@@ -78,7 +78,13 @@ static struct option options[] = {
 #define OPTION_COUNT (int)(sizeof(options) / sizeof(options[0]))
 /* rows for options: 34 on the screen, less the 3-line header and 3 lines
 around the list */
-#define OPTION_ROWS 27
+#define OPTION_ROWS 26
+/* the debug screen is 68 columns: a line that fills all 68 wraps by itself
+and its newline then adds a blank row (b91: every option took two rows, so
+the list ran past the bottom and wrapped over the top). Lines stay at 67 */
+/* build 92: the menu drawn into two buffers in turn (VRAM, uncached view) */
+#define MENU_VRAM 0x44000000u
+#define MENU_BUFFER_BYTES (512u * 272u * 4u)
 
 static struct map_entry maps[MAXIMUM_MAPS];
 static int map_count = 0;
@@ -296,12 +302,12 @@ static void draw(int page, int cursor, int map, int build)
 
 			if (first > 0)
 				snprintf(note, sizeof(note), "... %d more above", first);
-			pspDebugScreenPrintf("     %-63s\n", note);
+			pspDebugScreenPrintf("     %-62s\n", note);
 		}
 		for (i = first; i < OPTION_COUNT && i < first + OPTION_ROWS; i++)
 		{
 			pspDebugScreenSetTextColor(i == cursor ? 0xFF00FFFF : 0xFFFFFFFF);
-			pspDebugScreenPrintf(" [%c] %-16s %-46.46s\n", options[i].on ? 'x' : ' ', options[i].word, options[i].label);
+			pspDebugScreenPrintf(" [%c] %-16s %-45.45s\n", options[i].on ? 'x' : ' ', options[i].word, options[i].label);
 		}
 		pspDebugScreenSetTextColor(0xFFAAAAAA);
 		{
@@ -309,9 +315,9 @@ static void draw(int page, int cursor, int map, int build)
 
 			if (i < OPTION_COUNT)
 				snprintf(note, sizeof(note), "... %d more below", OPTION_COUNT - i);
-			pspDebugScreenPrintf("     %-63s\n", note);
+			pspDebugScreenPrintf("     %-62s\n", note);
 		}
-		pspDebugScreenPrintf(" other words kept: %-49.49s\n", extra_words);
+		pspDebugScreenPrintf(" other words kept: %-49.49s", extra_words);
 	}
 	pspDebugScreenSetTextColor(0xFFFFFFFF);
 }
@@ -342,12 +348,15 @@ void psp_menu(int build)
 
 	if (file_exists(DATA_ROOT "/input.txt") || file_exists(DATA_ROOT "/nomenu.txt"))
 		return;
+	int back = 0, dump_menu = -1;
+
 	scan_maps();
 	load_options();
 	map = current_map();
 	cursor = map;
 	pspDebugScreenInit();
 	pspDebugScreenSetBackColor(0xFF201008);
+	pspDebugScreenClear();
 	sceCtrlSetSamplingCycle(0);
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
 	while (!done)
@@ -365,10 +374,18 @@ void psp_menu(int build)
 			options_now |= options[k].on << k;
 		if (page != drawn_page || cursor != drawn_cursor || map != drawn_map || options_now != drawn_options)
 		{
-			sceDisplayWaitVblankStart();
-			if (page != drawn_page)
-				pspDebugScreenClear();
+			/* build 92: drawn whole into the buffer not on show, then shown
+			at the next vertical blank. b91's scrolling list redrew every
+			line on each move straight into the picture on show, which takes
+			longer than a blank: the D-pad flicker (Sheepdog01, b91) */
+			back = !back;
+			pspDebugScreenSetBase((u32 *)(MENU_VRAM + back * MENU_BUFFER_BYTES));
+			pspDebugScreenClear();
 			draw(page, cursor, map, build);
+			sceKernelDcacheWritebackAll();
+			sceDisplayWaitVblankStart();
+			sceDisplaySetFrameBuf((void *)(MENU_VRAM + back * MENU_BUFFER_BYTES), 512, PSP_DISPLAY_PIXEL_FORMAT_8888,
+				PSP_DISPLAY_SETBUF_NEXTFRAME);
 			drawn_page = page;
 			drawn_cursor = cursor;
 			drawn_map = map;
@@ -406,9 +423,33 @@ void psp_menu(int build)
 		}
 		if (pressed & PSP_CTRL_START)
 			done = 1;
+		/* build 92: ms0:/halo/menudump.txt (emulator test): the options page
+		with the cursor 15 down, the picture on show written raw (512 x 272,
+		32-bit) to menudump.raw, and on */
+		if (dump_menu < 0)
+			dump_menu = file_exists(DATA_ROOT "/menudump.txt");
+		if (dump_menu == 1)
+		{
+			page = 1;
+			cursor = 15;
+			dump_menu = 2;
+			continue;
+		}
+		if (dump_menu == 2)
+		{
+			SceUID file = sceIoOpen(DATA_ROOT "/menudump.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0666);
+
+			if (file >= 0)
+			{
+				sceIoWrite(file, (void *)(MENU_VRAM + back * MENU_BUFFER_BYTES), MENU_BUFFER_BYTES);
+				sceIoClose(file);
+			}
+			done = 1;
+		}
 		sceKernelDelayThread(60000);
 	}
 	save_files(map);
+	pspDebugScreenSetBase((u32 *)(MENU_VRAM + back * MENU_BUFFER_BYTES));
 	pspDebugScreenClear();
 	pspDebugScreenSetXY(0, 0);
 	pspDebugScreenPrintf("Loading %s...\n", map_count ? maps[map].name : "the game");
