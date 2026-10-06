@@ -414,6 +414,72 @@ static void bind_totals_gather(void)
 	}
 }
 
+/* build 88: the learned binds saved DURING play. The save at the map's
+close and at HOME (b47) never reached the Memory Stick on hardware: every
+log from b70 to b87 says "not yet saved", so the VRAM set has been largest
+first since the b68 packs replaced b46's file, and b87's bench found 90% of
+the texture binds served from RAM (b46, ranked: 88% from VRAM). Here the
+game thread copies the totals at a census (cheap: a few KB) once the map
+has been played for 1,800 frames and then every 9,000, and the heartbeat
+thread writes the copy (psp_tex_save_pending): the Memory Stick's 40-56 ms
+(b46) land on that thread, not on a frame */
+static unsigned int *snapshot = NULL, snapshot_capacity = 0, snapshot_entries = 0, snapshot_sum = 0;
+static char snapshot_name[64];
+static volatile int snapshot_pending = 0;
+static unsigned int map_open_frame = 0, last_snapshot_frame = 0, snapshots_taken = 0;
+
+static void learned_snapshot(void)
+{
+	if (!bind_totals || !map_name[0] || snapshot_pending || entry_count <= 0)
+		return;
+	if (frame - map_open_frame < 1800)
+		return;
+	if (snapshots_taken && frame - last_snapshot_frame < 9000)
+		return;
+	if (snapshot_capacity < (unsigned int)entry_count)
+	{
+		free(snapshot);
+		snapshot = malloc(entry_count * sizeof(unsigned int));
+		snapshot_capacity = snapshot ? (unsigned int)entry_count : 0;
+		if (!snapshot)
+			return;
+	}
+	memcpy(snapshot, bind_totals, entry_count * sizeof(unsigned int));
+	snapshot_entries = (unsigned int)entry_count;
+	snapshot_sum = key_sum();
+	snprintf(snapshot_name, sizeof(snapshot_name), "%s", map_name);
+	last_snapshot_frame = frame;
+	snapshots_taken++;
+	snapshot_pending = 1;
+}
+
+/* the heartbeat thread (psp_platform.c), every heartbeat */
+void psp_tex_save_pending(void)
+{
+	char path[128];
+	unsigned int header[3], start;
+	SceUID file;
+	int written = 0;
+
+	if (!snapshot_pending)
+		return;
+	start = sceKernelGetSystemTimeLow();
+	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", snapshot_name);
+	file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	if (file >= 0)
+	{
+		header[0] = 0x314D5256;
+		header[1] = snapshot_entries;
+		header[2] = snapshot_sum;
+		if (sceIoWrite(file, header, sizeof(header)) == sizeof(header))
+			written = sceIoWrite(file, snapshot, snapshot_entries * sizeof(unsigned int));
+		sceIoClose(file);
+	}
+	platform_log("textures: learned binds saved during play to %s (%d bytes, %s) in %u ms; the next launch fills VRAM by them",
+		path, written, file >= 0 ? "ok" : "couldn't open it", (sceKernelGetSystemTimeLow() - start) / 1000);
+	snapshot_pending = 0;
+}
+
 /* the game is quitting (HOME; psp_platform.c's exit callback) */
 void psp_tex_save_learned(void)
 {
@@ -490,6 +556,8 @@ void psp_tex_map_opened(const char *name)
 		int learned = 0, ranked;
 
 		snprintf(map_name, sizeof(map_name), "%s", name);
+		map_open_frame = frame;    /* build 88: the in-play save counts from here */
+		snapshots_taken = 0;
 		bind_totals = calloc(entry_count, sizeof(unsigned int));
 		if (bind_totals)
 			learned = bind_totals_load();
@@ -992,6 +1060,7 @@ void psp_tex_frame_end(void)
 		}
 		platform_log("textures: most bound over 900 frames (key size place binds):%s; the rest: VRAM %d binds (%d KB resident), RAM %d binds (%d KB)",
 			line, vram_binds, vram_bytes / 1024, ram_binds, ram_bytes / 1024);
+		learned_snapshot();
 	}
 	frame++;
 	frame_loaded = 0;

@@ -88,6 +88,7 @@ struct me_control
 	unsigned int stop;     /* the main CPU 1: stop; the ME 2: stopped */
 	unsigned int clock;    /* the ME: its cycle counter at the last poll */
 	unsigned int jobs;     /* the ME: jobs run */
+	unsigned int cause_before, cause_after; /* build 88: its Cause register at start */
 } __attribute__((aligned(64)));
 
 /* whole cache lines of their own; only ever used through the uncached view */
@@ -169,6 +170,21 @@ void meLibOnProcess(void)
 	volatile struct me_control *control = CONTROL;
 	int sums[MIX_FRAMES_MAX * 2];
 
+	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
+	Sheepdog01's PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
+	0. MIPS32r2's Cause bit 27 (DC, "disable count") stops it; the firmware
+	may leave it set on the ME. Cleared here; Cause before and after go to
+	the log either way */
+	{
+		unsigned int cause;
+
+		__asm__ __volatile__("mfc0 %0, $13" : "=r"(cause));
+		control->cause_before = cause;
+		cause &= ~(1u << 27);
+		__asm__ __volatile__("mtc0 %0, $13\n\tsync" : : "r"(cause));
+		__asm__ __volatile__("mfc0 %0, $13" : "=r"(cause));
+		control->cause_after = cause;
+	}
 	meLibDcacheWritebackInvalidateAll();
 	for (;;)
 	{
@@ -353,8 +369,9 @@ int psp_me_start(void)
 	}
 	me_state = 1;
 	atexit(stop_at_exit);
-	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond)",
-		table, control->alive - before, me_cycles_per_us);
+	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
+		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
+		control->cause_before, control->cause_after);
 	psp_log_flush();
 	return 1;
 }

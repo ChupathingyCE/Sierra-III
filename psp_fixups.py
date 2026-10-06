@@ -1521,6 +1521,26 @@ void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz
 	player_control_set_facing(0, &facing);
 }
 
+/* build 88: where the local player is now (benchrun re-places him only when
+he has drifted from the spot); 0 without a player */
+int psp_player_origin(float *out)
+{
+	long player_index = local_player_get_player_index(0);
+	struct player_datum *player;
+	real_point3d origin;
+
+	if (player_index == NONE)
+		return 0;
+	player = player_get(player_index);
+	if (player->unit_index == NONE)
+		return 0;
+	object_get_origin(player->unit_index, &origin);
+	out[0] = origin.x;
+	out[1] = origin.y;
+	out[2] = origin.z;
+	return 1;
+}
+
 /* build 70: a collision regression check ("colltest" in keep.txt,
 psp_platform.c): 256 rays from a metre above the player's feet in fixed
 directions, 60 units long, against the structure and objects; each hit's

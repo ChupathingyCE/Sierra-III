@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 87
+#define PSP_BUILD_NUMBER 88
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -136,6 +136,7 @@ static int log_batch_length = 0, log_batch_dropped = 0;
 static volatile int log_batching = 0;
 
 static void log_flush(void);
+static int log_lock_take(void);
 /* build 86: for psp_meaudio.c, around the Media Engine's start (a hang there
 would otherwise lose the lines before it) */
 void psp_log_flush(void)
@@ -149,13 +150,13 @@ static void log_flush(void)
 	int length, dropped;
 	SceUID file;
 
-	if (log_lock >= 0)
-		sceKernelWaitSema(log_lock, 1, NULL);
+	int locked = log_lock_take();
+
 	length = log_batch_length;
 	dropped = log_batch_dropped;
 	memcpy(copy, log_batch, length);
 	log_batch_length = log_batch_dropped = 0;
-	if (log_lock >= 0)
+	if (locked)
 		sceKernelSignalSema(log_lock, 1);
 	if (!length && !dropped)
 		return;
@@ -174,12 +175,27 @@ static void log_flush(void)
 	}
 }
 
+/* build 88: while the game exits (HOME), every wait for the log's lock is
+limited to 100 ms: no b70-b87 run's log has the exit callback's lines, nor
+was the learned-textures file ever written there, and a lock held by a thread
+the system has stopped would explain both */
+static volatile int exiting = 0;
+static int log_lock_take(void)
+{
+	SceUInt timeout = 100000;
+
+	if (log_lock < 0)
+		return 0;
+	if (!exiting)
+		return sceKernelWaitSema(log_lock, 1, NULL) >= 0;
+	return sceKernelWaitSema(log_lock, 1, &timeout) >= 0;
+}
+
 void psp_log_write(const char *text)
 {
 	SceUID file;
+	int locked = log_lock_take();
 
-	if (log_lock >= 0)
-		sceKernelWaitSema(log_lock, 1, NULL);
 	screen_write(text);
 	if (log_batching)
 	{
@@ -193,7 +209,7 @@ void psp_log_write(const char *text)
 		}
 		else
 			log_batch_dropped++;
-		if (log_lock >= 0)
+		if (locked)
 			sceKernelSignalSema(log_lock, 1);
 		return;
 	}
@@ -215,7 +231,7 @@ void psp_log_write(const char *text)
 		log_descriptor = file;
 	else
 		log_failure = file;
-	if (log_lock >= 0)
+	if (locked)
 		sceKernelSignalSema(log_lock, 1);
 }
 
@@ -453,21 +469,41 @@ void psp_fpu_mask_traps(void)
 void psp_tex_save_learned(void);
 void psp_meaudio_stop(const char *why);
 
+/* build 88: ms0:/halo/log/exit.txt, written straight to the file (no
+formatting, no lock, no log batch) at each step of the exit, so the next
+run's collect shows how far the exit got even if the log can't */
+static void exit_mark(const char *text)
+{
+	SceUID file = sceIoOpen(LOG_FOLDER "/exit.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+
+	if (file >= 0)
+	{
+		sceIoWrite(file, text, strlen(text));
+		sceIoClose(file);
+	}
+}
+
 static int exit_callback(int a, int b, void *c)
 {
 	(void)a; (void)b; (void)c;
+	exiting = 1;
+	exit_mark("exit: the HOME exit callback ran\n");
 	platform_log("HOME: exiting");
 	/* build 87: the log written out first, and again after the ME's stop (b86
 	run 2's log ended before either line: the batch was written only after
 	the stop, so a clean exit and a hung one looked the same) */
 	log_flush();
+	exit_mark("exit: log written\n");
 	/* build 86: the Media Engine stopped before the XMB comes back into the
 	memory it runs from (build 44's audio sample crashed the PSP on HOME) */
 	psp_meaudio_stop("HOME");
+	exit_mark("exit: Media Engine stopped\n");
 	log_flush();
 	/* build 47: the texture cache's learned binds (psp_tex.c) */
 	psp_tex_save_learned();
+	exit_mark("exit: learned textures saved\n");
 	log_flush();
+	exit_mark("exit: done, calling sceKernelExitGame\n");
 	sceKernelExitGame();
 	return 0;
 }
@@ -554,7 +590,11 @@ static const struct
 	float spot[6];
 } bench_views[] =
 {
-	{ "blue base, b86 spot", { 37.74f, -88.22f, 0.20f, 0.25f, 0.97f, 0.0f } },
+	/* build 88: z 0.55 (b87's 0.20 put the feet in the floor: the game
+	pushed the player 0.8 units away each time, and b87 placed him again
+	every window, which made this view's numbers noisy; Sheepdog01's b86 spot
+	itself reads 0.53) */
+	{ "blue base, b86 spot", { 37.74f, -88.22f, 0.55f, 0.25f, 0.97f, 0.0f } },
 	{ "red base front", { 95.0f, -172.0f, 0.45f, 0.0f, 1.0f, 0.05f } },
 	{ "mid field to blue", { 68.0f, -125.0f, 0.50f, -0.5f, 0.85f, 0.0f } },
 	{ "cliff top over the field", { 94.7f, -117.3f, 16.75f, -0.6f, -0.7f, -0.3f } },
@@ -628,11 +668,25 @@ static void bench_tick(void)
 	half = bench_step % 2;
 	if (!half)
 		bench_apply(config);
-	/* held at the spot every window (the game may have moved the player) */
-	psp_player_teleport(bench_views[view].spot[0], bench_views[view].spot[1], bench_views[view].spot[2],
-		bench_views[view].spot[3], bench_views[view].spot[4], bench_views[view].spot[5]);
-	platform_log("bench: window %d: view %d (%s), switch %d (%s), %s", bench_step, view, bench_views[view].name, config,
-		bench_configs[config], half ? "MEASURED" : "settling");
+	/* build 88: put at the spot when the view changes, and again only if the
+	game has moved the player off it (b87: every window, and Sheepdog01 saw the
+	teleport repeat; each one can hitch the window it starts) */
+	{
+		extern int psp_player_origin(float *out);
+		float at[3];
+		int placed = 0;
+
+		if (bench_step % (BENCH_CONFIGS * 2) == 0 || !psp_player_origin(at) ||
+			(at[0] - bench_views[view].spot[0]) * (at[0] - bench_views[view].spot[0]) +
+			(at[1] - bench_views[view].spot[1]) * (at[1] - bench_views[view].spot[1]) > 0.3f * 0.3f)
+		{
+			psp_player_teleport(bench_views[view].spot[0], bench_views[view].spot[1], bench_views[view].spot[2],
+				bench_views[view].spot[3], bench_views[view].spot[4], bench_views[view].spot[5]);
+			placed = 1;
+		}
+		platform_log("bench: window %d: view %d (%s), switch %d (%s), %s%s", bench_step, view, bench_views[view].name, config,
+			bench_configs[config], half ? "MEASURED" : "settling", placed ? " (player placed)" : "");
+	}
 }
 
 void psp_tick_account(unsigned long microseconds)
@@ -1047,6 +1101,12 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 				psp_me_report();
 			}
+			{
+				/* build 88: the learned textures, saved here during play (psp_tex.c) */
+				extern void psp_tex_save_pending(void);
+
+				psp_tex_save_pending();
+			}
 		}
 		last_ticks = ticks;
 		last_time = now;
@@ -1083,7 +1143,9 @@ int main(int argc, char **argv)
 	psp_fpu_mask_traps();
 	heap_base = (char *)sbrk(0);
 	log_lock = sceKernelCreateSema("halo log", 0, 1, 1, NULL);
-	thread = sceKernelCreateThread("halo callbacks", callback_thread, 0x11, 0x1000, 0, NULL);
+	/* build 88: 16 KB (was 4 KB): the exit callback formats log lines (a 512-byte
+	line plus vsnprintf's own frame) and writes files on this stack */
+	thread = sceKernelCreateThread("halo callbacks", callback_thread, 0x11, 0x4000, 0, NULL);
 	if (thread >= 0)
 		sceKernelStartThread(thread, 0, NULL);
 
@@ -1093,6 +1155,7 @@ int main(int argc, char **argv)
 	sceIoMkdir(DATA_ROOT "/save", 0777);
 	sceIoMkdir(LOG_FOLDER, 0777);
 	sceIoRemove(LOG_PATH);
+	sceIoRemove(LOG_FOLDER "/exit.txt"); /* build 88: this run's exit, if it gets that far */
 	freopen(DATA_ROOT "/stderr.txt", "w", stderr);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	freopen(DATA_ROOT "/stderr.txt", "a", stdout);
