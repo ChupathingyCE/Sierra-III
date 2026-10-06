@@ -1,0 +1,197 @@
+/*
+PSP_LIBC.C
+
+Small things the PSP's newlib lacks or the port's other platforms provide,
+compiled as plain C (no game prefix):
+- POSIX calls the Linux platform layer uses: pread/pwrite (the cache
+  file thread reads maps with them), sysconf, pause, ftruncate, utimensat;
+- the maths functions every port shares (port/include/halo_math.h). The PC
+  ports compute them in double precision, bit-identical across machines
+  for system link; the PSP computes them in single precision on its FPU
+  (lever 1 in the feasibility notes), since it won't play against PCs;
+- internet play (p2p.c) and the Android GL host, which the PSP doesn't
+  have: they report nothing.
+*/
+
+#include <errno.h>
+#include <math.h>
+#include <pthread.h>
+#include <string.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <pspkernel.h>
+#include <pspsysmem.h>
+
+/* ---------- POSIX */
+
+static pthread_mutex_t positioned_io_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* newlib has no pread/pwrite: seek and transfer under one lock, so two
+threads' positioned transfers on the same file can't interleave */
+ssize_t pread(int descriptor, void *buffer, size_t count, off_t offset)
+{
+	ssize_t result = -1;
+
+	pthread_mutex_lock(&positioned_io_lock);
+	if (lseek(descriptor, offset, SEEK_SET) == offset)
+		result = read(descriptor, buffer, count);
+	pthread_mutex_unlock(&positioned_io_lock);
+	return result;
+}
+
+ssize_t pwrite(int descriptor, const void *buffer, size_t count, off_t offset)
+{
+	ssize_t result = -1;
+
+	pthread_mutex_lock(&positioned_io_lock);
+	if (lseek(descriptor, offset, SEEK_SET) == offset)
+		result = write(descriptor, buffer, count);
+	pthread_mutex_unlock(&positioned_io_lock);
+	return result;
+}
+
+/* extends a file (the game sizes its save file this way, game_state_xbox.c)
+by writing its last byte; newlib can't shrink one, so a shorter length is
+left as it is */
+int ftruncate(int descriptor, off_t length)
+{
+	off_t end, position;
+	int result = 0;
+
+	pthread_mutex_lock(&positioned_io_lock);
+	position = lseek(descriptor, 0, SEEK_CUR);
+	end = lseek(descriptor, 0, SEEK_END);
+	if (end < 0)
+		result = -1;
+	else if (length > end)
+	{
+		char zero = 0;
+
+		if (lseek(descriptor, length - 1, SEEK_SET) != length - 1 || write(descriptor, &zero, 1) != 1)
+			result = -1;
+	}
+	lseek(descriptor, position, SEEK_SET);
+	pthread_mutex_unlock(&positioned_io_lock);
+	return result;
+}
+
+struct timespec;
+int utimensat(int directory, const char *path, const struct timespec times[2], int flags)
+{
+	(void)directory; (void)path; (void)times; (void)flags;
+	return 0;
+}
+
+int pause(void)
+{
+	sceKernelSleepThread();
+	return -1;
+}
+
+long sysconf(int name)
+{
+	switch (name)
+	{
+	case _SC_PAGESIZE: return 4096;
+	case _SC_PHYS_PAGES: return 24 * 1024 * 1024 / 4096;
+	case _SC_AVPHYS_PAGES: return (long)sceKernelTotalFreeMemSize() / 4096;
+	default: errno = EINVAL; return -1;
+	}
+}
+
+void _ReadWriteBarrier(void)
+{
+	__asm__ __volatile__("" ::: "memory");
+}
+
+/* ---------- maths, in single precision */
+
+double halo_sin(double x) { return sinf((float)x); }
+double halo_cos(double x) { return cosf((float)x); }
+double halo_tan(double x) { return tanf((float)x); }
+double halo_asin(double x) { return asinf((float)x); }
+double halo_acos(double x) { return acosf((float)x); }
+double halo_atan(double x) { return atanf((float)x); }
+double halo_atan2(double y, double x) { return atan2f((float)y, (float)x); }
+double halo_exp(double x) { return expf((float)x); }
+double halo_log(double x) { return logf((float)x); }
+double halo_log2(double x) { return log2f((float)x); }
+double halo_log10(double x) { return log10f((float)x); }
+double halo_pow(double x, double y) { return powf((float)x, (float)y); }
+
+/* ---------- no internet play (p2p.c) */
+
+const unsigned char *p2p_identifier(void) { static unsigned char identifier[16]; return identifier; }
+void p2p_hardware_id(char *hex, int size) { if (size > 0) { strncpy(hex, "5053500000000000", size - 1); hex[size - 1] = 0; } }
+void p2p_hardware_id_sanitize(char *destination, int size, const char *source)
+{ if (size > 0) { strncpy(destination, source ? source : "", size - 1); destination[size - 1] = 0; } }
+void p2p_discord_identity(char *id, int id_size, char *name, int name_size)
+{ if (id_size > 0) id[0] = 0; if (name_size > 0) name[0] = 0; }
+void p2p_discord_sanitize(char *destination, int size, const char *source, int name)
+{ (void)name; p2p_hardware_id_sanitize(destination, size, source); }
+unsigned long p2p_peer_endpoint_address(unsigned long address) { return address; }
+int p2p_outgoing(int stream, int socket, unsigned long *address, unsigned short *port)
+{ (void)stream; (void)socket; (void)address; (void)port; return 0; }
+int p2p_incoming(int stream, unsigned long *address, unsigned short *port) { (void)stream; (void)address; (void)port; return 0; }
+void p2p_socket_port(int socket, int stream, int listening, unsigned short port) { (void)socket; (void)stream; (void)listening; (void)port; }
+void p2p_port_taken(int stream, unsigned short port) { (void)stream; (void)port; }
+void p2p_socket_closed(int socket, unsigned short port) { (void)socket; (void)port; }
+int p2p_broadcast_targets(unsigned short port, unsigned long *addresses, unsigned short *ports, int maximum)
+{ (void)port; (void)addresses; (void)ports; (void)maximum; return 0; }
+int p2p_send_datagram(unsigned short source_port, unsigned long address, unsigned short port, const void *data, int size)
+{ (void)source_port; (void)address; (void)port; (void)data; (void)size; return 0; }
+int p2p_broadcast_datagram(unsigned short source_port, unsigned short port, const void *data, int size)
+{ (void)source_port; (void)port; (void)data; (void)size; return 0; }
+int p2p_peer_address(const unsigned char *peer, unsigned long *address) { (void)peer; (void)address; return 0; }
+void p2p_set_game_player_counts(int count, int maximum) { (void)count; (void)maximum; }
+const char *p2p_take_clipboard_text(void) { return NULL; }
+int p2p_join_invite(const char *text) { (void)text; return 0; }
+int p2p_hand_off_invite(void) { return 0; }
+void p2p_initialize(unsigned long local_address) { (void)local_address; }
+
+/* ---------- no Android GL host */
+
+int host_gl_has_extension(const char *name) { (void)name; return 0; }
+unsigned int host_gl_read_buffer_word(unsigned int buffer, unsigned int offset) { (void)buffer; (void)offset; return 0; }
+void host_gl_buffer_write(unsigned int target, unsigned int offset, unsigned int size, const void *data)
+{ (void)target; (void)offset; (void)size; (void)data; }
+void host_gl_fence_frame(unsigned int slot) { (void)slot; }
+void host_gl_wait_frame(unsigned int slot) { (void)slot; }
+
+/* ---------- no TIFF screenshots */
+
+void *TIFFOpen(const char *name, const char *mode) { (void)name; (void)mode; return NULL; }
+void TIFFClose(void *tiff) { (void)tiff; }
+int TIFFSetField(void *tiff, unsigned int tag, ...) { (void)tiff; (void)tag; return 0; }
+int TIFFWriteScanline(void *tiff, void *buffer, unsigned int row, unsigned short sample)
+{ (void)tiff; (void)buffer; (void)row; (void)sample; return -1; }
+
+/* ---------- heap accounting (linked with --wrap=malloc,calloc,realloc,memalign):
+large requests and every failure are logged, so the log says what the heap
+went to */
+
+void *__real_malloc(size_t size);
+void *__real_calloc(size_t count, size_t size);
+void *__real_realloc(void *pointer, size_t size);
+void *__real_memalign(size_t alignment, size_t size);
+void platform_log(const char *format, ...);
+
+static unsigned long heap_large_total = 0;
+
+static void *heap_note(void *result, size_t size, const char *kind, void *caller)
+{
+	if (!result)
+		platform_log("heap: %s of %u bytes FAILED (large requests so far %lu KB)", kind, (unsigned)size, heap_large_total / 1024);
+	else if (size >= 0x10000)
+	{
+		heap_large_total += size;
+		platform_log("heap: %s %u KB from %p (large requests so far %lu KB)", kind, (unsigned)(size / 1024),
+			caller, heap_large_total / 1024);
+	}
+	return result;
+}
+
+void *__wrap_malloc(size_t size) { return heap_note(__real_malloc(size), size, "malloc", __builtin_return_address(0)); }
+void *__wrap_calloc(size_t count, size_t size) { return heap_note(__real_calloc(count, size), count * size, "calloc", __builtin_return_address(0)); }
+void *__wrap_realloc(void *pointer, size_t size) { return heap_note(__real_realloc(pointer, size), size, "realloc", __builtin_return_address(0)); }
+void *__wrap_memalign(size_t alignment, size_t size) { return heap_note(__real_memalign(alignment, size), size, "memalign", __builtin_return_address(0)); }

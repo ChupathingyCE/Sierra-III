@@ -1,0 +1,1093 @@
+/*
+PSP_PLATFORM.C
+
+What the PSP needs besides the Linux platform layer, which it otherwise
+reuses as is (port/linux/src, built against the PSP toolchain's SDL3 and
+pthreads):
+- the program entry: module info, a fixed-size heap, exit handling, the
+  log file, the data and save roots;
+- no network yet: posix_net.c's sockets fail cleanly, and internet play's
+  helpers (posix_update.c, posix_upnp.c, p2p.c) report nothing.
+*/
+
+#include "platform.h"
+#include "posix.h"
+
+#include <pspkernel.h>
+/* the build number in the log (bump with every package) */
+#define PSP_BUILD_NUMBER 87
+/* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
+float psp_budget_last[7];
+#include <psputils.h>
+#include <psppower.h>
+#include <pspdebug.h>
+#include <pspdisplay.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#define SDL_MAIN_HANDLED
+#include <SDL3/SDL_main.h>
+
+PSP_MODULE_INFO("halo", PSP_MODULE_USER, 0, 1);
+PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
+PSP_MAIN_THREAD_STACK_SIZE_KB(512);
+/* fixed, so the heap ends below the game state and tag window
+(psp_build.py sets it from the linked program's size) */
+PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
+
+#define DATA_ROOT "ms0:/halo"
+/* in a folder of its own: the game's own files (debug.txt, stderr.txt,
+gamestate.txt) are written next to each other in ms0:/halo, and a file's
+size lives in its folder's directory entries, so the log stays out of
+that folder's way (build 6-8's logs all stopped at the same line) */
+#define LOG_FOLDER DATA_ROOT "/log"
+#define LOG_PATH LOG_FOLDER "/log.txt"
+
+int halo_main(void);
+long psp_game_time_peek(void);
+
+/* ---------- logging (psp_fixups.py's changes call this) */
+
+void platform_psp_log(const char *format, ...)
+{
+	char line[512];
+	va_list arguments;
+
+	va_start(arguments, format);
+	vsnprintf(line, sizeof(line), format, arguments);
+	va_end(arguments);
+	platform_log("%s", line);
+}
+
+/* ---------- the log: every line opened, appended and closed, so a crash
+can't lose lines still waiting for the Memory Stick's directory entry to be
+updated (xbox_kernel.c's platform_log calls this on the PSP) */
+
+/* every line is also drawn on the screen, before it goes to the file: if the
+system dies, the screen keeps the last lines for a photo, and if the screen
+keeps going while the file stops, the Memory Stick is what hung. The text
+sits at the top of VRAM (16-bit, 512 x 272), clear of the null renderer's
+targets at its start (psp_fixups.py's d3d8_resources.c change) */
+#define SCREEN_BASE ((void *)0x441B0000)
+#define SCREEN_COLUMNS 68
+#define SCREEN_ROWS 34
+
+static SceUID log_lock = -1;
+/* the descriptor log.txt last opened as (descriptors are handed out lowest
+free first, so it counts the files open), and its last failure */
+static volatile int log_descriptor = -1, log_failure = 0;
+static int screen_ready = 0, screen_row = 0;
+
+static void screen_row_text(const char *text, int length)
+{
+	char row[SCREEN_COLUMNS + 1];
+
+	memset(row, ' ', SCREEN_COLUMNS);
+	memcpy(row, text, length);
+	row[SCREEN_COLUMNS] = 0;
+	pspDebugScreenSetXY(0, screen_row);
+	pspDebugScreenPuts(row);
+	screen_row = (screen_row + 1) % SCREEN_ROWS;
+	/* a marker on the next row shows where the newest line is */
+	pspDebugScreenSetXY(0, screen_row);
+	pspDebugScreenPuts("----------------------------------------------------------------    ");
+}
+
+/* once the GE shows its own frames the log's screen is never displayed, and
+its VRAM becomes texture cache (psp_tex.c; build 21) */
+static volatile int screen_stopped = 0;
+
+void psp_screen_log_stop(void)
+{
+	screen_stopped = 1;
+}
+
+static void screen_write(const char *text)
+{
+	int length = (int)strlen(text);
+
+	if (screen_stopped)
+		return;
+	if (!screen_ready)
+	{
+		pspDebugScreenInitEx(SCREEN_BASE, PSP_DISPLAY_PIXEL_FORMAT_565, 1);
+		screen_ready = 1;
+	}
+	do
+	{
+		int part = length > SCREEN_COLUMNS ? SCREEN_COLUMNS : length;
+
+		screen_row_text(text, part);
+		text += part;
+		length -= part;
+	}
+	while (length > 0);
+}
+
+/* once the game runs, log lines are batched in memory and written once per
+heartbeat (build 19): opening and closing the log for every line cost the
+game several milliseconds a line, from a thread that outranks it. Start-up
+keeps writing each line at once, so a crash there still leaves the log;
+later, the screen keeps the last lines */
+static char log_batch[8192];
+static int log_batch_length = 0, log_batch_dropped = 0;
+static volatile int log_batching = 0;
+
+static void log_flush(void);
+/* build 86: for psp_meaudio.c, around the Media Engine's start (a hang there
+would otherwise lose the lines before it) */
+void psp_log_flush(void)
+{
+	log_flush();
+}
+
+static void log_flush(void)
+{
+	static char copy[sizeof(log_batch)];
+	int length, dropped;
+	SceUID file;
+
+	if (log_lock >= 0)
+		sceKernelWaitSema(log_lock, 1, NULL);
+	length = log_batch_length;
+	dropped = log_batch_dropped;
+	memcpy(copy, log_batch, length);
+	log_batch_length = log_batch_dropped = 0;
+	if (log_lock >= 0)
+		sceKernelSignalSema(log_lock, 1);
+	if (!length && !dropped)
+		return;
+	file = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+	if (file >= 0)
+	{
+		sceIoWrite(file, copy, length);
+		if (dropped)
+		{
+			char line[64];
+
+			snprintf(line, sizeof(line), "(log: %d lines dropped, the batch was full)\n", dropped);
+			sceIoWrite(file, line, strlen(line));
+		}
+		sceIoClose(file);
+	}
+}
+
+void psp_log_write(const char *text)
+{
+	SceUID file;
+
+	if (log_lock >= 0)
+		sceKernelWaitSema(log_lock, 1, NULL);
+	screen_write(text);
+	if (log_batching)
+	{
+		int length = strlen(text);
+
+		if (log_batch_length + length + 1 <= (int)sizeof(log_batch))
+		{
+			memcpy(log_batch + log_batch_length, text, length);
+			log_batch_length += length;
+			log_batch[log_batch_length++] = '\n';
+		}
+		else
+			log_batch_dropped++;
+		if (log_lock >= 0)
+			sceKernelSignalSema(log_lock, 1);
+		return;
+	}
+	file = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+	if (file >= 0)
+	{
+		sceIoWrite(file, text, strlen(text));
+		sceIoWrite(file, "\n", 1);
+		sceIoClose(file);
+	}
+	else if (file != log_failure)
+	{
+		char line[80];
+
+		snprintf(line, sizeof(line), "log.txt: can't open it (0x%08x)", (unsigned)file);
+		screen_write(line);
+	}
+	if (file >= 0)
+		log_descriptor = file;
+	else
+		log_failure = file;
+	if (log_lock >= 0)
+		sceKernelSignalSema(log_lock, 1);
+}
+
+/* ---------- breadcrumbs: psp_fixups.py puts a step before each call of the
+game's start-up, so the log (and the heartbeat) say how far it got */
+
+static const char *volatile last_step = "platform start-up";
+
+/* every step is remembered for the heartbeat; the first STEP_LOG_LIMIT
+are logged too (start-up and the first frames), numbered. 0 for profiling:
+logging a step takes milliseconds */
+#define STEP_LOG_LIMIT 0
+static volatile int step_count = 0;
+
+/* ---------- a flat profile from the breadcrumbs: the time from one step to
+the next is charged to the first. A step comes before every call in the main
+loop, game_tick, main_game_render, render_frame and render_window
+(psp_fixups.py), so each call's time lands on its own name, and the time a
+call spends in calls that have steps of their own lands on those. The
+heartbeat thread writes and clears the table every 10 s */
+#define PROFILE_SLOTS 512
+struct profile_slot
+{
+	const char *name;
+	unsigned long microseconds;
+	unsigned long calls;
+};
+static struct profile_slot profile_slots[PROFILE_SLOTS];
+static const char *profile_last_name = NULL;
+static unsigned int profile_last_time = 0;
+
+static struct profile_slot *profile_slot_for(const char *name)
+{
+	/* the names are string constants: one address each */
+	unsigned int index = ((unsigned int)name >> 2) % PROFILE_SLOTS;
+
+	while (profile_slots[index].name && profile_slots[index].name != name)
+		index = (index + 1) % PROFILE_SLOTS;
+	profile_slots[index].name = name;
+	return &profile_slots[index];
+}
+
+void psp_step(const char *name)
+{
+	unsigned int now = sceKernelGetSystemTimeLow();
+
+	if (profile_last_name)
+	{
+		struct profile_slot *slot = profile_slot_for(profile_last_name);
+
+		slot->microseconds += now - profile_last_time;
+		slot->calls++;
+	}
+	profile_last_name = name;
+	profile_last_time = now;
+	last_step = name;
+	if (step_count < STEP_LOG_LIMIT)
+		platform_log("step %d: %s", ++step_count, name);
+}
+
+/* ---------- objects_update by object type (build 19): objects.c times each
+object's update (psp_fixups.py) and the profile window reports the sums per
+tick, so a slow tick says which kind of object it went to */
+
+#define OBJECT_ACCOUNTS 20
+static const char *const object_account_names[OBJECT_ACCOUNTS] = {
+	"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery", "machine",
+	"control", "light", "placeholder", "sound scenery", "activation", "garbage collection",
+	"(of the vehicles: type update", "damage", "node matrices)",
+	"(of the bipeds: type update", "damage", "node matrices)"};
+static unsigned long object_microseconds[OBJECT_ACCOUNTS], object_updates[OBJECT_ACCOUNTS];
+
+void psp_object_account(int type, unsigned long microseconds)
+{
+	if (type >= 0 && type < OBJECT_ACCOUNTS)
+	{
+		object_microseconds[type] += microseconds;
+		object_updates[type]++;
+	}
+}
+
+static void object_report(SceUID file, unsigned long ticks)
+{
+	char line[1024];
+	int length, type;
+
+	length = snprintf(line, sizeof(line), "objects_update by type, ms per tick (updates per tick):");
+	for (type = 0; type < OBJECT_ACCOUNTS && length < (int)sizeof(line) - 64; type++)
+	{
+		if (object_updates[type])
+			length += snprintf(line + length, sizeof(line) - length, " %s %.2f (%.1f);", object_account_names[type],
+				ticks ? object_microseconds[type] / 1000.0 / ticks : 0.0, ticks ? (double)object_updates[type] / ticks : 0.0);
+		object_microseconds[type] = object_updates[type] = 0;
+	}
+	{
+		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep; /* objects.c (psp_fixups.py) */
+
+		if (length < (int)sizeof(line) - 96)
+			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles)",
+				ticks ? (double)psp_objects_asleep / ticks : 0.0, ticks ? (double)psp_objects_sleep_checked / ticks : 0.0,
+				ticks ? (double)psp_vehicles_asleep / ticks : 0.0);
+		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = 0;
+	}
+	platform_log("  %s", line);
+	if (file >= 0)
+	{
+		sceIoWrite(file, line, strlen(line));
+		sceIoWrite(file, "\n", 1);
+	}
+}
+
+/* ---------- what the null path keeps (build 19). With the GE drawing, the
+old Direct3D path's shadows, see-through parts, particles, decals, HUD and
+texture loads cost CPU time and draw nothing, and render interpolation
+blends between ticks the PSP can't render more often than anyway: all are
+off unless ms0:/halo/keep.txt names them (shadows transparent particles
+decals hud textures interpolation), to measure what each costs */
+
+static char keep_words[256] = "";
+
+static void keep_load(void)
+{
+	SceUID file = sceIoOpen(DATA_ROOT "/keep.txt", PSP_O_RDONLY, 0);
+	int length = 0;
+
+	if (file >= 0)
+	{
+		length = sceIoRead(file, keep_words + 1, sizeof(keep_words) - 3);
+		sceIoClose(file);
+	}
+	if (length < 0)
+		length = 0;
+	keep_words[0] = ' ';
+	keep_words[length + 1] = ' ';
+	keep_words[length + 2] = '\0';
+	for (file = 0; keep_words[file]; file++)
+		if (keep_words[file] == '\n' || keep_words[file] == '\r' || keep_words[file] == '\t' || keep_words[file] == ',')
+			keep_words[file] = ' ';
+	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
+		length ? keep_words : " nothing ");
+	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 skydump flatshade tdump nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio");
+}
+
+int psp_keep(const char *name)
+{
+	char word[40];
+
+	snprintf(word, sizeof(word), " %s ", name);
+	return strstr(keep_words, word) != NULL;
+}
+
+static int profile_compare(const void *a, const void *b)
+{
+	const struct profile_slot *x = a, *y = b;
+
+	return x->microseconds < y->microseconds ? 1 : x->microseconds > y->microseconds ? -1 : 0;
+}
+
+/* writes the window's table to log/profile.txt (and its top lines to the log)
+and starts a new one; frames is how many frames the window rendered */
+static void profile_report(double seconds, unsigned long frames, unsigned long ticks)
+{
+	static struct profile_slot copy[PROFILE_SLOTS];
+	static int window = 0;
+	static char report[8192];
+	int report_length;
+	unsigned long total = 0;
+	int index, used = 0;
+	SceUID file;
+	char line[160];
+
+	memcpy(copy, profile_slots, sizeof(copy));
+	for (index = 0; index < PROFILE_SLOTS; index++)
+	{
+		profile_slots[index].microseconds = 0;
+		profile_slots[index].calls = 0;
+	}
+	for (index = 0; index < PROFILE_SLOTS; index++)
+	{
+		if (copy[index].name && copy[index].microseconds)
+		{
+			copy[used++] = copy[index];
+			total += copy[index].microseconds;
+		}
+	}
+	qsort(copy, used, sizeof(copy[0]), profile_compare);
+	window++;
+	file = sceIoOpen(LOG_FOLDER "/profile.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+	snprintf(line, sizeof(line), "\nwindow %d: %.1f s, %lu frames, %lu ticks, %.1f%% of the time between steps\n"
+		"%-44s %9s %7s %9s %9s\n", window, seconds, frames, ticks, total / (seconds * 1e4),
+		"step (time until the next)", "ms/frame", "% time", "calls/s", "us/call");
+	/* the table goes to the file in one write (build 19) */
+	report_length = snprintf(report, sizeof(report), "%s", line);
+	for (index = 0; index < used && index < 60; index++)
+	{
+		snprintf(line, sizeof(line), "%-44s %9.2f %7.1f %9.1f %9.1f\n", copy[index].name,
+			frames ? copy[index].microseconds / 1000.0 / frames : 0.0,
+			copy[index].microseconds / (seconds * 1e4), copy[index].calls / seconds,
+			copy[index].calls ? (double)copy[index].microseconds / copy[index].calls : 0.0);
+		if (report_length + (int)strlen(line) < (int)sizeof(report))
+			report_length += snprintf(report + report_length, sizeof(report) - report_length, "%s", line);
+		if (index < 8)
+			platform_log("  %-30.30s %6.2f ms/frame %5.1f%%", copy[index].name,
+				frames ? copy[index].microseconds / 1000.0 / frames : 0.0, copy[index].microseconds / (seconds * 1e4));
+	}
+	if (file >= 0)
+		sceIoWrite(file, report, report_length);
+	object_report(file, ticks);
+	if (file >= 0)
+		sceIoClose(file);
+}
+
+/* ---------- the FPU: a PSP thread starts with its FPU control register at
+0x00000e00, the overflow, divide-by-zero and invalid operation traps
+enabled. The Xbox (and every other port) runs with all of them masked, and
+the game counts on it: in Blood Gulch's first tick, unit_update divides by
+a unit's aiming_velocity_maximum, which is 0 for some units, and 0/0 is an
+invalid operation. Unmasked, that trap is taken, nothing handles it, and the
+PSP freezes and switches itself off (PPSSPP keeps the register but takes no
+FPU traps, so it ran on). Every thread masks them: the main thread here, the
+game's threads as they start (psp_fixups.py's xbox_kernel.c change) */
+
+void psp_fpu_mask_traps(void)
+{
+	unsigned int control;
+
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	/* enable bits 7-11: inexact, underflow, overflow, divide by zero, invalid */
+	control &= ~0x00000F80u;
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+}
+
+/* ---------- exit */
+
+void psp_tex_save_learned(void);
+void psp_meaudio_stop(const char *why);
+
+static int exit_callback(int a, int b, void *c)
+{
+	(void)a; (void)b; (void)c;
+	platform_log("HOME: exiting");
+	/* build 87: the log written out first, and again after the ME's stop (b86
+	run 2's log ended before either line: the batch was written only after
+	the stop, so a clean exit and a hung one looked the same) */
+	log_flush();
+	/* build 86: the Media Engine stopped before the XMB comes back into the
+	memory it runs from (build 44's audio sample crashed the PSP on HOME) */
+	psp_meaudio_stop("HOME");
+	log_flush();
+	/* build 47: the texture cache's learned binds (psp_tex.c) */
+	psp_tex_save_learned();
+	log_flush();
+	sceKernelExitGame();
+	return 0;
+}
+
+/* sleep and wake: the texture cache in the volatile partition gives it back
+before the PSP sleeps (psp_tex.c; build 22) */
+void psp_tex_suspend(void);
+void psp_tex_resume(void);
+void psp_geo_suspend(void);
+void psp_geo_resume(void);
+
+static int power_callback(int unknown, int flags, void *argument)
+{
+	(void)unknown; (void)argument;
+	if (flags & PSP_POWER_CB_SUSPENDING)
+	{
+		/* build 86: the Media Engine stopped before the sleep (the main CPU
+		mixes from then on) */
+		psp_meaudio_stop("sleep");
+		/* build 68: the geometry cache's blocks are in the same partition; its
+		read in flight is waited for first */
+		psp_geo_suspend();
+		psp_tex_suspend();
+	}
+	if (flags & PSP_POWER_CB_RESUME_COMPLETE)
+	{
+		psp_tex_resume();
+		psp_geo_resume();
+	}
+	return 0;
+}
+
+static int callback_thread(SceSize args, void *argp)
+{
+	(void)args; (void)argp;
+	scePowerRegisterCallback(-1, sceKernelCreateCallback("power", power_callback, NULL));
+	sceKernelRegisterExitCallback(sceKernelCreateCallback("exit", exit_callback, NULL));
+	sceKernelSleepThreadCB();
+	return 0;
+}
+
+/* ---------- timing: every game tick and rendered frame is timed
+(psp_fixups.py's changes to game_time.c and main.c call these); the
+heartbeat reports them every 5 s with the game time, so the log shows how
+far the game got, whether it keeps up (150 ticks in 5 s is full speed at
+30 Hz), and what a tick and a frame cost on this CPU */
+
+/* the heap's start: how far newlib's heap has grown since (sbrk(0)) is its
+high-water mark, since it never gives memory back */
+static char *heap_base = NULL;
+
+static volatile unsigned long tick_count, tick_total, tick_maximum;
+static volatile unsigned long frame_count, frame_total, frame_maximum;
+
+unsigned long psp_microseconds(void)
+{
+	return sceKernelGetSystemTimeLow();
+}
+
+/* where the local player is, refreshed on the game's thread once a second
+(players.c, appended by psp_fixups.py) for the heartbeat to print */
+void psp_player_snapshot(char *text, int size);
+unsigned long psp_tag_loaded_calls = 0; /* cache_files.c (psp_fixups.py) */
+static char player_text[160] = "player: not yet";
+static unsigned long ticks_since_snapshot;
+
+void psp_tick_account(unsigned long microseconds)
+{
+	static unsigned long ticks_seen = 0;
+
+	/* keep.txt's "savetest": a checkpoint 10 s in (once), timed, the way the
+	campaign makes them (game_state_save writes the whole game state) */
+	++ticks_seen;
+	/* ms0:/halo/commands.txt: console commands run 10 s after the game starts (one
+a line; e.g. cheat_active_camouflage_local_player 0), for testing what a
+map doesn't show by itself (build 30) */
+	if (ticks_seen == 300)
+	{
+		FILE *file = fopen(DATA_ROOT "/commands.txt", "r");
+
+		if (file)
+		{
+			extern unsigned char hs_compile_and_evaluate(const char *source);
+			char line[256];
+
+			while (fgets(line, sizeof(line), file))
+			{
+				size_t length = strlen(line);
+
+				while (length && (line[length - 1] == '\n' || line[length - 1] == '\r'))
+					line[--length] = 0;
+				if (length)
+				{
+					platform_log("commands.txt: %s", line);
+					hs_compile_and_evaluate(line);
+				}
+			}
+			fclose(file);
+		}
+	}
+	/* build 59: ms0:/halo/teleport.txt, "x y z forward_x forward_y forward_z"
+	(the player's feet, as the heartbeat prints them, and a direction as a
+	screenshot's "looking"): the player put there 11 s in, and again each
+	5 s for a minute (the game may move a unit that lands in the air) */
+	if (ticks_seen >= 330 && ticks_seen <= 2130 && (ticks_seen - 330) % 150 == 0)
+	{
+		FILE *file = fopen(DATA_ROOT "/teleport.txt", "r");
+
+		if (file)
+		{
+			extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
+			float p[6];
+
+			if (fscanf(file, "%f %f %f %f %f %f", &p[0], &p[1], &p[2], &p[3], &p[4], &p[5]) == 6)
+			{
+				platform_log("teleport.txt: to %.2f %.2f %.2f looking %.2f %.2f %.2f", p[0], p[1], p[2], p[3], p[4], p[5]);
+				psp_player_teleport(p[0], p[1], p[2], p[3], p[4], p[5]);
+			}
+			fclose(file);
+		}
+	}
+	/* build 70: keep.txt's "colltest": the collision regression rays, 14 s in
+	(after the teleport, if any, has settled) and again at 24 s */
+	if ((ticks_seen == 420 || ticks_seen == 720) && psp_keep("colltest"))
+	{
+		extern void psp_collision_test(const float *fixed_origin);
+		FILE *file = fopen(DATA_ROOT "/teleport.txt", "r");
+		float p[6];
+		int fixed = file && fscanf(file, "%f %f %f %f %f %f", &p[0], &p[1], &p[2], &p[3], &p[4], &p[5]) == 6;
+
+		if (file)
+			fclose(file);
+		/* from teleport.txt's spot when there is one (the same rays whatever
+		the player did), else from the player */
+		psp_collision_test(fixed ? p : NULL);
+	}
+	/* keep.txt's "menutest": from the main menu, Blood Gulch after 20 s, the
+	way the menu starts a game (a new map's tags over the menu's) */
+	if (ticks_seen == 600 && psp_keep("menutest"))
+	{
+		extern unsigned char hs_compile_and_evaluate(const char *source);
+
+		platform_log("menutest: loading Blood Gulch from the menu");
+		hs_compile_and_evaluate("map_name levels\\test\\bloodgulch\\bloodgulch");
+	}
+	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
+	{
+		/* the main loop does both between ticks, as for the campaign's own
+		checkpoints and deaths */
+		extern void main_save_map_nonsafe(void);
+		extern void main_revert_map(void);
+
+		psp_player_snapshot(player_text, sizeof(player_text));
+		platform_log("savetest: %s at tick %lu (%s)", ticks_seen == 300 ? "checkpoint" : "revert", ticks_seen,
+			player_text);
+		if (ticks_seen == 300)
+			main_save_map_nonsafe();
+		else
+			main_revert_map();
+	}
+	if (++ticks_since_snapshot >= 30)
+	{
+		ticks_since_snapshot = 0;
+		psp_player_snapshot(player_text, sizeof(player_text));
+	}
+	tick_count++;
+	tick_total += microseconds;
+	if (microseconds > tick_maximum)
+		tick_maximum = microseconds;
+}
+
+void psp_ge_frame_end(void);
+
+void psp_phase(int phase);
+
+void psp_frame_account(unsigned long microseconds)
+{
+	/* the rendered frame goes to the screen (psp_ge.c) */
+	psp_phase(3);
+	psp_ge_frame_end();
+	psp_phase(0);
+	frame_count++;
+	frame_total += microseconds;
+	if (microseconds > frame_maximum)
+		frame_maximum = microseconds;
+}
+
+/* build 37: the hardware profiler (keep.txt "hwprofile"; psp/profile/main.c,
+a kernel module, adds the CPU's counters into this table ten times a second) */
+#define HW_COUNTERS 19
+#define HW_PARTITIONS 8
+#define HW_PHASES 4
+static struct
+{
+	volatile unsigned int sequence, pad;
+	volatile unsigned long long count[HW_COUNTERS];
+	/* build 44: the memory partitions' free space, surveyed once by the
+	module (psp/profile/main.c) */
+	volatile int partition_total[HW_PARTITIONS];
+	volatile int partition_largest[HW_PARTITIONS];
+	volatile unsigned int partitions_surveyed;
+	/* build 46: the counters by phase (0 other, 1 tick, 2 drawing, 3 frame
+	end), and coprocessor 0's register 24 (bit 0: the 04g+ "L2" cache) */
+	volatile unsigned long long phase_count[HW_PHASES][HW_COUNTERS];
+	volatile unsigned int phase_changes;
+	volatile unsigned int cop0_24;
+} hwprofile __attribute__((aligned(64)));
+static unsigned long long hwprofile_phase_last[HW_PHASES][HW_COUNTERS];
+static int partitions_reported = 0;
+static unsigned long long hwprofile_last[HW_COUNTERS];
+static int hwprofile_running = 0;
+
+/* build 46: tell the profiler what the game is doing now (the system call
+halo_profile.prx exports; psp/profile/exports.exp). Only with the module
+running: before it loads, the import isn't linked */
+int halo_profile_phase(int phase);
+
+void psp_phase(int phase)
+{
+	if (hwprofile_running)
+		halo_profile_phase(phase);
+}
+
+static void hwprofile_start(const char *eboot_path)
+{
+	char path[256];
+	char *slash;
+	SceUID module;
+	int status = 0;
+	unsigned int address = (unsigned int)&hwprofile;
+
+	snprintf(path, sizeof(path), "%s", eboot_path ? eboot_path : "ms0:/PSP/GAME/halo/EBOOT.PBP");
+	slash = strrchr(path, '/');
+	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_profile.prx");
+	module = sceKernelLoadModule(path, 0, NULL);
+	if (module >= 0)
+		module = sceKernelStartModule(module, sizeof(address), &address, &status, NULL);
+	hwprofile_running = module >= 0;
+	platform_log("hardware profiler %s: %s (0x%08x)", path, module >= 0 ? "started" : "not loaded", (unsigned)module);
+}
+
+/* the counters since the last heartbeat, as shares of the CPU's cycles and
+counts a millisecond (counters in PspDebugProfilerRegs order, from systemck) */
+static void hwprofile_report(void)
+{
+	unsigned long long d[HW_COUNTERS];
+	double cycles, ms;
+	int k;
+
+	if (!hwprofile_running || !hwprofile.sequence)
+		return;
+	if (hwprofile.partitions_surveyed && !partitions_reported)
+	{
+		char line[400];
+		int length = 0;
+
+		partitions_reported = 1;
+		for (k = 0; k < HW_PARTITIONS && length < (int)sizeof(line) - 48; k++)
+			if (hwprofile.partition_total[k] > 0 || hwprofile.partition_largest[k] > 0)
+				length += snprintf(line + length, sizeof(line) - length, " %d: %d KB free (largest block %d KB);", k + 1,
+					hwprofile.partition_total[k] / 1024, hwprofile.partition_largest[k] / 1024);
+		platform_log("memory partitions (1 kernel, 2 the game, 5 the borrowed 4 MB):%s", length ? line : " none reported");
+		platform_log("coprocessor 0 register 24: 0x%08x (bit 0, the firmware's test for the 04g+ boards' L2 cache: %s)",
+			hwprofile.cop0_24, hwprofile.cop0_24 & 1 ? "set" : "clear");
+	}
+	for (k = 0; k < HW_COUNTERS; k++)
+	{
+		unsigned long long now = hwprofile.count[k];
+
+		d[k] = now - hwprofile_last[k];
+		hwprofile_last[k] = now;
+	}
+	cycles = d[1] ? (double)d[1] : 1.0;
+	/* counts per million CPU cycles (3 ms at 333 MHz) */
+	ms = cycles / 1e6;
+	platform_log("hardware: %.0f M CPU cycles (%.0f M system); waiting on memory %.1f%%, internal %.1f%%, VFPU %.1f%%, coprocessors %.1f%%, asleep %.1f%% | per million cycles: D-cache misses %.0f, writebacks %.0f, I-cache misses %.0f, uncached loads %.0f stores %.0f, cached loads %.0f stores %.0f, bus %.0f, FPU ops %.0f, VFPU ops %.0f",
+		d[1] / 1e6, d[0] / 1e6, 100.0 * d[3] / cycles, 100.0 * d[2] / cycles, 100.0 * d[5] / cycles,
+		100.0 * d[4] / cycles, 100.0 * d[6] / cycles,
+		d[13] / ms, d[14] / ms, d[12] / ms, d[8] / ms, d[9] / ms, d[10] / ms, d[11] / ms, d[7] / ms,
+		d[16] / ms, d[17] / ms);
+	{
+		/* build 46: the same by phase */
+		static const char *const names[HW_PHASES] = { "other", "tick", "drawing", "frame end" };
+		char line[700];
+		int length = 0, phase;
+
+		for (phase = 0; phase < HW_PHASES && length < (int)sizeof(line) - 160; phase++)
+		{
+			unsigned long long p[HW_COUNTERS];
+			double pc;
+
+			for (k = 0; k < HW_COUNTERS; k++)
+			{
+				unsigned long long now = hwprofile.phase_count[phase][k];
+
+				p[k] = now - hwprofile_phase_last[phase][k];
+				hwprofile_phase_last[phase][k] = now;
+			}
+			pc = p[1] ? (double)p[1] : 1.0;
+			length += snprintf(line + length, sizeof(line) - length,
+				" %s %.1f%% (memory %.1f%%, asleep %.1f%%, I %.0f, D %.0f, wb %.0f, uncached loads %.0f stores %.0f);",
+				names[phase], 100.0 * p[1] / cycles, 100.0 * p[3] / pc, 100.0 * p[6] / pc,
+				p[12] / (pc / 1e6), p[13] / (pc / 1e6), p[14] / (pc / 1e6), p[8] / (pc / 1e6), p[9] / (pc / 1e6));
+			/* two phases a line: a log line holds 512 characters (b46's were cut) */
+			if (phase == 1)
+			{
+				platform_log("hardware by phase (share of cycles; per million cycles: I/D-cache misses, writebacks, uncached; %u phase changes):%s",
+					hwprofile.phase_changes, line);
+				length = 0;
+				line[0] = 0;
+			}
+		}
+		platform_log("hardware by phase, continued:%s", line);
+	}
+}
+
+static int heartbeat_thread(SceSize args, void *argp)
+{
+	long last_ticks = -1;
+	SceInt64 last_time = sceKernelGetSystemTimeWide();
+	int beat = 0;
+
+	(void)args; (void)argp;
+	psp_fpu_mask_traps();
+	for (;;)
+	{
+		SceInt64 now;
+		long ticks;
+		unsigned long tc, tt, tm, fc, ft, fm;
+		double seconds;
+
+		/* every second for the first 20, then every 5 */
+		sceKernelDelayThread(beat < 20 ? 1000000 : 5000000);
+		beat++;
+		now = sceKernelGetSystemTimeWide();
+		seconds = (now - last_time) / 1e6;
+		ticks = psp_game_time_peek();
+		tc = tick_count; tt = tick_total; tm = tick_maximum;
+		fc = frame_count; ft = frame_total; fm = frame_maximum;
+		tick_count = tick_total = tick_maximum = 0;
+		frame_count = frame_total = frame_maximum = 0;
+		/* the profile, every other 5 s beat once the game runs; the first
+		window starts at the first such beat */
+		if (ticks >= 0 && last_ticks >= 0 && beat > 20)
+		{
+			static SceInt64 profile_window_start = 0;
+			static unsigned long profile_frames = 0, profile_ticks = 0;
+
+			if (!profile_window_start)
+			{
+				profile_window_start = now;
+				memset(profile_slots, 0, sizeof(profile_slots));
+				memset(object_microseconds, 0, sizeof(object_microseconds));
+				memset(object_updates, 0, sizeof(object_updates));
+				{
+					extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep;
+
+					psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = 0;
+				}
+			}
+			else
+			{
+				profile_frames += fc;
+				profile_ticks += tc;
+				if ((beat & 1) == 0)
+				{
+					profile_report((now - profile_window_start) / 1e6, profile_frames, profile_ticks);
+					profile_window_start = now;
+					profile_frames = profile_ticks = 0;
+				}
+			}
+		}
+		if (ticks >= 0 && last_ticks >= 0)
+			platform_log("heartbeat: game time %ld (%.1f ticks/s) | tick %.2f ms avg, %.2f max | frame %.2f ms avg, %.2f max, %.1f fps | cpu %d MHz | free %d KB | heap top %lu of %d KB",
+				ticks, (ticks - last_ticks) / seconds,
+				tc ? tt / 1000.0 / tc : 0.0, tm / 1000.0,
+				fc ? ft / 1000.0 / fc : 0.0, fm / 1000.0, fc / seconds,
+				scePowerGetCpuClockFrequencyInt(), sceKernelTotalFreeMemSize() / 1024,
+				heap_base ? (unsigned long)((char *)sbrk(0) - heap_base) / 1024 : 0, PSP_HEAP_KB);
+		/* build 73: the Memory Stick reads of this window: how many, how
+		long in all, the slowest one (Sheepdog01's b71/b72: 1.7-5 s a frame at the
+		frame's end, the reads the suspects) */
+		if (ticks >= 0 && last_ticks >= 0)
+		{
+			extern void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us);
+			extern void psp_geo_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us);
+			unsigned long tr, tu, tw, gr, gu, gw;
+
+			psp_tex_io_window(&tr, &tu, &tw);
+			psp_geo_io_window(&gr, &gu, &gw);
+			platform_log("io: textures %lu reads, %.1f ms (slowest %.1f); geometry %lu reads, %.1f ms (slowest %.1f) over %.1f s",
+				tr, tu / 1000.0, tw / 1000.0, gr, gu / 1000.0, gw / 1000.0, seconds);
+			{
+				extern void psp_ge_frame_window(char *text, int size);
+				char line[400];
+
+				psp_ge_frame_window(line, sizeof(line));
+				platform_log("%s", line);
+			}
+		}
+		/* build 64: the frame against the 33.3 ms of 30 frames a second */
+		if (ticks >= 0 && last_ticks >= 0 && fc)
+		{
+			extern void psp_ge_budget(unsigned long *renderer_us, unsigned long *wait_us);
+			unsigned long renderer_us = 0, wait_us = 0;
+			double wall = seconds * 1000.0 / fc, ticks_ms = tt / 1000.0 / fc, frame_ms = ft / 1000.0 / fc;
+
+			psp_ge_budget(&renderer_us, &wait_us);
+			platform_log("budget: tag lookups by name %lu a frame (tag_loaded; verify_tag_reference answers from the reference since build 66)",
+				fc ? psp_tag_loaded_calls / fc : 0);
+			psp_tag_loaded_calls = 0;
+			psp_budget_last[0] = (float)wall;
+			psp_budget_last[1] = (float)(fc / seconds);
+			psp_budget_last[2] = (float)ticks_ms;
+			psp_budget_last[3] = (float)frame_ms;
+			psp_budget_last[4] = renderer_us / 1000.0f;
+			psp_budget_last[5] = wait_us / 1000.0f;
+			psp_budget_last[6] = (float)((ticks - last_ticks) / seconds);
+			platform_log("budget: %.1f ms a frame by the clock (%.1f fps; 30 fps is 33.3): ticks %.1f ms a frame (%.2f ticks), frame %.1f (the GE renderer's CPU %.1f of it, waiting for the GE %.1f), the rest %.1f; %s by %.1f ms",
+				wall, fc / seconds, ticks_ms, (double)tc / fc, frame_ms, renderer_us / 1000.0, wait_us / 1000.0,
+				wall - ticks_ms - frame_ms, wall > 33.33 ? "over" : "under", wall > 33.33 ? wall - 33.33 : 33.33 - wall);
+		}
+		if (!(ticks >= 0 && last_ticks >= 0))
+			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,
+				sceKernelTotalFreeMemSize() / 1024, log_descriptor);
+		hwprofile_report();
+		if (ticks >= 0 && (beat % 6) == 3)
+		{
+			/* build 44: the game state's arrays and pools, with their peaks */
+			extern void psp_game_state_report(void);
+
+			psp_game_state_report();
+		}
+		if (ticks >= 0 && beat > 20)
+			log_batching = 1;
+		if (ticks >= 0)
+		{
+			extern volatile unsigned int psp_pad_buttons, psp_pad_reads;
+			extern volatile int psp_pad_lx, psp_pad_ly;
+
+			platform_log("%s | pad %04x stick %d,%d (%u reads)", player_text, psp_pad_buttons & 0xFFFF,
+				psp_pad_lx, psp_pad_ly, psp_pad_reads);
+			if ((beat & 1) == 0)
+			{
+				/* the sound mixer's cost (psp_dsound.c; build 25) */
+				extern void psp_audio_report(void);
+
+				psp_audio_report();
+				{
+					/* build 87: the Media Engine's jobs (psp_me.c) */
+					extern void psp_me_report(void);
+
+					psp_me_report();
+				}
+			}
+		}
+		last_ticks = ticks;
+		last_time = now;
+		log_flush();
+	}
+	return 0;
+}
+
+/* loads halo_crash.prx from the EBOOT's folder: a kernel-mode module that
+writes ms0:/halo/crash.txt when the game crashes (psp/crash/main.c) */
+static void load_crash_handler(const char *eboot_path)
+{
+	char path[256];
+	char *slash;
+	SceUID module;
+	int status = 0;
+
+	snprintf(path, sizeof(path), "%s", eboot_path ? eboot_path : "ms0:/PSP/GAME/halo/EBOOT.PBP");
+	slash = strrchr(path, '/');
+	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_crash.prx");
+	module = sceKernelLoadModule(path, 0, NULL);
+	if (module >= 0)
+		module = sceKernelStartModule(module, 0, NULL, &status, NULL);
+	platform_log("crash handler %s: %s (0x%08x)", path, module >= 0 ? "installed" : "not loaded", (unsigned)module);
+}
+
+int main(int argc, char **argv)
+{
+	SceUID thread;
+	SceIoStat status;
+
+	psp_fpu_mask_traps();
+	heap_base = (char *)sbrk(0);
+	log_lock = sceKernelCreateSema("halo log", 0, 1, 1, NULL);
+	thread = sceKernelCreateThread("halo callbacks", callback_thread, 0x11, 0x1000, 0, NULL);
+	if (thread >= 0)
+		sceKernelStartThread(thread, 0, NULL);
+
+	/* everything the platform layer writes to stdout and stderr goes to
+	the log, unbuffered, so it survives a crash */
+	sceIoMkdir(DATA_ROOT, 0777);
+	sceIoMkdir(DATA_ROOT "/save", 0777);
+	sceIoMkdir(LOG_FOLDER, 0777);
+	sceIoRemove(LOG_PATH);
+	freopen(DATA_ROOT "/stderr.txt", "w", stderr);
+	setvbuf(stderr, NULL, _IONBF, 0);
+	freopen(DATA_ROOT "/stderr.txt", "a", stdout);
+	setvbuf(stdout, NULL, _IONBF, 0);
+
+	/* homebrew starts at 222 MHz; the measurements assume the PSP-1000's
+333 MHz (bus 166) */
+	scePowerSetClockFrequency(333, 333, 166);
+
+	load_crash_handler(argc > 0 ? argv[0] : NULL);
+
+	setenv("HALO_DATA_ROOT", DATA_ROOT, 1);
+	setenv("HALO_SAVE_ROOT", DATA_ROOT "/save", 1);
+	setenv("HALO_NULL_RENDERER", "1", 1);
+	/* the game's frustum in the screen's own shape (480:272, as 848 x 480),
+	so it culls what the GE's projection shows (build 19) */
+	setenv("HALO_DISPLAY_WIDTH", "848", 1);
+	/* sound: config.toml's [audio] enabled (on unless it says false; build 25) */
+	/* build 53: the build's number first, so a log says which EBOOT ran */
+	platform_log("Halo PSP bring-up build %d: free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
+		sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+	/* build 66: the launch menu (psp_menu.c): the map and the keep words,
+	written to init.txt and keep.txt before they are read */
+	{
+		extern void psp_menu(int build);
+
+		psp_menu(PSP_BUILD_NUMBER);
+	}
+	keep_load();
+	{
+		/* build 37: the VFPU's matrix product, checked against the FPU */
+		extern void psp_vfpu_initialize(void);
+
+		psp_vfpu_initialize();
+	}
+	if (psp_keep("hwprofile"))
+		hwprofile_start(argc > 0 ? argv[0] : NULL);
+
+	thread = sceKernelCreateThread("halo heartbeat", heartbeat_thread, 0x18, 0x4000, 0, NULL);
+	if (thread >= 0)
+		sceKernelStartThread(thread, 0, NULL);
+
+	/* the crash handler's own test: with ms0:/halo/crashtest.txt present,
+	the game faults on purpose here, and the handler's screen should appear */
+	if (sceIoGetstat(DATA_ROOT "/crashtest.txt", &status) >= 0)
+	{
+		platform_log("crash test: storing to address 4 (delete crashtest.txt to run the game)");
+		sceKernelDelayThread(1000000);
+		*(volatile int *)4 = 1;
+	}
+	SDL_SetMainReady();
+	return halo_main();
+}
+
+/* ---------- no network yet */
+
+int posix_socket_last_error(void) { return 10050; /* WSAENETDOWN */ }
+int posix_socket(int family, int type, int protocol) { (void)family; (void)type; (void)protocol; return -1; }
+int posix_socket_close(int socket) { (void)socket; return -1; }
+int posix_socket_bind(int socket, const void *address, int length) { (void)socket; (void)address; (void)length; return -1; }
+int posix_socket_connect(int socket, const void *address, int length) { (void)socket; (void)address; (void)length; return -1; }
+int posix_socket_listen(int socket, int backlog) { (void)socket; (void)backlog; return -1; }
+int posix_socket_accept(int socket, void *address, int *length) { (void)socket; (void)address; (void)length; return -1; }
+int posix_socket_send(int socket, const void *buffer, int length, int flags) { (void)socket; (void)buffer; (void)length; (void)flags; return -1; }
+int posix_socket_sendto(int socket, const void *buffer, int length, int flags, const void *address, int address_length)
+{ (void)socket; (void)buffer; (void)length; (void)flags; (void)address; (void)address_length; return -1; }
+int posix_socket_recv(int socket, void *buffer, int length, int flags) { (void)socket; (void)buffer; (void)length; (void)flags; return -1; }
+int posix_socket_recvfrom(int socket, void *buffer, int length, int flags, void *address, int *address_length)
+{ (void)socket; (void)buffer; (void)length; (void)flags; (void)address; (void)address_length; return -1; }
+int posix_socket_shutdown(int socket, int how) { (void)socket; (void)how; return -1; }
+int posix_socket_set_nonblocking(int socket, int nonblocking) { (void)socket; (void)nonblocking; return -1; }
+int posix_socket_bytes_available(int socket, posix_ulong *count) { (void)socket; if (count) *count = 0; return -1; }
+int posix_socket_set_nodelay(int socket) { (void)socket; return -1; }
+int posix_socket_setsockopt(int socket, int level, int name, const void *value, int length)
+{ (void)socket; (void)level; (void)name; (void)value; (void)length; return -1; }
+int posix_socket_getsockopt(int socket, int level, int name, void *value, int *length)
+{ (void)socket; (void)level; (void)name; (void)value; (void)length; return -1; }
+int posix_socket_getsockname(int socket, void *address, int *length) { (void)socket; (void)address; (void)length; return -1; }
+int posix_socket_getpeername(int socket, void *address, int *length) { (void)socket; (void)address; (void)length; return -1; }
+int posix_socket_select(int *read, int *read_count, int *write, int *write_count,
+	int *error, int *error_count, posix_long timeout_seconds, posix_long timeout_microseconds, int infinite)
+{
+	(void)read; (void)write; (void)error; (void)timeout_seconds; (void)timeout_microseconds; (void)infinite;
+	if (read_count) *read_count = 0;
+	if (write_count) *write_count = 0;
+	if (error_count) *error_count = 0;
+	return 0;
+}
+posix_ulong posix_local_ipv4_address(void) { return 0; }
+posix_ulong posix_resolve_ipv4(const char *host) { (void)host; return 0; }
+
+void posix_random_bytes(void *buffer, posix_ulong size)
+{
+	static SceKernelUtilsMt19937Context context;
+	static int seeded = 0;
+	unsigned char *bytes = buffer;
+	posix_ulong index;
+
+	if (!seeded)
+	{
+		sceKernelUtilsMt19937Init(&context, (u32)sceKernelGetSystemTimeLow());
+		seeded = 1;
+	}
+	for (index = 0; index < size; index++)
+		bytes[index] = (unsigned char)sceKernelUtilsMt19937UInt(&context);
+}
+
+int posix_upnp_forward_udp(unsigned short port, unsigned short preferred_port, posix_ulong *external_address,
+	unsigned short *external_port, char *error, int error_size)
+{
+	(void)port; (void)preferred_port; (void)external_address; (void)external_port;
+	if (error && error_size > 0)
+		snprintf(error, error_size, "no network on the PSP yet");
+	return 0;
+}
+void posix_upnp_stop_forwarding_udp(unsigned short external_port) { (void)external_port; }
+int posix_command_line_argument(int index, char *buffer, posix_ulong size) { (void)index; (void)buffer; (void)size; return 0; }
+posix_ulong posix_process_id(void) { return 1; }
+int posix_register_url_scheme(const char *scheme, const char *description) { (void)scheme; (void)description; return 0; }
+int posix_user_secret(unsigned char *secret, int size) { (void)secret; (void)size; return 0; }
+int posix_discord_connect(void) { return -1; }
+int posix_discord_write(int handle, const void *buffer, int length) { (void)handle; (void)buffer; (void)length; return -1; }
+int posix_discord_read(int handle, void *buffer, int length) { (void)handle; (void)buffer; (void)length; return -1; }
+void posix_discord_close(int handle) { (void)handle; }

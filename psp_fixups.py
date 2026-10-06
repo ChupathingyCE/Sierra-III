@@ -1,0 +1,5326 @@
+#!/usr/bin/env python3
+"""PSP source changes, applied to the build mirror after it is refreshed.
+
+Each change is an exact text replacement that must match once, so a change
+upstream makes the build stop here instead of silently building something
+else. Every replacement is wrapped in #ifdef HALO_PSP, so the files still
+build unchanged for the other ports.
+usage: psp_fixups.py TREE"""
+import os, sys
+
+TREE = sys.argv[1]
+
+FIXES = {
+# the GE renderer's first slice (psp_ge.c): the level, from the lightmap pass
+"source/rasterizer/rasterizer.c": [
+("""#include "rasterizer_models.h"
+""",
+ """#include "rasterizer_models.h"
+#ifdef HALO_PSP
+#include "rasterizer/rasterizer_model_types.h" /* the node matrices, for the GE (psp_fixups.py) */
+#include "shaders/shaders.h"
+#include "rasterizer/rasterizer_lights.h"
+
+/* the drawn object's function values (its A to D outs), for its
+see-through parts' animated and numeric maps (build 25; psp_fixups.py) */
+static real psp_animation_values[4];
+/* the object's change colours (team and armour colours; build 31) */
+static real_rgb_color psp_change_colors[4];
+static boolean psp_change_colors_valid = FALSE;
+static long psp_unique_identifier = 0;
+static boolean psp_animation_valid = FALSE;
+unsigned int psp_tex_bitmap_key(long tag_index, int bitmap);
+int psp_tex_bitmap_count(long tag_index);
+
+/* a see-through shader as the GE draws it: one texture (the first map of a
+numeric shader, at the digit the object's value gives; otherwise the map
+that spans the surface, the smallest scale), its scale and offset with the
+map's animation applied at this frame's time, and the blend function. Tag
+offsets from the shader definitions (rasterizer_xbox_transparent_geometry.c) */
+static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,
+	float *u_scale, float *v_scale, float *u_offset, float *v_offset, short *blend)
+{
+	char const *definition = (char const *)shader;
+	short type = shader ? *(short const *)(definition + 36) : -1;
+	unsigned int key = 0;
+
+	*u_scale = *v_scale = 1.0f;
+	*u_offset = *v_offset = 0.0f;
+	*blend = 0;
+	if ((type == 5 || type == 6) && *(short const *)(definition + 42) == 0 && *(long const *)(definition + 84) > 0)
+	{
+		/* generic and chicago: maps of 100 and 220 bytes */
+		char const *maps = *(char const *const *)(definition + 88), *map = maps;
+		int chicago = type == 6, stride = chicago ? 220 : 100, scale_at = chicago ? 84 : 4;
+		int map_at = chicago ? 120 : 40, animation_at = chicago ? 164 : 44, count, index, bitmap = 0;
+
+		count = *(long const *)(definition + 84);
+		if (*(unsigned char const *)(definition + 41) & 0x80)
+		{
+			/* numeric: digit "permutation" of the counter, as the Xbox works it out */
+			int frames = psp_tex_bitmap_count(*(long const *)(map + map_at));
+
+			if (frames > 0 && object && psp_animation_valid)
+			{
+				int limit = *(unsigned char const *)(definition + 40), digit;
+				int value = (int)floorf(limit * psp_animation_values[frames == 8 ? 3 : 0] + 0.5f);
+
+				value = value < 0 ? 0 : value > limit ? limit : value;
+				for (digit = 0; digit < permutation; digit++)
+					value /= frames;
+				bitmap = value % frames;
+			}
+		}
+		else
+		{
+			for (index = 1; index < count && index < 4; index++)
+			{
+				char const *candidate = maps + stride * index;
+				float scale = *(float const *)(candidate + scale_at), best = *(float const *)(map + scale_at);
+
+				if (scale != 0.0f && (best == 0.0f || scale <= best))
+					map = candidate;
+			}
+		}
+		key = psp_tex_bitmap_key(*(long const *)(map + map_at), bitmap);
+		{
+			struct render_animation animation;
+			real_vector4d u_transform, v_transform;
+			float map_u = *(float const *)(map + scale_at), map_v = *(float const *)(map + scale_at + 4);
+
+			animation.colors = NULL;
+			animation.values = psp_animation_values;
+			shader_texture_animation_evaluate((struct shader_texture_animation const *)(map + animation_at),
+				object && psp_animation_valid ? &animation : NULL, map_u != 0.0f ? map_u : 1.0f,
+				map_v != 0.0f ? map_v : 1.0f, *(float const *)(map + scale_at + 8), *(float const *)(map + scale_at + 12),
+				*(float const *)(map + scale_at + 16), global_frame_parameters.game_time_sec, &u_transform,
+				&v_transform);
+			/* the GE scales and shifts (no rotation) */
+			*u_scale = u_transform.n[0] != 0.0f ? u_transform.n[0] : 1.0f;
+			*v_scale = v_transform.n[1] != 0.0f ? v_transform.n[1] : 1.0f;
+			/* textures repeat: only the fraction matters, and the GE's floats
+			are short */
+			*u_offset = u_transform.n[3] - floorf(u_transform.n[3]);
+			*v_offset = v_transform.n[3] - floorf(v_transform.n[3]);
+		}
+		*blend = *(short const *)(definition + 44);
+	}
+	else if (type == 7)
+		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
+	else if (type == 8)
+	{
+		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
+		*u_scale = *(float const *)(definition + 340);
+		*v_scale = *u_scale;
+	}
+	return key;
+}
+#endif
+"""),
+("""	_rasterizer_window_begin(parameters);
+	return;""",
+ """	_rasterizer_window_begin(parameters);
+#ifdef HALO_PSP
+	{
+		/* the GE's frame starts from the first window's camera (psp_ge.c; psp_fixups.py) */
+		extern void psp_ge_window_begin(const float *, const float *, const float *, float, float, float);
+
+		psp_ge_window_begin(&parameters->camera.position.x, &parameters->camera.forward.i, &parameters->camera.up.i,
+			parameters->camera.vertical_field_of_view, parameters->camera.z_near, parameters->camera.z_far);
+	}
+#endif
+	return;"""),
+("""	_rasterizer_model_begin(parameters, is_dynamic);
+	return;""",
+ """	_rasterizer_model_begin(parameters, is_dynamic);
+#ifdef HALO_PSP
+	{
+		/* the model's node matrices, for the GE (psp_ge.c; psp_fixups.py) */
+		extern void psp_ge_model_begin(const float *, int, float, float, const float *, int, const float *, const float *);
+		struct render_lighting const *lighting = &parameters->lighting;
+
+		/* and its lighting: the ambient colour and up to two distant lights (build 22) */
+		psp_ge_model_begin((const float *)parameters->skinning.node_matrices, parameters->skinning.node_matrix_count,
+			parameters->base_map_scale.i, parameters->base_map_scale.j, &lighting->ambient_color.red,
+			lighting->distant_light_count, &lighting->distant_lights[0].color.red,
+			&lighting->distant_lights[1].color.red);
+		{
+			/* build 38: the first-person weapon's own near plane, as the
+			Xbox's model_begin sets it (_rasterizer_geometry_first_person_bit
+			is bit 7), and the model's bounding sphere, for the near plane */
+			extern void psp_ge_model_shape(int, const float *, float, float, float);
+
+			psp_ge_model_shape((int)((parameters->geometry_flags >> 7) & 1), &parameters->centroid.x,
+				parameters->radius, rasterizer_globals.first_person_weapon_near_clip_distance,
+				rasterizer_globals.first_person_weapon_far_clip_distance);
+		}
+		/* and its object's function values, for animated and numeric maps
+		on its see-through parts (build 25) */
+		{
+			/* and active camouflage: how see-through the model is (build 30) */
+			extern void psp_ge_model_effect(int type, float intensity);
+
+			psp_ge_model_effect(parameters->effect.type, parameters->effect.intensity);
+		}
+		psp_animation_valid = parameters->animation.values != NULL;
+		if (psp_animation_valid)
+			csmemcpy(psp_animation_values, parameters->animation.values, sizeof(psp_animation_values));
+		psp_unique_identifier = parameters->unique_identifier;
+		psp_change_colors_valid = parameters->animation.colors != NULL;
+		if (psp_change_colors_valid)
+			csmemcpy(psp_change_colors, parameters->animation.colors, sizeof(psp_change_colors));
+	}
+#endif
+	return;"""),
+("""	_rasterizer_model_draw(
+		shader,
+		shader_permutation_index,
+		triangle_buffer,
+		dynamic_triangle_buffer_index,
+		triangle_count,
+		vertex_buffer,
+		dynamic_vertex_buffer_index);
+	return;""",
+ """#ifdef HALO_PSP
+	{
+		/* once the GE draws, a model part's static geometry goes to it, in a
+		warm flat color per shader (psp_fixups.py) */
+		extern int psp_ge_active(void);
+		extern boolean psp_model_draw(struct triangle_buffer const *, long, struct vertex_buffer const *, unsigned int,
+			unsigned int, float, float, int);
+		extern unsigned int psp_tex_bitmap_key(long, int);
+		unsigned long hash = (unsigned long)shader * 2654435761UL;
+		unsigned int r = 160 + ((hash >> 8) & 0x5F), g = 70 + ((hash >> 16) & 0x5F), b = 40 + ((hash >> 24) & 0x3F);
+		unsigned int base_key = 0;
+		float u_scale = 1.0f, v_scale = 1.0f;
+		int alpha_tested = 0;
+
+		/* a model shader (soso): its base map, its map scale, and whether its
+		alpha is a cut-out (tag offsets, from the tag definitions; build 20) */
+		if (shader && *(short const *)((char const *)shader + 36) == 4)
+		{
+			base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 176), 0);
+			u_scale = *(float const *)((char const *)shader + 156);
+			v_scale = *(float const *)((char const *)shader + 160);
+			alpha_tested = !(*(unsigned short const *)((char const *)shader + 40) & 4);
+			/* build 36: a shader with a detail map draws the base map baked
+			with it (tools/texpack.py's model_looks), when the pack has it */
+			if (base_key && *(long const *)((char const *)shader + 232) != NONE)
+			{
+				extern int psp_tex_has(unsigned int key);
+
+				if (psp_tex_has(base_key | 1))
+					base_key |= 1;
+			}
+			/* build 36: two-sided (leaves): the back faces drawn too, as the
+			Xbox's second pass does; bit 1 of what goes to the GE */
+			if (*(unsigned short const *)((char const *)shader + 40) & 2)
+				alpha_tested |= 2;
+		}
+		{
+			/* its change colour (an armour's or team's colour, by the
+			multipurpose map's alpha; build 31): the object's colour A to D,
+			as the shader's change colour source picks */
+			extern void psp_ge_model_multipurpose(unsigned int, float const *, float const *);
+			extern real periodic_function_evaluate(short, real);
+			char const *definition = (char const *)shader;
+			short source = base_key ? *(short const *)(definition + 76) : 0;
+			long multipurpose = base_key ? *(long const *)(definition + 200) : NONE;
+			float change[3] = { 1.0f, 1.0f, 1.0f }, glow[3] = { 0.0f, 0.0f, 0.0f };
+
+			if (source >= 1 && source <= 4 && psp_change_colors_valid)
+			{
+				change[0] = psp_change_colors[source - 1].red;
+				change[1] = psp_change_colors[source - 1].green;
+				change[2] = psp_change_colors[source - 1].blue;
+			}
+			/* and its self-illumination colour, as the Xbox works it out:
+			between two colours by a periodic function of the time (at a
+			random phase per object unless the shader says not), times an
+			object colour if the shader names one */
+			if (multipurpose != NONE && *(float const *)(definition + 116) != 0.0f)
+			{
+				unsigned long seed = (unsigned long)psp_unique_identifier;
+				real phase = (*(unsigned short const *)(definition + 108) & 1) ? 0.0f : real_seed_random(&seed);
+				real fraction = periodic_function_evaluate(*(short const *)(definition + 114),
+					global_frame_parameters.game_time_sec / *(float const *)(definition + 116) + phase);
+				float const *lower = (float const *)(definition + 120), *upper = (float const *)(definition + 132);
+				short glow_source = *(short const *)(definition + 112);
+				int channel;
+
+				for (channel = 0; channel < 3; channel++)
+					glow[channel] = lower[channel] + (upper[channel] - lower[channel]) * fraction;
+				if (glow_source >= 1 && glow_source <= 4 && psp_change_colors_valid)
+				{
+					glow[0] *= psp_change_colors[glow_source - 1].red;
+					glow[1] *= psp_change_colors[glow_source - 1].green;
+					glow[2] *= psp_change_colors[glow_source - 1].blue;
+				}
+			}
+			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0, change, glow);
+		}
+		if (psp_ge_active() && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE &&
+			psp_model_draw(triangle_buffer, triangle_count, vertex_buffer, 0xFF000000 | (b << 16) | (g << 8) | r,
+				base_key, u_scale, v_scale, alpha_tested))
+			return;
+	}
+#endif
+	_rasterizer_model_draw(
+		shader,
+		shader_permutation_index,
+		triangle_buffer,
+		dynamic_triangle_buffer_index,
+		triangle_count,
+		vertex_buffer,
+		dynamic_vertex_buffer_index);
+	return;"""),
+("""	_rasterizer_environment_lightmap_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer);
+	return;""",
+ """#ifdef HALO_PSP
+	extern int psp_ge_active(void);
+
+	if (!psp_ge_active())
+#endif
+	_rasterizer_environment_lightmap_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer);
+#ifdef HALO_PSP
+	{
+		/* a flat color per shader, from its address (psp_fixups.py) */
+		extern void psp_environment_draw(long, long, long, struct vertex_buffer const *, unsigned int,
+			unsigned int, unsigned int, int);
+		extern unsigned int psp_tex_bitmap_key(long, int);
+		extern unsigned int psp_lightmap_key;
+		unsigned long hash = (unsigned long)shader * 2654435761UL;
+		unsigned int r = 96 + ((hash >> 8) & 0x7F), g = 96 + ((hash >> 16) & 0x7F), b = 80 + ((hash >> 24) & 0x5F);
+		unsigned int base_key = 0;
+		int alpha_tested = 0;
+
+		/* an environment shader (senv): its base map, and whether it is alpha
+		tested (tag offsets, from the tag definitions; build 20) */
+		if (shader && *(short const *)((char const *)shader + 36) == 3)
+		{
+			base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			alpha_tested = *(unsigned short const *)((char const *)shader + 40) & 1;
+		}
+		{
+			/* its detail and micro detail maps and their tiling (build 31;
+			shader_environment_diffuse_properties at +108): a pass each
+			unless combined by addition, which the GE's blend can't do */
+			extern void psp_ge_level_detail(unsigned int, float, float, unsigned int, float, float);
+			char const *definition = (char const *)shader;
+			unsigned int keys[2] = {0, 0};
+			float scales[2][2] = {{1.0f, 1.0f}, {1.0f, 1.0f}};
+			int which;
+
+			if (base_key)
+				for (which = 0; which < 2; which++)
+				{
+					short function = *(short const *)(definition + (which ? 244 : 176));
+					float scale = *(float const *)(definition + (which ? 248 : 180));
+					unsigned int key = function == 2 ? 0 :
+						psp_tex_bitmap_key(*(long const *)(definition + (which ? 264 : 196)), 0);
+
+					/* a blended shader picks between two detail maps by its
+					base map's alpha, which a pass of its own can't see: the
+					base map holds their mix's average, and only the micro
+					detail map is drawn */
+					if (!which && *(short const *)(definition + 42) != 0 &&
+						*(long const *)(definition + 216) != -1 &&
+						*(long const *)(definition + 216) != *(long const *)(definition + 196))
+						key = 0;
+					if (!key || scale <= 0.0f)
+						continue;
+					keys[which] = key;
+					scales[which][0] = scales[which][1] = scale;
+					/* "rescale detail maps": by the base map's size over the
+					detail map's (bitmap_data width and height at +4, +6) */
+					if ((*(unsigned short const *)(definition + 108) & 1) &&
+						*(short const *)(key + 4) > 0 && *(short const *)(key + 6) > 0)
+					{
+						scales[which][0] *= (float)*(short const *)(base_key + 4) / (float)*(short const *)(key + 4);
+						scales[which][1] *= (float)*(short const *)(base_key + 6) / (float)*(short const *)(key + 6);
+					}
+				}
+			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
+		}
+		psp_environment_draw(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
+			0xFF000000 | (b << 16) | (g << 8) | r, base_key, psp_lightmap_key, alpha_tested);
+	}
+#endif
+	return;"""),
+("""	_rasterizer_model_transparent_geometry_submit(
+		shader,
+		shader_permutation_index,
+		triangle_buffer,
+		dynamic_triangle_buffer_index,
+		triangle_count,
+		vertex_buffer,
+		dynamic_vertex_buffer_index,
+		centroid,
+		sort_filth);
+	return;""",
+ """#ifdef HALO_PSP
+	{
+		/* see-through model parts (the sky's clouds, glass, water) go to the GE's
+		own list, drawn far to near at the end of the frame (psp_ge.c; build 21;
+		psp_fixups.py) */
+		extern int psp_ge_active(void);
+		extern void psp_ge_transparent(struct triangle_buffer const *, long, struct vertex_buffer const *,
+			unsigned int, float, float, float, float, short, float const *);
+
+		if (psp_ge_active())
+		{
+			float u_scale, v_scale, u_offset, v_offset;
+			short blend;
+			unsigned int key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale,
+				&u_offset, &v_offset, &blend);
+
+			if (sort_filth)
+				*(short *)((char *)sort_filth + 8) = NONE;
+			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);
+			return;
+		}
+	}
+#endif
+	_rasterizer_model_transparent_geometry_submit(
+		shader,
+		shader_permutation_index,
+		triangle_buffer,
+		dynamic_triangle_buffer_index,
+		triangle_count,
+		vertex_buffer,
+		dynamic_vertex_buffer_index,
+		centroid,
+		sort_filth);
+	return;"""),
+("""	_rasterizer_psuedo_dynamic_screen_quad_draw(parameters, vertices);
+	return;""",
+ """#ifdef HALO_PSP
+	{
+		/* the HUD's quads go to the GE (psp_ge.c; build 20; psp_fixups.py) */
+		extern int psp_ge_active(void);
+		extern void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green,
+			float blue, float fade, float offset_x, float offset_y, void const *meter, int wrapped, float u_scale,
+			float v_scale);
+
+		if (psp_ge_active())
+		{
+			/* one map: the first, except under the menus' moving "plasma",
+			where the widget's own picture is the third (build 26) */
+			int map = parameters->doing_plasma_effect && parameters->map[2] ? 2 : 0;
+			real_rgb_color const *tint = parameters->map_tint[map];
+			real const *fade = parameters->map_fade[map];
+
+			extern void psp_ge_ui_space(int width, int height);
+
+			/* the screen these quads are laid out on: the game's 848 x 480 in
+			play, the menus' 640 x 480 (build 26) */
+			psp_ge_ui_space(global_window_parameters.camera.viewport_bounds.x1 -
+				global_window_parameters.camera.viewport_bounds.x0,
+				global_window_parameters.camera.viewport_bounds.y1 -
+				global_window_parameters.camera.viewport_bounds.y0);
+			psp_ge_screen_quad(vertices, (unsigned int)parameters->map[map], parameters->framebuffer_blend_function,
+				tint ? tint->red : 1.0f, tint ? tint->green : 1.0f, tint ? tint->blue : 1.0f, fade ? *fade : 1.0f,
+				parameters->offset ? parameters->offset->i : 0.0f, parameters->offset ? parameters->offset->j : 0.0f,
+				parameters->meter_parameters, parameters->map_wrapped[map], parameters->map_texture_scale[map].i,
+				parameters->map_texture_scale[map].j);
+			return;
+		}
+	}
+#endif
+	_rasterizer_psuedo_dynamic_screen_quad_draw(parameters, vertices);
+	return;"""),
+("""	_rasterizer_environment_lightmap_begin(lightmap_bitmap);
+	return;""",
+ """	_rasterizer_environment_lightmap_begin(lightmap_bitmap);
+#ifdef HALO_PSP
+	{
+		/* the lightmap page the next surfaces use, for the GE (build 20; psp_fixups.py) */
+		extern unsigned int psp_lightmap_key;
+
+		psp_lightmap_key = (unsigned int)lightmap_bitmap;
+	}
+#endif
+	return;"""),
+],
+"source/structures/structure_render.c": [
+("""		rasterizer_environment_lightmaps_begin();
+""",
+ """#ifdef HALO_PSP
+		{
+			/* the GE's frame starts from this window's camera (psp_ge.c; psp_fixups.py) */
+			extern void psp_ge_window_begin(const float *, const float *, const float *, float, float, float);
+			struct render_camera const *camera = &global_window_parameters.camera;
+
+			psp_ge_window_begin(&camera->position.x, &camera->forward.i, &camera->up.i,
+				camera->vertical_field_of_view, camera->z_near, camera->z_far);
+		}
+#endif
+		rasterizer_environment_lightmaps_begin();
+"""),
+],
+# no audio output, no sound engine: with audio.enabled false the Linux layer
+# only skips opening the audio device, and the game still starts sounds,
+# streams them through its 512 KB sound cache from the Memory Stick and mixes
+# them for nobody (3-4 ms a frame, 16-22 ms once the cache thrashes: "SOUND
+# CACHE BLOWN"). Disabled, sound_new_impulse, looping_sound_new and
+# sound_render do nothing
+"source/sound/sound_manager.c": [
+("""	sound_manager_globals.initialized = TRUE;
+
+	return;
+}""",
+ """	sound_manager_globals.initialized = TRUE;
+#ifdef HALO_PSP
+	{
+		extern int config_boolean(const char *name);
+
+		if (!config_boolean("audio.enabled"))
+			sound_manager_globals.enabled = FALSE;
+	}
+#endif
+
+	return;
+}"""),
+],
+# the sound cache's bookkeeping: 1024 pages of 4 KB is the Xbox's 4 MB. The
+# PSP's sound memory is PSP_SOUND_CACHE_SIZE, and with the page count left at
+# 1024 the cache handed out addresses past its end: sounds were read over the
+# map-read requests that follow it on the heap, and the next read went to a
+# garbage address (found replaying fire, melee and grenade in the emulator)
+"source/cache/xbox_sound_cache.c": [
+("""		"xbox sound cache",
+		1024,
+		12,""",
+ """		"xbox sound cache",
+#ifdef HALO_PSP
+		PSP_SOUND_CACHE_SIZE >> 12,
+#else
+		1024,
+#endif
+		12,"""),
+],
+# a player on a multiplayer map loaded the campaign way (init.txt's
+# map_name: there are no menus to start a game through yet). Its spawn
+# points are all marked for multiplayer game types, none of which matches
+# "no game engine", so no player would ever appear
+"source/game/game_engine.c": [
+("""	if (!match_game_type(game_engine_get_type(), 4, starting_location->game_types))
+		return 0.0f;
+""",
+ """#ifdef HALO_PSP
+	/* without a game engine any spawn point will do (psp_fixups.py) */
+	if (game_engine_running() &&
+		!match_game_type(game_engine_get_type(), 4, starting_location->game_types))
+		return 0.0f;
+#else
+	if (!match_game_type(game_engine_get_type(), 4, starting_location->game_types))
+		return 0.0f;
+#endif
+"""),
+],
+# the script stack: a frame's data starts 2 bytes off a word (offset 14 of
+# the 16-byte frame), so the first value stored in every frame is an
+# unaligned word, which the x86 Xbox tolerates and the PSP faults on (found
+# with PPSSPP's interpreter running init.txt's first command)
+"source/hs/hs_runtime.c": [
+("""	result = frame->data+frame->size;
+	frame->size += (short)size;
+""",
+ """#ifdef HALO_PSP
+	/* each allocation starts on a word, and the frame's size stays a
+	multiple of 4, so the next frame (pushed at frame + 16 + size) starts on
+	one too (psp_fixups.py) */
+	result = (void *)(((unsigned long)(frame->data+frame->size)+3) & ~3UL);
+	frame->size = (short)((((byte *)result+size-frame->data)+3) & ~3L);
+	match_hs_assert("c:\\halo\\SOURCE\\hs\\hs_runtime.c", 0x37f, thread_index,
+		frame->data+frame->size<=thread->stack_data+HS_THREAD_STACK_SIZE,
+		"stack overflow.");
+#else
+	result = frame->data+frame->size;
+	frame->size += (short)size;
+#endif
+"""),
+("""		next_expression_index = *(long *)thread->stack->data;
+""",
+ """#ifdef HALO_PSP
+		/* the frame's first value, at the first word of its data (psp_fixups.py) */
+		next_expression_index = *(long *)(((unsigned long)thread->stack->data+3) & ~3UL);
+#else
+		next_expression_index = *(long *)thread->stack->data;
+#endif
+"""),
+],
+"port/linux/src/xbox_kernel.c": [
+("""	pthread_mutex_unlock(&handle->lock);
+
+	exit_code = thread->start(thread->parameter);""",
+ """	pthread_mutex_unlock(&handle->lock);
+
+#ifdef HALO_PSP
+	/* PSP threads start with the FPU's overflow, divide-by-zero and invalid
+	operation traps enabled; the Xbox ran with every one masked, and the
+	game relies on that (psp_platform.c; psp_fixups.py) */
+	{
+		extern void psp_fpu_mask_traps(void);
+
+		psp_fpu_mask_traps();
+	}
+#endif
+	exit_code = thread->start(thread->parameter);"""),
+("""	fputs("halo-linux: ", stderr);
+	va_start(arguments, format);
+	vfprintf(stderr, format, arguments);
+	va_end(arguments);
+	fputc('\\n', stderr);""",
+ """#ifdef HALO_PSP
+	/* each line opened, appended and closed: a crash can't lose it in an
+	unwritten directory entry (psp_platform.c; psp_fixups.py) */
+	{
+		extern void psp_log_write(const char *text);
+		char line[512];
+
+		va_start(arguments, format);
+		vsnprintf(line, sizeof(line) - 1, format, arguments);
+		va_end(arguments);
+		psp_log_write(line);
+	}
+#else
+	fputs("halo-linux: ", stderr);
+	va_start(arguments, format);
+	vfprintf(stderr, format, arguments);
+	va_end(arguments);
+	fputc('\\n', stderr);
+#endif"""),
+("	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);",
+ """#ifdef HALO_PSP
+	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB
+	(psp_fixups.py) */
+	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x10000 ? stack_size : 0x10000);
+#else
+	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);
+#endif"""),
+],
+"source/rasterizer/rasterizer_debug.c": [
+("	MAXIMUM_DEBUG_PRIMITIVES = 8192,",
+ "	MAXIMUM_DEBUG_PRIMITIVES = PSP_DEBUG_PRIMITIVES,"),
+],
+"source/rasterizer/rasterizer_lights.c": [
+("static byte local_lens_flare_occlusion_test_results2[MAXIMUM_LENS_FLARE_MARKERS_PER_STRUCTURE+MAXIMUM_QUEUED_LENS_FLARES][MAXIMUM_WINDOWS];",
+ "static byte local_lens_flare_occlusion_test_results2[MAXIMUM_LENS_FLARE_MARKERS_PER_STRUCTURE+MAXIMUM_QUEUED_LENS_FLARES][PSP_LENS_FLARE_WINDOWS];"),
+("		return &local_lens_flare_occlusion_test_results2[structure_lens_flare_index][window_index];",
+ "		return &local_lens_flare_occlusion_test_results2[structure_lens_flare_index][window_index % PSP_LENS_FLARE_WINDOWS];"),
+],
+"port/linux/src/d3d8_resources.c": [
+("""static void *allocate_resource_memory(unsigned long size)
+{
+	void *memory = platform_contiguous_alloc(size, D3DTEXTURE_ALIGNMENT,
+		PLATFORM_ANY_PHYSICAL_ADDRESS, PAGE_READWRITE);
+""",
+"""#ifdef HALO_PSP
+/* PSP, null renderer: nothing ever draws into the back and depth buffers or
+the render targets, so they all share the start of VRAM instead of taking
+~4 MB of RAM (psp_fixups.py; psp_memory.c never frees VRAM) */
+static int psp_target_memory = 0;
+#define PSP_VRAM_TARGETS ((void *)0x04000000)
+#endif
+
+static void *allocate_resource_memory(unsigned long size)
+{
+#ifdef HALO_PSP
+	if (psp_target_memory && size <= 0x200000)
+		return PSP_VRAM_TARGETS;
+#endif
+	void *memory = platform_contiguous_alloc(size, D3DTEXTURE_ALIGNMENT,
+		PLATFORM_ANY_PHYSICAL_ADDRESS, PAGE_READWRITE);
+"""),
+("""	void *memory = allocate_resource_memory(pitch * height);
+
+	memset(surface, 0, sizeof(*surface));""",
+"""#ifdef HALO_PSP
+	void *memory;
+
+	psp_target_memory = 1;
+	memory = allocate_resource_memory(pitch * height);
+	psp_target_memory = 0;
+#else
+	void *memory = allocate_resource_memory(pitch * height);
+#endif
+
+	memset(surface, 0, sizeof(*surface));"""),
+("""	(void)usage;
+	(void)pool;
+	return create_texture(width, height, 1, levels, format, FALSE, (D3DBaseTexture **)texture);
+}""",
+"""	(void)pool;
+#ifdef HALO_PSP
+	{
+		HRESULT result;
+
+		psp_target_memory = (usage & D3DUSAGE_RENDERTARGET) != 0;
+		result = create_texture(width, height, 1, levels, format, FALSE, (D3DBaseTexture **)texture);
+		psp_target_memory = 0;
+		return result;
+	}
+#else
+	(void)usage;
+	return create_texture(width, height, 1, levels, format, FALSE, (D3DBaseTexture **)texture);
+#endif
+}"""),
+("""	(void)usage;
+	(void)pool;
+	return create_texture(edge_length, edge_length, 1, levels, format, TRUE, (D3DBaseTexture **)texture);
+}""",
+"""	(void)pool;
+#ifdef HALO_PSP
+	{
+		HRESULT result;
+
+		psp_target_memory = (usage & D3DUSAGE_RENDERTARGET) != 0;
+		result = create_texture(edge_length, edge_length, 1, levels, format, TRUE, (D3DBaseTexture **)texture);
+		psp_target_memory = 0;
+		return result;
+	}
+#else
+	(void)usage;
+	return create_texture(edge_length, edge_length, 1, levels, format, TRUE, (D3DBaseTexture **)texture);
+#endif
+}"""),
+],
+"source/main/main.c": [
+("					main_game_render((double)main_globals.seconds_elapsed);",
+ """#ifdef HALO_PSP
+					{
+						/* the frame's time, for the heartbeat (psp_platform.c; psp_fixups.py) */
+						unsigned long psp_start = psp_microseconds();
+
+						psp_phase(2);
+						main_game_render((double)main_globals.seconds_elapsed);
+						psp_frame_account(psp_microseconds() - psp_start);
+					}
+#else
+					main_game_render((double)main_globals.seconds_elapsed);
+#endif"""),
+],
+"source/game/game_time.c": [
+("						game_tick();",
+ """#ifdef HALO_PSP
+						{
+							/* each tick's time, for the heartbeat (psp_platform.c; psp_fixups.py) */
+							unsigned long psp_start = psp_microseconds();
+
+							psp_phase(1);
+							game_tick();
+							psp_phase(0);
+							psp_tick_account(psp_microseconds() - psp_start);
+						}
+#else
+						game_tick();
+#endif"""),
+("static struct game_time_globals_struct *game_time_globals;\n",
+ """static struct game_time_globals_struct *game_time_globals;
+
+#ifdef HALO_PSP
+/* the game time in ticks, or -1 before the game state exists: read by the
+PSP's heartbeat thread (psp_platform.c; psp_fixups.py) */
+long psp_game_time_peek(void)
+{
+	return game_time_globals && game_time_globals->initialized ? game_time_globals->local_time : -1;
+}
+#endif
+"""),
+],
+"source/cseries/profile.c": [
+("	MAXIMUM_PROFILE_FRAMES = 256,",
+ "	MAXIMUM_PROFILE_FRAMES = PSP_PROFILE_FRAMES,"),
+],
+"source/render/render.h": [
+("	unsigned long environment_surface_flags[MAXIMUM_SURFACES_PER_STRUCTURE];",
+ """#ifdef HALO_PSP
+	/* a bit vector (BIT_VECTOR_TEST_FLAG); one long per surface was 32x its
+	size, 512 KB (psp_fixups.py) */
+	unsigned long environment_surface_flags[BIT_VECTOR_SIZE_IN_LONGS(MAXIMUM_SURFACES_PER_STRUCTURE)];
+#else
+	unsigned long environment_surface_flags[MAXIMUM_SURFACES_PER_STRUCTURE];
+#endif"""),
+],
+"port/linux/src/d3d8_gl.c": [
+("#define MIRROR_SEGMENT_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_SEGMENT_SIZE)\n#define MIRROR_PAGE_SIZE 0x1000UL\n#define MIRROR_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_PAGE_SIZE)",
+ """#ifdef HALO_PSP
+/* the PSP runs this file only as the null renderer, which never uploads;
+400 KB of page tables would be wasted (psp_fixups.py) */
+#define MIRROR_SEGMENT_COUNT 1
+#define MIRROR_PAGE_SIZE 0x1000UL
+#define MIRROR_PAGE_COUNT 1
+#else
+#define MIRROR_SEGMENT_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_SEGMENT_SIZE)
+#define MIRROR_PAGE_SIZE 0x1000UL
+#define MIRROR_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_PAGE_SIZE)
+#endif"""),
+],
+"port/linux/src/platform.h": [
+("#define PLATFORM_CONTIGUOUS_BASE 0x80000000UL\n#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL /* a 128 MB development kit */",
+ """#ifdef HALO_PSP
+/* PSP: no address window. Addresses 0x88000000 and up are the kernel's
+view of RAM, so physical and virtual addresses stay identical; every
+user-RAM address counts as contiguous (psp_memory.c; psp_fixups.py). */
+#define PLATFORM_CONTIGUOUS_BASE 0x00000000UL
+#ifdef PSP_RECON_64MB
+#define PLATFORM_CONTIGUOUS_SIZE 0x0C000000UL
+#else
+#define PLATFORM_CONTIGUOUS_SIZE 0x0A000000UL
+#endif
+#else
+#define PLATFORM_CONTIGUOUS_BASE 0x80000000UL
+#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL /* a 128 MB development kit */
+#endif"""),
+],
+"source/cache/physical_memory_map.c": [
+("#define TAG_CACHE_BASE_ADDRESS 0x803A6000\n#define TAG_CACHE_SIZE 0x1600000\n#define TEXTURE_CACHE_SIZE 0x1600000\n#define SOUND_CACHE_SIZE 0x400000\n",
+ """#ifdef HALO_PSP
+/* PSP: the tag window sits near the top of user RAM, under the 1 MB left
+for thread stacks; maps are built for it (invader-build -X 0x09600000
+-T 0x900000). The texture and sound caches are what the null renderer and
+null audio need for now. */
+#define TAG_CACHE_BASE_ADDRESS 0x09600000
+#define TAG_CACHE_SIZE PSP_TAG_CACHE_SIZE
+#define TEXTURE_CACHE_SIZE PSP_TEXTURE_CACHE_SIZE
+#define SOUND_CACHE_SIZE PSP_SOUND_CACHE_SIZE
+#else
+#define TAG_CACHE_BASE_ADDRESS 0x803A6000
+#define TAG_CACHE_SIZE 0x1600000
+#define TEXTURE_CACHE_SIZE 0x1600000
+#define SOUND_CACHE_SIZE 0x400000
+#endif
+"""),
+],
+"source/cache/cache_files.c": [
+("""		if (cache_file_header_verify(&cache_file_globals.header, scenario_name, TRUE))
+		{
+			csmemset(tag_cache_base_address, 0xCD, 0x01600000);""",
+ """		if (cache_file_header_verify(&cache_file_globals.header, scenario_name, TRUE))
+		{
+#ifdef HALO_PSP
+			platform_psp_log("tags: %s, %ld bytes at file offset 0x%lx into %p",
+				scenario_name, (long)cache_file_globals.header.tag_data_size,
+				(unsigned long)cache_file_globals.header.tag_data_offset, tag_cache_base_address);
+#endif
+			csmemset(tag_cache_base_address, 0xCD, 0x01600000);"""),
+("""			cache_file_globals.tag_header = tag_cache_base_address;
+			match_vassert(""",
+ """			cache_file_globals.tag_header = tag_cache_base_address;
+#ifdef HALO_PSP
+			platform_psp_log("tags: read; signature 0x%08lx, %ld tags",
+				(unsigned long)cache_file_globals.tag_header->signature, (long)cache_file_globals.tag_header->tag_count);
+			{
+				/* a new map's tags sit where the last one's did: the GE forgets
+				what it converted or copied from them (build 27) */
+				extern void psp_ge_forget_map(void);
+				extern void psp_tex_map_opened(const char *name);
+				extern void psp_geo_map_opened(const char *name, unsigned long map_checksum, const void *first_vertex_descriptor);
+
+				psp_ge_forget_map();
+				/* build 68: the geometry pack first (it takes its RAM from the
+				texture cache's share), for a map built with its geometry outside */
+				psp_geo_map_opened(cache_file_globals.header.name, cache_file_globals.header.checksum,
+					cache_file_globals.tag_header->vertex_buffer_count ? cache_file_globals.tag_header->vertex_buffers : NULL);
+				/* and takes up the texture pack of the map whose tags these are
+				(build 20; at the tags since build 27: a map file is also opened
+				for the menu's previews, without becoming the map) */
+				psp_tex_map_opened(cache_file_globals.header.name);
+			}
+#endif
+			match_vassert("""),
+("XPhysicalProtect((void *)0x803A6000, 0x01600000, PAGE_READWRITE);",
+ "XPhysicalProtect(physical_memory_get_tag_cache_base_address(), PSP_TAG_CACHE_SIZE, PAGE_READWRITE);"),
+("XPhysicalProtect((void *)0x803A6000, 0x01600000, PAGE_READONLY);",
+ "XPhysicalProtect(physical_memory_get_tag_cache_base_address(), PSP_TAG_CACHE_SIZE, PAGE_READONLY);"),
+("csmemset(tag_cache_base_address, 0xCD, 0x01600000);",
+ "csmemset(tag_cache_base_address, 0xCD, PSP_TAG_CACHE_SIZE);"),
+("		0x01600000 - cache_file_globals.header.tag_data_size);",
+ "		PSP_TAG_CACHE_SIZE - cache_file_globals.header.tag_data_size);"),
+],
+"source/cache/xbox_texture_cache.c": [
+("	XBOX_TEXTURE_CACHE_PAGE_COUNT = 0x580,",
+ "	XBOX_TEXTURE_CACHE_PAGE_COUNT = PSP_TEXTURE_CACHE_SIZE / (1 << 14),"),
+("	XBOX_TEXTURE_CACHE_SIZE = 0x1600000,",
+ "	XBOX_TEXTURE_CACHE_SIZE = PSP_TEXTURE_CACHE_SIZE,"),
+# the guard kept free at both ends while map copying borrows the cache; the
+# PSP never copies maps (psp_fixups.py)
+("	XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE = 0x104000,",
+ "	XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE = PSP_TEXTURE_STEAL_GUARD,"),
+],
+"source/sound/sound_dsound_xbox.c": [
+("	SOUND_CACHE_SIZE = 0x400000,",
+ "	SOUND_CACHE_SIZE = PSP_SOUND_CACHE_SIZE,"),
+],
+"source/cache/cache_files_windows.c": [
+("""	request->buffer = buffer;
+	request->pending = TRUE;""",
+ """	request->buffer = buffer;
+#ifdef HALO_PSP
+	psp_request_callers[request_index] = __builtin_return_address(0);
+#endif
+	request->pending = TRUE;"""),
+("""			file = cached_map_file_get_handle(cache_file_globals.open_map_file_index);
+			match_assert(
+				"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files_windows.c",
+				1327,
+				!best_request->running);""",
+ """			file = cached_map_file_get_handle(cache_file_globals.open_map_file_index);
+#ifdef HALO_PSP
+			/* a request with no buffer: what is in the slot, and who asked */
+			if (!best_request->buffer)
+			{
+				long slot = best_request - cache_file_globals.requests;
+
+				platform_psp_log("cache: slot %ld pending with no buffer: size %ld offset 0x%lx event %p blocking %d running %d; last asked for by %p",
+					slot, best_request->size, (unsigned long)best_request->overlapped.Offset, best_request->overlapped.hEvent,
+					best_request->blocking, best_request->running, psp_request_callers[slot]);
+			}
+#endif
+			match_assert(
+				"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files_windows.c",
+				1327,
+				!best_request->running);"""),
+("""static struct cache_file_runtime_globals cache_file_globals;""",
+ """static struct cache_file_runtime_globals cache_file_globals;
+#ifdef HALO_PSP
+static void *psp_request_callers[MAXIMUM_SIMULTANEOUS_CACHE_REQUESTS];
+#endif"""),
+("""	cache_file_windows_thread_create();
+	cache_files_verify_language();""",
+ """#ifdef HALO_PSP
+	platform_psp_log("cache: %d request slots at %p, %d bytes each", MAXIMUM_SIMULTANEOUS_CACHE_REQUESTS,
+		cache_file_globals.requests, (int)sizeof(struct cache_file_request));
+#endif
+	cache_file_windows_thread_create();
+	cache_files_verify_language();"""),
+# no Z: cache on the PSP: the slots start empty...
+("""	cached_map_files_delete(NUMBER_OF_CACHED_MAP_FILES);
+	for (map_file_index = 0;
+		map_file_index < NUMBER_OF_CACHED_MAP_FILES;
+		map_file_index++)
+	{
+		struct cached_map_file *map_file = cached_map_file_get(map_file_index);
+		long size;""",
+"""#ifdef HALO_PSP
+	/* PSP: no Z: cache. Maps are stored uncompressed (mapunpack.py) and a
+	slot opens the map itself when it is first asked for
+	(cached_map_files_find_map). */
+	for (map_file_index = 0; map_file_index < NUMBER_OF_CACHED_MAP_FILES; map_file_index++)
+	{
+		memset(&cached_map_file_get(map_file_index)->header, 0, sizeof(struct cache_file_header));
+		cached_map_file_get(map_file_index)->file = INVALID_HANDLE_VALUE;
+	}
+	return;
+#endif
+	cached_map_files_delete(NUMBER_OF_CACHED_MAP_FILES);
+	for (map_file_index = 0;
+		map_file_index < NUMBER_OF_CACHED_MAP_FILES;
+		map_file_index++)
+	{
+		struct cached_map_file *map_file = cached_map_file_get(map_file_index);
+		long size;"""),
+# ...and a slot is the map file, opened on first use
+("""			return map_file_index;
+		}
+	}
+
+	return NONE;
+}""",
+"""			return map_file_index;
+		}
+	}
+
+#ifdef HALO_PSP
+	{
+		static short next_slot = 0;
+		char path[256];
+		HANDLE file;
+
+		cache_file_get_map_path(map_name, path);
+		file = CreateFileA(path, GENERIC_READ, 0, NULL, OPEN_EXISTING,
+			FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, NULL);
+		if (file != INVALID_HANDLE_VALUE)
+		{
+			struct cached_map_file *map_file;
+
+			map_file_index = next_slot;
+			if (map_file_index == cache_file_globals.open_map_file_index)
+				map_file_index = (map_file_index + 1) % NUMBER_OF_CACHED_MAP_FILES;
+			next_slot = (map_file_index + 1) % NUMBER_OF_CACHED_MAP_FILES;
+			map_file = cached_map_file_get(map_file_index);
+			if (map_file->file != INVALID_HANDLE_VALUE && map_file->file != NULL)
+				CloseHandle(map_file->file);
+			map_file->file = file;
+			cached_map_file_read_header(map_file_index);
+			platform_psp_log("map %s: opened in slot %d, header '%s'", path, map_file_index, map_file->header.name);
+			if (map_file->header.header_signature && !_stricmp(map_name, map_file->header.name))
+				return map_file_index;
+			platform_psp_log("map %s: header missing or named '%s' (store maps uncompressed: mapunpack.py)",
+				path, map_file->header.name);
+		}
+	}
+#endif
+	return NONE;
+}"""),
+],
+}
+
+
+# ---------- the AI debug records: every index of the two arrays goes
+# through PSP_DEBUG_INDEX, their allocations through PSP_DEBUG_COUNT
+import re
+DEBUG_ARRAYS = re.compile(r"\b(actor_debug_array|actor_path_debug_array)\[")
+
+def wrap_indices(text):
+    out, position = [], 0
+    for match in DEBUG_ARRAYS.finditer(text):
+        start = match.end()
+        if start < position:
+            continue
+        depth, end = 1, start
+        while depth:
+            depth += {"[": 1, "]": -1}.get(text[end], 0)
+            end += 1
+        out.append(text[position:start] + "PSP_DEBUG_INDEX(" + text[start:end - 1] + ")]")
+        position = end
+    out.append(text[position:])
+    return "".join(out)
+
+def ai_debug_records(tree):
+    changed = 0
+    for directory in ("source/ai",):
+        for name in sorted(os.listdir(os.path.join(tree, directory))):
+            if not name.endswith(".c"):
+                continue
+            path = os.path.join(tree, directory, name)
+            text = open(path, errors="surrogateescape").read()
+            if "PSP_DEBUG_INDEX" in text or not DEBUG_ARRAYS.search(text):
+                continue
+            text = wrap_indices(text)
+            if name == "ai_debug.c":
+                for old, new in (
+                    ("sizeof(*actor_debug_array) * MAXIMUM_NUMBER_OF_ACTORS", "sizeof(*actor_debug_array) * PSP_DEBUG_COUNT(MAXIMUM_NUMBER_OF_ACTORS)"),
+                    ("sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS", "sizeof(*actor_path_debug_array) * PSP_DEBUG_COUNT(MAXIMUM_NUMBER_OF_ACTOR_PATHS)"),
+                ):
+                    if text.count(old) != 2:
+                        sys.exit("psp_fixups: ai_debug.c: expected 2 of %s, found %d" % (old, text.count(old)))
+                    text = text.replace(old, new)
+            open(path, "w", errors="surrogateescape").write(text)
+            changed += 1
+    return changed
+
+# ---------- unaligned word accesses the PSP faults on (found with PPSSPP's
+# interpreter): every occurrence of each pattern goes through
+# PSP_UNALIGNED_ULONG (psp_limits.h)
+UNALIGNED = {
+    # the trailing guard word after a debug allocation of any size
+    "source/cseries/debug_memory.c": ["*(unsigned long *)((byte *)(header + 1)"],
+}
+
+def unaligned_accesses(tree):
+    changed = 0
+    for rel, patterns in UNALIGNED.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "PSP_UNALIGNED_ULONG" in text:
+            continue
+        for pattern in patterns:
+            if pattern not in text:
+                sys.exit("psp_fixups: %s: no %s" % (rel, pattern))
+            text = text.replace(pattern, "PSP_UNALIGNED_ULONG(" + pattern[len("*(unsigned long *)("):])
+        open(path, "w", errors="surrogateescape").write(text)
+        changed += 1
+    return changed
+
+# ---------- breadcrumbs: a psp_step() before each call of the game's
+# start-up, so the log says how far it got (psp_platform.c)
+STEPS = {
+    # file: [(function, stop at this text or None)]; the first frames as
+    # well as start-up (psp_platform.c logs the first steps only)
+    "source/game/game.c": [("void game_initialize(", None), ("void game_tick(", None),
+                           # build 36: the frame's particles, contrails, sounds...
+                           ("void game_frame(", None)],
+    "source/main/main.c": [("void main_loop(", None), ("void main_menu_load(", None),
+                           ("static void main_game_render(", None), ("void main_present_frame(", None)],
+    "source/render/render.c": [("void render_frame(", None), ("static void render_window(", None)],
+    # build 19: what runs after each tick (the gap after profile_tick_end), and the HUD
+    "source/game/game_time.c": [("void game_time_update(", None)],
+    "source/interface/interface.c": [("void interface_draw_screen(", None)],
+    # build 31: the HUD's 2 ms and the visibility's 3 ms a frame, broken down
+    "source/interface/hud.c": [("void hud_draw_screen(", None)],
+    # build 37: render_objects (8-15 ms a frame on the PSP), broken down
+    "source/render/render_objects.c": [("void render_objects(", None), ("static void render_object(", None)],
+    # build 66: the visibility's phases (3.6 ms a frame at the vantage point
+    # in the emulator)
+    "source/structures/structure_visibility.c": [("void structure_visibility_compute(", None)],
+}
+# build 45: the campaign's tick (b30 recon: 25-30 bipeds at 10-27 ms a tick,
+# ai_update 9-14 ms), broken down. Only with PSP_TICK_STEPS=1 (psp_build.py's
+# recon builds): a step before every call in these costs ~1.3 us a call, and
+# object_update runs for every object every tick
+if os.environ.get("PSP_TICK_STEPS", "") == "1":
+    STEPS.update({
+        "source/units/bipeds.c": [("boolean biped_update(", None), ("static void biped_update_moving(", None)],
+        "source/units/units.c": [("boolean unit_update(", None), ("short unit_update_animation(", None)],
+        "source/ai/actors.c": [("static void actor_update(", None)],
+        "source/ai/actor_perception.c": [("void actor_perception_update(", None), ("static void actor_perception_refresh(", None)],
+        "source/objects/objects.c": [("static boolean object_update(", None)],
+    })
+STEP_LINES = {
+    "source/bungie_net/network/transport_endpoint_set_winsock.c": [
+        "\t\tbypass_file = fopen(", "\t\tif (XNetStartup(", "\t\twsa_error = WSAStartup(",
+        "\t\tdeadline = system_milliseconds()", "\t\tXNetRandom(global_nonce"],
+}
+# build 47: a step with its own label before chosen lines (multi-line calls
+# the CALL pattern below can't see, and loop tops). Each text must occur in
+# the file; every occurrence gets the step, at the text's own indentation.
+# The places were checked to follow a statement or an opening brace, so the
+# step never becomes the lone body of an if. Runs after STEPS (the files
+# already holding PSP_STEP keep their declaration)
+STEP_LABELS = {
+    "source/render/render_objects.c": [
+        ("\twhile (object_index != NONE)\n\t{\n\t\tstruct object_datum *object = object_get(object_index);\n",
+         "render_object_list: an object (definition, LOD pixels, effect)", "after"),
+        ("\t\t\t\t\trender_model(\n\t\t\t\t\t\tdefinition->object.model.index,\n\t\t\t\t\t\tlevel_of_detail_pixels,\n",
+         "render_model (the object's model)", "before"),
+        ("\t\t\t\t\trender_model(\n\t\t\t\t\t\tdefinition->object.model.index,\n\t\t\t\t\t\tlevel_of_detail_pixels * 0.3f,\n",
+         "render_model (the object's shadow)", "before"),
+        ("\t\t\t\twidgets_render(object_index, data->lighting, &animation);\n", "widgets_render", "before"),
+    ],
+    # build 66: where the HUD's time goes (hud_render_weapon_interface took
+    # 3.1 ms a frame on the PSP, nearly the level's own)
+    "source/interface/hud_weapon.c": [
+        ("\t\tweapon_build_weapon_interface_state(\n\t\t\tweapon_index,\n\t\t\t&weapon_state);", "hud: weapon state", "before"),
+        ("\t\t\tcrosshairs_draw(\n\t\t\t\tplayer,\n\t\t\t\tweapon_index,", "hud: crosshairs", "before"),
+        ("\t\t\trender_weapon_hud(\n\t\t\t\thud_index,\n\t\t\t\tplayer->local_player_index,", "hud: weapon elements (flags)", "before"),
+        ("\t\t\tplay_weapon_hud_sounds(\n", "hud: weapon sounds", "before"),
+        ("\trender_grenade_hud(\n\t\tplayer->local_player_index,", "hud: grenades", "before"),
+        ("\tfor (element_index = 0;\n\t\telement_index < definition->statics.count;", "hud: weapon statics", "before"),
+        ("\tfor (element_index = 0;\n\t\telement_index < definition->meters.count;", "hud: weapon meters", "before"),
+        ("\tfor (element_index = 0;\n\t\telement_index < definition->numbers.count;", "hud: weapon numbers", "before"),
+    ],
+    "source/interface/hud_unit.c": [
+        ("\tunit_hud_shield_meter_mapper_tick();\n", "hud: unit mappers", "before"),
+        ("\t\t\t\tif (hud_definition->background.interface_bitmap.index != NONE)\n", "hud: unit background", "before"),
+        ("\t\t\t\tif (game_engine_has_shield(player_index) &&\n", "hud: unit shield + health", "before"),
+        ("\t\t\t\t\tif (hud_definition->motion_sensor.background.interface_bitmap.index != NONE)\n", "hud: unit motion sensor panel", "before"),
+        ("\t\t\t\t\tmotion_sensor_draw_screen(\n", "hud: unit motion sensor blips", "before"),
+        ("\t\t\t\t\tword overlay_type_flags = game_engine_has_teams() != FALSE;\n", "hud: unit auxiliary overlays", "before"),
+    ],
+    "source/models/models.c": [
+        ("\t\tif (node_matrices)\n", "render_model: relative node matrices", "before"),
+        ("\t\tif (TEST_FLAG(flags, _render_model_shadow_bit))\n\t\t{\n\t\t\trasterizer_environment_shadow_model_begin(",
+         "render_model: model begin", "before"),
+        ("\t\trender_model_parts(\n", "render_model_parts", "before"),
+        ("rasterizer_model_draw(\n", "rasterizer_model_draw", "before"),
+        ("rasterizer_model_transparent_geometry_submit(\n", "rasterizer_model_transparent_geometry_submit", "before"),
+        ("rasterizer_environment_shadow_model_draw(\n", "rasterizer_environment_shadow_model_draw", "before"),
+        ("\t\tif (TEST_FLAG(flags, _render_model_shadow_bit))\n\t\t{\n\t\t\trasterizer_environment_shadow_model_end();",
+         "render_model: model end", "before"),
+    ],
+}
+
+def step_labels(tree):
+    changed = 0
+    for rel, places in STEP_LABELS.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "PSP_STEP_LABELS" in text:
+            continue
+        for place, label, where in places:
+            if place not in text:
+                sys.exit("psp_fixups: %s: no %r" % (rel, place))
+            pieces = text.split(place)
+            out = pieces[0]
+            for piece in pieces[1:]:
+                line_start = out.rfind("\n") + 1
+                if where == "before":
+                    indent = out[line_start:] if out[line_start:].strip() == "" else ""
+                    if not indent:
+                        # the place starts with its own indentation
+                        indent = place[:len(place) - len(place.lstrip("\t"))]
+                        out += '%sPSP_STEP("%s");\n%s' % (indent, label, place)
+                    else:
+                        out += 'PSP_STEP("%s");\n%s%s' % (label, indent, place)
+                else:
+                    indent = place.rstrip("\n").split("\n")[-1]
+                    indent = indent[:len(indent) - len(indent.lstrip("\t"))]
+                    out += '%s%sPSP_STEP("%s");\n' % (place, indent, label)
+                out += piece
+            text = out
+        if "void psp_step(" not in text:
+            text = declare_step(text)
+        open(path, "w", errors="surrogateescape").write(text + "\n/* PSP_STEP_LABELS */\n")
+        changed += 1
+    return changed
+
+# a call standing alone as a statement; it becomes one expression, (step, call),
+# so it stays a single statement under an if or else without braces
+CALL = re.compile(r"^(\t+)([A-Za-z_]\w*)\((.*)\);$", re.M)
+NOT_STEPS = {"if", "while", "for", "switch", "return", "sizeof", "PSP_STEP", "match_assert", "match_hs_assert",
+             "assert", "error", "csmemset", "csmemcpy", "csstrncpy", "profile_enter", "profile_exit",
+             # macros that expand to statements (units.c, bipeds.c)
+             "match_assert_valid_real_normal3d", "match_assert_valid_real_vector3d", "match_assert_valid_real_point3d",
+             "match_assert_valid_real", "match_assert_valid_real_euler_angles2d", "match_assert_valid_real_matrix4x3",
+             "match_assert_valid_real_quaternion", "match_vassert", "vassert", "match_assert_valid_real_plane3d",
+             "match_assert_valid_real_normal2d", "match_assert_valid_real_vector2d", "match_assert_valid_real_point2d"}
+def step_excluded(name):
+    """asserts and other macros that expand to statements can't be made expressions"""
+    return name in NOT_STEPS or name.startswith(("match_assert", "assert_valid", "match_vassert"))
+STEP_DECLARATION = "\n#ifdef HALO_PSP\nvoid psp_step(const char *name); /* psp_fixups.py */\n#define PSP_STEP(name) psp_step(name)\n#else\n#define PSP_STEP(name) ((void)0)\n#endif\n"
+
+def declare_step(text):
+    first = text.index("#include")
+    line_end = text.index("\n", first) + 1
+    return text[:line_end] + STEP_DECLARATION + text[line_end:]
+
+def definition(text, function):
+    """where the function's body starts and ends (not a prototype's)"""
+    position = 0
+    while True:
+        start = text.index("\n" + function, position) + 1
+        brace, semicolon = text.find("\n{", start), text.find(";", start)
+        if brace >= 0 and (semicolon < 0 or brace < semicolon):
+            return brace, text.index("\n}\n", brace)
+        position = start
+
+def step_call(match):
+    if step_excluded(match.group(2)):
+        return match.group(0)
+    return '%s(PSP_STEP("%s"), %s(%s));' % (match.group(1), match.group(2), match.group(2), match.group(3))
+
+def breadcrumbs(tree):
+    changed = 0
+    for rel, functions in STEPS.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "PSP_STEP(" in text:
+            continue
+        for function, stop in functions:
+            start, end = definition(text, function)
+            if stop:
+                end = text.index(stop, start)
+            text = text[:start] + CALL.sub(step_call, text[start:end]) + text[end:]
+        open(path, "w", errors="surrogateescape").write(declare_step(text))
+        changed += 1
+    for rel, lines in STEP_LINES.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "PSP_STEP(" in text:
+            continue
+        for line in lines:
+            if text.count(line) != 1:
+                sys.exit("psp_fixups: %s: expected 1 of %s" % (rel, line))
+            text = text.replace(line, '\t\tPSP_STEP("transport: %s");\n%s' % (line.strip().split("(")[0].replace('"', ''), line))
+        open(path, "w", errors="surrogateescape").write(declare_step(text))
+        changed += 1
+    return changed
+
+# ---------- code added at the end of a file (PSP only)
+APPEND = {
+    "source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c": '''
+#ifdef HALO_PSP
+/* the GE renderer's way to the level's geometry (psp_ge.c): a material's
+visible triangles, from this frame's triangle list, over its vertex buffer
+(psp_fixups.py) */
+void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
+
+/* build 68: a vertex or index buffer's bytes come from the geometry cache
+when the map keeps them outside the tags (psp_geo.c), from the tags
+otherwise; NULL when the cache hasn't read them yet, and the draw is left
+for a frame */
+void *psp_vertex_lock(const struct vertex_buffer *buffer);
+void *psp_index_lock(const struct triangle_buffer *buffer);
+void *psp_level_vertices(const struct vertex_buffer *buffer);
+void *psp_geo_lock(unsigned int address, unsigned int size);
+int psp_geo_external(unsigned int address);
+unsigned long psp_geometry_draws_missed = 0;
+static boolean psp_geometry_missing(void)
+{
+	psp_geometry_draws_missed++;
+	return FALSE;
+}
+
+void psp_environment_draw(
+	long dynamic_triangle_buffer_index,
+	long first_triangle_index,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	unsigned int color,
+	unsigned int base_key,
+	unsigned int lightmap_key,
+	int alpha_tested)
+{
+	static boolean reported = FALSE;
+	struct dynamic_triangle_buffer *buffer;
+	BYTE *vertices = NULL, *lightmap_vertices = NULL;
+	struct vertex_buffer const *lightmap = vertex_buffer + 1;
+
+	if (dynamic_triangle_buffer_index == NONE || dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count ||
+		!vertex_buffer || !vertex_buffer->hardware_format)
+		return;
+	if (vertex_buffer->type != _rasterizer_vertex_type_environment_compressed)
+	{
+		if (!reported)
+			platform_psp_log("GE: level vertices of type %d, not drawn (only compressed ones are)", vertex_buffer->type);
+		reported = TRUE;
+		return;
+	}
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (!buffer->triangles || first_triangle_index + triangle_count > buffer->triangle_count)
+		return;
+	/* the lightmap's vertices follow the material's own (as the Xbox path's
+	vertex_buffer + 1), when the level has lightmaps. Build 68: in the
+	geometry pack they are one block (32 bytes a vertex, then 8), read once */
+	if (lightmap_key && lightmap->hardware_format && lightmap->count == vertex_buffer->count)
+	{
+		unsigned int base_address = ((const unsigned int *)vertex_buffer->hardware_format)[1];
+		unsigned int lightmap_address = ((const unsigned int *)lightmap->hardware_format)[1];
+
+		if (psp_geo_external(base_address) && lightmap_address == base_address + 32 * (unsigned int)vertex_buffer->count)
+		{
+			/* the pack addresses themselves: the renderer keeps its own copies
+			of a material and asks the cache for the bytes only to build them */
+			vertices = (BYTE *)base_address;
+			lightmap_vertices = (BYTE *)lightmap_address;
+		}
+		else
+		{
+			vertices = psp_vertex_lock(vertex_buffer);
+			lightmap_vertices = vertices ? psp_vertex_lock(lightmap) : NULL;
+			if (!vertices || !lightmap_vertices)
+				{ psp_geometry_missing(); return; }
+		}
+	}
+	else
+	{
+		vertices = psp_level_vertices(vertex_buffer);
+		if (!vertices)
+			{ psp_geometry_missing(); return; }
+	}
+	psp_ge_draw_level(vertices, lightmap_vertices, vertex_buffer->count,
+		(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count, color,
+		base_key, lightmap_vertices ? lightmap_key : 0, alpha_tested);
+}
+
+/* the level triangles a dynamic light reaches (build 29) */
+void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
+	unsigned int base_key);
+
+void psp_environment_light(
+	long dynamic_triangle_buffer_index,
+	long first_triangle_index,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	unsigned int base_key)
+{
+	struct dynamic_triangle_buffer *buffer;
+	BYTE *vertices = NULL;
+
+	if (dynamic_triangle_buffer_index == NONE || dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count ||
+		!vertex_buffer || !vertex_buffer->hardware_format ||
+		vertex_buffer->type != _rasterizer_vertex_type_environment_compressed)
+		return;
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (!buffer->triangles || first_triangle_index + triangle_count > buffer->triangle_count)
+		return;
+	vertices = psp_level_vertices(vertex_buffer);
+	if (!vertices)
+		{ psp_geometry_missing(); return; }
+	psp_ge_light_draw(vertices, vertex_buffer->count,
+		(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count, base_key);
+}
+
+/* the level triangles under an object's shadow (build 25) */
+void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count);
+
+void psp_environment_shadow(
+	long dynamic_triangle_buffer_index,
+	long first_triangle_index,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer)
+{
+	struct dynamic_triangle_buffer *buffer;
+	BYTE *vertices = NULL;
+
+	if (dynamic_triangle_buffer_index == NONE || dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count ||
+		!vertex_buffer || !vertex_buffer->hardware_format ||
+		vertex_buffer->type != _rasterizer_vertex_type_environment_compressed)
+		return;
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (!buffer->triangles || first_triangle_index + triangle_count > buffer->triangle_count)
+		return;
+	vertices = psp_level_vertices(vertex_buffer);
+	if (!vertices)
+		{ psp_geometry_missing(); return; }
+	psp_ge_shadow_draw(vertices, vertex_buffer->count,
+		(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count);
+}
+
+/* the level's see-through surfaces (build 23): queued with the GE's other
+see-through draws */
+void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
+	const float *centroid);
+
+void psp_environment_transparent(
+	long dynamic_triangle_buffer_index,
+	long first_triangle_index,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	unsigned int key,
+	float u_scale,
+	float v_scale,
+	float u_offset,
+	float v_offset,
+	short blend,
+	float const *centroid)
+{
+	struct dynamic_triangle_buffer *buffer;
+	BYTE *vertices = NULL;
+
+	if (dynamic_triangle_buffer_index == NONE || dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count ||
+		!vertex_buffer || !vertex_buffer->hardware_format ||
+		vertex_buffer->type != _rasterizer_vertex_type_environment_compressed)
+		return;
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (!buffer->triangles || first_triangle_index + triangle_count > buffer->triangle_count)
+		return;
+	vertices = psp_level_vertices(vertex_buffer);
+	if (!vertices)
+		{ psp_geometry_missing(); return; }
+	psp_ge_queue_level_transparent(vertices, vertex_buffer->count,
+		(const unsigned short *)buffer->triangles + 3 * first_triangle_index, triangle_count, key, u_scale, v_scale,
+		u_offset, v_offset, blend, centroid);
+}
+
+/* a model part's own vertices and triangles (a strip, or a list), for the GE;
+FALSE leaves it to the Direct3D path */
+void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
+	int alpha_tested);
+
+void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
+	short blend, const float *centroid);
+
+void psp_ge_transparent(
+	struct triangle_buffer const *triangle_buffer,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	unsigned int key,
+	float u_scale,
+	float v_scale,
+	float u_offset,
+	float v_offset,
+	short blend,
+	float const *centroid)
+{
+	BYTE *vertices = NULL, *indices = NULL;
+	boolean strip;
+
+	if (!triangle_buffer || !vertex_buffer || !vertex_buffer->hardware_format || !triangle_buffer->hardware_format ||
+		(vertex_buffer->type != _rasterizer_vertex_type_model_compressed &&
+			vertex_buffer->type != _rasterizer_vertex_type_model_uncompressed))
+		return;
+	strip = triangle_buffer->type == _triangle_buffer_type_precompiled_strip;
+	vertices = psp_vertex_lock(vertex_buffer);
+	if (!vertices)
+		{ psp_geometry_missing(); return; }
+	indices = psp_index_lock(triangle_buffer);
+	if (!indices)
+		{ psp_geometry_missing(); return; }
+	psp_ge_queue_transparent(vertices, vertex_buffer->count, vertex_buffer->type == _rasterizer_vertex_type_model_uncompressed,
+		(const unsigned short *)indices, strip ? triangle_count + 2 : 3 * triangle_count, strip, key, u_scale, v_scale,
+		u_offset, v_offset, blend, centroid);
+}
+
+boolean psp_model_draw(
+	struct triangle_buffer const *triangle_buffer,
+	long triangle_count,
+	struct vertex_buffer const *vertex_buffer,
+	unsigned int color,
+	unsigned int base_key,
+	float u_scale,
+	float v_scale,
+	int alpha_tested)
+{
+	BYTE *vertices = NULL, *indices = NULL;
+	boolean strip;
+
+	if (!triangle_buffer || !vertex_buffer || !vertex_buffer->hardware_format || !triangle_buffer->hardware_format ||
+		(vertex_buffer->type != _rasterizer_vertex_type_model_compressed &&
+			vertex_buffer->type != _rasterizer_vertex_type_model_uncompressed))
+		return FALSE;
+	strip = triangle_buffer->type == _triangle_buffer_type_precompiled_strip;
+	vertices = psp_vertex_lock(vertex_buffer);
+	if (!vertices)
+		return psp_geometry_missing();
+	indices = psp_index_lock(triangle_buffer);
+	if (!indices)
+		return psp_geometry_missing();
+	psp_ge_draw_model(vertices, vertex_buffer->count, vertex_buffer->type == _rasterizer_vertex_type_model_uncompressed,
+		(const unsigned short *)indices, strip ? triangle_count + 2 : 3 * triangle_count, strip, color, base_key,
+		u_scale, v_scale, alpha_tested);
+	return TRUE;
+}
+#endif
+''',
+    "source/game/players.c": '''
+#ifdef HALO_PSP
+/* the local player for the heartbeat: whether it has a unit, and where
+(psp_platform.c calls this on the game's thread; psp_fixups.py) */
+void psp_player_snapshot(char *text, int size)
+{
+	long player_index = local_player_get_player_index(0);
+	struct player_datum *player;
+
+	if (player_index == NONE)
+	{
+		snprintf(text, size, "player: no local player");
+		return;
+	}
+	player = player_get(player_index);
+	if (player->unit_index == NONE)
+	{
+		snprintf(text, size, "player: no unit (respawn timer %ld)", player->respawn_timer);
+		return;
+	}
+	{
+		real_point3d origin;
+
+		object_get_origin(player->unit_index, &origin);
+		snprintf(text, size, "player: at %.2f %.2f %.2f", origin.x, origin.y, origin.z);
+	}
+}
+
+/* build 59: the local player put at a spot and turned to a direction
+(ms0:/halo/teleport.txt, psp_platform.c), for repeating what Sheepdog01 saw at a
+place his screenshots name */
+void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz)
+{
+	long player_index = local_player_get_player_index(0);
+	struct player_datum *player;
+	real_point3d position;
+	real_vector3d facing;
+
+	if (player_index == NONE)
+		return;
+	player = player_get(player_index);
+	if (player->unit_index == NONE)
+		return;
+	position.x = x; position.y = y; position.z = z;
+	facing.i = fx; facing.j = fy; facing.k = fz;
+	object_set_position(player->unit_index, &position, NULL, NULL);
+	player_control_set_facing(0, &facing);
+}
+
+/* build 70: a collision regression check ("colltest" in keep.txt,
+psp_platform.c): 256 rays from a metre above the player's feet in fixed
+directions, 60 units long, against the structure and objects; each hit's
+distance, surface, plane designator and material logged with a checksum.
+Two builds (or two bakes of a map) that collide the same give the same
+lines: the test of the packed collision tables */
+extern boolean collision_test_vector(unsigned long flags, real_point3d const *point, real_vector3d const *vector,
+	long ignore_object_index, struct collision_result *collision);
+void psp_collision_test(const float *fixed_origin)
+{
+	long player_index = local_player_get_player_index(0);
+	struct player_datum *player;
+	real_point3d origin;
+	unsigned long checksum = 0, hits = 0;
+	int ray;
+
+	if (player_index == NONE)
+		return;
+	player = player_get(player_index);
+	if (player->unit_index == NONE)
+		return;
+	if (fixed_origin)
+	{
+		/* teleport.txt's spot: the same rays whatever the player did since */
+		origin.x = fixed_origin[0]; origin.y = fixed_origin[1]; origin.z = fixed_origin[2];
+	}
+	else
+		object_get_origin(player->unit_index, &origin);
+	origin.z += 1.0f;
+	platform_psp_log("colltest: from %.4f %.4f %.4f", origin.x, origin.y, origin.z);
+	for (ray = 0; ray < 256; ray++)
+	{
+		/* a Fibonacci sphere of directions */
+		real k = 1.0f - 2.0f * (ray + 0.5f) / 256.0f;
+		real r = (real)sqrt(1.0f - k * k);
+		real a = (real)ray * 2.39996323f;
+		real_vector3d vector;
+		struct collision_result result;
+		boolean hit;
+
+		vector.i = r * (real)cos(a) * 60.0f;
+		vector.j = r * (real)sin(a) * 60.0f;
+		vector.k = k * 60.0f;
+		csmemset(&result, 0, sizeof(result));
+		hit = collision_test_vector(0xC0A3, &origin, &vector, player->unit_index, &result);
+		if (hit)
+		{
+			unsigned long t_bits;
+
+			csmemcpy(&t_bits, &result.t, sizeof(t_bits));
+			checksum = checksum * 31 + t_bits + (unsigned long)result.surface_index * 7 +
+				(unsigned long)result.plane_designator * 13 + (unsigned long)result.material_index;
+			hits++;
+			if (ray % 8 == 0)
+				platform_psp_log("colltest: ray %d hit t %.6f surface %ld plane %08lx material %d object %ld",
+					ray, result.t, result.surface_index, (unsigned long)result.plane_designator,
+					result.material_index, result.object_index);
+		}
+		else
+			checksum = checksum * 31 + 0x9E3779B9UL;
+	}
+	platform_psp_log("colltest: %lu of 256 rays hit; checksum %08lx", hits, checksum);
+}
+#endif
+''',
+}
+
+def appended(tree):
+    for rel, code in APPEND.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "/* appended by psp_fixups.py */" not in text:
+            open(path, "w", errors="surrogateescape").write(text + "\n/* appended by psp_fixups.py */\n" + code)
+    return len(APPEND)
+
+# ---------- passes the GE renderer makes redundant: once the GE draws the
+# level (psp_ge.c), these only feed the null Direct3D path, so on the PSP they
+# return at once (about 6-8 ms a frame on Blood Gulch, measured with build 14)
+SKIPPED_PASSES = {
+    "source/structures/structure_render.c": ["structure_render_diffuse_texture", "structure_render_specular_lightmaps",
+        "structure_render_reflection_lightmap_masks", "structure_render_reflections",
+        "structure_render_fog", "structure_render_fog_screen"],
+    "source/structures/structure_detail_objects.c": ["structure_render_detail_objects"],
+    "source/objects/object_lights.c": ["lights_render_specular"],
+}
+SKIP_DECLARATION = "\n#ifdef HALO_PSP\nint psp_ge_active(void); /* psp_ge.c; psp_fixups.py */\n#endif\n"
+
+def skipped_passes(tree):
+    changed = 0
+    for rel, functions in SKIPPED_PASSES.items():
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "psp_ge_active()" in text:
+            continue
+        for function in functions:
+            header = "\nvoid %s(\n\tvoid)\n{\n" % function
+            if text.count(header) != 1:
+                sys.exit("psp_fixups: %s: expected one definition of %s" % (rel, function))
+            text = text.replace(header, header + "#ifdef HALO_PSP\n\tif (psp_ge_active())\n\t\treturn; /* the GE draws the level (psp_fixups.py) */\n#endif\n")
+        first = text.index("#include")
+        line_end = text.index("\n", first) + 1
+        text = text[:line_end] + SKIP_DECLARATION + text[line_end:]
+        open(path, "w", errors="surrogateescape").write(text)
+        changed += 1
+    return changed
+
+PRELUDE = '''/* PSP sizes (psp_fixups.py) */
+#ifdef HALO_PSP
+#ifdef PSP_RECON_64MB
+/* build 44: the campaign recon variant (psp_build.py's PSP_BIG_RAM): the
+Xbox's 22 MB tag window, for 64 MB models and the emulator set to one */
+#define PSP_TAG_CACHE_SIZE 0x01600000
+#else
+#define PSP_TAG_CACHE_SIZE 0x900000
+#endif
+/* build 25: the GE takes its textures from the map's texture pack, so the
+game's own texture cache only serves keep.txt's "textures" (512 KB); the
+sound cache, now feeding real output, doubles to 1 MB */
+#define PSP_TEXTURE_CACHE_SIZE 0x10000 /* 64 KB (build 30): "textures" in keep.txt thrashes it, but works */
+#define PSP_TEXTURE_STEAL_GUARD 0x4000
+#define PSP_SOUND_CACHE_SIZE 0x100000
+#define PSP_PROFILE_FRAMES 2
+#define PSP_DEBUG_PRIMITIVES 64
+/* one screen: no split screen on the PSP */
+#define PSP_LENS_FLARE_WINDOWS 1
+void platform_psp_log(const char *format, ...);
+unsigned long psp_microseconds(void);
+void psp_tick_account(unsigned long microseconds);
+void psp_frame_account(unsigned long microseconds);
+/* build 46: the hardware profiler's phases (psp_platform.c) */
+void psp_phase(int phase);
+#else
+#define PSP_TAG_CACHE_SIZE 0x01600000
+#define PSP_TEXTURE_CACHE_SIZE 0x1600000
+#define PSP_TEXTURE_STEAL_GUARD 0x104000
+#define PSP_SOUND_CACHE_SIZE 0x400000
+#define PSP_PROFILE_FRAMES 256
+#define PSP_DEBUG_PRIMITIVES 8192
+#define PSP_LENS_FLARE_WINDOWS MAXIMUM_WINDOWS
+#endif
+'''
+
+# ---------- build 19: with the GE drawing, the null path's shadows,
+# see-through parts, particles, decals, HUD and texture loads cost CPU time
+# and draw nothing, and render interpolation blends between ticks the PSP
+# can't draw more often than: each is skipped unless ms0:/halo/keep.txt names
+# it (psp_platform.c's psp_keep), so its cost can still be measured.
+# objects_update is timed by object type (psp_platform.c's psp_object_account)
+KEEP_DECLARATION = "#ifdef HALO_PSP\nint psp_keep(const char *name); /* psp_platform.c; psp_fixups.py */\nint psp_ge_active(void);\n#endif\n"
+# objects.c (build 19): idle scenery sleeps. Blood Gulch updates ~259
+# scenery objects every tick, and for a tree or a rock the update reproduces
+# the object exactly. An object whose update leaves its data byte-identical
+# twice running sleeps: it is skipped while its data stays the same, and any
+# change from outside (damage, a script moving it, a saved game loading)
+# wakes it, since its data no longer matches. Asleep it is still drawn and
+# still collides, like an object outside the Xbox's active area.
+# "awake" in keep.txt turns it off
+PSP_SLEEP_CODE = """#ifdef HALO_PSP
+void psp_object_account(int type, unsigned long microseconds); /* psp_platform.c; psp_fixups.py */
+int psp_keep(const char *name);
+static unsigned long psp_object_start;
+static int psp_sleep_enabled = -1;
+static int psp_sleep_debug = -1, psp_sleep_reports = 0, psp_vehicle_sleep_reports = 0;
+/* sleepdebug: one vehicle's data at the end of its update, to see what
+changes before the next (build 44) */
+static unsigned long between[640];
+static short between_identifier = 0;
+static int between_index = -1;
+static int psp_vehicle_sleep_on = -1;
+long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep;
+static struct { short identifier; short quiet; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
+
+static unsigned long psp_object_checksum(struct object_header_datum const *header)
+{
+	unsigned long const *word = (unsigned long const *)header->datum;
+	long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, index = 0;
+	unsigned long sum = 0x9E3779B9UL;
+	/* build 44: a unit's timer (unit.timer, +0x1BC; units.c's round robin
+	for the "used time" work) counts every tick whatever the unit does, so
+	it is left out for vehicles: asleep, a parked vehicle's turn simply
+	passes to the others */
+	long skip = header->type == _object_type_vehicle ? 0x1BC / 4 : -1;
+	/* and a weapon's item.last_owned_time (+0x1B4), stamped with the game
+	time every tick while it is attached to a unit (items.c): the vehicle's
+	own gun carries it, and only unattached items are ever collected by it */
+	long skip_whole = header->type == _object_type_weapon ? 0x1B4 / 4 : -1;
+
+	/* and every object's magic_number (+0x8): the marker a render or
+	collision pass stamps on each object it visits (object_mark_function),
+	so a visible object's changed every frame. Until build 44 only objects
+	off screen ever slept */
+	for (; index < count; index++, word++)
+		sum = ((sum << 5) | (sum >> 27)) ^ (index == skip ? (*word & 0xFFFF0000) : (index == skip_whole || index == 2) ? 0 : *word);
+	return sum;
+}
+
+static boolean object_update(long object_index);
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep);
+
+static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before;
+
+	if (psp_sleep_enabled < 0)
+		psp_sleep_enabled = !psp_keep("awake");
+	if (psp_vehicle_sleep_on < 0)
+		psp_vehicle_sleep_on = !psp_keep("vehiclesawake");
+	if (header->type == _object_type_vehicle)
+	{
+		/* build 40: each vehicle kind's update time, parked (at rest) or
+		not (Sheepdog01: the warthog and the scorpion cost far more than the ghost;
+		their physics tags have 15 and 18 mass points to the ghost's 5,
+		each tested against the ground every tick) */
+		static struct { long definition; unsigned long us[2], count[2]; } psp_vehicle_cost[8];
+		static unsigned long psp_vehicle_updates = 0;
+		unsigned long psp_start = psp_microseconds();
+		int psp_resting = TEST_FLAG(object->object.flags, _object_at_rest_bit) ? 1 : 0, k;
+		long definition = object->definition_index;
+
+		/* build 40: a parked, empty vehicle sleeps as idle scenery does
+		(its update leaving it byte-identical twice running); anyone getting
+		in, a shot, a blast's push changes its data and wakes it. The 8
+		parked vehicles cost 4.7 ms a tick on the PSP (build 39) */
+		/* build 44: on. Of the two counters a parked vehicle keeps (build
+		41), unit.timer is left out of the checksum (above); the other, the
+		animation frame (+0x80: the scorpion's idle), keeps a vehicle awake,
+		so only the warthog and the ghost sleep for now. keep.txt's
+		"vehiclesawake" turns it off */
+		psp_sleepy_update(object_index, absolute_index, header, psp_vehicle_sleep_on);
+		for (k = 0; k < 8 && psp_vehicle_cost[k].definition && psp_vehicle_cost[k].definition != definition; k++);
+		if (k < 8)
+		{
+			psp_vehicle_cost[k].definition = definition;
+			psp_vehicle_cost[k].us[psp_resting] += psp_microseconds() - psp_start;
+			psp_vehicle_cost[k].count[psp_resting]++;
+		}
+		if (++psp_vehicle_updates % 3000 == 0)
+		{
+			for (k = 0; k < 8 && psp_vehicle_cost[k].definition; k++)
+			{
+				platform_psp_log("vehicles: %s: moving %lu updates at %lu us, at rest %lu at %lu us",
+					tag_get_name(psp_vehicle_cost[k].definition),
+					psp_vehicle_cost[k].count[0], psp_vehicle_cost[k].count[0] ? psp_vehicle_cost[k].us[0] / psp_vehicle_cost[k].count[0] : 0,
+					psp_vehicle_cost[k].count[1], psp_vehicle_cost[k].count[1] ? psp_vehicle_cost[k].us[1] / psp_vehicle_cost[k].count[1] : 0);
+				psp_vehicle_cost[k].us[0] = psp_vehicle_cost[k].us[1] = 0;
+				psp_vehicle_cost[k].count[0] = psp_vehicle_cost[k].count[1] = 0;
+			}
+		}
+		return;
+	}
+	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
+}
+
+/* an object and what it carries (a parked vehicle's own gun, build 41),
+summed together; 0 when it can't sleep: it carries a unit (someone in a
+seat) or something carrying something else */
+static unsigned long psp_family_checksum(struct object_header_datum const *header)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long sum = psp_object_checksum(header);
+	long child = object->object.first_child_object_index;
+	int children = 0;
+
+	while (child != NONE)
+	{
+		struct object_header_datum const *child_header = object_header_get(child);
+		struct object_datum const *child_object = child_header->datum;
+
+		if (child_header->type == _object_type_biped || child_header->type == _object_type_vehicle ||
+			child_object->object.first_child_object_index != NONE || ++children > 4)
+		{
+			if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24)
+				platform_psp_log("sleep: %s can't sleep: it carries %s (type %d, which itself carries %s)",
+					tag_get_name(object->definition_index), tag_get_name(child_object->definition_index), child_header->type,
+					child_object->object.first_child_object_index != NONE ?
+						tag_get_name(object_get(child_object->object.first_child_object_index)->definition_index) : "nothing");
+			return 0;
+		}
+		sum = ((sum << 7) | (sum >> 25)) ^ psp_object_checksum(child_header);
+		child = child_object->object.next_object_index;
+	}
+	return sum ? sum : 1;
+}
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before = 0;
+
+	if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		(object->object.first_child_object_index == NONE || header->type == _object_type_vehicle))
+		before = psp_family_checksum(header);
+	if (!before)
+	{
+		object_update(object_index);
+		if (absolute_index < MAXIMUM_OBJECTS_PER_MAP)
+			psp_sleep[absolute_index].quiet = 0;
+		return;
+	}
+	psp_objects_sleep_checked++;
+	if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && game_time_get() > 150)
+	{
+		/* what changed since the last tick's end, outside the update */
+		long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
+
+		if (between_index == absolute_index && between_identifier == header->identifier)
+		{
+			for (w = 0; w < count; w++)
+				if (between[w] != ((unsigned long const *)header->datum)[w] && w != 2 && psp_vehicle_sleep_reports++ < 40)
+					platform_psp_log("sleep: %s changed between ticks: word %ld (byte %ld) %08lx -> %08lx (quiet %d, checksum %s)",
+						tag_get_name(object->definition_index), w, w * 4, between[w], ((unsigned long const *)header->datum)[w],
+						psp_sleep[absolute_index].quiet, psp_sleep[absolute_index].checksum == before ? "same" : "differs");
+		}
+		else if (between_index < 0)
+		{
+			between_index = absolute_index;
+			between_identifier = header->identifier;
+		}
+	}
+	if (psp_sleep[absolute_index].identifier == header->identifier &&
+		psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before)
+	{
+		psp_objects_asleep++;
+		if (header->type == _object_type_vehicle)
+			psp_vehicles_asleep++;
+		return;
+	}
+	if (psp_sleep_debug < 0)
+		psp_sleep_debug = psp_keep("sleepdebug");
+	if (psp_sleep_debug && (header->type == _object_type_vehicle ? (game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24) : psp_sleep_reports < 12))
+	{
+		static unsigned long copy[512];
+		long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word;
+
+		static unsigned long child_copy[512];
+		long child_count = 0, child_index = object->object.first_child_object_index;
+
+		if (header->type == _object_type_vehicle && child_index != NONE)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+
+			child_count = (child_header->data_size < 2048 ? child_header->data_size : 2048) / 4;
+			csmemcpy(child_copy, child_header->datum, child_count * 4);
+		}
+		csmemcpy(copy, header->datum, count * 4);
+		object_update(object_index);
+		if (child_count)
+		{
+			struct object_header_datum const *child_header = object_header_get(child_index);
+			long w;
+
+			for (w = 0; w < child_count; w++)
+				if (child_copy[w] != ((unsigned long const *)child_header->datum)[w] &&
+					!(child_header->type == _object_type_weapon && w == 0x1B4 / 4))
+				{
+					platform_psp_log("sleep: %s's child word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), w, w * 4, child_header->data_size, child_copy[w],
+						((unsigned long const *)child_header->datum)[w]);
+					break;
+				}
+		}
+		for (word = 0; word < count; word++)
+		{
+			if (copy[word] != ((unsigned long const *)header->datum)[word] && word != 2 && word != (header->type == _object_type_vehicle ? 0x1BC / 4 : -1))
+			{
+				if (game_time_get() > 150 && (psp_sleep_reports++ & 0) == 0)
+					platform_psp_log("sleep: %s stays awake: word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+				break;
+			}
+		}
+		if (word == count && header->type == _object_type_vehicle)
+		{
+			/* the vehicle itself held still: what it carries moved */
+			long child = object->object.first_child_object_index;
+
+			while (child != NONE)
+			{
+				struct object_header_datum const *child_header = object_header_get(child);
+				struct object_datum const *child_object = child_header->datum;
+				static unsigned long child_sum[64];
+				int slot = child & 63;
+				unsigned long sum = psp_object_checksum(child_header);
+
+				if (child_sum[slot] && child_sum[slot] != sum)
+					platform_psp_log("sleep: %s stays awake: its %s (type %d) changed", tag_get_name(object->definition_index),
+						tag_get_name(child_object->definition_index), child_header->type);
+				child_sum[slot] = sum;
+				child = child_object->object.next_object_index;
+			}
+		}
+	}
+	else
+		object_update(object_index);
+	if (psp_family_checksum(header) == before)
+	{
+		if (psp_sleep[absolute_index].identifier == header->identifier)
+		{
+			if (psp_sleep[absolute_index].quiet < 2)
+				psp_sleep[absolute_index].quiet++;
+		}
+		else
+		{
+			psp_sleep[absolute_index].identifier = header->identifier;
+			psp_sleep[absolute_index].quiet = 1;
+		}
+	}
+	else
+	{
+		psp_sleep[absolute_index].identifier = header->identifier;
+		psp_sleep[absolute_index].quiet = 0;
+	}
+	psp_sleep[absolute_index].checksum = before;
+	if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && between_index == absolute_index)
+		csmemcpy(between, header->datum, (header->data_size < 2560 ? header->data_size : 2560));
+}
+#endif
+"""
+
+FIXES_19_SKY = {
+"source/render/render_sky.c": [
+("""			rasterizer_models_begin(TRUE);
+			csmemset(&render_model_lighting, 0, sizeof(render_model_lighting));""",
+ """#ifdef HALO_PSP
+			{
+				/* the sky on the GE: at the far plane, behind everything (build 21; psp_fixups.py) */
+				extern void psp_ge_sky(int on);
+
+				psp_ge_sky(1);
+			}
+#endif
+			rasterizer_models_begin(TRUE);
+			csmemset(&render_model_lighting, 0, sizeof(render_model_lighting));"""),
+("""			rasterizer_models_end();
+		}
+	}
+
+	return;
+}""",
+ """			rasterizer_models_end();
+#ifdef HALO_PSP
+			{
+				extern void psp_ge_sky(int on);
+
+				psp_ge_sky(0);
+			}
+#endif
+		}
+	}
+
+	return;
+}"""),
+],
+}
+
+FIXES_22 = {
+"source/render/render_sprite.c": [
+("""void build_sprites_end(
+	struct build_sprite_data *data)
+{""",
+ """#ifdef HALO_PSP
+int psp_ge_active(void);
+int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
+#endif
+
+void build_sprites_end(
+	struct build_sprite_data *data)
+{"""),
+("""			rasterizer_dynamic_vertices_unlock(group->vertex_buffer_index);
+			if (TEST_FLAG(data->flags, _build_sprites_screen_space_bit))""",
+ """#ifdef HALO_PSP
+			/* sprites (particles, muzzle flashes, impacts) go to the GE's list of
+			see-through draws; they are built in view space (psp_ge.c; build 22;
+			psp_fixups.py) */
+			if (psp_ge_active() && !TEST_FLAG(data->flags, _build_sprites_screen_space_bit))
+			{
+				psp_ge_sprites(group->vertices, group->sprite_count, (unsigned int)group->bitmap,
+					data->shader ? data->shader->framebuffer_blend_function : 0,
+					(float const *)&render.frustum.view_to_world);
+				rasterizer_dynamic_vertices_unlock(group->vertex_buffer_index);
+				rasterizer_dynamic_vertices_delete(group->vertex_buffer_index);
+				continue;
+			}
+#endif
+			rasterizer_dynamic_vertices_unlock(group->vertex_buffer_index);
+			if (TEST_FLAG(data->flags, _build_sprites_screen_space_bit))"""),
+],
+}
+
+FIXES_19 = {
+"source/render/render_objects.c": [
+("void render_object_shadows(\n\tvoid)\n{",
+ KEEP_DECLARATION + "\nvoid render_object_shadows(\n\tvoid)\n{"),
+("\tprofile_enter(render_object_shadows_section);\n\n\tif (render_shadows)\n",
+ "\tprofile_enter(render_object_shadows_section);\n\n\tif (render_shadows\n#ifdef HALO_PSP\n\t\t&& (!psp_ge_active() || !psp_keep(\"noshadows\")) /* the GE's blob shadows since build 25 (psp_fixups.py) */\n#endif\n\t\t)\n"),
+],
+"source/rasterizer/rasterizer_transparent_geometry.c": [
+("void rasterizer_transparent_geometry_draw(\n\tboolean water)\n{",
+ KEEP_DECLARATION + "\nvoid rasterizer_transparent_geometry_draw(\n\tboolean water)\n{"),
+("\trasterizer_profile_begin((short)profile);\n\tif (transparent_geometry_group_count > 0)\n",
+ "\trasterizer_profile_begin((short)profile);\n#ifdef HALO_PSP\n\tif (psp_ge_active() && !psp_keep(\"transparent\"))\n\t{\n\t\t/* nothing draws them on the PSP yet (psp_fixups.py) */\n\t\ttransparent_geometry_group_index = (short)transparent_geometry_group_count;\n\t\trasterizer_profile_end((short)profile);\n\t\treturn;\n\t}\n#endif\n\tif (transparent_geometry_group_count > 0)\n"),
+],
+"source/render/render_particles.c": [
+("void render_particles(\n\tvoid)\n{",
+ KEEP_DECLARATION + "\nvoid render_particles(\n\tvoid)\n{"),
+("\treal_vector3d direction;\n\n\trendered_particle_count = 0;\n",
+ "\treal_vector3d direction;\n\n#ifdef HALO_PSP\n\tif (psp_ge_active() && psp_keep(\"noparticles\"))\n\t\treturn; /* noparticles in keep.txt: none (psp_fixups.py) */\n#endif\n\trendered_particle_count = 0;\n"),
+],
+"source/rasterizer/rasterizer.c": [
+("void rasterizer_decals_draw(\n\tshort cluster_index)\n{",
+ KEEP_DECLARATION + "\nvoid rasterizer_decals_draw(\n\tshort cluster_index)\n{"),
+("\t_rasterizer_decals_draw(cluster_index);\n",
+ "#ifdef HALO_PSP\n\tif (psp_ge_active() && psp_keep(\"nodecals\"))\n\t\treturn; /* the GE draws them since build 23; nodecals leaves them out (psp_fixups.py) */\n#endif\n\t_rasterizer_decals_draw(cluster_index);\n"),
+],
+"source/interface/interface.c": [
+("void interface_draw_screen(\n\tvoid)\n{",
+ KEEP_DECLARATION + "\nvoid interface_draw_screen(\n\tvoid)\n{"),
+("\tif (render.local_player_index == NONE)\n\t\treturn;\n\n\tweapon_hud_index = interface_get_weapon_hud_index(&flashlight_power);",
+ "\tif (render.local_player_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n\tif (psp_ge_active() && psp_keep(\"nohud\"))\n\t\treturn; /* nohud in keep.txt: no HUD (psp_fixups.py) */\n#endif\n\n\tweapon_hud_index = interface_get_weapon_hud_index(&flashlight_power);"),
+],
+"source/cache/xbox_texture_cache.c": [
+("void *_texture_cache_bitmap_get_hardware_format(\n\tstruct bitmap_data *bitmap,",
+ KEEP_DECLARATION + "\nvoid *_texture_cache_bitmap_get_hardware_format(\n\tstruct bitmap_data *bitmap,"),
+("\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\tif (bitmap->cache_block_index == NONE && load)",
+ "#ifdef HALO_PSP\n\t/* the null path's textures are never drawn, and a blocking load waits on\n\tthe Memory Stick (psp_fixups.py) */\n\tif (psp_ge_active() && !psp_keep(\"textures\"))\n\t{\n\t\t/* a stand-in, never drawn with: the HUD checks a texture is there before\n\t\tit draws, and the GE takes its textures from the map's texture pack\n\t\t(build 20) */\n\t\tstatic unsigned long psp_texture_stand_in[16];\n\n\t\treturn psp_texture_stand_in;\n\t}\n#endif\n\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\tif (bitmap->cache_block_index == NONE && load)"),
+],
+"port/linux/src/sdl_platform.c": [
+("int halo_interpolation_enabled(void)\n{",
+ KEEP_DECLARATION + "\nint halo_interpolation_enabled(void)\n{"),
+("\tif (enabled < 0)\n\t\tenabled = config_boolean(\"display.interpolation\");",
+ "#ifdef HALO_PSP\n\t/* off unless keep.txt names it: the PSP draws fewer frames than ticks\n\t(psp_fixups.py) */\n\tif (enabled < 0)\n\t\tenabled = psp_keep(\"interpolation\");\n#else\n\tif (enabled < 0)\n\t\tenabled = config_boolean(\"display.interpolation\");\n#endif"),
+],
+"source/objects/objects.c": [
+("void objects_update(\n\tvoid)\n{",
+ PSP_SLEEP_CODE + "\nvoid objects_update(\n\tvoid)\n{"),
+("\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n",
+ "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n#endif\n\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n"),
+("\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n",
+ "\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n#ifdef HALO_PSP\n\tpsp_object_account(12, psp_microseconds() - psp_object_start);\n#endif\n"),
+("\t\t\t\t\tobject_update(object_index);\n",
+ "#ifdef HALO_PSP\n\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\tpsp_object_account(object_header->type, psp_microseconds() - psp_object_start);\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
+("\tobjects_garbage_collection();\n\n\tprofile_exit(section);",
+ "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n\tobjects_garbage_collection();\n\tpsp_object_account(13, psp_microseconds() - psp_object_start);\n#else\n\tobjects_garbage_collection();\n#endif\n\n\tprofile_exit(section);"),
+],
+"port/include/halo_math.h": [
+("#define pow(x, y) halo_pow(x, y)\n",
+ """#define pow(x, y) halo_pow(x, y)
+
+#ifdef HALO_PSP
+/* single precision for float arguments (build 19; psp_fixups.py). The PSP's
+FPU has no double precision: a double sqrt is a 2,400-cycle library call,
+and the compiler does not narrow (real)sqrt(f) or (real)floor(f) itself.
+sqrt, floor, ceil and fmod are exact, so the float versions give the same
+bits; the halo_ trig functions already compute in float (psp_libc.c), so
+calling sinf and the rest directly only drops the conversions. Arguments
+that really are double keep the double functions. */
+#define PSP_IS_FLOAT(x) __builtin_types_compatible_p(__typeof__(x), float)
+#define PSP_NARROW1(F, D, x) __builtin_choose_expr(PSP_IS_FLOAT(x), F##f(x), D(x))
+#define PSP_NARROW2(F, D, x, y) __builtin_choose_expr(PSP_IS_FLOAT((x) + (y)), F##f(x, y), D(x, y))
+#undef sin
+#undef cos
+#undef tan
+#undef asin
+#undef acos
+#undef atan
+#undef atan2
+#undef pow
+#define sin(x) PSP_NARROW1(sin, halo_sin, x)
+#define cos(x) PSP_NARROW1(cos, halo_cos, x)
+#define tan(x) PSP_NARROW1(tan, halo_tan, x)
+#define asin(x) PSP_NARROW1(asin, halo_asin, x)
+#define acos(x) PSP_NARROW1(acos, halo_acos, x)
+#define atan(x) PSP_NARROW1(atan, halo_atan, x)
+#define atan2(y, x) PSP_NARROW2(atan2, halo_atan2, y, x)
+#define pow(x, y) PSP_NARROW2(pow, halo_pow, x, y)
+#define sqrt(x) PSP_NARROW1(sqrt, (sqrt), x)
+#define floor(x) PSP_NARROW1(floor, (floor), x)
+#define ceil(x) PSP_NARROW1(ceil, (ceil), x)
+#define fmod(x, y) PSP_NARROW2(fmod, (fmod), x, y)
+#endif
+"""),
+],
+"source/render/render_objects.c#lod": [
+("\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}",
+ "#ifdef HALO_PSP\n\t/* the game measures pixels on a 480-line screen; the PSP's has 272, so\n\tmodels pick the level of detail Bungie's thresholds give at the size they\n\treally appear (build 19; fulllod in keep.txt turns it off; psp_fixups.py) */\n\tif (!psp_keep(\"fulllod\"))\n\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n#endif\n\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}"),
+],
+}
+
+# build 23: the motion sensor (psp_ge.c draws it into a small target of its
+# own, then onto the HUD)
+FIXES_23 = {
+"source/rasterizer/rasterizer.c": [
+("""void rasterizer_hud_motion_sensor_blip_begin(
+	void)
+{
+	_rasterizer_hud_motion_sensor_blip_begin();""",
+ """#ifdef HALO_PSP
+int psp_ge_active(void);
+void psp_ge_blips_begin(void);
+void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key);
+void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key);
+struct bitmap_data *bitmap_group_try_and_get_bitmap(long bitmap_group_index, short bitmap_index);
+long interface_get_tag_index(short index);
+#define PSP_INTERFACE_BITMAP(index) ((unsigned int)bitmap_group_try_and_get_bitmap(interface_get_tag_index(index), 0))
+#endif
+
+void rasterizer_hud_motion_sensor_blip_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		psp_ge_blips_begin();
+		return;
+	}
+#endif
+	_rasterizer_hud_motion_sensor_blip_begin();"""),
+("""	_rasterizer_hud_motion_sensor_blip_draw(position, intensity, size, color, large_blip);""",
+ """#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		/* the Xbox's own sums (rasterizer_xbox_motion_sensor.c): the sensor's
+		square is -1 to 1 */
+		psp_ge_blip(position->x * -0.03125f, position->y * -0.03125f, size * 0.0625f, color->red * intensity,
+			color->green * intensity, color->blue * intensity, PSP_INTERFACE_BITMAP(large_blip ? 13 : 12));
+		return;
+	}
+#endif
+	_rasterizer_hud_motion_sensor_blip_draw(position, intensity, size, color, large_blip);"""),
+("""	_rasterizer_hud_motion_sensor_blip_end(center, scale);""",
+ """#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		psp_ge_blips_end(center->x, center->y, scale, PSP_INTERFACE_BITMAP(7), PSP_INTERFACE_BITMAP(8));
+		return;
+	}
+#endif
+	_rasterizer_hud_motion_sensor_blip_end(center, scale);"""),
+],
+}
+
+FIXES_23["source/rasterizer/xbox/rasterizer_xbox_text.c"] = [
+("""void rasterizer_text_end(
+	void)
+{
+	return;
+}""",
+ """#ifdef HALO_PSP
+/* the HUD's and menus' text goes to the GE (psp_ge.c; build 23; psp_fixups.py) */
+int psp_ge_active(void);
+int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y);
+void psp_ge_text_character(void const *vertices);
+void psp_ge_text_end(void);
+static int psp_text_open = 0;
+#endif
+
+void rasterizer_text_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_text_open)
+	{
+		psp_ge_text_end();
+		psp_text_open = 0;
+	}
+#endif
+	return;
+}"""),
+("""	short map_index;
+""",
+ """	short map_index;
+
+#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		extern void psp_ge_ui_space(int width, int height);
+
+		psp_ge_ui_space(global_window_parameters.camera.viewport_bounds.x1 -
+			global_window_parameters.camera.viewport_bounds.x0,
+			global_window_parameters.camera.viewport_bounds.y1 -
+			global_window_parameters.camera.viewport_bounds.y0);
+		psp_text_open = rasterizer_debug_options.draw_dynamic_screen_geometry &&
+			global_window_parameters.rasterizer_target == 0 && parameters && parameters->map[0] &&
+			psp_ge_text_begin(parameters->map[0], parameters->framebuffer_blend_function,
+				parameters->scale ? parameters->scale->i : 0.0f, parameters->scale ? parameters->scale->j : 0.0f);
+		return;
+	}
+#endif
+"""),
+("""	boolean success;
+	short vertex_index;
+""",
+ """	boolean success;
+	short vertex_index;
+
+#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		if (psp_text_open)
+			psp_ge_text_character(vertices);
+		return;
+	}
+#endif
+"""),
+]
+
+# build 23: the AI's line-of-sight debug drawing keeps 16,384 points and
+# 8,192 rays (300 KB of the 534 KB ai_debug) and only fills them when that
+# debug view is on; on the PSP it keeps 64 of each (the code checks the
+# limits). The Xbox layout's offset checks after them don't apply then.
+FIXES_23["source/ai/ai_debug.h"] = [
+("""	MAXIMUM_AI_DEBUG_LINEOFSIGHT_POINTS = 16384,
+	MAXIMUM_AI_DEBUG_LINEOFSIGHT_PAIRS = 8192,""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (build 23) */
+	MAXIMUM_AI_DEBUG_LINEOFSIGHT_POINTS = 64,
+	MAXIMUM_AI_DEBUG_LINEOFSIGHT_PAIRS = 64,
+#else
+	MAXIMUM_AI_DEBUG_LINEOFSIGHT_POINTS = 16384,
+	MAXIMUM_AI_DEBUG_LINEOFSIGHT_PAIRS = 8192,
+#endif"""),
+("""typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert[""",
+ """#ifndef HALO_PSP
+typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert["""),
+("""typedef char ai_debug_state_field_7D380_offset_assert[
+	offsetof(struct ai_debug_state, evaluation_context_valid) == 0x7D380 ? 1 : -1];""",
+ """typedef char ai_debug_state_field_7D380_offset_assert[
+	offsetof(struct ai_debug_state, evaluation_context_valid) == 0x7D380 ? 1 : -1];
+#endif"""),
+]
+
+# build 23: memory only a network game uses, allocated when one first does
+# (the host's per-tick lists of object states and inventories: 245 KB), and
+# the null renderer's index-range cache cut to what it still draws (the GE
+# draws the world, HUD and text: 60 KB)
+FIXES_23["port/linux/game/network_objects.c"] = [
+("""	static struct distributed_object_state states[MAXIMUM_TRACKED_OBJECTS + RESTING_STATES_PER_TICK];
+	static byte kinds[MAXIMUM_TRACKED_OBJECTS + RESTING_STATES_PER_TICK];
+	struct distributed_object_state_message message;""",
+ """#ifdef HALO_PSP
+	/* allocated by the first network game (psp_fixups.py, build 23) */
+	static struct distributed_object_state *states = NULL;
+	static byte *kinds = NULL;
+#else
+	static struct distributed_object_state states[MAXIMUM_TRACKED_OBJECTS + RESTING_STATES_PER_TICK];
+	static byte kinds[MAXIMUM_TRACKED_OBJECTS + RESTING_STATES_PER_TICK];
+#endif
+	struct distributed_object_state_message message;"""),
+("""	short resting = 0;
+	long told_count = objects_host_told_count;""",
+ """	short resting = 0;
+	long told_count = objects_host_told_count;
+#ifdef HALO_PSP
+	if (!states)
+	{
+		states = malloc(sizeof(*states) * (MAXIMUM_TRACKED_OBJECTS + RESTING_STATES_PER_TICK));
+		kinds = malloc(MAXIMUM_TRACKED_OBJECTS + RESTING_STATES_PER_TICK);
+		if (!states || !kinds)
+		{
+			free(states);
+			free(kinds);
+			states = NULL;
+			kinds = NULL;
+			return;
+		}
+	}
+#endif"""),
+("""	static struct distributed_inventory inventories[MAXIMUM_TRACKED_OBJECTS];
+	static byte kinds[MAXIMUM_TRACKED_OBJECTS];
+	static real_point3d origins[MAXIMUM_TRACKED_OBJECTS];
+	struct distributed_inventory_message message;
+	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, DATAGRAM_ENTRIES(struct distributed_inventory));
+	long inventory_count = 0;
+	long round = game_time_get() / INVENTORY_INTERVAL_TICKS;
+	struct object_iterator iterator;
+	short machine_number;
+""",
+ """#ifdef HALO_PSP
+	/* allocated by the first network game (psp_fixups.py, build 23) */
+	static struct distributed_inventory *inventories = NULL;
+	static byte *kinds = NULL;
+	static real_point3d *origins = NULL;
+#else
+	static struct distributed_inventory inventories[MAXIMUM_TRACKED_OBJECTS];
+	static byte kinds[MAXIMUM_TRACKED_OBJECTS];
+	static real_point3d origins[MAXIMUM_TRACKED_OBJECTS];
+#endif
+	struct distributed_inventory_message message;
+	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, DATAGRAM_ENTRIES(struct distributed_inventory));
+	long inventory_count = 0;
+	long round = game_time_get() / INVENTORY_INTERVAL_TICKS;
+	struct object_iterator iterator;
+	short machine_number;
+
+#ifdef HALO_PSP
+	if (!inventories)
+	{
+		inventories = malloc(sizeof(*inventories) * MAXIMUM_TRACKED_OBJECTS);
+		kinds = malloc(MAXIMUM_TRACKED_OBJECTS);
+		origins = malloc(sizeof(*origins) * MAXIMUM_TRACKED_OBJECTS);
+		if (!inventories || !kinds || !origins)
+		{
+			free(inventories);
+			free(kinds);
+			free(origins);
+			inventories = NULL;
+			kinds = NULL;
+			origins = NULL;
+			return;
+		}
+	}
+#endif
+"""),
+]
+FIXES_23["port/linux/src/d3d8_gl.c#index_ranges"] = [
+("""#define INDEX_RANGE_SLOTS 4096
+""",
+ """#ifdef HALO_PSP
+#define INDEX_RANGE_SLOTS 256 /* psp_fixups.py, build 23 */
+#else
+#define INDEX_RANGE_SLOTS 4096
+#endif
+"""),
+]
+
+# build 23: the GE fogs with the game's atmospheric fog (colour, distances,
+# density) instead of a fixed one
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	_rasterizer_window_set_fog(fog);
+	return;""",
+ """	_rasterizer_window_set_fog(fog);
+#ifdef HALO_PSP
+	{
+		/* as the Xbox settled it: off reads as zero density (psp_ge.c; psp_fixups.py) */
+		extern void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
+
+		psp_ge_fog(&global_window_parameters.fog.atmospheric_color.red,
+			global_window_parameters.fog.atmospheric_minimum_distance,
+			global_window_parameters.fog.atmospheric_maximum_distance,
+			global_window_parameters.fog.atmospheric_maximum_density);
+	}
+#endif
+	return;"""))
+
+# build 23: the level's own see-through surfaces (glass, water, the BSP's
+# effects) join the GE's see-through list, as the model parts do
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	_rasterizer_environment_transparent_geometry_submit(
+		shader,
+		shader_permutation_index,
+		lightmap,
+		dynamic_triangle_buffer_index,
+		first_triangle_index,
+		triangle_count,
+		vertex_buffers,
+		centroid,
+		plane,
+		offset,
+		lighting,
+		geometry_flags);
+	return;""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+		extern unsigned int psp_tex_bitmap_key(long, int);
+		extern void psp_environment_transparent(long, long, long, struct vertex_buffer const *, unsigned int, float,
+			float, float, float, short, float const *);
+
+		if (psp_ge_active())
+		{
+			float u_scale, v_scale, u_offset, v_offset;
+			short blend;
+			unsigned int key = psp_transparent_map(shader, shader_permutation_index, FALSE, &u_scale, &v_scale,
+				&u_offset, &v_offset, &blend);
+
+			if (key)
+				psp_environment_transparent(dynamic_triangle_buffer_index, first_triangle_index, triangle_count,
+					vertex_buffers, key, u_scale, v_scale, u_offset, v_offset, blend, centroid ? &centroid->x : NULL);
+			return;
+		}
+	}
+#endif
+	_rasterizer_environment_transparent_geometry_submit(
+		shader,
+		shader_permutation_index,
+		lightmap,
+		dynamic_triangle_buffer_index,
+		first_triangle_index,
+		triangle_count,
+		vertex_buffers,
+		centroid,
+		plane,
+		offset,
+		lighting,
+		geometry_flags);
+	return;"""))
+
+# build 23: decals (bullet holes, blood, scorch marks, the level's painted
+# markings) to the GE, from the game's own decal vertices
+FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
+("""		IDirect3DDevice8_SetVertexData4ub(
+			global_d3d_device,
+			9,
+			color >> 16,
+			color >> 8,
+			color,
+			PIXEL32_COMPONENT_MASK - intensity);
+		IDirect3DDevice8_DrawPrimitive(""",
+ """#ifdef HALO_PSP
+		if (psp_ge_active())
+		{
+			/* psp_ge.c (build 23; psp_fixups.py) */
+			extern void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend,
+				unsigned long color, int intensity, int alpha_tested);
+			extern unsigned int psp_tex_bitmap_key(long, int);
+			byte *vertex_data = NULL;
+
+			IDirect3DVertexBuffer8_Lock(local_d3d_vertex_buffer, 0, 0, &vertex_data, D3DLOCK_READONLY);
+			if (vertex_data)
+				psp_ge_decal(vertex_data + vertex_data_offset, decal->quad_count,
+					psp_tex_bitmap_key(shader->map.index, decal->bitmap_index), framebuffer_blend_function, color,
+					(int)intensity, local_layer == _decal_layer_alpha_tested);
+			IDirect3DVertexBuffer8_Unlock(local_d3d_vertex_buffer);
+			decal_index = decal->next_decal_index;
+			continue;
+		}
+#endif
+		IDirect3DDevice8_SetVertexData4ub(
+			global_d3d_device,
+			9,
+			color >> 16,
+			color >> 8,
+			color,
+			PIXEL32_COMPONENT_MASK - intensity);
+		IDirect3DDevice8_DrawPrimitive("""),
+("""void _rasterizer_decals_draw(
+	short cluster_index)
+{""",
+ """#ifdef HALO_PSP
+int psp_ge_active(void);
+#endif
+
+void _rasterizer_decals_draw(
+	short cluster_index)
+{"""),
+]
+
+# build 23: the screen flash (taking damage, pickups, teleporting) on the GE
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""void rasterizer_screen_flash(
+	void)
+{
+	_rasterizer_screen_flash();""",
+ """void rasterizer_screen_flash(
+	void)
+{
+#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+		extern void psp_ge_screen_flash(short type, float intensity, float const *argb);
+
+		if (psp_ge_active())
+		{
+			if (rasterizer_debug_options.screen_flash_enabled)
+				psp_ge_screen_flash(global_window_parameters.screen_flash.type,
+					global_window_parameters.screen_flash.intensity,
+					global_window_parameters.screen_flash.color.n);
+			return;
+		}
+	}
+#endif
+	_rasterizer_screen_flash();"""))
+
+# build 25: blob shadows on the GE. The game still picks each shadow's frame
+# and the level triangles that receive it; the silhouette it would draw from
+# the light (a model render per object) isn't needed for a blob
+FIXES_23["source/render/render_objects.c#shadows"] = [
+("""					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels * 0.3f,""",
+ """#ifdef HALO_PSP
+					if (!psp_ge_active())
+#endif
+					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels * 0.3f,"""),
+]
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	return _rasterizer_environment_shadow_begin(
+		object_index,
+		shadow_matrix,
+		shadow_color,
+		object_bounding_radius,
+		shadow_volume_bounding_radius);""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+		extern void psp_ge_shadow_begin(const float *matrix, const float *color, float radius);
+
+		if (psp_ge_active())
+		{
+			psp_ge_shadow_begin((const float *)shadow_matrix, &shadow_color->red, object_bounding_radius);
+			if (shadow_volume_bounding_radius)
+				*shadow_volume_bounding_radius = object_bounding_radius;
+			return TRUE;
+		}
+	}
+#endif
+	return _rasterizer_environment_shadow_begin(
+		object_index,
+		shadow_matrix,
+		shadow_color,
+		object_bounding_radius,
+		shadow_volume_bounding_radius);"""))
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	_rasterizer_environment_shadow_end();
+	return;""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+		extern void psp_ge_shadow_end(void);
+
+		if (psp_ge_active())
+		{
+			psp_ge_shadow_end();
+			return;
+		}
+	}
+#endif
+	_rasterizer_environment_shadow_end();
+	return;"""))
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	_rasterizer_environment_shadow_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer);""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+		extern void psp_environment_shadow(long, long, long, struct vertex_buffer const *);
+
+		if (psp_ge_active())
+		{
+			psp_environment_shadow(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer);
+			return;
+		}
+	}
+#endif
+	_rasterizer_environment_shadow_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer);"""))
+
+# build 25: shadows at the same size on screen as on the Xbox. The PSP's
+# level-of-detail pixels are measured on its 272 lines (build 19), so the
+# 30-pixel threshold (of 480) becomes 17, and the fade-in over 15 pixels 8.5
+FIXES_23["source/render/render_objects.c#shadows"].append(
+("""#define OBJECT_SHADOW_MINIMUM_PIXELS 30.f""",
+ """#ifdef HALO_PSP
+#define OBJECT_SHADOW_MINIMUM_PIXELS (30.f * 272.f / 480.f) /* psp_fixups.py */
+#else
+#define OBJECT_SHADOW_MINIMUM_PIXELS 30.f
+#endif"""))
+FIXES_23["source/render/render_objects.c#shadows"].append(
+("""					(level_of_detail_pixels - OBJECT_SHADOW_MINIMUM_PIXELS) * 0.06666667f;""",
+ """					(level_of_detail_pixels - OBJECT_SHADOW_MINIMUM_PIXELS) * 0.06666667f
+#ifdef HALO_PSP
+					* (480.f / 272.f)
+#endif
+					;"""))
+
+# build 26: checkpoints write only the game state's pages that hold
+# anything. A checkpoint is the whole 3.3 MB game state written to the
+# Memory Stick (2 s or more there), but on Blood Gulch 98% of it is zeros
+# (empty pools): 75 of its 837 4 KB pages hold data. The file keeps a page
+# map, then those pages; reverting reads them back over a cleared state
+FIXES_23["source/saved games/game_state_xbox.c"] = [
+("""boolean game_state_write_to_file(
+	void)
+{
+	unsigned long bytes_written;
+	boolean result = FALSE;
+""",
+ """#ifdef HALO_PSP
+#define PSP_STATE_PAGE 4096
+#define PSP_STATE_HEADER 2048
+#define PSP_STATE_SIGNATURE 0x53505350 /* 'PSPS' */
+void platform_psp_log(const char *format, ...);
+unsigned long psp_microseconds(void);
+
+static boolean psp_state_page_empty(unsigned long const *words)
+{
+	long index;
+
+	for (index = 0; index < PSP_STATE_PAGE / 4; index += 4)
+		if (words[index] | words[index + 1] | words[index + 2] | words[index + 3])
+			return FALSE;
+	return TRUE;
+}
+
+/* header: signature, size, page count, then one bit per page */
+static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long size)
+{
+	static unsigned long header[PSP_STATE_HEADER / 4];
+	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, start = psp_microseconds();
+	byte *map = (byte *)&header[3];
+
+	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
+		return FALSE;
+	csmemset(header, 0, sizeof(header));
+	header[0] = PSP_STATE_SIGNATURE;
+	header[1] = size;
+	header[2] = pages;
+	for (page = 0; page < pages; page++)
+		if (!psp_state_page_empty((unsigned long const *)(buffer + page * PSP_STATE_PAGE)))
+		{
+			map[page >> 3] |= 1 << (page & 7);
+			kept++;
+		}
+	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+		!WriteFile(handle, header, PSP_STATE_HEADER, &written, NULL) || written != PSP_STATE_HEADER)
+		return FALSE;
+	/* each run of kept pages in one write */
+	for (page = 0; page < pages; )
+	{
+		unsigned long run = 0;
+
+		if (!(map[page >> 3] & (1 << (page & 7))))
+		{
+			page++;
+			continue;
+		}
+		while (page + run < pages && (map[(page + run) >> 3] & (1 << ((page + run) & 7))))
+			run++;
+		if (!WriteFile(handle, buffer + page * PSP_STATE_PAGE, run * PSP_STATE_PAGE, &written, NULL) ||
+			written != run * PSP_STATE_PAGE)
+			return FALSE;
+		page += run;
+	}
+	platform_psp_log("checkpoint: %lu of %lu pages of game state written in %lu ms", kept, pages,
+		(psp_microseconds() - start) / 1000);
+	return TRUE;
+}
+
+static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
+{
+	static unsigned long header[PSP_STATE_HEADER / 4];
+	unsigned long pages = size / PSP_STATE_PAGE, page, read;
+	byte const *map = (byte const *)&header[3];
+
+	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+		!ReadFile(handle, header, PSP_STATE_HEADER, &read, NULL) || read != PSP_STATE_HEADER ||
+		header[0] != PSP_STATE_SIGNATURE || header[1] != size || header[2] != pages)
+		return FALSE;
+	csmemset(buffer, 0, size);
+	for (page = 0; page < pages; )
+	{
+		unsigned long run = 0;
+
+		if (!(map[page >> 3] & (1 << (page & 7))))
+		{
+			page++;
+			continue;
+		}
+		while (page + run < pages && (map[(page + run) >> 3] & (1 << ((page + run) & 7))))
+			run++;
+		if (!ReadFile(handle, buffer + page * PSP_STATE_PAGE, run * PSP_STATE_PAGE, &read, NULL) ||
+			read != run * PSP_STATE_PAGE)
+			return FALSE;
+		page += run;
+	}
+	return TRUE;
+}
+#endif
+
+boolean game_state_write_to_file(
+	void)
+{
+	unsigned long bytes_written;
+	boolean result = FALSE;
+"""),
+("""	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
+			INVALID_SET_FILE_POINTER &&
+		WriteFile(xbox_game_state_globals.handle, xbox_game_state_globals.buffer,
+			xbox_game_state_globals.buffer_size, &bytes_written, NULL) &&
+		bytes_written == xbox_game_state_globals.buffer_size)""",
+ """#ifdef HALO_PSP
+	(void)bytes_written;
+	if (psp_state_write(xbox_game_state_globals.handle, (byte const *)xbox_game_state_globals.buffer,
+		xbox_game_state_globals.buffer_size))
+#else
+	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
+			INVALID_SET_FILE_POINTER &&
+		WriteFile(xbox_game_state_globals.handle, xbox_game_state_globals.buffer,
+			xbox_game_state_globals.buffer_size, &bytes_written, NULL) &&
+		bytes_written == xbox_game_state_globals.buffer_size)
+#endif"""),
+("""	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
+			INVALID_SET_FILE_POINTER &&
+		ReadFile(xbox_game_state_globals.handle, xbox_game_state_globals.buffer,
+			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
+		bytes_read == xbox_game_state_globals.buffer_size)""",
+ """#ifdef HALO_PSP
+	(void)bytes_read;
+	if (psp_state_read(xbox_game_state_globals.handle, (byte *)xbox_game_state_globals.buffer,
+		xbox_game_state_globals.buffer_size))
+#else
+	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
+			INVALID_SET_FILE_POINTER &&
+		ReadFile(xbox_game_state_globals.handle, xbox_game_state_globals.buffer,
+			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
+		bytes_read == xbox_game_state_globals.buffer_size)
+#endif"""),
+]
+
+# build 26: the Memory Stick's free space from the PSP itself (newlib's
+# statvfs reports none, and the main menu then refuses to save: "not enough
+# free blocks")
+FIXES_23["port/linux/src/posix_files.c"] = [
+("""	struct statvfs st;
+
+	if (statvfs(path, &st) != 0)
+		return -1;
+	split64((unsigned long long)st.f_bavail * st.f_frsize, free_low, free_high);
+	split64((unsigned long long)st.f_blocks * st.f_frsize, total_low, total_high);
+	return 0;""",
+ """#ifdef HALO_PSP
+	/* sceIoDevctl's memory stick query (psp_fixups.py) */
+	extern int sceIoDevctl(const char *device, unsigned int command, void *input, int input_length, void *output,
+		int output_length);
+	struct { unsigned int maximum_clusters, free_clusters, maximum_sectors, sector_size, sectors_per_cluster; }
+		information, *pointer = &information;
+
+	(void)path;
+	if (sceIoDevctl("ms0:", 0x02425818, &pointer, sizeof(pointer), NULL, 0) < 0)
+		return -1;
+	split64((unsigned long long)information.free_clusters * information.sectors_per_cluster * information.sector_size,
+		free_low, free_high);
+	split64((unsigned long long)information.maximum_clusters * information.sectors_per_cluster *
+		information.sector_size, total_low, total_high);
+	return 0;
+#else
+	struct statvfs st;
+
+	if (statvfs(path, &st) != 0)
+		return -1;
+	split64((unsigned long long)st.f_bavail * st.f_frsize, free_low, free_high);
+	split64((unsigned long long)st.f_blocks * st.f_frsize, total_low, total_high);
+	return 0;
+#endif"""),
+]
+
+# build 26: the menus are laid out on 640 of the 848 columns, centred while
+# they draw (halo_screen_ui_offset); the GE pillarboxes them then
+FIXES_23["port/linux/src/d3d8_gl.c#ui"] = [
+("""void halo_screen_ui_offset(unsigned char centered)
+{""",
+ """void halo_screen_ui_offset(unsigned char centered)
+{
+#ifdef HALO_PSP
+	{
+		extern void psp_ge_ui_centered(int centered);
+
+		psp_ge_ui_centered(centered); /* psp_fixups.py */
+	}
+#endif"""),
+]
+
+# build 27: a BSP switch loads the next BSP where the last one was; the GE's
+# copies of the level's vertices go with it
+FIXES_23["source/cache/cache_files_windows.c#bsp"] = [
+("""	rasterizer_globals.current_lock_operation = _rasterizer_lock_bsp_switch;
+""",
+ """	rasterizer_globals.current_lock_operation = _rasterizer_lock_bsp_switch;
+#ifdef HALO_PSP
+	{
+		extern void psp_ge_forget_level(void);
+
+		psp_ge_forget_level(); /* psp_fixups.py */
+	}
+#endif
+"""),
+]
+
+# build 29: dynamic lights (the flashlight, muzzle flashes, plasma) on the
+# level, lit per vertex on the CPU and added over the level's base texture
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	_rasterizer_environment_diffuse_light_begin(light_index);
+	return;""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+		extern void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
+			float cosine_falloff, float cosine_cutoff);
+
+		if (psp_ge_active())
+		{
+			if (light_index >= 0 && light_index < rasterizer_lights.light_count)
+			{
+				struct rasterizer_light_submit_parameters const *light = &rasterizer_lights.lights[light_index];
+				/* the light's definition: cosines of its cone at +28 and +32 (object_lights.c) */
+				char const *definition = (char const *)light->definition;
+
+				psp_ge_light_begin(&light->position.x, &light->forward.i, &light->color.red, light->radius,
+					definition ? *(float const *)(definition + 28) : -1.0f,
+					definition ? *(float const *)(definition + 32) : -1.0f);
+			}
+			return;
+		}
+	}
+#endif
+	_rasterizer_environment_diffuse_light_begin(light_index);
+	return;"""))
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	_rasterizer_environment_diffuse_light_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer);""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+		extern void psp_environment_light(long, long, long, struct vertex_buffer const *, unsigned int);
+
+		if (psp_ge_active())
+		{
+			unsigned int base_key = 0;
+
+			if (shader && *(short const *)((char const *)shader + 36) == 3)
+				base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			psp_environment_light(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
+				base_key);
+			return;
+		}
+	}
+#endif
+	_rasterizer_environment_diffuse_light_draw(shader, bitmap_index, dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer);"""))
+FIXES_23["source/rasterizer/rasterizer.c"].append(
+("""	_rasterizer_environment_diffuse_light_end();
+	return;""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_ge_active(void);
+
+		if (psp_ge_active())
+			return;
+	}
+#endif
+	_rasterizer_environment_diffuse_light_end();
+	return;"""))
+
+# build 30: who asks for the large blocks (system_malloc's callers)
+FIXES_23["source/cseries/debug_memory.c"] = [
+("""	header = system_malloc(allocation_size);""",
+ """#ifdef HALO_PSP
+	if (size >= 0x10000)
+		platform_psp_log("heap: %u KB for %s line %ld", size / 1024, file ? file : "?", line);
+#endif
+	header = system_malloc(allocation_size);"""),
+]
+
+# build 30: the frame statistics' 144 KB sorting buffer only serves the
+# debug statistics view; the PSP doesn't allocate it (and counts nothing)
+FIXES_23["source/rasterizer/rasterizer_frame_statistics.c"] = [
+("""	rasterizer_frame_statistics_temp_buffer = match_malloc(
+		"c:\\\\halo\\\\SOURCE\\\\rasterizer\\\\rasterizer_frame_statistics.c",
+		41,
+		sizeof(word) *
+			RASTERIZER_MAXIMUM_TRIANGLES_PER_TRIANGLE_BUFFER *
+			NUMBER_OF_VERTICES_PER_TRIANGLE);
+
+	if (!rasterizer_frame_statistics_temp_buffer)""",
+ """#ifdef HALO_PSP
+	rasterizer_frame_statistics_temp_buffer = NULL; /* psp_fixups.py */
+	if (FALSE)
+#else
+	rasterizer_frame_statistics_temp_buffer = match_malloc(
+		"c:\\\\halo\\\\SOURCE\\\\rasterizer\\\\rasterizer_frame_statistics.c",
+		41,
+		sizeof(word) *
+			RASTERIZER_MAXIMUM_TRIANGLES_PER_TRIANGLE_BUFFER *
+			NUMBER_OF_VERTICES_PER_TRIANGLE);
+
+	if (!rasterizer_frame_statistics_temp_buffer)
+#endif"""),
+("""		if (triangles)""",
+ """		if (triangles && rasterizer_frame_statistics_temp_buffer)"""),
+]
+# which data arrays are large
+FIXES_23["source/memory/data.c"] = [
+("""	struct data_array *data = (struct data_array *)match_malloc(
+		"c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c",
+		41,
+		data_allocation_size(maximum_count, size));
+""",
+ """	struct data_array *data = (struct data_array *)match_malloc(
+		"c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c",
+		41,
+		data_allocation_size(maximum_count, size));
+#ifdef HALO_PSP
+	if (data_allocation_size(maximum_count, size) >= 0x10000)
+		platform_psp_log("heap: data array '%s', %d of %d bytes", name, maximum_count, size);
+#endif
+"""),
+]
+
+# ---------- build 31: the widget layer's sprites and occlusion tests on the
+# GE (lens flares, light volumes). The Xbox counts a flare's visible pixels
+# with a hardware visibility query; the PSP has none, so one ray from the eye
+# through the level and sight-blocking objects stands in for it, and the
+# game's own fade (a quarter of the way up, half down, per tick) smooths the
+# yes-or-no into a fade
+FIXES_31 = {}
+FIXES_31["source/rasterizer/xbox/rasterizer_xbox_widgets.c"] = [
+("""#include "rasterizer/rasterizer_console_vars.h"
+""",
+ """#include "rasterizer/rasterizer_console_vars.h"
+#ifdef HALO_PSP
+#include "physics/collisions.h"
+int psp_ge_active(void);
+unsigned int psp_tex_bitmap_key(long, int);
+int psp_tex_bitmap_count(long);
+void psp_ge_widget_begin(int depth_test);
+void psp_ge_widget_texture(unsigned int key);
+void psp_ge_widget_occlusion(int visible);
+void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
+	unsigned long color);
+int psp_keep(const char *name); /* psp_platform.c */
+#define PSP_OCCLUSION_TESTS 256
+#define PSP_OCCLUSION_RAYS 24
+static long psp_occlusion_visible[PSP_OCCLUSION_TESTS];
+static long psp_occlusion_frame_rays = 0, psp_occlusion_frame_index = -1;
+/* build 44: a flare's ray is cast every third frame, the answer kept between
+(the Xbox's own occlusion query answered a frame late; a flare fades over
+many frames anyway). The rays cost about 0.3 ms each on the PSP: 1.3 ms a
+frame driving down the valley in build 42. keep.txt's "flaresexact" casts
+every frame */
+#define PSP_OCCLUSION_KEEP_FRAMES 3
+static unsigned long psp_occlusion_tested[PSP_OCCLUSION_TESTS];
+static unsigned long psp_occlusion_frame = 1;
+static int psp_occlusion_exact = -1;
+unsigned long psp_occlusion_rays_cast = 0, psp_occlusion_rays_kept = 0; /* psp_ge.c logs them */
+#endif
+"""),
+("""long _rasterizer_widget_get_occlusion_test_result(
+	long occlusion_test_index)
+{
+	long occlusion_test_result = NONE;
+""",
+ """long _rasterizer_widget_get_occlusion_test_result(
+	long occlusion_test_index)
+{
+	long occlusion_test_result = NONE;
+
+#ifdef HALO_PSP
+	if (psp_ge_active())
+		return occlusion_test_index >= 0 && occlusion_test_index < PSP_OCCLUSION_TESTS ?
+			psp_occlusion_visible[occlusion_test_index] : 0;
+#endif
+"""),
+("""void _rasterizer_widget_begin(
+	short type,
+	word flags)
+{
+	real vertex_constants[5][4];
+	short viewport_width;
+	short viewport_height;
+""",
+ """void _rasterizer_widget_begin(
+	short type,
+	word flags)
+{
+	real vertex_constants[5][4];
+	short viewport_width;
+	short viewport_height;
+
+#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		if (type == _widget_type_internal_sprite)
+			psp_ge_widget_begin(TEST_FLAG(flags, _widget_zbuffer_enable_bit));
+		return;
+	}
+#endif
+"""),
+("""boolean _rasterizer_widget_set_texture(
+	short stage_index,
+	long bitmap_group_index,
+	short sequence_index)
+{
+	boolean success;
+""",
+ """boolean _rasterizer_widget_set_texture(
+	short stage_index,
+	long bitmap_group_index,
+	short sequence_index)
+{
+	boolean success;
+
+#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		/* the bitmap as rasterizer_set_texture_non_blocking picks it (the
+		sequence index is the bitmap's, wrapped), or the game's glow */
+		long tag_index = bitmap_group_index != NONE ? bitmap_group_index : global_rasterizer_data->glow.index;
+		int count = psp_tex_bitmap_count(tag_index);
+
+		psp_ge_widget_texture(count > 0 ? psp_tex_bitmap_key(tag_index, sequence_index % count) : 0);
+		/* FALSE: ready (TRUE would tell a lens flare to wait for it) */
+		return FALSE;
+	}
+#endif
+"""),
+("""	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\rasterizer\\\\xbox\\\\rasterizer_xbox_widgets.c",
+		334,
+		global_d3d_device);
+	D3DDevice_SetRenderState_ZEnable(zbuffer_enable);
+""",
+ """#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		psp_ge_widget_begin(zbuffer_enable);
+		return;
+	}
+#endif
+	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\rasterizer\\\\xbox\\\\rasterizer_xbox_widgets.c",
+		334,
+		global_d3d_device);
+	D3DDevice_SetRenderState_ZEnable(zbuffer_enable);
+"""),
+("""	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\rasterizer\\\\xbox\\\\rasterizer_xbox_widgets.c",
+		425,
+		point);
+""",
+ """	match_assert(
+		"c:\\\\halo\\\\SOURCE\\\\rasterizer\\\\xbox\\\\rasterizer_xbox_widgets.c",
+		425,
+		point);
+#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		psp_ge_widget_sprite(&point->x, radius, scale ? scale->i : 1.0f, scale ? scale->j : 1.0f, rotation, color);
+		return;
+	}
+#endif
+"""),
+("""	if (rasterizer_debug_options.lens_flare_occlusion_enabled)
+	{
+		if (rasterizer_widget_project_billboard(
+			point,
+			radius,
+			&projected_center,
+			&projected_axes))
+		{
+			projected_axes.i = MAX(1.0f, projected_axes.i);
+			projected_axes.j = MAX(1.0f, projected_axes.j);
+""",
+ """#ifdef HALO_PSP
+	if (psp_ge_active())
+	{
+		real on_screen = 0.0f;
+
+		pixel_count = 0;
+		if (rasterizer_widget_project_billboard(point, radius, &projected_center, &projected_axes))
+		{
+			/* the share of the test's square inside the viewport: the
+			Xbox's query counts no pixels off the screen */
+			real width = (real)(global_window_parameters.camera.viewport_bounds.x1 -
+				global_window_parameters.camera.viewport_bounds.x0);
+			real height = (real)(global_window_parameters.camera.viewport_bounds.y1 -
+				global_window_parameters.camera.viewport_bounds.y0);
+			real x0, x1, y0, y1;
+
+			projected_axes.i = MAX(1.0f, projected_axes.i);
+			projected_axes.j = MAX(1.0f, projected_axes.j);
+			pixel_count = (long)(4.0f * projected_axes.i * projected_axes.j);
+			x0 = MAX(0.0f, projected_center.x - projected_axes.i);
+			x1 = MIN(width, projected_center.x + projected_axes.i);
+			y0 = MAX(0.0f, projected_center.y - projected_axes.j);
+			y1 = MIN(height, projected_center.y + projected_axes.j);
+			if (x1 > x0 && y1 > y0)
+				on_screen = (x1 - x0) * (y1 - y0) / (4.0f * projected_axes.i * projected_axes.j);
+		}
+		if (index >= 0 && index < PSP_OCCLUSION_TESTS)
+		{
+			long visible = 0;
+
+			/* a budget of rays a frame (a new frame starts its tests again
+			from index 0); past it, a flare counts as hidden */
+			if (index <= psp_occlusion_frame_index)
+			{
+				psp_occlusion_frame_rays = 0;
+				psp_occlusion_frame++;
+			}
+			psp_occlusion_frame_index = index;
+			if (psp_occlusion_exact < 0)
+				psp_occlusion_exact = psp_keep("flaresexact");
+			if (!psp_occlusion_exact && pixel_count > 0 && on_screen > 0.0f &&
+				psp_occlusion_tested[index] && psp_occlusion_frame - psp_occlusion_tested[index] < PSP_OCCLUSION_KEEP_FRAMES)
+			{
+				/* last cast's answer, scaled to this frame's size on screen */
+				visible = psp_occlusion_visible[index] > 0 ? (long)(pixel_count * MIN(on_screen, 1.0f)) : 0;
+				psp_occlusion_rays_kept++;
+				psp_ge_widget_occlusion(visible > 0);
+			}
+			else if (pixel_count > 0 && on_screen > 0.0f && psp_occlusion_frame_rays < PSP_OCCLUSION_RAYS)
+			{
+				struct collision_result collision;
+				real_vector3d ray;
+
+				psp_occlusion_frame_rays++;
+				psp_occlusion_rays_cast++;
+				psp_occlusion_tested[index] = psp_occlusion_frame;
+				vector_from_points3d(&global_window_parameters.camera.position, point, &ray);
+				/* the level's sky surfaces (no material) are where the
+				sky is drawn: a ray that meets one has reached the sky */
+				if (!collision_test_vector(
+					FLAG(_collision_test_front_facing_surfaces_bit) |
+						FLAG(_collision_test_ignore_invisible_surfaces_bit) |
+						FLAG(_collision_test_structure_bit) |
+						FLAG(_collision_test_objects_bit) |
+						_collision_test_objects_sight_blocking_flags,
+					&global_window_parameters.camera.position,
+					&ray,
+					NONE,
+					&collision) ||
+					(collision.type == _collision_result_structure && collision.material_index == NONE))
+					visible = (long)(pixel_count * MIN(on_screen, 1.0f));
+				psp_ge_widget_occlusion(visible > 0);
+			}
+			psp_occlusion_visible[index] = visible;
+		}
+		return pixel_count;
+	}
+#endif
+	if (rasterizer_debug_options.lens_flare_occlusion_enabled)
+	{
+		if (rasterizer_widget_project_billboard(
+			point,
+			radius,
+			&projected_center,
+			&projected_axes))
+		{
+			projected_axes.i = MAX(1.0f, projected_axes.i);
+			projected_axes.j = MAX(1.0f, projected_axes.j);
+"""),
+]
+
+# ---------- build 31: the portal walk's budget. structure_visibility_traverse_
+# cluster walks every simple path through the portal graph (a cluster is
+# unmarked when the walk leaves it), which outdoors, where many portals see
+# each other, is thousands of steps a frame (2.7 ms on Blood Gulch in the
+# emulator). Past a budget of steps the walk stops and the frame uses the
+# camera cluster's potentially visible set instead, as structures_use_pvs_for_vs
+# does: every cluster that could be seen, each clipped to the whole screen. That
+# draws more than the walk would have found, never less, so nothing pops; and
+# indoors, where the walk is short, nothing changes
+FIXES_31["source/structures/structure_visibility.c"] = [
+("""static void structure_visibility_traverse_cluster(
+	short cluster_index,
+	struct portal_hull const *visible_region)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();""",
+ """#ifdef HALO_PSP
+#define PSP_PORTAL_STEPS 160
+static long psp_portal_steps = 0;
+static unsigned long psp_portal_walks = 0, psp_portal_fallbacks = 0, psp_portal_step_total = 0;
+#endif
+
+static void structure_visibility_traverse_cluster(
+	short cluster_index,
+	struct portal_hull const *visible_region)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+#ifdef HALO_PSP
+	if (++psp_portal_steps > PSP_PORTAL_STEPS)
+		return;
+#endif"""),
+("""	render.rendered_cluster_count = 0;
+	structure_visibility_find_clusters();
+
+	if (structures_use_pvs_for_vs)
+	{""",
+ """	render.rendered_cluster_count = 0;
+#ifdef HALO_PSP
+	psp_portal_steps = 0;
+	if (!structures_use_pvs_for_vs)
+	{
+		void platform_psp_log(const char *format, ...);
+
+		psp_portal_walk_id++;
+		structure_visibility_find_clusters();
+		psp_portal_walks++;
+		psp_portal_step_total += psp_portal_steps;
+		if (psp_portal_steps > PSP_PORTAL_STEPS)
+			psp_portal_fallbacks++;
+		if (psp_portal_walks % 900 == 0)
+			platform_psp_log("portal walks: %lu, %lu over budget (falling back to the PVS), %lu steps a walk; portal hulls %lu worked out, %lu reused",
+				psp_portal_walks, psp_portal_fallbacks, psp_portal_step_total / psp_portal_walks, psp_hull_misses, psp_hull_hits);
+	}
+	psp_pvs_fallback = psp_portal_steps > PSP_PORTAL_STEPS;
+	if (structures_use_pvs_for_vs || psp_portal_steps > PSP_PORTAL_STEPS)
+#else
+	structure_visibility_find_clusters();
+
+	if (structures_use_pvs_for_vs)
+#endif
+	{"""),
+]
+
+# build 59: after the fallback above, each rendered cluster has a new slot,
+# and the frusta the walk built belong to the old slots (or to none). The
+# fallback means "the whole screen", so it uses the camera's own frustum, as
+# structures_use_pvs_for_vs does (it never happened on Blood Gulch: 0 walks
+# over budget in b58, but a bigger campaign map would have culled the wrong
+# surfaces). And "visdump": what the walk found, logged every 150 walks
+FIXES_31["source/structures/structure_visibility.c#fallback"] = [
+("""static void structure_visibility_traverse_subclusters(
+	struct structure_bsp *structure)
+{
+	long rendered_cluster_index;
+""",
+ """#ifdef HALO_PSP
+static boolean psp_pvs_fallback = FALSE;
+#define PSP_PVS_FALLBACK psp_pvs_fallback
+#else
+#define PSP_PVS_FALLBACK 0
+#endif
+static void structure_visibility_traverse_subclusters(
+	struct structure_bsp *structure)
+{
+	long rendered_cluster_index;
+"""),
+("""		frustum = structures_use_pvs_for_vs || render.cluster_index == NONE
+			? &render.frustum
+			: &rendered_cluster->frustum;
+
+		for (subcluster_index = 0;""",
+ """		frustum = structures_use_pvs_for_vs || PSP_PVS_FALLBACK || render.cluster_index == NONE
+			? &render.frustum
+			: &rendered_cluster->frustum;
+
+		for (subcluster_index = 0;"""),
+("""		struct render_frustum *frustum = structures_use_pvs_for_vs || render.cluster_index == NONE
+			? &render.frustum
+			: &rendered_cluster->frustum;
+		long consumed_surface_index_count = 0;""",
+ """		struct render_frustum *frustum = structures_use_pvs_for_vs || PSP_PVS_FALLBACK || render.cluster_index == NONE
+			? &render.frustum
+			: &rendered_cluster->frustum;
+		long consumed_surface_index_count = 0;"""),
+("""		structure_visibility_traverse_surface_lists(structure);
+	}
+
+	return;
+}""",
+ """		structure_visibility_traverse_surface_lists(structure);
+	}
+
+#ifdef HALO_PSP
+	{
+		int psp_keep(const char *name);
+		void platform_psp_log(const char *format, ...);
+		static int dump = -1;
+		static unsigned long calls = 0;
+
+		if (dump < 0)
+			dump = psp_keep("visdump");
+		if (dump && ++calls % 150 == 0)
+		{
+			char text[400];
+			int used = 0;
+			short index;
+
+			for (index = 0; index < render.rendered_cluster_count && used < (int)sizeof(text) - 60; index++)
+			{
+				struct rendered_cluster *rendered = rendered_cluster_get(index);
+
+				used += snprintf(text + used, sizeof(text) - used, " %d[%.2f %.2f %.2f %.2f]",
+					rendered->cluster_index, rendered->clip_bounds.x0, rendered->clip_bounds.x1,
+					rendered->clip_bounds.y0, rendered->clip_bounds.y1);
+			}
+			platform_psp_log("visdump: camera %.3f %.3f %.3f leaf %ld cluster %ld; %d clusters, %ld surfaces%s;%s",
+				render.camera.position.x, render.camera.position.y, render.camera.position.z,
+				(long)render.leaf_index, (long)render.cluster_index, (int)render.rendered_cluster_count,
+				(long)render.environment_surface_count, psp_pvs_fallback ? " (PVS)" : "", text);
+		}
+	}
+#endif
+	return;
+}"""),
+]
+
+# and the portal hulls (build 31): the walk asks for the same portal's
+# screen outline again on every path that reaches it (about 450 times a
+# frame on Blood Gulch for some 60 portals); within one walk the camera is the
+# same, so each is worked out once and kept
+FIXES_31["source/structures/structure_visibility.c#hulls"] = [
+("""static short portal_hull_from_portal(
+	short portal_index,
+	boolean direction,
+	struct portal_hull *result)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	struct structure_visibility_portal *portal = TAG_BLOCK_GET_ELEMENT(
+		&structure->cluster_portals,
+		portal_index,
+		struct structure_visibility_portal);
+
+	return portal_hull_from_points(""",
+ """#ifdef HALO_PSP
+#define PSP_HULL_CACHE 128
+#define PSP_HULL_VERTICES 8
+static struct
+{
+	unsigned long walk;
+	long key;
+	short result, vertex_count;
+	real_point2d vertices[PSP_HULL_VERTICES];
+} psp_hull_cache[PSP_HULL_CACHE];
+static unsigned long psp_portal_walk_id = 1, psp_hull_hits = 0, psp_hull_misses = 0;
+
+static short portal_hull_from_portal_uncached(
+	short portal_index,
+	boolean direction,
+	struct portal_hull *result);
+
+static short portal_hull_from_portal(
+	short portal_index,
+	boolean direction,
+	struct portal_hull *result)
+{
+	long key = 2 * (long)portal_index + (direction ? 1 : 0);
+	unsigned int slot = (unsigned int)key & (PSP_HULL_CACHE - 1);
+	short answer;
+
+	if (psp_hull_cache[slot].walk == psp_portal_walk_id && psp_hull_cache[slot].key == key)
+	{
+		psp_hull_hits++;
+		result->vertex_count = psp_hull_cache[slot].vertex_count;
+		if (result->vertex_count > 0)
+			csmemcpy(result->vertices, psp_hull_cache[slot].vertices,
+				result->vertex_count * sizeof(real_point2d));
+		return psp_hull_cache[slot].result;
+	}
+	psp_hull_misses++;
+	answer = portal_hull_from_portal_uncached(portal_index, direction, result);
+	if (result->vertex_count <= PSP_HULL_VERTICES)
+	{
+		psp_hull_cache[slot].walk = psp_portal_walk_id;
+		psp_hull_cache[slot].key = key;
+		psp_hull_cache[slot].result = answer;
+		psp_hull_cache[slot].vertex_count = result->vertex_count;
+		if (result->vertex_count > 0)
+			csmemcpy(psp_hull_cache[slot].vertices, result->vertices,
+				result->vertex_count * sizeof(real_point2d));
+	}
+	return answer;
+}
+
+static short portal_hull_from_portal_uncached(
+#else
+static short portal_hull_from_portal(
+#endif
+	short portal_index,
+	boolean direction,
+	struct portal_hull *result)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	struct structure_visibility_portal *portal = TAG_BLOCK_GET_ELEMENT(
+		&structure->cluster_portals,
+		portal_index,
+		struct structure_visibility_portal);
+
+	result->vertex_count = 0;
+	return portal_hull_from_points("""),
+]
+
+# build 32: a vehicle's update, split (psp_platform.c's object report)
+FIXES_31["source/objects/objects.c#vehicles"] = [
+("""		object_type_update(object_index);
+		if (object_definition->object.collision_model.index!=NONE)
+		{
+			object_damage_update(object_index);
+		}
+
+		object_type_export_function_values(object_index);
+
+		if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
+		{
+			object_compute_node_matrices(object_index);
+		}
+""",
+ """#ifdef HALO_PSP
+		{
+			/* build 45: bipeds split the same way (accounts 17-19), for the
+			campaign's 25-30 of them a tick */
+			int timed = object->object.type == _object_type_vehicle ? 14 : object->object.type == _object_type_biped ? 17 : 0;
+			unsigned long mark = timed ? psp_microseconds() : 0, now;
+
+			object_type_update(object_index);
+			if (timed)
+			{
+				now = psp_microseconds();
+				psp_object_account(timed, now - mark);
+				mark = now;
+			}
+			if (object_definition->object.collision_model.index!=NONE)
+			{
+				object_damage_update(object_index);
+			}
+			object_type_export_function_values(object_index);
+			if (timed)
+			{
+				now = psp_microseconds();
+				psp_object_account(timed + 1, now - mark);
+				mark = now;
+			}
+			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
+			{
+				object_compute_node_matrices(object_index);
+			}
+			if (timed)
+				psp_object_account(timed + 2, psp_microseconds() - mark);
+		}
+#else
+		object_type_update(object_index);
+		if (object_definition->object.collision_model.index!=NONE)
+		{
+			object_damage_update(object_index);
+		}
+
+		object_type_export_function_values(object_index);
+
+		if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
+		{
+			object_compute_node_matrices(object_index);
+		}
+#endif
+"""),
+]
+
+# build 36: particles. Sheepdog01's b35 run: under sustained assault rifle fire the
+# game's frame step (particles_update, particle_systems_update...) took 15-39
+# ms a frame and render_particles 10-14 more: each free particle (a spark, a
+# chip of rock) runs point physics with a collision ray every frame, and
+# sparks bounce rather than settle. The PSP keeps a budget of free particles
+# alive at once (keep.txt "fullparticles": the Xbox's 1024); past it a new
+# one isn't made, so a long burst's shower thins instead of the frame rate
+# falling. Attached ones (muzzle flashes, on objects) don't count and are
+# always made. Logged every 900 updates: the peak, refusals, physics a frame
+FIXES_36 = {}
+# build 37: the game's matrix product on the VFPU (psp/src/psp_vfpu.c), which
+# checks itself against the FPU at start-up; keep.txt "novfpu" turns it off
+# build 37: the object's lighting, its own step (render_object, which
+# breadcrumbs() also steps through)
+FIXES_36["source/render/render_objects.c"] = [
+("""			if (needs_lighting)
+			{
+				data->lighting = object_get_cached_render_lighting(""",
+ """			if (needs_lighting)
+			{
+#ifdef HALO_PSP
+				{
+					void psp_step(const char *name);
+
+					psp_step("object_get_cached_render_lighting");
+				}
+#endif
+				data->lighting = object_get_cached_render_lighting("""),
+]
+# build 38: the first-person projection ends with its model
+FIXES_36["source/rasterizer/rasterizer.c#model_end"] = [
+("""void rasterizer_model_end(
+	void)
+{
+	_rasterizer_model_end();
+	return;
+}""",
+ """void rasterizer_model_end(
+	void)
+{
+	_rasterizer_model_end();
+#ifdef HALO_PSP
+	{
+		extern void psp_ge_model_shape(int, const float *, float, float, float);
+
+		psp_ge_model_shape(0, NULL, 0.0f, 0.0f, 0.0f);
+	}
+#endif
+	return;
+}"""),
+]
+FIXES_36["source/math/matrix_math.c"] = [
+("""void matrix4x3_multiply(
+	real_matrix4x3 const *a,
+	real_matrix4x3 const *b,
+	real_matrix4x3 *result)
+{
+	real const *a_elements = a->n[0];""",
+ """#ifdef HALO_PSP
+extern int psp_vfpu_on;
+void psp_vfpu_matrix4x3_multiply(const void *a, const void *b, void *result);
+#endif
+
+void matrix4x3_multiply(
+	real_matrix4x3 const *a,
+	real_matrix4x3 const *b,
+	real_matrix4x3 *result)
+{
+#ifdef HALO_PSP
+	if (psp_vfpu_on)
+	{
+		psp_vfpu_matrix4x3_multiply(a, b, result);
+		return;
+	}
+#endif
+	{
+	real const *a_elements = a->n[0];"""),
+("""		for (row = 0; row < 12; row++)
+			result_elements[row] = product[row];
+	}
+
+	result->scale = a->scale * b->scale;
+
+	return;
+}""",
+ """		for (row = 0; row < 12; row++)
+			result_elements[row] = product[row];
+	}
+
+	result->scale = a->scale * b->scale;
+	}
+
+	return;
+}"""),
+]
+
+# build 36: the HUD. At the Xbox's size the HUD covers the same share of the
+# PSP's screen as of a TV, which on 4.3 inches is small (Sheepdog01, b35). Halo
+# places each element from a corner (or the centre) of the window's bounds,
+# so the weapon and unit HUD and the messages are laid out in a window k
+# times smaller and the GE draws them k times larger: every element grows
+# and stays on its own corner. (The game's own HUD scale, for split screen,
+# is overridden per element in multiplayer.) Names over players, nav points
+# and damage arrows follow the 3D view and keep the full window.
+# keep.txt: hud100, hud115, hud130, hud145, hud160 (default 1.5)
+FIXES_36["source/interface/hud.c"] = [
+("""void hud_draw_screen(
+	void)
+{""",
+ """#ifdef HALO_PSP
+int psp_keep(const char *name); /* psp_platform.c; psp_fixups.py */
+void psp_ge_hud_zoom(float zoom);
+static rectangle2d psp_hud_window, psp_hud_viewport;
+static int psp_hud_zoomed = 0;
+/* build 40: while zoomed, corner elements move this far out toward their
+side (the game's own window units; hud_draw.c's hud_calculate_point) */
+short psp_hud_push = 0;
+#define PSP_HUD_PUSH 32
+
+static void psp_hud_zoom_begin(void)
+{
+	static float zoom = 0.0f;
+	short *w = render.camera.window_bounds.v, *v = render.camera.viewport_bounds.v;
+	int k;
+
+	if (zoom == 0.0f)
+		zoom = psp_keep("hud100") ? 1.0f : psp_keep("hud115") ? 1.15f : psp_keep("hud130") ? 1.3f :
+			psp_keep("hud145") ? 1.45f : psp_keep("hud160") ? 1.6f : 1.5f; /* build 40: 1.5 (Sheepdog01, b39: 1.3 readable with the full-size textures, but small) */
+	if (psp_hud_zoomed || zoom == 1.0f)
+		return;
+	psp_hud_window = render.camera.window_bounds;
+	psp_hud_viewport = render.camera.viewport_bounds;
+	for (k = 0; k < 4; k++)
+	{
+		w[k] = (short)(w[k] / zoom + 0.5f);
+		v[k] = (short)(v[k] / zoom + 0.5f);
+	}
+	psp_ge_hud_zoom(zoom);
+	psp_hud_push = psp_keep("hudnopush") ? 0 : PSP_HUD_PUSH;
+	psp_hud_zoomed = 1;
+}
+
+static void psp_hud_zoom_end(void)
+{
+	if (!psp_hud_zoomed)
+		return;
+	render.camera.window_bounds = psp_hud_window;
+	render.camera.viewport_bounds = psp_hud_viewport;
+	psp_ge_hud_zoom(1.0f);
+	psp_hud_push = 0;
+	psp_hud_zoomed = 0;
+}
+#define PSP_HUD_ZOOM_BEGIN psp_hud_zoom_begin();
+#define PSP_HUD_ZOOM_END psp_hud_zoom_end();
+#else
+#define PSP_HUD_ZOOM_BEGIN
+#define PSP_HUD_ZOOM_END
+#endif
+
+void hud_draw_screen(
+	void)
+{"""),
+("""				hud_render_weapon_interface(player);
+				hud_show_action_response(player_index);
+				hud_play_unit_sounds(player, hud_scripted_globals->show_hud);
+				hud_render_unit_interface(player);
+				hud_render_nav_points(render.local_player_index);""",
+ """				PSP_HUD_ZOOM_BEGIN
+				hud_render_weapon_interface(player);
+				hud_show_action_response(player_index);
+				hud_play_unit_sounds(player, hud_scripted_globals->show_hud);
+				hud_render_unit_interface(player);
+				PSP_HUD_ZOOM_END
+				hud_render_nav_points(render.local_player_index);"""),
+("""			else
+			{
+				hud_show_action_response(player_index);
+				hud_play_unit_sounds(player, hud_scripted_globals->show_hud);
+			}""",
+ """			else
+			{
+				PSP_HUD_ZOOM_BEGIN
+				hud_show_action_response(player_index);
+				PSP_HUD_ZOOM_END
+				hud_play_unit_sounds(player, hud_scripted_globals->show_hud);
+			}"""),
+("""		hud_messaging_update(render.local_player_index);
+	}
+
+	rasterizer_hud_end();""",
+ """		PSP_HUD_ZOOM_BEGIN
+		hud_messaging_update(render.local_player_index);
+		PSP_HUD_ZOOM_END
+	}
+
+	rasterizer_hud_end();"""),
+]
+
+# build 40: the corner elements pushed out toward the screen's sides. Halo
+# keeps them a TV's safe area in from each edge, which the zoom made larger
+# still (Sheepdog01, b39: "push it more to the outer sides horizontally"). A fixed
+# distance, so the elements of one corner keep their places to each other
+FIXES_36["source/interface/hud_draw.c"] = [
+("""		point.y = placement->offset.y *
+			(TEST_FLAG(corner, _hud_anchor_bottom_bit) ? -1 : 1) * scale +
+			render.camera.window_bounds.v[corner & FLAG(_hud_anchor_bottom_bit)] -
+			render.camera.viewport_bounds.y0;
+	}""",
+ """		point.y = placement->offset.y *
+			(TEST_FLAG(corner, _hud_anchor_bottom_bit) ? -1 : 1) * scale +
+			render.camera.window_bounds.v[corner & FLAG(_hud_anchor_bottom_bit)] -
+			render.camera.viewport_bounds.y0;
+#ifdef HALO_PSP
+		{
+			extern short psp_hud_push; /* hud.c (psp_fixups.py) */
+
+			point.x += TEST_FLAG(corner, _hud_anchor_right_bit) ? psp_hud_push : -psp_hud_push;
+		}
+#endif
+	}"""),
+]
+
+# build 41: the frame throttle's wait. It spun on the vertical blank count,
+# which a thread of the port's (d3d8_gl.c) moves on at 60 Hz; a PSP thread
+# runs until it waits, so the spinning game thread kept that thread from
+# ever running, and after a second the game gave up on its frame-rate
+# control (Sheepdog01's red "stuck waiting for VBLANK callback!"). Waiting a
+# millisecond at a time lets it run
+FIXES_36["source/main/main.c"] = [
+("""				if (precache_in_progress)
+				{
+					Sleep(1);
+				}
+				if (system_milliseconds() > start_milliseconds + 1000)""",
+ """#ifdef HALO_PSP
+				Sleep(1);
+#else
+				if (precache_in_progress)
+				{
+					Sleep(1);
+				}
+#endif
+				if (system_milliseconds() > start_milliseconds + 1000)"""),
+]
+
+# build 44: the text picture's cache lines go out when a character is added
+# to it, not every time one is drawn (psp_ge.c's text_character)
+FIXES_36["source/rasterizer/rasterizer_text.c"] = [
+("""		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
+
+		hardware_character_cache.x0 += font_character->bitmap_width;""",
+ """		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
+#ifdef HALO_PSP
+		{
+			/* the GE's copy of the picture (psp_ge.c; psp_fixups.py) */
+			extern void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height);
+
+			psp_ge_text_changed(hardware_character_cache.bitmap, hardware_character->x0, hardware_character->y0,
+				font_character->bitmap_width, font_character->bitmap_height);
+		}
+#endif
+
+		hardware_character_cache.x0 += font_character->bitmap_width;"""),
+]
+
+# build 44: where a driven vehicle's physics spends its time (8-10 ms a tick
+# on the PSP for the warthog and the scorpion, build 41): the ground test per
+# mass point (collision_get_features_in_sphere), the swept ray per mass point,
+# and the unit collisions. Logged every 600 updates
+FIXES_36["source/physics/physics.c"] = [
+("""void physics_compute_new(
+	struct physics_instance const *instance,
+	struct powered_mass_point_datum const *powered_mass_points,
+	struct mass_point_datum *mass_points,
+	real_vector3d *total_force,
+	real_vector3d *total_torque)
+{""",
+ """#ifdef HALO_PSP
+unsigned long psp_microseconds(void);
+void platform_psp_log(const char *format, ...);
+static unsigned long psp_physics_us[4], psp_physics_updates = 0, psp_physics_mass_points = 0;
+#define PSP_PHYSICS_GROUND 0
+#define PSP_PHYSICS_COMPUTE 1
+#define PSP_PHYSICS_SWEEP 2
+#define PSP_PHYSICS_UNITS 3
+#endif
+
+void physics_compute_new(
+	struct physics_instance const *instance,
+	struct powered_mass_point_datum const *powered_mass_points,
+	struct mass_point_datum *mass_points,
+	real_vector3d *total_force,
+	real_vector3d *total_torque)
+{"""),
+("""void physics_update(
+	long object_index,
+	struct powered_mass_point_datum *powered_mass_points,
+	struct mass_point_datum *mass_points,
+	real_vector3d const *magic_force,
+	real_vector3d const *magic_torque)
+{""",
+ """void physics_update(
+	long object_index,
+	struct powered_mass_point_datum *powered_mass_points,
+	struct mass_point_datum *mass_points,
+	real_vector3d const *magic_force,
+	real_vector3d const *magic_torque)
+{
+#ifdef HALO_PSP
+	unsigned long psp_mark;
+#endif"""),
+("""	physics_compute_new(
+		&instance,
+		powered_mass_points,
+		mass_points,
+		&total_force,
+		&total_torque);
+
+	{
+		struct vehicle_datum *vehicle = vehicle_datum_get(object_index);
+""",
+ """#ifdef HALO_PSP
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_new(
+		&instance,
+		powered_mass_points,
+		mass_points,
+		&total_force,
+		&total_torque);
+#ifdef HALO_PSP
+	psp_physics_us[PSP_PHYSICS_COMPUTE] += psp_microseconds() - psp_mark;
+	psp_physics_mass_points += physics->mass_points.count;
+#endif
+
+	{
+		struct vehicle_datum *vehicle = vehicle_datum_get(object_index);
+"""),
+("""	physics_update_new(
+		&instance,
+		powered_mass_points,
+		mass_points,
+		&total_force,
+		&total_torque);
+	physics_compute_unit_collisions(object_index);
+
+	return;
+}""",
+ """#ifdef HALO_PSP
+	psp_mark = psp_microseconds();
+#endif
+	physics_update_new(
+		&instance,
+		powered_mass_points,
+		mass_points,
+		&total_force,
+		&total_torque);
+#ifdef HALO_PSP
+	psp_physics_us[PSP_PHYSICS_SWEEP] += psp_microseconds() - psp_mark;
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_unit_collisions(object_index);
+#ifdef HALO_PSP
+	psp_physics_us[PSP_PHYSICS_UNITS] += psp_microseconds() - psp_mark;
+	if (++psp_physics_updates % 600 == 0)
+	{
+		platform_psp_log("physics: %lu vehicle updates, %.1f mass points each: us an update: ground tests %lu (in compute %lu), swept rays and integration %lu, unit collisions %lu",
+			psp_physics_updates, (double)psp_physics_mass_points / 600.0, psp_physics_us[PSP_PHYSICS_GROUND] / 600,
+			psp_physics_us[PSP_PHYSICS_COMPUTE] / 600, psp_physics_us[PSP_PHYSICS_SWEEP] / 600, psp_physics_us[PSP_PHYSICS_UNITS] / 600);
+		psp_physics_us[0] = psp_physics_us[1] = psp_physics_us[2] = psp_physics_us[3] = 0;
+		psp_physics_mass_points = 0;
+	}
+#endif
+
+	return;
+}"""),
+("""		compute_ground_plane(instance->object_index, mass_point, mass_point_definition);
+		mass_point->water_depth = scenario_location_water_depth(&mass_point->location, &mass_point->position);""",
+ """#ifdef HALO_PSP
+		{
+			unsigned long psp_ground_mark = psp_microseconds();
+
+			compute_ground_plane(instance->object_index, mass_point, mass_point_definition);
+			psp_physics_us[PSP_PHYSICS_GROUND] += psp_microseconds() - psp_ground_mark;
+		}
+#else
+		compute_ground_plane(instance->object_index, mass_point, mass_point_definition);
+#endif
+		mass_point->water_depth = scenario_location_water_depth(&mass_point->location, &mass_point->position);"""),
+]
+
+# build 44: the game state's 3.3 MB, by allocation (once, at load) and, every
+# few heartbeats, how full each data array and memory pool in it gets: the
+# sizes are the Xbox's limits (psp_capacity.h), the counts what Blood Gulch
+# and the campaign really reach
+# build 45: what the biped pill sweep costs, and how much of it is bipeds
+# standing still (b30 recon: biped_update_physics was 27% of the tick)
+# build 45: collision_get_features_in_sphere is the shared hot path (biped
+# pill sweeps, vehicle mass points, projectiles): time its BSP phase and its
+# objects phase, and count the objects it walks against the ones in reach
+FIXES_36["source/physics/collisions.c#features"] = [
+("""		collision_log_usage(_collision_function_vector_bounds_object);
+		collision_log_start_time(&collision_usage_times.features);
+		radius += 0.0625f;
+
+		if (collision_bsp_test_sphere(
+			collision_bsp,
+			MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+			breakable_surface_flags_get(),
+			center,
+			radius,
+			&result) &&
+			structure_flags)
+		{
+			collision_bsp_get_features_in_sphere(
+				collision_bsp,
+				&result,
+				NULL,
+				height,
+				width,
+				NONE,
+				features);
+		}
+
+		if (objects && result.leaf_count > 0)
+		{
+""",
+ """		collision_log_usage(_collision_function_vector_bounds_object);
+		collision_log_start_time(&collision_usage_times.features);
+		radius += 0.0625f;
+#ifdef HALO_PSP
+		psp_features_calls++;
+		psp_features_mark = psp_microseconds();
+#endif
+
+		if (collision_bsp_test_sphere(
+			collision_bsp,
+			MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+			breakable_surface_flags_get(),
+			center,
+			radius,
+			&result) &&
+			structure_flags)
+		{
+#ifdef HALO_PSP
+			{
+				unsigned long now = psp_microseconds();
+
+				psp_features_walk_us += now - psp_features_mark;
+				psp_features_mark = now;
+				psp_features_found += result.vertex_count + result.edge_count + result.surface_count;
+			}
+#endif
+			collision_bsp_get_features_in_sphere(
+				collision_bsp,
+				&result,
+				NULL,
+				height,
+				width,
+				NONE,
+				features);
+		}
+#ifdef HALO_PSP
+		{
+			unsigned long now = psp_microseconds();
+
+			psp_features_bsp_us += now - psp_features_mark;
+			psp_features_mark = now;
+			psp_features_leaves += result.leaf_count;
+		}
+#endif
+
+		if (objects && result.leaf_count > 0)
+		{
+"""),
+("""						if (object_mark_function(object_index))
+						{
+							object_get_features_in_sphere(
+								flags,
+								object_index,
+								center,
+								radius,
+								height,
+								width,
+								ignore_object_index,
+								features);
+						}
+					}
+				}
+			}
+			object_marker_end();
+			structure_cluster_marker_end();
+		}
+""",
+ """						if (object_mark_function(object_index))
+						{
+#ifdef HALO_PSP
+							psp_features_objects++;
+#endif
+							object_get_features_in_sphere(
+								flags,
+								object_index,
+								center,
+								radius,
+								height,
+								width,
+								ignore_object_index,
+								features);
+						}
+					}
+				}
+			}
+			object_marker_end();
+			structure_cluster_marker_end();
+		}
+#ifdef HALO_PSP
+		psp_features_objects_us += psp_microseconds() - psp_features_mark;
+		if (psp_features_calls >= 6000)
+		{
+			platform_psp_log("collision: features in sphere: %lu calls; BSP walk %lu us each (%.1f leaves), features %lu us (%.1f surfaces, edges and vertices made into shapes), objects %lu us (%.1f objects walked)",
+				psp_features_calls, psp_features_walk_us / psp_features_calls, (double)psp_features_leaves / psp_features_calls,
+				psp_features_bsp_us / psp_features_calls, (double)psp_features_found / psp_features_calls,
+				psp_features_objects_us / psp_features_calls, (double)psp_features_objects / psp_features_calls);
+			psp_features_calls = psp_features_bsp_us = psp_features_walk_us = psp_features_objects_us = psp_features_leaves = psp_features_objects = psp_features_found = 0;
+		}
+#endif
+"""),
+("""boolean collision_get_features_in_sphere(
+	unsigned long flags,""",
+ """#ifdef HALO_PSP
+/* build 45: the feature gather, timed by phase (psp_fixups.py) */
+static unsigned long psp_features_calls, psp_features_bsp_us, psp_features_walk_us, psp_features_objects_us, psp_features_leaves, psp_features_objects, psp_features_found, psp_features_mark;
+#endif
+boolean collision_get_features_in_sphere(
+	unsigned long flags,"""),
+]
+
+# build 46: how often a vehicle's slipping mass points make material effects
+# (dust, sparks) - every grounded point moving past 0.03 wu/tick, every tick
+FIXES_36["source/units/vehicles.c#slip"] = [
+("""					material_effect_new(definition->material_effects.index,
+						TEST_FLAG(mass_point_definition->flags, 0) ? 10 : 9,""",
+ """#ifdef HALO_PSP
+					{
+						extern unsigned long psp_slip_effects; /* particles.c (psp_fixups.py) */
+
+						psp_slip_effects++;
+					}
+#endif
+					material_effect_new(definition->material_effects.index,
+						TEST_FLAG(mass_point_definition->flags, 0) ? 10 : 9,"""),
+]
+
+FIXES_36["source/units/bipeds.c#pill"] = [
+("""	{
+		collision_count = collision_move_pill(
+			collision_flags,
+			&position,
+			&velocity,
+			physics->height,
+			physics->width,
+			physics->biped_index,
+			&clipped_position,
+			&clipped_velocity,
+			16,
+			collisions);
+	}
+""",
+ """	{
+#ifdef HALO_PSP
+		/* timed, by whether the biped is moving (psp_fixups.py) */
+		static unsigned long psp_pill_us[3], psp_pill_count[3], psp_pill_hits[3];
+		unsigned long psp_mark = psp_microseconds();
+		/* "still": little horizontal movement (gravity pulls every standing
+		biped into its ground plane each tick, so the vertical part is never
+		zero): 2 under 0.001 wu a tick, 1 under 0.01, 0 moving */
+		float psp_speed2 = velocity.i * velocity.i + velocity.j * velocity.j;
+		int psp_still = TEST_FLAG(physics->in_flags, _biped_physics_in_airborne_bit) ? 0 :
+			psp_speed2 < 1e-6f ? 2 : psp_speed2 < 1e-4f ? 1 : 0;
+#endif
+		collision_count = collision_move_pill(
+			collision_flags,
+			&position,
+			&velocity,
+			physics->height,
+			physics->width,
+			physics->biped_index,
+			&clipped_position,
+			&clipped_velocity,
+			16,
+			collisions);
+#ifdef HALO_PSP
+		psp_pill_us[psp_still] += psp_microseconds() - psp_mark;
+		psp_pill_count[psp_still]++;
+		psp_pill_hits[psp_still] += collision_count;
+		if (psp_pill_count[0] + psp_pill_count[1] + psp_pill_count[2] >= 3000)
+		{
+			platform_psp_log("bipeds: pill sweeps: moving %lu at %lu us (%.1f collisions each), slow %lu at %lu us (%.1f), still %lu at %lu us (%.1f)",
+				psp_pill_count[0], psp_pill_count[0] ? psp_pill_us[0] / psp_pill_count[0] : 0,
+				psp_pill_count[0] ? (double)psp_pill_hits[0] / psp_pill_count[0] : 0.0,
+				psp_pill_count[1], psp_pill_count[1] ? psp_pill_us[1] / psp_pill_count[1] : 0,
+				psp_pill_count[1] ? (double)psp_pill_hits[1] / psp_pill_count[1] : 0.0,
+				psp_pill_count[2], psp_pill_count[2] ? psp_pill_us[2] / psp_pill_count[2] : 0,
+				psp_pill_count[2] ? (double)psp_pill_hits[2] / psp_pill_count[2] : 0.0);
+			memset(psp_pill_us, 0, sizeof(psp_pill_us));
+			memset(psp_pill_count, 0, sizeof(psp_pill_count));
+			memset(psp_pill_hits, 0, sizeof(psp_pill_hits));
+		}
+#endif
+	}
+"""),
+]
+
+FIXES_36["source/saved games/game_state.c"] = [
+("""void *game_state_malloc(
+	const char *name,
+	const char *type,
+	long size)
+{
+	byte *pointer;
+""",
+ """#ifdef HALO_PSP
+void platform_psp_log(const char *format, ...);
+#define PSP_STATE_RECORDS 96
+/* the name is copied: some callers pass a buffer on their stack (b30 recon
+showed garbage names a few seconds in) */
+static struct { char name[40]; char type[12]; long size; void *pointer; short peak; } psp_state_records[PSP_STATE_RECORDS];
+static int psp_state_record_count = 0;
+
+/* the heartbeat's survey (psp_platform.c): every array and pool past 16 KB,
+with the most of it ever seen in use */
+void psp_game_state_report(void)
+{
+	char line[1024];
+	int length = 0, k;
+
+	for (k = 0; k < psp_state_record_count; k++)
+	{
+		struct data_array *data = (struct data_array *)psp_state_records[k].pointer;
+		struct memory_pool *pool = (struct memory_pool *)psp_state_records[k].pointer;
+		int used = -1, of = -1;
+		char kind = psp_state_records[k].type[0];
+		const char *name = psp_state_records[k].name[0] ? psp_state_records[k].name : "?";
+
+		if (kind == 'd' && data->valid)
+		{
+			if (data->actual_count > psp_state_records[k].peak)
+				psp_state_records[k].peak = data->actual_count;
+			used = psp_state_records[k].peak;
+			of = data->maximum_count;
+		}
+		else if (kind == 'm')
+		{
+			long in_use = pool->size - pool->free_size;
+
+			if (in_use > psp_state_records[k].peak)
+				psp_state_records[k].peak = (short)(in_use / 1024);
+			used = psp_state_records[k].peak;
+			of = pool->size / 1024;
+		}
+		if (psp_state_records[k].size < 16384)
+			continue;
+		if (length > (int)sizeof(line) - 96)
+		{
+			platform_psp_log("game state:%s", line);
+			length = 0;
+		}
+		if (used >= 0)
+			length += snprintf(line + length, sizeof(line) - length, " %s %ld KB (peak %d of %d%s);", name,
+				psp_state_records[k].size / 1024, used, of, kind == 'm' ? " KB" : "");
+		else
+			length += snprintf(line + length, sizeof(line) - length, " %s %ld KB;", name, psp_state_records[k].size / 1024);
+	}
+	if (length)
+		platform_psp_log("game state:%s", line);
+	platform_psp_log("game state: %ld KB allocated of %d KB", (game_state_globals.cpu_allocation_size + game_state_globals.gpu_allocation_size) / 1024, GAME_STATE_SIZE / 1024);
+}
+#endif
+
+void *game_state_malloc(
+	const char *name,
+	const char *type,
+	long size)
+{
+	byte *pointer;
+"""),
+("""	game_state_allocation_record(name, type, size, FALSE);
+
+	pointer = (byte *)game_state_globals.base_address+game_state_globals.cpu_allocation_size;
+	game_state_globals.cpu_allocation_size+= size;
+""",
+ """	game_state_allocation_record(name, type, size, FALSE);
+
+	pointer = (byte *)game_state_globals.base_address+game_state_globals.cpu_allocation_size;
+	game_state_globals.cpu_allocation_size+= size;
+#ifdef HALO_PSP
+	if (psp_state_record_count < PSP_STATE_RECORDS)
+	{
+		strncpy(psp_state_records[psp_state_record_count].name, name ? name : "?", sizeof(psp_state_records[0].name) - 1);
+		strncpy(psp_state_records[psp_state_record_count].type, type ? type : "", sizeof(psp_state_records[0].type) - 1);
+		psp_state_records[psp_state_record_count].size = size;
+		psp_state_records[psp_state_record_count].pointer = pointer;
+		psp_state_records[psp_state_record_count].peak = 0;
+		psp_state_record_count++;
+	}
+#endif
+"""),
+]
+
+# build 46: the collision code's tag block accessor inlined. Every BSP node
+# the sphere and ray walks visit reads its node and plane through
+# TAG_BLOCK_GET_ELEMENT, a call to tag_block_get_element_with_size and its
+# five checks; in these three files it is now an inline bounds check that
+# returns the same address, the out-of-range cases still going through the
+# function (so a bad index is noted in debug.txt as before). Left out: the
+# check that the tag definition's element size matches the structure's, a
+# property of the code, not of the data. Only these files: inlined
+# everywhere the accessor would grow the code the instruction cache holds
+FIXES_36["source/tag_files/tag_groups.h#fast"] = [
+("""void *tag_block_get_element_with_size(struct tag_block const *block, long index, long element_size);
+""", """void *tag_block_get_element_with_size(struct tag_block const *block, long index, long element_size);
+#if defined(HALO_PSP) && defined(PSP_FAST_TAG_BLOCKS)
+static __inline__ void *psp_tag_block_element(struct tag_block const *block, long index, long element_size)
+{
+	if (__builtin_expect(!block || !block->address || (unsigned long)index >= (unsigned long)block->count, 0))
+		return tag_block_get_element_with_size(block, index, element_size);
+	return (char *)block->address + index * element_size;
+}
+#undef TAG_BLOCK_GET_ELEMENT
+#define TAG_BLOCK_GET_ELEMENT(block_address, index, type) ((type *)psp_tag_block_element((block_address), (index), sizeof(type)))
+#endif
+"""),
+]
+FIXES_36["source/physics/collision_bsp.c#fast"] = [
+('#include "cseries/cseries.h"\n', '#define PSP_FAST_TAG_BLOCKS 1 /* build 46: tag_groups.h */\n#include "cseries/cseries.h"\n'),
+]
+# build 66: Halo's adaptive vertical-blank throttle off on the PSP. It paces
+# frames to whole vertical-blank intervals (2 = 30 fps, 3 = 20, 4 = 15) and
+# steps the interval down after repeated misses, then SLEEPS to pad every
+# frame out to it: Sheepdog01's b64 run spent 3.9 ms a frame in
+# main_rasterizer_throttle at 21 fps. Without it the frame runs as fast as it
+# can, capped at 30 fps by the millisecond branch. "vblankthrottle": as before
+# build 66: verify_tag_reference looked every reference up by NAME (tag_loaded:
+# a case-insensitive string compare against every tag of the group, 450
+# bitmaps for a bitmap reference) to assert that the index matched, then
+# returned the lookup's result. The crosshairs called it per item per frame
+# (0.33 ms a frame in the emulator, about 1 ms on the PSP). The reference's
+# own index is the answer in a consistent map, which Invader's are; "verifytags"
+# in keep.txt restores the lookup. tag_loaded itself is counted per frame
+FIXES_36["source/tag_files/tag_groups.c#verify"] = [
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_groups.c", 3055, reference);
+	index = tag_loaded(reference->group_tag, reference->name);
+""",
+ """	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_groups.c", 3055, reference);
+#ifdef HALO_PSP
+	{
+		extern int psp_keep(const char *name);
+		static int verify = -1;
+
+		if (verify < 0)
+			verify = psp_keep("verifytags");
+		if (!verify)
+			return reference->index;
+	}
+#endif
+	index = tag_loaded(reference->group_tag, reference->name);
+"""),
+]
+FIXES_36["source/cache/cache_files.c#tagloaded"] = [
+("""	short absolute_index;
+	long result = NONE;
+
+	if (cache_file_globals.tags_loaded)
+	{
+		match_assert(
+			"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files.c",
+			346,
+			global_tag_instances);
+""",
+ """	short absolute_index;
+	long result = NONE;
+
+#ifdef HALO_PSP
+	{
+		extern unsigned long psp_tag_loaded_calls;
+
+		psp_tag_loaded_calls++;
+	}
+#endif
+	if (cache_file_globals.tags_loaded)
+	{
+		match_assert(
+			"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files.c",
+			346,
+			global_tag_instances);
+"""),
+]
+
+FIXES_36["source/main/main.c#throttle"] = [
+("""static boolean main_framerate_throttle_enabled(
+	void)
+{
+	return rasterizer_globals.framerate_throttle;
+}""",
+ """static boolean main_framerate_throttle_enabled(
+	void)
+{
+#ifdef HALO_PSP
+	{
+		extern int psp_keep(const char *name);
+		static int vblank_throttle = -1;
+
+		if (vblank_throttle < 0)
+			vblank_throttle = psp_keep("vblankthrottle");
+		if (!vblank_throttle)
+			return FALSE;
+	}
+#endif
+	return rasterizer_globals.framerate_throttle;
+}"""),
+]
+
+FIXES_36["source/physics/collisions.c#fast"] = [
+('#include "cseries.h"\n#include "collisions.h"\n', '#define PSP_FAST_TAG_BLOCKS 1 /* build 46: tag_groups.h */\n#include "cseries.h"\n#include "collisions.h"\n'),
+]
+FIXES_36["source/physics/bsp3d.c#fast"] = [
+('#include "cseries.h"\n#include "bsp3d.h"\n', '#define PSP_FAST_TAG_BLOCKS 1 /* build 46: tag_groups.h */\n#include "cseries.h"\n#include "bsp3d.h"\n'),
+]
+
+FIXES_36["source/effects/particles.c"] = [
+("""void particle_new(
+	struct new_particle_data const *data)
+{""",
+ """#ifdef HALO_PSP
+/* build 38: the budget for particles in flight (128 refused smoke, debris
+and explosion parts with the sparks, Sheepdog01's "missing effects"), and how many
+of them run their physics each frame: each costs about 70 us (the wind where
+it is and a collision ray); past the budget they take turns, every second
+or third frame with the time they missed (the particle's own clock and
+animation still run every frame) */
+#define PSP_PARTICLE_BUDGET 256
+#define PSP_PARTICLE_PHYSICS_BUDGET 40
+static float psp_particle_dt[HALO_PORT_MAXIMUM_PARTICLES];
+/* build 39: a new particle runs its physics every frame for its first few
+(the spark off a pistol hit is gone in a quarter second: waiting a turn in
+its first frames left it hanging where it was born, Sheepdog01's "mistimed" shots).
+Only older ones take turns */
+#define PSP_PARTICLE_YOUNG_FRAMES 6
+static unsigned char psp_particle_age[HALO_PORT_MAXIMUM_PARTICLES];
+static unsigned long psp_particle_frame = 0, psp_particles_moving_last = 0, psp_particle_turns_skipped = 0;
+int psp_keep(const char *name); /* psp_platform.c; psp_fixups.py */
+unsigned long psp_microseconds(void);
+void platform_psp_log(const char *format, ...);
+static int psp_particle_budget = -1;
+static long psp_free_particles = 0;
+static unsigned long psp_particles_thinned = 0, psp_particles_refused = 0, psp_particle_updates = 0, psp_particle_physics = 0;
+static unsigned long psp_particle_us = 0, psp_particles_peak = 0, psp_particles_live_total = 0;
+/* build 46: which particles cost the time (Sheepdog01: the sparks off a vehicle's
+scrapes look like the assault rifle's): made and physics time per
+particle definition, the top ones logged with the particles line */
+#define PSP_PARTICLE_KINDS 32
+static struct { long definition_index; unsigned long made, physics, us; } psp_particle_kinds[PSP_PARTICLE_KINDS];
+unsigned long psp_slip_effects = 0; /* vehicles.c's create_slipping_effects (psp_fixups.py) */
+char *tag_get_name(long tag_index);
+static int psp_particle_kind(long definition_index)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 27, n;
+
+	for (n = 0; n < PSP_PARTICLE_KINDS; n++, k = (k + 1) % PSP_PARTICLE_KINDS)
+	{
+		if (psp_particle_kinds[k].definition_index == definition_index)
+			return k;
+		if (!psp_particle_kinds[k].made && !psp_particle_kinds[k].physics)
+		{
+			psp_particle_kinds[k].definition_index = definition_index;
+			return k;
+		}
+	}
+	return -1;
+}
+#endif
+
+void particle_new(
+	struct new_particle_data const *data)
+{"""),
+("""	particle_index = datum_new(particle_data);
+
+	if (particle_index == NONE)
+		return;
+
+	particle = particle_get(particle_index);
+
+	particle->flags = 0;""",
+ """#ifdef HALO_PSP
+	if (data->object_index == NONE)
+	{
+		if (psp_particle_budget < 0)
+			psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
+		if (psp_free_particles >= psp_particle_budget)
+		{
+			psp_particles_refused++;
+			return;
+		}
+		/* build 41: past 96 in flight, every second new one is left out,
+		past 160 two of three: a big burst (the tank shell's) comes out
+		thinner but on time, where the budget alone took it whole and then
+		refused everything after (Sheepdog01: dense, and a big cut in frames) */
+		if (psp_particle_budget != 0x7FFF && psp_free_particles >= 96)
+		{
+			static unsigned long psp_thin = 0;
+
+			if (++psp_thin % (psp_free_particles >= 160 ? 3 : 2))
+			{
+				psp_particles_thinned++;
+				return;
+			}
+		}
+	}
+#endif
+	particle_index = datum_new(particle_data);
+
+	if (particle_index == NONE)
+		return;
+#ifdef HALO_PSP
+	/* counted at once, so one frame's burst meets the budget too (the
+	count was only last frame's) */
+	if (data->object_index == NONE)
+		psp_free_particles++;
+	{
+		int psp_kind = psp_particle_kind(data->definition_index);
+
+		if (psp_kind >= 0)
+			psp_particle_kinds[psp_kind].made++;
+	}
+	if ((particle_index & 0xFFFF) < HALO_PORT_MAXIMUM_PARTICLES)
+	{
+		psp_particle_dt[particle_index & 0xFFFF] = 0.0f;
+		psp_particle_age[particle_index & 0xFFFF] = 0;
+	}
+#endif
+
+	particle = particle_get(particle_index);
+
+	particle->flags = 0;"""),
+("""void particles_update(
+	real dt)
+{
+	long particle_index;
+
+	profile_enter(particles_update_section);
+""",
+ """void particles_update(
+	real dt)
+{
+	long particle_index;
+#ifdef HALO_PSP
+	unsigned long psp_mark = psp_microseconds();
+	long psp_free = 0, psp_live = 0, psp_moving = 0;
+	/* every k-th frame for each particle, k from last frame's count */
+	unsigned long psp_turn = psp_particle_budget == 0x7FFF ? 1 :
+		(psp_particles_moving_last + PSP_PARTICLE_PHYSICS_BUDGET - 1) / PSP_PARTICLE_PHYSICS_BUDGET;
+
+	if (psp_turn < 1)
+		psp_turn = 1;
+	if (psp_turn > 3)
+		psp_turn = 3;
+	psp_particle_frame++;
+#endif
+
+	profile_enter(particles_update_section);
+"""),
+("""			else
+			{
+				if (particle_update_frame_time(particle_index, dt))
+					particle_update_physics(particle_index, dt);
+			}
+		}
+	}
+
+	profile_exit(particles_update_section);
+""",
+ """			else
+			{
+#ifdef HALO_PSP
+				real psp_dt = dt;
+				int psp_waits = 0;
+				long psp_slot = particle_index & 0xFFFF;
+
+				psp_live++;
+				if (particle->object_index == NONE)
+				{
+					psp_free++;
+					if (!TEST_FLAG(particle->flags, _particle_datum_at_rest_bit))
+					{
+						psp_moving++;
+						if (psp_slot < HALO_PORT_MAXIMUM_PARTICLES)
+						{
+							if (psp_particle_age[psp_slot] < PSP_PARTICLE_YOUNG_FRAMES)
+								psp_particle_age[psp_slot]++;
+							if (psp_turn > 1 && psp_particle_age[psp_slot] >= PSP_PARTICLE_YOUNG_FRAMES &&
+								(psp_slot + psp_particle_frame) % psp_turn)
+							{
+								psp_particle_dt[psp_slot] += dt;
+								psp_waits = 1;
+								psp_particle_turns_skipped++;
+							}
+							else
+							{
+								psp_dt = dt + psp_particle_dt[psp_slot];
+								psp_particle_dt[psp_slot] = 0.0f;
+							}
+						}
+						if (!psp_waits)
+							psp_particle_physics++;
+					}
+					else if (psp_slot < HALO_PORT_MAXIMUM_PARTICLES)
+						psp_particle_dt[psp_slot] = 0.0f;
+				}
+				if (particle_update_frame_time(particle_index, dt) && !psp_waits)
+				{
+					long psp_definition = particle->definition_index;
+					unsigned long psp_t0 = psp_microseconds();
+					int psp_kind;
+
+					particle_update_physics(particle_index, psp_dt);
+					psp_kind = psp_particle_kind(psp_definition);
+					if (psp_kind >= 0)
+					{
+						psp_particle_kinds[psp_kind].physics++;
+						psp_particle_kinds[psp_kind].us += psp_microseconds() - psp_t0;
+					}
+				}
+#else
+				if (particle_update_frame_time(particle_index, dt))
+					particle_update_physics(particle_index, dt);
+#endif
+			}
+		}
+	}
+
+#ifdef HALO_PSP
+	psp_free_particles = psp_free;
+	psp_particles_moving_last = psp_moving;
+	psp_particles_live_total += psp_live;
+	if ((unsigned long)psp_live > psp_particles_peak)
+		psp_particles_peak = psp_live;
+	psp_particle_us += psp_microseconds() - psp_mark;
+	/* build 46: every 30 s of real time, averaged over the calls made (the
+	900-call count reported far less often than expected on hardware) */
+	psp_particle_updates++;
+	{
+		static unsigned long psp_report_mark = 0;
+		unsigned long psp_now = psp_microseconds();
+
+		if (!psp_report_mark)
+			psp_report_mark = psp_now;
+		if (psp_now - psp_report_mark >= 30000000UL)
+		{
+			unsigned long calls = psp_particle_updates ? psp_particle_updates : 1;
+
+			psp_report_mark = psp_now;
+			platform_psp_log("particles: %lu alive on average (peak %lu), %lu physics updates a frame (%lu turns waited), %lu us a frame updating over %lu frames; %lu not made over the budget of %d free, %lu left out thinning bursts",
+				psp_particles_live_total / calls, psp_particles_peak, psp_particle_physics / calls, psp_particle_turns_skipped / calls,
+				psp_particle_us / calls, psp_particle_updates, psp_particles_refused, psp_particle_budget, psp_particles_thinned);
+			psp_particle_updates = 0;
+		psp_particles_live_total = psp_particles_peak = psp_particle_physics = psp_particle_us = 0;
+		psp_particles_refused = psp_particle_turns_skipped = psp_particles_thinned = 0;
+		{
+			char line[768];
+			int length, shown, k;
+
+			length = snprintf(line, sizeof(line), "particles by kind over 30 s (made, physics updates, us each): vehicle slip effects %lu;", psp_slip_effects);
+			psp_slip_effects = 0;
+			for (shown = 0; shown < 6; shown++)
+			{
+				int best = -1;
+
+				for (k = 0; k < PSP_PARTICLE_KINDS; k++)
+					if ((psp_particle_kinds[k].made || psp_particle_kinds[k].physics) &&
+						(best < 0 || psp_particle_kinds[k].us > psp_particle_kinds[best].us))
+						best = k;
+				if (best < 0 || length > (int)sizeof(line) - 128)
+					break;
+				{
+					const char *name = tag_get_name(psp_particle_kinds[best].definition_index);
+					const char *slash = name ? strrchr(name, '\\\\') : NULL;
+
+					length += snprintf(line + length, sizeof(line) - length, " %s %lu, %lu, %lu;",
+						slash ? slash + 1 : name ? name : "?", psp_particle_kinds[best].made, psp_particle_kinds[best].physics,
+						psp_particle_kinds[best].physics ? psp_particle_kinds[best].us / psp_particle_kinds[best].physics : 0);
+				}
+				psp_particle_kinds[best].made = psp_particle_kinds[best].physics = 0;
+				psp_particle_kinds[best].us = 0;
+			}
+			platform_psp_log("%s", line);
+			memset(psp_particle_kinds, 0, sizeof(psp_particle_kinds));
+		}
+		}
+	}
+#endif
+	profile_exit(particles_update_section);
+"""),
+]
+
+# build 68: object lighting reads three of a material's vertices for their
+# texture coordinates. In a map built with its geometry outside the tags
+# (invader-build -G) the material's vertex data pointer is 0x0C000000 + an
+# offset in the geometry pack; the renderer's copies of the material
+# (psp_ge.c's level streams, keyed by that address) hold the coordinates
+FIXES_36["source/objects/object_lights.c#geometry"] = [
+("""void sample_lightmap(
+	struct structure_material *material,
+	struct bitmap_data *bitmap,
+	struct structure_surface const *surface,
+	real s,
+	real t,
+	real_rgb_color *color)
+{
+	real_point2d texcoords[3];
+	real_point2d texcoord;
+""",
+"""#ifdef HALO_PSP
+extern long psp_structure_vertex_stride; /* psp_geo.c; psp_fixups.py */
+int psp_ge_level_vertex_texcoords(unsigned long key, int vertex_index, float *uv, float *lightmap_uv); /* psp_ge.c */
+unsigned long psp_object_light_samples_missed = 0;
+
+/* the three vertices' coordinates from the renderer's copies when the data
+is in the geometry pack: 1 if they are there, 0 if not this frame */
+static int psp_material_texcoords(struct structure_material const *material, struct structure_surface const *surface,
+	real_point2d *texcoords, int lightmap)
+{
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		float uv[2], lightmap_uv[2];
+
+		if (!psp_ge_level_vertex_texcoords(((unsigned long const *)material->vertices.hardware_format)[1],
+			surface->vertex_indices[k], uv, lightmap_uv))
+		{
+			psp_object_light_samples_missed++;
+			return 0;
+		}
+		texcoords[k].x = lightmap ? lightmap_uv[0] : uv[0];
+		texcoords[k].y = lightmap ? lightmap_uv[1] : uv[1];
+	}
+	return 1;
+}
+#endif
+
+void sample_lightmap(
+	struct structure_material *material,
+	struct bitmap_data *bitmap,
+	struct structure_surface const *surface,
+	real s,
+	real t,
+	real_rgb_color *color)
+{
+	real_point2d texcoords[3];
+	real_point2d texcoord;
+"""),
+("""	environment_lightmap_vertex_compressed_get_texcoord(
+		structure_material_get_lightmap_vertex(material, surface->vertex_indices[0]),
+		&texcoords[0]);
+	environment_lightmap_vertex_compressed_get_texcoord(
+		structure_material_get_lightmap_vertex(material, surface->vertex_indices[1]),
+		&texcoords[1]);
+	environment_lightmap_vertex_compressed_get_texcoord(
+		structure_material_get_lightmap_vertex(material, surface->vertex_indices[2]),
+		&texcoords[2]);
+""",
+"""#ifdef HALO_PSP
+	if (psp_structure_vertex_stride == 6 && material->vertices.hardware_format)
+	{
+		if (!psp_material_texcoords(material, surface, texcoords, 1))
+		{
+			/* as a bitmap the texture cache never loaded answers (bitmap_2d_get_pixel: NONE) */
+			color->red = color->green = color->blue = 1.0f;
+			return;
+		}
+	}
+	else
+	{
+#endif
+	environment_lightmap_vertex_compressed_get_texcoord(
+		structure_material_get_lightmap_vertex(material, surface->vertex_indices[0]),
+		&texcoords[0]);
+	environment_lightmap_vertex_compressed_get_texcoord(
+		structure_material_get_lightmap_vertex(material, surface->vertex_indices[1]),
+		&texcoords[1]);
+	environment_lightmap_vertex_compressed_get_texcoord(
+		structure_material_get_lightmap_vertex(material, surface->vertex_indices[2]),
+		&texcoords[2]);
+#ifdef HALO_PSP
+	}
+#endif
+"""),
+("""	environment_vertex_compressed_get_texcoord(
+		structure_material_get_vertex(material, surface->vertex_indices[0]),
+		&texcoords[0]);
+	environment_vertex_compressed_get_texcoord(
+		structure_material_get_vertex(material, surface->vertex_indices[1]),
+		&texcoords[1]);
+	environment_vertex_compressed_get_texcoord(
+		structure_material_get_vertex(material, surface->vertex_indices[2]),
+		&texcoords[2]);
+""",
+"""#ifdef HALO_PSP
+	if (psp_structure_vertex_stride == 6 && material->vertices.hardware_format)
+	{
+		if (!psp_material_texcoords(material, surface, texcoords, 0))
+		{
+			color->red = color->green = color->blue = 1.0f;
+			return;
+		}
+	}
+	else
+	{
+#endif
+	environment_vertex_compressed_get_texcoord(
+		structure_material_get_vertex(material, surface->vertex_indices[0]),
+		&texcoords[0]);
+	environment_vertex_compressed_get_texcoord(
+		structure_material_get_vertex(material, surface->vertex_indices[1]),
+		&texcoords[1]);
+	environment_vertex_compressed_get_texcoord(
+		structure_material_get_vertex(material, surface->vertex_indices[2]),
+		&texcoords[2]);
+#ifdef HALO_PSP
+	}
+#endif
+"""),
+]
+
+# build 68: the game's own readers of a material's vertices want positions
+# (the per-surface frustum test in the visibility walk, the surface under a
+# point). In a map built with its geometry outside the tags, the material's
+# compressed vertex data is a 12-byte-a-vertex copy of the positions alone
+# (invader-build -G); psp_geo_map_opened() tells which layout the map has
+# build 68: in a map built with its geometry outside the tags (invader-build
+# -G), the game's own copies of level data are packed: a material's vertex
+# positions are three int16 relative to the material's centroid times a scale
+# kept in the (unused) uncompressed vertex data's size field; leaf surface
+# references are two u16 (node 0xFFFF for none); the clusters' and
+# subclusters' surface index lists are u16. psp_geo_map_opened() sets
+# psp_structure_vertex_stride to 6 for such a map, 32 for an old one, from the
+# first model part's descriptor; these readers branch on it
+PSP_BSP_READERS = """
+#ifdef HALO_PSP
+extern long psp_structure_vertex_stride; /* psp_geo.c: 6 packed, 32 as the Xbox had it (psp_fixups.py) */
+#define PSP_BSP_PACKED (psp_structure_vertex_stride == 6)
+
+/* a material's vertex position, from either layout */
+static void psp_material_vertex_point(struct structure_material const *material, long vertex_index, real_point3d *point)
+{
+	if (PSP_BSP_PACKED)
+	{
+		short const *q = (short const *)material->compressed_vertex_data.address + 3 * vertex_index;
+		float scale;
+
+		csmemcpy(&scale, &material->uncompressed_vertex_data.size, sizeof(scale));
+		point->x = material->centroid.x + q[0] * scale;
+		point->y = material->centroid.y + q[1] * scale;
+		point->z = material->centroid.z + q[2] * scale;
+	}
+	else
+	{
+		csmemcpy(point, (byte const *)material->compressed_vertex_data.address + 32 * vertex_index, sizeof(*point));
+	}
+}
+
+/* a leaf's surface reference, from either layout */
+static void psp_surface_reference(struct tag_block const *block, long index, long *surface_index, long *node_index)
+{
+	if (PSP_BSP_PACKED)
+	{
+		unsigned short const *p = (unsigned short const *)block->address + 2 * index;
+
+		*surface_index = p[0];
+		*node_index = p[1] == 0xFFFF ? NONE : (long)p[1];
+	}
+	else
+	{
+		long const *p = (long const *)block->address + 2 * index;
+
+		*surface_index = p[0];
+		*node_index = p[1];
+	}
+}
+
+/* the k-th entry of a cluster's or subcluster's surface index list */
+#define PSP_SURFACE_INDEX(block, k) (PSP_BSP_PACKED ? (long)((unsigned short const *)(block)->address)[k] : ((long const *)(block)->address)[k])
+#endif
+"""
+
+FIXES_36["source/structures/structure_visibility.c#packed"] = [
+("""					real_point3d const *vertex0 = (real_point3d const *)(
+						(byte *)material->compressed_vertex_data.address +
+						surface->vertex_indices[0] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
+					real_point3d const *vertex1 = (real_point3d const *)(
+						(byte *)material->compressed_vertex_data.address +
+						surface->vertex_indices[1] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
+					real_point3d const *vertex2 = (real_point3d const *)(
+						(byte *)material->compressed_vertex_data.address +
+						surface->vertex_indices[2] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
+
+					if (render_frustum_triangle_visible(
+						frustum,
+						vertex0,
+						vertex1,
+						vertex2))
+""",
+"""#ifdef HALO_PSP
+					real_point3d points[3];
+					real_point3d const *vertex0 = &points[0];
+					real_point3d const *vertex1 = &points[1];
+					real_point3d const *vertex2 = &points[2];
+
+					psp_material_vertex_point(material, surface->vertex_indices[0], &points[0]);
+					psp_material_vertex_point(material, surface->vertex_indices[1], &points[1]);
+					psp_material_vertex_point(material, surface->vertex_indices[2], &points[2]);
+#else
+					real_point3d const *vertex0 = (real_point3d const *)(
+						(byte *)material->compressed_vertex_data.address +
+						surface->vertex_indices[0] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
+					real_point3d const *vertex1 = (real_point3d const *)(
+						(byte *)material->compressed_vertex_data.address +
+						surface->vertex_indices[1] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
+					real_point3d const *vertex2 = (real_point3d const *)(
+						(byte *)material->compressed_vertex_data.address +
+						surface->vertex_indices[2] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
+#endif
+
+					if (render_frustum_triangle_visible(
+						frustum,
+						vertex0,
+						vertex1,
+						vertex2))
+"""),
+# the cluster's list, consumed per material
+("""				surface_index = *surface_index_buffer++;
+				match_assert(
+					"c:\\\\halo\\\\SOURCE\\\\structures\\\\structure_visibility.c",
+					0x1A0,
+					surface_index_buffer-(long *) cluster->surface_indices.address<=cluster->surface_indices.count);
+""",
+"""#ifdef HALO_PSP
+				surface_index = PSP_SURFACE_INDEX(&cluster->surface_indices, consumed_surface_index_count);
+				(void)surface_index_buffer;
+#else
+				surface_index = *surface_index_buffer++;
+				match_assert(
+					"c:\\\\halo\\\\SOURCE\\\\structures\\\\structure_visibility.c",
+					0x1A0,
+					surface_index_buffer-(long *) cluster->surface_indices.address<=cluster->surface_indices.count);
+#endif
+"""),
+# the subclusters' lists: the frustum pass
+("""			surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
+			for (surface_list_index = 0;
+				(short)surface_list_index < subcluster->surface_indices.count;
+				surface_index_buffer++, surface_list_index++)
+			{
+				if (!BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer))
+				{
+					if (render.environment_surface_count >= MAXIMUM_RENDERED_ENVIRONMENT_SURFACES)
+					{
+						break;
+					}
+
+					BIT_VECTOR_SET_FLAG(render.environment_surface_flags, *surface_index_buffer, TRUE);
+""",
+"""#ifdef HALO_PSP
+			surface_index_buffer = NULL;
+			for (surface_list_index = 0;
+				(short)surface_list_index < subcluster->surface_indices.count;
+				surface_list_index++)
+			{
+				long psp_surface_index = PSP_SURFACE_INDEX(&subcluster->surface_indices, surface_list_index);
+
+				if (!BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, psp_surface_index))
+				{
+					if (render.environment_surface_count >= MAXIMUM_RENDERED_ENVIRONMENT_SURFACES)
+					{
+						break;
+					}
+
+					BIT_VECTOR_SET_FLAG(render.environment_surface_flags, psp_surface_index, TRUE);
+#else
+			surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
+			for (surface_list_index = 0;
+				(short)surface_list_index < subcluster->surface_indices.count;
+				surface_index_buffer++, surface_list_index++)
+			{
+				if (!BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer))
+				{
+					if (render.environment_surface_count >= MAXIMUM_RENDERED_ENVIRONMENT_SURFACES)
+					{
+						break;
+					}
+
+					BIT_VECTOR_SET_FLAG(render.environment_surface_flags, *surface_index_buffer, TRUE);
+#endif
+"""),
+# the subclusters' lists: the bounded-surfaces pass
+("""				long *surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
+				long surface_list_index;
+
+				for (surface_list_index = 0;
+					(short)surface_list_index < subcluster->surface_indices.count;
+					surface_index_buffer++, surface_list_index++)
+				{
+					if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer) &&
+						!BIT_VECTOR_TEST_FLAG(surface_flags, *surface_index_buffer))
+					{
+						if (found_count >= maximum_count)
+						{
+							break;
+						}
+
+						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
+""",
+"""#ifdef HALO_PSP
+				long surface_list_index;
+
+				for (surface_list_index = 0;
+					(short)surface_list_index < subcluster->surface_indices.count;
+					surface_list_index++)
+				{
+					long psp_surface_index = PSP_SURFACE_INDEX(&subcluster->surface_indices, surface_list_index);
+
+					if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, psp_surface_index) &&
+						!BIT_VECTOR_TEST_FLAG(surface_flags, psp_surface_index))
+					{
+						if (found_count >= maximum_count)
+						{
+							break;
+						}
+
+						BIT_VECTOR_SET_FLAG(surface_flags, psp_surface_index, TRUE);
+#else
+				long *surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
+				long surface_list_index;
+
+				for (surface_list_index = 0;
+					(short)surface_list_index < subcluster->surface_indices.count;
+					surface_index_buffer++, surface_list_index++)
+				{
+					if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer) &&
+						!BIT_VECTOR_TEST_FLAG(surface_flags, *surface_index_buffer))
+					{
+						if (found_count >= maximum_count)
+						{
+							break;
+						}
+
+						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
+#endif
+"""),
+("""						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
+#endif
+						surface_indices[found_count++] = *surface_index_buffer;
+""",
+"""						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
+#endif
+#ifdef HALO_PSP
+						surface_indices[found_count++] = psp_surface_index;
+#else
+						surface_indices[found_count++] = *surface_index_buffer;
+#endif
+"""),
+# leaf surface references in the bounded-surfaces pass
+("""			struct structure_visibility_surface_reference *reference = TAG_BLOCK_GET_ELEMENT(
+				&structure->surface_references,
+				reference_index,
+				struct structure_visibility_surface_reference);
+			long surface_index = reference->surface_index;
+""",
+"""#ifdef HALO_PSP
+			long surface_index, psp_node_index;
+
+			psp_surface_reference(&structure->surface_references, reference_index, &surface_index, &psp_node_index);
+#else
+			struct structure_visibility_surface_reference *reference = TAG_BLOCK_GET_ELEMENT(
+				&structure->surface_references,
+				reference_index,
+				struct structure_visibility_surface_reference);
+			long surface_index = reference->surface_index;
+#endif
+"""),
+]
+
+FIXES_36["source/structures/structures.c#packed"] = [
+("""		struct structure_surface_reference *surface_reference = TAG_BLOCK_GET_ELEMENT(
+			&structure->surface_references,
+			surface_reference_index,
+			struct structure_surface_reference);
+
+		if (surface_reference->bsp3d_node_index != NONE)
+		{
+			struct bsp3d_node *node = TAG_BLOCK_GET_ELEMENT(
+				&TAG_BLOCK_GET_ELEMENT(
+					&structure->collision_bsp,
+					0,
+					struct collision_bsp)->bsp3d.nodes,
+				surface_reference->bsp3d_node_index,
+				struct bsp3d_node);
+
+			if (node->plane_designator == plane_index)
+			{
+				struct structure_surface *surface = TAG_BLOCK_GET_ELEMENT(
+					&structure->surfaces,
+					surface_reference->surface_index,
+					struct structure_surface);
+""",
+"""#ifdef HALO_PSP
+		struct structure_surface_reference psp_reference, *surface_reference = &psp_reference;
+
+		psp_surface_reference(&structure->surface_references, surface_reference_index,
+			&psp_reference.surface_index, &psp_reference.bsp3d_node_index);
+#else
+		struct structure_surface_reference *surface_reference = TAG_BLOCK_GET_ELEMENT(
+			&structure->surface_references,
+			surface_reference_index,
+			struct structure_surface_reference);
+#endif
+
+		if (surface_reference->bsp3d_node_index != NONE)
+		{
+			struct bsp3d_node *node = TAG_BLOCK_GET_ELEMENT(
+				&TAG_BLOCK_GET_ELEMENT(
+					&structure->collision_bsp,
+					0,
+					struct collision_bsp)->bsp3d.nodes,
+				surface_reference->bsp3d_node_index,
+				struct bsp3d_node);
+
+			if (node->plane_designator == plane_index)
+			{
+				struct structure_surface *surface = TAG_BLOCK_GET_ELEMENT(
+					&structure->surfaces,
+					surface_reference->surface_index,
+					struct structure_surface);
+"""),
+("""					environment_vertex_compressed_get_point(
+						structure_material_get_vertex(
+							material,
+							surface->vertex_indices[0]),
+						&triangle_points[0]);
+					environment_vertex_compressed_get_point(
+						structure_material_get_vertex(
+							material,
+							surface->vertex_indices[1]),
+						&triangle_points[1]);
+					environment_vertex_compressed_get_point(
+						structure_material_get_vertex(
+							material,
+							surface->vertex_indices[2]),
+						&triangle_points[2]);
+""",
+"""#ifdef HALO_PSP
+					psp_material_vertex_point(material, surface->vertex_indices[0], &triangle_points[0]);
+					psp_material_vertex_point(material, surface->vertex_indices[1], &triangle_points[1]);
+					psp_material_vertex_point(material, surface->vertex_indices[2], &triangle_points[2]);
+#else
+					environment_vertex_compressed_get_point(
+						structure_material_get_vertex(
+							material,
+							surface->vertex_indices[0]),
+						&triangle_points[0]);
+					environment_vertex_compressed_get_point(
+						structure_material_get_vertex(
+							material,
+							surface->vertex_indices[1]),
+						&triangle_points[1]);
+					environment_vertex_compressed_get_point(
+						structure_material_get_vertex(
+							material,
+							surface->vertex_indices[2]),
+						&triangle_points[2]);
+#endif
+"""),
+]
+
+FIXES_36["source/structures/structures.c#readers"] = [
+("""#define structure_material_get_vertex(material, vertex_index) \\
+	((struct environment_vertex_compressed const *) \\
+		(material)->compressed_vertex_data.address + (vertex_index))
+""",
+"""#define structure_material_get_vertex(material, vertex_index) \\
+	((struct environment_vertex_compressed const *) \\
+		(material)->compressed_vertex_data.address + (vertex_index))
+""" + PSP_BSP_READERS),
+]
+FIXES_36["source/structures/structure_visibility.c#readers"] = [
+("""	COMPRESSED_STRUCTURE_VERTEX_SIZE = 0x20,
+	_shader_type_environment = 3,
+};
+""",
+"""	COMPRESSED_STRUCTURE_VERTEX_SIZE = 0x20,
+	_shader_type_environment = 3,
+};
+""" + PSP_BSP_READERS),
+]
+
+# build 70: the collision BSP's edges, surfaces and bsp2d references at 16
+# bits (invader-build -G packs them; every map on the PSP is built that way,
+# the Xbox originals of all 23 maps being on hand). Every campaign BSP's
+# counts fit: edges to 57,375 (unsigned), vertices and surfaces to 28,751,
+# planes to 19,123 and bsp2d nodes to 28,445 with their flag bit at bit 15;
+# no index in those tables is ever NONE. The flagged fields (a surface's and
+# a reference's plane designator, a reference's root) are read through
+# PSP_DESIGNATOR(), which gives the 32-bit convention the code was written
+# for (the flag at LONG_MIN); bsp3d nodes stay 32-bit (to 51,300, with a
+# leaf flag). Edges 24 -> 12 bytes, surfaces 12 -> 8, references 8 -> 4.
+FIXES_36["source/physics/collision_bsp_definitions.h#packed"] = [
+("""struct collision_surface
+{
+	long plane_designator;
+	long first_edge_index;
+	byte flags;
+	byte breakable_surface_index;
+	short material_index;
+};
+
+struct collision_edge
+{
+	long vertex_indices[2];
+	long edge_indices[2];
+	long surface_indices[2];
+};
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_UNPACKED_COLLISION)
+/* packed (psp_fixups.py, build 70): the plane designator's flag at bit 15 */
+struct collision_surface
+{
+	short plane_designator;
+	unsigned short first_edge_index;
+	byte flags;
+	byte breakable_surface_index;
+	short material_index;
+};
+
+struct collision_edge
+{
+	unsigned short vertex_indices[2];
+	unsigned short edge_indices[2];
+	unsigned short surface_indices[2];
+};
+#define PSP_DESIGNATOR(x) ((long)(x) < 0 ? (long)(LONG_MIN | ((x) & 0x7FFF)) : (long)(x))
+#else
+struct collision_surface
+{
+	long plane_designator;
+	long first_edge_index;
+	byte flags;
+	byte breakable_surface_index;
+	short material_index;
+};
+
+struct collision_edge
+{
+	long vertex_indices[2];
+	long edge_indices[2];
+	long surface_indices[2];
+};
+#define PSP_DESIGNATOR(x) ((long)(x))
+#endif
+"""),
+("""typedef char collision_surface_size_assert[
+	sizeof(struct collision_surface) == 0x0C ? 1 : -1];
+typedef char collision_surface_first_edge_index_offset_assert[
+	offsetof(struct collision_surface, first_edge_index) == 0x04 ? 1 : -1];
+typedef char collision_surface_material_index_offset_assert[
+	offsetof(struct collision_surface, material_index) == 0x0A ? 1 : -1];
+typedef char collision_edge_size_assert[
+	sizeof(struct collision_edge) == 0x18 ? 1 : -1];
+typedef char collision_edge_edge_indices_offset_assert[
+	offsetof(struct collision_edge, edge_indices) == 0x08 ? 1 : -1];
+typedef char collision_edge_surface_indices_offset_assert[
+	offsetof(struct collision_edge, surface_indices) == 0x10 ? 1 : -1];
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_UNPACKED_COLLISION)
+typedef char collision_surface_size_assert[
+	sizeof(struct collision_surface) == 0x08 ? 1 : -1];
+typedef char collision_edge_size_assert[
+	sizeof(struct collision_edge) == 0x0C ? 1 : -1];
+#else
+typedef char collision_surface_size_assert[
+	sizeof(struct collision_surface) == 0x0C ? 1 : -1];
+typedef char collision_surface_first_edge_index_offset_assert[
+	offsetof(struct collision_surface, first_edge_index) == 0x04 ? 1 : -1];
+typedef char collision_surface_material_index_offset_assert[
+	offsetof(struct collision_surface, material_index) == 0x0A ? 1 : -1];
+typedef char collision_edge_size_assert[
+	sizeof(struct collision_edge) == 0x18 ? 1 : -1];
+typedef char collision_edge_edge_indices_offset_assert[
+	offsetof(struct collision_edge, edge_indices) == 0x08 ? 1 : -1];
+typedef char collision_edge_surface_indices_offset_assert[
+	offsetof(struct collision_edge, surface_indices) == 0x10 ? 1 : -1];
+#endif
+"""),
+]
+FIXES_36["source/physics/collision_bsp.c#packed"] = [
+("""struct bsp2d_reference
+{
+	long plane_designator;
+	long root_index;
+};
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_UNPACKED_COLLISION)
+/* packed (psp_fixups.py, build 70): both flags at bit 15 */
+struct bsp2d_reference
+{
+	short plane_designator;
+	short root_index;
+};
+#else
+struct bsp2d_reference
+{
+	long plane_designator;
+	long root_index;
+};
+#endif
+"""),
+("""typedef char bsp2d_reference_size_assert[
+	sizeof(struct bsp2d_reference) == 0x08 ? 1 : -1];
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_UNPACKED_COLLISION)
+typedef char bsp2d_reference_size_assert[
+	sizeof(struct bsp2d_reference) == 0x04 ? 1 : -1];
+#else
+typedef char bsp2d_reference_size_assert[
+	sizeof(struct bsp2d_reference) == 0x08 ? 1 : -1];
+#endif
+"""),
+]
+
+# the flagged fields' readers: every "<surface-ish>->plane_designator" and
+# "reference->root_index" wrapped in PSP_DESIGNATOR() (a regex pass, since
+# there are 33 of them across 7 files; the left-hand side of an assignment is
+# never one of these)
+PACKED_DESIGNATOR_FILES = ["source/physics/collision_bsp.c", "source/physics/collision_features.c",
+    "source/physics/breakable_surfaces.c", "source/physics/collision_debug.c", "source/effects/decals.c",
+    "source/units/bipeds.c", "source/items/items.c"]
+def packed_designators(tree):
+    import re
+    changed = 0
+    pattern = re.compile(r"\b((?:[a-z0-9_]*surface[a-z0-9_]*|reference)->(?:plane_designator|root_index))\b")
+    for rel in PACKED_DESIGNATOR_FILES:
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "PSP_DESIGNATOR(" in text and rel.endswith("collision_bsp.c") is False:
+            pass
+        new, count = pattern.subn(r"PSP_DESIGNATOR(\1)", text)
+        # never wrap a left-hand side (none exist in the game code; the check keeps it that way)
+        if re.search(r"PSP_DESIGNATOR\([^)]*\)\s*=[^=]", new):
+            sys.exit("psp_fixups: %s: a packed designator is assigned to" % rel)
+        if count:
+            if "#include" in new:
+                first = new.index("#include")
+                line_end = new.index("\n", first) + 1
+                if "collision_bsp_definitions.h" not in new[:line_end + 2000]:
+                    new = new[:line_end] + '#include "physics/collision_bsp_definitions.h" /* PSP_DESIGNATOR (psp_fixups.py) */\n' + new[line_end:]
+            open(path, "w", errors="surrogateescape").write(new)
+            changed += count
+    return changed
+
+# build 71: the game's clocks from the PSP's microsecond counter since boot.
+# The Linux layer's GetTickCount and QueryPerformanceCounter read
+# CLOCK_MONOTONIC, which the PSP's C library answers with the wall clock
+# (gettimeofday): milliseconds since 1970, cut to 32 bits. With the vblank
+# throttle off (build 66) the frame loop measures its first frame against a
+# start time of 0, and that wall-clock value read as a signed long is
+# negative for 24.8 days out of every 49.7, depending on the PSP's date: the
+# game then asked to Sleep() for weeks before its first tick (Sheepdog01's b70 run,
+# 2026-10-05: game time 0 forever, step main_update_time). The emulator's
+# date happened to give a positive value
+FIXES_36["port/linux/src/xbox_kernel.c#clock"] = [
+("""DWORD WINAPI GetTickCount(void)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (DWORD)((unsigned long long)now.tv_sec * 1000ULL + (unsigned long long)now.tv_nsec / 1000000ULL);
+}
+""",
+"""#ifdef HALO_PSP
+long long sceKernelGetSystemTimeWide(void); /* microseconds since the PSP booted (psp_fixups.py) */
+#endif
+DWORD WINAPI GetTickCount(void)
+{
+#ifdef HALO_PSP
+	return (DWORD)((unsigned long long)sceKernelGetSystemTimeWide() / 1000ULL);
+#else
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (DWORD)((unsigned long long)now.tv_sec * 1000ULL + (unsigned long long)now.tv_nsec / 1000000ULL);
+#endif
+}
+"""),
+("""BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *count)
+{
+	struct timespec now;
+
+	clock_gettime(CLOCK_MONOTONIC, &now);
+""",
+"""BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *count)
+{
+	struct timespec now;
+
+#ifdef HALO_PSP
+	count->QuadPart = (LONGLONG)sceKernelGetSystemTimeWide();
+	return TRUE;
+#endif
+	clock_gettime(CLOCK_MONOTONIC, &now);
+"""),
+]
+# and the frame pacing never sleeps longer than a frame, whatever the clock says
+FIXES_36["source/main/main.c#sleep"] = [
+("""		if (milliseconds_elapsed < 33)
+		{
+			profile_idle_start();
+			if (global_frame_rate_throttle)
+				Sleep(33 - milliseconds_elapsed);
+			profile_idle_end();
+		}
+""",
+"""#ifdef HALO_PSP
+		if (milliseconds_elapsed >= 0 && milliseconds_elapsed < 33)
+#else
+		if (milliseconds_elapsed < 33)
+#endif
+		{
+			profile_idle_start();
+			if (global_frame_rate_throttle)
+				Sleep(33 - milliseconds_elapsed);
+			profile_idle_end();
+		}
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()):
+    FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
+
+
+for rel, changes in FIXES.items():
+    path = os.path.join(TREE, rel)
+    text = open(path, errors="surrogateescape").read()
+    if "psp_fixups.py" in text:
+        continue
+    for old, new in changes:
+        count = text.count(old)
+        if count != 1:
+            sys.exit("psp_fixups: %s: expected 1 match, found %d:\n%s" % (rel, count, old[:200]))
+        text = text.replace(old, new)
+    # the sizes go after the file's first #include, so its headers come first
+    if rel.endswith(".h"):
+        open(path, "w", errors="surrogateescape").write(text); continue
+    first = text.index("#include")
+    line_end = text.index("\n", first) + 1
+    text = text[:line_end] + PRELUDE + text[line_end:]
+    open(path, "w", errors="surrogateescape").write(text)
+print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned accesses fixed in %d, breadcrumbs in %d, code appended to %d, passes skipped in %d, packed designators %d"
+      % (len(FIXES), ai_debug_records(TREE), unaligned_accesses(TREE), breadcrumbs(TREE) + step_labels(TREE), appended(TREE), skipped_passes(TREE), packed_designators(TREE)))

@@ -1,0 +1,505 @@
+/* psp_me.c - jobs on the Media Engine (build 86: the sound mixer; build 87:
+job slots and the ME's own timing).
+
+The PSP's second CPU, the Media Engine (ME), does nothing for the game: its
+firmware runs the XMB's music and video decoders, which Halo doesn't use.
+Build 44's test (halo_me, Sheepdog01's PSP-1000, 2026-10-03) ran our C on it with
+mcidclan's me-core-mapper library; build 86 gave it the game's sound mixer
+(Sheepdog01's b86 run 2: ~2,500 blocks, none failed, a clean HOME exit).
+
+A job, start to end:
+	1. the main CPU writes its cache back, so main RAM holds what the ME
+	   must read;
+	2. it fills a SLOT (a few words of UNCACHED memory: both CPUs see the
+	   same words at once) and bumps the slot's request number;
+	3. the ME, polling its slots, drops its own cache (stale copies from the
+	   last job), runs the job (integers or FPU, never the VFPU, which the ME
+	   lacks; no system calls, no library calls), writes its cache back, and
+	   sets the slot's done number;
+	4. the main CPU drops its cached copies of what the ME changed.
+The ME writes only what the job owns, on whole 64-byte cache lines (a line
+written back carries all 64 bytes, so a shared line would overwrite a
+neighbour's newer bytes), and its own stack in its private memory.
+
+One slot per client thread (the audio thread; the renderer later), so two
+threads never share a slot; the ME serves the slots in order, audio first.
+
+Timing: the ME reads its own cycle counter (coprocessor 0 register 9)
+around each job; its rate is measured against the main CPU's microsecond
+clock at start. So the log has the ME's own time a job, its share of the
+ME, and the main CPU's side (hand-over and waiting) apart.
+
+While idle, the ME reads the uncached words once every ~25 us and otherwise
+spins in registers: the bus is the PSP's scarce resource (memory_traffic.md).
+
+Stopping: the ME must be stopped before the PSP leaves the game (HOME, quit)
+or sleeps (build 44's audio sample, which never stopped its ME, crashed the
+PSP on HOME). Stop asks, waits for the ME to acknowledge and halt itself;
+with no answer it holds the ME in reset through the kernel. The library's
+sleep handler (it replaces the firmware's own ME one) holds it in reset too.
+After a stop every job runs on the main CPU instead.
+
+The ME is the firmware's until the next reboot of the PSP once taken: XMB
+music and video stay off until then. PPSSPP doesn't run ME code at all:
+there, each job runs on the main CPU ("simulated"), to exercise everything
+but the ME itself.
+
+Built on mcidclan's me-core-mapper (psp-media-engine-custom-core), MIT
+licence, copyright (c) 2025-2026 mcidclan (m-c/d, m-cid); LICENSE-mecore.md
+ships beside the EBOOT. */
+#include <pspkernel.h>
+#include <pspiofilemgr.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <me-core-mapper/me-core.h>
+#include "psp_me.h"
+
+void platform_log(const char *format, ...);
+void psp_log_flush(void);
+int psp_keep(const char *name);
+
+/* the jobs (their own files): run on the ME, or on the main CPU when
+simulated or after a stop */
+unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *sums, short *output,
+	unsigned long frames, unsigned long *clipped);
+unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results);
+
+#define AUDIO_LIST_MAX 256
+#define MIX_FRAMES_MAX 512
+
+struct me_slot
+{
+	unsigned int request;  /* the main CPU: the number of the job to run */
+	unsigned int done;     /* the ME: the number of the last job finished */
+	unsigned int type;     /* ME_JOB_... */
+	unsigned int cycles;   /* the ME: its cycle counter across the last job */
+	unsigned int args[ME_JOB_ARGS];
+	unsigned int results[ME_JOB_RESULTS];
+} __attribute__((aligned(64)));
+
+struct me_control
+{
+	unsigned int alive;    /* the ME: idle polls, counted */
+	unsigned int stop;     /* the main CPU 1: stop; the ME 2: stopped */
+	unsigned int clock;    /* the ME: its cycle counter at the last poll */
+	unsigned int jobs;     /* the ME: jobs run */
+} __attribute__((aligned(64)));
+
+/* whole cache lines of their own; only ever used through the uncached view */
+static struct me_control control_storage __attribute__((aligned(64)));
+static struct me_slot slot_storage[ME_SLOTS] __attribute__((aligned(64)));
+static void *audio_list_storage[AUDIO_LIST_MAX] __attribute__((aligned(64)));
+#define UNCACHED(p) ((volatile __typeof__(*(p)) *)(0x40000000u | (unsigned int)(p)))
+#define CONTROL UNCACHED(&control_storage)
+#define SLOT(k) UNCACHED(&slot_storage[k])
+#define AUDIO_LIST ((void *volatile *)(0x40000000u | (unsigned int)audio_list_storage))
+
+/* 0 off, 1 the ME runs the jobs, 2 simulated (the emulator: the main CPU
+runs them), -1 stopped (after HOME, quit, sleep or a failure) */
+static volatile int me_state = 0;
+static unsigned int slot_request[ME_SLOTS];
+/* the ME's cycle counter, counts a microsecond (measured at start) */
+static float me_cycles_per_us = 0.0f;
+
+/* ---------- the Media Engine's side: no system calls, no library calls, no
+VFPU; everything it touches is listed above */
+
+static inline unsigned int me_cycles(void)
+{
+	unsigned int count;
+
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+	return count;
+}
+
+static inline void me_idle(void)
+{
+	unsigned int k;
+
+	/* ~25 us at 333 MHz in registers and the instruction cache */
+	for (k = 0; k < 2000; k++)
+		__asm__ __volatile__("nop");
+}
+
+/* one job (either CPU) */
+static void run_job(volatile struct me_slot *slot, int *sums)
+{
+	switch (slot->type)
+	{
+	case ME_JOB_AUDIO:
+	{
+		unsigned long clipped = 0, voices;
+
+		/* args: count, frames, output */
+		voices = psp_dsound_mix_list((void *const *)AUDIO_LIST, slot->args[0], sums, (short *)slot->args[2],
+			slot->args[1], &clipped);
+		slot->results[0] = (unsigned int)voices;
+		slot->results[1] = (unsigned int)clipped;
+		break;
+	}
+	case ME_JOB_CLASSIFY:
+	{
+		unsigned int results[ME_JOB_RESULTS] = { 0 }, k;
+
+		psp_ge_me_classify((const unsigned int *)slot->args, results);
+		for (k = 0; k < ME_JOB_RESULTS; k++)
+			slot->results[k] = results[k];
+		break;
+	}
+	default:
+		break;
+	}
+}
+
+__attribute__((noinline, aligned(4)))
+void meLibOnProcess(void)
+{
+	volatile struct me_control *control = CONTROL;
+	int sums[MIX_FRAMES_MAX * 2];
+
+	meLibDcacheWritebackInvalidateAll();
+	for (;;)
+	{
+		int k;
+
+		control->alive++;
+		control->clock = me_cycles();
+		if (control->stop)
+			break;
+		for (k = 0; k < ME_SLOTS; k++)
+		{
+			volatile struct me_slot *slot = SLOT(k);
+			unsigned int request = slot->request, start;
+
+			if (request == slot->done)
+				continue;
+			start = me_cycles();
+			/* what the main CPU wrote: drop any copy left from the last job */
+			meLibDcacheWritebackInvalidateAll();
+			run_job(slot, sums);
+			/* what this job wrote, to main RAM, before saying so */
+			meLibDcacheWritebackInvalidateAll();
+			slot->cycles = me_cycles() - start;
+			control->jobs++;
+			__asm__ __volatile__("sync");
+			slot->done = request;
+			__asm__ __volatile__("sync");
+		}
+		me_idle();
+	}
+	control->stop = 2;
+	__asm__ __volatile__("sync");
+	meLibHalt();
+}
+
+/* the library's sleep handler (its replacement for the firmware's own ME one)
+calls these in kernel mode: the ME held in reset through the sleep and after
+it; the main CPU runs the jobs from then on */
+void meLibOnSleep(void)
+{
+	HW_SYS_RESET_ENABLE = SC_HW_RESET;
+	meLibSync();
+	me_state = -1;
+}
+
+void meLibOnWake(void)
+{
+	HW_SYS_RESET_ENABLE = SC_HW_RESET;
+	meLibSync();
+	me_state = -1;
+}
+
+/* ---------- the main CPU's side */
+
+/* the log's figures, per slot, since the last report */
+static struct
+{
+	unsigned long jobs, failures, simulated;
+	unsigned long long me_cycles, wait_us, handover_us;
+	unsigned long me_worst_us, wait_worst_us;
+} stats[ME_SLOTS];
+static unsigned long long report_mark = 0;
+static float busy_percent_last = 0.0f;
+
+static int me_hold_reset(void)
+{
+	HW_SYS_RESET_ENABLE = SC_HW_RESET;
+	meLibSync();
+	return 0;
+}
+
+static int emulator(void)
+{
+	int result = 0;
+
+	/* PPSSPP answers its own "kemulator:" device (3: is this an emulator) */
+	return sceIoDevctl("kemulator:", 3, NULL, 0, &result, sizeof(result)) == 0 && result;
+}
+
+void psp_me_stop(const char *why)
+{
+	volatile struct me_control *control = CONTROL;
+	int k;
+
+	if (me_state == 1)
+	{
+		control->stop = 1;
+		for (k = 0; k < 100 && control->stop != 2; k++)
+			sceKernelDelayThread(1000);
+		if (control->stop == 2)
+			platform_log("ME: stopped (%s); halted itself after %d ms; the main CPU runs its jobs from here", why, k);
+		else
+		{
+			kcall_2(me_hold_reset, 0);
+			platform_log("ME: stopped (%s): NO answer in 100 ms, held in reset; the main CPU runs its jobs from here", why);
+		}
+	}
+	else if (me_state == 2)
+		platform_log("ME (simulated): stopped (%s)", why);
+	if (me_state > 0)
+		me_state = -1;
+}
+
+/* the old name (psp_platform.c's HOME and sleep callbacks) */
+void psp_meaudio_stop(const char *why)
+{
+	psp_me_stop(why);
+}
+
+static void stop_at_exit(void)
+{
+	psp_me_stop("exit");
+}
+
+/* launch (build 87: on unless the launch menu's "nomeaudio"): the ME started,
+its first signs of life checked, its clock measured. Non-zero when jobs can
+be handed over */
+int psp_me_start(void)
+{
+	volatile struct me_control *control = CONTROL;
+	unsigned int before, clock_before;
+	unsigned long long mark;
+	int table, k;
+
+	if (me_state || psp_keep("nomeaudio"))
+		return me_state > 0;
+	/* no cached copy of them anywhere on this CPU; then the words that
+	matter (they are in zeroed memory already) */
+	sceKernelDcacheWritebackInvalidateRange(&control_storage, sizeof(control_storage));
+	sceKernelDcacheWritebackInvalidateRange(slot_storage, sizeof(slot_storage));
+	sceKernelDcacheWritebackInvalidateRange(audio_list_storage, sizeof(audio_list_storage));
+	control->alive = control->stop = control->clock = control->jobs = 0;
+	for (k = 0; k < ME_SLOTS; k++)
+		SLOT(k)->request = SLOT(k)->done = 0;
+	report_mark = sceKernelGetSystemTimeWide();
+	if (emulator())
+	{
+		me_state = 2;
+		platform_log("ME: the emulator runs no ME code; each job is SIMULATED (the main CPU runs it)");
+		return 1;
+	}
+	{
+		/* the library writes its kernel helper, kcall.prx, to the current
+		folder and loads it from there: ms0:/halo, whatever the game's own
+		current folder is */
+		char folder[256];
+		int have = getcwd(folder, sizeof(folder)) != NULL;
+
+		platform_log("ME: starting the Media Engine (a hang here: hold the power switch up 10 s; launch with nomeaudio)");
+		psp_log_flush();
+		chdir("ms0:/halo");
+		table = meLibDefaultInit();
+		if (have)
+			chdir(folder);
+	}
+	if (table < 0)
+	{
+		me_state = -1;
+		platform_log("ME: the library couldn't start the ME (%d: -3/-4 kcall.prx not written or loaded, -5 no ME event handler, -6 unknown firmware image)", table);
+		return 0;
+	}
+	sceKernelDelayThread(2000);
+	before = control->alive;
+	clock_before = control->clock;
+	mark = sceKernelGetSystemTimeWide();
+	sceKernelDelayThread(20000);
+	if (control->alive == before)
+	{
+		me_state = -1;
+		kcall_2(me_hold_reset, 0);
+		platform_log("ME: the ME didn't start (alive %u -> %u in 20 ms; table %d); held in reset", before, control->alive, table);
+		return 0;
+	}
+	{
+		unsigned int cycles = control->clock - clock_before;
+		unsigned long long us = sceKernelGetSystemTimeWide() - mark;
+
+		me_cycles_per_us = us ? (float)cycles / (float)us : 0.0f;
+	}
+	me_state = 1;
+	atexit(stop_at_exit);
+	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond)",
+		table, control->alive - before, me_cycles_per_us);
+	psp_log_flush();
+	return 1;
+}
+
+int psp_meaudio_start(void)
+{
+	return psp_me_start();
+}
+
+int psp_me_running(void)
+{
+	return me_state > 0;
+}
+
+int psp_meaudio_running(void)
+{
+	return me_state > 0;
+}
+
+/* a job in a slot, run to the end: on the ME (the caller sleeps meanwhile),
+or on this CPU when simulated. args as the job type takes them; results
+filled. Returns 1 when done, 0 if the ME failed (it is stopped then; the
+caller runs the job its own way). first_look_us: how long the job is
+expected to take, the first sleep before looking (then every 0.1 ms) */
+int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
+	unsigned int first_look_us)
+{
+	volatile struct me_slot *slot;
+	unsigned long long start;
+	unsigned long waited, me_us;
+	int k;
+
+	if (me_state <= 0 || which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS)
+		return 0;
+	slot = SLOT(which);
+	start = sceKernelGetSystemTimeWide();
+	slot->type = type;
+	for (k = 0; k < arg_count; k++)
+		slot->args[k] = args[k];
+	if (me_state == 2)
+	{
+		static int sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
+
+		/* the emulator: the job's own code, on this CPU */
+		run_job(slot, sums);
+		me_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+		stats[which].simulated++;
+		waited = me_us;
+	}
+	else
+	{
+		__asm__ __volatile__("sync");
+		slot->request = ++slot_request[which];
+		__asm__ __volatile__("sync");
+		sceKernelDelayThread(first_look_us ? first_look_us : 100);
+		while (slot->done != slot_request[which])
+		{
+			if (sceKernelGetSystemTimeWide() - start > 40000)
+			{
+				platform_log("ME: a job (type %u) not finished in 40 ms (job %u; the ME at job %u, %u idle polls)", type,
+					slot_request[which], slot->done, CONTROL->alive);
+				stats[which].failures++;
+				psp_me_stop("a job timed out");
+				return 0;
+			}
+			sceKernelDelayThread(100);
+		}
+		waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+		stats[which].me_cycles += slot->cycles;
+		me_us = me_cycles_per_us > 0.0f ? (unsigned long)((float)slot->cycles / me_cycles_per_us) : 0;
+	}
+	for (k = 0; k < ME_JOB_RESULTS; k++)
+		results[k] = slot->results[k];
+	stats[which].jobs++;
+	stats[which].wait_us += waited;
+	if (waited > stats[which].wait_worst_us)
+		stats[which].wait_worst_us = waited;
+	if (me_us > stats[which].me_worst_us)
+		stats[which].me_worst_us = me_us;
+	return 1;
+}
+
+/* the audio job's list: up to 256 voices, written through the uncached view */
+int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
+	unsigned long *clipped, unsigned long *waited_us)
+{
+	unsigned int args[3], results[ME_JOB_RESULTS];
+	unsigned long long start = sceKernelGetSystemTimeWide();
+	unsigned long k;
+
+	if (me_state <= 0 || count > AUDIO_LIST_MAX || frames > MIX_FRAMES_MAX)
+		return 0;
+	for (k = 0; k < count; k++)
+		AUDIO_LIST[k] = list[k];
+	args[0] = (unsigned int)count;
+	args[1] = (unsigned int)frames;
+	args[2] = (unsigned int)output;
+	/* about 0.1-1 ms of work: a first look after 0.2 ms */
+	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 3, results, 200))
+		return 0;
+	*voices = results[0];
+	*clipped = results[1];
+	*waited_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+	return 1;
+}
+
+/* build 86's entry, kept for psp_dsound.c */
+int psp_meaudio_run(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
+	unsigned long *clipped, unsigned long *waited_us)
+{
+	return psp_me_audio(list, count, output, frames, voices, clipped, waited_us);
+}
+
+/* the main CPU's own work around a job (prepare, cache write-back and
+invalidation), told by the client, for the log */
+void psp_me_handover(int which, unsigned long us)
+{
+	if (which >= 0 && which < ME_SLOTS)
+		stats[which].handover_us += us;
+}
+
+float psp_me_busy_percent(void)
+{
+	return busy_percent_last;
+}
+
+/* every heartbeat (psp_platform.c): per slot, the ME's own time a job and its
+share of the ME, the main CPU's hand-over and wait */
+void psp_me_report(void)
+{
+	static const char *const names[ME_SLOTS] = { "audio", "render" };
+	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
+	char line[600];
+	int length = 0, k;
+
+	if (!me_state)
+		return;
+	report_mark = now;
+	for (k = 0; k < ME_SLOTS; k++)
+	{
+		unsigned long long me_us = me_cycles_per_us > 0.0f ? (unsigned long long)((float)stats[k].me_cycles / me_cycles_per_us) : 0;
+
+		if (stats[k].simulated)
+			me_us = stats[k].wait_us;
+		busy_us_all += me_us;
+		if (!stats[k].jobs && !stats[k].failures)
+			continue;
+		length += snprintf(line + length, sizeof(line) - length,
+			"; %s: %lu jobs, the ME's own time %lu us a job (worst %lu), %.1f%% of the ME; the main CPU's hand-over %lu us a job, waiting %lu us a job (worst %lu); %lu failed",
+			names[k], stats[k].jobs, stats[k].jobs ? (unsigned long)(me_us / stats[k].jobs) : 0, stats[k].me_worst_us,
+			window ? 100.0 * (double)me_us / (double)window : 0.0,
+			stats[k].jobs ? (unsigned long)(stats[k].handover_us / stats[k].jobs) : 0,
+			stats[k].jobs ? (unsigned long)(stats[k].wait_us / stats[k].jobs) : 0, stats[k].wait_worst_us, stats[k].failures);
+		if (length >= (int)sizeof(line))
+			length = (int)sizeof(line) - 1;
+	}
+	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
+	platform_log("ME: %s, %.1f%% busy over %.1f s%s", me_state == 1 ? "running" : me_state == 2 ? "SIMULATED (emulator)" :
+		"stopped", busy_percent_last, (double)window / 1e6, length ? line : "; no jobs");
+	memset(stats, 0, sizeof(stats));
+}
