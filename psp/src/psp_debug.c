@@ -43,6 +43,7 @@ extern float psp_budget_last[7];
 #define SETTING_STENCILS 16
 #define SETTING_COMPACT 17
 #define SETTING_DECALS 18
+#define SETTING_DETAIL_LEVEL 19
 #define LOCAL_OVERLAY 100
 #define LOCAL_AUDIO 101
 /* psp_dsound.c (build 86): 0 the main CPU mixes the sound, 1 the Media Engine */
@@ -72,6 +73,7 @@ static const char *const mixer_names[2] = { "main CPU", "Media Engine" };
 static const char *const stencil_names[3] = { "baked, EQUAL", "baked, +2", "old nudge" };
 static const char *const compact_names[2] = { "float", "16-bit" };
 static const char *const decal_names[2] = { "nudged (old)", "on the wall" };
+static const char *const detail_level_names[2] = { "slant per triangle (old)", "by distance" };
 
 static const struct item items[] =
 {
@@ -89,6 +91,7 @@ static const struct item items[] =
 	{ "Nudge floor (depth steps, test)", SETTING_FLOOR, 4, floor_names },
 	{ "Stencils (wall decorations)", SETTING_STENCILS, 3, stencil_names },
 	{ "Painted symbols (decals)", SETTING_DECALS, 2, decal_names },
+	{ "Detail map level", SETTING_DETAIL_LEVEL, 2, detail_level_names },
 	{ "Level vertices (test)", SETTING_COMPACT, 2, compact_names },
 	{ "Light pass (test)", SETTING_LIGHT, 4, light_names },
 	{ "Audio mixer (needs meaudio)", LOCAL_AUDIO, 2, mixer_names },

@@ -734,6 +734,8 @@ static int light_mode = 2;
 void psp_ge_forget_level(void);
 static int stencil_mode;
 static int level_compact;
+/* build 91: detail passes levelled by distance only (see the detail pass) */
+static int detail_by_distance = 1;
 static int decal_project;
 static unsigned long light_index_triangles = 0, light_nudged_draws = 0, lights_skipped = 0;
 static int nudge_percent = 0; /* build 84: the lift limit off by default (Sheepdog01's b83 run) */
@@ -855,6 +857,12 @@ int psp_ge_setting(int which, int set, int value)
 			psp_ge_forget_level();
 		}
 		return stencil_mode;
+	case 19:
+		/* build 91: the detail passes' texture level by distance alone (1),
+		or with the slant buckets per triangle (0, b64-b90) */
+		if (set)
+			detail_by_distance = value != 0;
+		return detail_by_distance;
 	case 18:
 		/* build 90: the permanent decals on the level's own triangles */
 		if (set)
@@ -2700,7 +2708,24 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				sceGuFog(near, far > near ? far : near + 1.0f, 0xFF808080);
 				sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_SRC_COLOR, 0, 0);
 				sceGuEnable(GU_BLEND);
-				draw_pass_angled(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0, detail_pass_slope, 1);
+				/* build 91: a detail map's smaller levels are faded toward a
+				colour other than their top level's average (Bungie's detail
+				fade: measured on Blood Gulch, "detail metal sratches" loses
+				43% of its brightness by its eighth level, "detail grass" turns
+				purple), so two triangles side by side in different slant
+				buckets showed a step in brightness along their shared edge
+				(Sheepdog01, b90 run 1, the base floors). The GE's slope mode picks the
+				level per pixel by depth, which changes smoothly; the buckets
+				only add the slant, per triangle. Base maps keep the buckets
+				(their levels keep their average). "slant per triangle (old)"
+				in the debug menu restores them here */
+				if (detail_by_distance)
+				{
+					sceGuTexSlope(detail_pass_slope);
+					draw_pass(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0);
+				}
+				else
+					draw_pass_angled(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0, detail_pass_slope, 1);
 				detail_passes++;
 			}
 			sceGuDisable(GU_BLEND);
@@ -7024,6 +7049,69 @@ under it was drawn this frame: the caller draws it the usual way */
 static int decal_project = 1;
 static unsigned long decals_projected = 0, decal_projected_triangles = 0, decals_project_fallback = 0;
 static unsigned short project_indices[3 * 1024];
+/* build 91: what lies under each decal plane, remembered. b90 tested every
+triangle the level drew this frame against every plane, each frame: 3-4 ms
+a frame at blue base and 15 ms in front of red base (b90 benchrun). The
+level's triangles under a permanent decal never change, so the hits are kept
+per plane (the union over the frames that scanned) and drawn from the list;
+a plane is scanned again every DECAL_RESCAN frames (every DECAL_RESCAN_EMPTY
+while it has nothing), so a symbol coming into view is complete within half
+a second. Each
+hit keeps its stream's pack address, so a stream let go and rebuilt for
+other vertices isn't drawn from. The near-plane pieces are still found each
+frame (they change with the eye) */
+#define DECAL_CACHE_PLANES 32
+#define DECAL_CACHE_HITS 96
+#define DECAL_RESCAN 16
+/* a plane with nothing under it yet (out of view, or not drawn): looked at
+again every 4 frames */
+#define DECAL_RESCAN_EMPTY 4
+struct decal_cache_hit
+{
+	const struct level_stream *stream;
+	const void *source;
+	unsigned short tri[3];
+};
+static struct decal_cache_slot
+{
+	unsigned int key;
+	unsigned int scanned;
+	int count;
+	struct decal_cache_hit hit[DECAL_CACHE_HITS];
+} decal_cache[DECAL_CACHE_PLANES];
+static int decal_cache_next = 0;
+static unsigned long decal_cache_scans = 0, decal_cache_uses = 0, decal_project_us = 0;
+
+static unsigned int decal_plane_key(const float *n, float d, const float *low, const float *high)
+{
+	unsigned int h = 2166136261u;
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		h = (h ^ (unsigned int)(int)(n[k] * 1000.0f)) * 16777619u;
+		h = (h ^ (unsigned int)(int)(low[k] * 100.0f)) * 16777619u;
+		h = (h ^ (unsigned int)(int)(high[k] * 100.0f)) * 16777619u;
+	}
+	h = (h ^ (unsigned int)(int)(d * 100.0f)) * 16777619u;
+	return h ? h : 1;
+}
+
+static struct decal_cache_slot *decal_cache_find(unsigned int key)
+{
+	int i;
+	struct decal_cache_slot *slot;
+
+	for (i = 0; i < DECAL_CACHE_PLANES; i++)
+		if (decal_cache[i].key == key)
+			return &decal_cache[i];
+	slot = &decal_cache[decal_cache_next];
+	decal_cache_next = (decal_cache_next + 1) % DECAL_CACHE_PLANES;
+	slot->key = key;
+	slot->count = 0;
+	slot->scanned = stream_frame - DECAL_RESCAN;
+	return slot;
+}
 
 struct decal_plane
 {
@@ -7058,7 +7146,8 @@ static int decal_project_hit(const float *a, const float *b, const float *c, con
 static int decal_project_draw(const unsigned char *in, int quad_count)
 {
 	struct decal_plane planes[8];
-	int plane_count = 0, quad, p, r, triangles = 0;
+	int plane_count = 0, quad, p, r, triangles = 0, scan;
+	struct decal_cache_slot *slot;
 
 	if (frame_level_stamp != stream_frame || !frame_level_count)
 		return 0;
@@ -7168,16 +7257,81 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 		/* straight to the GE (pspgum's texture matrix slot isn't sent; as the
 		spotlight's cone) */
 		sceGuSetMatrix(GU_TEXTURE, &m);
+		slot = decal_cache_find(decal_plane_key(g->n, g->d, g->low, g->high));
+		scan = (int)(stream_frame - slot->scanned) >= (slot->count ? DECAL_RESCAN : DECAL_RESCAN_EMPTY);
+		if (scan)
+		{
+			slot->scanned = stream_frame;
+			decal_cache_scans++;
+		}
+		else
+			decal_cache_uses++;
+		/* from memory: the remembered hits, a draw per stream, for streams
+		drawn this frame with no near-plane pieces (those are scanned below) */
+		if (!scan)
+		{
+			int h = 0;
+
+			while (h < slot->count)
+			{
+				const struct level_stream *stream = slot->hit[h].stream;
+				int count = 0, drawn = 0, q;
+
+				for (q = 0; q < frame_level_count && !drawn; q++)
+					if (frame_level[q].stream == stream)
+						drawn = 1;
+				/* the hits are stored stream by stream (one scan's order). A
+				remembered triangle with a corner outside the near plane or the
+				guard band was cut up or left out by the base pass this frame
+				(the classifier's own test): its pieces are found below */
+				for (; h < slot->count && slot->hit[h].stream == stream; h++)
+					if (drawn && slot->hit[h].source == stream->source)
+					{
+						int c, out = 0;
+
+						for (c = 0; c < 3 && !out; c++)
+						{
+							float camera[3];
+
+							to_camera(&stream->base[slot->hit[h].tri[c]].x, camera);
+							out = outside(camera);
+						}
+						if (out)
+							continue;
+						project_indices[3 * count] = slot->hit[h].tri[0];
+						project_indices[3 * count + 1] = slot->hit[h].tri[1];
+						project_indices[3 * count + 2] = slot->hit[h].tri[2];
+						count++;
+					}
+				if (count)
+				{
+					unsigned short *list = list_take((count * 3 * sizeof(unsigned short) + 3) & ~3);
+
+					if (list)
+					{
+						memcpy(list, project_indices, count * 3 * sizeof(unsigned short));
+						sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+							count * 3, list, stream->base);
+						triangles += count;
+					}
+				}
+			}
+		}
 		for (r = 0; r < frame_level_count; r++)
 		{
 			const struct frame_level_draw *f = &frame_level[r];
 			const struct level_stream *stream = f->stream;
-			int count = 0, t;
+			int count = 0, t, h, scan_here;
 
 			if (stream->high[0] < g->low[0] || stream->low[0] > g->high[0] || stream->high[1] < g->low[1] ||
 				stream->low[1] > g->high[1] || stream->high[2] < g->low[2] || stream->low[2] > g->high[2])
 				continue;
-			for (t = 0; t < f->kept && count < 1024; t++)
+			/* a draw with triangles cut at the near plane is scanned: a
+			remembered triangle may be one of them this frame, drawn as its
+			pieces (whole, its EQUAL draw would stripe and its pieces add on
+			top) */
+			scan_here = scan;
+			for (t = 0; scan_here && t < f->kept && count < 1024; t++)
 			{
 				const unsigned short *tri = f->indices + 3 * t;
 
@@ -7187,6 +7341,20 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 					project_indices[3 * count + 1] = tri[1];
 					project_indices[3 * count + 2] = tri[2];
 					count++;
+					/* remembered (once) */
+					for (h = 0; h < slot->count; h++)
+						if (slot->hit[h].stream == stream && slot->hit[h].tri[0] == tri[0] &&
+							slot->hit[h].tri[1] == tri[1] && slot->hit[h].tri[2] == tri[2])
+							break;
+					if (h == slot->count && slot->count < DECAL_CACHE_HITS)
+					{
+						slot->hit[h].stream = stream;
+						slot->hit[h].source = stream->source;
+						slot->hit[h].tri[0] = tri[0];
+						slot->hit[h].tri[1] = tri[1];
+						slot->hit[h].tri[2] = tri[2];
+						slot->count++;
+					}
 				}
 			}
 			if (count)
@@ -7253,6 +7421,8 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	static float quad_units[256];
 
 	int original_quads = quad_count;
+	unsigned int project_start;
+	int project_done;
 
 	if (!frame_open || !vertices || quad_count <= 0 || quad_count > 256 || intensity <= 0 || list_full() ||
 		!psp_tex_bind(key, &alpha))
@@ -7449,7 +7619,9 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	sceGuColor(fragment);
 	sceGumMatrixMode(GU_MODEL);
 	world_model();
-	if (permanent && decal_project && level_compact <= 0 && decal_project_draw(in, original_quads))
+	if (permanent && decal_project && level_compact <= 0 &&
+		(project_start = sceKernelGetSystemTimeLow(), project_done = decal_project_draw(in, original_quads),
+		decal_project_us += sceKernelGetSystemTimeLow() - project_start, project_done))
 		;
 	else
 	{
@@ -7984,10 +8156,11 @@ void psp_ge_frame_end(void)
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;
 		/* build 90 */
-		platform_log("GE: permanent decals (%s): %lu drawn on the level's own triangles (%lu triangles), %lu the usual way (last 300 frames)",
+		platform_log("GE: permanent decals (%s): %lu drawn on the level's own triangles (%lu triangles), %lu the usual way (last 300 frames); planes scanned %lu, from memory %lu; %lu us a frame",
 			decal_project ? "on the level's triangles" : "nudged, as before", decals_projected, decal_projected_triangles,
-			decals_project_fallback);
+			decals_project_fallback, decal_cache_scans, decal_cache_uses, decal_project_us / 300);
 		decals_projected = decal_projected_triangles = decals_project_fallback = 0;
+		decal_cache_scans = decal_cache_uses = decal_project_us = 0;
 		if (me_classify_jobs || me_classify_failures)
 			platform_log("GE: ME classify (meclassify, measure only): %lu jobs, %lu vertices, the main CPU waited %lu us in all, %lu answers differing, %lu failed",
 				me_classify_jobs, me_classify_vertices, me_classify_wait_us, me_classify_mismatches, me_classify_failures);
