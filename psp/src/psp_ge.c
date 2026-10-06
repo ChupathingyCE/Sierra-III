@@ -1175,6 +1175,10 @@ struct level_stream
 	lights' reach; the copies are all the renderer has of a material once
 	its bytes have left the cache */
 	unsigned int *normals;
+	/* build 89: the lightmap vertices' packed incident radiosity, for object
+	lighting (object_lights.c via psp_ge_level_vertex_lighting; NULL without
+	a lightmap) */
+	unsigned int *radiosity;
 	int count;
 	/* build 68: the frame it was last drawn in, for letting the least used
 	go when the copies are over their budget (a map built with its geometry
@@ -1519,12 +1523,21 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	}
 	at = (const unsigned char *)bake.file + 64;
 	end = (const unsigned char *)bake.file + size;
-	for (k = 0; k < (int)header[3] && at + 20 <= end; k++)
+	/* build 89: every record checked against the file's end and its indices
+	against their arrays (a damaged or half-copied file is refused whole),
+	and stored at the count of good ones: b87-b88 stored at the loop index
+	while counting only successes, so a wall whose allocation failed sat
+	inside the counted range with NULL tables (review) */
+#define BAKE_ROOM(bytes) ((unsigned int)(end - at) >= (unsigned int)(bytes))
+	for (k = 0; k < (int)header[3]; k++)
 	{
-		struct bake_wall *w = &bake.walls[k];
+		struct bake_wall *w = &bake.walls[bake.wall_count];
 		const unsigned int *h = (const unsigned int *)at;
-		unsigned int i, slots;
+		unsigned int i, slots, vertex_limit;
 
+		if (!BAKE_ROOM(20) || h[2] > 65535 || h[3] > 65535 || h[4] > 1000000 ||
+			!BAKE_ROOM(20 + h[2] * 32 + h[3] * 12 + h[4] * 6))
+			goto damaged;
 		w->key = h[0]; w->original = h[1]; w->added = h[2]; w->affected_count = h[3]; w->piece_count = h[4];
 		at += 20;
 		w->added_vertices = (const float *)at;
@@ -1534,14 +1547,29 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		w->pieces = (const unsigned short *)at;
 		at += w->piece_count * 6;
 		at = (const unsigned char *)(((unsigned int)at + 3) & ~3u);
+		if (at > end || w->original > 65535)
+			goto damaged;
+		vertex_limit = w->original + w->added;
+		for (i = 0; i < w->affected_count; i++)
+			if ((unsigned int)w->affected[i].first + w->affected[i].count > w->piece_count)
+				goto damaged;
+		for (i = 0; i < w->piece_count * 3; i++)
+			if (w->pieces[i] >= vertex_limit)
+				goto damaged;
 		for (slots = 16; slots < w->affected_count * 2; slots <<= 1)
 			;
 		w->hash_mask = slots - 1;
 		w->hash = calloc(slots, sizeof(unsigned short));
-		w->flags = calloc(w->original, 1);
-		w->drawn_frame = calloc(w->affected_count, sizeof(unsigned int));
+		w->flags = calloc(w->original ? w->original : 1, 1);
+		w->drawn_frame = calloc(w->affected_count ? w->affected_count : 1, sizeof(unsigned int));
 		if (!w->hash || !w->flags || !w->drawn_frame)
+		{
+			free(w->hash);
+			free(w->flags);
+			free(w->drawn_frame);
+			memset(w, 0, sizeof(*w));
 			continue;
+		}
 		for (i = 0; i < w->affected_count; i++)
 		{
 			const struct bake_affected *t = &w->affected[i];
@@ -1556,35 +1584,47 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		}
 		bake.wall_count++;
 	}
-	for (k = 0; k < (int)header[4] && at + 16 <= end; k++)
+	for (k = 0; k < (int)header[4]; k++)
 	{
-		struct bake_layer *l = &bake.layers[k];
+		struct bake_layer *l = &bake.layers[bake.layer_count];
 		const unsigned int *h = (const unsigned int *)at;
+		unsigned int i;
 		int w;
 
+		if (!BAKE_ROOM(16) || h[2] > 65535 || h[3] > 65535 || !BAKE_ROOM(16 + h[2] * 20 + h[3] * 8))
+			goto damaged;
+		memset(l, 0, sizeof(*l));
 		l->wall_key = h[0]; l->stencil_key = h[1]; l->vertex_count = h[2]; l->tri_count = h[3];
 		at += 16;
 		l->vertices = (struct ge_vertex *)at;
 		at += l->vertex_count * 20;
 		l->tris = (const unsigned short *)at;
 		at += l->tri_count * 8;
+		for (i = 0; i < l->tri_count; i++)
+			if (l->tris[4 * i] >= l->vertex_count || l->tris[4 * i + 1] >= l->vertex_count ||
+				l->tris[4 * i + 2] >= l->vertex_count)
+				goto damaged;
 		for (w = 0; w < bake.wall_count; w++)
 			if (bake.walls[w].key == l->wall_key)
 				l->wall = &bake.walls[w];
 		if (l->wall)
 			bake.layer_count++;
 	}
-	for (k = 0; k < (int)header[5] && at + 8 <= end; k++)
+	for (k = 0; k < (int)header[5]; k++)
 	{
 		struct bake_stencil *st = &bake.stencils[bake.stencil_count];
 		const unsigned int *h = (const unsigned int *)at;
 		unsigned int i, slots;
 
+		if (!BAKE_ROOM(8) || h[1] > 65535 || !BAKE_ROOM(8 + h[1] * 6))
+			goto damaged;
 		st->key = h[0]; st->count = h[1];
 		at += 8;
 		st->triples = (const unsigned short *)at;
 		at += st->count * 6;
 		at = (const unsigned char *)(((unsigned int)at + 3) & ~3u);
+		if (at > end)
+			goto damaged;
 		for (slots = 16; slots < st->count * 2; slots <<= 1)
 			;
 		st->hash_mask = slots - 1;
@@ -1605,6 +1645,11 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	sceKernelDcacheWritebackRange(bake.file, size);
 	platform_log("stencils: %s: %d walls, %d stencil layers, %d stencil materials baked", path, bake.wall_count,
 		bake.layer_count, bake.stencil_count);
+	return;
+damaged:
+	platform_log("stencils: %s is damaged (a record runs past the file or names a vertex it doesn't have): not used, the old nudge for every stencil", path);
+	bake_forget();
+#undef BAKE_ROOM
 }
 
 /* which replaced triangle a triple is (-1: none) */
@@ -1682,6 +1727,23 @@ static const unsigned short *bake_substitute(struct level_stream *stream, const 
 	return list;
 }
 
+/* build 89: what a material's copies take: the float copies, the packed
+normals and incident radiosity, the 16-bit copies (the budget's count; the
+16-bit ones and the radiosity were left out before) */
+static unsigned int stream_size(const struct level_stream *stream)
+{
+	unsigned int count = (unsigned int)stream->count, size;
+
+	size = count * sizeof(struct ge_vertex) * (stream->lightmap ? 2 : 1) + count * sizeof(unsigned int);
+	if (stream->radiosity)
+		size += count * sizeof(unsigned int);
+	if (stream->compact_base)
+		size += count * sizeof(struct compact_vertex);
+	if (stream->compact_lightmap)
+		size += count * sizeof(struct compact_vertex);
+	return size;
+}
+
 static struct level_stream *level_stream_get(const void *vertices, const void *lightmap_vertices, int count)
 {
 	const void *key = stream_key(vertices);
@@ -1731,15 +1793,17 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 		stream->base = malloc(total * sizeof(struct ge_vertex));
 		stream->lightmap = lightmap_vertices ? malloc(total * sizeof(struct ge_vertex)) : NULL;
 		stream->normals = malloc(total * sizeof(unsigned int));
+		stream->radiosity = lightmap_vertices ? calloc(total, sizeof(unsigned int)) : NULL;
 	}
-	if (!stream->base || (lightmap_vertices && !stream->lightmap) || !stream->normals)
+	if (!stream->base || (lightmap_vertices && (!stream->lightmap || !stream->radiosity)) || !stream->normals)
 	{
 		platform_log("GE: no memory for a material's vertices (%d)", count);
 		free(stream->base);
 		free(stream->lightmap);
 		free(stream->normals);
+		free(stream->radiosity);
 		stream->base = stream->lightmap = NULL;
-		stream->normals = NULL;
+		stream->normals = stream->radiosity = NULL;
 		return NULL;
 	}
 	stream->low[0] = stream->low[1] = stream->low[2] = 1e30f;
@@ -1766,6 +1830,7 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 			l->x = b->x; l->y = b->y; l->z = b->z;
 			l->u = (texcoord[0] * 2.0f + 1.0f) * (1.0f / 65535.0f);
 			l->v = (texcoord[1] * 2.0f + 1.0f) * (1.0f / 65535.0f);
+			stream->radiosity[index] = *(const unsigned int *)((const char *)lightmap_vertices + 8 * index);
 		}
 	}
 	if (stream->bake)
@@ -1800,7 +1865,7 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	sceKernelDcacheWritebackRange(stream->base, count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
 		sceKernelDcacheWritebackRange(stream->lightmap, count * sizeof(struct ge_vertex));
-	stream_bytes += count * sizeof(struct ge_vertex) * (stream->lightmap ? 2 : 1) + count * sizeof(unsigned int);
+	stream_bytes += stream_size(stream);
 	return stream;
 }
 
@@ -2395,6 +2460,12 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 
 		draw = angle_sort(stream->base, draw, kept_count, far_possible);
 		angle_us += sceKernelGetSystemTimeLow() - angle_start;
+		/* build 89: the pieces cut at the eye are near by definition: with
+		every kept triangle past the detail fade, the detail passes were
+		skipped for them too (the ground at the feet lost its detail map when
+		the rest of a large material's visible triangles were far; review) */
+		if (cut_count > 0)
+			angle_near_any = 1;
 	}
 	/* build 66: the cut corners as GE vertices, once for the base passes and
 	once for the lightmap's */
@@ -3126,7 +3197,23 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	{
 		slot = (slot + 1) % CONVERTED_BUFFERS;
 		if (++tries >= CONVERTED_BUFFERS)
+		{
+			/* build 89: said once. Entries are only forgotten at a map
+			change, and every address a model's block is read to adds one:
+			a long session churning the geometry cache (a campaign map) fills
+			it, and model parts then stop drawing (review; the real fix,
+			keeping this beside the cache's own block, is for the campaign
+			work) */
+			static int said = 0;
+
+			if (!said)
+			{
+				said = 1;
+				platform_log("GE: the converted-buffer table is FULL (%d addresses since the map loaded): model parts that need converting won't draw until the next map",
+					CONVERTED_BUFFERS);
+			}
 			return 0;
+		}
 	}
 	if (converted[slot])
 	{
@@ -3981,6 +4068,7 @@ void psp_ge_forget_level(void)
 		free(level_streams[index].base);
 		free(level_streams[index].lightmap);
 		free(level_streams[index].normals);
+		free(level_streams[index].radiosity);
 		free(level_streams[index].compact_base);
 		free(level_streams[index].compact_lightmap);
 	}
@@ -4606,6 +4694,11 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->depth_units = 0;
 	draw->cut_vertices = NULL;
 	draw->cut_count = 0;
+	/* build 89: nothing of a previous frame's draw left in the slot: its
+	filler sets these, and a slot left unfilled is skipped at the flush */
+	draw->vertices = NULL;
+	draw->indices = NULL;
+	draw->index_count = 0;
 	/* build 63: never set here before, so a level slot kept whatever the
 	slot's last user left: after a frame with more first-person see-through
 	parts (the pistol's), some of the level's painted symbols, the cave
@@ -4826,9 +4919,34 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		overlay_all_walls = psp_keep("overlaynowall");
 	if (overlay_all_walls)
 		return 1;
-	key = psp_geo_address_of(indices);
-	if (!key)
-		key = (unsigned int)indices;
+	/* build 89: keyed by the list's CONTENT (its indices hashed, with the
+	material's copies): the see-through level lists come from the game's
+	per-frame triangle pool, never the geometry cache, so b81's pack-address
+	key was the raw pointer here, the Nth slot of this frame's pool rather
+	than a surface, and another overlay with the same triangle count could
+	inherit its answers (review). Worked out once per list per frame */
+	{
+		static const unsigned short *last_list = NULL;
+		static const struct ge_vertex *last_stream = NULL;
+		static unsigned int last_frame_seen = 0, last_key = 0;
+		static long last_count = -1;
+
+		if (indices != last_list || stream != last_stream || stream_frame != last_frame_seen ||
+			triangle_count != last_count)
+		{
+			unsigned int h = 2166136261u ^ (unsigned int)stream;
+			long i;
+
+			for (i = 0; i < triangle_count * 3; i++)
+				h = (h ^ indices[i]) * 16777619u;
+			last_list = indices;
+			last_stream = stream;
+			last_frame_seen = stream_frame;
+			last_count = triangle_count;
+			last_key = h | 1;
+		}
+		key = last_key;
+	}
 	for (slot = 0; slot < overlay_backing_count; slot++)
 		if (overlay_backing[slot].key == key && overlay_backing[slot].count == triangle_count)
 		{
@@ -4993,7 +5111,12 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 			int index;
 
 			if (!out)
+			{
+				/* build 89: the slot given back (it held a previous
+				frame's pointers, drawn as garbage at the flush; review) */
+				transparent_count--;
 				return;
+			}
 			for (index = 0; index < cut_count; index++)
 			{
 				const float *c = cut_corners[index];
@@ -5180,7 +5303,11 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 		struct ge_vertex *out = list_take(cut_count * sizeof(struct ge_vertex));
 
 		if (!out)
+		{
+			/* build 89: the slot given back (review) */
+			transparent_count--;
 			return;
+		}
 		for (index = 0; index < cut_count; index++)
 		{
 			const float *c = cut_corners[index];
@@ -5258,6 +5385,9 @@ static void transparent_flush_body(void)
 	{
 		struct transparent_draw const *draw = &transparent[transparent_order[index]];
 
+		/* build 89: a slot whose filling never finished (see transparent_slot) */
+		if (!draw->vertices && !draw->cut_vertices)
+			continue;
 		/* build 63: "tdump": each see-through draw of the frame a screenshot
 		is asked for, with the state it goes out under */
 		if (tdump < 0)
@@ -5899,6 +6029,27 @@ int psp_ge_level_vertex_texcoords(unsigned int key, int vertex_index, float *uv,
 	return 1;
 }
 
+/* build 89: a vertex's packed normal and lightmap incident radiosity (the
+map's 32-bit forms) for object lighting, which in a map built with its
+geometry outside the tags read them at the Xbox's 32-byte stride from the
+6-byte position copy: garbage, and reads past the copy (review). 1 if the
+copies are there; radiosity 0 without a lightmap */
+int psp_ge_level_vertex_lighting(unsigned int key, int vertex_index, unsigned int *normal, unsigned int *radiosity)
+{
+	unsigned int slot = (key >> 5) % LEVEL_STREAMS, tries = 0;
+	const struct level_stream *stream;
+
+	while (level_streams[slot].source && (unsigned int)level_streams[slot].source != key && tries++ < LEVEL_STREAMS)
+		slot = (slot + 1) % LEVEL_STREAMS;
+	stream = &level_streams[slot];
+	if ((unsigned int)stream->source != key || !stream->base || !stream->normals || vertex_index < 0 ||
+		vertex_index >= stream->count)
+		return 0;
+	*normal = stream->normals[vertex_index];
+	*radiosity = stream->radiosity ? stream->radiosity[vertex_index] : 0;
+	return 1;
+}
+
 /* build 68: with a geometry pack open, the copies over their budget: the
 least recently drawn go, never one drawn this frame. Open addressing can't
 drop a slot without breaking the chains through it, so a dropped slot keeps
@@ -5923,12 +6074,18 @@ static void level_streams_trim(void)
 		{
 			struct level_stream *stream = &level_streams[oldest];
 
-			stream_bytes -= stream->count * sizeof(struct ge_vertex) * (stream->lightmap ? 2 : 1) + stream->count * sizeof(unsigned int);
+			stream_bytes -= stream_size(stream);
 			free(stream->base);
 			free(stream->lightmap);
 			free(stream->normals);
+			free(stream->radiosity);
+			/* build 89: the 16-bit copies too (leaked on every let-go and
+			rebuild before; review) */
+			free(stream->compact_base);
+			free(stream->compact_lightmap);
 			stream->base = stream->lightmap = NULL;
-			stream->normals = NULL;
+			stream->normals = stream->radiosity = NULL;
+			stream->compact_base = stream->compact_lightmap = NULL;
 			streams_let_go++;
 		}
 	}
@@ -6227,10 +6384,16 @@ texture's average colour instead (psp_tex_average), over the frame that
 already shows the texture */
 #define CONE_SIZE 32
 #define CONE_SLOTS 4
+/* build 89: the texels first and 16-aligned in EVERY slot. The aligned
+attribute was on the array only: with the two floats first each slot was
+1,032 bytes and slots 0 and 2 had their texels 8 bytes past a 16-byte
+boundary, where the GE (which ignores a texture address's low 4 bits) read
+the cone from 8 bytes early: the disc shifted a quarter of its width and the
+clamped edge no longer black, bright bands across lit walls (code review) */
 static struct
 {
+	unsigned char texels[CONE_SIZE * CONE_SIZE] __attribute__((aligned(16)));
 	float falloff, cutoff;
-	unsigned char texels[CONE_SIZE * CONE_SIZE];
 } cones[CONE_SLOTS] __attribute__((aligned(16)));
 /* the cone textures are 8-bit indices into a grey ramp */
 static unsigned int cone_ramp[256] __attribute__((aligned(16)));
@@ -6376,6 +6539,30 @@ static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *ou
 		MAXIMUM_CUT_CORNERS - *cut_count);
 }
 
+/* build 89: the light pass's nudge (mode 2), as b85's shadow test: a lift
+of 1% of the distance, at most 0.2 units, in depth steps at that distance;
+and the distance bands it is drawn in (squared distances 4, 16, 64, 256,
+1024: bands 2, 4, 8, 16, 32 units and beyond) */
+#define LIGHT_BANDS 6
+static int light_nudge_units(float distance)
+{
+	float lift, units;
+
+	if (distance < projection_near)
+		distance = projection_near;
+	lift = 0.01f * distance;
+	if (lift > 0.2f)
+		lift = 0.2f;
+	units = lift * 61439.0f * projection_near / (distance * distance);
+	return units < 3.0f ? 3 : units > 4096.0f ? 4096 : (int)units;
+}
+
+static int light_band(float squared)
+{
+	return squared < 4.0f ? 0 : squared < 16.0f ? 1 : squared < 64.0f ? 2 : squared < 256.0f ? 3 :
+		squared < 1024.0f ? 4 : 5;
+}
+
 static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
@@ -6386,7 +6573,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	/* build 86, modes 1 and 2: the whole triangles' indices (mode 1), their
 	reach summed for the flat colour; the nearest lit corner (mode 2) */
 	unsigned short *whole = NULL;
-	float reach_sum = 0.0f, nearest_squared = 1e30f;
+	float reach_sum = 0.0f;
 	unsigned int average = 0xFFFFFFFF;
 	unsigned char *cone = NULL;
 	ScePspFMatrix4 cone_projection;
@@ -6458,14 +6645,6 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			corners[corner][4] = stream->base[triangle[corner]].v;
 			corners[corner][5] = reach[corner];
 			corners[corner][6] = 0.0f;
-			if (light_mode == 2)
-			{
-				float dx = corners[corner][7] - camera_eye[0], dy = corners[corner][8] - camera_eye[1],
-					dz = corners[corner][9] - camera_eye[2], d2 = dx * dx + dy * dy + dz * dz;
-
-				if (d2 < nearest_squared)
-					nearest_squared = d2;
-			}
 		}
 		if (spot)
 		{
@@ -6551,24 +6730,8 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	else
 		sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
-	if (light_mode == 2)
-	{
-		/* as b85's shadow test: a lift of 1% of the distance to the nearest
-		lit corner, at most 0.2 units, in depth steps there */
-		float distance = sqrtf(nearest_squared), lift, units;
-
-		if (distance < projection_near)
-			distance = projection_near;
-		lift = 0.01f * distance;
-		if (lift > 0.2f)
-			lift = 0.2f;
-		units = lift * 61439.0f * projection_near / (distance * distance);
-		sceGuDepthFunc(GU_GEQUAL);
-		sceGuDepthOffset(units < 3.0f ? 3 : units > 4096.0f ? 4096 : (int)units);
-		light_nudged_draws++;
-	}
-	else
-		sceGuDepthFunc(GU_EQUAL);
+	/* mode 2: GEQUAL, the nudge set per batch below (build 89) */
+	sceGuDepthFunc(light_mode == 2 ? GU_GEQUAL : GU_EQUAL);
 	sceGuDepthMask(GU_TRUE);
 	sceGuEnable(GU_BLEND);
 	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
@@ -6587,7 +6750,65 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		sceGuColor(0xFFFFFFFF);
 		light_index_triangles += whole_count;
 	}
-	if (kept_count)
+	if (kept_count && light_mode == 2)
+	{
+		/* build 89: in distance bands, each with the nudge its own nearest
+		corner needs. b86-b88 sized one nudge for the whole draw from its
+		nearest corner, even one behind the eye or off screen: a floor corner
+		under the camera gave hundreds of depth steps, which lift a wall 5-10
+		units off by 0.5-2 units, so the light was painted over whatever
+		stood that close in front of it (review). Within a band (distances
+		doubling) the lift is at most 4 times the one asked for */
+		unsigned char band_of[SCRATCH_TRIANGLES];
+		long band_count[LIGHT_BANDS], t;
+		float band_near[LIGHT_BANDS];
+		int b;
+
+		for (b = 0; b < LIGHT_BANDS; b++)
+		{
+			band_count[b] = 0;
+			band_near[b] = 1e30f;
+		}
+		for (t = 0; t < kept_count; t++)
+		{
+			float nearest = 1e30f;
+			int c;
+
+			for (c = 0; c < 3; c++)
+			{
+				const struct shadow_vertex *v = &out[3 * t + c];
+				float dx = v->x - camera_eye[0], dy = v->y - camera_eye[1], dz = v->z - camera_eye[2];
+				float d2 = dx * dx + dy * dy + dz * dz;
+
+				if (d2 < nearest)
+					nearest = d2;
+			}
+			b = light_band(nearest);
+			band_of[t] = (unsigned char)b;
+			band_count[b]++;
+			if (nearest < band_near[b])
+				band_near[b] = nearest;
+		}
+		for (b = 0; b < LIGHT_BANDS; b++)
+		{
+			struct shadow_vertex *copy;
+			long n = 0;
+
+			if (!band_count[b])
+				continue;
+			copy = list_take((int)band_count[b] * 3 * sizeof(struct shadow_vertex));
+			if (!copy)
+				break;
+			for (t = 0; t < kept_count; t++)
+				if (band_of[t] == b)
+					memcpy(copy + 3 * n++, out + 3 * t, 3 * sizeof(struct shadow_vertex));
+			sceGuDepthOffset(light_nudge_units(sqrtf(band_near[b])));
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+				(int)n * 3, NULL, copy);
+			light_nudged_draws++;
+		}
+	}
+	else if (kept_count)
 	{
 		struct shadow_vertex *copy = list_take((int)kept_count * 3 * sizeof(struct shadow_vertex));
 
@@ -6601,6 +6822,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	if (cut_count)
 	{
 		struct shadow_vertex *pieces = list_take(cut_count * sizeof(struct shadow_vertex));
+		float nearest = 1e30f;
 
 		for (index = 0; pieces && index < cut_count; index++)
 		{
@@ -6612,6 +6834,19 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			pieces[index].x = c[7];
 			pieces[index].y = c[8];
 			pieces[index].z = c[9];
+			if (light_mode == 2)
+			{
+				float dx = c[7] - camera_eye[0], dy = c[8] - camera_eye[1], dz = c[9] - camera_eye[2];
+				float d2 = dx * dx + dy * dy + dz * dz;
+
+				if (d2 < nearest)
+					nearest = d2;
+			}
+		}
+		if (pieces && light_mode == 2)
+		{
+			sceGuDepthOffset(light_nudge_units(sqrtf(nearest)));
+			light_nudged_draws++;
 		}
 		if (pieces)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
@@ -7449,11 +7684,19 @@ void psp_ge_frame_end(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		/* build 87: its own line (the one above passed the log's line length) */
-		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes; ME classify (meclassify, measure only): %lu jobs, %lu vertices, the main CPU waited %lu us in all, %lu answers differing, %lu failed",
+		/* build 89: the counters over these 300 frames (they were never
+		reset, so a bench window's line carried every earlier window's;
+		review), and the ME's part on a line of its own (512 characters) */
+		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes (last 300 frames)",
 			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, stencil_mode, bake_substituted,
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
-			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws,
-			me_classify_jobs, me_classify_vertices, me_classify_wait_us, me_classify_mismatches, me_classify_failures);
+			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
+		light_index_triangles = light_nudged_draws = lights_skipped = 0;
+		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
+		compact_draws = 0;
+		if (me_classify_jobs || me_classify_failures)
+			platform_log("GE: ME classify (meclassify, measure only): %lu jobs, %lu vertices, the main CPU waited %lu us in all, %lu answers differing, %lu failed",
+				me_classify_jobs, me_classify_vertices, me_classify_wait_us, me_classify_mismatches, me_classify_failures);
 		/* build 87: the like-for-like of the two measure jobs (ME vs main CPU,
 		the same function on the same data, both starting with the data out of
 		their caches) */
@@ -7468,14 +7711,19 @@ void psp_ge_frame_end(void)
 				me_angle_sc_us, me_angle_triangles ? (unsigned long)(1000ull * me_angle_sc_us / me_angle_triangles) : 0,
 				me_angle_mismatches, me_angle_failures, me_classify_wait_us + me_angle_wait_us);
 			me_classify_jobs = me_classify_vertices = me_classify_me_us = me_classify_sc_us = me_classify_sc_mismatches = 0;
-			me_classify_wait_us = me_classify_mismatches = 0;
+			me_classify_wait_us = me_classify_mismatches = me_classify_failures = 0;
 			me_angle_jobs = me_angle_triangles = me_angle_me_us = me_angle_sc_us = me_angle_mismatches = 0;
 			me_angle_failures = me_angle_wait_us = 0;
 		}
-		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu; widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame, characters %lu (picture changed %lu times); peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
+		/* build 89: in two lines; the one line passed the log's 512
+		characters and the peaks (the cut-corner one is the only sign that
+		MAXIMUM_CUT_CORNERS ran out) never reached the log (review) */
+		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu; peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
-			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes, widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes, list_peak, (int)sizeof(display_list),
-			clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes,
+			list_peak, (int)sizeof(display_list), clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
+			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		if (frames > 1)
 		{
 			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",

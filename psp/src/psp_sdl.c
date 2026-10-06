@@ -291,7 +291,13 @@ bool SDL_GetGamepadButton(SDL_Gamepad *gamepad, SDL_GamepadButton button)
 		alone, it zooms (build 29). Select + right takes a screenshot, select +
 		left opens the debug menu (read_controls; builds 34, 77) */
 		static int select_held = 0, select_used = 0;
-		static unsigned int zoom_until = 0;
+		/* build 89: when the tap was, and whether one is live. b29-b88 kept
+		only zoom_until (0 at start) and tested (int)(zoom_until - now) > 0,
+		which turns true by itself once the 32-bit microsecond clock passes
+		2^31 (35.8 minutes after the PSP booted) or 35.8 minutes after the
+		last tap: a phantom zoom held until the next select tap (review) */
+		static unsigned int zoom_at = 0;
+		static int zoom_live = 0;
 		unsigned int now = sceKernelGetSystemTimeLow();
 		int shift = (b & PSP_CTRL_SELECT) != 0;
 
@@ -307,7 +313,10 @@ bool SDL_GetGamepadButton(SDL_Gamepad *gamepad, SDL_GamepadButton button)
 		else if (select_held)
 		{
 			if (!select_used)
-				zoom_until = now + 150000;
+			{
+				zoom_at = now;
+				zoom_live = 1;
+			}
 			select_held = select_used = 0;
 		}
 		switch (button)
@@ -322,7 +331,10 @@ bool SDL_GetGamepadButton(SDL_Gamepad *gamepad, SDL_GamepadButton button)
 		the debug menu) */
 		case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return shift && (b & PSP_CTRL_LTRIGGER) != 0;
 		case SDL_GAMEPAD_BUTTON_START: return (b & PSP_CTRL_START) != 0;
-		case SDL_GAMEPAD_BUTTON_RIGHT_STICK: return (int)(zoom_until - now) > 0;
+		case SDL_GAMEPAD_BUTTON_RIGHT_STICK:
+			if (zoom_live && now - zoom_at >= 150000)
+				zoom_live = 0;
+			return zoom_live;
 		default: return false;
 		}
 	}

@@ -417,8 +417,14 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 	stream->current_right = target_right;
 	if (!target_left && !target_right && !left && !right)
 	{
-		/* silent: just advance */
-		unsigned long long advance = (unsigned long long)step * frames + stream->fraction;
+		/* silent: just advance. Build 89: not past the end of what's queued
+		(a silent voice that had run dry kept counting, so the start of what
+		the game queued next was skipped) */
+		unsigned long long advance;
+
+		if (!current_packet(stream))
+			return 0;
+		advance = (unsigned long long)step * frames + stream->fraction;
 
 		stream->frame += (unsigned long)(advance >> 16);
 		stream->fraction = (unsigned long)(advance & 0xFFFF);
@@ -443,8 +449,12 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 			if (fraction && stream->frame < last)
 			{
 				packet_frame(stream, packet, stream->frame + 1, &l1, &r1);
-				sample_left = l0 + (((l1 - l0) * fraction) >> 16);
-				sample_right = r0 + (((r1 - r0) * fraction) >> 16);
+				/* build 89: the fraction halved first. (l1 - l0) reaches
+				+-65535 and the fraction 65535, so the product overflowed 32
+				bits on loud, fast-changing sound at a pitch other than 1:
+				a full-scale click of the wrong sign (code review) */
+				sample_left = l0 + (((l1 - l0) * (fraction >> 1)) >> 15);
+				sample_right = r0 + (((r1 - r0) * (fraction >> 1)) >> 15);
 			}
 			else
 			{
@@ -604,6 +614,13 @@ static int audio_thread(SceSize arguments, void *argument)
 	SceUID dump = -1;
 	unsigned long dumped = 0;
 
+	/* build 89: the FPU's traps masked, as on every other thread (a gain
+	worked out as infinity or NaN would have stopped the PSP here; review) */
+	{
+		extern void psp_fpu_mask_traps(void);
+
+		psp_fpu_mask_traps();
+	}
 	(void)arguments;
 	(void)argument;
 	if (channel < 0)

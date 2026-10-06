@@ -182,6 +182,9 @@ void meLibOnProcess(void)
 		control->cause_before = cause;
 		cause &= ~(1u << 27);
 		__asm__ __volatile__("mtc0 %0, $13\n\tsync" : : "r"(cause));
+		/* build 89: and the counter written, as me-core's own timer set-up
+		does before relying on it (mtc0 $0, $9) */
+		__asm__ __volatile__("mtc0 $0, $9\n\tsync");
 		__asm__ __volatile__("mfc0 %0, $13" : "=r"(cause));
 		control->cause_after = cause;
 	}
@@ -192,8 +195,9 @@ void meLibOnProcess(void)
 
 		control->alive++;
 		control->clock = me_cycles();
-		if (control->stop)
-			break;
+		/* build 89: the stop word is looked at after the slots (below), so a
+		job asked for just before a stop is still served: b86-b88 halted with
+		it pending and its caller waited 40 ms holding the mixer's lock */
 		for (k = 0; k < ME_SLOTS; k++)
 		{
 			volatile struct me_slot *slot = SLOT(k);
@@ -216,6 +220,8 @@ void meLibOnProcess(void)
 			slot->done = request;
 			__asm__ __volatile__("sync");
 		}
+		if (control->stop)
+			break;
 		me_idle();
 	}
 	control->stop = 2;
@@ -274,6 +280,9 @@ void psp_me_stop(const char *why)
 
 	if (me_state == 1)
 	{
+		/* build 89: no new jobs from here; one already asked for is served
+		(the ME runs its slots before it looks at the stop word) */
+		me_state = -1;
 		control->stop = 1;
 		for (k = 0; k < 100 && control->stop != 2; k++)
 			sceKernelDelayThread(1000);
@@ -430,6 +439,12 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 		sceKernelDelayThread(first_look_us ? first_look_us : 100);
 		while (slot->done != slot_request[which])
 		{
+			/* build 89: the ME halted (a stop) before it saw this job */
+			if (CONTROL->stop == 2 && slot->done != slot_request[which])
+			{
+				stats[which].failures++;
+				return 0;
+			}
 			if (sceKernelGetSystemTimeWide() - start > 40000)
 			{
 				platform_log("ME: a job (type %u) not finished in 40 ms (job %u; the ME at job %u, %u idle polls)", type,

@@ -219,6 +219,11 @@ static void pump(void)
 			pending_count--;
 			continue;
 		}
+		/* build 89: this frame's read share first, then the room: b72-b88
+		allocated (evicting) and only then found the share spent, so each
+		further miss that frame evicted a block for nothing (review) */
+		if (!async_reads && frame_read_bytes >= SYNC_FRAME_BUDGET)
+			return;
 		at = allocate(alignment(e->size));
 		if (!at)
 		{

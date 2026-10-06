@@ -100,12 +100,22 @@ static int alignment(unsigned int size)
 
 static void bind_totals_save(void);
 static void bind_totals_gather(void);
+/* build 89: the heartbeat's in-play save (psp_tex_save_pending) */
+static volatile int snapshot_pending = 0, snapshot_writing = 0;
 
 void psp_tex_close(void)
 {
 	/* build 47: the learned binds saved as the map closes (b46 wrote them
 	every 2,700 frames during play: a 40-56 ms pause each time) */
 	bind_totals_gather();
+	/* build 89: not over the heartbeat's in-play save of the same file */
+	{
+		int k;
+
+		snapshot_pending = 0;
+		for (k = 0; snapshot_writing && k < 100; k++)
+			sceKernelDelayThread(2000);
+	}
 	bind_totals_save();
 	if (pack >= 0)
 		sceIoClose(pack);
@@ -383,6 +393,12 @@ static int bind_totals_load(void)
 	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", map_name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (file < 0)
+	{
+		/* build 89: a save whose rename didn't happen (vram_write) */
+		snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram.tmp", map_name);
+		file = sceIoOpen(path, PSP_O_RDONLY, 0);
+	}
+	if (file < 0)
 		return 0;
 	if (sceIoRead(file, header, sizeof(header)) == sizeof(header) && header[0] == 0x314D5256 /* VRM1 */ &&
 		header[1] == (unsigned int)entry_count && header[2] == key_sum() &&
@@ -414,6 +430,41 @@ static void bind_totals_gather(void)
 	}
 }
 
+/* build 89: <map>.vram written whole or not at all: to <map>.vram.tmp,
+every write checked, then renamed over the old file (the loader takes the
+.tmp if the rename didn't happen). b46-b88 truncated the file first and
+reported success without checking the writes, so a failed or interrupted
+save wiped what had been learned (review). The bytes written, or < 0 */
+static int vram_write(const char *map, const unsigned int *totals, unsigned int entries, unsigned int sum)
+{
+	char path[128], temp[136];
+	unsigned int header[3];
+	SceUID file;
+	int ok = 0;
+
+	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", map);
+	snprintf(temp, sizeof(temp), "%s.tmp", path);
+	file = sceIoOpen(temp, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	if (file < 0)
+		return file;
+	header[0] = 0x314D5256;
+	header[1] = entries;
+	header[2] = sum;
+	if (sceIoWrite(file, header, sizeof(header)) == (int)sizeof(header) &&
+		sceIoWrite(file, totals, entries * sizeof(unsigned int)) == (int)(entries * sizeof(unsigned int)))
+		ok = 1;
+	sceIoClose(file);
+	if (!ok)
+	{
+		sceIoRemove(temp);
+		return -1;
+	}
+	sceIoRemove(path);
+	if (sceIoRename(temp, path) < 0)
+		return -2;
+	return (int)(sizeof(header) + entries * sizeof(unsigned int));
+}
+
 /* build 88: the learned binds saved DURING play. The save at the map's
 close and at HOME (b47) never reached the Memory Stick on hardware: every
 log from b70 to b87 says "not yet saved", so the VRAM set has been largest
@@ -425,7 +476,6 @@ thread writes the copy (psp_tex_save_pending): the Memory Stick's 40-56 ms
 (b46) land on that thread, not on a frame */
 static unsigned int *snapshot = NULL, snapshot_capacity = 0, snapshot_entries = 0, snapshot_sum = 0;
 static char snapshot_name[64];
-static volatile int snapshot_pending = 0;
 static unsigned int map_open_frame = 0, last_snapshot_frame = 0, snapshots_taken = 0;
 
 static void learned_snapshot(void)
@@ -456,27 +506,21 @@ static void learned_snapshot(void)
 /* the heartbeat thread (psp_platform.c), every heartbeat */
 void psp_tex_save_pending(void)
 {
-	char path[128];
-	unsigned int header[3], start;
-	SceUID file;
-	int written = 0;
+	unsigned int start;
+	int written;
 
 	if (!snapshot_pending)
 		return;
 	start = sceKernelGetSystemTimeLow();
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", snapshot_name);
-	file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-	if (file >= 0)
-	{
-		header[0] = 0x314D5256;
-		header[1] = snapshot_entries;
-		header[2] = snapshot_sum;
-		if (sceIoWrite(file, header, sizeof(header)) == sizeof(header))
-			written = sceIoWrite(file, snapshot, snapshot_entries * sizeof(unsigned int));
-		sceIoClose(file);
-	}
-	platform_log("textures: learned binds saved during play to %s (%d bytes, %s) in %u ms; the next launch fills VRAM by them",
-		path, written, file >= 0 ? "ok" : "couldn't open it", (sceKernelGetSystemTimeLow() - start) / 1000);
+	snapshot_writing = 1;
+	written = vram_write(snapshot_name, snapshot, snapshot_entries, snapshot_sum);
+	snapshot_writing = 0;
+	if (written > 0)
+		platform_log("textures: learned binds saved during play to %s.vram (%d bytes) in %u ms; the next launch fills VRAM by them",
+			snapshot_name, written, (sceKernelGetSystemTimeLow() - start) / 1000);
+	else
+		platform_log("textures: learned binds NOT saved to %s.vram (%08x: %s)", snapshot_name, (unsigned int)written,
+			written == -1 ? "a write failed" : written == -2 ? "the rename failed; the .tmp will be read" : "couldn't open the file");
 	snapshot_pending = 0;
 }
 
@@ -489,25 +533,14 @@ void psp_tex_save_learned(void)
 
 static void bind_totals_save(void)
 {
-	char path[128];
-	unsigned int header[3], start = sceKernelGetSystemTimeLow();
-	SceUID file;
-	int written = 0;
+	unsigned int start = sceKernelGetSystemTimeLow();
+	int written;
 
-	if (!bind_totals || !map_name[0])
+	if (!bind_totals || !map_name[0] || entry_count <= 0)
 		return;
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", map_name);
-	file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-	if (file < 0)
-		return;
-	header[0] = 0x314D5256;
-	header[1] = entry_count;
-	header[2] = key_sum();
-	if (sceIoWrite(file, header, sizeof(header)) == sizeof(header))
-		written = sceIoWrite(file, bind_totals, entry_count * sizeof(unsigned int));
-	sceIoClose(file);
-	platform_log("textures: learned binds written to %s (%d bytes) in %u ms", path, written,
-		(sceKernelGetSystemTimeLow() - start) / 1000);
+	written = vram_write(map_name, bind_totals, (unsigned int)entry_count, key_sum());
+	platform_log("textures: learned binds written to %s.vram (%d%s) in %u ms", map_name, written,
+		written > 0 ? " bytes" : ": FAILED", (sceKernelGetSystemTimeLow() - start) / 1000);
 }
 
 /* a map's tags were loaded: its texture pack, if there is one */

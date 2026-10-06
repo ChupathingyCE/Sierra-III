@@ -525,15 +525,30 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 # unaligned word, which the x86 Xbox tolerates and the PSP faults on (found
 # with PPSSPP's interpreter running init.txt's first command)
 "source/hs/hs_runtime.c": [
+("""	struct hs_stack_frame *new_frame = (struct hs_stack_frame *)
+		((byte *)thread->stack+thread->stack->size+sizeof(struct hs_stack_frame));
+""",
+ """	struct hs_stack_frame *new_frame = (struct hs_stack_frame *)
+		((byte *)thread->stack+thread->stack->size+sizeof(struct hs_stack_frame));
+#ifdef HALO_PSP
+	/* build 89: on a word (the frame's size is no longer a multiple of 4;
+	hs_stack_allocate, psp_fixups.py) */
+	new_frame = (struct hs_stack_frame *)(((unsigned long)new_frame+3) & ~3UL);
+#endif
+"""),
 ("""	result = frame->data+frame->size;
 	frame->size += (short)size;
 """,
  """#ifdef HALO_PSP
-	/* each allocation starts on a word, and the frame's size stays a
-	multiple of 4, so the next frame (pushed at frame + 16 + size) starts on
-	one too (psp_fixups.py) */
+	/* each allocation starts on a word. Build 89: the frame's size counts to
+	the allocation's end, no further, and the next frame is pushed on the
+	next word (hs_stack_push, below). b5-b88 also rounded the size up to 4,
+	measured from data (2 bytes off a word), so every word took 8 bytes of
+	the 512-byte stack instead of 4; by the retail scripts' syntax trees the
+	deepest of a10 (flavor_rumble, 616 bytes), c10 (620) and b40 (520) then
+	ran past it into the next script thread's datum (code review) */
 	result = (void *)(((unsigned long)(frame->data+frame->size)+3) & ~3UL);
-	frame->size = (short)((((byte *)result+size-frame->data)+3) & ~3L);
+	frame->size = (short)((byte *)result+size-frame->data);
 	match_hs_assert("c:\\halo\\SOURCE\\hs\\hs_runtime.c", 0x37f, thread_index,
 		frame->data+frame->size<=thread->stack_data+HS_THREAD_STACK_SIZE,
 		"stack overflow.");
@@ -1770,7 +1785,12 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 		animation frame (+0x80: the scorpion's idle), keeps a vehicle awake,
 		so only the warthog and the ghost sleep for now. keep.txt's
 		"vehiclesawake" turns it off */
-		psp_sleepy_update(object_index, absolute_index, header, psp_vehicle_sleep_on);
+		/* build 89: and only once the game's physics calls it at rest. The
+		byte-identical test alone also put to sleep a vehicle the physics
+		keeps awake on purpose (touching a machine or a breakable surface):
+		a lift moving under it, or another vehicle driving into it, then
+		didn't move it (code review) */
+		psp_sleepy_update(object_index, absolute_index, header, psp_vehicle_sleep_on && psp_resting);
 		for (k = 0; k < 8 && psp_vehicle_cost[k].definition && psp_vehicle_cost[k].definition != definition; k++);
 		if (k < 8)
 		{
@@ -4626,6 +4646,36 @@ static int psp_material_texcoords(struct structure_material const *material, str
 	}
 	return 1;
 }
+
+/* build 89: the three vertices' normals (radiosity 0) or lightmap incident
+radiosity (1) from the renderer's copies when the data is in the geometry
+pack. lights_distant_lighting_at_point read them with the Xbox macros, at a
+32-byte stride from the 6-byte position copy -G maps keep in the tags: every
+object's distant light direction, shadow vector and radiosity accuracy came
+from garbage, and the reads ran past the copy (code review). Straight up
+when the copies aren't there this frame */
+int psp_ge_level_vertex_lighting(unsigned int key, int vertex_index, unsigned int *normal, unsigned int *radiosity); /* psp_ge.c */
+static void psp_material_normals(struct structure_material const *material, struct structure_surface const *surface,
+	real_vector3d *normals, int radiosity)
+{
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		unsigned int normal, incident;
+
+		if (psp_ge_level_vertex_lighting(((unsigned long const *)material->vertices.hardware_format)[1],
+			surface->vertex_indices[k], &normal, &incident))
+			normals[k] = uncompress_int32_to_real_vector3d(radiosity ? incident : normal);
+		else
+		{
+			normals[k].i = 0.0f;
+			normals[k].j = 0.0f;
+			normals[k].k = 1.0f;
+			psp_object_light_samples_missed++;
+		}
+	}
+}
 #endif
 
 void sample_lightmap(
@@ -4708,6 +4758,64 @@ void sample_lightmap(
 		&texcoords[2]);
 #ifdef HALO_PSP
 	}
+#endif
+"""),
+("""						environment_vertex_compressed_get_normal(
+							structure_material_get_vertex(material, surface->vertex_indices[0]),
+							&normals[0]);
+						environment_vertex_compressed_get_normal(
+							structure_material_get_vertex(material, surface->vertex_indices[1]),
+							&normals[1]);
+						environment_vertex_compressed_get_normal(
+							structure_material_get_vertex(material, surface->vertex_indices[2]),
+							&normals[2]);
+""",
+"""#ifdef HALO_PSP
+						if (psp_structure_vertex_stride == 6 && material->vertices.hardware_format)
+							psp_material_normals(material, surface, normals, 0);
+						else
+						{
+#endif
+						environment_vertex_compressed_get_normal(
+							structure_material_get_vertex(material, surface->vertex_indices[0]),
+							&normals[0]);
+						environment_vertex_compressed_get_normal(
+							structure_material_get_vertex(material, surface->vertex_indices[1]),
+							&normals[1]);
+						environment_vertex_compressed_get_normal(
+							structure_material_get_vertex(material, surface->vertex_indices[2]),
+							&normals[2]);
+#ifdef HALO_PSP
+						}
+#endif
+"""),
+("""						environment_lightmap_vertex_compressed_get_incident_radiosity(
+							structure_material_get_lightmap_vertex(material, surface->vertex_indices[0]),
+							&normals[0]);
+						environment_lightmap_vertex_compressed_get_incident_radiosity(
+							structure_material_get_lightmap_vertex(material, surface->vertex_indices[1]),
+							&normals[1]);
+						environment_lightmap_vertex_compressed_get_incident_radiosity(
+							structure_material_get_lightmap_vertex(material, surface->vertex_indices[2]),
+							&normals[2]);
+""",
+"""#ifdef HALO_PSP
+						if (psp_structure_vertex_stride == 6 && material->vertices.hardware_format)
+							psp_material_normals(material, surface, normals, 1);
+						else
+						{
+#endif
+						environment_lightmap_vertex_compressed_get_incident_radiosity(
+							structure_material_get_lightmap_vertex(material, surface->vertex_indices[0]),
+							&normals[0]);
+						environment_lightmap_vertex_compressed_get_incident_radiosity(
+							structure_material_get_lightmap_vertex(material, surface->vertex_indices[1]),
+							&normals[1]);
+						environment_lightmap_vertex_compressed_get_incident_radiosity(
+							structure_material_get_lightmap_vertex(material, surface->vertex_indices[2]),
+							&normals[2]);
+#ifdef HALO_PSP
+						}
 #endif
 """),
 ]

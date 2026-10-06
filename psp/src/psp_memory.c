@@ -50,7 +50,9 @@ static void set_protection(unsigned long address, unsigned long size, DWORD prot
 {
 	unsigned long page, last;
 
-	if (!in_user_ram(address))
+	/* build 89: size 0 at the start of user RAM made "last" wrap to the top
+	of the table and the loop wrote a megabyte past it (review) */
+	if (!in_user_ram(address) || !size)
 		return;
 	if (address + size > USER_RAM_END)
 		size = USER_RAM_END - address;

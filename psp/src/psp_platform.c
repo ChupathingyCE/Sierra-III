@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 88
+#define PSP_BUILD_NUMBER 89
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -144,7 +144,29 @@ void psp_log_flush(void)
 	log_flush();
 }
 
+/* build 89: one flush at a time (the heartbeat's, the exit's, the ME
+start's): they shared the static copy below and could write each other's
+lines twice or garble them (review) */
+static SceUID flush_lock = -1;
+static volatile int exiting;
+static void log_flush_body(void);
+
 static void log_flush(void)
+{
+	int flushing = 0;
+
+	if (flush_lock >= 0)
+	{
+		SceUInt timeout = 100000;
+
+		flushing = sceKernelWaitSema(flush_lock, 1, exiting ? &timeout : NULL) >= 0;
+	}
+	log_flush_body();
+	if (flushing)
+		sceKernelSignalSema(flush_lock, 1);
+}
+
+static void log_flush_body(void)
 {
 	static char copy[sizeof(log_batch)];
 	int length, dropped;
@@ -179,7 +201,7 @@ static void log_flush(void)
 limited to 100 ms: no b70-b87 run's log has the exit callback's lines, nor
 was the learned-textures file ever written there, and a lock held by a thread
 the system has stopped would explain both */
-static volatile int exiting = 0;
+static volatile int exiting = 0;  /* (declared above log_flush) */
 static int log_lock_take(void)
 {
 	SceUInt timeout = 100000;
@@ -372,7 +394,9 @@ static void keep_load(void)
 			keep_words[file] = ' ';
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
 		length ? keep_words : " nothing ");
-	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 skydump flatshade tdump nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut");
+	/* build 89: in two lines (the one line passed the log's 512 characters) */
+	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 skydump flatshade tdump");
+	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut");
 }
 
 int psp_keep(const char *name)
@@ -469,41 +493,49 @@ void psp_fpu_mask_traps(void)
 void psp_tex_save_learned(void);
 void psp_meaudio_stop(const char *why);
 
-/* build 88: ms0:/halo/log/exit.txt, written straight to the file (no
-formatting, no lock, no log batch) at each step of the exit, so the next
-run's collect shows how far the exit got even if the log can't */
+/* build 88-89: ms0:/halo/log/exit.txt. Build 89: opened at start-up and
+kept open, so the exit writes through a descriptor it already has (the
+firmware starts the reboot before it calls the exit callback, and no file
+the callback opened in b47-b87 ever reached the Memory Stick; whether an
+open descriptor still works there is what this tells). Each step's result
+code is written too */
+static SceUID exit_file = -1;
+static int exit_callbacks_registered[3] = { 1, 1, 1 };
+
 static void exit_mark(const char *text)
 {
-	SceUID file = sceIoOpen(LOG_FOLDER "/exit.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
+	if (exit_file >= 0)
+		sceIoWrite(exit_file, text, strlen(text));
+}
 
-	if (file >= 0)
-	{
-		sceIoWrite(file, text, strlen(text));
-		sceIoClose(file);
-	}
+static void exit_mark_code(const char *what, int code)
+{
+	char line[96];
+
+	snprintf(line, sizeof(line), "exit: %s (0x%08x)\n", what, (unsigned int)code);
+	exit_mark(line);
 }
 
 static int exit_callback(int a, int b, void *c)
 {
 	(void)a; (void)b; (void)c;
 	exiting = 1;
-	exit_mark("exit: the HOME exit callback ran\n");
-	platform_log("HOME: exiting");
-	/* build 87: the log written out first, and again after the ME's stop (b86
-	run 2's log ended before either line: the batch was written only after
-	the stop, so a clean exit and a hung one looked the same) */
-	log_flush();
-	exit_mark("exit: log written\n");
-	/* build 86: the Media Engine stopped before the XMB comes back into the
-	memory it runs from (build 44's audio sample crashed the PSP on HOME) */
+	/* build 89: the Media Engine stopped FIRST, before any Memory Stick
+	work: the XMB reloads over the memory it runs from (build 44's audio
+	sample crashed the PSP on HOME), and b87-b88 put file writes ahead of
+	it, which would hang the exit there if a write blocked instead of
+	failing (review) */
 	psp_meaudio_stop("HOME");
-	exit_mark("exit: Media Engine stopped\n");
+	exit_mark("exit: the HOME exit callback ran; Media Engine stopped\n");
+	platform_log("HOME: exiting");
 	log_flush();
-	/* build 47: the texture cache's learned binds (psp_tex.c) */
-	psp_tex_save_learned();
-	exit_mark("exit: learned textures saved\n");
-	log_flush();
-	exit_mark("exit: done, calling sceKernelExitGame\n");
+	exit_mark("exit: log flushed\n");
+	/* build 89: no texture save here any more. The learned binds are saved
+	during play (psp_tex.c, b88); a save here that half worked (the file
+	truncated, the data never written) would wipe the one saved in play */
+	if (exit_file >= 0)
+		exit_mark_code("closing exit.txt, then sceKernelExitGame", sceIoClose(exit_file));
+	exit_file = -1;
 	sceKernelExitGame();
 	return 0;
 }
@@ -538,9 +570,19 @@ static int power_callback(int unknown, int flags, void *argument)
 
 static int callback_thread(SceSize args, void *argp)
 {
+	int power, exit;
+
 	(void)args; (void)argp;
-	scePowerRegisterCallback(-1, sceKernelCreateCallback("power", power_callback, NULL));
-	sceKernelRegisterExitCallback(sceKernelCreateCallback("exit", exit_callback, NULL));
+	/* build 89: as every other thread (the Xbox ran with the FPU's traps
+	masked); this one had them on (review) */
+	psp_fpu_mask_traps();
+	power = sceKernelCreateCallback("power", power_callback, NULL);
+	exit = sceKernelCreateCallback("exit", exit_callback, NULL);
+	/* build 89: the results kept for the log (main logs them once the log is
+	set up; a line from here would be deleted with the old log) */
+	exit_callbacks_registered[0] = scePowerRegisterCallback(-1, power);
+	exit_callbacks_registered[1] = exit;
+	exit_callbacks_registered[2] = sceKernelRegisterExitCallback(exit);
 	sceKernelSleepThreadCB();
 	return 0;
 }
@@ -580,6 +622,8 @@ is; the heartbeat's own lines (budget, GE, audio, ME) follow it, so
 tools/benchparse.py turns a log into a table. About four minutes; the game
 carries on as usual after it ("bench: done"). Stand still, touch nothing */
 volatile unsigned int psp_heartbeat_windows = 0;
+/* build 89: heartbeats so far (the first 20 are 1 s apart, then 5 s) */
+static volatile int heartbeat_beats = 0;
 static volatile unsigned long ticks_since_frame;
 int psp_audio_setting(int set, int value);
 int psp_ge_setting(int which, int set, int value);
@@ -642,8 +686,22 @@ static void bench_tick(void)
 		return;
 	/* a heartbeat window ended: the next step */
 	bench_window_seen = psp_heartbeat_windows;
-	if (bench_step < 0 && psp_heartbeat_windows < 3)
-		return;   /* the map settles first (15 s) */
+	/* the map settles first: build 89, three windows of the 5 s cadence
+	(b87-b88 counted the first 20 s's 1 s beats as windows, so view 0's
+	switches ran on 1 s windows right after the map loaded; review) */
+	{
+		static unsigned int windows_at_five = 0;
+
+		if (bench_step < 0)
+		{
+			if (heartbeat_beats <= 20)
+				return;
+			if (!windows_at_five)
+				windows_at_five = psp_heartbeat_windows;
+			if (psp_heartbeat_windows < windows_at_five + 3)
+				return;
+		}
+	}
 	if (bench_step >= 0 && bench_step % 2)
 	{
 		/* the measured window that just ended, from the heartbeat's own
@@ -970,6 +1028,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 		/* every second for the first 20, then every 5 */
 		sceKernelDelayThread(beat < 20 ? 1000000 : 5000000);
 		beat++;
+		heartbeat_beats = beat;
 		now = sceKernelGetSystemTimeWide();
 		seconds = (now - last_time) / 1e6;
 		ticks = psp_game_time_peek();
@@ -1143,6 +1202,7 @@ int main(int argc, char **argv)
 	psp_fpu_mask_traps();
 	heap_base = (char *)sbrk(0);
 	log_lock = sceKernelCreateSema("halo log", 0, 1, 1, NULL);
+	flush_lock = sceKernelCreateSema("halo log flush", 0, 1, 1, NULL);
 	/* build 88: 16 KB (was 4 KB): the exit callback formats log lines (a 512-byte
 	line plus vsnprintf's own frame) and writes files on this stack */
 	thread = sceKernelCreateThread("halo callbacks", callback_thread, 0x11, 0x4000, 0, NULL);
@@ -1155,7 +1215,9 @@ int main(int argc, char **argv)
 	sceIoMkdir(DATA_ROOT "/save", 0777);
 	sceIoMkdir(LOG_FOLDER, 0777);
 	sceIoRemove(LOG_PATH);
-	sceIoRemove(LOG_FOLDER "/exit.txt"); /* build 88: this run's exit, if it gets that far */
+	/* build 88: this run's exit, if it gets that far; build 89: kept open */
+	exit_file = sceIoOpen(LOG_FOLDER "/exit.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	exit_mark("exit: armed at start-up\n");
 	freopen(DATA_ROOT "/stderr.txt", "w", stderr);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	freopen(DATA_ROOT "/stderr.txt", "a", stdout);
@@ -1177,6 +1239,10 @@ int main(int argc, char **argv)
 	/* build 53: the build's number first, so a log says which EBOOT ran */
 	platform_log("Halo PSP bring-up build %d: free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
 		sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+	/* build 89: whether HOME and sleep are armed (negative: an error) */
+	platform_log("callbacks: power registration %08x, exit callback %08x, exit registration %08x; exit.txt %s",
+		(unsigned int)exit_callbacks_registered[0], (unsigned int)exit_callbacks_registered[1],
+		(unsigned int)exit_callbacks_registered[2], exit_file >= 0 ? "open" : "couldn't open it");
 	/* build 66: the launch menu (psp_menu.c): the map and the keep words,
 	written to init.txt and keep.txt before they are read */
 	{
