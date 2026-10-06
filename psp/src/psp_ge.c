@@ -58,6 +58,36 @@ was what got cut */
 /* 384 KB (build 40): sustained fire at a wall still filled 256 KB (decals
 copy the wall's triangles under them, every spark is a sprite) */
 #define DISPLAY_LIST_BYTES 0x60000
+/* build 93: the list's size this frame (benchrun's "display list in VRAM"
+puts it in VRAM's last 256 KB, which psp_tex.c keeps free during benchrun) */
+#define VRAM_BENCH_START 0x001C0000
+#define VRAM_BENCH_BYTES 0x40000
+static int list_bytes = DISPLAY_LIST_BYTES;
+
+/* build 93: benchrun's bus tests. The CPU builds every frame the same way;
+these only stop the GE from drawing a kind of draw (and so from reading its
+vertices): GE_SKIP_LEVEL the level's draws, GE_SKIP_MODELS the models'
+parts, GE_SKIP_ALL every draw (the VRAM-only load). ge_category says which
+hook is drawing */
+#define GE_SKIP_LEVEL 1
+#define GE_SKIP_MODELS 2
+#define GE_SKIP_ALL 4
+static int ge_skip = 0, ge_category = 0;
+static unsigned long ge_skipped_draws = 0;
+static int list_in_vram = 0, vram_busy = 0, vram_busy_calibrating = 0, vram_busy_sprites = 8;
+static unsigned int vram_busy_target_us = 15000;
+
+static inline int ge_draw_skipped(void)
+{
+	if (!ge_skip || !((ge_skip & GE_SKIP_ALL) || (ge_skip & ge_category)))
+		return 0;
+	ge_skipped_draws++;
+	return 1;
+}
+/* every draw in this file goes through the gate (a parenthesized name,
+(sceGuDrawArray)(...), is the real call: the VRAM load) */
+#define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) sceGumDrawArray(p, v, c, i, d); } while (0)
+#define sceGuDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) sceGuDrawArray(p, v, c, i, d); } while (0)
 /* draws stop this close to the display list's end (each draw adds its
 commands, and its copied indices and cut-up corners, to the list) */
 #define DISPLAY_LIST_MARGIN 0x3000
@@ -86,7 +116,7 @@ static void list_hud_phase(void)
 	transparent_flush();
 	taa_resolve();
 	hud_phase = 1;
-	list_limit = DISPLAY_LIST_BYTES;
+	list_limit = list_bytes;
 }
 
 static int list_full(void)
@@ -106,8 +136,8 @@ static int list_full_first_person(void)
 {
 	int saved = list_limit, full;
 
-	if (list_limit < DISPLAY_LIST_BYTES - HUD_RESERVE * 3 / 4)
-		list_limit = DISPLAY_LIST_BYTES - HUD_RESERVE * 3 / 4;
+	if (list_limit < list_bytes - HUD_RESERVE * 3 / 4)
+		list_limit = list_bytes - HUD_RESERVE * 3 / 4;
 	full = list_full();
 	list_limit = saved;
 	return full;
@@ -810,6 +840,47 @@ int psp_ge_setting(int which, int set, int value)
 	case 7:
 		if (set) psp_soften = value;
 		return psp_soften;
+	case 20:
+		/* build 93: benchrun: the GE skips a kind of draw (GE_SKIP_*) */
+		if (set)
+			ge_skip = value;
+		return ge_skip;
+	case 21:
+		/* build 93: benchrun: the display list in VRAM (needs benchrun's
+		VRAM room) */
+		if (set)
+			list_in_vram = value && psp_keep("benchrun");
+		return list_in_vram;
+	case 22:
+		/* build 93: benchrun: the GE busy on VRAM only. value > 0: on, sized
+		toward value tenths of a ms of GE time (timed alone: serial); -1: the
+		size held and the GE overlapped again (the measurement); 0: off */
+		if (set)
+		{
+			if (value > 0 && psp_keep("benchrun"))
+			{
+				vram_busy = 1;
+				vram_busy_target_us = (unsigned int)value * 100;
+				vram_busy_calibrating = 1;
+				ge_skip = GE_SKIP_ALL;
+				ge_serial = 1;
+			}
+			else if (value < 0 && vram_busy)
+			{
+				vram_busy_calibrating = 0;
+				ge_serial = 0;
+			}
+			else if (!value)
+			{
+				if (vram_busy)
+				{
+					ge_skip = 0;
+					ge_serial = 0;
+				}
+				vram_busy = vram_busy_calibrating = 0;
+			}
+		}
+		return vram_busy ? vram_busy_sprites : 0;
 	case 9:
 		if (ge_serial < 0) ge_serial = psp_keep("geserial");
 		if (set) ge_serial = value;
@@ -894,6 +965,68 @@ int psp_ge_setting(int which, int set, int value)
 	return 0;
 }
 
+/* build 93: benchrun's "GE busy on VRAM only": every real draw skipped,
+and at the frame's start the GE given work that touches only VRAM (a 512 x
+256 16-bit texture in VRAM's benchrun room, copied over itself as sprites,
+the list's own few hundred bytes aside), as long as this view's normal frame
+keeps it busy. If the CPU still slows down, main RAM's bus isn't why */
+
+static void vram_busy_load(void)
+{
+	struct { unsigned short u, v; short x, y, z; } *corners;
+	int k;
+
+	sceGuDrawBufferList(GU_PSM_5650, (void *)VRAM_BENCH_START, 512);
+	sceGuScissor(0, 0, 512, 256);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_BLEND);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexMode(GU_PSM_5650, 0, 0, 0);
+	sceGuTexImage(0, 512, 256, 512, (void *)(0x04000000 + VRAM_BENCH_START));
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuTexScale(1.0f, 1.0f);
+	sceGuTexOffset(0.0f, 0.0f);
+	corners = sceGuGetMemory(2 * sizeof(*corners));
+	corners[0].u = 0; corners[0].v = 0; corners[0].x = 0; corners[0].y = 0; corners[0].z = 0;
+	corners[1].u = 512; corners[1].v = 256; corners[1].x = 512; corners[1].y = 256; corners[1].z = 0;
+	for (k = 0; k < vram_busy_sprites; k++)
+		(sceGuDrawArray)(GU_SPRITES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, NULL, corners);
+	sceGuDrawBufferList(GU_PSM_5650, draw_buffer, BUFFER_WIDTH);
+	sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuEnable(GU_FOG);
+	sceGuDisable(GU_TEXTURE_2D);
+	/* overlapped: the GE told at once (the skipped draws make few stall
+	updates, and they are passed on in batches) */
+	if (!vram_busy_calibrating)
+	{
+		stall_force = 1;
+		sceGuGetMemory(4);
+		stall_force = 0;
+	}
+}
+
+/* the load's size, from this frame's wait for the GE while calibrating (the
+GE alone then: serial, and every real draw skipped) */
+static void vram_busy_calibrate(unsigned int waited_us)
+{
+	int wanted;
+
+	if (!vram_busy || !vram_busy_calibrating)
+		return;
+	/* too little to time: double it */
+	if (waited_us < 200)
+		wanted = vram_busy_sprites * 2;
+	else
+		wanted = (int)((float)vram_busy_sprites * (float)vram_busy_target_us / (float)waited_us + 0.5f);
+	/* halfway each frame, within 1..400 sprites */
+	wanted = (vram_busy_sprites + wanted) / 2;
+	vram_busy_sprites = wanted < 1 ? 1 : wanted > 400 ? 400 : wanted;
+}
+
 void psp_ge_window_begin(const float *position, const float *forward, const float *up,
 	float vertical_field_of_view, float z_near, float z_far)
 {
@@ -903,9 +1036,13 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		return;
 	if (!ge_ready)
 		ge_initialize();
-	sceGuStart(GU_DIRECT, display_list);
+	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
+	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : DISPLAY_LIST_BYTES;
+	sceGuStart(GU_DIRECT, list_in_vram ? (void *)(0x04000000 + VRAM_BENCH_START) : (void *)display_list);
 	sceGuFog(fog_near, fog_far, fog_color);
-	list_limit = DISPLAY_LIST_BYTES - HUD_RESERVE - TRANSPARENT_RESERVE;
+	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
+	if (vram_busy)
+		vram_busy_load();
 	hud_phase = 0;
 	taa_done = 0;
 	taa_frame++;
@@ -2768,7 +2905,9 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 {
 	unsigned int start = sceKernelGetSystemTimeLow();
 
+	ge_category = GE_SKIP_LEVEL;
 	psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key, alpha_tested);
+	ge_category = 0;
 	ge_entry_us[0] += sceKernelGetSystemTimeLow() - start;
 }
 
@@ -3260,6 +3399,59 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 	return part;
 }
 
+/* build 93: the table forgets what is gone. An entry whose geometry-cache
+block has since been loaded with something else (its generation is no longer
+any resident block's) or let go is dead: nothing there is converted any
+more. When the table is three-quarters full the live entries are kept and
+put back (open addressing can't simply delete), and the dead ones' skinning
+plans freed. b68-b92 forgot only at a map change, so a long campaign session
+churning the cache filled all 2,048 slots and model parts stopped drawing
+(code review b89). Entries in the tags (generation 0) are always live */
+static int converted_used = 0;
+static unsigned long converted_sweeps = 0, converted_forgotten = 0;
+unsigned int psp_geo_generation(const void *ptr);
+
+static void converted_sweep(void)
+{
+	static const void *keep_address[CONVERTED_BUFFERS];
+	static unsigned int keep_generation[CONVERTED_BUFFERS];
+	static struct skin_part *keep_skin[CONVERTED_BUFFERS];
+	int index, kept = 0;
+
+	for (index = 0; index < CONVERTED_BUFFERS; index++)
+	{
+		if (!converted[index])
+			continue;
+		if (psp_geo_generation(converted[index]) == converted_generation[index])
+		{
+			keep_address[kept] = converted[index];
+			keep_generation[kept] = converted_generation[index];
+			keep_skin[kept] = skinned[index];
+			kept++;
+		}
+		else
+		{
+			free(skinned[index]);
+			converted_forgotten++;
+		}
+	}
+	memset(converted, 0, sizeof(converted));
+	memset(converted_generation, 0, sizeof(converted_generation));
+	memset(skinned, 0, sizeof(skinned));
+	for (index = 0; index < kept; index++)
+	{
+		unsigned int slot = ((unsigned int)keep_address[index] >> 4) % CONVERTED_BUFFERS;
+
+		while (converted[slot])
+			slot = (slot + 1) % CONVERTED_BUFFERS;
+		converted[slot] = keep_address[index];
+		converted_generation[slot] = keep_generation[index];
+		skinned[slot] = keep_skin[index];
+	}
+	converted_used = kept;
+	converted_sweeps++;
+}
+
 /* rewrites a model vertex buffer for the GE, once; 0 if there's no room to
 remember it. Parts on several nodes are planned for skinning when their
 triangles are given (see-through parts aren't: they are queued with one
@@ -3275,6 +3467,11 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 
 	if (skin)
 		*skin = NULL;
+	if (converted_used >= CONVERTED_BUFFERS * 3 / 4)
+	{
+		converted_sweep();
+		slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS;
+	}
 	while (converted[slot] && converted[slot] != vertices)
 	{
 		slot = (slot + 1) % CONVERTED_BUFFERS;
@@ -3326,6 +3523,8 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 			part = skin_plan(vertices, count, uncompressed, indices, index_count, strip, node0, node1, weight0);
 		}
 	}
+	if (!converted[slot])
+		converted_used++;
 	converted[slot] = vertices;
 	skinned[slot] = part;
 	if (!part)
@@ -4097,7 +4296,9 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 {
 	unsigned int start = sceKernelGetSystemTimeLow();
 
+	ge_category = GE_SKIP_MODELS;
 	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested);
+	ge_category = 0;
 	ge_entry_us[1] += sceKernelGetSystemTimeLow() - start;
 }
 
@@ -4170,6 +4371,7 @@ void psp_ge_forget_map(void)
 	memset(skinned, 0, sizeof(skinned));
 	memset(converted, 0, sizeof(converted));
 	memset(converted_generation, 0, sizeof(converted_generation));
+	converted_used = 0;
 	converted_count = reconverted_count = skinned_parts = skin_batches = skin_bytes = skin_failures = 0;
 	psp_ge_forget_level();
 	/* build 87: the last map's stencil bake (the next map's pack brings its own) */
@@ -5435,8 +5637,8 @@ static void transparent_flush_body(void)
 
 	if (!transparent_count)
 		return;
-	if (list_limit < DISPLAY_LIST_BYTES - HUD_RESERVE)
-		list_limit = DISPLAY_LIST_BYTES - HUD_RESERVE;
+	if (list_limit < list_bytes - HUD_RESERVE)
+		list_limit = list_bytes - HUD_RESERVE;
 	if (overlays_off < 0)
 		overlays_off = psp_keep("nooverlays");
 	/* build 62: the world's projection and depth slice for the world's
@@ -8159,6 +8361,7 @@ void psp_ge_frame_end(void)
 		waited = sceKernelGetSystemTimeLow() - mark;
 		ge_wait_us += waited;
 		win_ge_us += waited;
+		vram_busy_calibrate(waited);
 		{
 			/* build 87: this frame's renderer CPU and GE wait, for the
 			heartbeat's window (psp_ge_budget) */
@@ -8267,6 +8470,20 @@ void psp_ge_frame_end(void)
 			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
+			if (converted_sweeps)
+			{
+				platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d",
+					converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS);
+				converted_sweeps = converted_forgotten = 0;
+			}
+			if (ge_skip || list_in_vram || vram_busy || ge_skipped_draws)
+			{
+				platform_log("GE: bench test: GE skipping %s; draws skipped %lu; display list in %s; VRAM-only load %s (%d sprites, %s)",
+					ge_skip & GE_SKIP_ALL ? "every draw" : ge_skip == GE_SKIP_LEVEL ? "the level" : ge_skip == GE_SKIP_MODELS ? "models" : "nothing",
+					ge_skipped_draws, list_in_vram ? "VRAM" : "RAM", vram_busy ? "on" : "off", vram_busy_sprites,
+					vram_busy_calibrating ? "sizing, GE alone" : "held, overlapped");
+				ge_skipped_draws = 0;
+			}
 			budget_wait_us = ge_wait_us / 300;
 			ge_wait_us = ge_wait_worst = 0;
 			frame_end_us[0] = frame_end_us[1] = frame_end_us[2] = 0;

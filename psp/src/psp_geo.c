@@ -39,7 +39,9 @@ int psp_keep(const char *name);
 #define GEO_ENTRIES 512
 #define GEO_PENDING 48
 #define RECENT_FRAMES 2
+#ifndef ARENA_BYTES
 #define ARENA_BYTES (1024 * 1024)
+#endif
 #define ASYNC_PRIORITY 0x10 /* above the game thread's 0x20 and the audio thread's 0x12 */
 
 struct geo_entry

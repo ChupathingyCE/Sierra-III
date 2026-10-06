@@ -43,37 +43,29 @@ struct option
 	int on;
 };
 
+/* build 93: trimmed (Sheepdog01): near2, near4, overlayslope1, overlayslope4,
+decalall, flatshade, tdump, visdump, noboxtest, detailallfar, levelcompact and
+interpolation left the menu. They still work typed into keep.txt, and the
+menu keeps them there as "other words" */
 static struct option options[] = {
 	{ "nearauto", "near plane: by what is near the eye", 1, 0 },
-	{ "near4", "near plane: x4", 1, 0 },
-	{ "near2", "near plane: x2", 1, 0 },
 	{ "nooverlay", "performance overlay OFF at start", 0, 0 },
 	{ "nomeaudio", "sound mixed on the main CPU, not the ME", 0, 0 },
-	{ "benchrun", "benchmark: 4 views x 5 switches, ~4 min", 0, 0 },
-	{ "levelcompact", "level vertices at 16 bits", 0, 0 },
+	{ "benchrun", "benchmark: 4 views x 7 switches, ~6 min", 0, 0 },
 	{ "meclassify", "ME speed test: 2 render jobs, measure only", 0, 0 },
-	{ "interpolation", "smooth motion between game ticks", 0, 0 },
-	{ "hwprofile", "hardware profile in the log", 0, 0 },
+	{ "hwprofile", "CPU counters in the log (benchrun: always)", 0, 0 },
 	{ "detailauto", "detail maps: the GE's own level choice", 0, 0 },
 	{ "noangle", "no slant buckets for texture levels", 0, 0 },
 	{ "mipauto", "all textures: the GE's own level choice", 0, 0 },
-	{ "overlayslope1", "wall symbols: one pixel of slant", 2, 0 },
-	{ "overlayslope4", "wall symbols: four pixels of slant", 2, 0 },
-	{ "decalall", "decals: draw even under 2 pixels", 0, 0 },
-	{ "flatshade", "flat shading, as builds 14-61", 0, 0 },
 	{ "nodetail", "no detail maps", 0, 0 },
 	{ "noshadows", "no shadows", 0, 0 },
 	{ "nodecals", "no decals", 0, 0 },
 	{ "nohud", "no HUD", 0, 0 },
 	{ "novblankthrottle", "Halo's frame pacing off", 0, 0 },
-	{ "noboxtest", "classify every level draw", 0, 0 },
-	{ "detailallfar", "detail passes past the fade too", 0, 0 },
 	{ "novfpu", "no VFPU", 0, 0 },
 	{ "texsqueeze", "texture RAM cache capped at 1 MB: stream", 3, 0 },
 	{ "texvramonly", "no texture RAM cache: VRAM only", 3, 0 },
 	{ "geoasync", "geometry reads asynchronous", 0, 0 },
-	{ "tdump", "log see-through draws on screenshots", 0, 0 },
-	{ "visdump", "log the visibility walk", 0, 0 },
 };
 #define OPTION_COUNT (int)(sizeof(options) / sizeof(options[0]))
 /* rows for options: 34 on the screen, less the 3-line header and 3 lines

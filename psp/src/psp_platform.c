@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 92
+#define PSP_BUILD_NUMBER 93
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -646,30 +646,56 @@ static const struct
 #define BENCH_VIEWS ((int)(sizeof(bench_views) / sizeof(bench_views[0])))
 static const char *const bench_configs[] =
 {
-	"baseline", "ME audio off", "stencils old nudge", "GE serial: GE busy time", "level compact",
+	/* build 93: the bus tests. "ME audio off" and "stencils old nudge" are
+	settled (no effect, b86-b92) and left out. Each new switch changes only
+	what the GE does; the CPU builds every frame the same way */
+	"baseline", "GE serial: GE busy time", "level compact", "GE skips models", "GE skips the level",
+	"display list in VRAM", "GE busy on VRAM only",
 };
+#define BENCH_SERIAL 1
+#define BENCH_VRAM_BUSY 6
+/* build 93: the GE's busy time at each view (the serial window's wait), the
+target for the VRAM-only load */
+static float bench_ge_busy_ms[8];
+/* build 93: the hardware counters for the drawing phase over the last
+heartbeat window (hwprofile_report): memory-wait share, D-cache misses per
+million cycles, memory-wait cycles per miss, uncached stores per million */
+static float hw_drawing[4];
+static int hw_drawing_valid = 0;
 #define BENCH_CONFIGS ((int)(sizeof(bench_configs) / sizeof(bench_configs[0])))
 static int bench_step = -1;
 static unsigned int bench_window_seen = 0;
 
 /* a configuration on (or everything back to the defaults with -1) */
-static void bench_apply(int config)
+static void bench_apply(int config, int view)
 {
-	/* the defaults: ME mixing, stencils baked, GE overlapped, float vertices */
-	psp_audio_setting(1, 1);
-	if (psp_ge_setting(16, 0, 0) != 0)
-		psp_ge_setting(16, 1, 0);
+	/* the defaults: GE overlapped, float vertices, every draw sent, the list
+	in RAM, no VRAM load */
 	psp_ge_setting(9, 1, 0);
 	if (psp_ge_setting(17, 0, 0) > 0)
 		psp_ge_setting(17, 1, 0);
-	if (config == 1)
-		psp_audio_setting(1, 0);
-	else if (config == 2)
-		psp_ge_setting(16, 1, 2);
-	else if (config == 3)
+	psp_ge_setting(20, 1, 0);
+	psp_ge_setting(21, 1, 0);
+	psp_ge_setting(22, 1, 0);
+	if (config == BENCH_SERIAL)
 		psp_ge_setting(9, 1, 1);
-	else if (config == 4)
+	else if (config == 2)
 		psp_ge_setting(17, 1, 1);
+	else if (config == 3)
+		psp_ge_setting(20, 1, 2);	/* models */
+	else if (config == 4)
+		psp_ge_setting(20, 1, 1);	/* the level */
+	else if (config == 5)
+		psp_ge_setting(21, 1, 1);
+	else if (config == BENCH_VRAM_BUSY)
+	{
+		/* the load's size found in the settling window (the GE alone, timed),
+		then held for the measured one; the target is this view's serial
+		window's GE time (tenths of a ms; 15 ms if it is missing) */
+		float target = view >= 0 && view < 8 && bench_ge_busy_ms[view] > 1.0f ? bench_ge_busy_ms[view] : 15.0f;
+
+		psp_ge_setting(22, 1, (int)(target * 10.0f));
+	}
 }
 
 static void bench_tick(void)
@@ -709,15 +735,24 @@ static void bench_tick(void)
 		different threads can come out of order) */
 		extern float psp_me_busy_percent(void);
 
-		platform_log("bench: RESULT view %d (%s) | switch %d (%s) | %.1f ms a frame, %.1f fps | ticks %.1f ms | frame %.1f ms (renderer CPU %.1f, GE wait %.1f) | %.1f ticks/s | ME %.1f%% busy",
-			bench_step / (BENCH_CONFIGS * 2), bench_views[bench_step / (BENCH_CONFIGS * 2)].name, (bench_step / 2) % BENCH_CONFIGS,
-			bench_configs[(bench_step / 2) % BENCH_CONFIGS], psp_budget_last[0], psp_budget_last[1], psp_budget_last[2],
-			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5], psp_budget_last[6], psp_me_busy_percent());
+		int result_view = bench_step / (BENCH_CONFIGS * 2), result_config = (bench_step / 2) % BENCH_CONFIGS;
+		char counters[160] = "";
+
+		if (result_config == BENCH_SERIAL && result_view < 8)
+			bench_ge_busy_ms[result_view] = psp_budget_last[5];
+		/* build 93: the drawing phase's hardware counters for the window */
+		if (hw_drawing_valid)
+			snprintf(counters, sizeof(counters), " | drawing: memory wait %.1f%%, D-misses %.0f a M cycles, %.0f cycles a miss, uncached stores %.0f a M",
+				hw_drawing[0], hw_drawing[1], hw_drawing[2], hw_drawing[3]);
+		platform_log("bench: RESULT view %d (%s) | switch %d (%s) | %.1f ms a frame, %.1f fps | ticks %.1f ms | frame %.1f ms (renderer CPU %.1f, GE wait %.1f) | %.1f ticks/s | ME %.1f%% busy%s",
+			result_view, bench_views[result_view].name, result_config,
+			bench_configs[result_config], psp_budget_last[0], psp_budget_last[1], psp_budget_last[2],
+			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5], psp_budget_last[6], psp_me_busy_percent(), counters);
 	}
 	bench_step++;
 	if (bench_step >= BENCH_VIEWS * BENCH_CONFIGS * 2)
 	{
-		bench_apply(-1);
+		bench_apply(-1, -1);
 		platform_log("bench: done (%d views x %d switches); everything back to the defaults", BENCH_VIEWS, BENCH_CONFIGS);
 		return;
 	}
@@ -725,7 +760,9 @@ static void bench_tick(void)
 	config = (bench_step / 2) % BENCH_CONFIGS;
 	half = bench_step % 2;
 	if (!half)
-		bench_apply(config);
+		bench_apply(config, view);
+	else if (config == BENCH_VRAM_BUSY)
+		psp_ge_setting(22, 1, -1);	/* the load's size held: measure */
 	/* build 88: put at the spot when the view changes, and again only if the
 	game has moved the player off it (b87: every window, and Sheepdog01 saw the
 	teleport repeat; each one can hitch the window it starts) */
@@ -992,6 +1029,15 @@ static void hwprofile_report(void)
 				hwprofile_phase_last[phase][k] = now;
 			}
 			pc = p[1] ? (double)p[1] : 1.0;
+			if (phase == 2)
+			{
+				/* build 93: for benchrun's RESULT line */
+				hw_drawing[0] = (float)(100.0 * p[3] / pc);
+				hw_drawing[1] = (float)(p[13] / (pc / 1e6));
+				hw_drawing[2] = p[13] ? (float)((double)p[3] / (double)p[13]) : 0.0f;
+				hw_drawing[3] = (float)(p[9] / (pc / 1e6));
+				hw_drawing_valid = p[1] > 0;
+			}
 			length += snprintf(line + length, sizeof(line) - length,
 				" %s %.1f%% (memory %.1f%%, asleep %.1f%%, I %.0f, D %.0f, wb %.0f, uncached loads %.0f stores %.0f);",
 				names[phase], 100.0 * p[1] / cycles, 100.0 * p[3] / pc, 100.0 * p[6] / pc,
@@ -1257,7 +1303,9 @@ int main(int argc, char **argv)
 
 		psp_vfpu_initialize();
 	}
-	if (psp_keep("hwprofile"))
+	/* build 93: benchrun starts the profiler too (its counters go on each
+	RESULT line) */
+	if (psp_keep("hwprofile") || psp_keep("benchrun"))
 		hwprofile_start(argc > 0 ? argv[0] : NULL);
 
 	thread = sceKernelCreateThread("halo heartbeat", heartbeat_thread, 0x18, 0x4000, 0, NULL);

@@ -39,7 +39,13 @@ struct pack_entry
 };
 
 #define VRAM_CACHE_START 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
-#define VRAM_CACHE_END 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
+#define VRAM_CACHE_END_FULL 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
+/* build 93: benchrun keeps VRAM's last 256 KB for its bus tests (the display
+list in VRAM, the VRAM-only GE load; psp_ge.c), for the whole run so every
+switch has the same texture placement */
+#define VRAM_BENCH_BYTES 0x40000
+static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
+#define VRAM_CACHE_END vram_cache_end
 #define LOAD_BUDGET_BYTES (96 * 1024) /* a frame's Memory Stick reads: ~7 ms */
 #define STAGING_BYTES (32 * 1024) /* build 68: 32 (was 64): 32 KB of zeroed data back; the Memory Stick gives 14.5 MB/s at 32 KB against 15.7 at 64 (halo_bench v10) */
 
@@ -78,7 +84,7 @@ struct arena
 };
 #define RAM_CACHE_BYTES (256 * 1024)
 static struct arena arenas[2] = {
-	{ 0x04000000 + VRAM_CACHE_START, 0x04000000 + VRAM_CACHE_END, 0x04000000 + VRAM_CACHE_START, 0x40000000 },
+	{ 0x04000000 + VRAM_CACHE_START, 0x04000000 + VRAM_CACHE_END_FULL, 0x04000000 + VRAM_CACHE_START, 0x40000000 },
 	{ 0, 0, 0, 0x40000000 } };
 static void *ram_cache = NULL;
 static unsigned int frame = 1, frame_loaded = 0;
@@ -136,6 +142,9 @@ void psp_tex_close(void)
 	free(bind_totals);
 	bind_totals = NULL;
 	entry_count = 0;
+	if (psp_keep("benchrun"))
+		vram_cache_end = VRAM_CACHE_END_FULL - VRAM_BENCH_BYTES;
+	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
 	arenas[1].next = arenas[1].start;
 }

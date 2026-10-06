@@ -17,6 +17,8 @@ compiled as plain C (no game prefix):
 #include <math.h>
 #include <pthread.h>
 #include <string.h>
+#include <malloc.h>
+#include <stdio.h>
 #include <sys/types.h>
 #include <unistd.h>
 #include <pspkernel.h>
@@ -178,8 +180,73 @@ void platform_log(const char *format, ...);
 
 static unsigned long heap_large_total = 0;
 
+/* build 93: who asks for the heap (bytes asked for since start, by the
+calling address; frees aren't counted), reported at the first failure and
+on psp_heap_report(): psp-addr2line -f -e halo.elf turns the addresses into
+functions */
+#define HEAP_CALLERS 96
+static struct { void *caller; unsigned long bytes, count; } heap_callers[HEAP_CALLERS];
+static int heap_caller_count = 0, heap_failed_reported = 0;
+
+static void heap_caller_add(void *caller, size_t size)
+{
+	int k;
+
+	for (k = 0; k < heap_caller_count; k++)
+		if (heap_callers[k].caller == caller)
+			break;
+	if (k == heap_caller_count)
+	{
+		if (heap_caller_count >= HEAP_CALLERS)
+			return;
+		heap_callers[heap_caller_count].caller = caller;
+		heap_caller_count++;
+	}
+	heap_callers[k].bytes += size;
+	heap_callers[k].count++;
+}
+
+void psp_heap_report(const char *why)
+{
+	char line[480];
+	int length = 0, shown = 0, k, best;
+	static unsigned char done[HEAP_CALLERS];
+	struct mallinfo info = mallinfo();
+
+	platform_log("heap (%s): %d KB in use, %d KB free inside, %d KB taken from the system; largest callers (bytes asked since start):",
+		why, info.uordblks / 1024, info.fordblks / 1024, info.arena / 1024);
+	memset(done, 0, sizeof(done));
+	while (shown < 16)
+	{
+		best = -1;
+		for (k = 0; k < heap_caller_count; k++)
+			if (!done[k] && (best < 0 || heap_callers[k].bytes > heap_callers[best].bytes))
+				best = k;
+		if (best < 0)
+			break;
+		done[best] = 1;
+		length += snprintf(line + length, sizeof(line) - length, " %p %lu KB (%lu);", heap_callers[best].caller,
+			heap_callers[best].bytes / 1024, heap_callers[best].count);
+		if (++shown % 8 == 0)
+		{
+			platform_log("heap callers:%s", line);
+			length = 0;
+			line[0] = 0;
+		}
+	}
+	if (length)
+		platform_log("heap callers:%s", line);
+}
+
 static void *heap_note(void *result, size_t size, const char *kind, void *caller)
 {
+	if (result)
+		heap_caller_add(caller, size);
+	if (!result && !heap_failed_reported)
+	{
+		heap_failed_reported = 1;
+		psp_heap_report("first failure");
+	}
 	if (!result)
 		platform_log("heap: %s of %u bytes FAILED (large requests so far %lu KB)", kind, (unsigned)size, heap_large_total / 1024);
 	else if (size >= 0x10000)
