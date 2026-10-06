@@ -557,6 +557,12 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	hits = misses = loads = load_bytes = evictions = too_big = failures = miss_frames = queue_full = no_room = 0;
 	read_us = read_worst_us = 0;
 	platform_log("geometry: %s, %u KB external; cache %u KB at %08x", path, pack_size / 1024, ARENA_BYTES / 1024, arena_start);
+	{
+		/* build 87: the stencil bake, keyed by this pack's addresses */
+		extern void psp_ge_stencils_open(const char *name, unsigned int map_crc);
+
+		psp_ge_stencils_open(name, map_crc);
+	}
 }
 
 /* the PSP is about to sleep: the volatile partition goes back to the system

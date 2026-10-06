@@ -356,7 +356,7 @@ static void keep_load(void)
 			keep_words[file] = ' ';
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
 		length ? keep_words : " nothing ");
-	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 skydump flatshade tdump nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio");
+	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 skydump flatshade tdump nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut");
 }
 
 int psp_keep(const char *name)
@@ -534,9 +534,113 @@ unsigned long psp_tag_loaded_calls = 0; /* cache_files.c (psp_fixups.py) */
 static char player_text[160] = "player: not yet";
 static unsigned long ticks_since_snapshot;
 
+/* ---------- build 87: "benchrun" (launch menu): a fixed benchmark
+
+Four fixed views of Blood Gulch, each held while a set of switches is tried
+one after another, two heartbeat windows (5 s each) per switch: the first
+settles (a switch that lets the level's copies go reloads them), the second
+is the measurement. Each window starts with a "bench:" line saying what it
+is; the heartbeat's own lines (budget, GE, audio, ME) follow it, so
+tools/benchparse.py turns a log into a table. About four minutes; the game
+carries on as usual after it ("bench: done"). Stand still, touch nothing */
+volatile unsigned int psp_heartbeat_windows = 0;
+static volatile unsigned long ticks_since_frame;
+int psp_audio_setting(int set, int value);
+int psp_ge_setting(int which, int set, int value);
+
+static const struct
+{
+	const char *name;
+	float spot[6];
+} bench_views[] =
+{
+	{ "blue base, b86 spot", { 37.74f, -88.22f, 0.20f, 0.25f, 0.97f, 0.0f } },
+	{ "red base front", { 95.0f, -172.0f, 0.45f, 0.0f, 1.0f, 0.05f } },
+	{ "mid field to blue", { 68.0f, -125.0f, 0.50f, -0.5f, 0.85f, 0.0f } },
+	{ "cliff top over the field", { 94.7f, -117.3f, 16.75f, -0.6f, -0.7f, -0.3f } },
+};
+#define BENCH_VIEWS ((int)(sizeof(bench_views) / sizeof(bench_views[0])))
+static const char *const bench_configs[] =
+{
+	"baseline", "ME audio off", "stencils old nudge", "GE serial: GE busy time", "level compact",
+};
+#define BENCH_CONFIGS ((int)(sizeof(bench_configs) / sizeof(bench_configs[0])))
+static int bench_step = -1;
+static unsigned int bench_window_seen = 0;
+
+/* a configuration on (or everything back to the defaults with -1) */
+static void bench_apply(int config)
+{
+	/* the defaults: ME mixing, stencils baked, GE overlapped, float vertices */
+	psp_audio_setting(1, 1);
+	if (psp_ge_setting(16, 0, 0) != 0)
+		psp_ge_setting(16, 1, 0);
+	psp_ge_setting(9, 1, 0);
+	if (psp_ge_setting(17, 0, 0) > 0)
+		psp_ge_setting(17, 1, 0);
+	if (config == 1)
+		psp_audio_setting(1, 0);
+	else if (config == 2)
+		psp_ge_setting(16, 1, 2);
+	else if (config == 3)
+		psp_ge_setting(9, 1, 1);
+	else if (config == 4)
+		psp_ge_setting(17, 1, 1);
+}
+
+static void bench_tick(void)
+{
+	extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
+	static int asked = -1;
+	int view, config, half;
+
+	if (asked < 0)
+		asked = psp_keep("benchrun");
+	if (!asked || bench_step >= BENCH_VIEWS * BENCH_CONFIGS * 2)
+		return;
+	if (psp_heartbeat_windows == bench_window_seen)
+		return;
+	/* a heartbeat window ended: the next step */
+	bench_window_seen = psp_heartbeat_windows;
+	if (bench_step < 0 && psp_heartbeat_windows < 3)
+		return;   /* the map settles first (15 s) */
+	if (bench_step >= 0 && bench_step % 2)
+	{
+		/* the measured window that just ended, from the heartbeat's own
+		figures for it (one self-contained line: the log's lines from
+		different threads can come out of order) */
+		extern float psp_me_busy_percent(void);
+
+		platform_log("bench: RESULT view %d (%s) | switch %d (%s) | %.1f ms a frame, %.1f fps | ticks %.1f ms | frame %.1f ms (renderer CPU %.1f, GE wait %.1f) | %.1f ticks/s | ME %.1f%% busy",
+			bench_step / (BENCH_CONFIGS * 2), bench_views[bench_step / (BENCH_CONFIGS * 2)].name, (bench_step / 2) % BENCH_CONFIGS,
+			bench_configs[(bench_step / 2) % BENCH_CONFIGS], psp_budget_last[0], psp_budget_last[1], psp_budget_last[2],
+			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5], psp_budget_last[6], psp_me_busy_percent());
+	}
+	bench_step++;
+	if (bench_step >= BENCH_VIEWS * BENCH_CONFIGS * 2)
+	{
+		bench_apply(-1);
+		platform_log("bench: done (%d views x %d switches); everything back to the defaults", BENCH_VIEWS, BENCH_CONFIGS);
+		return;
+	}
+	view = bench_step / (BENCH_CONFIGS * 2);
+	config = (bench_step / 2) % BENCH_CONFIGS;
+	half = bench_step % 2;
+	if (!half)
+		bench_apply(config);
+	/* held at the spot every window (the game may have moved the player) */
+	psp_player_teleport(bench_views[view].spot[0], bench_views[view].spot[1], bench_views[view].spot[2],
+		bench_views[view].spot[3], bench_views[view].spot[4], bench_views[view].spot[5]);
+	platform_log("bench: window %d: view %d (%s), switch %d (%s), %s", bench_step, view, bench_views[view].name, config,
+		bench_configs[config], half ? "MEASURED" : "settling");
+}
+
 void psp_tick_account(unsigned long microseconds)
 {
 	static unsigned long ticks_seen = 0;
+
+	ticks_since_frame++;
+	bench_tick();
 
 	/* keep.txt's "savetest": a checkpoint 10 s in (once), timed, the way the
 	campaign makes them (game_state_save writes the whole game state) */
@@ -643,8 +747,17 @@ void psp_ge_frame_end(void);
 
 void psp_phase(int phase);
 
+/* build 87: game ticks between rendered frames, as a histogram (0, 1, 2, 3,
+4+). With interpolation off (its default on the PSP), a frame shows the
+state of the last tick: frames alternating 1 and 2 ticks move the world in
+uneven steps, which reads as judder in fast turns (the warthog's donut
+bounce, Sheepdog01 b80: a candidate cause). keep word "interpolation" smooths it */
+static unsigned long ticks_per_frame_histogram[5];
+
 void psp_frame_account(unsigned long microseconds)
 {
+	ticks_per_frame_histogram[ticks_since_frame > 4 ? 4 : ticks_since_frame]++;
+	ticks_since_frame = 0;
 	/* the rendered frame goes to the screen (psp_ge.c) */
 	psp_phase(3);
 	psp_ge_frame_end();
@@ -797,6 +910,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 		SceInt64 now;
 		long ticks;
 		unsigned long tc, tt, tm, fc, ft, fm;
+		int window_done = 0;
 		double seconds;
 
 		/* every second for the first 20, then every 5 */
@@ -886,9 +1000,19 @@ static int heartbeat_thread(SceSize args, void *argp)
 			psp_budget_last[4] = renderer_us / 1000.0f;
 			psp_budget_last[5] = wait_us / 1000.0f;
 			psp_budget_last[6] = (float)((ticks - last_ticks) / seconds);
+			/* build 87: benchrun steps on window boundaries (counted at the
+			end of this heartbeat, once the ME's report is in too) */
+			window_done = 1;
 			platform_log("budget: %.1f ms a frame by the clock (%.1f fps; 30 fps is 33.3): ticks %.1f ms a frame (%.2f ticks), frame %.1f (the GE renderer's CPU %.1f of it, waiting for the GE %.1f), the rest %.1f; %s by %.1f ms",
 				wall, fc / seconds, ticks_ms, (double)tc / fc, frame_ms, renderer_us / 1000.0, wait_us / 1000.0,
 				wall - ticks_ms - frame_ms, wall > 33.33 ? "over" : "under", wall > 33.33 ? wall - 33.33 : 33.33 - wall);
+		}
+		if (ticks >= 0 && last_ticks >= 0 && fc)
+		{
+			platform_log("frames by game ticks since the last frame: 0: %lu, 1: %lu, 2: %lu, 3: %lu, 4+: %lu (interpolation %s)",
+				ticks_per_frame_histogram[0], ticks_per_frame_histogram[1], ticks_per_frame_histogram[2],
+				ticks_per_frame_histogram[3], ticks_per_frame_histogram[4], psp_keep("interpolation") ? "on" : "off");
+			memset(ticks_per_frame_histogram, 0, sizeof(ticks_per_frame_histogram));
 		}
 		if (!(ticks >= 0 && last_ticks >= 0))
 			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,
@@ -916,16 +1040,18 @@ static int heartbeat_thread(SceSize args, void *argp)
 				extern void psp_audio_report(void);
 
 				psp_audio_report();
-				{
-					/* build 87: the Media Engine's jobs (psp_me.c) */
-					extern void psp_me_report(void);
+			}
+			{
+				/* build 87: the Media Engine's jobs (psp_me.c), every window */
+				extern void psp_me_report(void);
 
-					psp_me_report();
-				}
+				psp_me_report();
 			}
 		}
 		last_ticks = ticks;
 		last_time = now;
+		if (window_done)
+			psp_heartbeat_windows++;
 		log_flush();
 	}
 	return 0;

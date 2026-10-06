@@ -727,6 +727,9 @@ GEQUAL with a nudge toward the eye; 3 the pass not drawn at all */
 /* build 87: the nudge by default (Sheepdog01's b86 run 1: it removed the stripes
 and looked right; "level array", the level's own vertices, still striped) */
 static int light_mode = 2;
+void psp_ge_forget_level(void);
+static int stencil_mode;
+static int level_compact;
 static unsigned long light_index_triangles = 0, light_nudged_draws = 0, lights_skipped = 0;
 static int nudge_percent = 0; /* build 84: the lift limit off by default (Sheepdog01's b83 run) */
 /* build 82: a test instrument. A fixed number of depth steps added to every
@@ -838,6 +841,25 @@ int psp_ge_setting(int which, int set, int value)
 	case 15:
 		if (set) light_mode = value < 0 ? 0 : value > 3 ? 3 : value;
 		return light_mode;
+	case 16:
+		/* build 87: the stencil bake. Changing it lets the level's copies go,
+		so they are rebuilt with or without the pieces' vertices */
+		if (set && value != stencil_mode)
+		{
+			stencil_mode = value < 0 ? 0 : value > 2 ? 2 : value;
+			psp_ge_forget_level();
+		}
+		return stencil_mode;
+	case 17:
+		/* build 87: the level's vertices at 16 bits; the copies are rebuilt */
+		if (level_compact < 0)
+			level_compact = psp_keep("levelcompact");
+		if (set && (value != 0) != (level_compact != 0))
+		{
+			level_compact = value != 0;
+			psp_ge_forget_level();
+		}
+		return level_compact;
 	case 11:
 	{
 		static const int floors[4] = { 0, 16, 64, 256 };
@@ -1163,8 +1185,144 @@ struct level_stream
 	/* build 66: the vertices' bounding box, for skipping the classification
 	of a draw wholly inside the view */
 	float low[3], high[3];
+	/* build 87: the stencil bake's pieces for this material (NULL: none);
+	count then includes the vertices the bake added */
+	struct bake_wall *bake;
+	int original_count;
+	/* build 87: "levelcompact": the same vertices at 16 bits (texture
+	coordinates times a scale, positions on a lattice; NULL: floats only) */
+	struct compact_vertex *compact_base, *compact_lightmap;
+	float compact_origin[3], compact_uv_scale[2];
 };
 #define LEVEL_STREAMS 512
+
+/* build 87: "levelcompact" (launch menu, or the debug menu's "Level
+vertices"). Memory traffic is this port's crux (memory_traffic.md): the GE
+reads every level vertex from RAM once a pass, 20 bytes each (two float
+texture coordinates, three float positions), up to four passes a triangle.
+At 16 bits a vertex is 10 bytes:
+	- positions on one lattice of 1/256 unit (3.9 mm) for every material,
+	  each material's origin a lattice point: the same world point lands on
+	  the same lattice point whichever material holds it (no cracks), and the
+	  GE's 16-bit position (q / 32768) times the model matrix's 128 plus the
+	  origin is exact in floats. The float copies are snapped to the lattice
+	  too, so the cut-up triangles, shadows, lights and stencils lie on the
+	  very same points;
+	- texture coordinates as q / 32768 times a per-material scale (the
+	  material's largest coordinate), applied with sceGuTexScale; lightmap
+	  coordinates are 16-bit in the map already.
+A material wider than the lattice reaches (+-128 units around its origin)
+stays in floats */
+struct compact_vertex
+{
+	short u, v, x, y, z;
+};
+#define COMPACT_STEP (1.0f / 256.0f)
+static int level_compact = -1;
+static unsigned long compact_streams = 0, compact_refused = 0, compact_draws = 0;
+/* the compact draw context of the level draw under way (NULL: floats) */
+static const struct level_stream *compact_now = NULL;
+static float pass_scale_u = 1.0f, pass_scale_v = 1.0f;
+static void world_model(void);
+
+/* the material's own model matrix (lattice to world, camera-relative) and
+texture scale for a compact pass */
+static void compact_begin(int lightmap)
+{
+	ScePspFMatrix4 m;
+	float k = COMPACT_STEP * 32768.0f;
+
+	gumLoadIdentity(&m);
+	m.x.x = m.y.y = m.z.z = k;
+	m.w.x = compact_now->compact_origin[0];
+	m.w.y = compact_now->compact_origin[1];
+	m.w.z = compact_now->compact_origin[2];
+	relative(&m);
+	sceGumMatrixMode(GU_MODEL);
+	sceGumLoadMatrix(&m);
+	if (lightmap)
+		sceGuTexScale(pass_scale_u * (32768.0f / 32767.0f), pass_scale_v * (32768.0f / 32767.0f));
+	else
+		sceGuTexScale(pass_scale_u * compact_now->compact_uv_scale[0], pass_scale_v * compact_now->compact_uv_scale[1]);
+	compact_draws++;
+}
+
+static void compact_end(void)
+{
+	world_model();
+	sceGuTexScale(pass_scale_u, pass_scale_v);
+}
+
+/* builds a stream's 16-bit copies, snapping its float copies to the lattice;
+0 when the material is too wide for the lattice (it stays in floats) */
+static int compact_build(struct level_stream *stream)
+{
+	float low[3], high[3], umax = 1e-6f, vmax = 1e-6f;
+	int i, axis;
+
+	for (axis = 0; axis < 3; axis++)
+	{
+		low[axis] = stream->low[axis];
+		high[axis] = stream->high[axis];
+		stream->compact_origin[axis] = floorf((low[axis] + high[axis]) * 0.5f / COMPACT_STEP + 0.5f) * COMPACT_STEP;
+		if (high[axis] - stream->compact_origin[axis] > 32760.0f * COMPACT_STEP ||
+			stream->compact_origin[axis] - low[axis] > 32760.0f * COMPACT_STEP)
+		{
+			compact_refused++;
+			return 0;
+		}
+	}
+	for (i = 0; i < stream->count; i++)
+	{
+		if (fabsf(stream->base[i].u) > umax) umax = fabsf(stream->base[i].u);
+		if (fabsf(stream->base[i].v) > vmax) vmax = fabsf(stream->base[i].v);
+	}
+	stream->compact_uv_scale[0] = umax * (32768.0f / 32767.0f);
+	stream->compact_uv_scale[1] = vmax * (32768.0f / 32767.0f);
+	stream->compact_base = memalign(16, stream->count * sizeof(struct compact_vertex));
+	stream->compact_lightmap = stream->lightmap ? memalign(16, stream->count * sizeof(struct compact_vertex)) : NULL;
+	if (!stream->compact_base || (stream->lightmap && !stream->compact_lightmap))
+	{
+		free(stream->compact_base);
+		free(stream->compact_lightmap);
+		stream->compact_base = stream->compact_lightmap = NULL;
+		compact_refused++;
+		return 0;
+	}
+	for (i = 0; i < stream->count; i++)
+	{
+		struct ge_vertex *b = &stream->base[i];
+		struct compact_vertex *c = &stream->compact_base[i];
+		float *p = &b->x;
+		short q[3];
+
+		for (axis = 0; axis < 3; axis++)
+		{
+			q[axis] = (short)floorf((p[axis] - stream->compact_origin[axis]) / COMPACT_STEP + 0.5f);
+			/* the float copy on the lattice point itself (exact in floats) */
+			p[axis] = stream->compact_origin[axis] + (float)q[axis] * COMPACT_STEP;
+		}
+		c->x = q[0]; c->y = q[1]; c->z = q[2];
+		c->u = (short)floorf(b->u / stream->compact_uv_scale[0] * 32768.0f + 0.5f);
+		c->v = (short)floorf(b->v / stream->compact_uv_scale[1] * 32768.0f + 0.5f);
+		if (stream->lightmap)
+		{
+			struct ge_vertex *l = &stream->lightmap[i];
+			struct compact_vertex *cl = &stream->compact_lightmap[i];
+			float lu = l->u < 0.0f ? 0.0f : l->u > 1.0f ? 1.0f : l->u, lv = l->v < 0.0f ? 0.0f : l->v > 1.0f ? 1.0f : l->v;
+
+			l->x = b->x; l->y = b->y; l->z = b->z;
+			cl->x = q[0]; cl->y = q[1]; cl->z = q[2];
+			cl->u = (short)floorf(lu * 32767.0f + 0.5f);
+			cl->v = (short)floorf(lv * 32767.0f + 0.5f);
+		}
+	}
+	sceKernelDcacheWritebackRange(stream->compact_base, stream->count * sizeof(struct compact_vertex));
+	if (stream->compact_lightmap)
+		sceKernelDcacheWritebackRange(stream->compact_lightmap, stream->count * sizeof(struct compact_vertex));
+	compact_streams++;
+	return 1;
+}
 static struct level_stream level_streams[LEVEL_STREAMS];
 static unsigned long stream_bytes = 0;
 static unsigned int stream_frame = 1;
@@ -1193,6 +1351,335 @@ static const void *stream_key(const void *vertices)
 		return vertices;
 	external = psp_geo_address_of(vertices);
 	return external ? (const void *)external : vertices;
+}
+
+/* ---------- build 87: the stencil bake (tools/stencilbake.py, <map>.pstn)
+
+A stencil (a light strip on a base wall, the cave's fungus) is its own
+see-through surface a few millimetres in front of a wall: the Xbox's 24-bit
+depth keeps them apart, the PSP's 16 bits can't, and no nudge was right at
+every distance and slant (builds 52-85). The bake cuts each wall triangle
+under a stencil along the stencil's outline (a constrained triangulation,
+no T-junctions with the triangles beside it). Here:
+	- a wall triangle the bake replaced is drawn as its pieces, in every pass
+	  (base, lightmap, detail; shadows and lights too), from vertices added
+	  to the material's copies;
+	- the stencil is drawn on the very same pieces (same positions, same
+	  matrices), only where its wall triangle was drawn this frame, with
+	  depth EQUAL, as the lightmap and detail passes are: exact, no nudge;
+	- its triangles the bake took are left out of the old path; any it
+	  couldn't (not on a wall: the teleporter's beam) keep the old nudge.
+"Stencils" in the debug menu: baked with EQUAL / baked with GEQUAL and two
+depth steps of slack / the old nudge (the bake off) */
+
+struct bake_affected
+{
+	unsigned short a, b, c, first, count, pad;
+};
+
+struct bake_wall
+{
+	unsigned int key, original, added, affected_count, piece_count;
+	const float *added_vertices;          /* 8 words each: x y z u v lu lv, packed normal */
+	const struct bake_affected *affected;
+	const unsigned short *pieces;         /* 3 each, into the extended copies */
+	unsigned char *flags;                 /* per original vertex: in a replaced triangle */
+	unsigned short *hash;                 /* replaced triangle + 1, by its triple */
+	unsigned int hash_mask;
+	unsigned int *drawn_frame;            /* per replaced triangle: the frame it was drawn in */
+};
+
+struct bake_layer
+{
+	unsigned int wall_key, stencil_key, vertex_count, tri_count;
+	struct ge_vertex *vertices;           /* the stencil's texture coordinates on the pieces' positions */
+	const unsigned short *tris;           /* 4 each: three vertices, the wall's replaced triangle */
+	struct bake_wall *wall;
+};
+
+struct bake_stencil
+{
+	unsigned int key, count;
+	const unsigned short *triples;
+	unsigned short *hash;
+	unsigned int hash_mask;
+};
+
+static struct
+{
+	void *file;
+	int wall_count, layer_count, stencil_count;
+	struct bake_wall *walls;
+	struct bake_layer *layers;
+	struct bake_stencil *stencils;
+} bake;
+/* 0 baked, EQUAL; 1 baked, GEQUAL with STENCIL_SLACK steps; 2 the old nudge */
+static int stencil_mode = 0;
+#define STENCIL_SLACK 2
+static unsigned long bake_substituted = 0, bake_pieces_drawn = 0, bake_layer_draws = 0, bake_layer_triangles = 0,
+	bake_old_path_triangles = 0;
+
+static unsigned int bake_triple_hash(unsigned int a, unsigned int b, unsigned int c)
+{
+	return (a * 73856093u) ^ (b * 19349663u) ^ (c * 83492791u);
+}
+
+static void bake_forget(void)
+{
+	int k;
+
+	for (k = 0; k < bake.wall_count; k++)
+	{
+		free(bake.walls[k].flags);
+		free(bake.walls[k].hash);
+		free(bake.walls[k].drawn_frame);
+	}
+	for (k = 0; k < bake.stencil_count; k++)
+		free(bake.stencils[k].hash);
+	free(bake.walls);
+	free(bake.layers);
+	free(bake.stencils);
+	free(bake.file);
+	memset(&bake, 0, sizeof(bake));
+}
+
+static struct bake_wall *bake_wall_of(unsigned int key)
+{
+	int k;
+
+	if (stencil_mode == 2)
+		return NULL;
+	for (k = 0; k < bake.wall_count; k++)
+		if (bake.walls[k].key == key)
+			return &bake.walls[k];
+	return NULL;
+}
+
+static struct bake_stencil *bake_stencil_of(unsigned int key)
+{
+	int k;
+
+	if (stencil_mode == 2)
+		return NULL;
+	for (k = 0; k < bake.stencil_count; k++)
+		if (bake.stencils[k].key == key)
+			return &bake.stencils[k];
+	return NULL;
+}
+
+/* the map's .pstn, when its geometry pack opens (psp_geo.c) */
+void psp_ge_stencils_open(const char *name, unsigned int map_crc)
+{
+	char path[128];
+	SceUID file;
+	int size, k;
+	unsigned int header[16];
+	const unsigned char *at, *end;
+
+	bake_forget();
+	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.pstn", name);
+	file = sceIoOpen(path, PSP_O_RDONLY, 0);
+	if (file < 0)
+	{
+		platform_log("stencils: no %s: the old nudge for every stencil", path);
+		return;
+	}
+	size = sceIoLseek32(file, 0, PSP_SEEK_END);
+	sceIoLseek32(file, 0, PSP_SEEK_SET);
+	bake.file = size > 64 ? memalign(64, size) : NULL;
+	if (!bake.file || sceIoRead(file, bake.file, size) != size)
+	{
+		sceIoClose(file);
+		platform_log("stencils: %s unreadable (%d bytes)", path, size);
+		bake_forget();
+		return;
+	}
+	sceIoClose(file);
+	memcpy(header, bake.file, sizeof(header));
+	if (header[0] != 0x4E545350 /* PSTN */ || header[1] != 1)
+	{
+		platform_log("stencils: %s is not a stencil bake", path);
+		bake_forget();
+		return;
+	}
+	if (map_crc && header[2] != map_crc)
+	{
+		platform_log("stencils: %s was baked from another build of the map (crc %08x, map %08x): not used", path,
+			header[2], map_crc);
+		bake_forget();
+		return;
+	}
+	bake.walls = calloc(header[3] + 1, sizeof(struct bake_wall));
+	bake.layers = calloc(header[4] + 1, sizeof(struct bake_layer));
+	bake.stencils = calloc(header[5] + 1, sizeof(struct bake_stencil));
+	if (!bake.walls || !bake.layers || !bake.stencils)
+	{
+		bake_forget();
+		return;
+	}
+	at = (const unsigned char *)bake.file + 64;
+	end = (const unsigned char *)bake.file + size;
+	for (k = 0; k < (int)header[3] && at + 20 <= end; k++)
+	{
+		struct bake_wall *w = &bake.walls[k];
+		const unsigned int *h = (const unsigned int *)at;
+		unsigned int i, slots;
+
+		w->key = h[0]; w->original = h[1]; w->added = h[2]; w->affected_count = h[3]; w->piece_count = h[4];
+		at += 20;
+		w->added_vertices = (const float *)at;
+		at += w->added * 32;
+		w->affected = (const struct bake_affected *)at;
+		at += w->affected_count * 12;
+		w->pieces = (const unsigned short *)at;
+		at += w->piece_count * 6;
+		at = (const unsigned char *)(((unsigned int)at + 3) & ~3u);
+		for (slots = 16; slots < w->affected_count * 2; slots <<= 1)
+			;
+		w->hash_mask = slots - 1;
+		w->hash = calloc(slots, sizeof(unsigned short));
+		w->flags = calloc(w->original, 1);
+		w->drawn_frame = calloc(w->affected_count, sizeof(unsigned int));
+		if (!w->hash || !w->flags || !w->drawn_frame)
+			continue;
+		for (i = 0; i < w->affected_count; i++)
+		{
+			const struct bake_affected *t = &w->affected[i];
+			unsigned int slot = bake_triple_hash(t->a, t->b, t->c) & w->hash_mask;
+
+			while (w->hash[slot])
+				slot = (slot + 1) & w->hash_mask;
+			w->hash[slot] = (unsigned short)(i + 1);
+			if (t->a < w->original) w->flags[t->a] = 1;
+			if (t->b < w->original) w->flags[t->b] = 1;
+			if (t->c < w->original) w->flags[t->c] = 1;
+		}
+		bake.wall_count++;
+	}
+	for (k = 0; k < (int)header[4] && at + 16 <= end; k++)
+	{
+		struct bake_layer *l = &bake.layers[k];
+		const unsigned int *h = (const unsigned int *)at;
+		int w;
+
+		l->wall_key = h[0]; l->stencil_key = h[1]; l->vertex_count = h[2]; l->tri_count = h[3];
+		at += 16;
+		l->vertices = (struct ge_vertex *)at;
+		at += l->vertex_count * 20;
+		l->tris = (const unsigned short *)at;
+		at += l->tri_count * 8;
+		for (w = 0; w < bake.wall_count; w++)
+			if (bake.walls[w].key == l->wall_key)
+				l->wall = &bake.walls[w];
+		if (l->wall)
+			bake.layer_count++;
+	}
+	for (k = 0; k < (int)header[5] && at + 8 <= end; k++)
+	{
+		struct bake_stencil *st = &bake.stencils[bake.stencil_count];
+		const unsigned int *h = (const unsigned int *)at;
+		unsigned int i, slots;
+
+		st->key = h[0]; st->count = h[1];
+		at += 8;
+		st->triples = (const unsigned short *)at;
+		at += st->count * 6;
+		at = (const unsigned char *)(((unsigned int)at + 3) & ~3u);
+		for (slots = 16; slots < st->count * 2; slots <<= 1)
+			;
+		st->hash_mask = slots - 1;
+		st->hash = calloc(slots, sizeof(unsigned short));
+		if (!st->hash)
+			continue;
+		for (i = 0; i < st->count; i++)
+		{
+			unsigned int slot = bake_triple_hash(st->triples[3 * i], st->triples[3 * i + 1], st->triples[3 * i + 2]) & st->hash_mask;
+
+			while (st->hash[slot])
+				slot = (slot + 1) & st->hash_mask;
+			st->hash[slot] = (unsigned short)(i + 1);
+		}
+		bake.stencil_count++;
+	}
+	/* the layers' vertices are read by the GE */
+	sceKernelDcacheWritebackRange(bake.file, size);
+	platform_log("stencils: %s: %d walls, %d stencil layers, %d stencil materials baked", path, bake.wall_count,
+		bake.layer_count, bake.stencil_count);
+}
+
+/* which replaced triangle a triple is (-1: none) */
+static int bake_find(const struct bake_wall *w, unsigned int a, unsigned int b, unsigned int c)
+{
+	unsigned int slot;
+
+	if (a >= w->original || b >= w->original || c >= w->original || !w->flags[a] || !w->flags[b] || !w->flags[c])
+		return -1;
+	slot = bake_triple_hash(a, b, c) & w->hash_mask;
+	while (w->hash[slot])
+	{
+		const struct bake_affected *t = &w->affected[w->hash[slot] - 1];
+
+		if (t->a == a && t->b == b && t->c == c)
+			return w->hash[slot] - 1;
+		slot = (slot + 1) & w->hash_mask;
+	}
+	return -1;
+}
+
+static void *list_take(int bytes);
+
+/* a draw's triangles with the replaced ones swapped for their pieces (in the
+display list's memory); the game's own list when none are in it. mark: the
+pieces are being drawn (the stencils on them may be drawn this frame) */
+static const unsigned short *bake_substitute(struct level_stream *stream, const unsigned short *indices,
+	long *triangle_count, int mark)
+{
+	struct bake_wall *w = stream->bake;
+	long t, extra = 0, found = 0, out = 0;
+	unsigned short *list;
+
+	if (!w || stencil_mode == 2)
+		return indices;
+	for (t = 0; t < *triangle_count; t++)
+	{
+		int r = bake_find(w, indices[3 * t], indices[3 * t + 1], indices[3 * t + 2]);
+
+		if (r >= 0)
+		{
+			extra += w->affected[r].count - 1;
+			found++;
+		}
+	}
+	if (!found)
+		return indices;
+	list = (unsigned short *)list_take((int)((*triangle_count + extra) * 3 * sizeof(unsigned short) + 3) & ~3);
+	if (!list)
+		return indices;
+	for (t = 0; t < *triangle_count; t++)
+	{
+		const unsigned short *tri = indices + 3 * t;
+		int r = bake_find(w, tri[0], tri[1], tri[2]);
+
+		if (r < 0)
+		{
+			list[3 * out] = tri[0];
+			list[3 * out + 1] = tri[1];
+			list[3 * out + 2] = tri[2];
+			out++;
+			continue;
+		}
+		memcpy(list + 3 * out, w->pieces + 3 * w->affected[r].first, w->affected[r].count * 3 * sizeof(unsigned short));
+		out += w->affected[r].count;
+		if (mark)
+		{
+			w->drawn_frame[r] = stream_frame;
+			bake_pieces_drawn += w->affected[r].count;
+		}
+	}
+	if (mark)
+		bake_substituted += found;
+	*triangle_count = out;
+	return list;
 }
 
 static struct level_stream *level_stream_get(const void *vertices, const void *lightmap_vertices, int count)
@@ -1230,11 +1717,21 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	}
 	stream->source = key;
 	stream->count = count;
+	stream->original_count = count;
 	stream->last_frame = stream_frame;
 	stream->uv_per_unit = 0.0f;
-	stream->base = malloc(count * sizeof(struct ge_vertex));
-	stream->lightmap = lightmap_vertices ? malloc(count * sizeof(struct ge_vertex)) : NULL;
-	stream->normals = malloc(count * sizeof(unsigned int));
+	/* build 87: room for the stencil bake's pieces' vertices after the
+	material's own */
+	stream->bake = bake_wall_of((unsigned int)key);
+	if (stream->bake && (stream->bake->original != (unsigned int)count || count + stream->bake->added > 65535))
+		stream->bake = NULL;
+	{
+		int total = count + (stream->bake ? (int)stream->bake->added : 0);
+
+		stream->base = malloc(total * sizeof(struct ge_vertex));
+		stream->lightmap = lightmap_vertices ? malloc(total * sizeof(struct ge_vertex)) : NULL;
+		stream->normals = malloc(total * sizeof(unsigned int));
+	}
 	if (!stream->base || (lightmap_vertices && !stream->lightmap) || !stream->normals)
 	{
 		platform_log("GE: no memory for a material's vertices (%d)", count);
@@ -1271,6 +1768,35 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 			l->v = (texcoord[1] * 2.0f + 1.0f) * (1.0f / 65535.0f);
 		}
 	}
+	if (stream->bake)
+	{
+		/* build 87: the pieces' vertices (inside the wall, so the box holds) */
+		unsigned int added;
+
+		for (added = 0; added < stream->bake->added; added++)
+		{
+			const float *a = stream->bake->added_vertices + 8 * added;
+			struct ge_vertex *b = &stream->base[count + added];
+
+			b->x = a[0]; b->y = a[1]; b->z = a[2];
+			b->u = a[3]; b->v = a[4];
+			stream->normals[count + added] = ((const unsigned int *)a)[7];
+			if (stream->lightmap)
+			{
+				struct ge_vertex *l = &stream->lightmap[count + added];
+
+				l->x = a[0]; l->y = a[1]; l->z = a[2];
+				l->u = a[5]; l->v = a[6];
+			}
+		}
+		count += stream->bake->added;
+		stream->count = count;
+	}
+	if (level_compact < 0)
+		level_compact = psp_keep("levelcompact");
+	stream->compact_base = stream->compact_lightmap = NULL;
+	if (level_compact)
+		compact_build(stream);
 	sceKernelDcacheWritebackRange(stream->base, count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
 		sceKernelDcacheWritebackRange(stream->lightmap, count * sizeof(struct ge_vertex));
@@ -1488,7 +2014,15 @@ static int cut_vertices_count = 0;
 static void draw_pass(const struct ge_vertex *stream, const unsigned short *indices, int index_count,
 	float (*cut)[CORNER_FLOATS], int cut_count, int lightmap)
 {
-	if (index_count > 0)
+	if (index_count > 0 && compact_now && (lightmap ? compact_now->compact_lightmap : compact_now->compact_base))
+	{
+		/* build 87: the 16-bit copies, through the material's own matrix */
+		compact_begin(lightmap);
+		sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+			index_count, indices, lightmap ? compact_now->compact_lightmap : compact_now->compact_base);
+		compact_end();
+	}
+	else if (index_count > 0)
 		sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 			index_count, indices, stream);
 	if (cut_count > 0 && cut_count == cut_vertices_count && cut_vertices_prepared[lightmap ? 1 : 0])
@@ -1536,14 +2070,22 @@ static void draw_pass_angled(const struct ge_vertex *stream, const unsigned shor
 		draw_pass(stream, indices, index_count, cut, cut_count, lightmap);
 		return;
 	}
+	if (compact_now && compact_now->compact_base && !lightmap)
+		compact_begin(0);
 	for (b = 0; b < buckets; b++)
 	{
 		if (!angle_count[b])
 			continue;
 		sceGuTexSlope(slope * angle_factor[b % ANGLE_BUCKETS]);
-		sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
-			(int)angle_count[b] * 3, indices + 3 * angle_first[b], stream);
+		if (compact_now && compact_now->compact_base && !lightmap)
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_16BIT | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				(int)angle_count[b] * 3, indices + 3 * angle_first[b], compact_now->compact_base);
+		else
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				(int)angle_count[b] * 3, indices + 3 * angle_first[b], stream);
 	}
+	if (compact_now && compact_now->compact_base && !lightmap)
+		compact_end();
 	sceGuTexSlope(slope);
 	if (cut_count > 0)
 		draw_pass(stream, NULL, 0, cut, cut_count, lightmap);
@@ -1595,11 +2137,21 @@ void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primar
 static unsigned char vertex_codes[65536];
 static int box_test = -1;
 static unsigned long budget_renderer_us = 0, budget_wait_us = 0;
+/* build 87: the same over the heartbeat's own window (benchrun's results
+need the window they name; the 300-frame figures lag it) */
+static unsigned long hb_renderer_us = 0, hb_wait_us = 0, hb_frames = 0, entry_snapshot = 0;
 
 /* build 64: the renderer's CPU time and the wait for the GE, us a frame, as
 last logged (the heartbeat's budget line) */
 void psp_ge_budget(unsigned long *renderer_us, unsigned long *wait_us)
 {
+	if (hb_frames)
+	{
+		*renderer_us = hb_renderer_us / hb_frames;
+		*wait_us = hb_wait_us / hb_frames;
+		hb_renderer_us = hb_wait_us = hb_frames = 0;
+		return;
+	}
 	*renderer_us = budget_renderer_us;
 	*wait_us = budget_wait_us;
 }
@@ -1607,6 +2159,10 @@ void psp_ge_budget(unsigned long *renderer_us, unsigned long *wait_us)
 static float cut_corners[MAXIMUM_CUT_CORNERS][CORNER_FLOATS];
 
 static int level_cull = -1;
+
+static void me_classify_measure(const struct level_stream *stream, unsigned int lowest, unsigned int highest);
+static unsigned long me_classify_jobs, me_classify_vertices, me_classify_mismatches, me_classify_failures,
+	me_classify_wait_us;
 
 static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
@@ -1629,6 +2185,17 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	stream = level_stream_get(vertices, lightmap_vertices, vertex_count);
 	if (!stream)
 		return;
+	/* build 87: the stencil bake's pieces in place of the triangles it cut */
+	if (stream->bake)
+	{
+		const unsigned short *swapped = bake_substitute(stream, indices, &triangle_count, 1);
+
+		if (swapped != indices)
+		{
+			indices = draw = swapped;
+			vertex_count = stream->count;
+		}
+	}
 	for (index = 0; index < triangle_count * 3; index++)
 	{
 		unsigned int vertex = indices[index];
@@ -1747,6 +2314,9 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	ge_part_calls[2]++;
 	part_add(1);
 	ge_part_us[1] -= cut_us;
+	/* build 87: the ME classifies the same range again ("meclassify") */
+	if (!all_inside)
+		me_classify_measure(stream, lowest, highest);
 	if (cut_count > clip_peak)
 		clip_peak = cut_count;
 	if (kept_count + cut_count == 0)
@@ -1870,6 +2440,9 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		int white_base = psp_pass_mode == 3, skip_lightmap = psp_pass_mode == 1 || psp_pass_mode == 4,
 			skip_detail = psp_pass_mode == 1 || psp_pass_mode == 2 || psp_pass_mode == 3;
 
+		/* build 87: the 16-bit copies for this draw's passes, when built */
+		compact_now = stream->compact_base ? stream : NULL;
+		pass_scale_u = pass_scale_v = 1.0f;
 		/* pass 1: the base texture, fading toward the fog */
 		sceGuEnable(GU_TEXTURE_2D);
 		sceGuTexFunc(GU_TFX_REPLACE, base_alpha && alpha_tested ? GU_TCC_RGBA : GU_TCC_RGB);
@@ -1964,6 +2537,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 				sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 				sceGuTexScale(detail_u[pass], detail_v[pass]);
+				pass_scale_u = detail_u[pass];
+				pass_scale_v = detail_v[pass];
 				if (uv_centre)
 					uv_shift(detail_u[pass], detail_v[pass]);
 				sceGuDepthFunc(GU_EQUAL);
@@ -1977,6 +2552,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			sceGuDisable(GU_BLEND);
 			sceGuTexLevelMode(tex_level_mode, tex_bias);
 			sceGuTexScale(1.0f, 1.0f);
+			pass_scale_u = pass_scale_v = 1.0f;
 			sceGuTexOffset(0.0f, 0.0f);
 			sceGuFog(fog_near, fog_far, fog_color);
 			sceGuDepthMask(GU_FALSE);
@@ -1984,12 +2560,16 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		}
 		sceGuDisable(GU_TEXTURE_2D);
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
+		compact_now = NULL;
 	}
 	else
 	{
 		/* not baked, or still on its way from the Memory Stick: flat */
 		sceGuColor(color);
+		compact_now = stream->compact_base ? stream : NULL;
+		pass_scale_u = pass_scale_v = 1.0f;
 		draw_pass(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0);
+		compact_now = NULL;
 		flat_draws++;
 	}
 	sceGuDisable(GU_CULL_FACE);
@@ -2809,12 +3389,57 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 	return 1;
 }
 
+/* build 87: "skincut" (on by default; "noskincut": dropped, as builds 41-86).
+A bending model's triangle reaching past the near plane used to be left
+out whole: the tank's treads and the warthog's wheels opened holes when the
+driving camera came close (Sheepdog01's b79 shots 5 and 6, and the distance where
+it stops). Now its three corners are bent on the CPU, by the same weights
+and node matrices the GE uses, and cut at the near plane and guard band as
+the level's triangles are; the pieces are drawn already bent (the model
+matrix is the identity for a bending part), their normals turned the same
+way so the GE lights them alike */
+static int skin_cut = -1;
+static unsigned long skin_cut_triangles = 0, skin_cut_pieces = 0;
+
+/* one skinned corner: bent position (camera-relative, the GE's space for a
+bending part), bent normal (8-bit units), texture coordinates */
+static void skin_corner(const unsigned char *record, int weights, int uv_at, const ScePspFMatrix4 *bone,
+	float *position, float *normal, float *uv)
+{
+	const float *p = (const float *)(record + uv_at + 12), *t = (const float *)(record + uv_at);
+	const signed char *n = (const signed char *)(record + uv_at + 8);
+	int slot, axis;
+
+	for (axis = 0; axis < 3; axis++)
+		position[axis] = normal[axis] = 0.0f;
+	for (slot = 0; slot < weights; slot++)
+	{
+		const ScePspFMatrix4 *m = &bone[slot];
+		float w = record[slot] * (1.0f / 128.0f);
+
+		if (!record[slot])
+			continue;
+		position[0] += w * (m->x.x * p[0] + m->y.x * p[1] + m->z.x * p[2] + m->w.x);
+		position[1] += w * (m->x.y * p[0] + m->y.y * p[1] + m->z.y * p[2] + m->w.y);
+		position[2] += w * (m->x.z * p[0] + m->y.z * p[1] + m->z.z * p[2] + m->w.z);
+		normal[0] += w * (m->x.x * n[0] + m->y.x * n[1] + m->z.x * n[2]);
+		normal[1] += w * (m->x.y * n[0] + m->y.y * n[1] + m->z.y * n[2]);
+		normal[2] += w * (m->x.z * n[0] + m->y.z * n[1] + m->z.z * n[2]);
+	}
+	uv[0] = t[0];
+	uv[1] = t[1];
+}
+
 static void model_geometry(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
 	if (skin)
 	{
 		int batch, slot;
+		ScePspFMatrix4 bone[SKIN_SLOTS];
+
+		if (skin_cut < 0)
+			skin_cut = !psp_keep("noskincut");
 
 		for (batch = 0; batch < skin->batch_count && !list_full(); batch++)
 		{
@@ -2836,6 +3461,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 
 					halo_matrix(model_nodes + 13 * (node < model_node_count ? node : 0), model);
 					sceGuBoneMatrix(slot, model);
+					bone[slot] = *model;
 					/* the matrix's rows along the camera's right, up and forward */
 					for (axis = 0; axis < 3; axis++)
 					{
@@ -2858,7 +3484,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				The CPU works out each corner's depth from its weights */
 				unsigned short *kept = list_take((draw_count * 2 + 3) & ~3);
 				float limit = projection_near * 1.25f;
-				int t, k, out = 0, uv_at = skin->stride - 24;
+				int t, k, out = 0, uv_at = skin->stride - 24, cut_count = 0;
 
 				if (!kept)
 					continue;
@@ -2898,6 +3524,50 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					if (behind)
 					{
 						near_triangles_dropped++;
+						if (skin_cut && cut_count < MAXIMUM_MODEL_CUT_CORNERS - 9)
+						{
+							/* build 87: bent here and cut, as the level's are */
+							float polygon[3][CORNER_FLOATS];
+							int bits[3];
+
+							memset(polygon, 0, sizeof(polygon));
+							for (k = 0; k < 3; k++)
+							{
+								const unsigned char *record = (const unsigned char *)vertices + skin->stride * draw[t + k];
+								float at[3], normal[3], uv[2], world[3];
+
+								skin_corner(record, skin->weights, uv_at, bone, at, normal, uv);
+								/* camera-relative to world, for the camera-space corner */
+								world[0] = at[0] + camera_eye[0];
+								world[1] = at[1] + camera_eye[1];
+								world[2] = at[2] + camera_eye[2];
+								to_camera(world, polygon[k]);
+								polygon[k][3] = uv[0];
+								polygon[k][4] = uv[1];
+								polygon[k][5] = normal[0];
+								polygon[k][6] = normal[1];
+								polygon[k][10] = normal[2];
+								polygon[k][7] = at[0];
+								polygon[k][8] = at[1];
+								polygon[k][9] = at[2];
+								bits[k] = outside(polygon[k]);
+							}
+							if (!(bits[0] & bits[1] & bits[2]))
+							{
+								if (!(bits[0] | bits[1] | bits[2]))
+								{
+									/* inside every plane, only inside the margin: drawn whole */
+									memcpy(model_cut[cut_count], polygon[0], sizeof(polygon[0]));
+									memcpy(model_cut[cut_count + 1], polygon[1], sizeof(polygon[0]));
+									memcpy(model_cut[cut_count + 2], polygon[2], sizeof(polygon[0]));
+									cut_count += 3;
+								}
+								else
+									cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + cut_count,
+										MAXIMUM_MODEL_CUT_CORNERS - cut_count);
+								skin_cut_triangles++;
+							}
+						}
 						continue;
 					}
 					kept[out++] = draw[t];
@@ -2906,6 +3576,42 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				}
 				draw = kept;
 				draw_count = out;
+				if (cut_count)
+				{
+					/* the bent pieces, after the batch's own triangles: GE vertices
+					(texture coordinates, 8-bit normal, position) already in the
+					bending part's space */
+					unsigned char *pieces = list_take(cut_count * 24);
+					int c;
+
+					if (pieces)
+					{
+						for (c = 0; c < cut_count; c++)
+						{
+							unsigned char *record = pieces + 24 * c;
+							float uv[2] = { model_cut[c][3], model_cut[c][4] };
+							int axis;
+
+							memcpy(record, uv, 8);
+							for (axis = 0; axis < 3; axis++)
+							{
+								float v = model_cut[c][axis == 2 ? 10 : 5 + axis];
+
+								record[8 + axis] = (unsigned char)(signed char)(v > 127.0f ? 127 : v < -127.0f ? -127 : (int)v);
+							}
+							record[11] = 0;
+							memcpy(record + 12, &model_cut[c][7], 12);
+						}
+						if (draw_count)
+							sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(skin->weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
+								GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
+								vertices);
+						sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+							cut_count, NULL, pieces);
+						skin_cut_pieces += cut_count / 3;
+						continue;
+					}
+				}
 				if (!draw_count)
 					continue;
 			}
@@ -3238,6 +3944,8 @@ void psp_ge_forget_level(void)
 		free(level_streams[index].base);
 		free(level_streams[index].lightmap);
 		free(level_streams[index].normals);
+		free(level_streams[index].compact_base);
+		free(level_streams[index].compact_lightmap);
 	}
 	memset(level_streams, 0, sizeof(level_streams));
 	/* build 64: the overlays' on-a-wall answers belong to this BSP */
@@ -3257,6 +3965,8 @@ void psp_ge_forget_map(void)
 	memset(converted_generation, 0, sizeof(converted_generation));
 	converted_count = reconverted_count = skinned_parts = skin_batches = skin_bytes = skin_failures = 0;
 	psp_ge_forget_level();
+	/* build 87: the last map's stencil bake (the next map's pack brings its own) */
+	bake_forget();
 }
 
 /* ---------- see-through model parts (build 21)
@@ -4172,10 +4882,120 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 	return flags[triangle] == 1;
 }
 
+/* build 87: a baked stencil's layers: its triangles on the pieces of the wall
+triangles drawn this frame, cut at the near plane and guard band as those
+pieces were (the same positions, the same cuts), queued as see-through draws
+that the flush tests with depth EQUAL */
+static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float u_scale, float v_scale, float u_offset,
+	float v_offset, short blend, const float *centroid)
+{
+	int k;
+
+	for (k = 0; k < bake.layer_count; k++)
+	{
+		struct bake_layer *l = &bake.layers[k];
+		struct transparent_draw *draw;
+		unsigned short *kept;
+		long t, kept_count = 0;
+		int cut_count = 0;
+
+		if (l->stencil_key != stencil_key || !l->wall || !l->wall->drawn_frame)
+			continue;
+		kept = (unsigned short *)list_take((int)(l->tri_count * 3 * sizeof(unsigned short) + 3) & ~3);
+		if (!kept)
+			return;
+		for (t = 0; t < (long)l->tri_count; t++)
+		{
+			const unsigned short *tri = l->tris + 4 * t;
+			int bits[3], corner;
+
+			if (tri[3] >= l->wall->affected_count || l->wall->drawn_frame[tri[3]] != stream_frame)
+				continue;
+			for (corner = 0; corner < 3; corner++)
+			{
+				float point[3];
+
+				to_camera(&l->vertices[tri[corner]].x, point);
+				bits[corner] = outside(point);
+			}
+			if (!(bits[0] | bits[1] | bits[2]))
+			{
+				kept[3 * kept_count] = tri[0];
+				kept[3 * kept_count + 1] = tri[1];
+				kept[3 * kept_count + 2] = tri[2];
+				kept_count++;
+			}
+			else if (!(bits[0] & bits[1] & bits[2]))
+			{
+				float corners[3][CORNER_FLOATS] = { { 0.0f } };
+
+				for (corner = 0; corner < 3; corner++)
+				{
+					const struct ge_vertex *v = &l->vertices[tri[corner]];
+
+					to_camera_corner(&v->x, corners[corner]);
+					corners[corner][3] = v->u;
+					corners[corner][4] = v->v;
+				}
+				cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
+					MAXIMUM_CUT_CORNERS - cut_count);
+			}
+		}
+		if (kept_count && (draw = transparent_slot(key, u_scale, v_scale, u_offset, v_offset, blend, centroid)) != NULL)
+		{
+			draw->vertices = l->vertices;
+			draw->indices = kept;
+			draw->index_count = (int)kept_count * 3;
+			draw->level = 3;
+			bake_layer_draws++;
+			bake_layer_triangles += kept_count;
+		}
+		if (cut_count && (draw = transparent_slot(key, u_scale, v_scale, u_offset, v_offset, blend, centroid)) != NULL)
+		{
+			struct ge_vertex *out = list_take(cut_count * sizeof(struct ge_vertex));
+			int index;
+
+			if (!out)
+				return;
+			for (index = 0; index < cut_count; index++)
+			{
+				const float *c = cut_corners[index];
+
+				out[index].u = c[3];
+				out[index].v = c[4];
+				out[index].x = c[7];
+				out[index].y = c[8];
+				out[index].z = c[9];
+			}
+			draw->vertices = out;
+			draw->indices = NULL;
+			draw->index_count = cut_count;
+			draw->level = 4;
+			bake_layer_draws++;
+		}
+	}
+}
+
+static int bake_stencil_has(const struct bake_stencil *st, const unsigned short *tri)
+{
+	unsigned int slot = bake_triple_hash(tri[0], tri[1], tri[2]) & st->hash_mask;
+
+	while (st->hash[slot])
+	{
+		const unsigned short *b = st->triples + 3 * (st->hash[slot] - 1);
+
+		if (b[0] == tri[0] && b[1] == tri[1] && b[2] == tri[2])
+			return 1;
+		slot = (slot + 1) & st->hash_mask;
+	}
+	return 0;
+}
+
 static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex_count, const unsigned short *indices,
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
+	const struct bake_stencil *baked = NULL;
 	struct level_stream *stream;
 	unsigned short *kept;
 	long index, kept_count = 0;
@@ -4187,6 +5007,11 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 	if (!frame_open || triangle_count <= 0 || !vertices || !indices || vertex_count <= 0 || list_full())
 		return;
 	memset(bucket_units, 0, sizeof(bucket_units));
+	/* build 87: a baked stencil is drawn on its walls' pieces; the triangles
+	the bake didn't take keep the old path below */
+	baked = bake_stencil_of((unsigned int)stream_key(vertices));
+	if (baked)
+		bake_queue_layers(baked->key, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
 	stream = level_stream_get(vertices, NULL, vertex_count);
 	if (!stream)
 		return;
@@ -4208,6 +5033,10 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 		const unsigned short *triangle = indices + 3 * index;
 		int bits[3], corner;
 
+		if (baked && bake_stencil_has(baked, triangle))
+			continue;
+		if (baked)
+			bake_old_path_triangles++;
 		for (corner = 0; corner < 3; corner++)
 		{
 			int code = vertex_codes[triangle[corner]];
@@ -4431,7 +5260,18 @@ static void transparent_flush_body(void)
 		painted symbols) lie on solid ones; the Xbox's 24-bit depth sorts
 		that out, the PSP's 16 bits flickered between them by the view.
 		Nudged nearer, as decals are */
-		if (draw->level)
+		if (draw->level >= 3)
+		{
+			/* build 87: a baked stencil on its wall's own pieces: the same
+			depth exactly (mode 1: two steps of slack, in case; and always
+			with levelcompact, whose walls go through the GE as 16-bit
+			vertices and another matrix, the stencil's as floats) */
+			if (stencil_mode == 1 || level_compact > 0)
+				sceGuDepthOffset(STENCIL_SLACK);
+			else
+				sceGuDepthFunc(GU_EQUAL);
+		}
+		else if (draw->level)
 		{
 			/* build 54: the nudge sized by distance, as build 52 did for
 			decals: a fixed 24 depth steps is metres far off (the base's
@@ -4459,10 +5299,10 @@ static void transparent_flush_body(void)
 		if (draw->sprites)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 				draw->index_count, NULL, draw->vertices);
-		else if (draw->level == 1)
+		else if (draw->level == 1 || draw->level == 3)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				draw->index_count, draw->indices, draw->vertices);
-		else if (draw->level == 2)
+		else if (draw->level == 2 || draw->level == 4)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 				draw->index_count, NULL, draw->vertices);
 		else
@@ -4477,6 +5317,8 @@ static void transparent_flush_body(void)
 		}
 		if (draw->level)
 			sceGuDepthOffset(0);
+		if (draw->level >= 3)
+			sceGuDepthFunc(GU_GEQUAL);
 		if (draw->first_person)
 			use_projection(0);
 		if (draw->sky == 2)
@@ -5069,6 +5911,17 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	stream = level_stream_find(vertices);
 	if (!stream)
 		return;
+	/* build 87: the pieces the level drew, where the stencil bake cut */
+	if (stream->bake)
+	{
+		const unsigned short *swapped = bake_substitute(stream, indices, &triangle_count, 0);
+
+		if (swapped != indices)
+		{
+			indices = swapped;
+			vertex_count = stream->count;
+		}
+	}
 	out = scratch_vertices;
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
@@ -5512,6 +6365,17 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	stream = level_stream_find(vertices);
 	if (!stream)
 		return;
+	/* build 87: the pieces the level drew, where the stencil bake cut */
+	if (stream->bake)
+	{
+		const unsigned short *swapped = bake_substitute(stream, indices, &triangle_count, 0);
+
+		if (swapped != indices)
+		{
+			indices = swapped;
+			vertex_count = stream->count;
+		}
+	}
 	if (spot)
 	{
 		/* the base texture's average colour (it must be resident) */
@@ -6491,6 +7355,19 @@ void psp_ge_frame_end(void)
 		waited = sceKernelGetSystemTimeLow() - mark;
 		ge_wait_us += waited;
 		win_ge_us += waited;
+		{
+			/* build 87: this frame's renderer CPU and GE wait, for the
+			heartbeat's window (psp_ge_budget) */
+			unsigned long sum = 0;
+			int k;
+
+			for (k = 0; k < GE_ENTRIES; k++)
+				sum += ge_entry_us[k];
+			hb_renderer_us += sum >= entry_snapshot ? sum - entry_snapshot : sum;
+			entry_snapshot = sum;
+			hb_wait_us += waited;
+			hb_frames++;
+		}
 		if (waited > win_ge_worst)
 			win_ge_worst = waited;
 		if (waited > ge_wait_worst)
@@ -6531,9 +7408,15 @@ void psp_ge_frame_end(void)
 	}
 	if (++frames == 1 || frames % 300 == 0)
 	{
-		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped; light pass test mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
+		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped); bending triangles cut at the near plane %lu (%lu pieces); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
-			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_mode, light_index_triangles, light_nudged_draws, lights_skipped, two_sided_draws, near_models, near_triangles_dropped);
+			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
+		/* build 87: its own line (the one above passed the log's line length) */
+		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes; ME classify (meclassify, measure only): %lu jobs, %lu vertices, the main CPU waited %lu us in all, %lu answers differing, %lu failed",
+			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, stencil_mode, bake_substituted,
+			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
+			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws,
+			me_classify_jobs, me_classify_vertices, me_classify_wait_us, me_classify_mismatches, me_classify_failures);
 		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu; widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame, characters %lu (picture changed %lu times); peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes, widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes, list_peak, (int)sizeof(display_list),
@@ -6561,6 +7444,7 @@ void psp_ge_frame_end(void)
 					total += ge_entry_us[k];
 					ge_entry_us[k] = 0;
 				}
+				entry_snapshot = 0;
 				platform_log("GE: renderer CPU us a frame: %s (all %lu); VFPU matrix products %lu a frame", text,
 					total / 300, psp_vfpu_multiplies / 300);
 				budget_renderer_us = total / 300;
@@ -6641,11 +7525,95 @@ int psp_ge_active(void)
 	return ge_ready;
 }
 
-/* ---------- build 87: the Media Engine's render job (psp_me.c), measure only.
-Filled in below once written; until then it does nothing */
+/* ---------- build 87: the Media Engine's first render job, measure only
+("meclassify" in the launch menu; off by default).
+
+The level draw's first CPU step is classifying each vertex against the
+near plane and the guard band (to_camera + outside, ~1-3 ms a frame on the
+PSP in b47). It is pure single-precision arithmetic on 12 bytes a vertex:
+the shape of job the ME suits (no VFPU, no library calls, little memory
+traffic per unit of work). Here the ME classifies the same vertices again,
+after the main CPU has, and the two answers are compared: what it measures
+is the ME's own time a vertex against the main CPU's, and whether the ME's
+FPU gives the same bits. Nothing it computes is used yet, and the main CPU
+waits for it, so it costs frame time while on: a measurement, not a speedup.
+The step after this (if the numbers say so) hands the classification to the
+ME for the whole visible set at the start of the level's drawing */
+static unsigned char me_codes[65536 + 64] __attribute__((aligned(64)));
+static float me_view[16] __attribute__((aligned(64)));
+static int me_classify_on = -1;
+static unsigned long me_classify_jobs, me_classify_vertices, me_classify_mismatches, me_classify_failures,
+	me_classify_wait_us;
+
+/* runs on the ME (or the main CPU when simulated): no system calls, no
+library calls, no VFPU. args: the stream's vertices, first and last index,
+the output, the view block (eye, right, up, forward, guard x and y, near) */
 unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results)
 {
-	(void)args;
-	(void)results;
-	return 0;
+	const struct ge_vertex *base = (const struct ge_vertex *)args[0];
+	unsigned int first = args[1], last = args[2], v;
+	unsigned char *out = (unsigned char *)args[3];
+	const float *view = (const float *)args[4];
+	float ex = view[0], ey = view[1], ez = view[2];
+	float rx = view[3], ry = view[4], rz = view[5], ux = view[6], uy = view[7], uz = view[8];
+	float fx = view[9], fy = view[10], fz = view[11], gx = view[12], gy = view[13], near = view[14];
+
+	for (v = first; v <= last; v++)
+	{
+		const struct ge_vertex *b = &base[v];
+		float d0 = b->x - ex, d1 = b->y - ey, d2 = b->z - ez;
+		float cx = d0 * rx + d1 * ry + d2 * rz, cy = d0 * ux + d1 * uy + d2 * uz, cz = d0 * fx + d1 * fy + d2 * fz;
+		unsigned char bits = 0;
+
+		if (cz < near) bits |= 1;
+		if (cx > gx * cz) bits |= 2;
+		if (cx < -gx * cz) bits |= 4;
+		if (cy > gy * cz) bits |= 8;
+		if (cy < -gy * cz) bits |= 16;
+		out[v] = bits;
+	}
+	results[0] = last - first + 1;
+	return last - first + 1;
+}
+
+/* the main CPU's side: after a draw's own classification, the same range on
+the ME; the answers compared where the main CPU worked one out */
+static void me_classify_measure(const struct level_stream *stream, unsigned int lowest, unsigned int highest)
+{
+	extern int psp_me_running(void);
+	extern int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
+		unsigned int first_look_us);
+	unsigned int args[5], results[8], v, start;
+	unsigned int line_first = lowest & ~63u, line_bytes = ((highest + 64) & ~63u) - line_first;
+
+	if (me_classify_on < 0)
+		me_classify_on = psp_keep("meclassify");
+	if (!me_classify_on || !psp_me_running() || highest < lowest)
+		return;
+	me_view[0] = camera_eye[0]; me_view[1] = camera_eye[1]; me_view[2] = camera_eye[2];
+	me_view[3] = camera_right[0]; me_view[4] = camera_right[1]; me_view[5] = camera_right[2];
+	me_view[6] = camera_up[0]; me_view[7] = camera_up[1]; me_view[8] = camera_up[2];
+	me_view[9] = camera_forward[0]; me_view[10] = camera_forward[1]; me_view[11] = camera_forward[2];
+	me_view[12] = guard_x; me_view[13] = guard_y; me_view[14] = NEAR_CLIP;
+	/* what the ME reads, to RAM; no copy of what it writes left here */
+	sceKernelDcacheWritebackRange(me_view, sizeof(me_view));
+	sceKernelDcacheWritebackInvalidateRange(me_codes + line_first, line_bytes);
+	args[0] = (unsigned int)stream->base;
+	args[1] = lowest;
+	args[2] = highest;
+	args[3] = (unsigned int)me_codes;
+	args[4] = (unsigned int)me_view;
+	start = sceKernelGetSystemTimeLow();
+	if (!psp_me_run(1 /* the render slot */, 2 /* ME_JOB_CLASSIFY */, args, 5, results, 50))
+	{
+		me_classify_failures++;
+		return;
+	}
+	me_classify_wait_us += sceKernelGetSystemTimeLow() - start;
+	sceKernelDcacheInvalidateRange(me_codes + line_first, line_bytes);
+	me_classify_jobs++;
+	me_classify_vertices += highest - lowest + 1;
+	for (v = lowest; v <= highest; v++)
+		if (!(vertex_codes[v] & CODE_UNKNOWN) && vertex_codes[v] != me_codes[v])
+			me_classify_mismatches++;
 }
