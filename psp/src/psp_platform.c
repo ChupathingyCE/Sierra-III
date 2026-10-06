@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 93
+#define PSP_BUILD_NUMBER 94
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>

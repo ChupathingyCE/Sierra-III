@@ -202,6 +202,10 @@ SYNC_FRAME_BUDGET bytes a frame (about 12 ms at the Memory Stick's measured
 16 MB/s) */
 static int async_reads = 0;
 static void *heap_arena = NULL;
+/* build 94: the arena carved from the texture RAM cache (campaign maps) */
+static int arena_carved = 0;
+/* the texture caches' size: VRAM 1,216 KB and RAM 4,096 KB */
+#define TEXTURE_CACHES_BYTES (5312 * 1024)
 static unsigned long window_reads = 0, window_us = 0, window_worst_us = 0;
 #define SYNC_FRAME_BUDGET (192 * 1024)
 static unsigned int frame_read_bytes = 0;
@@ -548,9 +552,41 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	were read from the Memory Stick as drawn, mid-frame, every frame: Sheepdog01's
 	b71/b72 runs spent 1.7-5 s a frame at the frame's end. The heap has had
 	1.5 MB it never reached (peak 3.4 of 5.0 MB) */
-	if (!heap_arena)
-		heap_arena = memalign(64, ARENA_BYTES);
-	arena = heap_arena;
+	/* build 94: a map whose texture pack is larger than the texture caches
+(every campaign map: 9-14 MB against 5.3 MB) streams its textures as drawn
+anyway, so the geometry cache takes its 1 MB from the texture RAM cache, as
+b68-b72 did, and leaves the heap: The Library ran out of heap at its first
+frame with it there. A pack that fits (Blood Gulch's) keeps the heap's, as
+b73 found it must */
+	{
+		SceIoStat stat;
+		char texture_path[128];
+		extern void *psp_tex_carve(unsigned int bytes);
+
+		snprintf(texture_path, sizeof(texture_path), "ms0:/halo/maps/%s.ptex", name);
+		arena = NULL;
+		if (!psp_keep("geoheap") && sceIoGetstat(texture_path, &stat) >= 0 && stat.st_size > TEXTURE_CACHES_BYTES)
+		{
+			if (heap_arena)
+			{
+				free(heap_arena);
+				heap_arena = NULL;
+			}
+			arena = psp_tex_carve(ARENA_BYTES);
+			arena_carved = arena != NULL;
+		}
+		if (!arena)
+		{
+			if (arena_carved)
+			{
+				psp_tex_carve(0);
+				arena_carved = 0;
+			}
+			if (!heap_arena)
+				heap_arena = memalign(64, ARENA_BYTES);
+			arena = heap_arena;
+		}
+	}
 	if (!arena)
 	{
 		platform_log("geometry: no RAM for the cache; %s closed", path);
@@ -563,7 +599,8 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	arena_end = arena_start + ARENA_BYTES;
 	hits = misses = loads = load_bytes = evictions = too_big = failures = miss_frames = queue_full = no_room = 0;
 	read_us = read_worst_us = 0;
-	platform_log("geometry: %s, %u KB external; cache %u KB at %08x", path, pack_size / 1024, ARENA_BYTES / 1024, arena_start);
+	platform_log("geometry: %s, %u KB external; cache %u KB at %08x (%s)", path, pack_size / 1024, ARENA_BYTES / 1024, arena_start,
+		arena_carved ? "from the texture RAM cache: its textures stream anyway" : "heap");
 	{
 		/* build 87: the stencil bake, keyed by this pack's addresses */
 		extern void psp_ge_stencils_open(const char *name, unsigned int map_crc);
@@ -585,6 +622,11 @@ void psp_geo_suspend(void)
 		sceIoWaitAsync(pack, &result);
 		poll();
 	}
+	/* build 94: carved from the texture RAM cache, the arena goes back to the
+	system with the volatile partition: its blocks are forgotten (the renderer
+	re-reads what it draws) */
+	if (arena_carved)
+		forget_all();
 }
 
 void psp_geo_resume(void)

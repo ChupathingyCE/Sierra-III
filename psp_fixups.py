@@ -3526,6 +3526,15 @@ FIXES_31["source/objects/objects.c#vehicles"] = [
 # falling. Attached ones (muzzle flashes, on objects) don't count and are
 # always made. Logged every 900 updates: the peak, refusals, physics a frame
 FIXES_36 = {}
+# build 93: the debug-drawing vertex buffer (render_debug's lines and
+# markers) was 24,576 vertices, 384 KB of the heap; nothing in a PSP build
+# draws debug geometry, and a request past the size is refused and warned
+# once (the allocator checks maximum_vertex_count). 1,024 keeps it working
+# for a debug line or two. The Library ran out of heap at its first frame
+FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#debugcap"] = [
+("	RASTERIZER_MAXIMUM_DYNAMIC_DEBUG_VERTICES = 24576,",
+ "#ifdef HALO_PSP\n	RASTERIZER_MAXIMUM_DYNAMIC_DEBUG_VERTICES = 1024, /* psp_fixups.py, build 93: 384 KB of heap */\n#else\n	RASTERIZER_MAXIMUM_DYNAMIC_DEBUG_VERTICES = 24576,\n#endif"),
+]
 # build 37: the game's matrix product on the VFPU (psp/src/psp_vfpu.c), which
 # checks itself against the FPU at start-up; keep.txt "novfpu" turns it off
 # build 37: the object's lighting, its own step (render_object, which
