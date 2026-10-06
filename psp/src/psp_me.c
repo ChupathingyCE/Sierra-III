@@ -65,6 +65,7 @@ simulated or after a stop */
 unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *sums, short *output,
 	unsigned long frames, unsigned long *clipped);
 unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results);
+unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results);
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -75,6 +76,8 @@ struct me_slot
 	unsigned int done;     /* the ME: the number of the last job finished */
 	unsigned int type;     /* ME_JOB_... */
 	unsigned int cycles;   /* the ME: its cycle counter across the last job */
+	unsigned int job_cycles; /* the ME: of those, the job's own code (without
+	                         the two cache hand-overs around it) */
 	unsigned int args[ME_JOB_ARGS];
 	unsigned int results[ME_JOB_RESULTS];
 } __attribute__((aligned(64)));
@@ -100,6 +103,7 @@ static void *audio_list_storage[AUDIO_LIST_MAX] __attribute__((aligned(64)));
 runs them), -1 stopped (after HOME, quit, sleep or a failure) */
 static volatile int me_state = 0;
 static unsigned int slot_request[ME_SLOTS];
+static unsigned int last_job_us[ME_SLOTS]; /* build 87: psp_me_last_job_us */
 /* the ME's cycle counter, counts a microsecond (measured at start) */
 static float me_cycles_per_us = 0.0f;
 
@@ -140,10 +144,16 @@ static void run_job(volatile struct me_slot *slot, int *sums)
 		break;
 	}
 	case ME_JOB_CLASSIFY:
+	case ME_JOB_ANGLE:
 	{
-		unsigned int results[ME_JOB_RESULTS] = { 0 }, k;
+		unsigned int args[ME_JOB_ARGS], results[ME_JOB_RESULTS] = { 0 }, k;
 
-		psp_ge_me_classify((const unsigned int *)slot->args, results);
+		for (k = 0; k < ME_JOB_ARGS; k++)
+			args[k] = slot->args[k];
+		if (slot->type == ME_JOB_CLASSIFY)
+			psp_ge_me_classify(args, results);
+		else
+			psp_ge_me_angle(args, results);
 		for (k = 0; k < ME_JOB_RESULTS; k++)
 			slot->results[k] = results[k];
 		break;
@@ -171,17 +181,20 @@ void meLibOnProcess(void)
 		for (k = 0; k < ME_SLOTS; k++)
 		{
 			volatile struct me_slot *slot = SLOT(k);
-			unsigned int request = slot->request, start;
+			unsigned int request = slot->request, start, job_start, job_end;
 
 			if (request == slot->done)
 				continue;
 			start = me_cycles();
 			/* what the main CPU wrote: drop any copy left from the last job */
 			meLibDcacheWritebackInvalidateAll();
+			job_start = me_cycles();
 			run_job(slot, sums);
+			job_end = me_cycles();
 			/* what this job wrote, to main RAM, before saying so */
 			meLibDcacheWritebackInvalidateAll();
 			slot->cycles = me_cycles() - start;
+			slot->job_cycles = job_end - job_start;
 			control->jobs++;
 			__asm__ __volatile__("sync");
 			slot->done = request;
@@ -217,7 +230,7 @@ void meLibOnWake(void)
 static struct
 {
 	unsigned long jobs, failures, simulated;
-	unsigned long long me_cycles, wait_us, handover_us;
+	unsigned long long me_cycles, me_job_cycles, wait_us, handover_us;
 	unsigned long me_worst_us, wait_worst_us;
 } stats[ME_SLOTS];
 static unsigned long long report_mark = 0;
@@ -390,6 +403,7 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 		me_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 		stats[which].simulated++;
 		waited = me_us;
+		last_job_us[which] = (unsigned int)me_us;
 	}
 	else
 	{
@@ -411,6 +425,8 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 		}
 		waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 		stats[which].me_cycles += slot->cycles;
+		stats[which].me_job_cycles += slot->job_cycles;
+		last_job_us[which] = me_cycles_per_us > 0.0f ? (unsigned int)((float)slot->job_cycles / me_cycles_per_us) : 0;
 		me_us = me_cycles_per_us > 0.0f ? (unsigned long)((float)slot->cycles / me_cycles_per_us) : 0;
 	}
 	for (k = 0; k < ME_JOB_RESULTS; k++)
@@ -422,6 +438,15 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 	if (me_us > stats[which].me_worst_us)
 		stats[which].me_worst_us = me_us;
 	return 1;
+}
+
+/* build 87: the last job's own code time on the ME, in microseconds (its
+cycle counter, without the cache hand-overs); simulated, the main CPU's time
+for the whole job */
+
+unsigned int psp_me_last_job_us(int which)
+{
+	return which >= 0 && which < ME_SLOTS ? last_job_us[which] : 0;
 }
 
 /* the audio job's list: up to 256 voices, written through the uncached view */
@@ -474,7 +499,7 @@ void psp_me_report(void)
 {
 	static const char *const names[ME_SLOTS] = { "audio", "render" };
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
-	char line[600];
+	char line[900];
 	int length = 0, k;
 
 	if (!me_state)
@@ -483,15 +508,18 @@ void psp_me_report(void)
 	for (k = 0; k < ME_SLOTS; k++)
 	{
 		unsigned long long me_us = me_cycles_per_us > 0.0f ? (unsigned long long)((float)stats[k].me_cycles / me_cycles_per_us) : 0;
+		/* build 87: the job's own code, apart from the cache hand-overs */
+		unsigned long long job_us = me_cycles_per_us > 0.0f ? (unsigned long long)((float)stats[k].me_job_cycles / me_cycles_per_us) : 0;
 
 		if (stats[k].simulated)
-			me_us = stats[k].wait_us;
+			me_us = job_us = stats[k].wait_us;
 		busy_us_all += me_us;
 		if (!stats[k].jobs && !stats[k].failures)
 			continue;
 		length += snprintf(line + length, sizeof(line) - length,
-			"; %s: %lu jobs, the ME's own time %lu us a job (worst %lu), %.1f%% of the ME; the main CPU's hand-over %lu us a job, waiting %lu us a job (worst %lu); %lu failed",
-			names[k], stats[k].jobs, stats[k].jobs ? (unsigned long)(me_us / stats[k].jobs) : 0, stats[k].me_worst_us,
+			"; %s: %lu jobs, the ME's own time %lu us a job (the job's code %lu, cache hand-overs the rest; worst %lu), %.1f%% of the ME; the main CPU's hand-over %lu us a job, waiting %lu us a job (worst %lu); %lu failed",
+			names[k], stats[k].jobs, stats[k].jobs ? (unsigned long)(me_us / stats[k].jobs) : 0,
+			stats[k].jobs ? (unsigned long)(job_us / stats[k].jobs) : 0, stats[k].me_worst_us,
 			window ? 100.0 * (double)me_us / (double)window : 0.0,
 			stats[k].jobs ? (unsigned long)(stats[k].handover_us / stats[k].jobs) : 0,
 			stats[k].jobs ? (unsigned long)(stats[k].wait_us / stats[k].jobs) : 0, stats[k].wait_worst_us, stats[k].failures);

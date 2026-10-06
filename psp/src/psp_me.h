@@ -11,6 +11,7 @@
 
 #define ME_JOB_AUDIO 1
 #define ME_JOB_CLASSIFY 2
+#define ME_JOB_ANGLE 3
 
 int psp_me_start(void);
 int psp_me_running(void);

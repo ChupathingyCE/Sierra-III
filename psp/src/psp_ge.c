@@ -1891,6 +1891,71 @@ static unsigned long angle_draws = 0, angle_triangles[ANGLE_BUCKETS], angle_us =
 	detail_passes_skipped_far = 0, level_draws_inside = 0, level_draws_classified = 0;
 static float detail_far_squared = 0.0f;
 
+/* build 87: one triangle's slant bucket (plus ANGLE_BUCKETS when wholly
+past the detail fade). The main CPU's loop below and the Media Engine's
+measure job (psp_ge_me_angle) both use this, so the two compute the very same
+expressions in the same order (no fused multiply-adds: -ffp-contract=off) and
+must agree bit for bit. No library calls: the ME runs it */
+static inline int angle_bucket_one(const struct ge_vertex *stream, const unsigned short *triangle, float ex, float ey,
+	float ez, int far_possible, float far_squared)
+{
+	const struct ge_vertex *a = &stream[triangle[0]], *p = &stream[triangle[1]], *q = &stream[triangle[2]];
+	float e1[3] = { p->x - a->x, p->y - a->y, p->z - a->z }, e2[3] = { q->x - a->x, q->y - a->y, q->z - a->z };
+	float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+	float da[3] = { a->x - ex, a->y - ey, a->z - ez };
+	float d[3] = { da[0] + e1[0] * (1.0f / 3.0f) + e2[0] * (1.0f / 3.0f), da[1] + e1[1] * (1.0f / 3.0f) + e2[1] * (1.0f / 3.0f),
+		da[2] + e1[2] * (1.0f / 3.0f) + e2[2] * (1.0f / 3.0f) };
+	float dot = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
+	float lengths = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+	int bucket = 0;
+
+	/* 1 / cos^2 against the bucket edges, 2^(b - 1/2) */
+	if (lengths > 0.0f)
+	{
+		float ratio_limit = dot * dot;
+
+		while (bucket < ANGLE_BUCKETS - 1 && lengths > ratio_limit * angle_factor[bucket] * angle_factor[bucket] * 1.41421356f)
+			bucket++;
+	}
+	if (far_possible)
+	{
+		/* far: every corner past DETAIL_FAR (the nearest corner decides) */
+		float sa = da[0] * da[0] + da[1] * da[1] + da[2] * da[2];
+
+		if (sa > far_squared)
+		{
+			float dp[3] = { p->x - ex, p->y - ey, p->z - ez };
+			float sp = dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2];
+
+			if (sp > far_squared)
+			{
+				float dq[3] = { q->x - ex, q->y - ey, q->z - ez };
+
+				if (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2] > far_squared)
+					bucket += ANGLE_BUCKETS;
+			}
+		}
+	}
+	return bucket;
+}
+
+/* build 87, the like-for-like: the same function on the main CPU over the
+same range, its cache emptied of the range first as the ME's is, timed, and
+its answers against the ME's */
+static unsigned long me_classify_sc_us = 0, me_classify_sc_mismatches = 0;
+static unsigned long me_classify_me_us = 0;
+/* build 87: the second measure job, the slant buckets (angle_sort's loop:
+three vertices fetched per triangle from wherever they lie, the shape of the
+renderer's most expensive CPU step on hardware, 3.8 ms a frame in b86) */
+static unsigned char me_buckets[ANGLE_TRIANGLES + 64] __attribute__((aligned(64)));
+static float me_angle_view[16] __attribute__((aligned(64)));
+static unsigned long me_angle_jobs = 0, me_angle_triangles = 0, me_angle_mismatches = 0, me_angle_failures = 0,
+	me_angle_wait_us = 0, me_angle_sc_us = 0;
+static unsigned long me_angle_me_us = 0;
+static void me_angle_measure(const struct ge_vertex *stream, const unsigned short *indices, long count,
+	int far_possible);
+static unsigned long angle_loop_us = 0;
+
 /* sorts a draw's triangles by slant; returns the list to draw (the given
 one, or a copy in the display list sorted by bucket) */
 static const unsigned short *angle_sort(const struct ge_vertex *stream, const unsigned short *indices, long count,
@@ -1915,48 +1980,20 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 	if (detail_all_far)
 		far_possible = 0;
 	memset(total, 0, sizeof(total));
-	for (t = 0; t < count; t++)
 	{
-		const struct ge_vertex *a = &stream[indices[3 * t]], *p = &stream[indices[3 * t + 1]], *q = &stream[indices[3 * t + 2]];
-		float e1[3] = { p->x - a->x, p->y - a->y, p->z - a->z }, e2[3] = { q->x - a->x, q->y - a->y, q->z - a->z };
-		float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
-		float da[3] = { a->x - ex, a->y - ey, a->z - ez };
-		float d[3] = { da[0] + e1[0] * (1.0f / 3.0f) + e2[0] * (1.0f / 3.0f), da[1] + e1[1] * (1.0f / 3.0f) + e2[1] * (1.0f / 3.0f),
-			da[2] + e1[2] * (1.0f / 3.0f) + e2[2] * (1.0f / 3.0f) };
-		float dot = n[0] * d[0] + n[1] * d[1] + n[2] * d[2];
-		float lengths = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-		int bucket = 0;
+		unsigned int loop_start = sceKernelGetSystemTimeLow();
 
-		/* 1 / cos^2 against the bucket edges, 2^(b - 1/2) */
-		if (lengths > 0.0f)
+		for (t = 0; t < count; t++)
 		{
-			float ratio_limit = dot * dot;
+			int bucket = angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, detail_far_squared);
 
-			while (bucket < ANGLE_BUCKETS - 1 && lengths > ratio_limit * angle_factor[bucket] * angle_factor[bucket] * 1.41421356f)
-				bucket++;
+			angle_bucket_of[t] = (unsigned char)bucket;
+			total[bucket]++;
 		}
-		if (far_possible)
-		{
-			/* far: every corner past DETAIL_FAR (the nearest corner decides) */
-			float sa = da[0] * da[0] + da[1] * da[1] + da[2] * da[2];
-
-			if (sa > detail_far_squared)
-			{
-				float dp[3] = { p->x - ex, p->y - ey, p->z - ez };
-				float sp = dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2];
-
-				if (sp > detail_far_squared)
-				{
-					float dq[3] = { q->x - ex, q->y - ey, q->z - ez };
-
-					if (dq[0] * dq[0] + dq[1] * dq[1] + dq[2] * dq[2] > detail_far_squared)
-						bucket += ANGLE_BUCKETS;
-				}
-			}
-		}
-		angle_bucket_of[t] = (unsigned char)bucket;
-		total[bucket]++;
+		angle_loop_us += sceKernelGetSystemTimeLow() - loop_start;
 	}
+	/* build 87: the ME works out the same buckets ("meclassify", measure only) */
+	me_angle_measure(stream, indices, count, far_possible);
 	for (b = 0; b < SORT_BUCKETS; b++)
 		if (total[b])
 			used++;
@@ -7417,6 +7454,24 @@ void psp_ge_frame_end(void)
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws,
 			me_classify_jobs, me_classify_vertices, me_classify_wait_us, me_classify_mismatches, me_classify_failures);
+		/* build 87: the like-for-like of the two measure jobs (ME vs main CPU,
+		the same function on the same data, both starting with the data out of
+		their caches) */
+		if (me_classify_jobs || me_angle_jobs || me_angle_failures)
+		{
+			platform_log("GE: ME measure (meclassify): classify %lu jobs, %lu vertices: the ME's code %lu us (%lu ns a vertex), the main CPU's %lu us (%lu ns a vertex), answers differing %lu; slant buckets %lu jobs, %lu triangles: the ME's code %lu us (%lu ns a triangle), the main CPU's %lu us (%lu ns a triangle), answers differing %lu, %lu failed; the main CPU waited %lu us for both",
+				me_classify_jobs, me_classify_vertices, me_classify_me_us,
+				me_classify_vertices ? (unsigned long)(1000ull * me_classify_me_us / me_classify_vertices) : 0,
+				me_classify_sc_us, me_classify_vertices ? (unsigned long)(1000ull * me_classify_sc_us / me_classify_vertices) : 0,
+				me_classify_sc_mismatches, me_angle_jobs, me_angle_triangles, me_angle_me_us,
+				me_angle_triangles ? (unsigned long)(1000ull * me_angle_me_us / me_angle_triangles) : 0,
+				me_angle_sc_us, me_angle_triangles ? (unsigned long)(1000ull * me_angle_sc_us / me_angle_triangles) : 0,
+				me_angle_mismatches, me_angle_failures, me_classify_wait_us + me_angle_wait_us);
+			me_classify_jobs = me_classify_vertices = me_classify_me_us = me_classify_sc_us = me_classify_sc_mismatches = 0;
+			me_classify_wait_us = me_classify_mismatches = 0;
+			me_angle_jobs = me_angle_triangles = me_angle_me_us = me_angle_sc_us = me_angle_mismatches = 0;
+			me_angle_failures = me_angle_wait_us = 0;
+		}
 		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu; widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame, characters %lu (picture changed %lu times); peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes, widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes, list_peak, (int)sizeof(display_list),
@@ -7456,8 +7511,8 @@ void psp_ge_frame_end(void)
 
 					for (b = 0; b < ANGLE_BUCKETS; b++)
 						all += angle_triangles[b];
-					platform_log("GE: angle buckets: %lu draws, %lu us a frame sorting; triangles by 1/cos (1, 1.4, 2, 2.8, 4, 5.7, 8): %lu%% %lu%% %lu%% %lu%% %lu%% %lu%% %lu%%; overlays: %lu asked of the collision (%lu on a wall, %lu free, %lu us in all; %d draws remembered, %lu replaced); slope nudges %lu, held to the lift limit (%d%% of the distance) %lu%s",
-						angle_draws, angle_us / 300, all ? angle_triangles[0] * 100 / all : 0, all ? angle_triangles[1] * 100 / all : 0,
+					platform_log("GE: angle buckets: %lu draws, %lu us a frame sorting (the bucket loop alone %lu); triangles by 1/cos (1, 1.4, 2, 2.8, 4, 5.7, 8): %lu%% %lu%% %lu%% %lu%% %lu%% %lu%% %lu%%; overlays: %lu asked of the collision (%lu on a wall, %lu free, %lu us in all; %d draws remembered, %lu replaced); slope nudges %lu, held to the lift limit (%d%% of the distance) %lu%s",
+						angle_draws, angle_us / 300, angle_loop_us / 300, all ? angle_triangles[0] * 100 / all : 0, all ? angle_triangles[1] * 100 / all : 0,
 						all ? angle_triangles[2] * 100 / all : 0, all ? angle_triangles[3] * 100 / all : 0,
 						all ? angle_triangles[4] * 100 / all : 0, all ? angle_triangles[5] * 100 / all : 0,
 						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped,
@@ -7474,6 +7529,7 @@ void psp_ge_frame_end(void)
 					uv_shift_largest = 0.0f;
 					memset(angle_triangles, 0, sizeof(angle_triangles));
 					angle_draws = angle_us = 0;
+					angle_loop_us = 0;
 					memset(near_auto_chosen, 0, sizeof(near_auto_chosen));
 					memset(near_auto_chosen_high, 0, sizeof(near_auto_chosen_high));
 					near_auto_by_objects = near_auto_us = near_auto_frames = 0;
@@ -7545,6 +7601,7 @@ static int me_classify_on = -1;
 static unsigned long me_classify_jobs, me_classify_vertices, me_classify_mismatches, me_classify_failures,
 	me_classify_wait_us;
 
+
 /* runs on the ME (or the main CPU when simulated): no system calls, no
 library calls, no VFPU. args: the stream's vertices, first and last index,
 the output, the view block (eye, right, up, forward, guard x and y, near) */
@@ -7576,6 +7633,87 @@ unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results)
 	return last - first + 1;
 }
 
+/* runs on the ME (or the main CPU when simulated): args: the stream's
+vertices, the triangles' indices, the count, the output (a bucket a
+triangle), the view block (eye, detail fade squared), far possible */
+unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results)
+{
+	const struct ge_vertex *stream = (const struct ge_vertex *)args[0];
+	const unsigned short *indices = (const unsigned short *)args[1];
+	unsigned int count = args[2], t;
+	unsigned char *out = (unsigned char *)args[3];
+	const float *view = (const float *)args[4];
+	int far_possible = (int)args[5];
+	float ex = view[0], ey = view[1], ez = view[2], far_squared = view[3];
+
+	for (t = 0; t < count; t++)
+		out[t] = (unsigned char)angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, far_squared);
+	results[0] = count;
+	return count;
+}
+
+/* the main CPU's side of the slant measure: the same triangles on the ME,
+its buckets against the main CPU's (angle_bucket_of), and the same function
+again on the main CPU with the triangles' vertices out of its cache first */
+static void me_angle_measure(const struct ge_vertex *stream, const unsigned short *indices, long count,
+	int far_possible)
+{
+	extern int psp_me_running(void);
+	extern int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
+		unsigned int first_look_us);
+	extern unsigned int psp_me_last_job_us(int which);
+	unsigned int args[6], results[8], start, lowest = 0xFFFF, highest = 0;
+	long t;
+
+	if (me_classify_on < 0)
+		me_classify_on = psp_keep("meclassify");
+	if (!me_classify_on || !psp_me_running() || count <= 0 || count > ANGLE_TRIANGLES)
+		return;
+	me_angle_view[0] = camera_eye[0];
+	me_angle_view[1] = camera_eye[1];
+	me_angle_view[2] = camera_eye[2];
+	me_angle_view[3] = detail_far_squared;
+	/* everything the ME reads (the vertices, a list written this frame, the
+	view) to RAM; nothing of the output left in this cache */
+	sceKernelDcacheWritebackAll();
+	sceKernelDcacheInvalidateRange(me_buckets, (unsigned int)((count + 63) & ~63));
+	args[0] = (unsigned int)stream;
+	args[1] = (unsigned int)indices;
+	args[2] = (unsigned int)count;
+	args[3] = (unsigned int)me_buckets;
+	args[4] = (unsigned int)me_angle_view;
+	args[5] = (unsigned int)far_possible;
+	start = sceKernelGetSystemTimeLow();
+	if (!psp_me_run(1 /* the render slot */, 3 /* ME_JOB_ANGLE */, args, 6, results, 50))
+	{
+		me_angle_failures++;
+		return;
+	}
+	me_angle_wait_us += sceKernelGetSystemTimeLow() - start;
+	me_angle_me_us += psp_me_last_job_us(1);
+	sceKernelDcacheInvalidateRange(me_buckets, (unsigned int)((count + 63) & ~63));
+	me_angle_jobs++;
+	me_angle_triangles += (unsigned long)count;
+	for (t = 0; t < count; t++)
+		if (me_buckets[t] != angle_bucket_of[t])
+			me_angle_mismatches++;
+	/* the main CPU, the same function, the vertices out of its cache first */
+	for (t = 0; t < count * 3; t++)
+	{
+		if (indices[t] < lowest)
+			lowest = indices[t];
+		if (indices[t] > highest)
+			highest = indices[t];
+	}
+	sceKernelDcacheWritebackInvalidateRange((void *)((unsigned int)&stream[lowest] & ~63u),
+		(unsigned int)((highest - lowest + 1) * sizeof(struct ge_vertex) + 64));
+	start = sceKernelGetSystemTimeLow();
+	for (t = 0; t < count; t++)
+		me_buckets[t] = (unsigned char)angle_bucket_one(stream, indices + 3 * t, me_angle_view[0], me_angle_view[1],
+			me_angle_view[2], far_possible, me_angle_view[3]);
+	me_angle_sc_us += sceKernelGetSystemTimeLow() - start;
+}
+
 /* the main CPU's side: after a draw's own classification, the same range on
 the ME; the answers compared where the main CPU worked one out */
 static void me_classify_measure(const struct level_stream *stream, unsigned int lowest, unsigned int highest)
@@ -7583,6 +7721,7 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 	extern int psp_me_running(void);
 	extern int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
 		unsigned int first_look_us);
+	extern unsigned int psp_me_last_job_us(int which);
 	unsigned int args[5], results[8], v, start;
 	unsigned int line_first = lowest & ~63u, line_bytes = ((highest + 64) & ~63u) - line_first;
 
@@ -7595,8 +7734,9 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 	me_view[6] = camera_up[0]; me_view[7] = camera_up[1]; me_view[8] = camera_up[2];
 	me_view[9] = camera_forward[0]; me_view[10] = camera_forward[1]; me_view[11] = camera_forward[2];
 	me_view[12] = guard_x; me_view[13] = guard_y; me_view[14] = NEAR_CLIP;
-	/* what the ME reads, to RAM; no copy of what it writes left here */
-	sceKernelDcacheWritebackRange(me_view, sizeof(me_view));
+	/* what the ME reads, to RAM (the view, and the vertices: a stream made
+	this frame may not be there yet); no copy of what it writes left here */
+	sceKernelDcacheWritebackAll();
 	sceKernelDcacheWritebackInvalidateRange(me_codes + line_first, line_bytes);
 	args[0] = (unsigned int)stream->base;
 	args[1] = lowest;
@@ -7610,10 +7750,23 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 		return;
 	}
 	me_classify_wait_us += sceKernelGetSystemTimeLow() - start;
+	me_classify_me_us += psp_me_last_job_us(1);
 	sceKernelDcacheInvalidateRange(me_codes + line_first, line_bytes);
 	me_classify_jobs++;
 	me_classify_vertices += highest - lowest + 1;
 	for (v = lowest; v <= highest; v++)
 		if (!(vertex_codes[v] & CODE_UNKNOWN) && vertex_codes[v] != me_codes[v])
 			me_classify_mismatches++;
+	/* build 87: the same function on the main CPU, the range out of its cache
+	first (as the ME starts), into vertex_codes (done with for this draw: every
+	user clears its range first) */
+	sceKernelDcacheWritebackInvalidateRange((void *)((unsigned int)&stream->base[lowest] & ~63u),
+		(highest - lowest + 1) * sizeof(struct ge_vertex) + 64);
+	args[3] = (unsigned int)vertex_codes;
+	start = sceKernelGetSystemTimeLow();
+	psp_ge_me_classify(args, results);
+	me_classify_sc_us += sceKernelGetSystemTimeLow() - start;
+	for (v = lowest; v <= highest; v++)
+		if (vertex_codes[v] != me_codes[v])
+			me_classify_sc_mismatches++;
 }
