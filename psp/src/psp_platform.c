@@ -1346,3 +1346,9 @@ int posix_discord_connect(void) { return -1; }
 int posix_discord_write(int handle, const void *buffer, int length) { (void)handle; (void)buffer; (void)length; return -1; }
 int posix_discord_read(int handle, void *buffer, int length) { (void)handle; (void)buffer; (void)length; return -1; }
 void posix_discord_close(int handle) { (void)handle; }
+
+/* build 92: for the screenshot stamp (psp_ge.c) */
+int psp_build_number(void)
+{
+	return PSP_BUILD_NUMBER;
+}

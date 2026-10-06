@@ -7962,24 +7962,88 @@ drawn, read from VRAM before it is shown, as a 480 x 272 BMP in
 ms0:/halo/shots. The PSP's own pixels, with no camera in the way */
 volatile int psp_screenshot_requested = 0;
 
+/* build 92: each shot stamped with the build, the run's seconds (the T of
+the overlay and the log's [t ...]) and the frame, burned into the bottom
+centre and put in the file name (shot004_t108.bmp). Not the PSP's clock:
+Sheepdog01's is unreliable. A 5 x 7 font of the characters it needs */
+static const unsigned char stamp_font[][7] = {
+	{ 14, 17, 19, 21, 25, 17, 14 }, { 4, 12, 4, 4, 4, 4, 14 }, { 14, 17, 1, 2, 4, 8, 31 },
+	{ 31, 2, 4, 2, 1, 17, 14 }, { 2, 6, 10, 18, 31, 2, 2 }, { 31, 16, 30, 1, 1, 17, 14 },
+	{ 6, 8, 16, 30, 17, 17, 14 }, { 31, 1, 2, 4, 8, 8, 8 }, { 14, 17, 17, 14, 17, 17, 14 },
+	{ 14, 17, 17, 15, 1, 2, 12 },
+	{ 16, 16, 22, 25, 17, 17, 30 },	/* b */
+	{ 8, 8, 28, 8, 8, 9, 6 },	/* t */
+	{ 6, 9, 8, 28, 8, 8, 8 },	/* f */
+	{ 0, 0, 0, 0, 0, 12, 12 },	/* . */
+	{ 0, 0, 0, 0, 0, 0, 0 },	/* space */
+};
+#define STAMP_HEIGHT 11
+
+static int stamp_glyph(char c)
+{
+	if (c >= '0' && c <= '9')
+		return c - '0';
+	return c == 'b' ? 10 : c == 't' ? 11 : c == 'f' ? 12 : c == '.' ? 13 : 14;
+}
+
+/* 1: white text, 2: the black box round it, 0: the picture */
+static unsigned char stamp_mask[STAMP_HEIGHT][SCREEN_WIDTH];
+
+static void stamp_build(const char *text)
+{
+	int length = (int)strlen(text), width = length * 6 + 3, left = (SCREEN_WIDTH - width) / 2, i, y, x;
+
+	memset(stamp_mask, 0, sizeof(stamp_mask));
+	for (y = 0; y < STAMP_HEIGHT; y++)
+		for (x = left; x < left + width && x < SCREEN_WIDTH; x++)
+			stamp_mask[y][x] = 2;
+	for (i = 0; i < length; i++)
+	{
+		const unsigned char *glyph = stamp_font[stamp_glyph(text[i])];
+
+		for (y = 0; y < 7; y++)
+			for (x = 0; x < 5; x++)
+				if (glyph[y] & (16 >> x))
+					stamp_mask[2 + y][left + 2 + 6 * i + x] = 1;
+	}
+}
+
+int psp_build_number(void);
+
 static void screenshot(void)
 {
 	static unsigned char rows[4 * SCREEN_WIDTH * 3];
 	const unsigned short *frame = (const unsigned short *)(0x44000000 + (unsigned int)draw_buffer);
 	unsigned char header[54];
 	unsigned int image = SCREEN_WIDTH * 3 * SCREEN_HEIGHT, size = 54 + image;
-	char path[64];
-	SceIoStat stat;
-	SceUID file;
-	int number, y, x, row = 0;
+	char path[64], text[48];
+	SceUID file, folder;
+	SceIoDirent entry;
+	int number = 0, y, x, row = 0;
+	float seconds = psp_debug_seconds();
 
+	/* the next number after the highest shotNNN* already there */
 	sceIoMkdir("ms0:/halo/shots", 0777);
-	for (number = 0; number < 1000; number++)
+	folder = sceIoDopen("ms0:/halo/shots");
+	if (folder >= 0)
 	{
-		snprintf(path, sizeof(path), "ms0:/halo/shots/shot%03d.bmp", number);
-		if (sceIoGetstat(path, &stat) < 0)
-			break;
+		memset(&entry, 0, sizeof(entry));
+		while (sceIoDread(folder, &entry) > 0)
+		{
+			if (strncmp(entry.d_name, "shot", 4) == 0 && entry.d_name[4] >= '0' && entry.d_name[4] <= '9')
+			{
+				int n = atoi(entry.d_name + 4);
+
+				if (n + 1 > number)
+					number = n + 1;
+			}
+			memset(&entry, 0, sizeof(entry));
+		}
+		sceIoDclose(folder);
 	}
+	snprintf(path, sizeof(path), "ms0:/halo/shots/shot%03d_t%d.bmp", number, (int)seconds);
+	snprintf(text, sizeof(text), "b%d  t %.1f  f %lu", psp_build_number(), seconds, frames);
+	stamp_build(text);
 	file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	if (file < 0)
 	{
@@ -7999,11 +8063,18 @@ static void screenshot(void)
 	for (y = SCREEN_HEIGHT - 1; y >= 0; y--)
 	{
 		unsigned char *out = rows + row * SCREEN_WIDTH * 3;
+		int stamp_row = y - (SCREEN_HEIGHT - STAMP_HEIGHT);
 
 		for (x = 0; x < SCREEN_WIDTH; x++)
 		{
 			unsigned int v = frame[y * BUFFER_WIDTH + x];
+			int m = stamp_row >= 0 ? stamp_mask[stamp_row][x] : 0;
 
+			if (m)
+			{
+				out[3 * x] = out[3 * x + 1] = out[3 * x + 2] = m == 1 ? 255 : 0;
+				continue;
+			}
 			out[3 * x] = (unsigned char)(((v >> 11) & 31) * 255 / 31);
 			out[3 * x + 1] = (unsigned char)(((v >> 5) & 63) * 255 / 63);
 			out[3 * x + 2] = (unsigned char)((v & 31) * 255 / 31);
@@ -8017,7 +8088,7 @@ static void screenshot(void)
 	sceIoClose(file);
 	/* where from (build 35): the debug camera can then go back there
 	(camera.txt: position, forward, up, field of view) */
-	platform_log("[t %.1f] screenshot: %s (frame %lu) from %.2f %.2f %.2f looking %.2f %.2f %.2f", psp_debug_seconds(), path, frames,
+	platform_log("[t %.1f] screenshot: %s (frame %lu) from %.2f %.2f %.2f looking %.2f %.2f %.2f", seconds, path, frames,
 		camera_eye[0], camera_eye[1], camera_eye[2], camera_forward[0], camera_forward[1], camera_forward[2]);
 }
 
