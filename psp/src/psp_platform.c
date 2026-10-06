@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 94
+#define PSP_BUILD_NUMBER 95
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -784,12 +784,66 @@ static void bench_tick(void)
 	}
 }
 
+/* build 95: every thread's stack, its size and how deep it has been (the
+kernel fills a new stack with 0xFF; the first word from the bottom that
+isn't is the deepest the thread has reached). For the memory plan: 1 MB of
+user RAM above the tag window goes to stacks */
+static void stack_report(void)
+{
+	SceUID ids[64];
+	int count = 0, k, length = 0;
+	char line[480];
+	unsigned long total = 0, used_total = 0;
+
+	if (sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, ids, 64, &count) < 0)
+		return;
+	for (k = 0; k < count && k < 64; k++)
+	{
+		SceKernelThreadInfo info;
+		const unsigned int *word;
+		unsigned int words, w;
+
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		if (sceKernelReferThreadStatus(ids[k], &info) < 0 || !info.stack || info.stackSize <= 0)
+			continue;
+		word = (const unsigned int *)info.stack;
+		words = (unsigned int)info.stackSize / 4;
+		/* the bottom 16 bytes hold the kernel's own guard words (the
+		thread's id): skipped */
+		for (w = 4; w < words && word[w] == 0xFFFFFFFFu; w++)
+			;
+		total += info.stackSize;
+		used_total += (words - w) * 4;
+		length += snprintf(line + length, sizeof(line) - length, " %.12s %d/%d;", info.name,
+			(int)((words - w) * 4 / 1024), info.stackSize / 1024);
+		if (length > (int)sizeof(line) - 40)
+		{
+			platform_log("stacks (KB used deepest/size):%s", line);
+			length = 0;
+			line[0] = 0;
+		}
+	}
+	platform_log("stacks (KB used deepest/size):%s total %lu KB reserved, %lu KB ever used", line, total / 1024, used_total / 1024);
+}
+
 void psp_tick_account(unsigned long microseconds)
 {
 	static unsigned long ticks_seen = 0;
 
 	ticks_since_frame++;
 	bench_tick();
+	/* build 95: the high-water marks, from the game thread every 5 s */
+	if (ticks_seen % 150 == 75)
+	{
+		extern void psp_sound_cache_report(void);
+		extern void psp_dynamic_geometry_report(void);
+
+		psp_sound_cache_report();
+		psp_dynamic_geometry_report();
+		if (ticks_seen % 900 == 75)
+			stack_report();
+	}
 
 	/* keep.txt's "savetest": a checkpoint 10 s in (once), timed, the way the
 	campaign makes them (game_state_save writes the whole game state) */

@@ -3526,6 +3526,114 @@ FIXES_31["source/objects/objects.c#vehicles"] = [
 # falling. Attached ones (muzzle flashes, on objects) don't count and are
 # always made. Logged every 900 updates: the peak, refusals, physics a frame
 FIXES_36 = {}
+# build 95: high-water marks for the Xbox-sized buffers (campaign memory
+# plan): the sound cache's working set, loads and failures; the D3D layer's
+# dynamic vertex groups, triangles and buffer slots, each frame's peak
+FIXES_36["source/cache/xbox_sound_cache.c#highwater"] = [
+("""	cache_block_index = lruv_block_new(
+		xbox_sound_cache_globals.cache,
+		sound->samples.size);
+""", """	cache_block_index = lruv_block_new(
+		xbox_sound_cache_globals.cache,
+		sound->samples.size);
+#ifdef HALO_PSP
+	if (cache_block_index != NONE)
+	{
+		psp_sound_cache_loads++;
+		psp_sound_cache_load_bytes += sound->samples.size;
+		if (sound->samples.size > psp_sound_cache_largest)
+			psp_sound_cache_largest = sound->samples.size;
+	}
+	else
+		psp_sound_cache_failures++;
+#endif
+"""),
+("static void sound_cache_start_loading_sound(\n\tstruct sound_permutation *sound)\n{",
+ """#ifdef HALO_PSP
+/* build 95 (psp_fixups.py): the sound cache's use, from the game thread every
+5 s (psp_platform.c). An LRU cache fills by design; what it needs is its
+working set: the pages of sounds playing (locked) or used in the last second */
+static unsigned long psp_sound_cache_loads = 0, psp_sound_cache_load_bytes = 0, psp_sound_cache_failures = 0,
+	psp_sound_cache_largest = 0, psp_sound_cache_peak_pages = 0;
+
+void psp_sound_cache_report(void)
+{
+	static byte usage[4096];
+	long pages = PSP_SOUND_CACHE_SIZE >> 12, k, occupied = 0, recent = 0, locked = 0;
+
+	if (!xbox_sound_cache_globals.cache || pages > (long)sizeof(usage))
+		return;
+	lruv_cache_get_page_usage(xbox_sound_cache_globals.cache, usage);
+	for (k = 0; k < pages; k++)
+	{
+		if (usage[k])
+			occupied++;
+		if (usage[k] && !(usage[k] & 4))
+			recent++;
+		if (usage[k] & 8)
+			locked++;
+	}
+	if ((unsigned long)recent > psp_sound_cache_peak_pages)
+		psp_sound_cache_peak_pages = recent;
+	platform_psp_log("sound cache: %ld KB occupied of %ld; used in the last second %ld KB (peak %lu KB), playing %ld KB; %lu loads (%lu KB, largest %lu KB), %lu failed for room",
+		occupied * 4, pages * 4, recent * 4, psp_sound_cache_peak_pages * 4, locked * 4, psp_sound_cache_loads,
+		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+}
+#endif
+
+static void sound_cache_start_loading_sound(
+	struct sound_permutation *sound)
+{"""),
+]
+FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#highwater"] = [
+("void rasterizer_dynamic_geometry_begin(\n\tvoid)\n{\n\tlong vertex_type;\n",
+ """#ifdef HALO_PSP
+/* build 95 (psp_fixups.py): each frame's use of the dynamic buffers, the
+peak kept for the heartbeat (psp_platform.c) */
+static long psp_dynamic_vertex_peak[NUMBER_OF_RASTERIZER_VERTEX_TYPES], psp_dynamic_triangle_peak = 0,
+	psp_dynamic_buffer_peak[2];
+
+void psp_dynamic_geometry_report(void)
+{
+	char line[400];
+	int length = 0;
+	long vertex_type;
+
+	for (vertex_type = 0; vertex_type < NUMBER_OF_RASTERIZER_VERTEX_TYPES; vertex_type++)
+	{
+		long size = rasterizer_geometry_get_vertex_size(vertex_type);
+
+		if (!dynamic_vertices.groups[vertex_type].total_vertex_count)
+			continue;
+		length += snprintf(line + length, sizeof(line) - length, " type %ld: %ld of %ld vertices (%ld of %ld KB);",
+			vertex_type, psp_dynamic_vertex_peak[vertex_type], dynamic_vertices.groups[vertex_type].total_vertex_count,
+			psp_dynamic_vertex_peak[vertex_type] * size / 1024, dynamic_vertices.groups[vertex_type].total_vertex_count * size / 1024);
+	}
+	platform_psp_log("dynamic geometry, frame peaks:%s triangles %ld of %d (%ld of %d KB); buffers %ld and %ld of %d and %d",
+		line, psp_dynamic_triangle_peak, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES,
+		psp_dynamic_triangle_peak * 6 / 1024, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES * 6 / 1024,
+		psp_dynamic_buffer_peak[0], psp_dynamic_buffer_peak[1], RASTERIZER_MAXIMUM_DYNAMIC_VERTEX_BUFFERS,
+		RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS);
+}
+#endif
+
+void rasterizer_dynamic_geometry_begin(
+	void)
+{
+	long vertex_type;
+#ifdef HALO_PSP
+	for (vertex_type = 0; vertex_type < NUMBER_OF_RASTERIZER_VERTEX_TYPES; vertex_type++)
+		if (dynamic_vertices.groups[vertex_type].vertex_count > psp_dynamic_vertex_peak[vertex_type])
+			psp_dynamic_vertex_peak[vertex_type] = dynamic_vertices.groups[vertex_type].vertex_count;
+	if (dynamic_triangles.triangle_count > psp_dynamic_triangle_peak)
+		psp_dynamic_triangle_peak = dynamic_triangles.triangle_count;
+	if (dynamic_vertices.buffer_count > psp_dynamic_buffer_peak[0])
+		psp_dynamic_buffer_peak[0] = dynamic_vertices.buffer_count;
+	if (dynamic_triangles.buffer_count > psp_dynamic_buffer_peak[1])
+		psp_dynamic_buffer_peak[1] = dynamic_triangles.buffer_count;
+#endif
+"""),
+]
 # build 93: the debug-drawing vertex buffer (render_debug's lines and
 # markers) was 24,576 vertices, 384 KB of the heap; nothing in a PSP build
 # draws debug geometry, and a request past the size is refused and warned
