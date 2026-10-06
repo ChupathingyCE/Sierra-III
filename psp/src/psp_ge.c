@@ -483,11 +483,15 @@ but a sphere that CONTAINS the eye no longer does (the vehicle being driven:
 b79's tank runs sat at x1 on most frames, "held down by an object", four
 times coarser depth than on foot; a model that close is cut triangle by
 triangle anyway, psp_ge_draw_model) */
+static int player_seated = 0;
 static float near_plane_auto(const float *eye, float game_near)
 {
+	extern int psp_player_seated(void);
 	unsigned int start = sceKernelGetSystemTimeLow();
 	int scale, level_scale = 1;
 
+	/* build 90: for psp_ge_model_shape this frame */
+	player_seated = psp_player_seated();
 	near_object_distance_last = near_object_distance;
 	near_object_distance = 1e30f;
 	for (scale = 16; scale > 1; scale /= 2)
@@ -730,6 +734,7 @@ static int light_mode = 2;
 void psp_ge_forget_level(void);
 static int stencil_mode;
 static int level_compact;
+static int decal_project;
 static unsigned long light_index_triangles = 0, light_nudged_draws = 0, lights_skipped = 0;
 static int nudge_percent = 0; /* build 84: the lift limit off by default (Sheepdog01's b83 run) */
 /* build 82: a test instrument. A fixed number of depth steps added to every
@@ -850,6 +855,11 @@ int psp_ge_setting(int which, int set, int value)
 			psp_ge_forget_level();
 		}
 		return stencil_mode;
+	case 18:
+		/* build 90: the permanent decals on the level's own triangles */
+		if (set)
+			decal_project = value != 0;
+		return decal_project;
 	case 17:
 		/* build 87: the level's vertices at 16 bits; the copies are rebuilt */
 		if (level_compact < 0)
@@ -2266,6 +2276,42 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 static unsigned long me_classify_jobs, me_classify_vertices, me_classify_mismatches, me_classify_failures,
 	me_classify_wait_us;
 
+/* build 90: this frame's level draws as the base pass drew them (stream,
+triangle list, cut-up corners), for the permanent decals (psp_ge_decal),
+which are drawn afterwards on these very triangles with depth EQUAL: the
+stencil bake's method, without a bake (the game builds these decals as the
+map loads). Sheepdog01's b87 run 2: the scenario's painted symbols on the base
+blocks partly sank into them on the PSP (whole in the emulator) */
+#define FRAME_LEVEL_DRAWS 96
+static struct frame_level_draw
+{
+	const struct level_stream *stream;
+	const unsigned short *indices;
+	int kept;
+	const struct ge_vertex *cut;
+	int cut_count;
+} frame_level[FRAME_LEVEL_DRAWS];
+static int frame_level_count = 0;
+static unsigned int frame_level_stamp = 0;
+
+static void frame_level_record(const struct level_stream *stream, const unsigned short *indices, int kept,
+	const struct ge_vertex *cut, int cut_count)
+{
+	if (frame_level_stamp != stream_frame)
+	{
+		frame_level_stamp = stream_frame;
+		frame_level_count = 0;
+	}
+	if (frame_level_count >= FRAME_LEVEL_DRAWS)
+		return;
+	frame_level[frame_level_count].stream = stream;
+	frame_level[frame_level_count].indices = indices;
+	frame_level[frame_level_count].kept = kept;
+	frame_level[frame_level_count].cut = cut;
+	frame_level[frame_level_count].cut_count = cut ? cut_count : 0;
+	frame_level_count++;
+}
+
 static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
@@ -2668,6 +2714,11 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		}
 		sceGuDisable(GU_TEXTURE_2D);
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
+		/* build 90: for the permanent decals (not with the 16-bit copies,
+		which go through another vertex path) */
+		if (!compact_now && !alpha_tested)
+			frame_level_record(stream, draw, (int)kept_count,
+				cut_count > 0 && cut_count == cut_vertices_count ? cut_vertices_prepared[0] : NULL, cut_count);
 		compact_now = NULL;
 	}
 	else
@@ -2811,7 +2862,13 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 			float reach = sqrtf(c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) - radius;
 
 			/* build 84: a sphere the eye is inside doesn't count (see
-			near_plane_auto) */
+			near_plane_auto). Build 90: only while the player sits in a
+			vehicle (the one he is in). On foot against the tank, the eye is
+			inside its large sphere too, and b84-b89 then let the near plane
+			out to 25 cm and cut the hull open (Sheepdog01's b87 shot 029): on foot
+			such a sphere counts as touching the eye */
+			if (reach < 0.0f && !player_seated)
+				reach = 0.0f;
 			if (reach >= 0.0f && reach < near_object_distance)
 				near_object_distance = reach;
 		}
@@ -6956,8 +7013,231 @@ static unsigned long decals_small = 0;
 #define DECAL_MINIMUM_PIXELS 2.0f /* build 58: 2 (was 3: a little too far out, Sheepdog01 b57) */
 
 
+/* build 90: a permanent decal (the level's painted symbols) drawn on the
+level's own triangles under it, as the base pass drew them this frame
+(frame_level), with depth EQUAL: the texture is put on them by the GE's
+texture matrix from each position (the decal quad's own mapping, worked out
+from three of its corners), and the decal texture's clamped edge (black for
+an added symbol) leaves the rest of each triangle as it was. A decal over
+several planes (wrapped round an edge) is drawn per plane. 0 if nothing
+under it was drawn this frame: the caller draws it the usual way */
+static int decal_project = 1;
+static unsigned long decals_projected = 0, decal_projected_triangles = 0, decals_project_fallback = 0;
+static unsigned short project_indices[3 * 1024];
+
+struct decal_plane
+{
+	float n[3], d, gu[3], gv[3], cu, cv, low[3], high[3];
+};
+
+static int decal_project_hit(const float *a, const float *b, const float *c, const struct decal_plane *g)
+{
+	float e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+	float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+	float length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+	int axis;
+
+	for (axis = 0; axis < 3; axis++)
+	{
+		float lo = a[axis], hi = a[axis];
+
+		if (b[axis] < lo) lo = b[axis];
+		if (c[axis] < lo) lo = c[axis];
+		if (b[axis] > hi) hi = b[axis];
+		if (c[axis] > hi) hi = c[axis];
+		if (hi < g->low[axis] || lo > g->high[axis])
+			return 0;
+	}
+	if (length <= 0.0f || fabsf(n[0] * g->n[0] + n[1] * g->n[1] + n[2] * g->n[2]) < 0.95f * length)
+		return 0;
+	return fabsf(a[0] * g->n[0] + a[1] * g->n[1] + a[2] * g->n[2] - g->d) < 0.08f &&
+		fabsf(b[0] * g->n[0] + b[1] * g->n[1] + b[2] * g->n[2] - g->d) < 0.08f &&
+		fabsf(c[0] * g->n[0] + c[1] * g->n[1] + c[2] * g->n[2] - g->d) < 0.08f;
+}
+
+static int decal_project_draw(const unsigned char *in, int quad_count)
+{
+	struct decal_plane planes[8];
+	int plane_count = 0, quad, p, r, triangles = 0;
+
+	if (frame_level_stamp != stream_frame || !frame_level_count)
+		return 0;
+	for (quad = 0; quad < quad_count; quad++)
+	{
+		const float *v[4];
+		float uv[4][2], e1[3], e2[3], n[3], length, a11, a12, a22, det;
+		int k;
+		struct decal_plane g;
+
+		for (k = 0; k < 4; k++)
+		{
+			const unsigned char *x = in + 16 * (4 * quad + k);
+
+			v[k] = (const float *)x;
+			uv[k][0] = *(const unsigned short *)(x + 12) * (1.0f / 32768.0f);
+			uv[k][1] = *(const unsigned short *)(x + 14) * (1.0f / 32768.0f);
+		}
+		for (k = 0; k < 3; k++)
+		{
+			e1[k] = v[1][k] - v[0][k];
+			e2[k] = v[3][k] - v[0][k];
+		}
+		n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+		n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+		n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+		length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+		a11 = e1[0] * e1[0] + e1[1] * e1[1] + e1[2] * e1[2];
+		a12 = e1[0] * e2[0] + e1[1] * e2[1] + e1[2] * e2[2];
+		a22 = e2[0] * e2[0] + e2[1] * e2[1] + e2[2] * e2[2];
+		det = a11 * a22 - a12 * a12;
+		if (length < 1e-6f || det < 1e-12f)
+			continue;
+		for (k = 0; k < 3; k++)
+			g.n[k] = n[k] / length;
+		g.d = g.n[0] * v[0][0] + g.n[1] * v[0][1] + g.n[2] * v[0][2];
+		{
+			/* the gradient of u (and v) in the quad's plane: g = a e1 + b e2
+			with g.e1 = du1 and g.e2 = du2 */
+			float du1 = uv[1][0] - uv[0][0], du2 = uv[3][0] - uv[0][0];
+			float dv1 = uv[1][1] - uv[0][1], dv2 = uv[3][1] - uv[0][1];
+			float au = (du1 * a22 - du2 * a12) / det, bu = (du2 * a11 - du1 * a12) / det;
+			float av = (dv1 * a22 - dv2 * a12) / det, bv = (dv2 * a11 - dv1 * a12) / det;
+
+			for (k = 0; k < 3; k++)
+			{
+				g.gu[k] = au * e1[k] + bu * e2[k];
+				g.gv[k] = av * e1[k] + bv * e2[k];
+			}
+			g.cu = uv[0][0] - (g.gu[0] * v[0][0] + g.gu[1] * v[0][1] + g.gu[2] * v[0][2]);
+			g.cv = uv[0][1] - (g.gv[0] * v[0][0] + g.gv[1] * v[0][1] + g.gv[2] * v[0][2]);
+		}
+		for (k = 0; k < 3; k++)
+		{
+			int c;
+
+			g.low[k] = g.high[k] = v[0][k];
+			for (c = 1; c < 4; c++)
+			{
+				if (v[c][k] < g.low[k]) g.low[k] = v[c][k];
+				if (v[c][k] > g.high[k]) g.high[k] = v[c][k];
+			}
+		}
+		/* the same plane as an earlier quad: one draw, its box grown */
+		for (p = 0; p < plane_count; p++)
+			if (planes[p].n[0] * g.n[0] + planes[p].n[1] * g.n[1] + planes[p].n[2] * g.n[2] > 0.999f &&
+				fabsf(planes[p].d - g.d) < 0.01f)
+				break;
+		if (p < plane_count)
+		{
+			for (k = 0; k < 3; k++)
+			{
+				if (g.low[k] < planes[p].low[k]) planes[p].low[k] = g.low[k];
+				if (g.high[k] > planes[p].high[k]) planes[p].high[k] = g.high[k];
+			}
+		}
+		else if (plane_count < 8)
+			planes[plane_count++] = g;
+	}
+	if (!plane_count)
+		return 0;
+	sceGuDepthFunc(GU_EQUAL);
+	sceGuDepthOffset(0);
+	if (level_cull)
+	{
+		sceGuFrontFace(level_cull == 1 ? LEVEL_FRONT : (LEVEL_FRONT == GU_CW ? GU_CCW : GU_CW));
+		sceGuEnable(GU_CULL_FACE);
+	}
+	sceGuTexMapMode(GU_TEXTURE_MATRIX, 0, 0);
+	sceGuTexProjMapMode(GU_POSITION);
+	for (p = 0; p < plane_count; p++)
+	{
+		struct decal_plane *g = &planes[p];
+		ScePspFMatrix4 m;
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			g->low[k] -= 0.05f;
+			g->high[k] += 0.05f;
+		}
+		memset(&m, 0, sizeof(m));
+		m.x.x = g->gu[0]; m.y.x = g->gu[1]; m.z.x = g->gu[2]; m.w.x = g->cu;
+		m.x.y = g->gv[0]; m.y.y = g->gv[1]; m.z.y = g->gv[2]; m.w.y = g->cv;
+		m.w.z = 1.0f;
+		m.w.w = 1.0f;
+		/* straight to the GE (pspgum's texture matrix slot isn't sent; as the
+		spotlight's cone) */
+		sceGuSetMatrix(GU_TEXTURE, &m);
+		for (r = 0; r < frame_level_count; r++)
+		{
+			const struct frame_level_draw *f = &frame_level[r];
+			const struct level_stream *stream = f->stream;
+			int count = 0, t;
+
+			if (stream->high[0] < g->low[0] || stream->low[0] > g->high[0] || stream->high[1] < g->low[1] ||
+				stream->low[1] > g->high[1] || stream->high[2] < g->low[2] || stream->low[2] > g->high[2])
+				continue;
+			for (t = 0; t < f->kept && count < 1024; t++)
+			{
+				const unsigned short *tri = f->indices + 3 * t;
+
+				if (decal_project_hit(&stream->base[tri[0]].x, &stream->base[tri[1]].x, &stream->base[tri[2]].x, g))
+				{
+					project_indices[3 * count] = tri[0];
+					project_indices[3 * count + 1] = tri[1];
+					project_indices[3 * count + 2] = tri[2];
+					count++;
+				}
+			}
+			if (count)
+			{
+				unsigned short *list = list_take((count * 3 * sizeof(unsigned short) + 3) & ~3);
+
+				if (list)
+				{
+					memcpy(list, project_indices, count * 3 * sizeof(unsigned short));
+					sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+						count * 3, list, stream->base);
+					triangles += count;
+				}
+			}
+			/* the corners cut at the near plane, as the base pass drew them */
+			count = 0;
+			for (t = 0; f->cut && t + 2 < f->cut_count && count < 1024; t += 3)
+				if (decal_project_hit(&f->cut[t].x, &f->cut[t + 1].x, &f->cut[t + 2].x, g))
+				{
+					project_indices[3 * count] = (unsigned short)t;
+					project_indices[3 * count + 1] = (unsigned short)(t + 1);
+					project_indices[3 * count + 2] = (unsigned short)(t + 2);
+					count++;
+				}
+			if (count)
+			{
+				unsigned short *list = list_take((count * 3 * sizeof(unsigned short) + 3) & ~3);
+
+				if (list)
+				{
+					memcpy(list, project_indices, count * 3 * sizeof(unsigned short));
+					sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+						count * 3, list, f->cut);
+					triangles += count;
+				}
+			}
+		}
+	}
+	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuDepthFunc(GU_GEQUAL);
+	if (triangles)
+	{
+		decals_projected++;
+		decal_projected_triangles += (unsigned long)triangles;
+	}
+	return triangles;
+}
+
 static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
-	int intensity, int alpha_tested)
+	int intensity, int alpha_tested, int permanent)
 {
 	const unsigned char *in = vertices;
 	struct decal_vertex_ge *out;
@@ -6971,6 +7251,8 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	edge-on beside the eye gave every decal of its batch, far ones too,
 	hundreds of steps; far off that is tens of units) */
 	static float quad_units[256];
+
+	int original_quads = quad_count;
 
 	if (!frame_open || !vertices || quad_count <= 0 || quad_count > 256 || intensity <= 0 || list_full() ||
 		!psp_tex_bind(key, &alpha))
@@ -7167,7 +7449,14 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	sceGuColor(fragment);
 	sceGumMatrixMode(GU_MODEL);
 	world_model();
-	sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_16BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D, quad_count * 6, NULL, out);
+	if (permanent && decal_project && level_compact <= 0 && decal_project_draw(in, original_quads))
+		;
+	else
+	{
+		if (permanent && decal_project)
+			decals_project_fallback++;
+		sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_16BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D, quad_count * 6, NULL, out);
+	}
 	sceGuTexLevelMode(tex_level_mode, tex_bias);
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDisable(GU_ALPHA_TEST);
@@ -7180,11 +7469,11 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 }
 
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
-	int intensity, int alpha_tested)
+	int intensity, int alpha_tested, int permanent)
 {
 	unsigned int start = sceKernelGetSystemTimeLow();
 
-	psp_ge_decal_body(vertices, quad_count, key, blend, color, intensity, alpha_tested);
+	psp_ge_decal_body(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent);
 	ge_entry_us[5] += sceKernelGetSystemTimeLow() - start;
 	ge_part_us[10] += sceKernelGetSystemTimeLow() - start;
 	ge_part_calls[10]++;
@@ -7694,6 +7983,11 @@ void psp_ge_frame_end(void)
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;
+		/* build 90 */
+		platform_log("GE: permanent decals (%s): %lu drawn on the level's own triangles (%lu triangles), %lu the usual way (last 300 frames)",
+			decal_project ? "on the level's triangles" : "nudged, as before", decals_projected, decal_projected_triangles,
+			decals_project_fallback);
+		decals_projected = decal_projected_triangles = decals_project_fallback = 0;
 		if (me_classify_jobs || me_classify_failures)
 			platform_log("GE: ME classify (meclassify, measure only): %lu jobs, %lu vertices, the main CPU waited %lu us in all, %lu answers differing, %lu failed",
 				me_classify_jobs, me_classify_vertices, me_classify_wait_us, me_classify_mismatches, me_classify_failures);

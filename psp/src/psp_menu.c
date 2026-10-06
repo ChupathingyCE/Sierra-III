@@ -65,7 +65,7 @@ static struct option options[] = {
 	{ "noshadows", "no shadows (noshadows)", 0, 0 },
 	{ "nodecals", "no decals (nodecals)", 0, 0 },
 	{ "nohud", "no HUD (nohud)", 0, 0 },
-	{ "vblankthrottle", "Halo's vertical-blank throttle (vblankthrottle)", 0, 0 },
+	{ "novblankthrottle", "Halo's frame pacing off (novblankthrottle)", 0, 0 },
 	{ "noboxtest", "classify every level draw (noboxtest)", 0, 0 },
 	{ "detailallfar", "detail passes past the fade too (detailallfar)", 0, 0 },
 	{ "novfpu", "no VFPU (novfpu)", 0, 0 },

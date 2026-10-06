@@ -1536,6 +1536,22 @@ void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz
 	player_control_set_facing(0, &facing);
 }
 
+/* build 90: 1 when the local player sits in a vehicle (nearauto: a model
+sphere the eye is inside holds the near plane in, unless it is the vehicle
+he is in; psp_ge.c) */
+int psp_player_seated(void)
+{
+	long player_index = local_player_get_player_index(0);
+	struct player_datum *player;
+
+	if (player_index == NONE)
+		return 0;
+	player = player_get(player_index);
+	if (player->unit_index == NONE)
+		return 0;
+	return object_get(player->unit_index)->object.parent_object_index != NONE;
+}
+
 /* build 88: where the local player is now (benchrun re-places him only when
 he has drifted from the spot); 0 without a player */
 int psp_player_origin(float *out)
@@ -2476,7 +2492,7 @@ FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
 		{
 			/* psp_ge.c (build 23; psp_fixups.py) */
 			extern void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend,
-				unsigned long color, int intensity, int alpha_tested);
+				unsigned long color, int intensity, int alpha_tested, int permanent);
 			extern unsigned int psp_tex_bitmap_key(long, int);
 			byte *vertex_data = NULL;
 
@@ -2484,7 +2500,9 @@ FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
 			if (vertex_data)
 				psp_ge_decal(vertex_data + vertex_data_offset, decal->quad_count,
 					psp_tex_bitmap_key(shader->map.index, decal->bitmap_index), framebuffer_blend_function, color,
-					(int)intensity, local_layer == _decal_layer_alpha_tested);
+					(int)intensity, local_layer == _decal_layer_alpha_tested,
+					/* build 90: the level's permanent decals (the scenario's painted symbols) */
+					TEST_FLAG(decal->flags, _decal_permanent_bit) ? 1 : 0);
 			IDirect3DVertexBuffer8_Unlock(local_d3d_vertex_buffer);
 			decal_index = decal->next_decal_index;
 			continue;
@@ -4310,8 +4328,12 @@ FIXES_36["source/main/main.c#throttle"] = [
 		extern int psp_keep(const char *name);
 		static int vblank_throttle = -1;
 
+		/* build 90: on by default (Sheepdog01's b87 run 3: with it the warthog's
+		rubber banding was almost gone; with interpolation it was worse).
+		"novblankthrottle" turns it off, and benchrun runs without it so its
+		figures stay comparable with earlier runs' */
 		if (vblank_throttle < 0)
-			vblank_throttle = psp_keep("vblankthrottle");
+			vblank_throttle = psp_keep("vblankthrottle") || (!psp_keep("novblankthrottle") && !psp_keep("benchrun"));
 		if (!vblank_throttle)
 			return FALSE;
 	}
