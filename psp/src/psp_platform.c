@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 96
+#define PSP_BUILD_NUMBER 97
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -819,6 +819,14 @@ static void stack_report(void)
 		memset(&info, 0, sizeof(info));
 		info.size = sizeof(info);
 		if (sceKernelReferThreadStatus(ids[k], &info) < 0 || !info.stack || info.stackSize <= 0)
+			continue;
+		/* build 97: our own threads' stacks only. b95/b96 read every
+		thread's, the system's idle threads too, whose stacks are kernel
+		memory: on the PSP a user-mode read there is an exception (Sheepdog01's b96
+		runs 1 and 2 both died at tick 75, the first time this ran; the
+		emulator doesn't protect kernel memory) */
+		if (!(info.attr & PSP_THREAD_ATTR_USER) || (unsigned int)info.stack < 0x08800000u ||
+			(unsigned int)info.stack + (unsigned int)info.stackSize > 0x0A000000u)
 			continue;
 		word = (const unsigned int *)info.stack;
 		words = (unsigned int)info.stackSize / 4;

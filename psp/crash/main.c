@@ -64,10 +64,22 @@ static void show(const char *label, unsigned int value)
 	pspDebugScreenPuts(text);
 }
 
-static void handler(PspDebugRegBlock *regs)
+/* build 97: the report drawn at one base: the on-screen log's buffer (shown
+while loading), then both of the GE's frame buffers (shown during play: b96's
+crashes in play froze on the game's last frame, the report drawn where
+nobody could see it) */
+static void draw_report(void *base, int clear, PspDebugRegBlock *regs)
 {
 	unsigned int code = (regs->cause >> 2) & 31;
 	unsigned int index, sp = regs->r[29];
+
+	if (clear)
+	{
+		unsigned int *p = (unsigned int *)base, n;
+
+		for (n = 0; n < 512 * 272 / 2; n++)
+			p[n] = 0;
+	}
 
 	/* draw straight into the frame buffer the game's on-screen log set up
 	and the display is showing (psp_platform.c: 16-bit, 512 wide, at
@@ -76,7 +88,7 @@ static void handler(PspDebugRegBlock *regs)
 	drawing may not be linked, and calling one inside the exception would
 	itself fault. pspDebugScreenInitEx with a base and no set-up only
 	writes memory */
-	pspDebugScreenInitEx((void *)0x441B0000, PSP_DISPLAY_PIXEL_FORMAT_565, 0);
+	pspDebugScreenInitEx(base, PSP_DISPLAY_PIXEL_FORMAT_565, 0);
 	pspDebugScreenPuts("Halo PSP crashed: ");
 	pspDebugScreenPuts(causes[code]);
 	show("\n\nepc      ", regs->epc);
@@ -106,6 +118,18 @@ static void handler(PspDebugRegBlock *regs)
 		}
 	}
 	pspDebugScreenPuts("\nTake a photo of this screen, then hold POWER.\n");
+}
+
+static void handler(PspDebugRegBlock *regs)
+{
+	unsigned int code = (regs->cause >> 2) & 31;
+	unsigned int index, sp = regs->r[29];
+
+	draw_report((void *)0x441B0000, 0, regs);
+	/* the GE's two frame buffers (psp_ge.c: 16-bit, 512 wide, at VRAM 0
+	and 0x44000) */
+	draw_report((void *)0x44000000, 1, regs);
+	draw_report((void *)0x44044000, 1, regs);
 
 	/* then the same to a file, if I/O works here */
 	file = sceIoOpen("ms0:/halo/crash.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
