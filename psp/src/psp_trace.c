@@ -1,4 +1,4 @@
-/* psp_trace.c - the load trace (build 96)
+/* psp_trace.c - the load trace (build 96), the blackbox (build 98)
 
 Why: Sheepdog01's b95 runs 1 and 2 on the PSP-1000 died loading The Library, just
 after the texture pack opened, with the ME on and off: the log stopped, the
@@ -34,7 +34,7 @@ void psp_trace_line(const char *format, ...)
 
 	if (!psp_trace || trace_busy)
 		return;
-	if (trace_lines >= TRACE_LIMIT)
+	if (psp_trace == 1 && trace_lines >= TRACE_LIMIT)
 	{
 		psp_trace = 0;
 		platform_log("trace: %d lines, stopped", TRACE_LIMIT);
@@ -57,10 +57,24 @@ void psp_trace_start(const char *why)
 	psp_trace_line("on (%s)", why);
 }
 
+/* build 98: "blackbox" (keep.txt, the launch menu): the trace goes on in
+play, without the steps (Memory Stick, DMA, GE list and display calls: a few
+lines a frame), and the heartbeat saves the log four times a second, so a
+freeze that takes the whole PSP down leaves its last quarter second. Sheepdog01's
+b97 run 1 froze in The Library's first fight with nothing in the log after
+the last 5 s batch */
+int psp_keep(const char *name);
+
 void psp_trace_stop(const char *why)
 {
-	if (!psp_trace)
+	if (psp_trace != 1)
 		return;
+	if (psp_keep("blackbox"))
+	{
+		psp_trace = 2;
+		platform_log("trace: %d lines to %s; blackbox: tracing on in play", trace_lines, why);
+		return;
+	}
 	psp_trace = 0;
 	platform_log("trace: off after %d lines (%s)", trace_lines, why);
 }

@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 97
+#define PSP_BUILD_NUMBER 98
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -136,7 +136,7 @@ heartbeat (build 19): opening and closing the log for every line cost the
 game several milliseconds a line, from a thread that outranks it. Start-up
 keeps writing each line at once, so a crash there still leaves the log;
 later, the screen keeps the last lines */
-static char log_batch[8192];
+static char log_batch[32768];
 static int log_batch_length = 0, log_batch_dropped = 0;
 static volatile int log_batching = 0;
 
@@ -322,7 +322,7 @@ void psp_step(const char *name)
 		extern volatile int psp_trace;
 		extern void psp_trace_line(const char *format, ...);
 
-		if (psp_trace)
+		if (psp_trace == 1)
 			psp_trace_line("step %s", name);
 	}
 }
@@ -1147,7 +1147,22 @@ static int heartbeat_thread(SceSize args, void *argp)
 		double seconds;
 
 		/* every second for the first 20, then every 5 */
-		sceKernelDelayThread(beat < 20 ? 1000000 : 5000000);
+		/* build 98: with "blackbox", the log saved every quarter second
+		meanwhile (psp_trace.c) */
+		{
+			static int blackbox = -1;
+			int slice, slices;
+
+			if (blackbox < 0)
+				blackbox = psp_keep("blackbox");
+			slices = blackbox ? (beat < 20 ? 4 : 20) : 1;
+			for (slice = 0; slice < slices; slice++)
+			{
+				sceKernelDelayThread((beat < 20 ? 1000000 : 5000000) / slices);
+				if (blackbox && slice + 1 < slices)
+					log_flush();
+			}
+		}
 		beat++;
 		heartbeat_beats = beat;
 		now = sceKernelGetSystemTimeWide();

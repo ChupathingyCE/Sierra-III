@@ -54,6 +54,7 @@ static struct option options[] = {
 	{ "benchrun", "benchmark: 4 views x 7 switches, ~6 min", 0, 0 },
 	{ "meclassify", "ME speed test: 2 render jobs, measure only", 0, 0 },
 	{ "hwprofile", "CPU counters in the log (benchrun: always)", 0, 0 },
+	{ "blackbox", "crash hunt: I/O traced in play, log saved 4x/s", 0, 0 },
 	{ "detailauto", "detail maps: the GE's own level choice", 0, 0 },
 	{ "noangle", "no slant buckets for texture levels", 0, 0 },
 	{ "mipauto", "all textures: the GE's own level choice", 0, 0 },
