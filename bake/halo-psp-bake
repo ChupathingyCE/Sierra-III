@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# halo-psp-bake: the one-shot bake (bake.py says what it does).
+#   ./halo-psp-bake <Halo disc image or maps folder> <output folder> [options]
+# First run: makes a Python environment beside this script (.venv) with the
+# libraries the texture and decal bakes need (numpy, Pillow, shapely,
+# triangle, scikit-learn). Needs python3 (3.9 or later) with venv, and an internet
+# connection that first time.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV="$HERE/.venv"
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "halo-psp-bake: first run, setting up $VENV"
+  python3 -m venv "$VENV" || { echo "halo-psp-bake: python3 -m venv failed (on Debian/Ubuntu: sudo apt install python3-venv)"; exit 1; }
+  "$VENV/bin/python" -m pip install --quiet --upgrade pip
+  "$VENV/bin/python" -m pip install --quiet numpy pillow shapely triangle scikit-learn
+fi
+# the bundled Invader runs against the libraries beside it
+if ! LD_LIBRARY_PATH="$HERE/invader/lib" "$HERE/invader/bin/invader-info" --help >/dev/null 2>&1; then
+  echo "halo-psp-bake: the bundled Invader doesn't run on this system (it needs glibc 2.39 or later:"
+  echo "Ubuntu 24.04, Fedora 40, a current Arch). Build it from invader-src.tar.gz (see INVADER.md) and"
+  echo "put invader-build, invader-extract, invader-info and libinvader.so in $HERE/invader/bin and lib."
+  exit 1
+fi
+exec "$VENV/bin/python" "$HERE/bake.py" "$@"

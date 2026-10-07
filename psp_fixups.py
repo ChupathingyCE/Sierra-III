@@ -1028,6 +1028,88 @@ def ai_debug_records(tree):
             changed += 1
     return changed
 
+# ---------- build 102: ai_debug.c's path debugger state on demand, and the
+# selected squad's records through PSP_DEBUG_INDEX (see FIXES_36 ai_debug.h)
+AI_DEBUG_LAZY = """#ifdef HALO_PSP
+/* psp_fixups.py (build 102): the path debugger's state (199 KB), allocated
+the first time the console's path debugging uses it */
+#include <stdlib.h>
+static struct path_state *psp_ai_debug_path_state_pointer = NULL;
+static struct path_debug_storage *psp_ai_debug_path_storage_pointer = NULL;
+static struct path_state *psp_ai_debug_path_state(void)
+{
+	if (!psp_ai_debug_path_state_pointer)
+		psp_ai_debug_path_state_pointer = calloc(1, sizeof(*psp_ai_debug_path_state_pointer));
+	return psp_ai_debug_path_state_pointer;
+}
+static struct path_debug_storage *psp_ai_debug_path_storage(void)
+{
+	if (!psp_ai_debug_path_storage_pointer)
+		psp_ai_debug_path_storage_pointer = calloc(1, sizeof(*psp_ai_debug_path_storage_pointer));
+	return psp_ai_debug_path_storage_pointer;
+}
+#endif
+"""
+
+def ai_debug_shrink(tree):
+    changed = 0
+    path = os.path.join(tree, "source/ai/ai_debug.c")
+    text = open(path, errors="surrogateescape").read()
+    if "psp_ai_debug_path_state" not in text:
+        n1 = len(re.findall(r"\bai_debug\.path_state\b", text))
+        n2 = len(re.findall(r"\bai_debug\.path_storage\b", text))
+        if not n1 or not n2:
+            sys.exit("psp_fixups: ai_debug.c: no ai_debug.path_state / path_storage")
+        text = re.sub(r"\bai_debug\.path_state\b", "(*psp_ai_debug_path_state())", text)
+        text = re.sub(r"\bai_debug\.path_storage\b", "(*psp_ai_debug_path_storage())", text)
+        # the allocator after the file's last #include, so the types are known
+        last = text.rindex("#include")
+        line_end = text.index("\n", last) + 1
+        text = text[:line_end] + AI_DEBUG_LAZY + text[line_end:]
+        open(path, "w", errors="surrogateescape").write(text)
+        changed += 1
+    for name in ("ai_debug.c", "actor_firing_position.c"):
+        path = os.path.join(tree, "source/ai", name)
+        text = open(path, errors="surrogateescape").read()
+        if "ai_debug.actor_record[PSP_DEBUG_INDEX(" in text or "ai_debug.actor_record[" not in text:
+            continue
+        out, position = [], 0
+        for match in re.finditer(r"\bai_debug\.actor_record\[", text):
+            start = match.end()
+            depth, end = 1, start
+            while depth:
+                depth += {"[": 1, "]": -1}.get(text[end], 0)
+                end += 1
+            out.append(text[position:start] + "PSP_DEBUG_INDEX(" + text[start:end - 1] + ")]")
+            position = end
+        out.append(text[position:])
+        open(path, "w", errors="surrogateescape").write("".join(out))
+        changed += 1
+    return changed
+
+# ---------- build 102: colour conversions in single precision. The decomp
+# rounds colours the x87 way, (long)rint((double)c * 255), to match the Xbox
+# bit for bit; the Allegrex has no double-precision FPU, so each channel cost
+# a software double multiply, add, subtract and conversion (~400
+# instructions). PPSSPP's I-cache model of The Library in combat: the soft-
+# double routines were ~5% of every instruction fetched, most of it from
+# real_argb_color_to_pixel32 (the HUD's and widgets' colours, every frame). In
+# single precision the result differs only when c * 255 lands within one part
+# in 2^24 of a half: a colour's last bit, now and then
+FLOAT_COLOUR_FILES = ["source/bitmaps/bitmaps_inlines.h", "source/effects/decals.c"]
+
+def float_colours(tree):
+    changed = 0
+    for rel in FLOAT_COLOUR_FILES:
+        path = os.path.join(tree, rel)
+        text = open(path, errors="surrogateescape").read()
+        if "__builtin_rint((double)" not in text:
+            continue
+        text = text.replace("__builtin_rint((double)", "__builtin_rintf((float)")
+        open(path, "w", errors="surrogateescape").write(text)
+        changed += 1
+    return changed
+
 # ---------- unaligned word accesses the PSP faults on (found with PPSSPP's
 # interpreter): every occurrence of each pattern goes through
 # PSP_UNALIGNED_ULONG (psp_limits.h)
@@ -1692,7 +1774,11 @@ game's own texture cache only serves keep.txt's "textures" (512 KB); the
 sound cache, now feeding real output, doubles to 1 MB */
 #define PSP_TEXTURE_CACHE_SIZE 0x10000 /* 64 KB (build 30): "textures" in keep.txt thrashes it, but works */
 #define PSP_TEXTURE_STEAL_GUARD 0x4000
-#define PSP_SOUND_CACHE_SIZE 0x100000
+/* build 102: 1.125 MB (was 1 MB): Sheepdog01's b101 Library run streamed 99 MB of
+sound in 6.5 minutes through the 1 MB cache (2,954 loads, 35 failed for
+room, the last second's working set up to 1000 KB); half of the 256 KB the
+build gave back to the heap (AI debugger, log buffers) */
+#define PSP_SOUND_CACHE_SIZE 0x120000
 #define PSP_PROFILE_FRAMES 2
 #define PSP_DEBUG_PRIMITIVES 64
 /* one screen: no split screen on the PSP */
@@ -1834,6 +1920,59 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 		}
 		return;
 	}
+	/* build 102: idle machines sleep too, as scenery does: a machine whose
+	update leaves it byte-identical twice running is skipped until something
+	changes it. Sheepdog01's b101 Library combat: 61 machines (doors, lifts, the
+	elevator's parts) cost 7.5 ms a tick. What a machine reads besides its own
+	bytes is covered: its power and position groups (a switch, a script) go
+	into the checksum (psp_family_checksum); an automatic door still runs on
+	the ticks it looks for someone near (one in four, machine_update), so it
+	opens as before; a platform (always moving) never sleeps. Measured in the
+	emulator on The Library: no gain (machines 1.73 ms a tick either way):
+	60% of its machine updates are type 2, always moving, and the idle ones
+	were cheap. So off unless keep.txt says "machinesleep" */
+	if (header->type == _object_type_machine)
+	{
+		static int psp_machine_sleep_on = -1;
+		int may = 0;
+
+		if (psp_machine_sleep_on < 0)
+			psp_machine_sleep_on = psp_keep("machinesleep");
+		if (psp_machine_sleep_on)
+		{
+			struct machine_datum const *machine = (struct machine_datum const *)object;
+			struct machine_definition const *definition = machine_definition_get(machine->definition_index);
+
+			may = definition->machine.type != 2 /* platform */ &&
+				!(definition->machine.type == 0 /* door */ && !TEST_FLAG(machine->machine.flags, 0 /* does not operate automatically */) &&
+					((game_time_get() + object_index) & 3) == 0);
+		}
+		{
+			/* build 102: why machines stay awake, every 3000 machine updates */
+			static unsigned long psp_machine_seen, psp_machine_gear, psp_machine_door_tick, psp_machine_children, psp_machine_by_type[4];
+			struct machine_datum const *machine = (struct machine_datum const *)object;
+			struct machine_definition const *definition = machine_definition_get(machine->definition_index);
+
+			psp_machine_seen++;
+			psp_machine_by_type[definition->machine.type & 3]++;
+			if (definition->machine.type == 2)
+				psp_machine_gear++;
+			else if (!may)
+				psp_machine_door_tick++;
+			else if (object->object.first_child_object_index != NONE)
+				psp_machine_children++;
+			if (psp_machine_seen % 3000 == 0)
+			{
+				platform_psp_log("machines: of %lu updates, by type %lu %lu %lu %lu; type 2 (always moving) %lu, door's look-around tick %lu, carrying something %lu; the rest may sleep (asleep counts: objects_update's line)",
+					psp_machine_seen, psp_machine_by_type[0], psp_machine_by_type[1], psp_machine_by_type[2], psp_machine_by_type[3],
+					psp_machine_gear, psp_machine_door_tick, psp_machine_children);
+				psp_machine_seen = psp_machine_gear = psp_machine_door_tick = psp_machine_children = 0;
+				psp_machine_by_type[0] = psp_machine_by_type[1] = psp_machine_by_type[2] = psp_machine_by_type[3] = 0;
+			}
+		}
+		psp_sleepy_update(object_index, absolute_index, header, may);
+		return;
+	}
 	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
 }
 
@@ -1864,6 +2003,24 @@ static unsigned long psp_family_checksum(struct object_header_datum const *heade
 		}
 		sum = ((sum << 7) | (sum >> 25)) ^ psp_object_checksum(child_header);
 		child = child_object->object.next_object_index;
+	}
+	/* build 102: a machine's power and position groups, which its update
+	reads and a switch or a script changes without touching the machine */
+	if (header->type == _object_type_machine)
+	{
+		struct device_datum const *device = (struct device_datum const *)object;
+		short groups[2];
+		int k;
+
+		groups[0] = device->device.power_group_index;
+		groups[1] = device->device.position_group_index;
+		for (k = 0; k < 2; k++)
+			if (groups[k] != NONE)
+			{
+				unsigned long const *group = (unsigned long const *)datum_get(device_groups_data, groups[k]);
+
+				sum = ((sum << 9) | (sum >> 23)) ^ group[0] ^ (group[1] * 0x9E3779B1UL);
+			}
 	}
 	return sum ? sum : 1;
 }
@@ -2314,6 +2471,36 @@ typedef char ai_debug_state_ballistic_lineoffire_valid_offset_assert["""),
  """typedef char ai_debug_state_field_7D380_offset_assert[
 	offsetof(struct ai_debug_state, evaluation_context_valid) == 0x7D380 ? 1 : -1];
 #endif"""),
+]
+
+# build 102: the rest of the AI debugger's static state, 231 of its 237 KB:
+# the path debugger's own path search (path_state 82 KB, path_storage 117 KB;
+# used only after the console's ai_debug_path command, allocated then on the
+# PSP, ai_debug_shrink below) and the firing-position records of the selected
+# squad (512 x 64 bytes; only written with a squad selected from the console,
+# and every index goes through PSP_DEBUG_INDEX like the actor records). The
+# game's heap gets it back
+FIXES_23["source/ai/ai_debug.h"] += [
+("""	NUMBER_OF_AI_DEBUG_ACTOR_RECORDS = 512,""",
+ """#ifdef HALO_PSP
+	NUMBER_OF_AI_DEBUG_ACTOR_RECORDS = 1, /* psp_fixups.py (build 102) */
+#else
+	NUMBER_OF_AI_DEBUG_ACTOR_RECORDS = 512,
+#endif"""),
+("""	struct path_state path_state;
+	boolean field_608A8;
+	char __unknown608A9[91];
+	struct path_debug_storage path_storage;
+""",
+ """#ifndef HALO_PSP
+	struct path_state path_state;
+#endif
+	boolean field_608A8;
+	char __unknown608A9[91];
+#ifndef HALO_PSP
+	struct path_debug_storage path_storage;
+#endif
+"""),
 ]
 
 # build 23: memory only a network game uses, allocated when one first does
@@ -4965,6 +5152,62 @@ void sample_lightmap(
 """),
 ]
 
+# build 102: object lighting's two samples of the level under an object, the
+# lightmap's colour and the surface texture's, from the texture pack
+# (psp_tex.c's psp_tex_light_texel): the game's bitmaps have no pixels here,
+# so bitmap_2d_get_pixel answered "none", white, and every object was lit as
+# if it stood in full light (Sheepdog01, b101). "lightwhite" in keep.txt: as before
+FIXES_36["source/objects/object_lights.c#lightmapsample"] = [
+("""	pixel32_to_real_rgb_color(
+		bitmap_2d_get_pixel(bitmap, &texcoord, 1.0f),
+		color);
+""",
+"""#ifdef HALO_PSP
+	{
+		extern int psp_tex_light_texel(unsigned int key, float u, float v, unsigned int *argb);
+		extern int psp_keep(const char *name);
+		static int psp_light_white = -1;
+		unsigned int psp_argb;
+
+		if (psp_light_white < 0)
+			psp_light_white = psp_keep("lightwhite");
+		if (!psp_light_white && psp_tex_light_texel((unsigned int)bitmap, texcoord.x, texcoord.y, &psp_argb))
+		{
+			pixel32_to_real_rgb_color((pixel32)psp_argb, color);
+			return;
+		}
+	}
+#endif
+	pixel32_to_real_rgb_color(
+		bitmap_2d_get_pixel(bitmap, &texcoord, 1.0f),
+		color);
+"""),
+("""	pixel32_to_real_rgb_color(
+		bitmap_2d_get_pixel(bitmap, &texcoord, 0.3f),
+		color);
+""",
+"""#ifdef HALO_PSP
+	{
+		extern int psp_tex_light_average(unsigned int key, unsigned int *argb);
+		extern int psp_keep(const char *name);
+		static int psp_light_white = -1;
+		unsigned int psp_argb;
+
+		if (psp_light_white < 0)
+			psp_light_white = psp_keep("lightwhite");
+		if (!psp_light_white && psp_tex_light_average((unsigned int)bitmap, &psp_argb))
+		{
+			pixel32_to_real_rgb_color((pixel32)psp_argb, color);
+			return;
+		}
+	}
+#endif
+	pixel32_to_real_rgb_color(
+		bitmap_2d_get_pixel(bitmap, &texcoord, 0.3f),
+		color);
+"""),
+]
+
 # build 68: the game's own readers of a material's vertices want positions
 # (the per-surface frustum test in the visibility walk, the surface under a
 # point). In a map built with its geometry outside the tags, the material's
@@ -5637,3 +5880,6 @@ for rel, changes in FIXES.items():
     open(path, "w", errors="surrogateescape").write(text)
 print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned accesses fixed in %d, breadcrumbs in %d, code appended to %d, passes skipped in %d, packed designators %d"
       % (len(FIXES), ai_debug_records(TREE), unaligned_accesses(TREE), breadcrumbs(TREE) + step_labels(TREE), appended(TREE), skipped_passes(TREE), packed_designators(TREE)))
+# build 102: after ai_debug_records, which skips a file once PSP_DEBUG_INDEX is in it
+print("psp_fixups: AI debugger state on demand in %d files" % ai_debug_shrink(TREE))
+print("psp_fixups: colour conversions in single precision in %d files" % float_colours(TREE))

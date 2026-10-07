@@ -53,7 +53,10 @@ void psp_trace_line(const char *format, ...)
 
 void psp_trace_start(const char *why)
 {
-	if (psp_trace)
+	/* build 102: only with "blackbox". On by default (b96-b101) it wrote
+	hundreds of lines at once at every map load: Blood Gulch's texture
+	preload took 9 s instead of 1.2 (Sheepdog01's b101 run 3) */
+	if (psp_trace || !psp_keep("blackbox"))
 		return;
 	psp_trace = 1;
 	psp_trace_line("on (%s)", why);
@@ -143,56 +146,131 @@ timing at all). Each wrapped call below takes this lock (re-entrant, for
 the log's own writes from inside a traced call); keep word "stickparallel"
 leaves it off */
 static SceUID stick_lock = -1;
-static volatile SceUID stick_owner = -1;
-static volatile int stick_depth = 0;
-static unsigned long stick_waits = 0, stick_wait_us = 0, stick_wait_worst = 0;
+
+/* build 102: where the Memory Stick's time goes, by thread: the calls'
+own time (lock or no lock: the stick does one request at a time, so a
+thread's synchronous read also waits for any other thread's read in the
+driver; an asynchronous read's transfer is not in it) and, with the lock,
+the time spent waiting for it. Sheepdog01's b101 run 2 waited 59 s for the lock
+over 2,379 waits, 0.9 s at worst, and which thread waited decides whether
+that was a stall on the screen (the game thread) or a late block (the
+loader, the sound) */
+#define STICK_THREADS 8
+static struct stick_thread
+{
+	SceUID id;
+	int depth, locked;
+	unsigned int calls, waits, start;
+	unsigned long long in_us, wait_us;
+	unsigned int worst_in_us, worst_wait_us;
+} stick_threads[STICK_THREADS], stick_spare;
+static volatile int stick_enabled = -1;
+int psp_keep_loaded(void);
+
+static struct stick_thread *stick_thread_of(SceUID me)
+{
+	int k;
+
+	for (k = 0; k < STICK_THREADS; k++)
+		if (stick_threads[k].id == me)
+			return &stick_threads[k];
+	for (k = 0; k < STICK_THREADS; k++)
+		if (!stick_threads[k].id)
+		{
+			/* a slot is only ever taken, never given back: at worst two
+			threads race for one and one of them counts in the other's */
+			stick_threads[k].id = me;
+			return &stick_threads[k];
+		}
+	return &stick_spare;
+}
 
 static void stick_take(void)
 {
 	SceUID me = sceKernelGetThreadId();
+	struct stick_thread *thread = stick_thread_of(me);
+	unsigned int start = sceKernelGetSystemTimeLow();
 
-	/* asked each time: keep.txt is read after the first file calls */
-	if (psp_keep("stickparallel"))
+	/* re-entrant: the log's own writes from inside a traced call */
+	if (thread->depth++ > 0)
 		return;
-	if (stick_lock < 0)
-		stick_lock = sceKernelCreateSema("halo stick", 0, 1, 1, NULL);
-	if (stick_lock < 0)
-		return;
-	if (stick_owner == me)
+	/* asked each time until keep.txt is read */
+	if (stick_enabled < 0)
 	{
-		stick_depth++;
-		return;
-	}
-	if (sceKernelPollSema(stick_lock, 1) < 0)
-	{
-		unsigned int start = sceKernelGetSystemTimeLow(), waited;
+		int on = !psp_keep("stickparallel");
 
-		sceKernelWaitSema(stick_lock, 1, NULL);
-		waited = sceKernelGetSystemTimeLow() - start;
-		stick_waits++;
-		stick_wait_us += waited;
-		if (waited > stick_wait_worst)
-			stick_wait_worst = waited;
+		if (on && stick_lock < 0)
+			stick_lock = sceKernelCreateSema("halo stick", 0, 1, 1, NULL);
+		if (psp_keep_loaded())
+			stick_enabled = on && stick_lock >= 0;
 	}
-	stick_owner = me;
-	stick_depth = 1;
+	thread->locked = 0;
+	if (stick_enabled != 0 && stick_lock >= 0 && !psp_keep("stickparallel"))
+	{
+		if (sceKernelPollSema(stick_lock, 1) < 0)
+		{
+			unsigned int waited;
+
+			sceKernelWaitSema(stick_lock, 1, NULL);
+			waited = sceKernelGetSystemTimeLow() - start;
+			thread->waits++;
+			thread->wait_us += waited;
+			if (waited > thread->worst_wait_us)
+				thread->worst_wait_us = waited;
+			start = sceKernelGetSystemTimeLow();
+		}
+		thread->locked = 1;
+	}
+	thread->start = start;
 }
 
 static void stick_give(void)
 {
-	if (stick_lock < 0 || stick_owner != sceKernelGetThreadId())
+	struct stick_thread *thread = stick_thread_of(sceKernelGetThreadId());
+	unsigned int took;
+
+	if (thread->depth <= 0 || --thread->depth > 0)
 		return;
-	if (--stick_depth == 0)
+	took = sceKernelGetSystemTimeLow() - thread->start;
+	thread->calls++;
+	thread->in_us += took;
+	if (took > thread->worst_in_us)
+		thread->worst_in_us = took;
+	if (thread->locked)
 	{
-		stick_owner = -1;
+		thread->locked = 0;
 		sceKernelSignalSema(stick_lock, 1);
 	}
 }
 
+/* the heartbeat's report: one line, the threads by name */
 void psp_stick_report(void)
 {
-	if (stick_waits)
-		platform_log("stick lock: %lu waits, %lu us in all, worst %lu us", stick_waits, stick_wait_us, stick_wait_worst);
+	char line[400];
+	int k, length;
+
+	length = snprintf(line, sizeof(line), "stick (%s):", stick_enabled > 0 && !psp_keep("stickparallel") ? "one thread at a time" : "parallel");
+	for (k = 0; k < STICK_THREADS && length < (int)sizeof(line) - 1; k++)
+	{
+		struct stick_thread *thread = &stick_threads[k];
+		SceKernelThreadInfo info;
+		const char *name = "?";
+
+		if (!thread->id || !thread->calls)
+			continue;
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		if (sceKernelReferThreadStatus(thread->id, &info) >= 0)
+			name = info.name;
+		length += snprintf(line + length, sizeof(line) - length, " %s %u calls %llu ms (worst %u)",
+			name, thread->calls, thread->in_us / 1000, thread->worst_in_us / 1000);
+		if (thread->waits && length < (int)sizeof(line) - 1)
+			length += snprintf(line + length, sizeof(line) - length, ", waited %u times %llu ms (worst %u);",
+				thread->waits, thread->wait_us / 1000, thread->worst_wait_us / 1000);
+		else if (length < (int)sizeof(line) - 1)
+			length += snprintf(line + length, sizeof(line) - length, ";");
+	}
+	platform_log("%s", line);
 }
 
 SceUID __real_sceIoOpen(const char *file, int flags, SceMode mode);

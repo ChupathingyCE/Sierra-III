@@ -20,6 +20,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include <pspkernel.h>
 #include <pspgu.h>
 #include <string.h>
+#include <math.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <malloc.h>
@@ -29,6 +30,7 @@ arrives its surfaces are drawn in their flat colour. */
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
 int psp_keep(const char *name);
+void psp_tex_light_report(void);
 
 struct pack_entry
 {
@@ -562,8 +564,29 @@ void psp_tex_map_opened(const char *name)
 	if (!name || !name[0])
 		return;
 	psp_tex_close();
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.ptex", name);
-	file = sceIoOpen(path, PSP_O_RDONLY, 0);
+	/* build 102: the asset track ("assettrack", launch menu): the map's
+	<map>_track.ptex when there is one, the same textures baked another way
+	(this build's: lightmaps at half size), so one game runs either data set */
+	file = -1;
+	{
+		/* and "assetdetail": <map>_detail.ptex, a pack baked with some
+		classes at full size (texpack.py --full-detail fp,...) */
+		static const char *const words[2] = { "assettrack", "assetdetail" }, *const suffixes[2] = { "_track", "_detail" };
+		int k;
+
+		for (k = 0; k < 2 && file < 0; k++)
+			if (psp_keep(words[k]))
+			{
+				snprintf(path, sizeof(path), "ms0:/halo/maps/%s%s.ptex", name, suffixes[k]);
+				file = sceIoOpen(path, PSP_O_RDONLY, 0);
+				platform_log("textures: %s: %s", words[k], file >= 0 ? path : "no such pack for this map: the usual one");
+			}
+	}
+	if (file < 0)
+	{
+		snprintf(path, sizeof(path), "ms0:/halo/maps/%s.ptex", name);
+		file = sceIoOpen(path, PSP_O_RDONLY, 0);
+	}
 	if (file < 0)
 	{
 		platform_log("textures: no %s (bake it with tools/texpack.py); surfaces stay flat", path);
@@ -816,6 +839,37 @@ int psp_tex_bitmap_count(long bitmap_tag_index)
 	return group ? (int)*(long *)(group + 96) : 0;
 }
 
+/* build 102: benchrun's stand-in texture (psp_ge.c's setting 23): 1, every
+bind; 2, the lightmaps' only. A 16 x 16 8-bit texture and its palette at the
+start of benchrun's VRAM room (contents don't matter: the colours are
+whatever is there), so the GE reads no texels from main RAM */
+int psp_tex_standin = 0;
+static int binding_lightmap = 0;
+int psp_tex_bind(unsigned int key, int *has_alpha);
+#define STANDIN_ADDRESS (0x04000000 + 0x001C0000)
+
+static int bind_standin(struct pack_entry const *entry, int *has_alpha)
+{
+	sceGuClutMode(GU_PSM_5650, 0, 0xFF, 0);
+	sceGuClutLoad(256 * 2 / 32, (void *)STANDIN_ADDRESS);
+	sceGuTexMode(GU_PSM_T8, 0, 0, 1);
+	sceGuTexImage(0, 16, 16, 16, (void *)(STANDIN_ADDRESS + 512));
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	if (has_alpha)
+		*has_alpha = entry->flags & 1;
+	return 1;
+}
+
+int psp_tex_bind_lightmap(unsigned int key)
+{
+	int bound;
+
+	binding_lightmap = 1;
+	bound = psp_tex_bind(key, NULL);
+	binding_lightmap = 0;
+	return bound;
+}
+
 /* makes the texture the GE's current one; 0 if it isn't there (yet) */
 int psp_tex_bind(unsigned int key, int *has_alpha)
 {
@@ -829,6 +883,8 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	if (index < 0)
 		return 0;
 	entry = &entries[index];
+	if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
+		return bind_standin(entry, has_alpha);
 	if (!resident_at[index])
 	{
 		misses++;
@@ -964,6 +1020,157 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	return 1;
 }
 
+/* ---------- build 102: object lighting from the lightmaps
+
+Halo lights an object from the level under it: a ray down finds the
+surface, and the lightmap's colour there (sample_lightmap) sets the object's
+ambient and its two distant lights' strength, the surface's texture colour
+(sample_diffuse_texture) the second light's tint. On the Xbox both read the
+bitmap's pixels in the texture cache (bitmap_2d_get_pixel); here the pixels
+are in this pack, the game's bitmaps have none, and the read answered
+"none", white: every object, characters, vehicles and scenery alike, lit as
+if it stood in full light (Sheepdog01, b101: "the lighting seems to be ignored by
+characters and vehicle models, as well as some rocks"). So the samples come
+from here: the texel itself when the texture is resident (exact: the
+lightmap's colours through its palette); else, while the map loads (static
+scenery is lit once, then), straight from the pack, one byte and one palette
+entry; in play at most LIGHT_READS_PER_FRAME such reads a frame, past that
+the page's last colour */
+#define LIGHT_READS_PER_FRAME 2
+#define LIGHT_PAGES 64
+static struct { unsigned int key, argb; } light_last[LIGHT_PAGES];
+static unsigned int light_reads_frame = 0, light_reads_this_frame = 0;
+static unsigned long light_exact = 0, light_read = 0, light_last_used = 0, light_white = 0, light_read_us = 0;
+
+static unsigned int argb_from_palette(int clut, unsigned int entry)
+{
+	unsigned int r, g, b, a = 255;
+
+	if (clut == GU_PSM_8888)
+	{
+		r = entry & 0xFF; g = (entry >> 8) & 0xFF; b = (entry >> 16) & 0xFF; a = entry >> 24;
+	}
+	else
+	{
+		r = (entry & 31) * 255 / 31; g = ((entry >> 5) & 63) * 255 / 63; b = ((entry >> 11) & 31) * 255 / 31;
+	}
+	return (a << 24) | (r << 16) | (g << 8) | b;
+}
+
+/* the byte offset of texel (x, y) in a swizzled top level, and the nibble */
+static unsigned int texel_offset(struct pack_entry const *entry, int x, int y, int *nibble)
+{
+	unsigned int bytes = entry->psm == GU_PSM_T4 ? (entry->width + 1) / 2 : entry->width;
+	unsigned int row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u;
+	unsigned int xb = entry->psm == GU_PSM_T4 ? (unsigned int)x / 2 : (unsigned int)x;
+
+	*nibble = entry->psm == GU_PSM_T4 ? (x & 1) : -1;
+	return ((unsigned int)(y / 8) * (row / 16) + xb / 16) * 128 + (unsigned int)(y % 8) * 16 + xb % 16;
+}
+
+static void light_remember(unsigned int key, unsigned int argb)
+{
+	unsigned int slot = (key >> 4) % LIGHT_PAGES;
+
+	light_last[slot].key = key;
+	light_last[slot].argb = argb;
+}
+
+/* the texel at (u, v) of a texture's top level, nearest, wrapped (as
+bitmap_2d_get_pixel samples a lightmap) as the Xbox's 0xAARRGGBB; 0 if it
+can't be had (the caller keeps the game's own answer) */
+int psp_tex_light_texel(unsigned int key, float u, float v, unsigned int *argb)
+{
+	int index = key && entries ? find(key) : -1;
+	struct pack_entry const *entry;
+	int x, y, nibble;
+	unsigned int palette_bytes, at, value, palette_entry = 0, slot;
+
+	if (index < 0)
+		return 0;
+	entry = &entries[index];
+	if (entry->psm != GU_PSM_T8 && entry->psm != GU_PSM_T4)
+		return 0;
+	x = (int)floorf((float)entry->width * u);
+	y = (int)floorf((float)entry->height * v);
+	x = ((x % entry->width) + entry->width) % entry->width;
+	y = ((y % entry->height) + entry->height) % entry->height;
+	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
+	at = texel_offset(entry, x, y, &nibble);
+	if (resident_at[index])
+	{
+		value = ((const unsigned char *)((resident_at[index] + palette_bytes) | 0x40000000))[at];
+		if (nibble >= 0)
+			value = (value >> (4 * nibble)) & 15;
+		palette_entry = entry->clut == GU_PSM_8888 ? ((const unsigned int *)(resident_at[index] | 0x40000000))[value]
+			: ((const unsigned short *)(resident_at[index] | 0x40000000))[value];
+		*argb = argb_from_palette(entry->clut, palette_entry);
+		light_exact++;
+		light_remember(key, *argb);
+		return 1;
+	}
+	if (light_reads_frame != frame)
+	{
+		light_reads_frame = frame;
+		light_reads_this_frame = 0;
+	}
+	if (pack >= 0 && (frame - map_open_frame < 2 || light_reads_this_frame < LIGHT_READS_PER_FRAME))
+	{
+		unsigned char byte;
+		unsigned int start = sceKernelGetSystemTimeLow(), entry_bytes = entry->clut == GU_PSM_8888 ? 4 : 2;
+
+		light_reads_this_frame++;
+		if (sceIoLseek32(pack, entry->offset + palette_bytes + at, PSP_SEEK_SET) == (int)(entry->offset + palette_bytes + at)
+			&& sceIoRead(pack, &byte, 1) == 1)
+		{
+			value = nibble >= 0 ? (byte >> (4 * nibble)) & 15 : byte;
+			if (sceIoLseek32(pack, entry->offset + value * entry_bytes, PSP_SEEK_SET) == (int)(entry->offset + value * entry_bytes)
+				&& sceIoRead(pack, &palette_entry, entry_bytes) == (int)entry_bytes)
+			{
+				*argb = argb_from_palette(entry->clut, palette_entry);
+				light_read++;
+				light_read_us += sceKernelGetSystemTimeLow() - start;
+				light_remember(key, *argb);
+				return 1;
+			}
+		}
+	}
+	slot = (key >> 4) % LIGHT_PAGES;
+	if (light_last[slot].key == key)
+	{
+		*argb = light_last[slot].argb;
+		light_last_used++;
+		return 1;
+	}
+	light_white++;
+	return 0;
+}
+
+/* a texture's average colour as 0xAARRGGBB, for the surface colour under
+an object (the Xbox reads a small mip level: lod 0.3); worked out once the
+texture is resident, and kept */
+int psp_tex_light_average(unsigned int key, unsigned int *argb)
+{
+	int index = key && entries ? find(key) : -1;
+	unsigned int abgr;
+
+	if (index < 0)
+		return 0;
+	if (averages_count == entry_count && averages && averages[index])
+		abgr = averages[index];
+	else if (!psp_tex_average(key, &abgr))
+		return 0;
+	*argb = (abgr & 0xFF00FF00) | ((abgr & 0xFF) << 16) | ((abgr >> 16) & 0xFF);
+	return 1;
+}
+
+void psp_tex_light_report(void)
+{
+	if (light_exact + light_read + light_last_used + light_white)
+		platform_log("object lighting: lightmap samples %lu from resident textures, %lu read from the pack (%lu us in all), %lu the page's last colour, %lu white (nothing to go on)",
+			light_exact, light_read, light_read_us, light_last_used, light_white);
+}
+
 /* whether the pack has a texture under this key (build 36: a model's base map
 with its detail map folded in is under the base's key | 1) */
 int psp_tex_has(unsigned int key)
@@ -1017,6 +1224,8 @@ void psp_tex_frame_end(void)
 		platform_log("textures: %lu loaded (%lu KB), %lu requests waited for the next frame, %lu for room; %lu evicted; largest frame %lu textures, %lu KB; %lu frames drew something untextured (longest run %lu)",
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
+	if (entries && frame % 300 == 0)
+		psp_tex_light_report();
 	if (frame_read_us > frame_read_worst)
 		frame_read_worst = frame_read_us;
 	frame_read_us = 0;

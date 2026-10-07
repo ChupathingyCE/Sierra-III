@@ -1,5 +1,5 @@
 TARGET = halo_crash
-OBJS = main.o
+OBJS = main.o crash_asm.o
 CFLAGS = -O2 -G0 -Wall
 BUILD_PRX = 1
 USE_KERNEL_LIBC = 1

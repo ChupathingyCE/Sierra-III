@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 101
+#define PSP_BUILD_NUMBER 102
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -141,7 +141,12 @@ heartbeat (build 19): opening and closing the log for every line cost the
 game several milliseconds a line, from a thread that outranks it. Start-up
 keeps writing each line at once, so a crash there still leaves the log;
 later, the screen keeps the last lines */
-static char log_batch[32768];
+/* build 102: 8 KB each for the batch and the flush's copy, as up to b97;
+the blackbox's 32 KB pair (b98-b101 had it always, 48 KB off the game's
+heap) comes from the system's free memory when the blackbox starts */
+static char log_batch_small[8192], log_copy_small[8192];
+static char *log_batch = log_batch_small, *log_copy = log_copy_small;
+static int log_batch_size = sizeof(log_batch_small);
 static int log_batch_length = 0, log_batch_dropped = 0;
 static volatile int log_batching = 0;
 
@@ -160,8 +165,11 @@ the game thread writes the batch at every frame's end, so a freeze loses at
 most the frame it happened in */
 static volatile int log_frame_flush = 0;
 
+static void log_batch_grow(void);
+
 void psp_log_batch_now(void)
 {
+	log_batch_grow();
 	log_batching = 1;
 	log_frame_flush = 1;
 }
@@ -190,7 +198,7 @@ static void log_flush(void)
 
 static void log_flush_body(void)
 {
-	static char copy[sizeof(log_batch)];
+	char *copy = log_copy;
 	int length, dropped;
 	SceUID file;
 
@@ -219,11 +227,20 @@ static void log_flush_body(void)
 	}
 }
 
+/* build 102: the crash handler (psp_crash.c) sets this too: the crashed
+thread may have held the log's locks */
+void psp_log_exiting(void);
+
 /* build 88: while the game exits (HOME), every wait for the log's lock is
 limited to 100 ms: no b70-b87 run's log has the exit callback's lines, nor
 was the learned-textures file ever written there, and a lock held by a thread
 the system has stopped would explain both */
 static volatile int exiting = 0;  /* (declared above log_flush) */
+
+void psp_log_exiting(void)
+{
+	exiting = 1;
+}
 static int log_lock_take(void)
 {
 	SceUInt timeout = 100000;
@@ -233,6 +250,41 @@ static int log_lock_take(void)
 	if (!exiting)
 		return sceKernelWaitSema(log_lock, 1, NULL) >= 0;
 	return sceKernelWaitSema(log_lock, 1, &timeout) >= 0;
+}
+
+/* build 102: the blackbox's larger batch (32 KB and its copy), from the
+user partition's free memory (not the game's heap); kept at 8 KB if there
+is none */
+static void log_batch_grow(void)
+{
+	SceUID block;
+	char *big;
+
+	if (log_batch_size > (int)sizeof(log_batch_small))
+		return;
+	block = sceKernelAllocPartitionMemory(2, "halo log batch", PSP_SMEM_High, 2 * 32768, NULL);
+	if (block < 0)
+	{
+		platform_log("log: no free memory for the blackbox's batch (0x%08x); 8 KB", (unsigned)block);
+		return;
+	}
+	big = sceKernelGetBlockHeadAddr(block);
+	/* nothing may flush (it reads the copy) or add lines while they change */
+	if (flush_lock >= 0)
+		sceKernelWaitSema(flush_lock, 1, NULL);
+	{
+		int locked = log_lock_take();
+
+		memcpy(big, log_batch, log_batch_length);
+		log_batch = big;
+		log_copy = big + 32768;
+		log_batch_size = 32768;
+		if (locked)
+			sceKernelSignalSema(log_lock, 1);
+	}
+	if (flush_lock >= 0)
+		sceKernelSignalSema(flush_lock, 1);
+	platform_log("log: the blackbox's batch, 32 KB from free memory");
 }
 
 void psp_log_write(const char *text)
@@ -245,7 +297,7 @@ void psp_log_write(const char *text)
 	{
 		int length = strlen(text);
 
-		if (log_batch_length + length + 1 <= (int)sizeof(log_batch))
+		if (log_batch_length + length + 1 <= log_batch_size)
 		{
 			memcpy(log_batch + log_batch_length, text, length);
 			log_batch_length += length;
@@ -257,7 +309,7 @@ void psp_log_write(const char *text)
 			sceKernelSignalSema(log_lock, 1);
 		/* build 99: a batch three quarters full is written at once (the
 		blackbox's first frames stream hundreds of textures in one frame) */
-		if (log_batch_length > (int)sizeof(log_batch) * 3 / 4)
+		if (log_batch_length > log_batch_size * 3 / 4)
 			log_flush();
 		return;
 	}
@@ -458,6 +510,13 @@ static void keep_load(void)
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
+}
+
+/* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
+asks before it caches its answer) */
+int psp_keep_loaded(void)
+{
+	return keep_words[0] != 0;
 }
 
 int psp_keep(const char *name)
@@ -710,11 +769,16 @@ static const char *const bench_configs[] =
 	/* build 93: the bus tests. "ME audio off" and "stencils old nudge" are
 	settled (no effect, b86-b92) and left out. Each new switch changes only
 	what the GE does; the CPU builds every frame the same way */
-	"baseline", "GE serial: GE busy time", "level compact", "GE skips models", "GE skips the level",
-	"display list in VRAM", "GE busy on VRAM only",
+	/* build 102: "level compact" and "display list in VRAM" settled (no
+	effect three times; ~0.5 ms) and left out; in: the texel tests. The
+	stand-in texture binds one 16 x 16 texture in VRAM for every draw (or
+	only for the lightmap pass), so the GE reads no texels from main RAM;
+	"textures one level smaller" is the remedy to try if texels are it */
+	"baseline", "GE serial: GE busy time", "GE skips models", "GE skips the level",
+	"stand-in texture (no RAM texels)", "stand-in lightmaps", "textures one level smaller", "GE busy on VRAM only",
 };
 #define BENCH_SERIAL 1
-#define BENCH_VRAM_BUSY 6
+#define BENCH_VRAM_BUSY 7
 /* build 93: the GE's busy time at each view (the serial window's wait), the
 target for the VRAM-only load */
 static float bench_ge_busy_ms[8];
@@ -738,16 +802,20 @@ static void bench_apply(int config, int view)
 	psp_ge_setting(20, 1, 0);
 	psp_ge_setting(21, 1, 0);
 	psp_ge_setting(22, 1, 0);
+	psp_ge_setting(23, 1, 0);
+	psp_ge_setting(24, 1, 0);
 	if (config == BENCH_SERIAL)
 		psp_ge_setting(9, 1, 1);
 	else if (config == 2)
-		psp_ge_setting(17, 1, 1);
-	else if (config == 3)
 		psp_ge_setting(20, 1, 2);	/* models */
-	else if (config == 4)
+	else if (config == 3)
 		psp_ge_setting(20, 1, 1);	/* the level */
+	else if (config == 4)
+		psp_ge_setting(23, 1, 1);	/* stand-in texture, every bind */
 	else if (config == 5)
-		psp_ge_setting(21, 1, 1);
+		psp_ge_setting(23, 1, 2);	/* stand-in texture, lightmaps */
+	else if (config == 6)
+		psp_ge_setting(24, 1, 1);	/* one level smaller */
 	else if (config == BENCH_VRAM_BUSY)
 	{
 		/* the load's size found in the settling window (the GE alone, timed),
@@ -916,6 +984,12 @@ void psp_tick_account(unsigned long microseconds)
 
 	/* build 99: "crashplay": a deliberate fault 20 s into play, to check
 	the crash handler's report shows on the game's screen */
+	if (ticks_seen == 600 && psp_keep("crashdraw"))
+	{
+		extern void psp_crash_draw_test(void);
+
+		psp_crash_draw_test();
+	}
 	if (ticks_seen == 600 && psp_keep("crashplay"))
 	{
 		platform_log("crashplay: storing to address 4 (the crash handler's report should show on screen)");
@@ -972,6 +1046,51 @@ map doesn't show by itself (build 30) */
 				psp_player_teleport(p[0], p[1], p[2], p[3], p[4], p[5]);
 			}
 			fclose(file);
+		}
+	}
+	/* build 102: ms0:/halo/route.txt, lines of "seconds x y z forward_x
+	forward_y forward_z": the player put at each spot in turn, at that many
+	seconds of play (game ticks), each line once. A route replayed from a
+	hardware log's "player: at" lines (tools/route_from_log.py), so the
+	emulator can size the caches on the route Sheepdog01 actually played */
+	{
+		static FILE *route = NULL;
+		static int route_done = 0;
+		static float next[7];
+		static int have_next = 0;
+		static unsigned long route_count = 0;
+
+		if (!route && !route_done)
+		{
+			route = fopen(DATA_ROOT "/route.txt", "r");
+			if (!route)
+				route_done = 1;
+		}
+		while (route && !route_done)
+		{
+			if (!have_next)
+			{
+				if (fscanf(route, "%f %f %f %f %f %f %f", &next[0], &next[1], &next[2], &next[3], &next[4], &next[5], &next[6]) != 7)
+				{
+					fclose(route);
+					route = NULL;
+					route_done = 1;
+					platform_log("route.txt: done, %lu spots", route_count);
+					break;
+				}
+				have_next = 1;
+			}
+			if ((float)ticks_seen < next[0] * 30.0f)
+				break;
+			{
+				extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
+
+				psp_player_teleport(next[1], next[2], next[3], next[4], next[5], next[6]);
+				route_count++;
+				if (route_count % 10 == 1)
+					platform_log("route.txt: spot %lu at %.1f s: %.2f %.2f %.2f", route_count, next[0], next[1], next[2], next[3]);
+			}
+			have_next = 0;
 		}
 	}
 	/* build 70: keep.txt's "colltest": the collision regression rays, 14 s in
@@ -1037,6 +1156,10 @@ static unsigned long ticks_per_frame_histogram[5];
 
 void psp_frame_account(unsigned long microseconds)
 {
+	extern void psp_crash_stop_if_crashed(void);
+
+	/* build 102: another thread crashed: the report stays on the screen */
+	psp_crash_stop_if_crashed();
 	if (log_frame_flush)
 		log_flush();
 	ticks_per_frame_histogram[ticks_since_frame > 4 ? 4 : ticks_since_frame]++;
@@ -1337,7 +1460,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 			/* build 100: the Memory Stick lock's waits (psp_trace.c) */
 			extern void psp_stick_report(void);
 
-			if (ticks >= 0 && beat > 20)
+			if (ticks >= 0 && beat > 20 && (beat % 6) == 0)
 				psp_stick_report();
 		}
 		if (ticks >= 0 && (beat % 6) == 3)
@@ -1399,7 +1522,17 @@ static void load_crash_handler(const char *eboot_path)
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_crash.prx");
 	module = sceKernelLoadModule(path, 0, NULL);
 	if (module >= 0)
-		module = sceKernelStartModule(module, 0, NULL, &status, NULL);
+	{
+		/* build 102: the module returns from a crash into the game's own
+		handler (psp_crash.c); these say where it is */
+		extern int psp_crash_arguments(void *out, int size);
+		unsigned int arguments[4];
+
+		if (psp_crash_arguments(arguments, sizeof(arguments)))
+			module = sceKernelStartModule(module, sizeof(arguments), arguments, &status, NULL);
+		else
+			module = sceKernelStartModule(module, 0, NULL, &status, NULL);
+	}
 	platform_log("crash handler %s: %s (0x%08x)", path, module >= 0 ? "installed" : "not loaded", (unsigned)module);
 }
 

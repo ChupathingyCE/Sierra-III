@@ -14,6 +14,7 @@ The addresses can then be looked up in the build's symbols.
 #include <pspdisplay.h>
 #include <pspiofilemgr.h>
 #include <string.h>
+#include <pspexception.h>
 
 PSP_MODULE_INFO("halo_crash", PSP_MODULE_KERNEL, 1, 0);
 PSP_MAIN_THREAD_ATTR(0);
@@ -175,20 +176,58 @@ static void handler(PspDebugRegBlock *regs)
 		;
 }
 
+/* build 102: the exception entry of our own (crash_asm.S), handing over to
+the game's handler (psp_crash.c), which the game names when it starts this
+module: its arguments are { magic, register block, handler, stack top }, all
+in the game's memory. Without them (an older game), pspsdk's handler as
+before */
+extern void halo_exception(void);
+extern unsigned int halo_block, halo_user_handler, halo_user_stack;
+
+struct halo_crash_arguments
+{
+	unsigned int magic, block, handler, stack_top;
+};
+#define HALO_CRASH_MAGIC 0x48435231 /* "HCR1" */
+
+static int user_address(unsigned int address)
+{
+	return address >= 0x08800000 && address < 0x0A000000;
+}
+
 int module_start(SceSize args, void *argp)
 {
 	int result;
 	char text[12];
+	struct halo_crash_arguments const *given = argp;
+	int ours = 0;
 
-	(void)args; (void)argp;
-	result = pspDebugInstallErrorHandler(handler);
+	if (args == sizeof(struct halo_crash_arguments) && given && given->magic == HALO_CRASH_MAGIC &&
+		user_address(given->block) && user_address(given->handler) && user_address(given->stack_top))
+	{
+		halo_block = given->block;
+		halo_user_handler = given->handler;
+		halo_user_stack = given->stack_top & ~15u;
+		ours = 1;
+		result = sceKernelRegisterDefaultExceptionHandler((void *)((unsigned int)halo_exception | 0x80000000));
+	}
+	else
+		result = pspDebugInstallErrorHandler(handler);
 	/* what the kernel said, for the game's log: 0 is installed; 0x8002013a
 	would mean the firmware doesn't resolve the call's NID */
 	file = sceIoOpen("ms0:/halo/log/crash_handler.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	put(ours ? "build 102 handler (into the game's own); " : "pspsdk's handler (no arguments from the game); ");
 	hex(text, (unsigned int)result);
 	put("sceKernelRegisterDefaultExceptionHandler returned 0x");
 	put(text);
 	put("\n");
+	if (ours)
+	{
+		put_hex("block ", halo_block);
+		put_hex(" handler ", halo_user_handler);
+		put_hex(" stack ", halo_user_stack);
+		put("\n");
+	}
 	if (file >= 0)
 		sceIoClose(file);
 	file = -1;

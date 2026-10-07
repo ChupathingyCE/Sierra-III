@@ -322,8 +322,80 @@ def detail_levels(m, b, tw, th):
     return out
 
 
+# build 102 (the asset track): lightmaps shrunk by this factor (texpack.py
+# --lightmap-scale 2), their charts' colours first grown into the gutters
+# (lightmap_masks.py) so the shrinking mixes nothing dark into the seams
+LIGHTMAP_SCALE = 1
+LIGHTMAP_MASKS = {}
+# build 102 (the asset track): alpha-tested textures' smaller levels keep the
+# top level's coverage (texpack.py --alpha-coverage). A box filter averages a
+# leaf's edge with the air around it, so at each smaller level fewer texels
+# pass the GE's alpha test (alpha > 127) and a far plant thins out and
+# shimmers as the level changes (Sheepdog01: the flickering plants, b62 shot 11).
+# Each level's alpha is scaled so the same share of it passes as at the top
+# (Castano's coverage-preserving mipmaps)
+ALPHA_COVERAGE = False
+ALPHA_TESTED = set()
+# build 102: per-class detail (texpack.py --full-detail fp,vehicles,...):
+# these classes keep their top level (the bake otherwise halves every texture
+# of 64 px and more) and the 256 px cap rises to 512. A lever to try, not the
+# default: each doubles its textures' bytes four times over
+DETAIL_CLASSES = {
+    'fp': lambda tag: '\\fp\\' in tag,
+    'weapons': lambda tag: tag.startswith('weapons\\') and '\\fp\\' not in tag,
+    'vehicles': lambda tag: tag.startswith('vehicles\\'),
+    'characters': lambda tag: tag.startswith('characters\\') and '\\fp\\' not in tag,
+}
+FULL_DETAIL = set()
+
+
+def full_detail(tag):
+    return any(DETAIL_CLASSES[c](tag) for c in FULL_DETAIL)
+
+
+def coverage(alpha):
+    return float((alpha > 127).mean()) if alpha.size else 0.0
+
+
+def keep_coverage(img, target):
+    """img's alpha scaled so coverage(alpha) is as close to target as it gets"""
+    a = img[:, :, 3].astype(np.float32)
+    if a.size == 0 or target <= 0.0 or target >= 1.0:
+        return img
+    low, high = 0.25, 8.0
+    for _ in range(24):
+        mid = (low + high) / 2
+        if coverage(np.clip(a * mid, 0, 255)) < target:
+            low = mid
+        else:
+            high = mid
+    out = img.copy()
+    out[:, :, 3] = np.clip(a * high + 0.5, 0, 255).astype(np.uint8)
+    return out
+
+
+def alpha_tested_bitmaps(m, d):
+    """bitmap tag names used as an alpha-tested shader's base map: model
+    shaders (soso) unless "not alpha tested", environment shaders (senv) with
+    "alpha tested" """
+    names = set()
+    for t in m.tags:
+        if t.group not in ('soso', 'senv') or not t.address or not m.in_tags(t.address):
+            continue
+        o = m.off(t.address)
+        flags, = struct.unpack_from('<H', m.data, o + 40)
+        base_offset = 164 if t.group == 'soso' else 136
+        tid, = struct.unpack_from('<i', m.data, o + base_offset + 12)
+        tested = not (flags & 4) if t.group == 'soso' else bool(flags & 1)
+        if tested and m.by_id.get(tid):
+            names.add(m.by_id[tid].name)
+    return names
+
+
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True):
     act, tw, th = target(b, cls)
+    if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
+        tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
     # HUD sheets (meters, numbers, reticles) at their full size: halved, the
     # digits and meter cells fall below a texel each (build 39). The big
     # menu screens keep the halving, and so do the split-screen scope masks
@@ -333,6 +405,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True):
     limit = MAXIMUM_SIDE
     if cls == 'objects (soso)' and '\\fp\\' not in b['tag']:
         limit = OBJECT_SIDE
+    if FULL_DETAIL and act == 'clut' and full_detail(b['tag']):
+        tw, th, limit = b['w'], b['h'], 512
     while cls != 'lightmap' and max(tw, th) > limit:
         tw, th = max(1, tw // 2), max(1, th // 2)
     if act != 'clut' or b['type'] != '2d' or not pow2(tw) or not pow2(th):
@@ -340,6 +414,9 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True):
     img = decode(m, b)
     if img is None:
         return None
+    if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and (b['tag'], b['index']) in LIGHTMAP_MASKS:
+        from lightmap_masks import dilate
+        img = dilate(img, LIGHTMAP_MASKS[(b['tag'], b['index'])], 2 * LIGHTMAP_SCALE + 2)
     if look:
         img = apply_look(img, look)
     if model_look:
@@ -383,6 +460,9 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True):
         clut = 0
     levels = []
     w, h, level_img = tw, th, small
+    chain_img = small
+    fix_coverage = ALPHA_COVERAGE and alpha and b['tag'] in ALPHA_TESTED and not own_levels and not grid
+    top_coverage = coverage(small[:, :, 3]) if fix_coverage else 0.0
     # build 49: no more levels than the Xbox bitmap has (its extra mip count
     # + 1, less the levels dropped above the baked size). Blood Gulch's 15
     # lightmaps have none on the Xbox; baked with a chain, their small levels
@@ -419,7 +499,11 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True):
         if cls == 'ui/hud':
             break
         w, h = max(1, w // 2), max(1, h // 2)
-        level_img = own_levels[len(levels)] if own_levels and len(levels) < len(own_levels) else downscale(level_img, w, h)
+        if own_levels and len(levels) < len(own_levels):
+            level_img = own_levels[len(levels)]
+        else:
+            chain_img = downscale(chain_img, w, h)
+            level_img = keep_coverage(chain_img, top_coverage) if fix_coverage else chain_img
     data = palette + b''.join(levels)
     return dict(w=tw, h=th, levels=len(levels), clut=clut, alpha=alpha, data=data, psm=4 if bits == 4 else 5)
 
@@ -429,13 +513,38 @@ def main():
     ap.add_argument('map')
     ap.add_argument('out')
     ap.add_argument('--limit', type=int, default=0)
+    ap.add_argument('--lightmap-scale', type=int, default=1, help='asset track: lightmaps shrunk by this (2: half)')
+    ap.add_argument('--pgeo', default=None, help='the map\'s geometry pack (default: beside the map) for the lightmap masks')
+    ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
+    ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
     a = ap.parse_args()
+    global FULL_DETAIL
+    FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
+    if FULL_DETAIL - set(DETAIL_CLASSES):
+        sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
     d = Defs()
     m = CacheMap(a.map)
+    global ALPHA_COVERAGE, ALPHA_TESTED
+    if a.alpha_coverage:
+        ALPHA_COVERAGE = True
+        ALPHA_TESTED = alpha_tested_bitmaps(m, d)
+        print('alpha coverage kept for %d alpha-tested bitmaps' % len(ALPHA_TESTED), file=sys.stderr)
     roles = refs.bitmap_roles(m, d)
     B = bitmap_list(m, d)
     if a.limit:
         B = B[:a.limit]
+    global LIGHTMAP_SCALE, LIGHTMAP_MASKS
+    LIGHTMAP_SCALE = max(1, a.lightmap_scale)
+    if LIGHTMAP_SCALE > 1:
+        from lightmap_masks import page_masks
+        sizes = {(b['tag'], b['index']): (b['w'], b['h']) for b in B
+                 if refs.classify(roles.get(b['tag'], ()), b) == 'lightmap'}
+        pgeo = a.pgeo or os.path.splitext(a.map)[0] + '.pgeo'
+        LIGHTMAP_MASKS = page_masks(a.map, pgeo, sizes)
+        covered = sum(int(v.sum()) for v in LIGHTMAP_MASKS.values())
+        total = sum(v.size for v in LIGHTMAP_MASKS.values())
+        print('lightmaps 1/%d: %d of %d pages masked, %.0f%% of their texels in charts' % (
+            LIGHTMAP_SCALE, len(LIGHTMAP_MASKS), len(sizes), 100.0 * covered / max(1, total)), file=sys.stderr)
     entries = []
     skipped = {}
     looks = level_looks(m, d, B)

@@ -59,6 +59,12 @@ static SceUID pack = -1;
 static unsigned int pack_size = 0, pack_crc = 0;
 static char pack_name[64];
 static unsigned int arena_start = 0, arena_end = 0, arena_next = 0;
+/* build 102: the cache's size when it is carved from the texture RAM cache
+(a campaign map): 1 MB, or 1.5 / 2 MB with "geo15" / "geo2" (launch menu).
+Sheepdog01's b101 Library run: 1,899 block loads, 375 frames missing a block, the
+area ahead flashing in and out at transitions. The asset track's smaller
+textures leave the texture cache room to give */
+static unsigned int arena_bytes = ARENA_BYTES;
 static struct geo_entry entries[GEO_ENTRIES];
 static int entry_count = 0;
 static unsigned short pending[GEO_PENDING];
@@ -578,7 +584,8 @@ b73 found it must */
 				free(heap_arena);
 				heap_arena = NULL;
 			}
-			arena = psp_tex_carve(ARENA_BYTES);
+			arena_bytes = psp_keep("geo2") ? 2048 * 1024 : psp_keep("geo15") ? 1536 * 1024 : ARENA_BYTES;
+			arena = psp_tex_carve(arena_bytes);
 			arena_carved = arena != NULL;
 		}
 		if (!arena)
@@ -588,6 +595,7 @@ b73 found it must */
 				psp_tex_carve(0);
 				arena_carved = 0;
 			}
+			arena_bytes = ARENA_BYTES;
 			if (!heap_arena)
 				heap_arena = memalign(64, ARENA_BYTES);
 			arena = heap_arena;
@@ -602,10 +610,10 @@ b73 found it must */
 		return;
 	}
 	arena_start = arena_next = (unsigned int)arena;
-	arena_end = arena_start + ARENA_BYTES;
+	arena_end = arena_start + arena_bytes;
 	hits = misses = loads = load_bytes = evictions = too_big = failures = miss_frames = queue_full = no_room = 0;
 	read_us = read_worst_us = 0;
-	platform_log("geometry: %s, %u KB external; cache %u KB at %08x (%s)", path, pack_size / 1024, ARENA_BYTES / 1024, arena_start,
+	platform_log("geometry: %s, %u KB external; cache %u KB at %08x (%s)", path, pack_size / 1024, arena_bytes / 1024, arena_start,
 		arena_carved ? "from the texture RAM cache: its textures stream anyway" : "heap");
 	{
 		/* build 87: the stencil bake, keyed by this pack's addresses */

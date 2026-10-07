@@ -146,6 +146,7 @@ static int list_full_first_person(void)
 /* room in the display list for a draw's own data, or NULL: a large draw
 (a light over many triangles) can need more than the margin above, and
 writing past the list's end corrupts memory (build 29) */
+int psp_tex_bind_lightmap(unsigned int key);
 int psp_keep(const char *name);
 
 /* build 48: the display list is written through the uncached view (pspgu's
@@ -881,6 +882,37 @@ int psp_ge_setting(int which, int set, int value)
 			}
 		}
 		return vram_busy ? vram_busy_sprites : 0;
+	case 23:
+		/* build 102: benchrun: every texture bind (1) or the lightmaps' (2)
+		replaced by one 16 x 16 texture in VRAM: the GE reads no texels from
+		main RAM (psp_tex.c). Splits b93's "models and the level each carry
+		half the bus cost" into texels and vertices */
+		if (set)
+		{
+			extern int psp_tex_standin;
+
+			psp_tex_standin = value && psp_keep("benchrun") ? value : 0;
+		}
+		{
+			extern int psp_tex_standin;
+
+			return psp_tex_standin;
+		}
+	case 24:
+		/* build 102: benchrun: every mipped texture one level smaller (the
+		GE's level bias +1): a quarter of the texels for the same pixels */
+		{
+			static float saved_bias = -1.0f;
+
+			if (set)
+			{
+				if (saved_bias < 0.0f)
+					saved_bias = tex_bias;
+				tex_bias = saved_bias + (value ? 1.0f : 0.0f);
+				sceGuTexLevelMode(tex_level_mode, tex_bias);
+			}
+			return saved_bias >= 0.0f && tex_bias > saved_bias;
+		}
 	case 9:
 		if (ge_serial < 0) ge_serial = psp_keep("geserial");
 		if (set) ge_serial = value;
@@ -2050,7 +2082,8 @@ static float pixels_per_unit(void)
 /* texture coordinate units per world unit over a draw's triangles */
 static float uv_density(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count)
 {
-	double uv_area = 0.0, world_area = 0.0;
+	/* build 102: in single precision (doubles are software on the PSP) */
+	float uv_area = 0.0f, world_area = 0.0f;
 	long t;
 
 	for (t = 0; t < triangle_count && t < 512; t++)
@@ -2062,7 +2095,7 @@ static float uv_density(const struct ge_vertex *stream, const unsigned short *in
 		world_area += sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
 		uv_area += fabsf((b->u - a->u) * (c->v - a->v) - (c->u - a->u) * (b->v - a->v));
 	}
-	return world_area > 0.0 ? (float)sqrt(uv_area / world_area) : 0.0f;
+	return world_area > 0.0f ? sqrtf(uv_area / world_area) : 0.0f;
 }
 
 /* the GE's level mode for a texture of size width x height drawn at
@@ -2766,7 +2799,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			sceGuTexOffset(0.0f, 0.0f);
 		textured_draws++;
 		/* pass 2: the lightmap multiplied in, where pass 1 drew */
-		if (!skip_lightmap && stream->lightmap && psp_tex_bind(lightmap_key, NULL))
+		if (!skip_lightmap && stream->lightmap && psp_tex_bind_lightmap(lightmap_key))
 		{
 			sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 			sceGuTexWrap(GU_CLAMP, GU_CLAMP);

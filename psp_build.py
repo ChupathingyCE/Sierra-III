@@ -33,7 +33,7 @@ PLATFORM_FILES = [
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_psh", "nv2a_vsh", "xgpu_text", "gl_functions",
     "xiso", "xbdm",
 ]
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_debug", "psp_me", "psp_trace"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_debug", "psp_me", "psp_trace", "psp_crash"]
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
 # variant that trades speed tricks for smaller code: the hardware profiler
@@ -138,7 +138,7 @@ def compile_one(item):
         return src, 0, "", obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", obj]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_debug.c",
-                     "psp_me.c", "psp_trace.c")):
+                     "psp_me.c", "psp_trace.c", "psp_crash.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         cmd = ["psp-gcc", "-G0", "-O2", "-march=allegrex", "-ffunction-sections", "-fdata-sections",
                "-I" + SDK + "/include", "-c", src, "-o", obj]
@@ -187,8 +187,28 @@ def link(objs, stubs):
                         os.path.join(HERE, "psp/meaudio/kcall.S"), "-o", stub], check=True)
         with open(os.path.join(OUT, "objs.rsp"), "a") as f:
             f.write('"%s"\n' % stub)
+    # build 102: PSP_TEXT_LAYOUT reorders the code for the 16 KB instruction
+    # cache: "coldfirst" puts every function's cold part (.text.unlikely.*,
+    # from -freorder-blocks-and-partition) together at the start instead of
+    # beside its function; a file name adds its list of hot functions (one
+    # section name a line, tools/icache_order.py's order.txt) right after
+    linkfile = SDK + "/lib/linkfile.prx"
+    layout = os.environ.get("PSP_TEXT_LAYOUT", "")
+    if layout:
+        text = open(linkfile).read()
+        hot = ""
+        if layout != "coldfirst":
+            names = [l.strip() for l in open(layout) if l.strip().startswith(".text.")]
+            hot = "".join("    *(%s)\n" % n for n in names)
+        old_text = "    _ftext = . ;\n    *(.text .stub .text.* .gnu.linkonce.t.*)\n"
+        if old_text not in text:
+            sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_TEXT_LAYOUT can't place the code")
+        text = text.replace(old_text, "    _ftext = . ;\n    *(.text.unlikely .text.unlikely.*)\n" + hot +
+                            "    *(.text .stub .text.* .gnu.linkonce.t.*)\n")
+        linkfile = os.path.join(OUT, "linkfile_layout.prx")
+        open(linkfile, "w").write(text)
     cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib", "-specs=" + SDK + "/lib/prxspecs",
-           "-Wl,-q,-T" + SDK + "/lib/linkfile.prx", "-Wl,-zmax-page-size=128", "-Wl,--gc-sections",
+           "-Wl,-q,-T" + linkfile, "-Wl,-zmax-page-size=128", "-Wl,--gc-sections",
            "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=sceKernelCreateThread,--wrap=sceGeListUpdateStallAddr,"
            "--wrap=sceIoOpen,--wrap=sceIoLseek32,--wrap=sceIoLseek,--wrap=sceIoRead,--wrap=sceIoReadAsync,--wrap=sceIoClose,"
            "--wrap=sceDmacMemcpy,--wrap=sceGeListEnQueue,--wrap=sceDisplaySetFrameBuf,--wrap=sceIoWrite,--wrap=sceIoGetstat",

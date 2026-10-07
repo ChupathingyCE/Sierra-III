@@ -51,11 +51,14 @@ static struct option options[] = {
 	{ "nearauto", "near plane: by what is near the eye", 1, 0 },
 	{ "nooverlay", "performance overlay OFF at start", 0, 0 },
 	{ "nomeaudio", "sound mixed on the main CPU, not the ME", 0, 0 },
-	{ "benchrun", "benchmark: 4 views x 7 switches, ~6 min", 0, 0 },
+	{ "benchrun", "benchmark: 4 views x 8 switches, ~6 min", 0, 0 },
+	{ "assettrack", "asset track: the maps' _track packs", 5, 0 },
+	{ "assetdetail", "asset track: the maps' _detail packs", 5, 0 },
 	{ "meclassify", "ME speed test: 2 render jobs, measure only", 0, 0 },
 	{ "hwprofile", "CPU counters in the log (benchrun: always)", 0, 0 },
 	{ "blackbox", "crash hunt: I/O traced in play, log saved each frame", 0, 0 },
 	{ "crashplay", "crash test: a deliberate crash 20 s into play", 0, 0 },
+	{ "lightwhite", "objects lit as before b102 (full light)", 0, 0 },
 	{ "crumbs", "crash hunt: last steps drawn on the screen (slow)", 0, 0 },
 	{ "detailauto", "detail maps: the GE's own level choice", 0, 0 },
 	{ "noangle", "no slant buckets for texture levels", 0, 0 },
@@ -69,6 +72,8 @@ static struct option options[] = {
 	{ "texsqueeze", "texture RAM cache capped at 1 MB: stream", 3, 0 },
 	{ "texvramonly", "no texture RAM cache: VRAM only", 3, 0 },
 	{ "geoasync", "geometry reads asynchronous", 0, 0 },
+	{ "geo15", "campaign geometry cache 1.5 MB (less for textures)", 4, 0 },
+	{ "geo2", "campaign geometry cache 2 MB (less for textures)", 4, 0 },
 };
 #define OPTION_COUNT (int)(sizeof(options) / sizeof(options[0]))
 /* rows for options: 34 on the screen, less the 3-line header and 3 lines
