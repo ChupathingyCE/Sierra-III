@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 100
+#define PSP_BUILD_NUMBER 101
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -107,6 +107,11 @@ void psp_screen_log_stop(void)
 	/* build 96: the load trace ends with the loading (its lines are written
 	at once, milliseconds each: during play they cost whole frames) */
 	psp_trace_stop("the first frame on the screen");
+	{
+		extern void psp_crumbs_arm(void);
+
+		psp_crumbs_arm();
+	}
 }
 
 static void screen_write(const char *text)
@@ -361,6 +366,12 @@ void psp_step(const char *name)
 			else if (fresh)
 				psp_trace_line("new step %s", name);
 		}
+	}
+	/* build 101: "crumbs": the step drawn on the screen (psp_trace.c) */
+	{
+		extern int psp_crumb_mark(const char *what, const char *detail);
+
+		psp_crumb_mark("step", name);
 	}
 }
 

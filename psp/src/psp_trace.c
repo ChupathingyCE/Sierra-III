@@ -16,6 +16,7 @@ The calls are wrapped at link time (psp_build.py's --wrap list); the log's
 own file is passed through untraced. */
 #include <pspkernel.h>
 #include <pspiofilemgr.h>
+#include <pspdebug.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
@@ -79,6 +80,50 @@ void psp_trace_stop(const char *why)
 	}
 	psp_trace = 0;
 	platform_log("trace: off after %d lines (%s)", trace_lines, why);
+}
+
+
+/* build 101: "crumbs". Every crash or freeze in The Library left nothing:
+the crash handler's own test (b100 run 2, a store to address 4) froze the
+PSP exactly like the real freezes, no report on the screen, no crash.txt,
+no sound, no input, then the power-off. So whatever runs at a fault doesn't
+get as far as drawing. Instead the game draws its own last steps into the
+picture on the screen as it goes (four rows at the bottom, in turn, each
+with a running number): what the frozen screen shows is the last thing it
+started. Slow (an uncached write per pixel), so only with the keep word */
+volatile unsigned int psp_shown_buffer = 0;
+static int crumbs_on = -1;
+static unsigned int crumb_count = 0;
+
+/* armed at the game's first frame on the screen (keep.txt is read by then;
+the launch menu's pictures don't count) */
+void psp_crumbs_arm(void)
+{
+	crumbs_on = psp_keep("crumbs");
+}
+
+int psp_crumb_mark(const char *what, const char *detail)
+{
+	char text[69];
+
+	if (crumbs_on <= 0 || !psp_shown_buffer)
+		return 0;
+	crumb_count++;
+	{
+		int length = snprintf(text, 49, "%06u %s %s", crumb_count % 1000000, what ? what : "", detail ? detail : "");
+
+		/* a fixed 48 columns, the last crumb on this row written over */
+		if (length < 0)
+			length = 0;
+		if (length > 48)
+			length = 48;
+		memset(text + length, ' ', 48 - length);
+		text[48] = 0;
+	}
+	pspDebugScreenSetBase((u32 *)(0x40000000u | (psp_shown_buffer & 0x0FFFFFFFu)));
+	pspDebugScreenSetXY(0, 30 + (int)(crumb_count & 3));
+	pspDebugScreenPuts(text);
+	return 0;
 }
 
 /* the file names behind the descriptors, for the read lines */
@@ -270,6 +315,7 @@ int __wrap_sceDisplaySetFrameBuf(void *top, int width, int format, int sync)
 	int result;
 
 	psp_trace_line("display %08x, width %d, format %d, sync %d", (unsigned)top, width, format, sync);
+	psp_shown_buffer = (unsigned int)top;
 	result = __real_sceDisplaySetFrameBuf(top, width, format, sync);
 	psp_trace_line("display = %d", result);
 	return result;

@@ -56,6 +56,7 @@ static struct option options[] = {
 	{ "hwprofile", "CPU counters in the log (benchrun: always)", 0, 0 },
 	{ "blackbox", "crash hunt: I/O traced in play, log saved each frame", 0, 0 },
 	{ "crashplay", "crash test: a deliberate crash 20 s into play", 0, 0 },
+	{ "crumbs", "crash hunt: last steps drawn on the screen (slow)", 0, 0 },
 	{ "detailauto", "detail maps: the GE's own level choice", 0, 0 },
 	{ "noangle", "no slant buckets for texture levels", 0, 0 },
 	{ "mipauto", "all textures: the GE's own level choice", 0, 0 },

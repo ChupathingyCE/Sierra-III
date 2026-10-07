@@ -1771,10 +1771,16 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 static boolean object_update(long object_index);
 static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep);
 
+int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */
 static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
 {
 	struct object_datum const *object = header->datum;
 	unsigned long before;
+
+	/* build 101: "crumbs": which object, on the screen as it updates */
+	if (header->type != _object_type_scenery && header->type != _object_type_machine &&
+		header->type != _object_type_sound_scenery)
+		psp_crumb_mark("object", tag_get_name(object->definition_index));
 
 	if (psp_sleep_enabled < 0)
 		psp_sleep_enabled = !psp_keep("awake");
@@ -5566,6 +5572,46 @@ FIXES_36["source/main/main.c#sleep"] = [
 			profile_idle_end();
 		}
 """),
+]
+
+# build 101: "crumbs" (psp_trace.c): the last steps drawn straight onto the
+# screen, so a freeze that takes the whole PSP down (Sheepdog01's b100 runs: no
+# crash report, no sound, no input; the crash handler's own test froze the
+# same way) leaves the last thing the game started on the frozen picture
+def _crumb(name, detail="0"):
+    return "#ifdef HALO_PSP\n\tchar *tag_get_name(long tag_index); int psp_crumb_mark(const char *what, const char *detail); int psp_crumbed = psp_crumb_mark(\"%s\", %s);\n#endif\n" % (name, detail)
+
+FIXES_36["source/items/projectiles.c#crumbs"] = [
+("static void projectile_detonate(\n\tlong projectile_index,\n\tboolean first_collision,\n\treal time_left)\n{\n",
+ "static void projectile_detonate(\n\tlong projectile_index,\n\tboolean first_collision,\n\treal time_left)\n{\n" + _crumb("projectile_detonate")),
+]
+FIXES_36["source/objects/damage.c#crumbs"] = [
+("void area_of_effect_cause_damage(\n\tstruct damage_data *damage,\n\tlong unused_object_index)\n{\n",
+ "void area_of_effect_cause_damage(\n\tstruct damage_data *damage,\n\tlong unused_object_index)\n{\n" + _crumb("area_of_effect_cause_damage", "tag_get_name(damage->definition_index)")),
+("\tshort material_index,\n\treal_vector3d const *object_normal)\n{\n",
+ "\tshort material_index,\n\treal_vector3d const *object_normal)\n{\n" + _crumb("object_cause_damage", "tag_get_name(damage->definition_index)")),
+]
+FIXES_36["source/physics/breakable_surfaces.c#crumbs"] = [
+("void breakable_surface_damage_area_of_effect(\n\tconst struct damage_data *damage_data)\n{\n",
+ "void breakable_surface_damage_area_of_effect(\n\tconst struct damage_data *damage_data)\n{\n" + _crumb("breakable_surface_damage_area")),
+]
+FIXES_36["source/effects/effects.c#crumbs"] = [
+("long effect_new_from_object(\n\tlong definition_index,\n\tlong owner_object_index,\n\tlong object_index,\n\tshort force_local_player_index,\n\treal scale_a,\n\treal scale_b,\n\treal_rgb_color const *color,\n\tstruct effect_vector_field const *impulse_field)\n{\n",
+ "long effect_new_from_object(\n\tlong definition_index,\n\tlong owner_object_index,\n\tlong object_index,\n\tshort force_local_player_index,\n\treal scale_a,\n\treal scale_b,\n\treal_rgb_color const *color,\n\tstruct effect_vector_field const *impulse_field)\n{\n" + _crumb("effect_new_from_object", "tag_get_name(definition_index)")),
+]
+
+# build 101: the breakable surfaces' "still there" bits are read and written
+# as 32-bit words (BIT_VECTOR_TEST_FLAG through a long *), but the array sat
+# one byte into its struct, after a one-byte boolean: on x86 a misaligned
+# word just works, on the PSP's MIPS it is an address error. The strict
+# emulator caught it on a grenade's blast (breakable_surface_extant, from
+# breakable_surface_damage_area_of_effect); Sheepdog01's b97-b100 freezes in The
+# Library came at grenades and shots near the Flood. Aligned on 4 bytes now
+FIXES_36["source/physics/breakable_surfaces.c#aligned"] = [
+("\tboolean enabled;\n\tbyte breakable_surface_flags[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO][32];\n",
+ "\tboolean enabled;\n#ifdef HALO_PSP\n\tbyte breakable_surface_flags[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO][32] __attribute__((aligned(4))); /* psp_fixups.py: read as words */\n#else\n\tbyte breakable_surface_flags[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO][32];\n#endif\n"),
+("static struct breakable_surface_globals *globals;\n",
+ "static struct breakable_surface_globals *globals;\n#ifdef HALO_PSP\n_Static_assert(__builtin_offsetof(struct breakable_surface_globals, breakable_surface_flags) % 4 == 0, \"breakable surface flags read as words\");\n#endif\n"),
 ]
 
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()):

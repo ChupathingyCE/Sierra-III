@@ -77,7 +77,7 @@ static void draw_report(void *base, int clear, PspDebugRegBlock *regs)
 	{
 		unsigned int *p = (unsigned int *)base, n;
 
-		for (n = 0; n < 512 * 272 / 2; n++)
+		for (n = 512 * 24 / 2; n < 512 * 272 / 2; n++)
 			p[n] = 0;
 	}
 
@@ -125,6 +125,17 @@ static void handler(PspDebugRegBlock *regs)
 	unsigned int code = (regs->cause >> 2) & 31;
 	unsigned int index, sp = regs->r[29];
 
+	/* build 101: first, with nothing but stores, a red band across the top
+	of both of the GE's frame buffers (16-bit 5650, red in the low bits):
+	b100's own crash test froze with nothing on the screen, so a band and no
+	text says this handler runs but the text drawing doesn't */
+	{
+		volatile unsigned short *fb0 = (volatile unsigned short *)0x44000000, *fb1 = (volatile unsigned short *)0x44044000;
+		unsigned int k;
+
+		for (k = 0; k < 512 * 24; k++)
+			fb0[k] = fb1[k] = 0x001F;
+	}
 	draw_report((void *)0x441B0000, 0, regs);
 	/* the GE's two frame buffers (psp_ge.c: 16-bit, 512 wide, at VRAM 0
 	and 0x44000) */
