@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 98
+#define PSP_BUILD_NUMBER 99
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -149,6 +149,18 @@ void psp_log_flush(void)
 	log_flush();
 }
 
+/* build 99: the blackbox batches from the first frame (b98 wrote each
+traced line at once until 20 s in: Sheepdog01's b98 run 2 started very slowly), and
+the game thread writes the batch at every frame's end, so a freeze loses at
+most the frame it happened in */
+static volatile int log_frame_flush = 0;
+
+void psp_log_batch_now(void)
+{
+	log_batching = 1;
+	log_frame_flush = 1;
+}
+
 /* build 89: one flush at a time (the heartbeat's, the exit's, the ME
 start's): they shared the static copy below and could write each other's
 lines twice or garble them (review) */
@@ -238,6 +250,10 @@ void psp_log_write(const char *text)
 			log_batch_dropped++;
 		if (locked)
 			sceKernelSignalSema(log_lock, 1);
+		/* build 99: a batch three quarters full is written at once (the
+		blackbox's first frames stream hundreds of textures in one frame) */
+		if (log_batch_length > (int)sizeof(log_batch) * 3 / 4)
+			log_flush();
 		return;
 	}
 	file = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
@@ -322,8 +338,29 @@ void psp_step(const char *name)
 		extern volatile int psp_trace;
 		extern void psp_trace_line(const char *format, ...);
 
-		if (psp_trace == 1)
-			psp_trace_line("step %s", name);
+		/* build 99: in play (the blackbox), each step the first time it
+		runs: a freeze after something new happens (Sheepdog01's b97/b98: the first
+		shot at an infection form) shows which code it entered */
+		static const char *seen[2048];
+
+		if (psp_trace)
+		{
+			unsigned int slot = ((unsigned int)name >> 2) & 2047, n;
+			int fresh = 1;
+
+			for (n = 0; n < 2048 && seen[slot]; n++, slot = (slot + 1) & 2047)
+				if (seen[slot] == name)
+				{
+					fresh = 0;
+					break;
+				}
+			if (fresh && n < 2048)
+				seen[slot] = name;
+			if (psp_trace == 1)
+				psp_trace_line("step %s", name);
+			else if (fresh)
+				psp_trace_line("new step %s", name);
+		}
 	}
 }
 
@@ -866,6 +903,15 @@ void psp_tick_account(unsigned long microseconds)
 			stack_report();
 	}
 
+	/* build 99: "crashplay": a deliberate fault 20 s into play, to check
+	the crash handler's report shows on the game's screen */
+	if (ticks_seen == 600 && psp_keep("crashplay"))
+	{
+		platform_log("crashplay: storing to address 4 (the crash handler's report should show on screen)");
+		psp_log_flush();
+		*(volatile int *)4 = 0;
+	}
+
 	/* keep.txt's "savetest": a checkpoint 10 s in (once), timed, the way the
 	campaign makes them (game_state_save writes the whole game state) */
 	++ticks_seen;
@@ -980,6 +1026,8 @@ static unsigned long ticks_per_frame_histogram[5];
 
 void psp_frame_account(unsigned long microseconds)
 {
+	if (log_frame_flush)
+		log_flush();
 	ticks_per_frame_histogram[ticks_since_frame > 4 ? 4 : ticks_since_frame]++;
 	ticks_since_frame = 0;
 	/* the rendered frame goes to the screen (psp_ge.c) */

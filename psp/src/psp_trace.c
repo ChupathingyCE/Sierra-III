@@ -71,8 +71,11 @@ void psp_trace_stop(const char *why)
 		return;
 	if (psp_keep("blackbox"))
 	{
+		extern void psp_log_batch_now(void);
+
 		psp_trace = 2;
 		platform_log("trace: %d lines to %s; blackbox: tracing on in play", trace_lines, why);
+		psp_log_batch_now();
 		return;
 	}
 	psp_trace = 0;
