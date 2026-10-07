@@ -517,6 +517,12 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	void *arena;
 	int outside = first_vertex_descriptor && ((const unsigned int *)first_vertex_descriptor)[1] >= EXTERNAL_BASE;
 
+	/* build 96: the load trace, from here to two seconds of play (psp_trace.c) */
+	{
+		extern void psp_trace_start(const char *why);
+
+		psp_trace_start(name);
+	}
 	psp_geo_close();
 	psp_structure_vertex_stride = outside ? 6 : 32;
 	if (!name || !name[0])

@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 95
+#define PSP_BUILD_NUMBER 96
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -101,7 +101,12 @@ static volatile int screen_stopped = 0;
 
 void psp_screen_log_stop(void)
 {
+	extern void psp_trace_stop(const char *why);
+
 	screen_stopped = 1;
+	/* build 96: the load trace ends with the loading (its lines are written
+	at once, milliseconds each: during play they cost whole frames) */
+	psp_trace_stop("the first frame on the screen");
 }
 
 static void screen_write(const char *text)
@@ -312,6 +317,14 @@ void psp_step(const char *name)
 	last_step = name;
 	if (step_count < STEP_LOG_LIMIT)
 		platform_log("step %d: %s", ++step_count, name);
+	/* build 96: the load trace's breadcrumbs (psp_trace.c) */
+	{
+		extern volatile int psp_trace;
+		extern void psp_trace_line(const char *format, ...);
+
+		if (psp_trace)
+			psp_trace_line("step %s", name);
+	}
 }
 
 /* ---------- objects_update by object type (build 19): objects.c times each
@@ -1226,6 +1239,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 				ticks_per_frame_histogram[0], ticks_per_frame_histogram[1], ticks_per_frame_histogram[2],
 				ticks_per_frame_histogram[3], ticks_per_frame_histogram[4], psp_keep("interpolation") ? "on" : "off");
 			memset(ticks_per_frame_histogram, 0, sizeof(ticks_per_frame_histogram));
+		}
+		/* build 96: the load trace ends after two seconds of play */
+		if (ticks >= 60)
+		{
+			extern void psp_trace_stop(const char *why);
+
+			psp_trace_stop("two seconds of play");
 		}
 		if (!(ticks >= 0 && last_ticks >= 0))
 			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,

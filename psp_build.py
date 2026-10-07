@@ -33,7 +33,7 @@ PLATFORM_FILES = [
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_psh", "nv2a_vsh", "xgpu_text", "gl_functions",
     "xiso", "xbdm",
 ]
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_debug", "psp_me"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_debug", "psp_me", "psp_trace"]
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
 # variant that trades speed tricks for smaller code: the hardware profiler
@@ -138,7 +138,7 @@ def compile_one(item):
         return src, 0, "", obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", obj]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_debug.c",
-                     "psp_me.c")):
+                     "psp_me.c", "psp_trace.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         cmd = ["psp-gcc", "-G0", "-O2", "-march=allegrex", "-ffunction-sections", "-fdata-sections",
                "-I" + SDK + "/include", "-c", src, "-o", obj]
@@ -189,7 +189,9 @@ def link(objs, stubs):
             f.write('"%s"\n' % stub)
     cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib", "-specs=" + SDK + "/lib/prxspecs",
            "-Wl,-q,-T" + SDK + "/lib/linkfile.prx", "-Wl,-zmax-page-size=128", "-Wl,--gc-sections",
-           "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=sceKernelCreateThread,--wrap=sceGeListUpdateStallAddr",
+           "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=sceKernelCreateThread,--wrap=sceGeListUpdateStallAddr,"
+           "--wrap=sceIoOpen,--wrap=sceIoLseek32,--wrap=sceIoLseek,--wrap=sceIoRead,--wrap=sceIoReadAsync,--wrap=sceIoClose,"
+           "--wrap=sceDmacMemcpy,--wrap=sceGeListEnQueue,--wrap=sceDisplaySetFrameBuf",
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     return subprocess.run(cmd, capture_output=True, text=True)
 
