@@ -21,6 +21,7 @@ own file is passed through untraced. */
 #include <string.h>
 
 void platform_log(const char *format, ...);
+int psp_keep(const char *name);
 
 volatile int psp_trace = 0;
 static volatile int trace_lines = 0, trace_busy = 0;
@@ -63,8 +64,6 @@ lines a frame), and the heartbeat saves the log four times a second, so a
 freeze that takes the whole PSP down leaves its last quarter second. Sheepdog01's
 b97 run 1 froze in The Library's first fight with nothing in the log after
 the last 5 s batch */
-int psp_keep(const char *name);
-
 void psp_trace_stop(const char *why)
 {
 	if (psp_trace != 1)
@@ -91,6 +90,66 @@ static const char *name_of(SceUID fd)
 	return fd >= 0 && fd < TRACE_FILES && trace_names[fd][0] ? trace_names[fd] : "?";
 }
 
+/* build 100: one thread on the Memory Stick at a time. Every freeze in
+The Library came with the game's loader thread reading the map while the
+main thread read textures or the heartbeat wrote the log (Blood Gulch
+preloads everything and never does this, the emulator's file system has no
+timing at all). Each wrapped call below takes this lock (re-entrant, for
+the log's own writes from inside a traced call); keep word "stickparallel"
+leaves it off */
+static SceUID stick_lock = -1;
+static volatile SceUID stick_owner = -1;
+static volatile int stick_depth = 0;
+static unsigned long stick_waits = 0, stick_wait_us = 0, stick_wait_worst = 0;
+
+static void stick_take(void)
+{
+	SceUID me = sceKernelGetThreadId();
+
+	/* asked each time: keep.txt is read after the first file calls */
+	if (psp_keep("stickparallel"))
+		return;
+	if (stick_lock < 0)
+		stick_lock = sceKernelCreateSema("halo stick", 0, 1, 1, NULL);
+	if (stick_lock < 0)
+		return;
+	if (stick_owner == me)
+	{
+		stick_depth++;
+		return;
+	}
+	if (sceKernelPollSema(stick_lock, 1) < 0)
+	{
+		unsigned int start = sceKernelGetSystemTimeLow(), waited;
+
+		sceKernelWaitSema(stick_lock, 1, NULL);
+		waited = sceKernelGetSystemTimeLow() - start;
+		stick_waits++;
+		stick_wait_us += waited;
+		if (waited > stick_wait_worst)
+			stick_wait_worst = waited;
+	}
+	stick_owner = me;
+	stick_depth = 1;
+}
+
+static void stick_give(void)
+{
+	if (stick_lock < 0 || stick_owner != sceKernelGetThreadId())
+		return;
+	if (--stick_depth == 0)
+	{
+		stick_owner = -1;
+		sceKernelSignalSema(stick_lock, 1);
+	}
+}
+
+void psp_stick_report(void)
+{
+	if (stick_waits)
+		platform_log("stick lock: %lu waits, %lu us in all, worst %lu us", stick_waits, stick_wait_us, stick_wait_worst);
+}
+
 SceUID __real_sceIoOpen(const char *file, int flags, SceMode mode);
 SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 {
@@ -99,7 +158,9 @@ SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 
 	if (!quiet)
 		psp_trace_line("open %s (flags %x)", file, flags);
+	stick_take();
 	fd = __real_sceIoOpen(file, flags, mode);
+	stick_give();
 	if (!quiet)
 	{
 		if (fd >= 0 && fd < TRACE_FILES)
@@ -116,7 +177,11 @@ SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 int __real_sceIoLseek32(SceUID fd, int offset, int whence);
 int __wrap_sceIoLseek32(SceUID fd, int offset, int whence)
 {
-	int result = __real_sceIoLseek32(fd, offset, whence);
+	int result;
+
+	stick_take();
+	result = __real_sceIoLseek32(fd, offset, whence);
+	stick_give();
 
 	psp_trace_line("seek %s %d to %08x (%d) = %08x", name_of(fd), (int)fd, (unsigned)offset, whence, (unsigned)result);
 	return result;
@@ -125,7 +190,11 @@ int __wrap_sceIoLseek32(SceUID fd, int offset, int whence)
 SceOff __real_sceIoLseek(SceUID fd, SceOff offset, int whence);
 SceOff __wrap_sceIoLseek(SceUID fd, SceOff offset, int whence)
 {
-	SceOff result = __real_sceIoLseek(fd, offset, whence);
+	SceOff result;
+
+	stick_take();
+	result = __real_sceIoLseek(fd, offset, whence);
+	stick_give();
 
 	psp_trace_line("seek64 %s %d to %08x (%d) = %08x", name_of(fd), (int)fd, (unsigned)offset, whence, (unsigned)result);
 	return result;
@@ -137,7 +206,9 @@ int __wrap_sceIoRead(SceUID fd, void *data, SceSize size)
 	int result;
 
 	psp_trace_line("read %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
+	stick_take();
 	result = __real_sceIoRead(fd, data, size);
+	stick_give();
 	psp_trace_line("read %s %d = %d", name_of(fd), (int)fd, result);
 	return result;
 }
@@ -148,7 +219,9 @@ int __wrap_sceIoReadAsync(SceUID fd, void *data, SceSize size)
 	int result;
 
 	psp_trace_line("read async %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
+	stick_take();
 	result = __real_sceIoReadAsync(fd, data, size);
+	stick_give();
 	psp_trace_line("read async %s %d started = %d", name_of(fd), (int)fd, result);
 	return result;
 }
@@ -161,7 +234,9 @@ int __wrap_sceIoClose(SceUID fd)
 
 	if (traced)
 		psp_trace_line("close %s %d", name_of(fd), (int)fd);
+	stick_take();
 	result = __real_sceIoClose(fd);
+	stick_give();
 	if (traced)
 		trace_names[fd][0] = 0;
 	return result;
@@ -197,5 +272,27 @@ int __wrap_sceDisplaySetFrameBuf(void *top, int width, int format, int sync)
 	psp_trace_line("display %08x, width %d, format %d, sync %d", (unsigned)top, width, format, sync);
 	result = __real_sceDisplaySetFrameBuf(top, width, format, sync);
 	psp_trace_line("display = %d", result);
+	return result;
+}
+
+int __real_sceIoWrite(SceUID fd, const void *data, SceSize size);
+int __wrap_sceIoWrite(SceUID fd, const void *data, SceSize size)
+{
+	int result;
+
+	stick_take();
+	result = __real_sceIoWrite(fd, data, size);
+	stick_give();
+	return result;
+}
+
+int __real_sceIoGetstat(const char *file, SceIoStat *stat);
+int __wrap_sceIoGetstat(const char *file, SceIoStat *stat)
+{
+	int result;
+
+	stick_take();
+	result = __real_sceIoGetstat(file, stat);
+	stick_give();
 	return result;
 }

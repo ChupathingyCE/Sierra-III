@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 99
+#define PSP_BUILD_NUMBER 100
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -1322,6 +1322,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,
 				sceKernelTotalFreeMemSize() / 1024, log_descriptor);
 		hwprofile_report();
+		{
+			/* build 100: the Memory Stick lock's waits (psp_trace.c) */
+			extern void psp_stick_report(void);
+
+			if (ticks >= 0 && beat > 20)
+				psp_stick_report();
+		}
 		if (ticks >= 0 && (beat % 6) == 3)
 		{
 			/* build 44: the game state's arrays and pools, with their peaks */
