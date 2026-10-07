@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 104
+#define PSP_BUILD_NUMBER 105
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -533,13 +533,13 @@ static void object_report(SceUID file, unsigned long ticks)
 		object_microseconds[type] = object_updates[type] = 0;
 	}
 	{
-		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep; /* objects.c (psp_fixups.py) */
+		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep; /* objects.c (psp_fixups.py) */
 
-		if (length < (int)sizeof(line) - 96)
-			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles)",
+		if (length < (int)sizeof(line) - 110)
+			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses)",
 				ticks ? (double)psp_objects_asleep / ticks : 0.0, ticks ? (double)psp_objects_sleep_checked / ticks : 0.0,
-				ticks ? (double)psp_vehicles_asleep / ticks : 0.0);
-		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = 0;
+				ticks ? (double)psp_vehicles_asleep / ticks : 0.0, ticks ? (double)psp_corpses_asleep / ticks : 0.0);
+		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
 	}
 	platform_log("  %s", line);
 	if (file >= 0)

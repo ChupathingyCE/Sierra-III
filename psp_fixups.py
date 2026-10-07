@@ -1827,7 +1827,7 @@ static unsigned long between[640];
 static short between_identifier = 0;
 static int between_index = -1;
 static int psp_vehicle_sleep_on = -1;
-long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep;
+long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep;
 static struct { short identifier; short quiet; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
 
 static unsigned long psp_object_checksum(struct object_header_datum const *header)
@@ -1839,7 +1839,12 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 	for the "used time" work) counts every tick whatever the unit does, so
 	it is left out for vehicles: asleep, a parked vehicle's turn simply
 	passes to the others */
-	long skip = header->type == _object_type_vehicle ? 0x1BC / 4 : -1;
+	long skip = header->type == _object_type_vehicle || header->type == _object_type_biped ? 0x1BC / 4 : -1;
+	/* build 105: a settled corpse's idle_ticks (biped_update counts them
+	while it lies dead and at rest): left out, and advanced by hand while it
+	sleeps (psp_sleepy_update) */
+	long idle_word = header->type == _object_type_biped ? (long)(offsetof(struct object_datum, object.idle_ticks) / 4) : -1;
+	unsigned long idle_mask = (offsetof(struct object_datum, object.idle_ticks) & 2) ? 0x0000FFFFUL : 0xFFFF0000UL;
 	/* and a weapon's item.last_owned_time (+0x1B4), stamped with the game
 	time every tick while it is attached to a unit (items.c): the vehicle's
 	own gun carries it, and only unattached items are ever collected by it */
@@ -1850,7 +1855,13 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 	so a visible object's changed every frame. Until build 44 only objects
 	off screen ever slept */
 	for (; index < count; index++, word++)
-		sum = ((sum << 5) | (sum >> 27)) ^ (index == skip ? (*word & 0xFFFF0000) : (index == skip_whole || index == 2) ? 0 : *word);
+	{
+		unsigned long value = index == skip ? (*word & 0xFFFF0000) : (index == skip_whole || index == 2) ? 0 : *word;
+
+		if (index == idle_word)
+			value &= idle_mask;
+		sum = ((sum << 5) | (sum >> 27)) ^ value;
+	}
 	return sum;
 }
 
@@ -1973,6 +1984,29 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 		psp_sleepy_update(object_index, absolute_index, header, may);
 		return;
 	}
+	/* build 105: a settled corpse sleeps as idle scenery does. Sheepdog01's b102
+	run 3: 116 biped updates a tick in the Library's first Flood fight with
+	at most 35 actors, about 0.74 ms each; the garbage collector never takes
+	a body a player can see. Only a truly dead one (garbage: a Flood combat
+	form feigning death is not), at rest for 2 s by the game's own count,
+	carrying nothing; the byte-identical rule then decides, and a push or
+	damage wakes it. Campaign only (no game engine). "corpsesawake": off */
+	if (header->type == _object_type_biped)
+	{
+		static int psp_corpse_sleep_on = -1;
+		int may = 0;
+
+		if (psp_corpse_sleep_on < 0)
+			psp_corpse_sleep_on = !psp_keep("corpsesawake");
+		if (psp_corpse_sleep_on && !game_engine_running() &&
+			TEST_FLAG(object->object.damage_flags, _object_dead_bit) &&
+			TEST_FLAG(object->object.flags, _object_garbage_bit) &&
+			TEST_FLAG(object->object.flags, _object_at_rest_bit) &&
+			object->object.idle_ticks > 60)
+			may = 1;
+		psp_sleepy_update(object_index, absolute_index, header, may);
+		return;
+	}
 	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
 }
 
@@ -2066,6 +2100,16 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		psp_objects_asleep++;
 		if (header->type == _object_type_vehicle)
 			psp_vehicles_asleep++;
+		if (header->type == _object_type_biped)
+		{
+			/* build 105: the corpse's idle count goes on as the update would
+			have kept it (the checksum leaves it out) */
+			struct object_datum *sleeper = (struct object_datum *)header->datum;
+
+			if (sleeper->object.idle_ticks < 32767)
+				sleeper->object.idle_ticks++;
+			psp_corpses_asleep++;
+		}
 		return;
 	}
 	if (psp_sleep_debug < 0)
@@ -2881,12 +2925,39 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	header[0] = PSP_STATE_SIGNATURE;
 	header[1] = size;
 	header[2] = pages;
+	/* build 105 (diagnostic): how many kept pages changed since the last
+	checkpoint (a hash a page), and the scan's time apart from the writes':
+	b102 run 6's checkpoint froze the game 1.76 s for 388 pages, and writing
+	only the changed pages is worth building only if few change */
+	static unsigned long psp_page_hash[2048];
+	static int psp_page_hashes_valid = 0;
+	unsigned long changed = 0, scan_us;
+
 	for (page = 0; page < pages; page++)
 		if (!psp_state_page_empty((unsigned long const *)(buffer + page * PSP_STATE_PAGE)))
 		{
+			unsigned long const *words = (unsigned long const *)(buffer + page * PSP_STATE_PAGE);
+			unsigned long hash = 0x811C9DC5UL;
+			long w;
+
+			for (w = 0; w < PSP_STATE_PAGE / 4; w++)
+				hash = ((hash << 5) | (hash >> 27)) ^ words[w];
+			if (page < 2048)
+			{
+				if (!psp_page_hashes_valid || psp_page_hash[page] != hash)
+					changed++;
+				psp_page_hash[page] = hash;
+			}
 			map[page >> 3] |= 1 << (page & 7);
 			kept++;
 		}
+		else if (page < 2048)
+		{
+			if (psp_page_hashes_valid && psp_page_hash[page] != 0)
+				changed++;
+			psp_page_hash[page] = 0;
+		}
+	scan_us = psp_microseconds() - start;
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!WriteFile(handle, header, PSP_STATE_HEADER, &written, NULL) || written != PSP_STATE_HEADER)
 		return FALSE;
@@ -2907,8 +2978,9 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 			return FALSE;
 		page += run;
 	}
-	platform_psp_log("checkpoint: %lu of %lu pages of game state written in %lu ms", kept, pages,
-		(psp_microseconds() - start) / 1000);
+	platform_psp_log("checkpoint: %lu of %lu pages of game state written in %lu ms (scan %lu ms; %lu pages changed since the last checkpoint%s)",
+		kept, pages, (psp_microseconds() - start) / 1000, scan_us / 1000, changed, psp_page_hashes_valid ? "" : ": the first");
+	psp_page_hashes_valid = 1;
 	return TRUE;
 }
 
