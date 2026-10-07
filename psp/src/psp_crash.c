@@ -165,6 +165,9 @@ void psp_crash_entry(struct psp_crash_block *regs)
 	const char *thread_name = "?";
 
 	psp_crashed = 1;
+	/* build 104: every lock wait limited from here on (the crashed thread
+	may hold the log's lock; psp_trace.c's locks don't wait after a crash) */
+	psp_log_exiting();
 	memset(&info, 0, sizeof(info));
 	info.size = sizeof(info);
 	if (sceKernelReferThreadStatus(sceKernelGetThreadId(), &info) >= 0)
@@ -172,6 +175,19 @@ void psp_crash_entry(struct psp_crash_block *regs)
 	/* the screen first (nothing in it can wait on anything), then the file */
 	draw_report(0x04000000, regs, thread_name);
 	draw_report(0x04044000, regs, thread_name);
+	{
+		/* build 104: while loading, the screen shows the log's own buffer
+		(VRAM 0x1B0000), not the GE's: the report goes there too, and the log
+		stops drawing over it (b97 did this; b102's handler didn't) */
+		extern int psp_screen_log_showing(void);
+		extern void psp_screen_log_freeze(void);
+
+		if (psp_screen_log_showing())
+		{
+			psp_screen_log_freeze();
+			draw_report(0x041B0000, regs, thread_name);
+		}
+	}
 	{
 		/* build 103: the handle held back since start-up, for crash.txt (b102
 		run 3's crash.txt couldn't be opened: the kernel was out of handles) */

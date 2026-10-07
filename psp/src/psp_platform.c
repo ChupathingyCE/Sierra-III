@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 103
+#define PSP_BUILD_NUMBER 104
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -98,6 +98,28 @@ static void screen_row_text(const char *text, int length)
 /* once the GE shows its own frames the log's screen is never displayed, and
 its VRAM becomes texture cache (psp_tex.c; build 21) */
 static volatile int screen_stopped = 0;
+
+/* build 104: for the crash handler: whether the log's screen is the one
+shown (loading), and holding it still so later lines don't cover a report */
+int psp_screen_log_showing(void)
+{
+	return !screen_stopped;
+}
+
+void psp_screen_log_freeze(void)
+{
+	screen_stopped = 1;
+}
+
+static void screen_write(const char *text);
+
+/* build 104: a line for the screen only, taking no lock and touching no
+file: for code that is waiting on a lock (psp_trace.c), where a log line
+could wait on the same lock */
+void psp_screen_note(const char *text)
+{
+	screen_write(text);
+}
 
 void psp_screen_log_stop(void)
 {
@@ -241,15 +263,64 @@ void psp_log_exiting(void)
 {
 	exiting = 1;
 }
+/* build 104: and in play, at most half a second: b103 run 1 (Sheepdog01) hung
+loading The Library with the game thread holding this lock while it waited
+on another (psp_trace.c's handle table), and the heartbeat waited here
+forever behind it. A wait that times out goes on without the lock (two
+lines may then interleave on the screen) and is counted; the holder is
+named in the heartbeat's report */
+static volatile SceUID log_lock_holder = 0;
+static volatile unsigned long log_lock_timeouts = 0;
+static volatile SceUID log_lock_last_holder = 0;
+
 static int log_lock_take(void)
 {
-	SceUInt timeout = 100000;
+	SceUInt timeout = exiting ? 100000 : 500000;
+	int taken;
 
 	if (log_lock < 0)
 		return 0;
-	if (!exiting)
-		return sceKernelWaitSema(log_lock, 1, NULL) >= 0;
-	return sceKernelWaitSema(log_lock, 1, &timeout) >= 0;
+	taken = sceKernelWaitSema(log_lock, 1, &timeout) >= 0;
+	if (taken)
+		log_lock_holder = sceKernelGetThreadId();
+	else
+	{
+		char note[80];
+
+		log_lock_timeouts++;
+		log_lock_last_holder = log_lock_holder;
+		if (log_lock_timeouts <= 3)
+		{
+			extern const char *psp_thread_name(SceUID id, char *buffer, int size);
+			char name[32];
+
+			snprintf(note, sizeof(note), "LOCK: the log's lock waited out; held by %s", psp_thread_name(log_lock_holder, name, sizeof(name)));
+			screen_write(note);
+		}
+	}
+	return taken;
+}
+
+/* build 104: the lock waits that timed out, for the heartbeat */
+void psp_lock_report(void)
+{
+	extern void psp_handles_lock_line(char *line, int size);
+	char line[200];
+
+	if (log_lock_timeouts)
+	{
+		SceKernelThreadInfo info;
+		const char *name = "?";
+
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		if (log_lock_last_holder && sceKernelReferThreadStatus(log_lock_last_holder, &info) >= 0)
+			name = info.name;
+		platform_log("locks: the log's lock waited out %lu times (last held by %s)", log_lock_timeouts, name);
+	}
+	psp_handles_lock_line(line, sizeof(line));
+	if (line[0])
+		platform_log("%s", line);
 }
 
 /* build 102: the blackbox's larger batch (32 KB and its copy), from the
@@ -1505,6 +1576,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,
 				sceKernelTotalFreeMemSize() / 1024, log_descriptor);
 		hwprofile_report();
+		psp_lock_report(); /* build 104 */
 		/* build 103: the game counts as activity, so the firmware doesn't dim
 		the backlight (Sheepdog01, b102: the screen went dark after a while without
 		buttons; the analog stick alone doesn't reset the timer) or put the PSP

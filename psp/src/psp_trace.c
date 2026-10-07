@@ -25,6 +25,7 @@ void platform_log(const char *format, ...);
 int psp_keep(const char *name);
 
 volatile int psp_trace = 0;
+extern volatile int psp_crashed; /* psp_crash.c */
 static volatile int trace_lines = 0, trace_busy = 0;
 #define TRACE_LIMIT 400 /* The Library takes 66 to its first frame; Blood Gulch's texture preload would take thousands */
 
@@ -185,6 +186,23 @@ static struct stick_thread *stick_thread_of(SceUID me)
 	return &stick_spare;
 }
 
+/* build 104: a thread's name for the lock notes */
+const char *psp_thread_name(SceUID id, char *buffer, int size)
+{
+	SceKernelThreadInfo info;
+
+	memset(&info, 0, sizeof(info));
+	info.size = sizeof(info);
+	if (id && sceKernelReferThreadStatus(id, &info) >= 0)
+		snprintf(buffer, size, "%s", info.name);
+	else
+		snprintf(buffer, size, "%x", (unsigned)id);
+	return buffer;
+}
+
+static volatile SceUID stick_holder = 0; /* build 104 */
+static volatile unsigned long stick_long_waits = 0;
+
 static void stick_take(void)
 {
 	SceUID me = sceKernelGetThreadId();
@@ -210,8 +228,42 @@ static void stick_take(void)
 		if (sceKernelPollSema(stick_lock, 1) < 0)
 		{
 			unsigned int waited;
+			/* build 104: after a crash, 200 ms at most (the crash handler
+			writes crash.txt; the holder may never let go) */
+			SceUInt crash_timeout = 200000;
 
-			sceKernelWaitSema(stick_lock, 1, NULL);
+			if (psp_crashed)
+			{
+				if (sceKernelWaitSema(stick_lock, 1, &crash_timeout) < 0)
+				{
+					thread->start = start;
+					return;
+				}
+			}
+			else
+			{
+				/* build 104: in 2 s steps, saying on the screen who holds
+				the stick when a wait gets that long (still waiting: the
+				stick is one thread's at a time) */
+				SceUInt step = 2000000;
+				int notes = 0;
+
+				while (sceKernelWaitSema(stick_lock, 1, &step) < 0)
+				{
+					void psp_screen_note(const char *text);
+					char note[80];
+
+					step = 2000000;
+					stick_long_waits++;
+					if (notes++ < 2)
+					{
+						char name[32];
+
+						snprintf(note, sizeof(note), "LOCK: the stick's lock waited 2 s; held by %s", psp_thread_name(stick_holder, name, sizeof(name)));
+						psp_screen_note(note);
+					}
+				}
+			}
 			waited = sceKernelGetSystemTimeLow() - start;
 			thread->waits++;
 			thread->wait_us += waited;
@@ -220,6 +272,7 @@ static void stick_take(void)
 			start = sceKernelGetSystemTimeLow();
 		}
 		thread->locked = 1;
+		stick_holder = me;
 	}
 	thread->start = start;
 }
@@ -307,25 +360,73 @@ static int handles_open = 0, handles_peak = 0, handles_lost = 0, close_failures 
 static SceUID handle_reserve = -1;
 static SceUID handle_lock = -1;
 
-static void handles_take(void)
+/* build 104: the table's lock is held only while an entry changes, so a
+wait of 200 ms means something is wrong (b103 run 1: the game thread waited
+here forever while holding the log's lock, and the heartbeat behind it). A
+wait that times out goes on without the lock and is counted; nothing is
+logged from here (the waiting thread may hold the log's lock). After a
+crash there is no waiting at all: the crashed thread may be the holder */
+static volatile SceUID handle_lock_holder = 0, handle_lock_stuck_holder = 0;
+static volatile unsigned long handle_lock_timeouts = 0;
+
+static int handles_take(void)
 {
+	SceUInt timeout = 200000;
+
 	if (handle_lock < 0)
 		handle_lock = sceKernelCreateSema("halo handles", 0, 1, 1, NULL);
-	if (handle_lock >= 0)
-		sceKernelWaitSema(handle_lock, 1, NULL);
+	if (handle_lock < 0 || psp_crashed)
+		return 0;
+	if (sceKernelWaitSema(handle_lock, 1, &timeout) < 0)
+	{
+		void psp_screen_note(const char *text);
+		char note[80];
+
+		handle_lock_timeouts++;
+		handle_lock_stuck_holder = handle_lock_holder;
+		if (handle_lock_timeouts <= 3)
+		{
+			char name[32];
+
+			snprintf(note, sizeof(note), "LOCK: the handle table's lock waited out; held by %s", psp_thread_name(handle_lock_holder, name, sizeof(name)));
+			psp_screen_note(note);
+		}
+		return 0;
+	}
+	handle_lock_holder = sceKernelGetThreadId();
+	return 1;
 }
 
-static void handles_give(void)
+static void handles_give(int taken)
 {
-	if (handle_lock >= 0)
+	if (taken)
+	{
+		handle_lock_holder = 0;
 		sceKernelSignalSema(handle_lock, 1);
+	}
+}
+
+/* for the heartbeat (empty when nothing happened) */
+void psp_handles_lock_line(char *line, int size)
+{
+	SceKernelThreadInfo info;
+	const char *name = "?";
+
+	line[0] = 0;
+	if (!handle_lock_timeouts)
+		return;
+	memset(&info, 0, sizeof(info));
+	info.size = sizeof(info);
+	if (handle_lock_stuck_holder && sceKernelReferThreadStatus(handle_lock_stuck_holder, &info) >= 0)
+		name = info.name;
+	snprintf(line, size, "locks: the handle table's lock waited out %lu times (held by %s, thread %x)",
+		handle_lock_timeouts, name, (unsigned)handle_lock_stuck_holder);
 }
 
 static void handle_add(SceUID fd, char kind, const char *path)
 {
 	int k, free_slot = -1;
-
-	handles_take();
+	int taken = handles_take();
 	for (k = 0; k < HANDLES; k++)
 	{
 		if (handles[k].kind && handles[k].fd == fd)
@@ -356,15 +457,14 @@ static void handle_add(SceUID fd, char kind, const char *path)
 		if (handles_open > handles_peak)
 			handles_peak = handles_open;
 	}
-	handles_give();
+	handles_give(taken);
 }
 
 static void handle_remove(SceUID fd, char kind, int result)
 {
 	int k;
 	char path[48] = "";
-
-	handles_take();
+	int taken = handles_take();
 	for (k = 0; k < HANDLES; k++)
 		if (handles[k].kind == kind && handles[k].fd == fd)
 		{
@@ -373,7 +473,7 @@ static void handle_remove(SceUID fd, char kind, int result)
 			handles_open--;
 			break;
 		}
-	handles_give();
+	handles_give(taken);
 	if (result < 0 && close_failures++ < 16)
 		platform_log("files: %s %d (%s) failed (0x%08x)", kind == 'd' ? "dclose" : "close", (int)fd,
 			path[0] ? path : "not in the table", (unsigned)result);
