@@ -144,8 +144,10 @@ void psp_tex_close(void)
 	free(bind_totals);
 	bind_totals = NULL;
 	entry_count = 0;
+	/* build 103: and 256 KB below that for the level's vertex copies
+	(psp_ge.c's setting 25, benchrun's "level vertices in VRAM") */
 	if (psp_keep("benchrun"))
-		vram_cache_end = VRAM_CACHE_END_FULL - VRAM_BENCH_BYTES;
+		vram_cache_end = VRAM_CACHE_END_FULL - VRAM_BENCH_BYTES - 0x40000;
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
 	arenas[1].next = arenas[1].start;

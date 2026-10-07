@@ -62,6 +62,43 @@ copy the wall's triangles under them, every spark is a sprite) */
 puts it in VRAM's last 256 KB, which psp_tex.c keeps free during benchrun) */
 #define VRAM_BENCH_START 0x001C0000
 #define VRAM_BENCH_BYTES 0x40000
+/* build 103: benchrun's "level vertices in VRAM": the level's vertex copies
+(the arrays the GE reads) built in the 256 KB below the bench room
+(psp_tex.c keeps it out of the texture cache under benchrun). b102 run 5:
+the GE's main-RAM reads cost the CPU 8-18 ms a frame, texels none of it,
+and b87/b93's 16-bit level vertices (half the bytes) changed nothing: if the
+cost is the number of scattered fetches rather than their bytes, only
+taking the fetches off the main bus shows it */
+#define VRAM_VERTEX_START 0x00180000
+#define VRAM_VERTEX_BYTES 0x40000
+static int level_vram = 0;
+static unsigned int vram_vertex_next = 0;
+static unsigned long vram_vertex_refused = 0, vram_vertex_streams = 0;
+
+static void *stream_alloc(unsigned int bytes)
+{
+	if (level_vram)
+	{
+		unsigned int at = (vram_vertex_next + 63) & ~63u;
+
+		if (at + bytes <= VRAM_VERTEX_BYTES)
+		{
+			vram_vertex_next = at + bytes;
+			vram_vertex_streams++;
+			return (void *)(0x04000000 + VRAM_VERTEX_START + at);
+		}
+		vram_vertex_refused++;
+	}
+	return malloc(bytes);
+}
+
+static void stream_free(void *pointer)
+{
+	/* VRAM is given back all at once, when the level's copies are let go */
+	if (((unsigned int)pointer & 0x0F000000u) == 0x04000000u)
+		return;
+	free(pointer);
+}
 static int list_bytes = DISPLAY_LIST_BYTES;
 
 /* build 93: benchrun's bus tests. The CPU builds every frame the same way;
@@ -119,12 +156,133 @@ static void list_hud_phase(void)
 	list_limit = list_bytes;
 }
 
+int psp_keep(const char *name);
+
+/* ---------- build 103: what fills the display list, and the level's room
+
+Sheepdog01's b102 runs 3 and 6 (The Library): in the Flood fight the level
+vanished (0 level draws while 340 KB of the list was in use; 25,000 draws
+skipped), and in run 6 about 1,100 draws were skipped every frame for the
+last half of the run, with Sheepdog01 idling in a corner. Which kind of draw fills
+the list wasn't logged. Each public entry now says what kind of draw it is
+(ge_kind); the bytes the list grows by are charged to the kind running,
+with its skipped draws; the report gives the average and the fullest frame,
+and the order the kinds came in that frame.
+
+The level's room: until the level's first draw of the frame, every other
+kind stops LEVEL_RESERVE bytes earlier, so what is drawn before the level
+can't leave it nothing (run 3's 0 level draws). Keep word "nolevelreserve":
+as before */
+enum { KIND_OTHER, KIND_SKY, KIND_LEVEL, KIND_LIGHT, KIND_LEVEL_SEETHROUGH, KIND_MODEL, KIND_SEETHROUGH_QUEUE,
+	KIND_DECAL, KIND_SPRITE, KIND_WIDGET, KIND_SHADOW, KIND_SEETHROUGH_FLUSH, KIND_SCREEN, KIND_HUD, KINDS };
+static const char *const kind_names[KINDS] = { "other", "sky", "level", "lights", "level see-through (stencil bake)",
+	"models", "see-through queued", "decals", "sprites (particles)", "flares", "shadows", "see-through drawn", "screen quads", "HUD" };
+static const char kind_letters[KINDS] = { 'o', 'k', 'L', 'l', 'B', 'M', 'q', 'd', 'p', 'f', 's', 'T', 'Q', 'H' };
+#define LEVEL_RESERVE 0x18000 /* 96 KB */
+static int ge_kind_now = KIND_OTHER, level_reserve_on = -1, level_begun = 0;
+static unsigned int kind_mark = 0, kind_seen = 0;
+static unsigned int kind_frame_bytes[KINDS], kind_peak_bytes[KINDS], kind_frame_skips[KINDS], kind_peak_skips[KINDS];
+static unsigned long long kind_bytes[KINDS];
+static unsigned long kind_skips[KINDS], kind_frames = 0, level_reserve_held = 0;
+static unsigned int kind_peak_total = 0;
+static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
+static int kind_order_length = 0;
+
+static void ge_kind(int kind)
+{
+	unsigned int now = sceGuCheckList();
+
+	if (now > kind_mark)
+		kind_frame_bytes[ge_kind_now] += now - kind_mark;
+	kind_mark = now;
+	ge_kind_now = kind;
+	if (!(kind_seen & (1u << kind)) && kind_order_length < KINDS)
+	{
+		kind_seen |= 1u << kind;
+		kind_order[kind_order_length++] = kind_letters[kind];
+	}
+	if (kind == KIND_LEVEL)
+		level_begun = 1;
+}
+
+static void ge_kinds_frame_begin(void)
+{
+	memset(kind_frame_bytes, 0, sizeof(kind_frame_bytes));
+	memset(kind_frame_skips, 0, sizeof(kind_frame_skips));
+	kind_mark = sceGuCheckList();
+	kind_seen = 0;
+	kind_order_length = 0;
+	ge_kind_now = KIND_OTHER;
+	level_begun = 0;
+	if (level_reserve_on < 0)
+		level_reserve_on = !psp_keep("nolevelreserve");
+}
+
+static void ge_kinds_frame_end(void)
+{
+	unsigned int total = 0;
+	int k;
+
+	ge_kind(KIND_OTHER);
+	for (k = 0; k < KINDS; k++)
+	{
+		kind_bytes[k] += kind_frame_bytes[k];
+		kind_skips[k] += kind_frame_skips[k];
+		total += kind_frame_bytes[k];
+	}
+	kind_frames++;
+	if (total >= kind_peak_total)
+	{
+		kind_peak_total = total;
+		memcpy(kind_peak_bytes, kind_frame_bytes, sizeof(kind_peak_bytes));
+		memcpy(kind_peak_skips, kind_frame_skips, sizeof(kind_peak_skips));
+		memcpy(kind_peak_order, kind_order, kind_order_length);
+		kind_peak_order[kind_order_length] = 0;
+	}
+}
+
+static void ge_kinds_report(void)
+{
+	char line[600];
+	int length, k;
+
+	if (!kind_frames)
+		return;
+	length = snprintf(line, sizeof(line), "GE: display list by kind, KB a frame over %lu frames (fullest frame; draws skipped a frame):",
+		kind_frames);
+	for (k = 0; k < KINDS && length < (int)sizeof(line) - 60; k++)
+		if (kind_bytes[k] || kind_skips[k])
+			length += snprintf(line + length, sizeof(line) - length, " %s %.1f (%.1f; %.1f)", kind_names[k],
+				kind_bytes[k] / 1024.0 / kind_frames, kind_peak_bytes[k] / 1024.0, (float)kind_skips[k] / kind_frames);
+	platform_log("%s", line);
+	platform_log("GE: fullest frame %u KB, kinds in order %s (L level, o other, k sky, l lights, B level see-through, M models, q see-through queued, d decals, p particles, f flares, s shadows, T see-through drawn, Q screen quads, H HUD); the level's reserve %s, held back %lu draws",
+		kind_peak_total / 1024, kind_peak_order, level_reserve_on > 0 ? "on" : "off", level_reserve_held);
+	memset(kind_bytes, 0, sizeof(kind_bytes));
+	memset(kind_skips, 0, sizeof(kind_skips));
+	kind_frames = 0;
+	kind_peak_total = 0;
+	level_reserve_held = 0;
+}
+
+/* the limit for the kind running: lower before the level has begun */
+static int kind_limit(void)
+{
+	if (level_reserve_on > 0 && !level_begun && ge_kind_now != KIND_LEVEL && ge_kind_now != KIND_SKY && !hud_phase)
+		return list_limit - LEVEL_RESERVE;
+	return list_limit;
+}
+
 static int list_full(void)
 {
-	if (sceGuCheckList() < list_limit - DISPLAY_LIST_MARGIN)
+	int limit = kind_limit();
+
+	if (sceGuCheckList() < limit - DISPLAY_LIST_MARGIN)
 		return 0;
 	if (!list_full_skips++)
 		platform_log("GE: the display list is full; draws skipped until the frame ends");
+	kind_frame_skips[ge_kind_now]++;
+	if (limit != list_limit && sceGuCheckList() < list_limit - DISPLAY_LIST_MARGIN)
+		level_reserve_held++;
 	return 1;
 }
 
@@ -184,10 +342,11 @@ static void *list_take(int bytes)
 {
 	void *taken;
 
-	if (sceGuCheckList() + bytes + 2048 + 128 > list_limit)
+	if (sceGuCheckList() + bytes + 2048 + 128 > kind_limit())
 	{
 		if (!list_full_skips++)
 			platform_log("GE: the display list is full (%d more bytes wanted); draws skipped until the frame ends", bytes);
+		kind_frame_skips[ge_kind_now]++;
 		return NULL;
 	}
 	if (list_cached < 0)
@@ -971,6 +1130,19 @@ int psp_ge_setting(int which, int set, int value)
 		if (set)
 			decal_project = value != 0;
 		return decal_project;
+	case 25:
+		/* build 103: benchrun: the level's vertex copies in VRAM; rebuilt */
+		if (set && (value != 0 && psp_keep("benchrun")) != (level_vram != 0))
+		{
+			level_vram = value != 0 && psp_keep("benchrun");
+			psp_ge_forget_level();
+			vram_vertex_refused = vram_vertex_streams = 0;
+		}
+		return level_vram;
+	case 26:
+		/* build 103: the VRAM copies' use, for the bench's RESULT line:
+		value 0 KB used, 1 copies placed, 2 copies refused (no room) */
+		return value == 0 ? (int)(vram_vertex_next / 1024) : value == 1 ? (int)vram_vertex_streams : (int)vram_vertex_refused;
 	case 17:
 		/* build 87: the level's vertices at 16 bits; the copies are rebuilt */
 		if (level_compact < 0)
@@ -1076,6 +1248,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	if (vram_busy)
 		vram_busy_load();
 	hud_phase = 0;
+	ge_kinds_frame_begin(); /* build 103 */
 	taa_done = 0;
 	taa_frame++;
 	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
@@ -1977,16 +2150,16 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	{
 		int total = count + (stream->bake ? (int)stream->bake->added : 0);
 
-		stream->base = malloc(total * sizeof(struct ge_vertex));
-		stream->lightmap = lightmap_vertices ? malloc(total * sizeof(struct ge_vertex)) : NULL;
+		stream->base = stream_alloc(total * sizeof(struct ge_vertex));
+		stream->lightmap = lightmap_vertices ? stream_alloc(total * sizeof(struct ge_vertex)) : NULL;
 		stream->normals = malloc(total * sizeof(unsigned int));
 		stream->radiosity = lightmap_vertices ? calloc(total, sizeof(unsigned int)) : NULL;
 	}
 	if (!stream->base || (lightmap_vertices && (!stream->lightmap || !stream->radiosity)) || !stream->normals)
 	{
 		platform_log("GE: no memory for a material's vertices (%d)", count);
-		free(stream->base);
-		free(stream->lightmap);
+		stream_free(stream->base);
+		stream_free(stream->lightmap);
 		free(stream->normals);
 		free(stream->radiosity);
 		stream->base = stream->lightmap = NULL;
@@ -2936,6 +3109,7 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
+	ge_kind(KIND_LEVEL); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	ge_category = GE_SKIP_LEVEL;
@@ -4327,6 +4501,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
 {
+	ge_kind(in_sky ? KIND_SKY : KIND_MODEL); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	ge_category = GE_SKIP_MODELS;
@@ -4381,14 +4556,15 @@ void psp_ge_forget_level(void)
 
 	for (index = 0; index < LEVEL_STREAMS; index++)
 	{
-		free(level_streams[index].base);
-		free(level_streams[index].lightmap);
+		stream_free(level_streams[index].base);
+		stream_free(level_streams[index].lightmap);
 		free(level_streams[index].normals);
 		free(level_streams[index].radiosity);
 		free(level_streams[index].compact_base);
 		free(level_streams[index].compact_lightmap);
 	}
 	memset(level_streams, 0, sizeof(level_streams));
+	vram_vertex_next = 0; /* build 103 */
 	/* build 64: the overlays' on-a-wall answers belong to this BSP */
 	overlay_backing_forget();
 	stream_bytes = 0;
@@ -4558,6 +4734,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world)
 {
+	ge_kind(KIND_SPRITE); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 	int result = psp_ge_sprites_body(vertices, sprite_count, bitmap_key, blend, view_to_world);
 
@@ -4605,6 +4782,7 @@ void psp_ge_widget_occlusion(int visible)
 void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
 	unsigned long color)
 {
+	ge_kind(KIND_WIDGET); /* build 103 */
 	static const float corner_uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 	static const int fan[6] = { 0, 1, 2, 0, 2, 3 };
 	struct sprite_vertex *out;
@@ -4970,6 +5148,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
 {
+	ge_kind(KIND_SEETHROUGH_QUEUE); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	psp_ge_queue_transparent_body(vertices, vertex_count, uncompressed, indices, index_count, strip, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
@@ -5650,6 +5829,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
+	ge_kind(KIND_LEVEL_SEETHROUGH); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	psp_ge_queue_level_transparent_body(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
@@ -5827,8 +6007,11 @@ static void transparent_flush_body(void)
 static void transparent_flush(void)
 {
 	unsigned int start = sceKernelGetSystemTimeLow();
+	int kind = ge_kind_now;
 
+	ge_kind(KIND_SEETHROUGH_FLUSH); /* build 103 */
 	transparent_flush_body();
+	ge_kind(kind);
 	ge_entry_us[8] += sceKernelGetSystemTimeLow() - start;
 }
 
@@ -5953,6 +6136,7 @@ static float hud_u_scale = 1.0f, hud_v_scale = 1.0f;
 static void hud_draw(struct game_screen_vertex const *in, int width, int height, float offset_x, float offset_y,
 	int use_vertex_color, unsigned int color, float red, float green, float blue, float fade)
 {
+	ge_kind(KIND_HUD); /* build 103 */
 	struct hud_vertex *out = list_take(4 * sizeof(struct hud_vertex));
 	int index;
 
@@ -5991,6 +6175,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
+	ge_kind(KIND_SCREEN); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters, wrapped, u_scale,
@@ -6392,8 +6577,8 @@ static void level_streams_trim(void)
 			struct level_stream *stream = &level_streams[oldest];
 
 			stream_bytes -= stream_size(stream);
-			free(stream->base);
-			free(stream->lightmap);
+			stream_free(stream->base);
+			stream_free(stream->lightmap);
 			free(stream->normals);
 			free(stream->radiosity);
 			/* build 89: the 16-bit copies too (leaked on every let-go and
@@ -6598,6 +6783,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 
 void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
 {
+	ge_kind(KIND_SHADOW); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	psp_ge_shadow_draw_body(vertices, vertex_count, indices, triangle_count);
@@ -6880,6 +7066,162 @@ static int light_band(float squared)
 		squared < 1024.0f ? 4 : 5;
 }
 
+/* ---------- build 103: lit triangles split near the light
+
+Sheepdog01, b102 (The Library): the flashlight barely showed on floors and lit
+walls only from very close. The Xbox measures the light's falloff per pixel
+(a 32x32x32 attenuation texture indexed by the pixel's offset from the
+light, 0.5/radius: rasterizer_xbox_environment.c); the GE pass measures it
+at the triangle's three corners and blends between them, so a floor
+triangle several metres across, lit in its middle, had its corners out of
+reach or behind the light: dim, or skipped whole. A spotlight's triangle
+with an edge longer than a fifth of the light's radius is now split into
+four, again and again (four levels at most) where it can reach the light,
+and each piece lit at its own corners. Keep word "nolightsplit": as before */
+static int light_split_on = -1;
+static unsigned long light_split_triangles = 0, light_split_pieces = 0;
+
+static void light_emit_spot(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
+{
+	/* the projected cone mirrors behind the light, so the part of the
+	triangle there is cut off (build 36), as psp_ge_light_draw_body does */
+	float polygon[4][CORNER_FLOATS], q[3];
+	int count = 0, k, corner;
+
+	for (corner = 0; corner < 3; corner++)
+		q[corner] = (corners[corner][7] - light.position[0]) * light.forward[0] +
+			(corners[corner][8] - light.position[1]) * light.forward[1] +
+			(corners[corner][9] - light.position[2]) * light.forward[2] - 0.05f;
+	if (q[0] <= 0.0f && q[1] <= 0.0f && q[2] <= 0.0f)
+		return;
+	if (q[0] >= 0.0f && q[1] >= 0.0f && q[2] >= 0.0f)
+	{
+		light_emit(corners, out, kept_count, cut_count);
+		return;
+	}
+	for (corner = 0; corner < 3; corner++)
+	{
+		int next = (corner + 1) % 3;
+
+		if (q[corner] >= 0.0f)
+			memcpy(polygon[count++], corners[corner], sizeof(polygon[0]));
+		if ((q[corner] >= 0.0f) != (q[next] >= 0.0f))
+		{
+			float t = q[corner] / (q[corner] - q[next]);
+
+			for (k = 0; k < CORNER_FLOATS; k++)
+				polygon[count][k] = corners[corner][k] + (corners[next][k] - corners[corner][k]) * t;
+			count++;
+		}
+	}
+	for (k = 1; k + 1 < count; k++)
+	{
+		float piece[3][CORNER_FLOATS];
+
+		memcpy(piece[0], polygon[0], sizeof(piece[0]));
+		memcpy(piece[1], polygon[k], sizeof(piece[0]));
+		memcpy(piece[2], polygon[k + 1], sizeof(piece[0]));
+		light_emit(piece, out, kept_count, cut_count);
+	}
+}
+
+static float distance_squared3(const float *a, const float *b)
+{
+	float x = a[0] - b[0], y = a[1] - b[1], z = a[2] - b[2];
+
+	return x * x + y * y + z * z;
+}
+
+static float light_split_tangent = 1.0f;
+
+static void light_split(float p[3][3], float uv[3][2], const unsigned int normal[3], int depth,
+	struct shadow_vertex *out, long *kept_count, int *cut_count)
+{
+	float longest = 0.0f, nearest = 1e30f, split;
+	int corner;
+
+	if (*kept_count >= SCRATCH_TRIANGLES)
+		return;
+	/* a piece wholly outside the cone's pyramid lights nothing (the first
+	emulator test split 460 triangles a light, most of them outside it) */
+	if (depth > 0 && outside_cone(p[0], p[1], p[2], light_split_tangent))
+		return;
+	for (corner = 0; corner < 3; corner++)
+	{
+		float edge = distance_squared3(p[corner], p[(corner + 1) % 3]);
+		float reach = distance_squared3(p[corner], light.position);
+
+		if (edge > longest)
+			longest = edge;
+		if (reach < nearest)
+			nearest = reach;
+	}
+	longest = sqrtf(longest);
+	nearest = sqrtf(nearest);
+	/* no point of the triangle is nearer the light than its nearest corner
+	less its longest edge: beyond the radius, nothing of it is lit */
+	if (nearest - longest > light.radius)
+		return;
+	/* finer near the light, where the falloff changes fastest: pieces about
+	a fifth of the radius across there, about half their distance further
+	out; three levels at most (64 pieces) */
+	split = 0.5f * nearest;
+	if (split < 0.2f * light.radius)
+		split = 0.2f * light.radius;
+	if (depth < 3 && longest > split)
+	{
+		float m[3][3], muv[3][2], piece[3][3], piece_uv[3][2];
+		unsigned int piece_normal[3];
+		int k;
+
+		for (corner = 0; corner < 3; corner++)
+		{
+			int next = (corner + 1) % 3;
+
+			for (k = 0; k < 3; k++)
+				m[corner][k] = 0.5f * (p[corner][k] + p[next][k]);
+			muv[corner][0] = 0.5f * (uv[corner][0] + uv[next][0]);
+			muv[corner][1] = 0.5f * (uv[corner][1] + uv[next][1]);
+		}
+		light_split_pieces += 3;
+		/* the three corner pieces and the middle one; a midpoint takes the
+		normal of the corner it starts from (level surfaces are flat) */
+		for (corner = 0; corner < 3; corner++)
+		{
+			int previous = (corner + 2) % 3;
+
+			memcpy(piece[0], p[corner], sizeof(piece[0]));
+			memcpy(piece[1], m[corner], sizeof(piece[0]));
+			memcpy(piece[2], m[previous], sizeof(piece[0]));
+			memcpy(piece_uv[0], uv[corner], sizeof(piece_uv[0]));
+			memcpy(piece_uv[1], muv[corner], sizeof(piece_uv[0]));
+			memcpy(piece_uv[2], muv[previous], sizeof(piece_uv[0]));
+			piece_normal[0] = piece_normal[1] = piece_normal[2] = normal[corner];
+			light_split(piece, piece_uv, piece_normal, depth + 1, out, kept_count, cut_count);
+		}
+		piece_normal[0] = normal[0]; piece_normal[1] = normal[1]; piece_normal[2] = normal[2];
+		light_split(m, muv, piece_normal, depth + 1, out, kept_count, cut_count);
+		return;
+	}
+	{
+		float corners[3][CORNER_FLOATS], reach[3];
+
+		for (corner = 0; corner < 3; corner++)
+			reach[corner] = light_reach(p[corner], normal[corner], 0);
+		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
+			return;
+		memset(corners, 0, sizeof(corners));
+		for (corner = 0; corner < 3; corner++)
+		{
+			to_camera_corner(p[corner], corners[corner]);
+			corners[corner][3] = uv[corner][0];
+			corners[corner][4] = uv[corner][1];
+			corners[corner][5] = reach[corner];
+		}
+		light_emit_spot(corners, out, kept_count, cut_count);
+	}
+}
+
 static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
@@ -6950,6 +7292,53 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		{
 			light_cone_skipped++;
 			continue;
+		}
+		if (spot)
+		{
+			/* build 103: a large triangle split near the light */
+			if (light_split_on < 0)
+				light_split_on = !psp_keep("nolightsplit");
+			if (light_split_on)
+			{
+				float p[3][3], uv[3][2], longest = 0.0f;
+				unsigned int normal[3];
+
+				for (corner = 0; corner < 3; corner++)
+				{
+					p[corner][0] = source[corner][0];
+					p[corner][1] = source[corner][1];
+					p[corner][2] = source[corner][2];
+					uv[corner][0] = stream->base[triangle[corner]].u;
+					uv[corner][1] = stream->base[triangle[corner]].v;
+					normal[corner] = stream->normals[triangle[corner]];
+				}
+				for (corner = 0; corner < 3; corner++)
+				{
+					float edge = distance_squared3(p[corner], p[(corner + 1) % 3]);
+
+					if (edge > longest)
+						longest = edge;
+				}
+				if (longest > 0.04f * light.radius * light.radius)
+				{
+					float nearest = 1e30f;
+
+					for (corner = 0; corner < 3; corner++)
+					{
+						float reach = distance_squared3(p[corner], light.position);
+
+						if (reach < nearest)
+							nearest = reach;
+					}
+					/* out of the light's reach altogether: as before */
+					if (sqrtf(nearest) - sqrtf(longest) > light.radius)
+						continue;
+					light_split_triangles++;
+					light_split_tangent = tangent;
+					light_split(p, uv, normal, 0, out, &kept_count, &cut_count);
+					continue;
+				}
+			}
 		}
 		for (corner = 0; corner < 3; corner++)
 			reach[corner] = light_reach(source[corner], stream->normals[triangle[corner]], !spot);
@@ -7186,6 +7575,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
+	ge_kind(KIND_LIGHT); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	psp_ge_light_draw_body(vertices, vertex_count, indices, triangle_count, base_key);
@@ -7878,6 +8268,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
+	ge_kind(KIND_DECAL); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	psp_ge_decal_body(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent);
@@ -7952,6 +8343,7 @@ static unsigned int blip_color(float red, float green, float blue)
 
 void psp_ge_blips_begin(void)
 {
+	ge_kind(KIND_HUD); /* build 103 */
 	list_hud_phase();
 	static const float everywhere[8] = { -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f };
 	static const float nothing[8] = { 0 };
@@ -7980,6 +8372,7 @@ void psp_ge_blips_begin(void)
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
+	ge_kind(KIND_HUD); /* build 103 */
 	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
 	float xy[8] = { x - radius, y + radius, x + radius, y + radius, x + radius, y - radius, x - radius, y - radius };
 
@@ -7993,6 +8386,7 @@ void psp_ge_blip(float x, float y, float radius, float red, float green, float b
 
 void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
 {
+	ge_kind(KIND_HUD); /* build 103 */
 	static const float square[8] = { -1.015625f, 1.046875f, 1.046875f, 1.046875f, 1.046875f, -1.015625f, -1.015625f, -1.015625f };
 
 	if (!blips_open)
@@ -8107,6 +8501,7 @@ void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height
 
 int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y)
 {
+	ge_kind(KIND_HUD); /* build 103 */
 	list_hud_phase();
 	/* the game's bitmap_data: width +4, height +6, format +12, pixels +44 */
 	const unsigned char *data = bitmap;
@@ -8142,6 +8537,7 @@ static void text_character(void const *vertices);
 
 void psp_ge_text_character(void const *vertices)
 {
+	ge_kind(KIND_HUD); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
 	text_character(vertices);
@@ -8355,6 +8751,7 @@ void psp_ge_frame_end(void)
 	win_transparent += transparent_count;
 	transparent_flush();
 	taa_resolve();
+	ge_kinds_frame_end(); /* build 103 */
 	win_flush_us += sceKernelGetSystemTimeLow() - flush_mark;
 	win_frames++;
 	win_draws += draws_this_frame;
@@ -8448,9 +8845,9 @@ void psp_ge_frame_end(void)
 	}
 	if (++frames == 1 || frames % 300 == 0)
 	{
-		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped); bending triangles cut at the near plane %lu (%lu pieces); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
+		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped, %lu split near the light, %lu pieces added); bending triangles cut at the near plane %lu (%lu pieces); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
-			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
+			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		/* build 87: its own line (the one above passed the log's line length) */
 		/* build 89: the counters over these 300 frames (they were never
 		reset, so a bench window's line carried every earlier window's;
@@ -8503,6 +8900,7 @@ void psp_ge_frame_end(void)
 			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
+			ge_kinds_report(); /* build 103 */
 			if (converted_sweeps)
 			{
 				platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d",

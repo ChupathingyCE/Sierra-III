@@ -271,6 +271,184 @@ void psp_stick_report(void)
 			length += snprintf(line + length, sizeof(line) - length, ";");
 	}
 	platform_log("%s", line);
+	{
+		/* build 103 */
+		void psp_handles_line(char *line, int size);
+
+		psp_handles_line(line, sizeof(line));
+		platform_log("%s", line);
+	}
+}
+
+/* ---------- build 103: the open-handle table
+
+Why: Sheepdog01's b102 run 3 (The Library, the first Flood fight) crashed in the C
+library's readdir: the kernel had refused a directory open with
+SCE_KERNEL_ERROR_MFILE (0x80020320, "too many open files": the firmware's
+iofilemgr gives out at most 64 descriptors, files and directories together),
+and libcglue's open() handed that code back as if it were a descriptor
+(opendir only tests for -1). The emulator's trace of the same route peaked at
+12 open handles and ended with 9: whatever uses them up happens on the
+hardware only. So every open and close (files and directories) is kept here
+with its path; the stick report says how many are open; a failed close is
+logged (a handle the kernel kept is one we can't see otherwise); and the
+first time an open fails for lack of handles, the table is written to the
+log, after one handle held back since start-up is given up so that the log
+(which opens its file for every batch) and crash.txt can still be written. */
+#define HANDLES 96
+static struct
+{
+	SceUID fd;
+	char kind; /* 'f' file, 'd' directory */
+	char path[47];
+	unsigned int opened_ms;
+} handles[HANDLES];
+static int handles_open = 0, handles_peak = 0, handles_lost = 0, close_failures = 0, open_failures = 0, mfile_failures = 0;
+static SceUID handle_reserve = -1;
+static SceUID handle_lock = -1;
+
+static void handles_take(void)
+{
+	if (handle_lock < 0)
+		handle_lock = sceKernelCreateSema("halo handles", 0, 1, 1, NULL);
+	if (handle_lock >= 0)
+		sceKernelWaitSema(handle_lock, 1, NULL);
+}
+
+static void handles_give(void)
+{
+	if (handle_lock >= 0)
+		sceKernelSignalSema(handle_lock, 1);
+}
+
+static void handle_add(SceUID fd, char kind, const char *path)
+{
+	int k, free_slot = -1;
+
+	handles_take();
+	for (k = 0; k < HANDLES; k++)
+	{
+		if (handles[k].kind && handles[k].fd == fd)
+		{
+			/* the kernel gave out a descriptor we think is open: its close
+			was missed (or made outside the wrappers) */
+			handles_lost++;
+			free_slot = k;
+			break;
+		}
+		if (!handles[k].kind && free_slot < 0)
+			free_slot = k;
+	}
+	if (free_slot >= 0)
+	{
+		if (!handles[free_slot].kind)
+			handles_open++;
+		handles[free_slot].fd = fd;
+		handles[free_slot].kind = kind;
+		/* the end of a long path says more than its start */
+		{
+			size_t length = path ? strlen(path) : 0;
+			const char *tail = length >= sizeof(handles[0].path) ? path + length - (sizeof(handles[0].path) - 1) : (path ? path : "?");
+
+			snprintf(handles[free_slot].path, sizeof(handles[0].path), "%s", tail);
+		}
+		handles[free_slot].opened_ms = sceKernelGetSystemTimeLow() / 1000;
+		if (handles_open > handles_peak)
+			handles_peak = handles_open;
+	}
+	handles_give();
+}
+
+static void handle_remove(SceUID fd, char kind, int result)
+{
+	int k;
+	char path[48] = "";
+
+	handles_take();
+	for (k = 0; k < HANDLES; k++)
+		if (handles[k].kind == kind && handles[k].fd == fd)
+		{
+			snprintf(path, sizeof(path), "%s", handles[k].path);
+			handles[k].kind = 0;
+			handles_open--;
+			break;
+		}
+	handles_give();
+	if (result < 0 && close_failures++ < 16)
+		platform_log("files: %s %d (%s) failed (0x%08x)", kind == 'd' ? "dclose" : "close", (int)fd,
+			path[0] ? path : "not in the table", (unsigned)result);
+}
+
+/* every handle open now, oldest first, into the log */
+void psp_handles_dump(const char *why)
+{
+	int k, listed = 0;
+	unsigned int now = sceKernelGetSystemTimeLow() / 1000;
+
+	platform_log("files: %s; %d handles open (peak %d), %d closes failed, %d descriptors handed out twice:", why,
+		handles_open, handles_peak, close_failures, handles_lost);
+	int test_handles = 0;
+
+	for (k = 0; k < HANDLES; k++)
+		if (handles[k].kind)
+		{
+			listed++;
+			/* handletest's own, counted rather than listed */
+			if (strstr(handles[k].path, "handletest.txt"))
+			{
+				test_handles++;
+				continue;
+			}
+			platform_log("files:   %c %3d  %-46s open %u s", handles[k].kind, (int)handles[k].fd, handles[k].path,
+				(now - handles[k].opened_ms) / 1000);
+		}
+	if (test_handles)
+		platform_log("files:   and %d of handletest's own", test_handles);
+	if (!listed)
+		platform_log("files:   (none in the table: the kernel's descriptors went to something outside the wrappers)");
+}
+
+/* one descriptor held from start-up, given up when the kernel runs out */
+void psp_handles_reserve(void)
+{
+	if (handle_reserve < 0)
+		handle_reserve = sceIoOpen("ms0:/halo/log/reserve.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+}
+
+void psp_handles_release(void)
+{
+	if (handle_reserve >= 0)
+	{
+		sceIoClose(handle_reserve);
+		handle_reserve = -1;
+	}
+}
+
+static void open_failed(const char *path, char kind, int result)
+{
+	open_failures++;
+	if ((unsigned)result == 0x80020320 /* SCE_KERNEL_ERROR_MFILE */)
+	{
+		int had_reserve = handle_reserve >= 0;
+
+		mfile_failures++;
+		psp_handles_release();
+		if (mfile_failures <= 4)
+		{
+			char why[120];
+
+			snprintf(why, sizeof(why), "OUT OF FILE HANDLES: %s %s failed (0x%08x)%s", kind == 'd' ? "dopen" : "open",
+				path ? path : "?", (unsigned)result, had_reserve ? "; the reserve handle given up for the log" : "");
+			psp_handles_dump(why);
+		}
+	}
+}
+
+/* for the stick report */
+void psp_handles_line(char *line, int size)
+{
+	snprintf(line, size, "files: %d handles open (peak %d), %d opens failed (%d for lack of handles), %d closes failed, %d handed out twice",
+		handles_open, handles_peak, open_failures, mfile_failures, close_failures, handles_lost);
 }
 
 SceUID __real_sceIoOpen(const char *file, int flags, SceMode mode);
@@ -284,6 +462,10 @@ SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 	stick_take();
 	fd = __real_sceIoOpen(file, flags, mode);
 	stick_give();
+	if (fd >= 0)
+		handle_add(fd, 'f', file);
+	else
+		open_failed(file, 'f', fd);
 	if (!quiet)
 	{
 		if (fd >= 0 && fd < TRACE_FILES)
@@ -360,6 +542,7 @@ int __wrap_sceIoClose(SceUID fd)
 	stick_take();
 	result = __real_sceIoClose(fd);
 	stick_give();
+	handle_remove(fd, 'f', result);
 	if (traced)
 		trace_names[fd][0] = 0;
 	return result;
@@ -418,5 +601,63 @@ int __wrap_sceIoGetstat(const char *file, SceIoStat *stat)
 	stick_take();
 	result = __real_sceIoGetstat(file, stat);
 	stick_give();
+	return result;
+}
+
+/* build 103: directories, through the same table (and the stick's lock, as
+every other Memory Stick call) */
+SceUID __real_sceIoDopen(const char *dirname);
+SceUID __wrap_sceIoDopen(const char *dirname)
+{
+	SceUID fd;
+
+	stick_take();
+	fd = __real_sceIoDopen(dirname);
+	stick_give();
+	if (fd >= 0)
+		handle_add(fd, 'd', dirname);
+	else
+		open_failed(dirname, 'd', fd);
+	return fd;
+}
+
+int __real_sceIoDclose(SceUID fd);
+int __wrap_sceIoDclose(SceUID fd)
+{
+	int result;
+
+	stick_take();
+	result = __real_sceIoDclose(fd);
+	stick_give();
+	handle_remove(fd, 'd', result);
+	return result;
+}
+
+/* build 103: libcglue's open() returns the kernel's error code (negative,
+but not -1) when sceIoDopen refuses a directory, and newlib's opendir tests
+only for -1: it then built a DIR on 0x80020320 and readdir indexed the
+descriptor table with it (Sheepdog01's b102 run 3 crash). Any negative result is
+made the -1 the C library promises, with errno set */
+#include <errno.h>
+#include <fcntl.h>
+int __real_open(const char *path, int flags, ...);
+int __wrap_open(const char *path, int flags, ...)
+{
+	va_list arguments;
+	int mode, result;
+
+	va_start(arguments, flags);
+	mode = va_arg(arguments, int);
+	va_end(arguments);
+	result = __real_open(path, flags, mode);
+	if (result < -1)
+	{
+		static int logged = 0;
+
+		if (logged++ < 8)
+			platform_log("files: open(%s) returned 0x%08x: made -1", path ? path : "?", (unsigned)result);
+		errno = (unsigned)result == 0x80020320 ? EMFILE : EIO;
+		return -1;
+	}
 	return result;
 }

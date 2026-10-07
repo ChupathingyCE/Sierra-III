@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 102
+#define PSP_BUILD_NUMBER 103
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -776,7 +776,14 @@ static const char *const bench_configs[] =
 	"textures one level smaller" is the remedy to try if texels are it */
 	"baseline", "GE serial: GE busy time", "GE skips models", "GE skips the level",
 	"stand-in texture (no RAM texels)", "stand-in lightmaps", "textures one level smaller", "GE busy on VRAM only",
+	/* build 103: the level's vertex copies in VRAM (psp_ge.c's setting 25):
+	b102 run 5 put the GE's bus cost on the draws, not their texels, and
+	b87/b93's half-size level vertices changed nothing; this takes the
+	level's vertex fetches off the main bus altogether. If it recovers what
+	"GE skips the level" did, the cost is the fetches themselves */
+	"level vertices in VRAM",
 };
+#define BENCH_LEVEL_VRAM 8
 #define BENCH_SERIAL 1
 #define BENCH_VRAM_BUSY 7
 /* build 93: the GE's busy time at each view (the serial window's wait), the
@@ -804,6 +811,7 @@ static void bench_apply(int config, int view)
 	psp_ge_setting(22, 1, 0);
 	psp_ge_setting(23, 1, 0);
 	psp_ge_setting(24, 1, 0);
+	psp_ge_setting(25, 1, 0);
 	if (config == BENCH_SERIAL)
 		psp_ge_setting(9, 1, 1);
 	else if (config == 2)
@@ -816,6 +824,8 @@ static void bench_apply(int config, int view)
 		psp_ge_setting(23, 1, 2);	/* stand-in texture, lightmaps */
 	else if (config == 6)
 		psp_ge_setting(24, 1, 1);	/* one level smaller */
+	else if (config == BENCH_LEVEL_VRAM)
+		psp_ge_setting(25, 1, 1);	/* the level's vertices in VRAM */
 	else if (config == BENCH_VRAM_BUSY)
 	{
 		/* the load's size found in the settling window (the GE alone, timed),
@@ -865,7 +875,7 @@ static void bench_tick(void)
 		extern float psp_me_busy_percent(void);
 
 		int result_view = bench_step / (BENCH_CONFIGS * 2), result_config = (bench_step / 2) % BENCH_CONFIGS;
-		char counters[160] = "";
+		char counters[240] = "";
 
 		if (result_config == BENCH_SERIAL && result_view < 8)
 			bench_ge_busy_ms[result_view] = psp_budget_last[5];
@@ -873,6 +883,14 @@ static void bench_tick(void)
 		if (hw_drawing_valid)
 			snprintf(counters, sizeof(counters), " | drawing: memory wait %.1f%%, D-misses %.0f a M cycles, %.0f cycles a miss, uncached stores %.0f a M",
 				hw_drawing[0], hw_drawing[1], hw_drawing[2], hw_drawing[3]);
+		if (result_config == BENCH_LEVEL_VRAM)
+		{
+			/* build 103: did the copies fit? */
+			size_t used = strlen(counters);
+
+			snprintf(counters + used, sizeof(counters) - used, " | VRAM vertices %d KB, %d copies, %d refused",
+				psp_ge_setting(26, 0, 0), psp_ge_setting(26, 0, 1), psp_ge_setting(26, 0, 2));
+		}
 		platform_log("bench: RESULT view %d (%s) | switch %d (%s) | %.1f ms a frame, %.1f fps | ticks %.1f ms | frame %.1f ms (renderer CPU %.1f, GE wait %.1f) | %.1f ticks/s | ME %.1f%% busy%s",
 			result_view, bench_views[result_view].name, result_config,
 			bench_configs[result_config], psp_budget_last[0], psp_budget_last[1], psp_budget_last[2],
@@ -997,6 +1015,33 @@ void psp_tick_account(unsigned long microseconds)
 		*(volatile int *)4 = 0;
 	}
 
+	/* build 103: "handletest": 15 s in, opens the log folder's reserve file
+	again and again until the kernel refuses, then closes them all: how many
+	descriptors were free at that moment (64 less what the system and the game
+	hold), and a check of the handle table's out-of-handles path */
+	if (ticks_seen == 450 && psp_keep("handletest"))
+	{
+		static SceUID held[80];
+		int count = 0, k;
+		SceUID fd = 0;
+
+		while (count < 80)
+		{
+			fd = sceIoOpen(LOG_FOLDER "/handletest.txt", PSP_O_RDONLY | PSP_O_CREAT, 0777);
+			if (fd < 0)
+				break;
+			held[count++] = fd;
+		}
+		platform_log("handletest: %d more handles opened before the kernel refused (0x%08x)", count, (unsigned)fd);
+		for (k = 0; k < count; k++)
+			sceIoClose(held[k]);
+		{
+			extern void psp_handles_reserve(void);
+
+			psp_handles_reserve();
+		}
+	}
+
 	/* keep.txt's "savetest": a checkpoint 10 s in (once), timed, the way the
 	campaign makes them (game_state_save writes the whole game state) */
 	++ticks_seen;
@@ -1026,6 +1071,10 @@ map doesn't show by itself (build 30) */
 			}
 			fclose(file);
 		}
+		else
+			/* build 103: said either way (b102 run 6: nothing logged, and no
+			way to tell a missing file from lines that didn't run) */
+			platform_log("commands.txt: none (no %s)", DATA_ROOT "/commands.txt");
 	}
 	/* build 59: ms0:/halo/teleport.txt, "x y z forward_x forward_y forward_z"
 	(the player's feet, as the heartbeat prints them, and a direction as a
@@ -1456,6 +1505,12 @@ static int heartbeat_thread(SceSize args, void *argp)
 			platform_log("heartbeat %d: game time %ld; step %s; free %d KB; log fd %d", beat, ticks, last_step,
 				sceKernelTotalFreeMemSize() / 1024, log_descriptor);
 		hwprofile_report();
+		/* build 103: the game counts as activity, so the firmware doesn't dim
+		the backlight (Sheepdog01, b102: the screen went dark after a while without
+		buttons; the analog stick alone doesn't reset the timer) or put the PSP
+		to sleep during play, a cutscene or a bench left alone */
+		if (ticks >= 0)
+			scePowerTick(PSP_POWER_TICK_ALL);
 		{
 			/* build 100: the Memory Stick lock's waits (psp_trace.c) */
 			extern void psp_stick_report(void);
@@ -1560,6 +1615,13 @@ int main(int argc, char **argv)
 	/* build 88: this run's exit, if it gets that far; build 89: kept open */
 	exit_file = sceIoOpen(LOG_FOLDER "/exit.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	exit_mark("exit: armed at start-up\n");
+	{
+		/* build 103: one file handle held back for when the kernel's 64 run
+		out (psp_trace.c's handle table) */
+		extern void psp_handles_reserve(void);
+
+		psp_handles_reserve();
+	}
 	freopen(DATA_ROOT "/stderr.txt", "w", stderr);
 	setvbuf(stderr, NULL, _IONBF, 0);
 	freopen(DATA_ROOT "/stderr.txt", "a", stdout);

@@ -68,8 +68,12 @@ static void draw_report(unsigned int base, const struct psp_crash_block *regs, c
 	pspDebugScreenSetXY(0, 3);
 	snprintf(line, sizeof(line), "Halo PSP build %d crashed: %s, thread %s\n\n", psp_build_number(), causes[code], thread_name);
 	pspDebugScreenPuts(line);
-	snprintf(line, sizeof(line), "epc %08x  ra %08x  badvaddr %08x\ncause %08x  status %08x  sp %08x\n\n",
-		regs->epc, regs->r[31], regs->badvaddr, regs->cause, regs->status, sp);
+	/* build 103: badvaddr is set only by address errors (the CPU leaves it
+	stale for bus errors: b102's crashplay showed 4a00e120); a fault in a
+	branch's delay slot (cause bit 31) reports the branch's address */
+	snprintf(line, sizeof(line), "epc %08x%s  ra %08x  badvaddr %08x%s\ncause %08x  status %08x  sp %08x\n\n",
+		regs->epc, (regs->cause & 0x80000000u) ? " (+4: delay slot)" : "", regs->r[31], regs->badvaddr,
+		(code == 6 || code == 7) ? " (stale)" : "", regs->cause, regs->status, sp);
 	pspDebugScreenPuts(line);
 	for (k = 0; k < 32; k += 4)
 	{
@@ -89,18 +93,20 @@ static void draw_report(unsigned int base, const struct psp_crash_block *regs, c
 	pspDebugScreenPuts("\nSaved to halo/crash.txt (if the Memory Stick still answers).\nTake a photo of this screen, then hold POWER.\n");
 }
 
-static void write_report(const struct psp_crash_block *regs, const char *thread_name)
+static int write_report(const struct psp_crash_block *regs, const char *thread_name)
 {
 	char line[200];
 	unsigned int code = (regs->cause >> 2) & 31, sp = regs->r[29], k;
 	SceUID file = sceIoOpen("ms0:/halo/crash.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 
 	if (file < 0)
-		return;
+		return file;
 #define PUT(...) do { int n = snprintf(line, sizeof(line), __VA_ARGS__); sceIoWrite(file, line, n > 0 ? (n < (int)sizeof(line) ? n : (int)sizeof(line) - 1) : 0); } while (0)
 	PUT("Halo PSP build %d crash\nexception: %s (code %u)\nthread: %s\n", psp_build_number(), causes[code], code, thread_name);
-	PUT("epc %08x  ra %08x  badvaddr %08x  cause %08x  status %08x  sp %08x  lo %08x  hi %08x\nregisters:", regs->epc,
+	PUT("epc %08x  ra %08x  badvaddr %08x  cause %08x  status %08x  sp %08x  lo %08x  hi %08x\n", regs->epc,
 		regs->r[31], regs->badvaddr, regs->cause, regs->status, sp, regs->lo, regs->hi);
+	PUT("%s%sregisters:", (regs->cause & 0x80000000u) ? "the fault is in the delay slot: the instruction after epc\n" : "",
+		(code == 6 || code == 7) ? "bus error: badvaddr is stale (only address errors set it)\n" : "");
 	for (k = 0; k < 32; k++)
 		PUT("%s %s %08x", k % 4 ? "" : "\n", names[k], regs->r[k]);
 	PUT("\nstack (from sp):");
@@ -110,6 +116,7 @@ static void write_report(const struct psp_crash_block *regs, const char *thread_
 	PUT("\n");
 #undef PUT
 	sceIoClose(file);
+	return 0;
 }
 
 /* crashdraw's picture of the first frame buffer (the emulator's runs keep
@@ -165,9 +172,33 @@ void psp_crash_entry(struct psp_crash_block *regs)
 	/* the screen first (nothing in it can wait on anything), then the file */
 	draw_report(0x04000000, regs, thread_name);
 	draw_report(0x04044000, regs, thread_name);
-	write_report(regs, thread_name);
-	platform_log("CRASH: %s in thread %s at epc %08x (ra %08x, badvaddr %08x); crash.txt written",
-		causes[(regs->cause >> 2) & 31], thread_name, regs->epc, regs->r[31], regs->badvaddr);
+	{
+		/* build 103: the handle held back since start-up, for crash.txt (b102
+		run 3's crash.txt couldn't be opened: the kernel was out of handles) */
+		extern void psp_handles_release(void);
+		extern void psp_handles_dump(const char *why);
+		int written, k;
+		char line[420];
+		int length;
+
+		psp_handles_release();
+		written = write_report(regs, thread_name);
+		if (written < 0)
+			platform_log("CRASH: %s in thread %s at epc %08x%s (ra %08x, badvaddr %08x); crash.txt NOT written (0x%08x)",
+				causes[(regs->cause >> 2) & 31], thread_name, regs->epc, (regs->cause & 0x80000000u) ? " (delay slot)" : "",
+				regs->r[31], regs->badvaddr, (unsigned)written);
+		else
+			platform_log("CRASH: %s in thread %s at epc %08x%s (ra %08x, badvaddr %08x); crash.txt written",
+				causes[(regs->cause >> 2) & 31], thread_name, regs->epc, (regs->cause & 0x80000000u) ? " (delay slot)" : "",
+				regs->r[31], regs->badvaddr);
+		/* the registers in the log too, so a crash.txt that couldn't be
+		written loses nothing */
+		length = snprintf(line, sizeof(line), "CRASH registers:");
+		for (k = 1; k < 32 && length < (int)sizeof(line) - 16; k++)
+			length += snprintf(line + length, sizeof(line) - length, " %s %08x", names[k], regs->r[k]);
+		platform_log("%s", line);
+		psp_handles_dump("at the crash");
+	}
 	/* the log's lock and the flush's wait at most 100 ms each from here: the
 	crashed thread may have held them */
 	psp_log_exiting();
