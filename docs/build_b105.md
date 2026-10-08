@@ -53,3 +53,23 @@ Built from b104 run 1 (build_b103.md, last section). Labels: **[M]** measured on
 
 1. **The Library**, `assettrack geo2 hwprofile handletest`, deathless. Play into the Flood fight and stay a while. Look for: no `HEAP FULL` on screen; controls alive; `handletest:` in the log; the `GE: display list` line; both `bus probe` lines; the `files:` lines.
 2. If the fight runs: **corpse sleep** shows in the `objects_update` line's asleep counts (`corpses`).
+
+## b105 run 1 (Sheepdog01's PSP-1000, The Library into the Flood fight, deathless) [M]
+
+**Stable:** no crash, controls alive throughout, **0 heap failures**, heap peak 5,192 of 5,376 KB (4,805 KB in use, the display list's 384 KB among it). 11,624 ticks.
+
+**Files:** 6 descriptors open in play; `handletest` opened 4 more before the refusal. With fds 0–2 that puts the PSP's limit at about 13 descriptors in all [M], what b104's numbers suggested.
+
+**Display list:** from the heap. 575 KB free outside it but no block over 307 KB, as in the emulator. So lever 1 needs pieces under 300 KB (the 192 KB index buffer, say), not the 384 KB list.
+
+**Bus probe, GE idle → busy:** the DDR controller's registers are identical (`bd000020=00008020 24=00020220 2c=80000004 30=11110410 34=00000007 38=0 40=0 44=0000000a`). `bd400004/104/300` go from 0 to `090679f4`, an address inside our display list (the GE's list pointers). `bc10004c` 0x40 → 0 and `bc100050` gains bit 0x20: a reset released and a bus clock turned on, most likely the Media Engine starting [U]. Nothing changes with the GE's load the way a priority setting would; `bd000030 = 11110410` is the one shaped like per-master fields [U]. Next for that research: `sceDdrWriteMaxAllocate` in `lowio.prx`.
+
+**Corpse sleep: never fired** (0.0 corpses asleep in every window). The fight peaked at 44.7 biped updates a tick against b102 run 3's 116, and Sheepdog01 saw a single body the whole fight, so there were few true corpses. Which of the rule's conditions (dead, garbage, at rest, 2 s idle, byte-identical) held them back isn't logged: b106 counts each.
+
+**Geometry popping out:** 203 frames drew with a block missing (1,277 misses, 5.6 MB read, worst frame 244 ms). The 2 MB geometry cache sat at 1,858 KB, and the level's vertex copies at their 1 MB budget with 2,082 let go. A capacity and timing problem: the read-ahead plan in geometry_streaming.md, not a bug.
+
+**Checkpoint:** 403 pages in 1,100 ms, of which the scan was 25 ms. The time is the writing.
+
+**Sound:** 107 MB streamed, 30 sounds failed for room (the music; audio.md §7, shelved).
+
+**Frame rate:** 5.0–6.7 fps in the fight; tick 39–46 ms.

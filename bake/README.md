@@ -41,6 +41,11 @@ Only some maps: `--maps c20,bloodgulch,ui` (always include `ui`).
 Copy `~/halo-psp-out/halo` to the root of the Memory Stick, so it holds
 `halo/maps/`. The game itself (`PSP/GAME/halo/`) comes from the build's zip.
 
+Maps from this version of the tool need **build 106 or later**: their
+animations' frame data moved into the `.pgeo` pack (streamed in as needed)
+and their script tables are sized to the map. Older builds can't load them,
+and build 106 still loads maps baked before it.
+
 ## Licences
 
 - The bake tools in `lib/` are part of the Halo PSP port.

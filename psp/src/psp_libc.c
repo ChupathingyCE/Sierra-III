@@ -23,6 +23,8 @@ compiled as plain C (no game prefix):
 #include <unistd.h>
 #include <pspkernel.h>
 #include <pspsysmem.h>
+#include <pspsdk.h>
+#include <time.h>
 
 /* ---------- POSIX */
 
@@ -104,6 +106,190 @@ long sysconf(int name)
 void _ReadWriteBarrier(void)
 {
 	__asm__ __volatile__("" ::: "memory");
+}
+
+/* ---------- build 106: condition variables that sleep
+
+pspdev's pthreads (pthreads-embedded) waits on a condition variable by
+polling: a look at its semaphore, then sceKernelDelayThread(100), again and
+again. So every thread waiting on one (the Xbox shim's events: the cache
+file thread between reads, the input thread...) wakes up to 10,000 times a
+second. The emulator counted 4,000 wakes a second for the cache file
+thread, 5% of the CPU. Below the game thread that only used the time the
+game left; the cache file thread now runs above it (psp_platform.c,
+psp_cache_thread_priority), where every wake would take the CPU from the
+game. These replace pthread_cond_* (psp_build.py links with --wrap): a
+count of the waiters and a kernel semaphore they sleep on.
+
+pthread_cond_t is a pointer here; PTHREAD_COND_INITIALIZER is (pointer) -1,
+made into a condition at its first use. POSIX lets a waiter wake without a
+signal (every caller loops on its own test), which keeps the timed-out case
+simple */
+struct psp_cond
+{
+	SceUID sleep;   /* the waiters sleep on it; a signal adds one */
+	SceUID guard;   /* a binary semaphore over the count */
+	int waiters;    /* waiting and not yet signalled */
+};
+#define PSP_COND_STATIC ((pthread_cond_t)-1)
+
+static struct psp_cond *cond_new(void)
+{
+	struct psp_cond *cond = malloc(sizeof(*cond));
+
+	if (!cond)
+		return NULL;
+	cond->sleep = sceKernelCreateSema("halo cond", 0, 0, 0x7FFFFFFF, NULL);
+	cond->guard = sceKernelCreateSema("halo cond guard", 0, 1, 1, NULL);
+	cond->waiters = 0;
+	if (cond->sleep < 0 || cond->guard < 0)
+	{
+		if (cond->sleep >= 0)
+			sceKernelDeleteSema(cond->sleep);
+		if (cond->guard >= 0)
+			sceKernelDeleteSema(cond->guard);
+		free(cond);
+		return NULL;
+	}
+	return cond;
+}
+
+static void cond_free(struct psp_cond *cond)
+{
+	sceKernelDeleteSema(cond->sleep);
+	sceKernelDeleteSema(cond->guard);
+	free(cond);
+}
+
+/* a statically made condition becomes a real one at its first use; two
+threads racing for that make one each and one keeps its own */
+static struct psp_cond *cond_get(pthread_cond_t *handle)
+{
+	struct psp_cond *made;
+	int interrupts;
+
+	if (!handle)
+		return NULL;
+	if (*handle != PSP_COND_STATIC)
+		return (struct psp_cond *)*handle;
+	made = cond_new();
+	if (!made)
+		return NULL;
+	interrupts = pspSdkDisableInterrupts();
+	if (*handle == PSP_COND_STATIC)
+	{
+		*handle = (pthread_cond_t)made;
+		made = NULL;
+	}
+	pspSdkEnableInterrupts(interrupts);
+	if (made)
+		cond_free(made);
+	return (struct psp_cond *)*handle;
+}
+
+int __wrap_pthread_cond_init(pthread_cond_t *handle, const pthread_condattr_t *attributes)
+{
+	struct psp_cond *cond = cond_new();
+
+	(void)attributes;
+	if (!handle)
+		return EINVAL;
+	if (!cond)
+		return ENOMEM;
+	*handle = (pthread_cond_t)cond;
+	return 0;
+}
+
+int __wrap_pthread_cond_destroy(pthread_cond_t *handle)
+{
+	if (!handle)
+		return EINVAL;
+	if (*handle != PSP_COND_STATIC && *handle)
+		cond_free((struct psp_cond *)*handle);
+	*handle = NULL;
+	return 0;
+}
+
+static int cond_wait(pthread_cond_t *handle, pthread_mutex_t *mutex, const struct timespec *deadline)
+{
+	struct psp_cond *cond = cond_get(handle);
+	int slept;
+
+	if (!cond)
+		return EINVAL;
+	sceKernelWaitSema(cond->guard, 1, NULL);
+	cond->waiters++;
+	sceKernelSignalSema(cond->guard, 1);
+	pthread_mutex_unlock(mutex);
+	if (deadline)
+	{
+		struct timespec now;
+		long long left;
+		SceUInt timeout;
+
+		clock_gettime(CLOCK_REALTIME, &now);
+		left = (long long)(deadline->tv_sec - now.tv_sec) * 1000000LL + (deadline->tv_nsec - now.tv_nsec) / 1000;
+		timeout = left <= 0 ? 0 : left > 0x7FFFFFFFLL ? 0x7FFFFFFF : (SceUInt)left;
+		slept = sceKernelWaitSema(cond->sleep, 1, &timeout);
+	}
+	else
+		slept = sceKernelWaitSema(cond->sleep, 1, NULL);
+	if (slept < 0)
+	{
+		/* timed out: out of the count, unless a signal came meanwhile and
+		left its wake in the semaphore (taken here: this waiter was the
+		one it woke) */
+		sceKernelWaitSema(cond->guard, 1, NULL);
+		if (sceKernelPollSema(cond->sleep, 1) >= 0)
+			slept = 0;
+		else if (cond->waiters > 0)
+			cond->waiters--;
+		sceKernelSignalSema(cond->guard, 1);
+	}
+	pthread_mutex_lock(mutex);
+	return slept < 0 ? ETIMEDOUT : 0;
+}
+
+int __wrap_pthread_cond_wait(pthread_cond_t *handle, pthread_mutex_t *mutex)
+{
+	return cond_wait(handle, mutex, NULL);
+}
+
+int __wrap_pthread_cond_timedwait(pthread_cond_t *handle, pthread_mutex_t *mutex, const struct timespec *deadline)
+{
+	return cond_wait(handle, mutex, deadline);
+}
+
+int __wrap_pthread_cond_signal(pthread_cond_t *handle)
+{
+	struct psp_cond *cond = cond_get(handle);
+
+	if (!cond)
+		return EINVAL;
+	sceKernelWaitSema(cond->guard, 1, NULL);
+	if (cond->waiters > 0)
+	{
+		cond->waiters--;
+		sceKernelSignalSema(cond->sleep, 1);
+	}
+	sceKernelSignalSema(cond->guard, 1);
+	return 0;
+}
+
+int __wrap_pthread_cond_broadcast(pthread_cond_t *handle)
+{
+	struct psp_cond *cond = cond_get(handle);
+
+	if (!cond)
+		return EINVAL;
+	sceKernelWaitSema(cond->guard, 1, NULL);
+	if (cond->waiters > 0)
+	{
+		sceKernelSignalSema(cond->sleep, cond->waiters);
+		cond->waiters = 0;
+	}
+	sceKernelSignalSema(cond->guard, 1);
+	return 0;
 }
 
 /* ---------- maths, in single precision */
@@ -227,10 +413,77 @@ static void format_give(int taken)
 	}
 }
 
+/* build 106: "printfcount" (keep.txt): which format strings the formatting
+goes to, the busiest logged by psp_printf_report (the emulator's PC samples
+put 4% of b30's tick in the lock taken here) */
+#define PRINTF_FORMATS 64
+static struct { const char *format; unsigned long calls; } printf_formats[PRINTF_FORMATS];
+static int printf_count_on = -1;
+
+static void printf_count(const char *format)
+{
+	extern int psp_keep(const char *name);
+	extern int psp_keep_loaded(void);
+	unsigned int slot = ((unsigned int)format >> 2) % PRINTF_FORMATS, probes;
+
+	if (printf_count_on < 0)
+	{
+		if (!psp_keep_loaded())
+			return;
+		/* psp_keep formats too: off while it looks */
+		printf_count_on = 0;
+		printf_count_on = psp_keep("printfcount");
+	}
+	if (!printf_count_on)
+		return;
+	for (probes = 0; probes < PRINTF_FORMATS; probes++, slot = (slot + 1) % PRINTF_FORMATS)
+		if (!printf_formats[slot].format || printf_formats[slot].format == format)
+		{
+			printf_formats[slot].format = format;
+			printf_formats[slot].calls++;
+			return;
+		}
+}
+
+/* the five busiest formats since the last report, into the log */
+void psp_printf_report(void)
+{
+	extern void platform_log(const char *format, ...);
+	int pass, k;
+
+	if (printf_count_on <= 0)
+		return;
+	for (pass = 0; pass < 5; pass++)
+	{
+		int best = -1;
+
+		for (k = 0; k < PRINTF_FORMATS; k++)
+			if (printf_formats[k].format && printf_formats[k].calls && (best < 0 || printf_formats[k].calls > printf_formats[best].calls))
+				best = k;
+		if (best < 0)
+			break;
+		{
+			char shown[48];
+			int c;
+
+			for (c = 0; c < 47 && printf_formats[best].format[c]; c++)
+				shown[c] = printf_formats[best].format[c] < ' ' ? ' ' : printf_formats[best].format[c];
+			shown[c] = 0;
+			platform_log("printf: %lu calls with \"%s\"", printf_formats[best].calls, shown);
+		}
+		printf_formats[best].calls = 0;
+	}
+	for (k = 0; k < PRINTF_FORMATS; k++)
+		printf_formats[k].calls = 0;
+}
+
 int __real__svfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments);
 int __wrap__svfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments)
 {
-	int taken = format_take(), result = __real__svfprintf_r(reent, file, format, arguments);
+	int taken = format_take(), result;
+
+	printf_count(format);
+	result = __real__svfprintf_r(reent, file, format, arguments);
 
 	format_give(taken);
 	return result;

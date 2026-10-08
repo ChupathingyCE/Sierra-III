@@ -1,3 +1,60 @@
+diff --git a/Core/CoreTiming.cpp b/Core/CoreTiming.cpp
+index ca20954..c512519 100644
+--- a/Core/CoreTiming.cpp
++++ b/Core/CoreTiming.cpp
+@@ -23,6 +23,7 @@
+ #include <mutex>
+ #include <set>
+ #include <vector>
++#include <string>
+ 
+ #include "Common/Profiler/Profiler.h"
+ 
+@@ -422,8 +423,44 @@ void ForceCheck(MIPSState *mips) {
+ #endif
+ }
+ 
++// local patch (Halo PSP port, b106): PSP_PCSAMPLE=<file> samples the PC (and
++// $ra) of the running thread every PSP_PCSAMPLE_CYCLES emulated cycles
++// (default 33300: 100 us at 333 MHz) and writes "thread pc ra count" lines to
++// the file every 4096 samples. Emulated cycles, so it finds where the game's
++// instructions go (no cache model): tools/pcprofile.py maps it to functions
++#include <map>
++#include <tuple>
++static int pcSampleEvent = -1;
++static s64 pcSampleCycles = 33300;
++static std::map<std::tuple<std::string, u32, u32>, u64> pcSamples;
++static u64 pcSampleCount = 0;
++static void PcSampleDump() {
++	const char *path = getenv("PSP_PCSAMPLE");
++	if (!path) return;
++	FILE *f = fopen(path, "w");
++	if (!f) return;
++	for (auto &e : pcSamples)
++		fprintf(f, "%s %08x %08x %llu\n", std::get<0>(e.first).c_str(), std::get<1>(e.first), std::get<2>(e.first), (unsigned long long)e.second);
++	fclose(f);
++}
++static void PcSampleCallback(u64 userdata, int cyclesLate) {
++	const char *name = __KernelGetThreadName(__KernelGetCurThread());
++	std::string thread = name ? name : "?";
++	for (auto &c : thread) if (c == ' ') c = '_';
++	pcSamples[std::make_tuple(thread, currentMIPS->pc, currentMIPS->r[31])]++;
++	if (++pcSampleCount % 4096 == 0)
++		PcSampleDump();
++	ScheduleEvent(pcSampleCycles - cyclesLate, pcSampleEvent, 0);
++}
++
+ void Advance(MIPSState *mips) {
+ 	PROFILE_THIS_SCOPE("advance");
++	if (pcSampleEvent < 0 && getenv("PSP_PCSAMPLE")) {
++		const char *c = getenv("PSP_PCSAMPLE_CYCLES");
++		if (c && atoll(c) > 1000) pcSampleCycles = atoll(c);
++		pcSampleEvent = RegisterEvent("PcSample", PcSampleCallback);
++		ScheduleEvent(pcSampleCycles, pcSampleEvent, 0);
++	}
+ 	int cyclesExecuted = slicelength - mips->downcount;
+ 	globalTimer += cyclesExecuted;
+ 	mips->downcount = slicelength;
 diff --git a/Core/HLE/sceIo.cpp b/Core/HLE/sceIo.cpp
 index 8d4b05a..80db818 100644
 --- a/Core/HLE/sceIo.cpp

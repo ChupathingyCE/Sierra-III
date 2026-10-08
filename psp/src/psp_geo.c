@@ -33,6 +33,13 @@ psp_geo_generation(), which changes with every load into the block. */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
+/* build 106: the animation cache, this pack's second reader (psp_anim.c) */
+void psp_anim_close(void);
+void psp_anim_map_opened(unsigned int bytes, unsigned int first, unsigned int end, unsigned int page,
+	unsigned int window_at, unsigned int window_bytes, int carve_from_textures);
+void psp_anim_suspend(void);
+void psp_anim_report(void);
+void psp_anim_frame_end(void);
 
 #define EXTERNAL_BASE 0x0C000000u
 #define HEADER_BYTES 64
@@ -95,13 +102,54 @@ static int alignment(unsigned int size)
 	return (size + 63) & ~63u;
 }
 
+/* build 106: the entries by external address, chained in buckets (the
+emulator's PC samples: 3% of b30's beach fight in finding an entry, a scan
+of the 300-odd resident ones for each of the frame's few hundred locks) */
+#define GEO_HASH 1024
+static short hash_head[GEO_HASH]; /* an entry's index + 1, 0: none */
+static short hash_next[GEO_ENTRIES];
+/* the entry psp_geo_lock handed out last: psp_geo_generation and
+psp_geo_address_of are asked about it right after, by the renderer */
+static int last_locked = -1;
+
+static unsigned int hash_of(unsigned int address)
+{
+	return ((address >> 6) * 2654435761u) >> 22;
+}
+
+static void hash_insert(int index)
+{
+	unsigned int bucket = hash_of(entries[index].address);
+
+	hash_next[index] = hash_head[bucket];
+	hash_head[bucket] = (short)(index + 1);
+}
+
+static void hash_remove(int index)
+{
+	short *link = &hash_head[hash_of(entries[index].address)];
+
+	while (*link)
+	{
+		if (*link == index + 1)
+		{
+			*link = hash_next[index];
+			return;
+		}
+		link = &hash_next[*link - 1];
+	}
+}
+
 static struct geo_entry *find(unsigned int address)
 {
-	int index;
+	short at = hash_head[hash_of(address)];
 
-	for (index = 0; index < entry_count; index++)
-		if (entries[index].address == address)
-			return &entries[index];
+	while (at)
+	{
+		if (entries[at - 1].address == address)
+			return &entries[at - 1];
+		at = hash_next[at - 1];
+	}
 	return NULL;
 }
 
@@ -169,16 +217,11 @@ static unsigned int allocate(unsigned int size)
 	return start;
 }
 
-/* the read in flight, if it has finished */
-static void poll(void)
+/* the read in flight has finished with this result */
+static void complete(SceInt64 result)
 {
-	SceInt64 result = 0;
 	struct geo_entry *e;
 
-	if (inflight < 0)
-		return;
-	if (sceIoPollAsync(pack, &result) != 0)
-		return;
 	e = &entries[inflight];
 	inflight = -1;
 	read_us += sceKernelGetSystemTimeLow() - read_start_us;
@@ -200,6 +243,38 @@ static void poll(void)
 		e->at = 0;
 		e->state = 0;
 	}
+}
+
+/* the read in flight, if it has finished */
+static void poll(void)
+{
+	SceInt64 result = 0;
+
+	if (inflight < 0)
+		return;
+	if (sceIoPollAsync(pack, &result) != 0)
+		return;
+	complete(result);
+}
+
+/* build 106: a synchronous read of size bytes at an external address, for
+the animation cache (psp_anim.c), whose data shares this pack (invader-build
+-M). On the game thread, like the geometry cache's own reads; a geometry read
+in flight ("geoasync") is finished first. The bytes read, or a negative error */
+int psp_geo_pack_read(unsigned int address, void *to, unsigned int size)
+{
+	if (pack < 0 || address < EXTERNAL_BASE || address - EXTERNAL_BASE + size > pack_size)
+		return -1;
+	if (inflight >= 0)
+	{
+		SceInt64 result = 0;
+
+		sceIoWaitAsync(pack, &result);
+		complete(result);
+	}
+	if (sceIoLseek32(pack, HEADER_BYTES + (address - EXTERNAL_BASE), PSP_SEEK_SET) < 0)
+		return -1;
+	return sceIoRead(pack, to, size);
 }
 
 /* starts the next queued read, if none is in flight and the block has room */
@@ -331,10 +406,14 @@ static struct geo_entry *entry_new(unsigned int address, unsigned int size)
 			return NULL;
 		if (e->at)
 			evictions++;
+		hash_remove((int)(e - entries));
 	}
 	memset(e, 0, sizeof(*e));
 	e->address = address;
 	e->size = size;
+	hash_insert((int)(e - entries));
+	if (last_locked == (int)(e - entries))
+		last_locked = -1;
 	return e;
 }
 
@@ -349,6 +428,7 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	{
 		e->last_frame = frame;
 		hits++;
+		last_locked = (int)(e - entries);
 		return (void *)e->at;
 	}
 	if (e && e->size < size && (e->state == 3 || e->state == 0))
@@ -370,6 +450,7 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 		if (e && e->state == 3)
 		{
 			e->last_frame = frame;
+			last_locked = (int)(e - entries);
 			return (void *)e->at;
 		}
 	}
@@ -400,6 +481,7 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	if (!async_reads && e->state == 3 && e->size >= size)
 	{
 		e->last_frame = frame;
+		last_locked = (int)(e - entries);
 		return (void *)e->at;
 	}
 	return NULL;
@@ -415,6 +497,13 @@ unsigned int psp_geo_generation(const void *ptr)
 
 	if (at < arena_start || at >= arena_end)
 		return 0;
+	if (last_locked >= 0)
+	{
+		const struct geo_entry *e = &entries[last_locked];
+
+		if (e->at && e->state == 3 && at >= e->at && at < e->at + e->size)
+			return e->generation;
+	}
 	for (index = 0; index < entry_count; index++)
 	{
 		const struct geo_entry *e = &entries[index];
@@ -434,6 +523,13 @@ unsigned int psp_geo_address_of(const void *ptr)
 
 	if (at < arena_start || at >= arena_end)
 		return 0;
+	if (last_locked >= 0)
+	{
+		const struct geo_entry *e = &entries[last_locked];
+
+		if (e->at && e->state == 3 && at >= e->at && at < e->at + e->size)
+			return e->address + (at - e->at);
+	}
 	for (index = 0; index < entry_count; index++)
 	{
 		const struct geo_entry *e = &entries[index];
@@ -461,6 +557,7 @@ void psp_geo_frame_end(void)
 	if (frame_missed)
 		miss_frames++;
 	frame_missed = 0;
+	psp_anim_frame_end();
 	if (pack >= 0 && frame % 300 == 0)
 	{
 		unsigned int resident = 0, resident_bytes = 0;
@@ -475,6 +572,7 @@ void psp_geo_frame_end(void)
 		platform_log("geometry: %lu hits, %lu misses (%lu frames missed something); %lu loaded (%lu KB), %lu evicted, %lu waited for room, %lu for the queue; %u blocks resident (%u KB of %u); reading %lu ms in all, worst frame %lu ms (%s)",
 			hits, misses, miss_frames, loads, load_bytes / 1024, evictions, no_room, queue_full, resident, resident_bytes / 1024,
 			(arena_end - arena_start) / 1024, read_us / 1000, frame_read_worst_us / 1000, async_reads ? "asynchronous" : "synchronous");
+		psp_anim_report();
 	}
 	frame++;
 }
@@ -498,10 +596,13 @@ static void forget_all(void)
 	pending_count = 0;
 	entry_count = 0;
 	arena_next = arena_start;
+	memset(hash_head, 0, sizeof(hash_head));
+	last_locked = -1;
 }
 
 void psp_geo_close(void)
 {
+	psp_anim_close();
 	if (pack >= 0)
 	{
 		forget_all();
@@ -516,7 +617,8 @@ void psp_geo_close(void)
 /* a map's tags were loaded: its geometry pack, if it was built with one.
 Called before the texture pack opens, so the texture cache's RAM share is
 settled first */
-void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *first_vertex_descriptor)
+void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *first_vertex_descriptor,
+	unsigned int tag_data_end, unsigned int window_end)
 {
 	char path[128];
 	unsigned int header[16];
@@ -623,6 +725,24 @@ b73 found it must */
 	read_us = read_worst_us = 0;
 	platform_log("geometry: %s, %u KB external; cache %u KB at %08x (%s)", path, pack_size / 1024, arena_bytes / 1024, arena_start,
 		arena_carved ? "from the texture RAM cache: its textures stream anyway" : "heap");
+	/* build 106: a map built with its animations outside (invader-build -M)
+	keeps their frame data at the front of this pack (the header's words 4-7:
+	bytes, first and end offsets, the page it is laid out for), read through
+	the animation cache; words 8-9 give the tag window's part the map never
+	uses, which the cache takes first if it really lies past the tags and
+	inside the window */
+	if (header[4] && header[6] > header[5] && header[6] <= pack_size)
+	{
+		unsigned int window_at = header[8], window_bytes = header[9];
+
+		if (window_bytes && (window_at < tag_data_end || window_at + window_bytes > window_end))
+		{
+			platform_log("animations: the pack's unused window part (%u KB at %08x) isn't between the tags' end (%08x) and the window's (%08x): not used",
+				window_bytes / 1024, window_at, tag_data_end, window_end);
+			window_at = window_bytes = 0;
+		}
+		psp_anim_map_opened(header[4], header[5], header[6], header[7], window_at, window_bytes, arena_carved);
+	}
 	{
 		/* build 87: the stencil bake, keyed by this pack's addresses */
 		extern void psp_ge_stencils_open(const char *name, unsigned int map_crc);
@@ -649,6 +769,7 @@ void psp_geo_suspend(void)
 	re-reads what it draws) */
 	if (arena_carved)
 		forget_all();
+	psp_anim_suspend();
 }
 
 void psp_geo_resume(void)

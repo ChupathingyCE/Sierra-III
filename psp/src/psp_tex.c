@@ -232,6 +232,13 @@ void *psp_tex_carve(unsigned int bytes)
 	return bytes ? (void *)((unsigned int)ram_cache + ram_cache_bytes - carved_bytes) : NULL;
 }
 
+/* build 106: the bytes carved now (the geometry cache's, then the animation
+cache's on top: psp_anim.c carves this plus its own) */
+unsigned int psp_tex_carved(void)
+{
+	return carved_bytes;
+}
+
 /* the PSP is about to sleep (psp_platform.c's power callback): the volatile
 partition goes back to the system, and its textures are forgotten */
 void psp_tex_suspend(void)

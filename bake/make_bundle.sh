@@ -18,7 +18,8 @@ done
 cp /home/claude/invader/src/tag/hek/definition/*.json $OUT/invader/definitions/
 cp /home/claude/invader/include/invader/hek/fourcc.hpp $OUT/invader/definitions/
 (cd /home/claude && tar czf $OUT/invader-src.tar.gz --exclude=invader/build invader)
-(cd /home/claude/invader && git diff d43ce55 HEAD > $OUT/invader-psp-fork.patch) || true
+# the working tree against upstream, so changes not yet committed are in the patch too
+(cd /home/claude/invader && git diff d43ce55 > $OUT/invader-psp-fork.patch) || true
 mkdir -p $OUT/LICENSES; cp /home/claude/invader/LICENSE.md $OUT/LICENSES/invader-LICENSE.md; cp /home/claude/invader/gplv3.txt $OUT/LICENSES/ 2>/dev/null || true; cp /tmp/halo-sp/LICENSE.md $OUT/LICENSES/halo-ce-universal-CC0.md
 (cd $(dirname $OUT) && tar czf $(basename $OUT).tar.gz $(basename $OUT))
 du -sh $OUT $OUT.tar.gz

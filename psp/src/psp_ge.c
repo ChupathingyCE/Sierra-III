@@ -48,6 +48,16 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 void platform_log(const char *format, ...);
 #define PSP_CLAMP_255(x) ((x) < 0 ? 0 : (x) > 255 ? 255 : (x))
 
+/* build 106: the renderer's own timers (a part's or an entry's time, for
+the GE lines) read the system clock, a system call, hundreds of times a
+frame: "notimers" in keep.txt skips them, and their reports then read 0.
+The frame's own timing, which the budget lines need, stays */
+extern int psp_timers_off;
+static inline unsigned int ge_clock(void)
+{
+	return psp_timers_off ? 0 : sceKernelGetSystemTimeLow();
+}
+
 #define SCREEN_WIDTH 480
 #define SCREEN_HEIGHT 272
 #define BUFFER_WIDTH 512
@@ -406,10 +416,10 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 	if ((stall_forwarded & 63) == 0)
 	{
 		/* now and then, what the call itself costs */
-		unsigned int t0 = sceKernelGetSystemTimeLow();
+		unsigned int t0 = ge_clock();
 		int result = __real_sceGeListUpdateStallAddr(qid, stall);
 
-		stall_timed_us += sceKernelGetSystemTimeLow() - t0;
+		stall_timed_us += ge_clock() - t0;
 		stall_timed++;
 		return result;
 	}
@@ -527,11 +537,11 @@ static const char *const ge_part_names[GE_PARTS] = {
 static unsigned int part_mark;
 static inline void part_start(void)
 {
-	part_mark = sceKernelGetSystemTimeLow();
+	part_mark = ge_clock();
 }
 static inline void part_add(int part)
 {
-	unsigned int now = sceKernelGetSystemTimeLow();
+	unsigned int now = ge_clock();
 
 	ge_part_us[part] += now - part_mark;
 	ge_part_calls[part]++;
@@ -724,29 +734,35 @@ static int player_seated = 0;
 static float near_plane_auto(const float *eye, float game_near)
 {
 	extern int psp_player_seated(void);
-	unsigned int start = sceKernelGetSystemTimeLow();
-	int scale, level_scale = 1;
+	unsigned int start = ge_clock();
+	int scale, level_scale = 1, object_scale;
 
 	/* build 90: for psp_ge_model_shape this frame */
 	player_seated = psp_player_seated();
 	near_object_distance_last = near_object_distance;
 	near_object_distance = 1e30f;
-	for (scale = 16; scale > 1; scale /= 2)
+	/* build 106: the nearest model's limit first, and the level tested
+	only at the scales it leaves (each test is a sphere query of the level,
+	1.2 ms a frame in the emulator at b30's beach, where the marines held
+	the plane at x1 anyway). The same choice as testing the level first: a
+	sphere clear of the level leaves every smaller one about the same
+	centre clear too */
+	for (object_scale = 16; object_scale > 1 && near_object_distance_last < game_near * object_scale * 1.4f;)
+		object_scale /= 2;
+	if (object_scale < 16)
+		near_auto_by_objects++;
+	for (scale = object_scale; scale > 1; scale /= 2)
 		if (!collision_test_sphere(eye, game_near * scale * 1.4f, -1))
 		{
 			level_scale = scale;
 			break;
 		}
 	scale = level_scale;
-	while (scale > 1 && near_object_distance_last < game_near * scale * 1.4f)
-		scale /= 2;
-	if (scale < level_scale)
-		near_auto_by_objects++;
 	near_auto_chosen[scale >= 4 ? 2 : scale == 2 ? 1 : 0]++;
 	if (scale >= 8)
 		near_auto_chosen_high[scale == 16 ? 1 : 0]++;
 	near_auto_frames++;
-	near_auto_us += sceKernelGetSystemTimeLow() - start;
+	near_auto_us += ge_clock() - start;
 	return game_near * scale;
 }
 
@@ -1460,7 +1476,9 @@ static unsigned short corner_stamp = 0;
 
 /* build 60: a stamp a draw, 32 apart, so a verdict can be the stamp plus a
 corner's five plane bits (rigid parts) or plus 0 / 1 (skinned ones) */
-#define CORNER_STAMP_STEP 32
+/* build 106: 64 (was 32): a bending part's corners keep six bits (build
+106's model_geometry), a rigid one's five */
+#define CORNER_STAMP_STEP 64
 static void corner_verdict_reset(void)
 {
 	corner_stamp += CORNER_STAMP_STEP;
@@ -2456,7 +2474,7 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 		far_possible = 0;
 	memset(total, 0, sizeof(total));
 	{
-		unsigned int loop_start = sceKernelGetSystemTimeLow();
+		unsigned int loop_start = ge_clock();
 
 		for (t = 0; t < count; t++)
 		{
@@ -2465,7 +2483,7 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 			angle_bucket_of[t] = (unsigned char)bucket;
 			total[bucket]++;
 		}
-		angle_loop_us += sceKernelGetSystemTimeLow() - loop_start;
+		angle_loop_us += ge_clock() - loop_start;
 	}
 	/* build 87: the ME works out the same buckets ("meclassify", measure only) */
 	me_angle_measure(stream, indices, count, far_possible);
@@ -2850,11 +2868,11 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			{
 				/* build 47: the cutting timed on its own (taken out of the
 				classification's time below) */
-				unsigned int cut_start = sceKernelGetSystemTimeLow();
+				unsigned int cut_start = ge_clock();
 
 				cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
 					MAXIMUM_CUT_CORNERS - cut_count);
-				cut_us += sceKernelGetSystemTimeLow() - cut_start;
+				cut_us += ge_clock() - cut_start;
 			}
 		}
 	}
@@ -2902,10 +2920,10 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		far_possible = reach > detail_far_squared;
 	}
 	{
-		unsigned int angle_start = sceKernelGetSystemTimeLow();
+		unsigned int angle_start = ge_clock();
 
 		draw = angle_sort(stream->base, draw, kept_count, far_possible);
-		angle_us += sceKernelGetSystemTimeLow() - angle_start;
+		angle_us += ge_clock() - angle_start;
 		/* build 89: the pieces cut at the eye are near by definition: with
 		every kept triangle past the detail fade, the detail passes were
 		skipped for them too (the ground at the feet lost its detail map when
@@ -3159,12 +3177,12 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
 	ge_kind(KIND_LEVEL); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	ge_category = GE_SKIP_LEVEL;
 	psp_ge_draw_level_body(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key, lightmap_key, alpha_tested);
 	ge_category = 0;
-	ge_entry_us[0] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[0] += ge_clock() - start;
 }
 
 /* ---------- objects: a model's parts, each drawn with one node's matrix
@@ -3935,20 +3953,23 @@ void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *chang
 	glow_color = abgr_from_rgb(glow) & 0xFFFFFF;
 }
 
-/* a pass over the part's triangles with the multipurpose map, its palette
-worked out per entry from one channel: 0 the change colour (white toward the
-colour by the blue, multiplied in), 1 the self-illumination (the colour by
-the green, added) */
-/* build 66: the worked-out palettes kept, by map, colour and pass. A part's
-palette was worked out again every frame (256 entries, three divisions
-each): the cyborg's and the vehicles', two passes each. A slot is reused
+/* a pass over the part's triangles with the multipurpose map's mask: 0 the
+change colour (white toward the colour by the blue, multiplied in), 1 the
+self-illumination (the colour by the green, added) */
+/* build 66: the worked-out palettes kept, by map and pass. A slot is reused
 only when nothing this frame still needs it (the GE reads a palette when the
-list runs), as the meters' (METER_CACHE) */
+list runs), as the meters' (METER_CACHE). Build 106: the palette is the
+mask alone (grey), and the GE applies the colour: the change pass with its
+blend texture function (fragment white x (1 - mask) + colour x mask, the
+colour as the environment colour), the glow pass modulating the colour by
+the mask. Until b105 the colour was worked into each palette entry, so every
+marine's own armour colour was a palette of its own, more than the cache's
+six slots in a fight: 6% of b30's beach fight in the emulator's PC samples */
 #define MULTIPURPOSE_CACHE 6
 static unsigned int multipurpose_cache_palette[MULTIPURPOSE_CACHE][256] __attribute__((aligned(64)));
 static struct
 {
-	unsigned int key, color;
+	unsigned int key;
 	unsigned long frame;
 	int which, count;
 } multipurpose_cache[MULTIPURPOSE_CACHE];
@@ -3961,6 +3982,16 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 	const unsigned short *palette16 = NULL;
 	unsigned int *computed = NULL, color = which ? glow_color : change_color;
 	int count = 0, entry, slot, free_slot = -1, hit = 0;
+	/* a 16-bit palette's 5- and 6-bit channels to 8 bits (v * 255 / 31, / 63) */
+	static unsigned char expand_5[32], expand_6[64];
+
+	if (!expand_5[31])
+	{
+		for (entry = 0; entry < 32; entry++)
+			expand_5[entry] = (unsigned char)(entry * 255 / 31);
+		for (entry = 0; entry < 64; entry++)
+			expand_6[entry] = (unsigned char)(entry * 255 / 63);
+	}
 
 	/* the Xbox's channel order, read off the Xbox disc's own Blood Gulch
 	(the cyborg's map: the armour plates solid in blue, alpha all white): red
@@ -3971,7 +4002,7 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 		return 0;
 	for (slot = 0; slot < MULTIPURPOSE_CACHE; slot++)
 	{
-		if (multipurpose_cache[slot].key == change_key && multipurpose_cache[slot].color == color &&
+		if (multipurpose_cache[slot].key == change_key &&
 			multipurpose_cache[slot].which == which && multipurpose_cache[slot].count == count)
 		{
 			computed = multipurpose_cache_palette[slot];
@@ -3990,7 +4021,6 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 		{
 			computed = multipurpose_cache_palette[free_slot];
 			multipurpose_cache[free_slot].key = change_key;
-			multipurpose_cache[free_slot].color = color;
 			multipurpose_cache[free_slot].which = which;
 			multipurpose_cache[free_slot].count = count;
 			multipurpose_cache[free_slot].frame = frames + 1;
@@ -4006,26 +4036,31 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 	}
 	for (entry = hit ? count : 0; entry < count; entry++)
 	{
-		unsigned int mask, out = 0xFF000000;
-		int channel;
+		unsigned int mask;
 
 		if (which)
-			mask = palette ? (palette[entry] >> 8) & 0xFF : ((palette16[entry] >> 5) & 0x3F) * 255 / 63;
+			mask = palette ? (palette[entry] >> 8) & 0xFF : expand_6[(palette16[entry] >> 5) & 0x3F];
 		else
-			mask = palette ? (palette[entry] >> 16) & 0xFF : (palette16[entry] >> 11) * 255 / 31;
-		for (channel = 0; channel < 3; channel++)
-		{
-			unsigned int c = (color >> (8 * channel)) & 0xFF;
-
-			out |= (which ? mask * c / 255 : 255 - mask * (255 - c) / 255) << (8 * channel);
-		}
-		computed[entry] = out;
+			mask = palette ? (palette[entry] >> 16) & 0xFF : expand_5[palette16[entry] >> 11];
+		computed[entry] = 0xFF000000 | (mask << 16) | (mask << 8) | mask;
 	}
 	if (!hit)
 		sceKernelDcacheWritebackRange(computed, count * 4);
 	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 	sceGuClutLoad(count / 8 > 0 ? count / 8 : 1, computed);
-	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	if (which)
+	{
+		/* the colour by the mask */
+		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+		sceGuColor(0xFF000000 | color);
+	}
+	else
+	{
+		/* white toward the colour by the mask */
+		sceGuTexFunc(GU_TFX_BLEND, GU_TCC_RGB);
+		sceGuTexEnvColor(color);
+		sceGuColor(0xFFFFFFFF);
+	}
 	sceGuDisable(GU_ALPHA_TEST);
 	sceGuDepthFunc(GU_EQUAL);
 	sceGuDepthMask(GU_TRUE);
@@ -4047,6 +4082,8 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDepthMask(GU_FALSE);
 	sceGuDepthFunc(GU_GEQUAL);
+	sceGuTexEnvColor(0xFFFFFFFF);
+	sceGuColor(0xFFFFFFFF);
 	return 1;
 }
 
@@ -4091,6 +4128,94 @@ static void skin_corner(const unsigned char *record, int weights, int uv_at, con
 	uv[1] = t[1];
 }
 
+/* build 106: a bending corner's camera-space position on the VFPU. Each of
+a batch's slots (its node matrices' rows along the camera's right, up and
+forward: depth_row) is loaded once a batch as a VFPU matrix, M100 to M700,
+row a of the batch's numbers in column a, so vhtfm4 gives the three dot
+products with (p, 1) at once (the probe, psp_vfpu.c: with M, element a is
+column a dotted with (p, 1)). A corner is then one transform per weighted
+slot, scaled by its weight and summed: on b30's beach these corners were
+most of model_geometry, 9% of the emulator's time. Up to 7 slots (M000
+holds the corner's working columns); 8-slot batches stay on the FPU.
+The sums run in the VFPU's own order, so a corner can differ from the FPU's
+in its last bit: a corner exactly on the near margin may then fall the
+other way (b30's beach: 2,193,417 corners compared, none did).
+Off unless keep.txt says "vfpuskin": in the emulator it came out 2-4%
+slower over the frame (the emulator's VFPU costs are its own), so it waits
+for the PSP's A/B. "skinvfpucheck": both, and the corners whose verdicts
+differ counted in the log */
+extern int psp_vfpu_on;
+static int skin_vfpu = -1, skin_vfpu_check = 0;
+static unsigned long skin_vfpu_corners = 0, skin_vfpu_differ = 0;
+
+#define SKIN_VFPU_LOAD(m, rows) __asm__ volatile( \
+	"lv.q C" #m "00, 0(%0)\n" "lv.q C" #m "10, 16(%0)\n" "lv.q C" #m "20, 32(%0)\n" "vzero.q C" #m "30\n" \
+	: : "r"(rows) : "memory")
+#define SKIN_VFPU_SLOT(m, weight) __asm__ volatile( \
+	"mtv %0, S030\n" "vhtfm4.q C010, M" #m "00, C000\n" "vscl.t C010, C010, S030\n" "vadd.t C020, C020, C010\n" \
+	: : "r"(weight))
+
+/* the batch's slots into M100 onward (rows: 16-byte aligned, [slot][3][4]) */
+static void skin_vfpu_load(const float (*rows)[3][4], int weights)
+{
+	switch (weights > 7 ? 7 : weights)
+	{
+	case 7: SKIN_VFPU_LOAD(7, rows[6]); /* fall through */
+	case 6: SKIN_VFPU_LOAD(6, rows[5]); /* fall through */
+	case 5: SKIN_VFPU_LOAD(5, rows[4]); /* fall through */
+	case 4: SKIN_VFPU_LOAD(4, rows[3]); /* fall through */
+	case 3: SKIN_VFPU_LOAD(3, rows[2]); /* fall through */
+	case 2: SKIN_VFPU_LOAD(2, rows[1]); /* fall through */
+	case 1: SKIN_VFPU_LOAD(1, rows[0]); /* fall through */
+	default: break;
+	}
+}
+
+/* one corner: p its position, record its weight bytes; at[3] out */
+static void skin_vfpu_corner(const unsigned char *record, int weights, const float *p, float *at)
+{
+	int slot;
+
+	__asm__ volatile("lv.s S000, 0(%0)\n" "lv.s S001, 4(%0)\n" "lv.s S002, 8(%0)\n" "vzero.t C020\n"
+		: : "r"(p) : "memory");
+	for (slot = 0; slot < weights; slot++)
+		if (record[slot])
+		{
+			union { float f; unsigned int u; } w;
+
+			w.f = record[slot] * (1.0f / 128.0f);
+			switch (slot)
+			{
+			case 0: SKIN_VFPU_SLOT(1, w.u); break;
+			case 1: SKIN_VFPU_SLOT(2, w.u); break;
+			case 2: SKIN_VFPU_SLOT(3, w.u); break;
+			case 3: SKIN_VFPU_SLOT(4, w.u); break;
+			case 4: SKIN_VFPU_SLOT(5, w.u); break;
+			case 5: SKIN_VFPU_SLOT(6, w.u); break;
+			default: SKIN_VFPU_SLOT(7, w.u); break;
+			}
+		}
+	__asm__ volatile("sv.s S020, 0(%0)\n" "sv.s S021, 4(%0)\n" "sv.s S022, 8(%0)\n" : : "r"(at) : "memory");
+}
+
+/* build 106: a bending part near the eye: what its first pass worked out
+(each batch's triangles kept whole, and its pieces cut at the near plane and
+guard band), drawn again by the part's other passes (the two-sided pass's
+back faces, the change and glow colour passes) from the same lists, which
+stay in the display list for the frame. Each pass used to test every corner
+again: a swaying tree over the player on b30's beach (two-sided leaves)
+cost 24% of the game thread in the emulator's PC samples. Valid for the part
+being drawn only (psp_ge_draw_model_body forgets it first) */
+static const struct skin_part *near_memo_skin = NULL;
+static int near_memo_complete = 0;
+static struct
+{
+	const unsigned short *draw;
+	int draw_count;
+	const unsigned char *pieces;
+	int cut_count;
+} near_memo[64];
+
 static void model_geometry(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
@@ -4098,6 +4223,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 	{
 		int batch, slot;
 		ScePspFMatrix4 bone[SKIN_SLOTS];
+		int near = model_near && !model_first_person;
+		int from_memo = near && near_memo_complete && near_memo_skin == skin, memo_failed = 0;
 
 		if (skin_cut < 0)
 			skin_cut = !psp_keep("noskincut");
@@ -4109,7 +4236,10 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			int draw_count = b->index_count;
 			/* each slot's matrix as the depth it gives a point: its rows
 			dotted with the camera's forward direction (build 41) */
-			float depth_row[SKIN_SLOTS][3][4];
+			/* static: 16-byte aligned for the VFPU's quad loads (build 106);
+			this renderer runs on one thread */
+			static float depth_row[SKIN_SLOTS][3][4] __attribute__((aligned(16)));
+			int on_vfpu;
 
 			for (slot = 0; slot < skin->weights; slot++)
 			{
@@ -4123,6 +4253,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					halo_matrix(model_nodes + 13 * (node < model_node_count ? node : 0), model);
 					sceGuBoneMatrix(slot, model);
 					bone[slot] = *model;
+					if (from_memo)
+						continue;
 					/* the matrix's rows along the camera's right, up and forward */
 					for (axis = 0; axis < 3; axis++)
 					{
@@ -4135,7 +4267,25 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					}
 				}
 			}
-			if (model_near && !model_first_person)
+			if (from_memo && batch < 64)
+			{
+				/* the first pass's lists */
+				draw = near_memo[batch].draw;
+				draw_count = near_memo[batch].draw_count;
+				if (near_memo[batch].cut_count)
+				{
+					if (draw_count)
+						sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(skin->weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
+							GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
+							vertices);
+					sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+						near_memo[batch].cut_count, NULL, near_memo[batch].pieces);
+					continue;
+				}
+				if (!draw_count)
+					continue;
+			}
+			else if (near)
 			{
 				/* build 41: a bending model at the eye (the warthog round the
 				camera behind it: its roll bars, turret, axles) drops the
@@ -4148,43 +4298,81 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				int t, k, out = 0, uv_at = skin->stride - 24, cut_count = 0;
 
 				if (!kept)
+				{
+					memo_failed = 1;
 					continue;
+				}
 				/* each vertex's verdict once a batch (build 43: worked out per
 				corner, it cost up to 6 ms a frame on the PSP in build 42) */
 				corner_verdict_reset();
+				/* build 106: the corners on the VFPU (skin_vfpu_corner) */
+				if (skin_vfpu < 0)
+				{
+					skin_vfpu = psp_vfpu_on && psp_keep("vfpuskin");
+					skin_vfpu_check = psp_keep("skinvfpucheck");
+				}
+				on_vfpu = skin_vfpu && skin->weights <= 7;
+				if (on_vfpu)
+					skin_vfpu_load((const float (*)[3][4])depth_row, skin->weights);
 				for (t = 0; t + 2 < draw_count; t += 3)
 				{
-					int behind = 0;
+					/* build 106: each corner's verdict is its planes as bits
+					(outside(): near, right, left, top, bottom) and 32 for
+					"behind" (camera_corner_out, the near test's margin); a
+					triangle wholly outside one plane is dropped here, without
+					bending its corners on the CPU only to find the same (the
+					tree over the player on b30's beach: most of its behind
+					triangles were wholly behind) */
+					int behind = 0, bits[3];
 
-					for (k = 0; k < 3 && !behind; k++)
+					for (k = 0; k < 3; k++)
 					{
 						const unsigned char *record = (const unsigned char *)vertices + skin->stride * draw[t + k];
-						int known = draw[t + k] < CORNER_VERDICTS ? corner_verdict[draw[t + k]] : -1;
+						int known = draw[t + k] < CORNER_VERDICTS ? corner_verdict[draw[t + k]] : -1, code;
 
-						if (known == corner_stamp)
-							continue;
-						if (known == corner_stamp + 1)
+						if (known >= corner_stamp && known < corner_stamp + CORNER_STAMP_STEP)
+							code = known - corner_stamp;
+						else
 						{
-							behind = 1;
-							break;
-						}
-						const float *p = (const float *)(record + uv_at + 12);
-						float at[3] = { 0.0f, 0.0f, 0.0f };
-						int axis;
+							const float *p = (const float *)(record + uv_at + 12);
+							float at[3] = { 0.0f, 0.0f, 0.0f };
+							int axis;
 
-						for (slot = 0; slot < skin->weights; slot++)
-							if (record[slot])
-								for (axis = 0; axis < 3; axis++)
-									at[axis] += record[slot] * (1.0f / 128.0f) * (depth_row[slot][axis][0] * p[0] +
-										depth_row[slot][axis][1] * p[1] + depth_row[slot][axis][2] * p[2] +
-										depth_row[slot][axis][3]);
-						behind = camera_corner_out(at[0], at[1], at[2], limit);
-						if (draw[t + k] < CORNER_VERDICTS)
-							corner_verdict[draw[t + k]] = (unsigned short)(corner_stamp + behind);
+							if (on_vfpu)
+								skin_vfpu_corner(record, skin->weights, p, at);
+							if (!on_vfpu || skin_vfpu_check)
+							{
+								float fpu[3] = { 0.0f, 0.0f, 0.0f };
+
+								for (slot = 0; slot < skin->weights; slot++)
+									if (record[slot])
+										for (axis = 0; axis < 3; axis++)
+											fpu[axis] += record[slot] * (1.0f / 128.0f) * (depth_row[slot][axis][0] * p[0] +
+												depth_row[slot][axis][1] * p[1] + depth_row[slot][axis][2] * p[2] +
+												depth_row[slot][axis][3]);
+								if (on_vfpu)
+								{
+									/* "skinvfpucheck": the two verdicts compared */
+									skin_vfpu_corners++;
+									if (((camera_corner_out(at[0], at[1], at[2], limit) ? 32 : 0) | outside(at)) !=
+										((camera_corner_out(fpu[0], fpu[1], fpu[2], limit) ? 32 : 0) | outside(fpu)))
+										skin_vfpu_differ++;
+								}
+								else
+									memcpy(at, fpu, sizeof(at));
+							}
+							code = (camera_corner_out(at[0], at[1], at[2], limit) ? 32 : 0) | outside(at);
+							if (draw[t + k] < CORNER_VERDICTS)
+								corner_verdict[draw[t + k]] = (unsigned short)(corner_stamp + code);
+						}
+						bits[k] = code & 31;
+						behind |= code & 32;
 					}
 					if (behind)
 					{
 						near_triangles_dropped++;
+						if (bits[0] & bits[1] & bits[2])
+							continue;
 						if (skin_cut && cut_count < MAXIMUM_MODEL_CUT_CORNERS - 9)
 						{
 							/* build 87: bent here and cut, as the level's are */
@@ -4270,8 +4458,22 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 							cut_count, NULL, pieces);
 						skin_cut_pieces += cut_count / 3;
+						if (batch < 64)
+						{
+							near_memo[batch].draw = draw;
+							near_memo[batch].draw_count = draw_count;
+							near_memo[batch].pieces = pieces;
+							near_memo[batch].cut_count = cut_count;
+						}
 						continue;
 					}
+				}
+				if (batch < 64)
+				{
+					near_memo[batch].draw = draw;
+					near_memo[batch].draw_count = draw_count;
+					near_memo[batch].pieces = NULL;
+					near_memo[batch].cut_count = 0;
 				}
 				if (!draw_count)
 					continue;
@@ -4279,6 +4481,13 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(skin->weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
 				GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D, draw_count, draw,
 				vertices);
+		}
+		if (near && !from_memo)
+		{
+			/* every batch worked out (none cut short by a full list): the
+			part's other passes draw from this */
+			near_memo_skin = skin;
+			near_memo_complete = !memo_failed && batch == skin->batch_count && skin->batch_count <= 64;
 		}
 	}
 	else
@@ -4304,6 +4513,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	alpha_tested &= 1;
 	model_cut_count = 0;
 	model_cut_vertices = NULL;
+	near_memo_skin = NULL; /* build 106: model_geometry's lists are this part's */
+	near_memo_complete = 0;
 	if (!frame_open || index_count < 3 || !vertices || !indices || !model_nodes || model_node_count <= 0 ||
 		vertex_count <= 0 || list_full() || (in_sky && magenta == 1))
 		return;
@@ -4551,12 +4762,12 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	int alpha_tested)
 {
 	ge_kind(in_sky ? KIND_SKY : KIND_MODEL); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	ge_category = GE_SKIP_MODELS;
 	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested);
 	ge_category = 0;
-	ge_entry_us[1] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[1] += ge_clock() - start;
 }
 
 /* the frame to the screen: the CPU's writes (the triangle lists, the
@@ -7708,7 +7919,12 @@ struct decal_vertex_ge
 };
 
 static int decal_pull = -1, decal_big = 0, decal_all = -1, decal_slope = -1, decal_batch = 0;
-static unsigned long decals_small = 0;
+static unsigned long decals_small = 0, decals_offscreen = 0;
+/* build 106: decal calls with no quad on the screen, left before the bind */
+static unsigned long decals_wholly_left_out = 0;
+/* "decalnocull": quads off the screen go through the work too (to time it) */
+static int decal_cull = -1;
+
 #define DECAL_MINIMUM_PIXELS 2.0f /* build 58: 2 (was 3: a little too far out, Sheepdog01 b57) */
 
 
@@ -7720,7 +7936,12 @@ from three of its corners), and the decal texture's clamped edge (black for
 an added symbol) leaves the rest of each triangle as it was. A decal over
 several planes (wrapped round an edge) is drawn per plane. 0 if nothing
 under it was drawn this frame: the caller draws it the usual way */
-static int decal_project = 1;
+/* build 106: off unless the debug menu turns it on. In every log since
+(The Library on the PSP in b105, b30 and The Library in the emulator) it
+drew none on the level's triangles ("0 drawn on the level's own
+triangles"): each permanent decal fell back to the usual draw after the
+scan, which cost 0.8 ms a frame at b30's beach in the emulator */
+static int decal_project = 0;
 static unsigned long decals_projected = 0, decal_projected_triangles = 0, decals_project_fallback = 0;
 static unsigned short project_indices[3 * 1024];
 /* build 91: what lies under each decal plane, remembered. b90 tested every
@@ -7755,6 +7976,16 @@ static struct decal_cache_slot
 } decal_cache[DECAL_CACHE_PLANES];
 static int decal_cache_next = 0;
 static unsigned long decal_cache_scans = 0, decal_cache_uses = 0, decal_project_us = 0;
+/* build 106: the decals' timers, on one call in DECAL_TIMED_ONE_IN and
+counted that many times over. The clock is a system call, and b30's beach
+draws hundreds of decals a frame: timing each one was 6% of the game
+thread in the emulator's PC samples (tools/pcprofile.py) */
+#define DECAL_TIMED_ONE_IN 16
+static int decal_timed = 0;
+static inline unsigned int decal_clock(void)
+{
+	return decal_timed ? ge_clock() : 0;
+}
 
 static unsigned int decal_plane_key(const float *n, float d, const float *low, const float *high)
 {
@@ -8087,99 +8318,33 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	float i = intensity * (1.0f / 255.0f), c[3];
 	int quad, corner, alpha = 0, k;
 	unsigned int fragment = 0xFFFFFFFF, constant = 0xFFFFFFFF, fog = fog_color;
-	float decal_units = 0.0f;
-	/* build 76: each quad's own slope part, applied as its own pull (one
+	/* build 76: each quad's own slope part is applied as its own pull (one
 	depth offset for the draw took its largest quad's: a stencil seen
 	edge-on beside the eye gave every decal of its batch, far ones too,
-	hundreds of steps; far off that is tens of units) */
-	static float quad_units[256];
-
+	hundreds of steps; far off that is tens of units); the largest is kept
+	for "decalbatch" */
+	float decal_units = 0.0f;
 	int original_quads = quad_count;
 	unsigned int project_start;
 	int project_done;
+	/* build 106: the first quad kept, as the game gave it (its texture level
+	is worked out from it before the pull moves its corners) */
+	float level_corners[3][3];
+	short level_uv[3][2];
 
-	if (!frame_open || !vertices || quad_count <= 0 || quad_count > 256 || intensity <= 0 || list_full() ||
-		!psp_tex_bind(key, &alpha))
+	if (!frame_open || !vertices || quad_count <= 0 || quad_count > 256 || intensity <= 0 || list_full())
 		return;
 	c[0] = ((color >> 16) & 0xFF) * (1.0f / 255.0f);
 	c[1] = ((color >> 8) & 0xFF) * (1.0f / 255.0f);
 	c[2] = (color & 0xFF) * (1.0f / 255.0f);
-	out = list_take(quad_count * 6 * sizeof(struct decal_vertex_ge));
-	if (!out)
-		return;
+	if (decal_pull < 0)
 	{
-		/* build 57: decals smaller than DECAL_MINIMUM_PIXELS across on the
-		screen are left out. A distant bullet hole covers a pixel or two, and
-		at 272 lines it lit a pixel one frame and none the next as the view
-		moved: the blinking Sheepdog01 saw at a distance (b50-b56; a larger depth
-		nudge changed nothing, so it wasn't the depth test). "decalall": all */
-		int kept = 0;
-		float pixels_per_unit = (SCREEN_HEIGHT * 0.5f) / tanf(projection_fov * 0.5f);
-
-		if (decal_all < 0)
-			decal_all = psp_keep("decalall");
-		if (decal_slope < 0)
-			decal_slope = !psp_keep("decalnoslope");
-		for (quad = 0; quad < quad_count; quad++)
-		{
-			const float *p0 = (const float *)(in + 16 * (4 * quad)), *p2 = (const float *)(in + 16 * (4 * quad + 2));
-
-			if (!decal_all)
-			{
-				float centre[3] = { (p0[0] + p2[0]) * 0.5f, (p0[1] + p2[1]) * 0.5f, (p0[2] + p2[2]) * 0.5f }, camera[3];
-				float dx = p2[0] - p0[0], dy = p2[1] - p0[1], dz = p2[2] - p0[2];
-
-				to_camera(centre, camera);
-				if (camera[2] > 0.0f &&
-					sqrtf(dx * dx + dy * dy + dz * dz) * pixels_per_unit < DECAL_MINIMUM_PIXELS * camera[2])
-				{
-					decals_small++;
-					continue;
-				}
-			}
-			for (corner = 0; corner < 6; corner++)
-			{
-				const unsigned char *v = in + 16 * (4 * quad + fan[corner]);
-				struct decal_vertex_ge *o = &out[6 * kept + corner];
-
-				memcpy(&o->x, v, 12);
-				memcpy(&o->u, v + 12, 4);
-			}
-			/* build 65: the quad's own depth slope (as the level's painted
-			symbols since b60), the largest of the decal's quads */
-			if (decal_slope)
-			{
-				float q[3][3];
-				float units;
-
-				for (corner = 0; corner < 3; corner++)
-					to_camera((const float *)(in + 16 * (4 * quad + corner)), q[corner]);
-				units = slope_units_capped(slope_units(q[0], q[1], q[2]), q[0], q[1], q[2]) + nudge_floor;
-				if (units > decal_units)
-					decal_units = units;
-				quad_units[kept] = units;
-			}
-			else
-				quad_units[kept] = 0.0f;
-			kept++;
-		}
-		if (!kept)
-			return;
-		quad_count = kept;
-	}
-	{
-		/* build 58: the texture level by distance, as for the level (a hole
-		on the ground swam with the ground's own texture) */
-		const struct decal_vertex_ge *a = &out[0], *b = &out[1], *c = &out[2];
-		float e1[3] = { b->x - a->x, b->y - a->y, b->z - a->z }, e2[3] = { c->x - a->x, c->y - a->y, c->z - a->z };
-		float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
-		float world_area = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-		float uv_area = fabsf((float)(b->u - a->u) * (float)(c->v - a->v) - (float)(c->u - a->u) * (float)(b->v - a->v)) *
-			(1.0f / 32768.0f) * (1.0f / 32768.0f);
-		int width = 0, height = 0;
-
-		psp_tex_size(key, &width, &height);
-		texture_levels_by_distance(world_area > 0.0f ? sqrtf(uv_area / world_area) : 0.0f, width, height, 1.0f, tex_bias);
+		decal_pull = !psp_keep("decaloffset");
+		/* build 55, a test: a nudge four times larger plus 1% of the
+		distance. If bullet holes still flicker with it, the cause isn't
+		the depth test */
+		decal_big = psp_keep("decalbig");
+		decal_batch = psp_keep("decalbatch");
 	}
 	/* build 52: a decal lies on its surface and must win the depth test
 	against it. A fixed depth offset (48 steps, build 36) is the wrong size
@@ -8190,38 +8355,171 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	by about two depth steps at its distance (a step is z^2 / (near x
 	61439)): the decal stays exactly where it was on the screen, and is
 	always just in front of its surface. "decaloffset": the old way */
-	if (decal_pull < 0)
 	{
-		decal_pull = !psp_keep("decaloffset");
-		/* build 55, a test: a nudge four times larger plus 1% of the
-		distance. If bullet holes still flicker with it, the cause isn't
-		the depth test */
-		decal_big = psp_keep("decalbig");
-		decal_batch = psp_keep("decalbatch");
-	}
-	if (decal_pull)
-	{
-		int index;
+		/* build 57: decals smaller than DECAL_MINIMUM_PIXELS across on the
+		screen are left out. A distant bullet hole covers a pixel or two, and
+		at 272 lines it lit a pixel one frame and none the next as the view
+		moved: the blinking Sheepdog01 saw at a distance (b50-b56; a larger depth
+		nudge changed nothing, so it wasn't the depth test). "decalall": all */
+		/* build 106: and quads wholly outside the view are left out before
+		any of the work below (b30's beach: 6-11 ms a frame in decals by the
+		end of the fight, in the emulator, most of it bullet holes behind the
+		camera or to the sides); the pull is worked out once a corner, not
+		once for each of the two triangles' copies of it. The kept quads come
+		out as before.
+		Build 106 too: in two passes, which quads are kept first, then the
+		texture bound and the list taken for those alone. A decal wholly off
+		the screen (most of the 400 calls a frame at b30's beach) no longer
+		binds its texture (a texture fetch for nothing, if it wasn't in VRAM)
+		or takes display list room for all its quads, which it then left
+		unused: decals were 131 KB of b30's 282 KB list a frame */
+		static unsigned char kept_quad[256];
+		static float kept_units[256];
+		int kept = 0, k_quad;
+		float pixels_per_unit = (SCREEN_HEIGHT * 0.5f) / tanf(projection_fov * 0.5f);
+		float half_y = tanf(projection_fov * 0.5f), half_x = half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+		/* a sphere is wholly outside a side plane when its centre is beyond
+		it by more than its radius: the planes' normals, unnormalised, have
+		these lengths */
+		float side_x = sqrtf(1.0f + half_x * half_x), side_y = sqrtf(1.0f + half_y * half_y);
 		float per_step = 1.0f / (projection_near * 61439.0f);
 
-		for (index = 0; index < quad_count * 6; index++)
+		if (decal_all < 0)
+			decal_all = psp_keep("decalall");
+		if (decal_cull < 0)
+			decal_cull = !psp_keep("decalnocull");
+		if (decal_slope < 0)
+			decal_slope = !psp_keep("decalnoslope");
+		for (quad = 0; quad < quad_count; quad++)
 		{
-			struct decal_vertex_ge *o = &out[index];
-			float d[3] = { o->x - camera_eye[0], o->y - camera_eye[1], o->z - camera_eye[2] };
-			float length = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-			float steps = 2.0f + (decal_batch ? 0.0f : quad_units[index / 6]);
-			float shift = decal_big ? 8.0f * length * length * per_step + 0.01f * length + 0.01f :
-				steps * length * length * per_step + 0.003f;
+			const float *p[4];
+			float centre[3], camera[3], radius2 = 0.0f, radius, units = 0.0f;
 
-			if (length > 2.0f * shift)
+			for (corner = 0; corner < 4; corner++)
+				p[corner] = (const float *)(in + 16 * (4 * quad + corner));
+			centre[0] = (p[0][0] + p[2][0]) * 0.5f;
+			centre[1] = (p[0][1] + p[2][1]) * 0.5f;
+			centre[2] = (p[0][2] + p[2][2]) * 0.5f;
+			to_camera(centre, camera);
+			if (!decal_all)
 			{
-				float scale = 1.0f - shift / length;
+				float dx = p[2][0] - p[0][0], dy = p[2][1] - p[0][1], dz = p[2][2] - p[0][2];
 
-				o->x = camera_eye[0] + d[0] * scale;
-				o->y = camera_eye[1] + d[1] * scale;
-				o->z = camera_eye[2] + d[2] * scale;
+				if (camera[2] > 0.0f &&
+					sqrtf(dx * dx + dy * dy + dz * dz) * pixels_per_unit < DECAL_MINIMUM_PIXELS * camera[2])
+				{
+					decals_small++;
+					continue;
+				}
+			}
+			for (corner = 0; corner < 4; corner++)
+			{
+				float dx = p[corner][0] - centre[0], dy = p[corner][1] - centre[1], dz = p[corner][2] - centre[2];
+				float d2 = dx * dx + dy * dy + dz * dz;
+
+				if (d2 > radius2)
+					radius2 = d2;
+			}
+			radius = sqrtf(radius2) * 1.01f + 0.01f;
+			if (!decal_cull)
+				;
+			else if (camera[2] < -radius ||
+				camera[0] - half_x * camera[2] > radius * side_x || -camera[0] - half_x * camera[2] > radius * side_x ||
+				camera[1] - half_y * camera[2] > radius * side_y || -camera[1] - half_y * camera[2] > radius * side_y)
+			{
+				decals_offscreen++;
+				continue;
+			}
+			/* build 65: the quad's own depth slope (as the level's painted
+			symbols since b60), the largest of the decal's quads */
+			if (decal_slope)
+			{
+				float q[3][3];
+
+				for (corner = 0; corner < 3; corner++)
+					to_camera(p[corner], q[corner]);
+				units = slope_units_capped(slope_units(q[0], q[1], q[2]), q[0], q[1], q[2]) + nudge_floor;
+				if (units > decal_units)
+					decal_units = units;
+			}
+			if (!kept)
+				for (corner = 0; corner < 3; corner++)
+				{
+					memcpy(level_corners[corner], p[corner], 12);
+					memcpy(level_uv[corner], (const unsigned char *)p[corner] + 12, 4);
+				}
+			kept_quad[kept] = (unsigned char)quad;
+			kept_units[kept] = units;
+			kept++;
+		}
+		if (!kept)
+		{
+			decals_wholly_left_out++;
+			return;
+		}
+		if (!psp_tex_bind(key, &alpha))
+			return;
+		out = list_take(kept * 6 * sizeof(struct decal_vertex_ge));
+		if (!out)
+			return;
+		for (k_quad = 0; k_quad < kept; k_quad++)
+		{
+			const float *p[4];
+			float pulled[4][3];
+
+			for (corner = 0; corner < 4; corner++)
+				p[corner] = (const float *)(in + 16 * (4 * kept_quad[k_quad] + corner));
+			/* the pull: each corner toward the eye along its line of sight
+			(build 52's comment above) */
+			for (corner = 0; corner < 4; corner++)
+			{
+				float d[3] = { p[corner][0] - camera_eye[0], p[corner][1] - camera_eye[1], p[corner][2] - camera_eye[2] };
+
+				memcpy(pulled[corner], p[corner], 12);
+				if (decal_pull)
+				{
+					float length = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+					float steps = 2.0f + (decal_batch ? 0.0f : kept_units[k_quad]);
+					float shift = decal_big ? 8.0f * length * length * per_step + 0.01f * length + 0.01f :
+						steps * length * length * per_step + 0.003f;
+
+					if (length > 2.0f * shift)
+					{
+						float scale = 1.0f - shift / length;
+
+						pulled[corner][0] = camera_eye[0] + d[0] * scale;
+						pulled[corner][1] = camera_eye[1] + d[1] * scale;
+						pulled[corner][2] = camera_eye[2] + d[2] * scale;
+					}
+				}
+			}
+			for (corner = 0; corner < 6; corner++)
+			{
+				struct decal_vertex_ge *o = &out[6 * k_quad + corner];
+
+				o->x = pulled[fan[corner]][0];
+				o->y = pulled[fan[corner]][1];
+				o->z = pulled[fan[corner]][2];
+				memcpy(&o->u, (const unsigned char *)p[fan[corner]] + 12, 4);
 			}
 		}
+		quad_count = kept;
+	}
+	{
+		/* build 58: the texture level by distance, as for the level (a hole
+		on the ground swam with the ground's own texture): from the first
+		quad kept, as the game gave it */
+		const float *a = level_corners[0], *b = level_corners[1], *c = level_corners[2];
+		float e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
+		float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+		float world_area = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+		float uv_area = fabsf((float)(level_uv[1][0] - level_uv[0][0]) * (float)(level_uv[2][1] - level_uv[0][1]) -
+			(float)(level_uv[2][0] - level_uv[0][0]) * (float)(level_uv[1][1] - level_uv[0][1])) *
+			(1.0f / 32768.0f) * (1.0f / 32768.0f);
+		int width = 0, height = 0;
+
+		psp_tex_size(key, &width, &height);
+		texture_levels_by_distance(world_area > 0.0f ? sqrtf(uv_area / world_area) : 0.0f, width, height, 1.0f, tex_bias);
 	}
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
@@ -8294,8 +8592,8 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	sceGumMatrixMode(GU_MODEL);
 	world_model();
 	if (permanent && decal_project && level_compact <= 0 &&
-		(project_start = sceKernelGetSystemTimeLow(), project_done = decal_project_draw(in, original_quads),
-		decal_project_us += sceKernelGetSystemTimeLow() - project_start, project_done))
+		(project_start = decal_clock(), project_done = decal_project_draw(in, original_quads),
+		decal_project_us += (decal_clock() - project_start) * DECAL_TIMED_ONE_IN, project_done))
 		;
 	else
 	{
@@ -8317,12 +8615,23 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
-	ge_kind(KIND_DECAL); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	static unsigned int decal_calls = 0;
 
-	psp_ge_decal_body(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent);
-	ge_entry_us[5] += sceKernelGetSystemTimeLow() - start;
-	ge_part_us[10] += sceKernelGetSystemTimeLow() - start;
+	ge_kind(KIND_DECAL); /* build 103 */
+	/* build 106: one call in DECAL_TIMED_ONE_IN timed (decal_clock) */
+	decal_timed = (decal_calls++ % DECAL_TIMED_ONE_IN) == 0;
+	if (decal_timed)
+	{
+		unsigned int start = decal_clock(), took;
+
+		psp_ge_decal_body(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent);
+		took = (decal_clock() - start) * DECAL_TIMED_ONE_IN;
+		ge_entry_us[5] += took;
+		ge_part_us[10] += took;
+		decal_timed = 0;
+	}
+	else
+		psp_ge_decal_body(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent);
 	ge_part_calls[10]++;
 }
 
@@ -9001,13 +9310,17 @@ void psp_ge_frame_end(void)
 						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped,
 						nudge_wide > 0 ? " (nudgewide: not held)" : "");
 					nudges_asked = nudges_clamped = 0;
-					platform_log("GE: near plane%s: %lu frames at x4 or more (x8 %lu, x16 %lu), %lu at x2, %lu at x1 (%lu held down by an object), %lu us a frame deciding; level draws a frame: %lu wholly inside the view (no classifying), %lu classified; triangles past the detail fade %lu a frame, detail passes skipped for whole draws %lu a frame",
+					platform_log("GE: near plane%s: %lu frames at x4 or more (x8 %lu, x16 %lu), %lu at x2, %lu at x1 (%lu with a model near enough to cap it), %lu us a frame deciding; level draws a frame: %lu wholly inside the view (no classifying), %lu classified; triangles past the detail fade %lu a frame, detail passes skipped for whole draws %lu a frame",
 						near_auto ? " (nearauto)" : " (fixed)", near_auto_chosen[2], near_auto_chosen_high[0], near_auto_chosen_high[1], near_auto_chosen[1], near_auto_chosen[0],
 						near_auto_by_objects, near_auto_frames ? near_auto_us / near_auto_frames : 0, level_draws_inside / 300,
 						level_draws_classified / 300, angle_far_triangles / 300, detail_passes_skipped_far / 300);
 					platform_log("GE: uv centring %s: %lu draws, largest shift %.0f repeats; GE serial %s",
 						uv_centre > 0 ? "on" : "off", uv_centred_draws / 300, uv_shift_largest,
 						ge_serial > 0 ? "on (the frame end's wait is the GE's whole busy time)" : "off");
+					/* build 106: the near bending corners' VFPU check */
+					if (skin_vfpu_check)
+						platform_log("GE: bending corners near the eye on the %s; skinvfpucheck: %lu compared with the FPU, %lu verdicts differed",
+							skin_vfpu > 0 ? "VFPU" : "FPU", skin_vfpu_corners, skin_vfpu_differ);
 					uv_centred_draws = 0;
 					uv_shift_largest = 0.0f;
 					memset(angle_triangles, 0, sizeof(angle_triangles));
@@ -9049,9 +9362,11 @@ void psp_ge_frame_end(void)
 					}
 					platform_log("GE: parts, us a frame (calls a frame): %s", parts);
 					/* build 48: the list's cached regions and the stall updates */
-					platform_log("GE: list: %lu regions a frame written cached (%lu KB a frame, %lu lines written back); stall updates %lu a frame, %lu passed on (%s), %.1f us each (%lu timed); decals under 3 pixels left out %lu",
+					platform_log("GE: list: %lu regions a frame written cached (%lu KB a frame, %lu lines written back); stall updates %lu a frame, %lu passed on (%s), %.1f us each (%lu timed); decal quads under 2 pixels left out %lu, wholly off the screen %lu (since the start); decal calls with nothing on the screen %lu a frame",
 						cached_takes / 300, cached_bytes / 300 / 1024, cached_lines_flushed / 300, stall_calls / 300,
-						stall_forwarded / 300, stall_batch == 1 ? "batched" : "each", stall_timed ? (double)stall_timed_us / stall_timed : 0.0, stall_timed, decals_small);
+						stall_forwarded / 300, stall_batch == 1 ? "batched" : "each", stall_timed ? (double)stall_timed_us / stall_timed : 0.0, stall_timed, decals_small, decals_offscreen,
+						decals_wholly_left_out / 300);
+					decals_wholly_left_out = 0;
 					cached_takes = cached_bytes = cached_lines_flushed = stall_calls = stall_forwarded = 0;
 				}
 			}

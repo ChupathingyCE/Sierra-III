@@ -96,21 +96,23 @@ picture on the screen as it goes (four rows at the bottom, in turn, each
 with a running number): what the frozen screen shows is the last thing it
 started. Slow (an uncached write per pixel), so only with the keep word */
 volatile unsigned int psp_shown_buffer = 0;
-static int crumbs_on = -1;
+/* build 106: shared, so a caller can skip working out a crumb's text (a tag
+name per object update) while crumbs are off: 1 on, 0 off, -1 not armed yet */
+int psp_crumbs_on = -1;
 static unsigned int crumb_count = 0;
 
 /* armed at the game's first frame on the screen (keep.txt is read by then;
 the launch menu's pictures don't count) */
 void psp_crumbs_arm(void)
 {
-	crumbs_on = psp_keep("crumbs");
+	psp_crumbs_on = psp_keep("crumbs");
 }
 
 int psp_crumb_mark(const char *what, const char *detail)
 {
 	char text[69];
 
-	if (crumbs_on <= 0 || !psp_shown_buffer)
+	if (psp_crumbs_on <= 0 || !psp_shown_buffer)
 		return 0;
 	crumb_count++;
 	{
@@ -331,6 +333,77 @@ void psp_stick_report(void)
 		psp_handles_line(line, sizeof(line));
 		platform_log("%s", line);
 	}
+}
+
+/* build 106: each thread's priority and its share of the CPU since the last
+report (the heartbeat, every 30 s), and how often it was woken.
+
+Why: Sheepdog01's b105 run spent 647 s in the cache file thread's 7,468 stick
+calls, 87 ms a call, for reads of about 30 KB that the stick does in about
+4 ms. The PSP's scheduler runs the highest-priority ready thread and never
+shares the CPU between equals, so a reader whose read has finished waits
+until the game thread (always busy at 6-8 fps) blocks, holding the stick's
+lock all that time. This line shows each thread's priority and CPU share on
+the PSP, so that reading can be checked (a lower number is a higher
+priority) */
+#define REPORT_THREADS 24
+void psp_threads_report(void)
+{
+	static struct { SceUID id; unsigned long long run_us; unsigned int releases; } last[REPORT_THREADS];
+	static unsigned long long last_report_us = 0;
+	SceUID ids[REPORT_THREADS];
+	unsigned long long now = sceKernelGetSystemTimeWide(), span = now - last_report_us;
+	unsigned long long counted = 0;
+	char line[700];
+	int count = 0, k, length;
+
+	if (sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, ids, REPORT_THREADS, &count) < 0)
+		return;
+	if (count > REPORT_THREADS)
+		count = REPORT_THREADS;
+	length = snprintf(line, sizeof(line), "threads (priority, CPU share since the last line, times woken):");
+	for (k = 0; k < count && length < (int)sizeof(line) - 1; k++)
+	{
+		SceKernelThreadInfo info;
+		unsigned long long run_us, before_us = 0;
+		unsigned int before_releases = 0;
+		int slot, free_slot = -1;
+
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		if (sceKernelReferThreadStatus(ids[k], &info) < 0)
+			continue;
+		run_us = ((unsigned long long)info.runClocks.hi << 32) | info.runClocks.low;
+		for (slot = 0; slot < REPORT_THREADS && last[slot].id != ids[k]; slot++)
+			if (free_slot < 0 && !last[slot].id)
+				free_slot = slot;
+		if (slot < REPORT_THREADS)
+		{
+			before_us = last[slot].run_us;
+			before_releases = last[slot].releases;
+		}
+		else if (free_slot >= 0)
+			slot = free_slot;
+		if (slot < REPORT_THREADS)
+		{
+			last[slot].id = ids[k];
+			last[slot].run_us = run_us;
+			last[slot].releases = info.releaseCount;
+		}
+		counted += run_us - before_us;
+		/* the idle thread is the time nobody wanted the CPU: the remainder */
+		if (!strncmp(info.name, "idle", 4))
+			continue;
+		length += snprintf(line + length, sizeof(line) - length, " %s 0x%x %.1f%% %u;",
+			info.name, info.currentPriority,
+			last_report_us && span ? 100.0 * (double)(run_us - before_us) / (double)span : 0.0,
+			info.releaseCount - before_releases);
+	}
+	if (last_report_us && span && length < (int)sizeof(line) - 1)
+		snprintf(line + length, sizeof(line) - length, " idle or the kernel %.1f%%",
+			counted < span ? 100.0 * (double)(span - counted) / (double)span : 0.0);
+	last_report_us = now;
+	platform_log("%s", line);
 }
 
 /* ---------- build 103: the open-handle table

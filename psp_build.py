@@ -33,7 +33,7 @@ PLATFORM_FILES = [
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_psh", "nv2a_vsh", "xgpu_text", "gl_functions",
     "xiso", "xbdm",
 ]
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_debug", "psp_me", "psp_trace", "psp_crash"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash"]
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
 # variant that trades speed tricks for smaller code: the hardware profiler
@@ -144,8 +144,8 @@ def compile_one(item):
             and os.path.getmtime(obj) > os.path.getmtime(os.path.join(TREE, src))):
         return src, 0, "", obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", obj]
-    if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_debug.c",
-                     "psp_me.c", "psp_trace.c", "psp_crash.c")):
+    if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
+                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         cmd = ["psp-gcc", "-G0", "-O2", "-march=allegrex", "-ffunction-sections", "-fdata-sections",
                "-I" + SDK + "/include", "-c", src, "-o", obj]
@@ -221,6 +221,9 @@ def link(objs, stubs):
            "--wrap=sceIoOpen,--wrap=sceIoLseek32,--wrap=sceIoLseek,--wrap=sceIoRead,--wrap=sceIoReadAsync,--wrap=sceIoClose,"
            "--wrap=sceDmacMemcpy,--wrap=sceGeListEnQueue,--wrap=sceDisplaySetFrameBuf,--wrap=sceIoWrite,--wrap=sceIoGetstat,"
            "--wrap=sceIoDopen,--wrap=sceIoDclose,--wrap=open,"
+           # build 106: condition variables that sleep instead of polling (psp_libc.c)
+           "--wrap=pthread_cond_init,--wrap=pthread_cond_destroy,--wrap=pthread_cond_wait,--wrap=pthread_cond_timedwait,"
+           "--wrap=pthread_cond_signal,--wrap=pthread_cond_broadcast,"
            # build 105: newlib's printf engines and strtod under one lock (psp_libc.c)
            "--wrap=_svfprintf_r,--wrap=_vfprintf_r,--wrap=_strtod_r,--wrap=vfprintf,--wrap=strtod,--wrap=strtof",
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + LIBS + ["-o", os.path.join(OUT, "halo.elf")]

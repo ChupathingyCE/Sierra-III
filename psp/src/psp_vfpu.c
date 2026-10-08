@@ -142,6 +142,36 @@ static void vfpu_probe(void)
 		: : "r"(a), "r"(b), "r"(v), "r"(out) : "memory");
 	platform_log("VFPU probe: vmmul columns (%g %g %g) (%g %g %g) (%g %g %g); vtfm (%g %g %g)",
 		out[0], out[1], out[2], out[3], out[4], out[5], out[6], out[7], out[8], out[9], out[10], out[11]);
+	{
+		/* build 106: vhtfm4 with the matrix as loaded (M) and transposed (E):
+		M100's column j holds (1+j, 10+j, 100+j, 1000+j) in rows 0-3, the
+		vector (2, 3, 5) and the homogeneous 1 */
+		static float m[16] __attribute__((aligned(16)));
+		static float w[3] __attribute__((aligned(16))) = { 2, 3, 5 };
+		static float h[8] __attribute__((aligned(16)));
+		int j;
+
+		for (j = 0; j < 4; j++)
+		{
+			m[4 * j + 0] = 1 + j;
+			m[4 * j + 1] = 10 + j;
+			m[4 * j + 2] = 100 + j;
+			m[4 * j + 3] = 1000 + j;
+		}
+		__asm__ volatile(
+			"lv.s S100, 0(%0)\n" "lv.s S101, 4(%0)\n" "lv.s S102, 8(%0)\n" "lv.s S103, 12(%0)\n"
+			"lv.s S110, 16(%0)\n" "lv.s S111, 20(%0)\n" "lv.s S112, 24(%0)\n" "lv.s S113, 28(%0)\n"
+			"lv.s S120, 32(%0)\n" "lv.s S121, 36(%0)\n" "lv.s S122, 40(%0)\n" "lv.s S123, 44(%0)\n"
+			"lv.s S130, 48(%0)\n" "lv.s S131, 52(%0)\n" "lv.s S132, 56(%0)\n" "lv.s S133, 60(%0)\n"
+			"lv.s S000, 0(%1)\n" "lv.s S001, 4(%1)\n" "lv.s S002, 8(%1)\n"
+			"vhtfm4.q C010, M100, C000\n"
+			"vhtfm4.q C020, E100, C000\n"
+			"sv.s S010, 0(%2)\n" "sv.s S011, 4(%2)\n" "sv.s S012, 8(%2)\n" "sv.s S013, 12(%2)\n"
+			"sv.s S020, 16(%2)\n" "sv.s S021, 20(%2)\n" "sv.s S022, 24(%2)\n" "sv.s S023, 28(%2)\n"
+			: : "r"(m), "r"(w), "r"(h) : "memory");
+		platform_log("VFPU probe: vhtfm4 M (%g %g %g %g), E (%g %g %g %g)",
+			h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+	}
 }
 
 /* start-up: 2000 random products both ways; the VFPU stays on if they agree

@@ -9,8 +9,9 @@ the menus' ui.map):
   1. reads the map out of the disc image (xiso.py: no other tool needed)
   2. checks it is the retail map this build was made for (hashes.json)
   3. extracts its tags and rebuilds the map for the PSP's memory with the
-     port's Invader (-X 0x09600000 -T 0x900000, model and level geometry to a
-     .pgeo pack, animations keyframed)
+     port's Invader (-X 0x09600000 -T 0x900000, model and level geometry and
+     the animations' frame data to a .pgeo pack, animations keyframed, the
+     script node table sized to the map)
   4. bakes the textures for the PSP's graphics chip (.ptex), and the asset
      track's version (_track.ptex: half-size lightmaps, and alpha-tested
      plants that keep their leaves at a distance; --no-track skips it)
@@ -41,7 +42,11 @@ CAMPAIGN = ['a10', 'a30', 'a50', 'b30', 'b40', 'c10', 'c20', 'c40', 'd20', 'd40'
 MULTIPLAYER = ['beavercreek', 'bloodgulch', 'boardingaction', 'carousel', 'chillout', 'damnation', 'hangemhigh',
                'longest', 'prisoner', 'putput', 'ratrace', 'sidewinder', 'wizard']
 ALL = CAMPAIGN + MULTIPLAYER + ['ui']
-BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-T', '0x900000', '-U', '-l', '0', '-H', '-K', '0.25,0.003']
+# -M (build 106): animation frame data to the .pgeo pack, read through the
+# game's animation cache; -Y 512: the script node table sized to the nodes in
+# use plus 512 spare. Maps built with either need build 106 or later
+BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-T', '0x900000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
+               '-M', '-Y', '512']
 
 
 def log(text):

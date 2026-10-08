@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 105
+#define PSP_BUILD_NUMBER 106
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -47,6 +47,9 @@ that folder's way (build 6-8's logs all stopped at the same line) */
 
 int halo_main(void);
 long psp_game_time_peek(void);
+
+/* build 106: the garbage collector's counts (objects.c, psp_fixups.py) */
+long psp_garbage_runs[3], psp_garbage_removed, psp_garbage_bipeds_removed;
 
 /* ---------- logging (psp_fixups.py's changes call this) */
 
@@ -445,9 +448,31 @@ static struct profile_slot *profile_slot_for(const char *name)
 	return &profile_slots[index];
 }
 
+/* build 106: "notimers" (keep.txt): the per-step and per-object timers off
+(each reads the system clock, a system call, and there are thousands a
+frame: the steps, the objects' updates, the renderer's parts). The profile
+windows and the per-type object lines then read 0; the heartbeat's frame and
+tick times stay. Set when keep.txt is read */
+int psp_timers_off = 0;
+
 void psp_step(const char *name)
 {
-	unsigned int now = sceKernelGetSystemTimeLow();
+	unsigned int now;
+
+	if (psp_timers_off)
+	{
+		/* the step is still kept for the crash report and the crumbs */
+		last_step = name;
+		{
+			extern int psp_crumb_mark(const char *what, const char *detail);
+			extern int psp_crumbs_on;
+
+			if (psp_crumbs_on > 0)
+				psp_crumb_mark("step", name);
+		}
+		return;
+	}
+	now = sceKernelGetSystemTimeLow();
 
 	if (profile_last_name)
 	{
@@ -542,12 +567,50 @@ static void object_report(SceUID file, unsigned long ticks)
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
 	}
 	platform_log("  %s", line);
+	{
+		/* build 106: the corpse-sleep rule's stages (psp_fixups.py), when any
+		biped was dead in the window */
+		extern long psp_corpse_stage[4], psp_corpses_holding;
+
+		if (psp_corpse_stage[0])
+			platform_log("  corpses, per tick: %.1f dead, %.1f of them garbage, %.1f at rest, %.1f idle past 2 s (offered to sleep), %.1f of those still holding something",
+				ticks ? (double)psp_corpse_stage[0] / ticks : 0.0, ticks ? (double)psp_corpse_stage[1] / ticks : 0.0,
+				ticks ? (double)psp_corpse_stage[2] / ticks : 0.0, ticks ? (double)psp_corpse_stage[3] / ticks : 0.0,
+				ticks ? (double)psp_corpses_holding / ticks : 0.0);
+		memset(psp_corpse_stage, 0, sizeof(psp_corpse_stage));
+		psp_corpses_holding = 0;
+	}
+	{
+		/* build 106: the garbage collector (psp_fixups.py, objects.c) */
+		extern long psp_garbage_runs[3], psp_garbage_removed, psp_garbage_bipeds_removed;
+
+		if (psp_garbage_runs[0] || psp_garbage_runs[1] || psp_garbage_runs[2])
+			platform_log("  garbage collector: %ld runs forced (a script or the console), %ld for space, %ld for too many active; %ld objects removed, %ld of them bipeds",
+				psp_garbage_runs[0], psp_garbage_runs[1], psp_garbage_runs[2], psp_garbage_removed, psp_garbage_bipeds_removed);
+		memset(psp_garbage_runs, 0, sizeof(psp_garbage_runs));
+		psp_garbage_removed = psp_garbage_bipeds_removed = 0;
+	}
+	{
+		/* build 106: the game's model part draws (rasterizer.c's hook,
+		psp_fixups.py): before the GE (texture keys, colours) and in
+		psp_model_draw (the geometry locks and the GE's own work) */
+		extern unsigned long psp_model_draw_us[3];
+
+		if (psp_model_draw_us[2])
+			platform_log("  model part draws: %lu, %.1f us each before the GE, %.1f in psp_model_draw",
+				psp_model_draw_us[2], (double)psp_model_draw_us[0] / psp_model_draw_us[2],
+				(double)psp_model_draw_us[1] / psp_model_draw_us[2]);
+		memset(psp_model_draw_us, 0, sizeof(psp_model_draw_us));
+	}
 	if (file >= 0)
 	{
 		sceIoWrite(file, line, strlen(line));
 		sceIoWrite(file, "\n", 1);
 	}
 }
+
+/* build 106: rasterizer.c's model part draws (object_report) */
+unsigned long psp_model_draw_us[3];
 
 /* ---------- what the null path keeps (build 19). With the GE drawing, the
 old Direct3D path's shadows, see-through parts, particles, decals, HUD and
@@ -557,6 +620,13 @@ off unless ms0:/halo/keep.txt names them (shadows transparent particles
 decals hud textures interpolation), to measure what each costs */
 
 static char keep_words[256] = "";
+/* build 106: bumped whenever keep_words changes, so psp_keep's remembered
+answers are asked again */
+static int keep_generation = 1;
+static SceUID keep_cache_lock = -1; /* made by keep_load, at start-up */
+
+static int keep_search(const char *name);
+extern int psp_timers_off;
 
 static void keep_load(void)
 {
@@ -576,6 +646,10 @@ static void keep_load(void)
 	for (file = 0; keep_words[file]; file++)
 		if (keep_words[file] == '\n' || keep_words[file] == '\r' || keep_words[file] == '\t' || keep_words[file] == ',')
 			keep_words[file] = ' ';
+	keep_generation++;
+	psp_timers_off = keep_search("notimers");
+	if (keep_cache_lock < 0)
+		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
 		length ? keep_words : " nothing ");
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
@@ -590,12 +664,123 @@ int psp_keep_loaded(void)
 	return keep_words[0] != 0;
 }
 
+/* build 106: the cache file thread's priority, set from that thread when it
+first wakes after keep.txt is read (psp_fixups.py, cache_files_windows.c).
+0x1c: above the game thread (0x20) and below the heartbeat (0x18), the
+audio (0x12) and the callbacks (0x11). Why: psp_threads_report, psp_trace.c.
+"readerslow" in keep.txt leaves it as it was, for comparing */
+#define PSP_READER_PRIORITY 0x1c
+int psp_keep(const char *name);
+void psp_cache_thread_priority(void)
+{
+	static int done = 0;
+	SceKernelThreadInfo info;
+
+	if (done || !psp_keep_loaded())
+		return;
+	done = 1;
+	memset(&info, 0, sizeof(info));
+	info.size = sizeof(info);
+	sceKernelReferThreadStatus(0, &info);
+	if (psp_keep("readerslow"))
+	{
+		platform_log("cache file thread: priority 0x%x left as it is (readerslow)", info.currentPriority);
+		return;
+	}
+	if (sceKernelChangeThreadPriority(0, PSP_READER_PRIORITY) < 0)
+		platform_log("cache file thread: priority 0x%x; the change to 0x%x was refused", info.currentPriority, PSP_READER_PRIORITY);
+	else
+		platform_log("cache file thread (%s): priority 0x%x, now 0x%x (above the game thread's: readerslow undoes it)",
+			info.name, info.currentPriority, PSP_READER_PRIORITY);
+}
+
+/* build 106: the answers remembered, by the word itself. Many asks are made
+per object or per draw each frame ("fulllod" for every model's detail
+level...): b30's beach asked 13,000 times a second, each a snprintf (under
+psp_libc.c's formatting lock) and a search of keep.txt's text, 6.6% of the
+game thread in the emulator's PC samples */
+#define KEEP_CACHE 128
+#define KEEP_CACHE_NAME 24
+static struct
+{
+	/* written by any thread, one at a time (keep_cache_lock): sequence is
+	odd while a slot is being written, and a reader trusts only what it read
+	between two equal, even values */
+	volatile unsigned int sequence;
+	int generation, answer;
+	char name[KEEP_CACHE_NAME];
+} keep_cache[KEEP_CACHE];
+
+static int keep_search(const char *name)
+{
+	size_t length = strlen(name);
+	const char *at = keep_words;
+
+	if (!length)
+		return 0;
+	while ((at = strstr(at, name)) != NULL)
+	{
+		/* a whole word: a space on each side (keep_load puts one at each end) */
+		if (at > keep_words && at[-1] == ' ' && at[length] == ' ')
+			return 1;
+		at++;
+	}
+	return 0;
+}
+
 int psp_keep(const char *name)
 {
-	char word[40];
+	unsigned int hash = 2166136261u, slot;
+	const char *c;
+	int answer;
 
-	snprintf(word, sizeof(word), " %s ", name);
-	return strstr(keep_words, word) != NULL;
+	for (c = name; *c && c - name < KEEP_CACHE_NAME; c++)
+		hash = (hash ^ (unsigned char)*c) * 16777619u;
+	if (c - name >= KEEP_CACHE_NAME)
+		return keep_search(name); /* too long to remember */
+	slot = hash % KEEP_CACHE;
+	{
+		unsigned int before = keep_cache[slot].sequence;
+
+		if (!(before & 1) && keep_cache[slot].generation == keep_generation && strcmp(keep_cache[slot].name, name) == 0)
+		{
+			answer = keep_cache[slot].answer;
+			if (keep_cache[slot].sequence == before)
+				return answer;
+		}
+	}
+	answer = keep_search(name);
+	/* the last one asked for in a slot is the one remembered there (before
+	keep.txt is read, nothing is remembered) */
+	if (keep_cache_lock >= 0 && sceKernelWaitSema(keep_cache_lock, 1, NULL) >= 0)
+	{
+		keep_cache[slot].sequence++;
+		keep_cache[slot].generation = keep_generation;
+		keep_cache[slot].answer = answer;
+		strcpy(keep_cache[slot].name, name);
+		keep_cache[slot].sequence++;
+		sceKernelSignalSema(keep_cache_lock, 1);
+	}
+	return answer;
+}
+
+/* build 106: a keep word made of a prefix and a number ("anim384"): the
+number, or fallback when keep.txt has no such word */
+int psp_keep_number(const char *prefix, int fallback)
+{
+	char word[40];
+	const char *at = keep_words;
+	size_t length;
+
+	snprintf(word, sizeof(word), " %s", prefix);
+	length = strlen(word);
+	while ((at = strstr(at, word)) != NULL)
+	{
+		at += length;
+		if (*at >= '0' && *at <= '9')
+			return atoi(at);
+	}
+	return fallback;
 }
 
 static int profile_compare(const void *a, const void *b)
@@ -770,7 +955,16 @@ static char *heap_base = NULL;
 static volatile unsigned long tick_count, tick_total, tick_maximum;
 static volatile unsigned long frame_count, frame_total, frame_maximum;
 
+/* the game's own timers (psp_fixups.py): statistics only, so "notimers"
+answers 0 */
 unsigned long psp_microseconds(void)
+{
+	return psp_timers_off ? 0 : sceKernelGetSystemTimeLow();
+}
+
+/* build 106: the heartbeat's tick and frame times (game_time.c, main.c;
+psp_fixups.py), four reads of the clock a frame, kept with "notimers" */
+unsigned long psp_heartbeat_clock(void)
 {
 	return sceKernelGetSystemTimeLow();
 }
@@ -1057,6 +1251,12 @@ void psp_tick_account(unsigned long microseconds)
 			psp_heap_line(line, sizeof(line));
 			platform_log("%s", line);
 		}
+		{
+			/* build 106: the busiest printf formats ("printfcount") */
+			extern void psp_printf_report(void);
+
+			psp_printf_report();
+		}
 		if (ticks_seen % 900 == 75)
 			stack_report();
 	}
@@ -1116,34 +1316,66 @@ void psp_tick_account(unsigned long microseconds)
 	++ticks_seen;
 	/* ms0:/halo/commands.txt: console commands run 10 s after the game starts (one
 a line; e.g. cheat_active_camouflage_local_player 0), for testing what a
-map doesn't show by itself (build 30) */
-	if (ticks_seen == 300)
+map doesn't show by itself (build 30). Build 106: a line starting "@N "
+runs at game tick N instead (e.g. "@900 ai_kill enc2"), for tests that need
+steps in order: the console has no way to wait */
 	{
-		FILE *file = fopen(DATA_ROOT "/commands.txt", "r");
+#define TIMED_COMMANDS 16
+		static struct { unsigned long tick; char text[200]; } timed[TIMED_COMMANDS];
+		static int timed_count = 0;
+		extern unsigned char hs_compile_and_evaluate(const char *source);
+		int k;
 
-		if (file)
+		if (ticks_seen == 300)
 		{
-			extern unsigned char hs_compile_and_evaluate(const char *source);
-			char line[256];
+			FILE *file = fopen(DATA_ROOT "/commands.txt", "r");
 
-			while (fgets(line, sizeof(line), file))
+			if (file)
 			{
-				size_t length = strlen(line);
+				char line[256];
 
-				while (length && (line[length - 1] == '\n' || line[length - 1] == '\r'))
-					line[--length] = 0;
-				if (length)
+				while (fgets(line, sizeof(line), file))
 				{
-					platform_log("commands.txt: %s", line);
-					hs_compile_and_evaluate(line);
+					size_t length = strlen(line);
+					char *text = line;
+					unsigned long at = 0;
+
+					while (length && (line[length - 1] == '\n' || line[length - 1] == '\r'))
+						line[--length] = 0;
+					if (line[0] == '@')
+					{
+						at = strtoul(line + 1, &text, 10);
+						while (*text == ' ')
+							text++;
+					}
+					if (!*text)
+						continue;
+					if (at > ticks_seen && timed_count < TIMED_COMMANDS)
+					{
+						timed[timed_count].tick = at;
+						snprintf(timed[timed_count].text, sizeof(timed[timed_count].text), "%s", text);
+						timed_count++;
+						platform_log("commands.txt: at tick %lu: %s", at, text);
+					}
+					else
+					{
+						platform_log("commands.txt: %s", text);
+						hs_compile_and_evaluate(text);
+					}
 				}
+				fclose(file);
 			}
-			fclose(file);
+			else
+				/* build 103: said either way (b102 run 6: nothing logged, and no
+				way to tell a missing file from lines that didn't run) */
+				platform_log("commands.txt: none (no %s)", DATA_ROOT "/commands.txt");
 		}
-		else
-			/* build 103: said either way (b102 run 6: nothing logged, and no
-			way to tell a missing file from lines that didn't run) */
-			platform_log("commands.txt: none (no %s)", DATA_ROOT "/commands.txt");
+		for (k = 0; k < timed_count; k++)
+			if (timed[k].tick == ticks_seen)
+			{
+				platform_log("commands.txt: tick %lu: %s", ticks_seen, timed[k].text);
+				hs_compile_and_evaluate(timed[k].text);
+			}
 	}
 	/* build 59: ms0:/halo/teleport.txt, "x y z forward_x forward_y forward_z"
 	(the player's feet, as the heartbeat prints them, and a direction as a
@@ -1544,12 +1776,14 @@ static int heartbeat_thread(SceSize args, void *argp)
 		{
 			extern void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us);
 			extern void psp_geo_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us);
-			unsigned long tr, tu, tw, gr, gu, gw;
+			extern void psp_anim_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us);
+			unsigned long tr, tu, tw, gr, gu, gw, ar, au, aw;
 
 			psp_tex_io_window(&tr, &tu, &tw);
 			psp_geo_io_window(&gr, &gu, &gw);
-			platform_log("io: textures %lu reads, %.1f ms (slowest %.1f); geometry %lu reads, %.1f ms (slowest %.1f) over %.1f s",
-				tr, tu / 1000.0, tw / 1000.0, gr, gu / 1000.0, gw / 1000.0, seconds);
+			psp_anim_io_window(&ar, &au, &aw);
+			platform_log("io: textures %lu reads, %.1f ms (slowest %.1f); geometry %lu reads, %.1f ms (slowest %.1f); animations %lu reads, %.1f ms (slowest %.1f) over %.1f s",
+				tr, tu / 1000.0, tw / 1000.0, gr, gu / 1000.0, gw / 1000.0, ar, au / 1000.0, aw / 1000.0, seconds);
 			{
 				extern void psp_ge_frame_window(char *text, int size);
 				char line[400];
@@ -1619,9 +1853,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 		{
 			/* build 100: the Memory Stick lock's waits (psp_trace.c) */
 			extern void psp_stick_report(void);
+			extern void psp_threads_report(void); /* build 106 */
 
 			if (ticks >= 0 && beat > 20 && (beat % 6) == 0)
+			{
 				psp_stick_report();
+				psp_threads_report();
+			}
 		}
 		if (ticks >= 0 && (beat % 6) == 3)
 		{

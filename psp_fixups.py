@@ -189,6 +189,11 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		extern boolean psp_model_draw(struct triangle_buffer const *, long, struct vertex_buffer const *, unsigned int,
 			unsigned int, float, float, int);
 		extern unsigned int psp_tex_bitmap_key(long, int);
+		/* build 106: this call's time, before the GE (keys, colours) and in
+		psp_model_draw (geometry locks, the GE's own work) */
+		extern unsigned long psp_microseconds(void);
+		extern unsigned long psp_model_draw_us[3];
+		unsigned long psp_mark = psp_microseconds();
 		unsigned long hash = (unsigned long)shader * 2654435761UL;
 		unsigned int r = 160 + ((hash >> 8) & 0x5F), g = 70 + ((hash >> 16) & 0x5F), b = 40 + ((hash >> 24) & 0x3F);
 		unsigned int base_key = 0;
@@ -259,10 +264,20 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			}
 			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0, change, glow);
 		}
-		if (psp_ge_active() && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE &&
-			psp_model_draw(triangle_buffer, triangle_count, vertex_buffer, 0xFF000000 | (b << 16) | (g << 8) | r,
-				base_key, u_scale, v_scale, alpha_tested))
-			return;
+		{
+			boolean drawn;
+			unsigned long psp_now = psp_microseconds();
+
+			psp_model_draw_us[0] += psp_now - psp_mark;
+			psp_mark = psp_now;
+			drawn = psp_ge_active() && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE &&
+				psp_model_draw(triangle_buffer, triangle_count, vertex_buffer, 0xFF000000 | (b << 16) | (g << 8) | r,
+					base_key, u_scale, v_scale, alpha_tested);
+			psp_model_draw_us[1] += psp_microseconds() - psp_mark;
+			psp_model_draw_us[2]++;
+			if (drawn)
+				return;
+		}
 	}
 #endif
 	_rasterizer_model_draw(
@@ -707,12 +722,14 @@ static void *allocate_resource_memory(unsigned long size)
 ("					main_game_render((double)main_globals.seconds_elapsed);",
  """#ifdef HALO_PSP
 					{
-						/* the frame's time, for the heartbeat (psp_platform.c; psp_fixups.py) */
-						unsigned long psp_start = psp_microseconds();
+						/* the frame's time, for the heartbeat (psp_platform.c; psp_fixups.py).
+						build 106: its own clock, which "notimers" leaves on */
+						extern unsigned long psp_heartbeat_clock(void);
+						unsigned long psp_start = psp_heartbeat_clock();
 
 						psp_phase(2);
 						main_game_render((double)main_globals.seconds_elapsed);
-						psp_frame_account(psp_microseconds() - psp_start);
+						psp_frame_account(psp_heartbeat_clock() - psp_start);
 					}
 #else
 					main_game_render((double)main_globals.seconds_elapsed);
@@ -722,13 +739,15 @@ static void *allocate_resource_memory(unsigned long size)
 ("						game_tick();",
  """#ifdef HALO_PSP
 						{
-							/* each tick's time, for the heartbeat (psp_platform.c; psp_fixups.py) */
-							unsigned long psp_start = psp_microseconds();
+							/* each tick's time, for the heartbeat (psp_platform.c; psp_fixups.py).
+							build 106: its own clock, which "notimers" leaves on */
+							extern unsigned long psp_heartbeat_clock(void);
+							unsigned long psp_start = psp_heartbeat_clock();
 
 							psp_phase(1);
 							game_tick();
 							psp_phase(0);
-							psp_tick_account(psp_microseconds() - psp_start);
+							psp_tick_account(psp_heartbeat_clock() - psp_start);
 						}
 #else
 						game_tick();
@@ -833,13 +852,18 @@ null audio need for now. */
 				what it converted or copied from them (build 27) */
 				extern void psp_ge_forget_map(void);
 				extern void psp_tex_map_opened(const char *name);
-				extern void psp_geo_map_opened(const char *name, unsigned long map_checksum, const void *first_vertex_descriptor);
+				extern void psp_geo_map_opened(const char *name, unsigned long map_checksum, const void *first_vertex_descriptor,
+					unsigned long tag_data_end, unsigned long window_end);
 
 				psp_ge_forget_map();
 				/* build 68: the geometry pack first (it takes its RAM from the
-				texture cache's share), for a map built with its geometry outside */
+				texture cache's share), for a map built with its geometry outside.
+				Build 106: and where the tags end and the window ends, which the
+				animation cache's use of the window's unused part is checked by */
 				psp_geo_map_opened(cache_file_globals.header.name, cache_file_globals.header.checksum,
-					cache_file_globals.tag_header->vertex_buffer_count ? cache_file_globals.tag_header->vertex_buffers : NULL);
+					cache_file_globals.tag_header->vertex_buffer_count ? cache_file_globals.tag_header->vertex_buffers : NULL,
+					(unsigned long)tag_cache_base_address + cache_file_globals.header.tag_data_size,
+					(unsigned long)tag_cache_base_address + PSP_TAG_CACHE_SIZE);
 				/* and takes up the texture pack of the map whose tags these are
 				(build 20; at the tags since build 27: a map file is also opened
 				for the menu's previews, without becoming the map) */
@@ -1167,6 +1191,12 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
         "source/ai/actor_perception.c": [("void actor_perception_update(", None), ("static void actor_perception_refresh(", None)],
         "source/objects/objects.c": [("static boolean object_update(", None)],
     })
+    # build 106: an object's lighting as it is drawn (b30's beach: 7-10 ms a
+    # frame under the step "object_get_level_of_detail_pixels", which is the
+    # lighting lookup it is an argument of)
+    STEPS["source/render/render_objects.c"] = STEPS["source/render/render_objects.c"] + [
+        ("struct render_lighting *object_get_cached_render_lighting(", None),
+        ("static void object_render_state_refresh(", None)]
 STEP_LINES = {
     "source/bungie_net/network/transport_endpoint_set_winsock.c": [
         "\t\tbypass_file = fopen(", "\t\tif (XNetStartup(", "\t\twsa_error = WSAStartup(",
@@ -1828,39 +1858,183 @@ static short between_identifier = 0;
 static int between_index = -1;
 static int psp_vehicle_sleep_on = -1;
 long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep;
+/* build 106: how far dead bipeds get through the corpse-sleep rule, a count
+per biped update: dead; and garbage (not feigning); and at rest; and idle
+past 2 s (so offered to the byte-identical rule). b105 run 1 slept none
+and couldn't say why */
+long psp_corpse_stage[4], psp_corpses_holding;
 static struct { short identifier; short quiet; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
 
-static unsigned long psp_object_checksum(struct object_header_datum const *header)
+/* What the byte-identical rule leaves out of an object's data: the words an
+update changes every tick without changing anything the game shows or does.
+One set of rules for the checksum and for sleepdebug's report of what kept
+an object awake, so the two always agree */
+struct psp_checksum_rules
 {
-	unsigned long const *word = (unsigned long const *)header->datum;
-	long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, index = 0;
-	unsigned long sum = 0x9E3779B9UL;
+	long count;            /* words compared (the datum, at most 2048 bytes) */
+	long half_skip;        /* low half left out (a unit's timer) */
+	long whole_skip;       /* whole word left out (a weapon's last-owned time) */
+	long idle_word;        /* a biped's idle_ticks: its half left out */
+	unsigned long idle_mask;
+	long aim_first, aim_end; /* a dead biped's aim and look servo */
+	long functions_first, functions_end, colours_first, colours_end; /* and what it recomputes asleep */
+};
+
+static void psp_checksum_rules_for(struct object_header_datum const *header, struct psp_checksum_rules *rules)
+{
+	/* build 106: units.c's psp_unit_aim_bytes */
+	extern const long psp_unit_aim_bytes[2];
+
+	rules->count = (header->data_size < 2048 ? header->data_size : 2048) / 4;
 	/* build 44: a unit's timer (unit.timer, +0x1BC; units.c's round robin
 	for the "used time" work) counts every tick whatever the unit does, so
 	it is left out for vehicles: asleep, a parked vehicle's turn simply
 	passes to the others */
-	long skip = header->type == _object_type_vehicle || header->type == _object_type_biped ? 0x1BC / 4 : -1;
-	/* build 105: a settled corpse's idle_ticks (biped_update counts them
-	while it lies dead and at rest): left out, and advanced by hand while it
-	sleeps (psp_sleepy_update) */
-	long idle_word = header->type == _object_type_biped ? (long)(offsetof(struct object_datum, object.idle_ticks) / 4) : -1;
-	unsigned long idle_mask = (offsetof(struct object_datum, object.idle_ticks) & 2) ? 0x0000FFFFUL : 0xFFFF0000UL;
+	rules->half_skip = header->type == _object_type_vehicle || header->type == _object_type_biped ? 0x1BC / 4 : -1;
 	/* and a weapon's item.last_owned_time (+0x1B4), stamped with the game
 	time every tick while it is attached to a unit (items.c): the vehicle's
 	own gun carries it, and only unattached items are ever collected by it */
-	long skip_whole = header->type == _object_type_weapon ? 0x1B4 / 4 : -1;
-
-	/* and every object's magic_number (+0x8): the marker a render or
-	collision pass stamps on each object it visits (object_mark_function),
-	so a visible object's changed every frame. Until build 44 only objects
-	off screen ever slept */
-	for (; index < count; index++, word++)
+	rules->whole_skip = header->type == _object_type_weapon ? 0x1B4 / 4 : -1;
+	/* build 105: a settled corpse's idle_ticks (biped_update counts them
+	while it lies dead and at rest): left out, and advanced by hand while it
+	sleeps (psp_sleepy_update) */
+	rules->idle_word = header->type == _object_type_biped ? (long)(offsetof(struct object_datum, object.idle_ticks) / 4) : -1;
+	rules->idle_mask = (offsetof(struct object_datum, object.idle_ticks) & 2) ? 0x0000FFFFUL : 0xFFFF0000UL;
+	/* build 106: a dead biped's aim and look servo: it oscillates on a corpse
+	and the dying pose ignores it (see units.c) */
+	rules->aim_first = rules->aim_end = -1;
+	rules->functions_first = rules->functions_end = rules->colours_first = rules->colours_end = -1;
+	if (header->type == _object_type_biped &&
+		TEST_FLAG(((struct object_datum const *)header->datum)->object.damage_flags, _object_dead_bit))
 	{
-		unsigned long value = index == skip ? (*word & 0xFFFF0000) : (index == skip_whole || index == 2) ? 0 : *word;
+		rules->aim_first = psp_unit_aim_bytes[0] / 4;
+		rules->aim_end = (psp_unit_aim_bytes[1] + 3) / 4;
+		/* and its function values (incoming, then outgoing) and outgoing
+		change colours, which a sleeping corpse still computes every tick
+		(psp_sleepy_update): a Flood body's first function cycles for ever */
+		rules->functions_first = offsetof(struct object_datum, object.incoming_function_values) / 4;
+		rules->functions_end = (offsetof(struct object_datum, object.outgoing_function_values) +
+			sizeof(((struct object_datum *)0)->object.outgoing_function_values) + 3) / 4;
+		rules->colours_first = offsetof(struct object_datum, object.outgoing_change_colors) / 4;
+		rules->colours_end = (offsetof(struct object_datum, object.outgoing_change_colors) +
+			sizeof(((struct object_datum *)0)->object.outgoing_change_colors) + 3) / 4;
+	}
+}
 
-		if (index == idle_word)
-			value &= idle_mask;
-		sum = ((sum << 5) | (sum >> 27)) ^ value;
+/* a word as the rule compares it. Word 2 is every object's magic_number
+(+0x8): the marker a render or collision pass stamps on each object it
+visits (object_mark_function), so a visible object's changed every frame.
+Until build 44 only objects off screen ever slept */
+static unsigned long psp_checksum_word(struct psp_checksum_rules const *rules, long index, unsigned long value)
+{
+	if (index == 2 || index == rules->whole_skip || (index >= rules->aim_first && index < rules->aim_end) ||
+		(index >= rules->functions_first && index < rules->functions_end) ||
+		(index >= rules->colours_first && index < rules->colours_end))
+		return 0;
+	if (index == rules->half_skip)
+		return value & 0xFFFF0000UL;
+	if (index == rules->idle_word)
+		return value & rules->idle_mask;
+	return value;
+}
+
+/* the checksum word by word through the rules: the reference the fast one
+below must equal ("checksumcheck" in keep.txt compares them) */
+static unsigned long psp_object_checksum_reference(struct object_header_datum const *header)
+{
+	unsigned long const *word = (unsigned long const *)header->datum;
+	unsigned long sum = 0x9E3779B9UL;
+	struct psp_checksum_rules rules;
+	long index;
+
+	psp_checksum_rules_for(header, &rules);
+	for (index = 0; index < rules.count; index++)
+		sum = ((sum << 5) | (sum >> 27)) ^ psp_checksum_word(&rules, index, word[index]);
+	return sum;
+}
+
+/* build 106: the same sum, faster. The rules touch few words (word 2, and
+for units and weapons a timer word, the idle count and a dead biped's aim,
+functions and colours); every other word goes in as it is, so the runs
+between the touched ones go through a plain loop, four words a turn, and
+only the touched words through psp_checksum_word. b30's beach: 277 scenery
+objects, most asleep, cost 5 ms a tick in the emulator, mostly this sum */
+#define PSP_CHECKSUM_STEP(sum, value) (((sum) << 5 | (sum) >> 27) ^ (value))
+static unsigned long psp_checksum_span(unsigned long sum, unsigned long const *word, long first, long end)
+{
+	long index = first;
+
+	for (; index + 4 <= end; index += 4)
+	{
+		sum = PSP_CHECKSUM_STEP(sum, word[index]);
+		sum = PSP_CHECKSUM_STEP(sum, word[index + 1]);
+		sum = PSP_CHECKSUM_STEP(sum, word[index + 2]);
+		sum = PSP_CHECKSUM_STEP(sum, word[index + 3]);
+	}
+	for (; index < end; index++)
+		sum = PSP_CHECKSUM_STEP(sum, word[index]);
+	return sum;
+}
+
+static unsigned long psp_object_checksum(struct object_header_datum const *header)
+{
+	static int psp_checksum_check = -1;
+	static unsigned long psp_checksum_checked = 0, psp_checksum_wrong = 0;
+	static int psp_checksum_slow = -1;
+	unsigned long const *word = (unsigned long const *)header->datum;
+	unsigned long sum = 0x9E3779B9UL;
+	struct psp_checksum_rules rules;
+	long touched[7][2], count = 0, index = 0, k, j;
+
+	/* "slowchecksum": the reference alone, for timing the difference */
+	if (psp_checksum_slow < 0)
+		psp_checksum_slow = psp_keep("slowchecksum");
+	if (psp_checksum_slow)
+		return psp_object_checksum_reference(header);
+	psp_checksum_rules_for(header, &rules);
+	/* the touched ranges, in order */
+	touched[count][0] = 2; touched[count][1] = 3; count++;
+#define PSP_TOUCHED(first, end) if ((first) >= 0 && (end) > (first)) { touched[count][0] = (first); touched[count][1] = (end); count++; }
+	PSP_TOUCHED(rules.half_skip, rules.half_skip + 1);
+	PSP_TOUCHED(rules.whole_skip, rules.whole_skip + 1);
+	PSP_TOUCHED(rules.idle_word, rules.idle_word + 1);
+	PSP_TOUCHED(rules.aim_first, rules.aim_end);
+	PSP_TOUCHED(rules.functions_first, rules.functions_end);
+	PSP_TOUCHED(rules.colours_first, rules.colours_end);
+#undef PSP_TOUCHED
+	for (k = 1; k < count; k++)
+		for (j = k; j > 0 && touched[j][0] < touched[j - 1][0]; j--)
+		{
+			long first = touched[j][0], end = touched[j][1];
+
+			touched[j][0] = touched[j - 1][0]; touched[j][1] = touched[j - 1][1];
+			touched[j - 1][0] = first; touched[j - 1][1] = end;
+		}
+	for (k = 0; k < count && index < rules.count; k++)
+	{
+		long first = touched[k][0] < index ? index : touched[k][0], end = touched[k][1];
+
+		if (first > rules.count)
+			first = rules.count;
+		if (end > rules.count)
+			end = rules.count;
+		sum = psp_checksum_span(sum, word, index, first);
+		for (index = first; index < end; index++)
+			sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
+		if (index < first)
+			index = first;
+	}
+	sum = psp_checksum_span(sum, word, index, rules.count);
+	if (psp_checksum_check < 0)
+		psp_checksum_check = psp_keep("checksumcheck");
+	if (psp_checksum_check)
+	{
+		psp_checksum_checked++;
+		if (psp_object_checksum_reference(header) != sum && psp_checksum_wrong++ < 8)
+			platform_psp_log("sleep: the fast checksum differs from the reference for %s (type %d)",
+				tag_get_name(((struct object_datum const *)header->datum)->definition_index), header->type);
+		if (psp_checksum_checked % 100000 == 0)
+			platform_psp_log("sleep: checksumcheck: %lu sums compared, %lu differed", psp_checksum_checked, psp_checksum_wrong);
 	}
 	return sum;
 }
@@ -1869,13 +2043,14 @@ static boolean object_update(long object_index);
 static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep);
 
 int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */
+extern int psp_crumbs_on; /* build 106: the name is only looked up while crumbs are on */
 static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
 {
 	struct object_datum const *object = header->datum;
 	unsigned long before;
 
 	/* build 101: "crumbs": which object, on the screen as it updates */
-	if (header->type != _object_type_scenery && header->type != _object_type_machine &&
+	if (psp_crumbs_on > 0 && header->type != _object_type_scenery && header->type != _object_type_machine &&
 		header->type != _object_type_sound_scenery)
 		psp_crumb_mark("object", tag_get_name(object->definition_index));
 
@@ -1998,12 +2173,23 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 
 		if (psp_corpse_sleep_on < 0)
 			psp_corpse_sleep_on = !psp_keep("corpsesawake");
-		if (psp_corpse_sleep_on && !game_engine_running() &&
-			TEST_FLAG(object->object.damage_flags, _object_dead_bit) &&
-			TEST_FLAG(object->object.flags, _object_garbage_bit) &&
-			TEST_FLAG(object->object.flags, _object_at_rest_bit) &&
-			object->object.idle_ticks > 60)
-			may = 1;
+		if (psp_corpse_sleep_on && !game_engine_running() && TEST_FLAG(object->object.damage_flags, _object_dead_bit))
+		{
+			psp_corpse_stage[0]++;
+			if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+			{
+				psp_corpse_stage[1]++;
+				if (TEST_FLAG(object->object.flags, _object_at_rest_bit))
+				{
+					psp_corpse_stage[2]++;
+					if (object->object.idle_ticks > 60)
+					{
+						psp_corpse_stage[3]++;
+						may = 1;
+					}
+				}
+			}
+		}
 		psp_sleepy_update(object_index, absolute_index, header, may);
 		return;
 	}
@@ -2063,12 +2249,21 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 {
 	struct object_datum const *object = header->datum;
 	unsigned long before = 0;
+	int corpse_reported = 0;
 
 	if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
 		(object->object.first_child_object_index == NONE || header->type == _object_type_vehicle))
 		before = psp_family_checksum(header);
 	if (!before)
 	{
+		if (may_sleep && header->type == _object_type_biped && object->object.first_child_object_index != NONE)
+		{
+			/* build 106: a corpse still holding something can't sleep (the
+			checksum covers the object alone): counted for the report */
+			extern long psp_corpses_holding;
+
+			psp_corpses_holding++;
+		}
 		object_update(object_index);
 		if (absolute_index < MAXIMUM_OBJECTS_PER_MAP)
 			psp_sleep[absolute_index].quiet = 0;
@@ -2097,24 +2292,71 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 	if (psp_sleep[absolute_index].identifier == header->identifier &&
 		psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before)
 	{
+		struct object_datum *sleeper = (struct object_datum *)header->datum;
+
 		psp_objects_asleep++;
+		/* build 106: object_update counts the active garbage it updates, and
+		the garbage collector starts at 50 of them: a sleeping wreck or corpse
+		still counts, so collection starts when it did on the Xbox */
+		if (TEST_FLAG(sleeper->object.flags, _object_garbage_bit))
+			++object_globals->active_garbage_object_count;
 		if (header->type == _object_type_vehicle)
 			psp_vehicles_asleep++;
 		if (header->type == _object_type_biped)
 		{
 			/* build 105: the corpse's idle count goes on as the update would
 			have kept it (the checksum leaves it out) */
-			struct object_datum *sleeper = (struct object_datum *)header->datum;
-
 			if (sleeper->object.idle_ticks < 32767)
 				sleeper->object.idle_ticks++;
+			/* build 106: and its functions are computed as the update would
+			(a Flood body's first function cycles for ever, and its shaders
+			read it): only the expensive parts sleep, the pose, the physics,
+			the animation and the AI's unit work */
+			object_type_export_function_values(object_index);
+			object_compute_function_values(object_index);
+			object_compute_change_colors(object_index);
 			psp_corpses_asleep++;
 		}
 		return;
 	}
 	if (psp_sleep_debug < 0)
 		psp_sleep_debug = psp_keep("sleepdebug");
-	if (psp_sleep_debug && (header->type == _object_type_vehicle ? (game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24) : psp_sleep_reports < 12))
+	if (psp_sleep_debug && header->type == _object_type_biped && may_sleep && game_time_get() > 150)
+	{
+		/* build 106: a corpse that stays awake: every word its update
+		changed that the checksum compares (one try in 300, 12 at most) */
+		static int biped_reports = 0;
+		static long biped_tries = 0;
+
+		if (biped_reports < 12 && biped_tries++ % 300 == 0)
+		{
+			static unsigned long copy[512];
+			long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, shown = 0;
+			unsigned long after_sum;
+
+			struct psp_checksum_rules rules;
+
+			csmemcpy(copy, header->datum, count * 4);
+			object_update(object_index);
+			after_sum = psp_object_checksum(header);
+			psp_checksum_rules_for(header, &rules);
+			biped_reports++;
+			for (word = 0; word < count && shown < 24; word++)
+				if (psp_checksum_word(&rules, word, copy[word]) != psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+				{
+					platform_psp_log("sleep: corpse %s word %ld (byte %ld) of %d changed, %08lx -> %08lx",
+						tag_get_name(object->definition_index), word, word * 4, header->data_size,
+						copy[word], ((unsigned long const *)header->datum)[word]);
+					shown++;
+				}
+			platform_psp_log("sleep: corpse %s: %ld changed words shown, checksum %s (quiet %d)", tag_get_name(object->definition_index),
+				shown, after_sum == before ? "same" : "differs", psp_sleep[absolute_index].quiet);
+			corpse_reported = 1;
+		}
+	}
+	if (corpse_reported)
+		; /* updated above */
+	else if (psp_sleep_debug && (header->type == _object_type_vehicle ? (game_time_get() > 150 && psp_vehicle_sleep_reports++ < 24) : psp_sleep_reports < 12))
 	{
 		static unsigned long copy[512];
 		long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word;
@@ -2716,27 +2958,40 @@ FIXES_23["source/rasterizer/rasterizer.c"].append(
 # build 23: decals (bullet holes, blood, scorch marks, the level's painted
 # markings) to the GE, from the game's own decal vertices
 FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
-("""		IDirect3DDevice8_SetVertexData4ub(
-			global_d3d_device,
-			9,
-			color >> 16,
-			color >> 8,
-			color,
-			PIXEL32_COMPONENT_MASK - intensity);
-		IDirect3DDevice8_DrawPrimitive(""",
- """#ifdef HALO_PSP
+("""		unsigned long intensity;
+
+		if (local_framebuffer_blend_function != framebuffer_blend_function)
+		{""",
+ """		unsigned long intensity;
+
+#ifdef HALO_PSP
 		if (psp_ge_active())
 		{
-			/* psp_ge.c (build 23; psp_fixups.py) */
+			/* psp_ge.c (build 23; psp_fixups.py). Build 106: first thing in
+			the loop, before the Xbox's blend, shader and texture state for
+			the decal (set for nothing here: the GE call sets its own, and
+			rasterizer_set_texture looked up the bitmap each time it changed,
+			nearly every bullet hole), and the GE's texture key worked out only
+			when the decal's bitmap differs from the last one's. b30's fight
+			draws 800-900 decals a frame */
 			extern void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend,
 				unsigned long color, int intensity, int alpha_tested, int permanent);
 			extern unsigned int psp_tex_bitmap_key(long, int);
 			byte *vertex_data = NULL;
 
+			vertex_data_offset = (unsigned long)lruv_block_get_address(local_vertex_cache, decal_index);
+			color = decal->color;
+			intensity = (decal->intensity * (color >> 24) + 127) >> 8;
+			if (shader->map.index != psp_key_group || decal->bitmap_index != psp_key_bitmap)
+			{
+				psp_key_group = shader->map.index;
+				psp_key_bitmap = decal->bitmap_index;
+				psp_key = psp_tex_bitmap_key(shader->map.index, decal->bitmap_index);
+			}
 			IDirect3DVertexBuffer8_Lock(local_d3d_vertex_buffer, 0, 0, &vertex_data, D3DLOCK_READONLY);
 			if (vertex_data)
 				psp_ge_decal(vertex_data + vertex_data_offset, decal->quad_count,
-					psp_tex_bitmap_key(shader->map.index, decal->bitmap_index), framebuffer_blend_function, color,
+					psp_key, framebuffer_blend_function, color,
 					(int)intensity, local_layer == _decal_layer_alpha_tested,
 					/* build 90: the level's permanent decals (the scenario's painted symbols) */
 					TEST_FLAG(decal->flags, _decal_permanent_bit) ? 1 : 0);
@@ -2745,24 +3000,30 @@ FIXES_23["source/rasterizer/xbox/rasterizer_xbox_decals.c"] = [
 			continue;
 		}
 #endif
-		IDirect3DDevice8_SetVertexData4ub(
-			global_d3d_device,
-			9,
-			color >> 16,
-			color >> 8,
-			color,
-			PIXEL32_COMPONENT_MASK - intensity);
-		IDirect3DDevice8_DrawPrimitive("""),
+
+		if (local_framebuffer_blend_function != framebuffer_blend_function)
+		{"""),
 ("""void _rasterizer_decals_draw(
 	short cluster_index)
-{""",
+{
+	long decal_index;
+""",
  """#ifdef HALO_PSP
 int psp_ge_active(void);
 #endif
 
 void _rasterizer_decals_draw(
 	short cluster_index)
-{"""),
+{
+	long decal_index;
+#ifdef HALO_PSP
+	/* the last decal's bitmap and its GE texture key (build 106), for this
+	call's decals only (a new map may reuse the numbers) */
+	long psp_key_group = NONE;
+	short psp_key_bitmap = NONE;
+	unsigned int psp_key = 0;
+#endif
+"""),
 ]
 
 # build 23: the screen flash (taking damage, pickups, teleporting) on the GE
@@ -5894,7 +6155,8 @@ FIXES_36["source/main/main.c#sleep"] = [
 # crash report, no sound, no input; the crash handler's own test froze the
 # same way) leaves the last thing the game started on the frozen picture
 def _crumb(name, detail="0"):
-    return "#ifdef HALO_PSP\n\tchar *tag_get_name(long tag_index); int psp_crumb_mark(const char *what, const char *detail); int psp_crumbed = psp_crumb_mark(\"%s\", %s);\n#endif\n" % (name, detail)
+    # build 106: the detail (often a tag name) is worked out only while crumbs are on
+    return "#ifdef HALO_PSP\n\tchar *tag_get_name(long tag_index); int psp_crumb_mark(const char *what, const char *detail); extern int psp_crumbs_on; int psp_crumbed = psp_crumbs_on > 0 ? psp_crumb_mark(\"%s\", %s) : 0;\n#endif\n" % (name, detail)
 
 FIXES_36["source/items/projectiles.c#crumbs"] = [
 ("static void projectile_detonate(\n\tlong projectile_index,\n\tboolean first_collision,\n\treal time_left)\n{\n",
@@ -6017,7 +6279,885 @@ FIXES_105["source/render/render_debug.c"] = [
  "\toffsetof(struct render_debug_globals_definition, string_overflow_reported) == 0x740B ? 1 : -1];\n#endif\n"),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()):
+# build 106: what the garbage collector does, for the corpse-sleep tests
+# (b105 run 1: Sheepdog01 saw bodies vanish once he looked away, well below the 50
+# active ones that start a collection on their own). Counted by reason; the
+# heartbeat's objects line reports them
+FIXES_106 = {}
+# build 106: a corpse's aim. The unit's aiming and looking servo keeps
+# running on a dead unit and, with nothing to aim at, overshoots back and
+# forth between two values every tick (the emulator's scripted Flood fight:
+# aiming_vector, aiming_velocity, looking_vector and looking_velocity flip
+# each tick), so no corpse was ever byte-identical from tick to tick and none
+# slept (b105 run 1). A dying unit's pose ignores them: the aiming and
+# looking overlays are off in the dying states (unit_animation_aiming_screen,
+# _unit_state_hard_ping.._unit_state_resurrect_back). So objects.c's corpse
+# checksum leaves this range out; while a corpse sleeps it keeps its last values
+FIXES_106["source/units/units.c#aim"] = [
+("""void unit_get_aiming_vector(
+	long unit_index,
+	real_vector3d *aiming_vector)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 106): the bytes of a unit's aim and look servo
+(aiming_vector to the end of looking_velocity), for the corpse checksum in
+objects.c, which can't see this structure */
+const long psp_unit_aim_bytes[2] =
+{
+	offsetof(struct unit_datum, unit.aiming_vector),
+	offsetof(struct unit_datum, unit.looking_velocity) + sizeof(real_vector3d)
+};
+#endif
+
+void unit_get_aiming_vector(
+	long unit_index,
+	real_vector3d *aiming_vector)
+{"""),
+]
+FIXES_106["source/objects/objects.c#garbage"] = [
+("""	if (garbage_collect_mode!=NONE)
+	{
+		long garbage_collect_mode_wide;""",
+ """#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (build 106): runs by reason (forced by a script or
+		the console, for space, for too many active), objects removed */
+		extern long psp_garbage_runs[3];
+
+		if (garbage_collect_mode == _garbage_collect_everything)
+			psp_garbage_runs[0]++;
+		else if (garbage_collect_mode == _garbage_collect_for_space)
+			psp_garbage_runs[1]++;
+		else if (garbage_collect_mode == _garbage_collect_active_objects)
+			psp_garbage_runs[2]++;
+	}
+#endif
+	if (garbage_collect_mode!=NONE)
+	{
+		long garbage_collect_mode_wide;"""),
+("""					object_set_garbage(object_index, FALSE);
+					object_delete_immediately(object_index);""",
+ """#ifdef HALO_PSP
+					{
+						extern long psp_garbage_removed, psp_garbage_bipeds_removed;
+
+						psp_garbage_removed++;
+						if (header->type == _object_type_biped)
+							psp_garbage_bipeds_removed++;
+					}
+#endif
+					object_set_garbage(object_index, FALSE);
+					object_delete_immediately(object_index);"""),
+]
+
+# build 106: animation frame data outside the tags. A map built with
+# invader-build -M (and -G) keeps each animation's frame data at the front of
+# its geometry pack, and the animation's data pointer is 0x0C000000 + its
+# offset there (the tag window can't hold it with the rest of a campaign
+# map's tags: campaign_window_fit.md). The game reads frame data in two
+# places: animation_get_frame_data (a compressed animation's compressed block,
+# or one uncompressed frame) and the three keyframe readers (the compressed
+# block). Both now ask psp_animation_data for exactly the bytes they read; it
+# answers from the tags, or through the animation cache (psp_anim.c). The
+# pointer is good for the length of the caller's call, as before
+FIXES_106["source/models/model_animation_definitions.h"] = [
+("""#define animation_get_default_data(animation) ((animation)->default_data.address)
+""",
+ """#define animation_get_default_data(animation) ((animation)->default_data.address)
+
+#ifdef HALO_PSP
+/* psp_fixups.py (build 106): size bytes of an animation's frame data, offset
+bytes in: in the tags, or, for a map built with its animations outside its
+tags (invader-build -M), in its geometry pack, through the animation cache
+(psp_anim.c), which reads them in if they aren't in RAM. The pointer stays
+good while the caller works on this animation (the cache keeps the last
+few ranges it handed out) */
+void *psp_anim_lock(unsigned long address, unsigned long size);
+static __inline__ byte *psp_animation_data(struct tag_data const *data, long offset, long size)
+{
+	unsigned long address = (unsigned long)data->address + (unsigned long)offset;
+
+	if (__builtin_expect(address < 0x0C000000UL, 1))
+		return (byte *)address;
+	return (byte *)psp_anim_lock(address, (unsigned long)size);
+}
+#endif
+"""),
+]
+FIXES_106["source/models/model_animation_definitions.c"] = [
+("""	compressed = TEST_FLAG(animation->flags, _animation_compressed_bit) && hs_model_animation_compression_enabled;
+	frame_data = tag_data_get_pointer(&animation->data, 0, 0);
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\models\\\\model_animation_definitions.c", 1147, frame_index>=0 && frame_index<animation->frame_count);
+
+	if (compressed)
+		frame_data += animation->compressed_data_offset;
+	else
+		frame_data += frame_index * animation->frame_size;
+""",
+ """	compressed = TEST_FLAG(animation->flags, _animation_compressed_bit) && hs_model_animation_compression_enabled;
+#ifndef HALO_PSP
+	frame_data = tag_data_get_pointer(&animation->data, 0, 0);
+#endif
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\models\\\\model_animation_definitions.c", 1147, frame_index>=0 && frame_index<animation->frame_count);
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 106): only the bytes this call's reader uses (the
+	compressed block, or this frame), from the tags or the animation cache */
+	if (compressed)
+		frame_data = psp_animation_data(&animation->data, animation->compressed_data_offset,
+			animation->data.size - animation->compressed_data_offset);
+	else
+		frame_data = psp_animation_data(&animation->data, frame_index * animation->frame_size, animation->frame_size);
+#else
+	if (compressed)
+		frame_data += animation->compressed_data_offset;
+	else
+		frame_data += frame_index * animation->frame_size;
+#endif
+"""),
+]
+FIXES_106["source/models/model_animations.c#frames"] = [
+("""	real_quaternion *rotation)
+{
+	byte *data = tag_data_get_pointer(&animation->data, animation->compressed_data_offset, 0);
+""",
+ """	real_quaternion *rotation)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 106): the compressed block, from the tags or the
+	animation cache (model_animation_definitions.h) */
+	byte *data = psp_animation_data(&animation->data, animation->compressed_data_offset,
+		animation->data.size - animation->compressed_data_offset);
+#else
+	byte *data = tag_data_get_pointer(&animation->data, animation->compressed_data_offset, 0);
+#endif
+"""),
+("""	real_point3d *translation)
+{
+	byte *data = tag_data_get_pointer(&animation->data, animation->compressed_data_offset, 0);
+""",
+ """	real_point3d *translation)
+{
+#ifdef HALO_PSP
+	byte *data = psp_animation_data(&animation->data, animation->compressed_data_offset,
+		animation->data.size - animation->compressed_data_offset);
+#else
+	byte *data = tag_data_get_pointer(&animation->data, animation->compressed_data_offset, 0);
+#endif
+"""),
+("""	real *scale)
+{
+	byte *data = tag_data_get_pointer(&animation->data, animation->compressed_data_offset, 0);
+""",
+ """	real *scale)
+{
+#ifdef HALO_PSP
+	byte *data = psp_animation_data(&animation->data, animation->compressed_data_offset,
+		animation->data.size - animation->compressed_data_offset);
+#else
+	byte *data = tag_data_get_pointer(&animation->data, animation->compressed_data_offset, 0);
+#endif
+"""),
+]
+
+# build 106: the script node table at the size the map's scripts need. The
+# Xbox's maps carry a table of 19,001 nodes (380 KB) in the scenario's tag
+# data, the engine's maximum; b30 uses 4,557. A map built with
+# invader-build -Y <spare> carries the nodes in use plus a spare share (the
+# console's expressions take nodes while they run; hs_node_gc gives them back
+# every 16 ticks). hs_allocate used the tag's table only when it was exactly
+# the maximum's size, and otherwise put a full-size table in the heap and
+# freed the tag's (with free(), on tag memory): it now takes any table that
+# agrees with its own header
+FIXES_106["source/hs/hs.c"] = [
+("""	scenario = global_scenario_index != NONE ? global_scenario_get() : NULL;
+	if (scenario &&
+		scenario->hs_syntax_data.size ==
+			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node))
+	{
+		return;
+	}
+""",
+ """	scenario = global_scenario_index != NONE ? global_scenario_get() : NULL;
+	if (scenario &&
+		scenario->hs_syntax_data.size ==
+			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node))
+	{
+		return;
+	}
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 106): a table sized to the map (invader-build -Y) */
+	if (scenario && scenario->hs_syntax_data.address &&
+		scenario->hs_syntax_data.size > (long)sizeof(struct data_array) &&
+		((struct data_array *)scenario->hs_syntax_data.address)->maximum_count <= MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO &&
+		scenario->hs_syntax_data.size == (long)(sizeof(struct data_array) +
+			((struct data_array *)scenario->hs_syntax_data.address)->maximum_count * sizeof(struct hs_syntax_node)))
+	{
+		return;
+	}
+#endif
+"""),
+]
+
+# build 106: datum_get, cheaper. The emulator's PC samples (tools/pcprofile.py)
+# put 11% of the game thread's time on b30's beach in datum_get itself: every
+# object, light and cluster reference lookup goes through it (object_get, the
+# cluster partitions' lists, the object and light markers), millions of times
+# a second. The lookup is a dozen instructions, but the release build's
+# failure message (a 128-byte buffer on the stack) gave every call a 160-byte
+# frame and a frame pointer. The message moved into a cold helper of its own,
+# so the found-it path has no frame. (Inlining it at every caller instead cost
+# 48 KB of code, 64 KB of heap)
+FIXES_106["source/memory/data.c#fast"] = [
+("""void *datum_get(
+	struct data_array *data,
+	long index)
+{
+	struct datum_header *header;
+	short identifier;
+	short absolute_index;
+""",
+ """#if defined(HALO_PSP) && defined(HALO_RELEASE)
+/* psp_fixups.py (build 106): datum_get's failure message, out of its way */
+static void __attribute__((noinline, cold)) psp_datum_get_failed(
+	struct data_array *data,
+	long index,
+	void *caller)
+{
+	char message[128];
+
+	csprintf(
+		message,
+		"%.32s index #%d (0x%x) is unused or changed (asked from %p)",
+		data->name,
+		index&0xFFFF,
+		index,
+		caller);
+	release_assert_failed(message, "c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c", 412, TRUE);
+}
+/* and no frame pointer for this one (the build keeps them for the crash
+handler's walk; a lookup this small doesn't need one) */
+void *datum_get(struct data_array *data, long index) __attribute__((optimize("omit-frame-pointer")));
+#endif
+
+void *datum_get(
+	struct data_array *data,
+	long index)
+{
+	struct datum_header *header;
+	short identifier;
+	short absolute_index;
+"""),
+("""#ifdef HALO_RELEASE
+	/* port: a release build's message too, and where it was asked from
+	(debug.txt's reference address places it in the build): the caller
+	goes on with the NULL and crashes, with nothing else to say which
+	array and which caller it was */
+	{
+		char message[128];
+""",
+ """#if defined(HALO_PSP) && defined(HALO_RELEASE)
+	psp_datum_get_failed(data, index, __builtin_return_address(0));
+#elif defined(HALO_RELEASE)
+	/* port: a release build's message too, and where it was asked from
+	(debug.txt's reference address places it in the build): the caller
+	goes on with the NULL and crashes, with nothing else to say which
+	array and which caller it was */
+	{
+		char message[128];
+"""),
+]
+
+# build 106: Bungie's collision usage log (collision_usage.c) times every
+# collision call with the performance counter (a system call each) and counts
+# it by user, for a debug display the PSP build never shows: 2% of b30's
+# tick in the emulator's PC samples went to the clock alone. Off unless the
+# build keeps the debug tools (PSP_DEBUG_TOOLS)
+FIXES_106["source/physics/collision_usage.c"] = [
+("""void collision_log_start_time(
+	LARGE_INTEGER *start_time)
+{
+	QueryPerformanceCounter(start_time);
+""",
+ """void collision_log_start_time(
+	LARGE_INTEGER *start_time)
+{
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
+	/* psp_fixups.py (build 106): the debug display's timing, off */
+	start_time->QuadPart = 0;
+	return;
+#endif
+	QueryPerformanceCounter(start_time);
+"""),
+("""	LARGE_INTEGER end_time;
+	short user;
+
+	QueryPerformanceCounter(&end_time);
+	user = collision_log_get_current_user(collision_function);""",
+ """	LARGE_INTEGER end_time;
+	short user;
+
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
+	return;
+#endif
+	QueryPerformanceCounter(&end_time);
+	user = collision_log_get_current_user(collision_function);"""),
+("""	short user;
+
+	user = collision_log_get_current_user(collision_function);
+	if (user != NONE)
+	{
+		collision_usage_current.function[collision_function]
+			.total_all_users.calls++;""",
+ """	short user;
+
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
+	return;
+#endif
+	user = collision_log_get_current_user(collision_function);
+	if (user != NONE)
+	{
+		collision_usage_current.function[collision_function]
+			.total_all_users.calls++;"""),
+]
+
+# build 106: tag_get's usual case first, with no frame. Every object
+# definition, shader and bitmap lookup goes through it (object_definition_get
+# a dozen times per object per tick): the emulator's PC samples put 2.8% of
+# b30's beach fight in tag_get and cache_get_tag_instance, most of it the
+# frame the assert messages' buffers need. A found tag of the right group is
+# returned at once; anything else goes to the original, unchanged, for its
+# asserts
+FIXES_106["source/cache/cache_files.c#fast"] = [
+("""void *tag_get(
+	long group_tag,
+	long tag_index)
+{
+	char expected_group[16];
+	char returned_group[16];
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 106): the found-it path, then the checked original */
+static void *psp_tag_get_checked(long group_tag, long tag_index);
+void *tag_get(long group_tag, long tag_index) __attribute__((optimize("omit-frame-pointer")));
+void *tag_get(
+	long group_tag,
+	long tag_index)
+{
+	short absolute_index = (short)tag_index;
+
+	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
+		absolute_index >= 0 && absolute_index < cache_file_globals.tag_header->tag_count)
+	{
+		struct cache_file_tag_instance *instance = &global_tag_instances[absolute_index];
+
+		if ((!(tag_index & 0xFFFF0000) || instance->tag_index == tag_index) &&
+			(instance->group_tag == group_tag || instance->parent_group_tags[0] == group_tag ||
+				instance->parent_group_tags[1] == group_tag) &&
+			instance->base_address)
+		{
+			return instance->base_address;
+		}
+	}
+	return psp_tag_get_checked(group_tag, tag_index);
+}
+
+static void * __attribute__((noinline)) psp_tag_get_checked(
+#else
+void *tag_get(
+#endif
+	long group_tag,
+	long tag_index)
+{
+	char expected_group[16];
+	char returned_group[16];
+"""),
+]
+
+# build 106: two more debug-only costs on hot paths (the emulator's PC
+# samples, b30's beach fight): data_verify, an assert-only check of a data
+# array's header, run on every step of every data array iteration and every
+# datum_new (0.8%); and the frame profiler's texture timer around every
+# object-lighting texture load (two clock reads a call). Both kept with the
+# debug tools (PSP_DEBUG_TOOLS)
+FIXES_106["source/memory/data.c#verify"] = [
+("""void data_verify(
+	struct data_array *data)
+{
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c", 457, data);
+""",
+ """void data_verify(
+	struct data_array *data)
+{
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
+	/* psp_fixups.py (build 106): asserts only */
+	return;
+#endif
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c", 457, data);
+"""),
+]
+FIXES_106["source/cseries/profile.c#texture"] = [
+("""void profile_texture_start(
+	void)
+{
+	profile_timesection_begin_now(&profile_globals.current_frame.texture);
+""",
+ """void profile_texture_start(
+	void)
+{
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
+	/* psp_fixups.py (build 106): the frame profiler's texture time, unused */
+	return;
+#endif
+	profile_timesection_begin_now(&profile_globals.current_frame.texture);
+"""),
+("""void profile_texture_end(
+	void)
+{
+	profile_timesection_end_now(&profile_globals.current_frame.texture);
+""",
+ """void profile_texture_end(
+	void)
+{
+#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
+	return;
+#endif
+	profile_timesection_end_now(&profile_globals.current_frame.texture);
+"""),
+]
+
+# build 106: datum_get inline where it is hottest. datum_get itself is
+# cheaper now (above), but its call volume stays: on b30's beach the
+# emulator's PC samples still put 9-11% of the game thread in it, from the
+# cluster partitions' reference lists (an object's move takes it out of each
+# of its clusters' lists and puts it back, walking each list), object_get
+# and the object and light markers. In those files (and the reference list
+# helpers every list walk uses) the found-it path is inline; elsewhere the
+# call stays, so the code grows only where it pays
+FIXES_106["source/memory/data.h#inline"] = [
+("""void *datum_get(struct data_array *data, long index);
+""",
+ """void *datum_get(struct data_array *data, long index);
+#ifdef HALO_PSP
+/* psp_fixups.py (build 106): datum_get's found-it path for the hottest
+callers (cluster partitions, reference lists, objects.c, object_lights.c);
+anything else is datum_get's, with its message */
+static __inline__ void *psp_datum_get_inline(struct data_array *data, long index)
+{
+	short absolute_index = (short)index;
+	short identifier = (short)(index >> 16);
+
+	if (absolute_index >= 0 && absolute_index < data->count)
+	{
+		struct datum_header *header = (struct datum_header *)((byte *)data->data + data->size * absolute_index);
+
+		if (header->identifier && (!identifier || identifier == header->identifier))
+			return header;
+	}
+	return datum_get(data, index);
+}
+#endif
+"""),
+]
+FIXES_106["source/objects/reference_lists.h"] = [
+("""	if (*reference_index!=NONE)
+	{
+		reference = (struct data_reference *)datum_get(array, *reference_index);""",
+ """	if (*reference_index!=NONE)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (build 106): inline (memory/data.h) */
+		reference = (struct data_reference *)psp_datum_get_inline(array, *reference_index);
+#else
+		reference = (struct data_reference *)datum_get(array, *reference_index);
+#endif"""),
+]
+_PSP_DATUM_INLINE = """
+#ifdef HALO_PSP
+/* psp_fixups.py (build 106): datum_get's found-it path inline in this file
+(memory/data.h) */
+#define datum_get(data, index) psp_datum_get_inline((data), (index))
+#endif
+"""
+FIXES_106["source/structures/cluster_partitions.c#inline"] = [
+("""#include "structures/structures.h"
+
+/* ---------- constants */""",
+ """#include "structures/structures.h"
+""" + _PSP_DATUM_INLINE + """
+/* ---------- constants */"""),
+]
+FIXES_106["source/objects/objects.c#inline"] = [
+("""#include "units/units.h"
+
+/* ---------- constants */""",
+ """#include "units/units.h"
+""" + _PSP_DATUM_INLINE + """
+/* ---------- constants */"""),
+]
+FIXES_106["source/objects/object_lights.c#inline"] = [
+("""#include "units/units.h"
+
+/* ---------- constants */""",
+ """#include "units/units.h"
+""" + _PSP_DATUM_INLINE + """
+/* ---------- constants */"""),
+]
+# build 106: game_sound_update in four steps for the profile. Sheepdog01's b105
+# run: 11.5 ms a frame (median of 94 windows; up to 16.4), against about 1 ms
+# in the emulator on b30. Its parts: the cluster's sound environment, the
+# potentially audible set (every cluster against the camera's), the
+# background music and every looping sound's update
+FIXES_106["source/sound/game_sound.c#steps"] = [
+("""	sound_manager_set_sound_environment(sound_environment);
+	compute_combined_pas();
+""",
+ """#ifdef HALO_PSP
+	{
+		void psp_step(const char *name); /* psp_fixups.py (build 106) */
+
+		psp_step("game_sound_update: set environment");
+		sound_manager_set_sound_environment(sound_environment);
+		psp_step("game_sound_update: audible clusters");
+		compute_combined_pas();
+		psp_step("game_sound_update: music");
+	}
+#else
+	sound_manager_set_sound_environment(sound_environment);
+	compute_combined_pas();
+#endif
+"""),
+("""	for (looping_sound_index = data_next_index(game_looping_sound_data, NONE);
+		looping_sound_index != NONE;
+		looping_sound_index = data_next_index(game_looping_sound_data, looping_sound_index))
+	{
+		struct game_looping_sound_datum *sound = game_looping_sound_get(looping_sound_index);
+
+		if (sound->object_index == NONE)""",
+ """#ifdef HALO_PSP
+	{
+		void psp_step(const char *name); /* psp_fixups.py (build 106) */
+
+		psp_step("game_sound_update: looping sounds");
+	}
+#endif
+	for (looping_sound_index = data_next_index(game_looping_sound_data, NONE);
+		looping_sound_index != NONE;
+		looping_sound_index = data_next_index(game_looping_sound_data, looping_sound_index))
+	{
+		struct game_looping_sound_datum *sound = game_looping_sound_get(looping_sound_index);
+
+		if (sound->object_index == NONE)"""),
+]
+# build 106: the sounds' obstruction tests. Each sound in an audible cluster
+# gets a collision test from the camera (structure, water, objects, scenery,
+# machines) every frame it is refreshed: the emulator's step-tagged PC samples
+# put The Library's "game_sound_update: looping sounds" step at 6.3% of the
+# time, two thirds of it these tests; Sheepdog01's b105 run measured the step at
+# 11.5 ms a frame. Two changes:
+# - source_audible: a sound past its maximum distance is out whatever the test
+#   says, so it isn't tested (exact: the same sounds are heard);
+# - compute_sound_obstruction: a result is reused for up to
+#   PSP_OBSTRUCTION_FRESH_TICKS (the Xbox reused it within a tick); older ones
+#   are tested again while the frame's PSP_OBSTRUCTION_TESTS last, and reused
+#   past that (a muffling that follows the camera 100-200 ms late)
+# The counts go to the log every 300 frames ("sound obstruction:")
+FIXES_106["source/sound/sound_manager.c#obstruction"] = [
+("""		if (nearest_listener_index != NONE)
+		{
+			compute_sound_obstruction(
+				nearest_listener_index,
+				source,
+				square_root(nearest_distance_squared));
+		}
+""",
+ """		if (nearest_listener_index != NONE)
+		{
+#ifdef HALO_PSP
+			/* psp_fixups.py (build 106): past its reach, out whatever the
+			test says (below); left obstructed and occluded */
+			extern unsigned long psp_obstruction_beyond;
+
+			if (nearest_distance_squared > maximum_distance * maximum_distance)
+			{
+				source->obstruction = 0.6f;
+				source->occlusion = 1.0f;
+				psp_obstruction_beyond++;
+			}
+			else
+#endif
+			compute_sound_obstruction(
+				nearest_listener_index,
+				source,
+				square_root(nearest_distance_squared));
+		}
+"""),
+]
+FIXES_106["source/sound/game_sound.c#obstruction"] = [
+("""void compute_sound_obstruction(
+	short local_player_index,
+	struct sound_source *source,
+	real distance)
+{
+	struct observer_result const *camera = observer_get_camera(local_player_index);
+	long slot = obstruction_cache_slot(local_player_index, &source->location.position);
+	long now = game_time_get();
+
+	if (obstruction_cache[slot].valid &&
+		obstruction_cache[slot].game_time == now &&
+		obstruction_cache[slot].local_player_index == local_player_index &&
+		obstruction_cache[slot].position.x == source->location.position.x &&
+		obstruction_cache[slot].position.y == source->location.position.y &&
+		obstruction_cache[slot].position.z == source->location.position.z)
+	{
+		source->obstruction = obstruction_cache[slot].obstruction;
+		source->occlusion = obstruction_cache[slot].occlusion;
+		return;
+	}
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 106): see FIXES_106 game_sound.c#obstruction */
+#define PSP_OBSTRUCTION_FRESH_TICKS 4
+#define PSP_OBSTRUCTION_TESTS 6
+static long psp_obstruction_frame = -1;
+static int psp_obstruction_frame_tests = 0;
+unsigned long psp_obstruction_tests = 0, psp_obstruction_reused = 0, psp_obstruction_beyond = 0;
+static unsigned long psp_obstruction_frames = 0;
+
+void psp_obstruction_report(void)
+{
+	void platform_psp_log(const char *format, ...);
+
+	if (++psp_obstruction_frames < 300)
+		return;
+	platform_psp_log("sound obstruction: %.1f tests a frame, %.1f reused (up to %d ticks old, or older past %d tests), %.1f past their reach and not tested",
+		psp_obstruction_tests / 300.0, psp_obstruction_reused / 300.0, PSP_OBSTRUCTION_FRESH_TICKS, PSP_OBSTRUCTION_TESTS,
+		psp_obstruction_beyond / 300.0);
+	psp_obstruction_frames = psp_obstruction_tests = psp_obstruction_reused = psp_obstruction_beyond = 0;
+}
+#endif
+
+void compute_sound_obstruction(
+	short local_player_index,
+	struct sound_source *source,
+	real distance)
+{
+	struct observer_result const *camera = observer_get_camera(local_player_index);
+	long slot = obstruction_cache_slot(local_player_index, &source->location.position);
+	long now = game_time_get();
+
+#ifdef HALO_PSP
+	if (psp_obstruction_frame != game_sound_globals->update_index)
+	{
+		psp_obstruction_frame = game_sound_globals->update_index;
+		psp_obstruction_frame_tests = 0;
+	}
+	if (obstruction_cache[slot].valid &&
+		obstruction_cache[slot].local_player_index == local_player_index &&
+		obstruction_cache[slot].position.x == source->location.position.x &&
+		obstruction_cache[slot].position.y == source->location.position.y &&
+		obstruction_cache[slot].position.z == source->location.position.z &&
+		/* unsigned: a game time gone back (a checkpoint revert) counts as old */
+		((unsigned long)(now - obstruction_cache[slot].game_time) < PSP_OBSTRUCTION_FRESH_TICKS ||
+		psp_obstruction_frame_tests >= PSP_OBSTRUCTION_TESTS))
+	{
+		source->obstruction = obstruction_cache[slot].obstruction;
+		source->occlusion = obstruction_cache[slot].occlusion;
+		if (obstruction_cache[slot].game_time != now)
+			psp_obstruction_reused++;
+		return;
+	}
+	psp_obstruction_frame_tests++;
+	psp_obstruction_tests++;
+#else
+	if (obstruction_cache[slot].valid &&
+		obstruction_cache[slot].game_time == now &&
+		obstruction_cache[slot].local_player_index == local_player_index &&
+		obstruction_cache[slot].position.x == source->location.position.x &&
+		obstruction_cache[slot].position.y == source->location.position.y &&
+		obstruction_cache[slot].position.z == source->location.position.z)
+	{
+		source->obstruction = obstruction_cache[slot].obstruction;
+		source->occlusion = obstruction_cache[slot].occlusion;
+		return;
+	}
+#endif
+"""),
+("""	game_sound_globals->update_index++;
+
+	return;
+}
+""",
+ """	game_sound_globals->update_index++;
+#ifdef HALO_PSP
+	{
+		void psp_obstruction_report(void); /* psp_fixups.py (build 106), below */
+
+		psp_obstruction_report();
+	}
+#endif
+
+	return;
+}
+"""),
+]
+# build 106: an object's dynamic point lights (muzzle flashes, plasma bolts)
+# are looked for only to pick the Xbox's vertex shader with
+# per-vertex point lights (rasterizer_xbox_models.c); the GE draws a model
+# with the ambient colour and the two distant lights alone (psp_ge.c,
+# psp_ge_model_begin), and the dynamic lights' share of an object's light
+# reaches it through the lightmap sample, which looks for them separately.
+# The search walked every light in each of the object's clusters for every
+# object drawn, every frame: 2.4% of the emulator's time at b30's beach (the
+# "object_get_level_of_detail_pixels" step). "objectpointlights" in keep.txt
+# looks for them again
+FIXES_106["source/objects/object_lights.c#pointlights"] = [
+("""void lights_prepare_for_object_dynamic(
+	long object_index,
+	struct render_lighting *lighting)
+{
+	struct object_cluster_iterator iterator;
+	real_point3d center;
+	real radius;
+	real light_intensities[MAXIMUM_RENDERED_POINT_LIGHTS];
+	real light_attenuations[MAXIMUM_RENDERED_POINT_LIGHTS];
+	short cluster_index;
+	short light_index;
+""",
+ """void lights_prepare_for_object_dynamic(
+	long object_index,
+	struct render_lighting *lighting)
+{
+	struct object_cluster_iterator iterator;
+	real_point3d center;
+	real radius;
+	real light_intensities[MAXIMUM_RENDERED_POINT_LIGHTS];
+	real light_attenuations[MAXIMUM_RENDERED_POINT_LIGHTS];
+	short cluster_index;
+	short light_index;
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 106): see FIXES_106 object_lights.c#pointlights */
+	static int psp_point_lights = -1;
+
+	if (psp_point_lights < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_point_lights = psp_keep("objectpointlights");
+	}
+	if (!psp_point_lights)
+	{
+		lighting->point_light_count = 0;
+		return;
+	}
+#endif
+"""),
+]
+# build 106: no frame pointer for the object lookups (object_get is
+# object_get_and_verify_type): about 4% of all instructions in the emulator's
+# Library and b30 samples go to them, called from everywhere. The build keeps
+# frame pointers for the crash handler's walk; these are leaves on their fast
+# path (the type check's message is cold), as datum_get and tag_get already are
+FIXES_106["source/objects/objects.c#frameless"] = [
+("""void *object_get_and_verify_type(
+	long object_index,
+	unsigned long valid_type_flags)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 106) */
+void *object_get_and_verify_type(long object_index, unsigned long valid_type_flags) __attribute__((optimize("omit-frame-pointer")));
+void *object_header_block_get(long object_index, struct object_header_block_reference *reference) __attribute__((optimize("omit-frame-pointer")));
+#endif
+
+void *object_get_and_verify_type(
+	long object_index,
+	unsigned long valid_type_flags)
+{"""),
+]
+# build 106: lightning (the Library's beams and arcs, on objects' markers)
+# cleared all of its 4,097-point scratch array, 147 KB on the stack, for
+# each chain of each instance every frame, so that its checks could find
+# unused points marked not valid. The emulator's step-tagged PC samples:
+# 2.6% of The Library's time in that memset (under "widgets render", the
+# step before it), and on the PSP it also pushes 147 KB through the data
+# cache each time. Only the points a chain uses are read, and each is
+# written before it is read, so only the flags of those are cleared, as each
+# segment begins: the same points come out
+FIXES_106["source/objects/widgets/lightning.c"] = [
+("""							point_count = 0;
+							csmemset(points, 0, sizeof(points));""",
+ """							point_count = 0;
+#ifdef HALO_PSP
+							/* psp_fixups.py (build 106): the first point is
+							written in full below; the segments' flags are
+							cleared as each begins */
+							points[0].valid = FALSE;
+#else
+							csmemset(points, 0, sizeof(points));
+#endif"""),
+("""							short octave_index;
+
+							match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\widgets\\\\lightning.c", 383, !points[point_count+segment_point_count].valid);""",
+ """							short octave_index;
+
+#ifdef HALO_PSP
+							{
+								/* psp_fixups.py (build 106): this segment's points,
+								not valid until written (above) */
+								short clear_index;
+
+								for (clear_index = 1; clear_index <= segment_point_count &&
+									point_count + clear_index < MAXIMUM_LIGHTNING_POINTS; clear_index++)
+									points[point_count + clear_index].valid = FALSE;
+							}
+#endif
+							match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\widgets\\\\lightning.c", 383, !points[point_count+segment_point_count].valid);"""),
+]
+# build 106: the cache file thread (the map's reads: sounds, the second BSP,
+# the tag reads the loader queues) above the game thread. The PSP runs the
+# highest-priority ready thread and never shares the CPU between equals, so a
+# read that has finished in the driver waits for the game thread to block
+# before its thread can issue the next one, and it keeps the stick's lock
+# meanwhile. Sheepdog01's b105 run: 87 ms a call for reads the stick does in about
+# 4 ms. The thread sleeps in the driver nearly all the time, so it costs the
+# game thread little CPU. psp_platform.c's psp_cache_thread_priority has the
+# rule and the keep word ("readerslow" leaves it where pthreads put it)
+FIXES_106["source/cache/cache_files_windows.c#priority"] = [
+("""static void cache_file_windows_thread_proc(
+	void)
+{
+	while (TRUE)
+	{
+		while (WaitForSingleObjectEx(
+			cache_file_globals.sleep_event,
+			INFINITE,
+			TRUE) == WAIT_IO_COMPLETION)
+			;
+""",
+ """static void cache_file_windows_thread_proc(
+	void)
+{
+	while (TRUE)
+	{
+		while (WaitForSingleObjectEx(
+			cache_file_globals.sleep_event,
+			INFINITE,
+			TRUE) == WAIT_IO_COMPLETION)
+			;
+#ifdef HALO_PSP
+		{
+			/* psp_fixups.py (build 106): once keep.txt has been read */
+			extern void psp_cache_thread_priority(void);
+
+			psp_cache_thread_priority();
+		}
+#endif
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
