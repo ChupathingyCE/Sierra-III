@@ -168,6 +168,126 @@ int TIFFSetField(void *tiff, unsigned int tag, ...) { (void)tiff; (void)tag; ret
 int TIFFWriteScanline(void *tiff, void *buffer, unsigned int row, unsigned short sample)
 { (void)tiff; (void)buffer; (void)row; (void)sample; return -1; }
 
+/* ---------- build 105: one thread at a time in newlib's number formatting
+
+pspdev's newlib keeps one shared state for every thread (a single global
+_impure_ptr, no per-thread one). Its float-to-text converter (_dtoa_r, under
+every %f) keeps scratch memory there and returns a string that the next call
+frees. So two threads formatting floats at once corrupt each other: the
+heartbeat (priority 0x18) can interrupt the game thread (0x20) in the middle
+of a line with %f and format its own. The emulator hit it with two copies
+running side by side (a crash in _dtoa_r reading 0x00333033, text used as a
+pointer); on the PSP it would be rare and random. The printf engines and
+strtod (the same scratch memory) are wrapped (psp_build.py) to take one
+lock. It is recursive for the thread that holds it, and after a crash it is
+skipped: the crashed thread may hold it, and the crash handler formats text */
+
+#include <stdarg.h>
+#include <reent.h>
+
+extern volatile int psp_crashed;
+static SceUID format_lock = -1;
+static volatile SceUID format_owner = 0;
+static volatile int format_depth = 0;
+
+/* called first thing at start-up, while only one thread runs (psp_platform.c) */
+void psp_format_lock_init(void)
+{
+	if (format_lock < 0)
+		format_lock = sceKernelCreateSema("halo format", 0, 1, 1, NULL);
+}
+
+static int format_take(void)
+{
+	SceUID self;
+
+	if (format_lock < 0 || psp_crashed)
+		return 0;
+	self = sceKernelGetThreadId();
+	if (format_owner == self)
+	{
+		format_depth++;
+		return 1;
+	}
+	if (sceKernelWaitSema(format_lock, 1, NULL) < 0)
+		return 0;
+	format_owner = self;
+	format_depth = 1;
+	return 1;
+}
+
+static void format_give(int taken)
+{
+	if (!taken)
+		return;
+	if (--format_depth == 0)
+	{
+		format_owner = 0;
+		sceKernelSignalSema(format_lock, 1);
+	}
+}
+
+int __real__svfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments);
+int __wrap__svfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments)
+{
+	int taken = format_take(), result = __real__svfprintf_r(reent, file, format, arguments);
+
+	format_give(taken);
+	return result;
+}
+
+int __real__vfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments);
+int __wrap__vfprintf_r(struct _reent *reent, FILE *file, const char *format, va_list arguments)
+{
+	int taken = format_take(), result = __real__vfprintf_r(reent, file, format, arguments);
+
+	format_give(taken);
+	return result;
+}
+
+/* vfprintf, strtod and strtof live in the same objects as the engines they
+call, so those calls never pass through the wrappers above: the entry points
+themselves are wrapped too (the other printf and scanf calls reach an engine
+from another object, and are covered) */
+int __real_vfprintf(FILE *file, const char *format, va_list arguments);
+int __wrap_vfprintf(FILE *file, const char *format, va_list arguments)
+{
+	int taken = format_take(), result = __real_vfprintf(file, format, arguments);
+
+	format_give(taken);
+	return result;
+}
+
+double __real_strtod(const char *text, char **end);
+double __wrap_strtod(const char *text, char **end)
+{
+	int taken = format_take();
+	double result = __real_strtod(text, end);
+
+	format_give(taken);
+	return result;
+}
+
+float __real_strtof(const char *text, char **end);
+float __wrap_strtof(const char *text, char **end)
+{
+	int taken = format_take();
+	float result = __real_strtof(text, end);
+
+	format_give(taken);
+	return result;
+}
+
+double __real__strtod_r(struct _reent *reent, const char *text, char **end);
+double __wrap__strtod_r(struct _reent *reent, const char *text, char **end)
+{
+	int taken = format_take();
+	double result = __real__strtod_r(reent, text, end);
+
+	format_give(taken);
+	return result;
+}
+
 /* ---------- heap accounting (linked with --wrap=malloc,calloc,realloc,memalign):
 large requests and every failure are logged, so the log says what the heap
 went to */
@@ -238,6 +358,13 @@ void psp_heap_report(const char *why)
 		platform_log("heap callers:%s", line);
 }
 
+/* build 105: failures are counted for the overlay's warning (psp_debug.c)
+and logged one by one only for the first 64; b104 run 1 wrote 15,128 such
+lines, which the log then had to carry. The heartbeat's heap line has the
+running count */
+volatile unsigned long psp_heap_failures = 0;
+#define HEAP_FAILURES_LOGGED 64
+
 static void *heap_note(void *result, size_t size, const char *kind, void *caller)
 {
 	if (result)
@@ -248,7 +375,11 @@ static void *heap_note(void *result, size_t size, const char *kind, void *caller
 		psp_heap_report("first failure");
 	}
 	if (!result)
-		platform_log("heap: %s of %u bytes FAILED (large requests so far %lu KB)", kind, (unsigned)size, heap_large_total / 1024);
+	{
+		if (++psp_heap_failures <= HEAP_FAILURES_LOGGED)
+			platform_log("heap: %s of %u bytes FAILED (large requests so far %lu KB)%s", kind, (unsigned)size,
+				heap_large_total / 1024, psp_heap_failures == HEAP_FAILURES_LOGGED ? "; further failures are only counted" : "");
+	}
 	else if (size >= 0x10000)
 	{
 		heap_large_total += size;
@@ -256,6 +387,18 @@ static void *heap_note(void *result, size_t size, const char *kind, void *caller
 			caller, heap_large_total / 1024);
 	}
 	return result;
+}
+
+/* build 105: for the heartbeat. Free space inside the heap split into many
+small pieces (allocations made and freed every frame) can leave a large
+request failing though plenty is free in all: the pieces' count says
+whether that is happening */
+void psp_heap_line(char *line, int size)
+{
+	struct mallinfo info = mallinfo();
+
+	snprintf(line, size, "heap: %d KB in use, %d KB free inside in %d pieces, %d KB taken from the system; %lu requests failed",
+		info.uordblks / 1024, info.fordblks / 1024, info.ordblks, info.arena / 1024, psp_heap_failures);
 }
 
 void *__wrap_malloc(size_t size) { return heap_note(__real_malloc(size), size, "malloc", __builtin_return_address(0)); }

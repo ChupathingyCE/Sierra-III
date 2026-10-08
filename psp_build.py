@@ -47,12 +47,19 @@ BIG_RAM = os.environ.get("PSP_BIG_RAM", "") == "1"
 # PSP_TICK_STEPS=1 adds the tick breadcrumbs (bipeds, units, actors, object_update;
 # psp_fixups.py) that cost a few percent of the tick: recon builds only
 TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
+# build 105: PSP_DEBUG_TOOLS=1 keeps the developer instruments that cost
+# memory and that the game itself never needs (so far: the Media Engine
+# measure job "meclassify", 68 KB of buffers; the game's render-debug cache
+# at its full size). Off by default: the shipping build leaves them out and
+# the heap gets the space. The campaign/multiplayer split will be a flavour
+# of the same kind
+DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
 PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
        "-fms-extensions", "-fcommon", "-fno-strict-aliasing", "-fwrapv",
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -171,7 +178,8 @@ def link(objs, stubs):
     # (the new stub format, psp-build-exports -k: two objects, the function's
     # stub referring to the library's entry, so --gc-sections keeps both; the
     # old format's library entry was dropped as unreferenced)
-    for part in ("0000", "0001"):
+    # (build 105: a second system call, the bus-priority probe: part 0002)
+    for part in ("0000", "0001", "0002"):
         stub = os.path.join(OUT, "halo_profile_%s.o" % part)
         subprocess.run(["psp-gcc", "-G0", "-I" + SDK + "/include", "-DF_halo_profile_" + part, "-c",
                         os.path.join(HERE, "psp/profile/halo_profile.S"), "-o", stub], check=True)
@@ -212,7 +220,9 @@ def link(objs, stubs):
            "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=sceKernelCreateThread,--wrap=sceGeListUpdateStallAddr,"
            "--wrap=sceIoOpen,--wrap=sceIoLseek32,--wrap=sceIoLseek,--wrap=sceIoRead,--wrap=sceIoReadAsync,--wrap=sceIoClose,"
            "--wrap=sceDmacMemcpy,--wrap=sceGeListEnQueue,--wrap=sceDisplaySetFrameBuf,--wrap=sceIoWrite,--wrap=sceIoGetstat,"
-           "--wrap=sceIoDopen,--wrap=sceIoDclose,--wrap=open",
+           "--wrap=sceIoDopen,--wrap=sceIoDclose,--wrap=open,"
+           # build 105: newlib's printf engines and strtod under one lock (psp_libc.c)
+           "--wrap=_svfprintf_r,--wrap=_vfprintf_r,--wrap=_strtod_r,--wrap=vfprintf,--wrap=strtod,--wrap=strtof",
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     return subprocess.run(cmd, capture_output=True, text=True)
 

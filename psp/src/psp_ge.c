@@ -421,7 +421,52 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 /* models are drawn unlit for now: their texture times this grey */
 #define MODEL_LIGHT 0xFFB4B4B4
 
-static unsigned int __attribute__((aligned(64))) display_list[DISPLAY_LIST_BYTES / 4];
+/* build 105: the display list (384 KB) is no longer part of the program's
+zeroed data: the heap is sized to fill whatever the program leaves below the
+game state, so those 384 KB went to the heap. The list itself is taken when
+the GE starts, from the free space left in user RAM (b104 run 1: 552 KB free
+in play) when a block that large is free there, else from the heap, which
+leaves things as they were. The emulator shows why it waits for the GE: taken
+first thing at start-up, the block landed where the tag window is placed
+later (at a fixed address), and the map couldn't load. In play the emulator
+had 576 KB free but no block over 308 KB, so there it comes from the heap;
+the log says which, and how the free space lies, on the PSP */
+static unsigned int *display_list = NULL;
+static const char *display_list_where = "not yet";
+static int display_list_free_kb = 0, display_list_largest_kb = 0;
+
+/* at least this much stays free outside the heap for what is made later
+(threads' stacks, the blackbox's buffer: b104 took 32 KB more after load) */
+#define DISPLAY_LIST_LEAVES_FREE (128 * 1024)
+
+static void display_list_acquire(void)
+{
+	SceUID block = -1;
+
+	if (display_list)
+		return;
+	if ((int)sceKernelTotalFreeMemSize() >= DISPLAY_LIST_BYTES + 64 + DISPLAY_LIST_LEAVES_FREE)
+		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, DISPLAY_LIST_BYTES + 64, NULL);
+	if (block >= 0)
+	{
+		display_list = (unsigned int *)(((unsigned int)sceKernelGetBlockHeadAddr(block) + 63) & ~63u);
+		display_list_where = "free user RAM outside the heap";
+	}
+	else
+	{
+		display_list = memalign(64, DISPLAY_LIST_BYTES);
+		display_list_where = display_list ? "the heap (no room for it outside)" : "nowhere: no memory";
+	}
+	display_list_free_kb = sceKernelTotalFreeMemSize() / 1024;
+	display_list_largest_kb = sceKernelMaxFreeMemSize() / 1024;
+}
+
+static void display_list_report(void)
+{
+	platform_log("GE: display list %d KB at %08x, from %s; then %d KB free in user RAM (largest block %d KB), now %d KB (largest %d KB)",
+		DISPLAY_LIST_BYTES / 1024, (unsigned int)display_list, display_list_where, display_list_free_kb,
+		display_list_largest_kb, sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+}
 static int ge_ready = 0, frame_open = 0;
 /* the buffer being drawn (relative to VRAM), swapped each frame */
 static void *draw_buffer = (void *)0;
@@ -537,6 +582,8 @@ void psp_ge_fog(const float *color, float minimum_distance, float maximum_distan
 /* the GE's own state, once: buffers, viewport, depth, fog */
 static void ge_initialize(void)
 {
+	display_list_acquire();
+	display_list_report();
 	sceGuInit();
 	sceGuStart(GU_DIRECT, display_list);
 	sceGuDrawBuffer(GU_PSM_5650, (void *)0, BUFFER_WIDTH);
@@ -2373,8 +2420,10 @@ static unsigned long me_classify_me_us = 0;
 /* build 87: the second measure job, the slant buckets (angle_sort's loop:
 three vertices fetched per triangle from wherever they lie, the shape of the
 renderer's most expensive CPU step on hardware, 3.8 ms a frame in b86) */
+#if PSP_DEBUG_TOOLS
 static unsigned char me_buckets[ANGLE_TRIANGLES + 64] __attribute__((aligned(64)));
 static float me_angle_view[16] __attribute__((aligned(64)));
+#endif
 static unsigned long me_angle_jobs = 0, me_angle_triangles = 0, me_angle_mismatches = 0, me_angle_failures = 0,
 	me_angle_wait_us = 0, me_angle_sc_us = 0;
 static unsigned long me_angle_me_us = 0;
@@ -8766,8 +8815,8 @@ void psp_ge_frame_end(void)
 		if (used > list_peak)
 		{
 			list_peak = used;
-			if (used > (int)sizeof(display_list) * 7 / 8)
-				platform_log("GE: display list %d of %d bytes used", used, (int)sizeof(display_list));
+			if (used > DISPLAY_LIST_BYTES * 7 / 8)
+				platform_log("GE: display list %d of %d bytes used", used, DISPLAY_LIST_BYTES);
 		}
 	}
 	{
@@ -8892,7 +8941,7 @@ void psp_ge_frame_end(void)
 		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu; peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes,
-			list_peak, (int)sizeof(display_list), clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+			list_peak, DISPLAY_LIST_BYTES, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		if (frames > 1)
@@ -9016,7 +9065,8 @@ int psp_ge_active(void)
 }
 
 /* ---------- build 87: the Media Engine's first render job, measure only
-("meclassify" in the launch menu; off by default).
+("meclassify" in the launch menu; off by default). Build 105: only in a
+build made with PSP_DEBUG_TOOLS=1 (psp_build.py); elsewhere it does nothing.
 
 The level draw's first CPU step is classifying each vertex against the
 near plane and the guard band (to_camera + outside, ~1-3 ms a frame on the
@@ -9029,8 +9079,10 @@ FPU gives the same bits. Nothing it computes is used yet, and the main CPU
 waits for it, so it costs frame time while on: a measurement, not a speedup.
 The step after this (if the numbers say so) hands the classification to the
 ME for the whole visible set at the start of the level's drawing */
+#if PSP_DEBUG_TOOLS
 static unsigned char me_codes[65536 + 64] __attribute__((aligned(64)));
 static float me_view[16] __attribute__((aligned(64)));
+#endif
 static int me_classify_on = -1;
 static unsigned long me_classify_jobs, me_classify_vertices, me_classify_mismatches, me_classify_failures,
 	me_classify_wait_us;
@@ -9089,6 +9141,7 @@ unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results)
 /* the main CPU's side of the slant measure: the same triangles on the ME,
 its buckets against the main CPU's (angle_bucket_of), and the same function
 again on the main CPU with the triangles' vertices out of its cache first */
+#if PSP_DEBUG_TOOLS
 static void me_angle_measure(const struct ge_vertex *stream, const unsigned short *indices, long count,
 	int far_possible)
 {
@@ -9204,3 +9257,15 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 		if (vertex_codes[v] != me_codes[v])
 			me_classify_sc_mismatches++;
 }
+#else /* PSP_DEBUG_TOOLS: the instrument is left out (psp_build.py) */
+static void me_angle_measure(const struct ge_vertex *stream, const unsigned short *indices, long count,
+	int far_possible)
+{
+	(void)stream; (void)indices; (void)count; (void)far_possible;
+}
+
+static void me_classify_measure(const struct level_stream *stream, unsigned int lowest, unsigned int highest)
+{
+	(void)stream; (void)lowest; (void)highest;
+}
+#endif

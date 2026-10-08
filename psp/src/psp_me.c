@@ -273,6 +273,12 @@ static int emulator(void)
 	return sceIoDevctl("kemulator:", 3, NULL, 0, &result, sizeof(result)) == 0 && result;
 }
 
+/* build 105: for the rest of the platform layer (the bus probe) */
+int psp_is_emulator(void)
+{
+	return emulator();
+}
+
 void psp_me_stop(const char *why)
 {
 	volatile struct me_control *control = CONTROL;

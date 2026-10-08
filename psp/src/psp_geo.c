@@ -570,14 +570,22 @@ anyway, so the geometry cache takes its 1 MB from the texture RAM cache, as
 b68-b72 did, and leaves the heap: The Library ran out of heap at its first
 frame with it there. A pack that fits (Blood Gulch's) keeps the heap's, as
 b73 found it must */
+	/* build 105: the size comes from the pack the textures will actually use
+	(the asset track's, when chosen), and a size that can't be had is logged
+	and counts as "too big": a wrong guess that way costs texture caching,
+	the other way it starves the heap (b104 run 1) */
 	{
-		SceIoStat stat;
 		char texture_path[128];
+		long texture_bytes;
 		extern void *psp_tex_carve(unsigned int bytes);
+		extern long psp_tex_pack_bytes(const char *name, char *path, int size);
 
-		snprintf(texture_path, sizeof(texture_path), "ms0:/halo/maps/%s.ptex", name);
+		texture_bytes = psp_tex_pack_bytes(name, texture_path, sizeof(texture_path));
+		if (texture_bytes < 0)
+			platform_log("geometry: couldn't size %s (0x%08x): taken as larger than the texture caches",
+				texture_path, (unsigned)texture_bytes);
 		arena = NULL;
-		if (!psp_keep("geoheap") && sceIoGetstat(texture_path, &stat) >= 0 && stat.st_size > TEXTURE_CACHES_BYTES)
+		if (!psp_keep("geoheap") && (texture_bytes < 0 || texture_bytes > TEXTURE_CACHES_BYTES))
 		{
 			if (heap_arena)
 			{

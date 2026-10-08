@@ -55,3 +55,9 @@ Details in psp_hardware_reference.md §9.1.
 ## 5. The b103 load hang: emulator, strict interpreter [M]
 
 The Library with Sheepdog01's exact keep words (assettrack, hwprofile, handletest, geo2), b103, strict checks: it loads past the stencil bake and plays 20 s with **0 bad accesses**. The hang doesn't reproduce in the emulator, so it depends on hardware timing, as a lock problem would. b104's on-screen `LOCK:` lines are the instrument for it.
+
+## Decisions (Sheepdog01, 2026-10-07 evening)
+
+- **The campaign build carries no multiplayer.** Code that is dead weight for the campaign goes. Multiplayer becomes its own build, parallel to the campaign one, sharing what it can. The multiplayer maps must still load in the campaign build for testing, as they have so far (`map_name` with no game engine running).
+- **Dead code (lever 5) gets a thorough investigation with full coverage** before anything is cut; Sheepdog01 may raise the reasoning effort for that pass.
+- **Sound facts that shape the bake:** the port's mixer runs at 22,050 Hz (`psp_dsound.c` `OUTPUT_RATE`) and the PSP's sample-rate converter takes it to the 44.1 kHz output. So 44.1 kHz music is already heard at 22 kHz today; baking it at 22 kHz removes data that is read from the stick and then thrown away.

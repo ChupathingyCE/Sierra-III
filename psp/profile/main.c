@@ -89,6 +89,40 @@ static void phase_account(int next)
 	sceKernelCpuResumeIntr(interrupts);
 }
 
+/* build 105: the bus-priority probe (psp_hardware_reference.md section 9.1).
+Read-only: the registers psdevwiki and uofw name in the DDR controller, the
+GE and its EDRAM, and the system controller, whose meaning nobody has
+documented. A value that differs between the GE idle (start-up) and busy
+(in play) marks a candidate for the arbiter's priority. The list lives here,
+not in the caller, so nothing else can be read through this call; registers
+known to act when read or written (the DDR flush, the hardware mutex, the
+soft interrupt) are left out */
+static const unsigned int bus_registers[] =
+{
+	0xBD000020, 0xBD000024, 0xBD00002C, 0xBD000030, 0xBD000034, 0xBD000038, 0xBD000040, 0xBD000044, /* DDR */
+	0xBD400004, 0xBD400104, 0xBD400300,                                                             /* GE */
+	0xBD500040, 0xBD500050, 0xBD500060, 0xBD500090, 0xBD5000A0,                                     /* EDRAM */
+	0xBC100040, 0xBC10004C, 0xBC100050,                                                             /* system */
+};
+#define BUS_REGISTERS (int)(sizeof(bus_registers) / sizeof(bus_registers[0]))
+
+/* the system call (exports.exp): pairs of (address, value) into the game's
+memory; returns how many pairs, or -1 for a buffer outside user RAM */
+int halo_profile_bus_probe(unsigned int *pairs, int max_pairs)
+{
+	unsigned int start = (unsigned int)pairs & 0x1FFFFFFF;
+	int k, count = max_pairs < BUS_REGISTERS ? max_pairs : BUS_REGISTERS;
+
+	if (count <= 0 || start < 0x08800000 || start + (unsigned int)count * 8 > 0x0A000000)
+		return -1;
+	for (k = 0; k < count; k++)
+	{
+		pairs[2 * k] = bus_registers[k];
+		pairs[2 * k + 1] = *(volatile unsigned int *)bus_registers[k];
+	}
+	return count;
+}
+
 /* the system call (exports.exp): the game's thread changes phase */
 int halo_profile_phase(int phase)
 {

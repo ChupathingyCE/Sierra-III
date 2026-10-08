@@ -67,3 +67,25 @@ Built from b102's hardware day (Sheepdog01's PSP-1000, runs 2–6). Labels: **[M
 - **The stick's lock** waits in 2 s steps.
 - **On a timeout or long wait**, a `LOCK: … held by <thread>` line goes to the screen, taking no lock and touching no file. A `locks:` line follows in the log.
 - **The crash handler** limits its own lock waits first, and when the loading screen is the one showing, draws its report there and stops the log drawing over it.
+
+## b104 run 1 (Sheepdog01's PSP-1000, The Library: assettrack, geo2, hwprofile, handletest, deathless) [M unless marked]
+
+**Loading got through.** The same moment that hung b103 now passes: the first refused open was given the reserve handle, the log kept writing, and no lock waited out.
+
+**The handle limit is far lower than 64.** At load, `c20.pstn` was refused with `SCE_KERNEL_ERROR_MFILE` while the game held only **9–10** descriptors (exit.txt, stderr.txt twice, debug.txt, savegame.bin, gamestate.txt, c20.map, c20.pgeo, the log, the reserve). Over the run, 10 more opens were refused for lack of handles, including the log's own file twice (those batches are lost). Where the limit lives (the FAT driver, the firmware, ARK-4) is [U]. b103's reserve handle is the likely extra handle that tipped load over the edge, so the b103 hang probably started here too [U].
+
+**The chain that followed:**
+1. The geometry cache decides where to live by stat'ing `c20.ptex`. That stat ran in the same shortage and evidently failed (it isn't logged) [U, strong]: the cache went to the **heap** (1 MB) instead of the volatile partition (2 MB with geo2; b102/b103 runs logged "from the texture RAM cache").
+2. **The heap was full from load:** top 4,924 of 4,928 KB; 15,128 failed allocations; 2,192 "no memory for a material's vertices" (level pieces missing).
+3. **Controls died at about t 350:** `SDL_GetGamepads` (`psp_sdl.c`) mallocs 8 bytes every poll. When even 8 bytes failed, the game saw no gamepad: the pad read count froze at 2,029 while game time kept advancing. Music stopping at the same time is most likely the game's sound code failing its own allocations [U].
+4. The stencil bake was off (no `.pstn`), so walls used the old nudge.
+
+**handletest gave no answer:** the first open returned `0x80010016` (invalid argument), not MFILE. Read-only plus create isn't accepted on the hardware's FAT (the emulator allows it). Needs to create the file first, then open it read-only.
+
+**Display list:** the level drew in every window (57–60 KB a frame), with 0–0.2 draws skipped a frame; fullest frame 347 KB of 384. The level's reserve does its job.
+
+**Flashlight (shots t247–t266):** the pool on the floor now shows on hardware, with visible rings (the split pieces' corners). The light pass cost about 3.1 ms a frame over a window with it on part of the time; a clean on/off figure needs a still A/B.
+
+**Frame rate:** 6.1–6.7 fps (ticks ~60 ms a frame, the frame 72–87 ms, the renderer's CPU 38–45). Not comparable with earlier runs: the heap was starved and level pieces were missing.
+
+**b105 must:** (1) hold fewer descriptors (one stderr handle, debug.txt and the save files closed when idle, exit.txt dropped since Kommander's Exit skips the callback anyway, the reserve reconsidered); (2) place the geometry cache from the texture pack's real size, not a stat that can fail, and log a failure; (3) give `SDL_GetGamepads` a static list; (4) fix handletest's open flags.

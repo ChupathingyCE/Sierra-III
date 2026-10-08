@@ -12,6 +12,8 @@ PSP_EXPORT_END
 
 PSP_EXPORT_START(halo_profile, 0, 0x4001)
 PSP_EXPORT_FUNC(halo_profile_phase)
+# build 105: the read-only bus-priority probe
+PSP_EXPORT_FUNC(halo_profile_bus_probe)
 PSP_EXPORT_END
 
 PSP_END_EXPORTS

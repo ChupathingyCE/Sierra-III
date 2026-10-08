@@ -213,6 +213,7 @@ void psp_debug_draw(void *vram)
 {
 	char line[96];
 	unsigned long long now = sceKernelGetSystemTimeWide();
+	int heap_warning;
 
 	/* the frame rate, smoothed over about half a second */
 	if (fps_mark)
@@ -245,7 +246,15 @@ void psp_debug_draw(void *vram)
 			tps_mark = now;
 		}
 	}
-	if (!menu_open && !overlay)
+	{
+		/* build 105: a full heap shows on screen whether or not the overlay is
+		on (b104 run 1 failed allocations from the moment it loaded, and it
+		showed only when the controls died) */
+		extern volatile unsigned long psp_heap_failures;
+
+		heap_warning = psp_heap_failures > 0;
+	}
+	if (!menu_open && !overlay && !heap_warning)
 		return;
 	if (!screen_ready)
 	{
@@ -277,6 +286,13 @@ void psp_debug_draw(void *vram)
 		snprintf(line, sizeof(line), "TICK %4.1f MS   REND %4.1f MS   PORT %4.1f MS   WAIT %4.1f MS", psp_budget_last[2],
 			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5]);
 		text(0, 1, 0xFF80FF80, line);
+	}
+	if (heap_warning)
+	{
+		extern volatile unsigned long psp_heap_failures;
+
+		snprintf(line, sizeof(line), "HEAP FULL: %lu requests failed (see the log)", psp_heap_failures);
+		text(0, 2, 0xFF4040FF, line);
 	}
 	if (menu_open)
 	{

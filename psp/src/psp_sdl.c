@@ -112,7 +112,9 @@ static void controller_initialize(void)
 void SDL_SetMainReady(void) {}
 bool SDL_Init(SDL_InitFlags flags) { (void)flags; controller_initialize(); return true; }
 Uint64 SDL_GetTicks(void) { return (Uint64)(sceKernelGetSystemTimeWide() / 1000); }
-void SDL_free(void *memory) { free(memory); }
+static SDL_JoystickID gamepad_list[2];
+/* the gamepad list (SDL_GetGamepads, below) is static: never freed */
+void SDL_free(void *memory) { if (memory != (void *)gamepad_list) free(memory); }
 const char *SDL_GetError(void) { return "not available on the PSP"; }
 bool SDL_SetHint(const char *name, const char *value) { (void)name; (void)value; return true; }
 SDL_ThreadID SDL_GetCurrentThreadID(void) { return (SDL_ThreadID)sceKernelGetThreadId(); }
@@ -229,19 +231,16 @@ static SceCtrlData read_controls(void)
 	return pad;
 }
 
+/* build 105: one fixed list instead of a malloc on every pad read. b104
+run 1 ran the heap dry, the 8-byte malloc failed, and the game saw no
+gamepad from then on: the controls died while the game kept running.
+SDL_free (above) knows not to free it */
+static SDL_JoystickID gamepad_list[2] = { PSP_GAMEPAD_ID, 0 };
+
 SDL_JoystickID *SDL_GetGamepads(int *count)
 {
-	SDL_JoystickID *ids = malloc(2 * sizeof(SDL_JoystickID));
-
-	if (!ids)
-	{
-		if (count) *count = 0;
-		return NULL;
-	}
-	ids[0] = PSP_GAMEPAD_ID;
-	ids[1] = 0;
 	if (count) *count = 1;
-	return ids;
+	return gamepad_list;
 }
 
 SDL_Gamepad *SDL_OpenGamepad(SDL_JoystickID id) { return id == PSP_GAMEPAD_ID ? (SDL_Gamepad *)&controller_ready : NULL; }

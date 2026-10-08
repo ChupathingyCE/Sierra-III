@@ -54,7 +54,9 @@ static struct option options[] = {
 	{ "benchrun", "benchmark: 4 views x 9 switches, ~6 min", 0, 0 },
 	{ "assettrack", "asset track: the maps' _track packs", 5, 0 },
 	{ "assetdetail", "asset track: the maps' _detail packs", 5, 0 },
+#if PSP_DEBUG_TOOLS
 	{ "meclassify", "ME speed test: 2 render jobs, measure only", 0, 0 },
+#endif
 	{ "hwprofile", "CPU counters in the log (benchrun: always)", 0, 0 },
 	{ "handletest", "file handles: how many are free 15 s in", 0, 0 },
 	{ "blackbox", "crash hunt: I/O traced in play, log saved each frame", 0, 0 },

@@ -357,6 +357,9 @@ static struct
 	unsigned int opened_ms;
 } handles[HANDLES];
 static int handles_open = 0, handles_peak = 0, handles_lost = 0, close_failures = 0, open_failures = 0, mfile_failures = 0;
+/* build 105: refusals split by reason, so the out-of-handles ones stand out
+from the ordinary "is this file there?" probes */
+static int missing_failures = 0;
 static SceUID handle_reserve = -1;
 static SceUID handle_lock = -1;
 
@@ -508,11 +511,22 @@ void psp_handles_dump(const char *why)
 		platform_log("files:   (none in the table: the kernel's descriptors went to something outside the wrappers)");
 }
 
-/* one descriptor held from start-up, given up when the kernel runs out */
+/* one descriptor held from start-up, given up when the kernel runs out.
+Build 105: also called from the heartbeat to take it back once one is free.
+It opens through the real call, so a retry while the kernel is still out of
+descriptors isn't counted or reported as a failure again */
+SceUID __real_sceIoOpen(const char *file, int flags, SceMode mode);
 void psp_handles_reserve(void)
 {
-	if (handle_reserve < 0)
-		handle_reserve = sceIoOpen("ms0:/halo/log/reserve.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	static const char path[] = "ms0:/halo/log/reserve.txt";
+
+	if (handle_reserve >= 0)
+		return;
+	stick_take();
+	handle_reserve = __real_sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	stick_give();
+	if (handle_reserve >= 0)
+		handle_add(handle_reserve, 'f', path);
 }
 
 void psp_handles_release(void)
@@ -527,6 +541,8 @@ void psp_handles_release(void)
 static void open_failed(const char *path, char kind, int result)
 {
 	open_failures++;
+	if ((unsigned)result == 0x80010002 /* the file isn't there (ENOENT) */)
+		missing_failures++;
 	if ((unsigned)result == 0x80020320 /* SCE_KERNEL_ERROR_MFILE */)
 	{
 		int had_reserve = handle_reserve >= 0;
@@ -547,11 +563,11 @@ static void open_failed(const char *path, char kind, int result)
 /* for the stick report */
 void psp_handles_line(char *line, int size)
 {
-	snprintf(line, size, "files: %d handles open (peak %d), %d opens failed (%d for lack of handles), %d closes failed, %d handed out twice",
-		handles_open, handles_peak, open_failures, mfile_failures, close_failures, handles_lost);
+	snprintf(line, size, "files: %d handles open (peak %d); opens failed: %d for lack of handles, %d not there, %d otherwise; %d closes failed, %d handed out twice",
+		handles_open, handles_peak, mfile_failures, missing_failures, open_failures - mfile_failures - missing_failures,
+		close_failures, handles_lost);
 }
 
-SceUID __real_sceIoOpen(const char *file, int flags, SceMode mode);
 SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 {
 	SceUID fd;

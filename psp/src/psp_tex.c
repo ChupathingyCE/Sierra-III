@@ -556,38 +556,81 @@ static void bind_totals_save(void)
 		written > 0 ? " bytes" : ": FAILED", (sceKernelGetSystemTimeLow() - start) / 1000);
 }
 
+/* The packs a map may use, in the order they are tried. Build 102: the
+asset track ("assettrack", launch menu), the map's <map>_track.ptex when
+there is one, the same textures baked another way (lightmaps at half size),
+so one game runs either data set; "assetdetail", <map>_detail.ptex, a pack
+baked with some classes at full size (texpack.py --full-detail fp,...).
+Last, the usual <map>.ptex. Returns 0 for a candidate whose keep word is off */
+#define PACK_CANDIDATES 3
+static int pack_candidate(const char *name, int which, char *path, int size, const char **word)
+{
+	static const char *const words[2] = { "assettrack", "assetdetail" }, *const suffixes[2] = { "_track", "_detail" };
+
+	*word = NULL;
+	if (which < 2)
+	{
+		if (!psp_keep(words[which]))
+			return 0;
+		*word = words[which];
+		snprintf(path, size, "ms0:/halo/maps/%s%s.ptex", name, suffixes[which]);
+	}
+	else
+		snprintf(path, size, "ms0:/halo/maps/%s.ptex", name);
+	return 1;
+}
+
+/* build 105: the size of the pack psp_tex_map_opened will open, for the
+geometry cache to place itself before the textures are opened (psp_geo.c).
+A failed stat is tried twice more: in b104 run 1 it most likely failed for
+lack of file descriptors, put the geometry cache in the heap and starved
+the game of memory. Returns the size, or the last error (negative) */
+long psp_tex_pack_bytes(const char *name, char *path, int size)
+{
+	long result = 0x80010002; /* not there */
+	int which, attempt;
+	const char *word;
+	SceIoStat stat;
+
+	for (which = 0; which < PACK_CANDIDATES; which++)
+	{
+		if (!pack_candidate(name, which, path, size, &word))
+			continue;
+		for (attempt = 0; attempt < 3; attempt++)
+		{
+			int got = sceIoGetstat(path, &stat);
+
+			if (got >= 0)
+				return (long)stat.st_size;
+			result = got;
+			if ((unsigned)got == 0x80010002)
+				break;
+			sceKernelDelayThread(20000);
+		}
+	}
+	return result < 0 ? result : -1;
+}
+
 /* a map's tags were loaded: its texture pack, if there is one */
 void psp_tex_map_opened(const char *name)
 {
 	char path[128];
 	unsigned int header[3];
-	SceUID file;
+	SceUID file = -1;
+	int which;
 
 	if (!name || !name[0])
 		return;
 	psp_tex_close();
-	/* build 102: the asset track ("assettrack", launch menu): the map's
-	<map>_track.ptex when there is one, the same textures baked another way
-	(this build's: lightmaps at half size), so one game runs either data set */
-	file = -1;
+	for (which = 0; which < PACK_CANDIDATES && file < 0; which++)
 	{
-		/* and "assetdetail": <map>_detail.ptex, a pack baked with some
-		classes at full size (texpack.py --full-detail fp,...) */
-		static const char *const words[2] = { "assettrack", "assetdetail" }, *const suffixes[2] = { "_track", "_detail" };
-		int k;
+		const char *word;
 
-		for (k = 0; k < 2 && file < 0; k++)
-			if (psp_keep(words[k]))
-			{
-				snprintf(path, sizeof(path), "ms0:/halo/maps/%s%s.ptex", name, suffixes[k]);
-				file = sceIoOpen(path, PSP_O_RDONLY, 0);
-				platform_log("textures: %s: %s", words[k], file >= 0 ? path : "no such pack for this map: the usual one");
-			}
-	}
-	if (file < 0)
-	{
-		snprintf(path, sizeof(path), "ms0:/halo/maps/%s.ptex", name);
+		if (!pack_candidate(name, which, path, sizeof(path), &word))
+			continue;
 		file = sceIoOpen(path, PSP_O_RDONLY, 0);
+		if (word)
+			platform_log("textures: %s: %s", word, file >= 0 ? path : "no such pack for this map: the usual one");
 	}
 	if (file < 0)
 	{

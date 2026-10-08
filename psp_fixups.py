@@ -5929,7 +5929,95 @@ FIXES_36["source/physics/breakable_surfaces.c#aligned"] = [
  "static struct breakable_surface_globals *globals;\n#ifdef HALO_PSP\n_Static_assert(__builtin_offsetof(struct breakable_surface_globals, breakable_surface_flags) % 4 == 0, \"breakable surface flags read as words\");\n#endif\n"),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()):
+# build 105: file descriptors. b104 run 1 showed the PSP lets the game hold
+# only about ten files at once (descriptors 3-12; the 13th was refused), and
+# two of the ten were the game's own logs, opened at start-up and never
+# closed. Their lines now go through the port's log, which opens its file
+# only for the moment of each batch write.
+FIXES_105 = {}
+FIXES_105["source/cseries/errors.c"] = [
+("""static void write_to_debug_file(
+	char const *string,
+	boolean date)
+{
+	static FILE *volatile debug_file = NULL;
+""",
+ """#ifdef HALO_PSP
+void platform_psp_log(const char *format, ...);
+
+/* psp_fixups.py (build 105): debug.txt's lines go to the port's log, one
+line each, without the file's own date prefix (the log has its own) */
+static void write_to_debug_file(
+	char const *string,
+	boolean date)
+{
+	char line[512];
+	size_t length;
+
+	(void)date;
+	snprintf(line, sizeof(line), "%s", string);
+	length = strlen(line);
+	while (length > 0 && (line[length - 1] == '\\n' || line[length - 1] == '\\r'))
+		line[--length] = 0;
+	if (length > 0)
+		platform_psp_log("debug.txt: %s", line);
+}
+#else
+static void write_to_debug_file(
+	char const *string,
+	boolean date)
+{
+	static FILE *volatile debug_file = NULL;
+"""),
+("""	fprintf(file, "%s%s", prefix, string);
+	fflush(file);
+}
+""",
+ """	fprintf(file, "%s%s", prefix, string);
+	fflush(file);
+}
+#endif
+"""),
+]
+# gamestate.txt listed every game-state allocation at start-up and kept the
+# file open; the heartbeat's "game state:" survey (build 36) already reports
+# each pool with its size and peak, so the PSP writes nothing here
+FIXES_105["source/saved games/game_state.c"] = [
+("""	// The January compiler inlines this logger into both arena allocators while
+	// retaining one out-of-line copy under its private address-derived name.
+	FILE *file = bss_004d27b0;
+""",
+ """	// The January compiler inlines this logger into both arena allocators while
+	// retaining one out-of-line copy under its private address-derived name.
+	FILE *file = bss_004d27b0;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 105): see the heartbeat's game state survey */
+	(void)name; (void)type; (void)size; (void)gpu; (void)file;
+	return;
+#endif
+"""),
+]
+
+# build 105: the game's render-debug cache (lines, spheres and text that
+# developer tools draw into the world) holds 512 entries, 29 KB. Nothing in a
+# PSP build draws debug geometry (b94 cut the debug vertex buffer for the same
+# reason), so the shipping build keeps 16 and the heap gets the rest; a build
+# with PSP_DEBUG_TOOLS=1 keeps Bungie's size. A full cache is already handled
+# (the entry is dropped and the overflow reported once). The Xbox layout
+# checks after the entries only hold at Bungie's size
+FIXES_105["source/render/render_debug.c"] = [
+("\tMAXIMUM_RENDER_DEBUG_CACHE_ENTRIES = 512,\n",
+ "#if defined(HALO_PSP) && !PSP_DEBUG_TOOLS\n\tMAXIMUM_RENDER_DEBUG_CACHE_ENTRIES = 16, /* psp_fixups.py (build 105) */\n#else\n\tMAXIMUM_RENDER_DEBUG_CACHE_ENTRIES = 512,\n#endif\n"),
+("typedef char render_debug_globals_size_check[\n\tsizeof(struct render_debug_globals_definition) == 0x740C ? 1 : -1];\n",
+ "#if !(defined(HALO_PSP) && !PSP_DEBUG_TOOLS) /* psp_fixups.py (build 105): Bungie's size only */\ntypedef char render_debug_globals_size_check[\n\tsizeof(struct render_debug_globals_definition) == 0x740C ? 1 : -1];\n#endif\n"),
+("typedef char render_debug_globals_game_time_offset_check[\n",
+ "#if !(defined(HALO_PSP) && !PSP_DEBUG_TOOLS)\ntypedef char render_debug_globals_game_time_offset_check[\n"),
+("\toffsetof(struct render_debug_globals_definition, string_overflow_reported) == 0x740B ? 1 : -1];\n",
+ "\toffsetof(struct render_debug_globals_definition, string_overflow_reported) == 0x740B ? 1 : -1];\n#endif\n"),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

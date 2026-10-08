@@ -363,3 +363,17 @@ Sources added: `/home/claude/research/src/psp-media-engine-safe-task` (README, M
 - `halo_me`: firmware table recognised as the PSP-1000's (`meLibDefaultInit` 3); the ME counted 5,740 → 300,865 in 0.2 s. At the firmware default clock (222 MHz, bus 111; the test does not set 333): 16 voices × 512 frames 1,531 µs on the ME vs 1,552 µs on the SC, **bit-identical output**; 20,000 `sinf`/`sqrtf` 27,990 vs 28,031 µs, identical results; 10 s stress with the ME mixing flat out (6,480 blocks) while the SC spun freely; stopped cleanly on request.
 - `halo_me_audio` (mcidclan's sample): the three generated sounds played correctly. **Pressing HOME crashed the PSP**: the sample never stops its ME loop, so when the XMB reloads into the memory the ME is executing from, the ME runs garbage. Rule for the game: stop the ME (and wait for its acknowledgement) before any exit path — HOME, quit, and the suspend power callback.
 - For comparison, the game's own SC mixer on hardware: 1.6 ms per 23 ms block at 6.4 voices (-O2 build), 2.8 ms with -Os; worst block 6.8 ms. That is the time an ME mixer would hand back.
+
+## 7. The sound bake plan, shelved (2026-10-07, Sheepdog01) [E unless marked]
+
+Shelved because sound isn't limiting performance; this is the agreed shape for when it comes back.
+
+**Facts it rests on [M/D]:** the disc stores effects and dialogue at 22,050 Hz (mostly mono) and music plus some ambience at 44,100 Hz stereo, all Xbox ADPCM. The Library: 55 MB of sound, 40 MB of it 44.1 kHz music (628 pieces). The port's mixer runs at 22,050 Hz (`psp_dsound.c` `OUTPUT_RATE`) through the PSP's sample-rate-converter channel, so music above 11 kHz is lost today. In b101 run 2 the sound cache read 99 MB in 6.5 minutes, 86% of all stick reads in play.
+
+**Two outputs instead of one mixing rate:** effects and voices keep the 22 kHz mixer on the converter channel; music and 44.1 kHz ambience get a small second mixer at 44.1 kHz on an ordinary audio channel; the PSP's audio hardware adds the channels together [D from PPSSPP's model; to confirm on hardware]. Each sound plays at its native rate without doubling the effects' mixing work.
+
+**Two bake profiles (switchable, no code changes):**
+- **Low** (if Media Engine time gets tight): music in a compressed codec (Vorbis or Opus) at 22–24 kHz, ~56 kbps; effects ADPCM at 22 kHz, mono where they always play in 3D, a trellis encoder. The Library ~18 MB.
+- **High** (the default if the tests pass): music in the codec at 44.1 kHz, 96–128 kbps, on the 44.1 kHz output; effects as in Low. The Library ~22–25 MB, Xbox-quality music, Media Engine ~15–25% busy.
+
+**Before any of it:** (1) a hardware test playing a 22 kHz tone on the converter channel and a 44.1 kHz tone on an ordinary channel together; (2) a decode benchmark of one Vorbis/Opus stream on the Media Engine. Design question first: Halo's music is chains of ~1.3 s pieces with random loop picks, so each piece must decode on its own (or the joins be blended).

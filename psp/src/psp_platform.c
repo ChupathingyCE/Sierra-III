@@ -684,28 +684,12 @@ void psp_fpu_mask_traps(void)
 void psp_tex_save_learned(void);
 void psp_meaudio_stop(const char *why);
 
-/* build 88-89: ms0:/halo/log/exit.txt. Build 89: opened at start-up and
-kept open, so the exit writes through a descriptor it already has (the
-firmware starts the reboot before it calls the exit callback, and no file
-the callback opened in b47-b87 ever reached the Memory Stick; whether an
-open descriptor still works there is what this tells). Each step's result
-code is written too */
-static SceUID exit_file = -1;
+/* builds 88-104 kept ms0:/halo/log/exit.txt open from start-up to record
+how far the HOME exit got. It answered its question (b90: ARK-4 Kommander's
+Exit, the only way Sheepdog01 quits, never calls the exit callback at all), and
+build 105 gives its descriptor back: b104 run 1 showed the PSP lets the
+game hold only about ten files at once */
 static int exit_callbacks_registered[3] = { 1, 1, 1 };
-
-static void exit_mark(const char *text)
-{
-	if (exit_file >= 0)
-		sceIoWrite(exit_file, text, strlen(text));
-}
-
-static void exit_mark_code(const char *what, int code)
-{
-	char line[96];
-
-	snprintf(line, sizeof(line), "exit: %s (0x%08x)\n", what, (unsigned int)code);
-	exit_mark(line);
-}
 
 static int exit_callback(int a, int b, void *c)
 {
@@ -717,16 +701,11 @@ static int exit_callback(int a, int b, void *c)
 	it, which would hang the exit there if a write blocked instead of
 	failing (review) */
 	psp_meaudio_stop("HOME");
-	exit_mark("exit: the HOME exit callback ran; Media Engine stopped\n");
 	platform_log("HOME: exiting");
 	log_flush();
-	exit_mark("exit: log flushed\n");
 	/* build 89: no texture save here any more. The learned binds are saved
 	during play (psp_tex.c, b88); a save here that half worked (the file
 	truncated, the data never written) would wipe the one saved in play */
-	if (exit_file >= 0)
-		exit_mark_code("closing exit.txt, then sceKernelExitGame", sceIoClose(exit_file));
-	exit_file = -1;
 	sceKernelExitGame();
 	return 0;
 }
@@ -1053,6 +1032,9 @@ static void stack_report(void)
 	platform_log("stacks (KB used deepest/size):%s total %lu KB reserved, %lu KB ever used", line, total / 1024, used_total / 1024);
 }
 
+static void bus_probe(const char *when); /* build 105, below */
+
+
 void psp_tick_account(unsigned long microseconds)
 {
 	static unsigned long ticks_seen = 0;
@@ -1067,9 +1049,21 @@ void psp_tick_account(unsigned long microseconds)
 
 		psp_sound_cache_report();
 		psp_dynamic_geometry_report();
+		{
+			/* build 105: the heap's state and its pieces (psp_libc.c) */
+			extern void psp_heap_line(char *line, int size);
+			char line[200];
+
+			psp_heap_line(line, sizeof(line));
+			platform_log("%s", line);
+		}
 		if (ticks_seen % 900 == 75)
 			stack_report();
 	}
+
+	/* build 105: the bus probe's second reading, 10 s into play */
+	if (ticks_seen == 300)
+		bus_probe("in play, the GE busy");
 
 	/* build 99: "crashplay": a deliberate fault 20 s into play, to check
 	the crash handler's report shows on the game's screen */
@@ -1086,19 +1080,23 @@ void psp_tick_account(unsigned long microseconds)
 		*(volatile int *)4 = 0;
 	}
 
-	/* build 103: "handletest": 15 s in, opens the log folder's reserve file
-	again and again until the kernel refuses, then closes them all: how many
-	descriptors were free at that moment (64 less what the system and the game
-	hold), and a check of the handle table's out-of-handles path */
+	/* build 103: "handletest": 15 s in, opens one small file again and again
+	until the kernel refuses, then closes them all: how many descriptors were
+	free at that moment, and a check of the handle table's out-of-handles
+	path. Build 105: the file is created first and then opened read-only;
+	b104 asked for read-only and create in one call, which the PSP's FAT
+	driver refuses (0x80010016, invalid argument) though the emulator allows it */
 	if (ticks_seen == 450 && psp_keep("handletest"))
 	{
 		static SceUID held[80];
 		int count = 0, k;
-		SceUID fd = 0;
+		SceUID fd = sceIoOpen(LOG_FOLDER "/handletest.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 
+		if (fd >= 0)
+			sceIoClose(fd);
 		while (count < 80)
 		{
-			fd = sceIoOpen(LOG_FOLDER "/handletest.txt", PSP_O_RDONLY | PSP_O_CREAT, 0777);
+			fd = sceIoOpen(LOG_FOLDER "/handletest.txt", PSP_O_RDONLY, 0777);
 			if (fd < 0)
 				break;
 			held[count++] = fd;
@@ -1348,6 +1346,33 @@ static void hwprofile_start(const char *eboot_path)
 	platform_log("hardware profiler %s: %s (0x%08x)", path, module >= 0 ? "started" : "not loaded", (unsigned)module);
 }
 
+/* build 105: the bus-priority probe (halo_profile.prx; psp_hardware_reference.md
+section 9.1): the undocumented DDR, GE, EDRAM and system-controller
+registers, read once with the GE idle (start-up) and once busy (in play).
+Read-only, and only the module's own fixed list. The emulator has no such
+registers, so it is skipped there */
+int halo_profile_bus_probe(unsigned int *pairs, int max_pairs);
+
+static void bus_probe(const char *when)
+{
+	extern int psp_is_emulator(void);
+	static unsigned int pairs[2 * 32] __attribute__((aligned(64)));
+	char line[600];
+	int count, length = 0, k;
+
+	if (!hwprofile_running)
+		return;
+	if (psp_is_emulator())
+	{
+		platform_log("bus probe (%s): skipped in the emulator", when);
+		return;
+	}
+	count = halo_profile_bus_probe(pairs, 32);
+	for (k = 0; k < count && length < (int)sizeof(line) - 24; k++)
+		length += snprintf(line + length, sizeof(line) - length, " %08x=%08x", pairs[2 * k], pairs[2 * k + 1]);
+	platform_log("bus probe (%s): %d registers:%s", when, count, count > 0 ? line : " (the module refused)");
+}
+
 /* the counters since the last heartbeat, as shares of the CPU's cycles and
 counts a millisecond (counters in PspDebugProfilerRegs order, from systemck) */
 static void hwprofile_report(void)
@@ -1577,6 +1602,14 @@ static int heartbeat_thread(SceSize args, void *argp)
 				sceKernelTotalFreeMemSize() / 1024, log_descriptor);
 		hwprofile_report();
 		psp_lock_report(); /* build 104 */
+		{
+			/* build 105: the reserve descriptor, given up when the kernel ran
+			out, is taken back as soon as one is free again (b104 run 1 lost
+			two log batches after the first refusal used it up) */
+			extern void psp_handles_reserve(void);
+
+			psp_handles_reserve();
+		}
 		/* build 103: the game counts as activity, so the firmware doesn't dim
 		the backlight (Sheepdog01, b102: the screen went dark after a while without
 		buttons; the analog stick alone doesn't reset the timer) or put the PSP
@@ -1684,20 +1717,27 @@ int main(int argc, char **argv)
 	sceIoMkdir(DATA_ROOT "/save", 0777);
 	sceIoMkdir(LOG_FOLDER, 0777);
 	sceIoRemove(LOG_PATH);
-	/* build 88: this run's exit, if it gets that far; build 89: kept open */
-	exit_file = sceIoOpen(LOG_FOLDER "/exit.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
-	exit_mark("exit: armed at start-up\n");
+	/* build 105: no exit.txt any more (see the exit callback) */
+	sceIoRemove(LOG_FOLDER "/exit.txt");
 	{
-		/* build 103: one file handle held back for when the kernel's 64 run
-		out (psp_trace.c's handle table) */
+		/* build 103: one file handle held back for when the kernel runs out
+		(psp_trace.c's handle table). b104 run 1: it runs out at about ten of
+		the game's own, not the 64 uofw's table suggested */
 		extern void psp_handles_reserve(void);
 
 		psp_handles_reserve();
 	}
+	{
+		/* build 105: newlib's number formatting, one thread at a time (psp_libc.c) */
+		extern void psp_format_lock_init(void);
+
+		psp_format_lock_init();
+	}
 	freopen(DATA_ROOT "/stderr.txt", "w", stderr);
 	setvbuf(stderr, NULL, _IONBF, 0);
-	freopen(DATA_ROOT "/stderr.txt", "a", stdout);
-	setvbuf(stdout, NULL, _IONBF, 0);
+	/* build 105: stdout shares stderr's stream (and so its one descriptor);
+	builds up to 104 opened the same file a second time for it */
+	stdout = stderr;
 
 	/* homebrew starts at 222 MHz; the measurements assume the PSP-1000's
 333 MHz (bus 166) */
@@ -1716,9 +1756,9 @@ int main(int argc, char **argv)
 	platform_log("Halo PSP bring-up build %d: free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
 		sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
 	/* build 89: whether HOME and sleep are armed (negative: an error) */
-	platform_log("callbacks: power registration %08x, exit callback %08x, exit registration %08x; exit.txt %s",
+	platform_log("callbacks: power registration %08x, exit callback %08x, exit registration %08x",
 		(unsigned int)exit_callbacks_registered[0], (unsigned int)exit_callbacks_registered[1],
-		(unsigned int)exit_callbacks_registered[2], exit_file >= 0 ? "open" : "couldn't open it");
+		(unsigned int)exit_callbacks_registered[2]);
 	/* build 66: the launch menu (psp_menu.c): the map and the keep words,
 	written to init.txt and keep.txt before they are read */
 	{
@@ -1736,7 +1776,10 @@ int main(int argc, char **argv)
 	/* build 93: benchrun starts the profiler too (its counters go on each
 	RESULT line) */
 	if (psp_keep("hwprofile") || psp_keep("benchrun"))
+	{
 		hwprofile_start(argc > 0 ? argv[0] : NULL);
+		bus_probe("at start-up, the GE idle");
+	}
 
 	thread = sceKernelCreateThread("halo heartbeat", heartbeat_thread, 0x18, 0x4000, 0, NULL);
 	if (thread >= 0)
