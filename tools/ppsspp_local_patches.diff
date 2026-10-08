@@ -1,16 +1,19 @@
 diff --git a/Core/CoreTiming.cpp b/Core/CoreTiming.cpp
-index ca20954..c512519 100644
+index ca20954..98275c9 100644
 --- a/Core/CoreTiming.cpp
 +++ b/Core/CoreTiming.cpp
-@@ -23,6 +23,7 @@
+@@ -23,8 +23,10 @@
  #include <mutex>
  #include <set>
  #include <vector>
 +#include <string>
  
  #include "Common/Profiler/Profiler.h"
++#include "Core/MemMap.h"
  
-@@ -422,8 +423,44 @@ void ForceCheck(MIPSState *mips) {
+ #include "Common/Serialize/Serializer.h"
+ #include "Common/Serialize/SerializeList.h"
+@@ -422,8 +424,67 @@ void ForceCheck(MIPSState *mips) {
  #endif
  }
  
@@ -23,7 +26,12 @@ index ca20954..c512519 100644
 +#include <tuple>
 +static int pcSampleEvent = -1;
 +static s64 pcSampleCycles = 33300;
-+static std::map<std::tuple<std::string, u32, u32>, u64> pcSamples;
++static std::map<std::tuple<std::string, u32, u32, std::string>, u64> pcSamples;
++// PSP_PCSAMPLE_STEP=<hex address> (b106): a pointer variable in the game
++// (its psp_step's last_step: the name of the step running), read at each
++// sample and written as a fifth field, so a step's samples (every thread's)
++// can be told apart: tools/pcprofile.py --step
++static u32 pcSampleStepAddress = 0;
 +static u64 pcSampleCount = 0;
 +static void PcSampleDump() {
 +	const char *path = getenv("PSP_PCSAMPLE");
@@ -31,14 +39,30 @@ index ca20954..c512519 100644
 +	FILE *f = fopen(path, "w");
 +	if (!f) return;
 +	for (auto &e : pcSamples)
-+		fprintf(f, "%s %08x %08x %llu\n", std::get<0>(e.first).c_str(), std::get<1>(e.first), std::get<2>(e.first), (unsigned long long)e.second);
++		if (pcSampleStepAddress)
++			fprintf(f, "%s %08x %08x %llu %s\n", std::get<0>(e.first).c_str(), std::get<1>(e.first), std::get<2>(e.first), (unsigned long long)e.second, std::get<3>(e.first).c_str());
++		else
++			fprintf(f, "%s %08x %08x %llu\n", std::get<0>(e.first).c_str(), std::get<1>(e.first), std::get<2>(e.first), (unsigned long long)e.second);
 +	fclose(f);
 +}
 +static void PcSampleCallback(u64 userdata, int cyclesLate) {
 +	const char *name = __KernelGetThreadName(__KernelGetCurThread());
 +	std::string thread = name ? name : "?";
 +	for (auto &c : thread) if (c == ' ') c = '_';
-+	pcSamples[std::make_tuple(thread, currentMIPS->pc, currentMIPS->r[31])]++;
++	std::string step = "-";
++	if (pcSampleStepAddress && Memory::IsValid4AlignedAddress(pcSampleStepAddress)) {
++		u32 pointer = Memory::ReadUnchecked_U32(pcSampleStepAddress);
++		if (pointer && Memory::IsValidAddress(pointer)) {
++			const char *text = Memory::GetCharPointerUnchecked(pointer);
++			size_t length = 0;
++			while (length < 64 && Memory::IsValidAddress(pointer + (u32)length) && text[length])
++				length++;
++			step.assign(text, length);
++			for (auto &c : step) if (c == ' ' || c == '\n' || c == '\t') c = '_';
++			if (step.empty()) step = "-";
++		}
++	}
++	pcSamples[std::make_tuple(thread, currentMIPS->pc, currentMIPS->r[31], step)]++;
 +	if (++pcSampleCount % 4096 == 0)
 +		PcSampleDump();
 +	ScheduleEvent(pcSampleCycles - cyclesLate, pcSampleEvent, 0);
@@ -49,6 +73,8 @@ index ca20954..c512519 100644
 +	if (pcSampleEvent < 0 && getenv("PSP_PCSAMPLE")) {
 +		const char *c = getenv("PSP_PCSAMPLE_CYCLES");
 +		if (c && atoll(c) > 1000) pcSampleCycles = atoll(c);
++		const char *s = getenv("PSP_PCSAMPLE_STEP");
++		if (s) pcSampleStepAddress = (u32)strtoul(s, nullptr, 16);
 +		pcSampleEvent = RegisterEvent("PcSample", PcSampleCallback);
 +		ScheduleEvent(pcSampleCycles, pcSampleEvent, 0);
 +	}

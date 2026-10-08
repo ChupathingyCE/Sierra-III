@@ -1499,6 +1499,11 @@ static inline int model_corner_out(float x, float y, float z, float limit)
 
 /* a model-space point through a part's camera-relative matrix into camera
 space (build 60) */
+/* build 107: a rigid part's camera transform, one product (psp_ge_draw_model_body) */
+static float rigid_rows[3][4];
+static int near_check = -1;
+static unsigned long near_check_corners = 0, near_check_differ = 0;
+
 static inline void model_to_camera(const ScePspFMatrix4 *m, const float *p, float *out)
 {
 	float x = m->x.x * p[0] + m->y.x * p[1] + m->z.x * p[2] + m->w.x;
@@ -2312,9 +2317,24 @@ Xbox's choice there; at a slant it doesn't blur more as the Xbox's did, but
 it no longer swims as the view turns. "mipauto": the automatic choice */
 static int mip_slope = -1;
 
+/* build 107: the tangent of half the field of view, worked out when the
+field of view changes (the decals asked for it twice a call, 800 calls a
+frame in b30's fight: tanf was 0.4% of the beach's time) */
+static float fov_tan_half(void)
+{
+	static float fov = -1.0f, value = 1.0f;
+
+	if (projection_fov != fov)
+	{
+		fov = projection_fov;
+		value = tanf(projection_fov * 0.5f);
+	}
+	return value;
+}
+
 static float pixels_per_unit(void)
 {
-	return (SCREEN_HEIGHT * 0.5f) / tanf(projection_fov * 0.5f);
+	return (SCREEN_HEIGHT * 0.5f) / fov_tan_half();
 }
 
 /* texture coordinate units per world unit over a draw's triangles */
@@ -4563,6 +4583,27 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			if (model_drop < 0)
 				model_drop = psp_keep("modeldrop");
 			corner_verdict_reset();
+			/* build 107: the part's matrix and the camera's axes made one
+			transform for the part (rigid_rows), so a corner costs one
+			three-row product instead of two (model_to_camera). Rounded
+			differently, so a corner exactly on a plane may fall the other
+			way. "nearcheck" in keep.txt: both, and the corners whose
+			verdicts differ counted in the log */
+			{
+				int axis;
+
+				if (near_check < 0)
+					near_check = psp_keep("nearcheck");
+				for (axis = 0; axis < 3; axis++)
+				{
+					const float *d = axis == 0 ? camera_right : axis == 1 ? camera_up : camera_forward;
+
+					rigid_rows[axis][0] = model.x.x * d[0] + model.x.y * d[1] + model.x.z * d[2];
+					rigid_rows[axis][1] = model.y.x * d[0] + model.y.y * d[1] + model.y.z * d[2];
+					rigid_rows[axis][2] = model.z.x * d[0] + model.z.y * d[1] + model.z.z * d[2];
+					rigid_rows[axis][3] = model.w.x * d[0] + model.w.y * d[1] + model.w.z * d[2];
+				}
+			}
 			for (triangle = 0; triangle < triangles; triangle++)
 			{
 				unsigned short corner[3];
@@ -4593,9 +4634,22 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 						const float *p = (const float *)((const char *)vertices + 24 * corner[k] + 12);
 						float camera_point[3];
 
-						model_to_camera(&model, p, camera_point);
+						camera_point[0] = rigid_rows[0][0] * p[0] + rigid_rows[0][1] * p[1] + rigid_rows[0][2] * p[2] + rigid_rows[0][3];
+						camera_point[1] = rigid_rows[1][0] * p[0] + rigid_rows[1][1] * p[1] + rigid_rows[1][2] * p[2] + rigid_rows[1][3];
+						camera_point[2] = rigid_rows[2][0] * p[0] + rigid_rows[2][1] * p[1] + rigid_rows[2][2] * p[2] + rigid_rows[2][3];
 						bits[k] = model_drop ? (camera_corner_out(camera_point[0], camera_point[1], camera_point[2],
 							limit) ? 1 : 0) : outside(camera_point);
+						if (near_check)
+						{
+							/* "nearcheck": the two-step transform's verdict */
+							float two_step[3];
+
+							model_to_camera(&model, p, two_step);
+							near_check_corners++;
+							if (bits[k] != (model_drop ? (camera_corner_out(two_step[0], two_step[1], two_step[2],
+								limit) ? 1 : 0) : outside(two_step)))
+								near_check_differ++;
+						}
 						if (corner[k] < CORNER_VERDICTS)
 							corner_verdict[corner[k]] = (unsigned short)(corner_stamp + bits[k]);
 					}
@@ -8376,8 +8430,8 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		static unsigned char kept_quad[256];
 		static float kept_units[256];
 		int kept = 0, k_quad;
-		float pixels_per_unit = (SCREEN_HEIGHT * 0.5f) / tanf(projection_fov * 0.5f);
-		float half_y = tanf(projection_fov * 0.5f), half_x = half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+		float half_y = fov_tan_half(), half_x = half_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+		float pixels_per_unit = (SCREEN_HEIGHT * 0.5f) / half_y;
 		/* a sphere is wholly outside a side plane when its centre is beyond
 		it by more than its radius: the planes' normals, unnormalised, have
 		these lengths */
@@ -9321,6 +9375,10 @@ void psp_ge_frame_end(void)
 					if (skin_vfpu_check)
 						platform_log("GE: bending corners near the eye on the %s; skinvfpucheck: %lu compared with the FPU, %lu verdicts differed",
 							skin_vfpu > 0 ? "VFPU" : "FPU", skin_vfpu_corners, skin_vfpu_differ);
+					/* build 107: the rigid near corners' one-product transform, checked */
+					if (near_check > 0)
+						platform_log("GE: nearcheck: %lu rigid corners near the eye compared with the two-step transform, %lu verdicts differed",
+							near_check_corners, near_check_differ);
 					uv_centred_draws = 0;
 					uv_shift_largest = 0.0f;
 					memset(angle_triangles, 0, sizeof(angle_triangles));

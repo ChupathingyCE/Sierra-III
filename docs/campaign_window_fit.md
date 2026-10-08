@@ -131,18 +131,19 @@ The two levers that close b30's gap, both in the bake (invader-build `-M` and `-
 
 Result: b30's tags are **5.04 MiB** (5,282,112 bytes), and the map loads and plays on the PSP-1000 layout (13 descriptors): the Pelican drop, 35 actors, the beach fight. The geometry cache (2 MB) and the animation cache both come from the texture RAM cache, whose textures stream anyway. Heap in play: 4,421–4,467 KB in use of 5,376 [E].
 
-**The other maps, on paper [U]:** each map's gap above, less its keyframed frame data (the list above, ×1.049 for MiB to MB) and about 0.28 MB of script nodes. These assume b30's script saving everywhere; each map needs its own bake to check.
+**All the campaign maps, built with b106's bake flags [M, the bake's build step alone, 2026-10-08]** (`invader-build` with `-M -Y 512` and the rest of `bake.py`'s flags; "Tag space" is tags plus the largest BSP against the 9.00 MiB window):
 
-| Map | Gap before | After the two levers |
-|---|---:|---:|
-| a10 | +2.49 | +0.12 |
-| a30 | +3.05 | +0.43 |
-| a50 | +2.93 | +0.05 |
-| b30 | +2.45 | −0.47 estimated; **−0.38 measured** (5,282,112 + 3,776,512 against 9,437,184) |
-| b40 | +3.47 | +0.60 |
-| c10 | +2.97 | −0.27 |
-| c40 | +2.95 | −0.10 |
-| d20 | +2.59 | −0.43 |
-| d40 | +2.49 | −0.44 |
+| Map | Tags | Tag space | Script nodes in use | Frame data moved out | Fits? |
+|---|---:|---:|---:|---:|---|
+| a10 Pillar of Autumn | 5.14 MiB | 8.93 (99.2%) | 17,391 | 2.42 MiB | **yes**, 72 KB spare |
+| a30 Halo | | 9.57 | 11,933 | | no, 0.57 MiB over |
+| a50 Truth and Reconciliation | | 9.20 | 14,875 | | no, 0.20 MiB over |
+| b30 Silent Cartographer | 5.04 MiB | 8.64 (96.0%) | 4,534 | 2.44 MiB | **yes** |
+| b40 Assault on the Control Room | | 9.53 | 10,360 | | no, 0.53 MiB over |
+| c10 343 Guilty Spark | 5.58 MiB | 8.92 (99.1%) | 9,144 | 2.73 MiB | **yes**, 80 KB spare |
+| c20 The Library | | (fit before; not rebuilt) | | | **yes** |
+| c40 Two Betrayals | 5.40 MiB | 8.75 (97.3%) | 7,817 | 2.85 MiB | **yes** |
+| d20 Keyes | 4.57 MiB | 8.71 (96.8%) | 7,612 | 2.55 MiB | **yes** |
+| d40 The Maw | 4.84 MiB | 8.44 (93.8%) | 13,222 | 2.84 MiB | **yes** |
 
-b30 came out 0.09 MB short of its estimate, so read the others with that margin. Five of the nine would fit as they are. a10, a50 and a30 are within the BSP formats' 0.4–0.7 MB; b40 needs that and a little more. c20 rebaked this way would gain about 1.4 MB of margin.
+**Seven of the ten fit the PSP-1000's window now.** The script tables vary far more than b30's suggested (4,534 to 17,391 nodes in use), which is why the on-paper estimate missed in both directions. a50 (0.20 MiB over), b40 (0.53) and a30 (0.57; its BSP is the largest, 4.66 MB) are within the BSP formats' estimated 0.4–0.7 MB, a30 and b40 only at its top end. a10 and c10 fit with under 100 KB spare, so anything added to their tags needs checking against it. c20 rebaked this way would gain about 1.4 MB of margin. Only the build step was run: the maps still need their full bakes (textures) and a play in the emulator.

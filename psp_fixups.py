@@ -7157,7 +7157,489 @@ FIXES_106["source/cache/cache_files_windows.c#priority"] = [
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()):
+FIXES_107 = {}
+# build 107: no debug record for an actor's path search. Each search took a
+# path_debug_storage (82 KB, most of it a copy of the search's own state)
+# from ai_debug_get_path_storage, which cleared all of it, and the search
+# copied its 82 KB state into it at the end, for the debug display of paths
+# a PSP build never shows: two 82 KB memory passes per path search. The
+# path code takes a NULL record everywhere (path.c tests state->debug before
+# each use), so with no record nothing else changes. The emulator's PC
+# samples: 3% of b30's "ai update" step in that memset alone. Kept with the
+# debug tools (PSP_DEBUG_TOOLS)
+FIXES_107["source/ai/ai_debug.c#pathstorage"] = [
+("""struct path_debug_storage *ai_debug_get_path_storage(
+	long actor_index)
+{
+	short storage_index = NONE;
+	short index;
+""",
+ """struct path_debug_storage *ai_debug_get_path_storage(
+	long actor_index)
+{
+	short storage_index = NONE;
+	short index;
+
+#if defined(HALO_PSP) && !PSP_DEBUG_TOOLS
+	/* psp_fixups.py (build 107): see FIXES_107 ai_debug.c#pathstorage */
+	(void)actor_index;
+	(void)storage_index;
+	(void)index;
+	return NULL;
+#endif
+"""),
+]
+# build 107: a cluster partition's element unlinked without walking its
+# cluster's list. Every object that moves is disconnected from its clusters
+# and connected again each tick (cluster_partition_reconnect), and the
+# removal walked the cluster's whole list to find the element before it:
+# b30's beach cluster holds about 300 objects, so each moving object's
+# removal read about 150 elements, each a likely cache miss on the PSP. The
+# emulator's PC samples: reference_list_remove 1.35% of all the time, 4% of
+# "objects update". Each element now keeps the element before it in its
+# list in its spare word (pad: an absolute index, 0xFFFF for the list's
+# head), and the object's own reference to the cluster keeps where its
+# element is. The unlink checks both links before it trusts them and falls
+# back to the walk otherwise, and removes the same element the walk would
+# (an object is in a cluster's list once), so the lists come out the same
+# build 107: the case-blind string compare without a tolower call per
+# character. Marker lookups (model_find_marker's binary search: weapons,
+# attachments, the AI's aim) and the scripts' name lookups go through
+# _stricmp; the emulator's PC samples put _stricmp and tolower at about 1%
+# of b30's beach, 4% of The Library's "widgets render" step (lightning's
+# markers). The game never changes the C locale, where tolower maps A-Z
+# alone, so folding A-Z by hand gives the same answers
+FIXES_107["port/linux/src/msvc_crt.c"] = [
+("""int _stricmp(const char *string1, const char *string2)
+{
+	for (;; string1++, string2++)
+	{
+		int c1 = tolower((unsigned char)*string1);
+		int c2 = tolower((unsigned char)*string2);
+
+		if (c1 != c2 || !c1)
+			return c1 - c2;
+	}
+}
+
+int _strnicmp(const char *string1, const char *string2, size_t count)
+{
+	for (; count; count--, string1++, string2++)
+	{
+		int c1 = tolower((unsigned char)*string1);
+		int c2 = tolower((unsigned char)*string2);
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 107): tolower in the C locale, inline */
+#define PSP_FOLD(c) ((c) >= 'A' && (c) <= 'Z' ? (c) + ('a' - 'A') : (c))
+#define tolower(c) PSP_FOLD(c)
+#endif
+
+int _stricmp(const char *string1, const char *string2)
+{
+	for (;; string1++, string2++)
+	{
+		int c1 = tolower((unsigned char)*string1);
+		int c2 = tolower((unsigned char)*string2);
+
+		if (c1 != c2 || !c1)
+			return c1 - c2;
+	}
+}
+
+int _strnicmp(const char *string1, const char *string2, size_t count)
+{
+	for (; count; count--, string1++, string2++)
+	{
+		int c1 = tolower((unsigned char)*string1);
+		int c2 = tolower((unsigned char)*string2);
+"""),
+("""char *_strdup(const char *string)
+{""",
+ """#ifdef HALO_PSP
+#undef tolower
+#endif
+
+char *_strdup(const char *string)
+{"""),
+]
+# build 107: each object's bounding sphere also kept in a dense array (game
+# state, so a checkpoint saves and restores it with the objects), for rays
+# and sphere queries to reject an object without reading its datum. A ray's
+# objects (collision_test_vector: the AI's lines of sight, projectiles,
+# sounds) and a sphere query's (collision_get_features_in_sphere: the
+# bipeds' and vehicles' physics) are every object in each cluster they touch,
+# about 300 on b30's beach, mostly sleeping scenery; each visit read the
+# object's header and datum (the emulator's samples: object_get_and_verify_
+# type 16.8% and datum_get 10.7% of b30's "ai update" step; on the PSP, cache
+# misses the emulator doesn't charge). The sphere is written in one place,
+# object_compute_node_matrices, and the copy beside it; a new object's
+# datum and copy both start zeroed. The test on the copy is the same test,
+# on the same numbers, that the original makes first (its other conditions
+# are and-ed with it, and a cluster's objects are roots, whose children are
+# tested only inside it), so the same objects are tested. "spherecheck" in
+# keep.txt compares the copy with the datum at every use
+FIXES_107["source/objects/objects.h#spheres"] = [
+("""
+
+#endif // __OBJECTS_H""",
+ """
+
+#ifdef HALO_PSP
+/* psp_fixups.py (build 107): see FIXES_107 objects.h#spheres */
+struct psp_object_sphere
+{
+	real_point3d center;
+	real radius;
+};
+extern struct psp_object_sphere *psp_object_spheres;
+#endif
+
+#endif // __OBJECTS_H"""),
+]
+FIXES_107["source/objects/objects.c#spheres"] = [
+("""	object_globals = (struct object_globals *)game_state_malloc("object globals", NULL, sizeof(*object_globals));
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 219, object_globals);
+""",
+ """	object_globals = (struct object_globals *)game_state_malloc("object globals", NULL, sizeof(*object_globals));
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 219, object_globals);
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 107): see FIXES_107 objects.h#spheres */
+	psp_object_spheres = (struct psp_object_sphere *)game_state_malloc("object spheres", NULL,
+		MAXIMUM_OBJECTS_PER_MAP * sizeof(struct psp_object_sphere));
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 219, psp_object_spheres);
+#endif
+"""),
+("""		if (memory_pool_block_allocate(object_memory_pool, (void**)&header->datum, size))
+		{
+			header->data_size = size;
+			memset(header->datum, 0, size);
+""",
+ """		if (memory_pool_block_allocate(object_memory_pool, (void**)&header->datum, size))
+		{
+			header->data_size = size;
+			memset(header->datum, 0, size);
+#ifdef HALO_PSP
+			/* psp_fixups.py (build 107): the sphere's copy, zeroed with it */
+			if (psp_object_spheres && data == object_header_data &&
+				DATUM_INDEX_TO_ABSOLUTE_INDEX(index) < MAXIMUM_OBJECTS_PER_MAP)
+				memset(&psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(index)], 0, sizeof(struct psp_object_sphere));
+#endif
+"""),
+("""	if (object->object.scale > 0.f)
+	{
+		object->object.bounding_sphere_radius *= object->object.scale;
+	}
+
+	return;
+}""",
+ """	if (object->object.scale > 0.f)
+	{
+		object->object.bounding_sphere_radius *= object->object.scale;
+	}
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 107): and its copy */
+	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) < MAXIMUM_OBJECTS_PER_MAP)
+	{
+		psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)].center = object->object.bounding_sphere_center;
+		psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)].radius = object->object.bounding_sphere_radius;
+	}
+#endif
+
+	return;
+}"""),
+("""static long object_header_new(
+	struct data_array *data, 
+	long index,
+	short size)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 107): see FIXES_107 objects.h#spheres */
+struct psp_object_sphere *psp_object_spheres = NULL;
+#endif
+
+static long object_header_new(
+	struct data_array *data, 
+	long index,
+	short size)
+{"""),
+]
+FIXES_107["source/physics/collisions.c#spheres"] = [
+("""boolean collision_test_vector(
+	unsigned long flags,
+	real_point3d const *point,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 107): the objects' sphere copies, first (FIXES_107
+objects.h#spheres). "spherecheck": each use compared with the datum */
+static int psp_sphere_check = -1;
+unsigned long psp_sphere_tests = 0, psp_sphere_rejects = 0, psp_sphere_checked = 0, psp_sphere_wrong = 0;
+
+static struct psp_object_sphere const *psp_sphere_of(long object_index)
+{
+	struct psp_object_sphere const *sphere = &psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)];
+
+	if (psp_sphere_check < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_sphere_check = psp_keep("spherecheck");
+	}
+	if (psp_sphere_check)
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		psp_sphere_checked++;
+		if (memcmp(&object->object.bounding_sphere_center, &sphere->center, sizeof(sphere->center)) ||
+			memcmp(&object->object.bounding_sphere_radius, &sphere->radius, sizeof(sphere->radius)))
+			psp_sphere_wrong++;
+	}
+	psp_sphere_tests++;
+	return sphere;
+}
+
+/* object_test_vector's own sphere test */
+static boolean psp_sphere_may_cross(
+	long object_index,
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+	if (fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;
+	psp_sphere_rejects++;
+	return FALSE;
+}
+
+/* object_get_features_in_sphere's own sphere test */
+static boolean psp_sphere_may_touch(
+	long object_index,
+	real_point3d const *center,
+	real radius)
+{
+	struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+	real reach = sphere->radius;
+
+	reach += radius;
+	if (point_in_sphere(center, &sphere->center, reach))
+		return TRUE;
+	psp_sphere_rejects++;
+	return FALSE;
+}
+#endif
+boolean collision_test_vector(
+	unsigned long flags,
+	real_point3d const *point,"""),
+("""						if (object_mark_function(object_index) &&
+							object_test_vector(""",
+ """						if (
+#ifdef HALO_PSP
+							psp_sphere_may_cross(object_index, point, vector) &&
+#endif
+							object_mark_function(object_index) &&
+							object_test_vector("""),
+("""						if (object_mark_function(object_index))
+						{
+#ifdef HALO_PSP
+							psp_features_objects++;
+#endif""",
+ """						if (
+#ifdef HALO_PSP
+							psp_sphere_may_touch(object_index, center, radius) &&
+#endif
+							object_mark_function(object_index))
+						{
+#ifdef HALO_PSP
+							psp_features_objects++;
+#endif"""),
+]
+FIXES_107["source/structures/cluster_partitions.c#unlink"] = [
+("""void cluster_partition_reconnect(
+	struct cluster_partition *partition,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 107): see FIXES_107 cluster_partitions.c#unlink */
+#define PSP_REFERENCE_HEAD 0xFFFF
+static unsigned long psp_unlinks_direct = 0, psp_unlinks_walked = 0;
+/* "unlinkcheck" in keep.txt: each direct unlink checked against the walk */
+static int psp_unlink_check = -1;
+static unsigned long psp_unlinks_checked = 0, psp_unlinks_wrong = 0;
+
+static struct data_reference *psp_reference_at(
+	struct data_array *array,
+	long absolute_index)
+{
+	struct data_reference *reference;
+
+	if (absolute_index < 0 || absolute_index >= array->maximum_count)
+		return NULL;
+	reference = (struct data_reference *)((char *)array->data + absolute_index * array->size);
+	return reference->identifier ? reference : NULL;
+}
+
+/* after both adds: the new element's place before the old head, and the
+object's cluster reference pointing at it */
+static void psp_cluster_links(
+	struct cluster_partition *partition,
+	long cluster_reference_before,
+	long *first_cluster_reference,
+	long data_head_before,
+	short cluster_index)
+{
+	long data_head = *cluster_partition_get_first_reference(partition, cluster_index);
+	struct data_reference *reference;
+
+	if (data_head == NONE || data_head == data_head_before)
+		return;
+	reference = (struct data_reference *)datum_get(partition->data_reference_data, data_head);
+	reference->pad = PSP_REFERENCE_HEAD;
+	if (data_head_before != NONE)
+		((struct data_reference *)datum_get(partition->data_reference_data, data_head_before))->pad =
+			(word)DATUM_INDEX_TO_ABSOLUTE_INDEX(data_head);
+	if (*first_cluster_reference != NONE && *first_cluster_reference != cluster_reference_before)
+		((struct data_reference *)datum_get(partition->cluster_reference_data, *first_cluster_reference))->pad =
+			(word)DATUM_INDEX_TO_ABSOLUTE_INDEX(data_head);
+}
+
+/* the object's element in the cluster's list, at hint, unlinked if both its
+links check out; FALSE: the caller walks the list */
+static boolean psp_cluster_unlink(
+	struct cluster_partition *partition,
+	short cluster_index,
+	long datum_index,
+	word hint)
+{
+	struct data_array *array = partition->data_reference_data;
+	long *head = cluster_partition_get_first_reference(partition, cluster_index);
+	struct data_reference *reference = psp_reference_at(array, hint), *before = NULL;
+	long index;
+
+	if (!reference || reference->datum_index != datum_index)
+		return FALSE;
+	index = DATUM_INDEX_NEW(hint, reference->identifier);
+	if (psp_unlink_check < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_unlink_check = psp_keep("unlinkcheck");
+	}
+	if (psp_unlink_check)
+	{
+		/* "unlinkcheck": the element the walk would remove, compared */
+		long walk = *head;
+
+		while (walk != NONE && ((struct data_reference *)datum_get(array, walk))->datum_index != datum_index)
+			walk = ((struct data_reference *)datum_get(array, walk))->next_reference_index;
+		psp_unlinks_checked++;
+		if (walk != index)
+			psp_unlinks_wrong++;
+	}
+	if (reference->pad == PSP_REFERENCE_HEAD)
+	{
+		if (*head != index)
+			return FALSE;
+	}
+	else
+	{
+		before = psp_reference_at(array, reference->pad);
+		if (!before || before->next_reference_index != index)
+			return FALSE;
+	}
+	datum_delete(array, index);
+	if (before)
+		before->next_reference_index = reference->next_reference_index;
+	else
+		*head = reference->next_reference_index;
+	if (reference->next_reference_index != NONE)
+		((struct data_reference *)datum_get(array, reference->next_reference_index))->pad = reference->pad;
+	return TRUE;
+}
+
+/* the counts, for the log (psp_platform.c's object report) */
+void psp_cluster_unlink_counts(unsigned long *direct, unsigned long *walked, unsigned long *checked, unsigned long *wrong)
+{
+	*direct = psp_unlinks_direct;
+	*walked = psp_unlinks_walked;
+	*checked = psp_unlinks_checked;
+	*wrong = psp_unlinks_wrong;
+	psp_unlinks_direct = psp_unlinks_walked = 0;
+}
+#endif
+
+void cluster_partition_reconnect(
+	struct cluster_partition *partition,"""),
+("""		short const cluster_index = cluster_indices[cluster_index_index];
+
+		reference_list_add(
+			partition->cluster_reference_data,
+			first_cluster_reference,
+			cluster_index);
+
+		reference_list_add(
+			partition->data_reference_data,
+			cluster_partition_get_first_reference(partition, cluster_index),
+			datum_index);
+""",
+ """		short const cluster_index = cluster_indices[cluster_index_index];
+#ifdef HALO_PSP
+		long psp_cluster_before = *first_cluster_reference;
+		long psp_data_before = *cluster_partition_get_first_reference(partition, cluster_index);
+#endif
+
+		reference_list_add(
+			partition->cluster_reference_data,
+			first_cluster_reference,
+			cluster_index);
+
+		reference_list_add(
+			partition->data_reference_data,
+			cluster_partition_get_first_reference(partition, cluster_index),
+			datum_index);
+#ifdef HALO_PSP
+		psp_cluster_links(partition, psp_cluster_before, first_cluster_reference, psp_data_before, cluster_index);
+#endif
+"""),
+("""		datum_delete(partition->cluster_reference_data, cluster_reference_index);
+
+		reference_list_remove(
+			partition->data_reference_data,
+			cluster_partition_get_first_reference(partition, cluster_index),
+			datum_index);
+""",
+ """		datum_delete(partition->cluster_reference_data, cluster_reference_index);
+
+#ifdef HALO_PSP
+		if (psp_cluster_unlink(partition, cluster_index, datum_index, cluster_reference->pad))
+			psp_unlinks_direct++;
+		else
+		{
+			psp_unlinks_walked++;
+#endif
+		reference_list_remove(
+			partition->data_reference_data,
+			cluster_partition_get_first_reference(partition, cluster_index),
+			datum_index);
+#ifdef HALO_PSP
+		}
+#endif
+"""),
+("""		if (reference->datum_index == datum_index)
+		{
+			datum_delete(array, *reference_index);
+			*reference_index = reference->next_reference_index;
+""",
+ """		if (reference->datum_index == datum_index)
+		{
+			datum_delete(array, *reference_index);
+			*reference_index = reference->next_reference_index;
+#ifdef HALO_PSP
+			/* psp_fixups.py (build 107): the next element's link back */
+			if (reference->next_reference_index != NONE)
+				((struct data_reference *)datum_get(array, reference->next_reference_index))->pad = reference->pad;
+#endif
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

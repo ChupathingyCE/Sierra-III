@@ -602,6 +602,34 @@ static void object_report(SceUID file, unsigned long ticks)
 				(double)psp_model_draw_us[1] / psp_model_draw_us[2]);
 		memset(psp_model_draw_us, 0, sizeof(psp_model_draw_us));
 	}
+	{
+		/* build 107: cluster partition unlinks, direct against walked
+		(cluster_partitions.c; psp_fixups.py) */
+		extern void psp_cluster_unlink_counts(unsigned long *direct, unsigned long *walked, unsigned long *checked,
+			unsigned long *wrong);
+		unsigned long direct, walked, checked, wrong;
+
+		psp_cluster_unlink_counts(&direct, &walked, &checked, &wrong);
+		if (direct || walked)
+			platform_log("  cluster unlinks, per tick: %.1f direct, %.1f walked the list",
+				ticks ? (double)direct / ticks : 0.0, ticks ? (double)walked / ticks : 0.0);
+		if (checked)
+			platform_log("  unlinkcheck: %lu direct unlinks compared with the walk since the start, %lu removed a different element",
+				checked, wrong);
+	}
+	{
+		/* build 107: objects rejected on their sphere's copy, before their
+		datum is read (collisions.c; psp_fixups.py) */
+		extern unsigned long psp_sphere_tests, psp_sphere_rejects, psp_sphere_checked, psp_sphere_wrong;
+
+		if (psp_sphere_tests)
+			platform_log("  object spheres, per tick: %.1f tested from the copy, %.1f rejected without reading the object",
+				ticks ? (double)psp_sphere_tests / ticks : 0.0, ticks ? (double)psp_sphere_rejects / ticks : 0.0);
+		if (psp_sphere_checked)
+			platform_log("  spherecheck: %lu copies compared with the object since the start, %lu differed",
+				psp_sphere_checked, psp_sphere_wrong);
+		psp_sphere_tests = psp_sphere_rejects = 0;
+	}
 	if (file >= 0)
 	{
 		sceIoWrite(file, line, strlen(line));
