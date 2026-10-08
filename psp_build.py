@@ -33,6 +33,22 @@ PLATFORM_FILES = [
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_psh", "nv2a_vsh", "xgpu_text", "gl_functions",
     "xiso", "xbdm",
 ]
+# build 107: the campaign-only engine. Co-op and multiplayer become a branch
+# of their own, with their own budgets (Sheepdog01, 2026-10-08), so the campaign
+# build leaves out the networking, the netcode and the multiplayer game
+# engines: 0.55 MB of code and buffers (docs/dead_code_inventory.md).
+# psp/src/psp_campaign.c answers what the campaign still calls in them, "no
+# network game". Multiplayer maps still load the way they are tested
+# (map_name levels\test\..., which runs no game engine). PSP_MULTIPLAYER=1
+# builds them in as before: the starting point for that branch
+MULTIPLAYER = os.environ.get("PSP_MULTIPLAYER", "") == "1"
+MULTIPLAYER_UNITS = ("source/networking/", "source/bungie_net/", "source/game/game_engine_",
+                     "port/linux/game/network_", "port/linux/src/xnet.c")
+# (bungie_net's threads and mutexes are the saved games' and the menus' too)
+CAMPAIGN_KEEPS = ("source/bungie_net/common/thread_win32.c",)
+def multiplayer_unit(rel):
+    return rel.startswith(MULTIPLAYER_UNITS) and rel not in CAMPAIGN_KEEPS
+
 PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash"]
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
@@ -94,10 +110,14 @@ def units():
     game = sorted({m.group(1) + ".c" for m in re.finditer(r"^build/linux/obj/(source/.*)\.o: linux_cc", targets, re.M)})
     game = [s for s in game if "/libtiff/" not in s]
     game += sorted({m.group(1) + ".c" for m in re.finditer(r"^build/linux/obj/(port/linux/game/.*)\.o: linux_cc", targets, re.M)})
+    if not MULTIPLAYER:
+        game = [s for s in game if not multiplayer_unit(s)]
     items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o"), []) for s in game]
     compat = ["-include", os.path.join(HERE, "psp/include/psp_compat.h")]
     for name in PLATFORM_FILES:
         s = "port/linux/src/%s.c" % name
+        if not MULTIPLAYER and multiplayer_unit(s):
+            continue
         if name == "dsound_sdl":
             # build 25: the PSP's own mixer (psp/src/psp_dsound.c), built as the Linux one is
             items.append((os.path.join(HERE, "psp/src/psp_dsound.c"), ninja_flags("build/linux/obj/" + s[:-2] + ".o"), compat))
@@ -107,6 +127,10 @@ def units():
     memory_flags = ninja_flags("build/linux/obj/port/linux/src/xbox_memory.o")
     for name in PSP_FILES:
         items.append((os.path.join(HERE, "psp/src/%s.c" % name), memory_flags, compat))
+    if not MULTIPLAYER:
+        # built as the networking units it stands in for
+        items.append((os.path.join(HERE, "psp/src/psp_campaign.c"),
+                      ninja_flags("build/linux/obj/source/networking/network_game_globals.o"), []))
     return items
 
 # build 69: the game's cold code at -Os (menus, saved games and films, the
@@ -215,8 +239,12 @@ def link(objs, stubs):
                             "    *(.text .stub .text.* .gnu.linkonce.t.*)\n")
         linkfile = os.path.join(OUT, "linkfile_layout.prx")
         open(linkfile, "w").write(text)
+    # build 107: the link map (halo.map: each function's and variable's
+    # address, size and object file) is written every link, for
+    # tools/coverage.py's per-file inventory
     cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib", "-specs=" + SDK + "/lib/prxspecs",
            "-Wl,-q,-T" + linkfile, "-Wl,-zmax-page-size=128", "-Wl,--gc-sections",
+           "-Wl,-Map=" + os.path.join(OUT, "halo.map"),
            "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=sceKernelCreateThread,--wrap=sceGeListUpdateStallAddr,"
            "--wrap=sceIoOpen,--wrap=sceIoLseek32,--wrap=sceIoLseek,--wrap=sceIoRead,--wrap=sceIoReadAsync,--wrap=sceIoClose,"
            "--wrap=sceDmacMemcpy,--wrap=sceGeListEnQueue,--wrap=sceDisplaySetFrameBuf,--wrap=sceIoWrite,--wrap=sceIoGetstat,"

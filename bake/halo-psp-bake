@@ -3,16 +3,49 @@
 #   ./halo-psp-bake <Halo disc image or maps folder> <output folder> [options]
 # First run: makes a Python environment beside this script (.venv) with the
 # libraries the texture and decal bakes need (numpy, Pillow, shapely,
-# triangle, scikit-learn). Needs python3 (3.9 or later) with venv, and an internet
-# connection that first time.
+# triangle, scikit-learn), and an internet connection that first time.
+#
+# Which Python: one from 3.9 to 3.13. The decal bake's "triangle" has no
+# ready-made package for 3.14 yet, and its source no longer builds there
+# (Sheepdog01's CachyOS, b106). So the newest of python3.13 ... python3.9 found
+# is used, then python3 if it is one of them; failing that, uv (if it is
+# installed) fetches a Python 3.12 for the environment alone.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$HERE/.venv"
+PACKAGES=(numpy pillow shapely triangle scikit-learn)
+
+usable() { "$1" -c 'import sys; sys.exit(0 if (3, 9) <= sys.version_info[:2] <= (3, 13) else 1)' 2>/dev/null; }
+
 if [ ! -x "$VENV/bin/python" ]; then
   echo "halo-psp-bake: first run, setting up $VENV"
-  python3 -m venv "$VENV" || { echo "halo-psp-bake: python3 -m venv failed (on Debian/Ubuntu: sudo apt install python3-venv)"; exit 1; }
-  "$VENV/bin/python" -m pip install --quiet --upgrade pip
-  "$VENV/bin/python" -m pip install --quiet numpy pillow shapely triangle scikit-learn
+  PYTHON=""
+  for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+    if command -v "$candidate" >/dev/null && usable "$candidate"; then
+      PYTHON="$candidate"
+      break
+    fi
+  done
+  UV="$(command -v uv || true)"
+  [ -z "$UV" ] && [ -x "$HOME/.local/bin/uv" ] && UV="$HOME/.local/bin/uv"
+  # a setup that fails part way leaves no environment behind, so the next run
+  # sets up again instead of baking with libraries missing
+  failed() { rm -rf "$VENV"; echo "halo-psp-bake: $1"; exit 1; }
+  if [ -n "$PYTHON" ]; then
+    "$PYTHON" -m venv "$VENV" || failed "$PYTHON -m venv failed (on Debian/Ubuntu: sudo apt install python3-venv)"
+    "$VENV/bin/python" -m pip install --quiet --upgrade pip || failed "updating pip failed"
+    "$VENV/bin/python" -m pip install --quiet "${PACKAGES[@]}" || failed "installing ${PACKAGES[*]} failed"
+  elif [ -n "$UV" ]; then
+    echo "halo-psp-bake: no Python 3.9-3.13 here; uv fetches a Python 3.12 for the bake alone"
+    "$UV" venv --python 3.12 "$VENV" || failed "uv venv failed"
+    "$UV" pip install --python "$VENV/bin/python" "${PACKAGES[@]}" || failed "installing ${PACKAGES[*]} failed"
+  else
+    echo "halo-psp-bake: the bake needs Python 3.9 to 3.13 (\"triangle\" doesn't build on 3.14 yet), and this"
+    echo "system has $(python3 --version 2>&1 || echo 'no python3'). The simplest way: install uv, which fetches one"
+    echo "for the bake alone, then run this again:"
+    echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
+    exit 1
+  fi
 fi
 # the bundled Invader runs against the libraries beside it
 if ! LD_LIBRARY_PATH="$HERE/invader/lib" "$HERE/invader/bin/invader-info" --help >/dev/null 2>&1; then

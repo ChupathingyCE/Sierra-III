@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 106
+#define PSP_BUILD_NUMBER 107
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -50,6 +50,8 @@ long psp_game_time_peek(void);
 
 /* build 106: the garbage collector's counts (objects.c, psp_fixups.py) */
 long psp_garbage_runs[3], psp_garbage_removed, psp_garbage_bipeds_removed;
+/* build 107: the most lens flares a frame has submitted (rasterizer_lights.c, psp_fixups.py) */
+long psp_lens_flare_peak;
 
 /* ---------- logging (psp_fixups.py's changes call this) */
 
@@ -568,6 +570,22 @@ static void object_report(SceUID file, unsigned long ticks)
 	}
 	platform_log("  %s", line);
 	{
+		/* build 107: the most lens flares a frame has submitted since the
+		start (rasterizer_lights.c, psp_fixups.py), against the 1,024 kept */
+		if (psp_lens_flare_peak)
+			platform_log("  lens flares: peak %ld a frame of the 1024 kept", psp_lens_flare_peak);
+	}
+	{
+		/* build 107: keep.txt's "sceneryhalf" (psp_fixups.py, objects.c):
+		sleeping scenery checked on alternate ticks */
+		extern long psp_scenery_unchecked, psp_scenery_woken;
+
+		if (psp_scenery_unchecked)
+			platform_log("  sleeping scenery, checked every other tick: %.1f left unchecked per tick, %.1f woken per tick (every wake, checked tick or not: a change is noticed up to a tick late)",
+				ticks ? (double)psp_scenery_unchecked / ticks : 0.0, ticks ? (double)psp_scenery_woken / ticks : 0.0);
+		psp_scenery_unchecked = psp_scenery_woken = 0;
+	}
+	{
 		/* build 106: the corpse-sleep rule's stages (psp_fixups.py), when any
 		biped was dead in the window */
 		extern long psp_corpse_stage[4], psp_corpses_holding;
@@ -809,6 +827,34 @@ int psp_keep_number(const char *prefix, int fallback)
 			return atoi(at);
 	}
 	return fallback;
+}
+
+/* build 107: the sound cache's size, chosen once at start-up (the cache is
+made before the map loads, from the heap): keep.txt's "soundN" in KB
+("sound1664"), else SOUND_CACHE_DEFAULT_KB, in 4 KB pages, 512 KB to 4 MB.
+Why it grew: b106 on the PSP failed 97 (The Library) to 204 (b30's beach)
+sound loads for room with 1,152 KB, each a sound that didn't play. d40's
+opening in the emulator (the most sound of the maps tried), to game time
+6,650: 1,152 KB failed 5,993 loads; 1,536 KB 144; 1,920 KB none. It also read
+less: 1,720 loads, 882, 733 */
+#define SOUND_CACHE_DEFAULT_KB 1536
+unsigned long psp_sound_cache_bytes(void)
+{
+	static unsigned long bytes = 0;
+
+	if (!bytes)
+	{
+		int kb = psp_keep_number("sound", SOUND_CACHE_DEFAULT_KB);
+
+		if (kb < 512)
+			kb = 512;
+		if (kb > 4096)
+			kb = 4096;
+		bytes = ((unsigned long)kb * 1024) & ~0xFFFul;
+		platform_log("sound cache: %lu KB (%s)", bytes / 1024,
+			kb == SOUND_CACHE_DEFAULT_KB ? "the default" : "keep.txt's sound word");
+	}
+	return bytes;
 }
 
 static int profile_compare(const void *a, const void *b)
@@ -1774,8 +1820,10 @@ static int heartbeat_thread(SceSize args, void *argp)
 				memset(object_updates, 0, sizeof(object_updates));
 				{
 					extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep;
+					extern long psp_scenery_unchecked, psp_scenery_woken;
 
 					psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = 0;
+					psp_scenery_unchecked = psp_scenery_woken = 0;
 				}
 			}
 			else

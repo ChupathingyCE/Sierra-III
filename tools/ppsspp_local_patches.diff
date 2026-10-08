@@ -309,6 +309,64 @@ index 723b566..9baa426 100644
  		PC += 4;
  	}
  
+diff --git a/Core/MIPS/JitCommon/JitBlockCache.cpp b/Core/MIPS/JitCommon/JitBlockCache.cpp
+index ac010e6..31994e4 100644
+--- a/Core/MIPS/JitCommon/JitBlockCache.cpp
++++ b/Core/MIPS/JitCommon/JitBlockCache.cpp
+@@ -17,6 +17,8 @@
+ 
+ #include "ppsspp_config.h"
+ #include <cstddef>
++#include <cstdio>
++#include <cstdlib>
+ #include <algorithm>
+ 
+ #include "ext/xxhash.h"
+@@ -169,8 +171,44 @@ static void ExpandRange(std::pair<u32, u32> &range, u32 newStart, u32 newEnd) {
+ 	range.second = std::max(range.second, newEnd);
+ }
+ 
++// local patch (Halo PSP port, b107): PSP_COVERAGE=<file> records every
++// compiled block's first address and length (in instructions) once, and
++// rewrites the file as "start count" lines every 1024 new blocks, so which
++// of the game's code ever ran can be told (tools/coverage.py)
++#include <set>
++#include <utility>
++static std::set<std::pair<u32, u32>> coverageBlocks;
++static size_t coverageWritten = 0;
++static void CoverageWrite() {
++	const char *path = getenv("PSP_COVERAGE");
++	if (!path)
++		return;
++	coverageWritten = coverageBlocks.size();
++	FILE *f = fopen(path, "w");
++	if (!f)
++		return;
++	for (auto &e : coverageBlocks)
++		fprintf(f, "%08x %u\n", e.first, e.second);
++	fclose(f);
++}
++static void CoverageRecord(u32 start, u32 count) {
++	static const char *path = getenv("PSP_COVERAGE");
++	static bool registered = false;
++	if (!path)
++		return;
++	if (!registered) {
++		registered = true;
++		atexit(CoverageWrite);
++	}
++	if (!coverageBlocks.insert(std::make_pair(start, count)).second)
++		return;
++	if (coverageBlocks.size() - coverageWritten >= 1024)
++		CoverageWrite();
++}
++
+ void JitBlockCache::FinalizeBlock(int block_num, bool block_link) {
+ 	JitBlock &b = blocks_[block_num];
++	CoverageRecord(b.originalAddress, b.originalSize);
+ 
+ 	b.originalFirstOpcode = Memory::Read_Opcode_JIT(b.originalAddress);
+ 	MIPSOpcode opcode = GetEmuHackOpForBlock(block_num);
 diff --git a/Core/MIPS/MIPSTables.cpp b/Core/MIPS/MIPSTables.cpp
 index 6ace0f2..aebcb96 100644
 --- a/Core/MIPS/MIPSTables.cpp

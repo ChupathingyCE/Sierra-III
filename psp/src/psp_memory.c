@@ -8,7 +8,8 @@ The game asks for its game state and tag cache at fixed addresses
 (physical_memory_map.c). On the PSP those are blocks of user RAM taken at
 exactly that address from the kernel (PSP_SMEM_Addr), the same way
 halo_loadtest reserved the tag window. Everything else comes from the C
-heap. There is no memory protection on the PSP; the protection the game
+heap, except (build 107) what fits in user RAM's free space outside it
+(outside_alloc). There is no memory protection on the PSP; the protection the game
 asks for is remembered per 4 KB page so XQueryMemoryProtect answers as the
 Xbox would.
 */
@@ -30,7 +31,7 @@ void free(void *pointer);
 #endif
 #define PAGE_SIZE_BYTES 0x1000UL
 #define USER_PAGE_COUNT ((USER_RAM_END - USER_RAM_BASE) / PAGE_SIZE_BYTES)
-#define MAXIMUM_PLACED_BLOCKS 8
+#define MAXIMUM_PLACED_BLOCKS 16
 
 /* build 68: a byte a page (the PAGE_ values are under 0x100): 6 KB, not 24 */
 static unsigned char page_protection[USER_PAGE_COUNT];
@@ -59,6 +60,50 @@ static void set_protection(unsigned long address, unsigned long size, DWORD prot
 	last = (address + size - 1 - USER_RAM_BASE) / PAGE_SIZE_BYTES;
 	for (page = (address - USER_RAM_BASE) / PAGE_SIZE_BYTES; page <= last; page++)
 		page_protection[page] = (unsigned char)protect;
+}
+
+/* build 107: a contiguous request that fits in user RAM's free space
+outside the heap goes there, as long as OUTSIDE_RESERVE stays free for what
+is made later (threads' stacks, the blackbox: b104 took 32 KB more after the
+load). That space, about 550 KB in two pieces near the top of user RAM, sat
+idle: the display list's 384 KB fits in neither piece (b106 on the PSP: 543 KB
+free, the largest piece 276 KB), so it comes from the heap. The rasterizer's
+start-up buffers (64 to 128 KB each) fit, and each one there is heap given
+back. Only once the two placed blocks (game state, tag window) are taken: a
+block taken earlier can land where the tag window must go (build 105's
+display list) */
+#define OUTSIDE_RESERVE (160 * 1024)
+#define OUTSIDE_LEAST (16 * 1024)
+static unsigned long outside_bytes = 0;
+
+static void *outside_alloc(unsigned long size, unsigned long alignment)
+{
+	void platform_log(const char *format, ...);
+	long index, placed = 0, empty = -1;
+	unsigned long slack = alignment > 64 ? alignment : 64, address;
+	SceUID block;
+
+	for (index = 0; index < MAXIMUM_PLACED_BLOCKS; index++)
+	{
+		if (placed_blocks[index].address)
+			placed++;
+		else if (empty < 0)
+			empty = index;
+	}
+	if (placed < 2 || empty < 0 || size < OUTSIDE_LEAST ||
+		(unsigned long)sceKernelMaxFreeMemSize() < size + slack ||
+		(unsigned long)sceKernelTotalFreeMemSize() < size + slack + OUTSIDE_RESERVE)
+		return NULL;
+	block = sceKernelAllocPartitionMemory(2, "halo outside the heap", PSP_SMEM_High, size + slack, NULL);
+	if (block < 0)
+		return NULL;
+	address = ((unsigned long)sceKernelGetBlockHeadAddr(block) + slack - 1) & ~(slack - 1);
+	placed_blocks[empty].address = address;
+	placed_blocks[empty].block = block;
+	outside_bytes += size;
+	platform_log("heap: contiguous %lu KB outside the heap instead, at 0x%08lx (%lu KB there so far; %d KB still free there)",
+		size / 1024, address, outside_bytes / 1024, sceKernelTotalFreeMemSize() / 1024);
+	return (void *)address;
 }
 
 /* nothing is protected on the PSP, so nothing needs the Linux layer's
@@ -118,7 +163,9 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 	}
 	else
 	{
-		result = memalign(alignment > 64 ? alignment : 64, size);
+		result = outside_alloc(size, alignment);
+		if (!result)
+			result = memalign(alignment > 64 ? alignment : 64, size);
 		if (!result)
 			platform_log("XPhysicalAlloc: no %lu KB on the heap", size / 1024);
 	}

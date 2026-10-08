@@ -67,7 +67,13 @@ static inline unsigned int ge_clock(void)
 was what got cut */
 /* 384 KB (build 40): sustained fire at a wall still filled 256 KB (decals
 copy the wall's triangles under them, every spark is a sprite) */
-#define DISPLAY_LIST_BYTES 0x60000
+/* 512 KB (build 107): b106 on b30's beach filled 384 KB in the fight (models
+175 KB a frame, up to 235 model and 850 decal draws a frame skipped; the
+flicker Sheepdog01 saw). Before the level's first draw the models may use only
+the list less the HUD's, the see-through draws' and the level's reserves
+(about 200 KB of 384). The 128 KB come from the heap; the start-up buffers
+psp_memory.c now places outside it gave back more than that */
+#define DISPLAY_LIST_BYTES 0x80000
 /* build 93: the list's size this frame (benchrun's "display list in VRAM"
 puts it in VRAM's last 256 KB, which psp_tex.c keeps free during benchrun) */
 #define VRAM_BENCH_START 0x001C0000
@@ -195,6 +201,15 @@ static unsigned int kind_frame_bytes[KINDS], kind_peak_bytes[KINDS], kind_frame_
 static unsigned long long kind_bytes[KINDS];
 static unsigned long kind_skips[KINDS], kind_frames = 0, level_reserve_held = 0;
 static unsigned int kind_peak_total = 0;
+/* build 107: what the models' share is made of (b106 on b30's beach: 175 KB a
+frame of models, and up to 235 model draws a frame skipped). Each skinned
+batch loads its slots' bone matrices (13 words each) for every pass */
+static unsigned long model_bone_loads = 0, model_take_bytes = 0, model_part_calls = 0;
+/* build 107: bone loads go into sub-lists that each pass calls (model_geometry) */
+static unsigned long model_bone_calls = 0, model_bone_sub_bytes = 0;
+/* build 107: rigid parts near the eye, and those drawn whole (rigid_part_whole);
+bending batches near the eye drawn whole, with no copy */
+static unsigned long near_parts = 0, near_parts_whole = 0, near_batches_whole = 0;
 static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
@@ -228,6 +243,37 @@ static void ge_kinds_frame_begin(void)
 		level_reserve_on = !psp_keep("nolevelreserve");
 }
 
+/* build 107: when the list is full, the smallest models on the screen go
+first. b106 on b30's beach: with the list full, whichever draws came last
+were skipped (up to 235 model draws a frame), a different set each frame, so
+rocks, crates and trees nearby flickered in and out (Sheepdog01). Now a model whose
+bounding sphere is smaller on the screen than model_size_floor (its
+diameter, in pixels) isn't drawn. The floor rises by a quarter each frame
+that skipped model draws for room, up to MODEL_SIZE_FLOOR_MOST, and comes
+back down slowly once the list has room again, so what goes missing is the
+farthest, smallest models, the same ones from frame to frame. The first-person
+weapon and the sky are never left out. Keep word "nosizefloor": as before */
+#define MODEL_SIZE_FLOOR_MOST 8.0f
+static float model_size_floor = 0.0f, model_size_floor_peak = 0.0f, model_pixels = 1.0e9f;
+static int size_floor_on = -1;
+static unsigned long model_floor_left_out = 0;
+
+static void model_size_floor_update(unsigned int total)
+{
+	if (size_floor_on < 0)
+		size_floor_on = !psp_keep("nosizefloor");
+	if (!size_floor_on)
+		return;
+	if (kind_frame_skips[KIND_MODEL])
+		model_size_floor = model_size_floor < 2.0f ? 2.0f : model_size_floor * 1.25f;
+	else if (total < (unsigned int)list_limit * 3 / 4)
+		model_size_floor = model_size_floor < 1.5f ? 0.0f : model_size_floor * 0.95f;
+	if (model_size_floor > MODEL_SIZE_FLOOR_MOST)
+		model_size_floor = MODEL_SIZE_FLOOR_MOST;
+	if (model_size_floor > model_size_floor_peak)
+		model_size_floor_peak = model_size_floor;
+}
+
 static void ge_kinds_frame_end(void)
 {
 	unsigned int total = 0;
@@ -240,6 +286,7 @@ static void ge_kinds_frame_end(void)
 		kind_skips[k] += kind_frame_skips[k];
 		total += kind_frame_bytes[k];
 	}
+	model_size_floor_update(total);
 	kind_frames++;
 	if (total >= kind_peak_total)
 	{
@@ -265,6 +312,24 @@ static void ge_kinds_report(void)
 			length += snprintf(line + length, sizeof(line) - length, " %s %.1f (%.1f; %.1f)", kind_names[k],
 				kind_bytes[k] / 1024.0 / kind_frames, kind_peak_bytes[k] / 1024.0, (float)kind_skips[k] / kind_frames);
 	platform_log("%s", line);
+	if (kind_bytes[KIND_MODEL])
+	{
+		/* bone loads written in the list directly, or once into a sub-list (which list_take counted) */
+		double frames_seen = (double)kind_frames;
+		double bone = model_bone_loads * 52.0 + model_bone_sub_bytes + model_bone_calls * 8.0;
+
+		platform_log("GE: the models' share, KB a frame: bone matrices %.1f (%.0f loads in the list, %.0f calls of sub-lists), data copied in %.1f (kept indices, cut corners, palettes), the rest %.1f (commands); %.0f part draws a frame",
+			bone / 1024.0 / frames_seen, model_bone_loads / frames_seen, model_bone_calls / frames_seen,
+			(model_take_bytes - model_bone_sub_bytes) / 1024.0 / frames_seen,
+			((double)kind_bytes[KIND_MODEL] - bone - (model_take_bytes - model_bone_sub_bytes)) / 1024.0 / frames_seen,
+			model_part_calls / frames_seen);
+		platform_log("GE: models left out for room, smallest first: %.1f part draws a frame (the size floor now %.1f px, at most %.1f px since the last report); rigid parts near the eye %.1f a frame, %.1f of them drawn whole with no copy; bending batches near the eye drawn whole %.1f a frame",
+			model_floor_left_out / frames_seen, model_size_floor, model_size_floor_peak, near_parts / frames_seen,
+			near_parts_whole / frames_seen, near_batches_whole / frames_seen);
+	}
+	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
+	model_size_floor_peak = model_size_floor;
+	model_bone_loads = model_take_bytes = model_part_calls = model_bone_calls = model_bone_sub_bytes = 0;
 	platform_log("GE: fullest frame %u KB, kinds in order %s (L level, o other, k sky, l lights, B level see-through, M models, q see-through queued, d decals, p particles, f flares, s shadows, T see-through drawn, Q screen quads, H HUD); the level's reserve %s, held back %lu draws",
 		kind_peak_total / 1024, kind_peak_order, level_reserve_on > 0 ? "on" : "off", level_reserve_held);
 	memset(kind_bytes, 0, sizeof(kind_bytes));
@@ -359,6 +424,8 @@ static void *list_take(int bytes)
 		kind_frame_skips[ge_kind_now]++;
 		return NULL;
 	}
+	if (ge_kind_now == KIND_MODEL)
+		model_take_bytes += bytes;
 	if (list_cached < 0)
 		list_cached = !psp_keep("listuncached");
 	if (!list_cached || bytes < LIST_CACHED_MINIMUM)
@@ -3299,11 +3366,15 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 		model_first_person = first_person;
 	}
 	model_near = 0;
+	model_pixels = 1.0e9f;
 	if (!first_person && centroid && radius > 0.0f)
 	{
 		float c[3];
 
 		to_camera(centroid, c);
+		/* build 107: the sphere's diameter on the screen, for the size floor */
+		if (c[2] > radius)
+			model_pixels = 2.0f * radius * (SCREEN_HEIGHT * 0.5f) / (tanf(projection_fov * 0.5f) * c[2]);
 		/* build 42: also near enough that a corner could land past the GE's
 		reach to the side (a point at depth d inside the model's sphere is at
 		most its radius out; past about 7 d it is off the GE's 2048 pixels) */
@@ -3984,8 +4055,13 @@ blend texture function (fragment white x (1 - mask) + colour x mask, the
 colour as the environment colour), the glow pass modulating the colour by
 the mask. Until b105 the colour was worked into each palette entry, so every
 marine's own armour colour was a palette of its own, more than the cache's
-six slots in a fight: 6% of b30's beach fight in the emulator's PC samples */
-#define MULTIPURPOSE_CACHE 6
+six slots in a fight: 6% of b30's beach fight in the emulator's PC samples.
+Build 107: 40 slots (40 KB). With six, b30's fight still had more masks in
+use a frame than slots (about 60 palettes worked out a frame, 13 reused), and
+each one past the slots was worked out again into the display list: about
+1 KB each, up to half of the 100-160 KB of data the models copied into the
+list a frame */
+#define MULTIPURPOSE_CACHE 40
 static unsigned int multipurpose_cache_palette[MULTIPURPOSE_CACHE][256] __attribute__((aligned(64)));
 static struct
 {
@@ -4236,6 +4312,40 @@ static struct
 	int cut_count;
 } near_memo[64];
 
+/* build 107: a bending part's bone matrices, once a part. Each batch loads
+its slots' matrices (13 words a slot) before its draw, and every pass of the
+part (the two-sided pass, the change and glow colour passes) loaded them all
+again: b30's beach fight put 66-74 KB of bone matrices in the list a frame
+(1,300-1,450 loads), a third of the models' share when the list was full.
+The first pass now writes each batch's loads into the list as a sub-list
+ending in a return, and every pass calls it (2 words). The matrices are
+worked out on the CPU once a part, too. Valid for the part being drawn only
+(psp_ge_draw_model_body forgets it first, as near_memo). Keep word
+"bonesdirect": loaded in the list by every pass, as before */
+#define BONE_MEMO_BATCHES 64
+static const struct skin_part *bone_memo_skin = NULL;
+static const unsigned int *bone_memo[BONE_MEMO_BATCHES];
+static int bones_direct = -1;
+
+/* a slot's matrix as the GE's bone commands (pspgu's sceGuBoneMatrix: the
+slot's place, then the 4 rows' first 3 columns as 24-bit floats) */
+static unsigned int *bone_commands(unsigned int *at, int slot, const ScePspFMatrix4 *matrix)
+{
+	const float *m = (const float *)matrix;
+	int row, column;
+
+	*at++ = (0x2Au << 24) | (unsigned int)(slot * 12);
+	for (row = 0; row < 4; row++)
+		for (column = 0; column < 3; column++)
+		{
+			union { float f; unsigned int u; } v;
+
+			v.f = m[row * 4 + column];
+			*at++ = (0x2Bu << 24) | (v.u >> 8);
+		}
+	return at;
+}
+
 static void model_geometry(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
@@ -4260,7 +4370,29 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 			this renderer runs on one thread */
 			static float depth_row[SKIN_SLOTS][3][4] __attribute__((aligned(16)));
 			int on_vfpu;
+			/* the CPU needs the matrices only to test the corners near the eye */
+			int cpu_matrices = near && !from_memo;
+			const unsigned int *sub = bone_memo_skin == skin && batch < BONE_MEMO_BATCHES ? bone_memo[batch] : NULL;
+			unsigned int *writing = NULL, *cursor = NULL;
 
+			if (bones_direct < 0)
+				bones_direct = psp_keep("bonesdirect");
+			if (!sub && !bones_direct && batch < BONE_MEMO_BATCHES)
+			{
+				int bytes = (skin->weights * 13 + 1) * 4;
+
+				writing = list_take(bytes);
+				if (writing)
+				{
+					model_bone_sub_bytes += bytes;
+					if (bone_memo_skin != skin)
+					{
+						bone_memo_skin = skin;
+						memset(bone_memo, 0, sizeof(bone_memo));
+					}
+					cursor = writing;
+				}
+			}
 			for (slot = 0; slot < skin->weights; slot++)
 			{
 				int node = b->node[slot];
@@ -4270,10 +4402,18 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				{
 					int axis;
 
+					if (sub && !cpu_matrices)
+						continue;
 					halo_matrix(model_nodes + 13 * (node < model_node_count ? node : 0), model);
-					sceGuBoneMatrix(slot, model);
+					if (cursor)
+						cursor = bone_commands(cursor, slot, model);
+					else if (!sub)
+					{
+						sceGuBoneMatrix(slot, model);
+						model_bone_loads++;
+					}
 					bone[slot] = *model;
-					if (from_memo)
+					if (!cpu_matrices)
 						continue;
 					/* the matrix's rows along the camera's right, up and forward */
 					for (axis = 0; axis < 3; axis++)
@@ -4286,6 +4426,20 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						depth_row[slot][axis][3] = model->w.x * d[0] + model->w.y * d[1] + model->w.z * d[2];
 					}
 				}
+			}
+			if (cursor)
+			{
+				/* the sub-list ends with a return; this pass calls it too */
+				*cursor++ = 0x0Bu << 24;
+				bone_memo[batch] = writing;
+				sub = writing;
+			}
+			if (sub)
+			{
+				/* BASE and CALL, as pspgu's sceGuCallList (without its stall update) */
+				sceGuSendCommandi(0x10, ((unsigned int)sub >> 8) & 0xF0000);
+				sceGuSendCommandi(0x0A, (unsigned int)sub & 0xFFFFFF);
+				model_bone_calls++;
 			}
 			if (from_memo && batch < 64)
 			{
@@ -4313,15 +4467,15 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				have since build 38. A corner behind the eye, given to the GE,
 				lands on the far side of the screen: the long spikes Sheepdog01 saw.
 				The CPU works out each corner's depth from its weights */
-				unsigned short *kept = list_take((draw_count * 2 + 3) & ~3);
+				/* build 107: the copy of the triangles drawn as they are is taken
+				at the first one that isn't (dropped or cut), with those before it;
+				a batch drawn whole uses its own indices. Taken first, as before,
+				every near batch was copied: b30 beside the Pelicans and the
+				marines, 70-160 KB of copied data in the list a frame */
+				unsigned short *kept = NULL;
 				float limit = projection_near * 1.25f;
-				int t, k, out = 0, uv_at = skin->stride - 24, cut_count = 0;
+				int t, k, out = 0, uv_at = skin->stride - 24, cut_count = 0, kept_failed = 0;
 
-				if (!kept)
-				{
-					memo_failed = 1;
-					continue;
-				}
 				/* each vertex's verdict once a batch (build 43: worked out per
 				corner, it cost up to 6 ms a frame on the PSP in build 42) */
 				corner_verdict_reset();
@@ -4390,6 +4544,17 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					}
 					if (behind)
 					{
+						if (!kept)
+						{
+							kept = list_take((draw_count * 2 + 3) & ~3);
+							if (!kept)
+							{
+								kept_failed = 1;
+								break;
+							}
+							memcpy(kept, draw, t * sizeof(*kept));
+							out = t;
+						}
 						near_triangles_dropped++;
 						if (bits[0] & bits[1] & bits[2])
 							continue;
@@ -4439,12 +4604,25 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						}
 						continue;
 					}
-					kept[out++] = draw[t];
-					kept[out++] = draw[t + 1];
-					kept[out++] = draw[t + 2];
+					if (kept)
+					{
+						kept[out++] = draw[t];
+						kept[out++] = draw[t + 1];
+						kept[out++] = draw[t + 2];
+					}
 				}
-				draw = kept;
-				draw_count = out;
+				if (kept_failed)
+				{
+					memo_failed = 1;
+					continue;
+				}
+				if (kept)
+				{
+					draw = kept;
+					draw_count = out;
+				}
+				else
+					near_batches_whole++;
 				if (cut_count)
 				{
 					/* the bent pieces, after the batch's own triangles: GE vertices
@@ -4522,6 +4700,103 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 	}
 }
 
+/* a rigid part's corner, as plane bits (outside(): near, sides; with
+"modeldrop", 1 when behind the near test's margin), worked out once a part
+and kept in corner_verdict. Build 107: the part's matrix and the camera's
+axes made one transform for the part (rigid_rows, rigid_rows_for), so a
+corner costs one three-row product instead of two (model_to_camera).
+Rounded differently, so a corner exactly on a plane may fall the other way.
+"nearcheck" in keep.txt: both, and the corners whose verdicts differ
+counted in the log */
+static void rigid_rows_for(const ScePspFMatrix4 *model)
+{
+	int axis;
+
+	if (near_check < 0)
+		near_check = psp_keep("nearcheck");
+	for (axis = 0; axis < 3; axis++)
+	{
+		const float *d = axis == 0 ? camera_right : axis == 1 ? camera_up : camera_forward;
+
+		rigid_rows[axis][0] = model->x.x * d[0] + model->x.y * d[1] + model->x.z * d[2];
+		rigid_rows[axis][1] = model->y.x * d[0] + model->y.y * d[1] + model->y.z * d[2];
+		rigid_rows[axis][2] = model->z.x * d[0] + model->z.y * d[1] + model->z.z * d[2];
+		rigid_rows[axis][3] = model->w.x * d[0] + model->w.y * d[1] + model->w.z * d[2];
+	}
+}
+
+static int rigid_corner_bits(const void *vertices, unsigned short corner, const ScePspFMatrix4 *model, float limit)
+{
+	int known = corner < CORNER_VERDICTS ? corner_verdict[corner] : -1, bits;
+	const float *p;
+	float camera_point[3];
+
+	if (known >= corner_stamp && known < corner_stamp + CORNER_STAMP_STEP)
+		return known - corner_stamp;
+	p = (const float *)((const char *)vertices + 24 * corner + 12);
+	camera_point[0] = rigid_rows[0][0] * p[0] + rigid_rows[0][1] * p[1] + rigid_rows[0][2] * p[2] + rigid_rows[0][3];
+	camera_point[1] = rigid_rows[1][0] * p[0] + rigid_rows[1][1] * p[1] + rigid_rows[1][2] * p[2] + rigid_rows[1][3];
+	camera_point[2] = rigid_rows[2][0] * p[0] + rigid_rows[2][1] * p[1] + rigid_rows[2][2] * p[2] + rigid_rows[2][3];
+	bits = model_drop ? (camera_corner_out(camera_point[0], camera_point[1], camera_point[2], limit) ? 1 : 0) :
+		outside(camera_point);
+	if (near_check)
+	{
+		float two_step[3];
+
+		model_to_camera(model, p, two_step);
+		near_check_corners++;
+		if (bits != (model_drop ? (camera_corner_out(two_step[0], two_step[1], two_step[2], limit) ? 1 : 0) :
+			outside(two_step)))
+			near_check_differ++;
+	}
+	if (corner < CORNER_VERDICTS)
+		corner_verdict[corner] = (unsigned short)(corner_stamp + bits);
+	return bits;
+}
+
+/* a triangle's corners, from a list or a strip (0: a strip's empty triangle) */
+static int part_triangle(const unsigned short *indices, int strip, long triangle, unsigned short *corner)
+{
+	if (strip)
+	{
+		corner[0] = indices[triangle];
+		corner[1] = indices[triangle + ((triangle & 1) ? 2 : 1)];
+		corner[2] = indices[triangle + ((triangle & 1) ? 1 : 2)];
+		return !(corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2]);
+	}
+	corner[0] = indices[3 * triangle];
+	corner[1] = indices[3 * triangle + 1];
+	corner[2] = indices[3 * triangle + 2];
+	return 1;
+}
+
+/* build 107: whether every triangle of a rigid part near the eye is wholly
+inside, so the part draws its own indices with no copy in the list. A model
+is "near" when its bounding sphere reaches the near plane or past the GE's
+guard band, which a large model's (a Pelican's) does while most of its parts'
+triangles are well inside: b30 beside the Pelicans copied up to 160 KB of
+kept indices and cut corners into the list a frame. The verdicts stay in
+corner_verdict for the copy, when one is needed */
+static int rigid_part_whole(const void *vertices, const unsigned short *indices, long index_count, int strip,
+	const ScePspFMatrix4 *model, float limit)
+{
+	long triangle, triangles = strip ? index_count - 2 : index_count / 3;
+	unsigned short corner[3];
+
+	if (model_drop < 0)
+		model_drop = psp_keep("modeldrop");
+	corner_verdict_reset();
+	rigid_rows_for(model);
+	near_parts++;
+	for (triangle = 0; triangle < triangles; triangle++)
+		if (part_triangle(indices, strip, triangle, corner) &&
+			(rigid_corner_bits(vertices, corner[0], model, limit) | rigid_corner_bits(vertices, corner[1], model, limit) |
+			rigid_corner_bits(vertices, corner[2], model, limit)))
+			return 0;
+	near_parts_whole++;
+	return 1;
+}
+
 static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
@@ -4535,9 +4810,15 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	model_cut_vertices = NULL;
 	near_memo_skin = NULL; /* build 106: model_geometry's lists are this part's */
 	near_memo_complete = 0;
+	bone_memo_skin = NULL; /* build 107: and its bone sub-lists */
 	if (!frame_open || index_count < 3 || !vertices || !indices || !model_nodes || model_node_count <= 0 ||
 		vertex_count <= 0 || list_full() || (in_sky && magenta == 1))
 		return;
+	if (model_size_floor > 0.0f && model_pixels < model_size_floor && !model_first_person && !in_sky)
+	{
+		model_floor_left_out++;
+		return;
+	}
 	part_start();
 	if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
 		return;
@@ -4552,7 +4833,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		node_matrix(vertices, indices, &model);
 		sceGumLoadMatrix(&model);
 		part_add(5);
-		if (model_near && !model_first_person)
+		if (model_near && !model_first_person &&
+			!rigid_part_whole(vertices, indices, index_count, strip, &model, projection_near * 1.25f))
 		{
 			/* build 38: near the eye, only the triangles wholly in front of
 			the near plane (with a margin), as a list */
@@ -4580,80 +4862,17 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			went missing whenever a corner reached past the screen's edge
 			(Sheepdog01's b59 rock shots), and a part with every triangle so placed
 			disappeared. "modeldrop": as before */
-			if (model_drop < 0)
-				model_drop = psp_keep("modeldrop");
-			corner_verdict_reset();
-			/* build 107: the part's matrix and the camera's axes made one
-			transform for the part (rigid_rows), so a corner costs one
-			three-row product instead of two (model_to_camera). Rounded
-			differently, so a corner exactly on a plane may fall the other
-			way. "nearcheck" in keep.txt: both, and the corners whose
-			verdicts differ counted in the log */
-			{
-				int axis;
-
-				if (near_check < 0)
-					near_check = psp_keep("nearcheck");
-				for (axis = 0; axis < 3; axis++)
-				{
-					const float *d = axis == 0 ? camera_right : axis == 1 ? camera_up : camera_forward;
-
-					rigid_rows[axis][0] = model.x.x * d[0] + model.x.y * d[1] + model.x.z * d[2];
-					rigid_rows[axis][1] = model.y.x * d[0] + model.y.y * d[1] + model.y.z * d[2];
-					rigid_rows[axis][2] = model.z.x * d[0] + model.z.y * d[1] + model.z.z * d[2];
-					rigid_rows[axis][3] = model.w.x * d[0] + model.w.y * d[1] + model.w.z * d[2];
-				}
-			}
+			/* (rigid_part_whole has reset corner_verdict, set rigid_rows and
+			worked out the corners up to the first triangle not wholly inside) */
 			for (triangle = 0; triangle < triangles; triangle++)
 			{
 				unsigned short corner[3];
 				int k, bits[3];
 
-				if (strip)
-				{
-					corner[0] = indices[triangle];
-					corner[1] = indices[triangle + ((triangle & 1) ? 2 : 1)];
-					corner[2] = indices[triangle + ((triangle & 1) ? 1 : 2)];
-					if (corner[0] == corner[1] || corner[1] == corner[2] || corner[0] == corner[2])
-						continue;
-				}
-				else
-				{
-					corner[0] = indices[3 * triangle];
-					corner[1] = indices[3 * triangle + 1];
-					corner[2] = indices[3 * triangle + 2];
-				}
+				if (!part_triangle(indices, strip, triangle, corner))
+					continue;
 				for (k = 0; k < 3; k++)
-				{
-					int known = corner[k] < CORNER_VERDICTS ? corner_verdict[corner[k]] : -1;
-
-					if (known >= corner_stamp && known < corner_stamp + CORNER_STAMP_STEP)
-						bits[k] = known - corner_stamp;
-					else
-					{
-						const float *p = (const float *)((const char *)vertices + 24 * corner[k] + 12);
-						float camera_point[3];
-
-						camera_point[0] = rigid_rows[0][0] * p[0] + rigid_rows[0][1] * p[1] + rigid_rows[0][2] * p[2] + rigid_rows[0][3];
-						camera_point[1] = rigid_rows[1][0] * p[0] + rigid_rows[1][1] * p[1] + rigid_rows[1][2] * p[2] + rigid_rows[1][3];
-						camera_point[2] = rigid_rows[2][0] * p[0] + rigid_rows[2][1] * p[1] + rigid_rows[2][2] * p[2] + rigid_rows[2][3];
-						bits[k] = model_drop ? (camera_corner_out(camera_point[0], camera_point[1], camera_point[2],
-							limit) ? 1 : 0) : outside(camera_point);
-						if (near_check)
-						{
-							/* "nearcheck": the two-step transform's verdict */
-							float two_step[3];
-
-							model_to_camera(&model, p, two_step);
-							near_check_corners++;
-							if (bits[k] != (model_drop ? (camera_corner_out(two_step[0], two_step[1], two_step[2],
-								limit) ? 1 : 0) : outside(two_step)))
-								near_check_differ++;
-						}
-						if (corner[k] < CORNER_VERDICTS)
-							corner_verdict[corner[k]] = (unsigned short)(corner_stamp + bits[k]);
-					}
-				}
+					bits[k] = rigid_corner_bits(vertices, corner[k], &model, limit);
 				if (!(bits[0] | bits[1] | bits[2]))
 				{
 					kept[3 * count] = corner[0];
@@ -4819,6 +5038,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	unsigned int start = ge_clock();
 
 	ge_category = GE_SKIP_MODELS;
+	model_part_calls++;
 	psp_ge_draw_model_body(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key, u_scale, v_scale, alpha_tested);
 	ge_category = 0;
 	ge_entry_us[1] += ge_clock() - start;

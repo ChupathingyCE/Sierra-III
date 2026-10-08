@@ -29,8 +29,15 @@ fill 3,165,260 of its 0x305000 bytes); the GPU part holds only the decal
 vertices, as on the Xbox. */
 
 #define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x092B0000 /* PSP: just below the tag window (0x09600000) */
-#define HALO_PORT_GAME_STATE_CPU_SIZE 0x305000 /* PSP: Xbox value */
-#define HALO_PORT_GAME_STATE_GPU_SIZE 0x40000 /* PSP: Xbox value */
+/* PSP, build 107: 64 KB moved from the GPU part to the CPU part, the total
+unchanged. The GPU part holds only the decal vertices, 160 KB
+(rasterizer_xbox_decals.c: 2,560 pages of 64 bytes) of its 256; b107's
+object sphere copies (32 KB) took the CPU part past its end (game_state.c's
+assert 159 at start-up, b107e on: harmless while the two parts didn't meet,
+since checkpoints save the whole buffer, but one more allocation would have
+put the CPU part's end inside the decal vertices) */
+#define HALO_PORT_GAME_STATE_CPU_SIZE 0x315000 /* Xbox: 0x305000 */
+#define HALO_PORT_GAME_STATE_GPU_SIZE 0x30000 /* Xbox: 0x40000 */
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
 
 /* ---------- objects */

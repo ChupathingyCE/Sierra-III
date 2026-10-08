@@ -47,14 +47,21 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 	*u_scale = *v_scale = 1.0f;
 	*u_offset = *v_offset = 0.0f;
 	*blend = 0;
-	if ((type == 5 || type == 6) && *(short const *)(definition + 42) == 0 && *(long const *)(definition + 84) > 0)
+	/* build 107: a first map that is a cube map (the shader's "first map
+	type": a reflection) is passed over for the next one, which the GE can
+	draw. b30's ocean ("water simple": a reflection cube, then three ripple
+	maps) had no map at all and wasn't drawn: the white water Sheepdog01 saw (b106) */
+	short first_map_type = (type == 5 || type == 6) ? *(short const *)(definition + 42) : 0;
+	long map_count = (type == 5 || type == 6) ? *(long const *)(definition + 84) : 0;
+
+	if ((type == 5 || type == 6) && map_count > (first_map_type != 0 ? 1 : 0))
 	{
 		/* generic and chicago: maps of 100 and 220 bytes */
-		char const *maps = *(char const *const *)(definition + 88), *map = maps;
 		int chicago = type == 6, stride = chicago ? 220 : 100, scale_at = chicago ? 84 : 4;
+		char const *maps = *(char const *const *)(definition + 88) + (first_map_type != 0 ? stride : 0), *map = maps;
 		int map_at = chicago ? 120 : 40, animation_at = chicago ? 164 : 44, count, index, bitmap = 0;
 
-		count = *(long const *)(definition + 84);
+		count = map_count - (first_map_type != 0 ? 1 : 0);
 		if (*(unsigned char const *)(definition + 41) & 0x80)
 		{
 			/* numeric: digit "permutation" of the counter, as the Xbox works it out */
@@ -638,9 +645,45 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 ],
 "source/rasterizer/rasterizer_lights.c": [
 ("static byte local_lens_flare_occlusion_test_results2[MAXIMUM_LENS_FLARE_MARKERS_PER_STRUCTURE+MAXIMUM_QUEUED_LENS_FLARES][MAXIMUM_WINDOWS];",
- "static byte local_lens_flare_occlusion_test_results2[MAXIMUM_LENS_FLARE_MARKERS_PER_STRUCTURE+MAXIMUM_QUEUED_LENS_FLARES][PSP_LENS_FLARE_WINDOWS];"),
+ "static byte local_lens_flare_occlusion_test_results2[PSP_LENS_FLARE_MARKERS+MAXIMUM_QUEUED_LENS_FLARES][PSP_LENS_FLARE_WINDOWS];"),
+("""		local_lens_flare_count= 0;
+	}
+
+	rasterizer_profile_end(_rasterizer_profile_lens_flare_occlusion_query);""",
+ """#ifdef HALO_PSP
+		/* build 107: the most flares a frame has submitted, for sizing
+		local_lens_flare_parameters (1,024 a frame, 40 KB) to the maps:
+		the heartbeat's "lens flares" line */
+		{
+			extern long psp_lens_flare_peak;
+
+			if (local_lens_flare_count > psp_lens_flare_peak)
+				psp_lens_flare_peak = local_lens_flare_count;
+		}
+#endif
+		local_lens_flare_count= 0;
+	}
+
+	rasterizer_profile_end(_rasterizer_profile_lens_flare_occlusion_query);"""),
 ("		return &local_lens_flare_occlusion_test_results2[structure_lens_flare_index][window_index];",
- "		return &local_lens_flare_occlusion_test_results2[structure_lens_flare_index][window_index % PSP_LENS_FLARE_WINDOWS];"),
+ """#ifdef HALO_PSP
+		/* build 107: sized to the maps' markers (PSP_LENS_FLARE_MARKERS, in
+		psp_fixups.py's PSP sizes); one past it shares the spare result */
+		if (structure_lens_flare_index >= PSP_LENS_FLARE_MARKERS + MAXIMUM_QUEUED_LENS_FLARES)
+		{
+			static byte spare_result;
+			static boolean logged = FALSE;
+
+			if (!logged)
+			{
+				logged = TRUE;
+				platform_psp_log("lens flares: marker %ld is past the %d kept (PSP_LENS_FLARE_MARKERS): its flares share one result",
+					structure_lens_flare_index - MAXIMUM_QUEUED_LENS_FLARES, PSP_LENS_FLARE_MARKERS);
+			}
+			return &spare_result;
+		}
+#endif
+		return &local_lens_flare_occlusion_test_results2[structure_lens_flare_index][window_index % PSP_LENS_FLARE_WINDOWS];"""),
 ],
 "port/linux/src/d3d8_resources.c": [
 ("""static void *allocate_resource_memory(unsigned long size)
@@ -780,6 +823,32 @@ long psp_game_time_peek(void)
 #endif"""),
 ],
 "port/linux/src/d3d8_gl.c": [
+("""		object->instruction_count = function[0] >> 16;
+		object->instructions = malloc(object->instruction_count * 4 * sizeof(DWORD));
+		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));""",
+ """		object->instruction_count = function[0] >> 16;
+#ifdef HALO_PSP
+		/* build 107: the copy is read only by the GL translator
+		(vertex_shader_get), which never runs on the PSP (gl_ready stays
+		FALSE): every Xbox vertex shader's code twice over, about 34 KB of
+		heap. The count stays, for GetVertexShaderSize */
+		object->instructions = NULL;
+#else
+		object->instructions = malloc(object->instruction_count * 4 * sizeof(DWORD));
+		memcpy(object->instructions, function + 1, object->instruction_count * 4 * sizeof(DWORD));
+#endif"""),
+("#define VISIBILITY_TEST_SLOTS 4096\n",
+ """#ifdef HALO_PSP
+/* build 107: the GL occlusion queries never run on the PSP (its lens flares
+test with psp_ge_widget_occlusion; no run's coverage reached them): two
+slots, not 4,096 in four arrays (64 KB). Two, not one: every use takes its
+index modulo the count and then turns 0 into 1, since slot 0 is the scratch
+query */
+#define VISIBILITY_TEST_SLOTS 2
+#else
+#define VISIBILITY_TEST_SLOTS 4096
+#endif
+"""),
 ("#define MIRROR_SEGMENT_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_SEGMENT_SIZE)\n#define MIRROR_PAGE_SIZE 0x1000UL\n#define MIRROR_PAGE_COUNT (PLATFORM_CONTIGUOUS_SIZE / MIRROR_PAGE_SIZE)",
  """#ifdef HALO_PSP
 /* the PSP runs this file only as the null renderer, which never uploads;
@@ -891,8 +960,14 @@ null audio need for now. */
  "	XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE = PSP_TEXTURE_STEAL_GUARD,"),
 ],
 "source/sound/sound_dsound_xbox.c": [
+# (build 107: the PSP's size is chosen at start-up, so a macro, not the enum's
+# constant; a directive inside the enum's braces is fine for the compiler)
 ("	SOUND_CACHE_SIZE = 0x400000,",
- "	SOUND_CACHE_SIZE = PSP_SOUND_CACHE_SIZE,"),
+ """#ifdef HALO_PSP
+#define SOUND_CACHE_SIZE PSP_SOUND_CACHE_SIZE
+#else
+	SOUND_CACHE_SIZE = 0x400000,
+#endif"""),
 ],
 "source/cache/cache_files_windows.c": [
 ("""	request->buffer = buffer;
@@ -1807,12 +1882,21 @@ sound cache, now feeding real output, doubles to 1 MB */
 /* build 102: 1.125 MB (was 1 MB): Sheepdog01's b101 Library run streamed 99 MB of
 sound in 6.5 minutes through the 1 MB cache (2,954 loads, 35 failed for
 room, the last second's working set up to 1000 KB); half of the 256 KB the
-build gave back to the heap (AI debugger, log buffers) */
-#define PSP_SOUND_CACHE_SIZE 0x120000
+build gave back to the heap (AI debugger, log buffers). Build 107: chosen at
+start-up, keep.txt's "soundN" (KB) or the default (psp_platform.c's
+psp_sound_cache_bytes), so it is no longer a constant */
+unsigned long psp_sound_cache_bytes(void);
+#define PSP_SOUND_CACHE_SIZE psp_sound_cache_bytes()
 #define PSP_PROFILE_FRAMES 2
 #define PSP_DEBUG_PRIMITIVES 64
 /* one screen: no split screen on the PSP */
 #define PSP_LENS_FLARE_WINDOWS 1
+/* build 107: the lens flare results kept per BSP marker. The game kept one
+for every marker index a BSP could have (65,536: 64 KB); the most any BSP
+of the ten campaign maps has is 4,616 (d40; a10 2,596, c20 733), read from
+the maps' "lens flare markers". A marker past this shares one spare result
+(its flare fades with the others'; logged once) */
+#define PSP_LENS_FLARE_MARKERS 8192
 void platform_psp_log(const char *format, ...);
 unsigned long psp_microseconds(void);
 void psp_tick_account(unsigned long microseconds);
@@ -1827,6 +1911,7 @@ void psp_phase(int phase);
 #define PSP_PROFILE_FRAMES 256
 #define PSP_DEBUG_PRIMITIVES 8192
 #define PSP_LENS_FLARE_WINDOWS MAXIMUM_WINDOWS
+#define PSP_LENS_FLARE_MARKERS MAXIMUM_LENS_FLARE_MARKERS_PER_STRUCTURE
 #endif
 '''
 
@@ -2245,16 +2330,44 @@ static unsigned long psp_family_checksum(struct object_header_datum const *heade
 	return sum ? sum : 1;
 }
 
+/* build 107: keep.txt's "sceneryhalf": sleeping scenery is checked on
+alternate ticks, half of it each tick (by its index), and stays asleep
+unchecked on the other. The check (the checksum of the whole datum) is most
+of what sleeping scenery costs: 2.3% of b30's beach [E]. What it trades:
+anything done to a scenery object (a script, a blast) is noticed up to a
+tick later than before. Off by default. The counts are the heartbeat's
+"sleeping scenery" line */
+long psp_scenery_unchecked, psp_scenery_woken;
+static int psp_scenery_half = -1;
+
+static int psp_scenery_skips_check(struct object_header_datum const *header, short absolute_index, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	/* the double speed powerup updates objects on even ticks only, so the
+	half by game time would be the same half every update */
+	long update = game_players_are_double_speed() ? game_time_get() >> 1 : game_time_get();
+
+	if (psp_scenery_half < 0)
+		psp_scenery_half = psp_keep("sceneryhalf");
+	return psp_scenery_half && psp_sleep_enabled && may_sleep && header->type == _object_type_scenery &&
+		absolute_index < MAXIMUM_OBJECTS_PER_MAP && object->object.first_child_object_index == NONE &&
+		psp_sleep[absolute_index].identifier == header->identifier && psp_sleep[absolute_index].quiet >= 2 &&
+		((update + absolute_index) & 1) != 0;
+}
+
 static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
 {
 	struct object_datum const *object = header->datum;
 	unsigned long before = 0;
 	int corpse_reported = 0;
+	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
 
-	if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+	if (unchecked)
+		psp_scenery_unchecked++;
+	else if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
 		(object->object.first_child_object_index == NONE || header->type == _object_type_vehicle))
 		before = psp_family_checksum(header);
-	if (!before)
+	if (!before && !unchecked)
 	{
 		if (may_sleep && header->type == _object_type_biped && object->object.first_child_object_index != NONE)
 		{
@@ -2289,8 +2402,8 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 			between_identifier = header->identifier;
 		}
 	}
-	if (psp_sleep[absolute_index].identifier == header->identifier &&
-		psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before)
+	if (unchecked || (psp_sleep[absolute_index].identifier == header->identifier &&
+		psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before))
 	{
 		struct object_datum *sleeper = (struct object_datum *)header->datum;
 
@@ -2319,6 +2432,11 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		}
 		return;
 	}
+	/* sceneryhalf: sleeping scenery that something changed (and that may
+	have waited a tick unchecked) */
+	if (psp_scenery_half && header->type == _object_type_scenery &&
+		psp_sleep[absolute_index].identifier == header->identifier && psp_sleep[absolute_index].quiet >= 2)
+		psp_scenery_woken++;
 	if (psp_sleep_debug < 0)
 		psp_sleep_debug = psp_keep("sleepdebug");
 	if (psp_sleep_debug && header->type == _object_type_biped && may_sleep && game_time_get() > 150)
@@ -4678,7 +4796,7 @@ FIXES_36["source/physics/collisions.c#features"] = [
 		psp_features_objects_us += psp_microseconds() - psp_features_mark;
 		if (psp_features_calls >= 6000)
 		{
-			platform_psp_log("collision: features in sphere: %lu calls; BSP walk %lu us each (%.1f leaves), features %lu us (%.1f surfaces, edges and vertices made into shapes), objects %lu us (%.1f objects walked)",
+			platform_psp_log("collision: features in sphere: %lu calls; BSP walk %lu us each (%.1f leaves), features %lu us (%.1f surfaces, edges and vertices made into shapes), objects %lu us (%.1f objects gathered: since b107, the ones past the sphere test)",
 				psp_features_calls, psp_features_walk_us / psp_features_calls, (double)psp_features_leaves / psp_features_calls,
 				psp_features_bsp_us / psp_features_calls, (double)psp_features_found / psp_features_calls,
 				psp_features_objects_us / psp_features_calls, (double)psp_features_objects / psp_features_calls);
@@ -6862,7 +6980,8 @@ FIXES_106["source/sound/game_sound.c#steps"] = [
 # - compute_sound_obstruction: a result is reused for up to
 #   PSP_OBSTRUCTION_FRESH_TICKS (the Xbox reused it within a tick); older ones
 #   are tested again while the frame's PSP_OBSTRUCTION_TESTS last, and reused
-#   past that (a muffling that follows the camera 100-200 ms late)
+#   past that (a muffling that follows the camera 100-200 ms late; b107 caps
+#   how late: FIXES_107 game_sound.c#stale)
 # The counts go to the log every 300 frames ("sound obstruction:")
 FIXES_106["source/sound/sound_manager.c#obstruction"] = [
 ("""		if (nearest_listener_index != NONE)
@@ -7166,7 +7285,7 @@ FIXES_107 = {}
 # path code takes a NULL record everywhere (path.c tests state->debug before
 # each use), so with no record nothing else changes. The emulator's PC
 # samples: 3% of b30's "ai update" step in that memset alone. Kept with the
-# debug tools (PSP_DEBUG_TOOLS)
+# debug tools (PSP_DEBUG_TOOLS), as is the records' array (114 KB of heap)
 FIXES_107["source/ai/ai_debug.c#pathstorage"] = [
 ("""struct path_debug_storage *ai_debug_get_path_storage(
 	long actor_index)
@@ -7188,20 +7307,84 @@ FIXES_107["source/ai/ai_debug.c#pathstorage"] = [
 	return NULL;
 #endif
 """),
+# and its array (114 KB of heap) isn't made: nothing asks for it. (The
+# sizes are written as the game has them: ai_debug_records, after these
+# fixups, wraps both, the allocation's and the memset's, in PSP_DEBUG_COUNT)
+("""	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS, FALSE, "c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 148) : actor_path_debug_array;
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 150, actor_debug_array && actor_path_debug_array);""",
+ """#if defined(HALO_PSP) && !PSP_DEBUG_TOOLS
+	/* psp_fixups.py (build 107): see FIXES_107 ai_debug.c#pathstorage */
+	actor_path_debug_array = NULL;
+#else
+	actor_path_debug_array = actor_path_debug_array==NULL ? (struct path_debug_storage *)debug_malloc(sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS, FALSE, "c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 148) : actor_path_debug_array;
+#endif
+
+#if defined(HALO_PSP) && !PSP_DEBUG_TOOLS
+	match_assert("c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 150, actor_debug_array);
+#else
+	match_assert("c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 150, actor_debug_array && actor_path_debug_array);
+#endif"""),
+# (and the five that read it take no array as no records)
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\ai\\\\ai_debug.c", 211, actor_path_debug_array)
+
+	memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS);
+""",
+ """	if (actor_path_debug_array)
+		memset(actor_path_debug_array, 0, sizeof(*actor_path_debug_array) * MAXIMUM_NUMBER_OF_ACTOR_PATHS);
+"""),
+("""void ai_debug_actor_deleted(
+	long actor_index)
+{
+	short path_index;
+""",
+ """void ai_debug_actor_deleted(
+	long actor_index)
+{
+	short path_index;
+
+	if (!actor_path_debug_array)
+		return;
+"""),
+("""	short found_path_index = NONE;
+	long found_path_time = NONE;
+""",
+ """	short found_path_index = NONE;
+	long found_path_time = NONE;
+
+	if (!actor_path_debug_array)
+		return NULL;
+"""),
+# (ai_debug_update calls this every tick)
+("""static void ai_debug_path_storage_update(
+	void)
+{
+	short index;
+	short other_index;
+""",
+ """static void ai_debug_path_storage_update(
+	void)
+{
+	short index;
+	short other_index;
+
+	if (!actor_path_debug_array)
+		return;
+"""),
+("""static void ai_debug_render_paths_failed(
+	void)
+{
+	short index;
+""",
+ """static void ai_debug_render_paths_failed(
+	void)
+{
+	short index;
+
+	if (!actor_path_debug_array)
+		return;
+"""),
 ]
-# build 107: a cluster partition's element unlinked without walking its
-# cluster's list. Every object that moves is disconnected from its clusters
-# and connected again each tick (cluster_partition_reconnect), and the
-# removal walked the cluster's whole list to find the element before it:
-# b30's beach cluster holds about 300 objects, so each moving object's
-# removal read about 150 elements, each a likely cache miss on the PSP. The
-# emulator's PC samples: reference_list_remove 1.35% of all the time, 4% of
-# "objects update". Each element now keeps the element before it in its
-# list in its spare word (pad: an absolute index, 0xFFFF for the list's
-# head), and the object's own reference to the cluster keeps where its
-# element is. The unlink checks both links before it trusts them and falls
-# back to the walk otherwise, and removes the same element the walk would
-# (an object is in a cluster's list once), so the lists come out the same
 # build 107: the case-blind string compare without a tolower call per
 # character. Marker lookups (model_find_marker's binary search: weapons,
 # attachments, the AI's aim) and the scripts' name lookups go through
@@ -7364,6 +7547,123 @@ static long object_header_new(
 	short size)
 {"""),
 ]
+# build 107: a recorded animation's event stream (the cinematics' actors) is
+# packed byte by byte, so a short-difference event's two shorts can start at
+# an odd address. The Xbox reads them anyway; the PSP's CPU raises an address
+# error on a halfword load from an odd address (the strict emulator's
+# "unaligned load of 2 bytes", update_controller_short, 35 s into a10's
+# opening). Packed, the struct is read a byte at a time, the same 4 bytes.
+# The other events are read with memcpy, or are single bytes
+FIXES_107["source/cutscene/recorded_animation_playback.c"] = [
+("""struct vector_short_difference_data
+{
+	short delta_yaw;
+	short delta_pitch;
+};""",
+ """struct vector_short_difference_data
+{
+	short delta_yaw;
+	short delta_pitch;
+}
+#ifdef HALO_PSP
+__attribute__((packed))
+#endif
+;"""),
+]
+# build 107: a BSP load filled the window's free part, from the tags' end to
+# the window's end, with 0xCD (the Xbox debug build's fill) before reading the
+# BSP over its share of it. Since b106 the animation cache keeps pages in the
+# part no BSP ever reaches (the pack's header gives it): a10's first BSP
+# switch, 40 s into its opening, filled those pages with 0xCD under the
+# cache's feet, and the next keyframe read went through 0xCDCDCDCD offsets
+# (b106 too: "animnowindow" kept it alive). Nothing reads the fill, so on the
+# PSP it is left out: the BSP's read writes its own share, and the bytes
+# between stay the cache's. Also up to 3.8 MB of memory writes a BSP switch
+FIXES_107["source/cache/cache_files.c#bspfill"] = [
+("""	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
+	csmemset(
+		tag_cache_base_address + cache_file_globals.header.tag_data_size,
+		0xCD,
+		PSP_TAG_CACHE_SIZE - cache_file_globals.header.tag_data_size);""",
+ """	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
+#ifndef HALO_PSP
+	csmemset(
+		tag_cache_base_address + cache_file_globals.header.tag_data_size,
+		0xCD,
+		PSP_TAG_CACHE_SIZE - cache_file_globals.header.tag_data_size);
+#else
+	(void)tag_cache_base_address;
+#endif"""),
+]
+# build 107: a read request is published by setting its slot's "pending", and
+# the reader thread takes any slot that is pending and not running. The C
+# order (fields, then pending) isn't what runs: nothing tells the compiler
+# another thread looks, so it may store the fields in any order, and in b107s
+# it stores pending first, before the event, size, offset and buffer. Since
+# b106 the reader runs above the game thread (0x1C over 0x20), so if it wakes
+# in those few instructions (a read finishing), it preempts and reads a
+# half-written slot: the old request's buffer and offset, or none at all (the
+# "slot pending with no buffer" log). A compiler barrier keeps pending last;
+# one core, so the CPU itself doesn't reorder what the other thread sees
+FIXES_107["source/cache/cache_files_windows.c#publish"] = [
+("""	request->pending = TRUE;
+	request->blocking = blocking;
+	request->running = FALSE;
+	cache_file_windows_thread_wake();""",
+ """#ifndef HALO_PSP
+	request->pending = TRUE;
+	request->blocking = blocking;
+	request->running = FALSE;
+#else
+	/* psp_fixups.py (build 107): every field before pending (see FIXES_107
+	cache_files_windows.c#publish) */
+	request->blocking = blocking;
+	request->running = FALSE;
+	__asm__ __volatile__("" ::: "memory");
+	request->pending = TRUE;
+#endif
+	cache_file_windows_thread_wake();"""),
+]
+# build 107: b106's obstruction cache (FIXES_106 game_sound.c#obstruction)
+# reused a result of any age once a frame's 6 tests were spent. The sounds
+# come in the same order every frame, so with many of them the first ones go
+# stale and take the budget again before the last ones get a turn: at 2
+# ticks a frame, past the 12th sound a sound kept the muffling of wherever
+# the camera was when it first played (or, after a checkpoint revert, from
+# before it). Past the budget a result is now reused only while it is under
+# PSP_OBSTRUCTION_STALE_TICKS (half a second) old; an older one is tested
+# whatever the budget. So a sound past the 12th is tested about every 8
+# frames instead of never. The log's "past the budget" counts every test
+# past it: those, and a new sound's first test (never reused, b106 too)
+FIXES_107["source/sound/game_sound.c#stale"] = [
+("""#define PSP_OBSTRUCTION_TESTS 6
+""",
+ """#define PSP_OBSTRUCTION_TESTS 6
+#define PSP_OBSTRUCTION_STALE_TICKS 15 /* build 107: see FIXES_107 game_sound.c#stale */
+"""),
+("""unsigned long psp_obstruction_tests = 0, psp_obstruction_reused = 0, psp_obstruction_beyond = 0;""",
+ """unsigned long psp_obstruction_tests = 0, psp_obstruction_reused = 0, psp_obstruction_beyond = 0, psp_obstruction_late = 0;"""),
+("""	platform_psp_log("sound obstruction: %.1f tests a frame, %.1f reused (up to %d ticks old, or older past %d tests), %.1f past their reach and not tested",
+		psp_obstruction_tests / 300.0, psp_obstruction_reused / 300.0, PSP_OBSTRUCTION_FRESH_TICKS, PSP_OBSTRUCTION_TESTS,
+		psp_obstruction_beyond / 300.0);
+	psp_obstruction_frames = psp_obstruction_tests = psp_obstruction_reused = psp_obstruction_beyond = 0;""",
+ """	platform_psp_log("sound obstruction: %.1f tests a frame (%.1f of them past the budget of %d), %.1f reused (up to %d ticks old, or %d past the budget), %.1f past their reach and not tested",
+		psp_obstruction_tests / 300.0, psp_obstruction_late / 300.0, PSP_OBSTRUCTION_TESTS,
+		psp_obstruction_reused / 300.0, PSP_OBSTRUCTION_FRESH_TICKS, PSP_OBSTRUCTION_STALE_TICKS,
+		psp_obstruction_beyond / 300.0);
+	psp_obstruction_frames = psp_obstruction_tests = psp_obstruction_reused = psp_obstruction_beyond = psp_obstruction_late = 0;"""),
+("""		((unsigned long)(now - obstruction_cache[slot].game_time) < PSP_OBSTRUCTION_FRESH_TICKS ||
+		psp_obstruction_frame_tests >= PSP_OBSTRUCTION_TESTS))""",
+ """		((unsigned long)(now - obstruction_cache[slot].game_time) < PSP_OBSTRUCTION_FRESH_TICKS ||
+		(psp_obstruction_frame_tests >= PSP_OBSTRUCTION_TESTS &&
+		(unsigned long)(now - obstruction_cache[slot].game_time) < PSP_OBSTRUCTION_STALE_TICKS)))"""),
+("""	psp_obstruction_frame_tests++;
+	psp_obstruction_tests++;""",
+ """	if (psp_obstruction_frame_tests >= PSP_OBSTRUCTION_TESTS)
+		psp_obstruction_late++;
+	psp_obstruction_frame_tests++;
+	psp_obstruction_tests++;"""),
+]
 FIXES_107["source/physics/collisions.c#spheres"] = [
 ("""boolean collision_test_vector(
 	unsigned long flags,
@@ -7453,6 +7753,19 @@ boolean collision_test_vector(
 							psp_features_objects++;
 #endif"""),
 ]
+# build 107: a cluster partition's element unlinked without walking its
+# cluster's list. Every object that moves is disconnected from its clusters
+# and connected again each tick (cluster_partition_reconnect), and the
+# removal walked the cluster's whole list to find the element before it:
+# b30's beach cluster holds about 300 objects, so each moving object's
+# removal read about 150 elements, each a likely cache miss on the PSP. The
+# emulator's PC samples: reference_list_remove 1.35% of all the time, 4% of
+# "objects update". Each element now keeps the element before it in its
+# list in its spare word (pad: an absolute index, 0xFFFF for the list's
+# head), and the object's own reference to the cluster keeps where its
+# element is. The unlink checks both links before it trusts them and falls
+# back to the walk otherwise, and removes the same element the walk would
+# (an object is in a cluster's list once), so the lists come out the same
 FIXES_107["source/structures/cluster_partitions.c#unlink"] = [
 ("""void cluster_partition_reconnect(
 	struct cluster_partition *partition,""",

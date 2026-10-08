@@ -175,8 +175,13 @@ static void trace_open(void)
 }
 
 /* a lookup that can't be served (no pack, a failed read): zeroes, so the
-game goes on with a wrong pose rather than reading freed memory; logged */
-static void *failure_block = NULL;
+game goes on with a wrong pose rather than reading freed memory; logged.
+A failure bigger than the block takes a new, bigger block rather than moving
+the old one (b106 reallocated it), since a caller may still hold the old
+one. The old ones are freed when the pack closes, when no lookup is held */
+#define FAILURE_BLOCKS 8
+static void *failure_blocks[FAILURE_BLOCKS];
+static unsigned int failure_block_count = 0;
 static unsigned int failure_bytes = 0;
 
 int psp_anim_active(void)
@@ -209,19 +214,30 @@ static void *failed(unsigned int address, unsigned int size, const char *why)
 {
 	if (failures++ < 8)
 		platform_log("animations: %u bytes at %08x: %s", size, address, why);
-	if (size > failure_bytes)
+	if (size > failure_bytes && failure_block_count < FAILURE_BLOCKS)
 	{
-		void *grown = realloc(failure_block, size);
+		/* at least double, so a few blocks cover any size */
+		unsigned int bytes = size > 2 * failure_bytes ? size : 2 * failure_bytes;
+		void *block = malloc(bytes);
 
-		if (grown)
+		if (block)
 		{
-			failure_block = grown;
-			failure_bytes = size;
+			failure_blocks[failure_block_count++] = block;
+			failure_bytes = bytes;
 		}
 	}
-	if (failure_block)
-		memset(failure_block, 0, failure_bytes);
-	return failure_block;
+	if (!failure_block_count)
+		return NULL;
+	/* the newest (biggest) block; still smaller than size only if malloc failed */
+	memset(failure_blocks[failure_block_count - 1], 0, failure_bytes);
+	return failure_blocks[failure_block_count - 1];
+}
+
+static void free_failure_blocks(void)
+{
+	while (failure_block_count)
+		free(failure_blocks[--failure_block_count]);
+	failure_bytes = 0;
 }
 
 static int protected_slot(unsigned int slot)
@@ -369,6 +385,15 @@ void *psp_anim_lock(unsigned long address, unsigned long size)
 	for (k = 1; slot >= 0 && k < count; k++)
 		if (page_slot[first_page + k] != slot + (int)k)
 			slot = -1;
+	/* build 107: and in one block. Pages read one at a time can sit in the
+	first block's last slot and the second block's first, numbered one after
+	the other but not side by side in memory: a range across them was taken
+	as a hit and read past the first block's end. Not seen to happen (a10's
+	crash was the BSP fill: FIXES_107 cache_files.c#bspfill), but ranges of
+	several pages are common: a10's cinematics are up to 32 KB, b30's
+	animations up to 15 KB */
+	if (slot >= 0 && (unsigned int)slot < block_slots[0] && (unsigned int)slot + count > block_slots[0])
+		slot = -1;
 	if (slot >= 0)
 		hits++;
 	else
@@ -411,6 +436,7 @@ void psp_anim_close(void)
 	page_count = 0;
 	animation_first = animation_end = page_base = 0;
 	memo_start = memo_end = memo_at = 0;
+	free_failure_blocks();
 }
 
 /* the pack holds animation data: bytes of it in [first, end) (offsets from
@@ -437,8 +463,9 @@ void psp_anim_map_opened(unsigned int bytes, unsigned int first, unsigned int en
 		;
 	page_bytes = 1u << page_shift;
 	cache_bytes = (unsigned int)psp_keep_number("anim", CACHE_KB_DEFAULT) * 1024;
-	/* at least 128 KB: the largest animation of a stock map is 50 KB (b30),
-	and a few more ranges are kept while one is read */
+	/* at least 128 KB: the largest animation of the maps measured is 32 KB
+	(a10's cinematics; b30's is 15 KB), and a few more ranges are kept while
+	one is read */
 	if (cache_bytes < 128 * 1024)
 		cache_bytes = 128 * 1024;
 	if (cache_bytes > SLOTS_MAX * page_bytes)
