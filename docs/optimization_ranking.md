@@ -15,7 +15,7 @@ The levers come in three kinds:
 - [U] inference.
 - [E→U] an emulator share scaled to the PSP. These are rough, and many shares date from before b106, so they overstate what's left of costs since reduced.
 
-Build numbers point to their docs (`build_bNNN.md`, `hardware_bNNN.md`); "v7", "v9" and so on are `halo_bench` runs (`psp_hardware_reference.md`). Scenes: BG = Blood Gulch, HEH = Hang 'Em High, Library = The Library (a30). "b107 log" is Sheepdog01's run `b107_b30_hw` (b30's beach, with `hwprofile`).
+Build numbers point to their docs (`build_bNNN.md`, `hardware_bNNN.md`); "v7", "v9" and so on are `halo_bench` runs (`psp_hardware_reference.md`). Scenes: BG = Blood Gulch, HEH = Hang 'Em High, Library = The Library (c20). "b107 log" is Sheepdog01's run `b107_b30_hw` (b30's beach, with `hwprofile`).
 
 ## The short version: what to chase, in order
 
