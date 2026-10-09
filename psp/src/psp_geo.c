@@ -86,6 +86,13 @@ static unsigned long read_us = 0, read_worst_us = 0;
 
 int psp_geo_open_count(void) { return pack >= 0; }
 
+/* build 108: the open map's bake formats (its pack's header word 10; 0 for a
+map without a pack): which tag blocks are already in the PSP's slim layouts
+(psp_tag_layouts.c) */
+static unsigned long map_formats = 0;
+
+unsigned long psp_geo_map_formats(void) { return map_formats; }
+
 /* the map's layout, from its first model part's vertex descriptor: a map
 built with its geometry outside (invader-build -G) keeps 6 bytes a level
 vertex in the tags (three int16 about the material's centroid, times a scale
@@ -487,57 +494,63 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	return NULL;
 }
 
+/* build 108: the resident entry holding ptr, or -1. The renderer asks this
+for every model part it draws (psp_geo_generation, psp_geo_address_of), and
+the answer used to be a scan of every entry when ptr wasn't the last block
+locked: the emulator's cache model put 6% of the drawing phase's data
+misses on the 12 KB entry table (b30's beach, docs/overnight_b108.md). Now
+the last block locked, then a small table by address (64 slots: the parts
+of a frame mostly repeat), then the scan, which fills the table. A slot is
+checked before it is believed (the entry may have been evicted or reused
+since), and only one resident block holds any arena address, so the answer
+is the scan's */
+#define AT_SLOTS 64
+static short at_slot[AT_SLOTS]; /* an entry's index + 1, 0: none */
+
+static int entry_holds(int index, unsigned int at)
+{
+	const struct geo_entry *e = &entries[index];
+
+	return e->at && e->state == 3 && at >= e->at && at < e->at + e->size;
+}
+
+static int resident_entry(const void *ptr)
+{
+	unsigned int at = (unsigned int)ptr, slot = (at >> 6) % AT_SLOTS;
+	int index;
+
+	if (at < arena_start || at >= arena_end)
+		return -1;
+	if (last_locked >= 0 && entry_holds(last_locked, at))
+		return last_locked;
+	if (at_slot[slot] && entry_holds(at_slot[slot] - 1, at))
+		return at_slot[slot] - 1;
+	for (index = 0; index < entry_count; index++)
+		if (entry_holds(index, at))
+		{
+			at_slot[slot] = (short)(index + 1);
+			return index;
+		}
+	return -1;
+}
+
 /* the generation of the block holding ptr: changes with every load into
 it, so the renderer knows whether what it worked out about the bytes there
 still holds. 0: not the cache's (tag data as before) */
 unsigned int psp_geo_generation(const void *ptr)
 {
-	unsigned int at = (unsigned int)ptr;
-	int index;
+	int index = resident_entry(ptr);
 
-	if (at < arena_start || at >= arena_end)
-		return 0;
-	if (last_locked >= 0)
-	{
-		const struct geo_entry *e = &entries[last_locked];
-
-		if (e->at && e->state == 3 && at >= e->at && at < e->at + e->size)
-			return e->generation;
-	}
-	for (index = 0; index < entry_count; index++)
-	{
-		const struct geo_entry *e = &entries[index];
-
-		if (e->at && e->state == 3 && at >= e->at && at < e->at + e->size)
-			return e->generation;
-	}
-	return 0;
+	return index >= 0 ? entries[index].generation : 0;
 }
 
 /* the external address of the resident bytes at ptr (the lasting identity
 of what's there), 0 if ptr isn't the cache's */
 unsigned int psp_geo_address_of(const void *ptr)
 {
-	unsigned int at = (unsigned int)ptr;
-	int index;
+	int index = resident_entry(ptr);
 
-	if (at < arena_start || at >= arena_end)
-		return 0;
-	if (last_locked >= 0)
-	{
-		const struct geo_entry *e = &entries[last_locked];
-
-		if (e->at && e->state == 3 && at >= e->at && at < e->at + e->size)
-			return e->address + (at - e->at);
-	}
-	for (index = 0; index < entry_count; index++)
-	{
-		const struct geo_entry *e = &entries[index];
-
-		if (e->at && e->state == 3 && at >= e->at && at < e->at + e->size)
-			return e->address + (at - e->at);
-	}
-	return 0;
+	return index >= 0 ? entries[index].address + ((unsigned int)ptr - entries[index].at) : 0;
 }
 
 int psp_geo_external(unsigned int address)
@@ -597,6 +610,7 @@ static void forget_all(void)
 	entry_count = 0;
 	arena_next = arena_start;
 	memset(hash_head, 0, sizeof(hash_head));
+	memset(at_slot, 0, sizeof(at_slot));
 	last_locked = -1;
 }
 
@@ -633,6 +647,8 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	}
 	psp_geo_close();
 	psp_structure_vertex_stride = outside ? 6 : 32;
+	/* build 108: the bake's formats, from the pack (below) */
+	map_formats = 0;
 	if (!name || !name[0])
 		return;
 	if (!outside)
@@ -655,6 +671,10 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 		platform_log("geometry: %s was built for another version of the map (crc %08x, map %08x): expect garbage",
 			path, header[2], map_crc);
 	pack_size = header[3];
+	/* build 108: header word 10, the bake's formats: bits 0-3, the tag
+	blocks invader-build -Z made slim (psp_tag_layouts.c) */
+	map_formats = header[10];
+	platform_log("geometry: %s: bake formats %lx", path, map_formats);
 	snprintf(pack_name, sizeof(pack_name), "%s", name);
 	async_reads = psp_keep("geoasync");
 	if (async_reads)

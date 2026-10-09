@@ -657,8 +657,15 @@ void psp_ge_fog(const float *color, float minimum_distance, float maximum_distan
 }
 
 /* the GE's own state, once: buffers, viewport, depth, fog */
+static void model_cut_take(void); /* build 108: below, by model_cut */
+
 static void ge_initialize(void)
 {
+	/* build 108: the scratchpad's pieces (psp_scratch.c), keep.txt read by now */
+	extern void psp_profile_tables_take(void);
+
+	model_cut_take();
+	psp_profile_tables_take();
 	display_list_acquire();
 	display_list_report();
 	sceGuInit();
@@ -1361,11 +1368,29 @@ static void vram_busy_calibrate(unsigned int waited_us)
 	vram_busy_sprites = wanted < 1 ? 1 : wanted > 400 ? 400 : wanted;
 }
 
+extern int psp_game_running(void); /* psp_fixups.py: players.c */
+static unsigned long win_other_targets = 0; /* windows for another target than the screen, for frameend: */
+
+/* build 108: each window's target, from the game's rasterizer_window_begin
+(psp_fixups.py). A window for another target than the screen (the Xbox's
+mirrors render into a second one first) is counted for the frameend: line:
+the GE has the screen alone, so such a window's draws land on it. b107 drew
+b30's floor mirrors that way, the whole level seen from the mirror's camera
+under the floor (render.c no longer renders mirrors, psp_fixups.py) */
+void psp_ge_window_target(int target)
+{
+	if (target != 0)
+		win_other_targets++;
+}
+
 void psp_ge_window_begin(const float *position, const float *forward, const float *up,
 	float vertical_field_of_view, float z_near, float z_far)
 {
 	ScePspFVector3 eye, center, upward;
 
+	/* one window a frame: the GE's frame takes the first window's camera,
+	and the later ones (letterbox bars, the non-player overlays: 2-D, on
+	the same screen) draw into it */
 	if (frame_open)
 		return;
 	if (!ge_ready)
@@ -1423,9 +1448,13 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 			platform_log("GE: the game's near plane %.4f, far %.1f; world near plane x%d%s", z_near, z_far, near_scale,
 				near_auto ? "; nearauto: x4, x2 or x1 by what is near the eye" : "");
 		}
-		if (near_auto)
+		/* build 108: nearauto only in a game. Between maps (a load's
+		frames, the error loop when a map is missing) the level and the
+		player are gone, and its tests read them (Sheepdog01's b107 b30 run: a bus
+		error at the level's end); the game's own plane then */
+		if (near_auto && psp_game_running())
 			z_near = near_plane_auto(position, z_near);
-		else
+		else if (!near_auto)
 			z_near *= near_scale;
 	}
 	near_clip = z_near;
@@ -4023,7 +4052,17 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 band, as GE vertices in the part's space (drawn by model_geometry after the
 part's own list, in every pass) */
 #define MAXIMUM_MODEL_CUT_CORNERS 192
-static float model_cut[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS];
+/* build 108: in the scratchpad (psp_scratch.c; ge_initialize): written and
+read back for every model part cut at the near plane, and the emulator's
+cache model counted 0.8 M misses on it over b30's beach fight */
+static float (*model_cut)[CORNER_FLOATS];
+
+void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c */
+static void model_cut_take(void)
+{
+	if (!model_cut)
+		model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
+}
 static int model_cut_count = 0;
 static void *model_cut_vertices = NULL;
 static int model_drop = -1;
@@ -9369,6 +9408,14 @@ void psp_ge_frame_window(char *text, int size)
 		win_frames, win_flush_us / 1000.0 / n, win_writeback_us / 1000.0 / n, win_ge_us / 1000.0 / n, win_ge_worst / 1000.0,
 		win_swap_us / 1000.0 / n, win_after_us / 1000.0 / n, win_list_bytes / 1024 / n, win_draws / n, win_triangles / n,
 		win_transparent / n);
+	if (win_other_targets)
+	{
+		size_t used = strlen(text);
+
+		snprintf(text + used, size > (int)used ? size - used : 0,
+			"; %lu windows for another target than the screen (drawn on it)", win_other_targets);
+		win_other_targets = 0;
+	}
 	win_frames = win_flush_us = win_writeback_us = win_ge_us = win_ge_worst = win_swap_us = win_after_us = 0;
 	win_list_bytes = win_triangles = win_draws = win_transparent = 0;
 }

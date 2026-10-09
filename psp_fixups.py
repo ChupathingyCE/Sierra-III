@@ -131,7 +131,9 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 	{
 		/* the GE's frame starts from the first window's camera (psp_ge.c; psp_fixups.py) */
 		extern void psp_ge_window_begin(const float *, const float *, const float *, float, float, float);
+		extern void psp_ge_window_target(int);
 
+		psp_ge_window_target((int)parameters->rasterizer_target); /* build 108: 0 the screen */
 		psp_ge_window_begin(&parameters->camera.position.x, &parameters->camera.forward.i, &parameters->camera.up.i,
 			parameters->camera.vertical_field_of_view, parameters->camera.z_near, parameters->camera.z_far);
 	}
@@ -1676,20 +1678,56 @@ boolean psp_model_draw(
 ''',
     "source/game/players.c": '''
 #ifdef HALO_PSP
+/* build 108: the local player's unit for the helpers below, or NONE. Only
+while a game is in progress: between maps the player and object tables are
+disposed but still hold the last map's indices, so reading them asserts
+(data.c#396 data->valid) and then faults. Sheepdog01's b107 run of b30: the level
+ended, b40 wasn't on the stick, the game's error loop drew a frame, and
+nearauto's psp_player_seated read the gone player's unit (object index
+#906, a bus error in object_get_and_verify_type) */
+static long psp_local_unit(struct player_datum **player_out)
+{
+	long player_index;
+	struct player_datum *player;
+
+	if (player_out)
+		*player_out = NULL;
+	if (!game_in_progress())
+		return NONE;
+	player_index = local_player_get_player_index(0);
+	if (player_index == NONE)
+		return NONE;
+	player = player_get(player_index);
+	if (player_out)
+		*player_out = player;
+	return player->unit_index;
+}
+
+/* build 108: for the GE's code, which doesn't see the game's headers
+(psp_ge.c: nearauto tests the level only while there is one) */
+int psp_game_running(void)
+{
+	return game_in_progress();
+}
+
 /* the local player for the heartbeat: whether it has a unit, and where
 (psp_platform.c calls this on the game's thread; psp_fixups.py) */
 void psp_player_snapshot(char *text, int size)
 {
-	long player_index = local_player_get_player_index(0);
 	struct player_datum *player;
+	long unit_index = psp_local_unit(&player);
 
-	if (player_index == NONE)
+	if (!game_in_progress())
+	{
+		snprintf(text, size, "player: no game in progress");
+		return;
+	}
+	if (!player)
 	{
 		snprintf(text, size, "player: no local player");
 		return;
 	}
-	player = player_get(player_index);
-	if (player->unit_index == NONE)
+	if (unit_index == NONE)
 	{
 		snprintf(text, size, "player: no unit (respawn timer %ld)", player->respawn_timer);
 		return;
@@ -1697,7 +1735,7 @@ void psp_player_snapshot(char *text, int size)
 	{
 		real_point3d origin;
 
-		object_get_origin(player->unit_index, &origin);
+		object_get_origin(unit_index, &origin);
 		snprintf(text, size, "player: at %.2f %.2f %.2f", origin.x, origin.y, origin.z);
 	}
 }
@@ -1707,19 +1745,15 @@ void psp_player_snapshot(char *text, int size)
 place his screenshots name */
 void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz)
 {
-	long player_index = local_player_get_player_index(0);
-	struct player_datum *player;
+	long unit_index = psp_local_unit(NULL);
 	real_point3d position;
 	real_vector3d facing;
 
-	if (player_index == NONE)
-		return;
-	player = player_get(player_index);
-	if (player->unit_index == NONE)
+	if (unit_index == NONE)
 		return;
 	position.x = x; position.y = y; position.z = z;
 	facing.i = fx; facing.j = fy; facing.k = fz;
-	object_set_position(player->unit_index, &position, NULL, NULL);
+	object_set_position(unit_index, &position, NULL, NULL);
 	player_control_set_facing(0, &facing);
 }
 
@@ -1728,31 +1762,23 @@ sphere the eye is inside holds the near plane in, unless it is the vehicle
 he is in; psp_ge.c) */
 int psp_player_seated(void)
 {
-	long player_index = local_player_get_player_index(0);
-	struct player_datum *player;
+	long unit_index = psp_local_unit(NULL);
 
-	if (player_index == NONE)
+	if (unit_index == NONE)
 		return 0;
-	player = player_get(player_index);
-	if (player->unit_index == NONE)
-		return 0;
-	return object_get(player->unit_index)->object.parent_object_index != NONE;
+	return object_get(unit_index)->object.parent_object_index != NONE;
 }
 
 /* build 88: where the local player is now (benchrun re-places him only when
 he has drifted from the spot); 0 without a player */
 int psp_player_origin(float *out)
 {
-	long player_index = local_player_get_player_index(0);
-	struct player_datum *player;
+	long unit_index = psp_local_unit(NULL);
 	real_point3d origin;
 
-	if (player_index == NONE)
+	if (unit_index == NONE)
 		return 0;
-	player = player_get(player_index);
-	if (player->unit_index == NONE)
-		return 0;
-	object_get_origin(player->unit_index, &origin);
+	object_get_origin(unit_index, &origin);
 	out[0] = origin.x;
 	out[1] = origin.y;
 	out[2] = origin.z;
@@ -1769,16 +1795,12 @@ extern boolean collision_test_vector(unsigned long flags, real_point3d const *po
 	long ignore_object_index, struct collision_result *collision);
 void psp_collision_test(const float *fixed_origin)
 {
-	long player_index = local_player_get_player_index(0);
-	struct player_datum *player;
+	long unit_index = psp_local_unit(NULL);
 	real_point3d origin;
 	unsigned long checksum = 0, hits = 0;
 	int ray;
 
-	if (player_index == NONE)
-		return;
-	player = player_get(player_index);
-	if (player->unit_index == NONE)
+	if (unit_index == NONE)
 		return;
 	if (fixed_origin)
 	{
@@ -1786,7 +1808,7 @@ void psp_collision_test(const float *fixed_origin)
 		origin.x = fixed_origin[0]; origin.y = fixed_origin[1]; origin.z = fixed_origin[2];
 	}
 	else
-		object_get_origin(player->unit_index, &origin);
+		object_get_origin(unit_index, &origin);
 	origin.z += 1.0f;
 	platform_psp_log("colltest: from %.4f %.4f %.4f", origin.x, origin.y, origin.z);
 	for (ray = 0; ray < 256; ray++)
@@ -1803,7 +1825,7 @@ void psp_collision_test(const float *fixed_origin)
 		vector.j = r * (real)sin(a) * 60.0f;
 		vector.k = k * 60.0f;
 		csmemset(&result, 0, sizeof(result));
-		hit = collision_test_vector(0xC0A3, &origin, &vector, player->unit_index, &result);
+		hit = collision_test_vector(0xC0A3, &origin, &vector, unit_index, &result);
 		if (hit)
 		{
 			unsigned long t_bits;
@@ -4912,6 +4934,17 @@ void psp_game_state_report(void)
 {
 	char line[1024];
 	int length = 0, k;
+	static int layout_said = 0;
+
+	/* build 108: once, where each allocation lies, so tools can name the
+	game state's addresses (the emulator's cache model, tools/cachemap.py) */
+	if (!layout_said && psp_state_record_count > 0)
+	{
+		layout_said = 1;
+		for (k = 0; k < psp_state_record_count; k++)
+			platform_psp_log("game state layout: %08lx %ld %s", (unsigned long)psp_state_records[k].pointer,
+				psp_state_records[k].size, psp_state_records[k].name[0] ? psp_state_records[k].name : "?");
+	}
 
 	for (k = 0; k < psp_state_record_count; k++)
 	{
@@ -7952,7 +7985,347 @@ void cluster_partition_reconnect(
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()):
+# build 108: Sheepdog01's b107 run of b30, to the level's end (docs/hardware_b107.md)
+FIXES_108 = {}
+# b30's floors are mirrors: the security room's at z 9.95 (BSP b30a, cluster
+# 48) and the map room's at z -14.92 (b30b, cluster 14). With one in view the
+# Xbox first renders the level from the mirror's camera into a second target
+# (the camera reflected through the floor), then the player's window, and
+# lays the first over the mirror's surface. The PSP draws one window a frame
+# from the first window's camera (psp_ge_window_begin), so the whole frame
+# came out from under the floor with the look's pitch turned over: the camera
+# "under the map" at those spots and directions. No mirror window now; the
+# floors draw as the Xbox draws them with no mirror found (has_mirror FALSE)
+FIXES_108["source/render/render.c#mirror"] = [
+("""	if (main_get_window_count() == 1)
+	{
+		if (structure_visibility_find_mirror(camera, &frustum, &mirror))""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (build 108): no mirror window (see FIXES_108) */
+	if (FALSE)
+#else
+	if (main_get_window_count() == 1)
+#endif
+	{
+		if (structure_visibility_find_mirror(camera, &frustum, &mirror))"""),
+]
+# the next level's map missing from the stick: the run ends at the level's
+# end (psp_next_map_check, psp_platform.c) rather than in the game's
+# "damaged disc" loop
+FIXES_108["source/main/main.c#nextmap"] = [
+("""		if (game_in_progress() && main_globals.connection == _game_connection_local)
+		{
+			struct game_options options;
+			short local_player_index;
+
+			game_options_new(&options);""",
+ """		if (game_in_progress() && main_globals.connection == _game_connection_local)
+		{
+			struct game_options options;
+			short local_player_index;
+
+#ifdef HALO_PSP
+			{
+				/* psp_fixups.py (build 108): see FIXES_108 main.c#nextmap */
+				extern void psp_next_map_check(const char *scenario_path);
+
+				psp_next_map_check(main_globals.soloplayer_map_name);
+			}
+#endif
+			game_options_new(&options);"""),
+]
+
+# Four tag blocks without the bytes the game never reads on the PSP
+# (invader-build -Z, build 108): a sound permutation's name and subtitle data
+# (124 -> 72 bytes), a pitch range's name (72 -> 40), an AI squad's unused
+# fields (232 -> 144) and a firing position's padding (24 -> 20). On a marine
+# level 0.4-0.6 MiB of the 9 MiB tag window; b40 doesn't fit without it
+# (docs/overnight_b108.md). The PSP's structs leave those bytes out, so the
+# game reads the blocks as it always has; a map baked before build 108 is
+# made slim in place as its tags load (psp/src/psp_tag_layouts.c, which has
+# the table the bake uses too). The names read in messages and debug dumps
+# print the tag's name or nothing (below); a squad keeps its name
+FIXES_108["source/sound/sound_definitions.h#layouts"] = [
+("""struct sound_pitch_range
+{
+	char name[32];""",
+ """/* psp_fixups.py (build 108): pitch ranges and permutations on the PSP
+without their names and a permutation without its subtitle data (FIXES_108,
+psp/src/psp_tag_layouts.c) */
+struct sound_pitch_range
+{
+#ifndef HALO_PSP
+	char name[32];
+#endif"""),
+("""struct sound_permutation
+{
+	char name[32];
+	real skip_fraction;""",
+ """struct sound_permutation
+{
+#ifndef HALO_PSP
+	char name[32];
+#endif
+	real skip_fraction;"""),
+("""	struct tag_data samples;
+	struct tag_data mouth_data;
+	struct tag_data subtitle_data;
+};""",
+ """	struct tag_data samples;
+	struct tag_data mouth_data;
+#ifndef HALO_PSP
+	struct tag_data subtitle_data;
+#endif
+};"""),
+]
+FIXES_108["source/ai/ai_scenario_definitions.h#layouts"] = [
+("""	word pad;
+	unsigned long unused1[7];
+	word pad5;
+	short maneuver_squad_index;""",
+ """	word pad;
+#ifndef HALO_PSP
+	unsigned long unused1[7]; /* psp_fixups.py (build 108): not on the PSP (FIXES_108) */
+#endif
+	word pad5;
+	short maneuver_squad_index;"""),
+("""	real respawn_time_upper_bound;
+	unsigned long unused3[12];
+	struct tag_block move_positions;
+	struct tag_block starting_locations;
+	struct tag_block unused_block;
+};""",
+ """	real respawn_time_upper_bound;
+#ifndef HALO_PSP
+	unsigned long unused3[12];
+#endif
+	struct tag_block move_positions;
+	struct tag_block starting_locations;
+#ifndef HALO_PSP
+	struct tag_block unused_block;
+#endif
+};"""),
+("""	short group_index;
+	short cluster_index;
+	byte unresolved[4];
+	long surface_index;
+};""",
+ """	short group_index;
+	short cluster_index;
+#ifndef HALO_PSP
+	byte unresolved[4]; /* psp_fixups.py (build 108): not on the PSP (FIXES_108) */
+#endif
+	long surface_index;
+};"""),
+]
+# the layout checks, at the PSP's sizes and offsets
+FIXES_108["source/ai/actor_firing_position.c#layouts"] = [
+("""typedef char actor_firing_position_definition_size_assert[
+	sizeof(struct firing_position_definition) == 0x18 ? 1 : -1];""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 108): the PSP's slim layouts (FIXES_108) */
+typedef char actor_firing_position_definition_size_assert[
+	sizeof(struct firing_position_definition) == 0x14 ? 1 : -1];
+#else
+typedef char actor_firing_position_definition_size_assert[
+	sizeof(struct firing_position_definition) == 0x18 ? 1 : -1];
+#endif"""),
+("""typedef char actor_firing_position_squad_groups_offset_assert[
+	offsetof(struct squad_definition, firing_position_groups) == 0x54 ? 1 : -1];
+typedef char actor_firing_position_squad_size_assert[
+	sizeof(struct squad_definition) == 0xE8 ? 1 : -1];""",
+ """#ifdef HALO_PSP
+typedef char actor_firing_position_squad_groups_offset_assert[
+	offsetof(struct squad_definition, firing_position_groups) == 0x54 - 28 ? 1 : -1];
+typedef char actor_firing_position_squad_size_assert[
+	sizeof(struct squad_definition) == 0xE8 - 88 ? 1 : -1];
+#else
+typedef char actor_firing_position_squad_groups_offset_assert[
+	offsetof(struct squad_definition, firing_position_groups) == 0x54 ? 1 : -1];
+typedef char actor_firing_position_squad_size_assert[
+	sizeof(struct squad_definition) == 0xE8 ? 1 : -1];
+#endif"""),
+]
+# as soon as a map's tags are read, before anything reads them: an older
+# bake's blocks in the PSP's layouts
+FIXES_108["source/cache/cache_files.c#layouts"] = [
+("""				pal_tags_loaded(cache_file_globals.header.build);
+			}""",
+ """				pal_tags_loaded(cache_file_globals.header.build);
+			}
+#ifdef HALO_PSP
+			{
+				/* psp_fixups.py (build 108): FIXES_108 sound_definitions.h#layouts */
+				extern void psp_tag_layouts_loaded(void);
+
+				psp_tag_layouts_loaded();
+			}
+#endif"""),
+]
+# Memory pools (the objects' 1 MB pool above all) check their whole block
+# list on every allocation, free and lookup (memory_pool_verify), and a
+# lookup walks the list again to assert the block is in it: with ~1,000
+# objects' blocks, each object created or deleted (every projectile, every
+# effect) read ~2,000 block headers. The emulator's cache model put 4.9% of
+# the tick's data misses there on b30's beach (docs/overnight_b108.md). The
+# walks only assert; on the PSP they run with keep word "poolverify"
+FIXES_108["source/memory/memory_pool.c#verify"] = [
+("""static void memory_pool_verify(
+	struct memory_pool *pool)
+{
+	struct memory_pool_block *block;
+	struct memory_pool_block *previous_block;
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\memory_pool.c", 340, pool->signature==POOL_SIGNATURE);
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\memory_pool.c", 341, pool->size>0);
+""",
+ """#ifdef HALO_PSP
+int psp_keep(const char *name);
+static int psp_pool_verify = -1; /* psp_fixups.py (build 108): FIXES_108 memory_pool.c#verify */
+#endif
+
+static void memory_pool_verify(
+	struct memory_pool *pool)
+{
+	struct memory_pool_block *block;
+	struct memory_pool_block *previous_block;
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\memory_pool.c", 340, pool->signature==POOL_SIGNATURE);
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\memory_pool.c", 341, pool->size>0);
+#ifdef HALO_PSP
+	if (psp_pool_verify < 0)
+		psp_pool_verify = psp_keep("poolverify");
+	if (!psp_pool_verify)
+		return;
+#endif
+"""),
+("""	for (other_block = pool->first_block; other_block && block != other_block; other_block = other_block->next_block)
+	{
+	}
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\memory_pool.c", 388, other_block);""",
+ """#ifdef HALO_PSP
+	if (psp_pool_verify)
+#endif
+	{
+	for (other_block = pool->first_block; other_block && block != other_block; other_block = other_block->next_block)
+	{
+	}
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\memory_pool.c", 388, other_block);
+	}"""),
+]
+
+# A full data array was searched from its first free index to its end on
+# every datum_new that found no room, and again on the next: the AI's props
+# with many actors, the effects and particles at their caps (the PSP's are
+# lower, psp_capacity.h). datum_new had 1.6% of b30's beach's tick data misses
+# (docs/overnight_b108.md). Now a search that finds no room leaves the first
+# free index at the end, until a datum is deleted (datum_delete lowers it).
+# ChupathingyCE's fix (source/memory/data.c there), as the PSP's
+FIXES_108["source/memory/data.c#full"] = [
+("""		absolute_index++;
+		header = (struct datum_header *)((byte *)header+size);
+	}
+
+	return result;
+}""",
+ """		absolute_index++;
+		header = (struct datum_header *)((byte *)header+size);
+	}
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 108): FIXES_108 data.c#full */
+	if (result == NONE)
+		data->first_free_absolute_index = data->maximum_count;
+#endif
+
+	return result;
+}"""),
+]
+
+# The main menu (ui.map) starts its intro movie, and the attract mode its
+# movies, through Bink, which the PSP doesn't have (bink_null.c: BinkOpen
+# fails). bink_playback_start stole the movie's memory pool from the texture
+# cache first: more than the PSP's cache has, so its page count went to zero
+# or below (asserts xbox_texture_cache.c#319 and lruv_cache.c#603 in the
+# emulator's main menu run), before the failed open gave it back. Now nothing
+# is stolen: the movie isn't started, which is where the failed open ended
+FIXES_108["source/bink/bink_playback.c#psp"] = [
+("""	if (!bink_globals.initialized)
+		return;
+	if (cache_files_precache_in_progress())
+		return;
+""",
+ """	if (!bink_globals.initialized)
+		return;
+	if (cache_files_precache_in_progress())
+		return;
+#ifdef HALO_PSP
+	/* psp_fixups.py (build 108): no Bink on the PSP (FIXES_108) */
+	platform_psp_log("bink: no movies on the PSP; skipping %s", full_pathname ? full_pathname : "");
+	return;
+#endif
+"""),
+]
+
+# the five places the engine reads a permutation's name: messages and debug
+# dumps, now with the sound's tag name or nothing (FIXES_108
+# sound_definitions.h#layouts above)
+FIXES_108["source/cache/xbox_sound_cache.c#permutations"] = [
+("""	sprintf(
+		xbox_sound_cache_globals.debug_block_name,
+		"%s (%s)",
+		tag_get_name(cache_sound->sound->runtime_tag_index),
+		cache_sound->sound);""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (build 108): permutations carry no names (FIXES_108) */
+	sprintf(
+		xbox_sound_cache_globals.debug_block_name,
+		"%s",
+		tag_get_name(cache_sound->sound->runtime_tag_index));
+#else
+	sprintf(
+		xbox_sound_cache_globals.debug_block_name,
+		"%s (%s)",
+		tag_get_name(cache_sound->sound->runtime_tag_index),
+		cache_sound->sound);
+#endif"""),
+("""			"d:\\\\stabbed.txt",
+			sound->name,""",
+ """			"d:\\\\stabbed.txt",
+#ifdef HALO_PSP
+			tag_get_name(sound->runtime_tag_index), /* psp_fixups.py (build 108) */
+#else
+			sound->name,
+#endif"""),
+]
+FIXES_108["source/sound/sound_definitions.c#permutations"] = [
+("""		"but how can you speak if you have no mouth data? (permutation %s)",
+		permutation->name);""",
+ """		"but how can you speak if you have no mouth data? (permutation %s)",
+#ifdef HALO_PSP
+		""); /* psp_fixups.py (build 108): permutations carry no names */
+#else
+		permutation->name);
+#endif"""),
+]
+FIXES_108["source/sound/sound_dsound_xbox.c#permutations"] = [
+("""						channel->playing_permutation ? channel->playing_permutation->name : "",
+						channel->queued_permutation ? channel->queued_permutation->name : "");""",
+ """#ifdef HALO_PSP
+						"", ""); /* psp_fixups.py (build 108): permutations carry no names */
+#else
+						channel->playing_permutation ? channel->playing_permutation->name : "",
+						channel->queued_permutation ? channel->queued_permutation->name : "");
+#endif"""),
+("""					"trying to queue sound %s but it's outside the valid range. (%ld)",
+					channel->playing_permutation->name,""",
+ """					"trying to queue sound %s but it's outside the valid range. (%ld)",
+#ifdef HALO_PSP
+					"", /* psp_fixups.py (build 108): permutations carry no names */
+#else
+					channel->playing_permutation->name,
+#endif"""),
+]
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

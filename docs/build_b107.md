@@ -52,6 +52,21 @@ Built after b106's two hardware runs (hardware_b106.md). Labels: **[M]** measure
 
 No crash, no strict-mode sites, 0 symbols stubbed.
 
+## Frame rate, before and after [E]
+
+The same route and keep words, compared over the same game time (`tools/hwreport.py --to`). The emulator runs the tick about 4x faster than the PSP and models no caches or bus, so these say which way things moved, not the PSP's frame rate. The PSP's are b106's: b30 3.6 fps, The Library 7.45 [M].
+
+| Run | Before | After | Change | GE renderer's CPU, ms a frame | Ticks, ms a frame |
+|---|---|---|---|---|---|
+| b30, Sheepdog01's screenshot views (b107t → final) | 15.3 fps | 14.6 fps | −4% | 17.2 → 20.5 | 34.8 → 34.8 |
+| b30 beach route (b107t → final) | 21.4 fps | 20.3 fps | −5% | 15.6 → 17.8 | 23.2 → 24.7 |
+| The Library (b107t → final; `nearcheck` added after) | 27.7 fps | 27.3 fps | −1% | 15.0 → 15.6 | 7.6 → 7.7 |
+| d40 opening (input by the clock, so the routes part) | 27.3 fps | 25.2 fps | −8% | 6.4 → 7.0 | 3.5 → 5.2 |
+| b30 beach route, b106 (b106z) → final b107 | 20.7 fps | 20.3 fps | −2% | 15.0 → 17.8 | 26.7 → 24.7 |
+
+- The renderer's CPU work went up because more is drawn: before, 100-240 model draws and about 300 decal draws a frame were skipped on b30. The ticks didn't change (b106 → b107: about 7% cheaper).
+- What the emulator can't show: the list is written with uncached stores over the bus (build 48), so the list's smaller share per model, and the palettes no longer worked out, should count for more on the PSP than here [U].
+
 ## New keep words
 
 - `soundN`: the sound cache's size in KB (512 to 4,096), for example `sound1920`. Default 1,536.

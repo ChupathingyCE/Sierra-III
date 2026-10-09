@@ -49,7 +49,7 @@ CAMPAIGN_KEEPS = ("source/bungie_net/common/thread_win32.c",)
 def multiplayer_unit(rel):
     return rel.startswith(MULTIPLAYER_UNITS) and rel not in CAMPAIGN_KEEPS
 
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch"]
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
 # variant that trades speed tricks for smaller code: the hardware profiler
@@ -131,6 +131,10 @@ def units():
         # built as the networking units it stands in for
         items.append((os.path.join(HERE, "psp/src/psp_campaign.c"),
                       ninja_flags("build/linux/obj/source/networking/network_game_globals.o"), []))
+    # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
+    # as they load (the game's headers, so its layout table is checked against them)
+    items.append((os.path.join(HERE, "psp/src/psp_tag_layouts.c"),
+                  ninja_flags("build/linux/obj/port/linux/game/pal_tags.o"), []))
     return items
 
 # build 69: the game's cold code at -Os (menus, saved games and films, the

@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 107
+#define PSP_BUILD_NUMBER 108
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -435,18 +435,74 @@ struct profile_slot
 	unsigned long microseconds;
 	unsigned long calls;
 };
-static struct profile_slot profile_slots[PROFILE_SLOTS];
+/* build 108: in the scratchpad (psp_scratch.c), with the front table below:
+the model draws reach for them ~2,800 times a second, and in b30's beach they
+had 2.5% of the drawing's data misses (b108l, docs/overnight_b108.md). Taken
+when the renderer starts (psp_profile_tables_take, from psp_ge.c's
+ge_initialize, after keep.txt is read); steps before then are kept for the
+crash report but not timed, and no profile window has begun by then */
+static struct profile_slot *profile_slots = NULL; /* [PROFILE_SLOTS] */
 static const char *profile_last_name = NULL;
 static unsigned int profile_last_time = 0;
 
+/* build 108: the slots in the order their names first came, so the few
+dozen a frame uses sit together (the slots used to be placed by a hash of the
+name, one cache line each: the emulator's cache model put 3.4% of the
+drawing's data misses on this table, b30's beach), found through a small
+table by name in front (512 bytes). The names are string constants: one
+address each */
+#define PROFILE_FRONT 64
+struct profile_front_entry
+{
+	const char *name;
+	struct profile_slot *slot;
+};
+static struct profile_front_entry *profile_front = NULL; /* [PROFILE_FRONT] */
+static int profile_used = 0;
+
+void *psp_scratch_take(unsigned int bytes, const char *what);
+
+void psp_profile_tables_take(void)
+{
+	if (profile_slots)
+		return;
+	profile_slots = psp_scratch_take(PROFILE_SLOTS * sizeof(*profile_slots), "the profiler's slots");
+	profile_front = psp_scratch_take(PROFILE_FRONT * sizeof(*profile_front), "the profiler's front table");
+	if (!profile_slots || !profile_front)
+		profile_slots = NULL;
+}
+
+static void profile_forget(void)
+{
+	if (!profile_slots)
+		return;
+	memset(profile_slots, 0, PROFILE_SLOTS * sizeof(*profile_slots));
+	memset(profile_front, 0, PROFILE_FRONT * sizeof(*profile_front));
+	profile_used = 0;
+}
+
 static struct profile_slot *profile_slot_for(const char *name)
 {
-	/* the names are string constants: one address each */
-	unsigned int index = ((unsigned int)name >> 2) % PROFILE_SLOTS;
+	unsigned int front = ((unsigned int)name >> 2) % PROFILE_FRONT;
+	int index;
 
-	while (profile_slots[index].name && profile_slots[index].name != name)
-		index = (index + 1) % PROFILE_SLOTS;
-	profile_slots[index].name = name;
+	if (profile_front[front].name == name)
+		return profile_front[front].slot;
+	for (index = 0; index < profile_used; index++)
+		if (profile_slots[index].name == name)
+			break;
+	if (index == profile_used)
+	{
+		/* a new name: the next slot, or the last one shared by every name
+		past the table's size */
+		if (profile_used < PROFILE_SLOTS)
+			profile_used++;
+		else
+			index = PROFILE_SLOTS - 1;
+		profile_slots[index].name = name;
+	}
+	profile_front[front].name = name;
+	profile_front[front].slot = &profile_slots[index];
 	return &profile_slots[index];
 }
 
@@ -476,7 +532,7 @@ void psp_step(const char *name)
 	}
 	now = sceKernelGetSystemTimeLow();
 
-	if (profile_last_name)
+	if (profile_last_name && profile_slots)
 	{
 		struct profile_slot *slot = profile_slot_for(profile_last_name);
 
@@ -877,6 +933,8 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 	SceUID file;
 	char line[160];
 
+	if (!profile_slots)
+		return;
 	memcpy(copy, profile_slots, sizeof(copy));
 	for (index = 0; index < PROFILE_SLOTS; index++)
 	{
@@ -950,23 +1008,50 @@ build 105 gives its descriptor back: b104 run 1 showed the PSP lets the
 game hold only about ten files at once */
 static int exit_callbacks_registered[3] = { 1, 1, 1 };
 
-static int exit_callback(int a, int b, void *c)
+/* back to the XMB (or ARK-4's menu), saying why in the log */
+static void exit_game(const char *why)
 {
-	(void)a; (void)b; (void)c;
 	exiting = 1;
 	/* build 89: the Media Engine stopped FIRST, before any Memory Stick
 	work: the XMB reloads over the memory it runs from (build 44's audio
 	sample crashed the PSP on HOME), and b87-b88 put file writes ahead of
 	it, which would hang the exit there if a write blocked instead of
 	failing (review) */
-	psp_meaudio_stop("HOME");
-	platform_log("HOME: exiting");
+	psp_meaudio_stop(why);
+	platform_log("%s: exiting", why);
 	log_flush();
 	/* build 89: no texture save here any more. The learned binds are saved
 	during play (psp_tex.c, b88); a save here that half worked (the file
 	truncated, the data never written) would wipe the one saved in play */
 	sceKernelExitGame();
+}
+
+static int exit_callback(int a, int b, void *c)
+{
+	(void)a; (void)b; (void)c;
+	exit_game("HOME");
 	return 0;
+}
+
+/* build 108: a level's end asks for the next map (main_change_map_name,
+psp_fixups.py). The stick holds the maps Sheepdog01 baked, not the whole campaign,
+and with the next one missing the game showed its "damaged disc" error and
+looped there for good; b107's run of b30 crashed in that loop instead. The
+level is finished, so the run ends here: the game exits, the log saying
+which map it wanted. scenario_path: "levels\b40\b40" (the map file is
+its last part) */
+void psp_next_map_check(const char *scenario_path)
+{
+	const char *name = strrchr(scenario_path, '\\');
+	char path[96];
+	SceIoStat stat;
+
+	name = name ? name + 1 : scenario_path;
+	snprintf(path, sizeof(path), DATA_ROOT "/maps/%s.map", name);
+	if (sceIoGetstat(path, &stat) >= 0)
+		return;
+	platform_log("level finished: the next map, %s, isn't on the memory stick (%s)", scenario_path, path);
+	exit_game("level finished");
 }
 
 /* sleep and wake: the texture cache in the volatile partition gives it back
@@ -1628,8 +1713,14 @@ halo_profile.prx exports; psp/profile/exports.exp). Only with the module
 running: before it loads, the import isn't linked */
 int halo_profile_phase(int phase);
 
+/* build 108: the phase as a plain word too (0 other, 1 tick, 2 drawing, 3
+frame end), for the emulator's cache models to split their counts by
+(PSP_DCACHE_PHASE; tools/ppsspp_local_patches.diff) */
+volatile int psp_current_phase = 0;
+
 void psp_phase(int phase)
 {
+	psp_current_phase = phase;
 	if (hwprofile_running)
 		halo_profile_phase(phase);
 }
@@ -1815,7 +1906,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 			if (!profile_window_start)
 			{
 				profile_window_start = now;
-				memset(profile_slots, 0, sizeof(profile_slots));
+				profile_forget();
 				memset(object_microseconds, 0, sizeof(object_microseconds));
 				memset(object_updates, 0, sizeof(object_updates));
 				{

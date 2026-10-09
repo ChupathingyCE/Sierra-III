@@ -11,7 +11,8 @@ the menus' ui.map):
   3. extracts its tags and rebuilds the map for the PSP's memory with the
      port's Invader (-X 0x09600000 -T 0x900000, model and level geometry and
      the animations' frame data to a .pgeo pack, animations keyframed, the
-     script node table sized to the map)
+     script node table sized to the map, the BSPs' grass and the bytes the
+     port never reads left out)
   4. bakes the textures for the PSP's graphics chip (.ptex), and the asset
      track's version (_track.ptex: half-size lightmaps, and alpha-tested
      plants that keep their leaves at a distance; --no-track skips it)
@@ -44,9 +45,15 @@ MULTIPLAYER = ['beavercreek', 'bloodgulch', 'boardingaction', 'carousel', 'chill
 ALL = CAMPAIGN + MULTIPLAYER + ['ui']
 # -M (build 106): animation frame data to the .pgeo pack, read through the
 # game's animation cache; -Y 512: the script node table sized to the nodes in
-# use plus 512 spare. Maps built with either need build 106 or later
+# use plus 512 spare. Maps built with either need build 106 or later.
+# -D (build 108): the BSPs' detail objects (grass) left out, which the port
+# never draws (a30: 1.2 MiB); -Z (build 108): four blocks without the bytes
+# the port never reads (sound permutations' and pitch ranges' names and
+# subtitle data, AI squads' unused fields, firing positions' padding: ~0.5 MiB
+# a campaign map, and what lets b40 fit). Maps built with -Z need build 108 or
+# later; build 108 still loads older ones (psp_tag_layouts.c)
 BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-T', '0x900000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
-               '-M', '-Y', '512']
+               '-M', '-Y', '512', '-D', '-Z']
 
 
 def log(text):
