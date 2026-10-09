@@ -1,10 +1,10 @@
 # Builds
 
-Every build Sheepdog01 ran on the PSP, and the commit it was made from. Build numbers are what the game's log prints ("bring-up build N"). The zips are attached to the GitHub Releases, with any game data removed (see the end).
+Every build Sheepdog01 ran on the PSP, and the commit it was made from. Build numbers are what the game's log prints ("bring-up build N"). Every zip is kept in one private GitHub Release, `build-archive`, with any game data removed (see the end). It's a record, not for sharing; a build gets a Release of its own only when Sheepdog01 shares it.
 
 ## With source (b87 onward)
 
-Each of these is a commit, tagged `bNNN`. Dates are when the source snapshot was taken (US Central).
+Each of these is a commit, tagged `bNNN` (`git checkout b108` gives that build's source). Dates are when the source snapshot was taken (US Central).
 
 | Build | Commit | Date | What it brought |
 |---|---|---|---|
@@ -49,7 +49,7 @@ These builds' source wasn't kept, only their zips. The milestones below come fro
 
 ## What was removed from the zips
 
-Twenty early zips carried a map pack for testing. That is game data, so it was removed before upload. The EBOOT and PRX modules are unchanged.
+Twenty early zips carried a map pack for testing. That is game data, so it was removed from the copy in `build-archive`. The EBOOT and PRX modules are unchanged.
 - b20–b36 and b39, b49: `bloodgulch.ptex`, plus `ui.ptex` in b27–b34;
 - b87: `bloodgulch.pstn`;
 - b102: `c20_track.ptex`.

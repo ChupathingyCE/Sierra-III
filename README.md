@@ -54,11 +54,11 @@ Then copy the output's `halo/` folder to the root of the Memory Stick. `bake/REA
 
 ## Installing
 
-Copy the release's `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`) to the Memory Stick. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
+Copy the build zip's `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`) to the Memory Stick. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
 
 ## History
 
-This repository was created on 2026-10-09. The history before then was rebuilt from the source snapshots kept for each build, one commit per snapshot, tagged by build (`b87` to `b110`). Builds 1 to 86 survive only as binaries. The builds themselves are attached to the GitHub Releases.
+This repository was created on 2026-10-09. The history before then was rebuilt from the source snapshots kept for each build, one commit per snapshot, tagged by build (`b87` to `b110`). Builds 1 to 86 survive only as binaries. Every build's zip is kept in one private Release, `build-archive`; a build gets a Release of its own only when it's shared.
 
 ## Licence
 
