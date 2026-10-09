@@ -42,7 +42,7 @@ These builds' source wasn't kept, only their zips. The milestones below come fro
 |---|---|---|
 | b1–b18 | 2026-10-01 | The first bring-up EBOOT (b1); the crash handler PRX (b7); the null renderer measured (b13–b14) |
 | b19–b41 | 2026-10-02 | The GE-native renderer finished (b17–b21); render interpolation off and single-precision maths (b19); textures in VRAM (b20); blob shadows (b25); checkpoint page map (b26); particle budgets (b36); the VFPU matrix product (b37); hot code at -O2 (b38); the frame throttle sleeps (b41) |
-| b42–b60 | 2026-10-03 | Vehicle sleep (b44); the hardware profiler's phases and the learned VRAM textures (b46); cached display-list writes (b48); rigid model cuts at the near plane (b60). There was no b51 |
+| b42–b60 | 2026-10-03 | Vehicle sleep (b44); the hardware profiler's phases and the learned VRAM textures (b46); cached display-list writes (b48); rigid model cuts at the near plane (b60). b51's zip is missing |
 | b61–b70 | 2026-10-04 | The box test and palette cache (b66); the geometry and keyframe packs (b68); 16-bit collision (b70) |
 | b71–b85 | 2026-10-05 | Synchronous geometry reads (b72); the geometry arena (b73); the clock fix that took play from under 1 fps to 25–29 (b75); the debug menu (b77) and overlay (b80) |
 | b86 | 2026-10-06 | Sound mixed on the Media Engine |
