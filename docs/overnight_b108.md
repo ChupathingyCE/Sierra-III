@@ -158,17 +158,24 @@ ChupathingyCE is a community build of OpenCE, which looks like halo-ce-universal
 
 **For GitHub:** the licence is CC0, the same as our base, so either base can be published. Our `#ifdef HALO_PSP` style suits upstream's rule that 32-bit builds stay byte-identical. The move is not needed to publish; choosing which upstream to fork from is a community question for Sheepdog01.
 
-No parity build was attempted tonight: with no gain to show for it, the night's CPU went to the maps and the measurements.
+**The parity build: started, stopped on purpose.** `PSP_FIXUPS_CHECK=1 python3 psp_fixups.py TREE` (new) lists every anchor that fails rather than stopping at the first: 34 on ChupathingyCE (the 33 above and tonight's `datum_new` fix, which it already has). Working through them showed why this is more than re-anchoring:
+- ChupathingyCE added checks of the map's data in the same code our fixups change, and they assume the Xbox's layouts. Two examples in `structure_visibility.c`: a material's vertex count taken as its compressed data's size over 32 bytes (our bake packs a vertex in 6, so most surfaces would be skipped), and surface indices checked as 32-bit values (ours are 16-bit). Its tag validator checks every tag at load against the stock layouts; our bake changes some on purpose (slim blocks, packed collision, external geometry), so it would need to know the PSP's [D, not run].
+- So each of the 34 needs the new check rewritten for the PSP's layouts and re-tested, mostly in the renderer and the collision code, where a slip shows up as missing walls rather than as a compile error.
+- Done as a sample: the portal hull cache (one of the six `structure_visibility.c` anchors), with a per-base alternative (`Either` in `/home/claude/psp_port_chupa`, a copy of the port tree; the shipped tree is unchanged).
+
+**Recommendation:** publish from the current base (or as a fork of halo-ce-universal), and take ChupathingyCE's bug fixes one at a time, as tonight's `datum_new` fix. A move becomes worth it if their netcode is wanted for the PSP's co-op branch.
 
 ## 8. The main menu: a first look [E]
 
 Booted with no map named (the game starts on `ui.map`, as the Xbox does), 5 minutes in the emulator:
 - **It runs:** the HALO title, CAMPAIGN / MULTIPLAYER / SETTINGS and the version string draw; the camera pans slowly; 30 fps at **3.1 ms a frame** in the emulator, where a b30 frame takes about 45. A passive level leaves nearly the whole frame free for quality.
-- **The background looks wrong:** a large grey surface fills the left of the screen with a diagonal edge and black below it, and 76-80 of the ring's triangles a frame are cut at the near plane. Sheepdog01's b106 run showed a white band across the ring on the PSP. Both need an Xbox reference shot of the same moment to judge against.
+- **The background needs a reference to judge:** a large grey surface fills the left of the screen, with a diagonal edge and black below it, and 76-80 of the ring's triangles a frame are cut at the near plane.
+  - The camera is right [D, E]: the menu's one script (`ring_loop`) moves it through 11 camera points within 2.5 units of the ring model, and the emulator's camera sat between the first two. A close surface is the design, not a bug.
+  - Open questions: the black below the edge, and the white band across the ring from Sheepdog01's b106 run. Both need an Xbox shot of the same moment to compare.
 - **Bink:** the menu starts its intro movie through Bink, which the PSP doesn't have. Before failing it took the movie's memory from the texture cache, more than the PSP's cache holds (asserts `xbox_texture_cache.c#319`, `lruv_cache.c#603`). Fixed from b108m: the movie isn't started, so nothing is taken.
 - **Not checked yet:** the menus past the first (input), the attract mode, the transition into a level from the menu (`menutest` does Blood Gulch).
 
-**The menu pass, as its own session:** reference shots → camera and near-plane cuts → the white band → quality settings that only the menu uses (full-size textures, no level-of-detail drops, finer sky).
+**The menu pass, as its own session:** reference shots → the near-plane cuts and the black below them → the white band → quality settings that only the menu uses (full-size textures, no level-of-detail drops, finer sky).
 
 ## 9. b108 on the PSP: the test plan
 
@@ -179,9 +186,10 @@ The build: **b108n** (heap 6,080 KB; `halo_psp_b108.zip`), and the same code at 
 1. **Bake every map with the b108 bake tool** (an hour or two), copy `halo/maps` to the stick, install the zip.
 2. **b30 to its end** (`assettrack geo2 nearauto`, deathless): the mirror rooms (security room, map room) no longer turn the view upside down; at the end b30 should roll into **b40** (Assault on the Control Room) now that it's on the stick. Play b40 a while: its BSP switches are the part the emulator didn't reach.
 3. **a30 and a50**, a few minutes each: they load, the opening plays.
-4. Optional A/Bs, the same stretch twice with `hwprofile`:
-   - `noscratch` (the scratchpad's worth);
+4. Optional A/Bs, the same stretch twice with `hwprofile`, most promising first:
+   - `sceneryhalf` (idle scenery checked every other tick): in the model it cut the tick's instructions and misses by 9% (`b109_candidates.md`);
    - the `-Os` zip against b108n (the instruction cache question; the model couldn't settle it). The `-Os` build's heartbeat reads "heap top ... of 6400 KB";
+   - `noscratch` (the scratchpad's worth);
    - `notimers` (what the profiler's per-step timers cost: thousands of steps a second, each reading the clock).
 
 Bring back `halo/log/` (`psplogs <name>`).

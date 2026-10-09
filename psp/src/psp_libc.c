@@ -336,6 +336,9 @@ const char *p2p_take_clipboard_text(void) { return NULL; }
 int p2p_join_invite(const char *text) { (void)text; return 0; }
 int p2p_hand_off_invite(void) { return 0; }
 void p2p_initialize(unsigned long local_address) { (void)local_address; }
+/* (ChupathingyCE's: whether a hosted game is offered on the internet) */
+void p2p_set_hosting_allowed(int allowed) { (void)allowed; }
+void p2p_set_hosting_public(int public) { (void)public; }
 
 /* ---------- no Android GL host */
 
@@ -345,6 +348,9 @@ void host_gl_buffer_write(unsigned int target, unsigned int offset, unsigned int
 { (void)target; (void)offset; (void)size; (void)data; }
 void host_gl_fence_frame(unsigned int slot) { (void)slot; }
 void host_gl_wait_frame(unsigned int slot) { (void)slot; }
+/* (ChupathingyCE's visibility counters: none counted, so none read) */
+void host_gl_read_buffer(unsigned int buffer, unsigned int offset, unsigned int size, void *data)
+{ (void)buffer; (void)offset; memset(data, 0, size); }
 
 /* ---------- no TIFF screenshots */
 

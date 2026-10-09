@@ -4,6 +4,7 @@
 # environment:
 #   EB      EBOOT.PBP to run (default /tmp/claude-0/EBOOT101.PBP)
 #   MAP     init.txt map line (default levels\c20\c20)
+#   INIT    more init.txt lines, ';' between them (e.g. "cheat_deathless_player 1")
 #   KEEP    keep words, space separated (default "nearauto nomeaudio")
 #   TP      teleport.txt line (default none)
 #   INPUT   input script file (default: none pressed)
@@ -22,6 +23,8 @@ MS=${MS:-/tmp/ms}
 EB=${EB:-/tmp/claude-0/EBOOT101.PBP}
 cp "$EB" $MS/PSP/GAME/halo/EBOOT.PBP
 printf "map_name %s\n" "${MAP:-levels\\c20\\c20}" > $MS/halo/init.txt
+# INIT: more init.txt lines, ';' between them (for example "cheat_deathless_player 1")
+[ -n "$INIT" ] && printf "%s\n" "$INIT" | tr ';' '\n' >> $MS/halo/init.txt
 : > $MS/halo/keep.txt
 for w in ${KEEP-nearauto nomeaudio}; do echo "$w" >> $MS/halo/keep.txt; done
 if [ -n "$ROUTE" ]; then cp "$ROUTE" $MS/halo/route.txt; else rm -f $MS/halo/route.txt; fi

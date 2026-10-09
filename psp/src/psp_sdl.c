@@ -121,6 +121,8 @@ SDL_ThreadID SDL_GetCurrentThreadID(void) { return (SDL_ThreadID)sceKernelGetThr
 char *SDL_GetClipboardText(void) { char *text = malloc(1); if (text) text[0] = 0; return text; }
 bool SDL_SetClipboardText(const char *text) { (void)text; return false; }
 bool SDL_PollEvent(SDL_Event *event) { (void)event; return false; }
+/* no keyboard: a key named in the bindings is none (ChupathingyCE's xinput_sdl.c) */
+SDL_Scancode SDL_GetScancodeFromName(const char *name) { (void)name; return SDL_SCANCODE_UNKNOWN; }
 bool SDL_ShowSimpleMessageBox(SDL_MessageBoxFlags flags, const char *title, const char *message, SDL_Window *window)
 {
 	(void)flags; (void)window;

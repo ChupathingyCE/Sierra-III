@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Builds the PSP bring-up EBOOT of halo-ce-universal.
+"""Builds the PSP bring-up EBOOT of halo-ce-universal or ChupathingyCE.
 
 1. Mirrors the repository into build/tree (build_var.py's mirror: the
    GCC-vs-clang textual fixes) and applies psp_fixups.py.
@@ -43,11 +43,37 @@ PLATFORM_FILES = [
 # builds them in as before: the starting point for that branch
 MULTIPLAYER = os.environ.get("PSP_MULTIPLAYER", "") == "1"
 MULTIPLAYER_UNITS = ("source/networking/", "source/bungie_net/", "source/game/game_engine_",
-                     "port/linux/game/network_", "port/linux/src/xnet.c")
+                     "port/linux/game/network_", "port/linux/game/coop_", "port/linux/src/xnet.c")
 # (bungie_net's threads and mutexes are the saved games' and the menus' too)
 CAMPAIGN_KEEPS = ("source/bungie_net/common/thread_win32.c",)
 def multiplayer_unit(rel):
     return rel.startswith(MULTIPLAYER_UNITS) and rel not in CAMPAIGN_KEEPS
+
+# build 110: the engine base. ChupathingyCE (a fork of OpenCE, on the same
+# line as halo-ce-universal) has the 64-bit address helpers in
+# source/cseries/xbox_address.h; psp_fixups.py tells the bases apart the same way
+CHUPA = os.path.exists(os.path.join(REPO, "source/cseries/xbox_address.h"))
+# ChupathingyCE's desktop features the PSP build leaves out (its configure
+# turns them on for every desktop build):
+# - Custom Edition (Halo PC) maps: their own 23 MB tag cache, Halo PC's layouts
+# - the game browser, its stats and moderation
+# - the PC menus: XML menus built into ui.map's tags as it loads (the PSP keeps
+#   the game's own, psp_menu.c)
+# - the tag schema check: a bit per byte of the tag window (1.1 MB) and a walk
+#   of every tag as a map loads, against the Xbox's layouts, which the PSP's
+#   bake changes (slim blocks, packed BSP vertices, geometry outside)
+# - touch input
+# psp/src/psp_chupa.c answers what the game still calls in them
+CHUPA_FLAGS_DROPPED = ("-DHALO_CUSTOM_EDITION", "-DHALO_GAME_BROWSER")
+CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c", "port/linux/game/server_browser.c",
+                       "port/linux/game/game_events.c", "port/linux/game/game_list_claims.c",
+                       "port/linux/game/game_stats.c", "port/linux/game/moderation_screen.c",
+                       "port/linux/game/map_families.c", "port/linux/game/ui_map_list.c",
+                       "port/linux/game/menu_functions.c", "port/linux/game/menu_tags.c",
+                       "port/linux/game/tag_schema_", "port/linux/game/tag_validate",
+                       "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c")
+def desktop_unit(rel):
+    return CHUPA and rel.startswith(CHUPA_DESKTOP_UNITS)
 
 PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch"]
 
@@ -70,12 +96,17 @@ TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
 # the heap gets the space. The campaign/multiplayer split will be a flavour
 # of the same kind
 DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
+# build 110: PSP_MAP_CHECKS=1 keeps ChupathingyCE's checks of a map's data as
+# the tick reads it (animations, collision walks). Off by default: the PSP's
+# maps are its own bake, read as halo-ce-universal reads them (psp_fixups.py,
+# FIXES_CHUPA "trusted maps")
+MAP_CHECKS = os.environ.get("PSP_MAP_CHECKS", "") == "1"
 PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
        "-fms-extensions", "-fcommon", "-fno-strict-aliasing", "-fwrapv",
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_CHUPATHINGYCE=1"] if CHUPA else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -98,9 +129,9 @@ def ninja_flags(target):
     args = shlex.split(out.strip().splitlines()[-1]); keep = []; i = 0
     while i < len(args):
         a = args[i]
-        if a in ("-include", "-idirafter"):
+        if a in ("-include", "-idirafter", "-iquote"):
             keep += [a, args[i + 1]]; i += 2; continue
-        if a.startswith(("-I", "-D", "-std=", "-U")) and a != "-D_FILE_OFFSET_BITS=64":
+        if a.startswith(("-I", "-D", "-std=", "-U")) and a != "-D_FILE_OFFSET_BITS=64" and a not in CHUPA_FLAGS_DROPPED:
             keep.append(a)
         i += 1
     return keep
@@ -112,6 +143,7 @@ def units():
     game += sorted({m.group(1) + ".c" for m in re.finditer(r"^build/linux/obj/(port/linux/game/.*)\.o: linux_cc", targets, re.M)})
     if not MULTIPLAYER:
         game = [s for s in game if not multiplayer_unit(s)]
+    game = [s for s in game if not desktop_unit(s)]
     items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o"), []) for s in game]
     compat = ["-include", os.path.join(HERE, "psp/include/psp_compat.h")]
     for name in PLATFORM_FILES:
@@ -131,6 +163,15 @@ def units():
         # built as the networking units it stands in for
         items.append((os.path.join(HERE, "psp/src/psp_campaign.c"),
                       ninja_flags("build/linux/obj/source/networking/network_game_globals.o"), []))
+    if CHUPA:
+        # build 110: what the desktop units left out answered for the PSP
+        # (CHUPA_DESKTOP_UNITS): the game's calls built as the game's port
+        # units are, the platform layer's as sdl_platform.c is (its flags
+        # carry the version)
+        items.append((os.path.join(HERE, "psp/src/psp_chupa.c"),
+                      ninja_flags("build/linux/obj/port/linux/game/pal_tags.o"), []))
+        items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
+                      ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
     # as they load (the game's headers, so its layout table is checked against them)
     items.append((os.path.join(HERE, "psp/src/psp_tag_layouts.c"),
@@ -148,11 +189,24 @@ COLD_PREFIXES = ("source/interface/", "source/saved games/", "source/saved films
                  "source/cache/", "source/tag_files/", "source/scenario/", "source/main/", "source/game/")
 COLD_KEEP_HOT = ("source/interface/hud", "source/interface/first_person", "source/main/main.c",
                  "source/game/game_time", "source/game/players", "source/game/game.c")
+# build 110: and the port's units that run at start-up, as a map loads, once
+# a frame or never on the PSP (the settings, the window and the controls'
+# polling, the file calls under the readers, the shader translators the null
+# renderer never calls, the disc image and debugger stand-ins, interpolation,
+# off by default), and the PSP's answer files
+COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "port/linux/src/xbdm.c",
+                   "port/linux/src/sdl_platform.c", "port/linux/src/xinput_sdl.c", "port/linux/src/xbox_files.c",
+                   "port/linux/src/xbox_xapi.c", "port/linux/game/render_interpolation.c",
+                   "port/linux/src/posix_files.c", "port/linux/src/halo_linker_common.c",
+                   "port/linux/src/nv2a_psh.c", "port/linux/src/nv2a_vsh.c", "port/linux/src/gl_functions.c",
+                   "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c",
+                   "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_chupa.c",
+                   "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c")
 def cold_code(rel):
     if os.environ.get("PSP_NO_COLD") or GAME_OPT != "-O2":
         return False
     r = rel.replace("\\", "/")
-    return r.startswith(COLD_PREFIXES) and not r.startswith(COLD_KEEP_HOT)
+    return (r.startswith(COLD_PREFIXES) and not r.startswith(COLD_KEEP_HOT)) or r in COLD_PORT_UNITS
 
 def compile_one(item):
     src, flags, extra = item
@@ -175,7 +229,10 @@ def compile_one(item):
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
-        cmd = ["psp-gcc", "-G0", "-O2", "-march=allegrex", "-ffunction-sections", "-fdata-sections",
+        # (build 110: the launch menu, the crash handler's side, the overlay
+        # and the load trace's wrappers for size; the rest for speed)
+        opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c")) else "-O2"
+        cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections",
                "-I" + SDK + "/include", "-c", src, "-o", obj]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)

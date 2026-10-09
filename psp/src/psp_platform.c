@@ -15,7 +15,13 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 108
+#define PSP_BUILD_NUMBER 110
+/* build 110: the engine base the build was made from (psp_build.py) */
+#ifdef PSP_CHUPATHINGYCE
+#define PSP_ENGINE_BASE "ChupathingyCE"
+#else
+#define PSP_ENGINE_BASE "halo-ce-universal"
+#endif
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>
@@ -1970,6 +1976,14 @@ static int heartbeat_thread(SceSize args, void *argp)
 			platform_log("budget: tag lookups by name %lu a frame (tag_loaded; verify_tag_reference answers from the reference since build 66)",
 				fc ? psp_tag_loaded_calls / fc : 0);
 			psp_tag_loaded_calls = 0;
+			{
+				/* build 109: model_find_marker's table (psp_fixups.py, FIXES_109) */
+				extern unsigned long psp_marker_memo_hits, psp_marker_memo_searches;
+
+				platform_log("budget: marker lookups %lu a frame, %lu of them searched",
+					(psp_marker_memo_hits + psp_marker_memo_searches) / fc, psp_marker_memo_searches / fc);
+				psp_marker_memo_hits = psp_marker_memo_searches = 0;
+			}
 			psp_budget_last[0] = (float)wall;
 			psp_budget_last[1] = (float)(fc / seconds);
 			psp_budget_last[2] = (float)ticks_ms;
@@ -2158,8 +2172,8 @@ int main(int argc, char **argv)
 	setenv("HALO_DISPLAY_WIDTH", "848", 1);
 	/* sound: config.toml's [audio] enabled (on unless it says false; build 25) */
 	/* build 53: the build's number first, so a log says which EBOOT ran */
-	platform_log("Halo PSP bring-up build %d: free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
-		sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+	platform_log("Halo PSP bring-up build %d (%s): free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
+		PSP_ENGINE_BASE, sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
 	/* build 89: whether HOME and sleep are armed (negative: an error) */
 	platform_log("callbacks: power registration %08x, exit callback %08x, exit registration %08x",
 		(unsigned int)exit_callbacks_registered[0], (unsigned int)exit_callbacks_registered[1],

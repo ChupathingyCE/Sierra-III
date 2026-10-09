@@ -1,8 +1,11 @@
 /*
-HALO_PORT_LIMITS.H
+PSP_LIMITS.H
 
-Multiplayer session limits of the native builds (Windows, Linux, Android),
-force-included by halo_linux_prefix.h and halo_windows_prefix.h.
+The PSP's copy of the engine's halo_port_limits.h (psp_build.py
+force-includes it, and it takes that header's include guard, so the
+engine's own is never read): the session limits and the netcode's layout,
+for either engine base. PSP_CHUPATHINGYCE (psp_build.py) marks the
+ChupathingyCE base, whose game settings record and netcode version differ.
 
 The Xbox game allows 16 players on at most 4 machines (up to 4 players each
 on split screen). The native builds allow 128 players on up to 128
@@ -75,8 +78,16 @@ machines, 16 players) are 0x226 and 0x434. */
 #define HALO_PORT_NETWORK_GAME_PLAYERS_END \
 	(HALO_PORT_NETWORK_GAME_PLAYERS_OFFSET + HALO_PORT_MAXIMUM_NETWORK_PLAYERS * HALO_PORT_NETWORK_PLAYER_SIZE)
 #define HALO_PORT_NETWORK_GAME_RANDOM_SEED_OFFSET (HALO_PORT_NETWORK_GAME_PLAYERS_END + 2)
+#ifdef PSP_CHUPATHINGYCE
+/* (ChupathingyCE: then the gametype's PC options, struct game_variant_options:
+0x1C bytes) */
+#define HALO_PORT_NETWORK_GAME_VARIANT_OPTIONS_OFFSET (HALO_PORT_NETWORK_GAME_PLAYERS_END + 0xA)
+#define HALO_PORT_NETWORK_GAME_LOCAL_DATA_OFFSET (HALO_PORT_NETWORK_GAME_PLAYERS_END + 0x26)
+#define HALO_PORT_NETWORK_GAME_SIZE (HALO_PORT_NETWORK_GAME_PLAYERS_END + 0x2A)
+#else
 #define HALO_PORT_NETWORK_GAME_LOCAL_DATA_OFFSET (HALO_PORT_NETWORK_GAME_PLAYERS_END + 0xA)
 #define HALO_PORT_NETWORK_GAME_SIZE (HALO_PORT_NETWORK_GAME_PLAYERS_END + 0xE)
+#endif
 
 /* ---------- system link protocol
 
@@ -93,7 +104,18 @@ is newer (network_client_manager.c). A host advertises it, with its netcode,
 in its game's advertisement's reserved bytes (network_server_message_handler.c),
 which hosts built before there was a version send as zeros: version 0.
 Raise it with any change to what the machines send each other. */
+#ifdef PSP_CHUPATHINGYCE
+#define HALO_PORT_NETWORK_VERSION 24
+/* ... the versions whose hosts a client joins (ChupathingyCE: delta.h's
+table, DELTA_LEGACY_VERSIONS); code asks the functions, not the numbers */
+#define HALO_PORT_NETWORK_VERSION_MINIMUM 11
+#define HALO_PORT_NETWORK_VERSION_MAXIMUM 24
+int delta_legacy_announce(void);
+int delta_legacy_minimum(void);
+int delta_legacy_maximum(void);
+#else
 #define HALO_PORT_NETWORK_VERSION 9
+#endif
 /* ... the advertisement's reserved bytes: the version (a little-endian word),
 then flags */
 #define HALO_PORT_ADVERTISED_VERSION_OFFSET 0
@@ -101,6 +123,9 @@ then flags */
 /* ... the host plays the distributed netcode (always, since the lockstep
 netcode was removed; hosts of version 4 built before then may not) */
 #define HALO_PORT_ADVERTISED_DISTRIBUTED_FLAG 0x01
+/* ... the game is under way (loading, playing or over), not in its lobby
+(ChupathingyCE) */
+#define HALO_PORT_ADVERTISED_IN_PROGRESS_FLAG 0x02
 
 /* a message header's 12-bit length allows messages of up to 0xFFF bytes,
 header included; the per-tick update of 128 players is 3,857 */
