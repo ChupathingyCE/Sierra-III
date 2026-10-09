@@ -6,7 +6,7 @@ renderer copies them, and the triangles (surfaces).
 usage (library): mats, info = load(map_path, pgeo_path, bsp_index=0)"""
 import struct, sys, os
 import numpy as np
-sys.path.insert(0, '/home/claude/research/baker')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'bake', 'lib'))  # the bake's readers (halomap.py, ...)
 from halomap import Defs, CacheMap
 
 PACK_BASE = 0x0C000000

@@ -10,8 +10,8 @@ Build 107: written while finding a10's crash, which turned out to be the
 animation cache's (psp_anim.c), not the data: a10's 628 pass.
 
 usage: python3 tools/animcheck.py MAP PGEO"""
-import struct, sys
-sys.path.insert(0, '/home/claude/research/baker')
+import os, struct, sys
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'bake', 'lib'))  # the bake's readers (halomap.py, ...)
 from halomap import Defs, CacheMap
 
 PACK_BASE = 0x0C000000

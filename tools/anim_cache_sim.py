@@ -21,7 +21,7 @@ Read cost model (halo_bench v10, Sheepdog01's PSP-1000): a random read costs abo
 import argparse, bisect, os, struct, sys
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, '/home/claude/research/baker')
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'bake', 'lib'))  # the bake's readers (halomap.py, ...)
 
 RECENT_RANGES = 6
 EXTERNAL_BASE = 0x0C000000
