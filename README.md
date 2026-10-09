@@ -26,9 +26,9 @@ The goal is a steady 30 ticks a second everywhere in the campaign, with 30 fps t
 
 ## Building
 
-You need Linux, the pspdev toolchain at `/opt/psp/pspdev`, and Python 3. The upstreams and their pins are in `UPSTREAM.md`.
+You need Linux, the pspdev toolchain (`$PSPDEV`, default `/opt/psp/pspdev`), and Python 3. The upstreams and their pins are in `UPSTREAM.md`.
 
-1. **The Media Engine library:** clone me-core-mapper at its pin, then run `make clean; make install` with pspdev on your `PATH`.
+1. **The Media Engine library:** clone me-core-mapper at its pin, then run `make clean; make install` with pspdev on your `PATH`. (Or build it anywhere and point `PSP_MECORE` at a folder holding its `include/me-core-mapper` and `lib/`.)
 2. **The engine:** clone ChupathingyCE at its pin, then in that checkout run:
    ```
    python3 configure.py --no-game-browser

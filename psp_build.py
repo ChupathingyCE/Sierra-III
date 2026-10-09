@@ -21,7 +21,12 @@ REPO = os.environ.get("HALO_REPO", "/tmp/halo-sp")
 OUT = os.environ.get("PSP_OUT", "/tmp/psp_halo")
 TREE = os.path.join(OUT, "tree")
 OBJ = os.path.join(OUT, "obj")
-SDK = "/opt/psp/pspdev/psp/sdk"
+# The toolchain: $PSPDEV as pspdev sets it (/opt/psp/pspdev here, /opt/pspdev in the lab runner)
+PSPDEV = os.environ.get("PSPDEV", "/opt/psp/pspdev")
+SDK = PSPDEV + "/psp/sdk"
+# mcidclan's me-core-mapper: installed into the toolchain by default (its "make install");
+# PSP_MECORE names a separate install prefix holding include/me-core-mapper and lib/
+MECORE = os.environ.get("PSP_MECORE", "")
 JOBS = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else 2
 GAME_STATE_BASE = 0x092B0000   # psp_capacity.h
 PROGRAM_BASE = 0x08804000      # where the kernel loads the module (first fit, low)
@@ -236,7 +241,7 @@ def compile_one(item):
                "-I" + SDK + "/include", "-c", src, "-o", obj]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
-            cmd[-4:-4] = ["-I" + os.path.dirname(SDK) + "/include"]
+            cmd[-4:-4] = ["-I" + (MECORE or os.path.dirname(SDK)) + "/include"]
     r = subprocess.run(cmd, cwd=TREE, capture_output=True, text=True)
     if r.returncode and "-mno-explicit-relocs" in cmd:
         # inline assembly that uses $at (".set noat") needs explicit relocations
@@ -303,7 +308,7 @@ def link(objs, stubs):
     # build 107: the link map (halo.map: each function's and variable's
     # address, size and object file) is written every link, for
     # tools/coverage.py's per-file inventory
-    cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib", "-specs=" + SDK + "/lib/prxspecs",
+    cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib"] + (["-L" + MECORE + "/lib"] if MECORE else []) + ["-specs=" + SDK + "/lib/prxspecs",
            "-Wl,-q,-T" + linkfile, "-Wl,-zmax-page-size=128", "-Wl,--gc-sections",
            "-Wl,-Map=" + os.path.join(OUT, "halo.map"),
            "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=sceKernelCreateThread,--wrap=sceGeListUpdateStallAddr,"

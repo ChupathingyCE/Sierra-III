@@ -1,6 +1,6 @@
 # What Sierra-III is built on
 
-Sierra-III doesn't copy anyone's source into this repository. It pins each upstream at an exact commit, and keeps our changes as our own files plus patches applied on top.
+Sierra-III doesn't copy anyone's source into this repository. It pins each upstream at an exact commit, and keeps our changes as our own files plus patches applied on top. The same pins are in `upstream/pins.env`, for scripts.
 
 | Piece | Upstream | Pinned at | Our changes | Licence |
 |---|---|---|---|---|
