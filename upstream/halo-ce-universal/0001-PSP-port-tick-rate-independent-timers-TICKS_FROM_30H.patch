@@ -1,0 +1,1468 @@
+From 5d7994d4854646a07cfb5a4f30947eaa4269a6d7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 10:52:22 -0500
+Subject: [PATCH 1/2] PSP port: tick-rate-independent timers (TICKS_FROM_30HZ)
+
+Per-tick constants in the AI and object code expressed through
+TICKS_FROM_30HZ(), so the tick rate could be changed for the PSP study.
+The PSP build applies its other changes at build time (psp_fixups.py).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: [private link]
+---
+ source/ai/action_charge.c               |  2 +-
+ source/ai/action_flee.c                 |  2 +-
+ source/ai/action_guard.c                |  4 +--
+ source/ai/action_obey.c                 |  6 ++--
+ source/ai/action_vehicle.c              |  2 +-
+ source/ai/action_wait.c                 |  4 +--
+ source/ai/actions.c                     | 20 +++++------
+ source/ai/actor_combat.c                |  4 +--
+ source/ai/actor_looking.c               |  2 +-
+ source/ai/actor_moving.c                |  4 +--
+ source/ai/actor_perception.c            | 42 +++++++++++-----------
+ source/ai/actor_stimulus.c              |  2 +-
+ source/ai/actor_type_elite.c            |  2 +-
+ source/ai/actor_type_flood.c            |  4 +--
+ source/ai/actor_type_infection.c        |  6 ++--
+ source/ai/actor_type_jackal.c           |  2 +-
+ source/ai/actors.c                      |  8 ++---
+ source/ai/ai.c                          |  2 +-
+ source/ai/ai_communication.c            | 32 ++++++++---------
+ source/ai/ai_debug.c                    |  4 +--
+ source/ai/encounters.c                  |  6 ++--
+ source/cseries/cseries.h                |  8 +++++
+ source/effects/effects.c                |  6 ++--
+ source/game/game_engine.c               | 46 ++++++++++++-------------
+ source/game/game_engine_race.c          |  2 +-
+ source/game/player_rumble.c             |  2 +-
+ source/game/players.c                   |  2 +-
+ source/hs/hs_runtime.c                  |  2 +-
+ source/interface/first_person_weapons.c |  4 +--
+ source/interface/hud_draw.c             |  2 +-
+ source/interface/hud_messaging.c        |  2 +-
+ source/interface/hud_unit.c             |  2 +-
+ source/interface/terminal.c             |  2 +-
+ source/main/main.c                      | 12 +++----
+ source/objects/damage.c                 |  4 +--
+ source/objects/objects.c                |  2 +-
+ source/objects/widgets/glow.c           |  6 ++--
+ source/units/bipeds.c                   | 10 +++---
+ source/units/unit_dialogue.c            | 12 +++----
+ source/units/units.c                    |  8 ++---
+ source/units/vehicles.c                 | 12 +++----
+ 41 files changed, 157 insertions(+), 149 deletions(-)
+
+diff --git a/source/ai/action_charge.c b/source/ai/action_charge.c
+index 31928588..cbf21f32 100644
+--- a/source/ai/action_charge.c
++++ b/source/ai/action_charge.c
+@@ -736,7 +736,7 @@ boolean action_charge_perform(
+ 		{
+ 			if (state_data->launched_leap)
+ 			{
+-				if (state_data->leap_failure_timer > 15)
++				if (state_data->leap_failure_timer > TICKS_FROM_30HZ(15))
+ 				{
+ 					state_data->aborted_melee_attack = TRUE;
+ 				}
+diff --git a/source/ai/action_flee.c b/source/ai/action_flee.c
+index c3c0b952..50c42c06 100644
+--- a/source/ai/action_flee.c
++++ b/source/ai/action_flee.c
+@@ -374,7 +374,7 @@ boolean action_flee_setup(
+ 		if (action_flee_blind_panic(panic_type) &&
+ 			real_seed_random(get_global_random_seed_address()) < 0.4f)
+ 		{
+-			state_data->flee_stationary_ticks = 45;
++			state_data->flee_stationary_ticks = TICKS_FROM_30HZ(45);
+ 			success = TRUE;
+ 		}
+ 		else if (!actor->meta.swarm)
+diff --git a/source/ai/action_guard.c b/source/ai/action_guard.c
+index b0eaddb4..3335b067 100644
+--- a/source/ai/action_guard.c
++++ b/source/ai/action_guard.c
+@@ -146,7 +146,7 @@ action_guard_setup_postcombat(
+ 
+ 	match_assert("c:\\halo\\SOURCE\\ai\\action_guard.c", 172, state_data);
+ 	csmemset(state_data, 0, sizeof(*state_data));
+-	state_data->wait_ticks = 120;
++	state_data->wait_ticks = TICKS_FROM_30HZ(120);
+ 	state_data->guard_location_type = 1;
+ 	state_data->post_combat = TRUE;
+ 	state_data->guard_look_prop_index = NONE;
+@@ -162,7 +162,7 @@ action_guard_setup_postcombat(
+ 		struct prop_datum *prop = prop_get(actor->external_orders.postcombat_prop_index);
+ 
+ 		state_data->guard_look_prop_index = actor->external_orders.postcombat_prop_index;
+-		state_data->look_ticks = 120;
++		state_data->look_ticks = TICKS_FROM_30HZ(120);
+ 		state_data->guard_look_until_reached_point = TRUE;
+ 
+ 		switch (actor->external_orders.postcombat_type)
+diff --git a/source/ai/action_obey.c b/source/ai/action_obey.c
+index d7260e4b..a8fc127d 100644
+--- a/source/ai/action_obey.c
++++ b/source/ai/action_obey.c
+@@ -1280,7 +1280,7 @@ flush_order_effects:
+ 				state_data->simple_control.simple_control_flags,
+ 				_obey_simple_jump_targeted_bit))
+ 			{
+-				state_data->simple_control.jump.delay_ticks = 15;
++				state_data->simple_control.jump.delay_ticks = TICKS_FROM_30HZ(15);
+ 			}
+ 		}
+ 
+@@ -2549,7 +2549,7 @@ static boolean action_obey_command_perform(
+ 				{
+ 					if (actor->control.moving)
+ 					{
+-						simple_control->pause_timer = 10;
++						simple_control->pause_timer = TICKS_FROM_30HZ(10);
+ 					}
+ 					done = done && simple_control->pause_timer == 0;
+ 				}
+@@ -2642,7 +2642,7 @@ static boolean action_obey_command_perform(
+ 				{
+ 					struct actor_variant_definition *variant_definition =
+ 						actor_variant_definition_get(actor->meta.variant_definition_index);
+-					short pause_ticks = (short)(variant_definition->ranged_combat.first_burst_delay_upper_bound * 30.0f);
++					short pause_ticks = (short)(variant_definition->ranged_combat.first_burst_delay_upper_bound * (real)TICKS_PER_SECOND);
+ 
+ 					simple_control->pause_timer = MAX(pause_ticks, 60);
+ 				}
+diff --git a/source/ai/action_vehicle.c b/source/ai/action_vehicle.c
+index 26b7b71a..ee1248be 100644
+--- a/source/ai/action_vehicle.c
++++ b/source/ai/action_vehicle.c
+@@ -859,7 +859,7 @@ boolean action_vehicle_perform(
+ 					if (could_potentially_fake)
+ 					{
+ 						state_data->fake_entry_potential_timer++;
+-						if (state_data->fake_entry_potential_timer >= 30)
++						if (state_data->fake_entry_potential_timer >= TICKS_FROM_30HZ(30))
+ 						{
+ 							correct_facing = TRUE;
+ 							within_range = TRUE;
+diff --git a/source/ai/action_wait.c b/source/ai/action_wait.c
+index 0b5ace6a..7e90bbf9 100644
+--- a/source/ai/action_wait.c
++++ b/source/ai/action_wait.c
+@@ -70,7 +70,7 @@ action_wait_perform(
+ 			if (actor->external_orders.pursuit_group_prop_index == NONE)
+ 			{
+ 				if (state_data->exit_timer == 0)
+-					state_data->exit_timer = 150;
++					state_data->exit_timer = TICKS_FROM_30HZ(150);
+ 			}
+ 			else if (game_time_get() >= state_data->entry_time + 2700)
+ 			{
+@@ -164,7 +164,7 @@ boolean action_wait_setup(
+ 		state_data->was_actively_searching = was_actively_searching;
+ 		state_data->entry_time = game_time_get();
+ 		state_data->exit_timer = 0;
+-		state_data->look_timer = 120;
++		state_data->look_timer = TICKS_FROM_30HZ(120);
+ 		state_data->desire_move = TRUE;
+ 		state_data->query_timer = seed_random_range(get_global_random_seed_address(), 300, 600);
+ 		result = TRUE;
+diff --git a/source/ai/actions.c b/source/ai/actions.c
+index 8d8e32f7..2ee73145 100644
+--- a/source/ai/actions.c
++++ b/source/ai/actions.c
+@@ -316,7 +316,7 @@ enum
+ };
+ 
+ #define ACTOR_GRENADE_THROW_MINIMUM_COSINE 0.86602539f
+-#define ACTOR_GRENADE_TICKS_PER_SECOND 30.0f
++#define ACTOR_GRENADE_TICKS_PER_SECOND ((real)TICKS_PER_SECOND)
+ #define AI_INDEX_SCOPE(index) ((unsigned long)(index) >> 30)
+ #define AI_INDEX_SUB_INDEX(index) (((unsigned long)(index) >> 16) & 0xFF)
+ 
+@@ -1794,7 +1794,7 @@ boolean actor_action_handle_active_cover_seeking(
+ 		debug_info->field_BA = 4;
+ 
+ 		if (actor->target.target_last_visible_time == NONE)
+-			target_hidden_ticks = 1000;
++			target_hidden_ticks = 1000; /* port: a sentinel for never seen, not a duration: left as it is at any TICKS_PER_SECOND */
+ 		else
+ 			target_hidden_ticks =
+ 				game_time_get() - actor->target.target_last_visible_time;
+@@ -2979,7 +2979,7 @@ boolean actor_action_handle_lost_contact(
+ 			actor->state.action_data.search.search_failed) &&
+ 			actor->state.action != _actor_action_wait)
+ 		{
+-			find_position_delay = 90;
++			find_position_delay = TICKS_FROM_30HZ(90);
+ 		}
+ 
+ 		actor_perception_abandoned_search(
+@@ -3872,7 +3872,7 @@ boolean actor_action_handle_vehicle_entry(
+ 			goto setup_entry;
+ 	}
+ 
+-	if (actor->state.certain_combat_timer < 60)
++	if (actor->state.certain_combat_timer < TICKS_FROM_30HZ(60))
+ 		return FALSE;
+ 
+ 	{
+@@ -4040,7 +4040,7 @@ static boolean actor_action_find_escape_from_danger(
+ 
+ 		alignment_vector.i = -actor->danger_zone.velocity.i;
+ 		alignment_vector.j = -actor->danger_zone.velocity.j;
+-		if (normalize2d(&alignment_vector) < 0.033333335f)
++		if (normalize2d(&alignment_vector) < (1.0f / TICKS_PER_SECOND))
+ 		{
+ 			alignment_vector.i = actor->danger_zone.position.x -
+ 				actor->input.position.body_position.x;
+@@ -4402,7 +4402,7 @@ boolean actor_action_handle_evasion(
+ 			{
+ 				actor->emotions.perceived_danger = 0.0f;
+ 				actor->emotions.evasion_delay_timer =
+-					(short)(definition->defensive.evasion_delay_timer * 30.0f);
++					(short)(definition->defensive.evasion_delay_timer * (real)TICKS_PER_SECOND);
+ 				actor->firing_positions.moved_away_from_firing_position = TRUE;
+ 				result = TRUE;
+ 			}
+@@ -4607,14 +4607,14 @@ boolean actor_action_handle_danger_avoidance(
+ 				actor->danger_zone.danger_radius);
+ 
+ 			if (urgency < REAL_MAX)
+-				urgency *= 45.0f;
++				urgency *= REAL_TICKS_FROM_30HZ(45.0f);
+ 
+ 			switch (actor->danger_zone.danger_type)
+ 			{
+ 			case _actor_danger_zone_suicide:
+ 				if (urgency == 0.0f &&
+ 					actor->danger_zone.suicide.time_until_death != NONE &&
+-					actor->danger_zone.suicide.time_until_death < 30)
++					actor->danger_zone.suicide.time_until_death < TICKS_FROM_30HZ(30))
+ 				{
+ 					reaction_is_urgent = TRUE;
+ 				}
+@@ -4623,14 +4623,14 @@ boolean actor_action_handle_danger_avoidance(
+ 			case _actor_danger_zone_projectile:
+ 				if (urgency == 0.0f &&
+ 					actor->danger_zone.projectile.time_until_explosion != NONE &&
+-					actor->danger_zone.projectile.time_until_explosion < 20)
++					actor->danger_zone.projectile.time_until_explosion < TICKS_FROM_30HZ(20))
+ 				{
+ 					reaction_is_urgent = TRUE;
+ 				}
+ 				break;
+ 
+ 			case _actor_danger_zone_vehicle:
+-				if (urgency < 30.0f)
++				if (urgency < (real)TICKS_PER_SECOND)
+ 					reaction_is_urgent = TRUE;
+ 				break;
+ 			}
+diff --git a/source/ai/actor_combat.c b/source/ai/actor_combat.c
+index 674af1b2..86f72825 100644
+--- a/source/ai/actor_combat.c
++++ b/source/ai/actor_combat.c
+@@ -324,7 +324,7 @@ static boolean actor_combat_enable_special_fire_situation(
+ 			actor->control.current_fire_target_type == _actor_fire_target_none &&
+ 			actor->target.target_type >= _actor_target_uninspected_orphan &&
+ 			actor->target.target_really_alive &&
+-			actor->target.since_any_target_visible_timer >= 75;
++			actor->target.since_any_target_visible_timer >= TICKS_FROM_30HZ(75);
+ 		break;
+ 
+ 	case _actor_special_fire_situation_strafing:
+@@ -2345,7 +2345,7 @@ void actor_combat_update(
+ 				actor->control.blocked_communication_timer++;
+ 				actor->control.fire_state_timer++;
+ 				firing_decision = _firing_blocked;
+-				if (actor->control.blocked_communication_timer >= 45 &&
++				if (actor->control.blocked_communication_timer >= TICKS_FROM_30HZ(45) &&
+ 					actor->target.target_type >= _actor_target_acknowledged_enemy)
+ 				{
+ 					long cause_unit_index = NONE;
+diff --git a/source/ai/actor_looking.c b/source/ai/actor_looking.c
+index 6b3f6dcc..68596709 100644
+--- a/source/ai/actor_looking.c
++++ b/source/ai/actor_looking.c
+@@ -399,7 +399,7 @@ real actor_look_compute_prop_interest(
+ 	{
+ 		if (prop->dead)
+ 		{
+-			interest = prop->dead_ticks < 210 ? 1.8f : 0.4f;
++			interest = prop->dead_ticks < TICKS_FROM_30HZ(210) ? 1.8f : 0.4f;
+ 		}
+ 		else if (prop->enemy)
+ 		{
+diff --git a/source/ai/actor_moving.c b/source/ai/actor_moving.c
+index 1bf85b23..7a329e8f 100644
+--- a/source/ai/actor_moving.c
++++ b/source/ai/actor_moving.c
+@@ -450,7 +450,7 @@ real const avoid_ray_avoidance_weights[2] =
+ 	0.8f,
+ 	1.2f,
+ };
+-long const avoid_ray_clear_bias_time = 75;
++long const avoid_ray_clear_bias_time = TICKS_FROM_30HZ(75);
+ real const avoid_ray_adjacent_fractions[2] =
+ {
+ 	0.8f,
+@@ -1688,7 +1688,7 @@ static void actor_move_vector_avoidance(
+ 		if (forward_dot < -0.2f)
+ 		{
+ 			if (actor->control.vector_avoidance_sharp_turn_timer != NONE &&
+-				actor->control.vector_avoidance_sharp_turn_timer < 90)
++				actor->control.vector_avoidance_sharp_turn_timer < TICKS_FROM_30HZ(90))
+ 			{
+ 				debug_info->field_653C = 7;
+ 				sharp_turn = TRUE;
+diff --git a/source/ai/actor_perception.c b/source/ai/actor_perception.c
+index f3a583a8..468e878a 100644
+--- a/source/ai/actor_perception.c
++++ b/source/ai/actor_perception.c
+@@ -1211,7 +1211,7 @@ boolean actor_perception_desire_prop(
+ 		{
+ 			desire = TRUE;
+ 		}
+-		else if (enemy && dead_ticks > 150)
++		else if (enemy && dead_ticks > TICKS_FROM_30HZ(150))
+ 		{
+ 			desire = FALSE;
+ 		}
+@@ -2045,7 +2045,7 @@ real actor_compute_prop_target_weight(
+ 	if (prop->ignore ||
+ 		!prop->enemy ||
+ 		(prop->state >= 0 && prop->state <= 1) ||
+-		(prop->dead && prop->dead_ticks >= 150) ||
++		(prop->dead && prop->dead_ticks >= TICKS_FROM_30HZ(150)) ||
+ 		prop->type == 15)
+ 	{
+ 		return 0.0f;
+@@ -2863,11 +2863,11 @@ static void actor_emotion_unopposable_retreat(
+ 			if (target_prop->player)
+ 				player_triggered = TRUE;
+ 			else
+-				target_prop->emotion_trigger_ticks = 22;
++				target_prop->emotion_trigger_ticks = TICKS_FROM_30HZ(22);
+ 		}
+ 		else if (target_prop->player)
+ 		{
+-			target_prop->emotion_trigger_ticks = 22;
++			target_prop->emotion_trigger_ticks = TICKS_FROM_30HZ(22);
+ 		}
+ 
+ 		if (target_prop->emotion_trigger_ticks > 0)
+@@ -2882,14 +2882,14 @@ static void actor_emotion_unopposable_retreat(
+ 						get_global_random_seed_address(),
+ 						lower_bound,
+ 						upper_bound) *
+-						30.0f);
++						(real)TICKS_PER_SECOND);
+ 			}
+ 
+ 			target_prop->emotion_trigger_ticks--;
+ 			target_prop->emotion_trigger_age++;
+ 		}
+ 
+-		if (target_prop->dead_ticks >= 45 ||
++		if (target_prop->dead_ticks >= TICKS_FROM_30HZ(45) ||
+ 			target->priority >= 4)
+ 		{
+ 			if (target_prop->emotion_trigger_threshold > 0 &&
+@@ -2960,7 +2960,7 @@ static void actor_emotion_unopposable_retreat(
+ 					get_global_random_seed_address(),
+ 					lower_bound,
+ 					upper_bound) *
+-					30.0f);
++					(real)TICKS_PER_SECOND);
+ 			actor->emotion_target_prop_index = best_prop_index;
+ 			actor->emotion_target_time = game_time_get();
+ 		}
+@@ -3598,7 +3598,7 @@ void actor_emotion_update(
+ 			actor_index,
+ 			actor->firing_positions.current_position_index,
+ 			TRUE);
+-		actor->emotions.moving_into_fire_timer = 22;
++		actor->emotions.moving_into_fire_timer = TICKS_FROM_30HZ(22);
+ 	}
+ 	else if (actor->emotions.moving_into_fire_timer > 0)
+ 	{
+@@ -3681,11 +3681,11 @@ void actor_emotion_update(
+ 				actor->emotions.defensive_crouch_timer =
+ 					(short)(definition->defensive.
+ 						defensive_crouch_min_stand_time *
+-						30.0f);
++						(real)TICKS_PER_SECOND);
+ 			}
+ 			else
+ 			{
+-				actor->emotions.defensive_crouch_timer = 45;
++				actor->emotions.defensive_crouch_timer = TICKS_FROM_30HZ(45);
+ 			}
+ 		}
+ 		else if (!actor->emotions.defensive_crouch && crouch)
+@@ -3697,11 +3697,11 @@ void actor_emotion_update(
+ 				actor->emotions.defensive_crouch_timer =
+ 					(short)(definition->defensive.
+ 						defensive_crouch_min_crouch_time *
+-						30.0f);
++						(real)TICKS_PER_SECOND);
+ 			}
+ 			else
+ 			{
+-				actor->emotions.defensive_crouch_timer = 45;
++				actor->emotions.defensive_crouch_timer = TICKS_FROM_30HZ(45);
+ 			}
+ 		}
+ 	}
+@@ -4881,7 +4881,7 @@ static boolean actor_perception_assess_vehicle_danger(
+ 					actor->danger_zone.initial_position = vehicle_origin;
+ 					actor->danger_zone.initial_velocity =
+ 						vehicle->object.translational_velocity;
+-					actor->danger_zone.acknowledgement_timer = 20;
++					actor->danger_zone.acknowledgement_timer = TICKS_FROM_30HZ(20);
+ 					actor->danger_zone.currently_perceived = mark;
+ 					actor->danger_zone.hostility = 0;
+ 
+@@ -4952,7 +4952,7 @@ static void actor_perception_refresh_danger_zone(
+ 		point_from_line3d(
+ 			&actor->danger_zone.position,
+ 			&actor->danger_zone.velocity,
+-			45.0f,
++			REAL_TICKS_FROM_30HZ(45.0f),
+ 			&actor->danger_zone.predict_danger_position),
+ 		&actor->danger_zone.position,
+ 		&actor->danger_zone.bounding_sphere_center);
+@@ -5444,7 +5444,7 @@ static void actor_perception_refresh_test_object(
+ 						actor->danger_zone.initial_position = origin;
+ 						actor->danger_zone.initial_velocity =
+ 							current_object->object.translational_velocity;
+-						actor->danger_zone.acknowledgement_timer = 30;
++						actor->danger_zone.acknowledgement_timer = TICKS_FROM_30HZ(30);
+ 						actor->danger_zone.currently_perceived = FALSE;
+ 						actor->danger_zone.hostility = 0;
+ 
+@@ -6236,7 +6236,7 @@ void actor_perception_update(
+ 				if (actor->danger_zone.hostility == 0 &&
+ 					!actor->danger_zone.attached_to_us &&
+ 					(actor->state.uncertain_combat_timer == NONE ||
+-						actor->state.uncertain_combat_timer >= 60))
++						actor->state.uncertain_combat_timer >= TICKS_FROM_30HZ(60)))
+ 				{
+ 					acknowledge_danger = --actor->danger_zone.acknowledgement_timer == 0;
+ 				}
+@@ -6334,13 +6334,13 @@ void actor_perception_update(
+ 		}
+ 
+ 		if (prop->ticks_since_damage != NONE &&
+-			++prop->ticks_since_damage >= 45)
++			++prop->ticks_since_damage >= TICKS_FROM_30HZ(45))
+ 		{
+ 			prop->currently_damaging_me = FALSE;
+ 		}
+ 
+ 		if (prop->ticks_since_definitely_located != NONE &&
+-			++prop->ticks_since_definitely_located >= 60)
++			++prop->ticks_since_definitely_located >= TICKS_FROM_30HZ(60))
+ 		{
+ 			prop->definitely_located = FALSE;
+ 			prop->definite_knowledge_source_actor = NONE;
+@@ -6381,7 +6381,7 @@ void actor_perception_update(
+ 
+ 			if (--prop->unopposable_casualties_inflicted > 0)
+ 			{
+-				prop->unopposable_casualty_decay_timer = 750;
++				prop->unopposable_casualty_decay_timer = TICKS_FROM_30HZ(750);
+ 			}
+ 		}
+ 
+@@ -6927,10 +6927,10 @@ void actor_perception_update(
+ 
+ 				if ((actor->target.target_prop_index != NONE &&
+ 						(actor->target.since_any_target_visible_timer == NONE ||
+-							actor->target.since_any_target_visible_timer >= 180)) ||
++							actor->target.since_any_target_visible_timer >= TICKS_FROM_30HZ(180))) ||
+ 					(actor->meta.encounter_index != NONE &&
+ 						((encounter = encounter_get(actor->meta.encounter_index))->enemy_visible_timer == NONE ||
+-							(encounter->enemy_visible_timer >= 180 && encounter->enemy_alive))))
++							(encounter->enemy_visible_timer >= TICKS_FROM_30HZ(180) && encounter->enemy_alive))))
+ 				{
+ 					if (actor->meta.unit_index != NONE)
+ 					{
+diff --git a/source/ai/actor_stimulus.c b/source/ai/actor_stimulus.c
+index bbcd2c0f..e240bce7 100644
+--- a/source/ai/actor_stimulus.c
++++ b/source/ai/actor_stimulus.c
+@@ -761,7 +761,7 @@ void actor_stimulus_prop_just_killed(
+ 				if (killer_prop->unopposable_enemy)
+ 				{
+ 					killer_prop->unopposable_casualties_inflicted++;
+-					killer_prop->unopposable_casualty_decay_timer = 750;
++					killer_prop->unopposable_casualty_decay_timer = TICKS_FROM_30HZ(750);
+ 				}
+ 			}
+ 		}
+diff --git a/source/ai/actor_type_elite.c b/source/ai/actor_type_elite.c
+index b62fa534..69c69df3 100644
+--- a/source/ai/actor_type_elite.c
++++ b/source/ai/actor_type_elite.c
+@@ -107,7 +107,7 @@ void elite_decide_action(
+ 			if (actor->input.shield_vitality < shield_fraction)
+ 			{
+ 				actor->state.action_data.guard.cower = TRUE;
+-				actor->state.action_data.guard.cower_ticks = 30;
++				actor->state.action_data.guard.cower_ticks = TICKS_FROM_30HZ(30);
+ 			}
+ 			else
+ 			{
+diff --git a/source/ai/actor_type_flood.c b/source/ai/actor_type_flood.c
+index 332afbcf..ddef07f1 100644
+--- a/source/ai/actor_type_flood.c
++++ b/source/ai/actor_type_flood.c
+@@ -401,8 +401,8 @@ boolean actor_type_flood_desire_shamble(
+ 					variant->movement_switching.run_time_lower_bound,
+ 					variant->movement_switching.run_time_upper_bound);
+ 			}
+-			actor->emotions.crouch_switching_change_timer = (short)MAX(change_time * 30.0f, 31.0f);
+-			actor->emotions.crouch_switching_stay_timer = 30;
++			actor->emotions.crouch_switching_change_timer = (short)MAX(change_time * (real)TICKS_PER_SECOND, (real)(TICKS_PER_SECOND + 1));
++			actor->emotions.crouch_switching_stay_timer = TICKS_FROM_30HZ(30);
+ 		}
+ 
+ 		result = actor->emotions.crouch_switching_current_value;
+diff --git a/source/ai/actor_type_infection.c b/source/ai/actor_type_infection.c
+index eb03cdd3..0c326d43 100644
+--- a/source/ai/actor_type_infection.c
++++ b/source/ai/actor_type_infection.c
+@@ -514,9 +514,9 @@ static void infection_swarm_control(
+ 					TEST_FLAG(
+ 						parent_definition->unit.flags,
+ 						_unit_melee_attackers_cannot_attach_bit)) &&
+-					swarm_component->attached_to_unit_ticks > 45)
++					swarm_component->attached_to_unit_ticks > TICKS_FROM_30HZ(45))
+ 				{
+-					swarm_component->attack_delay_ticks = 45;
++					swarm_component->attack_delay_ticks = TICKS_FROM_30HZ(45);
+ 					detach = TRUE;
+ 				}
+ 			}
+@@ -811,7 +811,7 @@ static void infection_swarm_control(
+ 		{
+ 			should_jump = TRUE;
+ 		}
+-		else if (has_direction && swarm_component->ground_ticks >= 45)
++		else if (has_direction && swarm_component->ground_ticks >= TICKS_FROM_30HZ(45))
+ 		{
+ 			if (member_index == intermittent_action_member)
+ 			{
+diff --git a/source/ai/actor_type_jackal.c b/source/ai/actor_type_jackal.c
+index 588fc9f6..4c290df3 100644
+--- a/source/ai/actor_type_jackal.c
++++ b/source/ai/actor_type_jackal.c
+@@ -102,7 +102,7 @@ void jackal_decide_action(
+ 			if (actor->input.shield_vitality < shield_fraction)
+ 			{
+ 				actor->state.action_data.guard.cower = TRUE;
+-				actor->state.action_data.guard.cower_ticks = 30;
++				actor->state.action_data.guard.cower_ticks = TICKS_FROM_30HZ(30);
+ 			}
+ 			else
+ 			{
+diff --git a/source/ai/actors.c b/source/ai/actors.c
+index da4ec393..2ae41543 100644
+--- a/source/ai/actors.c
++++ b/source/ai/actors.c
+@@ -1406,7 +1406,7 @@ static boolean actor_get_timeslice(
+ 
+ 	if (!ai_globals->time_given_this_frame &&
+ 		actor->meta.service_timer > ai_globals->last_highest_service_timer &&
+-		actor->meta.service_timer > 15)
++		actor->meta.service_timer > TICKS_FROM_30HZ(15))
+ 	{
+ 		actor->meta.service_timer = 0;
+ 		ai_globals->time_given_this_frame = TRUE;
+@@ -1745,10 +1745,10 @@ static void actor_input_update(
+ 
+ 			if (firing_position_type_mismatch)
+ 			{
+-				if (actor_debug_info->firing_position_type_mismatch_ticks < 150)
++				if (actor_debug_info->firing_position_type_mismatch_ticks < TICKS_FROM_30HZ(150))
+ 				{
+ 					actor_debug_info->firing_position_type_mismatch_ticks++;
+-					if (actor_debug_info->firing_position_type_mismatch_ticks == 150)
++					if (actor_debug_info->firing_position_type_mismatch_ticks == TICKS_FROM_30HZ(150))
+ 					{
+ 						if (actor->state.flying)
+ 						{
+@@ -4000,7 +4000,7 @@ static boolean actor_general_update(
+ 			if (can_become_dormant)
+ 			{
+ 				actor->meta.become_dormant_timer++;
+-				if (actor->meta.become_dormant_timer >= 60)
++				if (actor->meta.become_dormant_timer >= TICKS_FROM_30HZ(60))
+ 				{
+ 					actor_set_dormant(actor_index, TRUE);
+ 				}
+diff --git a/source/ai/ai.c b/source/ai/ai.c
+index bee7eaa7..cf07ebc2 100644
+--- a/source/ai/ai.c
++++ b/source/ai/ai.c
+@@ -1629,7 +1629,7 @@ void ai_disconnect_from_structure_bsp(
+ 
+ 					if (target_prop->player &&
+ 						actor->state.uncertain_combat_timer != NONE &&
+-						actor->state.uncertain_combat_timer < 90 &&
++						actor->state.uncertain_combat_timer < TICKS_FROM_30HZ(90) &&
+ 						target_prop->distance < 10.0f)
+ 					{
+ 						disconnect = TRUE;
+diff --git a/source/ai/ai_communication.c b/source/ai/ai_communication.c
+index 4947c6f4..24ddde97 100644
+--- a/source/ai/ai_communication.c
++++ b/source/ai/ai_communication.c
+@@ -1023,7 +1023,7 @@ short const communication_player_speaking_priorities
+ 	0, 2, 3, 4, 4, 6, 6, 7,
+ };
+ 
+-short const communication_unit_prefer_silent_time = 60;
++short const communication_unit_prefer_silent_time = TICKS_FROM_30HZ(60);
+ 
+ real const communication_timer_tolerances
+ 	[NUMBER_OF_COMMUNICATION_PRIORITIES][2][NUMBER_OF_COMMUNICATION_TIMER_TYPES] =
+@@ -1067,10 +1067,10 @@ real const communication_play_delays[NUMBER_OF_COMMUNICATION_TIMER_TYPES] =
+ 	0.0f, 0.5f, 0.8f, 0.5f, 0.8f,
+ };
+ 
+-short const communication_player_additional_delay = 30;
+-short const communication_overlap_time_modifier = 45;
+-short const communication_timeout_low_priority_modifier = 30;
+-short const communication_repeat_selection_time = 900;
++short const communication_player_additional_delay = TICKS_FROM_30HZ(30);
++short const communication_overlap_time_modifier = TICKS_FROM_30HZ(45);
++short const communication_timeout_low_priority_modifier = TICKS_FROM_30HZ(30);
++short const communication_repeat_selection_time = TICKS_FROM_30HZ(900);
+ real const communication_player_absolute_range = 30.0f;
+ real const communication_player_ideal_range_min = 3.0f;
+ real const communication_player_ideal_range_max = 15.0f;
+@@ -2012,7 +2012,7 @@ static short ai_communication_consider_speech(
+ 		elapsed_time = game_time_get() - last_speech_time;
+ 		speech_time = (short)(elapsed_time < 0 ? 0 : elapsed_time);
+ 		timer_tolerance = (short)(long)(
+-			communication_timer_tolerances[communication_priority][0][2] * 30.0f +
++			communication_timer_tolerances[communication_priority][0][2] * (real)TICKS_PER_SECOND +
+ 			(real)delay_ticks);
+ 		if (speech_time <= timer_tolerance)
+ 		{
+@@ -2685,7 +2685,7 @@ static void actor_reset_idle_vocalization_timer(
+ 
+ 	actor->control.idle_vocalization_combat = in_combat;
+ 	actor->control.idle_vocalization_timer =
+-		(short)(delay * 30.0f + (real)speech_offset);
++		(short)(delay * (real)TICKS_PER_SECOND + (real)speech_offset);
+ 	return;
+ }
+ 
+@@ -4886,7 +4886,7 @@ void ai_communication_finished(
+ 										speech.ai_notification_delay = (short)(long)(
+ 											communication_notification_delays[reply->communication_priority] *
+ 											TICKS_PER_SECOND);
+-										speech.pause_time = 24;
++										speech.pause_time = TICKS_FROM_30HZ(24);
+ 										speech.ai.target_unit_index = unit_index;
+ 										speech.ai.communication_type = NONE;
+ 										speech.ai.dialogue_type_index = NONE;
+@@ -5290,7 +5290,7 @@ static boolean ai_conversation_line_begin(
+ 				MAXIMUM_DIALOGUE_VARIANTS_PER_CONVERSATION_PARTICIPANT));
+ 		conversation->line_sound_index = line->dialogue[
+ 			conversation->dialogue_indices[line->participant_index]].index;
+-		conversation->line_delay_timer = (short)(long)(line->delay_time * 30.0f);
++		conversation->line_delay_timer = (short)(long)(line->delay_time * (real)TICKS_PER_SECOND);
+ 		conversation->line_flags = line->flags;
+ 		conversation->line_advance = FALSE;
+ 		conversation->line_finished = FALSE;
+@@ -5913,7 +5913,7 @@ void ai_communication_event(
+ 					betrayal =
+ 						subject_encounter->enemy_traitor ||
+ 						subject_encounter->enemy_visible_timer == NONE ||
+-						subject_encounter->enemy_visible_timer >= 270;
++						subject_encounter->enemy_visible_timer >= TICKS_FROM_30HZ(270);
+ 				}
+ 
+ 				friend_actor_index = ai_communication_find_global_actor_to_talk(
+@@ -6042,11 +6042,11 @@ void ai_communication_event(
+ 		enemy_status_enabled[2] =
+ 			subject_actor->target.target_prop_index == NONE ||
+ 			subject_actor->target.since_any_target_visible_timer == NONE ||
+-			subject_actor->target.since_any_target_visible_timer >= 180;
++			subject_actor->target.since_any_target_visible_timer >= TICKS_FROM_30HZ(180);
+ 		enemy_status_enabled[3] =
+ 			subject_actor->state.combat_status < _actor_combat_status_definite &&
+ 			(subject_actor->target.since_any_target_visible_timer == NONE ||
+-			subject_actor->target.since_any_target_visible_timer >= 75) &&
++			subject_actor->target.since_any_target_visible_timer >= TICKS_FROM_30HZ(75)) &&
+ 			(subject_actor->target.target_really_alive || subject_actor->state.combat_status > 0);
+ 		enemy_status_enabled[4] = subject_actor->state.combat_status < _actor_combat_status_dangerous;
+ 		enemy_status_enabled[5] =
+@@ -6061,17 +6061,17 @@ void ai_communication_event(
+ 			!subject_encounter->enemy_alive;
+ 		enemy_status_enabled[2] =
+ 			(subject_encounter->enemy_visible_timer == NONE ||
+-			subject_encounter->enemy_visible_timer >= 180) &&
++			subject_encounter->enemy_visible_timer >= TICKS_FROM_30HZ(180)) &&
+ 			subject_encounter->enemy_alive;
+ 		enemy_status_enabled[3] =
+ 			subject_actor->state.combat_status < _actor_combat_status_definite &&
+ 			(subject_encounter->enemy_visible_timer == NONE ||
+-			subject_encounter->enemy_visible_timer >= 75) &&
++			subject_encounter->enemy_visible_timer >= TICKS_FROM_30HZ(75)) &&
+ 			(subject_encounter->enemy_alive || subject_actor->state.combat_status > 0);
+ 		enemy_status_enabled[4] =
+ 			subject_actor->state.combat_status < _actor_combat_status_dangerous &&
+ 			(subject_encounter->enemy_visible_timer == NONE ||
+-			subject_encounter->enemy_visible_timer >= 75);
++			subject_encounter->enemy_visible_timer >= TICKS_FROM_30HZ(75));
+ 		enemy_status_enabled[5] =
+ 			subject_encounter->enemy_visible &&
+ 			subject_encounter->enemy_alive;
+@@ -7120,7 +7120,7 @@ void ai_communication_event(
+ 			speech.sound_definition_index = selected_possibility->sound_definition_index;
+ 			speech.delay_time = selected_possibility->delay_time;
+ 			speech.ai_notification_delay = selected_possibility->ai_delay_time;
+-			speech.pause_time = 24;
++			speech.pause_time = TICKS_FROM_30HZ(24);
+ 			speech.ai = ai_packet;
+ 			unit_speak(
+ 				selected_possibility->protagonist_unit_index,
+diff --git a/source/ai/ai_debug.c b/source/ai/ai_debug.c
+index fc2f220c..bc363deb 100644
+--- a/source/ai/ai_debug.c
++++ b/source/ai/ai_debug.c
+@@ -2322,7 +2322,7 @@ static void ai_debug_render_actor(
+ 				{
+ 					if (120-actor->state.action_data.search.search_failure_timer<=actor->state.action_data.search.search_remaining_time)
+ 					{
+-						delay = 120-actor->state.action_data.search.search_failure_timer;
++						delay = TICKS_FROM_30HZ(120)-actor->state.action_data.search.search_failure_timer;
+ 					}
+ 					else
+ 					{
+@@ -5993,7 +5993,7 @@ static void ai_debug_speech_update(
+ 			item.vocalization_type = vocalization_type;
+ 			item.sound_definition_index = sound_definition_index;
+ 			item.priority = 4;
+-			item.pause_time = 15;
++			item.pause_time = TICKS_FROM_30HZ(15);
+ 
+ 			ai_communication_packet_new(&item.ai);
+ 
+diff --git a/source/ai/encounters.c b/source/ai/encounters.c
+index e41f47e0..4923e034 100644
+--- a/source/ai/encounters.c
++++ b/source/ai/encounters.c
+@@ -1126,7 +1126,7 @@ void encounterless_activate(
+ 		"c:\\halo\\SOURCE\\ai\\encounters.c",
+ 		0x720,
+ 		actor->meta.encounterless);
+-	actor->meta.encounterless_active_timer = 90;
++	actor->meta.encounterless_active_timer = TICKS_FROM_30HZ(90);
+ 	actor_set_active(actor_index, TRUE);
+ 
+ 	return;
+@@ -2758,7 +2758,7 @@ static void encounter_post_combat(
+ 					if (prop->enemy)
+ 					{
+ 						if (TEST_FLAG(actor_definition->flags2, _actor_definition_no_corpse_shooting_bit) ||
+-							prop->dead_ticks >= 210)
++							prop->dead_ticks >= TICKS_FROM_30HZ(210))
+ 						{
+ 							behavior_index = 1;
+ 							maximum_distance = 5.0f;
+@@ -2990,7 +2990,7 @@ static void encounter_post_combat(
+ 
+ 	encounter->post_combat = TRUE;
+ 	encounter->post_combat_delay = FALSE;
+-	encounter->post_combat_delay_timer = 120;
++	encounter->post_combat_delay_timer = TICKS_FROM_30HZ(120);
+ 	encounter->enemies_defeated = 0;
+ 
+ 	return;
+diff --git a/source/cseries/cseries.h b/source/cseries/cseries.h
+index 9dfa3dfd..8279aedd 100644
+--- a/source/cseries/cseries.h
++++ b/source/cseries/cseries.h
+@@ -38,6 +38,14 @@ enum
+ 	TICKS_PER_DAY = (HOURS_PER_DAY*TICKS_PER_HOUR)
+ };
+ 
++/* port: game times the source writes as ticks of a 30 Hz game: n ticks, or
++the real x, at 30 ticks a second, as ticks at TICKS_PER_SECOND (rounded to the
++nearest). Each folds to its literal while TICKS_PER_SECOND is 30, so the
++matching build is unchanged. REAL_TICKS_FROM_30HZ takes only constants: of a
++variable, it would not fold */
++#define TICKS_FROM_30HZ(n) ((((n) * TICKS_PER_SECOND) + 15) / 30)
++#define REAL_TICKS_FROM_30HZ(x) ((x) * (real)TICKS_PER_SECOND / 30.0f)
++
+ enum
+ {
+ 	UNSIGNED_LONG_MAX = 4294967295,
+diff --git a/source/effects/effects.c b/source/effects/effects.c
+index 8bff7a5d..6ac2fb43 100644
+--- a/source/effects/effects.c
++++ b/source/effects/effects.c
+@@ -2054,9 +2054,9 @@ static void effect_generate_particles(
+ 						data.object_index = NONE;
+ 						data.position = world_point;
+ 						data.direction = world_direction;
+-						data.velocity.i = world_velocity.i + effect->velocity.i * 30.0f;
+-						data.velocity.j = world_velocity.j + effect->velocity.j * 30.0f;
+-						data.velocity.k = world_velocity.k + effect->velocity.k * 30.0f;
++						data.velocity.i = world_velocity.i + effect->velocity.i * (real)TICKS_PER_SECOND;
++						data.velocity.j = world_velocity.j + effect->velocity.j * (real)TICKS_PER_SECOND;
++						data.velocity.k = world_velocity.k + effect->velocity.k * (real)TICKS_PER_SECOND;
+ 					}
+ 
+ 					data.radius = effect_real_random_range(
+diff --git a/source/game/game_engine.c b/source/game/game_engine.c
+index fd70d570..66717505 100644
+--- a/source/game/game_engine.c
++++ b/source/game/game_engine.c
+@@ -2791,7 +2791,7 @@ static void game_engine_update_purge(
+ 		{
+ 			struct object_datum *object;
+ 
+-			cutoff_time = 900;
++			cutoff_time = TICKS_FROM_30HZ(900);
+ 			object = object_get(biped_iterator.index);
+ 
+ 			if (object->object.idle_ticks > (short)cutoff_time &&
+@@ -3564,7 +3564,7 @@ static void game_engine_update_teleporter(
+ 						return;
+ 					}
+ 
+-					blocked_message_delay = 120;
++					blocked_message_delay = TICKS_FROM_30HZ(120);
+ 					{
+ 						long string_list_index =
+ 							tag_loaded('ustr', "ui\\multiplayer_game_text");
+@@ -4741,7 +4741,7 @@ struct game_variant *build_game_variant_king(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+ 	result.universal_variant.goal_radar = _radar_nav_point;
+-	result.universal_variant.respawn_time = 150;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.score_to_win = 2;
+ 	result.flags = 1;
+ 	result.universal_variant.suicide_penalty = 150;
+@@ -4835,7 +4835,7 @@ struct game_variant *build_game_variant_team_slayer(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_no_shields_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+-	result.universal_variant.respawn_time = 300;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(300);
+ 	result.universal_variant.suicide_penalty = 300;
+ 	result.game_engine_index = game_engine_slayer;
+ 	result.universal_variant.teams = TRUE;
+@@ -4902,7 +4902,7 @@ struct game_variant *build_game_variant_phantoms(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, TRUE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+ 	result.game_engine_index = game_engine_slayer;
+-	result.universal_variant.respawn_time = 150;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.goal_radar = _radar_nav_point;
+ 	result.universal_variant.vehicle_set = _game_engine_vehicles_warthog;
+ 	result.universal_variant.suicide_penalty = 150;
+@@ -4936,7 +4936,7 @@ struct game_variant *build_game_variant_endurance(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+ 	result.game_engine_index = game_engine_slayer;
+ 	result.universal_variant.odd_man_out = TRUE;
+-	result.universal_variant.respawn_time_growth = 300;
++	result.universal_variant.respawn_time_growth = TICKS_FROM_30HZ(300);
+ 	result.universal_variant.vehicle_set = _game_engine_vehicles_warthog;
+ 	result.flags = 1;
+ 	result.universal_variant.suicide_penalty = 300;
+@@ -5008,7 +5008,7 @@ struct game_variant *build_game_variant_snipers(
+ 	result.universal_variant.lives = 0;
+ 	result.universal_variant.odd_man_out = FALSE;
+ 	result.universal_variant.respawn_time = 0;
+-	result.universal_variant.respawn_time_growth = 150;
++	result.universal_variant.respawn_time_growth = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.score_to_win = 15;
+ 	result.universal_variant.suicide_penalty = 300;
+ 	result.universal_variant.teams = FALSE;
+@@ -5033,7 +5033,7 @@ struct game_variant *build_game_variant_oddball(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_no_shields_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+-	result.universal_variant.respawn_time = 150;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.goal_radar = _radar_nav_point;
+ 	result.universal_variant.suicide_penalty = 150;
+ 	result.universal_variant.vehicle_set = _game_engine_vehicles_none;
+@@ -5087,7 +5087,7 @@ struct game_variant *build_game_variant_team_oddball(
+ 	result.game_engine_variant.oddball.speed_with_ball = 0;
+ 	result.game_engine_index = game_engine_oddball;
+ 	result.universal_variant.health = 1.0f;
+-	result.universal_variant.respawn_time = 300;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(300);
+ 	result.universal_variant.score_to_win = 2;
+ 	result.universal_variant.suicide_penalty = 150;
+ 
+@@ -5107,7 +5107,7 @@ struct game_variant *build_game_variant_reverse_tag(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_no_shields_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+-	result.universal_variant.respawn_time = 150;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.goal_radar = _radar_nav_point;
+ 	result.universal_variant.suicide_penalty = 150;
+ 	result.universal_variant.vehicle_set = _game_engine_vehicles_none;
+@@ -5144,7 +5144,7 @@ struct game_variant *build_game_variant_accumulation(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_no_shields_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+-	result.universal_variant.respawn_time = 150;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.suicide_penalty = 150;
+ 	result.universal_variant.vehicle_set = _game_engine_vehicles_none;
+ 	result.game_engine_variant.oddball.oddball_ball_type = 1;
+@@ -5180,7 +5180,7 @@ struct game_variant *build_game_variant_juggernaut(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_no_shields_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+-	result.universal_variant.respawn_time = 150;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.suicide_penalty = 150;
+ 	result.universal_variant.goal_radar = _radar_nav_point;
+ 	result.universal_variant.vehicle_set = _game_engine_vehicles_warthog;
+@@ -5216,7 +5216,7 @@ struct game_variant *build_game_variant_stalker(
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_no_shields_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_always_invisible_bit, FALSE);
+ 	SET_FLAG(result.universal_variant.flags, _game_variant_generic_starting_equipment_bit, FALSE);
+-	result.universal_variant.respawn_time = 150;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(150);
+ 	result.universal_variant.suicide_penalty = 150;
+ 	result.game_engine_variant.oddball.ball_spawn_count = 1;
+ 	result.game_engine_index = game_engine_oddball;
+@@ -5261,7 +5261,7 @@ struct game_variant *build_game_variant_king_pro(
+ 	result.universal_variant.health = 1.0f;
+ 	result.universal_variant.lives = 0;
+ 	result.universal_variant.odd_man_out = FALSE;
+-	result.universal_variant.respawn_time = 300;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(300);
+ 	result.universal_variant.respawn_time_growth = 0;
+ 	result.universal_variant.suicide_penalty = 450;
+ 	result.universal_variant.teams = FALSE;
+@@ -5294,7 +5294,7 @@ struct game_variant *build_game_variant_team_king(
+ 	result.universal_variant.health = 1.0f;
+ 	result.universal_variant.lives = 0;
+ 	result.universal_variant.odd_man_out = FALSE;
+-	result.universal_variant.respawn_time = 300;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(300);
+ 	result.universal_variant.respawn_time_growth = 0;
+ 	result.universal_variant.suicide_penalty = 150;
+ 	result.universal_variant.weapon_set = _game_engine_weapons_normal;
+@@ -5355,7 +5355,7 @@ struct game_variant *build_game_variant_ctf(
+ 	result.universal_variant.health = 1.0f;
+ 	result.universal_variant.lives = 0;
+ 	result.universal_variant.odd_man_out = FALSE;
+-	result.universal_variant.respawn_time = 300;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(300);
+ 	result.universal_variant.respawn_time_growth = 0;
+ 	result.universal_variant.score_to_win = 3;
+ 	result.universal_variant.suicide_penalty = 150;
+@@ -5391,7 +5391,7 @@ struct game_variant *build_game_variant_ctf_pro(
+ 	result.universal_variant.health = 1.0f;
+ 	result.universal_variant.lives = 0;
+ 	result.universal_variant.odd_man_out = FALSE;
+-	result.universal_variant.respawn_time = 300;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(300);
+ 	result.universal_variant.respawn_time_growth = 0;
+ 	result.universal_variant.score_to_win = 3;
+ 	result.universal_variant.suicide_penalty = 450;
+@@ -5461,7 +5461,7 @@ struct game_variant *build_game_variant_iron_ctf(
+ 	result.universal_variant.health = 2.0f;
+ 	result.universal_variant.lives = 0;
+ 	result.universal_variant.odd_man_out = FALSE;
+-	result.universal_variant.respawn_time = 450;
++	result.universal_variant.respawn_time = TICKS_FROM_30HZ(450);
+ 	result.universal_variant.respawn_time_growth = 0;
+ 	result.universal_variant.score_to_win = 3;
+ 	result.universal_variant.suicide_penalty = 150;
+@@ -6903,7 +6903,7 @@ static void internal_rasterize_target_name(
+ 		long hold_time = player->player_display_count;
+ 		real alpha;
+ 
+-		if (hold_time >= 10)
++		if (hold_time >= 10) /* port: a fade of 10 steps of 0.1 (below), not seconds: left as it is at any TICKS_PER_SECOND */
+ 			hold_time = 10;
+ 		ustrncpy(target_name, target_player->name, NUMBEROF(target_name) - 1);
+ 		target_name[NUMBEROF(target_name) - 1] = 0;
+@@ -7765,7 +7765,7 @@ void game_engine_client_respawn_countdown(
+ 		return;
+ 	}
+ 	if (player->local_player_index != NONE &&
+-		(player->respawn_timer == 90 || player->respawn_timer == 60 || player->respawn_timer == 30))
++		(player->respawn_timer == TICKS_FROM_30HZ(90) || player->respawn_timer == TICKS_FROM_30HZ(60) || player->respawn_timer == TICKS_FROM_30HZ(30)))
+ 	{
+ 		game_engine_play_multiplayer_sound(_multiplayer_sound_countdown_for_respawn);
+ 	}
+@@ -7816,17 +7816,17 @@ boolean game_engine_should_spawn_player(
+ 			{
+ 				if (player->local_player_index != NONE)
+ 				{
+-					if (respawn_timer == 90)
++					if (respawn_timer == TICKS_FROM_30HZ(90))
+ 					{
+ 						game_engine_play_multiplayer_sound(
+ 							_multiplayer_sound_countdown_for_respawn);
+ 					}
+-					else if (respawn_timer == 60)
++					else if (respawn_timer == TICKS_FROM_30HZ(60))
+ 					{
+ 						game_engine_play_multiplayer_sound(
+ 							_multiplayer_sound_countdown_for_respawn);
+ 					}
+-					else if (respawn_timer == 30)
++					else if (respawn_timer == TICKS_FROM_30HZ(30))
+ 					{
+ 						game_engine_play_multiplayer_sound(
+ 							_multiplayer_sound_countdown_for_respawn);
+diff --git a/source/game/game_engine_race.c b/source/game/game_engine_race.c
+index a67ad561..a70d3021 100644
+--- a/source/game/game_engine_race.c
++++ b/source/game/game_engine_race.c
+@@ -1473,7 +1473,7 @@ static boolean race_engine_initialize_for_new_map(
+ 	race_globals.vehicles_have_been_added = FALSE;
+ 	csmemset(&race_globals, 0, sizeof(race_globals));
+ 	csmemset(&race_events, 0, sizeof(race_events));
+-	timeout_for_endgame_sound = 30;
++	timeout_for_endgame_sound = TICKS_FROM_30HZ(30);
+ 
+ 	for (itr = 0; itr < scenario->netgame_flags.count; itr++)
+ 	{
+diff --git a/source/game/player_rumble.c b/source/game/player_rumble.c
+index 9d98510e..b19c30f3 100644
+--- a/source/game/player_rumble.c
++++ b/source/game/player_rumble.c
+@@ -293,7 +293,7 @@ void rumble_update(
+ 			impulse_index < MAXIMUM_RUMBLE_IMPULSES;
+ 			impulse_index++)
+ 		{
+-			player->impulse_time[impulse_index] += 1.0f / 30.0f;
++			player->impulse_time[impulse_index] += 1.0f / TICKS_PER_SECOND;
+ 		}
+ 
+ 		player_index = local_player_get_player_index(local_player_index);
+diff --git a/source/game/players.c b/source/game/players.c
+index cbe99c66..fe926f87 100644
+--- a/source/game/players.c
++++ b/source/game/players.c
+@@ -3872,7 +3872,7 @@ void players_update_after_game(
+ 		else
+ 		{
+ 			telefrag_ticks = player->telefrag_timeout;
+-			if (telefrag_ticks >= 90)
++			if (telefrag_ticks >= TICKS_FROM_30HZ(90))
+ 			{
+ 				/* a client's view of who blocks is a latency late: the
+ 				host's kill arrives with its damage events, and its message
+diff --git a/source/hs/hs_runtime.c b/source/hs/hs_runtime.c
+index 51e5b910..e4060390 100644
+--- a/source/hs/hs_runtime.c
++++ b/source/hs/hs_runtime.c
+@@ -2371,7 +2371,7 @@ void hs_evaluate_sleep_until(
+ 		*(boolean *)condition = FALSE;
+ 		*start_time = game_time_get();
+ 		*argument_index = 0;
+-		*(short *)ticks = 30;
++		*(short *)ticks = TICKS_PER_SECOND;
+ 		*timeout = NONE;
+ 
+ 		if (expression_index!=NONE)
+diff --git a/source/interface/first_person_weapons.c b/source/interface/first_person_weapons.c
+index c30bb4b7..f9d0f34a 100644
+--- a/source/interface/first_person_weapons.c
++++ b/source/interface/first_person_weapons.c
+@@ -1918,10 +1918,10 @@ static void first_person_weapon_update(
+ 
+ 			turning.i= signed_angular_difference(
+ 				first_person_weapon->last_render_facing.yaw,
+-				first_person_weapon->render_facing.yaw)*30.0f;
++				first_person_weapon->render_facing.yaw)*(real)TICKS_PER_SECOND;
+ 			turning.j= signed_angular_difference(
+ 				first_person_weapon->last_render_facing.pitch,
+-				first_person_weapon->render_facing.pitch)*-30.0f;
++				first_person_weapon->render_facing.pitch)*-(real)TICKS_PER_SECOND;
+ 
+ 			turning.i= PIN(turning.i, -1.0f, 1.0f);
+ 			turning.j= PIN(turning.j, -1.0f, 1.0f);
+diff --git a/source/interface/hud_draw.c b/source/interface/hud_draw.c
+index ada47927..8b48a045 100644
+--- a/source/interface/hud_draw.c
++++ b/source/interface/hud_draw.c
+@@ -1040,7 +1040,7 @@ void hud_calculate_point(
+ long get_flash_duration(
+ 	struct hud_color_definition const *hud_color)
+ {
+-	return fast_ftol(hud_color->flash_period * 30.0f);
++	return fast_ftol(hud_color->flash_period * (real)TICKS_PER_SECOND);
+ }
+ 
+ pixel32 get_flash_color(
+diff --git a/source/interface/hud_messaging.c b/source/interface/hud_messaging.c
+index 1413e765..06f4642d 100644
+--- a/source/interface/hud_messaging.c
++++ b/source/interface/hud_messaging.c
+@@ -696,7 +696,7 @@ void scripted_hud_set_timer_time(
+ 	struct hud_timer_data_definition *timer;
+ 	long time;
+ 
+-	hud_messaging_globals->timer.ticks = 30 * (60 * minutes + seconds);
++	hud_messaging_globals->timer.ticks = TICKS_PER_SECOND * (60 * minutes + seconds);
+ 	timer = &hud_messaging_globals->timer;
+ 	timer->paused = FALSE;
+ 	timer->enabled = TRUE;
+diff --git a/source/interface/hud_unit.c b/source/interface/hud_unit.c
+index 5b04897f..95055a2a 100644
+--- a/source/interface/hud_unit.c
++++ b/source/interface/hud_unit.c
+@@ -517,7 +517,7 @@ static void hud_update_unit_local_player(
+ 				if (hud_state->fade_time < 0.0f || hud_state->fade_time > 1.0f)
+ 					hud_state->last_shield_hit_time = game_time_get();
+ 
+-				if (game_time_get() - hud_state->last_shield_hit_time < 15)
++				if (game_time_get() - hud_state->last_shield_hit_time < TICKS_FROM_30HZ(15))
+ 				{
+ 					hud_state->fade_time = 0.0f;
+ 				}
+diff --git a/source/interface/terminal.c b/source/interface/terminal.c
+index 2a950a86..bf0075e6 100644
+--- a/source/interface/terminal.c
++++ b/source/interface/terminal.c
+@@ -263,7 +263,7 @@ void terminal_draw(
+ 				real fade_progress;
+ 
+ 				line = output_line_get(line_index);
+-				fade_progress = 4.f - line->timer * 0.033333335f;
++				fade_progress = 4.f - line->timer * (1.0f / TICKS_PER_SECOND);
+ 
+ 				color = line->color;
+ 				color.alpha*= PIN(fade_progress, 0.f, 1.f);
+diff --git a/source/main/main.c b/source/main/main.c
+index e35691e1..19f657db 100644
+--- a/source/main/main.c
++++ b/source/main/main.c
+@@ -965,7 +965,7 @@ void main_respawn(
+ {
+ 	main_globals.respawn = TRUE;
+ 	if (in_multiplayer)
+-		main_globals.respawn_timer = 91;
++		main_globals.respawn_timer = TICKS_FROM_30HZ(91);
+ 	return;
+ }
+ 
+@@ -1586,7 +1586,7 @@ void main_save_map_no_timeout(
+ void main_skip(
+ 	short ticks)
+ {
+-	if (ticks <= 15)
++	if (ticks <= 15) /* port: a bound on a debug skip, not a duration: left as it is at any TICKS_PER_SECOND */
+ 	{
+ 		main_globals.skip_ticks = ticks;
+ 		main_globals.skip = TRUE;
+@@ -1633,7 +1633,7 @@ void main_movie_start(
+ 		if (frames_per_second > 0.0001f)
+ 			main_globals.recording_dt = 1.0f / frames_per_second;
+ 		else
+-			main_globals.recording_dt = 1.0f / 30.0f;
++			main_globals.recording_dt = 1.0f / TICKS_PER_SECOND;
+ 		game_time_set_speed(1.0f);
+ 	}
+ 
+@@ -1914,7 +1914,7 @@ static void main_save_map_private(
+ 				{
+ 					main_globals.safe_intervals = 0;
+ 				}
+-				main_globals.ticks_until_next_save_check = 10;
++				main_globals.ticks_until_next_save_check = TICKS_FROM_30HZ(10);
+ 			}
+ 		}
+ 		else
+@@ -2202,7 +2202,7 @@ static void main_update_time_unthrottled(
+ 		if (main_globals.connection == _game_connection_local)
+ 		{
+ 			if (debug_force_frame_rate_update)
+-				seconds_elapsed = CEILING(seconds_elapsed, 0.03333333507180214f);
++				seconds_elapsed = CEILING(seconds_elapsed, (1.0f / TICKS_PER_SECOND));
+ 			else
+ 				seconds_elapsed = CEILING(seconds_elapsed, 0.06666667014360428f);
+ 		}
+@@ -2444,7 +2444,7 @@ static void main_update_time(
+ 		if (main_globals.connection == _game_connection_local)
+ 		{
+ 			if (debug_force_frame_rate_update)
+-				seconds_elapsed = CEILING(seconds_elapsed, 0.03333333507180214f);
++				seconds_elapsed = CEILING(seconds_elapsed, (1.0f / TICKS_PER_SECOND));
+ 			else
+ 				seconds_elapsed = CEILING(seconds_elapsed, 0.06666667014360428f);
+ 		}
+diff --git a/source/objects/damage.c b/source/objects/damage.c
+index d73a7e2d..fd90ccc9 100644
+--- a/source/objects/damage.c
++++ b/source/objects/damage.c
+@@ -1026,7 +1026,7 @@ static void object_damage_aftermath(
+ 		acceleration_scale =
+ 			damage_effect->damage.instantaneous_acceleration *
+ 			object_definition->object.acceleration_scale *
+-			0.033333335f;
++			(1.0f / TICKS_PER_SECOND);
+ 		scale_vector3d(&direction, acceleration_scale, &acceleration);
+ 
+ 		switch (object->object.type)
+@@ -1948,7 +1948,7 @@ void object_damage_update(
+ 	{
+ 		if (TEST_FLAG(damage_flags, _object_shield_over_charging_bit))
+ 		{
+-			real shield_vitality = object->object.shield_vitality + 0.033333335f;
++			real shield_vitality = object->object.shield_vitality + (1.0f / TICKS_PER_SECOND);
+ 
+ 			object->object.shield_vitality = shield_vitality;
+ 			if (shield_vitality >= 3.f)
+diff --git a/source/objects/objects.c b/source/objects/objects.c
+index 3ffb5ab7..f125f9ff 100644
+--- a/source/objects/objects.c
++++ b/source/objects/objects.c
+@@ -4807,7 +4807,7 @@ static void object_compute_function_values(
+ 
+ 	struct object_datum *object = object_get(object_index);
+ 	struct object_definition *object_definition = object_definition_get(object->definition_index);
+-	real huh = (57 * DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) + game_time_get()) * 0.033333335f;
++	real huh = (57 * DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) + game_time_get()) * (1.0f / TICKS_PER_SECOND);
+ 
+ 	for (function_index = 0; function_index<object_definition->object.functions.count; ++function_index)
+ 	{
+diff --git a/source/objects/widgets/glow.c b/source/objects/widgets/glow.c
+index f441e6de..6fa7364b 100644
+--- a/source/objects/widgets/glow.c
++++ b/source/objects/widgets/glow.c
+@@ -1206,7 +1206,7 @@ static struct glow_particle *glow_trailing_particle_new(
+ 				break;
+ 		}
+ 
+-		scale = definition->trailing_particle_velocity / 30.0f;
++		scale = definition->trailing_particle_velocity / (real)TICKS_PER_SECOND;
+ 		particle->initial_velocity.i *= scale;
+ 		particle->initial_velocity.j *= scale;
+ 		particle->initial_velocity.k *= scale;
+@@ -1216,7 +1216,7 @@ static struct glow_particle *glow_trailing_particle_new(
+ 			definition->particle_size_upper_bound);
+ 		particle->initial_size /= glow->bitmap_dimension;
+ 
+-		particle->lifetime = (short)(long)(definition->trailing_particle_lifetime * 30.0f);
++		particle->lifetime = (short)(long)(definition->trailing_particle_lifetime * (real)TICKS_PER_SECOND);
+ 
+ 		scale = real_local_random_range(0.0f, 1.0f);
+ 		particle->color.alpha = 1.0f;
+@@ -1411,7 +1411,7 @@ static void glow_update(
+ 
+ 	if (definition->trailing_particle_generation_frequency > 0.01f)
+ 	{
+-		real ticks_per_particle = 30.0f / definition->trailing_particle_generation_frequency;
++		real ticks_per_particle = (real)TICKS_PER_SECOND / definition->trailing_particle_generation_frequency;
+ 
+ 		if (ticks_per_particle < 1.0f)
+ 			ticks_per_particle = 1.0f;
+diff --git a/source/units/bipeds.c b/source/units/bipeds.c
+index 11960a70..d952ed3e 100644
+--- a/source/units/bipeds.c
++++ b/source/units/bipeds.c
+@@ -1692,7 +1692,7 @@ static void biped_falling_danger(
+ 	{
+ 		long game_time = game_time_get();
+ 
+-		if (biped->biped.airborne_ticks>30 &&
++		if (biped->biped.airborne_ticks>TICKS_FROM_30HZ(30) &&
+ 			(biped->biped.last_falling_communication_time==NONE ||
+ 			biped->biped.last_falling_communication_time+15<game_time))
+ 		{
+@@ -1745,11 +1745,11 @@ static void biped_vehicle_speech(
+ 	if (TEST_FLAG(vehicle_definition->unit.flags, _unit_causes_passenger_dialogue_bit) &&
+ 		biped->unit.actor_index!=NONE &&
+ 		biped->unit.animation.state!=_unit_state_ai_impulse &&
+-		biped->unit.gunner_inactive_ticks>120)
++		biped->unit.gunner_inactive_ticks>TICKS_FROM_30HZ(120))
+ 	{
+ 		long game_time = game_time_get();
+ 
+-		if (vehicle->vehicle.airborne_ticks>30 &&
++		if (vehicle->vehicle.airborne_ticks>TICKS_FROM_30HZ(30) &&
+ 			(biped->biped.last_falling_communication_time==NONE ||
+ 			biped->biped.last_falling_communication_time+15<game_time))
+ 		{
+@@ -3837,7 +3837,7 @@ static void biped_update_moving(
+ 		}
+ 
+ 		if (TEST_FLAG(biped->biped.flags, _biped_airborne_bit) &&
+-			biped->biped.airborne_ticks < 22 &&
++			biped->biped.airborne_ticks < TICKS_FROM_30HZ(22) &&
+ 			biped->unit.actor_index != NONE &&
+ 			actor_is_leaping(biped->unit.actor_index))
+ 		{
+@@ -3932,7 +3932,7 @@ static void biped_update_moving(
+ 	else
+ 	{
+ 		biped->biped.elevator_object_index = physics.elevator_object_index;
+-		biped->biped.elevator_ticks = 60;
++		biped->biped.elevator_ticks = TICKS_FROM_30HZ(60);
+ 	}
+ 
+ 	if (TEST_FLAG(biped->unit.flags, _unit_suspended_bit))
+diff --git a/source/units/unit_dialogue.c b/source/units/unit_dialogue.c
+index d62e4145..231c4fa9 100644
+--- a/source/units/unit_dialogue.c
++++ b/source/units/unit_dialogue.c
+@@ -662,7 +662,7 @@ void unit_speak(
+ 				"c:\\halo\\SOURCE\\units\\unit_dialogue.c",
+ 				360,
+ 				AI_BEHAVIOR(force_vocalizations));
+-			unit->unit.speech.sound_timer = 45;
++			unit->unit.speech.sound_timer = TICKS_FROM_30HZ(45);
+ 		}
+ 	}
+ 	else if (play_type == _unit_play_speech_queue)
+@@ -701,7 +701,7 @@ void unit_notify_impulse_sound(
+ 	speech_item.priority = _unit_speech_scripted;
+ 	speech_item.vocalization_type = NONE;
+ 	speech_item.sound_definition_index = sound_definition_index;
+-	speech_item.pause_time = 24;
++	speech_item.pause_time = TICKS_FROM_30HZ(24);
+ 	ai_communication_packet_new(&speech_item.ai);
+ 	unit_speak(unit_index, play_type, &speech_item);
+ 
+@@ -861,13 +861,13 @@ boolean unit_make_damage_sound(
+ 
+ 				if (took_major_body_damage)
+ 				{
+-					unit->unit.speech.damage_major_timer = 60;
++					unit->unit.speech.damage_major_timer = TICKS_FROM_30HZ(60);
+ 				}
+ 				else
+ 				{
+ 					unit->unit.speech.damage_minor_sounds++;
+-					unit->unit.speech.damage_minor_timer = 30;
+-					unit->unit.speech.damage_minor_decay_timer = 22;
++					unit->unit.speech.damage_minor_timer = TICKS_FROM_30HZ(30);
++					unit->unit.speech.damage_minor_decay_timer = TICKS_FROM_30HZ(22);
+ 				}
+ 			}
+ 		}
+@@ -984,7 +984,7 @@ void unit_dialogue_update(
+ 		if (unit->unit.speech.damage_minor_sounds > 0)
+ 		{
+ 			unit->unit.speech.damage_minor_sounds--;
+-			unit->unit.speech.damage_minor_decay_timer = 22;
++			unit->unit.speech.damage_minor_decay_timer = TICKS_FROM_30HZ(22);
+ 		}
+ 	}
+ 
+diff --git a/source/units/units.c b/source/units/units.c
+index 032635f2..bd295ac2 100644
+--- a/source/units/units.c
++++ b/source/units/units.c
+@@ -1623,7 +1623,7 @@ short unit_test_spawning(
+ 					unit_index,
+ 					unit_definition->unit.spawned_actor_variant.index,
+ 					spawned_actor_count,
+-					unit_definition->unit.spawn_throw_velocity * 0.033333335f);
++					unit_definition->unit.spawn_throw_velocity * (1.0f / TICKS_PER_SECOND));
+ 			}
+ 
+ 			SET_FLAG(unit->unit.flags, _unit_spawned_actors_bit, TRUE);
+@@ -6747,7 +6747,7 @@ void unit_damage_aftermath(
+ 		if (vitality > 0.f)
+ 		{
+ 			unit->unit.last_damage_category = damage_definition->category;
+-			unit->unit.delayed_damage_timer = 45;
++			unit->unit.delayed_damage_timer = TICKS_FROM_30HZ(45);
+ 			if (vitality < unit->unit.delayed_damage_peak)
+ 			{
+ 				vitality = unit->unit.delayed_damage_peak;
+@@ -8853,7 +8853,7 @@ void unit_cause_player_melee_damage(
+ 				}
+ 
+ 				if (unit->object.type==_object_type_biped &&
+-					biped_get(unit_index)->biped.airborne_ticks>15)
++					biped_get(unit_index)->biped.airborne_ticks>TICKS_FROM_30HZ(15))
+ 				{
+ 					damage_data.scale = 1.5f;
+ 				}
+@@ -11334,7 +11334,7 @@ static void unit_cause_continuous_melee_damage(
+ 			damage_data.direction = unit->object.forward;
+ 
+ 			SET_FLAG(damage_data.flags, _damage_create_localized_effect_bit, TRUE);
+-			unit->unit.melee_continuous_damage_effect_timer = 10;
++			unit->unit.melee_continuous_damage_effect_timer = TICKS_FROM_30HZ(10);
+ 
+ 			object_cause_damage(
+ 				&damage_data,
+diff --git a/source/units/vehicles.c b/source/units/vehicles.c
+index 0b6aeb80..e3a02bc3 100644
+--- a/source/units/vehicles.c
++++ b/source/units/vehicles.c
+@@ -835,7 +835,7 @@ boolean vehicle_moving_near_any_player(
+ 				{
+ 					if (((struct unit_datum *)unit_get(unit_indices[index]))->object.parent_object_index!=iterator.index
+ 						&& distance_squared3d(&unit_centers[index], &object->object.bounding_sphere_center)<100.0f
+-						&& magnitude_squared3d(&object->object.translational_velocity)>=(real)((1.0/30.0)*(1.0/30.0)))
++						&& magnitude_squared3d(&object->object.translational_velocity)>=(real)((1.0/TICKS_PER_SECOND)*(1.0/TICKS_PER_SECOND)))
+ 					{
+ 						no_vehicles_moving = FALSE;
+ 						goto done;
+@@ -1109,7 +1109,7 @@ static void update_alien_fighter_physics_old(
+ 			matrix4x3_multiply(&actual, &desired, &difference);
+ 			matrix4x3_rotation_to_quaternion(&difference, &rotation);
+ 			quaternion_to_angle_and_vector(&rotation, &angle, &axis);
+-			scale_vector3d(&axis, angle*(4.0f/30.0f), &scaled);
++			scale_vector3d(&axis, angle*(4.0f/TICKS_PER_SECOND), &scaled);
+ 		}
+ 
+ 		scale = physics->radius*physics->radius*physics->mass*0.05f;
+@@ -1578,7 +1578,7 @@ static void update_human_plane_physics(
+ 		}
+ 
+ 		{
+-			real const angle_scale = 1.0f/30;
++			real const angle_scale = 1.0f/TICKS_PER_SECOND;
+ 			real const torque_scale = 0.05f;
+ 			real_matrix4x3 vehicle_rotation;
+ 			real_matrix4x3 desired_rotation;
+@@ -2311,7 +2311,7 @@ static void update_alien_scout_physics(
+ 				cross_product3d(&left, global_up3d, &axis);
+ 				if (normalize3d(&axis)>0.0f)
+ 				{
+-					real fade = PIN(1.0f-vehicle->vehicle.airborne_ticks*(1.0f/30), 0.0f, 1.0f);
++					real fade = PIN(1.0f-vehicle->vehicle.airborne_ticks*(1.0f/TICKS_PER_SECOND), 0.0f, 1.0f);
+ 					real axis_scale = (1.0f-vehicle->vehicle.hover)*
+ 						physics->mass*fade*0.002f;
+ 					real up_scale;
+@@ -2454,7 +2454,7 @@ boolean vehicle_update(
+ 	{
+ 		if (TEST_FLAG(vehicle->vehicle.flags, 4) &&
+ 			vehicle->vehicle.upending_type &&
+-			vehicle->vehicle.upending_ticks<30 &&
++			vehicle->vehicle.upending_ticks<TICKS_FROM_30HZ(30) &&
+ 			vehicle->object.up.k<=0.9f)
+ 		{
+ 			real_vector3d torque_axis;
+@@ -2625,7 +2625,7 @@ boolean vehicle_update(
+ 		compute_airborne_ticks(vehicle_index, mass_points, powered_mass_points);
+ 
+ 		if (TEST_FLAG(vehicle->object.flags, _object_at_rest_bit))
+-			vehicle->vehicle.stop_time = 15;
++			vehicle->vehicle.stop_time = TICKS_FROM_30HZ(15);
+ 
+ 		if (!TEST_FLAG(vehicle->object.flags, _object_no_collisions_bit) &&
+ 			TEST_FLAG(FLAG(_vehicle_type_human_plane) | FLAG(_vehicle_type_alien_fighter),
+-- 
+2.43.0
+

@@ -1,0 +1,87 @@
+From 1bc68c5d64025677d267213cce971fcf0456e68e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 6 Oct 2026 10:53:17 -0500
+Subject: [PATCH 2/2] PSP port: cold or compiled-out asserts, float rounding
+ and square root
+
+match_assert/match_vassert can be compiled out (PSP_ASSERTS_OFF) or marked
+cold (PSP_ASSERTS_COLD); real_to_long rounds in float and square_root uses
+sqrtf, which give the same bits as the double forms on a GCC target whose
+FPU has no double operations. This is the source tree psp_build.py builds
+(HALO_REPO).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: [private link]
+---
+ source/cseries/cseries.h | 20 +++++++++++++++++---
+ source/math/real_math.h  |  7 ++++++-
+ 2 files changed, 23 insertions(+), 4 deletions(-)
+
+diff --git a/source/cseries/cseries.h b/source/cseries/cseries.h
+index 8279aedd..c0b2398b 100644
+--- a/source/cseries/cseries.h
++++ b/source/cseries/cseries.h
+@@ -125,8 +125,16 @@ ending in a brace, like the checked form, which some uses rely on (no
+ semicolon). */
+ #define RELEASE_ASSERT_MESSAGE(string) \
+ 	(__builtin_constant_p(string) ? (char const *)(string) : "<message not formatted in release builds>")
++#if defined(PSP_ASSERTS_OFF)
++#define match_assert(file, line, expr) if (0 && (expr)) { }
++#define match_vassert(file, line, expr, string) if (0 && (expr)) { }
++#elif defined(PSP_ASSERTS_COLD)
++#define match_assert(file, line, expr) if (__builtin_expect(!(expr), 0)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
++#define match_vassert(file, line, expr, string) if (__builtin_expect(!(expr), 0)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
++#else
+ #define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+ #define match_vassert(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
++#endif
+ #define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }
+ #define match_vwarn(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), FALSE); }
+ #else
+@@ -207,7 +215,11 @@ char *strlwr(char *string);
+ char *csprintf(char *buffer, char *format, ...);
+ void display_assert(char *information, char *file, long line, boolean fatal);
+ #ifdef HALO_RELEASE
+-void release_assert_failed(char const *information, char const *file, long line, boolean fatal);
++void release_assert_failed(char const *information, char const *file, long line, boolean fatal)
++#if defined(PSP_ASSERTS_COLD)
++	__attribute__((cold))
++#endif
++	;
+ #endif
+ long csmemcmp(const void *p1, const void *p2, unsigned long size);
+ void *csmemmove(void *destination, const void *source, unsigned long size);
+@@ -345,8 +357,10 @@ __inline long fast_ftol(
+ {
+ 	long result;
+ 
+-	/* FISTP: round to nearest under the default control word */
+-	result = (long)__builtin_rint((double)value);
++	/* FISTP: round to nearest under the default control word. port: rounded
++	in float; a float is exactly representable in double, so the result is
++	the same, without a software double round trip on the PSP */
++	result = (long)__builtin_rintf(value);
+ 
+ 	return result;
+ }
+diff --git a/source/math/real_math.h b/source/math/real_math.h
+index 219604e4..5b2dd471 100644
+--- a/source/math/real_math.h
++++ b/source/math/real_math.h
+@@ -989,7 +989,12 @@ real square_root(
+ __inline real square_root(
+ 	real x)
+ {
+-	return sqrt(x);
++	/* port: the float square root. A correctly rounded double square root,
++	rounded to float, is always the correctly rounded float square root, so
++	this gives the same bits on every port; clang already emits the float
++	instruction for sqrt() here, but GCC for the PSP (whose FPU has no double
++	operations) called a software double sqrt */
++	return sqrtf(x);
+ }
+ #endif
+ 
+-- 
+2.43.0
+

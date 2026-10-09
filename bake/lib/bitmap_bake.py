@@ -1,0 +1,332 @@
+"""bitmap_bake.py - prototype texture baker for the PSP.
+
+Extracts every bitmap from an Xbox-format Halo CE map, decodes it to RGBA
+(DXT1/3/5, 16- and 32-bit RGB, A8/Y8/AY8/A8Y8; Xbox-swizzled formats are
+unswizzled), applies a per-role policy (resolution, drop/keep), quantizes to
+CLUT8 (and CLUT4 for comparison), swizzles for the GE, and reports sizes and
+quality before/after.
+
+usage: python3 bitmap_bake.py map.map [--out DIR] [--previews N] [--limit N]
+
+Policy "A" (default, aimed at invisible-at-480x272):
+  * every texture with max side >= 64 drops its top mip (Xbox draws to 480
+    lines, the PSP to 272: 2^-0.82 of the texel density, so the GE samples
+    mip 0 of the original almost never); 1024s become 512 (GE maximum)
+  * lightmaps keep their resolution (low frequency, already small)
+  * bump maps (P8 / height / vector maps) are dropped: the GE has no per-pixel
+    lighting to use them
+  * cube maps: become a 64x64 sphere map (approximation; GE has no cube maps)
+  * format: CLUT8, swizzled; palette 16-bit 5650 (opaque) or 32-bit 8888
+    (alpha) -- the frame buffer is 16-bit so 5650 is lossless for opaque
+  * mips: the chain is kept down to 8 px (GE uses up to 8 levels)
+"""
+import sys, os, struct, collections, json, math, argparse
+import numpy as np
+from PIL import Image
+from halomap import Defs, CacheMap
+from assets import bitmaps, FORMATS, BPP
+import refs
+
+
+# ---------------------------------------------------------------- decoding
+def unswizzle_xbox(arr, w, h):
+    """Xbox textures (non-DXT, swizzled flag) are stored in Morton order:
+    interleaved x/y bits, x lowest, for as many bits as each side has."""
+    xs = np.arange(w)
+    ys = np.arange(h)
+    ox = np.zeros(w, np.int64)
+    oy = np.zeros(h, np.int64)
+    bit = 0
+    i = 0
+    while (1 << i) < w or (1 << i) < h:
+        if (1 << i) < w:
+            ox |= ((xs >> i) & 1) << bit
+            bit += 1
+        if (1 << i) < h:
+            oy |= ((ys >> i) & 1) << bit
+            bit += 1
+        i += 1
+    idx = oy[:, None] + ox[None, :]
+    return arr[idx.reshape(-1)].reshape(h, w, *arr.shape[1:])
+
+
+def rgb565(v):
+    r = ((v >> 11) & 31) * 255 // 31
+    g = ((v >> 5) & 63) * 255 // 63
+    b = (v & 31) * 255 // 31
+    return r, g, b
+
+
+def decode_dxt(buf, w, h, kind):
+    bw, bh = max(1, (w + 3) // 4), max(1, (h + 3) // 4)
+    bs = 8 if kind == 'DXT1' else 16
+    raw = np.frombuffer(buf[:bw * bh * bs], np.uint8).reshape(bh * bw, bs)
+    col = raw[:, bs - 8:]
+    c0 = col[:, 0].astype(np.uint32) | (col[:, 1].astype(np.uint32) << 8)
+    c1 = col[:, 2].astype(np.uint32) | (col[:, 3].astype(np.uint32) << 8)
+    bits = col[:, 4].astype(np.uint32) | (col[:, 5].astype(np.uint32) << 8) | \
+        (col[:, 6].astype(np.uint32) << 16) | (col[:, 7].astype(np.uint32) << 24)
+    p0 = np.stack(rgb565(c0), -1).astype(np.int32)
+    p1 = np.stack(rgb565(c1), -1).astype(np.int32)
+    four = (c0 > c1) | (kind != 'DXT1')
+    p2 = np.where(four[:, None], (2 * p0 + p1) // 3, (p0 + p1) // 2)
+    p3 = np.where(four[:, None], (p0 + 2 * p1) // 3, 0)
+    pal = np.stack([p0, p1, p2, p3], 1)                      # n,4,3
+    alpha_pal = np.full((len(c0), 4), 255, np.int32)
+    if kind == 'DXT1':
+        alpha_pal[:, 3] = np.where(four, 255, 0)
+    sel = (bits[:, None] >> (2 * np.arange(16, dtype=np.uint32))[None, :]) & 3   # n,16
+    rgb = np.take_along_axis(pal, sel[:, :, None].astype(np.int64).repeat(3, 2), 1)
+    a = np.take_along_axis(alpha_pal, sel.astype(np.int64), 1)
+    if kind == 'DXT3':
+        ab = raw[:, :8]
+        nib = np.stack([ab & 15, ab >> 4], -1).reshape(-1, 16)
+        a = nib.astype(np.int32) * 17
+    elif kind == 'DXT5':
+        a0 = raw[:, 0].astype(np.int32)
+        a1 = raw[:, 1].astype(np.int32)
+        abits = np.zeros(len(a0), np.uint64)
+        for k in range(6):
+            abits |= raw[:, 2 + k].astype(np.uint64) << np.uint64(8 * k)
+        asel = ((abits[:, None] >> (np.uint64(3) * np.arange(16, dtype=np.uint64))[None, :]) & np.uint64(7)).astype(np.int64)
+        apal = np.zeros((len(a0), 8), np.int32)
+        apal[:, 0], apal[:, 1] = a0, a1
+        big = a0 > a1
+        for k in range(1, 7):
+            apal[:, k + 1] = np.where(big, ((7 - k) * a0 + k * a1) // 7, 0)
+        for k in range(1, 5):
+            apal[:, k + 1] = np.where(big, apal[:, k + 1], ((5 - k) * a0 + k * a1) // 5)
+        apal[:, 6] = np.where(big, apal[:, 6], 0)
+        apal[:, 7] = np.where(big, apal[:, 7], 255)
+        a = np.take_along_axis(apal, asel, 1)
+    px = np.concatenate([rgb, a[:, :, None]], 2).reshape(bh, bw, 4, 4, 4)
+    img = px.transpose(0, 2, 1, 3, 4).reshape(bh * 4, bw * 4, 4)[:h, :w]
+    return img.astype(np.uint8)
+
+
+def decode_plain(buf, w, h, fmt, swizzled):
+    bpp = BPP[fmt] // 8
+    raw = np.frombuffer(buf[:w * h * bpp], np.uint8)
+    if fmt in (10, 11):            # X8R8G8B8 / A8R8G8B8 (little endian BGRA)
+        p = raw.reshape(-1, 4)[:, [2, 1, 0, 3]].copy()
+        if fmt == 10:
+            p[:, 3] = 255
+    elif fmt in (6, 8, 9):
+        v = raw.view('<u2').astype(np.int32)
+        if fmt == 6:
+            p = np.stack(list(rgb565(v)) + [np.full_like(v, 255)], -1)
+        elif fmt == 8:
+            p = np.stack([((v >> 10) & 31) * 255 // 31, ((v >> 5) & 31) * 255 // 31, (v & 31) * 255 // 31,
+                          np.where(v >> 15, 255, 0)], -1)
+        else:
+            p = np.stack([((v >> 8) & 15) * 17, ((v >> 4) & 15) * 17, (v & 15) * 17, (v >> 12) * 17], -1)
+    elif fmt == 0:                 # A8
+        p = np.stack([np.full_like(raw, 255)] * 3 + [raw], -1)
+    elif fmt == 1:                 # Y8
+        p = np.stack([raw, raw, raw, np.full_like(raw, 255)], -1)
+    elif fmt == 2:                 # AY8: same byte is both
+        p = np.stack([raw, raw, raw, raw], -1)
+    elif fmt == 3:                 # A8Y8: low byte Y, high byte A
+        v = raw.reshape(-1, 2)
+        p = np.stack([v[:, 0], v[:, 0], v[:, 0], v[:, 1]], -1)
+    else:
+        return None
+    p = p.astype(np.uint8)
+    if swizzled:
+        return unswizzle_xbox(p, w, h)
+    return p.reshape(h, w, 4)
+
+
+def decode(m, b):
+    """mip 0 (face 0 of a cube map) as an RGBA array, or None"""
+    fmt, w, h = b['fmt'], b['w'], b['h']
+    buf = m.data[b['pixels_offset']:b['pixels_offset'] + b['pixels_size']]
+    if b['type'] == '3d' or fmt in (17,) or BPP[fmt] == 0:
+        return None
+    if FORMATS[fmt].startswith('DXT'):
+        return decode_dxt(buf, w, h, FORMATS[fmt])
+    return decode_plain(buf, w, h, fmt, bool(b['flags'] & 8))
+
+
+# ---------------------------------------------------------------- PSP sizes
+def ge_level_bytes(w, h, bits):
+    """one swizzled mip level: rows padded to 16 bytes, height to 8 rows"""
+    row = max(16, (w * bits + 7) // 8)
+    row = (row + 15) // 16 * 16
+    return row * ((h + 7) // 8 * 8)
+
+
+def ge_chain_bytes(w, h, bits, min_side=8, max_levels=8):
+    tot, n = 0, 0
+    while n < max_levels:
+        tot += ge_level_bytes(w, h, bits)
+        n += 1
+        if w <= min_side and h <= min_side:
+            break
+        w, h = max(1, w // 2), max(1, h // 2)
+    return tot, n
+
+
+def swizzle_psp(data, width_bytes, height):
+    """GE swizzle: the texture as 16-byte x 8-row blocks, each block's rows
+    stored together, blocks left to right then top to bottom"""
+    a = np.frombuffer(data, np.uint8).reshape(height, width_bytes)
+    bx, by = width_bytes // 16, height // 8
+    return a.reshape(by, 8, bx, 16).transpose(0, 2, 1, 3).tobytes()
+
+
+def psnr(a, b):
+    mse = np.mean((a.astype(np.float64) - b.astype(np.float64)) ** 2)
+    return 99.0 if mse == 0 else 10 * math.log10(255.0 ** 2 / mse)
+
+
+def quantize(img, colors):
+    """CLUT quantization; returns (indices HxW, palette Nx4 uint8, reconstructed
+    RGBA, has_alpha).  Alpha is treated as data, not transparency: Halo's
+    environment textures keep blend/specular masks in alpha and need the RGB
+    under alpha 0, so RGBA is clustered as a 4-D point (k-means, seeded by
+    k-means++ on a sample).  Opaque textures cluster RGB only."""
+    from sklearn.cluster import KMeans
+    h, w = img.shape[:2]
+    has_alpha = img[:, :, 3].min() < 255
+    ch = 4 if has_alpha else 3
+    pts = img.reshape(-1, 4)[:, :ch].astype(np.float32)
+    uniq = np.unique(pts, axis=0)
+    if len(uniq) <= colors:
+        pal = uniq
+        lut = {tuple(p): i for i, p in enumerate(uniq)}
+        idx = np.array([lut[tuple(p)] for p in pts], np.int32) if len(pts) < 70000 else \
+            np.argmin(((pts[:, None, :] - pal[None]) ** 2).sum(2), 1)
+    else:
+        sample = pts if len(pts) <= 40000 else pts[np.random.RandomState(0).choice(len(pts), 40000, replace=False)]
+        km = KMeans(n_clusters=colors, n_init=1, max_iter=25, random_state=0).fit(sample)
+        pal = km.cluster_centers_
+        idx = km.predict(pts)
+    pal = np.clip(np.rint(pal), 0, 255).astype(np.uint8)
+    if ch == 3:
+        pal = np.concatenate([pal, np.full((len(pal), 1), 255, np.uint8)], 1)
+    if len(pal) < colors:
+        pal = np.concatenate([pal, np.zeros((colors - len(pal), 4), np.uint8)])
+    idx = idx.reshape(h, w)
+    return idx, pal, pal[idx], has_alpha
+
+
+def downscale(img, tw, th):
+    """box-filter each channel on its own: PIL premultiplies RGBA when it
+    resizes, which would blacken the colour under alpha 0 (Halo keeps blend
+    and specular masks in alpha, so that colour is visible)"""
+    if img.shape[1] == tw and img.shape[0] == th:
+        return img
+    rgb = np.array(Image.fromarray(np.ascontiguousarray(img[:, :, :3]), 'RGB').resize((tw, th), Image.Resampling.BOX))
+    a = np.array(Image.fromarray(np.ascontiguousarray(img[:, :, 3]), 'L').resize((tw, th), Image.Resampling.BOX))
+    return np.concatenate([rgb, a[:, :, None]], 2)
+
+
+def target(b, cls):
+    """policy A: (action, width, height)"""
+    w, h = b['w'], b['h']
+    if cls == 'bump':
+        return 'drop', 0, 0
+    if cls == 'cube':
+        return 'spheremap', 64, 64
+    if cls == '3d':
+        return 'keep3d', w, h
+    if cls != 'lightmap' and max(w, h) >= 64:
+        w, h = max(1, w // 2), max(1, h // 2)
+    while max(w, h) > 512:
+        w, h = max(1, w // 2), max(1, h // 2)
+    return 'clut', w, h
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('map')
+    ap.add_argument('--out', default=None)
+    ap.add_argument('--previews', type=int, default=0)
+    ap.add_argument('--limit', type=int, default=0)
+    a = ap.parse_args()
+    d = Defs()
+    m = CacheMap(a.map)
+    roles = refs.bitmap_roles(m, d)
+    B = bitmaps(m, d)
+    if a.limit:
+        B = B[:a.limit]
+    if a.out:
+        os.makedirs(a.out, exist_ok=True)
+    rows = []
+    for i, b in enumerate(B):
+        cls = refs.classify(roles.get(b['tag'], ()), b)
+        act, tw, th = target(b, cls)
+        row = dict(tag=b['tag'], idx=b['index'], cls=cls, fmt=b['format'], w=b['w'], h=b['h'], type=b['type'],
+                   mips=b['mips'], orig=b['pixels_size'], action=act, tw=tw, th=th)
+        if act == 'drop':
+            row.update(clut8=0, clut4=0)
+        elif act == 'spheremap':
+            row.update(clut8=ge_chain_bytes(64, 64, 8)[0] + 512, clut4=ge_chain_bytes(64, 64, 4)[0] + 32)
+        elif act == 'keep3d':
+            row.update(clut8=b['w'] * b['h'] * b['depth'] + 512, clut4=b['w'] * b['h'] * b['depth'] // 2 + 32)
+        else:
+            img = decode(m, b)
+            alpha = img is not None and img[:, :, 3].min() < 255
+            palbytes8 = 1024 if alpha else 512
+            palbytes4 = 64 if alpha else 32
+            row['clut8'] = ge_chain_bytes(tw, th, 8)[0] + palbytes8
+            row['clut4'] = ge_chain_bytes(tw, th, 4)[0] + palbytes4
+            row['alpha'] = bool(alpha)
+            if img is not None:
+                small = downscale(img, tw, th)
+                idx8, pal8, rec8, _ = quantize(small, 256)
+                idx4, pal4, rec4, _ = quantize(small, 16)
+                row['psnr8'] = round(psnr(small, rec8), 1)
+                row['psnr4'] = round(psnr(small, rec4), 1)
+                # the frame buffer's own 5650 quantization, for reference
+                ref565 = small.copy()
+                ref565[:, :, 0] &= 0xF8
+                ref565[:, :, 1] &= 0xFC
+                ref565[:, :, 2] &= 0xF8
+                row['psnr565'] = round(psnr(small[:, :, :3], ref565[:, :, :3]), 1)
+                if a.out:
+                    # write the GE-ready level 0: swizzled CLUT8 + palette
+                    wb = max(16, tw)
+                    hb = (th + 7) // 8 * 8
+                    pad = np.zeros((hb, wb), np.uint8)
+                    pad[:th, :tw] = idx8
+                    blob = swizzle_psp(pad.tobytes(), wb, hb)
+                    name = '%04d' % i
+                    open(os.path.join(a.out, name + '.clut8'), 'wb').write(pal8.tobytes() + blob)
+                    if i < a.previews:
+                        Image.fromarray(img, 'RGBA').save(os.path.join(a.out, name + '_xbox.png'))
+                        Image.fromarray(rec8.astype(np.uint8), 'RGBA').save(os.path.join(a.out, name + '_psp8.png'))
+                        Image.fromarray(rec4.astype(np.uint8), 'RGBA').save(os.path.join(a.out, name + '_psp4.png'))
+        rows.append(row)
+        if i % 50 == 0:
+            print('  %d/%d' % (i, len(B)), file=sys.stderr)
+    json.dump(rows, open('bitmap_bake_%s.json' % m.name, 'w'), indent=0)
+    report(rows)
+
+
+def report(rows):
+    tot_o = sum(r['orig'] for r in rows)
+    tot8 = sum(r['clut8'] for r in rows)
+    tot4 = sum(r['clut4'] for r in rows)
+    print('bitmaps %d: xbox %d B -> policy A CLUT8 %d B (%.1f%%), all-CLUT4 %d B (%.1f%%)' % (
+        len(rows), tot_o, tot8, 100.0 * tot8 / tot_o, tot4, 100.0 * tot4 / tot_o))
+    by = collections.defaultdict(lambda: collections.Counter())
+    ps = collections.defaultdict(list)
+    for r in rows:
+        c = by[r['cls']]
+        c['n'] += 1
+        c['orig'] += r['orig']
+        c['clut8'] += r['clut8']
+        c['clut4'] += r['clut4']
+        if 'psnr8' in r:
+            ps[r['cls']].append((r['psnr8'], r['psnr4'], r['psnr565']))
+    print('%-20s %4s %10s %10s %10s %7s %7s %7s' % ('role', 'n', 'xbox B', 'CLUT8 B', 'CLUT4 B', 'dB c8', 'dB c4', 'dB 565'))
+    for k, c in sorted(by.items(), key=lambda x: -x[1]['orig']):
+        p = ps.get(k)
+        med = lambda j: sorted(x[j] for x in p)[len(p) // 2] if p else float('nan')
+        print('%-20s %4d %10d %10d %10d %7.1f %7.1f %7.1f' % (k, c['n'], c['orig'], c['clut8'], c['clut4'], med(0), med(1), med(2)))
+
+
+if __name__ == '__main__':
+    main()
