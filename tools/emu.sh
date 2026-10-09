@@ -34,7 +34,7 @@ for w in ${KEEP-nearauto nomeaudio}; do echo "$w" >> $MS/halo/keep.txt; done
 if [ -n "$ROUTE" ]; then cp "$ROUTE" $MS/halo/route.txt; else rm -f $MS/halo/route.txt; fi
 if [ -n "$TP" ]; then echo "$TP" > $MS/halo/teleport.txt; else rm -f $MS/halo/teleport.txt; fi
 if [ -n "$INPUT" ]; then cp "$INPUT" $MS/halo/input.txt; else echo "0 0000 128 128" > $MS/halo/input.txt; fi
-rm -f $MS/halo/log/log.txt $MS/halo/log/profile.txt $MS/halo/log/animtrace.bin $MS/halo/crash.txt; mkdir -p $MS/halo/shots /tmp/ms_old_shots; mv $MS/halo/shots/*.bmp /tmp/ms_old_shots/ 2>/dev/null
+rm -f $MS/halo/log/log.txt $MS/halo/log/profile.txt $MS/halo/log/animtrace.bin $MS/halo/crash.txt; mkdir -p $MS/halo/shots $RUNS/old_shots; mv $MS/halo/shots/*.bmp $RUNS/old_shots/ 2>/dev/null
 ARGS="--memstick=$MS --timeout-wall=${WALL:-200}"
 [ "$STRICT" = 1 ] && ARGS="-i $ARGS"
 FATV=1; [ "$FAT" = 0 ] && FATV=
