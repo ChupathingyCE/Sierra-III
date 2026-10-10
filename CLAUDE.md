@@ -7,7 +7,7 @@ Sierra-III is a native PSP-1000 port of Halo: Combat Evolved, built on a decompi
 - **No game data, ever.** That means no maps, extracted tags, baked packs (`.map .pgeo .ptex .pstn .vram`), sounds or textures from the disc, in any commit, release or log. `.gitignore` enforces the common cases. Before a push, check that every binary or large file is ours.
 - **No Sony firmware.** `flash0:` modules (e.g. `lowio.prx`) stay off the repo; describing them in docs is fine.
 - **Test scaffolding goes in Sheepdog-01/lab-repo, not here.** That covers run specs, workflows, run scripts and results. This repo holds only what the port needs to build, bake and be tested by hand.
-- **Commit identity:** `Sheepdog-01 <15330660+Sheepdog-01@users.noreply.github.com>`, with the `Co-Authored-By: Claude` trailer.
+- **Commit identity** (Sheepdog01, 2026-10-10): Claude writes the code and Sheepdog01 tests it on hardware, so commits are authored as `Claude <noreply@anthropic.com>`, with Sheepdog01 as co-author: `Co-authored-by: Sheepdog-01 <15330660+Sheepdog-01@users.noreply.github.com>` (that line keeps the commits on his GitHub profile). Commits before 2026-10-10 are `Sheepdog-01`'s; leave them as they are.
 - **Finish testing a build before making the next one.** Each shipped build is tagged `bNNN`, and its zip is added to the `build-archive` Release (a record, not for sharing). A build gets a Release of its own only when Sheepdog01 chooses to share it.
 - **Changes that alter what the player sees or how the game behaves are Sheepdog01's call, one at a time, after an A/B.** Exact speed-ups don't need that. Every change ships behind a keep word so one build can test both sides.
 - **The hardware rules:**
