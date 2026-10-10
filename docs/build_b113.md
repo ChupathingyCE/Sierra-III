@@ -71,7 +71,7 @@ Every change has a keep word, typed into `keep.txt` or toggled in the launch men
 - **The strict interpreter** (38088958245, every new word on): one site, a stack read in pspgu's `callbackSig` (the GE's signal interrupt, which `gebusy` uses) at 0x083ffefc. That's PPSSPP's interrupt stack, which sits below user RAM in the emulator. pspgu's own `sceGuSync` relies on the same interrupt path on hardware [D]; the site is the emulator's.
 - **Exactness, b113's defaults against `weaksum renderstates256`** (`fixedseed` pairs, 38089896228 and 38089927978): play is identical up to tick 1,356 and parts at 1,357.
   - Builds or keep words that change the emulator's speed part near tick 1,326 even with `fixedseed`: b112 against b113 set back to b112's behaviour also parts at 1,326. So the check is good for b30's first 44 s across builds, and for a whole run within one build and one set of words.
-  - Naming what at 1,326 still follows the emulator's speed: runs 38092178378 and 38092205732.
+  - The first object to part across builds is a plasma pistol bolt (runs 38092178378 and 38092205732); the suspect is drawing feeding back into play through streaming [U] (`big_levers.md` §5).
 - **The flip** (Blood Gulch, `flipfixture`, the same press from the same side, approach type 2):
   - b113 (38090374354): the flag is set, the torque starts the same tick, the Warthog rights itself in 26 ticks (up.k −0.96 → 0.91), and the flag clears, exactly as with every vehicle kept awake (b112's `vehiclesawake` run).
   - `weaksum` (38090411833): b112's bug, unchanged: the checksum stays `e0226073` and the vehicle sleeps through it.
