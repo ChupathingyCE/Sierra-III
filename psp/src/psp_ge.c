@@ -91,6 +91,13 @@ static int level_vram = 0;
 static unsigned int vram_vertex_next = 0;
 static unsigned long vram_vertex_refused = 0, vram_vertex_streams = 0;
 
+/* build 111: every piece of a level copy comes from copy_alloc and goes back
+through copy_free: the copies' arena first, the general heap when it has no
+room (the arena is with the copies, below) */
+static void *copy_alloc(unsigned int bytes);
+static void copy_free(void *pointer);
+
+/* the arrays the GE reads (the float copies): benchrun's VRAM room first */
 static void *stream_alloc(unsigned int bytes)
 {
 	if (level_vram)
@@ -105,7 +112,7 @@ static void *stream_alloc(unsigned int bytes)
 		}
 		vram_vertex_refused++;
 	}
-	return malloc(bytes);
+	return copy_alloc(bytes);
 }
 
 static void stream_free(void *pointer)
@@ -113,7 +120,7 @@ static void stream_free(void *pointer)
 	/* VRAM is given back all at once, when the level's copies are let go */
 	if (((unsigned int)pointer & 0x0F000000u) == 0x04000000u)
 		return;
-	free(pointer);
+	copy_free(pointer);
 }
 static int list_bytes = DISPLAY_LIST_BYTES;
 
@@ -1809,12 +1816,13 @@ static int compact_build(struct level_stream *stream)
 	}
 	stream->compact_uv_scale[0] = umax * (32768.0f / 32767.0f);
 	stream->compact_uv_scale[1] = vmax * (32768.0f / 32767.0f);
-	stream->compact_base = memalign(16, stream->count * sizeof(struct compact_vertex));
-	stream->compact_lightmap = stream->lightmap ? memalign(16, stream->count * sizeof(struct compact_vertex)) : NULL;
+	/* build 111: in the copies' arena (16-byte aligned, as memalign gave) */
+	stream->compact_base = copy_alloc(stream->count * sizeof(struct compact_vertex));
+	stream->compact_lightmap = stream->lightmap ? copy_alloc(stream->count * sizeof(struct compact_vertex)) : NULL;
 	if (!stream->compact_base || (stream->lightmap && !stream->compact_lightmap))
 	{
-		free(stream->compact_base);
-		free(stream->compact_lightmap);
+		copy_free(stream->compact_base);
+		copy_free(stream->compact_lightmap);
 		stream->compact_base = stream->compact_lightmap = NULL;
 		compact_refused++;
 		return 0;
@@ -1860,6 +1868,168 @@ static unsigned long streams_let_go = 0;
 /* build 68: the copies' budget while a geometry pack is open (its blocks come
 and go; the copies are what stays) */
 #define LEVEL_STREAM_BUDGET (1024 * 1024)
+
+/* ---------- build 111: the copies' arena
+
+b108 run 1 (hardware_b108.md): the copies are let go and rebuilt as the view
+moves (level_streams_trim), and each rebuild asked the general heap for large
+blocks again (two of 106 KB for a material of 5,439 vertices) while the
+game's small, long-lived allocations settled into the holes the last ones
+left. After the hunter fight no hole was large enough: 1.4 MB free in 293
+pieces, and 5,290 materials went undrawn to the level's end.
+
+Every piece of a copy (the float copies, the normals, the radiosity, the
+16-bit copies) now comes from one block, carved out of the heap at the first
+copy and kept, so the copies' churn never reaches the general heap. Its size
+is the copies' budget plus room for a frame's new copies before the trim.
+When a piece doesn't fit, the least recently drawn copies are let go until it
+does, never one drawn this frame (the trim's rule: the GE may still be
+reading those). If this frame's copies fill the arena, the piece comes from
+the general heap, as before b111. What is drawn doesn't change.
+
+Blocks lie end to end, each behind a header holding its size and the size of
+the block before it, so a freed block merges with free neighbours on both
+sides. A request takes the smallest free block that holds it (best fit),
+split when what's left is worth keeping. "noarena" (keep word): the general
+heap only, as before. */
+#define ARENA_BYTES (LEVEL_STREAM_BUDGET + 128 * 1024)
+#define ARENA_ALIGN 16
+#define ARENA_SPLIT_LEAST 64
+struct arena_block
+{
+	unsigned int size;     /* bytes, this header included; a multiple of ARENA_ALIGN */
+	unsigned int previous; /* the size of the block before it (0: the first) */
+	unsigned int used;
+	unsigned int unused;   /* keeps the header ARENA_ALIGN bytes */
+};
+static char *arena = NULL;
+static int arena_state = -1; /* -1: not started; 0: off ("noarena", or no room); 1: on */
+static unsigned long arena_used = 0, arena_let_go = 0, arena_from_heap = 0;
+static int level_stream_let_go_oldest(void);
+
+static struct arena_block *arena_next(struct arena_block *block)
+{
+	char *next = (char *)block + block->size;
+
+	return next < arena + ARENA_BYTES ? (struct arena_block *)next : NULL;
+}
+
+static void arena_start(void)
+{
+	struct arena_block *first;
+
+	arena_state = 0;
+	if (psp_keep("noarena"))
+	{
+		platform_log("GE: the copies' arena: off (noarena); copies from the general heap");
+		return;
+	}
+	arena = memalign(ARENA_ALIGN, ARENA_BYTES);
+	if (!arena)
+	{
+		platform_log("GE: the copies' arena: no room for %u KB; copies from the general heap", ARENA_BYTES / 1024);
+		return;
+	}
+	first = (struct arena_block *)arena;
+	first->size = ARENA_BYTES;
+	first->previous = 0;
+	first->used = 0;
+	arena_state = 1;
+	platform_log("GE: the copies' arena: %u KB", ARENA_BYTES / 1024);
+}
+
+/* the smallest free block holding size bytes (header included), split if
+the rest is worth keeping; NULL: none */
+static void *arena_take(unsigned int size)
+{
+	struct arena_block *block, *best = NULL;
+
+	for (block = (struct arena_block *)arena; block; block = arena_next(block))
+		if (!block->used && block->size >= size && (!best || block->size < best->size))
+			best = block;
+	if (!best)
+		return NULL;
+	if (best->size - size >= ARENA_SPLIT_LEAST)
+	{
+		struct arena_block *rest = (struct arena_block *)((char *)best + size), *after;
+
+		rest->size = best->size - size;
+		rest->previous = size;
+		rest->used = 0;
+		best->size = size;
+		after = arena_next(rest);
+		if (after)
+			after->previous = rest->size;
+	}
+	best->used = 1;
+	arena_used += best->size;
+	return best + 1;
+}
+
+static unsigned int arena_largest_free(void)
+{
+	struct arena_block *block;
+	unsigned int largest = 0;
+
+	if (arena_state <= 0)
+		return 0;
+	for (block = (struct arena_block *)arena; block; block = arena_next(block))
+		if (!block->used && block->size > largest)
+			largest = block->size;
+	return largest;
+}
+
+static void *copy_alloc(unsigned int bytes)
+{
+	unsigned int size = (bytes + sizeof(struct arena_block) + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1);
+	void *pointer = NULL;
+
+	if (arena_state < 0)
+		arena_start();
+	if (arena_state > 0 && size <= ARENA_BYTES)
+	{
+		while (!(pointer = arena_take(size)) && level_stream_let_go_oldest())
+			arena_let_go++;
+		if (pointer)
+			return pointer;
+		arena_from_heap++;
+	}
+	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign) */
+	return memalign(ARENA_ALIGN, bytes);
+}
+
+static void copy_free(void *pointer)
+{
+	struct arena_block *block, *next;
+
+	if (!pointer)
+		return;
+	if (!arena || (char *)pointer < arena || (char *)pointer >= arena + ARENA_BYTES)
+	{
+		free(pointer);
+		return;
+	}
+	block = (struct arena_block *)pointer - 1;
+	block->used = 0;
+	arena_used -= block->size;
+	next = arena_next(block);
+	if (next && !next->used)
+		block->size += next->size;
+	if (block->previous)
+	{
+		struct arena_block *before = (struct arena_block *)((char *)block - block->previous);
+
+		if (!before->used)
+		{
+			before->size += block->size;
+			block = before;
+		}
+	}
+	next = arena_next(block);
+	if (next)
+		next->previous = block->size;
+}
+
 unsigned int psp_geo_address_of(const void *ptr);
 unsigned int psp_geo_generation(const void *ptr);
 int psp_geo_open_count(void);
@@ -2318,16 +2488,19 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 
 		stream->base = stream_alloc(total * sizeof(struct ge_vertex));
 		stream->lightmap = lightmap_vertices ? stream_alloc(total * sizeof(struct ge_vertex)) : NULL;
-		stream->normals = malloc(total * sizeof(unsigned int));
-		stream->radiosity = lightmap_vertices ? calloc(total, sizeof(unsigned int)) : NULL;
+		/* build 111: in the copies' arena too (not VRAM: the CPU reads these) */
+		stream->normals = copy_alloc(total * sizeof(unsigned int));
+		stream->radiosity = lightmap_vertices ? copy_alloc(total * sizeof(unsigned int)) : NULL;
+		if (stream->radiosity)
+			memset(stream->radiosity, 0, total * sizeof(unsigned int));
 	}
 	if (!stream->base || (lightmap_vertices && (!stream->lightmap || !stream->radiosity)) || !stream->normals)
 	{
 		platform_log("GE: no memory for a material's vertices (%d)", count);
 		stream_free(stream->base);
 		stream_free(stream->lightmap);
-		free(stream->normals);
-		free(stream->radiosity);
+		copy_free(stream->normals);
+		copy_free(stream->radiosity);
 		stream->base = stream->lightmap = NULL;
 		stream->normals = stream->radiosity = NULL;
 		return NULL;
@@ -5131,10 +5304,10 @@ void psp_ge_forget_level(void)
 	{
 		stream_free(level_streams[index].base);
 		stream_free(level_streams[index].lightmap);
-		free(level_streams[index].normals);
-		free(level_streams[index].radiosity);
-		free(level_streams[index].compact_base);
-		free(level_streams[index].compact_lightmap);
+		copy_free(level_streams[index].normals);
+		copy_free(level_streams[index].radiosity);
+		copy_free(level_streams[index].compact_base);
+		copy_free(level_streams[index].compact_lightmap);
 	}
 	memset(level_streams, 0, sizeof(level_streams));
 	vram_vertex_next = 0; /* build 103 */
@@ -7129,41 +7302,49 @@ int psp_ge_level_vertex_lighting(unsigned int key, int vertex_index, unsigned in
 least recently drawn go, never one drawn this frame. Open addressing can't
 drop a slot without breaking the chains through it, so a dropped slot keeps
 its key with no copies, and the next draw of it rebuilds in place */
+static void level_stream_let_go(struct level_stream *stream)
+{
+	stream_bytes -= stream_size(stream);
+	stream_free(stream->base);
+	stream_free(stream->lightmap);
+	copy_free(stream->normals);
+	copy_free(stream->radiosity);
+	/* build 89: the 16-bit copies too (leaked on every let-go and rebuild
+	before; review) */
+	copy_free(stream->compact_base);
+	copy_free(stream->compact_lightmap);
+	stream->base = stream->lightmap = NULL;
+	stream->normals = stream->radiosity = NULL;
+	stream->compact_base = stream->compact_lightmap = NULL;
+	streams_let_go++;
+}
+
+/* build 111: the least recently drawn copy let go, never one drawn this
+frame; 0 when none is left to let go. The trim's choice, now shared with the
+copies' arena (copy_alloc) */
+static int level_stream_let_go_oldest(void)
+{
+	int index, oldest = -1;
+
+	for (index = 0; index < LEVEL_STREAMS; index++)
+	{
+		struct level_stream *stream = &level_streams[index];
+
+		if (!stream->source || !stream->base || stream->last_frame == stream_frame)
+			continue;
+		if (oldest < 0 || stream->last_frame < level_streams[oldest].last_frame)
+			oldest = index;
+	}
+	if (oldest < 0)
+		return 0;
+	level_stream_let_go(&level_streams[oldest]);
+	return 1;
+}
+
 static void level_streams_trim(void)
 {
-	while (stream_bytes > LEVEL_STREAM_BUDGET)
-	{
-		int index, oldest = -1;
-
-		for (index = 0; index < LEVEL_STREAMS; index++)
-		{
-			struct level_stream *stream = &level_streams[index];
-
-			if (!stream->source || !stream->base || stream->last_frame == stream_frame)
-				continue;
-			if (oldest < 0 || stream->last_frame < level_streams[oldest].last_frame)
-				oldest = index;
-		}
-		if (oldest < 0)
-			return;
-		{
-			struct level_stream *stream = &level_streams[oldest];
-
-			stream_bytes -= stream_size(stream);
-			stream_free(stream->base);
-			stream_free(stream->lightmap);
-			free(stream->normals);
-			free(stream->radiosity);
-			/* build 89: the 16-bit copies too (leaked on every let-go and
-			rebuild before; review) */
-			free(stream->compact_base);
-			free(stream->compact_lightmap);
-			stream->base = stream->lightmap = NULL;
-			stream->normals = stream->radiosity = NULL;
-			stream->compact_base = stream->compact_lightmap = NULL;
-			streams_let_go++;
-		}
-	}
+	while (stream_bytes > LEVEL_STREAM_BUDGET && level_stream_let_go_oldest())
+		;
 }
 
 static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
@@ -9572,6 +9753,10 @@ void psp_ge_frame_end(void)
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes,
 			list_peak, DISPLAY_LIST_BYTES, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+		/* build 111 */
+		if (arena_state > 0)
+			platform_log("GE: the copies' arena: %lu KB in use of %u, largest free %u KB; %lu copies let go to make room, %lu pieces from the general heap instead",
+				arena_used / 1024, ARENA_BYTES / 1024, arena_largest_free() / 1024, arena_let_go, arena_from_heap);
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		if (frames > 1)
