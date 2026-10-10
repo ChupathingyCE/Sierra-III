@@ -28,7 +28,7 @@ SDK = PSPDEV + "/psp/sdk"
 # PSP_MECORE names a separate install prefix holding include/me-core-mapper and lib/
 MECORE = os.environ.get("PSP_MECORE", "")
 JOBS = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else 2
-GAME_STATE_BASE = 0x092B0000   # psp_capacity.h
+GAME_STATE_BASE = 0x092A0000   # psp_capacity.h (build 113: 64 KB lower)
 PROGRAM_BASE = 0x08804000      # where the kernel loads the module (first fit, low)
 STACK_RESERVE = 0x40000        # main thread and other low allocations made before the heap
 

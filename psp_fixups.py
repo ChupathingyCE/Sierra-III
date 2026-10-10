@@ -10598,6 +10598,70 @@ unsigned long *psp_sound_seed(void);
 """),
 ]
 
+
+# build 113: the render-state cache (b113_candidates.md #21): 512 entries,
+# 256 with "renderstates256"; and counts of what it and the rendered-object
+# list do each frame, reported with the objects (psp_platform.c)
+FIXES_113["source/render/render_objects.c#renderstates"] = [
+("""	cached_object_render_states = game_state_data_new(
+		"cached object render states",
+		MAXIMUM_CACHED_OBJECT_RENDER_STATES,
+		sizeof(struct object_render_state));""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_keep(const char *name);
+
+		/* build 113: the Xbox's 256 with "renderstates256" (psp_capacity.h) */
+		cached_object_render_states = game_state_data_new(
+			"cached object render states",
+			psp_keep("renderstates256") ? 256 : MAXIMUM_CACHED_OBJECT_RENDER_STATES,
+			sizeof(struct object_render_state));
+	}
+#else
+	cached_object_render_states = game_state_data_new(
+		"cached object render states",
+		MAXIMUM_CACHED_OBJECT_RENDER_STATES,
+		sizeof(struct object_render_state));
+#endif"""),
+("""	object_marker_end();
+
+	if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS &&""",
+ """	object_marker_end();
+#ifdef HALO_PSP
+	{
+		/* build 113: how full the rendered-object list gets (psp_platform.c's
+		report): objects past it aren't drawn that frame */
+		extern long psp_rendered_views, psp_rendered_full, psp_rendered_peak, psp_rendered_capacity;
+
+		psp_rendered_capacity = MAXIMUM_RENDERED_OBJECTS;
+		psp_rendered_views++;
+		if (render_object_globals.rendered_object_count > psp_rendered_peak)
+			psp_rendered_peak = render_object_globals.rendered_object_count;
+		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
+			psp_rendered_full++;
+	}
+#endif
+
+	if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS &&"""),
+("""		render_state_index = datum_new(cached_object_render_states);
+		if (render_state_index == NONE)
+		{""",
+ """		render_state_index = datum_new(cached_object_render_states);
+#ifdef HALO_PSP
+		{
+			/* build 113: lighting worked out whole, and how many of those
+			first had to find and push out the oldest entry */
+			extern long psp_render_states_new, psp_render_states_evicted;
+
+			psp_render_states_new++;
+			if (render_state_index == NONE)
+				psp_render_states_evicted++;
+		}
+#endif
+		if (render_state_index == NONE)
+		{"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 

@@ -106,6 +106,12 @@ the list less the HUD's, the see-through draws' and the level's reserves
 (about 200 KB of 384). The 128 KB come from the heap; the start-up buffers
 psp_memory.c now places outside it gave back more than that */
 #define DISPLAY_LIST_BYTES 0x80000
+/* build 113: 768 KB with "list768" (b113_candidates.md #19). b112 run 1's
+approach to b30's beach skipped 46 KB of model draws a frame with the list
+full; b112 run 5's cliffs 4,844 draws in 30 s. The list comes from the heap,
+which b111's long run left about 900 KB of untaken. Set when the GE starts */
+#define DISPLAY_LIST_BYTES_LARGE 0xC0000
+static int display_list_size = DISPLAY_LIST_BYTES;
 /* build 93: the list's size this frame (benchrun's "display list in VRAM"
 puts it in VRAM's last 256 KB, which psp_tex.c keeps free during benchrun) */
 #define VRAM_BENCH_START 0x001C0000
@@ -1378,8 +1384,10 @@ static void display_list_acquire(void)
 
 	if (display_list)
 		return;
-	if ((int)sceKernelTotalFreeMemSize() >= DISPLAY_LIST_BYTES + 64 + DISPLAY_LIST_LEAVES_FREE)
-		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, DISPLAY_LIST_BYTES + 64, NULL);
+	if (psp_keep("list768"))
+		display_list_size = DISPLAY_LIST_BYTES_LARGE;
+	if ((int)sceKernelTotalFreeMemSize() >= display_list_size + 64 + DISPLAY_LIST_LEAVES_FREE)
+		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, display_list_size + 64, NULL);
 	if (block >= 0)
 	{
 		display_list = (unsigned int *)(((unsigned int)sceKernelGetBlockHeadAddr(block) + 63) & ~63u);
@@ -1387,7 +1395,7 @@ static void display_list_acquire(void)
 	}
 	else
 	{
-		display_list = memalign(64, DISPLAY_LIST_BYTES);
+		display_list = memalign(64, display_list_size);
 		display_list_where = display_list ? "the heap (no room for it outside)" : "nowhere: no memory";
 	}
 	display_list_free_kb = sceKernelTotalFreeMemSize() / 1024;
@@ -1397,7 +1405,7 @@ static void display_list_acquire(void)
 static void display_list_report(void)
 {
 	platform_log("GE: display list %d KB at %08x, from %s; then %d KB free in user RAM (largest block %d KB), now %d KB (largest %d KB)",
-		DISPLAY_LIST_BYTES / 1024, (unsigned int)display_list, display_list_where, display_list_free_kb,
+		display_list_size / 1024, (unsigned int)display_list, display_list_where, display_list_free_kb,
 		display_list_largest_kb, sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
 }
 static int ge_ready = 0, frame_open = 0;
@@ -2258,7 +2266,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	if (!ge_ready)
 		ge_initialize();
 	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
-	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : DISPLAY_LIST_BYTES;
+	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : display_list_size;
 	sceGuStart(GU_DIRECT, list_in_vram ? (void *)(0x04000000 + VRAM_BENCH_START) : (void *)display_list);
 	sceGuFog(fog_near, fog_far, fog_color);
 	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
@@ -3474,8 +3482,10 @@ static unsigned int stream_size(const struct level_stream *stream)
 couldn't build (gemesim): building reads the geometry cache, which may start
 a stick read, and may fall back on the heap, all system calls. The main CPU
 builds them at the frame's end (psp_ge_frame_end), so they're there for the
-next frame; the draw is skipped meanwhile, as for geometry still on its way */
-#define STREAMS_WANTED 32
+next frame; the draw is skipped meanwhile, as for geometry still on its way.
+Build 113: 128 (b112's Test 3 asked for 113 in a frame and 14 didn't fit;
+12 bytes each) */
+#define STREAMS_WANTED 128
 static struct
 {
 	const void *vertices, *lightmap_vertices;
@@ -10953,8 +10963,8 @@ void psp_ge_frame_end(void)
 		if (used > list_peak)
 		{
 			list_peak = used;
-			if (used > DISPLAY_LIST_BYTES * 7 / 8)
-				platform_log("GE: display list %d of %d bytes used", used, DISPLAY_LIST_BYTES);
+			if (used > display_list_size * 7 / 8)
+				platform_log("GE: display list %d of %d bytes used", used, display_list_size);
 		}
 	}
 	{
@@ -11104,7 +11114,7 @@ void psp_ge_frame_end(void)
 		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu; peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes,
-			list_peak, DISPLAY_LIST_BYTES, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+			list_peak, display_list_size, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
 		/* build 111 */
 		if (arena_state > 0)
 			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",

@@ -35,7 +35,7 @@ LINES = (HI - LO) >> 6
 PROGRAM_BASE = 0x08804000
 PHASE_NAMES = ['other', 'tick', 'drawing', 'frame end']
 TAG_WINDOW = (0x09600000, 0x09F00000)
-GAME_STATE = (0x092B0000, 0x09600000)
+GAME_STATE = (0x092A0000, 0x09600000)  # build 113 on (0x092B0000 to b112)
 
 
 def load_dump(path):

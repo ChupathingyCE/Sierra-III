@@ -609,6 +609,9 @@ void psp_object_account(int type, unsigned long microseconds)
 	}
 }
 
+/* build 113: render_objects.c's counts (psp_fixups.py), since the last report */
+long psp_rendered_views, psp_rendered_full, psp_rendered_peak, psp_rendered_capacity, psp_render_states_new, psp_render_states_evicted;
+
 static void object_report(SceUID file, unsigned long ticks)
 {
 	char line[1024];
@@ -632,6 +635,19 @@ static void object_report(SceUID file, unsigned long ticks)
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
 	}
 	platform_log("  %s", line);
+	{
+		/* build 113: the views drawn (a frame each, as a rule), how full
+		their rendered-object list got, and the render-state cache's misses
+		(render_objects.c, psp_fixups.py): a miss works an object's lighting
+		out whole, and an eviction first scans the whole cache for the oldest */
+		if (psp_rendered_views)
+			platform_log("  objects drawn: %ld views; the list's peak %ld of %ld, full in %ld views (objects past it not drawn) | "
+				"render states: %.1f worked out whole a view, %.1f of them pushing out the oldest",
+				psp_rendered_views, psp_rendered_peak, psp_rendered_capacity, psp_rendered_full,
+				(double)psp_render_states_new / psp_rendered_views, (double)psp_render_states_evicted / psp_rendered_views);
+		psp_rendered_views = psp_rendered_full = psp_rendered_peak = 0;
+		psp_render_states_new = psp_render_states_evicted = 0;
+	}
 	{
 		/* build 107: the most lens flares a frame has submitted since the
 		start (rasterizer_lights.c, psp_fixups.py), against the 1,024 kept */

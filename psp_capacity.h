@@ -21,7 +21,9 @@ cache begins (0x803A6000). On the PSP it sits just below the tag window
 (psp_build.py's GAME_STATE_BASE has the same address: the heap ends below
 it). The GPU part holds only the decal vertices, as on the Xbox. */
 
-#define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x092B0000 /* PSP: just below the tag window (0x09600000) */
+/* build 113: 64 KB lower (0x092B0000 to b112), for the CPU part's 64 KB
+more below; the heap gives them. It must end at or below 0x09600000 */
+#define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x092A0000 /* PSP: just below the tag window (0x09600000) */
 /* PSP, build 107: 64 KB moved from the GPU part to the CPU part, the total
 unchanged. The GPU part holds only the decal vertices, 160 KB
 (rasterizer_xbox_decals.c: 2,560 pages of 64 bytes) of its 256; b107's
@@ -29,9 +31,13 @@ object sphere copies (32 KB) took the CPU part past its end (game_state.c's
 assert 159 at start-up, b107e on: harmless while the two parts didn't meet,
 since checkpoints save the whole buffer, but one more allocation would have
 put the CPU part's end inside the decal vertices) */
-#define HALO_PORT_GAME_STATE_CPU_SIZE 0x315000 /* (0x305000) */
+/* build 113: 64 KB more, for the render-state cache's 256 more entries of
+256 bytes (b112 left 65 KB of the CPU part unallocated) */
+#define HALO_PORT_GAME_STATE_CPU_SIZE 0x325000 /* (0x305000; b107-b112 0x315000) */
 #define HALO_PORT_GAME_STATE_GPU_SIZE 0x30000 /* (0x40000) */
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
+typedef char halo_port_game_state_below_tag_window[
+	HALO_PORT_GAME_STATE_BASE_ADDRESS + HALO_PORT_GAME_STATE_SIZE <= 0x09600000 ? 1 : -1];
 
 /* ---------- the tag window and the texture cache
 
@@ -72,7 +78,11 @@ build 30 (that switch thrashes it, but works). */
 objects, noncollideable objects, lights) */
 #define HALO_PORT_MAXIMUM_CLUSTER_REFERENCES 2048
 #define HALO_PORT_MAXIMUM_RENDERED_OBJECTS 256
-#define HALO_PORT_MAXIMUM_CACHED_OBJECT_RENDER_STATES 256
+/* build 113: 512 (the Xbox's 256 with "renderstates256", render_objects.c).
+Each object drawn keeps its lighting here; past the cache's size every miss
+scans all of it for the oldest and works the lighting out whole, and on b30's
+cliffs (350 scenery objects) it stayed full for minutes (b112 run 5) */
+#define HALO_PORT_MAXIMUM_CACHED_OBJECT_RENDER_STATES 512
 /* objects one explosion can damage */
 #define HALO_PORT_MAXIMUM_AREA_OF_EFFECT_OBJECTS 64
 /* script object lists, and the object references they all share */
