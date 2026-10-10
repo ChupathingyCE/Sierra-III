@@ -115,6 +115,10 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
+       # the port's own sources are compiled by full path, and __FILE__ (asserts)
+       # would put that path in the EBOOT: written relative to the checkout, the
+       # same commit builds the same bytes on any machine
+       "-ffile-prefix-map=" + HERE + "/=",
        # build 66: the inline tag block accessor (build 46's, for the collision
        # files) for the whole game: the HUD, the visibility walk and the
        # objects' updates reach their tag data through it thousands of times a
@@ -238,7 +242,7 @@ def compile_one(item):
         # and the load trace's wrappers for size; the rest for speed)
         opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c")) else "-O2"
         cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections",
-               "-I" + SDK + "/include", "-c", src, "-o", obj]
+               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include", "-c", src, "-o", obj]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
             cmd[-4:-4] = ["-I" + (MECORE or os.path.dirname(SDK)) + "/include"]
