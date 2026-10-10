@@ -72,11 +72,24 @@ With b111 [D, U]:
 
 - No map failed a request or left a material undrawn. Every heap peak, the arena included, is at least 890 KB under 6,016 KB here; the PSP carries more (above).
 - **Where pieces went to the heap:** the three openings whose copies pass the 1 MB budget (a10, c20, d20). Pieces go to the heap when nothing is left to let go: every copy left in the arena was drawn that frame, which happens as a level first appears (everything is new at once) and in views that draw more than the arena holds. They stay in the heap until let go, as all of them did before b111. In c20, 841 of about 1,003 KB of copies sat in the arena afterwards.
-- **What would close that gap:** compacting the arena at frame end (the GE has finished, and nothing keeps a pointer into a copy across frames [D]), then moving the heap's copies in. A b112-or-later candidate, not in b111.
+- **Compaction closes most of that gap** (added after these runs). The same openings with compaction and migration (`b111-compact` at `07ba673`, without the sweep), pieces the general heap still held at the end:
+
+  | Map | Before compaction | With it | Compactions (KB moved) | Copies brought back |
+  |---|---|---|---|---|
+  | a10 | 130 | 33 | 2 (1,235) | 9 |
+  | c20 | 112 | 0 | 2 (1,123) | 14 |
+  | d20 | 45 | 32 | 0 | 0 |
+
+  What's left is the copies a view draws beyond the arena's 1,056 KB: a10's opening draws about 1.6 MB a frame and d20's about 1.1 MB, so their arenas are full and nothing can be compacted or brought back. Those copies live in the general heap, as all copies did in b110.
 
 ## On the PSP
 
 The question: does b111 play b30 past the hunter fight, where b108 began to fail, with no `GE: no memory for a material's vertices` lines?
 - **Run:** b30 from the start, as far as possible, ideally to the end; deathless; keep words `nearauto assettrack geo2 hwprofile`; no USB capture.
-- **In the log:** the arena line (let-goes, pieces from the general heap), the heap line (`requests failed` should stay 0), and no "no memory" lines.
-- `noarena` gives b110's behaviour in the same build, if a comparison is wanted.
+- **In the log:**
+  - no `GE: no memory for a material's vertices` lines;
+  - the heap line: `requests failed` should stay 0, and `taken from the system` shows how close the heap came to its end;
+  - the arena line: let-goes, pieces in the general heap now, compactions;
+  - the converted-buffer table's line: the skinning plans' KB on the heap and their peak.
+- Pull the log right after the run: `log.txt` is removed at every launch.
+- To compare in the same build: `noarena` (b110's copies), `nocompact` (the arena as first built), `sweeplate` (b110's sweep).
