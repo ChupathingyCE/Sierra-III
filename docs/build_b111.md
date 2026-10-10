@@ -42,18 +42,22 @@ With b111 [D, U]:
 
 **A frame can draw more than the budget.** a10's opening draws about 1.6 MB of copies a frame [E]. The budget was never a cap there: b110 held all 1.6 MB in the general heap. b111 holds what fits in the arena and takes the rest from the general heap, the same total.
 
-**b111 on run 1's route** (`sierra-test` 38027507275, the same route, keep words and bake as b110's replay 38024398390):
+**b111 on run 1's route** (the same route, keep words and bake as b110's replay, `sierra-test` 38024398390). Two b111 runs: the arena alone (38027507275), and the final build with compaction and the sooner sweep (38036725008):
 
-| At the route's end (game time ~40,000 on) | b110 | b111 |
-|---|---|---|
-| Failed requests, materials undrawn | 0, 0 | 0, 0 |
-| Heap in use (b111: the arena's 1,056 KB included) | 5,287 KB | 5,410 KB |
-| Free inside the heap | 346 KB in 112 pieces | 34 KB in 51 pieces |
-| Taken from the system (heap top) | 5,634 KB | 5,444 KB |
-| Copies let go | 726 (the trim) | 839 (to make room in the arena) |
+| At the route's end (game time ~40,000 on) | b110 | b111, the arena alone | b111 final |
+|---|---|---|---|
+| Failed requests, materials undrawn | 0, 0 | 0, 0 | 0, 0 |
+| Heap in use (b111: the arena's 1,056 KB included) | 5,287 KB | 5,410 KB | 4,460 KB |
+| Free inside the heap | 346 KB in 112 pieces | 34 KB in 51 pieces | 354 KB in 63 pieces |
+| **Taken from the system (heap top)** | **5,634 KB** | **5,444 KB** | **4,815 KB** |
+| Copies let go | 726 (the trim) | 839 (to make room in the arena) | 862 |
+| Copies' pieces the general heap holds at the end | all of them | 103 | 0 (165 went there over the run; 33 copies brought back) |
+| Compactions | — | — | 19, 15.7 MB moved in all |
+| Skinning plans on the heap | not counted | not counted | 151 KB (peak 441 KB) |
 
-- b111 took 190 KB less from the system: the copies' churn no longer leaves holes in the general heap, so it wastes less, even with the whole arena reserved from the start.
-- 103 pieces went to the general heap, 99 of them between game time 20,085 and 30,141: the BSP switch into the facility (game time 25,189), where every copy is let go and the new BSP's appear at once. The arena afterwards: 822 KB in use, largest free 106 KB.
+- **The arena alone** took 190 KB less from the system than b110: the copies' churn no longer leaves holes in the general heap. 103 pieces still went to the general heap, 99 of them after the BSP switch into the facility (game time 25,189), when the frame's copies, pinned while drawn, had split the arena's free space.
+- **The final build** took 820 KB less than b110. Compaction kept the arena whole and brought the heap's copies back (none left at the end), and the sooner sweep kept the skinning plans under 450 KB where the arena-alone run made 994 KB of plans and freed none.
+- **Compaction's cost:** 19 runs over the level, about 830 KB moved each. A memory copy that size is a few milliseconds on the PSP [U]: a hitch shorter than one frame at today's frame rates, a handful of times a level.
 
 **Every map's opening** on the campaign bake, 300 s each, deathless, no input (`sierra-test`, b111 at `ae7b223`; a10 at `5d1e41d`, the first build with 128 KB of slack, rerun pending):
 
