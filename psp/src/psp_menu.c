@@ -57,6 +57,7 @@ static struct option options[] = {
 	{ "zoommaskfull", "zoom: the mask at full strength", 6, 0 },
 	{ "list768", "display list 768 KB (512 before)", 0, 0 },
 	{ "sound1792", "sound cache 1792 KB (1536 before)", 0, 0 },
+	{ "soundplace", "sound cache: big sounds kept at the top", 0, 0 },
 	{ "gebusy", "GE busy time in the log", 0, 0 },
 	{ "gedefer", "GE calls written down, carried out at frame end", 0, 0 },
 	{ "gemeon", "GE calls carried out on the ME (with gedefer)", 0, 0 },
