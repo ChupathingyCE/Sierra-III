@@ -9811,6 +9811,54 @@ Either(chupa=("""				"sound permutation %.32s of %d bytes not loaded",
 				sound->name,
 #endif""")),
 ]
+# Build 112: halo-ce-universal's upstream patch 0002 (cold or compiled-out
+# asserts, float rounding) never reached ChupathingyCE. psp_build.py passes
+# -DPSP_ASSERTS_COLD=1 and -freorder-blocks-and-partition, but cseries.h had
+# no branch for them: b110's and b111's link maps hold 3 .text.unlikely
+# sections against 2,981 on the old base, so every failed assert's call sat
+# in the middle of the hot code it guards, in the 16 KB instruction cache
+# that two thirds of the misses come from (optimization_ranking.md, E1). And
+# fast_ftol rounded through a double: on the PSP, whose FPU has no double
+# operations, three library calls (to double, rint, to long) for every
+# animation frame index, perception test and HUD number (libm's rint was
+# linked for it). A float rounds to the nearest integer exactly in float, so
+# rintf gives the same bits
+FIXES_CHUPA["source/cseries/cseries.h#asserts"] = [
+Either(chupa=("""#define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_vassert(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }""",
+ """/* psp_fixups.py (FIXES_CHUPA, build 112): PSP_ASSERTS_OFF compiles the
+fatal asserts out; PSP_ASSERTS_COLD marks them unlikely, so their calls go to
+.text.unlikely, away from the code they guard */
+#if defined(PSP_ASSERTS_OFF)
+#define match_assert(file, line, expr) if (0 && (expr)) { }
+#define match_vassert(file, line, expr, string) if (0 && (expr)) { }
+#elif defined(PSP_ASSERTS_COLD)
+#define match_assert(file, line, expr) if (__builtin_expect(!(expr), 0)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_vassert(file, line, expr, string) if (__builtin_expect(!(expr), 0)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#else
+#define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_vassert(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#endif
+#define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }""")),
+Either(chupa=("""#ifdef HALO_RELEASE
+void release_assert_failed(char const *information, char const *file, long line, boolean fatal);
+#endif""",
+ """#ifdef HALO_RELEASE
+void release_assert_failed(char const *information, char const *file, long line, boolean fatal)
+#if defined(PSP_ASSERTS_COLD)
+	__attribute__((cold)) /* psp_fixups.py (FIXES_CHUPA, build 112) */
+#endif
+	;
+#endif""")),
+Either(chupa=("""	/* FISTP: round to nearest under the default control word */
+	result = (long)__builtin_rint((double)value);""",
+ """	/* FISTP: round to nearest under the default control word.
+	psp_fixups.py (FIXES_CHUPA, build 112): rounded in float. A float is
+	exact in a double and its nearest integer is exact in a float, so the
+	result is the same, without a software double round trip on the PSP */
+	result = (long)__builtin_rintf(value);""")),
+]
 
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
