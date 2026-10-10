@@ -34,7 +34,23 @@ Heap 5,952 KB, as b111: the two add about 12 KB of code, most of it item 2's hot
 - **The emulator** (the same replay) [E]: the whole route with no fault. PPSSPP doesn't model the caches by default, so only the PSP shows the gain.
 - **Status:** built; awaiting the PSP.
 
+## 3. Instruments for the big levers (added later on 2026-10-10)
+
+Sheepdog01 asked for the levers that move the tick rate and frame rate by a lot, tested, instead of more small gains. `big_levers.md` sizes them. b112 carries the instruments and the first step; none changes the game unless its keep word is set.
+
+| Keep word | What it does | For |
+|---|---|---|
+| `ceilingbench` | b30 from 90 s of game time, standing still: each heartbeat window turns one big part off (AI, objects, effects, models, level, the GE layer), three cycles; benchrun's `bench: RESULT` lines (`tools/benchparse.py --by-switch`) | the most each structural lever could save, on the PSP |
+| `gedefer` | the model path's GE calls written down and carried out in runs, in order (`psp_ge.c`) | step 1 of moving the GE layer to the Media Engine; and a possible instruction-cache gain of its own |
+| `fixedticks` | every frame two ticks and a fifteenth of a second, whatever the clock says (`main.c`) | runs that play the same way on any build (tests only: game time stops following the clock) |
+| `statecrc` | a hash of the game state after every tick, and of each allocation every 30 ticks | proving a change leaves the game exactly as it was |
+
+Tools: `tools/mewalk.py` (what a Media Engine job started at given functions could reach: firmware calls, VFPU code, calls through pointers; the lab's `sierra-build` `reach` input runs it); `benchparse.py --by-switch` (a tick's own cost per switch). Lab: `sierra-test` `cache=1` runs the emulator's cache models and reports each phase's misses.
+
+Heap still 5,952 KB with all of this in.
+
 ## On the PSP, after b111's run
 
 - **Item 2:** the A/B stretch (the Pelican flight to the Warthog drop) on b112 with `placeddeadawake`, against b111's.
 - **Item 1:** b30's security room on b112, against b111: the bipeds' time a tick and the corpse line's "placed dead".
+- **The ceiling bench** on b30 (`ceilingbench`, about 10 minutes, hands off), and **benchrun on Blood Gulch** for switch 8 against switch 3 (`optimization_ranking.md` M3).
