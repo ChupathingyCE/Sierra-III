@@ -16,6 +16,8 @@ usage: python3 mewalk.py halo.dis [root ...] [--summary] [--each]
              handle another way (an assert that stops the job and lets the
              main CPU report it, a debug print left out). Each is listed with
              the call chain that reached it
+  --calls=   functions whose call lines (jal, j, bal, jalr) are printed as
+             they are in the disassembly: to see why a walk stops early
 
 Flagged:
   firmware call  a call into an imported firmware function (the stubs in
@@ -42,6 +44,10 @@ for f in flags:
     if f.startswith('--stop='):
         stops |= {s for s in f[len('--stop='):].split(',') if s}
 roots = args[1:] or ['meLibOnProcess']
+show_calls = []
+for f in flags:
+    if f.startswith('--calls='):
+        show_calls += [c for c in f[len('--calls='):].split(',') if c]
 
 STUB_SECTION = '.sceStub.text'
 funcs, starts, section_of = {}, {}, {}
@@ -147,6 +153,14 @@ def report(walk_roots):
             print("  %-40s %4d   %s" % (f[:40], n, chain(parent, f)))
         if len(where) > 40:
             print("  ... and %d more functions" % (len(where) - 40))
+
+CALL_LINE = re.compile(r'\t(jal|j|bal|jalr)\s')
+for f in show_calls:
+    print("calls in %s (%s, %d bytes):" % (f, section_of.get(f, 'not in the disassembly'), size_of(f) if f in funcs else 0))
+    for line in funcs.get(f, []):
+        if CALL_LINE.search(line):
+            print("  " + line.strip())
+    print()
 
 groups = [r.split('+') for r in roots]
 if each:
