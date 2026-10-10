@@ -218,6 +218,16 @@ Where the tick's data misses go, three new suspects (all exact levers if fixed):
 - **The game thread's stack** (13% of the tick's data misses, 9% of drawing's). Deep calls with large local buffers (the collision walks' feature lists) push everything else out of the 16 KB cache.
 - **`memset`** (3%): structures cleared whole (`path_state_new`, X20, is one).
 
+**`gedefer` on (lab run 38059883490, same route) [E].** The replay moves the GE layer's work from the drawing phase to the frame end, so compare the two phases together, per frame (2,921 frames off, 2,826 on):
+
+| Drawing + frame end, a frame | `gedefer` off | on | Change |
+|---|---:|---:|---:|
+| Instruction misses | 125 k | 99 k | −20% |
+| Data misses | 73 k | 78 k | +6% |
+| Instructions fetched | 13.1 M | 13.7 M | +4% (the recording) |
+
+The tick doesn't move (2.75% → 2.70% data misses). Writing the calls down and carrying them out in runs keeps each half's code in the instruction cache, as step 1 predicted. At ~216 ns a miss and an instruction a cycle, that's about −5.5 ms of misses against +2.7 ms of recording and data misses: **roughly −3 ms a frame on the main CPU, before the ME takes anything** [E]. Only the PSP gives the real figure: a `gedefer` A/B in the ceiling bench's flight.
+
 The objects pool is 20% of the tick's data misses, the object spheres 3.7%, the collision BSP walks (`collision_bsp_test_vector_recursive`, `bsp3d_test_sphere_recursive`, `bsp2d_test_sphere_recursive`) 15% together. Drawing's: `model_geometry` 8.8%, `render_model` 5.5%, the geometry cache's lookup `resident_entry` 4.1% (its `entries` table: E6).
 
 ## 8. Tests running and next
