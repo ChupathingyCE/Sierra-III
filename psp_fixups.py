@@ -5355,6 +5355,56 @@ void psp_game_state_report(void)
 		platform_psp_log("game state:%s", line);
 	platform_psp_log("game state: %ld KB allocated of %d KB", (game_state_globals.cpu_allocation_size + game_state_globals.gpu_allocation_size) / 1024, GAME_STATE_SIZE / 1024);
 }
+
+/* build 112: "statecrc": a hash of the whole game state after every tick
+(game.c), and of each allocation every 30 ticks. With "fixedticks" (main.c)
+and no input, two runs of the same stretch play the same way, so a change
+meant to leave the game exactly as it was must leave every line the same;
+the first tick that differs, and the allocation, say where it doesn't
+(docs/big_levers.md). FNV-1a over 32-bit words: a few cycles a word */
+int psp_keep(const char *name);
+static unsigned long psp_state_hash(const void *start, long bytes)
+{
+	/* from the first whole word (an allocation can start anywhere, and an
+	unaligned word load faults on the PSP) */
+	unsigned long skip = (4 - ((unsigned long)start & 3)) & 3;
+	const unsigned long *word = (const unsigned long *)((const char *)start + skip);
+	unsigned long hash = 2166136261UL;
+	long k;
+
+	for (k = 0; k < (bytes - (long)skip) / 4; k++)
+		hash = (hash ^ word[k]) * 16777619UL;
+	return hash;
+}
+
+void psp_game_state_hash_tick(long tick)
+{
+	static int asked = -1;
+	char line[1024];
+	int length = 0, k;
+
+	if (asked < 0)
+		asked = psp_keep("statecrc");
+	if (!asked || !game_state_globals.base_address)
+		return;
+	platform_psp_log("state: tick %ld %08lx", tick,
+		psp_state_hash(game_state_globals.base_address, game_state_globals.cpu_allocation_size));
+	if (tick % 30)
+		return;
+	for (k = 0; k < psp_state_record_count; k++)
+	{
+		if (length > (int)sizeof(line) - 64)
+		{
+			platform_psp_log("state: records at tick %ld:%s", tick, line);
+			length = 0;
+		}
+		length += snprintf(line + length, sizeof(line) - length, " %.24s %08lx",
+			psp_state_records[k].name[0] ? psp_state_records[k].name : "?",
+			psp_state_hash(psp_state_records[k].pointer, psp_state_records[k].size));
+	}
+	if (length)
+		platform_psp_log("state: records at tick %ld:%s", tick, line);
+}
 #endif
 
 void *game_state_malloc(
@@ -9420,6 +9470,47 @@ FIXES_112["source/game/game.c#bench"] = [
 #endif
 	particles_update(frame_dt);
 """),
+]
+# build 112: the tick-by-tick comparison (docs/big_levers.md): "statecrc"
+# hashes the game state after every tick (game_state.c), and "fixedticks"
+# makes every frame two ticks and a fifteenth of a second of game time, so
+# runs of different builds play the same way
+FIXES_112["source/game/game.c#statecrc"] = [
+("""	collision_log_end_period();
+	profile_tick_end();""",
+ """#ifdef HALO_PSP
+	{
+		extern void psp_game_state_hash_tick(long tick); /* game_state.c (psp_fixups.py, build 112) */
+
+		psp_game_state_hash_tick(game_time_get());
+	}
+#endif
+	collision_log_end_period();
+	profile_tick_end();"""),
+]
+FIXES_112["source/main/main.c#fixedticks"] = [
+("""	main_globals.frame_start_milliseconds = end_milliseconds;
+	main_globals.rasterizer_target_index = target_index;
+	main_globals.seconds_elapsed = seconds_elapsed;""",
+ """	main_globals.frame_start_milliseconds = end_milliseconds;
+	main_globals.rasterizer_target_index = target_index;
+#ifdef HALO_PSP
+	/* build 112: "fixedticks": every frame two ticks and a fifteenth of a
+	second, whatever the clock says, as the game's own film recorder steps.
+	With no input the game then plays the same way however fast a build
+	runs, so runs compare tick by tick ("statecrc", game_state.c). Tests
+	only: game time no longer follows the clock (psp_fixups.py) */
+	{
+		extern int psp_keep(const char *name);
+		static int fixed = -1;
+
+		if (fixed < 0)
+			fixed = psp_keep("fixedticks");
+		if (fixed && main_globals.connection == _game_connection_local && !main_globals.movie)
+			seconds_elapsed = 0.06666667014360428f;
+	}
+#endif
+	main_globals.seconds_elapsed = seconds_elapsed;"""),
 ]
 FIXES_112["source/render/render.c#bench"] = [
 ("""#include "structures/structures.h"
