@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 111
+#define PSP_BUILD_NUMBER 112
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -650,15 +650,18 @@ static void object_report(SceUID file, unsigned long ticks)
 	{
 		/* build 106: the corpse-sleep rule's stages (psp_fixups.py), when any
 		biped was dead in the window */
-		extern long psp_corpse_stage[4], psp_corpses_holding;
+		extern long psp_corpse_stage[4], psp_corpses_holding, psp_corpses_placed_dead;
 
+		/* build 112: "placed dead": bodies the level placed dead, which go on
+		to the same stages as garbage (at rest, idle, offered) */
 		if (psp_corpse_stage[0])
-			platform_log("  corpses, per tick: %.1f dead, %.1f of them garbage, %.1f at rest, %.1f idle past 2 s (offered to sleep), %.1f of those still holding something",
+			platform_log("  corpses, per tick: %.1f dead, %.1f of them garbage, %.1f placed dead, %.1f at rest, %.1f idle past 2 s (offered to sleep), %.1f of those still holding something",
 				ticks ? (double)psp_corpse_stage[0] / ticks : 0.0, ticks ? (double)psp_corpse_stage[1] / ticks : 0.0,
+				ticks ? (double)psp_corpses_placed_dead / ticks : 0.0,
 				ticks ? (double)psp_corpse_stage[2] / ticks : 0.0, ticks ? (double)psp_corpse_stage[3] / ticks : 0.0,
 				ticks ? (double)psp_corpses_holding / ticks : 0.0);
 		memset(psp_corpse_stage, 0, sizeof(psp_corpse_stage));
-		psp_corpses_holding = 0;
+		psp_corpses_holding = psp_corpses_placed_dead = 0;
 	}
 	{
 		/* build 106: the garbage collector (psp_fixups.py, objects.c) */

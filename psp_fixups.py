@@ -2151,8 +2151,9 @@ long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_cor
 /* build 106: how far dead bipeds get through the corpse-sleep rule, a count
 per biped update: dead; and garbage (not feigning); and at rest; and idle
 past 2 s (so offered to the byte-identical rule). b105 run 1 slept none
-and couldn't say why */
-long psp_corpse_stage[4], psp_corpses_holding;
+and couldn't say why. Build 112: psp_corpses_placed_dead, the bodies the
+level placed dead (never garbage) that go on to the same stages */
+long psp_corpse_stage[4], psp_corpses_holding, psp_corpses_placed_dead;
 static struct { short identifier; short quiet; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
 
 /* What the byte-identical rule leaves out of an object's data: the words an
@@ -2455,20 +2456,37 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 	a body a player can see. Only a truly dead one (garbage: a Flood combat
 	form feigning death is not), at rest for 2 s by the game's own count,
 	carrying nothing; the byte-identical rule then decides, and a push or
-	damage wakes it. Campaign only (no game engine). "corpsesawake": off */
+	damage wakes it. Campaign only (no game engine). "corpsesawake": off.
+	Build 112: also the bodies the level placed dead (set dressing: units.c
+	gives them _unit_placed_here_dead_bit and bars them from the garbage
+	list, so the collector never takes them and the garbage rule never let
+	them sleep). b108 run 1, b30's security room: 20 bodies, 13 garbage and
+	asleep, 7 placed dead and updated every tick. They are dead from the
+	start, so no feigning; the byte-identical rule still decides, and a push
+	or damage wakes them. "placeddeadawake": off */
 	if (header->type == _object_type_biped)
 	{
-		static int psp_corpse_sleep_on = -1;
+		static int psp_corpse_sleep_on = -1, psp_placed_dead_sleep_on = -1;
 		int may = 0;
 
 		if (psp_corpse_sleep_on < 0)
+		{
 			psp_corpse_sleep_on = !psp_keep("corpsesawake");
+			psp_placed_dead_sleep_on = !psp_keep("placeddeadawake");
+		}
 		if (psp_corpse_sleep_on && !game_engine_running() && TEST_FLAG(object->object.damage_flags, _object_dead_bit))
 		{
+			int garbage = TEST_FLAG(object->object.flags, _object_garbage_bit);
+			int placed_dead = !garbage && psp_placed_dead_sleep_on &&
+				TEST_FLAG(((struct unit_datum const *)object)->unit.flags, _unit_placed_here_dead_bit);
+
 			psp_corpse_stage[0]++;
-			if (TEST_FLAG(object->object.flags, _object_garbage_bit))
-			{
+			if (garbage)
 				psp_corpse_stage[1]++;
+			if (placed_dead)
+				psp_corpses_placed_dead++;
+			if (garbage || placed_dead)
+			{
 				if (TEST_FLAG(object->object.flags, _object_at_rest_bit))
 				{
 					psp_corpse_stage[2]++;
