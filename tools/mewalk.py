@@ -18,6 +18,11 @@ usage: python3 mewalk.py halo.dis [root ...] [--summary] [--each]
              the call chain that reached it
   --calls=   functions whose call lines (jal, j, bal, jalr) are printed as
              they are in the disassembly: to see why a walk stops early
+  --syms=    the symbol table (psp-objdump -t halo.elf): objdump starts a new
+             block at every symbol, and some fall inside a function (labels the
+             link keeps), which cut the function short and hid its calls; with
+             the table, each such block is put back into the function holding
+             it, and a call to it counts as a call to that function
 
 Flagged:
   firmware call  a call into an imported firmware function (the stubs in
@@ -68,6 +73,29 @@ for line in open(args[0], errors='replace'):
     if cur:
         funcs[cur].append(line)
 
+# objdump's blocks back into whole functions, from the symbol table
+syms_path = next((f[len('--syms='):] for f in flags if f.startswith('--syms=')), None)
+owner_of = {}
+if syms_path:
+    fsyms = []
+    for line in open(syms_path, errors='replace'):
+        m = re.match(r'^([0-9a-f]+) (.{7}) (\S+)\s+([0-9a-f]+) (.+)$', line.rstrip('\n'))
+        if m and 'F' in m.group(2) and int(m.group(4), 16) > 0:
+            fsyms.append((int(m.group(1), 16), int(m.group(4), 16), m.group(5).split()[-1]))
+    fsyms.sort()
+    import bisect
+    fstarts = [a for a, _, _ in fsyms]
+    for name in list(funcs):
+        i = bisect.bisect_right(fstarts, starts[name]) - 1
+        if i < 0:
+            continue
+        address, size, fname = fsyms[i]
+        if fname != name and fname in funcs and starts[name] < address + size and section_of[name] == section_of[fname]:
+            owner_of[name] = fname
+    for name in sorted(owner_of, key=lambda n: starts[n]):
+        funcs[owner_of[name]].extend(funcs.pop(name))
+    print("symbols: %d blocks put back into the functions holding them" % len(owner_of))
+
 CALL = re.compile(r'\t(jal|j|bal)\s+[0-9a-f]+ <([^>+]+)')
 VFPU = re.compile(r'\t(v[a-z0-9]+\.[spqt]\b|lv\.|sv\.|lvl\.|lvr\.|svl\.|svr\.|ulv\.|usv\.|mtv|mfv|vsync|bvf|bvt)')
 LINE_KINDS = [('syscall', re.compile(r'\tsyscall\b')), ('VFPU', VFPU),
@@ -101,9 +129,12 @@ def walk(walk_roots):
             continue  # a firmware import: nothing of ours behind it
         for line in funcs[f]:
             m = CALL.search(line)
-            if m and m.group(2) != f and m.group(2) not in parent:
-                parent[m.group(2)] = f
-                queue.append(m.group(2))
+            if not m:
+                continue
+            target = owner_of.get(m.group(2), m.group(2))
+            if target != f and target not in parent:
+                parent[target] = f
+                queue.append(target)
     return parent, order, missing, stopped
 
 def chain(parent, f):
