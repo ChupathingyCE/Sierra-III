@@ -161,7 +161,25 @@ GCC with a profile moves every block that never runs out of the hot path, lays o
 
 The use build is an ordinary build (no size cost), testable in the cache model, then on the PSP.
 
-## 7. Tests running and next
+## 7. The cache model on b30's opening (b112, `fixedticks`) [E]
+
+Lab run 38054938344: the emulator's cache models on the interpreter, b30 from the start, 5,842 ticks (194 s of game time) in 45 minutes.
+
+| Phase | Data misses | Instruction misses | Per tick / frame |
+|---|---:|---:|---|
+| tick | 247 M (2.75%) | 449 M (1.59%) | 42 k data + 77 k instruction misses a tick |
+| drawing | 213 M (1.92%) | 362 M (0.96%) | 73 k + 124 k a frame (2 ticks a frame) |
+
+At the PSP's ~216 ns a miss [M, `psp_hardware_reference.md`] that's ~26 ms of waiting a tick and ~43 ms a frame's drawing [U]. The tick's hot path: half its fetches from 5 KB of code, nine tenths from 59 KB (the same 59 KB as before).
+
+Where the tick's data misses go, three new suspects (all exact levers if fixed):
+- **The sleep rule's checksums** (`psp_checksum_rules_for`, `psp_checksum_span`: 6% of the tick's data misses; `psp_sleepy_update` 1.3% of its instruction misses). The byte-identical rule hashes each candidate's bytes every tick.
+- **The game thread's stack** (13% of the tick's data misses, 9% of drawing's). Deep calls with large local buffers (the collision walks' feature lists) push everything else out of the 16 KB cache.
+- **`memset`** (3%): structures cleared whole (`path_state_new`, X20, is one).
+
+The objects pool is 20% of the tick's data misses, the object spheres 3.7%, the collision BSP walks (`collision_bsp_test_vector_recursive`, `bsp3d_test_sphere_recursive`, `bsp2d_test_sphere_recursive`) 15% together. Drawing's: `model_geometry` 8.8%, `render_model` 5.5%, the texture lookup `resident_entry` 4.1% (the geometry cache's `entries` table: E6).
+
+## 8. Tests running and next
 
 - **Emulator ceiling bench with the GE layer switch** (b112).
 - **Cache-model A/B, `gedefer` off and on** (lab `cache=1`: the emulator's cache models on the interpreter, each phase's misses in `cache.txt`).
