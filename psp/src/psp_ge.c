@@ -6840,10 +6840,12 @@ The trail behind a projectile (the plasma rifle's and pistol's bolts, the
 needler's needles): render_contrails.c builds a strip of quads along the
 trail's points, two corners a point, in world coordinates, and hands it to
 the transparent-geometry groups, which the PSP never draws. Here the strip
-is queued with the see-through draws as triangles in the sprites' format,
-under a matrix that moves the world so the camera is at its origin, with the
-contrail shader's texture and blend. The game has already faded the corners
-(the trail's ends, the angle to the eye) in their alpha */
+is queued with the see-through draws as a triangle strip in the sprites'
+format (the corners in the game's own order: its two triangles a segment are
+a strip's), under a matrix that moves the world so the camera is at its
+origin, with the contrail shader's texture and blend. 48 bytes of list a
+segment. The game has already faded the corners (the trail's ends, the angle
+to the eye) in their alpha */
 static unsigned long contrails_queued = 0, contrail_segments = 0;
 
 static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
@@ -6851,9 +6853,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	struct game_sprite_vertex const *in = vertices;
 	struct sprite_vertex *out;
 	struct transparent_draw *draw;
-	int segments = vertex_count / 2 - 1, segment, corner;
-	/* the game's own two triangles a segment: (0, 1, 2) and (2, 1, 3) */
-	static const int quad[6] = { 0, 1, 2, 2, 1, 3 };
+	int segments = vertex_count / 2 - 1, corner;
 	float cx = 0.0f, cy = 0.0f, cz = 0.0f;
 
 	if (!frame_open || !vertices || segments <= 0 || !bitmap_key || list_full())
@@ -6863,24 +6863,21 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 		transparent_dropped++;
 		return 0;
 	}
-	out = list_take(segments * 6 * sizeof(struct sprite_vertex));
+	vertex_count = 2 * (segments + 1);
+	out = list_take(vertex_count * sizeof(struct sprite_vertex));
 	if (!out)
 		return 0;
-	for (segment = 0; segment < segments; segment++)
-		for (corner = 0; corner < 6; corner++)
-		{
-			struct game_sprite_vertex const *v = &in[2 * segment + quad[corner]];
-			struct sprite_vertex *o = &out[6 * segment + corner];
-			unsigned int argb = v->argb;
-
-			o->u = v->u;
-			o->v = v->v;
-			o->color = (argb & 0xFF00FF00) | ((argb >> 16) & 0xFF) | ((argb & 0xFF) << 16);
-			o->x = v->x; o->y = v->y; o->z = v->z;
-		}
 	for (corner = 0; corner < vertex_count; corner++)
 	{
-		cx += in[corner].x; cy += in[corner].y; cz += in[corner].z;
+		struct game_sprite_vertex const *v = &in[corner];
+		struct sprite_vertex *o = &out[corner];
+		unsigned int argb = v->argb;
+
+		o->u = v->u;
+		o->v = v->v;
+		o->color = (argb & 0xFF00FF00) | ((argb >> 16) & 0xFF) | ((argb & 0xFF) << 16);
+		o->x = v->x; o->y = v->y; o->z = v->z;
+		cx += v->x; cy += v->y; cz += v->z;
 	}
 	draw = &transparent[transparent_count++];
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
@@ -6888,8 +6885,8 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	relative(&draw->matrix);
 	draw->vertices = out;
 	draw->indices = NULL;
-	draw->index_count = segments * 6;
-	draw->strip = 0;
+	draw->index_count = vertex_count;
+	draw->strip = 1;
 	draw->key = bitmap_key;
 	draw->u_scale = draw->v_scale = 1.0f;
 	draw->u_offset = draw->v_offset = 0.0f;
@@ -8224,8 +8221,10 @@ static void transparent_flush_body(void)
 		sceGuTexOffset(draw->u_offset, draw->v_offset);
 		sceGumLoadMatrix(&draw->matrix);
 		if (draw->sprites)
-			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
-				draw->index_count, NULL, draw->vertices);
+			/* (build 113: a contrail is a strip; sprites and widgets lists) */
+			sceGumDrawArray(draw->strip ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
+				GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, draw->index_count, NULL,
+				draw->vertices);
 		else if (draw->level == 1 || draw->level == 3)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				draw->index_count, draw->indices, draw->vertices);
