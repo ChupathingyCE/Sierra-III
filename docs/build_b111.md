@@ -59,7 +59,7 @@ With b111 [D, U]:
 - **The final build** took 820 KB less than b110. Compaction kept the arena whole and brought the heap's copies back (none left at the end), and the sooner sweep kept the skinning plans under 450 KB where the arena-alone run made 994 KB of plans and freed none.
 - **Compaction's cost:** 19 runs over the level, about 830 KB moved each. A memory copy that size is a few milliseconds on the PSP [U]: a hitch shorter than one frame at today's frame rates, a handful of times a level.
 
-**Every map's opening** on the campaign bake, 300 s each, deathless, no input (`sierra-test`, b111 at `ae7b223`; a10 at `5d1e41d`, the first build with 128 KB of slack, rerun pending):
+**Every map's opening** on the campaign bake, 300 s each, deathless, no input (`sierra-test`, b111 at `ae7b223`, the arena alone; a10 at `5d1e41d`, the first build with 128 KB of slack, and rerun with compaction in the next table):
 
 | Map | Game time | Heap peak in use, KB (with the arena) | Heap top, KB | Copies' peak, KB | Arena at the end | Let go to make room | Pieces from the heap | Failed |
 |---|---|---|---|---|---|---|---|---|
