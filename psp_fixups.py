@@ -10772,6 +10772,50 @@ the highest place they fit (xbox_sound_cache.c sets it), and the size that
 counts as big */
 struct lruv_cache *psp_lruv_high_cache = NULL;
 #define PSP_LRUV_HIGH_PAGES 8
+
+/* build 113: the longest run of pages a new block could take now (free pages
+and blocks that may be pushed out, side by side), and the pages held by
+blocks that can't (playing, loading, or used this tick): the sound cache's
+log line when a sound finds no room (xbox_sound_cache.c) */
+long psp_lruv_largest_clearable(struct lruv_cache *cache, long *locked_pages)
+{
+	long page = 0, run = 0, best = 0, locked = 0, block_index = cache->first_block_index;
+
+	while (page < cache->page_count)
+	{
+		struct lruv_cache_block *block;
+
+		if (block_index == NONE)
+		{
+			run += cache->page_count - page;
+			break;
+		}
+		block = datum_get(cache->blocks, block_index);
+		if (page < block->first_page_index)
+		{
+			run += block->first_page_index - page;
+			page = block->first_page_index;
+			continue;
+		}
+		if ((cache->locked_block_proc && cache->locked_block_proc(block_index)) ||
+			(unsigned long)block->last_used_tick == (unsigned long)cache->tick)
+		{
+			if (run > best)
+				best = run;
+			run = 0;
+			locked += block->page_count;
+		}
+		else
+			run += block->page_count;
+		page = block->first_page_index + block->page_count;
+		block_index = block->next_block_index;
+	}
+	if (run > best)
+		best = run;
+	if (locked_pages)
+		*locked_pages = locked;
+	return best;
+}
 #endif
 
 long lruv_block_new(
@@ -10826,6 +10870,33 @@ FIXES_113["source/cache/xbox_sound_cache.c#soundplace"] = [
 			psp_lruv_high_cache = xbox_sound_cache_globals.cache;
 	}
 #endif"""),
+]
+
+
+# build 113: the sound cache's failures named (b113_candidates.md #24): the
+# first 24 each get a line with the sound's size, the longest run the cache
+# could clear for it, and what playing or loading sounds held
+FIXES_113["source/cache/xbox_sound_cache.c#noroom"] = [
+("""	else
+		psp_sound_cache_failures++;
+#endif
+""",
+ """	else
+	{
+		psp_sound_cache_failures++;
+		if (psp_sound_cache_failures <= 24)
+		{
+			extern long psp_lruv_largest_clearable(struct lruv_cache *cache, long *locked_pages); /* lruv_cache.c */
+			extern long psp_game_time_peek(void);
+			long locked_pages = 0, clearable = psp_lruv_largest_clearable(xbox_sound_cache_globals.cache, &locked_pages);
+
+			platform_psp_log("sound cache: no room for %ld KB at game time %ld: the longest run it could clear %ld KB; "
+				"%ld KB held by sounds playing or loading", (long)(sound->samples.size / 1024), psp_game_time_peek(),
+				clearable * 4, locked_pages * 4);
+		}
+	}
+#endif
+"""),
 ]
 
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_CHUPA.items()):
