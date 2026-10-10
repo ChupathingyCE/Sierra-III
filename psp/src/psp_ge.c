@@ -227,7 +227,7 @@ enum
 	DEFER_QUEUE_LEVEL_TRANSPARENT, DEFER_HUD_ZOOM, DEFER_UI_CENTERED, DEFER_UI_SPACE, DEFER_SCREEN_QUAD,
 	DEFER_SHADOW_BEGIN, DEFER_SHADOW_DRAW, DEFER_SHADOW_END, DEFER_LIGHT_BEGIN, DEFER_LIGHT_DRAW, DEFER_SCREEN_FLASH,
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
-	DEFER_TEXT_BEGIN
+	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */
 };
 typedef union
 {
@@ -311,6 +311,8 @@ void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primar
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
+int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend);
+void psp_ge_zoom_mask(unsigned int key);
 void psp_ge_sky(int on);
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
 void psp_ge_widget_begin(int depth_test);
@@ -601,6 +603,22 @@ static int defer_sprites(void const *vertices, int sprite_count, unsigned int bi
 	return 1;
 }
 
+/* build 113: a contrail's corners (render_contrails.c's contrail_vertex has
+the sprite vertex's layout: x, y, z, u, v, argb) */
+static int defer_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
+{
+	int words = vertices && vertex_count > 0 ? vertex_count * SPRITE_VERTEX_WORDS : 0;
+	defer_word *at = defer_take(DEFER_CONTRAIL, 3 + 1 + words);
+
+	if (!at)
+		return 0;
+	at[0].i = vertex_count;
+	at[1].u = bitmap_key;
+	at[2].i = blend;
+	defer_copy(at + 3, words ? vertices : NULL, words);
+	return 1;
+}
+
 static int defer_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
 	unsigned long color)
 {
@@ -784,6 +802,12 @@ static void defer_replay(const defer_word *buffer, unsigned int used)
 		case DEFER_SPRITES:
 			a = defer_copy_back(w + 3, &rest, NODE_FLOATS);
 			psp_ge_sprites(defer_copy_back(rest, &rest, 0), w[0].i, w[1].u, (short)w[2].i, a);
+			break;
+		case DEFER_CONTRAIL: /* build 113 */
+			psp_ge_contrail(defer_copy_back(w + 3, &rest, 0), w[0].i, w[1].u, (short)w[2].i);
+			break;
+		case DEFER_ZOOM_MASK: /* build 113 */
+			psp_ge_zoom_mask(w[0].u);
 			break;
 		case DEFER_WIDGET_BEGIN:
 			psp_ge_widget_begin(w[0].i);
@@ -2361,6 +2385,32 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	if (!ge_ready)
 		ge_initialize();
+	{
+		/* build 113: "shoteveryN": a screenshot every N seconds of game time,
+		at most 24 (emulator runs have no hands for select + right). Asked
+		for as the frame begins, so "tdump" lists the frame's see-through
+		draws too */
+		extern volatile int psp_screenshot_requested;
+		extern int psp_keep_number(const char *prefix, int fallback);
+		extern long psp_game_time_peek(void);
+		static int shot_every = -2, shots_asked = 0;
+		static long shot_next = -1;
+
+		if (shot_every == -2)
+			shot_every = psp_keep_number("shotevery", 0);
+		if (shot_every > 0 && shots_asked < 24)
+		{
+			long now = psp_game_time_peek(), period = (long)shot_every * 30;
+
+			if (shot_next >= 0 && now >= shot_next)
+			{
+				psp_screenshot_requested = 1;
+				shots_asked++;
+			}
+			if (shot_next < 0 || now >= shot_next)
+				shot_next = (now / period + 1) * period;
+		}
+	}
 	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
 	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : display_list_size;
 	sceGuStart(GU_DIRECT, list_in_vram ? (void *)(0x04000000 + VRAM_BENCH_START) : (void *)display_list);
@@ -6778,6 +6828,94 @@ int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_k
 	return result;
 }
 
+/* ---------- contrails (build 113, b113_candidates.md #1; keep word "contrails")
+
+The trail behind a projectile (the plasma rifle's and pistol's bolts, the
+needler's needles): render_contrails.c builds a strip of quads along the
+trail's points, two corners a point, in world coordinates, and hands it to
+the transparent-geometry groups, which the PSP never draws. Here the strip
+is queued with the see-through draws as triangles in the sprites' format,
+under a matrix that moves the world so the camera is at its origin, with the
+contrail shader's texture and blend. The game has already faded the corners
+(the trail's ends, the angle to the eye) in their alpha */
+static unsigned long contrails_queued = 0, contrail_segments = 0;
+
+static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
+{
+	struct game_sprite_vertex const *in = vertices;
+	struct sprite_vertex *out;
+	struct transparent_draw *draw;
+	int segments = vertex_count / 2 - 1, segment, corner;
+	/* the game's own two triangles a segment: (0, 1, 2) and (2, 1, 3) */
+	static const int quad[6] = { 0, 1, 2, 2, 1, 3 };
+	float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+
+	if (!frame_open || !vertices || segments <= 0 || !bitmap_key || list_full())
+		return 0;
+	if (transparent_count >= MAXIMUM_TRANSPARENT_DRAWS)
+	{
+		transparent_dropped++;
+		return 0;
+	}
+	out = list_take(segments * 6 * sizeof(struct sprite_vertex));
+	if (!out)
+		return 0;
+	for (segment = 0; segment < segments; segment++)
+		for (corner = 0; corner < 6; corner++)
+		{
+			struct game_sprite_vertex const *v = &in[2 * segment + quad[corner]];
+			struct sprite_vertex *o = &out[6 * segment + corner];
+			unsigned int argb = v->argb;
+
+			o->u = v->u;
+			o->v = v->v;
+			o->color = (argb & 0xFF00FF00) | ((argb >> 16) & 0xFF) | ((argb & 0xFF) << 16);
+			o->x = v->x; o->y = v->y; o->z = v->z;
+		}
+	for (corner = 0; corner < vertex_count; corner++)
+	{
+		cx += in[corner].x; cy += in[corner].y; cz += in[corner].z;
+	}
+	draw = &transparent[transparent_count++];
+	memset(&draw->matrix, 0, sizeof(draw->matrix));
+	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
+	relative(&draw->matrix);
+	draw->vertices = out;
+	draw->indices = NULL;
+	draw->index_count = segments * 6;
+	draw->strip = 0;
+	draw->key = bitmap_key;
+	draw->u_scale = draw->v_scale = 1.0f;
+	draw->u_offset = draw->v_offset = 0.0f;
+	draw->blend = blend;
+	draw->sky = 0;
+	draw->sprites = 1;
+	draw->level = 0;
+	draw->first_person = 0;
+	draw->cut_vertices = NULL;
+	draw->cut_count = 0;
+	/* from the eye, squared, as the other see-through draws sort */
+	cx = cx / vertex_count - camera_eye[0];
+	cy = cy / vertex_count - camera_eye[1];
+	cz = cz / vertex_count - camera_eye[2];
+	draw->distance = cx * cx + cy * cy + cz * cz;
+	contrails_queued++;
+	contrail_segments += segments;
+	return 1;
+}
+
+int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
+{
+	GE_DEFER(defer_contrail(vertices, vertex_count, bitmap_key, blend), 1);
+	GE_BENCH_SKIP(0);
+	ge_kind(KIND_SPRITE);
+	unsigned int start = ge_clock();
+	int result = psp_ge_contrail_body(vertices, vertex_count, bitmap_key, blend);
+
+	ge_entry_us[4] += ge_clock() - start;
+	return result;
+}
+
 /* ---------- the widget layer's sprites (build 31): lens flares and light
 volumes. The game hands over a world point, a radius, a scale, a rotation
 and a colour (ARGB, alpha the brightness); the Xbox draws a square facing the
@@ -8309,6 +8447,66 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 }
 
 static unsigned long screen_quad_bailed = 0;
+
+/* build 113: a zoomed weapon's mask (b113_candidates.md #20; keep word
+"zoommask"). The HUD's screen effect hands its full-screen bitmap to
+rasterizer_screen_effect (rasterizer.c, psp_fixups.py); the Xbox's last pass
+darkens the frame by the mask's alpha: frame x (1 - alpha), so the pistol's
+scope is clear in the middle and black around it
+(rasterizer_xbox_screen_effect.c). Here one quad over the 3D view, before
+the HUD. The mask is drawn for 4:3 (640x480): its square is kept round in the
+middle of the 480x272 screen, and the sides take its edge texels (clamped).
+The blur and night vision the effect can add are left out */
+static unsigned long zoom_masks = 0, zoom_masks_missing = 0;
+
+void psp_ge_zoom_mask(unsigned int key)
+{
+	GE_DEFER(defer_words(DEFER_ZOOM_MASK, 1, key, 0, 0, 0, 0, 0, 0, 0));
+	GE_BENCH_SKIP();
+	ge_kind(KIND_SCREEN);
+	struct hud_vertex *out;
+	int width, height;
+	/* the 4:3 square's width on the screen, and the texture's span across
+	the whole screen that makes it so */
+	float span = (float)SCREEN_WIDTH / (SCREEN_HEIGHT * 4.0f / 3.0f);
+
+	if (!frame_open || !key)
+		return;
+	list_hud_phase();
+	transparent_flush();
+	if (list_full())
+		return;
+	if (!psp_tex_size(key, &width, &height) || !psp_tex_bind(key, NULL))
+	{
+		zoom_masks_missing++;
+		return;
+	}
+	out = list_take(2 * sizeof(struct hud_vertex));
+	if (!out)
+		return;
+	out[0].u = (0.5f - span * 0.5f) * width;
+	out[0].v = 0.0f;
+	out[1].u = (0.5f + span * 0.5f) * width;
+	out[1].v = (float)height;
+	out[0].color = out[1].color = 0xFFFFFFFF;
+	out[0].x = 0.0f; out[0].y = 0.0f; out[0].z = 0.0f;
+	out[1].x = (float)SCREEN_WIDTH; out[1].y = (float)SCREEN_HEIGHT; out[1].z = 0.0f;
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_FOG);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+	sceGuTexScale(1.0f, 1.0f);
+	sceGuTexOffset(0.0f, 0.0f);
+	sceGuEnable(GU_BLEND);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
+	sceGuDisable(GU_BLEND);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuEnable(GU_FOG);
+	sceGuEnable(GU_DEPTH_TEST);
+	zoom_masks++;
+}
 
 static void screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
@@ -11188,6 +11386,15 @@ void psp_ge_frame_end(void)
 			decals_project_fallback, decal_cache_scans, decal_cache_uses, decal_project_us / 300);
 		decals_projected = decal_projected_triangles = decals_project_fallback = 0;
 		decal_cache_scans = decal_cache_uses = decal_project_us = 0;
+		/* build 113 */
+		if (contrails_queued)
+			platform_log("GE: contrails (contrails): %lu queued, %lu segments (last 300 frames)", contrails_queued,
+				contrail_segments);
+		contrails_queued = contrail_segments = 0;
+		if (zoom_masks || zoom_masks_missing)
+			platform_log("GE: zoom masks (zoommask): %lu drawn, %lu not in the texture pack (last 300 frames)", zoom_masks,
+				zoom_masks_missing);
+		zoom_masks = zoom_masks_missing = 0;
 		if (me_classify_jobs || me_classify_failures)
 			platform_log("GE: ME classify (meclassify, measure only): %lu jobs, %lu vertices, the main CPU waited %lu us in all, %lu answers differing, %lu failed",
 				me_classify_jobs, me_classify_vertices, me_classify_wait_us, me_classify_mismatches, me_classify_failures);

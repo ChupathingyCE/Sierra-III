@@ -10662,6 +10662,91 @@ FIXES_113["source/render/render_objects.c#renderstates"] = [
 		{"""),
 ]
 
+
+# build 113: contrails, the Covenant weapons' tracers (b113_candidates.md #1;
+# keep word "contrails"): the strip render_contrail builds goes to the GE's
+# see-through draws (psp_ge.c, psp_ge_contrail) instead of the
+# transparent-geometry groups the PSP never draws. Without the word, as before
+FIXES_113["source/render/render_contrails.c#contrails"] = [
+("""static void render_contrail(
+	struct contrail_datum *contrail,
+	struct contrail_definition *definition,
+	short instance_index)
+{
+	struct bitmap_data *bitmap;""",
+ """#ifdef HALO_PSP
+int psp_keep(const char *name);
+int psp_ge_active(void);
+int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend); /* psp_ge.c */
+#endif
+
+static void render_contrail(
+	struct contrail_datum *contrail,
+	struct contrail_definition *definition,
+	short instance_index)
+{
+	struct bitmap_data *bitmap;"""),
+("""			rasterizer_dynamic_triangles_unlock(triangle_buffer_index);
+			rasterizer_dynamic_vertices_unlock(vertex_buffer_index);
+			rasterizer_dynamic_unlit_geometry_draw(""",
+ """#ifdef HALO_PSP
+			{
+				static int psp_contrails = -1;
+
+				if (psp_contrails < 0)
+					psp_contrails = psp_keep("contrails");
+				if (psp_contrails && psp_ge_active())
+				{
+					/* the shader's blend: contrail shaders lay out their first
+					words as effect shaders do (flags, then the blend function) */
+					psp_ge_contrail(first_vertex, vertex_count, (unsigned int)bitmap,
+						((struct shader_effect_definition const *)shader)->framebuffer_blend_function);
+					rasterizer_dynamic_triangles_unlock(triangle_buffer_index);
+					rasterizer_dynamic_vertices_unlock(vertex_buffer_index);
+					rasterizer_dynamic_triangles_delete(triangle_buffer_index);
+					rasterizer_dynamic_vertices_delete(vertex_buffer_index);
+					rasterizer_globals.current_lock_operation = _rasterizer_lock_none;
+					return;
+				}
+			}
+#endif
+			rasterizer_dynamic_triangles_unlock(triangle_buffer_index);
+			rasterizer_dynamic_vertices_unlock(vertex_buffer_index);
+			rasterizer_dynamic_unlit_geometry_draw("""),
+]
+
+
+# build 113: a zoomed weapon's mask (b113_candidates.md #20; keep word
+# "zoommask"): the screen effect's mask goes to the GE (psp_ge.c,
+# psp_ge_zoom_mask). The rest of the effect (blur, night vision) as before
+FIXES_113["source/rasterizer/rasterizer.c#zoommask"] = [
+("""void rasterizer_screen_effect(
+	struct rasterizer_cinematic_screen_effect_parameters *parameters)
+{
+	_rasterizer_screen_effect(parameters);""",
+ """#ifdef HALO_PSP
+#include "rasterizer/rasterizer_cinematics.h"
+int psp_keep(const char *name);
+int psp_ge_active(void);
+void psp_ge_zoom_mask(unsigned int key); /* psp_ge.c */
+#endif
+
+void rasterizer_screen_effect(
+	struct rasterizer_cinematic_screen_effect_parameters *parameters)
+{
+#ifdef HALO_PSP
+	{
+		static int psp_zoom_mask = -1;
+
+		if (psp_zoom_mask < 0)
+			psp_zoom_mask = psp_keep("zoommask");
+		if (psp_zoom_mask && psp_ge_active() && parameters && parameters->convolution_mask)
+			psp_ge_zoom_mask((unsigned int)parameters->convolution_mask);
+	}
+#endif
+	_rasterizer_screen_effect(parameters);"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
