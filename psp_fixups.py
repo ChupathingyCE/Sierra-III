@@ -10096,7 +10096,195 @@ Either(chupa=("""	/* FISTP: round to nearest under the default control word */
 	result = (long)__builtin_rintf(value);""")),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_CHUPA.items()):
+# ---------- build 113: the flip prompt watched, and a fixture for it
+# (psp_watch.c; b113_candidates.md #10). "flipwatch" logs the prompt's four
+# conditions as they change for each vehicle the player's search looks at,
+# the player's action and button, the flip and the vehicle physics' upending.
+# "flipfixture" (debug tools only: it moves a vehicle) puts the vehicle nearest
+# the player upside down just in front of him, two seconds into the map, so
+# the emulator can reproduce Sheepdog01's sequence with no hands.
+FIXES_113 = {}
+FIXES_113["source/game/players.c#flipwatch"] = [
+("""static void player_examine_nearby_vehicle(
+	long player_index,
+	long vehicle_index)
+{""",
+ """#ifdef HALO_PSP
+/* psp_watch.c (build 113) */
+int psp_flipwatch_on(void);
+void psp_flipwatch_examine(long vehicle_index, const char *name, int dead, float up_k, float tipped_below,
+	int upending, int driver, int at_rest);
+void psp_flipwatch_player(long action_result, long action_object, int action_bit);
+void psp_flipwatch_flip(long vehicle_index, int approach_type);
+char *tag_get_name(long tag_index);
+#if PSP_DEBUG_TOOLS
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+/* "flipfixture": the vehicle nearest the player (within 30 units) put upside
+down 1.5 units in front of him, once, at game time 60 */
+static void psp_flip_fixture(long unit_index)
+{
+	static int fixture = -1;
+	struct object_iterator iterator;
+	struct object_datum *object, *unit;
+	long best = NONE;
+	real best_distance = 30.0f * 30.0f;
+
+	if (fixture < 0)
+		fixture = psp_keep("flipfixture");
+	if (!fixture || game_time_get() < 60)
+		return;
+	fixture = 0;
+	unit = object_get(unit_index);
+	object_iterator_new(&iterator, _object_mask_vehicle, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		real dx = object->object.position.x - unit->object.position.x;
+		real dy = object->object.position.y - unit->object.position.y;
+		real dz = object->object.position.z - unit->object.position.z;
+		real distance = dx * dx + dy * dy + dz * dz;
+
+		if (distance < best_distance && object->object.parent_object_index == NONE)
+		{
+			best_distance = distance;
+			best = iterator.index;
+		}
+	}
+	if (best == NONE)
+	{
+		platform_psp_log("flipfixture: no vehicle within 30 units of the player");
+		return;
+	}
+	{
+		struct object_datum *vehicle = object_get(best);
+		real_point3d place;
+		real_vector3d forward, up = { 0.0f, 0.0f, -1.0f }, ahead;
+		real length;
+
+		ahead.i = unit->object.forward.i;
+		ahead.j = unit->object.forward.j;
+		ahead.k = 0.0f;
+		length = (real)sqrt(ahead.i * ahead.i + ahead.j * ahead.j);
+		if (length < 0.01f)
+		{
+			ahead.i = 1.0f;
+			ahead.j = 0.0f;
+			length = 1.0f;
+		}
+		ahead.i /= length;
+		ahead.j /= length;
+		place.x = unit->object.position.x + 1.5f * ahead.i;
+		place.y = unit->object.position.y + 1.5f * ahead.j;
+		place.z = unit->object.position.z + 1.0f;
+		/* side on to the player, roof down */
+		forward.i = -ahead.j;
+		forward.j = ahead.i;
+		forward.k = 0.0f;
+		object_set_position(best, &place, &forward, &up);
+		vehicle->object.translational_velocity.i = vehicle->object.translational_velocity.j =
+			vehicle->object.translational_velocity.k = 0.0f;
+		vehicle->object.angular_velocity.i = vehicle->object.angular_velocity.j =
+			vehicle->object.angular_velocity.k = 0.0f;
+		vehicle->object.flags &= ~FLAG(_object_at_rest_bit);
+		platform_psp_log("flipfixture: %s #%08lx put upside down 1.5 units in front of the player (%.2f %.2f %.2f)",
+			tag_get_name(vehicle->definition_index), (unsigned long)best, place.x, place.y, place.z);
+	}
+}
+#endif
+#endif
+static void player_examine_nearby_vehicle(
+	long player_index,
+	long vehicle_index)
+{"""),
+("""	player = player_get(player_index);
+	vehicle = (struct players_vehicle_datum *)vehicle_get(vehicle_index);
+	if (!TEST_FLAG(vehicle->object.damage_flags, _object_dead_bit))
+""",
+ """	player = player_get(player_index);
+	vehicle = (struct players_vehicle_datum *)vehicle_get(vehicle_index);
+#ifdef HALO_PSP
+	if (psp_flipwatch_on())
+	{
+		struct game_globals_player_control *psp_control = TAG_BLOCK_GET_ELEMENT(
+			&scenario_get_game_globals()->player_control, 0, struct game_globals_player_control);
+
+		psp_flipwatch_examine(vehicle_index, tag_get_name(vehicle->definition_index),
+			TEST_FLAG(vehicle->object.damage_flags, _object_dead_bit) != 0, vehicle->object.up.k,
+			(real)cos((_pi * 0.5f) - psp_control->minimum_vehicle_flipping_angle),
+			TEST_FLAG(vehicle->vehicle.flags, _vehicle_upending_bit) != 0,
+			vehicle->unit.driver_object_index != NONE, TEST_FLAG(vehicle->object.flags, _object_at_rest_bit) != 0);
+	}
+#endif
+	if (!TEST_FLAG(vehicle->object.damage_flags, _object_dead_bit))
+"""),
+("""		SET_FLAG(target_vehicle->vehicle.flags, _vehicle_upending_bit, TRUE);
+""",
+ """		SET_FLAG(target_vehicle->vehicle.flags, _vehicle_upending_bit, TRUE);
+#ifdef HALO_PSP
+		psp_flipwatch_flip(player->action_object_index, approach_type);
+#endif
+"""),
+("""					if (TEST_FLAG(action->control_flags, _unit_control_action_bit) &&
+						unit->object.parent_object_index == NONE &&
+						!player_handle_action(iterator.datum_index) &&""",
+ """#ifdef HALO_PSP
+#if PSP_DEBUG_TOOLS
+					psp_flip_fixture(player->unit_index);
+#endif
+					if (psp_flipwatch_on())
+						psp_flipwatch_player(player->action_result, player->action_object_index,
+							TEST_FLAG(action->control_flags, _unit_control_action_bit) != 0);
+#endif
+					if (TEST_FLAG(action->control_flags, _unit_control_action_bit) &&
+						unit->object.parent_object_index == NONE &&
+						!player_handle_action(iterator.datum_index) &&"""),
+]
+FIXES_113["source/units/vehicles.c#flipwatch"] = [
+("""			vehicle->vehicle.upending_ticks++;
+		}
+		else
+		{
+			vehicle->vehicle.upending_ticks = 0;""",
+ """#ifdef HALO_PSP
+			{
+				/* psp_watch.c (build 113) */
+				void psp_flipwatch_upending_start(long vehicle_index, float up_k);
+
+				if (!vehicle->vehicle.upending_ticks)
+					psp_flipwatch_upending_start(vehicle_index, vehicle->object.up.k);
+			}
+#endif
+			vehicle->vehicle.upending_ticks++;
+		}
+		else
+		{
+#ifdef HALO_PSP
+			if (TEST_FLAG(vehicle->vehicle.flags, 4))
+			{
+				void psp_flipwatch_upending_end(long vehicle_index, int ticks, int type, float up_k);
+
+				psp_flipwatch_upending_end(vehicle_index, vehicle->vehicle.upending_ticks,
+					vehicle->vehicle.upending_type, vehicle->object.up.k);
+			}
+#endif
+			vehicle->vehicle.upending_ticks = 0;"""),
+]
+FIXES_113["source/objects/objects.c#flipwatch"] = [
+("""		if (header->type == _object_type_vehicle)
+			psp_vehicles_asleep++;
+""",
+ """		if (header->type == _object_type_vehicle)
+		{
+			void psp_flipwatch_asleep(long object_index); /* psp_watch.c (build 113) */
+
+			psp_vehicles_asleep++;
+			psp_flipwatch_asleep(object_index);
+		}
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

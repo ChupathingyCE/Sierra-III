@@ -80,7 +80,7 @@ CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c"
 def desktop_unit(rel):
     return CHUPA and rel.startswith(CHUPA_DESKTOP_UNITS)
 
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch"]
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
 # variant that trades speed tricks for smaller code: the hardware profiler
@@ -236,11 +236,11 @@ def compile_one(item):
         return src, 0, "", obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", obj]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
-                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c")):
+                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         # (build 110: the launch menu, the crash handler's side, the overlay
         # and the load trace's wrappers for size; the rest for speed)
-        opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c")) else "-O2"
+        opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c", "psp_watch.c")) else "-O2"
         cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections",
                "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include", "-c", src, "-o", obj]
         if src.endswith("psp_me.c"):
