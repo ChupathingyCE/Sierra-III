@@ -1,6 +1,6 @@
 # Build 113: the flip fix, the tracers, room for more objects (2026-10-10)
 
-Built on b112 after its six PSP runs (`hardware_b112.md`) and Sheepdog01's go to clean up and move on. Sheepdog01 was away for most of the build; he chooses which of the visible changes stay, one at a time, after an A/B. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator (PPSSPP with the local patches, PSP-1000 memory), **[D]** read in the code, **[U]** inference.
+Built on b112 (commit `e2022aff12`, zip `halo_psp_b113.zip`, EBOOT `f0114760…`) after its six PSP runs (`hardware_b112.md`) and Sheepdog01's go to clean up and move on. Sheepdog01 was away for most of the build; he chooses which of the visible changes stay, one at a time, after an A/B. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator (PPSSPP with the local patches, PSP-1000 memory), **[D]** read in the code, **[U]** inference.
 
 ## What changed
 
@@ -24,6 +24,7 @@ Every change has a keep word, typed into `keep.txt` or toggled in the launch men
 | `zoommaskfull` | #20 | The same mask at full strength: a clear circle in a black surround | as above |
 | `list768` | #19 | The display list 768 KB instead of 512, so fewer objects are pushed out | 256 KB of heap |
 | `gebusy` | instruments | The GE's busy time in the `frameend:` line | One interrupt per 16 draws |
+| `soundplace` | #24 (Sheepdog01, 17:55: "might as well") | The sound cache places big sounds (32 KB and up) at the top, so playing ones stop splitting the space the small ones need | None: no memory; big sounds may be read again more often |
 
 ### Instruments and test tools
 
@@ -77,6 +78,20 @@ Every change has a keep word, typed into `keep.txt` or toggled in the launch men
   - `weaksum` (38090411833): b112's bug, unchanged: the checksum stays `e0226073` and the vehicle sleeps through it.
 - **`gedefer` over the whole run** (38089959962 against 38089896228): play is identical up to tick 1,350. The whole state first differs at tick 532, in "object looping sounds" (a sound-system record that follows the emulator's speed, #25), which is not play.
 
+- **The finished build, every new word on** (38092985617, b30 on run 1's route, `contrails list768 gebusy hwprofile`): played to game time 18,594 with no fault. The list came from the heap at 768 KB. The tracers drew as strips (2,610 segments in 300 frames at the busiest). The rendered-object list peaked at 227 of 256 and was never full on this route. `gebusy`'s line works; the emulator's GE times mean nothing.
+- **The zoom's soft edge** (38093016435): the middle clear, the edges darkened by a third.
+- **`soundplace`, one run each on run 1's route** (38093942190 without, 38093971174 with; 1,536 KB) [E]:
+
+  | Sounds dropped by game time | without | `soundplace` |
+  |---|---|---|
+  | 2,600 (the flight) | 51 | 81 |
+  | 6,000 (the beach) | 251 | 158 |
+  | about 19,000 | 408 | 373 |
+  | Loads from the stick | 4,706 | 5,007 (+6%) |
+
+  - Mixed: worse in the flight, better on the beach. The emulator also drops three times what the PSP did (251 against 85 by the beach), because its audio runs on a different clock. So only Test 2 says whether it helps.
+  - To tell size from fragmentation, the first 24 drops are now logged: the sound's size, the longest run the cache could clear for it, and what playing and loading sounds held (`sound cache: no room for …`). **First answer** (38095073612, b30's opening) [E]: at the flight's start (game time 465) sounds playing or loading held 1,360 of the 1,536 KB, and the longest run left was 60 KB, so a 63 KB and a 120 KB sound didn't fit. So there it is mostly size, with fragmentation on top: 1,360 KB plus a 120 KB line needs about 1.5 MB in one piece. The same few sounds are asked for again tick after tick, so "failed for room" counts tries, not missing sounds.
+
 ## On the PSP
 
 Three tests, in order. Keep words come from the launch menu (b113 lists its own) or `keep.txt`. Deathless, as before. No USB capture.
@@ -111,11 +126,12 @@ umount $psp
 - If a Warthog ends up on its roof, try the flip prompt from either side.
 - What it answers: whether 512 render states speed up the cliffs (against run 5: 2.4–2.8 fps there), and how busy the GE is (`GE busy` in the `frameend:` lines).
 
-**Test 2: a bigger list and a bigger sound cache** (about 12 minutes)
-- Keep words: Test 1's plus `list768 sound1792`.
+**Test 2: a bigger list, and the sound cache's best set-up** (about 12 minutes)
+- Keep words: Test 1's plus `list768 sound1792 soundplace`.
 - Play from the start to the Warthog drop. **Stop** when the Warthog lands.
 - Listen during the Pelican flight: that's where b112 dropped most of its sounds.
-- What it answers: whether the far trees and the beach's objects stop blinking (draws skipped with the list full, against run 1), and whether the sound drops stay down (against run 6).
+- What it answers: whether the far trees and the beach's objects stop blinking (draws skipped with the list full, against run 1); whether the placement takes the drops below `sound1792` alone (against run 6's 16); and, from the new `no room for` lines, how much the playing sounds really hold on the PSP.
+- Heap with both: about 5,670 of 5,888 KB.
 
 **Test 3: the looks** (about 10 minutes)
 - Keep words: Test 1's plus `contrails zoommask`.
