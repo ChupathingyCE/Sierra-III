@@ -4934,6 +4934,47 @@ static void converted_sweep(void)
 	converted_sweeps++;
 }
 
+/* build 112: model buffers that work marked as the Media Engine's needed
+converted (gemesim): converting plans a bending part's skinning on the heap
+and sweeps the table, which frees plans, all behind the heap's lock. The
+main CPU converts them at the frame's end (psp_ge_frame_end), so they're
+ready next frame; the part isn't drawn meanwhile, as for geometry still on
+its way */
+#define CONVERTS_WANTED 64
+static struct
+{
+	void *vertices;
+	const unsigned short *indices;
+	int count, uncompressed, index_count, strip, skin;
+} converts_wanted[CONVERTS_WANTED];
+static int converts_wanted_count = 0;
+static unsigned long converts_wanted_total = 0, converts_wanted_dropped = 0;
+
+static void convert_want(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
+	int strip, int skin)
+{
+	int k;
+
+	for (k = 0; k < converts_wanted_count && converts_wanted[k].vertices != vertices; k++)
+		;
+	if (k < converts_wanted_count)
+		return;
+	if (k >= CONVERTS_WANTED)
+	{
+		converts_wanted_dropped++;
+		return;
+	}
+	converts_wanted[k].vertices = vertices;
+	converts_wanted[k].indices = indices;
+	converts_wanted[k].count = count;
+	converts_wanted[k].uncompressed = uncompressed;
+	converts_wanted[k].index_count = index_count;
+	converts_wanted[k].strip = strip;
+	converts_wanted[k].skin = skin;
+	converts_wanted_count++;
+	converts_wanted_total++;
+}
+
 /* rewrites a model vertex buffer for the GE, once; 0 if there's no room to
 remember it. Parts on several nodes are planned for skinning when their
 triangles are given (see-through parts aren't: they are queued with one
@@ -4951,7 +4992,8 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		*skin = NULL;
 	if (converted_sweep_late < 0)
 		converted_sweep_late = psp_keep("sweeplate");
-	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark))
+	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark) &&
+		!psp_me_context) /* build 112: the sweep frees plans: the main CPU's */
 	{
 		converted_sweep();
 		/* build 112: the next mark, past what this sweep kept */
@@ -4994,6 +5036,11 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 				*skin = skinned[slot];
 			return 1;
 		}
+		if (psp_me_context)
+		{
+			convert_want(vertices, count, uncompressed, indices, index_count, strip, skin != NULL);
+			return 0;
+		}
 		/* the cache has read other vertices (or these again) into the block
 		since: converted afresh, the old plan let go */
 		skin_free(skinned[slot]);
@@ -5002,7 +5049,14 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		reconverted_count++;
 	}
 	else
+	{
+		if (psp_me_context)
+		{
+			convert_want(vertices, count, uncompressed, indices, index_count, strip, skin != NULL);
+			return 0;
+		}
 		converted_generation[slot] = psp_geo_generation(vertices);
+	}
 	if (skin && indices)
 	{
 		node0 = malloc(count * 3);
@@ -10685,6 +10739,16 @@ void psp_ge_frame_end(void)
 			for (k = 0; k < streams_wanted_count; k++)
 				level_stream_get(streams_wanted[k].vertices, streams_wanted[k].lightmap_vertices, streams_wanted[k].count);
 			streams_wanted_count = 0;
+			/* and the model buffers it wanted converted */
+			for (k = 0; k < converts_wanted_count; k++)
+			{
+				struct skin_part *plan;
+
+				model_convert(converts_wanted[k].vertices, converts_wanted[k].count, converts_wanted[k].uncompressed,
+					converts_wanted[k].indices, converts_wanted[k].index_count, converts_wanted[k].strip,
+					converts_wanted[k].skin ? &plan : NULL);
+			}
+			converts_wanted_count = 0;
 		}
 		if (psp_geo_open_count())
 			level_streams_trim();
@@ -10780,6 +10844,9 @@ void psp_ge_frame_end(void)
 						break;
 				}
 				platform_log("GE: gedefer: carried out for:%s", sites);
+				if (converts_wanted_total || converts_wanted_dropped)
+					platform_log("GE: gemesim: %lu model buffers wanted converted by the Media Engine's work and converted at the frame's end, %lu more than the list held",
+						converts_wanted_total, converts_wanted_dropped);
 				if (streams_wanted_total || streams_wanted_dropped)
 					platform_log("GE: gemesim: %lu level copies wanted by the Media Engine's work and built at the frame's end, %lu more than the list held",
 						streams_wanted_total, streams_wanted_dropped);
