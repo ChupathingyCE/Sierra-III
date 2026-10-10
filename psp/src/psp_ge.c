@@ -1322,8 +1322,86 @@ until the frame's list is finished, so the GE starts when the CPU is done
 and the frame end's wait for it is the GE's whole busy time. A measurement,
 not a way to play: the two no longer overlap */
 static int ge_serial = -1;
+
+/* build 113: "gebusy": how long the GE works, timed by the GE itself
+(b113_candidates.md, instruments). We log the main CPU's time and the ME's,
+but the GE only through the frame end's wait for it. Each stall update
+passed on (a chunk of up to STALL_BATCH draws) now ends with a SIGNAL
+command; when the GE reaches it, it raises an interrupt and gebusy_signal
+notes the time. A chunk's busy time runs from when the GE could start it
+(handed over, or the chunk before finished, whichever is later) to then; the
+frame's last chunk ends at the list's FINISH (gebusy_finish). Summed over
+the heartbeat's window for the frameend: line. An interrupt per 16 draws,
+a few microseconds each. Not while the ME builds the lists (gemeon): it
+passes its stall updates on later. The emulator doesn't time the GE: only
+the PSP's number means anything */
+#define GEBUSY_SLOTS 256
+static int gebusy_on = -1, gebusy_inserting = 0;
+static void *gebusy_stall;
+static unsigned int gebusy_next = 0;
+static volatile unsigned int gebusy_handed[GEBUSY_SLOTS], gebusy_last_reached = 0, gebusy_finish_handed = 0;
+static volatile unsigned long gebusy_us = 0, gebusy_chunks = 0, gebusy_finishes = 0;
+static unsigned int gebusy_window_start = 0;
+
+static void gebusy_add(unsigned int start, unsigned int now)
+{
+	if ((int)(gebusy_last_reached - start) > 0)
+		start = gebusy_last_reached;
+	if ((int)(now - start) > 0)
+		gebusy_us += now - start;
+	gebusy_last_reached = now;
+}
+
+/* the GE's interrupts (pspgu's callbacks: interrupt context, so only the
+clock and a few sums) */
+static void gebusy_signal(int id)
+{
+	gebusy_add(gebusy_handed[id & (GEBUSY_SLOTS - 1)], sceKernelGetSystemTimeLow());
+	gebusy_chunks++;
+}
+
+static void gebusy_finish(int id)
+{
+	(void)id;
+	gebusy_add(gebusy_finish_handed, sceKernelGetSystemTimeLow());
+	gebusy_finishes++;
+}
+
+static void gebusy_start(void)
+{
+	gebusy_on = psp_keep("gebusy");
+	if (!gebusy_on)
+		return;
+	sceGuSetCallback(GU_CALLBACK_SIGNAL, gebusy_signal);
+	sceGuSetCallback(GU_CALLBACK_FINISH, gebusy_finish);
+	gebusy_window_start = sceKernelGetSystemTimeLow();
+	platform_log("GE: gebusy on (a SIGNAL every %d draws; the GE's busy time in the frameend: line)", STALL_BATCH);
+}
+
+/* the window's part of the frameend: line, then a new window */
+static void gebusy_window(char *text, int size, unsigned long frames_in_window)
+{
+	unsigned int now = sceKernelGetSystemTimeLow(), wall = now - gebusy_window_start;
+	unsigned long n = frames_in_window ? frames_in_window : 1;
+
+	if (gebusy_on <= 0 || size <= 0)
+		return;
+	snprintf(text, size, "; GE busy %.1f ms a frame, %.1f%% of the clock (%lu chunks, %lu finishes)%s",
+		gebusy_us / 1000.0 / n, wall ? 100.0 * gebusy_us / wall : 0.0, gebusy_chunks, gebusy_finishes,
+		psp_me_context ? " (not while the ME builds)" : "");
+	gebusy_us = gebusy_chunks = gebusy_finishes = 0;
+	gebusy_window_start = now;
+}
+
 int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 {
+	/* build 113: gebusy's own SIGNAL (below) moves the stall address; it
+	comes back here, and the new address is passed on with the chunk */
+	if (gebusy_inserting)
+	{
+		gebusy_stall = stall;
+		return 0;
+	}
 	stall_calls++;
 	if (stall_batch < 0)
 		stall_batch = !psp_keep("stalleach");
@@ -1340,6 +1418,23 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		stall_me_qid = qid;
 		stall_me_address = stall;
 		return 0;
+	}
+	if (gebusy_on > 0)
+	{
+		if (stall_force)
+			gebusy_finish_handed = sceKernelGetSystemTimeLow();
+		else
+		{
+			/* the chunk ends with a SIGNAL: the GE reports when it gets there */
+			unsigned int slot = gebusy_next++ & (GEBUSY_SLOTS - 1);
+
+			gebusy_inserting = 1;
+			gebusy_stall = stall;
+			sceGuSignal(GU_SIGNAL_NOWAIT, (int)slot);
+			gebusy_inserting = 0;
+			stall = gebusy_stall;
+			gebusy_handed[slot] = sceKernelGetSystemTimeLow();
+		}
 	}
 	stall_forwarded++;
 	if ((stall_forwarded & 63) == 0)
@@ -1534,6 +1629,7 @@ static void ge_initialize(void)
 	display_list_acquire();
 	display_list_report();
 	sceGuInit();
+	gebusy_start(); /* build 113 */
 	sceGuStart(GU_DIRECT, display_list);
 	sceGuDrawBuffer(GU_PSM_5650, (void *)0, BUFFER_WIDTH);
 	sceGuDispBuffer(SCREEN_WIDTH, SCREEN_HEIGHT, (void *)FRAME_BYTES, BUFFER_WIDTH);
@@ -10932,6 +11028,11 @@ void psp_ge_frame_window(char *text, int size)
 		snprintf(text + used, size > (int)used ? size - used : 0,
 			"; %lu windows for another target than the screen (drawn on it)", win_other_targets);
 		win_other_targets = 0;
+	}
+	{
+		size_t used = strlen(text);
+
+		gebusy_window(text + used, size - (int)used, win_frames); /* build 113 */
 	}
 	win_frames = win_flush_us = win_writeback_us = win_ge_us = win_ge_worst = win_swap_us = win_after_us = 0;
 	win_list_bytes = win_triangles = win_draws = win_transparent = 0;

@@ -1936,11 +1936,14 @@ static void hwprofile_report(void)
 	cycles = d[1] ? (double)d[1] : 1.0;
 	/* counts per million CPU cycles (3 ms at 333 MHz) */
 	ms = cycles / 1e6;
-	platform_log("hardware: %.0f M CPU cycles (%.0f M system); waiting on memory %.1f%%, internal %.1f%%, VFPU %.1f%%, coprocessors %.1f%%, asleep %.1f%% | per million cycles: D-cache misses %.0f, writebacks %.0f, I-cache misses %.0f, uncached loads %.0f stores %.0f, cached loads %.0f stores %.0f, bus %.0f, FPU ops %.0f, VFPU ops %.0f",
+	platform_log("hardware: %.0f M CPU cycles (%.0f M system); waiting on memory %.1f%%, internal %.1f%%, VFPU %.1f%%, coprocessors %.1f%%, asleep %.1f%% | per million cycles: D-cache misses %.0f, writebacks %.0f, I-cache misses %.0f, uncached loads %.0f stores %.0f, cached loads %.0f stores %.0f, bus %.0f, FPU ops %.0f, VFPU ops %.0f, local bus %.0f",
 		d[1] / 1e6, d[0] / 1e6, 100.0 * d[3] / cycles, 100.0 * d[2] / cycles, 100.0 * d[5] / cycles,
 		100.0 * d[4] / cycles, 100.0 * d[6] / cycles,
 		d[13] / ms, d[14] / ms, d[12] / ms, d[8] / ms, d[9] / ms, d[10] / ms, d[11] / ms, d[7] / ms,
-		d[16] / ms, d[17] / ms);
+		d[16] / ms, d[17] / ms, d[18] / ms);
+	/* (build 113: the 19th counter, the profiler's "local bus", was read but
+	never printed; PSPTEK reads it as the GE's bus cycles [U]: a cross-check
+	for gebusy) */
 	{
 		/* build 46: the same by phase */
 		static const char *const names[HW_PHASES] = { "other", "tick", "drawing", "frame end" };
@@ -2085,7 +2088,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 				tr, tu / 1000.0, tw / 1000.0, gr, gu / 1000.0, gw / 1000.0, ar, au / 1000.0, aw / 1000.0, seconds);
 			{
 				extern void psp_ge_frame_window(char *text, int size);
-				char line[400];
+				char line[512]; /* (build 113: gebusy's part too; the log's lines stop at 512) */
 
 				psp_ge_frame_window(line, sizeof(line));
 				platform_log("%s", line);
