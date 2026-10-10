@@ -74,9 +74,35 @@ The heap had taken 6,078 of its 6,080 KB from the system by game time 28,000. Wh
 | The Warthog flip prompt shows only briefly, once | Not looked into; the prompt's timing may count frames where the Xbox counts ticks [U] | new |
 | Active camouflage: the needler's needles stay visible | Camouflage draws the biped faint (b30); attached projectiles aren't part of it [U] | new |
 
+## Tests A and D, without capture (evening, 2026-10-09)
+
+Two short runs of b30, from the Pelican flight to the Warthog drop (game time about 6,000 each), keep words `nearauto assettrack hwprofile geo2`, deathless, no USB capture [M]:
+- **A:** b108 as shipped (`halo_psp_b108.zip`, heap 6,080 KB).
+- **D:** the same code with the hot engine at `-Os` (`halo_psp_b108_os.zip`, heap 6,400 KB).
+
+Both clean: no crash, 0 heap requests failed, heap peak about 4,970 KB in use.
+
+`log.txt` is removed at every launch (start-up in psp_platform.c); `profile.txt` appends. Pull the log after each run.
+
+### `-Os` loses: the hot code stays at `-O2` [M]
+
+| Game time | A (`-O2`) tick / frame ms, fps | D (`-Os`) tick / frame ms, fps | D against A (tick, frame) |
+|---|---|---|---|
+| 150-2,600 (the flight, the landing: scripted) | 60.2 / 129.6, 4.0 | 78.4 / 139.5, 3.4 | +30%, +8% |
+| 2,600-6,200 (the beach: hand-played) | 35.3 / 86.1, 7.1 | 46.2 / 103.0, 5.8 | +31%, +20% |
+
+- D is slower in every stretch (`abcompare.py`, six windows: tick +9% to +40%). The game logic carries the loss: `objects_update` +30%, `ai_update` +28% (ms a frame). Model drawing and the GE renderer's CPU are within ±4%.
+- The caches did worse, not better. Over the flight, per million cycles: instruction cache misses 4,000 → 4,373 (+9%), cached stores 24,603 → 28,112 (+14%); data cache misses fell 2,184 → 1,954 (−11%).
+- Why [U]: `-Os` turns off GCC's code alignment and its hot-path block layout (`-freorder-blocks-algorithm=stc`), and inlines less. The code is smaller, but the hot paths spread over more cache lines, and the extra calls save and restore registers (the extra stores).
+- The 320 KB of heap `-Os` frees doesn't pay for 30% on the tick. The level-stream arena solves the heap exactly.
+
+### What the capture cost: little [M]
+
+Over the flight (scripted, so comparable across runs), A against run 1 with capture: tick 60.2 against 60.4 ms, frame 129.6 against 132.6 ms (−2%). b108's flight is about b107's (61.7 / 129.2). The security room's difference (the bodies, above) stands.
+
 ## Next
 
 1. The level-stream arena (above): the one fix this run makes urgent, and b110 needs it too.
-2. Two keep-word checks on the PSP, cheap: `nosizefloor` for the trees; the flares with objects in the occlusion test.
+2. Keep-word checks on the PSP, still to run: `nosizefloor` for the trees (B), `sceneryhalf` (C), the flares with objects in the occlusion test.
 3. Reproduce in the emulator: the needler's pink flash, the missing plasma tracers, the brief flip prompt.
-4. Runs without USB capture from here on, or with it noted, since it costs bandwidth.
+4. Settled: `-Os` on the hot code (stays `-O2`); the USB capture costs about 2% of the frame, but runs stay without it.
