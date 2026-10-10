@@ -143,7 +143,7 @@ engine hands this file, on arrival: the engine still does all of its own
 drawing work, and this file's CPU work and the GE's reading are gone. What it
 saves is the most that moving this file's work to the Media Engine could save
 (an upper bound: the ME's version keeps the GE's reading) */
-#include "psp_bench.h"
+#include "../include/psp_bench.h" /* the plain-C units have no -I for psp/include (psp_build.py) */
 #define GE_BENCH_SKIP(...) do { if (psp_bench_skip & PSP_SKIP_GE) return __VA_ARGS__; } while (0)
 static int list_in_vram = 0, vram_busy = 0, vram_busy_calibrating = 0, vram_busy_sprites = 8;
 static unsigned int vram_busy_target_us = 15000;
