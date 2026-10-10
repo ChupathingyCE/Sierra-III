@@ -248,6 +248,15 @@ static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
 static unsigned int defer_used = 0;
 static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
+/* gemesim or gemeon: the carrying out is (or stands for) the Media Engine's,
+so what it can't do is done when the call is written down, on the main CPU
+(the see-through level triangles' wall answers) */
+static int defer_me_semantics = 0;
+/* the wall answers a record carried, while it is carried out (the replay of
+DEFER_QUEUE_LEVEL_TRANSPARENT sets it; overlay_answer reads it) */
+static const unsigned char *overlay_answers = NULL;
+static int overlay_answers_for(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned char *out);
 static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
 static void defer_drain(void);
 /* which calls made the waiting calls run, for the log: each is a point where
@@ -358,7 +367,15 @@ static void defer_frame_begin(void)
 				{
 					defer_me_thread = (unsigned int)sceKernelGetThreadId();
 					platform_log("GE: gemesim: carrying out marked as the Media Engine's (thread %08x)", defer_me_thread);
+					/* the check's own test: one known system call while
+					marked, which the emulator's mestrict.txt must list
+					(sceKernelGetSystemTimeLow from here), so a run with no
+					other line proves the gates rather than a dead check */
+					psp_me_context = defer_me_thread;
+					(void)sceKernelGetSystemTimeLow();
+					psp_me_context = 0;
 				}
+				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon");
 			}
 		}
 	}
@@ -596,7 +613,16 @@ static int defer_queue_level_transparent(const void *vertices, int vertex_count,
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
-	defer_word *at = defer_take(DEFER_QUEUE_LEVEL_TRANSPARENT, 10 + 4);
+	/* under ME semantics, each triangle's wall answer goes with the call
+	(worked out here: heap for the answers, the engine's collision rays);
+	a word saying how many answers, then the answers, a byte each */
+	long answers = defer_me_semantics && triangle_count > 0 ? triangle_count : 0;
+	defer_word *at = defer_take(DEFER_QUEUE_LEVEL_TRANSPARENT, 10 + 4 + 1 + (answers + 3) / 4);
+
+	if (!at)
+		return 0;
+	at[14].i = answers && overlay_answers_for(vertices, vertex_count, indices, triangle_count,
+		(unsigned char *)(at + 15)) ? (int)answers : 0;
 
 	at[0].p = vertices;
 	at[1].i = vertex_count;
@@ -766,8 +792,10 @@ static void defer_replay(const defer_word *buffer, unsigned int used)
 			psp_ge_widget_sprite(defer_copy_back(w + 5, &rest, 3), w[0].f, w[1].f, w[2].f, w[3].f, w[4].u);
 			break;
 		case DEFER_QUEUE_LEVEL_TRANSPARENT:
+			overlay_answers = w[14].i ? (const unsigned char *)(w + 15) : NULL;
 			psp_ge_queue_level_transparent(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i, w[4].u, w[5].f,
 				w[6].f, w[7].f, w[8].f, (short)w[9].i, defer_copy_back(w + 10, &rest, 3));
+			overlay_answers = NULL;
 			break;
 		case DEFER_HUD_ZOOM:
 			psp_ge_hud_zoom(w[0].f);
@@ -2218,14 +2246,15 @@ void psp_ge_window_target(int target)
 void psp_ge_window_begin(const float *position, const float *forward, const float *up,
 	float vertical_field_of_view, float z_near, float z_far)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	ScePspFVector3 eye, center, upward;
 
 	/* one window a frame: the GE's frame takes the first window's camera,
 	and the later ones (letterbox bars, the non-player overlays: 2-D, on
-	the same screen) draw into it */
+	the same screen) draw into it. (build 112: they change nothing, so
+	they don't make the waiting calls run either; the first does) */
 	if (frame_open)
 		return;
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	if (!ge_ready)
 		ge_initialize();
 	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
@@ -3454,6 +3483,9 @@ static struct
 } streams_wanted[STREAMS_WANTED];
 static int streams_wanted_count = 0;
 static unsigned long streams_wanted_total = 0, streams_wanted_dropped = 0;
+
+/* a level copy already built, or NULL; changes nothing (with the shadows) */
+static struct level_stream *level_stream_find(const void *vertices);
 
 static struct level_stream *level_stream_get(const void *vertices, const void *lightmap_vertices, int count)
 {
@@ -7476,6 +7508,41 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 	return flags[triangle] == 1;
 }
 
+/* build 112: a triangle's wall answer: the one its record carried while
+the Media Engine's work carries the call out (overlay_answers), else asked
+here */
+static int overlay_answer(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count,
+	long triangle)
+{
+	if (overlay_answers)
+		return overlay_answers[triangle];
+	/* (the ME's work without answers touches none of the answers' tables,
+	which the main CPU fills as calls are written down: it only wants) */
+	if (psp_me_context)
+		return overlay_want(stream, indices, triangle_count, triangle);
+	return overlay_on_a_wall(stream, indices, triangle_count, triangle);
+}
+
+/* every triangle's answer of a see-through level list, worked out on the
+main CPU as the call is written down (ME semantics): 1 if out[] holds them,
+0 if the level copy isn't there to ask from (the carrying out then asks, or
+wants, as before) */
+static int overlay_answers_for(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned char *out)
+{
+	/* an existing copy only: building one here would change the copies'
+	table and arena while the ME may be reading them (copies are built at
+	the frame's end) */
+	struct level_stream *stream = level_stream_find(vertices);
+	long t;
+
+	if (!stream)
+		return 0;
+	for (t = 0; t < triangle_count; t++)
+		out[t] = (unsigned char)overlay_on_a_wall(stream->base, indices, triangle_count, t);
+	return 1;
+}
+
 /* build 87: a baked stencil's layers: its triangles on the pieces of the wall
 triangles drawn this frame, cut at the near plane and guard band as those
 pieces were (the same positions, the same cuts), queued as see-through draws
@@ -7659,7 +7726,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 
 				for (corner = 0; corner < 3; corner++)
 					to_camera(&stream->base[triangle[corner]].x, p[corner]);
-				units = overlay_units(p[0], p[1], p[2], overlay_on_a_wall(stream->base, indices, triangle_count, index));
+				units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
 				overlay_triangle_bucket[kept_count] = overlay_bucket_of(units);
 				if (abs(units) > bucket_units[overlay_triangle_bucket[kept_count]])
 					bucket_units[overlay_triangle_bucket[kept_count]] = (unsigned short)abs(units);
@@ -7680,7 +7747,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				corners[corner][5] = corners[corner][6] = 0.0f;
 			}
 			units = overlay_units(corners[0], corners[1], corners[2],
-				overlay_on_a_wall(stream->base, indices, triangle_count, index));
+				overlay_answer(stream->base, indices, triangle_count, index));
 			if (units > cut_units)
 				cut_units = units;
 			if (units < 0 && -units > cut_units_free)
@@ -8465,7 +8532,11 @@ compressed vertex data address, which is the key when the data is in the
 pack). The copies hold what it asks: base and lightmap texture coordinates */
 int psp_ge_level_vertex_texcoords(unsigned int key, int vertex_index, float *uv, float *lightmap_uv)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	/* build 112: gedefer. Waiting calls run first so the answer is the one
+	the frame so far gives; under ME semantics they needn't: copies are built
+	only at the frame's end there, so this reads what is built already */
+	if (!defer_me_semantics)
+		GE_DEFER_DRAIN();
 	unsigned int slot = (key >> 5) % LEVEL_STREAMS, tries = 0;
 	const struct level_stream *stream;
 
@@ -8493,7 +8564,11 @@ geometry outside the tags read them at the Xbox's 32-byte stride from the
 copies are there; radiosity 0 without a lightmap */
 int psp_ge_level_vertex_lighting(unsigned int key, int vertex_index, unsigned int *normal, unsigned int *radiosity)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	/* build 112: gedefer. Waiting calls run first so the answer is the one
+	the frame so far gives; under ME semantics they needn't: copies are built
+	only at the frame's end there, so this reads what is built already */
+	if (!defer_me_semantics)
+		GE_DEFER_DRAIN();
 	unsigned int slot = (key >> 5) % LEVEL_STREAMS, tries = 0;
 	const struct level_stream *stream;
 
