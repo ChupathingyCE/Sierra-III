@@ -5391,14 +5391,15 @@ void psp_game_state_hash_tick(long tick)
 		psp_state_hash(game_state_globals.base_address, game_state_globals.cpu_allocation_size));
 	if (tick % 30)
 		return;
+	/* (lines kept under the log's 512 bytes, psp_platform.c) */
 	for (k = 0; k < psp_state_record_count; k++)
 	{
-		if (length > (int)sizeof(line) - 64)
+		if (length > 400)
 		{
 			platform_psp_log("state: records at tick %ld:%s", tick, line);
 			length = 0;
 		}
-		length += snprintf(line + length, sizeof(line) - length, " %.24s %08lx",
+		length += snprintf(line + length, sizeof(line) - length, " %.32s %08lx",
 			psp_state_records[k].name[0] ? psp_state_records[k].name : "?",
 			psp_state_hash(psp_state_records[k].pointer, psp_state_records[k].size));
 	}
