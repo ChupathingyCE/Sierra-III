@@ -46,13 +46,21 @@ From `hardware_b108.md`, "What Sheepdog01 saw". The causes come from reading the
 | 13 | Floor light through the hallway wall (map room bunker) | **Pieces cut at the near plane still get one nudge per draw** from the nearest cut corner: about 0.4 units of lift at 5 units, 1.1 at 8 [D arithmetic]. Band 0 has no lower bound either [D] | Run cut pieces through the same distance bands; split band 0 (`lightbands`) | <0.05 ms | emulator shot at the bunker entrance: default against light-pass mode 0 | medium-low |
 | 14 | The farthest trees vanish for a few frames | The display list's size floor drops the smallest models first when the list is full [U] | Already built: `nosizefloor` | none | **test B on b111** (waiting) | medium |
 
+From b111's long run (`hardware_b111.md`):
+
+| # | Seen | Cause | Fix (keep word) | Cost [E] | Check | Confidence |
+|---|---|---|---|---|---|---|
+| 15 | One flicker entering the map room bunker's third level | **A new view's textures arrive a frame late.** A bind whose texture isn't resident draws the surface without it for that frame, and a frame reads at most 96 KB from the stick (`psp_tex.c`, `LOAD_BUDGET_BYTES`) [D]. The report covering the entry has 1 such frame and 17 requests that waited [M]. That this was the flicker is [U]: the timing matches | On a miss, draw the texture's average colour (the pack already has it for object lighting) instead of nothing (`missaverage`). Later: read ahead for the clusters next to the player's | none per frame; a few bytes a texture if the average isn't already kept | PSP: the "frames drew something untextured" count stays, the flicker goes | medium |
+| 16 | Covenant weapons' holographic displays missing in first person | **Meter (type 9) and plasma (type 10) see-through parts are never drawn.** `psp_transparent_map` handles types 5–8; for the others it returns no map and the part is dropped with no counter (`psp_fixups.py`, the model hook) [D]. That the displays are meter or plasma shaders is [U] | Meters first: the map at +0x58, a palette per value built by the HUD meters' code (`METER_CACHE`), the meter maps given the HUD meters' palette in the bake (`meters`). A counter of dropped parts by shader type, whatever else is decided | ~0.3 ms a meter when its value changes, ~0 while steady | emulator shot holding the plasma rifle, `tdump` on; list the first-person models' shader types on the X3D | high (the drop), medium (that it's these displays) |
+| 17 | The camera clips through the Pelican on the bench seats | **The near plane goes out to 16 × the game's while seated** (152 of the flight's first 300 frames) [M]. Seated, a model sphere that contains the eye doesn't cap it (b90, for the driven vehicle), and in the air the level test finds nothing, so the plane sits at 1.0 world unit, inside the cabin [D] | While seated, test the vehicle's own collision model with the same spheres as the level; or hold ×1 while the eye is inside the seated vehicle's sphere (`nearseated`) | a few sphere tests a frame | emulator shot in the Pelican, then the PSP | high |
+
 ### Suggested order
 
-1. **Cheap, exact or near-exact, and an emulator shot checks them:** 1 contrails, 2 flare bipeds, 3 camouflage fade, 9 flash types, 11 flashlight on models, 4 step one (chicago fade).
+1. **Cheap, exact or near-exact, and an emulator shot checks them:** 1 contrails, 2 flare bipeds, 3 camouflage fade, 9 flash types, 11 flashlight on models, 4 step one (chicago fade), 17 the Pelican's near plane, 16 meters.
 2. **One PSP test settles several items:** dithering (6, 7, 12's banding), with the grey-ramp readback.
 3. **Bake changes**, one pack variant: palette rounding (6), the detail neutral (7), chicago flattening (4), the water tint (5).
 4. **Light pass rework:** 12, 13.
-5. **Needs information first:** 10 (the instrument and fixture, in the emulator), 8 (whether it came after T≈2070 s), 14 (test B).
+5. **Needs information first:** 10 (the instrument and fixture, in the emulator), 8 (whether it came after T≈2070 s), 14 (test B), 15 (the average-colour stand-in is cheap; whether it removes the flicker is a PSP call).
 
 Test 3 also showed the ME's drawing work leaves the picture unchanged to Sheepdog01's eye (2026-10-10).
 
