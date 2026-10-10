@@ -195,7 +195,7 @@ tick, read while drawing).
 Run at once, after what is waiting: the frame's start and end
 (psp_ge_window_begin decides the near plane from the level and the player;
 psp_ge_frame_end hands the list over), and the calls whose answer the engine
-uses (psp_ge_text_begin, the level vertex queries) or
+uses (the level vertex queries) or
 that change data a waiting call reads (psp_ge_text_changed), and the map
 loads. A model with more nodes than DEFER_MAX_NODES runs as it comes
 (defer_paused), since the engine reuses its node matrices' buffer for the
@@ -220,7 +220,8 @@ enum
 	DEFER_SPRITES, DEFER_WIDGET_BEGIN, DEFER_WIDGET_TEXTURE, DEFER_WIDGET_OCCLUSION, DEFER_WIDGET_SPRITE,
 	DEFER_QUEUE_LEVEL_TRANSPARENT, DEFER_HUD_ZOOM, DEFER_UI_CENTERED, DEFER_UI_SPACE, DEFER_SCREEN_QUAD,
 	DEFER_SHADOW_BEGIN, DEFER_SHADOW_DRAW, DEFER_SHADOW_END, DEFER_LIGHT_BEGIN, DEFER_LIGHT_DRAW, DEFER_SCREEN_FLASH,
-	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END
+	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
+	DEFER_TEXT_BEGIN
 };
 typedef union
 {
@@ -325,6 +326,7 @@ void psp_ge_blip(float x, float y, float radius, float red, float green, float b
 void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key);
 void psp_ge_text_character(void const *vertices);
 void psp_ge_text_end(void);
+int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y);
 
 /* at each frame's start: whether this frame defers (the keep word, asked
 once; the buffer taken from the heap the first time) */
@@ -819,6 +821,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used)
 			break;
 		case DEFER_TEXT_END:
 			psp_ge_text_end();
+			break;
+		case DEFER_TEXT_BEGIN:
+			psp_ge_text_begin(w[0].p, (short)w[1].i, w[2].f, w[3].f);
 			break;
 		}
 	}
@@ -10577,7 +10582,23 @@ void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height
 
 int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	/* build 112: gedefer. The engine needs the answer now (whether to send
+	the characters), so it is worked out here from what the main CPU knows:
+	the frame and the font's picture. Whether the list has room is the
+	carrying out's to judge: if it hasn't, the text stays closed then and
+	the characters written down after this are dropped there, as the engine
+	would have left them out. The same list either way */
+	if (defer_on && !defer_replaying && !defer_paused)
+	{
+		const unsigned char *picture = bitmap;
+		int answer = frame_open && picture && *(void *const *)(picture + 44) && *(const short *)(picture + 12) == 9 &&
+			*(const short *)(picture + 4) > 0 && *(const short *)(picture + 6) > 0 &&
+			*(const short *)(picture + 4) <= 512 && *(const short *)(picture + 6) <= 512;
+
+		defer_words(DEFER_TEXT_BEGIN, 4, DEFER_P(bitmap), (unsigned int)blend, defer_bits(offset_x), defer_bits(offset_y),
+			0, 0, 0, 0);
+		return answer;
+	}
 	ge_kind(KIND_HUD); /* build 103 */
 	list_hud_phase();
 	/* the game's bitmap_data: width +4, height +6, format +12, pixels +44 */
