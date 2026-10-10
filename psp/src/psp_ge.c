@@ -740,15 +740,21 @@ static int defer_text_character(void const *vertices)
 
 /* ----- a run of records carried out in order: on the main CPU, or as the
 Media Engine's job (psp_ge_me_replay) */
-static void defer_replay(const defer_word *buffer, unsigned int used)
+static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
-	unsigned int at = 0;
+	extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
+	unsigned int at = 0, records = 0;
 
 	while (at < used)
 	{
 		const defer_word *w = buffer + at + 1, *rest;
 		int kind = buffer[at].u & 0xFF;
 		const void *a, *b, *c;
+
+		/* build 113: on the ME, an audio block asked for meanwhile is mixed
+		between records rather than after the whole run (psp_me.c) */
+		if (on_me && (++records & 31) == 0)
+			psp_me_serve_audio();
 
 		at += buffer[at].u >> 8;
 		switch (kind)
@@ -896,7 +902,7 @@ emulator's ME-strict check also covers this path when it simulates the job) */
 unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 {
 	psp_me_context = args[2] ? args[2] : 1;
-	defer_replay((const defer_word *)args[0], args[1]);
+	defer_replay((const defer_word *)args[0], args[1], (int)args[3]);
 	psp_me_context = 0;
 	results[0] = args[1];
 	return 0;
@@ -946,7 +952,7 @@ static void defer_drain(void)
 	if (!defer_on_me())
 	{
 		psp_me_context = defer_me_thread;
-		defer_replay(defer_buffer, defer_used);
+		defer_replay(defer_buffer, defer_used, 0);
 		psp_me_context = 0;
 	}
 	/* the GE given what the run wrote (the newest stall address it kept) */

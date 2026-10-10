@@ -129,8 +129,8 @@ static inline void me_idle(void)
 		__asm__ __volatile__("nop");
 }
 
-/* one job (either CPU) */
-static void run_job(volatile struct me_slot *slot, int *sums)
+/* one job (either CPU; on_me: this is the ME) */
+static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 {
 	switch (slot->type)
 	{
@@ -153,6 +153,12 @@ static void run_job(volatile struct me_slot *slot, int *sums)
 
 		for (k = 0; k < ME_JOB_ARGS; k++)
 			args[k] = slot->args[k];
+		/* build 113: the replay's fourth argument says whether it runs on
+		the ME, where it may mix audio between records (psp_me_serve_audio);
+		gemesim marks the main CPU's own work as the ME's, so the context
+		word can't tell */
+		if (slot->type == ME_JOB_GE)
+			args[3] = (unsigned int)on_me;
 		if (slot->type == ME_JOB_CLASSIFY)
 			psp_ge_me_classify(args, results);
 		else if (slot->type == ME_JOB_ANGLE)
@@ -166,6 +172,45 @@ static void run_job(volatile struct me_slot *slot, int *sums)
 	default:
 		break;
 	}
+}
+
+/* build 113: a slot's job run on the ME, with the cache hand-overs around it
+(meLibOnProcess's loop, and psp_me_serve_audio below) */
+static void me_serve(volatile struct me_slot *slot, int *sums)
+{
+	volatile struct me_control *control = CONTROL;
+	unsigned int request = slot->request, start, job_start, job_end;
+
+	start = me_cycles();
+	/* what the main CPU wrote: drop any copy left from the last job */
+	meLibDcacheWritebackInvalidateAll();
+	job_start = me_cycles();
+	run_job(slot, sums, 1);
+	job_end = me_cycles();
+	/* what this job wrote, to main RAM, before saying so */
+	meLibDcacheWritebackInvalidateAll();
+	slot->cycles = me_cycles() - start;
+	slot->job_cycles = job_end - job_start;
+	control->jobs++;
+	__asm__ __volatile__("sync");
+	slot->done = request;
+	__asm__ __volatile__("sync");
+}
+
+/* build 113: called by a long job on the ME (the GE layer's replay,
+psp_ge.c's defer_replay) every few records: an audio block asked for
+meanwhile is mixed now, between two records, instead of waiting behind the
+whole render job. b112's Test 3 on the PSP: audio blocks waited up to 38 ms
+behind render jobs, and 7 of 109 were late [M] (b113_candidates.md, step
+4b). Only ever called on the ME (the replay's on-the-ME argument) */
+void psp_me_serve_audio(void)
+{
+	static int sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
+	volatile struct me_slot *slot = SLOT(ME_SLOT_AUDIO);
+
+	if (slot->request == slot->done)
+		return;
+	me_serve(slot, sums);
 }
 
 __attribute__((noinline, aligned(4)))
@@ -205,24 +250,9 @@ void meLibOnProcess(void)
 		for (k = 0; k < ME_SLOTS; k++)
 		{
 			volatile struct me_slot *slot = SLOT(k);
-			unsigned int request = slot->request, start, job_start, job_end;
 
-			if (request == slot->done)
-				continue;
-			start = me_cycles();
-			/* what the main CPU wrote: drop any copy left from the last job */
-			meLibDcacheWritebackInvalidateAll();
-			job_start = me_cycles();
-			run_job(slot, sums);
-			job_end = me_cycles();
-			/* what this job wrote, to main RAM, before saying so */
-			meLibDcacheWritebackInvalidateAll();
-			slot->cycles = me_cycles() - start;
-			slot->job_cycles = job_end - job_start;
-			control->jobs++;
-			__asm__ __volatile__("sync");
-			slot->done = request;
-			__asm__ __volatile__("sync");
+			if (slot->request != slot->done)
+				me_serve(slot, sums);
 		}
 		if (control->stop)
 			break;
@@ -435,7 +465,7 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 		static int sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
 
 		/* the emulator: the job's own code, on this CPU */
-		run_job(slot, sums);
+		run_job(slot, sums, 0);
 		me_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 		stats[which].simulated++;
 		waited = me_us;
@@ -455,10 +485,13 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 				stats[which].failures++;
 				return 0;
 			}
-			if (sceKernelGetSystemTimeWide() - start > 40000)
+			/* build 113: a render job gets 500 ms. The 40 ms limit was set
+			for audio jobs (about 1 ms each); b112's render jobs ran up to
+			39.6 ms on the PSP, and the one past 40 ms stopped the ME [M] */
+			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE ? 500000 : 40000))
 			{
-				platform_log("ME: a job (type %u) not finished in 40 ms (job %u; the ME at job %u, %u idle polls)", type,
-					slot_request[which], slot->done, CONTROL->alive);
+				platform_log("ME: a job (type %u) not finished in %u ms (job %u; the ME at job %u, %u idle polls)", type,
+					type == ME_JOB_GE ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
 				stats[which].failures++;
 				psp_me_stop("a job timed out");
 				return 0;
