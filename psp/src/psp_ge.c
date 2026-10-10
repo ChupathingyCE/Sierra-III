@@ -1880,19 +1880,25 @@ pieces, and 5,290 materials went undrawn to the level's end.
 
 Every piece of a copy (the float copies, the normals, the radiosity, the
 16-bit copies) now comes from one block, carved out of the heap at the first
-copy and kept, so the copies' churn never reaches the general heap. Its size
-is the copies' budget plus room for a frame's new copies before the trim.
-When a piece doesn't fit, the least recently drawn copies are let go until it
-does, never one drawn this frame (the trim's rule: the GE may still be
-reading those). If this frame's copies fill the arena, the piece comes from
-the general heap, as before b111. What is drawn doesn't change.
+copy and kept, so the copies' churn never reaches the general heap. When a
+piece doesn't fit, the least recently drawn copies are let go until it does,
+never one drawn this frame (the trim's rule: the GE may still be reading
+those). If this frame's copies fill the arena, the piece comes from the
+general heap, as before b111. What is drawn doesn't change.
+
+Its size is the copies' budget plus 32 KB for the blocks' headers and some
+slack against the arena's own fragmentation: what the copies already took
+from the heap. Everything else shares what's left. In b108 run 1 that was
+tight: at the peak (game time 25,072) the heap held 5,856 KB, the copies
+about 980 of it, so the rest needed about 4,876 KB; with a 6,016 KB heap,
+32 KB of slack leaves it about 4,960 (128 KB would leave about 4,864).
 
 Blocks lie end to end, each behind a header holding its size and the size of
 the block before it, so a freed block merges with free neighbours on both
 sides. A request takes the smallest free block that holds it (best fit),
 split when what's left is worth keeping. "noarena" (keep word): the general
 heap only, as before. */
-#define ARENA_BYTES (LEVEL_STREAM_BUDGET + 128 * 1024)
+#define ARENA_BYTES (LEVEL_STREAM_BUDGET + 32 * 1024)
 #define ARENA_ALIGN 16
 #define ARENA_SPLIT_LEAST 64
 struct arena_block
