@@ -146,14 +146,614 @@ saves is the most that moving this file's work to the Media Engine could save
 #include "../include/psp_bench.h" /* the plain-C units have no -I for psp/include (psp_build.py) */
 #define GE_BENCH_SKIP(...) do { if (psp_bench_skip & PSP_SKIP_GE) return __VA_ARGS__; } while (0)
 
-/* build 112: the model path deferred (keep word "gedefer"; the machinery is
-with the models' state, at psp_ge_model_begin). Every other call that writes
-the list carries out what is waiting first, so the list's order never changes */
+/* ---------- build 112: the GE layer's calls deferred (keep word "gedefer")
+
+The first steps toward the Media Engine building the GE's lists
+(docs/big_levers.md, lever L1). Every call the engine makes that writes the
+list is written down as it arrives, with each array it points to copied
+(node matrices, lights, colours, centroids, a sprite group's corners, a text
+character's, a screen quad's), and carried out later in the same order:
+when the buffer is full, when a call that must run at once arrives (it
+carries out what is waiting first: GE_DEFER_DRAIN), or at the frame's end.
+
+Kept as pointers, since they stay put until the frame ends: the geometry
+cache's blocks (protected for RECENT_FRAMES, psp_geo.c), the level's vertices
+and the frame's dynamic triangle lists, the decals' vertices (written in the
+tick, read while drawing).
+
+Run at once, after what is waiting: the frame's start and end
+(psp_ge_window_begin decides the near plane from the level and the player;
+psp_ge_frame_end hands the list over), and the calls whose answer the engine
+uses (psp_ge_text_begin, psp_ge_frame_window, the level vertex queries) or
+that change data a waiting call reads (psp_ge_text_changed), and the map
+loads. A model with more nodes than DEFER_MAX_NODES runs as it comes
+(defer_paused), since the engine reuses its node matrices' buffer for the
+next model; so does an array too large for the buffer.
+
+On the main CPU the list comes out the same (the same calls, in the same
+order); only the CPU's work is reordered: the engine's half for a run of
+calls, then this file's half for them, so each half's code stays in the
+instruction cache longer. The ME step moves the carrying out to the ME. Off
+(the default): one test a call. */
+#define DEFER_WORDS (64 * 1024 / 4)
+#define DEFER_LARGEST (DEFER_WORDS / 4) /* a record past this runs as it comes */
+#define DEFER_MAX_NODES 64
+#define NODE_FLOATS 13 /* a node matrix as the game keeps it (halo_matrix): scale, three axes, position */
+#define SCREEN_VERTEX_WORDS 5 /* struct game_screen_vertex: x, y, u, v, argb */
+#define SPRITE_VERTEX_WORDS 6 /* struct game_sprite_vertex: x, y, z, u, v, argb */
+#define METER_WORDS 7 /* struct game_meter */
+enum
+{
+	DEFER_MODEL_BEGIN = 1, DEFER_MODEL_SHAPE, DEFER_MODEL_EFFECT, DEFER_MODEL_MULTIPURPOSE, DEFER_DRAW_MODEL,
+	DEFER_QUEUE_TRANSPARENT, DEFER_FOG, DEFER_WINDOW_TARGET, DEFER_LEVEL_DETAIL, DEFER_DRAW_LEVEL, DEFER_SKY,
+	DEFER_SPRITES, DEFER_WIDGET_BEGIN, DEFER_WIDGET_TEXTURE, DEFER_WIDGET_OCCLUSION, DEFER_WIDGET_SPRITE,
+	DEFER_QUEUE_LEVEL_TRANSPARENT, DEFER_HUD_ZOOM, DEFER_UI_CENTERED, DEFER_UI_SPACE, DEFER_SCREEN_QUAD,
+	DEFER_SHADOW_BEGIN, DEFER_SHADOW_DRAW, DEFER_SHADOW_END, DEFER_LIGHT_BEGIN, DEFER_LIGHT_DRAW, DEFER_SCREEN_FLASH,
+	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END
+};
+typedef union
+{
+	unsigned int u;
+	int i;
+	float f;
+	const void *p;
+} defer_word;
+static defer_word *defer_buffer = NULL;
+static float *defer_nodes = NULL; /* the carried-out model's node matrices: model_nodes points here */
 static unsigned int defer_used = 0;
-static int defer_replaying = 0;
+static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
+static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
 static void defer_drain(void);
-static void defer_frame_begin(void);
+/* a call that runs at once carries out what is waiting first, so the list's
+order never changes */
 #define GE_DEFER_DRAIN() do { if (defer_used && !defer_replaying) defer_drain(); } while (0)
+/* a deferred call's own test: deferring this frame, not already carrying
+out, not inside a model too big to defer, and written down */
+#define GE_DEFER(record, ...) do { if (defer_on && !defer_replaying && !defer_paused && (record)) return __VA_ARGS__; } while (0)
+
+int psp_keep(const char *name);
+void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
+	const float *ambient, int light_count, const float *light0, const float *light1);
+void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp);
+void psp_ge_model_effect(int type, float intensity);
+void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow);
+void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
+	int alpha_tested);
+void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
+	short blend, const float *centroid);
+void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
+void psp_ge_window_target(int target);
+void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
+	unsigned int micro_key, float micro_u, float micro_v);
+void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
+void psp_ge_sky(int on);
+int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
+void psp_ge_widget_begin(int depth_test);
+void psp_ge_widget_texture(unsigned int key);
+void psp_ge_widget_occlusion(int visible);
+void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
+	unsigned long color);
+void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
+	const float *centroid);
+void psp_ge_hud_zoom(float zoom);
+void psp_ge_ui_centered(int centered);
+void psp_ge_ui_space(int width, int height);
+void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
+	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale);
+void psp_ge_shadow_begin(const float *matrix, const float *color, float radius);
+void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count);
+void psp_ge_shadow_end(void);
+void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
+	float cosine_falloff, float cosine_cutoff);
+void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
+	unsigned int base_key);
+void psp_ge_screen_flash(short type, float intensity, float const *argb);
+void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
+	int intensity, int alpha_tested, int permanent);
+void psp_ge_blips_begin(void);
+void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key);
+void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key);
+void psp_ge_text_character(void const *vertices);
+void psp_ge_text_end(void);
+
+/* at each frame's start: whether this frame defers (the keep word, asked
+once; the buffer taken from the heap the first time) */
+static void defer_frame_begin(void)
+{
+	static int asked = -1;
+
+	if (asked < 0)
+	{
+		asked = psp_keep("gedefer");
+		if (asked)
+		{
+			defer_buffer = memalign(64, DEFER_WORDS * sizeof(defer_word));
+			defer_nodes = memalign(64, DEFER_MAX_NODES * NODE_FLOATS * sizeof(float));
+			if (!defer_buffer || !defer_nodes)
+			{
+				free(defer_buffer);
+				free(defer_nodes);
+				defer_buffer = NULL;
+				defer_nodes = NULL;
+				asked = 0;
+				platform_log("GE: gedefer: no room for its buffer, off");
+			}
+			else
+				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer",
+					(unsigned int)(DEFER_WORDS * sizeof(defer_word) / 1024));
+		}
+	}
+	defer_on = asked;
+	defer_paused = 0;
+}
+
+/* room for a call of words words of arguments (what is waiting is carried
+out first if the buffer is full); NULL if the call is too large to defer,
+after carrying out what is waiting, so the call runs as it comes */
+static defer_word *defer_take(int kind, unsigned int words)
+{
+	defer_word *at;
+
+	if (words > DEFER_LARGEST)
+	{
+		defer_too_large++;
+		GE_DEFER_DRAIN();
+		return NULL;
+	}
+	if (defer_used + 1 + words > DEFER_WORDS)
+	{
+		defer_drains_full++;
+		defer_drain();
+	}
+	at = defer_buffer + defer_used;
+	at->u = (unsigned int)kind | (1 + words) << 8;
+	defer_used += 1 + words;
+	defer_records++;
+	return at + 1;
+}
+
+/* n words copied, after one saying whether the pointer was NULL: 1 + n words */
+static defer_word *defer_copy(defer_word *at, const void *p, int n)
+{
+	at->u = p != NULL;
+	if (p)
+		memcpy(at + 1, p, n * sizeof(defer_word));
+	return at + 1 + n;
+}
+
+/* and back: the copy's address, or NULL if the pointer was */
+static const void *defer_copy_back(const defer_word *at, const defer_word **next, int n)
+{
+	*next = at + 1 + n;
+	return at->u ? (const void *)(at + 1) : NULL;
+}
+
+/* ----- the calls written down: 1 if it was, 0 if it must run now */
+
+static int defer_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
+	const float *ambient, int light_count, const float *light0, const float *light1)
+{
+	int lights = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
+	int nodes = node_matrices && node_matrix_count > 0 ? node_matrix_count : 0;
+	defer_word *at;
+
+	if (nodes > DEFER_MAX_NODES)
+	{
+		defer_big_models++;
+		GE_DEFER_DRAIN();
+		defer_paused = 1;
+		return 0;
+	}
+	defer_paused = 0;
+	at = defer_take(DEFER_MODEL_BEGIN, 5 + 4 + 7 + 7 + nodes * NODE_FLOATS);
+	at[0].p = node_matrices;
+	at[1].i = node_matrix_count;
+	at[2].f = u_scale;
+	at[3].f = v_scale;
+	at[4].i = light_count;
+	at = defer_copy(at + 5, ambient, 3);
+	at = defer_copy(at, lights > 0 ? light0 : NULL, 6);
+	at = defer_copy(at, lights > 1 ? light1 : NULL, 6);
+	if (nodes)
+		memcpy(at, node_matrices, nodes * NODE_FLOATS * sizeof(float));
+	return 1;
+}
+
+static int defer_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp)
+{
+	defer_word *at = defer_take(DEFER_MODEL_SHAPE, 4 + 4);
+
+	at[0].i = first_person;
+	at[1].f = radius;
+	at[2].f = near_fp;
+	at[3].f = far_fp;
+	defer_copy(at + 4, centroid, 3);
+	return 1;
+}
+
+static int defer_model_effect(int type, float intensity)
+{
+	defer_word *at = defer_take(DEFER_MODEL_EFFECT, 2);
+
+	at[0].i = type;
+	at[1].f = intensity;
+	return 1;
+}
+
+static int defer_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
+{
+	defer_word *at = defer_take(DEFER_MODEL_MULTIPURPOSE, 1 + 4 + 4);
+
+	at[0].u = multipurpose_key;
+	defer_copy(defer_copy(at + 1, change, 3), glow, 3);
+	return 1;
+}
+
+static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
+	int alpha_tested)
+{
+	defer_word *at = defer_take(DEFER_DRAW_MODEL, 11);
+
+	at[0].p = vertices;
+	at[1].i = vertex_count;
+	at[2].i = uncompressed;
+	at[3].p = indices;
+	at[4].i = (int)index_count;
+	at[5].i = strip;
+	at[6].u = color;
+	at[7].u = base_key;
+	at[8].f = u_scale;
+	at[9].f = v_scale;
+	at[10].i = alpha_tested;
+	return 1;
+}
+
+static int defer_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
+	short blend, const float *centroid)
+{
+	defer_word *at = defer_take(DEFER_QUEUE_TRANSPARENT, 12 + 4);
+
+	at[0].p = vertices;
+	at[1].i = vertex_count;
+	at[2].i = uncompressed;
+	at[3].p = indices;
+	at[4].i = (int)index_count;
+	at[5].i = strip;
+	at[6].u = key;
+	at[7].f = u_scale;
+	at[8].f = v_scale;
+	at[9].f = u_offset;
+	at[10].f = v_offset;
+	at[11].i = blend;
+	defer_copy(at + 12, centroid, 3);
+	return 1;
+}
+
+static int defer_fog(const float *color, float minimum_distance, float maximum_distance, float density)
+{
+	defer_word *at = defer_take(DEFER_FOG, 3 + 4);
+
+	at[0].f = minimum_distance;
+	at[1].f = maximum_distance;
+	at[2].f = density;
+	defer_copy(at + 3, color, 3);
+	return 1;
+}
+
+/* a call of up to eight plain words (defer_bits for a float, DEFER_P
+for a pointer: both are a word on the PSP) */
+static int defer_words(int kind, int count, unsigned int a, unsigned int b, unsigned int c, unsigned int d,
+	unsigned int e, unsigned int f, unsigned int g, unsigned int h)
+{
+	defer_word *at = defer_take(kind, count);
+	unsigned int all[8] = { a, b, c, d, e, f, g, h };
+	int k;
+
+	for (k = 0; k < count; k++)
+		at[k].u = all[k];
+	return 1;
+}
+#define DEFER_P(pointer) ((unsigned int)(unsigned long)(pointer))
+
+static unsigned int defer_bits(float value)
+{
+	defer_word w;
+
+	w.f = value;
+	return w.u;
+}
+
+static int defer_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+{
+	defer_word *at = defer_take(DEFER_DRAW_LEVEL, 9);
+
+	at[0].p = vertices;
+	at[1].p = lightmap_vertices;
+	at[2].i = vertex_count;
+	at[3].p = indices;
+	at[4].i = (int)triangle_count;
+	at[5].u = color;
+	at[6].u = base_key;
+	at[7].u = lightmap_key;
+	at[8].i = alpha_tested;
+	return 1;
+}
+
+static int defer_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend,
+	float const *view_to_world)
+{
+	int corners = vertices && sprite_count > 0 ? 4 * sprite_count : 0;
+	defer_word *at = defer_take(DEFER_SPRITES, 3 + 1 + NODE_FLOATS + 1 + corners * SPRITE_VERTEX_WORDS);
+
+	if (!at)
+		return 0;
+	at[0].i = sprite_count;
+	at[1].u = bitmap_key;
+	at[2].i = blend;
+	at = defer_copy(at + 3, view_to_world, NODE_FLOATS);
+	defer_copy(at, corners ? vertices : NULL, corners * SPRITE_VERTEX_WORDS);
+	return 1;
+}
+
+static int defer_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
+	unsigned long color)
+{
+	defer_word *at = defer_take(DEFER_WIDGET_SPRITE, 5 + 4);
+
+	at[0].f = radius;
+	at[1].f = scale_x;
+	at[2].f = scale_y;
+	at[3].f = rotation;
+	at[4].u = (unsigned int)color;
+	defer_copy(at + 5, point, 3);
+	return 1;
+}
+
+static int defer_queue_level_transparent(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
+	const float *centroid)
+{
+	defer_word *at = defer_take(DEFER_QUEUE_LEVEL_TRANSPARENT, 10 + 4);
+
+	at[0].p = vertices;
+	at[1].i = vertex_count;
+	at[2].p = indices;
+	at[3].i = (int)triangle_count;
+	at[4].u = key;
+	at[5].f = u_scale;
+	at[6].f = v_scale;
+	at[7].f = u_offset;
+	at[8].f = v_offset;
+	at[9].i = blend;
+	defer_copy(at + 10, centroid, 3);
+	return 1;
+}
+
+static int defer_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
+	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
+{
+	defer_word *at = defer_take(DEFER_SCREEN_QUAD, 11 + 1 + 4 * SCREEN_VERTEX_WORDS + 1 + METER_WORDS);
+
+	at[0].u = key;
+	at[1].i = blend;
+	at[2].f = red;
+	at[3].f = green;
+	at[4].f = blue;
+	at[5].f = fade;
+	at[6].f = offset_x;
+	at[7].f = offset_y;
+	at[8].i = wrapped;
+	at[9].f = u_scale;
+	at[10].f = v_scale;
+	at = defer_copy(at + 11, vertices, 4 * SCREEN_VERTEX_WORDS);
+	defer_copy(at, meter_parameters, METER_WORDS);
+	return 1;
+}
+
+static int defer_shadow_begin(const float *matrix, const float *color, float radius)
+{
+	defer_word *at = defer_take(DEFER_SHADOW_BEGIN, 1 + 1 + NODE_FLOATS + 4);
+
+	at[0].f = radius;
+	defer_copy(defer_copy(at + 1, matrix, NODE_FLOATS), color, 3);
+	return 1;
+}
+
+static int defer_light_begin(const float *position, const float *forward, const float *color, float radius,
+	float cosine_falloff, float cosine_cutoff)
+{
+	defer_word *at = defer_take(DEFER_LIGHT_BEGIN, 3 + 4 + 4 + 4);
+
+	at[0].f = radius;
+	at[1].f = cosine_falloff;
+	at[2].f = cosine_cutoff;
+	defer_copy(defer_copy(defer_copy(at + 3, position, 3), forward, 3), color, 3);
+	return 1;
+}
+
+static int defer_screen_flash(short type, float intensity, float const *argb)
+{
+	defer_word *at = defer_take(DEFER_SCREEN_FLASH, 2 + 5);
+
+	at[0].i = type;
+	at[1].f = intensity;
+	defer_copy(at + 2, argb, 4);
+	return 1;
+}
+
+static int defer_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
+	int intensity, int alpha_tested, int permanent)
+{
+	defer_word *at = defer_take(DEFER_DECAL, 8);
+
+	at[0].p = vertices;
+	at[1].i = quad_count;
+	at[2].u = key;
+	at[3].i = blend;
+	at[4].u = (unsigned int)color;
+	at[5].i = intensity;
+	at[6].i = alpha_tested;
+	at[7].i = permanent;
+	return 1;
+}
+
+static int defer_text_character(void const *vertices)
+{
+	defer_word *at = defer_take(DEFER_TEXT_CHARACTER, 1 + 4 * SCREEN_VERTEX_WORDS);
+
+	defer_copy(at, vertices, 4 * SCREEN_VERTEX_WORDS);
+	return 1;
+}
+
+/* ----- everything waiting, carried out in order */
+static void defer_drain(void)
+{
+	unsigned int at = 0;
+
+	defer_replaying = 1;
+	while (at < defer_used)
+	{
+		const defer_word *w = defer_buffer + at + 1, *rest;
+		int kind = defer_buffer[at].u & 0xFF;
+		const void *a, *b, *c;
+
+		at += defer_buffer[at].u >> 8;
+		switch (kind)
+		{
+		case DEFER_MODEL_BEGIN:
+		{
+			int count = w[1].i, nodes = w[0].p && count > 0 ? count : 0;
+
+			a = defer_copy_back(w + 5, &rest, 3);
+			b = defer_copy_back(rest, &rest, 6);
+			c = defer_copy_back(rest, &rest, 6);
+			if (nodes)
+				memcpy(defer_nodes, rest, nodes * NODE_FLOATS * sizeof(float));
+			psp_ge_model_begin(w[0].p ? defer_nodes : NULL, count, w[2].f, w[3].f, a, w[4].i, b, c);
+			break;
+		}
+		case DEFER_MODEL_SHAPE:
+			psp_ge_model_shape(w[0].i, defer_copy_back(w + 4, &rest, 3), w[1].f, w[2].f, w[3].f);
+			break;
+		case DEFER_MODEL_EFFECT:
+			psp_ge_model_effect(w[0].i, w[1].f);
+			break;
+		case DEFER_MODEL_MULTIPURPOSE:
+			a = defer_copy_back(w + 1, &rest, 3);
+			psp_ge_model_multipurpose(w[0].u, a, defer_copy_back(rest, &rest, 3));
+			break;
+		case DEFER_DRAW_MODEL:
+			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
+				w[6].u, w[7].u, w[8].f, w[9].f, w[10].i);
+			break;
+		case DEFER_QUEUE_TRANSPARENT:
+			psp_ge_queue_transparent((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
+				w[6].u, w[7].f, w[8].f, w[9].f, w[10].f, (short)w[11].i, defer_copy_back(w + 12, &rest, 3));
+			break;
+		case DEFER_FOG:
+			psp_ge_fog(defer_copy_back(w + 3, &rest, 3), w[0].f, w[1].f, w[2].f);
+			break;
+		case DEFER_WINDOW_TARGET:
+			psp_ge_window_target(w[0].i);
+			break;
+		case DEFER_LEVEL_DETAIL:
+			psp_ge_level_detail(w[0].u, w[1].f, w[2].f, w[3].u, w[4].f, w[5].f);
+			break;
+		case DEFER_DRAW_LEVEL:
+			psp_ge_draw_level(w[0].p, w[1].p, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].u, w[6].u, w[7].u,
+				w[8].i);
+			break;
+		case DEFER_SKY:
+			psp_ge_sky(w[0].i);
+			break;
+		case DEFER_SPRITES:
+			a = defer_copy_back(w + 3, &rest, NODE_FLOATS);
+			psp_ge_sprites(defer_copy_back(rest, &rest, 0), w[0].i, w[1].u, (short)w[2].i, a);
+			break;
+		case DEFER_WIDGET_BEGIN:
+			psp_ge_widget_begin(w[0].i);
+			break;
+		case DEFER_WIDGET_TEXTURE:
+			psp_ge_widget_texture(w[0].u);
+			break;
+		case DEFER_WIDGET_OCCLUSION:
+			psp_ge_widget_occlusion(w[0].i);
+			break;
+		case DEFER_WIDGET_SPRITE:
+			psp_ge_widget_sprite(defer_copy_back(w + 5, &rest, 3), w[0].f, w[1].f, w[2].f, w[3].f, w[4].u);
+			break;
+		case DEFER_QUEUE_LEVEL_TRANSPARENT:
+			psp_ge_queue_level_transparent(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i, w[4].u, w[5].f,
+				w[6].f, w[7].f, w[8].f, (short)w[9].i, defer_copy_back(w + 10, &rest, 3));
+			break;
+		case DEFER_HUD_ZOOM:
+			psp_ge_hud_zoom(w[0].f);
+			break;
+		case DEFER_UI_CENTERED:
+			psp_ge_ui_centered(w[0].i);
+			break;
+		case DEFER_UI_SPACE:
+			psp_ge_ui_space(w[0].i, w[1].i);
+			break;
+		case DEFER_SCREEN_QUAD:
+			a = defer_copy_back(w + 11, &rest, 4 * SCREEN_VERTEX_WORDS);
+			psp_ge_screen_quad(a, w[0].u, (short)w[1].i, w[2].f, w[3].f, w[4].f, w[5].f, w[6].f, w[7].f,
+				defer_copy_back(rest, &rest, METER_WORDS), w[8].i, w[9].f, w[10].f);
+			break;
+		case DEFER_SHADOW_BEGIN:
+			a = defer_copy_back(w + 1, &rest, NODE_FLOATS);
+			psp_ge_shadow_begin(a, defer_copy_back(rest, &rest, 3), w[0].f);
+			break;
+		case DEFER_SHADOW_DRAW:
+			psp_ge_shadow_draw(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i);
+			break;
+		case DEFER_SHADOW_END:
+			psp_ge_shadow_end();
+			break;
+		case DEFER_LIGHT_BEGIN:
+			a = defer_copy_back(w + 3, &rest, 3);
+			b = defer_copy_back(rest, &rest, 3);
+			psp_ge_light_begin(a, b, defer_copy_back(rest, &rest, 3), w[0].f, w[1].f, w[2].f);
+			break;
+		case DEFER_LIGHT_DRAW:
+			psp_ge_light_draw(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i, w[4].u);
+			break;
+		case DEFER_SCREEN_FLASH:
+			psp_ge_screen_flash((short)w[0].i, w[1].f, defer_copy_back(w + 2, &rest, 4));
+			break;
+		case DEFER_DECAL:
+			psp_ge_decal(w[0].p, w[1].i, w[2].u, (short)w[3].i, w[4].u, w[5].i, w[6].i, w[7].i);
+			break;
+		case DEFER_BLIPS_BEGIN:
+			psp_ge_blips_begin();
+			break;
+		case DEFER_BLIP:
+			psp_ge_blip(w[0].f, w[1].f, w[2].f, w[3].f, w[4].f, w[5].f, w[6].u);
+			break;
+		case DEFER_BLIPS_END:
+			psp_ge_blips_end(w[0].f, w[1].f, w[2].f, w[3].u, w[4].u);
+			break;
+		case DEFER_TEXT_CHARACTER:
+			psp_ge_text_character(defer_copy_back(w, &rest, 4 * SCREEN_VERTEX_WORDS));
+			break;
+		case DEFER_TEXT_END:
+			psp_ge_text_end();
+			break;
+		}
+	}
+	defer_used = 0;
+	defer_replaying = 0;
+	defer_drains++;
+}
 static int list_in_vram = 0, vram_busy = 0, vram_busy_calibrating = 0, vram_busy_sprites = 8;
 static unsigned int vram_busy_target_us = 15000;
 
@@ -656,7 +1256,7 @@ static unsigned long fog_changes = 0;
 
 void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_fog(color, minimum_distance, maximum_distance, density)); /* build 112: gedefer */
 	float near = 1e6f, far = 2e6f;
 	unsigned int c;
 	int r, g, b;
@@ -1407,7 +2007,7 @@ b30's floor mirrors that way, the whole level seen from the mirror's camera
 under the floor (render.c no longer renders mirrors, psp_fixups.py) */
 void psp_ge_window_target(int target)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_WINDOW_TARGET, 1, (unsigned int)target, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (target != 0)
 		win_other_targets++;
 }
@@ -3146,7 +3746,8 @@ int psp_keep(const char *name);
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_LEVEL_DETAIL, 6, primary_key, defer_bits(primary_u), defer_bits(primary_v), micro_key,
+		defer_bits(micro_u), defer_bits(micro_v), 0, 0)); /* build 112: gedefer */
 	detail_key[0] = primary_key; detail_u[0] = primary_u; detail_v[0] = primary_v;
 	detail_key[1] = micro_key; detail_u[1] = micro_u; detail_v[1] = micro_v;
 }
@@ -3664,7 +4265,8 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
+		lightmap_key, alpha_tested)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL); /* build 103 */
 	unsigned int start = ge_clock();
@@ -3712,289 +4314,6 @@ static unsigned int color_from_rgb(const float *rgb)
 	g = g < 0 ? 0 : g > 255 ? 255 : g;
 	b = b < 0 ? 0 : b > 255 ? 255 : b;
 	return 0xFF000000 | (b << 16) | (g << 8) | r;
-}
-
-/* ---------- build 112: the model path deferred (keep word "gedefer")
-
-The first step toward the Media Engine building the GE's lists
-(docs/big_levers.md). The model path's calls (psp_ge_model_begin, _shape,
-_effect and _multipurpose, psp_ge_draw_model, psp_ge_queue_transparent) are
-written down as they arrive, with every array they point to copied (the node
-matrices, the lights, the colours, the centroids), and carried out later in
-the same order: when the buffer is full, when any other call that writes the
-list arrives (each of those runs GE_DEFER_DRAIN first), or at the frame's
-end. The vertices and indices are the geometry cache's blocks, which stay put
-for RECENT_FRAMES (psp_geo.c), so they are kept as pointers.
-
-On the main CPU the list comes out the same (the same calls, in the same
-order); only the CPU's work is reordered: the engine's half for a run of
-models, then this file's half for them, so each half's code stays in the
-instruction cache longer. The ME step moves the carrying out to the ME.
-
-A model with more nodes than DEFER_MAX_NODES isn't deferred: what is waiting
-is carried out, and that model's calls run as they come (defer_paused), since
-the engine reuses its node matrices' buffer for the next model. */
-#define DEFER_WORDS (64 * 1024 / 4)
-#define DEFER_MAX_NODES 64
-#define NODE_FLOATS 13 /* a node matrix as the game keeps it (halo_matrix): scale, three axes, position */
-enum
-{
-	DEFER_MODEL_BEGIN = 1, DEFER_MODEL_SHAPE, DEFER_MODEL_EFFECT, DEFER_MODEL_MULTIPURPOSE, DEFER_DRAW_MODEL,
-	DEFER_QUEUE_TRANSPARENT
-};
-typedef union
-{
-	unsigned int u;
-	int i;
-	float f;
-	const void *p;
-} defer_word;
-static defer_word *defer_buffer = NULL;
-static float *defer_nodes = NULL; /* the carried-out model's node matrices: model_nodes points here */
-static int defer_on = 0, defer_paused = 0;
-static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0;
-int psp_keep(const char *name);
-void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
-	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
-	int alpha_tested);
-void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
-	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
-	short blend, const float *centroid);
-void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
-	const float *ambient, int light_count, const float *light0, const float *light1);
-void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp);
-void psp_ge_model_effect(int type, float intensity);
-void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow);
-
-/* at each frame's start: whether this frame defers (the keep word, asked
-once; the buffer taken from the heap the first time) */
-static void defer_frame_begin(void)
-{
-	static int asked = -1;
-
-	if (asked < 0)
-	{
-		asked = psp_keep("gedefer");
-		if (asked)
-		{
-			defer_buffer = memalign(64, DEFER_WORDS * sizeof(defer_word));
-			defer_nodes = memalign(64, DEFER_MAX_NODES * NODE_FLOATS * sizeof(float));
-			if (!defer_buffer || !defer_nodes)
-			{
-				free(defer_buffer);
-				free(defer_nodes);
-				defer_buffer = NULL;
-				defer_nodes = NULL;
-				asked = 0;
-				platform_log("GE: gedefer: no room for its buffer, off");
-			}
-			else
-				platform_log("GE: gedefer: the model path deferred, %u KB of buffer",
-					(unsigned int)(DEFER_WORDS * sizeof(defer_word) / 1024));
-		}
-	}
-	defer_on = asked;
-	defer_paused = 0;
-}
-
-/* room for a call of words words of arguments (what is waiting is carried
-out first if the buffer is full) */
-static defer_word *defer_take(int kind, unsigned int words)
-{
-	defer_word *at;
-
-	if (defer_used + 1 + words > DEFER_WORDS)
-	{
-		defer_drains_full++;
-		defer_drain();
-	}
-	at = defer_buffer + defer_used;
-	at->u = (unsigned int)kind | (1 + words) << 8;
-	defer_used += 1 + words;
-	defer_records++;
-	return at + 1;
-}
-
-/* n floats copied (1 + n words: whether the pointer was NULL, then the floats) */
-static defer_word *defer_floats(defer_word *at, const float *p, int n)
-{
-	int k;
-
-	at->u = p != NULL;
-	for (k = 0; k < n; k++)
-		at[1 + k].f = p ? p[k] : 0.0f;
-	return at + 1 + n;
-}
-
-static const defer_word *defer_floats_back(const defer_word *at, float *into, int n, const float **p)
-{
-	int k;
-
-	for (k = 0; k < n; k++)
-		into[k] = at[1 + k].f;
-	*p = at->u ? into : NULL;
-	return at + 1 + n;
-}
-
-/* the calls written down: 1 if it was, 0 if it must run now */
-static int defer_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
-	const float *ambient, int light_count, const float *light0, const float *light1)
-{
-	int lights = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
-	int nodes = node_matrices && node_matrix_count > 0 ? node_matrix_count : 0;
-	defer_word *at;
-
-	if (nodes > DEFER_MAX_NODES)
-	{
-		defer_big_models++;
-		GE_DEFER_DRAIN();
-		defer_paused = 1;
-		return 0;
-	}
-	defer_paused = 0;
-	at = defer_take(DEFER_MODEL_BEGIN, 5 + 4 + 7 + 7 + nodes * NODE_FLOATS);
-	at[0].p = node_matrices;
-	at[1].i = node_matrix_count;
-	at[2].f = u_scale;
-	at[3].f = v_scale;
-	at[4].i = light_count;
-	at = defer_floats(at + 5, ambient, 3);
-	at = defer_floats(at, lights > 0 ? light0 : NULL, 6);
-	at = defer_floats(at, lights > 1 ? light1 : NULL, 6);
-	if (nodes)
-		memcpy(at, node_matrices, nodes * NODE_FLOATS * sizeof(float));
-	return 1;
-}
-
-static int defer_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp)
-{
-	defer_word *at = defer_take(DEFER_MODEL_SHAPE, 4 + 4);
-
-	at[0].i = first_person;
-	at[1].f = radius;
-	at[2].f = near_fp;
-	at[3].f = far_fp;
-	defer_floats(at + 4, centroid, 3);
-	return 1;
-}
-
-static int defer_model_effect(int type, float intensity)
-{
-	defer_word *at = defer_take(DEFER_MODEL_EFFECT, 2);
-
-	at[0].i = type;
-	at[1].f = intensity;
-	return 1;
-}
-
-static int defer_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
-{
-	defer_word *at = defer_take(DEFER_MODEL_MULTIPURPOSE, 1 + 4 + 4);
-
-	at[0].u = multipurpose_key;
-	defer_floats(defer_floats(at + 1, change, 3), glow, 3);
-	return 1;
-}
-
-static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
-	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
-	int alpha_tested)
-{
-	defer_word *at = defer_take(DEFER_DRAW_MODEL, 11);
-
-	at[0].p = vertices;
-	at[1].i = vertex_count;
-	at[2].i = uncompressed;
-	at[3].p = indices;
-	at[4].i = (int)index_count;
-	at[5].i = strip;
-	at[6].u = color;
-	at[7].u = base_key;
-	at[8].f = u_scale;
-	at[9].f = v_scale;
-	at[10].i = alpha_tested;
-	return 1;
-}
-
-static int defer_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
-	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
-	short blend, const float *centroid)
-{
-	defer_word *at = defer_take(DEFER_QUEUE_TRANSPARENT, 12 + 4);
-
-	at[0].p = vertices;
-	at[1].i = vertex_count;
-	at[2].i = uncompressed;
-	at[3].p = indices;
-	at[4].i = (int)index_count;
-	at[5].i = strip;
-	at[6].u = key;
-	at[7].f = u_scale;
-	at[8].f = v_scale;
-	at[9].f = u_offset;
-	at[10].f = v_offset;
-	at[11].i = blend;
-	defer_floats(at + 12, centroid, 3);
-	return 1;
-}
-
-/* a deferred call's own test: deferring this frame, not already carrying
-out, and not inside a model too big to defer */
-#define GE_DEFER(record) do { if (defer_on && !defer_replaying && !defer_paused && (record)) return; } while (0)
-
-/* everything waiting, carried out in order */
-static void defer_drain(void)
-{
-	unsigned int at = 0;
-
-	defer_replaying = 1;
-	while (at < defer_used)
-	{
-		const defer_word *w = defer_buffer + at + 1;
-		int kind = defer_buffer[at].u & 0xFF;
-		float a[3], b[6], c[6];
-		const float *pa, *pb, *pc;
-
-		at += defer_buffer[at].u >> 8;
-		switch (kind)
-		{
-		case DEFER_MODEL_BEGIN:
-		{
-			int count = w[1].i, nodes = w[0].p && count > 0 ? count : 0;
-			const defer_word *rest = defer_floats_back(w + 5, a, 3, &pa);
-
-			rest = defer_floats_back(rest, b, 6, &pb);
-			rest = defer_floats_back(rest, c, 6, &pc);
-			if (nodes)
-				memcpy(defer_nodes, rest, nodes * NODE_FLOATS * sizeof(float));
-			psp_ge_model_begin(w[0].p ? defer_nodes : NULL, count, w[2].f, w[3].f, pa, w[4].i, pb, pc);
-			break;
-		}
-		case DEFER_MODEL_SHAPE:
-			defer_floats_back(w + 4, a, 3, &pa);
-			psp_ge_model_shape(w[0].i, pa, w[1].f, w[2].f, w[3].f);
-			break;
-		case DEFER_MODEL_EFFECT:
-			psp_ge_model_effect(w[0].i, w[1].f);
-			break;
-		case DEFER_MODEL_MULTIPURPOSE:
-			defer_floats_back(defer_floats_back(w + 1, a, 3, &pa), b, 3, &pb);
-			psp_ge_model_multipurpose(w[0].u, pa, pb);
-			break;
-		case DEFER_DRAW_MODEL:
-			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
-				w[6].u, w[7].u, w[8].f, w[9].f, w[10].i);
-			break;
-		case DEFER_QUEUE_TRANSPARENT:
-			defer_floats_back(w + 12, a, 3, &pa);
-			psp_ge_queue_transparent((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
-				w[6].u, w[7].f, w[8].f, w[9].f, w[10].f, (short)w[11].i, pa);
-			break;
-		}
-	}
-	defer_used = 0;
-	defer_replaying = 0;
-	defer_drains++;
 }
 
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
@@ -5800,7 +6119,7 @@ static int in_sky = 0;
 
 void psp_ge_sky(int on)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_SKY, 1, (unsigned int)on, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (!frame_open)
 		return;
 	in_sky = on;
@@ -6018,7 +6337,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_sprites(vertices, sprite_count, bitmap_key, blend, view_to_world), 1); /* build 112: gedefer */
 	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
@@ -6046,14 +6365,14 @@ extern unsigned long psp_occlusion_rays_cast, psp_occlusion_rays_kept; /* raster
 
 void psp_ge_widget_begin(int depth_test)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_WIDGET_BEGIN, 1, (unsigned int)depth_test, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	widget_depth = depth_test;
 	widget_begins++;
 }
 
 void psp_ge_widget_texture(unsigned int key)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_WIDGET_TEXTURE, 1, key, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	widget_key = key;
 	if (!key)
 		widget_untextured++;
@@ -6062,7 +6381,7 @@ void psp_ge_widget_texture(unsigned int key)
 /* the occlusion rays' tally, for the log */
 void psp_ge_widget_occlusion(int visible)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_WIDGET_OCCLUSION, 1, (unsigned int)visible, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	occlusion_tests++;
 	if (visible)
 		occlusion_visible++;
@@ -6071,7 +6390,7 @@ void psp_ge_widget_occlusion(int visible)
 void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
 	unsigned long color)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_widget_sprite(point, radius, scale_x, scale_y, rotation, color)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_WIDGET); /* build 103 */
 	static const float corner_uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
@@ -7123,7 +7442,8 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_queue_level_transparent(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale,
+		u_offset, v_offset, blend, centroid)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL_SEETHROUGH); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
@@ -7360,7 +7680,7 @@ static float hud_zoom = 1.0f;
 
 void psp_ge_hud_zoom(float zoom)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_HUD_ZOOM, 1, defer_bits(zoom), 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	hud_zoom = zoom > 0.0f ? zoom : 1.0f;
 }
 
@@ -7368,13 +7688,13 @@ static int ui_centered = 0;
 
 void psp_ge_ui_centered(int centered)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_UI_CENTERED, 1, (unsigned int)centered, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	ui_centered = centered;
 }
 
 void psp_ge_ui_space(int width, int height)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_UI_SPACE, 2, (unsigned int)width, (unsigned int)height, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (width <= 0 || height <= 0)
 		return;
 	if (ui_centered)
@@ -7474,7 +7794,8 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,
+		wrapped, u_scale, v_scale)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SCREEN); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
@@ -7732,7 +8053,7 @@ static struct shadow_vertex scratch_vertices[3 * SCRATCH_TRIANGLES];
 /* the game's real_matrix4x3: scale, forward, left, up, position */
 void psp_ge_shadow_begin(const float *matrix, const float *color, float radius)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_shadow_begin(matrix, color, radius)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	int k;
 
@@ -8096,7 +8417,8 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 
 void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_SHADOW_DRAW, 4, DEFER_P(vertices), (unsigned int)vertex_count, DEFER_P(indices),
+		(unsigned int)triangle_count, 0, 0, 0, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SHADOW); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
@@ -8107,7 +8429,7 @@ void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned s
 
 void psp_ge_shadow_end(void)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_SHADOW_END, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	shadow.open = 0;
 }
 
@@ -8132,7 +8454,7 @@ static unsigned long lights_drawn = 0;
 void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
 	float cosine_falloff, float cosine_cutoff)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_light_begin(position, forward, color, radius, cosine_falloff, cosine_cutoff)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	int k;
 
@@ -8893,7 +9215,8 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_LIGHT_DRAW, 5, DEFER_P(vertices), (unsigned int)vertex_count, DEFER_P(indices),
+		(unsigned int)triangle_count, base_key, 0, 0, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LIGHT); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
@@ -8911,7 +9234,7 @@ static unsigned long flashes_drawn = 0;
 
 void psp_ge_screen_flash(short type, float intensity, float const *argb)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_screen_flash(type, intensity, argb)); /* build 112: gedefer */
 	struct hud_vertex *out;
 	float a, r, g, b;
 	unsigned int color, fix;
@@ -9676,7 +9999,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_decal(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	static unsigned int decal_calls = 0;
 
@@ -9764,7 +10087,7 @@ static unsigned int blip_color(float red, float green, float blue)
 
 void psp_ge_blips_begin(void)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	ge_kind(KIND_HUD); /* build 103 */
 	list_hud_phase();
 	static const float everywhere[8] = { -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f };
@@ -9794,7 +10117,8 @@ void psp_ge_blips_begin(void)
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_BLIP, 7, defer_bits(x), defer_bits(y), defer_bits(radius), defer_bits(red),
+		defer_bits(green), defer_bits(blue), key, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_HUD); /* build 103 */
 	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
@@ -9810,7 +10134,8 @@ void psp_ge_blip(float x, float y, float radius, float red, float green, float b
 
 void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
+		mask_key, 0, 0, 0)); /* build 112: gedefer */
 	ge_kind(KIND_HUD); /* build 103 */
 	static const float square[8] = { -1.015625f, 1.046875f, 1.046875f, 1.046875f, 1.046875f, -1.015625f, -1.015625f, -1.015625f };
 
@@ -9964,7 +10289,7 @@ static void text_character(void const *vertices);
 
 void psp_ge_text_character(void const *vertices)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_text_character(vertices)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_HUD); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
@@ -10005,7 +10330,7 @@ static void text_character(void const *vertices)
 
 void psp_ge_text_end(void)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_TEXT_END, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (!text_open)
 		return;
 	text_open = 0;
@@ -10355,9 +10680,9 @@ void psp_ge_frame_end(void)
 			converted_sweeps = converted_forgotten = 0;
 			/* build 112: gedefer's 300 frames */
 			if (defer_on)
-				platform_log("GE: gedefer: %lu model-path calls deferred, carried out in %lu runs (%lu when the buffer filled); %lu models with more than %d nodes ran as they came",
-					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES);
-			defer_records = defer_drains = defer_drains_full = defer_big_models = 0;
+				platform_log("GE: gedefer: %lu calls deferred, carried out in %lu runs (%lu when the buffer filled); ran as they came: %lu models with more than %d nodes, %lu calls too large",
+					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES, defer_too_large);
+			defer_records = defer_drains = defer_drains_full = defer_big_models = defer_too_large = 0;
 			if (ge_skip || list_in_vram || vram_busy || ge_skipped_draws)
 			{
 				platform_log("GE: bench test: GE skipping %s; draws skipped %lu; display list in %s; VRAM-only load %s (%d sprites, %s)",
