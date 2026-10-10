@@ -4,15 +4,26 @@
 integer and FPU work only: no VFPU, no system calls, no library calls
 (media_engine.md).
 
-usage: python3 mewalk.py halo.dis [root ...] [--summary]
+usage: python3 mewalk.py halo.dis [root ...] [--summary] [--each]
+                         [--stop=f,g,...]
   root       the functions a job starts from (default meLibOnProcess, the
-             ME's job loop, as build 87 checked it)
+             ME's job loop, as build 87 checked it); f+g+h is one root of
+             several functions (one walk, with --each too)
   --summary  per kind of problem, the functions that have it, each with one
              call chain from a root, instead of every flagged line
+  --each     one walk and one report per root, instead of one walk from all
+  --stop=    functions the walk doesn't enter: the boundary a job would
+             handle another way (an assert that stops the job and lets the
+             main CPU report it, a debug print left out). Each is listed with
+             the call chain that reached it
 
 Flagged:
-  syscall        a system call; imported firmware functions are stubs
-                 holding one, so calling them is flagged too
+  firmware call  a call into an imported firmware function (the stubs in
+                 .sceStub.text: the loader turns each into a system call or a
+                 jump into a module, so there is no syscall instruction to see
+                 in the file). Locks, file reads, the GE's queue, the clock:
+                 all firmware
+  syscall        a syscall instruction in our own code (rare)
   VFPU           a VFPU instruction (the ME has none)
   indirect call  jalr: a call through a pointer, which the walk can't follow,
                  so whatever it reaches is unknown
@@ -23,81 +34,125 @@ import re, sys
 from collections import deque
 
 args = [a for a in sys.argv[1:] if not a.startswith('--')]
-summary = '--summary' in sys.argv
+flags = [a for a in sys.argv[1:] if a.startswith('--')]
+summary = '--summary' in flags
+each = '--each' in flags
+stops = set()
+for f in flags:
+    if f.startswith('--stop='):
+        stops |= {s for s in f[len('--stop='):].split(',') if s}
 roots = args[1:] or ['meLibOnProcess']
 
-funcs, starts = {}, {}
-cur = None
+STUB_SECTION = '.sceStub.text'
+funcs, starts, section_of = {}, {}, {}
+cur, section = None, ''
 for line in open(args[0], errors='replace'):
     line = line.rstrip('\n')
+    m = re.match(r'^Disassembly of section (\S+):', line)
+    if m:
+        section, cur = m.group(1), None
+        continue
     m = re.match(r'^([0-9a-f]+) <(.+)>:', line)
     if m:
         cur = m.group(2)
         funcs[cur] = []
         starts[cur] = int(m.group(1), 16)
+        section_of[cur] = section
         continue
     if cur:
         funcs[cur].append(line)
 
 CALL = re.compile(r'\t(jal|j|bal)\s+[0-9a-f]+ <([^>+]+)')
 VFPU = re.compile(r'\t(v[a-z0-9]+\.[spqt]\b|lv\.|sv\.|lvl\.|lvr\.|svl\.|svr\.|ulv\.|usv\.|mtv|mfv|vsync|bvf|bvt)')
-KINDS = [('syscall', re.compile(r'\tsyscall\b')), ('VFPU', VFPU),
-         ('indirect call', re.compile(r'\tjalr\b')), ('indirect jump', re.compile(r'\tjr\s+(?!ra\b)'))]
+LINE_KINDS = [('syscall', re.compile(r'\tsyscall\b')), ('VFPU', VFPU),
+              ('indirect call', re.compile(r'\tjalr\b')), ('indirect jump', re.compile(r'\tjr\s+(?!ra\b)'))]
+KINDS = ['firmware call'] + [k for k, _ in LINE_KINDS]
 
-parent = {r: None for r in roots}
-order, seen, missing = [], set(), set()
-queue = deque(roots)
-while queue:
-    f = queue.popleft()
-    if f in seen:
-        continue
-    if f not in funcs:
-        missing.add(f)
-        continue
-    seen.add(f)
-    order.append(f)
-    for line in funcs[f]:
-        m = CALL.search(line)
-        if m and m.group(2) != f and m.group(2) not in parent:
-            parent[m.group(2)] = f
-            queue.append(m.group(2))
+INSN = re.compile(r'^\s*[0-9a-f]+:\t')
+def size_of(f):
+    """Bytes of code: one instruction word a disassembled line."""
+    return 4 * sum(1 for line in funcs[f] if INSN.match(line))
 
-def chain(f):
+def walk(walk_roots):
+    """Breadth first from the roots: each function's first caller is kept, so
+    chain() gives one shortest call chain back to a root."""
+    parent = {r: None for r in walk_roots}
+    order, seen, missing, stopped = [], set(), set(), set()
+    queue = deque(walk_roots)
+    while queue:
+        f = queue.popleft()
+        if f in seen:
+            continue
+        if f in stops and parent.get(f) is not None:
+            stopped.add(f)
+            continue
+        if f not in funcs:
+            missing.add(f)
+            continue
+        seen.add(f)
+        order.append(f)
+        if section_of[f] == STUB_SECTION:
+            continue  # a firmware import: nothing of ours behind it
+        for line in funcs[f]:
+            m = CALL.search(line)
+            if m and m.group(2) != f and m.group(2) not in parent:
+                parent[m.group(2)] = f
+                queue.append(m.group(2))
+    return parent, order, missing, stopped
+
+def chain(parent, f):
     path = []
     while f is not None:
         path.append(f)
         f = parent.get(f)
     return ' <- '.join(path)
 
-sorted_starts = sorted(starts.values())
-def size_of(f):
-    i = sorted_starts.index(starts[f])
-    return sorted_starts[i + 1] - starts[f] if i + 1 < len(sorted_starts) else 0
+def report(walk_roots):
+    parent, order, missing, stopped = walk(walk_roots)
+    found = {kind: {} for kind in KINDS}
+    for f in order:
+        if section_of[f] == STUB_SECTION:
+            found['firmware call'][f] = 1
+            if not summary:
+                print("CHECK firmware call", f, "<-", parent.get(f))
+            continue
+        for line in funcs[f]:
+            for kind, pattern in LINE_KINDS:
+                if pattern.search(line):
+                    found[kind][f] = found[kind].get(f, 0) + 1
+                    if not summary:
+                        print("CHECK", kind, f, line.strip())
+    ours = [f for f in order if section_of[f] != STUB_SECTION]
+    if not summary:
+        print("reached:", sorted(ours))
+        print("flagged:", sum(sum(w.values()) for w in found.values()))
+        return
+    print("roots: %s" % ' '.join(walk_roots))
+    print("reached: %d functions, %d KB of code" % (len(ours), sum(size_of(f) for f in ours) // 1024))
+    if stops:
+        print("stops: %s" % ' '.join(sorted(stops)))
+    if missing:
+        print("not in the disassembly: %s" % ' '.join(sorted(missing)))
+    if stopped:
+        print("\nstopped at: %d functions" % len(stopped))
+        for f in sorted(stopped):
+            print("  %-40s        %s" % (f[:40], chain(parent, f)))
+    for kind in KINDS:
+        where = found[kind]
+        if kind == 'firmware call':
+            print("\n%s: %d firmware functions" % (kind, len(where)))
+        else:
+            print("\n%s: %d sites in %d functions" % (kind, sum(where.values()), len(where)))
+        for f, n in sorted(where.items(), key=lambda x: (-x[1], x[0]))[:40]:
+            print("  %-40s %4d   %s" % (f[:40], n, chain(parent, f)))
+        if len(where) > 40:
+            print("  ... and %d more functions" % (len(where) - 40))
 
-found = {kind: {} for kind, _ in KINDS}
-lines_flagged = 0
-for f in order:
-    for line in funcs[f]:
-        for kind, pattern in KINDS:
-            if pattern.search(line):
-                found[kind][f] = found[kind].get(f, 0) + 1
-                lines_flagged += 1
-                if not summary:
-                    print("CHECK", kind, f, line.strip())
-
-if not summary:
-    print("reached:", sorted(order))
-    print("flagged:", lines_flagged)
-    sys.exit(0)
-
-print("roots: %s" % ' '.join(roots))
-print("reached: %d functions, %d KB of code" % (len(order), sum(size_of(f) for f in order) // 1024))
-if missing:
-    print("not in the disassembly: %s" % ' '.join(sorted(missing)))
-for kind, _ in KINDS:
-    where = found[kind]
-    print("\n%s: %d sites in %d functions" % (kind, sum(where.values()), len(where)))
-    for f, n in sorted(where.items(), key=lambda x: -x[1])[:40]:
-        print("  %-40s %4d   %s" % (f[:40], n, chain(f)))
-    if len(where) > 40:
-        print("  ... and %d more functions" % (len(where) - 40))
+groups = [r.split('+') for r in roots]
+if each:
+    for i, group in enumerate(groups):
+        if i:
+            print("\n" + "=" * 78 + "\n")
+        report(group)
+else:
+    report([f for group in groups for f in group])
