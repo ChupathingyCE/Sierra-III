@@ -94,7 +94,21 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
 
 1. **`gedefer` (b112, built):** the model path's six calls are written down with every array they point to copied, and carried out in order when the 64 KB buffer fills, when any other call that writes the list arrives, or at the frame's end. Everything still runs on the main CPU and the list comes out the same. It proves the recording is complete, and it reorders the CPU's work: the engine's half for a run of models, then this file's half, so each half's code stays in the instruction cache longer. That may be a speed-up of its own [U]; the cache-model A/B measures it.
 2. **The rest of the entry points recorded** (b112, built): the level, see-through level surfaces, fog, detail maps, the sky, sprite groups, widgets, decals, shadows, dynamic lights, screen quads, flashes, blips and text. What still runs at once, after what is waiting: the frame's start and end, the calls whose answer the engine uses (`psp_ge_text_begin`, `psp_ge_frame_window`, the level vertex queries), `psp_ge_text_changed` (it changes the font data a waiting character reads) and the map loads.
-3. **The gates moved** so the carrying-out reaches no firmware (mewalk's report goes to 0).
+3. **The gates moved** so the carrying-out reaches no firmware (mewalk's report goes to 0). The walk from `defer_drain` itself (lab run 38054673819 [D]: 377 functions, 206 KB, no calls through pointers) gives the list:
+
+   | Gate | Reached from | The ME-side answer |
+   |---|---|---|
+   | texture loads (`load_into`: stick reads, DMA) | `psp_tex_bind` | the main CPU makes each key resident when the call is written down; a texture drawn this frame is never evicted (`psp_tex.c`) |
+   | level copies' streaming (`psp_geo_lock`: async reads) | `level_stream_get` | the same, when the level draw is written down |
+   | the heap's lock (`malloc`/`free`) | `model_convert` | the converted buffers and skinning plans in an arena of the ME's own, as the level copies' arena (b111) |
+   | the keep-word cache's lock (on a cache miss only) | `psp_keep` | on the ME, a miss reads keep.txt's words without filling the cache |
+   | the log (file writes, the debug screen) | `platform_log` | a ring the main CPU writes out |
+   | the clock (`sceKernelGetSystemTimeLow`) | the entry points' timers | the ME's cycle counter |
+   | `sceKernelDcacheWritebackRange` | `psp_ge_shadow_begin` and others | the `cache` instruction on the ME's own lines |
+   | the GE's stall address | `sceGuDrawArray` (text, via the stall wrapper) | an uncached word the main CPU hands on |
+   | temporal blend (`taa_resolve`: VRAM address, write-backs) | `psp_ge_blips_begin` | settled off; the ME refuses it |
+   | engine collision (`overlay_on_a_wall`'s rays) | `psp_ge_queue_level_transparent` | done when the call is written down |
+   | VFPU (`vfpuskin`) | `model_geometry` | off on the ME |
 4. **Carried out on the ME**, streaming behind the recorder: an uncached write index, range write-backs before publishing, the ME's own write-back before the GE reads.
 
 ### What stays on the main CPU
