@@ -7,10 +7,14 @@ psp_fixups.py): a hash of the whole game state after every tick, and every
 plays the same way on any build, so a change meant to leave the game exactly
 as it was must give the same lines.
 
-usage: python3 statecmp.py A/log.txt B/log.txt [--ignore name,name,...]
+usage: python3 statecmp.py A/log.txt B/log.txt [--ignore name,name,...] [--objects]
   --ignore  allocations left out of the verdict (their names as the log
             gives them, e.g. "first person weapons"): parts that differ
             between two runs of the same build, so can't judge a change
+  --objects the runs' per-object play hashes (keep word stateobjects=N,
+            build 113) compared tick by tick: the first tick they differ,
+            and which objects (by definition name) are only in one run or
+            differ in place, motion, facing, health, parent or animation
 
 Prints the first tick whose whole-state hash differs and the first whose
 play hash differs (each object's kind, place, motion, facing, health, parent
@@ -45,6 +49,55 @@ def read(path):
             entries.extend(ENTRY.findall(m.group(2)))
     return whole, records, play
 
+def read_objects(path):
+    """tick -> {object index: (definition, hash)}, and definition -> name"""
+    ticks, names = {}, {}
+    for line in open(path, errors='replace'):
+        m = re.search(r'state: objects at tick (\d+):(.*)$', line.rstrip('\n'))
+        if m:
+            entries = ticks.setdefault(int(m.group(1)), {})
+            for index, definition, value in re.findall(r' ([0-9a-f]{8}) ([0-9a-f]{8}) ([0-9a-f]{8})', m.group(2)):
+                entries[index] = (definition, value)
+            continue
+        m = re.search(r'state: definition ([0-9a-f]{8}) is (.*)$', line.rstrip('\n'))
+        if m:
+            names[m.group(1)] = m.group(2)
+    return ticks, names
+
+
+def compare_objects(path_a, path_b):
+    oa, na = read_objects(path_a)
+    ob, nb = read_objects(path_b)
+    names = dict(na, **nb)
+    common = sorted(set(oa) & set(ob))
+    if not common:
+        print('objects: no per-object dumps in common (keep word stateobjects=N with statecrc)')
+        return
+    print('objects: dumps at %d ticks in common (%d to %d)' % (len(common), common[0], common[-1]))
+    shown = 0
+    for tick in common:
+        a, b = oa[tick], ob[tick]
+        only_a = sorted(set(a) - set(b))
+        only_b = sorted(set(b) - set(a))
+        differ = sorted(i for i in set(a) & set(b) if a[i] != b[i])
+        if not (only_a or only_b or differ):
+            continue
+        def label(index, entry):
+            return '%s %s' % (index, names.get(entry[0], entry[0]))
+        print('  tick %6d: %d only in A, %d only in B, %d differ' % (tick, len(only_a), len(only_b), len(differ)))
+        for index in only_a[:8]:
+            print('      only in A: ' + label(index, a[index]))
+        for index in only_b[:8]:
+            print('      only in B: ' + label(index, b[index]))
+        for index in differ[:8]:
+            print('      differs:   ' + label(index, a[index]))
+        shown += 1
+        if shown >= 6:
+            break
+    if not shown:
+        print('  every object the same at every tick dumped')
+
+
 def by_name(entries):
     """name -> hashes in order (some names repeat: "globals" of several kinds)"""
     named = {}
@@ -54,6 +107,9 @@ def by_name(entries):
 
 if len(args) != 2:
     sys.exit(__doc__)
+if '--objects' in sys.argv:
+    compare_objects(args[0], args[1])
+    sys.exit(0)
 wa, ra, pa = read(args[0])
 wb, rb, pb = read(args[1])
 common = sorted(set(wa) & set(wb))

@@ -5390,9 +5390,12 @@ void psp_game_state_hash_tick(long tick)
 	{
 		extern unsigned long psp_objects_play_hash(void); /* objects.c (psp_fixups.py) */
 
+		extern void psp_objects_play_dump(long tick); /* objects.c (psp_fixups.py, build 113) */
+
 		platform_psp_log("state: tick %ld %08lx play %08lx", tick,
 			psp_state_hash(game_state_globals.base_address, game_state_globals.cpu_allocation_size),
 			psp_objects_play_hash());
+		psp_objects_play_dump(tick);
 	}
 	if (tick % 30)
 		return;
@@ -9501,6 +9504,24 @@ FIXES_112["source/objects/objects.c#statecrc"] = [
 object's kind, place, motion, facing, health, parent and animation frame,
 leaving out what drawing writes into objects (render flags, the render state
 cache, node matrices), so two runs compare on the game alone (psp_fixups.py) */
+static int psp_object_play_words(long index, struct object_datum const *object, unsigned long *words)
+{
+	int count = 0;
+
+	words[count++] = (unsigned long)index;
+	words[count++] = (unsigned long)object->definition_index;
+	words[count++] = (unsigned long)object->object.type;
+	/* position, translational velocity, forward, up, angular velocity */
+	csmemcpy(&words[count], &object->object.position, 15 * sizeof(real));
+	count += 15;
+	csmemcpy(&words[count], &object->object.body_vitality, 2 * sizeof(real));
+	count += 2;
+	words[count++] = (unsigned long)object->object.parent_object_index;
+	words[count++] = ((unsigned long)(unsigned short)object->object.animation.state.index << 16) |
+		(unsigned short)object->object.animation.state.frame_index;
+	return count;
+}
+
 unsigned long psp_objects_play_hash(void)
 {
 	struct object_iterator iterator;
@@ -9511,23 +9532,66 @@ unsigned long psp_objects_play_hash(void)
 	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
 	{
 		unsigned long words[24];
-		int count = 0, k;
+		int count = psp_object_play_words(iterator.index, object, words), k;
 
-		words[count++] = (unsigned long)iterator.index;
-		words[count++] = (unsigned long)object->definition_index;
-		words[count++] = (unsigned long)object->object.type;
-		/* position, translational velocity, forward, up, angular velocity */
-		csmemcpy(&words[count], &object->object.position, 15 * sizeof(real));
-		count += 15;
-		csmemcpy(&words[count], &object->object.body_vitality, 2 * sizeof(real));
-		count += 2;
-		words[count++] = (unsigned long)object->object.parent_object_index;
-		words[count++] = ((unsigned long)(unsigned short)object->object.animation.state.index << 16) |
-			(unsigned short)object->object.animation.state.frame_index;
 		for (k = 0; k < count; k++)
 			hash = (hash ^ words[k]) * 16777619UL;
 	}
 	return hash;
+}
+
+/* build 113: "stateobjects=N" (with statecrc): for 48 ticks from tick N, each
+object's own play hash, so two runs that part ways at a tick can be compared
+object by object (tools/statecmp.py --objects). Each definition is named once,
+the first time it appears in a dump */
+void platform_psp_log(const char *format, ...);
+char *tag_get_name(long tag_index);
+void psp_objects_play_dump(long tick)
+{
+	static long first = -2;
+	static long named[256];
+	static int named_count = 0;
+	struct object_iterator iterator;
+	struct object_datum *object;
+	char line[512];
+	int length = 0;
+
+	if (first == -2)
+	{
+		extern long psp_keep_number(const char *name, long otherwise); /* psp_platform.c */
+
+		first = psp_keep_number("stateobjects", -1);
+		if (first >= 0)
+			platform_psp_log("state: each object's play hash for ticks %ld to %ld (stateobjects)", first, first + 47);
+	}
+	if (first < 0 || tick < first || tick >= first + 48)
+		return;
+	object_iterator_new(&iterator, _object_mask_all, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		unsigned long words[24], hash = 2166136261UL;
+		int count = psp_object_play_words(iterator.index, object, words), k;
+
+		for (k = 0; k < count; k++)
+			hash = (hash ^ words[k]) * 16777619UL;
+		for (k = 0; k < named_count && named[k] != object->definition_index; k++)
+			;
+		if (k == named_count && named_count < 256)
+		{
+			named[named_count++] = object->definition_index;
+			platform_psp_log("state: definition %08lx is %.100s", (unsigned long)object->definition_index,
+				tag_get_name(object->definition_index));
+		}
+		if (length > 400)
+		{
+			platform_psp_log("state: objects at tick %ld:%s", tick, line);
+			length = 0;
+		}
+		length += snprintf(line + length, sizeof(line) - length, " %08lx %08lx %08lx", (unsigned long)iterator.index,
+			(unsigned long)object->definition_index, hash);
+	}
+	if (length)
+		platform_psp_log("state: objects at tick %ld:%s", tick, line);
 }
 #endif
 
