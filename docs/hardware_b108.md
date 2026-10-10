@@ -50,7 +50,8 @@ The heap had taken 6,078 of its 6,080 KB from the system by game time 28,000. Wh
 | 38,000-46,600 (after the capture) | 23.4 / 75.2, 8.9 | 22.7 / 88.6, 8.7 | −3%, +18% |
 
 **The security room, slower in b108 [M] [U]:** the player is on the floor (z 10.0, the mirror at 9.95) in both runs. The difference is what was there and what was drawn:
-- 15.4 bipeds updated a tick in b108 against 9.5 in b107: about 60% more live characters (the fight played differently).
+- 15.4 bipeds updated a tick in b108 against 9.5 in b107. The live ones were about the same (about 4 a tick, the player included); the difference is bodies: 11.2 corpses a tick in b108, 5.9 in b107. Nothing between b107 and b108 touches bodies, garbage collection or biped updates [D], and the collector cleared bodies in both runs (the counts rise and fall across the level), so it's how the fight went: where and when enemies died relative to entering the room [U].
+- Most of those bodies were at rest ("idle past 2 s, offered to sleep") and still updated every tick: if a body at rest could really sleep, a room full of them would cost little [U]. A lever to look into.
 - Model drawing 22.4 ms a frame against 8.9; dynamic lights 13.2 ms against almost none.
 - b107 drew that room from the mirror's camera, under the floor, where most of the models were out of view: cheap for the wrong reason. b108 draws the room as the player sees it.
 
