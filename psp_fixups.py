@@ -5527,9 +5527,10 @@ FIXES_36["source/main/main.c#throttle"] = [
 		/* build 90: on by default (Sheepdog01's b87 run 3: with it the warthog's
 		rubber banding was almost gone; with interpolation it was worse).
 		"novblankthrottle" turns it off, and benchrun runs without it so its
-		figures stay comparable with earlier runs' */
+		figures stay comparable with earlier runs'; build 112: ceilingbench
+		too (padding to vertical blanks would hide what a switch saves) */
 		if (vblank_throttle < 0)
-			vblank_throttle = psp_keep("vblankthrottle") || (!psp_keep("novblankthrottle") && !psp_keep("benchrun"));
+			vblank_throttle = psp_keep("vblankthrottle") || (!psp_keep("novblankthrottle") && !psp_keep("benchrun") && !psp_keep("ceilingbench"));
 		if (!vblank_throttle)
 			return FALSE;
 	}
@@ -9368,6 +9369,103 @@ FIXES_110["source/physics/collision_debug.c#spray"] = [
 #endif"""),
 ]
 
+# ---------- build 112: the ceiling bench's switches (psp_platform.c,
+# "ceilingbench"; the bits are psp/include/psp_bench.h's). Each wraps one big
+# part of the tick or the frame in a test of psp_bench_skip, which is 0
+# unless the bench is running, so the game is unchanged otherwise
+FIXES_112 = {}
+FIXES_112["source/game/game.c#bench"] = [
+("""#include "units/vehicles.h"
+""",
+ """#include "units/vehicles.h"
+#ifdef HALO_PSP
+#include "psp_bench.h" /* the ceiling bench's switches (psp_fixups.py, build 112) */
+#endif
+"""),
+("""	if (!network_game_distributed_client())
+		ai_update();
+	else
+		network_actors_drive();
+""",
+ """	if (!network_game_distributed_client())
+	{
+#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_AI))
+#endif
+		ai_update();
+	}
+	else
+		network_actors_drive();
+"""),
+("""	effects_update(seconds_per_tick);
+""",
+ """#ifdef HALO_PSP
+	if (!(psp_bench_skip & PSP_SKIP_EFFECTS))
+#endif
+	effects_update(seconds_per_tick);
+"""),
+("""	recorded_animations_update();
+	objects_update();
+""",
+ """	recorded_animations_update();
+#ifdef HALO_PSP
+	if (!(psp_bench_skip & PSP_SKIP_OBJECTS))
+#endif
+	objects_update();
+"""),
+("""	particles_update(frame_dt);
+""",
+ """#ifdef HALO_PSP
+	if (!(psp_bench_skip & PSP_SKIP_EFFECTS))
+#endif
+	particles_update(frame_dt);
+"""),
+]
+FIXES_112["source/render/render.c#bench"] = [
+("""#include "structures/structures.h"
+""",
+ """#include "structures/structures.h"
+#ifdef HALO_PSP
+#include "psp_bench.h" /* the ceiling bench's switches (psp_fixups.py, build 112) */
+#endif
+"""),
+("""		render_objects();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_MODELS))
+#endif
+		render_objects();
+"""),
+("""		render_object_shadows();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_MODELS))
+#endif
+		render_object_shadows();
+"""),
+("""		structure_render_lightmaps();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_LEVEL))
+#endif
+		structure_render_lightmaps();
+"""),
+("""		structure_render_transparent_geometry();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_LEVEL))
+#endif
+		structure_render_transparent_geometry();
+"""),
+("""		render_particles();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_EFFECTS))
+#endif
+		render_particles();
+"""),
+]
+
 # ---------- ChupathingyCE only (the rebase)
 # Changes only ChupathingyCE's own code needs: what it added since its fork
 # that reads a field the PSP's slim layouts leave out, or allocates what the
@@ -9860,7 +9958,7 @@ Either(chupa=("""	/* FISTP: round to nearest under the default control word */
 	result = (long)__builtin_rintf(value);""")),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_CHUPA.items()):
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

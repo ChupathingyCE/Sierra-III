@@ -26,6 +26,7 @@ pthreads):
 float psp_budget_last[7];
 #include <psputils.h>
 #include <psppower.h>
+#include "psp_bench.h"
 #include <pspdebug.h>
 #include <pspdisplay.h>
 #include <stdarg.h>
@@ -1343,6 +1344,99 @@ static void bench_tick(void)
 	}
 }
 
+/* ---------- build 112: "ceilingbench" (keep word): what each big part costs
+
+A structural lever is worth weeks only where the part it speeds up is big.
+This bench measures each part's ceiling on the PSP itself, cache and bus
+effects included: from 90 s of play, wherever the player stands, the big
+parts are switched off one at a time, two heartbeat windows each (the first
+settles, the second is measured), and the cycle runs three times to average
+out a live scene. About three minutes. Measurement only: while a part is off
+the game is wrong (units freeze, models vanish); each part comes back at the
+end of its window, and everything at "bench: done". Stand still, touch
+nothing. The frame throttle is off for the run, as for benchrun (padding to
+vertical blanks would hide the savings).
+
+The lines are benchrun's ("bench: RESULT view N (...) | switch N (...) |
+..."), the views being the cycles, so tools/benchparse.py reads them;
+--by-switch averages the cycles. The switches (psp_bench_skip, read in
+game.c and render.c through psp_fixups.py's FIXES_112):
+- AI off: ai_update;
+- objects frozen: objects_update (every object's update: bipeds, vehicles,
+  weapons, scenery...);
+- effects off: effects_update, particles_update, render_particles;
+- models not drawn: render_objects, render_object_shadows;
+- level not drawn: structure_render_lightmaps,
+  structure_render_transparent_geometry. */
+int psp_bench_skip = 0;
+static const struct
+{
+	const char *name;
+	int skip;
+} ceiling_configs[] =
+{
+	{ "baseline", 0 },
+	{ "AI off", PSP_SKIP_AI },
+	{ "objects frozen", PSP_SKIP_OBJECTS },
+	{ "effects off", PSP_SKIP_EFFECTS },
+	{ "models not drawn", PSP_SKIP_MODELS },
+	{ "level not drawn", PSP_SKIP_LEVEL },
+};
+#define CEILING_CONFIGS ((int)(sizeof(ceiling_configs) / sizeof(ceiling_configs[0])))
+#define CEILING_CYCLES 3
+#define CEILING_START_TICKS (90 * 30)
+static int ceiling_step = -1;
+static unsigned int ceiling_window_seen = 0;
+
+static void ceiling_tick(void)
+{
+	static int asked = -1;
+	int config;
+
+	if (asked < 0)
+	{
+		asked = psp_keep("ceilingbench");
+		if (asked && psp_keep("benchrun"))
+		{
+			platform_log("bench: ceilingbench left out: benchrun is on (one bench a run)");
+			asked = 0;
+		}
+	}
+	if (!asked || ceiling_step >= CEILING_CONFIGS * CEILING_CYCLES * 2)
+		return;
+	if (psp_heartbeat_windows == ceiling_window_seen)
+		return;
+	ceiling_window_seen = psp_heartbeat_windows;
+	if (ceiling_step < 0 && (heartbeat_beats <= 20 || psp_game_time_peek() < CEILING_START_TICKS))
+		return;
+	if (ceiling_step >= 0 && ceiling_step % 2)
+	{
+		/* the measured window that just ended (benchrun's line, so
+		benchparse.py reads it) */
+		extern float psp_me_busy_percent(void);
+		int cycle = ceiling_step / (CEILING_CONFIGS * 2), done = (ceiling_step / 2) % CEILING_CONFIGS;
+		char counters[120] = "";
+
+		if (hw_drawing_valid)
+			snprintf(counters, sizeof(counters), " | drawing: memory wait %.1f%%, D-misses %.0f a M cycles",
+				hw_drawing[0], hw_drawing[1]);
+		platform_log("bench: RESULT view %d (ceiling cycle %d) | switch %d (%s) | %.1f ms a frame, %.1f fps | ticks %.1f ms | frame %.1f ms (renderer CPU %.1f, GE wait %.1f) | %.1f ticks/s | ME %.1f%% busy%s",
+			cycle, cycle + 1, done, ceiling_configs[done].name, psp_budget_last[0], psp_budget_last[1], psp_budget_last[2],
+			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5], psp_budget_last[6], psp_me_busy_percent(), counters);
+	}
+	ceiling_step++;
+	if (ceiling_step >= CEILING_CONFIGS * CEILING_CYCLES * 2)
+	{
+		psp_bench_skip = 0;
+		platform_log("bench: done (ceilingbench, %d cycles x %d switches); everything back on", CEILING_CYCLES, CEILING_CONFIGS);
+		return;
+	}
+	config = (ceiling_step / 2) % CEILING_CONFIGS;
+	psp_bench_skip = ceiling_configs[config].skip;
+	platform_log("bench: window %d: ceiling cycle %d, switch %d (%s), %s", ceiling_step,
+		ceiling_step / (CEILING_CONFIGS * 2) + 1, config, ceiling_configs[config].name, ceiling_step % 2 ? "MEASURED" : "settling");
+}
+
 /* build 95: every thread's stack, its size and how deep it has been (the
 kernel fills a new stack with 0xFF; the first word from the bottom that
 isn't is the deepest the thread has reached). For the memory plan: 1 MB of
@@ -1403,6 +1497,7 @@ void psp_tick_account(unsigned long microseconds)
 
 	ticks_since_frame++;
 	bench_tick();
+	ceiling_tick(); /* build 112 */
 	/* build 95: the high-water marks, from the game thread every 5 s */
 	if (ticks_seen % 150 == 75)
 	{
