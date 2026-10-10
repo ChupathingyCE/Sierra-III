@@ -45,8 +45,16 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <stdio.h>
 #include <malloc.h>
 #include <pspge.h>
+#include <stdarg.h>
 
 void platform_log(const char *format, ...);
+/* build 112: the GE layer logs through ge_log (defined with the deferral's
+machinery): platform_log on the main CPU; while the work is marked as the
+Media Engine's (gemesim), only a count per message, written out by the main
+CPU at the frame's end, since formatting and the log's file writes take
+locks and system calls. (platform_log) in parentheses is the real one */
+static void ge_log(const char *format, ...);
+#define platform_log(...) ge_log(__VA_ARGS__)
 #define PSP_CLAMP_255(x) ((x) < 0 ? 0 : (x) > 255 ? 255 : (x))
 
 /* build 106: the renderer's own timers (a part's or an entry's time, for
@@ -793,6 +801,53 @@ static void defer_drain(void)
 	defer_used = 0;
 	defer_replaying = 0;
 	defer_drains++;
+}
+
+/* the messages the Media Engine's work logged: each format with a count */
+#define ME_LOG_FORMATS 16
+static const char *me_log_format[ME_LOG_FORMATS];
+static unsigned long me_log_count[ME_LOG_FORMATS], me_log_lost = 0;
+
+static void ge_log(const char *format, ...)
+{
+	char line[512]; /* the log's own line limit (psp_platform.c) */
+	va_list arguments;
+
+	if (psp_me_context)
+	{
+		int k;
+
+		for (k = 0; k < ME_LOG_FORMATS && me_log_format[k] && me_log_format[k] != format; k++)
+			;
+		if (k < ME_LOG_FORMATS)
+		{
+			me_log_format[k] = format;
+			me_log_count[k]++;
+		}
+		else
+			me_log_lost++;
+		return;
+	}
+	va_start(arguments, format);
+	vsnprintf(line, sizeof(line), format, arguments);
+	va_end(arguments);
+	(platform_log)("%s", line);
+}
+
+/* at the frame's end, on the main CPU: what the Media Engine's work logged */
+static void me_log_write(void)
+{
+	int k;
+
+	for (k = 0; k < ME_LOG_FORMATS && me_log_format[k]; k++)
+	{
+		(platform_log)("GE (the Media Engine's work, %lu times): %s", me_log_count[k], me_log_format[k]);
+		me_log_format[k] = NULL;
+		me_log_count[k] = 0;
+	}
+	if (me_log_lost)
+		(platform_log)("GE (the Media Engine's work): %lu more messages of other kinds", me_log_lost);
+	me_log_lost = 0;
 }
 static int list_in_vram = 0, vram_busy = 0, vram_busy_calibrating = 0, vram_busy_sprites = 8;
 static unsigned int vram_busy_target_us = 15000;
@@ -10733,6 +10788,7 @@ void psp_ge_frame_end(void)
 		/* build 68: the geometry cache's reads, and the level copies' budget */
 		psp_geo_frame_end();
 		/* build 112: the copies the Media Engine's work wanted, built now */
+		me_log_write();
 		{
 			int k;
 
