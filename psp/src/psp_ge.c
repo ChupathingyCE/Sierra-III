@@ -41,6 +41,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <malloc.h>
 #include <pspge.h>
@@ -91,7 +92,15 @@ static int level_vram = 0;
 static unsigned int vram_vertex_next = 0;
 static unsigned long vram_vertex_refused = 0, vram_vertex_streams = 0;
 
-static void *stream_alloc(unsigned int bytes)
+/* build 111: every piece of a level copy comes from copy_alloc and goes back
+through copy_free: the copies' arena first, the general heap when it has no
+room (the arena is with the copies, below) */
+static void *copy_alloc(unsigned int bytes, void **owner);
+static void copy_free(void *pointer);
+
+/* the arrays the GE reads (the float copies): benchrun's VRAM room first.
+owner: the field that will hold the address (the arena moves blocks) */
+static void *stream_alloc(unsigned int bytes, void **owner)
 {
 	if (level_vram)
 	{
@@ -105,7 +114,7 @@ static void *stream_alloc(unsigned int bytes)
 		}
 		vram_vertex_refused++;
 	}
-	return malloc(bytes);
+	return copy_alloc(bytes, owner);
 }
 
 static void stream_free(void *pointer)
@@ -113,7 +122,7 @@ static void stream_free(void *pointer)
 	/* VRAM is given back all at once, when the level's copies are let go */
 	if (((unsigned int)pointer & 0x0F000000u) == 0x04000000u)
 		return;
-	free(pointer);
+	copy_free(pointer);
 }
 static int list_bytes = DISPLAY_LIST_BYTES;
 
@@ -1809,12 +1818,14 @@ static int compact_build(struct level_stream *stream)
 	}
 	stream->compact_uv_scale[0] = umax * (32768.0f / 32767.0f);
 	stream->compact_uv_scale[1] = vmax * (32768.0f / 32767.0f);
-	stream->compact_base = memalign(16, stream->count * sizeof(struct compact_vertex));
-	stream->compact_lightmap = stream->lightmap ? memalign(16, stream->count * sizeof(struct compact_vertex)) : NULL;
+	/* build 111: in the copies' arena (16-byte aligned, as memalign gave) */
+	stream->compact_base = copy_alloc(stream->count * sizeof(struct compact_vertex), (void **)&stream->compact_base);
+	stream->compact_lightmap = stream->lightmap ?
+		copy_alloc(stream->count * sizeof(struct compact_vertex), (void **)&stream->compact_lightmap) : NULL;
 	if (!stream->compact_base || (stream->lightmap && !stream->compact_lightmap))
 	{
-		free(stream->compact_base);
-		free(stream->compact_lightmap);
+		copy_free(stream->compact_base);
+		copy_free(stream->compact_lightmap);
 		stream->compact_base = stream->compact_lightmap = NULL;
 		compact_refused++;
 		return 0;
@@ -1860,6 +1871,340 @@ static unsigned long streams_let_go = 0;
 /* build 68: the copies' budget while a geometry pack is open (its blocks come
 and go; the copies are what stays) */
 #define LEVEL_STREAM_BUDGET (1024 * 1024)
+
+/* ---------- build 111: the copies' arena
+
+b108 run 1 (hardware_b108.md): the copies are let go and rebuilt as the view
+moves (level_streams_trim), and each rebuild asked the general heap for large
+blocks again (two of 106 KB for a material of 5,439 vertices) while the
+game's small, long-lived allocations settled into the holes the last ones
+left. After the hunter fight no hole was large enough: 1.4 MB free in 293
+pieces, and 5,290 materials went undrawn to the level's end.
+
+Every piece of a copy (the float copies, the normals, the radiosity, the
+16-bit copies) now comes from one block, carved out of the heap at the first
+copy and kept, so the copies' churn never reaches the general heap. When a
+piece doesn't fit, the least recently drawn copies are let go until it does,
+never one drawn this frame (the trim's rule: the GE may still be reading
+those). If this frame's copies fill the arena, the piece comes from the
+general heap, as before b111. What is drawn doesn't change.
+
+Its size is the copies' budget plus 32 KB for the blocks' headers and some
+slack against the arena's own fragmentation: what the copies already took
+from the heap. Everything else shares what's left. In b108 run 1 that was
+tight: at the peak (game time 25,072) the heap held 5,856 KB, the copies
+about 980 of it, so the rest needed about 4,876 KB; with a 6,016 KB heap,
+32 KB of slack leaves it about 4,960 (128 KB would leave about 4,864).
+
+Blocks lie end to end, each behind a header holding its size and the size of
+the block before it, so a freed block merges with free neighbours on both
+sides. A request takes the smallest free block that holds it (best fit),
+split when what's left is worth keeping. "noarena" (keep word): the general
+heap only, as before. */
+#define ARENA_BYTES (LEVEL_STREAM_BUDGET + 32 * 1024)
+#define ARENA_ALIGN 16
+#define ARENA_SPLIT_LEAST 64
+struct arena_block
+{
+	unsigned int size;     /* bytes, this header included; a multiple of ARENA_ALIGN */
+	unsigned int previous; /* the size of the block before it (0: the first) */
+	unsigned int used;
+	void **owner;          /* the field holding the block's address (arena_compact moves it) */
+};
+static char *arena = NULL;
+static int arena_state = -1; /* -1: not started; 0: off ("noarena", or no room); 1: on */
+static unsigned long arena_used = 0, arena_let_go = 0, arena_from_heap = 0;
+/* pieces the general heap holds now (from_heap counts all ever sent there) */
+static unsigned long arena_heap_live = 0;
+/* the largest free block at the last frame's end, for the log */
+static unsigned int arena_largest = 0;
+static int level_stream_let_go_oldest(void);
+static unsigned int stream_size(const struct level_stream *stream);
+
+static struct arena_block *arena_next(struct arena_block *block)
+{
+	char *next = (char *)block + block->size;
+
+	return next < arena + ARENA_BYTES ? (struct arena_block *)next : NULL;
+}
+
+static void __attribute__((cold)) arena_start(void)
+{
+	struct arena_block *first;
+
+	arena_state = 0;
+	if (psp_keep("noarena"))
+	{
+		platform_log("GE: the copies' arena: off (noarena); copies from the general heap");
+		return;
+	}
+	arena = memalign(ARENA_ALIGN, ARENA_BYTES);
+	if (!arena)
+	{
+		platform_log("GE: the copies' arena: no room for %u KB; copies from the general heap", ARENA_BYTES / 1024);
+		return;
+	}
+	first = (struct arena_block *)arena;
+	first->size = ARENA_BYTES;
+	first->previous = 0;
+	first->used = 0;
+	first->owner = NULL;
+	arena_state = 1;
+	platform_log("GE: the copies' arena: %u KB", ARENA_BYTES / 1024);
+}
+
+/* the smallest free block holding size bytes (header included), split if
+the rest is worth keeping; NULL: none */
+static void *arena_take(unsigned int size, void **owner)
+{
+	struct arena_block *block, *best = NULL;
+
+	for (block = (struct arena_block *)arena; block; block = arena_next(block))
+		if (!block->used && block->size >= size && (!best || block->size < best->size))
+			best = block;
+	if (!best)
+		return NULL;
+	if (best->size - size >= ARENA_SPLIT_LEAST)
+	{
+		struct arena_block *rest = (struct arena_block *)((char *)best + size), *after;
+
+		rest->size = best->size - size;
+		rest->previous = size;
+		rest->used = 0;
+		rest->owner = NULL;
+		best->size = size;
+		after = arena_next(rest);
+		if (after)
+			after->previous = rest->size;
+	}
+	best->used = 1;
+	best->owner = owner;
+	arena_used += best->size;
+	return best + 1;
+}
+
+static void *copy_alloc(unsigned int bytes, void **owner)
+{
+	unsigned int size = (bytes + sizeof(struct arena_block) + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1);
+	void *pointer = NULL;
+
+	if (arena_state < 0)
+		arena_start();
+	if (arena_state > 0 && size <= ARENA_BYTES)
+	{
+		while (!(pointer = arena_take(size, owner)) && level_stream_let_go_oldest())
+			arena_let_go++;
+		if (pointer)
+			return pointer;
+		arena_from_heap++;
+		arena_heap_live++;
+	}
+	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign) */
+	return memalign(ARENA_ALIGN, bytes);
+}
+
+static void copy_free(void *pointer)
+{
+	struct arena_block *block, *next;
+
+	if (!pointer)
+		return;
+	if (!arena || (char *)pointer < arena || (char *)pointer >= arena + ARENA_BYTES)
+	{
+		if (arena_state > 0 && arena_heap_live)
+			arena_heap_live--;
+		free(pointer);
+		return;
+	}
+	block = (struct arena_block *)pointer - 1;
+	block->used = 0;
+	block->owner = NULL;
+	arena_used -= block->size;
+	next = arena_next(block);
+	if (next && !next->used)
+		block->size += next->size;
+	if (block->previous)
+	{
+		struct arena_block *before = (struct arena_block *)((char *)block - block->previous);
+
+		if (!before->used)
+		{
+			before->size += block->size;
+			block = before;
+		}
+	}
+	next = arena_next(block);
+	if (next)
+		next->previous = block->size;
+}
+
+/* build 111: keeping the arena whole between frames.
+
+The copies drawn in a frame can't move or go while it's drawn, so when the
+view brings many new copies at once (a BSP switch, a turn in a big room) they
+land in whatever holes the earlier copies left, and the arena can fill up in
+pieces too small for the next big copy while plenty is free. b30 replayed on
+run 1's route: after the BSP switch into the facility, 89 pieces went to the
+general heap with about 960 KB of copies against the arena's 1,056.
+
+At the frame's end the GE is done and no copy is being built, so the arena's
+used blocks can slide down to its start (arena_compact): each block's owner
+field (the level copy's pointer to it) is repointed, and the GE's arrays are
+written back from the CPU's cache. Nothing outside level_streams keeps a
+copy's address past the frame: see-through draws are flushed within it, cut
+corners live in the display list, the decal cache and the overlays' answers
+keep the stream or the indices' identity [D]. Then copies the general heap
+holds come back into the arena (arena_migrate), a bounded amount a frame.
+
+Compacting moves up to the arena's 1 MB, so it runs only when the free space
+is badly split (its largest block under half of it, at least 64 KB free), at
+most every 30 frames, or at the end of a frame that sent pieces to the heap.
+"nocompact": neither (the arena as first built) */
+#define ARENA_COMPACT_EVERY 30
+#define ARENA_MIGRATE_BYTES (128 * 1024)
+static int arena_compact_on = -1;
+static unsigned int arena_last_compact = 0;
+static unsigned long arena_seen_from_heap = 0;
+static unsigned long arena_compactions = 0, arena_moved_kb = 0, arena_migrated = 0;
+
+static void __attribute__((cold)) arena_compact(void)
+{
+	struct arena_block *block, *next;
+	char *to = arena, *first_moved = NULL;
+	unsigned int previous = 0;
+	unsigned long moved = 0;
+
+	for (block = (struct arena_block *)arena; block; block = next)
+	{
+		unsigned int size = block->size;
+
+		/* the next block's header lies past this one: moving this one down
+		never overwrites it */
+		next = arena_next(block);
+		if (!block->used)
+			continue;
+		if ((char *)block != to)
+		{
+			memmove(to, block, size);
+			if (!first_moved)
+				first_moved = to;
+			moved += size;
+		}
+		block = (struct arena_block *)to;
+		block->previous = previous;
+		if (block->owner)
+			*block->owner = block + 1;
+		previous = size;
+		to += size;
+	}
+	if (to < arena + ARENA_BYTES)
+	{
+		block = (struct arena_block *)to;
+		block->size = (unsigned int)(arena + ARENA_BYTES - to);
+		block->previous = previous;
+		block->used = 0;
+		block->owner = NULL;
+	}
+	if (first_moved)
+		sceKernelDcacheWritebackRange(first_moved, (unsigned int)(to - first_moved));
+	arena_compactions++;
+	arena_moved_kb += moved / 1024;
+}
+
+/* a piece the general heap holds, moved into the arena if a free block takes
+it as it is (no letting go); the GE's arrays written back. 0: no room,
+1: nothing to move (none, VRAM, or already in the arena), 2: moved */
+static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int bytes, int ge_reads)
+{
+	char *piece = (char *)*field;
+	void *to;
+
+	if (!piece || (((unsigned int)piece & 0x0F000000u) == 0x04000000u) ||
+		(piece >= arena && piece < arena + ARENA_BYTES))
+		return 1;
+	to = arena_take((bytes + sizeof(struct arena_block) + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1), field);
+	if (!to)
+		return 0;
+	memcpy(to, piece, bytes);
+	if (ge_reads)
+		sceKernelDcacheWritebackRange(to, bytes);
+	*field = to;
+	free(piece);
+	if (arena_heap_live)
+		arena_heap_live--;
+	return 2;
+}
+
+/* the general heap's copies brought into the arena, up to ARENA_MIGRATE_BYTES
+a frame; a copy whose pieces don't all fit keeps the rest where they are */
+static void __attribute__((cold)) arena_migrate(void)
+{
+	static const struct { unsigned short offset; unsigned char size, ge_reads; } pieces[6] = {
+		{ offsetof(struct level_stream, base), sizeof(struct ge_vertex), 1 },
+		{ offsetof(struct level_stream, lightmap), sizeof(struct ge_vertex), 1 },
+		{ offsetof(struct level_stream, normals), sizeof(unsigned int), 0 },
+		{ offsetof(struct level_stream, radiosity), sizeof(unsigned int), 0 },
+		{ offsetof(struct level_stream, compact_base), sizeof(struct compact_vertex), 1 },
+		{ offsetof(struct level_stream, compact_lightmap), sizeof(struct compact_vertex), 1 },
+	};
+	long budget = ARENA_MIGRATE_BYTES;
+	int index, k, moved, result;
+
+	for (index = 0; index < LEVEL_STREAMS && budget > 0 && arena_heap_live; index++)
+	{
+		struct level_stream *stream = &level_streams[index];
+
+		for (moved = k = 0; k < 6; k++)
+		{
+			result = arena_migrate_piece((void **)((char *)stream + pieces[k].offset),
+				(unsigned int)stream->count * pieces[k].size, pieces[k].ge_reads);
+			if (!result)
+				return;
+			moved |= result == 2;
+		}
+		if (moved)
+		{
+			arena_migrated++;
+			budget -= (long)stream_size(stream);
+		}
+	}
+}
+
+/* at the frame's end, after the trim (the GE has finished the frame). The
+arena's housekeeping is marked cold: rare, compiled for size, kept out of the
+hot code (build 111's first compaction build crossed a 64 KB heap step) */
+static void __attribute__((cold)) arena_frame_end(void)
+{
+	struct arena_block *block;
+	unsigned int free_total = 0, largest = 0;
+	int overflowed;
+
+	if (arena_state <= 0)
+		return;
+	for (block = (struct arena_block *)arena; block; block = arena_next(block))
+		if (!block->used)
+		{
+			free_total += block->size;
+			if (block->size > largest)
+				largest = block->size;
+		}
+	arena_largest = largest;
+	if (arena_compact_on < 0)
+		arena_compact_on = !psp_keep("nocompact");
+	if (!arena_compact_on)
+		return;
+	overflowed = arena_from_heap != arena_seen_from_heap;
+	arena_seen_from_heap = arena_from_heap;
+	if (free_total >= 64 * 1024 && largest < free_total / 2 &&
+		(overflowed || stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY))
+	{
+		arena_compact();
+		arena_last_compact = stream_frame;
+	}
+	if (arena_heap_live)
+		arena_migrate();
+}
+
 unsigned int psp_geo_address_of(const void *ptr);
 unsigned int psp_geo_generation(const void *ptr);
 int psp_geo_open_count(void);
@@ -2316,18 +2661,21 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	{
 		int total = count + (stream->bake ? (int)stream->bake->added : 0);
 
-		stream->base = stream_alloc(total * sizeof(struct ge_vertex));
-		stream->lightmap = lightmap_vertices ? stream_alloc(total * sizeof(struct ge_vertex)) : NULL;
-		stream->normals = malloc(total * sizeof(unsigned int));
-		stream->radiosity = lightmap_vertices ? calloc(total, sizeof(unsigned int)) : NULL;
+		stream->base = stream_alloc(total * sizeof(struct ge_vertex), (void **)&stream->base);
+		stream->lightmap = lightmap_vertices ? stream_alloc(total * sizeof(struct ge_vertex), (void **)&stream->lightmap) : NULL;
+		/* build 111: in the copies' arena too (not VRAM: the CPU reads these) */
+		stream->normals = copy_alloc(total * sizeof(unsigned int), (void **)&stream->normals);
+		stream->radiosity = lightmap_vertices ? copy_alloc(total * sizeof(unsigned int), (void **)&stream->radiosity) : NULL;
+		if (stream->radiosity)
+			memset(stream->radiosity, 0, total * sizeof(unsigned int));
 	}
 	if (!stream->base || (lightmap_vertices && (!stream->lightmap || !stream->radiosity)) || !stream->normals)
 	{
 		platform_log("GE: no memory for a material's vertices (%d)", count);
 		stream_free(stream->base);
 		stream_free(stream->lightmap);
-		free(stream->normals);
-		free(stream->radiosity);
+		copy_free(stream->normals);
+		copy_free(stream->radiosity);
 		stream->base = stream->lightmap = NULL;
 		stream->normals = stream->radiosity = NULL;
 		return NULL;
@@ -3536,12 +3884,24 @@ struct skin_part
 {
 	int weights, stride, batch_count;
 	struct skin_batch *batches;
+	int bytes; /* build 112: the one allocation's size, for the live count */
 };
 
 static struct skin_part *skinned[CONVERTED_BUFFERS];
 /* each node's slot in the part being planned */
 static signed char skin_slot[SKIN_NODES];
 static unsigned long skinned_parts = 0, skin_batches = 0, skin_failures = 0, skin_bytes = 0;
+/* build 112: the plans' bytes on the heap now (skin_bytes counts all ever
+made), and the highest that reached */
+static unsigned long skin_live_bytes = 0, skin_live_peak = 0;
+
+static void skin_free(struct skin_part *part)
+{
+	if (!part)
+		return;
+	skin_live_bytes -= (unsigned long)part->bytes;
+	free(part);
+}
 
 /* a vertex's nodes and the first's weight, from either kind of vertex */
 static void vertex_nodes(const void *vertices, int index, int uncompressed, int *n0, int *n1, float *w0)
@@ -3766,6 +4126,10 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 			return NULL;
 		}
 		skin_bytes += bytes;
+		part->bytes = bytes;
+		skin_live_bytes += (unsigned long)bytes;
+		if (skin_live_bytes > skin_live_peak)
+			skin_live_peak = skin_live_bytes;
 		part->weights = slots;
 		part->stride = (slots <= 4 ? 4 : 8) + 8 + 4 + 12;
 		part->batch_count = batch_count;
@@ -3803,6 +4167,19 @@ churning the cache filled all 2,048 slots and model parts stopped drawing
 (code review b89). Entries in the tags (generation 0) are always live */
 static int converted_used = 0;
 static unsigned long converted_sweeps = 0, converted_forgotten = 0;
+/* build 112: sweep sooner. The dead entries' skinning plans stay on the heap
+until a sweep: in b108 run 1 the plans made reached 1,160 KB by game time
+20,000, and one sweep forgot 1,426 dead entries, so the heap carried up to
+about a megabyte of plans nothing would use again while the level's copies
+looked for room. The next sweep now comes 256 entries after what the last
+one kept, from a quarter of the table up to the three quarters it always
+used; a scene whose live parts pass the mark doesn't sweep on every part,
+because the mark moves past what was kept. A sweep's cost grows with the
+entries it checks, so smaller sweeps cost less each. "sweeplate": at three
+quarters only, as before */
+#define CONVERTED_SWEEP_STEP 256
+static int converted_sweep_mark = CONVERTED_BUFFERS / 4;
+static int converted_sweep_late = -1;
 unsigned int psp_geo_generation(const void *ptr);
 
 static void converted_sweep(void)
@@ -3825,7 +4202,7 @@ static void converted_sweep(void)
 		}
 		else
 		{
-			free(skinned[index]);
+			skin_free(skinned[index]);
 			converted_forgotten++;
 		}
 	}
@@ -3861,9 +4238,17 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 
 	if (skin)
 		*skin = NULL;
-	if (converted_used >= CONVERTED_BUFFERS * 3 / 4)
+	if (converted_sweep_late < 0)
+		converted_sweep_late = psp_keep("sweeplate");
+	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark))
 	{
 		converted_sweep();
+		/* build 112: the next mark, past what this sweep kept */
+		converted_sweep_mark = converted_used + CONVERTED_SWEEP_STEP;
+		if (converted_sweep_mark < CONVERTED_BUFFERS / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS / 4;
+		if (converted_sweep_mark > CONVERTED_BUFFERS * 3 / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS * 3 / 4;
 		slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS;
 	}
 	while (converted[slot] && converted[slot] != vertices)
@@ -3900,7 +4285,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		}
 		/* the cache has read other vertices (or these again) into the block
 		since: converted afresh, the old plan let go */
-		free(skinned[slot]);
+		skin_free(skinned[slot]);
 		skinned[slot] = NULL;
 		converted_generation[slot] = generation;
 		reconverted_count++;
@@ -5131,10 +5516,10 @@ void psp_ge_forget_level(void)
 	{
 		stream_free(level_streams[index].base);
 		stream_free(level_streams[index].lightmap);
-		free(level_streams[index].normals);
-		free(level_streams[index].radiosity);
-		free(level_streams[index].compact_base);
-		free(level_streams[index].compact_lightmap);
+		copy_free(level_streams[index].normals);
+		copy_free(level_streams[index].radiosity);
+		copy_free(level_streams[index].compact_base);
+		copy_free(level_streams[index].compact_lightmap);
 	}
 	memset(level_streams, 0, sizeof(level_streams));
 	vram_vertex_next = 0; /* build 103 */
@@ -5149,11 +5534,12 @@ void psp_ge_forget_map(void)
 	int index;
 
 	for (index = 0; index < CONVERTED_BUFFERS; index++)
-		free(skinned[index]);
+		skin_free(skinned[index]);
 	memset(skinned, 0, sizeof(skinned));
 	memset(converted, 0, sizeof(converted));
 	memset(converted_generation, 0, sizeof(converted_generation));
 	converted_used = 0;
+	converted_sweep_mark = CONVERTED_BUFFERS / 4; /* build 112 */
 	converted_count = reconverted_count = skinned_parts = skin_batches = skin_bytes = skin_failures = 0;
 	psp_ge_forget_level();
 	/* build 87: the last map's stencil bake (the next map's pack brings its own) */
@@ -7129,41 +7515,49 @@ int psp_ge_level_vertex_lighting(unsigned int key, int vertex_index, unsigned in
 least recently drawn go, never one drawn this frame. Open addressing can't
 drop a slot without breaking the chains through it, so a dropped slot keeps
 its key with no copies, and the next draw of it rebuilds in place */
+static void level_stream_let_go(struct level_stream *stream)
+{
+	stream_bytes -= stream_size(stream);
+	stream_free(stream->base);
+	stream_free(stream->lightmap);
+	copy_free(stream->normals);
+	copy_free(stream->radiosity);
+	/* build 89: the 16-bit copies too (leaked on every let-go and rebuild
+	before; review) */
+	copy_free(stream->compact_base);
+	copy_free(stream->compact_lightmap);
+	stream->base = stream->lightmap = NULL;
+	stream->normals = stream->radiosity = NULL;
+	stream->compact_base = stream->compact_lightmap = NULL;
+	streams_let_go++;
+}
+
+/* build 111: the least recently drawn copy let go, never one drawn this
+frame; 0 when none is left to let go. The trim's choice, now shared with the
+copies' arena (copy_alloc) */
+static int level_stream_let_go_oldest(void)
+{
+	int index, oldest = -1;
+
+	for (index = 0; index < LEVEL_STREAMS; index++)
+	{
+		struct level_stream *stream = &level_streams[index];
+
+		if (!stream->source || !stream->base || stream->last_frame == stream_frame)
+			continue;
+		if (oldest < 0 || stream->last_frame < level_streams[oldest].last_frame)
+			oldest = index;
+	}
+	if (oldest < 0)
+		return 0;
+	level_stream_let_go(&level_streams[oldest]);
+	return 1;
+}
+
 static void level_streams_trim(void)
 {
-	while (stream_bytes > LEVEL_STREAM_BUDGET)
-	{
-		int index, oldest = -1;
-
-		for (index = 0; index < LEVEL_STREAMS; index++)
-		{
-			struct level_stream *stream = &level_streams[index];
-
-			if (!stream->source || !stream->base || stream->last_frame == stream_frame)
-				continue;
-			if (oldest < 0 || stream->last_frame < level_streams[oldest].last_frame)
-				oldest = index;
-		}
-		if (oldest < 0)
-			return;
-		{
-			struct level_stream *stream = &level_streams[oldest];
-
-			stream_bytes -= stream_size(stream);
-			stream_free(stream->base);
-			stream_free(stream->lightmap);
-			free(stream->normals);
-			free(stream->radiosity);
-			/* build 89: the 16-bit copies too (leaked on every let-go and
-			rebuild before; review) */
-			free(stream->compact_base);
-			free(stream->compact_lightmap);
-			stream->base = stream->lightmap = NULL;
-			stream->normals = stream->radiosity = NULL;
-			stream->compact_base = stream->compact_lightmap = NULL;
-			streams_let_go++;
-		}
-	}
+	while (stream_bytes > LEVEL_STREAM_BUDGET && level_stream_let_go_oldest())
+		;
 }
 
 static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
@@ -9518,6 +9912,7 @@ void psp_ge_frame_end(void)
 		psp_geo_frame_end();
 		if (psp_geo_open_count())
 			level_streams_trim();
+		arena_frame_end(); /* build 111: compaction, the heap's copies brought back */
 		stream_frame++;
 		frame_end_us[2] += sceKernelGetSystemTimeLow() - mark;
 		win_after_us += sceKernelGetSystemTimeLow() - mark;
@@ -9572,6 +9967,11 @@ void psp_ge_frame_end(void)
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes,
 			list_peak, DISPLAY_LIST_BYTES, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+		/* build 111 */
+		if (arena_state > 0)
+			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
+				arena_used / 1024, ARENA_BYTES / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
+				arena_compactions, arena_moved_kb, arena_migrated);
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		if (frames > 1)
@@ -9580,12 +9980,12 @@ void psp_ge_frame_end(void)
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
 			ge_kinds_report(); /* build 103 */
-			if (converted_sweeps)
-			{
-				platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d",
-					converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS);
-				converted_sweeps = converted_forgotten = 0;
-			}
+			/* build 112: every 300 frames, with the skinning plans' heap */
+			platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d (next sweep at %d); skinning plans %lu KB on the heap (peak %lu KB)",
+				converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS,
+				converted_sweep_late > 0 ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark,
+				skin_live_bytes / 1024, skin_live_peak / 1024);
+			converted_sweeps = converted_forgotten = 0;
 			if (ge_skip || list_in_vram || vram_busy || ge_skipped_draws)
 			{
 				platform_log("GE: bench test: GE skipping %s; draws skipped %lu; display list in %s; VRAM-only load %s (%d sprites, %s)",
