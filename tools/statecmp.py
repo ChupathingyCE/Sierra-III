@@ -12,9 +12,12 @@ usage: python3 statecmp.py A/log.txt B/log.txt [--ignore name,name,...]
             gives them, e.g. "first person weapons"): parts that differ
             between two runs of the same build, so can't judge a change
 
-Prints the first tick whose whole-state hash differs, then for each 30-tick
-checkpoint the allocations that differ (the first few checkpoints and every
-change in the set), and a verdict on the allocations not ignored."""
+Prints the first tick whose whole-state hash differs and the first whose
+play hash differs (each object's kind, place, motion, facing, health, parent
+and animation frame: what the game plays with, without what drawing writes
+into objects), then for each 30-tick checkpoint the allocations that differ
+(the first checkpoint and every change in the set), and a verdict on the
+allocations not ignored."""
 import re
 import sys
 
@@ -27,18 +30,20 @@ for a in sys.argv[1:]:
 ENTRY = re.compile(r' (.+?) ([0-9a-f]{8})(?= |$)')
 
 def read(path):
-    whole, records = {}, {}
+    whole, records, play = {}, {}, {}
     for line in open(path, errors='replace'):
-        m = re.search(r'state: tick (\d+) ([0-9a-f]{8})', line)
+        m = re.search(r'state: tick (\d+) ([0-9a-f]{8})(?: play ([0-9a-f]{8}))?', line)
         if m:
             whole[int(m.group(1))] = m.group(2)
+            if m.group(3):
+                play[int(m.group(1))] = m.group(3)
             continue
         m = re.search(r'state: records at tick (\d+):(.*)$', line.rstrip('\n'))
         if m:
             tick = int(m.group(1))
             entries = records.setdefault(tick, [])
             entries.extend(ENTRY.findall(m.group(2)))
-    return whole, records
+    return whole, records, play
 
 def by_name(entries):
     """name -> hashes in order (some names repeat: "globals" of several kinds)"""
@@ -49,12 +54,18 @@ def by_name(entries):
 
 if len(args) != 2:
     sys.exit(__doc__)
-wa, ra = read(args[0])
-wb, rb = read(args[1])
+wa, ra, pa = read(args[0])
+wb, rb, pb = read(args[1])
 common = sorted(set(wa) & set(wb))
 differ = [t for t in common if wa[t] != wb[t]]
 print('ticks: %d and %d, %d in common; whole state differs at %d of them%s'
       % (len(wa), len(wb), len(common), len(differ), ', first at tick %d' % differ[0] if differ else ''))
+play_common = sorted(set(pa) & set(pb))
+if play_common:
+    play_differ = [t for t in play_common if pa[t] != pb[t]]
+    print('play (the objects as the game plays them): %s'
+          % ('the same at all %d ticks' % len(play_common) if not play_differ else
+             'differs at %d of %d ticks, first at tick %d' % (len(play_differ), len(play_common), play_differ[0])))
 
 checkpoints = sorted(set(ra) & set(rb))
 last, judged = None, set()

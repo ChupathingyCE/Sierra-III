@@ -5387,8 +5387,13 @@ void psp_game_state_hash_tick(long tick)
 		asked = psp_keep("statecrc");
 	if (!asked || !game_state_globals.base_address)
 		return;
-	platform_psp_log("state: tick %ld %08lx", tick,
-		psp_state_hash(game_state_globals.base_address, game_state_globals.cpu_allocation_size));
+	{
+		extern unsigned long psp_objects_play_hash(void); /* objects.c (psp_fixups.py) */
+
+		platform_psp_log("state: tick %ld %08lx play %08lx", tick,
+			psp_state_hash(game_state_globals.base_address, game_state_globals.cpu_allocation_size),
+			psp_objects_play_hash());
+	}
 	if (tick % 30)
 		return;
 	/* (lines kept under the log's 512 bytes, psp_platform.c) */
@@ -9488,6 +9493,47 @@ FIXES_112["source/game/game.c#statecrc"] = [
 #endif
 	collision_log_end_period();
 	profile_tick_end();"""),
+]
+FIXES_112["source/objects/objects.c#statecrc"] = [
+("void objects_update(\n\tvoid)\n{",
+ """#ifdef HALO_PSP
+/* build 112: statecrc's hash of what the game plays with (game_state.c): each
+object's kind, place, motion, facing, health, parent and animation frame,
+leaving out what drawing writes into objects (render flags, the render state
+cache, node matrices), so two runs compare on the game alone (psp_fixups.py) */
+unsigned long psp_objects_play_hash(void)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+	unsigned long hash = 2166136261UL;
+
+	object_iterator_new(&iterator, _object_mask_all, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		unsigned long words[24];
+		int count = 0, k;
+
+		words[count++] = (unsigned long)iterator.index;
+		words[count++] = (unsigned long)object->definition_index;
+		words[count++] = (unsigned long)object->object.type;
+		/* position, translational velocity, forward, up, angular velocity */
+		csmemcpy(&words[count], &object->object.position, 15 * sizeof(real));
+		count += 15;
+		csmemcpy(&words[count], &object->object.body_vitality, 2 * sizeof(real));
+		count += 2;
+		words[count++] = (unsigned long)object->object.parent_object_index;
+		words[count++] = ((unsigned long)(unsigned short)object->object.animation.state.index << 16) |
+			(unsigned short)object->object.animation.state.frame_index;
+		for (k = 0; k < count; k++)
+			hash = (hash ^ words[k]) * 16777619UL;
+	}
+	return hash;
+}
+#endif
+
+void objects_update(
+	void)
+{"""),
 ]
 FIXES_112["source/main/main.c#fixedticks"] = [
 ("""	main_globals.frame_start_milliseconds = end_milliseconds;
