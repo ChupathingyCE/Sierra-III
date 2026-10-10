@@ -2229,19 +2229,62 @@ static unsigned long psp_checksum_word(struct psp_checksum_rules const *rules, l
 	return value;
 }
 
+/* build 113: the sum itself. b112's, rotate by 5 then xor each word in,
+cancels: a bit changed in one word and the bit 5 places up changed in the
+next go in as the same value and xor to nothing. A Warthog's flip is just
+that (vehicle.flags gains 0x10, and the next word, upending_type, becomes 2:
+0x200), so the sleep never saw it and the vehicle never righted itself
+(b113_candidates.md #10). FNV-1a doesn't cancel like that: each word is
+xored in, then the lane is multiplied by an odd number, so for a second
+change to undo a first it must equal what the multiply made of the first,
+which depends on every byte before it. A single change always shows (xor and
+an odd multiply can't map two values to one). Four lanes, word i in lane
+i % 4, so the four multiplies of a turn of the loop overlap. "weaksum" in
+keep.txt brings back b112's sum, for timing the two */
+#define PSP_CHECKSUM_STEP(sum, value) (((sum) << 5 | (sum) >> 27) ^ (value))
+#define PSP_LANE_STEP(lane, value) ((lane) = ((lane) ^ (value)) * 16777619UL)
+static int psp_checksum_weak = -1;
+
+static int psp_checksum_weak_on(void)
+{
+	if (psp_checksum_weak < 0)
+		psp_checksum_weak = psp_keep("weaksum");
+	return psp_checksum_weak;
+}
+
+static void psp_lanes_start(unsigned long lane[4])
+{
+	lane[0] = 0x811C9DC5UL; /* FNV's own start, and three others */
+	lane[1] = 0x9E3779B9UL;
+	lane[2] = 0x85EBCA6BUL;
+	lane[3] = 0xC2B2AE35UL;
+}
+
+static unsigned long psp_lanes_end(unsigned long const lane[4])
+{
+	return lane[0] ^ (lane[1] << 8 | lane[1] >> 24) ^ (lane[2] << 16 | lane[2] >> 16) ^ (lane[3] << 24 | lane[3] >> 8);
+}
+
 /* the checksum word by word through the rules: the reference the fast one
 below must equal ("checksumcheck" in keep.txt compares them) */
 static unsigned long psp_object_checksum_reference(struct object_header_datum const *header)
 {
 	unsigned long const *word = (unsigned long const *)header->datum;
-	unsigned long sum = 0x9E3779B9UL;
+	unsigned long sum = 0x9E3779B9UL, lane[4];
 	struct psp_checksum_rules rules;
 	long index;
 
 	psp_checksum_rules_for(header, &rules);
+	if (psp_checksum_weak_on())
+	{
+		for (index = 0; index < rules.count; index++)
+			sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
+		return sum;
+	}
+	psp_lanes_start(lane);
 	for (index = 0; index < rules.count; index++)
-		sum = ((sum << 5) | (sum >> 27)) ^ psp_checksum_word(&rules, index, word[index]);
-	return sum;
+		PSP_LANE_STEP(lane[index & 3], psp_checksum_word(&rules, index, word[index]));
+	return psp_lanes_end(lane);
 }
 
 /* build 106: the same sum, faster. The rules touch few words (word 2, and
@@ -2249,8 +2292,8 @@ for units and weapons a timer word, the idle count and a dead biped's aim,
 functions and colours); every other word goes in as it is, so the runs
 between the touched ones go through a plain loop, four words a turn, and
 only the touched words through psp_checksum_word. b30's beach: 277 scenery
-objects, most asleep, cost 5 ms a tick in the emulator, mostly this sum */
-#define PSP_CHECKSUM_STEP(sum, value) (((sum) << 5 | (sum) >> 27) ^ (value))
+objects, most asleep, cost 5 ms a tick in the emulator, mostly this sum.
+Build 113: the four-lane sum (psp_checksum_span_lanes), or "weaksum"'s */
 static unsigned long psp_checksum_span(unsigned long sum, unsigned long const *word, long first, long end)
 {
 	long index = first;
@@ -2267,15 +2310,37 @@ static unsigned long psp_checksum_span(unsigned long sum, unsigned long const *w
 	return sum;
 }
 
+static void psp_checksum_span_lanes(unsigned long lane[4], unsigned long const *word, long first, long end)
+{
+	long index = first;
+	unsigned long a, b, c, d;
+
+	/* up to a multiple of 4, so the loop's words go to lanes 0 to 3 */
+	for (; index < end && (index & 3); index++)
+		PSP_LANE_STEP(lane[index & 3], word[index]);
+	a = lane[0]; b = lane[1]; c = lane[2]; d = lane[3];
+	for (; index + 4 <= end; index += 4)
+	{
+		PSP_LANE_STEP(a, word[index]);
+		PSP_LANE_STEP(b, word[index + 1]);
+		PSP_LANE_STEP(c, word[index + 2]);
+		PSP_LANE_STEP(d, word[index + 3]);
+	}
+	lane[0] = a; lane[1] = b; lane[2] = c; lane[3] = d;
+	for (; index < end; index++)
+		PSP_LANE_STEP(lane[index & 3], word[index]);
+}
+
 static unsigned long psp_object_checksum(struct object_header_datum const *header)
 {
 	static int psp_checksum_check = -1;
 	static unsigned long psp_checksum_checked = 0, psp_checksum_wrong = 0;
 	static int psp_checksum_slow = -1;
 	unsigned long const *word = (unsigned long const *)header->datum;
-	unsigned long sum = 0x9E3779B9UL;
+	unsigned long sum = 0x9E3779B9UL, lane[4];
 	struct psp_checksum_rules rules;
 	long touched[7][2], count = 0, index = 0, k, j;
+	int weak = psp_checksum_weak_on();
 
 	/* "slowchecksum": the reference alone, for timing the difference */
 	if (psp_checksum_slow < 0)
@@ -2301,6 +2366,7 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 			touched[j][0] = touched[j - 1][0]; touched[j][1] = touched[j - 1][1];
 			touched[j - 1][0] = first; touched[j - 1][1] = end;
 		}
+	psp_lanes_start(lane);
 	for (k = 0; k < count && index < rules.count; k++)
 	{
 		long first = touched[k][0] < index ? index : touched[k][0], end = touched[k][1];
@@ -2309,13 +2375,29 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 			first = rules.count;
 		if (end > rules.count)
 			end = rules.count;
-		sum = psp_checksum_span(sum, word, index, first);
+		if (weak)
+			sum = psp_checksum_span(sum, word, index, first);
+		else
+			psp_checksum_span_lanes(lane, word, index, first);
 		for (index = first; index < end; index++)
-			sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
+		{
+			unsigned long value = psp_checksum_word(&rules, index, word[index]);
+
+			if (weak)
+				sum = PSP_CHECKSUM_STEP(sum, value);
+			else
+				PSP_LANE_STEP(lane[index & 3], value);
+		}
 		if (index < first)
 			index = first;
 	}
-	sum = psp_checksum_span(sum, word, index, rules.count);
+	if (weak)
+		sum = psp_checksum_span(sum, word, index, rules.count);
+	else
+	{
+		psp_checksum_span_lanes(lane, word, index, rules.count);
+		sum = psp_lanes_end(lane);
+	}
 	if (psp_checksum_check < 0)
 		psp_checksum_check = psp_keep("checksumcheck");
 	if (psp_checksum_check)
