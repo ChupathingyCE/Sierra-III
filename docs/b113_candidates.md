@@ -15,6 +15,14 @@ Everything here ships behind a keep word. Anything that changes what the player 
   - reflections (cube maps baked to 64² sphere maps, a second pass per reflective part; best after L1, when the passes cost the ME instead of the main CPU);
   - model detail maps as their own pass (the bake folds them into the base today).
 
+## Built in b113 (2026-10-10, `build_b113.md`)
+
+- **In:** #10 the flip (four-lane FNV-1a, `weaksum` for b112's), #21 512 render states (`renderstates256`), #19 `list768`, #1 `contrails`, #20 `zoommask` / `zoommaskfull`, `gebusy`, and step 4b's items 1–3 (render jobs 500 ms, audio between replay records, `STREAMS_WANTED` 128).
+- **#16 meters: not yet.** The model meters need a bake change: `texpack.py` gives the grid palette (grey = position along the meter) only to HUD bitmaps (`cls == 'ui/hud' and grey_meter(...)`), so the plasma rifle's gauge map gets an ordinary palette and the meter can't be worked out per palette entry. Next: the meter shaders' maps get the grid palette too (`tagdeps.py` lists them), then a re-bake on the X3D and new packs on the stick, then the runtime path (`psp_transparent_map` type 9 through the HUD meters' code). b114.
+- **Found while building, for b114:**
+  - **#24 The sound cache's drops are mostly fragmentation** [M + D]. In b112 run 6 (1,792 KB), sounds were dropped while only 650–1,100 KB were playing. The cache (`lruv_block_new`) needs a sound's pages in one run, and the sounds still playing can't be pushed out, so scattered playing sounds split the free space. Place long sounds (loops, dialogue) from one end and short ones from the other. Nothing heard changes except fewer drops. The emulator reproduces the drops (30–338 a run) [E].
+  - **#25 Exactness across builds:** with `fixedseed` the same build agrees with itself for the whole run, but builds or keep words that change the emulator's speed part between ticks 1,326 and 1,357, and the "object looping sounds" records from tick 532 (`gedefer`). Something in b30's opening still follows how fast the emulator runs [E]. Runs 38092178378 and 38092205732 name the objects.
+
 ## 1. Instruments
 
 ### `gebusy`: how busy each processor is
