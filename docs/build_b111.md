@@ -1,6 +1,6 @@
-# Build 111: the level's vertex copies in an arena of their own (2026-10-10)
+# Build 111: the heap held, the level copies in an arena of their own (2026-10-10)
 
-Built on b110 after b108's hardware runs (`hardware_b108.md`): Sheepdog01 chose b111 = b110 + the level-stream arena. Nothing else changed. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator (PPSSPP with the local patches, PSP-1000 memory), **[D]** read in the code, **[U]** inference.
+Built on b110 after b108's hardware runs (`hardware_b108.md`). Sheepdog01 chose b111 = b110 + the level-stream arena; the same night the arena gained compaction, and the converted-buffer table's sooner sweep joined it, because b108 run 1's log showed the dead skinning plans filling the same heap. All three are exact (nothing seen or played changes), all three are memory, and each has a keep word. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator (PPSSPP with the local patches, PSP-1000 memory), **[D]** read in the code, **[U]** inference.
 
 ## What changed
 
@@ -10,8 +10,15 @@ Built on b110 after b108's hardware runs (`hardware_b108.md`): Sheepdog01 chose 
   - Inside the arena, blocks lie end to end behind 16-byte headers; a request takes the smallest free block that holds it, and a freed block merges with free neighbours.
 - **Nothing drawn changes.** A copy let go mid-frame is one the frame-end trim would have let go anyway, and it's rebuilt the next time it's drawn, as before.
 - **Keep word `noarena`:** the general heap only, as in b110, for the A/B.
-- **Log line every 300 frames:** `GE: the copies' arena: N KB in use of 1056, largest free N KB; N copies let go to make room, N pieces from the general heap instead`.
-- Program +1.3 KB; heap 6,016 KB, as b110.
+- **The arena kept whole between frames** (added after the first route replay, below). At the frame's end, after `sceGuSync` and the trim, the GE is done and no copy is being built:
+  - **Compaction:** the used blocks slide to the arena's start, so its free space is one block. Each block records its owner (the copy's field that points at it), which is repointed; the moved GE arrays are written back from the CPU's cache. Nothing outside the copies' table keeps a copy's address past the frame [D].
+  - It runs only when the free space is badly split (its largest block under half of it, at least 64 KB free), at most every 30 frames, or after a frame that sent pieces to the general heap.
+  - **Migration:** then copies the general heap holds come back into the arena, up to 128 KB a frame.
+  - **Keep word `nocompact`:** the arena without either.
+- **Log line every 300 frames:** `GE: the copies' arena: N of 1056 KB used, largest free N KB; let go for room N; pieces to the heap N (N there now); compacted N times, N KB; brought back N`.
+- **The converted-buffer table swept sooner** (`psp_ge.c`, "sweep sooner"). A model part bending on several nodes gets a skinning plan on the heap; when the geometry cache reuses the part's block, the plan is dead but stayed until the table was three quarters full. The next sweep now comes 256 entries after what the last one kept (a quarter to three quarters of the table; the mark moves past the live set). A part that comes back is converted and planned afresh, as after any sweep. **Keep word `sweeplate`:** three quarters only, as before.
+- **The converted-buffer table's log line,** now printed every 300 frames with the plans' live and peak KB: `GE: converted-buffer table: N sweeps, N dead entries forgotten, N in use of 2048 (next sweep at N); skinning plans N KB on the heap (peak N KB)`.
+- **Program +3 KB; heap 5,952 KB, 64 KB less than b110.** `psp_build.py` rounds the heap down to 64 KB, and b110 sat 2.6 KB above a step: the arena with compaction fit under it once its housekeeping was compiled for size (`cold`), and the sweep crossed it. The sweep gives back far more than 64 KB in a long level (below).
 
 ## Why this fixes b108 run 1's failure
 
@@ -21,10 +28,10 @@ What happened on the PSP [M] (`hardware_b108.md`; b108's heap was 6,080 KB):
 - From then on 5,290 materials went undrawn, and later frees left up to 1.4 MB free in 289 pieces, none large enough.
 - Every large request in the run came at start-up; during play the rest of the game asks for small blocks only.
 
-With the arena [D, U]:
-- The copies can't fail for room: they have 1,056 KB of their own, and the churn stays inside it.
-- The rest of the game gets 6,016 − 1,056 = 4,960 KB. In run 1 it needed about 4,520 KB at the start and about 4,850 KB at the peak (the heap's use less the copies'), so it fits with about 110 KB to spare at that moment. Its own allocations are small, so its holes serve them.
-- Why 32 KB of slack, not 128: the first build of b111 had 128 KB, which would have left the rest about 4,864 KB against the 4,876 KB it needed at run 1's peak.
+With b111 [D, U]:
+- The copies have 1,056 KB of their own, and their churn stays inside it. Compaction keeps that space whole between frames, and copies the general heap had to take come back.
+- The rest of the game gets 5,952 − 1,056 = 4,896 KB. In run 1 it needed about 4,520 KB at the start and about 4,850 KB at the peak (the heap's use less the copies'), and much of that growth was dead skinning plans: run 1 had made 1,160 KB of plans by game time 20,000 [M], and the replay below shows the sooner sweep keeping them to a few hundred KB. Its own allocations are small, so its holes serve them.
+- Why 32 KB of the arena's slack, not 128: the first build of b111 had 128 KB, which would have left the rest about 4,864 KB (on a 6,016 KB heap) against the 4,876 KB run 1 needed at its peak.
 
 ## What the emulator showed [E]
 
