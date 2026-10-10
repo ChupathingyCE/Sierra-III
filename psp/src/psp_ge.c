@@ -1757,7 +1757,9 @@ static void taa_resolve(void)
 	static const float strengths[4] = { 0.0f, 0.25f, 0.375f, 0.5f };
 	float alpha;
 
-	if (taa_done || !frame_open)
+	/* (build 112: never in the Media Engine's work: it reads VRAM, which the
+	ME can't see; temporal blend is settled off anyway) */
+	if (taa_done || !frame_open || psp_me_context)
 		return;
 	taa_done = 1;
 	if (psp_soften > 0 && !taa_failed)
@@ -5770,7 +5772,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					skin_vfpu = psp_vfpu_on && psp_keep("vfpuskin");
 					skin_vfpu_check = psp_keep("skinvfpucheck");
 				}
-				on_vfpu = skin_vfpu && skin->weights <= 7;
+				/* (build 112: never in the Media Engine's work: the ME has no VFPU) */
+				on_vfpu = skin_vfpu && skin->weights <= 7 && !psp_me_context;
 				if (on_vfpu)
 					skin_vfpu_load((const float (*)[3][4])depth_row, skin->weights);
 				for (t = 0; t + 2 < draw_count; t += 3)

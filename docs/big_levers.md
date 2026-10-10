@@ -110,7 +110,17 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
    | engine collision (`overlay_on_a_wall`'s rays) | `psp_ge_queue_level_transparent` | done when the call is written down |
    | VFPU (`vfpuskin`) | `model_geometry` | off on the ME |
 
-   **The check that the gates are closed** runs in the emulator, which runs no ME code: with `gedefer gemesim`, the carrying out is marked as the ME's work (`psp_me_context` holds the game thread's id), and the emulator's ME-strict check (`PSP_MESTRICT`, in the lab's patch) prints every system call that thread makes meanwhile, once per function and caller (`mestrict.txt` in the lab's results). Closed so far (b112): the entry points' timers (`ge_clock` reads 0) and the keep-word cache's fills.
+   **The check that the gates are closed** runs in the emulator, which runs no ME code: with `gedefer gemesim`, the carrying out is marked as the ME's work (`psp_me_context` holds the game thread's id), and the emulator's ME-strict check (`PSP_MESTRICT`, in the lab's patch) prints every system call that thread makes meanwhile, once per function and caller (`mestrict.txt` in the lab's results). Closed so far (b112), each behind `gemesim` so nothing changes without it:
+   - the entry points' timers (`ge_clock` reads 0);
+   - keep-word cache fills (skipped);
+   - texture loads, level copies and model conversions: the work asks, and the main CPU does them at the frame's end (`psp_tex_frame_end`, `psp_ge_frame_end`), so they're there next frame; the surface or part waits a frame, as for anything still on its way;
+   - the table sweep (waits for the main CPU);
+   - the log (`ge_log`: a count per message, written out at the frame's end);
+   - write-backs (`ge_writeback`: the cache instruction);
+   - the stall address (kept, then passed on when the run ends);
+   - temporal blend and VFPU skinning (never in the ME's work).
+
+   Still open: the engine's collision rays in `psp_ge_queue_level_transparent` (no system call, but on the ME they would read objects while the main CPU moves them: they have to move to when the call is written down), and whatever the ME-strict run still finds.
 4. **Carried out on the ME**, streaming behind the recorder: an uncached write index, range write-backs before publishing, the ME's own write-back before the GE reads.
 
 ### What stays on the main CPU
