@@ -71,6 +71,25 @@ static inline unsigned int ge_clock(void)
 	return psp_timers_off || psp_me_context ? 0 : sceKernelGetSystemTimeLow();
 }
 
+/* build 112: a range written back from the data cache for the GE to read:
+the firmware's call on the main CPU, as before; while the work is marked as
+the Media Engine's (gemesim), the cache instruction on each line instead (no
+system call; on the ME it writes back the ME's own cache, the one holding
+the data), each line written back and dropped as the list's lines are */
+static void ge_writeback(const void *start, unsigned int bytes)
+{
+	unsigned int line, end;
+
+	if (!psp_me_context)
+	{
+		sceKernelDcacheWritebackRange(start, bytes);
+		return;
+	}
+	end = (unsigned int)start + bytes;
+	for (line = (unsigned int)start & ~63u; line < end; line += 64)
+		__builtin_allegrex_cache(0x1B, line);
+}
+
 #define SCREEN_WIDTH 480
 #define SCREEN_HEIGHT 272
 #define BUFFER_WIDTH 512
@@ -219,6 +238,13 @@ emu.sh) prints every system call that thread makes then: each is a gate the
 ME version must not reach (big_levers.md, L1 step 3) */
 volatile unsigned int psp_me_context = 0;
 static unsigned int defer_me_thread = 0;
+/* and the GE's stall address: while the work is the Media Engine's, the
+newest one is kept here (the call is a system call; the stall wrapper, below)
+and the main CPU passes it on when the run of waiting calls ends */
+static int stall_me_qid = 0;
+static void *stall_me_address = NULL;
+static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
+int __real_sceGeListUpdateStallAddr(int qid, void *stall);
 static unsigned int defer_used = 0;
 static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
 static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
@@ -798,6 +824,13 @@ static void defer_drain(void)
 		}
 	}
 	psp_me_context = 0;
+	/* the GE given what the run wrote (the newest stall address it kept) */
+	if (stall_me_address)
+	{
+		stall_forwarded++;
+		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
+		stall_me_address = NULL;
+	}
 	defer_used = 0;
 	defer_replaying = 0;
 	defer_drains++;
@@ -1201,6 +1234,12 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		return 0;
 	stall_pending = 0;
 	list_flush_pending();
+	if (psp_me_context)
+	{
+		stall_me_qid = qid;
+		stall_me_address = stall;
+		return 0;
+	}
 	stall_forwarded++;
 	if ((stall_forwarded & 63) == 0)
 	{
@@ -2575,9 +2614,9 @@ static int compact_build(struct level_stream *stream)
 			cl->v = (short)floorf(lv * 32767.0f + 0.5f);
 		}
 	}
-	sceKernelDcacheWritebackRange(stream->compact_base, stream->count * sizeof(struct compact_vertex));
+	ge_writeback(stream->compact_base, stream->count * sizeof(struct compact_vertex));
 	if (stream->compact_lightmap)
-		sceKernelDcacheWritebackRange(stream->compact_lightmap, stream->count * sizeof(struct compact_vertex));
+		ge_writeback(stream->compact_lightmap, stream->count * sizeof(struct compact_vertex));
 	compact_streams++;
 	return 1;
 }
@@ -2823,7 +2862,7 @@ static void __attribute__((cold)) arena_compact(void)
 		block->owner = NULL;
 	}
 	if (first_moved)
-		sceKernelDcacheWritebackRange(first_moved, (unsigned int)(to - first_moved));
+		ge_writeback(first_moved, (unsigned int)(to - first_moved));
 	arena_compactions++;
 	arena_moved_kb += moved / 1024;
 }
@@ -2844,7 +2883,7 @@ static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int 
 		return 0;
 	memcpy(to, piece, bytes);
 	if (ge_reads)
-		sceKernelDcacheWritebackRange(to, bytes);
+		ge_writeback(to, bytes);
 	*field = to;
 	free(piece);
 	if (arena_heap_live)
@@ -3231,7 +3270,7 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		bake.stencil_count++;
 	}
 	/* the layers' vertices are read by the GE */
-	sceKernelDcacheWritebackRange(bake.file, size);
+	ge_writeback(bake.file, size);
 	platform_log("stencils: %s: %d walls, %d stencil layers, %d stencil materials baked", path, bake.wall_count,
 		bake.layer_count, bake.stencil_count);
 	return;
@@ -3489,9 +3528,9 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	stream->compact_base = stream->compact_lightmap = NULL;
 	if (level_compact)
 		compact_build(stream);
-	sceKernelDcacheWritebackRange(stream->base, count * sizeof(struct ge_vertex));
+	ge_writeback(stream->base, count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
-		sceKernelDcacheWritebackRange(stream->lightmap, count * sizeof(struct ge_vertex));
+		ge_writeback(stream->lightmap, count * sizeof(struct ge_vertex));
 	stream_bytes += stream_size(stream);
 	return stream;
 }
@@ -4113,7 +4152,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	triangles came and went with the view (Sheepdog01's canyon walls, the same way
 	each time he turned). Out of the cache first, as the meters (build 39) */
 	if (!kept)
-		sceKernelDcacheWritebackRange(indices, triangle_count * 3 * sizeof(unsigned short));
+		ge_writeback(indices, triangle_count * 3 * sizeof(unsigned short));
 	/* build 64: sorted by slant (angle_sort; the copy, if one is made, is the
 	display list's own). Build 66: with the far triangles (past DETAIL_FAR)
 	set apart, when the draw has detail maps and reaches that far */
@@ -4913,7 +4952,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 					out += 3;
 					part->batches[b].index_count += 3;
 				}
-			sceKernelDcacheWritebackRange(part->batches[b].indices, part->batches[b].index_count * 2);
+			ge_writeback(part->batches[b].indices, part->batches[b].index_count * 2);
 		}
 	}
 	free(batch_of);
@@ -5234,7 +5273,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		}
 	}
 	free(node0);
-	sceKernelDcacheWritebackRange(vertices, count * (part ? part->stride : 24));
+	ge_writeback(vertices, count * (part ? part->stride : 24));
 	return 1;
 }
 
@@ -5387,7 +5426,7 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 		computed[entry] = 0xFF000000 | (mask << 16) | (mask << 8) | mask;
 	}
 	if (!hit)
-		sceKernelDcacheWritebackRange(computed, count * 4);
+		ge_writeback(computed, count * 4);
 	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 	sceGuClutLoad(count / 8 > 0 ? count / 8 : 1, computed);
 	if (which)
@@ -8159,7 +8198,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 		it changed (Sheepdog01's "rubber banding" ammo and flashlight meters). The
 		display list's own memory is uncached, so only the kept slots need it */
 		if (!hit && computed >= &meter_cache_palette[0][0] && computed < &meter_cache_palette[METER_CACHE][0])
-			sceKernelDcacheWritebackRange(computed, count * 4);
+			ge_writeback(computed, count * 4);
 		sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 		sceGuClutLoad(count / 8, computed);
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
@@ -8277,7 +8316,7 @@ void psp_ge_shadow_begin(const float *matrix, const float *color, float radius)
 
 				blob_texture[32 * y + x] = 0xFF000000 | ((unsigned int)value * 0x010101);
 			}
-		sceKernelDcacheWritebackRange(blob_texture, sizeof(blob_texture));
+		ge_writeback(blob_texture, sizeof(blob_texture));
 		blob_ready = 1;
 	}
 }
@@ -8765,9 +8804,9 @@ static unsigned char *cone_texture(float falloff, float cutoff)
 	{
 		for (x = 0; x < 256; x++)
 			cone_ramp[x] = 0xFF000000 | (x << 16) | (x << 8) | x;
-		sceKernelDcacheWritebackRange(cone_ramp, sizeof(cone_ramp));
+		ge_writeback(cone_ramp, sizeof(cone_ramp));
 	}
-	sceKernelDcacheWritebackRange(cones[slot].texels, sizeof(cones[slot].texels));
+	ge_writeback(cones[slot].texels, sizeof(cones[slot].texels));
 	return cones[slot].texels;
 }
 
@@ -10428,7 +10467,7 @@ void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height
 		unsigned int start = (unsigned int)(pixels + (y + row) * bitmap_width + x) & ~63u;
 		unsigned int end = ((unsigned int)(pixels + (y + row) * bitmap_width + x + width) + 63) & ~63u;
 
-		sceKernelDcacheWritebackRange((void *)start, end - start);
+		ge_writeback((void *)start, end - start);
 	}
 	text_changed = 1;
 	text_changes++;
