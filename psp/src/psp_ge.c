@@ -200,6 +200,13 @@ typedef union
 } defer_word;
 static defer_word *defer_buffer = NULL;
 static float *defer_nodes = NULL; /* the carried-out model's node matrices: model_nodes points here */
+/* "gemesim" (with gedefer): the carrying out marked as the Media Engine's
+work while it still runs on the main CPU. This word holds the game thread's
+id meanwhile; the emulator's ME-strict check (PSP_MESTRICT, the lab's
+emu.sh) prints every system call that thread makes then: each is a gate the
+ME version must not reach (big_levers.md, L1 step 3) */
+volatile unsigned int psp_me_context = 0;
+static unsigned int defer_me_thread = 0;
 static unsigned int defer_used = 0;
 static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
 static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
@@ -304,8 +311,15 @@ static void defer_frame_begin(void)
 				platform_log("GE: gedefer: no room for its buffer, off");
 			}
 			else
+			{
 				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer",
 					(unsigned int)(DEFER_WORDS * sizeof(defer_word) / 1024));
+				if (psp_keep("gemesim"))
+				{
+					defer_me_thread = (unsigned int)sceKernelGetThreadId();
+					platform_log("GE: gemesim: carrying out marked as the Media Engine's (thread %08x)", defer_me_thread);
+				}
+			}
 		}
 	}
 	defer_on = asked;
@@ -640,6 +654,7 @@ static void defer_drain(void)
 	unsigned int at = 0;
 
 	defer_replaying = 1;
+	psp_me_context = defer_me_thread;
 	while (at < defer_used)
 	{
 		const defer_word *w = defer_buffer + at + 1, *rest;
@@ -770,6 +785,7 @@ static void defer_drain(void)
 			break;
 		}
 	}
+	psp_me_context = 0;
 	defer_used = 0;
 	defer_replaying = 0;
 	defer_drains++;
