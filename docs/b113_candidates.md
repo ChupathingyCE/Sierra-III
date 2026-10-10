@@ -1,0 +1,59 @@
+# Build 113: candidates (2026-10-10)
+
+What comes after b112. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator or estimate, **[D]** read in the code, **[U]** inference.
+
+Everything here ships behind a keep word. Anything that changes what the player sees is Sheepdog01's call, one at a time, after an A/B.
+
+## 1. Instruments
+
+### `gebusy`: how busy each processor is
+
+Today we log two of the three processors: the main CPU (the `threads (…)` line gives each thread's share; `hardware:` gives memory wait and time asleep) and the ME (`ME: running, X% busy`). The GE only has the frame end's "waiting for the GE" (0.4 ms on b112's flight [M]: it finishes right behind the CPU) and the `geserial` measuring mode.
+
+- **GE busy time, timed by the GE itself.** The stall wrapper (`__wrap_sceGeListUpdateStallAddr`) hands the GE a new chunk every 16 draws. Before each, a SIGNAL command (`sceGuSignal`, continue) goes into the list; the signal callback (`sceGuSetCallback(GU_CALLBACK_SIGNAL, …)`) notes when the GE reached it. A chunk's busy time runs from when the GE could start it (handed over, or the last chunk finished, whichever is later) to when it was reached. Summed per frame.
+- **The profiler's local-bus counter.** `hwprofile` reads all 19 counters, but `d[18]` (local bus; PSPTEK: the GE's bus cycles) is never printed [D]. Print it as a cross-check.
+- **One line per heartbeat:** `processors: main CPU 99.6% (game 96.1, memory wait 50%) | ME 0.3% | GE 14%`.
+- **Cost [E]:** one interrupt per 16 draws, a few µs each: well under 1 ms a frame. Only the PSP gives the GE's number (the emulator doesn't time the GE).
+- **Why now:** once L1 moves the GE work to the ME, the main CPU's share drops, and the GE could become the limit.
+
+## 2. L1 step 4b: lessons from b112's Test 3 (`gemeon` on the PSP)
+
+The details are in `big_levers.md` §4, "Step 4a on the PSP". What b113 needs from it:
+
+1. **Give render jobs a timeout of their own.** The 40 ms limit was set for audio jobs (about 1 ms each). Render jobs ran up to 39.6 ms before the one that stopped the ME [M]. Use 500 ms for render jobs, plus a progress word the replay bumps, so a slow job isn't mistaken for a stuck ME.
+2. **Don't let audio wait behind a render job.** The ME runs one job at a time. Audio blocks waited up to 38 ms behind render jobs, and 7 of 109 blocks were late (1 of 213 before render jobs started) [M]. `defer_drain` should check the audio slot every N records and mix the block in between.
+3. **Make the level copies' wanted list bigger.** `STREAMS_WANTED` is 32. 113 copies were asked for and 14 didn't fit [M]. Those surfaces wait a frame longer. Raise it to 128 (about 1.5 KB).
+4. **Then the overlap itself:** two buffers, spinning, the stall address passed on (`big_levers.md` §4, step 4).
+
+## 3. Sheepdog01's b108 list, triaged
+
+From `hardware_b108.md`, "What Sheepdog01 saw". The causes come from reading the b112 code (four read-only passes, 2026-10-10). Three of the findings were spot-checked against the code: the 5650 frame buffer with no dithering, contrails dropped with the transparent groups, and the flare ray's flags.
+
+| # | Seen | Cause | Fix (keep word) | Cost [E] | Check | Confidence |
+|---|---|---|---|---|---|---|
+| 1 | Plasma projectiles have no tracers | **Contrails never draw** [D]. `render_contrail` hands its strip to the transparent-geometry groups, which the PSP throws away (`psp_fixups.py`, `rasterizer_transparent_geometry_draw`). Lightning uses the same path, so it's invisible too. That the tracer is a contrail is [U] | Draw contrail strips as one see-through sprite draw each, with the contrail shader's blend (`contrails`) | ~0.1 ms, 14 KB of list per 100 segments | emulator shot of an Elite firing plasma | high (contrails), medium (that it's the tracer) |
+| 2 | Plasma glow shines through characters and bodies | The flare's ray tests the level plus vehicles, scenery and machines; **bipeds aren't in its flags** [D]. Flares draw with the depth test off. The Xbox used a depth-buffer visibility query, so anything solid hid them | Add bipeds to the ray, ignoring the player's own unit (`flarebipeds`) | under +0.1 ms a ray in fights (≤24 rays a frame) | emulator shot, Elite in front of a plasma glow | high |
+| 3 | Needles stay visible under active camouflage | Camouflage reaches only solid model parts. **See-through parts get no camouflage value** and draw at full strength [D]. On the Xbox, a camouflaged unit's attached objects fade with it | Pass camouflage into `psp_ge_queue_transparent` and fade the colour or alpha (`camofade`) | ~640 B; negligible CPU | emulator shot, camo + needler | high (mechanism), medium (needles are see-through parts: tag) |
+| 4 | Pelican thrusters draw as white cones | **Chicago shaders get one map only**, untinted, added 1:1. The other maps, their colour functions and the fade source are dropped [D] | First, tint by the fade-source value × (1 − camouflage) (`chicagofade`). Then, in the bake, flatten static maps into one texture | 1 multiply a draw; the bake adds ≤64 KB a shader | emulator shot in the flight | high (cause) |
+| 5 | Water mostly white | "Water simple" is a generic shader: **the cube map is skipped and the brightest-scale map drawn untinted**. The stage constants are never read [D]. Why it's white is [U] (on the Xbox the colour comes from the cube) | Bake a per-shader tint (cube mean × stage constants); later, a sphere-map pass | none per frame | emulator shot; `tdump` names the streaks | medium |
+| 6 | Dark areas much darker than the Xbox | **The lightmap maths matches the Xbox** [D]. Candidates: 16-bit colour with no dithering over 3–4 multiply passes [D + U], palettes truncated in the bake (detail maps' neutral 127.5 → 123: −7% red/blue a pass) [D], specular-lightmap and reflection passes skipped [D] | Dithering on (`dither`); round the palettes in the bake (a variant pack) | none | PSP only: a grey ramp read back (truncates or rounds?), then a capture against an Xbox shot | medium |
+| 7 | A gradient across terrain and walls | **The detail fade's colour doesn't match the 5650 neutral**: about 4% brightening a pass between 20 and 60 units, with a hue shift [D]. And no dithering (#6) | Fade toward the 5650 neutral (0x7B7D7B), or 8888 palettes for detail maps (`detailneutral`) | none (+512 B a detail map for 8888) | PSP | high |
+| 8 | Some objects lit, others beside them not | **An object over a material whose vertex copies are missing is lit white** [D]. b108's heap failed 5,290 copies from T≈2070 s; b111's arena removes that. Also: the "page's last colour" fallback, and lighting steps once per drawn frame (5–8 s to settle at 4–7 fps) | Log the missed counter (it isn't logged); on a miss, use the BSP's default lighting; step by ticks | negligible | check whether Sheepdog01's sightings came after T≈2070 s | medium-high |
+| 9 | Needler impacts flash the screen solid pink | **Not a missing texture**: the flash is drawn in the tag's colour on purpose [D]. Two candidates: the max, min and invert flash types are drawn as lighten or darken (solid where the Xbox is faint) [D], or each needle restarts the flash at its peak and at 3–7 fps a peak frame stays up 150–330 ms [U] | Draw max/min/invert with the GE's MAX/MIN/invert blends (`flashtypes`): an exact match to the Xbox | none | emulator shot under needle fire with a log line per flash (type, intensity, colour) | medium |
+| 10 | The Warthog flip prompt shows only briefly, once | **No timer anywhere**: the prompt is rebuilt every tick from the player's action, and the port changes none of it [D]. Candidates [U]: the flip happened (the prompt goes once the flip starts), a scripted message hid it, a marine was driving, or the player moved out of reach | None until the cause is known; a debug-tools log line on each action change | debug builds only | ask Sheepdog01: did the Warthog flip? | high (no timer), low (cause) |
+| 11 | The flashlight doesn't light characters or objects | Models get ambient plus two directional GE lights; **point lights are switched off** (FIXES_106), and nothing passes the spotlight on [D] | Test each model against this frame's spotlights; when inside the cone, turn on GE light 2 as a spot (`flashlightmodels`) | <0.1 ms; GE cost of the light unmeasured | emulator shot, then the PSP for the cost | high |
+| 12 | Jagged flashlight edges, geometry seams, decals over seams | **Neighbours split shared edges differently** (T-junctions, light jumps along the edge), midpoints take different normals, the tint changes per material, and **pieces are dropped when a draw's buffers fill** (no counter) [D]. Banding: no dithering | Decide splits per edge, average midpoint normals, flush instead of dropping, add the counter (`lightedges`) | +0.3–1 ms | emulator shot of a large floor; banding on the PSP | medium |
+| 13 | Floor light through the hallway wall (map room bunker) | **Pieces cut at the near plane still get one nudge per draw** from the nearest cut corner: about 0.4 units of lift at 5 units, 1.1 at 8 [D arithmetic]. Band 0 has no lower bound either [D] | Run cut pieces through the same distance bands; split band 0 (`lightbands`) | <0.05 ms | emulator shot at the bunker entrance: default against light-pass mode 0 | medium-low |
+| 14 | The farthest trees vanish for a few frames | The display list's size floor drops the smallest models first when the list is full [U] | Already built: `nosizefloor` | none | **test B on b111** (waiting) | medium |
+
+### Suggested order
+
+1. **Cheap, exact or near-exact, and an emulator shot checks them:** 1 contrails, 2 flare bipeds, 3 camouflage fade, 9 flash types, 11 flashlight on models, 4 step one (chicago fade).
+2. **One PSP test settles several items:** dithering (6, 7, 12's banding), with the grey-ramp readback.
+3. **Bake changes**, one pack variant: palette rounding (6), the detail neutral (7), chicago flattening (4), the water tint (5).
+4. **Light pass rework:** 12, 13.
+5. **Needs information first:** 10 (Sheepdog01), 8 (whether it came after T≈2070 s), 14 (test B).
+
+### Corrections to `hardware_b108.md`
+
+- Row "plasma glow": the ray isn't "level only". It tests the level, vehicles, scenery and machines, but not bipeds (#2).

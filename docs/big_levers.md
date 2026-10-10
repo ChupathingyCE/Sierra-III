@@ -161,6 +161,18 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
    - **The ME's time:** its cycle counter (CP0 $9, b89) for the entry points' timers.
    - **Expected cost:** two whole-cache operations a hand-over (~tens of µs each [U]) plus the tail the main CPU waits for at each call that runs at once. Against 42–65 ms a frame moved [M].
 
+### Step 4a on the PSP (b112, Test 3) [M]
+
+`halo_psp_b112me.zip`, keep words `nearauto assettrack hwprofile geo2 gedefer gemeon`, b30 from the start. In 4a the ME carries out the runs and the main CPU waits for each, so this measures whether the ME can do the work and what it costs, not a speed-up.
+
+- **The ME carried out the GE layer's work:** 48 render jobs, then the one that stopped it. The ME's own time was 17.8 ms a job, worst 39.6 ms. The main CPU waited 18.1 ms a job, so the hand-over (two whole-cache operations and the polling) costs about 0.3 ms a job.
+- **No loss from moving it.** Over the same stretch of b30's opening (game time 15–51), frames took 216–229 ms by the clock with the ME, against 227–262 ms in the ceiling run without `gedefer`. Two different runs, so this is within run-to-run noise.
+- **What stopped it:** job 49 wasn't done within psp_me.c's 40 ms limit. The ME had finished job 48, and render jobs had already reached 39.6 ms, so the limit (set for ~1 ms audio jobs) is most likely too short [U]. The ME then stopped, and the main CPU ran everything, audio included, for the rest of the run, as designed.
+- **Audio waited behind render jobs.** The ME runs one job at a time. Audio waited up to 38 ms, and 7 of 109 blocks were late, against 1 of 213 before render jobs started.
+- **The level copies' wanted list overflowed:** 113 asked, 14 more than its 32 entries held.
+
+For 4b (`b113_candidates.md` §2): a render job timeout of its own plus a progress word; audio mixed in between runs; a bigger wanted list; then the two-buffer overlap.
+
 ### What stays on the main CPU
 
 Engine calls into collision from the GE layer (`overlay_on_a_wall`'s rays for see-through level surfaces), the near plane's sphere test at the window's start, and texture/geometry residency. All happen when the call is written down or at the frame's start.
@@ -212,4 +224,4 @@ The objects pool is 20% of the tick's data misses, the object spheres 3.7%, the 
 
 - **Emulator ceiling bench with the GE layer switch** (b112).
 - **Cache-model A/B, `gedefer` off and on** (lab `cache=1`: the emulator's cache models on the interpreter, each phase's misses in `cache.txt`).
-- **For Sheepdog01's PSP:** the ceiling bench on b30, and benchrun on Blood Gulch for switch 8 (L2). Steps in the build notes.
+- **For Sheepdog01's PSP:** the ceiling bench on b30, and benchrun on Blood Gulch for switch 8 (L2). Steps in the build notes. Done (§3), and Test 3 (`gemeon`, §4 "Step 4a on the PSP").
