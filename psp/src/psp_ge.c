@@ -3278,6 +3278,20 @@ static unsigned int stream_size(const struct level_stream *stream)
 	return size;
 }
 
+/* build 112: level copies that work marked as the Media Engine's needed and
+couldn't build (gemesim): building reads the geometry cache, which may start
+a stick read, and may fall back on the heap, all system calls. The main CPU
+builds them at the frame's end (psp_ge_frame_end), so they're there for the
+next frame; the draw is skipped meanwhile, as for geometry still on its way */
+#define STREAMS_WANTED 32
+static struct
+{
+	const void *vertices, *lightmap_vertices;
+	int count;
+} streams_wanted[STREAMS_WANTED];
+static int streams_wanted_count = 0;
+static unsigned long streams_wanted_total = 0, streams_wanted_dropped = 0;
+
 static struct level_stream *level_stream_get(const void *vertices, const void *lightmap_vertices, int count)
 {
 	const void *key = stream_key(vertices);
@@ -3296,6 +3310,27 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	{
 		stream->last_frame = stream_frame;
 		return stream;
+	}
+	if (psp_me_context)
+	{
+		int k;
+
+		for (k = 0; k < streams_wanted_count && streams_wanted[k].vertices != vertices; k++)
+			;
+		if (k == streams_wanted_count)
+		{
+			if (k < STREAMS_WANTED)
+			{
+				streams_wanted[k].vertices = vertices;
+				streams_wanted[k].lightmap_vertices = lightmap_vertices;
+				streams_wanted[k].count = count;
+				streams_wanted_count++;
+				streams_wanted_total++;
+			}
+			else
+				streams_wanted_dropped++;
+		}
+		return NULL;
 	}
 	/* new, or let go when over budget (level_streams_trim): built here */
 	if (psp_geo_external((unsigned int)vertices))
@@ -10643,6 +10678,14 @@ void psp_ge_frame_end(void)
 		psp_tex_frame_end();
 		/* build 68: the geometry cache's reads, and the level copies' budget */
 		psp_geo_frame_end();
+		/* build 112: the copies the Media Engine's work wanted, built now */
+		{
+			int k;
+
+			for (k = 0; k < streams_wanted_count; k++)
+				level_stream_get(streams_wanted[k].vertices, streams_wanted[k].lightmap_vertices, streams_wanted[k].count);
+			streams_wanted_count = 0;
+		}
 		if (psp_geo_open_count())
 			level_streams_trim();
 		arena_frame_end(); /* build 111: compaction, the heap's copies brought back */
@@ -10737,6 +10780,9 @@ void psp_ge_frame_end(void)
 						break;
 				}
 				platform_log("GE: gedefer: carried out for:%s", sites);
+				if (streams_wanted_total || streams_wanted_dropped)
+					platform_log("GE: gemesim: %lu level copies wanted by the Media Engine's work and built at the frame's end, %lu more than the list held",
+						streams_wanted_total, streams_wanted_dropped);
 			}
 			defer_records = defer_drains = defer_drains_full = defer_big_models = defer_too_large = 0;
 			if (ge_skip || list_in_vram || vram_busy || ge_skipped_draws)
