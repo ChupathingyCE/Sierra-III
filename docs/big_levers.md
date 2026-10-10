@@ -191,6 +191,8 @@ So the AI needs a design where the rare paths (placing actors, dialogue, seats) 
 
 `game_tick`'s prelude before `ai_update` (allegiance decay, unit timers, the data-array check) would move with it.
 
+**The state check's reach [E]** (lab runs 38059921950 and 38059951107: the same build twice, `fixedticks statecrc`, no input; 38059978024 with `gedefer`). The play hash (what the game plays with) agrees between the two identical runs up to tick 1,325 and differs from tick 1,326 (44 s of game time) on. With `gedefer`, it also first differs at tick 1,326. So `gedefer` matches the game up to the point where two identical runs stop agreeing, and a state check can judge a change over b30's first 44 s only. Something outside the game's state drives play after that. The suspect [U]: the opening's dialogue. The scripts wait for a line to finish, and the mixer plays it in real time, so the tick a line ends depends on the emulator's speed. Next, find it: the first object that differs at tick 1,326, and the scripts' sound waits.
+
 ## 6. L4: profile-guided build
 
 GCC with a profile moves every block that never runs out of the hot path, lays out branches by how they go, and inlines by real call counts. It's aimed straight at instruction misses, which are two thirds of all misses.
