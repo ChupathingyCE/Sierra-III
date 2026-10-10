@@ -26,7 +26,7 @@ So the big levers are: **use the second CPU**, **fetch less code**, and **cut th
 | # | Lever | Ceiling | Exact? | Cost | First test | Status |
 |---|---|---|---|---|---|---|
 | L1 | **The ME builds the GE's lists** (the GE layer moves off the main CPU) | the GE layer's CPU: **42 ms (beach) to 65 ms (flight) a frame** [M], ~25% of each frame | yes | L | `gedefer` on one CPU, then on the ME | **steps 1–2 built (b112)** |
-| L2 | **VRAM for the level's vertices** (X1) | ≈ 36 ms of drawing a frame [U] | yes | M | benchrun switch 8 against switch 3 (M3) | built since b103; **needs one hardware run** |
+| L2 | **VRAM for what the GE reads** (X1): the level's vertices, then the models' | Blood Gulch [M]: the level's vertices in VRAM recover 4.4 of the 4.8 ms the level's GE reading costs; the models' reading 8.5 ms; all GE reading 14 ms (32% of the drawing) | yes | M | **M3 done (b112):** switch 8 against switch 3 | the level's switch works; the design for campaign VRAM budgets next |
 | L3 | **The next tick's AI on the ME while the main CPU draws** | `ai_update` 12–23 ms a tick in fights [M], one tick of the two a frame: 5–9% | if drawing and AI share nothing | L | reorder on one CPU, compare the game state every tick | reach measured; design below |
 | L4 | **Profile-guided build** (GCC knows the hot path, packs it, moves the rest out) | unknown; aims at the instruction misses | yes | M | instrumented run in the emulator, cache-model A/B | blocked on memory, below |
 | L5 | **The full tick/draw split** (the main CPU runs only ticks) | the frame becomes max(2 ticks, drawing) instead of their sum | yes, with a snapshot | XL | after L1 and L3 | the end state |
@@ -48,6 +48,23 @@ Keep word `ceilingbench` (b30, from 90 s of game time, standing still). Each hea
 | level not drawn | the level's passes | the level's drawing |
 | GE layer skipped | every draw handed to `psp_ge.c`, dropped on arrival | **L1's ceiling**: the GE layer's CPU plus the GE's reading; the engine's own drawing stays |
 
+**Sheepdog01's PSP-1000, b30's Pelican flight (game time 90–160 s), 3 cycles, b112 (2026-10-10) [M]:**
+
+| Switch | ms a frame | a tick | drawing a frame | the GE layer's CPU | saved: frame, tick, drawing |
+|---|---:|---:|---:|---:|---|
+| baseline | 274.6 | 46.0 | 173.9 | 90.0 | |
+| AI off | 247.6 | 34.1 | 172.4 | 84.7 | +27.0, +11.9, +1.5 |
+| objects frozen | 196.4 | 11.9 | 168.7 | 84.8 | +78.1, +34.1, +5.2 |
+| effects off | 270.7 | 48.5 | 171.2 | 84.5 | +3.8, −2.5, +2.7 |
+| models not drawn | 156.1 | 46.3 | 56.0 | 30.0 | +118.4, −0.3, +117.9 |
+| level not drawn | 256.9 | 45.0 | 157.0 | 70.5 | +17.7, +1.0, +16.9 |
+| GE layer skipped | 146.7 | 42.9 | 50.3 | 0.0 | +127.9, +3.1, +123.6 |
+
+- **L1's ceiling is bigger than the GE layer's own time.** Skipping it saves 123.6 ms of drawing against its own 90.0 ms of CPU: about 34 ms more comes back to the engine's own drawing (its code and data stay in the caches, and the GE stops reading main RAM). The ME's version keeps the GE's reading, so its saving lies between the two: **90–124 ms of a 275 ms frame (33–45%)**.
+- **Models are two thirds of drawing** (118 of 174 ms); the level 17 ms.
+- **The tick is objects** (34 of 46 ms; AI 12). Effects cost nothing measurable.
+- Each switch runs 10 s; the bench waited ~6 minutes of real time for its 90 s of game time (the game runs at about a quarter speed at 3.6 fps).
+
 **Emulator, b30, 3 cycles (run 38050134153) [E]:**
 
 | Switch | ms a frame | a tick | drawing a frame | saved: frame, tick, drawing |
@@ -62,6 +79,18 @@ Keep word `ceilingbench` (b30, from 90 s of game time, standing still). Each hea
 - In the emulator, objects are ~80% of a tick and models half of drawing. The GE layer ("rend", the renderer's CPU) is 25.5 of the 45.3 ms of drawing (56%).
 - **Drawing feeds back into the tick:** with models not drawn, a tick costs 1.3 ms less. Unseen objects skip work (their node matrices), so drawing and the tick are coupled. L3's audit must cover this.
 - The emulator's milliseconds aren't the PSP's (it runs ~2–3× faster); the shares are what transfer. The hardware run gives [M].
+
+**Blood Gulch benchrun, b112, 4 views (2026-10-10) [M]**, ms of drawing a frame saved against the baseline (43.8):
+
+| Switch | Saved |
+|---|---:|
+| GE skips the level | 4.8 |
+| level vertices in VRAM | 4.4 |
+| GE skips models | 8.5 |
+| GE busy on VRAM only (it reads no main RAM) | 14.0 |
+| stand-in textures, smaller textures | ≈ 0 |
+
+By b103's rule the level's GE cost is its vertex fetches over the shared bus, and VRAM takes ~90% of it away; the models' vertices are next (8.5 ms here). Texels are still nothing.
 
 ## 4. L1: the ME builds the GE's lists
 
@@ -122,7 +151,7 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
 
    - the see-through level surfaces' wall test (heap for its answers, and the engine's collision rays, which read the game's data while the main CPU may move it): an unknown answer counts as "on a wall" for a frame and is asked at the frame's end.
 
-   Still open: whatever the ME-strict run still finds.
+   **Checked (lab run 38059850176):** with every gate in, the ME-strict run lists only its own test call, so the work marked as the ME's makes no system call on the paths b30's opening runs. The calls that force a run are down to 2 a frame (the frame's start and end) plus the rare font update.
 4. **Carried out on the ME**, streaming behind the recorder. The design (not built yet):
    - **Two record buffers:** the main CPU fills one while the ME carries out the other, so no line is written by one CPU while the other reads it. A buffer is handed over when it's half full, at a call that runs at once, and at the frame's end.
    - **Hand-over** (psp_me.c's slots, `media_engine.md`): the main CPU writes back its whole data cache (the records, and what they point to that the engine wrote: dynamic triangles, decal vertices), then bumps the request number; the ME drops its cache, runs `defer_drain` on the buffer with `psp_me_context` set, writes its cache back and sets the done number. The main CPU **spins** on the done number (X3: no sleeps), and before touching the GE layer's state again it writes back and drops its own cache, so it reads what the ME wrote.
