@@ -54,3 +54,18 @@ Heap still 5,952 KB with all of this in.
 - **Item 2:** the A/B stretch (the Pelican flight to the Warthog drop) on b112 with `placeddeadawake`, against b111's.
 - **Item 1:** b30's security room on b112, against b111: the bipeds' time a tick and the corpse line's "placed dead".
 - **The ceiling bench** on b30 (`ceilingbench`, about 10 minutes, hands off), and **benchrun on Blood Gulch** for switch 8 against switch 3 (`optimization_ranking.md` M3).
+
+### Results (Sheepdog01's PSP-1000, 2026-10-10) [M]
+
+The scripted Pelican flight (game time 150–2,000), averaged over the heartbeat's `budget:` lines, the same keep words as b111's long run (`nearauto assettrack hwprofile geo2`):
+
+| Run | Clock, ms a frame | Ticks, ms a frame | Frame, ms | The GE layer's CPU | The rest (frame end) |
+|---|---|---|---|---|---|
+| b111 (the long run) | 267.8 | 127.9 | 132.8 | 63.4 | 7.1 |
+| b112 run 1 (`placeddeadawake`: item 2 alone) | 260.6 | 124.6 | 129.1 | 63.2 | 6.9 |
+| b112 run 2 (+ `gedefer`) | 260.0 | 128.4 | 91.7 | 65.0 | 40.0 |
+
+- **Item 2 (cold asserts, float `fast_ftol`): −2.7% by the clock, −2.6% on the ticks.** Small, and close to the run-to-run spread on this stretch (b108's two runs differed by 2%), but in the expected direction. It stays.
+- **`gedefer` on its own: no change** (260.0 against 260.6). The replay moves about 38 ms a frame from drawing to the frame end ("frame" falls, "the rest" rises), and the recording adds about 2 ms to the GE layer's CPU. The emulator's cache model had predicted about 3 ms a frame saved (`big_levers.md` §7); the PSP doesn't show it. So `gedefer` is neutral on the main CPU, and its value is as the step before the ME takes the replay (L1).
+- Both runs played the beach to the Warthog drop with no failed heap requests (run 1: 0 failed, 4,938 KB taken).
+- Item 1 (the security room) is still to run.
