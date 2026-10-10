@@ -204,9 +204,27 @@ static unsigned int defer_used = 0;
 static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
 static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
 static void defer_drain(void);
+/* which calls made the waiting calls run, for the log: each is a point where
+the ME's version has to catch up with the main CPU */
+#define DEFER_SITES 16
+static const char *defer_site[DEFER_SITES];
+static unsigned long defer_site_drains[DEFER_SITES];
+static void defer_drain_for(const char *site)
+{
+	int k;
+
+	for (k = 0; k < DEFER_SITES && defer_site[k] && defer_site[k] != site; k++)
+		;
+	if (k < DEFER_SITES)
+	{
+		defer_site[k] = site;
+		defer_site_drains[k]++;
+	}
+	defer_drain();
+}
 /* a call that runs at once carries out what is waiting first, so the list's
 order never changes */
-#define GE_DEFER_DRAIN() do { if (defer_used && !defer_replaying) defer_drain(); } while (0)
+#define GE_DEFER_DRAIN() do { if (defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
 #define GE_DEFER(record, ...) do { if (defer_on && !defer_replaying && !defer_paused && (record)) return __VA_ARGS__; } while (0)
@@ -10682,6 +10700,21 @@ void psp_ge_frame_end(void)
 			if (defer_on)
 				platform_log("GE: gedefer: %lu calls deferred, carried out in %lu runs (%lu when the buffer filled); ran as they came: %lu models with more than %d nodes, %lu calls too large",
 					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES, defer_too_large);
+			if (defer_on)
+			{
+				char sites[400];
+				int length = 0, k;
+
+				sites[0] = 0;
+				for (k = 0; k < DEFER_SITES && defer_site[k]; k++)
+				{
+					length += snprintf(sites + length, sizeof(sites) - length, " %s %lu;", defer_site[k], defer_site_drains[k]);
+					defer_site_drains[k] = 0;
+					if (length >= (int)sizeof(sites) - 1)
+						break;
+				}
+				platform_log("GE: gedefer: carried out for:%s", sites);
+			}
 			defer_records = defer_drains = defer_drains_full = defer_big_models = defer_too_large = 0;
 			if (ge_skip || list_in_vram || vram_busy || ge_skipped_draws)
 			{
