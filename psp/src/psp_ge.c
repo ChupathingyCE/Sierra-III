@@ -54,9 +54,13 @@ the GE lines) read the system clock, a system call, hundreds of times a
 frame: "notimers" in keep.txt skips them, and their reports then read 0.
 The frame's own timing, which the budget lines need, stays */
 extern int psp_timers_off;
+/* build 112: 0 too while the work is marked as the Media Engine's
+(gemesim): the main CPU's clock is a system call the ME can't make; the ME
+version will read the ME's own cycle counter */
+extern volatile unsigned int psp_me_context;
 static inline unsigned int ge_clock(void)
 {
-	return psp_timers_off ? 0 : sceKernelGetSystemTimeLow();
+	return psp_timers_off || psp_me_context ? 0 : sceKernelGetSystemTimeLow();
 }
 
 #define SCREEN_WIDTH 480
@@ -6376,10 +6380,10 @@ int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_k
 	GE_DEFER(defer_sprites(vertices, sprite_count, bitmap_key, blend, view_to_world), 1); /* build 112: gedefer */
 	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 	int result = psp_ge_sprites_body(vertices, sprite_count, bitmap_key, blend, view_to_world);
 
-	ge_entry_us[4] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[4] += ge_clock() - start;
 	return result;
 }
 
@@ -6798,10 +6802,10 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	GE_DEFER(defer_queue_transparent(vertices, vertex_count, uncompressed, indices, index_count, strip, key,
 		u_scale, v_scale, u_offset, v_offset, blend, centroid));
 	ge_kind(KIND_SEETHROUGH_QUEUE); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_queue_transparent_body(vertices, vertex_count, uncompressed, indices, index_count, strip, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
-	ge_entry_us[2] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[2] += ge_clock() - start;
 }
 
 /* the level's see-through surfaces (build 23): as the solid level, each
@@ -7124,7 +7128,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		float e1[3] = { b->x - a->x, b->y - a->y, b->z - a->z }, e2[3] = { c->x - a->x, c->y - a->y, c->z - a->z };
 		float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
 		float length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-		unsigned int start = sceKernelGetSystemTimeLow();
+		unsigned int start = ge_clock();
 
 		flags[triangle] = 1;
 		if (length > 0.0f)
@@ -7177,7 +7181,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 			overlay_on_walls++;
 		else
 			overlay_free++;
-		overlay_ask_us += sceKernelGetSystemTimeLow() - start;
+		overlay_ask_us += ge_clock() - start;
 	}
 	return flags[triangle] == 1;
 }
@@ -7482,10 +7486,10 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 		u_offset, v_offset, blend, centroid)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL_SEETHROUGH); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_queue_level_transparent_body(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
-	ge_entry_us[3] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[3] += ge_clock() - start;
 }
 
 #define LEVEL_OVERLAY_OFFSET 24
@@ -7658,13 +7662,13 @@ static void transparent_flush_body(void)
 
 static void transparent_flush(void)
 {
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 	int kind = ge_kind_now;
 
 	ge_kind(KIND_SEETHROUGH_FLUSH); /* build 103 */
 	transparent_flush_body();
 	ge_kind(kind);
-	ge_entry_us[8] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[8] += ge_clock() - start;
 }
 
 /* ---------- the HUD (build 20)
@@ -7834,11 +7838,11 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 		wrapped, u_scale, v_scale)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SCREEN); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters, wrapped, u_scale,
 		v_scale);
-	hud_quad_us += sceKernelGetSystemTimeLow() - start;
+	hud_quad_us += ge_clock() - start;
 }
 
 static unsigned long screen_quad_bailed = 0;
@@ -8457,10 +8461,10 @@ void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned s
 		(unsigned int)triangle_count, 0, 0, 0, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SHADOW); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_shadow_draw_body(vertices, vertex_count, indices, triangle_count);
-	ge_entry_us[7] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[7] += ge_clock() - start;
 }
 
 void psp_ge_shadow_end(void)
@@ -9255,10 +9259,10 @@ void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned sh
 		(unsigned int)triangle_count, base_key, 0, 0, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LIGHT); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_light_draw_body(vertices, vertex_count, indices, triangle_count, base_key);
-	ge_entry_us[6] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[6] += ge_clock() - start;
 }
 
 /* ---------- the screen flash (build 23): a colour over the whole picture,
@@ -10328,10 +10332,10 @@ void psp_ge_text_character(void const *vertices)
 	GE_DEFER(defer_text_character(vertices)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_HUD); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	text_character(vertices);
-	text_us += sceKernelGetSystemTimeLow() - start;
+	text_us += ge_clock() - start;
 }
 
 static void text_character(void const *vertices)

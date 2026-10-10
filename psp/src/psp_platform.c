@@ -862,6 +862,14 @@ int psp_keep(const char *name)
 		}
 	}
 	answer = keep_search(name);
+	/* build 112: not remembered while the work is marked as the Media
+	Engine's (gemesim, psp_ge.c): the slot's lock is a system call */
+	{
+		extern volatile unsigned int psp_me_context;
+
+		if (psp_me_context)
+			return answer;
+	}
 	/* the last one asked for in a slot is the one remembered there (before
 	keep.txt is read, nothing is remembered) */
 	if (keep_cache_lock >= 0 && sceKernelWaitSema(keep_cache_lock, 1, NULL) >= 0)
