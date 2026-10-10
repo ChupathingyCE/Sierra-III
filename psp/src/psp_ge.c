@@ -1925,7 +1925,7 @@ static struct arena_block *arena_next(struct arena_block *block)
 	return next < arena + ARENA_BYTES ? (struct arena_block *)next : NULL;
 }
 
-static void arena_start(void)
+static void __attribute__((cold)) arena_start(void)
 {
 	struct arena_block *first;
 
@@ -1980,7 +1980,7 @@ static void *arena_take(unsigned int size, void **owner)
 	return best + 1;
 }
 
-static unsigned int arena_largest_free(void)
+static unsigned int __attribute__((cold)) arena_largest_free(void)
 {
 	struct arena_block *block;
 	unsigned int largest = 0;
@@ -2077,7 +2077,7 @@ static unsigned int arena_last_compact = 0;
 static unsigned long arena_seen_from_heap = 0;
 static unsigned long arena_compactions = 0, arena_moved_kb = 0, arena_compact_us = 0, arena_migrated = 0;
 
-static void arena_compact(void)
+static void __attribute__((cold)) arena_compact(void)
 {
 	struct arena_block *block, *next;
 	char *to = arena, *first_moved = NULL;
@@ -2124,7 +2124,7 @@ static void arena_compact(void)
 
 /* a piece the general heap holds, moved into the arena if a free block takes
 it as it is (no letting go); the GE's arrays written back. 0: no room */
-static int arena_migrate_piece(void **field, unsigned int bytes, int ge_reads)
+static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int bytes, int ge_reads)
 {
 	char *piece = (char *)*field;
 	void *to;
@@ -2145,7 +2145,7 @@ static int arena_migrate_piece(void **field, unsigned int bytes, int ge_reads)
 	return 1;
 }
 
-static int arena_holds(const void *piece)
+static int __attribute__((cold)) arena_holds(const void *piece)
 {
 	return !piece || (((unsigned int)piece & 0x0F000000u) == 0x04000000u) ||
 		((const char *)piece >= arena && (const char *)piece < arena + ARENA_BYTES);
@@ -2153,7 +2153,7 @@ static int arena_holds(const void *piece)
 
 /* the general heap's copies brought into the arena, up to ARENA_MIGRATE_BYTES
 a frame; a copy whose pieces don't all fit keeps the rest where they are */
-static void arena_migrate(void)
+static void __attribute__((cold)) arena_migrate(void)
 {
 	unsigned long budget = ARENA_MIGRATE_BYTES;
 	int index;
@@ -2182,8 +2182,10 @@ static void arena_migrate(void)
 	}
 }
 
-/* at the frame's end, after the trim (the GE has finished the frame) */
-static void arena_frame_end(void)
+/* at the frame's end, after the trim (the GE has finished the frame). The
+arena's housekeeping is marked cold: rare, compiled for size, kept out of the
+hot code (build 111's first compaction build crossed a 64 KB heap step) */
+static void __attribute__((cold)) arena_frame_end(void)
 {
 	struct arena_block *block;
 	unsigned int free_total = 0, largest = 0;
@@ -9940,7 +9942,7 @@ void psp_ge_frame_end(void)
 			list_peak, DISPLAY_LIST_BYTES, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
 		/* build 111 */
 		if (arena_state > 0)
-			platform_log("GE: the copies' arena: %lu KB in use of %u, largest free %u KB; %lu copies let go to make room, %lu pieces from the general heap instead (%lu there now); compacted %lu times (%lu KB moved, %lu us in all), %lu copies brought back",
+			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB, %lu us; brought back %lu",
 				arena_used / 1024, ARENA_BYTES / 1024, arena_largest_free() / 1024, arena_let_go, arena_from_heap, arena_heap_live,
 				arena_compactions, arena_moved_kb, arena_compact_us, arena_migrated);
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
