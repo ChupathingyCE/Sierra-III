@@ -9540,7 +9540,7 @@ unsigned long psp_objects_play_hash(void)
 	return hash;
 }
 
-/* build 113: "stateobjects=N" (with statecrc): for 48 ticks from tick N, each
+/* build 113: "stateobjectsN" (with statecrc; e.g. stateobjects1300): for 48 ticks from tick N, each
 object's own play hash, so two runs that part ways at a tick can be compared
 object by object (tools/statecmp.py --objects). Each definition is named once,
 the first time it appears in a dump */
@@ -9558,11 +9558,11 @@ void psp_objects_play_dump(long tick)
 
 	if (first == -2)
 	{
-		extern long psp_keep_number(const char *name, long otherwise); /* psp_platform.c */
+		extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
 
 		first = psp_keep_number("stateobjects", -1);
 		if (first >= 0)
-			platform_psp_log("state: each object's play hash for ticks %ld to %ld (stateobjects)", first, first + 47);
+			platform_psp_log("state: each object's play hash for ticks %ld to %ld (stateobjects%ld)", first, first + 47, first);
 	}
 	if (first < 0 || tick < first || tick >= first + 48)
 		return;

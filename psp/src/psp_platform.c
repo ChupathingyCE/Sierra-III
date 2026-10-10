@@ -769,24 +769,6 @@ static void keep_load(void)
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
 }
 
-/* build 113: a number given in keep.txt as "name=N" (e.g. stateobjects=1300),
-or otherwise when the word isn't there. Not remembered: ask once */
-long psp_keep_number(const char *name, long otherwise)
-{
-	size_t length = strlen(name);
-	const char *at = keep_words;
-
-	if (!length)
-		return otherwise;
-	while ((at = strstr(at, name)) != NULL)
-	{
-		if (at > keep_words && at[-1] == ' ' && at[length] == '=' && at[length + 1] >= '0' && at[length + 1] <= '9')
-			return strtol(at + length + 1, NULL, 10);
-		at++;
-	}
-	return otherwise;
-}
-
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
 asks before it caches its answer) */
 int psp_keep_loaded(void)

@@ -11,7 +11,7 @@ usage: python3 statecmp.py A/log.txt B/log.txt [--ignore name,name,...] [--objec
   --ignore  allocations left out of the verdict (their names as the log
             gives them, e.g. "first person weapons"): parts that differ
             between two runs of the same build, so can't judge a change
-  --objects the runs' per-object play hashes (keep word stateobjects=N,
+  --objects the runs' per-object play hashes (keep word stateobjectsN,
             build 113) compared tick by tick: the first tick they differ,
             and which objects (by definition name) are only in one run or
             differ in place, motion, facing, health, parent or animation
@@ -71,7 +71,7 @@ def compare_objects(path_a, path_b):
     names = dict(na, **nb)
     common = sorted(set(oa) & set(ob))
     if not common:
-        print('objects: no per-object dumps in common (keep word stateobjects=N with statecrc)')
+        print('objects: no per-object dumps in common (keep word stateobjectsN with statecrc)')
         return
     print('objects: dumps at %d ticks in common (%d to %d)' % (len(common), common[0], common[-1]))
     shown = 0
