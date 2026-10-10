@@ -4,6 +4,8 @@ This is every speed lever the project has measured, proposed, tried, shipped or 
 
 **Update 2026-10-10** (b108's A and D runs, b111, the b112 candidates): M1's `-Os` question is settled (E3: it loses); the capture rule in §2 is corrected; E1 is built as a b112 candidate, along with a second regression from the rebase (`fast_ftol` rounding through a double); b108 run 1's log gave two new levers (E26, placed-dead bodies, a b112 candidate; the converted-buffer sweep, in b111). The rest stands.
 
+**Update 2026-10-10, later** (Sheepdog01: "significantly improve tickrate and frame rate… rather than chasing small gains"): the structural line is re-ranked and sized in **`big_levers.md`**. First: the Media Engine builds the GE's lists (the GE layer's CPU is 42–65 ms a frame on b30 [M]; a new lever, ahead of X3/X4), then VRAM residency (X1, M3 still decides), the next tick's AI on the ME, a profile-guided build (X17: its instrumented program doesn't fit the PSP-1000's layout), and the full tick/draw split (X16). b112 carries the instruments: the ceiling bench, `gedefer` (step 1 of the GE layer's move), `fixedticks` and `statecrc`.
+
 The levers come in three kinds:
 - **Exact:** the same game and the same picture, only faster. These need no decision from Sheepdog01.
   - **≈ exact** marks levers whose float results differ only in the last bits, like the VFPU matrix product shipped in b37. They are listed with the exact ones, flagged so Sheepdog01 can veto.

@@ -2151,8 +2151,9 @@ long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_cor
 /* build 106: how far dead bipeds get through the corpse-sleep rule, a count
 per biped update: dead; and garbage (not feigning); and at rest; and idle
 past 2 s (so offered to the byte-identical rule). b105 run 1 slept none
-and couldn't say why */
-long psp_corpse_stage[4], psp_corpses_holding;
+and couldn't say why. Build 112: psp_corpses_placed_dead, the bodies the
+level placed dead (never garbage) that go on to the same stages */
+long psp_corpse_stage[4], psp_corpses_holding, psp_corpses_placed_dead;
 static struct { short identifier; short quiet; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
 
 /* What the byte-identical rule leaves out of an object's data: the words an
@@ -2455,20 +2456,37 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 	a body a player can see. Only a truly dead one (garbage: a Flood combat
 	form feigning death is not), at rest for 2 s by the game's own count,
 	carrying nothing; the byte-identical rule then decides, and a push or
-	damage wakes it. Campaign only (no game engine). "corpsesawake": off */
+	damage wakes it. Campaign only (no game engine). "corpsesawake": off.
+	Build 112: also the bodies the level placed dead (set dressing: units.c
+	gives them _unit_placed_here_dead_bit and bars them from the garbage
+	list, so the collector never takes them and the garbage rule never let
+	them sleep). b108 run 1, b30's security room: 20 bodies, 13 garbage and
+	asleep, 7 placed dead and updated every tick. They are dead from the
+	start, so no feigning; the byte-identical rule still decides, and a push
+	or damage wakes them. "placeddeadawake": off */
 	if (header->type == _object_type_biped)
 	{
-		static int psp_corpse_sleep_on = -1;
+		static int psp_corpse_sleep_on = -1, psp_placed_dead_sleep_on = -1;
 		int may = 0;
 
 		if (psp_corpse_sleep_on < 0)
+		{
 			psp_corpse_sleep_on = !psp_keep("corpsesawake");
+			psp_placed_dead_sleep_on = !psp_keep("placeddeadawake");
+		}
 		if (psp_corpse_sleep_on && !game_engine_running() && TEST_FLAG(object->object.damage_flags, _object_dead_bit))
 		{
+			int garbage = TEST_FLAG(object->object.flags, _object_garbage_bit);
+			int placed_dead = !garbage && psp_placed_dead_sleep_on &&
+				TEST_FLAG(((struct unit_datum const *)object)->unit.flags, _unit_placed_here_dead_bit);
+
 			psp_corpse_stage[0]++;
-			if (TEST_FLAG(object->object.flags, _object_garbage_bit))
-			{
+			if (garbage)
 				psp_corpse_stage[1]++;
+			if (placed_dead)
+				psp_corpses_placed_dead++;
+			if (garbage || placed_dead)
+			{
 				if (TEST_FLAG(object->object.flags, _object_at_rest_bit))
 				{
 					psp_corpse_stage[2]++;
@@ -5337,6 +5355,62 @@ void psp_game_state_report(void)
 		platform_psp_log("game state:%s", line);
 	platform_psp_log("game state: %ld KB allocated of %d KB", (game_state_globals.cpu_allocation_size + game_state_globals.gpu_allocation_size) / 1024, GAME_STATE_SIZE / 1024);
 }
+
+/* build 112: "statecrc": a hash of the whole game state after every tick
+(game.c), and of each allocation every 30 ticks. With "fixedticks" (main.c)
+and no input, two runs of the same stretch play the same way, so a change
+meant to leave the game exactly as it was must leave every line the same;
+the first tick that differs, and the allocation, say where it doesn't
+(docs/big_levers.md). FNV-1a over 32-bit words: a few cycles a word */
+int psp_keep(const char *name);
+static unsigned long psp_state_hash(const void *start, long bytes)
+{
+	/* from the first whole word (an allocation can start anywhere, and an
+	unaligned word load faults on the PSP) */
+	unsigned long skip = (4 - ((unsigned long)start & 3)) & 3;
+	const unsigned long *word = (const unsigned long *)((const char *)start + skip);
+	unsigned long hash = 2166136261UL;
+	long k;
+
+	for (k = 0; k < (bytes - (long)skip) / 4; k++)
+		hash = (hash ^ word[k]) * 16777619UL;
+	return hash;
+}
+
+void psp_game_state_hash_tick(long tick)
+{
+	static int asked = -1;
+	char line[1024];
+	int length = 0, k;
+
+	if (asked < 0)
+		asked = psp_keep("statecrc");
+	if (!asked || !game_state_globals.base_address)
+		return;
+	{
+		extern unsigned long psp_objects_play_hash(void); /* objects.c (psp_fixups.py) */
+
+		platform_psp_log("state: tick %ld %08lx play %08lx", tick,
+			psp_state_hash(game_state_globals.base_address, game_state_globals.cpu_allocation_size),
+			psp_objects_play_hash());
+	}
+	if (tick % 30)
+		return;
+	/* (lines kept under the log's 512 bytes, psp_platform.c) */
+	for (k = 0; k < psp_state_record_count; k++)
+	{
+		if (length > 400)
+		{
+			platform_psp_log("state: records at tick %ld:%s", tick, line);
+			length = 0;
+		}
+		length += snprintf(line + length, sizeof(line) - length, " %.32s %08lx",
+			psp_state_records[k].name[0] ? psp_state_records[k].name : "?",
+			psp_state_hash(psp_state_records[k].pointer, psp_state_records[k].size));
+	}
+	if (length)
+		platform_psp_log("state: records at tick %ld:%s", tick, line);
+}
 #endif
 
 void *game_state_malloc(
@@ -5509,9 +5583,10 @@ FIXES_36["source/main/main.c#throttle"] = [
 		/* build 90: on by default (Sheepdog01's b87 run 3: with it the warthog's
 		rubber banding was almost gone; with interpolation it was worse).
 		"novblankthrottle" turns it off, and benchrun runs without it so its
-		figures stay comparable with earlier runs' */
+		figures stay comparable with earlier runs'; build 112: ceilingbench
+		too (padding to vertical blanks would hide what a switch saves) */
 		if (vblank_throttle < 0)
-			vblank_throttle = psp_keep("vblankthrottle") || (!psp_keep("novblankthrottle") && !psp_keep("benchrun"));
+			vblank_throttle = psp_keep("vblankthrottle") || (!psp_keep("novblankthrottle") && !psp_keep("benchrun") && !psp_keep("ceilingbench"));
 		if (!vblank_throttle)
 			return FALSE;
 	}
@@ -9350,6 +9425,185 @@ FIXES_110["source/physics/collision_debug.c#spray"] = [
 #endif"""),
 ]
 
+# ---------- build 112: the ceiling bench's switches (psp_platform.c,
+# "ceilingbench"; the bits are psp/include/psp_bench.h's). Each wraps one big
+# part of the tick or the frame in a test of psp_bench_skip, which is 0
+# unless the bench is running, so the game is unchanged otherwise
+FIXES_112 = {}
+FIXES_112["source/game/game.c#bench"] = [
+("""#include "units/vehicles.h"
+""",
+ """#include "units/vehicles.h"
+#ifdef HALO_PSP
+#include "psp_bench.h" /* the ceiling bench's switches (psp_fixups.py, build 112) */
+#endif
+"""),
+("""	if (!network_game_distributed_client())
+		ai_update();
+	else
+		network_actors_drive();
+""",
+ """	if (!network_game_distributed_client())
+	{
+#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_AI))
+#endif
+		ai_update();
+	}
+	else
+		network_actors_drive();
+"""),
+("""	effects_update(seconds_per_tick);
+""",
+ """#ifdef HALO_PSP
+	if (!(psp_bench_skip & PSP_SKIP_EFFECTS))
+#endif
+	effects_update(seconds_per_tick);
+"""),
+("""	recorded_animations_update();
+	objects_update();
+""",
+ """	recorded_animations_update();
+#ifdef HALO_PSP
+	if (!(psp_bench_skip & PSP_SKIP_OBJECTS))
+#endif
+	objects_update();
+"""),
+("""	particles_update(frame_dt);
+""",
+ """#ifdef HALO_PSP
+	if (!(psp_bench_skip & PSP_SKIP_EFFECTS))
+#endif
+	particles_update(frame_dt);
+"""),
+]
+# build 112: the tick-by-tick comparison (docs/big_levers.md): "statecrc"
+# hashes the game state after every tick (game_state.c), and "fixedticks"
+# makes every frame two ticks and a fifteenth of a second of game time, so
+# runs of different builds play the same way
+FIXES_112["source/game/game.c#statecrc"] = [
+("""	collision_log_end_period();
+	profile_tick_end();""",
+ """#ifdef HALO_PSP
+	{
+		extern void psp_game_state_hash_tick(long tick); /* game_state.c (psp_fixups.py, build 112) */
+
+		psp_game_state_hash_tick(game_time_get());
+	}
+#endif
+	collision_log_end_period();
+	profile_tick_end();"""),
+]
+FIXES_112["source/objects/objects.c#statecrc"] = [
+("void objects_update(\n\tvoid)\n{",
+ """#ifdef HALO_PSP
+/* build 112: statecrc's hash of what the game plays with (game_state.c): each
+object's kind, place, motion, facing, health, parent and animation frame,
+leaving out what drawing writes into objects (render flags, the render state
+cache, node matrices), so two runs compare on the game alone (psp_fixups.py) */
+unsigned long psp_objects_play_hash(void)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+	unsigned long hash = 2166136261UL;
+
+	object_iterator_new(&iterator, _object_mask_all, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		unsigned long words[24];
+		int count = 0, k;
+
+		words[count++] = (unsigned long)iterator.index;
+		words[count++] = (unsigned long)object->definition_index;
+		words[count++] = (unsigned long)object->object.type;
+		/* position, translational velocity, forward, up, angular velocity */
+		csmemcpy(&words[count], &object->object.position, 15 * sizeof(real));
+		count += 15;
+		csmemcpy(&words[count], &object->object.body_vitality, 2 * sizeof(real));
+		count += 2;
+		words[count++] = (unsigned long)object->object.parent_object_index;
+		words[count++] = ((unsigned long)(unsigned short)object->object.animation.state.index << 16) |
+			(unsigned short)object->object.animation.state.frame_index;
+		for (k = 0; k < count; k++)
+			hash = (hash ^ words[k]) * 16777619UL;
+	}
+	return hash;
+}
+#endif
+
+void objects_update(
+	void)
+{"""),
+]
+FIXES_112["source/main/main.c#fixedticks"] = [
+("""	main_globals.frame_start_milliseconds = end_milliseconds;
+	main_globals.rasterizer_target_index = target_index;
+	main_globals.seconds_elapsed = seconds_elapsed;""",
+ """	main_globals.frame_start_milliseconds = end_milliseconds;
+	main_globals.rasterizer_target_index = target_index;
+#ifdef HALO_PSP
+	/* build 112: "fixedticks": every frame two ticks and a fifteenth of a
+	second, whatever the clock says, as the game's own film recorder steps.
+	With no input the game then plays the same way however fast a build
+	runs, so runs compare tick by tick ("statecrc", game_state.c). Tests
+	only: game time no longer follows the clock (psp_fixups.py) */
+	{
+		extern int psp_keep(const char *name);
+		static int fixed = -1;
+
+		if (fixed < 0)
+			fixed = psp_keep("fixedticks");
+		if (fixed && main_globals.connection == _game_connection_local && !main_globals.movie)
+			seconds_elapsed = 0.06666667014360428f;
+	}
+#endif
+	main_globals.seconds_elapsed = seconds_elapsed;"""),
+]
+FIXES_112["source/render/render.c#bench"] = [
+("""#include "structures/structures.h"
+""",
+ """#include "structures/structures.h"
+#ifdef HALO_PSP
+#include "psp_bench.h" /* the ceiling bench's switches (psp_fixups.py, build 112) */
+#endif
+"""),
+("""		render_objects();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_MODELS))
+#endif
+		render_objects();
+"""),
+("""		render_object_shadows();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_MODELS))
+#endif
+		render_object_shadows();
+"""),
+("""		structure_render_lightmaps();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_LEVEL))
+#endif
+		structure_render_lightmaps();
+"""),
+("""		structure_render_transparent_geometry();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_LEVEL))
+#endif
+		structure_render_transparent_geometry();
+"""),
+("""		render_particles();
+""",
+ """#ifdef HALO_PSP
+		if (!(psp_bench_skip & PSP_SKIP_EFFECTS))
+#endif
+		render_particles();
+"""),
+]
+
 # ---------- ChupathingyCE only (the rebase)
 # Changes only ChupathingyCE's own code needs: what it added since its fork
 # that reads a field the PSP's slim layouts leave out, or allocates what the
@@ -9793,8 +10047,56 @@ Either(chupa=("""				"sound permutation %.32s of %d bytes not loaded",
 				sound->name,
 #endif""")),
 ]
+# Build 112: halo-ce-universal's upstream patch 0002 (cold or compiled-out
+# asserts, float rounding) never reached ChupathingyCE. psp_build.py passes
+# -DPSP_ASSERTS_COLD=1 and -freorder-blocks-and-partition, but cseries.h had
+# no branch for them: b110's and b111's link maps hold 3 .text.unlikely
+# sections against 2,981 on the old base, so every failed assert's call sat
+# in the middle of the hot code it guards, in the 16 KB instruction cache
+# that two thirds of the misses come from (optimization_ranking.md, E1). And
+# fast_ftol rounded through a double: on the PSP, whose FPU has no double
+# operations, three library calls (to double, rint, to long) for every
+# animation frame index, perception test and HUD number (libm's rint was
+# linked for it). A float rounds to the nearest integer exactly in float, so
+# rintf gives the same bits
+FIXES_CHUPA["source/cseries/cseries.h#asserts"] = [
+Either(chupa=("""#define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_vassert(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }""",
+ """/* psp_fixups.py (FIXES_CHUPA, build 112): PSP_ASSERTS_OFF compiles the
+fatal asserts out; PSP_ASSERTS_COLD marks them unlikely, so their calls go to
+.text.unlikely, away from the code they guard */
+#if defined(PSP_ASSERTS_OFF)
+#define match_assert(file, line, expr) if (0 && (expr)) { }
+#define match_vassert(file, line, expr, string) if (0 && (expr)) { }
+#elif defined(PSP_ASSERTS_COLD)
+#define match_assert(file, line, expr) if (__builtin_expect(!(expr), 0)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_vassert(file, line, expr, string) if (__builtin_expect(!(expr), 0)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#else
+#define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#define match_vassert(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+#endif
+#define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }""")),
+Either(chupa=("""#ifdef HALO_RELEASE
+void release_assert_failed(char const *information, char const *file, long line, boolean fatal);
+#endif""",
+ """#ifdef HALO_RELEASE
+void release_assert_failed(char const *information, char const *file, long line, boolean fatal)
+#if defined(PSP_ASSERTS_COLD)
+	__attribute__((cold)) /* psp_fixups.py (FIXES_CHUPA, build 112) */
+#endif
+	;
+#endif""")),
+Either(chupa=("""	/* FISTP: round to nearest under the default control word */
+	result = (long)__builtin_rint((double)value);""",
+ """	/* FISTP: round to nearest under the default control word.
+	psp_fixups.py (FIXES_CHUPA, build 112): rounded in float. A float is
+	exact in a double and its nearest integer is exact in a float, so the
+	result is the same, without a software double round trip on the PSP */
+	result = (long)__builtin_rintf(value);""")),
+]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_CHUPA.items()):
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

@@ -45,8 +45,16 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <stdio.h>
 #include <malloc.h>
 #include <pspge.h>
+#include <stdarg.h>
 
 void platform_log(const char *format, ...);
+/* build 112: the GE layer logs through ge_log (defined with the deferral's
+machinery): platform_log on the main CPU; while the work is marked as the
+Media Engine's (gemesim), only a count per message, written out by the main
+CPU at the frame's end, since formatting and the log's file writes take
+locks and system calls. (platform_log) in parentheses is the real one */
+static void ge_log(const char *format, ...);
+#define platform_log(...) ge_log(__VA_ARGS__)
 #define PSP_CLAMP_255(x) ((x) < 0 ? 0 : (x) > 255 ? 255 : (x))
 
 /* build 106: the renderer's own timers (a part's or an entry's time, for
@@ -54,9 +62,32 @@ the GE lines) read the system clock, a system call, hundreds of times a
 frame: "notimers" in keep.txt skips them, and their reports then read 0.
 The frame's own timing, which the budget lines need, stays */
 extern int psp_timers_off;
+/* build 112: 0 too while the work is marked as the Media Engine's
+(gemesim): the main CPU's clock is a system call the ME can't make; the ME
+version will read the ME's own cycle counter */
+extern volatile unsigned int psp_me_context;
 static inline unsigned int ge_clock(void)
 {
-	return psp_timers_off ? 0 : sceKernelGetSystemTimeLow();
+	return psp_timers_off || psp_me_context ? 0 : sceKernelGetSystemTimeLow();
+}
+
+/* build 112: a range written back from the data cache for the GE to read:
+the firmware's call on the main CPU, as before; while the work is marked as
+the Media Engine's (gemesim), the cache instruction on each line instead (no
+system call; on the ME it writes back the ME's own cache, the one holding
+the data), each line written back and dropped as the list's lines are */
+static void ge_writeback(const void *start, unsigned int bytes)
+{
+	unsigned int line, end;
+
+	if (!psp_me_context)
+	{
+		sceKernelDcacheWritebackRange(start, bytes);
+		return;
+	}
+	end = (unsigned int)start + bytes;
+	for (line = (unsigned int)start & ~63u; line < end; line += 64)
+		__builtin_allegrex_cache(0x1B, line);
 }
 
 #define SCREEN_WIDTH 480
@@ -136,6 +167,816 @@ hook is drawing */
 #define GE_SKIP_ALL 4
 static int ge_skip = 0, ge_category = 0;
 static unsigned long ge_skipped_draws = 0;
+
+/* build 112: the ceiling bench's "GE layer skipped" (psp_bench.h). Where the
+bus tests above keep the CPU's work and stop the GE, this drops every draw the
+engine hands this file, on arrival: the engine still does all of its own
+drawing work, and this file's CPU work and the GE's reading are gone. What it
+saves is the most that moving this file's work to the Media Engine could save
+(an upper bound: the ME's version keeps the GE's reading) */
+#include "../include/psp_bench.h" /* the plain-C units have no -I for psp/include (psp_build.py) */
+#define GE_BENCH_SKIP(...) do { if (psp_bench_skip & PSP_SKIP_GE) return __VA_ARGS__; } while (0)
+
+/* ---------- build 112: the GE layer's calls deferred (keep word "gedefer")
+
+The first steps toward the Media Engine building the GE's lists
+(docs/big_levers.md, lever L1). Every call the engine makes that writes the
+list is written down as it arrives, with each array it points to copied
+(node matrices, lights, colours, centroids, a sprite group's corners, a text
+character's, a screen quad's), and carried out later in the same order:
+when the buffer is full, when a call that must run at once arrives (it
+carries out what is waiting first: GE_DEFER_DRAIN), or at the frame's end.
+
+Kept as pointers, since they stay put until the frame ends: the geometry
+cache's blocks (protected for RECENT_FRAMES, psp_geo.c), the level's vertices
+and the frame's dynamic triangle lists, the decals' vertices (written in the
+tick, read while drawing).
+
+Run at once, after what is waiting: the frame's start and end
+(psp_ge_window_begin decides the near plane from the level and the player;
+psp_ge_frame_end hands the list over), and the calls whose answer the engine
+uses (the level vertex queries) or
+that change data a waiting call reads (psp_ge_text_changed), and the map
+loads. A model with more nodes than DEFER_MAX_NODES runs as it comes
+(defer_paused), since the engine reuses its node matrices' buffer for the
+next model; so does an array too large for the buffer.
+
+On the main CPU the list comes out the same (the same calls, in the same
+order); only the CPU's work is reordered: the engine's half for a run of
+calls, then this file's half for them, so each half's code stays in the
+instruction cache longer. The ME step moves the carrying out to the ME. Off
+(the default): one test a call. */
+#define DEFER_WORDS (64 * 1024 / 4)
+#define DEFER_LARGEST (DEFER_WORDS / 4) /* a record past this runs as it comes */
+#define DEFER_MAX_NODES 64
+#define NODE_FLOATS 13 /* a node matrix as the game keeps it (halo_matrix): scale, three axes, position */
+#define SCREEN_VERTEX_WORDS 5 /* struct game_screen_vertex: x, y, u, v, argb */
+#define SPRITE_VERTEX_WORDS 6 /* struct game_sprite_vertex: x, y, z, u, v, argb */
+#define METER_WORDS 7 /* struct game_meter */
+enum
+{
+	DEFER_MODEL_BEGIN = 1, DEFER_MODEL_SHAPE, DEFER_MODEL_EFFECT, DEFER_MODEL_MULTIPURPOSE, DEFER_DRAW_MODEL,
+	DEFER_QUEUE_TRANSPARENT, DEFER_FOG, DEFER_WINDOW_TARGET, DEFER_LEVEL_DETAIL, DEFER_DRAW_LEVEL, DEFER_SKY,
+	DEFER_SPRITES, DEFER_WIDGET_BEGIN, DEFER_WIDGET_TEXTURE, DEFER_WIDGET_OCCLUSION, DEFER_WIDGET_SPRITE,
+	DEFER_QUEUE_LEVEL_TRANSPARENT, DEFER_HUD_ZOOM, DEFER_UI_CENTERED, DEFER_UI_SPACE, DEFER_SCREEN_QUAD,
+	DEFER_SHADOW_BEGIN, DEFER_SHADOW_DRAW, DEFER_SHADOW_END, DEFER_LIGHT_BEGIN, DEFER_LIGHT_DRAW, DEFER_SCREEN_FLASH,
+	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
+	DEFER_TEXT_BEGIN
+};
+typedef union
+{
+	unsigned int u;
+	int i;
+	float f;
+	const void *p;
+} defer_word;
+static defer_word *defer_buffer = NULL;
+static float *defer_nodes = NULL; /* the carried-out model's node matrices: model_nodes points here */
+/* "gemesim" (with gedefer): the carrying out marked as the Media Engine's
+work while it still runs on the main CPU. This word holds the game thread's
+id meanwhile; the emulator's ME-strict check (PSP_MESTRICT, the lab's
+emu.sh) prints every system call that thread makes then: each is a gate the
+ME version must not reach (big_levers.md, L1 step 3) */
+volatile unsigned int psp_me_context = 0;
+static unsigned int defer_me_thread = 0;
+/* and the GE's stall address: while the work is the Media Engine's, the
+newest one is kept here (the call is a system call; the stall wrapper, below)
+and the main CPU passes it on when the run of waiting calls ends */
+static int stall_me_qid = 0;
+static void *stall_me_address = NULL;
+static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
+int __real_sceGeListUpdateStallAddr(int qid, void *stall);
+static unsigned int defer_used = 0;
+static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
+/* gemesim or gemeon: the carrying out is (or stands for) the Media Engine's,
+so what it can't do is done when the call is written down, on the main CPU
+(the see-through level triangles' wall answers) */
+static int defer_me_semantics = 0;
+/* the wall answers a record carried, while it is carried out (the replay of
+DEFER_QUEUE_LEVEL_TRANSPARENT sets it; overlay_answer reads it) */
+static const unsigned char *overlay_answers = NULL;
+static int overlay_answers_for(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned char *out);
+static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
+static void defer_drain(void);
+/* which calls made the waiting calls run, for the log: each is a point where
+the ME's version has to catch up with the main CPU */
+#define DEFER_SITES 16
+static const char *defer_site[DEFER_SITES];
+static unsigned long defer_site_drains[DEFER_SITES];
+static void defer_drain_for(const char *site)
+{
+	int k;
+
+	for (k = 0; k < DEFER_SITES && defer_site[k] && defer_site[k] != site; k++)
+		;
+	if (k < DEFER_SITES)
+	{
+		defer_site[k] = site;
+		defer_site_drains[k]++;
+	}
+	defer_drain();
+}
+/* a call that runs at once carries out what is waiting first, so the list's
+order never changes. Only the game's thread writes the list, so only it
+records and carries out; a call another thread makes (the heartbeat's
+psp_ge_frame_window, psp_ge_budget, psp_ge_setting) never drains */
+#define GE_DEFER_DRAIN() do { if (defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
+/* a deferred call's own test: deferring this frame, not already carrying
+out, not inside a model too big to defer, and written down */
+#define GE_DEFER(record, ...) do { if (defer_on && !defer_replaying && !defer_paused && (record)) return __VA_ARGS__; } while (0)
+
+int psp_keep(const char *name);
+void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
+	const float *ambient, int light_count, const float *light0, const float *light1);
+void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp);
+void psp_ge_model_effect(int type, float intensity);
+void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow);
+void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
+	int alpha_tested);
+void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
+	short blend, const float *centroid);
+void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
+void psp_ge_window_target(int target);
+void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
+	unsigned int micro_key, float micro_u, float micro_v);
+void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
+void psp_ge_sky(int on);
+int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
+void psp_ge_widget_begin(int depth_test);
+void psp_ge_widget_texture(unsigned int key);
+void psp_ge_widget_occlusion(int visible);
+void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
+	unsigned long color);
+void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
+	const float *centroid);
+void psp_ge_hud_zoom(float zoom);
+void psp_ge_ui_centered(int centered);
+void psp_ge_ui_space(int width, int height);
+void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
+	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale);
+void psp_ge_shadow_begin(const float *matrix, const float *color, float radius);
+void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count);
+void psp_ge_shadow_end(void);
+void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
+	float cosine_falloff, float cosine_cutoff);
+void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
+	unsigned int base_key);
+void psp_ge_screen_flash(short type, float intensity, float const *argb);
+void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
+	int intensity, int alpha_tested, int permanent);
+void psp_ge_blips_begin(void);
+void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key);
+void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key);
+void psp_ge_text_character(void const *vertices);
+void psp_ge_text_end(void);
+int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y);
+
+/* at each frame's start: whether this frame defers (the keep word, asked
+once; the buffer taken from the heap the first time) */
+static void defer_frame_begin(void)
+{
+	static int asked = -1;
+
+	if (asked < 0)
+	{
+		asked = psp_keep("gedefer");
+		if (asked)
+		{
+			defer_buffer = memalign(64, DEFER_WORDS * sizeof(defer_word));
+			defer_nodes = memalign(64, DEFER_MAX_NODES * NODE_FLOATS * sizeof(float));
+			if (!defer_buffer || !defer_nodes)
+			{
+				free(defer_buffer);
+				free(defer_nodes);
+				defer_buffer = NULL;
+				defer_nodes = NULL;
+				asked = 0;
+				platform_log("GE: gedefer: no room for its buffer, off");
+			}
+			else
+			{
+				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer",
+					(unsigned int)(DEFER_WORDS * sizeof(defer_word) / 1024));
+				if (psp_keep("gemesim"))
+				{
+					defer_me_thread = (unsigned int)sceKernelGetThreadId();
+					platform_log("GE: gemesim: carrying out marked as the Media Engine's (thread %08x)", defer_me_thread);
+					/* the check's own test: one known system call while
+					marked, which the emulator's mestrict.txt must list
+					(sceKernelGetSystemTimeLow from here), so a run with no
+					other line proves the gates rather than a dead check */
+					psp_me_context = defer_me_thread;
+					(void)sceKernelGetSystemTimeLow();
+					psp_me_context = 0;
+				}
+				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon");
+			}
+		}
+	}
+	defer_on = asked;
+	defer_paused = 0;
+}
+
+/* room for a call of words words of arguments (what is waiting is carried
+out first if the buffer is full); NULL if the call is too large to defer,
+after carrying out what is waiting, so the call runs as it comes */
+static defer_word *defer_take(int kind, unsigned int words)
+{
+	defer_word *at;
+
+	if (words > DEFER_LARGEST)
+	{
+		defer_too_large++;
+		GE_DEFER_DRAIN();
+		return NULL;
+	}
+	if (defer_used + 1 + words > DEFER_WORDS)
+	{
+		defer_drains_full++;
+		defer_drain();
+	}
+	at = defer_buffer + defer_used;
+	at->u = (unsigned int)kind | (1 + words) << 8;
+	defer_used += 1 + words;
+	defer_records++;
+	return at + 1;
+}
+
+/* n words copied, after one saying whether the pointer was NULL: 1 + n words */
+static defer_word *defer_copy(defer_word *at, const void *p, int n)
+{
+	at->u = p != NULL;
+	if (p)
+		memcpy(at + 1, p, n * sizeof(defer_word));
+	return at + 1 + n;
+}
+
+/* and back: the copy's address, or NULL if the pointer was */
+static const void *defer_copy_back(const defer_word *at, const defer_word **next, int n)
+{
+	*next = at + 1 + n;
+	return at->u ? (const void *)(at + 1) : NULL;
+}
+
+/* ----- the calls written down: 1 if it was, 0 if it must run now */
+
+static int defer_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
+	const float *ambient, int light_count, const float *light0, const float *light1)
+{
+	int lights = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
+	int nodes = node_matrices && node_matrix_count > 0 ? node_matrix_count : 0;
+	defer_word *at;
+
+	if (nodes > DEFER_MAX_NODES)
+	{
+		defer_big_models++;
+		GE_DEFER_DRAIN();
+		defer_paused = 1;
+		return 0;
+	}
+	defer_paused = 0;
+	at = defer_take(DEFER_MODEL_BEGIN, 5 + 4 + 7 + 7 + nodes * NODE_FLOATS);
+	at[0].p = node_matrices;
+	at[1].i = node_matrix_count;
+	at[2].f = u_scale;
+	at[3].f = v_scale;
+	at[4].i = light_count;
+	at = defer_copy(at + 5, ambient, 3);
+	at = defer_copy(at, lights > 0 ? light0 : NULL, 6);
+	at = defer_copy(at, lights > 1 ? light1 : NULL, 6);
+	if (nodes)
+		memcpy(at, node_matrices, nodes * NODE_FLOATS * sizeof(float));
+	return 1;
+}
+
+static int defer_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp)
+{
+	defer_word *at = defer_take(DEFER_MODEL_SHAPE, 4 + 4);
+
+	at[0].i = first_person;
+	at[1].f = radius;
+	at[2].f = near_fp;
+	at[3].f = far_fp;
+	defer_copy(at + 4, centroid, 3);
+	return 1;
+}
+
+static int defer_model_effect(int type, float intensity)
+{
+	defer_word *at = defer_take(DEFER_MODEL_EFFECT, 2);
+
+	at[0].i = type;
+	at[1].f = intensity;
+	return 1;
+}
+
+static int defer_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
+{
+	defer_word *at = defer_take(DEFER_MODEL_MULTIPURPOSE, 1 + 4 + 4);
+
+	at[0].u = multipurpose_key;
+	defer_copy(defer_copy(at + 1, change, 3), glow, 3);
+	return 1;
+}
+
+static int defer_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
+	int alpha_tested)
+{
+	defer_word *at = defer_take(DEFER_DRAW_MODEL, 11);
+
+	at[0].p = vertices;
+	at[1].i = vertex_count;
+	at[2].i = uncompressed;
+	at[3].p = indices;
+	at[4].i = (int)index_count;
+	at[5].i = strip;
+	at[6].u = color;
+	at[7].u = base_key;
+	at[8].f = u_scale;
+	at[9].f = v_scale;
+	at[10].i = alpha_tested;
+	return 1;
+}
+
+static int defer_queue_transparent(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
+	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
+	short blend, const float *centroid)
+{
+	defer_word *at = defer_take(DEFER_QUEUE_TRANSPARENT, 12 + 4);
+
+	at[0].p = vertices;
+	at[1].i = vertex_count;
+	at[2].i = uncompressed;
+	at[3].p = indices;
+	at[4].i = (int)index_count;
+	at[5].i = strip;
+	at[6].u = key;
+	at[7].f = u_scale;
+	at[8].f = v_scale;
+	at[9].f = u_offset;
+	at[10].f = v_offset;
+	at[11].i = blend;
+	defer_copy(at + 12, centroid, 3);
+	return 1;
+}
+
+static int defer_fog(const float *color, float minimum_distance, float maximum_distance, float density)
+{
+	defer_word *at = defer_take(DEFER_FOG, 3 + 4);
+
+	at[0].f = minimum_distance;
+	at[1].f = maximum_distance;
+	at[2].f = density;
+	defer_copy(at + 3, color, 3);
+	return 1;
+}
+
+/* a call of up to eight plain words (defer_bits for a float, DEFER_P
+for a pointer: both are a word on the PSP) */
+static int defer_words(int kind, int count, unsigned int a, unsigned int b, unsigned int c, unsigned int d,
+	unsigned int e, unsigned int f, unsigned int g, unsigned int h)
+{
+	defer_word *at = defer_take(kind, count);
+	unsigned int all[8] = { a, b, c, d, e, f, g, h };
+	int k;
+
+	for (k = 0; k < count; k++)
+		at[k].u = all[k];
+	return 1;
+}
+#define DEFER_P(pointer) ((unsigned int)(unsigned long)(pointer))
+
+static unsigned int defer_bits(float value)
+{
+	defer_word w;
+
+	w.f = value;
+	return w.u;
+}
+
+static int defer_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
+	const unsigned short *indices, long triangle_count, unsigned int color,
+	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
+{
+	defer_word *at = defer_take(DEFER_DRAW_LEVEL, 9);
+
+	at[0].p = vertices;
+	at[1].p = lightmap_vertices;
+	at[2].i = vertex_count;
+	at[3].p = indices;
+	at[4].i = (int)triangle_count;
+	at[5].u = color;
+	at[6].u = base_key;
+	at[7].u = lightmap_key;
+	at[8].i = alpha_tested;
+	return 1;
+}
+
+static int defer_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend,
+	float const *view_to_world)
+{
+	int corners = vertices && sprite_count > 0 ? 4 * sprite_count : 0;
+	defer_word *at = defer_take(DEFER_SPRITES, 3 + 1 + NODE_FLOATS + 1 + corners * SPRITE_VERTEX_WORDS);
+
+	if (!at)
+		return 0;
+	at[0].i = sprite_count;
+	at[1].u = bitmap_key;
+	at[2].i = blend;
+	at = defer_copy(at + 3, view_to_world, NODE_FLOATS);
+	defer_copy(at, corners ? vertices : NULL, corners * SPRITE_VERTEX_WORDS);
+	return 1;
+}
+
+static int defer_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
+	unsigned long color)
+{
+	defer_word *at = defer_take(DEFER_WIDGET_SPRITE, 5 + 4);
+
+	at[0].f = radius;
+	at[1].f = scale_x;
+	at[2].f = scale_y;
+	at[3].f = rotation;
+	at[4].u = (unsigned int)color;
+	defer_copy(at + 5, point, 3);
+	return 1;
+}
+
+static int defer_queue_level_transparent(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
+	const float *centroid)
+{
+	/* under ME semantics, each triangle's wall answer goes with the call
+	(worked out here: heap for the answers, the engine's collision rays);
+	a word saying how many answers, then the answers, a byte each */
+	long answers = defer_me_semantics && triangle_count > 0 ? triangle_count : 0;
+	defer_word *at = defer_take(DEFER_QUEUE_LEVEL_TRANSPARENT, 10 + 4 + 1 + (answers + 3) / 4);
+
+	if (!at)
+		return 0;
+	at[14].i = answers && overlay_answers_for(vertices, vertex_count, indices, triangle_count,
+		(unsigned char *)(at + 15)) ? (int)answers : 0;
+
+	at[0].p = vertices;
+	at[1].i = vertex_count;
+	at[2].p = indices;
+	at[3].i = (int)triangle_count;
+	at[4].u = key;
+	at[5].f = u_scale;
+	at[6].f = v_scale;
+	at[7].f = u_offset;
+	at[8].f = v_offset;
+	at[9].i = blend;
+	defer_copy(at + 10, centroid, 3);
+	return 1;
+}
+
+static int defer_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
+	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
+{
+	defer_word *at = defer_take(DEFER_SCREEN_QUAD, 11 + 1 + 4 * SCREEN_VERTEX_WORDS + 1 + METER_WORDS);
+
+	at[0].u = key;
+	at[1].i = blend;
+	at[2].f = red;
+	at[3].f = green;
+	at[4].f = blue;
+	at[5].f = fade;
+	at[6].f = offset_x;
+	at[7].f = offset_y;
+	at[8].i = wrapped;
+	at[9].f = u_scale;
+	at[10].f = v_scale;
+	at = defer_copy(at + 11, vertices, 4 * SCREEN_VERTEX_WORDS);
+	defer_copy(at, meter_parameters, METER_WORDS);
+	return 1;
+}
+
+static int defer_shadow_begin(const float *matrix, const float *color, float radius)
+{
+	defer_word *at = defer_take(DEFER_SHADOW_BEGIN, 1 + 1 + NODE_FLOATS + 4);
+
+	at[0].f = radius;
+	defer_copy(defer_copy(at + 1, matrix, NODE_FLOATS), color, 3);
+	return 1;
+}
+
+static int defer_light_begin(const float *position, const float *forward, const float *color, float radius,
+	float cosine_falloff, float cosine_cutoff)
+{
+	defer_word *at = defer_take(DEFER_LIGHT_BEGIN, 3 + 4 + 4 + 4);
+
+	at[0].f = radius;
+	at[1].f = cosine_falloff;
+	at[2].f = cosine_cutoff;
+	defer_copy(defer_copy(defer_copy(at + 3, position, 3), forward, 3), color, 3);
+	return 1;
+}
+
+static int defer_screen_flash(short type, float intensity, float const *argb)
+{
+	defer_word *at = defer_take(DEFER_SCREEN_FLASH, 2 + 5);
+
+	at[0].i = type;
+	at[1].f = intensity;
+	defer_copy(at + 2, argb, 4);
+	return 1;
+}
+
+static int defer_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
+	int intensity, int alpha_tested, int permanent)
+{
+	defer_word *at = defer_take(DEFER_DECAL, 8);
+
+	at[0].p = vertices;
+	at[1].i = quad_count;
+	at[2].u = key;
+	at[3].i = blend;
+	at[4].u = (unsigned int)color;
+	at[5].i = intensity;
+	at[6].i = alpha_tested;
+	at[7].i = permanent;
+	return 1;
+}
+
+static int defer_text_character(void const *vertices)
+{
+	defer_word *at = defer_take(DEFER_TEXT_CHARACTER, 1 + 4 * SCREEN_VERTEX_WORDS);
+
+	defer_copy(at, vertices, 4 * SCREEN_VERTEX_WORDS);
+	return 1;
+}
+
+/* ----- a run of records carried out in order: on the main CPU, or as the
+Media Engine's job (psp_ge_me_replay) */
+static void defer_replay(const defer_word *buffer, unsigned int used)
+{
+	unsigned int at = 0;
+
+	while (at < used)
+	{
+		const defer_word *w = buffer + at + 1, *rest;
+		int kind = buffer[at].u & 0xFF;
+		const void *a, *b, *c;
+
+		at += buffer[at].u >> 8;
+		switch (kind)
+		{
+		case DEFER_MODEL_BEGIN:
+		{
+			int count = w[1].i, nodes = w[0].p && count > 0 ? count : 0;
+
+			a = defer_copy_back(w + 5, &rest, 3);
+			b = defer_copy_back(rest, &rest, 6);
+			c = defer_copy_back(rest, &rest, 6);
+			if (nodes)
+				memcpy(defer_nodes, rest, nodes * NODE_FLOATS * sizeof(float));
+			psp_ge_model_begin(w[0].p ? defer_nodes : NULL, count, w[2].f, w[3].f, a, w[4].i, b, c);
+			break;
+		}
+		case DEFER_MODEL_SHAPE:
+			psp_ge_model_shape(w[0].i, defer_copy_back(w + 4, &rest, 3), w[1].f, w[2].f, w[3].f);
+			break;
+		case DEFER_MODEL_EFFECT:
+			psp_ge_model_effect(w[0].i, w[1].f);
+			break;
+		case DEFER_MODEL_MULTIPURPOSE:
+			a = defer_copy_back(w + 1, &rest, 3);
+			psp_ge_model_multipurpose(w[0].u, a, defer_copy_back(rest, &rest, 3));
+			break;
+		case DEFER_DRAW_MODEL:
+			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
+				w[6].u, w[7].u, w[8].f, w[9].f, w[10].i);
+			break;
+		case DEFER_QUEUE_TRANSPARENT:
+			psp_ge_queue_transparent((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
+				w[6].u, w[7].f, w[8].f, w[9].f, w[10].f, (short)w[11].i, defer_copy_back(w + 12, &rest, 3));
+			break;
+		case DEFER_FOG:
+			psp_ge_fog(defer_copy_back(w + 3, &rest, 3), w[0].f, w[1].f, w[2].f);
+			break;
+		case DEFER_WINDOW_TARGET:
+			psp_ge_window_target(w[0].i);
+			break;
+		case DEFER_LEVEL_DETAIL:
+			psp_ge_level_detail(w[0].u, w[1].f, w[2].f, w[3].u, w[4].f, w[5].f);
+			break;
+		case DEFER_DRAW_LEVEL:
+			psp_ge_draw_level(w[0].p, w[1].p, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].u, w[6].u, w[7].u,
+				w[8].i);
+			break;
+		case DEFER_SKY:
+			psp_ge_sky(w[0].i);
+			break;
+		case DEFER_SPRITES:
+			a = defer_copy_back(w + 3, &rest, NODE_FLOATS);
+			psp_ge_sprites(defer_copy_back(rest, &rest, 0), w[0].i, w[1].u, (short)w[2].i, a);
+			break;
+		case DEFER_WIDGET_BEGIN:
+			psp_ge_widget_begin(w[0].i);
+			break;
+		case DEFER_WIDGET_TEXTURE:
+			psp_ge_widget_texture(w[0].u);
+			break;
+		case DEFER_WIDGET_OCCLUSION:
+			psp_ge_widget_occlusion(w[0].i);
+			break;
+		case DEFER_WIDGET_SPRITE:
+			psp_ge_widget_sprite(defer_copy_back(w + 5, &rest, 3), w[0].f, w[1].f, w[2].f, w[3].f, w[4].u);
+			break;
+		case DEFER_QUEUE_LEVEL_TRANSPARENT:
+			overlay_answers = w[14].i ? (const unsigned char *)(w + 15) : NULL;
+			psp_ge_queue_level_transparent(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i, w[4].u, w[5].f,
+				w[6].f, w[7].f, w[8].f, (short)w[9].i, defer_copy_back(w + 10, &rest, 3));
+			overlay_answers = NULL;
+			break;
+		case DEFER_HUD_ZOOM:
+			psp_ge_hud_zoom(w[0].f);
+			break;
+		case DEFER_UI_CENTERED:
+			psp_ge_ui_centered(w[0].i);
+			break;
+		case DEFER_UI_SPACE:
+			psp_ge_ui_space(w[0].i, w[1].i);
+			break;
+		case DEFER_SCREEN_QUAD:
+			a = defer_copy_back(w + 11, &rest, 4 * SCREEN_VERTEX_WORDS);
+			psp_ge_screen_quad(a, w[0].u, (short)w[1].i, w[2].f, w[3].f, w[4].f, w[5].f, w[6].f, w[7].f,
+				defer_copy_back(rest, &rest, METER_WORDS), w[8].i, w[9].f, w[10].f);
+			break;
+		case DEFER_SHADOW_BEGIN:
+			a = defer_copy_back(w + 1, &rest, NODE_FLOATS);
+			psp_ge_shadow_begin(a, defer_copy_back(rest, &rest, 3), w[0].f);
+			break;
+		case DEFER_SHADOW_DRAW:
+			psp_ge_shadow_draw(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i);
+			break;
+		case DEFER_SHADOW_END:
+			psp_ge_shadow_end();
+			break;
+		case DEFER_LIGHT_BEGIN:
+			a = defer_copy_back(w + 3, &rest, 3);
+			b = defer_copy_back(rest, &rest, 3);
+			psp_ge_light_begin(a, b, defer_copy_back(rest, &rest, 3), w[0].f, w[1].f, w[2].f);
+			break;
+		case DEFER_LIGHT_DRAW:
+			psp_ge_light_draw(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i, w[4].u);
+			break;
+		case DEFER_SCREEN_FLASH:
+			psp_ge_screen_flash((short)w[0].i, w[1].f, defer_copy_back(w + 2, &rest, 4));
+			break;
+		case DEFER_DECAL:
+			psp_ge_decal(w[0].p, w[1].i, w[2].u, (short)w[3].i, w[4].u, w[5].i, w[6].i, w[7].i);
+			break;
+		case DEFER_BLIPS_BEGIN:
+			psp_ge_blips_begin();
+			break;
+		case DEFER_BLIP:
+			psp_ge_blip(w[0].f, w[1].f, w[2].f, w[3].f, w[4].f, w[5].f, w[6].u);
+			break;
+		case DEFER_BLIPS_END:
+			psp_ge_blips_end(w[0].f, w[1].f, w[2].f, w[3].u, w[4].u);
+			break;
+		case DEFER_TEXT_CHARACTER:
+			psp_ge_text_character(defer_copy_back(w, &rest, 4 * SCREEN_VERTEX_WORDS));
+			break;
+		case DEFER_TEXT_END:
+			psp_ge_text_end();
+			break;
+		case DEFER_TEXT_BEGIN:
+			psp_ge_text_begin(w[0].p, (short)w[1].i, w[2].f, w[3].f);
+			break;
+		}
+	}
+}
+
+/* build 112: "gemeon" (with gedefer): the run carried out as the Media
+Engine's job (psp_me.c, ME_JOB_GE), L1 step 4's first form: the main CPU
+waits for it, so it measures the ME on this work and proves it runs there;
+overlapping comes next. args: the records, their words, the value
+psp_me_context holds meanwhile (the game thread's id under gemesim, so the
+emulator's ME-strict check also covers this path when it simulates the job) */
+unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
+{
+	psp_me_context = args[2] ? args[2] : 1;
+	defer_replay((const defer_word *)args[0], args[1]);
+	psp_me_context = 0;
+	results[0] = args[1];
+	return 0;
+}
+
+static int defer_me_on = -1;
+static unsigned long defer_me_jobs = 0, defer_me_failed = 0, defer_me_wait_us = 0, defer_me_own_us = 0;
+
+/* 1 if the ME carried the run out */
+static int defer_on_me(void)
+{
+	extern int psp_me_running(void);
+	extern int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
+		unsigned int first_look_us);
+	extern unsigned int psp_me_last_job_us(int which);
+	unsigned int args[3], results[8], start;
+
+	if (defer_me_on < 0)
+		defer_me_on = psp_keep("gemeon");
+	if (!defer_me_on || !psp_me_running())
+		return 0;
+	/* everything the job reads to RAM: the records, what they point to that
+	the engine wrote, and this file's state as the main CPU left it */
+	sceKernelDcacheWritebackAll();
+	args[0] = (unsigned int)defer_buffer;
+	args[1] = defer_used;
+	args[2] = defer_me_thread;
+	start = sceKernelGetSystemTimeLow();
+	if (!psp_me_run(1 /* the render slot */, 4 /* ME_JOB_GE */, args, 3, results, 20))
+	{
+		defer_me_failed++;
+		return 0;
+	}
+	defer_me_wait_us += sceKernelGetSystemTimeLow() - start;
+	defer_me_own_us += psp_me_last_job_us(1);
+	defer_me_jobs++;
+	/* and back: what the ME wrote (this file's state, pspgu's, the list)
+	read fresh from RAM */
+	sceKernelDcacheWritebackInvalidateAll();
+	return 1;
+}
+
+/* ----- everything waiting, carried out in order */
+static void defer_drain(void)
+{
+	defer_replaying = 1;
+	if (!defer_on_me())
+	{
+		psp_me_context = defer_me_thread;
+		defer_replay(defer_buffer, defer_used);
+		psp_me_context = 0;
+	}
+	/* the GE given what the run wrote (the newest stall address it kept) */
+	if (stall_me_address)
+	{
+		stall_forwarded++;
+		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
+		stall_me_address = NULL;
+	}
+	defer_used = 0;
+	defer_replaying = 0;
+	defer_drains++;
+}
+
+/* the messages the Media Engine's work logged: each format with a count */
+#define ME_LOG_FORMATS 16
+static const char *me_log_format[ME_LOG_FORMATS];
+static unsigned long me_log_count[ME_LOG_FORMATS], me_log_lost = 0;
+
+static void ge_log(const char *format, ...)
+{
+	char line[512]; /* the log's own line limit (psp_platform.c) */
+	va_list arguments;
+
+	if (psp_me_context)
+	{
+		int k;
+
+		for (k = 0; k < ME_LOG_FORMATS && me_log_format[k] && me_log_format[k] != format; k++)
+			;
+		if (k < ME_LOG_FORMATS)
+		{
+			me_log_format[k] = format;
+			me_log_count[k]++;
+		}
+		else
+			me_log_lost++;
+		return;
+	}
+	va_start(arguments, format);
+	vsnprintf(line, sizeof(line), format, arguments);
+	va_end(arguments);
+	(platform_log)("%s", line);
+}
+
+/* at the frame's end, on the main CPU: what the Media Engine's work logged */
+static void me_log_write(void)
+{
+	int k;
+
+	for (k = 0; k < ME_LOG_FORMATS && me_log_format[k]; k++)
+	{
+		(platform_log)("GE (the Media Engine's work, %lu times): %s", me_log_count[k], me_log_format[k]);
+		me_log_format[k] = NULL;
+		me_log_count[k] = 0;
+	}
+	if (me_log_lost)
+		(platform_log)("GE (the Media Engine's work): %lu more messages of other kinds", me_log_lost);
+	me_log_lost = 0;
+}
 static int list_in_vram = 0, vram_busy = 0, vram_busy_calibrating = 0, vram_busy_sprites = 8;
 static unsigned int vram_busy_target_us = 15000;
 
@@ -488,6 +1329,12 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		return 0;
 	stall_pending = 0;
 	list_flush_pending();
+	if (psp_me_context)
+	{
+		stall_me_qid = qid;
+		stall_me_address = stall;
+		return 0;
+	}
 	stall_forwarded++;
 	if ((stall_forwarded & 63) == 0)
 	{
@@ -638,6 +1485,7 @@ static unsigned long fog_changes = 0;
 
 void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density)
 {
+	GE_DEFER(defer_fog(color, minimum_distance, maximum_distance, density)); /* build 112: gedefer */
 	float near = 1e6f, far = 2e6f;
 	unsigned int c;
 	int r, g, b;
@@ -1004,7 +1852,9 @@ static void taa_resolve(void)
 	static const float strengths[4] = { 0.0f, 0.25f, 0.375f, 0.5f };
 	float alpha;
 
-	if (taa_done || !frame_open)
+	/* (build 112: never in the Media Engine's work: it reads VRAM, which the
+	ME can't see; temporal blend is settled off anyway) */
+	if (taa_done || !frame_open || psp_me_context)
 		return;
 	taa_done = 1;
 	if (psp_soften > 0 && !taa_failed)
@@ -1388,6 +2238,7 @@ b30's floor mirrors that way, the whole level seen from the mirror's camera
 under the floor (render.c no longer renders mirrors, psp_fixups.py) */
 void psp_ge_window_target(int target)
 {
+	GE_DEFER(defer_words(DEFER_WINDOW_TARGET, 1, (unsigned int)target, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (target != 0)
 		win_other_targets++;
 }
@@ -1399,9 +2250,11 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 
 	/* one window a frame: the GE's frame takes the first window's camera,
 	and the later ones (letterbox bars, the non-player overlays: 2-D, on
-	the same screen) draw into it */
+	the same screen) draw into it. (build 112: they change nothing, so
+	they don't make the waiting calls run either; the first does) */
 	if (frame_open)
 		return;
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	if (!ge_ready)
 		ge_initialize();
 	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
@@ -1413,6 +2266,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		vram_busy_load();
 	hud_phase = 0;
 	ge_kinds_frame_begin(); /* build 103 */
+	defer_frame_begin(); /* build 112 */
 	taa_done = 0;
 	taa_frame++;
 	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
@@ -1858,9 +2712,9 @@ static int compact_build(struct level_stream *stream)
 			cl->v = (short)floorf(lv * 32767.0f + 0.5f);
 		}
 	}
-	sceKernelDcacheWritebackRange(stream->compact_base, stream->count * sizeof(struct compact_vertex));
+	ge_writeback(stream->compact_base, stream->count * sizeof(struct compact_vertex));
 	if (stream->compact_lightmap)
-		sceKernelDcacheWritebackRange(stream->compact_lightmap, stream->count * sizeof(struct compact_vertex));
+		ge_writeback(stream->compact_lightmap, stream->count * sizeof(struct compact_vertex));
 	compact_streams++;
 	return 1;
 }
@@ -2106,7 +2960,7 @@ static void __attribute__((cold)) arena_compact(void)
 		block->owner = NULL;
 	}
 	if (first_moved)
-		sceKernelDcacheWritebackRange(first_moved, (unsigned int)(to - first_moved));
+		ge_writeback(first_moved, (unsigned int)(to - first_moved));
 	arena_compactions++;
 	arena_moved_kb += moved / 1024;
 }
@@ -2127,7 +2981,7 @@ static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int 
 		return 0;
 	memcpy(to, piece, bytes);
 	if (ge_reads)
-		sceKernelDcacheWritebackRange(to, bytes);
+		ge_writeback(to, bytes);
 	*field = to;
 	free(piece);
 	if (arena_heap_live)
@@ -2345,6 +3199,7 @@ static struct bake_stencil *bake_stencil_of(unsigned int key)
 /* the map's .pstn, when its geometry pack opens (psp_geo.c) */
 void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 {
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	char path[128];
 	SceUID file;
 	int size, k;
@@ -2513,7 +3368,7 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		bake.stencil_count++;
 	}
 	/* the layers' vertices are read by the GE */
-	sceKernelDcacheWritebackRange(bake.file, size);
+	ge_writeback(bake.file, size);
 	platform_log("stencils: %s: %d walls, %d stencil layers, %d stencil materials baked", path, bake.wall_count,
 		bake.layer_count, bake.stencil_count);
 	return;
@@ -2615,6 +3470,23 @@ static unsigned int stream_size(const struct level_stream *stream)
 	return size;
 }
 
+/* build 112: level copies that work marked as the Media Engine's needed and
+couldn't build (gemesim): building reads the geometry cache, which may start
+a stick read, and may fall back on the heap, all system calls. The main CPU
+builds them at the frame's end (psp_ge_frame_end), so they're there for the
+next frame; the draw is skipped meanwhile, as for geometry still on its way */
+#define STREAMS_WANTED 32
+static struct
+{
+	const void *vertices, *lightmap_vertices;
+	int count;
+} streams_wanted[STREAMS_WANTED];
+static int streams_wanted_count = 0;
+static unsigned long streams_wanted_total = 0, streams_wanted_dropped = 0;
+
+/* a level copy already built, or NULL; changes nothing (with the shadows) */
+static struct level_stream *level_stream_find(const void *vertices);
+
 static struct level_stream *level_stream_get(const void *vertices, const void *lightmap_vertices, int count)
 {
 	const void *key = stream_key(vertices);
@@ -2633,6 +3505,27 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	{
 		stream->last_frame = stream_frame;
 		return stream;
+	}
+	if (psp_me_context)
+	{
+		int k;
+
+		for (k = 0; k < streams_wanted_count && streams_wanted[k].vertices != vertices; k++)
+			;
+		if (k == streams_wanted_count)
+		{
+			if (k < STREAMS_WANTED)
+			{
+				streams_wanted[k].vertices = vertices;
+				streams_wanted[k].lightmap_vertices = lightmap_vertices;
+				streams_wanted[k].count = count;
+				streams_wanted_count++;
+				streams_wanted_total++;
+			}
+			else
+				streams_wanted_dropped++;
+		}
+		return NULL;
 	}
 	/* new, or let go when over budget (level_streams_trim): built here */
 	if (psp_geo_external((unsigned int)vertices))
@@ -2736,9 +3629,9 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	stream->compact_base = stream->compact_lightmap = NULL;
 	if (level_compact)
 		compact_build(stream);
-	sceKernelDcacheWritebackRange(stream->base, count * sizeof(struct ge_vertex));
+	ge_writeback(stream->base, count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
-		sceKernelDcacheWritebackRange(stream->lightmap, count * sizeof(struct ge_vertex));
+		ge_writeback(stream->lightmap, count * sizeof(struct ge_vertex));
 	stream_bytes += stream_size(stream);
 	return stream;
 }
@@ -3123,6 +4016,8 @@ int psp_keep(const char *name);
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v)
 {
+	GE_DEFER(defer_words(DEFER_LEVEL_DETAIL, 6, primary_key, defer_bits(primary_u), defer_bits(primary_v), micro_key,
+		defer_bits(micro_u), defer_bits(micro_v), 0, 0)); /* build 112: gedefer */
 	detail_key[0] = primary_key; detail_u[0] = primary_u; detail_v[0] = primary_v;
 	detail_key[1] = micro_key; detail_u[1] = micro_u; detail_v[1] = micro_v;
 }
@@ -3358,7 +4253,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	triangles came and went with the view (Sheepdog01's canyon walls, the same way
 	each time he turned). Out of the cache first, as the meters (build 39) */
 	if (!kept)
-		sceKernelDcacheWritebackRange(indices, triangle_count * 3 * sizeof(unsigned short));
+		ge_writeback(indices, triangle_count * 3 * sizeof(unsigned short));
 	/* build 64: sorted by slant (angle_sort; the copy, if one is made, is the
 	display list's own). Build 66: with the far triangles (past DETAIL_FAR)
 	set apart, when the draw has detail maps and reaches that far */
@@ -3640,6 +4535,9 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
+	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
+		lightmap_key, alpha_tested)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL); /* build 103 */
 	unsigned int start = ge_clock();
 
@@ -3691,6 +4589,10 @@ static unsigned int color_from_rgb(const float *rgb)
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
+	GE_BENCH_SKIP();
+	if (defer_on && !defer_replaying &&
+		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
+		return;
 	int index;
 
 	model_nodes = node_matrices;
@@ -3730,6 +4632,8 @@ static void use_projection(int first_person)
 
 void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp)
 {
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_model_shape(first_person, centroid, radius, near_fp, far_fp));
 	if (!frame_open)
 		return;
 	if (near_fp > 0.001f)
@@ -3800,6 +4704,8 @@ int psp_keep(const char *name);
 
 void psp_ge_model_effect(int type, float intensity)
 {
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_model_effect(type, intensity));
 	model_camouflage = type == 1 && intensity > 0.0f ? (intensity > 1.0f ? 1.0f : intensity) : 0.0f;
 }
 
@@ -4147,7 +5053,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 					out += 3;
 					part->batches[b].index_count += 3;
 				}
-			sceKernelDcacheWritebackRange(part->batches[b].indices, part->batches[b].index_count * 2);
+			ge_writeback(part->batches[b].indices, part->batches[b].index_count * 2);
 		}
 	}
 	free(batch_of);
@@ -4223,6 +5129,47 @@ static void converted_sweep(void)
 	converted_sweeps++;
 }
 
+/* build 112: model buffers that work marked as the Media Engine's needed
+converted (gemesim): converting plans a bending part's skinning on the heap
+and sweeps the table, which frees plans, all behind the heap's lock. The
+main CPU converts them at the frame's end (psp_ge_frame_end), so they're
+ready next frame; the part isn't drawn meanwhile, as for geometry still on
+its way */
+#define CONVERTS_WANTED 64
+static struct
+{
+	void *vertices;
+	const unsigned short *indices;
+	int count, uncompressed, index_count, strip, skin;
+} converts_wanted[CONVERTS_WANTED];
+static int converts_wanted_count = 0;
+static unsigned long converts_wanted_total = 0, converts_wanted_dropped = 0;
+
+static void convert_want(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
+	int strip, int skin)
+{
+	int k;
+
+	for (k = 0; k < converts_wanted_count && converts_wanted[k].vertices != vertices; k++)
+		;
+	if (k < converts_wanted_count)
+		return;
+	if (k >= CONVERTS_WANTED)
+	{
+		converts_wanted_dropped++;
+		return;
+	}
+	converts_wanted[k].vertices = vertices;
+	converts_wanted[k].indices = indices;
+	converts_wanted[k].count = count;
+	converts_wanted[k].uncompressed = uncompressed;
+	converts_wanted[k].index_count = index_count;
+	converts_wanted[k].strip = strip;
+	converts_wanted[k].skin = skin;
+	converts_wanted_count++;
+	converts_wanted_total++;
+}
+
 /* rewrites a model vertex buffer for the GE, once; 0 if there's no room to
 remember it. Parts on several nodes are planned for skinning when their
 triangles are given (see-through parts aren't: they are queued with one
@@ -4240,7 +5187,8 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		*skin = NULL;
 	if (converted_sweep_late < 0)
 		converted_sweep_late = psp_keep("sweeplate");
-	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark))
+	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark) &&
+		!psp_me_context) /* build 112: the sweep frees plans: the main CPU's */
 	{
 		converted_sweep();
 		/* build 112: the next mark, past what this sweep kept */
@@ -4283,6 +5231,11 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 				*skin = skinned[slot];
 			return 1;
 		}
+		if (psp_me_context)
+		{
+			convert_want(vertices, count, uncompressed, indices, index_count, strip, skin != NULL);
+			return 0;
+		}
 		/* the cache has read other vertices (or these again) into the block
 		since: converted afresh, the old plan let go */
 		skin_free(skinned[slot]);
@@ -4291,7 +5244,14 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		reconverted_count++;
 	}
 	else
+	{
+		if (psp_me_context)
+		{
+			convert_want(vertices, count, uncompressed, indices, index_count, strip, skin != NULL);
+			return 0;
+		}
 		converted_generation[slot] = psp_geo_generation(vertices);
+	}
 	if (skin && indices)
 	{
 		node0 = malloc(count * 3);
@@ -4414,7 +5374,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		}
 	}
 	free(node0);
-	sceKernelDcacheWritebackRange(vertices, count * (part ? part->stride : 24));
+	ge_writeback(vertices, count * (part ? part->stride : 24));
 	return 1;
 }
 
@@ -4463,6 +5423,8 @@ static unsigned int abgr_from_rgb(float const *rgb)
 colour (by its blue) and the self-illumination (by its green; build 31) */
 void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
 {
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_model_multipurpose(multipurpose_key, change, glow));
 	change_key = multipurpose_key;
 	change_color = abgr_from_rgb(change);
 	glow_color = abgr_from_rgb(glow) & 0xFFFFFF;
@@ -4565,7 +5527,7 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 		computed[entry] = 0xFF000000 | (mask << 16) | (mask << 8) | mask;
 	}
 	if (!hit)
-		sceKernelDcacheWritebackRange(computed, count * 4);
+		ge_writeback(computed, count * 4);
 	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 	sceGuClutLoad(count / 8 > 0 ? count / 8 : 1, computed);
 	if (which)
@@ -4909,7 +5871,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					skin_vfpu = psp_vfpu_on && psp_keep("vfpuskin");
 					skin_vfpu_check = psp_keep("skinvfpucheck");
 				}
-				on_vfpu = skin_vfpu && skin->weights <= 7;
+				/* (build 112: never in the Media Engine's work: the ME has no VFPU) */
+				on_vfpu = skin_vfpu && skin->weights <= 7 && !psp_me_context;
 				if (on_vfpu)
 					skin_vfpu_load((const float (*)[3][4])depth_row, skin->weights);
 				for (t = 0; t + 2 < draw_count; t += 3)
@@ -5458,6 +6421,9 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
 {
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_draw_model(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key,
+		u_scale, v_scale, alpha_tested));
 	ge_kind(in_sky ? KIND_SKY : KIND_MODEL); /* build 103 */
 	unsigned int start = ge_clock();
 
@@ -5478,6 +6444,7 @@ static int in_sky = 0;
 
 void psp_ge_sky(int on)
 {
+	GE_DEFER(defer_words(DEFER_SKY, 1, (unsigned int)on, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (!frame_open)
 		return;
 	in_sky = on;
@@ -5510,6 +6477,7 @@ static void overlay_backing_forget(void);
 
 void psp_ge_forget_level(void)
 {
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	int index;
 
 	for (index = 0; index < LEVEL_STREAMS; index++)
@@ -5531,6 +6499,7 @@ void psp_ge_forget_level(void)
 
 void psp_ge_forget_map(void)
 {
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	int index;
 
 	for (index = 0; index < CONVERTED_BUFFERS; index++)
@@ -5693,11 +6662,13 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world)
 {
+	GE_DEFER(defer_sprites(vertices, sprite_count, bitmap_key, blend, view_to_world), 1); /* build 112: gedefer */
+	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 	int result = psp_ge_sprites_body(vertices, sprite_count, bitmap_key, blend, view_to_world);
 
-	ge_entry_us[4] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[4] += ge_clock() - start;
 	return result;
 }
 
@@ -5719,12 +6690,14 @@ extern unsigned long psp_occlusion_rays_cast, psp_occlusion_rays_kept; /* raster
 
 void psp_ge_widget_begin(int depth_test)
 {
+	GE_DEFER(defer_words(DEFER_WIDGET_BEGIN, 1, (unsigned int)depth_test, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	widget_depth = depth_test;
 	widget_begins++;
 }
 
 void psp_ge_widget_texture(unsigned int key)
 {
+	GE_DEFER(defer_words(DEFER_WIDGET_TEXTURE, 1, key, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	widget_key = key;
 	if (!key)
 		widget_untextured++;
@@ -5733,6 +6706,7 @@ void psp_ge_widget_texture(unsigned int key)
 /* the occlusion rays' tally, for the log */
 void psp_ge_widget_occlusion(int visible)
 {
+	GE_DEFER(defer_words(DEFER_WIDGET_OCCLUSION, 1, (unsigned int)visible, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	occlusion_tests++;
 	if (visible)
 		occlusion_visible++;
@@ -5741,6 +6715,8 @@ void psp_ge_widget_occlusion(int visible)
 void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
 	unsigned long color)
 {
+	GE_DEFER(defer_widget_sprite(point, radius, scale_x, scale_y, rotation, color)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_WIDGET); /* build 103 */
 	static const float corner_uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 	static const int fan[6] = { 0, 1, 2, 0, 2, 3 };
@@ -6107,11 +7083,14 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
 {
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_queue_transparent(vertices, vertex_count, uncompressed, indices, index_count, strip, key,
+		u_scale, v_scale, u_offset, v_offset, blend, centroid));
 	ge_kind(KIND_SEETHROUGH_QUEUE); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_queue_transparent_body(vertices, vertex_count, uncompressed, indices, index_count, strip, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
-	ge_entry_us[2] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[2] += ge_clock() - start;
 }
 
 /* the level's see-through surfaces (build 23): as the solid level, each
@@ -6363,6 +7342,39 @@ static void overlay_backing_forget(void)
 static unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, overlay_free = 0, overlay_ask_us = 0;
 
 static unsigned long overlay_backing_full = 0;
+
+/* build 112: triangles whose answer work marked as the Media Engine's needed
+and didn't have (gemesim): finding it takes heap for the answers and casts
+the engine's collision rays, which read the game's data while the main CPU
+may be moving it. The main CPU asks them at the frame's end
+(psp_ge_frame_end); meanwhile the triangle counts as on a wall, as it does
+when there's no memory for its answers */
+#define WALLS_WANTED 64
+static struct
+{
+	const struct ge_vertex *stream;
+	const unsigned short *indices;
+	long triangle_count, triangle;
+} walls_wanted[WALLS_WANTED];
+static int walls_wanted_count = 0;
+static unsigned long walls_wanted_total = 0, walls_wanted_dropped = 0;
+
+static int overlay_want(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count, long triangle)
+{
+	if (walls_wanted_count < WALLS_WANTED)
+	{
+		walls_wanted[walls_wanted_count].stream = stream;
+		walls_wanted[walls_wanted_count].indices = indices;
+		walls_wanted[walls_wanted_count].triangle_count = triangle_count;
+		walls_wanted[walls_wanted_count].triangle = triangle;
+		walls_wanted_count++;
+		walls_wanted_total++;
+	}
+	else
+		walls_wanted_dropped++;
+	return 1;
+}
+
 static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count,
 	long triangle)
 {
@@ -6408,6 +7420,8 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 			flags = overlay_backing[slot].flags;
 			break;
 		}
+	if (!flags && psp_me_context)
+		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags)
 	{
 		if (!(flags = calloc(triangle_count, 1)))
@@ -6427,6 +7441,8 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		overlay_backing[slot].count = triangle_count;
 		overlay_backing[slot].flags = flags;
 	}
+	if (!flags[triangle] && psp_me_context)
+		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags[triangle])
 	{
 		const struct ge_vertex *a = &stream[indices[3 * triangle]], *b = &stream[indices[3 * triangle + 1]],
@@ -6434,7 +7450,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		float e1[3] = { b->x - a->x, b->y - a->y, b->z - a->z }, e2[3] = { c->x - a->x, c->y - a->y, c->z - a->z };
 		float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
 		float length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-		unsigned int start = sceKernelGetSystemTimeLow();
+		unsigned int start = ge_clock();
 
 		flags[triangle] = 1;
 		if (length > 0.0f)
@@ -6487,9 +7503,44 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 			overlay_on_walls++;
 		else
 			overlay_free++;
-		overlay_ask_us += sceKernelGetSystemTimeLow() - start;
+		overlay_ask_us += ge_clock() - start;
 	}
 	return flags[triangle] == 1;
+}
+
+/* build 112: a triangle's wall answer: the one its record carried while
+the Media Engine's work carries the call out (overlay_answers), else asked
+here */
+static int overlay_answer(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count,
+	long triangle)
+{
+	if (overlay_answers)
+		return overlay_answers[triangle];
+	/* (the ME's work without answers touches none of the answers' tables,
+	which the main CPU fills as calls are written down: it only wants) */
+	if (psp_me_context)
+		return overlay_want(stream, indices, triangle_count, triangle);
+	return overlay_on_a_wall(stream, indices, triangle_count, triangle);
+}
+
+/* every triangle's answer of a see-through level list, worked out on the
+main CPU as the call is written down (ME semantics): 1 if out[] holds them,
+0 if the level copy isn't there to ask from (the carrying out then asks, or
+wants, as before) */
+static int overlay_answers_for(const void *vertices, int vertex_count, const unsigned short *indices,
+	long triangle_count, unsigned char *out)
+{
+	/* an existing copy only: building one here would change the copies'
+	table and arena while the ME may be reading them (copies are built at
+	the frame's end) */
+	struct level_stream *stream = level_stream_find(vertices);
+	long t;
+
+	if (!stream)
+		return 0;
+	for (t = 0; t < triangle_count; t++)
+		out[t] = (unsigned char)overlay_on_a_wall(stream->base, indices, triangle_count, t);
+	return 1;
 }
 
 /* build 87: a baked stencil's layers: its triangles on the pieces of the wall
@@ -6675,7 +7726,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 
 				for (corner = 0; corner < 3; corner++)
 					to_camera(&stream->base[triangle[corner]].x, p[corner]);
-				units = overlay_units(p[0], p[1], p[2], overlay_on_a_wall(stream->base, indices, triangle_count, index));
+				units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
 				overlay_triangle_bucket[kept_count] = overlay_bucket_of(units);
 				if (abs(units) > bucket_units[overlay_triangle_bucket[kept_count]])
 					bucket_units[overlay_triangle_bucket[kept_count]] = (unsigned short)abs(units);
@@ -6696,7 +7747,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				corners[corner][5] = corners[corner][6] = 0.0f;
 			}
 			units = overlay_units(corners[0], corners[1], corners[2],
-				overlay_on_a_wall(stream->base, indices, triangle_count, index));
+				overlay_answer(stream->base, indices, triangle_count, index));
 			if (units > cut_units)
 				cut_units = units;
 			if (units < 0 && -units > cut_units_free)
@@ -6788,11 +7839,14 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
+	GE_DEFER(defer_queue_level_transparent(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale,
+		u_offset, v_offset, blend, centroid)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL_SEETHROUGH); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_queue_level_transparent_body(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
-	ge_entry_us[3] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[3] += ge_clock() - start;
 }
 
 #define LEVEL_OVERLAY_OFFSET 24
@@ -6965,13 +8019,13 @@ static void transparent_flush_body(void)
 
 static void transparent_flush(void)
 {
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 	int kind = ge_kind_now;
 
 	ge_kind(KIND_SEETHROUGH_FLUSH); /* build 103 */
 	transparent_flush_body();
 	ge_kind(kind);
-	ge_entry_us[8] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[8] += ge_clock() - start;
 }
 
 /* ---------- the HUD (build 20)
@@ -7023,6 +8077,7 @@ static float hud_zoom = 1.0f;
 
 void psp_ge_hud_zoom(float zoom)
 {
+	GE_DEFER(defer_words(DEFER_HUD_ZOOM, 1, defer_bits(zoom), 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	hud_zoom = zoom > 0.0f ? zoom : 1.0f;
 }
 
@@ -7030,11 +8085,13 @@ static int ui_centered = 0;
 
 void psp_ge_ui_centered(int centered)
 {
+	GE_DEFER(defer_words(DEFER_UI_CENTERED, 1, (unsigned int)centered, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	ui_centered = centered;
 }
 
 void psp_ge_ui_space(int width, int height)
 {
+	GE_DEFER(defer_words(DEFER_UI_SPACE, 2, (unsigned int)width, (unsigned int)height, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (width <= 0 || height <= 0)
 		return;
 	if (ui_centered)
@@ -7134,12 +8191,15 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
+	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,
+		wrapped, u_scale, v_scale)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_SCREEN); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters, wrapped, u_scale,
 		v_scale);
-	hud_quad_us += sceKernelGetSystemTimeLow() - start;
+	hud_quad_us += ge_clock() - start;
 }
 
 static unsigned long screen_quad_bailed = 0;
@@ -7312,7 +8372,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 		it changed (Sheepdog01's "rubber banding" ammo and flashlight meters). The
 		display list's own memory is uncached, so only the kept slots need it */
 		if (!hit && computed >= &meter_cache_palette[0][0] && computed < &meter_cache_palette[METER_CACHE][0])
-			sceKernelDcacheWritebackRange(computed, count * 4);
+			ge_writeback(computed, count * 4);
 		sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 		sceGuClutLoad(count / 8, computed);
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
@@ -7390,6 +8450,8 @@ static struct shadow_vertex scratch_vertices[3 * SCRATCH_TRIANGLES];
 /* the game's real_matrix4x3: scale, forward, left, up, position */
 void psp_ge_shadow_begin(const float *matrix, const float *color, float radius)
 {
+	GE_DEFER(defer_shadow_begin(matrix, color, radius)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	int k;
 
 	shadow.open = 0;
@@ -7428,7 +8490,7 @@ void psp_ge_shadow_begin(const float *matrix, const float *color, float radius)
 
 				blob_texture[32 * y + x] = 0xFF000000 | ((unsigned int)value * 0x010101);
 			}
-		sceKernelDcacheWritebackRange(blob_texture, sizeof(blob_texture));
+		ge_writeback(blob_texture, sizeof(blob_texture));
 		blob_ready = 1;
 	}
 }
@@ -7470,6 +8532,11 @@ compressed vertex data address, which is the key when the data is in the
 pack). The copies hold what it asks: base and lightmap texture coordinates */
 int psp_ge_level_vertex_texcoords(unsigned int key, int vertex_index, float *uv, float *lightmap_uv)
 {
+	/* build 112: gedefer. Waiting calls run first so the answer is the one
+	the frame so far gives; under ME semantics they needn't: copies are built
+	only at the frame's end there, so this reads what is built already */
+	if (!defer_me_semantics)
+		GE_DEFER_DRAIN();
 	unsigned int slot = (key >> 5) % LEVEL_STREAMS, tries = 0;
 	const struct level_stream *stream;
 
@@ -7497,6 +8564,11 @@ geometry outside the tags read them at the Xbox's 32-byte stride from the
 copies are there; radiosity 0 without a lightmap */
 int psp_ge_level_vertex_lighting(unsigned int key, int vertex_index, unsigned int *normal, unsigned int *radiosity)
 {
+	/* build 112: gedefer. Waiting calls run first so the answer is the one
+	the frame so far gives; under ME semantics they needn't: copies are built
+	only at the frame's end there, so this reads what is built already */
+	if (!defer_me_semantics)
+		GE_DEFER_DRAIN();
 	unsigned int slot = (key >> 5) % LEVEL_STREAMS, tries = 0;
 	const struct level_stream *stream;
 
@@ -7750,15 +8822,19 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 
 void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
 {
+	GE_DEFER(defer_words(DEFER_SHADOW_DRAW, 4, DEFER_P(vertices), (unsigned int)vertex_count, DEFER_P(indices),
+		(unsigned int)triangle_count, 0, 0, 0, 0)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_SHADOW); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_shadow_draw_body(vertices, vertex_count, indices, triangle_count);
-	ge_entry_us[7] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[7] += ge_clock() - start;
 }
 
 void psp_ge_shadow_end(void)
 {
+	GE_DEFER(defer_words(DEFER_SHADOW_END, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	shadow.open = 0;
 }
 
@@ -7783,6 +8859,8 @@ static unsigned long lights_drawn = 0;
 void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
 	float cosine_falloff, float cosine_cutoff)
 {
+	GE_DEFER(defer_light_begin(position, forward, color, radius, cosine_falloff, cosine_cutoff)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	int k;
 
 	light.open = frame_open && radius > 0.0f && color[0] + color[1] + color[2] > 0.01f;
@@ -7908,9 +8986,9 @@ static unsigned char *cone_texture(float falloff, float cutoff)
 	{
 		for (x = 0; x < 256; x++)
 			cone_ramp[x] = 0xFF000000 | (x << 16) | (x << 8) | x;
-		sceKernelDcacheWritebackRange(cone_ramp, sizeof(cone_ramp));
+		ge_writeback(cone_ramp, sizeof(cone_ramp));
 	}
-	sceKernelDcacheWritebackRange(cones[slot].texels, sizeof(cones[slot].texels));
+	ge_writeback(cones[slot].texels, sizeof(cones[slot].texels));
 	return cones[slot].texels;
 }
 
@@ -8542,11 +9620,14 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
+	GE_DEFER(defer_words(DEFER_LIGHT_DRAW, 5, DEFER_P(vertices), (unsigned int)vertex_count, DEFER_P(indices),
+		(unsigned int)triangle_count, base_key, 0, 0, 0)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_LIGHT); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	psp_ge_light_draw_body(vertices, vertex_count, indices, triangle_count, base_key);
-	ge_entry_us[6] += sceKernelGetSystemTimeLow() - start;
+	ge_entry_us[6] += ge_clock() - start;
 }
 
 /* ---------- the screen flash (build 23): a colour over the whole picture,
@@ -8558,6 +9639,7 @@ static unsigned long flashes_drawn = 0;
 
 void psp_ge_screen_flash(short type, float intensity, float const *argb)
 {
+	GE_DEFER(defer_screen_flash(type, intensity, argb)); /* build 112: gedefer */
 	struct hud_vertex *out;
 	float a, r, g, b;
 	unsigned int color, fix;
@@ -9322,6 +10404,8 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
+	GE_DEFER(defer_decal(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	static unsigned int decal_calls = 0;
 
 	ge_kind(KIND_DECAL); /* build 103 */
@@ -9408,6 +10492,7 @@ static unsigned int blip_color(float red, float green, float blue)
 
 void psp_ge_blips_begin(void)
 {
+	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	ge_kind(KIND_HUD); /* build 103 */
 	list_hud_phase();
 	static const float everywhere[8] = { -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f };
@@ -9437,6 +10522,9 @@ void psp_ge_blips_begin(void)
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
+	GE_DEFER(defer_words(DEFER_BLIP, 7, defer_bits(x), defer_bits(y), defer_bits(radius), defer_bits(red),
+		defer_bits(green), defer_bits(blue), key, 0)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_HUD); /* build 103 */
 	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
 	float xy[8] = { x - radius, y + radius, x + radius, y + radius, x + radius, y - radius, x - radius, y - radius };
@@ -9451,6 +10539,8 @@ void psp_ge_blip(float x, float y, float radius, float red, float green, float b
 
 void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
 {
+	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
+		mask_key, 0, 0, 0)); /* build 112: gedefer */
 	ge_kind(KIND_HUD); /* build 103 */
 	static const float square[8] = { -1.015625f, 1.046875f, 1.046875f, 1.046875f, 1.046875f, -1.015625f, -1.015625f, -1.015625f };
 
@@ -9541,6 +10631,7 @@ static unsigned long text_changes = 0;
 
 void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height)
 {
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	const unsigned char *data = bitmap;
 	int bitmap_width = *(const short *)(data + 4), bitmap_height = *(const short *)(data + 6), row;
 	unsigned short *pixels = *(unsigned short *const *)(data + 44);
@@ -9558,7 +10649,7 @@ void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height
 		unsigned int start = (unsigned int)(pixels + (y + row) * bitmap_width + x) & ~63u;
 		unsigned int end = ((unsigned int)(pixels + (y + row) * bitmap_width + x + width) + 63) & ~63u;
 
-		sceKernelDcacheWritebackRange((void *)start, end - start);
+		ge_writeback((void *)start, end - start);
 	}
 	text_changed = 1;
 	text_changes++;
@@ -9566,6 +10657,23 @@ void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height
 
 int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y)
 {
+	/* build 112: gedefer. The engine needs the answer now (whether to send
+	the characters), so it is worked out here from what the main CPU knows:
+	the frame and the font's picture. Whether the list has room is the
+	carrying out's to judge: if it hasn't, the text stays closed then and
+	the characters written down after this are dropped there, as the engine
+	would have left them out. The same list either way */
+	if (defer_on && !defer_replaying && !defer_paused)
+	{
+		const unsigned char *picture = bitmap;
+		int answer = frame_open && picture && *(void *const *)(picture + 44) && *(const short *)(picture + 12) == 9 &&
+			*(const short *)(picture + 4) > 0 && *(const short *)(picture + 6) > 0 &&
+			*(const short *)(picture + 4) <= 512 && *(const short *)(picture + 6) <= 512;
+
+		defer_words(DEFER_TEXT_BEGIN, 4, DEFER_P(bitmap), (unsigned int)blend, defer_bits(offset_x), defer_bits(offset_y),
+			0, 0, 0, 0);
+		return answer;
+	}
 	ge_kind(KIND_HUD); /* build 103 */
 	list_hud_phase();
 	/* the game's bitmap_data: width +4, height +6, format +12, pixels +44 */
@@ -9602,11 +10710,13 @@ static void text_character(void const *vertices);
 
 void psp_ge_text_character(void const *vertices)
 {
+	GE_DEFER(defer_text_character(vertices)); /* build 112: gedefer */
+	GE_BENCH_SKIP();
 	ge_kind(KIND_HUD); /* build 103 */
-	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned int start = ge_clock();
 
 	text_character(vertices);
-	text_us += sceKernelGetSystemTimeLow() - start;
+	text_us += ge_clock() - start;
 }
 
 static void text_character(void const *vertices)
@@ -9641,6 +10751,7 @@ static void text_character(void const *vertices)
 
 void psp_ge_text_end(void)
 {
+	GE_DEFER(defer_words(DEFER_TEXT_END, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	if (!text_open)
 		return;
 	text_open = 0;
@@ -9796,6 +10907,8 @@ static unsigned long win_frames = 0, win_flush_us = 0, win_writeback_us = 0, win
 	win_swap_us = 0, win_after_us = 0, win_list_bytes = 0, win_triangles = 0, win_draws = 0, win_transparent = 0;
 void psp_ge_frame_window(char *text, int size)
 {
+	/* (no GE_DEFER_DRAIN: the heartbeat's thread asks for this line, and
+	waiting calls run only on the game's thread) */
 	unsigned long n = win_frames ? win_frames : 1;
 
 	snprintf(text, size, "frameend: %lu frames; a frame: see-through flush %.1f ms, cache write-back %.1f, waiting for the GE %.1f (worst %.1f), swap %.1f, caches %.1f; display list %lu KB, %lu level draws, %lu triangles, %lu see-through draws",
@@ -9816,6 +10929,7 @@ void psp_ge_frame_window(char *text, int size)
 
 void psp_ge_frame_end(void)
 {
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	unsigned int flush_mark;
 
 	if (!frame_open)
@@ -9910,6 +11024,30 @@ void psp_ge_frame_end(void)
 		psp_tex_frame_end();
 		/* build 68: the geometry cache's reads, and the level copies' budget */
 		psp_geo_frame_end();
+		/* build 112: the copies the Media Engine's work wanted, built now */
+		me_log_write();
+		{
+			int k;
+
+			for (k = 0; k < streams_wanted_count; k++)
+				level_stream_get(streams_wanted[k].vertices, streams_wanted[k].lightmap_vertices, streams_wanted[k].count);
+			streams_wanted_count = 0;
+			/* the see-through level triangles it wanted asked */
+			for (k = 0; k < walls_wanted_count; k++)
+				overlay_on_a_wall(walls_wanted[k].stream, walls_wanted[k].indices, walls_wanted[k].triangle_count,
+					walls_wanted[k].triangle);
+			walls_wanted_count = 0;
+			/* and the model buffers it wanted converted */
+			for (k = 0; k < converts_wanted_count; k++)
+			{
+				struct skin_part *plan;
+
+				model_convert(converts_wanted[k].vertices, converts_wanted[k].count, converts_wanted[k].uncompressed,
+					converts_wanted[k].indices, converts_wanted[k].index_count, converts_wanted[k].strip,
+					converts_wanted[k].skin ? &plan : NULL);
+			}
+			converts_wanted_count = 0;
+		}
 		if (psp_geo_open_count())
 			level_streams_trim();
 		arena_frame_end(); /* build 111: compaction, the heap's copies brought back */
@@ -9986,6 +11124,40 @@ void psp_ge_frame_end(void)
 				converted_sweep_late > 0 ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark,
 				skin_live_bytes / 1024, skin_live_peak / 1024);
 			converted_sweeps = converted_forgotten = 0;
+			/* build 112: gedefer's 300 frames */
+			if (defer_on)
+				platform_log("GE: gedefer: %lu calls deferred, carried out in %lu runs (%lu when the buffer filled); ran as they came: %lu models with more than %d nodes, %lu calls too large",
+					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES, defer_too_large);
+			if (defer_on)
+			{
+				char sites[400];
+				int length = 0, k;
+
+				sites[0] = 0;
+				for (k = 0; k < DEFER_SITES && defer_site[k]; k++)
+				{
+					length += snprintf(sites + length, sizeof(sites) - length, " %s %lu;", defer_site[k], defer_site_drains[k]);
+					defer_site_drains[k] = 0;
+					if (length >= (int)sizeof(sites) - 1)
+						break;
+				}
+				platform_log("GE: gedefer: carried out for:%s", sites);
+				if (defer_me_jobs || defer_me_failed)
+					platform_log("GE: gemeon: %lu runs on the Media Engine (%lu failed): the main CPU waited %lu us a run, the ME's own time %lu us",
+						defer_me_jobs, defer_me_failed, defer_me_jobs ? defer_me_wait_us / defer_me_jobs : 0,
+						defer_me_jobs ? defer_me_own_us / defer_me_jobs : 0);
+				defer_me_jobs = defer_me_failed = defer_me_wait_us = defer_me_own_us = 0;
+				if (walls_wanted_total || walls_wanted_dropped)
+					platform_log("GE: gemesim: %lu see-through level triangles wanted asked by the Media Engine's work and asked at the frame's end, %lu more than the list held",
+						walls_wanted_total, walls_wanted_dropped);
+				if (converts_wanted_total || converts_wanted_dropped)
+					platform_log("GE: gemesim: %lu model buffers wanted converted by the Media Engine's work and converted at the frame's end, %lu more than the list held",
+						converts_wanted_total, converts_wanted_dropped);
+				if (streams_wanted_total || streams_wanted_dropped)
+					platform_log("GE: gemesim: %lu level copies wanted by the Media Engine's work and built at the frame's end, %lu more than the list held",
+						streams_wanted_total, streams_wanted_dropped);
+			}
+			defer_records = defer_drains = defer_drains_full = defer_big_models = defer_too_large = 0;
 			if (ge_skip || list_in_vram || vram_busy || ge_skipped_draws)
 			{
 				platform_log("GE: bench test: GE skipping %s; draws skipped %lu; display list in %s; VRAM-only load %s (%d sprites, %s)",

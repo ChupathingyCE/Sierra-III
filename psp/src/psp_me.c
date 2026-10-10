@@ -66,6 +66,7 @@ unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *s
 	unsigned long frames, unsigned long *clipped);
 unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results);
+unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -146,6 +147,7 @@ static void run_job(volatile struct me_slot *slot, int *sums)
 	}
 	case ME_JOB_CLASSIFY:
 	case ME_JOB_ANGLE:
+	case ME_JOB_GE:
 	{
 		unsigned int args[ME_JOB_ARGS], results[ME_JOB_RESULTS] = { 0 }, k;
 
@@ -153,8 +155,10 @@ static void run_job(volatile struct me_slot *slot, int *sums)
 			args[k] = slot->args[k];
 		if (slot->type == ME_JOB_CLASSIFY)
 			psp_ge_me_classify(args, results);
-		else
+		else if (slot->type == ME_JOB_ANGLE)
 			psp_ge_me_angle(args, results);
+		else
+			psp_ge_me_replay(args, results);
 		for (k = 0; k < ME_JOB_RESULTS; k++)
 			slot->results[k] = results[k];
 		break;

@@ -266,6 +266,33 @@ void psp_tex_resume(void)
 static int load(int index);
 static int load_into(int index, int only);
 static void preload_vram(void);
+
+/* build 112: textures that work marked as the Media Engine's needed and
+couldn't load (the ME makes no system calls; gemesim, psp_ge.c): the main
+CPU reads them at the frame's end (psp_tex_frame_end), within the frame's
+budget, so they are there for the next frame. Until then their surfaces are
+drawn in their flat colour, as for any texture still on its way */
+extern volatile unsigned int psp_me_context;
+#define WANTED_MAX 64
+static unsigned short wanted[WANTED_MAX];
+static int wanted_count = 0;
+static unsigned long wanted_total = 0, wanted_dropped = 0;
+
+static void want(int index)
+{
+	int k;
+
+	for (k = 0; k < wanted_count; k++)
+		if (wanted[k] == index)
+			return;
+	if (wanted_count < WANTED_MAX)
+	{
+		wanted[wanted_count++] = (unsigned short)index;
+		wanted_total++;
+	}
+	else
+		wanted_dropped++;
+}
 static int screen_free;
 
 /* build 38: the whole pack read in at the start when it fits the caches
@@ -940,6 +967,12 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	if (!resident_at[index])
 	{
 		misses++;
+		if (psp_me_context)
+		{
+			want(index); /* build 112 */
+			frame_untextured = 1;
+			return 0;
+		}
 		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
 		{
 			frame_untextured = 1;
@@ -1255,6 +1288,16 @@ void psp_tex_screen_free(void)
 
 void psp_tex_frame_end(void)
 {
+	/* build 112: what the Media Engine's work wanted, read now */
+	if (wanted_count && entries)
+	{
+		int k;
+
+		for (k = 0; k < wanted_count; k++)
+			if (!resident_at[wanted[k]] && frame_loaded < LOAD_BUDGET_BYTES)
+				load(wanted[k]);
+		wanted_count = 0;
+	}
 	if (vram_pending_count && entries)
 		preload_vram();
 	if (frame_set_bytes > frame_set_peak)
@@ -1278,6 +1321,9 @@ void psp_tex_frame_end(void)
 			untextured_frames, untextured_run_worst);
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
+	if (entries && frame % 300 == 0 && (wanted_total || wanted_dropped))
+		platform_log("textures: %lu wanted by the Media Engine's work and read at the frame's end, %lu more than the list held (gemesim)",
+			wanted_total, wanted_dropped);
 	if (frame_read_us > frame_read_worst)
 		frame_read_worst = frame_read_us;
 	frame_read_us = 0;

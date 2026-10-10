@@ -668,3 +668,60 @@ index 06c6177..d2a95f5 100644
  	// Booting an ISO shouldn't rewrite the NAND out from under a test run - and the tests want
  	// whatever firmware is installed to stay put. Install one with --unpack-updater instead.
  	g_Config.bAutoUpgradeFirmware = false;
+diff --git a/Core/HLE/HLE.cpp b/Core/HLE/HLE.cpp
+index 2a41a5833..66a18a451 100644
+--- a/Core/HLE/HLE.cpp
++++ b/Core/HLE/HLE.cpp
+@@ -16,7 +16,10 @@
+ // https://github.com/hrydgard/ppsspp and http://www.ppsspp.org/.
+ 
+ #include <cstdarg>
++#include <cstdio>
++#include <cstdlib>
+ #include <map>
++#include <set>
+ #include <vector>
+ #include <string>
+ 
+@@ -1053,7 +1056,33 @@ static void UpdateSyscallStats(int modulenum, int funcnum, double total) {
+ 	}
+ }
+ 
++// local patch (Halo PSP port, 2026-10-10): PSP_MESTRICT=<hex address> names a
++// word in the game's memory that holds a thread's id while that thread runs
++// code meant for the Media Engine on the main CPU (simulated: this emulator
++// runs no ME code), and 0 otherwise. A system call that thread makes then is
++// one the ME couldn't make: each distinct function and caller is printed once,
++// "MESTRICT: <function> from <return address>". Other threads are unaffected.
++static void MeStrictCheck(const HLEFunction *info) {
++	static bool init = false;
++	static u32 addr = 0;
++	static std::set<std::pair<const HLEFunction *, u32>> seen;
++	if (!init) {
++		init = true;
++		if (const char *a = getenv("PSP_MESTRICT"))
++			addr = (u32)strtoul(a, nullptr, 16);
++	}
++	if (!addr || !Memory::IsValidAddress(addr))
++		return;
++	const u32 thread = Memory::ReadUnchecked_U32(addr);
++	if (thread == 0 || thread != (u32)__KernelGetCurThread())
++		return;
++	const u32 ra = currentMIPS->r[MIPS_REG_RA];
++	if (seen.size() < 500 && seen.insert(std::make_pair(info, ra)).second)
++		fprintf(stderr, "MESTRICT: %s from %08x\n", info->name ? info->name : "?", ra);
++}
++
+ static void CallSyscallWithFlags(const HLEFunction *info) {
++	MeStrictCheck(info);
+ 	// _dbg_assert_(g_stackSize == 0);
+ 	g_stackSize = 0;
+ 
+@@ -1094,6 +1123,7 @@ static void CallSyscallWithFlags(const HLEFunction *info) {
+ }
+ 
+ static void CallSyscallWithoutFlags(const HLEFunction *info) {
++	MeStrictCheck(info);
+ 	// _dbg_assert_(g_stackSize == 0);
+ 	g_stackSize = 0;
+ 
