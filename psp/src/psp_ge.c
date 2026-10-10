@@ -41,6 +41,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <malloc.h>
 #include <pspge.h>
@@ -1915,6 +1916,8 @@ static int arena_state = -1; /* -1: not started; 0: off ("noarena", or no room);
 static unsigned long arena_used = 0, arena_let_go = 0, arena_from_heap = 0;
 /* pieces the general heap holds now (from_heap counts all ever sent there) */
 static unsigned long arena_heap_live = 0;
+/* the largest free block at the last frame's end, for the log */
+static unsigned int arena_largest = 0;
 static int level_stream_let_go_oldest(void);
 static unsigned int stream_size(const struct level_stream *stream);
 
@@ -1978,19 +1981,6 @@ static void *arena_take(unsigned int size, void **owner)
 	best->owner = owner;
 	arena_used += best->size;
 	return best + 1;
-}
-
-static unsigned int __attribute__((cold)) arena_largest_free(void)
-{
-	struct arena_block *block;
-	unsigned int largest = 0;
-
-	if (arena_state <= 0)
-		return 0;
-	for (block = (struct arena_block *)arena; block; block = arena_next(block))
-		if (!block->used && block->size > largest)
-			largest = block->size;
-	return largest;
 }
 
 static void *copy_alloc(unsigned int bytes, void **owner)
@@ -2075,13 +2065,13 @@ most every 30 frames, or at the end of a frame that sent pieces to the heap.
 static int arena_compact_on = -1;
 static unsigned int arena_last_compact = 0;
 static unsigned long arena_seen_from_heap = 0;
-static unsigned long arena_compactions = 0, arena_moved_kb = 0, arena_compact_us = 0, arena_migrated = 0;
+static unsigned long arena_compactions = 0, arena_moved_kb = 0, arena_migrated = 0;
 
 static void __attribute__((cold)) arena_compact(void)
 {
 	struct arena_block *block, *next;
 	char *to = arena, *first_moved = NULL;
-	unsigned int previous = 0, start = sceKernelGetSystemTimeLow();
+	unsigned int previous = 0;
 	unsigned long moved = 0;
 
 	for (block = (struct arena_block *)arena; block; block = next)
@@ -2119,11 +2109,11 @@ static void __attribute__((cold)) arena_compact(void)
 		sceKernelDcacheWritebackRange(first_moved, (unsigned int)(to - first_moved));
 	arena_compactions++;
 	arena_moved_kb += moved / 1024;
-	arena_compact_us += sceKernelGetSystemTimeLow() - start;
 }
 
 /* a piece the general heap holds, moved into the arena if a free block takes
-it as it is (no letting go); the GE's arrays written back. 0: no room */
+it as it is (no letting go); the GE's arrays written back. 0: no room,
+1: nothing to move (none, VRAM, or already in the arena), 2: moved */
 static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int bytes, int ge_reads)
 {
 	char *piece = (char *)*field;
@@ -2142,43 +2132,41 @@ static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int 
 	free(piece);
 	if (arena_heap_live)
 		arena_heap_live--;
-	return 1;
-}
-
-static int __attribute__((cold)) arena_holds(const void *piece)
-{
-	return !piece || (((unsigned int)piece & 0x0F000000u) == 0x04000000u) ||
-		((const char *)piece >= arena && (const char *)piece < arena + ARENA_BYTES);
+	return 2;
 }
 
 /* the general heap's copies brought into the arena, up to ARENA_MIGRATE_BYTES
 a frame; a copy whose pieces don't all fit keeps the rest where they are */
 static void __attribute__((cold)) arena_migrate(void)
 {
-	unsigned long budget = ARENA_MIGRATE_BYTES;
-	int index;
+	static const struct { unsigned short offset; unsigned char size, ge_reads; } pieces[6] = {
+		{ offsetof(struct level_stream, base), sizeof(struct ge_vertex), 1 },
+		{ offsetof(struct level_stream, lightmap), sizeof(struct ge_vertex), 1 },
+		{ offsetof(struct level_stream, normals), sizeof(unsigned int), 0 },
+		{ offsetof(struct level_stream, radiosity), sizeof(unsigned int), 0 },
+		{ offsetof(struct level_stream, compact_base), sizeof(struct compact_vertex), 1 },
+		{ offsetof(struct level_stream, compact_lightmap), sizeof(struct compact_vertex), 1 },
+	};
+	long budget = ARENA_MIGRATE_BYTES;
+	int index, k, moved, result;
 
-	for (index = 0; index < LEVEL_STREAMS && budget > 0; index++)
+	for (index = 0; index < LEVEL_STREAMS && budget > 0 && arena_heap_live; index++)
 	{
 		struct level_stream *stream = &level_streams[index];
-		unsigned int count;
-		char *base = (char *)stream->base;
 
-		if (!stream->source || !base || (((unsigned int)base & 0x0F000000u) == 0x04000000u))
-			continue;
-		count = (unsigned int)stream->count;
-		if (arena_holds(stream->base) && arena_holds(stream->lightmap) && arena_holds(stream->normals) &&
-			arena_holds(stream->radiosity) && arena_holds(stream->compact_base) && arena_holds(stream->compact_lightmap))
-			continue;
-		if (!arena_migrate_piece((void **)&stream->base, count * sizeof(struct ge_vertex), 1) ||
-			!arena_migrate_piece((void **)&stream->lightmap, count * sizeof(struct ge_vertex), 1) ||
-			!arena_migrate_piece((void **)&stream->normals, count * sizeof(unsigned int), 0) ||
-			!arena_migrate_piece((void **)&stream->radiosity, count * sizeof(unsigned int), 0) ||
-			!arena_migrate_piece((void **)&stream->compact_base, count * sizeof(struct compact_vertex), 1) ||
-			!arena_migrate_piece((void **)&stream->compact_lightmap, count * sizeof(struct compact_vertex), 1))
-			break;
-		arena_migrated++;
-		budget = budget > stream_size(stream) ? budget - stream_size(stream) : 0;
+		for (moved = k = 0; k < 6; k++)
+		{
+			result = arena_migrate_piece((void **)((char *)stream + pieces[k].offset),
+				(unsigned int)stream->count * pieces[k].size, pieces[k].ge_reads);
+			if (!result)
+				return;
+			moved |= result == 2;
+		}
+		if (moved)
+		{
+			arena_migrated++;
+			budget -= (long)stream_size(stream);
+		}
 	}
 }
 
@@ -2193,10 +2181,6 @@ static void __attribute__((cold)) arena_frame_end(void)
 
 	if (arena_state <= 0)
 		return;
-	if (arena_compact_on < 0)
-		arena_compact_on = !psp_keep("nocompact");
-	if (!arena_compact_on)
-		return;
 	for (block = (struct arena_block *)arena; block; block = arena_next(block))
 		if (!block->used)
 		{
@@ -2204,6 +2188,11 @@ static void __attribute__((cold)) arena_frame_end(void)
 			if (block->size > largest)
 				largest = block->size;
 		}
+	arena_largest = largest;
+	if (arena_compact_on < 0)
+		arena_compact_on = !psp_keep("nocompact");
+	if (!arena_compact_on)
+		return;
 	overflowed = arena_from_heap != arena_seen_from_heap;
 	arena_seen_from_heap = arena_from_heap;
 	if (free_total >= 64 * 1024 && largest < free_total / 2 &&
@@ -9942,9 +9931,9 @@ void psp_ge_frame_end(void)
 			list_peak, DISPLAY_LIST_BYTES, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
 		/* build 111 */
 		if (arena_state > 0)
-			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB, %lu us; brought back %lu",
-				arena_used / 1024, ARENA_BYTES / 1024, arena_largest_free() / 1024, arena_let_go, arena_from_heap, arena_heap_live,
-				arena_compactions, arena_moved_kb, arena_compact_us, arena_migrated);
+			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
+				arena_used / 1024, ARENA_BYTES / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
+				arena_compactions, arena_moved_kb, arena_migrated);
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		if (frames > 1)
