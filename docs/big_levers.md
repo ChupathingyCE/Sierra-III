@@ -25,7 +25,7 @@ So the big levers are: **use the second CPU**, **fetch less code**, and **cut th
 
 | # | Lever | Ceiling | Exact? | Cost | First test | Status |
 |---|---|---|---|---|---|---|
-| L1 | **The ME builds the GE's lists** (the GE layer moves off the main CPU) | the GE layer's CPU: **42 ms (beach) to 65 ms (flight) a frame** [M], ~25% of each frame | yes | L | `gedefer` on one CPU, then on the ME | **step 1 built (b112)** |
+| L1 | **The ME builds the GE's lists** (the GE layer moves off the main CPU) | the GE layer's CPU: **42 ms (beach) to 65 ms (flight) a frame** [M], ~25% of each frame | yes | L | `gedefer` on one CPU, then on the ME | **steps 1–2 built (b112)** |
 | L2 | **VRAM for the level's vertices** (X1) | ≈ 36 ms of drawing a frame [U] | yes | M | benchrun switch 8 against switch 3 (M3) | built since b103; **needs one hardware run** |
 | L3 | **The next tick's AI on the ME while the main CPU draws** | `ai_update` 12–23 ms a tick in fights [M], one tick of the two a frame: 5–9% | if drawing and AI share nothing | L | reorder on one CPU, compare the game state every tick | reach measured; design below |
 | L4 | **Profile-guided build** (GCC knows the hot path, packs it, moves the rest out) | unknown; aims at the instruction misses | yes | M | instrumented run in the emulator, cache-model A/B | blocked on memory, below |
@@ -93,7 +93,7 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
 ### The steps
 
 1. **`gedefer` (b112, built):** the model path's six calls are written down with every array they point to copied, and carried out in order when the 64 KB buffer fills, when any other call that writes the list arrives, or at the frame's end. Everything still runs on the main CPU and the list comes out the same. It proves the recording is complete, and it reorders the CPU's work: the engine's half for a run of models, then this file's half, so each half's code stays in the instruction cache longer. That may be a speed-up of its own [U]; the cache-model A/B measures it.
-2. **The rest of the entry points recorded** (level, see-through level, decals, sprites, HUD), so a whole frame's calls are written down.
+2. **The rest of the entry points recorded** (b112, built): the level, see-through level surfaces, fog, detail maps, the sky, sprite groups, widgets, decals, shadows, dynamic lights, screen quads, flashes, blips and text. What still runs at once, after what is waiting: the frame's start and end, the calls whose answer the engine uses (`psp_ge_text_begin`, `psp_ge_frame_window`, the level vertex queries), `psp_ge_text_changed` (it changes the font data a waiting character reads) and the map loads.
 3. **The gates moved** so the carrying-out reaches no firmware (mewalk's report goes to 0).
 4. **Carried out on the ME**, streaming behind the recorder: an uncached write index, range write-backs before publishing, the ME's own write-back before the GE reads.
 
