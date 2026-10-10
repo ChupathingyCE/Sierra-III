@@ -10728,7 +10728,7 @@ FIXES_113["source/rasterizer/rasterizer.c#zoommask"] = [
 #include "rasterizer/rasterizer_cinematics.h"
 int psp_keep(const char *name);
 int psp_ge_active(void);
-void psp_ge_zoom_mask(unsigned int key); /* psp_ge.c */
+void psp_ge_zoom_mask(unsigned int key, unsigned int strength); /* psp_ge.c */
 #endif
 
 void rasterizer_screen_effect(
@@ -10738,10 +10738,14 @@ void rasterizer_screen_effect(
 	{
 		static int psp_zoom_mask = -1;
 
+		/* "zoommaskfull": the whole alpha always, for Sheepdog01 to compare */
 		if (psp_zoom_mask < 0)
-			psp_zoom_mask = psp_keep("zoommask");
+			psp_zoom_mask = psp_keep("zoommaskfull") ? 2 : psp_keep("zoommask");
+		/* the whole alpha with no blur; a third with one, the blur's
+		stand-in (convolution type 0: none) */
 		if (psp_zoom_mask && psp_ge_active() && parameters && parameters->convolution_mask)
-			psp_ge_zoom_mask((unsigned int)parameters->convolution_mask);
+			psp_ge_zoom_mask((unsigned int)parameters->convolution_mask,
+				psp_zoom_mask == 2 || !parameters->convolution_type ? 255 : 85);
 	}
 #endif
 	_rasterizer_screen_effect(parameters);"""),

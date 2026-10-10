@@ -312,7 +312,7 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend);
-void psp_ge_zoom_mask(unsigned int key);
+void psp_ge_zoom_mask(unsigned int key, unsigned int strength);
 void psp_ge_sky(int on);
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
 void psp_ge_widget_begin(int depth_test);
@@ -813,7 +813,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_contrail(defer_copy_back(w + 3, &rest, 0), w[0].i, w[1].u, (short)w[2].i);
 			break;
 		case DEFER_ZOOM_MASK: /* build 113 */
-			psp_ge_zoom_mask(w[0].u);
+			psp_ge_zoom_mask(w[0].u, w[1].u);
 			break;
 		case DEFER_WIDGET_BEGIN:
 			psp_ge_widget_begin(w[0].i);
@@ -8455,18 +8455,28 @@ static unsigned long screen_quad_bailed = 0;
 
 /* build 113: a zoomed weapon's mask (b113_candidates.md #20; keep word
 "zoommask"). The HUD's screen effect hands its full-screen bitmap to
-rasterizer_screen_effect (rasterizer.c, psp_fixups.py); the Xbox's last pass
-darkens the frame by the mask's alpha: frame x (1 - alpha), so the pistol's
-scope is clear in the middle and black around it
-(rasterizer_xbox_screen_effect.c). Here one quad over the 3D view, before
-the HUD. The mask is drawn for 4:3 (640x480): its square is kept round in the
-middle of the 480x272 screen, and the sides take its edge texels (clamped).
-The blur and night vision the effect can add are left out */
+rasterizer_screen_effect (rasterizer.c, psp_fixups.py). What the Xbox does
+with it (rasterizer_xbox_screen_effect.c), by the pixel shaders [D]:
+  - with no blur, its last pass darkens the frame by the mask's alpha:
+    frame x (1 - alpha);
+  - with a blur (the pistol's and the sniper rifle's zoom: "warp"), the mask
+    says where the blur goes: the last combiner mixes the sharp frame and
+    three offset copies by the mask's alpha, so the middle stays sharp and
+    the edges blur.
+The PSP has no cheap blur, so with one this darkens by a third of the
+mask's alpha instead, a stand-in for the soft edge (strength 85 of 255);
+without one, the whole alpha, as the Xbox. One quad over the 3D view, before
+the HUD. The mask is drawn for 4:3 (640x480): its square is kept round in
+the middle of the 480x272 screen, and the sides take its edge texels
+(clamped). The emulator's first run (38088924310) darkened the pistol's
+zoom by the whole alpha: a clear circle about half the screen's height in a
+black surround, which the Xbox's zoom doesn't show [U: as the game is
+remembered; the shaders say the mask weighs the blur] */
 static unsigned long zoom_masks = 0, zoom_masks_missing = 0;
 
-void psp_ge_zoom_mask(unsigned int key)
+void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 {
-	GE_DEFER(defer_words(DEFER_ZOOM_MASK, 1, key, 0, 0, 0, 0, 0, 0, 0));
+	GE_DEFER(defer_words(DEFER_ZOOM_MASK, 2, key, strength, 0, 0, 0, 0, 0, 0));
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SCREEN);
 	struct hud_vertex *out;
@@ -8493,7 +8503,7 @@ void psp_ge_zoom_mask(unsigned int key)
 	out[0].v = 0.0f;
 	out[1].u = (0.5f + span * 0.5f) * width;
 	out[1].v = (float)height;
-	out[0].color = out[1].color = 0xFFFFFFFF;
+	out[0].color = out[1].color = ((strength > 255 ? 255 : strength) << 24) | 0x00FFFFFF;
 	out[0].x = 0.0f; out[0].y = 0.0f; out[0].z = 0.0f;
 	out[1].x = (float)SCREEN_WIDTH; out[1].y = (float)SCREEN_HEIGHT; out[1].z = 0.0f;
 	sceGuDisable(GU_DEPTH_TEST);
