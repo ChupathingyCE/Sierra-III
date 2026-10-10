@@ -3884,12 +3884,24 @@ struct skin_part
 {
 	int weights, stride, batch_count;
 	struct skin_batch *batches;
+	int bytes; /* build 112: the one allocation's size, for the live count */
 };
 
 static struct skin_part *skinned[CONVERTED_BUFFERS];
 /* each node's slot in the part being planned */
 static signed char skin_slot[SKIN_NODES];
 static unsigned long skinned_parts = 0, skin_batches = 0, skin_failures = 0, skin_bytes = 0;
+/* build 112: the plans' bytes on the heap now (skin_bytes counts all ever
+made), and the highest that reached */
+static unsigned long skin_live_bytes = 0, skin_live_peak = 0;
+
+static void skin_free(struct skin_part *part)
+{
+	if (!part)
+		return;
+	skin_live_bytes -= (unsigned long)part->bytes;
+	free(part);
+}
 
 /* a vertex's nodes and the first's weight, from either kind of vertex */
 static void vertex_nodes(const void *vertices, int index, int uncompressed, int *n0, int *n1, float *w0)
@@ -4114,6 +4126,10 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 			return NULL;
 		}
 		skin_bytes += bytes;
+		part->bytes = bytes;
+		skin_live_bytes += (unsigned long)bytes;
+		if (skin_live_bytes > skin_live_peak)
+			skin_live_peak = skin_live_bytes;
 		part->weights = slots;
 		part->stride = (slots <= 4 ? 4 : 8) + 8 + 4 + 12;
 		part->batch_count = batch_count;
@@ -4151,6 +4167,19 @@ churning the cache filled all 2,048 slots and model parts stopped drawing
 (code review b89). Entries in the tags (generation 0) are always live */
 static int converted_used = 0;
 static unsigned long converted_sweeps = 0, converted_forgotten = 0;
+/* build 112: sweep sooner. The dead entries' skinning plans stay on the heap
+until a sweep: in b108 run 1 the plans made reached 1,160 KB by game time
+20,000, and one sweep forgot 1,426 dead entries, so the heap carried up to
+about a megabyte of plans nothing would use again while the level's copies
+looked for room. The next sweep now comes 256 entries after what the last
+one kept, from a quarter of the table up to the three quarters it always
+used; a scene whose live parts pass the mark doesn't sweep on every part,
+because the mark moves past what was kept. A sweep's cost grows with the
+entries it checks, so smaller sweeps cost less each. "sweeplate": at three
+quarters only, as before */
+#define CONVERTED_SWEEP_STEP 256
+static int converted_sweep_mark = CONVERTED_BUFFERS / 4;
+static int converted_sweep_late = -1;
 unsigned int psp_geo_generation(const void *ptr);
 
 static void converted_sweep(void)
@@ -4173,7 +4202,7 @@ static void converted_sweep(void)
 		}
 		else
 		{
-			free(skinned[index]);
+			skin_free(skinned[index]);
 			converted_forgotten++;
 		}
 	}
@@ -4209,9 +4238,17 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 
 	if (skin)
 		*skin = NULL;
-	if (converted_used >= CONVERTED_BUFFERS * 3 / 4)
+	if (converted_sweep_late < 0)
+		converted_sweep_late = psp_keep("sweeplate");
+	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark))
 	{
 		converted_sweep();
+		/* build 112: the next mark, past what this sweep kept */
+		converted_sweep_mark = converted_used + CONVERTED_SWEEP_STEP;
+		if (converted_sweep_mark < CONVERTED_BUFFERS / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS / 4;
+		if (converted_sweep_mark > CONVERTED_BUFFERS * 3 / 4)
+			converted_sweep_mark = CONVERTED_BUFFERS * 3 / 4;
 		slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS;
 	}
 	while (converted[slot] && converted[slot] != vertices)
@@ -4248,7 +4285,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		}
 		/* the cache has read other vertices (or these again) into the block
 		since: converted afresh, the old plan let go */
-		free(skinned[slot]);
+		skin_free(skinned[slot]);
 		skinned[slot] = NULL;
 		converted_generation[slot] = generation;
 		reconverted_count++;
@@ -5497,11 +5534,12 @@ void psp_ge_forget_map(void)
 	int index;
 
 	for (index = 0; index < CONVERTED_BUFFERS; index++)
-		free(skinned[index]);
+		skin_free(skinned[index]);
 	memset(skinned, 0, sizeof(skinned));
 	memset(converted, 0, sizeof(converted));
 	memset(converted_generation, 0, sizeof(converted_generation));
 	converted_used = 0;
+	converted_sweep_mark = CONVERTED_BUFFERS / 4; /* build 112 */
 	converted_count = reconverted_count = skinned_parts = skin_batches = skin_bytes = skin_failures = 0;
 	psp_ge_forget_level();
 	/* build 87: the last map's stencil bake (the next map's pack brings its own) */
@@ -9942,12 +9980,12 @@ void psp_ge_frame_end(void)
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
 			ge_kinds_report(); /* build 103 */
-			if (converted_sweeps)
-			{
-				platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d",
-					converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS);
-				converted_sweeps = converted_forgotten = 0;
-			}
+			/* build 112: every 300 frames, with the skinning plans' heap */
+			platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d (next sweep at %d); skinning plans %lu KB on the heap (peak %lu KB)",
+				converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS,
+				converted_sweep_late > 0 ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark,
+				skin_live_bytes / 1024, skin_live_peak / 1024);
+			converted_sweeps = converted_forgotten = 0;
 			if (ge_skip || list_in_vram || vram_busy || ge_skipped_draws)
 			{
 				platform_log("GE: bench test: GE skipping %s; draws skipped %lu; display list in %s; VRAM-only load %s (%d sprites, %s)",
