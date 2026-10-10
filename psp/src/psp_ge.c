@@ -686,20 +686,19 @@ static int defer_text_character(void const *vertices)
 	return 1;
 }
 
-/* ----- everything waiting, carried out in order */
-static void defer_drain(void)
+/* ----- a run of records carried out in order: on the main CPU, or as the
+Media Engine's job (psp_ge_me_replay) */
+static void defer_replay(const defer_word *buffer, unsigned int used)
 {
 	unsigned int at = 0;
 
-	defer_replaying = 1;
-	psp_me_context = defer_me_thread;
-	while (at < defer_used)
+	while (at < used)
 	{
-		const defer_word *w = defer_buffer + at + 1, *rest;
-		int kind = defer_buffer[at].u & 0xFF;
+		const defer_word *w = buffer + at + 1, *rest;
+		int kind = buffer[at].u & 0xFF;
 		const void *a, *b, *c;
 
-		at += defer_buffer[at].u >> 8;
+		at += buffer[at].u >> 8;
 		switch (kind)
 		{
 		case DEFER_MODEL_BEGIN:
@@ -823,7 +822,70 @@ static void defer_drain(void)
 			break;
 		}
 	}
+}
+
+/* build 112: "gemeon" (with gedefer): the run carried out as the Media
+Engine's job (psp_me.c, ME_JOB_GE), L1 step 4's first form: the main CPU
+waits for it, so it measures the ME on this work and proves it runs there;
+overlapping comes next. args: the records, their words, the value
+psp_me_context holds meanwhile (the game thread's id under gemesim, so the
+emulator's ME-strict check also covers this path when it simulates the job) */
+unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
+{
+	psp_me_context = args[2] ? args[2] : 1;
+	defer_replay((const defer_word *)args[0], args[1]);
 	psp_me_context = 0;
+	results[0] = args[1];
+	return 0;
+}
+
+static int defer_me_on = -1;
+static unsigned long defer_me_jobs = 0, defer_me_failed = 0, defer_me_wait_us = 0, defer_me_own_us = 0;
+
+/* 1 if the ME carried the run out */
+static int defer_on_me(void)
+{
+	extern int psp_me_running(void);
+	extern int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
+		unsigned int first_look_us);
+	extern unsigned int psp_me_last_job_us(int which);
+	unsigned int args[3], results[8], start;
+
+	if (defer_me_on < 0)
+		defer_me_on = psp_keep("gemeon");
+	if (!defer_me_on || !psp_me_running())
+		return 0;
+	/* everything the job reads to RAM: the records, what they point to that
+	the engine wrote, and this file's state as the main CPU left it */
+	sceKernelDcacheWritebackAll();
+	args[0] = (unsigned int)defer_buffer;
+	args[1] = defer_used;
+	args[2] = defer_me_thread;
+	start = sceKernelGetSystemTimeLow();
+	if (!psp_me_run(1 /* the render slot */, 4 /* ME_JOB_GE */, args, 3, results, 20))
+	{
+		defer_me_failed++;
+		return 0;
+	}
+	defer_me_wait_us += sceKernelGetSystemTimeLow() - start;
+	defer_me_own_us += psp_me_last_job_us(1);
+	defer_me_jobs++;
+	/* and back: what the ME wrote (this file's state, pspgu's, the list)
+	read fresh from RAM */
+	sceKernelDcacheWritebackInvalidateAll();
+	return 1;
+}
+
+/* ----- everything waiting, carried out in order */
+static void defer_drain(void)
+{
+	defer_replaying = 1;
+	if (!defer_on_me())
+	{
+		psp_me_context = defer_me_thread;
+		defer_replay(defer_buffer, defer_used);
+		psp_me_context = 0;
+	}
 	/* the GE given what the run wrote (the newest stall address it kept) */
 	if (stall_me_address)
 	{
@@ -10984,6 +11046,11 @@ void psp_ge_frame_end(void)
 						break;
 				}
 				platform_log("GE: gedefer: carried out for:%s", sites);
+				if (defer_me_jobs || defer_me_failed)
+					platform_log("GE: gemeon: %lu runs on the Media Engine (%lu failed): the main CPU waited %lu us a run, the ME's own time %lu us",
+						defer_me_jobs, defer_me_failed, defer_me_jobs ? defer_me_wait_us / defer_me_jobs : 0,
+						defer_me_jobs ? defer_me_own_us / defer_me_jobs : 0);
+				defer_me_jobs = defer_me_failed = defer_me_wait_us = defer_me_own_us = 0;
 				if (walls_wanted_total || walls_wanted_dropped)
 					platform_log("GE: gemesim: %lu see-through level triangles wanted asked by the Media Engine's work and asked at the frame's end, %lu more than the list held",
 						walls_wanted_total, walls_wanted_dropped);

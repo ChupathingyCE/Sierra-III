@@ -12,6 +12,7 @@
 #define ME_JOB_AUDIO 1
 #define ME_JOB_CLASSIFY 2
 #define ME_JOB_ANGLE 3
+#define ME_JOB_GE 4 /* build 112: a run of the GE layer's waiting calls (psp_ge.c, "gemeon") */
 
 int psp_me_start(void);
 int psp_me_running(void);
