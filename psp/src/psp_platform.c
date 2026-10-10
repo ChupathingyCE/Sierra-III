@@ -1367,7 +1367,10 @@ game.c and render.c through psp_fixups.py's FIXES_112):
 - effects off: effects_update, particles_update, render_particles;
 - models not drawn: render_objects, render_object_shadows;
 - level not drawn: structure_render_lightmaps,
-  structure_render_transparent_geometry. */
+  structure_render_transparent_geometry;
+- GE layer skipped: every draw the engine hands psp_ge.c, dropped on arrival
+  (the engine's own drawing work stays): the most the GE layer's move to the
+  Media Engine could save. */
 int psp_bench_skip = 0;
 static const struct
 {
@@ -1381,6 +1384,7 @@ static const struct
 	{ "effects off", PSP_SKIP_EFFECTS },
 	{ "models not drawn", PSP_SKIP_MODELS },
 	{ "level not drawn", PSP_SKIP_LEVEL },
+	{ "GE layer skipped", PSP_SKIP_GE },
 };
 #define CEILING_CONFIGS ((int)(sizeof(ceiling_configs) / sizeof(ceiling_configs[0])))
 #define CEILING_CYCLES 3

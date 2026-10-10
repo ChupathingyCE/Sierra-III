@@ -4,7 +4,10 @@ switch, the measured window. ceilingbench's views are its cycles.
 usage: python3 benchparse.py [--by-switch] log.txt [more logs...]
 --by-switch: one row per switch, averaged over the views (or cycles), each
 with its difference from the baseline's average: what switching that part off
-saved, so the most any lever on it could save."""
+saved, so the most any lever on it could save. "tick" is the cost of one tick
+(the frame's tick time over its ticks): a faster frame needs fewer ticks, so
+the frame's tick time falls with any saving, while a tick's own cost moves only
+when the switch touches the tick."""
 import re, sys, collections
 
 pat = re.compile(r'bench: RESULT view (\d+) \((.*?)\) \| switch (\d+) \((.*?)\) \| ([\d.]+) ms a frame, ([\d.]+) fps \| '
@@ -23,12 +26,16 @@ for path in [a for a in sys.argv[1:] if a != '--by-switch']:
             s[5] += 1
         avg = {key: [x / s[5] for x in s[:5]] + [s[5]] for key, s in sums.items()}
         base = next((a for (sw, _), a in avg.items() if sw == 0), None)
-        print('  %-26s %3s %7s %7s %7s %7s %6s   %s' % ('switch', 'n', 'ms', 'ticks', 'frame', 'rend', 'tps', 'saved against the baseline (ms a frame: all, ticks, frame)'))
+        def tick_ms(a):  # ticks ms a frame over ticks a frame (ticks/s x s a frame)
+            per_frame = a[4] * a[0] / 1000.0
+            return a[1] / per_frame if per_frame else 0.0
+        print('  %-26s %3s %7s %7s %7s %7s %7s %6s   %s' % ('switch', 'n', 'ms', 'ticks', 'tick', 'frame', 'rend', 'tps',
+                                                         'saved against the baseline (ms: a frame, a tick, drawing a frame)'))
         for (sw, sn), a in sorted(avg.items()):
             saved = ''
             if base and sw != 0:
-                saved = '%+6.1f  %+6.1f  %+6.1f' % (base[0] - a[0], base[1] - a[1], base[2] - a[2])
-            print('  %-26s %3d %7.1f %7.1f %7.1f %7.1f %6.1f   %s' % (sn[:26], a[5], a[0], a[1], a[2], a[3], a[4], saved))
+                saved = '%+6.1f  %+6.1f  %+6.1f' % (base[0] - a[0], tick_ms(base) - tick_ms(a), base[2] - a[2])
+            print('  %-26s %3d %7.1f %7.1f %7.1f %7.1f %7.1f %6.1f   %s' % (sn[:26], a[5], a[0], a[1], tick_ms(a), a[2], a[3], a[4], saved))
         continue
     print('  %-26s %-26s %6s %5s %6s %6s %6s %6s %5s %5s' % ('view', 'switch', 'ms', 'fps', 'ticks', 'frame', 'rend', 'GEwt', 'tps', 'ME%'))
     base = {}

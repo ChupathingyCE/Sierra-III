@@ -136,6 +136,15 @@ hook is drawing */
 #define GE_SKIP_ALL 4
 static int ge_skip = 0, ge_category = 0;
 static unsigned long ge_skipped_draws = 0;
+
+/* build 112: the ceiling bench's "GE layer skipped" (psp_bench.h). Where the
+bus tests above keep the CPU's work and stop the GE, this drops every draw the
+engine hands this file, on arrival: the engine still does all of its own
+drawing work, and this file's CPU work and the GE's reading are gone. What it
+saves is the most that moving this file's work to the Media Engine could save
+(an upper bound: the ME's version keeps the GE's reading) */
+#include "psp_bench.h"
+#define GE_BENCH_SKIP(...) do { if (psp_bench_skip & PSP_SKIP_GE) return __VA_ARGS__; } while (0)
 static int list_in_vram = 0, vram_busy = 0, vram_busy_calibrating = 0, vram_busy_sprites = 8;
 static unsigned int vram_busy_target_us = 15000;
 
@@ -3640,6 +3649,7 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL); /* build 103 */
 	unsigned int start = ge_clock();
 
@@ -3691,6 +3701,7 @@ static unsigned int color_from_rgb(const float *rgb)
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
+	GE_BENCH_SKIP();
 	int index;
 
 	model_nodes = node_matrices;
@@ -3730,6 +3741,7 @@ static void use_projection(int first_person)
 
 void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp)
 {
+	GE_BENCH_SKIP();
 	if (!frame_open)
 		return;
 	if (near_fp > 0.001f)
@@ -3800,6 +3812,7 @@ int psp_keep(const char *name);
 
 void psp_ge_model_effect(int type, float intensity)
 {
+	GE_BENCH_SKIP();
 	model_camouflage = type == 1 && intensity > 0.0f ? (intensity > 1.0f ? 1.0f : intensity) : 0.0f;
 }
 
@@ -4463,6 +4476,7 @@ static unsigned int abgr_from_rgb(float const *rgb)
 colour (by its blue) and the self-illumination (by its green; build 31) */
 void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
 {
+	GE_BENCH_SKIP();
 	change_key = multipurpose_key;
 	change_color = abgr_from_rgb(change);
 	glow_color = abgr_from_rgb(glow) & 0xFFFFFF;
@@ -5458,6 +5472,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
 {
+	GE_BENCH_SKIP();
 	ge_kind(in_sky ? KIND_SKY : KIND_MODEL); /* build 103 */
 	unsigned int start = ge_clock();
 
@@ -5693,6 +5708,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world)
 {
+	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 	int result = psp_ge_sprites_body(vertices, sprite_count, bitmap_key, blend, view_to_world);
@@ -5741,6 +5757,7 @@ void psp_ge_widget_occlusion(int visible)
 void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float scale_y, float rotation,
 	unsigned long color)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_WIDGET); /* build 103 */
 	static const float corner_uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 	static const int fan[6] = { 0, 1, 2, 0, 2, 3 };
@@ -6107,6 +6124,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_SEETHROUGH_QUEUE); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
@@ -6788,6 +6806,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_LEVEL_SEETHROUGH); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
@@ -7134,6 +7153,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_SCREEN); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
@@ -7390,6 +7410,7 @@ static struct shadow_vertex scratch_vertices[3 * SCRATCH_TRIANGLES];
 /* the game's real_matrix4x3: scale, forward, left, up, position */
 void psp_ge_shadow_begin(const float *matrix, const float *color, float radius)
 {
+	GE_BENCH_SKIP();
 	int k;
 
 	shadow.open = 0;
@@ -7750,6 +7771,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 
 void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_SHADOW); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
@@ -7783,6 +7805,7 @@ static unsigned long lights_drawn = 0;
 void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
 	float cosine_falloff, float cosine_cutoff)
 {
+	GE_BENCH_SKIP();
 	int k;
 
 	light.open = frame_open && radius > 0.0f && color[0] + color[1] + color[2] > 0.01f;
@@ -8542,6 +8565,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_LIGHT); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
@@ -9322,6 +9346,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
+	GE_BENCH_SKIP();
 	static unsigned int decal_calls = 0;
 
 	ge_kind(KIND_DECAL); /* build 103 */
@@ -9437,6 +9462,7 @@ void psp_ge_blips_begin(void)
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_HUD); /* build 103 */
 	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
 	float xy[8] = { x - radius, y + radius, x + radius, y + radius, x + radius, y - radius, x - radius, y - radius };
@@ -9602,6 +9628,7 @@ static void text_character(void const *vertices);
 
 void psp_ge_text_character(void const *vertices)
 {
+	GE_BENCH_SKIP();
 	ge_kind(KIND_HUD); /* build 103 */
 	unsigned int start = sceKernelGetSystemTimeLow();
 
