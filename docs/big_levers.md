@@ -109,6 +109,8 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
    | temporal blend (`taa_resolve`: VRAM address, write-backs) | `psp_ge_blips_begin` | settled off; the ME refuses it |
    | engine collision (`overlay_on_a_wall`'s rays) | `psp_ge_queue_level_transparent` | done when the call is written down |
    | VFPU (`vfpuskin`) | `model_geometry` | off on the ME |
+
+   **The check that the gates are closed** runs in the emulator, which runs no ME code: with `gedefer gemesim`, the carrying out is marked as the ME's work (`psp_me_context` holds the game thread's id), and the emulator's ME-strict check (`PSP_MESTRICT`, in the lab's patch) prints every system call that thread makes meanwhile, once per function and caller (`mestrict.txt` in the lab's results). Closed so far (b112): the entry points' timers (`ge_clock` reads 0) and the keep-word cache's fills.
 4. **Carried out on the ME**, streaming behind the recorder: an uncached write index, range write-backs before publishing, the ME's own write-back before the GE reads.
 
 ### What stays on the main CPU
