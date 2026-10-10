@@ -7243,6 +7243,39 @@ static void overlay_backing_forget(void)
 static unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, overlay_free = 0, overlay_ask_us = 0;
 
 static unsigned long overlay_backing_full = 0;
+
+/* build 112: triangles whose answer work marked as the Media Engine's needed
+and didn't have (gemesim): finding it takes heap for the answers and casts
+the engine's collision rays, which read the game's data while the main CPU
+may be moving it. The main CPU asks them at the frame's end
+(psp_ge_frame_end); meanwhile the triangle counts as on a wall, as it does
+when there's no memory for its answers */
+#define WALLS_WANTED 64
+static struct
+{
+	const struct ge_vertex *stream;
+	const unsigned short *indices;
+	long triangle_count, triangle;
+} walls_wanted[WALLS_WANTED];
+static int walls_wanted_count = 0;
+static unsigned long walls_wanted_total = 0, walls_wanted_dropped = 0;
+
+static int overlay_want(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count, long triangle)
+{
+	if (walls_wanted_count < WALLS_WANTED)
+	{
+		walls_wanted[walls_wanted_count].stream = stream;
+		walls_wanted[walls_wanted_count].indices = indices;
+		walls_wanted[walls_wanted_count].triangle_count = triangle_count;
+		walls_wanted[walls_wanted_count].triangle = triangle;
+		walls_wanted_count++;
+		walls_wanted_total++;
+	}
+	else
+		walls_wanted_dropped++;
+	return 1;
+}
+
 static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count,
 	long triangle)
 {
@@ -7288,6 +7321,8 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 			flags = overlay_backing[slot].flags;
 			break;
 		}
+	if (!flags && psp_me_context)
+		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags)
 	{
 		if (!(flags = calloc(triangle_count, 1)))
@@ -7307,6 +7342,8 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		overlay_backing[slot].count = triangle_count;
 		overlay_backing[slot].flags = flags;
 	}
+	if (!flags[triangle] && psp_me_context)
+		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags[triangle])
 	{
 		const struct ge_vertex *a = &stream[indices[3 * triangle]], *b = &stream[indices[3 * triangle + 1]],
@@ -10837,6 +10874,11 @@ void psp_ge_frame_end(void)
 			for (k = 0; k < streams_wanted_count; k++)
 				level_stream_get(streams_wanted[k].vertices, streams_wanted[k].lightmap_vertices, streams_wanted[k].count);
 			streams_wanted_count = 0;
+			/* the see-through level triangles it wanted asked */
+			for (k = 0; k < walls_wanted_count; k++)
+				overlay_on_a_wall(walls_wanted[k].stream, walls_wanted[k].indices, walls_wanted[k].triangle_count,
+					walls_wanted[k].triangle);
+			walls_wanted_count = 0;
 			/* and the model buffers it wanted converted */
 			for (k = 0; k < converts_wanted_count; k++)
 			{
@@ -10942,6 +10984,9 @@ void psp_ge_frame_end(void)
 						break;
 				}
 				platform_log("GE: gedefer: carried out for:%s", sites);
+				if (walls_wanted_total || walls_wanted_dropped)
+					platform_log("GE: gemesim: %lu see-through level triangles wanted asked by the Media Engine's work and asked at the frame's end, %lu more than the list held",
+						walls_wanted_total, walls_wanted_dropped);
 				if (converts_wanted_total || converts_wanted_dropped)
 					platform_log("GE: gemesim: %lu model buffers wanted converted by the Media Engine's work and converted at the frame's end, %lu more than the list held",
 						converts_wanted_total, converts_wanted_dropped);

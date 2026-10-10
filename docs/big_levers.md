@@ -120,7 +120,9 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
    - the stall address (kept, then passed on when the run ends);
    - temporal blend and VFPU skinning (never in the ME's work).
 
-   Still open: the engine's collision rays in `psp_ge_queue_level_transparent` (no system call, but on the ME they would read objects while the main CPU moves them: they have to move to when the call is written down), and whatever the ME-strict run still finds.
+   - the see-through level surfaces' wall test (heap for its answers, and the engine's collision rays, which read the game's data while the main CPU may move it): an unknown answer counts as "on a wall" for a frame and is asked at the frame's end.
+
+   Still open: whatever the ME-strict run still finds.
 4. **Carried out on the ME**, streaming behind the recorder: an uncached write index, range write-backs before publishing, the ME's own write-back before the GE reads.
 
 ### What stays on the main CPU
