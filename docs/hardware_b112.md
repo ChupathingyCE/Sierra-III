@@ -13,6 +13,7 @@ All with `nearauto assettrack hwprofile geo2`, deathless, no USB capture. Times 
 | 3 | `nosizefloor` (test B) | to just after landing | **Worse.** Whole groups of beach objects vanished and came back (Sheepdog01). With the display list full, whatever was submitted last is dropped: 83 KB of model draws a frame against 46 KB with the floor (game time 570–1,200). The floor stays; the list's room is `b113_candidates.md` #19 |
 | 4 | `sceneryhalf` (test C) | to the beach | **No measurable gain.** The flight's tick is 63.2 ms in runs 1 and 4; 58 sleeping scenery objects a tick were left unchecked. Off it stays |
 | 5 | none (b112's item 1 on: placed-dead bodies sleep) | the whole level (game time 35,447) | See below |
+| 6 | `sound1792` (the sound cache 1,536 → 1,792 KB) | to the beach (game time 6,125) | **Far fewer sounds dropped**, no speed change to see. See below |
 
 ## Run 5: placed-dead bodies sleeping [M]
 
@@ -22,6 +23,22 @@ All with `nearauto assettrack hwprofile geo2`, deathless, no USB capture. Times 
 - The heap: 0 requests failed.
 
 **The bipeds' cost stands out:** on the flight about 28 bipeds update every tick at about 1 ms each, 28 ms of a 63 ms tick [M]. That is the AI and the units' own update (`big_levers.md` L3).
+
+## Run 6: a bigger sound cache [M]
+
+The sound cache holds the sounds being played and the ones played recently. When a new sound doesn't fit, even after older ones are let go, it isn't played: the log's "failed for room".
+
+| At game time ≈6,000 | Run 5 (1,536 KB, the default) | Run 6 (`sound1792`) |
+|---|---|---|
+| Sounds not played ("failed for room") | 85 | **16** (−81%) |
+| Sound loads from the stick | 4,048 (111 MB) | 3,304 (100 MB), −18% |
+| Heap taken from the system | 4,918 KB | 5,234 KB (+316 KB) |
+| Heap requests failed | 0 | 0 |
+
+- **Speed:** nothing to see. The scripted flight (game time 150–2,000) ran at 3.7 fps, the slow end of the five runs' 3.7–4.2; the beach is hand-played and varies more. Fewer loads from the stick could only help, so the flight's spread is noise [U].
+- **The heap:** run 5 peaked at 5,154 KB over the whole level, so 1,792 KB of sound would peak at about 5,410 KB of the heap's 5,952 [U, by adding]. With `list768` (+256 KB) and 512 render states (+64 KB) too, about 5,730 KB: it fits, with about 220 KB to spare.
+- **Whether to make it the default is Sheepdog01's call:** it changes what the player hears (more of the sounds the game asks for are played). In b113 it would be the default with a keep word for the old size, if he chooses so after hearing it.
+- No screenshots this run.
 
 ## The worst spots, from Sheepdog01's screenshots [M]
 
