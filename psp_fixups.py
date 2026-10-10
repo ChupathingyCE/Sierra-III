@@ -5397,8 +5397,20 @@ void psp_game_state_hash_tick(long tick)
 			psp_objects_play_hash());
 		psp_objects_play_dump(tick);
 	}
-	if (tick % 30)
-		return;
+	{
+		/* build 113: "staterecordsN": every tick's records for 48 ticks from
+		tick N, to find the tick and the allocation where two runs part */
+		static long records_from = -2;
+
+		if (records_from == -2)
+		{
+			extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
+
+			records_from = psp_keep_number("staterecords", -1);
+		}
+		if (tick % 30 && !(records_from >= 0 && tick >= records_from && tick < records_from + 48))
+			return;
+	}
 	/* (lines kept under the log's 512 bytes, psp_platform.c) */
 	for (k = 0; k < psp_state_record_count; k++)
 	{
@@ -10367,6 +10379,26 @@ FIXES_113["source/units/vehicles.c#flipwatch"] = [
 			vehicle->vehicle.upending_ticks = 0;"""),
 ]
 FIXES_113["source/objects/objects.c#flipwatch"] = [
+("""		before = psp_family_checksum(header);
+	if (!before && !unchecked)
+""",
+ """		before = psp_family_checksum(header);
+	{
+		/* build 113: flipwatch, the sleep's own numbers for a vehicle just
+		flipped (psp_watch.c): why b113's first fixture runs saw it stay
+		asleep after its upending flag was set */
+		extern long psp_flipwatch_watched(void);
+
+		if (object_index == psp_flipwatch_watched())
+			platform_psp_log("flipwatch: t=%ld sleep check #%08lx: may sleep %d, checksum now %08lx, kept %08lx, quiet %d, "
+				"same object %d -> %s", game_time_get(), (unsigned long)object_index, may_sleep, before,
+				psp_sleep[absolute_index].checksum, psp_sleep[absolute_index].quiet,
+				psp_sleep[absolute_index].identifier == header->identifier ? 1 : 0,
+				unchecked || (psp_sleep[absolute_index].identifier == header->identifier &&
+					psp_sleep[absolute_index].quiet >= 2 && psp_sleep[absolute_index].checksum == before) ? "ASLEEP" : "updates");
+	}
+	if (!before && !unchecked)
+"""),
 ("""		if (header->type == _object_type_vehicle)
 			psp_vehicles_asleep++;
 """,

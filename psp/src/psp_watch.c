@@ -171,12 +171,27 @@ void psp_flipwatch_player(long action_result, long action_object, int action_bit
 	}
 }
 
+/* the vehicle just flipped, watched by the sleep (objects.c) for 60 ticks */
+static long flipwatch_watch_index = -1, flipwatch_watch_until = 0;
+
+long psp_flipwatch_watched(void)
+{
+	if (flipwatch_enabled <= 0 || flipwatch_watch_index == -1)
+		return -1;
+	if (psp_game_time_peek() > flipwatch_watch_until)
+		flipwatch_watch_index = -1;
+	return flipwatch_watch_index;
+}
+
 /* players.c, player_handle_action: the flip itself */
 void psp_flipwatch_flip(long vehicle_index, int approach_type)
 {
-	if (flipwatch_enabled > 0)
-		platform_log("flipwatch: t=%ld FLIP on #%08lx (approach %d): upending flag set", psp_game_time_peek(),
-			(unsigned long)vehicle_index, approach_type);
+	if (flipwatch_enabled <= 0)
+		return;
+	platform_log("flipwatch: t=%ld FLIP on #%08lx (approach %d): upending flag set", psp_game_time_peek(),
+		(unsigned long)vehicle_index, approach_type);
+	flipwatch_watch_index = vehicle_index;
+	flipwatch_watch_until = psp_game_time_peek() + 60;
 }
 
 /* vehicles.c, vehicle_update: the torque that rights it starts, and the flag
