@@ -10185,9 +10185,10 @@ char *tag_get_name(long tag_index);
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 
-/* "flipfixture": the vehicle nearest the player (within 30 units) put upside
-down 1.5 units in front of him, once, at game time 60; at game time 150, once
-it has fallen and settled, where it lies against the player */
+/* "flipfixture": a Warthog within 30 units of the player (else the nearest
+vehicle) put upside down just in front of him, touching his search's sphere,
+once, at game time 60; at game time 150, once it has fallen and settled,
+where it lies against the player */
 static void psp_flip_fixture(long unit_index)
 {
 	static int fixture = -1;
@@ -10230,6 +10231,10 @@ static void psp_flip_fixture(long unit_index)
 		real dz = object->object.position.z - unit->object.position.z;
 		real distance = dx * dx + dy * dy + dz * dz;
 
+		/* a Warthog first (Sheepdog01's sightings), else the nearest */
+		if (object->object.parent_object_index == NONE && distance < 30.0f * 30.0f &&
+			strstr(tag_get_name(object->definition_index), "warthog") != NULL)
+			distance -= 30.0f * 30.0f;
 		if (distance < best_distance && object->object.parent_object_index == NONE)
 		{
 			best_distance = distance;
@@ -10245,7 +10250,7 @@ static void psp_flip_fixture(long unit_index)
 		struct object_datum *vehicle = object_get(best);
 		real_point3d place;
 		real_vector3d forward, up = { 0.0f, 0.0f, -1.0f }, ahead;
-		real length;
+		real length, offset;
 
 		ahead.i = unit->object.forward.i;
 		ahead.j = unit->object.forward.j;
@@ -10259,9 +10264,14 @@ static void psp_flip_fixture(long unit_index)
 		}
 		ahead.i /= length;
 		ahead.j /= length;
-		place.x = unit->object.position.x + 1.5f * ahead.i;
-		place.y = unit->object.position.y + 1.5f * ahead.j;
-		place.z = unit->object.position.z + 1.0f;
+		/* near enough that the two bounding spheres overlap (the player's
+		search finds what touches his sphere), the vehicle's own radius plus
+		a little: b113's first runs put a Ghost 1.5 units out, its sphere
+		0.3 units short of the player's */
+		offset = vehicle->object.bounding_sphere_radius + 0.2f;
+		place.x = unit->object.position.x + offset * ahead.i;
+		place.y = unit->object.position.y + offset * ahead.j;
+		place.z = unit->object.position.z + 0.5f;
 		/* side on to the player, roof down */
 		forward.i = -ahead.j;
 		forward.j = ahead.i;
@@ -10273,8 +10283,8 @@ static void psp_flip_fixture(long unit_index)
 		vehicle->object.angular_velocity.i = vehicle->object.angular_velocity.j =
 			vehicle->object.angular_velocity.k = 0.0f;
 		vehicle->object.flags &= ~FLAG(_object_at_rest_bit);
-		platform_psp_log("flipfixture: %s #%08lx put upside down 1.5 units in front of the player (%.2f %.2f %.2f)",
-			tag_get_name(vehicle->definition_index), (unsigned long)best, place.x, place.y, place.z);
+		platform_psp_log("flipfixture: %s #%08lx put upside down %.2f units in front of the player (%.2f %.2f %.2f)",
+			tag_get_name(vehicle->definition_index), (unsigned long)best, offset, place.x, place.y, place.z);
 	}
 }
 #endif
