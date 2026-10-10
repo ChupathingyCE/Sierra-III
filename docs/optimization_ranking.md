@@ -2,6 +2,8 @@
 
 This is every speed lever the project has measured, proposed, tried, shipped or set aside, from build 13 to build 110. It ranks the open ones by what they would buy on Sheepdog01's PSP-1000. It draws on all 40 Halo docs, the b110 code (keep words, build flags, fixups), b107's b30 hardware log, past conversations, and what the C&C port found. A separate check against the code, docs and log corrected 32 points before it was saved.
 
+**Update 2026-10-10** (b108's A and D runs, b111, the b112 candidates): M1's `-Os` question is settled (E3: it loses); the capture rule in §2 is corrected; E1 is built as a b112 candidate, along with a second regression from the rebase (`fast_ftol` rounding through a double); b108 run 1's log gave two new levers (E26, placed-dead bodies; §7, the converted-buffer sweep). The rest stands.
+
 The levers come in three kinds:
 - **Exact:** the same game and the same picture, only faster. These need no decision from Sheepdog01.
   - **≈ exact** marks levers whose float results differ only in the last bits, like the VFPU matrix product shipped in b37. They are listed with the exact ones, flagged so Sheepdog01 can veto.
@@ -97,12 +99,12 @@ The Library and the facility are much closer.
 
 Each of these is cheap and decides a lot. Rules for every A/B:
 - Run the same stretch twice with `hwprofile`.
-- Use no screen capture: RemoteJoyLite's USB DMA doubles CPU miss cost while it runs.
+- Use no screen capture. RemoteJoyLite's USB DMA doubled CPU miss cost on halo_bench; in the game it cost about 2% of b30's flight frame (b108's A against run 1 [M]). Runs still go without it.
 - Remember that beach battles vary ~10% between runs of the same build. The Pelican flight is the fair comparison in the cache model.
 
 | # | Run | What it decides |
 |---|---|---|
-| M1 | **b108's optional A/Bs:** `sceneryhalf`, the `-Os` zip, `noscratch`, `notimers`; `vfpuskin` (low priority) | B2, E3, the scratchpad's worth, E2, E24 |
+| M1 | **b108's optional A/Bs:** `sceneryhalf`, the `-Os` zip, `noscratch`, `notimers`; `vfpuskin` (low priority). **The `-Os` zip is done** (E3); the rest carry over to b111, whose keep words are the same | B2, E3, the scratchpad's worth, E2, E24 |
 | M2 | **b110 on hardware**: b30 start to finish, heap line watched | The base for everything after; whether the heap fits |
 | M3 | **benchrun switch 8** (level vertices in VRAM, the 9th entry) against switch 3 (GE skips the level) | Whether the GE's cost is bytes or scattered fetches. Gates X1, the biggest drawing lever |
 | M4 | **`machinesleep` A/B** on The Library | E4; machines cost 7.5 ms a tick there [M] but the only A/B was in the emulator |
@@ -120,9 +122,9 @@ Mostly a day or less each. Savings are at the b30 beach on the PSP unless anothe
 
 | # | Lever | Saves | Status | Notes |
 |---|---|---|---|---|
-| E1 | **Restore cold asserts on ChupathingyCE** (`PSP_ASSERTS_COLD` is inert since the rebase) | ≤ 1.1 ms a tick + ≤ 1.4 ms a frame [U, ceiling] | **Regression, found today** | b110's link map: 3 `.text.unlikely` sections against 2,981 on the old base [D]. ChupathingyCE's `cseries.h` has neither the cold nor the `PSP_ASSERTS_OFF` branch; one fixup ports both. Likely part of b110's +5% instruction misses. Gives E7 its cold half |
+| E1 | **Restore cold asserts on ChupathingyCE** (`PSP_ASSERTS_COLD` is inert since the rebase) | ≤ 1.1 ms a tick + ≤ 1.4 ms a frame [U, ceiling] | **Built: b112 candidate** (`b112_candidates.md` §2) | b110's link map: 3 `.text.unlikely` sections against 2,981 on the old base [D]; b112's: 2,951. ChupathingyCE's `cseries.h` had neither the cold nor the `PSP_ASSERTS_OFF` branch; one fixup ports both, and with them the same patch's float `fast_ftol` (libm's double `rint` was linked for it; now gone). Likely part of b110's +5% instruction misses. Gives E7 its cold half |
 | E2 | **Lean play build**: `notimers` + `nooverlay` as play defaults, per-object timers and the game's own profiler/QPC reads out; a separate profile build keeps them | 3–10% of frame rate [E]; hardware unknown | keep words, off | The biggest cheap item if the PSP agrees; M1's `notimers` run sizes it. Frees 6.6 KB of scratchpad (E13). Sheepdog01's call on the fps readout |
-| E3 | **Optimisation level per unit**: `-Os` vs `-O2` on hot code; move hot functions out of `-Os` units (`tag_get` in `cache_files.c`, `psp_trace.c`'s step marks) | Sign unknown; ceiling ≈ 4.3 ms a tick + 4.2 ms a frame [E→U] | `-Os` zip awaiting M1 | The model's per-fetch I-miss rate fell 20% at `-Os` but the comparison was inconclusive; `-Os` code also runs slower (mixer 2.8 vs 1.6 ms a block [M]). Likely end state: inner loops `-O2`, the rest `-Os`. Untried: `-falign-functions=64`, `-O3`, `-funroll-loops` |
+| E3 | **Optimisation level per unit**: `-Os` vs `-O2` on hot code; move hot functions out of `-Os` units (`tag_get` in `cache_files.c`, `psp_trace.c`'s step marks) | **`-Os` on all hot code loses** | **Settled for the whole hot engine** (b108 D, `hardware_b108.md`) | `-Os` against `-O2` on the PSP: tick +30%, frame +8% over b30's flight; instruction misses per million cycles +9%, stores +14% [M]. `-Os` turns off GCC's alignment and hot-path block layout and inlines less [U]. The hot code stays `-O2`. Still open: moving single hot functions out of `-Os` units, and `-falign-functions=64`, `-O3`, `-funroll-loops` |
 | E4 | **`machinesleep` on by default** (after M4) | Library ceiling ≈ 3 ms a tick [U]; b30 unknown | keep word, off (b102) | Only type-1 machines and doors can sleep; 60% are always-moving platforms |
 | E5 | **Format lock off the tick path** (printf/strtod under one lock) | ≈ 2.5 ms a tick if the 4% share still holds [E→U] | measured, not built | The share may predate b106's keep-word cache; `printfcount` finds the busy call sites first |
 | E6 | **Geometry-cache lookups, option B** (a lock keeps its entry; don't rewrite `last_frame`) | ≈ 1.2 ms a frame [E→U] | proposed (b109) | `entries` is the largest named table in drawing's data misses (4.0%) |
@@ -145,6 +147,7 @@ Mostly a day or less each. Savings are at the b30 beach on the PSP unless anothe
 | E23 | **HUD bitmaps resident in VRAM** | unknown | proposed | No blocking texture load inside a frame |
 | E24 | **`vfpuskin`** (bending corners near the eye on the VFPU) | unknown on the PSP; the emulator came out 2–4% slower [E] | keep word, off (b106) | 0 differing verdicts over 2.19 M corners [E]. Low priority on M1's list |
 | E25 | **Ranged write-backs** instead of whole-cache write-backs | frame end ≈ 0–0.1 ms a frame [M, b107 log]; the audio block's is untimed, likely ≪ 1 ms [U] | proposed | Small, as measured. Risk: a missed range brings back b39–40's rubber-banding |
+| E26 | **Bodies placed dead sleep** like garbage corpses (`b112_candidates.md` §1) | b30's security room: 7 of 20 bodies updated every tick [M, b108 run 1]; ms unmeasured; levels dressed with bodies likely more [U] | **Built: b112 candidate** (`placeddeadawake`: off) | `units.c` bars set-dressing bodies from the garbage list, so b105's rule (garbage only) never offered them sleep [D]. The byte-identical rule still decides |
 
 ---
 
@@ -258,6 +261,7 @@ These are listed so nothing is lost. Each is in the merged notes with its source
   - gp-relative small data (`-G8`; PRX relocation may forbid it);
   - upstream Allegrex GCC patches.
 - **Memory, which feeds the caches above:**
+  - **the converted-buffer table swept sooner** (`b112_candidates.md` §3, built; `sweeplate`: off): dead entries' skinning plans held up to about 1 MB of heap in b108 run 1 [M];
   - game-state pools sized to measured peaks (~420–500 KB of heap);
   - debug-only data out (~0.45 MB);
   - the remaining Xbox-sized tables;
@@ -346,6 +350,8 @@ These are listed so nothing is lost. Each is in the merged notes with its source
 7. **The printf lock's 4% of the tick** may predate b106.
 8. **Skipped decal draws on b30 (b106):** 135 a frame in `hardware_b106.md`, 850 in a code comment; both [M].
 9. **Heartbeat/log writer priority:** above the game (prompt writes, steals game time) or below it (may make the game flush)?
+10. **The emulator's heap against the PSP's:** replaying b108 run 1's own path (the lab's route `b30_b108run1_timed`) matches the copies' churn but carries 700–950 KB less heap in use, because the replay meets far fewer models (`build_b111.md`). Memory questions that depend on what the player looks at still need the PSP.
+11. **The heap's 64 KB rounding** (`psp_build.py`) leaves up to 63 KB between the heap and the game state; about 140 KB stays free outside the heap during play [M]. Whether the heap can safely take more needs a look at what's placed outside it after start-up.
 
 **Docs to correct (the code settles these):**
 - `port_overview.md` lists double-buffered display lists as done. The code has one list, and the CPU waits at every frame end.
@@ -417,7 +423,8 @@ One line each: the build it shipped in, then what it measured.
 - **Learned VRAM set saved in play:** b88/b89.
 
 **Memory, build, hardware**
-- **Hot engine `-O2`, cold engine `-Os`:** b38/b69/b110.
+- **The level copies' arena:** b111 (`build_b111.md`). b108 run 1 failed to place copies from game time 27,907 to the level's end, 5,290 materials undrawn [M]; the arena keeps the copies' churn off the general heap. Awaiting its hardware run.
+- **Hot engine `-O2`, cold engine `-Os`:** b38/b69/b110. `-Os` on the hot engine measured 30% slower on the tick (b108 D [M]).
 - **Dead-code GC.**
 - **Packed BSP/collision:** b68/b70.
 - **`-G`, `-K`, `-M`, `-Y`, `-D`, `-Z` bakes:** all ten maps fit the window since b108.
