@@ -4,6 +4,17 @@ What comes after b112. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]*
 
 Everything here ships behind a keep word. Anything that changes what the player sees is Sheepdog01's call, one at a time, after an A/B.
 
+## Decisions and priorities (Sheepdog01, 2026-10-10)
+
+- **The heap stays at 5,952 KB** until we're certain we won't need it. b111's long run left about 900 KB of it untaken (`hardware_b111.md`); that's the margin, not room to shrink.
+- **Visual items that matter for enjoying the game:** the Covenant weapons' tracers (#1, contrails) and holographic displays (#16, meters and plasma). These go first among the visual fixes.
+- **Low priority, a todo for later: visual quality upgrades.** None is needed to enjoy the game:
+  - full-size first-person textures (the existing detail pack: `texpack.py --full-detail fp`, launch menu `assetdetail`; Blood Gulch's first-person textures went from 461 KB to 2.0 MB in b102 [M]);
+  - `fulllod` (the Xbox's choice of model detail instead of the one for 272 lines);
+  - specular highlights on models (the GE's specular light);
+  - reflections (cube maps baked to 64² sphere maps, a second pass per reflective part; best after L1, when the passes cost the ME instead of the main CPU);
+  - model detail maps as their own pass (the bake folds them into the base today).
+
 ## 1. Instruments
 
 ### `gebusy`: how busy each processor is
