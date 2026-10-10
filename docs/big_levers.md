@@ -123,7 +123,14 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
    - the see-through level surfaces' wall test (heap for its answers, and the engine's collision rays, which read the game's data while the main CPU may move it): an unknown answer counts as "on a wall" for a frame and is asked at the frame's end.
 
    Still open: whatever the ME-strict run still finds.
-4. **Carried out on the ME**, streaming behind the recorder: an uncached write index, range write-backs before publishing, the ME's own write-back before the GE reads.
+4. **Carried out on the ME**, streaming behind the recorder. The design (not built yet):
+   - **Two record buffers:** the main CPU fills one while the ME carries out the other, so no line is written by one CPU while the other reads it. A buffer is handed over when it's half full, at a call that runs at once, and at the frame's end.
+   - **Hand-over** (psp_me.c's slots, `media_engine.md`): the main CPU writes back its whole data cache (the records, and what they point to that the engine wrote: dynamic triangles, decal vertices), then bumps the request number; the ME drops its cache, runs `defer_drain` on the buffer with `psp_me_context` set, writes its cache back and sets the done number. The main CPU **spins** on the done number (X3: no sleeps), and before touching the GE layer's state again it writes back and drops its own cache, so it reads what the ME wrote.
+   - **What only the ME writes while it runs:** the GE layer's state (`psp_ge.c`'s statics, the converted-buffer table, the arenas), pspgu's list pointer, the list itself, the wanted lists. The main CPU writes none of them until the ME is done; its own counters (records, drains) stay apart from the ME's.
+   - **The GE's stall address:** the ME keeps the newest one (step 3's gate); the main CPU passes it on each time it sees a batch done, so the GE runs the list as it fills.
+   - **Calls that run at once** wait for the ME to finish what was handed over. Each one is a stall, so the next work is cutting them: the log's "carried out for" line counts them by call (text blocks, the level vertex queries, the frame's start and end).
+   - **The ME's time:** its cycle counter (CP0 $9, b89) for the entry points' timers.
+   - **Expected cost:** two whole-cache operations a hand-over (~tens of µs each [U]) plus the tail the main CPU waits for at each call that runs at once. Against 42–65 ms a frame moved [M].
 
 ### What stays on the main CPU
 
