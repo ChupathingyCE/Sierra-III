@@ -10186,10 +10186,12 @@ int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 
 /* "flipfixture": the vehicle nearest the player (within 30 units) put upside
-down 1.5 units in front of him, once, at game time 60 */
+down 1.5 units in front of him, once, at game time 60; at game time 150, once
+it has fallen and settled, where it lies against the player */
 static void psp_flip_fixture(long unit_index)
 {
 	static int fixture = -1;
+	static long placed = NONE;
 	struct object_iterator iterator;
 	struct object_datum *object, *unit;
 	long best = NONE;
@@ -10197,6 +10199,25 @@ static void psp_flip_fixture(long unit_index)
 
 	if (fixture < 0)
 		fixture = psp_keep("flipfixture");
+	if (placed != NONE && game_time_get() >= 150)
+	{
+		struct object_datum *vehicle = object_try_and_get_and_verify_type(placed, _object_mask_vehicle);
+
+		unit = object_get(unit_index);
+		if (vehicle)
+			platform_psp_log("flipfixture: t=%ld the vehicle lies at %.2f %.2f %.2f, up.k %.2f, at rest %d; its "
+				"sphere's centre %.2f from the player's (radii %.2f and %.2f)", game_time_get(),
+				vehicle->object.position.x, vehicle->object.position.y, vehicle->object.position.z, vehicle->object.up.k,
+				TEST_FLAG(vehicle->object.flags, _object_at_rest_bit) ? 1 : 0,
+				(real)sqrt((vehicle->object.bounding_sphere_center.x - unit->object.bounding_sphere_center.x) *
+					(vehicle->object.bounding_sphere_center.x - unit->object.bounding_sphere_center.x) +
+					(vehicle->object.bounding_sphere_center.y - unit->object.bounding_sphere_center.y) *
+					(vehicle->object.bounding_sphere_center.y - unit->object.bounding_sphere_center.y) +
+					(vehicle->object.bounding_sphere_center.z - unit->object.bounding_sphere_center.z) *
+					(vehicle->object.bounding_sphere_center.z - unit->object.bounding_sphere_center.z)),
+				vehicle->object.bounding_sphere_radius, unit->object.bounding_sphere_radius);
+		placed = NONE;
+	}
 	if (!fixture || game_time_get() < 60)
 		return;
 	fixture = 0;
@@ -10246,6 +10267,7 @@ static void psp_flip_fixture(long unit_index)
 		forward.j = ahead.i;
 		forward.k = 0.0f;
 		object_set_position(best, &place, &forward, &up);
+		placed = best;
 		vehicle->object.translational_velocity.i = vehicle->object.translational_velocity.j =
 			vehicle->object.translational_velocity.k = 0.0f;
 		vehicle->object.angular_velocity.i = vehicle->object.angular_velocity.j =
