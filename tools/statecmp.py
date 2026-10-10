@@ -17,7 +17,9 @@ usage: python3 statecmp.py A/log.txt B/log.txt [--ignore name,name,...] [--objec
             differ in place, motion, facing, health, parent or animation
 
 Prints the first tick whose whole-state hash differs and the first whose
-play hash differs (each object's kind, place, motion, facing, health, parent
+play hash differs, the first ticks the global and local random seeds differ
+(build 113: "fixedseed" makes the local one start the same and keeps the
+sound manager off it) (each object's kind, place, motion, facing, health, parent
 and animation frame: what the game plays with, without what drawing writes
 into objects), then for each 30-tick checkpoint the allocations that differ
 (the first checkpoint and every change in the set), and a verdict on the
@@ -34,20 +36,22 @@ for a in sys.argv[1:]:
 ENTRY = re.compile(r' (.+?) ([0-9a-f]{8})(?= |$)')
 
 def read(path):
-    whole, records, play = {}, {}, {}
+    whole, records, play, seeds = {}, {}, {}, {}
     for line in open(path, errors='replace'):
-        m = re.search(r'state: tick (\d+) ([0-9a-f]{8})(?: play ([0-9a-f]{8}))?', line)
+        m = re.search(r'state: tick (\d+) ([0-9a-f]{8})(?: play ([0-9a-f]{8}))?(?: seeds ([0-9a-f]{8}) ([0-9a-f]{8}))?', line)
         if m:
             whole[int(m.group(1))] = m.group(2)
             if m.group(3):
                 play[int(m.group(1))] = m.group(3)
+            if m.group(4):
+                seeds[int(m.group(1))] = (m.group(4), m.group(5))
             continue
         m = re.search(r'state: records at tick (\d+):(.*)$', line.rstrip('\n'))
         if m:
             tick = int(m.group(1))
             entries = records.setdefault(tick, [])
             entries.extend(ENTRY.findall(m.group(2)))
-    return whole, records, play
+    return whole, records, play, seeds
 
 def read_objects(path):
     """tick -> {object index: (definition, hash)}, and definition -> name"""
@@ -110,8 +114,8 @@ if len(args) != 2:
 if '--objects' in sys.argv:
     compare_objects(args[0], args[1])
     sys.exit(0)
-wa, ra, pa = read(args[0])
-wb, rb, pb = read(args[1])
+wa, ra, pa, sa = read(args[0])
+wb, rb, pb, sb = read(args[1])
 common = sorted(set(wa) & set(wb))
 differ = [t for t in common if wa[t] != wb[t]]
 print('ticks: %d and %d, %d in common; whole state differs at %d of them%s'
@@ -122,6 +126,12 @@ if play_common:
     print('play (the objects as the game plays them): %s'
           % ('the same at all %d ticks' % len(play_common) if not play_differ else
              'differs at %d of %d ticks, first at tick %d' % (len(play_differ), len(play_common), play_differ[0])))
+seed_common = sorted(set(sa) & set(sb))
+if seed_common:
+    for k, name in ((0, 'global'), (1, 'local')):
+        part = [t for t in seed_common if sa[t][k] != sb[t][k]]
+        print('%s random seed: %s' % (name, 'the same at all %d ticks' % len(seed_common) if not part else
+              'differs at %d of %d ticks, first at tick %d' % (len(part), len(seed_common), part[0])))
 
 checkpoints = sorted(set(ra) & set(rb))
 last, judged = None, set()

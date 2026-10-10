@@ -5392,9 +5392,14 @@ void psp_game_state_hash_tick(long tick)
 
 		extern void psp_objects_play_dump(long tick); /* objects.c (psp_fixups.py, build 113) */
 
-		platform_psp_log("state: tick %ld %08lx play %08lx", tick,
+		/* build 113: the global and local random seeds too, so two runs
+		show the tick their draws part ("fixedseed", random_math.c) */
+		extern unsigned long get_random_seed(void);
+		extern unsigned long *get_global_local_random_seed_address(void);
+
+		platform_psp_log("state: tick %ld %08lx play %08lx seeds %08lx %08lx", tick,
 			psp_state_hash(game_state_globals.base_address, game_state_globals.cpu_allocation_size),
-			psp_objects_play_hash());
+			psp_objects_play_hash(), get_random_seed(), *get_global_local_random_seed_address());
 		psp_objects_play_dump(tick);
 	}
 	{
@@ -10409,6 +10414,105 @@ FIXES_113["source/objects/objects.c#flipwatch"] = [
 			psp_vehicles_asleep++;
 			psp_flipwatch_asleep(object_index);
 		}
+"""),
+]
+
+
+# build 113: "fixedseed" (tests, beside "fixedticks" and "statecrc"). Two
+# b112 runs with the same input parted at tick 806, in the effects
+# (docs/big_levers.md §5). The local random seed, which effects, particles
+# and the sound manager all draw from, starts from the clock
+# (random_math_initialize), and the sound manager draws from it as sounds
+# start and loop: when depends on the audio and the stick's timing, not on
+# game time. With the word, the local seed starts at a constant when a map
+# starts, and the sound manager draws from a seed of its own, so the game's
+# own draws come out the same in every run. Off, nothing changes.
+FIXES_113["source/math/random_math.c#fixedseed"] = [
+("""unsigned long *get_global_local_random_seed_address(
+	void)
+{
+	return &random_math_globals.global_local_random_seed;
+}
+""",
+ """unsigned long *get_global_local_random_seed_address(
+	void)
+{
+	return &random_math_globals.global_local_random_seed;
+}
+
+#ifdef HALO_PSP
+/* build 113: "fixedseed" (psp_fixups.py): the sound manager's own seed, and
+the constant starts. sound_manager.c and sound_definitions.c draw through
+psp_sound_seed */
+int psp_keep(const char *name);
+static unsigned long psp_sound_random_seed = 0x50554E44UL;
+static int psp_fixed_seed = -1;
+
+static int psp_fixed_seed_on(void)
+{
+	if (psp_fixed_seed < 0)
+		psp_fixed_seed = psp_keep("fixedseed");
+	return psp_fixed_seed;
+}
+
+unsigned long *psp_sound_seed(void)
+{
+	return psp_fixed_seed_on() ? &psp_sound_random_seed : &random_math_globals.global_local_random_seed;
+}
+
+/* game.c, game_initialize_for_new_map, beside the global seed's start */
+void psp_fixed_seed_new_map(void)
+{
+	if (psp_fixed_seed_on())
+	{
+		random_math_globals.global_local_random_seed = 0x0B5E55EDUL;
+		psp_sound_random_seed = 0x50554E44UL;
+	}
+}
+#endif
+"""),
+]
+FIXES_113["source/game/game.c#fixedseed"] = [
+("""	set_random_seed(game_globals->options.random_seed);
+""",
+ """	set_random_seed(game_globals->options.random_seed);
+#ifdef HALO_PSP
+	{
+		extern void psp_fixed_seed_new_map(void); /* random_math.c (psp_fixups.py, build 113) */
+
+		psp_fixed_seed_new_map();
+	}
+#endif
+"""),
+]
+FIXES_113["source/sound/sound_manager.c#fixedseed"] = [
+("""#include <math.h>
+#include <stdio.h>
+""",
+ """#include <math.h>
+#include <stdio.h>
+
+#ifdef HALO_PSP
+/* build 113: "fixedseed": the sound manager draws from its own seed
+(random_math.c, psp_fixups.py); without the word it is the local seed, as
+before */
+unsigned long *psp_sound_seed(void);
+#define get_global_local_random_seed_address psp_sound_seed
+#define real_local_random_range(lower, upper) real_seed_random_range(psp_sound_seed(), (lower), (upper))
+#endif
+"""),
+]
+FIXES_113["source/sound/sound_definitions.c#fixedseed"] = [
+("""#include "sound_definitions.h"
+""",
+ """#include "sound_definitions.h"
+
+#ifdef HALO_PSP
+/* build 113: "fixedseed": permutations drawn from the sound manager's seed
+(random_math.c, psp_fixups.py) */
+unsigned long *psp_sound_seed(void);
+#define get_global_local_random_seed_address psp_sound_seed
+#endif
 """),
 ]
 
