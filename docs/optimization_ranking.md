@@ -2,7 +2,7 @@
 
 This is every speed lever the project has measured, proposed, tried, shipped or set aside, from build 13 to build 110. It ranks the open ones by what they would buy on Sheepdog01's PSP-1000. It draws on all 40 Halo docs, the b110 code (keep words, build flags, fixups), b107's b30 hardware log, past conversations, and what the C&C port found. A separate check against the code, docs and log corrected 32 points before it was saved.
 
-**Update 2026-10-10** (b108's A and D runs, b111, the b112 candidates): M1's `-Os` question is settled (E3: it loses); the capture rule in §2 is corrected; E1 is built as a b112 candidate, along with a second regression from the rebase (`fast_ftol` rounding through a double); b108 run 1's log gave two new levers (E26, placed-dead bodies; §7, the converted-buffer sweep). The rest stands.
+**Update 2026-10-10** (b108's A and D runs, b111, the b112 candidates): M1's `-Os` question is settled (E3: it loses); the capture rule in §2 is corrected; E1 is built as a b112 candidate, along with a second regression from the rebase (`fast_ftol` rounding through a double); b108 run 1's log gave two new levers (E26, placed-dead bodies, a b112 candidate; the converted-buffer sweep, in b111). The rest stands.
 
 The levers come in three kinds:
 - **Exact:** the same game and the same picture, only faster. These need no decision from Sheepdog01.
@@ -261,7 +261,7 @@ These are listed so nothing is lost. Each is in the merged notes with its source
   - gp-relative small data (`-G8`; PRX relocation may forbid it);
   - upstream Allegrex GCC patches.
 - **Memory, which feeds the caches above:**
-  - **the converted-buffer table swept sooner** (`b112_candidates.md` §3, built; `sweeplate`: off): dead entries' skinning plans held up to about 1 MB of heap in b108 run 1 [M];
+  - **the converted-buffer table swept sooner** (in b111, `build_b111.md`; `sweeplate`: off): dead entries' skinning plans held up to about 1 MB of heap in b108 run 1 [M]; in the replay of that run the plans left on the heap fell from 994 KB to 176 KB [E];
   - game-state pools sized to measured peaks (~420–500 KB of heap);
   - debug-only data out (~0.45 MB);
   - the remaining Xbox-sized tables;
@@ -423,7 +423,7 @@ One line each: the build it shipped in, then what it measured.
 - **Learned VRAM set saved in play:** b88/b89.
 
 **Memory, build, hardware**
-- **The level copies' arena:** b111 (`build_b111.md`). b108 run 1 failed to place copies from game time 27,907 to the level's end, 5,290 materials undrawn [M]; the arena keeps the copies' churn off the general heap. Awaiting its hardware run.
+- **The level copies' arena, compaction, and the sooner sweep:** b111 (`build_b111.md`). b108 run 1 failed to place copies from game time 27,907 to the level's end, 5,290 materials undrawn [M]; the arena keeps the copies' churn off the general heap, and the sweep frees dead skinning plans. Awaiting its hardware run.
 - **Hot engine `-O2`, cold engine `-Os`:** b38/b69/b110. `-Os` on the hot engine measured 30% slower on the tick (b108 D [M]).
 - **Dead-code GC.**
 - **Packed BSP/collision:** b68/b70.
