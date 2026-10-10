@@ -10751,6 +10751,83 @@ void rasterizer_screen_effect(
 	_rasterizer_screen_effect(parameters);"""),
 ]
 
+
+# build 113: the sound cache's placement (b113_candidates.md #24; keep word
+# "soundplace", Sheepdog01's call). b112 run 6 dropped sounds while only 650-1,100 KB
+# of its 1,792 were playing: a sound needs one run of the cache's pages, and
+# sounds still playing (or loading) can't be pushed out, so where they sit
+# splits the space. Big sounds (32 KB and up: dialogue, engine and ambient
+# loops, which also play longest) now take the highest place they fit, so
+# they gather at the top and the small, short ones churn below, in the space
+# left whole. Small sounds keep the cache's own choice (the oldest place).
+# Only the sound cache; without the word, as before
+FIXES_113["source/memory/lruv_cache.c#soundplace"] = [
+("""long lruv_block_new(
+	struct lruv_cache *cache,
+	long size)
+{""",
+ """#ifdef HALO_PSP
+/* build 113: "soundplace" (psp_fixups.py): the cache whose big blocks take
+the highest place they fit (xbox_sound_cache.c sets it), and the size that
+counts as big */
+struct lruv_cache *psp_lruv_high_cache = NULL;
+#define PSP_LRUV_HIGH_PAGES 8
+#endif
+
+long lruv_block_new(
+	struct lruv_cache *cache,
+	long size)
+{"""),
+("""				if (hole->page_count >= desired_page_count)
+				{
+					if (!found_hole ||
+						hole->last_used_tick < best_hole.last_used_tick ||
+						(hole->last_used_tick == best_hole.last_used_tick &&
+						 hole->page_count < best_hole.page_count))
+					{""",
+ """				if (hole->page_count >= desired_page_count)
+				{
+#ifdef HALO_PSP
+					/* build 113: a big sound takes the highest place it fits
+					(holes come in rising page order, so the last that fits) */
+					int psp_high = cache == psp_lruv_high_cache && desired_page_count >= PSP_LRUV_HIGH_PAGES;
+#else
+					int psp_high = 0;
+#endif
+
+					if (!found_hole || psp_high ||
+						(hole->last_used_tick < best_hole.last_used_tick ||
+						(hole->last_used_tick == best_hole.last_used_tick &&
+						 hole->page_count < best_hole.page_count)))
+					{"""),
+]
+FIXES_113["source/cache/xbox_sound_cache.c#soundplace"] = [
+("""	xbox_sound_cache_globals.cache = lruv_new(
+		"xbox sound cache",
+		SOUND_CACHE_PAGE_COUNT,
+		SOUND_CACHE_PAGE_SIZE_BITS,
+		512,
+		sound_cache_delete_block_proc,
+		(lruv_locked_block_proc)sound_cache_locked_block_proc);""",
+ """	xbox_sound_cache_globals.cache = lruv_new(
+		"xbox sound cache",
+		SOUND_CACHE_PAGE_COUNT,
+		SOUND_CACHE_PAGE_SIZE_BITS,
+		512,
+		sound_cache_delete_block_proc,
+		(lruv_locked_block_proc)sound_cache_locked_block_proc);
+#ifdef HALO_PSP
+	{
+		/* build 113: "soundplace": big sounds at the top (lruv_cache.c) */
+		extern struct lruv_cache *psp_lruv_high_cache;
+		extern int psp_keep(const char *name);
+
+		if (psp_keep("soundplace"))
+			psp_lruv_high_cache = xbox_sound_cache_globals.cache;
+	}
+#endif"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
