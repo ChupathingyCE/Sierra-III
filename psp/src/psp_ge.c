@@ -164,7 +164,7 @@ tick, read while drawing).
 Run at once, after what is waiting: the frame's start and end
 (psp_ge_window_begin decides the near plane from the level and the player;
 psp_ge_frame_end hands the list over), and the calls whose answer the engine
-uses (psp_ge_text_begin, psp_ge_frame_window, the level vertex queries) or
+uses (psp_ge_text_begin, the level vertex queries) or
 that change data a waiting call reads (psp_ge_text_changed), and the map
 loads. A model with more nodes than DEFER_MAX_NODES runs as it comes
 (defer_paused), since the engine reuses its node matrices' buffer for the
@@ -223,7 +223,9 @@ static void defer_drain_for(const char *site)
 	defer_drain();
 }
 /* a call that runs at once carries out what is waiting first, so the list's
-order never changes */
+order never changes. Only the game's thread writes the list, so only it
+records and carries out; a call another thread makes (the heartbeat's
+psp_ge_frame_window, psp_ge_budget, psp_ge_setting) never drains */
 #define GE_DEFER_DRAIN() do { if (defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
@@ -10504,7 +10506,8 @@ static unsigned long win_frames = 0, win_flush_us = 0, win_writeback_us = 0, win
 	win_swap_us = 0, win_after_us = 0, win_list_bytes = 0, win_triangles = 0, win_draws = 0, win_transparent = 0;
 void psp_ge_frame_window(char *text, int size)
 {
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	/* (no GE_DEFER_DRAIN: the heartbeat's thread asks for this line, and
+	waiting calls run only on the game's thread) */
 	unsigned long n = win_frames ? win_frames : 1;
 
 	snprintf(text, size, "frameend: %lu frames; a frame: see-through flush %.1f ms, cache write-back %.1f, waiting for the GE %.1f (worst %.1f), swap %.1f, caches %.1f; display list %lu KB, %lu level draws, %lu triangles, %lu see-through draws",
