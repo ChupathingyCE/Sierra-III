@@ -6,9 +6,9 @@ Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator, **[D]** rea
 
 ## 1. In short
 
-- **The stick has plenty of capacity.** It's busy about 3% of a run [U: the log's reads against halo_bench v10's speeds].
-- **The trouble is timing.** Three of the four readers stop the game thread while they read, behind a fourth that reads on its own thread. And every read is made only once the thing is needed.
-  - One beach frame took 1.1 s, 844 ms of it reading textures.
+- **The stick has plenty of capacity.** Every thread's calls together kept it busy 52 s of about 12 minutes, loading included: ~7% [M, the stick lock's totals].
+- **The trouble is timing.** Three of the four readers stop the game thread while they read. The stick serves one call at a time behind a lock, shared with the sound reader and **the log writer**. And every read is made only once the thing is needed.
+  - One beach frame took 1.1 s, 844 ms of it reading textures. The game thread's worst wait for the lock was 767 ms.
   - 30 frames drew a flat-coloured surface, up to 12 in a row: seconds at 3–5 fps.
 - **The fix is the same shape as the rest of §0:** one input stage that owns the stick, works ahead of the frame, and reads in large pieces.
 - **Smaller assets help twice:** fewer bytes to read, and more of the working set in each cache.
@@ -25,6 +25,14 @@ Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator, **[D]** rea
 | What shows | 30 frames with a flat-coloured surface, longest run 12 | 196 frames skipped a draw | | 3 sounds failed for room |
 | Cache | 3,120 KB (VRAM 1,216 + RAM 1,904) for a 7,060 KB pack | 2,048 KB for an 11,988 KB pack | 512 KB, all 64 pages in use | 1,792 KB, full |
 
+**The stick by thread** (the stick lock's totals for the run, loading included [M]). The stick serves one call at a time, and `psp_trace.c`'s lock makes threads take turns:
+
+| Thread | Calls | Time in the stick | Worst call | Waited for the lock |
+|---|---:|---:|---:|---:|
+| The game thread (textures, geometry, animations, opens, keep-file polling, …) | 6,013 | 16.9 s | 904 ms | 2.5 s, 299 times (worst 767 ms) |
+| The heartbeat thread (**writing the log**) | 2,028 | 15.9 s | 803 ms | 1.4 s |
+| The engine's reader (sound) | 7,430 | 19.5 s | 331 ms | 1.2 s (worst 676 ms) |
+
 **What the stick gives** (halo_bench v10 [M], `psp_hardware_reference.md`):
 - **Speed by read size:** 4 KB reads run at 8.5 MB/s, 16 KB at 13.7, 64 KB at 15.7, 256 KB and up at 16.3.
 - **A random read costs about 1.6–2 ms more than a sequential one.**
@@ -33,28 +41,35 @@ Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator, **[D]** rea
 **What that means:**
 1. **Sound is the stick's biggest reader:** about 7× the other three together.
    - The cache is 1.75 MB against the Xbox's 4 MB, so part of the 118 MB is probably sounds read again soon after being evicted. The log doesn't separate those from streamed music and dialogue yet.
-2. **The game thread's reads take about twice what the bench predicts** [U]:
-   - textures 3.8 s against ~1.7;
-   - geometry 3.9 against ~3.0;
-   - animations 1.6 against ~0.8.
-
-   The likely difference is waiting behind the sound reader on the same stick. That would also explain the 844 ms frame on the beach at game time 4,791.
-3. **The reads are small and scattered,** so each one's fixed cost (~2 ms) dominates: ~2 MB/s in play against 16 MB/s for large reads.
-4. **Everything is read on demand.** A texture is asked for the first time it's drawn, and the 96 KB-a-frame budget spreads a new view over several frames.
-5. **Texture space is tight:** one frame bound 2.43 MB of textures, against 3.1 MB of caches.
+2. **The game thread waits its turn.**
+   - Its reads take about twice what the bench predicts [U]: textures 3.8 s against ~1.7, geometry 3.9 against ~3.0, animations 1.6 against ~0.8.
+   - It waited for the stick lock 2.5 s in all, worst 767 ms [M]. That's the 1.1 s frame on the beach at game time 4,791.
+   - Which thread held the lock then isn't logged. The log writer's worst call was 803 ms, and the sound reader's 331.
+3. **Writing the log is the stick's second user** (15.9 s, 7.8 ms a call on average) [M].
+   - Bench presets log more (`hwprofile`, `gebusy`).
+   - Preset 7, the only one without them, had smaller frame spikes (`hardware_b114.md`). That's likely part of why Sheepdog01 found run 7 the smoothest [U].
+4. **The reads are small and scattered,** so each one's fixed cost (~2 ms) dominates: ~2 MB/s in play against 16 MB/s for large reads.
+5. **Everything is read on demand.** A texture is asked for the first time it's drawn, and the 96 KB-a-frame budget spreads a new view over several frames.
+6. **Texture space is tight:** one frame bound 2.43 MB of textures, against 3.1 MB of caches.
    - The best third of the VRAM texture set (383 KB) took 92% of VRAM's binds.
    - That's the basis for keeping ~400 KB of textures in VRAM in §0.
-6. **History, b71:** asynchronous geometry reads made every frame take 2.5–5 s, because the texture cache's synchronous reads waited behind them on the same stick. Everything went synchronous after that (`psp_geo.c`). The lesson is one reader, not none.
+7. **History, b71:** asynchronous geometry reads made every frame take 2.5–5 s, because the texture cache's synchronous reads waited behind them on the same stick. Everything went synchronous after that (`psp_geo.c`). The lesson is one reader, not none.
 
 ## 3. Arriving ahead of need
 
 | # | Lever | What it does | Quality | Needs |
 |---|---|---|---|---|
-| S1 | **One input stage** | A single thread owns the stick. It takes requests from all four readers (textures, geometry, animations, sound) and serves them in priority order: needed this frame; sound chunks, whose deadline is ~2.6 s (`audio.md`); then prefetch. The game thread never sleeps on the stick. Reads go async at an I/O priority above the game's (v10's rule) | L (only arrival times change) | The game's reader thread folded in, or its requests routed through S1 |
+| S1 | **One input stage** | A single thread owns the stick. It takes requests from all four readers (textures, geometry, animations, sound) and serves them in priority order: needed this frame; sound chunks, whose deadline is ~2.6 s (`audio.md`); then prefetch; **writes last** (the log, saves). Writes go in small pieces to a file made at full size beforehand, so the FAT doesn't grow mid-run and no write holds the stick for long. The game thread never sleeps on the stick. Reads go async at an I/O priority above the game's (v10's rule) | L (only arrival times change) | The game's reader thread folded in, or its requests routed through S1 |
 | S2 | **Prefetch by place** | At bake time, list each BSP cluster's textures and geometry blocks; it's an offline calculation from the map, so exact. In play, a cluster change queues the sets of the clusters visible from the new one. Characters: an encounter's spawn queues its types' models, textures and animations | L | A per-cluster table in the bake |
 | S3 | **Pack order** | Sort the packs by cluster and first use, so a prefetch is a few large reads near 16 MB/s instead of hundreds of small ones near 2 MB/s | L | `texpack.py`; the Invader fork's `-G` writer |
 | S4 | **Smallest mips first** | A texture's top level is 3/4 of its bytes, and at 480×272 most surfaces sample lower levels. Load small to large: a blurry texture shows within a frame instead of flat colour, and distant textures never need their top level. The renderer already works out the level a surface needs (`texture_levels_by_distance`, `psp_ge.c`) | ≈L once loaded (with a one-level margin); **V while loading** (blurry instead of flat) | Pack levels stored small to large; residency by level |
 | S5 | **Pin the effects** | Tracers, plasma, muzzle flashes and explosions are bound constantly: they stay resident for the whole map | L | A pinned set in the texture cache |
+
+**Against `optimization_ranking.md` §5 (hitches and streaming):**
+- S1 takes in H4 (read budgets per read), H12 (the stick lock), H5 and H9 (log lines and diagnostics off the game thread), and H7 (keep file handles; stop polling `teleport.txt`).
+- S2 takes in H1 (texture streaming on b30), H3 (geometry read-ahead) and H8 (animation prefetch at spawn).
+- S3 is H15 (pack layout). S9 takes in H14 (music at 22 kHz). S11 is H11 (a bigger sound cache).
+- H13 (a full cache's `allocate()` is O(n²)) runs every frame on the full sound cache, so it's worth fixing alongside S11.
 
 ## 4. Smaller assets
 
@@ -112,7 +127,7 @@ What comes out, per stretch (flight, landing, beach, bunker):
 ## 6. Order
 
 1. **Measure:**
-   - `iostats` in b115;
+   - `iostats` in b115, with the lock's waits by holder;
    - the emulator traces and the replay tool;
    - b30's sound census;
    - b30's texture split by source format and chosen depth (a stats pass of `texpack.py` in the lab; results only, no data leaves the runner).

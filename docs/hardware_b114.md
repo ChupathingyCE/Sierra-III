@@ -259,5 +259,6 @@ The opening bench to game time 5,118. Preset 9 was added on the stick after the 
 
 ## Next
 
-- Test 9 (optional, the cliffs) is still to run. Test 2 is skipped.
-- b115: `overlayfreefar` for Sheepdog01's A/B, and the water's tint.
+- **Done:** all nine tests are in and analysed above (Test 2 hung and was skipped). The ninth slot ran `drawdist40` instead of the cliffs.
+- **The day's recon** after these tests: `big_levers.md` §0 (the pipeline priority, the memory pools, the VRAM swap, DMA, the three measurements), §4 (step 4's memory), §8 (the tick by call), §9 (the VFPU); `streaming.md` (the stick, the asset bakes, the headroom).
+- **b115's draft list** is `b115_candidates.md`: `overlayfreefar` for Sheepdog01's A/B, the water's tint, a play preset, and the instruments (`iostats`, `gereads`, `gebusy` by layer, `vramtex`).

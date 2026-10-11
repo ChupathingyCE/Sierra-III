@@ -13,6 +13,12 @@ Sheepdog01 asked for the changes that would **significantly** raise the tick rat
 
 The aim is a pipeline: each unit works on its own stage of a different frame, and each reads from the memory nearest to it. The levers already ranked below are its pieces: L1 step 4 (the ME builds lists while the main CPU runs on), L2/X1 (VRAM for the GE's reads), L3 (AI on the ME), L5 (the full tick/draw split).
 
+**The GE's features, used and unused** [D]:
+- **Used:** hardware skinning (up to 8 bones a batch), two hardware lights for models, swizzled 8-bit textures, DMA for texture uploads.
+- **Unused, possibly large:** hardware point and spot lights for the dynamic lights. Those cost up to 14 ms of a b30 frame as extra passes [M, b107]. Per-vertex lighting would look different, so it's a B lever (X7).
+- **Unused, small:** the GE's own bounding-box test, which skips a draw wholly off screen. The CPU's checks already do most of this cheaply.
+- **Not available:** clipping at the near plane. The CPU has to cut those triangles, so that work stays wherever the list is built.
+
 **The Memory Stick is a stage too:** what's streamed in play, how to make it arrive ahead of need without stopping the game thread, smaller asset bakes, and how to measure the headroom and balance the caches are in `streaming.md` (S1–S11).
 
 ### The memory pools, b114 on b30 [M from the hardware log unless marked]
@@ -403,7 +409,60 @@ The tick doesn't move (2.75% → 2.70% data misses). Writing the calls down and 
 
 The objects pool is 20% of the tick's data misses, the object spheres 3.7%, the collision BSP walks (`collision_bsp_test_vector_recursive`, `bsp3d_test_sphere_recursive`, `bsp2d_test_sphere_recursive`) 15% together. Drawing's: `model_geometry` 8.8%, `render_model` 5.5%, the geometry cache's lookup `resident_entry` 4.1% (its `entries` table: E6).
 
-## 8. Tests running and next
+## 8. The tick, call by call (b114, `PSP_TICK_STEPS`) [E]
+
+Lab run 38171832444: b114 along `b30_b113test1_timed`, keep words `nearauto assettrack geo2 nomeaudio hwprofile`, the tick's steps timed. A step's time runs until the next mark, so the boundaries between parts are approximate. The emulator's tick is ~23 ms in the flight and ~16.5 on the beach, against the PSP's 69 and 35 [M]: use the shares, not the milliseconds.
+
+| Share of the tick | Flight | Beach | Per call (flight) | Levers |
+|---|---:|---:|---|---|
+| Posing (node matrices, and the object's common update that follows) | 27% | 28% | 44 µs × 142 objects a tick | X13, #25 (skip unseen objects), N3 |
+| AI | 23% | 22% | 22 actors | L3, B1 |
+| Biped movement (`biped_update_physics`, mostly collision walks) | 16% | 11% | 155 µs × 23 live bipeds | X9, X15 |
+| Framework (type update, function values, colours, damage) | 10% | 13% | 143 objects | |
+| Lights (`object_connect_lights`) | 8% | 8% | 17 µs × 84 | X8 |
+| Validity checks (`unit_verify_vectors`, `biped_verify_object_vectors`) | 6% | 6% | 7 µs × 165 | X10 |
+| Dead bodies settling (`biped_update_dead`) | 2.4% | 1.3% | 326 µs × 1.7 | |
+| Other (particles, scripts, sound, players) | 7% | 10% | | |
+
+- **A live biped costs about 1.1 ms a tick on the PSP in the flight and 0.7 on the beach** [M: 31.7 ms for 28, 12.9 for 19, `hardware_b114.md`].
+- **Posing covers every animated object:** 142 a tick in the flight, not only the 28 bipeds. Weapons and scenery are posed too.
+- **Movement is collision walks,** which are memory-bound: the levers are layout (X9) and the ME (X15), not arithmetic.
+- **Dead bodies cost twice a live biped, but only for a while.** The limp body relaxes onto the ground up to an iteration cap, then stops [D, `biped_update_dead`]. Fights with many deaths (the Flood in Two Betrayals) bring bursts, not a steady load.
+
+**The cache map's leads in the tick** (b114's `cachemap`, instructions over the bench [E]):
+
+| Function | Instructions | What it is | Lever |
+|---|---:|---|---|
+| `sphere_intersects_cluster_portal` | 346 M | objects re-linked into the level's clusters as they move | N4 |
+| `aiming_screen_apply` | 281 M | the aim blend: per node, four quaternions decompressed, three normalised blends and a product; two `fmod`s in software `double` a call | X13, E16 |
+| `model_get_marker_by_name` + `model_find_marker` | 278 M | markers looked up by name every tick (attachments, footsteps, weapons) | N3 |
+| `memset` | 238 M | callers unknown | N5 |
+| `unit_vectors_are_valid` + `valid_real_matrix4x3` | 260 M | validity checks | X10 |
+
+## 9. The VFPU: arithmetic only, main CPU only (2026-10-11)
+
+- **It's part of the main CPU, not a third worker.** It makes the main CPU's arithmetic faster: matrix products 3.2× [M: 906 µs against 2,880 for 2,000]. It can't run alongside anything.
+- **It does nothing for memory waits,** which are ~58% of the main CPU's cycles [M].
+- **The Media Engine has no VFPU.** Once L1 moves the GE layer onto the ME, VFPU code in the drawing path stops mattering. So the VFPU's targets are the tick's.
+
+| # | Work | Gain [U] | Exact? | Notes |
+|---|---|---|---|---|
+| 1 | **Posing maths** (X13): keyframe and aim-blend quaternion mixes, quaternion to matrix, chaining the skeleton | 0.5–2 ms a tick in the flight, 0.3–1 on the beach | ≈ exact | Quaternions are 4 wide, and the normalising square roots are slow on the FPU and fast on the VFPU (`vrsq`). It scales with bipeds. Firm it up with a halo_bench test of the real routines; the emulator's VFPU costs are its own |
+| 2 | **`vfpuskin`** (E24), already built, off | ≤ 1 ms a frame | ≈ exact | A free PSP A/B. The cinematic, with marines beside the camera, is its best case |
+| 3 | Lights (after X8) | 0.3–1 ms a tick | ≈ exact | X8's caching skips the work, exactly; the VFPU only speeds what's left |
+| 4 | Drawing-path maths (E9 classification, decals, see-through sort, GE matrices) | 0.5–2 ms a frame | ≈ exact | Interim only: L1 takes it to the ME |
+| 5 | Trig (E17) | 0.1–0.2 ms a tick | ≈ exact | |
+| 6 | **VFPU state on thread switches** (E20) | 0 to ~3% of the CPU | exact | Every thread gets the VFPU flag (`psp_vfpu.c`'s wrapper), and the audio thread wakes up to 10,000 times a second during ME jobs. If the kernel saves the VFPU's registers on every switch, that adds up; if only when needed, nothing. A halo_bench test settles it |
+
+**Not the VFPU's:**
+- collision (branches and dependent loads: X9);
+- validity checks (remove them: X10);
+- marker lookups (cache the index: N3);
+- cluster re-links (N4).
+
+**Ceiling:** about 2–4 ms a tick and 1–3 ms a frame, so 5–10 ms of a 294 ms flight frame [U]. A clean win, not one that moves the floor alone.
+
+## 10. Tests running and next
 
 - **Emulator ceiling bench with the GE layer switch** (b112).
 - **Cache-model A/B, `gedefer` off and on** (lab `cache=1`: the emulator's cache models on the interpreter, each phase's misses in `cache.txt`).
@@ -414,3 +473,5 @@ The objects pool is 20% of the tick's data misses, the object spheres 3.7%, the 
 - **Smaller drawing levers built as switches** for the PSP's A/B: `listcachedall` (X18), `statememo` (X6), `lean` (E2: −8 to −12% of the frame in the emulator's bench), `drawdistN` (B9: small on b30).
 - **L3's blocker (#25):** the first difference between b114 and b114 with `gedefer` is a standing Elite's aim at tick 1,320, and the object mark counter differs from tick 1,204: the engine's render-side work runs differently when the GE calls are deferred. Not streaming, not the VFPU.
 - **The lab runs up to ten emulators at once** (`docs/testing_pipeline.md`): about five times the night's emulator work.
+
+**Update 2026-10-11, evening:** the recon of the day is in §0 (the pipeline priority, the memory pools, the VRAM swap, DMA, the three measurements), §4 (step 4's memory), §8 (the tick by call), §9 (the VFPU) and `streaming.md`. What b115 carries is in `b115_candidates.md`.

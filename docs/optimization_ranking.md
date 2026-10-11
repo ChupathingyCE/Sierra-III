@@ -6,6 +6,8 @@ This is every speed lever the project has measured, proposed, tried, shipped or 
 
 **Update 2026-10-10, later** (Sheepdog01: "significantly improve tickrate and frame rate… rather than chasing small gains"): the structural line is re-ranked and sized in **`big_levers.md`**. First: the Media Engine builds the GE's lists (the GE layer's CPU is 42–65 ms a frame on b30 [M]; a new lever, ahead of X3/X4), then VRAM residency (X1, M3 still decides), the next tick's AI on the ME, a profile-guided build (X17: its instrumented program doesn't fit the PSP-1000's layout), and the full tick/draw split (X16). b112 carries the instruments: the ceiling bench, `gedefer` (step 1 of the GE layer's move), `fixedticks` and `statecrc`.
 
+**Update 2026-10-11** (b114's hardware runs and a day of recon with Sheepdog01): **aligning the workload to the pipeline is the priority** (`big_levers.md` §0): the memory pools, the VRAM swap (level vertices and the shared models in, most textures out), DMA's role, and three measurements to size it (`gereads`, `gebusy` by layer, `vramtex`/`vrammodels`). Streaming has its own doc and levers S1–S11 (`streaming.md`), which take in several of §5's H levers. The tick by call is `big_levers.md` §8, the VFPU's ranking §9. New levers N1–N5 are in §7. The next build's list is `b115_candidates.md`.
+
 The levers come in three kinds:
 - **Exact:** the same game and the same picture, only faster. These need no decision from Sheepdog01.
   - **≈ exact** marks levers whose float results differ only in the last bits, like the VFPU matrix product shipped in b37. They are listed with the exact ones, flagged so Sheepdog01 can veto.
@@ -139,15 +141,15 @@ Mostly a day or less each. Savings are at the b30 beach on the PSP unless anothe
 | E13 | **Scratchpad: `rasterizer_xbox_d3d_globals`** (2.2 KB) | ≈ 0.4–0.5 ms a frame [E→U] | proposed | Needs room: E2 frees it |
 | E14 | **Display list in VRAM** | 0.4–0.8 ms a frame (BG) [M] | measured, not built | b30's list is bigger and won't all fit. Overflow handling first |
 | E15 | **`cache 24` for whole-line writes** (memset, vertex copies, cut buffers, mixer output) | unknown; memset is 3.4% of instructions [E] | measured, not built | Half the cost of whole-line writes [M v9]. Only for fully overwritten, aligned lines |
-| E16 | **Remaining double maths**: `periodic_functions` fmod (exact); collision `fabs`, lift terms, `vehicles.c:661` (≈ exact) | < 0.5 ms a tick [U] | proposed | The `fabsf` sites round slightly |
+| E16 | **Remaining double maths**: `periodic_functions` fmod (exact); `aiming_screen_apply`'s two `fmod`s a call (exact as `x - truncf(x)`; 2026-10-11); collision `fabs`, lift terms, `vehicles.c:661` (≈ exact) | < 0.5 ms a tick [U] | proposed | The `fabsf` sites round slightly |
 | E17 | **VFPU trig** (`vsin` etc.) for the remaining tick trig (≈ exact) | 0.1–0.2 ms a tick [U] | proposed | Error < 4.8e-7; the last ~3 mantissa bits differ |
 | E18 | **Frame pointers omitted** (`-fno-omit-frame-pointer` is on the game's units) | unknown | proposed | The crash handler dumps from `sp` and doesn't walk `$fp` [D] |
 | E19 | **Keep-word asks cached in statics** (per model LOD, shadow, decal cluster, HUD draw, texture, particle) | small | proposed | Each ask is still a hash + strcmp + seqlock read |
-| E20 | **VFPU context only on threads that use the VFPU** | unknown | proposed | The audio thread wakes up to 10,000 times a second during ME jobs [D] |
+| E20 | **VFPU context only on threads that use the VFPU** | unknown: 0 to ~3% of the CPU [U] | proposed | The audio thread wakes up to 10,000 times a second during ME jobs [D], and `psp_vfpu.c`'s wrapper gives every thread the VFPU. A halo_bench test of thread switches with and without the flag settles whether the kernel saves the registers each time |
 | E21 | **Maths flags for the plain-C `psp/src` units** (`-fno-math-errno` etc.) | small | proposed | Drops the errno branch after `sqrt.s` in the GE code's hot loops |
 | E22 | **Object render-state cache cap** (256, full on b30, c10, d20) | unknown | measure first | Objects past the cap may rebuild their lighting every frame [U] |
 | E23 | **HUD bitmaps resident in VRAM** | unknown | proposed | No blocking texture load inside a frame |
-| E24 | **`vfpuskin`** (bending corners near the eye on the VFPU) | unknown on the PSP; the emulator came out 2–4% slower [E] | keep word, off (b106) | 0 differing verdicts over 2.19 M corners [E]. Low priority on M1's list |
+| E24 | **`vfpuskin`** (bending corners near the eye on the VFPU) | unknown on the PSP; the emulator came out 2–4% slower [E] | keep word, off (b106) | 0 differing verdicts over 2.19 M corners [E]. A free PSP A/B: the cinematic, with marines beside the camera, is its best case (2026-10-11) |
 | E25 | **Ranged write-backs** instead of whole-cache write-backs | frame end ≈ 0–0.1 ms a frame [M, b107 log]; the audio block's is untimed, likely ≪ 1 ms [U] | proposed | Small, as measured. Risk: a missed range brings back b39–40's rubber-banding |
 | E26 | **Bodies placed dead sleep** like garbage corpses (`b112_candidates.md` §1) | b30's security room: 7 of 20 bodies updated every tick [M, b108 run 1]; ms unmeasured; levels dressed with bodies likely more [U] | **Built: b112 candidate** (`placeddeadawake`: off) | `units.c` bars set-dressing bodies from the garbage list, so b105's rule (garbage only) never offered them sleep [D]. The byte-identical rule still decides |
 
@@ -171,7 +173,7 @@ These are the bigger ceilings. Most need a design and their own build.
 | X10 | **Assert audit**: compile out pure checks (`valid_real_*`, `unit_verify_vectors`, lookup asserts) | 0.6–1.9 ms a tick [E→U] | proposed | Up to 447 KB less code [D]. Needs E1's `PSP_ASSERTS_OFF` hook; some asserts have side effects |
 | X11 | **ME classify + slant buckets, run ahead** for the visible set | ≤ 5.8 ms a frame (BG) [M bound] | proposed; the per-draw split was measured and rejected (§7) | Exact (0 differing answers over ~5 M vertices [M]). Needs X3; competes with X1 and the tick for the ME |
 | X12 | **Baked per-cluster visible set**, or the **portal walk on the ME** | ≤ 5.5 / ≤ 2.5 ms a frame (BG) [M] | proposed / measured | Alternatives to each other and to cluster lists |
-| X13 | **VFPU node matrices / posing** (quaternions with `vrsq`; render-side relative matrices) (≈ exact) | 0.3–1 ms a tick [E] | proposed | "The VFPU only helps arithmetic; the CPU's problem is memory." Watch alignment: unaligned `ulv.q` corrupts on the PSP-1000 |
+| X13 | **VFPU node matrices / posing** (quaternions with `vrsq`; render-side relative matrices; the aim blend, `aiming_screen_apply`) (≈ exact) | 0.3–1 ms a tick [E]; 0.5–2 ms in the flight counting the aim blend [U] (`big_levers.md` §9) | proposed | "The VFPU only helps arithmetic; the CPU's problem is memory." Watch alignment: unaligned `ulv.q` corrupts on the PSP-1000 |
 | X14 | **Hot CPU tables in VRAM** (tag-instance table, BSP top) | ≤ 1.5 ms a tick [U] | proposed | A CPU miss to VRAM is 132 ns vs 220 [M v7]; competes with X1 for VRAM |
 | X15 | **ME collision sphere walks** | ≈ 1 ms a tick [E→U] | proposed | After X4; hard to batch |
 | X16 | **Tick/draw split with a snapshot** | enables ME tick jobs | proposed (rebuild step 5) | The structure that makes the ME a real second core |
@@ -190,7 +192,7 @@ These are the bigger ceilings. Most need a design and their own build.
 
 | # | Lever | Stall it removes | Status | Notes |
 |---|---|---|---|---|
-| H1 | **Texture streaming on b30** (track textures 7,060 KB vs 2,752 KB of caches) | 681 waits, up to 12 untextured frames in a row (b107 [M]); 36.5 s of game-thread stick time, worst 872 ms (b106 [M]) | open problem | Needs memory or smaller textures; competes with B14's `geo2` for texture RAM. Predicted-resource prefetch from the tags is one idea |
+| H1 | **Texture streaming on b30** (track textures 7,060 KB vs 2,752 KB of caches; 3,120 KB in b114) — now `streaming.md` S1–S7 | 681 waits, up to 12 untextured frames in a row (b107 [M]); 36.5 s of game-thread stick time, worst 872 ms (b106 [M]) | open problem | Needs memory or smaller textures; competes with B14's `geo2` for texture RAM. Predicted-resource prefetch from the tags is one idea |
 | H2 | **Checkpoints write only changed pages** | ≈ 0.44–0.7 s per checkpoint [E→U]; freezes of 1.1–1.76 s [M] | measured, not built | First find why writes run at ~0.9 MB/s against the stick's 4.9 |
 | H3 | **Geometry read-ahead**: warm at load → `geoasync` re-test → prefetch at natural points | 100–240 ms freezes, 13–28 a run (b86 [M]); worst 244–319 ms (Library) [M] | proposed / keep word off | Warm-up moves 260–295 ms into the load. `geoasync` trades a freeze for a pop-in (a look call) |
 | H4 | **Read budgets per read, not per byte** | caps 200–319 ms read frames [M] | proposed | A read costs ~2 ms however small [M v10] |
@@ -240,6 +242,18 @@ These are the bigger ceilings. Most need a design and their own build.
 ## 7. Other open levers: small, unsized, or memory only
 
 These are listed so nothing is lost. Each is in the merged notes with its sources.
+
+**New, 2026-10-11** (found while mapping the frame, `frame_map.html`, and in b114's cache map and tick steps, `big_levers.md` §8). All exact:
+
+| # | Lever | Size | Notes |
+|---|---|---|---|
+| N1 | **Tag lookups' globals in the scratchpad** (`global_tag_instances`, `cache_file_globals`) | ~10% of the tick's data misses [E; attribution U] | Every `tag_get` reads both, and they keep being pushed out of the cache |
+| N2 | **Skip the Xbox shim's shader constants on the GE path** | 2.2% of drawing's data misses [E] | The engine's model path still calls the Direct3D layer's constant stores; check what the GE path needs from them |
+| N3 | **A biped's per-tick shortcuts:** marker indices cached instead of looked up by name; checks and the skeleton skipped for a biped whose pose didn't change | 0.5–1.1 ms per biped a tick is the whole cost [M]; the name lookups alone run 278 M instructions over the bench [E] | Footsteps, attachments and weapons look markers up by name every tick |
+| N4 | **Cluster re-links only when an object crosses a portal** | `sphere_intersects_cluster_portal`: 346 M instructions in the tick over the bench [E] | First check whether objects that barely moved redo the test |
+| N5 | **The tick's `memset`s** | 238 M instructions in the tick over the bench [E] | Find the callers first. Large clears could skip work or use DMA in a burst; small ones stay on the CPU |
+
+**Streaming and assets** are S1–S11 in `streaming.md`. **The VRAM swap and DMA** are in `big_levers.md` §0.
 
 - **Tick:**
   - driven-vehicle physics (8–10 ms a tick on BG when driving [M]; a target, no design);
