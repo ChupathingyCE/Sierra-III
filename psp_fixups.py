@@ -9762,7 +9762,7 @@ void platform_psp_log(const char *format, ...);
 char *tag_get_name(long tag_index);
 void psp_objects_play_dump(long tick)
 {
-	static long first = -2, watched = -1;
+	static long first = -2, watched = -1, whole = -1;
 	static long named[256];
 	static int named_count = 0;
 	struct object_iterator iterator;
@@ -9781,6 +9781,10 @@ void psp_objects_play_dump(long tick)
 		low half) play words too, to see which part first (#25);
 		"statewordsall": every object's */
 		watched = psp_keep("statewordsall") ? -2 : psp_keep_number("statewords", -1);
+		/* "statefullN": object N's whole datum, every word, 32 a line (the
+		play words leave out what drives them: a unit's desired facing, its
+		AI's target...) */
+		whole = psp_keep_number("statefull", -1);
 	}
 	if (first < 0 || tick < first || tick >= first + 48)
 		return;
@@ -9815,6 +9819,24 @@ void psp_objects_play_dump(long tick)
 			for (k = 0; k < count; k++)
 				at += snprintf(text + at, sizeof(text) - at, " %08lx", words[k]);
 			platform_psp_log("state: words of object %08lx at tick %ld:%s", (unsigned long)iterator.index, tick, text);
+		}
+		if (whole >= 0 && (iterator.index & 0xFFFF) == whole)
+		{
+			struct object_header_datum const *header = object_header_get(iterator.index);
+			unsigned long const *datum = (unsigned long const *)header->datum;
+			long total = header->data_size / 4, from;
+
+			for (from = 0; from < total; from += 32)
+			{
+				char text[32 * 9 + 1];
+				int at = 0;
+				long w;
+
+				for (w = from; w < total && w < from + 32; w++)
+					at += snprintf(text + at, sizeof(text) - at, " %08lx", datum[w]);
+				platform_psp_log("state: datum of object %08lx at tick %ld, word %ld:%s", (unsigned long)iterator.index,
+					tick, from, text);
+			}
 		}
 	}
 	if (length)
