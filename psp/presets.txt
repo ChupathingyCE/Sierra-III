@@ -7,5 +7,5 @@
 4 flight, lean: nearauto assettrack geo2 gebusy lean
 5 flight, GE work on the ME: nearauto assettrack geo2 hwprofile gebusy gedefer gemeon
 6 bench, draw distance 100: nearauto assettrack geo2 hwprofile gebusy drawdist100
-7 zoom mask, soft edge: nearauto assettrack geo2 zoommask
-8 zoom mask, full: nearauto assettrack geo2 zoommaskfull
+7 beach looks: tracers, zoom soft edge: nearauto assettrack geo2 contrails zoommask
+8 beach looks: tracers, zoom full: nearauto assettrack geo2 contrails zoommaskfull
