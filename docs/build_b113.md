@@ -128,7 +128,7 @@ umount $psp
 
 **Test 2: a bigger list, and the sound cache's best set-up** (about 12 minutes)
 - Keep words: Test 1's plus `list768 sound1792 soundplace`.
-- Play from the start to the Warthog drop. **Stop** when the Warthog lands.
+- Play the opening bench, as Test 1 did: from the start into the first bunker. **Stop** in the bunker (about 13 minutes).
 - Listen during the Pelican flight: that's where b112 dropped most of its sounds.
 - What it answers: whether the far trees and the beach's objects stop blinking (draws skipped with the list full, against run 1); whether the placement takes the drops below `sound1792` alone (against run 6's 16); and, from the new `no room for` lines, how much the playing sounds really hold on the PSP.
 - Heap with both: about 5,670 of 5,888 KB.

@@ -4,7 +4,9 @@ Sheepdog01's PSP-1000 at 333 MHz, b30, `halo_psp_b113.zip` (EBOOT `f0114760…`)
 
 ## Test 1: b113 as it comes
 
-Keep words `nearauto assettrack geo2 hwprofile gebusy`, deathless. The run went from the start to the first bunker on the beach (game time 8,109, about 13 minutes) and stopped there, short of the cliffs. No fault; the log ends after a normal heartbeat.
+Keep words `nearauto assettrack geo2 hwprofile gebusy`, deathless. No fault. The run went from the start to the first bunker on the beach (game time 8,109, about 13 minutes).
+
+**The opening bench** (Sheepdog01, 2026-10-11): start to the first bunker, the furthest point before the way to the security room. It covers the scripted flight (the fair A/B stretch), the landing, the beach fight, and the walk down into the bunker, a light-drawing finish. b113's tests use it as their common stretch from here.
 
 ### The GE's own time, for the first time [M]
 
