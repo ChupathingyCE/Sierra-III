@@ -246,3 +246,9 @@ The objects pool is 20% of the tick's data misses, the object spheres 3.7%, the 
 - **Emulator ceiling bench with the GE layer switch** (b112).
 - **Cache-model A/B, `gedefer` off and on** (lab `cache=1`: the emulator's cache models on the interpreter, each phase's misses in `cache.txt`).
 - **For Sheepdog01's PSP:** the ceiling bench on b30, and benchrun on Blood Gulch for switch 8 (L2). Steps in the build notes. Done (§3), and Test 3 (`gemeon`, §4 "Step 4a on the PSP").
+
+**Update 2026-10-11, build 114 (`build_b114.md`):**
+- **L1:** step 4's overlap (the ME building the lists while the main CPU runs on) is still to build; it needs a day with the PSP at hand. b114's PSP test 5 runs `gemeon` with b113's step-4b fixes.
+- **Smaller drawing levers built as switches** for the PSP's A/B: `listcachedall` (X18), `statememo` (X6), `lean` (E2: −8 to −12% of the frame in the emulator's bench), `drawdistN` (B9: small on b30).
+- **L3's blocker (#25):** the first difference between b114 and b114 with `gedefer` is a standing Elite's aim at tick 1,320, and the object mark counter differs from tick 1,204: the engine's render-side work runs differently when the GE calls are deferred. Not streaming, not the VFPU.
+- **The lab runs up to ten emulators at once** (`docs/testing_pipeline.md`): about five times the night's emulator work.
