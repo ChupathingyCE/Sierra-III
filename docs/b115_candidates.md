@@ -33,6 +33,7 @@ Everything ships behind a keep word. Anything that changes what the player sees 
 | `gereads` | The GE's vertex and index bytes by buffer and class; the top buffers by reads per byte; the fit curve for 200–1,000 KB of VRAM | emulator first, PSP too | `big_levers.md` §0, "Measure first" |
 | `gebusy` with layer marks | The GE's own time per layer (level, models, see-through, decals, effects, HUD) and its starved time | PSP, bench presets only | same |
 | `vramtex=N` | The VRAM texture cache cut to N KB (the rest goes to RAM) | PSP, the cinematic A/B | same; the swap's first step |
+| `edramcheck` | The ME writes a pattern over eDRAM below its stack at start; the heartbeat has it checked. Shows whether anything else writes eDRAM during play | PSP | `big_levers.md` §0, "The ME's eDRAM, checked" |
 
 ## 3. Exact changes
 

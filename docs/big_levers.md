@@ -57,6 +57,14 @@ The rule: each byte goes nearest its heaviest reader.
 | Game state | 3,412 KB | sized to every map's peaks (~0.5 MB less) | Needs peaks from all ten maps, Two Betrayals' fights included |
 | ME eDRAM | audio | plus the ME's job code and ME-only data (L1's list state, a collision copy for L3's line-of-sight tests) | 158 ns against 214 ns from main RAM [M, `halo-psp-feasibility.md`] |
 
+**The ME's eDRAM, checked (2026-10-11) [D]:** in our setup it's free apart from the ME's stack.
+- Our ME code runs from main RAM. me-core's handler jumps to `meLibOnPreProcess` there.
+- The firmware's ME image sits in main RAM too, at 0x88300000 in the kernel's part (`me-core-mapper.h`).
+- The ME's stack starts at the top of eDRAM (0x80200000 on a PSP-1000; 0x80400000 on a slim) and grows down (`me-core.h`).
+- The firmware's own eDRAM heap (`_meCoreEDRAMAlloc`) belongs to its decoders, which never run once the ME is ours.
+- So ~190 KB at the bottom for the level's positions is far from the stack.
+- Two things to confirm on the PSP: that nothing else writes eDRAM during play (a pattern written at start and checked later), and that its contents don't survive sleep (treat it as a cache, rebuilt on resume, as the volatile partition is).
+
 **The rules this follows:**
 - **The ME can't see VRAM.** Under L1 the lists, and anything the ME reads to build them, stay in main RAM. So E14 (the display list in VRAM) conflicts with L1.
 - **VRAM is written by the CPU or by DMA,** never by the ME. A buffer can't be overwritten until the GE has finished the frame that reads it.
