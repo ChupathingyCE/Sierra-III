@@ -60,7 +60,7 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
 ## Installing (Sheepdog01's machine, fish)
 
 `pspmount` mounts the Memory Stick as `$psp`. Unzip the build zip into `$psp`, then `umount $psp`. Rules for anything that touches the stick:
-- Delete only within `$psp/halo` and `$psp/PSP/GAME/halo`.
+- Delete only within `$psp/halo`, `$psp/PSP/GAME/halo` and `$psp/PSP/GAME/halomp` (the multiplayer build, beside the campaign one: Sheepdog01, 2026-10-10).
 - Leave ARK-4's files and `overconfig.txt` alone.
 - Never format or wipe the stick.
 
