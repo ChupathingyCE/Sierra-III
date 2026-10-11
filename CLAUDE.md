@@ -66,7 +66,7 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
 
 To quit the game: HOME → ARK-4 Kommander → Exit.
 
-**Logs come off the stick into `$HOME/psp/logs/`** (Sheepdog01's rule, 2026-10-10), one `.tgz` per run, named for the build and the test: `mkdir -p $HOME/psp/logs; tar czf $HOME/psp/logs/b112_ceiling.tgz -C $psp/halo log`. `log.txt` is wiped at every launch, so pull it after each run. Give each test its stop condition and an honest time: a bench that waits for game time runs slower than the clock at low frame rates.
+**Logs come off the stick into `$HOME/psp/logs/`** (Sheepdog01's rule, 2026-10-10), one `.tgz` per run, named for the build and the test: `mkdir -p $HOME/psp/logs; tar czf $HOME/psp/logs/b112_ceiling.tgz -C $psp/halo log`. `log.txt` is wiped at every launch, so pull it after each run. A network test's tarball also carries the server's `debug.txt` (Sheepdog01's rule, 2026-10-11): `tar czf $HOME/psp/logs/mp3_test2.tgz -C $psp/halo log -C ~/games/halo-server debug.txt`. Give each test its stop condition and an honest time: a bench that waits for game time runs slower than the clock at low frame rates.
 
 ## Docs
 
