@@ -222,7 +222,7 @@ These are the bigger ceilings. Most need a design and their own build.
 | B6 | **`noangle`** (slant buckets off) | 3.8 ms a frame (BG) [M] | the ground swims, cliff feet alias (b63/64) | keep word |
 | B7 | **`noshadows`** | 1.33 ms a frame (BG) [M] | no blob shadows | keep word |
 | B8 | **`nolightsplit`** | ~3 ms renderer CPU facing a floor [E]; the light pass ~3.1 ms a frame (b104 [M]) | undoes the flashlight fix Sheepdog01 asked for | keep word; no clean hardware A/B yet |
-| B9 | **Draw distance per level** (far clip + fog, raised for cutscenes) | unknown; mainly GE time and VRAM fit; **b114 on b30: −5% of drawing at 60 world units, nothing at 100 [E]** | shorter view; enemies never engage from beyond it | **built (b114): `drawdistN`**, off; one value for all levels so far; PSP test 6 |
+| B9 | **Draw distance per level** (far clip + fog, raised for cutscenes) | unknown; mainly GE time and VRAM fit; **b114 on b30: −5% of drawing at 60 world units, nothing at 100 [E]** | shorter view; enemies never engage from beyond it | **built (b114): `drawdistN`**, off. PSP: −3% at 60, about −6% in the approach at 40 [M]. **Sheepdog01 (2026-10-11): kept in the back pocket, off.** 40 looks fine but cuts b30's landmark structure; 45 would suit this section. It may suit the large maps (Two Betrayals, Assault on the Control Room) better. If it comes back, it'll be a value per level or per section |
 | B10 | **Hover vehicles settle; scorpion idle frame** | small | parked bob/idle frame freezes | proposed |
 | B11 | **Decal cap and lifetime; flares, weather, contrails off; particle collision LOD** | small since b106's cull and budgets | fewer effects | proposed |
 | B12 | **`nodetail` / shorter `detailnear`** | unmeasured | less detail texture | keep words |

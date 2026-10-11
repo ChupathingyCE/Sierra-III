@@ -63,6 +63,47 @@ Keep words `nearauto assettrack geo2 hwprofile gebusy`. No fault. The run went f
 - **Tracers: none, as expected.** `contrails` is off by default, and preset 1 doesn't set it; presets 7 and 8 do.
 - **The ocean clipping into the seabed in the flight** (Sheepdog01): the cause is found, and a fix has been tested on the emulator. See "The ocean" below.
 
+## Where the time goes: Test 1's frame, mapped [M]
+
+From Test 1's `profile.txt`: 65 windows of 10 s, each step timed until the next. Steps cover all the time between frames, so a window's steps sum to its frame by the clock. Windows are placed by their cumulative ticks, so the stretch edges are blurred by up to one window. The tick split and the memory waits are from the log's objects and `hwprofile` lines.
+
+**The frame, ms**
+
+| | Cinematic | Flight | Landing | Beach | Bunker |
+|---|---|---|---|---|---|
+| Ticks (all of a frame's) | 119.7 | 137.6 | 90.6 | 66.0 | 21.1 |
+| Drawing: objects (models, shadows) | 70.0 | 110.6 | 37.2 | 45.1 | 13.7 |
+| Drawing: level | 10.1 | 21.8 | 12.9 | 16.4 | 13.2 |
+| Drawing: effects (decals, lights, particles, flares) | 2.4 | 10.4 | 11.4 | 9.9 | 7.6 |
+| Drawing: HUD | 0 | 4.9 | 5.1 | 4.0 | 3.4 |
+| Frame end (GE wait, swap, caches) | 1.7 | 1.6 | 1.3 | 2.5 | 1.2 |
+| Sound, saves, frame set-up, input | 4.3 | 6.8 | 6.9 | 6.0 | 5.3 |
+| **Frame** | **208** | **294** | **165** | **150** | **66** |
+| Ticks a frame | 1.98 | 1.99 | 1.98 | 1.88 | 1.61 |
+| Waiting on memory: ticks, drawing | 55%, 59% | 54%, 66% | 54%, 61% | 55%, 60% | 57%, 57% |
+
+**One tick, ms**
+
+| | Cinematic | Flight | Landing | Beach | Bunker |
+|---|---|---|---|---|---|
+| Objects | 43.9 | 46.2 | 32.1 | 25.4 | 9.5 |
+| of which bipeds (count) | 21.8 (27) | 22.9 (25) | 13.8 (30) | 13.5 (27) | |
+| of which vehicles | 9.6 (3) | 10.2 (3) | 3.1 (1) | 7.0 (2) | |
+| of which scenery | 8.2 (554) | 5.6 (337) | 2.6 (143) | 3.2 (181) | |
+| AI | 15.1 | 18.6 | 9.7 | 6.4 | 0.6 |
+| Other tick work (particles, scripts, effects, players) | 1.6 | 4.5 | 4.0 | 3.4 | 3.0 |
+| **Tick** | **60.5** | **69.2** | **45.8** | **35.2** | **13.1** |
+
+**How it turns into the frame rate and game speed:**
+- **The CPU is the critical path.** The GE works alongside it and finishes before the CPU needs it, so the frame end waits only 1–2.5 ms for it. The frame by the clock is the CPU's work, end to end.
+- **Below 15 fps, every frame carries two ticks, and the game slows down** [D]. Halo caps a frame's elapsed time at 1/15 s in a local game (`main.c`: `CEILING(seconds_elapsed, 1/15)`), so a frame never runs more than two ticks.
+  - In the flight, 3.4 fps means 6.8 ticks a second: the game runs at about a quarter of its speed.
+  - In the bunker, at 15 fps and 1.6 ticks a frame, it's close to real time.
+- **So the tick counts double in a slow frame.** The flight's frame is 2 × 69 ms of ticks plus 156 ms of drawing and the rest.
+- **The targets, in those terms:**
+  - A steady 30 ticks a second needs 15 fps with two ticks a frame: 2 × tick + drawing ≤ 66.7 ms. Today that's 294 ms in the flight (4.4× over), 165 at the landing (2.5×), 150 on the beach (2.2×), and 66 in the bunker (on target).
+  - 30 fps needs one tick plus one frame's drawing in 33.3 ms. The bunker is at 13.1 + 44.5 = 57.6 ms: 1.7× over.
+
 ## Test 2: `listcachedall`: the GE hung [M]
 
 - **The stop:** at game time 61 (about 2 s in), the game stopped. Heartbeats went on, with 0 frames and 0 ticks; the main thread sat in the frame end's phase, waiting for the GE.
@@ -182,6 +223,7 @@ The opening bench to game time 5,118. Preset 9 was added on the stick after the 
   - The landing spot: −14% for both, with the drawing's CPU −25% at 40 against −15%.
   - The extra 20 units buy a few milliseconds of drawing, inside the run-to-run spread.
 - **The beach's +69% fps is not the draw distance.** From game time 2,700 to the end, the player stayed at the landing spot (−54, −19, 4), so the fight never moved and the view stayed put. Test 1 drove down the beach in the Warthog over the same game times.
+- **Sheepdog01's verdict:** 40 looks fine, but it's a little short for the mission's landmark structure; 45 would suit this section, and perhaps not elsewhere. On the large maps (Two Betrayals, Assault on the Control Room) it may work better. **Kept in the back pocket, off.**
 - **Sounds failed for room: 18,** all in the approach (game time 1,565–2,163), with the cache full. Test 1 had 3, test 6 had 9, and preset 7 had 8. The approach's dialogue and music still overflow the 1,792 KB cache now and then.
 
 ## The ocean: Sheepdog01's "clips through the terrain under the water" [D + E]
