@@ -6847,6 +6847,12 @@ origin, with the contrail shader's texture and blend. 48 bytes of list a
 segment. The game has already faded the corners (the trail's ends, the angle
 to the eye) in their alpha */
 static unsigned long contrails_queued = 0, contrail_segments = 0;
+/* build 114: a contrail's pairs of corners the GE can take, and for each
+pair the one it is drawn from (itself, or the nearest one before it) */
+#define CONTRAIL_PAIRS 256
+static unsigned char contrail_pair_ok[CONTRAIL_PAIRS];
+static short contrail_pair_from[CONTRAIL_PAIRS];
+static unsigned long contrail_pairs_folded = 0, contrails_out_of_view = 0;
 
 static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
 {
@@ -6864,12 +6870,54 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 		return 0;
 	}
 	vertex_count = 2 * (segments + 1);
+	if (vertex_count > 2 * CONTRAIL_PAIRS)
+		vertex_count = 2 * CONTRAIL_PAIRS;
+	{
+		/* build 114: the pairs the GE can't take (b113 Test 3: Sheepdog01 saw the
+		plasma rifle's shots "streak badly and don't always render"). A
+		corner behind the near plane, or so far to a side that its screen
+		position passes the GE's 2048 pixels, wraps the triangle into a spike
+		across the screen or loses it (camera_corner_out; the player's own
+		shots trail back past the camera). Such a pair is folded onto the
+		nearest pair the GE can take, so the triangles that touch it have no
+		area; the trail stops where it leaves the view */
+		int pairs = vertex_count / 2, pair, last_good = -1, any_good = 0;
+		/* the models' margin (psp_ge_draw_model_body) */
+		float limit = projection_near * 1.25f;
+
+		for (pair = 0; pair < pairs; pair++)
+		{
+			float a[3], b[3];
+
+			to_camera(&in[2 * pair].x, a);
+			to_camera(&in[2 * pair + 1].x, b);
+			contrail_pair_ok[pair] = !camera_corner_out(a[0], a[1], a[2], limit) &&
+				!camera_corner_out(b[0], b[1], b[2], limit);
+			any_good |= contrail_pair_ok[pair];
+		}
+		if (!any_good)
+		{
+			contrails_out_of_view++;
+			return 0;
+		}
+		for (pair = 0; pair < pairs && !contrail_pair_ok[pair]; pair++)
+			;
+		last_good = pair;
+		for (pair = 0; pair < pairs; pair++)
+		{
+			if (contrail_pair_ok[pair])
+				last_good = pair;
+			else
+				contrail_pairs_folded++;
+			contrail_pair_from[pair] = (short)last_good;
+		}
+	}
 	out = list_take(vertex_count * sizeof(struct sprite_vertex));
 	if (!out)
 		return 0;
 	for (corner = 0; corner < vertex_count; corner++)
 	{
-		struct game_sprite_vertex const *v = &in[corner];
+		struct game_sprite_vertex const *v = &in[2 * contrail_pair_from[corner / 2] + (corner & 1)];
 		struct sprite_vertex *o = &out[corner];
 		unsigned int argb = v->argb;
 
@@ -11402,10 +11450,11 @@ void psp_ge_frame_end(void)
 		decals_projected = decal_projected_triangles = decals_project_fallback = 0;
 		decal_cache_scans = decal_cache_uses = decal_project_us = 0;
 		/* build 113 */
-		if (contrails_queued)
-			platform_log("GE: contrails (contrails): %lu queued, %lu segments (last 300 frames)", contrails_queued,
-				contrail_segments);
-		contrails_queued = contrail_segments = 0;
+		if (contrails_queued || contrails_out_of_view)
+			platform_log("GE: contrails (contrails): %lu queued, %lu segments; %lu pairs of corners folded away (behind the "
+				"near plane or past the GE's range), %lu contrails wholly out of view (last 300 frames)", contrails_queued,
+				contrail_segments, contrail_pairs_folded, contrails_out_of_view);
+		contrails_queued = contrail_segments = contrail_pairs_folded = contrails_out_of_view = 0;
 		if (zoom_masks || zoom_masks_missing)
 			platform_log("GE: zoom masks (zoommask): %lu drawn, %lu not in the texture pack (last 300 frames)", zoom_masks,
 				zoom_masks_missing);
