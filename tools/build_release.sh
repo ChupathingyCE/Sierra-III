@@ -108,12 +108,17 @@ unlock_entry
 log "Sierra-III $(git -C "$SRC" rev-parse HEAD) on $ENGINE, $JOBS jobs"
 (cd "$SRC" && HALO_REPO="$ENGINE_DIR" PSP_OUT="$OUT/build" PSP_MECORE="$MECORE_DIR" \
     python3 psp_build.py --jobs "$JOBS") >> "$OUT/build.log" 2>&1 || { tail -30 "$OUT/build.log"; exit 1; }
-make -C "$SRC/psp/crash" >> "$OUT/build.log" 2>&1
-make -C "$SRC/psp/profile" >> "$OUT/build.log" 2>&1
+# the two helper modules, built from copies so the checkout stays untouched
+# (the same bytes as built in place)
+for module in crash profile; do
+    rm -rf "$OUT/$module"; cp -r "$SRC/psp/$module" "$OUT/$module"
+    make -C "$OUT/$module" clean >> "$OUT/build.log" 2>&1
+    make -C "$OUT/$module" >> "$OUT/build.log" 2>&1
+done
 
 # --- the release zip -----------------------------------------------------------
 pkg=$OUT/pkg; rm -rf "$pkg"; mkdir -p "$pkg/PSP/GAME/halo"
-cp "$OUT/build/EBOOT.PBP" "$SRC/psp/crash/halo_crash.prx" "$SRC/psp/profile/halo_profile.prx" "$pkg/PSP/GAME/halo/"
+cp "$OUT/build/EBOOT.PBP" "$OUT/crash/halo_crash.prx" "$OUT/profile/halo_profile.prx" "$pkg/PSP/GAME/halo/"
 cp "$MECORE_DIR/LICENSE.md" "$pkg/PSP/GAME/halo/LICENSE-mecore.md"
 top=(PSP)
 if [[ -f $SRC/psp/presets.txt ]]; then
