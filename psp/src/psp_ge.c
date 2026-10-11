@@ -1326,6 +1326,9 @@ struct gu_list_view { unsigned int *start, *current; int parent_context; };
 extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
 static int list_all_cached = -1, list_cached_frame = 0;
 static unsigned int list_back_from = 0;
+/* while sceGuGetMemory runs: the region it hands out, not filled yet (its
+own stall update may be handed to the GE); 0 otherwise */
+static unsigned int list_filling_from = 0;
 static unsigned long list_lines_back = 0;
 
 /* right after the frame's sceGuStart */
@@ -1336,6 +1339,9 @@ static void list_cached_frame_start(int in_vram)
 	list_cached_frame = list_all_cached && !in_vram;
 	if (!list_cached_frame)
 		return;
+	/* sceGuStart wrote its first words through the uncached view, into the
+	line the next cached store reads in: they reach RAM first */
+	__asm__ volatile("sync");
 	gu_list->start = (unsigned int *)((unsigned int)gu_list->start & ~0x40000000u);
 	gu_list->current = (unsigned int *)((unsigned int)gu_list->current & ~0x40000000u);
 	list_back_from = (unsigned int)gu_list->current & ~63u;
@@ -1346,6 +1352,10 @@ static void list_write_back(const void *stall)
 {
 	unsigned int end = (unsigned int)stall & ~0x40000000u, line;
 
+	/* inside sceGuGetMemory: only up to its region (the JUMP over it is
+	written; the region is filled after, and joins the pending range) */
+	if (list_filling_from && list_filling_from < end)
+		end = list_filling_from;
 	if (!list_cached_frame || end <= list_back_from)
 		return;
 	for (line = list_back_from; line < end; line += 64)
@@ -1360,7 +1370,9 @@ static void list_write_back(const void *stall)
 call moved the stall address, possibly past the region and handed on, so
 list_write_back alone would never write it. Its lines join build 48's
 pending range instead, written back at the next hand-over, before the GE
-can reach the draw that reads it (that draw comes after the region) */
+can reach the draw that reads it (that draw comes after the region).
+sceGuGetMemory is wrapped (psp_build.py links it with --wrap), so every
+region is covered, pspgu's own too (sceGuClear fills one itself) */
 static void list_region_pending(const void *taken, int bytes)
 {
 	unsigned int start, end;
@@ -1373,6 +1385,21 @@ static void list_region_pending(const void *taken, int bytes)
 		pending_start = start;
 	if (end > pending_end)
 		pending_end = end;
+}
+
+void *__real_sceGuGetMemory(int size);
+void *__wrap_sceGuGetMemory(int size)
+{
+	void *taken;
+
+	if (!list_cached_frame)
+		return __real_sceGuGetMemory(size);
+	/* the region starts two words past the list's current end */
+	list_filling_from = ((unsigned int)gu_list->current & ~0x40000000u) + 8;
+	taken = __real_sceGuGetMemory(size);
+	list_filling_from = 0;
+	list_region_pending(taken, size);
+	return taken;
 }
 
 static void *list_take(int bytes)
@@ -1391,11 +1418,7 @@ static void *list_take(int bytes)
 	if (list_cached < 0)
 		list_cached = !psp_keep("listuncached");
 	if (!list_cached || bytes < LIST_CACHED_MINIMUM)
-	{
-		taken = sceGuGetMemory(bytes);
-		list_region_pending(taken, bytes); /* build 114: listcachedall */
-		return taken;
-	}
+		return sceGuGetMemory(bytes); /* (build 114: listcachedall's pending range, in the wrapper) */
 	taken = sceGuGetMemory(bytes + 128);
 	if (!taken)
 		return NULL;
@@ -1608,6 +1631,11 @@ static void display_list_acquire(void)
 	}
 	display_list_free_kb = sceKernelTotalFreeMemSize() / 1024;
 	display_list_largest_kb = sceKernelMaxFreeMemSize() / 1024;
+	/* build 114: no line of the block left in the cache from earlier use
+	(listcachedall writes the list through the cache; a stale dirty line
+	written back later would land over the GE's words) */
+	if (display_list)
+		sceKernelDcacheWritebackInvalidateRange(display_list, display_list_size);
 	transparent_table_acquire();
 }
 
@@ -2428,7 +2456,6 @@ static void vram_busy_load(void)
 	sceGuTexScale(1.0f, 1.0f);
 	sceGuTexOffset(0.0f, 0.0f);
 	corners = sceGuGetMemory(2 * sizeof(*corners));
-	list_region_pending(corners, 2 * sizeof(*corners)); /* build 114: listcachedall */
 	corners[0].u = 0; corners[0].v = 0; corners[0].x = 0; corners[0].y = 0; corners[0].z = 0;
 	corners[1].u = 512; corners[1].v = 256; corners[1].x = 512; corners[1].y = 256; corners[1].z = 0;
 	for (k = 0; k < vram_busy_sprites; k++)

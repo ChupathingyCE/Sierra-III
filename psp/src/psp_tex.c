@@ -998,7 +998,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 {
 	int index, level;
 	struct pack_entry const *entry;
-	unsigned int palette_bytes, address, width, height;
+	unsigned int palette_bytes, address, start, width, height;
 
 	if (!key || !entries)
 		return 0;
@@ -1045,6 +1045,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		return 1;
 	}
 	psp_tex_binds_sent++;
+	start = address; /* where the texture starts (address moves past the palette and levels) */
 	__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
 	__real_sceGuClutLoad(palette_bytes / 32, (void *)address);
 	__real_sceGuTexMode(entry->psm, entry->levels - 1, 0, 1);
@@ -1071,7 +1072,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	else
 	{
 		memo_key = key;
-		memo_address = address;
+		memo_address = start;
 		memo_frame = frame;
 	}
 	return 1;
