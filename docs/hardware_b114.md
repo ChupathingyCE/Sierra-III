@@ -98,6 +98,8 @@ From Test 1's `profile.txt`: 65 windows of 10 s, each step timed until the next.
 - **A biped's cost, by part** (in the flight, per tick): the unit's own update 17.3 ms, the skeleton's node matrices 7.6, damage 0.4, and the object's common update (attachments, function values, markers, relinking into clusters) about 6.4.
 - **Corrected 2026-10-11:** this table first showed bipeds at 22.9 ms in the flight, 13.8 at the landing and 13.5 on the beach. Those figures came from only the log lines without projectiles, which are the quiet moments. These figures use every line, and their sums match the profile's objects time per tick.
 
+**The interactive version** is `docs/frame_map.html` (also published as an artifact): every stage per stretch, what each is made of from the emulator's cache model, the Xbox alongside, and the levers that reach each stage.
+
 **How it turns into the frame rate and game speed:**
 - **The CPU is the critical path.** The GE works alongside it and finishes before the CPU needs it, so the frame end waits only 1–2.5 ms for it. The frame by the clock is the CPU's work, end to end.
 - **Below 15 fps, every frame carries two ticks, and the game slows down** [D]. Halo caps a frame's elapsed time at 1/15 s in a local game (`main.c`: `CEILING(seconds_elapsed, 1/15)`), so a frame never runs more than two ticks.

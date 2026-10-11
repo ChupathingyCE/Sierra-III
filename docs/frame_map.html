@@ -1,0 +1,600 @@
+<title>Sierra-III Frame Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700&family=Archivo+Narrow:wght@500;600&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+/* Layout: an instrument readout. A stretch selector drives one timeline (main CPU, GE, ME on one ms scale with the target lines), then the pipeline as stage cards in frame order, then the lever index. */
+:root {
+  --bg: #f3f4f1;
+  --surface: #ffffff;
+  --ink: #15191c;
+  --muted: #5b6469;
+  --line: #d8dcd6;
+  --soft: #e9ece7;
+  --accent: #b4532a;
+  --target: #c2362b;
+  --c-obj: #b4532a;
+  --c-ai: #d48a2c;
+  --c-tother: #cdb07a;
+  --c-vis: #2d6a89;
+  --c-prep: #4c97b8;
+  --c-gel: #1d4a75;
+  --c-level: #4f8a56;
+  --c-fx: #7a68a6;
+  --c-hud: #98a2a6;
+  --c-rest: #c4cac6;
+  --c-ge: #1d4a75;
+  --c-me: #2a9d8f;
+  --hatch: rgba(255,255,255,.55);
+  --ok: #2f7d4f;
+  --warn: #a8641a;
+  --bad: #a3322a;
+  --f-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --f-label: "Archivo Narrow", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --f-data: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #121517; --surface: #1a1e21; --ink: #e6e9e5; --muted: #9aa3a7; --line: #2d3337; --soft: #22272a;
+    --accent: #e0794b; --target: #ef6a5d;
+    --c-obj: #d36a3c; --c-ai: #e8a34a; --c-tother: #d9c08e; --c-vis: #4b93b8; --c-prep: #74b6d3; --c-gel: #5b8fc4;
+    --c-level: #6fae75; --c-fx: #a08fd0; --c-hud: #7f8a8f; --c-rest: #4a5257; --c-ge: #5b8fc4; --c-me: #3fbcad;
+    --hatch: rgba(0,0,0,.45); --ok: #5fbf86; --warn: #e3a35a; --bad: #ef7b70;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #121517; --surface: #1a1e21; --ink: #e6e9e5; --muted: #9aa3a7; --line: #2d3337; --soft: #22272a;
+  --accent: #e0794b; --target: #ef6a5d;
+  --c-obj: #d36a3c; --c-ai: #e8a34a; --c-tother: #d9c08e; --c-vis: #4b93b8; --c-prep: #74b6d3; --c-gel: #5b8fc4;
+  --c-level: #6fae75; --c-fx: #a08fd0; --c-hud: #7f8a8f; --c-rest: #4a5257; --c-ge: #5b8fc4; --c-me: #3fbcad;
+  --hatch: rgba(0,0,0,.45); --ok: #5fbf86; --warn: #e3a35a; --bad: #ef7b70;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--f-display); font-size: 15px; line-height: 1.5; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 64px; display: grid; gap: 28px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(26px, 4vw, 36px); font-weight: 700; letter-spacing: -0.01em; }
+h2 { font-size: 20px; font-weight: 600; }
+h3 { font-size: 15px; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+.eyebrow { font-family: var(--f-label); text-transform: uppercase; letter-spacing: .08em; font-size: 12px; color: var(--muted); font-weight: 600; }
+.mono, .num { font-family: var(--f-data); font-variant-numeric: tabular-nums; }
+header { display: grid; gap: 10px; }
+.legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 13px; color: var(--muted); }
+.legend b { font-family: var(--f-data); color: var(--ink); font-weight: 600; }
+
+/* stretch selector */
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.tabs button { font: 600 14px var(--f-label); letter-spacing: .02em; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.tabs button span { display: block; font: 400 11px var(--f-data); color: var(--muted); }
+.tabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.tabs button[aria-pressed="true"] span { color: var(--bg); opacity: .75; }
+.tabs button:focus-visible, summary:focus-visible, .filters button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* summary readout */
+.readout { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.readout > div { background: var(--surface); padding: 12px 14px; display: grid; gap: 2px; min-width: 0; }
+.readout .big { font: 600 24px var(--f-data); font-variant-numeric: tabular-nums; }
+.readout .sub { font-size: 12px; color: var(--muted); }
+.gap-bad { color: var(--bad); }
+.gap-ok { color: var(--ok); }
+
+/* timeline */
+.figure { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 16px 12px; display: grid; gap: 10px; }
+.tl-scroll { overflow-x: auto; }
+.tl { position: relative; min-width: 640px; display: grid; grid-template-columns: 92px 1fr; row-gap: 10px; column-gap: 10px; padding-top: 22px; padding-bottom: 18px; }
+.tl .lab { font: 600 12px var(--f-label); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); align-self: center; }
+.tl .lab small { display: block; font: 400 11px var(--f-data); text-transform: none; letter-spacing: 0; }
+.track { position: relative; height: 34px; background: var(--soft); border-radius: 4px; }
+.seg { position: absolute; top: 0; bottom: 0; overflow: hidden; border-right: 1px solid var(--surface); cursor: pointer; }
+.seg .mem { position: absolute; top: 0; bottom: 0; left: 0; background: repeating-linear-gradient(135deg, var(--hatch) 0 3px, transparent 3px 7px); }
+.seg .t { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); font: 600 11px var(--f-label); color: #fff; white-space: nowrap; text-shadow: 0 1px 1px rgba(0,0,0,.35); pointer-events: none; }
+.marker { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--target); pointer-events: none; }
+.marker span { position: absolute; top: -20px; left: 4px; font: 600 11px var(--f-data); color: var(--target); white-space: nowrap; }
+.marker.left span { left: auto; right: 4px; }
+.axis { position: absolute; left: 102px; right: 0; bottom: 0; height: 14px; font: 400 10px var(--f-data); color: var(--muted); }
+.axis i { position: absolute; transform: translateX(-50%); font-style: normal; }
+.keyrow { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
+.keyrow span { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.sw.hatch { background: repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 5px); border: 1px solid var(--line); }
+
+/* pipeline */
+.group { display: grid; gap: 10px; }
+.group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.group-head p { font-size: 13px; color: var(--muted); }
+details.stage { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+details.stage[open] { border-color: var(--muted); }
+summary { list-style: none; cursor: pointer; padding: 12px 14px; display: grid; grid-template-columns: 14px minmax(0, 1fr) auto; gap: 4px 12px; align-items: center; }
+summary::-webkit-details-marker { display: none; }
+summary .dot { width: 14px; height: 14px; border-radius: 3px; }
+summary .name { font-weight: 600; min-width: 0; }
+summary .name small { font: 500 12px var(--f-label); color: var(--muted); letter-spacing: .03em; margin-left: 6px; text-transform: uppercase; }
+summary .val { font: 600 15px var(--f-data); text-align: right; }
+summary .val small { display: block; font: 400 11px var(--f-data); color: var(--muted); }
+summary .bar { grid-column: 2 / 4; height: 6px; background: var(--soft); border-radius: 3px; position: relative; overflow: hidden; }
+summary .bar i { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; }
+summary .what { grid-column: 2 / 4; font-size: 13px; color: var(--muted); }
+.body { padding: 4px 14px 16px; display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1.1fr); gap: 18px; border-top: 1px solid var(--line); padding-top: 14px; }
+.body h4 { margin: 0 0 6px; font: 600 12px var(--f-label); text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
+.body ul { margin: 0; padding-left: 18px; display: grid; gap: 6px; font-size: 13.5px; }
+.body p { font-size: 13.5px; }
+.parts { width: 100%; border-collapse: collapse; font-size: 13px; }
+.parts td { padding: 4px 0; border-bottom: 1px solid var(--soft); vertical-align: top; }
+.parts td:last-child { text-align: right; font-family: var(--f-data); font-variant-numeric: tabular-nums; white-space: nowrap; padding-left: 10px; }
+.parts .note { color: var(--muted); font-size: 12px; }
+.lv { display: grid; gap: 8px; }
+.lever { display: grid; gap: 2px; font-size: 13px; }
+.lever .top { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.lever .id { font: 600 12px var(--f-data); }
+.lever .eff { color: var(--muted); font-size: 12.5px; }
+.pill { font: 600 11px var(--f-label); letter-spacing: .03em; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.s-built { color: var(--ok); }
+.s-off { color: var(--c-gel); }
+.s-tested { color: var(--warn); }
+.s-shelved { color: var(--bad); }
+.s-proposed { color: var(--muted); }
+.s-new { color: var(--accent); }
+.k-visible { font: 600 11px var(--f-label); color: var(--warn); }
+.tag { font: 600 11px var(--f-label); letter-spacing: .03em; color: var(--muted); }
+
+/* lever index */
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
+.filters button { font: 600 13px var(--f-label); padding: 5px 11px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+.filters button[aria-pressed="true"] { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+.table-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: 8px; }
+table.index { border-collapse: collapse; width: 100%; min-width: 760px; font-size: 13px; }
+table.index th { text-align: left; font: 600 12px var(--f-label); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 10px 12px; border-bottom: 1px solid var(--line); }
+table.index td { padding: 9px 12px; border-bottom: 1px solid var(--soft); vertical-align: top; }
+table.index td.id { font: 600 12px var(--f-data); white-space: nowrap; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 14px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.card p { font-size: 13.5px; }
+.card .fig { font: 600 13px var(--f-data); color: var(--accent); }
+.xbox { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.xbox > div { background: var(--surface); padding: 12px 14px; display: grid; gap: 4px; min-width: 0; }
+.xbox .row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 13px; }
+.xbox .row b { font-weight: 600; }
+.foot { font-size: 13px; color: var(--muted); display: grid; gap: 8px; }
+.foot ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
+@media (max-width: 860px) {
+  .body { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .readout > div:last-child:nth-child(odd) { grid-column: 1 / -1; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  summary .bar i, .seg { transition: width .25s ease, left .25s ease; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Sierra-III · build 114 on the PSP-1000 · b30, the opening bench</div>
+    <h1>Where a frame's time goes</h1>
+    <p>Every stage of a frame on Sheepdog01's PSP, measured in b114's test 1: what each stage costs in each stretch of the bench, what that time is made of, how the original Xbox did the same job, and which levers reach it. Pick a stretch, then open any stage.</p>
+    <div class="legend">
+      <span><b>[M]</b> measured on the PSP</span>
+      <span><b>[E]</b> emulator (where, not how long)</span>
+      <span><b>[D]</b> read in the code</span>
+      <span><b>[U]</b> inference</span>
+    </div>
+  </header>
+
+  <section class="group" aria-labelledby="pick">
+    <div class="group-head"><h2 id="pick">Stretch</h2><p>Game-time windows of the opening bench. Each figure below follows the stretch you pick.</p></div>
+    <div class="tabs" id="tabs" role="group" aria-label="Stretch"></div>
+    <div class="readout" id="readout"></div>
+  </section>
+
+  <section class="figure" aria-labelledby="tlh">
+    <div class="group-head"><h2 id="tlh">The frame on one scale</h2><p>The main CPU's work end to end, with the GE and the Media Engine running alongside. Hatching marks the share spent waiting on memory. Click a block to open its stage.</p></div>
+    <div class="tl-scroll"><div class="tl" id="timeline"></div></div>
+    <div class="keyrow" id="tlkey"></div>
+  </section>
+
+  <section class="group" aria-labelledby="pipeh">
+    <div class="group-head"><h2 id="pipeh">The pipeline, stage by stage</h2><p>In the order a frame runs them. Milliseconds are per displayed frame; a tick's own cost is in its card.</p></div>
+    <div id="pipeline" class="group"></div>
+  </section>
+
+  <section class="group" aria-labelledby="xh">
+    <div class="group-head"><h2 id="xh">The two machines</h2><p>Halo was built for the left column. The right column is why the same code costs so much more here.</p></div>
+    <div class="xbox" id="xbox"></div>
+  </section>
+
+  <section class="group" aria-labelledby="newh">
+    <div class="group-head"><h2 id="newh">Found while mapping</h2><p>Costs the map turned up that no lever covers yet. From the emulator's cache model; each needs a look in the code before it becomes a lever.</p></div>
+    <div class="cards" id="found"></div>
+  </section>
+
+  <section class="group" aria-labelledby="lih">
+    <div class="group-head"><h2 id="lih">Every lever on the map</h2><p>From optimization_ranking.md and big_levers.md, with the stage each one reaches.</p></div>
+    <div class="filters" id="filters" role="group" aria-label="Filter levers"></div>
+    <div class="table-scroll"><table class="index"><thead><tr><th>Lever</th><th>What it does</th><th>Stage</th><th>Status</th><th>What we know</th></tr></thead><tbody id="index"></tbody></table></div>
+  </section>
+
+  <section class="foot" aria-labelledby="srch">
+    <h2 id="srch">How these numbers were made</h2>
+    <ul>
+      <li>Stage times: b114 test 1's profile.txt [M], 65 windows of 10 s, each step timed until the next, so the steps add up to the frame by the clock. Windows are placed in a stretch by their cumulative ticks, which blurs each edge by up to one window. One run, hand-played: outside the cutscene, runs of one build vary by about 7%.</li>
+      <li>A tick's split by object type, the memory waits by phase, the GE's busy time and the Media Engine's share: the same run's log lines (objects_update by type, hwprofile, gebusy, ME) [M].</li>
+      <li>"What it's made of" inside a stage: the emulator's cache model on b114 (lab run 38125250298, all of b30 with fixed ticks) [E]. Shares are of that phase's instruction fetches (the work) and misses, over the whole level, so they point to where, not to how many milliseconds.</li>
+      <li>Targets: Sheepdog01's, 2026-10-11. A steady 30 ticks a second needs two ticks plus a frame's drawing in 66.7 ms; 30 fps needs one tick plus drawing in 33.3 ms. Halo caps a frame's game time at 1/15 s (main.c), so a frame carries at most two ticks and the game slows below 15 fps [D].</li>
+      <li>Xbox figures are its published hardware; how Halo used it is read in the engine's Xbox rasterizer code [D].</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+const ST = {
+  cutscene: { label: 'Cutscene', range: '150–570', frame: 208.2, fps: 4.78, tps: 9.5, tpf: 1.98, memTick: 55, memDraw: 59, ge: 44,
+    ms: { objects: 86.8, ai: 29.8, tother: 3.1, vis: 3.8, prep: 11.3, gel: 58.1, level: 6.6, fx: 2.4, hud: 0, rest: 6.0 },
+    tick: { objects: 43.9, ai: 15.1, other: 1.6, total: 60.5 },
+    types: { biped: [21.8, 27], vehicle: [9.6, 3], weapon: [1.5, 7], scenery: [8.2, 554], equipment: [1.4, 32] },
+    biped: { unit: 11.3, nodes: 7.4, damage: 0.4, common: 2.7 } },
+  flight: { label: 'Flight', range: '570–2,000', frame: 293.7, fps: 3.38, tps: 6.7, tpf: 1.99, memTick: 54, memDraw: 66, ge: 96,
+    ms: { objects: 91.9, ai: 36.9, tother: 8.9, vis: 7.8, prep: 28.2, gel: 81.8, level: 14.5, fx: 10.5, hud: 4.9, rest: 8.4 },
+    tick: { objects: 46.2, ai: 18.6, other: 4.5, total: 69.2 },
+    types: { biped: [31.7, 28], vehicle: [6.8, 2], weapon: [1.6, 6], scenery: [4.0, 225], projectile: [0.8, 2] },
+    biped: { unit: 17.3, nodes: 7.6, damage: 0.4, common: 6.4 } },
+  landing: { label: 'Landing', range: '2,000–2,700', frame: 165.4, fps: 5.96, tps: 11.8, tpf: 1.98, memTick: 54, memDraw: 61, ge: 47,
+    ms: { objects: 63.5, ai: 19.1, tother: 8.0, vis: 4.1, prep: 9.6, gel: 27.0, level: 9.3, fx: 11.5, hud: 5.1, rest: 8.2 },
+    tick: { objects: 32.1, ai: 9.7, other: 4.0, total: 45.8 },
+    types: { biped: [20.7, 30], vehicle: [3.4, 1], weapon: [4.7, 18], scenery: [2.6, 143], projectile: [1.0, 2] },
+    biped: { unit: 10.1, nodes: 4.0, damage: 0.2, common: 6.4 } },
+  beach: { label: 'Beach', range: '2,700–6,000', frame: 149.9, fps: 6.58, tps: 12.3, tpf: 1.88, memTick: 55, memDraw: 60, ge: 48,
+    ms: { objects: 47.7, ai: 12.0, tother: 6.3, vis: 3.6, prep: 11.1, gel: 33.7, level: 13.2, fx: 9.9, hud: 4.0, rest: 8.5 },
+    tick: { objects: 25.4, ai: 6.4, other: 3.4, total: 35.2 },
+    types: { biped: [12.9, 19], vehicle: [7.3, 2], weapon: [2.8, 12], scenery: [3.4, 216], projectile: [0.6, 1] },
+    biped: { unit: 6.5, nodes: 3.9, damage: 0.2, common: 2.3 } },
+  bunker: { label: 'Bunker', range: '6,000–7,400', frame: 65.6, fps: 14.8, tps: 23.9, tpf: 1.61, memTick: 57, memDraw: 57, ge: 21,
+    ms: { objects: 15.3, ai: 0.9, tother: 4.9, vis: 0.9, prep: 3.7, gel: 9.7, level: 12.4, fx: 7.6, hud: 3.4, rest: 6.6 },
+    tick: { objects: 9.5, ai: 0.6, other: 3.0, total: 13.1 },
+    types: { biped: [3.9, 8], weapon: [1.6, 7], machine: [1.6, 11], scenery: [0.1, 6], equipment: [0.4, 8] },
+    biped: { unit: 1.8, nodes: 0.8, damage: 0.0, common: 1.3 } }
+};
+const ORDER = ['cutscene', 'flight', 'landing', 'beach', 'bunker'];
+
+/* Drawing steps by stretch (ms per frame, profile.txt) */
+const STEPS = {
+  prep: { 'Lighting and set-up (model begin)': [4.1, 9.8, 3.2, 3.6, 1.1], 'Level of detail': [1.1, 4.3, 1.5, 1.9, 0.6], 'Model parts walked': [1.4, 3.8, 1.2, 1.4, 0.4], 'Skeleton relative to the camera': [1.6, 3.2, 1.0, 1.2, 0.4], 'Model end': [1.2, 3.2, 1.1, 1.2, 0.4], 'The object list': [1.3, 3.0, 0.8, 1.1, 0.2], 'Other': [0.6, 0.9, 0.8, 0.7, 0.6] },
+  gel: { 'Model parts (rasterizer_model_draw)': [46.2, 69.7, 21.7, 26.7, 7.3], 'See-through parts queued': [6.8, 5.4, 3.2, 2.9, 1.7], 'Blob shadows': [2.4, 4.6, 1.5, 3.2, 0.4], 'Shadows on the level': [2.6, 1.9, 0.4, 0.8, 0.1], 'First-person weapon': [0.1, 0.2, 0.2, 0.1, 0.2] },
+  level: { 'Materials\' passes (structure_render_lightmaps)': [3.1, 10.6, 6.6, 10.0, 9.7], 'See-through surfaces (the water among them)': [2.9, 2.7, 2.0, 2.3, 2.0], 'Preprocess, mirrors, sky': [0.6, 1.2, 0.7, 0.9, 0.7] },
+  fx: { 'Decals': [0.2, 2.4, 5.4, 3.3, 1.3], 'Dynamic lights': [0.7, 3.1, 2.4, 3.9, 3.0], 'Particles': [0.0, 3.5, 3.0, 1.8, 0.7], 'Lens flares': [1.2, 1.2, 0.6, 0.6, 0.4], 'Widgets, contrails, flashes': [0.3, 0.3, 0.1, 0.3, 2.2] },
+  rest: { 'Sound placement': [1.4, 4.5, 3.9, 2.1, 0.9], 'Frame end (the GE wait, the swap, caches)': [1.8, 1.6, 1.3, 2.5, 1.3], 'Frame set-up, input, camera, checkpoint saves': [2.8, 2.3, 3.0, 3.9, 4.4] }
+};
+
+const LEVERS = {
+  L1: { name: 'The Media Engine builds the GE\'s lists', stage: ['gel', 'level', 'ge'], status: 'in tree', st: 'tested', kind: 'exact', eff: 'Steps 1–2 built (b112); test 5: step 4b\'s fixes hold, still serial, +7% in the cutscene [M]. Step 4, the overlap, takes the GE layer\'s 21–81 ms a frame off the main CPU [U].' },
+  L2: { name: 'VRAM for what the GE reads (X1)', stage: ['level', 'ge'], status: 'in tree', st: 'off', kind: 'exact', eff: 'Blood Gulch: the level\'s vertices in VRAM recover 4.4 of the 4.8 ms its GE reading cost [M]. Fewer GE reads from main RAM also make the CPU\'s misses cheaper while drawing.' },
+  L3: { name: 'The next tick\'s AI on the Media Engine', stage: ['ai'], status: 'design', st: 'proposed', kind: 'exact', eff: 'One tick\'s AI a frame overlapped: 5–9% of a frame in fights [U]. Blocked on #25: render-side work changes play.' },
+  L4: { name: 'Profile-guided build', stage: ['all'], status: 'blocked', st: 'proposed', kind: 'exact', eff: 'Aims at the instruction misses. Profile-ordered linking alone measured about 3% fewer misses [E].' },
+  L5: { name: 'The full tick/draw split', stage: ['all'], status: 'end state', st: 'proposed', kind: 'exact', eff: 'The frame becomes the larger of two ticks and drawing, not their sum. After L1 and L3.' },
+  X5: { name: 'Data-oriented hot loops, with prefetch', stage: ['objects', 'scenery'], status: 'in progress', st: 'proposed', kind: 'exact', eff: 'Compact arrays for per-object walks: one small piece of code over many objects.' },
+  X9: { name: 'Collision walks: cache-line BSP layout, packed tables', stage: ['objects', 'ai'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'Collision is the tick\'s largest single piece of work [E].' },
+  X4: { name: 'AI line-of-sight rays on the Media Engine', stage: ['ai'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'Two processors waiting on memory don\'t slow each other [M], so ray walks are a natural fit.' },
+  X15: { name: 'Collision sphere walks on the Media Engine', stage: ['objects'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'Same reasoning as X4, for physics.' },
+  X13: { name: 'Node matrices and posing on the VFPU', stage: ['objects', 'prep'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'Bone matrices on the VFPU were sized at 1.5–2% of drawing [U]; the tick\'s posing is larger (7.6 ms a tick in the flight [M]).' },
+  X10: { name: 'Assert audit: compile out pure checks', stage: ['objects'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'valid_real_matrix4x3 and unit_vectors_are_valid together are 2.4% of the tick\'s instruction misses [E].' },
+  X14: { name: 'Hot CPU tables in VRAM (tag-instance table, BSP top)', stage: ['objects', 'ai'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'See "tag lookups" under Found while mapping: the scratchpad may be the better home.' },
+  X12: { name: 'Baked visible set per cluster, or the portal walk on the ME', stage: ['vis'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'Visibility is 1–8 ms a frame.' },
+  X19: { name: 'GE bounding-box culling by cluster', stage: ['vis', 'level'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'Lets the GE reject whole clusters itself.' },
+  X8: { name: 'Cache object lighting on unchanged inputs', stage: ['prep'], status: 'no design', st: 'proposed', kind: 'exact', eff: '"Model begin", mostly an object\'s lighting, is 4–10 ms a frame in the cutscene and flight [M].' },
+  E22: { name: 'Render-state cache size', stage: ['prep'], status: 'built (512)', st: 'built', kind: 'exact', eff: 'Filled at 512 on the beach, as in b113 [M]. The cliffs (test 9) are its test.' },
+  E12: { name: 'Skip the null-path model begin and transparent submit', stage: ['prep', 'gel'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'Work the engine does for the Xbox path that the GE path never uses.' },
+  X6: { name: 'State memo: binds and lighting left out', stage: ['gel'], status: 'tested', st: 'tested', kind: 'exact', eff: 'Test 3: no change; 8% of binds and 71% of lighting sets left out, about 1% of the list [M].' },
+  X18: { name: 'GE command words written through the cache', stage: ['gel'], status: 'shelved', st: 'shelved', kind: 'exact', eff: 'Test 2: the GE hung within 2 s [M]. Worth about 1% of drawing at most [U].' },
+  X2: { name: 'Precompiled display lists, model parts first', stage: ['gel'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'A part\'s commands built once and called each frame.' },
+  X21: { name: 'GE-native model vertex pack', stage: ['gel', 'ge'], status: 'proposed', st: 'proposed', kind: 'exact', eff: '14–20-byte vertices, 8-bit indices for small parts: less for the CPU to write and the GE to read.' },
+  E15: { name: 'cache 24 for whole-line writes', stage: ['gel'], status: 'measured', st: 'proposed', kind: 'exact', eff: 'Writing whole lines with cache 24 costs half [M halo_bench]. memset alone is 2.4% of drawing\'s instruction misses [E].' },
+  E24: { name: 'vfpuskin', stage: ['gel'], status: 'keep word, off', st: 'off', kind: 'exact', eff: 'Bending corners near the eye on the VFPU: no measurable change on the beach [E].' },
+  E2: { name: 'Lean: profiling timers and the overlay off', stage: ['all'], status: 'tested', st: 'tested', kind: 'visible', eff: 'Test 4: −2.6% in the cutscene [M]. Costs the fps readout and the step timers. Sheepdog01\'s call.' },
+  E7: { name: 'Hot/cold code layout', stage: ['all'], status: 'in tree', st: 'off', kind: 'exact', eff: 'Unshipped. Targets the instruction misses directly.' },
+  E9: { name: 'Level classification in the scratchpad, then the VFPU', stage: ['level'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'The per-vertex test of which side of the camera each corner lies on.' },
+  E10: { name: 'Slant-bucket sort cheaper', stage: ['level'], status: 'proposed', st: 'proposed', kind: 'exact', eff: '2.3 ms a frame sorting in the cutscene\'s windows [M].' },
+  X11: { name: 'Level classify and buckets on the ME, run ahead', stage: ['level'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'The per-draw split was measured and rejected; the visible-set version remains.' },
+  X7: { name: 'Dynamic lights: per-triangle selection', stage: ['fx'], status: 'no design', st: 'proposed', kind: 'exact', eff: 'Dynamic lights are 3–4 ms a frame on the landing and beach [M].' },
+  E23: { name: 'HUD bitmaps resident in VRAM', stage: ['hud'], status: 'proposed', st: 'proposed', kind: 'exact', eff: 'The HUD is 3–5 ms a frame in play [M].' },
+  X23: { name: 'Bus priority: CPU fills ahead of GE reads', stage: ['ge'], status: 'research', st: 'proposed', kind: 'exact', eff: 'The GE\'s main-RAM reads double the CPU\'s miss time while they run [M]. Needs a register that may not exist.' },
+  B1: { name: 'AI perception less often for far actors', stage: ['ai'], status: 'proposed', st: 'proposed', kind: 'visible', eff: 'Far actors react a little later.' },
+  B2: { name: 'sceneryhalf', stage: ['scenery'], status: 'keep word, off', st: 'off', kind: 'visible', eff: 'A change to sleeping scenery noticed up to a tick late.' },
+  B3: { name: 'Far, unseen machines at a lower rate', stage: ['objects'], status: 'proposed', st: 'proposed', kind: 'visible', eff: 'Coarser off-screen platform motion.' },
+  B4: { name: 'Half-rate posing for distant, at-rest, unseen objects', stage: ['objects'], status: 'proposed', st: 'proposed', kind: 'visible', eff: 'Very low visual cost. Posing is 7.6 ms a tick in the flight [M].' },
+  B6: { name: 'noangle (slant buckets off)', stage: ['level'], status: 'keep word', st: 'off', kind: 'visible', eff: 'The ground swims and cliff feet alias.' },
+  B9: { name: 'Draw distance', stage: ['level', 'gel', 'ge'], status: 'back pocket', st: 'tested', kind: 'visible', eff: 'Test 6 and preset 9: about −3% at 60, −6% in the approach at 40 [M]. Sheepdog01: 45 would suit b30\'s landmark; off for now.' },
+  B11: { name: 'Fewer effects: decal cap, flares, weather, contrails', stage: ['fx'], status: 'proposed', st: 'proposed', kind: 'visible', eff: 'Fewer effects on screen.' },
+  B12: { name: 'nodetail, shorter detailnear', stage: ['level'], status: 'keep word', st: 'off', kind: 'visible', eff: 'Less detail texture.' },
+  N1: { name: 'Tag lookups\' globals in the scratchpad', stage: ['objects', 'ai', 'gel'], status: 'new', st: 'new', kind: 'exact', eff: 'About 10% of the tick\'s data misses [E, attribution U].' },
+  N2: { name: 'Skip the Xbox shim\'s shader constants on the GE path', stage: ['gel'], status: 'new', st: 'new', kind: 'exact', eff: '2.2% of drawing\'s data misses [E]; whether the GE path needs them is [U].' },
+  N3: { name: 'A biped\'s per-tick shortcuts', stage: ['objects'], status: 'new', st: 'new', kind: 'exact', eff: 'Marker lookups by name, validity checks and node matrices for bipeds whose pose didn\'t change. For the biped discussion.' }
+};
+
+const STAGES = [
+  { group: 'tick', id: 'objects', key: 'objects', name: 'Objects', owner: 'engine', color: '--c-obj',
+    what: 'Every awake object\'s update: bipeds, vehicles, weapons, scenery.',
+    parts: s => {
+      const t = ST[s].types, b = ST[s].biped, rows = [];
+      const nm = { biped: 'Bipeds', vehicle: 'Vehicles', weapon: 'Weapons', scenery: 'Scenery (the port\'s sleep checks, mostly)', equipment: 'Equipment', projectile: 'Projectiles', machine: 'Machines (doors, lifts)' };
+      for (const k in t) rows.push([nm[k] + ' (' + t[k][1] + ')', t[k][0].toFixed(1) + ' ms/tick', '[M]']);
+      rows.push(['A biped, by part: the unit\'s own update ' + b.unit + ', skeleton (node matrices) ' + b.nodes + ', common object update ' + b.common + ', damage ' + b.damage, 'ms/tick', '[M]', true]);
+      return rows;
+    },
+    made: [
+      ['Collision rays and sphere tests: the biggest single piece of tick work. collision_bsp_test_vector_recursive alone is 4.1% of the tick\'s instructions and 5.2% of its data misses', 'E'],
+      ['Skeletons: node matrices, quaternion to matrix, keyframe lookups. object_compute_node_matrices is the tick\'s top instruction-miss function (4.0%)', 'E'],
+      ['Markers looked up by name each tick (model_get_marker_by_name, model_find_marker): 2.5% of instruction misses', 'E'],
+      ['Validity checks on every matrix and unit vector: 2.4% of instruction misses', 'E'],
+      ['Relinking moving objects into clusters (cluster_partition_*): 2.5% of instruction misses; the cluster reference tables they walk are 2.6% of data misses', 'E'],
+      ['The game state\'s object table (1 MB) is 17% of the tick\'s data misses; the stack itself is 15%', 'E'],
+      ['The port\'s sleep: checksums read each object\'s bytes, 4.6% of data misses. The multiply-by-33 checksum gave back 1.6 ms a tick in the cutscene', 'M']
+    ],
+    xbox: 'The same engine code, on a 733 MHz out-of-order CPU with a 128 KB L2 cache behind its 16 KB L1. A miss mostly lands in the L2 for a few dozen cycles; here it goes to RAM, 72 cycles or more.',
+    levers: ['X5', 'X13', 'X10', 'X9', 'X15', 'N1', 'N3', 'B4', 'B3', 'B2', 'L4', 'E7'] },
+  { group: 'tick', id: 'ai', key: 'ai', name: 'AI', owner: 'engine', color: '--c-ai',
+    what: 'Actors perceive, decide, aim and path: Covenant, and the marines even when seated in a Pelican.',
+    parts: s => [['AI per tick', ST[s].tick.ai.toFixed(1) + ' ms/tick', '[M]']],
+    made: [
+      ['Perception (actor_perception_update): 1.4% of the tick\'s instruction misses, 1.6% of data misses. Its line-of-sight rays fall under collision', 'E'],
+      ['Looking, moving, input (actor_look_update, actor_move_update, actor_input_update): about 2.6% of instruction misses', 'E'],
+      ['Props (each actor\'s memory of others) and path searches: 1.0% and 1.2% of misses', 'E'],
+      ['The actor and prop tables: 3.8% of the tick\'s data misses', 'E']
+    ],
+    xbox: 'The same code and the same 30 Hz tick, with the L2 absorbing what here goes to RAM.',
+    levers: ['L3', 'X4', 'X9', 'B1', 'N1'] },
+  { group: 'tick', id: 'tother', key: 'tother', name: 'Other tick work', owner: 'engine', color: '--c-tother',
+    what: 'Particles, effects, scripts, players, contrails, looping sounds.',
+    parts: s => [['Other tick work', ST[s].tick.other.toFixed(1) + ' ms/tick', '[M]']],
+    made: [['Particles and effects are most of it in fights; scripts (hs_update) under 1 ms a frame', 'M']],
+    xbox: 'The same code.',
+    levers: ['B11'] },
+  { group: 'draw', id: 'vis', key: 'vis', name: 'Visibility', owner: 'engine', color: '--c-vis',
+    what: 'Which parts of the level and which objects the camera can see, through the level\'s portals.',
+    parts: s => [['Visibility', ST[s].ms.vis.toFixed(1) + ' ms/frame', '[M]']],
+    made: [['The portal walk over clusters (structure_visibility_traverse_cluster): 1.6% of drawing\'s data misses', 'E']],
+    xbox: 'The same CPU-side portal walk.',
+    levers: ['X12', 'X19'] },
+  { group: 'draw', id: 'prep', key: 'prep', name: 'Object prep', owner: 'engine', color: '--c-prep',
+    what: 'For each visible object: its lighting, its level of detail, its skeleton placed relative to the camera.',
+    parts: s => stepRows('prep', s),
+    made: [
+      ['render_model: 6.2% of drawing\'s instruction misses and 4.7% of its data misses, the second-largest in drawing', 'E'],
+      ['"Model begin" is mostly working out an object\'s lighting; the render-state cache keeps it between frames', 'D'],
+      ['The engine still calls into the Xbox rendering layer for each model, which the GE path then ignores (see Found while mapping)', 'U']
+    ],
+    xbox: 'The same engine code. Its output went straight into vertex-shader constants for the GPU.',
+    levers: ['X8', 'E22', 'E12', 'X13'] },
+  { group: 'draw', id: 'gel', key: 'gel', name: 'Our GE layer: models', owner: 'port', color: '--c-gel',
+    what: 'psp_ge.c turns each model part into GE commands: vertices converted (cached), bones placed, lights built, textures bound, near-plane triangles cut, often several passes per part.',
+    parts: s => stepRows('gel', s),
+    made: [
+      ['Per-triangle work in model_geometry (skinning plans, near-plane cuts): 18% of all of drawing\'s instructions and 8.8% of its data misses, the largest single item', 'E'],
+      ['Per-part set-up (psp_ge_draw_model_body, rasterizer_model_draw, model_shape, model_convert, halo_matrix): about 15% of drawing\'s instruction misses', 'E'],
+      ['GE state toggles (sceGuEnable/Disable) and stall updates: 3.8% of instruction misses', 'E'],
+      ['Texture lookups (psp_tex_bind, resident_entry, frame end): 8.9% of drawing\'s data misses; the pack\'s 12 KB directory they read is 5.1% of misses by name', 'E'],
+      ['In the flight: 195 part draws a frame at about 0.36 ms each, with the camera beside the Pelicans and marines', 'M'],
+      ['The profiler\'s step marks (psp_step): 2.5% of instruction misses; lean removes them', 'E']
+    ],
+    xbox: 'A thin layer: set vertex-shader constants (bones, lights), bind streams, issue the draw. The NV2A skinned, lit, transformed and clipped in hardware, with up to four textures in one pass.',
+    levers: ['L1', 'X2', 'X21', 'E15', 'N2', 'X6', 'X18', 'E24', 'E12', 'B9'] },
+  { group: 'draw', id: 'level', key: 'level', name: 'The level', owner: 'port', color: '--c-level',
+    what: 'The level\'s geometry: each material\'s passes (lightmap, base, detail), triangles near the camera classified and cut, slant buckets for the detail maps, the see-through surfaces.',
+    parts: s => stepRows('level', s),
+    made: [
+      ['psp_ge_draw_level and its passes: 3.3% and 1.5% of drawing\'s data misses', 'E'],
+      ['Corner classification and slant buckets (rigid_corner_bits, angle_bucket_one): 2.8% of data misses', 'E'],
+      ['The geometry cache\'s lock (psp_geo_lock): 1.7% of instruction misses', 'E']
+    ],
+    xbox: 'One or two passes per material: base, detail and lightmap combined in the GPU\'s register combiners, clipped in hardware.',
+    levers: ['L2', 'E9', 'E10', 'X11', 'X19', 'B9', 'B6', 'B12'] },
+  { group: 'draw', id: 'fx', key: 'fx', name: 'Effects', owner: 'both', color: '--c-fx',
+    what: 'Decals, dynamic lights, particles, lens flares, widgets and contrails.',
+    parts: s => stepRows('fx', s),
+    made: [['Decals (psp_ge_decal_body): 2.3% of drawing\'s instruction misses; flares cast rays instead of the Xbox\'s GPU occlusion test', 'E']],
+    xbox: 'Built by the same engine code on the CPU; flares used the GPU\'s occlusion queries.',
+    levers: ['X7', 'B11'] },
+  { group: 'draw', id: 'hud', key: 'hud', name: 'HUD', owner: 'both', color: '--c-hud',
+    what: 'Crosshair, motion tracker, shields and health, weapon and grenade counters.',
+    parts: s => [['HUD', ST[s].ms.hud.toFixed(1) + ' ms/frame', '[M]']],
+    made: [['The motion tracker\'s blips and the crosshair are the largest parts', 'M']],
+    xbox: 'The same engine code, drawn by the GPU.',
+    levers: ['E23'] },
+  { group: 'draw', id: 'rest', key: 'rest', name: 'Sound, frame end, set-up', owner: 'both', color: '--c-rest',
+    what: 'Sound placement for the frame, the wait for the GE and the swap, frame set-up and input.',
+    parts: s => stepRows('rest', s),
+    made: [['The GE is almost never what the CPU waits on: the frame end waits only 1–2.5 ms', 'M']],
+    xbox: 'A push-buffer kick and the vertical sync.',
+    levers: ['E2'] }
+];
+
+function stepRows(k, s) {
+  const i = ORDER.indexOf(s), rows = [];
+  for (const n in STEPS[k]) rows.push([n, STEPS[k][n][i].toFixed(1) + ' ms/frame', '[M]']);
+  return rows;
+}
+
+const XBOX = [
+  ['CPU', '733 MHz, out of order', '333 MHz, in order: it stops dead on every miss'],
+  ['Caches', '16 + 16 KB L1, and a 128 KB L2', '16 + 16 KB L1, no L2: a miss costs about 216 ns [M], 424 while the GE reads RAM'],
+  ['Vertex work', 'NV2A vertex shaders: skinning, lighting, transforms, clipping', 'The GE skins (up to 8 bones) and lights (4), but our CPU still prepares each part and cuts near-plane triangles'],
+  ['Texturing', 'Up to 4 textures in one pass', 'One texture a pass: each extra layer is the geometry sent again'],
+  ['Processors', 'One', 'Two: the Media Engine is idle but for audio (13% busy in test 1) [M]'],
+  ['Memory', '64 MB, shared with the GPU', '24 MB for us; everything is baked down to fit'],
+  ['Depth', '24-bit', '16-bit: why decals, stencils and the water need nudging']
+];
+
+const FOUND = [
+  { title: 'Tag lookups miss on two globals', fig: '~10% of the tick\'s data misses', body: 'Every tag_get reads global_tag_instances and cache_file_globals, and both are pushed out of the cache between calls: 12.7 million misses each over the level. The cache map files them under the function just before tag_get (by one instruction), so the attribution is [U], but the two globals are named. Kept in the 16 KB scratchpad, they always hit.', lever: 'N1' },
+  { title: 'The Xbox shim still stores shader constants', fig: '2.2% of drawing\'s data misses', body: 'The engine\'s model path calls the Direct3D layer for every model, and its constants_store compares and copies each vertex-shader constant (bones, lights). Our GE path reads the engine\'s data directly, so this may be pure overhead. To check before it becomes a lever.', lever: 'N2' },
+  { title: 'The stack misses', fig: '15% of the tick\'s data misses, 9% of drawing\'s', body: 'The thread\'s own stack is evicted by the big walks between calls. Deep call chains with large locals make it worse; a few hot frames could move to the scratchpad.', lever: null },
+  { title: 'A biped\'s steady costs', fig: '0.5–1.1 ms per biped per tick', body: 'Markers looked up by name, validity checks on every matrix and the full skeleton rebuilt each tick, even for a marine sitting in a Pelican. For the biped discussion.', lever: 'N3' }
+];
+
+let cur = 'flight';
+try { const s = localStorage.getItem('framemap-stretch'); if (s && ST[s]) cur = s; } catch (e) {}
+let filter = 'all';
+
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const fmt = (v, d = 1) => Number(v).toFixed(d);
+const el = (tag, attrs = {}, html = '') => { const e = document.createElement(tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (html) e.innerHTML = html; return e; };
+
+function renderTabs() {
+  const box = document.getElementById('tabs'); box.innerHTML = '';
+  ORDER.forEach(k => {
+    const b = el('button', { type: 'button', 'aria-pressed': String(k === cur), id: 'tab-' + k }, ST[k].label + '<span>game time ' + ST[k].range + '</span>');
+    b.addEventListener('click', () => { cur = k; try { localStorage.setItem('framemap-stretch', k); } catch (e) {} renderAll(); });
+    box.appendChild(b);
+  });
+}
+
+function renderReadout() {
+  const s = ST[cur];
+  const draw = s.frame - s.ms.objects - s.ms.ai - s.ms.tother;
+  const minNeed = 2 * s.tick.total + draw; // two ticks + one frame's drawing
+  const topNeed = s.tick.total + draw;
+  const over = (v, t) => v <= t ? '<span class="gap-ok">on target</span>' : '<span class="gap-bad">' + fmt(v / t, 1) + '× over</span>';
+  document.getElementById('readout').innerHTML = [
+    ['Frame', fmt(s.frame) + ' ms', fmt(s.fps, 1) + ' fps'],
+    ['Ticks a second', fmt(s.tps, 1), 'game at ' + Math.round(100 * s.tps / 30) + '% speed; ' + fmt(s.tpf, 2) + ' ticks a frame'],
+    ['A tick', fmt(s.tick.total) + ' ms', s.tick.total < 33.3 ? 'under the 33.3 ms wall' : '<span class="gap-bad">over the 33.3 ms wall</span>'],
+    ['Minimum: 15 fps at 30 ticks', fmt(minNeed, 0) + ' ms', '2 × tick + drawing ≤ 66.7: ' + over(minNeed, 66.7)],
+    ['Primary: 30 fps at 30 ticks', fmt(topNeed, 0) + ' ms', 'tick + drawing ≤ 33.3: ' + over(topNeed, 33.3)]
+  ].map(r => '<div><div class="eyebrow">' + r[0] + '</div><div class="big">' + r[1] + '</div><div class="sub">' + r[2] + '</div></div>').join('');
+}
+
+const SEGS = [
+  ['objects', 'Objects', '--c-obj', 'tick'], ['ai', 'AI', '--c-ai', 'tick'], ['tother', 'Other', '--c-tother', 'tick'],
+  ['vis', 'Vis.', '--c-vis', 'draw'], ['prep', 'Prep', '--c-prep', 'draw'], ['gel', 'GE layer', '--c-gel', 'draw'],
+  ['level', 'Level', '--c-level', 'draw'], ['fx', 'Effects', '--c-fx', 'draw'], ['hud', 'HUD', '--c-hud', 'draw'], ['rest', 'Rest', '--c-rest', 'draw']
+];
+const SCALE = 300;
+
+function renderTimeline() {
+  const s = ST[cur], tl = document.getElementById('timeline');
+  tl.innerHTML = '';
+  const pct = ms => (100 * ms / SCALE) + '%';
+  // main CPU
+  tl.appendChild(el('div', { class: 'lab' }, 'Main CPU<small>' + fmt(s.frame) + ' ms</small>'));
+  const cpu = el('div', { class: 'track', role: 'img', 'aria-label': 'Main CPU, ' + fmt(s.frame) + ' ms a frame' });
+  let x = 0;
+  SEGS.forEach(([k, label, c, phase]) => {
+    const ms = s.ms[k]; if (!ms) return;
+    const seg = el('div', { class: 'seg', title: label + ': ' + fmt(ms) + ' ms (' + (phase === 'tick' ? s.memTick : s.memDraw) + '% waiting on memory)' });
+    seg.style.left = pct(x); seg.style.width = pct(ms); seg.style.background = 'var(' + c + ')';
+    const mem = el('div', { class: 'mem' }); mem.style.width = (phase === 'tick' ? s.memTick : s.memDraw) + '%'; seg.appendChild(mem);
+    if (ms / SCALE > 0.055) seg.appendChild(el('div', { class: 't' }, label));
+    seg.addEventListener('click', () => openStage(k));
+    cpu.appendChild(seg); x += ms;
+  });
+  [[66.7, '15 fps · 66.7 ms', 'marker'], [33.3, '30 fps · 33.3 ms', 'marker left']].forEach(([v, t, c]) => { const m = el('div', { class: c }, '<span>' + t + '</span>'); m.style.left = pct(v); cpu.appendChild(m); });
+  tl.appendChild(cpu);
+  // GE
+  tl.appendChild(el('div', { class: 'lab' }, 'GE<small>' + s.ge + ' ms busy</small>'));
+  const ge = el('div', { class: 'track', role: 'img', 'aria-label': 'GE busy ' + s.ge + ' ms a frame' });
+  const gs = el('div', { class: 'seg', title: 'The GE drawing: ' + s.ge + ' ms a frame [M]' }); gs.style.left = '0'; gs.style.width = pct(s.ge); gs.style.background = 'var(--c-ge)'; gs.style.opacity = '.85';
+  if (s.ge / SCALE > 0.06) gs.appendChild(el('div', { class: 't' }, 'drawing'));
+  gs.addEventListener('click', () => openStage('gel'));
+  ge.appendChild(gs);
+  [66.7, 33.3].forEach(v => { const m = el('div', { class: 'marker' }); m.style.left = pct(v); ge.appendChild(m); });
+  tl.appendChild(ge);
+  // ME
+  tl.appendChild(el('div', { class: 'lab' }, 'Media Engine<small>13% busy</small>'));
+  const me = el('div', { class: 'track', role: 'img', 'aria-label': 'Media Engine, audio only, about 13% busy' });
+  const ms = el('div', { class: 'seg', title: 'Audio mixing: about 13% of its time in play [M]' }); ms.style.left = '0'; ms.style.width = pct(s.frame * 0.13); ms.style.background = 'var(--c-me)';
+  if (s.frame * 0.13 / SCALE > 0.06) ms.appendChild(el('div', { class: 't' }, 'audio'));
+  me.appendChild(ms);
+  [66.7, 33.3].forEach(v => { const m = el('div', { class: 'marker' }); m.style.left = pct(v); me.appendChild(m); });
+  tl.appendChild(me);
+  const ax = el('div', { class: 'axis' });
+  for (let t = 0; t <= SCALE; t += 50) { const i = el('i', {}, t + (t === SCALE ? ' ms' : '')); i.style.left = (100 * t / SCALE) + '%'; if (t === SCALE) i.style.transform = 'translateX(-100%)'; if (t === 0) i.style.transform = 'none'; ax.appendChild(i); }
+  tl.appendChild(ax);
+  document.getElementById('tlkey').innerHTML = SEGS.map(([k, l, c]) => '<span><i class="sw" style="background:var(' + c + ')"></i>' + l + '</span>').join('') +
+    '<span><i class="sw hatch"></i>waiting on memory (ticks ' + s.memTick + '%, drawing ' + s.memDraw + '%)</span>';
+}
+
+function pill(lv) {
+  const cls = { built: 's-built', off: 's-off', tested: 's-tested', shelved: 's-shelved', proposed: 's-proposed', new: 's-new' }[lv.st] || 's-proposed';
+  return '<span class="pill ' + cls + '">' + lv.status + '</span>';
+}
+
+function renderPipeline() {
+  const s = ST[cur], box = document.getElementById('pipeline');
+  const openIds = new Set([...box.querySelectorAll('details[open]')].map(d => d.id));
+  box.innerHTML = '';
+  const groups = [
+    ['tick', 'Ticks', 'The game\'s simulation, 30 a second. Below 15 fps a frame carries two, so the tick counts twice. In this stretch: ' + fmt(s.tick.total) + ' ms a tick × ' + fmt(s.tpf, 2) + '.'],
+    ['draw', 'Drawing and the frame', 'Prepared on the main CPU, then drawn by the GE alongside. ' + fmt(s.frame - s.ms.objects - s.ms.ai - s.ms.tother) + ' ms a frame in this stretch.']
+  ];
+  const maxMs = Math.max(...STAGES.map(t => s.ms[t.key] || 0));
+  groups.forEach(([g, title, sub]) => {
+    const gb = el('div', { class: 'group' });
+    gb.appendChild(el('div', { class: 'group-head' }, '<h3>' + title + '</h3><p>' + sub + '</p>'));
+    STAGES.filter(t => t.group === g).forEach(t => {
+      const ms = s.ms[t.key] || 0, share = 100 * ms / s.frame, mem = g === 'tick' ? s.memTick : s.memDraw;
+      const d = el('details', { class: 'stage', id: 'st-' + t.id });
+      if (openIds.has(d.id)) d.open = true;
+      const owner = { engine: 'engine', port: 'port code', both: 'engine + port' }[t.owner];
+      d.innerHTML =
+        '<summary><span class="dot" style="background:var(' + t.color + ')"></span>' +
+        '<span class="name">' + t.name + '<small>' + owner + '</small></span>' +
+        '<span class="val">' + fmt(ms) + ' ms<small>' + fmt(share, 0) + '% of the frame · ' + mem + '% memory</small></span>' +
+        '<span class="bar"><i style="width:' + (100 * ms / maxMs) + '%;background:var(' + t.color + ')"></i></span>' +
+        '<span class="what">' + t.what + '</span></summary>';
+      const body = el('div', { class: 'body' });
+      const rows = t.parts(cur);
+      let partsHtml = '<h4>In this stretch</h4><table class="parts">' + rows.map(r => r[3]
+        ? '<tr><td colspan="2" class="note">' + r[0] + ' (' + r[1] + ') ' + r[2] + '</td></tr>'
+        : '<tr><td>' + r[0] + '</td><td>' + r[1] + ' <span class="tag">' + r[2] + '</span></td></tr>').join('') + '</table>';
+      partsHtml += '<h4 style="margin-top:12px">What it\'s made of</h4><ul>' + t.made.map(m => '<li>' + m[0] + ' <span class="tag">[' + m[1] + ']</span></li>').join('') + '</ul>';
+      const c1 = el('div', {}, partsHtml);
+      const c2 = el('div', {}, '<h4>On the Xbox</h4><p>' + t.xbox + '</p>');
+      const lv = t.levers.map(id => { const L = LEVERS[id]; return '<div class="lever"><div class="top"><span class="id">' + id + '</span><span>' + L.name + '</span>' + pill(L) + (L.kind === 'visible' ? '<span class="k-visible">changes the look or play</span>' : '') + '</div><div class="eff">' + L.eff + '</div></div>'; }).join('');
+      const c3 = el('div', {}, '<h4>Levers</h4><div class="lv">' + lv + '</div>');
+      body.append(c1, c2, c3); d.appendChild(body);
+      gb.appendChild(d);
+    });
+    box.appendChild(gb);
+  });
+  // the GE as hardware
+  const hw = el('div', { class: 'group' });
+  hw.appendChild(el('div', { class: 'group-head' }, '<h3>Alongside, in hardware</h3><p>These run in parallel with the main CPU; they cost the frame only when the CPU waits for them.</p>'));
+  const ge = el('details', { class: 'stage', id: 'st-ge' });
+  ge.innerHTML = '<summary><span class="dot" style="background:var(--c-ge)"></span><span class="name">The GE<small>hardware</small></span><span class="val">' + s.ge + ' ms<small>busy a frame · ' + fmt(100 * s.ge / s.frame, 0) + '% of the clock</small></span><span class="bar"><i style="width:' + (100 * s.ge / maxMs) + '%;background:var(--c-ge)"></i></span><span class="what">Draws what the GE layer wrote. ' + (s.ge > 66.7 ? 'Busy longer than the 15 fps budget on its own: in this stretch the GE becomes the next wall once the CPU is fast enough.' : 'Fits inside the 15 fps budget in this stretch.') + '</span></summary>' +
+    '<div class="body"><div><h4>What it\'s made of</h4><ul><li>Every pass of every model part and level material, filled at 480×272 with a 16-bit depth buffer <span class="tag">[D]</span></li><li>Its reads of textures and vertices from main RAM roughly double the CPU\'s miss time while they run <span class="tag">[M]</span></li></ul></div><div><h4>On the Xbox</h4><p>The NV2A at 233 MHz: programmable vertex shaders, four textures a pass, 24-bit depth, 640×480.</p></div><div><h4>Levers</h4><div class="lv">' +
+    ['L2', 'X21', 'X23', 'B9'].map(id => { const L = LEVERS[id]; return '<div class="lever"><div class="top"><span class="id">' + id + '</span><span>' + L.name + '</span>' + pill(L) + (L.kind === 'visible' ? '<span class="k-visible">changes the look or play</span>' : '') + '</div><div class="eff">' + L.eff + '</div></div>'; }).join('') + '<div class="lever"><div class="top"><span class="id">—</span><span>Fewer passes per part and material</span><span class="pill s-new">idea</span></div><div class="eff">The flight\'s GE time (96 ms) is over the 15 fps budget by itself.</div></div></div></div></div>';
+  if (openIds.has('st-ge')) ge.open = true;
+  hw.appendChild(ge);
+  box.appendChild(hw);
+}
+
+function openStage(k) {
+  const d = document.getElementById('st-' + k);
+  if (d) { d.open = true; d.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' }); }
+}
+
+function renderXbox() {
+  document.getElementById('xbox').innerHTML =
+    XBOX.map(r => '<div><div class="eyebrow">' + r[0] + '</div><div class="row"><div><b>Xbox</b><br>' + r[1] + '</div><div><b>PSP-1000</b><br>' + r[2] + '</div></div></div>').join('');
+}
+
+function renderFound() {
+  document.getElementById('found').innerHTML = FOUND.map(f => '<div class="card"><h3>' + f.title + '</h3><div class="fig">' + f.fig + '</div><p>' + f.body + '</p>' + (f.lever ? '<div class="tag">On the map as ' + f.lever + '</div>' : '') + '</div>').join('');
+}
+
+const STAGE_NAMES = { objects: 'Objects', ai: 'AI', tother: 'Other tick', scenery: 'Objects (scenery)', vis: 'Visibility', prep: 'Object prep', gel: 'GE layer', level: 'Level', fx: 'Effects', hud: 'HUD', ge: 'The GE', all: 'Whole program' };
+function renderIndex() {
+  const fb = document.getElementById('filters');
+  const F = [['all', 'All'], ['exact', 'Exact only'], ['visible', 'Changes the look or play'], ['done', 'Tested or shelved'], ['new', 'New']];
+  fb.innerHTML = '';
+  F.forEach(([k, l]) => { const b = el('button', { type: 'button', 'aria-pressed': String(k === filter), id: 'f-' + k }, l); b.addEventListener('click', () => { filter = k; renderIndex(); }); fb.appendChild(b); });
+  const rows = Object.entries(LEVERS).filter(([id, L]) =>
+    filter === 'all' || (filter === 'exact' && L.kind === 'exact') || (filter === 'visible' && L.kind === 'visible') ||
+    (filter === 'done' && (L.st === 'tested' || L.st === 'shelved')) || (filter === 'new' && L.st === 'new'));
+  document.getElementById('index').innerHTML = rows.map(([id, L]) => '<tr><td class="id">' + id + '</td><td>' + L.name + (L.kind === 'visible' ? '<br><span class="k-visible">changes the look or play</span>' : '') + '</td><td>' + L.stage.map(x => STAGE_NAMES[x]).join(', ') + '</td><td>' + pill(L) + '</td><td>' + L.eff + '</td></tr>').join('');
+}
+
+function renderAll() { renderTabs(); renderReadout(); renderTimeline(); renderPipeline(); }
+renderAll(); renderXbox(); renderFound(); renderIndex();
+</script>
