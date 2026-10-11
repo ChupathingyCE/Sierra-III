@@ -6,7 +6,7 @@ Sierra-III is a native PSP-1000 port of Halo: Combat Evolved, built on a decompi
 
 - **No game data, ever.** That means no maps, extracted tags, baked packs (`.map .pgeo .ptex .pstn .vram`), sounds or textures from the disc, in any commit, release or log. `.gitignore` enforces the common cases. Before a push, check that every binary or large file is ours.
 - **No Sony firmware.** `flash0:` modules (e.g. `lowio.prx`) stay off the repo; describing them in docs is fine.
-- **Test scaffolding goes in Sheepdog-01/lab-repo, not here.** That covers run specs, workflows, run scripts and results. This repo holds only what the port needs to build, bake and be tested by hand.
+- **Test scaffolding goes in the lab repository, not here.** That covers run specs, workflows, run scripts and results. This repo holds only what the port needs to build, bake and be tested by hand. Sessions that work on the lab get its name and rules from its own CLAUDE.md; `docs/testing_pipeline.md` describes its shape.
 - **Commit identity** (Sheepdog01, 2026-10-10): Claude writes the code and Sheepdog01 tests it on hardware, so commits are authored as `Claude <noreply@anthropic.com>`, with Sheepdog01 as co-author: `Co-authored-by: Sheepdog-01 <15330660+Sheepdog-01@users.noreply.github.com>` (that line keeps the commits on his GitHub profile). Commits before 2026-10-10 are `Sheepdog-01`'s; leave them as they are.
 - **Finish testing a build before making the next one.** Each shipped build is tagged `bNNN`, and its zip is added to the `build-archive` Release (a record, not for sharing). A build gets a Release of its own only when Sheepdog01 chooses to share it.
 - **Changes that alter what the player sees or how the game behaves are Sheepdog01's call, one at a time, after an A/B.** Exact speed-ups don't need that. Every change ships behind a keep word so one build can test both sides.
@@ -26,6 +26,9 @@ ninja build/linux/halo_msvc_semantics.h build/linux/platform_msvc_semantics.h
 
 # the port (pspdev's bin on PATH)
 HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
+
+# or all of it, from a clean machine, into a release zip (docs/toolchain.md)
+PSPDEV=<pspdev> tools/build_release.sh <out>
 ```
 
 **How the build works:** `psp_build.py` mirrors the engine into `<out>/tree`. `psp_fixups.py` then applies anchored (old, new) text pairs to that mirror: `FIXES_*` are lists or dicts per build, and `Either(universal=…, chupa=…)` covers the two engine bases. Then it compiles (hot engine `-O2`, cold units `-Os`), links, sizes the heap from the program's end, and packs `EBOOT.PBP`. A link map (`halo.map`) is written every link. The engine checkout itself is never edited.
@@ -54,7 +57,7 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
   - `PSP_DCACHE` / `PSP_ICACHE`: the cache model, with exact tick counts.
 
   `tools/emu.sh LABEL` does one run. It is driven by environment variables (map, keep words, input script, route, strict mode, wall time) and summarised by `tools/strictfilter.py`. The Pelican flight into b30 is the fair A/B stretch; beach battles vary ~10% between runs.
-- **The X3D runner:** builds, bakes and emulator runs can go to Sheepdog01's desktop through lab-repo's workflows. That repo's README describes it; maps never leave that machine.
+- **The lab's runners:** builds, bakes and emulator runs (many at once, as batches) can go to Sheepdog01's desktop through the lab repository's workflows. Its README describes them; maps never leave that machine.
 - **Hardware:** Sheepdog01 runs the build and sends back `halo/log/` (`log.txt`, `profile.txt`, `crash.txt`, shots). `tools/hwreport.py` reads the `hwprofile` lines.
 
 ## Installing (Sheepdog01's machine, fish)
@@ -66,7 +69,7 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
 
 To quit the game: HOME → ARK-4 Kommander → Exit.
 
-**Logs come off the stick into `$HOME/psp/logs/`** (Sheepdog01's rule, 2026-10-10), one `.tgz` per run, named for the build and the test: `mkdir -p $HOME/psp/logs; tar czf $HOME/psp/logs/b112_ceiling.tgz -C $psp/halo log`. `log.txt` is wiped at every launch, so pull it after each run. Give each test its stop condition and an honest time: a bench that waits for game time runs slower than the clock at low frame rates.
+**Logs come off the stick into `$HOME/psp/logs/`** (Sheepdog01's rule, 2026-10-10), one `.tgz` per run, named for the build and the test: `mkdir -p $HOME/psp/logs; tar czf $HOME/psp/logs/b114_test1.tgz --exclude='log/[0-9][0-9][0-9]_*' -C $psp/halo log shots`. Pull after each run: from build 114 the last 8 launches' logs stay on the stick as `log/NNN_log.txt` (the `--exclude` leaves them out of the archive), so a missed pull can still be recovered. Give each test its stop condition and an honest time: a bench that waits for game time runs slower than the clock at low frame rates.
 
 ## Docs
 

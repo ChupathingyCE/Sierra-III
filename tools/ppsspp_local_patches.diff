@@ -1,3 +1,28 @@
+diff --git a/Common/MemArenaPosix.cpp b/Common/MemArenaPosix.cpp
+index 38598a2..cebed57 100644
+--- a/Common/MemArenaPosix.cpp
++++ b/Common/MemArenaPosix.cpp
+@@ -58,7 +58,19 @@ bool MemArena::GrabMemSpace(size_t size) {
+ 	// Try a few times in case multiple instances are started near each other.
+ 	char ram_temp_filename[128]{};
+ 	bool is_shm = false;
+-	for (int i = 0; i < 256; ++i) {
++	fd = -1;
++#if defined(__linux__)
++	// Local patch (Halo port): an anonymous memory file first. /dev/shm is a mount with a size of
++	// its own (64 MB in a Podman or Docker container), and the file below is sparse, so a second
++	// instance there runs it out and every instance takes SIGBUS as it clears its RAM. A memfd
++	// counts only against the process's memory limit, and has no name to clash.
++	fd = memfd_create("ppsspp_ram", MFD_CLOEXEC);
++	if (fd >= 0) {
++		INFO_LOG(Log::MemMap, "Got memfd for the ram");
++		is_shm = true;
++	}
++#endif
++	for (int i = 0; fd < 0 && i < 256; ++i) {
+ 		snprintf(ram_temp_filename, sizeof(ram_temp_filename), "/ppsspp_%d.ram", i);
+ 		// This opens atomically, so will fail if another process is starting.
+ 		fd = shm_open(ram_temp_filename, O_RDWR | O_CREAT | O_EXCL, mode);
 diff --git a/Core/CoreTiming.cpp b/Core/CoreTiming.cpp
 index ca20954..98275c9 100644
 --- a/Core/CoreTiming.cpp

@@ -6,7 +6,7 @@ Native PlayStation Portable port of Halo: Combat Evolved, built for the original
 
 ## Where it stands
 
-The whole campaign loads on a PSP-1000: all ten maps fit its memory since build 108. On hardware (build 107), *The Silent Cartographer* (b30) plays start to finish at about 9 fps on average, 15 ticks a second. Build 110 moved the engine to ChupathingyCE.
+The whole campaign loads on a PSP-1000: all ten maps fit its memory since build 108. On hardware (build 107), *The Silent Cartographer* (b30) plays start to finish at about 9 fps on average, 15 ticks a second. Build 110 moved the engine to ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
 
 The goal is a steady 30 ticks a second everywhere in the campaign, with 30 fps the target. The plan to get there is `docs/rebuild_plan.md`, and every known speed lever, ranked, is in `docs/optimization_ranking.md`.
 
@@ -26,20 +26,15 @@ The goal is a steady 30 ticks a second everywhere in the campaign, with 30 fps t
 
 ## Building
 
-You need Linux, the pspdev toolchain (`$PSPDEV`, default `/opt/psp/pspdev`), and Python 3. The upstreams and their pins are in `UPSTREAM.md`.
+On Linux with the pspdev toolchain, Python 3, ninja, cmake and git:
 
-1. **The Media Engine library:** clone me-core-mapper at its pin, then run `make clean; make install` with pspdev on your `PATH`. (Or build it anywhere and point `PSP_MECORE` at a folder holding its `include/me-core-mapper` and `lib/`.)
-2. **The engine:** clone ChupathingyCE at its pin, then in that checkout run:
-   ```
-   python3 configure.py --no-game-browser
-   ninja build/linux/halo_msvc_semantics.h build/linux/platform_msvc_semantics.h
-   ```
-3. **The port:** from this checkout, with pspdev on your `PATH`, run:
-   ```
-   HALO_REPO=<engine checkout> PSP_OUT=<output folder> python3 psp_build.py --jobs 8
-   ```
-   The result is `<output folder>/EBOOT.PBP`.
-4. **The helper modules:** run `make` in `psp/crash` and in `psp/profile`. This produces `halo_crash.prx` and `halo_profile.prx`.
+```
+PSPDEV=/opt/pspdev tools/build_release.sh <output folder>
+```
+
+It fetches the engine and the Media Engine library at the commits `upstream/pins.env` pins (once, into a cache), builds the port and its two helper modules, and writes `halo_psp_<commit>.zip`. The same commit builds the same bytes on any machine, so the EBOOT's hash can be checked against the build's notes.
+
+**`docs/toolchain.md`** is the whole setup from a clean machine: the packages, the toolchain, the build, baking maps from your own disc, installing, and the emulator. **`docs/testing_pipeline.md`** describes how the project tests.
 
 ## Maps
 
@@ -54,7 +49,7 @@ Then copy the output's `halo/` folder to the root of the Memory Stick. `bake/REA
 
 ## Installing
 
-Copy the build zip's `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`) to the Memory Stick. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
+Unzip the build zip at the Memory Stick's root: `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`), and `halo/presets.txt` (the launch menu's test presets) when the build has one. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
 
 ## History
 
