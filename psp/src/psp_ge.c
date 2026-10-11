@@ -270,6 +270,7 @@ static int overlay_answers_for(const void *vertices, int vertex_count, const uns
 static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
 static void defer_drain(void);
 static void list_write_back(const void *stall); /* build 114: listcachedall */
+static void lit_forget(int what); /* build 114: statememo */
 /* which calls made the waiting calls run, for the log: each is a point where
 the ME's version has to catch up with the main CPU */
 #define DEFER_SITES 16
@@ -1735,6 +1736,7 @@ static void ge_initialize(void)
 	sceGuDisable(GU_CULL_FACE);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuDisable(GU_LIGHTING);
+	lit_forget(0); /* build 114: statememo */
 	/* build 62: Gouraud, as the Xbox shades. Left flat from the first
 	untextured builds (build 14), every lit model took one colour a
 	triangle once the GE lit models (build 22 on): the facets on the
@@ -2481,6 +2483,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : display_list_size;
 	sceGuStart(GU_DIRECT, list_in_vram ? (void *)(0x04000000 + VRAM_BENCH_START) : (void *)display_list);
 	list_cached_frame_start(list_in_vram); /* build 114: listcachedall */
+	lit_forget(2); /* build 114: statememo */
 	sceGuFog(fog_near, fog_far, fog_color);
 	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
 	if (vram_busy)
@@ -4932,27 +4935,99 @@ void psp_ge_model_effect(int type, float intensity)
 	model_camouflage = type == 1 && intensity > 0.0f ? (intensity > 1.0f ? 1.0f : intensity) : 0.0f;
 }
 
+/* build 114: "statememo" for lighting: the GE's lighting state as this file
+last set it, so a part lit as the GE already is sends nothing. Each part
+turns lighting on with the ambient and both lights (about 17 command words
+and a dozen pspgu calls), draws, and turns it off for its later passes; the
+parts of one object share their lighting. Only this file sets the GE's
+lighting: model_lighting, the start-up's "off" (lit_forget(0)), and the
+two-sided pass's flipped lights (lit_forget(1)). Forgotten at each frame's
+start, and never used in the Media Engine's work */
+static int lit_memo = -1, lit_enabled = -1, lit_params = 0, lit_on[2];
+static unsigned int lit_ambient, lit_color[2];
+static ScePspFVector3 lit_toward[2];
+static unsigned long lit_sets_sent = 0, lit_sets_memo = 0;
+
+/* lighting changed outside model_lighting: 0 turned off; 1 the lights'
+parameters; 2 everything unknown (a frame's start) */
+static void lit_forget(int what)
+{
+	lit_enabled = what == 0 ? 0 : what == 2 ? -1 : lit_enabled;
+	lit_params = 0;
+}
+
 static void model_lighting(int on)
 {
-	int index;
+	int index, sent = 0;
 
+	if (lit_memo < 0)
+		lit_memo = psp_keep("statememo");
+	if (!lit_memo || psp_me_context)
+	{
+		lit_enabled = -1;
+		lit_params = 0;
+	}
 	if (!on || (!model_light_count && model_ambient == 0xFF000000))
 	{
-		sceGuDisable(GU_LIGHTING);
+		if (lit_enabled != 0)
+			sceGuDisable(GU_LIGHTING);
+		if (lit_memo && !psp_me_context)
+			lit_enabled = 0;
 		return;
 	}
-	sceGuEnable(GU_LIGHTING);
-	sceGuAmbient(model_ambient);
+	if (lit_enabled != 1)
+	{
+		sceGuEnable(GU_LIGHTING);
+		sent = 1;
+	}
+	if (!lit_params || lit_ambient != model_ambient)
+	{
+		sceGuAmbient(model_ambient);
+		sent = 1;
+	}
 	for (index = 0; index < 2; index++)
 	{
 		if (index < model_light_count)
 		{
-			sceGuLight(index, GU_DIRECTIONAL, GU_DIFFUSE, &model_light_toward[index]);
-			sceGuLightColor(index, GU_DIFFUSE, model_light_color[index]);
-			sceGuEnable(GU_LIGHT0 + index);
+			if (!lit_params || memcmp(&lit_toward[index], &model_light_toward[index], sizeof(ScePspFVector3)) != 0)
+			{
+				sceGuLight(index, GU_DIRECTIONAL, GU_DIFFUSE, &model_light_toward[index]);
+				sent = 1;
+			}
+			if (!lit_params || lit_color[index] != model_light_color[index])
+			{
+				sceGuLightColor(index, GU_DIFFUSE, model_light_color[index]);
+				sent = 1;
+			}
+			if (!lit_params || !lit_on[index])
+			{
+				sceGuEnable(GU_LIGHT0 + index);
+				sent = 1;
+			}
 		}
-		else
+		else if (!lit_params || lit_on[index])
+		{
 			sceGuDisable(GU_LIGHT0 + index);
+			sent = 1;
+		}
+	}
+	if (sent)
+		lit_sets_sent++;
+	else
+		lit_sets_memo++;
+	if (!lit_memo || psp_me_context)
+		return;
+	lit_enabled = 1;
+	lit_params = 1;
+	lit_ambient = model_ambient;
+	for (index = 0; index < 2; index++)
+	{
+		lit_on[index] = index < model_light_count;
+		if (lit_on[index])
+		{
+			lit_toward[index] = model_light_toward[index];
+			lit_color[index] = model_light_color[index];
+		}
 	}
 }
 
@@ -6607,6 +6682,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 
 			sceGuLight(index, GU_DIRECTIONAL, GU_DIFFUSE, &flipped);
 		}
+		lit_forget(1); /* build 114: statememo */
 		model_geometry(vertices, indices, index_count, strip, skin, &model);
 		sceGuFrontFace(LEVEL_FRONT);
 		two_sided_draws++;
@@ -11735,6 +11811,15 @@ void psp_ge_frame_end(void)
 					decals_wholly_left_out = 0;
 					cached_takes = cached_bytes = cached_lines_flushed = stall_calls = stall_forwarded = 0;
 					list_lines_back = 0;
+					if (lit_memo > 0)
+					{
+						/* build 114: statememo */
+						extern unsigned long psp_tex_binds_memo, psp_tex_binds_sent;
+
+						platform_log("GE: state memo: texture binds %lu a frame sent, %lu left out; model lighting %lu a frame set, %lu left out",
+							psp_tex_binds_sent / 300, psp_tex_binds_memo / 300, lit_sets_sent / 300, lit_sets_memo / 300);
+						psp_tex_binds_sent = psp_tex_binds_memo = lit_sets_sent = lit_sets_memo = 0;
+					}
 				}
 			}
 		}

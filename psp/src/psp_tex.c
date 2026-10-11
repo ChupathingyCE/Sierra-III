@@ -949,6 +949,50 @@ int psp_tex_bind_lightmap(unsigned int key)
 	return bound;
 }
 
+/* build 114: "statememo": a bind of the texture the GE already has is left
+out of the list. A bind is about 28 command words (the palette, the mode,
+four a mip level, the filter); b113's Test 3 put the model parts' binds,
+state and lighting at 8-12 ms a frame on the PSP. The memo is the texture
+and its address, for this frame only, and every other texture-state call
+clears it: the five functions are wrapped (psp_build.py links them with
+--wrap), and the bind itself calls the real ones. Never in the Media
+Engine's work (its writes go to its own cache). The bind's bookkeeping
+(residency, this frame's set, the counts) runs either way */
+void __real_sceGuTexImage(int mipmap, int width, int height, int tbw, const void *tbp);
+void __real_sceGuTexMode(int tpsm, int maxmips, int mc, int swizzle);
+void __real_sceGuClutLoad(int num_blocks, const void *cbp);
+void __real_sceGuClutMode(unsigned int cpsm, unsigned int shift, unsigned int mask, unsigned int csa);
+void __real_sceGuTexFilter(int min, int mag);
+static unsigned int memo_key = 0, memo_address = 0, memo_frame = 0;
+static int memo_on = -1;
+unsigned long psp_tex_binds_memo = 0, psp_tex_binds_sent = 0;
+
+void __wrap_sceGuTexImage(int mipmap, int width, int height, int tbw, const void *tbp)
+{
+	memo_key = 0;
+	__real_sceGuTexImage(mipmap, width, height, tbw, tbp);
+}
+void __wrap_sceGuTexMode(int tpsm, int maxmips, int mc, int swizzle)
+{
+	memo_key = 0;
+	__real_sceGuTexMode(tpsm, maxmips, mc, swizzle);
+}
+void __wrap_sceGuClutLoad(int num_blocks, const void *cbp)
+{
+	memo_key = 0;
+	__real_sceGuClutLoad(num_blocks, cbp);
+}
+void __wrap_sceGuClutMode(unsigned int cpsm, unsigned int shift, unsigned int mask, unsigned int csa)
+{
+	memo_key = 0;
+	__real_sceGuClutMode(cpsm, shift, mask, csa);
+}
+void __wrap_sceGuTexFilter(int min, int mag)
+{
+	memo_key = 0;
+	__real_sceGuTexFilter(min, mag);
+}
+
 /* makes the texture the GE's current one; 0 if it isn't there (yet) */
 int psp_tex_bind(unsigned int key, int *has_alpha)
 {
@@ -990,9 +1034,20 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit palette */
 	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
 	address = resident_at[index];
-	sceGuClutMode(entry->clut, 0, 0xFF, 0);
-	sceGuClutLoad(palette_bytes / 32, (void *)address);
-	sceGuTexMode(entry->psm, entry->levels - 1, 0, 1);
+	/* build 114: statememo (above) */
+	if (memo_on < 0)
+		memo_on = psp_keep("statememo");
+	if (memo_on && !psp_me_context && key == memo_key && address == memo_address && frame == memo_frame)
+	{
+		psp_tex_binds_memo++;
+		if (has_alpha)
+			*has_alpha = entry->flags & 1;
+		return 1;
+	}
+	psp_tex_binds_sent++;
+	__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
+	__real_sceGuClutLoad(palette_bytes / 32, (void *)address);
+	__real_sceGuTexMode(entry->psm, entry->levels - 1, 0, 1);
 	address += palette_bytes;
 	width = entry->width;
 	height = entry->height;
@@ -1002,14 +1057,23 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		unsigned int row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u, rows = (height + 7) & ~7u;
 
 		/* the buffer width is in pixels */
-		sceGuTexImage(level, width, height, entry->psm == GU_PSM_T4 ? row * 2 : row, (void *)address);
+		__real_sceGuTexImage(level, width, height, entry->psm == GU_PSM_T4 ? row * 2 : row, (void *)address);
 		address += row * rows;
 		width = width > 1 ? width / 2 : 1;
 		height = height > 1 ? height / 2 : 1;
 	}
-	sceGuTexFilter(entry->levels > 1 ? GU_LINEAR_MIPMAP_LINEAR : GU_LINEAR, GU_LINEAR);
+	__real_sceGuTexFilter(entry->levels > 1 ? GU_LINEAR_MIPMAP_LINEAR : GU_LINEAR, GU_LINEAR);
 	if (has_alpha)
 		*has_alpha = entry->flags & 1;
+	/* the GE now has this texture (never remembered from the ME's work) */
+	if (psp_me_context)
+		memo_key = 0;
+	else
+	{
+		memo_key = key;
+		memo_address = address;
+		memo_frame = frame;
+	}
 	return 1;
 }
 
