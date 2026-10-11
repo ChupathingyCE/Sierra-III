@@ -786,7 +786,7 @@ static void keep_load(void)
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
 		length ? keep_words : " nothing ");
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
-	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 skydump flatshade tdump");
+	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
 }
 

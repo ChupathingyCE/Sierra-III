@@ -7778,7 +7778,20 @@ static float slope_units_capped(float units, const float *a, const float *b, con
 /* build 65: a triangle standing free (not on a wall) is nudged away from the
 eye instead, by the distance part: where its edge meets something solid (the
 teleporter's shield inside its frame, Sheepdog01's b64 shot 37: a green line along
-the frame's edge) the solid side now wins the tie. Returned negative */
+the frame's edge) the solid side now wins the tie. Returned negative.
+build 115: "overlayfreefar" (A/B; Sheepdog01's b114 run: b30's ocean "clips through
+the terrain under the water surface to varying degrees" in the flight). The
+ocean is free (the collision has no surface at the water: water is a fog
+plane there), and a draw goes out at the LARGEST push of its triangles. A
+triangle with a corner at the near plane asks 0.005 units of lift there,
+307/near steps (2,457 at x2, the 4,096 cap at x1): hundreds of units at
+70 units off, so the water lost to any seabed under it; triangles wholly in
+view asked the 3-step floor, about 2 units at 70 off at x2. With the word:
+the lift is measured at the triangle's FARTHEST corner, the floor is one
+step (the solid side still wins an exact tie), and a draw takes the
+SMALLEST push of its free triangles (one constant offset is a lift that
+grows with the square of the distance, so the far end decides) */
+static int overlay_free_far = -1;
 static int overlay_units(const float *a, const float *b, const float *c, int on_a_wall)
 {
 	float nearest = a[2], units;
@@ -7797,7 +7810,28 @@ static int overlay_units(const float *a, const float *b, const float *c, int on_
 		units = lift * 61439.0f * projection_near / (nearest * nearest);
 	}
 	if (!on_a_wall)
+	{
+		if (overlay_free_far < 0)
+			overlay_free_far = psp_keep("overlayfreefar");
+		if (overlay_free_far)
+		{
+			/* build 115: "overlayfreefar" (above): measured at the far corner */
+			float farthest = a[2], lift;
+
+			if (b[2] > farthest) farthest = b[2];
+			if (c[2] > farthest) farthest = c[2];
+			if (farthest < projection_near)
+				farthest = projection_near;
+			lift = nudge_lift_share * farthest;
+			if (lift > nudge_lift_ceiling)
+				lift = nudge_lift_ceiling;
+			if (lift < 0.005f)
+				lift = 0.005f;
+			units = lift * 61439.0f * projection_near / (farthest * farthest);
+			return units < 1.0f ? -1 : units > 4096.0f ? -4096 : -(int)units;
+		}
 		return units < 3.0f ? -3 : units > 4096.0f ? -4096 : -(int)units;
+	}
 	units += slope_units_capped(slope_units(a, b, c), a, b, c) + nudge_floor;
 	return units < 3.0f ? 3 : units > 4096.0f ? 4096 : (int)units;
 }
@@ -8252,7 +8286,13 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 					to_camera(&stream->base[triangle[corner]].x, p[corner]);
 				units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
 				overlay_triangle_bucket[kept_count] = overlay_bucket_of(units);
-				if (abs(units) > bucket_units[overlay_triangle_bucket[kept_count]])
+				/* build 115: overlayfreefar, the free bucket at its smallest push */
+				if (units < 0 && overlay_free_far > 0)
+				{
+					if (!bucket_units[0] || -units < bucket_units[0])
+						bucket_units[0] = (unsigned short)-units;
+				}
+				else if (abs(units) > bucket_units[overlay_triangle_bucket[kept_count]])
 					bucket_units[overlay_triangle_bucket[kept_count]] = (unsigned short)abs(units);
 			}
 			kept_count++;
@@ -8274,7 +8314,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				overlay_answer(stream->base, indices, triangle_count, index));
 			if (units > cut_units)
 				cut_units = units;
-			if (units < 0 && -units > cut_units_free)
+			if (units < 0 && (overlay_free_far > 0 ? !cut_units_free || -units < cut_units_free : -units > cut_units_free))
 				cut_units_free = -units;
 			cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
 				MAXIMUM_CUT_CORNERS - cut_count);
