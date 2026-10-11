@@ -1036,8 +1036,8 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	address = resident_at[index];
 	/* build 114: statememo (above) */
 	if (memo_on < 0)
-		memo_on = psp_keep("statememo");
-	if (memo_on && !psp_me_context && key == memo_key && address == memo_address && frame == memo_frame)
+		memo_on = psp_keep("statememo") || psp_keep("memotex"); /* memotex: this half alone */
+	if (memo_on > 0 && !psp_me_context && key == memo_key && address == memo_address && frame == memo_frame)
 	{
 		psp_tex_binds_memo++;
 		if (has_alpha)

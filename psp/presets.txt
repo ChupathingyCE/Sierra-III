@@ -6,6 +6,6 @@
 3 flight, state memo: nearauto assettrack geo2 hwprofile gebusy statememo
 4 flight, lean: nearauto assettrack geo2 gebusy lean
 5 flight, GE work on the ME: nearauto assettrack geo2 hwprofile gebusy gedefer gemeon
-6 bench, draw distance 100: nearauto assettrack geo2 hwprofile gebusy drawdist100
+6 bench, draw distance 60: nearauto assettrack geo2 hwprofile gebusy drawdist60
 7 beach looks, tracers and zoom soft edge: nearauto assettrack geo2 contrails zoommask
 8 beach looks, tracers and zoom full: nearauto assettrack geo2 contrails zoommaskfull

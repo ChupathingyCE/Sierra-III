@@ -5031,7 +5031,7 @@ static void model_lighting(int on)
 	int index, sent = 0;
 
 	if (lit_memo < 0)
-		lit_memo = psp_keep("statememo");
+		lit_memo = psp_keep("statememo") || psp_keep("memolight"); /* memolight: this half alone */
 	if (!lit_memo || psp_me_context)
 	{
 		lit_enabled = -1;
@@ -5046,10 +5046,7 @@ static void model_lighting(int on)
 		return;
 	}
 	if (lit_enabled != 1)
-	{
-		sceGuEnable(GU_LIGHTING);
-		sent = 1;
-	}
+		sceGuEnable(GU_LIGHTING); /* (each part turns lighting off for its later passes: not counted) */
 	if (!lit_params || lit_ambient != model_ambient)
 	{
 		sceGuAmbient(model_ambient);
@@ -11881,12 +11878,12 @@ void psp_ge_frame_end(void)
 					decals_wholly_left_out = 0;
 					cached_takes = cached_bytes = cached_lines_flushed = stall_calls = stall_forwarded = 0;
 					list_lines_back = 0;
-					if (lit_memo > 0)
+					if (lit_memo > 0 || psp_keep("memotex"))
 					{
-						/* build 114: statememo */
+						/* build 114: statememo (or one half: memotex, memolight) */
 						extern unsigned long psp_tex_binds_memo, psp_tex_binds_sent;
 
-						platform_log("GE: state memo: texture binds %lu a frame sent, %lu left out; model lighting %lu a frame set, %lu left out",
+						platform_log("GE: state memo: texture binds %lu a frame sent, %lu left out; model lighting (ambient and lights) %lu a frame set, %lu left out",
 							psp_tex_binds_sent / 300, psp_tex_binds_memo / 300, lit_sets_sent / 300, lit_sets_memo / 300);
 						psp_tex_binds_sent = psp_tex_binds_memo = lit_sets_sent = lit_sets_memo = 0;
 					}
