@@ -3490,6 +3490,11 @@ static void ge_reads_note(int vtype, int count, const void *indices, const void 
 		gr_index_bytes += (unsigned int)count * (unsigned int)isize;
 		gr_place_bytes[gr_place((unsigned int)indices)] += (unsigned int)count * (unsigned int)isize;
 	}
+	/* only buffers that could be held go in the table: this frame's data in
+	the list is new every frame (its addresses would fill the table), and
+	what's in VRAM is there already */
+	if (place == GR_LIST || place == GR_VRAM)
+		return;
 	/* the buffer's extent: the vertices an index reaches, or the draw's own */
 	extent = bytes;
 	if (indices && isize)
