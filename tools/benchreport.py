@@ -2,8 +2,13 @@
 """benchreport.py - the opening bench's stretches, for one run or several side by side.
 
 The opening bench (Sheepdog01, 2026-10-11) is b30 from the start to the first
-bunker: the scripted Pelican flight (the fair A/B stretch), the landing,
-the beach fight, and the walk down into the bunker. This splits a run's log
+bunker: the Pelican flight, the landing, the beach fight, and the walk down
+into the bunker. On the PSP only the flight's opening cinematic (game time
+150-570, the camera scripted) repeats run to run: six runs of b113 and b114
+fell within 1% there, while the rest of the flight, where the player looks
+around inside the Pelican, varied by 7% (hardware_b114.md). So "cinematic"
+is the PSP's fair A/B stretch; the emulator's scripted runs repeat
+everywhere. This splits a run's log
 by game time into those stretches and prints, for each, the figures the
 hardware notes compare, weighted by frames (a slow second counts for the
 frames it drew, not as one second):
@@ -28,7 +33,7 @@ figures are [M]; an emulator log's are [E] and its milliseconds aren't the PSP's
 import argparse, os, re, sys
 
 NUMBER = r"(-?[0-9]+(?:\.[0-9]+)?)"
-STRETCHES = "flight:300-2000,landing:2000-2700,beach:2700-6000,bunker:6000-8100"
+STRETCHES = "cinematic:150-570,flight:300-2000,landing:2000-2700,beach:2700-6000,bunker:6000-8100"
 
 
 def log_path(arg):
