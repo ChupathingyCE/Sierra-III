@@ -165,5 +165,6 @@ umount $psp
 | 6 | bench, draw distance 60 | The opening bench | In the bunker | ~13 min | By eye: is the fog at 60 world units acceptable? And the GE's time against test 1 |
 | 7 | beach looks, tracers and zoom soft edge | Land and fight on the beach; watch the plasma bolts; zoom the pistol a few times (tap select); screenshots (select + right) of a tracer and of the zoom | After the first beach fight | ~8 min | Are the tracers' streaks gone? Which zoom looks like the Xbox? |
 | 8 | beach looks, tracers and zoom full | Zoom the pistol once or twice | After the zoom | ~3 min | The full-strength mask, for comparison |
+| 9 (optional) | bench, b114 as it comes (preset 1 again) | From the start, past the bunker, through the Warthog drive and the cliffs, down to the map room | At the map room's descent | ~30 min | Whether 512 render states speed up the cliffs, against b112 run 5 (256: 2.4–2.8 fps there). The emulator's route never fills the cache, so only this run can say |
 
 Tests 2–5 each change one thing against test 1, over the same flight; `tools/benchreport.py` compares them.
