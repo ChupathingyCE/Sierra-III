@@ -60,13 +60,13 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
 ## Installing (Sheepdog01's machine, fish)
 
 `pspmount` mounts the Memory Stick as `$psp`. Unzip the build zip into `$psp`, then `umount $psp`. Rules for anything that touches the stick:
-- Delete only within `$psp/halo`, `$psp/PSP/GAME/halo` and `$psp/PSP/GAME/halomp` (the multiplayer build, beside the campaign one: Sheepdog01, 2026-10-10).
+- Delete only within `$psp/halo`, `$psp/PSP/GAME/halo`, and the multiplayer build's `$psp/halomp` and `$psp/PSP/GAME/halomp` (Sheepdog01, 2026-10-10 and 2026-10-11).
 - Leave ARK-4's files and `overconfig.txt` alone.
 - Never format or wipe the stick.
 
 To quit the game: HOME → ARK-4 Kommander → Exit.
 
-**Logs come off the stick into `$HOME/psp/logs/`** (Sheepdog01's rule, 2026-10-10), one `.tgz` per run, named for the build and the test: `mkdir -p $HOME/psp/logs; tar czf $HOME/psp/logs/b112_ceiling.tgz -C $psp/halo log`. `log.txt` is wiped at every launch, so pull it after each run. A network test's tarball also carries the server's `debug.txt` (Sheepdog01's rule, 2026-10-11): `tar czf $HOME/psp/logs/mp3_test2.tgz -C $psp/halo log -C ~/games/halo-server debug.txt`. Give each test its stop condition and an honest time: a bench that waits for game time runs slower than the clock at low frame rates.
+**Logs come off the stick into `$HOME/psp/logs/`** (Sheepdog01's rule, 2026-10-10), one `.tgz` per run, named for the build and the test: `mkdir -p $HOME/psp/logs; tar czf $HOME/psp/logs/b112_ceiling.tgz -C $psp/halo log`. `log.txt` is wiped at every launch, so pull it after each run. A network test's tarball also carries the server's `debug.txt` (Sheepdog01's rule, 2026-10-11), and the multiplayer build's log is in its own folder from mp4: `tar czf $HOME/psp/logs/mp4_test1.tgz -C $psp/halomp log -C ~/games/halo-server debug.txt`. Give each test its stop condition and an honest time: a bench that waits for game time runs slower than the clock at low frame rates.
 
 ## Docs
 
