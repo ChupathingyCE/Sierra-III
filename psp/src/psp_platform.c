@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 114
+#define PSP_BUILD_NUMBER 115
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -788,6 +788,8 @@ static void keep_load(void)
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
+	/* build 115 */
+	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -2204,8 +2206,10 @@ static int heartbeat_thread(SceSize args, void *argp)
 			{
 				/* build 87: the Media Engine's jobs (psp_me.c), every window */
 				extern void psp_me_report(void);
+				extern void psp_me_edram_probe(void);
 
 				psp_me_report();
+				psp_me_edram_probe(); /* build 115: edramcheck */
 			}
 			{
 				/* build 88: the learned textures, saved here during play (psp_tex.c) */

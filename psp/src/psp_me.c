@@ -169,6 +169,42 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 			slot->results[k] = results[k];
 		break;
 	}
+	case ME_JOB_EDRAM:
+	{
+		/* build 115: "edramcheck". args: 0 fill / 1 check, the first byte
+		(eDRAM offset), the bytes. The ME's own view of its eDRAM, cached
+		(me_serve drops the cache before the job and writes it back after).
+		Each word holds its own address mixed with a constant, so a word
+		moved or left from elsewhere shows too. Only on the ME: the main CPU
+		can't see eDRAM (simulated, nothing is touched) */
+		unsigned int first = slot->args[1], bytes = slot->args[2], at, bad = 0, first_bad = 0xFFFFFFFFu, found = 0;
+
+		if (!on_me)
+		{
+			slot->results[0] = 0xFFFFFFFFu;
+			break;
+		}
+		for (at = first; at < first + bytes; at += 4)
+		{
+			volatile unsigned int *word = (volatile unsigned int *)(0x80000000u + at);
+			unsigned int want = at ^ 0x5A5AA5A5u;
+
+			if (slot->args[0] == 0)
+				*word = want;
+			else if (*word != want)
+			{
+				if (!bad++)
+				{
+					first_bad = at;
+					found = *word;
+				}
+			}
+		}
+		slot->results[0] = bad;
+		slot->results[1] = first_bad;
+		slot->results[2] = found;
+		break;
+	}
 	default:
 		break;
 	}
@@ -488,10 +524,11 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 			/* build 113: a render job gets 500 ms. The 40 ms limit was set
 			for audio jobs (about 1 ms each); b112's render jobs ran up to
 			39.6 ms on the PSP, and the one past 40 ms stopped the ME [M] */
-			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE ? 500000 : 40000))
+			/* build 115: the eDRAM probe too, which may wait behind a render job */
+			if (sceKernelGetSystemTimeWide() - start > (type == ME_JOB_GE || type == ME_JOB_EDRAM ? 500000 : 40000))
 			{
 				platform_log("ME: a job (type %u) not finished in %u ms (job %u; the ME at job %u, %u idle polls)", type,
-					type == ME_JOB_GE ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
+					type == ME_JOB_GE || type == ME_JOB_EDRAM ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
 				stats[which].failures++;
 				psp_me_stop("a job timed out");
 				return 0;
@@ -570,9 +607,60 @@ float psp_me_busy_percent(void)
 
 /* every heartbeat (psp_platform.c): per slot, the ME's own time a job and its
 share of the ME, the main CPU's hand-over and wait */
+/* build 115: "edramcheck" (big_levers.md section 0, "The ME's eDRAM,
+checked"): whether anything but our own ME code writes the ME's eDRAM during
+play. At the first heartbeat with the ME running, the ME fills the stretch
+from 256 KB to 1.5 MB (its stack starts at the top, 2 MB, and grows down:
+512 KB are left to it) with a pattern; every heartbeat after, it checks
+256 KB of it in turn (about 2 ms on the ME), and the log says what it found.
+Only with the ME really running (not simulated, not stopped) */
+#define EDRAM_PROBE_FIRST 0x40000u
+#define EDRAM_PROBE_END 0x180000u
+#define EDRAM_PROBE_PIECE 0x40000u
+void psp_me_edram_probe(void)
+{
+	static int asked = -1, filled = 0;
+	static unsigned int next = EDRAM_PROBE_FIRST, checked = 0, bad_pieces = 0;
+	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 };
+
+	if (asked < 0)
+		asked = psp_keep("edramcheck") != 0;
+	if (!asked || me_state != 1)
+		return;
+	if (!filled)
+	{
+		args[0] = 0;
+		args[1] = EDRAM_PROBE_FIRST;
+		args[2] = EDRAM_PROBE_END - EDRAM_PROBE_FIRST;
+		if (psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 5000) && results[0] != 0xFFFFFFFFu)
+		{
+			filled = 1;
+			platform_log("ME: edramcheck: eDRAM %u to %u KB filled with the pattern", EDRAM_PROBE_FIRST / 1024, EDRAM_PROBE_END / 1024);
+		}
+		return;
+	}
+	args[0] = 1;
+	args[1] = next;
+	args[2] = EDRAM_PROBE_PIECE;
+	if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 1000) || results[0] == 0xFFFFFFFFu)
+		return;
+	checked++;
+	if (results[0])
+	{
+		bad_pieces++;
+		platform_log("ME: edramcheck: %u words changed in eDRAM %u to %u KB, the first at %08x (now %08x)",
+			results[0], next / 1024, (next + EDRAM_PROBE_PIECE) / 1024, results[1], results[2]);
+	}
+	if ((checked % 20) == 0)
+		platform_log("ME: edramcheck: %u pieces of 256 KB checked, %u with changes", checked, bad_pieces);
+	next += EDRAM_PROBE_PIECE;
+	if (next >= EDRAM_PROBE_END)
+		next = EDRAM_PROBE_FIRST;
+}
+
 void psp_me_report(void)
 {
-	static const char *const names[ME_SLOTS] = { "audio", "render" };
+	static const char *const names[ME_SLOTS] = { "audio", "render", "probe" };
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
 	char line[900];
 	int length = 0, k;

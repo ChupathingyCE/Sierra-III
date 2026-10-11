@@ -1032,8 +1032,16 @@ static inline int ge_draw_skipped(void)
 }
 /* every draw in this file goes through the gate (a parenthesized name,
 (sceGuDrawArray)(...), is the real call: the VRAM load) */
-#define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) sceGumDrawArray(p, v, c, i, d); } while (0)
-#define sceGuDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) sceGuDrawArray(p, v, c, i, d); } while (0)
+/* build 115: "gereads" counts what each draw makes the GE read (ge_reads_note,
+after the copies' arena below); the arguments are taken once */
+static int ge_reads_on = 0;
+static void ge_reads_note(int vtype, int count, const void *indices, const void *vertices);
+#define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
+	const void *ge_i_ = (i), *ge_d_ = (d); if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
+	sceGumDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
+#define sceGuDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
+	const void *ge_i_ = (i), *ge_d_ = (d); if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
+	sceGuDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
 /* draws stop this close to the display list's end (each draw adds its
 commands, and its copied indices and cut-up corners, to the list) */
 #define DISPLAY_LIST_MARGIN 0x3000
@@ -1106,9 +1114,13 @@ static unsigned long near_parts = 0, near_parts_whole = 0, near_batches_whole = 
 static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
+static void gebusy_kind_cut(int kind);
 static void ge_kind(int kind)
 {
-	unsigned int now = sceGuCheckList();
+	unsigned int now;
+
+	gebusy_kind_cut(kind); /* build 115 */
+	now = sceGuCheckList();
 
 	if (now > kind_mark)
 		kind_frame_bytes[ge_kind_now] += now - kind_mark;
@@ -1475,13 +1487,24 @@ static unsigned int gebusy_next = 0;
 static volatile unsigned int gebusy_handed[GEBUSY_SLOTS], gebusy_last_reached = 0, gebusy_finish_handed = 0;
 static volatile unsigned long gebusy_us = 0, gebusy_chunks = 0, gebusy_finishes = 0;
 static unsigned int gebusy_window_start = 0;
+/* build 115: the GE's time by the kind of draw it ran (ge_kind_now's kinds):
+each chunk is one kind's (a change of kind ends the chunk: gebusy_cut), so its
+busy time goes to that kind. The emulator doesn't time the GE: PSP only */
+static volatile unsigned char gebusy_kind[GEBUSY_SLOTS];
+static volatile unsigned char gebusy_finish_kind = 0;
+static volatile unsigned long gebusy_kind_us[KINDS];
+static int gebusy_cut = 0;
 
-static void gebusy_add(unsigned int start, unsigned int now)
+static void gebusy_add(unsigned int start, unsigned int now, int kind)
 {
 	if ((int)(gebusy_last_reached - start) > 0)
 		start = gebusy_last_reached;
 	if ((int)(now - start) > 0)
+	{
 		gebusy_us += now - start;
+		if (kind >= 0 && kind < KINDS)
+			gebusy_kind_us[kind] += now - start;
+	}
 	gebusy_last_reached = now;
 }
 
@@ -1489,19 +1512,22 @@ static void gebusy_add(unsigned int start, unsigned int now)
 clock and a few sums) */
 static void gebusy_signal(int id)
 {
-	gebusy_add(gebusy_handed[id & (GEBUSY_SLOTS - 1)], sceKernelGetSystemTimeLow());
+	gebusy_add(gebusy_handed[id & (GEBUSY_SLOTS - 1)], sceKernelGetSystemTimeLow(), gebusy_kind[id & (GEBUSY_SLOTS - 1)]);
 	gebusy_chunks++;
 }
 
 static void gebusy_finish(int id)
 {
 	(void)id;
-	gebusy_add(gebusy_finish_handed, sceKernelGetSystemTimeLow());
+	gebusy_add(gebusy_finish_handed, sceKernelGetSystemTimeLow(), gebusy_finish_kind);
 	gebusy_finishes++;
 }
 
 static void gebusy_start(void)
 {
+	ge_reads_on = psp_keep("gereads") ? 1 : 0; /* build 115 */
+	if (ge_reads_on)
+		platform_log("GE: gereads on (what each draw makes the GE read, by where it lives: a report every 300 frames)");
 	gebusy_on = psp_keep("gebusy");
 	if (!gebusy_on)
 		return;
@@ -1522,6 +1548,18 @@ static void gebusy_window(char *text, int size, unsigned long frames_in_window)
 	snprintf(text, size, "; GE busy %.1f ms a frame, %.1f%% of the clock (%lu chunks, %lu finishes)%s",
 		gebusy_us / 1000.0 / n, wall ? 100.0 * gebusy_us / wall : 0.0, gebusy_chunks, gebusy_finishes,
 		psp_me_context ? " (not while the ME builds)" : "");
+	{
+		/* build 115: the same time by kind, ms a frame (a line of its own) */
+		char line[420];
+		int k, at = snprintf(line, sizeof(line), "gebusy by kind, ms a frame:");
+
+		for (k = 0; k < KINDS && at < (int)sizeof(line) - 1; k++)
+			if (gebusy_kind_us[k] >= 100)
+				at += snprintf(line + at, sizeof(line) - at, " %s %.1f;", kind_names[k], gebusy_kind_us[k] / 1000.0 / n);
+		if (gebusy_us)
+			platform_log("%s", line);
+		memset((void *)gebusy_kind_us, 0, sizeof(gebusy_kind_us));
+	}
 	gebusy_us = gebusy_chunks = gebusy_finishes = 0;
 	gebusy_window_start = now;
 }
@@ -1542,7 +1580,7 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		ge_serial = psp_keep("geserial");
 	if (ge_serial && !stall_force)
 		return 0;
-	if (stall_batch && !stall_force && ++stall_pending < STALL_BATCH)
+	if (stall_batch && !stall_force && !gebusy_cut && ++stall_pending < STALL_BATCH)
 		return 0;
 	stall_pending = 0;
 	list_flush_pending();
@@ -1555,11 +1593,16 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 	if (gebusy_on > 0)
 	{
 		if (stall_force)
+		{
 			gebusy_finish_handed = sceKernelGetSystemTimeLow();
+			gebusy_finish_kind = (unsigned char)ge_kind_now;
+		}
 		else
 		{
 			/* the chunk ends with a SIGNAL: the GE reports when it gets there */
 			unsigned int slot = gebusy_next++ & (GEBUSY_SLOTS - 1);
+
+			gebusy_kind[slot] = (unsigned char)ge_kind_now; /* build 115 */
 
 			gebusy_inserting = 1;
 			gebusy_stall = stall;
@@ -1582,6 +1625,17 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		return result;
 	}
 	return __real_sceGeListUpdateStallAddr(qid, stall);
+}
+/* build 115: under gebusy, a change of kind hands the draws so far on as a
+chunk of the old kind (a stall update with its SIGNAL; sceGuGetMemory makes
+pspgu update the stall address), so no chunk mixes kinds */
+static void gebusy_kind_cut(int kind)
+{
+	if (gebusy_on <= 0 || kind == ge_kind_now || !stall_pending || psp_me_context)
+		return;
+	gebusy_cut = 1;
+	sceGuGetMemory(4);
+	gebusy_cut = 0;
 }
 #define SKY_COLOR 0xFFD8B080 /* ABGR: a pale blue */
 #define FOG_NEAR 8.0f
@@ -3321,6 +3375,227 @@ static void __attribute__((cold)) arena_migrate(void)
 /* at the frame's end, after the trim (the GE has finished the frame). The
 arena's housekeeping is marked cold: rare, compiled for size, kept out of the
 hot code (build 111's first compaction build crossed a 64 KB heap step) */
+/* ---------- build 115: "gereads" (big_levers.md section 0, "Measure first")
+
+What each draw makes the GE read from memory, and where those bytes live:
+the vertices (count times the format's size: for an indexed draw, a vertex
+fetched for every index; any reuse inside the GE would make it less [U]) and
+the indices. By where they live: VRAM, the display list (data written into
+it each frame: decals' and cut pieces' corners, kept indices), the level's
+copies (the arena above), the geometry cache (the models), the rest of the
+volatile partition, and the heap or the program. Each vertex buffer (by its
+address) keeps the bytes read from it and its extent; every 300 frames the
+report gives the totals a frame by place and by kind of draw, the buffers
+that would give most back per KB of VRAM, and the fit curve: the share of the
+GE's reads from main RAM that VRAM would take if it held the best buffers,
+200 to 1,000 KB of them. The per-frame data in the list can't be held, so it
+stays out of the curve */
+enum { GR_VRAM, GR_LIST, GR_LEVEL, GR_GEOMETRY, GR_VOLATILE, GR_OTHER, GR_PLACES };
+static const char *const gr_place_names[GR_PLACES] = { "VRAM", "display list (this frame's data)", "level copies",
+	"geometry cache (models)", "volatile, other", "heap or program" };
+struct gr_entry { unsigned int key, read, size; unsigned char place, kind; };
+#define GR_SLOTS 2048
+static struct gr_entry *gr_table = NULL;
+static unsigned long long gr_place_bytes[GR_PLACES], gr_kind_bytes[KINDS], gr_index_bytes = 0;
+static unsigned long gr_draws = 0, gr_dropped = 0, gr_frames_mark = 0;
+void psp_geo_range(unsigned int *start, unsigned int *end); /* psp_geo.c */
+
+/* a GE vertex's size from its format word (the GE's own layout: weights,
+texture coordinates, colour, normal, position, each aligned to its size, the
+whole to its largest) */
+static int gr_vertex_size(int vtype)
+{
+	static const unsigned char sizes[4] = { 0, 1, 2, 4 };
+	int size = 0, align = 1, t;
+
+	if ((t = (vtype >> 9) & 3) != 0)
+	{
+		size = (size + sizes[t] - 1) & ~(sizes[t] - 1);
+		size += sizes[t] * (((vtype >> 14) & 7) + 1);
+		if (sizes[t] > align) align = sizes[t];
+	}
+	if ((t = vtype & 3) != 0)
+	{
+		size = (size + sizes[t] - 1) & ~(sizes[t] - 1);
+		size += sizes[t] * 2;
+		if (sizes[t] > align) align = sizes[t];
+	}
+	if ((t = (vtype >> 2) & 7) != 0)
+	{
+		int c = t == 7 ? 4 : 2;
+
+		size = (size + c - 1) & ~(c - 1);
+		size += c;
+		if (c > align) align = c;
+	}
+	if ((t = (vtype >> 5) & 3) != 0)
+	{
+		size = (size + sizes[t] - 1) & ~(sizes[t] - 1);
+		size += sizes[t] * 3;
+		if (sizes[t] > align) align = sizes[t];
+	}
+	if ((t = (vtype >> 7) & 3) != 0)
+	{
+		size = (size + sizes[t] - 1) & ~(sizes[t] - 1);
+		size += sizes[t] * 3;
+		if (sizes[t] > align) align = sizes[t];
+	}
+	return (size + align - 1) & ~(align - 1);
+}
+
+static int gr_place(unsigned int address)
+{
+	unsigned int a = address & ~0x40000000u, geo_start = 0, geo_end = 0;
+
+	if ((a & 0x0F000000u) == 0x04000000u)
+		return GR_VRAM;
+	if (display_list && a >= ((unsigned int)display_list & ~0x40000000u) &&
+		a < ((unsigned int)display_list & ~0x40000000u) + (unsigned int)display_list_size)
+		return GR_LIST;
+	if (arena && a >= (unsigned int)arena && a < (unsigned int)arena + ARENA_BYTES)
+		return GR_LEVEL;
+	psp_geo_range(&geo_start, &geo_end);
+	if (geo_end > geo_start && a >= (geo_start & ~0x40000000u) && a < (geo_end & ~0x40000000u))
+		return GR_GEOMETRY;
+	if (a >= 0x08400000u && a < 0x08800000u)
+		return GR_VOLATILE;
+	return GR_OTHER;
+}
+
+static void ge_reads_note(int vtype, int count, const void *indices, const void *vertices)
+{
+	int vsize = gr_vertex_size(vtype), isize = ((vtype >> 11) & 3) == 1 ? 1 : ((vtype >> 11) & 3) == 2 ? 2 : 0;
+	unsigned int bytes, extent, key, h;
+	int place;
+
+	if (count <= 0 || !vertices || vsize <= 0)
+		return;
+	if (!gr_table)
+	{
+		gr_table = calloc(GR_SLOTS, sizeof(struct gr_entry));
+		if (!gr_table)
+		{
+			ge_reads_on = 0;
+			platform_log("GE: gereads: no room for its table; off");
+			return;
+		}
+	}
+	gr_draws++;
+	bytes = (unsigned int)count * (unsigned int)vsize;
+	place = gr_place((unsigned int)vertices);
+	gr_place_bytes[place] += bytes;
+	gr_kind_bytes[ge_kind_now] += bytes;
+	if (indices && isize)
+	{
+		gr_index_bytes += (unsigned int)count * (unsigned int)isize;
+		gr_place_bytes[gr_place((unsigned int)indices)] += (unsigned int)count * (unsigned int)isize;
+	}
+	/* the buffer's extent: the vertices an index reaches, or the draw's own */
+	extent = bytes;
+	if (indices && isize)
+	{
+		unsigned int most = 0;
+		int k;
+
+		if (isize == 2)
+			for (k = 0; k < count; k++) { if (((const unsigned short *)indices)[k] > most) most = ((const unsigned short *)indices)[k]; }
+		else
+			for (k = 0; k < count; k++) { if (((const unsigned char *)indices)[k] > most) most = ((const unsigned char *)indices)[k]; }
+		extent = (most + 1) * (unsigned int)vsize;
+	}
+	key = (unsigned int)vertices & ~0x40000000u;
+	h = (key >> 4) * 2654435761u;
+	for (unsigned int probe = 0; probe < 16; probe++)
+	{
+		struct gr_entry *e = &gr_table[(h + probe) & (GR_SLOTS - 1)];
+
+		if (e->key == key || !e->key)
+		{
+			if (!e->key)
+			{
+				e->key = key;
+				e->place = (unsigned char)place;
+				e->kind = (unsigned char)ge_kind_now;
+			}
+			e->read += bytes;
+			if (extent > e->size)
+				e->size = extent;
+			return;
+		}
+	}
+	gr_dropped++;
+}
+
+static int gr_by_value(const void *a, const void *b)
+{
+	const struct gr_entry *x = a, *y = b;
+	/* reads per byte, best first (cross-multiplied, no division) */
+	unsigned long long l = (unsigned long long)y->read * (x->size ? x->size : 1);
+	unsigned long long r = (unsigned long long)x->read * (y->size ? y->size : 1);
+
+	return l > r ? 1 : l < r ? -1 : 0;
+}
+
+static void ge_reads_report(unsigned long frames_now)
+{
+	extern long psp_game_time_peek(void);
+	unsigned long span = frames_now - gr_frames_mark;
+	unsigned long long ram = 0, taken;
+	char line[512];
+	int k, n = 0, at, step;
+	static const unsigned int steps_kb[5] = { 200, 400, 600, 800, 1000 };
+
+	if (ge_reads_on <= 0 || !gr_table || !span)
+		return;
+	at = snprintf(line, sizeof(line), "gereads: game time %ld, %lu frames, %lu draws; KB a frame by place:", psp_game_time_peek(), span, gr_draws);
+	for (k = 0; k < GR_PLACES && at < (int)sizeof(line) - 1; k++)
+		at += snprintf(line + at, sizeof(line) - at, " %s %.1f;", gr_place_names[k], gr_place_bytes[k] / 1024.0 / span);
+	if (at < (int)sizeof(line) - 1)
+		snprintf(line + at, sizeof(line) - at, " (indices %.1f of it)", gr_index_bytes / 1024.0 / span);
+	platform_log("%s", line);
+	at = snprintf(line, sizeof(line), "gereads: vertex KB a frame by kind:");
+	for (k = 0; k < KINDS && at < (int)sizeof(line) - 1; k++)
+		if (gr_kind_bytes[k])
+			at += snprintf(line + at, sizeof(line) - at, " %s %.1f;", kind_names[k], gr_kind_bytes[k] / 1024.0 / span);
+	platform_log("%s", line);
+	/* the buffers that could be held: in main RAM, not this frame's data */
+	for (k = 0; k < GR_SLOTS; k++)
+		if (gr_table[k].key && gr_table[k].place != GR_VRAM && gr_table[k].place != GR_LIST)
+		{
+			gr_table[n] = gr_table[k];
+			ram += gr_table[n].read;
+			n++;
+		}
+	qsort(gr_table, n, sizeof(struct gr_entry), gr_by_value);
+	at = snprintf(line, sizeof(line), "gereads: fit curve (%d buffers in main RAM, %.1f KB a frame read from them): VRAM holding the best",
+		n, ram / 1024.0 / span);
+	for (step = 0; step < 5 && at < (int)sizeof(line) - 1; step++)
+	{
+		unsigned long long held = 0;
+
+		taken = 0;
+		for (k = 0; k < n; k++)
+			if (held + gr_table[k].size <= steps_kb[step] * 1024ull)
+			{
+				held += gr_table[k].size;
+				taken += gr_table[k].read;
+			}
+		at += snprintf(line + at, sizeof(line) - at, " %u KB: %.0f%%;", steps_kb[step], ram ? 100.0 * taken / ram : 0.0);
+	}
+	platform_log("%s", line);
+	at = snprintf(line, sizeof(line), "gereads: best buffers (place, kind, KB, KB read a frame):");
+	for (k = 0; k < n && k < 8 && at < (int)sizeof(line) - 1; k++)
+		at += snprintf(line + at, sizeof(line) - at, " %s/%s %.1f %.1f;", gr_place_names[gr_table[k].place], kind_names[gr_table[k].kind],
+			gr_table[k].size / 1024.0, gr_table[k].read / 1024.0 / span);
+	platform_log("%s%s", line, gr_dropped ? " (some buffers past the table's room weren't kept)" : "");
+	memset(gr_table, 0, GR_SLOTS * sizeof(struct gr_entry));
+	memset(gr_place_bytes, 0, sizeof(gr_place_bytes));
+	memset(gr_kind_bytes, 0, sizeof(gr_kind_bytes));
+	gr_index_bytes = 0;
+	gr_draws = gr_dropped = 0;
+	gr_frames_mark = frames_now;
+}
+
 static void __attribute__((cold)) arena_frame_end(void)
 {
 	struct arena_block *block;
@@ -11769,6 +12044,7 @@ void psp_ge_frame_end(void)
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
 			ge_kinds_report(); /* build 103 */
+			ge_reads_report(frames); /* build 115 */
 			/* build 112: every 300 frames, with the skinning plans' heap */
 			platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d (next sweep at %d); skinning plans %lu KB on the heap (peak %lu KB)",
 				converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS,

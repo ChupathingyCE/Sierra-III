@@ -66,6 +66,13 @@ static SceUID pack = -1;
 static unsigned int pack_size = 0, pack_crc = 0;
 static char pack_name[64];
 static unsigned int arena_start = 0, arena_end = 0, arena_next = 0;
+
+/* build 115: the cache's addresses, for "gereads" (psp_ge.c) */
+void psp_geo_range(unsigned int *start, unsigned int *end)
+{
+	*start = arena_start;
+	*end = arena_end;
+}
 /* build 102: the cache's size when it is carved from the texture RAM cache
 (a campaign map): 1 MB, or 1.5 / 2 MB with "geo15" / "geo2" (launch menu).
 Sheepdog01's b101 Library run: 1,899 block loads, 375 frames missing a block, the

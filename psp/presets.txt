@@ -1,11 +1,9 @@
 # Halo PSP launch presets: one a line, "name: keep words" (no colon in the name). The launch menu's
-# third page (R from the options) lists them; cross applies one. Build 114's
-# tests (docs/build_b114.md says what each answers and when to stop).
-1 bench, b114 as it comes: nearauto assettrack geo2 hwprofile gebusy
-2 flight, GE words cached: nearauto assettrack geo2 hwprofile gebusy listcachedall
-3 flight, state memo: nearauto assettrack geo2 hwprofile gebusy statememo
-4 flight, lean: nearauto assettrack geo2 gebusy lean
-5 flight, GE work on the ME: nearauto assettrack geo2 hwprofile gebusy gedefer gemeon
-6 bench, draw distance 60: nearauto assettrack geo2 hwprofile gebusy drawdist60
-7 beach looks, tracers and zoom soft edge: nearauto assettrack geo2 contrails zoommask
-8 beach looks, tracers and zoom full: nearauto assettrack geo2 contrails zoommaskfull
+# third page (R from the options) lists them; cross applies one. Build 115's
+# tests (docs/build_b115.md says what each answers and when to stop).
+1 bench, b115 instruments: nearauto assettrack geo2 hwprofile gebusy iostats gereads edramcheck
+2 cinematic, base: nearauto assettrack geo2 gebusy iostats
+3 cinematic, textures from RAM: nearauto assettrack geo2 gebusy iostats vramtex400
+4 cinematic, VFPU skinning: nearauto assettrack geo2 gebusy iostats vfpuskin
+5 flight, the ocean pushed back by its far end: nearauto assettrack geo2 overlayfreefar
+6 play, no instruments: nearauto assettrack geo2

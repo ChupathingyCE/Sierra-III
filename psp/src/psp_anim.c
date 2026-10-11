@@ -326,7 +326,15 @@ static void read_pages(unsigned int first_page, unsigned int count, unsigned int
 	/* any dirty lines of the slots' last tenants go to memory now, not over
 	the new bytes later */
 	sceKernelDcacheWritebackInvalidateRange(to, count << page_shift);
-	got = psp_geo_pack_read(from, to, bytes);
+	{
+		/* build 115: "iostats" counts these reads as the animations' (psp_trace.c) */
+		void psp_io_kind_push_animations(void);
+		void psp_io_kind_pop(void);
+
+		psp_io_kind_push_animations();
+		got = psp_geo_pack_read(from, to, bytes);
+		psp_io_kind_pop();
+	}
 	took = sceKernelGetSystemTimeLow() - start;
 	read_us += took;
 	window_us += took;

@@ -11095,7 +11095,86 @@ FIXES_114["source/render/render.c#drawdist"] = [
 		if (!render_invalid_fog_warning_displayed)"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_CHUPA.items()):
+# ---------- build 115
+FIXES_115 = {}
+# build 115: the start-up's stand-in script table let go of once a map's own
+# is in use. hs_initialize, before any map, makes a full-size table in the
+# heap (19,001 nodes, 371 KB) for want of a scenario. At the first map,
+# hs_allocate found the map's own table sound and returned, and
+# hs_scenario_postprocess then pointed hs_syntax_data at the map's table: the
+# heap's table stayed allocated for the whole session with nothing using it,
+# and hs_syntax_data_allocated stayed TRUE, so the next map change's
+# hs_dispose_from_old_map would have freed the map's table (tag memory) with
+# free(). Now hs_allocate lets the stand-in go as soon as a map's own table
+# will be used. Exact: no script runs from the stand-in once a map is loaded
+FIXES_115["source/hs/hs.c#standin"] = [
+("""		hs_scenario_syntax_data_valid(scenario))
+	{
+		return;
+	}
+""",
+ """		hs_scenario_syntax_data_valid(scenario))
+	{
+#ifdef HALO_PSP
+		/* build 115 (psp_fixups.py): the stand-in made before any map, let
+		go of now that the map's own table will be used */
+		if (hs_syntax_data && hs_syntax_data_allocated)
+		{
+			data_make_invalid(hs_syntax_data);
+			data_dispose(hs_syntax_data);
+			hs_syntax_data_allocated = FALSE;
+			hs_syntax_data = NULL;
+			error(_error_silent, "script nodes: the start-up's stand-in table let go of (the map's own is used)");
+		}
+#endif
+		return;
+	}
+"""),
+]
+# build 115 (E16, optimization_ranking.md): the animations' fractions and
+# floors in single precision. (real)fmod((double)x, 1.0) and
+# (real)floor((double)x) run in software double on the PSP; for a float x,
+# x - truncf(x) and floorf(x) give the same values exactly (the fraction of a
+# float is a float, and so is its floor). The sign of a zero fraction is kept
+# as fmod gives it (copysignf), so even that bit agrees. The aim blend
+# (aiming_screen_apply) runs two a call, the overlays one each, for every
+# animated unit every tick
+FIXES_115["source/models/model_animations.c#fraction"] = [
+("""	fraction = (real)fmod((double)real_frame_index, 1.0);
+	frame_index = (short)fast_ftol((real)floor(fabs(real_frame_index)));""",
+ """#ifdef HALO_PSP
+	/* build 115 (psp_fixups.py): fmod(x, 1) and floor without double, exactly */
+#define PSP_FRACTION_OF(x) ({ real psp_x_ = (x), psp_f_ = psp_x_ - truncf(psp_x_); psp_f_ == 0.0f ? copysignf(0.0f, psp_x_) : psp_f_; })
+	fraction = PSP_FRACTION_OF(real_frame_index);
+	frame_index = (short)fast_ftol(floorf(fabsf(real_frame_index)));
+#else
+	fraction = (real)fmod((double)real_frame_index, 1.0);
+	frame_index = (short)fast_ftol((real)floor(fabs(real_frame_index)));
+#endif"""),
+("""	real fraction = (real)fmod((double)real_frame_index, 1.0);
+	short frame_index = (short)fast_ftol((real)floor(real_frame_index));""",
+ """#ifdef HALO_PSP
+	real fraction = PSP_FRACTION_OF(real_frame_index);
+	short frame_index = (short)fast_ftol(floorf(real_frame_index));
+#else
+	real fraction = (real)fmod((double)real_frame_index, 1.0);
+	short frame_index = (short)fast_ftol((real)floor(real_frame_index));
+#endif"""),
+("""	yaw_fraction = (real)fmod((double)yaw_frame, 1.0);""",
+ """#ifdef HALO_PSP
+	yaw_fraction = PSP_FRACTION_OF(yaw_frame);
+#else
+	yaw_fraction = (real)fmod((double)yaw_frame, 1.0);
+#endif"""),
+("""	pitch_fraction = (real)fmod((double)pitch_frame, 1.0);""",
+ """#ifdef HALO_PSP
+	pitch_fraction = PSP_FRACTION_OF(pitch_frame);
+#else
+	pitch_fraction = (real)fmod((double)pitch_frame, 1.0);
+#endif"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

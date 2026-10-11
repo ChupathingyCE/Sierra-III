@@ -30,6 +30,7 @@ arrives its surfaces are drawn in their flat colour. */
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 void psp_tex_light_report(void);
 
 struct pack_entry
@@ -148,6 +149,22 @@ void psp_tex_close(void)
 	(psp_ge.c's setting 25, benchrun's "level vertices in VRAM") */
 	if (psp_keep("benchrun"))
 		vram_cache_end = VRAM_CACHE_END_FULL - VRAM_BENCH_BYTES - 0x40000;
+	/* build 115: "vramtexN" (big_levers.md section 0, the swap's first step):
+	the VRAM texture cache cut to N KB, the rest of VRAM left empty, so the
+	textures past it come from the RAM cache instead. The A/B for whether the
+	GE reads texels from main RAM at no cost on b30, as it did on Blood Gulch
+	(gebusy's time by kind is the measure; the caches hold less in all, so
+	more textures stream, which iostats shows apart) */
+	else
+	{
+		int kb = psp_keep_number("vramtex", 0);
+
+		if (kb >= 64 && (unsigned int)kb * 1024 < VRAM_CACHE_END_FULL - VRAM_CACHE_START)
+		{
+			vram_cache_end = VRAM_CACHE_START + (unsigned int)kb * 1024;
+			platform_log("textures: vramtex: the VRAM cache cut to %d KB (of %u)", kb, (VRAM_CACHE_END_FULL - VRAM_CACHE_START) / 1024);
+		}
+	}
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
 	arenas[1].next = arenas[1].start;

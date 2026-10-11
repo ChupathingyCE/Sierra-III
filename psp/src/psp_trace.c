@@ -19,10 +19,13 @@ own file is passed through untraced. */
 #include <pspdebug.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
+int psp_keep_loaded(void);
+#define psp_keep_loaded_early psp_keep_loaded
 
 volatile int psp_trace = 0;
 extern volatile int psp_crashed; /* psp_crash.c */
@@ -141,6 +144,108 @@ static const char *name_of(SceUID fd)
 	return fd >= 0 && fd < TRACE_FILES && trace_names[fd][0] ? trace_names[fd] : "?";
 }
 
+/* build 115: "iostats" (streaming.md section 5): the Memory Stick's work by
+stream, each heartbeat report's window apart: calls, bytes, the time in the
+stick, the time waiting for the lock and which stream held it, and, for the
+map file (sound, mostly), how many reads fetch again an offset already read.
+A stream is known by the file (its extension) and, for the geometry pack's
+animation pages, by the reader saying so (psp_io_kind_push) */
+enum { IO_TEXTURES, IO_GEOMETRY, IO_ANIMATIONS, IO_MAP, IO_LOG, IO_OTHER, IO_KINDS };
+static const char *const io_kind_names[IO_KINDS] = { "textures", "geometry", "animations", "map file", "log", "other" };
+static unsigned char fd_kind[TRACE_FILES];
+static int fd_pos[TRACE_FILES]; /* where the next read starts (-1: unknown; set at open) */
+static struct io_window
+{
+	unsigned int calls, waits, map_rereads;
+	unsigned long long read_bytes, write_bytes, in_us, wait_us, reread_bytes;
+	unsigned int worst_in_us, worst_wait_us;
+	unsigned long long behind_us[IO_KINDS]; /* waited while that stream held the lock */
+} io_win[IO_KINDS];
+static int io_stats = -1;
+static unsigned char *map_seen = NULL; /* a bit per 4 KB of the map file read so far */
+#define MAP_SEEN_BYTES (16 * 1024)  /* 512 MB of map file */
+static volatile SceUID io_override_thread = 0;
+static volatile int io_override_kind = IO_OTHER, io_override_depth = 0;
+
+static int io_on(void)
+{
+	if (io_stats < 0 && psp_keep_loaded_early())
+		io_stats = psp_keep("iostats") != 0;
+	return io_stats > 0;
+}
+
+static int kind_of_path(const char *path)
+{
+	const char *dot;
+
+	if (!path)
+		return IO_OTHER;
+	if (strstr(path, "/log/"))
+		return IO_LOG;
+	dot = strrchr(path, '.');
+	if (dot && !strcmp(dot, ".ptex"))
+		return IO_TEXTURES;
+	if (dot && !strcmp(dot, ".pgeo"))
+		return IO_GEOMETRY;
+	if (dot && !strcmp(dot, ".map"))
+		return IO_MAP;
+	return IO_OTHER;
+}
+
+static int kind_of_fd(SceUID fd)
+{
+	int kind = fd >= 0 && fd < TRACE_FILES ? fd_kind[fd] : IO_OTHER;
+
+	if (io_override_depth > 0 && io_override_thread == sceKernelGetThreadId() && kind == IO_GEOMETRY)
+		kind = io_override_kind;
+	return kind;
+}
+
+/* the animation cache's page reads go through the geometry pack
+(psp_geo_pack_read): it says so around them */
+void psp_io_kind_push_animations(void)
+{
+	io_override_thread = sceKernelGetThreadId();
+	io_override_kind = IO_ANIMATIONS;
+	io_override_depth++;
+}
+
+void psp_io_kind_pop(void)
+{
+	if (io_override_depth > 0)
+		io_override_depth--;
+}
+
+/* a read of the map file: does it fetch again a 4 KB block read before? */
+static void map_read(SceUID fd, int bytes)
+{
+	int at, first, last, block, again;
+
+	if (fd < 0 || fd >= TRACE_FILES || bytes <= 0 || fd_pos[fd] < 0)
+		return;
+	at = fd_pos[fd];
+	fd_pos[fd] += bytes;
+	if (!map_seen)
+	{
+		map_seen = malloc(MAP_SEEN_BYTES);
+		if (!map_seen)
+			return;
+		memset(map_seen, 0, MAP_SEEN_BYTES);
+	}
+	first = at >> 12;
+	last = (at + bytes - 1) >> 12;
+	if (last >= MAP_SEEN_BYTES * 8)
+		return;
+	again = (map_seen[first >> 3] >> (first & 7)) & 1;
+	for (block = first; block <= last; block++)
+		map_seen[block >> 3] |= (unsigned char)(1 << (block & 7));
+	if (again)
+	{
+		io_win[IO_MAP].map_rereads++;
+		io_win[IO_MAP].reread_bytes += bytes;
+	}
+}
+
 /* build 100: one thread on the Memory Stick at a time. Every freeze in
 The Library came with the game's loader thread reading the map while the
 main thread read textures or the heartbeat wrote the log (Blood Gulch
@@ -162,7 +267,7 @@ loader, the sound) */
 static struct stick_thread
 {
 	SceUID id;
-	int depth, locked;
+	int depth, locked, kind;
 	unsigned int calls, waits, start;
 	unsigned long long in_us, wait_us;
 	unsigned int worst_in_us, worst_wait_us;
@@ -203,9 +308,10 @@ const char *psp_thread_name(SceUID id, char *buffer, int size)
 }
 
 static volatile SceUID stick_holder = 0; /* build 104 */
+static volatile int stick_holder_kind = IO_OTHER; /* build 115 */
 static volatile unsigned long stick_long_waits = 0;
 
-static void stick_take(void)
+static void stick_take_kind(int kind)
 {
 	SceUID me = sceKernelGetThreadId();
 	struct stick_thread *thread = stick_thread_of(me);
@@ -214,6 +320,7 @@ static void stick_take(void)
 	/* re-entrant: the log's own writes from inside a traced call */
 	if (thread->depth++ > 0)
 		return;
+	thread->kind = kind;
 	/* asked each time until keep.txt is read */
 	if (stick_enabled < 0)
 	{
@@ -224,12 +331,16 @@ static void stick_take(void)
 		if (psp_keep_loaded())
 			stick_enabled = on && stick_lock >= 0;
 	}
+	/* build 115: "iostats", asked once keep.txt is read */
+	if (io_stats < 0 && psp_keep_loaded())
+		io_stats = psp_keep("iostats") != 0;
 	thread->locked = 0;
 	if (stick_enabled != 0 && stick_lock >= 0 && !psp_keep("stickparallel"))
 	{
 		if (sceKernelPollSema(stick_lock, 1) < 0)
 		{
 			unsigned int waited;
+			int behind = stick_holder_kind;
 			/* build 104: after a crash, 200 ms at most (the crash handler
 			writes crash.txt; the holder may never let go) */
 			SceUInt crash_timeout = 200000;
@@ -271,12 +382,29 @@ static void stick_take(void)
 			thread->wait_us += waited;
 			if (waited > thread->worst_wait_us)
 				thread->worst_wait_us = waited;
+			if (io_stats > 0)
+			{
+				struct io_window *w = &io_win[kind];
+
+				w->waits++;
+				w->wait_us += waited;
+				if (waited > w->worst_wait_us)
+					w->worst_wait_us = waited;
+				if (behind >= 0 && behind < IO_KINDS)
+					w->behind_us[behind] += waited;
+			}
 			start = sceKernelGetSystemTimeLow();
 		}
 		thread->locked = 1;
 		stick_holder = me;
+		stick_holder_kind = kind;
 	}
 	thread->start = start;
+}
+
+static void stick_take(void)
+{
+	stick_take_kind(IO_OTHER);
 }
 
 static void stick_give(void)
@@ -291,6 +419,15 @@ static void stick_give(void)
 	thread->in_us += took;
 	if (took > thread->worst_in_us)
 		thread->worst_in_us = took;
+	if (io_stats > 0 && thread->kind >= 0 && thread->kind < IO_KINDS)
+	{
+		struct io_window *w = &io_win[thread->kind];
+
+		w->calls++;
+		w->in_us += took;
+		if (took > w->worst_in_us)
+			w->worst_in_us = took;
+	}
 	if (thread->locked)
 	{
 		thread->locked = 0;
@@ -326,6 +463,37 @@ void psp_stick_report(void)
 			length += snprintf(line + length, sizeof(line) - length, ";");
 	}
 	platform_log("%s", line);
+	if (io_on())
+	{
+		/* build 115: "iostats": each stream's window since the last report */
+		extern long psp_game_time_peek(void);
+		int kind, behind;
+
+		platform_log("iostats: game time %ld; per stream: calls, KB read/written, s in the stick (worst ms), s waiting for the lock (times, worst ms; behind whom, ms)",
+			psp_game_time_peek());
+		for (kind = 0; kind < IO_KINDS; kind++)
+		{
+			struct io_window *w = &io_win[kind];
+			char who[160];
+			int at = 0;
+
+			if (!w->calls && !w->waits)
+				continue;
+			who[0] = 0;
+			for (behind = 0; behind < IO_KINDS && at < (int)sizeof(who) - 1; behind++)
+				if (w->behind_us[behind] >= 1000)
+					at += snprintf(who + at, sizeof(who) - at, "%s%s %llu", at ? ", " : "", io_kind_names[behind], w->behind_us[behind] / 1000);
+			platform_log("iostats:   %s: %u calls, %llu/%llu KB, %llu.%02llu s (worst %u), waited %llu.%02llu s (%u times, worst %u%s%s%s)",
+				io_kind_names[kind], w->calls, w->read_bytes / 1024, w->write_bytes / 1024,
+				w->in_us / 1000000, (w->in_us / 10000) % 100, w->worst_in_us / 1000,
+				w->wait_us / 1000000, (w->wait_us / 10000) % 100, w->waits, w->worst_wait_us / 1000,
+				who[0] ? "; behind " : "", who, "");
+			if (kind == IO_MAP && w->map_rereads)
+				platform_log("iostats:   map file: %u reads fetched again a block read before, %llu KB of the %llu",
+					w->map_rereads, w->reread_bytes / 1024, w->read_bytes / 1024);
+		}
+		memset(io_win, 0, sizeof(io_win));
+	}
 	{
 		/* build 103 */
 		void psp_handles_line(char *line, int size);
@@ -595,9 +763,11 @@ void psp_handles_reserve(void)
 
 	if (handle_reserve >= 0)
 		return;
-	stick_take();
+	stick_take_kind(IO_LOG);
 	handle_reserve = __real_sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	stick_give();
+	if (handle_reserve >= 0 && handle_reserve < TRACE_FILES)
+		fd_kind[handle_reserve] = IO_LOG;
 	if (handle_reserve >= 0)
 		handle_add(handle_reserve, 'f', path);
 }
@@ -648,11 +818,16 @@ SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 
 	if (!quiet)
 		psp_trace_line("open %s (flags %x)", file, flags);
-	stick_take();
+	stick_take_kind(kind_of_path(file));
 	fd = __real_sceIoOpen(file, flags, mode);
 	stick_give();
 	if (fd >= 0)
 		handle_add(fd, 'f', file);
+	if (fd >= 0 && fd < TRACE_FILES)
+	{
+		fd_kind[fd] = (unsigned char)kind_of_path(file);
+		fd_pos[fd] = 0;
+	}
 	else
 		open_failed(file, 'f', fd);
 	if (!quiet)
@@ -673,9 +848,11 @@ int __wrap_sceIoLseek32(SceUID fd, int offset, int whence)
 {
 	int result;
 
-	stick_take();
+	stick_take_kind(kind_of_fd(fd));
 	result = __real_sceIoLseek32(fd, offset, whence);
 	stick_give();
+	if (fd >= 0 && fd < TRACE_FILES)
+		fd_pos[fd] = result >= 0 ? result : -1;
 
 	psp_trace_line("seek %s %d to %08x (%d) = %08x", name_of(fd), (int)fd, (unsigned)offset, whence, (unsigned)result);
 	return result;
@@ -686,9 +863,11 @@ SceOff __wrap_sceIoLseek(SceUID fd, SceOff offset, int whence)
 {
 	SceOff result;
 
-	stick_take();
+	stick_take_kind(kind_of_fd(fd));
 	result = __real_sceIoLseek(fd, offset, whence);
 	stick_give();
+	if (fd >= 0 && fd < TRACE_FILES)
+		fd_pos[fd] = result >= 0 && result < 0x7FFFFFFF ? (int)result : -1;
 
 	psp_trace_line("seek64 %s %d to %08x (%d) = %08x", name_of(fd), (int)fd, (unsigned)offset, whence, (unsigned)result);
 	return result;
@@ -700,9 +879,21 @@ int __wrap_sceIoRead(SceUID fd, void *data, SceSize size)
 	int result;
 
 	psp_trace_line("read %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
-	stick_take();
+	int kind = kind_of_fd(fd);
+
+	stick_take_kind(kind);
 	result = __real_sceIoRead(fd, data, size);
 	stick_give();
+	if (io_stats > 0 && result > 0)
+	{
+		io_win[kind].read_bytes += result;
+		if (kind == IO_MAP)
+			map_read(fd, result);
+		else if (fd >= 0 && fd < TRACE_FILES && fd_pos[fd] >= 0)
+			fd_pos[fd] += result;
+	}
+	else if (result > 0 && fd >= 0 && fd < TRACE_FILES && fd_pos[fd] >= 0)
+		fd_pos[fd] += result;
 	psp_trace_line("read %s %d = %d", name_of(fd), (int)fd, result);
 	return result;
 }
@@ -713,9 +904,15 @@ int __wrap_sceIoReadAsync(SceUID fd, void *data, SceSize size)
 	int result;
 
 	psp_trace_line("read async %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
-	stick_take();
+	int kind = kind_of_fd(fd);
+
+	stick_take_kind(kind);
 	result = __real_sceIoReadAsync(fd, data, size);
 	stick_give();
+	if (io_stats > 0 && result >= 0)
+		io_win[kind].read_bytes += size; /* asked: the transfer runs after the call */
+	if (fd >= 0 && fd < TRACE_FILES)
+		fd_pos[fd] = -1;
 	psp_trace_line("read async %s %d started = %d", name_of(fd), (int)fd, result);
 	return result;
 }
@@ -728,9 +925,14 @@ int __wrap_sceIoClose(SceUID fd)
 
 	if (traced)
 		psp_trace_line("close %s %d", name_of(fd), (int)fd);
-	stick_take();
+	stick_take_kind(kind_of_fd(fd));
 	result = __real_sceIoClose(fd);
 	stick_give();
+	if (fd >= 0 && fd < TRACE_FILES)
+	{
+		fd_kind[fd] = IO_OTHER;
+		fd_pos[fd] = -1;
+	}
 	handle_remove(fd, 'f', result);
 	if (traced)
 		trace_names[fd][0] = 0;
@@ -776,9 +978,15 @@ int __wrap_sceIoWrite(SceUID fd, const void *data, SceSize size)
 {
 	int result;
 
-	stick_take();
+	int kind = kind_of_fd(fd);
+
+	stick_take_kind(kind);
 	result = __real_sceIoWrite(fd, data, size);
 	stick_give();
+	if (io_stats > 0 && result > 0)
+		io_win[kind].write_bytes += result;
+	if (result > 0 && fd >= 0 && fd < TRACE_FILES && fd_pos[fd] >= 0)
+		fd_pos[fd] += result;
 	return result;
 }
 
