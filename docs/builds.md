@@ -34,6 +34,7 @@ Each of these is a commit, tagged `bNNN` (`git checkout b108` gives that build's
 | b111 | `a9d1f9c432` | 2026-10-10 03:06 | The level copies' arena, compaction, the sooner sweep |
 | b112 | `fe88bcc37a` | 2026-10-10 09:29 | Placed-dead bodies sleep, cold asserts, gedefer and the ME replay (keep words); zip `halo_psp_b112me.zip` |
 | b113 | `e2022aff12` | 2026-10-10 18:27 | The flip fix, 512 render states, tracers, zoom mask, list768, soundplace, gebusy (keep words) |
+| b114 | `c238665149` | 2026-10-11 04:58 | b113's tested switches on (list768, sound1792, soundplace), 320 see-through draws, the sum by 33, bodies grounded; listcachedall, statememo, lean, drawdistN (keep words); launch presets |
 
 b109 was never shipped: its changes are in b110. `build_bNNN.md` and `hardware_bNNN.md` in this folder hold the longer reports.
 

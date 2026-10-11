@@ -2,7 +2,7 @@
 
 Built overnight on b113 after its three PSP tests (`hardware_b113.md`), while Sheepdog01 slept, with the lab now running up to ten emulators at once (below). Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator (PPSSPP with the local patches, PSP-1000 memory), **[D]** read in the code, **[U]** inference.
 
-Zip `halo_psp_b114.zip`, EBOOT `FINAL_EBOOT`, commit `FINAL_COMMIT`. Heap 5,888 KB (the program sits about 14 KB under the next 64 KB step).
+Zip `halo_psp_b114.zip` (`66db1da3d664e3ca`, the same bytes from any machine), EBOOT `8ae1188134612709`, commit `c238665149`. Heap 5,888 KB (the program sits about 14 KB under the next 64 KB step).
 
 ## What changed
 
@@ -71,6 +71,8 @@ b113 Test 3 put "model: bind + state + lighting" at **8–12 ms a frame** for 12
 
 ## What the emulator showed [E]
 
+**The final checks, at the release commit** (b114-final, 38130452452): each preset's switches over the opening bench's route, all past its end (game time 10,100 to 10,600) with no fault; the whole b30 route with `listcachedall statememo contrails` together to game time 20,931 with no fault; the strict interpreter with those on, no bad access to game time 1,200.
+
 **The opening bench, b30 Test 1's route** (run 38125250298; frames by the clock in ms; the emulator runs about 3.4 times the PSP's speed, so its shares transfer, not its milliseconds):
 
 | Stretch (game time) | b113 (Test 2's words) | b114 | b114 `lean` |
@@ -85,9 +87,9 @@ b113 Test 3 put "model: bind + state + lighting" at **8–12 ms a frame** for 12
 - **`lean` is the biggest single saving tonight:** −12% of the frame in the flight, −11% in the landing, −8% on the beach [E]. The timers are system calls, which may cost the PSP more [U].
 - One oddity: `lean` failed 39 sound loads for room against 0. The emulator's audio follows its own clock and its sound counts were already unreliable (`build_b113.md`); the PSP decides.
 
-**b30's whole route** (b108 run 1's, run 38122860608): b114 played to game time 19,988 with no fault; no draw skipped with the list full; see-through drops 0 (b113: 177); sound failures 25 (b113: 41); heap peak 5,428 of 5,888 KB.
+**b30's whole route** (b108 run 1's, run 38122860608, b114 as of its body fix, `22909a3`): it played to game time 19,988 with no fault; no draw skipped with the list full; see-through drops 0 (b113: 177); sound failures 25 (b113: 41); heap peak 5,428 of 5,888 KB.
 
-**The strict interpreter** (same route, every default on): no bad access to game time 1,473 (a strict run is slow).
+**The strict interpreter** (same route and commit, every default on): no bad access to game time 1,473 (a strict run is slow).
 
 **The draw distance** (run 38127497143): the cap works and the fog closes at it in the level's colour. On b30 it saves little: drawing −5% in the flight at 60 world units, nothing measurable at 100 or 150 [E]. b30's own fog already runs 5 to 90 units at half density [D, the log], so most of what's drawn is near. The PSP's GE time may gain more than the CPU's [U]: preset 6 tests 60.
 
@@ -97,7 +99,7 @@ b113 Test 3 put "model: bind + state + lighting" at **8–12 ms a frame** for 12
 
 ## #25: where play parts across builds
 
-Two runs of one build play identically. Two builds, or keep words that change drawing, part ways near tick 1,350 of b30 even with `fixedticks` and `fixedseed`. Tonight's findings (batches x25-words 38123516507 and x25-full 38124588225; b114 against b114 with `gedefer`, which changes drawing alone):
+Two runs of one build play identically. Two builds, or keep words that change drawing, part ways after 45 to 60 s of b30 (ticks 1,326 to 1,750 so far, by build) even with `fixedticks` and `fixedseed`. Tonight's findings (batches x25-words 38123516507 and x25-full 38124588225; b114 against b114 with `gedefer`, which changes drawing alone):
 - **Not the VFPU** (the vector unit): with `novfpu` play still parts at the same tick.
 - **The first object:** a standing Elite (slot 947), at tick 1,348, by one unit in the last place of its facing.
 - **Its whole datum** (`statefull947`, word 2, the render mark, aside): identical through tick 1,319; at tick 1,320, 163 words part at once, starting with `unit.desired_aiming_vector` and `unit.aiming_vector` (offsets from the PSP compiler). Its AI aims at a slightly different point: its target's position or marker differs [U].
