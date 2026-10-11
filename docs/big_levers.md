@@ -56,6 +56,21 @@ The rule: each byte goes nearest its heaviest reader.
 - **VRAM is written by the CPU or by DMA,** never by the ME. A buffer can't be overwritten until the GE has finished the frame that reads it.
 - **The volatile partition is lost on sleep** (handled today: caches there forget on suspend).
 
+### The DMA controller: a fast mover, not a worker
+
+What we know (`halo-psp-feasibility.md`, halo_bench v6–v7 and v10 [M]):
+- **Speed:** RAM to RAM at 181 MB/s against a CPU `memcpy`'s 76; into VRAM at 323 MB/s. 512 KB into VRAM takes 1.6 ms against 4.1–4.9 ms for the CPU.
+- **It doesn't work into the scratchpad:** it reports success, but the data doesn't arrive.
+- **The user call blocks the calling thread** until the copy is done (`sceDmacMemcpy`, `sceDmacTryMemcpy`). Run from another thread, it does go alongside the CPU.
+- **It isn't free alongside the CPU.** While it copies, a CPU miss takes 499 ns instead of 218, and the DMA itself drops to 64 MB/s. That's worse than the GE's effect (424 ns).
+
+**What that means:** a background copy costs the CPU about what copying it itself would. A copy is worth doing by DMA in a short burst while the CPU would wait anyway, or in place of a CPU copy that blocks: 3× faster, and the CPU's cache isn't filled with the copied bytes. Its uses here:
+1. **Keeping VRAM stocked for the swap above:** the shared models, and refills of the visible clusters' vertices (256 KB in ~0.8 ms). It's already used for textures (`psp_tex.c`).
+2. **Bulk moves:** the level arena's compactions (803 KB in two, in b114 test 1 [M]) and similar.
+3. **Screenshot readback** for test runs: 272 KB out of VRAM.
+
+**It only copies, it can't convert.** Today model vertices are converted in place and the level's copies are converted into GE format as they're made, both on the CPU. Baking both in the GE's own format (X21 for models; the level's GE streams in the pack) turns loading into a plain copy, so the stick fills RAM and DMA fills VRAM with the CPU out of it.
+
 **Measure first:**
 1. **What the GE reads, per buffer, per frame** (emulator, in the lab): bytes read ÷ the buffer's size, the same ranking the texture cache uses (binds per byte). That decides the split between level and models.
 2. **The GE's own time split by layer** (models, level, effects, HUD; on the PSP): `gebusy` tagged by layer, for bench presets only, since its interrupts cause hitches.
