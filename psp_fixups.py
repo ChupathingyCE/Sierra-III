@@ -11097,40 +11097,6 @@ FIXES_114["source/render/render.c#drawdist"] = [
 
 # ---------- build 115
 FIXES_115 = {}
-# build 115: the start-up's stand-in script table let go of once a map's own
-# is in use. hs_initialize, before any map, makes a full-size table in the
-# heap (19,001 nodes, 371 KB) for want of a scenario. At the first map,
-# hs_allocate found the map's own table sound and returned, and
-# hs_scenario_postprocess then pointed hs_syntax_data at the map's table: the
-# heap's table stayed allocated for the whole session with nothing using it,
-# and hs_syntax_data_allocated stayed TRUE, so the next map change's
-# hs_dispose_from_old_map would have freed the map's table (tag memory) with
-# free(). Now hs_allocate lets the stand-in go as soon as a map's own table
-# will be used. Exact: no script runs from the stand-in once a map is loaded
-FIXES_115["source/hs/hs.c#standin"] = [
-("""		hs_scenario_syntax_data_valid(scenario))
-	{
-		return;
-	}
-""",
- """		hs_scenario_syntax_data_valid(scenario))
-	{
-#ifdef HALO_PSP
-		/* build 115 (psp_fixups.py): the stand-in made before any map, let
-		go of now that the map's own table will be used */
-		if (hs_syntax_data && hs_syntax_data_allocated)
-		{
-			data_make_invalid(hs_syntax_data);
-			data_dispose(hs_syntax_data);
-			hs_syntax_data_allocated = FALSE;
-			hs_syntax_data = NULL;
-			error(_error_silent, "script nodes: the start-up's stand-in table let go of (the map's own is used)");
-		}
-#endif
-		return;
-	}
-"""),
-]
 # build 115 (E16, optimization_ranking.md): the animations' fractions and
 # floors in single precision. (real)fmod((double)x, 1.0) and
 # (real)floor((double)x) run in software double on the PSP; for a float x,
