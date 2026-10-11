@@ -87,12 +87,16 @@ From Test 1's `profile.txt`: 65 windows of 10 s, each step timed until the next.
 | | Cinematic | Flight | Landing | Beach | Bunker |
 |---|---|---|---|---|---|
 | Objects | 43.9 | 46.2 | 32.1 | 25.4 | 9.5 |
-| of which bipeds (count) | 21.8 (27) | 22.9 (25) | 13.8 (30) | 13.5 (27) | |
-| of which vehicles | 9.6 (3) | 10.2 (3) | 3.1 (1) | 7.0 (2) | |
-| of which scenery | 8.2 (554) | 5.6 (337) | 2.6 (143) | 3.2 (181) | |
+| of which bipeds (count) | 21.8 (27) | 31.7 (28) | 20.7 (30) | 12.9 (19) | 3.9 (8) |
+| of which vehicles (count) | 9.6 (3) | 6.8 (2) | 3.4 (1) | 7.3 (2) | none |
+| of which weapons | 1.5 | 1.6 | 4.7 | 2.8 | 1.6 |
+| of which scenery (count) | 8.2 (554) | 4.0 (225) | 2.6 (143) | 3.4 (216) | 0.1 (6) |
 | AI | 15.1 | 18.6 | 9.7 | 6.4 | 0.6 |
 | Other tick work (particles, scripts, effects, players) | 1.6 | 4.5 | 4.0 | 3.4 | 3.0 |
 | **Tick** | **60.5** | **69.2** | **45.8** | **35.2** | **13.1** |
+
+- **A biped's cost, by part** (in the flight, per tick): the unit's own update 17.3 ms, the skeleton's node matrices 7.6, damage 0.4, and the object's common update (attachments, function values, markers, relinking into clusters) about 6.4.
+- **Corrected 2026-10-11:** this table first showed bipeds at 22.9 ms in the flight, 13.8 at the landing and 13.5 on the beach. Those figures came from only the log lines without projectiles, which are the quiet moments. These figures use every line, and their sums match the profile's objects time per tick.
 
 **How it turns into the frame rate and game speed:**
 - **The CPU is the critical path.** The GE works alongside it and finishes before the CPU needs it, so the frame end waits only 1–2.5 ms for it. The frame by the clock is the CPU's work, end to end.
