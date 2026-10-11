@@ -2,6 +2,62 @@
 
 Sheepdog01 asked for the changes that would **significantly** raise the tick rate and the frame rate, tested, instead of more small gains. This doc sizes the structural levers against b108's hardware runs, says what each needs, and records the first tests (b112). Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator, **[D]** read in the code, **[U]** inference.
 
+## 0. The priority: align the workload to the pipeline (Sheepdog01, 2026-10-11)
+
+**High priority, because it decides both targets** (`frame_rate_targets.md`). Today the frame runs as a line: the main CPU ticks, then builds the GE's lists, then the GE draws.
+- The main CPU waits on memory for ~58% of its cycles.
+- It spends 42–65 ms a frame building lists (b108 [M]).
+- The GE works 25–30% of the clock (b113 [M]). Its own time, 79 ms in the flight and 46 on the beach, is already over a 30 fps frame (33.3 ms), and in the flight over a 15 fps one.
+- Its main-RAM reads double the CPU's miss time while it works.
+- The Media Engine mixes audio, 10–18% busy in b114's flight and beach [M], and is otherwise free.
+
+The aim is a pipeline: each unit works on its own stage of a different frame, and each reads from the memory nearest to it. The levers already ranked below are its pieces: L1 step 4 (the ME builds lists while the main CPU runs on), L2/X1 (VRAM for the GE's reads), L3 (AI on the ME), L5 (the full tick/draw split).
+
+### The memory pools, b114 on b30 [M from the hardware log unless marked]
+
+| Pool | Size | What's in it |
+|---|---:|---|
+| VRAM | 2,048 KB | two 16-bit framebuffers 544 KB, depth 272, motion-sensor target 16; texture cache 1,216 (set by binds per byte) |
+| Program [D, `psp-size`] | 4.6 MB | code 2,762 KB, read-only data 462, data 146, zeroed 1,341 |
+| Heap | 5,888 KB, peak 5,520; **147 KB of user RAM free at worst** | sound cache 1,792; level vertex copies (the arena) 1,056, peak 1,013 in use; display list 768, peak 601 in use; data arrays (script nodes 371, sounds 86, …); the shim's index buffer 192; rasterizer pool 96 |
+| Game state | 3,412 KB, 3,347 allocated | Xbox-sized pools: actors 457 KB (peak 39 of 256), props 234 (255 of 768), objects 1,024 (494 used) |
+| Tag window | 9,216 KB, full | tags 5,158; the 377 KB gap before the BSP holds 368 KB of the animation cache [D, `psp_anim.c`]; the largest BSP fills the rest |
+| Stacks | 784 KB | main thread 281 of 512 at its deepest |
+| Volatile (borrowed) | 4,096 KB | geometry cache 2,048 (`geo2`; b30's pack is 11,988), texture RAM cache 1,904, animation cache 144 |
+| Scratchpad | 16 KB | the CPU's hot tables |
+| ME eDRAM | 2 MB | the ME's own memory, which nothing else can see: me-core and the audio mixer |
+
+b30's texture pack (7,060 KB) doesn't fit the 3,120 KB of texture caches, so textures stream as they're drawn.
+
+### The proposed arrangement [U, under discussion]
+
+The rule: each byte goes nearest its heaviest reader.
+- **What only the GE reads, and reads often** → VRAM.
+- **What the CPU reads constantly and rarely writes** → the scratchpad, then a cache-friendly layout.
+- **What only the ME reads** → its eDRAM.
+- **What several units share, or the ME writes** → main RAM.
+- **Bulk** → the stick, streamed through caches.
+
+| Pool | Today | Proposed | Why |
+|---|---|---|---|
+| VRAM: display | 832 KB | 832 KB | fixed |
+| VRAM: textures | 1,216 KB | ~150 KB (HUD, font, the hottest few) | Texels from RAM cost ±1 ms (Blood Gulch [M], stand-in textures) |
+| VRAM: level vertices and indices | 0 | ~550 KB, 16-bit (`levelcompact`) | Blood Gulch [M]: 4.4 of the level's 4.8 ms recovered from VRAM. Compact vertices don't speed reads from RAM, but fit twice as many here |
+| VRAM: models | 0 | ~500 KB: the shared cast at the LODs drawn | Blood Gulch [M]: the models' reading costs 8.5 ms. One marine model drawn ten times is read ten times |
+| Heap: level arena | 1,056 KB | a positions-only copy for the ME's near-plane cuts (~40%) | The ME can't see VRAM; frees ~600 KB |
+| Texture RAM cache | 1,904 KB | ~3 MB | Takes the textures VRAM gives up, paid for by the arena, the pools and debug data, so stick streaming doesn't grow |
+| Game state | 3,412 KB | sized to every map's peaks (~0.5 MB less) | Needs peaks from all ten maps, Two Betrayals' fights included |
+| ME eDRAM | audio | plus the ME's job code and ME-only data (L1's list state, a collision copy for L3's line-of-sight tests) | 158 ns against 214 ns from main RAM [M, `halo-psp-feasibility.md`] |
+
+**The rules this follows:**
+- **The ME can't see VRAM.** Under L1 the lists, and anything the ME reads to build them, stay in main RAM. So E14 (the display list in VRAM) conflicts with L1.
+- **VRAM is written by the CPU or by DMA,** never by the ME. A buffer can't be overwritten until the GE has finished the frame that reads it.
+- **The volatile partition is lost on sleep** (handled today: caches there forget on suspend).
+
+**Measure first:**
+1. **What the GE reads, per buffer, per frame** (emulator, in the lab): bytes read ÷ the buffer's size, the same ranking the texture cache uses (binds per byte). That decides the split between level and models.
+2. **The GE's own time split by layer** (models, level, effects, HUD; on the PSP): `gebusy` tagged by layer, for bench presets only, since its interrupts cause hitches.
+
 ## 1. The gap
 
 Targets (Sheepdog01): 30 ticks a second everywhere, which means 2 ticks plus one frame's drawing in 66.7 ms; and 30 fps on average.
