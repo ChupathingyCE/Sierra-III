@@ -41,11 +41,11 @@ The rule: each byte goes nearest its heaviest reader.
 | Pool | Today | Proposed | Why |
 |---|---|---|---|
 | VRAM: display | 832 KB | 832 KB | fixed |
-| VRAM: textures | 1,216 KB | ~150 KB (HUD, font, the hottest few) | Texels from RAM cost ±1 ms (Blood Gulch [M], stand-in textures) |
-| VRAM: level vertices and indices | 0 | ~550 KB, 16-bit (`levelcompact`) | Blood Gulch [M]: 4.4 of the level's 4.8 ms recovered from VRAM. Compact vertices don't speed reads from RAM, but fit twice as many here |
-| VRAM: models | 0 | ~500 KB: the shared cast at the LODs drawn | Blood Gulch [M]: the models' reading costs 8.5 ms. One marine model drawn ten times is read ten times |
+| VRAM: textures | 1,216 KB | ~400 KB: the best third by binds per byte | Texels from RAM cost ±1 ms (Blood Gulch [M], stand-in textures). On b30 the best third of the VRAM set (383 KB) took 92% of its binds (b114 test 1 [M]) |
+| VRAM: level vertices and indices | 0 | ~450 KB, 16-bit (`levelcompact`) | Blood Gulch [M]: 4.4 of the level's 4.8 ms recovered from VRAM. Compact vertices don't speed reads from RAM, but fit twice as many here |
+| VRAM: models | 0 | ~350 KB: the shared cast at the LODs drawn | Blood Gulch [M]: the models' reading costs 8.5 ms. One marine model drawn ten times is read ten times |
 | Heap: level arena | 1,056 KB | a positions-only copy for the ME's near-plane cuts (~40%) | The ME can't see VRAM; frees ~600 KB |
-| Texture RAM cache | 1,904 KB | ~3 MB | Takes the textures VRAM gives up, paid for by the arena, the pools and debug data, so stick streaming doesn't grow |
+| Texture RAM cache | 1,904 KB | ~2.7 MB | Takes the textures VRAM gives up, paid for by the arena, the pools and debug data. The caches together stay above 3 MB: one frame bound 2.43 MB of textures (b114 test 1 [M]) |
 | Game state | 3,412 KB | sized to every map's peaks (~0.5 MB less) | Needs peaks from all ten maps, Two Betrayals' fights included |
 | ME eDRAM | audio | plus the ME's job code and ME-only data (L1's list state, a collision copy for L3's line-of-sight tests) | 158 ns against 214 ns from main RAM [M, `halo-psp-feasibility.md`] |
 
