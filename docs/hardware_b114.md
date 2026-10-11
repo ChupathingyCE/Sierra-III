@@ -11,6 +11,7 @@ Sheepdog01's PSP-1000 at 333 MHz, b30, `halo_psp_b114.zip` (EBOOT `8ae1188134612
 - **Test 2 (`listcachedall`) hung the GE** within 2 s. Shelved.
 - **Test 3 (`statememo`) changed nothing** that the PSP can measure.
 - **Test 4 (`lean`) saves 2–3% of the frame**, not the 8–12% the emulator showed.
+- **Test 5 (`gemeon`): step 4b's fixes hold** (no failed jobs, no late audio). The ME's runs are still serial, so it costs 7% in the cinematic, and textures the ME can't load show as one flat-coloured frame (the red pistol).
 - **On the PSP, only the opening cinematic repeats from run to run.** `benchreport.py` now reports it first, as the stretch to use for A/Bs.
 
 ## The cinematic is the PSP's fair A/B stretch [M]
@@ -86,7 +87,27 @@ Keep words `nearauto assettrack geo2 hwprofile gebusy`. No fault. The run went f
 - No overlay, as expected.
 - **Sheepdog01's call:** 2–3% of the frame, against the fps readout and the step timers.
 
+## Test 5: `gedefer gemeon`: step 4b's fixes hold; serial, so it costs time [M]
+
+The run went from the start to the beach (game time 3,568). No fault. Sheepdog01 saw no floating bodies, one flicker from a body, and a red flash on the pistol when he switched to it straight out of the Pelican.
+
+- **b112's failures are gone** (`big_levers.md` §4, step 4a):
+  - 0 render or audio jobs failed over the run. b112's ME stopped at job 49 on its 40 ms limit; the worst render job here was 64 ms, against the new 500 ms limit.
+  - 0 of 16,764 audio blocks were late. In b112, 7 of 109 were late, waiting behind render jobs.
+  - No wanted list overflowed: 660 textures, 299 model buffers and 127 level copies were wanted by the ME's work, all fitted, and all were done at the frame's end.
+- **It costs 13 ms a frame in the cinematic:** 208.8 ms against Test 1's 195.6 (+7%).
+  - In steps 4a and 4b the main CPU waits out each ME run: 14.9 ms waited for 14.6 ms of the ME's work, about 2.2 runs a frame.
+  - So no speed-up was expected. Step 4, the overlap, is what would make it pay.
+  - Where the rest of the 13 ms goes is open [U]. The audio jobs' longer waits (2.9 against 2.7 ms a job) account for about 2.5 ms of it.
+  - The hand-played stretches came out −4% to −7%, inside their run-to-run spread.
+- **The red pistol is an untextured draw** [D for the mechanism, U that it's what Sheepdog01 saw]:
+  - Under `gemeon`, a texture bind on the ME can't read the texture from the stick. It asks for it at the frame's end and fails (`psp_tex_bind`).
+  - An untextured model part is drawn in a flat warm colour, picked per shader (red 160–255, green 70–165, blue 40–103; `psp_fixups.py`).
+  - The first frame after the switch, the pistol's textures weren't resident: one frame of a red-orange pistol. Without `gemeon` the main CPU reads the texture in the same frame, within the 96 KB budget.
+- **The body's flicker** is likely the same kind of thing [U]: a model buffer wanted converted is skipped for that frame.
+- **For step 4:** when the ME's bind fails, skip the part for that frame instead of drawing it flat, or read the textures the frame will want before the ME starts.
+
 ## Next
 
-- Tests 5–9 as in `build_b114.md`. Test 2 is skipped.
+- Tests 6–9 as in `build_b114.md`. Test 2 is skipped.
 - The water A/B on the emulator. If it holds, `overlayfreefar` goes into b115 for Sheepdog01's A/B.
