@@ -11051,7 +11051,51 @@ FIXES_113["source/cache/xbox_sound_cache.c#noroom"] = [
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_CHUPA.items()):
+# ---------- build 114
+FIXES_114 = {}
+# build 114: "drawdistN" (B9, optimization_ranking.md; Sheepdog01 approved it as a
+# switch to try): the far clip at N world units outside cutscenes. The
+# engine already brings each window's far clip in to its fog when the fog is
+# fully dense there (just above); the cap goes beside it, for the render and
+# rasterizer cameras both, so the engine's own culling leaves out the objects
+# and the level's clusters past it (the engine's work and the GE's). Where the
+# level has atmospheric fog, the fog reaches full density at the cap and
+# starts by 60% of it, in the level's own colour, so the far edge fades; a
+# level without it just ends at the cap. Off unless keep.txt has the word
+FIXES_114["source/render/render.c#drawdist"] = [
+("""	if (window->render_camera.z_far <= window->render_camera.z_near)
+	{
+		if (!render_invalid_fog_warning_displayed)""",
+ """#ifdef HALO_PSP
+	{
+		/* build 114: "drawdistN" (psp_ge.c, psp_draw_distance; psp_fixups.py) */
+		extern float psp_draw_distance(void);
+		extern boolean cinematic_in_progress(void);
+		real limit = psp_draw_distance();
+
+		if (limit > 0.0f && !cinematic_in_progress())
+		{
+			if (window->render_camera.z_far > limit)
+				window->render_camera.z_far = limit;
+			if (window->rasterizer_camera.z_far > limit)
+				window->rasterizer_camera.z_far = limit;
+			if (render.fog.atmospheric_maximum_distance > 0.0f)
+			{
+				if (render.fog.atmospheric_maximum_distance > limit)
+					render.fog.atmospheric_maximum_distance = limit;
+				if (render.fog.atmospheric_minimum_distance > limit * 0.6f)
+					render.fog.atmospheric_minimum_distance = limit * 0.6f;
+				render.fog.atmospheric_maximum_density = 1.0f;
+			}
+		}
+	}
+#endif
+	if (window->render_camera.z_far <= window->render_camera.z_near)
+	{
+		if (!render_invalid_fog_warning_displayed)"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

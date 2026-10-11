@@ -1677,6 +1677,25 @@ static float fog_near = 1e6f, fog_far = 2e6f;
 static unsigned int fog_color = SKY_COLOR;
 static unsigned long fog_changes = 0;
 
+/* build 114: "drawdistN" (B9): the far clip at N world units outside
+cutscenes, the fog closing at it (render.c, psp_fixups.py FIXES_114); 0 off */
+float psp_draw_distance(void)
+{
+	extern int psp_keep_loaded(void);
+	extern int psp_keep_number(const char *prefix, int fallback);
+	static float limit = -1.0f;
+
+	if (limit < 0.0f && psp_keep_loaded())
+	{
+		int n = psp_keep_number("drawdist", 0);
+
+		limit = n > 0 ? (float)n : 0.0f;
+		if (limit > 0.0f)
+			platform_log("GE: drawdist: the far clip at %d world units outside cutscenes, the fog closing at it", n);
+	}
+	return limit > 0.0f ? limit : 0.0f;
+}
+
 void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density)
 {
 	GE_DEFER(defer_fog(color, minimum_distance, maximum_distance, density)); /* build 112: gedefer */
