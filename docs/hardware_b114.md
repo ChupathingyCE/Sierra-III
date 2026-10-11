@@ -14,6 +14,7 @@ Sheepdog01's PSP-1000 at 333 MHz, b30, `halo_psp_b114.zip` (EBOOT `8ae1188134612
 - **Test 5 (`gemeon`): step 4b's fixes hold** (no failed jobs, no late audio). The ME's runs are still serial, so it costs 7% in the cinematic, and textures the ME can't load show as one flat-coloured frame (the red pistol).
 - **Test 6 (`drawdist60`): about 3%**, and the fog at 60 looks acceptable (Sheepdog01). 40, 30 and 20 go to the emulator first.
 - **Tests 7 and 8 (the looks):** the zoom overlay, the tracers and the plasma pistol need a reference to aim at (the PC build). The bake's half-size, 16-colour effect textures are a likely part of it. Preset 7, without `hwprofile` and `gebusy`, had smaller frame spikes.
+- **Preset 9 (`drawdist40`): about where 60 is** (−6% in the approach). The beach's big jump was the player standing still at the landing spot.
 - **The ocean's clipping is our depth push**, not the 16-bit depth buffer: it's fixed on the emulator (`overlayfreefar`), for b115.
 - **On the PSP, only the opening cinematic repeats from run to run.** `benchreport.py` now reports it first, as the stretch to use for A/Bs.
 
@@ -165,6 +166,24 @@ Preset 7 (`contrails zoommask`) ran from the start to the bunker (game time 7,43
   - A texture goes to 16 colours (CLUT4) when its PSNR is no worse than the 5650 framebuffer's own. That measure can pass a glow's soft alpha gradient while banding it.
   - To check: the format the bake chose for the plasma, contrail and zoom mask bitmaps, then a bake variant that keeps effect textures at CLUT8 and full size.
 
+## Preset 9: `drawdist40` [M]
+
+The opening bench to game time 5,118. Preset 9 was added on the stick after the emulator's runs (keep words: preset 1's plus `drawdist40`).
+
+| Frame by the clock, ms (drawing) | Test 1 (none) | Test 6 (60) | Preset 9 (40) |
+|---|---|---|---|
+| The cinematic (150–570) | 195.6 | 196.1 | 196.1 |
+| The approach (570–2,000) | 298.9 (156.7) | 278.8 (143.0) | 281.9 (139.9) |
+| The landing (2,000–2,700) | 192.0 | 199.1 | 189.2 |
+| The landing spot, same game times (2,700–3,400) | 134.5 (hwreport) | 115.1 | 115.9 |
+
+- **40 is about where 60 is.**
+  - The approach: −6% at 40 and −7% at 60, though the drawing's CPU was −8% at 40 against −3% at 60.
+  - The landing spot: −14% for both, with the drawing's CPU −25% at 40 against −15%.
+  - The extra 20 units buy a few milliseconds of drawing, inside the run-to-run spread.
+- **The beach's +69% fps is not the draw distance.** From game time 2,700 to the end, the player stayed at the landing spot (−54, −19, 4), so the fight never moved and the view stayed put. Test 1 drove down the beach in the Warthog over the same game times.
+- **Sounds failed for room: 18,** all in the approach (game time 1,565–2,163), with the cache full. Test 1 had 3, test 6 had 9, and preset 7 had 8. The approach's dialogue and music still overflow the 1,792 KB cache now and then.
+
 ## The ocean: Sheepdog01's "clips through the terrain under the water" [D + E]
 
 **The cause** [D]:
@@ -192,5 +211,5 @@ Preset 7 (`contrails zoommask`) ran from the start to the bunker (game time 7,43
 
 ## Next
 
-- Test 9 (optional) and preset 9 (draw distance 40). Test 2 is skipped.
+- Test 9 (optional, the cliffs) is still to run. Test 2 is skipped.
 - b115: `overlayfreefar` for Sheepdog01's A/B, and the water's tint.
