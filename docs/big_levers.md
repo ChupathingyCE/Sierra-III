@@ -202,6 +202,50 @@ So the AI needs a design where the rare paths (placing actors, dialogue, seats) 
 - **The suspect [U]:** drawing feeding back into play. The bolt leaves from the Elite's gun marker, and an object's nodes may be worked out fully only when it's drawn; what is drawn depends on which geometry and textures have arrived (`psp_geo.c`, `psp_tex.c`: a frame's reads are capped), and with `fixedticks` the reads land at different game times when a build runs at a different speed. **Next (b114, `b113_candidates.md` #25):** a test word that makes every geometry and texture read complete in the frame that asks for it, then the same cross-build pair again.
 - Until then, judge a change across builds over b30's first 44 s (tick 1,326), and within one build and one set of words over the whole run.
 
+### The reach, mapped (b114, 2026-10-11) [D]
+
+`tools/mewalk.py` on b114's disassembly (`psp-objdump -d`, the symbol table to rejoin split functions). It walks every direct call from `ai_update` and flags what the Media Engine can't run: firmware calls (locks, file reads, the clock, the GE), VFPU instructions, and calls through pointers that a static walk can't follow. Error and debug paths are cut off at `halt_and_catch_fire`, `system_exit`, `display_assert`, `error`, `platform_log`, `console_printf`, `terminal_printf` and `ai_debug_update`. An assert on the ME would stop the job and let the main CPU report it.
+
+- **What the AI can reach:** 986 functions, 386 KB of code. With the error paths included it's 1,501 functions and 630 KB.
+- **The steady path is nearly clean.** From `actors_update` (perception, decisions, looking, moving), the firmware is reached three ways only:
+  - `actor_decision_loop` → `sprintf`, building the "infinite decision loop" error message. That's an error path.
+  - `actor_erase` → object deletion. That's a rare path.
+  - every line-of-sight ray → `collision_test_vector` → `psp_sphere_of` → `psp_keep`. The keep word is cached in a static after the first call, which the static walk can't see. A run would.
+- **The rare paths, by entry point** (each walked on its own):
+
+| Entry point | Reaches | What the ME can't do there |
+|---|---|---|
+| `actor_place` (placing actors) | 485 functions, 191 KB | object cleanup → deletion → posing → animation reads from the stick (`psp_anim_lock` → `sceIoRead`); `terminal_shows` → the config file (fopen, the TOML parser); `sprintf` → malloc |
+| `unit_enter_seat` (getting into a vehicle) | 802 functions, 303 KB | weapon readied or put away → the texture cache (`cache_file_read`), sound requests (the unzoom sound), keep-word reads through marker lookups |
+| `ai_conversation_update` (dialogue) | 197 functions, 89 KB | 22 firmware functions, through dialogue sounds |
+| `encounters_update` | 699 functions, 273 KB | debug prints, and placement through the encounter rules |
+| `actor_erase` (inside `actors_update`) | | object deletion, as for placement |
+
+- **VFPU:** only `vfpu_multiply`, reached through node matrices during object deletion. The ME has no VFPU.
+- **Calls the walk can't follow:** 70 sites in 28 functions. They are qsort's comparator in perception, the object types' delete callbacks, the actor-type dispatch, encounter rules, and libc's stream internals. Each needs a look by hand.
+
+**What this means for L3:** run the steady path on the ME, and send the four entry points (placement, seat entry and exit, dialogue start, erasure) back to the main CPU as requests, the way `gemeon`'s wanted lists already work.
+
+**Confidence comes in three layers:**
+1. **This static map.** It covers every direct call, but not calls through pointers.
+2. **A dynamic check on real routes:** the emulator's ME-strict mode, as `gemesim` does for the GE layer. It catches the cached keep words and every pointer call actually taken.
+3. **Exactness:** the whole game state compared tick by tick with the AI reordered before drawing. That waits on #25, because drawing still changes play.
+
+### The two-CPU budget (b114 test 1) [M + arithmetic]
+
+Even split perfectly between the main CPU and the Media Engine, the work has to fit 2,000 ms of CPU a second. At the minimum target (15 fps, 30 ticks a second), the work a second is 30 × tick + 15 × drawing:
+
+| | Ticks | Drawing | Total | Against two CPUs |
+|---|---|---|---|---|
+| Cutscene | 1,815 | 1,328 | 3,143 ms | 1.6× over |
+| Flight | 2,076 | 2,340 | 4,416 ms | 2.2× over |
+| Landing | 1,374 | 1,122 | 2,496 ms | 1.25× over |
+| Beach | 1,056 | 1,259 | 2,315 ms | 1.16× over |
+| Bunker | 393 | 668 | 1,061 ms | fits (0.53×) |
+
+- **The split can't be perfect, because only some work can move.** On the beach, moving both the AI and the GE layer would put 990 ms a second on the ME, just under its whole second. The main CPU would keep 1,330 ms a second, which is still a third too much.
+- **So the moves and the cuts have to come together.** In actor-heavy scenes, the AI and the GE layer compete for the one Media Engine.
+
 ## 6. L4: profile-guided build
 
 GCC with a profile moves every block that never runs out of the hot path, lays out branches by how they go, and inlines by real call counts. It's aimed straight at instruction misses, which are two thirds of all misses.
