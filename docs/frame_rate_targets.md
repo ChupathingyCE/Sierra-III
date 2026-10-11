@@ -1,5 +1,31 @@
 # Frame-rate targets: 15, 20 or 30 fps (analysis b87, hardware results b87 run 3)
 
+## Sheepdog01's targets (2026-10-11)
+
+- **Primary goal:** a solid 30 ticks a second and 30 fps.
+- **Minimum acceptable:** 15 fps at 30 ticks a second, so the game runs at full speed.
+- **How it feels so far** (Sheepdog01): anything above 8 fps is playable, and around 15 ticks a second feels minimally playable. The first beach runs have been slideshows.
+- **Why fps has been about half the tick rate** [D]: Halo never lets a frame advance the game by more than 1/15 s in a local game (`main.c`, `CEILING(seconds_elapsed, 1/15)`). So a frame carries at most 2 ticks, and below 15 fps the game runs in slow motion at fps/15 of its speed.
+- **Why the floor matters:** Sheepdog01's PSP runs are the slowest part of the loop. Raising the floor shortens every test.
+
+**In milliseconds** (frame = 1000 ÷ fps; drawing budget = (1000 − 30 × tick ms) ÷ fps at full game speed):
+
+| Target | Frame | Ticks a frame | The condition |
+|---|---|---|---|
+| Minimum: 15 fps, 30 ticks a second | 66.7 ms | 2 | 2 × tick + drawing ≤ 66.7 ms |
+| Primary: 30 fps, 30 ticks a second | 33.3 ms | 1 | tick + drawing ≤ 33.3 ms |
+| Either | | | a tick under 33.3 ms, or the game can never run at full speed |
+
+**b114 against them** (Test 1, `hardware_b114.md`, "Where the time goes") [M]:
+
+| | 2 × tick + drawing | Against the minimum |
+|---|---|---|
+| Flight | 294 ms | 4.4× over |
+| Landing | 165 ms | 2.5× over |
+| Beach | 150 ms | 2.2× over |
+| Bunker | 66 ms | on it |
+
+
 2026-10-06. What each display rate costs, and why the choice interacts with the game's fixed 30 Hz tick. Labels: [M] measured on hardware, [D] from the source, [C] computed, [E] estimated.
 
 ## Two clocks
