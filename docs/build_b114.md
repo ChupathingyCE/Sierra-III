@@ -122,6 +122,8 @@ Two runs of one build play identically. Two builds, or keep words that change dr
 | X9, collision walks | Structural; days, not a night |
 | Profile-ordered linking (lever D) | Already measured on b102 [E]: the best order removed 3% of instruction misses (about 1% of a frame), because the hot path (278 KB) is far bigger than the 16 KB cache. `PSP_TEXT_LAYOUT=coldfirst` exists. Less code on the hot path is the lever (the state memo, `lean`) |
 | L4, a profile-guided build | Still blocked: the instrumented program doesn't fit the PSP-1000's layout (`big_levers.md` §6) |
+| The GE's busy time by draw kind (level, models, HUD) | The totals from `gebusy` come first: the PSP tests say whether the GE's own time is worth splitting further |
+| A test word completing every read in its own frame (#25) | Not needed: the reads are already synchronous and budgeted by frame; #25's lead points at the engine's render-side work instead |
 | HUD text a string at a time | Measured: 11–15 characters a frame [M, b113 Test 1], about 0.1 ms. Not worth it yet |
 | The holograms (meters) | A visual feature needing a bake change and a re-bake; not speed |
 
