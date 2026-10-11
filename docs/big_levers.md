@@ -71,9 +71,31 @@ What we know (`halo-psp-feasibility.md`, halo_bench v6–v7 and v10 [M]):
 
 **It only copies, it can't convert.** Today model vertices are converted in place and the level's copies are converted into GE format as they're made, both on the CPU. Baking both in the GE's own format (X21 for models; the level's GE streams in the pack) turns loading into a plain copy, so the stick fills RAM and DMA fills VRAM with the CPU out of it.
 
-**Measure first:**
-1. **What the GE reads, per buffer, per frame** (emulator, in the lab): bytes read ÷ the buffer's size, the same ranking the texture cache uses (binds per byte). That decides the split between level and models.
-2. **The GE's own time split by layer** (models, level, effects, HUD; on the PSP): `gebusy` tagged by layer, for bench presets only, since its interrupts cause hitches.
+### Measure first (planned 2026-10-11)
+
+Three measurements turn the proposal's sizes into numbers. Each is a keep word, so none changes a normal run.
+
+1. **What the GE reads, by buffer (`gereads`; emulator first, PSP too).**
+   - **How:** every draw already passes through one place, the `sceGuDrawArray`/`sceGumDrawArray` wrappers in `psp_ge.c`. With the keep word on, each draw adds its vertex and index bytes (count × the vertex format's size) to the buffer it reads: a model part in the geometry cache, a level stream in the arena, data inside the display list, or VRAM.
+   - **What it reports, per heartbeat:**
+     - bytes read a frame by class: level, each model type, decals and other in-list data, sprites, HUD;
+     - the top buffers by reads per byte;
+     - **the fit curve:** the share of the GE's vertex reads that would come from VRAM with 200, 400, 600, 800 and 1,000 KB, filled best-first.
+   - **Caveat:** counted bytes assume the GE fetches a vertex for every index; any reuse inside the GE would make the real figure lower [U].
+2. **The GE's time by layer (`gebusy` with layer marks; PSP only, bench presets only, since its interrupts cause hitches).**
+   - **How:** a SIGNAL at each change of layer (level, models, see-through, decals, effects, HUD) on top of today's one every 16 draws. Each chunk's busy time goes to the layer it ran, and time the GE spent waiting for the list is counted apart.
+   - **What it reports:** the GE's milliseconds a frame per layer, per stretch, and how long it sat starved.
+3. **One thing moved, timed (`vramtex`, then `vrammodels`; PSP, the cinematic A/B).**
+   - First a smaller VRAM texture cache, which shows whether texels are free on b30 as they were on Blood Gulch.
+   - Then the top model buffers by reads per byte (the marines in the Pelican's cabin) copied into the room it frees.
+   - The models layer's GE time with and without, divided by the bytes moved, gives what a KB of VRAM buys. That turns 1 and 2 into a forecast of the GE's floor after the swap.
+   - These are also the first two steps of building the swap.
+
+**How the results steer:**
+- If the models layer dominates and a few buffers carry most of its reads: models first, as proposed.
+- If the level dominates: the level's copies first, on the main CPU's path (gemeon off, so nothing yet needs the ME's positions).
+- If the data inside the list dominates (decals copy their triangles into it every frame): VRAM can't hold that. The levers there are fewer decal draws, or a display list in VRAM on the main CPU's path.
+- If a layer's time doesn't follow its bytes: it's fill or passes, and the levers are fewer passes and less overdraw.
 
 ## 1. The gap
 
