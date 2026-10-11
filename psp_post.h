@@ -43,3 +43,18 @@ them as functions */
 #undef isgraph
 #undef tolower
 #undef toupper
+
+/* build 114: a keep word's answer remembered at its call site, for the
+asks made per object or per draw (shadows, decals, the HUD, every bitmap a
+draw binds): psp_keep remembers answers itself, but each ask still hashes
+the word and compares it, about a thousand asks a frame on b30 (b112's
+cache-model run: 61,000 instructions a frame of drawing in psp_keep).
+keep.txt is read once at start-up (psp_platform.c, keep_load); before
+that, the answer is 0 and isn't remembered */
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+#define PSP_KEEP_ONCE(word) __extension__ ({ \
+	static signed char psp_keep_once_ = -1; \
+	if (psp_keep_once_ < 0 && psp_keep_loaded()) \
+		psp_keep_once_ = (signed char)psp_keep(word); \
+	psp_keep_once_ > 0; })

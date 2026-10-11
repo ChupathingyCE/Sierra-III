@@ -4878,7 +4878,7 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 		to_camera(centroid, c);
 		/* build 107: the sphere's diameter on the screen, for the size floor */
 		if (c[2] > radius)
-			model_pixels = 2.0f * radius * (SCREEN_HEIGHT * 0.5f) / (tanf(projection_fov * 0.5f) * c[2]);
+			model_pixels = 2.0f * radius * (SCREEN_HEIGHT * 0.5f) / (fov_tan_half() * c[2]); /* build 114: the remembered tangent (b112 cache model: tanf 14,000 instructions a frame) */
 		/* build 42: also near enough that a corner could land past the GE's
 		reach to the side (a point at depth d inside the model's sphere is at
 		most its radius out; past about 7 d it is off the GE's 2048 pixels) */

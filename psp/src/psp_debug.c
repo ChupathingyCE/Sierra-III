@@ -124,9 +124,9 @@ static int value_of(const struct item *item)
 {
 	if (item->setting == LOCAL_OVERLAY)
 	{
-		/* build 82: on unless the launch menu's "nooverlay" */
+		/* build 82: on unless the launch menu's "nooverlay" (build 114: or "lean") */
 		if (overlay < 0)
-			overlay = !psp_keep("nooverlay");
+			overlay = !psp_keep("nooverlay") && !psp_keep("lean");
 		return overlay;
 	}
 	if (item->setting == LOCAL_AUDIO)
@@ -226,7 +226,7 @@ void psp_debug_draw(void *vram)
 	fps_mark = now;
 	psp_debug_seconds();
 	if (overlay < 0)
-		overlay = !psp_keep("nooverlay");
+		overlay = !psp_keep("nooverlay") && !psp_keep("lean");
 	/* build 80: game ticks a second, live: counted over windows of at least
 	a quarter second (ticks come 1 or 2 a frame), smoothed like the fps */
 	{

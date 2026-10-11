@@ -3060,37 +3060,37 @@ FIXES_19 = {
 ("void render_object_shadows(\n\tvoid)\n{",
  KEEP_DECLARATION + "\nvoid render_object_shadows(\n\tvoid)\n{"),
 ("\tprofile_enter(render_object_shadows_section);\n\n\tif (render_shadows)\n",
- "\tprofile_enter(render_object_shadows_section);\n\n\tif (render_shadows\n#ifdef HALO_PSP\n\t\t&& (!psp_ge_active() || !psp_keep(\"noshadows\")) /* the GE's blob shadows since build 25 (psp_fixups.py) */\n#endif\n\t\t)\n"),
+ "\tprofile_enter(render_object_shadows_section);\n\n\tif (render_shadows\n#ifdef HALO_PSP\n\t\t&& (!psp_ge_active() || !PSP_KEEP_ONCE(\"noshadows\")) /* the GE's blob shadows since build 25 (psp_fixups.py) */\n#endif\n\t\t)\n"),
 ],
 "source/rasterizer/rasterizer_transparent_geometry.c": [
 ("void rasterizer_transparent_geometry_draw(\n\tboolean water)\n{",
  KEEP_DECLARATION + "\nvoid rasterizer_transparent_geometry_draw(\n\tboolean water)\n{"),
 ("\trasterizer_profile_begin((short)profile);\n\tif (transparent_geometry_group_count > 0)\n",
- "\trasterizer_profile_begin((short)profile);\n#ifdef HALO_PSP\n\tif (psp_ge_active() && !psp_keep(\"transparent\"))\n\t{\n\t\t/* nothing draws them on the PSP yet (psp_fixups.py) */\n\t\ttransparent_geometry_group_index = (short)transparent_geometry_group_count;\n\t\trasterizer_profile_end((short)profile);\n\t\treturn;\n\t}\n#endif\n\tif (transparent_geometry_group_count > 0)\n"),
+ "\trasterizer_profile_begin((short)profile);\n#ifdef HALO_PSP\n\tif (psp_ge_active() && !PSP_KEEP_ONCE(\"transparent\"))\n\t{\n\t\t/* nothing draws them on the PSP yet (psp_fixups.py) */\n\t\ttransparent_geometry_group_index = (short)transparent_geometry_group_count;\n\t\trasterizer_profile_end((short)profile);\n\t\treturn;\n\t}\n#endif\n\tif (transparent_geometry_group_count > 0)\n"),
 ],
 "source/render/render_particles.c": [
 ("void render_particles(\n\tvoid)\n{",
  KEEP_DECLARATION + "\nvoid render_particles(\n\tvoid)\n{"),
 ("\treal_vector3d direction;\n\n\trendered_particle_count = 0;\n",
- "\treal_vector3d direction;\n\n#ifdef HALO_PSP\n\tif (psp_ge_active() && psp_keep(\"noparticles\"))\n\t\treturn; /* noparticles in keep.txt: none (psp_fixups.py) */\n#endif\n\trendered_particle_count = 0;\n"),
+ "\treal_vector3d direction;\n\n#ifdef HALO_PSP\n\tif (psp_ge_active() && PSP_KEEP_ONCE(\"noparticles\"))\n\t\treturn; /* noparticles in keep.txt: none (psp_fixups.py) */\n#endif\n\trendered_particle_count = 0;\n"),
 ],
 "source/rasterizer/rasterizer.c": [
 ("void rasterizer_decals_draw(\n\tshort cluster_index)\n{",
  KEEP_DECLARATION + "\nvoid rasterizer_decals_draw(\n\tshort cluster_index)\n{"),
 ("\t_rasterizer_decals_draw(cluster_index);\n",
- "#ifdef HALO_PSP\n\tif (psp_ge_active() && psp_keep(\"nodecals\"))\n\t\treturn; /* the GE draws them since build 23; nodecals leaves them out (psp_fixups.py) */\n#endif\n\t_rasterizer_decals_draw(cluster_index);\n"),
+ "#ifdef HALO_PSP\n\tif (psp_ge_active() && PSP_KEEP_ONCE(\"nodecals\"))\n\t\treturn; /* the GE draws them since build 23; nodecals leaves them out (psp_fixups.py) */\n#endif\n\t_rasterizer_decals_draw(cluster_index);\n"),
 ],
 "source/interface/interface.c": [
 ("void interface_draw_screen(\n\tvoid)\n{",
  KEEP_DECLARATION + "\nvoid interface_draw_screen(\n\tvoid)\n{"),
 ("\tif (render.local_player_index == NONE)\n\t\treturn;\n\n\tweapon_hud_index = interface_get_weapon_hud_index(&flashlight_power);",
- "\tif (render.local_player_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n\tif (psp_ge_active() && psp_keep(\"nohud\"))\n\t\treturn; /* nohud in keep.txt: no HUD (psp_fixups.py) */\n#endif\n\n\tweapon_hud_index = interface_get_weapon_hud_index(&flashlight_power);"),
+ "\tif (render.local_player_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n\tif (psp_ge_active() && PSP_KEEP_ONCE(\"nohud\"))\n\t\treturn; /* nohud in keep.txt: no HUD (psp_fixups.py) */\n#endif\n\n\tweapon_hud_index = interface_get_weapon_hud_index(&flashlight_power);"),
 ],
 "source/cache/xbox_texture_cache.c": [
 ("void *_texture_cache_bitmap_get_hardware_format(\n\tstruct bitmap_data *bitmap,",
  KEEP_DECLARATION + "\nvoid *_texture_cache_bitmap_get_hardware_format(\n\tstruct bitmap_data *bitmap,"),
 Either(universal=("\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\tif (bitmap->cache_block_index == NONE && load)",
- "#ifdef HALO_PSP\n\t/* the null path's textures are never drawn, and a blocking load waits on\n\tthe Memory Stick (psp_fixups.py) */\n\tif (psp_ge_active() && !psp_keep(\"textures\"))\n\t{\n\t\t/* a stand-in, never drawn with: the HUD checks a texture is there before\n\t\tit draws, and the GE takes its textures from the map's texture pack\n\t\t(build 20) */\n\t\tstatic unsigned long psp_texture_stand_in[16];\n\n\t\treturn psp_texture_stand_in;\n\t}\n#endif\n\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\tif (bitmap->cache_block_index == NONE && load)"),
+ "#ifdef HALO_PSP\n\t/* the null path's textures are never drawn, and a blocking load waits on\n\tthe Memory Stick (psp_fixups.py) */\n\tif (psp_ge_active() && !PSP_KEEP_ONCE(\"textures\"))\n\t{\n\t\t/* a stand-in, never drawn with: the HUD checks a texture is there before\n\t\tit draws, and the GE takes its textures from the map's texture pack\n\t\t(build 20) */\n\t\tstatic unsigned long psp_texture_stand_in[16];\n\n\t\treturn psp_texture_stand_in;\n\t}\n#endif\n\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\tif (bitmap->cache_block_index == NONE && load)"),
  # ChupathingyCE
  chupa=("""	if (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))
 	{
@@ -3098,7 +3098,7 @@ Either(universal=("\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\
   """#ifdef HALO_PSP
 	/* the null path's textures are never drawn, and a blocking load waits on
 	the Memory Stick (psp_fixups.py) */
-	if (psp_ge_active() && !psp_keep("textures"))
+	if (psp_ge_active() && !PSP_KEEP_ONCE("textures"))
 	{
 		/* a stand-in, never drawn with: the HUD checks a texture is there before
 		it draws, and the GE takes its textures from the map's texture pack
@@ -3191,7 +3191,7 @@ that really are double keep the double functions. */
 ],
 "source/render/render_objects.c#lod": [
 ("\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}",
- "#ifdef HALO_PSP\n\t/* the game measures pixels on a 480-line screen; the PSP's has 272, so\n\tmodels pick the level of detail Bungie's thresholds give at the size they\n\treally appear (build 19; fulllod in keep.txt turns it off; psp_fixups.py) */\n\tif (!psp_keep(\"fulllod\"))\n\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n#endif\n\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}"),
+ "#ifdef HALO_PSP\n\t/* the game measures pixels on a 480-line screen; the PSP's has 272, so\n\tmodels pick the level of detail Bungie's thresholds give at the size they\n\treally appear (build 19; fulllod in keep.txt turns it off; psp_fixups.py) */\n\tif (!PSP_KEEP_ONCE(\"fulllod\"))\n\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n#endif\n\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}"),
 ],
 }
 

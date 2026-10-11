@@ -778,7 +778,9 @@ static void keep_load(void)
 		if (keep_words[file] == '\n' || keep_words[file] == '\r' || keep_words[file] == '\t' || keep_words[file] == ',')
 			keep_words[file] = ' ';
 	keep_generation++;
-	psp_timers_off = keep_search("notimers");
+	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
+	the measuring off, notimers and nooverlay in one word */
+	psp_timers_off = keep_search("notimers") || keep_search("lean");
 	if (keep_cache_lock < 0)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
