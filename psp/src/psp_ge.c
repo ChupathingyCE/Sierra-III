@@ -1356,6 +1356,25 @@ static void list_write_back(const void *stall)
 	list_back_from = end & ~63u;
 }
 
+/* listcachedall: a region taken with sceGuGetMemory is filled after that
+call moved the stall address, possibly past the region and handed on, so
+list_write_back alone would never write it. Its lines join build 48's
+pending range instead, written back at the next hand-over, before the GE
+can reach the draw that reads it (that draw comes after the region) */
+static void list_region_pending(const void *taken, int bytes)
+{
+	unsigned int start, end;
+
+	if (!list_cached_frame || !taken)
+		return;
+	start = ((unsigned int)taken & ~0x40000000u) & ~63u;
+	end = (((unsigned int)taken & ~0x40000000u) + bytes + 63) & ~63u;
+	if (pending_end <= pending_start || start < pending_start)
+		pending_start = start;
+	if (end > pending_end)
+		pending_end = end;
+}
+
 static void *list_take(int bytes)
 {
 	void *taken;
@@ -1372,7 +1391,11 @@ static void *list_take(int bytes)
 	if (list_cached < 0)
 		list_cached = !psp_keep("listuncached");
 	if (!list_cached || bytes < LIST_CACHED_MINIMUM)
-		return sceGuGetMemory(bytes);
+	{
+		taken = sceGuGetMemory(bytes);
+		list_region_pending(taken, bytes); /* build 114: listcachedall */
+		return taken;
+	}
 	taken = sceGuGetMemory(bytes + 128);
 	if (!taken)
 		return NULL;
@@ -2405,6 +2428,7 @@ static void vram_busy_load(void)
 	sceGuTexScale(1.0f, 1.0f);
 	sceGuTexOffset(0.0f, 0.0f);
 	corners = sceGuGetMemory(2 * sizeof(*corners));
+	list_region_pending(corners, 2 * sizeof(*corners)); /* build 114: listcachedall */
 	corners[0].u = 0; corners[0].v = 0; corners[0].x = 0; corners[0].y = 0; corners[0].z = 0;
 	corners[1].u = 512; corners[1].v = 256; corners[1].x = 512; corners[1].y = 256; corners[1].z = 0;
 	for (k = 0; k < vram_busy_sprites; k++)
