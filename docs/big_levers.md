@@ -27,7 +27,7 @@ The aim is a pipeline: each unit works on its own stage of a different frame, an
 |---|---:|---|
 | VRAM | 2,048 KB | two 16-bit framebuffers 544 KB, depth 272, motion-sensor target 16; texture cache 1,216 (set by binds per byte) |
 | Program [D, `psp-size`] | 4.6 MB | code 2,762 KB, read-only data 462, data 146, zeroed 1,341 |
-| Heap | 5,888 KB, peak 5,520; **147 KB of user RAM free at worst** | sound cache 1,792; level vertex copies (the arena) 1,056, peak 1,013 in use; display list 768, peak 601 in use; data arrays (script nodes 371, sounds 86, …); the shim's index buffer 192; rasterizer pool 96 |
+| Heap | 5,888 KB, peak 5,520; **147 KB of user RAM free at worst** | sound cache 1,792; level vertex copies (the arena) 1,056, peak 1,013 in use; display list 768, peak 601 in use; data arrays (sounds 86, …; the start-up's 371 KB of script nodes is let go of before the first map [E, b115]); the shim's index buffer 192; rasterizer pool 96 |
 | Game state | 3,412 KB, 3,347 allocated | Xbox-sized pools: actors 457 KB (peak 39 of 256), props 234 (255 of 768), objects 1,024 (494 used) |
 | Tag window | 9,216 KB, full | tags 5,158; the 377 KB gap before the BSP holds 368 KB of the animation cache [D, `psp_anim.c`]; the largest BSP fills the rest |
 | Stacks | 784 KB | main thread 281 of 512 at its deepest |
@@ -50,8 +50,8 @@ The rule: each byte goes nearest its heaviest reader.
 |---|---|---|---|
 | VRAM: display | 832 KB | 832 KB | fixed |
 | VRAM: textures | 1,216 KB | ~400 KB: the best third by binds per byte | Texels from RAM cost ±1 ms (Blood Gulch [M], stand-in textures). On b30 the best third of the VRAM set (383 KB) took 92% of its binds (b114 test 1 [M]) |
-| VRAM: level vertices and indices | 0 | ~450 KB, 16-bit (`levelcompact`) | Blood Gulch [M]: 4.4 of the level's 4.8 ms recovered from VRAM. Compact vertices don't speed reads from RAM, but fit twice as many here |
-| VRAM: models | 0 | ~350 KB: the shared cast at the LODs drawn | Blood Gulch [M]: the models' reading costs 8.5 ms. One marine model drawn ten times is read ten times |
+| VRAM: level vertices and indices | 0 | what's left, ~200 KB of the ~450 at 16 bits (`levelcompact`): per KB it ranks last (b115 `gereads` [E]) | Blood Gulch [M]: 4.4 of the level's 4.8 ms recovered from VRAM. Compact vertices don't speed reads from RAM, but fit twice as many here |
+| VRAM: models | 0 | ~600 KB: the buffers read most per KB (b115 `gereads` [E]: 82–100% of the GE's reads from main RAM on the bench) | Blood Gulch [M]: the models' reading costs 8.5 ms. One marine model drawn ten times is read ten times |
 | Heap: level arena | 1,056 KB | none: the GE-format copy moves to VRAM, made by the main CPU at the frame's end as today's conversions are; the positions the ME's near-plane cuts read go to **the ME's eDRAM**, copied there by the ME from the geometry cache (~190 KB at 16 bits) | The ME can't see VRAM and the main CPU can't see eDRAM, so data only the ME reads belongs in eDRAM (158 ns against 214 from main RAM [M]). Frees the arena's ~1 MB of heap |
 | Texture RAM cache | 1,904 KB | ~2.7 MB | Takes the textures VRAM gives up, paid for by the arena, the pools and debug data. The caches together stay above 3 MB: one frame bound 2.43 MB of textures (b114 test 1 [M]) |
 | Game state | 3,412 KB | sized to every map's peaks (~0.5 MB less) | Needs peaks from all ten maps, Two Betrayals' fights included |
@@ -110,6 +110,12 @@ Three measurements turn the proposal's sizes into numbers. Each is a keep word, 
 - If the level dominates: the level's copies first, on the main CPU's path (gemeon off, so nothing yet needs the ME's positions).
 - If the data inside the list dominates (decals copy their triangles into it every frame): VRAM can't hold that. The levers there are fewer decal draws, or a display list in VRAM on the main CPU's path.
 - If a layer's time doesn't follow its bytes: it's fill or passes, and the levers are fewer passes and less overdraw.
+
+**First results (b115, the emulator's opening bench [E]; `build_b115.md`):**
+- **The models dominate the bytes:** 69–88% of the GE's reads from main RAM (0.5–7 MB a frame). The level's copies are 0.1–0.6 MB; this frame's data in the list 30–200 KB.
+- **A few small buffers carry most of it:** in the flight, an 11 KB and an 18 KB model buffer are each read about 50 times a frame.
+- **The fit curve:** VRAM holding the best 400 KB takes 69–99% of those reads; 600 KB takes 82–100%. So ~600 KB for models, ~400 for textures, and the level gets the rest (~200 KB).
+- **Still open:** whether the GE's time follows the bytes (`gebusy` by kind, PSP), and c40's figures (more actors than b30's route).
 
 ## 1. The gap
 
@@ -282,7 +288,7 @@ Step 4 adds little memory. What it needs is rules about who writes what, and whe
 | Texture, geometry and level-copy residency, model conversions | main CPU at the frame's end (gemesim's wanted lists) | ME, GE | main RAM and the caches; VRAM copies are made here too, so the VRAM swap (§0) fits |
 | Positions for the near-plane cuts | ME | ME | eDRAM (§0) |
 
-- **New memory for step 4:** the second record buffer (64 KB) and a small log ring. Nothing else, since conversions stay on the main CPU at the frame's end. **Free user RAM is 147 KB at worst** (b114 test 1), so room comes first. The cleanest source is the script-node array: 19,001 nodes × 20 B = 371 KB of heap, of which b30 uses 4,557 (`campaign_census.md`). Sized to the map, it frees ~270 KB; ≈L once nothing is shown to make nodes at run time (`asset_baking.md` §3.8).
+- **New memory for step 4:** the second record buffer (64 KB) and a small log ring. Nothing else, since conversions stay on the main CPU at the frame's end. **Free user RAM is 147 KB at worst** (b114 test 1), so room comes first. The script-node array isn't a source after all: the start-up's 19,001-node table (371 KB) is let go of before the first map, and the map's own nodes live in the tag window, sized to the map since b106 [E, b115]. The room has to come from elsewhere: the display list's headroom (peak 601 of 768 KB on b30 [M]) is a candidate once other maps' peaks are known [U].
 - **Coherence:**
   - The main CPU writes back its data cache before each hand-over (the records and the arrays they point to).
   - The ME drops its cache at each hand-over, which also covers blocks the stick's DMA has just reloaded.

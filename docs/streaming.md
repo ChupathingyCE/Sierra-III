@@ -100,6 +100,8 @@ The bake was shelved because sound wasn't limiting speed (`optimization_ranking.
 
 b30's sound census is still to do (`snd_census.py` on b30). Campaign maps add music and scripted dialogue.
 
+**First count of the re-reads (b115 `iostats`, the emulator's opening bench [E]; `build_b115.md`):** to the bunker, 83% of the 81 MB read from the map file (sound, mostly) were blocks read before. Standing still after the route, ~3.5 MB every 27 s, all re-reads: looping sounds fetched again each time round. If the PSP agrees (b115 test 1), most of the sound reader's 19.5 s in the stick [M, b114] is re-reading, which makes S11, and keeping the loops resident, worth more than S9–S10's bytes [U]. The emulator's audio follows its own clock, so its counts are a guide only.
+
 ## 5. Measuring the headroom, and balancing it
 
 Headroom has two parts:

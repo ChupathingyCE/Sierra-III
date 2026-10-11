@@ -4,6 +4,8 @@ What comes after b114, gathered from b114's hardware tests (`hardware_b114.md`) 
 
 Progress on this list shows on the **Sierra-III performance** dashboard (an artifact in Sheepdog01's artifact list), in its Levers and Next pages.
 
+**Built as b115** (`build_b115.md`): the instruments, `overlayfreefar` and the presets. The two exact changes in §3 are out (below).
+
 Everything ships behind a keep word. Anything that changes what the player sees is Sheepdog01's call, one at a time, after an A/B. **This list is a draft:** the order and the cut are for Sheepdog01 to settle.
 
 ## Decisions and priorities (Sheepdog01, 2026-10-11)
@@ -39,8 +41,8 @@ Everything ships behind a keep word. Anything that changes what the player sees 
 
 | Item | Saves | Check first |
 |---|---|---|
-| The script-node array sized to the map (19,001 → b30's 4,557 plus a margin) | ~270 KB of heap; free RAM is 147 KB at worst [M] | That nothing creates nodes at run time (`asset_baking.md` §3.8) |
-| `aiming_screen_apply`'s two software-double `fmod`s → `x - truncf(x)` (E16) | small [U] | none: the same result |
+| ~~The script-node array sized to the map~~ | nothing: the start-up's table is let go of before the first map, and the map's nodes are in the tag window, sized since b106 [E, b115] | dropped |
+| `aiming_screen_apply`'s two software-double `fmod`s → `x - truncf(x)` (E16) | small [U] | **held back:** the emulator's state differed from tick 0 with it (`build_b115.md`) |
 
 ## 4. A/Bs for Sheepdog01 (one preset each)
 
@@ -50,7 +52,7 @@ Everything ships behind a keep word. Anything that changes what the player sees 
 
 ## 5. In the lab (no hardware)
 
-- A `gereads` batch along the bench route, every stretch.
+- ~~A `gereads` batch along the bench route, every stretch.~~ Done: models ~600 KB of VRAM, textures ~400, the level the rest (`build_b115.md`).
 - b30's sound census (`snd_census.py`), and a stats pass of `texpack.py` (b30's textures by source format and chosen depth; results only).
 - The emulator traces and the replay tool for the cache curves (`streaming.md` §5): design first.
 
