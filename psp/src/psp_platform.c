@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 113
+#define PSP_BUILD_NUMBER 114
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -926,8 +926,10 @@ Why it grew: b106 on the PSP failed 97 (The Library) to 204 (b30's beach)
 sound loads for room with 1,152 KB, each a sound that didn't play. d40's
 opening in the emulator (the most sound of the maps tried), to game time
 6,650: 1,152 KB failed 5,993 loads; 1,536 KB 144; 1,920 KB none. It also read
-less: 1,720 loads, 882, 733 */
-#define SOUND_CACHE_DEFAULT_KB 1536
+less: 1,720 loads, 882, 733.
+build 114: 1,792 KB ("sound1536" for b113's). b113's Test 2 on the PSP, with
+the placement too: no sound dropped by game time 4,000, against 108 */
+#define SOUND_CACHE_DEFAULT_KB 1792
 unsigned long psp_sound_cache_bytes(void)
 {
 	static unsigned long bytes = 0;

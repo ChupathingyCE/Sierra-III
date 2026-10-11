@@ -2240,16 +2240,42 @@ change to undo a first it must equal what the multiply made of the first,
 which depends on every byte before it. A single change always shows (xor and
 an odd multiply can't map two values to one). Four lanes, word i in lane
 i % 4, so the four multiplies of a turn of the loop overlap. "weaksum" in
-keep.txt brings back b112's sum, for timing the two */
-#define PSP_CHECKSUM_STEP(sum, value) (((sum) << 5 | (sum) >> 27) ^ (value))
-#define PSP_LANE_STEP(lane, value) ((lane) = ((lane) ^ (value)) * 16777619UL)
-static int psp_checksum_weak = -1;
+keep.txt brings back b112's sum, for timing the two.
 
-static int psp_checksum_weak_on(void)
+Build 114: the multiply by 33 (a shift by 5 and an add) in place of FNV's
+prime. b113's Test 1 on the PSP: FNV-1a cost about 1 ms a tick over b112's
+sum (scenery's update 4.4 -> 5.5 ms for the same objects). What fixed the
+flip holds for any odd multiplier: a single change always shows (xor and an
+odd multiply are both one to one), and the flip's two neighbouring words go
+to different lanes, so they cancel only if the end's mix of the lanes makes
+two unrelated differences equal. Both share one blind spot: the top bit of
+two words four apart (one lane) changed together cancels, since a top-bit
+difference passes any odd multiply unchanged. "fnvsum" brings back b113's */
+#define PSP_CHECKSUM_STEP(sum, value) (((sum) << 5 | (sum) >> 27) ^ (value))
+#define PSP_LANE_STEP_FNV(lane, value) ((lane) = ((lane) ^ (value)) * 16777619UL)
+#define PSP_LANE_STEP_33(lane, value) ((lane) = ((lane) ^ (value)) * 33UL)
+/* which sum: 0 the multiply by 33 (build 114), 1 FNV-1a ("fnvsum", b113),
+2 b112's rotate and xor ("weaksum") */
+#define PSP_SUM_33 0
+#define PSP_SUM_FNV 1
+#define PSP_SUM_WEAK 2
+static int psp_checksum_kind = -1;
+
+static int psp_checksum_kind_now(void)
 {
-	if (psp_checksum_weak < 0)
-		psp_checksum_weak = psp_keep("weaksum");
-	return psp_checksum_weak;
+	if (psp_checksum_kind < 0)
+		psp_checksum_kind = psp_keep("weaksum") ? PSP_SUM_WEAK : psp_keep("fnvsum") ? PSP_SUM_FNV : PSP_SUM_33;
+	return psp_checksum_kind;
+}
+
+/* one word into its lane, by the kind (for the few words the rules touch;
+the long runs go through psp_checksum_span_lanes's loops) */
+static void psp_lane_step(unsigned long lane[4], int kind, long index, unsigned long value)
+{
+	if (kind == PSP_SUM_FNV)
+		PSP_LANE_STEP_FNV(lane[index & 3], value);
+	else
+		PSP_LANE_STEP_33(lane[index & 3], value);
 }
 
 static void psp_lanes_start(unsigned long lane[4])
@@ -2274,8 +2300,10 @@ static unsigned long psp_object_checksum_reference(struct object_header_datum co
 	struct psp_checksum_rules rules;
 	long index;
 
+	int kind = psp_checksum_kind_now();
+
 	psp_checksum_rules_for(header, &rules);
-	if (psp_checksum_weak_on())
+	if (kind == PSP_SUM_WEAK)
 	{
 		for (index = 0; index < rules.count; index++)
 			sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
@@ -2283,7 +2311,7 @@ static unsigned long psp_object_checksum_reference(struct object_header_datum co
 	}
 	psp_lanes_start(lane);
 	for (index = 0; index < rules.count; index++)
-		PSP_LANE_STEP(lane[index & 3], psp_checksum_word(&rules, index, word[index]));
+		psp_lane_step(lane, kind, index, psp_checksum_word(&rules, index, word[index]));
 	return psp_lanes_end(lane);
 }
 
@@ -2310,25 +2338,38 @@ static unsigned long psp_checksum_span(unsigned long sum, unsigned long const *w
 	return sum;
 }
 
-static void psp_checksum_span_lanes(unsigned long lane[4], unsigned long const *word, long first, long end)
-{
-	long index = first;
-	unsigned long a, b, c, d;
+/* a run of words into the lanes, one function per kind so each loop is the
+step alone (build 114: the 33 and FNV kinds) */
+#define PSP_SPAN_LANES(name, STEP) \\
+static void name(unsigned long lane[4], unsigned long const *word, long first, long end) \\
+{ \\
+	long index = first; \\
+	unsigned long a, b, c, d; \\
+	/* up to a multiple of 4, so the loop's words go to lanes 0 to 3 */ \\
+	for (; index < end && (index & 3); index++) \\
+		STEP(lane[index & 3], word[index]); \\
+	a = lane[0]; b = lane[1]; c = lane[2]; d = lane[3]; \\
+	for (; index + 4 <= end; index += 4) \\
+	{ \\
+		STEP(a, word[index]); \\
+		STEP(b, word[index + 1]); \\
+		STEP(c, word[index + 2]); \\
+		STEP(d, word[index + 3]); \\
+	} \\
+	lane[0] = a; lane[1] = b; lane[2] = c; lane[3] = d; \\
+	for (; index < end; index++) \\
+		STEP(lane[index & 3], word[index]); \\
+}
+PSP_SPAN_LANES(psp_checksum_span_lanes_33, PSP_LANE_STEP_33)
+PSP_SPAN_LANES(psp_checksum_span_lanes_fnv, PSP_LANE_STEP_FNV)
+#undef PSP_SPAN_LANES
 
-	/* up to a multiple of 4, so the loop's words go to lanes 0 to 3 */
-	for (; index < end && (index & 3); index++)
-		PSP_LANE_STEP(lane[index & 3], word[index]);
-	a = lane[0]; b = lane[1]; c = lane[2]; d = lane[3];
-	for (; index + 4 <= end; index += 4)
-	{
-		PSP_LANE_STEP(a, word[index]);
-		PSP_LANE_STEP(b, word[index + 1]);
-		PSP_LANE_STEP(c, word[index + 2]);
-		PSP_LANE_STEP(d, word[index + 3]);
-	}
-	lane[0] = a; lane[1] = b; lane[2] = c; lane[3] = d;
-	for (; index < end; index++)
-		PSP_LANE_STEP(lane[index & 3], word[index]);
+static void psp_checksum_span_lanes(unsigned long lane[4], int kind, unsigned long const *word, long first, long end)
+{
+	if (kind == PSP_SUM_FNV)
+		psp_checksum_span_lanes_fnv(lane, word, first, end);
+	else
+		psp_checksum_span_lanes_33(lane, word, first, end);
 }
 
 static unsigned long psp_object_checksum(struct object_header_datum const *header)
@@ -2340,7 +2381,7 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 	unsigned long sum = 0x9E3779B9UL, lane[4];
 	struct psp_checksum_rules rules;
 	long touched[7][2], count = 0, index = 0, k, j;
-	int weak = psp_checksum_weak_on();
+	int kind = psp_checksum_kind_now(), weak = kind == PSP_SUM_WEAK;
 
 	/* "slowchecksum": the reference alone, for timing the difference */
 	if (psp_checksum_slow < 0)
@@ -2378,7 +2419,7 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 		if (weak)
 			sum = psp_checksum_span(sum, word, index, first);
 		else
-			psp_checksum_span_lanes(lane, word, index, first);
+			psp_checksum_span_lanes(lane, kind, word, index, first);
 		for (index = first; index < end; index++)
 		{
 			unsigned long value = psp_checksum_word(&rules, index, word[index]);
@@ -2386,7 +2427,7 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 			if (weak)
 				sum = PSP_CHECKSUM_STEP(sum, value);
 			else
-				PSP_LANE_STEP(lane[index & 3], value);
+				psp_lane_step(lane, kind, index, value);
 		}
 		if (index < first)
 			index = first;
@@ -2395,7 +2436,7 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 		sum = psp_checksum_span(sum, word, index, rules.count);
 	else
 	{
-		psp_checksum_span_lanes(lane, word, index, rules.count);
+		psp_checksum_span_lanes(lane, kind, word, index, rules.count);
 		sum = psp_lanes_end(lane);
 	}
 	if (psp_checksum_check < 0)
@@ -10862,11 +10903,13 @@ FIXES_113["source/cache/xbox_sound_cache.c#soundplace"] = [
 		(lruv_locked_block_proc)sound_cache_locked_block_proc);
 #ifdef HALO_PSP
 	{
-		/* build 113: "soundplace": big sounds at the top (lruv_cache.c) */
+		/* build 113: "soundplace": big sounds at the top (lruv_cache.c).
+		build 114: on by default, "nosoundplace" for b113's; b113's Test 2
+		on the PSP with sound1792: no sound dropped by game time 4,000 */
 		extern struct lruv_cache *psp_lruv_high_cache;
 		extern int psp_keep(const char *name);
 
-		if (psp_keep("soundplace"))
+		if (!psp_keep("nosoundplace"))
 			psp_lruv_high_cache = xbox_sound_cache_globals.cache;
 	}
 #endif"""),

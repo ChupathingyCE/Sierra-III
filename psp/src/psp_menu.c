@@ -51,13 +51,15 @@ static struct option options[] = {
 	{ "nearauto", "near plane: by what is near the eye", 1, 0 },
 	{ "nooverlay", "performance overlay OFF at start", 0, 0 },
 	{ "nomeaudio", "sound mixed on the main CPU, not the ME", 0, 0 },
+	/* build 114's switches (docs/build_b114.md): b113's defaults back */
+	{ "list512", "display list 512 KB (b113's; 768 now)", 0, 0 },
+	{ "sound1536", "sound cache 1536 KB (b113's; 1792 now)", 0, 0 },
+	{ "nosoundplace", "sound cache: big sounds not kept at the top", 0, 0 },
+	{ "seethrough160", "see-through draws: 160 a frame (b113's; 320 now)", 0, 0 },
 	/* build 113's switches (docs/build_b113.md) */
 	{ "contrails", "Covenant tracers (contrails) drawn", 0, 0 },
 	{ "zoommask", "zoom: the mask as a soft edge (blur stand-in)", 6, 0 },
 	{ "zoommaskfull", "zoom: the mask at full strength", 6, 0 },
-	{ "list768", "display list 768 KB (512 before)", 0, 0 },
-	{ "sound1792", "sound cache 1792 KB (1536 before)", 0, 0 },
-	{ "soundplace", "sound cache: big sounds kept at the top", 0, 0 },
 	{ "gebusy", "GE busy time in the log", 0, 0 },
 	{ "gedefer", "GE calls written down, carried out at frame end", 0, 0 },
 	{ "gemeon", "GE calls carried out on the ME (with gedefer)", 0, 0 },

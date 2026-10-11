@@ -111,7 +111,11 @@ approach to b30's beach skipped 46 KB of model draws a frame with the list
 full; b112 run 5's cliffs 4,844 draws in 30 s. The list comes from the heap,
 which b111's long run left about 900 KB of untaken. Set when the GE starts */
 #define DISPLAY_LIST_BYTES_LARGE 0xC0000
-static int display_list_size = DISPLAY_LIST_BYTES;
+/* build 114: 768 KB by default, "list512" for b113's. b113's Test 2 on the
+PSP: no draw skipped with the list full (Test 1: 13,518 by game time 1,200,
+the trees blinking), and the heap took 5,363 of 5,888 KB by game time 4,000
+with sound1792 too */
+static int display_list_size = DISPLAY_LIST_BYTES_LARGE;
 /* build 93: the list's size this frame (benchrun's "display list in VRAM"
 puts it in VRAM's last 256 KB, which psp_tex.c keeps free during benchrun) */
 #define VRAM_BENCH_START 0x001C0000
@@ -1503,14 +1507,16 @@ static int display_list_free_kb = 0, display_list_largest_kb = 0;
 (threads' stacks, the blackbox's buffer: b104 took 32 KB more after load) */
 #define DISPLAY_LIST_LEAVES_FREE (128 * 1024)
 
+static void transparent_table_acquire(void); /* build 114: the see-through table, with the list */
+
 static void display_list_acquire(void)
 {
 	SceUID block = -1;
 
 	if (display_list)
 		return;
-	if (psp_keep("list768"))
-		display_list_size = DISPLAY_LIST_BYTES_LARGE;
+	if (psp_keep("list512"))
+		display_list_size = DISPLAY_LIST_BYTES;
 	if ((int)sceKernelTotalFreeMemSize() >= display_list_size + 64 + DISPLAY_LIST_LEAVES_FREE)
 		block = sceKernelAllocPartitionMemory(2, "halo display list", PSP_SMEM_High, display_list_size + 64, NULL);
 	if (block >= 0)
@@ -1525,6 +1531,7 @@ static void display_list_acquire(void)
 	}
 	display_list_free_kb = sceKernelTotalFreeMemSize() / 1024;
 	display_list_largest_kb = sceKernelMaxFreeMemSize() / 1024;
+	transparent_table_acquire();
 }
 
 static void display_list_report(void)
@@ -6725,10 +6732,35 @@ struct game_sprite_vertex
 	float x, y, z, u, v;
 	unsigned int argb;
 };
-#define MAXIMUM_TRANSPARENT_DRAWS 160
-static struct transparent_draw transparent[MAXIMUM_TRANSPARENT_DRAWS];
+/* build 114: 320 (160 before; "seethrough160" for it). b113's Test 1 dropped
+494 see-through draws with the table full, Test 3 with the tracers 712
+(hardware_b113.md): smoke, sparks and shots not drawn. 128 bytes each, so
+the table comes from the heap when the GE starts (40 KB): as a static array
+it pushed the program past one of the heap's 64 KB steps (5,888 -> 5,824 KB) */
+#define MAXIMUM_TRANSPARENT_DRAWS 320
+#define TRANSPARENT_DRAWS_B113 160
+static struct transparent_draw *transparent = NULL;
+static int transparent_capacity = 0;
 static int transparent_count = 0, transparent_order[MAXIMUM_TRANSPARENT_DRAWS];
 static unsigned long transparent_drawn = 0, transparent_dropped = 0;
+
+static int transparent_full(void)
+{
+	return transparent_count >= transparent_capacity;
+}
+
+/* once, with the display list (display_list_acquire) */
+static void transparent_table_acquire(void)
+{
+	int wanted = psp_keep("seethrough160") ? TRANSPARENT_DRAWS_B113 : MAXIMUM_TRANSPARENT_DRAWS;
+
+	if (transparent)
+		return;
+	transparent = memalign(16, wanted * sizeof(*transparent));
+	transparent_capacity = transparent ? wanted : 0;
+	platform_log("GE: the see-through table: %d draws a frame, %d KB from the heap%s", transparent_capacity,
+		(int)(wanted * sizeof(*transparent) / 1024), transparent ? "" : " (no memory: none drawn)");
+}
 
 static void hud_blend(short blend);
 
@@ -6778,7 +6810,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 
 	if (!frame_open || !vertices || sprite_count <= 0 || !bitmap_key || list_full())
 		return 0;
-	if (transparent_count >= MAXIMUM_TRANSPARENT_DRAWS)
+	if (transparent_full())
 	{
 		transparent_dropped++;
 		return 0;
@@ -6864,7 +6896,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 
 	if (!frame_open || !vertices || segments <= 0 || !bitmap_key || list_full())
 		return 0;
-	if (transparent_count >= MAXIMUM_TRANSPARENT_DRAWS)
+	if (transparent_full())
 	{
 		transparent_dropped++;
 		return 0;
@@ -7023,7 +7055,7 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 
 	if (!frame_open || !widget_key || radius <= 0.0f || list_full())
 		return;
-	if (transparent_count >= MAXIMUM_TRANSPARENT_DRAWS)
+	if (transparent_full())
 	{
 		transparent_dropped++;
 		return;
@@ -7247,7 +7279,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	if (!frame_open || index_count < 3 || !vertices || !indices || !model_nodes || model_node_count <= 0 ||
 		vertex_count <= 0 || !model_convert(vertices, vertex_count, uncompressed, NULL, 0, 0, NULL))
 		return;
-	if (transparent_count >= MAXIMUM_TRANSPARENT_DRAWS)
+	if (transparent_full())
 	{
 		transparent_dropped++;
 		return;
@@ -7402,7 +7434,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 {
 	struct transparent_draw *draw;
 
-	if (transparent_count >= MAXIMUM_TRANSPARENT_DRAWS)
+	if (transparent_full())
 	{
 		transparent_dropped++;
 		return NULL;
