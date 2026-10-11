@@ -269,6 +269,7 @@ static int overlay_answers_for(const void *vertices, int vertex_count, const uns
 	long triangle_count, unsigned char *out);
 static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
 static void defer_drain(void);
+static void list_write_back(const void *stall); /* build 114: listcachedall */
 /* which calls made the waiting calls run, for the log: each is a point where
 the ME's version has to catch up with the main CPU */
 #define DEFER_SITES 16
@@ -963,6 +964,7 @@ static void defer_drain(void)
 	if (stall_me_address)
 	{
 		stall_forwarded++;
+		list_write_back(stall_me_address); /* build 114: listcachedall */
 		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
 		stall_me_address = NULL;
 	}
@@ -1303,6 +1305,56 @@ static void list_flush_pending(void)
 	pending_start = pending_end = 0;
 }
 
+/* build 114: "listcachedall" (lever F; optimization_ranking.md X18): the
+command words through the cache too. pspgu writes every command word through
+the list's uncached view (sceGuStart sets bit 30), one bus store each:
+b113's Test 3 shows 880-980 uncached stores per million cycles while
+drawing, and the PSP's level passes cost 175 us a draw against the
+emulator's 18 (engine_performance.md), a gap only the PSP's bus explains
+[U]. The GE takes only an address's low bits, so the list can be written
+through the cached view as long as every line is in memory before the GE
+may read it: each time the stall address is handed on (the two places that
+call the kernel), the lines from the last hand-over to the new stall
+address are written back and dropped ("cache 0x1B", as build 48's regions).
+Off with gemeon (the ME writes the list, through its own cache), with
+benchrun's list in VRAM, and with "listuncached". Exact: the same words
+reach the GE. The emulator can't check the write-back (it has no caches):
+only the PSP shows whether a line was missed (a GE hang or a garbled
+frame) */
+struct gu_list_view { unsigned int *start, *current; int parent_context; };
+extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
+static int list_all_cached = -1, list_cached_frame = 0;
+static unsigned int list_back_from = 0;
+static unsigned long list_lines_back = 0;
+
+/* right after the frame's sceGuStart */
+static void list_cached_frame_start(int in_vram)
+{
+	if (list_all_cached < 0)
+		list_all_cached = psp_keep("listcachedall") && !psp_keep("gemeon") && !psp_keep("listuncached");
+	list_cached_frame = list_all_cached && !in_vram;
+	if (!list_cached_frame)
+		return;
+	gu_list->start = (unsigned int *)((unsigned int)gu_list->start & ~0x40000000u);
+	gu_list->current = (unsigned int *)((unsigned int)gu_list->current & ~0x40000000u);
+	list_back_from = (unsigned int)gu_list->current & ~63u;
+}
+
+/* before the GE is told it may read up to stall */
+static void list_write_back(const void *stall)
+{
+	unsigned int end = (unsigned int)stall & ~0x40000000u, line;
+
+	if (!list_cached_frame || end <= list_back_from)
+		return;
+	for (line = list_back_from; line < end; line += 64)
+		__builtin_allegrex_cache(0x1B, line);
+	__asm__ volatile("sync");
+	list_lines_back += (end - list_back_from + 63) / 64;
+	/* the line holding the stall address may get more words */
+	list_back_from = end & ~63u;
+}
+
 static void *list_take(int bytes)
 {
 	void *taken;
@@ -1471,6 +1523,7 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		}
 	}
 	stall_forwarded++;
+	list_write_back(stall); /* build 114: listcachedall */
 	if ((stall_forwarded & 63) == 0)
 	{
 		/* now and then, what the call itself costs */
@@ -2427,6 +2480,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
 	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : display_list_size;
 	sceGuStart(GU_DIRECT, list_in_vram ? (void *)(0x04000000 + VRAM_BENCH_START) : (void *)display_list);
+	list_cached_frame_start(list_in_vram); /* build 114: listcachedall */
 	sceGuFog(fog_near, fog_far, fog_color);
 	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
 	if (vram_busy)
@@ -11673,12 +11727,14 @@ void psp_ge_frame_end(void)
 					}
 					platform_log("GE: parts, us a frame (calls a frame): %s", parts);
 					/* build 48: the list's cached regions and the stall updates */
-					platform_log("GE: list: %lu regions a frame written cached (%lu KB a frame, %lu lines written back); stall updates %lu a frame, %lu passed on (%s), %.1f us each (%lu timed); decal quads under 2 pixels left out %lu, wholly off the screen %lu (since the start); decal calls with nothing on the screen %lu a frame",
-						cached_takes / 300, cached_bytes / 300 / 1024, cached_lines_flushed / 300, stall_calls / 300,
+					platform_log("GE: list: %lu regions a frame written cached (%lu KB a frame, %lu lines written back); command words %s (%lu lines a frame written back); stall updates %lu a frame, %lu passed on (%s), %.1f us each (%lu timed); decal quads under 2 pixels left out %lu, wholly off the screen %lu (since the start); decal calls with nothing on the screen %lu a frame",
+						cached_takes / 300, cached_bytes / 300 / 1024, cached_lines_flushed / 300,
+						list_cached_frame ? "cached (listcachedall)" : "uncached", list_lines_back / 300, stall_calls / 300,
 						stall_forwarded / 300, stall_batch == 1 ? "batched" : "each", stall_timed ? (double)stall_timed_us / stall_timed : 0.0, stall_timed, decals_small, decals_offscreen,
 						decals_wholly_left_out / 300);
 					decals_wholly_left_out = 0;
 					cached_takes = cached_bytes = cached_lines_flushed = stall_calls = stall_forwarded = 0;
+					list_lines_back = 0;
 				}
 			}
 		}

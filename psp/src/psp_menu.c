@@ -56,6 +56,7 @@ static struct option options[] = {
 	{ "sound1536", "sound cache 1536 KB (b113's; 1792 now)", 0, 0 },
 	{ "nosoundplace", "sound cache: big sounds not kept at the top", 0, 0 },
 	{ "seethrough160", "see-through draws: 160 a frame (b113's; 320 now)", 0, 0 },
+	{ "listcachedall", "GE command words written through the cache", 0, 0 },
 	/* build 113's switches (docs/build_b113.md) */
 	{ "contrails", "Covenant tracers (contrails) drawn", 0, 0 },
 	{ "zoommask", "zoom: the mask as a soft edge (blur stand-in)", 6, 0 },
