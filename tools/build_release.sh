@@ -131,7 +131,8 @@ find "$pkg" -type d -exec chmod 755 {} +
 find "$pkg" -type f -exec chmod 644 {} +
 find "$pkg" -exec touch -h -d "@$stamp" {} +
 rm -f "$OUT/halo_psp_$LABEL.zip"
-(cd "$pkg" && python3 -m zipfile -c "$OUT/halo_psp_$LABEL.zip" "${top[@]}")
+# (a zip stores local times: UTC, so the time zone of the machine doesn't show)
+(cd "$pkg" && TZ=UTC python3 -m zipfile -c "$OUT/halo_psp_$LABEL.zip" "${top[@]}")
 cp "$OUT/build/halo.elf" "$OUT/build/halo.map" "$OUT/"
 log "$(grep -E '^program ' "$OUT/build.log" | tail -1)"
 log "wrote $OUT/halo_psp_$LABEL.zip ($(sha256sum "$OUT/build/EBOOT.PBP" | cut -c1-16) EBOOT)"
