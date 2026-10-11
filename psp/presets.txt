@@ -1,0 +1,11 @@
+# Halo PSP launch presets: one a line, "name: keep words". The launch menu's
+# third page (R from the options) lists them; cross applies one. Build 114's
+# tests (docs/build_b114.md says what each answers and when to stop).
+1 bench, b114 as it comes: nearauto assettrack geo2 hwprofile gebusy
+2 flight, GE words cached: nearauto assettrack geo2 hwprofile gebusy listcachedall
+3 flight, state memo: nearauto assettrack geo2 hwprofile gebusy statememo
+4 flight, lean: nearauto assettrack geo2 gebusy lean
+5 flight, GE work on the ME: nearauto assettrack geo2 hwprofile gebusy gedefer gemeon
+6 bench, draw distance 100: nearauto assettrack geo2 hwprofile gebusy drawdist100
+7 zoom mask, soft edge: nearauto assettrack geo2 zoommask
+8 zoom mask, full: nearauto assettrack geo2 zoommaskfull
