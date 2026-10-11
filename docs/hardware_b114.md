@@ -119,7 +119,22 @@ The opening bench to the bunker (game time 6,555). Sheepdog01: "the fog at 60 lo
 
 - **It matches the emulator** (−5% of drawing at 60 [E]) and what Sheepdog01 felt. One run can't pin it down further: hand-played stretches vary by ±7%.
 - **The cinematic was unchanged** (196.1 against 195.6), because the far clip is lifted during cutscenes. So the PSP's one repeatable stretch can't measure this switch.
-- **Next:** 40, 30 and 20 need no new build (`drawdistN` takes any number). The emulator runs them first (lab batch `drawdist-near`), for the trend and for pictures of the fog. At 20–30, the fog starts at 12–18 units, inside the range Elites fire from on the beach.
+- **Closer in, on the emulator** (lab batch `drawdist-near`, run 38156283151, b114 at `c238665149`; the bench's scripted route; the shares transfer to the PSP, the milliseconds don't) [E]:
+
+| Frame by the clock (drawing) | None | 60 | 40 | 30 | 20 |
+|---|---|---|---|---|---|
+| The flight after the cinematic (570–2,000) | 94.0 (47.8) | −3% (−6%) | −6% (−13%) | −9% (−18%) | −12% (−23%) |
+| The landing (2,000–2,700) | 81.0 (45.4) | −2% (−5%) | −6% (−15%) | −11% (−26%) | −24% (−39%) |
+| The beach (2,700–6,000) | 48.2 (21.3) | −1% (+2%) | +3% (0%) | +5% (−4%) | −9% (−15%) |
+| The bunker (6,000–8,100) | 40.9 (15.4) | −4% (−8%) | +1% (+1%) | +3% (−3%) | −6% (−10%) |
+
+  - **The saving is in the open views,** the flight and the landing. The beach fight is mostly within 30 units, and its ticks (the AI), which the draw distance doesn't touch, moved by up to 13% between runs because play parted.
+  - **The pictures** (a screenshot every 20 s):
+    - At 40, the cliffs and trees past the beach fade into a pale haze.
+    - At 30, they're nearly gone.
+    - At 20, the beach is in thick fog, the Covenant are silhouettes at its edge, and a hard line shows where the far clip cuts the ground against the unfogged sky.
+  - **At 20–30 the fog starts at 12–18 units,** inside the range Elites fire from on the beach.
+  - **40 is the one worth a PSP run:** about −6% of the frame in the open stretches. Below that, the look and the fight change more than the frame does.
 
 ## The ocean: Sheepdog01's "clips through the terrain under the water" [D + E]
 
