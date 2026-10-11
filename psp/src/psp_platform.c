@@ -668,17 +668,20 @@ static void object_report(SceUID file, unsigned long ticks)
 		/* build 106: the corpse-sleep rule's stages (psp_fixups.py), when any
 		biped was dead in the window */
 		extern long psp_corpse_stage[4], psp_corpses_holding, psp_corpses_placed_dead;
+		extern long psp_corpses_off_level, psp_corpse_ground_tests;
 
 		/* build 112: "placed dead": bodies the level placed dead, which go on
 		to the same stages as garbage (at rest, idle, offered) */
 		if (psp_corpse_stage[0])
-			platform_log("  corpses, per tick: %.1f dead, %.1f of them garbage, %.1f placed dead, %.1f at rest, %.1f idle past 2 s (offered to sleep), %.1f of those still holding something",
+			platform_log("  corpses, per tick: %.1f dead, %.1f of them garbage, %.1f placed dead, %.1f at rest, %.1f idle past 2 s (offered to sleep), %.1f of those still holding something, %.1f held up by something other than the level (kept awake; %ld ground tests)",
 				ticks ? (double)psp_corpse_stage[0] / ticks : 0.0, ticks ? (double)psp_corpse_stage[1] / ticks : 0.0,
 				ticks ? (double)psp_corpses_placed_dead / ticks : 0.0,
 				ticks ? (double)psp_corpse_stage[2] / ticks : 0.0, ticks ? (double)psp_corpse_stage[3] / ticks : 0.0,
-				ticks ? (double)psp_corpses_holding / ticks : 0.0);
+				ticks ? (double)psp_corpses_holding / ticks : 0.0, ticks ? (double)psp_corpses_off_level / ticks : 0.0,
+				psp_corpse_ground_tests);
 		memset(psp_corpse_stage, 0, sizeof(psp_corpse_stage));
 		psp_corpses_holding = psp_corpses_placed_dead = 0;
+		psp_corpses_off_level = psp_corpse_ground_tests = 0;
 	}
 	{
 		/* build 106: the garbage collector (psp_fixups.py, objects.c) */

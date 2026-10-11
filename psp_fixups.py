@@ -2154,7 +2154,13 @@ past 2 s (so offered to the byte-identical rule). b105 run 1 slept none
 and couldn't say why. Build 112: psp_corpses_placed_dead, the bodies the
 level placed dead (never garbage) that go on to the same stages */
 long psp_corpse_stage[4], psp_corpses_holding, psp_corpses_placed_dead;
-static struct { short identifier; short quiet; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
+/* build 114: bodies kept awake because something other than the level held
+them up, and the ground tests made (psp_corpse_on_level) */
+long psp_corpses_off_level, psp_corpse_ground_tests;
+/* build 114: quiet (0 to 2) as a byte, and ground beside it: for a body
+offered to sleep, whether the level is under it (psp_corpse_on_level: 0 not
+asked yet, 1 the level, 2 not). Still 8 bytes an entry */
+static struct { short identifier; signed char quiet; unsigned char ground; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
 
 /* What the byte-identical rule leaves out of an object's data: the words an
 update changes every tick without changing anything the game shows or does.
@@ -2456,6 +2462,68 @@ static unsigned long psp_object_checksum(struct object_header_datum const *heade
 static boolean object_update(long object_index);
 static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep);
 
+/* build 114: a body sleeps only while the level itself holds it up.
+A sleeping body skips its whole update, and its own bytes don't change when
+what it rests on goes away, so a body that came to rest on something else
+(another body that was cleared away, a vehicle, the player) stayed in the
+air (Sheepdog01's b113 Test 3: an Elite's body hanging above the beach). On the
+Xbox its physics runs every tick and finds itself airborne the tick its
+support goes (bipeds.c: the at-rest bit is worked out afresh each tick).
+The level never moves, so a body it holds can only start moving if
+something changes the body itself, which wakes it. The test is the biped's
+own for its support (bipeds.c): a sphere at the foot of its physics pill,
+the pill's radius plus 0.05, against the level, broken surfaces left out.
+It runs once as a body settles, and again only after the body has moved
+(the game zeroes its idle count whenever it isn't at rest). "corpseanyground"
+in keep.txt: any support, as b105 to b113 */
+#include "units/bipeds.h"
+#include "physics/breakable_surfaces.h"
+static struct collision_bsp_test_sphere_result psp_ground_result; /* 4 KB: off the stack */
+
+static int psp_corpse_on_level(long object_index, short absolute_index, struct object_header_datum const *header)
+{
+	static int psp_any_ground = -1;
+	real_point3d base;
+	real height, width;
+	int on_level;
+
+	if (psp_any_ground < 0)
+		psp_any_ground = psp_keep("corpseanyground");
+	if (psp_any_ground)
+		return 1;
+	if (absolute_index >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (psp_sleep[absolute_index].identifier != header->identifier)
+	{
+		/* a slot of its own from now (as psp_sleepy_update would start it) */
+		psp_sleep[absolute_index].identifier = header->identifier;
+		psp_sleep[absolute_index].quiet = 0;
+		psp_sleep[absolute_index].ground = 0;
+	}
+	if (!psp_sleep[absolute_index].ground)
+	{
+		biped_get_physics_pill(object_index, &base, &height, &width);
+		on_level = collision_bsp_test_sphere(global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+			breakable_surface_flags_get(), &base, width + 0.05f, &psp_ground_result) &&
+			psp_ground_result.surface_count > 0;
+		psp_sleep[absolute_index].ground = on_level ? 1 : 2;
+		psp_corpse_ground_tests++;
+	}
+	if (psp_sleep[absolute_index].ground == 2)
+	{
+		psp_corpses_off_level++;
+		return 0;
+	}
+	return 1;
+}
+
+/* a body that isn't settled (it moved, or hasn't been at rest 2 s): asked again when it settles */
+static void psp_corpse_unsettled(short absolute_index, struct object_header_datum const *header)
+{
+	if (absolute_index < MAXIMUM_OBJECTS_PER_MAP && psp_sleep[absolute_index].identifier == header->identifier)
+		psp_sleep[absolute_index].ground = 0;
+}
+
 int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */
 extern int psp_crumbs_on; /* build 106: the name is only looked up while crumbs are on */
 static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
@@ -2610,14 +2678,17 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 				psp_corpses_placed_dead++;
 			if (garbage || placed_dead)
 			{
-				if (TEST_FLAG(object->object.flags, _object_at_rest_bit))
+				if (TEST_FLAG(object->object.flags, _object_at_rest_bit) && object->object.idle_ticks > 60)
 				{
 					psp_corpse_stage[2]++;
-					if (object->object.idle_ticks > 60)
-					{
-						psp_corpse_stage[3]++;
-						may = 1;
-					}
+					psp_corpse_stage[3]++;
+					may = psp_corpse_on_level(object_index, absolute_index, header);
+				}
+				else
+				{
+					if (TEST_FLAG(object->object.flags, _object_at_rest_bit))
+						psp_corpse_stage[2]++;
+					psp_corpse_unsettled(absolute_index, header);
 				}
 			}
 		}
@@ -2897,10 +2968,13 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		{
 			psp_sleep[absolute_index].identifier = header->identifier;
 			psp_sleep[absolute_index].quiet = 1;
+			psp_sleep[absolute_index].ground = 0; /* build 114: a new object in the slot */
 		}
 	}
 	else
 	{
+		if (psp_sleep[absolute_index].identifier != header->identifier)
+			psp_sleep[absolute_index].ground = 0;
 		psp_sleep[absolute_index].identifier = header->identifier;
 		psp_sleep[absolute_index].quiet = 0;
 	}
