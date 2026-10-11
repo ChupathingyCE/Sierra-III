@@ -2251,6 +2251,72 @@ static void load_crash_handler(const char *eboot_path)
 	platform_log("crash handler %s: %s (0x%08x)", path, module >= 0 ? "installed" : "not loaded", (unsigned)module);
 }
 
+/* build 114: the last launch's files kept, numbered, in the log folder:
+log.txt, profile.txt and crash.txt become log/NNN_log.txt and so on (NNN
+counts launches), and only the last OLD_LAUNCHES sets stay. Until b113 the
+log was removed at every launch, so a test whose log wasn't pulled before
+the next launch was lost, and profile.txt gathered every launch's windows.
+Renamed within the one folder: whether the Memory Stick's driver moves a
+file to another folder isn't known, so crash.txt (in the data folder) is
+tried and left where it was if the rename fails. No keep word: keep.txt is
+read after this, and the cost is a few renames at start-up */
+#define OLD_LAUNCHES 8
+static void keep_last_launch(void)
+{
+	static const char *const names[3] = { LOG_FOLDER "/log.txt", LOG_FOLDER "/profile.txt", DATA_ROOT "/crash.txt" };
+	static const char *const suffixes[3] = { "log.txt", "profile.txt", "crash.txt" };
+	SceIoStat status;
+	SceIoDirent entry;
+	SceUID folder;
+	int newest = 0, oldest = 0x7FFFFFFF, sets = 0, number, k, n;
+	char path[96];
+
+	if (sceIoGetstat(LOG_PATH, &status) < 0)
+		return;
+	folder = sceIoDopen(LOG_FOLDER);
+	if (folder >= 0)
+	{
+		memset(&entry, 0, sizeof(entry));
+		while (sceIoDread(folder, &entry) > 0)
+		{
+			if (entry.d_name[0] >= '0' && entry.d_name[0] <= '9' && strcmp(entry.d_name + 3, "_log.txt") == 0)
+			{
+				number = atoi(entry.d_name);
+				sets++;
+				if (number > newest)
+					newest = number;
+				if (number < oldest)
+					oldest = number;
+			}
+			memset(&entry, 0, sizeof(entry));
+		}
+		sceIoDclose(folder);
+	}
+	number = newest >= 999 ? 1 : newest + 1;
+	for (k = 0; k < 3; k++)
+	{
+		snprintf(path, sizeof(path), LOG_FOLDER "/%03d_%s", number, suffixes[k]);
+		sceIoRemove(path);
+		if (k < 2)
+			sceIoRename(names[k], path);
+		else if (sceIoGetstat(names[k], &status) >= 0)
+			sceIoRename(names[k], path); /* on failure, left in ms0:/halo as before */
+	}
+	/* the oldest sets past the last OLD_LAUNCHES */
+	for (n = oldest; sets + 1 > OLD_LAUNCHES && n < number; n++)
+	{
+		snprintf(path, sizeof(path), LOG_FOLDER "/%03d_log.txt", n);
+		if (sceIoRemove(path) < 0)
+			continue;
+		for (k = 1; k < 3; k++)
+		{
+			snprintf(path, sizeof(path), LOG_FOLDER "/%03d_%s", n, suffixes[k]);
+			sceIoRemove(path);
+		}
+		sets--;
+	}
+}
+
 int main(int argc, char **argv)
 {
 	SceUID thread;
@@ -2271,6 +2337,7 @@ int main(int argc, char **argv)
 	sceIoMkdir(DATA_ROOT, 0777);
 	sceIoMkdir(DATA_ROOT "/save", 0777);
 	sceIoMkdir(LOG_FOLDER, 0777);
+	keep_last_launch(); /* build 114 */
 	sceIoRemove(LOG_PATH);
 	/* build 105: no exit.txt any more (see the exit callback) */
 	sceIoRemove(LOG_FOLDER "/exit.txt");

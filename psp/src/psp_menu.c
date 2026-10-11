@@ -22,6 +22,7 @@ exists; the files are then read as they are, as before. */
 #include <pspiofilemgr.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #define DATA_ROOT "ms0:/halo"
 #define MAXIMUM_MAPS 32
@@ -109,6 +110,88 @@ static struct map_entry maps[MAXIMUM_MAPS];
 static int map_count = 0;
 /* words in keep.txt the menu doesn't know: kept as typed */
 static char extra_words[256] = "";
+
+/* build 114: presets, ms0:/halo/presets.txt: one a line, "name: keep words"
+(# starts a comment). A build's zip can carry the night's tests as presets,
+so a test is one press instead of a dozen toggles. Applying one sets exactly
+its words: the options it names on, every other option off, its other words
+kept as "other words" */
+#define MAXIMUM_PRESETS 14 /* two rows each, within the 34-row screen */
+#define PRESET_NAME 48
+#define PRESET_WORDS 200
+/* taken from the heap for the menu's life only (the program sits a few KB
+under one of the heap's 64 KB steps) */
+static struct preset { char name[PRESET_NAME]; char words[PRESET_WORDS]; } *presets = NULL;
+static int preset_count = 0, preset_applied = -1;
+
+static void load_presets(void)
+{
+	SceUID file = sceIoOpen(DATA_ROOT "/presets.txt", PSP_O_RDONLY, 0);
+	enum { TEXT_BYTES = 4096 };
+	char *text, *line, *save = NULL;
+	int length;
+
+	preset_count = 0;
+	if (file < 0)
+		return;
+	text = malloc(TEXT_BYTES);
+	presets = malloc(MAXIMUM_PRESETS * sizeof(*presets));
+	if (!text || !presets)
+	{
+		free(text);
+		free(presets);
+		presets = NULL;
+		sceIoClose(file);
+		return;
+	}
+	length = sceIoRead(file, text, TEXT_BYTES - 1);
+	sceIoClose(file);
+	if (length <= 0)
+	{
+		free(text);
+		return;
+	}
+	text[length] = '\0';
+	for (line = strtok_r(text, "\r\n", &save); line && preset_count < MAXIMUM_PRESETS; line = strtok_r(NULL, "\r\n", &save))
+	{
+		char *colon = strchr(line, ':');
+
+		if (line[0] == '#' || !colon)
+			continue;
+		*colon = '\0';
+		snprintf(presets[preset_count].name, PRESET_NAME, "%s", line);
+		for (colon++; *colon == ' '; colon++)
+			;
+		snprintf(presets[preset_count].words, PRESET_WORDS, "%s", colon);
+		preset_count++;
+	}
+	free(text);
+}
+
+static void apply_preset(int p)
+{
+	char words[PRESET_WORDS], *word, *save = NULL;
+	int i;
+
+	for (i = 0; i < OPTION_COUNT; i++)
+		options[i].on = 0;
+	extra_words[0] = '\0';
+	snprintf(words, sizeof(words), "%s", presets[p].words);
+	for (word = strtok_r(words, " \t,", &save); word; word = strtok_r(NULL, " \t,", &save))
+	{
+		int known = 0;
+
+		for (i = 0; i < OPTION_COUNT; i++)
+			if (strcmp(options[i].word, word) == 0)
+				options[i].on = known = 1;
+		if (!known && strlen(extra_words) + strlen(word) + 2 < sizeof(extra_words))
+		{
+			strcat(extra_words, word);
+			strcat(extra_words, " ");
+		}
+	}
+	preset_applied = p;
+}
 
 static int file_exists(const char *path)
 {
@@ -289,9 +372,28 @@ static void draw(int page, int cursor, int map, int build)
 	pspDebugScreenSetXY(0, 0);
 	pspDebugScreenSetTextColor(0xFFFFFFFF);
 	pspDebugScreenPrintf("Halo PSP build %d        %s\n", build,
-		page == 0 ? "MAPS  (R: options)" : "OPTIONS  (L: maps)");
-	pspDebugScreenPrintf("up/down move, left/right/cross toggle, START plays\n\n");
-	if (page == 0)
+		page == 0 ? "MAPS  (R: options)" : page == 1 ? "OPTIONS  (L: maps, R: presets)" : "PRESETS  (L: options)");
+	pspDebugScreenPrintf(page == 2 ? "up/down move, cross applies, START plays\n\n" :
+		"up/down move, left/right/cross toggle, START plays\n\n");
+	if (page == 2)
+	{
+		/* build 114 */
+		for (i = 0; i < preset_count; i++)
+		{
+			pspDebugScreenSetTextColor(i == cursor ? 0xFF00FFFF : 0xFFFFFFFF);
+			pspDebugScreenPrintf(" %c %-.62s\n", i == preset_applied ? '*' : ' ', presets[i].name);
+			pspDebugScreenSetTextColor(0xFFAAAAAA);
+			pspDebugScreenPrintf("     %-.62s\n", presets[i].words);
+		}
+		if (!preset_count)
+			pspDebugScreenPrintf(" no presets (ms0:/halo/presets.txt: one a line, \"name: keep words\")\n");
+		else
+		{
+			pspDebugScreenSetTextColor(0xFFAAAAAA);
+			pspDebugScreenPrintf("\n %s\n", preset_applied >= 0 ? "applied: the options page shows its words" : "");
+		}
+	}
+	else if (page == 0)
 	{
 		for (i = 0; i < map_count; i++)
 		{
@@ -371,6 +473,7 @@ void psp_menu(int build)
 
 	scan_maps();
 	load_options();
+	load_presets(); /* build 114 */
 	map = current_map();
 	cursor = map;
 	pspDebugScreenInit();
@@ -380,18 +483,24 @@ void psp_menu(int build)
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
 	while (!done)
 	{
-		int count = page == 0 ? map_count : OPTION_COUNT;
+		int count = page == 0 ? map_count : page == 1 ? OPTION_COUNT : preset_count;
 		unsigned int pressed;
-		static int drawn_page = -1, drawn_cursor = -1, drawn_map = -1, drawn_options = -1;
-		int options_now = 0, k;
+		static int drawn_page = -1, drawn_cursor = -1, drawn_map = -1, drawn_preset = -2;
+		static unsigned int drawn_options = 0;
+		unsigned int options_now = 0;
+		int k;
 
 		/* build 71: redrawn only when something changed, at the start of a
 		vertical blank. The debug screen draws straight into the picture on
 		show, so clearing and redrawing it 16 times a second flickered (Sheepdog01,
 		b70) */
+		/* build 114: a hash of every option (b71-b113 packed them as bits of
+		one int, and options past the 32nd wrapped onto the first: toggling
+		one could leave the screen unchanged) */
 		for (k = 0; k < OPTION_COUNT; k++)
-			options_now |= options[k].on << k;
-		if (page != drawn_page || cursor != drawn_cursor || map != drawn_map || options_now != drawn_options)
+			options_now = options_now * 31u + (unsigned int)options[k].on + 1u;
+		if (page != drawn_page || cursor != drawn_cursor || map != drawn_map || options_now != drawn_options ||
+			preset_applied != drawn_preset)
 		{
 			/* build 92: drawn whole into the buffer not on show, then shown
 			at the next vertical blank. b91's scrolling list redrew every
@@ -409,6 +518,7 @@ void psp_menu(int build)
 			drawn_cursor = cursor;
 			drawn_map = map;
 			drawn_options = options_now;
+			drawn_preset = preset_applied;
 		}
 		sceCtrlReadBufferPositive(&pad, 1);
 		pressed = pad.Buttons & ~last;
@@ -428,9 +538,15 @@ void psp_menu(int build)
 			cursor = (cursor + count - 1) % count;
 		if ((pressed & PSP_CTRL_DOWN) && count)
 			cursor = (cursor + 1) % count;
-		if (pressed & (PSP_CTRL_RTRIGGER | PSP_CTRL_LTRIGGER | PSP_CTRL_TRIANGLE))
+		/* build 114: three pages, R forward and L back (triangle: forward) */
+		if (pressed & (PSP_CTRL_RTRIGGER | PSP_CTRL_TRIANGLE))
 		{
-			page = !page;
+			page = (page + 1) % 3;
+			cursor = page == 0 ? map : 0;
+		}
+		if (pressed & PSP_CTRL_LTRIGGER)
+		{
+			page = (page + 2) % 3;
 			cursor = page == 0 ? map : 0;
 		}
 		if (pressed & (PSP_CTRL_CROSS | PSP_CTRL_LEFT | PSP_CTRL_RIGHT))
@@ -439,6 +555,8 @@ void psp_menu(int build)
 				map = cursor;
 			else if (page == 1)
 				toggle(cursor);
+			else if (page == 2 && preset_count && (pressed & PSP_CTRL_CROSS))
+				apply_preset(cursor);
 		}
 		if (pressed & PSP_CTRL_START)
 			done = 1;
@@ -468,6 +586,9 @@ void psp_menu(int build)
 		sceKernelDelayThread(60000);
 	}
 	save_files(map);
+	free(presets); /* build 114 */
+	presets = NULL;
+	preset_count = 0;
 	pspDebugScreenSetBase((u32 *)(MENU_VRAM + back * MENU_BUFFER_BYTES));
 	pspDebugScreenClear();
 	pspDebugScreenSetXY(0, 0);
