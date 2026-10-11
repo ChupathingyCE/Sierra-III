@@ -2,6 +2,8 @@
 
 What comes after b114, gathered from b114's hardware tests (`hardware_b114.md`) and the day's recon (`big_levers.md` §0, §4, §8, §9; `streaming.md`). Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator or estimate, **[D]** read in the code, **[U]** inference.
 
+Progress on this list shows on the **Sierra-III performance** dashboard (an artifact in Sheepdog01's artifact list), in its Levers and Next pages.
+
 Everything ships behind a keep word. Anything that changes what the player sees is Sheepdog01's call, one at a time, after an A/B. **This list is a draft:** the order and the cut are for Sheepdog01 to settle.
 
 ## Decisions and priorities (Sheepdog01, 2026-10-11)
