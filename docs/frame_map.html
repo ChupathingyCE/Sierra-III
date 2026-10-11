@@ -82,24 +82,52 @@ header { display: grid; gap: 10px; }
 .gap-ok { color: var(--ok); }
 
 /* timeline */
-.figure { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 16px 16px 12px; display: grid; gap: 10px; }
-.tl-scroll { overflow-x: auto; }
-.tl { position: relative; min-width: 640px; display: grid; grid-template-columns: 92px 1fr; row-gap: 10px; column-gap: 10px; padding-top: 22px; padding-bottom: 18px; }
-.tl .lab { font: 600 12px var(--f-label); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); align-self: center; }
-.tl .lab small { display: block; font: 400 11px var(--f-data); text-transform: none; letter-spacing: 0; }
-.track { position: relative; height: 34px; background: var(--soft); border-radius: 4px; }
+.figure { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 20px 20px 16px; display: grid; gap: 16px; }
+.targets { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.target { border: 1px solid var(--line); border-left: 4px solid var(--target); border-radius: 6px; padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
+.target.primary { border-left-style: solid; }
+.target.minimum { border-left-style: dashed; }
+.target.wall { border-left-color: var(--muted); }
+.target .eq { font: 600 14px var(--f-data); }
+.target .now { font-size: 13px; color: var(--muted); }
+.tl-scroll { overflow-x: auto; padding-bottom: 4px; }
+.tl { position: relative; min-width: 920px; display: grid; grid-template-columns: 128px 1fr; row-gap: 14px; column-gap: 14px; padding-bottom: 26px; }
+.tl .lab { font: 600 13px var(--f-label); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); align-self: center; }
+.tl .lab small { display: block; font: 400 12px var(--f-data); text-transform: none; letter-spacing: 0; color: var(--ink); }
+.track { position: relative; height: 40px; background: var(--soft); border-radius: 4px; }
+.track.cpu { height: 64px; }
+.track.goal { height: 46px; background: transparent; }
+.track.braces { height: 34px; background: transparent; }
+.goalbar { position: absolute; left: 0; height: 18px; border-radius: 3px; border: 1.5px solid var(--target); background: color-mix(in srgb, var(--target) 10%, transparent); }
+.goalbar span { position: absolute; left: calc(100% + 8px); top: 50%; transform: translateY(-50%); font: 600 12px var(--f-label); color: var(--target); white-space: nowrap; }
+.goalbar.min { top: 26px; border-style: dashed; }
+.goalbar.pri { top: 2px; }
+.brace { position: absolute; bottom: 4px; height: 12px; border: 2px solid var(--muted); border-bottom: none; border-radius: 4px 4px 0 0; }
+.brace span { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); font: 600 12px var(--f-data); color: var(--ink); white-space: nowrap; }
 .seg { position: absolute; top: 0; bottom: 0; overflow: hidden; border-right: 1px solid var(--surface); cursor: pointer; }
 .seg .mem { position: absolute; top: 0; bottom: 0; left: 0; background: repeating-linear-gradient(135deg, var(--hatch) 0 3px, transparent 3px 7px); }
-.seg .t { position: absolute; left: 4px; top: 50%; transform: translateY(-50%); font: 600 11px var(--f-label); color: #fff; white-space: nowrap; text-shadow: 0 1px 1px rgba(0,0,0,.35); pointer-events: none; }
-.marker { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--target); pointer-events: none; }
-.marker span { position: absolute; top: -20px; left: 4px; font: 600 11px var(--f-data); color: var(--target); white-space: nowrap; }
-.marker.left span { left: auto; right: 4px; }
-.axis { position: absolute; left: 102px; right: 0; bottom: 0; height: 14px; font: 400 10px var(--f-data); color: var(--muted); }
-.axis i { position: absolute; transform: translateX(-50%); font-style: normal; }
-.keyrow { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 12px; color: var(--muted); }
-.keyrow span { display: inline-flex; align-items: center; gap: 6px; }
-.sw { width: 12px; height: 12px; border-radius: 2px; display: inline-block; }
+.seg .t { position: absolute; left: 6px; right: 4px; top: 50%; transform: translateY(-50%); font: 600 12px var(--f-label); color: #fff; white-space: nowrap; overflow: hidden; text-shadow: 0 1px 1px rgba(0,0,0,.4); pointer-events: none; line-height: 1.25; }
+.seg .t b { display: block; font: 600 12px var(--f-data); }
+.seg:hover { filter: brightness(1.08); }
+.marker { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--target); pointer-events: none; z-index: 2; }
+.marker.min { border-left-style: dashed; }
+.axis { position: absolute; left: 142px; right: 0; bottom: 0; height: 18px; font: 400 11px var(--f-data); color: var(--muted); }
+.axis i { position: absolute; transform: translateX(-50%); font-style: normal; white-space: nowrap; }
+.axis i.minor { top: -6px; width: 1px; height: 5px; background: var(--line); transform: none; }
+.tl-key { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 6px 18px; font-size: 13px; }
+.tl-key span { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tl-key b { margin-left: auto; font: 600 12px var(--f-data); }
+.sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; flex: none; }
 .sw.hatch { background: repeating-linear-gradient(135deg, var(--muted) 0 2px, transparent 2px 5px); border: 1px solid var(--line); }
+.sw.line { width: 18px; height: 0; border-top: 2px solid var(--target); border-radius: 0; }
+.sw.line.dash { border-top-style: dashed; }
+
+/* key */
+.key { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+.key .card dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; font-size: 13px; align-items: baseline; }
+.key .card dt { font: 600 12px var(--f-data); white-space: nowrap; }
+.key .card dd { margin: 0; color: var(--ink); }
+.key .card dd small { color: var(--muted); }
 
 /* pipeline */
 .group { display: grid; gap: 10px; }
@@ -183,6 +211,44 @@ table.index td.id { font: 600 12px var(--f-data); white-space: nowrap; }
     </div>
   </header>
 
+  <section class="group" aria-labelledby="keyh">
+    <div class="group-head"><h2 id="keyh">Key</h2><p>What the labels, lever names and markings on this page mean.</p></div>
+    <div class="key">
+      <div class="card"><h3>Lever names</h3><dl>
+        <dt>L1–L5</dt><dd>Big levers: structural changes sized to raise the tick and frame rate a lot <small>(big_levers.md)</small></dd>
+        <dt>E…</dt><dd>Exact, quick: same game and picture, small cost to build <small>(optimization_ranking.md §3)</small></dd>
+        <dt>X…</dt><dd>Exact, structural: same game and picture, bigger builds <small>(§4)</small></dd>
+        <dt>B…</dt><dd>Behaviour or look: changes what you see or feel, so it's your call after an A/B <small>(§6)</small></dd>
+        <dt>M…</dt><dd>Measure first: runs that decide the order <small>(§2)</small></dd>
+        <dt>N1–N3</dt><dd>New: found while building this map, not yet in the ranking</dd>
+      </dl></div>
+      <div class="card"><h3>Lever status</h3><dl>
+        <dt><span class="pill s-built">built</span></dt><dd>In the build and on</dd>
+        <dt><span class="pill s-off">keep word, off</span></dt><dd>In the build, off unless its keep word is set; also "in tree" (written, not shipped)</dd>
+        <dt><span class="pill s-tested">tested</span></dt><dd>Run on the PSP; the result is in the note</dd>
+        <dt><span class="pill s-shelved">shelved</span></dt><dd>Tried and set aside</dd>
+        <dt><span class="pill s-proposed">proposed</span></dt><dd>Designed or sized, not built; also "measured", "research", "no design"</dd>
+        <dt><span class="pill s-new">new</span></dt><dd>Spotted on this map; needs a look in the code first</dd>
+      </dl><p style="font-size:13px"><span class="k-visible">changes the look or play</span>: not exact, so it's your call, one at a time, after an A/B. Every other lever is exact: the same game and picture, only faster.</p></div>
+      <div class="card"><h3>Evidence and owners</h3><dl>
+        <dt>[M]</dt><dd>Measured on your PSP-1000</dd>
+        <dt>[E]</dt><dd>Emulator or its cache model: says where, not how long</dd>
+        <dt>[D]</dt><dd>Read in the code or data</dd>
+        <dt>[U]</dt><dd>Inference</dd>
+        <dt>ENGINE</dt><dd>Halo's own code, as decompiled</dd>
+        <dt>PORT CODE</dt><dd>Ours: psp_ge.c and the other psp/src files</dd>
+        <dt>HARDWARE</dt><dd>The GE or the Media Engine, running alongside the CPU</dd>
+      </dl></div>
+      <div class="card"><h3>On the chart</h3><dl>
+        <dt><span class="sw" style="background:var(--c-obj)"></span></dt><dd>A colour per stage, the same everywhere on the page</dd>
+        <dt><span class="sw hatch"></span></dt><dd>The share of that block spent waiting on memory</dd>
+        <dt><span class="sw line"></span></dt><dd>Primary target: 33.3 ms, 30 fps</dd>
+        <dt><span class="sw line dash"></span></dt><dd>Minimum target: 66.7 ms, 15 fps at full game speed</dd>
+        <dt>ms</dt><dd>Per displayed frame, unless it says "a tick"</dd>
+      </dl></div>
+    </div>
+  </section>
+
   <section class="group" aria-labelledby="pick">
     <div class="group-head"><h2 id="pick">Stretch</h2><p>Game-time windows of the opening bench. Each figure below follows the stretch you pick.</p></div>
     <div class="tabs" id="tabs" role="group" aria-label="Stretch"></div>
@@ -190,9 +256,10 @@ table.index td.id { font: 600 12px var(--f-data); white-space: nowrap; }
   </section>
 
   <section class="figure" aria-labelledby="tlh">
-    <div class="group-head"><h2 id="tlh">The frame on one scale</h2><p>The main CPU's work end to end, with the GE and the Media Engine running alongside. Hatching marks the share spent waiting on memory. Click a block to open its stage.</p></div>
+    <div class="group-head"><h2 id="tlh">The frame against the targets</h2><p>The main CPU's work end to end, on one millisecond scale with the targets, and the GE and the Media Engine running alongside. Click a block to open its stage.</p></div>
+    <div class="targets" id="targets"></div>
     <div class="tl-scroll"><div class="tl" id="timeline"></div></div>
-    <div class="keyrow" id="tlkey"></div>
+    <div class="tl-key" id="tlkey"></div>
   </section>
 
   <section class="group" aria-labelledby="pipeh">
@@ -473,46 +540,71 @@ const SCALE = 300;
 
 function renderTimeline() {
   const s = ST[cur], tl = document.getElementById('timeline');
+  const ticks = s.ms.objects + s.ms.ai + s.ms.tother, draw = s.frame - ticks;
+  const minNeed = 2 * s.tick.total + draw, priNeed = s.tick.total + draw;
+  const times = (v, t) => v <= t ? '<span class="gap-ok">within it</span>' : '<span class="gap-bad">' + fmt(v / t, 1) + '× over</span>';
+  document.getElementById('targets').innerHTML =
+    '<div class="target primary"><div class="eyebrow">Primary target · 30 fps at 30 ticks a second</div><div class="eq">1 tick + drawing ≤ 33.3 ms</div><div class="now">' + cap(s.label) + ': ' + fmt(s.tick.total) + ' + ' + fmt(draw) + ' = ' + fmt(priNeed) + ' ms, ' + times(priNeed, 33.3) + '</div></div>' +
+    '<div class="target minimum"><div class="eyebrow">Minimum target · 15 fps at 30 ticks a second</div><div class="eq">2 ticks + drawing ≤ 66.7 ms</div><div class="now">' + cap(s.label) + ': 2 × ' + fmt(s.tick.total) + ' + ' + fmt(draw) + ' = ' + fmt(minNeed) + ' ms, ' + times(minNeed, 66.7) + '</div></div>' +
+    '<div class="target wall"><div class="eyebrow">Either target · the tick on its own</div><div class="eq">1 tick &lt; 33.3 ms</div><div class="now">' + cap(s.label) + ': ' + fmt(s.tick.total) + ' ms, ' + (s.tick.total < 33.3 ? '<span class="gap-ok">under it</span>' : '<span class="gap-bad">' + fmt(s.tick.total / 33.3, 1) + '× over: the game can\'t reach full speed however fast drawing gets</span>') + '</div></div>';
   tl.innerHTML = '';
   const pct = ms => (100 * ms / SCALE) + '%';
+  const lines = track => { [[33.3, ''], [66.7, 'min']].forEach(([v, c]) => { const m = el('div', { class: 'marker ' + c }); m.style.left = pct(v); track.appendChild(m); }); };
+  // targets row
+  tl.appendChild(el('div', { class: 'lab' }, 'Targets<small>frame budgets</small>'));
+  const goal = el('div', { class: 'track goal' });
+  const gp = el('div', { class: 'goalbar pri' }, '<span>Primary: 30 fps, the whole frame in 33.3 ms</span>'); gp.style.width = pct(33.3); goal.appendChild(gp);
+  const gm = el('div', { class: 'goalbar min' }, '<span>Minimum: 15 fps at full game speed, 66.7 ms</span>'); gm.style.width = pct(66.7); goal.appendChild(gm);
+  lines(goal); tl.appendChild(goal);
+  // braces row
+  tl.appendChild(el('div', { class: 'lab' }, ''));
+  const br = el('div', { class: 'track braces' });
+  const b1 = el('div', { class: 'brace' }, '<span>' + fmt(s.tpf, 2) + ' ticks · ' + fmt(ticks) + ' ms</span>'); b1.style.left = pct(0); b1.style.width = 'calc(' + pct(ticks) + ' - 3px)'; br.appendChild(b1);
+  const b2 = el('div', { class: 'brace' }, '<span>drawing and the frame · ' + fmt(draw) + ' ms</span>'); b2.style.left = pct(ticks); b2.style.width = pct(draw); br.appendChild(b2);
+  tl.appendChild(br);
   // main CPU
-  tl.appendChild(el('div', { class: 'lab' }, 'Main CPU<small>' + fmt(s.frame) + ' ms</small>'));
-  const cpu = el('div', { class: 'track', role: 'img', 'aria-label': 'Main CPU, ' + fmt(s.frame) + ' ms a frame' });
+  tl.appendChild(el('div', { class: 'lab' }, 'Main CPU<small>' + fmt(s.frame) + ' ms · ' + fmt(s.fps, 1) + ' fps</small>'));
+  const cpu = el('div', { class: 'track cpu', role: 'img', 'aria-label': 'Main CPU, ' + fmt(s.frame) + ' ms a frame' });
   let x = 0;
   SEGS.forEach(([k, label, c, phase]) => {
     const ms = s.ms[k]; if (!ms) return;
-    const seg = el('div', { class: 'seg', title: label + ': ' + fmt(ms) + ' ms (' + (phase === 'tick' ? s.memTick : s.memDraw) + '% waiting on memory)' });
+    const memp = phase === 'tick' ? s.memTick : s.memDraw;
+    const seg = el('div', { class: 'seg', title: label + ': ' + fmt(ms) + ' ms, ' + memp + '% of it waiting on memory' });
     seg.style.left = pct(x); seg.style.width = pct(ms); seg.style.background = 'var(' + c + ')';
-    const mem = el('div', { class: 'mem' }); mem.style.width = (phase === 'tick' ? s.memTick : s.memDraw) + '%'; seg.appendChild(mem);
-    if (ms / SCALE > 0.055) seg.appendChild(el('div', { class: 't' }, label));
+    const mem = el('div', { class: 'mem' }); mem.style.width = memp + '%'; seg.appendChild(mem);
+    const w = ms / SCALE;
+    if (w > 0.045) seg.appendChild(el('div', { class: 't' }, label + '<b>' + fmt(ms) + '</b>'));
+    else if (w > 0.022) seg.appendChild(el('div', { class: 't' }, '<b>' + fmt(ms, 0) + '</b>'));
     seg.addEventListener('click', () => openStage(k));
     cpu.appendChild(seg); x += ms;
   });
-  [[66.7, '15 fps · 66.7 ms', 'marker'], [33.3, '30 fps · 33.3 ms', 'marker left']].forEach(([v, t, c]) => { const m = el('div', { class: c }, '<span>' + t + '</span>'); m.style.left = pct(v); cpu.appendChild(m); });
-  tl.appendChild(cpu);
+  lines(cpu); tl.appendChild(cpu);
   // GE
   tl.appendChild(el('div', { class: 'lab' }, 'GE<small>' + s.ge + ' ms busy</small>'));
   const ge = el('div', { class: 'track', role: 'img', 'aria-label': 'GE busy ' + s.ge + ' ms a frame' });
-  const gs = el('div', { class: 'seg', title: 'The GE drawing: ' + s.ge + ' ms a frame [M]' }); gs.style.left = '0'; gs.style.width = pct(s.ge); gs.style.background = 'var(--c-ge)'; gs.style.opacity = '.85';
-  if (s.ge / SCALE > 0.06) gs.appendChild(el('div', { class: 't' }, 'drawing'));
-  gs.addEventListener('click', () => openStage('gel'));
-  ge.appendChild(gs);
-  [66.7, 33.3].forEach(v => { const m = el('div', { class: 'marker' }); m.style.left = pct(v); ge.appendChild(m); });
-  tl.appendChild(ge);
+  const gs = el('div', { class: 'seg', title: 'The GE drawing: ' + s.ge + ' ms a frame [M]' }); gs.style.left = '0'; gs.style.width = pct(s.ge); gs.style.background = 'var(--c-ge)';
+  gs.appendChild(el('div', { class: 't' }, 'drawing <b style="display:inline">' + s.ge + ' ms</b>'));
+  gs.addEventListener('click', () => openStage('ge'));
+  ge.appendChild(gs); lines(ge); tl.appendChild(ge);
   // ME
   tl.appendChild(el('div', { class: 'lab' }, 'Media Engine<small>13% busy</small>'));
   const me = el('div', { class: 'track', role: 'img', 'aria-label': 'Media Engine, audio only, about 13% busy' });
   const ms = el('div', { class: 'seg', title: 'Audio mixing: about 13% of its time in play [M]' }); ms.style.left = '0'; ms.style.width = pct(s.frame * 0.13); ms.style.background = 'var(--c-me)';
-  if (s.frame * 0.13 / SCALE > 0.06) ms.appendChild(el('div', { class: 't' }, 'audio'));
-  me.appendChild(ms);
-  [66.7, 33.3].forEach(v => { const m = el('div', { class: 'marker' }); m.style.left = pct(v); me.appendChild(m); });
-  tl.appendChild(me);
+  ms.appendChild(el('div', { class: 't' }, 'audio'));
+  me.appendChild(ms); lines(me); tl.appendChild(me);
   const ax = el('div', { class: 'axis' });
-  for (let t = 0; t <= SCALE; t += 50) { const i = el('i', {}, t + (t === SCALE ? ' ms' : '')); i.style.left = (100 * t / SCALE) + '%'; if (t === SCALE) i.style.transform = 'translateX(-100%)'; if (t === 0) i.style.transform = 'none'; ax.appendChild(i); }
+  for (let t = 0; t <= SCALE; t += 25) {
+    if (t % 50) { const m = el('i', { class: 'minor' }); m.style.left = (100 * t / SCALE) + '%'; ax.appendChild(m); continue; }
+    const i = el('i', {}, t + (t === SCALE ? ' ms' : '')); i.style.left = (100 * t / SCALE) + '%';
+    if (t === SCALE) i.style.transform = 'translateX(-100%)'; if (t === 0) i.style.transform = 'none'; ax.appendChild(i);
+  }
   tl.appendChild(ax);
-  document.getElementById('tlkey').innerHTML = SEGS.map(([k, l, c]) => '<span><i class="sw" style="background:var(' + c + ')"></i>' + l + '</span>').join('') +
-    '<span><i class="sw hatch"></i>waiting on memory (ticks ' + s.memTick + '%, drawing ' + s.memDraw + '%)</span>';
+  document.getElementById('tlkey').innerHTML = SEGS.filter(([k]) => s.ms[k]).map(([k, l, c]) => '<span><i class="sw" style="background:var(' + c + ')"></i>' + STAGE_LONG[k] + '<b>' + fmt(s.ms[k]) + '</b></span>').join('') +
+    '<span><i class="sw hatch"></i>Waiting on memory<b>' + s.memTick + '% · ' + s.memDraw + '%</b></span>' +
+    '<span><i class="sw" style="background:var(--c-ge)"></i>The GE, busy<b>' + s.ge + '</b></span>';
 }
+const STAGE_LONG = { objects: 'Objects (tick)', ai: 'AI (tick)', tother: 'Other tick work', vis: 'Visibility', prep: 'Object prep', gel: 'Our GE layer', level: 'The level', fx: 'Effects', hud: 'HUD', rest: 'Sound, frame end, set-up' };
+const cap = t => t.charAt(0).toUpperCase() + t.slice(1);
 
 function pill(lv) {
   const cls = { built: 's-built', off: 's-off', tested: 's-tested', shelved: 's-shelved', proposed: 's-proposed', new: 's-new' }[lv.st] || 's-proposed';
