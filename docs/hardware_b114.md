@@ -13,6 +13,7 @@ Sheepdog01's PSP-1000 at 333 MHz, b30, `halo_psp_b114.zip` (EBOOT `8ae1188134612
 - **Test 4 (`lean`) saves 2–3% of the frame**, not the 8–12% the emulator showed.
 - **Test 5 (`gemeon`): step 4b's fixes hold** (no failed jobs, no late audio). The ME's runs are still serial, so it costs 7% in the cinematic, and textures the ME can't load show as one flat-coloured frame (the red pistol).
 - **Test 6 (`drawdist60`): about 3%**, and the fog at 60 looks acceptable (Sheepdog01). 40, 30 and 20 go to the emulator first.
+- **Tests 7 and 8 (the looks):** the zoom overlay, the tracers and the plasma pistol need a reference to aim at (the PC build). The bake's half-size, 16-colour effect textures are a likely part of it. Preset 7, without `hwprofile` and `gebusy`, had smaller frame spikes.
 - **The ocean's clipping is our depth push**, not the 16-bit depth buffer: it's fixed on the emulator (`overlayfreefar`), for b115.
 - **On the PSP, only the opening cinematic repeats from run to run.** `benchreport.py` now reports it first, as the stretch to use for A/Bs.
 
@@ -136,6 +137,34 @@ The opening bench to the bunker (game time 6,555). Sheepdog01: "the fog at 60 lo
   - **At 20–30 the fog starts at 12–18 units,** inside the range Elites fire from on the beach.
   - **40 is the one worth a PSP run:** about −6% of the frame in the open stretches. Below that, the look and the fight change more than the frame does.
 
+## Tests 7 and 8: the looks [M]
+
+Preset 7 (`contrails zoommask`) ran from the start to the bunker (game time 7,436). Preset 8 (`contrails zoommaskfull`) ran to game time 1,511 and drew 24 zoom masks.
+
+**What Sheepdog01 saw:**
+- The pistol's zoom overlay looks offset and stretched.
+- The plasma and rifle fire show long streaks rather than a projectile flying forward.
+- The plasma pistol's bolts look like a low-quality cloud.
+- Run 7 felt the smoothest of the night and looked the best.
+
+- **Smoothness:**
+  - The average frame was the same as Test 1's: 195.1 ms in the cinematic, against 195.6.
+  - The spikes were a little smaller. A heartbeat's worst frame was 1.63 times its average at the 90th percentile, against Test 1's 1.98 and Test 6's 1.77.
+  - Preset 7 is the only bench preset without `hwprofile` and `gebusy`. The profiler module and the GE's interrupt every 16 draws are the likely source of the hitches [U]. Preset 1 without those two words would test it.
+  - Nothing in the log explains the look [U].
+- **The zoom overlay** [D]:
+  - The port draws the screen effect's convolution mask as a darkening layer, a stand-in for the blur (a third of its alpha, or all of it with `zoommaskfull`). On the Xbox, that mask marks where the screen is blurred; it isn't drawn as it is.
+  - The texture is spread over the 4:3 square in the middle of the screen.
+  - The mask's soft gradient, held in a palette, shows as rings.
+  - What the real effect looks like has to come from a reference: the PC build at the same moment.
+- **The tracers** [D]:
+  - The contrails are drawn from the game's own vertices, with their per-point colours (Test 8: 221 contrails, about 11 segments each, in its last 300 frames), so their length is the tags'.
+  - What reads as wrong is more likely what goes with them [U]: the bolt's head (its light volume, glow and flare are widget sprites), the effect textures, and the 5650 framebuffer with no dithering.
+- **The bake as a cause** [D for the policy, U for these bitmaps]:
+  - Every texture loses its top mip, so it's stored at half resolution.
+  - A texture goes to 16 colours (CLUT4) when its PSNR is no worse than the 5650 framebuffer's own. That measure can pass a glow's soft alpha gradient while banding it.
+  - To check: the format the bake chose for the plasma, contrail and zoom mask bitmaps, then a bake variant that keeps effect textures at CLUT8 and full size.
+
 ## The ocean: Sheepdog01's "clips through the terrain under the water" [D + E]
 
 **The cause** [D]:
@@ -163,5 +192,5 @@ The opening bench to the bunker (game time 6,555). Sheepdog01: "the fog at 60 lo
 
 ## Next
 
-- Tests 7–9 as in `build_b114.md`. Test 2 is skipped.
+- Test 9 (optional) and preset 9 (draw distance 40). Test 2 is skipped.
 - b115: `overlayfreefar` for Sheepdog01's A/B, and the water's tint.
