@@ -13,6 +13,8 @@ Sheepdog01 asked for the changes that would **significantly** raise the tick rat
 
 The aim is a pipeline: each unit works on its own stage of a different frame, and each reads from the memory nearest to it. The levers already ranked below are its pieces: L1 step 4 (the ME builds lists while the main CPU runs on), L2/X1 (VRAM for the GE's reads), L3 (AI on the ME), L5 (the full tick/draw split).
 
+**The Memory Stick is a stage too:** what's streamed in play, how to make it arrive ahead of need without stopping the game thread, smaller asset bakes, and how to measure the headroom and balance the caches are in `streaming.md` (S1–S11).
+
 ### The memory pools, b114 on b30 [M from the hardware log unless marked]
 
 | Pool | Size | What's in it |
