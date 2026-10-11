@@ -60,6 +60,7 @@ Keep words: Test 1's plus `list768 sound1792 soundplace`. From the start to the 
 - **`list768` ends the approach's skipped draws.** All of b112's and Test 1's skips fell in game time 570–1,200, where the fullest frames want about 400 KB of list. With 768 KB none were skipped; the fullest frame's models took 246 KB.
 - **The cost:** the CPU now draws what it used to skip. Over the approach the frame took 198 ms against Test 1's 171 (+16%); the ticks were the same (62.8 against 62.7 ms). Over the rest of the run the frame was faster or the same (−9% and −10% in the next two stretches, −21% on the beach, all within the run-to-run spread).
 - **`sound1792` with `soundplace`: no sound dropped.** `sound1792` alone dropped 16 by the landing in run 6; with the placement too, none, and fewer loads from the stick. One run each [M]; the emulator's single runs were mixed, so the PSP's figure is the one to trust.
+- **What Sheepdog01 saw and heard:** no far trees blinking, and no sound problems noticed, though a missing sound is hard to hear in a busy soundscape: the log's drop count is the better judge there.
 - **The heap:** 5,363 of 5,888 KB taken by game time 4,000. b112 run 5's whole level peaked 312 KB above its game-time-4,000 figure (5,154 against 4,842), so the whole level would take about 5,680 KB [U]: it fits, with about 200 KB to spare.
 
 ## Next
