@@ -63,6 +63,16 @@ Keep words: Test 1's plus `list768 sound1792 soundplace`. From the start to the 
 - **What Sheepdog01 saw and heard:** no far trees blinking, and no sound problems noticed, though a missing sound is hard to hear in a busy soundscape: the log's drop count is the better judge there.
 - **The heap:** 5,363 of 5,888 KB taken by game time 4,000. b112 run 5's whole level peaked 312 KB above its game-time-4,000 figure (5,154 against 4,842), so the whole level would take about 5,680 KB [U]: it fits, with about 200 KB to spare.
 
+## Test 3: the looks
+
+Keep words: Test 1's plus `contrails zoommask`. From the start to the beach (game time 5,691). No fault. Sheepdog01 saw: the trees flickering again, the plasma rifle's shots streaking badly and not always drawn, and bodies stuck in midair (screenshot `shot000_t436`: an Elite's body hanging above the rocks).
+
+- **The flicker is the list's room** [M]: 16,047 draws skipped with the display list full, against Test 1's 13,518; the tracers take room too (up to 14,594 segments in 300 frames). Test 2, with `list768`, skipped none.
+- **"Not always drawn": the see-through draws' table is full** [M]: it holds 160 a frame, and 712 were dropped this run (Test 1, without tracers: 494). The tracers queue one each.
+- **The streaks** [U]: the player's own shots trail back past the camera, and a corner behind the near plane, or past the GE's 2,048-pixel range to a side, wraps the triangle into a spike across the screen (`shot001_t447`: a streak from the screen's corner to the crosshair). Models are cut for this; the tracers weren't. b114 folds such corners away.
+- **The zoom mask never drew**: no zoom-mask line in the log, so the zoom wasn't used with the pistol in this run, or the effect didn't reach the mask [U].
+- **Bodies in midair** [U]: 15 bodies a tick were at rest and offered to the port's sleep. A body asleep stays where it is if what held it up goes (another body cleared away, say). To check: does shooting a stuck body drop it, and does the keep word `awake` (no sleep at all) make it go away?
+
 ## Next
 
 - Test 2 (`list768 sound1792 soundplace`) and Test 3 (`contrails zoommask`), as in `build_b113.md`.
