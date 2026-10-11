@@ -46,7 +46,7 @@ The rule: each byte goes nearest its heaviest reader.
 | VRAM: textures | 1,216 KB | ~400 KB: the best third by binds per byte | Texels from RAM cost ±1 ms (Blood Gulch [M], stand-in textures). On b30 the best third of the VRAM set (383 KB) took 92% of its binds (b114 test 1 [M]) |
 | VRAM: level vertices and indices | 0 | ~450 KB, 16-bit (`levelcompact`) | Blood Gulch [M]: 4.4 of the level's 4.8 ms recovered from VRAM. Compact vertices don't speed reads from RAM, but fit twice as many here |
 | VRAM: models | 0 | ~350 KB: the shared cast at the LODs drawn | Blood Gulch [M]: the models' reading costs 8.5 ms. One marine model drawn ten times is read ten times |
-| Heap: level arena | 1,056 KB | a positions-only copy for the ME's near-plane cuts (~40%) | The ME can't see VRAM; frees ~600 KB |
+| Heap: level arena | 1,056 KB | none: the GE-format copy moves to VRAM, made by the main CPU at the frame's end as today's conversions are; the positions the ME's near-plane cuts read go to **the ME's eDRAM**, copied there by the ME from the geometry cache (~190 KB at 16 bits) | The ME can't see VRAM and the main CPU can't see eDRAM, so data only the ME reads belongs in eDRAM (158 ns against 214 from main RAM [M]). Frees the arena's ~1 MB of heap |
 | Texture RAM cache | 1,904 KB | ~2.7 MB | Takes the textures VRAM gives up, paid for by the arena, the pools and debug data. The caches together stay above 3 MB: one frame bound 2.43 MB of textures (b114 test 1 [M]) |
 | Game state | 3,412 KB | sized to every map's peaks (~0.5 MB less) | Needs peaks from all ten maps, Two Betrayals' fights included |
 | ME eDRAM | audio | plus the ME's job code and ME-only data (L1's list state, a collision copy for L3's line-of-sight tests) | 158 ns against 214 ns from main RAM [M, `halo-psp-feasibility.md`] |
@@ -218,6 +218,29 @@ The AI (L3) by comparison reaches 969 functions and 389 KB, 69 calls through poi
    - **Calls that run at once** wait for the ME to finish what was handed over. Each one is a stall, so the next work is cutting them: the log's "carried out for" line counts them by call (text blocks, the level vertex queries, the frame's start and end).
    - **The ME's time:** its cycle counter (CP0 $9, b89) for the entry points' timers.
    - **Expected cost:** two whole-cache operations a hand-over (~tens of µs each [U]) plus the tail the main CPU waits for at each call that runs at once. Against 42–65 ms a frame moved [M].
+
+### Step 4's memory (2026-10-11) [D, U where marked]
+
+Step 4 adds little memory. What it needs is rules about who writes what, and when.
+
+| Data | Written by | Read by | Lives in |
+|---|---|---|---|
+| Records (calls, and copies of what they point to) | main CPU | ME | main RAM: two 64 KB buffers (one today). b114 test 5 filled the 64 KB buffer ~0.7 times a frame beyond the two forced runs [M] |
+| The display list (768 KB, peak 601 used [M]) | ME | GE | main RAM (the ME can't write VRAM) |
+| The GE layer's state, the converted-buffer table, the wanted lists | ME while it runs; main CPU only after it's done | both | main RAM |
+| Texture, geometry and level-copy residency, model conversions | main CPU at the frame's end (gemesim's wanted lists) | ME, GE | main RAM and the caches; VRAM copies are made here too, so the VRAM swap (§0) fits |
+| Positions for the near-plane cuts | ME | ME | eDRAM (§0) |
+
+- **New memory for step 4:** the second record buffer (64 KB) and a small log ring. Nothing else, since conversions stay on the main CPU at the frame's end. **Free user RAM is 147 KB at worst** (b114 test 1), so room comes first. The cleanest source is the script-node array: 19,001 nodes × 20 B = 371 KB of heap, of which b30 uses 4,557 (`campaign_census.md`). Sized to the map, it frees ~270 KB; ≈L once nothing is shown to make nodes at run time (`asset_baking.md` §3.8).
+- **Coherence:**
+  - The main CPU writes back its data cache before each hand-over (the records and the arrays they point to).
+  - The ME drops its cache at each hand-over, which also covers blocks the stick's DMA has just reloaded.
+  - The ME writes back the list's lines before each stall address is passed on.
+  - b112's Test 3 measured the hand-over at ~0.3 ms a run [M].
+- **After step 4, frames in flight:** to let the GE draw frame N while the ME builds N+1:
+  - **the display list becomes a ring, not two lists.** The ME writes ahead of the GE's read point, which it learns from signals like `gebusy`'s, and wraps with a jump. Doubling a 768 KB list wouldn't fit;
+  - **"in use this frame" becomes "in use in the last two frames"** for textures and geometry blocks. Consecutive frames share most of their textures, so the working set grows little [U];
+  - the records already copy what they point to, so the main CPU can tick N+1 while the ME works on N.
 
 ### Step 4a on the PSP (b112, Test 3) [M]
 
