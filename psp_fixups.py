@@ -9762,7 +9762,7 @@ void platform_psp_log(const char *format, ...);
 char *tag_get_name(long tag_index);
 void psp_objects_play_dump(long tick)
 {
-	static long first = -2;
+	static long first = -2, watched = -1;
 	static long named[256];
 	static int named_count = 0;
 	struct object_iterator iterator;
@@ -9777,6 +9777,10 @@ void psp_objects_play_dump(long tick)
 		first = psp_keep_number("stateobjects", -1);
 		if (first >= 0)
 			platform_psp_log("state: each object's play hash for ticks %ld to %ld (stateobjects%ld)", first, first + 47, first);
+		/* build 114: "statewordsN": object N's (its slot, the identifier's
+		low half) play words too, to see which part first (#25);
+		"statewordsall": every object's */
+		watched = psp_keep("statewordsall") ? -2 : psp_keep_number("statewords", -1);
 	}
 	if (first < 0 || tick < first || tick >= first + 48)
 		return;
@@ -9803,6 +9807,15 @@ void psp_objects_play_dump(long tick)
 		}
 		length += snprintf(line + length, sizeof(line) - length, " %08lx %08lx %08lx", (unsigned long)iterator.index,
 			(unsigned long)object->definition_index, hash);
+		if (watched == -2 || (watched >= 0 && (iterator.index & 0xFFFF) == watched))
+		{
+			char text[24 * 9 + 1];
+			int at = 0;
+
+			for (k = 0; k < count; k++)
+				at += snprintf(text + at, sizeof(text) - at, " %08lx", words[k]);
+			platform_psp_log("state: words of object %08lx at tick %ld:%s", (unsigned long)iterator.index, tick, text);
+		}
 	}
 	if (length)
 		platform_psp_log("state: objects at tick %ld:%s", tick, line);
