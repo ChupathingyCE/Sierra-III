@@ -61,8 +61,69 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 
 ## What the emulator showed [E]
 
-(to follow: the strict check, the tour on the new bake, the checkpoints, vrammodels)
+PPSSPP with the local patches, PSP-1000 memory, nobody at the controls unless a test says otherwise; lab batch ids in brackets.
+
+**The crash fix and the strict interpreter.** b115.1's fix ran clean through a10, a30 and c40 under the strict interpreter (range, unaligned and FPU checks), where b115 stopped; b116 at `d0315d3` was clean on seven maps (`strict-b1151b-b116`, 38202483724). The final check, every map at the release commit on the final bake, is below.
+
+**Checkpoints (R10, R11)** (`checks-b116`, 38205131855). A checkpoint at tick 300 and a revert at 450 on six maps: every revert went back to tick 300 and the game went on from the same place as the first time; b30 with the old format (`statepages`) went the same way. The compact format writes 44-52% fewer bytes:
+
+| Map | Pages kept | As non-zero words | As pages |
+|---|---:|---:|---:|
+| b30 | 307 | 688 KB | 1,228 KB |
+| a10 | 209 | 431 KB | 836 KB |
+| c10 | 280 | 598 KB | 1,120 KB |
+| c40 | 190 | 368 KB | 760 KB |
+| d40 | 205 | 392 KB | 820 KB |
+
+The log held its writes around each checkpoint (`log: writes held 1 times around checkpoints`). The emulator's stick is no guide to the PSP's write time; the bytes are.
+
+**The restorations, by eye** (`verify-b116`, 38211669473; `verify2-b116`, 38212616299; on a bake of five maps with the corrected tints):
+- b30: the sky is blue with its clouds and the ring, and the ocean is green-blue in the shallows and blue-grey further out, where the tours before showed white. The thrusters fade with the thrust.
+- c10: the swamp water is dark blue, mostly see-through (it was solid white).
+- a10: space is dark (it was pale blue); the bridge's big window still shows a green pattern (open).
+- c40: Cortana and 343 Guilty Spark draw with their glows; the room's pale discs are still there (open: they look the same with the level's fade by angle as without, so they are probably not the faded volume lights [U]; the final tour's `nooverlays` run says whether they are level surfaces at all).
+- Meters: c40 has one in view every frame, drawn (300 a 300 frames, none left out). The first try left every one out: the meter's map had never been bound, so its palette wasn't in memory (fixed, `psp_tex_resident`). b30 with every vehicle and weapon dropped by the player didn't put a Warthog in view.
+
+**The VRAM swap's second step** (`vrammodels-b116`, 38206322935). With `vrammodels600`, 86 of b30's model buffers sat in 524 KB of VRAM and every model draw read a copy; the pictures are the same as without, frame for frame within the timing. `vrammodels800` was over the limit (half the texture cache's VRAM) and was left off without a word: now it says so, and preset 5 is 400 KB. Only the PSP can time it.
+
+**The sound bake (S9)** (`s9-meters-b116`, 38209149541). Four maps baked with S9 played through their openings with no audio error or crash. The maps are 31-48 MB smaller (a10 233 to 201 MB, c40 221 to 173), and over ten minutes the stick read about a third of the sound data (a10: 17.5 MB against 48.6; c40: 17.4 against 53.0). The bake's own SNR check, over every re-encoded sound: median 28-33 dB a map. Only ears can judge it.
 
 ## On the PSP
 
-(to follow)
+The maps are a new bake: the tints, the meters' palettes and the S9 sounds are in them (`campaign116f` on the desktop). Pick the map on the launch menu's first page, then R twice to the presets, cross on the test, START. Deathless, as before.
+
+**Before the first test: install the build and the maps**
+```fish
+# Desktop
+pspmount
+set zip ~/Downloads/halo_psp_b116.zip
+ls -l $zip                      # must list the file; fish carries on after a failed step
+unzip -o $zip -d $psp
+unzip -p $zip PSP/GAME/halo/EBOOT.PBP | cmp - $psp/PSP/GAME/halo/EBOOT.PBP; and echo "b116 is on the stick"
+ls ~/psp-bake/campaign116f/halo/maps | wc -l       # 53 files: ten maps of five, ui of three
+cp -v ~/psp-bake/campaign116f/halo/maps/* $psp/halo/maps/
+rm -f $psp/halo/shots/*
+umount $psp
+```
+The copy is about 2 GB (a few minutes). The log's first line should say `bring-up build 116`, and a line `textures: see-through tints for N shaders` should follow each map's load.
+
+**After each test: pull the log.** Change the name for each test:
+```fish
+# Desktop
+pspmount
+mkdir -p $HOME/psp/logs
+tar czf $HOME/psp/logs/b116_test1.tgz --exclude='log/[0-9][0-9][0-9]_*' -C $psp/halo log shots
+rm -f $psp/halo/shots/*
+umount $psp
+```
+
+Tests 1-4 matter most; 5 and 6 when there's time. Screenshots (the usual button) of anything that looks wrong help most.
+
+| # | Map, preset | Play | Stop | Time | What it answers |
+|---|---|---|---|---|---|
+| 1 | b30, 1 (play) | Through the flight, then a minute on the beach. Look at the ocean below, the sky, the Pelicans' thrusters; listen to the music and the voices | One minute after landing | ~5 min | By eye and ear: the ocean and sky (R1, R2, R2b), the thrusters' fade, the S9 sounds |
+| 2 | b30, 3 then 4 then 5 | Leave the controls alone through the opening cinematic, once with each preset | When the cinematic ends and you have control in the Pelican | ~3 min each | The model buffers in VRAM (600 KB, 400 KB) against none: the GE's time by kind (`gebusy`). `tools/benchreport.py` compares them |
+| 3 | c40, 1 (play) | The opening in the control room, then a few steps | 3 min after you get control | ~8 min | The pale discs gone (the volume lights fade by angle); Cortana's colour (doubled tints) |
+| 4 | c10, 1 (play) | The opening, then walk to the swamp water | 3 min after you get control | ~6 min | The swamp water (no longer white) and the fog |
+| 5 | b30, 1 (play) | Play until you can drive a Warthog, and pick up a plasma rifle from a dead Elite | When you've seen both | ~10-15 min | The meters: the Warthog's speedometer and engine meter, the plasma rifle's heat gauge |
+| 6 | b30, 6 (the b115 look) | as test 1 | as test 1 | ~5 min | The same flight with every restoration off, for side-by-side shots |

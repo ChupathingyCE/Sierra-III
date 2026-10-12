@@ -303,7 +303,9 @@ static int current_map(void)
 static void load_options(void)
 {
 	SceUID file = sceIoOpen(DATA_ROOT "/keep.txt", PSP_O_RDONLY, 0);
-	char text[256], *word, *save = NULL;
+	/* build 116: 512 (256 before), as the game reads keep.txt (review: the
+	menu read a long set's first 255 bytes and wrote the cut set back) */
+	char text[512], *word, *save = NULL;
 	int length, i;
 
 	extra_words[0] = '\0';
@@ -354,8 +356,9 @@ static void save_files(int map)
 				length += snprintf(text + length, sizeof(text) - length, "%s ", options[i].word);
 		if (length < (int)sizeof(text) - 1)
 			length += snprintf(text + length, sizeof(text) - length, "%s\n", extra_words);
-		if (length > (int)sizeof(text) - 1)
-			length = sizeof(text) - 1;
+		/* the game reads at most 509 bytes of it (psp_platform.c, keep_load) */
+		if (length > 509)
+			length = 509;
 		sceIoWrite(file, text, length);
 		sceIoClose(file);
 	}

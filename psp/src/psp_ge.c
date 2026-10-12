@@ -9206,7 +9206,10 @@ between that plane and the line to the eye, in a coloured copy of the
 triangles in view (and the pieces of those cut at the screen's edges),
 drawn as the cut-up corners are (level 2). The engine side leaves the fade
 mode out under "seethroughflat", and this path with it */
-#define LEVEL_ANGLE_TRIANGLES 2048
+/* at most this many triangles a surface take the coloured copy (36 KB of
+the display list); a bigger one draws unfaded, as before (review: 2,048
+was 150 KB a surface; c40's light volumes are 16 triangles each) */
+#define LEVEL_ANGLE_TRIANGLES 512
 static unsigned long level_angle_draws = 0;
 
 static void level_angle_colors(struct sprite_vertex *t, int mode, float fade, int blend, unsigned int tint)

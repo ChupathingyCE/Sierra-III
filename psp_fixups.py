@@ -4047,9 +4047,19 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 		{
 			byte const *bits = entry;
 			unsigned long const *words = (unsigned long const *)(entry + PSP_STATE_PAGE_WORDS / 8);
+			unsigned long set = 0;
 			long w;
 
 			csmemcpy(entry, in, bytes);
+			/* the bitmap must name exactly the entry's count of words: a
+			corrupt entry with more bits set read past its copy (review) */
+			for (w = 0; w < PSP_STATE_PAGE_WORDS / 32; w++)
+				set += (unsigned long)__builtin_popcountl(((unsigned long const *)entry)[w]);
+			if (set != counts[page])
+			{
+				free(entry);
+				return FALSE;
+			}
 			for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
 				out[w] = (bits[w >> 3] & (1 << (w & 7))) ? *words++ : 0;
 		}
