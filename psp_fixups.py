@@ -11207,7 +11207,11 @@ FIXES_116["source/rasterizer/rasterizer.c#planarfog"] = [
 # keyframe 2 past a multiple of 4 (badvaddr 09af9e36, in the animation cache;
 # the emulator's JIT forgives it, the PSP's CPU doesn't). A restoration: the
 # same values, read safely. The rotations are 6-byte tables of shorts and the
-# frame indices words, both fine at 2-byte alignment
+# frame indices words, both fine at 2-byte alignment. The last pair is the
+# default translation animation_get_node_orientations copies itself for a
+# node without translation keyframes: the strict interpreter stopped b115.1
+# there on a10, a30 and c40 at the same game times b115 stopped (lab batch
+# campaign-strict-b1151)
 FIXES_116["source/models/model_animations.c#unaligned"] = [
 ("""	node_header = ((unsigned long const *)(data+header->translation_node_headers_offset))[adjusted_node_index];""",
  """	node_header = PSP_UNALIGNED_ULONG(data+header->translation_node_headers_offset+sizeof(unsigned long)*adjusted_node_index);"""),
@@ -11250,6 +11254,8 @@ FIXES_116["source/models/model_animations.c#unaligned"] = [
  """			this_keyframe_scale = PSP_UNALIGNED_REAL(&keyframe_scales[keyframe_index]);"""),
 ("""			next_keyframe_scale = keyframe_scales[keyframe_index+1];""",
  """			next_keyframe_scale = PSP_UNALIGNED_REAL(&keyframe_scales[keyframe_index+1]);"""),
+("""					orientation->translation = *((real_point3d *)(data+header->default_translations_offset)+node_index);""",
+ """					PSP_UNALIGNED_REAL3(&orientation->translation, (real_point3d const *)(data+header->default_translations_offset)+node_index);"""),
 ]
 
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_CHUPA.items()):
