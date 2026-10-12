@@ -9596,11 +9596,14 @@ static void transparent_flush_body(void)
 			tdump = psp_keep("tdump");
 		if (tdump && psp_screenshot_requested)
 		{
+			extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
 			unsigned int state_depth = sceGuGetStatus(GU_DEPTH_TEST);
+			/* and the map's bitmap tag (after b116: a10's bridge window) */
+			char const *name = psp_bitmap_tag_name((void const *)draw->key);
 
-			platform_log("tdump: %d/%d key %08x sky %d level %d fp %d sprites %d blend %d dist %.1f count %d cut %d units %d at %.2f %.2f %.2f depth test %u mfp %d",
-				index, transparent_count, draw->key, draw->sky, draw->level, draw->first_person, draw->sprites, draw->blend,
-				sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,
+			platform_log("tdump: %d/%d key %08x (%s) sky %d level %d fp %d sprites %d blend %d dist %.1f count %d cut %d units %d at %.2f %.2f %.2f depth test %u mfp %d",
+				index, transparent_count, draw->key, name ? name : "no tag", draw->sky, draw->level, draw->first_person,
+				draw->sprites, draw->blend, sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,
 				draw->matrix.w.x, draw->matrix.w.y, draw->matrix.w.z, state_depth, model_first_person);
 		}
 		if ((draw->first_person ? list_full_first_person() : list_full()) || (draw->level && overlays_off) ||
