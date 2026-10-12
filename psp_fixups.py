@@ -11177,6 +11177,36 @@ FIXES_116["source/rasterizer/rasterizer.c#tint"] = [
 					vertex_buffers, key, u_scale, v_scale, u_offset, v_offset, blend, centroid ? &centroid->x : NULL);
 			}"""),
 ]
+# build 116: water (c10's swamp) draws its base map, with the blend the
+# Xbox's passes come down to (rasterizer_xbox_water.c): the background times
+# the base map's colour when the shader says so, then the reflection added
+# through the base map's alpha. One GE draw: an alpha blend when the colour
+# modulates the background, an added draw otherwise; texpack.py's tint folds
+# the reflection cube and the view tints in (seethrough.py). Builds 21-115
+# read the map from the tag's padding (+356): the white swamp. Keep word
+# "waterwhite": as before
+FIXES_116["source/rasterizer/rasterizer.c#water"] = [
+("""	else if (type == 8)
+	{
+		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
+		*u_scale = *(float const *)(definition + 340);
+		*v_scale = *u_scale;
+	}""",
+ """	else if (type == 8 && PSP_KEEP_ONCE("waterwhite"))
+	{
+		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
+		*u_scale = *(float const *)(definition + 340);
+		*v_scale = *u_scale;
+	}
+	else if (type == 8)
+	{
+		/* build 116: the base map (+76, its tag at +88), blended by the
+		shader's flags (+40: bit 0 the base map's alpha modulates the
+		reflection, bit 1 its colour modulates the background) */
+		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
+		*blend = (*(unsigned short const *)(definition + 40) & 2) ? 0 : 3;
+	}"""),
+]
 FIXES_116["source/rasterizer/rasterizer.c#planarfog"] = [
 ("""		extern void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
 

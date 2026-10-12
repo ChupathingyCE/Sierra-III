@@ -23,7 +23,7 @@ import numpy as np
 
 from bitmap_bake import decode
 
-GENERIC, CHICAGO = 5, 6
+GENERIC, CHICAGO, WATER = 5, 6, 8
 # the maps the PSP looks through for the one it draws (psp_transparent_map)
 PSP_MAPS_LOOKED_AT = 4
 
@@ -247,16 +247,57 @@ def chicago_result(m, o, maps_p, count, means):
     return None if current is None else np.clip(current, 0.0, 1.0)
 
 
+# ---------------------------------------------------------------- water
+
+def water_tint(m, o, means):
+    """water (swat): the Xbox draws the background times the base map's
+    colour (flag bit 1), the frame's alpha from the base map's alpha and the
+    view (bit 0), then the reflection cube times a tint between the parallel
+    and perpendicular colours, added through that alpha (rasterizer_xbox_
+    water.c). The GE draws the base map once: alpha-blended when its colour
+    modulates the background (psp_fixups.py), so the background keeps
+    1 - alpha of itself, alpha being one minus the base map's mean colour,
+    and the source is what the reflection adds over that alpha; added
+    otherwise. (tint, result, the base map's mean) or None"""
+    flags, = struct.unpack_from('<H', m.data, o + 40)
+    base_id, = struct.unpack_from('<i', m.data, o + 88)
+    reflection_id, = struct.unpack_from('<i', m.data, o + 168)
+    perpendicular, parallel = _argb(m.data, o + 108), _argb(m.data, o + 124)
+    base = means(base_id)
+    if base is None:
+        return None
+    reflection = means(reflection_id)
+    r = reflection[:3] if reflection is not None else np.zeros(3)
+    view = (perpendicular + parallel) * 0.5   # the view between face on and edge on
+    through = base[3] * view[3] if flags & 1 else 1.0
+    added = r * view[:3] * through
+    if flags & 2:
+        keep = float(np.clip(base[:3] @ np.array([0.299, 0.587, 0.114]), 0.0, 1.0))
+        alpha = max(1.0 - keep, 1.0 / 255.0)
+        result = np.append(np.clip(added / alpha, 0.0, 1.0), alpha)
+    else:
+        result = np.append(np.clip(added, 0.0, 1.0), 1.0)
+    floor = np.maximum(base, 1.0 / 255.0)
+    tint = np.clip(result / floor, 0.0, 1.0)
+    if not flags & 2:
+        tint[3] = 1.0
+    return tint, result, base
+
+
 # ---------------------------------------------------------------- the tint
 
 def shader_tint(m, tag, means):
     """(tint RGBA 0-1, the drawn map's index, the shader's result, the drawn
-    map's mean) for a generic or chicago shader, or None when the PSP's draw
-    needs none (a numeric shader, no maps, a map that can't be read)"""
+    map's mean) for a generic, chicago or water shader, or None when the
+    PSP's draw needs none (a numeric shader, no maps, a map that can't be
+    read). A water shader's drawn map is its base map (index 0 here)"""
     if not tag.address or not m.in_tags(tag.address):
         return None
     o = m.off(tag.address)
     kind, = struct.unpack_from('<H', m.data, o + 36)
+    if kind == WATER:
+        found = water_tint(m, o, means)
+        return None if found is None else (found[0], 0, found[1], found[2])
     if kind not in (GENERIC, CHICAGO):
         return None
     flags = m.data[o + 41]
@@ -300,7 +341,7 @@ def tints(m, bitmaps, shaders=None):
     means = Means(m, bitmaps)
     out = {}
     for t in m.tags:
-        if t.group not in ('sotr', 'schi') or (shaders is not None and t.name not in shaders):
+        if t.group not in ('sotr', 'schi', 'swat') or (shaders is not None and t.name not in shaders):
             continue
         found = shader_tint(m, t, means)
         if found is None:
