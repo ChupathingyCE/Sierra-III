@@ -249,15 +249,28 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			if (*(unsigned short const *)((char const *)shader + 40) & 2)
 				alpha_tested |= 2;
 		}
+		/* build 116: an environment shader (senv) on an object (b30's locked
+		door, a10's pilot chairs: devices and vehicles built with the level's
+		own shaders) gets its base map and alpha cut-out, at the offsets the
+		level's draws read (psp_environment_draw's hook, build 20). Until b115
+		these parts drew in the flat colour above (hardware_b115.md). A
+		restoration; keep word "senvflat" brings the flat colour back */
+		else if (shader && *(short const *)((char const *)shader + 36) == 3 && !PSP_KEEP_ONCE("senvflat"))
+		{
+			base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			alpha_tested = *(unsigned short const *)((char const *)shader + 40) & 1;
+		}
 		{
 			/* its change colour (an armour's or team's colour, by the
 			multipurpose map's alpha; build 31): the object's colour A to D,
-			as the shader's change colour source picks */
+			as the shader's change colour source picks. Model shaders only:
+			these offsets mean something else in other shaders (build 116) */
 			extern void psp_ge_model_multipurpose(unsigned int, float const *, float const *);
 			extern real periodic_function_evaluate(short, real);
 			char const *definition = (char const *)shader;
-			short source = base_key ? *(short const *)(definition + 76) : 0;
-			long multipurpose = base_key ? *(long const *)(definition + 200) : NONE;
+			boolean model_shader = base_key && *(short const *)(definition + 36) == 4;
+			short source = model_shader ? *(short const *)(definition + 76) : 0;
+			long multipurpose = model_shader ? *(long const *)(definition + 200) : NONE;
 			float change[3] = { 1.0f, 1.0f, 1.0f }, glow[3] = { 0.0f, 0.0f, 0.0f };
 
 			if (source >= 1 && source <= 4 && psp_change_colors_valid)

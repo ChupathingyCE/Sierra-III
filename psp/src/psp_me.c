@@ -609,40 +609,45 @@ float psp_me_busy_percent(void)
 share of the ME, the main CPU's hand-over and wait */
 /* build 115: "edramcheck" (big_levers.md section 0, "The ME's eDRAM,
 checked"): whether anything but our own ME code writes the ME's eDRAM during
-play. At the first heartbeat with the ME running, the ME fills the stretch
-from 256 KB to 1.5 MB (its stack starts at the top, 2 MB, and grows down:
-512 KB are left to it) with a pattern; every heartbeat after, it checks
-256 KB of it in turn (about 2 ms on the ME), and the log says what it found.
-Only with the ME really running (not simulated, not stopped) */
+play. The ME fills the stretch from 256 KB to 1.5 MB (its stack starts at the
+top, 2 MB, and grows down: 512 KB are left to it) with a pattern, then checks
+it piece by piece, and the log says what it found. Only with the ME really
+running (not simulated, not stopped).
+Build 116: a 64 KB piece a heartbeat, for the fill as for the checks. b115
+filled the whole 1.25 MB in one job: 56 ms on the ME, so the audio job queued
+behind it passed its 40 ms limit and the ME was stopped for the session
+(hardware_b115.md, test 1). A piece is about 3 ms of the ME's time */
 #define EDRAM_PROBE_FIRST 0x40000u
 #define EDRAM_PROBE_END 0x180000u
-#define EDRAM_PROBE_PIECE 0x40000u
+#define EDRAM_PROBE_PIECE 0x10000u
 void psp_me_edram_probe(void)
 {
-	static int asked = -1, filled = 0;
-	static unsigned int next = EDRAM_PROBE_FIRST, checked = 0, bad_pieces = 0;
+	static int asked = -1;
+	static unsigned int fill_next = EDRAM_PROBE_FIRST, next = EDRAM_PROBE_FIRST, checked = 0, bad_pieces = 0;
 	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 };
 
 	if (asked < 0)
 		asked = psp_keep("edramcheck") != 0;
 	if (!asked || me_state != 1)
 		return;
-	if (!filled)
+	if (fill_next < EDRAM_PROBE_END)
 	{
 		args[0] = 0;
-		args[1] = EDRAM_PROBE_FIRST;
-		args[2] = EDRAM_PROBE_END - EDRAM_PROBE_FIRST;
-		if (psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 5000) && results[0] != 0xFFFFFFFFu)
+		args[1] = fill_next;
+		args[2] = EDRAM_PROBE_PIECE;
+		if (psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 2000) && results[0] != 0xFFFFFFFFu)
 		{
-			filled = 1;
-			platform_log("ME: edramcheck: eDRAM %u to %u KB filled with the pattern", EDRAM_PROBE_FIRST / 1024, EDRAM_PROBE_END / 1024);
+			fill_next += EDRAM_PROBE_PIECE;
+			if (fill_next >= EDRAM_PROBE_END)
+				platform_log("ME: edramcheck: eDRAM %u to %u KB filled with the pattern, %u KB a heartbeat",
+					EDRAM_PROBE_FIRST / 1024, EDRAM_PROBE_END / 1024, EDRAM_PROBE_PIECE / 1024);
 		}
 		return;
 	}
 	args[0] = 1;
 	args[1] = next;
 	args[2] = EDRAM_PROBE_PIECE;
-	if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 1000) || results[0] == 0xFFFFFFFFu)
+	if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
 		return;
 	checked++;
 	if (results[0])
@@ -651,8 +656,9 @@ void psp_me_edram_probe(void)
 		platform_log("ME: edramcheck: %u words changed in eDRAM %u to %u KB, the first at %08x (now %08x)",
 			results[0], next / 1024, (next + EDRAM_PROBE_PIECE) / 1024, results[1], results[2]);
 	}
-	if ((checked % 20) == 0)
-		platform_log("ME: edramcheck: %u pieces of 256 KB checked, %u with changes", checked, bad_pieces);
+	if ((checked % 40) == 0)
+		platform_log("ME: edramcheck: %u pieces of %u KB checked, %u with changes", checked, EDRAM_PROBE_PIECE / 1024,
+			bad_pieces);
 	next += EDRAM_PROBE_PIECE;
 	if (next >= EDRAM_PROBE_END)
 		next = EDRAM_PROBE_FIRST;
