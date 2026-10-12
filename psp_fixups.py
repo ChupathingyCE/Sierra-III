@@ -11734,6 +11734,170 @@ FIXES_118["source/rasterizer/rasterizer.c#hdump"] = [
 			/* one map: the first, except under the menus' moving "plasma","""),
 ]
 
+# after build 116: a HUD multitexture overlay whose second map multiplies the
+# first, as the Xbox's combiners take them (keep word "hudonemap": the first
+# map alone, as before). The sniper rifle's angle ticks are two: a mask times
+# the ticks, which scroll with the aim's pitch and fade in when zoomed. The GE
+# drew the mask alone, at full strength: a50's two white bars (b116)
+FIXES_118["source/rasterizer/rasterizer.c#multiply"] = [
+("""
+void rasterizer_psuedo_dynamic_screen_quad_draw(
+	struct rasterizer_dynamic_screen_geometry_parameters *parameters,""",
+ """
+#ifdef HALO_PSP
+/* The GE has one texture a draw, so the second map is drawn and the first
+(the mask) is read at the edges of strips across the quad: its texels
+multiply the strips' vertex colours, and the GE's colour interpolation does
+the rest. Each map's coordinates as the Xbox's screen vertex program works
+them out: the quad's (or the screen's, when anchored to it) times the map's
+scale, plus its offset, times its texture scale. Nothing is drawn when
+either map's fade is 0 (the ticks, unzoomed). Returns 0 for any other
+combination, which is drawn as before (the first map) and named once */
+#define PSP_HUD_STRIPS_MAX 32
+
+static int psp_hud_multiply(
+	struct rasterizer_dynamic_screen_geometry_parameters const *parameters,
+	struct dynamic_screen_vertex const *vertices)
+{
+	extern int psp_tex_resident(unsigned int key);
+	extern int psp_tex_light_texel(unsigned int key, float u, float v, unsigned int *argb);
+	extern void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green,
+		float blue, float fade, float offset_x, float offset_y, void const *meter, int wrapped, float u_scale,
+		float v_scale);
+	extern void platform_log(const char *format, ...);
+	extern int psp_keep(const char *name);
+	static int off = -1, named = 0, told = 0;
+	struct dynamic_screen_vertex strip[4];
+	real_rgb_color const *tint0 = parameters->map_tint[0], *tint1 = parameters->map_tint[1];
+	real fade0 = parameters->map_fade[0] ? *parameters->map_fade[0] : 1.0f;
+	real fade1 = parameters->map_fade[1] ? *parameters->map_fade[1] : 1.0f;
+	real edge_u[PSP_HUD_STRIPS_MAX + 1][2], edge_v[PSP_HUD_STRIPS_MAX + 1][2];
+	real edge_x[PSP_HUD_STRIPS_MAX + 1][2], edge_y[PSP_HUD_STRIPS_MAX + 1][2];
+	pixel32 edge_color[PSP_HUD_STRIPS_MAX + 1][2];
+	real across, along;
+	int strips, line, side, along_s;
+
+	if (off < 0)
+		off = psp_keep("hudonemap");
+	if (off)
+		return 0;
+	if (parameters->map[2] || parameters->meter_parameters ||
+		parameters->map0_to_1_blend_function != 1 /* _shader_framebuffer_blend_function_multiply */)
+	{
+		if (named < 4)
+		{
+			named++;
+			platform_log("HUD: a multitexture overlay the GE draws as its first map only (map 0 to 1 %d, three maps %d)",
+				parameters->map0_to_1_blend_function, parameters->map[2] != NULL);
+		}
+		return 0;
+	}
+	if (fade0 <= 0.0f || fade1 <= 0.0f)
+		return 1;
+	psp_tex_resident((unsigned int)parameters->map[0]);
+	/* strips across the quad's longer side, about 8 of the game's pixels
+	each: the 0-1 and 3-2 edges (s) or the 0-3 and 1-2 edges (t) */
+	across = (vertices[1].position.x - vertices[0].position.x) * (vertices[1].position.x - vertices[0].position.x) +
+		(vertices[1].position.y - vertices[0].position.y) * (vertices[1].position.y - vertices[0].position.y);
+	along = (vertices[3].position.x - vertices[0].position.x) * (vertices[3].position.x - vertices[0].position.x) +
+		(vertices[3].position.y - vertices[0].position.y) * (vertices[3].position.y - vertices[0].position.y);
+	along_s = across > along;
+	strips = (int)(sqrtf(along_s ? across : along) / 8.0f);
+	strips = strips < 1 ? 1 : strips > PSP_HUD_STRIPS_MAX ? PSP_HUD_STRIPS_MAX : strips;
+	for (line = 0; line <= strips; line++)
+	{
+		real f = (real)line / (real)strips;
+
+		for (side = 0; side < 2; side++)
+		{
+			/* the two corners this line runs between, and the point on it */
+			int a = along_s ? (side ? 3 : 0) : (side ? 1 : 0);
+			int b = along_s ? (side ? 2 : 1) : (side ? 2 : 3);
+			real x = vertices[a].position.x + (vertices[b].position.x - vertices[a].position.x) * f;
+			real y = vertices[a].position.y + (vertices[b].position.y - vertices[a].position.y) * f;
+			real u = vertices[a].texture_coordinates.x + (vertices[b].texture_coordinates.x - vertices[a].texture_coordinates.x) * f;
+			real v = vertices[a].texture_coordinates.y + (vertices[b].texture_coordinates.y - vertices[a].texture_coordinates.y) * f;
+			real u0 = (parameters->map_anchor_screen[0] ? x : u) * parameters->map_scale[0].i;
+			real v0 = (parameters->map_anchor_screen[0] ? y : v) * parameters->map_scale[0].j;
+			unsigned int texel = 0xFFFFFFFFu, out = 0;
+			int channel;
+
+			if (parameters->map_offset[0])
+			{
+				u0 += parameters->map_offset[0]->x;
+				v0 += parameters->map_offset[0]->y;
+			}
+			u0 *= parameters->map_texture_scale[0].i;
+			v0 *= parameters->map_texture_scale[0].j;
+			if (!parameters->map_wrapped[0])
+			{
+				u0 = PIN(u0, 0.0f, 0.999f);
+				v0 = PIN(v0, 0.0f, 0.999f);
+			}
+			psp_tex_light_texel((unsigned int)parameters->map[0], u0, v0, &texel);
+			/* the vertex colour (the corners', along the line) times the
+			mask's texel times the first map's tint and fade; ARGB, so
+			channel 0 is blue and 3 alpha */
+			for (channel = 0; channel < 4; channel++)
+			{
+				int shift = 8 * channel;
+				real scale = channel == 3 ? fade0 :
+					!tint0 ? 1.0f : channel == 2 ? tint0->red : channel == 1 ? tint0->green : tint0->blue;
+				real from = (real)((vertices[a].color >> shift) & 0xFF), to = (real)((vertices[b].color >> shift) & 0xFF);
+				real value = (from + (to - from) * f) * (real)((texel >> shift) & 0xFF) / 255.0f * scale;
+
+				out |= (unsigned int)PIN(value + 0.5f, 0.0f, 255.0f) << shift;
+			}
+			edge_x[line][side] = x;
+			edge_y[line][side] = y;
+			/* the second map's coordinates, before its texture scale (the
+			GE's quad applies that, as for every HUD quad) */
+			edge_u[line][side] = (parameters->map_anchor_screen[1] ? x : u) * parameters->map_scale[1].i +
+				(parameters->map_offset[1] ? parameters->map_offset[1]->x : 0.0f);
+			edge_v[line][side] = (parameters->map_anchor_screen[1] ? y : v) * parameters->map_scale[1].j +
+				(parameters->map_offset[1] ? parameters->map_offset[1]->y : 0.0f);
+			edge_color[line][side] = out;
+		}
+	}
+	for (line = 0; line < strips; line++)
+	{
+		/* the strip's corners in the quad's order: 0 and 1 on one line, 2
+		and 3 on the next (or across, for strips along t) */
+		int k;
+
+		for (k = 0; k < 4; k++)
+		{
+			int l = along_s ? (k == 0 || k == 3 ? line : line + 1) : (k < 2 ? line : line + 1);
+			int s = along_s ? (k < 2 ? 0 : 1) : (k == 0 || k == 3 ? 0 : 1);
+
+			strip[k].position.x = edge_x[l][s];
+			strip[k].position.y = edge_y[l][s];
+			strip[k].texture_coordinates.x = edge_u[l][s];
+			strip[k].texture_coordinates.y = edge_v[l][s];
+			strip[k].color = edge_color[l][s];
+		}
+		psp_ge_screen_quad(strip, (unsigned int)parameters->map[1], parameters->framebuffer_blend_function,
+			tint1 ? tint1->red : 1.0f, tint1 ? tint1->green : 1.0f, tint1 ? tint1->blue : 1.0f, fade1,
+			parameters->offset ? parameters->offset->i : 0.0f, parameters->offset ? parameters->offset->j : 0.0f,
+			NULL, parameters->map_wrapped[1], parameters->map_texture_scale[1].i, parameters->map_texture_scale[1].j);
+	}
+	if (!told)
+	{
+		told = 1;
+		platform_log("HUD: a multitexture overlay's second map multiplied by its first, in %d strips", strips);
+	}
+	return 1;
+}
+#endif
+
+void rasterizer_psuedo_dynamic_screen_quad_draw(
+	struct rasterizer_dynamic_screen_geometry_parameters *parameters,"""),
+("""			psp_ge_screen_quad(vertices, (unsigned int)parameters->map[map], parameters->framebuffer_blend_function,""",
+ """			if (parameters->map[1] && !parameters->doing_plasma_effect && psp_hud_multiply(parameters, vertices))
+				return;
+			psp_ge_screen_quad(vertices, (unsigned int)parameters->map[map], parameters->framebuffer_blend_function,"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
