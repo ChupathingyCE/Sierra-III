@@ -79,7 +79,8 @@ The user drags the output's contents onto the stick root. That's one copy, and t
 
 ## Open items
 
-- [ ] Sheepdog01 records the ring loop and the Pillar shot from PC ChupathingyCE.
+- [ ] Sheepdog01 records the ring loop (ICON1) from PC ChupathingyCE.
+- [ ] PIC1: pinned for now (backdrop + ring + ship + titles, `psp/xmb/compose/`). Needs a larger ring capture; reads lower quality than commercial PIC1s on hardware.
 - [ ] Pick the clip: which track, and where its loop points sit.
 - [ ] Check on hardware that `atracdenc`'s ATRAC3 plays in the XMB [U until then].
 - [ ] Encode `ICON1.PMF` (UMD Stream Composer under Wine; Sheepdog01's machine only).
