@@ -11936,6 +11936,28 @@ void rasterizer_psuedo_dynamic_screen_quad_draw(
 			psp_ge_screen_quad(vertices, (unsigned int)parameters->map[map], parameters->framebuffer_blend_function,"""),
 ]
 
+# after build 116: a glass shader's diffuse map on a model lit by the model's
+# light, as the Xbox's glass diffuse pass draws it (keep word "glassflat":
+# at full brightness, as before). a10's bridge monitor ("monitor huge", a
+# glass shader) drew a bright green pattern in a dark room (b116)
+FIXES_118["source/rasterizer/rasterizer.c#glasslit"] = [
+("""	else if (type == 8)
+	{
+		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
+		*u_scale = *(float const *)(definition + 340);
+		*v_scale = *u_scale;
+	}""",
+ """	else if (type == 8)
+	{
+		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
+		*u_scale = *(float const *)(definition + 340);
+		*v_scale = *u_scale;
+		/* alpha-blended, lit (fade mode 3: psp_ge.c's SEETHROUGH_LIT) */
+		if (object && !PSP_KEEP_ONCE("glassflat"))
+			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+	}"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 

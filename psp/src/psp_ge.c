@@ -7639,6 +7639,10 @@ static int seethrough_fade_of(const unsigned char *rgba, const struct transparen
 static float seethrough_fade(short packed);
 static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_count, int placed, int mode,
 	float fade);
+static unsigned int seethrough_lit(unsigned int color, const float *wn, float nn);
+/* the see-through fade mode the engine side packs for a glass shader's
+diffuse map (psp_transparent_map): lit by the model's light (after b116) */
+#define SEETHROUGH_LIT 3
 
 /* a sprite batch's GE vertices: texture coordinate, colour, position */
 struct sprite_vertex
@@ -8537,7 +8541,41 @@ straight into), and one that fades when parallel vanishes edge on. The first
 version had the two the other way round (c40's pale discs stayed). Placed
 records (several nodes, already in the camera's space) keep their node in
 byte 11; the others go through the draw's matrix */
-static unsigned long seethrough_angle_draws = 0;
+static unsigned long seethrough_angle_draws = 0, seethrough_lit_draws = 0;
+/* after build 116: a glass shader's diffuse map lit as the Xbox lights it
+(its vertex program for glass's diffuse pass): the model's ambient colour
+plus each of its distant lights by the normal's angle to it, times the
+colour. Glass drew at full brightness in dark rooms (a10's bridge monitor:
+a bright green pattern); the shader's reflection (a cube map) and tint
+passes aren't drawn yet. Colours are the GE's ABGR; nn is the world
+normal's squared length */
+static unsigned int seethrough_lit(unsigned int color, const float *wn, float nn)
+{
+	float light[3], inverse = nn > 0.0f ? 1.0f / sqrtf(nn) : 0.0f;
+	unsigned int out = color & 0xFF000000u;
+	int index, channel;
+
+	for (channel = 0; channel < 3; channel++)
+		light[channel] = (float)((model_ambient >> (8 * channel)) & 0xFF);
+	for (index = 0; index < model_light_count; index++)
+	{
+		float d = (wn[0] * model_light_toward[index].x + wn[1] * model_light_toward[index].y +
+			wn[2] * model_light_toward[index].z) * inverse;
+
+		if (d > 0.0f)
+			for (channel = 0; channel < 3; channel++)
+				light[channel] += d * (float)((model_light_color[index] >> (8 * channel)) & 0xFF);
+	}
+	for (channel = 0; channel < 3; channel++)
+	{
+		float value = (float)((color >> (8 * channel)) & 0xFF) * (light[channel] > 255.0f ? 255.0f : light[channel]) /
+			255.0f;
+
+		out |= (unsigned int)(value + 0.5f) << (8 * channel);
+	}
+	return out;
+}
+
 static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_count, int placed, int mode,
 	float fade)
 {
@@ -8580,6 +8618,12 @@ static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_c
 		wn[1] = m->x.y * n[0] + m->y.y * n[1] + m->z.y * n[2];
 		wn[2] = m->x.z * n[0] + m->y.z * n[1] + m->z.z * n[2];
 		nn = wn[0] * wn[0] + wn[1] * wn[1] + wn[2] * wn[2];
+		if (mode == SEETHROUGH_LIT)
+		{
+			*(unsigned int *)(record + 8) = seethrough_lit(seethrough_tinted(seethrough_color((int)(fade * 255.0f + 0.5f),
+				draw->blend), draw->tint), wn, nn);
+			continue;
+		}
 		c = nn > 0.0f ? fabsf(wn[0] * camera_forward[0] + wn[1] * camera_forward[1] + wn[2] * camera_forward[2]) /
 			sqrtf(nn) : 1.0f;
 		a = mode == 1 ? 1.0f - c : c;
@@ -8588,7 +8632,10 @@ static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_c
 	}
 	draw->vertices = records;
 	draw->colored = 1;
-	seethrough_angle_draws++;
+	if (mode == SEETHROUGH_LIT)
+		seethrough_lit_draws++;
+	else
+		seethrough_angle_draws++;
 }
 
 static struct transparent_draw *transparent_slot(unsigned int key, float u_scale, float v_scale, float u_offset,
@@ -12989,6 +13036,10 @@ void psp_ge_frame_end(void)
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;
+		if (seethrough_lit_draws)
+			platform_log("GE: after build 116, last 300 frames: glass parts lit by their model's light %lu",
+				seethrough_lit_draws);
+		seethrough_lit_draws = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
