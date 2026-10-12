@@ -11693,7 +11693,7 @@ FIXES_118["source/rasterizer/rasterizer.c#hdump"] = [
 ("""		if (psp_ge_active())
 		{
 			/* one map: the first, except under the menus' moving "plasma",""",
- """		if (psp_ge_active() && parameters->map[1])
+ """		if (parameters->map[1] && psp_ge_active())
 		{
 			extern volatile int psp_screenshot_requested; /* psp_ge.c */
 			extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
@@ -11745,6 +11745,8 @@ void rasterizer_psuedo_dynamic_screen_quad_draw(
 	struct rasterizer_dynamic_screen_geometry_parameters *parameters,""",
  """
 #ifdef HALO_PSP
+#include "bitmaps/bitmap_group.h"
+
 /* The GE has one texture a draw, so the second map is drawn and the first
 (the mask) is read at the edges of strips across the quad: its texels
 multiply the strips' vertex colours, and the GE's colour interpolation does
@@ -11760,7 +11762,7 @@ static int psp_hud_multiply(
 	struct dynamic_screen_vertex const *vertices)
 {
 	extern int psp_tex_resident(unsigned int key);
-	extern int psp_tex_light_texel(unsigned int key, float u, float v, unsigned int *argb);
+	extern int psp_tex_texel(unsigned int key, float u, float v, unsigned int *argb);
 	extern void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green,
 		float blue, float fade, float offset_x, float offset_y, void const *meter, int wrapped, float u_scale,
 		float v_scale);
@@ -11774,7 +11776,7 @@ static int psp_hud_multiply(
 	real edge_u[PSP_HUD_STRIPS_MAX + 1][2], edge_v[PSP_HUD_STRIPS_MAX + 1][2];
 	real edge_x[PSP_HUD_STRIPS_MAX + 1][2], edge_y[PSP_HUD_STRIPS_MAX + 1][2];
 	pixel32 edge_color[PSP_HUD_STRIPS_MAX + 1][2];
-	real across, along;
+	real across, along, inset = 0.0f;
 	int strips, line, side, along_s;
 
 	if (off < 0)
@@ -11792,9 +11794,14 @@ static int psp_hud_multiply(
 		}
 		return 0;
 	}
-	if (fade0 <= 0.0f || fade1 <= 0.0f)
+	/* a map's fade scales only alpha, which only the alpha blend (0) takes
+	the source by; the other blends still write colour (review) */
+	if ((fade0 <= 0.0f || fade1 <= 0.0f) && parameters->framebuffer_blend_function == 0)
 		return 1;
-	psp_tex_resident((unsigned int)parameters->map[0]);
+	/* the mask's texels are read from memory: a frame it isn't loaded
+	(the stick's budget spent) draws nothing, as a quad whose bind fails */
+	if (!psp_tex_resident((unsigned int)parameters->map[0]))
+		return 1;
 	/* strips across the quad's longer side, about 8 of the game's pixels
 	each: the 0-1 and 3-2 edges (s) or the 0-3 and 1-2 edges (t) */
 	across = (vertices[1].position.x - vertices[0].position.x) * (vertices[1].position.x - vertices[0].position.x) +
@@ -11803,7 +11810,30 @@ static int psp_hud_multiply(
 		(vertices[3].position.y - vertices[0].position.y) * (vertices[3].position.y - vertices[0].position.y);
 	along_s = across > along;
 	strips = (int)(sqrtf(along_s ? across : along) / 8.0f);
+	{
+		/* no more strips than the mask has texels along them (nearest
+		sampling gains nothing past that) */
+		real du = (vertices[along_s ? 1 : 3].texture_coordinates.x - vertices[0].texture_coordinates.x) *
+			parameters->map_scale[0].i * parameters->map_texture_scale[0].i * (real)parameters->map[0]->width;
+		real dv = (vertices[along_s ? 1 : 3].texture_coordinates.y - vertices[0].texture_coordinates.y) *
+			parameters->map_scale[0].j * parameters->map_texture_scale[0].j * (real)parameters->map[0]->height;
+		int texels = (int)(sqrtf(du * du + dv * dv) + 0.5f);
+
+		if (!parameters->map_anchor_screen[0] && texels >= 1 && strips > texels)
+			strips = texels;
+	}
 	strips = strips < 1 ? 1 : strips > PSP_HUD_STRIPS_MAX ? PSP_HUD_STRIPS_MAX : strips;
+	{
+		/* the mask is read half a texel inside the quad's two long edges,
+		not on them: clamped HUD art often has a clear border texel */
+		real du = (vertices[along_s ? 3 : 1].texture_coordinates.x - vertices[0].texture_coordinates.x) *
+			parameters->map_scale[0].i * parameters->map_texture_scale[0].i * (real)parameters->map[0]->width;
+		real dv = (vertices[along_s ? 3 : 1].texture_coordinates.y - vertices[0].texture_coordinates.y) *
+			parameters->map_scale[0].j * parameters->map_texture_scale[0].j * (real)parameters->map[0]->height;
+		real texels = sqrtf(du * du + dv * dv);
+
+		inset = texels > 1.0f ? 0.5f / texels : 0.5f;
+	}
 	for (line = 0; line <= strips; line++)
 	{
 		real f = (real)line / (real)strips;
@@ -11817,8 +11847,16 @@ static int psp_hud_multiply(
 			real y = vertices[a].position.y + (vertices[b].position.y - vertices[a].position.y) * f;
 			real u = vertices[a].texture_coordinates.x + (vertices[b].texture_coordinates.x - vertices[a].texture_coordinates.x) * f;
 			real v = vertices[a].texture_coordinates.y + (vertices[b].texture_coordinates.y - vertices[a].texture_coordinates.y) * f;
-			real u0 = (parameters->map_anchor_screen[0] ? x : u) * parameters->map_scale[0].i;
-			real v0 = (parameters->map_anchor_screen[0] ? y : v) * parameters->map_scale[0].j;
+			/* the point the mask is read at: inset from this edge toward the other */
+			int c = along_s ? (side ? 0 : 3) : (side ? 0 : 1), d = along_s ? (side ? 1 : 2) : (side ? 3 : 2);
+			real xs = x + (vertices[c].position.x + (vertices[d].position.x - vertices[c].position.x) * f - x) * inset;
+			real ys = y + (vertices[c].position.y + (vertices[d].position.y - vertices[c].position.y) * f - y) * inset;
+			real us = u + (vertices[c].texture_coordinates.x +
+				(vertices[d].texture_coordinates.x - vertices[c].texture_coordinates.x) * f - u) * inset;
+			real vs = v + (vertices[c].texture_coordinates.y +
+				(vertices[d].texture_coordinates.y - vertices[c].texture_coordinates.y) * f - v) * inset;
+			real u0 = (parameters->map_anchor_screen[0] ? xs : us) * parameters->map_scale[0].i;
+			real v0 = (parameters->map_anchor_screen[0] ? ys : vs) * parameters->map_scale[0].j;
 			unsigned int texel = 0xFFFFFFFFu, out = 0;
 			int channel;
 
@@ -11834,7 +11872,7 @@ static int psp_hud_multiply(
 				u0 = PIN(u0, 0.0f, 0.999f);
 				v0 = PIN(v0, 0.0f, 0.999f);
 			}
-			psp_tex_light_texel((unsigned int)parameters->map[0], u0, v0, &texel);
+			psp_tex_texel((unsigned int)parameters->map[0], u0, v0, &texel);
 			/* the vertex colour (the corners', along the line) times the
 			mask's texel times the first map's tint and fade; ARGB, so
 			channel 0 is blue and 3 alpha */

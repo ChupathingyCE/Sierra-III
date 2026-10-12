@@ -1438,6 +1438,37 @@ int psp_tex_light_texel(unsigned int key, float u, float v, unsigned int *argb)
 	return 0;
 }
 
+/* the texel at (u, v) of a resident texture's top level, nearest, wrapped,
+as 0xAARRGGBB; 0 if the texture isn't resident (no Memory Stick read, and
+none of psp_tex_light_texel's counts or remembered colours: a HUD mask's
+texels, after build 116) */
+int psp_tex_texel(unsigned int key, float u, float v, unsigned int *argb)
+{
+	int index = key && entries ? find(key) : -1;
+	struct pack_entry const *entry;
+	int x, y, nibble;
+	unsigned int palette_bytes, at, value, palette_entry;
+
+	if (index < 0 || !resident_at[index])
+		return 0;
+	entry = &entries[index];
+	if (entry->psm != GU_PSM_T8 && entry->psm != GU_PSM_T4)
+		return 0;
+	x = (int)floorf((float)entry->width * u);
+	y = (int)floorf((float)entry->height * v);
+	x = ((x % entry->width) + entry->width) % entry->width;
+	y = ((y % entry->height) + entry->height) % entry->height;
+	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
+	at = texel_offset(entry, x, y, &nibble);
+	value = ((const unsigned char *)((resident_at[index] + palette_bytes) | 0x40000000))[at];
+	if (nibble >= 0)
+		value = (value >> (4 * nibble)) & 15;
+	palette_entry = entry->clut == GU_PSM_8888 ? ((const unsigned int *)(resident_at[index] | 0x40000000))[value]
+		: ((const unsigned short *)(resident_at[index] | 0x40000000))[value];
+	*argb = argb_from_palette(entry->clut, palette_entry);
+	return 1;
+}
+
 /* a texture's average colour as 0xAARRGGBB, for the surface colour under
 an object (the Xbox reads a small mip level: lod 0.3); worked out once the
 texture is resident, and kept */

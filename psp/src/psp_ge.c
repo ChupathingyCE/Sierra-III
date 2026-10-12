@@ -9598,8 +9598,9 @@ static void transparent_flush_body(void)
 		{
 			extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
 			unsigned int state_depth = sceGuGetStatus(GU_DEPTH_TEST);
-			/* and the map's bitmap tag (after b116: a10's bridge window) */
-			char const *name = psp_bitmap_tag_name((void const *)draw->key);
+			/* and the map's bitmap tag (after b116: a10's bridge window); a
+			walk over the tags, so not on the Media Engine (gemeon) */
+			char const *name = psp_me_context ? NULL : psp_bitmap_tag_name((void const *)draw->key);
 
 			platform_log("tdump: %d/%d key %08x (%s) sky %d level %d fp %d sprites %d blend %d dist %.1f count %d cut %d units %d at %.2f %.2f %.2f depth test %u mfp %d",
 				index, transparent_count, draw->key, name ? name : "no tag", draw->sky, draw->level, draw->first_person,
@@ -9944,7 +9945,9 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 
 	if (hdump < 0)
 		hdump = psp_keep("hdump");
-	if (!hdump || !psp_screenshot_requested || !vertices || !key)
+	/* not again when the defer queue replays the quad (gedefer), which may
+	run on the Media Engine (gemeon) */
+	if (!hdump || defer_replaying || !psp_screenshot_requested || !vertices || !key)
 		return;
 	x0 = x1 = in[0].x;
 	y0 = y1 = in[0].y;
