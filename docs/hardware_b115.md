@@ -8,6 +8,7 @@ This page fills in as the tests come back.
 
 - **b115 costs nothing on the cinematic** [M]: 197.0 ms a frame against b114's 195.6, inside the 1% that runs of one build vary by.
 - **The models are almost all of the GE's time** [M]: 88% of it in the cinematic (33 of 37 ms a frame) and 89% in the flight after it (105 of 118 ms). The emulator's byte count said the same (83–88% of the GE's reads from main RAM, `build_b115.md`). Both of `big_levers.md` §0's conditions for "models first" now hold: the models dominate the GE's time, and a few buffers carry most of their reads.
+- **Textures from main RAM cost the GE little** [M]: with VRAM's texture cache cut from 1,216 to 400 KB (test 3), the GE took 1.5 ms a frame more in the cinematic, all of it in the level's draws (2.5 → 4.1 ms); the models' time didn't move. The frame was within run-to-run noise (198.0 against 197.0 ms). So giving ~800 KB of VRAM to models costs about 1–1.5 ms of GE time, and the models' 105 ms in the flight is what it's for.
 - **The map file's re-reads are real on the PSP** [M]: after loading, 95% of what it read had been read before. They cost only 1.0–1.5% of the stick's time on this stretch, and nobody waited behind them.
 
 ## Test 2: the cinematic, base
@@ -53,3 +54,26 @@ Keep words `nearauto gebusy assettrack geo2 iostats`. No fault; Sheepdog01 stopp
 - **The log writes are the stick's biggest user while loading:** 8.9 s of the first report's 13.3 s. Most of that is the heartbeat thread (6.0 s); until the first frame, lines are written one at a time rather than batched [D]. The game thread waited only 0.1 s behind it, so loading barely felt it [M].
 - **One 280 ms log write** in the last report, as a checkpoint was written ("other": 1.3 MB). Log writes of that length are the hitch candidates `streaming.md` §2 names; test 1's longer run will show how often.
 - Sound: one voice ran dry once (75 ms), at the exit.
+
+## Test 3: the cinematic, textures from RAM (`vramtex400`)
+
+Keep words as test 2 plus `vramtex400`; the log confirms the cut (`the VRAM cache cut to 400 KB (of 1216)`). No fault; stopped at game time 1,182.
+
+| | b115 T2 (base) | b115 T3 (`vramtex400`) |
+|---|---:|---:|
+| The cinematic (150–570): frame by the clock, ms | 197.0 | 198.0 |
+| drawing, ms | 72.4 | 73.4 |
+| tick, ms | 60.3 | 60.5 |
+| GE, ms a frame: all | 37.2 | **38.7** |
+| GE: level | 2.5 | **4.1** |
+| GE: models | 32.7 | 32.4 |
+| The flight after it (570–1,151), GE: all | 118.3 | 118.3 |
+| GE: level | 9.8 | 10.9 |
+| GE: models | 105.3 | 104.0 |
+| Textures loaded over the run (KB) | 128 (2,188) | 199 (2,836) |
+| Textures read from the stick after loading, KB a report | 109–209 | 109–346 |
+
+- **The cost of texels in main RAM is the level's, ~1–1.5 ms a frame** [M]. The level's textures are the big, repeated ones; the models' time doesn't change, so their 105 ms isn't spent on texels.
+- **That matches Blood Gulch's ±1 ms** (`big_levers.md` §0) and settles M4: the swap's first step is cheap.
+- **Streaming barely moved:** the stick read the same textures except 137 KB more in the last report. In the real swap the RAM cache grows to take what VRAM gives up (`big_levers.md` §0), so even that goes.
+
