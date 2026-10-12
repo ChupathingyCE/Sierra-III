@@ -20,7 +20,11 @@ map reader (bake/lib/halomap.py) and Invader's tag definitions
 Shader groups, for reading the output: soso model, sotr transparent generic,
 schi chicago, scex chicago extended, swat water, sgla glass, smet meter,
 spla plasma (the PSP draws sotr, schi, swat and sgla see-through parts;
-b113_candidates.md #16)."""
+b113_candidates.md #16).
+
+Build 116: for each generic or chicago shader whose name contains the
+pattern, the tint the bake gives the one map the PSP draws of it
+(bake/lib/seethrough.py): derived colours, no tag data."""
 import os
 import sys
 
@@ -109,6 +113,20 @@ def main():
             if senv:
                 users.append('%s (%s)' % (t.name, ', '.join(senv)))
     print('object models with environment shaders (%d): %s' % (len(users), '; '.join(sorted(users)) or 'none'))
+    # build 116: the see-through tints (texpack.py writes them into the pack)
+    import seethrough
+    from texpack import bitmap_list
+    shaders = {t.name for t in m.tags if t.group in ('sotr', 'schi') and pattern in t.name.lower()}
+    means = seethrough.Means(m, bitmap_list(m, d))
+    for t in sorted((t for t in m.tags if t.name in shaders and t.group in ('sotr', 'schi')), key=lambda t: t.name):
+        found = seethrough.shader_tint(m, t, means)
+        if found is None:
+            print('tint for %s %s: none (numeric, no maps, or a map that cannot be read)' % (t.group, t.name))
+            continue
+        tint, drawn, result, mean = found
+        print('tint for %s %s: %08x (map %d drawn; the shader averages %s; that map %s)' % (
+            t.group, t.name, seethrough.abgr(tint), drawn, ' '.join('%.2f' % v for v in result),
+            ' '.join('%.2f' % v for v in mean)))
 
 
 if __name__ == '__main__':

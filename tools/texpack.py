@@ -14,6 +14,11 @@ File layout (little endian):
   directory, sorted by key: count x { u32 key (bitmap_data address),
     u16 width, u16 height, u8 levels, u8 psm (5 = T8), u8 clut (0 = 5650,
     3 = 8888), u8 flags (1 = has alpha), u32 offset, u32 size }
+  tints (build 116), right after the directory: 'TNT1', u32 count, then
+    count x { u32 shader tag address, u32 tint (ABGR) }, sorted by address:
+    the see-through shaders' tints for the one map the GE draws of each
+    (seethrough.py). Builds before 116 read the data by offset and never
+    look here
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
     each level swizzled, rows padded to 16 bytes and to 8 rows
 """
@@ -25,6 +30,7 @@ from assets import fo
 import refs
 from bitmap_bake import decode, downscale, quantize, swizzle_psp, target, psnr, decode_dxt, decode_plain, BPP
 from assets import FORMATS, TYPES, BTYPES, USAGES
+import seethrough
 
 
 def bitmap_list(m, d):
@@ -573,9 +579,18 @@ def main():
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
     entries.sort(key=lambda e: e['key'])
+    # build 116: the see-through shaders' tints (seethrough.py)
+    tints = seethrough.tints(m, bitmap_list(m, d))
+    for address in sorted(tints):
+        word, name, (tint, drawn, result, mean) = tints[address]
+        print('  tint %08x for %s: map %d drawn; the shader averages %s over its map\'s %s' % (
+            word, name, drawn, ' '.join('%.2f' % v for v in result), ' '.join('%.2f' % v for v in mean)), file=sys.stderr)
+    print('%d see-through shaders tinted' % len(tints), file=sys.stderr)
+    tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
+        struct.pack('<II', address, tints[address][0]) for address in sorted(tints)) if tints else b''
     header = 12
     directory = 20 * len(entries)
-    offset = (header + directory + 15) // 16 * 16
+    offset = (header + directory + len(tint_bytes) + 15) // 16 * 16
     blob = bytearray()
     dir_bytes = bytearray()
     for e in entries:
@@ -585,7 +600,7 @@ def main():
             blob += b'\0'
         dir_bytes += struct.pack('<IHHBBBBII', e['key'], e['w'], e['h'], e['levels'], e['psm'], e['clut'],
                                  1 if e['alpha'] else 0, start, len(e['data']))
-    out = bytearray(struct.pack('<4sII', b'PTX1', len(entries), directory)) + dir_bytes
+    out = bytearray(struct.pack('<4sII', b'PTX1', len(entries), directory)) + dir_bytes + tint_bytes
     while len(out) < offset:
         out += b'\0'
     out += blob
