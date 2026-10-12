@@ -3806,6 +3806,112 @@ sound reader has the Memory Stick first after it (psp_platform.c) */
 void psp_log_hold(unsigned int milliseconds);
 #define PSP_STATE_LOG_HOLD_MS 2500
 
+/* build 116 (R10): the checkpoint's pages stored compactly. b115 test 1
+[M]: each checkpoint froze the game 0.2-1.1 s writing 1.3-1.9 MB of game
+state, and most pages change each time, so writing only the changed ones
+saves little. Most of a page is zero words, though: each kept page is now
+a bitmap of its non-zero words (128 bytes) and those words, or the page
+as it is when that saves nothing. The header (4 KB) carries each page's
+count of non-zero words, so the reader decodes in place from the buffer's
+tail: no entry is longer than its page. Keep word "statepages": the
+format before (psp_state_read reads either) */
+#define PSP_STATE_SIGNATURE_WORDS 0x5A535350 /* 'PSSZ' */
+#define PSP_STATE_WORDS_HEADER 4096
+#define PSP_STATE_PAGE_WORDS (PSP_STATE_PAGE / 4)
+#define PSP_STATE_RAW_ABOVE ((PSP_STATE_PAGE - PSP_STATE_PAGE_WORDS / 8) / 4) /* 992 words: past this, raw */
+#define PSP_STATE_STAGE 32768
+static unsigned long psp_state_words_header[PSP_STATE_WORDS_HEADER / 4];
+
+static unsigned long psp_state_entry_bytes(unsigned short count)
+{
+	return count >= PSP_STATE_RAW_ABOVE ? PSP_STATE_PAGE : PSP_STATE_PAGE_WORDS / 8 + 4 * (unsigned long)count;
+}
+
+/* the header's parts: the page bitmap after four words, then the counts */
+#define PSP_STATE_MAP_BYTES(pages) ((((pages) + 7) / 8 + 3) & ~3UL)
+#define PSP_STATE_COUNTS(header, pages) ((unsigned short *)((byte *)(header) + 16 + PSP_STATE_MAP_BYTES(pages)))
+
+static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned long size)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, stream = 0, used = 0;
+	unsigned long start = psp_microseconds();
+	byte *map = (byte *)&header[4], *stage;
+	unsigned short *counts;
+	boolean ok = TRUE;
+
+	if (size % PSP_STATE_PAGE || 16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER)
+		return FALSE;
+	stage = (byte *)malloc(PSP_STATE_STAGE);
+	if (!stage)
+		return FALSE;
+	csmemset(header, 0, PSP_STATE_WORDS_HEADER);
+	counts = PSP_STATE_COUNTS(header, pages);
+	for (page = 0; page < pages; page++)
+	{
+		unsigned long const *words = (unsigned long const *)(buffer + page * PSP_STATE_PAGE);
+		unsigned short count = 0;
+		long w;
+
+		for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
+			count += words[w] != 0;
+		if (count)
+		{
+			map[page >> 3] |= 1 << (page & 7);
+			counts[page] = count;
+			stream += psp_state_entry_bytes(count);
+			kept++;
+		}
+	}
+	header[0] = PSP_STATE_SIGNATURE_WORDS;
+	header[1] = size;
+	header[2] = pages;
+	header[3] = stream;
+	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+		!WriteFile(handle, header, PSP_STATE_WORDS_HEADER, &written, NULL) || written != PSP_STATE_WORDS_HEADER)
+		ok = FALSE;
+	for (page = 0; ok && page < pages; page++)
+	{
+		unsigned long const *words = (unsigned long const *)(buffer + page * PSP_STATE_PAGE);
+		unsigned long bytes = psp_state_entry_bytes(counts[page]);
+
+		if (!counts[page])
+			continue;
+		if (used + bytes > PSP_STATE_STAGE)
+		{
+			ok = WriteFile(handle, stage, used, &written, NULL) && written == used;
+			used = 0;
+			if (!ok)
+				break;
+		}
+		if (counts[page] >= PSP_STATE_RAW_ABOVE)
+			csmemcpy(stage + used, words, PSP_STATE_PAGE);
+		else
+		{
+			byte *bits = stage + used;
+			unsigned long *out = (unsigned long *)(bits + PSP_STATE_PAGE_WORDS / 8);
+			long w;
+
+			csmemset(bits, 0, PSP_STATE_PAGE_WORDS / 8);
+			for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
+				if (words[w])
+				{
+					bits[w >> 3] |= 1 << (w & 7);
+					*out++ = words[w];
+				}
+		}
+		used += bytes;
+	}
+	if (ok && used)
+		ok = WriteFile(handle, stage, used, &written, NULL) && written == used;
+	free(stage);
+	if (ok)
+		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms",
+			kept, pages, (PSP_STATE_WORDS_HEADER + stream) / 1024, kept * PSP_STATE_PAGE / 1024,
+			(psp_microseconds() - start) / 1000);
+	return ok;
+}
+
 /* header: signature, size, page count, then one bit per page */
 static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long size)
 {
@@ -3816,6 +3922,19 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
 	psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+	{
+		/* build 116 (R10): the compact format, unless "statepages" (or it
+		can't: no room for its staging buffer); the pages as before then */
+		static int pages_only = -1;
+
+		if (pages_only < 0)
+			pages_only = psp_keep("statepages");
+		if (!pages_only && psp_state_write_words(handle, buffer, size))
+		{
+			psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+			return TRUE;
+		}
+	}
 	csmemset(header, 0, sizeof(header));
 	header[0] = PSP_STATE_SIGNATURE;
 	header[1] = size;
@@ -3880,6 +3999,66 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	return TRUE;
 }
 
+/* build 116 (R10): the compact format's pages (psp_state_write_words): the
+entries read to the buffer's tail, then each page decoded in place, front
+to back. No entry is longer than its page, so the entries still to decode
+always start at or after the page being written; a kept page's entry is
+copied aside first, since it may overlap its own page */
+static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long size, unsigned long const *first)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, read, stream;
+	byte const *map = (byte const *)&header[4], *in;
+	unsigned short const *counts;
+	byte *entry;
+
+	csmemcpy(header, first, PSP_STATE_HEADER);
+	if (16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER ||
+		!ReadFile(handle, (byte *)header + PSP_STATE_HEADER, PSP_STATE_WORDS_HEADER - PSP_STATE_HEADER, &read, NULL) ||
+		read != PSP_STATE_WORDS_HEADER - PSP_STATE_HEADER)
+		return FALSE;
+	stream = header[3];
+	counts = PSP_STATE_COUNTS(header, pages);
+	if (stream > size || (stream && (!ReadFile(handle, buffer + size - stream, stream, &read, NULL) || read != stream)))
+		return FALSE;
+	entry = (byte *)malloc(PSP_STATE_PAGE);
+	if (!entry)
+		return FALSE;
+	in = buffer + size - stream;
+	for (page = 0; page < pages; page++)
+	{
+		unsigned long *out = (unsigned long *)(buffer + page * PSP_STATE_PAGE);
+		unsigned long bytes;
+
+		if (!(map[page >> 3] & (1 << (page & 7))))
+		{
+			csmemset(out, 0, PSP_STATE_PAGE);
+			continue;
+		}
+		bytes = psp_state_entry_bytes(counts[page]);
+		if (in + bytes > buffer + size || in < (byte const *)out)
+		{
+			free(entry);
+			return FALSE;
+		}
+		if (counts[page] >= PSP_STATE_RAW_ABOVE)
+			memmove(out, in, PSP_STATE_PAGE);
+		else
+		{
+			byte const *bits = entry;
+			unsigned long const *words = (unsigned long const *)(entry + PSP_STATE_PAGE_WORDS / 8);
+			long w;
+
+			csmemcpy(entry, in, bytes);
+			for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
+				out[w] = (bits[w >> 3] & (1 << (w & 7))) ? *words++ : 0;
+		}
+		in += bytes;
+	}
+	free(entry);
+	return in == buffer + size;
+}
+
 static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
 {
 	static unsigned long header[PSP_STATE_HEADER / 4];
@@ -3888,7 +4067,11 @@ static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
 
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!ReadFile(handle, header, PSP_STATE_HEADER, &read, NULL) || read != PSP_STATE_HEADER ||
-		header[0] != PSP_STATE_SIGNATURE || header[1] != size || header[2] != pages)
+		header[1] != size || header[2] != pages)
+		return FALSE;
+	if (header[0] == PSP_STATE_SIGNATURE_WORDS)
+		return psp_state_read_words(handle, buffer, size, header);
+	if (header[0] != PSP_STATE_SIGNATURE)
 		return FALSE;
 	csmemset(buffer, 0, size);
 	for (page = 0; page < pages; )
