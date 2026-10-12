@@ -1810,6 +1810,17 @@ steps in order: the console has no way to wait */
 		platform_log("menutest: loading Blood Gulch from the menu");
 		hs_compile_and_evaluate("map_name levels\\test\\bloodgulch\\bloodgulch");
 	}
+	/* keep.txt's "exitatN": back to the menu at N seconds of game time, so
+	two emulator runs (the cache models' A/Bs) cover the same ticks and
+	their totals compare directly */
+	{
+		static long exit_tick = -1;
+
+		if (exit_tick < 0)
+			exit_tick = (long)psp_keep_number("exitat", 0) * 30;
+		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
+			exit_game("exitat");
+	}
 #ifdef PSP_PGO_GENERATE
 	{
 		/* PSP_PGO=generate (psp_build.py): the hot units' counts written to

@@ -123,6 +123,15 @@ MAP_CHECKS = os.environ.get("PSP_MAP_CHECKS", "") == "1"
 PGO = os.environ.get("PSP_PGO", "")
 PGO_PROFILE = os.environ.get("PSP_PGO_PROFILE", "")
 PGO_DIR = os.path.join(OUT, "pgo-profile")
+# PSP_PGO_PARTIAL=0: what the training run never reached is optimised for
+# size, as GCC does by default (smaller, but slow wherever the run didn't go);
+# 1, the default: optimised as usual
+PGO_PARTIAL = os.environ.get("PSP_PGO_PARTIAL", "1") != "0"
+# PSP_PGO_EXTRA: more flags for the counted units in a PSP_PGO=use build,
+# separated by commas or spaces (e.g. -fno-unroll-loops: -fprofile-use
+# unrolls and peels loops, which grows the program, and the heap is what's
+# left of 24 MB after it)
+PGO_EXTRA = os.environ.get("PSP_PGO_EXTRA", "").replace(",", " ").split()
 # the units PSP_PGO=generate counts in: source/<name>/ for each name, "psp"
 # for psp/src/. All the hot units counted, the program grew 5.3 MB and the
 # heap fell to 3.9 MB in the 64 MB layout, under b30's 5.2 MB; these are the
@@ -142,15 +151,23 @@ def pgo_counted(rel):
     return any(r.startswith("psp/src/" if u == "psp" else "source/%s/" % u) for u in PGO_UNITS if u)
 
 def pgo_flags(rel):
-    if PGO == "generate" and not pgo_counted(rel):
+    # only the counted units: -fprofile-use without counts still turns on
+    # its loop unrolling and peeling, which grew the uncounted units ~100 KB
+    # for nothing (the first local build)
+    if not pgo_counted(rel):
         return []
     if PGO == "generate":
         return ["-fprofile-generate=/pgo", "-fprofile-update=single", "-fprofile-prefix-path=" + OUT]
     if PGO == "use":
-        # partial training: code the run never reached is optimised as
-        # usual, not for size (one map's opening doesn't reach the rest)
-        return ["-fprofile-use=" + PGO_DIR, "-fprofile-prefix-path=" + OUT, "-fprofile-partial-training",
-                "-Wno-missing-profile"]
+        # partial training (PGO_PARTIAL): code the run never reached is
+        # optimised as usual, not for size (one map's opening doesn't reach
+        # the rest). A function whose source location moved but whose
+        # branches didn't (a line added above it) still uses its counts, with
+        # a warning; one whose branches changed is built without them (GCC
+        # checks both)
+        return ["-fprofile-use=" + PGO_DIR, "-fprofile-prefix-path=" + OUT] + (
+                ["-fprofile-partial-training"] if PGO_PARTIAL else []) + [
+                "-Wno-missing-profile", "-Wno-error=coverage-mismatch"] + PGO_EXTRA
     return []
 PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
        "-fms-extensions", "-fcommon", "-fno-strict-aliasing", "-fwrapv",
@@ -300,6 +317,12 @@ def compile_one(item):
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
             cmd[-4:-4] = ["-I" + (MECORE or os.path.dirname(SDK)) + "/include"]
+    if PGO:
+        # PGO: the port's own files named through the tree's link to the
+        # checkout (tree/sierra), as the engine's are named relative to the
+        # tree: a function's file name is part of its profile's checksum, so
+        # counts made on the lab's runner match a build on any machine
+        cmd = [a.replace(HERE + "/", "sierra/") for a in cmd]
     r = subprocess.run(cmd, cwd=TREE, capture_output=True, text=True)
     if r.returncode and "-mno-explicit-relocs" in cmd:
         # inline assembly that uses $at (".set noat") needs explicit relocations
@@ -395,6 +418,11 @@ def main():
     build_var.REPO, build_var.TREE = REPO, TREE
     build_var.mirror()
     subprocess.run([sys.executable, os.path.join(HERE, "psp_fixups.py"), TREE], check=True)
+    if PGO:
+        link_path = os.path.join(TREE, "sierra")
+        if os.path.islink(link_path):
+            os.remove(link_path)
+        os.symlink(HERE, link_path)
     if PGO == "use":
         import shutil, tarfile
         shutil.rmtree(PGO_DIR, ignore_errors=True)
