@@ -261,7 +261,8 @@ def water_tint(m, o, means):
     modulates the background (psp_fixups.py), so the background keeps
     1 - alpha of itself, alpha being one minus the base map's mean colour,
     and the source is what the reflection adds over that alpha; added
-    otherwise. (tint, result, the base map's mean) or None"""
+    otherwise. (the result over the base map's mean, unclipped; the result;
+    the base map's mean) or None"""
     flags, = struct.unpack_from('<H', m.data, o + 40)
     base_id, = struct.unpack_from('<i', m.data, o + 88)
     reflection_id, = struct.unpack_from('<i', m.data, o + 168)
@@ -281,26 +282,47 @@ def water_tint(m, o, means):
     else:
         result = np.append(np.clip(added, 0.0, 1.0), 1.0)
     floor = np.maximum(base, 1.0 / 255.0)
-    tint = np.clip(result / floor, 0.0, 1.0)
+    quotient = result / floor
     if not flags & 2:
-        tint[3] = 1.0
-    return tint, result, base
+        quotient[3] = 1.0
+    return quotient, result, base
 
 
 # ---------------------------------------------------------------- the tint
 
+# a colour more than this over its map's (the GE multiplies by at most 1)
+# is drawn doubled: the tint at half, the GE's colour doubling on
+DOUBLED_ABOVE = 1.02
+
+
+def _clipped(quotient):
+    """(tint RGBA 0-1, doubled): a shader's result over its drawn map's mean
+    as the GE can multiply it. Where a colour channel asks for more than the
+    map (Cortana, the holograms, the sniper rifle's screen: up to 3x), the
+    tint is halved and drawn with the GE's colour doubling (the alpha isn't
+    doubled); 2x is the most it gives"""
+    quotient = np.asarray(quotient, dtype=np.float64)
+    doubled = bool(quotient[:3].max() > DOUBLED_ABOVE)
+    rgb = quotient[:3] * (0.5 if doubled else 1.0)
+    return np.clip(np.append(rgb, quotient[3]), 0.0, 1.0), doubled
+
+
 def shader_tint(m, tag, means):
     """(tint RGBA 0-1, the drawn map's index, the shader's result, the drawn
-    map's mean) for a generic, chicago or water shader, or None when the
-    PSP's draw needs none (a numeric shader, no maps, a map that can't be
-    read). A water shader's drawn map is its base map (index 0 here)"""
+    map's mean, doubled) for a generic, chicago or water shader, or None when
+    the PSP's draw needs none (a numeric shader, no maps, a map that can't be
+    read). A water shader's drawn map is its base map (index 0 here).
+    doubled: the tint is half the colour, for the GE's colour doubling"""
     if not tag.address or not m.in_tags(tag.address):
         return None
     o = m.off(tag.address)
     kind, = struct.unpack_from('<H', m.data, o + 36)
     if kind == WATER:
         found = water_tint(m, o, means)
-        return None if found is None else (found[0], 0, found[1], found[2])
+        if found is None:
+            return None
+        tint, doubled = _clipped(found[0])
+        return tint, 0, found[1], found[2], doubled
     if kind not in (GENERIC, CHICAGO):
         return None
     flags = m.data[o + 41]
@@ -328,8 +350,8 @@ def shader_tint(m, tag, means):
     if result is None:
         return None
     base = np.maximum(map_means[drawn], 1.0 / 255.0)
-    tint = np.clip(result / base, 0.0, 1.0)
-    return tint, drawn, result, map_means[drawn]
+    tint, doubled = _clipped(result / base)
+    return tint, drawn, result, map_means[drawn], doubled
 
 
 def abgr(rgba):
@@ -339,8 +361,10 @@ def abgr(rgba):
 
 
 def tints(m, bitmaps, shaders=None):
-    """{shader tag address: (ABGR, the details)} for every generic and
-    chicago shader whose draw needs a tint (one that isn't white)"""
+    """{key: (ABGR, the shader's name, the details)} for every generic,
+    chicago and water shader whose draw needs a tint (one that isn't white,
+    or is doubled). The key is the shader's tag address, plus 1 when the tint
+    is doubled (tag addresses are multiples of 4; psp_tex.c reads the bit)"""
     means = Means(m, bitmaps)
     out = {}
     for t in m.tags:
@@ -350,6 +374,6 @@ def tints(m, bitmaps, shaders=None):
         if found is None:
             continue
         word = abgr(found[0])
-        if word != 0xFFFFFFFF:
-            out[t.address] = (word, t.name, found)
+        if word != 0xFFFFFFFF or found[4]:
+            out[t.address | (1 if found[4] else 0)] = (word, t.name, found)
     return out

@@ -129,9 +129,10 @@ def main():
         if found is None:
             print('tint for %s %s: none (numeric, no maps, or a map that cannot be read)' % (t.group, t.name))
             continue
-        tint, drawn, result, mean = found
-        print('tint for %s %s: %08x (map %d drawn; the shader averages %s; that map %s)' % (
-            t.group, t.name, seethrough.abgr(tint), drawn, ' '.join('%.2f' % v for v in result),
+        tint, drawn, result, mean, doubled = found
+        print('tint for %s %s: %08x%s (map %d drawn; the shader averages %s; that map %s)' % (
+            t.group, t.name, seethrough.abgr(tint), ' doubled' if doubled else '', drawn,
+            ' '.join('%.2f' % v for v in result),
             ' '.join('%.2f' % v for v in mean)))
 
 

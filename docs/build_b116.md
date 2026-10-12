@@ -19,10 +19,10 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 | # | What's restored | How | Keep word (off) |
 |---|---|---|---|
 | R1 | The ocean stays behind the seabed (b30's flight) | Free see-through surfaces pushed back by their far corner (b115's `overlayfreefar`, Sheepdog01's test 5 [M]) | `overlayfreenear` |
-| R2 | The ocean's colour, and every see-through shader's: thrusters, the a10 sky, glass | The bake works each shader out the way the Xbox's combiners would, with every map at its mean colour, and stores the tint for the one map the PSP draws (`seethrough.py`) | `notint` |
+| R2 | Every see-through shader's colour: thrusters, holograms, Cortana, the sky's layers | The bake works each shader out the way the Xbox's combiners would, with every map at its mean colour, and stores the tint for the one map the PSP draws (`seethrough.py`). A shader brighter than its map (Cortana, the holograms, the sniper rifle's screen: up to 3x) is drawn with the GE's colour doubling and half the tint | `notint` |
 | R2b | Water's colour: b30's ocean and c10's swamp (both white) | Water draws its base map blended as the shader's flags say (alpha-blended when its colour modulates the background, added otherwise), tinted with its reflection and view colours | `waterwhite` |
 | R3 | Doors, chairs and devices made with level shaders: textured (the map room bunker's door, a10's orange chairs) | Objects' environment-shader parts get their base map, as the level's do | `senvflat` |
-| — | See-through parts fade as on the Xbox: thruster cones with the thrust, light cones soft at the sides, parts under active camouflage | The shader's fade source, its fade by the angle the surface is seen at, and camouflage | `seethroughflat` |
+| — | See-through parts fade as on the Xbox: thruster cones with the thrust, light cones and volume lights soft at the sides (c40's pale discs), parts under active camouflage | The shader's fade source, its fade by the angle the surface is seen at (the level's by each triangle's own plane: its copies have no normals), and camouflage | `seethroughflat` |
 | — | Space and indoor gaps aren't pale blue | Each frame clears to the window's fog colour, as the Xbox clears (a10's opening) | `clearblue` |
 | — | c10's swamp fog | Planar fog, when the eye is in it, as a distance fog in its colour (the Xbox's fog pass, reduced to what the GE has) | `planarfogoff` |
 | b113 #2 | Plasma glows hidden behind characters | The flare's ray meets bipeds (not the player's own), stopping just short of the flare | `flaresnobipeds` |
@@ -56,7 +56,8 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 | R4's fallback (a resident level of detail instead of nothing) | Design; the counter comes first |
 | R7, R8 (zoom overlays, tracers) | Wait on reference shots from the PC build |
 | The sound rebake (S9, approved) | Its re-encoder isn't written yet: its own bake, after b116's checks |
-| c40's white discs, c10's vines, a10's bridge glass | Being identified (tag censuses queued) |
+| The ocean's colour from above (b30) | The Xbox colours what lies under water with the water's own fog, seen from above too; the GE fogs only by distance from the eye. The ocean is now its reflection over the seabed, not white, but the deep water isn't blue yet: a fog by depth below the water's plane, per vertex, is a bigger change |
+| c10's vines, a10's bridge glass | Still being identified |
 
 ## What the emulator showed [E]
 

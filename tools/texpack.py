@@ -17,8 +17,9 @@ File layout (little endian):
   tints (build 116), right after the directory: 'TNT1', u32 count, then
     count x { u32 shader tag address, u32 tint (ABGR) }, sorted by address:
     the see-through shaders' tints for the one map the GE draws of each
-    (seethrough.py). Builds before 116 read the data by offset and never
-    look here
+    (seethrough.py). Bit 0 of the address set: the tint is half the colour,
+    drawn with the GE's colour doubling. Builds before 116 read the data by
+    offset and never look here
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
     each level swizzled, rows padded to 16 bytes and to 8 rows
 """
@@ -591,9 +592,10 @@ def main():
     # build 116: the see-through shaders' tints (seethrough.py)
     tints = seethrough.tints(m, bitmap_list(m, d))
     for address in sorted(tints):
-        word, name, (tint, drawn, result, mean) = tints[address]
-        print('  tint %08x for %s: map %d drawn; the shader averages %s over its map\'s %s' % (
-            word, name, drawn, ' '.join('%.2f' % v for v in result), ' '.join('%.2f' % v for v in mean)), file=sys.stderr)
+        word, name, (tint, drawn, result, mean, doubled) = tints[address]
+        print('  tint %08x%s for %s: map %d drawn; the shader averages %s over its map\'s %s' % (
+            word, ' doubled' if doubled else '', name, drawn, ' '.join('%.2f' % v for v in result),
+            ' '.join('%.2f' % v for v in mean)), file=sys.stderr)
     print('%d see-through shaders tinted' % len(tints), file=sys.stderr)
     tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
         struct.pack('<II', address, tints[address][0]) for address in sorted(tints)) if tints else b''

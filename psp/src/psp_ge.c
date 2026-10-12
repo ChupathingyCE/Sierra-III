@@ -315,7 +315,11 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
 void psp_ge_fog_planar(float red, float green, float blue, float maximum_distance, float density);
 void psp_ge_seethrough_tint(unsigned int tint);
+void psp_ge_seethrough_shader(unsigned int shader);
 void psp_ge_seethrough_meter(const void *meter);
+static void seethrough_tint_set(unsigned int tint, int doubled);
+unsigned int psp_tex_shader_tint(unsigned int shader, int *doubled);
+int psp_tex_resident(unsigned int key);
 void psp_ge_window_target(int target);
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v);
@@ -807,7 +811,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_fog_planar(w[0].f, w[1].f, w[2].f, w[3].f, w[4].f);
 			break;
 		case DEFER_SEETHROUGH_TINT: /* build 116 */
-			psp_ge_seethrough_tint(w[0].u);
+			seethrough_tint_set(w[0].u, (int)w[1].u);
 			break;
 		case DEFER_SEETHROUGH_METER: /* build 116 */
 			psp_ge_seethrough_meter(w[0].u ? (const void *)(w + 1) : NULL);
@@ -7584,6 +7588,8 @@ struct transparent_draw
 	unsigned char first_person;
 	/* build 116: a meter's palette (clut, below), in the GE's 8-entry blocks */
 	unsigned char clut_blocks;
+	/* build 116: drawn with the GE's colour doubling (the tint is half) */
+	unsigned char doubled;
 	/* build 60: a see-through model part's triangles cut at the near plane
 	or the guard band: GE vertices in the part's space, drawn after its list */
 	void *cut_vertices;
@@ -7614,6 +7620,10 @@ before each call (psp_fixups.py, psp_ge_seethrough_tint); the call's pieces
 all take it, and it goes back to white when the call returns. Builds 21-115
 drew the one map untinted: b30's ocean white */
 static unsigned int seethrough_next_tint = 0xFFFFFFFF;
+/* build 116: the tint is half the shader's colour, drawn with the GE's
+colour doubling (a shader brighter than its map: Cortana, the holograms) */
+static unsigned char seethrough_next_doubled = 0;
+static unsigned long seethrough_doubled_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
 call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
 not a meter). Builds 21-115 dropped meter shaders: the plasma weapons' heat
@@ -7750,6 +7760,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
+	draw->doubled = 0;
 	halo_matrix(view_to_world, &draw->matrix);
 	draw->vertices = out;
 	draw->indices = NULL;
@@ -7880,6 +7891,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
+	draw->doubled = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -8029,6 +8041,7 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
+	draw->doubled = 0;
 	gumLoadIdentity(&draw->matrix);
 	relative(&draw->matrix);
 	draw->vertices = out;
@@ -8222,10 +8235,11 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	if (seethrough_meter_next)
 	{
 		/* build 116: a meter's palette for its value now (the cache slot is
-		this frame's until the list has run); none (a map without a 32-bit
-		palette, the list full): the part is left out, as before */
+		this frame's until the list has run), from its map's, brought into
+		memory first (the flush binds it later); none (a map without a 32-bit
+		palette, not loaded yet, the list full): the part is left out */
 		meter_parts++;
-		clut = meter_palette(key, &seethrough_next_meter, &clut_count);
+		clut = psp_tex_resident(key) ? meter_palette(key, &seethrough_next_meter, &clut_count) : NULL;
 		if (!clut || clut_count < 8)
 		{
 			meter_parts_dropped++;
@@ -8237,6 +8251,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
+	draw->doubled = 0;
 	draw->cut_vertices = NULL;
 	draw->cut_count = 0;
 	node_matrix(vertices, indices, &draw->matrix);
@@ -8306,6 +8321,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->v_offset = v_offset;
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
 	draw->tint = seethrough_next_tint;
+	draw->doubled = seethrough_next_doubled;
 	draw->color = draw->tint;
 	draw->colored = 0;
 	if (clut)
@@ -8316,6 +8332,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		draw->blend = seethrough_next_meter.tint_mode_2 ? BLEND_METER_TINT : BLEND_METER_BRIGHTNESS;
 		draw->tint = seethrough_next_meter.tint_color;
 		draw->color = 0xFFFFFFFF;
+		draw->doubled = 0;
 	}
 	draw->sky = (unsigned char)in_sky;
 	draw->sprites = 0;
@@ -8394,6 +8411,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 
 	psp_ge_queue_transparent_body(vertices, vertex_count, uncompressed, indices, index_count, strip, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
+	seethrough_next_doubled = 0;
 	seethrough_meter_next = 0; /* and its meter */
 	ge_entry_us[2] += ge_clock() - start;
 }
@@ -8425,10 +8443,27 @@ static unsigned int seethrough_color(int f, int blend)
 	return ((unsigned int)f << 24) | ((unsigned int)f << 16) | ((unsigned int)f << 8) | (unsigned int)f;
 }
 
+/* build 116: the next queue call's tint, and whether it is drawn doubled */
+static void seethrough_tint_set(unsigned int tint, int doubled)
+{
+	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 2, tint, (unsigned int)doubled, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
+	seethrough_next_tint = tint;
+	seethrough_next_doubled = (unsigned char)(doubled != 0);
+}
+
 void psp_ge_seethrough_tint(unsigned int tint)
 {
-	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 1, tint, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
-	seethrough_next_tint = tint;
+	seethrough_tint_set(tint, 0);
+}
+
+/* the engine side's call before each see-through queue call: the shader's
+tint from the texture pack (psp_tex.c; white for a shader it has none for) */
+void psp_ge_seethrough_shader(unsigned int shader)
+{
+	int doubled = 0;
+	unsigned int tint = psp_tex_shader_tint(shader, &doubled);
+
+	seethrough_tint_set(tint, doubled);
 }
 
 /* build 116: the next queue call's meter (struct psp_seethrough_meter), or
@@ -8573,6 +8608,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
+	draw->doubled = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -8586,6 +8622,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	GE copies) */
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
 	draw->tint = seethrough_next_tint;
+	draw->doubled = seethrough_next_doubled;
 	draw->color = seethrough_tinted(seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
 		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF, draw->tint);
 	draw->colored = 0;
@@ -9161,6 +9198,142 @@ static int bake_stencil_has(const struct bake_stencil *st, const unsigned short 
 	return 0;
 }
 
+/* build 116: a level see-through surface that fades by the angle it is seen
+at (the volume lights' cones and shafts: c40's pale discs, drawn flat at
+full strength until now). The level's GE copies have no normals, so each
+triangle's own plane stands in: its corners take the fade from the angle
+between that plane and the line to the eye, in a coloured copy of the
+triangles in view (and the pieces of those cut at the screen's edges),
+drawn as the cut-up corners are (level 2). The engine side leaves the fade
+mode out under "seethroughflat", and this path with it */
+#define LEVEL_ANGLE_TRIANGLES 2048
+static unsigned long level_angle_draws = 0;
+
+static void level_angle_colors(struct sprite_vertex *t, int mode, float fade, int blend, unsigned int tint)
+{
+	float e1[3] = { t[1].x - t[0].x, t[1].y - t[0].y, t[1].z - t[0].z };
+	float e2[3] = { t[2].x - t[0].x, t[2].y - t[0].y, t[2].z - t[0].z };
+	float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
+	float nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		float q[3] = { t[k].x - camera_eye[0], t[k].y - camera_eye[1], t[k].z - camera_eye[2] };
+		float qq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+		float c = nn > 0.0f && qq > 0.0f ? fabsf(n[0] * q[0] + n[1] * q[1] + n[2] * q[2]) / sqrtf(nn * qq) : 1.0f;
+		float a = mode == 1 ? c : 1.0f - c;
+
+		t[k].color = seethrough_tinted(seethrough_color((int)(fade * a * 255.0f + 0.5f), blend), tint);
+	}
+}
+
+/* 1: queued (or nothing in view); 0: left to the usual path (no room). The
+caller has reset vertex_codes over the triangles' range */
+static int level_transparent_angle(const struct level_stream *stream, const unsigned short *indices,
+	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
+	const float *centroid)
+{
+	struct transparent_draw *draw;
+	struct sprite_vertex *out;
+	long index, kept_count = 0;
+	int cut_count = 0, units, on_wall = 0, free_push = 0, mode = PSP_SEETHROUGH_MODE(blend), total, at = 0, corner;
+	float fade = PSP_SEETHROUGH_FADE(blend);
+
+	/* which triangles are in view, the pushes they ask, the cut pieces */
+	for (index = 0; index < triangle_count; index++)
+	{
+		const unsigned short *triangle = indices + 3 * index;
+		int bits[3];
+		float p[3][CORNER_FLOATS] = { { 0.0f } };
+
+		for (corner = 0; corner < 3; corner++)
+		{
+			int code = vertex_codes[triangle[corner]];
+
+			if (code & CODE_UNKNOWN)
+			{
+				float point[3];
+
+				to_camera(&stream->base[triangle[corner]].x, point);
+				code = outside(point);
+				vertex_codes[triangle[corner]] = (unsigned char)code;
+			}
+			bits[corner] = code;
+		}
+		if (bits[0] & bits[1] & bits[2])
+			continue;
+		for (corner = 0; corner < 3; corner++)
+		{
+			const struct ge_vertex *b = &stream->base[triangle[corner]];
+
+			to_camera_corner(&b->x, p[corner]);
+			p[corner][3] = b->u;
+			p[corner][4] = b->v;
+		}
+		units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
+		if (units > on_wall)
+			on_wall = units;
+		if (units < 0 && (overlay_free_far > 0 ? !free_push || -units < free_push : -units > free_push))
+			free_push = -units;
+		if (!(bits[0] | bits[1] | bits[2]))
+			kept_count++;
+		else
+			cut_count += clip_triangle(p, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
+				MAXIMUM_CUT_CORNERS - cut_count);
+	}
+	total = (int)kept_count * 3 + cut_count;
+	if (!total)
+		return 1;
+	out = list_take(total * (int)sizeof(struct sprite_vertex));
+	if (!out)
+		return 0;
+	if ((draw = transparent_slot(key, u_scale, v_scale, u_offset, v_offset, blend, centroid)) == NULL)
+		return 1;
+	/* the triangles wholly in view, then the cut pieces (world positions) */
+	for (index = 0; index < triangle_count && kept_count; index++)
+	{
+		const unsigned short *triangle = indices + 3 * index;
+
+		if (vertex_codes[triangle[0]] | vertex_codes[triangle[1]] | vertex_codes[triangle[2]])
+			continue;
+		for (corner = 0; corner < 3; corner++)
+		{
+			const struct ge_vertex *b = &stream->base[triangle[corner]];
+
+			out[at].u = b->u;
+			out[at].v = b->v;
+			out[at].x = b->x;
+			out[at].y = b->y;
+			out[at].z = b->z;
+			at++;
+		}
+	}
+	for (index = 0; index < cut_count; index++)
+	{
+		const float *c = cut_corners[index];
+
+		out[at].u = c[3];
+		out[at].v = c[4];
+		out[at].x = c[7];
+		out[at].y = c[8];
+		out[at].z = c[9];
+		at++;
+	}
+	for (index = 0; index + 2 < at; index += 3)
+		level_angle_colors(out + index, mode, fade, draw->blend, draw->tint);
+	draw->vertices = out;
+	draw->indices = NULL;
+	draw->index_count = at - at % 3;
+	draw->level = 2;
+	draw->colored = 1;
+	draw->depth_units = (short)(on_wall > 0 ? on_wall : -free_push);
+	level_transparent_draws++;
+	level_angle_draws++;
+	seethrough_angle_draws++;
+	return 1;
+}
+
 static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex_count, const unsigned short *indices,
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
@@ -9195,6 +9368,12 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 	if (highest >= (unsigned int)vertex_count)
 		return;
 	memset(vertex_codes + lowest, CODE_UNKNOWN, highest - lowest + 1);
+	/* build 116: a surface that fades by the angle it is seen at (above) */
+	if (PSP_SEETHROUGH_MODE(blend) != 0 && seethrough_fades(PSP_SEETHROUGH_BLEND(blend)) && !baked &&
+		triangle_count <= LEVEL_ANGLE_TRIANGLES &&
+		level_transparent_angle(stream, indices, triangle_count, key, u_scale, v_scale, u_offset, v_offset, blend,
+			centroid))
+		return;
 	kept = (unsigned short *)list_take((int)(triangle_count * 3 * sizeof(unsigned short) + 3) & ~3);
 	if (!kept)
 		return;
@@ -9357,6 +9536,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 
 	psp_ge_queue_level_transparent_body(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
+	seethrough_next_doubled = 0;
 	ge_entry_us[3] += ge_clock() - start;
 }
 
@@ -9506,6 +9686,12 @@ static void transparent_flush_body(void)
 		sceGuTexScale(draw->u_scale, draw->v_scale);
 		sceGuTexOffset(draw->u_offset, draw->v_offset);
 		sceGumLoadMatrix(&draw->matrix);
+		if (draw->doubled)
+		{
+			/* build 116: a shader brighter than its map, its tint halved */
+			sceGuEnable(GU_FRAGMENT_2X);
+			seethrough_doubled_draws++;
+		}
 		/* build 116: the shader's fade as one colour (sprites and coloured
 		draws carry their own) */
 		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
@@ -9519,8 +9705,9 @@ static void transparent_flush_body(void)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				draw->index_count, draw->indices, draw->vertices);
 		else if (draw->level == 2 || draw->level == 4)
-			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
-				draw->index_count, NULL, draw->vertices);
+			/* (build 116: a level surface faded by angle carries a colour a corner) */
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | (draw->colored ? GU_COLOR_8888 : 0) | GU_VERTEX_32BITF |
+				GU_TRANSFORM_3D, draw->index_count, NULL, draw->vertices);
 		else
 		{
 			/* build 116: a fade per vertex replaces the normal with a colour */
@@ -9541,6 +9728,8 @@ static void transparent_flush_body(void)
 			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 			sceGuDisable(GU_ALPHA_TEST);
 		}
+		if (draw->doubled)
+			sceGuDisable(GU_FRAGMENT_2X);
 		if (draw->level)
 			sceGuDepthOffset(0);
 		if (draw->level >= 3)
@@ -12750,9 +12939,12 @@ void psp_ge_frame_end(void)
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		/* build 116: the restorations' own counters */
-		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu; windows in planar fog %lu; meter parts %lu (%lu left out: no palette)",
-			seethrough_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped);
+		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu",
+			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
+			seethrough_doubled_draws);
 		seethrough_angle_draws = 0;
+		level_angle_draws = 0;
+		seethrough_doubled_draws = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;

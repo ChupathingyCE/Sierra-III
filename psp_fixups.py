@@ -11354,19 +11354,19 @@ FIXES_116 = {}
 # build 116: a see-through shader's tint, for the one map the GE draws of it:
 # texpack.py works it out from the shader's stages with every map at its
 # mean colour, and the pack carries it by the shader's tag address
-# (psp_tex.c, psp_tex_shader_tint). Set just before each queue call, which
-# uses it for that call's draws (psp_ge.c, psp_ge_seethrough_tint). Keep
-# word "notint": as before (b30's ocean white)
+# (psp_tex.c, psp_tex_shader_tint), halved and marked when the shader is
+# brighter than its map, for the GE's colour doubling. Looked up just before
+# each queue call, which uses it for that call's draws (psp_ge.c,
+# psp_ge_seethrough_shader). Keep word "notint": as before (b30's ocean white)
 FIXES_116["source/rasterizer/rasterizer.c#tint"] = [
 ("""			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
 				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
 					v_offset, blend, &centroid->x);""",
  """			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
 			{
-				extern void psp_ge_seethrough_tint(unsigned int tint);
-				extern unsigned int psp_tex_shader_tint(unsigned int shader);
+				extern void psp_ge_seethrough_shader(unsigned int shader);
 
-				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_ge_seethrough_shader((unsigned int)shader);
 				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
 					v_offset, blend, &centroid->x);
 			}"""),
@@ -11375,10 +11375,9 @@ FIXES_116["source/rasterizer/rasterizer.c#tint"] = [
 					vertex_buffers, key, u_scale, v_scale, u_offset, v_offset, blend, centroid ? &centroid->x : NULL);""",
  """			if (key)
 			{
-				extern void psp_ge_seethrough_tint(unsigned int tint);
-				extern unsigned int psp_tex_shader_tint(unsigned int shader);
+				extern void psp_ge_seethrough_shader(unsigned int shader);
 
-				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_ge_seethrough_shader((unsigned int)shader);
 				psp_environment_transparent(dynamic_triangle_buffer_index, first_triangle_index, triangle_count,
 					vertex_buffers, key, u_scale, v_scale, u_offset, v_offset, blend, centroid ? &centroid->x : NULL);
 			}"""),
@@ -11504,16 +11503,14 @@ numeric shader"""),
 		if (key)
 			psp_transparent_meter = &meter;
 	}"""),
-("""				extern void psp_ge_seethrough_tint(unsigned int tint);
-				extern unsigned int psp_tex_shader_tint(unsigned int shader);
+("""				extern void psp_ge_seethrough_shader(unsigned int shader);
 
-				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_ge_seethrough_shader((unsigned int)shader);
 				psp_ge_transparent(triangle_buffer,""",
- """				extern void psp_ge_seethrough_tint(unsigned int tint);
+ """				extern void psp_ge_seethrough_shader(unsigned int shader);
 				extern void psp_ge_seethrough_meter(const void *meter);
-				extern unsigned int psp_tex_shader_tint(unsigned int shader);
 
-				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_ge_seethrough_shader((unsigned int)shader);
 				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
 				psp_ge_transparent(triangle_buffer,"""),
 ]

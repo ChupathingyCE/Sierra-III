@@ -79,8 +79,9 @@ static char map_name[64];
 static unsigned int *averages = NULL;
 static int averages_count = 0;
 /* build 116: the see-through shaders' tints (texpack.py), pairs of (the
-shader's tag address, its tint ABGR) sorted by address; packs baked before
-build 116 have none, and every shader draws untinted, as before */
+shader's tag address, its tint ABGR) sorted by address; bit 0 of the address
+set: the tint is half the colour, for the GE's colour doubling. Packs baked
+before build 116 have none, and every shader draws untinted, as before */
 static unsigned int *tints = NULL;
 static int tint_count = 0;
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
@@ -796,11 +797,13 @@ void psp_tex_map_opened(const char *name)
 
 /* build 116: a see-through shader's tint (ABGR) by its tag address,
 white when the pack has none for it; keep word "notint": always white */
-unsigned int psp_tex_shader_tint(unsigned int shader)
+unsigned int psp_tex_shader_tint(unsigned int shader, int *doubled)
 {
 	static int off = -1;
 	int low = 0, high = tint_count - 1;
 
+	if (doubled)
+		*doubled = 0;
 	if (off < 0)
 		off = psp_keep("notint");
 	if (off || !tints)
@@ -808,10 +811,15 @@ unsigned int psp_tex_shader_tint(unsigned int shader)
 	while (low <= high)
 	{
 		int middle = (low + high) / 2;
+		unsigned int address = tints[2 * middle] & ~1u;
 
-		if (tints[2 * middle] == shader)
+		if (address == shader)
+		{
+			if (doubled)
+				*doubled = (int)(tints[2 * middle] & 1);
 			return tints[2 * middle + 1];
-		if (tints[2 * middle] < shader)
+		}
+		if (address < shader)
 			low = middle + 1;
 		else
 			high = middle - 1;
@@ -1194,6 +1202,36 @@ int psp_tex_palette(unsigned int key, const unsigned int **palette, int *count)
 		return 0;
 	*palette = (const unsigned int *)(resident_at[index] | 0x40000000);
 	*count = entries[index].psm == GU_PSM_T4 ? 16 : 256;
+	return 1;
+}
+
+/* build 116: a texture brought into memory without binding it (no GE
+state sent): a model meter's palette is worked out from its map's when the
+part is queued, before the flush binds the map. Counted as used this frame,
+as a bind is. 1 when it is resident */
+int psp_tex_resident(unsigned int key)
+{
+	int index = key && entries ? find(key) : -1;
+
+	if (index < 0)
+		return 0;
+	if (!resident_at[index])
+	{
+		misses++;
+		if (psp_me_context)
+		{
+			want(index);
+			return 0;
+		}
+		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+			return 0;
+	}
+	if (last_frame[index] != frame)
+	{
+		frame_set_bytes += alignment(entries[index].size);
+		frame_set_count++;
+	}
+	last_frame[index] = frame;
 	return 1;
 }
 
