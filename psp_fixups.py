@@ -11137,6 +11137,68 @@ FIXES_115 = {}
 
 # ---------- build 116
 FIXES_116 = {}
+# build 116: the planar fog (c10's swamp), as it reaches the eye: how deep
+# the eye is below the fog's plane, over the fog's maximum depth, as the
+# Xbox's fog pass works it out (rasterizer_xbox_environment_fog.c,
+# _rasterizer_environment_fog_begin). A cluster that is all fog ("fully
+# fogged") has its plane put at the far clip, facing the eye, by the Xbox's
+# own settling (rasterizer_xbox.c), so the eye is all the way in. The GE
+# fogs with the thicker of this and the atmospheric fog (psp_ge.c,
+# psp_ge_fog_planar); keep word "planarfogoff": as before
+# build 116: a see-through shader's tint, for the one map the GE draws of it:
+# texpack.py works it out from the shader's stages with every map at its
+# mean colour, and the pack carries it by the shader's tag address
+# (psp_tex.c, psp_tex_shader_tint). Set just before each queue call, which
+# uses it for that call's draws (psp_ge.c, psp_ge_seethrough_tint). Keep
+# word "notint": as before (b30's ocean white)
+FIXES_116["source/rasterizer/rasterizer.c#tint"] = [
+("""			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);""",
+ """			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+			{
+				extern void psp_ge_seethrough_tint(unsigned int tint);
+				extern unsigned int psp_tex_shader_tint(unsigned int shader);
+
+				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);
+			}"""),
+("""			if (key)
+				psp_environment_transparent(dynamic_triangle_buffer_index, first_triangle_index, triangle_count,
+					vertex_buffers, key, u_scale, v_scale, u_offset, v_offset, blend, centroid ? &centroid->x : NULL);""",
+ """			if (key)
+			{
+				extern void psp_ge_seethrough_tint(unsigned int tint);
+				extern unsigned int psp_tex_shader_tint(unsigned int shader);
+
+				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_environment_transparent(dynamic_triangle_buffer_index, first_triangle_index, triangle_count,
+					vertex_buffers, key, u_scale, v_scale, u_offset, v_offset, blend, centroid ? &centroid->x : NULL);
+			}"""),
+]
+FIXES_116["source/rasterizer/rasterizer.c#planarfog"] = [
+("""		extern void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
+
+		psp_ge_fog(&global_window_parameters.fog.atmospheric_color.red,""",
+ """		extern void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
+		extern void psp_ge_fog_planar(float red, float green, float blue, float maximum_distance, float density);
+		struct render_fog const *settled = &global_window_parameters.fog;
+		real eye = 0.0f;
+
+		if (settled->planar_mode && settled->planar_maximum_depth > 0.0f)
+		{
+			eye = -(settled->plane.n.i * global_window_parameters.camera.position.x +
+				settled->plane.n.j * global_window_parameters.camera.position.y +
+				settled->plane.n.k * global_window_parameters.camera.position.z -
+				settled->plane.d) / settled->planar_maximum_depth;
+			eye = eye < 0.0f ? 0.0f : eye > 1.0f ? 1.0f : eye;
+		}
+		/* build 116: first the planar fog, which psp_ge_fog weighs against the atmospheric */
+		psp_ge_fog_planar(settled->planar_color.red, settled->planar_color.green, settled->planar_color.blue,
+			settled->planar_maximum_distance, settled->planar_maximum_density * eye);
+		psp_ge_fog(&global_window_parameters.fog.atmospheric_color.red,"""),
+]
 # build 116: the compressed animations' float tables and node headers read
 # with unaligned-safe loads (PSP_UNALIGNED_REAL, PSP_UNALIGNED_REAL3,
 # PSP_UNALIGNED_ULONG: psp_limits.h). Our own keyframed animations pad every

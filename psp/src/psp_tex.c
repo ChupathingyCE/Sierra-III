@@ -75,6 +75,11 @@ static char map_name[64];
 /* per entry: its average colour once worked out (psp_tex_average) */
 static unsigned int *averages = NULL;
 static int averages_count = 0;
+/* build 116: the see-through shaders' tints (texpack.py), pairs of (the
+shader's tag address, its tint ABGR) sorted by address; packs baked before
+build 116 have none, and every shader draws untinted, as before */
+static unsigned int *tints = NULL;
+static int tint_count = 0;
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
 static unsigned short vram_pending[512];
 static int vram_pending_count = 0;
@@ -136,6 +141,9 @@ void psp_tex_close(void)
 	free(averages);
 	averages = NULL;
 	averages_count = 0;
+	free(tints);
+	tints = NULL;
+	tint_count = 0;
 	vram_pending_count = 0;
 	entries = NULL;
 	resident_at = last_frame = NULL;
@@ -711,6 +719,26 @@ void psp_tex_map_opened(const char *name)
 	}
 	pack = file;
 	entry_count = header[1];
+	{
+		/* build 116: the tints, right after the directory when the pack has
+		them ('TNT1', a count, the pairs); the textures' data is read by
+		offset, so packs without them read as before */
+		unsigned int table[2];
+
+		if (sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) && table[0] == 0x31544E54 /* TNT1 */ &&
+			table[1] > 0 && table[1] <= 4096 && (tints = malloc(table[1] * 8)) != NULL)
+		{
+			if (sceIoRead(file, tints, table[1] * 8) == (int)(table[1] * 8))
+				tint_count = (int)table[1];
+			else
+			{
+				free(tints);
+				tints = NULL;
+			}
+		}
+		platform_log("textures: see-through tints for %d shaders%s", tint_count,
+			tint_count ? "" : " (a pack baked before build 116: none)");
+	}
 	platform_log("textures: %s, %d textures; caches %d KB of VRAM and %d KB of RAM", path, entry_count,
 		(VRAM_CACHE_END - VRAM_CACHE_START) / 1024, (int)(arenas[1].end - arenas[1].start) / 1024);
 	{
@@ -730,6 +758,31 @@ void psp_tex_map_opened(const char *name)
 			ranked ? "by binds per byte" : learned ? "largest first (vramlargest)" : "largest first until learned");
 		preload(ranked);
 	}
+}
+
+/* build 116: a see-through shader's tint (ABGR) by its tag address,
+white when the pack has none for it; keep word "notint": always white */
+unsigned int psp_tex_shader_tint(unsigned int shader)
+{
+	static int off = -1;
+	int low = 0, high = tint_count - 1;
+
+	if (off < 0)
+		off = psp_keep("notint");
+	if (off || !tints)
+		return 0xFFFFFFFF;
+	while (low <= high)
+	{
+		int middle = (low + high) / 2;
+
+		if (tints[2 * middle] == shader)
+			return tints[2 * middle + 1];
+		if (tints[2 * middle] < shader)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return 0xFFFFFFFF;
 }
 
 static int find(unsigned int key)

@@ -232,7 +232,8 @@ enum
 	DEFER_QUEUE_LEVEL_TRANSPARENT, DEFER_HUD_ZOOM, DEFER_UI_CENTERED, DEFER_UI_SPACE, DEFER_SCREEN_QUAD,
 	DEFER_SHADOW_BEGIN, DEFER_SHADOW_DRAW, DEFER_SHADOW_END, DEFER_LIGHT_BEGIN, DEFER_LIGHT_DRAW, DEFER_SCREEN_FLASH,
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
-	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */
+	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
+	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT /* build 116 */
 };
 typedef union
 {
@@ -312,6 +313,8 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid);
 void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
+void psp_ge_fog_planar(float red, float green, float blue, float maximum_distance, float density);
+void psp_ge_seethrough_tint(unsigned int tint);
 void psp_ge_window_target(int target);
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v);
@@ -798,6 +801,12 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_FOG:
 			psp_ge_fog(defer_copy_back(w + 3, &rest, 3), w[0].f, w[1].f, w[2].f);
+			break;
+		case DEFER_FOG_PLANAR: /* build 116 */
+			psp_ge_fog_planar(w[0].f, w[1].f, w[2].f, w[3].f, w[4].f);
+			break;
+		case DEFER_SEETHROUGH_TINT: /* build 116 */
+			psp_ge_seethrough_tint(w[0].u);
 			break;
 		case DEFER_WINDOW_TARGET:
 			psp_ge_window_target(w[0].i);
@@ -1782,6 +1791,27 @@ keeps thickening where Halo holds). Until the game says, no fog. */
 static float fog_near = 1e6f, fog_far = 2e6f;
 static unsigned int fog_color = SKY_COLOR;
 static unsigned long fog_changes = 0;
+/* build 116: the colour each frame is cleared to, as the Xbox clears a
+window: its atmospheric fog's colour, fog on or off (rasterizer_xbox.c,
+_rasterizer_window_begin), here the last window's (one frame late at most).
+Builds 14-115 cleared to a fixed pale blue, which showed wherever nothing
+was drawn: a10's space, gaps indoors. Keep word "clearblue": as before */
+static unsigned int window_clear_color = SKY_COLOR;
+static int clear_blue = -1;
+/* build 116: the window's planar fog, as it reaches the eye (psp_fixups.py,
+rasterizer.c): the colour, and where it would be all fog (0: none). The
+Xbox draws planar fog as a pass of its own over the level and the objects,
+from the depth below the fog's plane and the distance
+(rasterizer_xbox_environment_fog.c); with the eye inside the fog (a cluster
+"fully fogged", c10's swamp, or the eye below the plane) that comes down to
+a distance fog in the planar colour, which the GE has. psp_ge_fog fogs with
+whichever of the two is thicker. Builds 23-115 had the atmospheric fog
+only: c10's swamp ended in a hard edge at its far clip. Keep word
+"planarfogoff": as before */
+static float planar_far = 0.0f;
+static unsigned int planar_color = 0;
+static int planar_fog_off = -1;
+static unsigned long planar_fog_windows = 0;
 
 /* build 114: "drawdistN" (B9): the far clip at N world units outside
 cutscenes, the fog closing at it (render.c, psp_fixups.py FIXES_114); 0 off */
@@ -1819,17 +1849,50 @@ void psp_ge_fog(const float *color, float minimum_distance, float maximum_distan
 	r = (int)(color[0] * 255.0f); g = (int)(color[1] * 255.0f); b = (int)(color[2] * 255.0f);
 	r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
 	c = 0xFF000000 | (b << 16) | (g << 8) | r;
+	window_clear_color = c;
+	/* build 116: the planar fog, where it is thicker (above) */
+	if (planar_far > 0.0f && planar_far < far)
+	{
+		near = 0.0f;
+		far = planar_far;
+		c = planar_color;
+		planar_fog_windows++;
+	}
 	if (near != fog_near || far != fog_far || c != fog_color)
 	{
 		if (fog_changes++ < 8)
-			platform_log("GE: fog %.1f to %.1f (density %.2f), colour %06x", minimum_distance, maximum_distance,
-				density, c & 0xFFFFFF);
+			platform_log("GE: fog %.1f to %.1f (density %.2f); the GE's %.1f to %.1f, colour %06x%s", minimum_distance,
+				maximum_distance, density, near, far, c & 0xFFFFFF, c == planar_color && near == 0.0f ? " (planar)" : "");
 		fog_near = near;
 		fog_far = far;
 		fog_color = c;
 	}
 	if (frame_open)
 		sceGuFog(fog_near, fog_far, fog_color);
+}
+
+/* build 116: the window's planar fog (above), called just before psp_ge_fog
+each window: density is the fog's maximum density times how deep the eye is
+in it (0 to 1), 0 for none */
+void psp_ge_fog_planar(float red, float green, float blue, float maximum_distance, float density)
+{
+	GE_DEFER(defer_words(DEFER_FOG_PLANAR, 5, defer_bits(red), defer_bits(green), defer_bits(blue),
+		defer_bits(maximum_distance), defer_bits(density), 0, 0, 0));
+	int r, g, b;
+
+	if (planar_fog_off < 0)
+		planar_fog_off = psp_keep("planarfogoff");
+	planar_far = 0.0f;
+	if (planar_fog_off || density <= 0.001f || maximum_distance <= 0.0f)
+		return;
+	if (density > 1.0f)
+		density = 1.0f;
+	/* all fog where a full fade would end, so the fog reaches the planar
+	density at its maximum distance, as psp_ge_fog does the atmospheric */
+	planar_far = maximum_distance / density;
+	r = (int)(red * 255.0f); g = (int)(green * 255.0f); b = (int)(blue * 255.0f);
+	r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
+	planar_color = 0xFF000000 | (b << 16) | (g << 8) | r;
 }
 
 /* the GE's own state, once: buffers, viewport, depth, fog */
@@ -2630,7 +2693,9 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		taa_jitter_x = taa_jitter_y = 0.0f;
 	if (magenta < 0)
 		magenta = psp_keep("clearmagenta");
-	sceGuClearColor(magenta ? 0xFFFF00FF : SKY_COLOR);
+	if (clear_blue < 0)
+		clear_blue = psp_keep("clearblue");
+	sceGuClearColor(magenta ? 0xFFFF00FF : clear_blue ? SKY_COLOR : window_clear_color);
 	sceGuClearDepth(0);
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 	/* build 63: the world's depth state from a known start each frame, so a
@@ -7186,6 +7251,9 @@ struct transparent_draw
 	normal bytes (colored) */
 	unsigned int color;
 	unsigned char colored;
+	/* build 116: the shader's tint (psp_ge_seethrough_tint), already in
+	color or the per-vertex colours; kept for the near-plane cut */
+	unsigned int tint;
 	unsigned char sky, sprites;
 	/* a widget sprite's (sky 2): whether it is hidden behind the level */
 	unsigned char depth_test;
@@ -7203,8 +7271,17 @@ struct transparent_draw
 };
 
 /* build 116: the see-through fade (defined with transparent_slot) */
+/* build 116: a see-through shader's tint (texpack.py works it out: the
+shader's stages with each map at its mean colour, over the mean of the map
+the GE draws), for the next queue call's draws. The engine side sets it just
+before each call (psp_fixups.py, psp_ge_seethrough_tint); the call's pieces
+all take it, and it goes back to white when the call returns. Builds 21-115
+drew the one map untinted: b30's ocean white */
+static unsigned int seethrough_next_tint = 0xFFFFFFFF;
 static int seethrough_fades(int blend);
 static unsigned int seethrough_color(int f, int blend);
+static unsigned int seethrough_tinted(unsigned int color, unsigned int tint);
+static int seethrough_fade_of(const unsigned char *rgba, const struct transparent_draw *draw);
 static float seethrough_fade(short packed);
 static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_count, int placed, int mode,
 	float fade);
@@ -7327,6 +7404,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 	draw = &transparent[transparent_count++];
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
+	draw->tint = 0xFFFFFFFF;
 	halo_matrix(view_to_world, &draw->matrix);
 	draw->vertices = out;
 	draw->indices = NULL;
@@ -7455,6 +7533,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	draw = &transparent[transparent_count++];
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
+	draw->tint = 0xFFFFFFFF;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -7602,6 +7681,7 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 	draw = &transparent[transparent_count++];
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
+	draw->tint = 0xFFFFFFFF;
 	gumLoadIdentity(&draw->matrix);
 	relative(&draw->matrix);
 	draw->vertices = out;
@@ -7728,9 +7808,9 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 				model_to_camera(&draw->matrix, p, polygon[k]);
 				polygon[k][3] = uv[0];
 				polygon[k][4] = uv[1];
-				/* build 116: a coloured draw's fade (its alpha byte) in the
-				normal's place: the pieces' colour is rebuilt from it */
-				polygon[k][5] = draw->colored ? (float)record[11] : (float)(signed char)record[8];
+				/* build 116: a coloured draw's fade in the normal's place:
+				the pieces' colour is rebuilt from it */
+				polygon[k][5] = draw->colored ? (float)seethrough_fade_of(record + 8, draw) : (float)(signed char)record[8];
 				polygon[k][6] = (signed char)record[9];
 				polygon[k][10] = (signed char)record[10];
 				polygon[k][7] = p[0];
@@ -7759,7 +7839,8 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 
 			memcpy(record, uv, 8);
 			if (draw->colored)
-				*(unsigned int *)(record + 8) = seethrough_color((int)(model_cut[c][5] + 0.5f), draw->blend);
+				*(unsigned int *)(record + 8) = seethrough_tinted(seethrough_color((int)(model_cut[c][5] + 0.5f),
+					draw->blend), draw->tint);
 			else
 			{
 				record[8] = (unsigned char)(signed char)model_cut[c][5];
@@ -7791,6 +7872,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw = &transparent[transparent_count++];
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
+	draw->tint = 0xFFFFFFFF;
 	draw->cut_vertices = NULL;
 	draw->cut_count = 0;
 	node_matrix(vertices, indices, &draw->matrix);
@@ -7859,7 +7941,8 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->u_offset = u_offset;
 	draw->v_offset = v_offset;
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
-	draw->color = 0xFFFFFFFF;
+	draw->tint = seethrough_next_tint;
+	draw->color = draw->tint;
 	draw->colored = 0;
 	draw->sky = (unsigned char)in_sky;
 	draw->sprites = 0;
@@ -7884,7 +7967,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		if (mode != 0 && vertex_count <= 4096)
 			seethrough_vertex_colors(draw, vertex_count, draw->vertices != vertices, mode, fade);
 		else if (fade < 1.0f)
-			draw->color = seethrough_color((int)(fade * 255.0f + 0.5f), draw->blend);
+			draw->color = seethrough_tinted(seethrough_color((int)(fade * 255.0f + 0.5f), draw->blend), draw->tint);
 	}
 	if (model_drop < 0)
 		model_drop = psp_keep("modeldrop");
@@ -7937,6 +8020,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	unsigned int start = ge_clock();
 
 	psp_ge_queue_transparent_body(vertices, vertex_count, uncompressed, indices, index_count, strip, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
+	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
 	ge_entry_us[2] += ge_clock() - start;
 }
 
@@ -7965,6 +8049,44 @@ static unsigned int seethrough_color(int f, int blend)
 	if (blend == 0)
 		return ((unsigned int)f << 24) | 0x00FFFFFF;
 	return ((unsigned int)f << 24) | ((unsigned int)f << 16) | ((unsigned int)f << 8) | (unsigned int)f;
+}
+
+void psp_ge_seethrough_tint(unsigned int tint)
+{
+	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 1, tint, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
+	seethrough_next_tint = tint;
+}
+
+/* two colours multiplied channel by channel (ABGR, 0-255 each) */
+static unsigned int seethrough_tinted(unsigned int color, unsigned int tint)
+{
+	unsigned int out = 0;
+	int shift;
+
+	if (tint == 0xFFFFFFFF)
+		return color;
+	for (shift = 0; shift < 32; shift += 8)
+		out |= ((((color >> shift) & 255) * ((tint >> shift) & 255) + 127) / 255) << shift;
+	return out;
+}
+
+/* the fade (0-255) a tinted per-vertex colour was made from, for the
+near-plane cut: through the alpha for an alpha blend, otherwise through the
+tint's strongest channel (an added blend's colour is the fade in every
+channel) */
+static int seethrough_fade_of(const unsigned char *rgba, const struct transparent_draw *draw)
+{
+	int channel = 3, k, t;
+
+	if (draw->blend != 0)
+		for (k = 0; k < 3; k++)
+			if (((draw->tint >> (8 * k)) & 255) > ((draw->tint >> (8 * channel)) & 255))
+				channel = k;
+	t = (int)((draw->tint >> (8 * channel)) & 255);
+	if (t <= 0)
+		return 0;
+	t = (rgba[channel] * 255 + t / 2) / t;
+	return t > 255 ? 255 : t;
 }
 
 /* the fade a packed blend asks for, times active camouflage's (the Xbox's
@@ -8040,7 +8162,8 @@ static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_c
 		qq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
 		c = nn > 0.0f && qq > 0.0f ? fabsf(wn[0] * q[0] + wn[1] * q[1] + wn[2] * q[2]) / sqrtf(nn * qq) : 1.0f;
 		a = mode == 1 ? c : 1.0f - c;
-		*(unsigned int *)(record + 8) = seethrough_color((int)(fade * a * 255.0f + 0.5f), draw->blend);
+		*(unsigned int *)(record + 8) = seethrough_tinted(seethrough_color((int)(fade * a * 255.0f + 0.5f), draw->blend),
+			draw->tint);
 	}
 	draw->vertices = records;
 	draw->colored = 1;
@@ -8060,6 +8183,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw = &transparent[transparent_count++];
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
+	draw->tint = 0xFFFFFFFF;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -8072,8 +8196,9 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	colour; their fade by angle isn't drawn yet (no normals in the level's
 	GE copies) */
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
-	draw->color = seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
-		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF;
+	draw->tint = seethrough_next_tint;
+	draw->color = seethrough_tinted(seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
+		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF, draw->tint);
 	draw->colored = 0;
 	draw->sky = 0;
 	draw->sprites = 0;
@@ -8219,7 +8344,10 @@ view asked the 3-step floor, about 2 units at 70 off at x2. With the word:
 the lift is measured at the triangle's FARTHEST corner, the floor is one
 step (the solid side still wins an exact tie), and a draw takes the
 SMALLEST push of its free triangles (one constant offset is a lift that
-grows with the square of the distance, so the far end decides) */
+grows with the square of the distance, so the far end decides).
+build 116: on by default, a restoration (the ocean behind the seabed, as
+the Xbox draws it: Sheepdog01's b115 test 5 on the PSP); keep word
+"overlayfreenear": as builds 65-115 */
 static int overlay_free_far = -1;
 static int overlay_units(const float *a, const float *b, const float *c, int on_a_wall)
 {
@@ -8241,10 +8369,10 @@ static int overlay_units(const float *a, const float *b, const float *c, int on_
 	if (!on_a_wall)
 	{
 		if (overlay_free_far < 0)
-			overlay_free_far = psp_keep("overlayfreefar");
+			overlay_free_far = !psp_keep("overlayfreenear");
 		if (overlay_free_far)
 		{
-			/* build 115: "overlayfreefar" (above): measured at the far corner */
+			/* build 115: "overlayfreefar" (above; the default from build 116): measured at the far corner */
 			float farthest = a[2], lift;
 
 			if (b[2] > farthest) farthest = b[2];
@@ -8715,7 +8843,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 					to_camera(&stream->base[triangle[corner]].x, p[corner]);
 				units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
 				overlay_triangle_bucket[kept_count] = overlay_bucket_of(units);
-				/* build 115: overlayfreefar, the free bucket at its smallest push */
+				/* build 115: overlayfreefar (the default from build 116), the free bucket at its smallest push */
 				if (units < 0 && overlay_free_far > 0)
 				{
 					if (!bucket_units[0] || -units < bucket_units[0])
@@ -8839,6 +8967,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	unsigned int start = ge_clock();
 
 	psp_ge_queue_level_transparent_body(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
+	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
 	ge_entry_us[3] += ge_clock() - start;
 }
 
@@ -12148,9 +12277,10 @@ void psp_ge_frame_end(void)
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		/* build 116: the restorations' own counters */
-		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu",
-			seethrough_angle_draws);
+		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu; windows in planar fog %lu",
+			seethrough_angle_draws, planar_fog_windows);
 		seethrough_angle_draws = 0;
+		planar_fog_windows = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;
