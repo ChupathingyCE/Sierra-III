@@ -317,7 +317,7 @@ void psp_ge_fog_planar(float red, float green, float blue, float maximum_distanc
 void psp_ge_seethrough_tint(unsigned int tint);
 void psp_ge_seethrough_shader(unsigned int shader);
 void psp_ge_seethrough_meter(const void *meter);
-static void seethrough_tint_set(unsigned int tint, int doubled);
+static void seethrough_tint_set(unsigned int tint, int doubled, unsigned int shader);
 unsigned int psp_tex_shader_tint(unsigned int shader, int *doubled);
 int psp_tex_resident(unsigned int key);
 void psp_ge_window_target(int target);
@@ -811,7 +811,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_fog_planar(w[0].f, w[1].f, w[2].f, w[3].f, w[4].f);
 			break;
 		case DEFER_SEETHROUGH_TINT: /* build 116 */
-			seethrough_tint_set(w[0].u, (int)w[1].u);
+			seethrough_tint_set(w[0].u, (int)w[1].u, w[2].u);
 			break;
 		case DEFER_SEETHROUGH_METER: /* build 116 */
 			psp_ge_seethrough_meter(w[0].u ? (const void *)(w + 1) : NULL);
@@ -7590,6 +7590,9 @@ struct transparent_draw
 	unsigned char clut_blocks;
 	/* build 116: drawn with the GE's colour doubling (the tint is half) */
 	unsigned char doubled;
+	/* after b116: the shader (its tag's definition) the part was queued
+	with, for tdump; 0 for sprites and parts queued without one */
+	unsigned int shader;
 	/* build 60: a see-through model part's triangles cut at the near plane
 	or the guard band: GE vertices in the part's space, drawn after its list */
 	void *cut_vertices;
@@ -7620,6 +7623,7 @@ before each call (psp_fixups.py, psp_ge_seethrough_tint); the call's pieces
 all take it, and it goes back to white when the call returns. Builds 21-115
 drew the one map untinted: b30's ocean white */
 static unsigned int seethrough_next_tint = 0xFFFFFFFF;
+static unsigned int seethrough_next_shader = 0; /* after b116: for tdump */
 /* build 116: the tint is half the shader's colour, drawn with the GE's
 colour doubling (a shader brighter than its map: Cortana, the holograms) */
 static unsigned char seethrough_next_doubled = 0;
@@ -7765,6 +7769,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->shader = 0;
 	halo_matrix(view_to_world, &draw->matrix);
 	draw->vertices = out;
 	draw->indices = NULL;
@@ -7896,6 +7901,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->shader = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -8046,6 +8052,7 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->shader = 0;
 	gumLoadIdentity(&draw->matrix);
 	relative(&draw->matrix);
 	draw->vertices = out;
@@ -8256,6 +8263,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->shader = 0;
 	draw->cut_vertices = NULL;
 	draw->cut_count = 0;
 	node_matrix(vertices, indices, &draw->matrix);
@@ -8325,6 +8333,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->v_offset = v_offset;
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
 	draw->tint = seethrough_next_tint;
+	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
 	draw->color = draw->tint;
 	draw->colored = 0;
@@ -8415,6 +8424,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 
 	psp_ge_queue_transparent_body(vertices, vertex_count, uncompressed, indices, index_count, strip, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
+	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
 	seethrough_meter_next = 0; /* and its meter */
 	ge_entry_us[2] += ge_clock() - start;
@@ -8447,17 +8457,19 @@ static unsigned int seethrough_color(int f, int blend)
 	return ((unsigned int)f << 24) | ((unsigned int)f << 16) | ((unsigned int)f << 8) | (unsigned int)f;
 }
 
-/* build 116: the next queue call's tint, and whether it is drawn doubled */
-static void seethrough_tint_set(unsigned int tint, int doubled)
+/* build 116: the next queue call's tint, and whether it is drawn doubled;
+after b116 also its shader (the tag's definition, for tdump; 0 for none) */
+static void seethrough_tint_set(unsigned int tint, int doubled, unsigned int shader)
 {
-	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 2, tint, (unsigned int)doubled, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 3, tint, (unsigned int)doubled, shader, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	seethrough_next_tint = tint;
 	seethrough_next_doubled = (unsigned char)(doubled != 0);
+	seethrough_next_shader = shader;
 }
 
 void psp_ge_seethrough_tint(unsigned int tint)
 {
-	seethrough_tint_set(tint, 0);
+	seethrough_tint_set(tint, 0, 0);
 }
 
 /* the engine side's call before each see-through queue call: the shader's
@@ -8467,7 +8479,7 @@ void psp_ge_seethrough_shader(unsigned int shader)
 	int doubled = 0;
 	unsigned int tint = psp_tex_shader_tint(shader, &doubled);
 
-	seethrough_tint_set(tint, doubled);
+	seethrough_tint_set(tint, doubled, shader);
 }
 
 /* build 116: the next queue call's meter (struct psp_seethrough_meter), or
@@ -8654,6 +8666,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->shader = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -8667,6 +8680,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	GE copies) */
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
 	draw->tint = seethrough_next_tint;
+	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
 	draw->color = seethrough_tinted(seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
 		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF, draw->tint);
@@ -9584,6 +9598,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 
 	psp_ge_queue_level_transparent_body(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
+	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
 	ge_entry_us[3] += ge_clock() - start;
 }
@@ -9649,7 +9664,11 @@ static void transparent_flush_body(void)
 			/* and the map's bitmap tag (after b116: a10's bridge window); a
 			walk over the tags, so not on the Media Engine (gemeon) */
 			char const *name = psp_me_context ? NULL : psp_bitmap_tag_name((void const *)draw->key);
+			extern char const *psp_shader_tag_name(void const *shader); /* hud_draw.c (psp_fixups.py) */
+			char const *shader_name = psp_me_context || !draw->shader ? NULL : psp_shader_tag_name((void const *)draw->shader);
 
+			if (shader_name)
+				platform_log("tdump: %d/%d shader %s", index, transparent_count, shader_name);
 			platform_log("tdump: %d/%d key %08x (%s) sky %d level %d fp %d sprites %d blend %d dist %.1f count %d cut %d units %d at %.2f %.2f %.2f depth test %u mfp %d",
 				index, transparent_count, draw->key, name ? name : "no tag", draw->sky, draw->level, draw->first_person,
 				draw->sprites, draw->blend, sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,

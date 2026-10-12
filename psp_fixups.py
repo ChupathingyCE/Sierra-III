@@ -11680,6 +11680,22 @@ char const *psp_bitmap_tag_name(void const *bitmap)
 	}
 	return NULL;
 }
+
+/* the shader tag whose definition this is, or NULL ("tdump"; every shader
+group has 'shdr' as a parent) */
+char const *psp_shader_tag_name(void const *shader)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, 0x73686472 /* shdr */);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		if (tag_get(0x73686472, tag_index) == shader)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
 #endif
 
 void hud_draw_bitmap(
