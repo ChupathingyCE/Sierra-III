@@ -1826,9 +1826,18 @@ steps in order: the console has no way to wait */
 			extern void __gcov_dump(void);
 			unsigned long start = psp_microseconds();
 
+			char saved[256];
+
 			sceIoMkdir(DATA_ROOT "/gcda", 0777);
 			setenv("GCOV_PREFIX", DATA_ROOT "/gcda", 1);
 			setenv("GCOV_PREFIX_STRIP", "1", 1);
+			/* and the folder made the current one: libgcov takes only an
+			absolute prefix ("/..."), and "ms0:/..." may not be one to it: the
+			first profile run's counts probably went to the folder the game started
+			in. Without the prefix it writes "./<name>" */
+			if (!getcwd(saved, sizeof(saved)))
+				saved[0] = '\0';
+			chdir(DATA_ROOT "/gcda");
 			/* libgcov says what goes wrong on stderr: into a file, read back
 			into the log below */
 			freopen(DATA_ROOT "/gcda_errors.txt", "w", stderr);
@@ -1845,6 +1854,8 @@ steps in order: the console has no way to wait */
 			}
 			__gcov_dump();
 			fflush(stderr);
+			if (saved[0])
+				chdir(saved);
 			platform_log("gcov: the hot units' counts written to %s/gcda at tick %lu, in %lu ms", DATA_ROOT,
 				ticks_seen, (psp_microseconds() - start) / 1000);
 			{
