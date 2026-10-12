@@ -1841,17 +1841,6 @@ steps in order: the console has no way to wait */
 			/* libgcov says what goes wrong on stderr: into a file, read back
 			into the log below */
 			freopen(DATA_ROOT "/gcda_errors.txt", "w", stderr);
-			{
-				/* a file named as libgcov names them, written the way it writes */
-				FILE *probe = fopen(DATA_ROOT "/gcda/probe#name.gcda", "w+b");
-
-				platform_log("gcov: a probe file %s", probe ? "opened" : "refused");
-				if (probe)
-				{
-					fwrite("gcov", 1, 4, probe);
-					fclose(probe);
-				}
-			}
 			__gcov_dump();
 			fflush(stderr);
 			if (saved[0])

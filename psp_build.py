@@ -282,7 +282,12 @@ def compile_one(item):
     if (os.environ.get("PSP_REUSE") and os.path.exists(obj) and not src.endswith("psp_platform.c")
             and os.path.getmtime(obj) > os.path.getmtime(os.path.join(TREE, src))):
         return src, 0, "", obj
-    cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", obj]
+    # PGO: the object named relative to the tree (the compiler's directory),
+    # so its counts file is the object's path under PSP_OUT, flattened
+    # ("tree#^#obj#source#ai#actors.gcda"): an absolute -o keeps the absolute
+    # path, nested in folders the PSP's libgcov can't make
+    out = os.path.relpath(obj, TREE) if PGO else obj
+    cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
@@ -291,7 +296,7 @@ def compile_one(item):
         opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c", "psp_watch.c")) else "-O2"
         cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections",
                "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + [
-               "-c", src, "-o", obj]
+               "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
             cmd[-4:-4] = ["-I" + (MECORE or os.path.dirname(SDK)) + "/include"]
