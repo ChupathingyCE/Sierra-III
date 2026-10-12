@@ -1,6 +1,6 @@
-# Build 116: candidates (2026-10-11, a draft while b115's test 1 runs)
+# Build 116: candidates (2026-10-11, a draft after b115's tests)
 
-What comes after b115, from its PSP tests so far (`hardware_b115.md`) and Sheepdog01's notes. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator or estimate, **[D]** read in the code or tags, **[U]** inference.
+What comes after b115, from its PSP tests (`hardware_b115.md`) and Sheepdog01's notes. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator or estimate, **[D]** read in the code or tags, **[U]** inference.
 
 ## Decisions (Sheepdog01, 2026-10-11)
 
@@ -21,6 +21,9 @@ What comes after b115, from its PSP tests so far (`hardware_b115.md`) and Sheepd
 | R7 | The zoom overlays are misaligned: the pistol (b114) and the sniper rifle (multiplayer) | The mask or the HUD's scope overlay, placed from 640×480 onto 480×272 [U] | Needs a reference shot from the PC build to aim at | Waits on a reference |
 | R8 | Tracers as long streaks; the plasma pistol's bolt like a cloud (b114 tests 7–8) | Likely the effects bake's half-size 16-colour textures [U] | Native DXT for effects (S6), checked against a reference | Waits on a reference |
 | R9 | Lines around the base of rocks | Open: edge seams, the lightmap bleeding across a seam, or the ocean through cracks in the ground [U] | An emulator A/B at the same rocks, `overlayfreefar` on and off, first | Recon |
+| R10 | The game freezes 0.2–1.1 s at each checkpoint | It writes 1.3–1.9 MB of game state to the stick on the game thread [M, b115 test 1]; most pages change each time, so "changed pages only" saves little | Compress the pages (the state is mostly small numbers and zeros) and keep the file at full size so writes never grow it | Design; the compression ratio is measurable in the emulator from a checkpoint |
+| R11 | Sound drops out for up to ~0.8 s after a checkpoint (3 s of silence in one report) | The heartbeat's log write right after a checkpoint takes ~600 ms, and the sound reader waits behind it [M] | Hold the log's flush while a checkpoint writes, and let the sound reader go first | Small |
+| R12 | (the same chain) A sound stream can't ride out a stall | The sound reader reads as it goes; a stall over its lead is heard [U] | Keep more of each stream read ahead (the sound cache's room) | Needs the cache balance (`streaming.md` §5) |
 
 ## 2. b113's restorations never built
 
@@ -40,14 +43,14 @@ Each was found in b113's review (`b113_candidates.md`) and set aside while speed
 ## 3. Speed and measurement
 
 - **First, trim code** (gap G8): b115's program sits 0.7 KB under the next 64 KB heap step, so any code b116 adds costs 64 KB of heap unless something leaves. The instruments could move to the cold, `-Os` half, or behind a build switch.
-- **`vrammodels`:** the most-read model buffers into VRAM (~600 KB, b115's fit curve [E]). The models are 88–89% of the GE's time [M]; this also splits that time into reading and transforming.
+- **`vrammodels`:** the most-read model buffers into VRAM: 600–800 KB (b115's fit curve; the PSP's beach needs more than the emulator's) [M]. The models are 77–89% of the GE's time on every stretch [M]; this also splits that time into reading and transforming.
 - **The log at start-up:** written a line at a time until the first frame, it took 8.9 s of the stick's time in test 2 [M]. Loading barely waited on it, so it's low on the list.
 - **Why E16 isn't exact** (lab): needed before the fraction change can come back.
-- Test 1's results (the bench, the eDRAM probe, the stick on the beach) slot in here when they arrive.
+- **Fix the eDRAM probe:** b115's filled 1.25 MB in one 56 ms job and stopped the ME for test 1 (an audio job behind it timed out). Slices of at most 64 KB, one a heartbeat. G4 stays open until it runs.
 
 ## 4. Order (a draft for Sheepdog01)
 
 1. Trim code (G8).
-2. The restorations with a found cause: R1, R3, R2, and R4's counter. Emulator shots before the build.
+2. The restorations with a found cause: R1, R3, R2, R11, and R4's counter. Emulator shots before the build. The fixed eDRAM probe.
 3. `vrammodels`, behind its keep word. It draws the same pixels, so it needs no approval, but a cinematic A/B on the PSP measures what it buys.
-4. Recon in the lab: R9's A/B, the rifle display, and emulator shots for #2–#18. References from the PC build for R7 and R8.
+4. Recon in the lab: R9's A/B, the rifle display, R10's compression ratio, and emulator shots for #2–#18. References from the PC build for R7 and R8.
