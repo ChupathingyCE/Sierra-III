@@ -1046,11 +1046,20 @@ static inline int ge_draw_skipped(void)
 after the copies' arena below); the arguments are taken once */
 static int ge_reads_on = 0;
 static void ge_reads_note(int vtype, int count, const void *indices, const void *vertices);
+/* build 116: "vrammodelsN": a model buffer's VRAM copy, when it has one
+(vm_redirect, by the model buffers' copies below) */
+static int vm_on = -1; /* -1: decided at the next frame (vm_reset) */
+static const void *vm_redirect(const void *vertices, int count);
+static void vm_reset(void);
+static void vm_frame_end(void);
+static void vm_report(void);
 #define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
-	const void *ge_i_ = (i), *ge_d_ = (d); if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
+	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
+	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
 	sceGumDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
 #define sceGuDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
-	const void *ge_i_ = (i), *ge_d_ = (d); if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
+	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
+	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
 	sceGuDrawArray(p, ge_v_, ge_c_, ge_i_, ge_d_); } } while (0)
 /* draws stop this close to the display list's end (each draw adds its
 commands, and its copied indices and cut-up corners, to the list) */
@@ -2723,6 +2732,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	sceGuClearDepth(0);
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
 	ge_dither(1); /* build 116: the world's draws */
+	if (vm_on < 0)
+		vm_reset(); /* build 116: vrammodels, after a new map or BSP */
 	/* build 63: the world's depth state from a known start each frame, so a
 	slip the frame before (a test left off, a nudge left on) can't carry */
 	sceGuEnable(GU_DEPTH_TEST);
@@ -5925,6 +5936,265 @@ static void convert_want(void *vertices, int count, int uncompressed, const unsi
 	converts_wanted_total++;
 }
 
+/* ---------- build 116: "vrammodelsN", the model buffers' VRAM copies
+
+big_levers.md section 0, the VRAM swap's second step. b115 [E, gereads]: the
+models are 69-88% of what the GE reads from main RAM, and a few small buffers
+carry most of it (an 11 KB buffer read 586 KB a frame); ~600 KB of VRAM takes
+82-92% of those reads. b115 test 3 [M]: texels from main RAM cost the GE
+~1.5 ms a frame, so the textures can give that VRAM up. With the word, the top
+N KB of VRAM (psp_tex.c, psp_tex_vram_models) hold copies of the converted
+model buffers the GE reads most per byte, and the draw gate (sceGuDrawArray,
+above) hands the GE the copy instead. The same bytes: the same pixels.
+
+- A buffer is known from its conversion (model_convert: its address, size and
+  the geometry cache's generation of its block). A copy is good while the
+  generation holds; the gate drops it when the cache has read something else
+  into the block.
+- Copies are made at the frame's end, the most-read per byte first, at most
+  128 KB a frame; reads halve every 32 frames, so the set follows the view.
+  Room a dropped copy used isn't reused for two frames (a list the GE is
+  still drawing may read it).
+- Never from the Media Engine's side (it can't see VRAM, and the tables are
+  the main CPU's): the gate leaves its draws alone.
+Off by default: Sheepdog01's A/B (a cinematic's GE time, gebusy by kind). */
+#define VM_ENTRIES 1024
+#define VM_HASH 2048
+#define VM_NONE 0xFFFFFFFFu
+#define VM_COPY_BUDGET (128 * 1024)
+#define VM_QUARANTINE_FRAMES 2
+struct vm_entry
+{
+	unsigned int source, generation, bytes, at, reads, frame, released;
+};
+static struct vm_entry *vm = NULL;
+static unsigned short *vm_hash = NULL, *vm_order = NULL;
+static int vm_count = 0;
+static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
+static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
+
+/* the entry for a buffer's address, or NULL (adding it when asked) */
+static struct vm_entry *vm_find(unsigned int source, int add)
+{
+	unsigned int h = (source >> 4) & (VM_HASH - 1), probe;
+
+	for (probe = 0; probe < VM_HASH; probe++)
+	{
+		unsigned short slot = vm_hash[(h + probe) & (VM_HASH - 1)];
+
+		if (!slot)
+		{
+			if (!add || vm_count >= VM_ENTRIES)
+				return NULL;
+			vm[vm_count].source = source;
+			vm[vm_count].at = VM_NONE;
+			vm[vm_count].released = 0;
+			vm[vm_count].reads = 0;
+			vm_hash[(h + probe) & (VM_HASH - 1)] = (unsigned short)(++vm_count);
+			return &vm[vm_count - 1];
+		}
+		if (vm[slot - 1].source == source)
+			return &vm[slot - 1];
+	}
+	return NULL;
+}
+
+/* at a new map or BSP (and the first time): the room psp_tex.c gave, and
+empty tables */
+static void vm_reset(void)
+{
+	extern unsigned int psp_tex_vram_models(unsigned int *start);
+
+	vm_size = psp_tex_vram_models(&vm_base);
+	vm_on = 0;
+	if (!vm_size)
+		return;
+	if (!vm)
+		vm = malloc(VM_ENTRIES * sizeof(struct vm_entry));
+	if (!vm_hash)
+		vm_hash = malloc(VM_HASH * sizeof(unsigned short));
+	if (!vm_order)
+		vm_order = malloc(VM_ENTRIES * sizeof(unsigned short));
+	if (!vm || !vm_hash || !vm_order)
+	{
+		platform_log("GE: vrammodels: no room for its tables; off");
+		return;
+	}
+	memset(vm_hash, 0, VM_HASH * sizeof(unsigned short));
+	vm_count = 0;
+	vm_on = 1;
+}
+
+/* a copy let go: its room comes back after the quarantine */
+static void vm_release(struct vm_entry *e)
+{
+	if (e->at != VM_NONE && !e->released)
+	{
+		e->released = vm_frame + VM_QUARANTINE_FRAMES + 1;
+		vm_dropped++;
+	}
+}
+
+/* model_convert's buffer, converted: its size and its block's generation */
+static void vm_note(void *vertices, unsigned int bytes)
+{
+	struct vm_entry *e;
+
+	if (vm_on <= 0 || psp_me_context)
+		return;
+	e = vm_find((unsigned int)vertices, 1);
+	if (!e)
+		return;
+	if (e->at != VM_NONE && (e->bytes != bytes || e->generation != psp_geo_generation(vertices)))
+		vm_release(e);
+	e->bytes = bytes;
+	e->generation = psp_geo_generation(vertices);
+}
+
+/* the gate: the copy's address for a buffer that has a good one */
+static const void *vm_redirect(const void *vertices, int count)
+{
+	struct vm_entry *e;
+
+	if (psp_me_context || !vertices)
+		return vertices;
+	e = vm_find((unsigned int)vertices, 0);
+	if (!e)
+		return vertices;
+	vm_draws++;
+	if (psp_geo_generation(vertices) != e->generation)
+	{
+		/* the cache has read other bytes into the block: model_convert
+		notes it afresh when it converts them */
+		vm_release(e);
+		e->reads = 0;
+		return vertices;
+	}
+	e->reads += (unsigned int)count;
+	e->frame = vm_frame;
+	if (e->at == VM_NONE || e->released)
+		return vertices;
+	vm_redirects++;
+	return (const void *)(vm_base + e->at);
+}
+
+/* the first gap of the given size in the copies' room, or VM_NONE; copies
+whose quarantine is over give their room back first */
+static unsigned int vm_place(unsigned int bytes)
+{
+	unsigned short *order = vm_order;
+	int n = 0, k, j;
+	unsigned int at = 0;
+
+	for (k = 0; k < vm_count; k++)
+	{
+		struct vm_entry *e = &vm[k];
+
+		if (e->at == VM_NONE)
+			continue;
+		if (e->released && vm_frame >= e->released)
+		{
+			e->at = VM_NONE;
+			e->released = 0;
+			continue;
+		}
+		/* insertion by place: a few hundred copies at most */
+		for (j = n; j > 0 && vm[order[j - 1]].at > e->at; j--)
+			order[j] = order[j - 1];
+		order[j] = (unsigned short)k;
+		n++;
+	}
+	for (k = 0; k < n; k++)
+	{
+		struct vm_entry *e = &vm[order[k]];
+
+		if (e->at >= at + bytes)
+			return at;
+		at = (e->at + e->bytes + 15) & ~15u;
+	}
+	return at + bytes <= vm_size ? at : VM_NONE;
+}
+
+/* the frame's end: the best buffers without a copy get one, room allowing;
+when there's none, the least-read copy not drawn lately makes way */
+static void vm_frame_end(void)
+{
+	unsigned int budget = VM_COPY_BUDGET;
+	int k, round;
+
+	if (vm_on <= 0)
+		return;
+	vm_frame++;
+	if ((vm_frame & 31) == 0)
+		for (k = 0; k < vm_count; k++)
+			vm[k].reads >>= 1;
+	for (round = 0; round < 16 && budget; round++)
+	{
+		struct vm_entry *best = NULL, *worst = NULL;
+		unsigned int at;
+
+		/* the most reads a byte among the buffers drawn this frame or the
+		last without a copy (cross-multiplied, no division) */
+		for (k = 0; k < vm_count; k++)
+		{
+			struct vm_entry *e = &vm[k];
+
+			if (e->at != VM_NONE || !e->reads || !e->bytes || e->bytes > vm_size || e->bytes > budget ||
+				vm_frame - e->frame > 2)
+				continue;
+			if (!best || (unsigned long long)e->reads * best->bytes > (unsigned long long)best->reads * e->bytes)
+				best = e;
+		}
+		if (!best)
+			break;
+		at = vm_place(best->bytes);
+		if (at == VM_NONE)
+		{
+			/* the least read a byte of the copies not drawn these 30 frames,
+			if it's worth less than the newcomer */
+			for (k = 0; k < vm_count; k++)
+			{
+				struct vm_entry *e = &vm[k];
+
+				if (e->at == VM_NONE || e->released || vm_frame - e->frame < 30)
+					continue;
+				if (!worst || (unsigned long long)e->reads * worst->bytes < (unsigned long long)worst->reads * e->bytes)
+					worst = e;
+			}
+			if (!worst || (unsigned long long)worst->reads * best->bytes >= (unsigned long long)best->reads * worst->bytes)
+			{
+				vm_full++;
+				break;
+			}
+			vm_release(worst);
+			break; /* its room comes back after the quarantine */
+		}
+		memcpy((void *)((vm_base + at) | 0x40000000), (const void *)best->source, best->bytes);
+		best->at = at;
+		best->released = 0;
+		budget -= best->bytes;
+		vm_copied += best->bytes;
+	}
+}
+
+static void vm_report(void)
+{
+	unsigned int resident = 0, bytes = 0;
+	int k;
+
+	if (vm_on <= 0)
+		return;
+	for (k = 0; k < vm_count; k++)
+		if (vm[k].at != VM_NONE && !vm[k].released)
+		{
+			resident++;
+			bytes += vm[k].bytes;
+		}
+	platform_log("GE: vrammodels: %u buffers in %u of %u KB of VRAM; draws from a copy %lu of %lu, %lu KB copied, %lu copies let go, %lu times full (last 300 frames; %d buffers known)",
+		resident, bytes / 1024, vm_size / 1024, vm_redirects, vm_draws, vm_copied / 1024, vm_dropped, vm_full, vm_count);
+	vm_draws = vm_redirects = vm_copied = vm_dropped = vm_full = 0;
+}
+
 /* rewrites a model vertex buffer for the GE, once; 0 if there's no room to
 remember it. Parts on several nodes are planned for skinning when their
 triangles are given (see-through parts aren't: they are queued with one
@@ -6130,6 +6400,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	}
 	free(node0);
 	ge_writeback(vertices, count * (part ? part->stride : 24));
+	vm_note(vertices, (unsigned int)count * (part ? part->stride : 24)); /* build 116: vrammodels */
 	return 1;
 }
 
@@ -7236,6 +7507,8 @@ void psp_ge_forget_level(void)
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	int index;
 
+	if (vm_on > 0)
+		vm_on = -1; /* build 116: vrammodels' tables again at the next frame */
 	for (index = 0; index < LEVEL_STREAMS; index++)
 	{
 		stream_free(level_streams[index].base);
@@ -12222,6 +12495,7 @@ void psp_ge_frame_end(void)
 	transparent_flush();
 	taa_resolve();
 	ge_kinds_frame_end(); /* build 103 */
+	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
 	win_flush_us += sceKernelGetSystemTimeLow() - flush_mark;
 	win_frames++;
 	win_draws += draws_this_frame;
@@ -12417,6 +12691,7 @@ void psp_ge_frame_end(void)
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
 			ge_kinds_report(); /* build 103 */
 			ge_reads_report(frames); /* build 115 */
+			vm_report(); /* build 116 */
 			/* build 112: every 300 frames, with the skinning plans' heap */
 			platform_log("GE: converted-buffer table: %lu sweeps, %lu dead entries forgotten, %d in use of %d (next sweep at %d); skinning plans %lu KB on the heap (peak %lu KB)",
 				converted_sweeps, converted_forgotten, converted_used, CONVERTED_BUFFERS,

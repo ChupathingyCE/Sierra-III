@@ -1,9 +1,9 @@
 # Halo PSP launch presets: one a line, "name: keep words" (no colon in the name). The launch menu's
-# third page (R from the options) lists them; cross applies one. Build 115's
-# tests (docs/build_b115.md says what each answers and when to stop).
-1 bench, b115 instruments: nearauto assettrack geo2 hwprofile gebusy iostats gereads edramcheck
-2 cinematic, base: nearauto assettrack geo2 gebusy iostats
-3 cinematic, textures from RAM: nearauto assettrack geo2 gebusy iostats vramtex400
-4 cinematic, VFPU skinning: nearauto assettrack geo2 gebusy iostats vfpuskin
-5 flight, the ocean pushed back by its far end: nearauto assettrack geo2 overlayfreefar
-6 play, no instruments: nearauto assettrack geo2
+# third page (R from the options) lists them; cross applies one. Build 116's tests
+# (docs/build_b116.md says what each answers and when to stop).
+1 play, b116 as it ships: nearauto assettrack geo2
+2 ladder, the campaign maps measured: nearauto assettrack geo2 gebusy iostats
+3 cinematic, base: nearauto assettrack geo2 gebusy
+4 cinematic, model buffers in VRAM (600 KB): nearauto assettrack geo2 gebusy vrammodels600
+5 cinematic, model buffers in VRAM (800 KB): nearauto assettrack geo2 gebusy vrammodels800
+6 the b115 look, every restoration off: nearauto assettrack geo2 overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar lognohold statepages
