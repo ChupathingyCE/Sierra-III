@@ -36,6 +36,23 @@ struct psp_unaligned_ulong { unsigned long value; } __attribute__((packed));
 #else
 #define PSP_UNALIGNED_ULONG(address) (*(unsigned long *)(address))
 #endif
+/* build 116: the same for a float, and for three in a row (a point or a
+vector) copied to an aligned place. Bungie's compressed animations can hold
+their float tables at an address 2 past a multiple of 4: b115 faulted on a10's
+opening in animation_get_keyframe_translation (psp_fixups.py, FIXES_116) */
+#ifdef HALO_PSP
+struct psp_unaligned_real { float value; } __attribute__((packed));
+#define PSP_UNALIGNED_REAL(address) (((const struct psp_unaligned_real *)(address))->value)
+#else
+#define PSP_UNALIGNED_REAL(address) (*(const float *)(address))
+#endif
+#define PSP_UNALIGNED_REAL3(to, from) do { \
+		const char *psp_from_ = (const char *)(from); \
+		float *psp_to_ = (float *)(to); \
+		psp_to_[0] = PSP_UNALIGNED_REAL(psp_from_); \
+		psp_to_[1] = PSP_UNALIGNED_REAL(psp_from_ + 4); \
+		psp_to_[2] = PSP_UNALIGNED_REAL(psp_from_ + 8); \
+	} while (0)
 /* the AI debug records (ai_debug.c) are 6.6 MB for 256 actors and 3.7 MB of
 path storage; gameplay only writes them, so on the PSP every actor shares
 one record (psp_fixups.py) */

@@ -11102,7 +11102,62 @@ FIXES_114["source/render/render.c#drawdist"] = [
 # pairs are in commit 2de694d if it comes back with the cause found.
 FIXES_115 = {}
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_CHUPA.items()):
+# ---------- build 116
+FIXES_116 = {}
+# build 116: the compressed animations' float tables and node headers read
+# with unaligned-safe loads (PSP_UNALIGNED_REAL, PSP_UNALIGNED_REAL3,
+# PSP_UNALIGNED_ULONG: psp_limits.h). Our own keyframed animations pad every
+# table to 4 bytes (the fork's psp_keyframe_compress), but Bungie's compressed
+# ones don't always: b115 faulted on a10's opening cinematic at a translation
+# keyframe 2 past a multiple of 4 (badvaddr 09af9e36, in the animation cache;
+# the emulator's JIT forgives it, the PSP's CPU doesn't). A restoration: the
+# same values, read safely. The rotations are 6-byte tables of shorts and the
+# frame indices words, both fine at 2-byte alignment
+FIXES_116["source/models/model_animations.c#unaligned"] = [
+("""	node_header = ((unsigned long const *)(data+header->translation_node_headers_offset))[adjusted_node_index];""",
+ """	node_header = PSP_UNALIGNED_ULONG(data+header->translation_node_headers_offset+sizeof(unsigned long)*adjusted_node_index);"""),
+("""		*translation = default_translations[node_index];""",
+ """		PSP_UNALIGNED_REAL3(translation, &default_translations[node_index]);"""),
+("""			*translation = keyframe_translations[keyframe_count-1];""",
+ """			PSP_UNALIGNED_REAL3(translation, &keyframe_translations[keyframe_count-1]);"""),
+("""		if (real_frame_index==(real)this_keyframe_frame_index)
+		{
+			*translation = *this_keyframe;""",
+ """#ifdef HALO_PSP
+		/* build 116 (psp_fixups.py): both keyframes copied out with
+		unaligned-safe loads, so the copy and the interpolation below read
+		aligned floats */
+		real_point3d psp_this_keyframe, psp_next_keyframe;
+
+		PSP_UNALIGNED_REAL3(&psp_this_keyframe, this_keyframe);
+		PSP_UNALIGNED_REAL3(&psp_next_keyframe, next_keyframe);
+		this_keyframe = &psp_this_keyframe;
+		next_keyframe = &psp_next_keyframe;
+#endif
+		if (real_frame_index==(real)this_keyframe_frame_index)
+		{
+			*translation = *this_keyframe;"""),
+("""	node_header = ((unsigned long const *)(data+header->scale_node_headers_offset))[adjusted_node_index];""",
+ """	node_header = PSP_UNALIGNED_ULONG(data+header->scale_node_headers_offset+sizeof(unsigned long)*adjusted_node_index);"""),
+("""		*scale = default_scales[adjusted_node_index];""",
+ """		*scale = PSP_UNALIGNED_REAL(&default_scales[adjusted_node_index]);"""),
+("""			*scale = keyframe_scales[keyframe_count-1];""",
+ """			*scale = PSP_UNALIGNED_REAL(&keyframe_scales[keyframe_count-1]);"""),
+("""			this_keyframe_scale = default_scales[adjusted_node_index];""",
+ """			this_keyframe_scale = PSP_UNALIGNED_REAL(&default_scales[adjusted_node_index]);"""),
+("""			next_keyframe_scale = keyframe_scales[0];""",
+ """			next_keyframe_scale = PSP_UNALIGNED_REAL(&keyframe_scales[0]);"""),
+("""			this_keyframe_scale = keyframe_scales[keyframe_count-1];""",
+ """			this_keyframe_scale = PSP_UNALIGNED_REAL(&keyframe_scales[keyframe_count-1]);"""),
+("""			next_keyframe_scale = default_scales[adjusted_node_index];""",
+ """			next_keyframe_scale = PSP_UNALIGNED_REAL(&default_scales[adjusted_node_index]);"""),
+("""			this_keyframe_scale = keyframe_scales[keyframe_index];""",
+ """			this_keyframe_scale = PSP_UNALIGNED_REAL(&keyframe_scales[keyframe_index]);"""),
+("""			next_keyframe_scale = keyframe_scales[keyframe_index+1];""",
+ """			next_keyframe_scale = PSP_UNALIGNED_REAL(&keyframe_scales[keyframe_index+1]);"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
