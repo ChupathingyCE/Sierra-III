@@ -365,7 +365,11 @@ def main():
     # size the heap: from the program's end up to the game state
     size = subprocess.run(["psp-size", os.path.join(OUT, "halo.elf")], capture_output=True, text=True).stdout.splitlines()[1].split()
     program = int(size[0]) + int(size[1]) + int(size[2])
-    heap = (GAME_STATE_BASE - PROGRAM_BASE - program - STACK_RESERVE) // 1024 // 64 * 64
+    # build 116: to 4 KB, not 64. With 64, a few bytes of code past a step
+    # cost the heap 64 KB at once (b115 sat 0.7 KB under one). The slack
+    # above the heap is STACK_RESERVE either way: b115 ran with it plus
+    # 0.7 KB, and "free" in the heartbeat (138 KB in b115) is what's left of it
+    heap = (GAME_STATE_BASE - PROGRAM_BASE - program - STACK_RESERVE) // 1024 // 4 * 4
     print("program %.2f MB (text %d, data %d, bss %d); heap %d KB; %d symbols stubbed (stubbed_symbols.txt)"
           % (program / 1048576, int(size[0]), int(size[1]), int(size[2]), heap, len(stubs)))
     if heap != HEAP_KB:
