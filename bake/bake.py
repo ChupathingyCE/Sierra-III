@@ -29,6 +29,9 @@ Options:
     --detail fp,vehicles        also bake _detail.ptex with these classes at
                                 full size (fp, weapons, vehicles, characters):
                                 the launch menu's "assetdetail" uses them
+    --sound s9                  the sound bake (build 116, streaming.md S9):
+                                every sound at 22,050 Hz at most, effects mono,
+                                music stereo, still Xbox ADPCM (lib/soundpack.py)
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, hashlib, json, os, shutil, subprocess, sys, time
@@ -126,7 +129,7 @@ def tool_env():
     return env
 
 
-def bake_map(name, retail, out_maps, work, track, keep_work, detail=''):
+def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''):
     started = time.time()
     folder = os.path.join(work, name)
     shutil.rmtree(folder, ignore_errors=True)
@@ -141,6 +144,12 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail=''):
     run([invader('invader-extract'), '-m', os.path.join(folder, 'maps_in'), '-t', os.path.join(folder, 'tags'), '-G']
         + ([] if name in MULTIPLAYER else ['-n']) + [os.path.join(folder, 'maps_in', name + '.map')], log_path, env=env)
     scenario = scenario_path(os.path.join(folder, 'maps_in', name + '.map'), log_path)
+    if sound:
+        log('%s: sounds re-encoded (%s)' % (name, sound))
+        run([sys.executable, os.path.join(LIB, 'soundpack.py'), os.path.join(folder, 'tags'), sound], log_path, env=env)
+        summary = [line for line in open(log_path, errors='replace') if line.startswith('soundpack ')]
+        if summary:
+            log('%s: %s' % (name, summary[-1].strip()))
     log('%s: building %s for the PSP' % (name, scenario))
     built = os.path.join(folder, name + '_z.map')
     pgeo = os.path.join(out_maps, name + '.pgeo')
@@ -178,6 +187,7 @@ def main():
     ap.add_argument('--keep-work', action='store_true')
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--detail', default='')
+    ap.add_argument('--sound', default='', choices=['', 's9', 's10'])
     a = ap.parse_args()
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or ALL
     unknown = [m for m in wanted if m not in ALL]
@@ -203,7 +213,7 @@ def main():
         if name not in found:
             continue
         try:
-            bake_map(name, found[name], out_maps, work, not a.no_track, a.keep_work, a.detail)
+            bake_map(name, found[name], out_maps, work, not a.no_track, a.keep_work, a.detail, a.sound)
         except Exception as e:
             failures.append(name)
             log('%s: FAILED: %s' % (name, e))
