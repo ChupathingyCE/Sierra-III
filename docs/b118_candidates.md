@@ -46,11 +46,27 @@ Both are see-through shaders that combine several maps, of which the GE draws on
   - Why it shows: the mean is dark (0.04), but the frost's sparse bright texels show at full contrast. On the Xbox the reflection modulates them [U].
   - Its maps (`sierra-tags`, 38237182457): `cube map glass` and `cryo glass`, plus an extra layer, `cryo glass tint`.
   - The fix: read the maps' functions. Then either the bake keeps the frost's contrast down, or a two-pass draw stands in for the cube map. The 5650 framebuffer has no destination alpha to combine maps in [D].
-- **c40's pale discs** are `levels\b30\devices\interior tech objects\bitmaps\static blue band vert`, an animated band on the control room's hologram panels.
-  - The evidence: with it left out, every disc goes (`tskip2-c40`); the hologram panel, teleport ring, ring markers, the Monitor's glow rings, the Forerunner text and the soft flares made no difference.
-  - The shader isn't certain. The panel's own, `interior tech objects\holo control`, holds the band as map 0, with the panel's picture and a readout as maps 1 and 2 (`sierra-tags`, 38237207232). But the bake says it draws map 1, so another shader holding the band may be what's drawn [U].
-  - Why it shows: on the Xbox, another map (a mask or the band's scroll) confines the band. Alone, it covers the whole disc [U].
-  - The fix: find which shader draws the band (a `tdump` line that names the shader, not only its map), then give it its other maps' say.
+- **c40's pale discs** are the control room's hologram of Halo [E]: `levels\b40\devices\holo halo ring\shaders\holo halo outer ring`, `... holo halo inner ring` and `levels\b40\devices\holo halo solar system\shaders\holo halo solar system`.
+  - What's drawn: each draws its brightest map, `static blue band vert`, an animated band (mean 0.67 0.88 0.90), over the whole ring or disc. Tints are 0.1-0.2, added (`tdump3`, 38242088390, with the shader named; `tskip2-c40`).
+  - On the Xbox the shaders' other maps shape the band into the hologram's rings [U].
+  - The fix, like a10's: the maps' functions first. Then either draw the shaping map, or tint by it.
+- **The same in a10:** `levels\a10\shaders\cryo glass` draws its frost on both the level's panels and models (65 draws in one frame); the Pillar of Autumn's engine exhaust (`poa engine exhaust`) also draws the static band.
+
+## Exact speed-ups from an independent review (branch `speed118p`)
+
+A second review read the GE layer for exact speed-ups (the picture byte for byte the same). Three are built, and their cache-model A/B against b116 on c40 and d20 is running (`speed118-ab`):
+- the see-through level lists' "on a wall" flags remembered per list (each triangle searched the table of up to 2,048 lists);
+- the texture lookup's recent places (a draw asks 2-3 times);
+- `-fno-math-errno` for the port's own C units, as the engine's have.
+
+The bigger ones are still to do (savings estimated [U]):
+
+| What | Cost now | Saving |
+|---|---|---|
+| The light pass works out each shared level vertex again in every triangle it's in, and clears 132 bytes a triangle | d20: 145 light draws, 17 ms a frame [E] | a third to a half of the pass |
+| `transparent_cut` runs on every see-through model part, even one wholly in view | 1.3-3.5 ms a frame [E] | most of it |
+| The shadow pass: the light pass's pattern | 1-3.3 ms a frame on a10 and a30 [E] | about half |
+| HUD strips: one bind and one draw for all of an overlay's strips | only while zoomed | 0.1-0.3 ms |
 
 ## When it becomes the build
 
