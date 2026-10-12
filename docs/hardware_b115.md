@@ -217,3 +217,39 @@ Preset 2 (`nearauto gebusy assettrack geo2 iostats`), a10 from the campaign bake
 | 010, 016–017 | The holographic displays and consoles dim and still | Animated see-through shaders draw one map with no scrolling or tint; environment self-illumination isn't drawn [D/U] | #4 family |
 | 011–015 | Keyes and the crew underlit; a crewman's face with odd texture | Object lighting indoors, and the dark-areas items (#6, #8) [U] | #6, #8 |
 
+## The campaign ladder: c10 and c40
+
+**The strict interpreter on all ten maps** (batch `campaign-strict-b115`, 1,800 s each) [E]: three maps stop at an unaligned 4-byte load, all in `animation_get_keyframe_translation`. a10 at game time ~2,418 (pc `08944ae4`, the keyframe copy: PSP crash, same pc), a30 at 118 and c40 at ~1,360 (pc `0894496c`, the node header read). The other seven ran clean as far as they got (game time 3,576–7,991). The b116 fix covers both reads.
+
+### c40 Two Betrayals
+
+Preset 2. Crashed at game time 1,424: epc `0894496c`, badvaddr `09b45d4e`, the very address the strict run predicted [M]. Sheepdog01's notes before the crash:
+- a lot of wobbling (possibly b107's "wild node matrix" finding on c40: scales over 100 on the Control Room's light shafts [U]);
+- the bridge's textures wrong;
+- lights shining through the Chief's legs at the start (flares drawn without the depth test, and the flare's ray skips bipeds: `b113_candidates.md` #2 [D]);
+- the scene dark (#6).
+
+### c10 343 Guilty Spark
+
+Preset 2. No fault: Sheepdog01 played to game time 28,033 (stopped after falling down an elevator shaft), 29 screenshots.
+
+| Stretch | Frame, ms (fps) | Drawing | Tick | GE (models, level) |
+|---|---:|---:|---:|---:|
+| The swamp (150–4,000) | 183.0 (5.5) | 92.8 | 38.6 | 56 ms (46, 8.4) |
+| Inside (4,000–28,033) | 117.6 (8.5) | 65.2 | 23.3 | 28 ms (15.7, 9.3) |
+
+- **"By far the most playable map once inside"** (Sheepdog01): inside it ranges from 5 to 30 fps by the fight; its last stretch ran at 30 fps with 30 ticks a second.
+- **The display list filled late in the run:** 43,482 draws skipped between game time 21,454 and 24,383, in the Flood fights. Decals were 8 ms a frame of the GE layer's CPU work there, and decals copy their triangles into the list every frame [U: the main filler]. Skipped draws are things not drawn: a restoration item.
+- **The swamp's GE time is the models'** (46 of 56 ms): the trees and the fight.
+- 38 sounds failed for room; heap peak 5,508 KB.
+
+**What Sheepdog01 saw**, and what each likely is:
+
+| Shots | Seen | Likely cause |
+|---|---|---|
+| 000 | The swamp water flat white | The water shader drawn untinted, as b30's ocean (#5) |
+| 001–006 | The hanging vines as solid bars | A see-through or cut-out shader drawn without its alpha [U]; a census of the vine shader will say |
+| 001–007 | No fog: the edge of the view distance shows | The port's fog hook saw only the interior fog (0–22 units, density 1) and "none" (density 0) outdoors [M, the log]; c10's outdoor fog comes from somewhere the hook doesn't catch [U] |
+| 010 | The bunker's lights as solid yellow cones | Generic/chicago see-through shaders drawn one map, untinted, added 1:1 (#4 family) |
+| 011–012 | Orange flat surfaces on the bunker's platform | Objects made with level shaders, flat (R3, fixed on the b116 branch) [U: that they're objects] |
+
