@@ -54,17 +54,32 @@ Both are see-through shaders that combine several maps, of which the GE draws on
 
 ## Exact speed-ups from an independent review (branch `speed118p`)
 
-A second review read the GE layer for exact speed-ups (the picture byte for byte the same). Three are built, and their cache-model A/B against b116 on c40 and d20 is running (`speed118-ab`):
-- the see-through level lists' "on a wall" flags remembered per list (each triangle searched the table of up to 2,048 lists);
-- the texture lookup's recent places (a draw asks 2-3 times);
-- `-fno-math-errno` for the port's own C units, as the engine's have.
+A second review read the GE layer for exact speed-ups, keeping the picture byte for byte. Four are built on `speed118p` (on `pgo116`, for `exitat`):
+1. **The overlay flags:** the see-through level lists' "on a wall" flags remembered per list. Each triangle had searched a table of up to 2,048 lists.
+2. **The texture lookup:** it remembers its recent places, since a draw asks 2-3 times.
+3. **`-fno-math-errno`** for the port's own C units, as the engine's have.
+4. **The level light pass:** each shared vertex is worked out once a draw (its reach and its place from the camera), in a 256-entry table (6 KB of bss; heap 5,844 KB). Each triangle no longer clears its 33 corner floats.
 
-The bigger ones are still to do (savings estimated [U]):
+**Measured** in the cache models against b116, each run to the same 3,600 ticks [E]:
 
-| What | Cost now | Saving |
+| Build | Map | Drawing | Tick | Play |
+|---|---|---:|---:|---|
+| 1-3 (`speed118-ab`, 38244859198) | c40 | −2.3% | +0.4% | the same tick for tick |
+| 1-3 | d20 | −1.2% | +0.3% | the same |
+| 1-4 (`lightmemo-ab`, 38247017012) | d20 | −3.8% | +0.2% | the same |
+| 1-4 | a10 | −2.4% | +0.2% | the same |
+
+- **The tick's +0.2-0.4%** is the code moving in the cache, not more work: it fetches the same instructions [U].
+- **Pictures can't be compared** between two builds: the effects animate with the clock, and the clock runs differently in each (`lightmemo-shots`).
+- **So the light memo checks itself instead** (keep word `lightmemocheck`): it works every remembered value out again and compares bit for bit.
+  - The first run found 1,296 mismatches in 201 million on d20. When two corners of one triangle share a slot, the earlier corner read the later one's place.
+  - After the fix: 0 in 220 million on d20, c40 and b30 (38251011761) [E].
+
+**Still to do:**
+
+| What | Cost now | Saving [U] |
 |---|---|---|
-| The light pass works out each shared level vertex again in every triangle it's in, and clears 132 bytes a triangle | d20: 145 light draws, 17 ms a frame [E] | a third to a half of the pass |
-| `transparent_cut` runs on every see-through model part, even one wholly in view | 1.3-3.5 ms a frame [E] | most of it |
+| `transparent_cut` runs on every see-through model part, even one wholly in view | 1.3-3.5 ms a frame [E] | most of it. Exact only if the bounding sphere holds every vertex and no triangle reaches past the guard band, so it needs a self-check like the light memo's |
 | The shadow pass: the light pass's pattern | 1-3.3 ms a frame on a10 and a30 [E] | about half |
 | HUD strips: one bind and one draw for all of an overlay's strips | only while zoomed | 0.1-0.3 ms |
 
