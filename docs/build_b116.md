@@ -22,7 +22,7 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 | R2 | Every see-through shader's colour: thrusters, holograms, Cortana, the sky's layers | The bake works each shader out the way the Xbox's combiners would, with every map at its mean colour, and stores the tint for the one map the PSP draws (`seethrough.py`). A shader brighter than its map (Cortana, the holograms, the sniper rifle's screen: up to 3x) is drawn with the GE's colour doubling and half the tint | `notint` |
 | R2b | Water's colour: b30's ocean and c10's swamp (both white) | Water draws its base map blended as the shader's flags say (alpha-blended when its colour modulates the background, added otherwise), tinted with its reflection and view colours | `waterwhite` |
 | R3 | Doors, chairs and devices made with level shaders: textured (the map room bunker's door, a10's orange chairs) | Objects' environment-shader parts get their base map, as the level's do | `senvflat` |
-| — | See-through parts fade as on the Xbox: thruster cones with the thrust, light cones and volume lights soft at the sides (c40's pale discs), parts under active camouflage | The shader's fade source, its fade by the angle the surface is seen at (the level's by each triangle's own plane: its copies have no normals), and camouflage | `seethroughflat` |
+| — | See-through parts fade as on the Xbox: thruster cones with the thrust; surfaces that fade by the angle they're seen at (light volumes looked straight into, glows' rims); parts under active camouflage | The shader's fade source; its fade by angle, as the Xbox's vertex program for transparent shaders works it out (the second colour carries c = \|normal · camera forward\| and 1 − c; "fade when perpendicular" takes 1 − c and vanishes face on, "fade when parallel" takes c and vanishes edge on), the level's by each triangle's own plane (its copies have no normals); and camouflage | `seethroughflat` |
 | — | Space and indoor gaps aren't pale blue | Each frame clears to the window's fog colour, as the Xbox clears (a10's opening) | `clearblue` |
 | — | c10's swamp fog | Planar fog, when the eye is in it, as a distance fog in its colour (the Xbox's fog pass, reduced to what the GE has) | `planarfogoff` |
 | b113 #2 | Plasma glows hidden behind characters | The flare's ray meets bipeds (not the player's own), stopping just short of the flare | `flaresnobipeds` |
@@ -100,12 +100,15 @@ set zip ~/Downloads/halo_psp_b116.zip
 ls -l $zip                      # must list the file; fish carries on after a failed step
 unzip -o $zip -d $psp
 unzip -p $zip PSP/GAME/halo/EBOOT.PBP | cmp - $psp/PSP/GAME/halo/EBOOT.PBP; and echo "b116 is on the stick"
-ls ~/psp-bake/campaign116f/halo/maps | wc -l       # 53 files: ten maps of five, ui of three
-cp -v ~/psp-bake/campaign116f/halo/maps/* $psp/halo/maps/
+set maps ~/psp-bake/campaign116f/halo/maps
+cp -v $maps/ui.* $psp/halo/maps/
+for m in a10 a30 a50 b30 b40 c10 c20 c40 d20 d40
+    cp -v $maps/$m.* $maps/$m"_track.ptex" $psp/halo/maps/
+end
 rm -f $psp/halo/shots/*
 umount $psp
 ```
-The copy is about 2 GB (a few minutes). The log's first line should say `bring-up build 116`, and a line `textures: see-through tints for N shaders` should follow each map's load.
+The copy is 53 files, 2.0 GB (350 MB less than the last campaign bake: the S9 sounds), a few minutes. The bake also made the multiplayer maps; this build doesn't need them. The log's first line should say `bring-up build 116`, and a line `textures: see-through tints for N shaders` should follow each map's load.
 
 **After each test: pull the log.** Change the name for each test:
 ```fish

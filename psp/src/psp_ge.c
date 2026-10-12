@@ -8526,11 +8526,17 @@ static float seethrough_fade(short packed)
 
 /* build 116: the fade by the angle a see-through part is seen at, a colour
 per vertex in a copy of its records (the 8-bit normal's 4 bytes become the
-colour; the flush draws it with GU_COLOR_8888). |n.v| is 1 seen face on, 0
-seen edge on: "fade when perpendicular" (a light cone's soft sides) takes
-that, "fade when parallel" one minus it. Placed records (several nodes,
-already in the camera's space) keep their node in byte 11; the others go
-through the draw's matrix */
+colour; the flush draws it with GU_COLOR_8888). As the Xbox's vertex program
+for transparent shaders works it out (rasterizer_xbox_vertex_shaders_data.inc,
+program 24, translated by the port's nv2a_vsh.c): c = |n . the camera's
+forward direction| (1 seen face on, 0 seen edge on); its second colour
+carries c in blue and 1 - c in alpha, and "fade when perpendicular" (mode 1)
+takes the alpha, "fade when parallel" (mode 2) the blue. So a surface that
+fades when perpendicular vanishes seen face on (a light volume looked
+straight into), and one that fades when parallel vanishes edge on. The first
+version had the two the other way round (c40's pale discs stayed). Placed
+records (several nodes, already in the camera's space) keep their node in
+byte 11; the others go through the draw's matrix */
 static unsigned long seethrough_angle_draws = 0;
 static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_count, int placed, int mode,
 	float fade)
@@ -8553,10 +8559,9 @@ static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_c
 	for (v = 0; v < vertex_count; v++)
 	{
 		unsigned char *record = records + 24 * v;
-		const float *p = (const float *)(record + 12);
 		float n[3] = { (signed char)record[8], (signed char)record[9], (signed char)record[10] };
 		const ScePspFMatrix4 *m = &draw->matrix;
-		float wn[3], q[3], nn, qq, c, a;
+		float wn[3], nn, c, a;
 
 		if (placed)
 		{
@@ -8570,21 +8575,14 @@ static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_c
 				done[node] = 1;
 			}
 			m = &at_node[node];
-			q[0] = p[0]; q[1] = p[1]; q[2] = p[2];
-		}
-		else
-		{
-			q[0] = m->x.x * p[0] + m->y.x * p[1] + m->z.x * p[2] + m->w.x;
-			q[1] = m->x.y * p[0] + m->y.y * p[1] + m->z.y * p[2] + m->w.y;
-			q[2] = m->x.z * p[0] + m->y.z * p[1] + m->z.z * p[2] + m->w.z;
 		}
 		wn[0] = m->x.x * n[0] + m->y.x * n[1] + m->z.x * n[2];
 		wn[1] = m->x.y * n[0] + m->y.y * n[1] + m->z.y * n[2];
 		wn[2] = m->x.z * n[0] + m->y.z * n[1] + m->z.z * n[2];
 		nn = wn[0] * wn[0] + wn[1] * wn[1] + wn[2] * wn[2];
-		qq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
-		c = nn > 0.0f && qq > 0.0f ? fabsf(wn[0] * q[0] + wn[1] * q[1] + wn[2] * q[2]) / sqrtf(nn * qq) : 1.0f;
-		a = mode == 1 ? c : 1.0f - c;
+		c = nn > 0.0f ? fabsf(wn[0] * camera_forward[0] + wn[1] * camera_forward[1] + wn[2] * camera_forward[2]) /
+			sqrtf(nn) : 1.0f;
+		a = mode == 1 ? 1.0f - c : c;
 		*(unsigned int *)(record + 8) = seethrough_tinted(seethrough_color((int)(fade * a * 255.0f + 0.5f), draw->blend),
 			draw->tint);
 	}
@@ -9220,15 +9218,15 @@ static void level_angle_colors(struct sprite_vertex *t, int mode, float fade, in
 	float nn = n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
 	int k;
 
-	for (k = 0; k < 3; k++)
-	{
-		float q[3] = { t[k].x - camera_eye[0], t[k].y - camera_eye[1], t[k].z - camera_eye[2] };
-		float qq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
-		float c = nn > 0.0f && qq > 0.0f ? fabsf(n[0] * q[0] + n[1] * q[1] + n[2] * q[2]) / sqrtf(nn * qq) : 1.0f;
-		float a = mode == 1 ? c : 1.0f - c;
+	/* the models' rule (seethrough_vertex_colors): against the camera's
+	forward direction, mode 1 vanishing face on, mode 2 edge on */
+	float c = nn > 0.0f ? fabsf(n[0] * camera_forward[0] + n[1] * camera_forward[1] + n[2] * camera_forward[2]) /
+		sqrtf(nn) : 1.0f;
+	float a = mode == 1 ? 1.0f - c : c;
+	unsigned int color = seethrough_tinted(seethrough_color((int)(fade * a * 255.0f + 0.5f), blend), tint);
 
-		t[k].color = seethrough_tinted(seethrough_color((int)(fade * a * 255.0f + 0.5f), blend), tint);
-	}
+	for (k = 0; k < 3; k++)
+		t[k].color = color;
 }
 
 /* 1: queued (or nothing in view); 0: left to the usual path (no room). The

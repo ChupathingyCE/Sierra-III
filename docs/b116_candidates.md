@@ -10,12 +10,37 @@ What comes after b115, from its PSP tests (`hardware_b115.md`) and Sheepdog01's 
 
 ## Status, the morning of 2026-10-12
 
-What the overnight b116 took (`build_b116.md` has each with its keep word):
+What b116 took (`build_b116.md` has each with its keep word):
 
-- **Done:** the crash fix (both halves, also in b115.1); R1; R2 (a tint per see-through shader, worked out in the bake, and water's base map); R3; R4's counter; R10; R11; the see-through fade (b113 #3, #4's first half); the eDRAM probe in slices; the clear colour and c10's planar fog (new); b113 #2, #6, #7, #9 and #17; the heap sized to 4 KB (G8's first step: b116 adds ~20 KB of code and the heap is 5,860 KB, b115's 5,888).
-- **Built, off by default (Sheepdog01's A/B):** `vrammodels600` / `vrammodels800`.
-- **Built for the bake, off unless asked for:** the sound bake S9 (`--sound s9`); S10 needs the rate per permutation first.
-- **Left:** R4's fallback, R5, R6, R7, R8, R9, R12; b113 #11, #15, #16, #18; c40's white discs, c10's vines and a10's bridge glass (identification under way); G8's trims: `MAXIMUM_WINDOWS` to 1 for the PSP (~30 KB of lens-flare and per-window tables), the network update queues (83 KB, but single player uses them: needs care), `vertex_codes` and the other large statics in `psp_ge.c`.
+- **Done:**
+  - the crash fix (both halves, also in b115.1);
+  - R1;
+  - R2: a tint per see-through shader, worked out in the bake, doubled for shaders brighter than their map;
+  - water's base map, blended by its flags (Xbox type 7: the first try took 8, glass);
+  - R3;
+  - R4's counter;
+  - R10;
+  - R11;
+  - the see-through fade (b113 #3, #4's first half), and the level's fade by angle (each triangle's plane);
+  - the eDRAM probe in slices;
+  - the clear colour and c10's planar fog (new);
+  - b113 #2, #6, #7, #9, #16 (meters) and #17;
+  - the heap sized to 4 KB (G8's first step);
+  - the keep-word buffers widened (a review finding).
+- **Built, off by default (Sheepdog01's A/B):** `vrammodels600` and `vrammodels400` (800 is over the limit: half the texture cache's VRAM).
+- **In the bake:** the sound bake S9 (`--sound s9`, in `campaign116f`). S10 needs the rate per permutation first.
+- **Left:**
+  - R4's fallback, R5, R6, R7, R8, R9, R12;
+  - b113 #11, #15, #18;
+  - c40's pale discs: not the faded volume lights [U]; the final tour's `nooverlays` run says whether they are level surfaces;
+  - c10's vines;
+  - a10's bridge window: a green pattern;
+  - b30's deep water: blue-grey, as the GE has no fog by depth below the water;
+  - glass tints: glass draws its diffuse map at full strength; the Xbox lights it and blends it by its alpha and detail map;
+  - G8's trims:
+    - `MAXIMUM_WINDOWS` to 1 for the PSP (~30 KB of lens-flare and per-window tables);
+    - the network update queues (83 KB, but single player uses them: needs care);
+    - `vertex_codes` and the other large statics in `psp_ge.c`.
 
 ## 1. Restorations from b115's tests (on by default)
 
