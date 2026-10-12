@@ -2515,6 +2515,10 @@ int main(int argc, char **argv)
 	/* build 53: the build's number first, so a log says which EBOOT ran */
 	platform_log("Halo PSP bring-up build %d (%s): free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
 		PSP_ENGINE_BASE, sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+#ifdef PSP_PGO_PROFILE
+	/* PSP_PGO=use (psp_build.py): the profile it was built with */
+	platform_log("pgo: the hot code laid out and optimised by the profile pgo/%s.tgz", PSP_PGO_PROFILE);
+#endif
 	/* build 89: whether HOME and sleep are armed (negative: an error) */
 	platform_log("callbacks: power registration %08x, exit callback %08x, exit registration %08x",
 		(unsigned int)exit_callbacks_registered[0], (unsigned int)exit_callbacks_registered[1],

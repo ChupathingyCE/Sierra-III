@@ -296,6 +296,9 @@ def compile_one(item):
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_platform.c"):
         defines.append("-DPSP_HEAP_KB=%d" % HEAP_KB)
+        if PGO == "use":
+            # the log's first lines say which profile built it
+            defines.append('-DPSP_PGO_PROFILE="%s"' % PGO_PROFILE)
     # PSP_REUSE: keep an object only when it is newer than its source. Build
     # 46 shipped with a stale psp_tex.o (reused without this check, so an
     # edit to psp_tex.c never reached the EBOOT): the learned-binds file was
