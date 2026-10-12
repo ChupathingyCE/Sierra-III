@@ -10731,6 +10731,20 @@ void psp_ge_light_begin(const float *position, const float *forward, const float
 /* how much of the light reaches a vertex (0 to 1); cone: whether the
 spotlight's cone is in it (build 36: a spotlight's cone comes from a
 projected texture instead, and only the side behind the light is cut here) */
+/* after b116: the level light pass's vertices for the draw in hand, by the
+vertex's low bits: its reach and, once asked for, its place from the camera
+(5 KB from bss; a level vertex sits in 3-6 triangles, each of which worked
+both out again; an independent review) */
+#define LIGHT_MEMO 256
+struct light_memo_entry
+{
+	unsigned int tag; /* the draw's number << 16 | the vertex */
+	float reach, camera[3];
+	int camera_known;
+};
+static struct light_memo_entry light_memo[LIGHT_MEMO];
+static unsigned int light_memo_draw = 0;
+
 static float light_reach(const float *p, unsigned int packed_normal, int cone_in_vertex)
 {
 	float d[3], distance_squared, fade, inverse, cone, facing, normal[3];
@@ -11172,10 +11186,19 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	out = scratch_vertices;
 	if (light_mode == 1)
 		whole = list_take((int)triangle_count * 3 * sizeof(unsigned short));
+	/* after b116: this draw's vertices remembered (light_memo) */
+	if (++light_memo_draw > 0xFFFF)
+	{
+		memset(light_memo, 0, sizeof(light_memo));
+		light_memo_draw = 1;
+	}
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
-		float corners[3][CORNER_FLOATS] = { { 0.0f } }, reach[3];
+		/* after b116: no clear of all 33 floats a triangle; each corner's
+		fields are written below before they're read, but 6 and 10 (an
+		independent review) */
+		float corners[3][CORNER_FLOATS], reach[3];
 		int corner;
 		const float *source[3];
 
@@ -11238,16 +11261,44 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			}
 		}
 		for (corner = 0; corner < 3; corner++)
-			reach[corner] = light_reach(source[corner], stream->normals[triangle[corner]], !spot);
+		{
+			/* after b116: a vertex shared by several triangles (3-6 in a
+			level's lists) worked out once a draw: its reach, and its place
+			from the camera when a triangle first needs it (the same
+			functions on the same inputs: the same floats) */
+			unsigned int vertex = triangle[corner], tag = (light_memo_draw << 16) | vertex;
+			struct light_memo_entry *memo = &light_memo[vertex & (LIGHT_MEMO - 1)];
+
+			if (memo->tag != tag)
+			{
+				memo->tag = tag;
+				memo->reach = light_reach(source[corner], stream->normals[vertex], !spot);
+				memo->camera_known = 0;
+			}
+			reach[corner] = memo->reach;
+		}
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			continue;
 		for (corner = 0; corner < 3; corner++)
 		{
-			to_camera_corner(&stream->base[triangle[corner]].x, corners[corner]);
+			struct light_memo_entry *memo = &light_memo[triangle[corner] & (LIGHT_MEMO - 1)];
+
+			if (!memo->camera_known)
+			{
+				to_camera(&stream->base[triangle[corner]].x, memo->camera);
+				memo->camera_known = 1;
+			}
+			corners[corner][0] = memo->camera[0];
+			corners[corner][1] = memo->camera[1];
+			corners[corner][2] = memo->camera[2];
+			corners[corner][7] = stream->base[triangle[corner]].x;
+			corners[corner][8] = stream->base[triangle[corner]].y;
+			corners[corner][9] = stream->base[triangle[corner]].z;
 			corners[corner][3] = stream->base[triangle[corner]].u;
 			corners[corner][4] = stream->base[triangle[corner]].v;
 			corners[corner][5] = reach[corner];
 			corners[corner][6] = 0.0f;
+			corners[corner][10] = 0.0f;
 		}
 		if (spot)
 		{
