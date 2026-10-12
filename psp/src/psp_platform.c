@@ -1829,9 +1829,57 @@ steps in order: the console has no way to wait */
 			sceIoMkdir(DATA_ROOT "/gcda", 0777);
 			setenv("GCOV_PREFIX", DATA_ROOT "/gcda", 1);
 			setenv("GCOV_PREFIX_STRIP", "1", 1);
+			/* libgcov says what goes wrong on stderr: into a file, read back
+			into the log below */
+			freopen(DATA_ROOT "/gcda_errors.txt", "w", stderr);
+			{
+				/* a file named as libgcov names them, written the way it writes */
+				FILE *probe = fopen(DATA_ROOT "/gcda/probe#name.gcda", "w+b");
+
+				platform_log("gcov: a probe file %s", probe ? "opened" : "refused");
+				if (probe)
+				{
+					fwrite("gcov", 1, 4, probe);
+					fclose(probe);
+				}
+			}
 			__gcov_dump();
+			fflush(stderr);
 			platform_log("gcov: the hot units' counts written to %s/gcda at tick %lu, in %lu ms", DATA_ROOT,
 				ticks_seen, (psp_microseconds() - start) / 1000);
+			{
+				SceUID folder = sceIoDopen(DATA_ROOT "/gcda");
+				SceIoDirent entry;
+				int files = 0, shown = 0;
+
+				if (folder >= 0)
+				{
+					memset(&entry, 0, sizeof(entry));
+					while (sceIoDread(folder, &entry) > 0)
+					{
+						if (entry.d_name[0] != '.')
+						{
+							if (shown++ < 3)
+								platform_log("gcov: %s/gcda holds %s (%d bytes)", DATA_ROOT, entry.d_name,
+									(int)entry.d_stat.st_size);
+							files++;
+						}
+						memset(&entry, 0, sizeof(entry));
+					}
+					sceIoDclose(folder);
+				}
+				platform_log("gcov: %d files in %s/gcda", files, DATA_ROOT);
+			}
+			{
+				FILE *errors = fopen(DATA_ROOT "/gcda_errors.txt", "r");
+				char line[200];
+				int lines = 0;
+
+				while (errors && fgets(line, sizeof(line), errors) && lines++ < 12)
+					platform_log("gcov stderr: %s", line);
+				if (errors)
+					fclose(errors);
+			}
 		}
 	}
 #endif
