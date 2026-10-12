@@ -9,6 +9,7 @@ This page fills in as the tests come back.
 - **b115 costs nothing on the cinematic** [M]: 197.0 ms a frame against b114's 195.6, inside the 1% that runs of one build vary by.
 - **The models are almost all of the GE's time** [M]: 88% of it in the cinematic (33 of 37 ms a frame) and 89% in the flight after it (105 of 118 ms). The emulator's byte count said the same (83–88% of the GE's reads from main RAM, `build_b115.md`). Both of `big_levers.md` §0's conditions for "models first" now hold: the models dominate the GE's time, and a few buffers carry most of their reads.
 - **Textures from main RAM cost the GE little** [M]: with VRAM's texture cache cut from 1,216 to 400 KB (test 3), the GE took 1.5 ms a frame more in the cinematic, all of it in the level's draws (2.5 → 4.1 ms); the models' time didn't move. The frame was within run-to-run noise (198.0 against 197.0 ms). So giving ~800 KB of VRAM to models costs about 1–1.5 ms of GE time, and the models' 105 ms in the flight is what it's for.
+- **`vfpuskin` gains nothing measurable** [M]: the cinematic took 196.1 ms a frame against 197.0, and drawing 72.6 against 72.4, both inside run-to-run noise. It stays off (E24).
 - **The map file's re-reads are real on the PSP** [M]: after loading, 95% of what it read had been read before. They cost only 1.0–1.5% of the stick's time on this stretch, and nobody waited behind them.
 
 ## Test 2: the cinematic, base
@@ -37,7 +38,7 @@ Keep words `nearauto gebusy assettrack geo2 iostats`. No fault; Sheepdog01 stopp
 | **All** | **37.2** | **118.3** |
 
 - **What it means for the targets:** at 30 fps the GE has 33 ms a frame. The cinematic is just over that; the flight after it is 3.6 times over, and the models are 105 ms of it. Faster CPU work alone can't take the flight past ~8 fps [U, from the GE's time alone].
-- **What it doesn't say yet:** whether the models' time is the GE reading vertices from main RAM or the GE transforming them. Tests 3 and 4 split that: 3 moves textures to main RAM, 4 moves near corners to the VFPU. Blood Gulch's A/B [M] found most of the models' cost was reading.
+- **What it doesn't say yet:** whether the models' time is the GE reading vertices from main RAM or the GE transforming them. Test 3 rules out texels (below). `vrammodels` (b116) splits the rest: if the models' GE time drops with their buffers in VRAM, reading was the cost. Blood Gulch's A/B [M] found most of the models' cost was reading. (An earlier note said test 4 would split it too; it can't, since `vfpuskin` changes only the CPU's work.)
 - `gebusy by kind` adds a chunk at each change of kind, so the total can differ a little from b114's; here it's 45 against 44 ms (benchreport's weighting).
 
 **The stick by stream** (`iostats`, every ~30 s) [M]:
@@ -76,4 +77,20 @@ Keep words as test 2 plus `vramtex400`; the log confirms the cut (`the VRAM cach
 - **The cost of texels in main RAM is the level's, ~1–1.5 ms a frame** [M]. The level's textures are the big, repeated ones; the models' time doesn't change, so their 105 ms isn't spent on texels.
 - **That matches Blood Gulch's ±1 ms** (`big_levers.md` §0) and settles M4: the swap's first step is cheap.
 - **Streaming barely moved:** the stick read the same textures except 137 KB more in the last report. In the real swap the RAM cache grows to take what VRAM gives up (`big_levers.md` §0), so even that goes.
+
+## Test 4: the cinematic, VFPU skinning (`vfpuskin`)
+
+Keep words as test 2 plus `vfpuskin`. No fault; stopped in the Pelican.
+
+| | b115 T2 (base) | b115 T4 (`vfpuskin`) |
+|---|---:|---:|
+| The cinematic (150–570): frame by the clock, ms | 197.0 | 196.1 |
+| drawing, ms | 72.4 | 72.6 |
+| tick, ms | 60.3 | 60.6 |
+| GE, ms a frame (models) | 37.2 (32.7) | 38.1 (33.4) |
+| The flight (300–2,000): drawing, ms | 152.3 | 149.7 |
+
+- **No measurable gain on the cinematic** [M]: every figure is inside the 1% that runs of one build vary by. The flight's drawing is 1.7% lower, but the flight after game time 570 varies by 7% with where the player looks, so that isn't a result.
+- **Why so little** [U]: `vfpuskin` moves only one job to the VFPU, the camera-space corners of skinned parts cut at the near plane. That's the marines beside the camera in the cabin, a small share of the cinematic's drawing. The emulator found it 2–4% slower; the PSP finds it level.
+- **Verdict:** it stays off. E24 closes as "no gain on b30"; c40's close fights are the only place it might still matter.
 
