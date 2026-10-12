@@ -165,7 +165,11 @@ def pgo_flags(rel):
         # branches didn't (a line added above it) still uses its counts, with
         # a warning; one whose branches changed is built without them (GCC
         # checks both)
-        return ["-fprofile-use=" + PGO_DIR, "-fprofile-prefix-path=" + OUT] + (
+        # -fprofile-correction: counts merged from several runs
+        # (psp-gcov-tool merge) can leave a value profile (a division's or a
+        # copy's usual operand) a little off its block's count, which GCC
+        # otherwise refuses ("corrupted value profile")
+        return ["-fprofile-use=" + PGO_DIR, "-fprofile-prefix-path=" + OUT, "-fprofile-correction"] + (
                 ["-fprofile-partial-training"] if PGO_PARTIAL else []) + [
                 "-Wno-missing-profile", "-Wno-error=coverage-mismatch"] + PGO_EXTRA
     return []
