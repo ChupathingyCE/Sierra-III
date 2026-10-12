@@ -9924,10 +9924,47 @@ static unsigned long hud_quad_us = 0, text_us = 0;
 static void screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale);
 
+/* "hdump": each HUD quad of a frame a screenshot is asked for, with its
+bitmap's tag, its corners in the game's 640x480 screen and its colour, before
+the defer queue (the tag name is looked up on this thread). For a HUD element
+drawn where the Xbox doesn't draw it (a50's white bars, b116) */
+static void hud_quad_dump(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
+	float fade, void const *meter_parameters, int wrapped)
+{
+	extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
+	static int hdump = -1;
+	struct game_screen_vertex const *in = vertices;
+	const unsigned char *bitmap = (const unsigned char *)key;
+	float x0, y0, x1, y1;
+	char const *name;
+	int corner;
+
+	if (hdump < 0)
+		hdump = psp_keep("hdump");
+	if (!hdump || !psp_screenshot_requested || !vertices || !key)
+		return;
+	x0 = x1 = in[0].x;
+	y0 = y1 = in[0].y;
+	for (corner = 1; corner < 4; corner++)
+	{
+		x0 = fminf(x0, in[corner].x);
+		x1 = fmaxf(x1, in[corner].x);
+		y0 = fminf(y0, in[corner].y);
+		y1 = fmaxf(y1, in[corner].y);
+	}
+	name = psp_bitmap_tag_name(bitmap);
+	platform_log("hdump: %s (bitmap %dx%d) at %.0f,%.0f to %.0f,%.0f, uv %.3f,%.3f to %.3f,%.3f; colour %.2f %.2f %.2f "
+		"fade %.2f argb %08x; blend %d%s%s",
+		name ? name : "(no tag)", *(const short *)(bitmap + 4), *(const short *)(bitmap + 6), x0, y0, x1, y1,
+		in[0].u, in[0].v, in[2].u, in[2].v, red, green, blue, fade, in[0].argb, blend, meter_parameters ? ", meter" : "",
+		wrapped ? ", wrapped" : "");
+}
+
 /* the HUD's quads, timed for the log (build 31) */
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
+	hud_quad_dump(vertices, key, blend, red, green, blue, fade, meter_parameters, wrapped);
 	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,
 		wrapped, u_scale, v_scale)); /* build 112: gedefer */
 	GE_BENCH_SKIP();

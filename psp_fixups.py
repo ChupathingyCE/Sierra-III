@@ -11649,7 +11649,44 @@ FIXES_116["source/models/model_animations.c#unaligned"] = [
  """					PSP_UNALIGNED_REAL3(&orientation->translation, (real_point3d const *)(data+header->default_translations_offset)+node_index);"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_CHUPA.items()):
+# after build 116: "hdump" (psp_ge.c) names each HUD quad's bitmap by its
+# tag: the tag whose bitmaps hold the quad's bitmap_data. A walk over every
+# bitmap tag, so only for the frames a screenshot is asked for
+FIXES_118 = {}
+FIXES_118["source/interface/hud_draw.c#hdump"] = [
+("""
+void hud_draw_bitmap(
+	struct bitmap_data const *bitmap,""",
+ """
+#ifdef HALO_PSP
+#include "cache/cache_files.h"
+char *tag_get_name(long tag_index);
+
+/* the tag a bitmap_data belongs to, or NULL (psp_fixups.py; "hdump") */
+char const *psp_bitmap_tag_name(void const *bitmap)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, BITMAP_GROUP_TAG);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		struct bitmap_group const *group = bitmap_group_get(tag_index);
+		char const *first = (char const *)group->bitmaps.address;
+
+		if (first && (char const *)bitmap >= first &&
+			(char const *)bitmap < first + group->bitmaps.count * (long)sizeof(struct bitmap_data))
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+#endif
+
+void hud_draw_bitmap(
+	struct bitmap_data const *bitmap,"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
