@@ -20,7 +20,7 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 |---|---|---|---|
 | R1 | The ocean stays behind the seabed (b30's flight) | Free see-through surfaces pushed back by their far corner (b115's `overlayfreefar`, Sheepdog01's test 5 [M]) | `overlayfreenear` |
 | R2 | The ocean's colour, and every see-through shader's: thrusters, the a10 sky, glass | The bake works each shader out the way the Xbox's combiners would, with every map at its mean colour, and stores the tint for the one map the PSP draws (`seethrough.py`) | `notint` |
-| R2b | c10's swamp water (it was white) | Water draws its base map (b115 read it from the tag's padding), alpha-blended, tinted with its reflection | `waterwhite` |
+| R2b | Water's colour: b30's ocean and c10's swamp (both white) | Water draws its base map blended as the shader's flags say (alpha-blended when its colour modulates the background, added otherwise), tinted with its reflection and view colours | `waterwhite` |
 | R3 | Doors, chairs and devices made with level shaders: textured (the map room bunker's door, a10's orange chairs) | Objects' environment-shader parts get their base map, as the level's do | `senvflat` |
 | — | See-through parts fade as on the Xbox: thruster cones with the thrust, light cones soft at the sides, parts under active camouflage | The shader's fade source, its fade by the angle the surface is seen at, and camouflage | `seethroughflat` |
 | — | Space and indoor gaps aren't pale blue | Each frame clears to the window's fog colour, as the Xbox clears (a10's opening) | `clearblue` |

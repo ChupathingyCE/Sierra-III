@@ -23,7 +23,10 @@ import numpy as np
 
 from bitmap_bake import decode
 
-GENERIC, CHICAGO, WATER = 5, 6, 8
+# the shader types as an Xbox map holds them: Invader writes the Xbox's,
+# which have no chicago extended, so water is 7 (8 is glass, 9 meter);
+# build 116's first bake took water for 8 and tinted none
+GENERIC, CHICAGO, WATER = 5, 6, 7
 # the maps the PSP looks through for the one it draws (psp_transparent_map)
 PSP_MAPS_LOOKED_AT = 4
 
