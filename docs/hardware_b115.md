@@ -12,7 +12,10 @@ This page fills in as the tests come back.
 - **`vfpuskin` gains nothing measurable** [M]: the cinematic took 196.1 ms a frame against 197.0, and drawing 72.6 against 72.4, both inside run-to-run noise. It stays off (E24).
 - **`overlayfreefar` fixes the ocean through the seabed** (test 5, Sheepdog01's eye) [M]. The shoreline is now jagged where the water meets the sand at a shallow angle, like the Scorpion's shadows on Blood Gulch: the 16-bit depth buffer can't tell which is in front there [U]. The ocean is still white (the tint, b116).
 - **Sheepdog01's other sightings in test 5** map onto known items: the far rock that vanished for a few frames (geometry not yet read; 198 frames missed some), the flashlight's dots along edges (b113 #12), the walkway seen through the bunker wall (b113 #13, still present), plus two new ones: lines around the base of rocks, and the locked door drawn flat and metallic (found: objects made with level shaders get no texture). Details below.
-- **The map file's re-reads are real on the PSP** [M]: after loading, 95% of what it read had been read before. They cost only 1.0–1.5% of the stick's time on this stretch, and nobody waited behind them.
+- **The map file's re-reads are real on the PSP** [M]: after loading, 93–95% of what it read had been read before. Over the whole bench that's 3% of the stick's time, up to 6% in the beach's busiest reports.
+- **Test 1: my eDRAM probe stopped the Media Engine** for the whole run. Its first job (the fill) kept the ME busy 56 ms, the audio job behind it timed out at 40 ms, and a timeout stops the ME for the session. The main CPU then mixed the audio (6–7% of its time), so test 1 ran ~10% slower than b114's (215.3 ms against 195.6 on the cinematic) and the probe answered nothing. Its other instruments are sound: they measure the GE and the stick, not the CPU.
+- **The models dominate the GE on every stretch** [M, test 1]: 77–87% of its time, 32 ms of the beach's 42.
+- **The stick's long waits are the checkpoints** [M, test 1]. A checkpoint writes 1.3–1.9 MB of game state on the game thread and took 211–1,136 ms: the game stops for that long. Right after one, the log's next write took ~600 ms, and the sound reader waited behind it up to 610 ms; one report had 3 s of silence (5 gaps, the longest 774 ms).
 
 ## Test 2: the cinematic, base
 
@@ -122,4 +125,52 @@ Keep words `nearauto assettrack geo2 overlayfreefar` (no instruments). No fault.
 - **A rule:** fixes that restore the original game (the ocean, the texture issues) go on by default without an A/B (`CLAUDE.md`). So `overlayfreefar` and the water's tint go on by default in b116.
 - **The assault rifle's display, very occasionally:** dots like the flashlight's along the edge where the display meets the housing. The display is a model-shader part (`fp\shaders\display`) with three see-through chicago overlays drawn on it (`compass`, `numbers`, `ar data`; census run 38190196843). Candidates [U]: the overlays and the surface under them tie in the 16-bit depth buffer along that edge, or the same edge seams as the flashlight's (#12).
 - **The sniper rifle's zoom overlay is misaligned** (seen in the multiplayer test; b30 has no sniper rifle). It's the same family as the pistol's zoom overlay, offset and stretched in b114's tests 7–8. Two things draw while zoomed: the mask (`zoommask`, off by default, kept round in the middle of the screen) and the HUD's scope overlay, placed from the 640×480 HUD onto the 480×272 screen. Which one is off needs a reference shot from the PC build [U].
+
+## Test 1: the bench, b115's instruments
+
+Keep words `nearauto gebusy assettrack hwprofile geo2 iostats gereads edramcheck`. No fault; Sheepdog01 stopped at game time 5,708, on the beach (b114's test 1 went on to the bunker, 7,408).
+
+**The eDRAM probe stopped the ME (my bug)** [M]:
+- The probe's first job filled 1.25 MB of eDRAM in one go: 56 ms on the ME. The next audio job waited behind it, timed out at 40 ms, and a timed-out job stops the ME for the rest of the session (`ME: stopped (a job timed out)`, game time ~20).
+- From then on the main CPU mixed the audio: 6–7% of its time. That's most of why this run is slower than b114's test 1 everywhere: the cinematic 215.3 ms a frame against 195.6, the beach 172.8 against 165.3. b115's speed is test 2's to 5's, which match b114.
+- The probe never got to check anything, so whether anything else writes eDRAM is still open (G4, [D] only).
+- **One figure came out of it** [M]: the ME wrote eDRAM at 23 MB/s (172 ns a word) in that loop, close to the 158 ns a read measured before. The level positions' copy for L1 (~190 KB) would take ~8 ms of the ME to fill [U, if the copy writes a word at a time].
+- **Fix for b116:** fill and check in slices of at most 64 KB (~3 ms), one a heartbeat, so an audio job never waits more than a few ms behind one.
+
+**The GE's time by kind** (`gebusy`), ms a frame [M]. The CPU's audio work doesn't change what the GE does:
+
+| Stretch | GE, all | models | level | see-through | shadows, lights, decals |
+|---|---:|---:|---:|---:|---:|
+| cinematic (150–570) | 37.8 | 33.1 (87%) | 2.7 | 1.5 | 0.2 |
+| flight (570–2,000) | 95.5 | 82.6 (86%) | 9.4 | 2.3 | 0.6 |
+| landing (2,000–2,700) | 42.4 | 34.1 (80%) | 5.1 | 1.8 | 0.5 |
+| beach (2,700–5,708) | 41.8 | 32.1 (77%) | 6.4 | 1.4 | 1.4 |
+
+At 30 fps the GE has 33 ms a frame. The beach's models alone take 32 ms.
+
+**What the GE reads** (`gereads`), KB a frame from main RAM [M; the bytes don't depend on the CPU]:
+
+| Stretch | From main RAM | Models' share | VRAM holding the best 400 KB | 600 KB | 800 KB | Emulator, 600 KB [E] |
+|---|---:|---:|---:|---:|---:|---:|
+| flight | 3,838–6,775 | 84–88% | 77–88% | 86–94% | 90–97% | 85–92% |
+| landing | 2,970 | 84% | 82% | 90% | 95% | 96% |
+| beach | 1,165–3,826 | 78–87% | 62–91% | 73–97% | 80–100% | 92–100% |
+
+- **The flight matches the emulator; the beach is harder.** Sheepdog01's beach fight has more characters in view than the emulator's route, so more buffers share the reads. 600 KB takes 73–97% there, 800 KB 80–100%.
+- **So the models' share of VRAM is 600–800 KB**, not 600. With textures at ~400 KB that's 1,000–1,200 of the 1,216 KB, and the level's copies get little or nothing.
+
+**The stick** (`iostats`, a report every ~30 s) [M]:
+
+| Report ending at game time | Checkpoint ("other") written | Its worst call | Log's worst call | Sound reader's worst wait (behind) |
+|---|---|---:|---:|---|
+| 1,231 | 1,322 KB | 65 ms | 586 ms | 469 ms (the log) |
+| 2,892 | 1,446 KB | 60 ms | 14 ms | 10 ms |
+| 3,235 | 382 KB (and 2.7 s in all) | 792 ms | 64 ms | none |
+| 3,923 | 1,666 KB | 419 ms | 581 ms | 534 ms (the log) |
+| 5,296 | 1,878 KB | 897 ms | 614 ms | 610 ms (the log) |
+
+- **The checkpoints** (`checkpoint:` lines): 330–469 pages of game state (1.3–1.9 MB), written by the game thread in 211, 211, 1,072, 1,136 and 369 ms. Most pages change between checkpoints (283–429 of them), so writing only the changed ones saves little. Similar sizes took 211 or 1,100 ms; the stick's own housekeeping (extending the file, or erasing) is the likely difference [U].
+- **The chain after a checkpoint:** the stick is still busy, the heartbeat's log write takes ~600 ms, and the sound reader waits behind it. In the report ending at 5,296 that gave 2.96 s of silence in 5 gaps, the longest 774 ms. This is G3's answer: b114's 767 ms wait was very likely the same chain [U].
+- **The sound re-reads:** after loading, 93% of the 112 MB read from the map file had been read before. 19.4 s in the stick over the run, 3.2% of the time; up to 1.8 s in a beach report (6%).
+- **Levers this points to:** write checkpoints compressed and into a file kept at full size (fewer bytes, no file growth); hold the log's flush while a checkpoint writes; keep more sound read ahead so a 1 s stall isn't heard. All three restore the original's behaviour (no freeze, no silence).
 
