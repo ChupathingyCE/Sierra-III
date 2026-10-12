@@ -80,6 +80,17 @@ def run(command, log_path, cwd=None, env=None):
         raise RuntimeError('%s failed (%d); the end of %s:\n%s' % (os.path.basename(command[0]), r.returncode, log_path, tail))
 
 
+def echo_from(log_path, start, markers):
+    """the lines a step added to a map's own log (from byte start) that
+    hold one of markers, into the bake's log (build 116: the texture pack's
+    see-through tints and meter maps; names and colours only)"""
+    with open(log_path, errors='replace') as f:
+        f.seek(start)
+        for line in f.read().splitlines():
+            if any(marker in line for marker in markers):
+                log('  ' + line.strip())
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -159,8 +170,10 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     run([sys.executable, os.path.join(LIB, 'dez.py'), built, final], log_path, env=env)
     os.remove(built)
     log('%s: textures' % name)
+    start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')], log_path,
         cwd=LIB, env=env)
+    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps'))
     if track and name != 'ui':
         log('%s: textures, asset track (half-size lightmaps, plants kept whole at a distance)' % name)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
