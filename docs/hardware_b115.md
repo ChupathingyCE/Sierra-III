@@ -10,6 +10,8 @@ This page fills in as the tests come back.
 - **The models are almost all of the GE's time** [M]: 88% of it in the cinematic (33 of 37 ms a frame) and 89% in the flight after it (105 of 118 ms). The emulator's byte count said the same (83–88% of the GE's reads from main RAM, `build_b115.md`). Both of `big_levers.md` §0's conditions for "models first" now hold: the models dominate the GE's time, and a few buffers carry most of their reads.
 - **Textures from main RAM cost the GE little** [M]: with VRAM's texture cache cut from 1,216 to 400 KB (test 3), the GE took 1.5 ms a frame more in the cinematic, all of it in the level's draws (2.5 → 4.1 ms); the models' time didn't move. The frame was within run-to-run noise (198.0 against 197.0 ms). So giving ~800 KB of VRAM to models costs about 1–1.5 ms of GE time, and the models' 105 ms in the flight is what it's for.
 - **`vfpuskin` gains nothing measurable** [M]: the cinematic took 196.1 ms a frame against 197.0, and drawing 72.6 against 72.4, both inside run-to-run noise. It stays off (E24).
+- **`overlayfreefar` fixes the ocean through the seabed** (test 5, Sheepdog01's eye) [M]. The shoreline is now jagged where the water meets the sand at a shallow angle, like the Scorpion's shadows on Blood Gulch: the 16-bit depth buffer can't tell which is in front there [U]. The ocean is still white (the tint, b116).
+- **Sheepdog01's other sightings in test 5** map onto known items: the far rock that vanished for a few frames (geometry not yet read; 198 frames missed some), the flashlight's dots along edges (b113 #12), the walkway seen through the bunker wall (b113 #13, still present), plus two new ones: lines around the base of rocks, and the locked door drawn flat and metallic. Details below.
 - **The map file's re-reads are real on the PSP** [M]: after loading, 95% of what it read had been read before. They cost only 1.0–1.5% of the stick's time on this stretch, and nobody waited behind them.
 
 ## Test 2: the cinematic, base
@@ -93,4 +95,25 @@ Keep words as test 2 plus `vfpuskin`. No fault; stopped in the Pelican.
 - **No measurable gain on the cinematic** [M]: every figure is inside the 1% that runs of one build vary by. The flight's drawing is 1.7% lower, but the flight after game time 570 varies by 7% with where the player looks, so that isn't a result.
 - **Why so little** [U]: `vfpuskin` moves only one job to the VFPU, the camera-space corners of skinned parts cut at the near plane. That's the marines beside the camera in the cabin, a small share of the cinematic's drawing. The emulator found it 2–4% slower; the PSP finds it level.
 - **Verdict:** it stays off. E24 closes as "no gain on b30"; c40's close fights are the only place it might still matter.
+
+## Test 5: the flight, the ocean pushed back by its far end (`overlayfreefar`)
+
+Keep words `nearauto assettrack geo2 overlayfreefar` (no instruments). No fault. Sheepdog01 went past the preset's stop: after the Warthog, a medium run straight to the map room bunker (game time 7,064; 14 screenshots).
+
+**The ocean (what the test was for)** [M, Sheepdog01's eye and shots t479–488]:
+- **It no longer shows through the seabed.** The fix holds on the PSP as it did in the emulator.
+- **The shoreline is jagged** where the water meets the sand, "similar to how the shadows from the Scorpion in Blood Gulch behaved, but it looks better geometry wise". Where two surfaces cross at a shallow angle, the 16-bit depth buffer gives both the same depth over long strips, so which one wins flips from pixel to pixel [U]. It's the cost of a smaller push; a push that grows slightly with distance would trade some of it back.
+- **The ocean is still white.** That's the tint (`b113_candidates.md` #5), planned for b116.
+
+**Speed** [M]: no instruments in this preset. Where it overlaps the other runs it matches them: the cinematic 195.1 ms a frame (b114 test 1: 195.6; b115 test 2: 197.0), the beach 167.9 (b114 test 1: 165.3). b115 has no speed changes, so the smoother feel past the bridge is the place, or the instruments being off (b114's preset 7 had smaller spikes for the same reason) [U]. Past the bridge, in the map room bunker, it ran at 17–20 fps with 28–29 ticks a second.
+
+**Sightings, and what each maps to:**
+
+| Seen (Sheepdog01) | Known as | Cause | Confidence |
+|---|---|---|---|
+| The farthest visible rock vanished for a few frames as he approached | `b113_candidates.md` #22 (objects appear late), not #19 (the display list never filled: 0 draws skipped) | **The geometry cache hadn't read its vertices yet.** A miss queues the read and leaves the draw out for that frame, and a frame reads at most 192 KB (`psp_geo.c`, `psp_fixups.py`'s `psp_vertex_lock`) [D]. This run: 198 frames missed something, 984 blocks evicted from the 2 MB cache, worst frame's read 134 ms [M]. A rock that changes level of detail as you come close needs a new block [U] | medium-high (mechanism [D], this rock [U]) |
+| When using the flashlight, dots or lines along the edges of geometry, "like I'm seeing through the seams" | #12 (jagged flashlight edges, seams) | **Neighbouring pieces split their shared edges differently** (T-junctions), so the light pass leaves pinholes along them [D, b113]. `lightedges` was proposed, never built | medium |
+| Lines around the base of rocks, "like a water line" (shots t374–419) | new | Open. The shots show a thin bright band where rocks meet the ground, and dotted lines across the ground. Candidates [U]: the same seams (#12) where the rock meets the terrain; the lightmap's texels bleeding across the seam (b30's lightmaps are baked at reduced size); the ocean showing through cracks in the terrain under it (the smaller push lets it win where nothing solid covers it). An emulator A/B at the same rocks, `overlayfreefar` on and off, sorts the last one out | low |
+| Walkway seen through the wall before the locked door (map room bunker) | #13 (floor light through the hallway wall) | **Pieces cut at the near plane get one depth nudge per draw**, up to ~1 unit of lift at 8 units [D, b113]. `lightbands` was proposed, never built. Still present | medium |
+| The door that stays locked until the security room looks flat and metallic, as if textures or effects were missing | new | Open. Likely a shader layer the port skips: environment reflections (the cube map) and specular passes aren't drawn (#5, #6) [U]. A tag census of the door's shader would say | low |
 
