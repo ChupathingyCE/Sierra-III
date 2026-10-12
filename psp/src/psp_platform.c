@@ -829,7 +829,7 @@ static void keep_load(void)
 	/* build 115 */
 	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar");
 	/* build 116: the restorations are on by default; these words turn each off */
-	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar lognohold");
+	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar lognohold statepages");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
