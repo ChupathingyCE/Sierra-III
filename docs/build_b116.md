@@ -1,10 +1,10 @@
 # Build 116: the original game restored (2026-10-12)
 
-Built overnight after b115's tests on four campaign maps and Sheepdog01's rule of 2026-10-11: where the port draws or behaves differently from Halo on the Xbox, the fix goes on by default, with a keep word that turns it off (`CLAUDE.md`). b116 carries b115.1's crash fix and fourteen restorations, plus the VRAM swap's second step for Sheepdog01's A/B. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator (PPSSPP with the local patches, PSP-1000 memory), **[D]** read in the code or tags, **[U]** inference.
+Built overnight after b115's tests on four campaign maps and Sheepdog01's rule of 2026-10-11: where the port draws or behaves differently from Halo on the Xbox, the fix goes on by default, with a keep word that turns it off (`CLAUDE.md`). b116 carries b115.1's crash fix and fifteen restorations, plus the VRAM swap's second step for Sheepdog01's A/B; its maps carry the S9 sound bake. Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator (PPSSPP with the local patches, PSP-1000 memory), **[D]** read in the code or tags, **[U]** inference.
 
-Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,888): the heap is now sized to 4 KB, not 64 KB, so the new code cost only what it is. a10's peak in b115 was 5,764 KB [E].
+`halo_psp_b116.zip` (SHA-256 `8c943432889134cf55b2508540eb9c7ab65852c340c63f59a834018b4d7b6d18`), EBOOT `e313c587741763e437ce13224a32131baac82fe903ebbc17efb062bf4c9f482e`: built from commit `5a5fc0c3ee` on the `b116` branch, the same bytes the lab built and checked there. Heap 5,852 KB (b115: 5,888): the heap is now sized to 4 KB, not 64 KB, so the new code cost only what it is. a10's peak was 5,764 KB in b115 and 5,728 in b116 [E].
 
-**The maps need the new bake** for the see-through and water tints (`/bake/campaign116` on the desktop: `~/psp-bake/campaign116/halo/maps`). With the old maps everything else still works, and those shaders draw untinted, as before.
+**The maps need the new bake** for the see-through and water tints, the meters' palettes and the S9 sounds (`/bake/campaign116f` on the desktop: `~/psp-bake/campaign116f/halo/maps`). With older maps everything else still works: those shaders draw untinted, the meters' fill can come out wrong (their maps weren't given the grid palette) [U], and the sounds are the disc's.
 
 ## What changed
 
@@ -40,6 +40,12 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 |---|---|
 | `vrammodelsN` (600 or 400; at most half the texture cache's 1,216 KB) | The top N KB of VRAM hold copies of the model buffers the GE reads most per byte; draws read the copies (the same pixels). The textures give that VRAM up (b115 test 3: ~1.5 ms of GE time [M]); the models were 105 ms of the flight's GE time [M]. In the emulator 600 KB held 86 of b30's model buffers, and every model draw read a copy (gereads: the fit curve puts 96% of b30's model reads in the best 600 KB, 88% in 400) [E]. Presets 3 (without), 4 and 5 |
 
+### In the maps: the sound bake (S9, approved by Sheepdog01 on 2026-10-11)
+
+| What | Why | To hear the disc's sounds |
+|---|---|---|
+| `soundpack.py` re-encodes each map's sounds as the bake builds it (`--sound s9`): 44,100 Hz sounds go to 22,050 and stereo effects to mono; music stays stereo. The codec stays Xbox ADPCM, so the game's sound code is unchanged | The port mixes at 22,050 Hz, so nothing above 11 kHz was heard, and 3D sounds are mixed as mono [D]. The maps are 31-48 MB smaller, and over ten minutes the stick read about a third as much sound data [E] | Maps baked without `--sound` (no keep word: it's in the maps) |
+
 ### Instruments and fixes
 
 - The geometry report counts the draws left out for a frame (R4's far objects vanishing).
@@ -55,15 +61,19 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 | b113 #18, shields flaring when hit | Modifier shaders aren't drawn at all yet |
 | R4's fallback (a resident level of detail instead of nothing) | Design; the counter comes first |
 | R7, R8 (zoom overlays, tracers) | Wait on reference shots from the PC build |
-| The sound rebake (S9, approved) | Its re-encoder isn't written yet: its own bake, after b116's checks |
 | The ocean's colour from above (b30) | The Xbox colours what lies under water with the water's own fog, seen from above too; the GE fogs only by distance from the eye. The ocean is now its reflection over the seabed, not white, but the deep water isn't blue yet: a fog by depth below the water's plane, per vertex, is a bigger change |
 | c10's vines, a10's bridge glass | Still being identified |
+| a50's two white vertical bars (since b115) | An interface element: they go with the HUD (`nohud`, `a50-bars-b116`, 38224287101) and stay put on screen. a50 starts with the sniper rifle, whose zoom overlay R7 saw misplaced in multiplayer [U]. Its HUD's elements are next |
 
 ## What the emulator showed [E]
 
 PPSSPP with the local patches, PSP-1000 memory, nobody at the controls unless a test says otherwise; lab batch ids in brackets.
 
-**The crash fix and the strict interpreter.** b115.1's fix ran clean through a10, a30 and c40 under the strict interpreter (range, unaligned and FPU checks), where b115 stopped; b116 at `d0315d3` was clean on seven maps (`strict-b1151b-b116`, 38202483724). The final check, every map at the release commit on the final bake, is below.
+**The crash fix and the strict interpreter.** b115.1's fix ran clean through a10, a30 and c40 under the strict interpreter (range, unaligned and FPU checks), where b115 stopped; b116 at `d0315d3` was clean on seven maps (`strict-b1151b-b116`, 38202483724).
+
+**The final check** (`final-strict-b116`, 38217964580): all ten openings under the strict interpreter at `f8498fe`, on the final bake (`campaign116f`), 1,800 s each: no unaligned load, nothing out of range, no crash. The fade fix after it (`5a5fc0c`: arithmetic in two functions) ran the same check on c40, a10 and b30 (`verify3-b116`, 38220819475): clean on all three (game time 5,878, 5,594 and 3,538 in 1,800 s).
+
+**The look on the final bake** (`final-tour-b116`, 38217971523): a shot every 10 s through all ten openings; every run ended normally. `c40-nooverlays` (the level's see-through surfaces left out) still shows the room's pale discs: they are model parts, not the level's. With the corrected fade (`verify3-b116`) they are unchanged; 343 Guilty Spark's glow now shows a soft blue halo around him, and the ring around him in the second shot is gone.
 
 **Checkpoints (R10, R11)** (`checks-b116`, 38205131855). A checkpoint at tick 300 and a revert at 450 on six maps: every revert went back to tick 300 and the game went on from the same place as the first time; b30 with the old format (`statepages`) went the same way. The compact format writes 44-52% fewer bytes:
 
@@ -81,7 +91,7 @@ The log held its writes around each checkpoint (`log: writes held 1 times around
 - b30: the sky is blue with its clouds and the ring, and the ocean is green-blue in the shallows and blue-grey further out, where the tours before showed white. The thrusters fade with the thrust.
 - c10: the swamp water is dark blue, mostly see-through (it was solid white).
 - a10: space is dark (it was pale blue); the bridge's big window still shows a green pattern (open).
-- c40: Cortana and 343 Guilty Spark draw with their glows; the room's pale discs are still there (open: they look the same with the level's fade by angle as without, so they are probably not the faded volume lights [U]; the final tour's `nooverlays` run says whether they are level surfaces at all).
+- c40: Cortana and 343 Guilty Spark draw with their glows; the room's pale discs are still there (open: model parts, since they stay with the level's see-through surfaces left out, and unchanged by either fade rule).
 - Meters: c40 has one in view every frame, drawn (300 a 300 frames, none left out). The first try left every one out: the meter's map had never been bound, so its palette wasn't in memory (fixed, `psp_tex_resident`). b30 with every vehicle and weapon dropped by the player didn't put a Warthog in view.
 
 **The VRAM swap's second step** (`vrammodels-b116`, 38206322935). With `vrammodels600`, 86 of b30's model buffers sat in 524 KB of VRAM and every model draw read a copy; the pictures are the same as without, frame for frame within the timing. `vrammodels800` was over the limit (half the texture cache's VRAM) and was left off without a word: now it says so, and preset 5 is 400 KB. Only the PSP can time it.
@@ -126,7 +136,7 @@ Tests 1-4 matter most; 5 and 6 when there's time. Screenshots (the usual button)
 |---|---|---|---|---|---|
 | 1 | b30, 1 (play) | Through the flight, then a minute on the beach. Look at the ocean below, the sky, the Pelicans' thrusters; listen to the music and the voices | One minute after landing | ~5 min | By eye and ear: the ocean and sky (R1, R2, R2b), the thrusters' fade, the S9 sounds |
 | 2 | b30, 3 then 4 then 5 | Leave the controls alone through the opening cinematic, once with each preset | When the cinematic ends and you have control in the Pelican | ~3 min each | The model buffers in VRAM (600 KB, 400 KB) against none: the GE's time by kind (`gebusy`). `tools/benchreport.py` compares them |
-| 3 | c40, 1 (play) | The opening in the control room, then a few steps | 3 min after you get control | ~8 min | The pale discs gone (the volume lights fade by angle); Cortana's colour (doubled tints) |
+| 3 | c40, 1 (play) | The opening in the control room, then a few steps | 3 min after you get control | ~8 min | Cortana's colour (doubled tints) and Guilty Spark's glow; whether the room's pale discs are there on the PSP too (still open in the emulator) |
 | 4 | c10, 1 (play) | The opening, then walk to the swamp water | 3 min after you get control | ~6 min | The swamp water (no longer white) and the fog |
 | 5 | b30, 1 (play) | Play until you can drive a Warthog, and pick up a plasma rifle from a dead Elite | When you've seen both | ~10-15 min | The meters: the Warthog's speedometer and engine meter, the plasma rifle's heat gauge |
 | 6 | b30, 6 (the b115 look) | as test 1 | as test 1 | ~5 min | The same flight with every restoration off, for side-by-side shots |

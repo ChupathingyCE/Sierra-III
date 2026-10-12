@@ -32,8 +32,9 @@ What b116 took (`build_b116.md` has each with its keep word):
 - **Left:**
   - R4's fallback, R5, R6, R7, R8, R9, R12;
   - b113 #11, #15, #18;
-  - c40's pale discs: not the faded volume lights [U]; the final tour's `nooverlays` run says whether they are level surfaces;
+  - c40's pale discs: model parts (they stay with the level's see-through surfaces left out), unchanged by the fade by angle;
   - c10's vines;
+  - a50's white vertical bars: part of the HUD (gone with `nohud`); a50 starts with the sniper rifle (R7's misplaced overlay?) [U];
   - a10's bridge window: a green pattern;
   - b30's deep water: blue-grey, as the GE has no fog by depth below the water;
   - glass tints: glass draws its diffuse map at full strength; the Xbox lights it and blends it by its alpha and detail map;

@@ -37,6 +37,7 @@ Each of these is a commit, tagged `bNNN` (`git checkout b108` gives that build's
 | b114 | `c238665149` | 2026-10-11 04:58 | b113's tested switches on (list768, sound1792, soundplace), 320 see-through draws, the sum by 33, bodies grounded; listcachedall, statememo, lean, drawdistN (keep words); launch presets |
 | b115 | `88f09ee565` | 2026-10-11 18:07 | The instruments that size the VRAM swap and the streaming: iostats, gereads, gebusy by kind, vramtexN, edramcheck (keep words); overlayfreefar for Sheepdog01's A/B |
 | b115.1 | `166da9e933` | 2026-10-11 23:05 | b115 with the animation crash fixed: compressed animations' tables read unaligned-safe (a10, a30, c40) |
+| b116 | `5a5fc0c3ee` | 2026-10-12 02:58 | The original game restored, on by default: see-through tints (doubled where brighter than the map), water, meters, fades by thrust and angle, the clear colour, planar fog, textured level-shader objects, compact checkpoints and the log held around them; vrammodelsN for Sheepdog01's A/B; maps baked with the S9 sounds |
 
 b109 was never shipped: its changes are in b110. `build_bNNN.md` and `hardware_bNNN.md` in this folder hold the longer reports.
 
