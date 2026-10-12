@@ -12,6 +12,8 @@ This page fills in as the tests come back.
 - **`vfpuskin` gains nothing measurable** [M]: the cinematic took 196.1 ms a frame against 197.0, and drawing 72.6 against 72.4, both inside run-to-run noise. It stays off (E24).
 - **`overlayfreefar` fixes the ocean through the seabed** (test 5, Sheepdog01's eye) [M]. The shoreline is now jagged where the water meets the sand at a shallow angle, like the Scorpion's shadows on Blood Gulch: the 16-bit depth buffer can't tell which is in front there [U]. The ocean is still white (the tint, b116).
 - **Sheepdog01's other sightings in test 5** map onto known items: the far rock that vanished for a few frames (geometry not yet read; 198 frames missed some), the flashlight's dots along edges (b113 #12), the walkway seen through the bunker wall (b113 #13, still present), plus two new ones: lines around the base of rocks, and the locked door drawn flat and metallic (found: objects made with level shaders get no texture). Details below.
+- **a10 crashes at game time 2,477, the same tick in both runs** [M]: an unaligned float load in `animation_get_keyframe_translation`, inside one of Bungie's compressed animations in the opening cinematic. The emulator's normal mode lets it pass. Fixed on the `b116` branch (unaligned-safe loads), not yet shipped.
+- **a10's opening space shots run at the primary target** [M]: 28 fps with 30 ticks a second (35 ms a frame), the first stretch of any map to get there. Its interiors run 11–15 fps, and there the CPU's drawing is the limit (51 ms a frame, against a 7 ms tick and 27 ms of GE).
 - **The map file's re-reads are real on the PSP** [M]: after loading, 93–95% of what it read had been read before. Over the whole bench that's 3% of the stick's time, up to 6% in the beach's busiest reports.
 - **Test 1: my eDRAM probe stopped the Media Engine** for the whole run. Its first job (the fill) kept the ME busy 56 ms, the audio job behind it timed out at 40 ms, and a timeout stops the ME for the session. The main CPU then mixed the audio (6–7% of its time), so test 1 ran ~10% slower than b114's (215.3 ms against 195.6 on the cinematic) and the probe answered nothing. Its other instruments are sound: they measure the GE and the stick, not the CPU.
 - **The models dominate the GE on every stretch** [M, test 1]: 77–87% of its time, 32 ms of the beach's 42.
@@ -180,4 +182,38 @@ Keep words `nearauto assettrack geo2`. No fault; stopped at game time 4,889, on 
 - Beach 123.9 ms a frame (8.1 fps), against 165–173 in the other runs: the beach depends on where the player goes and looks, so it isn't a comparison.
 - The "cinematic" stretch took 245.7 ms a frame against ~196 in every other run, with the drawing up ~30% and the tick unchanged. The geometry cache served 38% more lookups over it, so more was drawn: the opening was likely skipped and the player looked around the cabin [U].
 - 8 sounds failed for room; heap peak 5,348 KB.
+
+## The campaign ladder on b115: a10 (two runs)
+
+Preset 2 (`nearauto gebusy assettrack geo2 iostats`), a10 from the campaign bake. Both runs crashed at game time 2,477, in the opening cinematic.
+
+**The crash** [M, the crash screen; D, the disassembly]:
+- `bad address (load)`, thread `user_main`, epc `08944ae4` (offset `0x140ae4`: `animation_get_keyframe_translation`, called from `animation_get_node_orientations`), badvaddr `09af9e36`.
+- The faulting instruction copies a translation keyframe (three floats) with word loads, and the keyframe sits 2 past a multiple of 4, inside the animation cache's part of the tag window.
+- Our own keyframed animations pad every table to 4 bytes (the fork's `psp_keyframe_compress`), and the header and node header loads before it were aligned. So this is one of Bungie's own compressed animations, whose tables can start 2 past a multiple of 4 [D/U].
+- The emulator ran a10's opening in the lab with no fault: its JIT forgives unaligned loads. The strict interpreter reports them, and a strict batch on all ten maps is running.
+- **The fix** (branch `b116`, commit `086d337`): the translation and scale readers load their floats and node headers through packed structs (`PSP_UNALIGNED_REAL`, `PSP_UNALIGNED_REAL3`, `PSP_UNALIGNED_ULONG`), which GCC turns into `lwl`/`lwr` pairs. +168 bytes of code.
+
+**Speed** (`benchreport.py --stretches space:150-400,interior:400-2470`) [M]:
+
+| Stretch | Frame, ms (fps) | Drawing | Tick | GE (share of the clock) |
+|---|---:|---:|---:|---:|
+| Space: the ship, the ring, the planet (150–400) | 35.2 (28.4) / 39.6 (25.3) | 7.1 / 7.7 | 4.0 / 3.3 | 4 ms (9%) |
+| The bridge and halls (400–2,470) | 68.4 (14.6) / 89.0 (11.2) | 50.7 / 52.7 | 7.1 / 7.4 | 27 ms (30–36%) |
+
+- **Space runs at the primary target:** 28 fps with 30 ticks a second.
+- **Indoors, the CPU's drawing is the limit** (Sheepdog01's read too): 51 ms a frame against a 7 ms tick and 27 ms of GE. The GE layer's own CPU work is 28–33 ms of it: level draws 8–15 ms, model parts 7–9, the lights up to 11 and shadows up to 7 as the cinematic moves.
+- The GE's time: models 61%, the level 30% (b30: models 77–89%).
+- Run 2 is slower indoors because it took 19 screenshots: each is a ~400 KB write to the stick.
+
+**What Sheepdog01 saw** (run 2, 19 screenshots) and what each likely is:
+
+| Shot | Seen | Likely cause | Known as |
+|---|---|---|---|
+| 000 | The sky pale blue instead of space; the planet black; the ring a thin outline with no texture | a10's sky models use shaders the port doesn't draw (a census of a10's sky is queued) [U] | new |
+| 001–006 | The ship's engine glows as white cones, like the Pelican's thrusters, with a depth fault inside the cone | Chicago shaders draw one map, untinted, added 1:1 [D] (`b113_candidates.md` #4); the cone's inside, see-through drawn far to near by draw, not by triangle [U] | #4, plus new |
+| 007–010 | The bridge windows show a marbled pattern | The glass shader's map choice: the pattern looks like a bump or reflection map drawn as its colour [U] (census queued) | new |
+| 008–009 | The orange chairs untextured | **Objects made with level shaders get a flat colour per shader** [D]: the same cause as b30's locked door (R3) | R3 |
+| 010, 016–017 | The holographic displays and consoles dim and still | Animated see-through shaders draw one map with no scrolling or tint; environment self-illumination isn't drawn [D/U] | #4 family |
+| 011–015 | Keyes and the crew underlit; a crewman's face with odd texture | Object lighting indoors, and the dark-areas items (#6, #8) [U] | #6, #8 |
 
