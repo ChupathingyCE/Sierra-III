@@ -27,6 +27,8 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bake', 'lib'))
 from halomap import Defs, CacheMap, Walker, FOURCC_GROUP  # noqa: E402
 
+# the shader tag groups, in the order the summary prints them (build 116)
+SHADER_GROUPS = ('soso', 'senv', 'sotr', 'schi', 'scex', 'sgla', 'swat', 'smet', 'spla')
 FOLLOW = {
     'weap', 'proj', 'mod2', 'mode', 'cont', 'ligh', 'lens', 'pctl', 'part', 'effe', 'eqip', 'vehi', 'bipd',
     'garb', 'soso', 'sotr', 'schi', 'scex', 'smet', 'spla', 'sgla', 'swat', 'item', 'obje', 'unit',
@@ -88,6 +90,25 @@ def main():
     for group in ('smet', 'spla'):
         names = sorted(t.name for t in m.tags if t.group == group)
         print('%s shaders in the map (%d): %s' % (group, len(names), '; '.join(names) or 'none'))
+    # build 116: how many shaders of each kind the map has, by name for the
+    # kinds the PSP draws least of (glass, water, chicago extended), and the
+    # object models that use level (environment) shaders, which b115 drew
+    # in a flat colour (hardware_b115.md)
+    counts = {}
+    for t in m.tags:
+        if t.group in SHADER_GROUPS:
+            counts[t.group] = counts.get(t.group, 0) + 1
+    print('shader kinds in the map: %s' % ', '.join('%s %d' % (g, counts.get(g, 0)) for g in SHADER_GROUPS))
+    for group in ('sgla', 'swat', 'scex'):
+        names = sorted(t.name for t in m.tags if t.group == group)
+        print('%s shaders in the map (%d): %s' % (group, len(names), '; '.join(names) or 'none'))
+    users = []
+    for t in m.tags:
+        if t.group in ('mode', 'mod2'):
+            senv = sorted({target.name for path, group, target in deps_of(m, d, walker, t) if group == 'senv'})
+            if senv:
+                users.append('%s (%s)' % (t.name, ', '.join(senv)))
+    print('object models with environment shaders (%d): %s' % (len(users), '; '.join(sorted(users)) or 'none'))
 
 
 if __name__ == '__main__':
