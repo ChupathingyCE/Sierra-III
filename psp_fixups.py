@@ -11686,6 +11686,54 @@ void hud_draw_bitmap(
 	struct bitmap_data const *bitmap,"""),
 ]
 
+# after build 116: "hdump" also lists a multitexture overlay's other maps,
+# how they combine, and their offsets and scales (the sniper rifle's angle
+# ticks: the GE draws only the first map, b116)
+FIXES_118["source/rasterizer/rasterizer.c#hdump"] = [
+("""		if (psp_ge_active())
+		{
+			/* one map: the first, except under the menus' moving "plasma",""",
+ """		if (psp_ge_active() && parameters->map[1])
+		{
+			extern volatile int psp_screenshot_requested; /* psp_ge.c */
+			extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
+			extern void platform_log(const char *format, ...);
+			extern int psp_keep(const char *name);
+			static int psp_hdump = -1;
+
+			if (psp_hdump < 0)
+				psp_hdump = psp_keep("hdump");
+			if (psp_hdump && psp_screenshot_requested)
+			{
+				int map;
+
+				platform_log("hdump: multitexture, map 0 to 1 %d, map 1 to 2 %d, framebuffer %d, plasma %d",
+					parameters->map0_to_1_blend_function, parameters->map1_to_2_blend_function,
+					parameters->framebuffer_blend_function, parameters->doing_plasma_effect);
+				for (map = 0; map < 3 && parameters->map[map]; map++)
+				{
+					char const *name = psp_bitmap_tag_name(parameters->map[map]);
+
+					platform_log("hdump:   map %d %s: offset %.3f %.3f, scale %.3f %.3f, texture scale %.4f %.4f, "
+						"%s, %s, tint %.2f %.2f %.2f, fade %.2f", map, name ? name : "(no tag)",
+						parameters->map_offset[map] ? parameters->map_offset[map]->x : 0.0f,
+						parameters->map_offset[map] ? parameters->map_offset[map]->y : 0.0f,
+						parameters->map_scale[map].i, parameters->map_scale[map].j,
+						parameters->map_texture_scale[map].i, parameters->map_texture_scale[map].j,
+						parameters->map_wrapped[map] ? "wrapped" : "clamped",
+						parameters->map_anchor_screen[map] ? "anchored to the screen" : "to the quad",
+						parameters->map_tint[map] ? parameters->map_tint[map]->red : 1.0f,
+						parameters->map_tint[map] ? parameters->map_tint[map]->green : 1.0f,
+						parameters->map_tint[map] ? parameters->map_tint[map]->blue : 1.0f,
+						parameters->map_fade[map] ? *parameters->map_fade[map] : 1.0f);
+				}
+			}
+		}
+		if (psp_ge_active())
+		{
+			/* one map: the first, except under the menus' moving "plasma","""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
