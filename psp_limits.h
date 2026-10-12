@@ -46,19 +46,6 @@ struct psp_unaligned_real { float value; } __attribute__((packed));
 #else
 #define PSP_UNALIGNED_REAL(address) (*(const float *)(address))
 #endif
-/* build 116: a see-through shader's fade, packed above its blend function in
-the short the queue already carries (psp_fixups.py psp_transparent_map,
-psp_ge.c): bits 0-3 the blend function, 4-5 the framebuffer fade mode (none,
-fade when perpendicular, fade when parallel), 6 "don't fade with active
-camouflage", 7-14 how much the fade source takes away (0: none, 255: all).
-A plain blend function (nothing above bit 3) is full strength, no fade */
-#define PSP_SEETHROUGH_PACK(blend, mode, fade, keep_with_camouflage) \
-	((short)(((blend) & 15) | (((mode) & 3) << 4) | ((keep_with_camouflage) ? 64 : 0) | \
-	((255 - (int)((((fade) < 0.0f ? 0.0f : (fade) > 1.0f ? 1.0f : (fade)) * 255.0f) + 0.5f)) << 7)))
-#define PSP_SEETHROUGH_BLEND(packed) ((packed) & 15)
-#define PSP_SEETHROUGH_MODE(packed) (((packed) >> 4) & 3)
-#define PSP_SEETHROUGH_KEEP_WITH_CAMOUFLAGE(packed) (((packed) & 64) != 0)
-#define PSP_SEETHROUGH_FADE(packed) ((float)(255 - (((packed) >> 7) & 255)) / 255.0f)
 #define PSP_UNALIGNED_REAL3(to, from) do { \
 		const char *psp_from_ = (const char *)(from); \
 		float *psp_to_ = (float *)(to); \
@@ -66,6 +53,9 @@ A plain blend function (nothing above bit 3) is full strength, no fade */
 		psp_to_[1] = PSP_UNALIGNED_REAL(psp_from_ + 4); \
 		psp_to_[2] = PSP_UNALIGNED_REAL(psp_from_ + 8); \
 	} while (0)
+/* build 116: a see-through shader's fade, packed with its blend function
+(shared with psp_ge.c) */
+#include "psp/include/psp_seethrough.h"
 /* the AI debug records (ai_debug.c) are 6.6 MB for 256 actors and 3.7 MB of
 path storage; gameplay only writes them, so on the PSP every actor shares
 one record (psp_fixups.py) */

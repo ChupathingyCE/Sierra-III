@@ -185,6 +185,7 @@ drawing work, and this file's CPU work and the GE's reading are gone. What it
 saves is the most that moving this file's work to the Media Engine could save
 (an upper bound: the ME's version keeps the GE's reading) */
 #include "../include/psp_bench.h" /* the plain-C units have no -I for psp/include (psp_build.py) */
+#include "../include/psp_seethrough.h" /* build 116: a see-through part's fade, packed with its blend */
 #define GE_BENCH_SKIP(...) do { if (psp_bench_skip & PSP_SKIP_GE) return __VA_ARGS__; } while (0)
 
 /* ---------- build 112: the GE layer's calls deferred (keep word "gedefer")
