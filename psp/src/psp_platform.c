@@ -1810,6 +1810,31 @@ steps in order: the console has no way to wait */
 		platform_log("menutest: loading Blood Gulch from the menu");
 		hs_compile_and_evaluate("map_name levels\\test\\bloodgulch\\bloodgulch");
 	}
+#ifdef PSP_PGO_GENERATE
+	{
+		/* PSP_PGO=generate (psp_build.py): the hot units' counts written to
+		ms0:/halo/gcda at "gcovdumpN" seconds of game time, once, for a
+		PSP_PGO=use build. libgcov names each file by its object's path
+		under "/pgo" (the build's -fprofile-generate=/pgo); GCOV_PREFIX_STRIP
+		drops that and GCOV_PREFIX puts the stick's folder in front */
+		static long dump_tick = -1;
+
+		if (dump_tick < 0)
+			dump_tick = (long)psp_keep_number("gcovdump", 0) * 30;
+		if (dump_tick > 0 && (long)ticks_seen == dump_tick)
+		{
+			extern void __gcov_dump(void);
+			unsigned long start = psp_microseconds();
+
+			sceIoMkdir(DATA_ROOT "/gcda", 0777);
+			setenv("GCOV_PREFIX", DATA_ROOT "/gcda", 1);
+			setenv("GCOV_PREFIX_STRIP", "1", 1);
+			__gcov_dump();
+			platform_log("gcov: the hot units' counts written to %s/gcda at tick %lu, in %lu ms", DATA_ROOT,
+				ticks_seen, (psp_microseconds() - start) / 1000);
+		}
+	}
+#endif
 	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
 	{
 		/* the main loop does both between ticks, as for the campaign's own

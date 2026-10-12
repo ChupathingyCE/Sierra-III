@@ -23,7 +23,14 @@ it). The GPU part holds only the decal vertices, as on the Xbox. */
 
 /* build 113: 64 KB lower (0x092B0000 to b112), for the CPU part's 64 KB
 more below; the heap gives them. It must end at or below 0x09600000 */
+#ifdef PSP_RECON_64MB
+/* the 64 MB variant (emulator only; psp_build.py's PSP_BIG_RAM): above its
+22 MB tag window, so the program and the heap have everything below the
+window (PSP_PGO=generate's counters need it) */
+#define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x0AC00000
+#else
 #define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x092A0000 /* PSP: just below the tag window (0x09600000) */
+#endif
 /* PSP, build 107: 64 KB moved from the GPU part to the CPU part, the total
 unchanged. The GPU part holds only the decal vertices, 160 KB
 (rasterizer_xbox_decals.c: 2,560 pages of 64 bytes) of its 256; b107's
@@ -36,8 +43,10 @@ put the CPU part's end inside the decal vertices) */
 #define HALO_PORT_GAME_STATE_CPU_SIZE 0x325000 /* (0x305000; b107-b112 0x315000) */
 #define HALO_PORT_GAME_STATE_GPU_SIZE 0x30000 /* (0x40000) */
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
+#ifndef PSP_RECON_64MB
 typedef char halo_port_game_state_below_tag_window[
 	HALO_PORT_GAME_STATE_BASE_ADDRESS + HALO_PORT_GAME_STATE_SIZE <= 0x09600000 ? 1 : -1];
+#endif
 
 /* ---------- the tag window and the texture cache
 
