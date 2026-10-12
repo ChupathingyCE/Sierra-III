@@ -54,12 +54,17 @@ Both are see-through shaders that combine several maps, of which the GE draws on
 
 ## Exact speed-ups from an independent review (branch `speed118p`)
 
-A second review read the GE layer for exact speed-ups, keeping the picture byte for byte. Five are built on `speed118p` (on `pgo116`, for `exitat`):
+A second review read the GE layer for exact speed-ups, keeping the picture byte for byte. Four are built on `speed118p` (head `4023a72`) (on `pgo116`, for `exitat`):
 1. **The overlay flags:** the see-through level lists' "on a wall" flags remembered per list. Each triangle had searched a table of up to 2,048 lists.
 2. **The texture lookup:** it remembers its recent places, since a draw asks 2-3 times.
 3. **`-fno-math-errno`** for the port's own C units, as the engine's have.
-4. **The level light pass:** each shared vertex is worked out once a draw (its reach and its place from the camera). Each triangle no longer clears its 33 corner floats.
-5. **The level shadow pass:** the same, sharing one 256-entry table with the light pass (each pass call takes a new number). 9 KB of bss; heap 5,840 KB against b116's 5,852.
+4. **The level light pass:** each shared vertex is worked out once a draw (its reach and its place from the camera), in a 256-entry table (6 KB of bss; heap 5,844 KB against b116's 5,852). Each triangle no longer clears its 33 corner floats.
+
+**Tried and reverted:** the shadow pass sharing the same table, widened to 36-byte entries (9 KB).
+- Its check was clean, and so was the strict interpreter on a10, a30, d20 and c40.
+- But the cache models put drawing at −1.2% on a10 and −1.0% on a30 (`cornermemo-ab`, 38252969070), against −2.4% on a10 with the light pass's table alone.
+- The bigger table took more data-cache misses (+5.8%) than the shadow work it saved.
+- It stays in the history (`115b1aa`). A shadow memo needs a table of its own, small enough for the cache.
 
 **Measured** in the cache models against b116, each run to the same 3,600 ticks [E]:
 
@@ -75,13 +80,13 @@ A second review read the GE layer for exact speed-ups, keeping the picture byte 
 - **So the memo checks itself instead** (keep word `cornermemocheck`, first `lightmemocheck`): it works every remembered value out again and compares bit for bit.
   - The first run found 1,296 mismatches in 201 million on d20. When two corners of one triangle share a slot, the earlier corner read the later one's place.
   - After the fix: 0 in 220 million on d20, c40 and b30 (38251011761) [E].
-  - With the shadow pass sharing the table: 0 in 265 million on a10, a30, d20 and c40 (`cornermemo-check`, 38252959341) [E].
-  - Its timing on a30 and a10, where shadows cost most, is running (`cornermemo-ab`, 38252969070).
+  - With the shadow pass sharing the table (since reverted): 0 in 265 million on a10, a30, d20 and c40 (`cornermemo-check`, 38252959341) [E].
 
 **Still to do:**
 
 | What | Cost now | Saving [U] |
 |---|---|---|
+| The shadow pass: the light pass's pattern, with a table of its own | 1-3.3 ms a frame on a10 and a30 [E] | under half: a shared table cost as much as it saved |
 | `transparent_cut` runs on every see-through model part, even one wholly in view | 1.3-3.5 ms a frame [E] | most of it. Exact only if the bounding sphere holds every vertex and no triangle reaches past the guard band, so it needs a self-check like the light memo's |
 | HUD strips: one bind and one draw for all of an overlay's strips | only while zoomed | 0.1-0.3 ms |
 
