@@ -10347,6 +10347,80 @@ void psp_ge_shadow_begin(const float *matrix, const float *color, float radius)
 	}
 }
 
+/* after b116: the level light and shadow passes' vertices for the call in
+hand, by the vertex's low bits. A level vertex sits in 3-6 triangles, and
+each triangle worked out its place from the camera (and the light's reach,
+or the blob's coordinates and colour) again (an independent review). Each
+call takes a new number (corner_memo_next), so one pass's entries never
+answer another's. Two corners of one triangle can share a slot (their low
+bits alike): the later takes it, so the earlier is worked out directly
+when it's next needed. keep.txt's "cornermemocheck" works every remembered
+value out again and counts the ones that differ bit for bit. 9 KB of bss */
+#define CORNER_MEMO 256
+struct corner_memo_entry
+{
+	unsigned int tag; /* the call's number << 16 | the vertex */
+	float camera[3];
+	int camera_known;
+	float a, b; /* the light's reach (a); the blob's coordinates (a, b) */
+	unsigned int color; /* the blob's colour */
+	int bits; /* outside() of the camera place, for the shadow pass */
+	int shadow_known;
+};
+static struct corner_memo_entry corner_memo[CORNER_MEMO];
+static unsigned int corner_memo_draw = 0;
+static int corner_memo_check = -1;
+static unsigned long corner_memo_checks = 0, corner_memo_mismatches = 0;
+
+static void corner_memo_next(void)
+{
+	if (corner_memo_check < 0)
+		corner_memo_check = psp_keep("cornermemocheck");
+	if (corner_memo_check && corner_memo_checks >= 200000)
+	{
+		platform_log("GE: corner memo checked %lu times, %lu mismatches", corner_memo_checks, corner_memo_mismatches);
+		corner_memo_checks = corner_memo_mismatches = 0;
+	}
+	if (++corner_memo_draw > 0xFFFF)
+	{
+		memset(corner_memo, 0, sizeof(corner_memo));
+		corner_memo_draw = 1;
+	}
+}
+
+static void shadow_corner(const float *p, float *u, float *v, unsigned int *color);
+
+/* the blob's coordinates and colour at a vertex, remembered for the call */
+static void shadow_corner_memo(const float *p, unsigned int vertex, float *u, float *v, unsigned int *color)
+{
+	struct corner_memo_entry *memo = &corner_memo[vertex & (CORNER_MEMO - 1)];
+
+	if (memo->tag != ((corner_memo_draw << 16) | vertex))
+	{
+		shadow_corner(p, u, v, color);
+		return;
+	}
+	if (!memo->shadow_known)
+	{
+		shadow_corner(p, &memo->a, &memo->b, &memo->color);
+		memo->shadow_known = 1;
+	}
+	else if (corner_memo_check)
+	{
+		float again_u, again_v;
+		unsigned int again_color;
+
+		shadow_corner(p, &again_u, &again_v, &again_color);
+		if (memcmp(&again_u, &memo->a, sizeof(float)) || memcmp(&again_v, &memo->b, sizeof(float)) ||
+			again_color != memo->color)
+			corner_memo_mismatches++;
+		corner_memo_checks++;
+	}
+	*u = memo->a;
+	*v = memo->b;
+	*color = memo->color;
+}
+
 static void shadow_corner(const float *p, float *u, float *v, unsigned int *color)
 {
 	float d[3], h, fade;
@@ -10510,18 +10584,48 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 		}
 	}
 	out = scratch_vertices;
+	corner_memo_next(); /* after b116 */
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
-		float corners[3][CORNER_FLOATS] = { { 0.0f } };
+		/* after b116: no clear of all 33 floats a triangle: fields 0-9 are
+		written below, and 10, which nothing else writes, cleared */
+		float corners[3][CORNER_FLOATS];
 		int bits[3], corner;
 
 		if (triangle[0] >= vertex_count || triangle[1] >= vertex_count || triangle[2] >= vertex_count)
 			return;
 		for (corner = 0; corner < 3; corner++)
 		{
-			to_camera_corner(&stream->base[triangle[corner]].x, corners[corner]);
-			bits[corner] = outside(corners[corner]);
+			unsigned int vertex = triangle[corner], tag = (corner_memo_draw << 16) | vertex;
+			struct corner_memo_entry *memo = &corner_memo[vertex & (CORNER_MEMO - 1)];
+			const struct ge_vertex *base = &stream->base[vertex];
+
+			if (memo->tag != tag)
+			{
+				memo->tag = tag;
+				to_camera(&base->x, memo->camera);
+				memo->camera_known = 1;
+				memo->bits = outside(memo->camera);
+				memo->shadow_known = 0;
+			}
+			else if (corner_memo_check)
+			{
+				float again[3];
+
+				to_camera(&base->x, again);
+				if (memcmp(again, memo->camera, sizeof(again)) || outside(again) != memo->bits)
+					corner_memo_mismatches++;
+				corner_memo_checks++;
+			}
+			corners[corner][0] = memo->camera[0];
+			corners[corner][1] = memo->camera[1];
+			corners[corner][2] = memo->camera[2];
+			corners[corner][7] = base->x;
+			corners[corner][8] = base->y;
+			corners[corner][9] = base->z;
+			corners[corner][10] = 0.0f;
+			bits[corner] = memo->bits;
 		}
 		if (bits[0] & bits[1] & bits[2])
 			continue;
@@ -10532,7 +10636,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 				const struct ge_vertex *b = &stream->base[triangle[corner]];
 				struct shadow_vertex *o = &out[3 * kept_count + corner];
 
-				shadow_corner(&b->x, &o->u, &o->v, &o->color);
+				shadow_corner_memo(&b->x, triangle[corner], &o->u, &o->v, &o->color);
 				o->x = b->x; o->y = b->y; o->z = b->z;
 			}
 			kept_count++;
@@ -10544,7 +10648,8 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 		{
 			unsigned int color;
 
-			shadow_corner(&stream->base[triangle[corner]].x, &corners[corner][3], &corners[corner][4], &color);
+			shadow_corner_memo(&stream->base[triangle[corner]].x, triangle[corner], &corners[corner][3],
+				&corners[corner][4], &color);
 			corners[corner][5] = (float)(color & 0xFF);
 			corners[corner][6] = (float)((color >> 8) & 0xFF);
 		}
@@ -10731,22 +10836,6 @@ void psp_ge_light_begin(const float *position, const float *forward, const float
 /* how much of the light reaches a vertex (0 to 1); cone: whether the
 spotlight's cone is in it (build 36: a spotlight's cone comes from a
 projected texture instead, and only the side behind the light is cut here) */
-/* after b116: the level light pass's vertices for the draw in hand, by the
-vertex's low bits: its reach and, once asked for, its place from the camera
-(5 KB from bss; a level vertex sits in 3-6 triangles, each of which worked
-both out again; an independent review) */
-#define LIGHT_MEMO 256
-struct light_memo_entry
-{
-	unsigned int tag; /* the draw's number << 16 | the vertex */
-	float reach, camera[3];
-	int camera_known;
-};
-static struct light_memo_entry light_memo[LIGHT_MEMO];
-static unsigned int light_memo_draw = 0;
-static int light_memo_check = -1; /* keep.txt's "lightmemocheck" */
-static unsigned long light_memo_checks = 0, light_memo_mismatches = 0;
-
 static float light_reach(const float *p, unsigned int packed_normal, int cone_in_vertex)
 {
 	float d[3], distance_squared, fade, inverse, cone, facing, normal[3];
@@ -11188,19 +11277,8 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	out = scratch_vertices;
 	if (light_mode == 1)
 		whole = list_take((int)triangle_count * 3 * sizeof(unsigned short));
-	/* after b116: this draw's vertices remembered (light_memo) */
-	if (light_memo_check < 0)
-		light_memo_check = psp_keep("lightmemocheck");
-	if (light_memo_check && light_memo_checks >= 200000)
-	{
-		platform_log("GE: light memo checked %lu times, %lu mismatches", light_memo_checks, light_memo_mismatches);
-		light_memo_checks = light_memo_mismatches = 0;
-	}
-	if (++light_memo_draw > 0xFFFF)
-	{
-		memset(light_memo, 0, sizeof(light_memo));
-		light_memo_draw = 1;
-	}
+	/* after b116: this call's vertices remembered (corner_memo) */
+	corner_memo_next();
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
@@ -11275,37 +11353,37 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			level's lists) worked out once a draw: its reach, and its place
 			from the camera when a triangle first needs it (the same
 			functions on the same inputs: the same floats) */
-			unsigned int vertex = triangle[corner], tag = (light_memo_draw << 16) | vertex;
-			struct light_memo_entry *memo = &light_memo[vertex & (LIGHT_MEMO - 1)];
+			unsigned int vertex = triangle[corner], tag = (corner_memo_draw << 16) | vertex;
+			struct corner_memo_entry *memo = &corner_memo[vertex & (CORNER_MEMO - 1)];
 
 			if (memo->tag != tag)
 			{
 				memo->tag = tag;
-				memo->reach = light_reach(source[corner], stream->normals[vertex], !spot);
+				memo->a = light_reach(source[corner], stream->normals[vertex], !spot);
 				memo->camera_known = 0;
 			}
-			reach[corner] = memo->reach;
-			if (light_memo_check)
+			reach[corner] = memo->a;
+			if (corner_memo_check)
 			{
 				/* "lightmemocheck": worked out again and compared, bit for bit */
 				float again = light_reach(source[corner], stream->normals[vertex], !spot);
 
-				if (memcmp(&again, &memo->reach, sizeof(again)))
-					light_memo_mismatches++;
-				light_memo_checks++;
+				if (memcmp(&again, &memo->a, sizeof(again)))
+					corner_memo_mismatches++;
+				corner_memo_checks++;
 			}
 		}
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			continue;
 		for (corner = 0; corner < 3; corner++)
 		{
-			struct light_memo_entry *memo = &light_memo[triangle[corner] & (LIGHT_MEMO - 1)];
+			struct corner_memo_entry *memo = &corner_memo[triangle[corner] & (CORNER_MEMO - 1)];
 			float direct[3];
 
 			/* two corners of one triangle can share a slot (their low bits
 			alike): the later one took it, so the earlier is worked out
-			here instead (lightmemocheck found it on d20) */
-			if (memo->tag != ((light_memo_draw << 16) | triangle[corner]))
+			here instead (the check found it on d20) */
+			if (memo->tag != ((corner_memo_draw << 16) | triangle[corner]))
 			{
 				to_camera(&stream->base[triangle[corner]].x, direct);
 				memo = NULL;
@@ -11315,14 +11393,14 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				to_camera(&stream->base[triangle[corner]].x, memo->camera);
 				memo->camera_known = 1;
 			}
-			else if (light_memo_check)
+			else if (corner_memo_check)
 			{
 				float again[3];
 
 				to_camera(&stream->base[triangle[corner]].x, again);
 				if (memcmp(again, memo->camera, sizeof(again)))
-					light_memo_mismatches++;
-				light_memo_checks++;
+					corner_memo_mismatches++;
+				corner_memo_checks++;
 			}
 			corners[corner][0] = memo ? memo->camera[0] : direct[0];
 			corners[corner][1] = memo ? memo->camera[1] : direct[1];
