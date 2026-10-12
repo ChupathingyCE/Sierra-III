@@ -49,5 +49,5 @@ Notes on the table:
 
 ## Next
 
-- a50, b40 and a30 don't fit the window yet (0.20, 0.53 and 0.57 MiB over). That's a choice between moving the freed 0.7 MB to the window, the BSP formats, or both.
+- ~~a50, b40 and a30 don't fit the window yet.~~ They do in the full campaign bake (2026-10-09): all ten load and play their openings on b115 (`campaign_window_fit.md`, 2026-10-11).
 - Deeper routes per map (a teleport into each BSP), so the late fights' pools and timings get measured, not just the openings'.

@@ -147,3 +147,25 @@ Result: b30's tags are **5.04 MiB** (5,282,112 bytes), and the map loads and pla
 | d40 The Maw | 4.84 MiB | 8.44 (93.8%) | 13,222 | 2.84 MiB | **yes** |
 
 **Seven of the ten fit the PSP-1000's window now.** The script tables vary far more than b30's suggested (4,534 to 17,391 nodes in use), which is why the on-paper estimate missed in both directions. a50 (0.20 MiB over), b40 (0.53) and a30 (0.57; its BSP is the largest, 4.66 MB) are within the BSP formats' estimated 0.4–0.7 MB, a30 and b40 only at its top end. a10 and c10 fit with under 100 KB spare, so anything added to their tags needs checking against it. c20 rebaked this way would gain about 1.4 MB of margin. Only the build step was run: the maps still need their full bakes (textures) and a play in the emulator.
+
+## 2026-10-11: all ten fit (the campaign bake, b115) [D, E]
+
+The lab's full campaign bake (`campaign`, 2026-10-09: textures and all) came out smaller than the b106 build-step table above, and all ten maps now load and play their openings on b115 in the emulator's PSP-1000 layout (batch `campaign-b115`: no input, 420 s each, no fault).
+- **The window's spare** at the largest BSP is what the animation cache finds unused between the tags and the largest BSP (the pack's header says where it starts) [D]. The cache takes up to 512 KB there, so 512 means "512 or more":
+
+  | Map | Tags (bytes) | Spare in the window | Heap peak (of 5,888 KB) |
+  |---|---:|---:|---:|
+  | a10 Pillar of Autumn | 4,957,524 | 488 KB | **5,764** |
+  | a30 Halo | 4,917,552 | 504 KB | 5,352 |
+  | a50 Truth and Reconciliation | 5,490,736 | 296 KB | 5,124 |
+  | b30 Silent Cartographer | 4,811,552 | ≥512 KB | 5,216 |
+  | b40 Assault on the Control Room | 6,086,192 | **64 KB** | 5,124 |
+  | c10 343 Guilty Spark | 5,404,928 | ≥512 KB | 5,192 |
+  | c20 The Library | 3,070,164 | ≥512 KB | 5,300 |
+  | c40 Two Betrayals | 5,324,164 | ≥512 KB | 5,192 |
+  | d20 Keyes | 4,527,960 | ≥512 KB | 5,188 |
+  | d40 The Maw | 4,795,104 | ≥512 KB | 5,124 |
+
+- **The tight ones:** b40's window (64 KB spare) and a10's heap (124 KB left at its peak). b115's program sits 0.7 KB under a 64 KB heap step (`build_b115.md`), so code added without a trim would leave a10 60 KB.
+- **Openings only:** later BSPs fit the window by construction (the spare is measured against the largest), but the heap and pools in the late fights are unmeasured.
+
