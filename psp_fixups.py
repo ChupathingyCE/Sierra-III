@@ -3801,6 +3801,11 @@ static boolean psp_state_page_empty(unsigned long const *words)
 	return TRUE;
 }
 
+/* build 116 (R11): the log holds its writes around a checkpoint, so the
+sound reader has the Memory Stick first after it (psp_platform.c) */
+void psp_log_hold(unsigned int milliseconds);
+#define PSP_STATE_LOG_HOLD_MS 2500
+
 /* header: signature, size, page count, then one bit per page */
 static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long size)
 {
@@ -3810,6 +3815,7 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
+	psp_log_hold(PSP_STATE_LOG_HOLD_MS);
 	csmemset(header, 0, sizeof(header));
 	header[0] = PSP_STATE_SIGNATURE;
 	header[1] = size;
@@ -3870,6 +3876,7 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	platform_psp_log("checkpoint: %lu of %lu pages of game state written in %lu ms (scan %lu ms; %lu pages changed since the last checkpoint%s)",
 		kept, pages, (psp_microseconds() - start) / 1000, scan_us / 1000, changed, psp_page_hashes_valid ? "" : ": the first");
 	psp_page_hashes_valid = 1;
+	psp_log_hold(PSP_STATE_LOG_HOLD_MS); /* build 116: from the end of the write */
 	return TRUE;
 }
 

@@ -63,7 +63,7 @@ struct geo_entry
 };
 
 static SceUID pack = -1;
-static unsigned int pack_size = 0, pack_crc = 0;
+static unsigned int pack_size = 0;
 static char pack_name[64];
 static unsigned int arena_start = 0, arena_end = 0, arena_next = 0;
 
@@ -589,9 +589,15 @@ void psp_geo_frame_end(void)
 				resident++;
 				resident_bytes += entries[index].size;
 			}
-		platform_log("geometry: %lu hits, %lu misses (%lu frames missed something); %lu loaded (%lu KB), %lu evicted, %lu waited for room, %lu for the queue; %u blocks resident (%u KB of %u); reading %lu ms in all, worst frame %lu ms (%s)",
-			hits, misses, miss_frames, loads, load_bytes / 1024, evictions, no_room, queue_full, resident, resident_bytes / 1024,
-			(arena_end - arena_start) / 1024, read_us / 1000, frame_read_worst_us / 1000, async_reads ? "asynchronous" : "synchronous");
+		/* build 116 (R4): the draws left out for a frame because their
+		vertices weren't read yet (psp_fixups.py, psp_geometry_missing): a
+		far object that vanishes for a few frames as you approach */
+		extern unsigned long psp_geometry_draws_missed;
+
+		platform_log("geometry: %lu hits, %lu misses (%lu frames missed something, %lu draws left out); %lu loaded (%lu KB), %lu evicted, %lu waited for room, %lu for the queue; %u blocks resident (%u KB of %u); reading %lu ms in all, worst frame %lu ms (%s)",
+			hits, misses, miss_frames, psp_geometry_draws_missed, loads, load_bytes / 1024, evictions, no_room, queue_full,
+			resident, resident_bytes / 1024, (arena_end - arena_start) / 1024, read_us / 1000, frame_read_worst_us / 1000,
+			async_reads ? "asynchronous" : "synchronous");
 		psp_anim_report();
 	}
 	frame++;

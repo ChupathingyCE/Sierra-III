@@ -215,9 +215,47 @@ static SceUID flush_lock = -1;
 static volatile int exiting;
 static void log_flush_body(void);
 
+/* build 116 (R11): the log holds its writes while a checkpoint is written
+and for a moment after (psp_fixups.py, psp_state_write), so the sound
+reader has the Memory Stick first. b115 test 1 [M]: the heartbeat's write
+right after a checkpoint took ~600 ms, the sound reader waited behind it,
+and the sound dropped out for up to 0.8 s. A batch nearly full is written
+anyway, and nothing is held while the game exits or after a crash. Keep
+word "lognohold": as before */
+static volatile unsigned long long log_hold_until = 0;
+static unsigned long log_holds = 0, log_holds_reported = 0;
+int psp_keep(const char *name);
+
+void psp_log_hold(unsigned int milliseconds)
+{
+	log_hold_until = sceKernelGetSystemTimeWide() + (unsigned long long)milliseconds * 1000;
+}
+
+static int log_held(void)
+{
+	static int off = -1;
+
+	if (!log_hold_until || exiting || log_batch_length >= log_batch_size * 7 / 8)
+		return 0;
+	if (sceKernelGetSystemTimeWide() >= log_hold_until)
+	{
+		log_hold_until = 0;
+		return 0;
+	}
+	if (off < 0)
+		off = psp_keep("lognohold");
+	if (off)
+		return 0;
+	log_holds++;
+	return 1;
+}
+
 static void log_flush(void)
 {
 	int flushing = 0;
+
+	if (log_held())
+		return;
 
 	if (flush_lock >= 0)
 	{
@@ -791,7 +829,7 @@ static void keep_load(void)
 	/* build 115 */
 	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar");
 	/* build 116: the restorations are on by default; these words turn each off */
-	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest");
+	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar lognohold");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -2224,6 +2262,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 		last_time = now;
 		if (window_done)
 			psp_heartbeat_windows++;
+		if (log_holds != log_holds_reported)
+		{
+			/* build 116 (R11) */
+			platform_log("log: writes held %lu times around checkpoints (the sound reader first)",
+				log_holds - log_holds_reported);
+			log_holds_reported = log_holds;
+		}
 		log_flush();
 	}
 	return 0;
