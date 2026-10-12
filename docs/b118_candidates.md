@@ -13,18 +13,28 @@ Instruments on the same branch: `hdump` (each HUD quad of a screenshot frame wit
 
 ## Exact speed-ups
 
-**The profile-guided build (L4)**, branch `pgo116` (on b116). The first measurement used one profile, b30's opening flight. It ran in the cache models on b30's flight and a10's opening, both to the same 3,600 ticks (`exitat120`; lab run 38225204020) [E]. Cycles are estimated as instruction fetches plus 40 a miss [U].
+**The profile-guided build (L4)**, branch `pgo116` (on b116). The final measurement used a profile from five stretches (`pgo/campaign5.tgz`, lab run 38231877703, merged with `psp-gcov-tool`): b30's opening flight, b30's beach bench (b113 test 1's route), and the openings of a10, c10 and c40. The "lean" build uses partial training, without unrolling, peeling, tracing or cloning:
+- program 3,292 KB against b116's 3,343;
+- heap 5,900 KB against 5,852.
 
-| Build | Program | Heap | b30 tick | b30 drawing | a10 tick | a10 drawing |
-|---|---:|---:|---:|---:|---:|---:|
-| Profile, partial training, no unrolling, peeling, tracing or cloning ("lean") | −34 KB | +32 KB | −4.5% | −2.4% | −0.8% | −0.5% |
-| Profile, GCC's defaults for unreached code (size) and its loop options | +52 KB | −52 KB | −3.3% | −4.0% | −0.4% | −1.0% |
-| Profile, partial training and every GCC loop option (a local build) | +192 KB | −188 KB, under a10's peak | — | — | — | — |
+It ran in the cache models against b116, each run to the same 3,600 ticks (`exitat120`, lab run 38234283909) [E]. Cycles are estimated as instruction fetches plus 40 a miss [U].
 
-- **Where the gain comes from:** mostly instruction-cache misses. b30's tick has 19% fewer with the lean build.
-- **The stretch the profile never saw gains little.** A profile from five stretches is being made (`pgo-gen5-b116`): b30's flight and beach bench, and the openings of a10, c10 and c40.
-- **Exact:** a10's game state was the same tick for tick in both builds. b30's parts at tick 1351, the tick where any drawing change parts it (#25, the Elite in slot 947) [E].
-- **Only the PSP can say how much it's worth:** its branches and pipeline aren't in the model.
+| Stretch | In the profile? | Tick | Drawing | I misses (tick, drawing) |
+|---|---|---:|---:|---:|
+| b30's flight | yes | −6.1% | −9.2% | −21%, −22% |
+| b40's opening | no | −1.6% | −5.5% | −16%, −13% |
+| d20's opening | no | −1.9% | −5.0% | −15%, −15% |
+
+- **Where the gain comes from:** mostly instruction-cache misses: the profile puts the code that runs together side by side.
+- **Exact:** b40 and d20 played the same tick for tick against b116 (game state's play hash). b30 parts at tick 1357, where any drawing change parts it (#25, the Elite in slot 947) [E].
+- **A first try with one stretch's profile** (b30's flight; lab run 38225204020) gained under 1% on a10, which wasn't in it. GCC's own defaults also grew the program by 52-192 KB; at the top end that put the heap under a10's peak.
+- **Only the PSP can say how much it's worth:** its pipeline and branches aren't in the model.
+- **The PSP test:** `halo_psp_b116_pgo.zip` is b116 built this way. Test 7 in `handoff_2026-10-12.md` times it against b116.
+- **The build:**
+  ```
+  PSP_PGO=use PSP_PGO_PROFILE=campaign5 PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone
+  ```
+- **When the code changes:** a profile goes stale. GCC drops the counts of any function whose branches changed, so make a new profile before a release (`PSP_PGO=generate`, `gcovdumpN`, the lab's `pgo-gen5-b116` batch).
 
 ## Identified tonight, not fixed
 
@@ -34,12 +44,13 @@ Both are see-through shaders that combine several maps, of which the GE draws on
   - The evidence: it goes with `nooverlays` and with the cryo glass map left out, and stays with the monitor glass or the space sky's star mask left out (`a10window`, `a10window2`).
   - The shader: a chicago shader drawn alpha-multiply-add. Its map 0 is a cube map (a reflection) the GE can't draw, so map 1, the frost, is drawn with a tint from the shader's mean colour (`20469494`, doubled) [D, bake log].
   - Why it shows: the mean is dark (0.04), but the frost's sparse bright texels show at full contrast. On the Xbox the reflection modulates them [U].
-  - The fix: the tags listing (`sierra-tags`, a10, "glass") will give the maps' functions. Then either the bake keeps the frost's contrast down, or a two-pass draw stands in for the cube map. The 5650 framebuffer has no destination alpha to combine maps in [D].
+  - Its maps (`sierra-tags`, 38237182457): `cube map glass` and `cryo glass`, plus an extra layer, `cryo glass tint`.
+  - The fix: read the maps' functions. Then either the bake keeps the frost's contrast down, or a two-pass draw stands in for the cube map. The 5650 framebuffer has no destination alpha to combine maps in [D].
 - **c40's pale discs** are `levels\b30\devices\interior tech objects\bitmaps\static blue band vert`, an animated band on the control room's hologram panels.
   - The evidence: with it left out, every disc goes (`tskip2-c40`); the hologram panel, teleport ring, ring markers, the Monitor's glow rings, the Forerunner text and the soft flares made no difference.
-  - Likely shader: the panel's own, `interior tech objects\holo control` (map 1 drawn, tint `0078798d` doubled) [U].
+  - The shader isn't certain. The panel's own, `interior tech objects\holo control`, holds the band as map 0, with the panel's picture and a readout as maps 1 and 2 (`sierra-tags`, 38237207232). But the bake says it draws map 1, so another shader holding the band may be what's drawn [U].
   - Why it shows: on the Xbox, another map (a mask or the band's scroll) confines the band. Alone, it covers the whole disc [U].
-  - The fix: the tags listing for "holo control" on c40 is queued.
+  - The fix: find which shader draws the band (a `tdump` line that names the shader, not only its map), then give it its other maps' say.
 
 ## When it becomes the build
 
