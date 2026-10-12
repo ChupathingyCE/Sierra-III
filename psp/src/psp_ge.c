@@ -10744,6 +10744,8 @@ struct light_memo_entry
 };
 static struct light_memo_entry light_memo[LIGHT_MEMO];
 static unsigned int light_memo_draw = 0;
+static int light_memo_check = -1; /* keep.txt's "lightmemocheck" */
+static unsigned long light_memo_checks = 0, light_memo_mismatches = 0;
 
 static float light_reach(const float *p, unsigned int packed_normal, int cone_in_vertex)
 {
@@ -11187,6 +11189,13 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	if (light_mode == 1)
 		whole = list_take((int)triangle_count * 3 * sizeof(unsigned short));
 	/* after b116: this draw's vertices remembered (light_memo) */
+	if (light_memo_check < 0)
+		light_memo_check = psp_keep("lightmemocheck");
+	if (light_memo_check && light_memo_checks >= 200000)
+	{
+		platform_log("GE: light memo checked %lu times, %lu mismatches", light_memo_checks, light_memo_mismatches);
+		light_memo_checks = light_memo_mismatches = 0;
+	}
 	if (++light_memo_draw > 0xFFFF)
 	{
 		memset(light_memo, 0, sizeof(light_memo));
@@ -11276,6 +11285,15 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				memo->camera_known = 0;
 			}
 			reach[corner] = memo->reach;
+			if (light_memo_check)
+			{
+				/* "lightmemocheck": worked out again and compared, bit for bit */
+				float again = light_reach(source[corner], stream->normals[vertex], !spot);
+
+				if (memcmp(&again, &memo->reach, sizeof(again)))
+					light_memo_mismatches++;
+				light_memo_checks++;
+			}
 		}
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			continue;
@@ -11287,6 +11305,15 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			{
 				to_camera(&stream->base[triangle[corner]].x, memo->camera);
 				memo->camera_known = 1;
+			}
+			else if (light_memo_check)
+			{
+				float again[3];
+
+				to_camera(&stream->base[triangle[corner]].x, again);
+				if (memcmp(again, memo->camera, sizeof(again)))
+					light_memo_mismatches++;
+				light_memo_checks++;
 			}
 			corners[corner][0] = memo->camera[0];
 			corners[corner][1] = memo->camera[1];
