@@ -35,6 +35,8 @@ Each of these is a commit, tagged `bNNN` (`git checkout b108` gives that build's
 | b112 | `fe88bcc37a` | 2026-10-10 09:29 | Placed-dead bodies sleep, cold asserts, gedefer and the ME replay (keep words); zip `halo_psp_b112me.zip` |
 | b113 | `e2022aff12` | 2026-10-10 18:27 | The flip fix, 512 render states, tracers, zoom mask, list768, soundplace, gebusy (keep words) |
 | b114 | `c238665149` | 2026-10-11 04:58 | b113's tested switches on (list768, sound1792, soundplace), 320 see-through draws, the sum by 33, bodies grounded; listcachedall, statememo, lean, drawdistN (keep words); launch presets |
+| b115 | `88f09ee565` | 2026-10-11 18:07 | The instruments that size the VRAM swap and the streaming: iostats, gereads, gebusy by kind, vramtexN, edramcheck (keep words); overlayfreefar for Sheepdog01's A/B |
+| b115.1 | `166da9e933` | 2026-10-11 23:05 | b115 with the animation crash fixed: compressed animations' tables read unaligned-safe (a10, a30, c40) |
 
 b109 was never shipped: its changes are in b110. `build_bNNN.md` and `hardware_bNNN.md` in this folder hold the longer reports.
 
