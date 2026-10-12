@@ -129,6 +129,26 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			*v_offset = v_transform.n[3] - floorf(v_transform.n[3]);
 		}
 		*blend = *(short const *)(definition + 44);
+		{
+			/* build 116: the framebuffer fade, as the Xbox applies it
+			(rasterizer_xbox_transparent_geometry.c): the fade source's value
+			(one of the object's A-D outputs: a Pelican's thrust, a light's
+			brightness), the fade mode (by the angle the surface is seen at)
+			and, for chicago, whether active camouflage leaves it alone. Until
+			b115 every see-through part drew at full strength: the white
+			thruster cones and the solid light cones (hardware_b115.md).
+			Keep word "seethroughflat" draws them as b115 did */
+			short fade_mode = *(short const *)(definition + 46), fade_source = *(short const *)(definition + 48);
+			int keep_with_camouflage = chicago && (*(unsigned short const *)(definition + 96) & 1);
+			float fade = 1.0f;
+
+			if (fade_source > 0 && fade_source <= 4 && object && psp_animation_valid)
+				fade = psp_animation_values[fade_source - 1];
+			if (fade_mode < 0 || fade_mode > 2)
+				fade_mode = 0;
+			if (!PSP_KEEP_ONCE("seethroughflat"))
+				*blend = PSP_SEETHROUGH_PACK(*blend, fade_mode, fade, keep_with_camouflage);
+		}
 	}
 	else if (type == 7)
 		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);

@@ -7179,6 +7179,12 @@ struct transparent_draw
 	unsigned int key;
 	float u_scale, v_scale, u_offset, v_offset, distance;
 	short blend;
+	/* build 116: the shader's fade (psp_limits.h PSP_SEETHROUGH_*): one
+	colour for the whole draw (0xFFFFFFFF: none), or, when the fade depends
+	on the angle the surface is seen at, a colour per vertex in the record's
+	normal bytes (colored) */
+	unsigned int color;
+	unsigned char colored;
 	unsigned char sky, sprites;
 	/* a widget sprite's (sky 2): whether it is hidden behind the level */
 	unsigned char depth_test;
@@ -7194,6 +7200,13 @@ struct transparent_draw
 	(0: worked out from distance when drawn, as builds 54-59) */
 	short depth_units;
 };
+
+/* build 116: the see-through fade (defined with transparent_slot) */
+static int seethrough_fades(int blend);
+static unsigned int seethrough_color(int f, int blend);
+static float seethrough_fade(short packed);
+static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_count, int placed, int mode,
+	float fade);
 
 /* a sprite batch's GE vertices: texture coordinate, colour, position */
 struct sprite_vertex
@@ -7311,6 +7324,8 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 		cx += in[4 * sprite].x; cy += in[4 * sprite].y; cz += in[4 * sprite].z;
 	}
 	draw = &transparent[transparent_count++];
+	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
+	draw->colored = 0;
 	halo_matrix(view_to_world, &draw->matrix);
 	draw->vertices = out;
 	draw->indices = NULL;
@@ -7437,6 +7452,8 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 		cx += v->x; cy += v->y; cz += v->z;
 	}
 	draw = &transparent[transparent_count++];
+	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
+	draw->colored = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -7582,6 +7599,8 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 		o->z = centre[2] + camera_right[2] * offset[k][0] - camera_up[2] * offset[k][1];
 	}
 	draw = &transparent[transparent_count++];
+	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
+	draw->colored = 0;
 	gumLoadIdentity(&draw->matrix);
 	relative(&draw->matrix);
 	draw->vertices = out;
@@ -7708,7 +7727,9 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 				model_to_camera(&draw->matrix, p, polygon[k]);
 				polygon[k][3] = uv[0];
 				polygon[k][4] = uv[1];
-				polygon[k][5] = (signed char)record[8];
+				/* build 116: a coloured draw's fade (its alpha byte) in the
+				normal's place: the pieces' colour is rebuilt from it */
+				polygon[k][5] = draw->colored ? (float)record[11] : (float)(signed char)record[8];
 				polygon[k][6] = (signed char)record[9];
 				polygon[k][10] = (signed char)record[10];
 				polygon[k][7] = p[0];
@@ -7736,10 +7757,15 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 			float uv[2] = { model_cut[c][3], model_cut[c][4] };
 
 			memcpy(record, uv, 8);
-			record[8] = (unsigned char)(signed char)model_cut[c][5];
-			record[9] = (unsigned char)(signed char)model_cut[c][6];
-			record[10] = (unsigned char)(signed char)model_cut[c][10];
-			record[11] = 0;
+			if (draw->colored)
+				*(unsigned int *)(record + 8) = seethrough_color((int)(model_cut[c][5] + 0.5f), draw->blend);
+			else
+			{
+				record[8] = (unsigned char)(signed char)model_cut[c][5];
+				record[9] = (unsigned char)(signed char)model_cut[c][6];
+				record[10] = (unsigned char)(signed char)model_cut[c][10];
+				record[11] = 0;
+			}
 			memcpy(record + 12, &model_cut[c][7], 12);
 		}
 		draw->cut_vertices = out;
@@ -7762,6 +7788,8 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		return;
 	}
 	draw = &transparent[transparent_count++];
+	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
+	draw->colored = 0;
 	draw->cut_vertices = NULL;
 	draw->cut_count = 0;
 	node_matrix(vertices, indices, &draw->matrix);
@@ -7829,7 +7857,9 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->v_scale = model_v_scale * (v_scale != 0.0f ? v_scale : 1.0f);
 	draw->u_offset = u_offset;
 	draw->v_offset = v_offset;
-	draw->blend = blend;
+	draw->blend = PSP_SEETHROUGH_BLEND(blend);
+	draw->color = 0xFFFFFFFF;
+	draw->colored = 0;
 	draw->sky = (unsigned char)in_sky;
 	draw->sprites = 0;
 	draw->level = 0;
@@ -7843,6 +7873,18 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		draw->distance = 0.0f;
 	if (draw->sky)
 		draw->distance = 1e30f;
+	/* build 116: the shader's fade (the source's value, active camouflage,
+	the angle), before the cut so the cut pieces carry it */
+	if (seethrough_fades(draw->blend))
+	{
+		float fade = seethrough_fade(blend);
+		int mode = PSP_SEETHROUGH_MODE(blend);
+
+		if (mode != 0 && vertex_count <= 4096)
+			seethrough_vertex_colors(draw, vertex_count, draw->vertices != vertices, mode, fade);
+		else if (fade < 1.0f)
+			draw->color = seethrough_color((int)(fade * 255.0f + 0.5f), draw->blend);
+	}
 	if (model_drop < 0)
 		model_drop = psp_keep("modeldrop");
 	if (!draw->first_person && !model_drop)
@@ -7906,6 +7948,104 @@ static unsigned long level_transparent_draws = 0;
 static unsigned long ge_wait_us = 0, ge_wait_worst = 0;
 static unsigned long frame_end_us[3];
 
+/* build 116: a see-through shader's fade as a GE colour that the texture is
+multiplied by (TFX_MODULATE): for an alpha blend the alpha, for the added and
+subtracted blends the colour and alpha alike. The multiplied and min/max
+blends would need a fade toward their neutral colour, which a modulate can't
+do: they stay at full strength (seethrough_fades) */
+static int seethrough_fades(int blend)
+{
+	return blend == 0 || blend == 3 || blend == 4 || blend == 7;
+}
+
+static unsigned int seethrough_color(int f, int blend)
+{
+	f = f < 0 ? 0 : f > 255 ? 255 : f;
+	if (blend == 0)
+		return ((unsigned int)f << 24) | 0x00FFFFFF;
+	return ((unsigned int)f << 24) | ((unsigned int)f << 16) | ((unsigned int)f << 8) | (unsigned int)f;
+}
+
+/* the fade a packed blend asks for, times active camouflage's (the Xbox's
+1 - intensity, unless the shader says to keep it), 0-1 (model_camouflage:
+psp_ge_model_effect) */
+static float seethrough_fade(short packed)
+{
+	float fade = PSP_SEETHROUGH_FADE(packed);
+
+	if (!PSP_SEETHROUGH_KEEP_WITH_CAMOUFLAGE(packed))
+		fade *= 1.0f - model_camouflage;
+	return fade;
+}
+
+/* build 116: the fade by the angle a see-through part is seen at, a colour
+per vertex in a copy of its records (the 8-bit normal's 4 bytes become the
+colour; the flush draws it with GU_COLOR_8888). |n.v| is 1 seen face on, 0
+seen edge on: "fade when perpendicular" (a light cone's soft sides) takes
+that, "fade when parallel" one minus it. Placed records (several nodes,
+already in the camera's space) keep their node in byte 11; the others go
+through the draw's matrix */
+static unsigned long seethrough_angle_draws = 0;
+static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_count, int placed, int mode,
+	float fade)
+{
+	static ScePspFMatrix4 at_node[SKIN_NODES];
+	static unsigned char done[SKIN_NODES];
+	unsigned char *records = (unsigned char *)draw->vertices;
+	int v;
+
+	if (!placed)
+	{
+		unsigned char *copy = list_take(vertex_count * 24);
+
+		if (!copy)
+			return;
+		memcpy(copy, records, vertex_count * 24);
+		records = copy;
+	}
+	memset(done, 0, sizeof(done));
+	for (v = 0; v < vertex_count; v++)
+	{
+		unsigned char *record = records + 24 * v;
+		const float *p = (const float *)(record + 12);
+		float n[3] = { (signed char)record[8], (signed char)record[9], (signed char)record[10] };
+		const ScePspFMatrix4 *m = &draw->matrix;
+		float wn[3], q[3], nn, qq, c, a;
+
+		if (placed)
+		{
+			int node = record[11] / 3;
+
+			if (node >= SKIN_NODES || node >= model_node_count)
+				node = 0;
+			if (!done[node])
+			{
+				halo_matrix(model_nodes + 13 * node, &at_node[node]);
+				done[node] = 1;
+			}
+			m = &at_node[node];
+			q[0] = p[0]; q[1] = p[1]; q[2] = p[2];
+		}
+		else
+		{
+			q[0] = m->x.x * p[0] + m->y.x * p[1] + m->z.x * p[2] + m->w.x;
+			q[1] = m->x.y * p[0] + m->y.y * p[1] + m->z.y * p[2] + m->w.y;
+			q[2] = m->x.z * p[0] + m->y.z * p[1] + m->z.z * p[2] + m->w.z;
+		}
+		wn[0] = m->x.x * n[0] + m->y.x * n[1] + m->z.x * n[2];
+		wn[1] = m->x.y * n[0] + m->y.y * n[1] + m->z.y * n[2];
+		wn[2] = m->x.z * n[0] + m->y.z * n[1] + m->z.z * n[2];
+		nn = wn[0] * wn[0] + wn[1] * wn[1] + wn[2] * wn[2];
+		qq = q[0] * q[0] + q[1] * q[1] + q[2] * q[2];
+		c = nn > 0.0f && qq > 0.0f ? fabsf(wn[0] * q[0] + wn[1] * q[1] + wn[2] * q[2]) / sqrtf(nn * qq) : 1.0f;
+		a = mode == 1 ? c : 1.0f - c;
+		*(unsigned int *)(record + 8) = seethrough_color((int)(fade * a * 255.0f + 0.5f), draw->blend);
+	}
+	draw->vertices = records;
+	draw->colored = 1;
+	seethrough_angle_draws++;
+}
+
 static struct transparent_draw *transparent_slot(unsigned int key, float u_scale, float v_scale, float u_offset,
 	float v_offset, short blend, const float *centroid)
 {
@@ -7917,6 +8057,8 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 		return NULL;
 	}
 	draw = &transparent[transparent_count++];
+	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
+	draw->colored = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -7925,7 +8067,13 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->v_scale = v_scale != 0.0f ? v_scale : 1.0f;
 	draw->u_offset = u_offset;
 	draw->v_offset = v_offset;
-	draw->blend = blend;
+	/* build 116: the level's see-through surfaces take the fade's one
+	colour; their fade by angle isn't drawn yet (no normals in the level's
+	GE copies) */
+	draw->blend = PSP_SEETHROUGH_BLEND(blend);
+	draw->color = seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
+		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF;
+	draw->colored = 0;
 	draw->sky = 0;
 	draw->sprites = 0;
 	draw->strip = 0;
@@ -8817,6 +8965,10 @@ static void transparent_flush_body(void)
 		sceGuTexScale(draw->u_scale, draw->v_scale);
 		sceGuTexOffset(draw->u_offset, draw->v_offset);
 		sceGumLoadMatrix(&draw->matrix);
+		/* build 116: the shader's fade as one colour (sprites and coloured
+		draws carry their own) */
+		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
+			sceGuColor(draw->color);
 		if (draw->sprites)
 			/* (build 113: a contrail is a strip; sprites and widgets lists) */
 			sceGumDrawArray(draw->strip ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
@@ -8830,14 +8982,19 @@ static void transparent_flush_body(void)
 				draw->index_count, NULL, draw->vertices);
 		else
 		{
+			/* build 116: a fade per vertex replaces the normal with a colour */
+			int middle = draw->colored ? GU_COLOR_8888 : GU_NORMAL_8BIT;
+
 			if (draw->index_count > 0)
 				sceGumDrawArray(draw->strip ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
-					GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+					GU_TEXTURE_32BITF | middle | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 					draw->index_count, draw->indices, draw->vertices);
 			if (draw->cut_count > 0 && draw->cut_vertices)
-				sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+				sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | middle | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 					draw->cut_count, NULL, draw->cut_vertices);
 		}
+		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
+			sceGuColor(0xFFFFFFFF);
 		if (draw->level)
 			sceGuDepthOffset(0);
 		if (draw->level >= 3)
@@ -11989,6 +12146,10 @@ void psp_ge_frame_end(void)
 			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, stencil_mode, bake_substituted,
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
+		/* build 116: the restorations' own counters */
+		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu",
+			seethrough_angle_draws);
+		seethrough_angle_draws = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;
