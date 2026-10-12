@@ -131,7 +131,7 @@ Keep words `nearauto assettrack geo2 overlayfreefar` (no instruments). No fault.
 Keep words `nearauto gebusy assettrack hwprofile geo2 iostats gereads edramcheck`. No fault; Sheepdog01 stopped at game time 5,708, on the beach (b114's test 1 went on to the bunker, 7,408).
 
 **The eDRAM probe stopped the ME (my bug)** [M]:
-- The probe's first job filled 1.25 MB of eDRAM in one go: 56 ms on the ME. The next audio job waited behind it, timed out at 40 ms, and a timed-out job stops the ME for the rest of the session (`ME: stopped (a job timed out)`, game time ~20).
+- The probe's first job filled 1.25 MB of eDRAM in one go: 56 ms on the ME. The next audio job waited behind it, timed out at 40 ms, and a timed-out job stops the ME for the rest of the session (`ME: stopped (a job timed out)`, at game time 1–5, the first heartbeat of play).
 - From then on the main CPU mixed the audio: 6–7% of its time. That's most of why this run is slower than b114's test 1 everywhere: the cinematic 215.3 ms a frame against 195.6, the beach 172.8 against 165.3. b115's speed is test 2's to 5's, which match b114.
 - The probe never got to check anything, so whether anything else writes eDRAM is still open (G4, [D] only).
 - **One figure came out of it** [M]: the ME wrote eDRAM at 23 MB/s (172 ns a word) in that loop, close to the 158 ns a read measured before. The level positions' copy for L1 (~190 KB) would take ~8 ms of the ME to fill [U, if the copy writes a word at a time].
