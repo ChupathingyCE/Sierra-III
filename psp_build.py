@@ -318,7 +318,10 @@ def compile_one(item):
         # (build 110: the launch menu, the crash handler's side, the overlay
         # and the load trace's wrappers for size; the rest for speed)
         opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c", "psp_watch.c")) else "-O2"
-        cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections",
+        # after b116: -fno-math-errno, as the engine's units have: sqrtf is
+        # the FPU's sqrt.s alone, without a library fallback that only sets
+        # errno (the same results; an independent review)
+        cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections", "-fno-math-errno",
                "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + [
                "-c", src, "-o", out]
         if src.endswith("psp_me.c"):

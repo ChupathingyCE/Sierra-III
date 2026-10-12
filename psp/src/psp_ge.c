@@ -8869,6 +8869,11 @@ static struct
 	unsigned char *flags; /* per triangle: 0 not asked, 1 on a wall, 2 free */
 } overlay_backing[OVERLAY_BACKINGS];
 static int overlay_backing_count = 0, overlay_all_walls = -1;
+/* after b116: the last list's flags, so its triangles don't search the
+table again each (it holds up to 2,048 lists; an independent review) */
+static unsigned int overlay_cached_key = 0;
+static long overlay_cached_count = -1;
+static unsigned char *overlay_cached_flags = NULL;
 
 static void overlay_backing_forget(void)
 {
@@ -8877,6 +8882,7 @@ static void overlay_backing_forget(void)
 	for (index = 0; index < overlay_backing_count; index++)
 		free(overlay_backing[index].flags);
 	overlay_backing_count = 0;
+	overlay_cached_flags = NULL;
 }
 static unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, overlay_free = 0, overlay_ask_us = 0;
 
@@ -8953,12 +8959,16 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		}
 		key = last_key;
 	}
-	for (slot = 0; slot < overlay_backing_count; slot++)
-		if (overlay_backing[slot].key == key && overlay_backing[slot].count == triangle_count)
-		{
-			flags = overlay_backing[slot].flags;
-			break;
-		}
+	/* (the main CPU's alone: the Media Engine's cache doesn't see its writes) */
+	if (!psp_me_context && overlay_cached_flags && key == overlay_cached_key && triangle_count == overlay_cached_count)
+		flags = overlay_cached_flags;
+	else
+		for (slot = 0; slot < overlay_backing_count; slot++)
+			if (overlay_backing[slot].key == key && overlay_backing[slot].count == triangle_count)
+			{
+				flags = overlay_backing[slot].flags;
+				break;
+			}
 	if (!flags && psp_me_context)
 		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags)
@@ -8971,6 +8981,8 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 
 			slot = victim;
 			victim = (victim + 1) % OVERLAY_BACKINGS;
+			if (overlay_cached_flags == overlay_backing[slot].flags)
+				overlay_cached_flags = NULL;
 			free(overlay_backing[slot].flags);
 			overlay_backing_full++;
 		}
@@ -8979,6 +8991,12 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		overlay_backing[slot].key = key;
 		overlay_backing[slot].count = triangle_count;
 		overlay_backing[slot].flags = flags;
+	}
+	if (!psp_me_context)
+	{
+		overlay_cached_key = key;
+		overlay_cached_count = triangle_count;
+		overlay_cached_flags = flags;
 	}
 	if (!flags[triangle] && psp_me_context)
 		return overlay_want(stream, indices, triangle_count, triangle);
