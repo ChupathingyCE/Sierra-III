@@ -110,7 +110,7 @@ the list ran past the bottom and wrapped over the top). Lines stay at 67 */
 static struct map_entry maps[MAXIMUM_MAPS];
 static int map_count = 0;
 /* words in keep.txt the menu doesn't know: kept as typed */
-static char extra_words[256] = "";
+static char extra_words[384] = ""; /* build 116: 384 (256), for the longer presets */
 
 /* build 114: presets, ms0:/halo/presets.txt: one a line, "name: keep words"
 (# starts a comment). A build's zip can carry the night's tests as presets,
@@ -119,7 +119,8 @@ its words: the options it names on, every other option off, its other words
 kept as "other words" */
 #define MAXIMUM_PRESETS 14 /* two rows each, within the 34-row screen */
 #define PRESET_NAME 48
-#define PRESET_WORDS 200
+/* build 116: 320 (200 before): b116's "every restoration off" preset is 199 */
+#define PRESET_WORDS 320
 /* taken from the heap for the menu's life only (the program sits a few KB
 under one of the heap's 64 KB steps) */
 static struct preset { char name[PRESET_NAME]; char words[PRESET_WORDS]; } *presets = NULL;
@@ -344,10 +345,17 @@ static void save_files(int map)
 
 	if (file >= 0)
 	{
+		/* build 116: the length held inside the buffer (snprintf answers
+		what it would have written, so a long set ran length past the
+		buffer and the next size went negative). keep.txt is read into 512
+		bytes (psp_platform.c, keep_words) */
 		for (i = 0; i < OPTION_COUNT; i++)
-			if (options[i].on)
+			if (options[i].on && length < (int)sizeof(text) - 1)
 				length += snprintf(text + length, sizeof(text) - length, "%s ", options[i].word);
-		length += snprintf(text + length, sizeof(text) - length, "%s\n", extra_words);
+		if (length < (int)sizeof(text) - 1)
+			length += snprintf(text + length, sizeof(text) - length, "%s\n", extra_words);
+		if (length > (int)sizeof(text) - 1)
+			length = sizeof(text) - 1;
 		sceIoWrite(file, text, length);
 		sceIoClose(file);
 	}

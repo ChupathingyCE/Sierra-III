@@ -398,7 +398,7 @@ def alpha_tested_bitmaps(m, d):
     return names
 
 
-def bake_one(m, b, cls, look=None, model_look=None, full_hud=True):
+def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -433,7 +433,12 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True):
         if not own_levels:
             img = neutral_detail(img)
     small = own_levels[0] if own_levels else downscale(img, tw, th)
-    grid = cls == 'ui/hud' and grey_meter(small)
+    # build 116: a meter shader's map (the plasma weapons' gauges, the
+    # Warthog's meters) takes the grid too, always: the GE works its colours
+    # out per palette entry from the blue (the position along the meter) and
+    # the alpha (the shape), as the HUD's (psp_ge.c, meter_palette), and an
+    # ordinary palette's entries are averages of both (b113_candidates.md #16)
+    grid = (cls == 'ui/hud' and grey_meter(small)) or meter
     if grid:
         grid_off = grid_offset(small)
         idx, pal, alpha = grid_index(small, grid_off), grid_palette(grid_off), True
@@ -536,6 +541,9 @@ def main():
         ALPHA_TESTED = alpha_tested_bitmaps(m, d)
         print('alpha coverage kept for %d alpha-tested bitmaps' % len(ALPHA_TESTED), file=sys.stderr)
     roles = refs.bitmap_roles(m, d)
+    # build 116: the bitmaps meter shaders draw (bake_one gives them the grid)
+    meter_maps = set(tag for tag, tag_roles in roles.items() if any(r.startswith('smet:') for r in tag_roles))
+    print('%d meter shader maps: the grid palette' % len(meter_maps), file=sys.stderr)
     B = bitmap_list(m, d)
     if a.limit:
         B = B[:a.limit]
@@ -562,7 +570,8 @@ def main():
             cls = 'detail (also drawn plain)'
         tag_roles = roles.get(b['tag'], ())
         full_hud = not tag_roles or any('splitscreen' not in role for role in tag_roles)
-        r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud)
+        meter = b['tag'] in meter_maps
+        r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter)
         if r is None:
             skipped[cls] = skipped.get(cls, 0) + 1
             continue
@@ -570,7 +579,7 @@ def main():
         r['name'] = b['tag']
         entries.append(r)
         if b['address'] in mlooks:
-            v = bake_one(m, b, cls, looks.get(b['address']), mlooks[b['address']], full_hud=full_hud)
+            v = bake_one(m, b, cls, looks.get(b['address']), mlooks[b['address']], full_hud=full_hud, meter=meter)
             if v is not None:
                 v['key'] = b['address'] | 1
                 v['name'] = b['tag'] + ' (with its detail map)'

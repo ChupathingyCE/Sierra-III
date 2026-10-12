@@ -6,4 +6,4 @@
 3 cinematic, base: nearauto assettrack geo2 gebusy
 4 cinematic, model buffers in VRAM (600 KB): nearauto assettrack geo2 gebusy vrammodels600
 5 cinematic, model buffers in VRAM (800 KB): nearauto assettrack geo2 gebusy vrammodels800
-6 the b115 look, every restoration off: nearauto assettrack geo2 overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar lognohold statepages
+6 the b115 look, every restoration off: nearauto assettrack geo2 overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages

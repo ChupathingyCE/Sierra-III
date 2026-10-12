@@ -223,7 +223,7 @@ instruction cache longer. The ME step moves the carrying out to the ME. Off
 #define NODE_FLOATS 13 /* a node matrix as the game keeps it (halo_matrix): scale, three axes, position */
 #define SCREEN_VERTEX_WORDS 5 /* struct game_screen_vertex: x, y, u, v, argb */
 #define SPRITE_VERTEX_WORDS 6 /* struct game_sprite_vertex: x, y, z, u, v, argb */
-#define METER_WORDS 7 /* struct game_meter */
+#define METER_WORDS 7 /* struct psp_seethrough_meter (the game's rasterizer_meter_parameters) */
 enum
 {
 	DEFER_MODEL_BEGIN = 1, DEFER_MODEL_SHAPE, DEFER_MODEL_EFFECT, DEFER_MODEL_MULTIPURPOSE, DEFER_DRAW_MODEL,
@@ -233,7 +233,7 @@ enum
 	DEFER_SHADOW_BEGIN, DEFER_SHADOW_DRAW, DEFER_SHADOW_END, DEFER_LIGHT_BEGIN, DEFER_LIGHT_DRAW, DEFER_SCREEN_FLASH,
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
-	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT /* build 116 */
+	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */
 };
 typedef union
 {
@@ -315,6 +315,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
 void psp_ge_fog_planar(float red, float green, float blue, float maximum_distance, float density);
 void psp_ge_seethrough_tint(unsigned int tint);
+void psp_ge_seethrough_meter(const void *meter);
 void psp_ge_window_target(int target);
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v);
@@ -807,6 +808,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_SEETHROUGH_TINT: /* build 116 */
 			psp_ge_seethrough_tint(w[0].u);
+			break;
+		case DEFER_SEETHROUGH_METER: /* build 116 */
+			psp_ge_seethrough_meter(w[0].u ? (const void *)(w + 1) : NULL);
 			break;
 		case DEFER_WINDOW_TARGET:
 			psp_ge_window_target(w[0].i);
@@ -7578,6 +7582,8 @@ struct transparent_draw
 	unsigned char level;
 	/* build 38: a first-person part (its own projection and depth slice) */
 	unsigned char first_person;
+	/* build 116: a meter's palette (clut, below), in the GE's 8-entry blocks */
+	unsigned char clut_blocks;
 	/* build 60: a see-through model part's triangles cut at the near plane
 	or the guard band: GE vertices in the part's space, drawn after its list */
 	void *cut_vertices;
@@ -7585,7 +7591,20 @@ struct transparent_draw
 	/* build 60: a level overlay's nudge toward the eye, in depth steps
 	(0: worked out from distance when drawn, as builds 54-59) */
 	short depth_units;
+	/* build 116: a meter shader's draw (b113 #16): the palette worked out
+	for its value (meter_palette), drawn in place of the map's own, with
+	blend BLEND_METER_TINT or BLEND_METER_BRIGHTNESS and the meter's tint
+	colour (ARGB) in tint; NULL for every other draw */
+	const unsigned int *clut;
 };
+
+/* build 116: a meter shader's blends, as the Xbox sets them
+(rasterizer_xbox_transparent_geometry.c): in tint mode 2 the frame gets
+colour x tint + frame x alpha, as the HUD's meters; otherwise colour x the
+meter's brightness + frame x tint, with the alpha test standing in for the
+Xbox's alpha kill. Past the blend functions' 0-7 */
+#define BLEND_METER_TINT 14
+#define BLEND_METER_BRIGHTNESS 15
 
 /* build 116: the see-through fade (defined with transparent_slot) */
 /* build 116: a see-through shader's tint (texpack.py works it out: the
@@ -7595,6 +7614,14 @@ before each call (psp_fixups.py, psp_ge_seethrough_tint); the call's pieces
 all take it, and it goes back to white when the call returns. Builds 21-115
 drew the one map untinted: b30's ocean white */
 static unsigned int seethrough_next_tint = 0xFFFFFFFF;
+/* build 116 (b113 #16): a meter shader's parameters, for the next queue
+call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
+not a meter). Builds 21-115 dropped meter shaders: the plasma weapons' heat
+gauges and the Warthog's meters weren't drawn */
+static struct psp_seethrough_meter seethrough_next_meter;
+static int seethrough_meter_next = 0;
+static unsigned long meter_parts = 0, meter_parts_dropped = 0;
+static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter const *meter, int *count_out);
 static int seethrough_fades(int blend);
 static unsigned int seethrough_color(int f, int blend);
 static unsigned int seethrough_tinted(unsigned int color, unsigned int tint);
@@ -7722,6 +7749,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
+	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	halo_matrix(view_to_world, &draw->matrix);
 	draw->vertices = out;
 	draw->indices = NULL;
@@ -7851,6 +7879,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
+	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -7999,6 +8028,7 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
+	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	gumLoadIdentity(&draw->matrix);
 	relative(&draw->matrix);
 	draw->vertices = out;
@@ -8178,6 +8208,9 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 {
 	struct transparent_draw *draw;
 
+	unsigned int *clut = NULL;
+	int clut_count = 0;
+
 	if (!frame_open || index_count < 3 || !vertices || !indices || !model_nodes || model_node_count <= 0 ||
 		vertex_count <= 0 || !model_convert(vertices, vertex_count, uncompressed, NULL, 0, 0, NULL))
 		return;
@@ -8186,10 +8219,24 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		transparent_dropped++;
 		return;
 	}
+	if (seethrough_meter_next)
+	{
+		/* build 116: a meter's palette for its value now (the cache slot is
+		this frame's until the list has run); none (a map without a 32-bit
+		palette, the list full): the part is left out, as before */
+		meter_parts++;
+		clut = meter_palette(key, &seethrough_next_meter, &clut_count);
+		if (!clut || clut_count < 8)
+		{
+			meter_parts_dropped++;
+			return;
+		}
+	}
 	draw = &transparent[transparent_count++];
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
+	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->cut_vertices = NULL;
 	draw->cut_count = 0;
 	node_matrix(vertices, indices, &draw->matrix);
@@ -8261,6 +8308,15 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->tint = seethrough_next_tint;
 	draw->color = draw->tint;
 	draw->colored = 0;
+	if (clut)
+	{
+		/* build 116: a meter (the palette does its colours; no fade) */
+		draw->clut = clut;
+		draw->clut_blocks = (unsigned char)(clut_count / 8);
+		draw->blend = seethrough_next_meter.tint_mode_2 ? BLEND_METER_TINT : BLEND_METER_BRIGHTNESS;
+		draw->tint = seethrough_next_meter.tint_color;
+		draw->color = 0xFFFFFFFF;
+	}
 	draw->sky = (unsigned char)in_sky;
 	draw->sprites = 0;
 	draw->level = 0;
@@ -8338,6 +8394,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 
 	psp_ge_queue_transparent_body(vertices, vertex_count, uncompressed, indices, index_count, strip, key, u_scale, v_scale, u_offset, v_offset, blend, centroid);
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
+	seethrough_meter_next = 0; /* and its meter */
 	ge_entry_us[2] += ge_clock() - start;
 }
 
@@ -8372,6 +8429,20 @@ void psp_ge_seethrough_tint(unsigned int tint)
 {
 	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 1, tint, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	seethrough_next_tint = tint;
+}
+
+/* build 116: the next queue call's meter (struct psp_seethrough_meter), or
+NULL for a part that isn't one. The engine side calls it before every model
+part it queues (psp_fixups.py), so a meter never carries over to the next */
+void psp_ge_seethrough_meter(const void *meter)
+{
+	const unsigned int *w = meter;
+
+	GE_DEFER(w ? defer_words(DEFER_SEETHROUGH_METER, 1 + METER_WORDS, 1, w[0], w[1], w[2], w[3], w[4], w[5], w[6]) :
+		defer_words(DEFER_SEETHROUGH_METER, 1, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
+	seethrough_meter_next = meter != NULL;
+	if (meter)
+		memcpy(&seethrough_next_meter, meter, sizeof(seethrough_next_meter));
 }
 
 /* two colours multiplied channel by channel (ABGR, 0-255 each) */
@@ -8501,6 +8572,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
+	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
 	relative(&draw->matrix);
@@ -9369,7 +9441,29 @@ static void transparent_flush_body(void)
 		else
 			/* added or multiplied light fades by its own: no fog colour on top */
 			sceGuDisable(GU_FOG);
-		hud_blend(draw->blend);
+		if (draw->clut)
+		{
+			/* build 116: a meter, with its own palette (meter_palette) in
+			place of the map's, its colours drawn as they are */
+			unsigned int tint = draw->tint, rgb = ((tint & 0xFF) << 16) | (tint & 0xFF00) | ((tint >> 16) & 0xFF);
+
+			sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+			sceGuClutLoad(draw->clut_blocks, draw->clut);
+			sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+			sceGuEnable(GU_BLEND);
+			if (draw->blend == BLEND_METER_TINT)
+				sceGuBlendFunc(GU_ADD, GU_FIX, GU_SRC_ALPHA, rgb, 0);
+			else
+			{
+				unsigned int brightness = tint >> 24;
+
+				sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, (brightness << 16) | (brightness << 8) | brightness, rgb);
+				sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+				sceGuEnable(GU_ALPHA_TEST);
+			}
+		}
+		else
+			hud_blend(draw->blend);
 		if (draw->first_person)
 			use_projection(1);
 		/* build 35: the level's see-through surfaces (the base pillars'
@@ -9442,6 +9536,11 @@ static void transparent_flush_body(void)
 		}
 		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
 			sceGuColor(0xFFFFFFFF);
+		if (draw->clut)
+		{
+			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+			sceGuDisable(GU_ALPHA_TEST);
+		}
 		if (draw->level)
 			sceGuDepthOffset(0);
 		if (draw->level >= 3)
@@ -9504,14 +9603,10 @@ struct game_screen_vertex
 	unsigned int argb;
 };
 
-/* the game's rasterizer_meter_parameters (colours ARGB) */
-struct game_meter
-{
-	unsigned int gradient_min_color, gradient_max_color, background_color, flash_color;
-	unsigned char flash_color_is_negative, tint_mode_2, pad[2];
-	unsigned int tint_color;
-	float gradient;
-};
+/* the game's rasterizer_meter_parameters (colours ARGB): build 116 keeps
+the layout in psp_seethrough.h (struct psp_seethrough_meter), shared with the
+models' meter shaders; its seven words are what the defer queue copies */
+typedef char meter_words_check[sizeof(struct psp_seethrough_meter) == METER_WORDS * 4 ? 1 : -1];
 
 #define GAME_SCREEN_WIDTH 848.0f
 #define GAME_SCREEN_HEIGHT 480.0f
@@ -9622,12 +9717,14 @@ static void hud_draw(struct game_screen_vertex const *in, int width, int height,
 
 /* worked-out meter palettes, kept while their meter doesn't change (build 31);
 a slot's frame is the frame (counted from 1) that last used it */
-#define METER_CACHE 6
+/* build 116: ten slots (six before), as the models' meter shaders share
+them: a plasma rifle's gauge, the Warthogs' meters in view (4 KB more) */
+#define METER_CACHE 10
 static unsigned int meter_cache_palette[METER_CACHE][256] __attribute__((aligned(64)));
 static struct
 {
 	unsigned int key;
-	struct game_meter meter;
+	struct psp_seethrough_meter meter;
 	unsigned long frame;
 	int count;
 } meter_cache[METER_CACHE];
@@ -9724,12 +9821,140 @@ void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 	zoom_masks++;
 }
 
+/* a meter's palette (build 23; a routine of its own from build 116, for the
+models' meter shaders as well as the HUD's meters). The Xbox works a meter
+out per pixel in four register-combiner stages; with a palette texture the
+same sum can be done once per palette entry instead. The texture's grey (its
+blue) is the position along the meter and its alpha the shape:
+  shape 0                    nothing drawn (the Xbox's alpha kill)
+  position past the flash    the empty colour
+  otherwise                  min to max colour along the meter,
+                             plus the flash colour past the fill
+each multiplied by the shape; the frame then gets
+colour x tint + frame x alpha (alpha: the fade, or the empty colour's).
+NULL when the map has no 32-bit palette or the display list is full;
+*count_out: the palette's entries */
+static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter const *meter, int *count_out)
+{
+	const unsigned int *palette;
+	unsigned int *computed = NULL, fill = meter->gradient_min_color >> 24, flash_end = meter->flash_color >> 24;
+	int count, entry, slot, free_slot = -1, hit = 0;
+
+	if (!psp_tex_palette(key, &palette, &count))
+		return NULL;
+	/* a meter that hasn't changed since it was last worked out (most of
+	them, most frames) reuses that palette (build 31): the sum is a
+	dozen divisions an entry, about a third of a millisecond a meter */
+	for (slot = 0; slot < METER_CACHE; slot++)
+	{
+		if (meter_cache[slot].key == key && meter_cache[slot].count == count &&
+			!memcmp(&meter_cache[slot].meter, meter, sizeof(*meter)))
+		{
+			computed = meter_cache_palette[slot];
+			meter_cache[slot].frame = frames + 1;
+			meter_reused++;
+			hit = 1;
+			break;
+		}
+		if (meter_cache[slot].frame != frames + 1 &&
+			(free_slot < 0 || meter_cache[slot].frame < meter_cache[free_slot].frame))
+			free_slot = slot;
+	}
+	if (!computed)
+	{
+		/* into a slot not used this frame (the GE reads the palettes when
+		the frame's list runs), or else the display list's memory */
+		if (free_slot >= 0)
+		{
+			computed = meter_cache_palette[free_slot];
+			meter_cache[free_slot].key = key;
+			meter_cache[free_slot].count = count;
+			meter_cache[free_slot].meter = *meter;
+			meter_cache[free_slot].frame = frames + 1;
+		}
+		else
+		{
+			computed = list_take(count * 4 + 16);
+			if (!computed)
+				return NULL;
+			computed = (unsigned int *)(((unsigned int)computed + 15) & ~15u);
+		}
+		meter_worked++;
+	}
+	for (entry = hit ? count : 0; entry < count; entry++)
+	{
+		unsigned int texel = palette[entry], shape = texel >> 24, position = (texel >> 16) & 0xFF;
+		int channel, out[3], alpha_out;
+
+		/* build 116: outside tint mode 2 (the models' meters only; the HUD's
+		are all in it) the blend takes no alpha, so the alpha is the alpha
+		test's: 0 where the Xbox kills the pixel, otherwise all */
+		if (!shape)
+		{
+			computed[entry] = meter->tint_mode_2 ? 0xFF000000 : 0;
+			continue;
+		}
+		if (position >= flash_end)
+		{
+			for (channel = 0; channel < 3; channel++)
+				out[channel] = (meter->background_color >> (16 - 8 * channel)) & 0xFF;
+			alpha_out = meter->background_color >> 24;
+		}
+		else
+		{
+			/* past the fill by more than a quarter: the flash at full */
+			int past = 255 - 2 * PSP_CLAMP_255(4 * ((int)fill - (int)position));
+			/* build 116: the colour's run along the meter, by its gradient
+			(stage 0's alpha: the position over the gradient, at least an
+			eighth; the HUD's gradient is always 1, the position itself) */
+			int along = (int)position;
+
+			if (meter->gradient != 1.0f)
+			{
+				float gradient = meter->gradient > 0.125f ? meter->gradient : 0.125f;
+
+				along = (int)((float)position / gradient + 0.5f);
+				along = along > 255 ? 255 : along;
+			}
+			if (past < 0)
+				past = 0;
+			for (channel = 0; channel < 3; channel++)
+			{
+				int low = (meter->gradient_min_color >> (16 - 8 * channel)) & 0xFF;
+				int high = (meter->gradient_max_color >> (16 - 8 * channel)) & 0xFF;
+				int flash = (meter->flash_color >> (16 - 8 * channel)) & 0xFF;
+
+				out[channel] = low + (high - low) * along / 255 +
+					(meter->flash_color_is_negative ? -1 : 1) * flash * past / 255;
+				out[channel] = PSP_CLAMP_255(out[channel]);
+			}
+			alpha_out = meter->tint_color >> 24;
+		}
+		if (!meter->tint_mode_2)
+			alpha_out = 255;
+		/* ABGR, each colour times the shape */
+		computed[entry] = ((unsigned int)alpha_out << 24) | ((out[2] * shape / 255) << 16) |
+			((out[1] * shape / 255) << 8) | (out[0] * shape / 255);
+	}
+	/* build 39: out of the CPU's cache before the GE reads it. The GE
+	draws each piece as soon as it is listed (GU_DIRECT moves its stall
+	address on at every draw), long before the frame's end writes the
+	cache back: a meter worked out afresh was drawn with whatever that slot
+	held in memory before, a meter's previous value, for one frame each time
+	it changed (Sheepdog01's "rubber banding" ammo and flashlight meters). The
+	display list's own memory is uncached, so only the kept slots need it */
+	if (!hit && computed >= &meter_cache_palette[0][0] && computed < &meter_cache_palette[METER_CACHE][0])
+		ge_writeback(computed, count * 4);
+	*count_out = count;
+	return computed;
+}
+
 static void screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
 	list_hud_phase();
 	struct game_screen_vertex const *in = vertices;
-	struct game_meter const *meter = meter_parameters;
+	struct psp_seethrough_meter const *meter = meter_parameters;
 	int width, height, alpha = 0;
 
 	if (!frame_open || !vertices)
@@ -9776,123 +10001,22 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	if (meter)
 	{
-		/* the Xbox works a meter out per pixel in four register-combiner
-		stages; with a palette texture the same sum can be done once per
-		palette entry instead (build 23). The texture's grey (its blue) is
-		the position along the meter and its alpha the shape:
-		  shape 0                    nothing drawn (the Xbox's alpha kill)
-		  position past the flash    the empty colour
-		  otherwise                  min to max colour along the meter,
-		                             plus the flash colour past the fill
-		each multiplied by the shape; the frame then gets
-		colour x tint + frame x alpha (alpha: the fade, or the empty
-		colour's). */
-		const unsigned int *palette;
-		unsigned int *computed = NULL, fill = meter->gradient_min_color >> 24, flash_end = meter->flash_color >> 24;
-		int count, entry, slot, free_slot = -1, hit = 0;
+		/* the meter's own palette (meter_palette, above), drawn as the
+		Xbox blends it: colour x tint + frame x alpha */
+		unsigned int *computed;
+		int count = 0;
 
 		/* build 63: the depth test and fog back on the way out, as at the
 		end; returned with them off, everything after in the frame drew
 		through walls until the next HUD quad switched them back */
-		if (!psp_tex_palette(key, &palette, &count))
+		computed = meter_palette(key, meter, &count);
+		if (!computed)
 		{
 			screen_quad_bailed++;
 			sceGuEnable(GU_FOG);
 			sceGuEnable(GU_DEPTH_TEST);
 			return;
 		}
-		/* a meter that hasn't changed since it was last worked out (most of
-		them, most frames) reuses that palette (build 31): the sum is a
-		dozen divisions an entry, about a third of a millisecond a meter */
-		for (slot = 0; slot < METER_CACHE; slot++)
-		{
-			if (meter_cache[slot].key == key && meter_cache[slot].count == count &&
-				!memcmp(&meter_cache[slot].meter, meter, sizeof(*meter)))
-			{
-				computed = meter_cache_palette[slot];
-				meter_cache[slot].frame = frames + 1;
-				meter_reused++;
-				hit = 1;
-				break;
-			}
-			if (meter_cache[slot].frame != frames + 1 &&
-				(free_slot < 0 || meter_cache[slot].frame < meter_cache[free_slot].frame))
-				free_slot = slot;
-		}
-		if (!computed)
-		{
-			/* into a slot not used this frame (the GE reads the palettes when
-			the frame's list runs), or else the display list's memory */
-			if (free_slot >= 0)
-			{
-				computed = meter_cache_palette[free_slot];
-				meter_cache[free_slot].key = key;
-				meter_cache[free_slot].count = count;
-				meter_cache[free_slot].meter = *meter;
-				meter_cache[free_slot].frame = frames + 1;
-			}
-			else
-			{
-				computed = list_take(count * 4 + 16);
-				if (!computed)
-				{
-					screen_quad_bailed++;
-					sceGuEnable(GU_FOG);
-					sceGuEnable(GU_DEPTH_TEST);
-					return;
-				}
-				computed = (unsigned int *)(((unsigned int)computed + 15) & ~15u);
-			}
-			meter_worked++;
-		}
-		for (entry = hit ? count : 0; entry < count; entry++)
-		{
-			unsigned int texel = palette[entry], shape = texel >> 24, position = (texel >> 16) & 0xFF;
-			int channel, out[3], alpha_out;
-
-			if (!shape)
-			{
-				computed[entry] = 0xFF000000;
-				continue;
-			}
-			if (position >= flash_end)
-			{
-				for (channel = 0; channel < 3; channel++)
-					out[channel] = (meter->background_color >> (16 - 8 * channel)) & 0xFF;
-				alpha_out = meter->background_color >> 24;
-			}
-			else
-			{
-				/* past the fill by more than a quarter: the flash at full */
-				int past = 255 - 2 * PSP_CLAMP_255(4 * ((int)fill - (int)position));
-
-				if (past < 0)
-					past = 0;
-				for (channel = 0; channel < 3; channel++)
-				{
-					int low = (meter->gradient_min_color >> (16 - 8 * channel)) & 0xFF;
-					int high = (meter->gradient_max_color >> (16 - 8 * channel)) & 0xFF;
-					int flash = (meter->flash_color >> (16 - 8 * channel)) & 0xFF;
-
-					out[channel] = low + (high - low) * (int)position / 255 +
-						(meter->flash_color_is_negative ? -1 : 1) * flash * past / 255;
-					out[channel] = PSP_CLAMP_255(out[channel]);
-				}
-				alpha_out = meter->tint_color >> 24;
-			}
-			/* ABGR, each colour times the shape */
-			computed[entry] = ((unsigned int)alpha_out << 24) | ((out[2] * shape / 255) << 16) |
-				((out[1] * shape / 255) << 8) | (out[0] * shape / 255);
-		}
-		/* build 39: out of the CPU's cache before the GE reads it. The GE
-		draws each piece as soon as it is listed (GU_DIRECT moves its stall
-		address on at every draw), long before the frame's end writes the
-		cache back: a meter worked out afresh was drawn with whatever that slot
-		held in memory before, a meter's previous value, for one frame each time
-		it changed (Sheepdog01's "rubber banding" ammo and flashlight meters). The
-		display list's own memory is uncached, so only the kept slots need it */
-		if (!hit && computed >= &meter_cache_palette[0][0] && computed < &meter_cache_palette[METER_CACHE][0])
-			ge_writeback(computed, count * 4);
 		sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 		sceGuClutLoad(count / 8, computed);
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
@@ -12626,10 +12750,11 @@ void psp_ge_frame_end(void)
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		/* build 116: the restorations' own counters */
-		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu; windows in planar fog %lu",
-			seethrough_angle_draws, planar_fog_windows);
+		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu; windows in planar fog %lu; meter parts %lu (%lu left out: no palette)",
+			seethrough_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped);
 		seethrough_angle_draws = 0;
 		planar_fog_windows = 0;
+		meter_parts = meter_parts_dropped = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;

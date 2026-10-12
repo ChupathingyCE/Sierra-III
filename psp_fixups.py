@@ -11413,6 +11413,110 @@ FIXES_116["source/rasterizer/rasterizer.c#water"] = [
 		*blend = (*(unsigned short const *)(definition + 40) & 2) ? 0 : 3;
 	}"""),
 ]
+# build 116 (b113 #16): meter shaders, drawn (the plasma weapons' heat
+# gauges, the Warthog's speedometer and engine meters). The Xbox works a
+# meter's colour out per pixel in four combiner stages from five of the
+# object's values (rasterizer_xbox_transparent_geometry.c,
+# _shader_type_transparent_meter); the stages are the HUD's meters' with two
+# constants in other slots, so the engine side fills the HUD's parameters
+# (psp_seethrough.h) and the GE works a palette out from them as it does for
+# the HUD (psp_ge.c, meter_palette; the bake gives meter maps the HUD's grid
+# palette, texpack.py). Builds 21-115 left meters out. Keep word "nometers":
+# as before. Level meters (no object, no values) stay left out
+FIXES_116["source/rasterizer/rasterizer.c#meters"] = [
+("""/* a see-through shader as the GE draws it: one texture (the first map of a
+numeric shader""",
+ """/* build 116: the meter the last psp_transparent_map call worked out, for
+the queue call after it (NULL: not a meter) */
+static struct psp_seethrough_meter const *psp_transparent_meter = NULL;
+
+/* a colour (0-1) and an alpha as the Xbox's pixel32, ARGB, rounded as
+real_a_rgb_color_to_pixel32 does (build 116, the meters) */
+static unsigned int psp_meter_pixel(float alpha, float const *rgb)
+{
+	float v[4] = { alpha, rgb[0], rgb[1], rgb[2] };
+	unsigned int out = 0;
+	int k;
+
+	for (k = 0; k < 4; k++)
+		out = (out << 8) | (unsigned int)(int)(PIN(v[k], 0.0f, 1.0f) * 255.0f + 0.5f);
+	return out;
+}
+
+/* a see-through shader as the GE draws it: one texture (the first map of a
+numeric shader"""),
+("""	*u_scale = *v_scale = 1.0f;
+	*u_offset = *v_offset = 0.0f;
+	*blend = 0;
+	/* build 107: a first map that is a cube map""",
+ """	*u_scale = *v_scale = 1.0f;
+	*u_offset = *v_offset = 0.0f;
+	*blend = 0;
+	psp_transparent_meter = NULL; /* build 116 */
+	/* build 107: a first map that is a cube map"""),
+("""		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
+		*blend = (*(unsigned short const *)(definition + 40) & 2) ? 0 : 3;
+	}""",
+ """		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
+		*blend = (*(unsigned short const *)(definition + 40) & 2) ? 0 : 3;
+	}
+	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))
+	{
+		/* build 116: a meter. Its map (+76, the tag at +88; the bitmap the
+		permutation picks, as rasterizer_set_texture does) holds the position
+		along the meter in its blue and the shape in its alpha. Flags +40
+		(bit 2 the flash colour negative, bit 3 tint mode 2); colours +124
+		(gradient minimum, maximum, background, flash, tint: three floats
+		each); meter and background transparency +184, +188; the sources
+		+216 (meter brightness, flash brightness, value, gradient, flash
+		extension: 1-4 the object's A-D outputs, otherwise 1). Into the HUD's
+		slots (psp_seethrough.h): stage 0's flash extension where the HUD
+		has its fill, stage 2's value where the HUD has its flash's end */
+		static struct psp_seethrough_meter meter;
+		unsigned short flags = *(unsigned short const *)(definition + 40);
+		float const *color = (float const *)(definition + 124);
+		float value[5] = { 1.0f, 1.0f, 1.0f, 1.0f, 1.0f }, flash[3], tint[3];
+		long map = *(long const *)(definition + 88);
+		int bitmaps = psp_tex_bitmap_count(map), tint_mode_2 = (flags >> 3) & 1, k;
+
+		for (k = 0; k < 5; k++)
+		{
+			short source = *(short const *)(definition + 216 + 2 * k);
+
+			if (source >= 1 && source <= 4 && psp_animation_valid)
+				value[k] = PIN(psp_animation_values[source - 1], 0.0f, 1.0f);
+		}
+		for (k = 0; k < 3; k++)
+		{
+			flash[k] = value[1] * color[9 + k];
+			tint[k] = tint_mode_2 ? value[0] * color[12 + k] : color[12 + k];
+		}
+		meter.gradient_min_color = psp_meter_pixel(value[4], color);
+		meter.gradient_max_color = psp_meter_pixel(1.0f / (value[3] * 8.0f > 1.0f ? value[3] * 8.0f : 1.0f), color + 3);
+		meter.background_color = psp_meter_pixel(tint_mode_2 ? *(float const *)(definition + 188) : 0.0f, color + 6);
+		meter.flash_color = psp_meter_pixel(value[2], flash);
+		meter.tint_color = psp_meter_pixel(tint_mode_2 ? *(float const *)(definition + 184) : value[0], tint);
+		meter.flash_color_is_negative = (unsigned char)((flags >> 2) & 1);
+		meter.tint_mode_2 = (unsigned char)tint_mode_2;
+		meter.pad[0] = meter.pad[1] = 0;
+		meter.gradient = value[3];
+		key = psp_tex_bitmap_key(map, bitmaps > 0 && permutation > 0 ? permutation % bitmaps : 0);
+		if (key)
+			psp_transparent_meter = &meter;
+	}"""),
+("""				extern void psp_ge_seethrough_tint(unsigned int tint);
+				extern unsigned int psp_tex_shader_tint(unsigned int shader);
+
+				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_ge_transparent(triangle_buffer,""",
+ """				extern void psp_ge_seethrough_tint(unsigned int tint);
+				extern void psp_ge_seethrough_meter(const void *meter);
+				extern unsigned int psp_tex_shader_tint(unsigned int shader);
+
+				psp_ge_seethrough_tint(psp_tex_shader_tint((unsigned int)shader));
+				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
+				psp_ge_transparent(triangle_buffer,"""),
+]
 # build 116 (b113 #2): a flare's ray meets characters too, as the Xbox's
 # depth-tested visibility query hid a plasma glow behind anyone standing in
 # front of it; b31-b115's ray met the level, vehicles, scenery and machines

@@ -788,7 +788,10 @@ blends between ticks the PSP can't render more often than anyway: all are
 off unless ms0:/halo/keep.txt names them (shadows transparent particles
 decals hud textures interpolation), to measure what each costs */
 
-static char keep_words[256] = "";
+/* build 116: 512 (256 before): b116's "every restoration off" preset with
+the menu's own words came within a few characters of 253, past which
+keep.txt's last words were silently lost */
+static char keep_words[512] = "";
 /* build 106: bumped whenever keep_words changes, so psp_keep's remembered
 answers are asked again */
 static int keep_generation = 1;
@@ -829,7 +832,7 @@ static void keep_load(void)
 	/* build 115 */
 	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar");
 	/* build 116: the restorations are on by default; these words turn each off */
-	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar lognohold statepages");
+	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock

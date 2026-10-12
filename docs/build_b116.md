@@ -30,6 +30,7 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 | b113 #7 | No brighter band 20-60 units out on terrain and walls | Detail passes fade to their palette's own neutral grey | `detailgrey80` |
 | b113 #9 | A needle's pink flash faint, not solid | Max, min and invert screen flashes with the GE's MAX/MIN blends, as the Xbox draws them | `flashnearest` |
 | b113 #17 | The Pelican's cabin not cut open on the bench seats | In a first-person seat the near plane stays at the game's own | `nearseatedfar` |
+| b113 #16 | The plasma weapons' heat gauges and the Warthog's speedometer and engine meters | Meter shaders drawn: the engine side fills the HUD meters' constants from the shader and the object's values, as the Xbox's four combiner stages take them, and the GE works a palette out per value (the HUD's own routine). The bake gives meter maps the HUD's grid palette | `nometers` |
 | R10 | Shorter checkpoint freezes | Checkpoints stored as each page's non-zero words (most of a page is zero) | `statepages` |
 | R11 | No sound gap after a checkpoint | The log holds its writes while the checkpoint writes and for 2.5 s after, so the sound reader has the stick first | `lognohold` |
 
@@ -43,13 +44,13 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 
 - The geometry report counts the draws left out for a frame (R4's far objects vanishing).
 - The eDRAM probe works in 64 KB slices, one a heartbeat (b115's stopped the ME on test 1).
-- The log lists the restorations' keep words, the windows in planar fog, the see-through parts faded by angle, the holds around checkpoints, and the texture pack's tint count.
+- The log lists the restorations' keep words, the windows in planar fog, the see-through parts faded by angle, the meter parts drawn, the holds around checkpoints, and the texture pack's tint count.
+- Keep words: `keep.txt` is read into 512 bytes (256 before), a preset holds 320 characters (200), and the menu's file writer can't run past its buffer. Preset 6 (every restoration off) is 199 characters: with b115's limits its last words could have been lost without a word in the log.
 
 ## Not in b116, and why
 
 | Item | Why not |
 |---|---|
-| b113 #16, the meters (Covenant weapons' gauges, the Warthog's meters) | A bake change (the meter maps on the HUD meters' grid palette) and a run-time palette per value: next |
 | b113 #11, the flashlight on characters | Needs the GE's light 2 as a spot, tested against the cone per model: next |
 | b113 #18, shields flaring when hit | Modifier shaders aren't drawn at all yet |
 | R4's fallback (a resident level of detail instead of nothing) | Design; the counter comes first |
