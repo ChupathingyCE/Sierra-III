@@ -43,6 +43,9 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
 | `PSP_TICK_STEPS=1` | Per-step tick timing; recon only |
 | `PSP_NO_COLD=1` | Everything at the hot optimisation level |
 | `PSP_FIXUPS_CHECK=1` | Lists every fixup anchor that no longer matches, and builds nothing |
+| `PSP_XMB_SND0=<file.AT3>` | Packs a local menu sound into the EBOOT (never commit it; see `psp/xmb/README.md`) |
+
+**Menu art:** the XMB icon, overlay and background come from `psp/xmb/campaign/` or `psp/xmb/mp/` (by `PSP_MULTIPLAYER`); `psp/xmb/README.md` has the sizes.
 
 **Keep words:** `ms0:/halo/keep.txt` (or the launch menu) turns features on and off at launch. `psp_keep()` in `psp/src/psp_platform.c` reads them. `docs/optimization_ranking.md` (appendix B) lists the speed-related ones.
 

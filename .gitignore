@@ -32,6 +32,11 @@ tags_*/
 *.shader_*
 *.unicode_string_list
 *.font
+# Audio clipped from the game's music (e.g. for the XMB's SND0). Keep these
+# local and pack them with PSP_XMB_SND0; see psp/xmb/README.md.
+*.at3
+*.AT3
+/psp/xmb/local/
 
 # 2. Build output. psp_build.py regenerates all of it.
 /build/
