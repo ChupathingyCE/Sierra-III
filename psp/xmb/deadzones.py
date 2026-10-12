@@ -2,7 +2,8 @@
 """The XMB's dead zones over PIC1: where the firmware draws its own UI on top of the wallpaper.
 
 Measured from photos of a PSP-1000 (2026-10-12), in screen pixels (480 x 272).
-Photo measurements are about +/-4 px; a calibration grid on hardware refines them.
+Photo measurements are about +/-4 px, and each zone carries a few pixels of margin
+beyond what was measured (the list column measured 55-140, the clock from 341).
 
 usage: deadzones.py OUT.png [UNDER.png]
   Writes the zones as a translucent overlay, over UNDER (a 480 x 272 PIC1) when given."""
@@ -11,13 +12,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 # (name, x0, y0, x1, y1, when it is there)
 ZONES = [
-    ("other titles above", 48, 0, 162, 96, "always; the list scrolls through this column"),
+    ("other titles above", 50, 0, 146, 96, "always; the list scrolls through this column"),
     ("highlighted tile", 18, 96, 176, 188, "always; the game's own ICON0 / ICON1"),
-    ("other titles below", 48, 188, 162, 272, "always; the list scrolls through this column"),
+    ("other titles below", 50, 188, 146, 272, "always; the list scrolls through this column"),
     ("category icon", 0, 50, 32, 86, "always"),
     ("corner mark", 0, 0, 18, 18, "always"),
     ("list arrow", 4, 128, 18, 146, "always"),
-    ("clock + battery", 344, 10, 480, 34, "always"),
+    ("clock + battery", 336, 10, 480, 34, "always"),
     ("Options button", 390, 218, 480, 258, "after a moment on the entry"),
 ]
 

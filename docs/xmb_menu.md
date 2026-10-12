@@ -22,25 +22,26 @@ Why the split:
 
 ## Layout (revised 2026-10-12, after a hardware preview)
 
-The game title and the Sierra-III mark stack in one column to the right of the ring tile (x 196–452, y 44–215), centred on the tile's row. The rest of the screen is left to the wallpaper.
+The game title sits at the top (x 152–328, y 14–73) and the Sierra-III mark at the bottom (x 152–328, y 217–264), both centred on the screen's true centre (x 240). The middle half of the screen (y 68–204) is left to the wallpaper, the tile's row included.
 
 - **Baked into PIC1, not PIC0.** Where the XMB draws PIC0 isn't documented in what we checked [U]; PIC1 fills the 480×272 screen, so baking the title and mark into it puts every pixel where we drew it.
 - **Why not above and below the tile** (the first plan): on hardware, the other titles in the list sit there, and scrolling moves them through that whole column [M].
+- **Margins**: about 12 px to the list column and 13 px to the clock; the mark ends 8 px above the screen's bottom edge.
 - **The highlighted tile** sits at about (24, 101), 146×81 [M, from a photo, ±4 px].
 
 ### Dead zones
 
-Where the XMB draws its own UI over PIC1, measured from photos of a PSP-1000 [M, ±4 px]. Nothing important goes in these; the final PIC1 leaves them to the wallpaper. `psp/xmb/deadzones.py OUT.png PIC1.png` draws them over any PIC1.
+Where the XMB draws its own UI over PIC1, measured from photos of a PSP-1000 [M, ±4 px; each zone keeps a few pixels of margin beyond the measurement]. Nothing important goes in these; the final PIC1 leaves them to the wallpaper. `psp/xmb/deadzones.py OUT.png PIC1.png` draws them over any PIC1.
 
 | Zone | x | y | When |
 |---|---|---|---|
-| Other titles above | 48–162 | 0–96 | Always; the list scrolls through this column |
+| Other titles above | 50–146 | 0–96 | Always; the list scrolls through this column |
 | Highlighted tile | 18–176 | 96–188 | Always |
-| Other titles below | 48–162 | 188–272 | Always |
+| Other titles below | 50–146 | 188–272 | Always |
 | Category icon | 0–32 | 50–86 | Always |
 | Corner mark | 0–18 | 0–18 | Always |
 | List arrow | 4–18 | 128–146 | Always |
-| Clock and battery | 344–480 | 10–34 | Always |
+| Clock and battery | 336–480 | 10–34 | Always |
 | Options button | 390–480 | 218–258 | After a moment on the entry |
 
 Also from the hardware preview: the PSP-1000's LCD lifts near-black toward mid-blue, so the final art shouldn't lean on deep blacks.
