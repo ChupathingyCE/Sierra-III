@@ -174,3 +174,10 @@ At 30 fps the GE has 33 ms a frame. The beach's models alone take 32 ms.
 - **The sound re-reads:** after loading, 93% of the 112 MB read from the map file had been read before. 19.4 s in the stick over the run, 3.2% of the time; up to 1.8 s in a beach report (6%).
 - **Levers this points to:** write checkpoints compressed and into a file kept at full size (fewer bytes, no file growth); hold the log's flush while a checkpoint writes; keep more sound read ahead so a 1 s stall isn't heard. All three restore the original's behaviour (no freeze, no silence).
 
+## Test 6: play, no instruments
+
+Keep words `nearauto assettrack geo2`. No fault; stopped at game time 4,889, on the beach.
+- Beach 123.9 ms a frame (8.1 fps), against 165–173 in the other runs: the beach depends on where the player goes and looks, so it isn't a comparison.
+- The "cinematic" stretch took 245.7 ms a frame against ~196 in every other run, with the drawing up ~30% and the tick unchanged. The geometry cache served 38% more lookups over it, so more was drawn: the opening was likely skipped and the player looked around the cabin [U].
+- 8 sounds failed for room; heap peak 5,348 KB.
+
