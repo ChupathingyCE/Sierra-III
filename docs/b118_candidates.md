@@ -89,7 +89,8 @@ A second review read the GE layer for exact speed-ups, keeping the picture byte 
 
 - `PSP_BUILD_NUMBER` 118 (`psp_platform.c`).
 - `hudonemap` and `glassflat` go into the log's list of the restorations' keep words, and into preset 6 ("the b115 look", every restoration off).
-- Merge `pgo116` once the PSP shows it gains (an exact speed-up: no A/B of the look needed); it touches `psp_build.py` and `psp_platform.c`, and `hudbars` neither.
+- Merge `speed118p` (which carries `pgo116`). A trial merge into `hudbars` went through without a conflict and compiled: heap 5,832 KB without a profile [D].
+- Build with the profile once the PSP shows it gains (test 7; an exact speed-up, so no A/B of the look). Make a new profile at the final code first: GCC drops the counts of every function that changed.
 - The usual final checks: the strict interpreter on all ten maps and the tour, on the release commit.
 
 ## From b116, still open
