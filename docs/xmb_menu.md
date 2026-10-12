@@ -20,12 +20,30 @@ Why the split:
 - The score is extracted game data, and its ownership is not public (the composers' 2020 royalty suit against Microsoft settled on undisclosed terms). The bake reads it from the user's disc, the same way maps are made. This is the decomp-port precedent (e.g. Ship of Harkinian): share code, generate assets locally.
 - Bake-first is reversible. Music can always be shipped later; a shipped copy can't be taken back.
 
-## Layout (decided 2026-10-12)
+## Layout (revised 2026-10-12, after a hardware preview)
 
-Layout 1: the game title sits above the ring tile, the Sierra-III mark below it, and the right side of the screen is left to the Pillar of Autumn.
+The game title and the Sierra-III mark stack in one column to the right of the ring tile (x 196–452, y 44–215), centred on the tile's row. The rest of the screen is left to the wallpaper.
 
 - **Baked into PIC1, not PIC0.** Where the XMB draws PIC0 isn't documented in what we checked [U]; PIC1 fills the 480×272 screen, so baking the title and mark into it puts every pixel where we drew it.
-- **The tile's position is still an estimate** (28, 98, 144×80 at 1×) [U]. A screenshot of the real XMB fixes it before the final PIC1 is exported.
+- **Why not above and below the tile** (the first plan): on hardware, the other titles in the list sit there, and scrolling moves them through that whole column [M].
+- **The highlighted tile** sits at about (24, 101), 146×81 [M, from a photo, ±4 px].
+
+### Dead zones
+
+Where the XMB draws its own UI over PIC1, measured from photos of a PSP-1000 [M, ±4 px]. Nothing important goes in these; the final PIC1 leaves them to the wallpaper. `psp/xmb/deadzones.py OUT.png PIC1.png` draws them over any PIC1.
+
+| Zone | x | y | When |
+|---|---|---|---|
+| Other titles above | 48–162 | 0–96 | Always; the list scrolls through this column |
+| Highlighted tile | 18–176 | 96–188 | Always |
+| Other titles below | 48–162 | 188–272 | Always |
+| Category icon | 0–32 | 50–86 | Always |
+| Corner mark | 0–18 | 0–18 | Always |
+| List arrow | 4–18 | 128–146 | Always |
+| Clock and battery | 344–480 | 10–34 | Always |
+| Options button | 390–480 | 218–258 | After a moment on the entry |
+
+Also from the hardware preview: the PSP-1000's LCD lifts near-black toward mid-blue, so the final art shouldn't lean on deep blacks.
 
 ## The game title
 
@@ -64,7 +82,8 @@ The user drags the output's contents onto the stick root. That's one copy, and t
 - [ ] Pick the clip: which track, and where its loop points sit.
 - [ ] Check on hardware that `atracdenc`'s ATRAC3 plays in the XMB [U until then].
 - [ ] Encode `ICON1.PMF` (UMD Stream Composer under Wine; Sheepdog01's machine only).
-- [ ] Screenshot the real XMB to fix the icon tile's position.
+- [x] Find the icon tile's real position (photo, 2026-10-12).
+- [ ] Optional: refine the dead zones with a calibration grid shown as PIC1 on hardware.
 - [ ] Design the Sierra-III mark (the next piece; the title may be revisited once it exists).
 - [ ] Export the final PIC1 (footage + title + mark) and drop PIC0.
 - [ ] Set `PSP_TITLE` for both builds.
