@@ -48,7 +48,22 @@ Each was found in b113's review (`b113_candidates.md`) and set aside while speed
 - **Why E16 isn't exact** (lab): needed before the fraction change can come back.
 - **Fix the eDRAM probe:** b115's filled 1.25 MB in one 56 ms job and stopped the ME for test 1 (an audio job behind it timed out). Slices of at most 64 KB, one a heartbeat. G4 stays open until it runs.
 
-## 4. Order (a draft for Sheepdog01)
+## 4. Benchmarks: the campaign ladder (Sheepdog01, 2026-10-11)
+
+All ten campaign maps fit the PSP-1000 and play their openings on b115 in the emulator (`campaign_window_fit.md`, 2026-10-11). Sheepdog01's ladder for the PSP, each on b115 first for a baseline:
+
+| Map | Why | Stretch |
+|---|---|---|
+| b30 The Silent Cartographer | The accessible one; every build so far has numbers here | The opening cinematic (game time 150–570) and the beach |
+| a10 Pillar of Autumn | Interiors, and a long scripted opening: a second fair A/B stretch, lighter on the tick | The opening cinematic, into the cryo bay |
+| c10 343 Guilty Spark | The swamp: fog and a short draw distance, the Flood's first appearance | The drop, then the swamp |
+| c40 Two Betrayals | The top of the pyramid: Covenant against Flood, flying | The opening, then the first big fight |
+
+- **The emulator runs all ten every build** (the lab's `campaign-b115` batch: openings, no input). With an input script per map it can go deeper.
+- **`benchreport.py --stretches`** takes each map's own game-time stretches once the PSP runs show where they are.
+- **The heap:** a10 peaks at 5,764 of 5,888 KB. That makes the code trim (G8) a must, not a nicety.
+
+## 5. Order (a draft for Sheepdog01)
 
 1. Trim code (G8).
 2. The restorations with a found cause: R1, R3, R2, R11, and R4's counter. Emulator shots before the build. The fixed eDRAM probe.
