@@ -11300,8 +11300,17 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		for (corner = 0; corner < 3; corner++)
 		{
 			struct light_memo_entry *memo = &light_memo[triangle[corner] & (LIGHT_MEMO - 1)];
+			float direct[3];
 
-			if (!memo->camera_known)
+			/* two corners of one triangle can share a slot (their low bits
+			alike): the later one took it, so the earlier is worked out
+			here instead (lightmemocheck found it on d20) */
+			if (memo->tag != ((light_memo_draw << 16) | triangle[corner]))
+			{
+				to_camera(&stream->base[triangle[corner]].x, direct);
+				memo = NULL;
+			}
+			else if (!memo->camera_known)
 			{
 				to_camera(&stream->base[triangle[corner]].x, memo->camera);
 				memo->camera_known = 1;
@@ -11315,9 +11324,9 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 					light_memo_mismatches++;
 				light_memo_checks++;
 			}
-			corners[corner][0] = memo->camera[0];
-			corners[corner][1] = memo->camera[1];
-			corners[corner][2] = memo->camera[2];
+			corners[corner][0] = memo ? memo->camera[0] : direct[0];
+			corners[corner][1] = memo ? memo->camera[1] : direct[1];
+			corners[corner][2] = memo ? memo->camera[2] : direct[2];
 			corners[corner][7] = stream->base[triangle[corner]].x;
 			corners[corner][8] = stream->base[triangle[corner]].y;
 			corners[corner][9] = stream->base[triangle[corner]].z;
