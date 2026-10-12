@@ -75,6 +75,7 @@ A second review read the GE layer for exact speed-ups, keeping the picture byte 
 | 1-4 (`lightmemo-ab`, 38247017012) | d20 | −3.8% | +0.2% | the same |
 | 1-4 | a10 | −2.4% | +0.2% | the same |
 
+- **The strict interpreter** at the head (`4023a72`, after the revert): clean on a10, a30, d20 and c40, no crash (`speed118p-strict`, 38257590975) [E].
 - **The tick's +0.2-0.4%** is the code moving in the cache, not more work: it fetches the same instructions [U].
 - **Pictures can't be compared** between two builds: the effects animate with the clock, and the clock runs differently in each (`lightmemo-shots`).
 - **So the memo checks itself instead** (keep word `cornermemocheck`, first `lightmemocheck`): it works every remembered value out again and compares bit for bit.
