@@ -1983,14 +1983,30 @@ void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz
 
 /* build 90: 1 when the local player sits in a vehicle (nearauto: a model
 sphere the eye is inside holds the near plane in, unless it is the vehicle
-he is in; psp_ge.c) */
+he is in; psp_ge.c). Build 116 (b113 #17): 2 in a seat without the
+third-person camera (a Pelican's bench), where the vehicle's own walls are
+at the eye and its sphere holds the plane in as on foot; b90-b115 let the
+plane out to 16 x there and cut the cabin open. Keep word "nearseatedfar":
+1 in any seat, as before */
 int psp_player_seated(void)
 {
+	static int far_in_any_seat = -1;
 	long unit_index = psp_local_unit(NULL);
+	struct unit_datum *unit;
+	struct object_datum *vehicle;
 
 	if (unit_index == NONE)
 		return 0;
-	return object_get(unit_index)->object.parent_object_index != NONE;
+	unit = unit_get(unit_index);
+	if (unit->object.parent_object_index == NONE)
+		return 0;
+	if (far_in_any_seat < 0)
+		far_in_any_seat = psp_keep("nearseatedfar");
+	vehicle = object_get(unit->object.parent_object_index);
+	if (far_in_any_seat || !TEST_FLAG(_object_mask_unit, vehicle->object.type) || unit->unit.parent_seat_index == NONE)
+		return 1;
+	return TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&unit_definition_get(vehicle->definition_index)->unit.seats,
+		unit->unit.parent_seat_index, struct unit_seat)->flags, _unit_seat_third_person_camera_bit) ? 1 : 2;
 }
 
 /* build 88: where the local player is now (benchrun re-places him only when
@@ -11206,6 +11222,50 @@ FIXES_116["source/rasterizer/rasterizer.c#water"] = [
 		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
 		*blend = (*(unsigned short const *)(definition + 40) & 2) ? 0 : 3;
 	}"""),
+]
+# build 116 (b113 #2): a flare's ray meets characters too, as the Xbox's
+# depth-tested visibility query hid a plasma glow behind anyone standing in
+# front of it; b31-b115's ray met the level, vehicles, scenery and machines
+# only, so glows shone through bodies. The players' own bipeds are left out
+# (the eye is inside the player's), and the ray stops 0.15 units short of
+# the flare, so a character's capsule doesn't hide the glow of the weapon in
+# its own hands. Keep word "flaresnobipeds": as before
+FIXES_116["source/rasterizer/xbox/rasterizer_xbox_widgets.c#bipeds"] = [
+("""				vector_from_points3d(&global_window_parameters.camera.position, point, &ray);
+				/* the level's sky surfaces (no material) are where the
+				sky is drawn: a ray that meets one has reached the sky */
+				if (!collision_test_vector(
+					FLAG(_collision_test_front_facing_surfaces_bit) |
+						FLAG(_collision_test_ignore_invisible_surfaces_bit) |
+						FLAG(_collision_test_structure_bit) |
+						FLAG(_collision_test_objects_bit) |
+						_collision_test_objects_sight_blocking_flags,""",
+ """				vector_from_points3d(&global_window_parameters.camera.position, point, &ray);
+				{
+					static int no_bipeds = -1;
+					real length = magnitude3d(&ray);
+
+					if (no_bipeds < 0)
+						no_bipeds = psp_keep("flaresnobipeds");
+					if (!no_bipeds && length > 0.3f)
+						scale_vector3d(&ray, (length - 0.15f) / length, &ray);
+					psp_flare_bipeds = no_bipeds ? 0 :
+						FLAG(_collision_test_objects_bipeds_bit) | FLAG(_collision_test_skip_player_bipeds_bit);
+				}
+				/* the level's sky surfaces (no material) are where the
+				sky is drawn: a ray that meets one has reached the sky */
+				if (!collision_test_vector(
+					FLAG(_collision_test_front_facing_surfaces_bit) |
+						FLAG(_collision_test_ignore_invisible_surfaces_bit) |
+						FLAG(_collision_test_structure_bit) |
+						FLAG(_collision_test_objects_bit) |
+						_collision_test_objects_sight_blocking_flags | psp_flare_bipeds,"""),
+("""static unsigned long psp_occlusion_frame = 1;
+static int psp_occlusion_exact = -1;""",
+ """static unsigned long psp_occlusion_frame = 1;
+static int psp_occlusion_exact = -1;
+/* build 116: characters in a flare's way (b113 #2) */
+static unsigned long psp_flare_bipeds = 0;"""),
 ]
 FIXES_116["source/rasterizer/rasterizer.c#planarfog"] = [
 ("""		extern void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);

@@ -1070,6 +1070,29 @@ static void transparent_flush(void);
 static void taa_resolve(void);
 static int hud_phase = 0;
 
+/* build 116 (b113 #6): the world drawn with the GE's ordered dither, as a
+16-bit frame needs to keep the Xbox's 32-bit gradients: without it the
+dark areas and the multiply passes (lightmap, detail maps) went in visible
+steps. The HUD and the 2D items keep flat colours (a dithered flat colour
+is a speckle). Keep word "nodither": as before */
+static int dither_off = -1;
+static void ge_dither(int on)
+{
+	static const ScePspIMatrix4 matrix = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
+
+	if (dither_off < 0)
+		dither_off = psp_keep("nodither");
+	if (dither_off)
+		return;
+	if (on)
+	{
+		sceGuSetDither(&matrix);
+		sceGuEnable(GU_DITHER);
+	}
+	else
+		sceGuDisable(GU_DITHER);
+}
+
 /* the HUD's turn: the reserve is its. The world's see-through draws are
 flushed first, inside the world's share (build 34: in build 33 the flush
 came after the switch and the effects of a firefight ate the HUD's room) */
@@ -1079,6 +1102,7 @@ static void list_hud_phase(void)
 		return;
 	transparent_flush();
 	taa_resolve();
+	ge_dither(0); /* build 116 */
 	hud_phase = 1;
 	list_limit = list_bytes;
 }
@@ -2698,6 +2722,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	sceGuClearColor(magenta ? 0xFFFF00FF : clear_blue ? SKY_COLOR : window_clear_color);
 	sceGuClearDepth(0);
 	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+	ge_dither(1); /* build 116: the world's draws */
 	/* build 63: the world's depth state from a known start each frame, so a
 	slip the frame before (a test left off, a nudge left on) can't carry */
 	sceGuEnable(GU_DEPTH_TEST);
@@ -4655,6 +4680,24 @@ static float detail_bias = -2.0f;
 static int detail_slope = -1;
 int psp_keep(const char *name);
 
+/* build 116 (b113 #7): the grey a detail pass fades to, its texels' own
+neutral: texpack.py bakes a detail map around 0.5, which a 16-bit (5650)
+palette holds as 0x7B7D7B. Builds 31-115 faded to 0x808080, about 4%
+brighter a pass, so the terrain and the walls brightened in a band from 20
+to 60 units (b113 #7). A 32-bit palette holds 0x808080 itself. Keep word
+"detailgrey80": as before */
+static unsigned int detail_neutral(unsigned int key)
+{
+	extern int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *count);
+	static int old = -1;
+	const unsigned short *palette;
+	int count;
+
+	if (old < 0)
+		old = psp_keep("detailgrey80");
+	return !old && psp_tex_palette16(key, &palette, &count) ? 0xFF7B7D7B : 0xFF808080;
+}
+
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v)
 {
@@ -5116,7 +5159,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 					uv_shift(detail_u[pass], detail_v[pass]);
 				sceGuDepthFunc(GU_EQUAL);
 				sceGuDepthMask(GU_TRUE);
-				sceGuFog(near, far > near ? far : near + 1.0f, 0xFF808080);
+				sceGuFog(near, far > near ? far : near + 1.0f, detail_neutral(detail_key[pass]));
 				sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_SRC_COLOR, 0, 0);
 				sceGuEnable(GU_BLEND);
 				/* build 91: a detail map's smaller levels are faded toward a
@@ -5318,8 +5361,9 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 			vehicle (the one he is in). On foot against the tank, the eye is
 			inside its large sphere too, and b84-b89 then let the near plane
 			out to 25 cm and cut the hull open (Sheepdog01's b87 shot 029): on foot
-			such a sphere counts as touching the eye */
-			if (reach < 0.0f && !player_seated)
+			such a sphere counts as touching the eye. Build 116: and in a
+			first-person seat (psp_player_seated 2: a Pelican's bench) */
+			if (reach < 0.0f && player_seated != 1)
 				reach = 0.0f;
 			if (reach >= 0.0f && reach < near_object_distance)
 				near_object_distance = reach;
@@ -10835,10 +10879,21 @@ void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned sh
 
 /* ---------- the screen flash (build 23): a colour over the whole picture,
 lightening (taking damage, pickups), darkening or tinting it, at the
-game's intensity (rasterizer_xbox_screen_effect.c's sums; max, min and
-invert are drawn as the nearest of those) */
+game's intensity (rasterizer_xbox_screen_effect.c's sums). Build 116 (b113
+#9): max, min and invert as the Xbox draws them (the GE has its MAX and MIN
+blends and the factors invert needs); builds 23-115 drew max as a lighten
+and min as a darken, so a needle's pink flash went solid over the picture
+where the Xbox's only lifts what is darker than it. Keep word
+"flashnearest": as before */
 
 static unsigned long flashes_drawn = 0;
+static int flash_nearest = -1;
+
+/* a flash colour channel as a byte, clamped */
+static unsigned int flash_byte(float value)
+{
+	return (unsigned int)PSP_CLAMP_255((int)(value * 255.0f + 0.5f));
+}
 
 void psp_ge_screen_flash(short type, float intensity, float const *argb)
 {
@@ -10857,7 +10912,27 @@ void psp_ge_screen_flash(short type, float intensity, float const *argb)
 	sceGuDisable(GU_FOG);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_BLEND);
-	switch (type)
+	if (flash_nearest < 0)
+		flash_nearest = psp_keep("flashnearest");
+	if (!flash_nearest && (type == 3 || type == 4 || type == 5))
+	{
+		/* the Xbox's source colour for each (its combiner's sums of the
+		flash colour f and its alpha fa, each channel clamped) */
+		float f[3] = { r, g, b }, source[3];
+		int k;
+
+		for (k = 0; k < 3; k++)
+			source[k] = type == 3 ? f[k] - a : type == 4 ? f[k] + a : f[k] * (2.0f * f[k] - 1.0f) + a;
+		color = 0xFF000000 | (flash_byte(source[2]) << 16) | (flash_byte(source[1]) << 8) | flash_byte(source[0]);
+		if (type == 3) /* max: the brighter of the picture and the colour */
+			sceGuBlendFunc(GU_MAX, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+		else if (type == 4) /* min: the darker */
+			sceGuBlendFunc(GU_MIN, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+		else /* invert: the colour times (1 - the picture), plus the picture times (1 - f) */
+			sceGuBlendFunc(GU_ADD, GU_ONE_MINUS_DST_COLOR, GU_FIX, 0,
+				(flash_byte(1.0f - b) << 16) | (flash_byte(1.0f - g) << 8) | flash_byte(1.0f - r));
+	}
+	else switch (type)
 	{
 	case 2: /* darken: the colour taken away */
 	case 4: /* min */
