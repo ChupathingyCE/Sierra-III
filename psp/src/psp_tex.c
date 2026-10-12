@@ -194,6 +194,10 @@ void psp_tex_close(void)
 			platform_log("textures: vrammodels: the top %d KB of VRAM for the model buffers; the texture cache %u KB",
 				kb, (vram_cache_end - VRAM_CACHE_START) / 1024);
 		}
+		else if (kb)
+			/* said, not silently left off (the emulator's vrammodels800 run) */
+			platform_log("textures: vrammodels%d left off: 64 KB up to half the texture cache's VRAM (%u KB)", kb,
+				(VRAM_CACHE_END_FULL - VRAM_CACHE_START) / 2048);
 	}
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;

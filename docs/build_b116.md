@@ -38,7 +38,7 @@ Zip, EBOOT and commit: below, once the release is built. Heap 5,864 KB (b115: 5,
 
 | Keep word | What it does |
 |---|---|
-| `vrammodelsN` (600 or 800) | The top N KB of VRAM hold copies of the model buffers the GE reads most per byte; draws read the copies (the same pixels). The textures give that VRAM up (b115 test 3: ~1.5 ms of GE time [M]); the models were 105 ms of the flight's GE time [M]. Presets 3, 4 and 5 |
+| `vrammodelsN` (600 or 400; at most half the texture cache's 1,216 KB) | The top N KB of VRAM hold copies of the model buffers the GE reads most per byte; draws read the copies (the same pixels). The textures give that VRAM up (b115 test 3: ~1.5 ms of GE time [M]); the models were 105 ms of the flight's GE time [M]. In the emulator 600 KB held 86 of b30's model buffers, and every model draw read a copy (gereads: the fit curve puts 96% of b30's model reads in the best 600 KB, 88% in 400) [E]. Presets 3 (without), 4 and 5 |
 
 ### Instruments and fixes
 
