@@ -9593,6 +9593,7 @@ static int overlay_scaled = -1;
 static int overlays_off = -1;
 extern volatile int psp_screenshot_requested;
 static int tdump = -1;
+static long tskip = -1; /* "tskipN" (transparent_flush_body) */
 
 static void transparent_flush_body(void)
 {
@@ -9654,6 +9655,18 @@ static void transparent_flush_body(void)
 				draw->sprites, draw->blend, sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,
 				draw->matrix.w.x, draw->matrix.w.y, draw->matrix.w.z, state_depth, model_first_person);
 		}
+		/* "tskipN": the see-through draws whose map is the bitmap_data at
+		address N (decimal; tdump prints it in hex) left out, to tell which
+		draw a thing on screen is (after b116: c40's pale discs). The tags
+		sit at the same addresses in every build, for the same map */
+		if (tskip < 0)
+		{
+			extern int psp_keep_number(const char *prefix, int fallback);
+
+			tskip = (long)psp_keep_number("tskip", 0);
+		}
+		if (tskip > 0 && draw->key == (unsigned int)tskip)
+			continue;
 		if ((draw->first_person ? list_full_first_person() : list_full()) || (draw->level && overlays_off) ||
 			!psp_tex_bind(draw->key, NULL))
 			continue;
