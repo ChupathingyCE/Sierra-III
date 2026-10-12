@@ -113,9 +113,15 @@ def main():
             if senv:
                 users.append('%s (%s)' % (t.name, ', '.join(senv)))
     print('object models with environment shaders (%d): %s' % (len(users), '; '.join(sorted(users)) or 'none'))
-    # build 116: the see-through tints (texpack.py writes them into the pack)
-    import seethrough
-    from texpack import bitmap_list
+    # build 116: the see-through tints (texpack.py writes them into the pack).
+    # They decode bitmaps, which needs the bake's environment (numpy, Pillow):
+    # without it, said and skipped
+    try:
+        import seethrough
+        from texpack import bitmap_list
+    except ImportError as e:
+        print('tints: not worked out here (%s; the bake\'s environment has it)' % e)
+        return
     shaders = {t.name for t in m.tags if t.group in ('sotr', 'schi', 'swat') and pattern in t.name.lower()}
     means = seethrough.Means(m, bitmap_list(m, d))
     for t in sorted((t for t in m.tags if t.name in shaders and t.group in ('sotr', 'schi', 'swat')), key=lambda t: t.name):
