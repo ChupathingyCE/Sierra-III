@@ -4,7 +4,7 @@ Sierra-III doesn't copy anyone's source into this repository. It pins each upstr
 
 | Piece | Upstream | Pinned at | Our changes | Licence |
 |---|---|---|---|---|
-| **Engine (current base)** | [ChupathingyCE](https://github.com/ChupathingyCE/chupathingyce) (0.7.1d) | `b78e6cfa00d007592a21b12363b2cbc1b5217997` | None in the checkout: `psp_fixups.py` changes a mirror of it at build time | its `LICENSE.md` |
+| **Engine (current base)** | [ChupathingyCE](https://github.com/ChupathingyCE/chupathingyce) (0.7.4e, network version 28) | `f8abf2162aa4d4be8ba85ecd63396c776ff92faf` | None in the checkout: `psp_fixups.py` changes a mirror of it at build time | its `LICENSE.md` |
 | **Engine (previous base, still builds)** | [halo-ce-universal](https://github.com/cybersecurity/halo-ce-universal) | `8fb1647e18a68e164529321bdcbe24557801f23b` | `upstream/halo-ce-universal/*.patch` (two commits, apply with `git am`), plus `psp_fixups.py` | CC0 (its `LICENSE.md`) |
 | **Invader** (the map builder the bake uses) | [SnowyMouse/invader](https://github.com/SnowyMouse/invader) | `d43ce550db5b6b68ddea0d4c2080b616555e5279`; submodule `ext/riat` at `c1380cbfc708d89a3713af57b48d3f4368c34f8a` | `upstream/invader/psp-fork.patch` (apply with `git apply`) | GPLv3 |
 | **Media Engine library** | [mcidclan/psp-media-engine-custom-core](https://github.com/mcidclan/psp-media-engine-custom-core) (me-core-mapper) | `727421b4d5f006f298f22451864a464eb0e7fd20` | None. `tools/build_release.sh` builds it with cmake into its cache (`PSP_MECORE` points `psp_build.py` at it) | MIT (shipped beside the EBOOT as `LICENSE-mecore.md`) |

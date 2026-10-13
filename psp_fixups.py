@@ -7690,19 +7690,23 @@ FIXES_36["source/physics/breakable_surfaces.c#aligned"] = [
 # two of the ten were the game's own logs, opened at start-up and never
 # closed. Their lines now go through the port's log, which opens its file
 # only for the moment of each batch write.
-FIXES_105 = {}
-FIXES_105["source/cseries/errors.c"] = [
-("""static void write_to_debug_file(
-	char const *string,
-	boolean date)
-{
-	static FILE *volatile debug_file = NULL;
-""",
- """#ifdef HALO_PSP
+#
+# build 120 (upstream f8abf21): ChupathingyCE's debug.txt now counts a line
+# written again as it was ("last line repeated N times") and rolls the file
+# at 64 MB. The PSP keeps the counting (a warning each tick would otherwise
+# fill the log) and has no roll: the port's log starts empty every launch.
+# The whole desktop writer, its statics and its roll helper, stays behind
+# #else, so the two anchors are the first and last lines of that stretch.
+_PSP_DEBUG_FILE = """#ifdef HALO_PSP
 void platform_psp_log(const char *format, ...);
 
-/* psp_fixups.py (build 105): debug.txt's lines go to the port's log, one
-line each, without the file's own date prefix (the log has its own) */
+/* psp_fixups.py (builds 105, 120): debug.txt's lines go to the port's log,
+one line each, without the file's own date prefix (the log has its own). A
+line written again as it was is counted until a different one comes, as
+upstream does (one writer: the game thread logs; a race costs only a count) */
+static char debug_file_psp_last_line[512];
+static unsigned long debug_file_psp_repeat_count = 0;
+
 static void write_to_debug_file(
 	char const *string,
 	boolean date)
@@ -7715,17 +7719,51 @@ static void write_to_debug_file(
 	length = strlen(line);
 	while (length > 0 && (line[length - 1] == '\\n' || line[length - 1] == '\\r'))
 		line[--length] = 0;
-	if (length > 0)
-		platform_psp_log("debug.txt: %s", line);
+	if (length == 0)
+		return;
+	if (!strcmp(line, debug_file_psp_last_line))
+	{
+		debug_file_psp_repeat_count++;
+		return;
+	}
+	if (debug_file_psp_repeat_count)
+	{
+		platform_psp_log("debug.txt: last line repeated %lu times", debug_file_psp_repeat_count);
+		debug_file_psp_repeat_count = 0;
+	}
+	memcpy(debug_file_psp_last_line, line, length + 1);
+	platform_psp_log("debug.txt: %s", line);
 }
-#else
+"""
+FIXES_105 = {}
+FIXES_105["source/cseries/errors.c"] = [
+Either(universal=("""static void write_to_debug_file(
+	char const *string,
+	boolean date)
+{
+	static FILE *volatile debug_file = NULL;
+""",
+ _PSP_DEBUG_FILE + """#else
 static void write_to_debug_file(
 	char const *string,
 	boolean date)
 {
 	static FILE *volatile debug_file = NULL;
 """),
-("""	fprintf(file, "%s%s", prefix, string);
+       chupa=("""static void debug_file_port_write(
+	FILE *file,
+	char const *prefix,
+	char const *string);
+""",
+ _PSP_DEBUG_FILE + """/* (never set on the PSP, which has no roll: write_to_error_file reads it) */
+static boolean debug_file_port_rolled = FALSE;
+#else
+static void debug_file_port_write(
+	FILE *file,
+	char const *prefix,
+	char const *string);
+""")),
+Either(universal=("""	fprintf(file, "%s%s", prefix, string);
 	fflush(file);
 }
 """,
@@ -7734,6 +7772,17 @@ static void write_to_debug_file(
 }
 #endif
 """),
+       chupa=("""	fprintf(file, "%s%s", prefix, string);
+	fflush(file);
+	debug_file_port_size += (long)(csstrlen(prefix) + csstrlen(string));
+}
+""",
+ """	fprintf(file, "%s%s", prefix, string);
+	fflush(file);
+	debug_file_port_size += (long)(csstrlen(prefix) + csstrlen(string));
+}
+#endif
+""")),
 ]
 # gamestate.txt listed every game-state allocation at start-up and kept the
 # file open; the heartbeat's "game state:" survey (build 36) already reports
