@@ -63,3 +63,5 @@ This repository was created on 2026-10-09. The history before then was rebuilt f
 ## Licence
 
 None chosen yet. The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
+
+Sierra-III was created under Microsoft's "Game Content Usage Rules" using assets from Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. The only such assets in this repository are the XMB menu's wallpaper, made from stills of our own gameplay footage. Halo: Combat Evolved © Microsoft Corporation.

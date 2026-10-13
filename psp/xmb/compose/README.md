@@ -1,8 +1,8 @@
 # PIC1 compositing (work in progress, pinned 2026-10-12)
 
-Scripts that build the XMB wallpaper from Sheepdog01's own gameplay captures. **The captures, the
-cutouts made from them and the PIC1 they produce are footage of the game: they stay on Sheepdog01's
-machine and never enter this repository.** Only the scripts live here.
+Scripts that build the XMB wallpaper from Sheepdog01's own gameplay captures. **The captures and the
+cutouts made from them stay on Sheepdog01's machine.** The exported PIC1 is the one exception to the
+no-game-data rule (CLAUDE.md, 2026-10-12): it's committed as `../campaign/PIC1.PNG`.
 
 | Script | Input | Output |
 |---|---|---|

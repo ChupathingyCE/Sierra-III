@@ -8,7 +8,7 @@ The XMB is the PSP's home menu. When Sierra-III is highlighted there, the firmwa
 |---|---|---|---|
 | `ICON0.PNG` | 144×80 | The tile in the game list | `campaign/`, `mp/` |
 | `ICON1.PMF` | 144×80, PMF video | Animated tile, replaces ICON0 on hover | not yet |
-| `PIC0.PNG` | 310×180, transparent | Overlay drawn on the background | `campaign/`, `mp/` |
+| `PIC0.PNG` | 310×180, transparent | Overlay drawn on the background | `mp/` (the campaign's titles are baked into its PIC1) |
 | `PIC1.PNG` | 480×272 | Full-screen background (static only) | `campaign/`, `mp/` |
 | `SND0.AT3` | ATRAC3 | Loops while the entry is highlighted | local only, see below |
 
@@ -18,10 +18,11 @@ The campaign build (`PSP/GAME/halo`) and the multiplayer build (`PSP/GAME/halomp
 
 ## Art
 
-- What is here now are placeholders drawn by `make_placeholders.py`. Re-run it to regenerate them.
+- **The campaign's `PIC1.PNG` is real art** (2026-10-12): the generated backdrop (`backdrop.py`), the ring and the Pillar of Autumn cut from Sheepdog01's PC captures (`compose/`), and the game title and Sierra-III mark. It stands in until Sheepdog01 recaptures on his ultrawide (`docs/xmb_menu.md`).
+- Everything else is a placeholder drawn by `make_placeholders.py`. Re-running it leaves real art alone (`REAL` in the script).
 - Real art replaces the PNGs in place, at exactly these sizes. Keep the layered masters (at 2–4× size) wherever you draw; only the exported PNGs live here.
 - Export plain 8-bit PNGs: non-interlaced, no metadata. The XMB can show a blank tile for anything fancier.
-- Art must be ours. Nothing from the game's files or Microsoft's branding goes in this repository.
+- Art must be ours, with one exception: stills of Sheepdog01's own gameplay footage, under Microsoft's Game Content Usage Rules (CLAUDE.md; the README carries their notice). Only the exported images: never the raw captures or cutouts, nothing extracted from the game's files, no Microsoft logos.
 
 ## Sound
 

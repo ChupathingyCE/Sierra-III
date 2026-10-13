@@ -11,7 +11,9 @@ contract (see README.md). Each set is written to psp/xmb/<variant>/:
 
 These are stand-ins: obviously placeholder, entirely ours, safe to commit.
 Real art replaces the PNGs in place; this script stays as the reference
-for sizes and layout zones.
+for sizes and layout zones. Slots holding real art are listed in REAL and
+never overwritten (the campaign's PIC1 since 2026-10-12; it carries the
+titles itself, so that build has no PIC0).
 
 usage: python3 psp/xmb/make_placeholders.py      (needs Pillow >= 10.1)"""
 import os
@@ -29,6 +31,8 @@ VARIANTS = {
     "campaign": {"label": "CAMPAIGN", "accent": (88, 170, 120)},
     "mp": {"label": "MULTIPLAYER", "accent": (200, 140, 60)},
 }
+# Slots holding real art, skipped here.
+REAL = {("campaign", "PIC1.PNG"), ("campaign", "PIC0.PNG")}
 STEEL_TOP, STEEL_BOTTOM = (34, 40, 46), (10, 12, 14)
 TEXT = (226, 230, 232)
 
@@ -99,9 +103,11 @@ def main():
     for name, v in VARIANTS.items():
         out = os.path.join(HERE, name)
         os.makedirs(out, exist_ok=True)
-        save(make_icon0(v), os.path.join(out, "ICON0.PNG"))
-        save(make_pic0(v), os.path.join(out, "PIC0.PNG"))
-        save(make_pic1(v), os.path.join(out, "PIC1.PNG"))
+        for slot, make in (("ICON0.PNG", make_icon0), ("PIC0.PNG", make_pic0), ("PIC1.PNG", make_pic1)):
+            if (name, slot) in REAL:
+                print("kept", os.path.join(name, slot), "(real art)")
+            else:
+                save(make(v), os.path.join(out, slot))
 
 
 if __name__ == "__main__":

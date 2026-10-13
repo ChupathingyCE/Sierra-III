@@ -106,7 +106,8 @@ The main menu's theme isn't in any script: ui.map's only script moves the camera
 ## Open items
 
 - [ ] Sheepdog01 records the ring loop (ICON1) from PC ChupathingyCE.
-- [ ] PIC1: pinned for now (backdrop + ring + ship + titles, `psp/xmb/compose/`). Needs a larger ring capture; reads lower quality than commercial PIC1s on hardware.
+- [x] PIC1 committed for b117 (2026-10-12): `psp/xmb/campaign/PIC1.PNG`; the campaign's PIC0 dropped. The footage exception is in CLAUDE.md.
+- [ ] PIC1 recapture: a larger ring, shot on the ultrawide; it reads lower quality than commercial PIC1s on hardware.
 - [ ] Pick the clip: run `--maps ui --list-music` on the desktop, listen, and set `MUSIC` in `bake/bake.py`.
 - [x] The bake step that cuts, encodes and packs SND0 (2026-10-12).
 - [ ] Check on hardware that `atracdenc`'s ATRAC3 plays in the XMB [U until then].
@@ -114,7 +115,7 @@ The main menu's theme isn't in any script: ui.map's only script moves the camera
 - [x] Find the icon tile's real position (photo, 2026-10-12).
 - [ ] Optional: refine the dead zones with a calibration grid shown as PIC1 on hardware.
 - [ ] Design the Sierra-III mark (the next piece; the title may be revisited once it exists).
-- [ ] Export the final PIC1 (footage + title + mark) and drop PIC0.
+- [x] Export the PIC1 (footage + title + mark) and drop PIC0.
 - [ ] Set `PSP_TITLE` for both builds.
-- [ ] Add the GCUR notice to README.md.
+- [x] Add the GCUR notice to README.md.
 - [ ] More disc releases for `hashes.json` (only NTSC 01.10.12.2276 today).
