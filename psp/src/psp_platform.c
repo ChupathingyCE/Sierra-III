@@ -882,6 +882,34 @@ void psp_cache_thread_priority(void)
 			info.name, info.currentPriority, PSP_READER_PRIORITY);
 }
 
+/* build 119: the port's vertical blank thread (d3d8_gl.c), above the game
+thread so it counts each blank on time (psp_fixups.py, FIXES_119 d3d8_gl.c
+#vblank): 0x1e, under the cache file thread's 0x1c. "vblankslow" leaves it
+at its own (0x3c) */
+#define PSP_VBLANK_PRIORITY 0x1e
+void psp_vblank_thread_priority(void)
+{
+	static int done = 0;
+	SceKernelThreadInfo info;
+
+	if (done || !psp_keep_loaded())
+		return;
+	done = 1;
+	memset(&info, 0, sizeof(info));
+	info.size = sizeof(info);
+	sceKernelReferThreadStatus(0, &info);
+	if (psp_keep("vblankslow"))
+	{
+		platform_log("vertical blank thread: priority 0x%x left as it is (vblankslow)", info.currentPriority);
+		return;
+	}
+	if (sceKernelChangeThreadPriority(0, PSP_VBLANK_PRIORITY) < 0)
+		platform_log("vertical blank thread: priority 0x%x; the change to 0x%x was refused", info.currentPriority, PSP_VBLANK_PRIORITY);
+	else
+		platform_log("vertical blank thread (%s): priority 0x%x, now 0x%x (above the game thread's: vblankslow undoes it)",
+			info.name, info.currentPriority, PSP_VBLANK_PRIORITY);
+}
+
 /* build 106: the answers remembered, by the word itself. Many asks are made
 per object or per draw each frame ("fulllod" for every model's detail
 level...): b30's beach asked 13,000 times a second, each a snprintf (under
