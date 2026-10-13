@@ -1433,6 +1433,9 @@ static unsigned long model_bone_calls = 0, model_bone_sub_bytes = 0;
 /* build 107: rigid parts near the eye, and those drawn whole (rigid_part_whole);
 bending batches near the eye drawn whole, with no copy */
 static unsigned long near_parts = 0, near_parts_whole = 0, near_batches_whole = 0;
+/* build 118: the near path's sphere test (batch_sphere_inside) */
+static int near_sphere_full = -1, near_sphere_check = 0;
+static unsigned long near_batches_by_sphere = 0, near_sphere_mismatches = 0;
 static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
@@ -1550,11 +1553,15 @@ static void ge_kinds_report(void)
 			(model_take_bytes - model_bone_sub_bytes) / 1024.0 / frames_seen,
 			((double)kind_bytes[KIND_MODEL] - bone - (model_take_bytes - model_bone_sub_bytes)) / 1024.0 / frames_seen,
 			model_part_calls / frames_seen);
-		platform_log("GE: models left out for room, smallest first: %.1f part draws a frame (the size floor now %.1f px, at most %.1f px since the last report); rigid parts near the eye %.1f a frame, %.1f of them drawn whole with no copy; bending batches near the eye drawn whole %.1f a frame",
+		platform_log("GE: models left out for room, smallest first: %.1f part draws a frame (the size floor now %.1f px, at most %.1f px since the last report); rigid parts near the eye %.1f a frame, %.1f of them drawn whole with no copy; bending batches near the eye drawn whole %.1f a frame, %.1f of them by their sphere (build 118)%s",
 			model_floor_left_out / frames_seen, model_size_floor, model_size_floor_peak, near_parts / frames_seen,
-			near_parts_whole / frames_seen, near_batches_whole / frames_seen);
+			near_parts_whole / frames_seen, near_batches_whole / frames_seen, near_batches_by_sphere / frames_seen,
+			near_sphere_check ? (near_sphere_mismatches ? "; nearspherecheck: SOME THE SPHERE PASSED WERE NOT WHOLE" : "; nearspherecheck: all whole") : "");
+		if (near_sphere_check && near_sphere_mismatches)
+			platform_log("GE: nearspherecheck: %lu batches the sphere passed were cut or dropped by the corner loop", near_sphere_mismatches);
 	}
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
+	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
 	model_bone_loads = model_take_bytes = model_part_calls = model_bone_calls = model_bone_sub_bytes = 0;
 	platform_log("GE: fullest frame %u KB, kinds in order %s (L level, o other, k sky, l lights, B level see-through, M models, q see-through queued, d decals, p particles, f flares, s shadows, T see-through drawn, Q screen quads, H HUD); the level's reserve %s, held back %lu draws",
@@ -3167,6 +3174,23 @@ across the screen (Sheepdog01's warthog roll bars and axles passing the camera) 
 static inline int camera_corner_out(float x, float y, float z, float limit)
 {
 	return z < limit || x > guard_x * z || x < -guard_x * z || y > guard_y * z || y < -guard_y * z;
+}
+
+/* build 118: whether a camera-space sphere lies wholly inside the planes
+the corner tests use (outside(), camera_corner_out()): its nearest depth at
+or past near, and its centre inside each side plane by its radius (those
+planes pass through the eye; their normals, as outside() writes them, are
+guard_x_length and guard_y_length long). The radius gets 1% and 0.01 units
+more for the rounding between the corners' transform and the centre's.
+Written so a NaN fails. transparent_cut's model_sphere_inside and the near
+path's batch_sphere_inside both ask this */
+static int sphere_inside(const float *c, float radius, float near)
+{
+	float r = radius * 1.01f + 0.01f;
+
+	return radius >= 0.0f && c[2] - r >= near &&
+		fabsf(c[0]) + r * guard_x_length <= guard_x * c[2] &&
+		fabsf(c[1]) + r * guard_y_length <= guard_y * c[2];
 }
 
 /* each vertex's verdict for the draw at hand: corner_stamp in, +1 out,
@@ -5926,6 +5950,11 @@ struct skin_batch
 	unsigned char node[SKIN_SLOTS];
 	unsigned short *indices;
 	int index_count;
+	/* build 118: a sphere round the batch's vertices in the part's own
+	space (before bending), for the near path's fast test (batch_sphere);
+	worked out the first time the batch is drawn near the eye, radius < 0
+	until then */
+	float center[3], radius;
 };
 
 struct skin_part
@@ -6188,6 +6217,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 			part->batches[b] = batches[b];
 			part->batches[b].indices = out;
 			part->batches[b].index_count = 0;
+			part->batches[b].radius = -1.0f; /* build 118: its sphere not yet worked out */
 			for (t = 0; t < triangle_count; t++)
 				if (batch_of[t] == b)
 				{
@@ -7134,6 +7164,85 @@ static unsigned int *bone_commands(unsigned int *at, int slot, const ScePspFMatr
 	return at;
 }
 
+/* build 118: the near path's fast test for a bending batch. Every vertex
+of the batch lies in its sphere (the part's own space); each slot's matrix
+takes that sphere to a sphere in camera space, its radius stretched by the
+matrix's largest stretch; and a bent vertex is a weighted mean of its
+slots' images of it, so it lies in the hull of those spheres. All of them
+wholly inside the corner tests' planes, every corner passes them, and no
+triangle is dropped or cut: the batch is drawn whole, as the corner loop
+would have found. "nearspherecheck" runs the loop anyway and counts the
+batches the test passed that it didn't draw whole; "nearspherefull": the
+loop for every batch, as before (their counters: by near_parts) */
+
+/* the batch's sphere, worked out once from its vertices (the bending
+part's records: the position after the texture coordinate and normal) */
+static void batch_sphere(struct skin_batch *b, const struct skin_part *skin, const void *vertices)
+{
+	float low[3] = { 0.0f, 0.0f, 0.0f }, high[3] = { 0.0f, 0.0f, 0.0f }, reach = 0.0f;
+	int uv_at = skin->stride - 24, i, axis;
+
+	for (i = 0; i < b->index_count; i++)
+	{
+		const float *p = (const float *)((const unsigned char *)vertices + skin->stride * b->indices[i] + uv_at + 12);
+
+		for (axis = 0; axis < 3; axis++)
+		{
+			if (i == 0 || p[axis] < low[axis]) low[axis] = p[axis];
+			if (i == 0 || p[axis] > high[axis]) high[axis] = p[axis];
+		}
+	}
+	for (axis = 0; axis < 3; axis++)
+		b->center[axis] = (low[axis] + high[axis]) * 0.5f;
+	for (i = 0; i < b->index_count; i++)
+	{
+		const float *p = (const float *)((const unsigned char *)vertices + skin->stride * b->indices[i] + uv_at + 12);
+		float dx = p[0] - b->center[0], dy = p[1] - b->center[1], dz = p[2] - b->center[2];
+		float d = dx * dx + dy * dy + dz * dz;
+
+		if (d > reach)
+			reach = d;
+	}
+	b->radius = sqrtf(reach);
+}
+
+/* whether every used slot's image of the batch's sphere lies wholly inside
+the corner tests' planes, near being the larger of their two near limits.
+depth_row: each slot's matrix as rows along the camera's right, up and
+forward (model_geometry). The largest stretch of a slot's 3x3 part is
+bounded by its Gram matrix's largest row sum (Gershgorin), which is exact
+for a rotation with one scale, as the game's nodes are */
+static int batch_sphere_inside(const struct skin_batch *b, int weights, const float (*depth_row)[3][4], float near)
+{
+	int slot;
+
+	for (slot = 0; slot < weights; slot++)
+	{
+		const float (*row)[4] = depth_row[slot];
+		float c[3], gram[3][3], stretch = 0.0f;
+		int i, j;
+
+		if (b->node[slot] == 0xFF)
+			continue;
+		for (i = 0; i < 3; i++)
+		{
+			c[i] = row[i][0] * b->center[0] + row[i][1] * b->center[1] + row[i][2] * b->center[2] + row[i][3];
+			for (j = 0; j < 3; j++)
+				gram[i][j] = row[i][0] * row[j][0] + row[i][1] * row[j][1] + row[i][2] * row[j][2];
+		}
+		for (i = 0; i < 3; i++)
+		{
+			float sum = fabsf(gram[i][0]) + fabsf(gram[i][1]) + fabsf(gram[i][2]);
+
+			if (sum > stretch)
+				stretch = sum;
+		}
+		if (!sphere_inside(c, b->radius * sqrtf(stretch), near))
+			return 0;
+	}
+	return 1;
+}
+
 static void model_geometry(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
@@ -7149,7 +7258,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 
 		for (batch = 0; batch < skin->batch_count && !list_full(); batch++)
 		{
-			struct skin_batch const *b = &skin->batches[batch];
+			struct skin_batch *b = &skin->batches[batch];
 			const unsigned short *draw = b->indices;
 			int draw_count = b->index_count;
 			/* each slot's matrix as the depth it gives a point: its rows
@@ -7263,6 +7372,22 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				unsigned short *kept = NULL;
 				float limit = projection_near * 1.25f;
 				int t, k, out = 0, uv_at = skin->stride - 24, cut_count = 0, kept_failed = 0;
+				int whole_by_sphere = 0;
+
+				/* build 118: the batch's sphere first (batch_sphere_inside): wholly
+				inside, the corner loop is skipped and the batch drawn whole */
+				if (near_sphere_full < 0)
+				{
+					near_sphere_full = psp_keep("nearspherefull");
+					near_sphere_check = psp_keep("nearspherecheck");
+				}
+				if (!near_sphere_full)
+				{
+					if (b->radius < 0.0f)
+						batch_sphere(b, skin, vertices);
+					whole_by_sphere = batch_sphere_inside(b, skin->weights, (const float (*)[3][4])depth_row,
+						limit > NEAR_CLIP ? limit : NEAR_CLIP);
+				}
 
 				/* each vertex's verdict once a batch (build 43: worked out per
 				corner, it cost up to 6 ms a frame on the PSP in build 42) */
@@ -7277,7 +7402,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				on_vfpu = skin_vfpu && skin->weights <= 7 && !PSP_ME_WORK();
 				if (on_vfpu)
 					skin_vfpu_load((const float (*)[3][4])depth_row, skin->weights);
-				for (t = 0; t + 2 < draw_count; t += 3)
+				for (t = 0; (!whole_by_sphere || near_sphere_check) && t + 2 < draw_count; t += 3)
 				{
 					/* build 106: each corner's verdict is its planes as bits
 					(outside(): near, right, left, top, bottom) and 32 for
@@ -7399,6 +7524,14 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						kept[out++] = draw[t + 1];
 						kept[out++] = draw[t + 2];
 					}
+				}
+				if (whole_by_sphere)
+				{
+					/* build 118: "nearspherecheck": the loop ran anyway, and must
+					have found the batch whole */
+					near_batches_by_sphere++;
+					if (near_sphere_check && (kept || cut_count || kept_failed))
+						near_sphere_mismatches++;
 				}
 				if (kept_failed)
 				{
@@ -8471,19 +8604,10 @@ static unsigned long tcut_parts = 0, tcut_no_sphere = 0, tcut_inside = 0, tcut_m
 static unsigned long tcut_mismatches_logged = 0;
 
 /* whether the model's sphere lies wholly inside the planes outside()
-tests: its nearest depth at or past the near plane, and its centre inside
-each side plane by its radius (those planes pass through the eye; their
-normals, as outside() writes them, are guard_x_length and guard_y_length
-long). The radius gets 1% and 0.01 units more for the rounding between the
-corners' transform and the centre's. Written so a NaN fails */
+tests (sphere_inside, at the near plane outside() uses) */
 static int model_sphere_inside(void)
 {
-	const float *c = model_sphere;
-	float r = model_sphere_radius * 1.01f + 0.01f;
-
-	return model_sphere_radius > 0.0f && c[2] - r >= NEAR_CLIP &&
-		fabsf(c[0]) + r * guard_x_length <= guard_x * c[2] &&
-		fabsf(c[1]) + r * guard_y_length <= guard_y * c[2];
+	return model_sphere_radius > 0.0f && sphere_inside(model_sphere, model_sphere_radius, NEAR_CLIP);
 }
 
 /* "tcutcheck": a part its model's sphere called wholly in view has a
