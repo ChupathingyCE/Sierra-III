@@ -7779,6 +7779,7 @@ FIXES_36["source/physics/breakable_surfaces.c#aligned"] = [
 # fill the log) and has no roll: the port's log starts empty every launch.
 # The whole desktop writer, its statics and its roll helper, stays behind
 # #else, so the two anchors are the first and last lines of that stretch.
+# ChupathingyCE only: halo-ce-universal is frozen as a base (Sheepdog01, 2026-10-13).
 _PSP_DEBUG_FILE = """#ifdef HALO_PSP
 void platform_psp_log(const char *format, ...);
 
@@ -7819,20 +7820,7 @@ static void write_to_debug_file(
 """
 FIXES_105 = {}
 FIXES_105["source/cseries/errors.c"] = [
-Either(universal=("""static void write_to_debug_file(
-	char const *string,
-	boolean date)
-{
-	static FILE *volatile debug_file = NULL;
-""",
- _PSP_DEBUG_FILE + """#else
-static void write_to_debug_file(
-	char const *string,
-	boolean date)
-{
-	static FILE *volatile debug_file = NULL;
-"""),
-       chupa=("""static void debug_file_port_write(
+("""static void debug_file_port_write(
 	FILE *file,
 	char const *prefix,
 	char const *string);
@@ -7844,27 +7832,18 @@ static void debug_file_port_write(
 	FILE *file,
 	char const *prefix,
 	char const *string);
-""")),
-Either(universal=("""	fprintf(file, "%s%s", prefix, string);
+"""),
+("""	fprintf(file, "%s%s", prefix, string);
 	fflush(file);
+	debug_file_port_size += (long)(csstrlen(prefix) + csstrlen(string));
 }
 """,
  """	fprintf(file, "%s%s", prefix, string);
 	fflush(file);
+	debug_file_port_size += (long)(csstrlen(prefix) + csstrlen(string));
 }
 #endif
 """),
-       chupa=("""	fprintf(file, "%s%s", prefix, string);
-	fflush(file);
-	debug_file_port_size += (long)(csstrlen(prefix) + csstrlen(string));
-}
-""",
- """	fprintf(file, "%s%s", prefix, string);
-	fflush(file);
-	debug_file_port_size += (long)(csstrlen(prefix) + csstrlen(string));
-}
-#endif
-""")),
 ]
 # gamestate.txt listed every game-state allocation at start-up and kept the
 # file open; the heartbeat's "game state:" survey (build 36) already reports

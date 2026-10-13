@@ -34,7 +34,7 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
 PSPDEV=<pspdev> tools/build_release.sh <out>
 ```
 
-**How the build works:** `psp_build.py` mirrors the engine into `<out>/tree`. `psp_fixups.py` then applies anchored (old, new) text pairs to that mirror: `FIXES_*` are lists or dicts per build, and `Either(universal=…, chupa=…)` covers the two engine bases. Then it compiles (hot engine `-O2`, cold units `-Os`), links, sizes the heap from the program's end, and packs `EBOOT.PBP`. A link map (`halo.map`) is written every link. The engine checkout itself is never edited.
+**How the build works:** `psp_build.py` mirrors the engine into `<out>/tree`. `psp_fixups.py` then applies anchored (old, new) text pairs to that mirror: `FIXES_*` are lists or dicts per build, and `Either(universal=…, chupa=…)` covers the two engine bases. **halo-ce-universal is frozen as a base** (Sheepdog01, 2026-10-13): new work targets ChupathingyCE only (plain pairs, no `Either`); cross-compatibility is ChupathingyCE's, upstream of us. Then it compiles (hot engine `-O2`, cold units `-Os`), links, sizes the heap from the program's end, and packs `EBOOT.PBP`. A link map (`halo.map`) is written every link. The engine checkout itself is never edited.
 
 **Build switches (environment):**
 
