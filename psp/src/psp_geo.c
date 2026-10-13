@@ -30,6 +30,7 @@ psp_geo_generation(), which changes with every load into the block. */
 #include <stdlib.h>
 #include <malloc.h>
 #include <string.h>
+#include "psp_me.h" /* build 118: psp_on_me */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -569,7 +570,11 @@ checked before it is believed (the entry may have been evicted or reused
 since), and only one resident block holds any arena address, so the answer
 is the scan's */
 #define AT_SLOTS 64
-static short at_slot[AT_SLOTS]; /* an entry's index + 1, 0: none */
+/* build 118: one table a CPU, each on cache lines of its own. The renderer
+asks this from the Media Engine too (gemeoverlap), while the main CPU locks
+blocks for the next calls; a table both wrote would share cache lines with
+the main CPU's words, and the ME's write-back would undo the main CPU's */
+static short at_slot_cpu[2][AT_SLOTS] __attribute__((aligned(64))); /* an entry's index + 1, 0: none */
 
 static int entry_holds(int index, unsigned int at)
 {
@@ -581,6 +586,7 @@ static int entry_holds(int index, unsigned int at)
 static int resident_entry(const void *ptr)
 {
 	unsigned int at = (unsigned int)ptr, slot = (at >> 6) % AT_SLOTS;
+	short *at_slot = at_slot_cpu[psp_on_me()];
 	int index;
 
 	if (at < arena_start || at >= arena_end)
@@ -680,7 +686,7 @@ static void forget_all(void)
 	entry_count = 0;
 	arena_next = arena_start;
 	memset(hash_head, 0, sizeof(hash_head));
-	memset(at_slot, 0, sizeof(at_slot));
+	memset(at_slot_cpu, 0, sizeof(at_slot_cpu));
 	last_locked = -1;
 }
 
