@@ -22,7 +22,29 @@ Built on `hudbars` after tests 1–4. Each restores the original or speeds the g
 | G1 | Objects vanishing approaching the landing pad (test 1: 3 draws left out in that report) | **R4: a draw's geometry read at once past the frame's share**, while the frame has read under 384 KB (twice the share). b116 left the draw out once the share was spent or the read queue was full. Up to ~110 ms more in such a frame at the PSP's 1.7 MB/s [M, U] | `geoshare` | `geoshare118` [E]: the draws left out, and the strict interpreter: pending |
 | C1 | Checkpoints slower than b115's despite half the bytes: b30's first 3,102 ms against 219; c40's 699 against 171; c10's 439–2,046 against 153–201 (tests 1, 3, 4) | **The compact format written in whole 4 KB pieces**: b116 wrote 32 KB stages of any length, so each write ended mid-sector. The file's bytes are the same | — (exact) | the PSP's checkpoint times |
 | P1 | No lighting on actors (test 1) | **Models lit by their point lights again** (muzzle flashes, plasma, the flashlight). b106 stopped looking for them for speed. Up to two per object go to the GE as lights 2 and 3, each colour scaled by the reach at the model's centre (the light pass's falloff and cone); the GE shades each vertex by its angle to the light | `nopointlights` | `pointlights118` [E]: the parts lit, shots, the strict interpreter: pending. b106 measured the search at 2.4% of the emulator's time on b30's beach |
-| V1 | Model buffers in VRAM (test 2): the models' GE time −31% in the cinematic, −44% in the flight; the flight at 4.28 fps against 3.67 | `vrammodels600` by default | (none: the keep word turns it on in b116) | Sheepdog01's call #2 |
+| V1 | Model buffers in VRAM (test 2): the models' GE time −31% in the cinematic, −44% in the flight; the flight at 4.28 fps against 3.67 | `vrammodels600` by default | a new off word (`vrammodels0`) | **Sheepdog01: yes** ("the single most noticeable performance improvement so far") |
+| PG | The profile-guided build (test 7): the cinematic 182.6 ms a frame against 194.2–196.1, the tick −7% | Build 118 with a profile made from its final code | (exact) | measured [M]; goes in |
+
+**An independent review of D1, L1, G1, C1 and P1** (2026-10-12) found D1, G1 and C1 correct, and fixed in `046022a`:
+- P1's lights were given in world coordinates where this file's model matrices put the camera at the origin, so an actor was lit from a direction set by where the player stood (serious).
+- P1's reach and cone are now measured on the model's sphere, not at its centre.
+- `nopointlights` no longer sends disables b116 didn't.
+- L1's corners on the near plane had no room to lift. The light's pieces are now cut 1% past the plane.
+- C1's stage is 64-byte aligned.
+
+**L1 didn't remove the line at Sheepdog01's spot** (`lightcut118`, 38327135018) [E]: the faint line across the hallway wall is there under both rules, so it may not be the light pass. `pointlights118` leaves out the level's see-through surfaces, then decals, and names the see-through maps (`tdump`).
+
+**From Sheepdog01's notes on c40 and c10, open** (first guesses [U]):
+
+| Seen [M] | Candidates |
+|---|---|
+| c40: the bridge's textures broken | not looked at yet |
+| c40: the bridge glass's edges through Chief's legs, the legs looking see-through | the glass drawn after Chief without the depth test, or Chief's legs in the see-through queue |
+| c40: the walls' stencils and lights flicker and phase through the geometry as he moves | the stencil bake or the overlays' nudge, as on Blood Gulch before b87 |
+| c40: the trench glass across the great hallway not drawn | a glass shader the GE path drops |
+| c40: objects flicker on the pyramid's top level | R4 (G1 above), or the display list's size floor |
+| c10: no water effects when something enters the water | the splash particles or the water shader's ripples |
+| c10: the elevator's textures flat | an object with level shaders (R3) or a multitexture map drawn as one |
 
 **Not fixed: c10's swamp fog.** b116's planar fog never engaged: 0 windows in planar fog on the PSP (test 4) and in the emulator. It only covers the eye inside the fog, and in the swamp the eye is above the fog's plane. There the Xbox fogs what lies below the plane by its depth, the same piece b30's deep water needs: a fog by depth below a plane, per vertex.
 
@@ -110,7 +132,8 @@ A second review read the GE layer for exact speed-ups, keeping the picture byte 
 
 - `PSP_BUILD_NUMBER` 118 (`psp_platform.c`).
 - `hudonemap`, `glassflat`, `lightcutone`, `geoshare` and `nopointlights` go into the log's list of the restorations' keep words, and into preset 6 ("the b115 look", every restoration off). `ditherall` doesn't need to: preset 6 has `nodither`.
-- `vrammodels600` by default if Sheepdog01 agrees (call #2), with a keep word to turn it off.
+- `vrammodels600` by default (Sheepdog01: yes, 2026-10-12), with a keep word to turn it off.
+- S9 sounds stay (Sheepdog01's call #1): the bake keeps `--sound s9`.
 - Merge `speed118p` (which carries `pgo116`). A trial merge into `hudbars` went through without a conflict and compiled: heap 5,832 KB without a profile [D].
 - Build with the profile once the PSP shows it gains (test 7; an exact speed-up, so no A/B of the look). Make a new profile at the final code first: GCC drops the counts of every function that changed.
 - The usual final checks: the strict interpreter on all ten maps and the tour, on the release commit.
