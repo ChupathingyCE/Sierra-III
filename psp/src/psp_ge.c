@@ -8924,7 +8924,7 @@ the distance (the debug menu: off, 1, 2, 4, 8%; default 2), never under
 0.01 units (3 cm). "nudgewide": no ceiling (b60-b75) */
 static int nudge_wide = -1;
 static unsigned long nudges_clamped = 0, nudges_asked = 0;
-static float slope_units_capped(float units, const float *a, const float *b, const float *c)
+static float slope_units_capped(float units, const float *a, const float *b, const float *c, float reference)
 {
 	float ceiling, nearest = a[2], lift, cos_angle, length;
 	float e1[3] = { b[0] - a[0], b[1] - a[1], b[2] - a[2] }, e2[3] = { c[0] - a[0], c[1] - a[1], c[2] - a[2] };
@@ -8938,6 +8938,10 @@ static float slope_units_capped(float units, const float *a, const float *b, con
 		return units;
 	if (b[2] < nearest) nearest = b[2];
 	if (c[2] < nearest) nearest = c[2];
+	/* build 118: the depth the cap is measured at, when the caller gives one
+	(the triangle's farthest corner, overlay_units) */
+	if (reference > 0.0f)
+		nearest = reference;
 	if (nearest < projection_near)
 		nearest = projection_near;
 	/* the lift allowed, then the distance along the view that gives it */
@@ -8976,7 +8980,7 @@ grows with the square of the distance, so the far end decides).
 build 116: on by default, a restoration (the ocean behind the seabed, as
 the Xbox draws it: Sheepdog01's b115 test 5 on the PSP); keep word
 "overlayfreenear": as builds 65-115 */
-static int overlay_free_far = -1;
+static int overlay_free_far = -1, overlay_wall_near = -1;
 static int overlay_units(const float *a, const float *b, const float *c, int on_a_wall)
 {
 	float nearest = a[2], units;
@@ -9017,7 +9021,34 @@ static int overlay_units(const float *a, const float *b, const float *c, int on_
 		}
 		return units < 3.0f ? -3 : units > 4096.0f ? -4096 : -(int)units;
 	}
-	units += slope_units_capped(slope_units(a, b, c), a, b, c) + nudge_floor;
+	/* build 118: an on-wall triangle's nudge measured at its FARTHEST corner,
+	as build 115 did for free ones. One depth offset is a lift that grows
+	with the square of the distance, so a triangle reaching from the near
+	plane outward, its nudge sized at the near end (up to the 4,096-step
+	cap), was lifted ~10 units at 3 units off: b30's bunker glass floor
+	drawn through the hallway wall (b113 #13, b116 test 1, lab batch
+	pointlights118 [E]), and likely c40's bridge glass through Chief's legs
+	(b116 test 3) [U]. Keep word "overlaywallnear": as before */
+	if (overlay_wall_near < 0)
+		overlay_wall_near = psp_keep("overlaywallnear");
+	if (!overlay_wall_near)
+	{
+		float farthest = a[2], lift;
+
+		if (b[2] > farthest) farthest = b[2];
+		if (c[2] > farthest) farthest = c[2];
+		if (farthest < projection_near)
+			farthest = projection_near;
+		lift = nudge_lift_share * farthest;
+		if (lift > nudge_lift_ceiling)
+			lift = nudge_lift_ceiling;
+		if (lift < 0.005f)
+			lift = 0.005f;
+		units = lift * 61439.0f * projection_near / (farthest * farthest);
+		units += slope_units_capped(slope_units(a, b, c), a, b, c, farthest) + nudge_floor;
+		return units < 3.0f ? 3 : units > 4096.0f ? 4096 : (int)units;
+	}
+	units += slope_units_capped(slope_units(a, b, c), a, b, c, 0.0f) + nudge_floor;
 	return units < 3.0f ? 3 : units > 4096.0f ? 4096 : (int)units;
 }
 
@@ -12407,7 +12438,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 
 				for (corner = 0; corner < 3; corner++)
 					to_camera(p[corner], q[corner]);
-				units = slope_units_capped(slope_units(q[0], q[1], q[2]), q[0], q[1], q[2]) + nudge_floor;
+				units = slope_units_capped(slope_units(q[0], q[1], q[2]), q[0], q[1], q[2], 0.0f) + nudge_floor;
 				if (units > decal_units)
 					decal_units = units;
 			}
