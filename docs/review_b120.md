@@ -89,6 +89,8 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 **Proven [M, rig].**
 - It works: halts = wakes sent = wakes taken (216 / 216 / 216), 0 failed jobs. A wake costs 22 µs of main-CPU time (a kernel call).
 - No frame gain on b30: the long stretch in the noise; the cinematic stretch's drawing borderline +5% (gap 2.7 ms against a 2.5 ms repeat spread). Lab run 38472249947.
+- Under ME render jobs (`gedefer gemeon gemeoverlap`): still 0 failed jobs and halts ≈ wakes; frame and tick in the noise; drawing +0.7–1.2% (0.2–0.3 ms). Likely why [U]: each submit to a halted ME pays the wake's 22 µs kernel call on the drawing thread. Lab run 38479188604.
+- For ME phase 1: the idle-polling ME measured as free, and a job queue shouldn't pay a kernel call per job.
 
 **Default.** Off. Proven groundwork for ME phase 1, not a speed-up.
 
@@ -100,7 +102,7 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 
 **Why.** Each look is an uncached read on the same bus the ME uses to read its job's inputs, and the clock is a system call (review, 1). Matters only with `gemeoverlap` (opt-in), which ME phase 1 builds on.
 
-**Proven.** Nothing yet: render jobs on the ME also need `gedefer`, which the first rig job left out, so none ran (lab run 38472264749). Re-run with it: *(lab run 38479188604: result here)*.
+**Proven [M, rig].** No effect. With render jobs on the ME, the ME's own time per job is 10.5 ms on every side (±0.5%), so the spin's bus traffic isn't slowing it at today's job sizes; frame and tick in the noise. Lab run 38479188604 (the first try, 38472264749, left out `gedefer`, so no render jobs ran).
 
 **Default.** Off. It acts only under `gemeoverlap`, itself opt-in, so it informs ME phase 1 rather than this build.
 
