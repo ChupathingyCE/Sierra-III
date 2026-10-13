@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 119
+#define PSP_BUILD_NUMBER 120
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -848,6 +848,7 @@ static void keep_load(void)
 	/* build 119: its exact speed-ups' off words, their self-checks, the
 	clock fix's off word, and the PSP probes */
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
+	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; look (opt-in, Sheepdog01's A/B): hudsnap hud177; Media Engine (opt-in): mehalt mefinishslow");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
