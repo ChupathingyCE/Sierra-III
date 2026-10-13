@@ -9,7 +9,11 @@ game state's allocations ("game state layout:" lines in the run's log), the
 tags in the tag window (from the map the run loaded), and the memory regions
 around them (heap, volatile memory, stacks).
 
-    python3 cachemap.py DCACHE.bin halo.elf log.txt [MAP.map] [--top N]
+    python3 cachemap.py DCACHE.bin halo.elf log.txt [MAP.map] [--top N] [--lines N]
+
+--lines N: the hottest lines of the N functions with the most fetches in the
+tick and the drawing, disassembled (file:line too when built with
+PSP_CFLAGS=-g1, which leaves the code as it is)
 
 What it prints, per phase:
   - data misses by region and by name, with each name's size and misses per
@@ -149,6 +153,33 @@ class Namer:
         return None, 0
 
 
+def hot_lines(p, ifetches, imisses, code_namer, elf, names, total, per_function=12):
+    """the hottest 64-byte lines of each named function, each with its
+    fetches and misses and its 16 instructions (psp-objdump beside psp-nm)"""
+    objdump = os.environ.get('PSP_NM', '/opt/psp/pspdev/bin/psp-nm')
+    objdump = objdump[:-2] + 'objdump' if objdump.endswith('nm') else 'psp-objdump'
+    for want in names:
+        lines = []
+        for line in range(LINES):
+            f = ifetches[p][line]
+            if f and code_namer.name(LO + (line << 6))[0] == want:
+                lines.append((f, imisses[p][line], LO + (line << 6)))
+        if not lines:
+            continue
+        lines.sort(reverse=True)
+        print('\nhot lines of %s (%s):' % (want, PHASE_NAMES[p]))
+        for f, m, address in lines[:per_function]:
+            print('  -- %08x  fetches %d (%.2f%% of the phase), misses %d' % (address, f, 100.0 * f / total, m))
+            start = address - PROGRAM_BASE
+            out = subprocess.run([objdump, '-d', '-l', '--no-show-raw-insn', '--start-address=0x%x' % start,
+                                  '--stop-address=0x%x' % (start + 64), elf], capture_output=True, text=True).stdout
+            for text in out.splitlines():
+                text = text.rstrip()
+                if not text or text.startswith(('Disassembly', elf)) or 'file format' in text:
+                    continue
+                print('     ' + text)
+
+
 def main():
     if len(sys.argv) < 4:
         sys.exit(__doc__)
@@ -243,6 +274,15 @@ def main():
             print('instruction misses by function (fetches, size):')
             for key, (f, m, size) in sorted(by_function.items(), key=lambda x: -x[1][1])[:top]:
                 print('  %9d  %5.1f%%  fetches %10d  %6d B  %s' % (m, 100.0 * m / total_imisses, f, size, key))
+            # 2026-10-13: by fetches too (the list above, by misses, hides a
+            # function that runs a lot from the cache), and the hottest lines of
+            # the leaders, disassembled (with file:line when the build has -g1)
+            print('instruction fetches by function (share of the phase\'s fetches, misses):')
+            ranked = sorted(by_function.items(), key=lambda x: -x[1][0])
+            for key, (f, m, size) in ranked[:top]:
+                print('  %11d  %5.1f%%  misses %9d  %6d B  %s' % (f, 100.0 * f / total, m, size, key))
+            if '--lines' in sys.argv and PHASE_NAMES[p] in ('tick', 'drawing'):
+                hot_lines(p, ifetches, imisses, code_namer, elf, [k for k, v in ranked[:int(sys.argv[sys.argv.index('--lines') + 1])]], total)
 
 
 if __name__ == '__main__':
