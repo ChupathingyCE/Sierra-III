@@ -306,6 +306,68 @@ static unsigned long window_reads = 0, window_us = 0, window_worst_us = 0;
 static unsigned int frame_read_bytes = 0;
 static unsigned long frame_read_us = 0, frame_read_worst_us = 0;
 
+/* build 118 (R4): a draw whose geometry isn't resident is read for at once,
+past the frame's share, while the frame has read under twice the share.
+b116 left such a draw out for the frame once the share was spent or the
+queue was full, so an object vanished for a frame or two as it came into
+view: Sheepdog01 saw it approaching b30's landing pad (b116 test 1: 3 draws left
+out in that report [M]). The Xbox never leaves one out. The frame pays for
+the read instead: the PSP read geometry at 1.7 MB/s in that run, so the
+second share is up to ~110 ms [M, U]. Keep word "geoshare": as before */
+#define SYNC_FRAME_CAP (2 * SYNC_FRAME_BUDGET)
+static int geo_share_only = -1;
+static unsigned long past_share_reads = 0, past_share_bytes = 0;
+
+static void pending_remove(int k)
+{
+	memmove(pending + k, pending + k + 1, (pending_count - k - 1) * sizeof(pending[0]));
+	pending_count--;
+}
+
+/* reads entry e into the arena now, on this thread: 1 when it is resident
+after, 0 when there was no room (it stays as it was), -1 when the read
+failed (it goes back to state 0) */
+static int read_entry_now(struct geo_entry *e)
+{
+	unsigned int at = allocate(alignment(e->size)), start, took;
+	int got;
+
+	if (!at)
+	{
+		no_room++;
+		return 0;
+	}
+	/* the previous tenant's lines, if any are still dirty in the cache, go
+	back to memory now rather than over the new bytes later */
+	sceKernelDcacheWritebackInvalidateRange((void *)at, alignment(e->size));
+	start = sceKernelGetSystemTimeLow();
+	got = sceIoLseek32(pack, HEADER_BYTES + (e->address - EXTERNAL_BASE), PSP_SEEK_SET) < 0 ? -1 :
+		sceIoRead(pack, (void *)at, e->size);
+	if (got != (int)e->size)
+	{
+		if (failures++ < 8)
+			platform_log("geometry: reading %u bytes at %08x failed (%d)", e->size, e->address, got);
+		e->state = 0;
+		return -1;
+	}
+	sceKernelDcacheWritebackInvalidateRange((void *)at, e->size);
+	e->at = at;
+	e->state = 3;
+	e->generation = ++generation_counter;
+	e->last_frame = frame;
+	loads++;
+	load_bytes += e->size;
+	frame_read_bytes += e->size;
+	took = sceKernelGetSystemTimeLow() - start;
+	read_us += took;
+	frame_read_us += took;
+	window_reads++;
+	window_us += took;
+	if (took > window_worst_us)
+		window_worst_us = took;
+	return 1;
+}
+
 static void pump(void)
 {
 	while (inflight < 0 && pending_count > 0)
@@ -316,8 +378,7 @@ static void pump(void)
 		if (e->state != 1)
 		{
 			/* dropped meanwhile */
-			memmove(pending, pending + 1, (pending_count - 1) * sizeof(pending[0]));
-			pending_count--;
+			pending_remove(0);
 			continue;
 		}
 		/* build 89: this frame's read share first, then the room: b72-b88
@@ -325,18 +386,6 @@ static void pump(void)
 		further miss that frame evicted a block for nothing (review) */
 		if (!async_reads && frame_read_bytes >= SYNC_FRAME_BUDGET)
 			return;
-		at = allocate(alignment(e->size));
-		if (!at)
-		{
-			/* everything is in use this frame: try again next frame */
-			no_room++;
-			return;
-		}
-		memmove(pending, pending + 1, (pending_count - 1) * sizeof(pending[0]));
-		pending_count--;
-		/* the previous tenant's lines, if any are still dirty in the cache,
-		go back to memory now rather than over the new bytes later */
-		sceKernelDcacheWritebackInvalidateRange((void *)at, alignment(e->size));
 		if (!async_reads)
 		{
 			/* build 72: read now, on this thread. Sheepdog01's b71 run: with the
@@ -344,44 +393,22 @@ static void pump(void)
 			frame's end (render_frame_present 97%), where the texture cache's
 			own reads (synchronous, the same Memory Stick) wait behind them.
 			"geoasync" in keep.txt brings the asynchronous reads back */
-			unsigned int start = sceKernelGetSystemTimeLow();
-			int got;
-
-			if (frame_read_bytes >= SYNC_FRAME_BUDGET)
-			{
-				/* this frame's share is read: the rest waits for the next */
-				pending[pending_count++] = (unsigned short)(e - entries);
-				return;
-			}
-			got = sceIoLseek32(pack, HEADER_BYTES + (e->address - EXTERNAL_BASE), PSP_SEEK_SET) < 0 ? -1 :
-				sceIoRead(pack, (void *)at, e->size);
-			if (got != (int)e->size)
-			{
-				if (failures++ < 8)
-					platform_log("geometry: reading %u bytes at %08x failed (%d)", e->size, e->address, got);
-				e->state = 0;
-				continue;
-			}
-			sceKernelDcacheWritebackInvalidateRange((void *)at, e->size);
-			e->at = at;
-			e->state = 3;
-			e->generation = ++generation_counter;
-			e->last_frame = frame;
-			loads++;
-			load_bytes += e->size;
-			frame_read_bytes += e->size;
-			{
-				unsigned int took = sceKernelGetSystemTimeLow() - start;
-
-				read_us += took;
-				frame_read_us += took;
-				window_reads++;
-				window_us += took;
-				if (took > window_worst_us)
-					window_worst_us = took;
-			}
+			if (read_entry_now(e) == 0)
+				return; /* everything is in use this frame: try again next frame */
+			pending_remove(0);
 			continue;
 		}
+		at = allocate(alignment(e->size));
+		if (!at)
+		{
+			/* everything is in use this frame: try again next frame */
+			no_room++;
+			return;
+		}
+		pending_remove(0);
+		/* the previous tenant's lines, if any are still dirty in the cache,
+		go back to memory now rather than over the new bytes later */
+		sceKernelDcacheWritebackInvalidateRange((void *)at, alignment(e->size));
 		if (sceIoLseek32(pack, HEADER_BYTES + (e->address - EXTERNAL_BASE), PSP_SEEK_SET) < 0 ||
 			sceIoReadAsync(pack, (void *)at, e->size) < 0)
 		{
@@ -395,6 +422,29 @@ static void pump(void)
 		inflight = (int)(e - entries);
 		read_start_us = sceKernelGetSystemTimeLow();
 	}
+}
+
+/* build 118 (R4): e, wanted by a draw this frame and not read by the pump,
+read now past the frame's share; 1 when it is resident after */
+static int read_past_share(struct geo_entry *e)
+{
+	int k;
+
+	if (geo_share_only < 0)
+		geo_share_only = psp_keep("geoshare");
+	if (geo_share_only || async_reads || frame_read_bytes >= SYNC_FRAME_CAP || (e->state != 0 && e->state != 1))
+		return 0;
+	if (read_entry_now(e) != 1)
+		return 0;
+	for (k = 0; k < pending_count; k++)
+		if (pending[k] == (unsigned short)(e - entries))
+		{
+			pending_remove(k);
+			break;
+		}
+	past_share_reads++;
+	past_share_bytes += e->size;
+	return 1;
 }
 
 static struct geo_entry *entry_new(unsigned int address, unsigned int size)
@@ -484,6 +534,11 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	{
 		if (pending_count >= GEO_PENDING)
 		{
+			if (read_past_share(e))
+			{
+				last_locked = (int)(e - entries);
+				return (void *)e->at;
+			}
 			queue_full++;
 			return NULL;
 		}
@@ -492,6 +547,8 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 		e->last_frame = frame;
 	}
 	pump();
+	if (!async_reads && e->state == 1)
+		read_past_share(e); /* build 118 (R4): still queued after the pump */
 	if (!async_reads && e->state == 3 && e->size >= size)
 	{
 		e->last_frame = frame;
@@ -594,10 +651,10 @@ void psp_geo_frame_end(void)
 		far object that vanishes for a few frames as you approach */
 		extern unsigned long psp_geometry_draws_missed;
 
-		platform_log("geometry: %lu hits, %lu misses (%lu frames missed something, %lu draws left out); %lu loaded (%lu KB), %lu evicted, %lu waited for room, %lu for the queue; %u blocks resident (%u KB of %u); reading %lu ms in all, worst frame %lu ms (%s)",
+		platform_log("geometry: %lu hits, %lu misses (%lu frames missed something, %lu draws left out); %lu loaded (%lu KB), %lu evicted, %lu waited for room, %lu for the queue; %u blocks resident (%u KB of %u); reading %lu ms in all, worst frame %lu ms (%s); read past the frame's share for a draw %lu (%lu KB)",
 			hits, misses, miss_frames, psp_geometry_draws_missed, loads, load_bytes / 1024, evictions, no_room, queue_full,
 			resident, resident_bytes / 1024, (arena_end - arena_start) / 1024, read_us / 1000, frame_read_worst_us / 1000,
-			async_reads ? "asynchronous" : "synchronous");
+			async_reads ? "asynchronous" : "synchronous", past_share_reads, past_share_bytes / 1024);
 		psp_anim_report();
 	}
 	frame++;
