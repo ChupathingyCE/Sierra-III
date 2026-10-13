@@ -993,8 +993,6 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	if (!args[3])
 		psp_me_context = args[2] ? args[2] : 1;
 	defer_replay((const defer_word *)args[0], args[1], (int)args[3]);
-	if (!args[3])
-		psp_me_context = 0;
 	results[0] = args[1];
 	/* build 118: gemeoverlap (args[4]): the newest stall address the run
 	kept goes back in the slot (uncached), for the main CPU to pass on, and
@@ -1005,6 +1003,9 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 		results[2] = (unsigned int)stall_me_qid;
 		stall_me_address = NULL;
 	}
+	/* (last: everything above is the ME's work, also when simulated) */
+	if (!args[3])
+		psp_me_context = 0;
 	return 0;
 }
 
@@ -10385,7 +10386,7 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 	float fade, void const *meter_parameters, int wrapped)
 {
 	extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
-	static int hdump = -1;
+	static PSP_MAIN_SIDE int hdump = -1; /* build 118: set as the calls are written down */
 	struct game_screen_vertex const *in = vertices;
 	const unsigned char *bitmap = (const unsigned char *)key;
 	float x0, y0, x1, y1;

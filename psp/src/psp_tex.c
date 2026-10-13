@@ -845,7 +845,7 @@ static int find(unsigned int key)
 	Media Engine binds (gemeoverlap) while the main CPU asks for textures
 	too (object lighting's lightmap samples) */
 	static int recent_cpu[2][64] __attribute__((aligned(64)));
-	int *recent = recent_cpu[psp_on_me()];
+	int *recent = recent_cpu[PSP_ME_WORK() ? 1 : 0]; /* (the emulator's simulated ME work too, for its write trace) */
 	int slot = (int)((key >> 4) & 63), low = 0, high = entry_count - 1, at = recent[slot];
 
 	if (at < entry_count && entries[at].key == key)

@@ -586,7 +586,7 @@ static int entry_holds(int index, unsigned int at)
 static int resident_entry(const void *ptr)
 {
 	unsigned int at = (unsigned int)ptr, slot = (at >> 6) % AT_SLOTS;
-	short *at_slot = at_slot_cpu[psp_on_me()];
+	short *at_slot = at_slot_cpu[PSP_ME_WORK() ? 1 : 0]; /* (the emulator's simulated ME work too, for its write trace) */
 	int index;
 
 	if (at < arena_start || at >= arena_end)
