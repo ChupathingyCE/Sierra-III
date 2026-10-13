@@ -195,11 +195,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			/* build 118: the object's point lights (muzzle flashes, plasma,
 			the flashlight), up to two, as the Xbox's model vertex shader
 			takes them (the "lights" permutation, rasterizer_xbox_models.c).
-			Each light's reach is worked out at the model's centre, as the
-			light pass does per vertex (psp_ge.c, light_reach): the falloff
+			Each light's reach is worked out once for the model, as the light
+			pass does per vertex (psp_ge.c, light_reach): the falloff
 			(1 - d^2/r^2)^2 and a spotlight's cone between its falloff and
-			cutoff cosines; the GE then shades each vertex by its angle to the
-			light (psp_ge_model_point_light) */
+			cutoff cosines, both at the point of the model's sphere nearest the
+			light (the engine picks a light when its sphere touches the
+			object's: find_point_light_for_object), so a Warthog lit at one
+			end isn't left dark; the GE then shades each vertex by its angle to
+			the light (psp_ge_model_point_light) */
 			extern void psp_ge_model_point_light(const float *position, unsigned int color);
 			short k;
 
@@ -208,7 +211,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				long index = lighting->point_light_indices[k];
 				struct rasterizer_light_submit_parameters const *light;
 				char const *definition;
-				real dx, dy, dz, d2, fade, scale;
+				real dx, dy, dz, d2, distance, nearest, fade, scale;
 				int r, g, b;
 
 				if (index < 0 || index >= rasterizer_lights.light_count)
@@ -220,16 +223,26 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				dy = light->position.y - parameters->centroid.y;
 				dz = light->position.z - parameters->centroid.z;
 				d2 = dx * dx + dy * dy + dz * dz;
-				fade = 1.0f - d2 / (light->radius * light->radius);
+				distance = square_root(d2);
+				nearest = distance - parameters->radius;
+				if (nearest < 0.0f)
+					nearest = 0.0f;
+				fade = 1.0f - nearest * nearest / (light->radius * light->radius);
 				if (fade <= 0.0f)
 					continue;
 				fade *= fade;
-				/* the definition's cone cosines at +28 and +32 (object_lights.c) */
+				/* the definition's cone cosines at +28 and +32 (object_lights.c),
+				against the sphere: the angle to its centre less the angle it
+				spans as seen from the light */
 				definition = (char const *)light->definition;
-				if (definition && *(float const *)(definition + 32) > -0.99f && d2 > 1e-8f)
+				if (definition && *(float const *)(definition + 32) > -0.99f && distance > parameters->radius)
 				{
 					real cutoff = *(float const *)(definition + 32), falloff = *(float const *)(definition + 28);
-					real cone = -(dx * light->forward.i + dy * light->forward.j + dz * light->forward.k) / square_root(d2);
+					real cosine = -(dx * light->forward.i + dy * light->forward.j + dz * light->forward.k) / distance;
+					real sine = cosine < 1.0f ? square_root(1.0f - cosine * cosine) : 0.0f;
+					real span_sine = parameters->radius / distance, span_cosine = square_root(1.0f - span_sine * span_sine);
+					/* cos(angle - span), or 1 inside the span */
+					real cone = sine <= span_sine && cosine > 0.0f ? 1.0f : cosine * span_cosine + sine * span_sine;
 
 					if (falloff <= cutoff)
 						falloff = cutoff + 0.001f;
@@ -3894,15 +3907,18 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 	unsigned long *header = psp_state_words_header;
 	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, stream = 0, used = 0;
 	unsigned long start = psp_microseconds();
-	byte *map = (byte *)&header[4], *stage;
+	byte *map = (byte *)&header[4], *stage, *stage_block;
 	unsigned short *counts;
 	boolean ok = TRUE;
 
 	if (size % PSP_STATE_PAGE || 16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER)
 		return FALSE;
-	stage = (byte *)malloc(PSP_STATE_STAGE);
-	if (!stage)
+	/* build 118: the stage 64-byte aligned (an independent review: b115's
+	fast path wrote straight from the game state's aligned buffer) */
+	stage_block = (byte *)malloc(PSP_STATE_STAGE + 63);
+	if (!stage_block)
 		return FALSE;
+	stage = (byte *)(((unsigned long)stage_block + 63) & ~63UL);
 	csmemset(header, 0, PSP_STATE_WORDS_HEADER);
 	counts = PSP_STATE_COUNTS(header, pages);
 	for (page = 0; page < pages; page++)
@@ -3972,7 +3988,7 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 	}
 	if (ok && used)
 		ok = WriteFile(handle, stage, used, &written, NULL) && written == used;
-	free(stage);
+	free(stage_block);
 	if (ok)
 		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms",
 			kept, pages, (PSP_STATE_WORDS_HEADER + stream) / 1024, kept * PSP_STATE_PAGE / 1024,

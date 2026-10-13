@@ -5396,9 +5396,13 @@ void psp_ge_model_point_light(const float *position, unsigned int color)
 	GE_DEFER(defer_model_point_light(position, color));
 	if (model_point_count >= 2 || !position)
 		return;
-	model_point_position[model_point_count].x = position[0];
-	model_point_position[model_point_count].y = position[1];
-	model_point_position[model_point_count].z = position[2];
+	/* the GE lights after the model matrix, and this file's model matrices
+	have the camera at the origin (relative), so the light's place is
+	given from the camera too (an independent review; at replay, after
+	GE_DEFER, the camera is the one the model is drawn from) */
+	model_point_position[model_point_count].x = position[0] - camera_eye[0];
+	model_point_position[model_point_count].y = position[1] - camera_eye[1];
+	model_point_position[model_point_count].z = position[2] - camera_eye[2];
 	model_point_color[model_point_count] = color;
 	model_point_count++;
 }
@@ -5515,6 +5519,10 @@ static ScePspFVector3 lit_toward[2];
 static int lit_point_on[2];
 static unsigned int lit_point_color[2];
 static ScePspFVector3 lit_point_position[2];
+/* whether the GE may have light 2 or 3 on, memo or not, so a model without
+point lights sends no disables when they're already off (nopointlights
+then sends what b116 sent) */
+static int lit_points_maybe_on = 0;
 static unsigned long lit_sets_sent = 0, lit_sets_memo = 0;
 
 /* lighting changed outside model_lighting: 0 turned off; 1 the lights'
@@ -5602,12 +5610,13 @@ static void model_lighting(int on)
 				sent = 1;
 			}
 		}
-		else if (!lit_params || lit_point_on[index])
+		else if (lit_points_maybe_on && (!lit_params || lit_point_on[index]))
 		{
 			sceGuDisable(GU_LIGHT2 + index);
 			sent = 1;
 		}
 	}
+	lit_points_maybe_on = model_point_count > 0;
 	if (on && model_point_count)
 		model_point_parts++;
 	if (sent)
@@ -7551,6 +7560,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		by place): the back faces go without */
 		for (index = 0; index < model_point_count; index++)
 			sceGuDisable(GU_LIGHT2 + index);
+		lit_points_maybe_on = 0; /* light 3 was already off when only light 2 was used */
 		lit_forget(1); /* build 114: statememo */
 		model_geometry(vertices, indices, index_count, strip, skin, &model);
 		sceGuFrontFace(LEVEL_FRONT);
@@ -11400,7 +11410,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	unsigned int average = 0xFFFFFFFF;
 	unsigned char *cone = NULL;
 	ScePspFMatrix4 cone_projection;
-	float tangent = 0.0f, tint[3] = { 1.0f, 1.0f, 1.0f }, saved[3];
+	float tangent = 0.0f, tint[3] = { 1.0f, 1.0f, 1.0f }, saved[3], near_saved;
 
 	if (!light.open || !frame_open || triangle_count <= 0 || !vertices || !indices || list_full())
 		return;
@@ -11439,6 +11449,17 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	out = scratch_vertices;
 	if (light_mode == 1)
 		whole = list_take((int)triangle_count * 3 * sizeof(unsigned short));
+	/* build 118: the light's own pieces cut a hair past the near plane, so
+	a corner on the cut has room for its 1% lift toward the eye
+	(light_lift_corner) without crossing the plane; at the plane itself it
+	would get none, where a wall beside the player needs the most (an
+	independent review). The sliver left out is 1% of the near plane's
+	distance deep */
+	if (light_cut_one < 0)
+		light_cut_one = psp_keep("lightcutone");
+	near_saved = near_clip;
+	if (light_mode == 2 && !light_cut_one)
+		near_clip = projection_near * 1.0102f;
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
@@ -11447,7 +11468,10 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		const float *source[3];
 
 		if (triangle[0] >= vertex_count || triangle[1] >= vertex_count || triangle[2] >= vertex_count)
+		{
+			near_clip = near_saved;
 			return;
+		}
 		/* build 68: from the copies (position, and the packed normal kept
 		beside them), not the map's vertices, which may be in the pack */
 		for (corner = 0; corner < 3; corner++)
@@ -11571,6 +11595,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		}
 		light_emit(corners, out, &kept_count, &cut_count);
 	}
+	near_clip = near_saved;
 	if (!kept_count && !cut_count && !whole_count)
 		return;
 	/* the light's colour, times the surface's average colour for a spotlight */
