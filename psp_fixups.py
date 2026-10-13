@@ -1304,6 +1304,35 @@ static void *psp_request_callers[MAXIMUM_SIMULTANEOUS_CACHE_REQUESTS];
 		HANDLE file;
 
 		cache_file_get_map_path(map_name, path);
+		/* build 118: one map file open besides the open map's. A slot kept
+		its file open until the slot came round again (6 slots), so the
+		sixth map in one session found the PSP out of file handles (b117
+		test 2, the ladder: a10.map to b40.map all open, the log's handle
+		given up at b40, c20's map not opened, back to the XMB). A slot let
+		go forgets its header, so its map, asked for again, opens afresh.
+		Off: mapfilesopen (b117's) */
+		{
+			extern int psp_keep(const char *name);
+			static int keep_all = -1;
+			short other;
+
+			if (keep_all < 0)
+				keep_all = psp_keep("mapfilesopen");
+			for (other = 0; !keep_all && other < NUMBER_OF_CACHED_MAP_FILES; other++)
+			{
+				struct cached_map_file *slot = cached_map_file_get(other);
+
+				if (other == cache_file_globals.open_map_file_index)
+					continue;
+				if (slot->file != INVALID_HANDLE_VALUE && slot->file != NULL)
+				{
+					platform_psp_log("map slot %d: %s let go", other, slot->header.name);
+					CloseHandle(slot->file);
+				}
+				slot->file = INVALID_HANDLE_VALUE;
+				memset(&slot->header, 0, sizeof(struct cache_file_header));
+			}
+		}
 		file = CreateFileA(path, GENERIC_READ, 0, NULL, OPEN_EXISTING,
 			FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED, NULL);
 		if (file != INVALID_HANDLE_VALUE)
