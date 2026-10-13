@@ -233,7 +233,8 @@ enum
 	DEFER_SHADOW_BEGIN, DEFER_SHADOW_DRAW, DEFER_SHADOW_END, DEFER_LIGHT_BEGIN, DEFER_LIGHT_DRAW, DEFER_SCREEN_FLASH,
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
-	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */
+	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
+	DEFER_MODEL_POINT_LIGHT /* build 118 */
 };
 typedef union
 {
@@ -305,6 +306,7 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	const float *ambient, int light_count, const float *light0, const float *light1);
 void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp);
 void psp_ge_model_effect(int type, float intensity);
+void psp_ge_model_point_light(const float *position, unsigned int color);
 void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
@@ -496,6 +498,15 @@ static int defer_model_effect(int type, float intensity)
 
 	at[0].i = type;
 	at[1].f = intensity;
+	return 1;
+}
+
+static int defer_model_point_light(const float *position, unsigned int color)
+{
+	defer_word *at = defer_take(DEFER_MODEL_POINT_LIGHT, 1 + 4);
+
+	at[0].u = color;
+	defer_copy(at + 1, position, 3);
 	return 1;
 }
 
@@ -791,6 +802,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_MODEL_EFFECT:
 			psp_ge_model_effect(w[0].i, w[1].f);
+			break;
+		case DEFER_MODEL_POINT_LIGHT:
+			psp_ge_model_point_light(defer_copy_back(w + 1, &rest, 3), w[0].u);
 			break;
 		case DEFER_MODEL_MULTIPURPOSE:
 			a = defer_copy_back(w + 1, &rest, 3);
@@ -5329,6 +5343,13 @@ static unsigned int model_ambient = MODEL_LIGHT;
 static int model_light_count = 0;
 static unsigned int model_light_color[2];
 static ScePspFVector3 model_light_toward[2];
+/* build 118: and up to two point lights (the GE's lights 2 and 3), each a
+place and a colour already scaled by its reach at the model's centre
+(psp_fixups.py, the model's begin) */
+static int model_point_count = 0;
+static unsigned int model_point_color[2];
+static ScePspFVector3 model_point_position[2];
+static unsigned long model_point_parts = 0;
 
 static unsigned int color_from_rgb(const float *rgb)
 {
@@ -5355,6 +5376,7 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	model_v_scale = v_scale != 0.0f ? v_scale : 1.0f;
 	model_ambient = ambient ? color_from_rgb(ambient) : MODEL_LIGHT;
 	model_light_count = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
+	model_point_count = 0; /* build 118: psp_ge_model_point_light follows */
 	for (index = 0; index < model_light_count; index++)
 	{
 		const float *light = index ? light1 : light0;
@@ -5365,6 +5387,20 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 		model_light_toward[index].y = -light[4];
 		model_light_toward[index].z = -light[5];
 	}
+}
+
+/* build 118: one of the object's point lights, after psp_ge_model_begin */
+void psp_ge_model_point_light(const float *position, unsigned int color)
+{
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_model_point_light(position, color));
+	if (model_point_count >= 2 || !position)
+		return;
+	model_point_position[model_point_count].x = position[0];
+	model_point_position[model_point_count].y = position[1];
+	model_point_position[model_point_count].z = position[2];
+	model_point_color[model_point_count] = color;
+	model_point_count++;
 }
 
 /* build 38: whether the next model is the first-person weapon (its own
@@ -5475,6 +5511,10 @@ start, and never used in the Media Engine's work */
 static int lit_memo = -1, lit_enabled = -1, lit_params = 0, lit_on[2];
 static unsigned int lit_ambient, lit_color[2];
 static ScePspFVector3 lit_toward[2];
+/* build 118: the point lights' (lights 2 and 3) */
+static int lit_point_on[2];
+static unsigned int lit_point_color[2];
+static ScePspFVector3 lit_point_position[2];
 static unsigned long lit_sets_sent = 0, lit_sets_memo = 0;
 
 /* lighting changed outside model_lighting: 0 turned off; 1 the lights'
@@ -5496,7 +5536,7 @@ static void model_lighting(int on)
 		lit_enabled = -1;
 		lit_params = 0;
 	}
-	if (!on || (!model_light_count && model_ambient == 0xFF000000))
+	if (!on || (!model_light_count && !model_point_count && model_ambient == 0xFF000000))
 	{
 		if (lit_enabled != 0)
 			sceGuDisable(GU_LIGHTING);
@@ -5537,6 +5577,39 @@ static void model_lighting(int on)
 			sent = 1;
 		}
 	}
+	/* build 118: the point lights, as lights 2 and 3: a place and a colour
+	already scaled by the reach at the model's centre, so no attenuation;
+	the GE shades each vertex by its angle to the light */
+	for (index = 0; index < 2; index++)
+	{
+		if (index < model_point_count)
+		{
+			if (!lit_params || !lit_point_on[index] ||
+				memcmp(&lit_point_position[index], &model_point_position[index], sizeof(ScePspFVector3)) != 0)
+			{
+				sceGuLight(2 + index, GU_POINTLIGHT, GU_DIFFUSE, &model_point_position[index]);
+				sceGuLightAtt(2 + index, 1.0f, 0.0f, 0.0f);
+				sent = 1;
+			}
+			if (!lit_params || !lit_point_on[index] || lit_point_color[index] != model_point_color[index])
+			{
+				sceGuLightColor(2 + index, GU_DIFFUSE, model_point_color[index]);
+				sent = 1;
+			}
+			if (!lit_params || !lit_point_on[index])
+			{
+				sceGuEnable(GU_LIGHT2 + index);
+				sent = 1;
+			}
+		}
+		else if (!lit_params || lit_point_on[index])
+		{
+			sceGuDisable(GU_LIGHT2 + index);
+			sent = 1;
+		}
+	}
+	if (on && model_point_count)
+		model_point_parts++;
 	if (sent)
 		lit_sets_sent++;
 	else
@@ -5553,6 +5626,12 @@ static void model_lighting(int on)
 		{
 			lit_toward[index] = model_light_toward[index];
 			lit_color[index] = model_light_color[index];
+		}
+		lit_point_on[index] = index < model_point_count;
+		if (lit_point_on[index])
+		{
+			lit_point_position[index] = model_point_position[index];
+			lit_point_color[index] = model_point_color[index];
 		}
 	}
 }
@@ -7468,6 +7547,10 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 
 			sceGuLight(index, GU_DIRECTIONAL, GU_DIFFUSE, &flipped);
 		}
+		/* build 118: a point light can't be flipped the same way (it lights
+		by place): the back faces go without */
+		for (index = 0; index < model_point_count; index++)
+			sceGuDisable(GU_LIGHT2 + index);
 		lit_forget(1); /* build 114: statememo */
 		model_geometry(vertices, indices, index_count, strip, skin, &model);
 		sceGuFrontFace(LEVEL_FRONT);
@@ -13153,10 +13236,11 @@ void psp_ge_frame_end(void)
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;
-		if (seethrough_lit_draws)
-			platform_log("GE: after build 116, last 300 frames: glass parts lit by their model's light %lu",
-				seethrough_lit_draws);
+		if (seethrough_lit_draws || model_point_parts)
+			platform_log("GE: after build 116, last 300 frames: glass parts lit by their model's light %lu; model parts lit by point lights %lu",
+				seethrough_lit_draws, model_point_parts);
 		seethrough_lit_draws = 0;
+		model_point_parts = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;

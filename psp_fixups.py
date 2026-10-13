@@ -192,6 +192,64 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			lighting->distant_light_count, &lighting->distant_lights[0].color.red,
 			&lighting->distant_lights[1].color.red);
 		{
+			/* build 118: the object's point lights (muzzle flashes, plasma,
+			the flashlight), up to two, as the Xbox's model vertex shader
+			takes them (the "lights" permutation, rasterizer_xbox_models.c).
+			Each light's reach is worked out at the model's centre, as the
+			light pass does per vertex (psp_ge.c, light_reach): the falloff
+			(1 - d^2/r^2)^2 and a spotlight's cone between its falloff and
+			cutoff cosines; the GE then shades each vertex by its angle to the
+			light (psp_ge_model_point_light) */
+			extern void psp_ge_model_point_light(const float *position, unsigned int color);
+			short k;
+
+			for (k = 0; k < lighting->point_light_count && k < MAXIMUM_RENDERED_POINT_LIGHTS; k++)
+			{
+				long index = lighting->point_light_indices[k];
+				struct rasterizer_light_submit_parameters const *light;
+				char const *definition;
+				real dx, dy, dz, d2, fade, scale;
+				int r, g, b;
+
+				if (index < 0 || index >= rasterizer_lights.light_count)
+					continue;
+				light = &rasterizer_lights.lights[index];
+				if (light->radius <= 0.0f)
+					continue;
+				dx = light->position.x - parameters->centroid.x;
+				dy = light->position.y - parameters->centroid.y;
+				dz = light->position.z - parameters->centroid.z;
+				d2 = dx * dx + dy * dy + dz * dz;
+				fade = 1.0f - d2 / (light->radius * light->radius);
+				if (fade <= 0.0f)
+					continue;
+				fade *= fade;
+				/* the definition's cone cosines at +28 and +32 (object_lights.c) */
+				definition = (char const *)light->definition;
+				if (definition && *(float const *)(definition + 32) > -0.99f && d2 > 1e-8f)
+				{
+					real cutoff = *(float const *)(definition + 32), falloff = *(float const *)(definition + 28);
+					real cone = -(dx * light->forward.i + dy * light->forward.j + dz * light->forward.k) / square_root(d2);
+
+					if (falloff <= cutoff)
+						falloff = cutoff + 0.001f;
+					if (cone <= cutoff)
+						continue;
+					if (cone < falloff)
+						fade *= (cone - cutoff) / (falloff - cutoff);
+				}
+				scale = fade * 255.0f;
+				r = (int)(light->color.red * scale);
+				g = (int)(light->color.green * scale);
+				b = (int)(light->color.blue * scale);
+				r = r > 255 ? 255 : r < 0 ? 0 : r;
+				g = g > 255 ? 255 : g < 0 ? 0 : g;
+				b = b > 255 ? 255 : b < 0 ? 0 : b;
+				if (r | g | b)
+					psp_ge_model_point_light(&light->position.x, 0xFF000000u | ((unsigned int)b << 16) | ((unsigned int)g << 8) | (unsigned int)r);
+			}
+		}
+		{
 			/* build 38: the first-person weapon's own near plane, as the
 			Xbox's model_begin sets it (_rasterizer_geometry_first_person_bit
 			is bit 7), and the model's bounding sphere, for the near plane */
@@ -8432,6 +8490,8 @@ void compute_sound_obstruction(
 }
 """),
 ]
+# build 118: looked for again by default: the GE lights models by them now
+# (b116 test 1: Sheepdog01 saw no lighting on actors). "nopointlights": as before.
 # build 106: an object's dynamic point lights (muzzle flashes, plasma bolts)
 # are looked for only to pick the Xbox's vertex shader with
 # per-vertex point lights (rasterizer_xbox_models.c); the GE draws a model
@@ -8467,14 +8527,17 @@ FIXES_106["source/objects/object_lights.c#pointlights"] = [
 	short cluster_index;
 	short light_index;
 #ifdef HALO_PSP
-	/* psp_fixups.py (build 106): see FIXES_106 object_lights.c#pointlights */
+	/* psp_fixups.py (build 106): see FIXES_106 object_lights.c#pointlights.
+	Build 118: looked for again by default, as the GE now lights models by
+	them (rasterizer.c, psp_ge_model_point_light); "nopointlights" skips
+	them, as builds 106-116 did */
 	static int psp_point_lights = -1;
 
 	if (psp_point_lights < 0)
 	{
 		int psp_keep(const char *name);
 
-		psp_point_lights = psp_keep("objectpointlights");
+		psp_point_lights = !psp_keep("nopointlights");
 	}
 	if (!psp_point_lights)
 	{
