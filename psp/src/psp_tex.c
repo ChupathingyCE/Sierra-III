@@ -49,6 +49,8 @@ switch has the same texture placement */
 #define VRAM_BENCH_BYTES 0x40000
 static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
+/* build 118: the VRAM given to the model buffers by default, in KB */
+#define VRAM_MODELS_DEFAULT_KB 600
 /* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
 of the most-read model buffers (psp_tex_vram_models) */
 static unsigned int vram_models_bytes = 0;
@@ -181,11 +183,14 @@ void psp_tex_close(void)
 	the top N KB of VRAM leave the texture cache for the models, the VRAM
 	swap's second step (b115 test 3 [M]: textures from main RAM cost the GE
 	~1.5 ms a frame; the models' reads are most of the rest). Not with
-	benchrun, whose rooms are up there */
+	benchrun, whose rooms are up there.
+	Build 118: 600 KB by default (b116 test 2 [M]: the models' GE time 31%
+	less in b30's cinematic and 44% less in the flight after it, the flight
+	16% faster; Sheepdog01's call, 2026-10-12). "vrammodels0" turns it off */
 	vram_models_bytes = 0;
 	if (!psp_keep("benchrun"))
 	{
-		int kb = psp_keep_number("vrammodels", 0);
+		int kb = psp_keep_number("vrammodels", VRAM_MODELS_DEFAULT_KB);
 
 		if (kb >= 64 && (unsigned int)kb * 1024 <= (VRAM_CACHE_END_FULL - VRAM_CACHE_START) / 2)
 		{
@@ -195,7 +200,9 @@ void psp_tex_close(void)
 			platform_log("textures: vrammodels: the top %d KB of VRAM for the model buffers; the texture cache %u KB",
 				kb, (vram_cache_end - VRAM_CACHE_START) / 1024);
 		}
-		else if (kb)
+		else if (!kb)
+			platform_log("textures: vrammodels0: the model buffers stay in main RAM (as b116 without the word)");
+		else
 			/* said, not silently left off (the emulator's vrammodels800 run) */
 			platform_log("textures: vrammodels%d left off: 64 KB up to half the texture cache's VRAM (%u KB)", kb,
 				(VRAM_CACHE_END_FULL - VRAM_CACHE_START) / 2048);
