@@ -384,23 +384,31 @@ def link(objs, stubs):
                         os.path.join(HERE, "psp/meaudio/kcall.S"), "-o", stub], check=True)
         with open(os.path.join(OUT, "objs.rsp"), "a") as f:
             f.write('"%s"\n' % stub)
-    # build 102: PSP_TEXT_LAYOUT reorders the code for the 16 KB instruction
-    # cache: "coldfirst" puts every function's cold part (.text.unlikely.*,
-    # from -freorder-blocks-and-partition) together at the start instead of
-    # beside its function; a file name adds its list of hot functions (one
-    # section name a line, tools/icache_order.py's order.txt) right after
+    # PSP_TEXT_LAYOUT reorders the code for the 16 KB instruction cache. The
+    # SDK's script places every code section in input order, which scatters
+    # hot functions among cold ones; each layout puts some sections first,
+    # then everything else as before. Same code, new addresses: exact.
+    #   coldfirst (build 102): every function's cold part (.text.unlikely.*,
+    #     from -freorder-blocks-and-partition) together at the start;
+    #   hotgroup (build 120): that, then every function PGO's profile found
+    #     hot (.text.hot.*, from -freorder-functions) as one block, so hot
+    #     code stops sharing cache lines with cold code at both ends
+    #     (research_icache.md, T1). Only a PGO build has .text.hot sections;
+    #   a file name: coldfirst, then that file's hot functions in its order
+    #     (one section name a line, tools/icache_order.py's order.txt).
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
     if layout:
-        hot = ""
-        if layout != "coldfirst":
-            names = [l.strip() for l in open(layout) if l.strip().startswith(".text.")]
-            hot = "".join("    *(%s)\n" % n for n in names)
+        first = ["*(.text.unlikely .text.unlikely.*)"]
+        if layout == "hotgroup":
+            first.append("*(.text.hot .text.hot.*)")
+        elif layout != "coldfirst":
+            first += ["*(%s)" % l.strip() for l in open(layout) if l.strip().startswith(".text.")]
         old_text = "    _ftext = . ;\n    *(.text .stub .text.* .gnu.linkonce.t.*)\n"
         if old_text not in text:
             sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_TEXT_LAYOUT can't place the code")
-        text = text.replace(old_text, "    _ftext = . ;\n    *(.text.unlikely .text.unlikely.*)\n" + hot +
+        text = text.replace(old_text, "    _ftext = . ;\n" + "".join("    %s\n" % f for f in first) +
                             "    *(.text .stub .text.* .gnu.linkonce.t.*)\n")
     # build 118: the variables of the code the Media Engine runs (the GE
     # layer, the texture cache, pspgu) on cache lines of their own, and the
