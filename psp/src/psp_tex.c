@@ -836,14 +836,24 @@ unsigned int psp_tex_shader_tint(unsigned int shader, int *doubled)
 
 static int find(unsigned int key)
 {
-	int low = 0, high = entry_count - 1;
+	/* after b116: where the last keys were found, by a few bits of the key
+	(a draw asks for its texture 2-3 times: bind, size, residency); a place
+	is used only if its entry still has that key, so nothing goes stale
+	when a map's pack replaces the entries (an independent review) */
+	static int recent[64];
+	int slot = (int)((key >> 4) & 63), low = 0, high = entry_count - 1, at = recent[slot];
 
+	if (at < entry_count && entries[at].key == key)
+		return at;
 	while (low <= high)
 	{
 		int middle = (low + high) / 2;
 
 		if (entries[middle].key == key)
+		{
+			recent[slot] = middle;
 			return middle;
+		}
 		if (entries[middle].key < key)
 			low = middle + 1;
 		else

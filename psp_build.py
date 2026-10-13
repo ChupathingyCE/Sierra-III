@@ -29,6 +29,7 @@ SDK = PSPDEV + "/psp/sdk"
 MECORE = os.environ.get("PSP_MECORE", "")
 JOBS = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else 2
 GAME_STATE_BASE = 0x092A0000   # psp_capacity.h (build 113: 64 KB lower)
+TAG_WINDOW_BASE = 0x09600000   # psp_capacity.h, physical_memory_map.c
 PROGRAM_BASE = 0x08804000      # where the kernel loads the module (first fit, low)
 STACK_RESERVE = 0x40000        # main thread and other low allocations made before the heap
 
@@ -91,6 +92,10 @@ GAME_OPT = os.environ.get("PSP_GAME_OPT", "-O2")
 # to 0x0C000000, MEMSIZE=1 in the PARAM.SFO so the firmware (and PPSSPP)
 # extend the user partition. Recon only: the PSP-1000 is the target.
 BIG_RAM = os.environ.get("PSP_BIG_RAM", "") == "1"
+# the heap runs from the program's end up to the game state; in the 64 MB
+# variant the game state sits above the tag window (psp_capacity.h), and the
+# heap runs up to the window (room for PSP_PGO=generate's counters)
+HEAP_CEILING = TAG_WINDOW_BASE if BIG_RAM else GAME_STATE_BASE
 # PSP_TICK_STEPS=1 adds the tick breadcrumbs (bipeds, units, actors, object_update;
 # psp_fixups.py) that cost a few percent of the tick: recon builds only
 TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
@@ -106,12 +111,74 @@ DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
 # maps are its own bake, read as halo-ce-universal reads them (psp_fixups.py,
 # FIXES_CHUPA "trusted maps")
 MAP_CHECKS = os.environ.get("PSP_MAP_CHECKS", "") == "1"
+# PGO, the profile-guided build (big_levers.md section 6, L4).
+# PSP_PGO=generate builds the hot units (those at -O2) counting their own
+# branches and calls; the counters don't fit the PSP-1000's layout, so it
+# needs PSP_BIG_RAM=1 (the emulator set to a 64 MB model). The game writes
+# the counts to ms0:/halo/gcda at "gcovdumpN" seconds of game time.
+# PSP_PGO=use with PSP_PGO_PROFILE=<name> builds the same units with the
+# counts in pgo/<name>.tgz: an ordinary build, for the PSP-1000. The counts'
+# file names are the objects' paths under PSP_OUT (-fprofile-prefix-path),
+# so a profile made on one machine builds on another
+PGO = os.environ.get("PSP_PGO", "")
+PGO_PROFILE = os.environ.get("PSP_PGO_PROFILE", "")
+PGO_DIR = os.path.join(OUT, "pgo-profile")
+# PSP_PGO_PARTIAL=0: what the training run never reached is optimised for
+# size, as GCC does by default (smaller, but slow wherever the run didn't go);
+# 1, the default: optimised as usual
+PGO_PARTIAL = os.environ.get("PSP_PGO_PARTIAL", "1") != "0"
+# PSP_PGO_EXTRA: more flags for the counted units in a PSP_PGO=use build,
+# separated by commas or spaces (e.g. -fno-unroll-loops: -fprofile-use
+# unrolls and peels loops, which grows the program, and the heap is what's
+# left of 24 MB after it)
+PGO_EXTRA = os.environ.get("PSP_PGO_EXTRA", "").replace(",", " ").split()
+# the units PSP_PGO=generate counts in: source/<name>/ for each name, "psp"
+# for psp/src/. All the hot units counted, the program grew 5.3 MB and the
+# heap fell to 3.9 MB in the 64 MB layout, under b30's 5.2 MB; these are the
+# tick's and the drawing's own (about 3.4 MB) [U]. PSP_PGO_UNITS=a,b,...
+# chooses others. The use build gives every hot unit its counts, where it
+# has them
+PGO_UNITS = os.environ.get("PSP_PGO_UNITS", "ai,rasterizer,objects,physics,units,structures,render,models,psp").split(",")
+if PGO not in ("", "generate", "use"):
+    sys.exit("psp_build: PSP_PGO is generate or use")
+if PGO == "generate" and not BIG_RAM:
+    sys.exit("psp_build: PSP_PGO=generate needs PSP_BIG_RAM=1 (the counters don't fit 24 MB)")
+if PGO == "use" and not re.fullmatch(r"[A-Za-z0-9_-]+", PGO_PROFILE):
+    sys.exit("psp_build: PSP_PGO=use needs PSP_PGO_PROFILE=<name> (pgo/<name>.tgz)")
+
+def pgo_counted(rel):
+    r = rel.replace("\\", "/")
+    return any(r.startswith("psp/src/" if u == "psp" else "source/%s/" % u) for u in PGO_UNITS if u)
+
+def pgo_flags(rel):
+    # only the counted units: -fprofile-use without counts still turns on
+    # its loop unrolling and peeling, which grew the uncounted units ~100 KB
+    # for nothing (the first local build)
+    if not pgo_counted(rel):
+        return []
+    if PGO == "generate":
+        return ["-fprofile-generate=/pgo", "-fprofile-update=single", "-fprofile-prefix-path=" + OUT]
+    if PGO == "use":
+        # partial training (PGO_PARTIAL): code the run never reached is
+        # optimised as usual, not for size (one map's opening doesn't reach
+        # the rest). A function whose source location moved but whose
+        # branches didn't (a line added above it) still uses its counts, with
+        # a warning; one whose branches changed is built without them (GCC
+        # checks both)
+        # -fprofile-correction: counts merged from several runs
+        # (psp-gcov-tool merge) can leave a value profile (a division's or a
+        # copy's usual operand) a little off its block's count, which GCC
+        # otherwise refuses ("corrupted value profile")
+        return ["-fprofile-use=" + PGO_DIR, "-fprofile-prefix-path=" + OUT, "-fprofile-correction"] + (
+                ["-fprofile-partial-training"] if PGO_PARTIAL else []) + [
+                "-Wno-missing-profile", "-Wno-error=coverage-mismatch"] + PGO_EXTRA
+    return []
 PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fshort-wchar",
        "-fms-extensions", "-fcommon", "-fno-strict-aliasing", "-fwrapv",
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_CHUPATHINGYCE=1"] if CHUPA else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_CHUPATHINGYCE=1"] if CHUPA else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -223,10 +290,15 @@ def compile_one(item):
     obj = os.path.join(OBJ, rel[:-2] + ".o")
     if cold_code(rel):
         extra = extra + ["-Os"]
+    elif GAME_OPT == "-O2":
+        extra = extra + pgo_flags(rel)
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_platform.c"):
         defines.append("-DPSP_HEAP_KB=%d" % HEAP_KB)
+        if PGO == "use":
+            # the log's first lines say which profile built it
+            defines.append('-DPSP_PGO_PROFILE="%s"' % PGO_PROFILE)
     # PSP_REUSE: keep an object only when it is newer than its source. Build
     # 46 shipped with a stale psp_tex.o (reused without this check, so an
     # edit to psp_tex.c never reached the EBOOT): the learned-binds file was
@@ -234,18 +306,33 @@ def compile_one(item):
     if (os.environ.get("PSP_REUSE") and os.path.exists(obj) and not src.endswith("psp_platform.c")
             and os.path.getmtime(obj) > os.path.getmtime(os.path.join(TREE, src))):
         return src, 0, "", obj
-    cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", obj]
+    # PGO: the object named relative to the tree (the compiler's directory),
+    # so its counts file is the object's path under PSP_OUT, flattened
+    # ("tree#^#obj#source#ai#actors.gcda"): an absolute -o keeps the absolute
+    # path, nested in folders the PSP's libgcov can't make
+    out = os.path.relpath(obj, TREE) if PGO else obj
+    cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
                      "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         # (build 110: the launch menu, the crash handler's side, the overlay
         # and the load trace's wrappers for size; the rest for speed)
         opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c", "psp_watch.c")) else "-O2"
-        cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections",
-               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include", "-c", src, "-o", obj]
+        # after b116: -fno-math-errno, as the engine's units have: sqrtf is
+        # the FPU's sqrt.s alone, without a library fallback that only sets
+        # errno (the same results; an independent review)
+        cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections", "-fno-math-errno",
+               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + [
+               "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
             cmd[-4:-4] = ["-I" + (MECORE or os.path.dirname(SDK)) + "/include"]
+    if PGO:
+        # PGO: the port's own files named through the tree's link to the
+        # checkout (tree/sierra), as the engine's are named relative to the
+        # tree: a function's file name is part of its profile's checksum, so
+        # counts made on the lab's runner match a build on any machine
+        cmd = [a.replace(HERE + "/", "sierra/") for a in cmd]
     r = subprocess.run(cmd, cwd=TREE, capture_output=True, text=True)
     if r.returncode and "-mno-explicit-relocs" in cmd:
         # inline assembly that uses $at (".set noat") needs explicit relocations
@@ -312,7 +399,8 @@ def link(objs, stubs):
     # build 107: the link map (halo.map: each function's and variable's
     # address, size and object file) is written every link, for
     # tools/coverage.py's per-file inventory
-    cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib"] + (["-L" + MECORE + "/lib"] if MECORE else []) + ["-specs=" + SDK + "/lib/prxspecs",
+    cmd = ["psp-gcc", "-G0", "-L" + SDK + "/lib"] + (["-L" + MECORE + "/lib"] if MECORE else []) + (
+           ["-fprofile-generate"] if PGO == "generate" else []) + ["-specs=" + SDK + "/lib/prxspecs",
            "-Wl,-q,-T" + linkfile, "-Wl,-zmax-page-size=128", "-Wl,--gc-sections",
            "-Wl,-Map=" + os.path.join(OUT, "halo.map"),
            "-Wl,--wrap=malloc,--wrap=calloc,--wrap=realloc,--wrap=memalign,--wrap=sceKernelCreateThread,--wrap=sceGeListUpdateStallAddr,"
@@ -340,6 +428,20 @@ def main():
     build_var.REPO, build_var.TREE = REPO, TREE
     build_var.mirror()
     subprocess.run([sys.executable, os.path.join(HERE, "psp_fixups.py"), TREE], check=True)
+    if PGO:
+        link_path = os.path.join(TREE, "sierra")
+        if os.path.islink(link_path):
+            os.remove(link_path)
+        os.symlink(HERE, link_path)
+    if PGO == "use":
+        import shutil, tarfile
+        shutil.rmtree(PGO_DIR, ignore_errors=True)
+        os.makedirs(PGO_DIR)
+        with tarfile.open(os.path.join(HERE, "pgo", PGO_PROFILE + ".tgz")) as t:
+            members = [m for m in t.getmembers() if m.isfile() and m.name.endswith(".gcda") and
+                       "/" not in m.name.lstrip("./") and ".." not in m.name]
+            t.extractall(PGO_DIR, members=members)
+        print("pgo: %d count files from pgo/%s.tgz" % (len(members), PGO_PROFILE))
     HEAP_KB = int(os.environ.get("PSP_HEAP_KB", "4096"))
     items = units()
     results = list(ThreadPoolExecutor(JOBS).map(compile_one, items))
@@ -369,7 +471,7 @@ def main():
     # cost the heap 64 KB at once (b115 sat 0.7 KB under one). The slack
     # above the heap is STACK_RESERVE either way: b115 ran with it plus
     # 0.7 KB, and "free" in the heartbeat (138 KB in b115) is what's left of it
-    heap = (GAME_STATE_BASE - PROGRAM_BASE - program - STACK_RESERVE) // 1024 // 4 * 4
+    heap = (HEAP_CEILING - PROGRAM_BASE - program - STACK_RESERVE) // 1024 // 4 * 4
     print("program %.2f MB (text %d, data %d, bss %d); heap %d KB; %d symbols stubbed (stubbed_symbols.txt)"
           % (program / 1048576, int(size[0]), int(size[1]), int(size[2]), heap, len(stubs)))
     if heap != HEAP_KB:

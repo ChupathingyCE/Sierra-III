@@ -9073,6 +9073,11 @@ static struct
 	unsigned char *flags; /* per triangle: 0 not asked, 1 on a wall, 2 free */
 } overlay_backing[OVERLAY_BACKINGS];
 static int overlay_backing_count = 0, overlay_all_walls = -1;
+/* after b116: the last list's flags, so its triangles don't search the
+table again each (it holds up to 2,048 lists; an independent review) */
+static unsigned int overlay_cached_key = 0;
+static long overlay_cached_count = -1;
+static unsigned char *overlay_cached_flags = NULL;
 
 static void overlay_backing_forget(void)
 {
@@ -9081,6 +9086,7 @@ static void overlay_backing_forget(void)
 	for (index = 0; index < overlay_backing_count; index++)
 		free(overlay_backing[index].flags);
 	overlay_backing_count = 0;
+	overlay_cached_flags = NULL;
 }
 static unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, overlay_free = 0, overlay_ask_us = 0;
 
@@ -9157,12 +9163,16 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		}
 		key = last_key;
 	}
-	for (slot = 0; slot < overlay_backing_count; slot++)
-		if (overlay_backing[slot].key == key && overlay_backing[slot].count == triangle_count)
-		{
-			flags = overlay_backing[slot].flags;
-			break;
-		}
+	/* (the main CPU's alone: the Media Engine's cache doesn't see its writes) */
+	if (!psp_me_context && overlay_cached_flags && key == overlay_cached_key && triangle_count == overlay_cached_count)
+		flags = overlay_cached_flags;
+	else
+		for (slot = 0; slot < overlay_backing_count; slot++)
+			if (overlay_backing[slot].key == key && overlay_backing[slot].count == triangle_count)
+			{
+				flags = overlay_backing[slot].flags;
+				break;
+			}
 	if (!flags && psp_me_context)
 		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags)
@@ -9175,6 +9185,8 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 
 			slot = victim;
 			victim = (victim + 1) % OVERLAY_BACKINGS;
+			if (overlay_cached_flags == overlay_backing[slot].flags)
+				overlay_cached_flags = NULL;
 			free(overlay_backing[slot].flags);
 			overlay_backing_full++;
 		}
@@ -9183,6 +9195,12 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		overlay_backing[slot].key = key;
 		overlay_backing[slot].count = triangle_count;
 		overlay_backing[slot].flags = flags;
+	}
+	if (!psp_me_context)
+	{
+		overlay_cached_key = key;
+		overlay_cached_count = triangle_count;
+		overlay_cached_flags = flags;
 	}
 	if (!flags[triangle] && psp_me_context)
 		return overlay_want(stream, indices, triangle_count, triangle);
@@ -10978,6 +10996,22 @@ void psp_ge_light_begin(const float *position, const float *forward, const float
 /* how much of the light reaches a vertex (0 to 1); cone: whether the
 spotlight's cone is in it (build 36: a spotlight's cone comes from a
 projected texture instead, and only the side behind the light is cut here) */
+/* after b116: the level light pass's vertices for the draw in hand, by the
+vertex's low bits: its reach and, once asked for, its place from the camera
+(5 KB from bss; a level vertex sits in 3-6 triangles, each of which worked
+both out again; an independent review) */
+#define LIGHT_MEMO 256
+struct light_memo_entry
+{
+	unsigned int tag; /* the draw's number << 16 | the vertex */
+	float reach, camera[3];
+	int camera_known;
+};
+static struct light_memo_entry light_memo[LIGHT_MEMO];
+static unsigned int light_memo_draw = 0;
+static int light_memo_check = -1; /* keep.txt's "lightmemocheck" */
+static unsigned long light_memo_checks = 0, light_memo_mismatches = 0;
+
 static float light_reach(const float *p, unsigned int packed_normal, int cone_in_vertex)
 {
 	float d[3], distance_squared, fade, inverse, cone, facing, normal[3];
@@ -11460,10 +11494,26 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	near_saved = near_clip;
 	if (light_mode == 2 && !light_cut_one)
 		near_clip = projection_near * 1.0102f;
+	/* after b116: this draw's vertices remembered (light_memo) */
+	if (light_memo_check < 0)
+		light_memo_check = psp_keep("lightmemocheck");
+	if (light_memo_check && light_memo_checks >= 200000)
+	{
+		platform_log("GE: light memo checked %lu times, %lu mismatches", light_memo_checks, light_memo_mismatches);
+		light_memo_checks = light_memo_mismatches = 0;
+	}
+	if (++light_memo_draw > 0xFFFF)
+	{
+		memset(light_memo, 0, sizeof(light_memo));
+		light_memo_draw = 1;
+	}
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
-		float corners[3][CORNER_FLOATS] = { { 0.0f } }, reach[3];
+		/* after b116: no clear of all 33 floats a triangle; each corner's
+		fields are written below before they're read, but 6 and 10 (an
+		independent review) */
+		float corners[3][CORNER_FLOATS], reach[3];
 		int corner;
 		const float *source[3];
 
@@ -11529,16 +11579,71 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			}
 		}
 		for (corner = 0; corner < 3; corner++)
-			reach[corner] = light_reach(source[corner], stream->normals[triangle[corner]], !spot);
+		{
+			/* after b116: a vertex shared by several triangles (3-6 in a
+			level's lists) worked out once a draw: its reach, and its place
+			from the camera when a triangle first needs it (the same
+			functions on the same inputs: the same floats) */
+			unsigned int vertex = triangle[corner], tag = (light_memo_draw << 16) | vertex;
+			struct light_memo_entry *memo = &light_memo[vertex & (LIGHT_MEMO - 1)];
+
+			if (memo->tag != tag)
+			{
+				memo->tag = tag;
+				memo->reach = light_reach(source[corner], stream->normals[vertex], !spot);
+				memo->camera_known = 0;
+			}
+			reach[corner] = memo->reach;
+			if (light_memo_check)
+			{
+				/* "lightmemocheck": worked out again and compared, bit for bit */
+				float again = light_reach(source[corner], stream->normals[vertex], !spot);
+
+				if (memcmp(&again, &memo->reach, sizeof(again)))
+					light_memo_mismatches++;
+				light_memo_checks++;
+			}
+		}
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			continue;
 		for (corner = 0; corner < 3; corner++)
 		{
-			to_camera_corner(&stream->base[triangle[corner]].x, corners[corner]);
+			struct light_memo_entry *memo = &light_memo[triangle[corner] & (LIGHT_MEMO - 1)];
+			float direct[3];
+
+			/* two corners of one triangle can share a slot (their low bits
+			alike): the later one took it, so the earlier is worked out
+			here instead (lightmemocheck found it on d20) */
+			if (memo->tag != ((light_memo_draw << 16) | triangle[corner]))
+			{
+				to_camera(&stream->base[triangle[corner]].x, direct);
+				memo = NULL;
+			}
+			else if (!memo->camera_known)
+			{
+				to_camera(&stream->base[triangle[corner]].x, memo->camera);
+				memo->camera_known = 1;
+			}
+			else if (light_memo_check)
+			{
+				float again[3];
+
+				to_camera(&stream->base[triangle[corner]].x, again);
+				if (memcmp(again, memo->camera, sizeof(again)))
+					light_memo_mismatches++;
+				light_memo_checks++;
+			}
+			corners[corner][0] = memo ? memo->camera[0] : direct[0];
+			corners[corner][1] = memo ? memo->camera[1] : direct[1];
+			corners[corner][2] = memo ? memo->camera[2] : direct[2];
+			corners[corner][7] = stream->base[triangle[corner]].x;
+			corners[corner][8] = stream->base[triangle[corner]].y;
+			corners[corner][9] = stream->base[triangle[corner]].z;
 			corners[corner][3] = stream->base[triangle[corner]].u;
 			corners[corner][4] = stream->base[triangle[corner]].v;
 			corners[corner][5] = reach[corner];
 			corners[corner][6] = 0.0f;
+			corners[corner][10] = 0.0f;
 		}
 		if (spot)
 		{

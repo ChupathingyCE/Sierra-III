@@ -1810,6 +1810,90 @@ steps in order: the console has no way to wait */
 		platform_log("menutest: loading Blood Gulch from the menu");
 		hs_compile_and_evaluate("map_name levels\\test\\bloodgulch\\bloodgulch");
 	}
+	/* keep.txt's "exitatN": back to the menu at N seconds of game time, so
+	two emulator runs (the cache models' A/Bs) cover the same ticks and
+	their totals compare directly */
+	{
+		static long exit_tick = -1;
+
+		if (exit_tick < 0)
+			exit_tick = (long)psp_keep_number("exitat", 0) * 30;
+		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
+			exit_game("exitat");
+	}
+#ifdef PSP_PGO_GENERATE
+	{
+		/* PSP_PGO=generate (psp_build.py): the hot units' counts written to
+		ms0:/halo/gcda at "gcovdumpN" seconds of game time, once, for a
+		PSP_PGO=use build. libgcov names each file by its object's path
+		under "/pgo" (the build's -fprofile-generate=/pgo); GCOV_PREFIX_STRIP
+		drops that and GCOV_PREFIX puts the stick's folder in front */
+		static long dump_tick = -1;
+
+		if (dump_tick < 0)
+			dump_tick = (long)psp_keep_number("gcovdump", 0) * 30;
+		if (dump_tick > 0 && (long)ticks_seen == dump_tick)
+		{
+			extern void __gcov_dump(void);
+			unsigned long start = psp_microseconds();
+
+			char saved[256];
+
+			sceIoMkdir(DATA_ROOT "/gcda", 0777);
+			setenv("GCOV_PREFIX", DATA_ROOT "/gcda", 1);
+			setenv("GCOV_PREFIX_STRIP", "1", 1);
+			/* and the folder made the current one: libgcov takes only an
+			absolute prefix ("/..."), and "ms0:/..." may not be one to it: the
+			first profile run's counts probably went to the folder the game started
+			in. Without the prefix it writes "./<name>" */
+			if (!getcwd(saved, sizeof(saved)))
+				saved[0] = '\0';
+			chdir(DATA_ROOT "/gcda");
+			/* libgcov says what goes wrong on stderr: into a file, read back
+			into the log below */
+			freopen(DATA_ROOT "/gcda_errors.txt", "w", stderr);
+			__gcov_dump();
+			fflush(stderr);
+			if (saved[0])
+				chdir(saved);
+			platform_log("gcov: the hot units' counts written to %s/gcda at tick %lu, in %lu ms", DATA_ROOT,
+				ticks_seen, (psp_microseconds() - start) / 1000);
+			{
+				SceUID folder = sceIoDopen(DATA_ROOT "/gcda");
+				SceIoDirent entry;
+				int files = 0, shown = 0;
+
+				if (folder >= 0)
+				{
+					memset(&entry, 0, sizeof(entry));
+					while (sceIoDread(folder, &entry) > 0)
+					{
+						if (entry.d_name[0] != '.')
+						{
+							if (shown++ < 3)
+								platform_log("gcov: %s/gcda holds %s (%d bytes)", DATA_ROOT, entry.d_name,
+									(int)entry.d_stat.st_size);
+							files++;
+						}
+						memset(&entry, 0, sizeof(entry));
+					}
+					sceIoDclose(folder);
+				}
+				platform_log("gcov: %d files in %s/gcda", files, DATA_ROOT);
+			}
+			{
+				FILE *errors = fopen(DATA_ROOT "/gcda_errors.txt", "r");
+				char line[200];
+				int lines = 0;
+
+				while (errors && fgets(line, sizeof(line), errors) && lines++ < 12)
+					platform_log("gcov stderr: %s", line);
+				if (errors)
+					fclose(errors);
+			}
+		}
+	}
+#endif
 	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
 	{
 		/* the main loop does both between ticks, as for the campaign's own
@@ -2431,6 +2515,10 @@ int main(int argc, char **argv)
 	/* build 53: the build's number first, so a log says which EBOOT ran */
 	platform_log("Halo PSP bring-up build %d (%s): free user memory %d KB, largest block %d KB", PSP_BUILD_NUMBER,
 		PSP_ENGINE_BASE, sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
+#ifdef PSP_PGO_PROFILE
+	/* PSP_PGO=use (psp_build.py): the profile it was built with */
+	platform_log("pgo: the hot code laid out and optimised by the profile pgo/%s.tgz", PSP_PGO_PROFILE);
+#endif
 	/* build 89: whether HOME and sleep are armed (negative: an error) */
 	platform_log("callbacks: power registration %08x, exit callback %08x, exit registration %08x",
 		(unsigned int)exit_callbacks_registered[0], (unsigned int)exit_callbacks_registered[1],
