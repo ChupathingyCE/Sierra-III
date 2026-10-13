@@ -46,6 +46,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <malloc.h>
 #include <pspge.h>
 #include <stdarg.h>
+#include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
 
 void platform_log(const char *format, ...);
 /* build 112: the GE layer logs through ge_log (defined with the deferral's
@@ -68,7 +69,7 @@ version will read the ME's own cycle counter */
 extern volatile unsigned int psp_me_context;
 static inline unsigned int ge_clock(void)
 {
-	return psp_timers_off || psp_me_context ? 0 : sceKernelGetSystemTimeLow();
+	return psp_timers_off || PSP_ME_WORK() ? 0 : sceKernelGetSystemTimeLow();
 }
 
 /* build 112: a range written back from the data cache for the GE to read:
@@ -80,7 +81,7 @@ static void ge_writeback(const void *start, unsigned int bytes)
 {
 	unsigned int line, end;
 
-	if (!psp_me_context)
+	if (!PSP_ME_WORK())
 	{
 		sceKernelDcacheWritebackRange(start, bytes);
 		return;
@@ -265,6 +266,32 @@ static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
 so what it can't do is done when the call is written down, on the main CPU
 (the see-through level triangles' wall answers) */
 static int defer_me_semantics = 0;
+/* build 118: "gemeoverlap" (with gedefer and gemeon): L1 step 4, the Media
+Engine carrying out one half of the buffer while the main CPU writes the
+next calls into the other (docs/big_levers.md, section 4). A half goes to
+the ME when it is full; the main CPU waits for it only when it needs the
+other half back, or at a call that runs at once (the frame's start and end,
+the level vertex queries, text updates), which then runs with the ME idle,
+as without the overlap. The list comes out the same: the same calls, in the
+same order, carried out by one CPU at a time.
+What each CPU writes while a half is out, on cache lines of its own (each
+CPU's cache writes back whole 64-byte lines, so a line both write loses one
+CPU's bytes): the ME, the GE layer's state, pspgu's, the list, the wanted
+lists; the main CPU, the records' other half and the recorder's words
+(defer_used and the rest). The emulator runs no ME code: there the half is
+carried out at once on the main CPU, marked as the ME's work (gemesim), and
+psp_me_window says a half is out, for the emulator's write trace (keep word
+mewrites, the lab's PSP_MEWRITES), which lists every line both write */
+#define DEFER_HALF (DEFER_WORDS / 2)
+static int me_overlap = 0;      /* this session overlaps (decided once) */
+static int defer_half = 0;      /* the half being written */
+static defer_word *defer_base = NULL; /* its first word */
+static unsigned int defer_limit = DEFER_WORDS; /* its words */
+static int me_out = 0;          /* the other half is out with the ME */
+static int me_wrote = 0;        /* the ME has carried a half out since the main CPU last dropped its cache */
+static unsigned long me_overlap_runs = 0, me_overlap_waits = 0, me_overlap_wait_us = 0, me_overlap_alone = 0;
+/* a line of its own: only the main CPU writes it */
+volatile unsigned int psp_me_window[16] __attribute__((aligned(64)));
 /* the wall answers a record carried, while it is carried out (the replay of
 DEFER_QUEUE_LEVEL_TRANSPARENT sets it; overlay_answer reads it) */
 static const unsigned char *overlay_answers = NULL;
@@ -272,6 +299,7 @@ static int overlay_answers_for(const void *vertices, int vertex_count, const uns
 	long triangle_count, unsigned char *out);
 static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
 static void defer_drain(void);
+static void defer_hand_over(void); /* build 118: gemeoverlap */
 static void list_write_back(const void *stall); /* build 114: listcachedall */
 static void lit_forget(int what); /* build 114: statememo */
 /* which calls made the waiting calls run, for the log: each is a point where
@@ -296,10 +324,15 @@ static void defer_drain_for(const char *site)
 order never changes. Only the game's thread writes the list, so only it
 records and carries out; a call another thread makes (the heartbeat's
 psp_ge_frame_window, psp_ge_budget, psp_ge_setting) never drains */
-#define GE_DEFER_DRAIN() do { if (defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
+/* build 118: the calls are written down only on the main CPU, never while
+carrying out. On the Media Engine (gemeoverlap) the main CPU's own words
+(defer_used, defer_replaying) say what the main CPU is doing meanwhile, not
+the ME: there the test is psp_on_me(), its own stack */
+#define DEFER_RECORDING() (defer_on && !defer_replaying && !psp_on_me())
+#define GE_DEFER_DRAIN() do { if (!psp_on_me() && defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
-#define GE_DEFER(record, ...) do { if (defer_on && !defer_replaying && !defer_paused && (record)) return __VA_ARGS__; } while (0)
+#define GE_DEFER(record, ...) do { if (DEFER_RECORDING() && !defer_paused && (record)) return __VA_ARGS__; } while (0)
 
 int psp_keep(const char *name);
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
@@ -401,6 +434,17 @@ static void defer_frame_begin(void)
 					psp_me_context = 0;
 				}
 				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon");
+				defer_base = defer_buffer;
+				/* build 118: the overlap needs the ME's carrying out (gemeon) */
+				if (psp_keep("gemeoverlap") && psp_keep("gemeon"))
+				{
+					me_overlap = 1;
+					defer_limit = DEFER_HALF;
+					platform_log("GE: gemeoverlap: the Media Engine carries out one half of the buffer (%u KB) while the main CPU writes the other",
+						(unsigned int)(DEFER_HALF * sizeof(defer_word) / 1024));
+				}
+				else if (psp_keep("gemeoverlap"))
+					platform_log("GE: gemeoverlap needs gemeon (and gedefer): off");
 			}
 		}
 	}
@@ -421,12 +465,15 @@ static defer_word *defer_take(int kind, unsigned int words)
 		GE_DEFER_DRAIN();
 		return NULL;
 	}
-	if (defer_used + 1 + words > DEFER_WORDS)
+	if (defer_used + 1 + words > defer_limit)
 	{
 		defer_drains_full++;
-		defer_drain();
+		if (me_overlap)
+			defer_hand_over(); /* build 118: the half to the ME, the other one next */
+		else
+			defer_drain();
 	}
-	at = defer_buffer + defer_used;
+	at = defer_base + defer_used;
 	at->u = (unsigned int)kind | (1 + words) << 8;
 	defer_used += 1 + words;
 	defer_records++;
@@ -939,10 +986,25 @@ psp_me_context holds meanwhile (the game thread's id under gemesim, so the
 emulator's ME-strict check also covers this path when it simulates the job) */
 unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 {
-	psp_me_context = args[2] ? args[2] : 1;
+	/* build 118: on the ME itself nothing marks the work (PSP_ME_WORK sees
+	its stack): psp_me_context is the main CPU's word, which a write here
+	would share a cache line with while the main CPU runs on (gemeoverlap).
+	Simulated (args[3] 0), the main CPU runs it: marked as before */
+	if (!args[3])
+		psp_me_context = args[2] ? args[2] : 1;
 	defer_replay((const defer_word *)args[0], args[1], (int)args[3]);
-	psp_me_context = 0;
+	if (!args[3])
+		psp_me_context = 0;
 	results[0] = args[1];
+	/* build 118: gemeoverlap (args[4]): the newest stall address the run
+	kept goes back in the slot (uncached), for the main CPU to pass on, and
+	is forgotten here: only the ME writes stall_me_address meanwhile */
+	if (args[4])
+	{
+		results[1] = (unsigned int)stall_me_address;
+		results[2] = (unsigned int)stall_me_qid;
+		stall_me_address = NULL;
+	}
 	return 0;
 }
 
@@ -983,9 +1045,125 @@ static int defer_on_me(void)
 	return 1;
 }
 
+/* ----- build 118: gemeoverlap's two halves */
+
+/* the half out with the ME, waited for, and the GE given what it wrote */
+static void defer_wait_me(void)
+{
+	extern unsigned int psp_me_last_job_us(int which);
+	unsigned int results[ME_JOB_RESULTS] = { 0 }, start;
+
+	if (!me_out)
+		return;
+	me_out = 0;
+	start = sceKernelGetSystemTimeLow();
+	if (!psp_me_finish(ME_SLOT_RENDER, results))
+	{
+		/* the ME stopped (HOME, sleep, a job past 500 ms) with the half
+		perhaps half carried out: the main CPU goes on alone from here,
+		and this frame may draw wrong */
+		psp_me_window[0] = 0;
+		defer_me_failed++;
+		me_overlap = 0;
+		/* the half being written moves to the buffer's start, where the
+		calls are written from now on */
+		if (defer_base != defer_buffer)
+			memmove(defer_buffer, defer_base, defer_used * sizeof(defer_word));
+		defer_base = defer_buffer;
+		defer_half = 0;
+		defer_limit = DEFER_WORDS;
+		platform_log("GE: gemeoverlap: the Media Engine failed with half the buffer out; the main CPU carries the calls out from here");
+		return;
+	}
+	psp_me_window[0] = 0;
+	me_overlap_waits++;
+	me_overlap_wait_us += sceKernelGetSystemTimeLow() - start;
+	defer_me_own_us += psp_me_last_job_us(ME_SLOT_RENDER);
+	defer_me_jobs++;
+	if (results[1])
+	{
+		stall_forwarded++;
+		__real_sceGeListUpdateStallAddr((int)results[2], (void *)results[1]);
+	}
+}
+
+/* the half being written handed to the ME, and the other one written next;
+carried out here if the ME can't take it */
+static void defer_hand_over(void)
+{
+	unsigned int args[5];
+
+	defer_wait_me(); /* one half out at a time: the other is free after this */
+	if (!defer_used)
+		return;
+	if (me_overlap && psp_me_running())
+	{
+		/* the records, what they point to that the engine wrote, and this
+		file's state as the main CPU left it, to RAM for the ME (which drops
+		its own cache as the job starts) */
+		sceKernelDcacheWritebackAll();
+		args[0] = (unsigned int)defer_base;
+		args[1] = defer_used;
+		args[2] = defer_me_thread;
+		args[3] = 0; /* (psp_me.c sets it: on the ME or not) */
+		args[4] = 1;
+		psp_me_window[0] = 1;
+		/* simulated, the job runs inside psp_me_submit, on this CPU */
+		defer_replaying = 1;
+		if (psp_me_submit(ME_SLOT_RENDER, ME_JOB_GE, args, 5))
+		{
+			defer_replaying = 0;
+			me_out = 1;
+			me_wrote = 1;
+			me_overlap_runs++;
+			defer_half ^= 1;
+			defer_base = defer_buffer + defer_half * DEFER_HALF;
+			defer_used = 0;
+			return;
+		}
+		defer_replaying = 0;
+		psp_me_window[0] = 0;
+	}
+	/* the ME can't take it: carried out here, as gedefer alone, after
+	dropping the main CPU's stale copies of what the ME wrote */
+	me_overlap_alone++;
+	if (me_wrote)
+	{
+		sceKernelDcacheWritebackInvalidateAll();
+		me_wrote = 0;
+	}
+	defer_replaying = 1;
+	psp_me_context = defer_me_thread;
+	defer_replay(defer_base, defer_used, 0);
+	psp_me_context = 0;
+	defer_replaying = 0;
+	if (stall_me_address)
+	{
+		stall_forwarded++;
+		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
+		stall_me_address = NULL;
+	}
+	defer_used = 0;
+}
+
 /* ----- everything waiting, carried out in order */
 static void defer_drain(void)
 {
+	if (me_overlap)
+	{
+		/* build 118: the half being written out too, then both done, and
+		what the ME wrote (this file's state, pspgu's, the list) read fresh
+		from RAM before the call that runs at once runs here */
+		defer_hand_over();
+		defer_wait_me();
+		if (me_wrote)
+		{
+			sceKernelDcacheWritebackInvalidateAll();
+			me_wrote = 0;
+		}
+		defer_drains++;
+		return;
+	}
 	defer_replaying = 1;
 	if (!defer_on_me())
 	{
@@ -1016,7 +1194,7 @@ static void ge_log(const char *format, ...)
 	char line[512]; /* the log's own line limit (psp_platform.c) */
 	va_list arguments;
 
-	if (psp_me_context)
+	if (PSP_ME_WORK())
 	{
 		int k;
 
@@ -1661,7 +1839,7 @@ static void gebusy_window(char *text, int size, unsigned long frames_in_window)
 		return;
 	snprintf(text, size, "; GE busy %.1f ms a frame, %.1f%% of the clock (%lu chunks, %lu finishes)%s",
 		gebusy_us / 1000.0 / n, wall ? 100.0 * gebusy_us / wall : 0.0, gebusy_chunks, gebusy_finishes,
-		psp_me_context ? " (not while the ME builds)" : "");
+		PSP_ME_WORK() ? " (not while the ME builds)" : "");
 	{
 		/* build 115: the same time by kind, ms a frame (a line of its own) */
 		char line[420];
@@ -1698,7 +1876,7 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		return 0;
 	stall_pending = 0;
 	list_flush_pending();
-	if (psp_me_context)
+	if (PSP_ME_WORK())
 	{
 		stall_me_qid = qid;
 		stall_me_address = stall;
@@ -1745,7 +1923,7 @@ chunk of the old kind (a stall update with its SIGNAL; sceGuGetMemory makes
 pspgu update the stall address), so no chunk mixes kinds */
 static void gebusy_kind_cut(int kind)
 {
-	if (gebusy_on <= 0 || kind == ge_kind_now || !stall_pending || psp_me_context)
+	if (gebusy_on <= 0 || kind == ge_kind_now || !stall_pending || PSP_ME_WORK())
 		return;
 	gebusy_cut = 1;
 	sceGuGetMemory(4);
@@ -2342,7 +2520,7 @@ static void taa_resolve(void)
 
 	/* (build 112: never in the Media Engine's work: it reads VRAM, which the
 	ME can't see; temporal blend is settled off anyway) */
-	if (taa_done || !frame_open || psp_me_context)
+	if (taa_done || !frame_open || PSP_ME_WORK())
 		return;
 	taa_done = 1;
 	if (psp_soften > 0 && !taa_failed)
@@ -4255,7 +4433,7 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 		stream->last_frame = stream_frame;
 		return stream;
 	}
-	if (psp_me_context)
+	if (PSP_ME_WORK())
 	{
 		int k;
 
@@ -5365,7 +5543,7 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
 	GE_BENCH_SKIP();
-	if (defer_on && !defer_replaying &&
+	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
 		return;
 	int index;
@@ -5539,7 +5717,7 @@ static void model_lighting(int on)
 
 	if (lit_memo < 0)
 		lit_memo = psp_keep("statememo") || psp_keep("memolight"); /* memolight: this half alone */
-	if (!lit_memo || psp_me_context)
+	if (!lit_memo || PSP_ME_WORK())
 	{
 		lit_enabled = -1;
 		lit_params = 0;
@@ -5548,7 +5726,7 @@ static void model_lighting(int on)
 	{
 		if (lit_enabled != 0)
 			sceGuDisable(GU_LIGHTING);
-		if (lit_memo && !psp_me_context)
+		if (lit_memo && !PSP_ME_WORK())
 			lit_enabled = 0;
 		return;
 	}
@@ -5623,7 +5801,7 @@ static void model_lighting(int on)
 		lit_sets_sent++;
 	else
 		lit_sets_memo++;
-	if (!lit_memo || psp_me_context)
+	if (!lit_memo || PSP_ME_WORK())
 		return;
 	lit_enabled = 1;
 	lit_params = 1;
@@ -6186,7 +6364,7 @@ static void vm_note(void *vertices, unsigned int bytes)
 {
 	struct vm_entry *e;
 
-	if (vm_on <= 0 || psp_me_context)
+	if (vm_on <= 0 || PSP_ME_WORK())
 		return;
 	e = vm_find((unsigned int)vertices, 1);
 	if (!e)
@@ -6202,7 +6380,7 @@ static const void *vm_redirect(const void *vertices, int count)
 {
 	struct vm_entry *e;
 
-	if (psp_me_context || !vertices)
+	if (PSP_ME_WORK() || !vertices)
 		return vertices;
 	e = vm_find((unsigned int)vertices, 0);
 	if (!e)
@@ -6359,7 +6537,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	if (converted_sweep_late < 0)
 		converted_sweep_late = psp_keep("sweeplate");
 	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark) &&
-		!psp_me_context) /* build 112: the sweep frees plans: the main CPU's */
+		!PSP_ME_WORK()) /* build 112: the sweep frees plans: the main CPU's */
 	{
 		converted_sweep();
 		/* build 112: the next mark, past what this sweep kept */
@@ -6402,7 +6580,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 				*skin = skinned[slot];
 			return 1;
 		}
-		if (psp_me_context)
+		if (PSP_ME_WORK())
 		{
 			convert_want(vertices, count, uncompressed, indices, index_count, strip, skin != NULL);
 			return 0;
@@ -6416,7 +6594,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	}
 	else
 	{
-		if (psp_me_context)
+		if (PSP_ME_WORK())
 		{
 			convert_want(vertices, count, uncompressed, indices, index_count, strip, skin != NULL);
 			return 0;
@@ -7044,7 +7222,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					skin_vfpu_check = psp_keep("skinvfpucheck");
 				}
 				/* (build 112: never in the Media Engine's work: the ME has no VFPU) */
-				on_vfpu = skin_vfpu && skin->weights <= 7 && !psp_me_context;
+				on_vfpu = skin_vfpu && skin->weights <= 7 && !PSP_ME_WORK();
 				if (on_vfpu)
 					skin_vfpu_load((const float (*)[3][4])depth_row, skin->weights);
 				for (t = 0; t + 2 < draw_count; t += 3)
@@ -9195,7 +9373,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		key = last_key;
 	}
 	/* (the main CPU's alone: the Media Engine's cache doesn't see its writes) */
-	if (!psp_me_context && overlay_cached_flags && key == overlay_cached_key && triangle_count == overlay_cached_count)
+	if (!PSP_ME_WORK() && overlay_cached_flags && key == overlay_cached_key && triangle_count == overlay_cached_count)
 		flags = overlay_cached_flags;
 	else
 		for (slot = 0; slot < overlay_backing_count; slot++)
@@ -9204,7 +9382,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 				flags = overlay_backing[slot].flags;
 				break;
 			}
-	if (!flags && psp_me_context)
+	if (!flags && PSP_ME_WORK())
 		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags)
 	{
@@ -9227,13 +9405,13 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		overlay_backing[slot].count = triangle_count;
 		overlay_backing[slot].flags = flags;
 	}
-	if (!psp_me_context)
+	if (!PSP_ME_WORK())
 	{
 		overlay_cached_key = key;
 		overlay_cached_count = triangle_count;
 		overlay_cached_flags = flags;
 	}
-	if (!flags[triangle] && psp_me_context)
+	if (!flags[triangle] && PSP_ME_WORK())
 		return overlay_want(stream, indices, triangle_count, triangle);
 	if (!flags[triangle])
 	{
@@ -9310,7 +9488,7 @@ static int overlay_answer(const struct ge_vertex *stream, const unsigned short *
 		return overlay_answers[triangle];
 	/* (the ME's work without answers touches none of the answers' tables,
 	which the main CPU fills as calls are written down: it only wants) */
-	if (psp_me_context)
+	if (PSP_ME_WORK())
 		return overlay_want(stream, indices, triangle_count, triangle);
 	return overlay_on_a_wall(stream, indices, triangle_count, triangle);
 }
@@ -9855,9 +10033,9 @@ static void transparent_flush_body(void)
 			unsigned int state_depth = sceGuGetStatus(GU_DEPTH_TEST);
 			/* and the map's bitmap tag (after b116: a10's bridge window); a
 			walk over the tags, so not on the Media Engine (gemeon) */
-			char const *name = psp_me_context ? NULL : psp_bitmap_tag_name((void const *)draw->key);
+			char const *name = PSP_ME_WORK() ? NULL : psp_bitmap_tag_name((void const *)draw->key);
 			extern char const *psp_shader_tag_name(void const *shader); /* hud_draw.c (psp_fixups.py) */
-			char const *shader_name = psp_me_context || !draw->shader ? NULL : psp_shader_tag_name((void const *)draw->shader);
+			char const *shader_name = PSP_ME_WORK() || !draw->shader ? NULL : psp_shader_tag_name((void const *)draw->shader);
 
 			if (shader_name)
 				platform_log("tdump: %d/%d shader %s", index, transparent_count, shader_name);
@@ -10218,7 +10396,7 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 		hdump = psp_keep("hdump");
 	/* not again when the defer queue replays the quad (gedefer), which may
 	run on the Media Engine (gemeon) */
-	if (!hdump || defer_replaying || !psp_screenshot_requested || !vertices || !key)
+	if (!hdump || defer_replaying || psp_on_me() || !psp_screenshot_requested || !vertices || !key)
 		return;
 	x0 = x1 = in[0].x;
 	y0 = y1 = in[0].y;
@@ -12979,7 +13157,7 @@ int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float off
 	carrying out's to judge: if it hasn't, the text stays closed then and
 	the characters written down after this are dropped there, as the engine
 	would have left them out. The same list either way */
-	if (defer_on && !defer_replaying && !defer_paused)
+	if (DEFER_RECORDING() && !defer_paused)
 	{
 		const unsigned char *picture = bitmap;
 		int answer = frame_open && picture && *(void *const *)(picture + 44) && *(const short *)(picture + 12) == 9 &&
@@ -13495,6 +13673,12 @@ void psp_ge_frame_end(void)
 						defer_me_jobs, defer_me_failed, defer_me_jobs ? defer_me_wait_us / defer_me_jobs : 0,
 						defer_me_jobs ? defer_me_own_us / defer_me_jobs : 0);
 				defer_me_jobs = defer_me_failed = defer_me_wait_us = defer_me_own_us = 0;
+				/* build 118: gemeoverlap. waited: the main CPU's time in
+				psp_me_finish a half (simulated: the half's own time) */
+				if (me_overlap_runs || me_overlap_alone)
+					platform_log("GE: gemeoverlap: %lu halves carried out by the Media Engine while the main CPU wrote the next, the main CPU waited %lu us a half; %lu carried out on the main CPU (the ME couldn't take them)",
+						me_overlap_runs, me_overlap_waits ? me_overlap_wait_us / me_overlap_waits : 0, me_overlap_alone);
+				me_overlap_runs = me_overlap_waits = me_overlap_wait_us = me_overlap_alone = 0;
 				if (walls_wanted_total || walls_wanted_dropped)
 					platform_log("GE: gemesim: %lu see-through level triangles wanted asked by the Media Engine's work and asked at the frame's end, %lu more than the list held",
 						walls_wanted_total, walls_wanted_dropped);

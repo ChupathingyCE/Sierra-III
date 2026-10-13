@@ -476,6 +476,9 @@ int psp_meaudio_running(void)
 	return me_state > 0;
 }
 
+/* the simulated jobs' mixing sums (the emulator; one job at a time there) */
+static int simulated_sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
+
 /* a job in a slot, run to the end: on the ME (the caller sleeps meanwhile),
 or on this CPU when simulated. args as the job type takes them; results
 filled. Returns 1 when done, 0 if the ME failed (it is stopped then; the
@@ -498,10 +501,8 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 		slot->args[k] = args[k];
 	if (me_state == 2)
 	{
-		static int sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
-
 		/* the emulator: the job's own code, on this CPU */
-		run_job(slot, sums, 0);
+		run_job(slot, simulated_sums, 0);
 		me_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 		stats[which].simulated++;
 		waited = me_us;
@@ -549,6 +550,111 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 		stats[which].wait_worst_us = waited;
 	if (me_us > stats[which].me_worst_us)
 		stats[which].me_worst_us = me_us;
+	return 1;
+}
+
+/* build 118: a job handed over without waiting (L1 step 4, psp_ge.c's
+"gemeoverlap"): the main CPU goes on with its own work and finishes the job
+later with psp_me_finish. One job a slot at a time. Returns 1 if handed over
+(or, simulated, already run here: the emulator runs no ME code), 0 if the ME
+can't take it (off, stopped, a job already out): the caller runs it itself.
+The caller writes back its data cache first, as for psp_me_run */
+static int submitted[ME_SLOTS]; /* 0 none, 1 out with the ME, 2 run here (simulated) */
+static unsigned long long submit_mark[ME_SLOTS];
+
+int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count)
+{
+	volatile struct me_slot *slot;
+	int k;
+
+	if (me_state <= 0 || which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS || submitted[which])
+		return 0;
+	slot = SLOT(which);
+	slot->type = type;
+	for (k = 0; k < arg_count; k++)
+		slot->args[k] = args[k];
+	submit_mark[which] = sceKernelGetSystemTimeWide();
+	if (me_state == 2)
+	{
+		run_job(slot, simulated_sums, 0);
+		last_job_us[which] = (unsigned int)(sceKernelGetSystemTimeWide() - submit_mark[which]);
+		stats[which].simulated++;
+		submitted[which] = 2;
+		return 1;
+	}
+	__asm__ __volatile__("sync");
+	slot->request = ++slot_request[which];
+	__asm__ __volatile__("sync");
+	submitted[which] = 1;
+	return 1;
+}
+
+/* the job handed over, waited for: 1 when done (results filled), 0 if the
+ME failed (it is stopped then, and the job may be half done). The wait spins
+on the slot's uncached done word: hand-overs come every few milliseconds,
+and a sleep would cost the PSP's scheduler tick (b112's X3). After 2 ms it
+sleeps in 50 us steps, so a slow job doesn't hold the CPU from the other
+threads */
+int psp_me_finish(int which, unsigned int *results)
+{
+	volatile struct me_slot *slot;
+	unsigned long long start;
+	unsigned long waited;
+	int k, state;
+
+	if (which < 0 || which >= ME_SLOTS || !submitted[which])
+		return 0;
+	state = submitted[which];
+	submitted[which] = 0;
+	slot = SLOT(which);
+	start = sceKernelGetSystemTimeWide();
+	if (state == 1)
+	{
+		while (slot->done != slot_request[which])
+		{
+			unsigned long long now = sceKernelGetSystemTimeWide();
+
+			/* the ME halted (a stop: HOME, sleep) before it finished this job */
+			if (CONTROL->stop == 2 && slot->done != slot_request[which])
+			{
+				stats[which].failures++;
+				return 0;
+			}
+			if (now - submit_mark[which] > 500000)
+			{
+				platform_log("ME: a handed-over job (type %u) not finished in 500 ms (job %u; the ME at job %u, %u idle polls)",
+					slot->type, slot_request[which], slot->done, CONTROL->alive);
+				stats[which].failures++;
+				psp_me_stop("a handed-over job timed out");
+				return 0;
+			}
+			if (now - start < 2000)
+			{
+				for (k = 0; k < 64; k++)
+					__asm__ __volatile__("nop");
+			}
+			else
+				sceKernelDelayThread(50);
+		}
+		stats[which].me_cycles += slot->cycles;
+		stats[which].me_job_cycles += slot->job_cycles;
+		last_job_us[which] = me_cycles_per_us > 0.0f ? (unsigned int)((float)slot->job_cycles / me_cycles_per_us) : 0;
+		{
+			unsigned long me_us = me_cycles_per_us > 0.0f ? (unsigned long)((float)slot->cycles / me_cycles_per_us) : 0;
+
+			if (me_us > stats[which].me_worst_us)
+				stats[which].me_worst_us = me_us;
+		}
+		waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+	}
+	else
+		waited = last_job_us[which]; /* simulated: the job's own time, run at the hand-over */
+	for (k = 0; k < ME_JOB_RESULTS; k++)
+		results[k] = slot->results[k];
+	stats[which].jobs++;
+	stats[which].wait_us += waited;
+	if (waited > stats[which].wait_worst_us)
+		stats[which].wait_worst_us = waited;
 	return 1;
 }
 

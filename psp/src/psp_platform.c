@@ -34,6 +34,7 @@ float psp_budget_last[7];
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "psp_me.h" /* build 118: PSP_ME_WORK */
 #define SDL_MAIN_HANDLED
 #include <SDL3/SDL_main.h>
 
@@ -936,7 +937,7 @@ int psp_keep(const char *name)
 	{
 		extern volatile unsigned int psp_me_context;
 
-		if (psp_me_context)
+		if (PSP_ME_WORK())
 			return answer;
 	}
 	/* the last one asked for in a slot is the one remembered there (before

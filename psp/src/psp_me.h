@@ -25,5 +25,26 @@ void psp_me_handover(int which, unsigned long us);
 void psp_me_report(void);
 float psp_me_busy_percent(void);
 void psp_me_edram_probe(void);
+/* build 118: a job handed over without waiting, then finished (gemeoverlap) */
+int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
+int psp_me_finish(int which, unsigned int *results);
+
+/* build 118: 1 on the Media Engine. me-core starts it on a stack in its own
+eDRAM ($sp 0x80200000 or 0x80400000, me-core.h), and every thread of the main
+CPU runs on a stack in main RAM, from 0x08000000 up. So code both CPUs run
+(the GE layer's, psp_ge.c) can tell where it is without a shared word: a word
+both CPUs write would share a cache line between them */
+static inline int psp_on_me(void)
+{
+	unsigned int sp;
+
+	__asm__ ("move %0, $sp" : "=r"(sp));
+	return (sp & 0x1FFFFFFFu) < 0x01000000u;
+}
+
+/* work that is (or, in the emulator, stands for) the Media Engine's: on the
+ME, or marked as its by psp_me_context (gemesim: the main CPU runs it) */
+extern volatile unsigned int psp_me_context;
+#define PSP_ME_WORK() (psp_me_context != 0 || psp_on_me())
 
 #endif

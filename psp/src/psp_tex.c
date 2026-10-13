@@ -26,6 +26,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include <malloc.h>
 #include <pspsuspend.h>
 #include <pspdmac.h>
+#include "psp_me.h" /* build 118: PSP_ME_WORK */
 
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
@@ -1140,7 +1141,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	if (!resident_at[index])
 	{
 		misses++;
-		if (psp_me_context)
+		if (PSP_ME_WORK())
 		{
 			want(index); /* build 112 */
 			frame_untextured = 1;
@@ -1166,7 +1167,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	/* build 114: statememo (above) */
 	if (memo_on < 0)
 		memo_on = psp_keep("statememo") || psp_keep("memotex"); /* memotex: this half alone */
-	if (memo_on > 0 && !psp_me_context && key == memo_key && address == memo_address && frame == memo_frame)
+	if (memo_on > 0 && !PSP_ME_WORK() && key == memo_key && address == memo_address && frame == memo_frame)
 	{
 		psp_tex_binds_memo++;
 		if (has_alpha)
@@ -1196,7 +1197,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	if (has_alpha)
 		*has_alpha = entry->flags & 1;
 	/* the GE now has this texture (never remembered from the ME's work) */
-	if (psp_me_context)
+	if (PSP_ME_WORK())
 		memo_key = 0;
 	else
 	{
@@ -1235,7 +1236,7 @@ int psp_tex_resident(unsigned int key)
 	if (!resident_at[index])
 	{
 		misses++;
-		if (psp_me_context)
+		if (PSP_ME_WORK())
 		{
 			want(index);
 			return 0;
