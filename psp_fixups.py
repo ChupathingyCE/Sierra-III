@@ -12499,6 +12499,39 @@ FIXES_118["source/rasterizer/rasterizer.c#glasslit"] = [
 # on d20 become a few thousand. "surfaceqsort": as before;
 # "surfacesortcheck": both, the results compared
 FIXES_119 = {}
+# build 119: the vertical blank thread above the game thread. The port's
+# 60 Hz thread (d3d8_gl.c) counts the vertical blanks the game paces its
+# clock by (main_update_time: a frame's game time is the blanks since the
+# last, at most a fifteenth of a second). At priority 0x3c, below the game
+# thread's 0x20, it only ran when the game thread waited, then counted the
+# blanks it had missed all at once: one frame saw one blank, the next seven,
+# and the cap threw the rest away. On the PSP-1000 (b118 test 4) b40 ran
+# 1.43 ticks a frame at 16 fps where its frames' lengths give 1.8: the game
+# ran at 77% of real time. At 0x1e it wakes on time (60 short wakes a
+# second). Restores the original game's clock; "vblankslow": as before
+FIXES_119["port/linux/src/d3d8_gl.c#vblank"] = [
+("""	(void)unused;
+	clock_gettime(CLOCK_MONOTONIC, &next);
+	for (;;)
+	{
+		D3DCALLBACK callback;
+""",
+ """	(void)unused;
+	clock_gettime(CLOCK_MONOTONIC, &next);
+	for (;;)
+	{
+		D3DCALLBACK callback;
+
+#ifdef HALO_PSP
+		{
+			/* psp_fixups.py (build 119): above the game thread, once keep.txt is read */
+			extern void psp_vblank_thread_priority(void);
+
+			psp_vblank_thread_priority();
+		}
+#endif
+"""),
+]
 FIXES_119["source/structures/structure_render.c#surfacesort"] = [
 ("""static void structure_render_dynamic_triangles_from_indices(
 	short surface_count,
