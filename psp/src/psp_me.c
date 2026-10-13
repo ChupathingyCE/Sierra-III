@@ -90,6 +90,12 @@ struct me_control
 	unsigned int clock;    /* the ME: its cycle counter at the last poll */
 	unsigned int jobs;     /* the ME: jobs run */
 	unsigned int cause_before, cause_after; /* build 88: its Cause register at start */
+	/* build 120, "mehalt": the ME halts when it has nothing to do and the
+	main CPU wakes it with an interrupt, instead of polling the slots */
+	unsigned int halt_idle; /* the main CPU: 1 to halt when idle (set after start) */
+	unsigned int halted;    /* the ME: 1 from just before a halt until it wakes */
+	unsigned int halts;     /* the ME: halts, counted */
+	unsigned int wakes;     /* the ME: wake interrupts taken (meLibOnExternalInterrupt) */
 } __attribute__((aligned(64)));
 
 /* whole cache lines of their own; only ever used through the uncached view */
@@ -127,6 +133,54 @@ static inline void me_idle(void)
 	/* ~25 us at 333 MHz in registers and the instruction cache */
 	for (k = 0; k < 2000; k++)
 		__asm__ __volatile__("nop");
+}
+
+/* build 120: me-core's exception handler calls this on the ME for each
+external interrupt (the main CPU's wake, me_wake below). The handler saves
+only k0, k1, ra and at, so this may use only k0 and k1: no C. It counts the
+wake, so the log can tell "wakes arrive but the ME stays halted" (halt
+resuming at itself) from "wakes are lost" (me-core's samples/exceptions
+counts interrupts the same way) */
+__attribute__((noinline, aligned(4)))
+void meLibOnExternalInterrupt(void)
+{
+	__asm__ __volatile__(
+		".set push\n"
+		".set noreorder\n"
+		"la      $k0, %0\n"
+		"li      $k1, 0x40000000\n" /* the uncached view, as UNCACHED() */
+		"or      $k0, $k0, $k1\n"
+		"lw      $k1, 0($k0)\n"
+		"addiu   $k1, $k1, 1\n"
+		"sw      $k1, 0($k0)\n"
+		"sync\n"
+		".set pop\n"
+		:
+		: "i"(&control_storage.wakes)
+		: "k0", "k1", "memory");
+}
+
+/* build 120: "mehalt"'s idle. halted is raised before the slots are looked
+at once more, so a job asked for during this pass is served, not slept
+through. One window is left: a wake that lands between that look and the
+halt is taken by the handler before the halt. The main CPU covers it by
+waking again while it waits (me_wake), so it costs one look, never a job */
+static void me_halt_idle(volatile struct me_control *control)
+{
+	int k, waiting = 0;
+
+	control->halted = 1;
+	__asm__ __volatile__("sync");
+	for (k = 0; k < ME_SLOTS; k++)
+		if (SLOT(k)->request != SLOT(k)->done)
+			waiting = 1;
+	if (!waiting && !control->stop)
+	{
+		control->halts++;
+		meLibHalt();
+	}
+	control->halted = 0;
+	__asm__ __volatile__("sync");
 }
 
 /* one job (either CPU; on_me: this is the ME) */
@@ -254,6 +308,7 @@ void meLibOnProcess(void)
 {
 	volatile struct me_control *control = CONTROL;
 	int sums[MIX_FRAMES_MAX * 2];
+	int halt_ready = 0; /* build 120: the exception handler is set up */
 
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
 	Sheepdog01's PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
@@ -278,6 +333,13 @@ void meLibOnProcess(void)
 	{
 		int k;
 
+		/* build 120: "mehalt" is looked at every 256th pass (it is set once,
+		after start), so the polling idle costs what it did before */
+		if ((control->alive & 255) == 0 && control->halt_idle && !halt_ready)
+		{
+			meLibExceptionHandlerInit(0);
+			halt_ready = 1;
+		}
 		control->alive++;
 		control->clock = me_cycles();
 		/* build 89: the stop word is looked at after the slots (below), so a
@@ -292,7 +354,10 @@ void meLibOnProcess(void)
 		}
 		if (control->stop)
 			break;
-		me_idle();
+		if (halt_ready)
+			me_halt_idle(control);
+		else
+			me_idle();
 	}
 	control->stop = 2;
 	__asm__ __volatile__("sync");
@@ -328,6 +393,31 @@ static struct
 static unsigned long long report_mark = 0;
 static float busy_percent_last = 0.0f;
 
+/* build 120: "mehalt" on this side. A wake is a kernel call (me-core's
+meLibEmitSoftwareInterrupt), so it is sent only to a halted ME, and again
+on each look while a job waits (me_halt_idle says why). The first 256 are
+timed, for the kernel call's cost */
+static int me_halting = 0;
+static unsigned long wakes_sent, wakes_timed;
+static unsigned long long wake_us;
+
+static void me_wake(void)
+{
+	if (!me_halting || !CONTROL->halted)
+		return;
+	if (wakes_timed < 256)
+	{
+		unsigned long long start = sceKernelGetSystemTimeWide();
+
+		meLibEmitSoftwareInterrupt();
+		wake_us += sceKernelGetSystemTimeWide() - start;
+		wakes_timed++;
+	}
+	else
+		meLibEmitSoftwareInterrupt();
+	wakes_sent++;
+}
+
 static int me_hold_reset(void)
 {
 	HW_SYS_RESET_ENABLE = SC_HW_RESET;
@@ -360,8 +450,12 @@ void psp_me_stop(const char *why)
 		(the ME runs its slots before it looks at the stop word) */
 		me_state = -1;
 		control->stop = 1;
+		me_wake();
 		for (k = 0; k < 100 && control->stop != 2; k++)
+		{
 			sceKernelDelayThread(1000);
+			me_wake();
+		}
 		if (control->stop == 2)
 			platform_log("ME: stopped (%s); halted itself after %d ms; the main CPU runs its jobs from here", why, k);
 		else
@@ -454,9 +548,14 @@ int psp_me_start(void)
 	}
 	me_state = 1;
 	atexit(stop_at_exit);
+	/* build 120: only now, so the start check above saw the ME polling */
+	me_halting = psp_keep("mehalt");
+	control->halt_idle = me_halting;
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
+	if (me_halting)
+		platform_log("ME: mehalt: the ME halts when idle and is woken by interrupt");
 	psp_log_flush();
 	return 1;
 }
@@ -513,9 +612,11 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 		__asm__ __volatile__("sync");
 		slot->request = ++slot_request[which];
 		__asm__ __volatile__("sync");
+		me_wake();
 		sceKernelDelayThread(first_look_us ? first_look_us : 100);
 		while (slot->done != slot_request[which])
 		{
+			me_wake();
 			/* build 89: the ME halted (a stop) before it saw this job */
 			if (CONTROL->stop == 2 && slot->done != slot_request[which])
 			{
@@ -585,6 +686,7 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	__asm__ __volatile__("sync");
 	slot->request = ++slot_request[which];
 	__asm__ __volatile__("sync");
+	me_wake();
 	submitted[which] = 1;
 	return 1;
 }
@@ -594,43 +696,63 @@ ME failed (it is stopped then, and the job may be half done). The wait spins
 on the slot's uncached done word: hand-overs come every few milliseconds,
 and a sleep would cost the PSP's scheduler tick (b112's X3). After 2 ms it
 sleeps in 50 us steps, so a slow job doesn't hold the CPU from the other
-threads */
+threads.
+Build 120, "mefinishslow" (code_review_b119_me.md, finding 1): each look is
+an uncached read on the bus the ME is reading its job's inputs from, and
+the clock is a system call. By default a look comes every 64 nops (~0.2 us)
+with the clock and the stop word every look; spaced, a look every ~3 us and
+the clock and stop word every 16th look, so a wake is still a few us late
+at most */
+#define FINISH_SPIN_NOPS 64        /* between looks, by default */
+#define FINISH_SPIN_NOPS_SLOW 1000 /* "mefinishslow": ~3 us at 333 MHz */
+#define FINISH_SLOW_CLOCK_EVERY 16 /* "mefinishslow": the clock every 16th look */
+
 int psp_me_finish(int which, unsigned int *results)
 {
+	static int slow = -1;
 	volatile struct me_slot *slot;
-	unsigned long long start;
-	unsigned long waited;
+	unsigned long long start, now;
+	unsigned long waited, looks = 0;
 	int k, state;
 
 	if (which < 0 || which >= ME_SLOTS || !submitted[which])
 		return 0;
+	if (slow < 0)
+		slow = psp_keep("mefinishslow");
 	state = submitted[which];
 	submitted[which] = 0;
 	slot = SLOT(which);
-	start = sceKernelGetSystemTimeWide();
+	start = now = sceKernelGetSystemTimeWide();
 	if (state == 1)
 	{
 		while (slot->done != slot_request[which])
 		{
-			unsigned long long now = sceKernelGetSystemTimeWide();
+			int spin = slow ? FINISH_SPIN_NOPS_SLOW : FINISH_SPIN_NOPS;
 
-			/* the ME halted (a stop: HOME, sleep) before it finished this job */
-			if (CONTROL->stop == 2 && slot->done != slot_request[which])
+			if (!slow || looks % FINISH_SLOW_CLOCK_EVERY == 0)
 			{
-				stats[which].failures++;
-				return 0;
+				now = sceKernelGetSystemTimeWide();
+				/* the ME halted (a stop: HOME, sleep) before it finished this job */
+				if (CONTROL->stop == 2 && slot->done != slot_request[which])
+				{
+					stats[which].failures++;
+					return 0;
+				}
+				if (now - submit_mark[which] > 500000)
+				{
+					platform_log("ME: a handed-over job (type %u) not finished in 500 ms (job %u; the ME at job %u, %u idle polls)",
+						slot->type, slot_request[which], slot->done, CONTROL->alive);
+					stats[which].failures++;
+					psp_me_stop("a handed-over job timed out");
+					return 0;
+				}
+				/* mehalt: a wake that may have been lost (me_halt_idle) */
+				me_wake();
 			}
-			if (now - submit_mark[which] > 500000)
-			{
-				platform_log("ME: a handed-over job (type %u) not finished in 500 ms (job %u; the ME at job %u, %u idle polls)",
-					slot->type, slot_request[which], slot->done, CONTROL->alive);
-				stats[which].failures++;
-				psp_me_stop("a handed-over job timed out");
-				return 0;
-			}
+			looks++;
 			if (now - start < 2000)
 			{
-				for (k = 0; k < 64; k++)
+				for (k = 0; k < spin; k++)
 					__asm__ __volatile__("nop");
 			}
 			else
@@ -802,6 +924,22 @@ void psp_me_report(void)
 			length = (int)sizeof(line) - 1;
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
+	if (me_halting && length < (int)sizeof(line) - 160)
+	{
+		/* build 120: mehalt's own figures since the last report. Wakes
+		taken far above halts: the ME is interrupted while busy. Halts
+		without wakes taken, with jobs failing: wakes don't arrive. Wakes
+		taken with jobs failing: halt resumes at itself */
+		static unsigned int halts_last, wakes_last;
+		unsigned int halts = CONTROL->halts, wakes = CONTROL->wakes;
+
+		length += snprintf(line + length, sizeof(line) - length,
+			"; mehalt: %u halts, %lu wakes sent (a kernel call, %lu us each), %u taken",
+			halts - halts_last, wakes_sent, wakes_timed ? (unsigned long)(wake_us / wakes_timed) : 0, wakes - wakes_last);
+		halts_last = halts;
+		wakes_last = wakes;
+		wakes_sent = 0;
+	}
 	platform_log("ME: %s, %.1f%% busy over %.1f s%s", me_state == 1 ? "running" : me_state == 2 ? "SIMULATED (emulator)" :
 		"stopped", busy_percent_last, (double)window / 1e6, length ? line : "; no jobs");
 	memset(stats, 0, sizeof(stats));
