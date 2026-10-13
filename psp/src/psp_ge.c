@@ -11111,6 +11111,36 @@ static int light_nudge_units(float distance)
 	return units < 3.0f ? 3 : units > 4096.0f ? 4096 : (int)units;
 }
 
+/* build 118 (b113 #13): the light's pieces cut at the near plane, each
+corner moved toward the eye along its own line of sight (so it stays on its
+pixel) by the lift light_nudge_units gives its own distance. b116 nudged
+all of a draw's cut pieces by one depth offset, sized by the corner nearest
+the eye; but a piece cut at the near plane reaches from there to 8 units
+and more, and a nudge sized for 0.1 units lifts the floor 8 units off by
+about 1 unit, past the wall in front of it: the floor's light seen through
+the map room bunker's hallway wall (b108-b116 [M]). Measured along the
+view, as the depth buffer measures; a corner never moves past the near
+plane. Keep word "lightcutone": as before */
+static int light_cut_one = -1;
+
+static void light_lift_corner(struct shadow_vertex *corner)
+{
+	float dx = corner->x - camera_eye[0], dy = corner->y - camera_eye[1], dz = corner->z - camera_eye[2];
+	float depth = dx * camera_forward[0] + dy * camera_forward[1] + dz * camera_forward[2], lift, scale;
+
+	if (depth <= projection_near)
+		return;
+	/* light_nudge_units' depth steps at this depth, in world units */
+	lift = (float)light_nudge_units(depth) * depth * depth / (61439.0f * projection_near);
+	if (lift > depth - projection_near)
+		lift = depth - projection_near;
+	/* along the line of sight, the depth shrinks by the same share */
+	scale = (depth - lift) / depth;
+	corner->x = camera_eye[0] + dx * scale;
+	corner->y = camera_eye[1] + dy * scale;
+	corner->z = camera_eye[2] + dz * scale;
+}
+
 static int light_band(float squared)
 {
 	return squared < 4.0f ? 0 : squared < 16.0f ? 1 : squared < 64.0f ? 2 : squared < 256.0f ? 3 :
@@ -11581,6 +11611,8 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		struct shadow_vertex *pieces = list_take(cut_count * sizeof(struct shadow_vertex));
 		float nearest = 1e30f;
 
+		if (light_cut_one < 0)
+			light_cut_one = psp_keep("lightcutone");
 		for (index = 0; pieces && index < cut_count; index++)
 		{
 			const float *c = cut_corners[index];
@@ -11591,7 +11623,9 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			pieces[index].x = c[7];
 			pieces[index].y = c[8];
 			pieces[index].z = c[9];
-			if (light_mode == 2)
+			if (light_mode == 2 && !light_cut_one)
+				light_lift_corner(&pieces[index]);
+			else if (light_mode == 2)
 			{
 				float dx = c[7] - camera_eye[0], dy = c[8] - camera_eye[1], dz = c[9] - camera_eye[2];
 				float d2 = dx * dx + dy * dy + dz * dz;
@@ -11602,7 +11636,8 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		}
 		if (pieces && light_mode == 2)
 		{
-			sceGuDepthOffset(light_nudge_units(sqrtf(nearest)));
+			/* build 118: the corners carry their own lift; no nudge */
+			sceGuDepthOffset(light_cut_one ? light_nudge_units(sqrtf(nearest)) : 0);
 			light_nudged_draws++;
 		}
 		if (pieces)
