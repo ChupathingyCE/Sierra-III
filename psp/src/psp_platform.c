@@ -667,7 +667,7 @@ static void object_report(SceUID file, unsigned long ticks)
 	{
 		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep; /* objects.c (psp_fixups.py) */
 		extern long psp_objects_restless_skipped; /* build 118: the restless back-off */
-		extern long psp_items_asleep; /* build 120: resting weapons and equipment */
+		extern long psp_items_asleep; /* resting weapons and equipment */
 
 		if (length < (int)sizeof(line) - 160)
 			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses, %.1f items); restless, unchecked %.1f",

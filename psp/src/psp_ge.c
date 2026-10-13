@@ -11223,8 +11223,8 @@ game's coordinates times its texture scale are 0 to 1 across the bitmap, or,
 for its linear (interface) bitmaps, in the bitmap's own texels (build 26) */
 static float hud_u_scale = 1.0f, hud_v_scale = 1.0f;
 
-/* build 120 (Sheepdog01: the HUD looks soft): "hudsnap" puts each HUD quad's
-corners on whole pixels. Placed at the game's coordinates times the screen
+/* "hudsnap" puts each HUD quad's corners on whole pixels, so the HUD
+stops looking soft. Placed at the game's coordinates times the screen
 scale, an element's edge lands part-way across a pixel, and the bilinear
 filter spreads it over two. On whole pixels a texel drawn at its own size
 (hud177) is exactly one pixel, as the screen copy relies on (shift 0, above);

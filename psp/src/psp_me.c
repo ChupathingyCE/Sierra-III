@@ -90,8 +90,8 @@ struct me_control
 	unsigned int clock;    /* the ME: its cycle counter at the last poll */
 	unsigned int jobs;     /* the ME: jobs run */
 	unsigned int cause_before, cause_after; /* build 88: its Cause register at start */
-	/* build 120, "mehalt": the ME halts when it has nothing to do and the
-	main CPU wakes it with an interrupt, instead of polling the slots */
+	/* "mehalt": the ME halts when it has nothing to do and the main CPU
+	wakes it with an interrupt, instead of polling the slots */
 	unsigned int halt_idle; /* the main CPU: 1 to halt when idle (set after start) */
 	unsigned int halted;    /* the ME: 1 from just before a halt until it wakes */
 	unsigned int halts;     /* the ME: halts, counted */
@@ -135,7 +135,7 @@ static inline void me_idle(void)
 		__asm__ __volatile__("nop");
 }
 
-/* build 120: me-core's exception handler calls this on the ME for each
+/* me-core's exception handler calls this on the ME for each
 external interrupt (the main CPU's wake, me_wake below). The handler saves
 only k0, k1, ra and at, so this may use only k0 and k1: no C. It counts the
 wake, so the log can tell "wakes arrive but the ME stays halted" (halt
@@ -160,7 +160,7 @@ void meLibOnExternalInterrupt(void)
 		: "k0", "k1", "memory");
 }
 
-/* build 120: "mehalt"'s idle. halted is raised before the slots are looked
+/* "mehalt"'s idle. halted is raised before the slots are looked
 at once more, so a job asked for during this pass is served, not slept
 through. One window is left: a wake that lands between that look and the
 halt is taken by the handler before the halt. The main CPU covers it by
@@ -308,7 +308,7 @@ void meLibOnProcess(void)
 {
 	volatile struct me_control *control = CONTROL;
 	int sums[MIX_FRAMES_MAX * 2];
-	int halt_ready = 0; /* build 120: the exception handler is set up */
+	int halt_ready = 0; /* mehalt: the exception handler is set up */
 
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
 	Sheepdog01's PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
@@ -333,8 +333,8 @@ void meLibOnProcess(void)
 	{
 		int k;
 
-		/* build 120: "mehalt" is looked at every 256th pass (it is set once,
-		after start), so the polling idle costs what it did before */
+		/* "mehalt" is looked at every 256th pass (it is set once, after
+		start), so the polling idle costs what it would without it */
 		if ((control->alive & 255) == 0 && control->halt_idle && !halt_ready)
 		{
 			meLibExceptionHandlerInit(0);
@@ -393,7 +393,7 @@ static struct
 static unsigned long long report_mark = 0;
 static float busy_percent_last = 0.0f;
 
-/* build 120: "mehalt" on this side. A wake is a kernel call (me-core's
+/* "mehalt" on this side. A wake is a kernel call (me-core's
 meLibEmitSoftwareInterrupt), so it is sent only to a halted ME, and again
 on each look while a job waits (me_halt_idle says why). The first 256 are
 timed, for the kernel call's cost */
@@ -548,7 +548,7 @@ int psp_me_start(void)
 	}
 	me_state = 1;
 	atexit(stop_at_exit);
-	/* build 120: only now, so the start check above saw the ME polling */
+	/* mehalt only now, so the start check above saw the ME polling */
 	me_halting = psp_keep("mehalt");
 	control->halt_idle = me_halting;
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
@@ -694,10 +694,10 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 /* the job handed over, waited for: 1 when done (results filled), 0 if the
 ME failed (it is stopped then, and the job may be half done). The wait spins
 on the slot's uncached done word: hand-overs come every few milliseconds,
-and a sleep would cost the PSP's scheduler tick (b112's X3). After 2 ms it
+and a sleep would cost the PSP's scheduler tick (lever X3). After 2 ms it
 sleeps in 50 us steps, so a slow job doesn't hold the CPU from the other
 threads.
-Build 120, "mefinishslow" (code_review_b119_me.md, finding 1): each look is
+"mefinishslow" (code_review_b119_me.md, finding 1): each look is
 an uncached read on the bus the ME is reading its job's inputs from, and
 the clock is a system call. By default a look comes every 64 nops (~0.2 us)
 with the clock and the stop word every look; spaced, a look every ~3 us and
@@ -926,7 +926,7 @@ void psp_me_report(void)
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
 	{
-		/* build 120: mehalt's own figures since the last report. Wakes
+		/* mehalt's own figures since the last report. Wakes
 		taken far above halts: the ME is interrupted while busy. Halts
 		without wakes taken, with jobs failing: wakes don't arrive. Wakes
 		taken with jobs failing: halt resumes at itself */

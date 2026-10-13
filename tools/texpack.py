@@ -344,7 +344,7 @@ LIGHTMAP_MASKS = {}
 ALPHA_COVERAGE = False
 ALPHA_TESTED = set()
 
-# build 120 (Sheepdog01: the HUD looks soft): HUD sheets stay at 8 bits. The
+# HUD sheets stay at 8 bits, so the HUD stops looking soft. The
 # 16-colour test below compares a bitmap's error with the 16-bit frame
 # buffer's own, which a glyph's anti-aliased edge or a meter's soft ramp can
 # pass while its steps show (the same test banded effect gradients,

@@ -2303,8 +2303,8 @@ static short between_identifier = 0;
 static int between_index = -1;
 static int psp_vehicle_sleep_on = -1;
 long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep;
-/* build 120: resting weapons and equipment ("itemsawake" off), and the check
-mode that updates them anyway to prove the rule ("itemsleepcheck") */
+/* resting weapons and equipment ("itemsawake" off), and the check mode that
+updates them anyway to prove the rule ("itemsleepcheck") */
 static int psp_item_sleep_on = -1, psp_item_sleep_check = -1;
 long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
 /* build 106: how far dead bipeds get through the corpse-sleep rule, a count
@@ -2700,7 +2700,7 @@ static void psp_corpse_unsettled(short absolute_index, struct object_header_datu
 		psp_sleep[absolute_index].ground = 0;
 }
 
-/* build 120: whether a weapon or piece of equipment may be offered to the
+/* whether a weapon or piece of equipment may be offered to the
 byte-identical rule. Each exclusion is an input its update reads from
 outside its own bytes (items.c item_update, weapons.c weapon_update):
 - held or still moving: it changes every tick anyway;
@@ -2906,10 +2906,9 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 		psp_sleepy_update(object_index, absolute_index, header, may);
 		return;
 	}
-	/* build 120: a weapon or a piece of equipment lying at rest on the level
-	sleeps as idle scenery does (research_halo_activation.md, opportunity 1).
-	Ground weapons cost 1.5-4.7 ms a tick on the PSP (hardware_b114.md) and
-	never slept. At rest, item_update and weapon_update read nothing outside
+	/* a weapon or a piece of equipment lying at rest on the level sleeps as
+	idle scenery does (research_halo_activation.md, opportunity 1): ground
+	weapons cost 1.5-4.7 ms a tick on the PSP (hardware_b114.md). At rest, item_update and weapon_update read nothing outside
 	the item's own bytes but what psp_item_may_sleep leaves out, so the
 	byte-identical rule decides exactly; a shot, a blast or a pick-up changes
 	the item and wakes it. "itemsawake": off. "itemsleepcheck": sleepers are
@@ -3072,9 +3071,9 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		{
 			if (psp_item_sleep_check > 0)
 			{
-				/* build 120: itemsleepcheck. The update runs as if awake (so
-				the run plays as "itemsawake" would, garbage counted by the
-				update itself), and a sleeper it changed is logged */
+				/* itemsleepcheck: the update runs as if awake (so the run
+				plays as "itemsawake" would, garbage counted by the update
+				itself), and a sleeper it changed is logged */
 				unsigned long after;
 
 				object_update(object_index);
@@ -5439,7 +5438,7 @@ void matrix4x3_multiply(
 # is overridden per element in multiplayer.) Names over players, nav points
 # and damage arrows follow the 3D view and keep the full window.
 # keep.txt: hud100, hud115, hud130, hud145, hud160, hud177 (default 1.5)
-# hud177 (build 120): 848 / 480 = 1.767, the zoom at which a HUD texel is one
+# hud177: 848 / 480 = 1.767, the zoom at which a HUD texel is one
 # PSP pixel (480/848 x 1.767 = 1.000, 272/480 x 1.767 = 1.001); with hudsnap
 # (psp_ge.c, hud_draw) the HUD is drawn 1:1, with nothing left to filter
 FIXES_36["source/interface/hud.c"] = [
@@ -7767,26 +7766,23 @@ FIXES_36["source/physics/breakable_surfaces.c#aligned"] = [
  "static struct breakable_surface_globals *globals;\n#ifdef HALO_PSP\n_Static_assert(__builtin_offsetof(struct breakable_surface_globals, breakable_surface_flags) % 4 == 0, \"breakable surface flags read as words\");\n#endif\n"),
 ]
 
-# build 105: file descriptors. b104 run 1 showed the PSP lets the game hold
-# only about ten files at once (descriptors 3-12; the 13th was refused), and
-# two of the ten were the game's own logs, opened at start-up and never
-# closed. Their lines now go through the port's log, which opens its file
+# File descriptors: the PSP lets the game hold only about ten files at once,
+# and two of them were the game's own logs, opened at start-up and never
+# closed. Their lines go through the port's log instead, which opens its file
 # only for the moment of each batch write.
 #
-# build 120 (upstream f8abf21): ChupathingyCE's debug.txt now counts a line
-# written again as it was ("last line repeated N times") and rolls the file
-# at 64 MB. The PSP keeps the counting (a warning each tick would otherwise
-# fill the log) and has no roll: the port's log starts empty every launch.
-# The whole desktop writer, its statics and its roll helper, stays behind
-# #else, so the two anchors are the first and last lines of that stretch.
-# ChupathingyCE only: halo-ce-universal is frozen as a base (Sheepdog01, 2026-10-13).
+# debug.txt: a line written again as it was is counted, as upstream does ("last
+# line repeated N times"), so a warning each tick can't fill the log; there is
+# no roll at 64 MB, since the port's log starts empty every launch. The whole
+# desktop writer, its statics and its roll helper stay behind #else, so the
+# two anchors are the first and last lines of that stretch.
 _PSP_DEBUG_FILE = """#ifdef HALO_PSP
 void platform_psp_log(const char *format, ...);
 
-/* psp_fixups.py (builds 105, 120): debug.txt's lines go to the port's log,
-one line each, without the file's own date prefix (the log has its own). A
-line written again as it was is counted until a different one comes, as
-upstream does (one writer: the game thread logs; a race costs only a count) */
+/* psp_fixups.py: debug.txt's lines go to the port's log, one line each,
+without the file's own date prefix (the log has its own). A line written
+again as it was is counted until a different one comes, as upstream does
+(one writer: the game thread logs; a race costs only a count) */
 static char debug_file_psp_last_line[512];
 static unsigned long debug_file_psp_repeat_count = 0;
 

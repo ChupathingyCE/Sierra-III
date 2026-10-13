@@ -388,10 +388,9 @@ def link(objs, stubs):
     # SDK's script places every code section in input order, which scatters
     # hot functions among cold ones; each layout puts some sections first,
     # then everything else as before. Same code, new addresses: exact.
-    #   coldfirst (build 102): every function's cold part (.text.unlikely.*,
-    #     from -freorder-blocks-and-partition) together at the start;
-    #   hotgroup (build 120): that, then every function PGO's profile found
-    #     hot (.text.hot.*, from -freorder-functions) as one block, so hot
+    #   coldfirst: every function's cold part (.text.unlikely.*, from
+    #     -freorder-blocks-and-partition) together at the start;
+    #   hotgroup: that, then every function PGO's profile found hot (.text.hot.*, from -freorder-functions) as one block, so hot
     #     code stops sharing cache lines with cold code at both ends
     #     (research_icache.md, T1). Only a PGO build has .text.hot sections;
     #   a file name: coldfirst, then that file's hot functions in its order
