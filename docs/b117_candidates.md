@@ -18,7 +18,7 @@ Built on `hudbars` after tests 1–4. Each restores the original or speeds the g
 | # | Seen on the PSP [M] | Fix | Keep word (as b116) | Check |
 |---|---|---|---|---|
 | D1 | A checkerboard on shadows and particles (test 1), up to 140 of 255 under the Pelican's dust | **The dither only on draws that don't blend**, and on the level's lightmap pass, which sets the level's brightness. A blended draw rounds the frame again with the same 4x4 offset at each pixel, so passes that change a pixel little build a fixed pattern. Every blend switch goes through `ge_blend()` | `ditherall` | `dither118` (38326421791) [E], the same frames under each rule. Pattern spread on b30: 28.2 → **7.7** (1.4 with no dither); a10: 13.4 → **6.2**. b116's rule also darkened the picture by up to 5.9 of 255 levels; the new one is within 0.6 of no dither |
-| L1 | The hallway floor's light through the bunker's wall (b113 #13; tests 1 and b108–b115) | **The light's pieces cut at the near plane lifted per corner**: each corner moves toward the eye along its own line of sight, by the lift its own depth needs, never past the near plane. b116 nudged them all by one offset sized for the nearest corner, about 1 unit of lift at 8 units | `lightcutone` | `lightcut118` [E], at Sheepdog01's spot (route `b30_bunker_hallway`): pending |
+| L1 | The hallway floor's light through the bunker's wall (b113 #13; tests 1 and b108–b115) | **The light's pieces cut at the near plane lifted per corner**: each corner moves toward the eye along its own line of sight, by the lift its own depth needs, never past the near plane. b116 nudged them all by one offset sized for the nearest corner, about 1 unit of lift at 8 units | `lightcutone` | `lightcut118` (38327135018) [E], at Sheepdog01's spot (route `b30_bunker_hallway`): correct, but the line stays under both rules; it isn't the light pass (O1 below) |
 | G1 | Objects vanishing approaching the landing pad (test 1: 3 draws left out in that report) | **R4: a draw's geometry read at once past the frame's share**, while the frame has read under 384 KB (twice the share). b116 left the draw out once the share was spent or the read queue was full. Up to ~110 ms more in such a frame at the PSP's 1.7 MB/s [M, U] | `geoshare` | `geoshare118` (38327676750) [E]: draws left out over the openings, b116's rule against the new: a10 202 → 18, a30 590 → 102, c10 536 → 111, d20 277 → 0; what's left is in the first 300 frames, as the map loads (a10: 2 later). Reads past the share: 71–118 a run, 390–1,728 KB. The strict interpreter clean on a30 and c10 |
 | C1 | Checkpoints slower than b115's despite half the bytes: b30's first 3,102 ms against 219; c40's 699 against 171; c10's 439–2,046 against 153–201 (tests 1, 3, 4) | **The compact format written in whole 4 KB pieces**: b116 wrote 32 KB stages of any length, so each write ended mid-sector. The file's bytes are the same | — (exact) | the PSP's checkpoint times |
 | P1 | No lighting on actors (test 1) | **Models lit by their point lights again** (muzzle flashes, plasma, the flashlight). b106 stopped looking for them for speed. Up to two per object go to the GE as lights 2 and 3, each colour scaled by the reach at the model's centre (the light pass's falloff and cone); the GE shades each vertex by its angle to the light | `nopointlights` | `pointlights118` [E]: the parts lit, shots, the strict interpreter: pending. b106 measured the search at 2.4% of the emulator's time on b30's beach |
@@ -32,14 +32,20 @@ Built on `hudbars` after tests 1–4. Each restores the original or speeds the g
 - L1's corners on the near plane had no room to lift. The light's pieces are now cut 1% past the plane.
 - C1's stage is 64-byte aligned.
 
-**L1 didn't remove the line at Sheepdog01's spot** (`lightcut118`, 38327135018) [E]: the faint line across the hallway wall is there under both rules, so it may not be the light pass. `pointlights118` leaves out the level's see-through surfaces, then decals, and names the see-through maps (`tdump`).
+**L1 didn't remove the line at Sheepdog01's spot** (`lightcut118`, 38327135018) [E]: the faint line across the hallway wall is there under both rules. `pointlights118` found what it is: a see-through level surface. With the see-through surfaces left out (`nooverlays`) the line is gone; with decals left out it stays. At Sheepdog01's spot one draw of `levels\b30\shaders\glass floor`, its pieces cut at the near plane, carries a 4,096-step depth nudge, the largest any of its triangles asked for, applied to them all [E, `tdump`].
+
+**For 118:**
+
+| # | Seen | The change | Off word | Evidence |
+|---|---|---|---|---|
+| O1 | The hallway floor through the bunker's wall (b113 #13) | **On-wall overlays nudged by their far corner.** One depth offset lifts a point by its depth squared, so an offset sized at the nearest corner lifts the far corners far more: 4,096 steps is about 10 units at 3 units away. The on-wall branch of `overlay_units` now measures the distance part and the slope cap at the farthest corner (`hudbars` `6c3f857`, not in b117) | `overlaywallnear` | `wallfar118` (38338235859) [E]: at Sheepdog01's spot the line is gone with the far rule and there with the near one (shot 9). c40's and a10's openings by eye the same; pixel by pixel, a few to 200 pixels a shot in small patches. Very likely c40's bridge glass through Chief's legs too [U]: Sheepdog01's spot on c40 not checked yet |
 
 **From Sheepdog01's notes on c40 and c10, open** (first guesses [U]):
 
 | Seen [M] | Candidates |
 |---|---|
 | c40: the bridge's textures broken | not looked at yet |
-| c40: the bridge glass's edges through Chief's legs, the legs looking see-through | the glass drawn after Chief without the depth test, or Chief's legs in the see-through queue |
+| c40: the bridge glass's edges through Chief's legs, the legs looking see-through | most likely O1's cause, an on-wall overlay over-lifted at its far corners; or Chief's legs in the see-through queue |
 | c40: the walls' stencils and lights flicker and phase through the geometry as he moves | the stencil bake or the overlays' nudge, as on Blood Gulch before b87 |
 | c40: the trench glass across the great hallway not drawn | a glass shader the GE path drops |
 | c40: objects flicker on the pyramid's top level | R4 (G1 above), or the display list's size floor |
