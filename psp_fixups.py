@@ -11853,68 +11853,182 @@ FIXES_118["source/units/units.c#verify"] = [
 #endif
 	if (!unit_vectors_are_valid(unit_index))"""),
 ]
-# build 118 (X9's first question): "sphereprobe" counts the level sphere
-# queries (collision_bsp_test_sphere: a biped's or vehicle's features each
-# move, a body's ground test) that repeat one made this tick or the last with
-# exactly the same inputs: the BSP, the centre and radius bit for bit, and
-# the breakable surfaces' flags (the bit vector the caller passes). Such a repeat has the same answer, so
-# the share says what a memo of the answers would save before one is built
-# (a standing biped asks the same question every tick; b30's recon counted
-# 7-20% of bipeds still). A 256-entry table of the inputs' hashes; logged
-# every 300 ticks. Off, one test of a flag a query
-FIXES_118["source/physics/collision_bsp.c#sphereprobe"] = [
+# build 118 (X9): the level sphere queries' answers remembered. A query
+# (collision_bsp_test_sphere: a biped's or vehicle's features as it moves, a
+# body's ground test) walks the 3D BSP to its leaves and each leaf's 2D BSPs:
+# about a quarter of a50's tick in the cache model (tickmap118). Its answer
+# depends only on its inputs: the BSP (tag data, fixed until the next map or
+# BSP switch), the centre and radius, and the breakable surfaces' flags. The
+# probe that came first (lab run 38368364688) found 53-59% of a50's queries
+# repeat one of the tick before exactly (a standing biped asks the same thing
+# every tick), b30 38%, c10 43%, d20 15-32%, c20 13%; none repeat within a
+# tick. So a small table keeps recent answers under all their inputs, compared
+# in full, bit for bit: a hit is the walk's own answer. An answer too big for
+# an entry (or with an index past 16 bits) isn't kept, and the table is
+# forgotten when the collision BSP is set (a map's load, a BSP switch: the
+# next BSP is read into the same tag window) and when a map's tags load.
+# "spherewalk" (keep.txt): every query walks, as before; "spherememocheck":
+# a hit walks too and compares, and the log counts any difference
+FIXES_118["source/physics/collision_bsp.c#spherememo"] = [
 ("""boolean collision_bsp_test_sphere(
 	struct collision_bsp const *bsp,""",
  """#ifdef HALO_PSP
-/* psp_fixups.py (build 118): see FIXES_118 collision_bsp.c#sphereprobe */
+/* psp_fixups.py (build 118): see FIXES_118 collision_bsp.c#spherememo */
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 long game_time_get(void);
-static int psp_sphere_probe_on = -1;
-static struct { unsigned long hash; long tick; } psp_sphere_probe_seen[256];
-static unsigned long psp_sphere_queries, psp_sphere_repeats, psp_sphere_repeats_same_tick;
-static long psp_sphere_probe_window = -1;
+#define PSP_SPHERE_MEMO_SETS 16
+#define PSP_SPHERE_MEMO_WAYS 2
+#define PSP_SPHERE_MEMO_LEAVES 32
+#define PSP_SPHERE_MEMO_FEATURES 16
+#define PSP_SPHERE_MEMO_FLAG_WORDS 8 /* breakable surfaces: 256 bits (MAXIMUM_BREAKABLE_SURFACES_PER_MAP) */
+struct psp_sphere_memo_entry
+{
+	/* the inputs: the BSP (NULL: an empty entry), the centre and radius
+	as bits, the breakable surfaces' count and flags */
+	struct collision_bsp const *bsp;
+	unsigned long x, y, z, radius;
+	unsigned long flags[PSP_SPHERE_MEMO_FLAG_WORDS];
+	short breakable_surface_count;
+	/* the answer */
+	unsigned char surface_count, edge_count, vertex_count, leaf_count;
+	unsigned short surfaces[PSP_SPHERE_MEMO_FEATURES], edges[PSP_SPHERE_MEMO_FEATURES],
+		vertices[PSP_SPHERE_MEMO_FEATURES], leaves[PSP_SPHERE_MEMO_LEAVES];
+	unsigned long used; /* the query count when last used: the older way is replaced */
+};
+static struct psp_sphere_memo_entry psp_sphere_memo[PSP_SPHERE_MEMO_SETS][PSP_SPHERE_MEMO_WAYS];
+static int psp_sphere_memo_on = -1, psp_sphere_memo_check = 0;
+static unsigned long psp_sphere_queries, psp_sphere_hits, psp_sphere_kept, psp_sphere_wrong, psp_sphere_clock;
+static long psp_sphere_window = -1;
 
-static void psp_sphere_probe(
+/* a map's tags loaded, or the collision BSP set: every answer forgotten */
+void psp_sphere_memo_forget(void)
+{
+	csmemset(psp_sphere_memo, 0, sizeof(psp_sphere_memo));
+}
+
+/* the inputs in an entry's form; FALSE when the flags don't fit one */
+static boolean psp_sphere_memo_key(
+	struct psp_sphere_memo_entry *key,
 	struct collision_bsp const *bsp,
 	short breakable_surface_count,
 	byte const *breakable_surface_flags,
 	real_point3d const *center,
 	real radius)
 {
-	union { real f; unsigned long u; } x, y, z, r;
-	unsigned long hash = 2166136261UL;
-	long tick = game_time_get(), k;
-	unsigned int slot;
+	union { real f; unsigned long u; } v;
+	long words = breakable_surface_flags ? (breakable_surface_count + 31) / 32 : 0, k;
 
-	x.f = center->x; y.f = center->y; z.f = center->z; r.f = radius;
-#define PSP_PROBE_MIX(word) hash = (hash ^ (unsigned long)(word)) * 16777619UL
-	PSP_PROBE_MIX((unsigned long)bsp); PSP_PROBE_MIX(x.u); PSP_PROBE_MIX(y.u); PSP_PROBE_MIX(z.u); PSP_PROBE_MIX(r.u);
-	if (breakable_surface_flags)
-		for (k = 0; k < (breakable_surface_count + 31) / 32; k++) /* the bit vector's words */
-			PSP_PROBE_MIX(((unsigned long const *)breakable_surface_flags)[k]);
-#undef PSP_PROBE_MIX
-	psp_sphere_queries++;
-	slot = (unsigned int)(hash ^ (hash >> 16)) & 255;
-	if (psp_sphere_probe_seen[slot].hash == hash && psp_sphere_probe_seen[slot].tick >= tick - 1)
-	{
-		psp_sphere_repeats++;
-		if (psp_sphere_probe_seen[slot].tick == tick)
-			psp_sphere_repeats_same_tick++;
+	if (words > PSP_SPHERE_MEMO_FLAG_WORDS || breakable_surface_count < 0)
+		return FALSE;
+	csmemset(key, 0, sizeof(*key));
+	key->bsp = bsp;
+	v.f = center->x; key->x = v.u;
+	v.f = center->y; key->y = v.u;
+	v.f = center->z; key->z = v.u;
+	v.f = radius; key->radius = v.u;
+	key->breakable_surface_count = breakable_surface_count;
+	for (k = 0; k < words; k++)
+		key->flags[k] = ((unsigned long const *)breakable_surface_flags)[k];
+	return TRUE;
+}
+
+static unsigned int psp_sphere_memo_set(struct psp_sphere_memo_entry const *key)
+{
+	unsigned long hash = 2166136261UL;
+	long k;
+
+#define PSP_MEMO_MIX(word) hash = (hash ^ (unsigned long)(word)) * 16777619UL
+	PSP_MEMO_MIX((unsigned long)key->bsp); PSP_MEMO_MIX(key->x); PSP_MEMO_MIX(key->y); PSP_MEMO_MIX(key->z);
+	PSP_MEMO_MIX(key->radius);
+	for (k = 0; k < PSP_SPHERE_MEMO_FLAG_WORDS; k++)
+		PSP_MEMO_MIX(key->flags[k]);
+#undef PSP_MEMO_MIX
+	return (unsigned int)(hash ^ (hash >> 16)) & (PSP_SPHERE_MEMO_SETS - 1);
+}
+
+static boolean psp_sphere_memo_same_inputs(struct psp_sphere_memo_entry const *a, struct psp_sphere_memo_entry const *b)
+{
+	long k;
+
+	if (a->bsp != b->bsp || a->x != b->x || a->y != b->y || a->z != b->z || a->radius != b->radius ||
+		a->breakable_surface_count != b->breakable_surface_count)
+		return FALSE;
+	for (k = 0; k < PSP_SPHERE_MEMO_FLAG_WORDS; k++)
+		if (a->flags[k] != b->flags[k])
+			return FALSE;
+	return TRUE;
+}
+
+static void psp_sphere_memo_answer(struct psp_sphere_memo_entry const *entry, struct collision_bsp_test_sphere_result *result)
+{
+	long k;
+
+	result->surface_count = entry->surface_count;
+	result->edge_count = entry->edge_count;
+	result->vertex_count = entry->vertex_count;
+	result->leaf_count = entry->leaf_count;
+	for (k = 0; k < entry->surface_count; k++) result->surface_indices[k] = entry->surfaces[k];
+	for (k = 0; k < entry->edge_count; k++) result->edge_indices[k] = entry->edges[k];
+	for (k = 0; k < entry->vertex_count; k++) result->vertex_indices[k] = entry->vertices[k];
+	for (k = 0; k < entry->leaf_count; k++) result->leaf_indices[k] = entry->leaves[k];
+}
+
+/* the answer into an entry; FALSE when it doesn't fit one */
+static boolean psp_sphere_memo_store(struct psp_sphere_memo_entry *entry, struct collision_bsp_test_sphere_result const *result)
+{
+	long k;
+
+	if (result->surface_count > PSP_SPHERE_MEMO_FEATURES || result->edge_count > PSP_SPHERE_MEMO_FEATURES ||
+		result->vertex_count > PSP_SPHERE_MEMO_FEATURES || result->leaf_count > PSP_SPHERE_MEMO_LEAVES)
+		return FALSE;
+#define PSP_MEMO_COPY(field, count, indices) \\
+	for (k = 0; k < result->count; k++) \\
+	{ \\
+		if ((unsigned long)result->indices[k] > 0xFFFFUL) \\
+			return FALSE; \\
+		entry->field[k] = (unsigned short)result->indices[k]; \\
 	}
-	psp_sphere_probe_seen[slot].hash = hash;
-	psp_sphere_probe_seen[slot].tick = tick;
-	if (psp_sphere_probe_window < 0)
-		psp_sphere_probe_window = tick;
-	if (tick - psp_sphere_probe_window >= 300)
-	{
-		platform_psp_log("sphereprobe: %lu level sphere queries in %ld ticks (%.1f a tick); %lu repeat one of this tick or the last exactly (%.1f%%), %lu of them this tick's",
-			psp_sphere_queries, tick - psp_sphere_probe_window, (float)psp_sphere_queries / (float)(tick - psp_sphere_probe_window),
-			psp_sphere_repeats, psp_sphere_queries ? 100.0f * (float)psp_sphere_repeats / (float)psp_sphere_queries : 0.0f,
-			psp_sphere_repeats_same_tick);
-		psp_sphere_queries = psp_sphere_repeats = psp_sphere_repeats_same_tick = 0;
-		psp_sphere_probe_window = tick;
-	}
+	PSP_MEMO_COPY(surfaces, surface_count, surface_indices)
+	PSP_MEMO_COPY(edges, edge_count, edge_indices)
+	PSP_MEMO_COPY(vertices, vertex_count, vertex_indices)
+	PSP_MEMO_COPY(leaves, leaf_count, leaf_indices)
+#undef PSP_MEMO_COPY
+	entry->surface_count = (unsigned char)result->surface_count;
+	entry->edge_count = (unsigned char)result->edge_count;
+	entry->vertex_count = (unsigned char)result->vertex_count;
+	entry->leaf_count = (unsigned char)result->leaf_count;
+	return TRUE;
+}
+
+static boolean psp_sphere_memo_same_answer(struct psp_sphere_memo_entry const *entry, struct collision_bsp_test_sphere_result const *result)
+{
+	long k;
+
+	if (result->surface_count != entry->surface_count || result->edge_count != entry->edge_count ||
+		result->vertex_count != entry->vertex_count || result->leaf_count != entry->leaf_count)
+		return FALSE;
+	for (k = 0; k < entry->surface_count; k++) if (result->surface_indices[k] != entry->surfaces[k]) return FALSE;
+	for (k = 0; k < entry->edge_count; k++) if (result->edge_indices[k] != entry->edges[k]) return FALSE;
+	for (k = 0; k < entry->vertex_count; k++) if (result->vertex_indices[k] != entry->vertices[k]) return FALSE;
+	for (k = 0; k < entry->leaf_count; k++) if (result->leaf_indices[k] != entry->leaves[k]) return FALSE;
+	return TRUE;
+}
+
+static void psp_sphere_memo_report(void)
+{
+	long tick = game_time_get();
+
+	if (psp_sphere_window < 0)
+		psp_sphere_window = tick;
+	if (tick - psp_sphere_window < 300)
+		return;
+	platform_psp_log("spherememo: %lu level sphere queries in %ld ticks, %lu answered from the table, %lu answers kept%s%lu",
+		psp_sphere_queries, tick - psp_sphere_window, psp_sphere_hits, psp_sphere_kept,
+		psp_sphere_memo_check ? "; spherememocheck: answers that differed from the walk " : "; ",
+		psp_sphere_wrong);
+	psp_sphere_queries = psp_sphere_hits = psp_sphere_kept = psp_sphere_wrong = 0;
+	psp_sphere_window = tick;
 }
 #endif
 
@@ -11926,12 +12040,103 @@ boolean collision_bsp_test_sphere(
  """	result->vertex_count = 0;
 
 #ifdef HALO_PSP
-	if (psp_sphere_probe_on < 0)
-		psp_sphere_probe_on = psp_keep("sphereprobe");
-	if (psp_sphere_probe_on)
-		psp_sphere_probe(bsp, breakable_surface_count, breakable_surface_flags, center, radius);
-#endif
-	bsp3d_test_sphere_recursive(&context, 0, 0);"""),
+	{
+		/* psp_fixups.py (build 118): the answers remembered (#spherememo) */
+		struct psp_sphere_memo_entry key, *set = NULL, *hit = NULL;
+		boolean keyed = FALSE;
+		int way;
+
+		if (psp_sphere_memo_on < 0)
+		{
+			psp_sphere_memo_on = !psp_keep("spherewalk");
+			psp_sphere_memo_check = psp_keep("spherememocheck");
+		}
+		if (psp_sphere_memo_on)
+		{
+			keyed = psp_sphere_memo_key(&key, bsp, breakable_surface_count, breakable_surface_flags, center, radius);
+			psp_sphere_queries++;
+			psp_sphere_clock++;
+		}
+		if (keyed)
+		{
+			set = psp_sphere_memo[psp_sphere_memo_set(&key)];
+			for (way = 0; way < PSP_SPHERE_MEMO_WAYS && !hit; way++)
+				if (set[way].bsp && psp_sphere_memo_same_inputs(&set[way], &key))
+					hit = &set[way];
+		}
+		if (hit)
+		{
+			hit->used = psp_sphere_clock;
+			psp_sphere_hits++;
+			if (psp_sphere_memo_check)
+			{
+				bsp3d_test_sphere_recursive(&context, 0, 0);
+				if (!psp_sphere_memo_same_answer(hit, result))
+					psp_sphere_wrong++;
+			}
+			psp_sphere_memo_answer(hit, result);
+		}
+		else
+		{
+			bsp3d_test_sphere_recursive(&context, 0, 0);
+			if (keyed)
+			{
+				/* the way used longest ago gives its place */
+				struct psp_sphere_memo_entry *entry = &set[0];
+
+				for (way = 1; way < PSP_SPHERE_MEMO_WAYS; way++)
+					if (set[way].used < entry->used)
+						entry = &set[way];
+
+				*entry = key;
+				if (psp_sphere_memo_store(entry, result))
+				{
+					entry->used = psp_sphere_clock;
+					psp_sphere_kept++;
+				}
+				else
+					entry->bsp = NULL; /* too big for an entry: not kept */
+			}
+		}
+		if (psp_sphere_memo_on)
+			psp_sphere_memo_report();
+	}
+#else
+	bsp3d_test_sphere_recursive(&context, 0, 0);
+#endif"""),
+]
+# (the table forgotten as the collision BSP is set: a map's first BSP and
+# every switch read the next BSP into the same tag window)
+FIXES_118["source/scenario/scenario.c#spherememo"] = [
+("""			global_bsp3d = (struct bsp3d *)TAG_BLOCK_GET_ELEMENT(
+				&global_structure_bsp->collision_bsp,
+				0,
+				struct collision_bsp);""",
+ """			global_bsp3d = (struct bsp3d *)TAG_BLOCK_GET_ELEMENT(
+				&global_structure_bsp->collision_bsp,
+				0,
+				struct collision_bsp);
+#ifdef HALO_PSP
+			{
+				/* psp_fixups.py (build 118): collision_bsp.c#spherememo */
+				extern void psp_sphere_memo_forget(void);
+
+				psp_sphere_memo_forget();
+			}
+#endif"""),
+]
+# (and as a map's tags load: objects' collision BSPs are tag data)
+FIXES_118["source/cache/cache_files.c#spherememo"] = [
+("""				psp_model_markers_forget((unsigned long)tag_cache_base_address + cache_file_globals.header.tag_data_size);
+			}""",
+ """				psp_model_markers_forget((unsigned long)tag_cache_base_address + cache_file_globals.header.tag_data_size);
+			}
+			{
+				/* psp_fixups.py (build 118): collision_bsp.c#spherememo */
+				extern void psp_sphere_memo_forget(void);
+
+				psp_sphere_memo_forget();
+			}"""),
 ]
 FIXES_118["source/units/bipeds.c#verify"] = [
 ("""static void biped_verify_object_vectors(
