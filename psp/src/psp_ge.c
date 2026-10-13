@@ -4740,8 +4740,11 @@ static float detail_far_squared = 0.0f;
 past the detail fade). The main CPU's loop below and the Media Engine's
 measure job (psp_ge_me_angle) both use this, so the two compute the very same
 expressions in the same order (no fused multiply-adds: -ffp-contract=off) and
-must agree bit for bit. No library calls: the ME runs it */
-static inline int angle_bucket_one(const struct ge_vertex *stream, const unsigned short *triangle, float ex, float ey,
+must agree bit for bit. No library calls: the ME runs it. Build 119:
+always written in (GCC kept it a call, 5-8.5% of the drawing's instructions
+on a30, c20 and d20 by the cache model: hotlines119); the same operations in
+the same order, so the same buckets */
+static inline __attribute__((always_inline)) int angle_bucket_one(const struct ge_vertex *stream, const unsigned short *triangle, float ex, float ey,
 	float ez, int far_possible, float far_squared)
 {
 	const struct ge_vertex *a = &stream[triangle[0]], *p = &stream[triangle[1]], *q = &stream[triangle[2]];
