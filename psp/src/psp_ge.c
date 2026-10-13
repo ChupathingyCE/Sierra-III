@@ -1442,6 +1442,10 @@ spheres on the heap */
 static int near_cluster_full = -1, near_cluster_check = 0;
 static unsigned long near_cluster_kept = 0, near_cluster_dropped = 0, near_cluster_mixed = 0, near_cluster_mismatches = 0;
 static unsigned long near_cluster_bytes = 0;
+/* build 119: the rigid near path's runs (rigid_run_verdict) */
+static int rigid_runs_full = -1, rigid_runs_check = 0;
+static unsigned long rigid_runs_kept = 0, rigid_runs_dropped = 0, rigid_runs_mixed = 0, rigid_runs_mismatches = 0,
+	rigid_runs_made = 0, rigid_runs_bytes = 0;
 static int skin_axis_loop = -1, skin_axis_check = 0; /* build 119: model_geometry's corner sums, "skinaxisloop" */
 static unsigned long skin_axis_checked = 0, skin_axis_differ = 0;
 static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
@@ -1576,9 +1580,16 @@ static void ge_kinds_report(void)
 			platform_log("GE: nearclustercheck: %lu triangles disagreed with their run's verdict", near_cluster_mismatches);
 		if (skin_axis_check)
 			platform_log("GE: skinaxischeck: %lu corner sums compared with the loop's, %lu differed", skin_axis_checked, skin_axis_differ);
+		platform_log("GE: rigid near runs of %d triangles (%s): %.1f a frame kept whole, %.1f dropped whole, %.1f looked at corner by corner; %lu parts' spheres made (%lu KB)%s",
+			NEAR_CLUSTER_TRIANGLES, rigid_runs_full > 0 ? "off: rigidrunsfull" : "on", rigid_runs_kept / frames_seen,
+			rigid_runs_dropped / frames_seen, rigid_runs_mixed / frames_seen, rigid_runs_made, rigid_runs_bytes / 1024,
+			rigid_runs_check ? (rigid_runs_mismatches ? "; rigidrunscheck: SOME TRIANGLES DISAGREED WITH THEIR RUN" : "; rigidrunscheck: all agreed") : "");
+		if (rigid_runs_check && rigid_runs_mismatches)
+			platform_log("GE: rigidrunscheck: %lu triangles disagreed with their run's verdict", rigid_runs_mismatches);
 	}
 	near_cluster_kept = near_cluster_dropped = near_cluster_mixed = near_cluster_mismatches = 0;
 	skin_axis_checked = skin_axis_differ = 0;
+	rigid_runs_kept = rigid_runs_dropped = rigid_runs_mixed = rigid_runs_mismatches = rigid_runs_made = 0;
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
@@ -8006,6 +8017,146 @@ static int rigid_part_whole(const void *vertices, const unsigned short *indices,
 	return 1;
 }
 
+/* build 119: the rigid near path in runs ("NR"), as the bending one's
+(near_cluster_verdict). A large rigid part at the eye (c20's and b30's: the
+near filter 2.8-3.1 ms a frame on the PSP) has every corner worked out to
+find the triangles to keep, drop or cut. Its triangles are taken in runs of
+NEAR_CLUSTER_TRIANGLES, each with a sphere in the part's own space, worked
+out once and kept in a small table by the part's buffers (as multi_memo
+keeps its answers, by the buffers' geometry-cache generations). Through
+the part's matrix (rigid_rows; its largest stretch by batch_sphere_inside's
+bound) a run wholly inside the planes is kept with no corner worked out, one
+wholly beyond one plane is dropped: each triangle's own verdict would be
+the same (outside(): NEAR_CLIP and the guard planes). "rigidrunsfull": every
+corner as before; "rigidrunscheck": the corners anyway, compared */
+#define RIGID_RUN_PARTS 16
+static struct rigid_runs
+{
+	const void *vertices;
+	const unsigned short *indices;
+	long index_count;
+	int strip, count;
+	unsigned int vertices_generation, indices_generation, used;
+	float (*spheres)[4];
+} rigid_runs[RIGID_RUN_PARTS];
+static unsigned int rigid_runs_clock = 0;
+
+/* the part's runs' spheres, from the table or worked out now (NULL: no room) */
+static struct rigid_runs *rigid_runs_for(const void *vertices, const unsigned short *indices, long index_count, int strip)
+{
+	long triangles = strip ? index_count - 2 : index_count / 3, t;
+	unsigned int vertices_generation = psp_geo_generation(vertices), indices_generation = psp_geo_generation(indices);
+	struct rigid_runs *slot = NULL;
+	int k, count;
+
+	for (k = 0; k < RIGID_RUN_PARTS; k++)
+	{
+		struct rigid_runs *r = &rigid_runs[k];
+
+		if (r->spheres && r->vertices == vertices && r->indices == indices && r->index_count == index_count &&
+			r->strip == strip && r->vertices_generation == vertices_generation && r->indices_generation == indices_generation)
+		{
+			r->used = ++rigid_runs_clock;
+			return r;
+		}
+		if (!slot || (!r->spheres && slot->spheres) || (r->spheres && slot->spheres && r->used < slot->used))
+			slot = r;
+	}
+	if (triangles <= 0)
+		return NULL;
+	count = (int)((triangles + NEAR_CLUSTER_TRIANGLES - 1) / NEAR_CLUSTER_TRIANGLES);
+	if (slot->spheres)
+	{
+		rigid_runs_bytes -= (unsigned long)slot->count * sizeof(float[4]);
+		free(slot->spheres);
+		slot->spheres = NULL;
+	}
+	slot->spheres = malloc(count * sizeof(float[4]));
+	if (!slot->spheres)
+		return NULL;
+	rigid_runs_bytes += (unsigned long)count * sizeof(float[4]);
+	rigid_runs_made++;
+	slot->vertices = vertices;
+	slot->indices = indices;
+	slot->index_count = index_count;
+	slot->strip = strip;
+	slot->count = count;
+	slot->vertices_generation = vertices_generation;
+	slot->indices_generation = indices_generation;
+	slot->used = ++rigid_runs_clock;
+	for (k = 0; k < count; k++)
+	{
+		float low[3] = { 0.0f, 0.0f, 0.0f }, high[3] = { 0.0f, 0.0f, 0.0f }, reach = 0.0f;
+		long first = (long)k * NEAR_CLUSTER_TRIANGLES, last = first + NEAR_CLUSTER_TRIANGLES;
+		int any = 0, axis, c;
+
+		if (last > triangles)
+			last = triangles;
+		/* every corner of the run's triangles, the empty strip ones too (more
+		corners only make the sphere larger) */
+		for (t = first; t < last; t++)
+			for (c = 0; c < 3; c++)
+			{
+				unsigned short v = strip ? indices[t + c] : indices[3 * t + c];
+				const float *p = (const float *)((const char *)vertices + 24 * v + 12);
+
+				for (axis = 0; axis < 3; axis++)
+				{
+					if (!any || p[axis] < low[axis]) low[axis] = p[axis];
+					if (!any || p[axis] > high[axis]) high[axis] = p[axis];
+				}
+				any = 1;
+			}
+		for (axis = 0; axis < 3; axis++)
+			slot->spheres[k][axis] = (low[axis] + high[axis]) * 0.5f;
+		for (t = first; t < last; t++)
+			for (c = 0; c < 3; c++)
+			{
+				unsigned short v = strip ? indices[t + c] : indices[3 * t + c];
+				const float *p = (const float *)((const char *)vertices + 24 * v + 12);
+				float dx = p[0] - slot->spheres[k][0], dy = p[1] - slot->spheres[k][1], dz = p[2] - slot->spheres[k][2];
+				float d = dx * dx + dy * dy + dz * dz;
+
+				if (d > reach)
+					reach = d;
+			}
+		slot->spheres[k][3] = sqrtf(reach);
+	}
+	return slot;
+}
+
+/* the largest stretch of rigid_rows' 3x3 part (batch_sphere_inside's bound) */
+static float rigid_rows_stretch(void)
+{
+	float stretch = 0.0f;
+	int i, j;
+
+	for (i = 0; i < 3; i++)
+	{
+		float sum = 0.0f;
+
+		for (j = 0; j < 3; j++)
+			sum += fabsf(rigid_rows[i][0] * rigid_rows[j][0] + rigid_rows[i][1] * rigid_rows[j][1] +
+				rigid_rows[i][2] * rigid_rows[j][2]);
+		if (sum > stretch)
+			stretch = sum;
+	}
+	return sqrtf(stretch);
+}
+
+/* a run's verdict: 1 every corner inside, 2 every corner beyond one plane, 0 either */
+static int rigid_run_verdict(const float *sphere, float stretch)
+{
+	float centre[3], radius = sphere[3] * stretch;
+	int i;
+
+	for (i = 0; i < 3; i++)
+		centre[i] = rigid_rows[i][0] * sphere[0] + rigid_rows[i][1] * sphere[1] + rigid_rows[i][2] * sphere[2] + rigid_rows[i][3];
+	if (sphere_inside(centre, radius, NEAR_CLIP))
+		return 1;
+	return sphere_beyond(centre, radius, NEAR_CLIP) ? 2 : 0;
+}
+
 static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
@@ -8073,15 +8224,61 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			disappeared. "modeldrop": as before */
 			/* (rigid_part_whole has reset corner_verdict, set rigid_rows and
 			worked out the corners up to the first triangle not wholly inside) */
+			/* build 119: the runs (rigid_run_verdict) */
+			struct rigid_runs *runs = NULL;
+			float stretch = 0.0f;
+			int run_state = 0;
+			long run_end = 0;
+
+			if (rigid_runs_full < 0)
+			{
+				rigid_runs_full = psp_keep("rigidrunsfull");
+				rigid_runs_check = psp_keep("rigidrunscheck");
+			}
+			if (!rigid_runs_full && !model_drop)
+			{
+				runs = rigid_runs_for(vertices, indices, index_count, strip);
+				if (runs)
+					stretch = rigid_rows_stretch();
+			}
 			for (triangle = 0; triangle < triangles; triangle++)
 			{
 				unsigned short corner[3];
 				int k, bits[3];
 
+				if (runs && triangle >= run_end)
+				{
+					long r = triangle / NEAR_CLUSTER_TRIANGLES;
+
+					run_end = (r + 1) * NEAR_CLUSTER_TRIANGLES;
+					run_state = r < runs->count ? rigid_run_verdict(runs->spheres[r], stretch) : 0;
+					if (run_state == 1)
+						rigid_runs_kept++;
+					else if (run_state == 2)
+						rigid_runs_dropped++;
+					else
+						rigid_runs_mixed++;
+				}
 				if (!part_triangle(indices, strip, triangle, corner))
 					continue;
+				if (run_state == 1 && !rigid_runs_check)
+				{
+					kept[3 * count] = corner[0];
+					kept[3 * count + 1] = corner[1];
+					kept[3 * count + 2] = corner[2];
+					count++;
+					continue;
+				}
+				if (run_state == 2 && !rigid_runs_check)
+				{
+					near_triangles_dropped++;
+					continue;
+				}
 				for (k = 0; k < 3; k++)
 					bits[k] = rigid_corner_bits(vertices, corner[k], &model, limit);
+				/* "rigidrunscheck": the run's verdict against the triangle's own */
+				if ((run_state == 1 && (bits[0] | bits[1] | bits[2])) || (run_state == 2 && !(bits[0] & bits[1] & bits[2])))
+					rigid_runs_mismatches++;
 				if (!(bits[0] | bits[1] | bits[2]))
 				{
 					kept[3 * count] = corner[0];
@@ -8327,6 +8524,8 @@ void psp_ge_forget_level(void)
 	platform_log("GE: the level's vertex copies let go (a new BSP or map)");
 }
 
+static void transparent_multi_forget(void);
+
 void psp_ge_forget_map(void)
 {
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
@@ -8335,6 +8534,17 @@ void psp_ge_forget_map(void)
 	for (index = 0; index < CONVERTED_BUFFERS; index++)
 		skin_free(skinned[index]);
 	memset(skinned, 0, sizeof(skinned));
+	/* build 119: the rigid runs' spheres and the see-through parts' node
+	answers (M1, build 118) are kept by buffer address and generation, and a
+	part in the tags has generation 0 in every map: forgotten with the map */
+	for (index = 0; index < RIGID_RUN_PARTS; index++)
+		if (rigid_runs[index].spheres)
+		{
+			rigid_runs_bytes -= (unsigned long)rigid_runs[index].count * sizeof(float[4]);
+			free(rigid_runs[index].spheres);
+		}
+	memset(rigid_runs, 0, sizeof(rigid_runs));
+	transparent_multi_forget();
 	memset(converted, 0, sizeof(converted));
 	memset(converted_generation, 0, sizeof(converted_generation));
 	converted_used = 0;
@@ -9132,6 +9342,12 @@ static int transparent_part_scan(const unsigned char *base, const unsigned short
 		if (indices[i] < vertex_count && base[24 * indices[i] + 11] != first)
 			return 1;
 	return 0;
+}
+
+/* build 119: forgotten with the map (psp_ge_forget_map) */
+static void transparent_multi_forget(void)
+{
+	memset(multi_memo, 0, sizeof(multi_memo));
 }
 
 static int transparent_part_multi(const unsigned char *base, const unsigned short *indices, long index_count, int vertex_count)
