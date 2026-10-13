@@ -42,6 +42,14 @@ static inline int psp_on_me(void)
 	return (sp & 0x1FFFFFFFu) < 0x01000000u;
 }
 
+/* build 118: a variable of the GE layer's or the texture cache's files that
+the main CPU writes while the Media Engine works (gemeoverlap: the recorder's
+words, the heartbeat's windows, the see-through level triangles' wall
+answers). psp_build.py's link script puts these together on cache lines of
+their own, away from the ME's variables of the same files. A static gets it
+before its type: static PSP_MAIN_SIDE int x = 0; */
+#define PSP_MAIN_SIDE __attribute__((section(".data.psp_main_side")))
+
 /* work that is (or, in the emulator, stands for) the Media Engine's: on the
 ME, or marked as its by psp_me_context (gemesim: the main CPU runs it) */
 extern volatile unsigned int psp_me_context;

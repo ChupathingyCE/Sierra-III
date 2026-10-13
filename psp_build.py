@@ -382,9 +382,9 @@ def link(objs, stubs):
     # beside its function; a file name adds its list of hot functions (one
     # section name a line, tools/icache_order.py's order.txt) right after
     linkfile = SDK + "/lib/linkfile.prx"
+    text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
     if layout:
-        text = open(linkfile).read()
         hot = ""
         if layout != "coldfirst":
             names = [l.strip() for l in open(layout) if l.strip().startswith(".text.")]
@@ -394,8 +394,30 @@ def link(objs, stubs):
             sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_TEXT_LAYOUT can't place the code")
         text = text.replace(old_text, "    _ftext = . ;\n    *(.text.unlikely .text.unlikely.*)\n" + hot +
                             "    *(.text .stub .text.* .gnu.linkonce.t.*)\n")
-        linkfile = os.path.join(OUT, "linkfile_layout.prx")
-        open(linkfile, "w").write(text)
+    # build 118: the variables of the code the Media Engine runs (the GE
+    # layer, the texture cache, pspgu) on cache lines of their own, and the
+    # main CPU's own variables in those files (PSP_MAIN_SIDE, psp_me.h) on
+    # others, each block 64-byte aligned at both ends. With gemeoverlap both
+    # CPUs work at once, each through its own write-back cache, and a line
+    # holding one CPU's variable and the other's would lose one CPU's write
+    # (docs/big_levers.md, L1 step 4; the emulator's write trace finds them)
+    old_data = "    _fdata = . ;\n    *(.data .data.* .gnu.linkonce.d.*)\n"
+    old_bss = "   *(.dynbss)\n   *(.bss .bss.* .gnu.linkonce.b.*)\n"
+    if old_data not in text or old_bss not in text:
+        sys.exit("psp_build: the SDK's linkfile.prx has changed; the Media Engine's variables can't be placed")
+    me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*")
+    text = text.replace(old_data, "    _fdata = . ;\n"
+                        "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
+                        "    . = ALIGN(64);\n    __psp_main_side_end = .;\n    __psp_me_data_start = .;\n" +
+                        "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n"
+                        "    *(.data .data.* .gnu.linkonce.d.*)\n")
+    text = text.replace(old_bss, "   *(.dynbss)\n   . = ALIGN(64);\n   __psp_me_bss_start = .;\n" +
+                        "".join("   %s(.bss .bss.* COMMON)\n" % o for o in me_objects) +
+                        "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n"
+                        "   *(.bss .bss.* .gnu.linkonce.b.*)\n")
+    linkfile = os.path.join(OUT, "linkfile_layout.prx")
+    open(linkfile, "w").write(text)
     # build 107: the link map (halo.map: each function's and variable's
     # address, size and object file) is written every link, for
     # tools/coverage.py's per-file inventory

@@ -841,7 +841,11 @@ static int find(unsigned int key)
 	(a draw asks for its texture 2-3 times: bind, size, residency); a place
 	is used only if its entry still has that key, so nothing goes stale
 	when a map's pack replaces the entries (an independent review) */
-	static int recent[64];
+	/* build 118: one table a CPU, each on cache lines of its own: the
+	Media Engine binds (gemeoverlap) while the main CPU asks for textures
+	too (object lighting's lightmap samples) */
+	static int recent_cpu[2][64] __attribute__((aligned(64)));
+	int *recent = recent_cpu[psp_on_me()];
 	int slot = (int)((key >> 4) & 63), low = 0, high = entry_count - 1, at = recent[slot];
 
 	if (at < entry_count && entries[at].key == key)
@@ -930,7 +934,7 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 
 static unsigned long read_us = 0, frame_read_us = 0, frame_read_worst = 0;
 /* build 73: this heartbeat window's reads, for the log's io: line */
-static unsigned long window_reads = 0, window_us = 0, window_worst_us = 0;
+static PSP_MAIN_SIDE unsigned long window_reads = 0, window_us = 0, window_worst_us = 0; /* build 118: the heartbeat resets them */
 void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us)
 {
 	*reads = window_reads;

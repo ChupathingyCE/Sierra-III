@@ -260,8 +260,8 @@ static int stall_me_qid = 0;
 static void *stall_me_address = NULL;
 static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
-static unsigned int defer_used = 0;
-static int defer_on = 0, defer_replaying = 0, defer_paused = 0;
+static PSP_MAIN_SIDE unsigned int defer_used = 0;
+static PSP_MAIN_SIDE int defer_on = 0, defer_replaying = 0, defer_paused = 0;
 /* gemesim or gemeon: the carrying out is (or stands for) the Media Engine's,
 so what it can't do is done when the call is written down, on the main CPU
 (the see-through level triangles' wall answers) */
@@ -283,13 +283,13 @@ carried out at once on the main CPU, marked as the ME's work (gemesim), and
 psp_me_window says a half is out, for the emulator's write trace (keep word
 mewrites, the lab's PSP_MEWRITES), which lists every line both write */
 #define DEFER_HALF (DEFER_WORDS / 2)
-static int me_overlap = 0;      /* this session overlaps (decided once) */
-static int defer_half = 0;      /* the half being written */
-static defer_word *defer_base = NULL; /* its first word */
-static unsigned int defer_limit = DEFER_WORDS; /* its words */
-static int me_out = 0;          /* the other half is out with the ME */
-static int me_wrote = 0;        /* the ME has carried a half out since the main CPU last dropped its cache */
-static unsigned long me_overlap_runs = 0, me_overlap_waits = 0, me_overlap_wait_us = 0, me_overlap_alone = 0;
+static PSP_MAIN_SIDE int me_overlap = 0;      /* this session overlaps (decided once) */
+static PSP_MAIN_SIDE int defer_half = 0;      /* the half being written */
+static PSP_MAIN_SIDE defer_word *defer_base = NULL; /* its first word */
+static PSP_MAIN_SIDE unsigned int defer_limit = DEFER_WORDS; /* its words */
+static PSP_MAIN_SIDE int me_out = 0;          /* the other half is out with the ME */
+static PSP_MAIN_SIDE int me_wrote = 0;        /* the ME has carried a half out since the main CPU last dropped its cache */
+static PSP_MAIN_SIDE unsigned long me_overlap_runs = 0, me_overlap_waits = 0, me_overlap_wait_us = 0, me_overlap_alone = 0;
 /* a line of its own: only the main CPU writes it */
 volatile unsigned int psp_me_window[16] __attribute__((aligned(64)));
 /* the wall answers a record carried, while it is carried out (the replay of
@@ -297,7 +297,7 @@ DEFER_QUEUE_LEVEL_TRANSPARENT sets it; overlay_answer reads it) */
 static const unsigned char *overlay_answers = NULL;
 static int overlay_answers_for(const void *vertices, int vertex_count, const unsigned short *indices,
 	long triangle_count, unsigned char *out);
-static unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
+static PSP_MAIN_SIDE unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
 static void defer_drain(void);
 static void defer_hand_over(void); /* build 118: gemeoverlap */
 static void list_write_back(const void *stall); /* build 114: listcachedall */
@@ -305,8 +305,8 @@ static void lit_forget(int what); /* build 114: statememo */
 /* which calls made the waiting calls run, for the log: each is a point where
 the ME's version has to catch up with the main CPU */
 #define DEFER_SITES 16
-static const char *defer_site[DEFER_SITES];
-static unsigned long defer_site_drains[DEFER_SITES];
+static PSP_MAIN_SIDE const char *defer_site[DEFER_SITES];
+static PSP_MAIN_SIDE unsigned long defer_site_drains[DEFER_SITES];
 static void defer_drain_for(const char *site)
 {
 	int k;
@@ -1008,8 +1008,8 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	return 0;
 }
 
-static int defer_me_on = -1;
-static unsigned long defer_me_jobs = 0, defer_me_failed = 0, defer_me_wait_us = 0, defer_me_own_us = 0;
+static PSP_MAIN_SIDE int defer_me_on = -1;
+static PSP_MAIN_SIDE unsigned long defer_me_jobs = 0, defer_me_failed = 0, defer_me_wait_us = 0, defer_me_own_us = 0;
 
 /* 1 if the ME carried the run out */
 static int defer_on_me(void)
@@ -1775,16 +1775,16 @@ the PSP's number means anything */
 #define GEBUSY_SLOTS 256
 static int gebusy_on = -1, gebusy_inserting = 0;
 static void *gebusy_stall;
-static unsigned int gebusy_next = 0;
-static volatile unsigned int gebusy_handed[GEBUSY_SLOTS], gebusy_last_reached = 0, gebusy_finish_handed = 0;
-static volatile unsigned long gebusy_us = 0, gebusy_chunks = 0, gebusy_finishes = 0;
-static unsigned int gebusy_window_start = 0;
+static PSP_MAIN_SIDE unsigned int gebusy_next = 0;
+static PSP_MAIN_SIDE volatile unsigned int gebusy_handed[GEBUSY_SLOTS], gebusy_last_reached = 0, gebusy_finish_handed = 0;
+static PSP_MAIN_SIDE volatile unsigned long gebusy_us = 0, gebusy_chunks = 0, gebusy_finishes = 0;
+static PSP_MAIN_SIDE unsigned int gebusy_window_start = 0;
 /* build 115: the GE's time by the kind of draw it ran (ge_kind_now's kinds):
 each chunk is one kind's (a change of kind ends the chunk: gebusy_cut), so its
 busy time goes to that kind. The emulator doesn't time the GE: PSP only */
-static volatile unsigned char gebusy_kind[GEBUSY_SLOTS];
-static volatile unsigned char gebusy_finish_kind = 0;
-static volatile unsigned long gebusy_kind_us[KINDS];
+static PSP_MAIN_SIDE volatile unsigned char gebusy_kind[GEBUSY_SLOTS];
+static PSP_MAIN_SIDE volatile unsigned char gebusy_finish_kind = 0;
+static PSP_MAIN_SIDE volatile unsigned long gebusy_kind_us[KINDS];
 static int gebusy_cut = 0;
 
 static void gebusy_add(unsigned int start, unsigned int now, int kind)
@@ -2108,7 +2108,7 @@ float psp_draw_distance(void)
 		int n = psp_keep_number("drawdist", 0);
 
 		limit = n > 0 ? (float)n : 0.0f;
-		if (limit > 0.0f)
+		if (limit > 0.0f && !PSP_ME_WORK())
 			platform_log("GE: drawdist: the far clip at %d world units outside cutscenes, the fog closing at it", n);
 	}
 	return limit > 0.0f ? limit : 0.0f;
@@ -4973,7 +4973,7 @@ static int box_test = -1;
 static unsigned long budget_renderer_us = 0, budget_wait_us = 0;
 /* build 87: the same over the heartbeat's own window (benchrun's results
 need the window they name; the 300-frame figures lag it) */
-static unsigned long hb_renderer_us = 0, hb_wait_us = 0, hb_frames = 0, entry_snapshot = 0;
+static PSP_MAIN_SIDE unsigned long hb_renderer_us = 0, hb_wait_us = 0, hb_frames = 0, entry_snapshot = 0;
 
 /* build 64: the renderer's CPU time and the wait for the GE, us a frame, as
 last logged (the heartbeat's budget line) */
@@ -9280,13 +9280,13 @@ static struct
 	unsigned int key;
 	long count;
 	unsigned char *flags; /* per triangle: 0 not asked, 1 on a wall, 2 free */
-} overlay_backing[OVERLAY_BACKINGS];
-static int overlay_backing_count = 0, overlay_all_walls = -1;
+} overlay_backing[OVERLAY_BACKINGS] PSP_MAIN_SIDE; /* build 118: the main CPU's, as calls are written down */
+static PSP_MAIN_SIDE int overlay_backing_count = 0, overlay_all_walls = -1;
 /* after b116: the last list's flags, so its triangles don't search the
 table again each (it holds up to 2,048 lists; an independent review) */
-static unsigned int overlay_cached_key = 0;
-static long overlay_cached_count = -1;
-static unsigned char *overlay_cached_flags = NULL;
+static PSP_MAIN_SIDE unsigned int overlay_cached_key = 0;
+static PSP_MAIN_SIDE long overlay_cached_count = -1;
+static PSP_MAIN_SIDE unsigned char *overlay_cached_flags = NULL;
 
 static void overlay_backing_forget(void)
 {
@@ -9297,9 +9297,9 @@ static void overlay_backing_forget(void)
 	overlay_backing_count = 0;
 	overlay_cached_flags = NULL;
 }
-static unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, overlay_free = 0, overlay_ask_us = 0;
+static PSP_MAIN_SIDE unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, overlay_free = 0, overlay_ask_us = 0;
 
-static unsigned long overlay_backing_full = 0;
+static PSP_MAIN_SIDE unsigned long overlay_backing_full = 0;
 
 /* build 112: triangles whose answer work marked as the Media Engine's needed
 and didn't have (gemesim): finding it takes heap for the answers and casts
@@ -9351,10 +9351,10 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 	than a surface, and another overlay with the same triangle count could
 	inherit its answers (review). Worked out once per list per frame */
 	{
-		static const unsigned short *last_list = NULL;
-		static const struct ge_vertex *last_stream = NULL;
-		static unsigned int last_frame_seen = 0, last_key = 0;
-		static long last_count = -1;
+		static PSP_MAIN_SIDE const unsigned short *last_list = NULL;
+		static PSP_MAIN_SIDE const struct ge_vertex *last_stream = NULL;
+		static PSP_MAIN_SIDE unsigned int last_frame_seen = 0, last_key = 0;
+		static PSP_MAIN_SIDE long last_count = -1;
 
 		if (indices != last_list || stream != last_stream || stream_frame != last_frame_seen ||
 			triangle_count != last_count)
@@ -9390,7 +9390,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 			return 1;
 		if (overlay_backing_count >= OVERLAY_BACKINGS)
 		{
-			static int victim = 0;
+			static PSP_MAIN_SIDE int victim = 0;
 
 			slot = victim;
 			victim = (victim + 1) % OVERLAY_BACKINGS;
@@ -9441,7 +9441,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 			on a scenery piece) */
 			flags[triangle] = collision_test_vector(0xC0A3, point, vector, -1, &result) ? 1 : 2;
 			{
-				static int walldump = -1;
+				static PSP_MAIN_SIDE int walldump = -1;
 
 				if (walldump < 0)
 					walldump = psp_keep("walldump");
@@ -13397,7 +13397,7 @@ static void screenshot(void)
 frameend: line (psp_platform.c). Sheepdog01's b72/b73 runs: the step holding the
 frame end took 0.8 s a frame, growing by ~15 ms each frame, with no Memory
 Stick reads; the per-300-frame report never came at 1 fps */
-static unsigned long win_frames = 0, win_flush_us = 0, win_writeback_us = 0, win_ge_us = 0, win_ge_worst = 0,
+static PSP_MAIN_SIDE unsigned long win_frames = 0, win_flush_us = 0, win_writeback_us = 0, win_ge_us = 0, win_ge_worst = 0,
 	win_swap_us = 0, win_after_us = 0, win_list_bytes = 0, win_triangles = 0, win_draws = 0, win_transparent = 0;
 void psp_ge_frame_window(char *text, int size)
 {

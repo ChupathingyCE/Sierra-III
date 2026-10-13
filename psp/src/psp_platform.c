@@ -962,8 +962,14 @@ int psp_keep_number(const char *prefix, int fallback)
 	const char *at = keep_words;
 	size_t length;
 
-	snprintf(word, sizeof(word), " %s", prefix);
-	length = strlen(word);
+	/* build 118: " prefix" put together by hand. snprintf takes the printf
+	lock (psp_libc.c: a system call), and the GE layer asks for its numbers
+	lazily, the first time from the Media Engine perhaps (gemeoverlap; the
+	emulator's ME-strict check found tskip's) */
+	word[0] = ' ';
+	for (length = 1; prefix[length - 1] && length < sizeof(word) - 1; length++)
+		word[length] = prefix[length - 1];
+	word[length] = 0;
 	while ((at = strstr(at, word)) != NULL)
 	{
 		at += length;
