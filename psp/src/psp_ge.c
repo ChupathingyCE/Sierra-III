@@ -2024,6 +2024,9 @@ psp_ge_model_shape, radius 0 when there is none (the sky, a flag, the
 first-person weapon, after the model ends or a new window begins) */
 static float model_sphere[3], model_sphere_radius = 0.0f;
 static unsigned long first_person_flushes = 0;
+/* build 118: frames by how long they were shown (psp_ge_frame_end) */
+static unsigned int swap_last = 0, swap_longest = 0;
+static unsigned long swap_shown[5];
 static float projection_fov = 1.2f, projection_near = 0.0625f, projection_far = 1000.0f;
 static float first_person_near = 0.0117f, first_person_far = 1024.0f;
 static unsigned long near_models = 0, near_triangles_dropped = 0;
@@ -8479,7 +8482,8 @@ static void transparent_sphere_missed(const struct transparent_draw *draw, int v
 		if (dx * dx + dy * dy + dz * dz > farthest)
 			farthest = dx * dx + dy * dy + dz * dz;
 	}
-	platform_log("GE: tcutcheck: a see-through part (key %08x, %d vertices) its model's sphere (radius %.3f, %.2f ahead) called wholly in view has a triangle outside (planes %d); its farthest corner is %.3f from the centre",
+	/* (ge_log: from the ME's work, counted only) */
+	ge_log("GE: tcutcheck: a see-through part (key %08x, %d vertices) its model's sphere (radius %.3f, %.2f ahead) called wholly in view has a triangle outside (planes %d); its farthest corner is %.3f from the centre",
 		draw->key, vertex_count, model_sphere_radius, model_sphere[2], bits, sqrtf(farthest));
 }
 
@@ -13628,6 +13632,24 @@ void psp_ge_frame_end(void)
 		mark = sceKernelGetSystemTimeLow();
 		draw_buffer = sceGuSwapBuffers();
 		frame_end_us[1] += sceKernelGetSystemTimeLow() - mark;
+		/* build 118: how long each frame stayed on the screen, in display
+		refreshes (60 a second): frames are shown at refreshes, so a frame
+		that misses 33.3 ms shows for 50 (20 fps for that frame), not 34.
+		The heartbeat's 5 s averages hide these single-frame hitches */
+		{
+			unsigned int now = sceKernelGetSystemTimeLow();
+
+			if (swap_last)
+			{
+				unsigned int shown = now - swap_last;
+				int refreshes = shown < 25000 ? 0 : shown < 41667 ? 1 : shown < 58333 ? 2 : shown < 75000 ? 3 : 4;
+
+				swap_shown[refreshes]++;
+				if (shown > swap_longest)
+					swap_longest = shown;
+			}
+			swap_last = now;
+		}
 		win_swap_us += sceKernelGetSystemTimeLow() - mark;
 		frame_open = 0;
 		mark = sceKernelGetSystemTimeLow();
@@ -13679,6 +13701,11 @@ void psp_ge_frame_end(void)
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		/* build 116: the restorations' own counters */
+		/* build 118: the frames' time on screen (above) */
+		platform_log("GE: frames shown for 1 display refresh (60 fps) %lu, 2 (30 fps) %lu, 3 (20 fps) %lu, 4 (15 fps) %lu, 5 or more %lu; the longest %u ms (last 300 frames)",
+			swap_shown[0], swap_shown[1], swap_shown[2], swap_shown[3], swap_shown[4], swap_longest / 1000);
+		memset(swap_shown, 0, sizeof(swap_shown));
+		swap_longest = 0;
 		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu",
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
 			seethrough_doubled_draws);
