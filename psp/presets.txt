@@ -2,7 +2,7 @@
 # third page (R from the options) lists them; cross applies one. Build 117's tests
 # (docs/build_b117.md says what each answers and when to stop).
 1 play, b117 as it ships: nearauto assettrack geo2
-2 ladder, all campaign openings, 3 min each: nearauto assettrack geo2 gebusy iostats ladder180
+2 ladder, all campaign openings, 90 s each: nearauto assettrack geo2 gebusy iostats ladder90
 3 cinematic bench, stops by itself: nearauto assettrack geo2 gebusy exitat70
 4 cinematic bench, model buffers in main RAM: nearauto assettrack geo2 gebusy vrammodels0 exitat70
 5 ceiling bench, hands off from the start: nearauto assettrack geo2 ceilingbench exitat300
