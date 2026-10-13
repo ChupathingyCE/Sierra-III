@@ -6171,7 +6171,8 @@ FIXES_36["source/main/main.c#throttle"] = [
 		figures stay comparable with earlier runs'; build 112: ceilingbench
 		too (padding to vertical blanks would hide what a switch saves) */
 		if (vblank_throttle < 0)
-			vblank_throttle = psp_keep("vblankthrottle") || (!psp_keep("novblankthrottle") && !psp_keep("benchrun") && !psp_keep("ceilingbench"));
+			vblank_throttle = psp_keep("vblankthrottle") || (!psp_keep("novblankthrottle") && !psp_keep("benchrun") && !psp_keep("ceilingbench") &&
+				!psp_keep("mebench")); /* build 118: mebench too */
 		if (!vblank_throttle)
 			return FALSE;
 	}

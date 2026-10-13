@@ -288,10 +288,20 @@ static PSP_MAIN_SIDE int defer_half = 0;      /* the half being written */
 static PSP_MAIN_SIDE defer_word *defer_base = NULL; /* its first word */
 static PSP_MAIN_SIDE unsigned int defer_limit = DEFER_WORDS; /* its words */
 static PSP_MAIN_SIDE int me_out = 0;          /* the other half is out with the ME */
+static PSP_MAIN_SIDE int defer_me_on = -1; /* gemeon (asked once; mebench sets it) */
 static PSP_MAIN_SIDE int me_wrote = 0;        /* the ME has carried a half out since the main CPU last dropped its cache */
 static PSP_MAIN_SIDE unsigned long me_overlap_runs = 0, me_overlap_waits = 0, me_overlap_wait_us = 0, me_overlap_alone = 0;
 /* a line of its own: only the main CPU writes it */
 volatile unsigned int psp_me_window[16] __attribute__((aligned(64)));
+/* build 118: "mebench": the three ways of running the GE layer's work, in
+turns of ME_BENCH_FRAMES frames in one run, each frame's time (swap to swap,
+the frame pacing off) added to its way: on the main CPU as it comes (gedefer
+off), on the ME with the main CPU waiting (gemeon), and overlapped
+(gemeoverlap). One build and one run answer what the overlap is worth on the
+PSP, in the same stretch of play (the hardware runner's golden rule) */
+#define ME_BENCH_FRAMES 60
+static PSP_MAIN_SIDE int me_bench = -1, me_bench_way = 0, me_bench_settled = 0;
+static PSP_MAIN_SIDE unsigned long me_bench_frame = 0, me_bench_frames[3], me_bench_us[3];
 /* the wall answers a record carried, while it is carried out (the replay of
 DEFER_QUEUE_LEVEL_TRANSPARENT sets it; overlay_answer reads it) */
 static const unsigned char *overlay_answers = NULL;
@@ -403,7 +413,9 @@ static void defer_frame_begin(void)
 
 	if (asked < 0)
 	{
-		asked = psp_keep("gedefer");
+		/* build 118: mebench takes gedefer and gemeon with it */
+		me_bench = psp_keep("mebench");
+		asked = psp_keep("gedefer") || me_bench;
 		if (asked)
 		{
 			defer_buffer = memalign(64, DEFER_WORDS * sizeof(defer_word));
@@ -433,7 +445,10 @@ static void defer_frame_begin(void)
 					(void)sceKernelGetSystemTimeLow();
 					psp_me_context = 0;
 				}
-				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon");
+				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench;
+				if (me_bench)
+					platform_log("GE: mebench: the GE layer's work on the main CPU, on the ME serially, and overlapped, in turns of %d frames; the frame pacing off",
+						ME_BENCH_FRAMES);
 				defer_base = defer_buffer;
 				/* build 118: the overlap needs the ME's carrying out (gemeon) */
 				if (psp_keep("gemeoverlap") && psp_keep("gemeon"))
@@ -450,6 +465,21 @@ static void defer_frame_begin(void)
 	}
 	defer_on = asked;
 	defer_paused = 0;
+	/* build 118: mebench's way for this frame (the ME idle here: the frame's
+	end carried everything out) */
+	if (me_bench > 0 && defer_buffer && !defer_used)
+	{
+		int way = (int)((me_bench_frame++ / ME_BENCH_FRAMES) % 3);
+
+		me_bench_settled = way == me_bench_way;
+		me_bench_way = way;
+		defer_on = way > 0;
+		defer_me_on = 1;
+		me_overlap = way == 2;
+		defer_limit = me_overlap ? DEFER_HALF : DEFER_WORDS;
+		defer_base = defer_buffer;
+		defer_half = 0;
+	}
 }
 
 /* room for a call of words words of arguments (what is waiting is carried
@@ -1009,7 +1039,6 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	return 0;
 }
 
-static PSP_MAIN_SIDE int defer_me_on = -1;
 static PSP_MAIN_SIDE unsigned long defer_me_jobs = 0, defer_me_failed = 0, defer_me_wait_us = 0, defer_me_own_us = 0;
 
 /* 1 if the ME carried the run out */
@@ -13647,6 +13676,13 @@ void psp_ge_frame_end(void)
 				swap_shown[refreshes]++;
 				if (shown > swap_longest)
 					swap_longest = shown;
+				/* build 118: mebench (a turn's first frame left out: it
+				started under the last way) */
+				if (me_bench > 0 && me_bench_settled)
+				{
+					me_bench_frames[me_bench_way]++;
+					me_bench_us[me_bench_way] += shown;
+				}
 			}
 			swap_last = now;
 		}
@@ -13706,6 +13742,17 @@ void psp_ge_frame_end(void)
 			swap_shown[0], swap_shown[1], swap_shown[2], swap_shown[3], swap_shown[4], swap_longest / 1000);
 		memset(swap_shown, 0, sizeof(swap_shown));
 		swap_longest = 0;
+		if (me_bench > 0)
+		{
+			int way;
+
+			platform_log("GE: mebench, last 300 frames: on the main CPU %lu frames, %.1f ms a frame; on the ME serially %lu, %.1f ms; overlapped %lu, %.1f ms",
+				me_bench_frames[0], me_bench_frames[0] ? me_bench_us[0] / 1000.0f / me_bench_frames[0] : 0.0f,
+				me_bench_frames[1], me_bench_frames[1] ? me_bench_us[1] / 1000.0f / me_bench_frames[1] : 0.0f,
+				me_bench_frames[2], me_bench_frames[2] ? me_bench_us[2] / 1000.0f / me_bench_frames[2] : 0.0f);
+			for (way = 0; way < 3; way++)
+				me_bench_frames[way] = me_bench_us[way] = 0;
+		}
 		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu",
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
 			seethrough_doubled_draws);
