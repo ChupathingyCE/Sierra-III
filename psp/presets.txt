@@ -1,9 +1,11 @@
 # Halo PSP launch presets: one a line, "name: keep words" (no colon in the name). The launch menu's
-# third page (R from the options) lists them; cross applies one. Build 116's tests
-# (docs/build_b116.md says what each answers and when to stop).
-1 play, b116 as it ships: nearauto assettrack geo2
-2 ladder, the campaign maps measured: nearauto assettrack geo2 gebusy iostats
-3 cinematic, base: nearauto assettrack geo2 gebusy
-4 cinematic, model buffers in VRAM (600 KB): nearauto assettrack geo2 gebusy vrammodels600
-5 cinematic, model buffers in VRAM (400 KB): nearauto assettrack geo2 gebusy vrammodels400
-6 the b115 look, every restoration off: nearauto assettrack geo2 overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages
+# third page (R from the options) lists them; cross applies one. Build 117's tests
+# (docs/build_b117.md says what each answers and when to stop).
+1 play, b117 as it ships: nearauto assettrack geo2
+2 ladder, all campaign openings, 3 min each: nearauto assettrack geo2 gebusy iostats ladder180
+3 cinematic bench, stops by itself: nearauto assettrack geo2 gebusy exitat70
+4 cinematic bench, model buffers in main RAM: nearauto assettrack geo2 gebusy vrammodels0 exitat70
+5 ceiling bench, hands off from the start: nearauto assettrack geo2 ceilingbench exitat300
+6 GE work on the ME (serial), stops by itself: nearauto assettrack geo2 gebusy gedefer gemeon exitat70
+7 the b116 look (117's restorations off): nearauto assettrack geo2 hudonemap glassflat lightcutone geoshare nopointlights ditherall
+8 the b115 look, every restoration off: nearauto assettrack geo2 overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages hudonemap glassflat lightcutone geoshare nopointlights

@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 116
+#define PSP_BUILD_NUMBER 117
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -833,6 +833,9 @@ static void keep_load(void)
 	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar");
 	/* build 116: the restorations are on by default; these words turn each off */
 	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages");
+	/* build 117: its own restorations, each turned off by these; and the
+	speed defaults' off words */
+	platform_log("keep words, build 117's restorations off: hudonemap glassflat lightcutone geoshare nopointlights ditherall; speed: vrammodels0; tests: ladderN exitatN");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
