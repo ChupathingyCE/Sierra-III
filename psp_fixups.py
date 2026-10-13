@@ -1321,7 +1321,13 @@ static void *psp_request_callers[MAXIMUM_SIMULTANEOUS_CACHE_REQUESTS];
 			cached_map_file_read_header(map_file_index);
 			platform_psp_log("map %s: opened in slot %d, header '%s'", path, map_file_index, map_file->header.name);
 			if (map_file->header.header_signature && !_stricmp(map_name, map_file->header.name))
+			{
+				/* build 117: the ladder's turns go by the map that opened (psp_platform.c) */
+				extern void psp_map_opened(const char *name);
+
+				psp_map_opened(map_file->header.name);
 				return map_file_index;
+			}
 			platform_psp_log("map %s: header missing or named '%s' (store maps uncompressed: mapunpack.py)",
 				path, map_file->header.name);
 		}
