@@ -1,4 +1,4 @@
-/* psp_geo.c - the geometry cache (build 68)
+/* psp_geo.c - the geometry cache
 
 Why: a campaign map's tags are 14-17 MB against the PSP-1000's 9 MB tag
 window, and 4.5-5.4 MB of that is model vertex and index data, plus 2-4 MB
@@ -30,11 +30,11 @@ psp_geo_generation(), which changes with every load into the block. */
 #include <stdlib.h>
 #include <malloc.h>
 #include <string.h>
-#include "psp_me.h" /* build 118: psp_on_me */
+#include "psp_me.h" /* psp_on_me */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
-/* build 106: the animation cache, this pack's second reader (psp_anim.c) */
+/* the animation cache, this pack's second reader (psp_anim.c) */
 void psp_anim_close(void);
 void psp_anim_map_opened(unsigned int bytes, unsigned int first, unsigned int end, unsigned int page,
 	unsigned int window_at, unsigned int window_bytes, int carve_from_textures);
@@ -68,17 +68,18 @@ static unsigned int pack_size = 0;
 static char pack_name[64];
 static unsigned int arena_start = 0, arena_end = 0, arena_next = 0;
 
-/* build 115: the cache's addresses, for "gereads" (psp_ge.c) */
+/* the cache's addresses, for "gereads" (psp_ge.c) */
 void psp_geo_range(unsigned int *start, unsigned int *end)
 {
 	*start = arena_start;
 	*end = arena_end;
 }
-/* build 102: the cache's size when it is carved from the texture RAM cache
-(a campaign map): 1 MB, or 1.5 / 2 MB with "geo15" / "geo2" (launch menu).
-Sheepdog01's b101 Library run: 1,899 block loads, 375 frames missing a block, the
-area ahead flashing in and out at transitions. The asset track's smaller
-textures leave the texture cache room to give */
+/* the cache's size when it is carved from the texture RAM cache (a
+campaign map): 1 MB, or 1.5 / 2 MB with "geo15" / "geo2" (launch menu). At
+1 MB a walk through the Library loaded 1,899 blocks on the PSP, 375 frames
+missed one, and the area ahead flashed in and out at transitions
+(docs/overnight_b102.md). The asset track's smaller textures leave the
+texture cache room to give */
 static unsigned int arena_bytes = ARENA_BYTES;
 static struct geo_entry entries[GEO_ENTRIES];
 static int entry_count = 0;
@@ -94,7 +95,7 @@ static unsigned long read_us = 0, read_worst_us = 0;
 
 int psp_geo_open_count(void) { return pack >= 0; }
 
-/* build 108: the open map's bake formats (its pack's header word 10; 0 for a
+/* the open map's bake formats (its pack's header word 10; 0 for a
 map without a pack): which tag blocks are already in the PSP's slim layouts
 (psp_tag_layouts.c) */
 static unsigned long map_formats = 0;
@@ -117,7 +118,7 @@ static int alignment(unsigned int size)
 	return (size + 63) & ~63u;
 }
 
-/* build 106: the entries by external address, chained in buckets (the
+/* the entries by external address, chained in buckets (the
 emulator's PC samples: 3% of b30's beach fight in finding an entry, a scan
 of the 300-odd resident ones for each of the frame's few hundred locks) */
 #define GEO_HASH 1024
@@ -272,7 +273,7 @@ static void poll(void)
 	complete(result);
 }
 
-/* build 106: a synchronous read of size bytes at an external address, for
+/* a synchronous read of size bytes at an external address, for
 the animation cache (psp_anim.c), whose data shares this pack (invader-build
 -M). On the game thread, like the geometry cache's own reads; a geometry read
 in flight ("geoasync") is finished first. The bytes read, or a negative error */
@@ -293,12 +294,12 @@ int psp_geo_pack_read(unsigned int address, void *to, unsigned int size)
 }
 
 /* starts the next queued read, if none is in flight and the block has room */
-/* build 72: synchronous reads unless keep.txt says "geoasync"; at most
+/* synchronous reads unless keep.txt says "geoasync"; at most
 SYNC_FRAME_BUDGET bytes a frame (about 12 ms at the Memory Stick's measured
 16 MB/s) */
 static int async_reads = 0;
 static void *heap_arena = NULL;
-/* build 94: the arena carved from the texture RAM cache (campaign maps) */
+/* the arena carved from the texture RAM cache (campaign maps) */
 static int arena_carved = 0;
 /* the texture caches' size: VRAM 1,216 KB and RAM 4,096 KB */
 #define TEXTURE_CACHES_BYTES (5312 * 1024)
@@ -307,14 +308,13 @@ static unsigned long window_reads = 0, window_us = 0, window_worst_us = 0;
 static unsigned int frame_read_bytes = 0;
 static unsigned long frame_read_us = 0, frame_read_worst_us = 0;
 
-/* build 117 (R4): a draw whose geometry isn't resident is read for at once,
-past the frame's share, while the frame has read under twice the share.
-b116 left such a draw out for the frame once the share was spent or the
-queue was full, so an object vanished for a frame or two as it came into
-view: Sheepdog01 saw it approaching b30's landing pad (b116 test 1: 3 draws left
-out in that report [M]). The Xbox never leaves one out. The frame pays for
-the read instead: the PSP read geometry at 1.7 MB/s in that run, so the
-second share is up to ~110 ms [M, U]. Keep word "geoshare": as before */
+/* R4: a draw whose geometry isn't resident is read for at once, past the
+frame's share, while the frame has read under twice the share. Left out
+instead, an object vanishes for a frame or two as it comes into view (seen
+on the PSP approaching b30's landing pad: docs/hardware_b116.md, test 1),
+and the Xbox never leaves one out. The frame pays for the read instead: at
+the 1.7 MB/s the PSP read geometry in that run, the second share is up to
+~110 ms [M, U]. Keep word "geoshare": such a draw is left out for the frame */
 #define SYNC_FRAME_CAP (2 * SYNC_FRAME_BUDGET)
 static int geo_share_only = -1;
 static unsigned long past_share_reads = 0, past_share_bytes = 0;
@@ -382,18 +382,19 @@ static void pump(void)
 			pending_remove(0);
 			continue;
 		}
-		/* build 89: this frame's read share first, then the room: b72-b88
-		allocated (evicting) and only then found the share spent, so each
-		further miss that frame evicted a block for nothing (review) */
+		/* this frame's read share first, then the room: allocating first
+		(evicting) and only then finding the share spent would evict a
+		block for nothing on each further miss that frame */
 		if (!async_reads && frame_read_bytes >= SYNC_FRAME_BUDGET)
 			return;
 		if (!async_reads)
 		{
-			/* build 72: read now, on this thread. Sheepdog01's b71 run: with the
-			reads asynchronous, every frame took 2.5 or 5 s, all of it in the
-			frame's end (render_frame_present 97%), where the texture cache's
-			own reads (synchronous, the same Memory Stick) wait behind them.
-			"geoasync" in keep.txt brings the asynchronous reads back */
+			/* read now, on this thread. With these reads asynchronous, every
+			frame took 2.5 or 5 s on the PSP, all of it in the frame's end
+			(render_frame_present 97%), where the texture cache's own reads
+			(synchronous, the same Memory Stick) wait behind them
+			(docs/streaming.md §2). "geoasync" in keep.txt brings the
+			asynchronous reads back */
 			if (read_entry_now(e) == 0)
 				return; /* everything is in use this frame: try again next frame */
 			pending_remove(0);
@@ -425,7 +426,7 @@ static void pump(void)
 	}
 }
 
-/* build 117 (R4): e, wanted by a draw this frame and not read by the pump,
+/* R4: e, wanted by a draw this frame and not read by the pump,
 read now past the frame's share; 1 when it is resident after */
 static int read_past_share(struct geo_entry *e)
 {
@@ -549,7 +550,7 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	}
 	pump();
 	if (!async_reads && e->state == 1)
-		read_past_share(e); /* build 117 (R4): still queued after the pump */
+		read_past_share(e); /* R4: still queued after the pump */
 	if (!async_reads && e->state == 3 && e->size >= size)
 	{
 		e->last_frame = frame;
@@ -559,18 +560,17 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	return NULL;
 }
 
-/* build 108: the resident entry holding ptr, or -1. The renderer asks this
-for every model part it draws (psp_geo_generation, psp_geo_address_of), and
-the answer used to be a scan of every entry when ptr wasn't the last block
-locked: the emulator's cache model put 6% of the drawing phase's data
-misses on the 12 KB entry table (b30's beach, docs/overnight_b108.md). Now
-the last block locked, then a small table by address (64 slots: the parts
+/* the resident entry holding ptr, or -1. The renderer asks this for every
+model part it draws (psp_geo_generation, psp_geo_address_of), so a scan of
+every entry each time is too slow: scanning, the emulator's cache model put
+6% of the drawing phase's data misses on the 12 KB entry table (b30's beach,
+docs/overnight_b108.md). So: the last block locked, then a small table by address (64 slots: the parts
 of a frame mostly repeat), then the scan, which fills the table. A slot is
 checked before it is believed (the entry may have been evicted or reused
 since), and only one resident block holds any arena address, so the answer
 is the scan's */
 #define AT_SLOTS 64
-/* build 118: one table a CPU, each on cache lines of its own. The renderer
+/* one table a CPU, each on cache lines of its own. The renderer
 asks this from the Media Engine too (gemeoverlap), while the main CPU locks
 blocks for the next calls; a table both wrote would share cache lines with
 the main CPU's words, and the ME's write-back would undo the main CPU's */
@@ -652,7 +652,7 @@ void psp_geo_frame_end(void)
 				resident++;
 				resident_bytes += entries[index].size;
 			}
-		/* build 116 (R4): the draws left out for a frame because their
+		/* R4: the draws left out for a frame because their
 		vertices weren't read yet (psp_fixups.py, psp_geometry_missing): a
 		far object that vanishes for a few frames as you approach */
 		extern unsigned long psp_geometry_draws_missed;
@@ -715,7 +715,7 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	void *arena;
 	int outside = first_vertex_descriptor && ((const unsigned int *)first_vertex_descriptor)[1] >= EXTERNAL_BASE;
 
-	/* build 96: the load trace, from here to two seconds of play (psp_trace.c) */
+	/* the load trace, from here to two seconds of play (psp_trace.c) */
 	{
 		extern void psp_trace_start(const char *why);
 
@@ -723,7 +723,7 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	}
 	psp_geo_close();
 	psp_structure_vertex_stride = outside ? 6 : 32;
-	/* build 108: the bake's formats, from the pack (below) */
+	/* the bake's formats, from the pack (below) */
 	map_formats = 0;
 	if (!name || !name[0])
 		return;
@@ -747,7 +747,7 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 		platform_log("geometry: %s was built for another version of the map (crc %08x, map %08x): expect garbage",
 			path, header[2], map_crc);
 	pack_size = header[3];
-	/* build 108: header word 10, the bake's formats: bits 0-3, the tag
+	/* header word 10, the bake's formats: bits 0-3, the tag
 	blocks invader-build -Z made slim (psp_tag_layouts.c) */
 	map_formats = header[10];
 	platform_log("geometry: %s: bake formats %lx", path, map_formats);
@@ -757,21 +757,20 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 		sceIoChangeAsyncPriority(pack, ASYNC_PRIORITY);
 	frame_read_bytes = 0;
 	frame_read_us = frame_read_worst_us = 0;
-	/* build 73: from the heap, not carved from the texture cache. Carved
-	(b68-b72), Blood Gulch's 5 MB of textures no longer fit the RAM cache and
-	were read from the Memory Stick as drawn, mid-frame, every frame: Sheepdog01's
-	b71/b72 runs spent 1.7-5 s a frame at the frame's end. The heap has had
-	1.5 MB it never reached (peak 3.4 of 5.0 MB) */
-	/* build 94: a map whose texture pack is larger than the texture caches
-(every campaign map: 9-14 MB against 5.3 MB) streams its textures as drawn
-anyway, so the geometry cache takes its 1 MB from the texture RAM cache, as
-b68-b72 did, and leaves the heap: The Library ran out of heap at its first
-frame with it there. A pack that fits (Blood Gulch's) keeps the heap's, as
-b73 found it must */
-	/* build 105: the size comes from the pack the textures will actually use
-	(the asset track's, when chosen), and a size that can't be had is logged
-	and counts as "too big": a wrong guess that way costs texture caching,
-	the other way it starves the heap (b104 run 1) */
+	/* from the heap, not carved from the texture cache: carved, Blood
+	Gulch's 5 MB of textures no longer fit the RAM cache and are read from
+	the Memory Stick as drawn, mid-frame, every frame (1.7-5 s a frame at
+	the frame's end on the PSP). Blood Gulch's heap has 1.5 MB to spare (its
+	peak was 3.4 of 5.0 MB) */
+	/* a map whose texture pack is larger than the texture caches (every
+campaign map: 9-14 MB against 5.3 MB) streams its textures as drawn anyway,
+so the geometry cache takes its 1 MB from the texture RAM cache and leaves
+the heap: from the heap, The Library runs out of heap at its first frame. A
+pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
+	/* the size comes from the pack the textures will actually use (the
+	asset track's, when chosen), and a size that can't be had is logged and
+	counts as "too big": a wrong guess that way costs texture caching, the
+	other way it starves the heap (it has, on the PSP) */
 	{
 		char texture_path[128];
 		long texture_bytes;
@@ -821,7 +820,7 @@ b73 found it must */
 	read_us = read_worst_us = 0;
 	platform_log("geometry: %s, %u KB external; cache %u KB at %08x (%s)", path, pack_size / 1024, arena_bytes / 1024, arena_start,
 		arena_carved ? "from the texture RAM cache: its textures stream anyway" : "heap");
-	/* build 106: a map built with its animations outside (invader-build -M)
+	/* a map built with its animations outside (invader-build -M)
 	keeps their frame data at the front of this pack (the header's words 4-7:
 	bytes, first and end offsets, the page it is laid out for), read through
 	the animation cache; words 8-9 give the tag window's part the map never
@@ -840,7 +839,7 @@ b73 found it must */
 		psp_anim_map_opened(header[4], header[5], header[6], header[7], window_at, window_bytes, arena_carved);
 	}
 	{
-		/* build 87: the stencil bake, keyed by this pack's addresses */
+		/* the stencil bake, keyed by this pack's addresses */
 		extern void psp_ge_stencils_open(const char *name, unsigned int map_crc);
 
 		psp_ge_stencils_open(name, map_crc);
@@ -860,7 +859,7 @@ void psp_geo_suspend(void)
 		sceIoWaitAsync(pack, &result);
 		poll();
 	}
-	/* build 94: carved from the texture RAM cache, the arena goes back to the
+	/* carved from the texture RAM cache, the arena goes back to the
 	system with the volatile partition: its blocks are forgotten (the renderer
 	re-reads what it draws) */
 	if (arena_carved)
@@ -872,7 +871,7 @@ void psp_geo_resume(void)
 {
 }
 
-/* build 73: this heartbeat window's Memory Stick reads for geometry, for the
+/* this heartbeat window's Memory Stick reads for geometry, for the
 log's io: line (psp_platform.c) */
 void psp_geo_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us)
 {
