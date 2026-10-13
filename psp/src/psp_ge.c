@@ -234,7 +234,7 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT /* build 118 */
+	DEFER_MODEL_POINT_LIGHT /* build 117 */
 };
 typedef union
 {
@@ -1107,7 +1107,7 @@ dark areas and the multiply passes (lightmap, detail maps) went in visible
 steps. The HUD and the 2D items keep flat colours (a dithered flat colour
 is a speckle). Keep word "nodither": as before.
 
-build 118: the dither only where a draw lays down a new colour. A blended
+build 117: the dither only where a draw lays down a new colour. A blended
 draw reads the frame back and rounds it again, and the dither moves each
 pixel by the offset of its place in the 4x4 matrix: the same offset in
 every pass. Where a pass changes a pixel little (a layer of smoke, a
@@ -1152,7 +1152,7 @@ static void ge_dither(int on)
 	dither_set(on && (dither_all || !blend_now));
 }
 
-/* blending on or off, and the dither with it (build 118) */
+/* blending on or off, and the dither with it (build 117) */
 static void ge_blend(int on)
 {
 	if (on)
@@ -1164,7 +1164,7 @@ static void ge_blend(int on)
 		dither_set(dither_all || !on);
 }
 
-/* blending on with the dither kept: the level's lightmap pass (build 118) */
+/* blending on with the dither kept: the level's lightmap pass (build 117) */
 static void ge_blend_dithered(void)
 {
 	sceGuEnable(GU_BLEND);
@@ -5178,7 +5178,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			material colour (final combiner T2 x EF, no shift) and the
 			texture pass multiplies the frame by the base (DESTCOLOR, ZERO);
 			only the detail maps are doubled (build 35: was 2 x, overbright).
-			Dithered: this pass sets the level's brightness (build 118) */
+			Dithered: this pass sets the level's brightness (build 117) */
 			sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_FIX, 0, 0);
 			ge_blend_dithered();
 			draw_pass(stream->lightmap, draw, (int)kept_count * 3, cut_corners, cut_count, 1);
@@ -5343,7 +5343,7 @@ static unsigned int model_ambient = MODEL_LIGHT;
 static int model_light_count = 0;
 static unsigned int model_light_color[2];
 static ScePspFVector3 model_light_toward[2];
-/* build 118: and up to two point lights (the GE's lights 2 and 3), each a
+/* build 117: and up to two point lights (the GE's lights 2 and 3), each a
 place and a colour already scaled by its reach at the model's centre
 (psp_fixups.py, the model's begin) */
 static int model_point_count = 0;
@@ -5376,7 +5376,7 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	model_v_scale = v_scale != 0.0f ? v_scale : 1.0f;
 	model_ambient = ambient ? color_from_rgb(ambient) : MODEL_LIGHT;
 	model_light_count = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
-	model_point_count = 0; /* build 118: psp_ge_model_point_light follows */
+	model_point_count = 0; /* build 117: psp_ge_model_point_light follows */
 	for (index = 0; index < model_light_count; index++)
 	{
 		const float *light = index ? light1 : light0;
@@ -5389,7 +5389,7 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	}
 }
 
-/* build 118: one of the object's point lights, after psp_ge_model_begin */
+/* build 117: one of the object's point lights, after psp_ge_model_begin */
 void psp_ge_model_point_light(const float *position, unsigned int color)
 {
 	GE_BENCH_SKIP();
@@ -5515,7 +5515,7 @@ start, and never used in the Media Engine's work */
 static int lit_memo = -1, lit_enabled = -1, lit_params = 0, lit_on[2];
 static unsigned int lit_ambient, lit_color[2];
 static ScePspFVector3 lit_toward[2];
-/* build 118: the point lights' (lights 2 and 3) */
+/* build 117: the point lights' (lights 2 and 3) */
 static int lit_point_on[2];
 static unsigned int lit_point_color[2];
 static ScePspFVector3 lit_point_position[2];
@@ -5585,7 +5585,7 @@ static void model_lighting(int on)
 			sent = 1;
 		}
 	}
-	/* build 118: the point lights, as lights 2 and 3: a place and a colour
+	/* build 117: the point lights, as lights 2 and 3: a place and a colour
 	already scaled by the reach at the model's centre, so no attenuation;
 	the GE shades each vertex by its angle to the light */
 	for (index = 0; index < 2; index++)
@@ -7556,7 +7556,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 
 			sceGuLight(index, GU_DIRECTIONAL, GU_DIFFUSE, &flipped);
 		}
-		/* build 118: a point light can't be flipped the same way (it lights
+		/* build 117: a point light can't be flipped the same way (it lights
 		by place): the back faces go without */
 		for (index = 0; index < model_point_count; index++)
 			sceGuDisable(GU_LIGHT2 + index);
@@ -11238,7 +11238,7 @@ static int light_nudge_units(float distance)
 	return units < 3.0f ? 3 : units > 4096.0f ? 4096 : (int)units;
 }
 
-/* build 118 (b113 #13): the light's pieces cut at the near plane, each
+/* build 117 (b113 #13): the light's pieces cut at the near plane, each
 corner moved toward the eye along its own line of sight (so it stays on its
 pixel) by the lift light_nudge_units gives its own distance. b116 nudged
 all of a draw's cut pieces by one depth offset, sized by the corner nearest
@@ -11483,7 +11483,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	out = scratch_vertices;
 	if (light_mode == 1)
 		whole = list_take((int)triangle_count * 3 * sizeof(unsigned short));
-	/* build 118: the light's own pieces cut a hair past the near plane, so
+	/* build 117: the light's own pieces cut a hair past the near plane, so
 	a corner on the cut has room for its 1% lift toward the eye
 	(light_lift_corner) without crossing the plane; at the plane itself it
 	would get none, where a wall beside the player needs the most (an
@@ -11849,7 +11849,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		}
 		if (pieces && light_mode == 2)
 		{
-			/* build 118: the corners carry their own lift; no nudge */
+			/* build 117: the corners carry their own lift; no nudge */
 			sceGuDepthOffset(light_cut_one ? light_nudge_units(sqrtf(nearest)) : 0);
 			light_nudged_draws++;
 		}

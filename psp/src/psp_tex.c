@@ -49,7 +49,7 @@ switch has the same texture placement */
 #define VRAM_BENCH_BYTES 0x40000
 static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
-/* build 118: the VRAM given to the model buffers by default, in KB */
+/* build 117: the VRAM given to the model buffers by default, in KB */
 #define VRAM_MODELS_DEFAULT_KB 600
 /* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
 of the most-read model buffers (psp_tex_vram_models) */
@@ -184,7 +184,7 @@ void psp_tex_close(void)
 	swap's second step (b115 test 3 [M]: textures from main RAM cost the GE
 	~1.5 ms a frame; the models' reads are most of the rest). Not with
 	benchrun, whose rooms are up there.
-	Build 118: 600 KB by default (b116 test 2 [M]: the models' GE time 31%
+	Build 117: 600 KB by default (b116 test 2 [M]: the models' GE time 31%
 	less in b30's cinematic and 44% less in the flight after it, the flight
 	16% faster; Sheepdog01's call, 2026-10-12). "vrammodels0" turns it off */
 	vram_models_bytes = 0;
