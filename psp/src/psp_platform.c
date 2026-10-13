@@ -667,14 +667,16 @@ static void object_report(SceUID file, unsigned long ticks)
 	{
 		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep; /* objects.c (psp_fixups.py) */
 		extern long psp_objects_restless_skipped; /* build 118: the restless back-off */
+		extern long psp_items_asleep; /* build 120: resting weapons and equipment */
 
-		if (length < (int)sizeof(line) - 140)
-			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses); restless, unchecked %.1f",
+		if (length < (int)sizeof(line) - 160)
+			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses, %.1f items); restless, unchecked %.1f",
 				ticks ? (double)psp_objects_asleep / ticks : 0.0, ticks ? (double)psp_objects_sleep_checked / ticks : 0.0,
 				ticks ? (double)psp_vehicles_asleep / ticks : 0.0, ticks ? (double)psp_corpses_asleep / ticks : 0.0,
+				ticks ? (double)psp_items_asleep / ticks : 0.0,
 				ticks ? (double)psp_objects_restless_skipped / ticks : 0.0);
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
-		psp_objects_restless_skipped = 0;
+		psp_objects_restless_skipped = psp_items_asleep = 0;
 	}
 	platform_log("  %s", line);
 	{
@@ -2292,10 +2294,10 @@ static int heartbeat_thread(SceSize args, void *argp)
 				memset(object_microseconds, 0, sizeof(object_microseconds));
 				memset(object_updates, 0, sizeof(object_updates));
 				{
-					extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep;
+					extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_items_asleep;
 					extern long psp_scenery_unchecked, psp_scenery_woken;
 
-					psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = 0;
+					psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_items_asleep = 0;
 					psp_scenery_unchecked = psp_scenery_woken = 0;
 				}
 			}

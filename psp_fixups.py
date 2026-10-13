@@ -2303,6 +2303,10 @@ static short between_identifier = 0;
 static int between_index = -1;
 static int psp_vehicle_sleep_on = -1;
 long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep;
+/* build 120: resting weapons and equipment ("itemsawake" off), and the check
+mode that updates them anyway to prove the rule ("itemsleepcheck") */
+static int psp_item_sleep_on = -1, psp_item_sleep_check = -1;
+long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
 /* build 106: how far dead bipeds get through the corpse-sleep rule, a count
 per biped update: dead; and garbage (not feigning); and at rest; and idle
 past 2 s (so offered to the byte-identical rule). b105 run 1 slept none
@@ -2696,6 +2700,41 @@ static void psp_corpse_unsettled(short absolute_index, struct object_header_datu
 		psp_sleep[absolute_index].ground = 0;
 }
 
+/* build 120: whether a weapon or piece of equipment may be offered to the
+byte-identical rule. Each exclusion is an input its update reads from
+outside its own bytes (items.c item_update, weapons.c weapon_update):
+- held or still moving: it changes every tick anyway;
+- resting on an object: realigned to that object's node every tick;
+- resting on a breakable surface of the current level: watches it break;
+- attached lights: the update re-links them in the level's light lists,
+  and sleeping would change those lists' order (not shown harmless yet);
+- a weapon tracking an object: checks that the object still exists.
+Carrying something is left to psp_sleepy_update, as for every type */
+#include "physics/collision_bsp_definitions.h"
+static int psp_item_may_sleep(struct object_header_datum const *header)
+{
+	struct item_datum const *item = (struct item_datum const *)header->datum;
+
+	if (item->object.parent_object_index != NONE ||
+		!TEST_FLAG(item->object.flags, _object_at_rest_bit) ||
+		TEST_FLAG(item->object.flags, _object_has_attached_lights_bit) ||
+		TEST_FLAG(item->item.flags, _item_on_object_bit))
+		return 0;
+	if (header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 0;
+	if (TEST_FLAG(item->item.flags, _item_on_structure_bit) && item->item.rested_surface_index != NONE &&
+		item->item.bsp_index == global_structure_bsp_index_get())
+	{
+		struct collision_surface const *surface = TAG_BLOCK_GET_ELEMENT(&global_collision_bsp_get()->surfaces,
+			item->item.rested_surface_index, struct collision_surface);
+
+		if (TEST_FLAG(surface->flags, 3 /* _collision_surface_breakable_bit (items.c) */))
+			return 0;
+	}
+	return 1;
+}
+
 int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */
 extern int psp_crumbs_on; /* build 106: the name is only looked up while crumbs are on */
 static void psp_object_update(long object_index, short absolute_index, struct object_header_datum *header)
@@ -2867,6 +2906,24 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 		psp_sleepy_update(object_index, absolute_index, header, may);
 		return;
 	}
+	/* build 120: a weapon or a piece of equipment lying at rest on the level
+	sleeps as idle scenery does (research_halo_activation.md, opportunity 1).
+	Ground weapons cost 1.5-4.7 ms a tick on the PSP (hardware_b114.md) and
+	never slept. At rest, item_update and weapon_update read nothing outside
+	the item's own bytes but what psp_item_may_sleep leaves out, so the
+	byte-identical rule decides exactly; a shot, a blast or a pick-up changes
+	the item and wakes it. "itemsawake": off. "itemsleepcheck": sleepers are
+	updated anyway and any change logged (psp_sleepy_update) */
+	if (header->type == _object_type_weapon || header->type == _object_type_equipment)
+	{
+		if (psp_item_sleep_on < 0)
+		{
+			psp_item_sleep_on = !psp_keep("itemsawake");
+			psp_item_sleep_check = psp_keep("itemsleepcheck");
+		}
+		psp_sleepy_update(object_index, absolute_index, header, psp_item_sleep_on && psp_item_may_sleep(header));
+		return;
+	}
 	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
 }
 
@@ -3011,6 +3068,28 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 	{
 		struct object_datum *sleeper = (struct object_datum *)header->datum;
 
+		if (header->type == _object_type_weapon || header->type == _object_type_equipment)
+		{
+			if (psp_item_sleep_check > 0)
+			{
+				/* build 120: itemsleepcheck. The update runs as if awake (so
+				the run plays as "itemsawake" would, garbage counted by the
+				update itself), and a sleeper it changed is logged */
+				unsigned long after;
+
+				object_update(object_index);
+				after = psp_family_checksum(header);
+				psp_items_sleep_checked++;
+				if (after != before && psp_items_sleep_wrong++ < 8)
+					platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+						tag_get_name(sleeper->definition_index), game_time_get(), before, after);
+				if (psp_items_sleep_checked % 30000 == 0)
+					platform_psp_log("sleep: itemsleepcheck: %lu sleeper updates, %lu changed one",
+						psp_items_sleep_checked, psp_items_sleep_wrong);
+				return;
+			}
+			psp_items_asleep++;
+		}
 		psp_objects_asleep++;
 		/* build 106: object_update counts the active garbage it updates, and
 		the garbage collector starts at 50 of them: a sleeping wreck or corpse
