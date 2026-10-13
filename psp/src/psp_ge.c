@@ -1091,23 +1091,72 @@ static int hud_phase = 0;
 16-bit frame needs to keep the Xbox's 32-bit gradients: without it the
 dark areas and the multiply passes (lightmap, detail maps) went in visible
 steps. The HUD and the 2D items keep flat colours (a dithered flat colour
-is a speckle). Keep word "nodither": as before */
-static int dither_off = -1;
+is a speckle). Keep word "nodither": as before.
+
+build 118: the dither only where a draw lays down a new colour. A blended
+draw reads the frame back and rounds it again, and the dither moves each
+pixel by the offset of its place in the 4x4 matrix: the same offset in
+every pass. Where a pass changes a pixel little (a layer of smoke, a
+shadow's quad outside the shadow, a detail map near its neutral), the
+rounding goes the same way pass after pass, and the passes build a fixed
+pattern: b116's test 1 showed it on shadows and particles, swinging up to
+140 of 255 under the Pelican's dust [M]. So the dither is on for draws that
+don't blend, and for the level's lightmap pass, which sets the level's
+brightness (where b113 #6's steps showed); off for every other blended
+draw. Keep word "ditherall": b116's dither on every draw of the world */
+static int dither_off = -1, dither_all = -1;
+static int dither_world = 0; /* the world's turn: the dither may be on */
+static int dither_now = -1, blend_now = 0; /* what the GE was last given */
+
+static void dither_set(int on)
+{
+	if (on == dither_now)
+		return;
+	if (on)
+		sceGuEnable(GU_DITHER);
+	else
+		sceGuDisable(GU_DITHER);
+	dither_now = on;
+}
+
+/* the world's turn begins (1) or ends (0) */
 static void ge_dither(int on)
 {
 	static const ScePspIMatrix4 matrix = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
 
 	if (dither_off < 0)
+	{
 		dither_off = psp_keep("nodither");
+		dither_all = psp_keep("ditherall");
+	}
 	if (dither_off)
 		return;
 	if (on)
-	{
 		sceGuSetDither(&matrix);
-		sceGuEnable(GU_DITHER);
-	}
+	dither_world = on;
+	dither_now = -1; /* given again, so each frame starts from a known state */
+	dither_set(on && (dither_all || !blend_now));
+}
+
+/* blending on or off, and the dither with it (build 118) */
+static void ge_blend(int on)
+{
+	if (on)
+		sceGuEnable(GU_BLEND);
 	else
-		sceGuDisable(GU_DITHER);
+		sceGuDisable(GU_BLEND);
+	blend_now = on;
+	if (dither_world)
+		dither_set(dither_all || !on);
+}
+
+/* blending on with the dither kept: the level's lightmap pass (build 118) */
+static void ge_blend_dithered(void)
+{
+	sceGuEnable(GU_BLEND);
+	blend_now = 1;
+	if (dither_world)
+		dither_set(1);
 }
 
 /* the HUD's turn: the reserve is its. The world's see-through draws are
@@ -2237,11 +2286,11 @@ static void buffer_state(int on)
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 		sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 		sceGuTexFlush();
-		sceGuEnable(GU_BLEND);
+		ge_blend(1);
 	}
 	else
 	{
-		sceGuDisable(GU_BLEND);
+		ge_blend(0);
 		sceGuEnable(GU_DEPTH_TEST);
 		sceGuDepthMask(GU_FALSE);
 		sceGuEnable(GU_FOG);
@@ -2604,7 +2653,7 @@ static void vram_busy_load(void)
 	sceGuDrawBufferList(GU_PSM_5650, (void *)VRAM_BENCH_START, 512);
 	sceGuScissor(0, 0, 512, 256);
 	sceGuDisable(GU_DEPTH_TEST);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDisable(GU_FOG);
 	sceGuDisable(GU_ALPHA_TEST);
 	sceGuEnable(GU_TEXTURE_2D);
@@ -5114,11 +5163,12 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			/* src x dst, once: the Xbox lightmap pass writes lightmap x
 			material colour (final combiner T2 x EF, no shift) and the
 			texture pass multiplies the frame by the base (DESTCOLOR, ZERO);
-			only the detail maps are doubled (build 35: was 2 x, overbright) */
+			only the detail maps are doubled (build 35: was 2 x, overbright).
+			Dithered: this pass sets the level's brightness (build 118) */
 			sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_FIX, 0, 0);
-			sceGuEnable(GU_BLEND);
+			ge_blend_dithered();
 			draw_pass(stream->lightmap, draw, (int)kept_count * 3, cut_corners, cut_count, 1);
-			sceGuDisable(GU_BLEND);
+			ge_blend(0);
 			sceGuFog(fog_near, fog_far, fog_color);
 			sceGuDepthMask(GU_FALSE);
 			sceGuDepthFunc(GU_GEQUAL);
@@ -5180,7 +5230,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				sceGuDepthMask(GU_TRUE);
 				sceGuFog(near, far > near ? far : near + 1.0f, detail_neutral(detail_key[pass]));
 				sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_SRC_COLOR, 0, 0);
-				sceGuEnable(GU_BLEND);
+				ge_blend(1);
 				/* build 91: a detail map's smaller levels are faded toward a
 				colour other than their top level's average (Bungie's detail
 				fade: measured on Blood Gulch, "detail metal sratches" loses
@@ -5201,7 +5251,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 					draw_pass_angled(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0, detail_pass_slope, 1);
 				detail_passes++;
 			}
-			sceGuDisable(GU_BLEND);
+			ge_blend(0);
 			sceGuTexLevelMode(tex_level_mode, tex_bias);
 			sceGuTexScale(1.0f, 1.0f);
 			pass_scale_u = pass_scale_v = 1.0f;
@@ -6592,9 +6642,9 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 		sceGuFog(fog_near, fog_far, 0xFFFFFFFF);
 		sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_FIX, 0, 0);
 	}
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	model_geometry(vertices, indices, index_count, strip, skin, model);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDepthMask(GU_FALSE);
 	sceGuDepthFunc(GU_GEQUAL);
@@ -7390,7 +7440,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		sceGuColor(((unsigned int)PSP_CLAMP_255(alpha) << 24) | 0xFFFFFF);
 		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 		sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
-		sceGuEnable(GU_BLEND);
+		ge_blend(1);
 		sceGuDepthMask(GU_TRUE);
 	}
 	/* build 36: back faces culled, as the Xbox culls them (D3DCULL_CCW). Drawn,
@@ -7436,7 +7486,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	}
 	if (model_camouflage > 0.0f)
 	{
-		sceGuDisable(GU_BLEND);
+		ge_blend(0);
 		sceGuDepthMask(GU_FALSE);
 	}
 	if (textured)
@@ -9714,7 +9764,7 @@ static void transparent_flush_body(void)
 			sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 			sceGuClutLoad(draw->clut_blocks, draw->clut);
 			sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-			sceGuEnable(GU_BLEND);
+			ge_blend(1);
 			if (draw->blend == BLEND_METER_TINT)
 				sceGuBlendFunc(GU_ADD, GU_FIX, GU_SRC_ALPHA, rgb, 0);
 			else
@@ -9831,7 +9881,7 @@ static void transparent_flush_body(void)
 		use_projection(1);
 	sceGuTexScale(1.0f, 1.0f);
 	sceGuTexOffset(0.0f, 0.0f);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_FOG);
 	sceGuDepthMask(GU_FALSE);
@@ -9945,7 +9995,7 @@ static unsigned int argb_to_abgr(unsigned int argb, float red, float green, floa
 
 static void hud_blend(short blend)
 {
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	switch (blend)
 	{
 	case 1: sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_FIX, 0, 0); break;
@@ -10123,10 +10173,10 @@ void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	sceGuTexScale(1.0f, 1.0f);
 	sceGuTexOffset(0.0f, 0.0f);
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
 	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_FOG);
 	sceGuEnable(GU_DEPTH_TEST);
@@ -10332,7 +10382,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 		sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 		sceGuClutLoad(count / 8, computed);
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
-		sceGuEnable(GU_BLEND);
+		ge_blend(1);
 		{
 			unsigned int tint = meter->tint_color;
 
@@ -10345,7 +10395,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 		hud_blend(blend);
 		hud_draw(in, width, height, offset_x, offset_y, 1, 0, red, green, blue, fade);
 	}
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_FOG);
 	sceGuEnable(GU_DEPTH_TEST);
@@ -10680,7 +10730,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	else
 		sceGuDepthFunc(GU_EQUAL);
 	sceGuDepthMask(GU_TRUE);
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	/* the frame times (1 - blob x darkness) */
 	sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_COLOR, 0, 0);
 	/* far off, the fog leaves the frame alone */
@@ -10767,7 +10817,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 				cut_count, NULL, pieces);
 	}
 	sceGuFog(fog_near, fog_far, fog_color);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDepthMask(GU_FALSE);
 	sceGuDepthFunc(GU_GEQUAL);
 	if (shadow_mode == 2)
@@ -11440,7 +11490,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	/* mode 2: GEQUAL, the nudge set per batch below (build 89) */
 	sceGuDepthFunc(light_mode == 2 ? GU_GEQUAL : GU_EQUAL);
 	sceGuDepthMask(GU_TRUE);
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
 	sceGuFog(fog_near, fog_far, 0xFF000000);
 	sceGumMatrixMode(GU_MODEL);
@@ -11564,7 +11614,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	if (spot)
 		sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 	sceGuFog(fog_near, fog_far, fog_color);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDepthMask(GU_FALSE);
 	sceGuDepthFunc(GU_GEQUAL);
 	if (light_mode == 2)
@@ -11620,7 +11670,7 @@ void psp_ge_screen_flash(short type, float intensity, float const *argb)
 	sceGuDisable(GU_DEPTH_TEST);
 	sceGuDisable(GU_FOG);
 	sceGuDisable(GU_TEXTURE_2D);
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	if (flash_nearest < 0)
 		flash_nearest = psp_keep("flashnearest");
 	if (!flash_nearest && (type == 3 || type == 4 || type == 5))
@@ -11666,7 +11716,7 @@ void psp_ge_screen_flash(short type, float intensity, float const *argb)
 	out[1].y = SCREEN_HEIGHT;
 	out[0].color = out[1].color = color;
 	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuEnable(GU_FOG);
 	sceGuEnable(GU_DEPTH_TEST);
 	flashes_drawn++;
@@ -12309,7 +12359,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	/* build 76: the slope part is in each quad's pull now; "decalbatch": the
 	b65-b75 single offset for the draw */
 	sceGuDepthOffset(decal_pull ? (decal_batch ? (decal_units > 4096.0f ? 4096 : (int)decal_units) : 0) : 48);
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	switch (blend)
 	{
 	case 1: /* multiply */
@@ -12381,7 +12431,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDisable(GU_ALPHA_TEST);
 	sceGuTexEnvColor(0xFFFFFFFF);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDepthOffset(0);
 	sceGuDepthMask(GU_FALSE);
 	sceGuDisable(GU_TEXTURE_2D);
@@ -12495,7 +12545,7 @@ void psp_ge_blips_begin(void)
 	sceGuScissor(0, 0, BLIP_SIZE, BLIP_SIZE);
 	sceGuDisable(GU_DEPTH_TEST);
 	sceGuDisable(GU_FOG);
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	/* black, drawn rather than cleared (a clear covers the whole screen's
 	size, past the target's end) */
@@ -12503,7 +12553,7 @@ void psp_ge_blips_begin(void)
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
-	sceGuEnable(GU_BLEND);
+	ge_blend(1);
 	blips_open = 1;
 }
 
@@ -12588,7 +12638,7 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 		sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
 		}
 	}
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_FOG);
 	sceGuEnable(GU_DEPTH_TEST);
@@ -12742,7 +12792,7 @@ void psp_ge_text_end(void)
 	if (!text_open)
 		return;
 	text_open = 0;
-	sceGuDisable(GU_BLEND);
+	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_FOG);
 	sceGuEnable(GU_DEPTH_TEST);
