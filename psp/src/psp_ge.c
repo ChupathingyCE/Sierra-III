@@ -8814,6 +8814,75 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 	}
 }
 
+/* build 118: whether a see-through part's triangles use more than one node
+(the scan below, build 42's), remembered per part. The scan read every
+index's vertex every frame for every see-through part, and its answer only
+changes with the part's data: c40's see-through queue was 18% of its
+drawing's instructions (nearwins118). Kept under the vertex and index
+buffers, their counts, and the geometry cache's generation for each buffer
+(an address the cache loads with something else gets a new one). "multiscan"
+(keep.txt): scanned every frame, as before; "multicheck": a remembered
+answer is scanned again and compared */
+#define MULTI_MEMO 64
+static struct
+{
+	const void *vertices;
+	const unsigned short *indices;
+	long index_count;
+	int vertex_count;
+	unsigned int vertices_generation, indices_generation;
+	int multi;
+} multi_memo[MULTI_MEMO];
+static int multi_scan = -1, multi_check = 0;
+static unsigned long multi_scans = 0, multi_remembered = 0, multi_mismatches = 0;
+
+static int transparent_part_scan(const unsigned char *base, const unsigned short *indices, long index_count, int vertex_count)
+{
+	int first = indices[0] < vertex_count ? base[24 * indices[0] + 11] : 0;
+	long i;
+
+	for (i = 0; i < index_count; i++)
+		if (indices[i] < vertex_count && base[24 * indices[i] + 11] != first)
+			return 1;
+	return 0;
+}
+
+static int transparent_part_multi(const unsigned char *base, const unsigned short *indices, long index_count, int vertex_count)
+{
+	unsigned int slot = (((unsigned int)base >> 4) ^ ((unsigned int)indices >> 2) ^ (unsigned int)index_count) & (MULTI_MEMO - 1);
+	unsigned int vertices_generation, indices_generation;
+	int multi;
+
+	if (multi_scan < 0)
+	{
+		multi_scan = psp_keep("multiscan");
+		multi_check = psp_keep("multicheck");
+	}
+	if (multi_scan)
+		return transparent_part_scan(base, indices, index_count, vertex_count);
+	vertices_generation = psp_geo_generation(base);
+	indices_generation = psp_geo_generation(indices);
+	if (multi_memo[slot].vertices == base && multi_memo[slot].indices == indices &&
+		multi_memo[slot].index_count == index_count && multi_memo[slot].vertex_count == vertex_count &&
+		multi_memo[slot].vertices_generation == vertices_generation && multi_memo[slot].indices_generation == indices_generation)
+	{
+		multi_remembered++;
+		if (multi_check && transparent_part_scan(base, indices, index_count, vertex_count) != multi_memo[slot].multi)
+			multi_mismatches++;
+		return multi_memo[slot].multi;
+	}
+	multi_scans++;
+	multi = transparent_part_scan(base, indices, index_count, vertex_count);
+	multi_memo[slot].vertices = base;
+	multi_memo[slot].indices = indices;
+	multi_memo[slot].index_count = index_count;
+	multi_memo[slot].vertex_count = vertex_count;
+	multi_memo[slot].vertices_generation = vertices_generation;
+	multi_memo[slot].indices_generation = indices_generation;
+	multi_memo[slot].multi = multi;
+	return multi;
+}
+
 static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
@@ -8866,12 +8935,8 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		ones by the first: the rigid record keeps only that), and drawn with
 		no further matrix */
 		const unsigned char *base = vertices;
-		long i;
-		int first = indices[0] < vertex_count ? base[24 * indices[0] + 11] : 0, multi = 0;
+		int multi = transparent_part_multi(base, indices, index_count, vertex_count); /* build 118: remembered */
 
-		for (i = 0; i < index_count && !multi; i++)
-			if (indices[i] < vertex_count && base[24 * indices[i] + 11] != first)
-				multi = 1;
 		if (multi && vertex_count <= 4096)
 		{
 			unsigned char *out = list_take(vertex_count * 24);
@@ -13904,6 +13969,10 @@ void psp_ge_frame_end(void)
 			platform_log("GE: see-through parts to cut, last 300 frames: %lu; wholly in view by their model's sphere %lu (left whole, no triangle checked), no sphere %lu",
 				tcut_parts, tcut_inside, tcut_no_sphere);
 		tcut_parts = tcut_no_sphere = tcut_inside = tcut_mismatches = 0;
+		/* build 118: the see-through parts' node scans (transparent_part_multi) */
+		platform_log("GE: see-through parts' node scans, last 300 frames: %lu scanned, %lu remembered%s%lu",
+			multi_scans, multi_remembered, multi_check ? "; multicheck: remembered answers that differed " : "; ", multi_mismatches);
+		multi_scans = multi_remembered = multi_mismatches = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
