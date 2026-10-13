@@ -153,9 +153,12 @@ class Namer:
         return None, 0
 
 
-def hot_lines(p, ifetches, imisses, code_namer, elf, names, total, per_function=12):
+def hot_lines(p, ifetches, imisses, dmiss_pc, code_namer, elf, names, total, per_function=12):
     """the hottest 64-byte lines of each named function, each with its
-    fetches and misses and its 16 instructions (psp-objdump beside psp-nm)"""
+    fetches, its instruction misses, the data misses of its loads and stores
+    (DCM3 dumps) and its 16 instructions (psp-objdump beside psp-nm). On the
+    PSP-1000 a miss costs ~216 ns, so a line's misses can outweigh its
+    fetches"""
     objdump = os.environ.get('PSP_NM', '/opt/psp/pspdev/bin/psp-nm')
     objdump = objdump[:-2] + 'objdump' if objdump.endswith('nm') else 'psp-objdump'
     for want in names:
@@ -163,13 +166,14 @@ def hot_lines(p, ifetches, imisses, code_namer, elf, names, total, per_function=
         for line in range(LINES):
             f = ifetches[p][line]
             if f and code_namer.name(LO + (line << 6))[0] == want:
-                lines.append((f, imisses[p][line], LO + (line << 6)))
+                lines.append((f, imisses[p][line], dmiss_pc[p][line] if dmiss_pc is not None else 0, LO + (line << 6)))
         if not lines:
             continue
         lines.sort(reverse=True)
         print('\nhot lines of %s (%s):' % (want, PHASE_NAMES[p]))
-        for f, m, address in lines[:per_function]:
-            print('  -- %08x  fetches %d (%.2f%% of the phase), misses %d' % (address, f, 100.0 * f / total, m))
+        for f, m, dm, address in lines[:per_function]:
+            print('  -- %08x  fetches %d (%.2f%% of the phase), instruction misses %d, data misses %d' % (
+                address, f, 100.0 * f / total, m, dm))
             start = address - PROGRAM_BASE
             out = subprocess.run([objdump, '-d', '-l', '--no-show-raw-insn', '--start-address=0x%x' % start,
                                   '--stop-address=0x%x' % (start + 64), elf], capture_output=True, text=True).stdout
@@ -282,7 +286,7 @@ def main():
             for key, (f, m, size) in ranked[:top]:
                 print('  %11d  %5.1f%%  misses %9d  %6d B  %s' % (f, 100.0 * f / total, m, size, key))
             if '--lines' in sys.argv and PHASE_NAMES[p] in ('tick', 'drawing'):
-                hot_lines(p, ifetches, imisses, code_namer, elf, [k for k, v in ranked[:int(sys.argv[sys.argv.index('--lines') + 1])]], total)
+                hot_lines(p, ifetches, imisses, dmiss_pc, code_namer, elf, [k for k, v in ranked[:int(sys.argv[sys.argv.index('--lines') + 1])]], total)
 
 
 if __name__ == '__main__':
