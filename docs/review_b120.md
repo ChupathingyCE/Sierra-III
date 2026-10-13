@@ -8,9 +8,9 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 |---|---|---|---|
 | 1 | Engine pin: ChupathingyCE `v0.7.4e` | upstream | on |
 | 2 | `hotgroup`: PGO's hot code laid out as one block | exact speed (link layout) | *decided after the cache model* |
-| 3 | Resting weapons and equipment sleep | exact speed | *decided after the exactness runs* |
+| 3 | Resting weapons and equipment sleep | exact speed | on (`itemsawake` off) |
 | 4 | `mehalt`: the ME halts when idle | ME groundwork | off (opt-in) |
-| 5 | `mefinishslow`: a spaced wait on ME jobs | ME groundwork | *decided after rig job B* |
+| 5 | `mefinishslow`: a spaced wait on ME jobs | ME groundwork | off (opt-in) |
 | 6 | HUD sharpness: `hudsnap`, `hud177`, HUD sheets at 8 bits | look | words off; bake on |
 | 7 | Docs and comments only | none | n/a |
 
@@ -68,9 +68,10 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 **Proven.**
 - `itemsleepcheck` (every sleeper updated anyway, any change logged): 0 of 240,000 sleeper updates changed an item, on b30's beach fight [E].
 - 15–31 items asleep a tick there [E].
-- The whole game state tick for tick against `itemsawake` *(d20, a50, c20: result here)*. b30 can't judge this one: its play parts at tick ~1,326 across any change in frame time, whatever the change. Every subset of sleeping items parted at that same tick.
+- Against `itemsawake`, hands off, over whole runs: **the play hash and both random seeds are identical at every tick** on d20 (23,326 ticks), a50 (37,147) and c20 (28,602), with 1–11 items asleep a tick [E] (lab run 38476074227). That's the bar b117–b119's exact levers were judged by. The whole-state hash differs only in allocations already known to follow the emulator's speed whatever the change (`object looping sounds`, `first person weapons`, the render pass's mark in `objects`: `big_levers.md` §5, #25).
+- b30 can't judge it: its play parts at tick ~1,326 across any change in frame time, because its scripts wait on dialogue. Every subset of sleeping items parted at that same tick (lab run 38474943943).
 
-**Default.** *(on if exact; off word `itemsawake`)*
+**Default.** On. Off word `itemsawake`.
 
 ## 4. `mehalt` (`338ca2f`)
 
@@ -99,16 +100,16 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 
 **Why.** Each look is an uncached read on the same bus the ME uses to read its job's inputs, and the clock is a system call (review, 1). Matters only with `gemeoverlap` (opt-in), which ME phase 1 builds on.
 
-**Proven.** *(rig job B, 38472264749: result here)*
+**Proven.** Nothing yet: render jobs on the ME also need `gedefer`, which the first rig job left out, so none ran (lab run 38472264749). Re-run with it: *(lab run 38479188604: result here)*.
 
-**Default.** *(decided by job B)*
+**Default.** Off. It acts only under `gemeoverlap`, itself opt-in, so it informs ME phase 1 rather than this build.
 
 ## 6. HUD sharpness (`9ab0baf`, by the HUD session; `docs/hud_sharpness.md`)
 
 **What.**
 - `hudsnap`: each HUD quad's corners land on whole pixels (`hud_pixel()` in `psp_ge.c`).
 - `hud177`: the HUD zoom where one HUD texel is one PSP pixel (~18% bigger than 1.5).
-- In the bake: HUD sheets stay at 8 bits (`texpack.py`; `--hud-clut4` reverts). The bake's `HUD sheets:` line names any sheet this changed.
+- In the bake: HUD sheets stay at 8 bits (`texpack.py`; `--hud-clut4` reverts). The bake's `HUD sheets:` line names any sheet this changed: in `campaign120`, **17–21 HUD sheets per map** that the old rule had cut to 16 colours (the ammo, reticle, health, sensor and scope sheets among them).
 
 **Why.** You see the HUD as soft. Off-pixel corners and a texel covering 0.85 of a pixel make the filter blend every edge.
 
