@@ -14168,14 +14168,15 @@ void psp_ge_frame_end(void)
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		{
 			/* build 119: the light pass's surface lists sorted (psp_fixups.py, structure_render.c#surfacesort) */
-			extern unsigned long psp_surface_sorts, psp_surface_sorts_in_order, psp_surface_sort_mismatches;
+			extern unsigned long psp_surface_sorts, psp_surface_sorts_in_order, psp_surface_sort_mismatches,
+				psp_surface_sorts_by_bits;
 
-			platform_log("GE: surface lists sorted %lu (%lu already in order)%s (last 300 frames)", psp_surface_sorts,
-				psp_surface_sorts_in_order, psp_keep("surfacesortcheck") ? (psp_surface_sort_mismatches ?
+			platform_log("GE: surface lists sorted %lu (%lu through the surface bits, %lu already in order)%s (last 300 frames)",
+				psp_surface_sorts, psp_surface_sorts_by_bits, psp_surface_sorts_in_order, psp_keep("surfacesortcheck") ? (psp_surface_sort_mismatches ?
 				"; surfacesortcheck: SOME LISTS CAME OUT DIFFERENT" : "; surfacesortcheck: all the same") : "");
 			if (psp_surface_sort_mismatches)
 				platform_log("GE: surfacesortcheck: %lu lists came out different", psp_surface_sort_mismatches);
-			psp_surface_sorts = psp_surface_sorts_in_order = psp_surface_sort_mismatches = 0;
+			psp_surface_sorts = psp_surface_sorts_in_order = psp_surface_sort_mismatches = psp_surface_sorts_by_bits = 0;
 		}
 		/* build 116: the restorations' own counters */
 		/* build 118: the frames' time on screen (above) */

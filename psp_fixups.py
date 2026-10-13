@@ -12493,8 +12493,11 @@ FIXES_118["source/rasterizer/rasterizer.c#glasslit"] = [
 # hotlines119). psp_sort_surface_indices is the same algorithm (the same
 # pivots, partitions and short sort, so the same swaps) with the comparison
 # written in, and returns at once when the list is already in order. Values
-# alone are sorted, so the list comes out the same. "surfaceqsort": as
-# before; "surfacesortcheck": both, the results compared
+# alone are sorted, so the list comes out the same. Then (the same build)
+# a list with no index twice is put in order through a bit per surface
+# instead (psp_order_surface_indices_by_bits): ~80,000 instructions a list
+# on d20 become a few thousand. "surfaceqsort": as before;
+# "surfacesortcheck": both, the results compared
 FIXES_119 = {}
 FIXES_119["source/structures/structure_render.c#surfacesort"] = [
 ("""static void structure_render_dynamic_triangles_from_indices(
@@ -12511,7 +12514,67 @@ FIXES_119["source/structures/structure_render.c#surfacesort"] = [
 #include <stdlib.h>
 #include <string.h>
 
-unsigned long psp_surface_sorts = 0, psp_surface_sorts_in_order = 0, psp_surface_sort_mismatches = 0;
+unsigned long psp_surface_sorts = 0, psp_surface_sorts_in_order = 0, psp_surface_sort_mismatches = 0,
+	psp_surface_sorts_by_bits = 0;
+
+/* build 119: a list of surface indices put in order through a bit per
+surface (the BSP's own surface count): each index sets its bit, and the set
+bits are read back in order. With no index twice (the light pass's lists
+hold each surface once), the list comes out as the sort's. An index out of
+range or seen twice: 0, and the sort does it. The bits are kept on the heap
+and grow with the largest BSP seen */
+static unsigned long *psp_surface_bits = NULL;
+static long psp_surface_bit_words = 0;
+
+static int psp_order_surface_indices_by_bits(
+	long *elements,
+	long element_count,
+	long surface_count)
+{
+	long words = (surface_count + 31) >> 5, k, w;
+
+	if (surface_count <= 0)
+		return 0;
+	if (words > psp_surface_bit_words)
+	{
+		unsigned long *more = malloc(words * sizeof(unsigned long));
+
+		if (!more)
+			return 0;
+		/* (never free(NULL) here: this build's free reads a block's
+		header before the pointer, and faulted at 0xffffffe0) */
+		if (psp_surface_bits)
+			free(psp_surface_bits);
+		psp_surface_bits = more;
+		psp_surface_bit_words = words;
+	}
+	memset(psp_surface_bits, 0, words * sizeof(unsigned long));
+	for (k = 0; k < element_count; k++)
+	{
+		long index = elements[k];
+		unsigned long bit;
+
+		if (index < 0 || index >= surface_count)
+			return 0;
+		bit = 1ul << (index & 31);
+		if (psp_surface_bits[index >> 5] & bit)
+			return 0;
+		psp_surface_bits[index >> 5] |= bit;
+	}
+	for (w = 0, k = 0; w < words; w++)
+	{
+		unsigned long bits = psp_surface_bits[w];
+
+		while (bits)
+		{
+			unsigned long lowest = bits & (0ul - bits);
+
+			elements[k++] = (w << 5) + (31 - __builtin_clz(lowest));
+			bits ^= lowest;
+		}
+	}
+	return 1;
+}
 
 /* psp_fixups.py (build 119): qsort_4byte (cseries/sort.c) for
 compare_surface_indices, its comparison (a > b) written in */
@@ -12668,7 +12731,10 @@ static void structure_render_dynamic_triangles_from_indices(
 
 			if (copy)
 				memcpy(copy, surface_indices, surface_count * sizeof(long));
-			psp_sort_surface_indices(surface_indices, surface_count);
+			if (psp_order_surface_indices_by_bits(surface_indices, surface_count, structure_bsp->surfaces.count))
+				psp_surface_sorts_by_bits++;
+			else
+				psp_sort_surface_indices(surface_indices, surface_count);
 			if (copy)
 			{
 				qsort_4byte(copy, surface_count, compare_surface_indices);
@@ -12677,6 +12743,8 @@ static void structure_render_dynamic_triangles_from_indices(
 				free(copy);
 			}
 		}
+		else if (psp_order_surface_indices_by_bits(surface_indices, surface_count, structure_bsp->surfaces.count))
+			psp_surface_sorts_by_bits++;
 		else
 			psp_sort_surface_indices(surface_indices, surface_count);
 		psp_surface_sorts++;
