@@ -29,6 +29,24 @@ The port's vertical blank thread counts the screen's refreshes, and the game's c
 
 - **b118's test 2** (118's speed-ups off, ~2% faster on b30's cinematic): not a cost. On the rig each of the three speed-ups off left b30's drawing inside the default's own repeat spread, which is wider (4%) than the 2% seen (lab runs 38440755848, -773806, -791589, -817029) [M, rig].
 
+### On the rig already (PSP-3000, the ladder on this exact EBOOT, lab run 38450861752) [M, rig]
+
+Every map from The Pillar of Autumn to The Maw in one session, no crash (the wall stopped it in d40's opening, so d40 has no row). Second half of each map's 90 s; `tools/ladderreport.py` makes this table.
+
+| Level | fps | Tick (ms) | Ticks a second | b118 on the rig (slow clock): fps / ticks a second |
+|---|---:|---:|---:|---|
+| The Pillar of Autumn (a10) | 14.7 | 6.6 | 25.3 | 14.1 / 24.1 |
+| Halo (a30) | 6.9 | 11.5 | 13.8 | 6.5 / 12.8 |
+| Truth and Reconciliation (a50) | 9.1 | 32.6 | 18.0 | 9.0 / 17.9 |
+| The Silent Cartographer (b30) | 3.9 | 59.1 | 7.8 | 3.8 / 7.5 |
+| Assault on the Control Room (b40) | 14.9 | 16.5 | **28.1** | 14.5 / 24.6 |
+| 343 Guilty Spark (c10) | 8.9 | 23.2 | 17.8 | 8.8 / 17.2 |
+| The Library (c20) | 7.9 | 26.4 | 15.5 | 7.7 / 15.2 |
+| Two Betrayals (c40) | 13.0 | 16.4 | 25.8 | 12.9 / 25.2 |
+| Keyes (d20) | 7.6 | 16.8 | 15.0 | 7.7 / 14.2 |
+
+**How to read ticks a second:** the engine advances the game by at most a fifteenth of a second (2 ticks) a frame. Below 15 fps that cap binds, so ticks a second is 2 × fps (Halo 6.9 → 13.8; b30 3.9 → 7.8) and the game runs slower than real time by design; the clock fix can't change that. It recovers the ticks only on maps whose frames come in under the cap, like b40 (24.6 → 28.1). That cap is why the floor is 15 fps.
+
 ## On the PSP
 
 **Install** (the EBOOT and the presets; the maps stay):
