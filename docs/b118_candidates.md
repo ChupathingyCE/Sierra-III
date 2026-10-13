@@ -11,6 +11,21 @@ What comes after b116. Sheepdog01 saved build 117 "for something special", so th
 
 Instruments on the same branch: `hdump` (each HUD quad of a screenshot frame with its bitmap's tag, place, colour and blend; a multitexture overlay's every map), and `tdump` now names each see-through draw's map.
 
+## From b116's PSP tests (Sheepdog01, 2026-10-12 evening; `hardware_b116.md`)
+
+Built on `hudbars` after tests 1–4. Each restores the original or speeds the game up exactly, so each goes on by default, with a keep word for b116's behaviour.
+
+| # | Seen on the PSP [M] | Fix | Keep word (as b116) | Check |
+|---|---|---|---|---|
+| D1 | A checkerboard on shadows and particles (test 1), up to 140 of 255 under the Pelican's dust | **The dither only on draws that don't blend**, and on the level's lightmap pass, which sets the level's brightness. A blended draw rounds the frame again with the same 4x4 offset at each pixel, so passes that change a pixel little build a fixed pattern. Every blend switch goes through `ge_blend()` | `ditherall` | `dither118` (38326421791) [E], the same frames under each rule. Pattern spread on b30: 28.2 → **7.7** (1.4 with no dither); a10: 13.4 → **6.2**. b116's rule also darkened the picture by up to 5.9 of 255 levels; the new one is within 0.6 of no dither |
+| L1 | The hallway floor's light through the bunker's wall (b113 #13; tests 1 and b108–b115) | **The light's pieces cut at the near plane lifted per corner**: each corner moves toward the eye along its own line of sight, by the lift its own depth needs, never past the near plane. b116 nudged them all by one offset sized for the nearest corner, about 1 unit of lift at 8 units | `lightcutone` | `lightcut118` [E], at Sheepdog01's spot (route `b30_bunker_hallway`): pending |
+| G1 | Objects vanishing approaching the landing pad (test 1: 3 draws left out in that report) | **R4: a draw's geometry read at once past the frame's share**, while the frame has read under 384 KB (twice the share). b116 left the draw out once the share was spent or the read queue was full. Up to ~110 ms more in such a frame at the PSP's 1.7 MB/s [M, U] | `geoshare` | `geoshare118` [E]: the draws left out, and the strict interpreter: pending |
+| C1 | Checkpoints slower than b115's despite half the bytes: b30's first 3,102 ms against 219; c40's 699 against 171; c10's 439–2,046 against 153–201 (tests 1, 3, 4) | **The compact format written in whole 4 KB pieces**: b116 wrote 32 KB stages of any length, so each write ended mid-sector. The file's bytes are the same | — (exact) | the PSP's checkpoint times |
+| P1 | No lighting on actors (test 1) | **Models lit by their point lights again** (muzzle flashes, plasma, the flashlight). b106 stopped looking for them for speed. Up to two per object go to the GE as lights 2 and 3, each colour scaled by the reach at the model's centre (the light pass's falloff and cone); the GE shades each vertex by its angle to the light | `nopointlights` | `pointlights118` [E]: the parts lit, shots, the strict interpreter: pending. b106 measured the search at 2.4% of the emulator's time on b30's beach |
+| V1 | Model buffers in VRAM (test 2): the models' GE time −31% in the cinematic, −44% in the flight; the flight at 4.28 fps against 3.67 | `vrammodels600` by default | (none: the keep word turns it on in b116) | Sheepdog01's call #2 |
+
+**Not fixed: c10's swamp fog.** b116's planar fog never engaged: 0 windows in planar fog on the PSP (test 4) and in the emulator. It only covers the eye inside the fog, and in the swamp the eye is above the fog's plane. There the Xbox fogs what lies below the plane by its depth, the same piece b30's deep water needs: a fog by depth below a plane, per vertex.
+
 ## Exact speed-ups
 
 **The profile-guided build (L4)**, branch `pgo116` (on b116). The final measurement used a profile from five stretches (`pgo/campaign5.tgz`, lab run 38231877703, merged with `psp-gcov-tool`): b30's opening flight, b30's beach bench (b113 test 1's route), and the openings of a10, c10 and c40. The "lean" build uses partial training, without unrolling, peeling, tracing or cloning:
@@ -94,7 +109,8 @@ A second review read the GE layer for exact speed-ups, keeping the picture byte 
 ## When it becomes the build
 
 - `PSP_BUILD_NUMBER` 118 (`psp_platform.c`).
-- `hudonemap` and `glassflat` go into the log's list of the restorations' keep words, and into preset 6 ("the b115 look", every restoration off).
+- `hudonemap`, `glassflat`, `lightcutone`, `geoshare` and `nopointlights` go into the log's list of the restorations' keep words, and into preset 6 ("the b115 look", every restoration off). `ditherall` doesn't need to: preset 6 has `nodither`.
+- `vrammodels600` by default if Sheepdog01 agrees (call #2), with a keep word to turn it off.
 - Merge `speed118p` (which carries `pgo116`). A trial merge into `hudbars` went through without a conflict and compiled: heap 5,832 KB without a profile [D].
 - Build with the profile once the PSP shows it gains (test 7; an exact speed-up, so no A/B of the look). Make a new profile at the final code first: GCC drops the counts of every function that changed.
 - The usual final checks: the strict interpreter on all ten maps and the tour, on the release commit.
