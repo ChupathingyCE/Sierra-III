@@ -284,6 +284,12 @@ def cold_code(rel):
     r = rel.replace("\\", "/")
     return (r.startswith(COLD_PREFIXES) and not r.startswith(COLD_KEEP_HOT)) or r in COLD_PORT_UNITS
 
+# PSP_NOINLINE=psp_ge,collision_bsp (recon only): the units whose path
+# contains one of these words are compiled with no inlining, so the cache
+# map (tools/cachemap.py) names each helper's instructions and misses rather
+# than folding them into their caller. Slower; never for play
+NOINLINE_UNITS = [w for w in os.environ.get("PSP_NOINLINE", "").split(",") if w]
+
 def compile_one(item):
     src, flags, extra = item
     rel = os.path.relpath(src, HERE) if src.startswith("/") else src
@@ -292,6 +298,8 @@ def compile_one(item):
         extra = extra + ["-Os"]
     elif GAME_OPT == "-O2":
         extra = extra + pgo_flags(rel)
+    if any(word in rel for word in NOINLINE_UNITS):
+        extra = extra + ["-fno-inline", "-fno-inline-small-functions", "-fno-inline-functions-called-once"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_platform.c"):

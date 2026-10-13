@@ -47,6 +47,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_BIG_RAM=1` | 64 MB recon variant; never for play |
 | `PSP_TEXT_LAYOUT=coldfirst` | Hot/cold code layout |
 | `PSP_TICK_STEPS=1` | Per-step tick timing; recon only |
+| `PSP_NOINLINE=psp_ge,…` | Units whose path holds a listed word compiled without inlining, so the cache map names each helper; recon only |
 | `PSP_NO_COLD=1` | Everything at the hot optimisation level |
 | `PSP_FIXUPS_CHECK=1` | Lists every fixup anchor that no longer matches, and builds nothing |
 | `PSP_XMB_SND0=<file.AT3>` | Packs a local menu sound into the EBOOT (never commit it; see `psp/xmb/README.md`) |
