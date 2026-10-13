@@ -18,6 +18,10 @@ Sierra-III is a native PSP-1000 port of Halo: Combat Evolved, built on a decompi
   - Write the CPU's cache back before the GE, the Media Engine or DMA reads what it wrote.
   - Unaligned word loads fault on hardware (the emulator forgives them).
   - `double` is software: keep it out of hot paths.
+- **How AI is used here** (Sheepdog01, 2026-10-13, measured against ChupathingyCE's generative-AI policy): Sheepdog01 decides what to build, tests every build on hardware, and is responsible for it; Claude writes the code, and every commit says so (the identity above). So that a person reviews every change:
+  - **Each build ships with a review walk-through** (`docs/review_bNNN.md`): every change merged since the last build, its key lines and why they're there, short enough for Sheepdog01 to read and question before testing.
+  - **Comments say why, not what, and not when.** No comment restates the code. Build history ("build 112: …") belongs in commit messages and build notes, not in the code: when a comment is touched, move the history out and keep the reason.
+- **Upstreaming to ChupathingyCE** (Sheepdog01, 2026-10-13: a project rule; their `CONTRIBUTING.md`, "Using AI tools"): only small, self-contained changes; Sheepdog01 understands every line and can explain it in review; tested on ChupathingyCE's own desktop build, not only through the port; and the pull request says plainly that it was written with Claude. Nothing goes upstream that fails one of these.
 - **Evidence labels in docs:** [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. The emulator says *where* time goes; only the PSP says *how long*.
 
 ## Building

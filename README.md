@@ -6,9 +6,20 @@ Native PlayStation Portable port of Halo: Combat Evolved, built for the original
 
 ## Where it stands
 
-The whole campaign loads on a PSP-1000: all ten maps fit its memory since build 108. On hardware (build 107), *The Silent Cartographer* (b30) plays start to finish at about 9 fps on average, 15 ticks a second. Build 110 moved the engine to ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
+The whole campaign loads and plays on a PSP-1000, all ten maps in one session. As of build 119 (2026-10-13, on Sheepdog01's PSP-1000), *The Maw* (d40) runs at 19 fps; *The Pillar of Autumn*, *Assault on the Control Room* and *Two Betrayals* are within a few milliseconds of the floor of 15 fps at 30 ticks a second; the heaviest map, *The Silent Cartographer* (b30), runs at about 4 fps in its opening flight and 9 on the beach. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
 
-The goal is a steady 30 ticks a second everywhere in the campaign, with 30 fps the target. The plan to get there is `docs/rebuild_plan.md`, and every known speed lever, ranked, is in `docs/optimization_ranking.md`.
+The goal is a steady 30 ticks a second everywhere in the campaign, with 30 fps the target and 15 fps at 30 ticks the floor. The plan is `docs/rebuild_plan.md`, and every known speed lever, ranked, is in `docs/optimization_ranking.md`.
+
+## How it's made
+
+Sierra-III is written with an AI model, Claude, and every commit says so: Claude is the author and Sheepdog01 (Sheepdog-01) the co-author. The division of work is fixed:
+
+- **Sheepdog01 decides what to build** and in what order, and every change to how the game looks or plays is his call, made after seeing both sides.
+- **Claude writes the code**, and each change carries its evidence: why it's there, what it was measured against, and whether the figure came from the PSP, the emulator, the code or inference (`[M]`, `[E]`, `[D]`, `[U]` in the docs).
+- **Every build is tested on a real PSP-1000** by Sheepdog01 before the next one is made, and speed-ups that claim to leave the game unchanged are checked tick by tick against the game's state in an emulator first.
+- **Sheepdog01 reviews every build's changes** through a walk-through of what changed and why (`docs/review_bNNN.md`).
+
+The decompilation this port is built on, and ChupathingyCE, were also made with heavy use of AI tools; ChupathingyCE's README says how it uses them, and Sierra-III follows the same principle: a person decides, reviews, tests and answers for every change.
 
 ## What's here
 
