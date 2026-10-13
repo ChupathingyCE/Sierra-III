@@ -11777,6 +11777,67 @@ FIXES_116["source/models/model_animations.c#unaligned"] = [
 # tag: the tag whose bitmaps hold the quad's bitmap_data. A walk over every
 # bitmap tag, so only for the frames a screenshot is asked for
 FIXES_118 = {}
+# build 118 (X10, optimization_ranking.md): the units' and bipeds' vector
+# checks skipped. unit_verify_vectors runs a dozen times a unit a tick and
+# biped_verify_object_vectors around a biped's every pose; each only tests
+# that the facing vectors are unit length and at right angles, and does
+# something (a log line and an assert) only when they aren't. In play they
+# always are, so skipping them changes nothing but the time: 6% of the
+# emulator's tick (b114, big_levers.md section 8: 7 us x 165 a tick).
+# "verifyvectors" runs them as before
+FIXES_118["source/units/units.c#verify"] = [
+("""static void unit_verify_vectors(
+	long unit_index,
+	char const *debugstring)
+{
+	char buffer[512];
+
+	if (!unit_vectors_are_valid(unit_index))""",
+ """static void unit_verify_vectors(
+	long unit_index,
+	char const *debugstring)
+{
+	char buffer[512];
+
+#ifdef HALO_PSP
+	{
+		extern int psp_keep(const char *name);
+		static int psp_verify = -1;
+
+		if (psp_verify < 0)
+			psp_verify = psp_keep("verifyvectors");
+		if (!psp_verify)
+			return;
+	}
+#endif
+	if (!unit_vectors_are_valid(unit_index))"""),
+]
+FIXES_118["source/units/bipeds.c#verify"] = [
+("""static void biped_verify_object_vectors(
+	long biped_index,
+	char const *state)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+""",
+ """static void biped_verify_object_vectors(
+	long biped_index,
+	char const *state)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+#ifdef HALO_PSP
+	{
+		/* (units.c's #verify, psp_fixups.py) */
+		extern int psp_keep(const char *name);
+		static int psp_verify = -1;
+
+		if (psp_verify < 0)
+			psp_verify = psp_keep("verifyvectors");
+		if (!psp_verify)
+			return;
+	}
+#endif
+"""),
+]
 FIXES_118["source/interface/hud_draw.c#hdump"] = [
 ("""
 void hud_draw_bitmap(
