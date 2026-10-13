@@ -18,6 +18,10 @@ Sierra-III is a native PSP-1000 port of Halo: Combat Evolved, built on a decompi
   - Write the CPU's cache back before the GE, the Media Engine or DMA reads what it wrote.
   - Unaligned word loads fault on hardware (the emulator forgives them).
   - `double` is software: keep it out of hot paths.
+- **How AI is used here** (Sheepdog01, 2026-10-13, measured against ChupathingyCE's generative-AI policy): Sheepdog01 decides what to build, tests every build on hardware, and is responsible for it; Claude writes the code, and every commit says so (the identity above). So that a person reviews every change:
+  - **Each build ships with a review walk-through** (`docs/review_bNNN.md`): every change merged since the last build, its key lines and why they're there, short enough for Sheepdog01 to read and question before testing.
+  - **Comments say why, not what, and not when.** No comment restates the code. Build history ("build 112: …") belongs in commit messages and build notes, not in the code: when a comment is touched, move the history out and keep the reason.
+- **Upstreaming to ChupathingyCE** (Sheepdog01, 2026-10-13: a project rule; their `CONTRIBUTING.md`, "Using AI tools"): only small, self-contained changes; Sheepdog01 understands every line and can explain it in review; tested on ChupathingyCE's own desktop build, not only through the port; and the pull request says plainly that it was written with Claude. Nothing goes upstream that fails one of these.
 - **Evidence labels in docs:** [M] measured on the PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. The emulator says *where* time goes; only the PSP says *how long*.
 
 ## Building
@@ -34,7 +38,7 @@ HALO_REPO=<engine> PSP_OUT=<out> python3 psp_build.py --jobs 8
 PSPDEV=<pspdev> tools/build_release.sh <out>
 ```
 
-**How the build works:** `psp_build.py` mirrors the engine into `<out>/tree`. `psp_fixups.py` then applies anchored (old, new) text pairs to that mirror: `FIXES_*` are lists or dicts per build, and `Either(universal=…, chupa=…)` covers the two engine bases. **halo-ce-universal is frozen as a base** (Sheepdog01, 2026-10-13): new work targets ChupathingyCE only (plain pairs, no `Either`); cross-compatibility is ChupathingyCE's, upstream of us. Then it compiles (hot engine `-O2`, cold units `-Os`), links, sizes the heap from the program's end, and packs `EBOOT.PBP`. A link map (`halo.map`) is written every link. The engine checkout itself is never edited.
+**How the build works:** `psp_build.py` mirrors the engine into `<out>/tree`. `psp_fixups.py` then applies anchored (old, new) text pairs to that mirror: `FIXES_*` are lists or dicts per build, and `Either(universal=…, chupa=…)` covered the two engine bases; **halo-ce-universal is retired** (Sheepdog01, 2026-10-13: `UPSTREAM.md`), so new fixups write ChupathingyCE's anchor only, and the existing pairs go with the next rebase. Then it compiles (hot engine `-O2`, cold units `-Os`), links, sizes the heap from the program's end, and packs `EBOOT.PBP`. A link map (`halo.map`) is written every link. The engine checkout itself is never edited.
 
 **Build switches (environment):**
 
@@ -45,7 +49,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_DEBUG_TOOLS=1` | Debug-only instruments (e.g. `meclassify`) |
 | `PSP_MULTIPLAYER=1` | Builds the multiplayer units back in |
 | `PSP_BIG_RAM=1` | 64 MB recon variant; never for play |
-| `PSP_TEXT_LAYOUT=coldfirst`, `hotgroup` or an order file | Code layout for the I-cache: cold parts first; `hotgroup` then PGO's hot functions as one block |
+| `PSP_TEXT_LAYOUT=coldfirst` | Hot/cold code layout |
 | `PSP_TICK_STEPS=1` | Per-step tick timing; recon only |
 | `PSP_NOINLINE=psp_ge,…` | Units whose path holds a listed word compiled without inlining, so the cache map names each helper; recon only |
 | `PSP_NO_COLD=1` | Everything at the hot optimisation level |
