@@ -1571,6 +1571,69 @@ static void stack_report(void)
 static void bus_probe(const char *when); /* build 105, below */
 
 
+/* build 117: keep.txt's "ladderN": the campaign's openings one after
+another, N seconds of game time each, with nobody at the controls (Sheepdog01,
+2026-10-12: a test session that runs itself). N seconds into a map, the
+next one in the campaign's order loads; one that isn't on the stick is
+passed over, and after the last the game exits. Start it from the launch
+menu on any campaign map. The map's name comes from the cache file's
+header as it opens (psp_map_opened, psp_fixups.py) */
+static char current_map[32];
+
+void psp_map_opened(const char *name)
+{
+	snprintf(current_map, sizeof(current_map), "%s", name ? name : "");
+}
+
+static int map_on_stick(const char *name)
+{
+	char path[96];
+	SceIoStat stat;
+
+	snprintf(path, sizeof(path), DATA_ROOT "/maps/%s.map", name);
+	return sceIoGetstat(path, &stat) >= 0;
+}
+
+static void ladder_tick(unsigned long ticks_seen)
+{
+	static const char *const order[] = { "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40" };
+	static long ladder_ticks = -1;
+	static unsigned long ladder_next = 0;
+	static char ladder_map[32];
+	int k, at = -1;
+
+	if (ladder_ticks < 0)
+		ladder_ticks = (long)psp_keep_number("ladder", 0) * 30;
+	if (ladder_ticks <= 0 || !current_map[0] || !strcmp(current_map, "ui"))
+		return;
+	if (strcmp(ladder_map, current_map) != 0)
+	{
+		/* a map has started: its turn runs from here */
+		snprintf(ladder_map, sizeof(ladder_map), "%s", current_map);
+		ladder_next = ticks_seen + (unsigned long)ladder_ticks;
+		platform_log("ladder: %s for %ld s of game time", ladder_map, ladder_ticks / 30);
+		return;
+	}
+	if (ticks_seen != ladder_next)
+		return;
+	for (k = 0; k < (int)(sizeof(order) / sizeof(order[0])); k++)
+		if (!strcmp(order[k], ladder_map))
+			at = k;
+	for (k = at + 1; k < (int)(sizeof(order) / sizeof(order[0])); k++)
+		if (map_on_stick(order[k]))
+		{
+			extern unsigned char hs_compile_and_evaluate(const char *source);
+			char command[64];
+
+			snprintf(command, sizeof(command), "map_name levels\\%s\\%s", order[k], order[k]);
+			platform_log("ladder: %s's turn is over; %s next", ladder_map, order[k]);
+			hs_compile_and_evaluate(command);
+			return;
+		}
+	platform_log("ladder: %s was the last map on the stick", ladder_map);
+	exit_game("ladder done");
+}
+
 void psp_tick_account(unsigned long microseconds)
 {
 	static unsigned long ticks_seen = 0;
@@ -1810,6 +1873,7 @@ steps in order: the console has no way to wait */
 		platform_log("menutest: loading Blood Gulch from the menu");
 		hs_compile_and_evaluate("map_name levels\\test\\bloodgulch\\bloodgulch");
 	}
+	ladder_tick(ticks_seen); /* build 117 */
 	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
 	{
 		/* the main loop does both between ticks, as for the campaign's own
