@@ -11853,6 +11853,86 @@ FIXES_118["source/units/units.c#verify"] = [
 #endif
 	if (!unit_vectors_are_valid(unit_index))"""),
 ]
+# build 118 (X9's first question): "sphereprobe" counts the level sphere
+# queries (collision_bsp_test_sphere: a biped's or vehicle's features each
+# move, a body's ground test) that repeat one made this tick or the last with
+# exactly the same inputs: the BSP, the centre and radius bit for bit, and
+# the breakable surfaces' flags (the bit vector the caller passes). Such a repeat has the same answer, so
+# the share says what a memo of the answers would save before one is built
+# (a standing biped asks the same question every tick; b30's recon counted
+# 7-20% of bipeds still). A 256-entry table of the inputs' hashes; logged
+# every 300 ticks. Off, one test of a flag a query
+FIXES_118["source/physics/collision_bsp.c#sphereprobe"] = [
+("""boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (build 118): see FIXES_118 collision_bsp.c#sphereprobe */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+long game_time_get(void);
+static int psp_sphere_probe_on = -1;
+static struct { unsigned long hash; long tick; } psp_sphere_probe_seen[256];
+static unsigned long psp_sphere_queries, psp_sphere_repeats, psp_sphere_repeats_same_tick;
+static long psp_sphere_probe_window = -1;
+
+static void psp_sphere_probe(
+	struct collision_bsp const *bsp,
+	short breakable_surface_count,
+	byte const *breakable_surface_flags,
+	real_point3d const *center,
+	real radius)
+{
+	union { real f; unsigned long u; } x, y, z, r;
+	unsigned long hash = 2166136261UL;
+	long tick = game_time_get(), k;
+	unsigned int slot;
+
+	x.f = center->x; y.f = center->y; z.f = center->z; r.f = radius;
+#define PSP_PROBE_MIX(word) hash = (hash ^ (unsigned long)(word)) * 16777619UL
+	PSP_PROBE_MIX((unsigned long)bsp); PSP_PROBE_MIX(x.u); PSP_PROBE_MIX(y.u); PSP_PROBE_MIX(z.u); PSP_PROBE_MIX(r.u);
+	if (breakable_surface_flags)
+		for (k = 0; k < (breakable_surface_count + 31) / 32; k++) /* the bit vector's words */
+			PSP_PROBE_MIX(((unsigned long const *)breakable_surface_flags)[k]);
+#undef PSP_PROBE_MIX
+	psp_sphere_queries++;
+	slot = (unsigned int)(hash ^ (hash >> 16)) & 255;
+	if (psp_sphere_probe_seen[slot].hash == hash && psp_sphere_probe_seen[slot].tick >= tick - 1)
+	{
+		psp_sphere_repeats++;
+		if (psp_sphere_probe_seen[slot].tick == tick)
+			psp_sphere_repeats_same_tick++;
+	}
+	psp_sphere_probe_seen[slot].hash = hash;
+	psp_sphere_probe_seen[slot].tick = tick;
+	if (psp_sphere_probe_window < 0)
+		psp_sphere_probe_window = tick;
+	if (tick - psp_sphere_probe_window >= 300)
+	{
+		platform_psp_log("sphereprobe: %lu level sphere queries in %ld ticks (%.1f a tick); %lu repeat one of this tick or the last exactly (%.1f%%), %lu of them this tick's",
+			psp_sphere_queries, tick - psp_sphere_probe_window, (float)psp_sphere_queries / (float)(tick - psp_sphere_probe_window),
+			psp_sphere_repeats, psp_sphere_queries ? 100.0f * (float)psp_sphere_repeats / (float)psp_sphere_queries : 0.0f,
+			psp_sphere_repeats_same_tick);
+		psp_sphere_queries = psp_sphere_repeats = psp_sphere_repeats_same_tick = 0;
+		psp_sphere_probe_window = tick;
+	}
+}
+#endif
+
+boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,"""),
+("""	result->vertex_count = 0;
+
+	bsp3d_test_sphere_recursive(&context, 0, 0);""",
+ """	result->vertex_count = 0;
+
+#ifdef HALO_PSP
+	if (psp_sphere_probe_on < 0)
+		psp_sphere_probe_on = psp_keep("sphereprobe");
+	if (psp_sphere_probe_on)
+		psp_sphere_probe(bsp, breakable_surface_count, breakable_surface_flags, center, radius);
+#endif
+	bsp3d_test_sphere_recursive(&context, 0, 0);"""),
+]
 FIXES_118["source/units/bipeds.c#verify"] = [
 ("""static void biped_verify_object_vectors(
 	long biped_index,
