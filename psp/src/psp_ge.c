@@ -1436,6 +1436,12 @@ static unsigned long near_parts = 0, near_parts_whole = 0, near_batches_whole = 
 /* build 118: the near path's sphere test (batch_sphere_inside) */
 static int near_sphere_full = -1, near_sphere_check = 0;
 static unsigned long near_batches_by_sphere = 0, near_sphere_mismatches = 0;
+/* build 119: the near path's run test (near_cluster_verdict), and the runs'
+spheres on the heap */
+#define NEAR_CLUSTER_TRIANGLES 16
+static int near_cluster_full = -1, near_cluster_check = 0;
+static unsigned long near_cluster_kept = 0, near_cluster_dropped = 0, near_cluster_mixed = 0, near_cluster_mismatches = 0;
+static unsigned long near_cluster_bytes = 0;
 static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
@@ -1559,7 +1565,15 @@ static void ge_kinds_report(void)
 			near_sphere_check ? (near_sphere_mismatches ? "; nearspherecheck: SOME THE SPHERE PASSED WERE NOT WHOLE" : "; nearspherecheck: all whole") : "");
 		if (near_sphere_check && near_sphere_mismatches)
 			platform_log("GE: nearspherecheck: %lu batches the sphere passed were cut or dropped by the corner loop", near_sphere_mismatches);
+		/* build 119 */
+		platform_log("GE: near runs of %d triangles (%s): %.1f a frame kept whole, %.1f dropped whole, %.1f looked at corner by corner; their spheres %lu KB%s",
+			NEAR_CLUSTER_TRIANGLES, near_cluster_full > 0 ? "off: nearclusterfull" : "on", near_cluster_kept / frames_seen,
+			near_cluster_dropped / frames_seen, near_cluster_mixed / frames_seen, near_cluster_bytes / 1024,
+			near_cluster_check ? (near_cluster_mismatches ? "; nearclustercheck: SOME TRIANGLES DISAGREED WITH THEIR RUN" : "; nearclustercheck: all agreed") : "");
+		if (near_cluster_check && near_cluster_mismatches)
+			platform_log("GE: nearclustercheck: %lu triangles disagreed with their run's verdict", near_cluster_mismatches);
 	}
+	near_cluster_kept = near_cluster_dropped = near_cluster_mixed = near_cluster_mismatches = 0;
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
@@ -5955,6 +5969,12 @@ struct skin_batch
 	worked out the first time the batch is drawn near the eye, radius < 0
 	until then */
 	float center[3], radius;
+	/* build 119: its triangles in runs of NEAR_CLUSTER_TRIANGLES, each with
+	a sphere like the batch's (centre, radius), for the corner loop's run
+	test (near_cluster_verdict); made the first time the loop runs on the
+	batch, -1 until then, 0 when there was no room */
+	float (*clusters)[4];
+	int cluster_count;
 };
 
 struct skin_part
@@ -5977,6 +5997,17 @@ static void skin_free(struct skin_part *part)
 	if (!part)
 		return;
 	skin_live_bytes -= (unsigned long)part->bytes;
+	{
+		int b;
+
+		/* build 119: the runs' spheres (near_clusters_make) */
+		for (b = 0; b < part->batch_count; b++)
+			if (part->batches[b].clusters)
+			{
+				near_cluster_bytes -= (unsigned long)part->batches[b].cluster_count * sizeof(float[4]);
+				free(part->batches[b].clusters);
+			}
+	}
 	free(part);
 }
 
@@ -6218,6 +6249,8 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 			part->batches[b].indices = out;
 			part->batches[b].index_count = 0;
 			part->batches[b].radius = -1.0f; /* build 118: its sphere not yet worked out */
+			part->batches[b].clusters = NULL; /* build 119: nor its runs' */
+			part->batches[b].cluster_count = -1;
 			for (t = 0; t < triangle_count; t++)
 				if (batch_of[t] == b)
 				{
@@ -7243,6 +7276,145 @@ static int batch_sphere_inside(const struct skin_batch *b, int weights, const fl
 	return 1;
 }
 
+/* build 119: the near path's run test ("NC"). The corner loop works out a
+corner's verdict only to find the triangles with a corner behind the near
+margin or past a guard plane (camera_corner_out): those are dropped or cut,
+and every other triangle is kept as it is. A bending batch round the eye
+(a30's trees over the player: 22 ms a frame of corner loop on the PSP)
+fails the batch's sphere test, yet most of its triangles lie wholly in
+front, and many wholly behind. So the batch's triangles are taken in runs
+of NEAR_CLUSTER_TRIANGLES, each with its own sphere (worked out once, as
+batch_sphere does), and each slot's image of it is tested as
+batch_sphere_inside does. Every image wholly in front of the margin and
+inside the guard planes: no corner of the run is out, and its triangles are
+kept with none worked out. Every image wholly beyond one and the same plane
+(behind the nearer of the two near limits, or past a guard plane): every
+corner is out on that plane, so each triangle is dropped, as the loop would
+drop it. "nearclusterfull": the loop for every triangle, as before;
+"nearclustercheck": the loop runs anyway and counts the triangles whose own
+verdict disagrees with their run's */
+
+/* the runs' spheres, in the part's own space (the batch's records) */
+static void near_clusters_make(struct skin_batch *b, const struct skin_part *skin, const void *vertices)
+{
+	int triangles = b->index_count / 3, count = (triangles + NEAR_CLUSTER_TRIANGLES - 1) / NEAR_CLUSTER_TRIANGLES;
+	int uv_at = skin->stride - 24, c;
+
+	b->cluster_count = 0;
+	b->clusters = count > 0 ? malloc(count * sizeof(float[4])) : NULL;
+	if (!b->clusters)
+		return;
+	b->cluster_count = count;
+	near_cluster_bytes += (unsigned long)count * sizeof(float[4]);
+	for (c = 0; c < count; c++)
+	{
+		int first = c * NEAR_CLUSTER_TRIANGLES * 3, last = first + NEAR_CLUSTER_TRIANGLES * 3, i, axis;
+		float low[3] = { 0.0f, 0.0f, 0.0f }, high[3] = { 0.0f, 0.0f, 0.0f }, reach = 0.0f;
+
+		if (last > triangles * 3)
+			last = triangles * 3;
+		for (i = first; i < last; i++)
+		{
+			const float *p = (const float *)((const unsigned char *)vertices + skin->stride * b->indices[i] + uv_at + 12);
+
+			for (axis = 0; axis < 3; axis++)
+			{
+				if (i == first || p[axis] < low[axis]) low[axis] = p[axis];
+				if (i == first || p[axis] > high[axis]) high[axis] = p[axis];
+			}
+		}
+		for (axis = 0; axis < 3; axis++)
+			b->clusters[c][axis] = (low[axis] + high[axis]) * 0.5f;
+		for (i = first; i < last; i++)
+		{
+			const float *p = (const float *)((const unsigned char *)vertices + skin->stride * b->indices[i] + uv_at + 12);
+			float dx = p[0] - b->clusters[c][0], dy = p[1] - b->clusters[c][1], dz = p[2] - b->clusters[c][2];
+			float d = dx * dx + dy * dy + dz * dz;
+
+			if (d > reach)
+				reach = d;
+		}
+		b->clusters[c][3] = sqrtf(reach);
+	}
+}
+
+/* each used slot's largest stretch (batch_sphere_inside's bound); -1 for a
+slot the batch doesn't use */
+static void near_slot_stretch(const struct skin_batch *b, int weights, const float (*depth_row)[3][4], float *scale)
+{
+	int slot;
+
+	for (slot = 0; slot < weights; slot++)
+	{
+		const float (*row)[4] = depth_row[slot];
+		float gram[3][3], stretch = 0.0f;
+		int i, j;
+
+		scale[slot] = -1.0f;
+		if (b->node[slot] == 0xFF)
+			continue;
+		for (i = 0; i < 3; i++)
+			for (j = 0; j < 3; j++)
+				gram[i][j] = row[i][0] * row[j][0] + row[i][1] * row[j][1] + row[i][2] * row[j][2];
+		for (i = 0; i < 3; i++)
+		{
+			float sum = fabsf(gram[i][0]) + fabsf(gram[i][1]) + fabsf(gram[i][2]);
+
+			if (sum > stretch)
+				stretch = sum;
+		}
+		scale[slot] = sqrtf(stretch);
+	}
+}
+
+/* the planes a camera-space sphere lies wholly beyond, as outside()'s bits:
+1 the near limit given, 2 and 4 the guard planes left and right, 8 and 16
+up and down. The radius gets sphere_inside's margin; a NaN gives none */
+static int sphere_beyond(const float *c, float radius, float near)
+{
+	float r = radius * 1.01f + 0.01f;
+	int bits = 0;
+
+	if (!(radius >= 0.0f))
+		return 0;
+	if (c[2] + r < near) bits |= 1;
+	if (c[0] - guard_x * c[2] > r * guard_x_length) bits |= 2;
+	if (-c[0] - guard_x * c[2] > r * guard_x_length) bits |= 4;
+	if (c[1] - guard_y * c[2] > r * guard_y_length) bits |= 8;
+	if (-c[1] - guard_y * c[2] > r * guard_y_length) bits |= 16;
+	return bits;
+}
+
+/* a run's verdict: 1 every corner in (kept whole), 2 every corner out on
+one plane (dropped), 0 either */
+static int near_cluster_verdict(const struct skin_batch *b, int c, int weights, const float (*depth_row)[3][4],
+	const float *scale, float near_in, float near_out)
+{
+	const float *sphere = b->clusters[c];
+	int slot, inside = 1, beyond = 0x1F, used = 0;
+
+	for (slot = 0; slot < weights; slot++)
+	{
+		const float (*row)[4] = depth_row[slot];
+		float centre[3], radius;
+		int i;
+
+		if (scale[slot] < 0.0f)
+			continue;
+		used++;
+		for (i = 0; i < 3; i++)
+			centre[i] = row[i][0] * sphere[0] + row[i][1] * sphere[1] + row[i][2] * sphere[2] + row[i][3];
+		radius = sphere[3] * scale[slot];
+		if (inside && !sphere_inside(centre, radius, near_in))
+			inside = 0;
+		if (beyond)
+			beyond &= sphere_beyond(centre, radius, near_out);
+		if (!inside && !beyond)
+			return 0;
+	}
+	return !used ? 0 : inside ? 1 : beyond ? 2 : 0;
+}
+
 static void model_geometry(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
@@ -7373,6 +7545,9 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				float limit = projection_near * 1.25f;
 				int t, k, out = 0, uv_at = skin->stride - 24, cut_count = 0, kept_failed = 0;
 				int whole_by_sphere = 0;
+				/* build 119: the runs (near_cluster_verdict) */
+				float slot_scale[SKIN_SLOTS];
+				int use_clusters = 0, cluster_end = 0, cluster_state = 0;
 
 				/* build 118: the batch's sphere first (batch_sphere_inside): wholly
 				inside, the corner loop is skipped and the batch drawn whole */
@@ -7402,6 +7577,22 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				on_vfpu = skin_vfpu && skin->weights <= 7 && !PSP_ME_WORK();
 				if (on_vfpu)
 					skin_vfpu_load((const float (*)[3][4])depth_row, skin->weights);
+				/* build 119: the runs' spheres (near_cluster_verdict) */
+				if (near_cluster_full < 0)
+				{
+					near_cluster_full = psp_keep("nearclusterfull");
+					near_cluster_check = psp_keep("nearclustercheck");
+				}
+				if (!near_cluster_full && !whole_by_sphere)
+				{
+					if (b->cluster_count < 0)
+						near_clusters_make(b, skin, vertices);
+					if (b->cluster_count > 0)
+					{
+						near_slot_stretch(b, skin->weights, (const float (*)[3][4])depth_row, slot_scale);
+						use_clusters = 1;
+					}
+				}
 				for (t = 0; (!whole_by_sphere || near_sphere_check) && t + 2 < draw_count; t += 3)
 				{
 					/* build 106: each corner's verdict is its planes as bits
@@ -7412,6 +7603,50 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					tree over the player on b30's beach: most of its behind
 					triangles were wholly behind) */
 					int behind = 0, bits[3];
+
+					/* build 119: a new run, its verdict */
+					if (use_clusters && t >= cluster_end)
+					{
+						int c = t / (3 * NEAR_CLUSTER_TRIANGLES);
+
+						cluster_end = (c + 1) * 3 * NEAR_CLUSTER_TRIANGLES;
+						cluster_state = c < b->cluster_count ? near_cluster_verdict(b, c, skin->weights,
+							(const float (*)[3][4])depth_row, slot_scale, limit, limit < NEAR_CLIP ? limit : NEAR_CLIP) : 0;
+						if (cluster_state == 1)
+							near_cluster_kept++;
+						else if (cluster_state == 2)
+							near_cluster_dropped++;
+						else
+							near_cluster_mixed++;
+					}
+					if (cluster_state == 1 && !near_cluster_check)
+					{
+						/* every corner in: kept as it is */
+						if (kept)
+						{
+							kept[out++] = draw[t];
+							kept[out++] = draw[t + 1];
+							kept[out++] = draw[t + 2];
+						}
+						continue;
+					}
+					if (cluster_state == 2 && !near_cluster_check)
+					{
+						/* every corner out on one plane: dropped, as below */
+						if (!kept)
+						{
+							kept = list_take((draw_count * 2 + 3) & ~3);
+							if (!kept)
+							{
+								kept_failed = 1;
+								break;
+							}
+							memcpy(kept, draw, t * sizeof(*kept));
+							out = t;
+						}
+						near_triangles_dropped++;
+						continue;
+					}
 
 					for (k = 0; k < 3; k++)
 					{
@@ -7456,6 +7691,9 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						bits[k] = code & 31;
 						behind |= code & 32;
 					}
+					/* build 119: "nearclustercheck": the run's verdict against the triangle's own */
+					if ((cluster_state == 1 && behind) || (cluster_state == 2 && !(behind && (bits[0] & bits[1] & bits[2]))))
+						near_cluster_mismatches++;
 					if (behind)
 					{
 						if (!kept)
