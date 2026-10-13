@@ -63,6 +63,9 @@ flash0/
 /runs/
 *.tgz
 *.zip
+# ...but the profile-guided build's counts are ours (counts of this code's
+# branches, no game data): psp_build.py reads them from pgo/
+!/pgo/*.tgz
 
 # 5. Python and editor clutter.
 __pycache__/
