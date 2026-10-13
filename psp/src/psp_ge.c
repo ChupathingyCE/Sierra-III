@@ -1442,6 +1442,8 @@ spheres on the heap */
 static int near_cluster_full = -1, near_cluster_check = 0;
 static unsigned long near_cluster_kept = 0, near_cluster_dropped = 0, near_cluster_mixed = 0, near_cluster_mismatches = 0;
 static unsigned long near_cluster_bytes = 0;
+static int skin_axis_loop = -1, skin_axis_check = 0; /* build 119: model_geometry's corner sums, "skinaxisloop" */
+static unsigned long skin_axis_checked = 0, skin_axis_differ = 0;
 static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
@@ -1572,8 +1574,11 @@ static void ge_kinds_report(void)
 			near_cluster_check ? (near_cluster_mismatches ? "; nearclustercheck: SOME TRIANGLES DISAGREED WITH THEIR RUN" : "; nearclustercheck: all agreed") : "");
 		if (near_cluster_check && near_cluster_mismatches)
 			platform_log("GE: nearclustercheck: %lu triangles disagreed with their run's verdict", near_cluster_mismatches);
+		if (skin_axis_check)
+			platform_log("GE: skinaxischeck: %lu corner sums compared with the loop's, %lu differed", skin_axis_checked, skin_axis_differ);
 	}
 	near_cluster_kept = near_cluster_dropped = near_cluster_mixed = near_cluster_mismatches = 0;
+	skin_axis_checked = skin_axis_differ = 0;
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
@@ -7580,6 +7585,11 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				on_vfpu = skin_vfpu && skin->weights <= 7 && !PSP_ME_WORK();
 				if (on_vfpu)
 					skin_vfpu_load((const float (*)[3][4])depth_row, skin->weights);
+				if (skin_axis_loop < 0)
+				{
+					skin_axis_loop = psp_keep("skinaxisloop");
+					skin_axis_check = psp_keep("skinaxischeck");
+				}
 				/* build 119: the runs' spheres (near_cluster_verdict) */
 				if (near_cluster_full < 0)
 				{
@@ -7670,12 +7680,48 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 							{
 								float fpu[3] = { 0.0f, 0.0f, 0.0f };
 
-								for (slot = 0; slot < skin->weights; slot++)
-									if (record[slot])
-										for (axis = 0; axis < 3; axis++)
-											fpu[axis] += record[slot] * (1.0f / 128.0f) * (depth_row[slot][axis][0] * p[0] +
-												depth_row[slot][axis][1] * p[1] + depth_row[slot][axis][2] * p[2] +
-												depth_row[slot][axis][3]);
+								/* build 119: the three axes written out (they were a loop the
+								release build doesn't unroll), so the FPU works on the three
+								sums at once rather than one after another: each is the same
+								expression as before, in the same order, so the same floats.
+								"skinaxisloop": the loop, as before */
+								if (skin_axis_loop)
+								{
+									for (slot = 0; slot < skin->weights; slot++)
+										if (record[slot])
+											for (axis = 0; axis < 3; axis++)
+												fpu[axis] += record[slot] * (1.0f / 128.0f) * (depth_row[slot][axis][0] * p[0] +
+													depth_row[slot][axis][1] * p[1] + depth_row[slot][axis][2] * p[2] +
+													depth_row[slot][axis][3]);
+								}
+								else
+									for (slot = 0; slot < skin->weights; slot++)
+										if (record[slot])
+										{
+											const float (*row)[4] = depth_row[slot];
+
+											fpu[0] += record[slot] * (1.0f / 128.0f) * (row[0][0] * p[0] + row[0][1] * p[1] +
+												row[0][2] * p[2] + row[0][3]);
+											fpu[1] += record[slot] * (1.0f / 128.0f) * (row[1][0] * p[0] + row[1][1] * p[1] +
+												row[1][2] * p[2] + row[1][3]);
+											fpu[2] += record[slot] * (1.0f / 128.0f) * (row[2][0] * p[0] + row[2][1] * p[1] +
+												row[2][2] * p[2] + row[2][3]);
+										}
+								if (skin_axis_check)
+								{
+									/* "skinaxischeck": the loop as before, the sums compared bit for bit */
+									float again[3] = { 0.0f, 0.0f, 0.0f };
+
+									for (slot = 0; slot < skin->weights; slot++)
+										if (record[slot])
+											for (axis = 0; axis < 3; axis++)
+												again[axis] += record[slot] * (1.0f / 128.0f) * (depth_row[slot][axis][0] * p[0] +
+													depth_row[slot][axis][1] * p[1] + depth_row[slot][axis][2] * p[2] +
+													depth_row[slot][axis][3]);
+									skin_axis_checked++;
+									if (memcmp(again, fpu, sizeof(again)))
+										skin_axis_differ++;
+								}
 								if (on_vfpu)
 								{
 									/* "skinvfpucheck": the two verdicts compared */
