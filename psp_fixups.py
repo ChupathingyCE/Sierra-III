@@ -12541,7 +12541,10 @@ static int psp_order_surface_indices_by_bits(
 
 		if (!more)
 			return 0;
-		free(psp_surface_bits);
+		/* (never free(NULL) here: this build's free reads a block's
+		header before the pointer, and faulted at 0xffffffe0) */
+		if (psp_surface_bits)
+			free(psp_surface_bits);
 		psp_surface_bits = more;
 		psp_surface_bit_words = words;
 	}
