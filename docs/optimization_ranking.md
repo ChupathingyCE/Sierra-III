@@ -490,9 +490,12 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - `transparent`, `textures`, `interpolation`, `novfpu`, `noscratch`, `nocull`;
 - `readerslow`, `nomeaudio`.
 - build 118: `verifyvectors` (X10, the vector checks), `tcutfull` (T1, the see-through cut's sphere test), `restlesscheck` (the restless back-off: every sleep candidate checked every tick).
+- build 119: `nearclusterfull` (NC, the near corner loop's runs of 16), `skinaxisloop` (SU, the corner sums' axes written out), `rigidrunsfull` (NR, the rigid near path's runs), `surfaceqsort` (SS, the light pass's surface bits), `vblankslow` (the clock fix: the vertical blank thread back below the game thread).
 
 Pacing word: `novblankthrottle` turns the throttle off. Frames get faster, but the warthog bounces again.
 
-Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118).
+Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118), `nearclustercheck`, `skinaxischeck`, `rigidrunscheck`, `surfacesortcheck` (build 119).
+
+Instrument word: `probes` (build 119) splits the hot loops from their calls on the PSP: the near corner loop and bone slots, the level's passes by piece, the light draw before, in and after its triangle loop, the decal calls by piece. Off by default: each reading costs ~0.6 us.
 
 Build switches that undo savings: `PSP_MAP_CHECKS=1`, `PSP_NO_COLD=1`, `PSP_DEBUG_TOOLS=1`, `PSP_MULTIPLAYER=1`.

@@ -72,6 +72,18 @@ static inline unsigned int ge_clock(void)
 	return psp_timers_off || PSP_ME_WORK() ? 0 : sceKernelGetSystemTimeLow();
 }
 
+/* build 119: "probes": the finer timers that split a hot loop from its
+call (the near corner loop and bone slots, the level's passes by piece, the
+light draw before, in and after its triangle loop, the decal calls by
+piece). Each reading costs ~0.6 us on the PSP, so they are off unless the
+word is set: off, they read no clock and log nothing. Read at launch
+(gebusy_start) */
+static int probes_on = 0;
+static inline unsigned int probe_clock(void)
+{
+	return probes_on ? ge_clock() : 0;
+}
+
 /* build 112: a range written back from the data cache for the GE to read:
 the firmware's call on the main CPU, as before; while the work is marked as
 the Media Engine's (gemesim), the cache instruction on each line instead (no
@@ -1448,6 +1460,11 @@ static unsigned long rigid_runs_kept = 0, rigid_runs_dropped = 0, rigid_runs_mix
 	rigid_runs_made = 0, rigid_runs_bytes = 0;
 static int skin_axis_loop = -1, skin_axis_check = 0; /* build 119: model_geometry's corner sums, "skinaxisloop" */
 static unsigned long skin_axis_checked = 0, skin_axis_differ = 0;
+/* build 119's probe: the near path's corner loop, timed per batch on the
+PSP (the rig: a30's model geometry is 28.6 ms a frame), and the bone slots'
+matrices per batch */
+static unsigned long near_loop_us = 0, near_loop_batches = 0, near_loop_triangles = 0, near_corners_worked = 0,
+	slot_us = 0, slot_batches = 0;
 static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
@@ -1590,6 +1607,12 @@ static void ge_kinds_report(void)
 	near_cluster_kept = near_cluster_dropped = near_cluster_mixed = near_cluster_mismatches = 0;
 	skin_axis_checked = skin_axis_differ = 0;
 	rigid_runs_kept = rigid_runs_dropped = rigid_runs_mixed = rigid_runs_mismatches = rigid_runs_made = 0;
+	/* build 119's probe */
+	if (probes_on)
+		platform_log("GE: near corner loop: %lu us a frame (%lu batches, %lu triangles, %lu corners worked out); bone slots %lu us a frame (%lu batches) (over %lu frames)",
+		near_loop_us / kind_frames, near_loop_batches / kind_frames, near_loop_triangles / kind_frames, near_corners_worked / kind_frames,
+		slot_us / kind_frames, slot_batches / kind_frames, kind_frames);
+	near_loop_us = near_loop_batches = near_loop_triangles = near_corners_worked = slot_us = slot_batches = 0;
 	model_floor_left_out = near_parts = near_parts_whole = near_batches_whole = 0;
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
@@ -1887,6 +1910,9 @@ static void gebusy_start(void)
 	ge_reads_on = psp_keep("gereads") ? 1 : 0; /* build 115 */
 	if (ge_reads_on)
 		platform_log("GE: gereads on (what each draw makes the GE read, by where it lives: a report every 300 frames)");
+	probes_on = psp_keep("probes") ? 1 : 0; /* build 119 */
+	if (probes_on)
+		platform_log("GE: probes on (the near corner loop, the level's passes, the light draw and the decal calls split by piece)");
 	gebusy_on = psp_keep("gebusy");
 	if (!gebusy_on)
 		return;
@@ -5069,6 +5095,9 @@ void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primar
 
 #define CODE_UNKNOWN 0x80
 static unsigned char vertex_codes[65536];
+/* build 119's probe: the level's passes on the PSP, by piece (the slant
+sort has its own timer, angle_us) */
+static unsigned long level_uv_us = 0, level_base_us = 0, level_lightmap_us = 0, level_detail_us = 0, level_probe_draws = 0;
 static int box_test = -1;
 static unsigned long budget_renderer_us = 0, budget_wait_us = 0;
 /* build 87: the same over the heartbeat's own window (benchrun's results
@@ -5380,6 +5409,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	uv_centre_u = uv_centre_v = 0.0f;
 	if (uv_centre < 0)
 		uv_centre = !psp_keep("uvwide");
+	unsigned int probe_mark = probe_clock(); /* build 119's probe */
+
 	if (textured && uv_centre)
 	{
 		unsigned int step = (highest - lowest) / 96 + 1, i;
@@ -5400,6 +5431,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		}
 		uv_centred_draws++;
 	}
+	level_uv_us += probe_clock() - probe_mark;
+	level_probe_draws++;
 	if (textured)
 	{
 		int base_width = 0, base_height = 0;
@@ -5420,6 +5453,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		compact_now = stream->compact_base ? stream : NULL;
 		pass_scale_u = pass_scale_v = 1.0f;
 		/* pass 1: the base texture, fading toward the fog */
+		probe_mark = probe_clock();
 		sceGuEnable(GU_TEXTURE_2D);
 		sceGuTexFunc(GU_TFX_REPLACE, base_alpha && alpha_tested ? GU_TCC_RGBA : GU_TCC_RGB);
 		sceGuTexWrap(GU_REPEAT, GU_REPEAT);
@@ -5442,6 +5476,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		if (uv_centre)
 			sceGuTexOffset(0.0f, 0.0f);
 		textured_draws++;
+		level_base_us += probe_clock() - probe_mark;
+		probe_mark = probe_clock();
 		/* pass 2: the lightmap multiplied in, where pass 1 drew */
 		if (!skip_lightmap && stream->lightmap && psp_tex_bind_lightmap(lightmap_key))
 		{
@@ -5465,6 +5501,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			sceGuDepthMask(GU_FALSE);
 			sceGuDepthFunc(GU_GEQUAL);
 		}
+		level_lightmap_us += probe_clock() - probe_mark;
+		probe_mark = probe_clock();
 		/* passes 3 and 4: the detail maps, the same way */
 		if (detail_off < 0)
 			detail_off = psp_keep("nodetail");
@@ -5552,6 +5590,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			sceGuDepthMask(GU_FALSE);
 			sceGuDepthFunc(GU_GEQUAL);
 		}
+		level_detail_us += probe_clock() - probe_mark;
 		sceGuDisable(GU_TEXTURE_2D);
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
 		/* build 90: for the permanent decals (not with the 16-bit copies,
@@ -7478,6 +7517,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					cursor = writing;
 				}
 			}
+			unsigned int slot_start = probe_clock(); /* build 119's probe */
+
 			for (slot = 0; slot < skin->weights; slot++)
 			{
 				int node = b->node[slot];
@@ -7512,6 +7553,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					}
 				}
 			}
+			slot_us += probe_clock() - slot_start;
+			slot_batches++;
 			if (cursor)
 			{
 				/* the sub-list ends with a return; this pass calls it too */
@@ -7579,6 +7622,9 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 					whole_by_sphere = batch_sphere_inside(b, skin->weights, (const float (*)[3][4])depth_row,
 						limit > NEAR_CLIP ? limit : NEAR_CLIP);
 				}
+
+				unsigned int loop_start = probe_clock(); /* build 119's probe */
+				unsigned long probe_corners = 0; /* in a register; added once below */
 
 				/* each vertex's verdict once a batch (build 43: worked out per
 				corner, it cost up to 6 ms a frame on the PSP in build 42) */
@@ -7682,6 +7728,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 							float at[3] = { 0.0f, 0.0f, 0.0f };
 							int axis;
 
+							probe_corners++;
 							if (on_vfpu)
 								skin_vfpu_corner(record, skin->weights, p, at);
 							if (!on_vfpu || skin_vfpu_check)
@@ -7819,6 +7866,13 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						kept[out++] = draw[t + 1];
 						kept[out++] = draw[t + 2];
 					}
+				}
+				if (probes_on && (!whole_by_sphere || near_sphere_check))
+				{
+					near_loop_us += probe_clock() - loop_start;
+					near_loop_batches++;
+					near_loop_triangles += (unsigned long)(draw_count / 3);
+					near_corners_worked += probe_corners;
 				}
 				if (whole_by_sphere)
 				{
@@ -12013,6 +12067,17 @@ static struct
 	int open;
 } light;
 static unsigned long lights_drawn = 0;
+/* build 119's probe: the light pass's triangles looked at, and those with a
+corner in the light's reach (lit): what culling groups of triangles by box
+would save */
+static unsigned long light_triangles_looked = 0, light_triangles_lit = 0;
+/* and the triangle loop's time, the rest of the draw's being its setup
+(the stream, the bake's pieces, the texture) and its list (colours, bands) */
+static unsigned long light_loop_us = 0, light_probe_draws = 0;
+/* 119c: the draw's time before the loop (the stream, the bake's pieces, the
+texture) and after it (colours, bands, the list) */
+static unsigned long light_setup_us = 0, light_post_us = 0;
+static unsigned int light_call_start = 0, light_post_start = 0;
 
 void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
 	float cosine_falloff, float cosine_cutoff)
@@ -12548,6 +12613,13 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		memset(light_memo, 0, sizeof(light_memo));
 		light_memo_draw = 1;
 	}
+	unsigned int light_loop_start = probe_clock(); /* build 119's probe */
+
+	unsigned long probe_looked = 0, probe_lit = 0; /* in registers; added once below */
+
+	if (probes_on)
+		light_setup_us += light_loop_start - light_call_start;
+
 	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
@@ -12645,8 +12717,10 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				light_memo_checks++;
 			}
 		}
+		probe_looked++;
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			continue;
+		probe_lit++;
 		for (corner = 0; corner < 3; corner++)
 		{
 			struct light_memo_entry *memo = &light_memo[triangle[corner] & (LIGHT_MEMO - 1)];
@@ -12740,6 +12814,14 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			}
 		}
 		light_emit(corners, out, &kept_count, &cut_count);
+	}
+	if (probes_on)
+	{
+		light_post_start = probe_clock();
+		light_loop_us += light_post_start - light_loop_start;
+		light_probe_draws++;
+		light_triangles_looked += probe_looked;
+		light_triangles_lit += probe_lit;
 	}
 	near_clip = near_saved;
 	if (!kept_count && !cut_count && !whole_count)
@@ -12919,10 +13001,15 @@ void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned sh
 		(unsigned int)triangle_count, base_key, 0, 0, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	ge_kind(KIND_LIGHT); /* build 103 */
-	unsigned int start = ge_clock();
+	unsigned int start = ge_clock(), end;
 
+	light_call_start = start; /* 119c's probe */
+	light_post_start = 0;
 	psp_ge_light_draw_body(vertices, vertex_count, indices, triangle_count, base_key);
-	ge_entry_us[6] += ge_clock() - start;
+	end = ge_clock();
+	if (light_post_start)
+		light_post_us += end - light_post_start;
+	ge_entry_us[6] += end - start;
 }
 
 /* ---------- the screen flash (build 23): a colour over the whole picture,
@@ -13101,6 +13188,12 @@ static inline unsigned int decal_clock(void)
 {
 	return decal_timed ? ge_clock() : 0;
 }
+/* build 119's probe: a timed call's body by piece (setup, the off-screen
+loop, the texture and the list's room, the corners, the state and the draw) */
+static unsigned int decal_probe_mark = 0;
+static unsigned long decal_probe_us[5];
+#define DECAL_PROBE(piece) do { if (decal_timed && probes_on) { unsigned int now_ = ge_clock(); \
+	decal_probe_us[piece] += (now_ - decal_probe_mark) * DECAL_TIMED_ONE_IN; decal_probe_mark = now_; } } while (0)
 
 static unsigned int decal_plane_key(const float *n, float d, const float *low, const float *high)
 {
@@ -13505,6 +13598,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 			decal_cull = !psp_keep("decalnocull");
 		if (decal_slope < 0)
 			decal_slope = !psp_keep("decalnoslope");
+		DECAL_PROBE(0);
 		for (quad = 0; quad < quad_count; quad++)
 		{
 			const float *p[4];
@@ -13567,6 +13661,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 			kept_units[kept] = units;
 			kept++;
 		}
+		DECAL_PROBE(1);
 		if (!kept)
 		{
 			decals_wholly_left_out++;
@@ -13577,6 +13672,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		out = list_take(kept * 6 * sizeof(struct decal_vertex_ge));
 		if (!out)
 			return;
+		DECAL_PROBE(2);
 		for (k_quad = 0; k_quad < kept; k_quad++)
 		{
 			const float *p[4];
@@ -13619,6 +13715,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 			}
 		}
 		quad_count = kept;
+		DECAL_PROBE(3);
 	}
 	{
 		/* build 58: the texture level by distance, as for the level (a hole
@@ -13725,6 +13822,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	sceGuDepthMask(GU_FALSE);
 	sceGuDisable(GU_TEXTURE_2D);
 	decals_drawn++;
+	DECAL_PROBE(4);
 }
 
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
@@ -13740,6 +13838,8 @@ void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short 
 	if (decal_timed)
 	{
 		unsigned int start = decal_clock(), took;
+
+		decal_probe_mark = start; /* build 119's probe */
 
 		psp_ge_decal_body(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent);
 		took = (decal_clock() - start) * DECAL_TIMED_ONE_IN;
@@ -14437,6 +14537,11 @@ void psp_ge_frame_end(void)
 				platform_log("GE: surfacesortcheck: %lu lists came out different", psp_surface_sort_mismatches);
 			psp_surface_sorts = psp_surface_sorts_in_order = psp_surface_sort_mismatches = psp_surface_sorts_by_bits = 0;
 		}
+		/* build 119's probe */
+		if (probes_on)
+			platform_log("GE: light pass triangles: %lu looked at, %lu with a corner in reach; the triangle loop %lu us a frame over %lu draws; before the loop %lu us, after it %lu us (last 300 frames)",
+			light_triangles_looked, light_triangles_lit, light_loop_us / 300, light_probe_draws, light_setup_us / 300, light_post_us / 300);
+		light_triangles_looked = light_triangles_lit = light_loop_us = light_probe_draws = light_setup_us = light_post_us = 0;
 		/* build 116: the restorations' own counters */
 		/* build 118: the frames' time on screen (above) */
 		platform_log("GE: frames shown for 1 display refresh (60 fps) %lu, 2 (30 fps) %lu, 3 (20 fps) %lu, 4 (15 fps) %lu, 5 or more %lu; the longest %u ms (last 300 frames)",
@@ -14655,6 +14760,11 @@ void psp_ge_frame_end(void)
 					if (near_check > 0)
 						platform_log("GE: nearcheck: %lu rigid corners near the eye compared with the two-step transform, %lu verdicts differed",
 							near_check_corners, near_check_differ);
+					/* build 119's probe */
+					if (probes_on)
+						platform_log("GE: level passes by piece, us a frame: uv centring %lu, base pass %lu, lightmap pass %lu, detail passes %lu (%lu draws a frame; the slant sort above)",
+						level_uv_us / 300, level_base_us / 300, level_lightmap_us / 300, level_detail_us / 300, level_probe_draws / 300);
+					level_uv_us = level_base_us = level_lightmap_us = level_detail_us = level_probe_draws = 0;
 					uv_centred_draws = 0;
 					uv_shift_largest = 0.0f;
 					memset(angle_triangles, 0, sizeof(angle_triangles));
@@ -14702,6 +14812,11 @@ void psp_ge_frame_end(void)
 						stall_forwarded / 300, stall_batch == 1 ? "batched" : "each", stall_timed ? (double)stall_timed_us / stall_timed : 0.0, stall_timed, decals_small, decals_offscreen,
 						decals_wholly_left_out / 300);
 					decals_wholly_left_out = 0;
+					/* build 119's probe */
+					if (probes_on)
+						platform_log("GE: decal calls by piece, us a frame: setup %lu, the off-screen loop %lu, texture and list room %lu, corners %lu, state and draw %lu",
+						decal_probe_us[0] / 300, decal_probe_us[1] / 300, decal_probe_us[2] / 300, decal_probe_us[3] / 300, decal_probe_us[4] / 300);
+					memset(decal_probe_us, 0, sizeof(decal_probe_us));
 					cached_takes = cached_bytes = cached_lines_flushed = stall_calls = stall_forwarded = 0;
 					list_lines_back = 0;
 					if (lit_memo > 0 || psp_keep("memotex"))
