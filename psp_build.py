@@ -486,10 +486,25 @@ def main():
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     subprocess.run(["mksfoex"] + (["-d", "MEMSIZE=1"] if BIG_RAM else []) +
                    [os.environ.get("PSP_TITLE", "Halo PSP bring-up"), os.path.join(OUT, "PARAM.SFO")], check=True)
+    icon0, icon1, pic0, pic1, snd0 = xmb_files()
     subprocess.run(["pack-pbp", os.path.join(OUT, "EBOOT.PBP"), os.path.join(OUT, "PARAM.SFO"),
-                    "NULL", "NULL", "NULL", "NULL", "NULL", os.path.join(OUT, "halo.prx"), "NULL"],
+                    icon0, icon1, pic0, pic1, snd0, os.path.join(OUT, "halo.prx"), "NULL"],
                    check=True, capture_output=True)
     print("wrote", os.path.join(OUT, "EBOOT.PBP"))
+
+def xmb_files():
+    """The XMB menu art for pack-pbp, in its order: ICON0, ICON1, PIC0, PIC1, SND0.
+    Art comes from psp/xmb/<campaign|mp>/; a missing file is packed as NULL.
+    SND0 is packed only when PSP_XMB_SND0 names a local .AT3, because a clip
+    of the game's music is game data and never lives in this repository."""
+    art = os.path.join(HERE, "psp/xmb", "mp" if MULTIPLAYER else "campaign")
+    def pick(name):
+        path = os.path.join(art, name)
+        return path if os.path.exists(path) else "NULL"
+    snd0 = os.environ.get("PSP_XMB_SND0", "")
+    if snd0 and not os.path.exists(snd0):
+        sys.exit("PSP_XMB_SND0 names a file that doesn't exist: " + snd0)
+    return pick("ICON0.PNG"), pick("ICON1.PMF"), pick("PIC0.PNG"), pick("PIC1.PNG"), snd0 or "NULL"
 
 if __name__ == "__main__":
     main()

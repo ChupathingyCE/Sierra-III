@@ -17,9 +17,11 @@ the menus' ui.map):
      track's version (_track.ptex: half-size lightmaps, and alpha-tested
      plants that keep their leaves at a distance; --no-track skips it)
   5. bakes the level's wall decals into its walls (.pstn)
+  6. with --eboot: cuts the XMB menu's sound from the music on your disc and
+     writes a copy of the release EBOOT with it (lib/snd0.py)
 
-The output folder then holds halo/maps/...: copy the "halo" folder to the
-root of the Memory Stick, beside the PSP folder from the build's zip.
+The output folder then holds halo/maps/... (and, with --eboot,
+PSP/GAME/halo/EBOOT.PBP): copy its contents to the root of the Memory Stick.
 
 Options:
     --maps a10,c20,bloodgulch   only these maps (default: all found)
@@ -32,6 +34,11 @@ Options:
     --sound s9                  the sound bake (build 116, streaming.md S9):
                                 every sound at 22,050 Hz at most, effects mono,
                                 music stereo, still Xbox ADPCM (lib/soundpack.py)
+    --eboot PATH                the release's EBOOT.PBP: a copy with the menu
+                                sound goes to <output>/PSP/GAME/<its folder>/
+    --music [MAP:]TAG[@START][+LENGTH]
+                                which clip (default MUSIC below; MAP: ui)
+    --list-music                list the maps' music tags and lengths, and stop
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, hashlib, json, os, shutil, subprocess, sys, time
@@ -39,6 +46,7 @@ import argparse, hashlib, json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
 INVADER = os.path.join(HERE, 'invader')
+ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder, if any (else atracdenc on PATH)
 sys.path.insert(0, HERE)
 from xiso import XIso
 
@@ -55,6 +63,9 @@ ALL = CAMPAIGN + MULTIPLAYER + ['ui']
 # subtitle data, AI squads' unused fields, firing positions' padding: ~0.5 MiB
 # a campaign map, and what lets b40 fit). Maps built with -Z need build 108 or
 # later; build 108 still loads older ones (psp_tag_layouts.c)
+# The XMB menu's sound: [MAP:]TAG[@START][+LENGTH] (snd0.py). Not chosen yet;
+# `--list-music` shows the candidates.
+MUSIC = ''
 BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-T', '0x900000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
                '-M', '-Y', '512', '-D', '-Z']
 
@@ -134,7 +145,7 @@ def scenario_path(map_path, log_path):
 
 def tool_env():
     env = dict(os.environ)
-    env['LD_LIBRARY_PATH'] = os.path.join(INVADER, 'lib') + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
+    env['LD_LIBRARY_PATH'] = os.path.join(INVADER, 'lib') + ':' + os.path.join(ATRACDENC, 'lib') + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
     env['HALO_PSP_INVADER_DEFINITIONS'] = os.path.join(INVADER, 'definitions')
     env['PYTHONPATH'] = LIB + (':' + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
     return env
@@ -191,6 +202,45 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     log('%s: done in %.0f s' % (name, time.time() - started))
 
 
+def atracdenc():
+    bundled = os.path.join(ATRACDENC, 'bin', 'atracdenc')
+    return bundled if os.path.exists(bundled) else shutil.which('atracdenc')
+
+
+def music_spec(spec):
+    """[MAP:]TAG[@START][+LENGTH] -> (map, the rest)"""
+    head, colon, rest = spec.partition(':')
+    return (head, rest) if colon and head in ALL else ('ui', spec)
+
+
+def menu_eboot(eboot, spec, found, output, work):
+    """Best-effort: the release EBOOT, with the clip as its SND0 when it can be
+    made, goes to output/PSP/GAME/<halo or halomp>/. Sound is never why the
+    bake fails: without it, the EBOOT is copied as it is."""
+    folder = os.path.basename(os.path.dirname(os.path.abspath(eboot)))
+    folder = folder if folder in ('halo', 'halomp') else 'halo'
+    out_dir = os.path.join(output, 'PSP', 'GAME', folder)
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, 'EBOOT.PBP')
+    source_map, clip = music_spec(spec) if spec else (None, None)
+    encoder = atracdenc()
+    why = ('no clip chosen (--music)' if not spec else 'atracdenc not found' if not encoder else
+           '%s.map not found' % source_map if source_map not in found else None)
+    if why is None:
+        log_path = os.path.join(work, 'snd0.log')
+        try:
+            log('menu sound: %s from %s.map' % (clip, source_map))
+            run([sys.executable, os.path.join(LIB, 'snd0.py'), 'make', found[source_map], clip,
+                 os.path.join(work, 'SND0.AT3'), '--atracdenc', encoder, '--eboot', eboot, '--eboot-out', out],
+                log_path, env=tool_env())
+            log('menu sound: %s' % out)
+            return
+        except Exception as e:
+            why = str(e)
+    shutil.copyfile(eboot, out)
+    log('menu sound skipped (%s); %s is the release EBOOT as it is' % (why, out))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('source', help='your Halo disc image, or a folder holding its maps')
@@ -201,6 +251,9 @@ def main():
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--detail', default='')
     ap.add_argument('--sound', default='', choices=['', 's9', 's10'])
+    ap.add_argument('--eboot', default='')
+    ap.add_argument('--music', default=MUSIC)
+    ap.add_argument('--list-music', action='store_true')
     a = ap.parse_args()
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or ALL
     unknown = [m for m in wanted if m not in ALL]
@@ -209,7 +262,18 @@ def main():
     out_maps = os.path.join(a.output, 'halo', 'maps')
     work = os.path.join(a.output, 'work')
     os.makedirs(out_maps, exist_ok=True)
-    found = gather(a.source, work, wanted)
+    if a.eboot and not os.path.isfile(a.eboot):
+        sys.exit('halo-psp-bake: --eboot %s: no such file' % a.eboot)
+    music_map = music_spec(a.music)[0] if a.eboot and a.music else None
+    found = gather(a.source, work, wanted + ([music_map] if music_map and music_map not in wanted else []))
+    if a.list_music:
+        r = subprocess.run([sys.executable, os.path.join(LIB, 'snd0.py'), 'list'] + [found[m] for m in wanted if m in found],
+                           env=tool_env())
+        if not a.keep_work:
+            shutil.rmtree(os.path.join(work, 'retail'), ignore_errors=True)
+        sys.exit(r.returncode)
+    music_source = {music_map: found[music_map]} if music_map in found else {}
+    found = {m: found[m] for m in found if m in wanted}
     missing = [m for m in wanted if m not in found]
     if missing:
         log('not found in %s: %s' % (a.source, ', '.join(missing)))
@@ -230,11 +294,14 @@ def main():
         except Exception as e:
             failures.append(name)
             log('%s: FAILED: %s' % (name, e))
+    if a.eboot:
+        menu_eboot(a.eboot, a.music, music_source, a.output, work)
     if not a.keep_work:
         shutil.rmtree(os.path.join(work, 'retail'), ignore_errors=True)
     log('baked %d of %d maps into %s%s' % (len(found) - len(failures), len(wanted), out_maps,
         '; failed: ' + ', '.join(failures) if failures else ''))
-    log('copy %s to the root of the Memory Stick (it holds maps/)' % os.path.join(a.output, 'halo'))
+    log('copy %s to the root of the Memory Stick (it holds maps/)' % os.path.join(a.output, 'halo')
+        if not a.eboot else 'copy the contents of %s (halo/ and PSP/) to the root of the Memory Stick' % a.output)
     sys.exit(1 if failures else 0)
 
 
