@@ -192,7 +192,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			lighting->distant_light_count, &lighting->distant_lights[0].color.red,
 			&lighting->distant_lights[1].color.red);
 		{
-			/* build 118: the object's point lights (muzzle flashes, plasma,
+			/* build 117: the object's point lights (muzzle flashes, plasma,
 			the flashlight), up to two, as the Xbox's model vertex shader
 			takes them (the "lights" permutation, rasterizer_xbox_models.c).
 			Each light's reach is worked out once for the model, as the light
@@ -3913,7 +3913,7 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 
 	if (size % PSP_STATE_PAGE || 16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER)
 		return FALSE;
-	/* build 118: the stage 64-byte aligned (an independent review: b115's
+	/* build 117: the stage 64-byte aligned (an independent review: b115's
 	fast path wrote straight from the game state's aligned buffer) */
 	stage_block = (byte *)malloc(PSP_STATE_STAGE + 63);
 	if (!stage_block)
@@ -3953,7 +3953,7 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 			continue;
 		if (used + bytes > PSP_STATE_STAGE)
 		{
-			/* build 118: whole 4 KB pieces only, the rest moved to the
+			/* build 117: whole 4 KB pieces only, the rest moved to the
 			stage's start, so every write but the last starts and ends on a
 			4 KB bound of the file. b116 test 1 [M]: written in pieces of any
 			length, b30's first checkpoint (330 pages, 768 KB) took 3,102
@@ -8506,7 +8506,7 @@ void compute_sound_obstruction(
 }
 """),
 ]
-# build 118: looked for again by default: the GE lights models by them now
+# build 117: looked for again by default: the GE lights models by them now
 # (b116 test 1: Sheepdog01 saw no lighting on actors). "nopointlights": as before.
 # build 106: an object's dynamic point lights (muzzle flashes, plasma bolts)
 # are looked for only to pick the Xbox's vertex shader with
@@ -8544,7 +8544,7 @@ FIXES_106["source/objects/object_lights.c#pointlights"] = [
 	short light_index;
 #ifdef HALO_PSP
 	/* psp_fixups.py (build 106): see FIXES_106 object_lights.c#pointlights.
-	Build 118: looked for again by default, as the GE now lights models by
+	Build 117: looked for again by default, as the GE now lights models by
 	them (rasterizer.c, psp_ge_model_point_light); "nopointlights" skips
 	them, as builds 106-116 did */
 	static int psp_point_lights = -1;

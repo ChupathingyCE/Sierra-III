@@ -306,7 +306,7 @@ static unsigned long window_reads = 0, window_us = 0, window_worst_us = 0;
 static unsigned int frame_read_bytes = 0;
 static unsigned long frame_read_us = 0, frame_read_worst_us = 0;
 
-/* build 118 (R4): a draw whose geometry isn't resident is read for at once,
+/* build 117 (R4): a draw whose geometry isn't resident is read for at once,
 past the frame's share, while the frame has read under twice the share.
 b116 left such a draw out for the frame once the share was spent or the
 queue was full, so an object vanished for a frame or two as it came into
@@ -424,7 +424,7 @@ static void pump(void)
 	}
 }
 
-/* build 118 (R4): e, wanted by a draw this frame and not read by the pump,
+/* build 117 (R4): e, wanted by a draw this frame and not read by the pump,
 read now past the frame's share; 1 when it is resident after */
 static int read_past_share(struct geo_entry *e)
 {
@@ -548,7 +548,7 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	}
 	pump();
 	if (!async_reads && e->state == 1)
-		read_past_share(e); /* build 118 (R4): still queued after the pump */
+		read_past_share(e); /* build 117 (R4): still queued after the pump */
 	if (!async_reads && e->state == 3 && e->size >= size)
 	{
 		e->last_frame = frame;

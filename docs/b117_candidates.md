@@ -1,6 +1,6 @@
-# The next build: candidates (2026-10-12, a draft while b116 waits for its PSP tests)
+# Build 117: candidates (2026-10-12; b116's PSP tests are done)
 
-What comes after b116. Sheepdog01 saved build 117 "for something special", so the next ordinary build is 118 unless he says otherwise. Nothing here ships until b116's tests are done (`CLAUDE.md`: finish testing a build before making the next one). Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator, **[D]** read in the code or tags, **[U]** inference.
+What comes after b116. Sheepdog01 (2026-10-12, after the tests): this build is **117, the performance milestone**, which is the "something special" he had saved the number for. (Until then these notes called it 118: the lab's batch names `dither118`, `lightcut118`, `geoshare118`, `pointlights118` and the branches `speed118`, `speed118p` and `b118` keep that name.) Nothing here ships until b116's tests are done (`CLAUDE.md`: finish testing a build before making the next one). Labels: **[M]** measured on Sheepdog01's PSP-1000, **[E]** emulator, **[D]** read in the code or tags, **[U]** inference.
 
 ## Restorations ready on the branch `hudbars` (on by default, Sheepdog01's rule)
 
@@ -23,7 +23,7 @@ Built on `hudbars` after tests 1–4. Each restores the original or speeds the g
 | C1 | Checkpoints slower than b115's despite half the bytes: b30's first 3,102 ms against 219; c40's 699 against 171; c10's 439–2,046 against 153–201 (tests 1, 3, 4) | **The compact format written in whole 4 KB pieces**: b116 wrote 32 KB stages of any length, so each write ended mid-sector. The file's bytes are the same | — (exact) | the PSP's checkpoint times |
 | P1 | No lighting on actors (test 1) | **Models lit by their point lights again** (muzzle flashes, plasma, the flashlight). b106 stopped looking for them for speed. Up to two per object go to the GE as lights 2 and 3, each colour scaled by the reach at the model's centre (the light pass's falloff and cone); the GE shades each vertex by its angle to the light | `nopointlights` | `pointlights118` [E]: the parts lit, shots, the strict interpreter: pending. b106 measured the search at 2.4% of the emulator's time on b30's beach |
 | V1 | Model buffers in VRAM (test 2): the models' GE time −31% in the cinematic, −44% in the flight; the flight at 4.28 fps against 3.67 | `vrammodels600` by default | a new off word (`vrammodels0`) | **Sheepdog01: yes** ("the single most noticeable performance improvement so far") |
-| PG | The profile-guided build (test 7): the cinematic 182.6 ms a frame against 194.2–196.1, the tick −7% | Build 118 with a profile made from its final code | (exact) | measured [M]; goes in |
+| PG | The profile-guided build (test 7): the cinematic 182.6 ms a frame against 194.2–196.1, the tick −7% | Build 117 with a profile made from its final code | (exact) | measured [M]; goes in |
 
 **An independent review of D1, L1, G1, C1 and P1** (2026-10-12) found D1, G1 and C1 correct, and fixed in `046022a`:
 - P1's lights were given in world coordinates where this file's model matrices put the camera at the origin, so an actor was lit from a direction set by where the player stood (serious).
@@ -130,7 +130,7 @@ A second review read the GE layer for exact speed-ups, keeping the picture byte 
 
 ## When it becomes the build
 
-- `PSP_BUILD_NUMBER` 118 (`psp_platform.c`).
+- `PSP_BUILD_NUMBER` 117 (`psp_platform.c`).
 - `hudonemap`, `glassflat`, `lightcutone`, `geoshare` and `nopointlights` go into the log's list of the restorations' keep words, and into preset 6 ("the b115 look", every restoration off). `ditherall` doesn't need to: preset 6 has `nodither`.
 - `vrammodels600` by default (Sheepdog01: yes, 2026-10-12), with a keep word to turn it off.
 - S9 sounds stay (Sheepdog01's call #1): the bake keeps `--sound s9`.
