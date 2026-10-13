@@ -12485,7 +12485,209 @@ FIXES_118["source/rasterizer/rasterizer.c#glasslit"] = [
 	}"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_CHUPA.items()):
+# build 119: the light pass's surface lists sorted without a call per
+# comparison. structure_render_dynamic_triangles_from_indices sorts each
+# list of surface indices with qsort_4byte, which calls
+# compare_surface_indices through a pointer for every comparison: 9% of
+# d20's drawing instructions (qsort_4byte 6.5%, the comparison 2.5%;
+# hotlines119). psp_sort_surface_indices is the same algorithm (the same
+# pivots, partitions and short sort, so the same swaps) with the comparison
+# written in, and returns at once when the list is already in order. Values
+# alone are sorted, so the list comes out the same. "surfaceqsort": as
+# before; "surfacesortcheck": both, the results compared
+FIXES_119 = {}
+FIXES_119["source/structures/structure_render.c#surfacesort"] = [
+("""static void structure_render_dynamic_triangles_from_indices(
+	short surface_count,
+	long *surface_indices,
+	short *triangles)
+{
+	struct structure_bsp *structure_bsp = global_structure_bsp_get();
+	short surface_index_index;
+
+	qsort_4byte(surface_indices, surface_count, compare_surface_indices);
+""",
+ """#ifdef HALO_PSP
+#include <stdlib.h>
+#include <string.h>
+
+unsigned long psp_surface_sorts = 0, psp_surface_sorts_in_order = 0, psp_surface_sort_mismatches = 0;
+
+/* psp_fixups.py (build 119): qsort_4byte (cseries/sort.c) for
+compare_surface_indices, its comparison (a > b) written in */
+static void psp_sort_surface_indices(
+	long *elements,
+	unsigned long element_count)
+{
+	long *lo_stack[30];
+	long *hi_stack[30];
+	long *lo, *hi, *i, *j, *mid;
+	long depth;
+	unsigned long size, k;
+	long temp;
+
+	if (element_count<2)
+		return;
+	/* already in order (no element above the next): nothing to move */
+	for (k = 1; k < element_count && !(elements[k - 1] > elements[k]); k++)
+		;
+	if (k == element_count)
+	{
+		psp_surface_sorts_in_order++;
+		return;
+	}
+
+	lo = elements;
+	depth = 0;
+	hi = elements+element_count-1;
+
+	for (;;)
+	{
+		size = hi-lo+1;
+		if (size<=8)
+		{
+			/* shortsort_4byte */
+			long *best, *scan;
+			long *top = hi;
+
+			while (top>lo)
+			{
+				best = lo;
+				for (scan = lo+1; scan<=top; scan++)
+				{
+					if (*scan > *best)
+						best = scan;
+				}
+
+				temp = *best;
+				*best = *top;
+				*top = temp;
+
+				top--;
+			}
+		}
+		else
+		{
+			mid = lo+(size>>1);
+			temp = *mid;
+			*mid = *lo;
+			*lo = temp;
+
+			i = lo;
+			j = hi+1;
+
+			for (;;)
+			{
+				do
+				{
+					i++;
+				}
+				while (i<=hi && !(*i > *lo));
+
+				do
+				{
+					j--;
+				}
+				while (j>lo && *j > *lo);
+
+				if (j<i)
+					break;
+
+				temp = *i;
+				*i = *j;
+				*j = temp;
+			}
+
+			temp = *lo;
+			*lo = *j;
+			*j = temp;
+
+			if ((char *)j-(char *)lo-1>=(char *)hi-(char *)i)
+			{
+				if (lo+1<j)
+				{
+					lo_stack[depth] = lo;
+					hi_stack[depth] = j-1;
+					depth++;
+				}
+				if (i<hi)
+				{
+					lo = i;
+					continue;
+				}
+			}
+			else
+			{
+				if (i<hi)
+				{
+					lo_stack[depth] = i;
+					hi_stack[depth] = hi;
+					depth++;
+				}
+				if (lo+1<j)
+				{
+					hi = j-1;
+					continue;
+				}
+			}
+		}
+
+		if (--depth<0)
+			break;
+
+		lo = lo_stack[depth];
+		hi = hi_stack[depth];
+	}
+}
+#endif
+
+static void structure_render_dynamic_triangles_from_indices(
+	short surface_count,
+	long *surface_indices,
+	short *triangles)
+{
+	struct structure_bsp *structure_bsp = global_structure_bsp_get();
+	short surface_index_index;
+
+#ifdef HALO_PSP
+	{
+		extern int psp_keep(const char *name);
+		static int old = -1, check = 0;
+
+		if (old < 0)
+		{
+			old = psp_keep("surfaceqsort");
+			check = psp_keep("surfacesortcheck");
+		}
+		if (old)
+			qsort_4byte(surface_indices, surface_count, compare_surface_indices);
+		else if (check && surface_count > 1)
+		{
+			/* "surfacesortcheck": the old sort on a copy, the two compared */
+			long *copy = malloc(surface_count * sizeof(long));
+
+			if (copy)
+				memcpy(copy, surface_indices, surface_count * sizeof(long));
+			psp_sort_surface_indices(surface_indices, surface_count);
+			if (copy)
+			{
+				qsort_4byte(copy, surface_count, compare_surface_indices);
+				if (memcmp(copy, surface_indices, surface_count * sizeof(long)))
+					psp_surface_sort_mismatches++;
+				free(copy);
+			}
+		}
+		else
+			psp_sort_surface_indices(surface_indices, surface_count);
+		psp_surface_sorts++;
+	}
+#else
+	qsort_4byte(surface_indices, surface_count, compare_surface_indices);
+#endif
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
