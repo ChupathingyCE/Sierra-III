@@ -489,9 +489,10 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - `noboxtest`, `listuncached`, `stalleach`, `nolevelreserve`, `nosizefloor`, `vramlargest`;
 - `transparent`, `textures`, `interpolation`, `novfpu`, `noscratch`, `nocull`;
 - `readerslow`, `nomeaudio`.
+- build 118: `verifyvectors` (X10, the vector checks), `tcutfull` (T1, the see-through cut's sphere test), `restlesscheck` (the restless back-off: every sleep candidate checked every tick).
 
 Pacing word: `novblankthrottle` turns the throttle off. Frames get faster, but the warthog bounces again.
 
-Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`.
+Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118).
 
 Build switches that undo savings: `PSP_MAP_CHECKS=1`, `PSP_NO_COLD=1`, `PSP_DEBUG_TOOLS=1`, `PSP_MULTIPLAYER=1`.

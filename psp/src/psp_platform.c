@@ -666,12 +666,15 @@ static void object_report(SceUID file, unsigned long ticks)
 	}
 	{
 		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep; /* objects.c (psp_fixups.py) */
+		extern long psp_objects_restless_skipped; /* build 118: the restless back-off */
 
-		if (length < (int)sizeof(line) - 110)
-			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses)",
+		if (length < (int)sizeof(line) - 140)
+			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses); restless, unchecked %.1f",
 				ticks ? (double)psp_objects_asleep / ticks : 0.0, ticks ? (double)psp_objects_sleep_checked / ticks : 0.0,
-				ticks ? (double)psp_vehicles_asleep / ticks : 0.0, ticks ? (double)psp_corpses_asleep / ticks : 0.0);
+				ticks ? (double)psp_vehicles_asleep / ticks : 0.0, ticks ? (double)psp_corpses_asleep / ticks : 0.0,
+				ticks ? (double)psp_objects_restless_skipped / ticks : 0.0);
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
+		psp_objects_restless_skipped = 0;
 	}
 	platform_log("  %s", line);
 	{

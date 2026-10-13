@@ -2316,6 +2316,23 @@ long psp_corpses_off_level, psp_corpse_ground_tests;
 offered to sleep, whether the level is under it (psp_corpse_on_level: 0 not
 asked yet, 1 the level, 2 not). Still 8 bytes an entry */
 static struct { short identifier; signed char quiet; unsigned char ground; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
+/* build 118: the restless back-off. An object whose update changed it on
+PSP_RESTLESS_FAILS checks running (swaying vegetation, a looping animation)
+is updated without the checks for PSP_RESTLESS_TICKS ticks, then checked
+again. c10's swamp checked ~556 objects a tick and ~238 of them changed
+every time, each summed before and after its update for nothing: the sums
+were 22% of c10's tick in the cache model (tickmap118). Not checking only
+ever means updating, as the Xbox always does, so play can't change; an
+object that settles sleeps up to PSP_RESTLESS_TICKS later. An entry counts
+its failed checks, then (high bit set) the ticks it has left unchecked; it
+belongs to the object psp_sleep's entry names. "restlesscheck" (keep.txt):
+every tick checked, as before */
+#define PSP_RESTLESS_FAILS 2
+#define PSP_RESTLESS_TICKS 30
+#define PSP_RESTLESS_SKIPPING 0x80
+static unsigned char psp_restless[MAXIMUM_OBJECTS_PER_MAP];
+static int psp_restless_on = -1;
+long psp_objects_restless_skipped; /* updates made without the checks (the heartbeat's sleep line) */
 
 /* What the byte-identical rule leaves out of an object's data: the words an
 update changes every tick without changing anything the game shows or does.
@@ -2934,6 +2951,21 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 	int corpse_reported = 0;
 	int unchecked = psp_scenery_skips_check(header, absolute_index, may_sleep);
 
+	/* build 118: a restless object in its unchecked ticks is updated as it
+	comes (the back-off, above psp_checksum_rules) */
+	if (psp_restless_on < 0)
+		psp_restless_on = !psp_keep("restlesscheck");
+	if (!unchecked && psp_restless_on && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		(psp_restless[absolute_index] & PSP_RESTLESS_SKIPPING) &&
+		psp_sleep[absolute_index].identifier == header->identifier)
+	{
+		unsigned char left = (unsigned char)(psp_restless[absolute_index] & ~PSP_RESTLESS_SKIPPING);
+
+		psp_restless[absolute_index] = left > 1 ? (unsigned char)(PSP_RESTLESS_SKIPPING | (left - 1)) : 0;
+		psp_objects_restless_skipped++;
+		object_update(object_index);
+		return;
+	}
 	if (unchecked)
 		psp_scenery_unchecked++;
 	else if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
@@ -3125,13 +3157,21 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 			psp_sleep[absolute_index].quiet = 1;
 			psp_sleep[absolute_index].ground = 0; /* build 114: a new object in the slot */
 		}
+		psp_restless[absolute_index] = 0; /* build 118 */
 	}
 	else
 	{
+		/* build 118: one more failed check; the last allowed starts the
+		back-off. A new object in the slot starts its count afresh */
+		unsigned char fails = psp_sleep[absolute_index].identifier == header->identifier ? psp_restless[absolute_index] : 0;
+
 		if (psp_sleep[absolute_index].identifier != header->identifier)
 			psp_sleep[absolute_index].ground = 0;
 		psp_sleep[absolute_index].identifier = header->identifier;
 		psp_sleep[absolute_index].quiet = 0;
+		if (psp_restless_on)
+			psp_restless[absolute_index] = fails + 1 >= PSP_RESTLESS_FAILS ?
+				(unsigned char)(PSP_RESTLESS_SKIPPING | PSP_RESTLESS_TICKS) : (unsigned char)(fails + 1);
 	}
 	psp_sleep[absolute_index].checksum = before;
 	if (psp_sleep_debug > 0 && header->type == _object_type_vehicle && between_index == absolute_index)
