@@ -5438,7 +5438,10 @@ void matrix4x3_multiply(
 # and stays on its own corner. (The game's own HUD scale, for split screen,
 # is overridden per element in multiplayer.) Names over players, nav points
 # and damage arrows follow the 3D view and keep the full window.
-# keep.txt: hud100, hud115, hud130, hud145, hud160 (default 1.5)
+# keep.txt: hud100, hud115, hud130, hud145, hud160, hud177 (default 1.5)
+# hud177 (build 120): 848 / 480 = 1.767, the zoom at which a HUD texel is one
+# PSP pixel (480/848 x 1.767 = 1.000, 272/480 x 1.767 = 1.001); with hudsnap
+# (psp_ge.c, hud_draw) the HUD is drawn 1:1, with nothing left to filter
 FIXES_36["source/interface/hud.c"] = [
 ("""void hud_draw_screen(
 	void)
@@ -5461,7 +5464,7 @@ static void psp_hud_zoom_begin(void)
 
 	if (zoom == 0.0f)
 		zoom = psp_keep("hud100") ? 1.0f : psp_keep("hud115") ? 1.15f : psp_keep("hud130") ? 1.3f :
-			psp_keep("hud145") ? 1.45f : psp_keep("hud160") ? 1.6f : 1.5f; /* build 40: 1.5 (Sheepdog01, b39: 1.3 readable with the full-size textures, but small) */
+			psp_keep("hud145") ? 1.45f : psp_keep("hud160") ? 1.6f : psp_keep("hud177") ? 848.0f / 480.0f : 1.5f; /* build 40: 1.5 (Sheepdog01, b39: 1.3 readable with the full-size textures, but small) */
 	if (psp_hud_zoomed || zoom == 1.0f)
 		return;
 	psp_hud_window = render.camera.window_bounds;

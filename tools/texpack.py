@@ -343,6 +343,17 @@ LIGHTMAP_MASKS = {}
 # (Castano's coverage-preserving mipmaps)
 ALPHA_COVERAGE = False
 ALPHA_TESTED = set()
+
+# build 120 (Sheepdog01: the HUD looks soft): HUD sheets stay at 8 bits. The
+# 16-colour test below compares a bitmap's error with the 16-bit frame
+# buffer's own, which a glyph's anti-aliased edge or a meter's soft ramp can
+# pass while its steps show (the same test banded effect gradients,
+# hardware_b114.md). HUD sheets are few and small, and drawn near their own
+# size, so every step is seen. --hud-clut4 puts them back under the test.
+# HUD_KEPT_8: the sheets the old rule would have put at 4 bits (the log's
+# 'HUD sheets' line, so a bake says whether this changed anything)
+HUD_CLUT4 = False
+HUD_KEPT_8 = []
 # build 102: per-class detail (texpack.py --full-detail fp,vehicles,...):
 # these classes keep their top level (the bake otherwise halves every texture
 # of 64 px and more) and the 256 px cap rises to 512. A lever to try, not the
@@ -461,7 +472,10 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
         reference[:, :, 1] &= 0xFC
         reference[:, :, 2] &= 0xF8
         if psnr(small, rec4) >= psnr(small[:, :, :3], reference[:, :, :3]) - 1.0:
-            idx, pal, rec, bits = idx4, pal4[:16], rec4, 4
+            if cls == 'ui/hud' and not HUD_CLUT4:
+                HUD_KEPT_8.append(b['tag'])
+            else:
+                idx, pal, rec, bits = idx4, pal4[:16], rec4, 4
     if alpha:
         palette = pal.astype(np.uint8).tobytes()                       # 8888, r g b a
         clut = 3
@@ -529,8 +543,10 @@ def main():
     ap.add_argument('--pgeo', default=None, help='the map\'s geometry pack (default: beside the map) for the lightmap masks')
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
+    ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
     a = ap.parse_args()
-    global FULL_DETAIL
+    global FULL_DETAIL, HUD_CLUT4
+    HUD_CLUT4 = a.hud_clut4
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
         sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
@@ -588,6 +604,12 @@ def main():
                 print('  %s: detail map folded in for %s' % (b['tag'], mlooks[b['address']]['shader']), file=sys.stderr)
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
+    if HUD_CLUT4:
+        print('HUD sheets: 16 colours allowed (--hud-clut4)', file=sys.stderr)
+    else:
+        kept = sorted(set(HUD_KEPT_8))
+        print('HUD sheets: %d kept at 8 bits that the old rule put at 4%s' % (
+            len(kept), (': ' + ', '.join(kept)) if kept else ''), file=sys.stderr)
     entries.sort(key=lambda e: e['key'])
     # build 116: the see-through shaders' tints (seethrough.py)
     tints = seethrough.tints(m, bitmap_list(m, d))

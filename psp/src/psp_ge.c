@@ -11223,6 +11223,21 @@ game's coordinates times its texture scale are 0 to 1 across the bitmap, or,
 for its linear (interface) bitmaps, in the bitmap's own texels (build 26) */
 static float hud_u_scale = 1.0f, hud_v_scale = 1.0f;
 
+/* build 120 (Sheepdog01: the HUD looks soft): "hudsnap" puts each HUD quad's
+corners on whole pixels. Placed at the game's coordinates times the screen
+scale, an element's edge lands part-way across a pixel, and the bilinear
+filter spreads it over two. On whole pixels a texel drawn at its own size
+(hud177) is exactly one pixel, as the screen copy relies on (shift 0, above);
+at other zooms the edges at least stop smearing, and every element is as
+sharp as every other. A slanted quad's corners move by at most half a pixel.
+A look change: off until Sheepdog01's A/B */
+static int hud_snap = -1;
+
+static float hud_pixel(float position)
+{
+	return hud_snap ? floorf(position + 0.5f) : position;
+}
+
 static void hud_draw(struct game_screen_vertex const *in, int width, int height, float offset_x, float offset_y,
 	int use_vertex_color, unsigned int color, float red, float green, float blue, float fade)
 {
@@ -11232,13 +11247,15 @@ static void hud_draw(struct game_screen_vertex const *in, int width, int height,
 
 	if (!out)
 		return;
+	if (hud_snap < 0)
+		hud_snap = psp_keep("hudsnap");
 	for (index = 0; index < 4; index++)
 	{
 		out[index].u = in[index].u * hud_u_scale * width;
 		out[index].v = in[index].v * hud_v_scale * height;
 		out[index].color = argb_to_abgr(use_vertex_color ? in[index].argb : color, red, green, blue, fade);
-		out[index].x = (in[index].x + offset_x) * ui_scale_x * hud_zoom + ui_offset_x;
-		out[index].y = (in[index].y + offset_y) * ui_scale_y * hud_zoom;
+		out[index].x = hud_pixel((in[index].x + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
+		out[index].y = hud_pixel((in[index].y + offset_y) * ui_scale_y * hud_zoom);
 		out[index].z = 0.0f;
 	}
 	sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 4, NULL, out);
