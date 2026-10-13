@@ -3879,10 +3879,20 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 			continue;
 		if (used + bytes > PSP_STATE_STAGE)
 		{
-			ok = WriteFile(handle, stage, used, &written, NULL) && written == used;
-			used = 0;
+			/* build 118: whole 4 KB pieces only, the rest moved to the
+			stage's start, so every write but the last starts and ends on a
+			4 KB bound of the file. b116 test 1 [M]: written in pieces of any
+			length, b30's first checkpoint (330 pages, 768 KB) took 3,102
+			ms where b115 wrote the same 330 pages whole, 1,320 KB, in 219 ms
+			(that a write ending mid-sector makes the Memory Stick rewrite
+			it for the next one is [U]) */
+			unsigned long whole = used & ~(unsigned long)(PSP_STATE_PAGE - 1);
+
+			ok = WriteFile(handle, stage, whole, &written, NULL) && written == whole;
 			if (!ok)
 				break;
+			memmove(stage, stage + whole, used - whole);
+			used -= whole;
 		}
 		if (counts[page] >= PSP_STATE_RAW_ABOVE)
 			csmemcpy(stage + used, words, PSP_STATE_PAGE);
