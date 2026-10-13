@@ -1,11 +1,11 @@
 # Halo PSP launch presets: one a line, "name: keep words" (no colon in the name). The launch menu's
-# third page (R from the options) lists them; cross applies one. Build 118's tests
-# (docs/build_b118.md says what each answers and when to stop).
-1 play, b118 as it ships: nearauto assettrack geo2
+# third page (R from the options) lists them; cross applies one. Build 119's tests
+# (docs/build_b119.md says what each answers and when to stop).
+1 play, b119 as it ships: nearauto assettrack geo2
 2 ladder, all campaign openings, 90 s each: nearauto assettrack geo2 gebusy iostats ladder90
-3 cinematic bench, stops by itself: nearauto assettrack geo2 gebusy exitat70
-4 cinematic bench, model buffers in main RAM: nearauto assettrack geo2 gebusy vrammodels0 exitat70
-5 ceiling bench, hands off from the start: nearauto assettrack geo2 ceilingbench exitat300
-6 cinematic bench, 118's speed-ups off: nearauto assettrack geo2 gebusy restlesscheck spherewalk nearspherefull multiscan verifyvectors tcutfull exitat70
+3 ladder, the old slow clock: nearauto assettrack geo2 gebusy iostats ladder90 vblankslow
+4 cinematic bench, stops by itself: nearauto assettrack geo2 gebusy exitat70
+5 cinematic bench, 119's speed-ups off: nearauto assettrack geo2 gebusy nearclusterfull skinaxisloop rigidrunsfull surfaceqsort exitat70
+6 ladder with the probes: nearauto assettrack geo2 gebusy iostats ladder90 probes
 7 the b117 look (118's restoration off): nearauto assettrack geo2 overlaywallnear
 8 the b115 look, every restoration off: nearauto assettrack geo2 overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages hudonemap glassflat lightcutone geoshare nopointlights overlaywallnear
