@@ -2002,6 +2002,11 @@ static unsigned long clipped_this_frame = 0, culled_this_frame = 0, model_draws_
 directions in the world */
 static float camera_right[3], camera_up[3], camera_forward[3];
 static float guard_x, guard_y;
+/* build 118: the lengths of the guard band's side planes' normals as
+outside() writes them (x = guard_x z has (1, 0, -guard_x)), set with
+guard_x and guard_y, so a sphere can be tested against those planes
+without a square root each time (model_sphere_inside) */
+static float guard_x_length = 1.0f, guard_y_length = 1.0f;
 /* build 36: the game's own near plane (0.0625 world units on Blood Gulch),
 set each frame; it was a fixed 0.25, and the player stands about 0.2 from a
 wall he walks into, so the wall was cut away and the view went through it */
@@ -2013,6 +2018,11 @@ is never cut off by the near plane nor sinks into a wall in front of it */
 #define WORLD_DEPTH_NEAR 61439
 #define FIRST_PERSON_DEPTH_FAR 61440
 static int model_first_person = 0, model_near = 0;
+/* build 118: the model's bounding sphere (the object's, which the game
+culls it by) in camera space, for transparent_cut's fast path; set by
+psp_ge_model_shape, radius 0 when there is none (the sky, a flag, the
+first-person weapon, after the model ends or a new window begins) */
+static float model_sphere[3], model_sphere_radius = 0.0f;
 static unsigned long first_person_flushes = 0;
 static float projection_fov = 1.2f, projection_near = 0.0625f, projection_far = 1000.0f;
 static float first_person_near = 0.0117f, first_person_far = 1024.0f;
@@ -3028,6 +3038,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	projection_far = z_far;
 	model_first_person = 0;
 	model_near = 0;
+	model_sphere_radius = 0.0f; /* build 118: a new camera; the next model sets its own */
 	/* the clipping against the near plane, every frame (the GE's state may
 	not survive the PSP sleeping) */
 	sceGuEnable(GU_CLIP_PLANES);
@@ -3076,6 +3087,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		camera_up[2] = camera_right[0] * forward[1] - camera_right[1] * forward[0];
 		guard_y = GUARD * tanf(vertical_field_of_view * 0.5f);
 		guard_x = guard_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+		guard_x_length = sqrtf(1.0f + guard_x * guard_x); /* build 118 */
+		guard_y_length = sqrtf(1.0f + guard_y * guard_y);
 	}
 	sceGumMatrixMode(GU_MODEL);
 	world_model();
@@ -5607,6 +5620,7 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 {
 	GE_BENCH_SKIP();
 	GE_DEFER(defer_model_shape(first_person, centroid, radius, near_fp, far_fp));
+	model_sphere_radius = 0.0f; /* build 118: none until this model's is known */
 	if (!frame_open)
 		return;
 	if (near_fp > 0.001f)
@@ -5626,6 +5640,11 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 		float c[3];
 
 		to_camera(centroid, c);
+		/* build 118: kept for the model's see-through parts (transparent_cut) */
+		model_sphere[0] = c[0];
+		model_sphere[1] = c[1];
+		model_sphere[2] = c[2];
+		model_sphere_radius = radius;
 		/* build 107: the sphere's diameter on the screen, for the size floor */
 		if (c[2] > radius)
 			model_pixels = 2.0f * radius * (SCREEN_HEIGHT * 0.5f) / (fov_tan_half() * c[2]); /* build 114: the remembered tangent (b112 cache model: tanf 14,000 instructions a frame) */
@@ -8394,6 +8413,76 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 	widget_sprites++;
 }
 
+/* build 118: the sphere first. Most see-through parts are wholly in view,
+and for those transparent_cut (below) transforms every corner and tests
+every triangle only to leave the draw as it was (1.3-3.5 ms a frame in the
+emulator, b117_candidates.md [E]). The model's bounding sphere decides it
+first (psp_ge_model_shape: the object's, its root node's bounding offset
+and the tag's bounding radius times its scale, the sphere the game culls the
+object by). If the sphere lies wholly inside every plane outside() tests,
+so does every corner within it, no triangle has a bit set, and the loop
+would return with the draw untouched: it is skipped.
+That holds only while every corner lies within the sphere, which nothing
+guarantees: a tag's radius set too small, a part animated out past it, a
+blended corner placed by its first node alone (the rigid record keeps only
+that, psp_ge_queue_transparent_body). The opaque parts have trusted the
+same sphere since build 56 (model_near: a model whose sphere is clear has
+no triangle checked). Parts without a sphere (the sky's, a flag's: radius
+0) take the loop as before. Plain floats and no system call: this can run
+on the Media Engine.
+"tcutcheck": the loop runs anyway after the sphere says inside, and the
+log counts the parts where it found a triangle outside (the first few with
+how far out their farthest corner lies). "tcutfull": no sphere test, as
+builds 60-117 */
+static int tcut_full = -1, tcut_check = -1;
+static unsigned long tcut_parts = 0, tcut_no_sphere = 0, tcut_inside = 0, tcut_mismatches = 0;
+static unsigned long tcut_mismatches_logged = 0;
+
+/* whether the model's sphere lies wholly inside the planes outside()
+tests: its nearest depth at or past the near plane, and its centre inside
+each side plane by its radius (those planes pass through the eye; their
+normals, as outside() writes them, are guard_x_length and guard_y_length
+long). The radius gets 1% and 0.01 units more for the rounding between the
+corners' transform and the centre's. Written so a NaN fails */
+static int model_sphere_inside(void)
+{
+	const float *c = model_sphere;
+	float r = model_sphere_radius * 1.01f + 0.01f;
+
+	return model_sphere_radius > 0.0f && c[2] - r >= NEAR_CLIP &&
+		fabsf(c[0]) + r * guard_x_length <= guard_x * c[2] &&
+		fabsf(c[1]) + r * guard_y_length <= guard_y * c[2];
+}
+
+/* "tcutcheck": a part its model's sphere called wholly in view has a
+triangle outside some plane (bits, outside()'s). Counted; the first few
+logged, with the part's corner farthest from the sphere's centre */
+static void transparent_sphere_missed(const struct transparent_draw *draw, int vertex_count, int bits)
+{
+	float farthest = 0.0f;
+	long i;
+
+	tcut_mismatches++;
+	if (tcut_mismatches_logged >= 8)
+		return;
+	tcut_mismatches_logged++;
+	for (i = 0; i < draw->index_count; i++)
+	{
+		float c[3], dx, dy, dz;
+
+		if (draw->indices[i] >= vertex_count)
+			continue;
+		model_to_camera(&draw->matrix, (const float *)((const unsigned char *)draw->vertices + 24 * draw->indices[i] + 12), c);
+		dx = c[0] - model_sphere[0];
+		dy = c[1] - model_sphere[1];
+		dz = c[2] - model_sphere[2];
+		if (dx * dx + dy * dy + dz * dz > farthest)
+			farthest = dx * dx + dy * dy + dz * dz;
+	}
+	platform_log("GE: tcutcheck: a see-through part (key %08x, %d vertices) its model's sphere (radius %.3f, %.2f ahead) called wholly in view has a triangle outside (planes %d); its farthest corner is %.3f from the centre",
+		draw->key, vertex_count, model_sphere_radius, model_sphere[2], bits, sqrtf(farthest));
+}
+
 /* build 60: a see-through model part checked against the camera as the
 level is: triangles wholly inside kept, wholly outside a plane skipped, the
 rest cut on the CPU. These parts were given to the GE whole. The sky is
@@ -8406,8 +8495,26 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 	const unsigned short *indices = draw->indices;
 	long triangles = draw->strip ? draw->index_count - 2 : draw->index_count / 3, t, count = 0;
 	unsigned short *kept = NULL;
-	int k, any = 0, cut = 0;
+	int k, any = 0, cut = 0, sphere_inside = 0;
 
+	/* build 118: the model's sphere first (above) */
+	if (tcut_full < 0)
+		tcut_full = psp_keep("tcutfull");
+	if (tcut_check < 0)
+		tcut_check = psp_keep("tcutcheck");
+	tcut_parts++;
+	if (!tcut_full)
+	{
+		if (model_sphere_radius <= 0.0f)
+			tcut_no_sphere++;
+		else if (model_sphere_inside())
+		{
+			tcut_inside++;
+			if (!tcut_check)
+				return;
+			sphere_inside = 1;
+		}
+	}
 	corner_verdict_reset();
 	for (t = 0; t < triangles; t++)
 	{
@@ -8452,6 +8559,8 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 			long u;
 
 			any = 1;
+			if (sphere_inside)
+				transparent_sphere_missed(draw, vertex_count, bits[0] | bits[1] | bits[2]);
 			kept = list_take((int)((triangles * 3) * sizeof(unsigned short) + 3) & ~3);
 			if (!kept)
 				return;
@@ -13581,6 +13690,22 @@ void psp_ge_frame_end(void)
 				seethrough_lit_draws, model_point_parts);
 		seethrough_lit_draws = 0;
 		model_point_parts = 0;
+		/* build 118: transparent_cut's sphere test (the words read here too:
+		until a part has been cut they are still -1) */
+		if (tcut_full < 0)
+			tcut_full = psp_keep("tcutfull");
+		if (tcut_check < 0)
+			tcut_check = psp_keep("tcutcheck");
+		if (tcut_full)
+			platform_log("GE: see-through parts to cut, last 300 frames: %lu, each checked triangle by triangle (tcutfull)",
+				tcut_parts);
+		else if (tcut_check)
+			platform_log("GE: see-through parts to cut, last 300 frames: %lu; wholly in view by their model's sphere %lu, no sphere %lu; tcutcheck: of the %lu the sphere called in view, checked triangle by triangle anyway, %lu had a triangle outside",
+				tcut_parts, tcut_inside, tcut_no_sphere, tcut_inside, tcut_mismatches);
+		else
+			platform_log("GE: see-through parts to cut, last 300 frames: %lu; wholly in view by their model's sphere %lu (left whole, no triangle checked), no sphere %lu",
+				tcut_parts, tcut_inside, tcut_no_sphere);
+		tcut_parts = tcut_no_sphere = tcut_inside = tcut_mismatches = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
