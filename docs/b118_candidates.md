@@ -11,6 +11,8 @@ Nothing here ships until b117's tests are done (`CLAUDE.md`). Labels: **[M]** PS
 | T1 | `transparent_cut` skips a see-through part whose model's bounding sphere is wholly in view (from `tcut118`) | exact speed-up | `tcutfull`; `tcutcheck` verifies | lab run 38353068304 (`w118c`) |
 | X10 | The units' and bipeds' vector checks skipped (they act only on broken vectors) | exact speed-up | `verifyvectors` | Exact: play agrees to the cross-keep reach (`mebench118`, 38357172854) [E]. Worth small (0.3–1.3% of the tick's instructions, `tickmap118`): b114's "6%" was `PSP_TICK_STEPS` timing the inline work after the call too |
 | R1 | **The restless back-off**: an object whose update changed it on two sleep checks running is updated without the checks for 30 ticks (`887a84b`) | exact speed-up | `restlesscheck` | c10: −15% of the tick's instructions, −14.5% instruction misses; a30: −8%; play and seeds agree all 3,600 ticks (`restless118`, 38364074267) [E]. Strict clean on c10, b30. Rig ladder: c10's tick 22.6 ms against b117's 25.8 on the PSP-1000 [M, cross-device] |
+| X9a | **The level sphere queries' answers remembered** (`f5756af`): 32 entries under all their inputs (the BSP, centre and radius bit for bit, the breakable surfaces' flags), forgotten at each collision BSP set and each map's tags | exact speed-up | `spherewalk`; `spherememocheck` verifies | Probe (38368364688): a50 53–59% of queries repeat last tick's exactly. Memo (38369948767): 0 differing answers on a50, b30, d20, c20; a50 −3.0% of the tick's instructions; play and seeds agree all 3,600 ticks; strict clean [E]. Hits a50 26–32%, b30 63–69%, d20 ~5%, c20 7%: d20 and c20 lose repeats to the table's size, a50 to big answers (`spheresize118`, 38374265166). More entries: ~1% of the tick for ~7 KB of heap (Sheepdog01's trade) |
+| NS | **The near path's sphere test** (`53a9ffb`): a bending batch near the eye whose sphere is wholly inside the corner tests' planes is drawn whole without its corner loop (each slot's image of the batch's sphere; a Gershgorin bound on the slot's stretch) | exact speed-up | `nearspherefull`; `nearspherecheck` verifies | `nearsphere118` (38370888358): "all whole" on a30, b30, c40; a30: 6 of 8 whole batches a frame passed by their sphere, drawing −2.2% instructions, model geometry 14.7 → 13.7 ms a frame [E]. transparent_cut's test now shares `sphere_inside` |
 | H1 | Frames counted by display refreshes shown (1, 2, 3, 4, 5+) and the longest, in the 300-frame GE report: the momentary drops below 30 fps that 5 s averages hide | instrument | — | — |
 
 ## L1: what makes the overlap safe
@@ -43,7 +45,7 @@ Six levels, 120 s each, by function (`cachemap.txt`). Share of the tick's instru
 (? : below the report's top 40 by instruction misses.) **X8 is parked:** its "8%" was a step share. Drawing's biggest is `model_geometry` (19–28% of drawing's instructions on b30 and a30) and on d20 the light pass (15%).
 
 ## Next
-1. ~~`w118c`~~ clean; ~~`mebench`~~ answered (L1: no gain); ~~X10~~ exact; R1 built and checked.
+1. ~~`w118c`~~ clean; ~~`mebench`~~ answered (L1: no gain); ~~X10~~ exact; R1, X9a and NS built, checked, merged. `w118d` (38375333273): all together, the ten-level ladder and four strict openings.
 2. R1 on the rig against `restlesscheck`, same device, c10 (batched with the next hardware question).
 3. The tick: X9 (collision walks, a50's biggest), posing on c10/c20; `model_geometry`'s near and far paths split by a probe.
 4. The shadow pass memo; c40's restorations from Sheepdog01's notes (`b117_candidates.md`).
