@@ -44,6 +44,7 @@ Labels: **[M]** measured on a PSP (the PSP-3000 rig's figures are marked as such
 | The Library (c20) | 7.7 | 26.5 | 15.2 | 7.8 / 26.7 |
 | Two Betrayals (c40) | 12.9 | 16.0 | 25.2 | 12.6 / 16.7 |
 | Keyes (d20) | 7.7 | 22.7 | 14.2 | 7.3 / 16.9 (a different stretch: cut short) |
+| **The Maw (d40)** | **16.3** | 4.2 | **29.8** | (never measured) — **meets the floor (15 fps at 30 ticks)**: hands-off at its start, the opening only (lab run 38398689046) |
 
 The rig ran b116 within ~2% of the PSP-1000 on the frame and 1% on the tick (`hardware_rig.md`); its GE is about 12% slower.
 
