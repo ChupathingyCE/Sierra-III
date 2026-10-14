@@ -848,10 +848,9 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 
 /* the PSP is about to sleep: the volatile partition goes back to the system
 (psp_tex_suspend), and the blocks in it are forgotten */
-void psp_geo_suspend(void)
+/* a read in flight finished, so its descriptor can be closed */
+void psp_geo_settle(void)
 {
-	/* the arena is in the heap, which sleep keeps: only a read in flight is
-	finished first */
 	if (pack >= 0 && inflight >= 0)
 	{
 		SceInt64 result;
@@ -859,6 +858,13 @@ void psp_geo_suspend(void)
 		sceIoWaitAsync(pack, &result);
 		poll();
 	}
+}
+
+void psp_geo_suspend(void)
+{
+	/* the arena is in the heap, which sleep keeps: only a read in flight is
+	finished first */
+	psp_geo_settle();
 	/* carved from the texture RAM cache, the arena goes back to the
 	system with the volatile partition: its blocks are forgotten (the renderer
 	re-reads what it draws) */

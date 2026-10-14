@@ -5437,10 +5437,11 @@ void matrix4x3_multiply(
 # and stays on its own corner. (The game's own HUD scale, for split screen,
 # is overridden per element in multiplayer.) Names over players, nav points
 # and damage arrows follow the 3D view and keep the full window.
-# keep.txt: hud100, hud115, hud130, hud145, hud160, hud177 (default 1.5)
-# hud177: 848 / 480 = 1.767, the zoom at which a HUD texel is one
+# keep.txt: hud100, hud115, hud130, hud145, hud150, hud160 (default 1.767)
+# The default, 848 / 480 = 1.767, is the zoom at which a HUD texel is one
 # PSP pixel (480/848 x 1.767 = 1.000, 272/480 x 1.767 = 1.001); with hudsnap
-# (psp_ge.c, hud_draw) the HUD is drawn 1:1, with nothing left to filter
+# (psp_ge.c, hud_draw) the HUD is drawn 1:1, with nothing left to filter.
+# Sheepdog01 chose it over 1.5 by A/B (hardware_b120.md, test 4b)
 FIXES_36["source/interface/hud.c"] = [
 ("""void hud_draw_screen(
 	void)
@@ -5454,6 +5455,11 @@ static int psp_hud_zoomed = 0;
 side (the game's own window units; hud_draw.c's hud_calculate_point) */
 short psp_hud_push = 0;
 #define PSP_HUD_PUSH 32
+/* the top corners' elements move this far up, for the room the 1:1 zoom
+takes (Sheepdog01, test 4b: closer to the top edge); about 12 PSP pixels, leaving
+the ammo and shield bars ~6 pixels from the edge */
+short psp_hud_push_up = 0;
+#define PSP_HUD_PUSH_UP 7
 
 static void psp_hud_zoom_begin(void)
 {
@@ -5463,7 +5469,7 @@ static void psp_hud_zoom_begin(void)
 
 	if (zoom == 0.0f)
 		zoom = psp_keep("hud100") ? 1.0f : psp_keep("hud115") ? 1.15f : psp_keep("hud130") ? 1.3f :
-			psp_keep("hud145") ? 1.45f : psp_keep("hud160") ? 1.6f : psp_keep("hud177") ? 848.0f / 480.0f : 1.5f; /* build 40: 1.5 (Sheepdog01, b39: 1.3 readable with the full-size textures, but small) */
+			psp_keep("hud145") ? 1.45f : psp_keep("hud150") ? 1.5f : psp_keep("hud160") ? 1.6f : 848.0f / 480.0f;
 	if (psp_hud_zoomed || zoom == 1.0f)
 		return;
 	psp_hud_window = render.camera.window_bounds;
@@ -5475,6 +5481,7 @@ static void psp_hud_zoom_begin(void)
 	}
 	psp_ge_hud_zoom(zoom);
 	psp_hud_push = psp_keep("hudnopush") ? 0 : PSP_HUD_PUSH;
+	psp_hud_push_up = psp_keep("hudnopushup") ? 0 : PSP_HUD_PUSH_UP;
 	psp_hud_zoomed = 1;
 }
 
@@ -5486,6 +5493,7 @@ static void psp_hud_zoom_end(void)
 	render.camera.viewport_bounds = psp_hud_viewport;
 	psp_ge_hud_zoom(1.0f);
 	psp_hud_push = 0;
+	psp_hud_push_up = 0;
 	psp_hud_zoomed = 0;
 }
 #define PSP_HUD_ZOOM_BEGIN psp_hud_zoom_begin();
@@ -5550,9 +5558,11 @@ FIXES_36["source/interface/hud_draw.c"] = [
 			render.camera.viewport_bounds.y0;
 #ifdef HALO_PSP
 		{
-			extern short psp_hud_push; /* hud.c (psp_fixups.py) */
+			extern short psp_hud_push, psp_hud_push_up; /* hud.c (psp_fixups.py) */
 
 			point.x += TEST_FLAG(corner, _hud_anchor_right_bit) ? psp_hud_push : -psp_hud_push;
+			if (!TEST_FLAG(corner, _hud_anchor_bottom_bit))
+				point.y -= psp_hud_push_up;
 		}
 #endif
 	}"""),

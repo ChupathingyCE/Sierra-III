@@ -154,6 +154,47 @@ enum { IO_TEXTURES, IO_GEOMETRY, IO_ANIMATIONS, IO_MAP, IO_LOG, IO_OTHER, IO_KIN
 static const char *const io_kind_names[IO_KINDS] = { "textures", "geometry", "animations", "map file", "log", "other" };
 static unsigned char fd_kind[TRACE_FILES];
 static int fd_pos[TRACE_FILES]; /* where the next read starts (-1: unknown; set at open) */
+
+/* Open files don't survive a sleep: after the wake every read on a
+descriptor opened before it fails, and streamed geometry, textures and
+sounds came back as garbage (hardware_b120.md). So each open file's full
+path, flags and mode are kept here, by the descriptor its caller was given,
+and psp_io_reopen_all() opens them again on the wake. Callers keep the
+descriptors they hold: where the kernel hands back a different one, the
+wrappers pass the new one on (io_real) */
+#define REOPEN_PATH 160
+static struct reopen
+{
+	char path[REOPEN_PATH]; /* empty: no file open under this descriptor */
+	int flags;
+	SceMode mode;
+	SceUID real; /* the kernel's descriptor for it now */
+} reopen_table[TRACE_FILES];
+static int reopen_untracked = 0, reopen_collisions = 0;
+
+static SceUID io_real(SceUID fd)
+{
+	return fd >= 0 && fd < TRACE_FILES && reopen_table[fd].path[0] ? reopen_table[fd].real : fd;
+}
+
+static void reopen_note(SceUID fd, const char *path, int flags, SceMode mode)
+{
+	if (fd < 0)
+		return;
+	if (fd >= TRACE_FILES || !path || strlen(path) >= REOPEN_PATH)
+	{
+		reopen_untracked++;
+		return;
+	}
+	/* a descriptor the kernel gave out that a caller still holds under a
+	translation: both now mean this file, and the older one can't be served */
+	if (reopen_table[fd].path[0] && reopen_table[fd].real != fd)
+		reopen_collisions++;
+	snprintf(reopen_table[fd].path, REOPEN_PATH, "%s", path);
+	reopen_table[fd].flags = flags;
+	reopen_table[fd].mode = mode;
+	reopen_table[fd].real = fd;
+}
 static struct io_window
 {
 	unsigned int calls, waits, map_rereads;
@@ -765,6 +806,7 @@ void psp_handles_reserve(void)
 		return;
 	stick_take_kind(IO_LOG);
 	handle_reserve = __real_sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	reopen_note(handle_reserve, path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	stick_give();
 	if (handle_reserve >= 0 && handle_reserve < TRACE_FILES)
 		fd_kind[handle_reserve] = IO_LOG;
@@ -820,6 +862,7 @@ SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 		psp_trace_line("open %s (flags %x)", file, flags);
 	stick_take_kind(kind_of_path(file));
 	fd = __real_sceIoOpen(file, flags, mode);
+	reopen_note(fd, file, flags, mode);
 	stick_give();
 	if (fd >= 0)
 		handle_add(fd, 'f', file);
@@ -849,7 +892,7 @@ int __wrap_sceIoLseek32(SceUID fd, int offset, int whence)
 	int result;
 
 	stick_take_kind(kind_of_fd(fd));
-	result = __real_sceIoLseek32(fd, offset, whence);
+	result = __real_sceIoLseek32(io_real(fd), offset, whence);
 	stick_give();
 	if (fd >= 0 && fd < TRACE_FILES)
 		fd_pos[fd] = result >= 0 ? result : -1;
@@ -864,7 +907,7 @@ SceOff __wrap_sceIoLseek(SceUID fd, SceOff offset, int whence)
 	SceOff result;
 
 	stick_take_kind(kind_of_fd(fd));
-	result = __real_sceIoLseek(fd, offset, whence);
+	result = __real_sceIoLseek(io_real(fd), offset, whence);
 	stick_give();
 	if (fd >= 0 && fd < TRACE_FILES)
 		fd_pos[fd] = result >= 0 && result < 0x7FFFFFFF ? (int)result : -1;
@@ -882,7 +925,7 @@ int __wrap_sceIoRead(SceUID fd, void *data, SceSize size)
 	int kind = kind_of_fd(fd);
 
 	stick_take_kind(kind);
-	result = __real_sceIoRead(fd, data, size);
+	result = __real_sceIoRead(io_real(fd), data, size);
 	stick_give();
 	if (io_stats > 0 && result > 0)
 	{
@@ -907,7 +950,7 @@ int __wrap_sceIoReadAsync(SceUID fd, void *data, SceSize size)
 	int kind = kind_of_fd(fd);
 
 	stick_take_kind(kind);
-	result = __real_sceIoReadAsync(fd, data, size);
+	result = __real_sceIoReadAsync(io_real(fd), data, size);
 	stick_give();
 	if (io_stats > 0 && result >= 0)
 		io_win[kind].read_bytes += size; /* asked: the transfer runs after the call */
@@ -926,7 +969,9 @@ int __wrap_sceIoClose(SceUID fd)
 	if (traced)
 		psp_trace_line("close %s %d", name_of(fd), (int)fd);
 	stick_take_kind(kind_of_fd(fd));
-	result = __real_sceIoClose(fd);
+	result = __real_sceIoClose(io_real(fd));
+	if (fd >= 0 && fd < TRACE_FILES)
+		reopen_table[fd].path[0] = 0;
 	stick_give();
 	if (fd >= 0 && fd < TRACE_FILES)
 	{
@@ -937,6 +982,77 @@ int __wrap_sceIoClose(SceUID fd)
 	if (traced)
 		trace_names[fd][0] = 0;
 	return result;
+}
+
+/* the asynchronous calls name a descriptor too */
+int __real_sceIoWaitAsync(SceUID fd, SceInt64 *result);
+int __wrap_sceIoWaitAsync(SceUID fd, SceInt64 *result)
+{
+	return __real_sceIoWaitAsync(io_real(fd), result);
+}
+
+int __real_sceIoPollAsync(SceUID fd, SceInt64 *result);
+int __wrap_sceIoPollAsync(SceUID fd, SceInt64 *result)
+{
+	return __real_sceIoPollAsync(io_real(fd), result);
+}
+
+int __real_sceIoChangeAsyncPriority(SceUID fd, int priority);
+int __wrap_sceIoChangeAsyncPriority(SceUID fd, int priority)
+{
+	return __real_sceIoChangeAsyncPriority(io_real(fd), priority);
+}
+
+/* On the wake (the power callback), before anything reads: every file the
+game held open is opened again, at the place its next read was to start.
+The old descriptors are closed first, so the kernel can give the same
+numbers back and nothing needs translating. Holding the stick's lock
+throughout makes any read that was waiting go after this, through the new
+descriptors. A file opened for writing keeps what it has (no truncating)
+and goes on at its end. "shift" (the reopentest keep word) holds one extra
+descriptor open first, so the kernel's numbers move and the translation is
+exercised without a sleep. Fills in what happened, for the log */
+void psp_io_reopen_all(int shift, char *line, int size)
+{
+	int fd, files = 0, moved = 0, failed = 0;
+	SceUID extra = -1;
+
+	stick_take_kind(IO_OTHER);
+	for (fd = 0; fd < TRACE_FILES; fd++)
+		if (reopen_table[fd].path[0])
+			__real_sceIoClose(reopen_table[fd].real);
+	if (shift)
+		extra = __real_sceIoOpen("ms0:/halo/log/reopentest.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	for (fd = 0; fd < TRACE_FILES; fd++)
+	{
+		struct reopen *file = &reopen_table[fd];
+		int writing = (file->flags & PSP_O_WRONLY) != 0;
+		SceUID real;
+
+		if (!file->path[0])
+			continue;
+		files++;
+		real = __real_sceIoOpen(file->path, file->flags & ~(PSP_O_TRUNC | PSP_O_EXCL), file->mode);
+		if (real < 0)
+		{
+			failed++;
+			continue;
+		}
+		file->real = real;
+		if (real != fd)
+			moved++;
+		if (writing)
+			__real_sceIoLseek32(real, 0, PSP_SEEK_END);
+		else if (fd_pos[fd] >= 0)
+			__real_sceIoLseek32(real, fd_pos[fd], PSP_SEEK_SET);
+	}
+	stick_give();
+	/* the extra one stays open: a descriptor handed out over a translated
+	one would be a collision, which the test is there to show doesn't happen
+	in play (the kernel gives the lowest free number, and this holds it) */
+	(void)extra;
+	snprintf(line, size, "%d files reopened, %d at a new descriptor, %d failed; %d not tracked, %d collisions so far%s",
+		files, moved, failed, reopen_untracked, reopen_collisions, shift ? " (reopentest: one extra descriptor held first)" : "");
 }
 
 int __real_sceDmacMemcpy(void *dst, const void *src, SceSize size);
@@ -981,7 +1097,7 @@ int __wrap_sceIoWrite(SceUID fd, const void *data, SceSize size)
 	int kind = kind_of_fd(fd);
 
 	stick_take_kind(kind);
-	result = __real_sceIoWrite(fd, data, size);
+	result = __real_sceIoWrite(io_real(fd), data, size);
 	stick_give();
 	if (io_stats > 0 && result > 0)
 		io_win[kind].write_bytes += result;

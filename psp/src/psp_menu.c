@@ -170,6 +170,17 @@ static void load_presets(void)
 	free(text);
 }
 
+/* the preset the game was started with, for the launch menu's header and
+the screenshots' stamp line: its number (the digits its name starts with, or
+its place in the list), "+" once an option is changed after it; empty when
+none was applied (a lab run's keep.txt, or words set by hand) */
+static char preset_label[8] = "";
+
+const char *psp_preset_label(void)
+{
+	return preset_label;
+}
+
 static void apply_preset(int p)
 {
 	char words[PRESET_WORDS], *word, *save = NULL;
@@ -193,6 +204,11 @@ static void apply_preset(int p)
 		}
 	}
 	preset_applied = p;
+	{
+		int number = atoi(presets[p].name);
+
+		snprintf(preset_label, sizeof(preset_label), "%d", number > 0 ? number : p + 1);
+	}
 }
 
 static int file_exists(const char *path)
@@ -383,7 +399,7 @@ static void draw(int page, int cursor, int map, int build)
 
 	pspDebugScreenSetXY(0, 0);
 	pspDebugScreenSetTextColor(0xFFFFFFFF);
-	pspDebugScreenPrintf("Halo PSP build %d        %s\n", build,
+	pspDebugScreenPrintf("Halo PSP build %d  preset %-4s  %-32s\n", build, preset_label[0] ? preset_label : "none",
 		page == 0 ? "MAPS  (R: options)" : page == 1 ? "OPTIONS  (L: maps, R: presets)" : "PRESETS  (L: options)");
 	pspDebugScreenPrintf(page == 2 ? "up/down move, cross applies, START plays\n\n" :
 		"up/down move, left/right/cross toggle, START plays\n\n");
@@ -458,6 +474,9 @@ static void draw(int page, int cursor, int map, int build)
 static void toggle(int i)
 {
 	int j;
+
+	if (preset_label[0] && !strchr(preset_label, '+') && strlen(preset_label) + 1 < sizeof(preset_label))
+		strcat(preset_label, "+");
 
 	if (options[i].group)
 	{

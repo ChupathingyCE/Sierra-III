@@ -11230,7 +11230,7 @@ filter spreads it over two. On whole pixels a texel drawn at its own size
 (hud177) is exactly one pixel, as the screen copy relies on (shift 0, above);
 at other zooms the edges at least stop smearing, and every element is as
 sharp as every other. A slanted quad's corners move by at most half a pixel.
-A look change: off until Sheepdog01's A/B */
+On by default since Sheepdog01's A/B; "hudnosnap" turns it off */
 static int hud_snap = -1;
 
 static float hud_pixel(float position)
@@ -11248,7 +11248,7 @@ static void hud_draw(struct game_screen_vertex const *in, int width, int height,
 	if (!out)
 		return;
 	if (hud_snap < 0)
-		hud_snap = psp_keep("hudsnap");
+		hud_snap = !psp_keep("hudnosnap");
 	for (index = 0; index < 4; index++)
 	{
 		out[index].u = in[index].u * hud_u_scale * width;
@@ -14226,6 +14226,8 @@ static const unsigned char stamp_font[][7] = {
 	{ 6, 9, 8, 28, 8, 8, 8 },	/* f */
 	{ 0, 0, 0, 0, 0, 12, 12 },	/* . */
 	{ 0, 0, 0, 0, 0, 0, 0 },	/* space */
+	{ 0, 0, 30, 17, 30, 16, 16 },	/* p */
+	{ 0, 4, 4, 31, 4, 4, 0 },	/* + */
 };
 #define STAMP_HEIGHT 11
 
@@ -14233,7 +14235,7 @@ static int stamp_glyph(char c)
 {
 	if (c >= '0' && c <= '9')
 		return c - '0';
-	return c == 'b' ? 10 : c == 't' ? 11 : c == 'f' ? 12 : c == '.' ? 13 : 14;
+	return c == 'b' ? 10 : c == 't' ? 11 : c == 'f' ? 12 : c == '.' ? 13 : c == 'p' ? 15 : c == '+' ? 16 : 14;
 }
 
 /* 1: white text, 2: the black box round it, 0: the picture */
@@ -14292,7 +14294,15 @@ static void screenshot(void)
 		sceIoDclose(folder);
 	}
 	snprintf(path, sizeof(path), "ms0:/halo/shots/shot%03d_t%d.bmp", number, (int)seconds);
-	snprintf(text, sizeof(text), "b%d  t %.1f  f %lu", psp_build_number(), seconds, frames);
+	{
+		const char *psp_preset_label(void);
+		const char *preset = psp_preset_label();
+
+		if (preset[0])
+			snprintf(text, sizeof(text), "b%d  p%s  t %.1f  f %lu", psp_build_number(), preset, seconds, frames);
+		else
+			snprintf(text, sizeof(text), "b%d  t %.1f  f %lu", psp_build_number(), seconds, frames);
+	}
 	stamp_build(text);
 	file = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	if (file < 0)

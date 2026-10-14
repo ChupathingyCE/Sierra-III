@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 120
+#define PSP_BUILD_NUMBER 121
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -1196,6 +1196,7 @@ void psp_tex_suspend(void);
 void psp_tex_resume(void);
 void psp_geo_suspend(void);
 void psp_geo_resume(void);
+void psp_io_reopen_all(int shift, char *line, int size);
 
 static int power_callback(int unknown, int flags, void *argument)
 {
@@ -1212,6 +1213,15 @@ static int power_callback(int unknown, int flags, void *argument)
 	}
 	if (flags & PSP_POWER_CB_RESUME_COMPLETE)
 	{
+		/* first: the files the game streams from died in the sleep, and a
+		thread may already be waiting to read (psp_trace.c) */
+		if (!psp_keep("noreopen"))
+		{
+			char line[160];
+
+			psp_io_reopen_all(0, line, sizeof(line));
+			platform_log("sleep: awake; %s", line);
+		}
 		psp_tex_resume();
 		psp_geo_resume();
 	}
@@ -1922,6 +1932,18 @@ steps in order: the console has no way to wait */
 
 		platform_log("menutest: loading Blood Gulch from the menu");
 		hs_compile_and_evaluate("map_name levels\\test\\bloodgulch\\bloodgulch");
+	}
+	/* keep.txt's "reopentest": the wake's reopening of every file, at 20 s
+	of game time without a sleep, with the kernel's descriptor numbers
+	moved, so the emulator can show play goes on exactly as without it */
+	if (ticks_seen == 600 && psp_keep("reopentest"))
+	{
+		char line[160];
+		void psp_geo_settle(void);
+
+		psp_geo_settle();
+		psp_io_reopen_all(1, line, sizeof(line));
+		platform_log("reopentest: %s", line);
 	}
 	/* keep.txt's "exitatN": back to the menu at N seconds of game time, so
 	two emulator runs (the cache models' A/Bs) cover the same ticks and
