@@ -21,7 +21,34 @@ Labels: **[M]** measured on a PSP (the PSP-3000 rig's figures are marked as such
 | Machines sleep | exact speed | yes | `machinesawake` |
 | The ME job ring and the slant split (ME phase 1) | exact speed | yes | `meslantoff` |
 
-**On the rig:** the ladder on this exact EBOOT and the new packs is running (lab run 38551389789); its table goes here when it lands.
+### On the rig (PSP-3000) [M]
+
+**The A/Bs, each speed-up against its off word in one build** (`tools/abreport.py`; repeat 2; "real" = the gap beats the repeats' own spread):
+
+| Change | Where | Tick with it on | Off | Gap | Lab run |
+|---|---|---:|---:|---:|---|
+| AI perception batch | b30 beach (b113 route) | 49.2 ms | 52.0 | **−2.8 ms (−5.4%)** | 38524100365 |
+| AI perception batch | a50 | 25.9 | 26.4 | −0.6 (−2.2%) | 38524222985 |
+| Level sphere walk | a50 | 18.5 to 30.9 by stretch | 19.6 to 32.5 | **−0.8 to −1.6 ms (−3.4 to −6.0%)** | 38548747232 |
+| Level sphere walk | c20 | 27.9 | 27.9 | none (by design: c20's walks are small) | 38548708625 |
+| Machines sleep | c20 | 27.9 | 28.7 | **−0.7 to −0.8 ms (−2.6 to −3.0%)**, frame −1.1% | 38548708625 |
+| ME slant split | b30, c20 | n/a | n/a | the sort −0.7 to −1.4 ms a frame (b30), −0.6 (c20); 0 of 414,000 triangles differing, 0 failed jobs | 38524258259, 38524293692 |
+
+**The ladder on this exact EBOOT and the new packs** (lab run 38551389789; every map's opening, second half of its 90 s, hands off; `tools/ladderreport.py`). The openings are mostly cutscenes and flights, so the AI and biped gains above show little here:
+
+| Level | fps | Tick (ms) | Ticks a second | b120 on the rig: fps / tick (ms) |
+|---|---:|---:|---:|---|
+| The Pillar of Autumn (a10) | 14.5 | 6.6 | 25.4 | 14.9 / 6.6 |
+| Halo (a30) | 6.9 | 10.5 | 13.9 | 7.0 / 10.5 |
+| Truth and Reconciliation (a50) | 9.6 | 30.1 | 19.0 | 9.3 / 31.3 |
+| The Silent Cartographer (b30) | 4.0 | 56.6 | 8.0 | 4.0 / 56.7 |
+| Assault on the Control Room (b40) | 14.9 | 16.3 | 28.0 | 14.9 / 16.1 |
+| 343 Guilty Spark (c10) | 9.1 | 22.0 | 18.0 | 9.3 / 21.3 |
+| The Library (c20) | 8.0 | 25.6 | 15.6 | 8.0 / 26.0 |
+| Two Betrayals (c40) | 13.7 | 15.2 | 26.7 | 13.7 / 15.3 |
+| Keyes (d20) | 8.1 | 15.0 | 16.1 | 8.2 / 16.3 |
+
+The tick is down on a50 (−1.2 ms) and d20 (−1.3), level elsewhere, and up on c10 (+0.7). One ladder run is one sample: c10's and a10's small drops are within what one run varies [U]. Your PSP-1000's ladder (test 5) is the comparison that counts.
 
 ## On the PSP
 
