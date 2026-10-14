@@ -14559,9 +14559,9 @@ FIXES_122 = {}
 # sight at the start of actors_update, but its answers are needed only as each
 # actor's update reaches prop_status_refresh. With "meraysperc" the main CPU
 # casts the first few rays itself ("meraysfrontN", 4 unless set), hands the
-# rest to the ME as one ring job (psp_me.c, ME_JOB_PERC_RAYS), and updates
-# its first actors while the ME casts them. It collects the answers when the
-# first actor of the ME's part asks for its ray.
+# rest to the ME as ring jobs of up to 16 rays (psp_me.c, ME_JOB_PERC_RAYS),
+# and updates its first actors while the ME casts them. It collects a job's
+# answers when the first actor of that job asks for its ray.
 # What lets the ME cast them exactly:
 # - every input of a ray is in its record (FIXES_121's psp_perc_ray), and
 #   everything else a ray reads is the level's collision BSP and the tags
@@ -15082,8 +15082,8 @@ FIXES_122["source/ai/actor_perception.c#merays"] = [
 its actors to psp_perception_queue, then call psp_perception_queue_done */""",
  """/* psp_fixups.py (FIXES_122): perception's queued rays on the Media Engine
 (see psp_fixups.py's FIXES_122 #merays). The first rays are cast here as
-before; the rest go to the ME as one ring job and are collected when the
-first actor of the ME's part asks for its ray */
+before; the rest go to the ME as ring jobs, each collected when the first
+actor of its part asks for its ray */
 short psp_ai_test_line_of_sight_quiet(real_point3d const *p0, short p0_cluster_index,
 	real_point3d const *p1, short p1_cluster_index, short mode, boolean test_line_of_fire,
 	long ignore_object_index, boolean ignore_vehicles, long *collisions); /* ai.c */
@@ -15099,17 +15099,24 @@ struct psp_merays_answer
 	short pad;
 	long collisions;
 };
-/* the ME's output: whole 64-byte lines of its own */
-static struct psp_merays_answer psp_merays_answers[PSP_PERC_RAYS] __attribute__((aligned(64)));
-typedef char psp_merays_answers_lines_assert[sizeof(psp_merays_answers) % 64 == 0 ? 1 : -1];
+/* rays a job: its answers are then two whole 64-byte lines of its own, and
+a job ends well inside the ring's 10 ms watchdog even when every ray is an
+expanded one (four vectors), so a long tick can't stop the ring */
+#define PSP_MERAYS_JOB_RAYS 16
+#define PSP_MERAYS_JOBS ((PSP_PERC_RAYS + PSP_MERAYS_JOB_RAYS - 1) / PSP_MERAYS_JOB_RAYS)
+/* the ME's output, job by job */
+static struct psp_merays_answer psp_merays_answers[PSP_MERAYS_JOBS * PSP_MERAYS_JOB_RAYS] __attribute__((aligned(64)));
+typedef char psp_merays_answers_lines_assert[(PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer)) % 64 == 0 ? 1 : -1];
 
 static int psp_merays_on = -1, psp_merays_front;
 static boolean psp_merays_pass;
-/* a job pushed and not collected: the five functions that count
-psp_object_epoch wait for it first (objects.c) */
+/* jobs pushed and not all collected: the five functions that count
+psp_object_epoch wait for them first (objects.c) */
 int psp_merays_out;
-static unsigned int psp_merays_ticket;
-static short psp_merays_first, psp_merays_count;
+static unsigned int psp_merays_tickets[PSP_MERAYS_JOBS];
+/* the ME's part of the queue: from psp_merays_first, psp_merays_count rays
+in psp_merays_jobs jobs, the first psp_merays_collected of them collected */
+static short psp_merays_first, psp_merays_count, psp_merays_jobs, psp_merays_collected;
 static struct
 {
 	unsigned long jobs, refused, rays, answered, unsure, failed, settled, taken, checked, mismatches;
@@ -15160,78 +15167,95 @@ void psp_perception_me_rays(
 	results[1] = unsure;
 }
 
-/* queue_done: the rays from meraysfront on to the ME, the first ones cast
-here meanwhile; all of them here if the ring can't take the job */
+/* queue_done: the rays from meraysfront on to the ME, PSP_MERAYS_JOB_RAYS a
+job, the first ones cast here meanwhile; here too any the ring can't take */
 static void psp_merays_hand_over(void)
 {
-	short index, first = (short)psp_merays_front;
+	short index, first = (short)MIN(psp_merays_front, psp_perc_ray_count), end = first;
 
-	if (psp_perc_ray_count > first &&
-		psp_me_push_perc_rays(&psp_perc_rays[first], (unsigned int)(psp_perc_ray_count - first),
-			psp_merays_answers, sizeof(psp_merays_answers), &psp_merays_ticket))
+	psp_merays_first = first;
+	psp_merays_jobs = psp_merays_collected = 0;
+	while (end < psp_perc_ray_count && psp_merays_jobs < PSP_MERAYS_JOBS)
 	{
-		psp_merays_out = TRUE;
-		psp_merays_first = first;
-		psp_merays_count = psp_perc_ray_count - first;
-		psp_merays_stats.jobs++;
-		psp_merays_stats.rays += psp_merays_count;
-	}
-	else
-	{
-		if (psp_perc_ray_count > first)
+		short count = (short)MIN(psp_perc_ray_count - end, PSP_MERAYS_JOB_RAYS);
+
+		if (!psp_me_push_perc_rays(&psp_perc_rays[end], (unsigned int)count,
+			&psp_merays_answers[psp_merays_jobs * PSP_MERAYS_JOB_RAYS],
+			PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer), &psp_merays_tickets[psp_merays_jobs]))
+		{
 			psp_merays_stats.refused++;
-		first = psp_perc_ray_count;
+			break;
+		}
+		psp_merays_jobs++;
+		psp_merays_stats.jobs++;
+		psp_merays_stats.rays += count;
+		end += count;
 	}
+	psp_merays_count = end - first;
+	psp_merays_out = psp_merays_jobs > 0;
 	for (index = 0; index < first; index++)
+		psp_perc_cast(&psp_perc_rays[index]);
+	for (index = end; index < psp_perc_ray_count; index++)
 		psp_perc_cast(&psp_perc_rays[index]);
 }
 
-/* the ME's answers into the queue: before the first ray of its part is
-taken. A ray it doesn't serve, or every ray after a failed job, is cast here
-(nothing has moved since the queue: psp_perception_line_of_sight looked at
-the epoch first) */
-static void psp_merays_collect(void)
+/* the ME's answers into the queue, job by job up to the one holding ray
+`index`, before that ray is taken. A ray the ME's walk doesn't serve, or
+every ray of a failed job, is cast here (nothing has moved since the queue:
+psp_perception_line_of_sight looked at the epoch first) */
+static void psp_merays_collect(
+	short index)
 {
-	unsigned int results[11];
-	int done = psp_me_wait(psp_merays_ticket, results);
-	short k;
+	short job = (index - psp_merays_first) / PSP_MERAYS_JOB_RAYS;
 
-	psp_merays_out = FALSE;
-	if (!done)
-		psp_merays_stats.failed++;
-	for (k = 0; k < psp_merays_count; k++)
+	while (psp_merays_collected <= job && psp_merays_collected < psp_merays_jobs)
 	{
-		struct psp_perc_ray *ray = &psp_perc_rays[psp_merays_first + k];
+		unsigned int results[11];
+		short j = psp_merays_collected++, k;
+		short start = j * PSP_MERAYS_JOB_RAYS, end = (short)MIN(start + PSP_MERAYS_JOB_RAYS, psp_merays_count);
+		int done = psp_me_wait(psp_merays_tickets[j], results);
 
-		if (done && psp_merays_answers[k].result >= 0)
+		if (!done)
+			psp_merays_stats.failed++;
+		for (k = start; k < end; k++)
 		{
-			ray->result = psp_merays_answers[k].result;
-			ray->collisions = psp_merays_answers[k].collisions;
-			ray->from_me = TRUE;
-			psp_merays_stats.answered++;
-		}
-		else
-		{
-			if (done)
-				psp_merays_stats.unsure++;
-			psp_perc_cast(ray);
+			struct psp_perc_ray *ray = &psp_perc_rays[psp_merays_first + k];
+
+			if (done && psp_merays_answers[k].result >= 0)
+			{
+				ray->result = psp_merays_answers[k].result;
+				ray->collisions = psp_merays_answers[k].collisions;
+				ray->from_me = TRUE;
+				psp_merays_stats.answered++;
+			}
+			else
+			{
+				if (done)
+					psp_merays_stats.unsure++;
+				psp_perc_cast(ray);
+			}
 		}
 	}
+	psp_merays_out = psp_merays_collected < psp_merays_jobs;
 }
 
-/* before something moves (objects.c) or at actors_update's end: the job
-finished, and its part of the queue dropped unread */
+/* before something moves (objects.c) or at actors_update's end: the jobs
+finished, and the rays of those not collected dropped unread */
 void psp_merays_settle(void)
 {
 	unsigned int results[11];
+	short keep = psp_merays_first + psp_merays_collected * PSP_MERAYS_JOB_RAYS;
 
 	if (!psp_merays_out)
 		return;
-	psp_me_wait(psp_merays_ticket, results);
+	while (psp_merays_collected < psp_merays_jobs)
+		psp_me_wait(psp_merays_tickets[psp_merays_collected++], results);
 	psp_merays_out = FALSE;
-	psp_merays_stats.settled += psp_merays_count;
-	if (psp_perc_ray_count > psp_merays_first)
-		psp_perc_ray_count = psp_merays_first;
+	if (psp_perc_ray_count > keep)
+	{
+		psp_merays_stats.settled += psp_perc_ray_count - keep;
+		psp_perc_ray_count = keep;
+	}
 }
 
 /* the start of actors_update: true when actors_update is to offer each of
@@ -15300,7 +15324,7 @@ its actors to psp_perception_queue, then call psp_perception_queue_done */"""),
  """		if (ray->actor_index != actor_index || ray->taken)
 			continue;
 		if (psp_merays_out && index >= psp_merays_first)
-			psp_merays_collect();
+			psp_merays_collect(index);
 		ray->taken = TRUE;"""),
 ("""			psp_perc_stats.taken++;
 			if (!psp_perc_check)""",
