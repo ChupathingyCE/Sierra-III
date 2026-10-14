@@ -3033,23 +3033,35 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		/* build 113: "shoteveryN": a screenshot every N seconds of game time,
 		at most 24 (emulator runs have no hands for select + right). Asked
 		for as the frame begins, so "tdump" lists the frame's see-through
-		draws too */
+		draws too. "shotrunN": each of those moments takes N frames in a
+		row (at most 72 shots then), so a frame-to-frame change (a wobble,
+		a flicker) can be told from motion by comparing neighbours */
 		extern volatile int psp_screenshot_requested;
 		extern int psp_keep_number(const char *prefix, int fallback);
 		extern long psp_game_time_peek(void);
-		static int shot_every = -2, shots_asked = 0;
+		static int shot_every = -2, shot_run = 1, shot_run_left = 0, shots_asked = 0, shots_most = 24;
 		static long shot_next = -1;
 
 		if (shot_every == -2)
+		{
 			shot_every = psp_keep_number("shotevery", 0);
-		if (shot_every > 0 && shots_asked < 24)
+			shot_run = psp_keep_number("shotrun", 1);
+			if (shot_run < 1)
+				shot_run = 1;
+			if (shot_run > 1)
+				shots_most = 72;
+		}
+		if (shot_every > 0 && shots_asked < shots_most)
 		{
 			long now = psp_game_time_peek(), period = (long)shot_every * 30;
 
 			if (shot_next >= 0 && now >= shot_next)
+				shot_run_left = shot_run;
+			if (shot_run_left > 0)
 			{
 				psp_screenshot_requested = 1;
 				shots_asked++;
+				shot_run_left--;
 			}
 			if (shot_next < 0 || now >= shot_next)
 				shot_next = (now / period + 1) * period;
@@ -14733,8 +14745,9 @@ static void screenshot(void)
 	sceIoClose(file);
 	/* where from (build 35): the debug camera can then go back there
 	(camera.txt: position, forward, up, field of view) */
-	platform_log("[t %.1f] screenshot: %s (frame %lu) from %.2f %.2f %.2f looking %.2f %.2f %.2f", seconds, path, frames,
-		camera_eye[0], camera_eye[1], camera_eye[2], camera_forward[0], camera_forward[1], camera_forward[2]);
+	platform_log("[t %.1f] screenshot: %s (frame %lu) from %.2f %.2f %.2f looking %.2f %.2f %.2f, near plane %.4f", seconds, path,
+		frames, camera_eye[0], camera_eye[1], camera_eye[2], camera_forward[0], camera_forward[1], camera_forward[2],
+		projection_near);
 }
 
 /* build 74: the frame end's parts over each heartbeat window, for the log's
