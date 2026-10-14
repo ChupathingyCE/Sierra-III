@@ -2100,7 +2100,7 @@ jitter: a cut piece wholly past one of them draws no pixel and is left out
 (clip_triangle); "cutlessoff" draws them */
 #define SCREEN_MARGIN_PIXELS 8.0f
 static float screen_x = 1.0f, screen_y = 1.0f;
-static int cut_less = 1;
+static int cut_less = 1, guard_wide = 0;
 /* build 118: the lengths of the guard band's side planes' normals as
 outside() writes them (x = guard_x z has (1, 0, -guard_x)), set with
 guard_x and guard_y, so a sphere can be tested against those planes
@@ -2132,13 +2132,14 @@ static unsigned long near_models = 0, near_triangles_dropped = 0;
 /* the GE's front face for the Xbox's D3DCULL_CCW (build 35) */
 #define LEVEL_FRONT GU_CW
 #define NEAR_CLIP near_clip
-/* how far off the screen a corner may land (the guard planes). The GE
-takes screen positions within 2048 pixels of the screen's centre (its
-4096-pixel drawing space, the screen in its middle: ge_initialize's offset);
-past that a corner wraps round. GUARD_PIXELS leaves 128 pixels of margin on
-both axes. GUARD is the older 6 screen widths and heights (1440 pixels
-across, 816 up and down), which cut triangles the GE could draw whole;
-"cutstreamoff" and "cutlessoff" keep it */
+/* how far off the screen a corner may land (the guard planes): 6 screen
+widths and heights, 1440 pixels across and 816 up and down. The GE takes
+screen positions within 2048 pixels of the screen's centre (its 4096-pixel
+drawing space, the screen in its middle: ge_initialize's offset); past that a
+corner wraps round. "guardwide" puts the planes at GUARD_PIXELS on both axes
+(128 pixels of margin), so fewer triangles are cut, but not pixel for pixel:
+a triangle drawn whole instead of as pieces rounds its colours and edges a
+little differently (docs/review_cutstream.md), so it is Sheepdog01's call */
 #define GUARD 6.0f
 #define GUARD_PIXELS 1920.0f
 
@@ -3198,7 +3199,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 			aspect is the screen's) */
 			float pixel = tanf(vertical_field_of_view * 0.5f) / (SCREEN_HEIGHT / 2);
 
-			if (cut_less)
+			if (guard_wide)
 				guard_x = guard_y = GUARD_PIXELS * pixel;
 			else
 			{
@@ -3623,7 +3624,7 @@ static void cut_count_report(unsigned long frame_count)
 	}
 	platform_log("GE: cutcount: %s, guard planes %s (x %.2f, y %.2f), %lu spill blocks taken",
 		cut_stream ? "cut pieces streamed past the buffers" : "cutstreamoff: the fixed buffers alone",
-		cut_less ? "at the GE's limit" : "at 6 screens", guard_x, guard_y, cut_spill_blocks);
+		guard_wide ? "at the GE's limit (guardwide)" : "at 6 screens", guard_x, guard_y, cut_spill_blocks);
 	memset(cut_tally, 0, sizeof(cut_tally));
 	cut_spill_blocks = 0;
 }
@@ -7373,11 +7374,14 @@ static void cut_take(void)
 {
 	cut_stream = !psp_keep("cutstreamoff");
 	cut_less = cut_stream && !psp_keep("cutlessoff");
+	guard_wide = cut_stream && psp_keep("guardwide");
 	cut_count_on = psp_keep("cutcount");
 	if (!cut_stream)
-		platform_log("GE: cutstreamoff: cut pieces past the fixed buffers are lost, the guard planes at 6 screens");
+		platform_log("GE: cutstreamoff: cut pieces past the fixed buffers are lost, pieces off the screen drawn");
 	else if (!cut_less)
-		platform_log("GE: cutlessoff: the guard planes at 6 screens, pieces off the screen drawn");
+		platform_log("GE: cutlessoff: cut pieces off the screen drawn");
+	if (guard_wide)
+		platform_log("GE: guardwide: the guard planes at %d pixels from the screen's centre", (int)GUARD_PIXELS);
 	model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
 }
 static int model_cut_count = 0;
