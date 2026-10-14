@@ -14551,7 +14551,218 @@ static boolean collision_bsp_test_vector_recursive(
 	struct collision_bsp_test_vector_context *data,"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()):
+# ---------- build 122
+FIXES_122 = {}
+# The root node's frame in the world, remembered per object. For an object
+# with no parent that isn't world-relative, the root's matrix is
+# (translation x rotation) x the root's own orientation, and the first
+# product depends only on the object's position, forward, up and mirrored
+# bit and on its definition's centre of mass and origin offset (tag data).
+# A machine stands still while its animation turns, and so does anything at
+# rest, so that product repeats tick after tick: kept in a slot by object
+# index, with every input it was made from, and reused when all of them
+# match bit for bit. The same bits in give the same bits out
+# (matrix4x3_multiply reads its inputs before writing, on the FPU and the
+# VFPU alike), so the root's matrix and everything after it are unchanged.
+# The slots are emptied for each new map, where the same definition index
+# can name another tag. Also the root's second validity check: it tested
+# the matrix the first one had just passed (valid_real_matrix4x3 is pure).
+# "posingold" (keep.txt): both as before; "posingcheck": every remembered
+# frame made again and compared (the log's "posing" lines count them)
+FIXES_122["source/objects/objects.c#rootframe"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_122): the root's frame, remembered */
+#define PSP_POSE_SLOTS 256
+struct psp_pose_frame
+{
+	long object_index;
+	long definition_index;
+	void const *definition;
+	unsigned long mirrored;
+	real_point3d position;
+	real_vector3d forward;
+	real_vector3d up;
+	real_matrix4x3 frame;
+};
+static struct psp_pose_frame psp_pose_frames[PSP_POSE_SLOTS];
+static int psp_pose_on = -1;
+static int psp_pose_check = 0;
+static unsigned long psp_pose_hits, psp_pose_made, psp_pose_compared, psp_pose_differed;
+static long psp_pose_window = -1;
+
+static void psp_pose_forget(void)
+{
+	csmemset(psp_pose_frames, 0xFF, sizeof(psp_pose_frames));
+}
+
+static int psp_pose_enabled(void)
+{
+	if (psp_pose_on < 0)
+	{
+		psp_pose_on = !psp_keep("posingold");
+		psp_pose_check = psp_keep("posingcheck");
+		psp_pose_forget();
+	}
+	return psp_pose_on;
+}
+
+static boolean psp_pose_matches(
+	struct psp_pose_frame const *slot,
+	long object_index,
+	struct object_datum const *object,
+	void const *definition)
+{
+	return slot->object_index == object_index &&
+		slot->definition_index == object->definition_index &&
+		slot->definition == definition &&
+		slot->mirrored == (unsigned long)TEST_FLAG(object->object.flags, _object_mirrored_bit) &&
+		!csmemcmp(&slot->position, &object->object.position, sizeof(real_point3d)) &&
+		!csmemcmp(&slot->forward, &object->object.forward, sizeof(real_vector3d)) &&
+		!csmemcmp(&slot->up, &object->object.up, sizeof(real_vector3d));
+}
+
+static void psp_pose_keep(
+	struct psp_pose_frame *slot,
+	long object_index,
+	struct object_datum const *object,
+	void const *definition,
+	real_matrix4x3 const *frame)
+{
+	slot->object_index = object_index;
+	slot->definition_index = object->definition_index;
+	slot->definition = definition;
+	slot->mirrored = (unsigned long)TEST_FLAG(object->object.flags, _object_mirrored_bit);
+	slot->position = object->object.position;
+	slot->forward = object->object.forward;
+	slot->up = object->object.up;
+	slot->frame = *frame;
+}
+
+static void psp_pose_report(void)
+{
+	long tick = game_time_get();
+
+	if (psp_pose_window < 0 || tick < psp_pose_window)
+		psp_pose_window = tick;
+	if (tick - psp_pose_window < 300)
+		return;
+	platform_psp_log("posing: root frames in %ld ticks: %lu reused, %lu made%s%lu of %lu",
+		tick - psp_pose_window, psp_pose_hits, psp_pose_made,
+		psp_pose_check ? "; posingcheck: remembered frames that differed " : "; compared ",
+		psp_pose_differed, psp_pose_compared);
+	psp_pose_hits = psp_pose_made = psp_pose_compared = psp_pose_differed = 0;
+	psp_pose_window = tick;
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+"""),
+("""	real_matrix4x3 parent_node_matrix_no_scale_no_mirror;
+
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	""", """	real_matrix4x3 parent_node_matrix_no_scale_no_mirror;
+#ifdef HALO_PSP
+	struct psp_pose_frame *psp_pose_slot = NULL;
+	boolean psp_pose_found = FALSE;
+	boolean psp_root_valid = FALSE;
+#endif
+
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	"""),
+("""				if (!world_relative)
+				{
+					matrix4x3_translation(&object_translation_matrix, &object->object.position);
+""", """				if (!world_relative)
+				{
+#ifdef HALO_PSP
+					if (!object_node_matrix && psp_pose_enabled())
+					{
+						psp_pose_slot = &psp_pose_frames[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
+						psp_pose_found = psp_pose_matches(psp_pose_slot, object_index, object, object_definition);
+						psp_pose_report();
+						if (psp_pose_found && !psp_pose_check)
+						{
+							psp_pose_hits++;
+							matrix4x3_multiply(&psp_pose_slot->frame, &node_matrix, &object_nodes[node_stack_index]);
+							goto psp_root_placed;
+						}
+					}
+#endif
+					matrix4x3_translation(&object_translation_matrix, &object->object.position);
+"""),
+("""					else
+					{
+						matrix4x3_multiply(&object_translation_matrix, &object_rotation_matrix, &object_nodes[node_stack_index]);
+						matrix4x3_multiply(&object_nodes[node_stack_index], &node_matrix, &object_nodes[node_stack_index]);
+					}
+""", """					else
+					{
+						matrix4x3_multiply(&object_translation_matrix, &object_rotation_matrix, &object_nodes[node_stack_index]);
+#ifdef HALO_PSP
+						if (psp_pose_slot)
+						{
+							if (psp_pose_found)
+							{
+								psp_pose_compared++;
+								if (csmemcmp(&psp_pose_slot->frame, &object_nodes[node_stack_index], sizeof(real_matrix4x3)))
+									psp_pose_differed++;
+							}
+							psp_pose_made++;
+							psp_pose_keep(psp_pose_slot, object_index, object, object_definition, &object_nodes[node_stack_index]);
+						}
+#endif
+						matrix4x3_multiply(&object_nodes[node_stack_index], &node_matrix, &object_nodes[node_stack_index]);
+					}
+"""),
+("""				if (!valid_real_matrix4x3(&object_nodes[node_stack_index]))
+				{
+					real_matrix4x3 const *validated_root_node_matrix;
+""", """#ifdef HALO_PSP
+psp_root_placed:
+				psp_root_valid = valid_real_matrix4x3(&object_nodes[node_stack_index]);
+				if (!psp_root_valid)
+#else
+				if (!valid_real_matrix4x3(&object_nodes[node_stack_index]))
+#endif
+				{
+					real_matrix4x3 const *validated_root_node_matrix;
+"""),
+("""				real_matrix4x3 *final_matrix = &object_nodes[node_stack_index];
+				if (!valid_real_matrix4x3(final_matrix))""", """				real_matrix4x3 *final_matrix = &object_nodes[node_stack_index];
+#ifdef HALO_PSP
+				/* the check just above passed this same matrix */
+				if (!(psp_root_valid && psp_pose_enabled()) && !valid_real_matrix4x3(final_matrix))
+#else
+				if (!valid_real_matrix4x3(final_matrix))
+#endif"""),
+("""void objects_initialize_for_new_map(
+	void)
+{
+""", """#ifdef HALO_PSP
+static int psp_pose_on;
+#endif
+
+void objects_initialize_for_new_map(
+	void)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_122): a definition index can name another tag
+	now, so the remembered root frames go (psp_pose_enabled empties them) */
+	psp_pose_on = -1;
+#endif
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
