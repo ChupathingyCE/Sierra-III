@@ -56,6 +56,8 @@ On its normal path the job writes its stack, the `collision` and `result` struct
 
 Software double (`__adddf3`, `__extendsfdf2`, `__gedf2`) is reachable only through `render_interpolation_object_node_matrices`. That function returns at once outside a frame's drawing (`interpolation_rendering` is FALSE during a tick), so at tick time the path is dead, on the ME as on the main CPU.
 
+With that function and the failure paths stopped (`--stop=render_interpolation_object_node_matrices,error,release_assert_failed,psp_tag_get_checked`), the walk reaches 40 functions and 11 KB of code, with no double in it.
+
 **The stack** [D, frame sizes from the disassembly]:
 
 | Function | Frame |
