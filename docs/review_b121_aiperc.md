@@ -64,7 +64,12 @@ Branch `aiperc121` (from `w121`, `274f08a`).
 - **Play exact.** Hands off, on against `percold`: the play hash and both random seeds are identical at every tick on d20 (25,411 ticks), a50 (41,911) and c20 (31,681) [E] (lab 38512442380). That is the bar `itemsawake` and b117–b119's exact levers were held to.
 - **Every answer checked.** `perccheck` works out every kept fact and every queued ray again and compares them [E]:
   - b30's beach on the b113 route: 0 mismatched facts in 1,796,579 lookups (1,079,079 kept), and 0 mismatched rays in 158,108 taken (lab 38512442380);
-  - d20 over 34,200 passes and a50 over 52,200 passes: 0 and 0 (lab 38515411714).
+  - d20 over 34,200 passes and a50 over 52,200 passes: 0 and 0 (lab 38515411714);
+  - the other maps, hands off for 600 s (lab 38522269547), no crash on any:
+    - b40: 0 mismatches in 67,110 rays and 305,030 kept facts, with objects changing during the AI in 3 passes (vehicles);
+    - c40: 0 in 58,962 rays;
+    - c10: 0 in 3,669 rays (the Flood);
+    - a30 and d40: their openings run no AI hands off.
 - **The prediction is nearly always right** [E]:
   - b30: 159,556 rays cast; 158,108 taken (99.1%), 1,274 refused (the call's inputs differed, so it cast its own), 23 dropped because something moved;
   - a50: 97.8% taken; c20: 99.8%; d20: 98.9%.
