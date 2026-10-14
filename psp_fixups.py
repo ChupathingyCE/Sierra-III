@@ -15652,7 +15652,7 @@ boolean network_coop_active(void);
 boolean cinematic_in_progress(void);
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
-int psp_machine_step_alone(long machine_index); /* device_machines.c */
+int psp_machine_step_alone(long machine_index, int step); /* device_machines.c */
 static int psp_machines_far = -1, psp_pose_half = -1;
 static unsigned long psp_far_machine_counts[2], psp_pose_half_counts[2];
 
@@ -15751,13 +15751,15 @@ static int psp_machine_far_skips(long object_index, struct object_datum const *o
 	/* anything carried, riding or touching it moves with its relink and
 	pose, so those stay every tick; and a sleeping machine's lights are
 	reconnected every tick (machinesleep), so lit ones stay too */
+	if (!psp_machine_step_alone(object_index, FALSE))
+		return 0;
 	skip = object->object.first_child_object_index == NONE && object->object.parent_object_index == NONE &&
 		!TEST_FLAG(object->object.flags, _object_has_attached_lights_bit) &&
 		psp_far_unseen(object) &&
 		objects_in_sphere(_object_mask_unit | _object_mask_item, _object_mask_unit | _object_mask_item,
 			&object->object.location, &object->object.bounding_sphere_center,
 			object->object.bounding_sphere_radius, found, NUMBEROF(found)) == 0 &&
-		psp_machine_step_alone(object_index);
+		psp_machine_step_alone(object_index, TRUE);
 	psp_far_count(psp_far_machine_counts, skip, "machinesfar: always-moving machines");
 	return skip;
 }
@@ -15843,8 +15845,9 @@ always-moving machine's tick without its update: only the step
 machine_update's first lines make, the same operations on the same values,
 so its position and its group's value stay where every-tick updates put
 them. Only while device_update would leave the machine alone (its power
-steady, nothing asked of its position group); else 0, nothing changed */
-int psp_machine_step_alone(long machine_index)
+steady, nothing asked of its position group); else 0, nothing changed.
+Without step, only whether it could */
+int psp_machine_step_alone(long machine_index, int step)
 {
 	struct machine_datum *machine = machine_get(machine_index);
 	struct machine_definition *definition = machine_definition_get(machine->definition_index);
@@ -15862,9 +15865,12 @@ int psp_machine_step_alone(long machine_index)
 		group = (struct device_group_datum *)datum_get(device_groups_data, machine->device.position_group_index);
 		if (group->actual_value != machine->device.position)
 			return 0;
-		/* as device_update does for a device its group leaves alone */
-		machine->device.delay_ticks = 0;
 	}
+	if (!step)
+		return 1;
+	/* as device_update does for a device its group leaves alone */
+	if (group)
+		machine->device.delay_ticks = 0;
 	machine->device.position +=
 		(1.0f - machine->device.power) * definition->device.runtime_maximum_depowered_position_velocity +
 		machine->device.power * definition->device.runtime_maximum_powered_position_velocity;
