@@ -104,3 +104,10 @@ The machines get cheaper by 4% (c20) and 13% (d20), but on c20 the whole tick ba
 **Multiplayer.** Machines are in multiplayer maps; sleeping changes nothing the simulation reads only if the whole state stays the same, which is what `machines121m` checks. Until it does, the word stays off in both builds.
 
 **Default.** Off (`machinesleep`). Turn it on when `machines121m` gives the same whole state as the default apart from the allocations that follow the emulator's speed, and say so in the build notes.
+
+## Next, by the evidence
+
+- **`machinesleep` on**, once `machines121m` holds: the largest exact lever for machines found (−2.6% of c20's tick est., −2.7% of d20's).
+- **The gears' node matrices** (31% of c20's machines): their pose changes every tick; what could still be exact is cheaper work per node, not less of it [U].
+- **A light's reconnect** looks its marker up by name every tick (`light_reconnect_to_map` → `object_get_marker_by_name`); the marker it finds depends only on the model and the object's permutations, so it could be remembered while the matrix is still worked out [D, not built].
+- **The memo for machines only**: most of its lookups (~950 a tick on c20) are for objects that moved, which it can't answer and whose instruction misses cancel its gain. Asking it only inside a machine's update would keep the machines' gain [U, not built].
