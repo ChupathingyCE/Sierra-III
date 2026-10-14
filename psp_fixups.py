@@ -13639,9 +13639,11 @@ FIXES_121["source/objects/objects.c#epoch"] = [
 # asks ~20 times a tick: on a50 it is a quarter of the tick's instructions
 # (cachemap, lab 38512475945: bsp2d 12.8%, bsp3d 10.6%, the edge test 4.1%).
 # Three changes, each giving the walk's own answer, list for list, in order:
-# - a leaf's references are matched against the plane stack only when a
-#   count per bucket of the stack's designators says one could be there (a
-#   bucket at zero holds none of them; most references fail the scan);
+# - a leaf's reference is looked for in the plane stack through 64 buckets
+#   of the stack's designators, each with a count and an xor: a bucket at
+#   zero holds none, a bucket holding one holds its xor, and only a bucket
+#   holding more is scanned as before (a50's walks reach ~48 leaves and
+#   match ~93 references, each a scan of the stack);
 # - a surface the walk has already tested under the same signed plane
 #   designator isn't tested again: its second test adds nothing (each list
 #   keeps an index once, and a list that was full stays full), and returns
@@ -13689,6 +13691,8 @@ struct psp_sphere_walk_data
 	/* the signed designator of the reference whose bsp2d is being walked */
 	long designator;
 	unsigned char stack_counts[PSP_PLANE_BUCKETS];
+	/* the xor of the designators in each bucket */
+	long stack_xors[PSP_PLANE_BUCKETS];
 };
 
 struct psp_surface_seen
@@ -13964,8 +13968,10 @@ static void psp_bsp3d_test_sphere(
 			designator = node->plane_designator | LONG_MIN;
 			data->plane_stack[data->stack_depth++] = designator;
 			walk->stack_counts[PSP_PLANE_BUCKET(designator)]++;
+			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
 			psp_bsp3d_test_sphere(walk, node->children[0], depth);
 			walk->stack_counts[PSP_PLANE_BUCKET(designator)]--;
+			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
 			data->stack_depth--;
 
 			match_assert(
@@ -13975,8 +13981,10 @@ static void psp_bsp3d_test_sphere(
 			designator = node->plane_designator & LONG_MAX;
 			data->plane_stack[data->stack_depth++] = designator;
 			walk->stack_counts[PSP_PLANE_BUCKET(designator)]++;
+			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
 			psp_bsp3d_test_sphere(walk, node->children[1], depth);
 			walk->stack_counts[PSP_PLANE_BUCKET(designator)]--;
+			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
 			data->stack_depth--;
 
 			return;
@@ -14012,56 +14020,73 @@ static void psp_bsp3d_test_sphere(
 				&data->bsp->bsp2d_references,
 				reference_index,
 				struct bsp2d_reference);
-			long designator = PSP_DESIGNATOR(reference->plane_designator);
-			short stack_index;
+			/* (packed_designators wraps the reference's fields in PSP_DESIGNATOR) */
+			long designator = reference->plane_designator;
+			unsigned long bucket = PSP_PLANE_BUCKET(designator);
+			boolean on_stack = FALSE;
 
 			psp_st_references++;
-			if (!walk->stack_counts[PSP_PLANE_BUCKET(designator)])
+			if (!walk->stack_counts[bucket])
 				continue;
 			psp_st_scanned++;
-			for (stack_index = 0; stack_index < data->stack_depth; stack_index++)
+			/* a bucket holding one designator holds it in its xor */
+			if (walk->stack_counts[bucket] == 1)
 			{
-				if (data->plane_stack[stack_index] == designator)
-				{
-					real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
-						&data->bsp->bsp3d.planes,
-						designator & LONG_MAX,
-						real_plane3d);
-					real plane_distance = -plane3d_distance_to_point(plane, data->center);
-					real_point3d center_projected_on_plane;
-					real absolute_i;
-					real absolute_j;
-					real absolute_k;
-					short projection;
+				on_stack = walk->stack_xors[bucket] == designator;
+			}
+			else
+			{
+				short stack_index;
 
-					psp_st_matched++;
-					center_projected_on_plane.x =
-						plane->n.i * plane_distance + data->center->x;
-					center_projected_on_plane.y =
-						plane->n.j * plane_distance + data->center->y;
-					center_projected_on_plane.z =
-						plane->n.k * plane_distance + data->center->z;
-					absolute_i = fabs(plane->n.i);
-					absolute_j = fabs(plane->n.j);
-					absolute_k = fabs(plane->n.k);
-					if (absolute_k >= absolute_j && absolute_k >= absolute_i)
-						projection = _z;
-					else
-						projection = absolute_j >= absolute_i ? _y : _x;
-					data->projection_axis = projection;
-					data->projection_sign =
-						projection_sign_from_vector3d(&plane->n, projection) !=
-						(designator & LONG_MIN ? TRUE : FALSE);
-					project_point3d(
-						&center_projected_on_plane,
-						data->projection_axis,
-						data->projection_sign,
-						&data->center2d);
-					data->bsp2d_nodes_left = data->bsp->bsp2d.nodes.count;
-					walk->designator = designator;
-					psp_bsp2d_test_sphere(walk, PSP_DESIGNATOR(reference->root_index), 0);
-					break;
+				for (stack_index = 0; stack_index < data->stack_depth; stack_index++)
+				{
+					if (data->plane_stack[stack_index] == designator)
+					{
+						on_stack = TRUE;
+						break;
+					}
 				}
+			}
+			if (!on_stack)
+				continue;
+			{
+				real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
+					&data->bsp->bsp3d.planes,
+					designator & LONG_MAX,
+					real_plane3d);
+				real plane_distance = -plane3d_distance_to_point(plane, data->center);
+				real_point3d center_projected_on_plane;
+				real absolute_i;
+				real absolute_j;
+				real absolute_k;
+				short projection;
+
+				psp_st_matched++;
+				center_projected_on_plane.x =
+					plane->n.i * plane_distance + data->center->x;
+				center_projected_on_plane.y =
+					plane->n.j * plane_distance + data->center->y;
+				center_projected_on_plane.z =
+					plane->n.k * plane_distance + data->center->z;
+				absolute_i = fabs(plane->n.i);
+				absolute_j = fabs(plane->n.j);
+				absolute_k = fabs(plane->n.k);
+				if (absolute_k >= absolute_j && absolute_k >= absolute_i)
+					projection = _z;
+				else
+					projection = absolute_j >= absolute_i ? _y : _x;
+				data->projection_axis = projection;
+				data->projection_sign =
+					projection_sign_from_vector3d(&plane->n, projection) !=
+					(designator & LONG_MIN ? TRUE : FALSE);
+				project_point3d(
+					&center_projected_on_plane,
+					data->projection_axis,
+					data->projection_sign,
+					&data->center2d);
+				data->bsp2d_nodes_left = data->bsp->bsp2d.nodes.count;
+				walk->designator = designator;
+				psp_bsp2d_test_sphere(walk, reference->root_index, 0);
 			}
 		}
 	}
@@ -14127,6 +14152,7 @@ static void psp_sphere_walk(struct test_sphere_data *data)
 	walk.base = *data;
 	walk.designator = 0;
 	csmemset(walk.stack_counts, 0, sizeof(walk.stack_counts));
+	csmemset(walk.stack_xors, 0, sizeof(walk.stack_xors));
 	psp_bsp3d_test_sphere(&walk, 0, 0);
 	psp_st_walks++;
 
