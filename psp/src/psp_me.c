@@ -729,7 +729,9 @@ int psp_me_start(void)
 	unsigned long long mark;
 	int table, k;
 
-	if (me_state || psp_keep("nomeaudio"))
+	/* nomeaudio keeps the ME off unless a ring client asks for it; the
+	mixer then stays on the main CPU (psp_dsound.c) */
+	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant")))
 		return me_state > 0;
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
@@ -1359,7 +1361,7 @@ void psp_me_report(void)
 {
 	static const char *const names[ME_SLOTS] = { "audio", "render", "probe" };
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
-	char line[1400];
+	char line[900], ring_line[400];
 	int length = 0, k;
 
 	if (!me_state)
@@ -1386,6 +1388,7 @@ void psp_me_report(void)
 		if (length >= (int)sizeof(line))
 			length = (int)sizeof(line) - 1;
 	}
+	ring_line[0] = 0;
 	if (ring_stats.jobs || ring_stats.failures || ring_stats.refused_busy || ring_stats.refused_full || ring_stats.refused_check)
 	{
 		/* the ring's plumbing: on the ME, the whole job against its code
@@ -1399,17 +1402,15 @@ void psp_me_report(void)
 		if (me_state == 2)
 			all_us = ring_stats.simulated_us;
 		busy_us_all += all_us;
-		if (length < (int)sizeof(line) - 1)
-			length += snprintf(line + length, sizeof(line) - length,
-				"; ring: %lu jobs (%lu done before the wait), %s %lu us a job (the job's code %lu; picked up within %lu us, worst %lu); the main CPU's push %lu us a job, wait %lu us a job (worst %lu), push to answer %lu us; refused %lu (ME busy), %lu (full), %lu (transfer rules); %lu failed",
+		/* a line of its own: the log's lines have a length limit */
+		snprintf(ring_line, sizeof(ring_line),
+				"ME: ring: %lu jobs (%lu done before the wait), %s %lu us a job (the job's code %lu; picked up within %lu us, worst %lu); the main CPU's push %lu us a job, wait %lu us a job (worst %lu), push to answer %lu us; refused %lu (ME busy), %lu (full), %lu (transfer rules); %lu failed",
 				ring_stats.jobs, ring_stats.at_once, me_state == 2 ? "SIMULATED inside the push," : "the ME's own time",
 				(unsigned long)(all_us / jobs), (unsigned long)((float)ring_stats.job_cycles / rate / (float)jobs),
 				(unsigned long)((float)ring_stats.look_cycles / rate / (float)jobs), (unsigned long)((float)ring_stats.look_worst_cycles / rate),
 				(unsigned long)(ring_stats.push_us / jobs), (unsigned long)(ring_stats.wait_us / jobs), ring_stats.wait_worst_us,
 				(unsigned long)(ring_stats.round_us / jobs), ring_stats.refused_busy, ring_stats.refused_full, ring_stats.refused_check,
 				ring_stats.failures);
-		if (length >= (int)sizeof(line))
-			length = (int)sizeof(line) - 1;
 		memset(&ring_stats, 0, sizeof(ring_stats));
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
@@ -1431,5 +1432,7 @@ void psp_me_report(void)
 	}
 	platform_log("ME: %s, %.1f%% busy over %.1f s%s", me_state == 1 ? "running" : me_state == 2 ? "SIMULATED (emulator)" :
 		"stopped", busy_percent_last, (double)window / 1e6, length ? line : "; no jobs");
+	if (ring_line[0])
+		platform_log("%s", ring_line);
 	memset(stats, 0, sizeof(stats));
 }

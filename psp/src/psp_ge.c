@@ -4876,8 +4876,9 @@ static PSP_MAIN_SIDE int me_slant = -1, me_slant_check = 0, me_slant_min = SLANT
 static PSP_MAIN_SIDE unsigned long me_slant_draws = 0, me_slant_split = 0, me_slant_triangles = 0, me_slant_mismatches = 0,
 	me_slant_fallbacks = 0, me_slant_checked = 0;
 /* the ME's part's buckets: written by the ME's job only, read here only
-after the wait (whole lines of their own) */
-static unsigned char me_slant_out[ANGLE_TRIANGLES] __attribute__((aligned(64)));
+after the wait (whole lines of their own). The ME's part is at most half a
+draw */
+static unsigned char me_slant_out[ANGLE_TRIANGLES / 2] __attribute__((aligned(64)));
 
 /* the ME's part handed over: returns where this CPU's part ends (count: no
 job, this CPU does the whole draw). lowest and highest: the draw's vertex
@@ -4906,7 +4907,7 @@ static __attribute__((noinline)) long slant_hand_over(const struct ge_vertex *st
 		return count;
 	me_slant_draws++;
 	part = (count - me_slant_bias) / 2;
-	if (count < me_slant_min || part <= 0 || !psp_me_ring_ready())
+	if (count < me_slant_min || part <= 0 || part > (long)sizeof(me_slant_out) || !psp_me_ring_ready())
 		return count;
 	first = count - part;
 	memset(&job, 0, sizeof(job));

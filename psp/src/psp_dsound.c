@@ -687,6 +687,14 @@ static void audio_start(void)
 	master_volume = (float)config_real("audio.volume");
 	/* build 86: the launch option meaudio: the Media Engine mixes */
 	psp_meaudio_start();
+	{
+		extern int psp_keep(const char *word);
+
+		/* nomeaudio with the ME started for other jobs (meslant): the main
+		CPU still mixes, so an A/B of those jobs leaves audio where it was */
+		if (psp_keep("nomeaudio"))
+			me_wanted = 0;
+	}
 	/* above the game's thread, which it interrupts for a moment every 23 ms */
 	thread = sceKernelCreateThread("halo audio", audio_thread, 0x12, 0x4000, 0, NULL);
 	if (thread >= 0)
