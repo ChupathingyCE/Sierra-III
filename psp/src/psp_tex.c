@@ -81,12 +81,20 @@ static char map_name[64];
 /* per entry: its average colour once worked out (psp_tex_average) */
 static unsigned int *averages = NULL;
 static int averages_count = 0;
-/* build 116: the see-through shaders' tints (texpack.py), pairs of (the
-shader's tag address, its tint ABGR) sorted by address; bit 0 of the address
-set: the tint is half the colour, for the GE's colour doubling. Packs baked
-before build 116 have none, and every shader draws untinted, as before */
+/* the see-through shaders' tints (texpack.py), pairs of (the shader's tag
+address, its tint ABGR) sorted by address. Bits of the address: 0, the tint
+is half the colour, for the GE's colour doubling; 1, the tint is added to the
+map rather than multiplied. A pack without them draws every shader untinted */
 static unsigned int *tints = NULL;
 static int tint_count = 0;
+/* the shaders whose drawn map the bake chose over the runtime's smallest-
+scale rule (texpack.py 'TND1'): triples of (the shader's tag address, with
+the third word's flags in its low bits; the map's index in the shader's
+maps; the tint for the rule's map, for the keep word drawnmapscale) sorted
+by address. A pack without them leaves every shader to the rule */
+static unsigned int *drawn_maps = NULL;
+static int drawn_map_count = 0;
+static int drawn_map_scale(void);
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
 static unsigned short vram_pending[512];
 static int vram_pending_count = 0;
@@ -151,6 +159,9 @@ void psp_tex_close(void)
 	free(tints);
 	tints = NULL;
 	tint_count = 0;
+	free(drawn_maps);
+	drawn_maps = NULL;
+	drawn_map_count = 0;
 	vram_pending_count = 0;
 	entries = NULL;
 	resident_at = last_frame = NULL;
@@ -763,24 +774,45 @@ void psp_tex_map_opened(const char *name)
 	pack = file;
 	entry_count = header[1];
 	{
-		/* build 116: the tints, right after the directory when the pack has
-		them ('TNT1', a count, the pairs); the textures' data is read by
-		offset, so packs without them read as before */
+		/* the tints, right after the directory when the pack has them
+		('TNT1', a count, the pairs), then the drawn maps ('TND1', a count,
+		the triples); the textures' data is read by offset, so packs without
+		them read as before */
 		unsigned int table[2];
+		int tables = 0;
 
 		if (sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) && table[0] == 0x31544E54 /* TNT1 */ &&
-			table[1] > 0 && table[1] <= 4096 && (tints = malloc(table[1] * 8)) != NULL)
+			table[1] <= 4096)
 		{
-			if (sceIoRead(file, tints, table[1] * 8) == (int)(table[1] * 8))
-				tint_count = (int)table[1];
-			else
+			tables = 1;
+			if (table[1] > 0 && (tints = malloc(table[1] * 8)) != NULL)
 			{
-				free(tints);
-				tints = NULL;
+				if (sceIoRead(file, tints, table[1] * 8) == (int)(table[1] * 8))
+					tint_count = (int)table[1];
+				else
+				{
+					free(tints);
+					tints = NULL;
+					tables = 0;
+				}
 			}
 		}
-		platform_log("textures: see-through tints for %d shaders%s", tint_count,
-			tint_count ? "" : " (a pack baked before build 116: none)");
+		if (tables && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
+			table[0] == 0x31444E54 /* TND1 */ && table[1] > 0 && table[1] <= 4096 &&
+			(drawn_maps = malloc(table[1] * 12)) != NULL)
+		{
+			if (sceIoRead(file, drawn_maps, table[1] * 12) == (int)(table[1] * 12))
+				drawn_map_count = (int)table[1];
+			else
+			{
+				free(drawn_maps);
+				drawn_maps = NULL;
+			}
+		}
+		platform_log("textures: see-through tints for %d shaders%s; drawn maps chosen by the bake for %d%s", tint_count,
+			tint_count ? "" : " (a pack baked before build 116: none)", drawn_map_count,
+			drawn_map_count ? (drawn_map_scale() ? " (drawnmapscale: the smallest scale's instead)" : "") :
+			" (none in this pack: the smallest scale's for all)");
 	}
 	platform_log("textures: %s, %d textures; caches %d KB of VRAM and %d KB of RAM", path, entry_count,
 		(VRAM_CACHE_END - VRAM_CACHE_START) / 1024, (int)(arenas[1].end - arenas[1].start) / 1024);
@@ -803,28 +835,75 @@ void psp_tex_map_opened(const char *name)
 	}
 }
 
-/* build 116: a see-through shader's tint (ABGR) by its tag address,
-white when the pack has none for it; keep word "notint": always white */
-unsigned int psp_tex_shader_tint(unsigned int shader, int *doubled)
+/* the keep word "drawnmapscale": every shader on the runtime's own rule,
+drawn with the tint the bake worked out for that rule's map */
+static int drawn_map_scale(void)
 {
-	static int off = -1;
-	int low = 0, high = tint_count - 1;
+	static int on = -1;
 
-	if (doubled)
-		*doubled = 0;
-	if (off < 0)
-		off = psp_keep("notint");
-	if (off || !tints)
-		return 0xFFFFFFFF;
-	while (low <= high)
+	if (on < 0)
+		on = psp_keep("drawnmapscale");
+	return on;
+}
+
+/* a shader's place in the pack's drawn maps, or -1 */
+static int drawn_map_find(unsigned int shader)
+{
+	int low = 0, high = drawn_map_count - 1;
+
+	while (drawn_maps && low <= high)
 	{
 		int middle = (low + high) / 2;
-		unsigned int address = tints[2 * middle] & ~1u;
+		unsigned int address = drawn_maps[3 * middle] & ~3u;
+
+		if (address == shader)
+			return middle;
+		if (address < shader)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return -1;
+}
+
+/* the map the bake chose for a see-through shader to draw (its index in the
+shader's maps), or -1 for the runtime's smallest-scale rule */
+int psp_tex_shader_map(unsigned int shader)
+{
+	int found = drawn_map_scale() ? -1 : drawn_map_find(shader);
+
+	return found < 0 ? -1 : (int)drawn_maps[3 * found + 1];
+}
+
+/* a see-through shader's tint (ABGR) by its tag address, white when the
+pack has none for it, and its flags (bit 0 doubled, bit 1 added). Keep word
+"notint": always white */
+unsigned int psp_tex_shader_tint(unsigned int shader, int *flags)
+{
+	static int off = -1;
+	int low = 0, high = tint_count - 1, found;
+
+	if (flags)
+		*flags = 0;
+	if (off < 0)
+		off = psp_keep("notint");
+	if (off)
+		return 0xFFFFFFFF;
+	if (drawn_map_scale() && (found = drawn_map_find(shader)) >= 0)
+	{
+		if (flags)
+			*flags = (int)(drawn_maps[3 * found] & 3);
+		return drawn_maps[3 * found + 2];
+	}
+	while (tints && low <= high)
+	{
+		int middle = (low + high) / 2;
+		unsigned int address = tints[2 * middle] & ~3u;
 
 		if (address == shader)
 		{
-			if (doubled)
-				*doubled = (int)(tints[2 * middle] & 1);
+			if (flags)
+				*flags = (int)(tints[2 * middle] & 3);
 			return tints[2 * middle + 1];
 		}
 		if (address < shader)

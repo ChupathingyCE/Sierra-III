@@ -11643,12 +11643,12 @@ FIXES_116 = {}
 # fogs with the thicker of this and the atmospheric fog (psp_ge.c,
 # psp_ge_fog_planar); keep word "planarfogoff": as before
 # build 116: a see-through shader's tint, for the one map the GE draws of it:
-# texpack.py works it out from the shader's stages with every map at its
-# mean colour, and the pack carries it by the shader's tag address
-# (psp_tex.c, psp_tex_shader_tint), halved and marked when the shader is
-# brighter than its map, for the GE's colour doubling. Looked up just before
-# each queue call, which uses it for that call's draws (psp_ge.c,
-# psp_ge_seethrough_shader). Keep word "notint": as before (b30's ocean white)
+# seethrough.py works it out from the shader's stages over that map's
+# texels, and the pack carries it by the shader's tag address (psp_tex.c,
+# psp_tex_shader_tint) with how it meets the map: multiplied, multiplied
+# doubled (a shader brighter than its map), added, or alone. Looked up just
+# before each queue call, which uses it for that call's draws (psp_ge.c,
+# psp_ge_seethrough_shader). Keep word "notint": untinted (b30's ocean white)
 FIXES_116["source/rasterizer/rasterizer.c#tint"] = [
 ("""			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
 				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
@@ -12904,7 +12904,49 @@ static void structure_render_dynamic_triangles_from_indices(
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()):
+FIXES_121 = {}
+# The map a see-through shader draws, as the bake chose it: the one whose
+# texels carry most of what the shader draws (seethrough.py; the pack's
+# drawn maps, psp_tex.c psp_tex_shader_map). "Smallest scale" takes the map
+# that spans the surface, which on the holograms (b40's planet and rings, the
+# holo controls) is their scrolling band overlay, not their art: they drew
+# as flat bands. A pack without the table, or the keep word "drawnmapscale",
+# leaves every shader on the scale rule
+FIXES_121["source/rasterizer/rasterizer.c#drawnmap"] = [
+("""		else
+		{
+			for (index = 1; index < count && index < 4; index++)
+			{
+				char const *candidate = maps + stride * index;
+				float scale = *(float const *)(candidate + scale_at), best = *(float const *)(map + scale_at);
+
+				if (scale != 0.0f && (best == 0.0f || scale <= best))
+					map = candidate;
+			}
+		}
+""",
+ """		else
+		{
+			/* counted from the shader's first map, a cube map included */
+			extern int psp_tex_shader_map(unsigned int shader);
+			int chosen = psp_tex_shader_map((unsigned int)shader);
+
+			if (chosen >= (first_map_type != 0 ? 1 : 0) && chosen < map_count)
+				map = *(char const *const *)(definition + 88) + stride * chosen;
+			else
+				for (index = 1; index < count && index < 4; index++)
+				{
+					char const *candidate = maps + stride * index;
+					float scale = *(float const *)(candidate + scale_at), best = *(float const *)(map + scale_at);
+
+					if (scale != 0.0f && (best == 0.0f || scale <= best))
+						map = candidate;
+				}
+		}
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_121.items()) + list(FIXES_CHUPA.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

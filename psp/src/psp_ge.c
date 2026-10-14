@@ -374,8 +374,8 @@ void psp_ge_fog_planar(float red, float green, float blue, float maximum_distanc
 void psp_ge_seethrough_tint(unsigned int tint);
 void psp_ge_seethrough_shader(unsigned int shader);
 void psp_ge_seethrough_meter(const void *meter);
-static void seethrough_tint_set(unsigned int tint, int doubled, unsigned int shader);
-unsigned int psp_tex_shader_tint(unsigned int shader, int *doubled);
+static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shader);
+unsigned int psp_tex_shader_tint(unsigned int shader, int *flags);
 int psp_tex_resident(unsigned int key);
 void psp_ge_window_target(int target);
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
@@ -8644,6 +8644,11 @@ struct transparent_draw
 	unsigned char clut_blocks;
 	/* build 116: drawn with the GE's colour doubling (the tint is half) */
 	unsigned char doubled;
+	/* how the tint meets the map: SEETHROUGH_MODULATE (multiplied, as
+	the GE's TFX_MODULATE), SEETHROUGH_ADD (added, TFX_ADD) or
+	SEETHROUGH_FLAT (the tint alone, TFX_BLEND); the alpha is multiplied
+	in all three */
+	unsigned char tint_model;
 	/* after b116: the shader (its tag's definition) the part was queued
 	with, for tdump; 0 for sprites and parts queued without one */
 	unsigned int shader;
@@ -8670,18 +8675,27 @@ Xbox's alpha kill. Past the blend functions' 0-7 */
 #define BLEND_METER_BRIGHTNESS 15
 
 /* build 116: the see-through fade (defined with transparent_slot) */
-/* build 116: a see-through shader's tint (texpack.py works it out: the
-shader's stages with each map at its mean colour, over the mean of the map
-the GE draws), for the next queue call's draws. The engine side sets it just
-before each call (psp_fixups.py, psp_ge_seethrough_tint); the call's pieces
-all take it, and it goes back to white when the call returns. Builds 21-115
-drew the one map untinted: b30's ocean white */
+/* a see-through shader's tint, for the next queue call's draws: the GE
+draws one map of the shader, and the tint stands for the rest of it
+(seethrough.py works it out from the shader's stages over that map's
+texels). The engine side sets it just before each call (psp_fixups.py,
+psp_ge_seethrough_shader); the call's pieces all take it, and it goes back
+to white when the call returns. Untinted, b30's ocean drew white */
 static unsigned int seethrough_next_tint = 0xFFFFFFFF;
 static unsigned int seethrough_next_shader = 0; /* after b116: for tdump */
 /* build 116: the tint is half the shader's colour, drawn with the GE's
 colour doubling (a shader brighter than its map: Cortana, the holograms) */
 static unsigned char seethrough_next_doubled = 0;
 static unsigned long seethrough_doubled_draws = 0;
+/* the next queue call's tint model (struct transparent_draw, tint_model):
+the bake's fit of the shader over its map's texels (seethrough.py). A
+reflection the PSP doesn't draw comes in added (a10's monitor glass) or, when
+the map hardly shows in the shader at all, flat (a10's cryo glass) */
+#define SEETHROUGH_MODULATE 0
+#define SEETHROUGH_ADD 1
+#define SEETHROUGH_FLAT 2
+static unsigned char seethrough_next_model = SEETHROUGH_MODULATE;
+static unsigned long seethrough_added_draws = 0, seethrough_flat_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
 call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
 not a meter). Builds 21-115 dropped meter shaders: the plasma weapons' heat
@@ -8823,6 +8837,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->tint_model = SEETHROUGH_MODULATE;
 	draw->shader = 0;
 	halo_matrix(view_to_world, &draw->matrix);
 	draw->vertices = out;
@@ -8955,6 +8970,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->tint_model = SEETHROUGH_MODULATE;
 	draw->shader = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
@@ -9106,6 +9122,7 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->tint_model = SEETHROUGH_MODULATE;
 	draw->shader = 0;
 	gumLoadIdentity(&draw->matrix);
 	relative(&draw->matrix);
@@ -9474,6 +9491,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->tint_model = SEETHROUGH_MODULATE;
 	draw->shader = 0;
 	draw->cut_vertices = NULL;
 	draw->cut_count = 0;
@@ -9542,6 +9560,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->tint = seethrough_next_tint;
 	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
+	draw->tint_model = seethrough_next_model;
 	draw->color = draw->tint;
 	draw->colored = 0;
 	if (clut)
@@ -9553,6 +9572,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		draw->tint = seethrough_next_meter.tint_color;
 		draw->color = 0xFFFFFFFF;
 		draw->doubled = 0;
+		draw->tint_model = SEETHROUGH_MODULATE;
 	}
 	draw->sky = (unsigned char)in_sky;
 	draw->sprites = 0;
@@ -9633,6 +9653,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
 	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
+	seethrough_next_model = SEETHROUGH_MODULATE;
 	seethrough_meter_next = 0; /* and its meter */
 	ge_entry_us[2] += ge_clock() - start;
 }
@@ -9664,13 +9685,15 @@ static unsigned int seethrough_color(int f, int blend)
 	return ((unsigned int)f << 24) | ((unsigned int)f << 16) | ((unsigned int)f << 8) | (unsigned int)f;
 }
 
-/* build 116: the next queue call's tint, and whether it is drawn doubled;
-after b116 also its shader (the tag's definition, for tdump; 0 for none) */
-static void seethrough_tint_set(unsigned int tint, int doubled, unsigned int shader)
+/* the next queue call's tint, its model as the pack gives it
+(psp_tex_shader_tint: 0 modulate, 1 modulate doubled, 2 added, 3 flat) and
+its shader (the tag's definition, for tdump; 0 for none) */
+static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shader)
 {
-	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 3, tint, (unsigned int)doubled, shader, 0, 0, 0, 0, 0)); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 3, tint, (unsigned int)flags, shader, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	seethrough_next_tint = tint;
-	seethrough_next_doubled = (unsigned char)(doubled != 0);
+	seethrough_next_doubled = (unsigned char)(flags == 1);
+	seethrough_next_model = flags == 2 ? SEETHROUGH_ADD : flags == 3 ? SEETHROUGH_FLAT : SEETHROUGH_MODULATE;
 	seethrough_next_shader = shader;
 }
 
@@ -9683,10 +9706,10 @@ void psp_ge_seethrough_tint(unsigned int tint)
 tint from the texture pack (psp_tex.c; white for a shader it has none for) */
 void psp_ge_seethrough_shader(unsigned int shader)
 {
-	int doubled = 0;
-	unsigned int tint = psp_tex_shader_tint(shader, &doubled);
+	int flags = 0;
+	unsigned int tint = psp_tex_shader_tint(shader, &flags);
 
-	seethrough_tint_set(tint, doubled, shader);
+	seethrough_tint_set(tint, flags, shader);
 }
 
 /* build 116: the next queue call's meter (struct psp_seethrough_meter), or
@@ -9873,6 +9896,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->tint = 0xFFFFFFFF;
 	draw->clut = NULL; /* build 116: a meter's own palette, or none */
 	draw->doubled = 0;
+	draw->tint_model = SEETHROUGH_MODULATE;
 	draw->shader = 0;
 	memset(&draw->matrix, 0, sizeof(draw->matrix));
 	draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
@@ -9889,6 +9913,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->tint = seethrough_next_tint;
 	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
+	draw->tint_model = seethrough_next_model;
 	draw->color = seethrough_tinted(seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
 		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF, draw->tint);
 	draw->colored = 0;
@@ -10856,6 +10881,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
 	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
+	seethrough_next_model = SEETHROUGH_MODULATE;
 	ge_entry_us[3] += ge_clock() - start;
 }
 
@@ -11032,6 +11058,22 @@ static void transparent_flush_body(void)
 			sceGuEnable(GU_FRAGMENT_2X);
 			seethrough_doubled_draws++;
 		}
+		if (draw->tint_model == SEETHROUGH_ADD)
+		{
+			sceGuTexFunc(GU_TFX_ADD, GU_TCC_RGBA);
+			seethrough_added_draws++;
+		}
+		else if (draw->tint_model == SEETHROUGH_FLAT)
+		{
+			/* the vertex colour where the texel is dark, the environment
+			colour where it is bright: the same colour, so the texel only
+			gives its alpha. A draw coloured per vertex takes the tint */
+			unsigned int flat = draw->sprites || draw->colored ? draw->tint : draw->color;
+
+			sceGuTexFunc(GU_TFX_BLEND, GU_TCC_RGBA);
+			sceGuTexEnvColor(flat & 0x00FFFFFF);
+			seethrough_flat_draws++;
+		}
 		/* build 116: the shader's fade as one colour (sprites and coloured
 		draws carry their own) */
 		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
@@ -11070,6 +11112,10 @@ static void transparent_flush_body(void)
 		}
 		if (draw->doubled)
 			sceGuDisable(GU_FRAGMENT_2X);
+		if (draw->tint_model != SEETHROUGH_MODULATE)
+			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+		if (draw->tint_model == SEETHROUGH_FLAT)
+			sceGuTexEnvColor(0xFFFFFFFF);
 		if (draw->level)
 			sceGuDepthOffset(0);
 		if (draw->level >= 3)
@@ -14586,12 +14632,14 @@ void psp_ge_frame_end(void)
 			for (way = 0; way < 3; way++)
 				me_bench_frames[way] = me_bench_us[way] = 0;
 		}
-		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu",
+		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu, added %lu, flat %lu",
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
-			seethrough_doubled_draws);
+			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws);
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;
+		seethrough_added_draws = 0;
+		seethrough_flat_draws = 0;
 		if (seethrough_lit_draws || model_point_parts)
 			platform_log("GE: after build 116, last 300 frames: glass parts lit by their model's light %lu; model parts lit by point lights %lu",
 				seethrough_lit_draws, model_point_parts);
