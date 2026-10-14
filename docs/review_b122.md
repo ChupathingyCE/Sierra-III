@@ -66,5 +66,5 @@ Branch `w122`. Start from b121 (`49d0938`).
 ## The merged build
 
 - **1 and 2 together are exact** against both off: play and both seeds identical at every tick on d20 (22,615), a50 (37,681), c20 (28,081); `perccheck posingcheck` on a50: 0 differing [E] (lab 38578895499).
-- **The off words leave play as it was**: the merged build against 53d8070 (before 3–6), defaults: lab batch `w122offexact`.
+- **The off words leave play as it was**: the merged build against 53d8070 (before 3–6), defaults: play and seeds identical at every tick on d20 (24,452), a50 (39,852), c20 (29,765) [E] (lab 38590465463).
 - The multiplayer build compiles (the PGO batch's `mp-build` run). AI runs on the server only, so change 1 never runs on a client; change 2 is bit-identical [D].
