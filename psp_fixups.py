@@ -6173,6 +6173,23 @@ void psp_game_state_hash_tick(long tick)
 				if (length)
 					platform_psp_log("state: blocks of actor at tick %ld:%s", tick, line);
 				length = 0;
+				{
+					/* "stateblockrawB": that block's bytes too, word by word */
+					extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
+					long raw = psp_keep_number("stateblockraw", -1);
+
+					if (raw >= 0 && raw < blocks)
+					{
+						const unsigned long *word = (const unsigned long *)((const char *)psp_state_records[k].pointer +
+							((4 - ((unsigned long)psp_state_records[k].pointer & 3)) & 3) + raw * 64);
+						int w;
+
+						for (w = 0; w < 16; w++)
+							length += snprintf(line + length, sizeof(line) - length, " %08lx", word[w]);
+						platform_psp_log("state: block %ld of actor at tick %ld:%s", raw, tick, line);
+						length = 0;
+					}
+				}
 			}
 		}
 		if (tick % 30 && !(records_from >= 0 && tick >= records_from && tick < records_from + 48))
