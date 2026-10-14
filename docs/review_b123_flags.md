@@ -6,7 +6,7 @@ Branch `flags123`, from `w122` (`85ebea3`, build 122 + docs).
 
 | Change | Kind | Default | Words / switches |
 |---|---|---|---|
-| 1. PGO flag sweep in the cache models | build setting | SWEEP_DEFAULT | `PSP_PGO_HOT_FRACTION`, `PSP_PGO_HOT_PERMILLE`, `PSP_PGO_ALIGN_FUNCTIONS`, `PSP_PGO_ALIGN_LOOPS` (new switches) |
+| 1. PGO flag sweep in the cache models | build setting, exact speed-up | **on**: functions aligned to 64, loops to 32, four loop transforms off | `PSP_PGO_ALIGN_FUNCTIONS`, `PSP_PGO_ALIGN_LOOPS`, `PSP_PGO_LOOP_TRANSFORMS` (off side: `0 0 1`); for sweeps `PSP_PGO_HOT_FRACTION`, `PSP_PGO_HOT_PERMILLE` |
 | 2. `ai_profile_update` samples only for a display | exact speed-up | **on** | `aiprofilefull` (off: as before) |
 | 3. Activation census | recon | off | `activecensus` |
 | 4. Doc fixes | docs | | |
@@ -40,7 +40,7 @@ Sizes from each build's `halo.map` (local builds at the same commit and flags; k
 
 **Exactness.** Flags can change code generation, floats included, so each is proved on play, not argued. In these cache-model runs: c20 played identically on every variant, play and both seeds at every tick [E]. **b30's flight is no judge across builds in the cache models:** any two builds with different code layout part ways after tick ~1,050–1,460, even `af64` against `af64l32`, which differ only in the padding before loops (no instruction changes); the same build twice (base, `ws950`: one EBOOT) plays identically. Something in that stretch depends on how fast the code runs, not on what it computes [E→U]; worth knowing for future A/Bs (a note in the lab's findings). The proof that counts is the statecrc pair below.
 
-**Proven.** Hands off with `statecrc` at `b7ca423`, the new flags against build 122's (`flags123c`'s on side, the same commit): **play and both random seeds identical at every tick on d20 (21,374 ticks), a50 (36,631) and c20 (28,060)**, for the default's flags and for the alignment alone [E] (lab 38620060902 against 38615620299). The whole-state hash differs from tick 0, as between any two builds (38590465463 did the same): it covers fields that hold code addresses. Locally, the default build is byte for byte the build with these flags given by hand (EBOOT `c5fc58e8…`), and the off side's switches give build 122's EBOOT byte for byte (`9fb706d8…`).
+**Proven.** Hands off with `statecrc` at `b7ca423`, the new flags against build 122's (`flags123c`'s on side, the same commit): **play and both random seeds identical at every tick on d20 (21,374 ticks), a50 (36,631) and c20 (28,060)**, for the default's flags and for the alignment alone [E] (lab 38620060902 against 38615620299). The whole-state hash differs from tick 0, as it does between any two builds (38590465463, b122's merge against its parent, did the same); presumably fields that hold code addresses [U]. Locally, the default build is byte for byte the build with these flags given by hand (EBOOT `c5fc58e8…`), and the off side's switches give build 122's EBOOT byte for byte (`9fb706d8…`).
 
 **Default.** The combination: on b30 it beats the alignment alone (−4.4% against −4.1%), on c20 it trails it (−4.6% against −5.0%), and it gives 32 KB of heap back. `psp_build.py`: in a `PSP_PGO=use` build the counted units get `-falign-functions=64 -falign-loops=32 -fno-unswitch-loops -fno-split-loops -fno-version-loops-for-strides -fno-predictive-commoning` unless told otherwise. **The off side** (build 122's flags): `PSP_PGO_ALIGN_FUNCTIONS=0 PSP_PGO_ALIGN_LOOPS=0 PSP_PGO_LOOP_TRANSFORMS=1`. The release's own `PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone` stays as it is. The heap gives 84 KB to the padding (5,632 KB in the local build; b30 needs ~5.2 MB).
 
@@ -60,7 +60,7 @@ Sizes from each build's `halo.map` (local builds at the same commit and flags; k
 
 **What it saves.** Two actor walks and 28 history updates a tick: 0.05–0.2 ms of b30's tick by the research's estimate [U]; in the cache models, `ai_profile_update` and its sample procedures are each below the cache map's cut on b30's flight and c20's opening (0.5% of the tick's instructions, ~35,000 a tick on b30), so the saving is at most ~0.1 ms a tick [E, lab 38614069299]; small, but it is pure waste.
 
-**Proven.** Hands off with `statecrc`, the default against `aiprofilefull`, one build (`b7ca423`, build 122's flags): play and both random seeds identical at every tick on d20 (21,374 ticks), a50 (36,631) and c20 (28,060) [E] (lab 38615620299). As in earlier proofs, the whole-state hash differs where drawing writes into objects (contrails, lights); the play hash leaves those out.
+**Proven.** Hands off with `statecrc`, the default against `aiprofilefull`, one build (`b7ca423`, build 122's flags): play and both random seeds identical at every tick on d20 (21,374 ticks), a50 (36,631) and c20 (28,060) [E] (lab 38615620299). As in earlier proofs, the whole-state hash differs in allocations outside play (what drawing writes into objects, and with it the timing of what follows); the play hash and the seeds are the test.
 
 **Default.** On; `aiprofilefull` brings back every tick's samples. Turning a display on mid-game starts its history then.
 
