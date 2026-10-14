@@ -4,7 +4,7 @@ Labels: **[M]** measured on a PSP (the PSP-3000 rig's figures are marked as such
 
 **b122 replaces b121 for testing:** it carries all of b121. Read `docs/review_b121.md` and `docs/review_b122.md` first.
 
-`halo_psp_b122.zip`: RELEASE_LINE
+`halo_psp_b122.zip` (SHA-256 `1eb5fae7233f651c12152122fed0ff585bf4b54767df147fd93044ab25ebc410`), EBOOT `d1dba340b62894cc18dd84416b8a72f4d92f1f1c69fb68d351db4af1cb38ca67`: built from commit `17a305f` on `w122` (lab run 38599466275). Heap 5,716 KB (b121: 5,760); 0 symbols stubbed. Its own profile (`campaign-b122`, counted at `832b74b` on `campaign121`, 13 runs). For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
 
 **Texture packs: `campaign121`**, the same as b121's. If b121's packs are already on the stick, the copy below changes nothing.
 
@@ -23,7 +23,15 @@ Labels: **[M]** measured on a PSP (the PSP-3000 rig's figures are marked as such
 | **Perception's rays on the Media Engine** | exact speed (new) | yes | `meraysoff` |
 | **Cheaper posing** | exact speed (new) | yes | `posingold animlockcall` |
 
-RIG_SECTION
+### On the rig (PSP-3000) [M]
+
+| Change | Where | Gap with it on | Lab run |
+|---|---|---|---|
+| Rays on the ME | a50 | tick **−1.0 to −1.8 ms (−3.8 to −5.7%)**; 0 of 31,940 checked answers mismatched | 38567183309 |
+| Rays on the ME | b30 (b113 route) | flight tick **−6.7 ms (−9.8%)**, cinematic −3.3 ms; landing and beach −2.0 to −2.3 ms (within the spread) | 38577715595 |
+| Cheaper posing | c20 | tick −0.2 to −0.3 ms (−0.7 to −1%) | 38567141001 |
+
+b121's own A/Bs are in `build_b121.md`. The ladder on this EBOOT (lab 38599518536) and the `aihalf` A/B on b30's beach (38599553360) are queued on the rig.
 
 ## On the PSP
 
