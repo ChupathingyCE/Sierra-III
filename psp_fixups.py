@@ -13982,6 +13982,575 @@ FIXES_121["source/devices/device_machines.c#machinetime"] = [
 """),
 ]
 
+# The level sphere walk (collision_bsp_test_sphere), which a biped's physics
+# asks ~20 times a tick: on a50 it is a quarter of the tick's instructions
+# (cachemap, lab 38512475945: bsp2d 12.8%, bsp3d 10.6%, the edge test 4.1%).
+# Three changes, each giving the walk's own answer, list for list, in order.
+# They pay only on a walk that reaches several leaves (a50: ~48 a walk, half
+# its surface tests repeats); a walk of a leaf or two (c20: 1.7, 12% repeats)
+# costs more with their bookkeeping (lab 38525896825: c20 +1.05%), and so
+# does any walk through a copy of the engine's code instead of the engine's
+# own (switching a walk over at its third leaf still cost c20 +0.80%, lab
+# 38539791064: the copy's code and data misses). So each walk is the engine's
+# own while the last walks averaged three leaves or fewer, and otherwise a
+# copy with all three changes:
+# - a leaf's reference is looked for in the plane stack through 64 buckets
+#   of the stack's designators, each with a count and an xor: a bucket at
+#   zero holds none, a bucket holding one holds its xor, and only a bucket
+#   holding more is scanned as before (a50's walks reach ~48 leaves and
+#   match ~93 references, each a scan of the stack);
+# - a surface the walk has already tested under the same signed plane
+#   designator isn't tested again: its second test adds nothing (each list
+#   keeps an index once, and a list that was full stays full), and returns
+#   the same way (centre, radius and projection are the same);
+# - a surface's vertex test and edge test go round its edge ring once
+#   together: they fill different lists, each in the ring's order as before.
+# "surfacetestold" (keep.txt): the walk as before; "surfacetestcheck": every
+# walk is made both ways and the log counts answers that differ
+FIXES_121["source/physics/collision_bsp.c#surfacetest"] = [
+("""boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_121): collision_bsp.c#surfacetest */
+static void psp_sphere_walk(struct test_sphere_data *data);
+#endif
+
+boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,"""),
+("""				bsp3d_test_sphere_recursive(&context, 0, 0);
+				if (!psp_sphere_memo_same_answer(hit, result))""",
+ """				psp_sphere_walk(&context);
+				if (!psp_sphere_memo_same_answer(hit, result))"""),
+("""			bsp3d_test_sphere_recursive(&context, 0, 0);
+			if (keyed)""",
+ """			psp_sphere_walk(&context);
+			if (keyed)"""),
+("""}
+
+static boolean collision_bsp_test_vector_recursive(
+	struct collision_bsp_test_vector_context *data,""",
+ """}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_121): see FIXES_121 collision_bsp.c#surfacetest */
+#define PSP_PLANE_BUCKETS 64
+#define PSP_PLANE_BUCKET(designator) ((unsigned long)(designator) * 0x9E3779B1u >> 26)
+#define PSP_SURFACES_SEEN 256
+/* past this many in one walk, surfaces are tested without being looked up,
+so a probe always finds an empty slot */
+#define PSP_SURFACES_SEEN_FULL 192
+/* the walks' leaves, averaged over the last ~8 walks, in sixteenths: past
+three leaves a walk takes the changes (c20's walks average 1.7 leaves and
+didn't pay; b30's 4.4 and d20's 4.4 did; a50's 47) */
+#define PSP_SURFACE_DEDUP_LEAVES16 (3 * 16)
+static long psp_walk_leaves16 = 0;
+
+struct psp_sphere_walk_data
+{
+	struct test_sphere_data *data;
+	/* the signed designator of the reference whose bsp2d is being walked */
+	long designator;
+};
+
+/* the plane stack's designators by bucket: a count and an xor each. Every
+designator counted is popped before the walk ends, so both are back at zero
+for the next */
+static unsigned char psp_stack_counts[PSP_PLANE_BUCKETS];
+static long psp_stack_xors[PSP_PLANE_BUCKETS];
+
+struct psp_surface_seen
+{
+	unsigned long walk;
+	long surface_index;
+	long designator;
+};
+
+static struct psp_surface_seen psp_surfaces_seen[PSP_SURFACES_SEEN];
+static unsigned long psp_surface_walk = 0;
+static int psp_surfaces_seen_count = 0;
+static int psp_surface_test_on = -1, psp_surface_test_check = 0;
+static unsigned long psp_st_walks, psp_st_leaves, psp_st_references, psp_st_scanned, psp_st_matched;
+static unsigned long psp_st_surfaces, psp_st_again, psp_st_compared, psp_st_differed, psp_st_engine;
+static long psp_st_window = -1;
+static struct test_sphere_data psp_st_check_context;
+static struct collision_bsp_test_sphere_result psp_st_check_result;
+
+static boolean psp_surface_seen_before(
+	long surface_index,
+	long designator)
+{
+	unsigned long slot;
+
+	if (psp_surfaces_seen_count >= PSP_SURFACES_SEEN_FULL)
+		return FALSE;
+	slot = ((unsigned long)surface_index * 0x9E3779B1u ^ (unsigned long)designator * 0x85EBCA77u) >> 24;
+	for (;; slot = (slot + 1) & (PSP_SURFACES_SEEN - 1))
+	{
+		struct psp_surface_seen *seen = &psp_surfaces_seen[slot];
+
+		if (seen->walk != psp_surface_walk)
+		{
+			seen->walk = psp_surface_walk;
+			seen->surface_index = surface_index;
+			seen->designator = designator;
+			psp_surfaces_seen_count++;
+			return FALSE;
+		}
+		if (seen->surface_index == surface_index && seen->designator == designator)
+			return TRUE;
+	}
+}
+
+/* collision_surface_test_sphere with its vertex and edge rings walked as one */
+static void psp_surface_test_sphere(
+	struct test_sphere_data *data,
+	long surface_index)
+{
+	struct collision_surface const *surface;
+	byte breakable_surface_index;
+	long edge_index;
+	real radius_squared;
+	boolean hit_feature = FALSE;
+	short edge_count;
+
+	if (!collision_bsp_valid_surface_index(data->bsp, surface_index))
+	{
+		return;
+	}
+	surface = TAG_BLOCK_GET_ELEMENT(
+		&data->bsp->surfaces,
+		surface_index,
+		struct collision_surface);
+	if (!collision_surface_edge_ring_continues(data->bsp, surface->first_edge_index, 0))
+	{
+		return;
+	}
+
+	if (TEST_FLAG(surface->flags, _collision_surface_breakable_bit))
+	{
+		breakable_surface_index = surface->breakable_surface_index;
+		if (breakable_surface_index < data->breakable_surface_count &&
+			!BIT_VECTOR_TEST_FLAG(
+				(long const *)data->breakable_surface_flags,
+				breakable_surface_index))
+		{
+			return;
+		}
+	}
+
+	radius_squared = data->radius * data->radius;
+	edge_index = surface->first_edge_index;
+	edge_count = 0;
+	do
+	{
+		struct collision_edge const *edge = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->edges,
+			edge_index,
+			struct collision_edge);
+		boolean reverse = edge->surface_indices[1] == surface_index;
+		long vertex_index = edge->vertex_indices[reverse];
+		struct collision_vertex const *vertex0 = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->vertices,
+			vertex_index,
+			struct collision_vertex);
+		struct collision_vertex const *vertex1 = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->vertices,
+			edge->vertex_indices[!reverse],
+			struct collision_vertex);
+		real delta_x = vertex0->point.x - data->center->x;
+		real delta_y = vertex0->point.y - data->center->y;
+		real delta_z = vertex0->point.z - data->center->z;
+		real distance_squared =
+			delta_x * delta_x +
+			delta_y * delta_y +
+			delta_z * delta_z;
+		real_vector3d edge_vector;
+
+		if (distance_squared <= radius_squared)
+		{
+			add_feature(
+				&data->result->vertex_count,
+				data->result->vertex_indices,
+				vertex_index);
+			hit_feature = TRUE;
+		}
+
+		vector_from_points3d(&vertex0->point, &vertex1->point, &edge_vector);
+		if (fast_vector_intersects_sphere(
+			&vertex0->point,
+			&edge_vector,
+			data->center,
+			data->radius))
+		{
+			add_feature(
+				&data->result->edge_count,
+				data->result->edge_indices,
+				edge_index);
+			hit_feature = TRUE;
+		}
+
+		edge_index = edge->edge_indices[reverse];
+	}
+	while (edge_index != surface->first_edge_index &&
+		collision_surface_edge_ring_continues(data->bsp, edge_index, ++edge_count));
+
+	if (!hit_feature)
+	{
+		edge_index = surface->first_edge_index;
+		edge_count = 0;
+		do
+		{
+			struct collision_edge const *edge = TAG_BLOCK_GET_ELEMENT(
+				&data->bsp->edges,
+				edge_index,
+				struct collision_edge);
+			boolean reverse = edge->surface_indices[1] == surface_index;
+			struct collision_vertex const *vertex0 = TAG_BLOCK_GET_ELEMENT(
+				&data->bsp->vertices,
+				edge->vertex_indices[reverse],
+				struct collision_vertex);
+			struct collision_vertex const *vertex1 = TAG_BLOCK_GET_ELEMENT(
+				&data->bsp->vertices,
+				edge->vertex_indices[!reverse],
+				struct collision_vertex);
+			real_point2d point0;
+			real_point2d point1;
+			real_vector2d vector0;
+			real_vector2d vector1;
+
+			project_point3d(
+				&vertex0->point,
+				data->projection_axis,
+				data->projection_sign,
+				&point0);
+			project_point3d(
+				&vertex1->point,
+				data->projection_axis,
+				data->projection_sign,
+				&point1);
+			vector_from_points2d(&data->center2d, &point0, &vector0);
+			vector_from_points2d(&data->center2d, &point1, &vector1);
+			if (cross_product2d(&vector0, &vector1) < 0.f)
+				return;
+
+			edge_index = edge->edge_indices[reverse];
+		}
+		while (edge_index != surface->first_edge_index &&
+			collision_surface_edge_ring_continues(data->bsp, edge_index, ++edge_count));
+	}
+
+	add_feature(
+		&data->result->surface_count,
+		data->result->surface_indices,
+		surface_index);
+
+	return;
+}
+
+static void psp_bsp2d_test_sphere(
+	struct psp_sphere_walk_data *walk,
+	long child_index,
+	short depth)
+{
+	struct test_sphere_data *data = walk->data;
+
+	while (!(child_index & LONG_MIN))
+	{
+		struct bsp2d_node const *node;
+		real distance;
+		boolean reaches_first_child;
+		boolean reaches_second_child;
+
+		if (!collision_bsp2d_enter_node(data->bsp, child_index, depth++, &data->bsp2d_nodes_left))
+		{
+			return;
+		}
+		node = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->bsp2d.nodes,
+			child_index,
+			struct bsp2d_node);
+		distance = plane2d_distance_to_point(&node->plane, &data->center2d);
+		reaches_first_child = distance <= data->radius;
+		reaches_second_child = distance >= -data->radius;
+
+		if (reaches_first_child)
+			psp_bsp2d_test_sphere(walk, node->child_indices[0], depth);
+		if (!reaches_second_child)
+			return;
+
+		child_index = node->child_indices[1];
+	}
+
+	psp_st_surfaces++;
+	if (psp_surface_seen_before(child_index & LONG_MAX, walk->designator))
+	{
+		psp_st_again++;
+		return;
+	}
+	psp_surface_test_sphere(data, child_index & LONG_MAX);
+}
+
+
+
+static void psp_bsp3d_test_sphere(
+	struct psp_sphere_walk_data *walk,
+	long node_index,
+	short depth)
+{
+	struct test_sphere_data *data = walk->data;
+
+	while (!(node_index & LONG_MIN))
+	{
+		struct bsp3d_node const *node;
+		real_plane3d const *plane;
+		real distance;
+		boolean reaches_second_child;
+		boolean child_index;
+		long designator;
+
+		if (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))
+		{
+			return;
+		}
+		node = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->bsp3d.nodes,
+			node_index,
+			struct bsp3d_node);
+		plane = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->bsp3d.planes,
+			node->plane_designator,
+			real_plane3d);
+		distance = plane3d_distance_to_point(plane, data->center);
+		reaches_second_child = distance < data->radius;
+		child_index = distance > -data->radius;
+
+		if (child_index && reaches_second_child)
+		{
+			match_assert(
+				"c:\\\\halo\\\\SOURCE\\\\physics\\\\collision_bsp.c",
+				0x206,
+				data->stack_depth>=0 && data->stack_depth<MAXIMUM_BSP3D_DEPTH);
+			designator = node->plane_designator | LONG_MIN;
+			data->plane_stack[data->stack_depth++] = designator;
+			psp_stack_counts[PSP_PLANE_BUCKET(designator)]++;
+			psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			psp_bsp3d_test_sphere(walk, node->children[0], depth);
+			psp_stack_counts[PSP_PLANE_BUCKET(designator)]--;
+			psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			data->stack_depth--;
+
+			match_assert(
+				"c:\\\\halo\\\\SOURCE\\\\physics\\\\collision_bsp.c",
+				0x210,
+				data->stack_depth>=0 && data->stack_depth<MAXIMUM_BSP3D_DEPTH);
+			designator = node->plane_designator & LONG_MAX;
+			data->plane_stack[data->stack_depth++] = designator;
+			psp_stack_counts[PSP_PLANE_BUCKET(designator)]++;
+			psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			psp_bsp3d_test_sphere(walk, node->children[1], depth);
+			psp_stack_counts[PSP_PLANE_BUCKET(designator)]--;
+			psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			data->stack_depth--;
+
+			return;
+		}
+
+		node_index = node->children[child_index];
+	}
+
+	if (node_index != NONE &&
+		collision_bsp_valid_leaf(data->bsp, node_index & LONG_MAX))
+	{
+		long leaf_index = node_index & LONG_MAX;
+		struct collision_leaf const *leaf = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->leaves,
+			leaf_index,
+			struct collision_leaf);
+		long reference_index;
+
+		psp_st_leaves++;
+		if (data->result->leaf_count < 256)
+		{
+			data->result->leaf_indices[data->result->leaf_count] = leaf_index;
+			data->result->leaf_count++;
+		}
+
+		for (
+			reference_index = leaf->first_bsp2d_reference_index;
+			reference_index <
+				leaf->first_bsp2d_reference_index + leaf->bsp2d_reference_count;
+			reference_index++)
+		{
+			struct bsp2d_reference const *reference = TAG_BLOCK_GET_ELEMENT(
+				&data->bsp->bsp2d_references,
+				reference_index,
+				struct bsp2d_reference);
+			/* (packed_designators wraps the reference's fields in PSP_DESIGNATOR) */
+			long designator = reference->plane_designator;
+			unsigned long bucket = PSP_PLANE_BUCKET(designator);
+			boolean on_stack = FALSE;
+
+			psp_st_references++;
+			if (!psp_stack_counts[bucket])
+				continue;
+			psp_st_scanned++;
+			/* a bucket holding one designator holds it in its xor */
+			if (psp_stack_counts[bucket] == 1)
+			{
+				on_stack = psp_stack_xors[bucket] == designator;
+			}
+			else
+			{
+				short stack_index;
+
+				for (stack_index = 0; stack_index < data->stack_depth; stack_index++)
+				{
+					if (data->plane_stack[stack_index] == designator)
+					{
+						on_stack = TRUE;
+						break;
+					}
+				}
+			}
+			if (!on_stack)
+				continue;
+			{
+				real_plane3d const *plane = TAG_BLOCK_GET_ELEMENT(
+					&data->bsp->bsp3d.planes,
+					designator & LONG_MAX,
+					real_plane3d);
+				real plane_distance = -plane3d_distance_to_point(plane, data->center);
+				real_point3d center_projected_on_plane;
+				real absolute_i;
+				real absolute_j;
+				real absolute_k;
+				short projection;
+
+				psp_st_matched++;
+				center_projected_on_plane.x =
+					plane->n.i * plane_distance + data->center->x;
+				center_projected_on_plane.y =
+					plane->n.j * plane_distance + data->center->y;
+				center_projected_on_plane.z =
+					plane->n.k * plane_distance + data->center->z;
+				absolute_i = fabs(plane->n.i);
+				absolute_j = fabs(plane->n.j);
+				absolute_k = fabs(plane->n.k);
+				if (absolute_k >= absolute_j && absolute_k >= absolute_i)
+					projection = _z;
+				else
+					projection = absolute_j >= absolute_i ? _y : _x;
+				data->projection_axis = projection;
+				data->projection_sign =
+					projection_sign_from_vector3d(&plane->n, projection) !=
+					(designator & LONG_MIN ? TRUE : FALSE);
+				project_point3d(
+					&center_projected_on_plane,
+					data->projection_axis,
+					data->projection_sign,
+					&data->center2d);
+				data->bsp2d_nodes_left = data->bsp->bsp2d.nodes.count;
+				walk->designator = designator;
+				psp_bsp2d_test_sphere(walk, reference->root_index, 0);
+			}
+		}
+	}
+}
+
+static boolean psp_sphere_results_equal(
+	struct collision_bsp_test_sphere_result const *a,
+	struct collision_bsp_test_sphere_result const *b)
+{
+	return a->surface_count == b->surface_count &&
+		a->edge_count == b->edge_count &&
+		a->vertex_count == b->vertex_count &&
+		a->leaf_count == b->leaf_count &&
+		!csmemcmp(a->surface_indices, b->surface_indices, a->surface_count * sizeof(long)) &&
+		!csmemcmp(a->edge_indices, b->edge_indices, a->edge_count * sizeof(long)) &&
+		!csmemcmp(a->vertex_indices, b->vertex_indices, a->vertex_count * sizeof(long)) &&
+		!csmemcmp(a->leaf_indices, b->leaf_indices, a->leaf_count * sizeof(long));
+}
+
+static void psp_surface_test_report(void)
+{
+	long tick = game_time_get();
+
+	if (psp_st_window < 0)
+		psp_st_window = tick;
+	if (tick - psp_st_window < 300)
+		return;
+	platform_psp_log("surfacetest: %lu walks in %ld ticks (%lu the engine's own), %lu leaves, %lu references (%lu scanned, %lu on the stack), %lu surfaces reached (%lu again, not retested)%s%lu of %lu",
+		psp_st_walks, tick - psp_st_window, psp_st_engine, psp_st_leaves, psp_st_references, psp_st_scanned, psp_st_matched,
+		psp_st_surfaces, psp_st_again,
+		psp_surface_test_check ? "; surfacetestcheck: walks that differed " : "; compared ",
+		psp_st_differed, psp_st_compared);
+	psp_st_walks = psp_st_leaves = psp_st_references = psp_st_scanned = psp_st_matched = 0;
+	psp_st_surfaces = psp_st_again = psp_st_compared = psp_st_differed = psp_st_engine = 0;
+	psp_st_window = tick;
+}
+
+static void psp_sphere_walk(struct test_sphere_data *data)
+{
+	struct psp_sphere_walk_data walk;
+
+	if (psp_surface_test_on < 0)
+	{
+		psp_surface_test_on = !psp_keep("surfacetestold");
+		psp_surface_test_check = psp_keep("surfacetestcheck");
+	}
+	if (!psp_surface_test_on)
+	{
+		bsp3d_test_sphere_recursive(data, 0, 0);
+		return;
+	}
+	if (psp_surface_test_check)
+		psp_st_check_context = *data;
+
+	psp_st_walks++;
+	/* (the check takes the copy every time: the engine's walk needs none) */
+	if (!psp_surface_test_check && psp_walk_leaves16 <= PSP_SURFACE_DEDUP_LEAVES16)
+	{
+		psp_st_engine++;
+		bsp3d_test_sphere_recursive(data, 0, 0);
+	}
+	else
+	{
+		/* a new walk number empties the table; at the counter's wrap, slots
+		stamped long ago are emptied for real */
+		if (++psp_surface_walk == 0)
+		{
+			csmemset(psp_surfaces_seen, 0, sizeof(psp_surfaces_seen));
+			psp_surface_walk = 1;
+		}
+		psp_surfaces_seen_count = 0;
+		walk.data = data;
+		walk.designator = 0;
+		psp_bsp3d_test_sphere(&walk, 0, 0);
+	}
+	psp_walk_leaves16 += (data->result->leaf_count * 16 - psp_walk_leaves16) / 8;
+
+	if (psp_surface_test_check)
+	{
+		struct collision_bsp_test_sphere_result *result = data->result;
+
+		psp_st_check_context.result = &psp_st_check_result;
+		psp_st_check_result.leaf_count = 0;
+		psp_st_check_result.surface_count = 0;
+		psp_st_check_result.edge_count = 0;
+		psp_st_check_result.vertex_count = 0;
+		bsp3d_test_sphere_recursive(&psp_st_check_context, 0, 0);
+		psp_st_compared++;
+		if (!psp_sphere_results_equal(result, &psp_st_check_result))
+			psp_st_differed++;
+	}
+	psp_surface_test_report();
+}
+#endif
+
+static boolean collision_bsp_test_vector_recursive(
+	struct collision_bsp_test_vector_context *data,"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
