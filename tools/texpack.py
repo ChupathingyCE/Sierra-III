@@ -7,19 +7,28 @@ textures of 64 px and more, 512 px at most; lightmaps at full size). The
 game finds a texture by the address of its bitmap_data in the tag window,
 which is fixed for a map built for the PSP (invader-build -X 0x09600000).
 
-usage: python3 texpack.py map.map out.ptex [--limit N]
+usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means]
 
 File layout (little endian):
   header: 'PTX1', u32 count, u32 directory size
   directory, sorted by key: count x { u32 key (bitmap_data address),
     u16 width, u16 height, u8 levels, u8 psm (5 = T8), u8 clut (0 = 5650,
     3 = 8888), u8 flags (1 = has alpha), u32 offset, u32 size }
-  tints (build 116), right after the directory: 'TNT1', u32 count, then
-    count x { u32 shader tag address, u32 tint (ABGR) }, sorted by address:
-    the see-through shaders' tints for the one map the GE draws of each
+  tints, right after the directory: 'TNT1', u32 count, then count x
+    { u32 shader tag address, u32 tint (ABGR) }, sorted by address: the
+    see-through shaders' tints for the one map the GE draws of each
     (seethrough.py). Bit 0 of the address set: the tint is half the colour,
-    drawn with the GE's colour doubling. Builds before 116 read the data by
-    offset and never look here
+    drawn with the GE's colour doubling; bit 1 alone: the tint is added to
+    the map, not multiplied; both bits: the tint alone is drawn, the map
+    giving only its alpha (seethrough.py's models). The textures' data is
+    read by offset, so a build that doesn't know a table never looks at it
+  drawn maps, right after the tints: 'TND1', u32 count, then count x
+    { u32 shader tag address (bits 0 and 1 as above, for the third word),
+    u32 the map the GE draws (its index in the shader's maps), u32 the tint
+    for the map the runtime's own rule would draw (keep word drawnmapscale) },
+    sorted by address: only the shaders whose drawn map isn't the rule's.
+    Only when there are any, after a 'TNT1' (of count 0 when no shader is
+    tinted)
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
     each level swizzled, rows padded to 16 bytes and to 8 rows
 """
@@ -544,6 +553,8 @@ def main():
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
+    ap.add_argument('--tints-from-means', action='store_true',
+                    help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
     a = ap.parse_args()
     global FULL_DETAIL, HUD_CLUT4
     HUD_CLUT4 = a.hud_clut4
@@ -611,16 +622,27 @@ def main():
         print('HUD sheets: %d kept at 8 bits that the old rule put at 4%s' % (
             len(kept), (': ' + ', '.join(kept)) if kept else ''), file=sys.stderr)
     entries.sort(key=lambda e: e['key'])
-    # build 116: the see-through shaders' tints (seethrough.py)
-    tints = seethrough.tints(m, bitmap_list(m, d))
-    for address in sorted(tints):
-        word, name, (tint, drawn, result, mean, doubled) = tints[address]
-        print('  tint %08x%s for %s: map %d drawn; the shader averages %s over its map\'s %s' % (
-            word, ' doubled' if doubled else '', name, drawn, ' '.join('%.2f' % v for v in result),
-            ' '.join('%.2f' % v for v in mean)), file=sys.stderr)
-    print('%d see-through shaders tinted' % len(tints), file=sys.stderr)
-    tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
-        struct.pack('<II', address, tints[address][0]) for address in sorted(tints)) if tints else b''
+    # the see-through shaders' tints and drawn maps (seethrough.py)
+    tints, drawn = seethrough.tints(m, bitmap_list(m, d), from_means=a.tints_from_means)
+    names = {t.address: t.name for t in m.tags}
+    for address in sorted(set(k & ~3 for k in tints) | set(drawn)):
+        found = next((tints[k][2] for k in tints if k & ~3 == address), None) or drawn[address]
+        alt = '' if found.alt is None else ' (the scale rule\'s map %d: tint %s)' % (found.scale_drawn, found.alt.name())
+        print('  tint %s for %s: map %d drawn%s; the shader averages %s over its map\'s %s' % (
+            found.name(), names[address], found.drawn, alt, ' '.join('%.2f' % v for v in found.result),
+            ' '.join('%.2f' % v for v in found.mean)), file=sys.stderr)
+    print('%d see-through shaders tinted (%d doubled, %d added, %d flat); %d drawn from another map than the scale rule\'s%s' % (
+        len(tints), sum(1 for k in tints if k & 3 == seethrough.DOUBLED), sum(1 for k in tints if k & 3 == seethrough.ADD),
+        sum(1 for k in tints if k & 3 == seethrough.FLAT), len(drawn),
+        ' (tints from the maps\' means: --tints-from-means)' if a.tints_from_means else ''), file=sys.stderr)
+    tint_bytes = b''
+    if tints or drawn:
+        tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
+            struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
+        if drawn:
+            tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
+                struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
+                            drawn[address].alt.word()) for address in sorted(drawn))
     header = 12
     directory = 20 * len(entries)
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16

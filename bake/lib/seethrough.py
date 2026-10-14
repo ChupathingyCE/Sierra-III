@@ -1,22 +1,51 @@
-"""seethrough.py - a see-through shader's tint, for the one map the PSP draws of
-it (build 116).
+"""seethrough.py - which map the PSP draws of a see-through shader, and the
+tint it draws that map with.
 
 The Xbox draws a transparent generic shader (sotr) with up to four maps run
 through up to seven register-combiner stages (shader_transparent_generic_
 preprocessor.c), and a transparent chicago shader (schi) with its maps folded
 one into the next by each map's colour and alpha functions (shader_transparent_
-chicago_preprocessor.c). The GE draws one texture at a time: the port picks one
-map of the shader (psp_fixups.py, psp_transparent_map) and drew it untinted
-until build 116. b30's ocean ("water simple": a reflection cube, then three
-ripple maps) came out white, the ripple map drawn as it is.
+chicago_preprocessor.c). The GE draws one texture at a time, so the port draws
+one map of the shader (psp_fixups.py, psp_transparent_map) with a constant
+colour for the rest of it (psp_ge.c).
 
-This works the shader out the way the Xbox's combiners would, with every map
-at its mean colour, and divides the result by the mean of the map the PSP
-draws. The GE multiplies that map by the quotient (the tint), so the draw
-averages to the shader's own colour and keeps its map's pattern. What the
-mean can't stand for (the angle a surface is seen at, a constant colour's
-animation over time) takes its middle value. Prints nothing; texpack.py
-writes the tints into the pack, by the shader's tag address (psp_tex.c).
+The constant comes from running the shader the way the Xbox's combiners would
+over a sample of the drawn map's texels. Another map that is the same bitmap
+at the same scale takes the same texel (a map layered on itself: c40's
+teleport column multiplies two copies of one streak map, where means would
+give the streaks' mean squared, a quarter of their brightness); the other
+maps sit at their mean colour, and so does a reflection cube the PSP skips.
+What the texels can't stand for (the angle a surface is seen at, a constant
+colour's animation over time) takes its middle value.
+
+Three ways of drawing the result are fitted to the texels. Modulate is kept
+unless another is much closer (MODEL_BETTER) and the shader has no fade (the
+GE's fade rides on the vertex colour, which only modulate multiplies the
+whole draw by):
+  modulate  the map times the tint (the GE's TFX_MODULATE), so the draw
+            averages to the shader's own colour and keeps its map's pattern;
+            a tint over 1 is halved and drawn with the GE's colour doubling
+  add       the map plus the tint (TFX_ADD): a reflection added over the map
+            (a10's monitor glass)
+  flat      the tint alone, whatever the texel (TFX_BLEND with the vertex
+            and environment colours alike): a shader whose colour hardly
+            depends on the map at all. a10's cryo glass (its bridge windows)
+            is the reflection cube times a constant, its map adding a few
+            per cent; folded into a multiplier of the map it scaled each
+            texel by x1.2 red and green and x0.5 blue, so the map's near-white
+            texels showed as the yellow splotches
+In all three the alpha is the map's times the tint's.
+
+The drawn map is the one whose texels carry most of what the shader draws
+(the variance of its output when only that map varies), unless the map the
+runtime's own rule picks (the smallest scale: the map that spans the
+surface) carries nearly as much. The holograms' scrolling band overlay has
+the smallest scale, but their planet and rings are the content.
+
+tints(..., from_means=True) works every shader out with every map at its mean
+and the runtime's map, as the packs were baked before (texpack.py
+--tints-from-means). Prints nothing; texpack.py writes the tints and the
+drawn maps into the pack, by the shader's tag address (psp_tex.c).
 """
 import struct
 import numpy as np
@@ -24,13 +53,26 @@ import numpy as np
 from bitmap_bake import decode
 
 # the shader types as an Xbox map holds them: Invader writes the Xbox's,
-# which have no chicago extended, so water is 7 (8 is glass, 9 meter);
-# build 116's first bake took water for 8 and tinted none
+# which have no chicago extended, so water is 7 (8 is glass, 9 meter)
 GENERIC, CHICAGO, WATER = 5, 6, 7
-# the maps the PSP looks through for the one it draws (psp_transparent_map)
+# the maps the runtime's own rule looks through (psp_transparent_map)
 PSP_MAPS_LOOKED_AT = 4
+# texels sampled from a map, on an even spread over its top level
+TEXELS = 4096
+# another map is drawn in place of the runtime's only when it carries this
+# many times the share of the output
+DRAWN_MARGIN = 1.5
+# the add or flat model is kept only when its error is under this share of
+# the modulate model's
+MODEL_BETTER = 0.5
+# a modulate model this close (mean squared error, colours 0-1: two steps
+# of 255 in each channel) is kept whatever the others' errors
+MODULATE_CLOSE = 3 * (2.0 / 255.0) ** 2
+# the drawing models, as the pack's two low address bits give them
+MODULATE, DOUBLED, ADD, FLAT = 0, 1, 2, 3
+MODEL_NAMES = {MODULATE: '', DOUBLED: ' doubled', ADD: ' added', FLAT: ' flat'}
 
-# ---------------------------------------------------------------- the means
+# ---------------------------------------------------------------- the maps
 
 
 def _face_bytes(b, bpp):
@@ -70,8 +112,23 @@ def bitmap_mean(m, b):
     return None if img is None else img.reshape(-1, 4).mean(0) / 255.0
 
 
+def bitmap_texels(m, b, count=TEXELS):
+    """up to count texels of a 2D bitmap's top level (count x RGBA, 0-1),
+    evenly spread; None for a cube map or one that can't be read"""
+    if b['type'] != '2d':
+        return None
+    img = decode(m, b)
+    if img is None:
+        return None
+    flat = img.reshape(-1, 4)
+    if len(flat) > count:
+        flat = flat[np.linspace(0, len(flat) - 1, count).astype(np.int64)]
+    return flat.astype(np.float64) / 255.0
+
+
 class Means:
-    """bitmap tag id -> the mean of its first bitmap, worked out once"""
+    """bitmap tag id -> the mean of its first bitmap, worked out once; and
+    texels(tag id), a sample of its texels"""
 
     def __init__(self, m, bitmaps):
         self.m = m
@@ -79,15 +136,32 @@ class Means:
         for b in bitmaps:
             self.first.setdefault(b['tag'], b)
         self.cache = {}
+        self.texel_cache = {}
+
+    def _bitmap(self, tag_id):
+        t = self.m.by_id.get(tag_id)
+        return self.first.get(t.name) if t is not None and t.group == 'bitm' else None
 
     def __call__(self, tag_id):
-        if tag_id in self.cache:
-            return self.cache[tag_id]
-        t = self.m.by_id.get(tag_id)
-        b = self.first.get(t.name) if t is not None and t.group == 'bitm' else None
-        mean = bitmap_mean(self.m, b) if b else None
-        self.cache[tag_id] = mean
-        return mean
+        if tag_id not in self.cache:
+            b = self._bitmap(tag_id)
+            self.cache[tag_id] = bitmap_mean(self.m, b) if b else None
+        return self.cache[tag_id]
+
+    def texels(self, tag_id):
+        if tag_id not in self.texel_cache:
+            b = self._bitmap(tag_id)
+            self.texel_cache[tag_id] = bitmap_texels(self.m, b) if b else None
+        return self.texel_cache[tag_id]
+
+
+def _rows(x, n):
+    """a map's colour as n x RGBA: its texels, or its mean (black when
+    unreadable) on every row"""
+    if x is None:
+        return np.zeros((n, 4))
+    x = np.asarray(x, dtype=np.float64)
+    return x.copy() if x.ndim == 2 else np.tile(x, (n, 1))
 
 
 # ---------------------------------------------------------------- generic
@@ -126,26 +200,28 @@ _OUTPUT_MAPPINGS = [lambda x: x, lambda x: x * 0.5, lambda x: x * 2.0, lambda x:
                     lambda x: x - 0.5, lambda x: (x - 0.5) * 2.0]
 
 
-def _colour_input(reg, index, mapping):
+def _colour_input(reg, index, mapping, n):
+    """n x RGB"""
     if index < 5:
-        return np.full(3, _CODE_AT_ZERO[_CONSTANT_CODES[index][mapping & 7]])
+        return np.full((n, 3), _CODE_AT_ZERO[_CONSTANT_CODES[index][mapping & 7]])
     index -= 5
     if index < 10:
-        return _mapped(reg[_REGISTERS[index]][:3], mapping)
+        return _mapped(reg[_REGISTERS[index]][:, :3], mapping)
     if index < 20:
-        return _mapped(np.full(3, reg[_REGISTERS[index - 10]][3]), mapping)
-    return np.zeros(3)
+        return _mapped(np.repeat(reg[_REGISTERS[index - 10]][:, 3:4], 3, 1), mapping)
+    return np.zeros((n, 3))
 
 
-def _alpha_input(reg, index, mapping):
+def _alpha_input(reg, index, mapping, n):
+    """n values"""
     if index < 5:
-        return float(_CODE_AT_ZERO[_CONSTANT_CODES[index][mapping & 7]])
+        return np.full(n, float(_CODE_AT_ZERO[_CONSTANT_CODES[index][mapping & 7]]))
     index -= 5
     if index < 10:
-        return float(_mapped(reg[_REGISTERS[index]][3], mapping))
+        return _mapped(reg[_REGISTERS[index]][:, 3], mapping)
     if index < 20:
-        return float(_mapped(reg[_REGISTERS[index - 10]][2], mapping))
-    return 0.0
+        return _mapped(reg[_REGISTERS[index - 10]][:, 2], mapping)
+    return np.zeros(n)
 
 
 def _function_mean(function):
@@ -159,15 +235,17 @@ def _argb(data, at):
     return np.array([r, g, b, a])
 
 
-def generic_result(m, o, maps, means):
-    """the shader's colour (RGBA 0-1) with every map at its mean"""
+def generic_result(m, o, maps):
+    """the shader's colour (n x RGBA, 0-1), each map given as its texels (n x
+    RGBA) or a mean (RGBA)"""
+    n = max([len(x) for x in maps[:4] if x is not None and np.ndim(x) == 2] or [1])
     stages_n, stages_p = struct.unpack_from('<iI', m.data, o + 96)
-    reg = {k: np.zeros(4) for k in _REGISTERS}
-    for i, mean in enumerate(maps[:4]):
-        reg['T%d' % i] = np.array(mean if mean is not None else np.zeros(4), dtype=np.float64)
-    reg['V0'] = np.ones(4)        # the diffuse light: unlit, white
-    reg['V1'] = np.full(4, 0.5)   # the fades by angle: their middle
-    reg['R0'][3] = reg['T0'][3]   # the combiners start with map 0's alpha in scratch 0
+    reg = {k: np.zeros((n, 4)) for k in _REGISTERS}
+    for i, x in enumerate(maps[:4]):
+        reg['T%d' % i] = _rows(x, n)
+    reg['V0'] = np.ones((n, 4))        # the diffuse light: unlit, white
+    reg['V1'] = np.full((n, 4), 0.5)   # the fades by angle: their middle
+    reg['R0'][:, 3] = reg['T0'][:, 3]  # the combiners start with map 0's alpha in scratch 0
     if stages_n <= 0:
         reg['R0'] = reg['T0'].copy()
     so = m.off(stages_p) if stages_n > 0 else None
@@ -176,28 +254,28 @@ def generic_result(m, o, maps, means):
         flags, = struct.unpack_from('<H', m.data, at)
         function, = struct.unpack_from('<h', m.data, at + 6)
         lower, upper, colour1 = _argb(m.data, at + 12), _argb(m.data, at + 28), _argb(m.data, at + 44)
-        reg['C0'] = lower + _function_mean(function) * (upper - lower)
-        reg['C1'] = colour1
+        reg['C0'] = np.tile(lower + _function_mean(function) * (upper - lower), (n, 1))
+        reg['C1'] = np.tile(colour1, (n, 1))
         c = struct.unpack_from('<14h', m.data, at + 60)
         a = struct.unpack_from('<12h', m.data, at + 88)
-        A, B, C, D = (_colour_input(reg, c[2 * k], c[2 * k + 1]) for k in range(4))
-        ab = np.full(3, A @ B) if c[9] == 1 else A * B
-        cd = np.full(3, C @ D) if c[11] == 1 else C * D
-        mux = reg['R0'][3] >= 0.5
-        total = (cd if mux else ab) if flags & 1 else ab + cd
+        A, B, C, D = (_colour_input(reg, c[2 * k], c[2 * k + 1], n) for k in range(4))
+        ab = np.repeat((A * B).sum(1, keepdims=True), 3, 1) if c[9] == 1 else A * B
+        cd = np.repeat((C * D).sum(1, keepdims=True), 3, 1) if c[11] == 1 else C * D
+        mux = reg['R0'][:, 3] >= 0.5
+        total = np.where(mux[:, None], cd, ab) if flags & 1 else ab + cd
         fmap = _OUTPUT_MAPPINGS[c[13]] if 0 <= c[13] < 6 else _OUTPUT_MAPPINGS[0]
         colour_out = [(c[8], ab), (c[10], cd), (c[12], total)]
-        aA, aB, aC, aD = (_alpha_input(reg, a[2 * k], a[2 * k + 1]) for k in range(4))
+        aA, aB, aC, aD = (_alpha_input(reg, a[2 * k], a[2 * k + 1], n) for k in range(4))
         aab, acd = aA * aB, aC * aD
-        atotal = (acd if mux else aab) if flags & 2 else aab + acd
+        atotal = np.where(mux, acd, aab) if flags & 2 else aab + acd
         amap = _OUTPUT_MAPPINGS[a[11]] if 0 <= a[11] < 6 else _OUTPUT_MAPPINGS[0]
         alpha_out = [(a[8], aab), (a[9], acd), (a[10], atotal)]
         for out, value in colour_out:
             if 0 < out < len(_OUTPUTS):
-                reg[_OUTPUTS[out]][:3] = np.clip(fmap(value), -1.0, 1.0)
+                reg[_OUTPUTS[out]][:, :3] = np.clip(fmap(value), -1.0, 1.0)
         for out, value in alpha_out:
             if 0 < out < len(_OUTPUTS):
-                reg[_OUTPUTS[out]][3] = float(np.clip(amap(value), -1.0, 1.0))
+                reg[_OUTPUTS[out]][:, 3] = np.clip(amap(value), -1.0, 1.0)
     return np.clip(reg['R0'], 0.0, 1.0)
 
 
@@ -217,36 +295,37 @@ def _fold(c, n, function):
     return None
 
 
-def chicago_result(m, o, maps_p, count, means):
-    """the shader's colour with every map at its mean: map 0, then each next
-    map folded in by the previous map's functions"""
+def chicago_result(m, o, maps_p, count, maps):
+    """the shader's colour (n x RGBA) with its maps as generic_result takes
+    them: map 0, then each next map folded in by the previous map's
+    functions"""
+    rows = max([len(x) for x in maps[:4] if x is not None and np.ndim(x) == 2] or [1])
     mo = m.off(maps_p)
     current = None
     for i in range(min(count, 4)):
         at = mo + 220 * i
         flags, = struct.unpack_from('<H', m.data, at)
-        mean = means[i]
-        n = np.array(mean if mean is not None else np.zeros(4), dtype=np.float64)
+        n = _rows(maps[i], rows)
         if flags & 2:   # alpha replicate: the map's alpha in its colour too
-            n = np.array([n[3], n[3], n[3], n[3]])
+            n = np.repeat(n[:, 3:4], 4, 1)
         if current is None:
             current = n
             continue
         colour_function, alpha_function = struct.unpack_from('<hh', m.data, mo + 220 * (i - 1) + 44)
-        rgb, alpha = current[:3], current[3]
+        rgb, alpha = current[:, :3], current[:, 3]
         if colour_function in (9, 10, 11, 12):
-            w = alpha if colour_function in (9, 10) else n[3]
-            rgb = n[:3] * w + rgb * (1 - w) if colour_function in (9, 11) else rgb * w + n[:3] * (1 - w)
+            w = (alpha if colour_function in (9, 10) else n[:, 3])[:, None]
+            rgb = n[:, :3] * w + rgb * (1 - w) if colour_function in (9, 11) else rgb * w + n[:, :3] * (1 - w)
         else:
-            rgb = _fold(rgb, n[:3], colour_function)
+            rgb = _fold(rgb, n[:, :3], colour_function)
         if alpha_function in (9, 10, 11, 12):
-            w = alpha if alpha_function in (9, 10) else n[3]
-            alpha = n[3] * w + alpha * (1 - w) if alpha_function in (9, 11) else alpha * w + n[3] * (1 - w)
+            w = alpha if alpha_function in (9, 10) else n[:, 3]
+            alpha = n[:, 3] * w + alpha * (1 - w) if alpha_function in (9, 11) else alpha * w + n[:, 3] * (1 - w)
         else:
-            alpha = _fold(alpha, n[3], alpha_function)
+            alpha = _fold(alpha, n[:, 3], alpha_function)
         if rgb is None or alpha is None:
             return None
-        current = np.clip(np.append(rgb, alpha), -1.0, 1.0)
+        current = np.clip(np.concatenate([rgb, alpha[:, None]], 1), -1.0, 1.0)
     return None if current is None else np.clip(current, 0.0, 1.0)
 
 
@@ -293,6 +372,7 @@ def water_tint(m, o, means):
 # a colour more than this over its map's (the GE multiplies by at most 1)
 # is drawn doubled: the tint at half, the GE's colour doubling on
 DOUBLED_ABOVE = 1.02
+_LUMA = np.array([0.299, 0.587, 0.114])
 
 
 def _clipped(quotient):
@@ -307,12 +387,102 @@ def _clipped(quotient):
     return np.clip(np.append(rgb, quotient[3]), 0.0, 1.0), doubled
 
 
-def shader_tint(m, tag, means):
-    """(tint RGBA 0-1, the drawn map's index, the shader's result, the drawn
-    map's mean, doubled) for a generic, chicago or water shader, or None when
-    the PSP's draw needs none (a numeric shader, no maps, a map that can't be
-    read). A water shader's drawn map is its base map (index 0 here).
-    doubled: the tint is half the colour, for the GE's colour doubling"""
+class Tint:
+    """how the GE draws a shader: map `drawn` with `tint` (RGBA 0-1) by the
+    drawing model (MODULATE, DOUBLED, ADD or FLAT). result and mean: the
+    shader's mean colour and the drawn map's. scale_drawn: the map the
+    runtime's own rule picks; alt: this shader's Tint for that map when the
+    bake draws another (the runtime's keep word drawnmapscale draws it).
+    errors: each model's mean squared error over the texels, by name (None
+    from means). shares: each candidate map's share of the output"""
+
+    def __init__(self, tint, drawn, result, mean, model=MODULATE):
+        self.tint, self.drawn, self.result, self.mean, self.model = tint, drawn, result, mean, model
+        self.scale_drawn, self.alt, self.errors, self.shares = drawn, None, None, {}
+
+    @property
+    def doubled(self):
+        return self.model == DOUBLED
+
+    def word(self):
+        return abgr(self.tint)
+
+    def flags(self):
+        """the model, as the pack keys it in the address's two low bits"""
+        return self.model
+
+    def name(self):
+        """the colour word and the model, as the bake's log and tagdeps.py
+        print them"""
+        return '%08x%s' % (self.word(), MODEL_NAMES[self.model])
+
+    def plain(self):
+        """drawn as the map is: no entry in the pack's tints"""
+        return self.word() == 0xFFFFFFFF and self.model == MODULATE
+
+
+def _visible(result, blend):
+    """what the frame gets of the shader's colour: through its alpha for an
+    alpha blend, as it is otherwise"""
+    return result[:, :3] * result[:, 3:4] if blend == 0 else result[:, :3]
+
+
+def _fit(result, texels, blend, fade_free):
+    """(tint, model, {model name: error}) for the drawn map's texels against
+    the shader's colour over them. The error is the mean squared difference
+    in colour, weighted by the shader's alpha for an alpha blend (what the
+    frame gets). Modulate unless add or flat is closer by MODEL_BETTER, the
+    modulate model is off by more than MODULATE_CLOSE, and the shader has no
+    fade"""
+    mean_r, mean_t = result.mean(0), texels.mean(0)
+    tint, doubled = _clipped(mean_r / np.maximum(mean_t, 1.0 / 255.0))
+    weight = result[:, 3] if blend == 0 else np.ones(len(result))
+    weight = weight / max(float(weight.sum()), 1e-9)
+
+    def error(drawn):
+        return float((((np.clip(drawn, 0.0, 1.0) - result[:, :3]) ** 2).sum(1) * weight).sum())
+    errors = {'modulate': error(texels[:, :3] * tint[:3] * (2.0 if doubled else 1.0))}
+    k = np.clip(mean_r[:3] - mean_t[:3], 0.0, 1.0)
+    errors['add'] = error(texels[:, :3] + k)
+    flat = np.clip(mean_r[:3], 0.0, 1.0)
+    errors['flat'] = error(np.tile(flat, (len(texels), 1)))
+    model = DOUBLED if doubled else MODULATE
+    # a shader pinned at white (the needler's ammo glow) is the combiners'
+    # clamp, not its maps: the map's shape is all a draw can keep of it
+    pinned = bool((mean_r[:3] > 0.98).all())
+    if fade_free and not pinned and errors['modulate'] > MODULATE_CLOSE:
+        best = min(('add', 'flat'), key=lambda name: errors[name])
+        if errors[best] < MODEL_BETTER * errors['modulate'] and (best == 'flat' or k.max() > 0.5 / 255.0):
+            return np.append(k if best == 'add' else flat, tint[3]), ADD if best == 'add' else FLAT, errors
+    return tint, model, errors
+
+
+def _maps(m, o, kind):
+    """[(bitmap tag id, (u scale, v scale))] of a generic or chicago shader"""
+    count, maps_p = struct.unpack_from('<iI', m.data, o + 84)
+    stride, scale_at, map_at = (220, 84, 120) if kind == CHICAGO else (100, 4, 40)
+    mo = m.off(maps_p)
+    return [(struct.unpack_from('<i', m.data, mo + stride * i + map_at)[0],
+             struct.unpack_from('<ff', m.data, mo + stride * i + scale_at)) for i in range(count)]
+
+
+def _scale_drawn(maps, skip):
+    """the map the runtime's own rule draws: of those after a cube map, the
+    one with the smallest scale (the map that spans the surface), a tie to
+    the later one (psp_transparent_map)"""
+    drawn, best = skip, maps[skip][1][0]
+    for i in range(skip + 1, min(len(maps), skip + PSP_MAPS_LOOKED_AT)):
+        scale = maps[i][1][0]
+        if scale != 0.0 and (best == 0.0 or scale <= best):
+            drawn, best = i, scale
+    return drawn
+
+
+def shader_tint(m, tag, means, from_means=False):
+    """a Tint for a generic, chicago or water shader, or None when the PSP's
+    draw needs none (a numeric shader, no maps, a map that can't be read). A
+    water shader's drawn map is its base map (index 0 here). from_means:
+    every map at its mean, the runtime's map, the modulate model"""
     if not tag.address or not m.in_tags(tag.address):
         return None
     o = m.off(tag.address)
@@ -322,36 +492,74 @@ def shader_tint(m, tag, means):
         if found is None:
             return None
         tint, doubled = _clipped(found[0])
-        return tint, 0, found[1], found[2], doubled
+        return Tint(tint, 0, found[1], found[2], DOUBLED if doubled else MODULATE)
     if kind not in (GENERIC, CHICAGO):
         return None
     flags = m.data[o + 41]
-    first_map_type, = struct.unpack_from('<h', m.data, o + 42)
+    first_map_type, blend, fade_mode, fade_source = struct.unpack_from('<hhhh', m.data, o + 42)
     count, maps_p = struct.unpack_from('<iI', m.data, o + 84)
     skip = 1 if first_map_type != 0 else 0
     if flags & 0x80 or count <= skip:
         return None
-    stride, scale_at, map_at = (220, 84, 120) if kind == CHICAGO else (100, 4, 40)
-    mo = m.off(maps_p)
-    ids = [struct.unpack_from('<i', m.data, mo + stride * i + map_at)[0] for i in range(count)]
-    map_means = [means(i) for i in ids]
-    # the map the PSP draws: of those after a cube map, the one with the
-    # smallest scale (the map that spans the surface), as psp_transparent_map
-    drawn = skip
-    best, = struct.unpack_from('<f', m.data, mo + stride * drawn + scale_at)
-    for i in range(skip + 1, min(count, skip + PSP_MAPS_LOOKED_AT)):
-        scale, = struct.unpack_from('<f', m.data, mo + stride * i + scale_at)
-        if scale != 0.0 and (best == 0.0 or scale <= best):
-            drawn, best = i, scale
-    if map_means[drawn] is None:
+    maps = _maps(m, o, kind)
+    map_means = [means(i) for i, _ in maps]
+
+    def evaluate(group):
+        """the shader over the texels of the maps in group (one bitmap at one
+        scale), every other map at its mean"""
+        given = [means.texels(maps[i][0]) if i in group else map_means[i] for i in range(count)]
+        return generic_result(m, o, given) if kind == GENERIC else chicago_result(m, o, maps_p, count, given)
+
+    def group_of(j):
+        return {i for i in range(skip, count) if maps[i] == maps[j]}
+
+    scale_drawn = _scale_drawn(maps, skip)
+    if map_means[scale_drawn] is None:
         return None
-    result = generic_result(m, o, map_means, means) if kind == GENERIC else \
-        chicago_result(m, o, maps_p, count, map_means)
-    if result is None:
-        return None
-    base = np.maximum(map_means[drawn], 1.0 / 255.0)
-    tint, doubled = _clipped(result / base)
-    return tint, drawn, result, map_means[drawn], doubled
+    if from_means:
+        result = evaluate(set())
+        if result is None:
+            return None
+        tint, doubled = _clipped(result[0] / np.maximum(map_means[scale_drawn], 1.0 / 255.0))
+        return Tint(tint, scale_drawn, result[0], map_means[scale_drawn], DOUBLED if doubled else MODULATE)
+
+    fade_free = fade_mode == 0 and fade_source == 0
+
+    def tint_for(j):
+        texels = means.texels(maps[j][0])
+        if texels is None:
+            return None
+        result = evaluate(group_of(j))
+        if result is None:
+            return None
+        tint, model, errors = _fit(result, texels, blend, fade_free)
+        found = Tint(tint, j, result.mean(0), map_means[j], model)
+        found.errors = errors
+        return found
+
+    # each candidate's share of the output: the variance of what the frame
+    # gets when that map (with its layered copies) is the only one varying
+    shares = {}
+    for j in range(skip, count):
+        if any(maps[i] == maps[j] for i in shares) or means.texels(maps[j][0]) is None:
+            continue
+        result = evaluate(group_of(j))
+        if result is not None:
+            shares[j] = float((_visible(result, blend) @ _LUMA).var())
+    drawn = scale_drawn
+    if shares:
+        best = max(shares, key=lambda j: shares[j])
+        own = max([shares[j] for j in shares if maps[j] == maps[scale_drawn]] or [0.0])
+        if maps[best] != maps[scale_drawn] and shares[best] > DRAWN_MARGIN * own:
+            drawn = best
+    found = tint_for(drawn)
+    if found is None:
+        # a map that can't be sampled (3D, unreadable): from its mean
+        return shader_tint(m, tag, means, from_means=True)
+    found.scale_drawn, found.shares = scale_drawn, shares
+    if drawn != scale_drawn:
+        found.alt = tint_for(scale_drawn) or shader_tint(m, tag, means, from_means=True)
+    return found
 
 
 def abgr(rgba):
@@ -360,20 +568,23 @@ def abgr(rgba):
     return (a << 24) | (b << 16) | (g << 8) | r
 
 
-def tints(m, bitmaps, shaders=None):
-    """{key: (ABGR, the shader's name, the details)} for every generic,
-    chicago and water shader whose draw needs a tint (one that isn't white,
-    or is doubled). The key is the shader's tag address, plus 1 when the tint
-    is doubled (tag addresses are multiples of 4; psp_tex.c reads the bit)"""
+def tints(m, bitmaps, shaders=None, from_means=False):
+    """({key: (ABGR, the shader's name, its Tint)}, {address: its Tint}): the
+    first for every generic, chicago and water shader whose draw needs a tint
+    (one that isn't white, or isn't drawn by plain modulate), keyed by its
+    tag address plus its model (tag addresses are multiples of 4; psp_tex.c
+    reads the two bits); the second for every shader whose drawn map isn't
+    the one the runtime's own rule picks"""
     means = Means(m, bitmaps)
-    out = {}
+    out, drawn = {}, {}
     for t in m.tags:
         if t.group not in ('sotr', 'schi', 'swat') or (shaders is not None and t.name not in shaders):
             continue
-        found = shader_tint(m, t, means)
+        found = shader_tint(m, t, means, from_means)
         if found is None:
             continue
-        word = abgr(found[0])
-        if word != 0xFFFFFFFF or found[4]:
-            out[t.address | (1 if found[4] else 0)] = (word, t.name, found)
-    return out
+        if not found.plain():
+            out[t.address | found.flags()] = (found.word(), t.name, found)
+        if found.drawn != found.scale_drawn:
+            drawn[t.address] = found
+    return out, drawn

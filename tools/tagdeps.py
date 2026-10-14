@@ -22,9 +22,12 @@ schi chicago, scex chicago extended, swat water, sgla glass, smet meter,
 spla plasma (the PSP draws sotr, schi, swat and sgla see-through parts;
 b113_candidates.md #16).
 
-Build 116: for each generic, chicago or water shader whose name contains the
-pattern, the tint the bake gives the one map the PSP draws of it
-(bake/lib/seethrough.py): derived colours, no tag data."""
+For each generic, chicago or water shader whose name contains the pattern,
+the map the PSP draws of it and the tint the bake gives that map
+(bake/lib/seethrough.py), beside the tint from the maps' means (the packs'
+before the texel fit), how well each drawing model fits, and the combiner
+stages of a generic shader whose tint changed: derived colours and register
+wiring, no tag data."""
 import os
 import sys
 
@@ -128,17 +131,31 @@ def main():
         return
     shaders = {t.name for t in m.tags if t.group in ('sotr', 'schi', 'swat') and pattern in t.name.lower()}
     means = seethrough.Means(m, bitmap_list(m, d))
+    changed = 0
     for t in sorted((t for t in m.tags if t.name in shaders and t.group in ('sotr', 'schi', 'swat')), key=lambda t: t.name):
         found = seethrough.shader_tint(m, t, means)
         if found is None:
             print('tint for %s %s: none (numeric, no maps, or a map that cannot be read)' % (t.group, t.name))
             continue
-        tint, drawn, result, mean, doubled = found
-        print('tint for %s %s: %08x%s (map %d drawn; the shader averages %s; that map %s)' % (
-            t.group, t.name, seethrough.abgr(tint), ' doubled' if doubled else '', drawn,
-            ' '.join('%.2f' % v for v in result),
-            ' '.join('%.2f' % v for v in mean)))
-        print_tint_inputs(m, t, means)
+        print('tint for %s %s: %s (map %d drawn%s; the shader averages %s; that map %s)' % (
+            t.group, t.name, found.name(), found.drawn,
+            '; the scale rule\'s map %d: %s' % (found.scale_drawn, found.alt.name()) if found.alt else '',
+            ' '.join('%.2f' % v for v in found.result),
+            ' '.join('%.2f' % v for v in found.mean)))
+        # the tint as the packs had it before: every map at its mean, the
+        # runtime's map (texpack.py --tints-from-means)
+        before = seethrough.shader_tint(m, t, means, from_means=True)
+        same = before is not None and before.word() == found.word() and before.flags() == found.flags() and \
+            before.drawn == found.drawn
+        changed += not same
+        print('    from means: %s (map %d drawn)%s' % (before.name(), before.drawn, '' if same else '   CHANGED')
+              if before is not None else '    from means: none')
+        if found.errors is not None:
+            print('    fit over the texels: error modulate %.5f, add %.5f, flat %.5f; each map\'s share of the output: %s' % (
+                found.errors['modulate'], found.errors['add'], found.errors['flat'],
+                ', '.join('map %d %.5f' % (j, v) for j, v in sorted(found.shares.items())) or 'none'))
+        print_tint_inputs(m, t, means, stages=not same)
+    print('tints that change from the means\' (texels, the drawn map, the model): %d' % changed)
 
 
 # the shader fields a tint depends on, by their tag enums' order
@@ -147,11 +164,12 @@ FADE_MODES = ('none', 'fade when perpendicular', 'fade when parallel')
 FADE_SOURCES = ('none', 'A out', 'B out', 'C out', 'D out')
 
 
-def print_tint_inputs(m, t, means):
+def print_tint_inputs(m, t, means, stages=False):
     """what a tint was worked out from: the framebuffer blend and fade, and
     each map's bitmap, scale and mean. A wrong tint shows up here as a map
     whose mean doesn't stand for what the shader draws (a cube map, a
-    mostly-black mask) or a blend the mean can't model"""
+    mostly-black mask) or a blend the mean can't model. stages: a generic
+    shader's combiner stages too, as register wiring"""
     import struct
     import seethrough
     o = m.off(t.address)
@@ -175,6 +193,48 @@ def print_tint_inputs(m, t, means):
         print('    map %d: %s, scale %g x %g, mean %s' % (
             i, target.name if target is not None else 'none', u, v,
             ' '.join('%.2f' % x for x in mean) if mean is not None else 'unreadable'))
+    if stages and kind == seethrough.GENERIC:
+        for line in stage_lines(m, o):
+            print('    ' + line)
+
+
+# the generic shader's combiner registers and mappings, for stage_lines
+INPUTS = ('zero', 'one', 'half', '-1', '-half', 'T0', 'T1', 'T2', 'T3', 'V0', 'V1', 'R0', 'R1', 'C0', 'C1')
+MAPPINGS = ('', '1-', '2x-1:', '1-2x:', 'x-.5:', '.5-x:', 's:', '-')
+OUTPUTS = ('-', 'R0', 'R1', 'V0', 'V1', 'T0', 'T1', 'T2', 'T3')
+OUTPUT_MAPPINGS = ('', ' x0.5', ' x2', ' x4', ' -0.5', ' (x-0.5)x2')
+
+
+def stage_lines(m, o):
+    """each combiner stage of a generic shader as one line: the colour half's
+    AB, CD and AB+CD (or the mux) and where each goes, then the alpha half's"""
+    import struct
+    stages_n, stages_p = struct.unpack_from('<iI', m.data, o + 96)
+    lines = []
+    so = m.off(stages_p) if stages_n > 0 else None
+    for s in range(min(stages_n, 7)):
+        at = so + 112 * s
+        flags, = struct.unpack_from('<H', m.data, at)
+        c = struct.unpack_from('<14h', m.data, at + 60)
+        a = struct.unpack_from('<12h', m.data, at + 88)
+
+        def name(index, mapping, alpha):
+            if index < 5:
+                return INPUTS[index]
+            index -= 5
+            half = ('.a' if not alpha else '.b') if index >= 10 else ('.rgb' if not alpha else '.a')
+            reg = INPUTS[5 + index % 10] if index < 20 else '?'
+            return '%s%s%s' % (MAPPINGS[mapping & 7], reg, half)
+        cin = [name(c[2 * k], c[2 * k + 1], False) for k in range(4)]
+        ain = [name(a[2 * k], a[2 * k + 1], True) for k in range(4)]
+        out = lambda i: OUTPUTS[i] if 0 <= i < len(OUTPUTS) else '?'
+        omap = lambda i: OUTPUT_MAPPINGS[i] if 0 <= i < len(OUTPUT_MAPPINGS) else '?'
+        lines.append('stage %d: colour %s%s%s -> %s, %s%s%s -> %s, %s -> %s%s; alpha %s*%s -> %s, %s*%s -> %s, %s -> %s%s' % (
+            s, cin[0], '.' if c[9] == 1 else '*', cin[1], out(c[8]), cin[2], '.' if c[11] == 1 else '*', cin[3],
+            out(c[10]), 'mux' if flags & 1 else 'sum', out(c[12]), omap(c[13]),
+            ain[0], ain[1], out(a[8]), ain[2], ain[3], out(a[9]), 'mux' if flags & 2 else 'sum', out(a[10]),
+            omap(a[11])))
+    return lines
 
 
 if __name__ == '__main__':

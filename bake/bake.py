@@ -39,6 +39,9 @@ Options:
     --music [MAP:]TAG[@START][+LENGTH]
                                 which clip (default MUSIC below; MAP: ui)
     --list-music                list the maps' music tags and lengths, and stop
+    --tints-from-means          the see-through shaders' tints from every
+                                map's mean, on the runtime's own map, as
+                                the packs were before (lib/seethrough.py)
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, hashlib, json, os, shutil, subprocess, sys, time
@@ -46,6 +49,8 @@ import argparse, hashlib, json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
 INVADER = os.path.join(HERE, 'invader')
+# options every texpack.py run takes (--tints-from-means)
+TEXPACK_OPTIONS = []
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder, if any (else atracdenc on PATH)
 sys.path.insert(0, HERE)
 from xiso import XIso
@@ -182,17 +187,17 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     os.remove(built)
     log('%s: textures' % name)
     start = os.path.getsize(log_path)
-    run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')], log_path,
-        cwd=LIB, env=env)
+    run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
+        log_path, cwd=LIB, env=env)
     echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets'))
     if track and name != 'ui':
         log('%s: textures, asset track (half-size lightmaps, plants kept whole at a distance)' % name)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
-             '--lightmap-scale', '2', '--alpha-coverage', '--pgeo', pgeo], log_path, cwd=LIB, env=env)
+             '--lightmap-scale', '2', '--alpha-coverage', '--pgeo', pgeo] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
     if detail and name != 'ui':
         log('%s: textures at full size for %s' % (name, detail))
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_detail.ptex'),
-             '--full-detail', detail], log_path, cwd=LIB, env=env)
+             '--full-detail', detail] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
     if name != 'ui':
         log('%s: wall decals' % name)
         run([sys.executable, os.path.join(LIB, 'stencilbake.py'), final, pgeo, os.path.join(out_maps, name + '.pstn')],
@@ -254,7 +259,10 @@ def main():
     ap.add_argument('--eboot', default='')
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
+    ap.add_argument('--tints-from-means', action='store_true')
     a = ap.parse_args()
+    if a.tints_from_means:
+        TEXPACK_OPTIONS.append('--tints-from-means')
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or ALL
     unknown = [m for m in wanted if m not in ALL]
     if unknown:
