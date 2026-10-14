@@ -16287,17 +16287,128 @@ int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 
 # when the answer changes, the weapon wakes that tick and its update clears
 # the index as it would have. weapon_new is left as it is: initialising the
 # field would change the weapon's state from its first tick, and the desktop
-# servers run the same code. Opt-in, "weapontracksleep" (keep.txt): with it,
-# itemsleepcheck finds a resting needler changed by its own update on b30
-# (14 of 210,000 sleeper updates): its second outgoing function value
-# (byte 0xE8) moves now and then with nothing else changed: the update
-# evaluates the definition's periodic functions at 57 x the object's slot +
-# game time (object_compute_function_values), so game time is an outside
-# input, and a sleeping needler would hold the old value. A sleeper that
-# still computes its functions (as a sleeping corpse does) would answer it.
-# itemsleepcheck logs the words that changed.
+# servers run the same code.
+# Game time is a second outside input: the update evaluates the definition's
+# periodic functions at 57 x the object's slot + game time
+# (object_compute_function_values), so a weapon whose functions hold still
+# for a while can sleep and then miss their next step (a needler on b30). So
+# a sleeping weapon still computes its functions and change colours, as a
+# sleeping corpse does (psp_sleeper_functions), and its checksum leaves them
+# out. "weapontrackawake" (keep.txt): tracking weapons excluded again, and
+# weapons back to the rule as it was.
+# itemsleepcheck compares an item's whole datum, its functions included,
+# between what sleeping would leave and what the update makes.
+# "funccheck" (keep.txt): every other sleeper's functions are computed each
+# tick and compared with what it holds, then put back; the counts by type go
+# to the log (psp_func_check_sleeper). Report only.
 # The lit items' report line also counts ground weapons and sleeping ones
 FIXES_123L["source/objects/objects.c#weapontrack"] = [
+("""		rules->colours_end = (offsetof(struct object_datum, object.outgoing_change_colors) +
+			sizeof(((struct object_datum *)0)->object.outgoing_change_colors) + 3) / 4;
+	}
+}
+""", """		rules->colours_end = (offsetof(struct object_datum, object.outgoing_change_colors) +
+			sizeof(((struct object_datum *)0)->object.outgoing_change_colors) + 3) / 4;
+	}
+	/* psp_fixups.py (FIXES_123L): a weapon's too, which it also computes
+	while it sleeps (psp_sleeper_functions) */
+	if (header->type == _object_type_weapon && psp_weapon_track())
+	{
+		rules->functions_first = offsetof(struct object_datum, object.incoming_function_values) / 4;
+		rules->functions_end = (offsetof(struct object_datum, object.outgoing_function_values) +
+			sizeof(((struct object_datum *)0)->object.outgoing_function_values) + 3) / 4;
+		rules->colours_first = offsetof(struct object_datum, object.outgoing_change_colors) / 4;
+		rules->colours_end = (offsetof(struct object_datum, object.outgoing_change_colors) +
+			sizeof(((struct object_datum *)0)->object.outgoing_change_colors) + 3) / 4;
+	}
+}
+"""),
+("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{""", """/* psp_fixups.py (FIXES_123L): what object_update computes from game time and
+the object's own state, made for a sleeper as its update would, in the same
+order: exported functions, function values, change colours */
+static void psp_sleeper_functions(long object_index)
+{
+	object_type_export_function_values(object_index);
+	object_compute_function_values(object_index);
+	object_compute_change_colors(object_index);
+}
+
+/* "funccheck": a sleeper's functions, as its update would make them now,
+against what it holds; the datum is put back after, so play is as without */
+static int psp_func_check = -1;
+static unsigned long psp_func_checked[16], psp_func_stale[16];
+static long psp_func_reported = -1;
+
+static void psp_func_check_sleeper(long object_index, struct object_header_datum *header)
+{
+	static const char *const names[12] = { "biped", "vehicle", "weapon", "equipment", "garbage", "projectile",
+		"scenery", "machine", "control", "light fixture", "placeholder", "sound scenery" };
+	static unsigned long held[512];
+	static long named[16];
+	static int named_count = 0;
+	unsigned long *word = (unsigned long *)header->datum;
+	long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, w, first = -1;
+	int type = header->type & 15, k;
+
+	if (psp_func_check < 0)
+		psp_func_check = psp_keep("funccheck");
+	if (!psp_func_check)
+		return;
+	csmemcpy(held, word, count * 4);
+	psp_sleeper_functions(object_index);
+	for (w = 0; w < count && first < 0; w++)
+		if (w != 2 && held[w] != word[w])
+			first = w;
+	if (first >= 0 && named_count < 16)
+	{
+		for (k = 0; k < named_count && named[k] != ((struct object_datum const *)word)->definition_index; k++)
+			;
+		if (k == named_count)
+		{
+			named[named_count++] = ((struct object_datum const *)word)->definition_index;
+			platform_psp_log("funccheck: %s (%s) holds a stale function: word %ld (byte 0x%lx) %08lx, its update makes %08lx (t=%ld)",
+				tag_get_name(((struct object_datum const *)word)->definition_index), type < 12 ? names[type] : "?",
+				first, first * 4, held[first], word[first], game_time_get());
+		}
+	}
+	csmemcpy(word, held, count * 4);
+	psp_func_checked[type]++;
+	if (first >= 0)
+		psp_func_stale[type]++;
+	if (psp_func_reported < 0)
+		psp_func_reported = game_time_get();
+	if (game_time_get() - psp_func_reported >= 900)
+	{
+		char line[400];
+		int length = 0;
+
+		for (k = 0; k < 12; k++)
+			if (psp_func_checked[k])
+				length += snprintf(line + length, sizeof(line) - length, " %s %lu of %lu;", names[k],
+					psp_func_stale[k], psp_func_checked[k]);
+		platform_psp_log("funccheck: t=%ld, stale of checked sleeper updates, from the start:%s", game_time_get(), line);
+		psp_func_reported = game_time_get();
+	}
+}
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{"""),
+("""			object_type_export_function_values(object_index);
+			object_compute_function_values(object_index);
+			object_compute_change_colors(object_index);
+			psp_corpses_asleep++;
+		}
+""", """			psp_sleeper_functions(object_index);
+			psp_corpses_asleep++;
+		}
+		/* psp_fixups.py (FIXES_123L): a sleeping weapon's functions too (its
+		checksum leaves them out), and the check of every other sleeper's */
+		if (header->type == _object_type_weapon && psp_weapon_track())
+			psp_sleeper_functions(object_index);
+		else if (psp_func_check != 0 && header->type != _object_type_biped)
+			psp_func_check_sleeper(object_index, header);
+"""),
 ("""				unsigned long after;
 
 				object_update(object_index);
@@ -16307,56 +16418,71 @@ FIXES_123L["source/objects/objects.c#weapontrack"] = [
 					platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
 						tag_get_name(sleeper->definition_index), game_time_get(), before, after);""",
 """				unsigned long after;
-				/* the datum before the update, so a change shows which words
+				/* the whole datum (but the render mark and a carried weapon's
+				stamp, which the rule never compares) as sleeping would leave
+				it, functions included, against what the update makes of it
 				(psp_fixups.py FIXES_123L) */
-				static unsigned long copy[512];
-				long count = (header->data_size < 2048 ? header->data_size : 2048) / 4;
+				static unsigned long copy[512], asleep[512];
+				long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, first = -1;
 
 				csmemcpy(copy, header->datum, count * 4);
+				if (header->type == _object_type_weapon && psp_weapon_track())
+				{
+					psp_sleeper_functions(object_index);
+					csmemcpy(asleep, header->datum, count * 4);
+					csmemcpy(header->datum, copy, count * 4);
+				}
+				else
+					csmemcpy(asleep, copy, count * 4);
 				object_update(object_index);
 				after = psp_family_checksum(header);
 				psp_items_sleep_checked++;
-				if (after != before && psp_items_sleep_wrong++ < 8)
+				for (word = 0; word < count && first < 0; word++)
+					if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+						first = word;
+				if ((after != before || first >= 0) && psp_items_sleep_wrong++ < 8)
 				{
-					struct psp_checksum_rules rules;
-					long word, shown = 0;
+					long shown = 0;
 
 					platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
 						tag_get_name(sleeper->definition_index), game_time_get(), before, after);
-					psp_checksum_rules_for(header, &rules);
 					for (word = 0; word < count && shown < 12; word++)
-						if (psp_checksum_word(&rules, word, copy[word]) !=
-							psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+						if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 						{
-							platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) %08lx -> %08lx",
-								word, word * 4, copy[word], ((unsigned long const *)header->datum)[word]);
+							platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
+								word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
 							shown++;
 						}
 					if (!shown)
-						platform_psp_log("sleep: itemsleepcheck:   no compared word changed (what it carries, or its tracked object)");
+						platform_psp_log("sleep: itemsleepcheck:   no word of its own changed (what it carries, or its tracked object)");
 				}"""),
 ("""long psp_items_lit_reason[6];
 """, """long psp_items_lit_reason[6];
-/* psp_fixups.py (FIXES_123L): tracking weapons ("weapontracksleep", opt-in),
-and the ground weapons updated and asleep, for the object report */
-static int psp_weapon_track_sleep = -1;
+/* psp_fixups.py (FIXES_123L): weapons that track an object may sleep, with
+their functions computed while they do ("weapontrackawake" off); and the
+ground weapons updated and asleep, for the object report */
+static int psp_weapon_track_on = -1;
 long psp_weapons_ground, psp_weapons_asleep;
+
+static int psp_weapon_track(void)
+{
+	if (psp_weapon_track_on < 0)
+		psp_weapon_track_on = !psp_keep("weapontrackawake");
+	return psp_weapon_track_on;
+}
 
 /* whether a weapon tracking an object is kept from the sleep rule */
 static int psp_weapon_track_excluded(struct object_header_datum const *header)
 {
-	if (header->type != _object_type_weapon ||
-		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index == NONE)
-		return 0;
-	if (psp_weapon_track_sleep < 0)
-		psp_weapon_track_sleep = psp_keep("weapontracksleep");
-	return !psp_weapon_track_sleep;
+	return header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE &&
+		!psp_weapon_track();
 }
 """),
 ("""- a weapon tracking an object: checks that the object still exists.
-""", """- a weapon tracking an object: checks that the object still exists.
-  With "weapontracksleep" that answer is in the sleep checksum
-  (psp_family_checksum) instead, and the weapon is offered.
+""", """- a weapon tracking an object: none now; it checks that the object
+  still exists, and that answer is in the sleep checksum
+  (psp_family_checksum; "weapontrackawake": excluded again).
 """),
 ("""	if (header->type == _object_type_weapon &&
 		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
