@@ -93,8 +93,9 @@ To quit the game: HOME → ARK-4 Kommander → Exit.
 
 ## Docs
 
-- `docs/` holds every write-up. Start with `rebuild_plan.md`, `optimization_ranking.md`, `chupa_rebase.md` and `psp_hardware_reference.md`.
-- Copies also live in Sheepdog01's claude.ai project ("Game Dev and Programming", `claude/*.md`).
+- `docs/` holds every write-up about the port: build notes, reviews, hardware reports, plans. Start with `rebuild_plan.md`, `optimization_ranking.md`, `chupa_rebase.md` and `psp_hardware_reference.md`.
+- `docs/research/` holds the research behind the levers (the B-series source notes, the engine read-throughs). Cite it from a lever's doc rather than restating it.
+- **GitHub is the home; the claude.ai project ("PSP Game Development") is the summary.** Its `living/` docs (`STATE`, `RULES`, `ARCHITECTURE`, `HARDWARE`, `TOOLCHAIN`, `BENCHMARKS`) say where things stand and point here for detail. A new write-up goes in `docs/` first; the project gets a copy only when it should be read in chat.
 
 ## Slated to move to Sheepdog-01/Sheep-PSP-Tools
 
