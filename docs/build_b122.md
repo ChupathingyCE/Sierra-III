@@ -65,5 +65,9 @@ umount $psp
 | 4 | The Pillar of Autumn (a10), **1** | The opening, from inside the bridge and the flyby | After the flyby | LK16: the bridge windows clear, no yellow splotches; LK17: the thruster |
 | 5 | a10, **2** (the ladder) | Hands off | It quits by itself after The Maw (d40) | Every map on b122 on your PSP-1000 |
 | 6 | b30, **4** (speed-ups off) | as 2, no sleep | as 2 | Optional, by feel: the same fight with the six speed-ups of b121 and b122 off |
+| 7 | b30, **13** then **1** | Sit on the Pelican bench and look at the wall behind you; a screenshot on each | When you've looked | The Pelican wall: does `cutroom` bring it back? |
+| 8 | c10, **8** then **1** | The swamp's plants, standing and moving | When you've looked | Foliage two-pass: softer plant edges, worth +13% frame time? |
+| 9 | b30 beach, **7** then **1** | The beach fight | Fight done | Far AI at half rate: does the far AI feel slower to react? |
+| 10 | d20, **9** then **1** | The corridors' ceiling and wall edges | When you've looked | Light merging: the seam, and is this the merge you meant? |
 
-**With one evening:** 1, 2, 3 and 4, then start 5 on the charger and leave it.
+**First sitting:** 1, 2, 3 and 4, then start 5 on the charger and leave it. **Later:** 7–10 are your A/B calls, any order; 6 is optional. Presets 10 (`seethroughvfpu`, c40), 11 (`machinesfar posehalf`, c20) and 12 (`sceneryhalf`) are speed questions the rig answers, so you can skip them.
