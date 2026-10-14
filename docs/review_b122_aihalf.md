@@ -49,8 +49,8 @@ An actor rests only on its turn (game time plus its index, odd or even, so half 
   |---|---:|---:|---:|---:|---:|---|
   | b30 route | 31,068 of 73,278 (42%) | 6,845 | 29,120 | 6,245 | 0 | 117,915 → 99,821 (−15%) |
   | a50 | 43,821 of 70,746 (62%) | 26,925 | 0 | 0 | 0 | 139,226 → 95,497 (−31%) |
-  | c20 | 17,385 of 31,228 (56%) | 3,164 | 0 | 0 | 10,679 | |
-  | d20 | 1,902 of 9,735 (20%) | 0 | 2,608 | 1,649 | 3,576 | |
+  | c20 | 17,385 of 31,228 (56%) | 3,164 | 0 | 0 | 10,679 | 33,869 → 19,400 (−43%) |
+  | d20 | 1,902 of 9,735 (20%) | 0 | 2,608 | 1,649 | 3,576 | 11,921 → 8,362 (−30%) |
 
   On b30 most kept turns are actors fighting the marines in range: those keep full rate by design. A swarm (the Flood's infection forms) has no single unit, so it never rests; the log counts it only in the total.
 - **No AI frozen in the shots** (`shotevery5`, on and off side by side at the same game time). On b30 the beach fight runs on both sides: an elite meleeing the player at 117.8 s with the word on, grunts and marines firing at 133 and 144 s. a50's marines walk the same paths on both sides. c20 and d20 show no enemies on screen hands off.
@@ -63,7 +63,9 @@ An actor rests only on its turn (game time plus its index, odd or even, so half 
   | | −1.4% | −2.2% | −1.0% | **−0.29 ms (−1.4%)** |
 
   That is with 1.8 resting turns a tick. Later in the same map it is 4.1 a tick.
-- **Multiplayer:** batch `aihalf122b` (lab 38581266921) builds `PSP_MULTIPLAYER=1` with the word on; see the report.
+  Rays are counted at the same pass for c20 and d20 (7,200); their off runs are in `aihalf122b`.
+- **At 10 world units** (`aihalfdist10`, batch `aihalf122b`, lab 38581266921): a50 rests 109,285 of 121,146 turns (90%), b30's route 39,596 of 104,278 (38%: the beach fight keeps its actors awake by their targets). Neither crashed (600 s, game time 18,060 and 15,342).
+- **Multiplayer** (same batch): the `PSP_MULTIPLAYER=1` build compiles, links and plays Blood Gulch with `aihalf` for 120 s, game time 3,768, no crash. Its perception lines read 0 rays: no AI there.
 
 **The expected gain [U].**
 - About 0.08–0.15 ms of the estimate per resting turn (a50's figure).
