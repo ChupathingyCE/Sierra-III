@@ -80,7 +80,8 @@ Sheepdog01 (20:23, during the ladder): a10's window glass looks worse than befor
 - **So it's longstanding** [E]; the lead [U]: a texture meant for something else (the window shader's reflection map, or a bump or detail map) drawn as the glass's colour. For the look batch.
 - **On the PSP it is worse** (Sheepdog01, 20:39): much more pronounced, less abstract and see-through.
 - **The rig's PSP-3000 draws b119 and b120 identically** [M] (lab runs 38496994706, 38497057378; `b120_a10_glass_rig_b119_vs_b120.png`), and the same as the emulator; `vramlargest` (VRAM filled by size) changes nothing. The PSP-1000's test 5 log and the rig's show the same texture setup for a10 (RAM cache 4,096 KB, the same pack, learned binds read).
-- **Open:** nothing measured explains a difference on Sheepdog01's PSP-1000. Next: a PSP-1000 screenshot at the bridge on b120 (game time ~50), set beside the rig's.
+- **Sheepdog01's PSP-1000 on b120** (`b120_test1a_a10glass1.tgz`, shots at game time 45-73; `b120_a10_glass_psp1000_vs_rig.png`): the same green-yellow mottled pattern at about the same strength as the rig's frames, from inside the bridge and from outside the ship. The frames come from nearby moments of the cutscene, so not pixel for pixel.
+- **So the pattern is b119's too** (emulator, rig, and now the PSP-1000 agree on b120's look; the emulator and the rig show b119 identical). The "worse than before" likely compares with an older build. Open: which build last showed the glass faint and see-through; an emulator tour of older builds would date the change.
 
 ## For b121 (Sheepdog01, 2026-10-13)
 
