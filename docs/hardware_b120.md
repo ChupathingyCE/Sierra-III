@@ -47,6 +47,11 @@ In b40's intro. Leads [U]: the glass shader on the Pelican's window, or a level-
 ### LK15: the motion tracker's pulse shows a faint cross
 Shots 005-007: a hairline straight down from the centre in 005. Lead [U]: the pulse is drawn as four mirrored quarter-quads, and where two meet, the bilinear filter samples the texture's edge or wraps to its far edge. Fixes to try: clamp the sheet's edges, or pull the UVs in by half a texel.
 
+## Tests 3 and 4: the HUD A/B
+
+- **Test 3 (`hudsnap`)** against test 2 (plain), at 4× (`b120_hud_plain_vs_hudsnap.png`): slightly better; Sheepdog01: both somewhat jagged, test 3 a little better on screen thanks to the smoothing.
+- **Test 4 ran without `hud177`:** its log's keep words are `nearauto assettrack geo2 hudsnap`, preset 4's, and the HUD is the same size as test 3's (with `hud177` it would be ~18% bigger). The launch menu keeps unknown words as typed (`apply_preset`, `psp_menu.c`), so the likeliest cause is preset 4 applied again. To re-run with preset 5. The menu doesn't log which preset it applied: b121's preset-on-the-stamp ask covers that.
+
 ## For b121 (Sheepdog01, 2026-10-13)
 
 - **The build number and the active preset on screen.** The stamp line at the bottom of every screenshot already shows the build, game time and frame (`b120 t 341.0 f 1930`); add the preset there, and in the launch menu's header.
