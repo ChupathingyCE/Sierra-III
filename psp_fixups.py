@@ -16126,7 +16126,7 @@ long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
 /* psp_fixups.py (FIXES_123L): lit items ("litemsawake" off), and their
 counts for the object report */
 static int psp_lit_item_sleep_on = -1;
-long psp_items_lit_offered, psp_items_lit_asleep;
+long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep;
 """),
 ("""- attached lights: the update re-links them in the level's light lists,
   and sleeping would change those lists' order (not shown harmless yet);
@@ -16163,6 +16163,45 @@ int psp_crumb_mark(""", """			return 0;
 }
 
 int psp_crumb_mark("""),
+("""		psp_sleepy_update(object_index, absolute_index, header, psp_item_sleep_on && psp_item_may_sleep(header));
+		return;
+	}
+	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
+}
+""", """		if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+			psp_lit_item_seen(header);
+		psp_sleepy_update(object_index, absolute_index, header, psp_item_sleep_on && psp_item_may_sleep(header));
+		return;
+	}
+	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
+}
+"""),
+("""int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */""",
+"""/* psp_fixups.py (FIXES_123L): a weapon or equipment with attached lights
+updated; each such definition named once in the log, with what kept it
+awake then, so a run shows which items carry lights and where they lie */
+static void psp_lit_item_seen(struct object_header_datum const *header)
+{
+	static long named[16];
+	static int named_count = 0;
+	struct item_datum const *item = (struct item_datum const *)header->datum;
+	int k;
+
+	psp_items_lit_updated++;
+	for (k = 0; k < named_count; k++)
+		if (named[k] == item->definition_index)
+			return;
+	if (named_count < 16)
+	{
+		named[named_count++] = item->definition_index;
+		platform_psp_log("sleep: lit item %s (type %d): parent %s, at rest %d, on an object %d (t=%ld)",
+			tag_get_name(item->definition_index), header->type, item->object.parent_object_index != NONE ? "yes" : "none",
+			TEST_FLAG(item->object.flags, _object_at_rest_bit) ? 1 : 0, TEST_FLAG(item->item.flags, _item_on_object_bit) ? 1 : 0,
+			game_time_get());
+	}
+}
+
+int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */"""),
 ("""			psp_items_asleep++;
 		}
 		psp_objects_asleep++;

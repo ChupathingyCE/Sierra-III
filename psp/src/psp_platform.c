@@ -673,22 +673,25 @@ static void object_report(SceUID file, unsigned long ticks)
 		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep; /* objects.c (psp_fixups.py) */
 		extern long psp_objects_restless_skipped; /* build 118: the restless back-off */
 		extern long psp_items_asleep; /* resting weapons and equipment */
-		/* resting items with lights that nothing else keeps awake, and how
-		many of them slept ("litemsawake": none) */
-		extern long psp_items_lit_offered, psp_items_lit_asleep;
+		/* weapons and equipment with attached lights: updated, offered to the
+		sleep rule (nothing else keeps them awake), asleep. On a line of their
+		own: the line above is cut at the log's 512 bytes on busy maps */
+		extern long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep;
 
-		if (length < (int)sizeof(line) - 200)
-			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses, %.1f items, lit %.1f of %.1f); restless, unchecked %.1f",
+		if (length < (int)sizeof(line) - 160)
+			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses, %.1f items); restless, unchecked %.1f",
 				ticks ? (double)psp_objects_asleep / ticks : 0.0, ticks ? (double)psp_objects_sleep_checked / ticks : 0.0,
 				ticks ? (double)psp_vehicles_asleep / ticks : 0.0, ticks ? (double)psp_corpses_asleep / ticks : 0.0,
 				ticks ? (double)psp_items_asleep / ticks : 0.0,
-				ticks ? (double)psp_items_lit_asleep / ticks : 0.0, ticks ? (double)psp_items_lit_offered / ticks : 0.0,
 				ticks ? (double)psp_objects_restless_skipped / ticks : 0.0);
+		platform_log("  %s", line);
+		platform_log("  lit items per tick: %.2f updated, %.2f offered to sleep, %.2f asleep",
+			ticks ? (double)psp_items_lit_updated / ticks : 0.0, ticks ? (double)psp_items_lit_offered / ticks : 0.0,
+			ticks ? (double)psp_items_lit_asleep / ticks : 0.0);
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
 		psp_objects_restless_skipped = psp_items_asleep = 0;
-		psp_items_lit_offered = psp_items_lit_asleep = 0;
+		psp_items_lit_updated = psp_items_lit_offered = psp_items_lit_asleep = 0;
 	}
-	platform_log("  %s", line);
 	{
 		/* "machinetime": a machine's parts; and the relink memo's lookups
 		(cluster_partitions.c, psp_fixups.py FIXES_121) */
@@ -2352,10 +2355,10 @@ static int heartbeat_thread(SceSize args, void *argp)
 				{
 					extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_items_asleep;
 					extern long psp_scenery_unchecked, psp_scenery_woken;
-					extern long psp_items_lit_offered, psp_items_lit_asleep;
+					extern long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep;
 
 					psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_items_asleep = 0;
-					psp_items_lit_offered = psp_items_lit_asleep = 0;
+					psp_items_lit_updated = psp_items_lit_offered = psp_items_lit_asleep = 0;
 					psp_scenery_unchecked = psp_scenery_woken = 0;
 				}
 			}
