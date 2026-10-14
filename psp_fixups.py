@@ -15359,13 +15359,12 @@ static struct psp_merays_answer psp_merays_answers[PSP_MERAYS_JOBS * PSP_MERAYS_
 typedef char psp_merays_answers_lines_assert[(PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer)) % 64 == 0 ? 1 : -1];
 
 static int psp_merays_on = -1, psp_merays_front;
-/* the fewest rays worth handing over ("meraysminN"; 0: any). A tick's
-hand-over costs the main CPU's whole cache written back and the ME a cold
-cache whatever the count, and each ray takes the ME longer from a cold cache
-than the main CPU from a warm one: in b122's rig ladder (lab 38599518536) the
-openings that crept (b40, c10, c20, c40) handed over 1.2-1.5 rays a job, the
-fights that gained (a50, b30) 9-11. Fewer than this are cast here, as with
-the ME off: the same answers either way */
+/* the fewest rays worth handing over ("meraysminN"; 0, the default: any).
+A tick's hand-over costs the main CPU's whole cache written back and the ME a
+cold cache whatever the count, and many ticks hand over only one or two rays.
+Whether casting those here instead is faster is the rig's question, so it is
+off unless asked for. Fewer than this are cast here, as with the ME off: the
+same answers either way */
 static int psp_merays_min;
 static unsigned long psp_merays_small;
 static boolean psp_merays_pass;
@@ -15543,11 +15542,11 @@ its actors to psp_perception_queue, then call psp_perception_queue_done */"""),
 		psp_merays_front = psp_keep_number("meraysfront", 4);
 		if (psp_merays_front < 0 || psp_merays_front > PSP_PERC_RAYS)
 			psp_merays_front = 4;
-		psp_merays_min = psp_keep_number("meraysmin", 4);
+		psp_merays_min = psp_keep_number("meraysmin", 0);
 		if (psp_merays_min < 0)
-			psp_merays_min = 4;
+			psp_merays_min = 0;
 		if (psp_merays_on)
-			platform_psp_log("perception: the rays past the first %d cast by the Media Engine when there are %d or more (meraysoff turns it off, meraysmin0 hands over any)",
+			platform_psp_log("perception: the rays past the first %d cast by the Media Engine when there are %d or more (meraysoff turns it off; meraysminN for a floor)",
 				psp_merays_front, psp_merays_min);
 	}
 	psp_merays_pass = psp_merays_on && psp_perc_queue_on && psp_me_ring_ready();
