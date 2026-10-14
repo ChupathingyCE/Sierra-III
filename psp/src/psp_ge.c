@@ -15370,8 +15370,13 @@ unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results)
 		total[b] = 0;
 	for (t = 0; t < count; t++)
 	{
-		int bucket = angle_bucket_one(stream, indices + 3 * t, ex.f, ey.f, ez.f, far_possible, far_squared.f);
+		int bucket;
 
+		/* audio first: a block waiting is mixed every 64 triangles, ~64 us
+		of the ME's time (psp_me.c) */
+		if ((t & 63) == 63)
+			psp_me_ring_step(t);
+		bucket = angle_bucket_one(stream, indices + 3 * t, ex.f, ey.f, ez.f, far_possible, far_squared.f);
 		out[t] = (unsigned char)bucket;
 		total[bucket]++;
 	}

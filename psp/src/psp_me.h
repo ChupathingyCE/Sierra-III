@@ -47,6 +47,11 @@ RAM (the level, the objects), so the main CPU writes back its whole cache
 before the push (psp_me_writeback(NULL, ME_RING_ALL_OF_RAM)) and the ME drops
 its whole cache before the job */
 #define ME_RING_ALL_OF_RAM 0x01000000u
+/* the last argument of a ring job, non-zero: an earlier job of the same
+hand-over (pushed just before it, with nothing written by the main CPU in
+between that this job reads) has already made this job's inputs fresh on the
+ME, so the ME doesn't drop them again (psp_me_push_perc_rays) */
+#define ME_RING_ARG_CONTINUES (ME_RING_ARGS - 1)
 
 struct psp_me_job
 {
@@ -67,6 +72,10 @@ void psp_me_writeback(const void *start, unsigned int bytes);
 int psp_me_push(const struct psp_me_job *job, unsigned int *ticket);
 int psp_me_wait(unsigned int ticket, unsigned int *results);
 void psp_me_ring_test(void);
+/* a long ring job's step, on the ME: the debug stash notes it, and an audio
+block waiting is mixed now (audio comes before every other job). Nothing
+anywhere else */
+void psp_me_ring_step(unsigned int step);
 
 /* build 118: 1 on the Media Engine. me-core starts it on a stack in its own
 eDRAM ($sp 0x80200000 or 0x80400000, me-core.h), and every thread of the main
