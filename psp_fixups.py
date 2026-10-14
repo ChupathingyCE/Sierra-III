@@ -16300,7 +16300,10 @@ int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 
 # between what sleeping would leave and what the update makes.
 # "funccheck" (keep.txt): every other sleeper's functions are computed each
 # tick and compared with what it holds, then put back; the counts by type go
-# to the log (psp_func_check_sleeper). Report only.
+# to the log (psp_func_check_sleeper). Report only. It found sleeping
+# machines holding stale function values on d20 (a holo control sphere: a
+# function at 1.0 that its update makes 0.8), so a sleeping machine computes
+# its functions too, the same way ("machinefuncsheld": as before).
 # The lit items' report line also counts ground weapons and sleeping ones
 FIXES_123L["source/objects/objects.c#weapontrack"] = [
 ("""		rules->colours_end = (offsetof(struct object_datum, object.outgoing_change_colors) +
@@ -16310,9 +16313,9 @@ FIXES_123L["source/objects/objects.c#weapontrack"] = [
 """, """		rules->colours_end = (offsetof(struct object_datum, object.outgoing_change_colors) +
 			sizeof(((struct object_datum *)0)->object.outgoing_change_colors) + 3) / 4;
 	}
-	/* psp_fixups.py (FIXES_123L): a weapon's too, which it also computes
-	while it sleeps (psp_sleeper_functions) */
-	if (header->type == _object_type_weapon && psp_weapon_track())
+	/* psp_fixups.py (FIXES_123L): a weapon's and a machine's too, which
+	they also compute while they sleep (psp_sleeper_functions) */
+	if (psp_sleeper_computes_functions(header))
 	{
 		rules->functions_first = offsetof(struct object_datum, object.incoming_function_values) / 4;
 		rules->functions_end = (offsetof(struct object_datum, object.outgoing_function_values) +
@@ -16402,9 +16405,10 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 """, """			psp_sleeper_functions(object_index);
 			psp_corpses_asleep++;
 		}
-		/* psp_fixups.py (FIXES_123L): a sleeping weapon's functions too (its
-		checksum leaves them out), and the check of every other sleeper's */
-		if (header->type == _object_type_weapon && psp_weapon_track())
+		/* psp_fixups.py (FIXES_123L): a sleeping weapon's or machine's
+		functions too (its checksum leaves them out), and the check of every
+		other sleeper's */
+		if (psp_sleeper_computes_functions(header))
 			psp_sleeper_functions(object_index);
 		else if (psp_func_check != 0 && header->type != _object_type_biped)
 			psp_func_check_sleeper(object_index, header);
@@ -16426,7 +16430,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 				long count = (header->data_size < 2048 ? header->data_size : 2048) / 4, word, first = -1;
 
 				csmemcpy(copy, header->datum, count * 4);
-				if (header->type == _object_type_weapon && psp_weapon_track())
+				if (psp_sleeper_computes_functions(header))
 				{
 					psp_sleeper_functions(object_index);
 					csmemcpy(asleep, header->datum, count * 4);
@@ -16469,6 +16473,24 @@ static int psp_weapon_track(void)
 	if (psp_weapon_track_on < 0)
 		psp_weapon_track_on = !psp_keep("weapontrackawake");
 	return psp_weapon_track_on;
+}
+
+/* whether a sleeper of this kind computes its functions while it sleeps,
+as its update would, its checksum leaving them out: weapons (with the
+tracking lever) and machines; dead bipeds have their own branch */
+static int psp_machine_funcs_on = -1;
+
+static int psp_sleeper_computes_functions(struct object_header_datum const *header)
+{
+	if (header->type == _object_type_weapon)
+		return psp_weapon_track();
+	if (header->type == _object_type_machine)
+	{
+		if (psp_machine_funcs_on < 0)
+			psp_machine_funcs_on = !psp_keep("machinefuncsheld");
+		return psp_machine_funcs_on;
+	}
+	return 0;
 }
 
 /* whether a weapon tracking an object is kept from the sleep rule */
