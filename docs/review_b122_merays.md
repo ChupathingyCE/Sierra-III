@@ -14,7 +14,7 @@ With the word off, nothing runs that didn't before, except one load and branch a
 
 ## The question: can the ME cast perception's queued rays, exactly?
 
-**Verdict: feasible, with three changes, all made here.** The ray's code needs an ME-side copy of its top four functions (the deep walks are shared), the main CPU must write back its whole cache before each job, and nothing may move while a job is out. The emulator can prove it exact and the rules kept. Only the rig can say what it is worth. **Expected gain [U]: about 0.5–0.9 ms a tick on b30's beach (1–2% of 49 ms), 0.4–0.7 ms on a50, little on c20.** Worth a rig A/B. It isn't a large lever.
+**Verdict: feasible, with three changes, all made here.** The ray's code needs an ME-side copy of its top four functions (the deep walks are shared), the main CPU must write back its whole cache before each job, and nothing may move while a job is out. The emulator has shown it exact: 0 of 270,940 ME answers differ, and play is the same at every tick on d20 and a50. It has also shown the rules kept: no system call, and no line both CPUs wrote except the emulator's own stack. Only the rig can say what it is worth. **Expected gain [U]: about 0.5–0.9 ms a tick on b30's beach (1–2% of 49 ms), 0.4–0.7 ms on a50, little on c20.** Worth a rig A/B. It isn't a large lever.
 
 ### What a ray reads and writes [D]
 
