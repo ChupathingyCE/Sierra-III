@@ -16106,7 +16106,167 @@ boolean machine_update(
 ]
 
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()):
+FIXES_123 = {}
+# ai_profile_update samples its meters every tick for the AI debug display
+# (ai_show_* and profile_display): two walks over every actor (units, swarm
+# actors) and 28 meters' histories, each with a float division. Nothing in
+# play reads a meter's sample, value or history; the only reader outside the
+# display is the port's perception (FIXES_121, FIXES_122), which uses the
+# line-of-sight and collision accumulators as counters within one tick and
+# relies on them starting each tick at 0. So with the display off, only that
+# reset is done. The display's history starts over when it is turned on.
+# "aiprofilefull" (keep.txt): every tick's samples as before
+FIXES_123["source/ai/ai_profile.c#skip"] = [
+("""void ai_profile_update(
+	void)
+{
+	short index;
+	struct ai_meter_definition const *definition = global_ai_meter_definitions;
+	struct ai_meter *meter = ai_profile.meters;
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_123): whether anything shows the meters */
+int psp_keep(const char *name);
+extern boolean profile_display;
+
+static boolean psp_ai_profile_shown(
+	void)
+{
+	return profile_display || psp_keep("aiprofilefull") ||
+		(ai_profile.show && (ai_profile.show_stats || ai_profile.show_actors || ai_profile.show_swarms ||
+			ai_profile.show_paths || ai_profile.show_line_of_sight || ai_profile.show_prop_types));
+}
+#endif
+
+void ai_profile_update(
+	void)
+{
+	short index;
+	struct ai_meter_definition const *definition = global_ai_meter_definitions;
+	struct ai_meter *meter = ai_profile.meters;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_123): the accumulators start the tick at 0, as
+	after a full update; the rest is the display's alone */
+	if (!psp_ai_profile_shown())
+	{
+		for (index = 0; index < NUMBER_OF_AI_METERS; index++)
+		{
+			meter[index].accumulator = 0;
+		}
+		return;
+	}
+#endif
+"""),
+]
+
+# "activecensus" (keep.txt; recon): every 5 s of game time, a log line of what
+# is awake: objects active of all by type, actors (active, dormant, forced
+# active), encounters (active, forced active) and squads whose dormancy a
+# script turned off (ai_allow_dormant false). It reads and changes nothing
+# else, so play is the same with it on; it tells which activation levers are
+# left (which types stay active, and how much of that the scripts force)
+FIXES_123["source/ai/ai.c#census"] = [
+("""void ai_update(
+	void)
+{
+	boolean update_ai""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_123): "activecensus" (see there) */
+#include "objects/objects.h"
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+static void psp_activation_census(
+	void)
+{
+	static char const *const type_names[NUMBER_OF_OBJECT_TYPES] = {
+		"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+		"machine", "control", "light", "placeholder", "soundscenery"};
+	long active[NUMBER_OF_OBJECT_TYPES] = {0}, total[NUMBER_OF_OBJECT_TYPES] = {0};
+	long actors = 0, actors_active = 0, actors_dormant = 0, actors_forced = 0;
+	long encounters = 0, encounters_active = 0, encounters_forced = 0;
+	long squads = 0, squads_awake = 0;
+	char line[512];
+	int at = 0;
+	short type;
+	struct data_iterator iterator;
+	struct object_header_datum *header;
+	struct actor_datum *actor;
+	struct encounter_datum *encounter;
+
+	data_iterator_new(&iterator, object_header_data);
+	while ((header = data_iterator_next(&iterator)) != NULL)
+	{
+		if (header->type < NUMBER_OF_OBJECT_TYPES)
+		{
+			total[header->type]++;
+			active[header->type] += TEST_FLAG(header->flags, _object_header_active_bit);
+		}
+	}
+	data_iterator_new(&iterator, actor_data);
+	while ((actor = data_iterator_next(&iterator)) != NULL)
+	{
+		actors++;
+		actors_active += actor->meta.active != 0;
+		actors_dormant += actor->meta.dormant != 0;
+		actors_forced += actor->meta.force_active != 0;
+	}
+	data_iterator_new(&iterator, encounter_data);
+	while ((encounter = data_iterator_next(&iterator)) != NULL)
+	{
+		short squad_index;
+
+		encounters++;
+		encounters_active += encounter->active != 0;
+		encounters_forced += encounter->force_active != 0;
+		for (squad_index = 0; squad_index < encounter->squad_count; squad_index++)
+		{
+			squads++;
+			squads_awake += encounter_get_squad(encounter, squad_index)->disable_dormant != 0;
+		}
+	}
+	for (type = 0; type < NUMBER_OF_OBJECT_TYPES && at < (int)sizeof(line) - 40; type++)
+	{
+		if (total[type])
+		{
+			at += snprintf(line + at, sizeof(line) - at, " %s %ld/%ld", type_names[type], active[type], total[type]);
+		}
+	}
+	platform_psp_log("activecensus: game time %ld | objects active/all:%s | actors %ld/%ld active, %ld dormant, %ld forced | encounters %ld/%ld active, %ld forced | squads %ld/%ld dormancy off",
+		game_time_get(), line, actors_active, actors, actors_dormant, actors_forced,
+		encounters_active, encounters, encounters_forced, squads_awake, squads);
+}
+#endif
+
+void ai_update(
+	void)
+{
+	boolean update_ai"""),
+("""		else if (ai_globals->ai_has_control_data)
+		{
+			actors_freeze();
+			ai_globals->ai_has_control_data = FALSE;
+		}
+	}
+
+	profile_exit(ai_update_section);""", """		else if (ai_globals->ai_has_control_data)
+		{
+			actors_freeze();
+			ai_globals->ai_has_control_data = FALSE;
+		}
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_123): "activecensus" */
+		if (game_time_get() % 150 == 0 && psp_keep("activecensus"))
+		{
+			psp_activation_census();
+		}
+#endif
+	}
+
+	profile_exit(ai_update_section);"""),
+]
+
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
