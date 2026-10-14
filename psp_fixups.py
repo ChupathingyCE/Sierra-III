@@ -13638,7 +13638,11 @@ FIXES_121["source/objects/objects.c#epoch"] = [
 # The level sphere walk (collision_bsp_test_sphere), which a biped's physics
 # asks ~20 times a tick: on a50 it is a quarter of the tick's instructions
 # (cachemap, lab 38512475945: bsp2d 12.8%, bsp3d 10.6%, the edge test 4.1%).
-# Three changes, each giving the walk's own answer, list for list, in order:
+# Three changes, each giving the walk's own answer, list for list, in order.
+# They pay only on a walk that reaches several leaves (a50: ~48 a walk, half
+# its surface tests repeats); a walk of a leaf or two (c20: 1.7, 12% repeats)
+# costs more with their bookkeeping (lab 38525896825: c20 +1.05%). So a walk
+# starts as before and takes them on at its third leaf, for the rest of it:
 # - a leaf's reference is looked for in the plane stack through 64 buckets
 #   of the stack's designators, each with a count and an xor: a bucket at
 #   zero holds none, a bucket holding one holds its xor, and only a bucket
@@ -13684,16 +13688,24 @@ static boolean collision_bsp_test_vector_recursive(
 /* past this many in one walk, surfaces are tested without being looked up,
 so a probe always finds an empty slot */
 #define PSP_SURFACES_SEEN_FULL 192
+/* the leaves a walk reaches the old way before it takes on the buckets and
+the table (b30's walks, 4.4 leaves, paid; c20's, 1.7, didn't) */
+#define PSP_SURFACE_PLAIN_LEAVES 2
 
 struct psp_sphere_walk_data
 {
-	struct test_sphere_data base;
+	struct test_sphere_data *data;
 	/* the signed designator of the reference whose bsp2d is being walked */
 	long designator;
-	unsigned char stack_counts[PSP_PLANE_BUCKETS];
-	/* the xor of the designators in each bucket */
-	long stack_xors[PSP_PLANE_BUCKETS];
+	short leaves;
+	boolean dedup;
 };
+
+/* the plane stack's designators by bucket while a walk deduplicates: a count
+and an xor each. Every designator counted is popped before the walk ends,
+so both are back at zero for the next */
+static unsigned char psp_stack_counts[PSP_PLANE_BUCKETS];
+static long psp_stack_xors[PSP_PLANE_BUCKETS];
 
 struct psp_surface_seen
 {
@@ -13707,7 +13719,7 @@ static unsigned long psp_surface_walk = 0;
 static int psp_surfaces_seen_count = 0;
 static int psp_surface_test_on = -1, psp_surface_test_check = 0;
 static unsigned long psp_st_walks, psp_st_leaves, psp_st_references, psp_st_scanned, psp_st_matched;
-static unsigned long psp_st_surfaces, psp_st_again, psp_st_compared, psp_st_differed;
+static unsigned long psp_st_surfaces, psp_st_again, psp_st_compared, psp_st_differed, psp_st_dedup;
 static long psp_st_window = -1;
 static struct test_sphere_data psp_st_check_context;
 static struct collision_bsp_test_sphere_result psp_st_check_result;
@@ -13889,7 +13901,7 @@ static void psp_bsp2d_test_sphere(
 	long child_index,
 	short depth)
 {
-	struct test_sphere_data *data = &walk->base;
+	struct test_sphere_data *data = walk->data;
 
 	while (!(child_index & LONG_MIN))
 	{
@@ -13918,6 +13930,11 @@ static void psp_bsp2d_test_sphere(
 		child_index = node->child_indices[1];
 	}
 
+	if (!walk->dedup)
+	{
+		collision_surface_test_sphere(data, child_index & LONG_MAX);
+		return;
+	}
 	psp_st_surfaces++;
 	if (psp_surface_seen_before(child_index & LONG_MAX, walk->designator))
 	{
@@ -13927,12 +13944,38 @@ static void psp_bsp2d_test_sphere(
 	psp_surface_test_sphere(data, child_index & LONG_MAX);
 }
 
+/* the walk takes on the buckets and the table: the buckets counted from the
+stack as it stands, the table emptied by a new walk number (at the
+counter's wrap, slots stamped long ago are emptied for real) */
+static void psp_sphere_walk_dedup(
+	struct psp_sphere_walk_data *walk)
+{
+	struct test_sphere_data *data = walk->data;
+	long stack_index;
+
+	for (stack_index = 0; stack_index < data->stack_depth; stack_index++)
+	{
+		long designator = data->plane_stack[stack_index];
+
+		psp_stack_counts[PSP_PLANE_BUCKET(designator)]++;
+		psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+	}
+	if (++psp_surface_walk == 0)
+	{
+		csmemset(psp_surfaces_seen, 0, sizeof(psp_surfaces_seen));
+		psp_surface_walk = 1;
+	}
+	psp_surfaces_seen_count = 0;
+	walk->dedup = TRUE;
+	psp_st_dedup++;
+}
+
 static void psp_bsp3d_test_sphere(
 	struct psp_sphere_walk_data *walk,
 	long node_index,
 	short depth)
 {
-	struct test_sphere_data *data = &walk->base;
+	struct test_sphere_data *data = walk->data;
 
 	while (!(node_index & LONG_MIN))
 	{
@@ -13967,11 +14010,18 @@ static void psp_bsp3d_test_sphere(
 				data->stack_depth>=0 && data->stack_depth<MAXIMUM_BSP3D_DEPTH);
 			designator = node->plane_designator | LONG_MIN;
 			data->plane_stack[data->stack_depth++] = designator;
-			walk->stack_counts[PSP_PLANE_BUCKET(designator)]++;
-			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			if (walk->dedup)
+			{
+				psp_stack_counts[PSP_PLANE_BUCKET(designator)]++;
+				psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			}
 			psp_bsp3d_test_sphere(walk, node->children[0], depth);
-			walk->stack_counts[PSP_PLANE_BUCKET(designator)]--;
-			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			/* (counted at its push, or by psp_sphere_walk_dedup since) */
+			if (walk->dedup)
+			{
+				psp_stack_counts[PSP_PLANE_BUCKET(designator)]--;
+				psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			}
 			data->stack_depth--;
 
 			match_assert(
@@ -13980,11 +14030,18 @@ static void psp_bsp3d_test_sphere(
 				data->stack_depth>=0 && data->stack_depth<MAXIMUM_BSP3D_DEPTH);
 			designator = node->plane_designator & LONG_MAX;
 			data->plane_stack[data->stack_depth++] = designator;
-			walk->stack_counts[PSP_PLANE_BUCKET(designator)]++;
-			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			if (walk->dedup)
+			{
+				psp_stack_counts[PSP_PLANE_BUCKET(designator)]++;
+				psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			}
 			psp_bsp3d_test_sphere(walk, node->children[1], depth);
-			walk->stack_counts[PSP_PLANE_BUCKET(designator)]--;
-			walk->stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			/* (counted at its push, or by psp_sphere_walk_dedup since) */
+			if (walk->dedup)
+			{
+				psp_stack_counts[PSP_PLANE_BUCKET(designator)]--;
+				psp_stack_xors[PSP_PLANE_BUCKET(designator)] ^= designator;
+			}
 			data->stack_depth--;
 
 			return;
@@ -14004,6 +14061,8 @@ static void psp_bsp3d_test_sphere(
 		long reference_index;
 
 		psp_st_leaves++;
+		if (!walk->dedup && ++walk->leaves > PSP_SURFACE_PLAIN_LEAVES)
+			psp_sphere_walk_dedup(walk);
 		if (data->result->leaf_count < 256)
 		{
 			data->result->leaf_indices[data->result->leaf_count] = leaf_index;
@@ -14026,13 +14085,13 @@ static void psp_bsp3d_test_sphere(
 			boolean on_stack = FALSE;
 
 			psp_st_references++;
-			if (!walk->stack_counts[bucket])
+			if (walk->dedup && !psp_stack_counts[bucket])
 				continue;
 			psp_st_scanned++;
 			/* a bucket holding one designator holds it in its xor */
-			if (walk->stack_counts[bucket] == 1)
+			if (walk->dedup && psp_stack_counts[bucket] == 1)
 			{
-				on_stack = walk->stack_xors[bucket] == designator;
+				on_stack = psp_stack_xors[bucket] == designator;
 			}
 			else
 			{
@@ -14114,13 +14173,13 @@ static void psp_surface_test_report(void)
 		psp_st_window = tick;
 	if (tick - psp_st_window < 300)
 		return;
-	platform_psp_log("surfacetest: %lu walks in %ld ticks, %lu leaves, %lu references (%lu scanned, %lu on the stack), %lu surfaces reached (%lu again, not retested)%s%lu of %lu",
-		psp_st_walks, tick - psp_st_window, psp_st_leaves, psp_st_references, psp_st_scanned, psp_st_matched,
+	platform_psp_log("surfacetest: %lu walks in %ld ticks (%lu deduplicating past their first %d leaves), %lu leaves, %lu references (%lu scanned, %lu on the stack), %lu surfaces reached deduplicating (%lu again, not retested)%s%lu of %lu",
+		psp_st_walks, tick - psp_st_window, psp_st_dedup, PSP_SURFACE_PLAIN_LEAVES, psp_st_leaves, psp_st_references, psp_st_scanned, psp_st_matched,
 		psp_st_surfaces, psp_st_again,
 		psp_surface_test_check ? "; surfacetestcheck: walks that differed " : "; compared ",
 		psp_st_differed, psp_st_compared);
 	psp_st_walks = psp_st_leaves = psp_st_references = psp_st_scanned = psp_st_matched = 0;
-	psp_st_surfaces = psp_st_again = psp_st_compared = psp_st_differed = 0;
+	psp_st_surfaces = psp_st_again = psp_st_compared = psp_st_differed = psp_st_dedup = 0;
 	psp_st_window = tick;
 }
 
@@ -14141,18 +14200,10 @@ static void psp_sphere_walk(struct test_sphere_data *data)
 	if (psp_surface_test_check)
 		psp_st_check_context = *data;
 
-	/* a new walk's number makes every slot of the last walk's table empty;
-	at the counter's wrap, slots stamped long ago are emptied for real */
-	if (++psp_surface_walk == 0)
-	{
-		csmemset(psp_surfaces_seen, 0, sizeof(psp_surfaces_seen));
-		psp_surface_walk = 1;
-	}
-	psp_surfaces_seen_count = 0;
-	walk.base = *data;
+	walk.data = data;
 	walk.designator = 0;
-	csmemset(walk.stack_counts, 0, sizeof(walk.stack_counts));
-	csmemset(walk.stack_xors, 0, sizeof(walk.stack_xors));
+	walk.leaves = 0;
+	walk.dedup = FALSE;
 	psp_bsp3d_test_sphere(&walk, 0, 0);
 	psp_st_walks++;
 
