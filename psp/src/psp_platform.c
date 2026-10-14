@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 122
+#define PSP_BUILD_NUMBER 123
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -673,6 +673,11 @@ static void object_report(SceUID file, unsigned long ticks)
 		extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_corpses_asleep; /* objects.c (psp_fixups.py) */
 		extern long psp_objects_restless_skipped; /* build 118: the restless back-off */
 		extern long psp_items_asleep; /* resting weapons and equipment */
+		/* weapons and equipment with attached lights: updated, offered to the
+		sleep rule (nothing else keeps them awake), asleep. On a line of their
+		own: the line above is cut at the log's 512 bytes on busy maps */
+		extern long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep, psp_items_lit_reason[6];
+		extern long psp_weapons_ground, psp_weapons_asleep; /* weapons not held, lit or not */
 
 		if (length < (int)sizeof(line) - 160)
 			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses, %.1f items); restless, unchecked %.1f",
@@ -680,10 +685,21 @@ static void object_report(SceUID file, unsigned long ticks)
 				ticks ? (double)psp_vehicles_asleep / ticks : 0.0, ticks ? (double)psp_corpses_asleep / ticks : 0.0,
 				ticks ? (double)psp_items_asleep / ticks : 0.0,
 				ticks ? (double)psp_objects_restless_skipped / ticks : 0.0);
+		platform_log("  %s", line);
+		platform_log("  lit items per tick: %.2f updated, %.2f offered to sleep, %.2f asleep; kept awake: held %.2f, not at rest %.2f, on an object %.2f, tracking %.2f, breakable surface %.2f",
+			ticks ? (double)psp_items_lit_updated / ticks : 0.0, ticks ? (double)psp_items_lit_offered / ticks : 0.0,
+			ticks ? (double)psp_items_lit_asleep / ticks : 0.0,
+			ticks ? (double)psp_items_lit_reason[1] / ticks : 0.0, ticks ? (double)psp_items_lit_reason[2] / ticks : 0.0,
+			ticks ? (double)psp_items_lit_reason[3] / ticks : 0.0, ticks ? (double)psp_items_lit_reason[4] / ticks : 0.0,
+			ticks ? (double)psp_items_lit_reason[5] / ticks : 0.0);
+		platform_log("  weapons on the ground per tick: %.2f updated, %.2f asleep",
+			ticks ? (double)psp_weapons_ground / ticks : 0.0, ticks ? (double)psp_weapons_asleep / ticks : 0.0);
+		memset(psp_items_lit_reason, 0, sizeof(psp_items_lit_reason));
+		psp_weapons_ground = psp_weapons_asleep = 0;
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
 		psp_objects_restless_skipped = psp_items_asleep = 0;
+		psp_items_lit_updated = psp_items_lit_offered = psp_items_lit_asleep = 0;
 	}
-	platform_log("  %s", line);
 	{
 		/* "machinetime": a machine's parts; and the relink memo's lookups
 		(cluster_partitions.c, psp_fixups.py FIXES_121) */
@@ -873,7 +889,7 @@ static void keep_load(void)
 	clock fix's off word, and the PSP probes */
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
-	platform_log("keep words, build 123's: speed off: aiprofilefull; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); recon: activecensus");
+	platform_log("keep words, build 123's: speed off: aiprofilefull; speed, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash meraysminN weapontracksleep; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); lit items: litemsawake; recon: activecensus");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
 	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
@@ -2348,8 +2364,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 				{
 					extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_items_asleep;
 					extern long psp_scenery_unchecked, psp_scenery_woken;
+					extern long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep, psp_items_lit_reason[6];
+					extern long psp_weapons_ground, psp_weapons_asleep;
 
 					psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_items_asleep = 0;
+					psp_items_lit_updated = psp_items_lit_offered = psp_items_lit_asleep = 0;
+					memset(psp_items_lit_reason, 0, sizeof(psp_items_lit_reason));
+					psp_weapons_ground = psp_weapons_asleep = 0;
 					psp_scenery_unchecked = psp_scenery_woken = 0;
 				}
 			}

@@ -16187,6 +16187,342 @@ void ai_profile_update(
 """),
 ]
 
+
+FIXES_123L = {}
+# Resting weapons and equipment with attached lights sleep too (a Covenant
+# weapon's glow, a plasma grenade's). They were kept awake because their
+# update reconnects their lights, which puts each first in its clusters'
+# lists, and a sleeper's lights stayed where they were: the lists decide
+# which lights light an object. A sleeping item now reconnects its lights
+# where its update would, at its own turn in the tick, as a sleeping machine
+# already does (FIXES_121's machinesleep, review_b121_machines.md). The rest
+# of the update leaves the item byte-identical (the sleep rule), so the
+# marker the light hangs on, and so the light's place, are the same too.
+# "litemsawake" (keep.txt): lit items kept awake. The object report's sleep
+# part counts lit items offered to the rule and asleep, per tick
+FIXES_123L["source/objects/objects.c#litems"] = [
+("""static int psp_item_sleep_on = -1, psp_item_sleep_check = -1;
+long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
+""", """static int psp_item_sleep_on = -1, psp_item_sleep_check = -1;
+long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
+/* psp_fixups.py (FIXES_123L): lit items ("litemsawake" off), and their
+counts for the object report */
+static int psp_lit_item_sleep_on = -1;
+long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep;
+/* what kept lit items awake, per update (psp_lit_item_seen): offered, held,
+not at rest, on an object, tracking an object, on a breakable surface */
+long psp_items_lit_reason[6];
+"""),
+("""- attached lights: the update re-links them in the level's light lists,
+  and sleeping would change those lists' order (not shown harmless yet);
+""", """- attached lights: none now; asleep, the item reconnects them where its
+  update would (psp_sleepy_update), so the lists keep their order
+  ("litemsawake": excluded again);
+"""),
+("""	if (item->object.parent_object_index != NONE ||
+		!TEST_FLAG(item->object.flags, _object_at_rest_bit) ||
+		TEST_FLAG(item->object.flags, _object_has_attached_lights_bit) ||
+		TEST_FLAG(item->item.flags, _item_on_object_bit))
+		return 0;
+""", """	if (item->object.parent_object_index != NONE ||
+		!TEST_FLAG(item->object.flags, _object_at_rest_bit) ||
+		TEST_FLAG(item->item.flags, _item_on_object_bit))
+		return 0;
+"""),
+("""			return 0;
+	}
+	return 1;
+}
+
+int psp_crumb_mark(""", """			return 0;
+	}
+	/* last, so the count is of lit items nothing else keeps awake */
+	if (TEST_FLAG(item->object.flags, _object_has_attached_lights_bit))
+	{
+		psp_items_lit_offered++;
+		if (psp_lit_item_sleep_on < 0)
+			psp_lit_item_sleep_on = !psp_keep("litemsawake");
+		return psp_lit_item_sleep_on;
+	}
+	return 1;
+}
+
+int psp_crumb_mark("""),
+("""		psp_sleepy_update(object_index, absolute_index, header, psp_item_sleep_on && psp_item_may_sleep(header));
+		return;
+	}
+	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
+}
+""", """		if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+			psp_lit_item_seen(header, absolute_index);
+		psp_sleepy_update(object_index, absolute_index, header, psp_item_sleep_on && psp_item_may_sleep(header));
+		return;
+	}
+	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
+}
+"""),
+("""int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */""",
+"""/* psp_fixups.py (FIXES_123L): a weapon or equipment with attached lights
+updated, and which of psp_item_may_sleep's tests (in its order) it fails,
+counted per update. Each lit item's reason is logged when it changes, with
+what the "not at rest" case turns on (its speeds, its item flags), so a run
+shows why lit items on the ground stay awake. Reads only */
+static const char *const psp_lit_reason_names[6] =
+	{ "offered", "held", "not at rest", "on an object", "tracking an object", "on a breakable surface" };
+
+static int psp_lit_item_reason(struct object_header_datum const *header)
+{
+	struct item_datum const *item = (struct item_datum const *)header->datum;
+
+	if (item->object.parent_object_index != NONE)
+		return 1;
+	if (!TEST_FLAG(item->object.flags, _object_at_rest_bit))
+		return 2;
+	if (TEST_FLAG(item->item.flags, _item_on_object_bit))
+		return 3;
+	if (header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 4;
+	if (TEST_FLAG(item->item.flags, _item_on_structure_bit) && item->item.rested_surface_index != NONE &&
+		item->item.bsp_index == global_structure_bsp_index_get() &&
+		TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&global_collision_bsp_get()->surfaces,
+			item->item.rested_surface_index, struct collision_surface)->flags, 3))
+		return 5;
+	return 0;
+}
+
+static void psp_lit_item_seen(struct object_header_datum const *header, short absolute_index)
+{
+	static struct { short identifier; signed char reason; } last[64];
+	static int lines = 0;
+	struct item_datum const *item = (struct item_datum const *)header->datum;
+	int slot = absolute_index & 63;
+	int reason = psp_lit_item_reason(header);
+
+	psp_items_lit_updated++;
+	psp_items_lit_reason[reason]++;
+	if (last[slot].identifier == header->identifier && last[slot].reason == reason)
+		return;
+	last[slot].identifier = header->identifier;
+	last[slot].reason = (signed char)reason;
+	if (lines++ < 400)
+		platform_psp_log("sleep: lit item %s #%d: %s (t=%ld; speed %.5f, spin %.5f; item flags %04x, on structure %d, surface %ld)",
+			tag_get_name(item->definition_index), absolute_index, psp_lit_reason_names[reason], game_time_get(),
+			magnitude3d(&item->object.translational_velocity), magnitude3d(&item->object.angular_velocity),
+			(unsigned)item->item.flags, TEST_FLAG(item->item.flags, _item_on_structure_bit) ? 1 : 0,
+			(long)item->item.rested_surface_index);
+	if (reason == 4 && lines < 400)
+	{
+		/* what the tracked index names: nothing in this engine sets it but
+		to NONE, so a value here is either a tracking trigger's or stale */
+		struct weapon_datum const *weapon = (struct weapon_datum const *)header->datum;
+		long tracked = weapon->weapon.tracked_object_index;
+		struct object_datum const *target = (struct object_datum const *)object_try_and_get_and_verify_type(tracked, _object_mask_all);
+
+		lines++;
+		platform_psp_log("sleep: lit item #%d tracks %08lx: %s (type %d); triggers %d/%d, light power %.3f, light delay %d",
+			absolute_index, (unsigned long)tracked, target ? tag_get_name(target->definition_index) : "no object",
+			target ? (int)target->object.type : -1, (int)weapon->weapon.triggers[0].state, (int)weapon->weapon.triggers[1].state,
+			weapon->weapon.integrated_light_power, (int)weapon->weapon.integrated_light_delay_ticks);
+	}
+}
+
+int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */"""),
+("""			psp_items_asleep++;
+		}
+		psp_objects_asleep++;
+""", """			psp_items_asleep++;
+			if (TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))
+				psp_items_lit_asleep++;
+		}
+		psp_objects_asleep++;
+"""),
+("""		/* a sleeping machine's lights are still reconnected as its update
+		would (object_update's object_connect_lights): to the same places,
+		but first in their clusters' lists, where every light the tick
+		reconnects goes. Without it the lists' order changed (machinesleep on
+		d20, lab 38526377504), and with it the lights a lit object picks */
+		if (header->type == _object_type_machine &&
+			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&""",
+"""		/* a sleeping machine's or item's lights are still reconnected as its
+		update would (object_update's object_connect_lights): to the same
+		places, but first in their clusters' lists, where every light the
+		tick reconnects goes. Without it the lists' order changed
+		(machinesleep on d20, lab 38526377504), and with it the lights a lit
+		object picks. Only items with lights pay for the test below */
+		if ((header->type == _object_type_machine ||
+				((header->type == _object_type_weapon || header->type == _object_type_equipment) &&
+					TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))) &&
+			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&"""),
+]
+
+
+# Resting weapons that "track an object" sleep too. A weapon's
+# tracked_object_index is never initialised (weapon_new leaves the 0 its
+# datum starts with), and index 0 has identifier 0, which datum_try_and_get
+# reads as "any": it finds whatever object holds slot 0, so weapon_update's
+# check that the tracked object still exists never clears it, and b120's
+# exclusion of tracking weapons kept every ground weapon awake
+# (review_b123_lititems.md section 4). That check is the only outside input
+# the exclusion stood for, so its answer goes into the sleep checksum, taken
+# at the weapon's own turn in the tick, the moment weapon_update would ask:
+# when the answer changes, the weapon wakes that tick and its update clears
+# the index as it would have. weapon_new is left as it is: initialising the
+# field would change the weapon's state from its first tick, and the desktop
+# servers run the same code. Opt-in, "weapontracksleep" (keep.txt): with it,
+# itemsleepcheck finds a resting needler changed by its own update on b30
+# (14 of 210,000 sleeper updates): its second outgoing function value
+# (byte 0xE8) moves now and then with nothing else changed: the update
+# evaluates the definition's periodic functions at 57 x the object's slot +
+# game time (object_compute_function_values), so game time is an outside
+# input, and a sleeping needler would hold the old value. A sleeper that
+# still computes its functions (as a sleeping corpse does) would answer it.
+# itemsleepcheck logs the words that changed.
+# The lit items' report line also counts ground weapons and sleeping ones
+FIXES_123L["source/objects/objects.c#weapontrack"] = [
+("""				unsigned long after;
+
+				object_update(object_index);
+				after = psp_family_checksum(header);
+				psp_items_sleep_checked++;
+				if (after != before && psp_items_sleep_wrong++ < 8)
+					platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+						tag_get_name(sleeper->definition_index), game_time_get(), before, after);""",
+"""				unsigned long after;
+				/* the datum before the update, so a change shows which words
+				(psp_fixups.py FIXES_123L) */
+				static unsigned long copy[512];
+				long count = (header->data_size < 2048 ? header->data_size : 2048) / 4;
+
+				csmemcpy(copy, header->datum, count * 4);
+				object_update(object_index);
+				after = psp_family_checksum(header);
+				psp_items_sleep_checked++;
+				if (after != before && psp_items_sleep_wrong++ < 8)
+				{
+					struct psp_checksum_rules rules;
+					long word, shown = 0;
+
+					platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+						tag_get_name(sleeper->definition_index), game_time_get(), before, after);
+					psp_checksum_rules_for(header, &rules);
+					for (word = 0; word < count && shown < 12; word++)
+						if (psp_checksum_word(&rules, word, copy[word]) !=
+							psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+						{
+							platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) %08lx -> %08lx",
+								word, word * 4, copy[word], ((unsigned long const *)header->datum)[word]);
+							shown++;
+						}
+					if (!shown)
+						platform_psp_log("sleep: itemsleepcheck:   no compared word changed (what it carries, or its tracked object)");
+				}"""),
+("""long psp_items_lit_reason[6];
+""", """long psp_items_lit_reason[6];
+/* psp_fixups.py (FIXES_123L): tracking weapons ("weapontracksleep", opt-in),
+and the ground weapons updated and asleep, for the object report */
+static int psp_weapon_track_sleep = -1;
+long psp_weapons_ground, psp_weapons_asleep;
+
+/* whether a weapon tracking an object is kept from the sleep rule */
+static int psp_weapon_track_excluded(struct object_header_datum const *header)
+{
+	if (header->type != _object_type_weapon ||
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index == NONE)
+		return 0;
+	if (psp_weapon_track_sleep < 0)
+		psp_weapon_track_sleep = psp_keep("weapontracksleep");
+	return !psp_weapon_track_sleep;
+}
+"""),
+("""- a weapon tracking an object: checks that the object still exists.
+""", """- a weapon tracking an object: checks that the object still exists.
+  With "weapontracksleep" that answer is in the sleep checksum
+  (psp_family_checksum) instead, and the weapon is offered.
+"""),
+("""	if (header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 0;
+	if (TEST_FLAG(item->item.flags, _item_on_structure_bit) && item->item.rested_surface_index != NONE &&
+		item->item.bsp_index == global_structure_bsp_index_get())
+	{""", """	if (psp_weapon_track_excluded(header))
+		return 0;
+	if (TEST_FLAG(item->item.flags, _item_on_structure_bit) && item->item.rested_surface_index != NONE &&
+		item->item.bsp_index == global_structure_bsp_index_get())
+	{"""),
+("""	if (header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 4;""", """	if (psp_weapon_track_excluded(header))
+		return 4;"""),
+("""	/* build 102: a machine's power and position groups, which its update
+	reads and a switch or a script changes without touching the machine */
+	if (header->type == _object_type_machine)""", """	/* psp_fixups.py (FIXES_123L): whether a weapon's tracked object still
+	exists, which weapon_update asks every tick and acts on (it clears the
+	index): asked here at the same moment, so a change wakes the weapon */
+	if (header->type == _object_type_weapon)
+	{
+		long tracked = ((struct weapon_datum const *)object)->weapon.tracked_object_index;
+
+		if (tracked != NONE)
+			sum = ((sum << 5) | (sum >> 27)) ^ (object_try_and_get_and_verify_type(tracked, _object_mask_all) ? 0x5BD1E995UL : 0x1B873593UL);
+	}
+	/* build 102: a machine's power and position groups, which its update
+	reads and a switch or a script changes without touching the machine */
+	if (header->type == _object_type_machine)"""),
+("""		if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+			psp_lit_item_seen(header, absolute_index);
+""", """		if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+			psp_lit_item_seen(header, absolute_index);
+		if (header->type == _object_type_weapon && object->object.parent_object_index == NONE)
+			psp_weapons_ground++;
+"""),
+("""			if (TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))
+				psp_items_lit_asleep++;
+""", """			if (TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))
+				psp_items_lit_asleep++;
+			if (header->type == _object_type_weapon)
+				psp_weapons_asleep++;
+"""),
+]
+
+
+# Which weapons' triggers enter the tracking state after firing (the only
+# place the tracked index is read in play): each weapon definition, the
+# first time one is made, logs its triggers that carry
+# _weapon_trigger_tracks_projectile_bit. A flag and a tag name, read at
+# run time; nothing of the tag leaves the machine but that line
+FIXES_123L["source/items/weapons.c#tracksprojectile"] = [
+("""	weapon->weapon.state = _weapon_state_idle;
+	weapon->weapon.overheated_effect_index = NONE;
+""", """	weapon->weapon.state = _weapon_state_idle;
+	weapon->weapon.overheated_effect_index = NONE;
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_123L): "#tracksprojectile" (see there) */
+		void platform_psp_log(const char *format, ...);
+		static long reported[32];
+		static int reported_count = 0;
+		int k;
+
+		for (k = 0; k < reported_count && reported[k] != weapon->definition_index; k++)
+			;
+		if (k == reported_count && reported_count < 32)
+		{
+			int tracking = 0;
+
+			reported[reported_count++] = weapon->definition_index;
+			for (k = 0; k < weapon_definition->weapon.triggers.count; k++)
+				if (TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&weapon_definition->weapon.triggers, k,
+					struct weapon_trigger_definition)->flags, _weapon_trigger_tracks_projectile_bit))
+					tracking |= 1 << k;
+			platform_psp_log("weapons: %s: %d triggers, tracking triggers mask %d",
+				tag_get_name(weapon->definition_index), (int)weapon_definition->weapon.triggers.count, tracking);
+		}
+	}
+#endif
+"""),
+]
+
 # "activecensus" (keep.txt; recon): every 5 s of game time, a log line of what
 # is awake: objects active of all by type, actors (active, dormant, forced
 # active), encounters (active, forced active) and squads whose dormancy a
@@ -16293,8 +16629,121 @@ void ai_update(
 	profile_exit(ai_update_section);"""),
 ]
 
+# "pillreach" (keep.txt; builds with PSP_DEBUG_TOOLS=1 only): recon for
+# docs/plan_biped_collision_me.md. A per-biped collision cache built ahead
+# (on the ME) answers a pill sweep only when the sweep's sphere lies inside
+# the sphere the cache was built for. This counts, for each sweep, how far
+# the biped reaches in a tick (its speed against a few margins), and plays a
+# cache of each margin per biped: rebuilt when a sweep falls outside it, with
+# the level walk such a build would make (its leaves and surfaces). Changes
+# no value the game reads: the extra walk only fills a result on the stack
+FIXES_123L["source/units/bipeds.c#pillreach"] = [
+("""static void biped_update_physics(
+	struct biped_physics *physics)
+{""", """#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+/* psp_fixups.py (FIXES_123L): "pillreach" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+#define PSP_REACH_SLOTS 256
+#define PSP_REACH_SPEEDS 4
+#define PSP_REACH_CACHES 3
+static const real psp_reach_speeds[PSP_REACH_SPEEDS] = { 0.025f, 0.05f, 0.1f, 0.2f };
+static const real psp_reach_margins[PSP_REACH_CACHES] = { 0.25f, 0.5f, 1.0f };
+static struct { long biped_index; real_point3d centre[PSP_REACH_CACHES]; } psp_reach[PSP_REACH_SLOTS];
+static unsigned long psp_reach_sweeps, psp_reach_slow[PSP_REACH_SPEEDS], psp_reach_builds[PSP_REACH_CACHES];
+static unsigned long psp_reach_leaves[PSP_REACH_CACHES], psp_reach_surfaces[PSP_REACH_CACHES], psp_reach_full[PSP_REACH_CACHES];
+static long psp_reach_reported = -1;
+static int psp_reach_on = -1;
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()):
+static void psp_pill_reach(
+	struct biped_physics const *physics,
+	real_point3d const *position,
+	real_vector3d const *velocity)
+{
+	int slot = (int)(physics->biped_index & (PSP_REACH_SLOTS - 1)), k;
+	real half = physics->height * 0.5f;
+	real speed = magnitude3d(velocity);
+	real reach = speed * 0.5f + half + physics->width;
+	real_point3d centre;
+
+	if (psp_reach_on < 0)
+		psp_reach_on = psp_keep("pillreach");
+	if (!psp_reach_on)
+		return;
+	centre.x = position->x + velocity->i * 0.5f;
+	centre.y = position->y + velocity->j * 0.5f;
+	centre.z = position->z + velocity->k * 0.5f + half;
+	psp_reach_sweeps++;
+	for (k = 0; k < PSP_REACH_SPEEDS; k++)
+		if (speed <= psp_reach_speeds[k])
+			psp_reach_slow[k]++;
+	for (k = 0; k < PSP_REACH_CACHES; k++)
+	{
+		/* a cache is a sphere of the pill's reach at rest plus the margin,
+		centred where the biped stood when it was built */
+		real cache_radius = half + physics->width + psp_reach_margins[k];
+
+		if (psp_reach[slot].biped_index != physics->biped_index ||
+			distance3d(&centre, &psp_reach[slot].centre[k]) + reach > cache_radius)
+		{
+			struct collision_bsp_test_sphere_result result;
+
+			psp_reach[slot].centre[k].x = position->x;
+			psp_reach[slot].centre[k].y = position->y;
+			psp_reach[slot].centre[k].z = position->z + half;
+			psp_reach_builds[k]++;
+			if (collision_bsp_test_sphere(global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+				breakable_surface_flags_get(), &psp_reach[slot].centre[k], cache_radius + 0.0625f, &result))
+			{
+				psp_reach_leaves[k] += result.leaf_count;
+				psp_reach_surfaces[k] += result.surface_count;
+				if (result.leaf_count >= 256 || result.surface_count >= 256)
+					psp_reach_full[k]++;
+			}
+		}
+	}
+	psp_reach[slot].biped_index = physics->biped_index;
+	if (psp_reach_reported < 0)
+		psp_reach_reported = game_time_get();
+	if (game_time_get() - psp_reach_reported >= 300)
+	{
+		long ticks = game_time_get() - psp_reach_reported;
+
+		platform_psp_log("pillreach: %lu sweeps in %ld ticks; speed <= 0.025/0.05/0.1/0.2: %lu/%lu/%lu/%lu; "
+			"caches +0.25/+0.5/+1.0: builds %lu/%lu/%lu, leaves a build %.1f/%.1f/%.1f, surfaces a build %.1f/%.1f/%.1f, full %lu/%lu/%lu",
+			psp_reach_sweeps, ticks, psp_reach_slow[0], psp_reach_slow[1], psp_reach_slow[2], psp_reach_slow[3],
+			psp_reach_builds[0], psp_reach_builds[1], psp_reach_builds[2],
+			psp_reach_builds[0] ? (double)psp_reach_leaves[0] / psp_reach_builds[0] : 0.0,
+			psp_reach_builds[1] ? (double)psp_reach_leaves[1] / psp_reach_builds[1] : 0.0,
+			psp_reach_builds[2] ? (double)psp_reach_leaves[2] / psp_reach_builds[2] : 0.0,
+			psp_reach_builds[0] ? (double)psp_reach_surfaces[0] / psp_reach_builds[0] : 0.0,
+			psp_reach_builds[1] ? (double)psp_reach_surfaces[1] / psp_reach_builds[1] : 0.0,
+			psp_reach_builds[2] ? (double)psp_reach_surfaces[2] / psp_reach_builds[2] : 0.0,
+			psp_reach_full[0], psp_reach_full[1], psp_reach_full[2]);
+		psp_reach_reported = game_time_get();
+		psp_reach_sweeps = 0;
+		for (k = 0; k < PSP_REACH_SPEEDS; k++)
+			psp_reach_slow[k] = 0;
+		for (k = 0; k < PSP_REACH_CACHES; k++)
+			psp_reach_builds[k] = psp_reach_leaves[k] = psp_reach_surfaces[k] = psp_reach_full[k] = 0;
+	}
+}
+#endif
+
+static void biped_update_physics(
+	struct biped_physics *physics)
+{"""),
+("""			psp_speed2 < 1e-6f ? 2 : psp_speed2 < 1e-4f ? 1 : 0;
+#endif
+		collision_count = collision_move_pill(""", """			psp_speed2 < 1e-6f ? 2 : psp_speed2 < 1e-4f ? 1 : 0;
+#endif
+#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+		psp_pill_reach(physics, &position, &velocity);
+#endif
+		collision_count = collision_move_pill("""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

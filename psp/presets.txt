@@ -1,16 +1,17 @@
 # Halo PSP launch presets: one a line, "name: keep words" (no colon in the name). The launch menu's
-# third page (R from the options) lists them; cross applies one. Build 122's tests
-# (docs/build_b122.md says what each answers and when to stop).
-1 play, b122 as it ships: nearauto assettrack geo2
+# third page (R from the options) lists them; cross applies one. Build 123's tests
+# (docs/build_b123.md says what each answers and when to stop).
+1 play, b123 as it ships: nearauto assettrack geo2
 2 ladder, all campaign openings, 90 s each: nearauto assettrack geo2 gebusy iostats ladder90
 3 cinematic bench, stops by itself: nearauto assettrack geo2 gebusy exitat70
 4 play, the speed-ups off (b121 and b122): nearauto assettrack geo2 percold surfacetestold machinesawake meslantoff meraysoff posingold animlockcall
 5 play, holograms on b120's map choice: nearauto assettrack geo2 drawnmapscale
-6 play, b120's HUD: nearauto assettrack geo2 hudnosnap hud150 hudnopushup
+6 play, stick reads logged: nearauto assettrack geo2 iostats
 7 A/B, far AI at half rate: nearauto assettrack geo2 aihalf
 8 A/B, foliage two-pass (c10, b30): nearauto assettrack geo2 foliagetwopass
 9 A/B, light merging (d20): nearauto assettrack geo2 lightmerge
 10 A/B, see-through on the VFPU (c40): nearauto assettrack geo2 seethroughvfpu
 11 A/B, far machines and half-rate posing (c20): nearauto assettrack geo2 machinesfar posehalf
 12 A/B, scenery at half rate: nearauto assettrack geo2 sceneryhalf
-13 A/B, Pelican wall (cut buffer x4): nearauto assettrack geo2 cutroom
+13 Pelican wall as before (small cut buffer): nearauto assettrack geo2 cutroomoff
+14 look check, near plane pinned: assettrack geo2 near4
