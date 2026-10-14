@@ -16127,6 +16127,9 @@ long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
 counts for the object report */
 static int psp_lit_item_sleep_on = -1;
 long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep;
+/* what kept lit items awake, per update (psp_lit_item_seen): offered, held,
+not at rest, on an object, tracking an object, on a breakable surface */
+long psp_items_lit_reason[6];
 """),
 ("""- attached lights: the update re-links them in the level's light lists,
   and sleeping would change those lists' order (not shown harmless yet);
@@ -16169,7 +16172,7 @@ int psp_crumb_mark("""),
 	psp_sleepy_update(object_index, absolute_index, header, header->type == _object_type_scenery);
 }
 """, """		if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
-			psp_lit_item_seen(header);
+			psp_lit_item_seen(header, absolute_index);
 		psp_sleepy_update(object_index, absolute_index, header, psp_item_sleep_on && psp_item_may_sleep(header));
 		return;
 	}
@@ -16178,27 +16181,54 @@ int psp_crumb_mark("""),
 """),
 ("""int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */""",
 """/* psp_fixups.py (FIXES_123L): a weapon or equipment with attached lights
-updated; each such definition named once in the log, with what kept it
-awake then, so a run shows which items carry lights and where they lie */
-static void psp_lit_item_seen(struct object_header_datum const *header)
+updated, and which of psp_item_may_sleep's tests (in its order) it fails,
+counted per update. Each lit item's reason is logged when it changes, with
+what the "not at rest" case turns on (its speeds, its item flags), so a run
+shows why lit items on the ground stay awake. Reads only */
+static const char *const psp_lit_reason_names[6] =
+	{ "offered", "held", "not at rest", "on an object", "tracking an object", "on a breakable surface" };
+
+static int psp_lit_item_reason(struct object_header_datum const *header)
 {
-	static long named[16];
-	static int named_count = 0;
 	struct item_datum const *item = (struct item_datum const *)header->datum;
-	int k;
+
+	if (item->object.parent_object_index != NONE)
+		return 1;
+	if (!TEST_FLAG(item->object.flags, _object_at_rest_bit))
+		return 2;
+	if (TEST_FLAG(item->item.flags, _item_on_object_bit))
+		return 3;
+	if (header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 4;
+	if (TEST_FLAG(item->item.flags, _item_on_structure_bit) && item->item.rested_surface_index != NONE &&
+		item->item.bsp_index == global_structure_bsp_index_get() &&
+		TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&global_collision_bsp_get()->surfaces,
+			item->item.rested_surface_index, struct collision_surface)->flags, 3))
+		return 5;
+	return 0;
+}
+
+static void psp_lit_item_seen(struct object_header_datum const *header, short absolute_index)
+{
+	static struct { short identifier; signed char reason; } last[64];
+	static int lines = 0;
+	struct item_datum const *item = (struct item_datum const *)header->datum;
+	int slot = absolute_index & 63;
+	int reason = psp_lit_item_reason(header);
 
 	psp_items_lit_updated++;
-	for (k = 0; k < named_count; k++)
-		if (named[k] == item->definition_index)
-			return;
-	if (named_count < 16)
-	{
-		named[named_count++] = item->definition_index;
-		platform_psp_log("sleep: lit item %s (type %d): parent %s, at rest %d, on an object %d (t=%ld)",
-			tag_get_name(item->definition_index), header->type, item->object.parent_object_index != NONE ? "yes" : "none",
-			TEST_FLAG(item->object.flags, _object_at_rest_bit) ? 1 : 0, TEST_FLAG(item->item.flags, _item_on_object_bit) ? 1 : 0,
-			game_time_get());
-	}
+	psp_items_lit_reason[reason]++;
+	if (last[slot].identifier == header->identifier && last[slot].reason == reason)
+		return;
+	last[slot].identifier = header->identifier;
+	last[slot].reason = (signed char)reason;
+	if (lines++ < 400)
+		platform_psp_log("sleep: lit item %s #%d: %s (t=%ld; speed %.5f, spin %.5f; item flags %04x, on structure %d, surface %ld)",
+			tag_get_name(item->definition_index), absolute_index, psp_lit_reason_names[reason], game_time_get(),
+			magnitude3d(&item->object.translational_velocity), magnitude3d(&item->object.angular_velocity),
+			(unsigned)item->item.flags, TEST_FLAG(item->item.flags, _item_on_structure_bit) ? 1 : 0,
+			(long)item->item.rested_surface_index);
 }
 
 int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */"""),
