@@ -67,6 +67,7 @@ unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *s
 unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
+unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results);
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -90,13 +91,17 @@ struct me_control
 	unsigned int clock;    /* the ME: its cycle counter at the last poll */
 	unsigned int jobs;     /* the ME: jobs run */
 	unsigned int cause_before, cause_after; /* build 88: its Cause register at start */
-	/* "mehalt": the ME halts when it has nothing to do and the main CPU
-	wakes it with an interrupt, instead of polling the slots */
-	unsigned int halt_idle; /* the main CPU: 1 to halt when idle (set after start) */
+	/* the main CPU, set once after start: ME_FEATURE_HALT ("mehalt": the ME
+	halts when it has nothing to do and the main CPU wakes it with an
+	interrupt, instead of polling the slots), ME_FEATURE_RING (the job ring).
+	One word, so the idle loop's look at it costs what mehalt's alone did */
+	unsigned int features;
 	unsigned int halted;    /* the ME: 1 from just before a halt until it wakes */
 	unsigned int halts;     /* the ME: halts, counted */
 	unsigned int wakes;     /* the ME: wake interrupts taken (meLibOnExternalInterrupt) */
 } __attribute__((aligned(64)));
+#define ME_FEATURE_HALT 1u
+#define ME_FEATURE_RING 2u
 
 /* whole cache lines of their own; only ever used through the uncached view */
 static struct me_control control_storage __attribute__((aligned(64)));
@@ -106,6 +111,88 @@ static void *audio_list_storage[AUDIO_LIST_MAX] __attribute__((aligned(64)));
 #define CONTROL UNCACHED(&control_storage)
 #define SLOT(k) UNCACHED(&slot_storage[k])
 #define AUDIO_LIST ((void *volatile *)(0x40000000u | (unsigned int)audio_list_storage))
+
+/* ---------- the job ring (ME phase 1; psp_me.h has its contract)
+
+A slot holds one job, and its caller sleeps or spins until the ME is done.
+The ring holds up to ME_RING_ENTRIES jobs, so the main CPU can hand one over,
+get on with its own share of the work, and collect the answer when it needs
+it. The single-writer queue (research_brief_for_master.md 1.4-1.5):
+- ring_pushed is written by the main CPU only and ring_popped by the ME
+  only, each on a 64-byte line of its own, touched only through the uncached
+  view; both only grow (unsigned wrap is fine), and popped passing a job
+  means the job is done, its results and output in main RAM.
+- A request's lines are written by the main CPU (cached, then written back
+  before pushed moves); a result's lines and the job's output by the ME
+  (cached, written back before popped moves). Each CPU's cache writes back
+  whole lines and doesn't see the other's, so no line has two writers.
+- The ME drops its copies of a request's lines and of the job's inputs
+  before reading them; the main CPU drops its copies of a result's lines and
+  of the output before reading them. */
+#define RING_MASK (ME_RING_ENTRIES - 1)
+/* past this a range of cache operations costs more than doing the whole
+16 KB data cache: one instruction a line, whether the line is held or not */
+#define RING_WHOLE_CACHE_BYTES (16 * 1024)
+/* a job may use this much of its CPU's stack; the word past it is the
+sentinel checked at the job's end */
+#define RING_JOB_STACK_BYTES 4096
+#define RING_SENTINEL 0x5E471E1Du
+#define RING_OK 0
+#define RING_BAD_TYPE 1
+#define RING_STACK 2
+
+struct me_ring_counter
+{
+	unsigned int value;
+	unsigned int pad[15];
+} __attribute__((aligned(64)));
+
+struct me_ring_request
+{
+	unsigned int type, ticket;
+	unsigned int input[ME_RING_INPUTS], input_bytes[ME_RING_INPUTS];
+	unsigned int output, output_bytes;
+	unsigned int args[ME_RING_ARGS];
+	unsigned int pad[32 - 4 - 2 * ME_RING_INPUTS - ME_RING_ARGS];
+} __attribute__((aligned(64)));
+
+struct me_ring_result
+{
+	unsigned int ticket;      /* the job these are for */
+	unsigned int status;      /* RING_OK, ... */
+	unsigned int job_cycles;  /* the ME's cycle counter across the job's own code */
+	unsigned int all_cycles;  /* and across the whole job, its cache work included */
+	unsigned int look_cycles; /* from the ME's last look that found the ring empty to the job's start: how
+	                          long the job can have waited to be picked up */
+	unsigned int results[ME_RING_RESULTS];
+} __attribute__((aligned(64)));
+
+static struct me_ring_counter ring_pushed_storage, ring_popped_storage;
+static struct me_ring_request ring_requests[ME_RING_ENTRIES];
+static struct me_ring_result ring_results[ME_RING_ENTRIES];
+#define RING_PUSHED (UNCACHED(&ring_pushed_storage)->value)
+#define RING_POPPED (UNCACHED(&ring_popped_storage)->value)
+
+/* hit operations on the lines holding [start, start + bytes): 0x1A writes a
+line back, 0x1B writes it back and drops it. On either CPU, in user mode (as
+list_take's and ge_writeback's in psp_ge.c) */
+static inline void lines_writeback(unsigned int start, unsigned int bytes)
+{
+	unsigned int line, end = start + bytes;
+
+	for (line = start & ~63u; line < end; line += 64)
+		__builtin_allegrex_cache(0x1A, line);
+	__asm__ __volatile__("sync");
+}
+
+static inline void lines_drop(unsigned int start, unsigned int bytes)
+{
+	unsigned int line, end = start + bytes;
+
+	for (line = start & ~63u; line < end; line += 64)
+		__builtin_allegrex_cache(0x1B, line);
+	__asm__ __volatile__("sync");
+}
 
 /* 0 off, 1 the ME runs the jobs, 2 simulated (the emulator: the main CPU
 runs them), -1 stopped (after HOME, quit, sleep or a failure) */
@@ -165,7 +252,7 @@ at once more, so a job asked for during this pass is served, not slept
 through. One window is left: a wake that lands between that look and the
 halt is taken by the handler before the halt. The main CPU covers it by
 waking again while it waits (me_wake), so it costs one look, never a job */
-static void me_halt_idle(volatile struct me_control *control)
+static void me_halt_idle(volatile struct me_control *control, int ring_ready, unsigned int ring_popped)
 {
 	int k, waiting = 0;
 
@@ -174,6 +261,8 @@ static void me_halt_idle(volatile struct me_control *control)
 	for (k = 0; k < ME_SLOTS; k++)
 		if (SLOT(k)->request != SLOT(k)->done)
 			waiting = 1;
+	if (ring_ready && RING_PUSHED != ring_popped)
+		waiting = 1;
 	if (!waiting && !control->stop)
 	{
 		control->halts++;
@@ -303,12 +392,135 @@ void psp_me_serve_audio(void)
 	me_serve(slot, sums);
 }
 
+/* the word RING_JOB_STACK_BYTES below the caller's stack pointer */
+static inline volatile unsigned int *ring_sentinel(void)
+{
+	unsigned int sp;
+
+	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
+	return (volatile unsigned int *)((sp - RING_JOB_STACK_BYTES) & ~3u);
+}
+
+/* one ring job, on the ME (on_me), or on the main CPU when simulated, where
+there is no ME cache to look after and no ME cycle counter to read.
+look_cycles: how long it can have waited to be picked up */
+static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, unsigned int look_cycles)
+{
+	struct me_ring_request *request = &ring_requests[index];
+	struct me_ring_result *result = &ring_results[index];
+	unsigned int args[ME_RING_ARGS], results[ME_RING_RESULTS], start = 0, job_start = 0, job_end = 0, inputs = 0;
+	unsigned int status = RING_OK, k;
+	volatile unsigned int *sentinel;
+
+	if (on_me)
+	{
+		start = me_cycles();
+		/* the request as the main CPU wrote it back, not a copy from the last
+		time this entry was used */
+		lines_drop((unsigned int)request, sizeof(*request));
+		for (k = 0; k < ME_RING_INPUTS; k++)
+			inputs += request->input_bytes[k];
+		if (inputs > RING_WHOLE_CACHE_BYTES)
+			meLibDcacheWritebackInvalidateAll();
+		else
+			for (k = 0; k < ME_RING_INPUTS; k++)
+				if (request->input_bytes[k])
+					lines_drop(request->input[k], request->input_bytes[k]);
+	}
+	for (k = 0; k < ME_RING_ARGS; k++)
+		args[k] = request->args[k];
+	for (k = 0; k < ME_RING_RESULTS; k++)
+		results[k] = 0;
+	sentinel = ring_sentinel();
+	*sentinel = RING_SENTINEL;
+	if (on_me)
+		job_start = me_cycles();
+	switch (request->type)
+	{
+	case ME_JOB_SLANT:
+		psp_ge_me_slant(args, results);
+		break;
+	default:
+		status = RING_BAD_TYPE;
+		break;
+	}
+	if (on_me)
+		job_end = me_cycles();
+	/* a job that ran past its stack allowance may have written over whatever
+	lies below it: reported, and the ring stops */
+	if (*sentinel != RING_SENTINEL)
+		status = RING_STACK;
+	if (on_me && request->output_bytes)
+	{
+		if (request->output_bytes > RING_WHOLE_CACHE_BYTES)
+			meLibDcacheWritebackInvalidateAll();
+		else
+			lines_writeback(request->output, request->output_bytes);
+	}
+	result->ticket = request->ticket;
+	result->status = status;
+	result->job_cycles = job_end - job_start;
+	result->look_cycles = look_cycles;
+	for (k = 0; k < ME_RING_RESULTS; k++)
+		result->results[k] = results[k];
+	result->all_cycles = on_me ? me_cycles() - start : 0;
+	if (on_me)
+		lines_writeback((unsigned int)result, sizeof(*result));
+	__asm__ __volatile__("sync");
+}
+
+/* the ME: every job pushed since its last look, in order. last_look: the
+cycle count when the ring was last seen with nothing waiting past popped */
+static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look)
+{
+	unsigned int looked = me_cycles(), pushed = RING_PUSHED;
+
+	while (popped != pushed)
+	{
+		ring_run(popped & RING_MASK, 1, me_cycles() - *last_look);
+		popped++;
+		RING_POPPED = popped;
+		__asm__ __volatile__("sync");
+	}
+	/* anything pushed after the read above came after this moment */
+	*last_look = looked;
+	return popped;
+}
+
+/* after a ring job, the ME looks at the ring every ~1.5 us instead of once
+an idle pass (~36 us on the PSP, b86): the renderer pushes its jobs in a
+burst (a level's draws), and each microsecond a job waits to be picked up is
+one the main CPU may wait at the end. A look is one uncached read; a linger
+pass is as long as an idle pass, and the slots are still looked at every
+pass. RING_LINGER_PASSES passes (~2 ms) after the last job, the idle is as
+before */
+#define RING_LINGER_PASSES 64
+#define RING_LINGER_LOOKS 16
+#define RING_LINGER_NOPS 125
+static void me_ring_linger(unsigned int popped, unsigned int *last_look)
+{
+	int look, k;
+
+	for (look = 0; look < RING_LINGER_LOOKS; look++)
+	{
+		unsigned int looked = me_cycles();
+
+		if (RING_PUSHED != popped)
+			return;
+		*last_look = looked;
+		for (k = 0; k < RING_LINGER_NOPS; k++)
+			__asm__ __volatile__("nop");
+	}
+}
+
 __attribute__((noinline, aligned(4)))
 void meLibOnProcess(void)
 {
 	volatile struct me_control *control = CONTROL;
 	int sums[MIX_FRAMES_MAX * 2];
 	int halt_ready = 0; /* mehalt: the exception handler is set up */
+	int ring_ready = 0; /* the main CPU has turned the ring on */
+	unsigned int ring_popped = 0, ring_last_look = 0, ring_quiet = RING_LINGER_PASSES;
 
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
 	Sheepdog01's PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
@@ -333,29 +545,54 @@ void meLibOnProcess(void)
 	{
 		int k;
 
-		/* "mehalt" is looked at every 256th pass (it is set once, after
-		start), so the polling idle costs what it would without it */
-		if ((control->alive & 255) == 0 && control->halt_idle && !halt_ready)
+		/* the features word is looked at every 256th pass (it is set once,
+		after start), so the polling idle costs what it would without it */
+		if ((control->alive & 255) == 0 && (!halt_ready || !ring_ready))
 		{
-			meLibExceptionHandlerInit(0);
-			halt_ready = 1;
+			unsigned int features = control->features;
+
+			if ((features & ME_FEATURE_HALT) && !halt_ready)
+			{
+				meLibExceptionHandlerInit(0);
+				halt_ready = 1;
+			}
+			if ((features & ME_FEATURE_RING) && !ring_ready)
+			{
+				ring_ready = 1;
+				ring_last_look = me_cycles();
+			}
 		}
 		control->alive++;
 		control->clock = me_cycles();
 		/* build 89: the stop word is looked at after the slots (below), so a
 		job asked for just before a stop is still served: b86-b88 halted with
-		it pending and its caller waited 40 ms holding the mixer's lock */
+		it pending and its caller waited 40 ms holding the mixer's lock.
+		The ring after the audio slot: a ring job is small and the main CPU
+		may be waiting for it; audio is due on time */
 		for (k = 0; k < ME_SLOTS; k++)
 		{
 			volatile struct me_slot *slot = SLOT(k);
 
 			if (slot->request != slot->done)
 				me_serve(slot, sums);
+			if (k == ME_SLOT_AUDIO && ring_ready)
+			{
+				unsigned int before = ring_popped;
+
+				ring_popped = me_ring_drain(ring_popped, &ring_last_look);
+				if (ring_popped != before)
+					ring_quiet = 0;
+			}
 		}
 		if (control->stop)
 			break;
-		if (halt_ready)
-			me_halt_idle(control);
+		if (ring_ready && ring_quiet < RING_LINGER_PASSES)
+		{
+			ring_quiet++;
+			me_ring_linger(ring_popped, &ring_last_look);
+		}
+		else if (halt_ready)
+			me_halt_idle(control, ring_ready, ring_popped);
 		else
 			me_idle();
 	}
@@ -398,6 +635,7 @@ meLibEmitSoftwareInterrupt), so it is sent only to a halted ME, and again
 on each look while a job waits (me_halt_idle says why). The first 256 are
 timed, for the kernel call's cost */
 static int me_halting = 0;
+static int ring_on = 0; /* "meslant": the job ring, decided at start */
 static unsigned long wakes_sent, wakes_timed;
 static unsigned long long wake_us;
 
@@ -501,11 +739,18 @@ int psp_me_start(void)
 	control->alive = control->stop = control->clock = control->jobs = 0;
 	for (k = 0; k < ME_SLOTS; k++)
 		SLOT(k)->request = SLOT(k)->done = 0;
+	sceKernelDcacheWritebackInvalidateRange(&ring_pushed_storage, sizeof(ring_pushed_storage));
+	sceKernelDcacheWritebackInvalidateRange(&ring_popped_storage, sizeof(ring_popped_storage));
+	sceKernelDcacheWritebackInvalidateRange(ring_requests, sizeof(ring_requests));
+	sceKernelDcacheWritebackInvalidateRange(ring_results, sizeof(ring_results));
+	RING_PUSHED = RING_POPPED = 0;
+	ring_on = psp_keep("meslant");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
 		me_state = 2;
-		platform_log("ME: the emulator runs no ME code; each job is SIMULATED (the main CPU runs it)");
+		platform_log("ME: the emulator runs no ME code; each job is SIMULATED (the main CPU runs it)%s",
+			ring_on ? "; the job ring on (meslant)" : "");
 		return 1;
 	}
 	{
@@ -550,12 +795,14 @@ int psp_me_start(void)
 	atexit(stop_at_exit);
 	/* mehalt only now, so the start check above saw the ME polling */
 	me_halting = psp_keep("mehalt");
-	control->halt_idle = me_halting;
+	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
 	if (me_halting)
 		platform_log("ME: mehalt: the ME halts when idle and is woken by interrupt");
+	if (ring_on)
+		platform_log("ME: the job ring on (meslant): %d entries", ME_RING_ENTRIES);
 	psp_log_flush();
 	return 1;
 }
@@ -780,6 +1027,222 @@ int psp_me_finish(int which, unsigned int *results)
 	return 1;
 }
 
+/* ---------- the job ring, the main CPU's side */
+
+/* a job that isn't done this long after its push is reported, and the main
+CPU does its work instead (psp_me_wait returns 0). The ring is then off for
+the session: the ME may still finish the job late and write its output,
+which nobody reads again. A slant job is ~0.1-2 ms of work (~1 us a
+triangle, b90) and may wait behind one audio block (~0.6 ms) */
+#define RING_DEADLINE_US 10000
+/* between two looks at popped while waiting: ~1 us, so the look costs the
+bus little while the ME reads its inputs (code_review_b119_me.md, 1) */
+#define RING_WAIT_NOPS 250
+#define RING_WAIT_CLOCK_EVERY 16
+
+extern volatile unsigned int psp_me_window[16];
+static unsigned int ring_next = 0;        /* the next ticket */
+static unsigned int ring_popped_seen = 0; /* popped, as last read */
+static int ring_dead = 0;                 /* a job failed: the ring takes no more */
+static unsigned int ring_push_mark[ME_RING_ENTRIES]; /* the push's time, a ticket's */
+static unsigned int ring_thread = 0;      /* simulated: the producer's thread, for psp_me_context */
+static struct
+{
+	unsigned long jobs, at_once, failures, refused_busy, refused_full, refused_check;
+	unsigned long long job_cycles, all_cycles, look_cycles, push_us, wait_us, round_us;
+	unsigned long long simulated_us; /* the emulator: the jobs' own time, run inside the push */
+	unsigned long look_worst_cycles, wait_worst_us;
+} ring_stats;
+
+int psp_me_ring_ready(void)
+{
+	return ring_on && !ring_dead && me_state > 0;
+}
+
+/* what the main CPU wrote that a job will read, out of its cache to main
+RAM: the lines of the range, or past 16 KB the whole cache */
+void psp_me_writeback(const void *start, unsigned int bytes)
+{
+	if (bytes > RING_WHOLE_CACHE_BYTES)
+		sceKernelDcacheWritebackAll();
+	else if (bytes)
+		lines_writeback((unsigned int)start, bytes);
+}
+
+/* in main RAM, where the ME can reach it (not VRAM, not the scratchpad);
+cached or uncached view alike */
+static int ring_in_ram(unsigned int address, unsigned int bytes)
+{
+	unsigned int at = address & 0x1FFFFFFFu;
+
+	return !bytes || (at >= 0x08000000u && at + bytes <= 0x0C000000u && at + bytes > at);
+}
+
+/* a job handed to the ring: 1, with its ticket for psp_me_wait; 0 if the
+ring can't take it (off, full, the ME busy with a long slot job, or a
+transfer that breaks the rules above): the caller does the work itself */
+int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
+{
+	struct me_ring_request *request;
+	unsigned int start, t, index, k;
+
+	if (!psp_me_ring_ready())
+		return 0;
+	start = sceKernelGetSystemTimeLow();
+	/* a render or probe job holds the ME for milliseconds (gemeon's are
+	~10 ms on the PSP, review_b120.md 5): a ring job behind it would be
+	waited for longer than its work is worth */
+	for (k = 0; k < ME_SLOTS; k++)
+		if (k != ME_SLOT_AUDIO && submitted[k])
+		{
+			ring_stats.refused_busy++;
+			return 0;
+		}
+	if (ring_next - ring_popped_seen >= ME_RING_ENTRIES)
+	{
+		ring_popped_seen = RING_POPPED;
+		if (ring_next - ring_popped_seen >= ME_RING_ENTRIES)
+		{
+			ring_stats.refused_full++;
+			return 0;
+		}
+	}
+	/* the transfer rules: the output is whole lines (a line written back
+	carries all 64 bytes), everything in main RAM */
+	if (((unsigned int)job->output & 63u) || (job->output_bytes & 63u) ||
+		!ring_in_ram((unsigned int)job->output, job->output_bytes) || (job->output_bytes && ((unsigned int)job->output & 0x40000000u)))
+	{
+		ring_stats.refused_check++;
+		return 0;
+	}
+	for (k = 0; k < ME_RING_INPUTS; k++)
+		if (!ring_in_ram((unsigned int)job->input[k], job->input_bytes[k]))
+		{
+			ring_stats.refused_check++;
+			return 0;
+		}
+	t = ring_next;
+	index = t & RING_MASK;
+	request = &ring_requests[index];
+	request->type = job->type;
+	request->ticket = t;
+	for (k = 0; k < ME_RING_INPUTS; k++)
+	{
+		request->input[k] = (unsigned int)job->input[k];
+		request->input_bytes[k] = job->input_bytes[k];
+	}
+	request->output = (unsigned int)job->output;
+	request->output_bytes = job->output_bytes;
+	for (k = 0; k < ME_RING_ARGS; k++)
+		request->args[k] = job->args[k];
+	ring_push_mark[index] = start;
+	ring_next = t + 1;
+	if (me_state == 2)
+	{
+		/* the emulator: the job's code here and now, marked as the ME's for
+		the ME-strict check and the write trace (emu.sh's gemesim and
+		mewrites); the window stays open until the wait */
+		unsigned int job_start;
+
+		if (!ring_thread)
+			ring_thread = (unsigned int)sceKernelGetThreadId();
+		psp_me_window[0] = 1;
+		job_start = sceKernelGetSystemTimeLow();
+		psp_me_context = ring_thread;
+		ring_run(index, 0, 0);
+		psp_me_context = 0;
+		ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
+		RING_POPPED = t + 1;
+	}
+	else
+	{
+		lines_writeback((unsigned int)request, sizeof(*request));
+		RING_PUSHED = t + 1;
+		__asm__ __volatile__("sync");
+		me_wake();
+	}
+	*ticket = t;
+	ring_stats.push_us += sceKernelGetSystemTimeLow() - start;
+	return 1;
+}
+
+/* a pushed job's answer: 1 when done (results filled, its output readable
+on this CPU), 0 if the ME failed it (stopped, too late, or the job broke a
+rule): the caller does the work itself, and must not read the output */
+int psp_me_wait(unsigned int ticket, unsigned int *results)
+{
+	unsigned int index = ticket & RING_MASK, start = sceKernelGetSystemTimeLow(), now, looks = 0, k;
+	struct me_ring_request *request = &ring_requests[index];
+	struct me_ring_result *result = &ring_results[index];
+	unsigned long waited;
+
+	if (ring_next - ticket - 1 >= ME_RING_ENTRIES)
+		return 0;
+	if (me_state == 2)
+		psp_me_window[0] = 0;
+	if ((int)(RING_POPPED - ticket) > 0)
+		ring_stats.at_once++;
+	else
+	{
+		while ((int)(RING_POPPED - ticket) <= 0)
+		{
+			if (looks++ % RING_WAIT_CLOCK_EVERY == 0)
+			{
+				now = sceKernelGetSystemTimeLow();
+				/* stopped (HOME, sleep, a slot job's timeout) before this job */
+				if (me_state <= 0 || CONTROL->stop == 2)
+				{
+					ring_stats.failures++;
+					return 0;
+				}
+				if (now - ring_push_mark[index] > RING_DEADLINE_US)
+				{
+					platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here",
+						ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
+					ring_dead = 1;
+					ring_stats.failures++;
+					return 0;
+				}
+				/* mehalt: a wake that may have been lost (me_halt_idle) */
+				me_wake();
+			}
+			for (k = 0; k < RING_WAIT_NOPS; k++)
+				__asm__ __volatile__("nop");
+		}
+	}
+	/* this CPU's copies of what the ME wrote are stale: dropped (it never
+	writes these lines itself, so dropping loses nothing of its own) */
+	lines_drop((unsigned int)result, sizeof(*result));
+	if (request->output_bytes > RING_WHOLE_CACHE_BYTES)
+		sceKernelDcacheWritebackInvalidateAll();
+	else if (request->output_bytes)
+		lines_drop(request->output, request->output_bytes);
+	if (result->ticket != ticket || result->status != RING_OK)
+	{
+		platform_log("ME: ring job %u (type %u) came back %s (ticket %u); the main CPU does it, and the ring is off from here",
+			ticket, request->type, result->status == RING_STACK ? "past its stack allowance" :
+			result->status == RING_BAD_TYPE ? "as an unknown type" : "with another job's answer", result->ticket);
+		ring_dead = 1;
+		ring_stats.failures++;
+		return 0;
+	}
+	for (k = 0; k < ME_RING_RESULTS; k++)
+		results[k] = result->results[k];
+	now = sceKernelGetSystemTimeLow();
+	waited = now - start;
+	ring_stats.jobs++;
+	ring_stats.wait_us += waited;
+	if (waited > ring_stats.wait_worst_us)
+		ring_stats.wait_worst_us = waited;
+	ring_stats.round_us += now - ring_push_mark[index];
+	ring_stats.job_cycles += result->job_cycles;
+	ring_stats.all_cycles += result->all_cycles;
+	ring_stats.look_cycles += result->look_cycles;
+	if (result->look_cycles > ring_stats.look_worst_cycles)
+		ring_stats.look_worst_cycles = result->look_cycles;
+	return 1;
+}
+
 /* build 87: the last job's own code time on the ME, in microseconds (its
 cycle counter, without the cache hand-overs); simulated, the main CPU's time
 for the whole job */
@@ -896,7 +1359,7 @@ void psp_me_report(void)
 {
 	static const char *const names[ME_SLOTS] = { "audio", "render", "probe" };
 	unsigned long long now = sceKernelGetSystemTimeWide(), window = now - report_mark, busy_us_all = 0;
-	char line[900];
+	char line[1400];
 	int length = 0, k;
 
 	if (!me_state)
@@ -922,6 +1385,32 @@ void psp_me_report(void)
 			stats[k].jobs ? (unsigned long)(stats[k].wait_us / stats[k].jobs) : 0, stats[k].wait_worst_us, stats[k].failures);
 		if (length >= (int)sizeof(line))
 			length = (int)sizeof(line) - 1;
+	}
+	if (ring_stats.jobs || ring_stats.failures || ring_stats.refused_busy || ring_stats.refused_full || ring_stats.refused_check)
+	{
+		/* the ring's plumbing: on the ME, the whole job against its code
+		(the rest is the cache work around it) and how long a job can have
+		waited to be picked up; on the main CPU, the push (the request and
+		its write-back) and the wait at the end, and push to answer */
+		unsigned long jobs = ring_stats.jobs ? ring_stats.jobs : 1;
+		float rate = me_cycles_per_us > 0.0f ? me_cycles_per_us : 1.0f;
+		unsigned long long all_us = (unsigned long long)((float)ring_stats.all_cycles / rate);
+
+		if (me_state == 2)
+			all_us = ring_stats.simulated_us;
+		busy_us_all += all_us;
+		if (length < (int)sizeof(line) - 1)
+			length += snprintf(line + length, sizeof(line) - length,
+				"; ring: %lu jobs (%lu done before the wait), %s %lu us a job (the job's code %lu; picked up within %lu us, worst %lu); the main CPU's push %lu us a job, wait %lu us a job (worst %lu), push to answer %lu us; refused %lu (ME busy), %lu (full), %lu (transfer rules); %lu failed",
+				ring_stats.jobs, ring_stats.at_once, me_state == 2 ? "SIMULATED inside the push," : "the ME's own time",
+				(unsigned long)(all_us / jobs), (unsigned long)((float)ring_stats.job_cycles / rate / (float)jobs),
+				(unsigned long)((float)ring_stats.look_cycles / rate / (float)jobs), (unsigned long)((float)ring_stats.look_worst_cycles / rate),
+				(unsigned long)(ring_stats.push_us / jobs), (unsigned long)(ring_stats.wait_us / jobs), ring_stats.wait_worst_us,
+				(unsigned long)(ring_stats.round_us / jobs), ring_stats.refused_busy, ring_stats.refused_full, ring_stats.refused_check,
+				ring_stats.failures);
+		if (length >= (int)sizeof(line))
+			length = (int)sizeof(line) - 1;
+		memset(&ring_stats, 0, sizeof(ring_stats));
 	}
 	busy_percent_last = window ? (float)(100.0 * (double)busy_us_all / (double)window) : 0.0f;
 	if (me_halting && length < (int)sizeof(line) - 160)
