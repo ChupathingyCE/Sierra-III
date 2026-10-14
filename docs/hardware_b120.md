@@ -91,11 +91,28 @@ Sheepdog01 (20:23, during the ladder): a10's window glass looks worse than befor
 
 Sheepdog01 (21:52), in the external flyby. Leads [U]: the inner glow nearly coplanar with the nozzle and fighting it for depth (as LK13), or a fine texture without the smaller mip levels at that distance. An emulator capture of the flyby tells them apart.
 
+## Sheepdog01's look list, continued (2026-10-13, evening)
+
+### LK18: c40 Two Betrayals, the control room in the opening cutscene
+Sheepdog01's PC reference: the Chief inside a golden energy column, then 343 Guilty Spark with a soft blue halo, the striped planet hologram in its glass sphere, the glowing arc. The worst of what the port shows (Sheepdog01, 22:21):
+- **the bridge's textures and shaders** wrong;
+- **the glass railings** on either side of the bridge flicker and shine through the Chief's legs;
+- **textures bouncing violently**.
+
+Sheepdog01: all of these are also present in MCC and the Gearbox PC port, so those can't serve as the reference here; the Xbox (and ChupathingyCE) can.
+Known from earlier builds: the hologram's shaders draw only their animated `static blue band vert` map over the whole ring or disc (`b117_candidates.md`); wild node matrices on the room's light shafts, scales over 100, a wobble candidate (b107) [U]; flares drawn without the depth test (`b113_candidates.md` #2), a candidate for the railings showing through the legs [U]. Capture queued: lab run 38505653695 (b120, a shot every 5 s, plain and `notint`).
+
+### LK19: the Halo ring, low quality and seemingly textureless wherever it shows
+Sheepdog01: on every level he has seen it on so far, and in the main menu. **Ask: a carve-out so the ring always draws at the highest quality the PSP can manage.** Leads [U]: the bake halves textures of 64 px and up and caps them at 256 px (`--full-detail` per class lifts both, `overnight_b102.md`); a10's sky models' shaders were found undrawn in b115, and b116 restored b30's ring. First step: name the ring's model, shaders and maps per map, and which of them draw.
+
+### LK20: the main menu at the highest quality it can take
+Sheepdog01: the menu costs little, so maximise its quality any way that doesn't affect the rest of the game. Candidates [U]: `ui`'s textures at full detail (the menu's pack is its own file), and whatever the menu's render can afford that gameplay can't. Each a separate lever, measured for memory, since the menu's memory is the game's until the level loads.
+
 ## For b121 (Sheepdog01, 2026-10-13)
 
 - **The build number and the active preset on screen.** The stamp line at the bottom of every screenshot already shows the build, game time and frame (`b120 t 341.0 f 1930`); add the preset there, and in the launch menu's header.
 - **Reopen files on wake** (the sleep bug above).
 - **The HUD: `hudsnap hud177` on by default** (Sheepdog01's A/B, test 4b), with the corner push re-sized for the 1:1 zoom so the elements sit closer to the edges, the top first. Off words for each.
-- **LK16, a10's glass: the see-through tint for its shader** (found; the fix above).
+- **LK16, a10's glass: the see-through tint for its shader** (found; the fix above; Sheepdog01: in b121).
 - LK13 (far water), LK14 (Pelican window), LK15 (tracker cross), LK17 (thruster shimmer): leads above.
 - **The log pull's `rm -f $psp/halo/shots/*`** fails in fish when the folder is empty (fish refuses a wildcard that matches nothing). Use `find $psp/halo/shots -type f -delete`.
