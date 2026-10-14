@@ -132,21 +132,34 @@ PGO_PARTIAL = os.environ.get("PSP_PGO_PARTIAL", "1") != "0"
 # unrolls and peels loops, which grows the program, and the heap is what's
 # left of 24 MB after it)
 PGO_EXTRA = os.environ.get("PSP_PGO_EXTRA", "").replace(",", " ").split()
-# the same for flags whose value holds an "=", which a build switch's value
-# can't (the lab checks switches as PSP_NAME=letters, digits and -_.,):
-# PSP_PGO_HOT_FRACTION=N and PSP_PGO_HOT_PERMILLE=N set how much of the
-# counted code GCC calls hot (--param hot-bb-count-fraction, default 10000;
-# hot-bb-count-ws-permille, default 990; GCC uses the stricter of the two);
-# PSP_PGO_ALIGN_FUNCTIONS=N and PSP_PGO_ALIGN_LOOPS=N align to N bytes
-# (-O2 aligns to 4 on allegrex; a cache line is 64)
-for _sw, _flag in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction="),
-                   ("PSP_PGO_HOT_PERMILLE", "--param=hot-bb-count-ws-permille="),
-                   ("PSP_PGO_ALIGN_FUNCTIONS", "-falign-functions="),
-                   ("PSP_PGO_ALIGN_LOOPS", "-falign-loops=")):
-    if os.environ.get(_sw, ""):
-        if not re.fullmatch(r"[0-9]+", os.environ[_sw]):
-            sys.exit("psp_build: %s is a number" % _sw)
-        PGO_EXTRA.append(_flag + os.environ[_sw])
+# The counted units' layout and loop flags in a PSP_PGO=use build
+# (review_b123_flags.md: the cache models' instruction misses):
+# - PSP_PGO_ALIGN_FUNCTIONS=N, PSP_PGO_ALIGN_LOOPS=N: align to N bytes
+#   (64 and 32 unless set; 0 leaves GCC's own, 4 bytes on allegrex). A
+#   function or loop that starts on a 64-byte cache line fetches fewer lines
+#   for the same code; the padding costs ~110 KB of heap
+# - PSP_PGO_LOOP_TRANSFORMS=1: keeps GCC's loop unswitching, splitting,
+#   versioning for strides and predictive commoning, which copy loops (more
+#   code for the 16 KB instruction cache to hold); off unless set
+# - PSP_PGO_HOT_FRACTION=N: --param hot-bb-count-fraction (GCC's 10000
+#   unless set): a smaller N calls less code hot and optimises the rest for
+#   size, which lost (more instructions, more misses on b30)
+# - PSP_PGO_HOT_PERMILLE=N: --param hot-bb-count-ws-permille; GCC reads it
+#   only with LTO, so it changes nothing here (the sweep's control)
+# These are switches of their own because a lab build switch's value can't
+# hold an "=" (PSP_NAME=letters, digits and -_.,)
+for _sw, _flag, _default in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction=", ""),
+                             ("PSP_PGO_HOT_PERMILLE", "--param=hot-bb-count-ws-permille=", ""),
+                             ("PSP_PGO_ALIGN_FUNCTIONS", "-falign-functions=", "64"),
+                             ("PSP_PGO_ALIGN_LOOPS", "-falign-loops=", "32")):
+    _value = os.environ.get(_sw, "") or _default
+    if not re.fullmatch(r"[0-9]*", _value):
+        sys.exit("psp_build: %s is a number" % _sw)
+    if _value not in ("", "0"):
+        PGO_EXTRA.append(_flag + _value)
+if os.environ.get("PSP_PGO_LOOP_TRANSFORMS", "") != "1":
+    PGO_EXTRA += ["-fno-unswitch-loops", "-fno-split-loops", "-fno-version-loops-for-strides",
+                  "-fno-predictive-commoning"]
 # the units PSP_PGO=generate counts in: source/<name>/ for each name, "psp"
 # for psp/src/. All the hot units counted, the program grew 5.3 MB and the
 # heap fell to 3.9 MB in the 64 MB layout, under b30's 5.2 MB; these are the
