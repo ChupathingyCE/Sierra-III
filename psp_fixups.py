@@ -15627,6 +15627,211 @@ FIXES_122["source/objects/objects.c#merays"] = [
 )]
 
 
+# B1 in docs/optimization_ranking.md, Sheepdog01's to judge after an A/B: far actors
+# service their props at half rate. Bungie's actor_perception_update already
+# services one prop an actor a tick, the first whose stepped timer reaches the
+# last tick's highest, and non-enemies and far props less often; on an
+# actor's resting tick no prop is serviced, so every timer keeps counting and
+# the next tick picks up the round where it stopped. Everything else of
+# perception (the danger zone, the decays, the target's position, awareness)
+# runs every tick as before. An actor rests on every other tick (staggered by
+# its index, so half the far actors rest each tick) only when it is farther
+# than aihalfdistN world units (15 unless set) from every player, has no
+# target within its weapon's range, hasn't been damaged lately (until the
+# unit's recent damage has decayed to nothing), and isn't in a zoomed
+# player's view; with "aihalfview", nor in any player's view. The queue
+# (FIXES_121) casts no ray for a resting actor, since it asks none.
+# "aihalf": on; off by default (a behaviour change)
+FIXES_122["source/ai/actor_perception.c#aihalf"] = [
+("""/* an actor actors_update will update: its serviced prop predicted and its
+ray cast now, in a row with the other actors' */
+void psp_perception_queue(""",
+ """/* psp_fixups.py (FIXES_122): far actors' perception at half rate (see
+psp_fixups.py's FIXES_122 #aihalf) */
+#include "game/players.h"
+
+#define PSP_AIHALF_VIEWERS 4
+/* a player's eye, where it looks, and the tangent of half its view's
+widest angle (the zoom divides it); a margin over the 70-degree view */
+struct psp_aihalf_viewer
+{
+	real_point3d head;
+	real_vector3d aim;
+	real tan_half;
+	boolean zoomed;
+};
+static struct psp_aihalf_viewer psp_aihalf_viewers[PSP_AIHALF_VIEWERS];
+static short psp_aihalf_viewer_count;
+static long psp_aihalf_viewer_time = NONE;
+static int psp_aihalf_on = -1, psp_aihalf_view;
+static real psp_aihalf_distance_squared;
+static struct
+{
+	unsigned long asked, rested, near, target, damaged, seen;
+} psp_aihalf_stats;
+
+static void psp_aihalf_viewers_now(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+	long now = game_time_get();
+
+	if (now == psp_aihalf_viewer_time)
+		return;
+	psp_aihalf_viewer_time = now;
+	psp_aihalf_viewer_count = 0;
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && psp_aihalf_viewer_count < PSP_AIHALF_VIEWERS)
+	{
+		struct psp_aihalf_viewer *viewer;
+		short zoom_level;
+
+		if (player->unit_index == NONE || !object_try_and_get(player->unit_index))
+			continue;
+		viewer = &psp_aihalf_viewers[psp_aihalf_viewer_count++];
+		unit_get_head_position(player->unit_index, &viewer->head);
+		unit_get_aiming_vector(player->unit_index, &viewer->aim);
+		zoom_level = unit_get_zoom_level(player->unit_index);
+		viewer->zoomed = zoom_level != NONE;
+		viewer->tan_half = 0.9f;
+		if (viewer->zoomed)
+		{
+			real magnification = unit_get_zoom_magnification(player->unit_index, zoom_level);
+
+			if (magnification > 1.0f)
+				viewer->tan_half /= magnification;
+		}
+	}
+}
+
+static boolean psp_aihalf_in_view(
+	struct psp_aihalf_viewer const *viewer,
+	real_point3d const *point)
+{
+	real_vector3d to_point;
+	real along, across_squared;
+
+	vector_from_points3d(&viewer->head, point, &to_point);
+	along = dot_product3d(&to_point, &viewer->aim);
+	if (along <= 0.0f)
+		return FALSE;
+	across_squared = dot_product3d(&to_point, &to_point) - along * along;
+	return across_squared <= viewer->tan_half * viewer->tan_half * along * along;
+}
+
+/* TRUE when the actor services no prop this tick. counted: the call
+actor_perception_update makes (the queue asks the same, uncounted) */
+boolean psp_perception_rest(
+	long actor_index,
+	boolean counted)
+{
+	struct actor_datum *actor;
+	struct object_datum *unit;
+	short index;
+
+	if (psp_aihalf_on < 0)
+	{
+		int distance;
+
+		psp_aihalf_on = psp_keep("aihalf");
+		psp_aihalf_view = psp_keep("aihalfview");
+		distance = psp_keep_number("aihalfdist", 15);
+		psp_aihalf_distance_squared = (real)distance * (real)distance;
+		if (psp_aihalf_on)
+			platform_psp_log("perception: far actors at half rate (beyond %d world units%s)",
+				distance, psp_aihalf_view ? ", out of view" : "");
+	}
+	if (!psp_aihalf_on || ((game_time_get() + DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index)) & 1))
+		return FALSE;
+	actor = actor_get(actor_index);
+	unit = actor->meta.unit_index == NONE ? NULL : object_try_and_get(actor->meta.unit_index);
+	if (counted)
+		psp_aihalf_stats.asked++;
+	if (!unit)
+		return FALSE;
+	if (unit->object.recent_body_damage > 0.0f || unit->object.recent_shield_damage > 0.0f)
+	{
+		if (counted)
+			psp_aihalf_stats.damaged++;
+		return FALSE;
+	}
+	if (actor->target.target_prop_index != NONE &&
+		prop_get(actor->target.target_prop_index)->distance <= actor->control.weapon_maximum_range)
+	{
+		if (counted)
+			psp_aihalf_stats.target++;
+		return FALSE;
+	}
+	psp_aihalf_viewers_now();
+	for (index = 0; index < psp_aihalf_viewer_count; index++)
+	{
+		struct psp_aihalf_viewer const *viewer = &psp_aihalf_viewers[index];
+
+		if (distance_squared3d(&viewer->head, &unit->object.bounding_sphere_center) < psp_aihalf_distance_squared)
+		{
+			if (counted)
+				psp_aihalf_stats.near++;
+			return FALSE;
+		}
+		if ((viewer->zoomed || psp_aihalf_view) && psp_aihalf_in_view(viewer, &unit->object.bounding_sphere_center))
+		{
+			if (counted)
+				psp_aihalf_stats.seen++;
+			return FALSE;
+		}
+	}
+	if (counted)
+		psp_aihalf_stats.rested++;
+	return TRUE;
+}
+
+/* an actor actors_update will update: its serviced prop predicted and its
+ray cast now, in a row with the other actors' */
+void psp_perception_queue("""),
+("""	if (psp_perc_ray_count >= PSP_PERC_RAYS || actor->meta.dormant || !actor->meta.active ||
+		actor->meta.swarm || (unit = psp_perc_unit_or_null(actor->meta.unit_index)) == NULL)
+		return;
+""",
+ """	if (psp_perc_ray_count >= PSP_PERC_RAYS || actor->meta.dormant || !actor->meta.active ||
+		actor->meta.swarm || (unit = psp_perc_unit_or_null(actor->meta.unit_index)) == NULL)
+		return;
+	/* a resting actor asks for no ray */
+	if (psp_perception_rest(actor_index, FALSE))
+		return;
+"""),
+("""			psp_merays_stats.checked, psp_merays_stats.mismatches);
+}""",
+ """			psp_merays_stats.checked, psp_merays_stats.mismatches);
+	if (psp_aihalf_on > 0 && psp_perc_stats.passes % 1800 == 0)
+		platform_psp_log("perception, half rate: %lu of %lu resting turns taken; kept awake by a player near %lu, "
+			"a target in range %lu, damage %lu, in view %lu",
+			psp_aihalf_stats.rested, psp_aihalf_stats.asked, psp_aihalf_stats.near, psp_aihalf_stats.target,
+			psp_aihalf_stats.damaged, psp_aihalf_stats.seen);
+}"""),
+("""	struct actor_position_data position;
+
+	if (!actor->meta.dormant)
+	{
+		if (actor->meta.timeslice)""",
+ """	struct actor_position_data position;
+#ifdef HALO_PSP
+	/* FIXES_122 #aihalf: on a resting tick no prop is serviced */
+	boolean psp_rest = !actor->meta.dormant && psp_perception_rest(actor_index, TRUE);
+#endif
+
+	if (!actor->meta.dormant)
+	{
+		if (actor->meta.timeslice)"""),
+("""			if (!prop_serviced &&
+				prop_timer >= actor->meta.highest_prop_timer)""",
+ """			if (!prop_serviced &&
+#ifdef HALO_PSP
+				!psp_rest &&
+#endif
+				prop_timer >= actor->meta.highest_prop_timer)"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
