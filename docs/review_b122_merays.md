@@ -47,6 +47,13 @@ With the word off, nothing runs that didn't before, except one load and branch a
 - 0 firmware calls, 0 `syscall`, 0 VFPU, 0 indirect calls;
 - no malloc.
 
+**Stores to the program's own data in that code** [D, the disassembly: a store through a register set by `lui`]: there are 15, in 9 functions, and every one is on a failure path.
+- Each `warned_about_*` flag stored right after an `error()` call: the BSP walk's, the 2D test's, the leaf-to-cluster lookup's, the collision model's.
+- `release_assert_failed`'s table.
+- `cache_empty_tag_instance`, behind `tag_get`'s checked path.
+
+On its normal path the job writes its stack, the `collision` and `result` structures on that stack, and its answers. That is what the emulator's ME write trace is queued to confirm.
+
 Software double (`__adddf3`, `__extendsfdf2`, `__gedf2`) is reachable only through `render_interpolation_object_node_matrices`. That function returns at once outside a frame's drawing (`interpolation_rendering` is FALSE during a tick), so at tick time the path is dead, on the ME as on the main CPU.
 
 **The stack** [D, frame sizes from the disassembly]:
