@@ -492,6 +492,8 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - build 118: `verifyvectors` (X10, the vector checks), `tcutfull` (T1, the see-through cut's sphere test), `restlesscheck` (the restless back-off: every sleep candidate checked every tick).
 - build 119: `nearclusterfull` (NC, the near corner loop's runs of 16), `skinaxisloop` (SU, the corner sums' axes written out), `rigidrunsfull` (NR, the rigid near path's runs), `surfaceqsort` (SS, the light pass's surface bits), `vblankslow` (the clock fix: the vertical blank thread back below the game thread).
 
+Opt-in look calls (build 122, off, for Sheepdog01's A/B; `docs/review_b122_look.md`): `seethroughvfpu` (multi-node see-through parts placed on the VFPU), `lightmerge` (the light pass's bands drawn as one, each corner lifted), `foliagetwopass` (alpha-tested model parts' soft second pass), `sceneryhalf` (B2, build 107).
+
 Pacing word: `novblankthrottle` turns the throttle off. Frames get faster, but the warthog bounces again.
 
 Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118), `nearclustercheck`, `skinaxischeck`, `rigidrunscheck`, `surfacesortcheck` (build 119), `meslantcheck`, `meringtest` (ME phase 1, with the opt-in `meslant`).

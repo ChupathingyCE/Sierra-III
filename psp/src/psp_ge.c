@@ -7060,6 +7060,34 @@ struct skin_part;
 static void model_geometry(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model);
 
+/* An alpha-tested part (leaves, grass, fences) keeps only texels over half
+alpha, so its edges are hard and a far plant whose mips thin out shimmers as
+it moves. "foliagetwopass" (keep.txt, off) draws such a part a second time:
+blended by its alpha, only where it is nearer than what is there (GREATER:
+pass 1's own texels are equal, so they are left alone) and without writing
+depth, so the texels pass 1 threw away fade the edge in. It costs a second
+model_geometry for every alpha-tested part, and the faded edge is drawn in
+object order, so something drawn later behind it covers it. A look change
+for Sheepdog01's A/B */
+static int foliage_two_pass = -1;
+static unsigned long foliage_second_passes = 0;
+
+static void foliage_soft_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
+	struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+	sceGuDepthFunc(GU_GREATER);
+	sceGuDepthMask(GU_TRUE);
+	ge_blend(1);
+	sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	ge_blend(0);
+	sceGuDepthMask(GU_FALSE);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuAlphaFunc(GU_GREATER, 0x7F, 0xFF);
+	foliage_second_passes++;
+}
+
 /* build 60: a rigid part's triangles cut at the near plane or the guard
 band, as GE vertices in the part's space (drawn by model_geometry after the
 part's own list, in every pass) */
@@ -8360,7 +8388,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	int alpha_tested)
 {
 	ScePspFMatrix4 model;
-	int base_alpha = 0, textured, two_sided = (alpha_tested & 2) != 0;
+	int base_alpha = 0, textured, soft = 0, two_sided = (alpha_tested & 2) != 0;
 	struct skin_part *skin = NULL;
 
 	alpha_tested &= 1;
@@ -8588,6 +8616,11 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		sceGuEnable(GU_CULL_FACE);
 	part_add(7);
 	model_geometry(vertices, indices, index_count, strip, skin, &model);
+	if (foliage_two_pass < 0)
+		foliage_two_pass = psp_keep("foliagetwopass");
+	soft = foliage_two_pass && textured && base_alpha && alpha_tested && model_camouflage <= 0.0f && !in_sky;
+	if (soft)
+		foliage_soft_pass(vertices, indices, index_count, strip, skin, &model);
 	part_add(8);
 	if (two_sided && model_cull && model_camouflage <= 0.0f)
 	{
@@ -8608,6 +8641,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		lit_points_maybe_on = 0; /* light 3 was already off when only light 2 was used */
 		lit_forget(1); /* build 114: statememo */
 		model_geometry(vertices, indices, index_count, strip, skin, &model);
+		if (soft)
+			foliage_soft_pass(vertices, indices, index_count, strip, skin, &model);
 		sceGuFrontFace(LEVEL_FRONT);
 		two_sided_draws++;
 	}
@@ -9601,6 +9636,30 @@ static int transparent_part_multi(const unsigned char *base, const unsigned shor
 	return multi;
 }
 
+/* A see-through part on several nodes is placed vertex by vertex on the CPU,
+and on c40 (Cortana, Guilty Spark) that is most of the see-through queue's
+work. "seethroughvfpu" (keep.txt, off): each node's matrix is loaded into the
+VFPU once per run of vertices on it, and a vertex is one vhtfm4. The VFPU
+sums the products in its own order, so a vertex can land a last bit away
+from the FPU's: a placement change too small to see, but not bit-exact, so
+it is Sheepdog01's call after an A/B. Never in the Media Engine's work (no VFPU) */
+static int seethrough_vfpu = -1;
+static unsigned long seethrough_vfpu_vertices = 0;
+
+/* rows m->x .. m->w into R100..R103, so column a of M100 is the matrix's
+row a with its offset: vhtfm4 with (p, 1) then gives the placed point */
+#define SEETHROUGH_VFPU_LOAD(m) __asm__ volatile( \
+	"lv.q R100, 0(%0)\n" "lv.q R101, 16(%0)\n" "lv.q R102, 32(%0)\n" "lv.q R103, 48(%0)\n" \
+	: : "r"(m) : "memory")
+
+static void seethrough_vfpu_place(const float *p, float *q)
+{
+	__asm__ volatile("lv.s S000, 0(%0)\n" "lv.s S001, 4(%0)\n" "lv.s S002, 8(%0)\n"
+		"vhtfm4.q C010, M100, C000\n"
+		"sv.s S010, 0(%1)\n" "sv.s S011, 4(%1)\n" "sv.s S012, 8(%1)\n"
+		: : "r"(p), "r"(q) : "memory");
+}
+
 static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
@@ -9662,10 +9721,13 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 
 			if (out)
 			{
-				static ScePspFMatrix4 node_at[SKIN_NODES];
+				static ScePspFMatrix4 node_at[SKIN_NODES] __attribute__((aligned(16)));
 				static unsigned char node_done[SKIN_NODES];
-				int v;
+				int v, on_vfpu, loaded = -1;
 
+				if (seethrough_vfpu < 0)
+					seethrough_vfpu = psp_vfpu_on && psp_keep("seethroughvfpu");
+				on_vfpu = seethrough_vfpu && !PSP_ME_WORK();
 				memset(node_done, 0, sizeof(node_done));
 				for (v = 0; v < vertex_count; v++)
 				{
@@ -9684,10 +9746,22 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 						node_done[node] = 1;
 					}
 					memcpy(out + 24 * v, in, 12);
+					if (on_vfpu)
+					{
+						if (node != loaded)
+						{
+							SEETHROUGH_VFPU_LOAD(m);
+							loaded = node;
+						}
+						seethrough_vfpu_place(p, q);
+						continue;
+					}
 					q[0] = m->x.x * p[0] + m->y.x * p[1] + m->z.x * p[2] + m->w.x;
 					q[1] = m->x.y * p[0] + m->y.y * p[1] + m->z.y * p[2] + m->w.y;
 					q[2] = m->x.z * p[0] + m->y.z * p[1] + m->z.z * p[2] + m->w.z;
 				}
+				if (on_vfpu)
+					seethrough_vfpu_vertices += vertex_count;
 				draw->vertices = out;
 				memset(&draw->matrix, 0, sizeof(draw->matrix));
 				draw->matrix.x.x = draw->matrix.y.y = draw->matrix.z.z = draw->matrix.w.w = 1.0f;
@@ -12566,6 +12640,45 @@ view, as the depth buffer measures; a corner never moves past the near
 plane. Keep word "lightcutone": as before */
 static int light_cut_one = -1;
 
+/* Mode 2 draws a light's whole triangles in up to six distance bands, each
+with one depth nudge sized for its nearest corner, and its cut pieces as one
+more draw: up to seven draws a light and surface, each band a pass over
+every kept triangle and a copy. "lightmerge" (keep.txt, off) lifts every
+corner by its own distance instead, as the cut pieces already are, and draws
+all of them at once. A band's nudge may lift a corner up to four times what
+its distance asks, so the merged lift is smaller for most corners: the
+light can sit a hair deeper into a surface it fights with. That is a look
+change, so it is Sheepdog01's call after an A/B (d20, where lights are many) */
+static int light_merge = -1;
+static unsigned long light_merged_draws = 0;
+
+/* light_lift_corner's lift for the merged draw, worked out as a share of
+the depth so a corner costs one division: min(1% of the depth, 0.2 units),
+kept between 3 and 4096 depth steps (one step at depth d is d * d * step,
+step = 1 / (61439 * near)), and never past the near plane. It skips
+light_lift_corner's rounding to whole depth steps, a sub-step difference */
+static inline void light_lift_corner_merged(struct shadow_vertex *corner, float step)
+{
+	float dx = corner->x - camera_eye[0], dy = corner->y - camera_eye[1], dz = corner->z - camera_eye[2];
+	float depth = dx * camera_forward[0] + dy * camera_forward[1] + dz * camera_forward[2], inverse, share, low, high,
+		most, scale;
+
+	if (depth <= projection_near)
+		return;
+	inverse = 1.0f / depth;
+	share = depth <= 20.0f ? 0.01f : 0.2f * inverse;
+	low = 3.0f * step * depth;
+	high = 4096.0f * step * depth;
+	share = share < low ? low : share > high ? high : share;
+	most = 1.0f - projection_near * inverse;
+	if (share > most)
+		share = most;
+	scale = 1.0f - share;
+	corner->x = camera_eye[0] + dx * scale;
+	corner->y = camera_eye[1] + dy * scale;
+	corner->z = camera_eye[2] + dz * scale;
+}
+
 static void light_lift_corner(struct shadow_vertex *corner)
 {
 	float dx = corner->x - camera_eye[0], dy = corner->y - camera_eye[1], dz = corner->z - camera_eye[2];
@@ -13082,6 +13195,40 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			(int)whole_count * 3, whole, stream->base);
 		sceGuColor(0xFFFFFFFF);
 		light_index_triangles += whole_count;
+	}
+	if (light_merge < 0)
+		light_merge = psp_keep("lightmerge");
+	if (light_merge && light_mode == 2 && !light_cut_one && (kept_count || cut_count))
+	{
+		long total = kept_count * 3 + cut_count;
+		struct shadow_vertex *all = list_take((int)total * (int)sizeof(struct shadow_vertex));
+		float step = 1.0f / (61439.0f * projection_near);
+
+		if (all)
+		{
+			memcpy(all, out, kept_count * 3 * sizeof(struct shadow_vertex));
+			for (index = 0; index < kept_count * 3; index++)
+				light_lift_corner_merged(&all[index], step);
+			for (index = 0; index < cut_count; index++)
+			{
+				const float *c = cut_corners[index];
+				struct shadow_vertex *v = &all[kept_count * 3 + index];
+
+				v->u = c[3];
+				v->v = c[4];
+				v->color = light_color(c[5]);
+				v->x = c[7];
+				v->y = c[8];
+				v->z = c[9];
+				light_lift_corner_merged(v, step);
+			}
+			sceGuDepthOffset(0);
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+				(int)total, NULL, all);
+			light_merged_draws++;
+		}
+		kept_count = 0;
+		cut_count = 0;
 	}
 	if (kept_count && light_mode == 2)
 	{
@@ -14813,8 +14960,17 @@ void psp_ge_frame_end(void)
 		platform_log("GE: see-through parts' node scans, last 300 frames: %lu scanned, %lu remembered%s%lu",
 			multi_scans, multi_remembered, multi_check ? "; multicheck: remembered answers that differed " : "; ", multi_mismatches);
 		multi_scans = multi_remembered = multi_mismatches = 0;
+		if (foliage_two_pass > 0)
+			platform_log("GE: foliagetwopass: alpha-tested parts' soft second passes, last 300 frames: %lu", foliage_second_passes);
+		foliage_second_passes = 0;
+		if (seethrough_vfpu > 0)
+			platform_log("GE: seethroughvfpu: see-through vertices placed on the VFPU, last 300 frames: %lu", seethrough_vfpu_vertices);
+		seethrough_vfpu_vertices = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
+		if (light_merge > 0)
+			platform_log("GE: lightmerge: merged light draws, last 300 frames: %lu", light_merged_draws);
+		light_merged_draws = 0;
 		light_index_triangles = light_nudged_draws = lights_skipped = 0;
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;

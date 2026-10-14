@@ -875,6 +875,7 @@ static void keep_load(void)
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
+	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
