@@ -14524,6 +14524,7 @@ void psp_ge_frame_end(void)
 
 	if (!frame_open)
 		return;
+	psp_me_ring_test(); /* "meringtest" (psp_me.c); off: one test a frame */
 	flush_mark = sceKernelGetSystemTimeLow();
 	win_transparent += transparent_count;
 	transparent_flush();

@@ -40,6 +40,7 @@ The ring serves one producer thread, the main CPU's renderer. */
 #define ME_RING_INPUTS 3
 #define ME_RING_RESULTS 11
 #define ME_JOB_SLANT 6 /* angle_sort's bucket loop over part of a draw (psp_ge.c) */
+#define ME_JOB_RINGTEST 7 /* "meringtest": the ring's own check (psp_me_ring_test) */
 
 struct psp_me_job
 {
@@ -59,6 +60,7 @@ int psp_me_ring_ready(void);
 void psp_me_writeback(const void *start, unsigned int bytes);
 int psp_me_push(const struct psp_me_job *job, unsigned int *ticket);
 int psp_me_wait(unsigned int ticket, unsigned int *results);
+void psp_me_ring_test(void);
 
 /* build 118: 1 on the Media Engine. me-core starts it on a stack in its own
 eDRAM ($sp 0x80200000 or 0x80400000, me-core.h), and every thread of the main

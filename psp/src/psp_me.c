@@ -392,6 +392,24 @@ void psp_me_serve_audio(void)
 	me_serve(slot, sums);
 }
 
+/* "meringtest"'s job (psp_me_ring_test): each output word from its input
+word, and the input's sum, so a stale input line on the ME or a stale output
+line on the main CPU shows as a wrong word */
+#define RINGTEST_WORDS 64
+static void ring_test_job(const unsigned int *args, unsigned int *results)
+{
+	const unsigned int *in = (const unsigned int *)args[0];
+	unsigned int *out = (unsigned int *)args[1], i, sum = 0;
+
+	for (i = 0; i < RINGTEST_WORDS; i++)
+	{
+		sum += in[i];
+		out[i] = (in[i] ^ 0x5A5A5A5Au) + i;
+	}
+	results[0] = sum;
+	results[1] = args[2];
+}
+
 /* the word RING_JOB_STACK_BYTES below the caller's stack pointer */
 static inline volatile unsigned int *ring_sentinel(void)
 {
@@ -439,6 +457,9 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	{
 	case ME_JOB_SLANT:
 		psp_ge_me_slant(args, results);
+		break;
+	case ME_JOB_RINGTEST:
+		ring_test_job(args, results);
 		break;
 	default:
 		status = RING_BAD_TYPE;
@@ -731,7 +752,7 @@ int psp_me_start(void)
 
 	/* nomeaudio keeps the ME off unless a ring client asks for it; the
 	mixer then stays on the main CPU (psp_dsound.c) */
-	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant")))
+	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest")))
 		return me_state > 0;
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
@@ -746,7 +767,7 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(ring_requests, sizeof(ring_requests));
 	sceKernelDcacheWritebackInvalidateRange(ring_results, sizeof(ring_results));
 	RING_PUSHED = RING_POPPED = 0;
-	ring_on = psp_keep("meslant");
+	ring_on = psp_keep("meslant") || psp_keep("meringtest");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -1245,6 +1266,73 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	return 1;
 }
 
+/* "meringtest": the ring's own check, a burst of ME_RING_ENTRIES jobs at each
+frame's end from the renderer's thread (the ring's one producer). Each job
+reads an input the main CPU has just rewritten with a new pattern and writes
+an output the main CPU read a frame before, so a missing write-back or drop
+on either CPU shows as a wrong word; the burst fills the ring, so the index
+wraps every frame, and the answers are collected last first */
+static unsigned int ringtest_in[ME_RING_ENTRIES][RINGTEST_WORDS] __attribute__((aligned(64)));
+static unsigned int ringtest_out[ME_RING_ENTRIES][RINGTEST_WORDS] __attribute__((aligned(64)));
+static int ringtest_on = -1;
+static unsigned int ringtest_seq = 0;
+static unsigned long ringtest_bursts, ringtest_jobs, ringtest_wrong, ringtest_short, ringtest_failed;
+
+void psp_me_ring_test(void)
+{
+	unsigned int tickets[ME_RING_ENTRIES], results[ME_RING_RESULTS], k, i, pushed = 0;
+	struct psp_me_job job;
+
+	if (PSP_ME_WORK())
+		return;
+	if (ringtest_on < 0)
+		ringtest_on = psp_keep("meringtest");
+	if (!ringtest_on || !psp_me_ring_ready())
+		return;
+	ringtest_seq++;
+	for (k = 0; k < ME_RING_ENTRIES; k++)
+	{
+		for (i = 0; i < RINGTEST_WORDS; i++)
+			ringtest_in[k][i] = (ringtest_seq * 2654435761u) ^ (k << 24) ^ (i * 40503u);
+		psp_me_writeback(ringtest_in[k], sizeof(ringtest_in[k]));
+		memset(&job, 0, sizeof(job));
+		job.type = ME_JOB_RINGTEST;
+		job.args[0] = (unsigned int)ringtest_in[k];
+		job.args[1] = (unsigned int)ringtest_out[k];
+		job.args[2] = ringtest_seq;
+		job.input[0] = ringtest_in[k];
+		job.input_bytes[0] = sizeof(ringtest_in[k]);
+		job.output = ringtest_out[k];
+		job.output_bytes = sizeof(ringtest_out[k]);
+		if (!psp_me_push(&job, &tickets[k]))
+			break;
+		pushed++;
+	}
+	if (pushed < ME_RING_ENTRIES)
+		ringtest_short++;
+	for (k = pushed; k-- > 0;)
+	{
+		unsigned int sum = 0, wrong = 0;
+
+		if (!psp_me_wait(tickets[k], results))
+		{
+			ringtest_failed++;
+			continue;
+		}
+		for (i = 0; i < RINGTEST_WORDS; i++)
+		{
+			sum += ringtest_in[k][i];
+			if (ringtest_out[k][i] != (ringtest_in[k][i] ^ 0x5A5A5A5Au) + i)
+				wrong++;
+		}
+		if (results[0] != sum || results[1] != ringtest_seq)
+			wrong++;
+		ringtest_wrong += wrong;
+		ringtest_jobs++;
+	}
+	ringtest_bursts++;
+}
+
 /* build 87: the last job's own code time on the ME, in microseconds (its
 cycle counter, without the cache hand-overs); simulated, the main CPU's time
 for the whole job */
@@ -1434,5 +1522,11 @@ void psp_me_report(void)
 		"stopped", busy_percent_last, (double)window / 1e6, length ? line : "; no jobs");
 	if (ring_line[0])
 		platform_log("%s", ring_line);
+	if (ringtest_bursts)
+	{
+		platform_log("ME: ringtest: %lu bursts, %lu jobs checked, %lu wrong (words or sums), %lu bursts short of a full ring (a push refused), %lu jobs failed",
+			ringtest_bursts, ringtest_jobs, ringtest_wrong, ringtest_short, ringtest_failed);
+		ringtest_bursts = ringtest_jobs = ringtest_wrong = ringtest_short = ringtest_failed = 0;
+	}
 	memset(stats, 0, sizeof(stats));
 }
