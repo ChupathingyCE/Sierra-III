@@ -60,7 +60,11 @@ The machine's position never drifts, because it is stepped every tick.
 
 ## Proven
 
-**Builds.** Both words build in the campaign build (local, `9aa2fb7`: 448 of 448 units, no stubs). The batch below also compiles the `PSP_MULTIPLAYER=1` build.
+**Builds** (local, `9aa2fb7`):
+- campaign: 448 of 448 units, nothing stubbed;
+- `PSP_MULTIPLAYER=1`: 490 of 490 units, linked. Its 10 stubbed symbols are the multiplayer build's usual ones (`delta_legacy_*`, `map_family_*` and the like), none of them from this change.
+
+The batch below compiles the multiplayer build again.
 
 **Lab batch `farrate122a`, run 38582477085** [E], `9aa2fb7`, both words on against off:
 
