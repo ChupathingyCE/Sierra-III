@@ -14750,6 +14750,9 @@ void psp_ge_frame_end(void)
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	unsigned int flush_mark;
 
+	/* the ring's one producer, between frames: where the ME can be restarted
+	after a sleep (a slot job still out puts it off to a later frame end) */
+	psp_me_wake_poll();
 	if (!frame_open)
 		return;
 	psp_me_ring_test(); /* "meringtest" (psp_me.c); off: one test a frame */

@@ -30,6 +30,15 @@ void psp_me_edram_probe(void);
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
 
+/* sleep and wake: the power callback stops the ME as the PSP sleeps and asks
+for a restart once it is awake; the main thread's frame end carries the
+restart out ("mewakeoff" keeps the ME stopped, as before) */
+void psp_me_sleep_stop(void);
+void psp_me_wake_request(void);
+void psp_me_wake_poll(void);
+/* "mewaketest": a sleep's hold on the ME, without a sleep */
+void psp_me_wake_test_sleep(void);
+
 /* The job ring (ME phase 1, keep word "meslant" turns it on): jobs handed
 to the ME without a slot of their own, collected later. Each job is a leaf:
 everything it reads is named at the push and stays unchanged until the wait;
