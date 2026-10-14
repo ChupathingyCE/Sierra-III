@@ -6,10 +6,10 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference. Emulator figures are JIT
 
 | Keep word | What | Kind | Emulator [E] | Default |
 |---|---|---|---|---|
-| `seethroughvfpu` | c40's multi-node see-through parts placed on the VFPU | speed, not bit-exact | pictures identical; see-through models −3% | off |
+| `seethroughvfpu` | c40's multi-node see-through parts placed on the VFPU | speed, not bit-exact | pictures identical (c40); see-through models −3% | off |
 | `lightmerge` | the light pass's bands and cut pieces as one draw | speed/look trade | light seams slightly thinner; cost below | off |
-| `foliagetwopass` | alpha-tested model parts get a soft second pass | look, costs speed | softer leaf edges; frame +13% on c10 | off |
-| `sceneryhalf` | sleeping scenery checked every other tick (b107) | speed/behaviour | see §4 | off |
+| `foliagetwopass` | alpha-tested model parts get a soft second pass | look, costs speed | softer leaf edges; frame +13% on c10, +1.4% on b30 | off |
+| `sceneryhalf` | sleeping scenery checked every other tick (b107) | speed/behaviour | b30 tick −2.5%; pictures the same | off |
 
 ## 1. `seethroughvfpu`: see-through parts on several nodes placed by the VFPU
 
@@ -21,7 +21,7 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference. Emulator figures are JIT
 - 9750–9757: the matrix is reloaded only when the node changes (`loaded`); then the vertex is placed and the FPU lines skipped.
 - `node_at` is now `aligned(16)`: `lv.q` needs it.
 
-**What the player sees.** Nothing: over c40's opening (24 shots at the same frames, Cortana and Guilty Spark in view, 200,960 vertices placed on the VFPU per 300 frames) **no pixel differs by more than 8 levels** [E]. The VFPU sums in its own order, so a vertex can still land a last bit away.
+**What the player sees.** Nothing: over c40's opening (24 shots at the same frames, Cortana and Guilty Spark in view, 200,960 vertices placed on the VFPU per 300 frames) **not one pixel differs** [E]. The VFPU sums in its own order, so a vertex can still land a last bit away.
 
 **Cost/gain** [E, lab 38580939224]: the see-through models' CPU 2,919 → 2,826 µs a frame (−3.2%); the GE renderer's CPU −0.5% (12.68 → 12.61 ms a frame). Small, as `vfpuskin` was; whether the PSP agrees is its A/B.
 
@@ -48,11 +48,11 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference. Emulator figures are JIT
 
 **What the player sees** [E, `b122_look_foliagetwopass_c10.png`, the 3x crop]: c10's ferns and palms get soft, anti-aliased edges instead of stair-stepped ones. Known side effect [D]: the faded fringe has no depth, so something drawn later behind it covers it. The level's own alpha-tested surfaces and c10's hanging vines (LK7, still solid bars) are not changed by it.
 
-**Cost/gain** [E, lab 38580939224, c10's swamp]: model parts' CPU 3.1 → 3.5 ms a frame (+14%); the GE renderer's CPU +5%; the CPU now **waits for the GE 6.1 ms a frame** (0.01 without), so the frame by the clock is 45.7 → 51.6 ms (+13%). 47,239 second passes per 300 frames. It is the most expensive of the four; the PSP's fill rate decides it.
+**Cost/gain** [E, lab 38580939224, c10's swamp]: model parts' CPU 3.1 → 3.5 ms a frame (+14%); the GE renderer's CPU +5%; the CPU now **waits for the GE 6.1 ms a frame** (0.01 without), so the frame by the clock is 45.7 → 51.6 ms (+13%). 47,239 second passes per 300 frames. On b30's flight and landing (lab 38580957065) it costs less: the frame by the clock +1.4%, the GE wait 0.15 → 1.39 ms a frame, up to 19,744 second passes per 300 frames; b30's shots aren't a clean pair (play drifted apart on the beach: the rifle's pose and a shield effect differ), so c10's are the ones to judge (`b122_look_foliagetwopass_b30.png` is kept for the record). It is the most expensive of the four; the PSP's fill rate decides it.
 
 ## 4. `sceneryhalf` (build 107, unchanged)
 
-Still in `psp_fixups.py` (3011–3031, 3160) on w122 [D]: a sleeping scenery object is checked on alternate ticks, half of them each tick by index. Its heartbeat line ("sleeping scenery, checked every other tick") shows it working. On the PSP it gained nothing measurable in b112 (63.2 ms a tick with and without, `hardware_b112.md`) [M]. It changes when the simulation notices a change to scenery, so it stays off for multiplayer play against a server unless Sheepdog01 decides otherwise [U].
+Still in `psp_fixups.py` (3011–3031, 3160) on w122 [D]: a sleeping scenery object is checked on alternate ticks, half of them each tick by index. Checked on w122 (lab 38580957065, b30's flight and landing) [E]: the heartbeat line ("sleeping scenery, checked every other tick") shows 112–114 sleeping scenery objects a tick left unchecked, 0–0.1 woken; the tick 13.75 → 13.40 ms (−2.5%); the shots at the same frames differ in 211 pixels over 24 (`b122_look_sceneryhalf.png`). On the PSP it gained nothing measurable in b112 (63.2 ms a tick with and without, `hardware_b112.md`) [M]. It changes when the simulation notices a change to scenery, so it stays off for multiplayer play against a server unless Sheepdog01 decides otherwise [U].
 
 ## Multiplayer
 
