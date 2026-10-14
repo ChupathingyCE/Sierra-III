@@ -35,7 +35,41 @@ An actor rests only on its turn (game time plus its index, odd or even, so half 
 
 **What changes for the player [U].** A far actor notices a new unit, or a change in a known one (it came into sight, went into cover, fired), up to one round of its props later than before. A round is one tick per prop it knows (more for non-enemies), so for an actor that knows 6 units it is ~0.2 s later at 30 ticks a second. Nothing changes for an actor near the player, one fighting in range, one just hit, or one the player is looking at through a scope. This is a change in play, so runs on and off part after the first far actor rests: compare them as alike, not the same.
 
-**Proven so far.** (filled from lab 38581218511 and 38581266921 below)
+**Proven so far** [E], batch `aihalf122a`, lab 38581218511, on `9210d97`, `maps=/bake/campaign121`. Every run ended on its wall (or its `exitat`): no crash, no fault, 0 strict sites.
+
+- **Nothing breaks with the word on** (600 s each, 10 at once):
+  - b30 on the b113 route: game time 10,178, against 9,890 off;
+  - a50 hands off: 10,828 (10,827 off);
+  - c20: 8,267; d20: 8,186;
+  - a50 under the strict interpreter: 0 bad accesses.
+- **The queue and the ME stay exact with actors resting.** b30's route with `aihalf meraysperc perccheck`: 0 mismatched of 95,879 rays taken, 0 of 62,295 ME answers checked, 0 failed jobs, 0 of 743,200 kept unit facts.
+- **How much rests** (the log's `half rate` line at the run's end):
+
+  | Map | Resting turns taken | Kept: player near | target in range | damage | a swarm | rays cast, off → on |
+  |---|---:|---:|---:|---:|---:|---|
+  | b30 route | 31,068 of 73,278 (42%) | 6,845 | 29,120 | 6,245 | 0 | 117,915 → 99,821 (−15%) |
+  | a50 | 43,821 of 70,746 (62%) | 26,925 | 0 | 0 | 0 | 139,226 → 95,497 (−31%) |
+  | c20 | 17,385 of 31,228 (56%) | 3,164 | 0 | 0 | 10,679 | |
+  | d20 | 1,902 of 9,735 (20%) | 0 | 2,608 | 1,649 | 3,576 | |
+
+  On b30 most kept turns are actors fighting the marines in range: those keep full rate by design. A swarm (the Flood's infection forms) has no single unit, so it never rests; the log counts it only in the total.
+- **No AI frozen in the shots** (`shotevery5`, on and off side by side at the same game time). On b30 the beach fight runs on both sides: an elite meleeing the player at 117.8 s with the word on, grunts and marines firing at 133 and 144 s. a50's marines walk the same paths on both sides. c20 and d20 show no enemies on screen hands off.
+- **The cache models, a50's opening to 60 s** (hands off, `fixedticks fixedseed`; play parts, so alike, not the same). Estimate: one cycle an instruction plus 72 cycles a miss at 333 MHz:
+
+  | | Instructions a tick | D misses | I misses | Est. tick |
+  |---|---:|---:|---:|---:|
+  | off | 2,681,612 | 22,257 | 32,915 | 19.98 ms |
+  | `aihalf` | 2,645,209 | 21,771 | 32,581 | 19.70 ms |
+  | | −1.4% | −2.2% | −1.0% | **−0.29 ms (−1.4%)** |
+
+  That is with 1.8 resting turns a tick. Later in the same map it is 4.1 a tick.
+- **Multiplayer:** batch `aihalf122b` (lab 38581266921) builds `PSP_MULTIPLAYER=1` with the word on; see the report.
+
+**The expected gain [U].**
+- About 0.08–0.15 ms of the estimate per resting turn (a50's figure).
+- b30's beach takes ~3.5 resting turns a tick, which comes to **~0.3–0.5 ms a tick**.
+- a50 later in the map takes ~4 a tick: ~0.3–0.6 ms.
+- On the PSP with b122's defaults, the ME casts most rays already, so the main CPU saves less: the skipped status work (visibility, hearing, the weights), not the whole ray. Only the rig can say how much.
 
 **Default.** Off, until Sheepdog01's A/B on the rig. Words:
 - `aihalf`: on;
