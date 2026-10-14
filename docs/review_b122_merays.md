@@ -128,7 +128,7 @@ That comes to ~10–12 KB on a retail map, and at most ~17 KB at the port's 128-
   - **Play exact.** Word on against off, hands off: the play hash and both random seeds are the same at every tick, on d20 (25,217 ticks) and a50 (40,835).
     - The perception lines of each pair are equal to the last count: the same rays cast, taken and refused.
     - The ME played 5,699 and 377,137 of its answers.
-    - The whole-state hash differs in the allocations already known to follow the emulator's speed, and in `actor`. That is the stack bytes copied in with a `direction_specification` (`review_b121_aiperc.md`): the job's frames leave different bytes on the stack.
+    - The whole-state hash differs in the allocations already known to follow the emulator's speed, and in `actor`. Most likely [U] that is the stack bytes copied in with a `direction_specification` (`review_b121_aiperc.md`), since the job's frames leave different bytes on the stack; not yet narrowed with `stateblocksN`.
   - **No system call in the ME's work** (a50, strict interpreter, `gemesim`): `MESTRICT: no system calls in work meant for the Media Engine`. 0 bad accesses.
   - **The ME write trace** (`mewrites`, same run): 46 lines written by the ME's work, 3,513 by the main CPU while a job was out, and 23 by both.
     - All 23 are in one 24 KB stretch at 0x09fb98c0–0x09fbf900: the main thread's stack, where the emulator runs the job.
