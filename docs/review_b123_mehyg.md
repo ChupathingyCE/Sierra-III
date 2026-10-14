@@ -92,8 +92,16 @@ What's left is the difference between the two builds as built: different profile
 
 ## Proven (emulator)
 
-Lab batch `mehyg123a` (run ID in the final report): the state CRC pairs hands off on d20, a50, c20 against `w122`; `perccheck`, `meslantcheck`, `meringtest` with 0 mismatches; a50 and b30 in the strict interpreter with `gemesim mewrites` showing no line written by both sides; the multiplayer build compiled and started.
+Lab batch `mehyg123a`, run 38617640170 (`7571547`, the code as it is here) [E]:
+- **Exact.** The state CRC pairs hands off against `w122` (`85ebea3`), both with the ME's rays and slant on: play and both random seeds the same at every tick on d20 (22,552 ticks), a50 (38,554) and c20 (29,045). The allocations that differ (decal vertex cache, particles, actor/prop/objects bookkeeping) are the ones that differed between b122's own accepted pair (lab 38590465463, a50: the same verdict).
+- **Every answer checked.** `perccheck`: 24,760 rays checked on a50, 112,845 on b30's b113 route (with `meraysmin4`, 385 ticks cast on the main CPU), 0 mismatched, 0 failed jobs. `meslantcheck`: 414,000 and 279,900 triangles, 0 differing. `meringtest`: 952 jobs, 0 wrong.
+- **The line rules.** a50 and b30 in the strict interpreter with `gemesim mewrites`: no system call in the ME's work. The lines written by both sides are 23 on a50, the same 23 main-thread stack lines (0x09fb….) as b122's own a50 trace (lab 38560105583), where the emulator runs the ME's work on the main thread's stack (on the PSP the ME's stack is its own eDRAM); b30's 7 are among those same stack lines. No line of the program's data or heap.
+- **Audio by ranges.** On the (simulated) ME: 433 of 433 blocks on a50's opening, 117 of 433 on b30's flight, 0 of 433 on b30's beach (more voices and samples than 16 KB: the whole cache, as before). So change 3 helps the lighter scenes only.
+- **Multiplayer.** The build compiles. It stops at start in the emulator on a full heap (the 768 KB display list), exactly as `w122`'s own multiplayer build does (lab 38595336888, the same two lines): not this branch's.
 
 ## For the rig
 
-The runs to ask for are in the final report: an audio-wait and tick A/B with `keepsets` on b30 and c40 (`- | meaudiofirstoff meraysbatchoff meaudiorangesoff mepushdropoff mestashoff`), and c10 with `meraysmin4` against the default.
+Three `sierra-hw` runs, each one build with `keepsets` (the PSP-3000; read with `tools/abreport.py`):
+1. c40, 300 s wall, `keepsets = "- | meaudiofirstoff meraysbatchoff meaudiorangesoff mepushdropoff mestashoff"`, `repeat=2`: the whole branch on and off, through the cinematic and the bunker. Watch the tick and the `audio: … waited for` line.
+2. b30, the b113 route, 660 s wall, the same keepsets, `repeat=2`: the flight (many rays a tick: change 2's case) and the beach.
+3. c10, 300 s wall, `keepsets = "- | meraysmin4"`, `repeat=2`: whether small ray batches are better on the main CPU.
