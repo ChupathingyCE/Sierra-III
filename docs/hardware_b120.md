@@ -78,7 +78,9 @@ The tick is faster on 9 of 10 maps (a30 −8%, c10 and c40 −6%) and fps is up 
 Sheepdog01 (20:23, during the ladder): a10's window glass looks worse than before, yellow splotches all over it in a repeating pattern.
 - **Not a b120 regression in the emulator** [E] (lab run 38495638507, a shot every 10 s through a10's opening): b119 on its maps, b120 on its maps, b120 on b119's maps and b120 with `glassflat` draw the bridge windows identically, a green-yellow mottled pattern repeating where the view outside should be (shots 004 and 022). The two bakes' logs also match for a10 except the new HUD line.
 - **So it's longstanding** [E]; the lead [U]: a texture meant for something else (the window shader's reflection map, or a bump or detail map) drawn as the glass's colour. For the look batch.
-- **On the PSP it is worse** (Sheepdog01, 20:39): much more pronounced, less abstract and see-through. So something differs on hardware only. Being checked on the rig: a10 shots on b120 (as is, and with `vramlargest`, VRAM filled by size as on a fresh stick) and on b119 (lab runs 38496994706, 38497057378).
+- **On the PSP it is worse** (Sheepdog01, 20:39): much more pronounced, less abstract and see-through.
+- **The rig's PSP-3000 draws b119 and b120 identically** [M] (lab runs 38496994706, 38497057378; `b120_a10_glass_rig_b119_vs_b120.png`), and the same as the emulator; `vramlargest` (VRAM filled by size) changes nothing. The PSP-1000's test 5 log and the rig's show the same texture setup for a10 (RAM cache 4,096 KB, the same pack, learned binds read).
+- **Open:** nothing measured explains a difference on Sheepdog01's PSP-1000. Next: a PSP-1000 screenshot at the bridge on b120 (game time ~50), set beside the rig's.
 
 ## For b121 (Sheepdog01, 2026-10-13)
 
