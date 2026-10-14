@@ -55,6 +55,8 @@ import subprocess
 import sys
 from collections import defaultdict
 
+# the game's ELF is linked at 0 and loaded here; an ELF linked where it
+# loads (a plain homebrew test) needs no offset, which Names notices
 PROGRAM_BASE = 0x08804000
 MHZ = 333.0
 PHASE_NAMES = ['other', 'tick', 'drawing', 'frame end']
@@ -135,13 +137,16 @@ class Names:
 
     def __init__(self, elf=None, linkmap=None):
         spans = []
+        global PROGRAM_BASE
         if elf:
             out = subprocess.run([tool('nm'), '-n', '-S', elf], capture_output=True, text=True).stdout
-            for line in out.splitlines():
-                parts = line.split()
-                if len(parts) == 4 and parts[2] in 'tTwW':
-                    start = int(parts[0], 16) + PROGRAM_BASE
-                    spans.append((start, start + int(parts[1], 16), parts[3]))
+            rows = [line.split() for line in out.splitlines()]
+            rows = [p for p in rows if len(p) == 4 and p[2] in 'tTwW']
+            if rows and min(int(p[0], 16) for p in rows) >= 0x08000000:
+                PROGRAM_BASE = 0
+            for parts in rows:
+                start = int(parts[0], 16) + PROGRAM_BASE
+                spans.append((start, start + int(parts[1], 16), parts[3]))
         elif linkmap:
             spans = self.from_map(linkmap)
         spans.sort()
