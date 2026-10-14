@@ -134,6 +134,43 @@ def main():
             t.group, t.name, seethrough.abgr(tint), ' doubled' if doubled else '', drawn,
             ' '.join('%.2f' % v for v in result),
             ' '.join('%.2f' % v for v in mean)))
+        print_tint_inputs(m, t, means)
+
+
+# the shader fields a tint depends on, by their tag enums' order
+BLENDS = ('alpha blend', 'multiply', 'double multiply', 'add', 'subtract', 'min', 'max', 'alpha multiply add')
+FADE_MODES = ('none', 'fade when perpendicular', 'fade when parallel')
+FADE_SOURCES = ('none', 'A out', 'B out', 'C out', 'D out')
+
+
+def print_tint_inputs(m, t, means):
+    """what a tint was worked out from: the framebuffer blend and fade, and
+    each map's bitmap, scale and mean. A wrong tint shows up here as a map
+    whose mean doesn't stand for what the shader draws (a cube map, a
+    mostly-black mask) or a blend the mean can't model"""
+    import struct
+    import seethrough
+    o = m.off(t.address)
+    kind, = struct.unpack_from('<H', m.data, o + 36)
+    if kind not in (seethrough.GENERIC, seethrough.CHICAGO):
+        return
+    first_map_type, blend, fade_mode, fade_source = struct.unpack_from('<hhhh', m.data, o + 42)
+    count, maps_p = struct.unpack_from('<iI', m.data, o + 84)
+    stages, = struct.unpack_from('<i', m.data, o + 96) if kind == seethrough.GENERIC else (0,)
+    name = lambda table, i: table[i] if 0 <= i < len(table) else str(i)
+    print('    blend %s; fade %s by %s; first map type %d; %d maps%s' % (
+        name(BLENDS, blend), name(FADE_MODES, fade_mode), name(FADE_SOURCES, fade_source),
+        first_map_type, count, '; %d stages' % stages if kind == seethrough.GENERIC else ''))
+    stride, scale_at, map_at = (220, 84, 120) if kind == seethrough.CHICAGO else (100, 4, 40)
+    mo = m.off(maps_p)
+    for i in range(count):
+        tid, = struct.unpack_from('<i', m.data, mo + stride * i + map_at)
+        u, v = struct.unpack_from('<ff', m.data, mo + stride * i + scale_at)
+        target = m.by_id.get(tid)
+        mean = means(tid)
+        print('    map %d: %s, scale %g x %g, mean %s' % (
+            i, target.name if target is not None else 'none', u, v,
+            ' '.join('%.2f' % x for x in mean) if mean is not None else 'unreadable'))
 
 
 if __name__ == '__main__':
