@@ -2096,8 +2096,8 @@ static float camera_right[3], camera_up[3], camera_forward[3];
 static float guard_x, guard_y;
 /* the screen's side planes as the guard planes are written (x = screen_x z),
 with a margin of SCREEN_MARGIN_PIXELS for the GE's rounding and the TAA's
-jitter: a cut piece wholly past one of them draws no pixel and is left out
-(clip_triangle); "cutlessoff" draws them */
+jitter: a triangle or cut piece wholly past one of them draws no pixel and
+is left out (clip_triangle); "cutlessoff" draws them */
 #define SCREEN_MARGIN_PIXELS 8.0f
 static float screen_x = 1.0f, screen_y = 1.0f;
 static int cut_less = 1, guard_wide = 0;
@@ -3464,19 +3464,24 @@ static inline const float *cut_at(struct cut_store *store, int index)
 }
 
 /* "cutcount": what the cutting does, by kind, in the 300-frame log. Which
-planes a cut triangle crossed: the near plane, or only the guard planes
-(which the GE could have drawn whole if they sat at its own limit); its
-pieces, those wholly off the screen, and those lost for want of room; the
-most corners one draw needed in a frame (the buffer's room is the most it
-held) */
+planes a triangle sent to be cut crossed: the near plane, or only the guard
+planes (which the GE could have drawn whole if they sat at its own limit);
+those wholly off the screen; the pieces of the rest, those wholly off the
+screen, and those lost for want of room; the most corners one draw needed in
+a frame (the buffer's room is the most it held) */
 static int cut_count_on = 0;
 static struct cut_tally
 {
-	unsigned long near, guard_only, pieces, off_screen, lost, peak, frames_over;
+	unsigned long near, guard_only, whole_off, pieces, off_screen, lost, peak, frames_over;
 } cut_tally[CUT_KINDS];
 static int cut_frame_peak[CUT_KINDS];
 static const char *const cut_kind_names[CUT_KINDS] = { "level", "rigid parts", "bending parts", "see-through parts", "other (lights, shadows, stencils, level see-through)" };
 
+/* whether a triangle lies wholly past one of the screen's side planes. Each
+plane passes through the eye, so a triangle whose three corners are on its
+outer side lies wholly in that half-space, whatever their depths (a corner
+behind the eye included): no pixel of it, nor of any piece cut from it, is
+on the screen */
 static inline int piece_off_screen(const float *a, const float *b, const float *c)
 {
 	return (a[0] > screen_x * a[2] && b[0] > screen_x * b[2] && c[0] > screen_x * c[2]) ||
@@ -3488,13 +3493,31 @@ static inline int piece_off_screen(const float *a, const float *b, const float *
 /* cuts a camera-space triangle to the inside of the planes it crosses
 (bits, outside()'s), every value of each corner cut alike. The pieces, a
 fan, go into store as a triangle list; returns how many corners it added.
-Every piece lies in front of the near plane (a triangle crossing none has
-every corner in front), which piece_off_screen relies on */
+Most triangles sent here reach past the screen's side (the guard planes are
+6 screens out), and most of their pieces land wholly off the screen: a
+triangle wholly off it is not cut at all, and a piece wholly off it is not
+stored ("cutlessoff": both cut and drawn, as before). Neither draws a pixel */
 static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_store *store)
 {
 	float buffer[2][12][CORNER_FLOATS];
 	int count = 3, plane, index, source = 0, added = 0, k;
 
+	if (cut_count_on)
+	{
+		struct cut_tally *tally = &cut_tally[store->kind];
+
+		if (bits & 1)
+			tally->near++;
+		else
+			tally->guard_only++;
+	}
+	if ((cut_less || cut_count_on) && piece_off_screen(polygon[0], polygon[1], polygon[2]))
+	{
+		if (cut_count_on)
+			cut_tally[store->kind].whole_off++;
+		if (cut_less)
+			return 0;
+	}
 	memcpy(buffer[0], polygon, 3 * sizeof(polygon[0]));
 	for (plane = 0; plane < 5 && count >= 3; plane++)
 	{
@@ -3521,17 +3544,8 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 		count = kept;
 		source = !source;
 	}
-	if (cut_count_on)
-	{
-		struct cut_tally *tally = &cut_tally[store->kind];
-
-		if (bits & 1)
-			tally->near++;
-		else
-			tally->guard_only++;
-		if (count >= 3)
-			tally->pieces += (unsigned long)(count - 2);
-	}
+	if (cut_count_on && count >= 3)
+		cut_tally[store->kind].pieces += (unsigned long)(count - 2);
 	for (index = 1; index + 1 < count; index++)
 	{
 		const float *a = buffer[source][0], *b = buffer[source][index], *c = buffer[source][index + 1];
@@ -3617,9 +3631,10 @@ static void cut_count_report(unsigned long frame_count)
 	{
 		struct cut_tally *tally = &cut_tally[kind];
 
-		platform_log("GE: cutcount %s, %lu frames: triangles cut %lu at the near plane, %lu at guard planes only; pieces %lu, %lu wholly off the screen%s, %lu lost; most corners in one draw %lu (room %d), frames over the room %lu",
-			cut_kind_names[kind], frame_count, tally->near, tally->guard_only, tally->pieces, tally->off_screen,
-			cut_less ? " (left out)" : " (drawn)", tally->lost, tally->peak,
+		platform_log("GE: cutcount %s, %lu frames: triangles cut %lu at the near plane, %lu at guard planes only, %lu of them wholly off the screen%s; pieces %lu, %lu wholly off the screen%s, %lu lost; most corners in one draw %lu (room %d), frames over the room %lu",
+			cut_kind_names[kind], frame_count, tally->near, tally->guard_only, tally->whole_off,
+			cut_less ? " (not cut)" : "", tally->pieces, tally->off_screen, cut_less ? " (left out)" : " (drawn)",
+			tally->lost, tally->peak,
 			kind == CUT_LEVEL || kind == CUT_OTHER ? MAXIMUM_CUT_CORNERS : MAXIMUM_MODEL_CUT_CORNERS, tally->frames_over);
 	}
 	platform_log("GE: cutcount: %s, guard planes %s (x %.2f, y %.2f), %lu spill blocks taken",
@@ -7379,7 +7394,7 @@ static void cut_take(void)
 	if (!cut_stream)
 		platform_log("GE: cutstreamoff: cut pieces past the fixed buffers are lost, pieces off the screen drawn");
 	else if (!cut_less)
-		platform_log("GE: cutlessoff: cut pieces off the screen drawn");
+		platform_log("GE: cutlessoff: triangles and pieces off the screen cut and drawn");
 	if (guard_wide)
 		platform_log("GE: guardwide: the guard planes at %d pixels from the screen's centre", (int)GUARD_PIXELS);
 	model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
