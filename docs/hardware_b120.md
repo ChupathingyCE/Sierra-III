@@ -85,6 +85,7 @@ Sheepdog01 (20:23, during the ladder): a10's window glass looks worse than befor
 - **Dated to b116** [E] (lab run 38501924836, `b120_a10_glass_tour.png`): b113-b115 draw the bridge windows pale bluish-white; b116 onward green-yellow, darker and opaque. b116 brought the see-through shaders' tints (`seethrough.py` in the bake, multiplied in by the game).
 - **Found: the tint** [E] (lab run 38502938098, `b120_a10_glass_tint.png`): b120 with `notint` draws the windows as b113-b115 did. The tint the bake records for the bridge windows' shader is wrong for this glass.
 - **Sheepdog01 (21:52): the glass wobbles as the camera pans in from outside.** Lead [U]: the mottled texture is the window's reflection map, its coordinates following the view direction; the tint makes it dominant, so its slide shows.
+- **Why the tint is wrong: found** (LK18, "Why the tints come out wrong", case 2): the glass's added reflection is folded into a multiplying tint.
 - **Fix (b121, a restoration with an off word):** the tint for this shader in the bake (why `seethrough.py` gives it green-yellow), then whether the reflection should be as strong as it is even untinted (pre-b116 still shows the pattern, paler).
 
 ## LK17: the Pillar of Autumn's thruster, its inner part shimmers (a10)
@@ -102,6 +103,22 @@ Sheepdog01's PC reference: the Chief inside a golden energy column, then 343 Gui
 Sheepdog01: all of these are also present in MCC and the Gearbox PC port, so those can't serve as the reference here; the Xbox (and ChupathingyCE) can.
 Known from earlier builds: the hologram's shaders draw only their animated `static blue band vert` map over the whole ring or disc (`b117_candidates.md`); wild node matrices on the room's light shafts, scales over 100, a wobble candidate (b107) [U]; flares drawn without the depth test (`b113_candidates.md` #2), a candidate for the railings showing through the legs [U]. Capture queued: lab run 38505653695 (b120, a shot every 5 s, plain and `notint`).
 
+**Capture read** [E] (`b120_c40_tint.png`):
+- **The Chief's golden column is the tint again, as a10's glass.** With `notint` it draws gold around him as on Sheepdog01's PC; with b116's tints it's a faint grey shimmer. Its shader is very likely `cinematics\effects\teleportation\shaders\teleport ring` [U]: the tint report gives it `ff243b49`, so its gold map is drawn at about a quarter strength.
+- With `notint` the hologram sphere and the arc go solid white. Their tints are needed; the column's is wrong.
+- The planet hologram isn't drawn in either: its shader draws its `static blue band vert` map, not `solar system` (below).
+
+**Why the tints come out wrong** [D], from the tint report (Sierra-III `tools/tagdeps.py`, which now prints each tint's inputs; lab runs 38506894961 c40, 38506915773 a10). `seethrough.py` works a shader out with every map at its **mean** and divides by the drawn map's mean. Two cases break that:
+1. **The same bitmap layered on itself.** The teleport ring multiplies two scrolling copies of one gold streak map. The means give 0.29 × 0.29 = 0.08, but where streaks line up the real product stays near the streak's own brightness. So the tint dims the column about 4×.
+2. **A reflection added in.** a10's `cryo glass` and `monitor glass` add a cube-map reflection the PSP never draws (it skips the cube map). The bake folds that added grey into a *multiplying* tint, and the ratio comes out uneven per channel. `cryo glass` gets `20469494` doubled, about ×1.2 red and green but ×0.5 blue. A near-white texel in the glass map turns yellow, while the dark blue average stays about right. That is the yellow splotches in a pattern. Which of the two shaders is the bridge windows isn't confirmed yet [U]; the fix covers both.
+
+**The planet hologram's map** [D]. The port draws the map with the smallest scale and lets a tie go to the *later* map. `holo halo solar system` has three maps at scale 1 (`solar system`, then the band twice), so the band wins. The ring holograms' content maps (`halo inner ring` 4×1, `halo outer ring` 60×1) lose to the band's 2×1 outright. "Smallest scale" assumes the spanning map is the pattern; on the holograms the band is a scrolling overlay.
+
+**Fix plan (b121, restorations with an off word each):**
+- **Tints from texels, not means:** evaluate the combiners over a sample of the drawn map's texels, giving another map the same texel when it is the same bitmap at the same scale (layered), and leave out what the PSP doesn't draw (the reflection cube). This fixes the column and the glass, and should leave the tints that are right as they are. Proven by the tint report before and after, then emulator shots of a10, b30, c40 and d20.
+- **The drawn map from the bake:** the pack names, per shader, the map whose texels carry most of the shader's output, and the runtime uses it in place of "smallest scale". That restores the holograms (planet, rings, control) with their own art.
+- The railings showing through the legs and the bouncing textures need frames of their own: next capture.
+
 ### LK19: the Halo ring, low quality and seemingly textureless wherever it shows
 Sheepdog01: on every level he has seen it on so far, and in the main menu. **Ask: a carve-out so the ring always draws at the highest quality the PSP can manage.** Leads [U]: the bake halves textures of 64 px and up and caps them at 256 px (`--full-detail` per class lifts both, `overnight_b102.md`); a10's sky models' shaders were found undrawn in b115, and b116 restored b30's ring. First step: name the ring's model, shaders and maps per map, and which of them draw.
 
@@ -113,6 +130,6 @@ Sheepdog01: the menu costs little, so maximise its quality any way that doesn't 
 - **The build number and the active preset on screen.** The stamp line at the bottom of every screenshot already shows the build, game time and frame (`b120 t 341.0 f 1930`); add the preset there, and in the launch menu's header.
 - **Reopen files on wake** (the sleep bug above).
 - **The HUD: `hudsnap hud177` on by default** (Sheepdog01's A/B, test 4b), with the corner push re-sized for the 1:1 zoom so the elements sit closer to the edges, the top first. Off words for each.
-- **LK16, a10's glass: the see-through tint for its shader** (found; the fix above; Sheepdog01: in b121).
+- **LK16 and LK18: see-through tints from texels, not means**, and the drawn map named by the bake (LK18's fix plan). It fixes a10's glass, c40's golden column and the holograms' art together; Sheepdog01 agreed to a10's in b121.
 - LK13 (far water), LK14 (Pelican window), LK15 (tracker cross), LK17 (thruster shimmer): leads above.
 - **The log pull's `rm -f $psp/halo/shots/*`** fails in fish when the folder is empty (fish refuses a wildcard that matches nothing). Use `find $psp/halo/shots -type f -delete`.
