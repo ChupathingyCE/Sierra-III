@@ -89,18 +89,29 @@ struct slot_range
 static struct slot_range recent[RECENT_RANGES];
 
 /* the range handed out last: a reader asks for the same animation once per
-node, so most lookups end here */
-static unsigned int memo_start = 0, memo_end = 0, memo_at = 0;
+node, so most lookups end here. psp_animation_data (psp_fixups.py,
+FIXES_122) makes this same test inline, so a repeat costs no call: these,
+repeats, forget_pending and trace are shared with it under the psp_anim_
+names. "animlockcall" (keep.txt): every lookup comes here, as before */
+#define memo_start psp_anim_memo_start
+#define memo_end psp_anim_memo_end
+#define memo_at psp_anim_memo_at
+#define repeats psp_anim_repeats
+#define forget_pending psp_anim_forget_pending
+#define trace psp_anim_trace
+unsigned int memo_start = 0, memo_end = 0, memo_at = 0;
+int psp_anim_inline = 1;
 
 /* what the log reports (since the map opened, and this window's) */
-static unsigned long repeats = 0, lookups = 0, hits = 0, misses = 0, reads = 0, read_bytes = 0, evictions = 0,
+unsigned long repeats = 0;
+static unsigned long lookups = 0, hits = 0, misses = 0, reads = 0, read_bytes = 0, evictions = 0,
 	failures = 0, no_room = 0, other_threads = 0;
 static unsigned long read_us = 0, read_worst_us = 0;
 static unsigned long window_reads = 0, window_us = 0, window_worst_us = 0;
 static SceUID game_thread = 0;
 /* set by the power callback's thread before the PSP sleeps (a carved arena's
 bytes don't survive it); the game thread forgets at its next lookup */
-static volatile int forget_pending = 0;
+volatile int forget_pending = 0;
 
 /* "animtrace" (keep.txt): the distinct ranges asked for in each frame,
 written to log/animtrace.bin for tools/anim_cache_sim.py, which replays them
@@ -110,7 +121,7 @@ the emulator: the memo is off (every lookup is seen) and the file is written
 every 64 KB */
 #define TRACE_WORDS (16 * 1024)
 #define TRACE_SEEN 256
-static unsigned int *trace = NULL;
+unsigned int *trace = NULL;
 static int trace_words = 0, trace_on = -1;
 static SceUID trace_file = -1;
 static unsigned int *trace_seen = NULL; /* TRACE_SEEN words after the trace's */
@@ -461,6 +472,7 @@ void psp_anim_map_opened(unsigned int bytes, unsigned int first, unsigned int en
 	psp_anim_close();
 	forget_pending = 0;
 	game_thread = sceKernelGetThreadId();
+	psp_anim_inline = !psp_keep("animlockcall");
 	repeats = lookups = hits = misses = reads = read_bytes = evictions = failures = no_room = other_threads = 0;
 	read_us = read_worst_us = 0;
 	if (!bytes || end <= first)

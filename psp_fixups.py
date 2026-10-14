@@ -14762,6 +14762,40 @@ void objects_initialize_for_new_map(
 """),
 ]
 
+# An animation's data asked for again in the range handed out last (one
+# reader per node, so 96% of c20's asks: 707k of 734k in 60 s) answered
+# inline: the same test psp_anim_lock makes first, on the same variables,
+# giving the same pointer and counting the repeat the same way, without the
+# call into a 2.4 KB function. "animlockcall" (keep.txt): every ask calls
+# psp_anim_lock, as before
+FIXES_122["source/models/model_animation_definitions.h#inline"] = [
+("""	if (__builtin_expect(address < 0x0C000000UL, 1))
+		return (byte *)address;
+	return (byte *)psp_anim_lock(address, (unsigned long)size);
+}
+#endif
+""", """	if (__builtin_expect(address < 0x0C000000UL, 1))
+		return (byte *)address;
+	{
+		/* psp_fixups.py (FIXES_122): psp_anim_lock's first test, inline */
+		extern unsigned int psp_anim_memo_start, psp_anim_memo_end, psp_anim_memo_at, *psp_anim_trace;
+		extern unsigned long psp_anim_repeats;
+		extern volatile int psp_anim_forget_pending;
+		extern int psp_anim_inline;
+
+		if (psp_anim_inline && address >= psp_anim_memo_start && address + (unsigned long)size <= psp_anim_memo_end &&
+			!psp_anim_forget_pending && !psp_anim_trace)
+		{
+			psp_anim_repeats++;
+			return (byte *)(psp_anim_memo_at + (address - psp_anim_memo_start));
+		}
+	}
+	return (byte *)psp_anim_lock(address, (unsigned long)size);
+}
+#endif
+"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
