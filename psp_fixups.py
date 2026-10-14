@@ -16229,6 +16229,20 @@ static void psp_lit_item_seen(struct object_header_datum const *header, short ab
 			magnitude3d(&item->object.translational_velocity), magnitude3d(&item->object.angular_velocity),
 			(unsigned)item->item.flags, TEST_FLAG(item->item.flags, _item_on_structure_bit) ? 1 : 0,
 			(long)item->item.rested_surface_index);
+	if (reason == 4 && lines < 400)
+	{
+		/* what the tracked index names: nothing in this engine sets it but
+		to NONE, so a value here is either a tracking trigger's or stale */
+		struct weapon_datum const *weapon = (struct weapon_datum const *)header->datum;
+		long tracked = weapon->weapon.tracked_object_index;
+		struct object_datum const *target = (struct object_datum const *)object_try_and_get_and_verify_type(tracked, _object_mask_all);
+
+		lines++;
+		platform_psp_log("sleep: lit item #%d tracks %08lx: %s (type %d); triggers %d/%d, light power %.3f, light delay %d",
+			absolute_index, (unsigned long)tracked, target ? tag_get_name(target->definition_index) : "no object",
+			target ? (int)target->object.type : -1, (int)weapon->weapon.triggers[0].state, (int)weapon->weapon.triggers[1].state,
+			weapon->weapon.integrated_light_power, (int)weapon->weapon.integrated_light_delay_ticks);
+	}
 }
 
 int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 101) */"""),
