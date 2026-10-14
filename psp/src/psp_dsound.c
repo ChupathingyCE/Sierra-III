@@ -32,6 +32,7 @@ the game calls every frame, and from Flush, never from the audio thread.
 #include <pspkernel.h>
 #include <pspaudio.h>
 #include <math.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -85,7 +86,6 @@ struct psp_stream
 	float minimum_distance, maximum_distance;
 	float i3dl2_gain;
 
-	struct voice_packet packets[MAXIMUM_STREAM_PACKETS];
 	unsigned long packet_head;
 	unsigned long packet_count;
 	/* position inside the head unfinished packet: whole frames and a 16-bit fraction */
@@ -109,6 +109,10 @@ struct psp_stream
 	the game then queues more (Sheepdog01's b86 run 2: regular breaks heard with
 	either mixer, the output never late) */
 	unsigned long dry_frames;
+
+	/* last, so a hand-over by ranges covers the fields above in a few whole
+	lines and only the queued packets' entries of this (psp_dsound_me_lines) */
+	struct voice_packet packets[MAXIMUM_STREAM_PACKETS];
 };
 /* build 86: a voice takes whole 64-byte cache lines (memalign, the size
 rounded up): the Media Engine writes voices back a cache line at a time, and
@@ -504,6 +508,143 @@ unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *s
 	return voices;
 }
 
+/* ---------- the Media Engine's cache hand-over by ranges
+
+Each audio block used to cost the whole data cache three times: the main CPU
+wrote back all of its own before the job, and the ME dropped all of its own
+before and after it, so a ring job the block was mixed between or inside (the
+perception rays' BSP walks) started over from main RAM. Instead, the lines the
+mix can touch:
+- it reads and writes a voice's fields above packets[] (STREAM_HEAD_BYTES:
+  position, decoded blocks, gains) and the queued packets' entries, from
+  packet_head on, packet_count of them (current_packet; a finished packet's
+  flag is the only write there). The game's side changes the rest only
+  under the mixer's lock, which the audio thread holds through the job;
+- it reads, of each queued packet's samples, only the stretch this block can
+  reach (sample_lines);
+- it writes its output block, and its sums (on the ME's own stack, or
+  psp_me.c's array that only the ME uses).
+Nothing else: no calls out of this file, and the step and gains are worked
+out on the main CPU beforehand (prepare_voice). Past 16 KB of lines, a range
+costs more instructions than the whole cache (YAPSPD's rule, b4 research),
+so the whole cache it is, as before. "meaudiorangesoff" keeps the whole cache
+always. Either CPU may choose the whole cache on its own: each side's ranges
+cover every line the other can write back */
+#define STREAM_HEAD_BYTES offsetof(struct psp_stream, packets)
+#define HANDOVER_WHOLE_BYTES (16 * 1024)
+#define LINES_COUNT 0     /* only measure */
+#define LINES_WRITEBACK 1 /* the main CPU, before the job */
+#define LINES_DROP 2      /* write back and drop: the ME before and after, the main CPU after */
+
+/* the whole lines holding [start, start + bytes), the op on each; returns
+their bytes. Through the uncached view, no cache holds them */
+static unsigned long cache_lines(const void *start, unsigned long bytes, int op)
+{
+	unsigned int line, first = (unsigned int)start & ~63u, end = (unsigned int)start + bytes;
+
+	if (!bytes || ((unsigned int)start & 0x40000000u))
+		return 0;
+	if (op == LINES_WRITEBACK)
+		for (line = first; line < end; line += 64)
+			__builtin_allegrex_cache(0x1A, line);
+	else if (op == LINES_DROP)
+		for (line = first; line < end; line += 64)
+			__builtin_allegrex_cache(0x1B, line);
+	return ((end + 63) & ~63u) - first;
+}
+
+/* the queued packets' entries: one stretch of the ring, or two where it wraps */
+static unsigned long entry_lines(struct psp_stream *stream, int op)
+{
+	unsigned long first = stream->packet_head % MAXIMUM_STREAM_PACKETS, count = stream->packet_count, run;
+
+	if (count > MAXIMUM_STREAM_PACKETS)
+		count = MAXIMUM_STREAM_PACKETS;
+	run = count < MAXIMUM_STREAM_PACKETS - first ? count : MAXIMUM_STREAM_PACKETS - first;
+	return cache_lines(&stream->packets[first], run * sizeof(struct voice_packet), op) +
+		cache_lines(&stream->packets[0], (count - run) * sizeof(struct voice_packet), op);
+}
+
+/* the samples one block of mix_voice can read. Output frame k reads the
+packet frame at ((fraction + k * step) >> 16) past the first one and the
+frame after it, so all reads lie within reach + 2 frames from the first,
+reach = (fraction + frames * step) >> 16, counted on across packets as
+current_packet moves through them (skipping finished ones, and those the
+position is already past). An ADPCM frame reads its whole block */
+static unsigned long sample_lines(struct psp_stream *stream, unsigned long frames, int op)
+{
+	unsigned long long need = (((unsigned long long)stream->step * frames + stream->fraction) >> 16) + 2;
+	unsigned long position, frame = stream->frame, bytes = 0;
+
+	if (need > HANDOVER_WHOLE_BYTES * 2)
+		return HANDOVER_WHOLE_BYTES + 1; /* a pitch far past any the game asks for: the whole cache */
+	for (position = 0; position < stream->packet_count && need; position++)
+	{
+		const struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+		unsigned long last, start, end;
+
+		if (packet->finished)
+			continue;
+		if (frame >= packet->frames)
+		{
+			frame -= packet->frames;
+			continue;
+		}
+		last = packet->frames - 1;
+		if (need - 1 < last - frame)
+			last = frame + (unsigned long)need - 1;
+		need -= last - frame + 1;
+		if (stream->adpcm)
+		{
+			start = (frame >> 6) * XBOX_ADPCM_BLOCK_BYTES * stream->channels;
+			end = ((last >> 6) + 1) * XBOX_ADPCM_BLOCK_BYTES * stream->channels;
+		}
+		else
+		{
+			start = frame * 2 * stream->channels;
+			end = (last + 1) * 2 * stream->channels;
+		}
+		bytes += cache_lines(packet->data + start, end - start, op);
+		frame = 0;
+	}
+	return bytes;
+}
+
+static unsigned long voice_lines(struct psp_stream *stream, unsigned long frames, int op)
+{
+	return cache_lines(stream, STREAM_HEAD_BYTES, op) + entry_lines(stream, op) + sample_lines(stream, frames, op);
+}
+
+/* the ME's side (psp_me.c's me_serve), before the job (after 0) and after it
+(after 1, only when before returned 1): 1 done by ranges, 0 past 16 KB (the
+caller drops the whole cache). Before, each voice's fields are dropped and
+then read, so its entries and samples are worked out from the main CPU's
+values, not from a copy left in this cache */
+int psp_dsound_me_lines(void *const *list, unsigned long count, unsigned long frames, int after)
+{
+	unsigned long k, bytes = count * ((STREAM_HEAD_BYTES + 63) & ~(size_t)63);
+
+	if (bytes > HANDOVER_WHOLE_BYTES)
+		return 0;
+	for (k = 0; k < count; k++)
+		cache_lines(list[k], STREAM_HEAD_BYTES, LINES_DROP);
+	__asm__ __volatile__("sync" : : : "memory");
+	for (k = 0; k < count; k++)
+	{
+		struct psp_stream *stream = (struct psp_stream *)list[k];
+
+		bytes += entry_lines(stream, LINES_DROP);
+		if (after)
+			continue;
+		__asm__ __volatile__("sync" : : : "memory");
+		bytes += sample_lines(stream, frames, LINES_DROP);
+		if (bytes > HANDOVER_WHOLE_BYTES)
+			return 0;
+	}
+	__asm__ __volatile__("sync" : : : "memory");
+	return 1;
+}
+
 #define VOICE_LIST_MAX 256
 int psp_meaudio_start(void);
 void psp_me_handover(int which, unsigned long us);
@@ -514,6 +655,9 @@ int psp_meaudio_run(void *const *list, unsigned long count, short *output, unsig
 from the start with the launch option meaudio) */
 static int me_wanted = 1;
 static unsigned long me_blocks = 0, me_wait_us = 0, me_wait_worst_us = 0, me_failures = 0, me_overflows = 0;
+/* the hand-over by ranges: -1 not decided yet; blocks handed over that way */
+static int ranges_on = -1;
+static unsigned long ranges_blocks = 0;
 
 /* the debug menu (psp_debug.c): 0 the main CPU mixes, 1 the Media Engine;
 it reads 0 when the ME isn't running */
@@ -559,17 +703,46 @@ static void mix(short *output, unsigned long frames)
 	}
 	if (on_me)
 	{
-		unsigned long k;
+		unsigned long k, bytes = frames * OUTPUT_CHANNELS * sizeof(short);
+		int ranges;
 
-		/* everything the ME reads, from this CPU's cache to RAM; no copy of
-		the output block left here to be written over the ME's */
-		sceKernelDcacheWritebackAll();
+		if (ranges_on < 0)
+		{
+			extern int psp_keep(const char *word);
+
+			ranges_on = !psp_keep("meaudiorangesoff");
+		}
+		/* everything the ME reads, from this CPU's cache to RAM (the lines
+		the mix touches, or the whole cache); no copy of the output block
+		left here to be written over the ME's */
+		for (k = 0; ranges_on && k < count && bytes <= HANDOVER_WHOLE_BYTES; k++)
+			bytes += voice_lines(list[k], frames, LINES_COUNT);
+		ranges = ranges_on && bytes <= HANDOVER_WHOLE_BYTES;
+		if (ranges)
+		{
+			for (k = 0; k < count; k++)
+				voice_lines(list[k], frames, LINES_WRITEBACK);
+			__asm__ __volatile__("sync" : : : "memory");
+			ranges_blocks++;
+		}
+		else
+			sceKernelDcacheWritebackAll();
 		sceKernelDcacheWritebackInvalidateRange(output, frames * OUTPUT_CHANNELS * sizeof(short));
 		mixed = psp_meaudio_run((void *const *)list, count, output, frames, &voices, &clipped, &me_us);
 		/* what the ME changed, dropped from this cache (whole lines: see
-		STREAM_BYTES; nothing here wrote to them, the lock is held) */
+		STREAM_BYTES; nothing here wrote to them, the lock is held): the
+		fields and entries the mix writes, or each voice whole */
 		for (k = 0; k < count; k++)
-			sceKernelDcacheInvalidateRange(list[k], STREAM_BYTES);
+		{
+			if (ranges)
+			{
+				cache_lines(list[k], STREAM_HEAD_BYTES, LINES_DROP);
+				entry_lines(list[k], LINES_DROP);
+			}
+			else
+				sceKernelDcacheInvalidateRange(list[k], STREAM_BYTES);
+		}
+		__asm__ __volatile__("sync" : : : "memory");
 		sceKernelDcacheInvalidateRange(output, frames * OUTPUT_CHANNELS * sizeof(short));
 		if (mixed)
 		{
@@ -714,15 +887,15 @@ void psp_audio_report(void)
 		mix_voice_blocks / mix_blocks, mix_voice_blocks * 10 / mix_blocks % 10, mix_peak_voices,
 		mix_worst_us, lock_worst_us, late_blocks, mix_blocks, gap_worst_us, clipped_blocks, cut_sounds);
 	if (me_blocks || me_failures || psp_meaudio_running())
-		platform_log("audio: Media Engine mixed %lu of the blocks (menu: %s), waited for %lu us a block on average, %lu at most (main CPU asleep meanwhile); %lu failed; %lu over the voice list",
+		platform_log("audio: Media Engine mixed %lu of the blocks (menu: %s), waited for %lu us a block on average, %lu at most (main CPU asleep meanwhile); %lu failed; %lu over the voice list; %lu handed over by ranges (the rest by the whole cache)",
 			me_blocks, me_wanted ? "ME" : "main CPU", me_blocks ? me_wait_us / me_blocks : 0, me_wait_worst_us, me_failures,
-			me_overflows);
+			me_overflows, ranges_blocks);
 	platform_log("audio: the game waited for the mixer's lock %lu times, %lu us in all, %lu at most; voices that ran dry and were then fed more (a gap heard) %lu, %lu ms of silence in all, the longest %lu ms",
 		game_lock_waits, game_lock_wait_us, game_lock_worst_us, dry_gaps, dry_gap_frames * 1000 / OUTPUT_RATE,
 		dry_gap_worst * 1000 / OUTPUT_RATE);
 	dry_gaps = dry_gap_frames = dry_gap_worst = 0;
 	game_lock_waits = game_lock_wait_us = game_lock_worst_us = 0;
-	me_blocks = me_wait_us = me_wait_worst_us = me_failures = me_overflows = 0;
+	me_blocks = me_wait_us = me_wait_worst_us = me_failures = me_overflows = ranges_blocks = 0;
 	mix_blocks = mix_microseconds = mix_voice_blocks = mix_peak_voices = 0;
 	mix_worst_us = lock_worst_us = late_blocks = clipped_blocks = gap_worst_us = cut_sounds = 0;
 }

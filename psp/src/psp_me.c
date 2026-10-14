@@ -103,6 +103,42 @@ struct me_control
 } __attribute__((aligned(64)));
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
+/* audio first: a waiting audio block is mixed before each ring job and
+between the steps of a long one ("meaudiofirstoff" turns it off) */
+#define ME_FEATURE_AUDIO_FIRST 4u
+/* the audio job's cache hand-over by ranges (psp_dsound_me_lines;
+"meaudiorangesoff": the whole cache, twice a block) */
+#define ME_FEATURE_AUDIO_RANGES 8u
+/* the debug stash kept ("mestashoff" turns it off) */
+#define ME_FEATURE_STASH 16u
+
+/* The debug stash: where the ME is, in words of its own (two cache lines,
+only ever used through the uncached view), so a main CPU that gives up on a
+job can say what the ME was doing (me_stash_dump). The ME writes it, the
+main CPU only reads it */
+#define STASH_AT 0        /* STASH_IDLE, ... */
+#define STASH_TICKET 1    /* the ring job in hand */
+#define STASH_TYPE 2      /* its type (or the slot job's) */
+#define STASH_STEP 3      /* how far into a long job (psp_me_ring_step) */
+#define STASH_CLOCK 4     /* the ME's cycle counter at the last note */
+#define STASH_RING_BEGUN 5
+#define STASH_RING_ENDED 6
+#define STASH_AUDIO_INSIDE 7 /* audio blocks mixed before or inside a ring job */
+#define STASH_SLOT_BEGUN 8
+#define STASH_SLOT_ENDED 9
+#define STASH_PUSHED 10   /* the ring's pushed count as the ME last read it */
+#define STASH_AUDIO_RANGES 11 /* audio blocks the ME handed over by ranges */
+#define STASH_WORDS 32
+#define STASH_IDLE 1
+#define STASH_SLOT_DROP 2 /* a slot job's cache work before it */
+#define STASH_SLOT_JOB 3
+#define STASH_SLOT_WRITE 4 /* and after it */
+#define STASH_RING_DROP 5
+#define STASH_RING_JOB 6
+#define STASH_RING_WRITE 7
+#define STASH_HALTED 8
+#define STASH_STOPPED 9
+static unsigned int stash_storage[STASH_WORDS] __attribute__((aligned(64)));
 
 /* whole cache lines of their own; only ever used through the uncached view */
 static struct me_control control_storage __attribute__((aligned(64)));
@@ -112,6 +148,30 @@ static void *audio_list_storage[AUDIO_LIST_MAX] __attribute__((aligned(64)));
 #define CONTROL UNCACHED(&control_storage)
 #define SLOT(k) UNCACHED(&slot_storage[k])
 #define AUDIO_LIST ((void *volatile *)(0x40000000u | (unsigned int)audio_list_storage))
+#define STASH ((volatile unsigned int *)(0x40000000u | (unsigned int)stash_storage))
+
+/* the ME's note in the stash; the features word is read each time (one
+uncached read) so the main CPU's choice holds without a copy on the ME */
+static inline void me_note(unsigned int at)
+{
+	unsigned int count;
+
+	if (!(CONTROL->features & ME_FEATURE_STASH))
+		return;
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+	STASH[STASH_AT] = at;
+	STASH[STASH_CLOCK] = count;
+}
+
+static inline void me_count(unsigned int which)
+{
+	if (CONTROL->features & ME_FEATURE_STASH)
+		STASH[which]++;
+}
+
+/* the ME code's audio hand-over by ranges (psp_dsound.c): 1 done, 0 over the
+size where the whole cache is cheaper (the caller does the whole cache) */
+int psp_dsound_me_lines(void *const *list, unsigned long count, unsigned long frames, int after);
 
 /* ---------- the job ring (ME phase 1; psp_me.h has its contract)
 
@@ -276,6 +336,7 @@ static void me_halt_idle(volatile struct me_control *control, int ring_ready, un
 	if (!waiting && !control->stop)
 	{
 		control->halts++;
+		me_note(STASH_HALTED);
 		meLibHalt();
 	}
 	control->halted = 0;
@@ -368,38 +429,89 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 static void me_serve(volatile struct me_slot *slot, int *sums)
 {
 	volatile struct me_control *control = CONTROL;
-	unsigned int request = slot->request, start, job_start, job_end;
+	unsigned int request = slot->request, start, job_start, job_end, type = slot->type;
+	int ranges;
 
 	start = me_cycles();
-	/* what the main CPU wrote: drop any copy left from the last job */
-	meLibDcacheWritebackInvalidateAll();
+	me_count(STASH_SLOT_BEGUN);
+	me_note(STASH_SLOT_DROP);
+	/* what the main CPU wrote: drop any copy left from the last job. The
+	audio job by ranges, so a ring job it is mixed between or inside keeps
+	what it has in the cache: the voices it reads (psp_dsound_me_lines says
+	why that is all of them), or the whole cache past 16 KB */
+	ranges = type == ME_JOB_AUDIO && (control->features & ME_FEATURE_AUDIO_RANGES) &&
+		psp_dsound_me_lines((void *const *)AUDIO_LIST, slot->args[0], slot->args[1], 0);
+	if (!ranges)
+		meLibDcacheWritebackInvalidateAll();
+	else
+		me_count(STASH_AUDIO_RANGES);
 	job_start = me_cycles();
+	me_note(STASH_SLOT_JOB);
 	run_job(slot, sums, 1);
 	job_end = me_cycles();
-	/* what this job wrote, to main RAM, before saying so */
-	meLibDcacheWritebackInvalidateAll();
+	me_note(STASH_SLOT_WRITE);
+	/* what this job wrote, to main RAM, before saying so: the voices' lines
+	it changed and the output block, or the whole cache */
+	if (ranges)
+	{
+		psp_dsound_me_lines((void *const *)AUDIO_LIST, slot->args[0], slot->args[1], 1);
+		lines_drop(slot->args[2], slot->args[1] * 2 * sizeof(short));
+	}
+	else
+		meLibDcacheWritebackInvalidateAll();
 	slot->cycles = me_cycles() - start;
 	slot->job_cycles = job_end - job_start;
 	control->jobs++;
+	me_count(STASH_SLOT_ENDED);
+	me_note(STASH_IDLE);
 	__asm__ __volatile__("sync");
 	slot->done = request;
 	__asm__ __volatile__("sync");
 }
 
-/* build 113: called by a long job on the ME (the GE layer's replay,
-psp_ge.c's defer_replay) every few records: an audio block asked for
-meanwhile is mixed now, between two records, instead of waiting behind the
-whole render job. b112's Test 3 on the PSP: audio blocks waited up to 38 ms
-behind render jobs, and 7 of 109 were late [M] (b113_candidates.md, step
-4b). Only ever called on the ME (the replay's on-the-ME argument) */
-void psp_me_serve_audio(void)
+/* the audio slot's job, if one is waiting: 1 when one was mixed */
+static int me_audio_now(void)
 {
 	static int sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
 	volatile struct me_slot *slot = SLOT(ME_SLOT_AUDIO);
 
 	if (slot->request == slot->done)
-		return;
+		return 0;
 	me_serve(slot, sums);
+	return 1;
+}
+
+/* called by a long job on the ME (the GE layer's replay, psp_ge.c's
+defer_replay) every few records: an audio block asked for meanwhile is mixed
+now, between two records, instead of waiting behind the whole render job.
+b112's Test 3 on the PSP: audio blocks waited up to 38 ms behind render jobs,
+and 7 of 109 were late [M] (b113_candidates.md, step 4b). Only ever called on
+the ME (the replay's on-the-ME argument) */
+void psp_me_serve_audio(void)
+{
+	me_audio_now();
+}
+
+/* a ring job's step (psp_me.h): the slant job every 64 triangles (~1 us
+each, b90), the rays' job every ray (~27 us: a job of 16 is ~430 us [M]), so
+an audio block waits that long at most for the ME instead of a whole job, or
+eight of them queued (Sheepdog01, 2026-10-14: audio comes before everything else on
+the ME). Mixing here is exact: the audio job reads and writes only the
+voices, its output and its own sums, none of which a ring job touches */
+void psp_me_ring_step(unsigned int step)
+{
+	unsigned int features;
+
+	if (!psp_on_me())
+		return;
+	features = CONTROL->features;
+	if (features & ME_FEATURE_STASH)
+		STASH[STASH_STEP] = step;
+	if ((features & ME_FEATURE_AUDIO_FIRST) && me_audio_now())
+	{
+		me_count(STASH_AUDIO_INSIDE);
+		me_note(STASH_RING_JOB);
+	}
 }
 
 /* "meringtest"'s job (psp_me_ring_test): each output word from its input
@@ -443,17 +555,31 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	if (on_me)
 	{
 		start = me_cycles();
+		me_count(STASH_RING_BEGUN);
+		me_note(STASH_RING_DROP);
 		/* the request as the main CPU wrote it back, not a copy from the last
 		time this entry was used */
 		lines_drop((unsigned int)request, sizeof(*request));
-		for (k = 0; k < ME_RING_INPUTS; k++)
-			inputs += request->input_bytes[k];
-		if (inputs > RING_WHOLE_CACHE_BYTES)
-			meLibDcacheWritebackInvalidateAll();
-		else
+		if (CONTROL->features & ME_FEATURE_STASH)
+		{
+			STASH[STASH_TICKET] = request->ticket;
+			STASH[STASH_TYPE] = request->type;
+			STASH[STASH_STEP] = 0;
+		}
+		/* a continuing job's inputs: fresh since its hand-over's first job
+		dropped them, and unchanged since (ME_RING_ARG_CONTINUES) */
+		if (!request->args[ME_RING_ARG_CONTINUES])
+		{
 			for (k = 0; k < ME_RING_INPUTS; k++)
-				if (request->input_bytes[k])
-					lines_drop(request->input[k], request->input_bytes[k]);
+				inputs += request->input_bytes[k];
+			if (inputs > RING_WHOLE_CACHE_BYTES)
+				meLibDcacheWritebackInvalidateAll();
+			else
+				for (k = 0; k < ME_RING_INPUTS; k++)
+					if (request->input_bytes[k])
+						lines_drop(request->input[k], request->input_bytes[k]);
+		}
+		me_note(STASH_RING_JOB);
 	}
 	for (k = 0; k < ME_RING_ARGS; k++)
 		args[k] = request->args[k];
@@ -484,6 +610,8 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	lies below it: reported, and the ring stops */
 	if (*sentinel != RING_SENTINEL)
 		status = RING_STACK;
+	if (on_me)
+		me_note(STASH_RING_WRITE);
 	if (on_me && request->output_bytes)
 	{
 		if (request->output_bytes > RING_WHOLE_CACHE_BYTES)
@@ -499,18 +627,29 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		result->results[k] = results[k];
 	result->all_cycles = on_me ? me_cycles() - start : 0;
 	if (on_me)
+	{
 		lines_writeback((unsigned int)result, sizeof(*result));
+		me_count(STASH_RING_ENDED);
+		me_note(STASH_IDLE);
+	}
 	__asm__ __volatile__("sync");
 }
 
 /* the ME: every job pushed since its last look, in order. last_look: the
-cycle count when the ring was last seen with nothing waiting past popped */
+cycle count when the ring was last seen with nothing waiting past popped.
+Audio first: an audio block asked for meanwhile is mixed before each job,
+so it waits for one job at most, not for all eight the ring holds */
 static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look)
 {
 	unsigned int looked = me_cycles(), pushed = RING_PUSHED;
+	int audio_first = (CONTROL->features & ME_FEATURE_AUDIO_FIRST) != 0;
 
+	if (CONTROL->features & ME_FEATURE_STASH)
+		STASH[STASH_PUSHED] = pushed;
 	while (popped != pushed)
 	{
+		if (audio_first && me_audio_now())
+			me_count(STASH_AUDIO_INSIDE);
 		ring_run(popped & RING_MASK, 1, me_cycles() - *last_look);
 		popped++;
 		RING_POPPED = popped;
@@ -630,6 +769,7 @@ void meLibOnProcess(void)
 		else
 			me_idle();
 	}
+	me_note(STASH_STOPPED);
 	control->stop = 2;
 	__asm__ __volatile__("sync");
 	meLibHalt();
@@ -670,6 +810,13 @@ on each look while a job waits (me_halt_idle says why). The first 256 are
 timed, for the kernel call's cost */
 static int me_halting = 0;
 static int ring_on = 0; /* the job ring, decided at start */
+/* a push writes back and drops the job's output lines itself, so no line of
+the output can be dirty here when the ME writes it ("mepushdropoff": the
+caller's care, as before) */
+static int ring_push_drop = 1;
+/* perception's rays: one cache hand-over for a tick's jobs, not one a job
+("meraysbatchoff": one a job, as before) */
+static int rays_batch = 1;
 
 /* The slant split is on by default: the rig showed it exact (0 of 414,000
 triangles differing, 0 failed jobs) and a little faster (b30 and c20: the
@@ -804,7 +951,12 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(ring_requests, sizeof(ring_requests));
 	sceKernelDcacheWritebackInvalidateRange(ring_results, sizeof(ring_results));
 	RING_PUSHED = RING_POPPED = 0;
+	sceKernelDcacheWritebackInvalidateRange(stash_storage, sizeof(stash_storage));
+	for (k = 0; k < STASH_WORDS; k++)
+		STASH[k] = 0;
 	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest");
+	ring_push_drop = !psp_keep("mepushdropoff");
+	rays_batch = !psp_keep("meraysbatchoff");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -855,7 +1007,9 @@ int psp_me_start(void)
 	atexit(stop_at_exit);
 	/* mehalt only now, so the start check above saw the ME polling */
 	me_halting = psp_keep("mehalt");
-	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u);
+	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
+		(psp_keep("meaudiofirstoff") ? 0u : ME_FEATURE_AUDIO_FIRST) |
+		(psp_keep("meaudiorangesoff") ? 0u : ME_FEATURE_AUDIO_RANGES) | (psp_keep("mestashoff") ? 0u : ME_FEATURE_STASH);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -881,6 +1035,8 @@ int psp_meaudio_running(void)
 {
 	return me_state > 0;
 }
+
+static void me_stash_dump(const char *why);
 
 /* the simulated jobs' mixing sums (the emulator; one job at a time there) */
 static int simulated_sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
@@ -938,6 +1094,7 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 			{
 				platform_log("ME: a job (type %u) not finished in %u ms (job %u; the ME at job %u, %u idle polls)", type,
 					type == ME_JOB_GE || type == ME_JOB_EDRAM ? 500 : 40, slot_request[which], slot->done, CONTROL->alive);
+				me_stash_dump("a slot job late");
 				stats[which].failures++;
 				psp_me_stop("a job timed out");
 				return 0;
@@ -1049,6 +1206,7 @@ int psp_me_finish(int which, unsigned int *results)
 				{
 					platform_log("ME: a handed-over job (type %u) not finished in 500 ms (job %u; the ME at job %u, %u idle polls)",
 						slot->type, slot_request[which], slot->done, CONTROL->alive);
+					me_stash_dump("a handed-over job late");
 					stats[which].failures++;
 					psp_me_stop("a handed-over job timed out");
 					return 0;
@@ -1157,6 +1315,26 @@ static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int ind
 	RING_POPPED = t + 1;
 }
 
+/* the debug stash, to the log, when the main CPU gives up on a job: where
+the ME was (STASH_AT: 1 between jobs, 2-4 a slot job's cache work, code and
+write-back, 5-7 a ring job's, 8 halted, 9 stopped), the ring job and how far
+into it, its cycle counter then and now (the same: the ME has stopped
+counting; apart: it runs, and was there that long ago) */
+static __attribute__((noinline, cold)) void me_stash_dump(const char *why)
+{
+	volatile unsigned int *stash = STASH;
+	unsigned int now = CONTROL->clock;
+	float rate = me_cycles_per_us > 0.0f ? me_cycles_per_us : 1.0f;
+
+	platform_log("ME: stash (%s): at %u; ring job %u (type %u), step %u; ring jobs begun %u, ended %u, pushed as last seen %u, popped %u; "
+		"slot jobs begun %u, ended %u; audio blocks mixed before or inside ring jobs %u; the ME's clock at the note %u, at its last idle pass %u (%d us after the note: below 0, it hasn't been back to its idle loop since), idle polls %u",
+		why, stash[STASH_AT], stash[STASH_TICKET], stash[STASH_TYPE], stash[STASH_STEP], stash[STASH_RING_BEGUN],
+		stash[STASH_RING_ENDED], stash[STASH_PUSHED], RING_POPPED, stash[STASH_SLOT_BEGUN], stash[STASH_SLOT_ENDED],
+		stash[STASH_AUDIO_INSIDE], stash[STASH_CLOCK], now, (int)((float)(int)(now - stash[STASH_CLOCK]) / rate),
+		CONTROL->alive);
+	psp_log_flush();
+}
+
 /* a failed wait, reported (why: 0 stopped, 1 too late, 2 a bad answer); the
 ring stops unless the ME itself was stopped */
 static __attribute__((noinline, cold)) int ring_fail(int why, unsigned int ticket, unsigned int index)
@@ -1165,8 +1343,12 @@ static __attribute__((noinline, cold)) int ring_fail(int why, unsigned int ticke
 	const struct me_ring_result *result = &ring_results[index];
 
 	if (why == 1)
+	{
 		platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here",
 			ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
+		if (me_state == 1)
+			me_stash_dump("a ring job late");
+	}
 	else if (why == 2)
 		platform_log("ME: ring job %u (type %u) came back %s (ticket %u); the main CPU does it, and the ring is off from here",
 			ticket, request->type, result->status == RING_STACK ? "past its stack allowance" :
@@ -1241,6 +1423,16 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 		ring_push_simulated(index, t);
 	else
 	{
+		/* the output's lines written back and dropped here: the wait drops
+		them with a write-back too (0x1B), and a line the caller had left
+		dirty would then land on the ME's answer */
+		if (ring_push_drop && job->output_bytes)
+		{
+			if (job->output_bytes > RING_WHOLE_CACHE_BYTES)
+				sceKernelDcacheWritebackInvalidateAll();
+			else
+				lines_drop((unsigned int)job->output, job->output_bytes);
+		}
 		lines_writeback((unsigned int)request, sizeof(*request));
 		RING_PUSHED = t + 1;
 		__asm__ __volatile__("sync");
@@ -1254,9 +1446,14 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 /* perception's queued rays (psp_fixups.py FIXES_122, actor_perception.c
 #merays). The engine's units don't see this header, so the job is put
 together here. A ray reads the level and the objects anywhere in RAM: this
-CPU's whole cache is written back first, and the ME drops its whole cache */
+CPU's whole cache is written back first, and the ME drops its whole cache.
+Once a hand-over, not once a job: a tick's jobs are pushed one after the
+other with nothing written in between (continues: not the first of them), and
+nothing a ray reads changes until all of them are collected (the five
+functions that count psp_object_epoch wait for them first), so what the first
+job made fresh on the ME stays fresh for the rest */
 int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, unsigned int answer_bytes,
-	unsigned int *ticket)
+	unsigned int *ticket, int continues)
 {
 	struct psp_me_job job;
 
@@ -1265,11 +1462,13 @@ int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, u
 	job.args[0] = (unsigned int)rays;
 	job.args[1] = (unsigned int)answers;
 	job.args[2] = count;
+	job.args[ME_RING_ARG_CONTINUES] = continues && rays_batch;
 	job.input[0] = NULL;
 	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
 	job.output = answers;
 	job.output_bytes = answer_bytes;
-	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	if (!job.args[ME_RING_ARG_CONTINUES])
+		psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
 	return psp_me_push(&job, ticket);
 }
 
@@ -1590,6 +1789,15 @@ void psp_me_report(void)
 		"stopped", busy_percent_last, (double)window / 1e6, length ? line : "; no jobs");
 	if (ring_line[0])
 		platform_log("%s", ring_line);
+	if (me_state == 1 && (CONTROL->features & ME_FEATURE_STASH))
+	{
+		/* the ME's own counts since start (the stash) */
+		volatile unsigned int *stash = STASH;
+
+		platform_log("ME: since start: %u audio blocks mixed before or inside a ring job, %u of all its audio blocks handed over by ranges; ring jobs %u begun, %u ended; slot jobs %u begun, %u ended",
+			stash[STASH_AUDIO_INSIDE], stash[STASH_AUDIO_RANGES], stash[STASH_RING_BEGUN], stash[STASH_RING_ENDED],
+			stash[STASH_SLOT_BEGUN], stash[STASH_SLOT_ENDED]);
+	}
 	if (ringtest_bursts)
 	{
 		platform_log("ME: ringtest: %lu bursts, %lu jobs checked, %lu wrong (words or sums), %lu bursts short of a full ring (a push refused), %lu jobs failed",

@@ -15338,8 +15338,9 @@ short psp_ai_test_line_of_sight_quiet(real_point3d const *p0, short p0_cluster_i
 	long ignore_object_index, boolean ignore_vehicles, long *collisions); /* ai.c */
 int psp_me_ring_ready(void); /* psp_me.c */
 int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, unsigned int answer_bytes,
-	unsigned int *ticket);
+	unsigned int *ticket, int continues);
 int psp_me_wait(unsigned int ticket, unsigned int *results);
+void psp_me_ring_step(unsigned int step);
 int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
 
 struct psp_merays_answer
@@ -15358,6 +15359,15 @@ static struct psp_merays_answer psp_merays_answers[PSP_MERAYS_JOBS * PSP_MERAYS_
 typedef char psp_merays_answers_lines_assert[(PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer)) % 64 == 0 ? 1 : -1];
 
 static int psp_merays_on = -1, psp_merays_front;
+/* the fewest rays worth handing over ("meraysminN"; 0: any). A tick's
+hand-over costs the main CPU's whole cache written back and the ME a cold
+cache whatever the count, and each ray takes the ME longer from a cold cache
+than the main CPU from a warm one: in b122's rig ladder (lab 38599518536) the
+openings that crept (b40, c10, c20, c40) handed over 1.2-1.5 rays a job, the
+fights that gained (a50, b30) 9-11. Fewer than this are cast here, as with
+the ME off: the same answers either way */
+static int psp_merays_min;
+static unsigned long psp_merays_small;
 static boolean psp_merays_pass;
 /* jobs pushed and not all collected: the five functions that count
 psp_object_epoch wait for them first (objects.c) */
@@ -15402,7 +15412,11 @@ void psp_perception_me_rays(
 	for (k = 0; k < count; k++)
 	{
 		long collisions;
-		short result = psp_ai_test_line_of_sight_quiet(&rays[k].p0, rays[k].p0_cluster_index,
+		short result;
+
+		/* audio first: a block waiting is mixed between two rays (psp_me.c) */
+		psp_me_ring_step(k);
+		result = psp_ai_test_line_of_sight_quiet(&rays[k].p0, rays[k].p0_cluster_index,
 			&rays[k].p1, rays[k].p1_cluster_index, rays[k].mode, FALSE, rays[k].ignore_object_index,
 			rays[k].ignore_vehicles, &collisions);
 
@@ -15424,13 +15438,22 @@ static void psp_merays_hand_over(void)
 
 	psp_merays_first = first;
 	psp_merays_jobs = psp_merays_collected = 0;
+	if (psp_perc_ray_count - first < psp_merays_min)
+	{
+		if (psp_perc_ray_count > first)
+			psp_merays_small++;
+		end = psp_perc_ray_count;
+		first = end;
+		psp_merays_first = first;
+	}
 	while (end < psp_perc_ray_count && psp_merays_jobs < PSP_MERAYS_JOBS)
 	{
 		short count = (short)MIN(psp_perc_ray_count - end, PSP_MERAYS_JOB_RAYS);
 
 		if (!psp_me_push_perc_rays(&psp_perc_rays[end], (unsigned int)count,
 			&psp_merays_answers[psp_merays_jobs * PSP_MERAYS_JOB_RAYS],
-			PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer), &psp_merays_tickets[psp_merays_jobs]))
+			PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer), &psp_merays_tickets[psp_merays_jobs],
+			psp_merays_jobs > 0))
 		{
 			psp_merays_stats.refused++;
 			break;
@@ -15520,8 +15543,12 @@ its actors to psp_perception_queue, then call psp_perception_queue_done */"""),
 		psp_merays_front = psp_keep_number("meraysfront", 4);
 		if (psp_merays_front < 0 || psp_merays_front > PSP_PERC_RAYS)
 			psp_merays_front = 4;
+		psp_merays_min = psp_keep_number("meraysmin", 4);
+		if (psp_merays_min < 0)
+			psp_merays_min = 4;
 		if (psp_merays_on)
-			platform_psp_log("perception: the rays past the first %d cast by the Media Engine (meraysoff turns it off)", psp_merays_front);
+			platform_psp_log("perception: the rays past the first %d cast by the Media Engine when there are %d or more (meraysoff turns it off, meraysmin0 hands over any)",
+				psp_merays_front, psp_merays_min);
 	}
 	psp_merays_pass = psp_merays_on && psp_perc_queue_on && psp_me_ring_ready();
 	psp_perc_line_of_sight_meter = ai_profile.meters[_ai_meter_line_of_sight].accumulator;"""),
@@ -15563,9 +15590,11 @@ its actors to psp_perception_queue, then call psp_perception_queue_done */"""),
 }""",
  """			psp_perc_stats.stale, psp_perc_stats.ray_mismatches);
 	if (psp_merays_on && psp_perc_stats.passes % 1800 == 0)
-		platform_psp_log("perception, Media Engine: %lu jobs (%lu refused), %lu rays: %lu answered, %lu not served, "
+		platform_psp_log("perception, Media Engine: %lu jobs (%lu refused; %lu ticks' rays too few to hand over, meraysmin %d), "
+			"%lu rays: %lu answered, %lu not served, "
 			"%lu after a failed job, %lu dropped before a change; %lu taken, %lu checked, %lu mismatched",
-			psp_merays_stats.jobs, psp_merays_stats.refused, psp_merays_stats.rays, psp_merays_stats.answered,
+			psp_merays_stats.jobs, psp_merays_stats.refused, psp_merays_small, psp_merays_min,
+			psp_merays_stats.rays, psp_merays_stats.answered,
 			psp_merays_stats.unsure, psp_merays_stats.failed, psp_merays_stats.settled, psp_merays_stats.taken,
 			psp_merays_stats.checked, psp_merays_stats.mismatches);
 }"""),
