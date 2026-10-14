@@ -3143,6 +3143,16 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 			object_compute_change_colors(object_index);
 			psp_corpses_asleep++;
 		}
+		/* a sleeping machine's lights are still reconnected as its update
+		would (object_update's object_connect_lights): to the same places,
+		but first in their clusters' lists, where every light the tick
+		reconnects goes. Without it the lists' order changed (machinesleep on
+		d20, lab 38526377504), and with it the lights a lit object picks */
+		if (header->type == _object_type_machine &&
+			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&
+			(!TEST_FLAG(sleeper->object.flags, _object_invisible_bit) ||
+				object_definition_get(sleeper->definition_index)->object.model.index == NONE))
+			object_connect_lights(object_index, TRUE, TRUE);
 		return;
 	}
 	/* sceneryhalf: sleeping scenery that something changed (and that may
