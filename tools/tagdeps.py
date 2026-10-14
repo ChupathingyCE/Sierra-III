@@ -28,7 +28,11 @@ pattern, the tint the bake gives the one map the PSP draws of it
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'bake', 'lib'))
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, '..', 'bake', 'lib'))
+# texpack.py sits beside this file; python -I leaves the script's own
+# folder off the path, so it is put there by name
+sys.path.insert(1, HERE)
 from halomap import Defs, CacheMap, Walker, FOURCC_GROUP  # noqa: E402
 
 # the shader tag groups, in the order the summary prints them (build 116)
