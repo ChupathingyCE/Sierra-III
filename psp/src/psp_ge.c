@@ -12652,6 +12652,33 @@ change, so it is Sheepdog01's call after an A/B (d20, where lights are many) */
 static int light_merge = -1;
 static unsigned long light_merged_draws = 0;
 
+/* light_lift_corner's lift for the merged draw, worked out as a share of
+the depth so a corner costs one division: min(1% of the depth, 0.2 units),
+kept between 3 and 4096 depth steps (one step at depth d is d * d * step,
+step = 1 / (61439 * near)), and never past the near plane. It skips
+light_lift_corner's rounding to whole depth steps, a sub-step difference */
+static inline void light_lift_corner_merged(struct shadow_vertex *corner, float step)
+{
+	float dx = corner->x - camera_eye[0], dy = corner->y - camera_eye[1], dz = corner->z - camera_eye[2];
+	float depth = dx * camera_forward[0] + dy * camera_forward[1] + dz * camera_forward[2], inverse, share, low, high,
+		most, scale;
+
+	if (depth <= projection_near)
+		return;
+	inverse = 1.0f / depth;
+	share = depth <= 20.0f ? 0.01f : 0.2f * inverse;
+	low = 3.0f * step * depth;
+	high = 4096.0f * step * depth;
+	share = share < low ? low : share > high ? high : share;
+	most = 1.0f - projection_near * inverse;
+	if (share > most)
+		share = most;
+	scale = 1.0f - share;
+	corner->x = camera_eye[0] + dx * scale;
+	corner->y = camera_eye[1] + dy * scale;
+	corner->z = camera_eye[2] + dz * scale;
+}
+
 static void light_lift_corner(struct shadow_vertex *corner)
 {
 	float dx = corner->x - camera_eye[0], dy = corner->y - camera_eye[1], dz = corner->z - camera_eye[2];
@@ -13175,14 +13202,13 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	{
 		long total = kept_count * 3 + cut_count;
 		struct shadow_vertex *all = list_take((int)total * (int)sizeof(struct shadow_vertex));
+		float step = 1.0f / (61439.0f * projection_near);
 
 		if (all)
 		{
+			memcpy(all, out, kept_count * 3 * sizeof(struct shadow_vertex));
 			for (index = 0; index < kept_count * 3; index++)
-			{
-				all[index] = out[index];
-				light_lift_corner(&all[index]);
-			}
+				light_lift_corner_merged(&all[index], step);
 			for (index = 0; index < cut_count; index++)
 			{
 				const float *c = cut_corners[index];
@@ -13194,7 +13220,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				v->x = c[7];
 				v->y = c[8];
 				v->z = c[9];
-				light_lift_corner(v);
+				light_lift_corner_merged(v, step);
 			}
 			sceGuDepthOffset(0);
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
