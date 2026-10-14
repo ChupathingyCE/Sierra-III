@@ -16106,7 +16106,93 @@ boolean machine_update(
 ]
 
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()):
+FIXES_123L = {}
+# Resting weapons and equipment with attached lights sleep too (a Covenant
+# weapon's glow, a plasma grenade's). They were kept awake because their
+# update reconnects their lights, which puts each first in its clusters'
+# lists, and a sleeper's lights stayed where they were: the lists decide
+# which lights light an object. A sleeping item now reconnects its lights
+# where its update would, at its own turn in the tick, as a sleeping machine
+# already does (FIXES_121's machinesleep, review_b121_machines.md). The rest
+# of the update leaves the item byte-identical (the sleep rule), so the
+# marker the light hangs on, and so the light's place, are the same too.
+# "litemsawake" (keep.txt): lit items kept awake. The object report's sleep
+# part counts lit items offered to the rule and asleep, per tick
+FIXES_123L["source/objects/objects.c#litems"] = [
+("""static int psp_item_sleep_on = -1, psp_item_sleep_check = -1;
+long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
+""", """static int psp_item_sleep_on = -1, psp_item_sleep_check = -1;
+long psp_items_asleep, psp_items_sleep_checked, psp_items_sleep_wrong;
+/* psp_fixups.py (FIXES_123L): lit items ("litemsawake" off), and their
+counts for the object report */
+static int psp_lit_item_sleep_on = -1;
+long psp_items_lit_offered, psp_items_lit_asleep;
+"""),
+("""- attached lights: the update re-links them in the level's light lists,
+  and sleeping would change those lists' order (not shown harmless yet);
+""", """- attached lights: none now; asleep, the item reconnects them where its
+  update would (psp_sleepy_update), so the lists keep their order
+  ("litemsawake": excluded again);
+"""),
+("""	if (item->object.parent_object_index != NONE ||
+		!TEST_FLAG(item->object.flags, _object_at_rest_bit) ||
+		TEST_FLAG(item->object.flags, _object_has_attached_lights_bit) ||
+		TEST_FLAG(item->item.flags, _item_on_object_bit))
+		return 0;
+""", """	if (item->object.parent_object_index != NONE ||
+		!TEST_FLAG(item->object.flags, _object_at_rest_bit) ||
+		TEST_FLAG(item->item.flags, _item_on_object_bit))
+		return 0;
+"""),
+("""			return 0;
+	}
+	return 1;
+}
+
+int psp_crumb_mark(""", """			return 0;
+	}
+	/* last, so the count is of lit items nothing else keeps awake */
+	if (TEST_FLAG(item->object.flags, _object_has_attached_lights_bit))
+	{
+		psp_items_lit_offered++;
+		if (psp_lit_item_sleep_on < 0)
+			psp_lit_item_sleep_on = !psp_keep("litemsawake");
+		return psp_lit_item_sleep_on;
+	}
+	return 1;
+}
+
+int psp_crumb_mark("""),
+("""			psp_items_asleep++;
+		}
+		psp_objects_asleep++;
+""", """			psp_items_asleep++;
+			if (TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))
+				psp_items_lit_asleep++;
+		}
+		psp_objects_asleep++;
+"""),
+("""		/* a sleeping machine's lights are still reconnected as its update
+		would (object_update's object_connect_lights): to the same places,
+		but first in their clusters' lists, where every light the tick
+		reconnects goes. Without it the lists' order changed (machinesleep on
+		d20, lab 38526377504), and with it the lights a lit object picks */
+		if (header->type == _object_type_machine &&
+			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&""",
+"""		/* a sleeping machine's or item's lights are still reconnected as its
+		update would (object_update's object_connect_lights): to the same
+		places, but first in their clusters' lists, where every light the
+		tick reconnects goes. Without it the lists' order changed
+		(machinesleep on d20, lab 38526377504), and with it the lights a lit
+		object picks. Only items with lights pay for the test below */
+		if ((header->type == _object_type_machine ||
+				((header->type == _object_type_weapon || header->type == _object_type_equipment) &&
+					TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))) &&
+			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&"""),
+]
+
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123L.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
