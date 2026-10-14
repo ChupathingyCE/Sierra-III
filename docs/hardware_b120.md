@@ -31,7 +31,9 @@ Sheepdog01: the water in the far distance of the intro cutscene flickers on the 
 
 ### Resting items: they work, with one ask
 - Still fully interactive: thrown by explosions, dropped plasma grenades detonate in blasts, picked up as before.
-- **"Sticky":** a dropped weapon sticks to an object it falls against. Sheepdog01 asks for a **4 s delay before an item may sleep**. Note [D]: Bungie's `item_update` re-aligns an item resting *on an object* (`_item_on_object_bit`) to that object every tick, so it rides along; the sleep rule leaves those items awake. The check that settles which it is: the same drop with `itemsawake`.
+- **"Sticky":** a dropped weapon sticks to an object it falls against. Sheepdog01 first asked for a 4 s delay before an item may sleep; then (20:06) said a found mechanism makes the timer unnecessary.
+- **The mechanism is Bungie's, not the sleep** [D]. In a campaign game only one line sets an item's at-rest bit (`items.c` `item_update`, the landing branch; `game_engine.c`'s is multiplayer): a falling item that lands on the level (flat enough) is "on structure", and one that lands on top of a scenery or device object is "on object". An on-object item is re-aligned to that object's node every tick at the point and angle where it landed, so it stays glued there. The sleep rule never offers on-object items (`psp_item_may_sleep`), and a falling item isn't at rest, so sleeping can't cause the sticking.
+- **So no timer.** The cheap proof, when convenient: the same drop with `itemsawake`; if it still sticks, it's the original's.
 
 ### The sleep breaks the game (found: dead file handles)
 Sheepdog01 slept the PSP as the Warthog dropped; after the wake the level was garbage (a "tunnel", shots 011-013), sound effects broke, the ambient track changed and explosions played at random.
@@ -48,7 +50,6 @@ Shots 005-007: a hairline straight down from the centre in 005. Lead [U]: the pu
 ## For b121 (Sheepdog01, 2026-10-13)
 
 - **The build number and the active preset on screen.** The stamp line at the bottom of every screenshot already shows the build, game time and frame (`b120 t 341.0 f 1930`); add the preset there, and in the launch menu's header.
-- **Resting items wait 4 s** before they may sleep (Sheepdog01).
 - **Reopen files on wake** (the sleep bug above).
 - LK13 (far water), LK14 (Pelican window), LK15 (tracker cross): leads above.
 - **The log pull's `rm -f $psp/halo/shots/*`** fails in fish when the folder is empty (fish refuses a wildcard that matches nothing). Use `find $psp/halo/shots -type f -delete`.
