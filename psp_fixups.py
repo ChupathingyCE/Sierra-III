@@ -15730,7 +15730,7 @@ static int psp_far_off_tick(long object_index)
 static void psp_far_count(unsigned long *counts, int skipped, char const *what)
 {
 	counts[skipped ? 1 : 0]++;
-	if (counts[0] + counts[1] >= 30000)
+	if (counts[0] + counts[1] >= 3000)
 	{
 		platform_psp_log("%s: of %lu chances, %lu skipped", what, counts[0] + counts[1], counts[1]);
 		counts[0] = counts[1] = 0;
@@ -15764,20 +15764,29 @@ static int psp_machine_far_skips(long object_index, struct object_datum const *o
 	return skip;
 }
 
-/* posehalf: 1 when this tick's pose of the object is left out */
+/* posehalf: 1 when this tick's pose of the object is left out. A child's
+pose is made from its parent's, so a family (an AI and the gun it holds)
+goes by its root: all of it is posed on the same ticks */
 static int psp_pose_half_skips(long object_index, struct object_datum const *object)
 {
+	long root_index = object_index;
+	struct object_datum const *root = object;
 	int skip;
 
 	if (psp_pose_half < 0)
 		psp_pose_half = psp_keep("posehalf");
-	if (psp_pose_half <= 0 || !TEST_FLAG(object->object.flags, _object_at_rest_bit) ||
-		object->object.type == _object_type_machine || !psp_far_off_tick(object_index))
+	if (psp_pose_half <= 0)
 		return 0;
-	/* a parent's pose places its children, and a child's comes from its
-	parent's */
-	skip = object->object.first_child_object_index == NONE && object->object.parent_object_index == NONE &&
-		!object->object.animation.interpolation_frame_count && psp_far_unseen(object);
+	while (root->object.parent_object_index != NONE)
+	{
+		root_index = root->object.parent_object_index;
+		root = object_get(root_index);
+	}
+	if (!TEST_FLAG(root->object.flags, _object_at_rest_bit) || root->object.type == _object_type_machine ||
+		!psp_far_off_tick(root_index))
+		return 0;
+	skip = !object->object.animation.interpolation_frame_count && !root->object.animation.interpolation_frame_count &&
+		psp_far_unseen(root);
 	psp_far_count(psp_pose_half_counts, skip, "posehalf: resting objects' poses");
 	return skip;
 }
