@@ -83,7 +83,10 @@ So the choice is made before the walk:
 
 **Proven** [E]. Hands off, `nearauto assettrack geo2 nomeaudio fixedticks fixedseed statecrc`, on against `surfacetestold`, compared with `tools/statecmp.py --ignore="object looping sounds,first person weapons"`. `surfacetestcheck` makes each walk both ways and compares surfaces, edges, vertices and leaves, count and order.
 
-**`c17bc51` (the choice per walk, the one to ship)**: its pairs on a50, c20 and d20 and its `surfacetestcheck` on a50, c20 and b30's route are in lab 38543568066 (`bp121j`), still running at hand-off.
+**`c17bc51` (the choice per walk, the one to ship)**, lab 38543568066 (`bp121j`, walls of 600 s):
+- **Play exact.** The play hash and both random seeds are the same at every common tick: a50 19,231, c20 15,114, d20 13,768.
+- **Every walk checked.** `surfacetestcheck` (the copy every walk): 0 walks differed of 430,707 on a50, 555,670 on c20 and 444,441 on b30's beach by the b113 route.
+- **The choice** (`surfacetest:` lines): c20 took the engine's walk 99.8% of the time, d20 82%, a50 1.8%.
 
 **`4696c68` (the copy from a walk's third leaf)**, lab 38539760969 (`bp121g`, walls of 600 s):
 - **Play exact.** The play hash and both random seeds are the same at every common tick: a50 26,371, c20 20,341, d20 16,616.
@@ -106,7 +109,16 @@ The whole-state hash parts only in allocations known to follow the emulator's sp
 
 **Measured: the cache models** [E]. The tick phase, per tick, with the estimate above. a50 and c20 play the same on both sides, so their counts compare exactly; b30 plays alike, not the same.
 
-`c17bc51`'s cache-model runs (a50 and c20 to 60 s, b30's route to 100 s, on against `surfacetestold`) are in lab 38543568066 (`bp121j`), still running at hand-off. `4696c68`'s b30 is in lab 38539821915 (`bp121i`).
+`c17bc51`, lab 38543568066 (`bp121j`), on against `surfacetestold`:
+
+| Map, stretch | Instructions | Data misses | Instr. misses | Est. tick, old → on | Walk functions, est. ms a tick |
+|---|---:|---:|---:|---|---|
+| a50, 60 s | −6.5% | +1.3% | −0.1% | 20.46 → 19.96 ms (**−0.50, −2.4%**) | 2.92 → 2.42 |
+| c20, 60 s | +0.25% | +0.6% | +0.3% | 22.83 → 22.91 ms (+0.08, +0.34%) | 1.02 → 1.02 |
+| b30 route, 100 s (alike, not the same) | −4.7% | −2.4% | −2.6% | 48.82 → 47.22 ms (−1.59, −3.3%) | 3.22 → 2.72 |
+
+- c20's walk is now at parity: the engine's own code runs (99.8% of walks), and the walk functions' fetches and misses are within 1%.
+- What c20 still shows (+0.08 ms est.) is outside the walk: `psp_step` (+4.3 million fetches), sound mixing (`psp_dsound_mix_list`, +2.7 million) and decoding (`decode_block`, +2.0 million). The same three moved the same way in `4696c68`'s pair. Sound follows the emulator's timing; why `psp_step` differs between the two keep words is not known [U].
 
 Earlier versions:
 
@@ -119,6 +131,9 @@ Earlier versions:
 | `f5b4ca5`, 38528154096 | a50, 60 s | | | 20.37 → 19.85 ms (−0.53, −2.6%) |
 | `4696c68`, 38539791064 | a50, 60 s | −6.0% | +1.6% | 20.46 → 20.10 ms (−0.36, −1.8%) |
 | `4696c68`, 38539791064 | c20, 60 s | +0.4% | +1.4% | 22.83 → 23.02 ms (**+0.18, +0.80%**) |
+| `4696c68`, 38539821915 | b30 route, 100 s | +1.4% | +6.2% | 47.52 → 49.18 ms (+1.66, +3.5%; alike, not the same) |
+
+b30's figures carry its play, which parts across any change in speed: in `4696c68`'s pair the AI's and units' own functions rose too (`unit_update`, `actor_perception_update`). Its walk is worth reading on its own. There, the copy's data misses (13.7 million over 100 s against the engine walk's 10.6; 4.4 million of them in the 2D walk) come mostly from the 2D walk, where the surface table is probed: the table is 3 KB of 12-byte slots, and a probe is likely a miss [U]. A smaller slot is the next thing to try.
 
 **Default.** On; an exact speed-up is pre-approved. Keep words:
 - `surfacetestold`: the walk as before;
