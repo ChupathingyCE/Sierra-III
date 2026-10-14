@@ -68,6 +68,7 @@ unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results)
 unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results);
+void psp_perception_me_rays(const unsigned int *args, unsigned int *results);
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -136,6 +137,9 @@ it. The single-writer queue (research_brief_for_master.md 1.4-1.5):
 /* a job may use this much of its CPU's stack; the word past it is the
 sentinel checked at the job's end */
 #define RING_JOB_STACK_BYTES 4096
+/* a ray walks the level's BSP and each object's recursively: its frames and
+results take more (actor_perception.c, psp_perception_me_rays) */
+#define RING_RAYS_STACK_BYTES (24 * 1024)
 #define RING_SENTINEL 0x5E471E1Du
 #define RING_OK 0
 #define RING_BAD_TYPE 1
@@ -416,13 +420,13 @@ static void ring_test_job(const unsigned int *args, unsigned int *results)
 	results[1] = args[2];
 }
 
-/* the word RING_JOB_STACK_BYTES below the caller's stack pointer */
-static inline volatile unsigned int *ring_sentinel(void)
+/* the word a job's stack allowance below the caller's stack pointer */
+static inline volatile unsigned int *ring_sentinel(unsigned int allowance)
 {
 	unsigned int sp;
 
 	__asm__ __volatile__("move %0, $sp" : "=r"(sp));
-	return (volatile unsigned int *)((sp - RING_JOB_STACK_BYTES) & ~3u);
+	return (volatile unsigned int *)((sp - allowance) & ~3u);
 }
 
 /* one ring job, on the ME (on_me), or on the main CPU when simulated, where
@@ -455,7 +459,7 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		args[k] = request->args[k];
 	for (k = 0; k < ME_RING_RESULTS; k++)
 		results[k] = 0;
-	sentinel = ring_sentinel();
+	sentinel = ring_sentinel(request->type == ME_JOB_PERC_RAYS ? RING_RAYS_STACK_BYTES : RING_JOB_STACK_BYTES);
 	*sentinel = RING_SENTINEL;
 	if (on_me)
 		job_start = me_cycles();
@@ -466,6 +470,9 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		break;
 	case ME_JOB_RINGTEST:
 		ring_test_job(args, results);
+		break;
+	case ME_JOB_PERC_RAYS:
+		psp_perception_me_rays(args, results);
 		break;
 	default:
 		status = RING_BAD_TYPE;
@@ -769,7 +776,7 @@ int psp_me_start(void)
 
 	/* nomeaudio keeps the ME off unless a ring client asks for it; the
 	mixer then stays on the main CPU (psp_dsound.c) */
-	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest")))
+	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest") && !psp_keep("meraysperc")))
 		return me_state > 0;
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
@@ -784,7 +791,7 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(ring_requests, sizeof(ring_requests));
 	sceKernelDcacheWritebackInvalidateRange(ring_results, sizeof(ring_results));
 	RING_PUSHED = RING_POPPED = 0;
-	ring_on = psp_me_slant_wanted() || psp_keep("meringtest");
+	ring_on = psp_me_slant_wanted() || psp_keep("meringtest") || psp_keep("meraysperc");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -1103,7 +1110,7 @@ int psp_me_ring_ready(void)
 RAM: the lines of the range, or past 16 KB the whole cache */
 void psp_me_writeback(const void *start, unsigned int bytes)
 {
-	if (bytes > RING_WHOLE_CACHE_BYTES)
+	if (bytes > RING_WHOLE_CACHE_BYTES || bytes == ME_RING_ALL_OF_RAM)
 		sceKernelDcacheWritebackAll();
 	else if (bytes)
 		lines_writeback((unsigned int)start, bytes);
@@ -1195,7 +1202,8 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 		return 0;
 	}
 	for (k = 0; k < ME_RING_INPUTS; k++)
-		if (!ring_in_ram((unsigned int)job->input[k], job->input_bytes[k]))
+		if (!(job->input[k] == NULL && job->input_bytes[k] == ME_RING_ALL_OF_RAM) &&
+			!ring_in_ram((unsigned int)job->input[k], job->input_bytes[k]))
 		{
 			ring_stats.refused_check++;
 			return 0;
@@ -1228,6 +1236,28 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 	*ticket = t;
 	ring_stats.push_us += sceKernelGetSystemTimeLow() - start;
 	return 1;
+}
+
+/* perception's queued rays (psp_fixups.py FIXES_122, actor_perception.c
+#merays). The engine's units don't see this header, so the job is put
+together here. A ray reads the level and the objects anywhere in RAM: this
+CPU's whole cache is written back first, and the ME drops its whole cache */
+int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, unsigned int answer_bytes,
+	unsigned int *ticket)
+{
+	struct psp_me_job job;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_PERC_RAYS;
+	job.args[0] = (unsigned int)rays;
+	job.args[1] = (unsigned int)answers;
+	job.args[2] = count;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = answers;
+	job.output_bytes = answer_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
 }
 
 /* a pushed job's answer: 1 when done (results filled, its output readable
