@@ -13648,10 +13648,12 @@ FIXES_121["source/structures/cluster_partitions.c#relinkmemo"] = [
 """, """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_121): the remembered lookups (see psp_fixups.py's
 FIXES_121 #relinkmemo). Slots are picked by a hash of the inputs, and a slot
-answers only for inputs equal to the ones stored, bit for bit. The
-generation is the cluster lists': a new map, a new BSP or a loaded game makes
-the lists anew (cluster_partition_port_forget), and every slot from before
-stops answering */
+answers only for inputs equal to the ones stored, bit for bit, and only in
+the generation it was stored in. A new generation starts when the cluster
+lists are made anew (cluster_partition_port_forget: a new map, a loaded
+game) and when the level's BSP is another (scenario_switch_structure_bsp
+reconnects every object without making the lists anew), so no answer from
+another BSP is ever given */
 int psp_keep(const char *name);
 
 #define PSP_RELINK_SLOTS 256
@@ -13678,6 +13680,9 @@ static unsigned long psp_relink_generation = 1;
 static int psp_relink_on = -1, psp_relink_check = 0;
 unsigned long psp_relink_hits, psp_relink_misses, psp_relink_wrong;
 
+static void const *psp_relink_structure = NULL;
+static short psp_relink_structure_index = NONE;
+
 static void psp_relink_start(void)
 {
 	if (psp_relink_on < 0)
@@ -13685,6 +13690,13 @@ static void psp_relink_start(void)
 		psp_relink_on = !psp_keep("relinkfresh");
 		psp_relink_check = psp_keep("relinkcheck");
 		csmemset(psp_relink_clusters, 0xFF, sizeof(psp_relink_clusters));
+	}
+	if (psp_relink_on &&
+		(global_structure_bsp_get() != psp_relink_structure || global_structure_bsp_index_get() != psp_relink_structure_index))
+	{
+		psp_relink_structure = global_structure_bsp_get();
+		psp_relink_structure_index = global_structure_bsp_index_get();
+		psp_relink_generation++;
 	}
 }
 
@@ -13824,8 +13836,8 @@ void cluster_partition_reconnect(
 	struct cluster_partition *partition)
 {
 #ifdef HALO_PSP
-	/* psp_fixups.py (FIXES_121): the lists are made anew, perhaps for
-	another BSP: no remembered lookup answers from now */
+	/* psp_fixups.py (FIXES_121): the lists are made anew (a new map, a
+	loaded game): no remembered lookup answers from now */
 	psp_relink_generation++;
 #endif
 """),
