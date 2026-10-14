@@ -4859,7 +4859,7 @@ static void me_angle_measure(const struct ge_vertex *stream, const unsigned shor
 	int far_possible);
 static unsigned long angle_loop_us = 0;
 
-/* "meslant" (ME phase 1): the back part of a draw's bucket loop goes to the
+/* The slant split (ME phase 1; on by default, "meslantoff"): the back part of a draw's bucket loop goes to the
 Media Engine through the job ring while this CPU works the front part, so
 the two halves run at once. Both call angle_bucket_one, so the buckets are
 the same bits (b90 on the PSP: 0 differing over 4.7 million triangles); the
@@ -4886,7 +4886,9 @@ static __attribute__((noinline, cold)) void slant_decide(void)
 {
 	extern int psp_keep_number(const char *prefix, int fallback);
 
-	me_slant = psp_keep("meslant");
+	int psp_me_slant_wanted(void);
+
+	me_slant = psp_me_slant_wanted();
 	me_slant_check = psp_keep("meslantcheck");
 	me_slant_min = psp_keep_number("meslantmin", SLANT_SPLIT_MIN);
 	me_slant_bias = psp_keep_number("meslantbias", SLANT_BIAS);

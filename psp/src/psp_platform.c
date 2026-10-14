@@ -872,7 +872,8 @@ static void keep_load(void)
 	/* build 119: its exact speed-ups' off words, their self-checks, the
 	clock fix's off word, and the PSP probes */
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
-	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; look (opt-in, Sheepdog01's A/B): hudsnap hud177; Media Engine (opt-in): mehalt mefinishslow");
+	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
+	platform_log("keep words, build 121's: speed off: percold surfacetestold machinesawake meslantoff; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck; opt-in: relinkmemo; recon: machinetime reopentest");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock

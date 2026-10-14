@@ -662,7 +662,18 @@ meLibEmitSoftwareInterrupt), so it is sent only to a halted ME, and again
 on each look while a job waits (me_halt_idle says why). The first 256 are
 timed, for the kernel call's cost */
 static int me_halting = 0;
-static int ring_on = 0; /* "meslant": the job ring, decided at start */
+static int ring_on = 0; /* the job ring, decided at start */
+
+/* The slant split is on by default: the rig showed it exact (0 of 414,000
+triangles differing, 0 failed jobs) and a little faster (b30 and c20: the
+sort 0.6-1.4 ms a frame less). "meslantoff" turns it off; "nomeaudio" keeps
+the ME stopped unless "meslant" asks for the ring */
+int psp_me_slant_wanted(void)
+{
+	if (psp_keep("meslantoff"))
+		return 0;
+	return psp_keep("meslant") || !psp_keep("nomeaudio");
+}
 static unsigned long wakes_sent, wakes_timed;
 static unsigned long long wake_us;
 
@@ -773,7 +784,7 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(ring_requests, sizeof(ring_requests));
 	sceKernelDcacheWritebackInvalidateRange(ring_results, sizeof(ring_results));
 	RING_PUSHED = RING_POPPED = 0;
-	ring_on = psp_keep("meslant") || psp_keep("meringtest");
+	ring_on = psp_me_slant_wanted() || psp_keep("meringtest");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
