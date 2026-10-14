@@ -114,7 +114,7 @@ If step 0 finds the nodes scattered, the baker renumbers `bsp3d.nodes` (and each
 - **Inputs:** the biped's centre and radius at the tick's start (final: AI doesn't move bipeds; scripts that teleport are caught by "not here"), the BSP pointer and index. Passed in the job's arguments, so the main CPU writes back only those few lines, not its whole cache as perception's rays must (b122, on by default; `meraysoff`). Both kinds of job share the ring during `actors_update`.
 - **Reads:** the level's collision BSP only: written once at load, never dirty in the main CPU's cache.
 - **Outputs:** each copy in a slot of its own, in lines the main CPU doesn't touch until it collects the job (the ring's rule). Two slots per biped (the copy in use and the one being built).
-- **Queue:** ring jobs of up to N builds, N sized to stay under the ring's 10 ms watchdog (a build walks a sphere ~1.5–2× a sweep's radius: on a50 perhaps 0.5–1 ms each on the ME [U]).
+- **Queue:** ring jobs of up to N builds, N sized to stay under the ring's 10 ms watchdog (a build at +0.25 reaches ~5 times a sweep's leaves on a50, `pillreach`: perhaps 0.5–1 ms each on the ME [U]; ~0.5 builds a tick, so one job a tick is the usual case).
 - **Collect:** at the biped's sweep: if its new copy is done, take it; if not, use the old one if it holds, else walk the level. Never wait.
 - **Code:** the build is the walk plus the recording. Like `merays122`, it must reach no system call, no VFPU, no double, no allocator, and no global store on its normal path (`mewalk.py`, `gemesim`, `mewrites`).
 - The ME is idle 85–92% of the tick [M], rays included; AI is ~17 ms of b30's tick [E], so the builds have room to finish before `objects_update`.
@@ -132,8 +132,8 @@ If step 0 finds the nodes scattered, the baker renumbers `bsp3d.nodes` (and each
 - **Float paths.** The copy's walk must be the same compiled FPU code as the level's walk (one function, a different `bsp` pointer), with the planes, vertices and centre copied bit for bit.
   - The VFPU is not bit-identical to the FPU: nothing on this path may move to the VFPU.
   - No separate copy of the walk compiled with other flags (contraction, `-ffast-math`).
-  - The ME runs the same Allegrex FPU code (`merays122`: 0 of 270,940 ME answers differed in the emulator) [E]; the real ME's answers need `perccheck`'s equivalent on the rig.
-- **The walk's guards** (`collision_bsp3d_enter_node`'s node budget, `bsp2d_nodes_left` from the BSP's node count) must count as they would on the level, or a malformed map could stop the copy's walk where the level's goes on. "Not here" covers it: any stop that differs ends in a level walk.
+  - The ME runs the same Allegrex FPU code. Perception's rays showed it: 0 of 270,940 ME answers differed in the emulator [E] and 0 of 31,940 on the rig's real ME [M] (`review_b122.md` §1). The copies need the same check on the rig (`collcachecheck` with the ME building).
+- **The walk's guards** (`collision_bsp3d_enter_node`'s node budget, `bsp2d_nodes_left` from the BSP's node count, the edge ring's bound) must be set from the level's counts, not the copy's, or a malformed map could stop the copy's walk where the level's goes on, silently. Retail maps don't reach them (`review_b121_bipeds.md`); `collcachecheck` would show a difference.
 - **The 256 caps** on leaves, surfaces, edges and vertices: the copy's walk meets the same events in the same order, so the caps cut the same.
 - **Breakable surfaces:** the copy keeps every surface, broken or not, with its breakable index; the walk tests the live flags as it does now. Nothing to invalidate when glass breaks.
 - **The port's own state** read by the walk: the X9 memo (stays in front; its answers are exact either way), `psp_walk_leaves16` (which code walks; speed only), `psp_surfaces_seen` (per walk). None changes play.
