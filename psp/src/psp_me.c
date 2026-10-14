@@ -106,10 +106,11 @@ struct me_control
 /* audio first: a waiting audio block is mixed before each ring job and
 between the steps of a long one ("meaudiofirstoff" turns it off) */
 #define ME_FEATURE_AUDIO_FIRST 4u
-/* the audio job's cache hand-over by ranges (psp_dsound_me_lines;
-"meaudiorangesoff": the whole cache, twice a block) */
+/* the audio job's cache hand-over by ranges (psp_dsound_me_lines), off
+unless "meaudioranges": on the rig it didn't shorten the ME's mix, and c40's
+cinematic ticks were longer with it among the words on */
 #define ME_FEATURE_AUDIO_RANGES 8u
-/* the debug stash kept ("mestashoff" turns it off) */
+/* the debug stash kept, when "mestash" asks for it (a hang to diagnose) */
 #define ME_FEATURE_STASH 16u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
@@ -1009,7 +1010,7 @@ int psp_me_start(void)
 	me_halting = psp_keep("mehalt");
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
 		(psp_keep("meaudiofirstoff") ? 0u : ME_FEATURE_AUDIO_FIRST) |
-		(psp_keep("meaudiorangesoff") ? 0u : ME_FEATURE_AUDIO_RANGES) | (psp_keep("mestashoff") ? 0u : ME_FEATURE_STASH);
+		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -1325,6 +1326,9 @@ static __attribute__((noinline, cold)) void me_stash_dump(const char *why)
 	volatile unsigned int *stash = STASH;
 	unsigned int now = CONTROL->clock;
 	float rate = me_cycles_per_us > 0.0f ? me_cycles_per_us : 1.0f;
+
+	if (!(CONTROL->features & ME_FEATURE_STASH))
+		return;
 
 	platform_log("ME: stash (%s): at %u; ring job %u (type %u), step %u; ring jobs begun %u, ended %u, pushed as last seen %u, popped %u; "
 		"slot jobs begun %u, ended %u; audio blocks mixed before or inside ring jobs %u; the ME's clock at the note %u, at its last idle pass %u (%d us after the note: below 0, it hasn't been back to its idle loop since), idle polls %u",

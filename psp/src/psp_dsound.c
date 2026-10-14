@@ -527,9 +527,10 @@ mix can touch:
 Nothing else: no calls out of this file, and the step and gains are worked
 out on the main CPU beforehand (prepare_voice). Past 16 KB of lines, a range
 costs more instructions than the whole cache (YAPSPD's rule, b4 research),
-so the whole cache it is, as before. "meaudiorangesoff" keeps the whole cache
-always. Either CPU may choose the whole cache on its own: each side's ranges
-cover every line the other can write back */
+so the whole cache it is, as before. Off unless "meaudioranges": the rig
+showed no shorter mix on the ME, and c40's cinematic ticks were longer with
+it among the words on. Either CPU may choose the whole cache on its own:
+each side's ranges cover every line the other can write back */
 #define STREAM_HEAD_BYTES offsetof(struct psp_stream, packets)
 #define HANDOVER_WHOLE_BYTES (16 * 1024)
 #define LINES_COUNT 0     /* only measure */
@@ -710,7 +711,7 @@ static void mix(short *output, unsigned long frames)
 		{
 			extern int psp_keep(const char *word);
 
-			ranges_on = !psp_keep("meaudiorangesoff");
+			ranges_on = psp_keep("meaudioranges");
 		}
 		/* everything the ME reads, from this CPU's cache to RAM (the lines
 		the mix touches, or the whole cache); no copy of the output block
