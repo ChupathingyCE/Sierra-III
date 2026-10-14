@@ -2094,6 +2094,13 @@ static unsigned long clipped_this_frame = 0, culled_this_frame = 0, model_draws_
 directions in the world */
 static float camera_right[3], camera_up[3], camera_forward[3];
 static float guard_x, guard_y;
+/* the screen's side planes as the guard planes are written (x = screen_x z),
+with a margin of SCREEN_MARGIN_PIXELS for the GE's rounding and the TAA's
+jitter: a cut piece wholly past one of them draws no pixel and is left out
+(clip_triangle); "cutlessoff" draws them */
+#define SCREEN_MARGIN_PIXELS 8.0f
+static float screen_x = 1.0f, screen_y = 1.0f;
+static int cut_less = 1;
 /* build 118: the lengths of the guard band's side planes' normals as
 outside() writes them (x = guard_x z has (1, 0, -guard_x)), set with
 guard_x and guard_y, so a sphere can be tested against those planes
@@ -2125,9 +2132,15 @@ static unsigned long near_models = 0, near_triangles_dropped = 0;
 /* the GE's front face for the Xbox's D3DCULL_CCW (build 35) */
 #define LEVEL_FRONT GU_CW
 #define NEAR_CLIP near_clip
-/* how far off the screen a corner may land, in screen widths and heights:
-6 keeps it within the GE's 2048 pixels */
+/* how far off the screen a corner may land (the guard planes). The GE
+takes screen positions within 2048 pixels of the screen's centre (its
+4096-pixel drawing space, the screen in its middle: ge_initialize's offset);
+past that a corner wraps round. GUARD_PIXELS leaves 128 pixels of margin on
+both axes. GUARD is the older 6 screen widths and heights (1440 pixels
+across, 816 up and down), which cut triangles the GE could draw whole;
+"cutstreamoff" and "cutlessoff" keep it */
 #define GUARD 6.0f
+#define GUARD_PIXELS 1920.0f
 
 /* build 37: CPU time in the renderer's entry points, by kind, for the log */
 #define GE_ENTRIES 9
@@ -2284,14 +2297,14 @@ void psp_ge_fog_planar(float red, float green, float blue, float maximum_distanc
 }
 
 /* the GE's own state, once: buffers, viewport, depth, fog */
-static void model_cut_take(void); /* build 108: below, by model_cut */
+static void cut_take(void); /* below, by model_cut */
 
 static void ge_initialize(void)
 {
 	/* build 108: the scratchpad's pieces (psp_scratch.c), keep.txt read by now */
 	extern void psp_profile_tables_take(void);
 
-	model_cut_take();
+	cut_take();
 	psp_profile_tables_take();
 	display_list_acquire();
 	display_list_report();
@@ -3180,9 +3193,22 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		camera_up[0] = camera_right[1] * forward[2] - camera_right[2] * forward[1];
 		camera_up[1] = camera_right[2] * forward[0] - camera_right[0] * forward[2];
 		camera_up[2] = camera_right[0] * forward[1] - camera_right[1] * forward[0];
-		guard_y = GUARD * tanf(vertical_field_of_view * 0.5f);
-		guard_x = guard_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
-		guard_x_length = sqrtf(1.0f + guard_x * guard_x); /* build 118 */
+		{
+			/* a pixel's width at depth 1 (pixels are square: the projection's
+			aspect is the screen's) */
+			float pixel = tanf(vertical_field_of_view * 0.5f) / (SCREEN_HEIGHT / 2);
+
+			if (cut_less)
+				guard_x = guard_y = GUARD_PIXELS * pixel;
+			else
+			{
+				guard_y = GUARD * tanf(vertical_field_of_view * 0.5f);
+				guard_x = guard_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
+			}
+			screen_x = (SCREEN_WIDTH / 2 + SCREEN_MARGIN_PIXELS) * pixel;
+			screen_y = (SCREEN_HEIGHT / 2 + SCREEN_MARGIN_PIXELS) * pixel;
+		}
+		guard_x_length = sqrtf(1.0f + guard_x * guard_x);
 		guard_y_length = sqrtf(1.0f + guard_y * guard_y);
 	}
 	sceGumMatrixMode(GU_MODEL);
@@ -3312,16 +3338,158 @@ static inline float plane_distance(const float *v, int plane)
 	}
 }
 
-/* cuts a camera-space triangle to the inside of the planes it crosses; each
-corner carries its camera-space position and both texture coordinates
-(x, y, z, base u, v, lightmap u, v), all cut alike. The pieces (a fan, as a
-triangle list) go into out; returns how many corners it added */
 /* a cut corner: camera-space position (0-2), two pairs of texture
-coordinates or other values (3-6), and its world position (7-9); build 60:
-one more value (10), a model corner's normal's third part */
+coordinates or other values (3-6), its world position (7-9), and one more
+value (10), a model corner's normal's third part */
 #define CORNER_FLOATS 11
-static unsigned long cut_pieces_lost = 0;
-static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, float (*out)[CORNER_FLOATS], int room)
+/* the fixed buffers' rooms, in corners: the level's (shared by the lights,
+shadows, stencils and the level's see-through draws) and the models' */
+#define MAXIMUM_CUT_CORNERS 384
+#define MAXIMUM_MODEL_CUT_CORNERS 192
+
+/* Where a draw's cut pieces wait, as floats, until its path turns them into
+GE vertices. The first corners go into a fixed buffer (the scratchpad's for
+the models, a static one for the level); a draw cut into more pieces than
+that holds carries on into blocks taken from the display list, the frame's
+own memory, which the GE never reads (sceGuGetMemory jumps over them) and
+which the next frame reuses. So no piece is dropped while the list has room:
+with the buffer alone the pieces past it were lost without a trace, and a
+Pelican's bench lost the wall behind the player (cut_pieces_lost).
+"cutstreamoff": the buffer alone, the rest lost */
+#define CUT_SPILL_CORNERS 96 /* a multiple of 3, as the buffers' rooms are, so a piece never straddles two blocks */
+struct cut_spill
+{
+	struct cut_spill *next;
+	int unused;
+	float corners[CUT_SPILL_CORNERS][CORNER_FLOATS];
+};
+enum { CUT_LEVEL, CUT_RIGID, CUT_SKIN, CUT_SEE, CUT_OTHER, CUT_KINDS };
+struct cut_store
+{
+	float (*head)[CORNER_FLOATS];
+	int head_room, count, lost, kind;
+	struct cut_spill *first, *last;
+	/* the block cut_at read last, and the index of its first corner past head */
+	struct cut_spill *read;
+	int read_base;
+};
+static int cut_stream = 1;
+static unsigned long cut_pieces_lost = 0, cut_spill_blocks = 0;
+
+static void cut_store_begin(struct cut_store *store, float (*head)[CORNER_FLOATS], int head_room, int kind)
+{
+	store->head = head;
+	store->head_room = head_room;
+	store->count = store->lost = 0;
+	store->kind = kind;
+	store->first = store->last = store->read = NULL;
+	store->read_base = 0;
+}
+
+/* A spill block is display-list memory, which the next frame writes again
+(through the uncached view, or the cached one after "cache 0x18"), so no
+line of it may stay dirty in the data cache, to be written back over that
+later: list_take's own write-back only covers what is written before the
+list's next hand-over, and a block is filled over many pieces. Each write to
+a block is written back and dropped at once (only past the fixed buffer) */
+static void cut_spill_settle(const void *start, int bytes)
+{
+	unsigned int line = (unsigned int)start & ~63u, end = (unsigned int)start + bytes;
+
+	for (; line < end; line += 64)
+		__builtin_allegrex_cache(0x1B, line);
+}
+
+static float (*cut_piece_spilled(struct cut_store *store))[CORNER_FLOATS]
+{
+	int past = store->count - store->head_room, at = past % CUT_SPILL_CORNERS;
+
+	if (!at)
+	{
+		struct cut_spill *block = cut_stream ? list_take(sizeof(struct cut_spill)) : NULL;
+
+		if (!block)
+			return NULL;
+		block->next = NULL;
+		cut_spill_settle(&block->next, sizeof(block->next));
+		if (store->last)
+		{
+			store->last->next = block;
+			cut_spill_settle(&store->last->next, sizeof(block->next));
+		}
+		else
+			store->first = block;
+		store->last = block;
+		cut_spill_blocks++;
+	}
+	store->count += 3;
+	return store->last->corners + at;
+}
+
+/* room for one piece's three corners, or NULL when there is none */
+static inline float (*cut_piece(struct cut_store *store))[CORNER_FLOATS]
+{
+	if (store->count + 3 <= store->head_room)
+	{
+		float (*piece)[CORNER_FLOATS] = store->head + store->count;
+
+		store->count += 3;
+		return piece;
+	}
+	return cut_piece_spilled(store);
+}
+
+static const float *cut_at_spilled(struct cut_store *store, int index)
+{
+	int past = index - store->head_room;
+
+	if (!store->read || past < store->read_base)
+	{
+		store->read = store->first;
+		store->read_base = 0;
+	}
+	while (past >= store->read_base + CUT_SPILL_CORNERS)
+	{
+		store->read = store->read->next;
+		store->read_base += CUT_SPILL_CORNERS;
+	}
+	return store->read->corners[past - store->read_base];
+}
+
+/* corner index of the store, in the order they were written */
+static inline const float *cut_at(struct cut_store *store, int index)
+{
+	return index < store->head_room ? store->head[index] : cut_at_spilled(store, index);
+}
+
+/* "cutcount": what the cutting does, by kind, in the 300-frame log. Which
+planes a cut triangle crossed: the near plane, or only the guard planes
+(which the GE could have drawn whole if they sat at its own limit); its
+pieces, those wholly off the screen, and those lost for want of room; the
+most corners one draw needed in a frame (the buffer's room is the most it
+held) */
+static int cut_count_on = 0;
+static struct cut_tally
+{
+	unsigned long near, guard_only, pieces, off_screen, lost, peak, frames_over;
+} cut_tally[CUT_KINDS];
+static int cut_frame_peak[CUT_KINDS];
+static const char *const cut_kind_names[CUT_KINDS] = { "level", "rigid parts", "bending parts", "see-through parts", "other (lights, shadows, stencils, level see-through)" };
+
+static inline int piece_off_screen(const float *a, const float *b, const float *c)
+{
+	return (a[0] > screen_x * a[2] && b[0] > screen_x * b[2] && c[0] > screen_x * c[2]) ||
+		(a[0] < -screen_x * a[2] && b[0] < -screen_x * b[2] && c[0] < -screen_x * c[2]) ||
+		(a[1] > screen_y * a[2] && b[1] > screen_y * b[2] && c[1] > screen_y * c[2]) ||
+		(a[1] < -screen_y * a[2] && b[1] < -screen_y * b[2] && c[1] < -screen_y * c[2]);
+}
+
+/* cuts a camera-space triangle to the inside of the planes it crosses
+(bits, outside()'s), every value of each corner cut alike. The pieces, a
+fan, go into store as a triangle list; returns how many corners it added.
+Every piece lies in front of the near plane (a triangle crossing none has
+every corner in front), which piece_off_screen relies on */
+static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_store *store)
 {
 	float buffer[2][12][CORNER_FLOATS];
 	int count = 3, plane, index, source = 0, added = 0, k;
@@ -3352,18 +3520,112 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, float (*out)
 		count = kept;
 		source = !source;
 	}
-	for (index = 1; index + 1 < count && added + 3 <= room; index++)
+	if (cut_count_on)
 	{
-		memcpy(out[added++], buffer[source][0], sizeof(buffer[0][0]));
-		memcpy(out[added++], buffer[source][index], sizeof(buffer[0][0]));
-		memcpy(out[added++], buffer[source][index + 1], sizeof(buffer[0][0]));
+		struct cut_tally *tally = &cut_tally[store->kind];
+
+		if (bits & 1)
+			tally->near++;
+		else
+			tally->guard_only++;
+		if (count >= 3)
+			tally->pieces += (unsigned long)(count - 2);
 	}
-	/* a full cut buffer leaves the rest of the polygon undrawn: counted, as
-	it opens holes in a wall at the eye (a seated camera's cabin) */
-	if (count >= 3 && added / 3 < count - 2)
-		cut_pieces_lost += (unsigned long)(count - 2 - added / 3);
+	for (index = 1; index + 1 < count; index++)
+	{
+		const float *a = buffer[source][0], *b = buffer[source][index], *c = buffer[source][index + 1];
+		float (*piece)[CORNER_FLOATS];
+
+		if ((cut_less || cut_count_on) && piece_off_screen(a, b, c))
+		{
+			if (cut_count_on)
+				cut_tally[store->kind].off_screen++;
+			if (cut_less)
+				continue;
+		}
+		piece = cut_piece(store);
+		if (!piece)
+		{
+			/* a hole in whatever is at the eye: counted, it should stay 0 */
+			store->lost++;
+			cut_pieces_lost++;
+			if (cut_count_on)
+				cut_tally[store->kind].lost++;
+			continue;
+		}
+		memcpy(piece[0], a, sizeof(buffer[0][0]));
+		memcpy(piece[1], b, sizeof(buffer[0][0]));
+		memcpy(piece[2], c, sizeof(buffer[0][0]));
+		if (store->count > store->head_room)
+			cut_spill_settle(piece, 3 * sizeof(buffer[0][0]));
+		added += 3;
+	}
+	if (cut_count_on && store->count + 3 * store->lost > cut_frame_peak[store->kind])
+		cut_frame_peak[store->kind] = store->count + 3 * store->lost;
 	clipped_this_frame++;
 	return added;
+}
+
+/* a triangle stored as it is (cut_piece's room, counted as a cut's) */
+static int cut_store_whole(float polygon[3][CORNER_FLOATS], struct cut_store *store)
+{
+	float (*piece)[CORNER_FLOATS] = cut_piece(store);
+
+	if (!piece)
+	{
+		store->lost++;
+		cut_pieces_lost++;
+		if (cut_count_on)
+			cut_tally[store->kind].lost++;
+		return 0;
+	}
+	memcpy(piece, polygon, 3 * sizeof(polygon[0]));
+	if (store->count > store->head_room)
+		cut_spill_settle(piece, 3 * sizeof(polygon[0]));
+	if (cut_count_on && store->count + 3 * store->lost > cut_frame_peak[store->kind])
+		cut_frame_peak[store->kind] = store->count + 3 * store->lost;
+	return 3;
+}
+
+/* at each frame's end: each kind's most corners in one draw this frame */
+static void cut_count_frame_end(void)
+{
+	int kind;
+
+	if (!cut_count_on)
+		return;
+	for (kind = 0; kind < CUT_KINDS; kind++)
+	{
+		struct cut_tally *tally = &cut_tally[kind];
+
+		if ((unsigned long)cut_frame_peak[kind] > tally->peak)
+			tally->peak = (unsigned long)cut_frame_peak[kind];
+		if (cut_frame_peak[kind] > (kind == CUT_LEVEL || kind == CUT_OTHER ? MAXIMUM_CUT_CORNERS : MAXIMUM_MODEL_CUT_CORNERS))
+			tally->frames_over++;
+		cut_frame_peak[kind] = 0;
+	}
+}
+
+static void cut_count_report(unsigned long frame_count)
+{
+	int kind;
+
+	if (!cut_count_on)
+		return;
+	for (kind = 0; kind < CUT_KINDS; kind++)
+	{
+		struct cut_tally *tally = &cut_tally[kind];
+
+		platform_log("GE: cutcount %s, %lu frames: triangles cut %lu at the near plane, %lu at guard planes only; pieces %lu, %lu wholly off the screen%s, %lu lost; most corners in one draw %lu (room %d), frames over the room %lu",
+			cut_kind_names[kind], frame_count, tally->near, tally->guard_only, tally->pieces, tally->off_screen,
+			cut_less ? " (left out)" : " (drawn)", tally->lost, tally->peak,
+			kind == CUT_LEVEL || kind == CUT_OTHER ? MAXIMUM_CUT_CORNERS : MAXIMUM_MODEL_CUT_CORNERS, tally->frames_over);
+	}
+	platform_log("GE: cutcount: %s, guard planes %s (x %.2f, y %.2f), %lu spill blocks taken",
+		cut_stream ? "cut pieces streamed past the buffers" : "cutstreamoff: the fixed buffers alone",
+		cut_less ? "at the GE's limit" : "at 6 screens", guard_x, guard_y, cut_spill_blocks);
+	memset(cut_tally, 0, sizeof(cut_tally));
+	cut_spill_blocks = 0;
 }
 
 /* ---------- the level, textured (build 20)
@@ -5104,7 +5366,7 @@ static struct ge_vertex *cut_vertices_prepared[2];
 static int cut_vertices_count = 0;
 
 static void draw_pass(const struct ge_vertex *stream, const unsigned short *indices, int index_count,
-	float (*cut)[CORNER_FLOATS], int cut_count, int lightmap)
+	struct cut_store *cut, int cut_count, int lightmap)
 {
 	if (index_count > 0 && compact_now && (lightmap ? compact_now->compact_lightmap : compact_now->compact_base))
 	{
@@ -5139,11 +5401,13 @@ static void draw_pass(const struct ge_vertex *stream, const unsigned short *indi
 		near or guard planes, well inside what the GE can draw */
 		for (index = 0; index < cut_count; index++)
 		{
-			corners[index].u = cut[index][lightmap ? 5 : 3];
-			corners[index].v = cut[index][lightmap ? 6 : 4];
-			corners[index].x = cut[index][7];
-			corners[index].y = cut[index][8];
-			corners[index].z = cut[index][9];
+			const float *c = cut_at(cut, index);
+
+			corners[index].u = c[lightmap ? 5 : 3];
+			corners[index].v = c[lightmap ? 6 : 4];
+			corners[index].x = c[7];
+			corners[index].y = c[8];
+			corners[index].z = c[9];
 		}
 		sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_3D, cut_count, NULL, corners);
 	}
@@ -5153,7 +5417,7 @@ static void draw_pass(const struct ge_vertex *stream, const unsigned short *indi
 times its factor, the cut-up corners (at the eye, level 0 regardless) with
 the slope as it is */
 static void draw_pass_angled(const struct ge_vertex *stream, const unsigned short *indices, int index_count,
-	float (*cut)[CORNER_FLOATS], int cut_count, int lightmap, float slope, int near_only)
+	struct cut_store *cut, int cut_count, int lightmap, float slope, int near_only)
 {
 	int b, buckets = near_only ? ANGLE_BUCKETS : SORT_BUCKETS;
 
@@ -5270,7 +5534,6 @@ void psp_ge_budget(unsigned long *renderer_us, unsigned long *wait_us)
 	*renderer_us = budget_renderer_us;
 	*wait_us = budget_wait_us;
 }
-#define MAXIMUM_CUT_CORNERS 384 /* the peak seen on the PSP is 249 (build 32); build 60: 768 to 512, room for model_cut */
 static float cut_corners[MAXIMUM_CUT_CORNERS][CORNER_FLOATS];
 
 static int level_cull = -1;
@@ -5327,12 +5590,14 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	int cut_count = 0, base_alpha = 0, textured, all_inside, far_possible = 0;
 	unsigned int cut_us = 0;
 	float base_slope = 0.0f, detail_pass_slope = 0.0f;
+	struct cut_store pieces_store;
 
 	if (!frame_open || triangle_count <= 0 || !vertices || !indices || vertex_count <= 0 || list_full())
 		return;
 	part_start();
 	cut_vertices_count = 0;
 	cut_vertices_prepared[0] = cut_vertices_prepared[1] = NULL;
+	cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_LEVEL);
 	stream = level_stream_get(vertices, lightmap_vertices, vertex_count);
 	if (!stream)
 		return;
@@ -5455,8 +5720,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				classification's time below) */
 				unsigned int cut_start = ge_clock();
 
-				cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
-					MAXIMUM_CUT_CORNERS - cut_count);
+				cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &pieces_store);
 				cut_us += ge_clock() - cut_start;
 			}
 		}
@@ -5530,11 +5794,13 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				break;
 			for (index = 0; index < cut_count; index++)
 			{
-				corners[index].u = cut_corners[index][which ? 5 : 3];
-				corners[index].v = cut_corners[index][which ? 6 : 4];
-				corners[index].x = cut_corners[index][7];
-				corners[index].y = cut_corners[index][8];
-				corners[index].z = cut_corners[index][9];
+				const float *c = cut_at(&pieces_store, index);
+
+				corners[index].u = c[which ? 5 : 3];
+				corners[index].v = c[which ? 6 : 4];
+				corners[index].x = c[7];
+				corners[index].y = c[8];
+				corners[index].z = c[9];
 			}
 			cut_vertices_prepared[which] = corners;
 		}
@@ -5621,7 +5887,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			sceGuDisable(GU_TEXTURE_2D);
 			sceGuColor(0xFFFFFFFF);
 		}
-		draw_pass_angled(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0, base_slope, 0);
+		draw_pass_angled(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0, base_slope, 0);
 		if (white_base)
 			sceGuEnable(GU_TEXTURE_2D);
 		sceGuDisable(GU_ALPHA_TEST);
@@ -5647,7 +5913,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			Dithered: this pass sets the level's brightness (build 117) */
 			sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_FIX, 0, 0);
 			ge_blend_dithered();
-			draw_pass(stream->lightmap, draw, (int)kept_count * 3, cut_corners, cut_count, 1);
+			draw_pass(stream->lightmap, draw, (int)kept_count * 3, &pieces_store, cut_count, 1);
 			ge_blend(0);
 			sceGuFog(fog_near, fog_far, fog_color);
 			sceGuDepthMask(GU_FALSE);
@@ -5727,10 +5993,10 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				if (detail_by_distance)
 				{
 					sceGuTexSlope(detail_pass_slope);
-					draw_pass(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0);
+					draw_pass(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0);
 				}
 				else
-					draw_pass_angled(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0, detail_pass_slope, 1);
+					draw_pass_angled(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0, detail_pass_slope, 1);
 				detail_passes++;
 			}
 			ge_blend(0);
@@ -5758,7 +6024,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		sceGuColor(color);
 		compact_now = stream->compact_base ? stream : NULL;
 		pass_scale_u = pass_scale_v = 1.0f;
-		draw_pass(stream->base, draw, (int)kept_count * 3, cut_corners, cut_count, 0);
+		draw_pass(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0);
 		compact_now = NULL;
 		flat_draws++;
 	}
@@ -7093,58 +7359,26 @@ static void foliage_soft_pass(void *vertices, const unsigned short *indices, lon
 	foliage_second_passes++;
 }
 
-/* build 60: a rigid part's triangles cut at the near plane or the guard
-band, as GE vertices in the part's space (drawn by model_geometry after the
-part's own list, in every pass) */
-#define MAXIMUM_MODEL_CUT_CORNERS 192
-/* build 108: in the scratchpad (psp_scratch.c; ge_initialize): written and
+/* a rigid part's triangles cut at the near plane or the guard band, as GE
+vertices in the part's space (drawn by model_geometry after the part's own
+list, in every pass). Their floats are staged in the scratchpad: written and
 read back for every model part cut at the near plane, and the emulator's
-cache model counted 0.8 M misses on it over b30's beach fight */
+cache model counted 0.8 M misses on them over b30's beach fight when they
+were in main memory */
 static float (*model_cut)[CORNER_FLOATS];
-/* Four times the room, on the heap. With the eye inside a vehicle's cabin
-(a Pelican's bench) most of the wall it faces crosses the near plane or the
-guard band, and a part's pieces past the scratchpad's 192 corners were left
-undrawn: the wall behind the player went missing (cut_pieces_lost). The
-larger buffer is taken only once a frame has lost pieces, so a game that
-never needs it (most views, and the multiplayer build's tighter heap) keeps
-the scratchpad's and pays nothing. "cutroom" takes it at start;
-"cutroomoff" never grows it */
-#define LARGE_MODEL_CUT_CORNERS 768
-static int model_cut_room = MAXIMUM_MODEL_CUT_CORNERS;
-static int model_cut_grow_allowed = -1;
 
 void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c */
-static int model_cut_take_large(const char *why)
+/* at start, with keep.txt read: the cutting's words, and the scratchpad's buffer */
+static void cut_take(void)
 {
-	float (*large)[CORNER_FLOATS] = malloc(sizeof(float[LARGE_MODEL_CUT_CORNERS][CORNER_FLOATS]));
-
-	platform_log("GE: the models' cut buffer %s: %d corners%s", why, large ? LARGE_MODEL_CUT_CORNERS : model_cut_room,
-		large ? " on the heap" : " kept (no heap room)");
-	if (!large)
-		return 0;
-	model_cut = large;
-	model_cut_room = LARGE_MODEL_CUT_CORNERS;
-	return 1;
-}
-static void model_cut_take(void)
-{
-	model_cut_grow_allowed = !psp_keep("cutroomoff");
-	if (!model_cut && psp_keep("cutroom"))
-		model_cut_take_large("taken at start (cutroom)");
-	if (!model_cut)
-		model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
-}
-/* at a frame's end, where no cut corners are held: the next frame cuts into
-the larger buffer (the display list keeps its own copies of this frame's) */
-static void model_cut_grow_if_lost(unsigned long lost)
-{
-	static unsigned long lost_seen;
-
-	if (lost == lost_seen)
-		return;
-	lost_seen = lost;
-	if (model_cut_grow_allowed > 0 && model_cut_room < LARGE_MODEL_CUT_CORNERS)
-		model_cut_grow_allowed = model_cut_take_large("grown after pieces were lost");
+	cut_stream = !psp_keep("cutstreamoff");
+	cut_less = cut_stream && !psp_keep("cutlessoff");
+	cut_count_on = psp_keep("cutcount");
+	if (!cut_stream)
+		platform_log("GE: cutstreamoff: cut pieces past the fixed buffers are lost, the guard planes at 6 screens");
+	else if (!cut_less)
+		platform_log("GE: cutlessoff: the guard planes at 6 screens, pieces off the screen drawn");
+	model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
 }
 static int model_cut_count = 0;
 static void *model_cut_vertices = NULL;
@@ -7822,6 +8056,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				float limit = projection_near * 1.25f;
 				int t, k, out = 0, uv_at = skin->stride - 24, cut_count = 0, kept_failed = 0;
 				int whole_by_sphere = 0;
+				struct cut_store pieces_store;
 				/* build 119: the runs (near_cluster_verdict) */
 				float slot_scale[SKIN_SLOTS];
 				int use_clusters = 0, cluster_end = 0, cluster_state = 0;
@@ -7843,6 +8078,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 
 				unsigned int loop_start = probe_clock(); /* build 119's probe */
 				unsigned long probe_corners = 0; /* in a register; added once below */
+
+				cut_store_begin(&pieces_store, model_cut, MAXIMUM_MODEL_CUT_CORNERS, CUT_SKIN);
 
 				/* each vertex's verdict once a batch (build 43: worked out per
 				corner, it cost up to 6 ms a frame on the PSP in build 42) */
@@ -8032,11 +8269,13 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						near_triangles_dropped++;
 						if (bits[0] & bits[1] & bits[2])
 							continue;
-						if (skin_cut && cut_count >= model_cut_room - 9)
+						/* cutstreamoff: the fixed buffer's own check, a triangle's
+						worst case of room or the whole triangle lost */
+						if (skin_cut && !cut_stream && cut_count >= MAXIMUM_MODEL_CUT_CORNERS - 9)
 							cut_pieces_lost++;
-						if (skin_cut && cut_count < model_cut_room - 9)
+						else if (skin_cut)
 						{
-							/* build 87: bent here and cut, as the level's are */
+							/* bent here and cut, as the level's are */
 							float polygon[3][CORNER_FLOATS];
 							int bits[3];
 
@@ -8067,14 +8306,10 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 								if (!(bits[0] | bits[1] | bits[2]))
 								{
 									/* inside every plane, only inside the margin: drawn whole */
-									memcpy(model_cut[cut_count], polygon[0], sizeof(polygon[0]));
-									memcpy(model_cut[cut_count + 1], polygon[1], sizeof(polygon[0]));
-									memcpy(model_cut[cut_count + 2], polygon[2], sizeof(polygon[0]));
-									cut_count += 3;
+									cut_count += cut_store_whole(polygon, &pieces_store);
 								}
 								else
-									cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + cut_count,
-										model_cut_room - cut_count);
+									cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], &pieces_store);
 								skin_cut_triangles++;
 							}
 						}
@@ -8127,18 +8362,19 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						for (c = 0; c < cut_count; c++)
 						{
 							unsigned char *record = pieces + 24 * c;
-							float uv[2] = { model_cut[c][3], model_cut[c][4] };
+							const float *corner = cut_at(&pieces_store, c);
+							float uv[2] = { corner[3], corner[4] };
 							int axis;
 
 							memcpy(record, uv, 8);
 							for (axis = 0; axis < 3; axis++)
 							{
-								float v = model_cut[c][axis == 2 ? 10 : 5 + axis];
+								float v = corner[axis == 2 ? 10 : 5 + axis];
 
 								record[8 + axis] = (unsigned char)(signed char)(v > 127.0f ? 127 : v < -127.0f ? -127 : (int)v);
 							}
 							record[11] = 0;
-							memcpy(record + 12, &model_cut[c][7], 12);
+							memcpy(record + 12, &corner[7], 12);
 						}
 						if (draw_count)
 							sceGumDrawArray(GU_TRIANGLES, GU_WEIGHTS(skin->weights) | GU_WEIGHT_8BIT | GU_TEXTURE_32BITF |
@@ -8500,6 +8736,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			float stretch = 0.0f;
 			int run_state = 0;
 			long run_end = 0;
+			struct cut_store pieces_store;
+
+			cut_store_begin(&pieces_store, model_cut, MAXIMUM_MODEL_CUT_CORNERS, CUT_RIGID);
 
 			if (rigid_runs_full < 0)
 			{
@@ -8579,8 +8818,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 						polygon[k][8] = p[1];
 						polygon[k][9] = p[2];
 					}
-					model_cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + model_cut_count,
-						model_cut_room - model_cut_count);
+					model_cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], &pieces_store);
 				}
 			}
 			if (model_cut_count)
@@ -8594,14 +8832,15 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 					for (c = 0; c < model_cut_count; c++)
 					{
 						unsigned char *record = out + 24 * c;
-						float uv[2] = { model_cut[c][3], model_cut[c][4] };
+						const float *corner = cut_at(&pieces_store, c);
+						float uv[2] = { corner[3], corner[4] };
 
 						memcpy(record, uv, 8);
-						record[8] = (unsigned char)(signed char)model_cut[c][5];
-						record[9] = (unsigned char)(signed char)model_cut[c][6];
-						record[10] = (unsigned char)(signed char)model_cut[c][10];
+						record[8] = (unsigned char)(signed char)corner[5];
+						record[9] = (unsigned char)(signed char)corner[6];
+						record[10] = (unsigned char)(signed char)corner[10];
 						record[11] = 0;
-						memcpy(record + 12, &model_cut[c][7], 12);
+						memcpy(record + 12, &corner[7], 12);
 					}
 					model_cut_vertices = out;
 				}
@@ -9445,6 +9684,7 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 	long triangles = draw->strip ? draw->index_count - 2 : draw->index_count / 3, t, count = 0;
 	unsigned short *kept = NULL;
 	int k, any = 0, cut = 0, sphere_inside = 0;
+	struct cut_store pieces_store;
 
 	/* build 118: the model's sphere first (above) */
 	if (tcut_full < 0)
@@ -9464,6 +9704,7 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 			sphere_inside = 1;
 		}
 	}
+	cut_store_begin(&pieces_store, model_cut, MAXIMUM_MODEL_CUT_CORNERS, CUT_SEE);
 	corner_verdict_reset();
 	for (t = 0; t < triangles; t++)
 	{
@@ -9568,7 +9809,7 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 				polygon[k][8] = p[1];
 				polygon[k][9] = p[2];
 			}
-			cut += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + cut, model_cut_room - cut);
+			cut += clip_triangle(polygon, bits[0] | bits[1] | bits[2], &pieces_store);
 		}
 	}
 	if (!any)
@@ -9586,20 +9827,21 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 		for (c = 0; c < cut; c++)
 		{
 			unsigned char *record = out + 24 * c;
-			float uv[2] = { model_cut[c][3], model_cut[c][4] };
+			const float *corner = cut_at(&pieces_store, c);
+			float uv[2] = { corner[3], corner[4] };
 
 			memcpy(record, uv, 8);
 			if (draw->colored)
-				*(unsigned int *)(record + 8) = seethrough_tinted(seethrough_color((int)(model_cut[c][5] + 0.5f),
+				*(unsigned int *)(record + 8) = seethrough_tinted(seethrough_color((int)(corner[5] + 0.5f),
 					draw->blend), draw->tint);
 			else
 			{
-				record[8] = (unsigned char)(signed char)model_cut[c][5];
-				record[9] = (unsigned char)(signed char)model_cut[c][6];
-				record[10] = (unsigned char)(signed char)model_cut[c][10];
+				record[8] = (unsigned char)(signed char)corner[5];
+				record[9] = (unsigned char)(signed char)corner[6];
+				record[10] = (unsigned char)(signed char)corner[10];
 				record[11] = 0;
 			}
-			memcpy(record + 12, &model_cut[c][7], 12);
+			memcpy(record + 12, &corner[7], 12);
 		}
 		draw->cut_vertices = out;
 		draw->cut_count = cut;
@@ -10706,9 +10948,11 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 		unsigned short *kept;
 		long t, kept_count = 0;
 		int cut_count = 0;
+		struct cut_store pieces_store;
 
 		if (l->stencil_key != stencil_key || !l->wall || !l->wall->drawn_frame)
 			continue;
+		cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
 		kept = (unsigned short *)list_take((int)(l->tri_count * 3 * sizeof(unsigned short) + 3) & ~3);
 		if (!kept)
 			return;
@@ -10745,8 +10989,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 					corners[corner][3] = v->u;
 					corners[corner][4] = v->v;
 				}
-				cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
-					MAXIMUM_CUT_CORNERS - cut_count);
+				cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &pieces_store);
 			}
 		}
 		if (kept_count && (draw = transparent_slot(key, u_scale, v_scale, u_offset, v_offset, blend, centroid)) != NULL)
@@ -10772,7 +11015,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 			}
 			for (index = 0; index < cut_count; index++)
 			{
-				const float *c = cut_corners[index];
+				const float *c = cut_at(&pieces_store, index);
 
 				out[index].u = c[3];
 				out[index].v = c[4];
@@ -10848,7 +11091,9 @@ static int level_transparent_angle(const struct level_stream *stream, const unsi
 	long index, kept_count = 0;
 	int cut_count = 0, units, on_wall = 0, free_push = 0, mode = PSP_SEETHROUGH_MODE(blend), total, at = 0, corner;
 	float fade = PSP_SEETHROUGH_FADE(blend);
+	struct cut_store pieces_store;
 
+	cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
 	/* which triangles are in view, the pushes they ask, the cut pieces */
 	for (index = 0; index < triangle_count; index++)
 	{
@@ -10888,8 +11133,7 @@ static int level_transparent_angle(const struct level_stream *stream, const unsi
 		if (!(bits[0] | bits[1] | bits[2]))
 			kept_count++;
 		else
-			cut_count += clip_triangle(p, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
-				MAXIMUM_CUT_CORNERS - cut_count);
+			cut_count += clip_triangle(p, bits[0] | bits[1] | bits[2], &pieces_store);
 	}
 	total = (int)kept_count * 3 + cut_count;
 	if (!total)
@@ -10920,7 +11164,7 @@ static int level_transparent_angle(const struct level_stream *stream, const unsi
 	}
 	for (index = 0; index < cut_count; index++)
 	{
-		const float *c = cut_corners[index];
+		const float *c = cut_at(&pieces_store, index);
 
 		out[at].u = c[3];
 		out[at].v = c[4];
@@ -10955,6 +11199,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 	int cut_count = 0, units, cut_units = 0, cut_units_free = 0, bucket;
 	unsigned short bucket_units[OVERLAY_BUCKETS];
 	struct transparent_draw *draw;
+	struct cut_store pieces_store;
 
 	if (!frame_open || triangle_count <= 0 || !vertices || !indices || vertex_count <= 0 || list_full())
 		return;
@@ -10977,6 +11222,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 	if (highest >= (unsigned int)vertex_count)
 		return;
 	memset(vertex_codes + lowest, CODE_UNKNOWN, highest - lowest + 1);
+	cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
 	/* build 116: a surface that fades by the angle it is seen at (above) */
 	if (PSP_SEETHROUGH_MODE(blend) != 0 && seethrough_fades(PSP_SEETHROUGH_BLEND(blend)) && !baked &&
 		triangle_count <= LEVEL_ANGLE_TRIANGLES &&
@@ -11050,8 +11296,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				cut_units = units;
 			if (units < 0 && (overlay_free_far > 0 ? !cut_units_free || -units < cut_units_free : -units > cut_units_free))
 				cut_units_free = -units;
-			cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
-				MAXIMUM_CUT_CORNERS - cut_count);
+			cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &pieces_store);
 		}
 	}
 	if (kept_count > OVERLAY_TRIANGLES)
@@ -11114,7 +11359,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 		}
 		for (index = 0; index < cut_count; index++)
 		{
-			const float *c = cut_corners[index];
+			const float *c = cut_at(&pieces_store, index);
 			int k;
 
 			/* the world position carried through the cut (build 34) */
@@ -12179,7 +12424,9 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	struct shadow_vertex *out;
 	long index, kept_count = 0;
 	int cut_count = 0;
+	struct cut_store pieces_store;
 
+	cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
 	shadow_requests++;
 	if (!shadow.open || !frame_open || triangle_count <= 0 || !vertices || !indices || list_full())
 		return;
@@ -12237,8 +12484,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 			corners[corner][5] = (float)(color & 0xFF);
 			corners[corner][6] = (float)((color >> 8) & 0xFF);
 		}
-		cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + cut_count,
-			MAXIMUM_CUT_CORNERS - cut_count);
+		cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &pieces_store);
 	}
 	if (!kept_count && !cut_count)
 		return;
@@ -12336,7 +12582,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 
 		for (index = 0; pieces && index < cut_count; index++)
 		{
-			const float *c = cut_corners[index];
+			const float *c = cut_at(&pieces_store, index);
 			unsigned int r = (unsigned int)c[5], g = (unsigned int)c[6];
 
 			pieces[index].u = c[3];
@@ -12626,6 +12872,9 @@ static int outside_cone(const float *p0, const float *p1, const float *p2, float
 	return bits != 0;
 }
 
+/* the light pass's cut pieces (psp_ge_light_draw_body begins it) */
+static struct cut_store light_pieces;
+
 /* one lit triangle (corners: camera space, texture coordinates, the light's
 reach at 5, the world position at 7): kept, cut up, or skipped by the view */
 static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
@@ -12651,8 +12900,7 @@ static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *ou
 		(*kept_count)++;
 		return;
 	}
-	*cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], cut_corners + *cut_count,
-		MAXIMUM_CUT_CORNERS - *cut_count);
+	*cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &light_pieces);
 }
 
 /* build 89: the light pass's nudge (mode 2), as b85's shadow test: a lift
@@ -12927,6 +13175,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		lights_skipped++;
 		return;
 	}
+	cut_store_begin(&light_pieces, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
 	stream = level_stream_find(vertices);
 	if (!stream)
 		return;
@@ -13256,7 +13505,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				light_lift_corner_merged(&all[index], step);
 			for (index = 0; index < cut_count; index++)
 			{
-				const float *c = cut_corners[index];
+				const float *c = cut_at(&light_pieces, index);
 				struct shadow_vertex *v = &all[kept_count * 3 + index];
 
 				v->u = c[3];
@@ -13353,7 +13602,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			light_cut_one = psp_keep("lightcutone");
 		for (index = 0; pieces && index < cut_count; index++)
 		{
-			const float *c = cut_corners[index];
+			const float *c = cut_at(&light_pieces, index);
 
 			pieces[index].u = c[3];
 			pieces[index].v = c[4];
@@ -14863,7 +15112,7 @@ void psp_ge_frame_end(void)
 		mark = sceKernelGetSystemTimeLow();
 		draw_buffer = sceGuSwapBuffers();
 		frame_end_us[1] += sceKernelGetSystemTimeLow() - mark;
-		model_cut_grow_if_lost(cut_pieces_lost);
+		cut_count_frame_end();
 		/* build 118: how long each frame stayed on the screen, in display
 		refreshes (60 a second): frames are shown at refreshes, so a frame
 		that misses 33.3 ms shows for 50 (20 fps for that frame), not 34.
@@ -14932,6 +15181,7 @@ void psp_ge_frame_end(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		cut_count_report(frames == 1 ? 1 : 300);
 		/* build 87: its own line (the one above passed the log's line length) */
 		/* build 89: the counters over these 300 frames (they were never
 		reset, so a bench window's line carried every earlier window's;
