@@ -118,13 +118,25 @@ That comes to ~10–12 KB on a retail map, and at most ~17 KB at the port's 128-
 
 - **Builds** [D]: the campaign build compiles and links (`4bc4f00`); `mewalk.py` gives the figures above.
 - **Memory** [D]: +6.8 KB code and +0.4 KB data against `446e3eb`, both built the same way. The heap is 8 KB smaller: 5,696 KB against 5,704.
-- **Emulator:** batch `merays122a` (lab run 38560105583) on `b8b7726`. That commit is this branch before the jobs were cut to 16; the walk is the same. It was queued behind two other sessions' batches when this was written, so its results were still to come:
-  1. `a50-strict`: the strict interpreter with `gemesim` (no system call in the ME's work) and `mewrites` (no line written both by the ME's work and the main CPU while the job is out);
-  2. `perccheck` with the word on, on b30's route, a50, b40 and c10: 0 mismatched, 0 failed wanted;
-  3. state CRC pairs, word on against off, on d20 and a50;
-  4. the multiplayer build starts Blood Gulch with the word on.
-
-  Read them with `mewrites.py`, `statecmp.py` and the log's two `perception` lines.
+- **Emulator** [E]: batch `merays122a`, lab run 38560105583, on `b8b7726`. That commit is this branch before the jobs were cut to 16; the walk is the same. Every run ended normally.
+  - **Every ME answer checked** (`perccheck`, the main CPU casting each taken ray again): **0 mismatched of 270,921**, 0 not served, 0 after a failed job, 0 refused pushes, 0 failed ring jobs.
+    - b30's route: 101,977 checked (103,003 cast by the ME);
+    - a50: 130,363;
+    - b40 (vehicles): 12,621;
+    - c10 (the Flood): 1,219;
+    - the strict a50 run: 24,760.
+  - **Play exact.** Word on against off, hands off: the play hash and both random seeds are the same at every tick, on d20 (25,217 ticks) and a50 (40,835).
+    - The perception lines of each pair are equal to the last count: the same rays cast, taken and refused.
+    - The ME played 5,699 and 377,137 of its answers.
+    - The whole-state hash differs in the allocations already known to follow the emulator's speed, and in `actor`. That is the stack bytes copied in with a `direction_specification` (`review_b121_aiperc.md`): the job's frames leave different bytes on the stack.
+  - **No system call in the ME's work** (a50, strict interpreter, `gemesim`): `MESTRICT: no system calls in work meant for the Media Engine`. 0 bad accesses.
+  - **The ME write trace** (`mewrites`, same run): 46 lines written by the ME's work, 3,513 by the main CPU while a job was out, and 23 by both.
+    - All 23 are in one 24 KB stretch at 0x09fb98c0–0x09fbf900: the main thread's stack, where the emulator runs the job.
+    - The ME's first stores there are frames and locals: `ring_run`'s argument copies, the mark-clearing loop in `psp_collision_test_vector_quiet`, the matrix temporaries, and the slant job's own frame. The main CPU's are the deeper calls of its actor updates.
+    - None is in the program image or the heap. On the PSP the ME runs on its own stack in its eDRAM, so these lines aren't shared there.
+    - Read with `mewrites.py` against a local build of `b8b7726`.
+  - **Multiplayer:** builds, and stops where `w121` does on Blood Gulch (the GE's 768 KB display list doesn't fit the heap).
+- **Batch `merays122b`** (lab run 38561782273, queued) runs the final plumbing (`4bc4f00`, jobs of 16): `perccheck` on b30's route and a50, and the d20 state CRC pair.
 - **What the emulator can't show.** It runs no ME code: each job runs inside the push, on the main CPU. So it proves the copy exact and the writes confined, but not:
   - the real ME's cache;
   - the speed;
