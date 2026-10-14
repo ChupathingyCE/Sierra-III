@@ -4880,6 +4880,18 @@ after the wait (whole lines of their own). The ME's part is at most half a
 draw */
 static unsigned char me_slant_out[ANGLE_TRIANGLES / 2] __attribute__((aligned(64)));
 
+/* the words, read once. Cold, like the other once-only and rare paths
+below: the hand-over's code, each draw's, stays fewer cache lines */
+static __attribute__((noinline, cold)) void slant_decide(void)
+{
+	extern int psp_keep_number(const char *prefix, int fallback);
+
+	me_slant = psp_keep("meslant");
+	me_slant_check = psp_keep("meslantcheck");
+	me_slant_min = psp_keep_number("meslantmin", SLANT_SPLIT_MIN);
+	me_slant_bias = psp_keep_number("meslantbias", SLANT_BIAS);
+}
+
 /* the ME's part handed over: returns where this CPU's part ends (count: no
 job, this CPU does the whole draw). lowest and highest: the draw's vertex
 range. The stream's vertices are in main RAM already (written back when
@@ -4895,14 +4907,7 @@ static __attribute__((noinline)) long slant_hand_over(const struct ge_vertex *st
 	if (PSP_ME_WORK())
 		return count;
 	if (me_slant < 0)
-	{
-		extern int psp_keep_number(const char *prefix, int fallback);
-
-		me_slant = psp_keep("meslant");
-		me_slant_check = psp_keep("meslantcheck");
-		me_slant_min = psp_keep_number("meslantmin", SLANT_SPLIT_MIN);
-		me_slant_bias = psp_keep_number("meslantbias", SLANT_BIAS);
-	}
+		slant_decide();
 	if (!me_slant)
 		return count;
 	me_slant_draws++;
@@ -4936,47 +4941,55 @@ static __attribute__((noinline)) long slant_hand_over(const struct ge_vertex *st
 	return first;
 }
 
-/* the ME's part collected into angle_bucket_of and the totals; if the ME
-failed it, this CPU works the part out itself */
+/* the ME's part worked out on this CPU: after a failed wait (done 0), or
+with meslantcheck, where the ME's answer (done 1, results) is compared and
+this CPU's is used */
+static __attribute__((noinline, cold)) void slant_part_here(int done, const unsigned int *results,
+	const struct ge_vertex *stream, const unsigned short *indices, long first, long count, int far_possible, long *total)
+{
+	float ex = camera_eye[0], ey = camera_eye[1], ez = camera_eye[2];
+	unsigned long differ = 0;
+	long t, mine[SORT_BUCKETS];
+	int b;
+
+	memset(mine, 0, sizeof(mine));
+	for (t = first; t < count; t++)
+	{
+		int bucket = angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, detail_far_squared);
+
+		if (done && me_slant_out[t - first] != bucket)
+			differ++;
+		angle_bucket_of[t] = (unsigned char)bucket;
+		mine[bucket]++;
+	}
+	for (b = 0; b < SORT_BUCKETS; b++)
+	{
+		if (done && (long)((results[b >> 1] >> ((b & 1) * 16)) & 0xFFFFu) != mine[b])
+			differ++;
+		total[b] += mine[b];
+	}
+	if (done)
+	{
+		me_slant_split++;
+		me_slant_triangles += (unsigned long)(count - first);
+		me_slant_checked += (unsigned long)(count - first);
+		me_slant_mismatches += differ;
+	}
+	else
+		me_slant_fallbacks++;
+}
+
+/* the ME's part collected into angle_bucket_of and the totals */
 static __attribute__((noinline)) void slant_collect(unsigned int ticket, const struct ge_vertex *stream, const unsigned short *indices, long first,
 	long count, int far_possible, long *total)
 {
 	unsigned int results[ME_RING_RESULTS];
-	float ex = camera_eye[0], ey = camera_eye[1], ez = camera_eye[2];
-	long t, part = count - first;
+	long part = count - first;
 	int b, done = psp_me_wait(ticket, results);
 
 	if (!done || me_slant_check)
 	{
-		unsigned long differ = 0;
-		long mine[SORT_BUCKETS];
-		int ok = done; /* meslantcheck: the ME's answer, to compare */
-
-		memset(mine, 0, sizeof(mine));
-		for (t = first; t < count; t++)
-		{
-			int bucket = angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, detail_far_squared);
-
-			if (ok && me_slant_out[t - first] != bucket)
-				differ++;
-			angle_bucket_of[t] = (unsigned char)bucket;
-			mine[bucket]++;
-		}
-		for (b = 0; b < SORT_BUCKETS; b++)
-		{
-			if (ok && (long)((results[b >> 1] >> ((b & 1) * 16)) & 0xFFFFu) != mine[b])
-				differ++;
-			total[b] += mine[b];
-		}
-		if (ok)
-		{
-			me_slant_split++;
-			me_slant_triangles += (unsigned long)part;
-			me_slant_checked += (unsigned long)part;
-			me_slant_mismatches += differ;
-		}
-		else
-			me_slant_fallbacks++;
+		slant_part_here(done, results, stream, indices, first, count, far_possible, total);
 		return;
 	}
 	me_slant_split++;

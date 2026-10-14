@@ -1107,6 +1107,45 @@ static int ring_in_ram(unsigned int address, unsigned int bytes)
 	return !bytes || (at >= 0x08000000u && at + bytes <= 0x0C000000u && at + bytes > at);
 }
 
+/* the emulator: the job's code here and now, marked as the ME's for the
+ME-strict check and the write trace (emu.sh's gemesim and mewrites); the
+window stays open until the wait. Cold, as the failure paths below: the
+PSP's push and wait stay fewer cache lines */
+static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int index, unsigned int t)
+{
+	unsigned int job_start;
+
+	if (!ring_thread)
+		ring_thread = (unsigned int)sceKernelGetThreadId();
+	psp_me_window[0] = 1;
+	job_start = sceKernelGetSystemTimeLow();
+	psp_me_context = ring_thread;
+	ring_run(index, 0, 0);
+	psp_me_context = 0;
+	ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
+	RING_POPPED = t + 1;
+}
+
+/* a failed wait, reported (why: 0 stopped, 1 too late, 2 a bad answer); the
+ring stops unless the ME itself was stopped */
+static __attribute__((noinline, cold)) int ring_fail(int why, unsigned int ticket, unsigned int index)
+{
+	const struct me_ring_request *request = &ring_requests[index];
+	const struct me_ring_result *result = &ring_results[index];
+
+	if (why == 1)
+		platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here",
+			ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
+	else if (why == 2)
+		platform_log("ME: ring job %u (type %u) came back %s (ticket %u); the main CPU does it, and the ring is off from here",
+			ticket, request->type, result->status == RING_STACK ? "past its stack allowance" :
+			result->status == RING_BAD_TYPE ? "as an unknown type" : "with another job's answer", result->ticket);
+	if (why)
+		ring_dead = 1;
+	ring_stats.failures++;
+	return 0;
+}
+
 /* a job handed to the ring: 1, with its ticket for psp_me_wait; 0 if the
 ring can't take it (off, full, the ME busy with a long slot job, or a
 transfer that breaks the rules above): the caller does the work itself */
@@ -1167,22 +1206,7 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 	ring_push_mark[index] = start;
 	ring_next = t + 1;
 	if (me_state == 2)
-	{
-		/* the emulator: the job's code here and now, marked as the ME's for
-		the ME-strict check and the write trace (emu.sh's gemesim and
-		mewrites); the window stays open until the wait */
-		unsigned int job_start;
-
-		if (!ring_thread)
-			ring_thread = (unsigned int)sceKernelGetThreadId();
-		psp_me_window[0] = 1;
-		job_start = sceKernelGetSystemTimeLow();
-		psp_me_context = ring_thread;
-		ring_run(index, 0, 0);
-		psp_me_context = 0;
-		ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
-		RING_POPPED = t + 1;
-	}
+		ring_push_simulated(index, t);
 	else
 	{
 		lines_writeback((unsigned int)request, sizeof(*request));
@@ -1220,18 +1244,9 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 				now = sceKernelGetSystemTimeLow();
 				/* stopped (HOME, sleep, a slot job's timeout) before this job */
 				if (me_state <= 0 || CONTROL->stop == 2)
-				{
-					ring_stats.failures++;
-					return 0;
-				}
+					return ring_fail(0, ticket, index);
 				if (now - ring_push_mark[index] > RING_DEADLINE_US)
-				{
-					platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here",
-						ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
-					ring_dead = 1;
-					ring_stats.failures++;
-					return 0;
-				}
+					return ring_fail(1, ticket, index);
 				/* mehalt: a wake that may have been lost (me_halt_idle) */
 				me_wake();
 			}
@@ -1247,14 +1262,7 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	else if (request->output_bytes)
 		lines_drop(request->output, request->output_bytes);
 	if (result->ticket != ticket || result->status != RING_OK)
-	{
-		platform_log("ME: ring job %u (type %u) came back %s (ticket %u); the main CPU does it, and the ring is off from here",
-			ticket, request->type, result->status == RING_STACK ? "past its stack allowance" :
-			result->status == RING_BAD_TYPE ? "as an unknown type" : "with another job's answer", result->ticket);
-		ring_dead = 1;
-		ring_stats.failures++;
-		return 0;
-	}
+		return ring_fail(2, ticket, index);
 	for (k = 0; k < ME_RING_RESULTS; k++)
 		results[k] = result->results[k];
 	now = sceKernelGetSystemTimeLow();
