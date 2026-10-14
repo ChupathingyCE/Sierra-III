@@ -16288,9 +16288,14 @@ int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 
 # the index as it would have. weapon_new is left as it is: initialising the
 # field would change the weapon's state from its first tick, and the desktop
 # servers run the same code. Opt-in, "weapontracksleep" (keep.txt): with it,
-# itemsleepcheck found a resting needler changed by its own update on b30
-# (12 of 150,000 sleeper updates), so another outside input is still
-# unaccounted for. itemsleepcheck now logs the words that changed.
+# itemsleepcheck finds a resting needler changed by its own update on b30
+# (14 of 210,000 sleeper updates): its second outgoing function value
+# (byte 0xE8) moves now and then with nothing else changed: the update
+# evaluates the definition's periodic functions at 57 x the object's slot +
+# game time (object_compute_function_values), so game time is an outside
+# input, and a sleeping needler would hold the old value. A sleeper that
+# still computes its functions (as a sleeping corpse does) would answer it.
+# itemsleepcheck logs the words that changed.
 # The lit items' report line also counts ground weapons and sleeping ones
 FIXES_123L["source/objects/objects.c#weapontrack"] = [
 ("""				unsigned long after;

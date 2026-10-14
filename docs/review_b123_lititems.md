@@ -7,10 +7,11 @@ Branch `lititems123` (from `w122`, `85ebea3`).
 | Change | Kind | Default |
 |---|---|---|
 | Resting weapons and equipment with attached lights may sleep, their lights reconnected as their update would | exact speed; **never reached**: another test keeps every lit ground weapon awake (§4), so no gain | on (`litemsawake` off) |
-| The lit items counted on a line of their own, with the sleep test each one fails | report | always |
+| Resting "tracking" weapons sleep: the tracked object's existence in the sleep checksum | speed; **not exact yet**: a needler's time-driven function moves while it sleeps (§5) | **off** (opt-in `weapontracksleep`) |
+| The lit items counted on a line of their own, with the sleep test each one fails; ground weapons updated and asleep; itemsleepcheck shows the changed words | report | always |
 | `pillreach`: how far a biped's pill sweep reaches (for `plan_biped_collision_me.md`) | recon, `PSP_DEBUG_TOOLS=1` only | off (opt-in) |
 
-**In short.** The change is exact and changes nothing else, but it never gets to act. Lit weapons do lie on the ground (the assault rifle, pistol, needler, plasma pistol and plasma rifle: 2–20 a tick), and every one that comes to rest is kept awake by the sleep rule's **tracking test**. That test fires because `tracked_object_index` is never initialised: it is 0, not NONE, and 0 names whatever object sits in slot 0 (§4). The lights exclusion was never the binding one. An exact lever follows from it (§4); not built.
+**In short.** The change is exact and changes nothing else, but it never gets to act. Lit weapons do lie on the ground (the assault rifle, pistol, needler, plasma pistol and plasma rifle: 2–20 a tick), and every one that comes to rest is kept awake by the sleep rule's **tracking test**. That test fires because `tracked_object_index` is never initialised: it is 0, not NONE, and 0 names whatever object sits in slot 0 (§4). The lights exclusion was never the binding one. The lever that follows (§5) is built, but `itemsleepcheck` caught a second outside input, game time through the weapon's own functions, so it ships off.
 
 ---
 
@@ -112,7 +113,7 @@ Results (lab 38616332979) are in the plan.
 - The lights have nothing to do with it [D]: `items.c` sets and clears `_object_at_rest_bit` only for falls, bounces and pushes. The census counted only lit items, but unlit weapons go through the same `weapon_new` [D; not counted].
 - The trigger code reads the index only in `_trigger_tracking`: a trigger whose definition has `_weapon_trigger_tracks_projectile_bit` enters it after firing, and leaves it when the trigger is up or the index is NONE (`weapons.c`). Nothing here sets the index to the projectile, so with the 0 such a trigger tracks until released. Whether any of the game's weapons has that flag is not checked [U]. On the ground, triggers are idle, so a resting weapon never reads it.
 
-**An exact lever** (not built). The tracking test exists only because `weapon_update` reads whether the tracked object still exists. Fold that one read into the sleep checksum and the test can go:
+**An exact lever** (built as §5, opt-in). The tracking test exists only because `weapon_update` reads whether the tracked object still exists. Fold that one read into the sleep checksum and the test can go:
 - In `psp_family_checksum`, for a weapon whose `tracked_object_index != NONE`, mix in whether `object_try_and_get_and_verify_type(tracked, _object_mask_all)` succeeds, as b102 mixes in a machine's groups. The checksum is taken at the weapon's own turn in the tick, the moment `weapon_update` would ask.
 - Then drop the tracking exclusion from `psp_item_may_sleep`.
 - If slot 0's object goes (or a real target dies), the checksum changes that same tick, the weapon wakes, and its update clears the index exactly as it would have. While the answer stays the same, the update leaves the weapon's bytes alone (the byte-identical rule shows it, as for any sleeper).
@@ -120,4 +121,30 @@ Results (lab 38616332979) are in the plan.
 - Multiplayer: the same argument as §1. The read is local; a network update writes the weapon's bytes and wakes it.
 
 **Not exact: initialising the field.** Setting `tracked_object_index = NONE` in `weapon_new` would end the wildcard lookup at the source. But it changes every new weapon's bytes and what `weapon_update` reads, so the state hash would differ from the first tick. ChupathingyCE's desktop servers run the same `weapon_new`, so the server and the port would hold different weapon state. It is a behaviour change with an upstream question (does the Xbox's `weapon_new` set it? [U]), for Sheepdog01 and, if it holds, a small upstream fix. Not built.
+
+## 5. The tracking lever, built: off until the functions are handled (`9c4d694`, `39b9276`)
+
+**What.** `FIXES_123L["source/objects/objects.c#weapontrack"]`:
+- `psp_family_checksum`: for a weapon whose `tracked_object_index != NONE`, the answer to `object_try_and_get_and_verify_type(tracked, _object_mask_all)` is mixed into the checksum, as b102 mixes in a machine's groups. It is asked at the weapon's own turn in the tick, the moment `weapon_update` asks it.
+- `psp_weapon_track_excluded`: the tracking exclusion holds unless `weapontracksleep`. The first build had it on (off word `weapontrackawake`); `39b9276` made it opt-in after the check below.
+- `weapon_new` is unchanged.
+- Report only: `weapons on the ground per tick: U updated, A asleep`; `itemsleepcheck` now logs each changed word of an update that changed a sleeper; `weapons.c#tracksprojectile` logs each weapon definition's tracking triggers once.
+
+**Proof** [E], the lever on against off.
+- **Play exact.** Lab 38640831708, hands off, statecrc, `statecmp --ignore="object looping sounds,first person weapons"`: the play hash and both seeds are the same at every common tick on d20 (26,210), a50 (42,105) and c20 (31,561). The whole state differs in `objects` (and `contrail point` on d20), the allocations that follow the emulator's speed. The light lists are the same.
+- **But only c20 exercised it.** Ground weapons asleep a tick with the lever on: c20 1.0, d20 0, a50 0 (a50's two that settle are later kept awake as "not at rest"). So these pairs say little.
+- **`itemsleepcheck` failed on b30's route.** It changed 12 of 150,000 sleeper updates (lab 38640831708) and 14 of 210,000 (lab 38645794975, `39b9276`), every one a `weapons\needler\needler`. On c10 (420,000) and a50 (360,000) it changed none.
+- **What changed** (lab 38645794975): always word 58, byte 0xE8 of the datum, which is `outgoing_function_values[1]`, by small steps (`3e30b0b1 → 3e30b0b2`, `3e445df9 → 3e40ebd3`). `object_compute_function_values` evaluates each of the definition's functions at `(57 × slot + game time) / 30` [D]. So **game time is an outside input**: a function that holds still (a step or plateau) lets the needler sleep, and when it moves, the sleeping needler keeps the old value. Function values feed the needler's shaders, not play, which is why the play hash held; the whole-state hash couldn't tell, because `objects` already differs for speed.
+- **Default: off.** It fails the bar (a sleeper its own update would change). Opt-in `weapontracksleep`.
+
+**The gain, as far as measured** [E] (cache models to game time 40 s, lab 38640831708, on against off):
+- b30's route (the flight; 4.0 of 4.0 ground weapons asleep): 46.41 → 46.00 ms est. a tick (−0.42 ms, −0.9%). b30 plays alike, not the same, across a change in speed.
+- a50: 15.560 → 15.541 ms (no weapon slept in the window).
+- Ground weapons on b30's route over 600 s, hands off: 5.8 a tick, up to 19 on the beach (lab 38645794975). All the ground weapons the census logged are lit.
+
+**What would make it exact** (not built). Let a sleeping weapon still compute its functions, as a sleeping corpse does (b106, `psp_sleepy_update`): `object_type_export_function_values`, `object_compute_function_values`, `object_compute_change_colors` in the asleep branch, and the function values and change colours left out of the weapon's checksum (`psp_checksum_rules_for`, as for a dead biped). Then `itemsleepcheck` and the statecrc pairs again.
+
+**The same input reaches every sleeper** [U]. Any sleeping object whose definition has a function of time with a plateau (equipment under b120's item sleep, scenery, parked vehicles) can hold an old function value through a step. `itemsleepcheck` covers items only, and found none but the needler on b30, c10 and a50. Scenery and vehicles have no such check. The play hash can't see function values, and `objects` hides them in the whole-state hash. A check mode for all sleepers would settle it.
+
+**Tracking triggers** [E]. No weapon seen has `_weapon_trigger_tracks_projectile_bit`. The `weapons:` lines (lab 38640831708; d20, a50, c20, b30) list 12 definitions, each with a tracking mask of 0: assault rifle, pistol, plasma rifle, plasma pistol, needler, sniper rifle, shotgun, rocket launcher, energy sword, the warthog's, the covenant turret's and the dropship's guns. Only the flag and the tag name are read; nothing of the tags leaves the runner but those lines.
 
