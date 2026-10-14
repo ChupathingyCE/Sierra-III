@@ -62,7 +62,7 @@ MHZ = 333.0
 PHASE_NAMES = ['other', 'tick', 'drawing', 'frame end']
 
 SITE_FIELDS = ['phase', 'pc', 'kind', 'execs', 'misses', 'stall', 'waited', 'hide_any', 'hide0', 'hide1', 'hide2',
-               'hide3', 'dist', 'far', 'recur', 'ops', 'sp_ops', 'hide_next', 'stride', 'delta']
+               'hide3', 'dist', 'far', 'recur', 'ops', 'sp_ops', 'hide_next', 'stride', 'delta', 'hd1', 'hd2', 'hd3']
 TOTAL_FIELDS = ['phase', 'cycles', 'dstall', 'istall', 'waits', 'pf_issued', 'pf_fills', 'pf_used', 'pf_unused',
                 'misses', 'imisses']
 
@@ -258,8 +258,10 @@ def is_branch(op):
 
 
 def walk_back(code, span, pc, longest=96):
-    """From the access at pc back through straight-line code to its base
-    register's write: what lies between, and where a prefetch would go"""
+    """From the access at pc back through the code that falls through to it,
+    to its base register's write: what lies between, and where a prefetch
+    would go. Branches that land on the way are only noted: a prefetch
+    placed above one serves the path that falls through"""
     insns, targets = code.function(span)
     index = {a: i for i, (a, _, _) in enumerate(insns)}
     if pc not in index:
@@ -270,15 +272,14 @@ def walk_back(code, span, pc, longest=96):
         return None
     offset, base = mem
     result = {'insn': '%s %s' % (op, ','.join(operands)), 'base': base, 'offset': offset, 'def': None,
-              'stop': None, 'blockers': [], 'path': []}
+              'stop': None, 'blockers': [], 'path': [], 'joins': []}
     i = index[pc]
     in_delay = i > 0 and is_branch(insns[i - 1][1])
     result['delay_slot'] = in_delay
     steps = 0
     while True:
         if insns[i][0] in targets:
-            result['stop'] = 'a branch lands at %08x' % insns[i][0]
-            break
+            result['joins'].append(insns[i][0])
         if i == 0:
             result['stop'] = 'function start'
             break
@@ -305,7 +306,7 @@ def walk_back(code, span, pc, longest=96):
     starts = []      # (first instruction of a stretch, its length)
     if result['def']:
         start, rest = path[0][0] + 4, path[1:]
-    elif result['stop'] in ('function start',) or (result['stop'] or '').startswith('a branch lands'):
+    elif result['stop'] in ('function start', 'after an unconditional jump'):
         start, rest = (path[0][0] if path else pc), path
     else:
         start, rest = None, path   # the walk gave up: what came before is unknown
@@ -325,7 +326,8 @@ def walk_back(code, span, pc, longest=96):
     if result['place_before'] is not None:
         k = index.get(result['place_before'])
         result['place_in_delay'] = k is not None and k > 0 and is_branch(insns[k - 1][1])
-        result['branchy'] = any(is_branch(o) for a, o, _ in path if result['place_before'] <= a < pc)
+        result['branchy'] = (any(is_branch(o) for a, o, _ in path if result['place_before'] <= a < pc)
+                             or any(result['place_before'] < j <= pc for j in result['joins']))
     return result
 
 
@@ -339,10 +341,39 @@ def ms(cycles):
     return cycles / (MHZ * 1000.0)
 
 
+ADDITIVE = ['execs', 'misses', 'stall', 'waited', 'hide_any', 'hide0', 'hide1', 'hide2', 'hide3', 'dist', 'far',
+            'recur', 'ops', 'sp_ops', 'hide_next', 'stride', 'hd1', 'hd2', 'hd3']
+
+
+def is_elf(path):
+    with open(path, 'rb') as f:
+        return f.read(4) == b'\x7fELF'
+
+
+def combine(runs, phase):
+    """Each run's sites for one phase as figures a tick, then the mean over
+    the runs (a site missing from a run counts 0 there): one map of a level
+    each, so no level outweighs another for having played longer"""
+    merged = {}
+    for header, totals, sites in runs:
+        ticks = header.get('ticks', 0) if phase == 1 else 0
+        ticks = ticks or 1
+        for site in sites:
+            if site['phase'] != phase:
+                continue
+            key = (site['pc'], site['kind'])
+            m = merged.setdefault(key, dict({k: 0.0 for k in ADDITIVE}, pc=site['pc'], kind=site['kind'],
+                                            delta=site['delta'], best=-1))
+            for k in ADDITIVE:
+                m[k] += site[k] / ticks / len(runs)
+            if site['misses'] > m['best']:
+                m['best'], m['delta'] = site['misses'], site['delta']
+    return list(merged.values())
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    ap.add_argument('sites')
-    ap.add_argument('elf', nargs='?', help='the build\'s halo.elf (names and code)')
+    ap.add_argument('inputs', nargs='+', help='one or more sites files (several: their mean a tick) and the ELF')
     ap.add_argument('--map', help='halo.map, for names when there is no ELF (no code then)')
     ap.add_argument('--phase', type=int, default=1, help='0 other, 1 tick (default), 2 drawing, 3 frame end')
     ap.add_argument('--top', type=int, default=30)
@@ -352,29 +383,40 @@ def main():
     ap.add_argument('--inject-out', help='file for --inject (default: printed at the end)')
     args = ap.parse_args()
 
-    header, totals, all_sites = read_sites(args.sites)
+    elfs = [p for p in args.inputs if is_elf(p)]
+    paths = [p for p in args.inputs if p not in elfs]
+    if len(elfs) > 1 or not paths:
+        sys.exit('prefetchmap: give one or more sites files and at most one ELF')
+    elf = elfs[0] if elfs else None
+    runs = [read_sites(p) for p in paths]
+    header = runs[0][0]
+    fmt = min(r[0]['format'] for r in runs)
     miss = header.get('miss', 72)
-    ticks = header.get('ticks', 0) if args.phase == 1 else 0
-    unit = 'a tick' if ticks else 'in the run'
-    if not ticks:
-        ticks = 1
-    names = Names(args.elf, args.map) if (args.elf or args.map) else Names()
-    code = Code(args.elf) if args.elf else None
-    sites = [s for s in all_sites if s['phase'] == args.phase and s['kind'] in 'ls']
-    injected = [s for s in all_sites if s['phase'] == args.phase and s['kind'] == 'p']
+    unit = 'a tick' if args.phase == 1 else 'in the run'
+    ticks = 1   # combine() leaves every figure a tick (a run, outside the tick)
+    names = Names(elf, args.map) if (elf or args.map) else Names()
+    code = Code(elf) if elf else None
+    all_sites = combine(runs, args.phase)
+    sites = [s for s in all_sites if s['kind'] in 'ls']
+    injected = [s for s in all_sites if s['kind'] == 'p']
     for s in sites:
         span = names.find(s['pc']) if names.spans else None
         s['span'] = span
         s['function'] = span[2] if span else '?'
         s['where'] = names.name(s['pc']) if names.spans else '%08x' % s['pc']
         s['lever'] = lever(s['function'])
-        m = max(s['misses'], 1)
-        s['hide'] = s['hide0']
-        s['score'] = per_tick(s['hide0'], ticks)
-        s['net'] = per_tick(s['hide0'] - s['execs'], ticks)
-        s['near_gain'] = per_tick(s['hide3'] - s['hide0'], ticks)
-        s['next_gain'] = per_tick(max(s['hide_next'] - s['hide0'], 0), ticks)
-        s['frac'] = s['hide0'] / (m * miss)
+        m = s['misses'] or 1
+        s['score'] = s['hide0']
+        s['net'] = s['hide0'] - s['execs']
+        s['near_gain'] = s['hide3'] - s['hide0']
+        # what moving up to three data operations could add, the I-misses left
+        # where they are (format 3; before it, a bound: neither more than
+        # taking out three events of either kind nor than taking out every I-miss)
+        if fmt >= 3:
+            s['near_data'] = max(s['hd3'] - s['hide0'], 0)
+        else:
+            s['near_data'] = max(min(s['hide3'], s['hide_any']) - s['hide0'], 0)
+        s['next_gain'] = max(s['hide_next'] - s['hide0'], 0)
         s['window'] = s['hide0'] / m
         s['window_any'] = s['hide_any'] / m
         s['dist_mean'] = s['dist'] / m
@@ -384,35 +426,40 @@ def main():
         s['ops_mean'] = s['ops'] / m
         s['sp_mean'] = s['sp_ops'] / m
 
-    t = totals.get(args.phase)
-    print('prefetchmap: %s, phase %d (%s), sites format %d; miss %d cycles, I-miss %d, I-misses %s for fills'
-          % (os.path.basename(args.sites), args.phase, PHASE_NAMES[args.phase], header['format'], miss,
-             header.get('imiss', 0), 'wait' if header.get('iwait', 1) else "don't wait"))
-    if t:
-        print('%d ticks. Per tick [E]: %.0f cycles (%.2f ms), data-miss stall %.0f (%.2f ms; %.0f misses), '
-              'instruction-miss stall %.0f (%.2f ms), waits on fills %.0f'
-              % (header.get('ticks', 0), per_tick(t['cycles'], ticks), ms(per_tick(t['cycles'], ticks)),
-                 per_tick(t['dstall'], ticks), ms(per_tick(t['dstall'], ticks)), per_tick(t['misses'], ticks),
-                 per_tick(t['istall'], ticks), ms(per_tick(t['istall'], ticks)), per_tick(t['waits'], ticks)))
+    print('prefetchmap: phase %d (%s), sites format %d; miss %d cycles, I-miss %d, I-misses %s for fills'
+          % (args.phase, PHASE_NAMES[args.phase], min(r[0]['format'] for r in runs), miss, header.get('imiss', 0),
+             'wait' if header.get('iwait', 1) else "don't wait"))
+    for path, (h, totals, _) in zip(paths, runs):
+        t = totals.get(args.phase)
+        n = (h.get('ticks', 0) if args.phase == 1 else 0) or 1
+        if not t:
+            continue
+        print('%s: %d ticks. %s [E]: %.0f cycles (%.2f ms), data-miss stall %.0f (%.2f ms; %.0f misses), '
+              'instruction-miss stall %.0f (%.2f ms; %.0f misses), waits on fills %.0f'
+              % (path, h.get('ticks', 0), unit.capitalize(), t['cycles'] / n, ms(t['cycles'] / n), t['dstall'] / n,
+                 ms(t['dstall'] / n), t['misses'] / n, t['istall'] / n, ms(t['istall'] / n), t['imisses'] / n,
+                 t['waits'] / n))
         if t['pf_issued']:
-            print('prefetches %s: %.1f issued, %.1f filled, %.1f used, %.1f evicted unused'
-                  % (unit, per_tick(t['pf_issued'], ticks), per_tick(t['pf_fills'], ticks),
-                     per_tick(t['pf_used'], ticks), per_tick(t['pf_unused'], ticks)))
+            print('  prefetches %s: %.1f issued, %.1f filled, %.1f used, %.1f evicted unused'
+                  % (unit, t['pf_issued'] / n, t['pf_fills'] / n, t['pf_used'] / n, t['pf_unused'] / n))
+    if len(runs) > 1:
+        print('the figures below are the mean of the %d runs, %s' % (len(runs), unit))
     listed = sum(s['misses'] for s in sites)
     hide_all = sum(s['hide0'] for s in sites)
     hide_any = sum(s['hide_any'] for s in sites)
     hide3 = sum(s['hide3'] for s in sites)
+    near_data = sum(s['near_data'] for s in sites)
     net_all = sum(max(s['hide0'] - s['execs'], 0) for s in sites)
-    if t and t['misses']:
-        print('the %d sites listed (at least %d misses each) hold %.0f%% of the phase\'s misses'
-              % (len(sites), header.get('min', 0), 100.0 * listed / t['misses']))
-    print('a prefetch at every listed site, each placed at its best window, would hide [E] %.0f cycles %s '
-          '(%.3f ms; %.0f%% of the listed sites\' stall), %.0f after each prefetch\'s own cycle at every run '
-          'where it pays; with I-misses not in the way %.0f (%.3f ms); with up to three memory operations moved '
-          'out of the way %.0f (%.3f ms)'
-          % (per_tick(hide_all, ticks), unit, ms(per_tick(hide_all, ticks)),
-             100.0 * hide_all / max(listed * miss, 1), per_tick(net_all, ticks), per_tick(hide_any, ticks),
-             ms(per_tick(hide_any, ticks)), per_tick(hide3, ticks), ms(per_tick(hide3, ticks))))
+    print('%d sites (each with at least %d misses in its run), %.0f misses %s' % (len(sites), header.get('min', 0),
+                                                                              listed, unit))
+    print('a prefetch at every site, each at its best window, would hide [E] %.0f cycles %s (%.3f ms; %.1f%% of '
+          'their stall), %.0f (%.3f ms) after the prefetch\'s own cycle at each run, at the sites where that pays'
+          % (hide_all, unit, ms(hide_all), 100.0 * hide_all / max(listed * miss, 1), net_all, ms(net_all)))
+    print('  if I-misses don\'t wait for a fill (unmeasured [U]): %.0f (%.3f ms)' % (hide_any, ms(hide_any)))
+    print('  with up to three memory events (data operations or I-misses) out of each window: %.0f (%.3f ms)'
+          % (hide3, ms(hide3)))
+    print('  with up to three data operations moved out of each window, the I-misses left: %.0f (%.3f ms)%s'
+          % (hide_all + near_data, ms(hide_all + near_data), '' if fmt >= 3 else ' (an upper bound before format 3)'))
     print()
 
     # --- ranked sites
@@ -433,7 +480,7 @@ def main():
         loop += ' %3.0f%%' % (100 * s['recur_frac'])
         print('%-4d %08x  %-46s %-2s %8.1f %6.2f %-9s %7.0f %4.0f%% %6.1f %6.1f %8.0f %8.0f  %s'
               % (n, s['pc'], s['where'][:46], s['kind'], per_tick(s['misses'], ticks),
-                 s['misses'] / max(s['execs'], 1), loop, s['dist_mean'], 100 * s['far_frac'], s['window'],
+                 s['misses'] / (s['execs'] or 1), loop, s['dist_mean'], 100 * s['far_frac'], s['window'],
                  s['window_any'], s['score'], s['net'], s['lever']))
     print('  miss/t: misses a tick; m/run: misses per run of the instruction; loop: L when a backward branch in the '
           'function spans it, then how often it ran again within 4,096 cycles; known: mean cycles from the base '
@@ -462,7 +509,7 @@ def main():
                 if info.get('place_in_delay'):
                     note = ' (that spot is a delay slot: in the code it goes before the branch)'
                 elif info.get('branchy'):
-                    note = ' (a branch lies between: the window is on one path)'
+                    note = ' (a branch leaves or lands between: the window is on the path that falls through)'
                 print('   place: cache 0x1E, %d(%s) before %08x: %d instructions with no memory operation follow%s'
                       % (info['offset'], info['base'], info['place_before'], info['static_run'], note))
             else:
@@ -472,19 +519,24 @@ def main():
         print()
 
     # --- near misses
-    near = sorted([s for s in sites if s['near_gain'] > 0], key=lambda s: -s['near_gain'])
-    print('== near misses: cycles a tick more if up to three memory operations moved out of the window [E]')
-    print('%-4s %-9s %-46s %8s %6s %6s %6s %6s %6s %6s  %s'
-          % ('#', 'pc', 'function', 'miss/t', 'win', 'win-1', 'win-2', 'win-3', 'ops', 'on sp', 'gain/t'))
+    near = sorted([s for s in sites if s['near_data'] > 0], key=lambda s: -s['near_data'])
+    print('== near misses: cycles %s more if up to three data operations moved out of the window [E]' % unit)
+    print('%-4s %-9s %-46s %8s %6s %6s %6s %6s %6s %6s %6s %8s  %s'
+          % ('#', 'pc', 'function', 'miss/t', 'win', 'win-1', 'win-2', 'win-3', 'win*', 'ops', 'on sp', 'gain/t',
+             'lever'))
     for n, s in enumerate(near[:args.near], 1):
-        m = max(s['misses'], 1)
-        print('%-4d %08x  %-46s %8.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f  %.0f  %s'
-              % (n, s['pc'], s['where'][:46], per_tick(s['misses'], ticks), s['window'], s['hide1'] / m,
-                 s['hide2'] / m, s['hide3'] / m, s['ops_mean'], s['sp_mean'], s['near_gain'], s['lever']))
+        m = s['misses'] or 1
+        k = ['hd1', 'hd2', 'hd3'] if fmt >= 3 else ['hide1', 'hide2', 'hide3']
+        print('%-4d %08x  %-46s %8.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %6.1f %8.0f  %s'
+              % (n, s['pc'], s['where'][:46], s['misses'], s['window'], s[k[0]] / m, s[k[1]] / m,
+                 s[k[2]] / m, s['window_any'], s['ops_mean'], s['sp_mean'], s['near_data'], s['lever']))
         info = walk_back(code, s['span'], s['pc']) if code and s['span'] else None
         if info and info['blockers']:
             print('       in the way: ' + '; '.join('%08x %s%s' % (a, txt, ' (spill)' if sp else '')
                                                 for a, txt, sp in list(reversed(info['blockers']))[:6]))
+    print('  win-N: the window with N data operations taken out, the I-misses left (before format 3: N memory '
+          'events of either kind); win*: with only data operations in the way; gain/t: what taking out up to three '
+          'data operations adds')
     print()
 
     # --- loops with a steady step: the next item, a run ahead
@@ -495,7 +547,7 @@ def main():
         print('%-4s %-9s %-46s %8s %6s %7s %7s %6s %8s  %s'
               % ('#', 'pc', 'function', 'miss/t', 'win', 'win-it', 'steady', 'step', 'gain/t', 'lever'))
         for n, s in enumerate(pipes[:args.near], 1):
-            m = max(s['misses'], 1)
+            m = s['misses'] or 1
             print('%-4d %08x  %-46s %8.1f %6.1f %7.1f %6.0f%% %6d %8.0f  %s'
                   % (n, s['pc'], s['where'][:46], per_tick(s['misses'], ticks), s['window'], s['hide_next'] / m,
                      100 * s['stride_frac'], s['delta'], s['next_gain'], s['lever']))
