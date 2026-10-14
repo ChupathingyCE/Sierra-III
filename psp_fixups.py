@@ -15627,6 +15627,265 @@ FIXES_122["source/objects/objects.c#merays"] = [
 )]
 
 
+# Two behaviour A/Bs for Sheepdog01 (docs/optimization_ranking.md section 6, B3 and
+# B4; docs/review_b122_farrate.md). Both off by default and campaign only:
+# - "machinesfar": an always-moving machine (type 2: c20's gears and
+#   platforms) that is far from the player, out of view and carrying nothing
+#   is updated every other tick. On the other tick only its position steps on
+#   (machine_update's own first lines, so the position stays on its path, bit
+#   for bit); its relink, pose, functions and damage catch up at the next
+#   update;
+# - "posehalf": an object at rest, far from the player and out of view has
+#   its node matrices (and their post-processing) made every other tick; its
+#   animation and the rest of its update run every tick, so the next pose made
+#   is the one it would have had.
+# "Far" and "in view" are judged from the player's unit, which is simulation
+# state, so the answer doesn't follow the frame rate. Never in a networked
+# game: a client simulates in step with a server that updates everything
+# every tick, and a co-op or multiplayer game would part from it.
+FIXES_122["source/objects/objects.c#farrate"] = [
+("""static boolean object_update(
+	long object_index)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_122): "machinesfar" and "posehalf" (see there) */
+boolean network_coop_active(void);
+boolean cinematic_in_progress(void);
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+int psp_machine_step_alone(long machine_index); /* device_machines.c */
+static int psp_machines_far = -1, psp_pose_half = -1;
+static unsigned long psp_far_machine_counts[2], psp_pose_half_counts[2];
+
+/* world units: about 18 m, past where a player picks out a gear's or a
+body's single-tick motion */
+#define PSP_FAR_DISTANCE 6.0f
+/* the cone counted as in view: about 70 degrees each side of the aim, wider
+than the widest view, and the slack covers a vehicle's camera sitting
+behind the player */
+#define PSP_FAR_VIEW_COSINE 0.34f
+#define PSP_FAR_CAMERA_SLACK 4.0f
+
+/* the player's eye and aim for this tick, or 0: a networked game, a
+cutscene (its camera is anywhere), no unit, more than one local player */
+static int psp_far_viewer(real_point3d *eye, real_vector3d *aim)
+{
+	static long known_time = -1;
+	static int usable = 0;
+	static real_point3d known_eye;
+	static real_vector3d known_aim;
+	long now = game_time_get();
+
+	if (now != known_time)
+	{
+		known_time = now;
+		usable = 0;
+		if (game_in_progress() && game_connection() == _game_connection_local && !game_engine_running() &&
+			!network_coop_active() && !cinematic_in_progress() && local_player_count() == 1)
+		{
+			long player_index = local_player_get_player_index(0);
+			long unit_index = player_index != NONE ? player_get(player_index)->unit_index : NONE;
+
+			if (unit_index != NONE)
+			{
+				struct unit_datum const *unit = (struct unit_datum const *)object_get(unit_index);
+
+				known_eye = unit->object.bounding_sphere_center;
+				known_aim = unit->unit.aiming_vector;
+				usable = 1;
+			}
+		}
+	}
+	*eye = known_eye;
+	*aim = known_aim;
+	return usable;
+}
+
+static int psp_far_unseen(struct object_datum const *object)
+{
+	real_point3d eye;
+	real_vector3d aim, d;
+	real distance, radius = object->object.bounding_sphere_radius;
+
+	if (!psp_far_viewer(&eye, &aim))
+		return 0;
+	d.i = object->object.bounding_sphere_center.x - eye.x;
+	d.j = object->object.bounding_sphere_center.y - eye.y;
+	d.k = object->object.bounding_sphere_center.z - eye.z;
+	distance = square_root(d.i * d.i + d.j * d.j + d.k * d.k);
+	if (distance - radius < PSP_FAR_DISTANCE)
+		return 0;
+	return d.i * aim.i + d.j * aim.j + d.k * aim.k < PSP_FAR_VIEW_COSINE * distance - radius - PSP_FAR_CAMERA_SLACK;
+}
+
+/* half of the eligible objects each tick, by index; the double speed
+powerup updates objects on even ticks only, so the half by game time would
+be the same half every update */
+static int psp_far_off_tick(long object_index)
+{
+	long update = game_players_are_double_speed() ? game_time_get() >> 1 : game_time_get();
+
+	return ((update + (object_index & 0xFFFF)) & 1) != 0;
+}
+
+static void psp_far_count(unsigned long *counts, int skipped, char const *what)
+{
+	counts[skipped ? 1 : 0]++;
+	if (counts[0] + counts[1] >= 30000)
+	{
+		platform_psp_log("%s: of %lu chances, %lu skipped", what, counts[0] + counts[1], counts[1]);
+		counts[0] = counts[1] = 0;
+	}
+}
+
+/* machinesfar: 1 when this tick's update of an always-moving machine is
+left out (its position stepped on alone) */
+static int psp_machine_far_skips(long object_index, struct object_datum const *object)
+{
+	long found[1];
+	int skip;
+
+	if (psp_machines_far < 0)
+		psp_machines_far = psp_keep("machinesfar");
+	if (psp_machines_far <= 0 || !psp_far_off_tick(object_index))
+		return 0;
+	/* anything carried, riding or touching it moves with its relink and
+	pose, so those stay every tick; and a sleeping machine's lights are
+	reconnected every tick (machinesleep), so lit ones stay too */
+	skip = object->object.first_child_object_index == NONE && object->object.parent_object_index == NONE &&
+		!TEST_FLAG(object->object.flags, _object_has_attached_lights_bit) &&
+		psp_far_unseen(object) &&
+		objects_in_sphere(_object_mask_unit | _object_mask_item, _object_mask_unit | _object_mask_item,
+			&object->object.location, &object->object.bounding_sphere_center,
+			object->object.bounding_sphere_radius, found, NUMBEROF(found)) == 0 &&
+		psp_machine_step_alone(object_index);
+	psp_far_count(psp_far_machine_counts, skip, "machinesfar: always-moving machines");
+	return skip;
+}
+
+/* posehalf: 1 when this tick's pose of the object is left out */
+static int psp_pose_half_skips(long object_index, struct object_datum const *object)
+{
+	int skip;
+
+	if (psp_pose_half < 0)
+		psp_pose_half = psp_keep("posehalf");
+	if (psp_pose_half <= 0 || !TEST_FLAG(object->object.flags, _object_at_rest_bit) ||
+		object->object.type == _object_type_machine || !psp_far_off_tick(object_index))
+		return 0;
+	/* a parent's pose places its children, and a child's comes from its
+	parent's */
+	skip = object->object.first_child_object_index == NONE && object->object.parent_object_index == NONE &&
+		!object->object.animation.interpolation_frame_count && psp_far_unseen(object);
+	psp_far_count(psp_pose_half_counts, skip, "posehalf: resting objects' poses");
+	return skip;
+}
+#endif
+
+static boolean object_update(
+	long object_index)
+{"""),
+("""#ifdef HALO_PSP
+		{
+			/* build 45: bipeds split the same way (accounts 17-19), for the
+			campaign's 25-30 of them a tick */
+""", """#ifdef HALO_PSP
+		int psp_pose_skipped = psp_pose_half_skips(object_index, object);
+
+		{
+			/* build 45: bipeds split the same way (accounts 17-19), for the
+			campaign's 25-30 of them a tick */
+"""),
+("""			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit))
+			{
+				object_compute_node_matrices(object_index);
+			}
+			if (timed)
+				psp_object_account(timed + 2, psp_microseconds() - mark);
+""", """			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped)
+			{
+				object_compute_node_matrices(object_index);
+			}
+			if (timed)
+				psp_object_account(timed + 2, psp_microseconds() - mark);
+"""),
+("""		object_postprocess_node_matrices(object_index);
+#ifdef HALO_PSP
+		if (psp_machine_mark)
+			psp_object_account(26, psp_microseconds() - psp_machine_mark);
+#endif
+""", """#ifdef HALO_PSP
+		/* post-processing works on the pose in place, so it runs only on a
+		pose just made */
+		if (!psp_pose_skipped)
+			object_postprocess_node_matrices(object_index);
+		if (psp_machine_mark)
+			psp_object_account(26, psp_microseconds() - psp_machine_mark);
+#else
+		object_postprocess_node_matrices(object_index);
+#endif
+"""),
+("""		psp_sleepy_update(object_index, absolute_index, header, may);
+		return;
+	}
+	/* build 105: a settled corpse""", """		if (psp_machine_far_skips(object_index, object))
+			return;
+		psp_sleepy_update(object_index, absolute_index, header, may);
+		return;
+	}
+	/* build 105: a settled corpse"""),
+]
+FIXES_122["source/devices/device_machines.c#farrate"] = [
+("""boolean machine_update(
+	long machine_index)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_122): "machinesfar" (objects.c). A far, unseen
+always-moving machine's tick without its update: only the step
+machine_update's first lines make, the same operations on the same values,
+so its position and its group's value stay where every-tick updates put
+them. Only while device_update would leave the machine alone (its power
+steady, nothing asked of its position group); else 0, nothing changed */
+int psp_machine_step_alone(long machine_index)
+{
+	struct machine_datum *machine = machine_get(machine_index);
+	struct machine_definition *definition = machine_definition_get(machine->definition_index);
+	struct device_group_datum *group = NULL;
+
+	if (definition->machine.type != _machine_type_platform ||
+		machine->device.power_velocity != 0.0f || machine->device.position_velocity != 0.0f)
+		return 0;
+	if (machine->device.power_group_index != NONE &&
+		((struct device_group_datum *)datum_get(device_groups_data, machine->device.power_group_index))->actual_value !=
+			machine->device.power)
+		return 0;
+	if (machine->device.position_group_index != NONE)
+	{
+		group = (struct device_group_datum *)datum_get(device_groups_data, machine->device.position_group_index);
+		if (group->actual_value != machine->device.position)
+			return 0;
+		/* as device_update does for a device its group leaves alone */
+		machine->device.delay_ticks = 0;
+	}
+	machine->device.position +=
+		(1.0f - machine->device.power) * definition->device.runtime_maximum_depowered_position_velocity +
+		machine->device.power * definition->device.runtime_maximum_powered_position_velocity;
+	if (machine->device.position >= 1.0f)
+	{
+		machine->device.position -= 1.0f;
+	}
+	/* the relink this asks for is made at the next update */
+	machine->device.flags |= FLAG(_device_position_changed_bit);
+	if (group)
+		group->actual_value = machine->device.position;
+	return 1;
+}
+#endif
+
+boolean machine_update(
+	long machine_index)
+{"""),
+]
+
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
