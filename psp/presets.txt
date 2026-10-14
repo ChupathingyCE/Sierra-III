@@ -13,3 +13,4 @@
 10 A/B, see-through on the VFPU (c40): nearauto assettrack geo2 seethroughvfpu
 11 A/B, far machines and half-rate posing (c20): nearauto assettrack geo2 machinesfar posehalf
 12 A/B, scenery at half rate: nearauto assettrack geo2 sceneryhalf
+13 A/B, Pelican wall (cut buffer x4): nearauto assettrack geo2 cutroom
