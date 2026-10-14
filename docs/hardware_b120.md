@@ -52,12 +52,31 @@ Shots 005-007: a hairline straight down from the centre in 005. Lead [U]: the pu
 - **Test 3 (`hudsnap`)** against test 2 (plain), at 4× (`b120_hud_plain_vs_hudsnap.png`): slightly better; Sheepdog01: both somewhat jagged, test 3 a little better on screen thanks to the smoothing.
 - **Test 4 ran without `hud177`:** its log's keep words are `nearauto assettrack geo2 hudsnap`, preset 4's, and the HUD is the same size as test 3's (with `hud177` it would be ~18% bigger). The launch menu keeps unknown words as typed (`apply_preset`, `psp_menu.c`), so the likeliest cause is preset 4 applied again. To re-run with preset 5. The menu doesn't log which preset it applied: b121's preset-on-the-stamp ask covers that.
 
+## Test 5: the ladder (a10, preset 2)
+
+`b120_test5.tgz`: **all ten maps in one session, no crash** [M]. `ladderreport.py`, b119's PSP-1000 ladder beside it:
+
+| Level | fps (b119 → b120) | Tick, ms (b119 → b120) |
+|---|---|---|
+| The Pillar of Autumn (a10) | 14.9 → 15.1 | 6.6 → 6.6 |
+| Halo (a30) | 7.0 → 7.0 | 11.5 → 10.6 |
+| Truth and Reconciliation (a50) | 9.2 → 9.3 | 32.0 → 31.3 |
+| The Silent Cartographer (b30) | 3.9 → 4.0 | 59.3 → 56.8 |
+| Assault on the Control Room (b40) | 14.6 → 15.0 | 15.7 → 15.3 |
+| 343 Guilty Spark (c10) | 9.1 → 9.2 | 22.7 → 21.3 |
+| The Library (c20) | 8.0 → 8.0 | 26.3 → 25.9 |
+| Two Betrayals (c40) | 13.5 → 13.7 | 16.2 → 15.3 |
+| Keyes (d20) | 7.6 → 7.7 | 16.9 → 16.2 |
+| The Maw (d40) | 19.0 → 19.6 | 5.5 → 5.4 |
+
+The tick is faster on 9 of 10 maps (a30 −8%, c10 and c40 −6%) and fps is up or level on all ten, as the rig predicted.
+
 ## LK16: a10's window glass, yellow splotches in a repeating pattern
 
 Sheepdog01 (20:23, during the ladder): a10's window glass looks worse than before, yellow splotches all over it in a repeating pattern.
 - **Not a b120 regression in the emulator** [E] (lab run 38495638507, a shot every 10 s through a10's opening): b119 on its maps, b120 on its maps, b120 on b119's maps and b120 with `glassflat` draw the bridge windows identically, a green-yellow mottled pattern repeating where the view outside should be (shots 004 and 022). The two bakes' logs also match for a10 except the new HUD line.
 - **So it's longstanding** [E]; the lead [U]: a texture meant for something else (the window shader's reflection map, or a bump or detail map) drawn as the glass's colour. For the look batch.
-- **Open:** Sheepdog01 saw it as *worse* on the PSP; the emulator can't show a hardware-only difference. A PSP-1000 screenshot at the windows settles it.
+- **On the PSP it is worse** (Sheepdog01, 20:39): much more pronounced, less abstract and see-through. So something differs on hardware only. Being checked on the rig: a10 shots on b120 (as is, and with `vramlargest`, VRAM filled by size as on a fresh stick) and on b119 (lab runs 38496994706, 38497057378).
 
 ## For b121 (Sheepdog01, 2026-10-13)
 
