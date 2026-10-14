@@ -631,12 +631,17 @@ void psp_step(const char *name)
 object's update (psp_fixups.py) and the profile window reports the sums per
 tick, so a slow tick says which kind of object it went to */
 
-#define OBJECT_ACCOUNTS 20
+#define OBJECT_ACCOUNTS 27
+#define OBJECT_ACCOUNTS_FIRST_LINE 20 /* the machines' parts go on a line of their own */
 static const char *const object_account_names[OBJECT_ACCOUNTS] = {
 	"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery", "machine",
 	"control", "light", "placeholder", "sound scenery", "activation", "garbage collection",
 	"(of the vehicles: type update", "damage", "node matrices)",
-	"(of the bipeds: type update", "damage", "node matrices)"};
+	"(of the bipeds: type update", "damage", "node matrices)",
+	/* "machinetime" (psp_fixups.py): the relink is part of the type update,
+	and only machines with lights on them count in the lights */
+	"(of the machines: type update", "damage", "node matrices", "the relink", "functions and colours", "lights",
+	"children and the rest)"};
 static unsigned long object_microseconds[OBJECT_ACCOUNTS], object_updates[OBJECT_ACCOUNTS];
 
 void psp_object_account(int type, unsigned long microseconds)
@@ -657,7 +662,7 @@ static void object_report(SceUID file, unsigned long ticks)
 	int length, type;
 
 	length = snprintf(line, sizeof(line), "objects_update by type, ms per tick (updates per tick):");
-	for (type = 0; type < OBJECT_ACCOUNTS && length < (int)sizeof(line) - 64; type++)
+	for (type = 0; type < OBJECT_ACCOUNTS_FIRST_LINE && length < (int)sizeof(line) - 64; type++)
 	{
 		if (object_updates[type])
 			length += snprintf(line + length, sizeof(line) - length, " %s %.2f (%.1f);", object_account_names[type],
@@ -679,6 +684,25 @@ static void object_report(SceUID file, unsigned long ticks)
 		psp_objects_restless_skipped = psp_items_asleep = 0;
 	}
 	platform_log("  %s", line);
+	{
+		/* "machinetime": a machine's parts; and the relink memo's lookups
+		(cluster_partitions.c, psp_fixups.py FIXES_121) */
+		extern unsigned long psp_relink_hits, psp_relink_misses, psp_relink_wrong;
+
+		length = snprintf(line, sizeof(line), "machine parts, ms per tick (updates per tick):");
+		for (type = OBJECT_ACCOUNTS_FIRST_LINE; type < OBJECT_ACCOUNTS && length < (int)sizeof(line) - 64; type++)
+		{
+			if (object_updates[type])
+				length += snprintf(line + length, sizeof(line) - length, " %s %.3f (%.1f);", object_account_names[type],
+					ticks ? object_microseconds[type] / 1000.0 / ticks : 0.0, ticks ? (double)object_updates[type] / ticks : 0.0);
+			object_microseconds[type] = object_updates[type] = 0;
+		}
+		if (length < (int)sizeof(line) - 128)
+			length += snprintf(line + length, sizeof(line) - length, " relink lookups per tick: %.1f remembered, %.1f worked out, %lu wrong",
+				ticks ? (double)psp_relink_hits / ticks : 0.0, ticks ? (double)psp_relink_misses / ticks : 0.0, psp_relink_wrong);
+		psp_relink_hits = psp_relink_misses = 0;
+		platform_log("  %s", line);
+	}
 	{
 		/* build 113: the views drawn (a frame each, as a rule), how full
 		their rendered-object list got, and the render-state cache's misses

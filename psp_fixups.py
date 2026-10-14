@@ -13635,6 +13635,328 @@ FIXES_121["source/objects/objects.c#epoch"] = [
     "void object_compute_node_matrices(\n\tlong object_index)",
 )]
 
+# A reconnect's two lookups, remembered: which leaf and cluster a point is in,
+# and which clusters a sphere touches. Both read only their inputs and the
+# level's BSP, so the same inputs give the same answer bit for bit. Every
+# machine is moved to where it already is each tick (machine_update's
+# object_translate), and a light on it reconnects with it, so most reconnects
+# repeat last tick's lookups. The disconnect and reconnect still happen in
+# full: the lists come out in the same order with the same references. Off:
+# "relinkfresh"; "relinkcheck" does each remembered lookup again and compares
+FIXES_121["source/structures/cluster_partitions.c#relinkmemo"] = [
+("""void cluster_partition_reconnect(
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_121): the remembered lookups (see psp_fixups.py's
+FIXES_121 #relinkmemo). Slots are picked by a hash of the inputs, and a slot
+answers only for inputs equal to the ones stored, bit for bit. The
+generation is the cluster lists': a new map, a new BSP or a loaded game makes
+the lists anew (cluster_partition_port_forget), and every slot from before
+stops answering */
+int psp_keep(const char *name);
+
+#define PSP_RELINK_SLOTS 256
+#define PSP_RELINK_CLUSTERS 14
+struct psp_relink_clusters
+{
+	unsigned long bits[4]; /* the sphere: x, y, z, radius */
+	unsigned long generation;
+	short cluster_index;
+	short count; /* -1: empty */
+	short clusters[PSP_RELINK_CLUSTERS];
+};
+struct psp_relink_location
+{
+	unsigned long bits[3];
+	unsigned long generation;
+	long leaf_index;
+	short cluster_index;
+	short full; /* 0: empty */
+};
+static struct psp_relink_clusters psp_relink_clusters[PSP_RELINK_SLOTS];
+static struct psp_relink_location psp_relink_locations[PSP_RELINK_SLOTS];
+static unsigned long psp_relink_generation = 1;
+static int psp_relink_on = -1, psp_relink_check = 0;
+unsigned long psp_relink_hits, psp_relink_misses, psp_relink_wrong;
+
+static void psp_relink_start(void)
+{
+	if (psp_relink_on < 0)
+	{
+		psp_relink_on = !psp_keep("relinkfresh");
+		psp_relink_check = psp_keep("relinkcheck");
+		csmemset(psp_relink_clusters, 0xFF, sizeof(psp_relink_clusters));
+	}
+}
+
+static unsigned long psp_relink_slot(unsigned long const *bits, int count, unsigned long extra)
+{
+	unsigned long hash = extra * 0x27D4EB2FUL;
+	int k;
+
+	for (k = 0; k < count; k++)
+		hash = (hash ^ bits[k]) * 0x9E3779B1UL;
+	return (hash >> 24) & (PSP_RELINK_SLOTS - 1);
+}
+
+static short psp_relink_clusters_in_sphere(
+	short cluster_index,
+	real_point3d const *position,
+	real radius,
+	short maximum_count,
+	short *cluster_indices)
+{
+	struct psp_relink_clusters *slot;
+	unsigned long bits[4];
+	short count, k;
+
+	psp_relink_start();
+	if (!psp_relink_on)
+		return structure_clusters_in_sphere(cluster_index, position, radius, maximum_count, cluster_indices);
+	csmemcpy(bits, position, 12);
+	csmemcpy(&bits[3], &radius, 4);
+	slot = &psp_relink_clusters[psp_relink_slot(bits, 4, (unsigned short)cluster_index)];
+	if (slot->count >= 0 && slot->count <= maximum_count && slot->generation == psp_relink_generation &&
+		slot->cluster_index == cluster_index && slot->bits[0] == bits[0] && slot->bits[1] == bits[1] &&
+		slot->bits[2] == bits[2] && slot->bits[3] == bits[3])
+	{
+		psp_relink_hits++;
+		for (k = 0; k < slot->count; k++)
+			cluster_indices[k] = slot->clusters[k];
+		if (psp_relink_check)
+		{
+			short fresh[64];
+			short fresh_count = structure_clusters_in_sphere(cluster_index, position, radius, NUMBEROF(fresh), fresh);
+			boolean same = fresh_count == slot->count;
+
+			for (k = 0; same && k < fresh_count; k++)
+				same = fresh[k] == slot->clusters[k];
+			if (!same)
+				psp_relink_wrong++;
+		}
+		return slot->count;
+	}
+	psp_relink_misses++;
+	count = structure_clusters_in_sphere(cluster_index, position, radius, maximum_count, cluster_indices);
+	if (count >= 0 && count <= PSP_RELINK_CLUSTERS && count <= maximum_count)
+	{
+		slot->bits[0] = bits[0];
+		slot->bits[1] = bits[1];
+		slot->bits[2] = bits[2];
+		slot->bits[3] = bits[3];
+		slot->generation = psp_relink_generation;
+		slot->cluster_index = cluster_index;
+		slot->count = count;
+		for (k = 0; k < count; k++)
+			slot->clusters[k] = cluster_indices[k];
+	}
+	return count;
+}
+
+/* scenario_location_from_point, remembered (object_reconnect_to_map). It
+writes the location's leaf and cluster and nothing else; so does this */
+void psp_relink_location_from_point(
+	struct location *location,
+	real_point3d const *point)
+{
+	struct psp_relink_location *slot;
+	unsigned long bits[3];
+
+	psp_relink_start();
+	if (!psp_relink_on)
+	{
+		scenario_location_from_point(location, point);
+		return;
+	}
+	csmemcpy(bits, point, 12);
+	slot = &psp_relink_locations[psp_relink_slot(bits, 3, 0)];
+	if (slot->full && slot->generation == psp_relink_generation &&
+		slot->bits[0] == bits[0] && slot->bits[1] == bits[1] && slot->bits[2] == bits[2])
+	{
+		psp_relink_hits++;
+		location->leaf_index = slot->leaf_index;
+		location->cluster_index = slot->cluster_index;
+		if (psp_relink_check)
+		{
+			struct location fresh;
+
+			scenario_location_from_point(&fresh, point);
+			if (fresh.leaf_index != slot->leaf_index || fresh.cluster_index != slot->cluster_index)
+				psp_relink_wrong++;
+		}
+		return;
+	}
+	psp_relink_misses++;
+	scenario_location_from_point(location, point);
+	slot->bits[0] = bits[0];
+	slot->bits[1] = bits[1];
+	slot->bits[2] = bits[2];
+	slot->generation = psp_relink_generation;
+	slot->leaf_index = location->leaf_index;
+	slot->cluster_index = location->cluster_index;
+	slot->full = 1;
+}
+#endif
+
+void cluster_partition_reconnect(
+"""),
+("""	cluster_count = structure_clusters_in_sphere(
+		location->cluster_index,
+		position,
+		radius,
+		NUMBEROF(cluster_indices),
+		cluster_indices);
+""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_121): remembered when the same sphere comes again */
+	cluster_count = psp_relink_clusters_in_sphere(
+#else
+	cluster_count = structure_clusters_in_sphere(
+#endif
+		location->cluster_index,
+		position,
+		radius,
+		NUMBEROF(cluster_indices),
+		cluster_indices);
+"""),
+("""static void cluster_partition_port_forget(
+	struct cluster_partition *partition)
+{
+""", """static void cluster_partition_port_forget(
+	struct cluster_partition *partition)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_121): the lists are made anew, perhaps for
+	another BSP: no remembered lookup answers from now */
+	psp_relink_generation++;
+#endif
+"""),
+]
+FIXES_121["source/objects/objects.c#relinkmemo"] = [
+("""		if (!location)
+		{
+			scenario_location_from_point(&bounding_sphere_location, &object->object.bounding_sphere_center);
+			location = &bounding_sphere_location;
+
+			if (bounding_sphere_location.cluster_index==NONE)
+			{
+				scenario_location_from_point(&bounding_sphere_location, &object->object.position);
+			}
+		}
+""", """		if (!location)
+		{
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_121): remembered (cluster_partitions.c) */
+			extern void psp_relink_location_from_point(struct location *location, real_point3d const *point);
+
+			psp_relink_location_from_point(&bounding_sphere_location, &object->object.bounding_sphere_center);
+#else
+			scenario_location_from_point(&bounding_sphere_location, &object->object.bounding_sphere_center);
+#endif
+			location = &bounding_sphere_location;
+
+			if (bounding_sphere_location.cluster_index==NONE)
+			{
+				scenario_location_from_point(&bounding_sphere_location, &object->object.position);
+			}
+		}
+"""),
+]
+
+# "machinetime" in keep.txt: a machine's update timed in its parts
+# (psp_platform.c's object report, accounts 20 to 26). Recon only
+FIXES_121["source/objects/objects.c#machinetime"] = [
+("""static boolean object_update(
+	long object_index)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_121): "machinetime" (device_machines.c reads it too) */
+int psp_machine_time = -1;
+
+static int psp_machine_timed(struct object_datum const *object)
+{
+	if (psp_machine_time < 0)
+		psp_machine_time = psp_keep("machinetime");
+	return psp_machine_time > 0 && object->object.type == _object_type_machine;
+}
+#endif
+
+static boolean object_update(
+	long object_index)
+{"""),
+("""			int timed = object->object.type == _object_type_vehicle ? 14 : object->object.type == _object_type_biped ? 17 : 0;
+""", """			int timed = object->object.type == _object_type_vehicle ? 14 : object->object.type == _object_type_biped ? 17 :
+				psp_machine_timed(object) ? 20 : 0;
+"""),
+("""#endif
+
+		object_compute_function_values(object_index);
+		object_compute_change_colors(object_index);
+""", """#endif
+#ifdef HALO_PSP
+		unsigned long psp_machine_mark = psp_machine_timed(object) ? psp_microseconds() | 1 : 0;
+#endif
+
+		object_compute_function_values(object_index);
+		object_compute_change_colors(object_index);
+#ifdef HALO_PSP
+		if (psp_machine_mark)
+		{
+			psp_object_account(24, psp_microseconds() - psp_machine_mark);
+			psp_machine_mark = psp_microseconds() | 1;
+		}
+#endif
+"""),
+("""			object_connect_lights(object_index, TRUE, TRUE);
+		}
+
+		// Update children (if we have any)
+""", """			object_connect_lights(object_index, TRUE, TRUE);
+		}
+#ifdef HALO_PSP
+		/* only machines with lights on them are counted */
+		if (psp_machine_mark && TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+			psp_object_account(25, psp_microseconds() - psp_machine_mark);
+		if (psp_machine_mark)
+			psp_machine_mark = psp_microseconds() | 1;
+#endif
+
+		// Update children (if we have any)
+"""),
+("""		object_postprocess_node_matrices(object_index);
+	}
+
+	return result;
+}
+""", """		object_postprocess_node_matrices(object_index);
+#ifdef HALO_PSP
+		if (psp_machine_mark)
+			psp_object_account(26, psp_microseconds() - psp_machine_mark);
+#endif
+	}
+
+	return result;
+}
+"""),
+]
+FIXES_121["source/devices/device_machines.c#machinetime"] = [
+("""	if (TEST_FLAG(machine->device.flags, _device_position_changed_bit))
+	{
+		object_translate(machine_index, &machine->object.position, NULL);
+""", """	if (TEST_FLAG(machine->device.flags, _device_position_changed_bit))
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_121): "machinetime" (objects.c) */
+		extern int psp_machine_time;
+		void psp_object_account(int type, unsigned long microseconds);
+		unsigned long psp_mark = psp_machine_time > 0 ? psp_microseconds() : 0;
+
+		object_translate(machine_index, &machine->object.position, NULL);
+		if (psp_machine_time > 0)
+			psp_object_account(23, psp_microseconds() - psp_mark);
+#else
+		object_translate(machine_index, &machine->object.position, NULL);
+#endif
+"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
