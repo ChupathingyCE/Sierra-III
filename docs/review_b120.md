@@ -7,7 +7,7 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 | # | Change | Kind | Default |
 |---|---|---|---|
 | 1 | Engine pin: ChupathingyCE `v0.7.4e` | upstream | on |
-| 2 | `hotgroup`: PGO's hot code laid out as one block | exact speed (link layout) | *decided after the cache model* |
+| 2 | `hotgroup`: PGO's hot code laid out as one block | exact speed (link layout) | not in b120 (for b121) |
 | 3 | Resting weapons and equipment sleep | exact speed | on (`itemsawake` off) |
 | 4 | `mehalt`: the ME halts when idle | ME groundwork | off (opt-in) |
 | 5 | `mefinishslow`: a spaced wait on ME jobs | ME groundwork | off (opt-in) |
@@ -29,7 +29,7 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 - **Cost:** none added per tick (the hot files' diffs were read: one actor loop got one iteration shorter).
 - **Behaviour, edge cases only:** a starting weapon added while one is held becomes the one in hand; two reads of uninitialised values in the AI (grenade aim from a vehicle, who speaks a line) now read defined values.
 
-**Proven.** `PSP_FIXUPS_CHECK=1` lists no broken anchors; it builds with 0 stubbed symbols [D]. Heap 5,784 KB, 60 KB less than b119: upstream's code grew.
+**Proven.** `PSP_FIXUPS_CHECK=1` lists no broken anchors; it builds with 0 stubbed symbols [D]. The release build's heap is 5,836 KB, 8 KB under b119's 5,844.
 
 **Default.** On; it's the engine.
 
@@ -41,9 +41,11 @@ Branch `w120`. Start from b119 (`bb8b02d`).
 
 **Why.** The PSP's link script places code in input order, so hot functions sit among cold ones and share 64-byte cache lines with them. With a 16 KB I-cache and ~59 KB of hot tick code, wasted line ends add up. Two thirds of the main CPU's misses are instruction fetches (`research_icache.md`, T1).
 
-**Proven.** Same code at new addresses, so exact by construction. Its worth: the cache model on b120's own profile *(result here)*.
+**Proven.** Same code at new addresses, so exact by construction.
 
-**Default.** *(decided by the cache model)*
+**What happened.** The first version didn't link with a profile: a function's hot and cold parts branch to each other with MIPS's 16-bit branches (±128 KB), and grouping all hot parts away from all cold parts put them out of reach (lab run 38482586242). The fixed version keeps each hot function's own cold part beside it, per object file, and leaves everything else as the default places it (`hot_pairs()` in `psp_build.py`). With b120's profile it links; the hot block spans 589 KB for 562 KB of hot code. GCC calls far more code "hot" than the research pictured (769 functions, not the ~59 KB tick core).
+
+**Default.** Not in b120: the fixed layout still needs its cache-model and rig verdicts, and b120's release ladder was already measuring the default layout. It's exact and link-only, so it can join b121 without waiting on anything else. Model run: lab 38486727212.
 
 ## 3. Resting weapons and equipment sleep (`85b5c57`)
 

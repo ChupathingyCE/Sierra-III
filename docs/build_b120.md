@@ -4,7 +4,7 @@ Labels: **[M]** measured on a PSP (the PSP-3000 rig's figures are marked as such
 
 **Read `docs/review_b120.md` first:** every change since b119, its key lines and why.
 
-`halo_psp_b120.zip`: *(hashes, commit and lab run filled at release)*. Built with **its own profile** (`campaign-b120`: counted at `6c1fd25` on the new maps, 13 runs, 156 units), `PSP_PGO=use PSP_PGO_PROFILE=campaign-b120 PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone`.
+`halo_psp_b120.zip` (SHA-256 `60e85e62218d503cf39b195c3f8fcb850bac845af3472ec50a31b58b52ab7198`), EBOOT `ab2c0211ef9b52954ec818b922b09502c80c90e956b8d45365382775ae41d80f`: built from commit `84646c2` on `w120` (lab run 38486771413). Heap 5,836 KB (b119: 5,844); 0 symbols stubbed. Built with **its own profile** (`campaign-b120`: counted at `6c1fd25` on the new maps, 13 runs, 156 units), `PSP_PGO=use PSP_PGO_PROFILE=campaign-b120 PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone`.
 
 **New texture packs: `campaign120`.** The same as `campaign116f` except the HUD sheets: 17–21 per map stay at 8 bits instead of 16 colours. Only the `.ptex` files changed; the install below copies just those.
 
@@ -17,11 +17,29 @@ Labels: **[M]** measured on a PSP (the PSP-3000 rig's figures are marked as such
 | HUD sheets at 8 bits | restoration (bake) | yes | `--hud-clut4` at bake time |
 | `hudsnap`, `hud177` | look: your A/B | no | n/a |
 | `mehalt`, `mefinishslow` | ME groundwork | no | n/a |
-| *code layout (`hotgroup`)* | *exact speed* | *(at release)* | *n/a* |
+| code layout (`hotgroup`) | exact speed | not yet (b121) | n/a |
 
 **Settled on the rig already** [M, rig]:
 - `mehalt` works on real hardware (halts = wakes, 0 failed jobs, 22 µs a wake) but gives no frame gain, so it ships off.
 - The tick, broken down: a50's is mostly biped physics (8.7 ms a tick, 668 µs a call); c20's mostly posing and **53 machines at 6.5 ms a tick**. That's the input for the tick levers after the ME phases.
+
+### On the rig already (PSP-3000, the ladder on this exact EBOOT, lab run 38486781171) [M, rig]
+
+Every map from The Pillar of Autumn to Keyes in one session, no crash (the wall stopped it in d40's opening, as planned). Second half of each map's 90 s; `tools/ladderreport.py` makes this table.
+
+| Level | fps | Tick (ms) | Ticks a second | b119 on the rig: fps / tick (ms) |
+|---|---:|---:|---:|---|
+| The Pillar of Autumn (a10) | 14.9 | 6.6 | 25.6 | 14.7 / 6.6 |
+| Halo (a30) | 7.0 | 10.5 | 14.0 | 6.9 / 11.5 |
+| Truth and Reconciliation (a50) | 9.3 | 31.3 | 18.3 | 9.1 / 32.6 |
+| The Silent Cartographer (b30) | 4.0 | 56.7 | 8.1 | 3.9 / 59.1 |
+| Assault on the Control Room (b40) | 14.9 | 16.1 | 28.1 | 14.9 / 16.5 |
+| 343 Guilty Spark (c10) | 9.3 | 21.3 | 18.5 | 8.9 / 23.2 |
+| The Library (c20) | 8.0 | 26.0 | 15.6 | 7.9 / 26.4 |
+| Two Betrayals (c40) | 13.7 | 15.3 | 26.8 | 13.0 / 16.4 |
+| Keyes (d20) | 8.2 | 16.3 | 16.3 | 7.6 / 16.8 |
+
+The tick is 2–9% faster on every map but a10, and fps is up on 8 of 9: the rebase, the resting items and the fresh profile together. b30's flight on the rig: 231.7 ms a frame against 235.9 with b119's profile on the same code (lab runs 38482644668, 38472249947).
 
 ## On the PSP
 
