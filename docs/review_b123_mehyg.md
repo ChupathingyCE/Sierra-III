@@ -4,18 +4,20 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 Branch `mehyg123`, from `w122` (`85ebea3`). Your rule (2026-10-14): audio comes first on the ME; everything else waits on sound.
 
-| # | Change | Kind | Default | Off word |
+| # | Change | Kind | Default | On word |
 |---|---|---|---|---|
-| 1 | Audio mixed before each ring job and inside long ones | audio priority (exact) | on | `meaudiofirstoff` |
-| 2 | One cache hand-over a tick's rays, not one a job | exact speed | on | `meraysbatchoff` |
-| 3 | The audio job's cache hand-over by ranges | exact speed | **off** (rig: no gain, a c40 suspect) | on: `meaudioranges` |
-| 4 | The push writes back and drops the job's output itself | safety (a latent hole) | on | `mepushdropoff` |
-| 5 | The ME's debug stash, dumped when a job is late | instrument | **off** (a c40 suspect) | on: `mestash` |
-| 6 | Small ray batches cast on the main CPU (`meraysminN`) | exact speed, for an A/B | **off** | on: `meraysmin4` |
+| 1 | Audio mixed before each ring job and inside long ones | audio priority (exact) | **off** | `meaudiofirst` |
+| 2 | One cache hand-over a tick's rays, not one a job | exact speed | **off** | `meraysbatch` |
+| 3 | The audio job's cache hand-over by ranges | exact speed | **off** | `meaudioranges` |
+| 4 | The push writes back and drops the job's output itself | safety (a latent hole) | **off** | `mepushdrop` |
+| 5 | The ME's debug stash, dumped when a job is late | instrument | **off** | `mestash` |
+| 6 | Small ray batches cast on the main CPU | exact speed | **off** | `meraysminN` (e.g. `meraysmin4`) |
+
+**All six are opt-in for b123**: nothing on this branch has shown a gain on the rig yet, and c40's cinematic ran slower with 1–5 on for a reason the logs don't name (below). With no word given, b123 runs w122's ME code paths, so the emulator's exactness proof against w122 covers the defaults.
 
 The emulator runs no ME code: it proves exactness and the line rules; only the rig can say whether these are faster and whether the audio waits shrink. Every change is exact by construction, so the rig runs ask only "how long".
 
-**The rig's first answer** (all five words on against all off, 2 runs a side, PSP-3000; read in "What the rig showed" below): c40's opening cinematic was slower with them on (tick 20.4 against 17.7 ms, frame by the clock 82.1 against 76.5) [M]. Changes 3 and 5 are now off by default until a single-word A/B names the cause; 1, 2 and 4 stay on.
+**The rig's first answer** (all five words on against all off, 2 runs a side, PSP-3000; read in "What the rig showed" below): c40's opening cinematic was slower with them on (tick 20.4 against 17.7 ms, frame by the clock 82.1 against 76.5) [M]. All six are now off by default until an A/B names the cause.
 
 ---
 
@@ -53,7 +55,7 @@ The game's side changes a voice only under the mixer's lock, which the audio thr
 
 **Log.** `audio: … N handed over by ranges` (the main CPU's side) and `ME: since start: … M of all its audio blocks handed over by ranges` (the ME's, with `mestash`).
 
-**Default: off** (`meaudioranges` turns it on). On the rig the ME's mix took the same time either way (c40's cinematic 872 against 874 us a block, b30's 2,072–2,084 against 2,069) [M], so it gave nothing measurable, and it is one of the three changes that were on in c40's cinematic when it ran slower.
+On the rig the ME's mix took the same time either way (c40's cinematic 872 against 874 us a block, b30's 2,072–2,084 against 2,069) [M], so it gave nothing measurable, and it is one of the three changes that were on in c40's cinematic when it ran slower.
 
 ## 4. The push drops the output
 
@@ -63,7 +65,7 @@ The game's side changes a voice only under the mixer's lock, which the audio thr
 
 **What.** 128 bytes (two lines, uncached, written only by the ME): where it is (between jobs, a slot job's cache work / code / write-back, the same for a ring job, halted, stopped), the ring job's ticket and type, the step inside it (the ray or triangle), its cycle counter at the note, and counts (ring and slot jobs begun and ended, audio blocks mixed before or inside ring jobs, audio blocks by ranges). `me_stash_dump()` logs it when the main CPU gives up on a ring job (`ring_fail`, too late), a slot job or a handed-over job; each heartbeat logs the counts.
 
-**Cost.** One or two uncached stores a job and one a ray, and a line in each heartbeat [D]. **Default: off** (`mestash` turns it on, for a hang to diagnose): it is one of the three changes that were on in c40's cinematic when it ran slower, and with it off the dump on a late job is skipped.
+**Cost.** One or two uncached stores a job and one a ray, and a line in each heartbeat [D]. With it off, the dump on a late job is skipped.
 
 ## 6. The b122 cutscene creep, and `meraysmin`
 
@@ -117,11 +119,11 @@ Lab 38631087543 (c40) and 38631133512 (b30's b113 route), `7d2e988`, all five wo
 | b30 cinematic and flight, tick | | | the same |
 
 What the logs separate, per change:
-- **1, audio first.** In c40's cinematic it never fired: `ME: since start: 0 audio blocks mixed before or inside a ring job` [M]. So it is not c40's cost. On b30 it fired ~500 times a run, and the worst audio wait a block fell from 3.9–5.0 ms to 2.7–3.5 ms (cinematic and flight; the average stays 2.3 ms) [M]. The price is paid by the ring jobs it mixes inside: the ME's time a ring job rose 950 → 1,020 us (cinematic) and 670 → 725 us (flight), and the main CPU's wait a ring job by 30–80 us. b30's tick didn't move. **Kept on**: it does what you asked of it.
-- **2, one hand-over a tick's rays.** In c40's cinematic every job carried one ray (1,158 jobs, 1,158 rays in the first 1,800 passes, the same both sides), so no job ever continued a hand-over. It is not c40's cost. **Kept on.**
-- **3, audio by ranges.** It ran on every block (c40: ~110 a heartbeat, all of them), with no shorter mix on the ME. **Now off.**
-- **4, the push drops its output.** Two lines a ray job; a slant job's output, up to 16 KB, on the renderer. **Kept on**: a safety fix of a few cache operations, and the cost is in c40's ticks, not its drawing.
-- **5, the stash.** A few uncached stores on the ME a job and a heartbeat line. **Now off.**
+- **1, audio first.** In c40's cinematic it never fired: `ME: since start: 0 audio blocks mixed before or inside a ring job` [M]. So it is not c40's cost. On b30 it fired ~500 times a run, and the worst audio wait a block fell from 3.9–5.0 ms to 2.7–3.5 ms (cinematic and flight; the average stays 2.3 ms) [M]. The price is paid by the ring jobs it mixes inside: the ME's time a ring job rose 950 → 1,020 us (cinematic) and 670 → 725 us (flight), and the main CPU's wait a ring job by 30–80 us. b30's tick didn't move. It does what you asked of it on b30; it waits for the A/B below like the rest.
+- **2, one hand-over a tick's rays.** In c40's cinematic every job carried one ray (1,158 jobs, 1,158 rays in the first 1,800 passes, the same both sides), so no job ever continued a hand-over. It is not c40's cost.
+- **3, audio by ranges.** It ran on every block (c40: ~110 a heartbeat, all of them), with no shorter mix on the ME.
+- **4, the push drops its output.** Two lines a ray job; a slant job's output, up to 16 KB, on the renderer. A safety fix of a few cache operations; c40's extra cost is in its ticks, not its drawing.
+- **5, the stash.** A few uncached stores on the ME a job and a heartbeat line.
 
 What doesn't explain c40's cinematic: these were the same on both sides there:
 - the ring's wait a job (22 against 24 us);
@@ -133,10 +135,12 @@ What doesn't explain c40's cinematic: these were the same on both sides there:
 
 The extra time shows as occasional long ticks: the worst tick of a heartbeat was 93–160 ms with the words on, 48–78 ms off. None of the waits above accounts for them [U]. The profile windows (from 100 s in) show the two sides doing the same work at the same rate afterwards.
 
-**The A/B that names it** (on this head, where 3 and 5 are off): c40, `wall=300`, `repeat=2`, `keepsets = "- | meaudioranges | mestash | mepushdropoff"`. The side that brings back the long ticks is the cause. If none does, the cause was in 1 or 2 after all, and the next A/B is `"- | meaudiofirstoff | meraysbatchoff"`.
+**The A/B that names it** (on this head, everything off by default): c40, `wall=300`, `repeat=2`,
+`keepsets = "- | meaudiofirst meraysbatch | meaudioranges mestash | mepushdrop"`.
+The pair that brings back the long ticks holds the cause; a single-word A/B inside that pair then names it.
 
 ## For the rig
 
 Next, in order (the PSP-3000; read with `tools/abreport.py`):
-1. c40, `wall=300`, `repeat=2`, `keepsets = "- | meaudioranges | mestash | mepushdropoff"` (above).
+1. c40, `wall=300`, `repeat=2`, `keepsets = "- | meaudiofirst meraysbatch | meaudioranges mestash | mepushdrop"` (above).
 2. c10, `wall=300`, `repeat=2`, `keepsets = "- | meraysmin4"`: whether small ray batches are better on the main CPU.

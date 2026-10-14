@@ -104,7 +104,8 @@ struct me_control
 #define ME_FEATURE_HALT 1u
 #define ME_FEATURE_RING 2u
 /* audio first: a waiting audio block is mixed before each ring job and
-between the steps of a long one ("meaudiofirstoff" turns it off) */
+between the steps of a long one ("meaudiofirst"; off until a rig A/B shows
+what it costs the ring jobs it is mixed inside) */
 #define ME_FEATURE_AUDIO_FIRST 4u
 /* the audio job's cache hand-over by ranges (psp_dsound_me_lines), off
 unless "meaudioranges": on the rig it didn't shorten the ME's mix, and c40's
@@ -812,12 +813,12 @@ timed, for the kernel call's cost */
 static int me_halting = 0;
 static int ring_on = 0; /* the job ring, decided at start */
 /* a push writes back and drops the job's output lines itself, so no line of
-the output can be dirty here when the ME writes it ("mepushdropoff": the
-caller's care, as before) */
-static int ring_push_drop = 1;
+the output can be dirty here when the ME writes it ("mepushdrop"; otherwise
+the caller's care, as before) */
+static int ring_push_drop = 0;
 /* perception's rays: one cache hand-over for a tick's jobs, not one a job
-("meraysbatchoff": one a job, as before) */
-static int rays_batch = 1;
+("meraysbatch"; otherwise one a job, as before) */
+static int rays_batch = 0;
 
 /* The slant split is on by default: the rig showed it exact (0 of 414,000
 triangles differing, 0 failed jobs) and a little faster (b30 and c20: the
@@ -956,8 +957,8 @@ int psp_me_start(void)
 	for (k = 0; k < STASH_WORDS; k++)
 		STASH[k] = 0;
 	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest");
-	ring_push_drop = !psp_keep("mepushdropoff");
-	rays_batch = !psp_keep("meraysbatchoff");
+	ring_push_drop = psp_keep("mepushdrop");
+	rays_batch = psp_keep("meraysbatch");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -1009,7 +1010,7 @@ int psp_me_start(void)
 	/* mehalt only now, so the start check above saw the ME polling */
 	me_halting = psp_keep("mehalt");
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
-		(psp_keep("meaudiofirstoff") ? 0u : ME_FEATURE_AUDIO_FIRST) |
+		(psp_keep("meaudiofirst") ? ME_FEATURE_AUDIO_FIRST : 0u) |
 		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
