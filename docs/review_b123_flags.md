@@ -29,7 +29,7 @@ Branch `flags123`, from `w122` (`85ebea3`, build 122 + docs).
 | T4a: no unswitch, split, version-for-strides, predictive commoning | 589 KB | −34 KB | +32 KB | −2.5% | **−1.7%** | −4.7% | **−1.6%** |
 | functions aligned to 64 | 628 KB | +111 KB | −108 KB | −9.9% | **−4.1%** | −10.0% | **−4.0%** |
 | functions 64, loops 32 | 630 KB | +119 KB | −116 KB | −9.6% | **−4.1%** | −10.7% | **−5.0%** |
-| **functions 64, loops 32, T4a (the new default)** | 615 KB | +84 KB | −84 KB | pending | **pending** | pending | **pending** |
+| **functions 64, loops 32, T4a: the new default** (lab 38620060902) | 615 KB | +84 KB | −84 KB | −10.3% | **−4.4%** (47.74 ms) | −10.8% | **−4.6%** (21.49 ms) |
 
 Sizes from each build's `halo.map` (local builds at the same commit and flags; kept sections only).
 
@@ -40,9 +40,9 @@ Sizes from each build's `halo.map` (local builds at the same commit and flags; k
 
 **Exactness.** Flags can change code generation, floats included, so each is proved on play, not argued. In these cache-model runs: c20 played identically on every variant, play and both seeds at every tick [E]. **b30's flight is no judge across builds in the cache models:** any two builds with different code layout part ways after tick ~1,050–1,460, even `af64` against `af64l32`, which differ only in the padding before loops (no instruction changes); the same build twice (base, `ws950`: one EBOOT) plays identically. Something in that stretch depends on how fast the code runs, not on what it computes [E→U]; worth knowing for future A/Bs (a note in the lab's findings). The proof that counts is the statecrc pair below.
 
-**Proven.** Pending: lab 38620060902 (`flags123d`): the default's flags and the alignment alone, hands off with statecrc on d20, a50, c20, against `flags123c`'s on side (lab 38615620299, build 122's flags, the same commit `b7ca423`), and the default's flags in the cache models. Locally, the default build is byte for byte the build with these flags given by hand (EBOOT `c5fc58e8…`).
+**Proven.** Hands off with `statecrc` at `b7ca423`, the new flags against build 122's (`flags123c`'s on side, the same commit): **play and both random seeds identical at every tick on d20 (21,374 ticks), a50 (36,631) and c20 (28,060)**, for the default's flags and for the alignment alone [E] (lab 38620060902 against 38615620299). The whole-state hash differs from tick 0, as between any two builds (38590465463 did the same): it covers fields that hold code addresses. Locally, the default build is byte for byte the build with these flags given by hand (EBOOT `c5fc58e8…`), and the off side's switches give build 122's EBOOT byte for byte (`9fb706d8…`).
 
-**Default.** `psp_build.py`: in a `PSP_PGO=use` build the counted units get `-falign-functions=64 -falign-loops=32 -fno-unswitch-loops -fno-split-loops -fno-version-loops-for-strides -fno-predictive-commoning` unless told otherwise. **The off side** (build 122's flags): `PSP_PGO_ALIGN_FUNCTIONS=0 PSP_PGO_ALIGN_LOOPS=0 PSP_PGO_LOOP_TRANSFORMS=1`. The release's own `PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone` stays as it is. The heap gives 84 KB to the padding (5,632 KB in the local build; b30 needs ~5.2 MB).
+**Default.** The combination: on b30 it beats the alignment alone (−4.4% against −4.1%), on c20 it trails it (−4.6% against −5.0%), and it gives 32 KB of heap back. `psp_build.py`: in a `PSP_PGO=use` build the counted units get `-falign-functions=64 -falign-loops=32 -fno-unswitch-loops -fno-split-loops -fno-version-loops-for-strides -fno-predictive-commoning` unless told otherwise. **The off side** (build 122's flags): `PSP_PGO_ALIGN_FUNCTIONS=0 PSP_PGO_ALIGN_LOOPS=0 PSP_PGO_LOOP_TRANSFORMS=1`. The release's own `PSP_PGO_EXTRA=-fno-unroll-loops,-fno-peel-loops,-fno-tracer,-fno-ipa-cp-clone` stays as it is. The heap gives 84 KB to the padding (5,632 KB in the local build; b30 needs ~5.2 MB).
 
 **Key lines.** `psp_build.py`, after `PGO_EXTRA`: the loop over `PSP_PGO_HOT_FRACTION`, `PSP_PGO_HOT_PERMILLE`, `PSP_PGO_ALIGN_FUNCTIONS` (default 64), `PSP_PGO_ALIGN_LOOPS` (default 32), and `PSP_PGO_LOOP_TRANSFORMS`. These are switches of their own because a lab build switch can't carry an `=` in its value.
 
@@ -58,9 +58,9 @@ Sizes from each build's `halo.map` (local builds at the same commit and flags; k
 
 **Why the reset stays.** The port's perception (FIXES_121 `psp_perception_begin`, FIXES_122's merays) reads the line-of-sight and collision accumulators as counters within a tick, saves them and writes them back; they are `short`s, so they must start each tick at 0 as the full update leaves them, or they would wrap [D]. After the skip, every accumulator holds what the full update would have left: 0.
 
-**What it saves.** Two actor walks and 28 history updates a tick: 0.05–0.2 ms of b30's tick by the research's estimate [U]; the cache models' figure is below (SKIP_SAVED).
+**What it saves.** Two actor walks and 28 history updates a tick: 0.05–0.2 ms of b30's tick by the research's estimate [U]; in the cache models, `ai_profile_update` and its sample procedures are each below the cache map's cut on b30's flight and c20's opening (0.5% of the tick's instructions, ~35,000 a tick on b30), so the saving is at most ~0.1 ms a tick [E, lab 38614069299]; small, but it is pure waste.
 
-**Proven.** SKIP_PROVEN
+**Proven.** Hands off with `statecrc`, the default against `aiprofilefull`, one build (`b7ca423`, build 122's flags): play and both random seeds identical at every tick on d20 (21,374 ticks), a50 (36,631) and c20 (28,060) [E] (lab 38615620299). As in earlier proofs, the whole-state hash differs where drawing writes into objects (contrails, lights); the play hash leaves those out.
 
 **Default.** On; `aiprofilefull` brings back every tick's samples. Turning a display on mid-game starts its history then.
 
@@ -80,9 +80,17 @@ Objects come from the object header array (`_object_header_active_bit`, by type)
 
 **Why.** Before designing another activation lever we need to know what stays awake and why: which object types stay active, how many actors are forced active or kept from dormancy by the scripts (those levers are the scripts', not ours), and how many are awake on their own.
 
-**Proven.** CENSUS_PROVEN
+**Proven.** `activecensus` against `aiprofilefull` (lab 38615620299): play and both seeds identical at every tick on d20 (21,391), a50 (36,931), c20 (28,051) [E]. The multiplayer build (`PSP_MULTIPLAYER=1`) builds with both changes (lab 38615620299: program 5.83 MB, heap 4,636 KB) and its census line came out at blood gulch's start; that run, with `assettrack geo2`, then ran out of heap for the display list before play, as other multiplayer runs with those words have (lititems123's, without them, played: heap 4,640 KB there). The play check with lititems123's words is lab 38624966261 (MP_RESULT).
 
-**First readings.** CENSUS_READINGS
+**First readings** (hands off at the start, so the counts hold still after the first seconds; game time 2,700) [E]:
+
+| Map | Objects active of all | Actors | Encounters | Squads with dormancy off |
+|---|---|---|---|---|
+| d20 | biped 9/33, equipment 5/20, scenery 25/89, machine 33/203, light 26/56, sound scenery 1/50 | 1/7 active, 6 dormant | 1/62 active | 0/172 |
+| a50 | biped 14/32, vehicle 3/3, weapon 2/23, equipment 11/117, **scenery 266/540**, light 20/49, sound scenery 7/16 | 14/14 active | 2/33 active | **10/530** |
+| c20 | biped 30/41, weapon 1/5, scenery 12/19, **machine 53/357**, sound scenery 28/119 | 9/9 active | 3/81 active, **1 forced** | 0/169 |
+
+What it says for levers [U]: a50's half-awake scenery (266 objects) and c20's 53 machines (MS, `machinesfar`) are the big active sets; a50's 10 squads kept from dormancy and c20's forced encounter are the scripts' doing, so not ours to change. b30's opening is the next reading: lab 38624966261 (B30_RESULT).
 
 ---
 
