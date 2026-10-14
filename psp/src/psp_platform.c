@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 121
+#define PSP_BUILD_NUMBER 122
 /* build 110: the engine base the build was made from (psp_build.py) */
 #ifdef PSP_CHUPATHINGYCE
 #define PSP_ENGINE_BASE "ChupathingyCE"
@@ -874,6 +874,7 @@ static void keep_load(void)
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
+	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock

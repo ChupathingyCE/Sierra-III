@@ -14802,6 +14802,831 @@ FIXES_122["source/models/model_animation_definitions.h#inline"] = [
 """),
 ]
 
+
+# ---------- perception's queued rays on the Media Engine (on; "meraysoff" turns it off)
+# The queue (FIXES_121 actor_perception.c#batch) casts every actor's line of
+# sight at the start of actors_update, but its answers are needed only as each
+# actor's update reaches prop_status_refresh. With the rays on the ME, the main CPU
+# casts the first few rays itself ("meraysfrontN", 4 unless set), hands the
+# rest to the ME as ring jobs of up to 16 rays (psp_me.c, ME_JOB_PERC_RAYS),
+# and updates its first actors while the ME casts them. It collects a job's
+# answers when the first actor of that job asks for its ray.
+# What lets the ME cast them exactly:
+# - every input of a ray is in its record (FIXES_121's psp_perc_ray), and
+#   everything else a ray reads is the level's collision BSP and the tags
+#   (fixed for the level), the clusters' object lists, the objects' datums,
+#   node matrices and sphere copies, and the breakable surfaces' flags;
+# - the main CPU writes its whole cache back before the push, and the ME
+#   drops its whole cache before the job (ME_RING_ALL_OF_RAM);
+# - the ME's copy of the walk writes only its stack and its answers: the
+#   main CPU's walk marks objects in their datums (magic_number) and clusters
+#   in structure_globals, keeps a collision-user stack, the AI profile's
+#   meters, the usage log's times and the sphere counters, and each CPU's
+#   cache writes back whole lines it doesn't share with the other. The ME's
+#   marks are bit sets on its stack; the meters' counts come back with the
+#   answers and are added as each ray is taken, as FIXES_121 does;
+# - while the job is out, anything that would change what a ray reads goes
+#   through one of the five functions that count psp_object_epoch, and each
+#   of them first waits for the job: the ME never reads an object halfway
+#   through a change, and the answers are dropped, as the queue's are;
+# - the ME's FPU gives the main CPU's bits (b90: 0 of 4.7 million triangles
+#   differed), and nothing on the way is a double or a system call.
+# A flag set the ME's walk doesn't serve (it serves line of sight's only),
+# or a failed job, sends the ray back to the main CPU, which casts it as
+# before. "perccheck" with it casts every taken ray again on the main CPU
+# and counts the ME's answers that differ apart from the main CPU's own
+FIXES_122["source/physics/collision_bsp.c#merays"] = [
+("""/* ---------- private code */
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_122): collision_bsp_test_vector for the Media Engine
+(actor_perception.c #merays): the same walk without the usage log, whose
+times are the main CPU's lines */
+boolean psp_collision_bsp_test_vector_quiet(
+	unsigned long flags,
+	struct collision_bsp const *bsp,
+	short breakable_surface_count,
+	byte const *breakable_surface_flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	real maximum_t,
+	struct collision_bsp_test_vector_result *result)
+{
+	struct collision_bsp_test_vector_context context;
+	real t;
+
+	context.flags = flags;
+	context.bsp = bsp;
+	context.breakable_surface_count = breakable_surface_count;
+	context.breakable_surface_flags = breakable_surface_flags;
+	context.point = point;
+	context.vector = vector;
+	context.result = result;
+	result->t = maximum_t < 0.f ? 0.f : maximum_t;
+	context.last_leaf_index = NONE;
+	context.last_plane_index = NONE;
+	result->leaf_count = 0;
+	context.last_contents = _contents_unknown;
+	context.nodes_left = bsp->bsp3d.nodes.count;
+
+	t = PIN(maximum_t, 0.f, 1.f);
+	return collision_bsp_test_vector_recursive(&context, 0, 0.f, t, 0);
+}
+#endif
+
+/* ---------- private code */
+"""),
+]
+FIXES_122["source/physics/collision_models.c#merays"] = [
+("""boolean collision_model_test_pill(
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_122): collision_model_test_vector for the Media
+Engine (actor_perception.c #merays): the same tests without the usage log */
+boolean psp_collision_bsp_test_vector_quiet(unsigned long flags, struct collision_bsp const *bsp,
+	short breakable_surface_count, byte const *breakable_surface_flags, real_point3d const *point,
+	real_vector3d const *vector, real maximum_t, struct collision_bsp_test_vector_result *result);
+
+boolean psp_collision_model_test_vector_quiet(
+	struct collision_model_instance const *instance,
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	struct collision_model_test_vector_result *result)
+{
+	short node_index;
+	boolean return_value = FALSE;
+
+	result->bsp_result.t = FLT_MAX;
+	for (node_index = 0; node_index < instance->node_count; ++node_index)
+	{
+		struct collision_node const *collision_node = TAG_BLOCK_GET_ELEMENT(&instance->model->nodes, node_index, struct collision_node);
+
+		if (collision_node_region_valid(collision_node))
+		{
+			short perm = instance->region_permutation_indices[collision_node->region_index];
+
+			if (perm != NONE && collision_node->bsps.count > 0)
+			{
+				struct collision_bsp *collision_bsp;
+
+				perm = PIN(perm, 0, collision_node->bsps.count - 1);
+				collision_bsp = TAG_BLOCK_GET_ELEMENT(&collision_node->bsps, perm, struct collision_bsp);
+				if (collision_bsp->bsp3d.nodes.count > 0)
+				{
+					real_matrix4x3 inverted_matrix;
+					real_point3d transformed_point;
+					real_vector3d transformed_vector;
+
+					matrix4x3_inverse(&instance->matrices[node_index], &inverted_matrix);
+					matrix4x3_transform_point(&inverted_matrix, point, &transformed_point);
+					matrix4x3_transform_vector(&inverted_matrix, vector, &transformed_vector);
+					if (psp_collision_bsp_test_vector_quiet(flags, collision_bsp, 0, NULL, &transformed_point,
+						&transformed_vector, result->bsp_result.t, &result->bsp_result))
+					{
+						result->node_index = node_index;
+						result->region_index = collision_node->region_index;
+						result->bsp_index = perm;
+						return_value = TRUE;
+					}
+				}
+			}
+		}
+	}
+
+	return return_value;
+}
+#endif
+
+boolean collision_model_test_pill(
+"""),
+]
+FIXES_122["source/physics/collisions.c#merays"] = [
+("""boolean collision_test_pill(
+	unsigned long flags,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_122): collision_test_vector for the Media Engine
+(actor_perception.c #merays), for line of sight's flags only: the structure
+and the sight-blocking objects, no media, no vehicles' physics, no keeping
+the location valid. The same walk in the same order, filling what line of
+sight reads (whether it hit, t, the locations and the point), and writing
+nothing but its stack and *collision: an object or cluster is marked in bit
+sets of its own instead of the objects' magic numbers and structure_globals
+(which the main CPU's own tests write meanwhile), and the usage log and the
+sphere counters are left out. -1: flags it doesn't serve */
+boolean psp_collision_bsp_test_vector_quiet(unsigned long flags, struct collision_bsp const *bsp,
+	short breakable_surface_count, byte const *breakable_surface_flags, real_point3d const *point,
+	real_vector3d const *vector, real maximum_t, struct collision_bsp_test_vector_result *result);
+boolean psp_collision_model_test_vector_quiet(struct collision_model_instance const *instance,
+	unsigned long flags, real_point3d const *point, real_vector3d const *vector,
+	struct collision_model_test_vector_result *result);
+
+struct psp_quiet_marks
+{
+	unsigned long objects[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+	unsigned long clusters[(MAXIMUM_CLUSTERS_PER_STRUCTURE + 31) / 32];
+};
+
+/* object_test_vector, for an object found in a cluster and the objects
+attached to it */
+static boolean psp_object_test_vector_quiet(
+	long object_index,
+	unsigned long bsp_flags,
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	long ignore_object_index,
+	struct collision_result *collision)
+{
+	boolean hit = FALSE;
+
+	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			TEST_FLAG(flags, object->object.type + _collision_test_objects_first_type_bit) &&
+			fast_vector_intersects_sphere(point, vector, &object->object.bounding_sphere_center,
+				object->object.bounding_sphere_radius))
+		{
+			struct collision_model_instance instance;
+			struct collision_model_test_vector_result result;
+
+			if (collision_model_instance_new(&instance, object_index) &&
+				psp_collision_model_test_vector_quiet(&instance, bsp_flags, point, vector, &result) &&
+				collision->t > result.bsp_result.t)
+			{
+				collision->type = _collision_result_object;
+				collision->t = result.bsp_result.t;
+				collision->object_index = object_index;
+				hit = TRUE;
+			}
+			if (object->object.first_child_object_index != NONE &&
+				psp_object_test_vector_quiet(object->object.first_child_object_index, bsp_flags, flags,
+					point, vector, ignore_object_index, collision))
+				hit = TRUE;
+		}
+		object_index = object->object.next_object_index;
+	}
+	while (object_index != NONE);
+
+	return hit;
+}
+
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+short psp_collision_test_vector_quiet(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	long ignore_object_index,
+	struct collision_result *collision)
+{
+	boolean hit = FALSE;
+	boolean test_objects = TEST_FLAG(flags, _collision_test_objects_bit);
+	unsigned long bsp_flags = 0;
+	struct collision_bsp_test_vector_result bsp_result;
+
+	if (TEST_FLAG(flags, _collision_test_media_bit) ||
+		TEST_FLAG(flags, _collision_test_use_vehicle_physics_bit) ||
+		TEST_FLAG(flags, _collision_test_try_to_keep_location_valid_bit) ||
+		!(TEST_FLAG(flags, _collision_test_structure_bit) || test_objects) ||
+		debug_collision_skip_vectors)
+		return -1;
+
+	collision->type = NONE;
+	collision->start_location.leaf_index = NONE;
+	collision->start_location.cluster_index = NONE;
+	collision->location.leaf_index = NONE;
+	collision->location.cluster_index = NONE;
+	collision->t = 1.0f;
+	if (debug_collision_skip_objects)
+		test_objects = FALSE;
+	if (!(flags & (FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_back_facing_surfaces_bit))))
+		flags |= FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_back_facing_surfaces_bit);
+	SET_FLAG(bsp_flags, _collision_test_front_facing_surfaces_bit, TEST_FLAG(flags, _collision_test_front_facing_surfaces_bit));
+	SET_FLAG(bsp_flags, _collision_test_back_facing_surfaces_bit, TEST_FLAG(flags, _collision_test_back_facing_surfaces_bit));
+	SET_FLAG(bsp_flags, _collision_test_ignore_two_sided_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_two_sided_surfaces_bit));
+	SET_FLAG(bsp_flags, _collision_test_ignore_invisible_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_invisible_surfaces_bit));
+	SET_FLAG(bsp_flags, _collision_test_ignore_breakable_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_breakable_surfaces_bit));
+
+	if (psp_collision_bsp_test_vector_quiet(bsp_flags, global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+		breakable_surface_flags_get(), point, vector, REAL_MAX, &bsp_result) &&
+		TEST_FLAG(flags, _collision_test_structure_bit))
+	{
+		collision->t = bsp_result.t;
+		collision->type = _collision_result_structure;
+		hit = TRUE;
+	}
+	if (bsp_result.leaf_count > 0)
+	{
+		collision->start_location.leaf_index = bsp_result.leaf_indices[0];
+		collision->start_location.cluster_index = (short)collision_cluster_index_from_leaf(bsp_result.leaf_indices[0]);
+		collision->location.leaf_index = bsp_result.leaf_indices[bsp_result.leaf_count - 1];
+		collision->location.cluster_index = (short)collision_cluster_index_from_leaf(bsp_result.leaf_indices[bsp_result.leaf_count - 1]);
+	}
+
+	if (test_objects && bsp_result.leaf_count > 0)
+	{
+		struct psp_quiet_marks marks;
+		long leaf_index, k;
+
+		if (!(flags & _collision_test_objects_all_types_flags))
+			flags |= _collision_test_objects_all_types_flags;
+		for (k = 0; k < (long)(sizeof(marks.objects) / sizeof(marks.objects[0])); k++)
+			marks.objects[k] = 0;
+		for (k = 0; k < (long)(sizeof(marks.clusters) / sizeof(marks.clusters[0])); k++)
+			marks.clusters[k] = 0;
+		for (leaf_index = 0; leaf_index < bsp_result.leaf_count; leaf_index++)
+		{
+			long cluster_index = collision_cluster_index_from_leaf(bsp_result.leaf_indices[leaf_index]);
+			long reference_index;
+			long object_index;
+
+			/* structure_cluster_mark: a cluster that fits no cluster is skipped */
+			if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE ||
+				(marks.clusters[cluster_index >> 5] & (1ul << (cluster_index & 31))))
+				continue;
+			marks.clusters[cluster_index >> 5] |= 1ul << (cluster_index & 31);
+			for (object_index = cluster_get_first_collideable_object(&reference_index, (short)cluster_index);
+				object_index != NONE;
+				object_index = cluster_get_next_collideable_object(&reference_index))
+			{
+				short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+				struct psp_object_sphere const *sphere = &psp_object_spheres[absolute_index];
+
+				/* collision_test_vector's order: the sphere copy, the mark
+				(object_mark_function), the object */
+				if (!fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius) ||
+					(marks.objects[absolute_index >> 5] & (1ul << (absolute_index & 31))))
+					continue;
+				marks.objects[absolute_index >> 5] |= 1ul << (absolute_index & 31);
+				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,
+					ignore_object_index, collision))
+					hit = TRUE;
+			}
+		}
+	}
+
+	if (!hit)
+		collision->t = 1.0f;
+	COLLISION_POINT_FROM_LINE3D(point, vector, collision->t, &collision->point);
+	return hit;
+}
+#endif
+
+boolean collision_test_pill(
+	unsigned long flags,"""),
+]
+FIXES_122["source/ai/ai.c#merays"] = [
+("""short ai_test_line_of_sight(
+	real_point3d const *p0,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_122): ai_test_line_of_sight as the Media Engine casts
+it (actor_perception.c #merays): the same tests in the same order, through
+psp_collision_test_vector_quiet. The collision tests are counted into
+*collisions instead of the AI profile, and there is no collision-user stack:
+both are the main CPU's lines. -1: a ray the quiet tests don't serve, for
+the main CPU to cast */
+short psp_collision_test_vector_quiet(unsigned long flags, real_point3d const *point,
+	real_vector3d const *vector, long ignore_object_index, struct collision_result *collision);
+
+static short psp_collision_test_line_quiet(
+	unsigned long flags,
+	real_point3d const *point0,
+	real_point3d const *point1,
+	long ignore_object_index,
+	struct collision_result *collision)
+{
+	real_vector3d vector;
+
+	vector_from_points3d(point0, point1, &vector);
+	return psp_collision_test_vector_quiet(flags, point0, &vector, ignore_object_index, collision);
+}
+
+short psp_ai_test_line_of_sight_quiet(
+	real_point3d const *p0,
+	short p0_cluster_index,
+	real_point3d const *p1,
+	short p1_cluster_index,
+	short mode,
+	boolean test_line_of_fire,
+	long ignore_object_index,
+	boolean ignore_vehicles,
+	long *collisions)
+{
+	struct collision_result collision;
+	real collision_t = 1.0f;
+	unsigned long collision_flags;
+	boolean clear_line_of_sight;
+	short blocked;
+	short tested;
+	short result;
+
+	*collisions = 0;
+	if (ai_debug.render_lineofsight)
+		return -1;
+	if (p0_cluster_index != NONE && p1_cluster_index != NONE && !scenario_test_pvs(p0_cluster_index, p1_cluster_index))
+		return _ai_line_of_sight_obstructed;
+
+	collision_flags =
+		FLAG(_collision_test_front_facing_surfaces_bit) |
+		FLAG(_collision_test_back_facing_surfaces_bit) |
+		FLAG(_collision_test_structure_bit) |
+		FLAG(_collision_test_objects_bit) |
+		_collision_test_objects_sight_blocking_flags;
+	if (game_connection() == _game_connection_local && ai_debug.fast_los)
+	{
+		collision_flags =
+			FLAG(_collision_test_front_facing_surfaces_bit) |
+			FLAG(_collision_test_back_facing_surfaces_bit) |
+			FLAG(_collision_test_structure_bit);
+	}
+	if (test_line_of_fire)
+		SET_FLAG(collision_flags, _collision_test_ignore_breakable_surfaces_bit, TRUE);
+	else
+		SET_FLAG(collision_flags, _collision_test_ignore_two_sided_surfaces_bit, TRUE);
+	if (ignore_vehicles)
+		SET_FLAG(collision_flags, _collision_test_objects_vehicles_bit, FALSE);
+
+	{
+		real_vector3d vector;
+
+		(*collisions)++;
+		vector_from_points3d(p0, p1, &vector);
+		tested = psp_collision_test_vector_quiet(collision_flags, p0, &vector, ignore_object_index, &collision);
+		if (tested < 0)
+			return -1;
+		if (!tested)
+		{
+			clear_line_of_sight = TRUE;
+		}
+		else
+		{
+			clear_line_of_sight = FALSE;
+			collision_t = collision.t;
+		}
+	}
+
+	{
+		real fog = scenario_fog_at_point(&collision.start_location, p0, &collision.point);
+
+		if (fog > 0.8f)
+			goto classify_collision_distance;
+		if (fog > 0.6f)
+			goto occluded;
+	}
+
+	if (mode == _ai_line_of_sight_normal)
+		goto classify_visibility;
+
+	{
+		real_vector3d perpendicular;
+
+		perpendicular.i = p0->y - p1->y;
+		perpendicular.j = p1->x - p0->x;
+		perpendicular.k = 0.0f;
+		if (normalize3d(&perpendicular) == 0.0f)
+			perpendicular = *global_forward3d;
+
+		if (mode == _ai_line_of_sight_expand_source)
+		{
+			real_point3d p0a;
+			real_point3d p0b;
+
+			p0a.x = perpendicular.i * 0.25f + p0->x;
+			p0a.y = perpendicular.j * 0.25f + p0->y;
+			p0a.z = perpendicular.k * 0.25f + p0->z;
+			p0b.x = p0->x - perpendicular.i * 0.25f;
+			p0b.y = p0->y - perpendicular.j * 0.25f;
+			p0b.z = p0->z - perpendicular.k * 0.25f;
+
+			(*collisions)++;
+			tested = psp_collision_test_line_quiet(collision_flags, &p0a, p1, ignore_object_index, &collision);
+			if (tested < 0)
+				return -1;
+			blocked = clear_line_of_sight ? tested : !tested;
+			if (!blocked)
+			{
+				(*collisions)++;
+				tested = psp_collision_test_line_quiet(collision_flags, &p0b, p1, ignore_object_index, &collision);
+				if (tested < 0)
+					return -1;
+				blocked = clear_line_of_sight ? tested : !tested;
+			}
+		}
+		else
+		{
+			real_point3d p1a;
+			real_point3d p1b;
+			real_point3d p1c;
+
+			if (!clear_line_of_sight)
+				goto classify_collision_distance;
+
+			point_from_line3d(p1, &perpendicular, 0.1f, &p1a);
+			point_from_line3d(p1, &perpendicular, -0.1f, &p1b);
+			point_from_line3d(p1, global_down3d, 0.1f, &p1c);
+
+			(*collisions)++;
+			blocked = psp_collision_test_line_quiet(collision_flags, &p1a, p0, ignore_object_index, &collision);
+			if (blocked < 0)
+				return -1;
+			if (!blocked)
+			{
+				(*collisions)++;
+				blocked = psp_collision_test_line_quiet(collision_flags, &p1b, p0, ignore_object_index, &collision);
+				if (blocked < 0)
+					return -1;
+			}
+			if (!blocked)
+			{
+				(*collisions)++;
+				blocked = psp_collision_test_line_quiet(collision_flags, &p1c, p0, ignore_object_index, &collision);
+				if (blocked < 0)
+					return -1;
+			}
+		}
+	}
+
+	if (blocked)
+		goto occluded;
+
+classify_visibility:
+	if (clear_line_of_sight)
+		return _ai_line_of_sight_clear;
+
+classify_collision_distance:
+	{
+		real distance = distance3d(p0, p1);
+
+		if (distance < 1.0f)
+			goto obstructed;
+		if (distance * collision_t < 1.0f)
+			return _ai_line_of_sight_from_cover;
+		result = _ai_line_of_sight_to_cover;
+		if ((1.0f - collision_t) * distance < 4.0f)
+			return result;
+	}
+
+obstructed:
+	return _ai_line_of_sight_obstructed;
+
+occluded:
+	return _ai_line_of_sight_occluded;
+}
+#endif
+
+short ai_test_line_of_sight(
+	real_point3d const *p0,"""),
+]
+
+FIXES_122["source/ai/actor_perception.c#merays"] = [
+("""	boolean ignore_vehicles, taken;
+""",
+ """	boolean ignore_vehicles, taken;
+	boolean from_me; /* cast by the Media Engine (FIXES_122 #merays) */
+"""),
+("""/* the start of actors_update: true when actors_update is to offer each of
+its actors to psp_perception_queue, then call psp_perception_queue_done */""",
+ """/* psp_fixups.py (FIXES_122): perception's queued rays on the Media Engine
+(see psp_fixups.py's FIXES_122 #merays). The first rays are cast here as
+before; the rest go to the ME as ring jobs, each collected when the first
+actor of its part asks for its ray */
+short psp_ai_test_line_of_sight_quiet(real_point3d const *p0, short p0_cluster_index,
+	real_point3d const *p1, short p1_cluster_index, short mode, boolean test_line_of_fire,
+	long ignore_object_index, boolean ignore_vehicles, long *collisions); /* ai.c */
+int psp_me_ring_ready(void); /* psp_me.c */
+int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, unsigned int answer_bytes,
+	unsigned int *ticket);
+int psp_me_wait(unsigned int ticket, unsigned int *results);
+int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
+
+struct psp_merays_answer
+{
+	short result; /* -1: the ME's walk doesn't serve it */
+	short pad;
+	long collisions;
+};
+/* rays a job: its answers are then two whole 64-byte lines of its own, and
+a job ends well inside the ring's 10 ms watchdog even when every ray is an
+expanded one (four vectors), so a long tick can't stop the ring */
+#define PSP_MERAYS_JOB_RAYS 16
+#define PSP_MERAYS_JOBS ((PSP_PERC_RAYS + PSP_MERAYS_JOB_RAYS - 1) / PSP_MERAYS_JOB_RAYS)
+/* the ME's output, job by job */
+static struct psp_merays_answer psp_merays_answers[PSP_MERAYS_JOBS * PSP_MERAYS_JOB_RAYS] __attribute__((aligned(64)));
+typedef char psp_merays_answers_lines_assert[(PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer)) % 64 == 0 ? 1 : -1];
+
+static int psp_merays_on = -1, psp_merays_front;
+static boolean psp_merays_pass;
+/* jobs pushed and not all collected: the five functions that count
+psp_object_epoch wait for them first (objects.c) */
+int psp_merays_out;
+static unsigned int psp_merays_tickets[PSP_MERAYS_JOBS];
+/* the ME's part of the queue: from psp_merays_first, psp_merays_count rays
+in psp_merays_jobs jobs, the first psp_merays_collected of them collected */
+static short psp_merays_first, psp_merays_count, psp_merays_jobs, psp_merays_collected;
+static struct
+{
+	unsigned long jobs, refused, rays, answered, unsure, failed, settled, taken, checked, mismatches;
+} psp_merays_stats;
+
+/* a queued ray cast on this CPU; the AI profile's meters as before it, its
+collision count kept to be added when it's taken */
+static void psp_perc_cast(
+	struct psp_perc_ray *ray)
+{
+	long line_of_sight = ai_profile.meters[_ai_meter_line_of_sight].accumulator;
+	long collisions = ai_profile.meters[_ai_meter_collisions].accumulator;
+
+	ray->result = ai_test_line_of_sight(&ray->p0, ray->p0_cluster_index, &ray->p1, ray->p1_cluster_index,
+		ray->mode, FALSE, ray->ignore_object_index, ray->ignore_vehicles);
+	ray->collisions = ai_profile.meters[_ai_meter_collisions].accumulator - collisions;
+	ray->from_me = FALSE;
+	ai_profile.meters[_ai_meter_line_of_sight].accumulator = line_of_sight;
+	ai_profile.meters[_ai_meter_collisions].accumulator = collisions;
+}
+
+/* the job (psp_me.c, ME_JOB_PERC_RAYS), on the ME: reads the rays' records
+and the world, writes only its answers. args: the first record, the answers,
+the count */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+void psp_perception_me_rays(
+	const unsigned int *args,
+	unsigned int *results)
+{
+	struct psp_perc_ray const *rays = (struct psp_perc_ray const *)args[0];
+	struct psp_merays_answer *answers = (struct psp_merays_answer *)args[1];
+	unsigned int count = args[2], k, unsure = 0;
+
+	for (k = 0; k < count; k++)
+	{
+		long collisions;
+		short result = psp_ai_test_line_of_sight_quiet(&rays[k].p0, rays[k].p0_cluster_index,
+			&rays[k].p1, rays[k].p1_cluster_index, rays[k].mode, FALSE, rays[k].ignore_object_index,
+			rays[k].ignore_vehicles, &collisions);
+
+		answers[k].result = result;
+		answers[k].pad = 0;
+		answers[k].collisions = collisions;
+		if (result < 0)
+			unsure++;
+	}
+	results[0] = count;
+	results[1] = unsure;
+}
+
+/* queue_done: the rays from meraysfront on to the ME, PSP_MERAYS_JOB_RAYS a
+job, the first ones cast here meanwhile; here too any the ring can't take */
+static void psp_merays_hand_over(void)
+{
+	short index, first = (short)MIN(psp_merays_front, psp_perc_ray_count), end = first;
+
+	psp_merays_first = first;
+	psp_merays_jobs = psp_merays_collected = 0;
+	while (end < psp_perc_ray_count && psp_merays_jobs < PSP_MERAYS_JOBS)
+	{
+		short count = (short)MIN(psp_perc_ray_count - end, PSP_MERAYS_JOB_RAYS);
+
+		if (!psp_me_push_perc_rays(&psp_perc_rays[end], (unsigned int)count,
+			&psp_merays_answers[psp_merays_jobs * PSP_MERAYS_JOB_RAYS],
+			PSP_MERAYS_JOB_RAYS * sizeof(struct psp_merays_answer), &psp_merays_tickets[psp_merays_jobs]))
+		{
+			psp_merays_stats.refused++;
+			break;
+		}
+		psp_merays_jobs++;
+		psp_merays_stats.jobs++;
+		psp_merays_stats.rays += count;
+		end += count;
+	}
+	psp_merays_count = end - first;
+	psp_merays_out = psp_merays_jobs > 0;
+	for (index = 0; index < first; index++)
+		psp_perc_cast(&psp_perc_rays[index]);
+	for (index = end; index < psp_perc_ray_count; index++)
+		psp_perc_cast(&psp_perc_rays[index]);
+}
+
+/* the ME's answers into the queue, job by job up to the one holding ray
+`index`, before that ray is taken. A ray the ME's walk doesn't serve, or
+every ray of a failed job, is cast here (nothing has moved since the queue:
+psp_perception_line_of_sight looked at the epoch first) */
+static void psp_merays_collect(
+	short index)
+{
+	short job = (index - psp_merays_first) / PSP_MERAYS_JOB_RAYS;
+
+	while (psp_merays_collected <= job && psp_merays_collected < psp_merays_jobs)
+	{
+		unsigned int results[11];
+		short j = psp_merays_collected++, k;
+		short start = j * PSP_MERAYS_JOB_RAYS, end = (short)MIN(start + PSP_MERAYS_JOB_RAYS, psp_merays_count);
+		int done = psp_me_wait(psp_merays_tickets[j], results);
+
+		if (!done)
+			psp_merays_stats.failed++;
+		for (k = start; k < end; k++)
+		{
+			struct psp_perc_ray *ray = &psp_perc_rays[psp_merays_first + k];
+
+			if (done && psp_merays_answers[k].result >= 0)
+			{
+				ray->result = psp_merays_answers[k].result;
+				ray->collisions = psp_merays_answers[k].collisions;
+				ray->from_me = TRUE;
+				psp_merays_stats.answered++;
+			}
+			else
+			{
+				if (done)
+					psp_merays_stats.unsure++;
+				psp_perc_cast(ray);
+			}
+		}
+	}
+	psp_merays_out = psp_merays_collected < psp_merays_jobs;
+}
+
+/* before something moves (objects.c) or at actors_update's end: the jobs
+finished, and the rays of those not collected dropped unread */
+void psp_merays_settle(void)
+{
+	unsigned int results[11];
+	short keep = psp_merays_first + psp_merays_collected * PSP_MERAYS_JOB_RAYS;
+
+	if (!psp_merays_out)
+		return;
+	while (psp_merays_collected < psp_merays_jobs)
+		psp_me_wait(psp_merays_tickets[psp_merays_collected++], results);
+	psp_merays_out = FALSE;
+	if (psp_perc_ray_count > keep)
+	{
+		psp_merays_stats.settled += psp_perc_ray_count - keep;
+		psp_perc_ray_count = keep;
+	}
+}
+
+/* the start of actors_update: true when actors_update is to offer each of
+its actors to psp_perception_queue, then call psp_perception_queue_done */"""),
+("""	psp_perc_ray_count = 0;
+	psp_perc_line_of_sight_meter = ai_profile.meters[_ai_meter_line_of_sight].accumulator;""",
+ """	psp_perc_ray_count = 0;
+	if (psp_merays_on < 0)
+	{
+		int psp_me_rays_wanted(void);
+
+		psp_merays_on = psp_me_rays_wanted();
+		psp_merays_front = psp_keep_number("meraysfront", 4);
+		if (psp_merays_front < 0 || psp_merays_front > PSP_PERC_RAYS)
+			psp_merays_front = 4;
+		if (psp_merays_on)
+			platform_psp_log("perception: the rays past the first %d cast by the Media Engine (meraysoff turns it off)", psp_merays_front);
+	}
+	psp_merays_pass = psp_merays_on && psp_perc_queue_on && psp_me_ring_ready();
+	psp_perc_line_of_sight_meter = ai_profile.meters[_ai_meter_line_of_sight].accumulator;"""),
+("""	ray->taken = FALSE;
+	before = ai_profile.meters[_ai_meter_collisions].accumulator;
+	ray->result = ai_test_line_of_sight(&ray->p0, ray->p0_cluster_index, &ray->p1, ray->p1_cluster_index,
+		ray->mode, FALSE, ray->ignore_object_index, ray->ignore_vehicles);
+	ray->collisions = ai_profile.meters[_ai_meter_collisions].accumulator - before;
+	psp_perc_ray_count++;""",
+ """	ray->taken = FALSE;
+	ray->from_me = FALSE;
+	/* with the ME, every ray is cast in psp_perception_queue_done */
+	if (psp_merays_pass)
+	{
+		psp_perc_ray_count++;
+		return;
+	}
+	before = ai_profile.meters[_ai_meter_collisions].accumulator;
+	ray->result = ai_test_line_of_sight(&ray->p0, ray->p0_cluster_index, &ray->p1, ray->p1_cluster_index,
+		ray->mode, FALSE, ray->ignore_object_index, ray->ignore_vehicles);
+	ray->collisions = ai_profile.meters[_ai_meter_collisions].accumulator - before;
+	psp_perc_ray_count++;"""),
+("""	/* the meters as if no ray had been cast yet: each counts when taken */
+	ai_profile.meters[_ai_meter_line_of_sight].accumulator = psp_perc_line_of_sight_meter;""",
+ """	if (psp_merays_pass)
+		psp_merays_hand_over();
+	/* the meters as if no ray had been cast yet: each counts when taken */
+	ai_profile.meters[_ai_meter_line_of_sight].accumulator = psp_perc_line_of_sight_meter;"""),
+("""void psp_perception_end(
+	void)
+{
+	psp_perc_inside = FALSE;""",
+ """void psp_perception_end(
+	void)
+{
+	psp_merays_settle();
+	psp_perc_inside = FALSE;"""),
+("""			psp_perc_stats.stale, psp_perc_stats.ray_mismatches);
+}""",
+ """			psp_perc_stats.stale, psp_perc_stats.ray_mismatches);
+	if (psp_merays_on && psp_perc_stats.passes % 1800 == 0)
+		platform_psp_log("perception, Media Engine: %lu jobs (%lu refused), %lu rays: %lu answered, %lu not served, "
+			"%lu after a failed job, %lu dropped before a change; %lu taken, %lu checked, %lu mismatched",
+			psp_merays_stats.jobs, psp_merays_stats.refused, psp_merays_stats.rays, psp_merays_stats.answered,
+			psp_merays_stats.unsure, psp_merays_stats.failed, psp_merays_stats.settled, psp_merays_stats.taken,
+			psp_merays_stats.checked, psp_merays_stats.mismatches);
+}"""),
+("""		if (ray->actor_index != actor_index || ray->taken)
+			continue;
+		ray->taken = TRUE;""",
+ """		if (ray->actor_index != actor_index || ray->taken)
+			continue;
+		if (psp_merays_out && index >= psp_merays_first)
+			psp_merays_collect(index);
+		ray->taken = TRUE;"""),
+("""			psp_perc_stats.taken++;
+			if (!psp_perc_check)""",
+ """			psp_perc_stats.taken++;
+			if (ray->from_me)
+				psp_merays_stats.taken++;
+			if (!psp_perc_check)"""),
+("""			if (result != ray->result)
+				psp_perc_stats.ray_mismatches++;""",
+ """			if (result != ray->result)
+				psp_perc_stats.ray_mismatches++;
+			if (ray->from_me)
+			{
+				psp_merays_stats.checked++;
+				if (result != ray->result)
+					psp_merays_stats.mismatches++;
+			}"""),
+]
+# what changes a ray's answer first waits for the ME's rays
+FIXES_122["source/objects/objects.c#merays"] = [
+(head + """
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_121): perception's facts and rays made
+		before this no longer hold (actor_perception.c) */
+		extern unsigned long psp_object_epoch;
+
+		psp_object_epoch++;""", head + """
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_121): perception's facts and rays made
+		before this no longer hold (actor_perception.c) */
+		extern unsigned long psp_object_epoch;
+		/* psp_fixups.py (FIXES_122): and the Media Engine, which may be
+		reading the objects for perception's rays, finishes first */
+		extern int psp_merays_out;
+		void psp_merays_settle(void);
+
+		if (psp_merays_out)
+			psp_merays_settle();
+		psp_object_epoch++;""") for head in (
+    "void object_disconnect_from_map(\n\tlong object_index)",
+    "void object_reconnect_to_map(\n\tlong object_index,\n\tstruct location const *location)",
+    "void object_detach(\n\tlong child_object_index)",
+    "void object_attach_to_node(\n\tlong parent_object_index,\n\tlong child_object_index,\n\tshort parent_node_index)",
+    "void object_compute_node_matrices(\n\tlong object_index)",
+)]
+
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
