@@ -7,7 +7,7 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference. Emulator figures are JIT
 | Keep word | What | Kind | Emulator [E] | Default |
 |---|---|---|---|---|
 | `seethroughvfpu` | c40's multi-node see-through parts placed on the VFPU | speed, not bit-exact | pictures identical (c40); see-through models −3% | off |
-| `lightmerge` | the light pass's bands and cut pieces as one draw | speed/look trade | light seams slightly thinner; cost below | off |
+| `lightmerge` | the light pass's bands and cut pieces as one draw | speed/look trade | light seams slightly thinner; light pass +3% | off |
 | `foliagetwopass` | alpha-tested model parts get a soft second pass | look, costs speed | softer leaf edges; frame +13% on c10, +1.4% on b30 | off |
 | `sceneryhalf` | sleeping scenery checked every other tick (b107) | speed/behaviour | b30 tick −2.5%; pictures the same | off |
 
@@ -36,7 +36,7 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference. Emulator figures are JIT
 
 **What the player sees** [E, `b122_look_lightmerge.png`]: a band's nudge can lift a corner up to four times what its own distance asks; per corner, each gets its own. In d20's corridors the bright light seam along a ceiling/wall edge is **thinner** with the word (less light leaking past the edge); elsewhere the same. 2,185 pixels differ by more than 8 levels over 24 shots.
 
-**Cost/gain** [E]: the first version (calling `light_lift_corner`, three divisions a corner) made d20's light pass **dearer**, 14.5 → 17.1 ms a frame (+18%, lab 38580939224). The committed version (one division) is measured in lab 38583595807: see "Still open" if that run hadn't finished.
+**Cost/gain** [E]: the first version (calling `light_lift_corner`, three divisions a corner) made d20's light pass **dearer**, 14.5 → 17.1 ms a frame (+18%, lab 38580939224). The committed version (one division a corner, lab 38586798025) is still a little dearer: the light pass 14.7 → 15.2 ms a frame (+3.2%, 19 windows), the GE renderer's CPU +1.4%, the clock +0.8%. So in the emulator the bands' passes and copies cost less than a lift per corner; fewer draws don't pay for it. **As built it is a look call, not a speed-up**: the PSP's A/B decides whether its fewer draws and state changes (33,000 merged draws per 300 frames on d20) win there.
 
 ## 3. `foliagetwopass`: alpha-tested parts with soft edges
 
@@ -67,4 +67,6 @@ The three new words are drawing-only (`psp_ge.c` is shared) and change nothing t
 
 ## Still open
 
-(filled in at the end of the session)
+- `lightmerge` costs a little in the emulator (above); if Sheepdog01 prefers its look, a cheaper lift (shared corners worked out once, as the light memo does for the level's vertices) is the next step.
+- `foliagetwopass` covers model parts only; the level's own alpha-tested surfaces and c10's vines (LK7) are separate.
+- The reading of "light-pass merging" (§2) is this session's; Sheepdog01 should say if he meant another merge.
