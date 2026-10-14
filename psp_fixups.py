@@ -16275,6 +16275,121 @@ int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 
 ]
 
 
+# Resting weapons that "track an object" sleep too. A weapon's
+# tracked_object_index is never initialised (weapon_new leaves the 0 its
+# datum starts with), and index 0 has identifier 0, which datum_try_and_get
+# reads as "any": it finds whatever object holds slot 0, so weapon_update's
+# check that the tracked object still exists never clears it, and b120's
+# exclusion of tracking weapons kept every ground weapon awake
+# (review_b123_lititems.md section 4). That check is the only outside input
+# the exclusion stood for, so its answer goes into the sleep checksum, taken
+# at the weapon's own turn in the tick, the moment weapon_update would ask:
+# when the answer changes, the weapon wakes that tick and its update clears
+# the index as it would have. weapon_new is left as it is: initialising the
+# field would change the weapon's state from its first tick, and the desktop
+# servers run the same code. "weapontrackawake" (keep.txt): excluded again.
+# The lit items' report line also counts ground weapons and sleeping ones
+FIXES_123L["source/objects/objects.c#weapontrack"] = [
+("""long psp_items_lit_reason[6];
+""", """long psp_items_lit_reason[6];
+/* psp_fixups.py (FIXES_123L): tracking weapons ("weapontrackawake" off), and
+the ground weapons updated and asleep, for the object report */
+static int psp_weapon_track_awake = -1;
+long psp_weapons_ground, psp_weapons_asleep;
+"""),
+("""- a weapon tracking an object: checks that the object still exists.
+""", """- a weapon tracking an object: none now; it checks that the object
+  still exists, and that answer is in the sleep checksum
+  (psp_family_checksum; "weapontrackawake": excluded again).
+"""),
+("""	if (header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 0;
+	if (TEST_FLAG(item->item.flags, _item_on_structure_bit) && item->item.rested_surface_index != NONE &&
+		item->item.bsp_index == global_structure_bsp_index_get())
+	{""", """	if (psp_weapon_track_awake < 0)
+		psp_weapon_track_awake = psp_keep("weapontrackawake");
+	if (psp_weapon_track_awake && header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 0;
+	if (TEST_FLAG(item->item.flags, _item_on_structure_bit) && item->item.rested_surface_index != NONE &&
+		item->item.bsp_index == global_structure_bsp_index_get())
+	{"""),
+("""	if (header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 4;""", """	if (psp_weapon_track_awake > 0 && header->type == _object_type_weapon &&
+		((struct weapon_datum const *)header->datum)->weapon.tracked_object_index != NONE)
+		return 4;"""),
+("""	/* build 102: a machine's power and position groups, which its update
+	reads and a switch or a script changes without touching the machine */
+	if (header->type == _object_type_machine)""", """	/* psp_fixups.py (FIXES_123L): whether a weapon's tracked object still
+	exists, which weapon_update asks every tick and acts on (it clears the
+	index): asked here at the same moment, so a change wakes the weapon */
+	if (header->type == _object_type_weapon)
+	{
+		long tracked = ((struct weapon_datum const *)object)->weapon.tracked_object_index;
+
+		if (tracked != NONE)
+			sum = ((sum << 5) | (sum >> 27)) ^ (object_try_and_get_and_verify_type(tracked, _object_mask_all) ? 0x5BD1E995UL : 0x1B873593UL);
+	}
+	/* build 102: a machine's power and position groups, which its update
+	reads and a switch or a script changes without touching the machine */
+	if (header->type == _object_type_machine)"""),
+("""		if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+			psp_lit_item_seen(header, absolute_index);
+""", """		if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+			psp_lit_item_seen(header, absolute_index);
+		if (header->type == _object_type_weapon && object->object.parent_object_index == NONE)
+			psp_weapons_ground++;
+"""),
+("""			if (TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))
+				psp_items_lit_asleep++;
+""", """			if (TEST_FLAG(sleeper->object.flags, _object_has_attached_lights_bit))
+				psp_items_lit_asleep++;
+			if (header->type == _object_type_weapon)
+				psp_weapons_asleep++;
+"""),
+]
+
+
+# Which weapons' triggers enter the tracking state after firing (the only
+# place the tracked index is read in play): each weapon definition, the
+# first time one is made, logs its triggers that carry
+# _weapon_trigger_tracks_projectile_bit. A flag and a tag name, read at
+# run time; nothing of the tag leaves the machine but that line
+FIXES_123L["source/items/weapons.c#tracksprojectile"] = [
+("""	weapon->weapon.state = _weapon_state_idle;
+	weapon->weapon.overheated_effect_index = NONE;
+""", """	weapon->weapon.state = _weapon_state_idle;
+	weapon->weapon.overheated_effect_index = NONE;
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_123L): "#tracksprojectile" (see there) */
+		void platform_psp_log(const char *format, ...);
+		static long reported[32];
+		static int reported_count = 0;
+		int k;
+
+		for (k = 0; k < reported_count && reported[k] != weapon->definition_index; k++)
+			;
+		if (k == reported_count && reported_count < 32)
+		{
+			int tracking = 0;
+
+			reported[reported_count++] = weapon->definition_index;
+			for (k = 0; k < weapon_definition->weapon.triggers.count; k++)
+				if (TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&weapon_definition->weapon.triggers, k,
+					struct weapon_trigger_definition)->flags, _weapon_trigger_tracks_projectile_bit))
+					tracking |= 1 << k;
+			platform_psp_log("weapons: %s: %d triggers, tracking triggers mask %d",
+				tag_get_name(weapon->definition_index), (int)weapon_definition->weapon.triggers.count, tracking);
+		}
+	}
+#endif
+"""),
+]
+
+
 # "pillreach" (keep.txt; builds with PSP_DEBUG_TOOLS=1 only): recon for
 # docs/plan_biped_collision_me.md. A per-biped collision cache built ahead
 # (on the ME) answers a pill sweep only when the sweep's sphere lies inside

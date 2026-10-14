@@ -677,6 +677,7 @@ static void object_report(SceUID file, unsigned long ticks)
 		sleep rule (nothing else keeps them awake), asleep. On a line of their
 		own: the line above is cut at the log's 512 bytes on busy maps */
 		extern long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep, psp_items_lit_reason[6];
+		extern long psp_weapons_ground, psp_weapons_asleep; /* weapons not held, lit or not */
 
 		if (length < (int)sizeof(line) - 160)
 			length += snprintf(line + length, sizeof(line) - length, " asleep %.1f of %.1f per tick (%.1f vehicles, %.1f corpses, %.1f items); restless, unchecked %.1f",
@@ -691,7 +692,10 @@ static void object_report(SceUID file, unsigned long ticks)
 			ticks ? (double)psp_items_lit_reason[1] / ticks : 0.0, ticks ? (double)psp_items_lit_reason[2] / ticks : 0.0,
 			ticks ? (double)psp_items_lit_reason[3] / ticks : 0.0, ticks ? (double)psp_items_lit_reason[4] / ticks : 0.0,
 			ticks ? (double)psp_items_lit_reason[5] / ticks : 0.0);
+		platform_log("  weapons on the ground per tick: %.2f updated, %.2f asleep",
+			ticks ? (double)psp_weapons_ground / ticks : 0.0, ticks ? (double)psp_weapons_asleep / ticks : 0.0);
 		memset(psp_items_lit_reason, 0, sizeof(psp_items_lit_reason));
+		psp_weapons_ground = psp_weapons_asleep = 0;
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
 		psp_objects_restless_skipped = psp_items_asleep = 0;
 		psp_items_lit_updated = psp_items_lit_offered = psp_items_lit_asleep = 0;
@@ -2360,10 +2364,12 @@ static int heartbeat_thread(SceSize args, void *argp)
 					extern long psp_objects_asleep, psp_objects_sleep_checked, psp_vehicles_asleep, psp_items_asleep;
 					extern long psp_scenery_unchecked, psp_scenery_woken;
 					extern long psp_items_lit_updated, psp_items_lit_offered, psp_items_lit_asleep, psp_items_lit_reason[6];
+					extern long psp_weapons_ground, psp_weapons_asleep;
 
 					psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_items_asleep = 0;
 					psp_items_lit_updated = psp_items_lit_offered = psp_items_lit_asleep = 0;
 					memset(psp_items_lit_reason, 0, sizeof(psp_items_lit_reason));
+					psp_weapons_ground = psp_weapons_asleep = 0;
 					psp_scenery_unchecked = psp_scenery_woken = 0;
 				}
 			}
