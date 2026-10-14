@@ -14559,16 +14559,20 @@ FIXES_122 = {}
 # product depends only on the object's position, forward, up and mirrored
 # bit and on its definition's centre of mass and origin offset (tag data).
 # A machine stands still while its animation turns, and so does anything at
-# rest, so that product repeats tick after tick: kept in a slot by object
-# index, with every input it was made from, and reused when all of them
-# match bit for bit. The same bits in give the same bits out
+# rest, so that product repeats tick after tick (64% of c20's root frames,
+# 85-89% of a50's and d20's): kept in a slot by object index, with every
+# input it was made from, and reused when all of them match bit for bit.
+# It saves instructions but not time: the 24 KB of slots cost as many data
+# misses as the work they save (c20's tick +0.2% in the cache models), so
+# it is opt-in: "posingmemo". The same bits in give the same bits out
 # (matrix4x3_multiply reads its inputs before writing, on the FPU and the
 # VFPU alike), so the root's matrix and everything after it are unchanged.
 # The slots are emptied for each new map, where the same definition index
 # can name another tag. Also the root's second validity check: it tested
 # the matrix the first one had just passed (valid_real_matrix4x3 is pure).
-# "posingold" (keep.txt): both as before; "posingcheck": every remembered
-# frame made again and compared (the log's "posing" lines count them)
+# "posingold" (keep.txt): the second check as before (and no memo);
+# "posingcheck": the memo on, every remembered frame made again and compared
+# (the log's "posing" lines count them)
 FIXES_122["source/objects/objects.c#rootframe"] = [
 ("""void object_compute_node_matrices(
 	long object_index)
@@ -14590,6 +14594,7 @@ struct psp_pose_frame
 };
 static struct psp_pose_frame psp_pose_frames[PSP_POSE_SLOTS];
 static int psp_pose_on = -1;
+static int psp_pose_memo = 0;
 static int psp_pose_check = 0;
 static unsigned long psp_pose_hits, psp_pose_made, psp_pose_compared, psp_pose_differed;
 static long psp_pose_window = -1;
@@ -14605,6 +14610,7 @@ static int psp_pose_enabled(void)
 	{
 		psp_pose_on = !psp_keep("posingold");
 		psp_pose_check = psp_keep("posingcheck");
+		psp_pose_memo = psp_pose_on && (psp_keep("posingmemo") || psp_pose_check);
 		psp_pose_forget();
 	}
 	return psp_pose_on;
@@ -14684,7 +14690,7 @@ void object_compute_node_matrices(
 """, """				if (!world_relative)
 				{
 #ifdef HALO_PSP
-					if (!object_node_matrix && psp_pose_enabled())
+					if (!object_node_matrix && psp_pose_enabled() && psp_pose_memo)
 					{
 						psp_pose_slot = &psp_pose_frames[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
 						psp_pose_found = psp_pose_matches(psp_pose_slot, object_index, object, object_definition);
