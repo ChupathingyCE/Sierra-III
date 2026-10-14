@@ -1,9 +1,9 @@
 # Halo PSP launch presets: one a line, "name: keep words" (no colon in the name). The launch menu's
-# third page (R from the options) lists them; cross applies one. Build 121's tests
-# (docs/build_b121.md says what each answers and when to stop).
-1 play, b121 as it ships: nearauto assettrack geo2
+# third page (R from the options) lists them; cross applies one. Build 122's tests
+# (docs/build_b122.md says what each answers and when to stop).
+1 play, b122 as it ships: nearauto assettrack geo2
 2 ladder, all campaign openings, 90 s each: nearauto assettrack geo2 gebusy iostats ladder90
 3 cinematic bench, stops by itself: nearauto assettrack geo2 gebusy exitat70
-4 play, b121's speed-ups off: nearauto assettrack geo2 percold surfacetestold machinesawake meslantoff
+4 play, the speed-ups off (b121 and b122): nearauto assettrack geo2 percold surfacetestold machinesawake meslantoff meraysoff posingold animlockcall
 5 play, holograms on b120's map choice: nearauto assettrack geo2 drawnmapscale
 6 play, b120's HUD: nearauto assettrack geo2 hudnosnap hud150 hudnopushup
