@@ -119,7 +119,7 @@ That comes to ~10–12 KB on a retail map, and at most ~17 KB at the port's 128-
 - **Builds** [D]: the campaign build compiles and links (`4bc4f00`); `mewalk.py` gives the figures above.
 - **Memory** [D]: +6.8 KB code and +0.4 KB data against `446e3eb`, both built the same way. The heap is 8 KB smaller: 5,696 KB against 5,704.
 - **Emulator** [E]: batch `merays122a`, lab run 38560105583, on `b8b7726`. That commit is this branch before the jobs were cut to 16; the walk is the same. Every run ended normally.
-  - **Every ME answer checked** (`perccheck`, the main CPU casting each taken ray again): **0 mismatched of 270,921**, 0 not served, 0 after a failed job, 0 refused pushes, 0 failed ring jobs.
+  - **Every ME answer checked** (`perccheck`, the main CPU casting each taken ray again): **0 mismatched of 270,940**, 0 not served, 0 after a failed job, 0 refused pushes, 0 failed ring jobs.
     - b30's route: 101,977 checked (103,003 cast by the ME);
     - a50: 130,363;
     - b40 (vehicles): 12,621;
