@@ -53,6 +53,7 @@ With the words off nothing runs that didn't before: the ME's idle loop reads one
   - The caller then does the work itself, and the ring stops for the session. A late job may still write its output, but nobody reads it again.
   - So a stuck ME never hangs the game.
 - `psp_me_report()` prints an `ME: ring:` line each heartbeat (below).
+- The rare paths are cold functions of their own: `ring_push_simulated` (the emulator's), `ring_fail`, and in `psp_ge.c` `slant_decide` and `slant_part_here`. The code the main CPU runs for a job each draw is then ~670 instructions (hand-over, push, wait, collect).
 
 **Why.** b90 measured the ME as fast as the main CPU. What lost was the hand-over: ~320 µs a job of sleeps and whole-cache operations (`media_engine.md`). This hand-over is designed for small jobs:
 - no sleeps;
@@ -131,20 +132,25 @@ A missing write-back or drop on either CPU shows as a wrong word. That makes it 
 
 ## Proven [E] (the emulator runs no ME code: each ring job runs inside the push, on the main CPU, marked as the ME's work)
 
-Lab runs (lab-repo, `sierra-batch`): 38511103442 (121a), 38511131463 (121b), 38512381219 (121c), 38514031556 (121d).
+Lab runs (lab-repo, `sierra-batch`): 38511103442 (121a), 38511131463 (121b), 38512381219 (121c), 38514031556 (121d), 38516586601 (121e), 38518966627 (121f, on the branch's code as it stands: `c21d91e`).
 
-- **Exact.** `meslantcheck` found **0 differing buckets or totals over 54.4 million triangles** handed to the ring: b30 14.8 million, a50 12.3, c20 20.2, d20 7.1, with and without ME audio, the strict runs included. The game's play hash (`statecrc`) matched at every shared tick, word on and off, on d20 (10,720 ticks), a50 (17,155) and c20 (13,478) with `nomeaudio`. b30's play hash parts at tick ~1,357 only with ME audio on and the check's extra time, as it does across any timing change (b30's known audio-timing split). The whole-state hash differs in the `objects` record, which drawing writes and which the play hash leaves out. The same happens across `probes` on `w119` (lab 38443084885, from tick 102 on d20).
+- **Exact.** `meslantcheck` found **0 differing buckets or totals over 86.6 million triangles** handed to the ring: b30 16.0 million, a50 12.3, c20 51.2, d20 7.1. That covers runs with and without ME audio, the strict runs included. The game's play hash (`statecrc`) matched at every shared tick, word on and off, on d20 (10,720 ticks), a50 (17,155) and c20 (13,478) with `nomeaudio`. b30's play hash parts at tick ~1,357 only with ME audio on and the check's extra time, as it does across any timing change (b30's known audio-timing split). The whole-state hash differs in the `objects` record, which drawing writes and which the play hash leaves out. The same happens across `probes` on `w119` (lab 38443084885, from tick 102 on d20).
 - **Failures 0.** 0 fell back, 0 refused, 0 failed in every run.
 - **The rules hold** (the strict interpreter, b30):
   - 121b: 1,623,289 triangles to the ring, 0 bad accesses. The ME write trace found **0 lines written by both** the ME's work and the main CPU while a job was out (37 lines the ME's, 649 the main CPU's). The ME-strict check found **no system call** in the ME's work.
-  - 121d, with `meringtest` too: again 0 lines by both (72 and 716) and no system call.
-- **`meringtest`** (121d): **88,112 test jobs, 0 wrong words or sums**, 0 bursts short of a full ring, 0 failed. This covers b30 alone, b30 with `meslant meslantcheck` (6.6 million more triangles checked, 0 differing), and the strict run.
+  - 121d and 121f, with `meringtest` too: again 0 lines by both (72 against 716 and 818) and no system call.
+- **`meringtest`** (121d–f): **252,176 test jobs, 0 wrong words or sums**, 0 bursts short of a full ring, 0 failed, on b30 and c20, the strict runs included.
 - **Off changes nothing.** The word-off runs against `w121a`'s (lab 38509454132, base `274f08a`), with the same keep words:
   - the play hash is equal at every shared tick: d20 10,771 (121c), a50 17,431 (121c) and 21,567 (121d);
   - the heartbeats' frame and tick times are equal to 0.01 ms in every stretch.
 - **The main CPU's cost of the plumbing** (simulated, so the ME's half still runs on the main CPU):
   - JIT runs, the bucket loop's time on vs off: d20 +117 µs a frame, c20 +100, a50 +33. That is 15, 15 and 5 jobs a frame, so **~7 µs a job**.
-  - Cache models, b30 to game time 600 (121b): drawing +2.8 million instructions, +56,000 data misses and +192,000 instruction misses over ~1,800 jobs, so **~1,560 instructions, ~31 data and ~107 instruction misses a job**. That is an upper bound for the PSP [U]: there, `ring_run` and the job's code run on the ME, not here.
+  - Cache models, drawing on minus off, to game time 600:
+    - b30 (121b, ~1,800 jobs): **~1,560 instructions, ~31 data and ~107 instruction misses a job**;
+    - c20 (121e, ~4,500 jobs): ~2,260 instructions, 11 data and 138 instruction misses a job;
+    - c20 after the rare paths went into cold functions (121f, `c21d91e`): **~1,900 instructions, 12 data and 115 instruction misses a job**.
+    
+    These are upper bounds for the PSP [U]: there, `ring_run` and the job's code run on the ME, not here.
 - **Memory.** +8 KB code and +4 KB data: the heap is 12 KB smaller (5,756 KB against `w121`'s 5,768).
 - **Multiplayer.** It compiles (121a, 121c). The batch's MP run fails at start on `w121` as on this branch: no room for the display list, a different data folder and bake. The netplay run against ChupathingyCE's server is in the report.
 
