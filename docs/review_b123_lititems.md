@@ -48,7 +48,7 @@ b30's beach and a50 lost the counts to that cut, so `c2c041f` gives the lit item
 - **Play exact.** The play hash and both random seeds are the same at every common tick: d20 18,468 (across its BSP switch), a50 31,420, c20 23,731.
 - **The light lists** (`lights`, `light`, `light cluster reference`, `cluster light reference`) are the same at every checkpoint on all three.
 - The whole state differs only in `objects`, the render pass's mark that follows the emulator's speed (`big_levers.md` §5, #25). c20's last checkpoint (23,730) is cut mid-line by the wall and left out, as in the earlier reviews.
-- `itemsleepcheck` (every sleeper updated anyway, any change logged): 0 changed of 60,000 sleeper updates on b30's route and of 120,000 on a50.
+- `itemsleepcheck` (every sleeper updated anyway, any change logged; lab 38614501309): 0 changed, by the last count lines, of 60,000 sleeper updates on b30's route and 120,000 on a50.
 - **What that proves.** Since no lit item slept, these runs show that the change disturbs nothing else. They don't yet exercise the new branch. The branch is the machines' (`f6d2617`, proven with lit machines on d20, `review_b121_machines.md`), now taken by items. When the census finds a map with a resting lit item, a statecrc pair there is the remaining proof (below).
 
 **Multiplayer.** Items sleep in both builds.
