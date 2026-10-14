@@ -7101,25 +7101,50 @@ part's own list, in every pass) */
 read back for every model part cut at the near plane, and the emulator's
 cache model counted 0.8 M misses on it over b30's beach fight */
 static float (*model_cut)[CORNER_FLOATS];
-/* "cutroom": four times the room, on the heap. With the eye inside a
-vehicle's cabin (a Pelican's bench) most of the wall it faces crosses the
-near plane or the guard band, and a part's pieces past the scratchpad's
-192 corners were left undrawn (cut_pieces_lost) */
+/* Four times the room, on the heap. With the eye inside a vehicle's cabin
+(a Pelican's bench) most of the wall it faces crosses the near plane or the
+guard band, and a part's pieces past the scratchpad's 192 corners were left
+undrawn: the wall behind the player went missing (cut_pieces_lost). The
+larger buffer is taken only once a frame has lost pieces, so a game that
+never needs it (most views, and the multiplayer build's tighter heap) keeps
+the scratchpad's and pays nothing. "cutroom" takes it at start;
+"cutroomoff" never grows it */
 #define LARGE_MODEL_CUT_CORNERS 768
 static int model_cut_room = MAXIMUM_MODEL_CUT_CORNERS;
+static int model_cut_grow_allowed = -1;
 
 void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c */
+static int model_cut_take_large(const char *why)
+{
+	float (*large)[CORNER_FLOATS] = malloc(sizeof(float[LARGE_MODEL_CUT_CORNERS][CORNER_FLOATS]));
+
+	platform_log("GE: the models' cut buffer %s: %d corners%s", why, large ? LARGE_MODEL_CUT_CORNERS : model_cut_room,
+		large ? " on the heap" : " kept (no heap room)");
+	if (!large)
+		return 0;
+	model_cut = large;
+	model_cut_room = LARGE_MODEL_CUT_CORNERS;
+	return 1;
+}
 static void model_cut_take(void)
 {
+	model_cut_grow_allowed = !psp_keep("cutroomoff");
 	if (!model_cut && psp_keep("cutroom"))
-	{
-		model_cut = malloc(sizeof(float[LARGE_MODEL_CUT_CORNERS][CORNER_FLOATS]));
-		if (model_cut)
-			model_cut_room = LARGE_MODEL_CUT_CORNERS;
-		platform_log("GE: cutroom: the models' cut buffer %d corners%s", model_cut_room, model_cut ? " on the heap" : " (no heap room)");
-	}
+		model_cut_take_large("taken at start (cutroom)");
 	if (!model_cut)
 		model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
+}
+/* at a frame's end, where no cut corners are held: the next frame cuts into
+the larger buffer (the display list keeps its own copies of this frame's) */
+static void model_cut_grow_if_lost(unsigned long lost)
+{
+	static unsigned long lost_seen;
+
+	if (lost == lost_seen)
+		return;
+	lost_seen = lost;
+	if (model_cut_grow_allowed > 0 && model_cut_room < LARGE_MODEL_CUT_CORNERS)
+		model_cut_grow_allowed = model_cut_take_large("grown after pieces were lost");
 }
 static int model_cut_count = 0;
 static void *model_cut_vertices = NULL;
@@ -14838,6 +14863,7 @@ void psp_ge_frame_end(void)
 		mark = sceKernelGetSystemTimeLow();
 		draw_buffer = sceGuSwapBuffers();
 		frame_end_us[1] += sceKernelGetSystemTimeLow() - mark;
+		model_cut_grow_if_lost(cut_pieces_lost);
 		/* build 118: how long each frame stayed on the screen, in display
 		refreshes (60 a second): frames are shown at refreshes, so a frame
 		that misses 33.3 ms shows for 50 (20 fps for that frame), not 34.
