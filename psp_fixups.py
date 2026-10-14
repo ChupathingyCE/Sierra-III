@@ -1595,9 +1595,38 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
         "source/units/bipeds.c": [("boolean biped_update(", None), ("static void biped_update_moving(", None)],
         "source/units/units.c": [("boolean unit_update(", None), ("short unit_update_animation(", None)],
         "source/ai/actors.c": [("static void actor_update(", None)],
-        "source/ai/actor_perception.c": [("void actor_perception_update(", None), ("static void actor_perception_refresh(", None)],
+        "source/ai/actor_perception.c": [("void actor_perception_update(", None), ("static void actor_perception_refresh(", None),
+                                         # perception's own parts: which of them the line of sight is
+                                         ("void prop_position_refresh(", None),
+                                         ("static void actor_perception_refresh_danger_zone(", None)],
         "source/objects/objects.c": [("static boolean object_update(", None)],
     })
+    # prop_status_refresh's calls are assignments, which the call pattern
+    # can't see: labelled steps split it instead
+    STEP_LABELS_TICK = {
+        "source/ai/actor_perception.c": [
+            ("\t\tprop->ignore = TEST_FLAG(unit->unit.flags, _unit_ignored_by_actors_bit);\n",
+             "prop_status_refresh: start", "before"),
+            ("\t\t\tprop->line_of_sight =\n", "prop_status_refresh: line of sight", "before"),
+            ("\t\t\tprop->lighting = _prop_lighting_bright;\n", "prop_status_refresh: unit facts", "before"),
+            ("\t\t\tif (prop->ignore || blind)\n", "prop_status_refresh: orphan visibility", "before"),
+            ("\t\t\t\t\tlighting = prop->flashlight ? _prop_lighting_bright : prop->lighting;\n\t\t\t\t\tvisibility =\n",
+             "prop_status_refresh: visibility", "before"),
+            ("\t\t\t\tif ((game_connection() == _game_connection_local && ai_debug.deaf) ||\n",
+             "prop_status_refresh: audibility", "before"),
+            ("\t\tif (prop->dangerous_vehicle_driver)\n", "prop_status_refresh: dangers", "before"),
+            ("\t\tprop->unopposable_enemy = actor_compute_prop_unopposable(actor_index, prop_index);\n",
+             "prop_status_refresh: unopposable", "before"),
+            ("\t\tprop->target_weight = actor_compute_prop_target_weight(actor_index, prop_index);\n",
+             "prop_status_refresh: target weight", "before"),
+            ("\t\tprop->look_interest = actor_look_compute_prop_interest(actor_index, prop_index);\n",
+             "prop_status_refresh: look interest", "before"),
+            ("\t\tprop->refresh_stimuli = TRUE;\n\t}\n\n\treturn;\n}\n\nboolean actor_expected_acknowledgement(",
+             "prop_status_refresh: end", "before"),
+            ("\t\tswitch (prop->state)\n\t\t{\n\t\tcase _prop_state_unacknowledged:\n",
+             "actor_perception_update: prop state", "before"),
+        ],
+    }
     # build 106: an object's lighting as it is drawn (b30's beach: 7-10 ms a
     # frame under the step "object_get_level_of_detail_pixels", which is the
     # lighting lookup it is an argument of)
@@ -1657,6 +1686,8 @@ STEP_LABELS = {
          "render_model: model end", "before"),
     ],
 }
+if os.environ.get("PSP_TICK_STEPS", "") == "1":
+    STEP_LABELS.update(STEP_LABELS_TICK)
 
 def step_labels(tree):
     changed = 0
@@ -6108,6 +6139,58 @@ void psp_game_state_hash_tick(long tick)
 			extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
 
 			records_from = psp_keep_number("staterecords", -1);
+		}
+		/* "stateblocksN": at tick N, the actor allocation's hash by 64-byte
+		block, so two runs that part in it say which fields (with
+		tools/psp_offsets.py and the allocation's element size) */
+		static long blocks_at = -2;
+
+		if (blocks_at == -2)
+		{
+			extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
+
+			blocks_at = psp_keep_number("stateblocks", -1);
+		}
+		if (tick == blocks_at)
+		{
+			for (k = 0; k < psp_state_record_count; k++)
+			{
+				long block, blocks;
+
+				if (strcmp(psp_state_records[k].name, "actor"))
+					continue;
+				blocks = psp_state_records[k].size / 64;
+				for (block = 0; block < blocks; block++)
+				{
+					if (length > 440)
+					{
+						platform_psp_log("state: blocks of actor at tick %ld:%s", tick, line);
+						length = 0;
+					}
+					length += snprintf(line + length, sizeof(line) - length, " %ld:%08lx", block,
+						psp_state_hash((const char *)psp_state_records[k].pointer + block * 64, 64));
+				}
+				if (length)
+					platform_psp_log("state: blocks of actor at tick %ld:%s", tick, line);
+				length = 0;
+				{
+					/* "stateblockrawB": that block's bytes too, word by word */
+					extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
+					long raw = psp_keep_number("stateblockraw", -1);
+
+					if (raw >= 0 && raw < blocks)
+					{
+						const unsigned long *word = (const unsigned long *)((const char *)psp_state_records[k].pointer +
+							((4 - ((unsigned long)psp_state_records[k].pointer & 3)) & 3) + raw * 64);
+						int w;
+
+						for (w = 0; w < 16; w++)
+							length += snprintf(line + length, sizeof(line) - length, " %08lx", word[w]);
+						platform_psp_log("state: block %ld of actor at tick %ld:%s", raw, tick, line);
+						length = 0;
+					}
+				}
+			}
 		}
 		if (tick % 30 && !(records_from >= 0 && tick >= records_from && tick < records_from + 48))
 			return;
@@ -12946,7 +13029,613 @@ FIXES_121["source/rasterizer/rasterizer.c#drawnmap"] = [
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_121.items()) + list(FIXES_CHUPA.items()):
+
+# ---------- AI perception as a batch (ME phase 1: proposal C, steps 1-3)
+# Every level is bound by the tick, and perception is the AI's largest part:
+# on b30's beach its line of sight alone is ~40% of perception, one ray per
+# actor a tick, cast between that actor's other work.
+# Two exact parts, alive only for the length of actors_update:
+# - the unit facts: a unit's head and centre of mass (two marker lookups) and
+#   whether it is underwater are worked out once and shared. Its own actor
+#   reads them in actor_input_update, and every actor that knows the unit
+#   reads them again in prop_position_refresh (a target, every tick);
+# - the ray queue: the line of sight each actor's serviced prop will ask for
+#   is predicted at the start of actors_update and all of them are cast
+#   together, so the collision code and the clusters' object lists stay in
+#   the caches from ray to ray. prop_status_refresh takes a queued answer
+#   only when every input of its own call matches the queued one bit for bit
+#   and nothing has moved since; otherwise it casts its own ray, as before.
+# Grouping the whole of perception (step 1 proper) can't be exact: perception
+# draws the global random seed (notice and dive chances, the stimuli's
+# dialogue), and so do the stages after it, so running every actor's
+# perception first would reorder the draws. The queue's inputs and outputs
+# (step 2) are the ray's: two points and clusters, the mode, the vehicle to
+# ignore, and the answer. psp_object_epoch counts every change that could
+# alter a ray's answer or a unit fact: an object placed, moved, attached,
+# detached, removed from the map, or its node matrices made.
+# "percold": both off; "percnoqueue", "percnomemo": one off; "perccheck":
+# every answer either gives is worked out again and compared (the run plays
+# with the fresh one, as "percold" would)
+FIXES_121["source/ai/actor_perception.c#batch"] = [
+("""void prop_status_refresh(
+	long actor_index,
+	long prop_index,
+	struct actor_position_data *position)
+{""",
+ """#ifdef HALO_PSP
+#include <string.h>
+
+int psp_keep(const char *name); /* psp_platform.c */
+
+/* psp_fixups.py (FIXES_121): perception's unit facts and ray queue (the
+notes are psp_fixups.py's) */
+unsigned long psp_object_epoch;
+
+static int psp_perc_memo_on = -1, psp_perc_queue_on, psp_perc_check;
+/* the facts and the queue hold only inside actors_update: the units move
+in objects_update, so nothing is kept from one tick to the next */
+static boolean psp_perc_inside;
+static unsigned long psp_perc_pass, psp_perc_pass_epoch;
+
+#define PSP_PERC_UNITS 64
+#define PSP_PERC_HEAD 1
+#define PSP_PERC_BODY 2
+#define PSP_PERC_WATER 4
+struct psp_perc_unit
+{
+	long unit_index;
+	unsigned long pass, epoch;
+	unsigned long known;
+	real_point3d head, center_of_mass;
+	struct location water_location;
+	real_point3d water_position;
+	boolean underwater;
+};
+static struct psp_perc_unit psp_perc_units[PSP_PERC_UNITS];
+
+#define PSP_PERC_RAYS 48
+struct psp_perc_ray
+{
+	long actor_index, prop_index, ignore_object_index;
+	real_point3d p0, p1;
+	short p0_cluster_index, p1_cluster_index, mode, result;
+	boolean ignore_vehicles, taken;
+	/* what the ray added to the AI profile's collision meter, added again
+	when it's taken so the meters read as without the queue */
+	long collisions;
+};
+static struct psp_perc_ray psp_perc_rays[PSP_PERC_RAYS];
+static short psp_perc_ray_count;
+static unsigned long psp_perc_ray_epoch;
+
+static struct
+{
+	unsigned long passes, passes_moved, lookups, hits, fact_mismatches;
+	unsigned long cast, taken, refused, stale, ray_mismatches;
+} psp_perc_stats;
+
+static void psp_perc_keep_words(void)
+{
+	if (psp_perc_memo_on < 0)
+	{
+		int old = psp_keep("percold");
+
+		psp_perc_memo_on = !old && !psp_keep("percnomemo");
+		psp_perc_queue_on = !old && !psp_keep("percnoqueue");
+		psp_perc_check = psp_keep("perccheck");
+		platform_psp_log("perception: unit facts %s, ray queue %s%s",
+			psp_perc_memo_on ? "on" : "off", psp_perc_queue_on ? "on" : "off",
+			psp_perc_check ? ", checked" : "");
+	}
+}
+
+/* a unit's slot, emptied when it was filled in another pass or before an
+object changed; NULL outside actors_update or with the facts off */
+static struct psp_perc_unit *psp_perc_unit_slot(
+	long unit_index)
+{
+	struct psp_perc_unit *slot;
+
+	if (!psp_perc_inside || !psp_perc_memo_on)
+		return NULL;
+	slot = &psp_perc_units[DATUM_INDEX_TO_ABSOLUTE_INDEX(unit_index) & (PSP_PERC_UNITS - 1)];
+	if (slot->unit_index != unit_index || slot->pass != psp_perc_pass || slot->epoch != psp_object_epoch)
+	{
+		slot->unit_index = unit_index;
+		slot->pass = psp_perc_pass;
+		slot->epoch = psp_object_epoch;
+		slot->known = 0;
+	}
+	psp_perc_stats.lookups++;
+	return slot;
+}
+
+void psp_perception_unit_head(
+	long unit_index,
+	real_point3d *head)
+{
+	struct psp_perc_unit *slot = psp_perc_unit_slot(unit_index);
+
+	if (slot && (slot->known & PSP_PERC_HEAD))
+	{
+		psp_perc_stats.hits++;
+		if (!psp_perc_check)
+		{
+			*head = slot->head;
+			return;
+		}
+		unit_get_head_position(unit_index, head);
+		if (memcmp(head, &slot->head, sizeof(*head)))
+			psp_perc_stats.fact_mismatches++;
+		return;
+	}
+	unit_get_head_position(unit_index, head);
+	if (slot)
+	{
+		slot->head = *head;
+		slot->known |= PSP_PERC_HEAD;
+	}
+}
+
+void psp_perception_unit_center_of_mass(
+	long unit_index,
+	real_point3d *center_of_mass)
+{
+	struct psp_perc_unit *slot = psp_perc_unit_slot(unit_index);
+
+	if (slot && (slot->known & PSP_PERC_BODY))
+	{
+		psp_perc_stats.hits++;
+		if (!psp_perc_check)
+		{
+			*center_of_mass = slot->center_of_mass;
+			return;
+		}
+		unit_get_center_of_mass(unit_index, center_of_mass);
+		if (memcmp(center_of_mass, &slot->center_of_mass, sizeof(*center_of_mass)))
+			psp_perc_stats.fact_mismatches++;
+		return;
+	}
+	unit_get_center_of_mass(unit_index, center_of_mass);
+	if (slot)
+	{
+		slot->center_of_mass = *center_of_mass;
+		slot->known |= PSP_PERC_BODY;
+	}
+}
+
+/* the answer is kept with its own inputs, and given back only for the
+same inputs */
+boolean psp_perception_unit_underwater(
+	long unit_index,
+	struct location const *location,
+	real_point3d const *position)
+{
+	struct psp_perc_unit *slot = psp_perc_unit_slot(unit_index);
+	boolean underwater;
+
+	if (slot && (slot->known & PSP_PERC_WATER) &&
+		slot->water_location.leaf_index == location->leaf_index &&
+		slot->water_location.cluster_index == location->cluster_index &&
+		slot->water_location.bonus == location->bonus &&
+		!memcmp(&slot->water_position, position, sizeof(*position)))
+	{
+		psp_perc_stats.hits++;
+		if (!psp_perc_check)
+			return slot->underwater;
+		underwater = scenario_location_underwater(location, position, NULL);
+		if (underwater != slot->underwater)
+			psp_perc_stats.fact_mismatches++;
+		return underwater;
+	}
+	underwater = scenario_location_underwater(location, position, NULL);
+	if (slot)
+	{
+		slot->water_location = *location;
+		slot->water_position = *position;
+		slot->underwater = underwater;
+		slot->known |= PSP_PERC_WATER;
+	}
+	return underwater;
+}
+
+/* the vehicle a unit rides, as actor_input_update and prop_position_refresh
+find it */
+static long psp_perc_vehicle_of(
+	struct unit_datum *unit)
+{
+	long parent_index = unit->object.parent_object_index;
+
+	if (parent_index != NONE && object_get(parent_index)->object.type == _object_type_vehicle)
+		return parent_index;
+	return NONE;
+}
+
+static struct unit_datum *psp_perc_unit_or_null(
+	long unit_index)
+{
+	struct object_datum *object = unit_index == NONE ? NULL : object_try_and_get(unit_index);
+
+	return object && TEST_FLAG(_object_mask_unit, object->object.type) ? (struct unit_datum *)object : NULL;
+}
+
+/* the start of actors_update: true when actors_update is to offer each of
+its actors to psp_perception_queue, then call psp_perception_queue_done */
+static long psp_perc_line_of_sight_meter, psp_perc_collision_meter;
+
+boolean psp_perception_begin(
+	void)
+{
+	psp_perc_keep_words();
+	psp_perc_pass++;
+	psp_perc_inside = TRUE;
+	psp_perc_pass_epoch = psp_object_epoch;
+	psp_perc_ray_epoch = psp_object_epoch;
+	psp_perc_ray_count = 0;
+	psp_perc_line_of_sight_meter = ai_profile.meters[_ai_meter_line_of_sight].accumulator;
+	psp_perc_collision_meter = ai_profile.meters[_ai_meter_collisions].accumulator;
+	return psp_perc_queue_on;
+}
+
+/* an actor actors_update will update: its serviced prop predicted and its
+ray cast now, in a row with the other actors' */
+void psp_perception_queue(
+	long actor_index)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	struct prop_iterator props;
+	struct prop_datum *prop;
+	struct psp_perc_ray *ray;
+	struct unit_datum *unit, *prop_unit;
+	long before;
+
+	/* what actor_perception_update and prop_status_refresh ask of an actor
+	before the ray (a swarm senses from one of its units: its rays are cast
+	in place) */
+	if (psp_perc_ray_count >= PSP_PERC_RAYS || actor->meta.dormant || !actor->meta.active ||
+		actor->meta.swarm || (unit = psp_perc_unit_or_null(actor->meta.unit_index)) == NULL)
+		return;
+
+	/* actor_perception_update's choice: the first prop whose timer, after
+	this tick's step, reaches the highest of the last tick */
+	prop_iterator_new(&props, actor_index);
+	while ((prop = prop_iterator_next(&props)) != NULL)
+	{
+		short timer = prop->timer + 1;
+
+		if (!prop->enemy)
+			timer >>= 3;
+		if (prop->quantized_distance >= 3)
+			timer >>= 1;
+		if (timer >= actor->meta.highest_prop_timer)
+			break;
+	}
+	/* an orphan keeps the head it was last seen with, and a swarm's unit
+	can change in the refresh: their rays are cast in place */
+	if (prop == NULL || prop->swarm ||
+		(prop->state >= _prop_state_uninspected_orphan && prop->state <= _prop_state_inspected_orphan) ||
+		(prop_unit = psp_perc_unit_or_null(prop->unit_index)) == NULL)
+		return;
+
+	ray = &psp_perc_rays[psp_perc_ray_count];
+	ray->actor_index = actor_index;
+	ray->prop_index = props.index;
+	psp_perception_unit_head(actor->meta.unit_index, &ray->p0);
+	ray->p0_cluster_index = object_get(object_get_ultimate_parent(actor->meta.unit_index))->object.location.cluster_index;
+	ray->ignore_vehicles = psp_perc_vehicle_of(unit) != NONE;
+	psp_perception_unit_head(prop->unit_index, &ray->p1);
+	ray->p1_cluster_index = object_get(object_get_ultimate_parent(prop->unit_index))->object.location.cluster_index;
+	ray->ignore_object_index = psp_perc_vehicle_of(prop_unit);
+	ray->mode = prop->player && prop->enemy ? _ai_line_of_sight_expand_target : _ai_line_of_sight_normal;
+	ray->taken = FALSE;
+	before = ai_profile.meters[_ai_meter_collisions].accumulator;
+	ray->result = ai_test_line_of_sight(&ray->p0, ray->p0_cluster_index, &ray->p1, ray->p1_cluster_index,
+		ray->mode, FALSE, ray->ignore_object_index, ray->ignore_vehicles);
+	ray->collisions = ai_profile.meters[_ai_meter_collisions].accumulator - before;
+	psp_perc_ray_count++;
+}
+
+void psp_perception_queue_done(
+	void)
+{
+	/* the meters as if no ray had been cast yet: each counts when taken */
+	ai_profile.meters[_ai_meter_line_of_sight].accumulator = psp_perc_line_of_sight_meter;
+	ai_profile.meters[_ai_meter_collisions].accumulator = psp_perc_collision_meter;
+	psp_perc_stats.cast += psp_perc_ray_count;
+	/* a ray cast before something moved can't be trusted */
+	if (psp_object_epoch != psp_perc_ray_epoch)
+	{
+		psp_perc_stats.stale += psp_perc_ray_count;
+		psp_perc_ray_count = 0;
+	}
+}
+
+void psp_perception_end(
+	void)
+{
+	psp_perc_inside = FALSE;
+	psp_perc_stats.passes++;
+	if (psp_object_epoch != psp_perc_pass_epoch)
+		psp_perc_stats.passes_moved++;
+	if (psp_perc_stats.passes % 1800 == 0)
+		platform_psp_log("perception: %lu passes (%lu with an object changed); unit facts %lu of %lu lookups kept, %lu mismatched; "
+			"rays %lu cast, %lu taken, %lu refused, %lu stale, %lu mismatched",
+			psp_perc_stats.passes, psp_perc_stats.passes_moved, psp_perc_stats.hits, psp_perc_stats.lookups,
+			psp_perc_stats.fact_mismatches, psp_perc_stats.cast, psp_perc_stats.taken, psp_perc_stats.refused,
+			psp_perc_stats.stale, psp_perc_stats.ray_mismatches);
+}
+
+/* ai_test_line_of_sight for prop_status_refresh: the queued answer when
+the call is the queued one, bit for bit */
+static short psp_perception_line_of_sight(
+	long actor_index,
+	long prop_index,
+	real_point3d const *p0,
+	short p0_cluster_index,
+	real_point3d const *p1,
+	short p1_cluster_index,
+	short mode,
+	boolean test_line_of_fire,
+	long ignore_object_index,
+	boolean ignore_vehicles)
+{
+	short index;
+
+	if (psp_perc_ray_count > 0 && psp_perc_ray_epoch != psp_object_epoch)
+	{
+		for (index = 0; index < psp_perc_ray_count; index++)
+		{
+			if (!psp_perc_rays[index].taken)
+				psp_perc_stats.stale++;
+		}
+		psp_perc_ray_count = 0;
+	}
+	for (index = 0; index < psp_perc_ray_count; index++)
+	{
+		struct psp_perc_ray *ray = &psp_perc_rays[index];
+
+		if (ray->actor_index != actor_index || ray->taken)
+			continue;
+		ray->taken = TRUE;
+		if (ray->prop_index == prop_index && !test_line_of_fire && ray->mode == mode &&
+			ray->p0_cluster_index == p0_cluster_index && ray->p1_cluster_index == p1_cluster_index &&
+			ray->ignore_object_index == ignore_object_index && !ray->ignore_vehicles == !ignore_vehicles &&
+			!memcmp(&ray->p0, p0, sizeof(*p0)) && !memcmp(&ray->p1, p1, sizeof(*p1)))
+		{
+			short result;
+
+			psp_perc_stats.taken++;
+			if (!psp_perc_check)
+			{
+				ai_profile.meters[_ai_meter_line_of_sight].accumulator++;
+				ai_profile.meters[_ai_meter_collisions].accumulator += ray->collisions;
+				return ray->result;
+			}
+			result = ai_test_line_of_sight(p0, p0_cluster_index, p1, p1_cluster_index, mode,
+				test_line_of_fire, ignore_object_index, ignore_vehicles);
+			if (result != ray->result)
+				psp_perc_stats.ray_mismatches++;
+			return result;
+		}
+		psp_perc_stats.refused++;
+		break;
+	}
+	return ai_test_line_of_sight(p0, p0_cluster_index, p1, p1_cluster_index, mode,
+		test_line_of_fire, ignore_object_index, ignore_vehicles);
+}
+#endif
+
+void prop_status_refresh(
+	long actor_index,
+	long prop_index,
+	struct actor_position_data *position)
+{"""),
+("""			prop->line_of_sight =
+				ai_test_line_of_sight(
+					&position->head_position,
+					position->body_location.cluster_index,
+					&prop->head_position,
+					prop->body_location.cluster_index,
+					prop->player && prop->enemy ? _ai_line_of_sight_expand_target : _ai_line_of_sight_normal,
+					FALSE,
+					prop->vehicle_index,
+					actor->input.vehicle_index != NONE);
+
+			if (prop->ignore || blind)""",
+ """			prop->line_of_sight =
+#ifdef HALO_PSP
+				psp_perception_line_of_sight(
+					actor_index,
+					prop_index,
+#else
+				ai_test_line_of_sight(
+#endif
+					&position->head_position,
+					position->body_location.cluster_index,
+					&prop->head_position,
+					prop->body_location.cluster_index,
+					prop->player && prop->enemy ? _ai_line_of_sight_expand_target : _ai_line_of_sight_normal,
+					FALSE,
+					prop->vehicle_index,
+					actor->input.vehicle_index != NONE);
+
+			if (prop->ignore || blind)"""),
+("""			prop->line_of_sight =
+				ai_test_line_of_sight(
+					&position->head_position,
+					position->body_location.cluster_index,
+					&prop->head_position,
+					prop->body_location.cluster_index,
+					prop->player && prop->enemy ? _ai_line_of_sight_expand_target : _ai_line_of_sight_normal,
+					FALSE,
+					prop->vehicle_index,
+					actor->input.vehicle_index != NONE);
+			prop->lighting = _prop_lighting_bright;""",
+ """			prop->line_of_sight =
+#ifdef HALO_PSP
+				psp_perception_line_of_sight(
+					actor_index,
+					prop_index,
+#else
+				ai_test_line_of_sight(
+#endif
+					&position->head_position,
+					position->body_location.cluster_index,
+					&prop->head_position,
+					prop->body_location.cluster_index,
+					prop->player && prop->enemy ? _ai_line_of_sight_expand_target : _ai_line_of_sight_normal,
+					FALSE,
+					prop->vehicle_index,
+					actor->input.vehicle_index != NONE);
+			prop->lighting = _prop_lighting_bright;"""),
+("""		unit_get_head_position(prop->unit_index, &prop->head_position);
+		object_get_origin(prop->unit_index, &prop->body_position);
+		unit_get_center_of_mass(prop->unit_index, &prop->center_of_mass);""",
+ """#ifdef HALO_PSP
+		psp_perception_unit_head(prop->unit_index, &prop->head_position);
+		object_get_origin(prop->unit_index, &prop->body_position);
+		psp_perception_unit_center_of_mass(prop->unit_index, &prop->center_of_mass);
+#else
+		unit_get_head_position(prop->unit_index, &prop->head_position);
+		object_get_origin(prop->unit_index, &prop->body_position);
+		unit_get_center_of_mass(prop->unit_index, &prop->center_of_mass);
+#endif"""),
+("""		prop->underwater =
+			scenario_location_underwater(
+				&prop->body_location,
+				&prop->center_of_mass,
+				NULL);""",
+ """		prop->underwater =
+#ifdef HALO_PSP
+			psp_perception_unit_underwater(prop->unit_index, &prop->body_location, &prop->center_of_mass);
+#else
+			scenario_location_underwater(
+				&prop->body_location,
+				&prop->center_of_mass,
+				NULL);
+#endif"""),
+]
+FIXES_121["source/ai/actors.c#batch"] = [
+("""void actor_input_sample_position(
+	long actor_index,
+	long unit_index,
+	struct actor_position_data *position)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_121): perception's unit facts and ray queue
+(actor_perception.c) */
+boolean psp_perception_begin(void);
+void psp_perception_queue(long actor_index);
+void psp_perception_queue_done(void);
+void psp_perception_end(void);
+void psp_perception_unit_head(long unit_index, real_point3d *head);
+void psp_perception_unit_center_of_mass(long unit_index, real_point3d *center_of_mass);
+boolean psp_perception_unit_underwater(long unit_index, struct location const *location, real_point3d const *position);
+#endif
+
+void actor_input_sample_position(
+	long actor_index,
+	long unit_index,
+	struct actor_position_data *position)
+{"""),
+("""	unit_get_head_position(unit_index, &position->head_position);
+	object_get_velocities(unit_index, &position->velocity, NULL);""",
+ """#ifdef HALO_PSP
+	psp_perception_unit_head(unit_index, &position->head_position);
+#else
+	unit_get_head_position(unit_index, &position->head_position);
+#endif
+	object_get_velocities(unit_index, &position->velocity, NULL);"""),
+("""		unit_get_center_of_mass(actor->meta.unit_index, &center_of_mass);
+		actor->input.underwater = scenario_location_underwater(
+			&actor->input.position.body_location,
+			&center_of_mass,
+			NULL);""",
+ """#ifdef HALO_PSP
+		psp_perception_unit_center_of_mass(actor->meta.unit_index, &center_of_mass);
+		actor->input.underwater = psp_perception_unit_underwater(
+			actor->meta.unit_index,
+			&actor->input.position.body_location,
+			&center_of_mass);
+#else
+		unit_get_center_of_mass(actor->meta.unit_index, &center_of_mass);
+		actor->input.underwater = scenario_location_underwater(
+			&actor->input.position.body_location,
+			&center_of_mass,
+			NULL);
+#endif"""),
+("""	ai_globals->time_given_this_frame = FALSE;
+
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		if (actor->meta.erase_next_tick)
+		{
+			actor_erase(iterator.index, FALSE);
+		}
+		else if (actor->state.mode > _actor_mode_braindead)
+		{
+			actor_update(iterator.index);
+		}
+	}
+""",
+ """	ai_globals->time_given_this_frame = FALSE;
+
+#ifdef HALO_PSP
+	/* perception's rays, one per actor, cast together before the actors
+	update (the same actors the loop below updates) */
+	if (psp_perception_begin())
+	{
+		actor_iterator_new(&iterator, TRUE);
+		while ((actor = actor_iterator_next(&iterator)) != NULL)
+		{
+			if (!actor->meta.erase_next_tick && actor->state.mode > _actor_mode_braindead)
+				psp_perception_queue(iterator.index);
+		}
+		psp_perception_queue_done();
+	}
+#endif
+	actor_iterator_new(&iterator, TRUE);
+	while ((actor = actor_iterator_next(&iterator)) != NULL)
+	{
+		if (actor->meta.erase_next_tick)
+		{
+			actor_erase(iterator.index, FALSE);
+		}
+		else if (actor->state.mode > _actor_mode_braindead)
+		{
+			actor_update(iterator.index);
+		}
+	}
+#ifdef HALO_PSP
+	psp_perception_end();
+#endif
+"""),
+]
+# what can change a ray's answer or a unit fact counts in psp_object_epoch
+FIXES_121["source/objects/objects.c#epoch"] = [
+(head + """
+{
+""", head + """
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_121): perception's facts and rays made
+		before this no longer hold (actor_perception.c) */
+		extern unsigned long psp_object_epoch;
+
+		psp_object_epoch++;
+	}
+#endif
+""") for head in (
+    "void object_disconnect_from_map(\n\tlong object_index)",
+    "void object_reconnect_to_map(\n\tlong object_index,\n\tstruct location const *location)",
+    "void object_detach(\n\tlong child_object_index)",
+    "void object_attach_to_node(\n\tlong parent_object_index,\n\tlong child_object_index,\n\tshort parent_node_index)",
+    "void object_compute_node_matrices(\n\tlong object_index)",
+)]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
