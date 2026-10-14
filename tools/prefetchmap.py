@@ -40,7 +40,8 @@ What it prints, for one phase (1: the tick, by default):
   - the totals by lever.
 
 --inject N writes the static placement of the top N sites as the
-emulator's PSP_PF_INJECT lines (sierra-batch's pfinject): the run's model
+emulator's PSP_PF_INJECT lines (leaving out stretches shorter than
+--inject-min cycles and sites whose prefetch would cost more than it hides) (sierra-batch's pfinject): the run's model
 then issues those prefetches without changing the code, and its DCTIME
 lines score them against a run without.
 
@@ -391,6 +392,8 @@ def main():
     ap.add_argument('--detail', type=int, default=12, help='top sites shown with their code')
     ap.add_argument('--inject', type=int, default=0, help='write the top N sites\' placements as PSP_PF_INJECT lines')
     ap.add_argument('--inject-out', help='file for --inject (default: printed at the end)')
+    ap.add_argument('--inject-min', type=int, default=16,
+                    help='the shortest stretch, in cycles, worth a placement (default 16)')
     args = ap.parse_args()
 
     elfs = [p for p in args.inputs if is_elf(p)]
@@ -592,12 +595,24 @@ def main():
         print()
 
     if args.inject:
-        lines = []
+        lines, placed = [], set()
         for s in ranked[:args.inject]:
             info = details.get(s['pc']) or (walk_back(code, s['span'], s['pc']) if code and s['span'] else None)
             if not info or info.get('place_before') is None:
                 lines.append('# %08x %s: no straight-line placement' % (s['pc'], s['where']))
                 continue
+            # a prefetch saves only the stretch it starts (the next memory
+            # operation waits out the rest), and costs a cycle every run
+            if info['static_run'] < args.inject_min or s['net'] <= 0:
+                lines.append('# %08x %s: left out (a %d-cycle stretch, net %.0f a tick)'
+                             % (s['pc'], s['where'], info['static_run'], s['net']))
+                continue
+            # fills serialize: a second prefetch at one spot waits out the first
+            if info['place_before'] in placed:
+                lines.append('# %08x %s: same spot as an earlier placement (it would wait for that fill)'
+                             % (s['pc'], s['where']))
+                continue
+            placed.add(info['place_before'])
             lines.append('%08x %s %d  # for %08x %s' % (info['place_before'], info['base'], info['offset'],
                                                       s['pc'], s['where']))
         text = '\n'.join(lines) + '\n'
