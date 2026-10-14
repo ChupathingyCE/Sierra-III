@@ -83,6 +83,16 @@ NO_GPR_WRITE = STORES | {'j', 'jr', 'jal', 'jalr', 'mtc1', 'ctc1', 'mtv', 'mtvc'
                          'mult', 'multu', 'div', 'divu', 'madd', 'maddu', 'msub', 'msubu', 'mthi', 'mtlo',
                          'lwc1', 'lv.s', 'lv.q', 'lvl.q', 'lvr.q'}
 UNCONDITIONAL = {'j', 'jr', 'b'}
+
+
+def cycles_of(op):
+    """PPSSPP's estimate, which the model's clock uses: a stretch is measured
+    in cycles, so a long divide is worth its 29"""
+    if op == 'div.s':
+        return 29
+    if op.startswith('v') and op not in MEMORY_OPS:
+        return 2
+    return 1
 CALL_CLOBBERS = {'at', 'v0', 'v1', 'a0', 'a1', 'a2', 'a3', 't0', 't1', 't2', 't3', 't4', 't5', 't6', 't7',
                  't8', 't9', 'ra'}
 REG_ALIASES = {'s8': 'fp'}
@@ -317,7 +327,7 @@ def walk_back(code, span, pc, longest=96):
                 starts.append((start, run))
             start, run = address + 4, 0
         else:
-            run += 1
+            run += cycles_of(op2)
     if start is not None:
         starts.append((start, run))
     best = max(starts, key=lambda x: x[1]) if starts else None
@@ -510,7 +520,7 @@ def main():
                     note = ' (that spot is a delay slot: in the code it goes before the branch)'
                 elif info.get('branchy'):
                     note = ' (a branch leaves or lands between: the window is on the path that falls through)'
-                print('   place: cache 0x1E, %d(%s) before %08x: %d instructions with no memory operation follow%s'
+                print('   place: cache 0x1E, %d(%s) before %08x: %d cycles with no memory operation follow%s'
                       % (info['offset'], info['base'], info['place_before'], info['static_run'], note))
             else:
                 print('   place: no stretch free of memory operations in the straight-line code')
