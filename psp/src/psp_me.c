@@ -175,11 +175,14 @@ static struct me_ring_result ring_results[ME_RING_ENTRIES];
 
 /* hit operations on the lines holding [start, start + bytes): 0x1A writes a
 line back, 0x1B writes it back and drops it. On either CPU, in user mode (as
-list_take's and ge_writeback's in psp_ge.c) */
+list_take's and ge_writeback's in psp_ge.c). A range seen through the
+uncached view never went through a cache: nothing to do */
 static inline void lines_writeback(unsigned int start, unsigned int bytes)
 {
 	unsigned int line, end = start + bytes;
 
+	if (start & 0x40000000u)
+		return;
 	for (line = start & ~63u; line < end; line += 64)
 		__builtin_allegrex_cache(0x1A, line);
 	__asm__ __volatile__("sync");
@@ -189,6 +192,8 @@ static inline void lines_drop(unsigned int start, unsigned int bytes)
 {
 	unsigned int line, end = start + bytes;
 
+	if (start & 0x40000000u)
+		return;
 	for (line = start & ~63u; line < end; line += 64)
 		__builtin_allegrex_cache(0x1B, line);
 	__asm__ __volatile__("sync");

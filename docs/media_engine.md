@@ -103,3 +103,16 @@ b89's counter fix works on hardware: the cycle counter runs at 331.6 a microseco
 - **The hand-over is the cost:** a job's round trip was ~520 µs against ~200 µs of code, so ~320 µs a job goes to the waiting thread's sleeps (50 µs, then every 100 µs, each able to overrun) and the whole-cache write-backs. 6,300 small jobs a 300-frame window can't pay that.
 - **So an offload must be few, large, asynchronous jobs:** hand the ME a whole frame's worth (or a tick's) early, do other work, collect late; spin briefly rather than sleep when the answer is due; write back ranges, not the whole cache.
 - With equal speed, the ME is a full second core. Where it goes first (renderer or tick) is the open decision; see campaign_window_fit.md and frame_rate_targets.md.
+
+## The job ring (ME phase 1, `meslant`; `docs/review_b121_me.md`)
+
+The answer to "few, large, asynchronous jobs" for work that comes in pieces: a ring of 8 jobs beside the slots, with a hand-over cheap enough for jobs of ~50–500 µs.
+
+- **One writer per line.** `pushed` (main CPU) and `popped` (ME) are each on an uncached line of their own. Requests are written by the main CPU, then written back before the push. Results and outputs are written by the ME, then written back before `popped` moves. Each side drops its stale copies of the other's lines before reading them (`cache 0x1B` on the lines; the whole cache only past 16 KB).
+- **Rules checked at the push:** the output is whole 64-byte lines, and everything is in main RAM (not VRAM).
+- **Checked after each job:** a stack sentinel.
+- **A 10 ms watchdog:** past it, the main CPU does the job itself and the ring stops for the session.
+- **Pick-up:** the ring is served right after the audio slot. After a ring job the ME looks every ~1.5 µs for ~2 ms (the renderer pushes in bursts), then idles as before.
+- **First client:** the slant sort. The ME takes the back part of a draw's bucket loop while the main CPU does the front (`slant_hand_over` / `slant_collect`, `meslantcheck`).
+- **Its own check:** `meringtest`, 8 jobs a frame over freshly rewritten buffers.
+- **In the emulator** every ring job runs inside the push, so the emulator proves the rules (strict interpreter, the ME write trace, the ME-strict check) and the exactness, but not the speed.
