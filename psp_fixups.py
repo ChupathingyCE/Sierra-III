@@ -1595,9 +1595,39 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
         "source/units/bipeds.c": [("boolean biped_update(", None), ("static void biped_update_moving(", None)],
         "source/units/units.c": [("boolean unit_update(", None), ("short unit_update_animation(", None)],
         "source/ai/actors.c": [("static void actor_update(", None)],
-        "source/ai/actor_perception.c": [("void actor_perception_update(", None), ("static void actor_perception_refresh(", None)],
+        "source/ai/actor_perception.c": [("void actor_perception_update(", None), ("static void actor_perception_refresh(", None),
+                                         # perception's own parts: which of them the line of sight is
+                                         ("void prop_position_refresh(", None),
+                                         ("static void actor_perception_refresh_danger_zone(", None)],
         "source/objects/objects.c": [("static boolean object_update(", None)],
     })
+    # prop_status_refresh's calls are assignments, which the call pattern
+    # can't see: labelled steps split it instead
+    STEP_LABELS_TICK = {
+        "source/ai/actor_perception.c": [
+            ("\t\tprop->ignore = TEST_FLAG(unit->unit.flags, _unit_ignored_by_actors_bit);\n",
+             "prop_status_refresh: start", "before"),
+            ("\t\t\tprop->line_of_sight =\n\t\t\t\tai_test_line_of_sight(\n",
+             "prop_status_refresh: line of sight", "before"),
+            ("\t\t\tprop->lighting = _prop_lighting_bright;\n", "prop_status_refresh: unit facts", "before"),
+            ("\t\t\tif (prop->ignore || blind)\n", "prop_status_refresh: orphan visibility", "before"),
+            ("\t\t\t\t\tlighting = prop->flashlight ? _prop_lighting_bright : prop->lighting;\n\t\t\t\t\tvisibility =\n",
+             "prop_status_refresh: visibility", "before"),
+            ("\t\t\t\tif ((game_connection() == _game_connection_local && ai_debug.deaf) ||\n",
+             "prop_status_refresh: audibility", "before"),
+            ("\t\tif (prop->dangerous_vehicle_driver)\n", "prop_status_refresh: dangers", "before"),
+            ("\t\tprop->unopposable_enemy = actor_compute_prop_unopposable(actor_index, prop_index);\n",
+             "prop_status_refresh: unopposable", "before"),
+            ("\t\tprop->target_weight = actor_compute_prop_target_weight(actor_index, prop_index);\n",
+             "prop_status_refresh: target weight", "before"),
+            ("\t\tprop->look_interest = actor_look_compute_prop_interest(actor_index, prop_index);\n",
+             "prop_status_refresh: look interest", "before"),
+            ("\t\tprop->refresh_stimuli = TRUE;\n\t}\n\n\treturn;\n}\n\nboolean actor_expected_acknowledgement(",
+             "prop_status_refresh: end", "before"),
+            ("\t\tswitch (prop->state)\n\t\t{\n\t\tcase _prop_state_unacknowledged:\n",
+             "actor_perception_update: prop state", "before"),
+        ],
+    }
     # build 106: an object's lighting as it is drawn (b30's beach: 7-10 ms a
     # frame under the step "object_get_level_of_detail_pixels", which is the
     # lighting lookup it is an argument of)
@@ -1657,6 +1687,8 @@ STEP_LABELS = {
          "render_model: model end", "before"),
     ],
 }
+if os.environ.get("PSP_TICK_STEPS", "") == "1":
+    STEP_LABELS.update(STEP_LABELS_TICK)
 
 def step_labels(tree):
     changed = 0
