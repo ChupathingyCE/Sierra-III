@@ -6140,6 +6140,41 @@ void psp_game_state_hash_tick(long tick)
 
 			records_from = psp_keep_number("staterecords", -1);
 		}
+		/* "stateblocksN": at tick N, the actor allocation's hash by 64-byte
+		block, so two runs that part in it say which fields (with
+		tools/psp_offsets.py and the allocation's element size) */
+		static long blocks_at = -2;
+
+		if (blocks_at == -2)
+		{
+			extern int psp_keep_number(const char *prefix, int fallback); /* psp_platform.c */
+
+			blocks_at = psp_keep_number("stateblocks", -1);
+		}
+		if (tick == blocks_at)
+		{
+			for (k = 0; k < psp_state_record_count; k++)
+			{
+				long block, blocks;
+
+				if (strcmp(psp_state_records[k].name, "actor"))
+					continue;
+				blocks = psp_state_records[k].size / 64;
+				for (block = 0; block < blocks; block++)
+				{
+					if (length > 440)
+					{
+						platform_psp_log("state: blocks of actor at tick %ld:%s", tick, line);
+						length = 0;
+					}
+					length += snprintf(line + length, sizeof(line) - length, " %ld:%08lx", block,
+						psp_state_hash((const char *)psp_state_records[k].pointer + block * 64, 64));
+				}
+				if (length)
+					platform_psp_log("state: blocks of actor at tick %ld:%s", tick, line);
+				length = 0;
+			}
+		}
 		if (tick % 30 && !(records_from >= 0 && tick >= records_from && tick < records_from + 48))
 			return;
 	}
