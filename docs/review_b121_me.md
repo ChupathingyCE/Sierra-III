@@ -152,7 +152,11 @@ Lab runs (lab-repo, `sierra-batch`): 38511103442 (121a), 38511131463 (121b), 385
     
     These are upper bounds for the PSP [U]: there, `ring_run` and the job's code run on the ME, not here.
 - **Memory.** +8 KB code and +4 KB data: the heap is 12 KB smaller (5,756 KB against `w121`'s 5,768).
-- **Multiplayer.** It compiles (121a, 121c). The batch's MP run fails at start on `w121` as on this branch: no room for the display list, a different data folder and bake. The netplay run against ChupathingyCE's server is in the report.
+- **Multiplayer.** It compiles (121a, 121c, and `sierra-netplay` 38513708451 with `meslant meslantcheck`). Neither MP run in the lab reaches a game, on `w121` as on this branch, so the lab can't play it yet:
+  - The batch's MP run (campaign bake, data folder `halo`) runs out of room for the display list at start.
+  - The netplay run (`/bake/mp5`, ChupathingyCE's server up) stays at the menu: `map_name none`, a UI widget not loaded, no network lines. `w121`'s own netplay run (38522451570) does the same.
+  
+  The ring changes no simulation (the word only reorders the CPUs' work on the drawing), so the network version is untouched.
 
 ## Rig runs wanted
 
