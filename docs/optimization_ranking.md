@@ -218,8 +218,8 @@ These are the bigger ceilings. Most need a design and their own build.
 |---|---|---|---|---|
 | B1 | **AI perception less often** (far actors at half rate; stagger + line-of-sight cache) | ≤ 6.8 ms a tick if every actor went half rate [U, pre-b106 share]; far actors only: smaller, unknown | reaction delay for far actors | proposed; keep word only. Bungie already services one prop per actor per tick, non-enemies 8× less often [D] |
 | B2 | **`sceneryhalf`** | 0.25–1 ms a tick [E→U]; the b109c model said −9% (disputed) | a change to sleeping scenery noticed up to a tick late | keep word, off; first on M1's list |
-| B3 | **Far, unseen always-moving machines at a lower rate** | Library ≈ 2.2 ms a tick [U] | coarser off-screen platform motion | proposed; after E4 |
-| B4 | **Half-rate posing** for distant, at-rest, unseen objects | ceiling ≤ 8.6 ms, likely small [E→U] | "very low" | proposed |
+| B3 | **Far, unseen always-moving machines at a lower rate** | Library ≈ 2.2 ms a tick [U] | coarser off-screen platform motion | **built (b122): `machinesfar`**, off; campaign only (`review_b122_farrate.md`) |
+| B4 | **Half-rate posing** for distant, at-rest, unseen objects | ceiling ≤ 8.6 ms, likely small [E→U] | "very low" | **built (b122): `posehalf`**, off; campaign only (`review_b122_farrate.md`) |
 | B5 | **ME rays answered a tick late** (pipelined X4) | removes X4's wait | AI sees a tick late | proposed |
 | B6 | **`noangle`** (slant buckets off) | 3.8 ms a frame (BG) [M] | the ground swims, cliff feet alias (b63/64) | keep word |
 | B7 | **`noshadows`** | 1.33 ms a frame (BG) [M] | no blob shadows | keep word |
