@@ -12990,7 +12990,7 @@ static void structure_render_dynamic_triangles_from_indices(
 # ---------- AI perception as a batch (ME phase 1: proposal C, steps 1-3)
 # Every level is bound by the tick, and perception is the AI's largest part:
 # on b30's beach its line of sight alone is ~40% of perception, one ray per
-# actor a tick, cast between that actor's other work (aiperc121a, JIT steps).
+# actor a tick, cast between that actor's other work.
 # Two exact parts, alive only for the length of actors_update:
 # - the unit facts: a unit's head and centre of mass (two marker lookups) and
 #   whether it is underwater are worked out once and shared. Its own actor
