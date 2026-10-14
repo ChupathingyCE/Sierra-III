@@ -78,6 +78,12 @@ An actor rests only on its turn (game time plus its index, odd or even, so half 
 
 **Campaign and multiplayer.** A networked client never runs `ai_update` (the server's actors drive it), so against ChupathingyCE's servers this code never runs [D]. On a PSP hosting a game, the rest decision reads only game time and positions, the same on every machine, so nothing is drawn from the random seed. The multiplayer build compiles it.
 
+**Rig runs wanted** (`sierra-hw`, after b122's own queue). Both use `ref=aihalf122`, `maps=/bake/campaign121/halo/maps` and `keep="nearauto assettrack geo2 gebusy"`, so the ME's rays are on as in b122.
+1. **b30, the beach** (4 runs, ~45 min of the PSP): `map=levels\b30\b30`, `route=b30_b113test1_timed`, `keepsets="- | aihalf"`, `repeat=2`, `wall=660`. Read `abreport.py` for the beach's tick (game time 2,700 to the end) and AI, and the `half rate` line.
+2. **a50, far actors** (6 runs, ~30 min): `map=levels\a50\a50`, `keepsets="- | aihalf | aihalf aihalfdist10"`, `repeat=2`, `wall=300`.
+
+Sheepdog01's call after those: whether a far actor reacting up to a round later is acceptable for the tick it gives.
+
 ---
 
 ## B5: the ME's answers used a tick late: not built
