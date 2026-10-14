@@ -50,7 +50,9 @@ Shots 005-007: a hairline straight down from the centre in 005. Lead [U]: the pu
 ## Tests 3 and 4: the HUD A/B
 
 - **Test 3 (`hudsnap`)** against test 2 (plain), at 4× (`b120_hud_plain_vs_hudsnap.png`): slightly better; Sheepdog01: both somewhat jagged, test 3 a little better on screen thanks to the smoothing.
-- **Test 4 ran without `hud177`:** its log's keep words are `nearauto assettrack geo2 hudsnap`, preset 4's, and the HUD is the same size as test 3's (with `hud177` it would be ~18% bigger). The launch menu keeps unknown words as typed (`apply_preset`, `psp_menu.c`), so the likeliest cause is preset 4 applied again. To re-run with preset 5. The menu doesn't log which preset it applied: b121's preset-on-the-stamp ask covers that.
+- **Test 4 ran without `hud177`:** its log's keep words are `nearauto assettrack geo2 hudsnap`, preset 4's, and the HUD is the same size as test 3's (with `hud177` it would be ~18% bigger). The launch menu keeps unknown words as typed (`apply_preset`, `psp_menu.c`), so the likeliest cause is preset 4 applied again. The menu doesn't log which preset it applied: b121's preset-on-the-stamp ask covers that.
+- **Test 4b (`hudsnap hud177`, re-run with preset 5)**: Sheepdog01: **looks much better**; the HUD needs pushing closer to the top edge, given the extra space it takes (`b120_hud_test3_vs_test4b.png`). The push that moves corner elements toward their edges while the HUD is zoomed (`PSP_HUD_PUSH`, 32 of the game's 848×480 units, `psp_fixups.py`) was sized for the 1.5 zoom.
+- **Verdict:** `hudsnap hud177`, with a push sized for the 1:1 zoom (the top edge first).
 
 ## Test 5: the ladder (a10, preset 2)
 
@@ -82,5 +84,6 @@ Sheepdog01 (20:23, during the ladder): a10's window glass looks worse than befor
 
 - **The build number and the active preset on screen.** The stamp line at the bottom of every screenshot already shows the build, game time and frame (`b120 t 341.0 f 1930`); add the preset there, and in the launch menu's header.
 - **Reopen files on wake** (the sleep bug above).
-- LK13 (far water), LK14 (Pelican window), LK15 (tracker cross): leads above.
+- **The HUD: `hudsnap hud177` on by default** (Sheepdog01's A/B, test 4b), with the corner push re-sized for the 1:1 zoom so the elements sit closer to the edges, the top first. Off words for each.
+- LK13 (far water), LK14 (Pelican window), LK15 (tracker cross), LK16 (a10 glass): leads above.
 - **The log pull's `rm -f $psp/halo/shots/*`** fails in fish when the folder is empty (fish refuses a wildcard that matches nothing). Use `find $psp/halo/shots -type f -delete`.
