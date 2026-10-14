@@ -133,9 +133,15 @@ A missing write-back or drop on either CPU shows as a wrong word. That makes it 
 
 Lab runs (lab-repo, `sierra-batch`): 38511103442 (121a), 38511131463 (121b), 38512381219 (121c), 38514031556 (121d).
 
-- **Exact.** `meslantcheck` found **0 differing buckets or totals over 46.6 million triangles** handed to the ring: b30, a50, c20 and d20, with and without ME audio, plus the strict run. The game's play hash (`statecrc`) matched at every shared tick, word on and off, on d20 (10,720 ticks), a50 (17,155) and c20 (13,478) with `nomeaudio`. b30's play hash parts at tick ~1,357 only with ME audio on and the check's extra time, as it does across any timing change (b30's known audio-timing split). The whole-state hash differs in the `objects` record, which drawing writes and which the play hash leaves out. The same happens across `probes` on `w119` (lab 38443084885, from tick 102 on d20).
-- **Failures 0.** 0 fell back, 0 refused, 0 failed in every run. Under the strict interpreter (121b, b30, 1,623,289 triangles to the ring): 0 bad accesses; the ME write trace found **0 lines written by both** the ME's work and the main CPU while a job was out (37 lines the ME's, 649 the main CPU's); the ME-strict check found **no system call** in the ME's work.
-- **Off changes nothing.** `meslant121c`'s word-off runs against `w121a`'s (lab 38509454132, base `274f08a`), same keep words: the play hash is equal at every shared tick (d20 10,771, a50 17,431), and the heartbeats' frame and tick times are equal to 0.01 ms in every stretch.
+- **Exact.** `meslantcheck` found **0 differing buckets or totals over 54.4 million triangles** handed to the ring: b30 14.8 million, a50 12.3, c20 20.2, d20 7.1, with and without ME audio, the strict runs included. The game's play hash (`statecrc`) matched at every shared tick, word on and off, on d20 (10,720 ticks), a50 (17,155) and c20 (13,478) with `nomeaudio`. b30's play hash parts at tick ~1,357 only with ME audio on and the check's extra time, as it does across any timing change (b30's known audio-timing split). The whole-state hash differs in the `objects` record, which drawing writes and which the play hash leaves out. The same happens across `probes` on `w119` (lab 38443084885, from tick 102 on d20).
+- **Failures 0.** 0 fell back, 0 refused, 0 failed in every run.
+- **The rules hold** (the strict interpreter, b30):
+  - 121b: 1,623,289 triangles to the ring, 0 bad accesses. The ME write trace found **0 lines written by both** the ME's work and the main CPU while a job was out (37 lines the ME's, 649 the main CPU's). The ME-strict check found **no system call** in the ME's work.
+  - 121d, with `meringtest` too: again 0 lines by both (72 and 716) and no system call.
+- **`meringtest`** (121d): **88,112 test jobs, 0 wrong words or sums**, 0 bursts short of a full ring, 0 failed. This covers b30 alone, b30 with `meslant meslantcheck` (6.6 million more triangles checked, 0 differing), and the strict run.
+- **Off changes nothing.** The word-off runs against `w121a`'s (lab 38509454132, base `274f08a`), with the same keep words:
+  - the play hash is equal at every shared tick: d20 10,771 (121c), a50 17,431 (121c) and 21,567 (121d);
+  - the heartbeats' frame and tick times are equal to 0.01 ms in every stretch.
 - **The main CPU's cost of the plumbing** (simulated, so the ME's half still runs on the main CPU):
   - JIT runs, the bucket loop's time on vs off: d20 +117 µs a frame, c20 +100, a50 +33. That is 15, 15 and 5 jobs a frame, so **~7 µs a job**.
   - Cache models, b30 to game time 600 (121b): drawing +2.8 million instructions, +56,000 data misses and +192,000 instruction misses over ~1,800 jobs, so **~1,560 instructions, ~31 data and ~107 instruction misses a job**. That is an upper bound for the PSP [U]: there, `ring_run` and the job's code run on the ME, not here.
@@ -144,4 +150,17 @@ Lab runs (lab-repo, `sierra-batch`): 38511103442 (121a), 38511131463 (121b), 385
 
 ## Rig runs wanted
 
-In the session's report. In short: `meringtest meslant meslantcheck` once (exactness on the real ME, the protocol's sharpest check); `keepsets="- | meslant"` with `repeat=2` on b30's cinematic and c20 (the speed); then the same with `mehalt`, and the tuning words.
+The emulator can't answer two questions: whether the real ME and its cache keep the rules, and what the split is worth. Both runs use `maps=/bake/campaign120/halo/maps`:
+
+1. **b30, the rules and the speed in one build.** `keep="nearauto assettrack geo2"`, `keepsets="- | meslant | meslant meslantcheck meringtest"`, `repeat=2`, `wall=240` (6 runs).
+   - On the checking side, read `ME: ringtest:` (0 wrong, 0 failed) and `GE: meslant:` (0 differing, 0 fell back).
+   - On all sides, read `ME: ring:` (pick-up, the ME's cache work, the main CPU's push and wait).
+   - `abreport.py`: the cinematic's drawing and frame, `- | meslant`.
+2. **c20, the speed with mehalt and the tuning.** `keep="nearauto assettrack geo2"`, `keepsets="- | meslant | mehalt meslant | meslant meslantbias64"`, `repeat=2`, `wall=300` (8 runs).
+   - Read the angle-bucket line's "bucket loop alone", the ring line's wait, and the frame.
+   - mehalt shows whether the wake's 22 µs kernel call per burst is paid.
+
+What to look for:
+- **The win:** "the bucket loop alone" falls, and the ring's wait stays small next to the ME's own time.
+- **The ME is late:** the wait is large while the pick-up is small. That's the ME's cache work, so raise `meslantbias`.
+- **Jobs too small:** small draws cost more than they save. That's `meslantmin`.

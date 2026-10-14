@@ -163,7 +163,8 @@ struct me_ring_result
 	unsigned int job_cycles;  /* the ME's cycle counter across the job's own code */
 	unsigned int all_cycles;  /* and across the whole job, its cache work included */
 	unsigned int look_cycles; /* from the ME's last look that found the ring empty to the job's start: how
-	                          long the job can have waited to be picked up */
+	                          long the job can have waited to be picked up (under mehalt the time halted
+	                          before the wake counts too, so only the polling ME's figure is tight) */
 	unsigned int results[ME_RING_RESULTS];
 } __attribute__((aligned(64)));
 
