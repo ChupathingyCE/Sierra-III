@@ -80,7 +80,7 @@ Objects come from the object header array (`_object_header_active_bit`, by type)
 
 **Why.** Before designing another activation lever we need to know what stays awake and why: which object types stay active, how many actors are forced active or kept from dormancy by the scripts (those levers are the scripts', not ours), and how many are awake on their own.
 
-**Proven.** `activecensus` against `aiprofilefull` (lab 38615620299): play and both seeds identical at every tick on d20 (21,391), a50 (36,931), c20 (28,051) [E]. The multiplayer build (`PSP_MULTIPLAYER=1`) builds with both changes (lab 38615620299: program 5.83 MB, heap 4,636 KB) and its census line came out at blood gulch's start; that run, with `assettrack geo2`, then ran out of heap for the display list before play, as other multiplayer runs with those words have (lititems123's, without them, played: heap 4,640 KB there). The play check with lititems123's words is lab 38624966261 (MP_RESULT).
+**Proven.** `activecensus` against `aiprofilefull` (lab 38615620299): play and both seeds identical at every tick on d20 (21,391), a50 (36,931), c20 (28,051) [E]. The multiplayer build (`PSP_MULTIPLAYER=1`) builds with both changes (lab 38615620299: program 5.83 MB, heap 4,636 KB) and its census line came out at blood gulch's start; that run, with `assettrack geo2`, then ran out of heap for the display list before play, as other multiplayer runs with those words have (lititems123's, without them, played: heap 4,640 KB there). With lititems123's words (`nearauto nomeaudio activecensus`) it played blood gulch to game time 7,834 in its 120 s, census lines throughout (vehicle 8/8, scenery 45/46 active) [E] (lab 38624966261).
 
 **First readings** (hands off at the start, so the counts hold still after the first seconds; game time 2,700) [E]:
 
@@ -90,7 +90,7 @@ Objects come from the object header array (`_object_header_active_bit`, by type)
 | a50 | biped 14/32, vehicle 3/3, weapon 2/23, equipment 11/117, **scenery 266/540**, light 20/49, sound scenery 7/16 | 14/14 active | 2/33 active | **10/530** |
 | c20 | biped 30/41, weapon 1/5, scenery 12/19, **machine 53/357**, sound scenery 28/119 | 9/9 active | 3/81 active, **1 forced** | 0/169 |
 
-What it says for levers [U]: a50's half-awake scenery (266 objects) and c20's 53 machines (MS, `machinesfar`) are the big active sets; a50's 10 squads kept from dormancy and c20's forced encounter are the scripts' doing, so not ours to change. b30's opening is the next reading: lab 38624966261 (B30_RESULT).
+What it says for levers [U]: a50's half-awake scenery (266 objects) and c20's 53 machines (MS, `machinesfar`) are the big active sets; a50's 10 squads kept from dormancy and c20's forced encounter are the scripts' doing, so not ours to change. b30's opening, hands off to game time 15,380 [E] (lab 38624966261): **scenery 277/671 active** all the way, bipeds 34 active (39 to 69 in all, the bodies of the beach fight included), resting weapons and equipment active (30/70, 35/62: IS's ground), machines 0/128, lights 0/10; actors 29/29 active at the start, falling to 1/31 with 30 dormant once the next wave is placed; no encounter forced, no squad's dormancy off. So on b30 and a50 the largest awake set is scenery, and the scripts force nothing: the next activation lever is why ~40% of the scenery stays active (the next question for a census by definition) [U].
 
 ---
 
