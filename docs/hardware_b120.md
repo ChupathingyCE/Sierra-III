@@ -81,12 +81,21 @@ Sheepdog01 (20:23, during the ladder): a10's window glass looks worse than befor
 - **On the PSP it is worse** (Sheepdog01, 20:39): much more pronounced, less abstract and see-through.
 - **The rig's PSP-3000 draws b119 and b120 identically** [M] (lab runs 38496994706, 38497057378; `b120_a10_glass_rig_b119_vs_b120.png`), and the same as the emulator; `vramlargest` (VRAM filled by size) changes nothing. The PSP-1000's test 5 log and the rig's show the same texture setup for a10 (RAM cache 4,096 KB, the same pack, learned binds read).
 - **Sheepdog01's PSP-1000 on b120** (`b120_test1a_a10glass1.tgz`, shots at game time 45-73; `b120_a10_glass_psp1000_vs_rig.png`): the same green-yellow mottled pattern at about the same strength as the rig's frames, from inside the bridge and from outside the ship. The frames come from nearby moments of the cutscene, so not pixel for pixel.
-- **So the pattern is b119's too** (emulator, rig, and now the PSP-1000 agree on b120's look; the emulator and the rig show b119 identical). The "worse than before" likely compares with an older build. Open: which build last showed the glass faint and see-through; an emulator tour of older builds would date the change.
+- **So the pattern is b119's too** (emulator, rig, and now the PSP-1000 agree on b120's look; the emulator and the rig show b119 identical). Sheepdog01: the glass was faint and see-through in the first builds a10 ran in.
+- **Dated to b116** [E] (lab run 38501924836, `b120_a10_glass_tour.png`): b113-b115 draw the bridge windows pale bluish-white; b116 onward green-yellow, darker and opaque. b116 brought the see-through shaders' tints (`seethrough.py` in the bake, multiplied in by the game).
+- **Found: the tint** [E] (lab run 38502938098, `b120_a10_glass_tint.png`): b120 with `notint` draws the windows as b113-b115 did. The tint the bake records for the bridge windows' shader is wrong for this glass.
+- **Sheepdog01 (21:52): the glass wobbles as the camera pans in from outside.** Lead [U]: the mottled texture is the window's reflection map, its coordinates following the view direction; the tint makes it dominant, so its slide shows.
+- **Fix (b121, a restoration with an off word):** the tint for this shader in the bake (why `seethrough.py` gives it green-yellow), then whether the reflection should be as strong as it is even untinted (pre-b116 still shows the pattern, paler).
+
+## LK17: the Pillar of Autumn's thruster, its inner part shimmers (a10)
+
+Sheepdog01 (21:52), in the external flyby. Leads [U]: the inner glow nearly coplanar with the nozzle and fighting it for depth (as LK13), or a fine texture without the smaller mip levels at that distance. An emulator capture of the flyby tells them apart.
 
 ## For b121 (Sheepdog01, 2026-10-13)
 
 - **The build number and the active preset on screen.** The stamp line at the bottom of every screenshot already shows the build, game time and frame (`b120 t 341.0 f 1930`); add the preset there, and in the launch menu's header.
 - **Reopen files on wake** (the sleep bug above).
 - **The HUD: `hudsnap hud177` on by default** (Sheepdog01's A/B, test 4b), with the corner push re-sized for the 1:1 zoom so the elements sit closer to the edges, the top first. Off words for each.
-- LK13 (far water), LK14 (Pelican window), LK15 (tracker cross), LK16 (a10 glass): leads above.
+- **LK16, a10's glass: the see-through tint for its shader** (found; the fix above).
+- LK13 (far water), LK14 (Pelican window), LK15 (tracker cross), LK17 (thruster shimmer): leads above.
 - **The log pull's `rm -f $psp/halo/shots/*`** fails in fish when the folder is empty (fish refuses a wildcard that matches nothing). Use `find $psp/halo/shots -type f -delete`.
