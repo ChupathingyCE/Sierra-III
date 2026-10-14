@@ -50,9 +50,17 @@ The machine's position never drifts, because it is stepped every tick.
 
 ## 2. `posehalf`
 
-**What.** This applies to an object that is at rest (`_object_at_rest_bit`), far, unseen, has no parent or children, isn't interpolating and isn't a machine (those are part 1's). On its off tick, `object_compute_node_matrices` and `object_postprocess_node_matrices` are left out. The post-processing works on the pose in place, so it only runs on a pose that was just made. The animation, physics, functions and lights still run every tick, so the next pose made is exactly the one it would have had [D].
+**What.** This applies to a family of objects (a root and everything attached to it, such as an AI and the gun it holds) whose root is at rest (`_object_at_rest_bit`), far and unseen, and isn't a machine (those are part 1's). Nothing in the family may be interpolating. On the family's off tick, `object_compute_node_matrices` and `object_postprocess_node_matrices` are left out for every member:
 
-**Key lines.** `objects/objects.c#farrate`: `psp_pose_half_skips` is decided once at the top of `object_update` (`psp_pose_skipped`). The node-matrix call and the post-processing call are each gated on it.
+- the whole family takes the same ticks, because a child's pose is made from its parent's;
+- the post-processing works on the pose in place, so it only runs on a pose that was just made;
+- the animation, physics, functions and lights still run every tick, so the next pose made is exactly the one it would have had [D].
+
+The first version (`c4d0458`) left out anything with a parent or children. That excluded every armed AI and every held weapon, and it skipped 0 of 30,000 chances on c20 (lab 38582477085). `1dd6302` decides by the family's root.
+
+**Key lines.** `objects/objects.c#farrate`:
+- `psp_pose_half_skips` walks up to the root and is decided once at the top of `object_update` (`psp_pose_skipped`);
+- the node-matrix call and the post-processing call are each gated on it.
 
 **Why.** Posing is 17.5% of c20's tick, 10% of b30's and 5.8% of a50's [E, `review_b122_posing.md`]. What rests and stays awake (an idle AI, a corpse not yet asleep, a parked vehicle someone touched) is still posed every tick.
 
@@ -60,19 +68,21 @@ The machine's position never drifts, because it is stepped every tick.
 
 ## Proven
 
-**Builds** (local, `9aa2fb7`):
+**Builds** (local, `9aa2fb7`; `1dd6302` again for the campaign):
 - campaign: 448 of 448 units, nothing stubbed;
 - `PSP_MULTIPLAYER=1`: 490 of 490 units, linked. Its 10 stubbed symbols are the multiplayer build's usual ones (`delta_legacy_*`, `map_family_*` and the like), none of them from this change.
 
 The batch below compiles the multiplayer build again.
 
-**Lab batch `farrate122a`, run 38582477085** [E], `9aa2fb7`, both words on against off:
+**Lab batch `farrate122a`, run 38582477085** [E], `9aa2fb7`, both words on (posehalf's first rule):
 
-- c20 hands off and b30 on the `b113test1_timed` route, in the cache models, to game time 40 s;
-- c20, d20 and a50 hands off, and b30 on the route, with `shotevery5`, checking for a crash and for how the machines and distant objects look;
-- the multiplayer compile.
+- **No crash, and play as normal, with both words on.** c20, d20 and a50 hands off, and b30 on the `b113test1_timed` route, each 480 s of wall with `shotevery5`. They reached game time 9,922, 9,979, 13,389 and 11,880 with segv 0, no strict-mode sites and no `crash.txt`, 24 shots each. The `PSP_MULTIPLAYER=1` build compiled (EBOOT `ba3e5e4876893702`).
+- **`machinesfar` acts on c20** (hands off): about 15 always-moving machines a tick are offered on their off tick. Of those, 28% were skipped in the first 30,000 chances and 53% in every later count. That is roughly 8 of c20's ~30 gear updates a tick left out. The other three maps have no always-moving machines in reach.
+- **Cache models, c20 hands off to game time 40 s** (both words on against off, `fixedticks fixedseed`): the estimated tick went from 22.555 to 22.601 ms (+0.2%). Fetches fell 0.13%, but instruction misses rose 0.4%. In this opening window few gears qualify (the 28% above), so the test's own code costs about what it saves.
+- **b30 on the route, same window:** 47.882 against 47.954 ms (+0.15%). b30 has no gears, so this is the cost of the test alone, while posehalf's first rule skipped nothing.
+- **Screenshots** of the machines and distant objects look as they do without the words. They are on the results branch, not in this repo (they show game content).
 
-The log's `machinesfar:` and `posehalf:` lines count, every 30,000 chances, how many were skipped. *Results: see the build notes once the run reports. When this was written it was queued behind four other batches.*
+**Lab batch `farrate122b`, run 38588163787** [E], `1dd6302` (posehalf by family): the cache-model pair again on b30's route and on c20 to game time 40 s, and the counts on a50 and d20. *Its figures go into the build notes when it reports.*
 
 ## Multiplayer
 
