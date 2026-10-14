@@ -82,7 +82,30 @@ The batch below compiles the multiplayer build again.
 - **b30 on the route, same window:** 47.882 against 47.954 ms (+0.15%). b30 has no gears, so this is the cost of the test alone, while posehalf's first rule skipped nothing.
 - **Screenshots** of the machines and distant objects look as they do without the words. They are on the results branch, not in this repo (they show game content).
 
-**Lab batch `farrate122b`, run 38588163787** [E], `1dd6302` (posehalf by family): the cache-model pair again on b30's route and on c20 to game time 40 s, and the counts on a50 and d20. *Its figures go into the build notes when it reports.*
+**Lab batch `farrate122b`, run 38588163787** [E], `1dd6302` (posehalf by family), both words on against off, counts every 3,000 chances:
+
+| | Est. tick off / on | Change | Skipped in the window |
+|---|---|---|---|
+| c20 hands off, to game time 40 s | 22.499 / 22.637 ms | +0.6% | machinesfar 1 of ~12,000; posehalf 0 |
+| b30 route, to game time 40 s | 48.569 / 48.717 ms | +0.3% | posehalf 8 of ~21,000 |
+
+In the counts, hands off with both words on:
+- **a50**: posehalf skips about 22% of the resting families it is offered (~650 of every 3,000), steadily;
+- **d20**: posehalf skips 0;
+- **c20**: machinesfar 53% of offered gears after the opening (`farrate122a`).
+
+a50 and d20 reached game time 13,390 and 10,276 with no crash (segv 0, no strict sites), 24 shots each.
+
+**So, in the windows measured, neither word pays.** Where little qualifies (c20's and b30's first 40 s), the test's own cost shows: +0.3% to +0.6% of the tick, mostly instruction misses from the new code in `object_update` and the per-object calls (`game_players_are_double_speed`, the root walk, the far test). The windows where they do act (c20 after its opening, a50 hands off) weren't measured in the cache models for lack of time.
+
+## Next, by the evidence
+
+- Make the test cheap before measuring again [U]:
+  - decide once per tick, not per object, whether the viewer is usable and which half is off;
+  - bail out at the first check when it isn't;
+  - keep the tests out of `object_update`'s straight path.
+- Measure where they act: c20 past its opening (machinesfar), a50 hands off (posehalf), in the cache models to game time 120 s or more.
+- posehalf finds few families: living AI are rarely "at rest", and d20's are near or in view. Without the at-rest condition it would reach idle AI, but that is a larger change in behaviour, so Sheepdog01's call.
 
 ## Multiplayer
 
@@ -94,7 +117,7 @@ Both off. Each needs Sheepdog01's call after an A/B, because it changes the simu
 
 ## For the rig
 
-One `sierra-hw` run each, with keep sets (on, off, on, off), read with `tools/abreport.py`:
+Not yet. The emulator shows no gain so far, so hardware time should wait for the cheaper test and a cache-model gain where the words act. Once both are in, one `sierra-hw` run each, with keep sets (on, off, on, off), read with `tools/abreport.py`:
 
 1. **c20**, where the gears are: `ref=farrate122 maps=/bake/campaign121/halo/maps map=levels\c20\c20 init="cheat_deathless_player 1" keep="nearauto assettrack geo2 hwprofile" keepsets="machinesfar posehalf | -" repeat=2 wall=420`
-2. **b30's opening**, the fair A/B stretch, for `posehalf`: the same with `map=levels\b30\b30 route=b30_b113test1_timed keepsets="posehalf | -"`.
+2. **a50**, where `posehalf` acts: the same with `map=levels\a50\a50 keepsets="posehalf | -"`. b30's opening (the fair A/B stretch) gives `posehalf` almost nothing to skip.
