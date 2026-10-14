@@ -3320,6 +3320,7 @@ triangle list) go into out; returns how many corners it added */
 coordinates or other values (3-6), and its world position (7-9); build 60:
 one more value (10), a model corner's normal's third part */
 #define CORNER_FLOATS 11
+static unsigned long cut_pieces_lost = 0;
 static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, float (*out)[CORNER_FLOATS], int room)
 {
 	float buffer[2][12][CORNER_FLOATS];
@@ -3357,6 +3358,10 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, float (*out)
 		memcpy(out[added++], buffer[source][index], sizeof(buffer[0][0]));
 		memcpy(out[added++], buffer[source][index + 1], sizeof(buffer[0][0]));
 	}
+	/* a full cut buffer leaves the rest of the polygon undrawn: counted, as
+	it opens holes in a wall at the eye (a seated camera's cabin) */
+	if (count >= 3 && added / 3 < count - 2)
+		cut_pieces_lost += (unsigned long)(count - 2 - added / 3);
 	clipped_this_frame++;
 	return added;
 }
@@ -7068,10 +7073,23 @@ part's own list, in every pass) */
 read back for every model part cut at the near plane, and the emulator's
 cache model counted 0.8 M misses on it over b30's beach fight */
 static float (*model_cut)[CORNER_FLOATS];
+/* "cutroom": four times the room, on the heap. With the eye inside a
+vehicle's cabin (a Pelican's bench) most of the wall it faces crosses the
+near plane or the guard band, and a part's pieces past the scratchpad's
+192 corners were left undrawn (cut_pieces_lost) */
+#define LARGE_MODEL_CUT_CORNERS 768
+static int model_cut_room = MAXIMUM_MODEL_CUT_CORNERS;
 
 void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c */
 static void model_cut_take(void)
 {
+	if (!model_cut && psp_keep("cutroom"))
+	{
+		model_cut = malloc(sizeof(float[LARGE_MODEL_CUT_CORNERS][CORNER_FLOATS]));
+		if (model_cut)
+			model_cut_room = LARGE_MODEL_CUT_CORNERS;
+		platform_log("GE: cutroom: the models' cut buffer %d corners%s", model_cut_room, model_cut ? " on the heap" : " (no heap room)");
+	}
 	if (!model_cut)
 		model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
 }
@@ -7961,7 +7979,9 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						near_triangles_dropped++;
 						if (bits[0] & bits[1] & bits[2])
 							continue;
-						if (skin_cut && cut_count < MAXIMUM_MODEL_CUT_CORNERS - 9)
+						if (skin_cut && cut_count >= model_cut_room - 9)
+							cut_pieces_lost++;
+						if (skin_cut && cut_count < model_cut_room - 9)
 						{
 							/* build 87: bent here and cut, as the level's are */
 							float polygon[3][CORNER_FLOATS];
@@ -8001,7 +8021,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 								}
 								else
 									cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + cut_count,
-										MAXIMUM_MODEL_CUT_CORNERS - cut_count);
+										model_cut_room - cut_count);
 								skin_cut_triangles++;
 							}
 						}
@@ -8507,7 +8527,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 						polygon[k][9] = p[2];
 					}
 					model_cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + model_cut_count,
-						MAXIMUM_MODEL_CUT_CORNERS - model_cut_count);
+						model_cut_room - model_cut_count);
 				}
 			}
 			if (model_cut_count)
@@ -9488,7 +9508,7 @@ static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 				polygon[k][8] = p[1];
 				polygon[k][9] = p[2];
 			}
-			cut += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + cut, MAXIMUM_MODEL_CUT_CORNERS - cut);
+			cut += clip_triangle(polygon, bits[0] | bits[1] | bits[2], model_cut + cut, model_cut_room - cut);
 		}
 	}
 	if (!any)
@@ -14738,6 +14758,7 @@ void psp_ge_frame_end(void)
 		platform_log("GE: sky drawn %lu times, %lu solid parts; %lu see-through draws, %lu dropped; %lu sprites; %lu HUD quads, %lu characters, %lu blips; skinned parts %lu (%lu batches, %lu KB, %lu left rigid); level see-through %lu; decals %lu; flashes %lu; shadows %lu begun, %lu requests, %lu draws; light draws %lu (%lu with a projected cone, %lu triangles outside cones skipped, %lu split near the light, %lu pieces added); bending triangles cut at the near plane %lu (%lu pieces); two-sided parts %lu; models at the near plane %lu (%lu triangles left out)",
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
+		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
 		/* build 87: its own line (the one above passed the log's line length) */
 		/* build 89: the counters over these 300 frames (they were never
 		reset, so a bench window's line carried every earlier window's;
