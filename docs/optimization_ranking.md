@@ -494,7 +494,7 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 
 Pacing word: `novblankthrottle` turns the throttle off. Frames get faster, but the warthog bounces again.
 
-Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118), `nearclustercheck`, `skinaxischeck`, `rigidrunscheck`, `surfacesortcheck` (build 119).
+Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118), `nearclustercheck`, `skinaxischeck`, `rigidrunscheck`, `surfacesortcheck` (build 119), `meslantcheck`, `meringtest` (ME phase 1, with the opt-in `meslant`).
 
 Instrument word: `probes` (build 119) splits the hot loops from their calls on the PSP: the near corner loop and bone slots, the level's passes by piece, the light draw before, in and after its triangle loop, the decal calls by piece. Off by default: each reading costs ~0.6 us.
 

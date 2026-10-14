@@ -15,6 +15,7 @@
 #define ME_JOB_ANGLE 3
 #define ME_JOB_GE 4 /* build 112: a run of the GE layer's waiting calls (psp_ge.c, "gemeon") */
 #define ME_JOB_EDRAM 5 /* build 115: fill or check a stretch of the ME's eDRAM (edramcheck) */
+/* 6: ME_JOB_SLANT, a ring job (below) */
 
 int psp_me_start(void);
 int psp_me_running(void);
@@ -28,6 +29,38 @@ void psp_me_edram_probe(void);
 /* build 118: a job handed over without waiting, then finished (gemeoverlap) */
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
+
+/* The job ring (ME phase 1, keep word "meslant" turns it on): jobs handed
+to the ME without a slot of their own, collected later. Each job is a leaf:
+everything it reads is named at the push and stays unchanged until the wait;
+it writes only its output (whole 64-byte lines of its own) and its results.
+The ring serves one producer thread, the main CPU's renderer. */
+#define ME_RING_ENTRIES 8 /* a power of two */
+#define ME_RING_ARGS 16
+#define ME_RING_INPUTS 3
+#define ME_RING_RESULTS 11
+#define ME_JOB_SLANT 6 /* angle_sort's bucket loop over part of a draw (psp_ge.c) */
+#define ME_JOB_RINGTEST 7 /* "meringtest": the ring's own check (psp_me_ring_test) */
+
+struct psp_me_job
+{
+	unsigned int type; /* ME_JOB_... */
+	unsigned int args[ME_RING_ARGS];
+	/* what the job reads from main RAM: the ME drops its own copies of these
+	before the job. The main CPU writes back what it wrote (psp_me_writeback) */
+	const void *input[ME_RING_INPUTS];
+	unsigned int input_bytes[ME_RING_INPUTS];
+	/* what the job writes besides its results: 64-byte aligned, whole lines,
+	read by the main CPU only after the wait */
+	void *output;
+	unsigned int output_bytes;
+};
+
+int psp_me_ring_ready(void);
+void psp_me_writeback(const void *start, unsigned int bytes);
+int psp_me_push(const struct psp_me_job *job, unsigned int *ticket);
+int psp_me_wait(unsigned int ticket, unsigned int *results);
+void psp_me_ring_test(void);
 
 /* build 118: 1 on the Media Engine. me-core starts it on a stack in its own
 eDRAM ($sp 0x80200000 or 0x80400000, me-core.h), and every thread of the main

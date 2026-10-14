@@ -4859,10 +4859,151 @@ static void me_angle_measure(const struct ge_vertex *stream, const unsigned shor
 	int far_possible);
 static unsigned long angle_loop_us = 0;
 
+/* "meslant" (ME phase 1): the back part of a draw's bucket loop goes to the
+Media Engine through the job ring while this CPU works the front part, so
+the two halves run at once. Both call angle_bucket_one, so the buckets are
+the same bits (b90 on the PSP: 0 differing over 4.7 million triangles); the
+display list comes out byte for byte the same. A draw is split only from
+SLANT_SPLIT_MIN triangles, where the work outweighs a job's hand-over, and
+the ME's part is smaller by SLANT_BIAS triangles, since it starts later and
+drops its cache first ("meslantminN", "meslantbiasN" set them, to tune on
+the PSP). "meslantcheck": this CPU works the ME's part out again, counts
+what differs and uses its own. Only where this CPU draws the level (with
+gemeon the whole level draw is already the ME's) */
+#define SLANT_SPLIT_MIN 96
+#define SLANT_BIAS 32
+static PSP_MAIN_SIDE int me_slant = -1, me_slant_check = 0, me_slant_min = SLANT_SPLIT_MIN, me_slant_bias = SLANT_BIAS;
+static PSP_MAIN_SIDE unsigned long me_slant_draws = 0, me_slant_split = 0, me_slant_triangles = 0, me_slant_mismatches = 0,
+	me_slant_fallbacks = 0, me_slant_checked = 0;
+/* the ME's part's buckets: written by the ME's job only, read here only
+after the wait (whole lines of their own). The ME's part is at most half a
+draw */
+static unsigned char me_slant_out[ANGLE_TRIANGLES / 2] __attribute__((aligned(64)));
+
+/* the words, read once. Cold, like the other once-only and rare paths
+below: the hand-over's code, each draw's, stays fewer cache lines */
+static __attribute__((noinline, cold)) void slant_decide(void)
+{
+	extern int psp_keep_number(const char *prefix, int fallback);
+
+	me_slant = psp_keep("meslant");
+	me_slant_check = psp_keep("meslantcheck");
+	me_slant_min = psp_keep_number("meslantmin", SLANT_SPLIT_MIN);
+	me_slant_bias = psp_keep_number("meslantbias", SLANT_BIAS);
+}
+
+/* the ME's part handed over: returns where this CPU's part ends (count: no
+job, this CPU does the whole draw). lowest and highest: the draw's vertex
+range. The stream's vertices are in main RAM already (written back when
+built or moved, for the GE); the indices may be this frame's list copy */
+static __attribute__((noinline)) long slant_hand_over(const struct ge_vertex *stream, const unsigned short *indices, long count, int far_possible,
+	unsigned int lowest, unsigned int highest, unsigned int *ticket)
+{
+	struct psp_me_job job;
+	long part, first;
+	int k;
+	union { float f; unsigned int u; } bits;
+
+	if (PSP_ME_WORK())
+		return count;
+	if (me_slant < 0)
+		slant_decide();
+	if (!me_slant)
+		return count;
+	me_slant_draws++;
+	part = (count - me_slant_bias) / 2;
+	if (count < me_slant_min || part <= 0 || part > (long)sizeof(me_slant_out) || !psp_me_ring_ready())
+		return count;
+	first = count - part;
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_SLANT;
+	job.args[0] = (unsigned int)stream;
+	job.args[1] = (unsigned int)(indices + 3 * first);
+	job.args[2] = (unsigned int)part;
+	job.args[3] = (unsigned int)me_slant_out;
+	job.args[4] = (unsigned int)far_possible;
+	for (k = 0; k < 3; k++)
+	{
+		bits.f = camera_eye[k];
+		job.args[5 + k] = bits.u;
+	}
+	bits.f = detail_far_squared;
+	job.args[8] = bits.u;
+	job.input[0] = indices + 3 * first;
+	job.input_bytes[0] = (unsigned int)part * 3 * sizeof(unsigned short);
+	job.input[1] = &stream[lowest];
+	job.input_bytes[1] = (highest - lowest + 1) * sizeof(struct ge_vertex);
+	job.output = me_slant_out;
+	job.output_bytes = ((unsigned int)part + 63) & ~63u;
+	psp_me_writeback(job.input[0], job.input_bytes[0]);
+	if (!psp_me_push(&job, ticket))
+		return count;
+	return first;
+}
+
+/* the ME's part worked out on this CPU: after a failed wait (done 0), or
+with meslantcheck, where the ME's answer (done 1, results) is compared and
+this CPU's is used */
+static __attribute__((noinline, cold)) void slant_part_here(int done, const unsigned int *results,
+	const struct ge_vertex *stream, const unsigned short *indices, long first, long count, int far_possible, long *total)
+{
+	float ex = camera_eye[0], ey = camera_eye[1], ez = camera_eye[2];
+	unsigned long differ = 0;
+	long t, mine[SORT_BUCKETS];
+	int b;
+
+	memset(mine, 0, sizeof(mine));
+	for (t = first; t < count; t++)
+	{
+		int bucket = angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, detail_far_squared);
+
+		if (done && me_slant_out[t - first] != bucket)
+			differ++;
+		angle_bucket_of[t] = (unsigned char)bucket;
+		mine[bucket]++;
+	}
+	for (b = 0; b < SORT_BUCKETS; b++)
+	{
+		if (done && (long)((results[b >> 1] >> ((b & 1) * 16)) & 0xFFFFu) != mine[b])
+			differ++;
+		total[b] += mine[b];
+	}
+	if (done)
+	{
+		me_slant_split++;
+		me_slant_triangles += (unsigned long)(count - first);
+		me_slant_checked += (unsigned long)(count - first);
+		me_slant_mismatches += differ;
+	}
+	else
+		me_slant_fallbacks++;
+}
+
+/* the ME's part collected into angle_bucket_of and the totals */
+static __attribute__((noinline)) void slant_collect(unsigned int ticket, const struct ge_vertex *stream, const unsigned short *indices, long first,
+	long count, int far_possible, long *total)
+{
+	unsigned int results[ME_RING_RESULTS];
+	long part = count - first;
+	int b, done = psp_me_wait(ticket, results);
+
+	if (!done || me_slant_check)
+	{
+		slant_part_here(done, results, stream, indices, first, count, far_possible, total);
+		return;
+	}
+	me_slant_split++;
+	me_slant_triangles += (unsigned long)part;
+	memcpy(angle_bucket_of + first, me_slant_out, (size_t)part);
+	for (b = 0; b < SORT_BUCKETS; b++)
+		total[b] += (long)((results[b >> 1] >> ((b & 1) * 16)) & 0xFFFFu);
+}
+
 /* sorts a draw's triangles by slant; returns the list to draw (the given
-one, or a copy in the display list sorted by bucket) */
+one, or a copy in the display list sorted by bucket). lowest and highest:
+the draw's vertex range */
 static const unsigned short *angle_sort(const struct ge_vertex *stream, const unsigned short *indices, long count,
-	int far_possible)
+	int far_possible, unsigned int lowest, unsigned int highest)
 {
 	long t, total[SORT_BUCKETS];
 	int b, used = 0;
@@ -4884,15 +5025,19 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 		far_possible = 0;
 	memset(total, 0, sizeof(total));
 	{
-		unsigned int loop_start = ge_clock();
+		unsigned int loop_start = ge_clock(), ticket = 0;
+		/* off: one test a draw (me_slant is -1 until the first draw decides) */
+		long mine = me_slant ? slant_hand_over(stream, indices, count, far_possible, lowest, highest, &ticket) : count;
 
-		for (t = 0; t < count; t++)
+		for (t = 0; t < mine; t++)
 		{
 			int bucket = angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, detail_far_squared);
 
 			angle_bucket_of[t] = (unsigned char)bucket;
 			total[bucket]++;
 		}
+		if (mine < count)
+			slant_collect(ticket, stream, indices, mine, count, far_possible, total);
 		angle_loop_us += ge_clock() - loop_start;
 	}
 	/* build 87: the ME works out the same buckets ("meclassify", measure only) */
@@ -5355,7 +5500,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	{
 		unsigned int angle_start = ge_clock();
 
-		draw = angle_sort(stream->base, draw, kept_count, far_possible);
+		draw = angle_sort(stream->base, draw, kept_count, far_possible, lowest, highest);
 		angle_us += ge_clock() - angle_start;
 		/* build 89: the pieces cut at the eye are near by definition: with
 		every kept triangle past the detail fade, the detail passes were
@@ -14438,6 +14583,7 @@ void psp_ge_frame_end(void)
 
 	if (!frame_open)
 		return;
+	psp_me_ring_test(); /* "meringtest" (psp_me.c); off: one test a frame */
 	flush_mark = sceKernelGetSystemTimeLow();
 	win_transparent += transparent_count;
 	transparent_flush();
@@ -14820,6 +14966,12 @@ void psp_ge_frame_end(void)
 						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped,
 						nudge_wide > 0 ? " (nudgewide: not held)" : "");
 					nudges_asked = nudges_clamped = 0;
+					if (me_slant > 0)
+						platform_log("GE: meslant: %lu of %lu sorted draws split with the Media Engine, %lu triangles of %lu (%lu%%) bucketed there; %lu fell back to this CPU; meslantcheck: %lu triangles checked, %lu answers differing",
+							me_slant_split, me_slant_draws, me_slant_triangles, all, all ? me_slant_triangles * 100 / all : 0,
+							me_slant_fallbacks, me_slant_checked, me_slant_mismatches);
+					me_slant_draws = me_slant_split = me_slant_triangles = me_slant_fallbacks = me_slant_checked = 0;
+					me_slant_mismatches = 0;
 					platform_log("GE: near plane%s: %lu frames at x4 or more (x8 %lu, x16 %lu), %lu at x2, %lu at x1 (%lu with a model near enough to cap it), %lu us a frame deciding; level draws a frame: %lu wholly inside the view (no classifying), %lu classified; triangles past the detail fade %lu a frame, detail passes skipped for whole draws %lu a frame",
 						near_auto ? " (nearauto)" : " (fixed)", near_auto_chosen[2], near_auto_chosen_high[0], near_auto_chosen_high[1], near_auto_chosen[1], near_auto_chosen[0],
 						near_auto_by_objects, near_auto_frames ? near_auto_us / near_auto_frames : 0, level_draws_inside / 300,
@@ -14985,6 +15137,41 @@ unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results)
 	for (t = 0; t < count; t++)
 		out[t] = (unsigned char)angle_bucket_one(stream, indices + 3 * t, ex, ey, ez, far_possible, far_squared);
 	results[0] = count;
+	return count;
+}
+
+/* "meslant": the ring job for the back part of a draw's triangles
+(angle_sort). Runs on the ME (or the main CPU when simulated): no system
+calls, no library calls, no VFPU. args: [0] the stream's vertices, [1] the
+part's indices, [2] its triangle count, [3] the output (a bucket a triangle),
+[4] far possible, [5]-[7] the eye and [8] the detail fade squared (float
+bits). results: the part's count in each bucket, two to a word (a draw has
+at most ANGLE_TRIANGLES) */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results)
+{
+	const struct ge_vertex *stream = (const struct ge_vertex *)args[0];
+	const unsigned short *indices = (const unsigned short *)args[1];
+	unsigned int count = args[2], t, b, total[SORT_BUCKETS];
+	unsigned char *out = (unsigned char *)args[3];
+	int far_possible = (int)args[4];
+	union { unsigned int u; float f; } ex, ey, ez, far_squared;
+
+	ex.u = args[5];
+	ey.u = args[6];
+	ez.u = args[7];
+	far_squared.u = args[8];
+	for (b = 0; b < SORT_BUCKETS; b++)
+		total[b] = 0;
+	for (t = 0; t < count; t++)
+	{
+		int bucket = angle_bucket_one(stream, indices + 3 * t, ex.f, ey.f, ez.f, far_possible, far_squared.f);
+
+		out[t] = (unsigned char)bucket;
+		total[bucket]++;
+	}
+	for (b = 0; b < SORT_BUCKETS; b += 2)
+		results[b / 2] = total[b] | total[b + 1] << 16;
 	return count;
 }
 
