@@ -6,9 +6,9 @@ Branch `machines121` (from `w121`, `5015ea3`).
 
 | Change | Kind | Default |
 |---|---|---|
-| The relink memo: a reconnect's two lookups remembered | exact speed | on (`relinkfresh` off) |
+| The relink memo: a reconnect's two lookups remembered | exact speed, ~0 gain | off (opt-in `relinkmemo`) |
 | `machinetime`: a machine's update in its parts | recon instrument | off (opt-in) |
-| `machinesleep` (b102) re-judged, and a sleeping machine's lights reconnected | exact speed, not yet proven whole | off (opt-in); on once `machines121m` holds |
+| `machinesleep` (b102) re-judged, and a sleeping machine's lights reconnected | exact speed | on (`machinesawake` off) |
 
 ---
 
@@ -75,7 +75,7 @@ The machines get cheaper by 4% (c20) and 13% (d20), but on c20 the whole tick ba
 
 **Multiplayer.** The memo changes no value the game computes: it returns what the lookup would have returned. So nothing the simulation or the network sees changes. The `PSP_MULTIPLAYER=1` build compiles (lab 38526124924, build 2: EBOOT `be64e5449d3ac333`; its run fails at start, as every w121 MP run in the harness does, `mpcheck121`). The desktop servers don't run this code.
 
-**Default.** On. Off word `relinkfresh`; `relinkcheck` does every remembered lookup again and counts any that differs (the `machine parts` line's `wrong`).
+**Default.** Off: it gains about nothing on c20's tick, and its BSP generation already needed a fix. Opt-in word `relinkmemo` (the runs above used `relinkfresh`, the off word it had then); `relinkcheck` with it does every remembered lookup again and counts any that differs. Kept as an opt-in rather than dropped because the machines-only variant (Next) may make it pay.
 
 ## 2. `machinetime` (`ed42ef0`)
 
@@ -101,9 +101,11 @@ The machines get cheaper by 4% (c20) and 13% (d20), but on c20 the whole tick ba
 
 **Proven so far.** `ed42ef0`'s `machinesleep` against the default, hands off (lab 38526377504): the play hash and both seeds are identical at every tick on c20 (19,438), d20 (16,531) and a50 (26,431) [E]. But on d20 the whole state also differed in the light lists (`lights`, `light cluster reference`, `cluster light reference`, `light`) and `cached object render states`, from tick 1,140 on. An awake machine reconnects its lights every tick, which puts them first in their clusters' lists, and a sleeping one's stayed where they were. The lists decide which lights light an object, so that could be seen. `f6d2617` reconnects a sleeping machine's lights as its update would. Its runs: batch `machines121m`, lab 38533467924 (the state pair on c20, d20 and a50, and the cache models on c20 and d20), queued on the emu runner when this was written.
 
-**Multiplayer.** Machines are in multiplayer maps; sleeping changes nothing the simulation reads only if the whole state stays the same, which is what `machines121m` checks. Until it does, the word stays off in both builds.
+**Proven whole** (`f6d2617`, lab 38533467924, hands off, `machinesleep` against the default) [E]: the play hash and both seeds identical at every tick on c20 (20,311), d20 (15,719, across its BSP switch) and a50 (26,359). The whole state differs only in what follows the emulator's speed: d20 nothing else; c20 `lights` at the one checkpoint 13,260 (as in the memo's runs); a50 `actor` (`review_b121_aiperc.md`). The light lists that differed with `ed42ef0` now match. Each run's last checkpoint (cut mid-line by the wall) is left out.
 
-**Default.** Off (`machinesleep`). Turn it on when `machines121m` gives the same whole state as the default apart from the allocations that follow the emulator's speed, and say so in the build notes.
+**Multiplayer.** A sleeping machine is skipped only while its update would leave it byte-identical: its bytes, its power and position groups (which a switch, a script or a network update of the group changes) and its lights are covered, and anything that writes to the machine, including the client's network update of it, changes its bytes and wakes it before its next update. What a client sends or receives about a machine is read from those same bytes, so it is the same whether the machine slept or not. Not run in a networked game here (the MP build only compiles in the harness).
+
+**Default.** On, in both builds. Off word `machinesawake` (was the opt-in `machinesleep`).
 
 ## Next, by the evidence
 

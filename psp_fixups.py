@@ -2840,14 +2840,16 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 	opens as before; a platform (always moving) never sleeps. Measured in the
 	emulator on The Library: no gain (machines 1.73 ms a tick either way):
 	60% of its machine updates are type 2, always moving, and the idle ones
-	were cheap. So off unless keep.txt says "machinesleep" */
+	were cheap. In the cache models it is 2.6% of c20's tick and 2.7% of
+	d20's (machines121); a sleeping machine's lights are still reconnected
+	(psp_sleepy_update). On; "machinesawake" turns it off */
 	if (header->type == _object_type_machine)
 	{
 		static int psp_machine_sleep_on = -1;
 		int may = 0;
 
 		if (psp_machine_sleep_on < 0)
-			psp_machine_sleep_on = psp_keep("machinesleep");
+			psp_machine_sleep_on = !psp_keep("machinesawake");
 		if (psp_machine_sleep_on)
 		{
 			struct machine_datum const *machine = (struct machine_datum const *)object;
@@ -13651,8 +13653,9 @@ FIXES_121["source/objects/objects.c#epoch"] = [
 # machine is moved to where it already is each tick (machine_update's
 # object_translate), and a light on it reconnects with it, so most reconnects
 # repeat last tick's lookups. The disconnect and reconnect still happen in
-# full: the lists come out in the same order with the same references. Off:
-# "relinkfresh"; "relinkcheck" does each remembered lookup again and compares
+# full: the lists come out in the same order with the same references. It
+# gains little (its own misses cancel most of it), so it is opt-in:
+# "relinkmemo"; "relinkcheck" with it does each remembered lookup again and compares
 FIXES_121["source/structures/cluster_partitions.c#relinkmemo"] = [
 ("""void cluster_partition_reconnect(
 """, """#ifdef HALO_PSP
@@ -13697,7 +13700,7 @@ static void psp_relink_start(void)
 {
 	if (psp_relink_on < 0)
 	{
-		psp_relink_on = !psp_keep("relinkfresh");
+		psp_relink_on = psp_keep("relinkmemo");
 		psp_relink_check = psp_keep("relinkcheck");
 		csmemset(psp_relink_clusters, 0xFF, sizeof(psp_relink_clusters));
 	}
