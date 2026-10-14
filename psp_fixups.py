@@ -16192,6 +16192,120 @@ int psp_crumb_mark("""),
 ]
 
 
+# "pillreach" (keep.txt; builds with PSP_DEBUG_TOOLS=1 only): recon for
+# docs/plan_biped_collision_me.md. A per-biped collision cache built ahead
+# (on the ME) answers a pill sweep only when the sweep's sphere lies inside
+# the sphere the cache was built for. This counts, for each sweep, how far
+# the biped reaches in a tick (its speed against a few margins), and plays a
+# cache of each margin per biped: rebuilt when a sweep falls outside it, with
+# the level walk such a build would make (its leaves and surfaces). Changes
+# no value the game reads: the extra walk only fills a result on the stack
+FIXES_123L["source/units/bipeds.c#pillreach"] = [
+("""static void biped_update_physics(
+	struct biped_physics *physics)
+{""", """#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+/* psp_fixups.py (FIXES_123L): "pillreach" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+#define PSP_REACH_SLOTS 256
+#define PSP_REACH_SPEEDS 4
+#define PSP_REACH_CACHES 3
+static const real psp_reach_speeds[PSP_REACH_SPEEDS] = { 0.025f, 0.05f, 0.1f, 0.2f };
+static const real psp_reach_margins[PSP_REACH_CACHES] = { 0.25f, 0.5f, 1.0f };
+static struct { long biped_index; real_point3d centre[PSP_REACH_CACHES]; } psp_reach[PSP_REACH_SLOTS];
+static unsigned long psp_reach_sweeps, psp_reach_slow[PSP_REACH_SPEEDS], psp_reach_builds[PSP_REACH_CACHES];
+static unsigned long psp_reach_leaves[PSP_REACH_CACHES], psp_reach_surfaces[PSP_REACH_CACHES], psp_reach_full[PSP_REACH_CACHES];
+static long psp_reach_reported = -1;
+static int psp_reach_on = -1;
+
+static void psp_pill_reach(
+	struct biped_physics const *physics,
+	real_point3d const *position,
+	real_vector3d const *velocity)
+{
+	int slot = (int)(physics->biped_index & (PSP_REACH_SLOTS - 1)), k;
+	real half = physics->height * 0.5f;
+	real speed = magnitude3d(velocity);
+	real reach = speed * 0.5f + half + physics->width;
+	real_point3d centre;
+
+	if (psp_reach_on < 0)
+		psp_reach_on = psp_keep("pillreach");
+	if (!psp_reach_on)
+		return;
+	centre.x = position->x + velocity->i * 0.5f;
+	centre.y = position->y + velocity->j * 0.5f;
+	centre.z = position->z + velocity->k * 0.5f + half;
+	psp_reach_sweeps++;
+	for (k = 0; k < PSP_REACH_SPEEDS; k++)
+		if (speed <= psp_reach_speeds[k])
+			psp_reach_slow[k]++;
+	for (k = 0; k < PSP_REACH_CACHES; k++)
+	{
+		/* a cache is a sphere of the pill's reach at rest plus the margin,
+		centred where the biped stood when it was built */
+		real cache_radius = half + physics->width + psp_reach_margins[k];
+
+		if (psp_reach[slot].biped_index != physics->biped_index ||
+			distance3d(&centre, &psp_reach[slot].centre[k]) + reach > cache_radius)
+		{
+			struct collision_bsp_test_sphere_result result;
+
+			psp_reach[slot].centre[k].x = position->x;
+			psp_reach[slot].centre[k].y = position->y;
+			psp_reach[slot].centre[k].z = position->z + half;
+			psp_reach_builds[k]++;
+			if (collision_bsp_test_sphere(global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+				breakable_surface_flags_get(), &psp_reach[slot].centre[k], cache_radius + 0.0625f, &result))
+			{
+				psp_reach_leaves[k] += result.leaf_count;
+				psp_reach_surfaces[k] += result.surface_count;
+				if (result.leaf_count >= 256 || result.surface_count >= 256)
+					psp_reach_full[k]++;
+			}
+		}
+	}
+	psp_reach[slot].biped_index = physics->biped_index;
+	if (psp_reach_reported < 0)
+		psp_reach_reported = game_time_get();
+	if (game_time_get() - psp_reach_reported >= 300)
+	{
+		long ticks = game_time_get() - psp_reach_reported;
+
+		platform_psp_log("pillreach: %lu sweeps in %ld ticks; speed <= 0.025/0.05/0.1/0.2: %lu/%lu/%lu/%lu; "
+			"caches +0.25/+0.5/+1.0: builds %lu/%lu/%lu, leaves a build %.1f/%.1f/%.1f, surfaces a build %.1f/%.1f/%.1f, full %lu/%lu/%lu",
+			psp_reach_sweeps, ticks, psp_reach_slow[0], psp_reach_slow[1], psp_reach_slow[2], psp_reach_slow[3],
+			psp_reach_builds[0], psp_reach_builds[1], psp_reach_builds[2],
+			psp_reach_builds[0] ? (double)psp_reach_leaves[0] / psp_reach_builds[0] : 0.0,
+			psp_reach_builds[1] ? (double)psp_reach_leaves[1] / psp_reach_builds[1] : 0.0,
+			psp_reach_builds[2] ? (double)psp_reach_leaves[2] / psp_reach_builds[2] : 0.0,
+			psp_reach_builds[0] ? (double)psp_reach_surfaces[0] / psp_reach_builds[0] : 0.0,
+			psp_reach_builds[1] ? (double)psp_reach_surfaces[1] / psp_reach_builds[1] : 0.0,
+			psp_reach_builds[2] ? (double)psp_reach_surfaces[2] / psp_reach_builds[2] : 0.0,
+			psp_reach_full[0], psp_reach_full[1], psp_reach_full[2]);
+		psp_reach_reported = game_time_get();
+		psp_reach_sweeps = 0;
+		for (k = 0; k < PSP_REACH_SPEEDS; k++)
+			psp_reach_slow[k] = 0;
+		for (k = 0; k < PSP_REACH_CACHES; k++)
+			psp_reach_builds[k] = psp_reach_leaves[k] = psp_reach_surfaces[k] = psp_reach_full[k] = 0;
+	}
+}
+#endif
+
+static void biped_update_physics(
+	struct biped_physics *physics)
+{"""),
+("""			psp_speed2 < 1e-6f ? 2 : psp_speed2 < 1e-4f ? 1 : 0;
+#endif
+		collision_count = collision_move_pill(""", """			psp_speed2 < 1e-6f ? 2 : psp_speed2 < 1e-4f ? 1 : 0;
+#endif
+#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+		psp_pill_reach(physics, &position, &velocity);
+#endif
+		collision_count = collision_move_pill("""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123L.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
