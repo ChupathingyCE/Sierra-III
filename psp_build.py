@@ -132,6 +132,21 @@ PGO_PARTIAL = os.environ.get("PSP_PGO_PARTIAL", "1") != "0"
 # unrolls and peels loops, which grows the program, and the heap is what's
 # left of 24 MB after it)
 PGO_EXTRA = os.environ.get("PSP_PGO_EXTRA", "").replace(",", " ").split()
+# the same for flags whose value holds an "=", which a build switch's value
+# can't (the lab checks switches as PSP_NAME=letters, digits and -_.,):
+# PSP_PGO_HOT_FRACTION=N and PSP_PGO_HOT_PERMILLE=N set how much of the
+# counted code GCC calls hot (--param hot-bb-count-fraction, default 10000;
+# hot-bb-count-ws-permille, default 990; GCC uses the stricter of the two);
+# PSP_PGO_ALIGN_FUNCTIONS=N and PSP_PGO_ALIGN_LOOPS=N align to N bytes
+# (-O2 aligns to 4 on allegrex; a cache line is 64)
+for _sw, _flag in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction="),
+                   ("PSP_PGO_HOT_PERMILLE", "--param=hot-bb-count-ws-permille="),
+                   ("PSP_PGO_ALIGN_FUNCTIONS", "-falign-functions="),
+                   ("PSP_PGO_ALIGN_LOOPS", "-falign-loops=")):
+    if os.environ.get(_sw, ""):
+        if not re.fullmatch(r"[0-9]+", os.environ[_sw]):
+            sys.exit("psp_build: %s is a number" % _sw)
+        PGO_EXTRA.append(_flag + os.environ[_sw])
 # the units PSP_PGO=generate counts in: source/<name>/ for each name, "psp"
 # for psp/src/. All the hot units counted, the program grew 5.3 MB and the
 # heap fell to 3.9 MB in the 64 MB layout, under b30's 5.2 MB; these are the
