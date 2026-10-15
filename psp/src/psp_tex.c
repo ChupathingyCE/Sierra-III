@@ -1012,6 +1012,7 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 }
 
 static unsigned long read_us = 0, frame_read_us = 0, frame_read_worst = 0;
+extern volatile unsigned long psp_stick_read_us; /* build 126: every blocking Memory Stick read's time (psp_frametrace.c) */
 /* build 73: this heartbeat window's reads, for the log's io: line */
 static PSP_MAIN_SIDE unsigned long window_reads = 0, window_us = 0, window_worst_us = 0; /* build 118: the heartbeat resets them */
 void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us)
@@ -1085,6 +1086,7 @@ static int load_into(int index, int only)
 		/* build 35: the Memory Stick's time, measured (about 1.2 MB/s expected) */
 	read_us += sceKernelGetSystemTimeLow() - read_start;
 	frame_read_us += sceKernelGetSystemTimeLow() - read_start;
+	psp_stick_read_us += sceKernelGetSystemTimeLow() - read_start; /* build 126: frametrace */
 	{
 		unsigned long took = sceKernelGetSystemTimeLow() - read_start;
 

@@ -92,6 +92,7 @@ static unsigned long hits = 0, misses = 0, loads = 0, load_bytes = 0, evictions 
 static int frame_missed = 0;
 static unsigned int read_start_us = 0;
 static unsigned long read_us = 0, read_worst_us = 0;
+extern volatile unsigned long psp_stick_read_us; /* build 126: every blocking Memory Stick read's time (psp_frametrace.c) */
 
 int psp_geo_open_count(void) { return pack >= 0; }
 
@@ -362,6 +363,7 @@ static int read_entry_now(struct geo_entry *e)
 	took = sceKernelGetSystemTimeLow() - start;
 	read_us += took;
 	frame_read_us += took;
+	psp_stick_read_us += took; /* build 126: frametrace (the asynchronous reads, which overlap other work, aren't counted) */
 	window_reads++;
 	window_us += took;
 	if (took > window_worst_us)

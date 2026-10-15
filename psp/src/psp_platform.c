@@ -897,6 +897,7 @@ static void keep_load(void)
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf; recon: noglowpass nobackpass");
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
+	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times)");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -1818,6 +1819,10 @@ static void ladder_tick(unsigned long ticks_seen)
 	exit_game("ladder done");
 }
 
+/* build 126: "frametrace" (psp_frametrace.c) */
+void psp_frametrace_tick(unsigned long microseconds);
+void psp_frametrace_frame(unsigned long draw_us, unsigned long ticks, unsigned long end_us);
+
 void psp_tick_account(unsigned long microseconds)
 {
 	static unsigned long ticks_seen = 0;
@@ -2195,6 +2200,7 @@ steps in order: the console has no way to wait */
 	tick_total += microseconds;
 	if (microseconds > tick_maximum)
 		tick_maximum = microseconds;
+	psp_frametrace_tick(microseconds); /* build 126 */
 }
 
 void psp_ge_frame_end(void);
@@ -2211,17 +2217,21 @@ static unsigned long ticks_per_frame_histogram[5];
 void psp_frame_account(unsigned long microseconds)
 {
 	extern void psp_crash_stop_if_crashed(void);
+	unsigned long ticks = ticks_since_frame, end_start;
 
 	/* build 102: another thread crashed: the report stays on the screen */
 	psp_crash_stop_if_crashed();
 	if (log_frame_flush)
 		log_flush();
-	ticks_per_frame_histogram[ticks_since_frame > 4 ? 4 : ticks_since_frame]++;
+	ticks_per_frame_histogram[ticks > 4 ? 4 : ticks]++;
 	ticks_since_frame = 0;
 	/* the rendered frame goes to the screen (psp_ge.c) */
 	psp_phase(3);
+	end_start = psp_heartbeat_clock();
 	psp_ge_frame_end();
 	psp_phase(0);
+	/* build 126: "frametrace" (psp_frametrace.c) */
+	psp_frametrace_frame(microseconds, ticks, psp_heartbeat_clock() - end_start);
 	frame_count++;
 	frame_total += microseconds;
 	if (microseconds > frame_maximum)
