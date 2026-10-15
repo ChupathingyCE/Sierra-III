@@ -2,7 +2,7 @@
 
 `review_b131.md` lists every change and why. b127–b130 never reached your PSP, so their tests are tonight's, on b131 (the same eight). The bake is unchanged (`campaign121`).
 
-ZIPLINE
+`halo_psp_b131.zip` (SHA-256 `4647a058d19864ec48340d5e26c1ccb68455977c7f399467f65c4e0cd7d67a6e`), EBOOT `5de9704feba8492e5a83759307b53935d01986ae9de2791016817c8ccb51a5dd`: built from commit `646c3f6` on `w131` (lab sierra-build 38803284593). Heap 5,660 KB (b130's 5,672: the pose job's code and surface bounds' table pointer; its 40 KB table comes out of the heap at the first walk). **Its own profile** (`campaign-b131`, counted at `e508844`, 13 runs). Release check (lab 38803195090): RCRESULT For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
 
 **What's new for you:** nothing to see: b131 plays and looks as b130 does. Bipeds' movement passes over level surfaces that can't touch them (`surfaceboundoff`, or preset 4, tests them all as before). In the cache model a50's tick is 2.8% faster and b30's 2.0% [E]; exact (every walk compared with the engine's own, play identical). The Media Engine pose job is in but off: it hung the PSP-3000 once today, so no preset uses it tonight.
 
