@@ -1356,17 +1356,24 @@ static void dither_set(int on)
 /* the world's turn begins (1) or ends (0) */
 static void ge_dither(int on)
 {
+	/* a 4x4 Bayer matrix spanning one 5-bit step (8 levels): enough to hide
+	red's and blue's steps, and two of green's 6-bit steps, so the pattern
+	shows most in green. "ditherhalf" (opt-in, Sheepdog01's look call): half the
+	span, half the pattern; the 5-bit steps come back as half-steps */
 	static const ScePspIMatrix4 matrix = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
+	static const ScePspIMatrix4 half = { { -2, 0, -2, 0 }, { 1, -1, 1, -1 }, { -2, 0, -2, 0 }, { 1, -1, 1, -1 } };
+	static int dither_half = -1;
 
 	if (dither_off < 0)
 	{
 		dither_off = psp_keep("nodither");
 		dither_all = psp_keep("ditherall");
+		dither_half = psp_keep("ditherhalf");
 	}
 	if (dither_off)
 		return;
 	if (on)
-		sceGuSetDither(&matrix);
+		sceGuSetDither(dither_half ? &half : &matrix);
 	dither_world = on;
 	dither_now = -1; /* given again, so each frame starts from a known state */
 	dither_set(on && (dither_all || !blend_now));
@@ -9045,9 +9052,14 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	self-illumination added, where pass 1 drew */
 	if (textured && change_key && model_camouflage <= 0.0f && !in_sky)
 	{
+		/* "noglowpass" (recon): which brightness on a model is its self-illumination */
+		static int glow_off = -1;
+
 		if (change_color != 0xFFFFFFFF && multipurpose_pass(0, vertices, indices, index_count, strip, skin, &model))
 			change_passes++;
-		if (glow_color && multipurpose_pass(1, vertices, indices, index_count, strip, skin, &model))
+		if (glow_off < 0)
+			glow_off = psp_keep("noglowpass");
+		if (glow_color && !glow_off && multipurpose_pass(1, vertices, indices, index_count, strip, skin, &model))
 			glow_passes++;
 	}
 	if (model_camouflage > 0.0f)
@@ -9224,6 +9236,8 @@ struct transparent_draw
 	SEETHROUGH_FLAT (the tint alone, TFX_BLEND); the alpha is multiplied
 	in all three */
 	unsigned char tint_model;
+	/* SEETHROUGH_EXACT_DEPTH and SEETHROUGH_CLAMPED (below) */
+	unsigned char depth_mode;
 	/* after b116: the shader (its tag's definition) the part was queued
 	with, for tdump; 0 for sprites and parts queued without one */
 	unsigned int shader;
@@ -9271,6 +9285,20 @@ the map hardly shows in the shader at all, flat (a10's cryo glass) */
 #define SEETHROUGH_FLAT 2
 static unsigned char seethrough_next_model = SEETHROUGH_MODULATE;
 static unsigned long seethrough_added_draws = 0, seethrough_flat_draws = 0;
+/* How the Xbox depth-tests a see-through surface: LESSEQUAL, with a depth
+bias only for a shader flagged decal (rasterizer_xbox_transparent_geometry.c;
+shaders.c, shader_is_decal); the water shader's base map clamped at its edges
+(rasterizer_xbox_water.c). The port's nudges stand in for the decal bias on
+16-bit depth; a surface that isn't a decal gets none, as on the Xbox, so the
+far ocean wins its ties with the seabed instead of losing them as the near
+plane changes, and the ocean's draws stop taking different pushes (the steps
+along the shore). Read from the shader tag on the engine's side (the queue
+may run deferred), in the tint call's flags. Keep words "seethroughpush" and
+"waterwrap": the port's pushes and the repeating water map */
+#define SEETHROUGH_EXACT_DEPTH 16
+#define SEETHROUGH_CLAMPED 32
+static unsigned char seethrough_next_depth = 0;
+static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
 call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
 not a meter). Builds 21-115 dropped meter shaders: the plasma weapons' heat
@@ -10178,6 +10206,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
 	draw->tint_model = seethrough_next_model;
+	draw->depth_mode = seethrough_next_depth;
 	draw->color = draw->tint;
 	draw->colored = 0;
 	if (clut)
@@ -10271,6 +10300,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
 	seethrough_next_model = SEETHROUGH_MODULATE;
+	seethrough_next_depth = 0;
 	seethrough_meter_next = 0; /* and its meter */
 	ge_entry_us[2] += ge_clock() - start;
 }
@@ -10309,6 +10339,8 @@ static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shade
 {
 	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 3, tint, (unsigned int)flags, shader, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	seethrough_next_tint = tint;
+	seethrough_next_depth = (unsigned char)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED));
+	flags &= 15;
 	seethrough_next_doubled = (unsigned char)(flags == 1);
 	seethrough_next_model = flags == 2 ? SEETHROUGH_ADD : flags == 3 ? SEETHROUGH_FLAT : SEETHROUGH_MODULATE;
 	seethrough_next_shader = shader;
@@ -10323,8 +10355,31 @@ void psp_ge_seethrough_tint(unsigned int tint)
 tint from the texture pack (psp_tex.c; white for a shader it has none for) */
 void psp_ge_seethrough_shader(unsigned int shader)
 {
+	static int pushed = -1, wrapped = -1;
 	int flags = 0;
 	unsigned int tint = psp_tex_shader_tint(shader, &flags);
+
+	if (pushed < 0)
+	{
+		pushed = psp_keep("seethroughpush");
+		wrapped = psp_keep("waterwrap");
+	}
+	if (shader)
+	{
+		/* the shader's type at +36 (Invader's numbering: generic 5, chicago
+		6, water 7, glass 8, meter 9, plasma 10); generic's and chicago's
+		flags byte at +41, glass's and meter's word at +40 */
+		const unsigned char *definition = (const unsigned char *)shader;
+		short type = *(const short *)(definition + 36);
+		int decal = type == 5 || type == 6 ? (definition[41] & 2) != 0 :
+			type == 8 ? (*(const unsigned short *)(definition + 40) & 2) != 0 :
+			type == 9 ? (*(const unsigned short *)(definition + 40) & 1) != 0 : 0;
+
+		if (!pushed && !decal && type >= 5 && type <= 10)
+			flags |= SEETHROUGH_EXACT_DEPTH;
+		if (!wrapped && type == 7)
+			flags |= SEETHROUGH_CLAMPED;
+	}
 
 	seethrough_tint_set(tint, flags, shader);
 }
@@ -10531,6 +10586,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
 	draw->tint_model = seethrough_next_model;
+	draw->depth_mode = seethrough_next_depth;
 	draw->color = seethrough_tinted(seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
 		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF, draw->tint);
 	draw->colored = 0;
@@ -11234,7 +11290,8 @@ static int level_transparent_angle(const struct level_stream *stream, const unsi
 			p[corner][3] = b->u;
 			p[corner][4] = b->v;
 		}
-		units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
+		units = seethrough_next_depth & SEETHROUGH_EXACT_DEPTH ? 0 :
+			overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
 		if (units > on_wall)
 			on_wall = units;
 		if (units < 0 && (overlay_free_far > 0 ? !free_push || -units < free_push : -units > free_push))
@@ -11310,6 +11367,8 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 	struct transparent_draw *draw;
 	struct cut_store pieces_store;
 
+	int exact = (seethrough_next_depth & SEETHROUGH_EXACT_DEPTH) != 0;
+
 	if (!frame_open || triangle_count <= 0 || !vertices || !indices || vertex_count <= 0 || list_full())
 		return;
 	memset(bucket_units, 0, sizeof(bucket_units));
@@ -11371,6 +11430,14 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 			{
 				float p[3][3];
 
+				if (exact)
+				{
+					/* one draw, at the depth it has: no nudge to size, no wall to ask about */
+					overlay_triangle_bucket[kept_count] = 0;
+					bucket_units[0] = 1;
+					kept_count++;
+					continue;
+				}
 				for (corner = 0; corner < 3; corner++)
 					to_camera(&stream->base[triangle[corner]].x, p[corner]);
 				units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
@@ -11399,7 +11466,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				corners[corner][4] = b->v;
 				corners[corner][5] = corners[corner][6] = 0.0f;
 			}
-			units = overlay_units(corners[0], corners[1], corners[2],
+			units = exact ? 0 : overlay_units(corners[0], corners[1], corners[2],
 				overlay_answer(stream->base, indices, triangle_count, index));
 			if (units > cut_units)
 				cut_units = units;
@@ -11502,6 +11569,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
 	seethrough_next_model = SEETHROUGH_MODULATE;
+	seethrough_next_depth = 0;
 	ge_entry_us[3] += ge_clock() - start;
 }
 
@@ -11570,7 +11638,8 @@ static void transparent_flush_body(void)
 			char const *shader_name = PSP_ME_WORK() || !draw->shader ? NULL : psp_shader_tag_name((void const *)draw->shader);
 
 			if (shader_name)
-				platform_log("tdump: %d/%d shader %s", index, transparent_count, shader_name);
+				platform_log("tdump: %d/%d shader %s (type %d, depth mode %d)", index, transparent_count, shader_name,
+					*(const short *)((const char *)draw->shader + 36), draw->depth_mode);
 			platform_log("tdump: %d/%d key %08x (%s) sky %d level %d fp %d sprites %d blend %d dist %.1f count %d cut %d units %d at %.2f %.2f %.2f depth test %u mfp %d",
 				index, transparent_count, draw->key, name ? name : "no tag", draw->sky, draw->level, draw->first_person,
 				draw->sprites, draw->blend, sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,
@@ -11667,11 +11736,21 @@ static void transparent_flush_body(void)
 
 				units = scaled < 3.0f ? 3 : scaled > 4096.0f ? 4096 : (int)scaled;
 			}
+			if (draw->depth_mode & SEETHROUGH_EXACT_DEPTH)
+			{
+				units = 0;
+				seethrough_exact_draws++;
+			}
 			sceGuDepthOffset(units);
 		}
 		sceGuTexScale(draw->u_scale, draw->v_scale);
 		sceGuTexOffset(draw->u_offset, draw->v_offset);
 		sceGumLoadMatrix(&draw->matrix);
+		if (draw->depth_mode & SEETHROUGH_CLAMPED)
+		{
+			sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+			seethrough_clamped_draws++;
+		}
 		if (draw->doubled)
 		{
 			/* build 116: a shader brighter than its map, its tint halved */
@@ -11732,6 +11811,8 @@ static void transparent_flush_body(void)
 		}
 		if (draw->doubled)
 			sceGuDisable(GU_FRAGMENT_2X);
+		if (draw->depth_mode & SEETHROUGH_CLAMPED)
+			sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 		if (draw->tint_model != SEETHROUGH_MODULATE)
 			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 		if (draw->tint_model == SEETHROUGH_FLAT)
@@ -15340,6 +15421,9 @@ void psp_ge_frame_end(void)
 		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu, added %lu, flat %lu",
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
 			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws);
+		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu",
+			seethrough_exact_draws, seethrough_clamped_draws);
+		seethrough_exact_draws = seethrough_clamped_draws = 0;
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;
