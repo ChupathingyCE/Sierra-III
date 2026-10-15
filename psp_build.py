@@ -460,7 +460,10 @@ def link(objs, stubs):
     #     code stops sharing cache lines with cold code (research_icache.md,
     #     T1). Only a PGO build has .text.hot sections;
     #   a file name: coldfirst, then that file's hot functions in its order
-    #     (one section name a line, tools/icache_order.py's order.txt).
+    #     (one section name a line, tools/icache_order.py's order.txt); or,
+    #     when its lines are placements ("*<object>(<section>)", the lab's
+    #     tools/codeorder.py: the call graph's order, T2), those in its order
+    #     and nothing first, each function's cold part placed beside it.
     # A linker script gives each input section to the first rule that
     # matches it, so the most specific placements come first.
     linkfile = SDK + "/lib/linkfile.prx"
@@ -472,7 +475,15 @@ def link(objs, stubs):
         else:
             first = ["*(.text.unlikely .text.unlikely.*)"]
         if layout not in ("coldfirst", "hotgroup"):
-            first += ["*(%s)" % l.strip() for l in open(layout) if l.strip().startswith(".text.")]
+            # a bare name is a placement file of this repo's (psp/layout/), as
+            # a profile's name is pgo/'s
+            if not os.path.isfile(layout) and os.path.isfile(os.path.join(HERE, "psp/layout", layout + ".txt")):
+                layout = os.path.join(HERE, "psp/layout", layout + ".txt")
+            lines = [l.strip() for l in open(layout) if l.strip() and not l.startswith("#")]
+            if lines and all(l.startswith("*") for l in lines):
+                first = lines
+            else:
+                first += ["*(%s)" % l for l in lines if l.startswith(".text.")]
         old_text = "    _ftext = . ;\n    *(.text .stub .text.* .gnu.linkonce.t.*)\n"
         if old_text not in text:
             sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_TEXT_LAYOUT can't place the code")
