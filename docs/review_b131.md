@@ -5,7 +5,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 | Branch | What | Kind | Default | Words | Review |
 |---|---|---|---|---|---|
 | `spherebound132` | The level sphere walk passes over surfaces whose bounding sphere is out of reach | exact speed-up | on | `surfaceboundoff` (off); `surfacetestcheck` (check) | §1 |
-| `mepose131` | Next tick's base poses made ahead, on the main CPU or the Media Engine | exact speed-up, opt-in while the PSP-3000's hang is open | off | `poseahead`, `poseaheadme`, `poseaheadcheck` | §2 |
+| `mepose131` | Next tick's base poses made ahead, on the main CPU or the Media Engine: the first slice of phase D | exact speed-up, opt-in while the PSP-3000's hang is open | off | `poseahead`, `poseaheadme`, `poseaheadcheck` | §2 |
 | `spherebound132` | The pose job's parts timed on the PSP | instrument | off | `posetime` | §3 |
 
 ## Release check
@@ -26,7 +26,7 @@ psp_sb_passed++;
 return TRUE;             /* out of reach: the test would add nothing */
 ```
 
-**Why.** It's a cache-miss lever (your steer today): the sphere walk is the tick's largest source of data misses on a50 (17% of them), and most of its cost is walking rings of edges and vertices scattered through memory. The recon (lab 38790928679 [E], every test counted): **85% of a50's surface tests are out of reach**, 67% of b30's, 61% of d20's, 33% of c20's.
+**Why.** A cache-miss lever: the sphere walk is the tick's largest source of data misses on a50 (17% of them), and most of its cost is walking rings of edges and vertices scattered through memory. **Filler, not the headline:** under today's lever rule its ceiling is under a millisecond (the cache model: −0.6 ms a tick on a50, −0.85 ms on b30); it was built and proven before the rule, and ships because it's free. The recon (lab 38790928679 [E], every test counted): **85% of a50's surface tests are out of reach**, 67% of b30's, 61% of d20's, 33% of c20's.
 
 **Exact** [D, E]. A surface's vertices and edges lie inside its bounding sphere, and so does the point the sphere's centre projects onto when the test finds it inside the face (that point is less than the sphere's radius from the centre, since the sphere straddles the face's plane). So a sphere farther away than both radii touches none of them. The margin (a thousandth of the reach, plus 0.0001 of a world unit) covers the rounding of these sums at the level's coordinates. In the recon, none of 17 million out-of-reach surfaces would have been added or hit. Checks (lab 38793200211 [E]): every walk compared with the engine's own (`surfacetestcheck`), 0 of 197,649 differ on a50 and 0 of 372,128 on b30's route; play and both seeds identical to `surfaceboundoff` at every tick on a50 (19,291) and d20 (11,530).
 
