@@ -2414,8 +2414,8 @@ static void relative(ScePspFMatrix4 *m)
 	m->w.z -= ge_eye[2];
 }
 
-/* the model matrix for anything given in world coordinates (the level,
-decals, shadows, lights): the world moved so the camera is at its origin */
+/* the model matrix for anything given in world coordinates: the world moved
+so the camera is at its origin */
 static void world_model(void)
 {
 	ScePspFMatrix4 m;
@@ -2423,6 +2423,115 @@ static void world_model(void)
 	gumLoadIdentity(&m);
 	relative(&m);
 	sceGumLoadMatrix(&m);
+}
+
+/* The level's copies give their positions from an origin near the eye, not
+from the world's. Why: with the level's translation exact in the matrix
+words (ge_eye), the level still shook on the PSP-1000 in c40's opening, while
+the emulator, which models only those words, showed it still. So the GE loses
+precision on large numbers somewhere else too [U]: most likely it folds the
+model and view matrices into one in its own precision, and then a vertex
+given 700 units out, and the translation that brings it back to the eye,
+each lose about 1/64 of a unit, differently as the camera moves. Models never
+shook because their vertices and translations are small (relative()). Given
+from level_origin, the level's numbers are the size of the scene round the
+eye too ("geprecision" measures the GE directly).
+- level_origin is a point of a LEVEL_ORIGIN_STEP lattice. It follows the eye
+  (level_origin_follow, as a frame begins) once the eye is more than
+  LEVEL_ORIGIN_SLACK from it on an axis, so it moves seldom.
+- Positions are snapped to 1/LEVEL_SNAP of a unit as a copy is made (0.24 mm,
+  far under a pixel). A lattice point minus a snapped position is then exact
+  in a float within LEVEL_REACH, so a copy moved from one origin to another
+  loses nothing, however often it moves.
+- Each copy carries the origin its positions are given from (its own matrix,
+  level_model). The copies drawn in a frame are moved to level_origin at the
+  frame's end, when nothing reads them (level_copies_follow); until then a
+  copy draws from its own origin, as correctly, with larger numbers.
+- With every copy on one origin, a vertex two materials share goes through
+  the same numbers in both, as it did in world coordinates: no seams.
+- The CPU's tests of a copy's positions use level_eye, the eye seen from the
+  copy's origin. The difference of two exact values is one rounding, so they
+  get the same floats as the world's would (for the snapped positions).
+Everything drawn on the level's own triangles (lights, shadows, the stencil
+bake's layers, see-through surfaces, cut pieces) is made from the copy's
+positions and drawn through the copy's matrix, so equal depths stay equal.
+Decals, which the game gives in world coordinates, are given from
+level_origin as they are written. "levellocaloff": every origin the world's,
+nothing snapped, as before */
+#define LEVEL_ORIGIN_STEP 32.0f
+#define LEVEL_ORIGIN_SLACK 24.0f
+#define LEVEL_SNAP 4096.0f
+#define LEVEL_REACH 4000.0f
+static int level_local = -1;
+static const float world_origin[3] = { 0.0f, 0.0f, 0.0f };
+static float level_origin[3];
+static int level_origin_set = 0;
+static float level_eye[3];
+static unsigned long level_origin_moves = 0, level_copies_moved = 0, level_copies_left = 0,
+	level_vertices_moved = 0, level_move_us = 0;
+
+/* a model matrix for positions given from origin: origin moved to ge_eye,
+in full floats on the CPU */
+static void level_matrix(ScePspFMatrix4 *m, const float *origin)
+{
+	gumLoadIdentity(m);
+	m->w.x = origin[0];
+	m->w.y = origin[1];
+	m->w.z = origin[2];
+	relative(m);
+}
+
+static void level_model(const float *origin)
+{
+	ScePspFMatrix4 m;
+
+	level_matrix(&m, origin);
+	sceGumMatrixMode(GU_MODEL);
+	sceGumLoadMatrix(&m);
+}
+
+/* the eye seen from a copy's origin, for the CPU's tests of its positions */
+static inline void level_frame(const float *origin)
+{
+	level_eye[0] = camera_eye[0] - origin[0];
+	level_eye[1] = camera_eye[1] - origin[1];
+	level_eye[2] = camera_eye[2] - origin[2];
+}
+
+/* a position on 1/LEVEL_SNAP of a unit, rounded half away from zero */
+static inline float level_snap(float x)
+{
+	float scaled = x * LEVEL_SNAP;
+
+	return (float)(int)(scaled + (scaled >= 0.0f ? 0.5f : -0.5f)) * (1.0f / LEVEL_SNAP);
+}
+
+/* whether every position of a box (world) is exact from origin */
+static int level_reach(const float *low, const float *high, const float *origin)
+{
+	int k;
+
+	for (k = 0; k < 3; k++)
+		if (high[k] - origin[k] > LEVEL_REACH || origin[k] - low[k] > LEVEL_REACH)
+			return 0;
+	return 1;
+}
+
+/* level_origin re-centred on the lattice point nearest the eye, once the eye
+has moved LEVEL_ORIGIN_SLACK from it on any axis */
+static void level_origin_follow(const float *eye)
+{
+	int k, far = !level_origin_set;
+
+	for (k = 0; k < 3 && !far; k++)
+		far = fabsf(eye[k] - level_origin[k]) > LEVEL_ORIGIN_SLACK;
+	if (!far)
+		return;
+	for (k = 0; k < 3; k++)
+		level_origin[k] = floorf(eye[k] * (1.0f / LEVEL_ORIGIN_STEP) + 0.5f) * LEVEL_ORIGIN_STEP;
+	if (level_origin_set)
+		level_origin_moves++;
+	level_origin_set = 1;
 }
 
 /* build 64: "nearauto", the near plane moved out as far as what is near the
@@ -2570,6 +2679,206 @@ static void perspective(float fov_degrees, float n, float f)
 		sceGumTranslate(&shift);
 	}
 	sceGumPerspective(fov_degrees, (float)SCREEN_WIDTH / SCREEN_HEIGHT, n, f);
+}
+
+/* ---------- "geprecision": the GE's precision with large coordinates,
+measured on whatever runs the build (the emulator models only the matrix
+words' 24 bits; the level's shake on the PSP says the GE loses more).
+
+As the first frame begins, a white quad 2 units ahead of a camera 800 units
+from the world's origin (c40's control room) is drawn alone, over and over,
+with the camera moved 1/256 of a unit sideways each time (the "move" sweep)
+or turned 2 milliradians (the "turn" sweep), 32 steps each. The quad's right
+edge is slanted, so the white pixels counted along every row give where the
+edge lies to a small fraction of a pixel. A GE exact to the floats' precision
+moves the edge smoothly, a straight line against the step (a parabola for
+the turn); what the GE rounds shows as the steps' scatter about that line.
+Each way of giving the quad to the GE is one line of the log:
+  world, eye in model: world positions, the eye's whole position in the
+    model matrix's translation (the level before the exact origin);
+  world, exact origin: world positions, ge_eye in the model matrix and the
+    rest in the view (levelexact);
+  local 28 away: positions from an origin 28 units from the eye, with the
+    exact origin (levellocal, near its farthest from level_origin);
+  local at the quad: positions from an origin at the quad (the best case);
+  local 28 away, eye in model: as the third, without the exact origin;
+  near the origin: the whole scene a few units from the world's origin
+    (control: nothing is large).
+Read: a scatter (rms) well over the control's in the first two and not in
+the local ones means large positions themselves lose precision in the GE,
+and the levellocal fix is the right one. The emulator should show scatter
+only in the first */
+#define GEPREC_STEPS 32
+#define GEPREC_LEFT 160
+#define GEPREC_RIGHT 336
+
+struct geprec_corner
+{
+	float x, y, z;
+};
+
+/* the edge's mean column over the screen's rows, from what the GE drew */
+static float geprec_edge(void)
+{
+	const volatile unsigned short *frame = (const volatile unsigned short *)0x44000000;
+	unsigned long white = 0;
+	int x, y;
+
+	for (y = 0; y < SCREEN_HEIGHT; y++)
+		for (x = GEPREC_LEFT; x < GEPREC_RIGHT; x++)
+			white += frame[y * BUFFER_WIDTH + x] != 0;
+	return GEPREC_LEFT + (float)white / SCREEN_HEIGHT;
+}
+
+/* one picture: the quad (world corners) from eye looking along forward, given
+to the GE as mode says; returns the edge's column */
+static float geprec_draw(int mode, const float *eye, const float *forward, const float corners[4][3],
+	const float *origin)
+{
+	static const int order[6] = { 0, 1, 2, 0, 2, 3 };
+	ScePspFVector3 zero = { 0.0f, 0.0f, 0.0f }, ahead = { forward[0], forward[1], forward[2] }, up = { 0.0f, 0.0f, 1.0f };
+	ScePspFMatrix4 model;
+	struct geprec_corner *v;
+	float g[3], from[3];
+	int exact = mode != 0 && mode != 4, local = mode >= 2 && mode <= 4, k;
+
+	for (k = 0; k < 3; k++)
+	{
+		g[k] = exact ? ge_matrix_float(eye[k]) : eye[k];
+		from[k] = local ? origin[k] : 0.0f;
+	}
+	sceGuStart(GU_DIRECT, display_list);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDisable(GU_BLEND);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuClearColor(0);
+	sceGuClear(GU_COLOR_BUFFER_BIT);
+	sceGuColor(0xFFFFFFFF);
+	sceGumMatrixMode(GU_PROJECTION);
+	perspective(70.0f, 0.0625f, 1024.0f);
+	sceGumMatrixMode(GU_VIEW);
+	sceGumLoadIdentity();
+	sceGumLookAt(&zero, &ahead, &up);
+	if (exact)
+	{
+		ScePspFVector3 shift = { g[0] - eye[0], g[1] - eye[1], g[2] - eye[2] };
+
+		sceGumTranslate(&shift);
+	}
+	gumLoadIdentity(&model);
+	model.w.x = from[0] - g[0];
+	model.w.y = from[1] - g[1];
+	model.w.z = from[2] - g[2];
+	sceGumMatrixMode(GU_MODEL);
+	sceGumLoadMatrix(&model);
+	v = sceGuGetMemory(6 * sizeof(struct geprec_corner));
+	for (k = 0; k < 6; k++)
+	{
+		v[k].x = corners[order[k]][0] - from[0];
+		v[k].y = corners[order[k]][1] - from[1];
+		v[k].z = corners[order[k]][2] - from[2];
+	}
+	sceGumDrawArray(GU_TRIANGLES, GU_VERTEX_32BITF | GU_TRANSFORM_3D, 6, NULL, v);
+	sceGuFinish();
+	sceGuSync(0, 0);
+	return geprec_edge();
+}
+
+static void __attribute__((cold)) ge_precision_test(void)
+{
+	static const char *const names[6] = { "world, eye in model", "world, exact origin", "local 28 away",
+		"local at the quad", "local 28 away, eye in model", "near the origin" };
+	float base[2][3] = { { 361.37f, -714.21f, 76.11f }, { 3.37f, -2.21f, 1.13f } };
+	int mode, sweep;
+
+	stall_force = 1;
+	platform_log("geprecision: a quad 2 units ahead, its edge's column (pixels) over %d steps: the camera moved 1/256 unit sideways (move) or turned 2 mrad (turn); fit a parabola, rms and largest scatter about it",
+		GEPREC_STEPS);
+	for (mode = 0; mode < 6; mode++)
+		for (sweep = 0; sweep < 2; sweep++)
+		{
+			const float *e0 = base[mode == 5];
+			float forward0[3] = { 0.8f, -0.6f, -0.1f }, right[3], length, corners[4][3], origin[3], edge[GEPREC_STEPS];
+			float s[5] = { 0.0f }, t[3] = { 0.0f }, rms = 0.0f, most = 0.0f, a, b, c, det;
+			int k, step;
+
+			length = sqrtf(forward0[0] * forward0[0] + forward0[1] * forward0[1] + forward0[2] * forward0[2]);
+			for (k = 0; k < 3; k++)
+				forward0[k] /= length;
+			/* right = forward x up (up the world's z) */
+			right[0] = forward0[1];
+			right[1] = -forward0[0];
+			right[2] = 0.0f;
+			length = sqrtf(right[0] * right[0] + right[1] * right[1]);
+			right[0] /= length;
+			right[1] /= length;
+			{
+				/* the corners across and up the view (r, u), 2 units ahead; the
+				right edge leans 0.12 units over the screen's height */
+				static const float ru[4][2] = { { -5.0f, -1.5f }, { 0.0f, -1.5f }, { 0.12f, 1.5f }, { -5.0f, 1.5f } };
+				float camera_upward[3] = { right[1] * forward0[2] - right[2] * forward0[1],
+					right[2] * forward0[0] - right[0] * forward0[2], right[0] * forward0[1] - right[1] * forward0[0] };
+				int corner;
+
+				for (corner = 0; corner < 4; corner++)
+					for (k = 0; k < 3; k++)
+						corners[corner][k] = e0[k] + 2.0f * forward0[k] + ru[corner][0] * right[k] + ru[corner][1] * camera_upward[k];
+			}
+			for (k = 0; k < 3; k++)
+				origin[k] = mode == 3 ? floorf(corners[0][k] + 0.5f) : floorf(e0[k] + 0.5f) + (k == 0 ? 20.0f : k == 1 ? -20.0f : 4.0f);
+			for (step = 0; step < GEPREC_STEPS; step++)
+			{
+				float eye[3], forward[3];
+
+				for (k = 0; k < 3; k++)
+				{
+					eye[k] = e0[k] + (sweep == 0 ? step * (1.0f / 256.0f) * right[k] : 0.0f);
+					forward[k] = forward0[k];
+				}
+				if (sweep == 1)
+				{
+					float angle = step * 0.002f, cosine = cosf(angle), sine = sinf(angle);
+
+					forward[0] = forward0[0] * cosine - forward0[1] * sine;
+					forward[1] = forward0[0] * sine + forward0[1] * cosine;
+				}
+				edge[step] = geprec_draw(mode, eye, forward, corners, origin);
+			}
+			/* least squares a + b k + c k^2 */
+			for (step = 0; step < GEPREC_STEPS; step++)
+			{
+				float k1 = (float)step, k2 = k1 * k1;
+
+				s[0] += 1.0f; s[1] += k1; s[2] += k2; s[3] += k2 * k1; s[4] += k2 * k2;
+				t[0] += edge[step]; t[1] += edge[step] * k1; t[2] += edge[step] * k2;
+			}
+			det = s[0] * (s[2] * s[4] - s[3] * s[3]) - s[1] * (s[1] * s[4] - s[3] * s[2]) + s[2] * (s[1] * s[3] - s[2] * s[2]);
+			a = (t[0] * (s[2] * s[4] - s[3] * s[3]) - s[1] * (t[1] * s[4] - s[3] * t[2]) + s[2] * (t[1] * s[3] - s[2] * t[2])) / det;
+			b = (s[0] * (t[1] * s[4] - s[3] * t[2]) - t[0] * (s[1] * s[4] - s[3] * s[2]) + s[2] * (s[1] * t[2] - t[1] * s[2])) / det;
+			c = (s[0] * (s[2] * t[2] - t[1] * s[3]) - s[1] * (s[1] * t[2] - t[1] * s[2]) + t[0] * (s[1] * s[3] - s[2] * s[2])) / det;
+			for (step = 0; step < GEPREC_STEPS; step++)
+			{
+				float r = edge[step] - (a + b * step + c * step * step);
+
+				rms += r * r;
+				if (fabsf(r) > most)
+					most = fabsf(r);
+			}
+			rms = sqrtf(rms / GEPREC_STEPS);
+			platform_log("geprecision: %-28s %s: edge at %.2f, %+.3f px a step; scatter rms %.3f px, largest %.3f px",
+				names[mode], sweep ? "turn" : "move", edge[0], b, rms, most);
+		}
+	/* the GE as ge_initialize left it, and a black frame */
+	sceGuStart(GU_DIRECT, display_list);
+	sceGuClearColor(0);
+	sceGuClear(GU_COLOR_BUFFER_BIT);
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuEnable(GU_FOG);
+	sceGuFinish();
+	sceGuSync(0, 0);
+	stall_force = 0;
 }
 
 static int taa_history_ready(void)
@@ -3079,7 +3388,11 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		return;
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	if (!ge_ready)
+	{
 		ge_initialize();
+		if (psp_keep("geprecision"))
+			ge_precision_test();
+	}
 	{
 		/* build 113: "shoteveryN": a screenshot every N seconds of game time,
 		at most 24 (emulator runs have no hands for select + right). Asked
@@ -3220,6 +3533,10 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		for (k = 0; k < 3; k++)
 			ge_eye[k] = level_exact ? ge_matrix_float(position[k]) : position[k];
 	}
+	if (level_local < 0)
+		level_local = !psp_keep("levellocaloff");
+	if (level_local)
+		level_origin_follow(position);
 	{
 		ScePspFVector3 origin = { 0.0f, 0.0f, 0.0f }, ahead;
 
@@ -3293,20 +3610,33 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 }
 
 /* a point in camera space: x right, y up, z forward (distance ahead) */
-static inline void to_camera(const float *p, float *out)
+static inline void to_camera_from(const float *eye, const float *p, float *out)
 {
-	float d0 = p[0] - camera_eye[0], d1 = p[1] - camera_eye[1], d2 = p[2] - camera_eye[2];
+	float d0 = p[0] - eye[0], d1 = p[1] - eye[1], d2 = p[2] - eye[2];
 
 	out[0] = d0 * camera_right[0] + d1 * camera_right[1] + d2 * camera_right[2];
 	out[1] = d0 * camera_up[0] + d1 * camera_up[1] + d2 * camera_up[2];
 	out[2] = d0 * camera_forward[0] + d1 * camera_forward[1] + d2 * camera_forward[2];
 }
 
-/* a corner to be cut: camera space for the clipping, the world position
-carried along for drawing (build 34) */
-static inline void to_camera_corner(const float *p, float *corner)
+/* a world position */
+static inline void to_camera(const float *p, float *out)
 {
-	to_camera(p, corner);
+	to_camera_from(camera_eye, p, out);
+}
+
+/* a level copy's position, given from the origin level_frame was given */
+static inline void level_to_camera(const float *p, float *out)
+{
+	to_camera_from(level_eye, p, out);
+}
+
+/* a level corner to be cut: camera space for the clipping, the copy's
+position carried along for drawing through the copy's matrix, so the cut
+corners the cut keeps are the very floats the uncut neighbours have */
+static inline void level_to_camera_corner(const float *p, float *corner)
+{
+	level_to_camera(p, corner);
 	corner[7] = p[0];
 	corner[8] = p[1];
 	corner[9] = p[2];
@@ -3783,6 +4113,9 @@ struct level_stream
 	coordinates times a scale, positions on a lattice; NULL: floats only) */
 	struct compact_vertex *compact_base, *compact_lightmap;
 	float compact_origin[3], compact_uv_scale[2];
+	/* the point the positions of base and lightmap are given from (the world
+	minus it); low and high stay in the world */
+	float origin[3];
 };
 #define LEVEL_STREAMS 512
 
@@ -3839,7 +4172,7 @@ static void compact_begin(int lightmap)
 
 static void compact_end(void)
 {
-	world_model();
+	level_model(compact_now->origin);
 	sceGuTexScale(pass_scale_u, pass_scale_v);
 }
 
@@ -3890,9 +4223,9 @@ static int compact_build(struct level_stream *stream)
 
 		for (axis = 0; axis < 3; axis++)
 		{
-			q[axis] = (short)floorf((p[axis] - stream->compact_origin[axis]) / COMPACT_STEP + 0.5f);
+			q[axis] = (short)floorf((p[axis] + stream->origin[axis] - stream->compact_origin[axis]) / COMPACT_STEP + 0.5f);
 			/* the float copy on the lattice point itself (exact in floats) */
-			p[axis] = stream->compact_origin[axis] + (float)q[axis] * COMPACT_STEP;
+			p[axis] = stream->compact_origin[axis] + (float)q[axis] * COMPACT_STEP - stream->origin[axis];
 		}
 		c->x = q[0]; c->y = q[1]; c->z = q[2];
 		c->u = (short)floorf(b->u / stream->compact_uv_scale[0] * 32768.0f + 0.5f);
@@ -4547,6 +4880,10 @@ struct bake_layer
 	struct ge_vertex *vertices;           /* the stencil's texture coordinates on the pieces' positions */
 	const unsigned short *tris;           /* 4 each: three vertices, the wall's replaced triangle */
 	struct bake_wall *wall;
+	/* the origin the positions are given from, once placed as the wall's
+	copy is (level_layers_follow); unplaced, they are the file's world ones */
+	float origin[3];
+	int placed;
 };
 
 struct bake_stencil
@@ -4912,6 +5249,72 @@ static unsigned long streams_wanted_total = 0, streams_wanted_dropped = 0;
 /* a level copy already built, or NULL; changes nothing (with the shadows) */
 static struct level_stream *level_stream_find(const void *vertices);
 
+/* a wall's stencil layers given from its copy's origin: they lie on the
+wall's pieces, drawn with depth EQUAL, so they take the same snapped
+positions from the same origin. Main CPU only, when nothing reads them */
+static void level_layers_follow(unsigned int wall_key, const float *origin)
+{
+	int k;
+
+	if (!level_local)
+		return;
+	for (k = 0; k < bake.layer_count; k++)
+	{
+		struct bake_layer *l = &bake.layers[k];
+		unsigned int i;
+
+		if (l->wall_key != wall_key || (l->placed && !memcmp(l->origin, origin, sizeof(l->origin))))
+			continue;
+		for (i = 0; i < l->vertex_count; i++)
+		{
+			float *p = &l->vertices[i].x;
+			int axis;
+
+			for (axis = 0; axis < 3; axis++)
+				p[axis] = (l->placed ? p[axis] + l->origin[axis] : level_snap(p[axis])) - origin[axis];
+		}
+		memcpy(l->origin, origin, sizeof(l->origin));
+		l->placed = 1;
+		ge_writeback(l->vertices, l->vertex_count * sizeof(struct ge_vertex));
+	}
+}
+
+/* a copy moved to another origin: exact (lattice points, snapped positions,
+within LEVEL_REACH), or left where it is */
+static void level_copy_follow(struct level_stream *stream, const float *origin)
+{
+	float shift[3];
+	int i, axis;
+
+	if (!level_reach(stream->low, stream->high, origin))
+	{
+		level_copies_left++;
+		return;
+	}
+	for (axis = 0; axis < 3; axis++)
+		shift[axis] = stream->origin[axis] - origin[axis];
+	for (i = 0; i < stream->count; i++)
+	{
+		struct ge_vertex *b = &stream->base[i];
+
+		b->x += shift[0]; b->y += shift[1]; b->z += shift[2];
+		if (stream->lightmap)
+		{
+			struct ge_vertex *l = &stream->lightmap[i];
+
+			l->x = b->x; l->y = b->y; l->z = b->z;
+		}
+	}
+	memcpy(stream->origin, origin, sizeof(stream->origin));
+	ge_writeback(stream->base, stream->count * sizeof(struct ge_vertex));
+	if (stream->lightmap)
+		ge_writeback(stream->lightmap, stream->count * sizeof(struct ge_vertex));
+	if (stream->bake)
+		level_layers_follow(stream->bake->key, origin);
+	level_copies_moved++;
+	level_vertices_moved += (unsigned long)stream->count;
+}
+
 static struct level_stream *level_stream_get(const void *vertices, const void *lightmap_vertices, int count)
 {
 	const void *key = stream_key(vertices);
@@ -5000,26 +5403,36 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	}
 	stream->low[0] = stream->low[1] = stream->low[2] = 1e30f;
 	stream->high[0] = stream->high[1] = stream->high[2] = -1e30f;
+	if (level_local < 0)
+		level_local = !psp_keep("levellocaloff");
 	for (index = 0; index < count; index++)
 	{
 		const float *vertex = (const float *)((const char *)vertices + 32 * index);
 		struct ge_vertex *b = &stream->base[index];
 		int axis;
 
-		b->x = vertex[0]; b->y = vertex[1]; b->z = vertex[2];
+		if (level_local)
+		{
+			b->x = level_snap(vertex[0]); b->y = level_snap(vertex[1]); b->z = level_snap(vertex[2]);
+		}
+		else
+		{
+			b->x = vertex[0]; b->y = vertex[1]; b->z = vertex[2];
+		}
 		b->u = vertex[6]; b->v = vertex[7];
 		stream->normals[index] = ((const unsigned int *)vertex)[3];
 		for (axis = 0; axis < 3; axis++)
 		{
-			if (vertex[axis] < stream->low[axis]) stream->low[axis] = vertex[axis];
-			if (vertex[axis] > stream->high[axis]) stream->high[axis] = vertex[axis];
+			float p = (&b->x)[axis];
+
+			if (p < stream->low[axis]) stream->low[axis] = p;
+			if (p > stream->high[axis]) stream->high[axis] = p;
 		}
 		if (stream->lightmap)
 		{
 			const short *texcoord = (const short *)((const char *)lightmap_vertices + 8 * index + 4);
 			struct ge_vertex *l = &stream->lightmap[index];
 
-			l->x = b->x; l->y = b->y; l->z = b->z;
 			l->u = (texcoord[0] * 2.0f + 1.0f) * (1.0f / 65535.0f);
 			l->v = (texcoord[1] * 2.0f + 1.0f) * (1.0f / 65535.0f);
 			stream->radiosity[index] = *(const unsigned int *)((const char *)lightmap_vertices + 8 * index);
@@ -5035,19 +5448,53 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 			const float *a = stream->bake->added_vertices + 8 * added;
 			struct ge_vertex *b = &stream->base[count + added];
 
-			b->x = a[0]; b->y = a[1]; b->z = a[2];
+			if (level_local)
+			{
+				b->x = level_snap(a[0]); b->y = level_snap(a[1]); b->z = level_snap(a[2]);
+			}
+			else
+			{
+				b->x = a[0]; b->y = a[1]; b->z = a[2];
+			}
 			b->u = a[3]; b->v = a[4];
 			stream->normals[count + added] = ((const unsigned int *)a)[7];
 			if (stream->lightmap)
 			{
 				struct ge_vertex *l = &stream->lightmap[count + added];
 
-				l->x = a[0]; l->y = a[1]; l->z = a[2];
 				l->u = a[5]; l->v = a[6];
 			}
 		}
 		count += stream->bake->added;
 		stream->count = count;
+	}
+	/* the positions given from the copy's origin: the level's, or where the
+	copy lies too far from it to be exact, the lattice point nearest its
+	middle */
+	{
+		int axis;
+
+		stream->origin[0] = stream->origin[1] = stream->origin[2] = 0.0f;
+		if (level_local && level_origin_set && level_reach(stream->low, stream->high, level_origin))
+			memcpy(stream->origin, level_origin, sizeof(stream->origin));
+		else if (level_local)
+			for (axis = 0; axis < 3; axis++)
+				stream->origin[axis] = floorf((stream->low[axis] + stream->high[axis]) * (0.5f / LEVEL_ORIGIN_STEP) + 0.5f) *
+					LEVEL_ORIGIN_STEP;
+		for (index = 0; index < count; index++)
+		{
+			struct ge_vertex *b = &stream->base[index];
+
+			b->x -= stream->origin[0]; b->y -= stream->origin[1]; b->z -= stream->origin[2];
+			if (stream->lightmap)
+			{
+				struct ge_vertex *l = &stream->lightmap[index];
+
+				l->x = b->x; l->y = b->y; l->z = b->z;
+			}
+		}
+		if (stream->bake)
+			level_layers_follow(stream->bake->key, stream->origin);
 	}
 	if (level_compact < 0)
 		level_compact = psp_keep("levelcompact");
@@ -5298,7 +5745,7 @@ static __attribute__((noinline)) long slant_hand_over(const struct ge_vertex *st
 	job.args[4] = (unsigned int)far_possible;
 	for (k = 0; k < 3; k++)
 	{
-		bits.f = camera_eye[k];
+		bits.f = level_eye[k];
 		job.args[5 + k] = bits.u;
 	}
 	bits.f = detail_far_squared;
@@ -5321,7 +5768,7 @@ this CPU's is used */
 static __attribute__((noinline, cold)) void slant_part_here(int done, const unsigned int *results,
 	const struct ge_vertex *stream, const unsigned short *indices, long first, long count, int far_possible, long *total)
 {
-	float ex = camera_eye[0], ey = camera_eye[1], ez = camera_eye[2];
+	float ex = level_eye[0], ey = level_eye[1], ez = level_eye[2];
 	unsigned long differ = 0;
 	long t, mine[SORT_BUCKETS];
 	int b;
@@ -5382,7 +5829,7 @@ static const unsigned short *angle_sort(const struct ge_vertex *stream, const un
 	long t, total[SORT_BUCKETS];
 	int b, used = 0;
 	unsigned short *sorted;
-	float ex = camera_eye[0], ey = camera_eye[1], ez = camera_eye[2];
+	float ex = level_eye[0], ey = level_eye[1], ez = level_eye[2];
 
 	angle_bucketed = 0;
 	angle_near_any = 1;
@@ -5706,6 +6153,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	stream = level_stream_get(vertices, lightmap_vertices, vertex_count);
 	if (!stream)
 		return;
+	level_frame(stream->origin);
 	/* build 87: the stencil bake's pieces in place of the triangles it cut */
 	if (stream->bake)
 	{
@@ -5776,7 +6224,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			{
 				float point[3];
 
-				to_camera(&stream->base[triangle[corner]].x, point);
+				level_to_camera(&stream->base[triangle[corner]].x, point);
 				code = outside(point);
 				vertex_codes[triangle[corner]] = (unsigned char)code;
 			}
@@ -5814,7 +6262,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			{
 				const struct ge_vertex *b = &stream->base[triangle[corner]];
 
-				to_camera_corner(&b->x, corners[corner]);
+				level_to_camera_corner(&b->x, corners[corner]);
 				corners[corner][3] = b->u;
 				corners[corner][4] = b->v;
 				corners[corner][5] = stream->lightmap ? stream->lightmap[triangle[corner]].u : 0.0f;
@@ -5911,6 +6359,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		}
 		cut_vertices_count = cut_count;
 	}
+	level_model(stream->origin);
 
 	/* build 35: the back faces culled, as the Xbox does (D3DCULL_CCW for
 	every environment pass). Drawn, a hill's far side shares the 16-bit depth
@@ -5942,7 +6391,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		for (i = lowest; i <= highest; i += step)
 		{
 			const struct ge_vertex *v = &stream->base[i];
-			float dx = v->x - camera_eye[0], dy = v->y - camera_eye[1], dz = v->z - camera_eye[2];
+			float dx = v->x - level_eye[0], dy = v->y - level_eye[1], dz = v->z - level_eye[2];
 			float d = dx * dx + dy * dy + dz * dz;
 
 			if (d < best)
@@ -6133,6 +6582,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		compact_now = NULL;
 		flat_draws++;
 	}
+	world_model();
 	sceGuDisable(GU_CULL_FACE);
 	draws_this_frame++;
 	triangles_this_frame += kept_count;
@@ -10921,14 +11371,14 @@ when there's no memory for its answers */
 #define WALLS_WANTED 64
 static struct
 {
-	const struct ge_vertex *stream;
+	const struct level_stream *stream;
 	const unsigned short *indices;
 	long triangle_count, triangle;
 } walls_wanted[WALLS_WANTED];
 static int walls_wanted_count = 0;
 static unsigned long walls_wanted_total = 0, walls_wanted_dropped = 0;
 
-static int overlay_want(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count, long triangle)
+static int overlay_want(const struct level_stream *stream, const unsigned short *indices, long triangle_count, long triangle)
 {
 	if (walls_wanted_count < WALLS_WANTED)
 	{
@@ -10944,9 +11394,10 @@ static int overlay_want(const struct ge_vertex *stream, const unsigned short *in
 	return 1;
 }
 
-static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count,
+static int overlay_on_a_wall(const struct level_stream *copy, const unsigned short *indices, long triangle_count,
 	long triangle)
 {
+	const struct ge_vertex *stream = copy->base;
 	int slot;
 	unsigned char *flags = NULL;
 	unsigned int key;
@@ -10994,7 +11445,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 				break;
 			}
 	if (!flags && PSP_ME_WORK())
-		return overlay_want(stream, indices, triangle_count, triangle);
+		return overlay_want(copy, indices, triangle_count, triangle);
 	if (!flags)
 	{
 		if (!(flags = calloc(triangle_count, 1)))
@@ -11023,7 +11474,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 		overlay_cached_flags = flags;
 	}
 	if (!flags[triangle] && PSP_ME_WORK())
-		return overlay_want(stream, indices, triangle_count, triangle);
+		return overlay_want(copy, indices, triangle_count, triangle);
 	if (!flags[triangle])
 	{
 		const struct ge_vertex *a = &stream[indices[3 * triangle]], *b = &stream[indices[3 * triangle + 1]],
@@ -11042,7 +11493,8 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 
 			for (k = 0; k < 3; k++)
 			{
-				float middle = ((&a->x)[k] + (&b->x)[k] + (&c->x)[k]) * (1.0f / 3.0f);
+				/* the collision is the world's */
+				float middle = ((&a->x)[k] + (&b->x)[k] + (&c->x)[k]) * (1.0f / 3.0f) + copy->origin[k];
 
 				point[k] = middle + n[k] / length * 0.04f;
 				vector[k] = -n[k] / length * 0.08f;
@@ -11092,7 +11544,7 @@ static int overlay_on_a_wall(const struct ge_vertex *stream, const unsigned shor
 /* build 112: a triangle's wall answer: the one its record carried while
 the Media Engine's work carries the call out (overlay_answers), else asked
 here */
-static int overlay_answer(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count,
+static int overlay_answer(const struct level_stream *stream, const unsigned short *indices, long triangle_count,
 	long triangle)
 {
 	if (overlay_answers)
@@ -11120,7 +11572,7 @@ static int overlay_answers_for(const void *vertices, int vertex_count, const uns
 	if (!stream)
 		return 0;
 	for (t = 0; t < triangle_count; t++)
-		out[t] = (unsigned char)overlay_on_a_wall(stream->base, indices, triangle_count, t);
+		out[t] = (unsigned char)overlay_on_a_wall(stream, indices, triangle_count, t);
 	return 1;
 }
 
@@ -11144,6 +11596,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 
 		if (l->stencil_key != stencil_key || !l->wall || !l->wall->drawn_frame)
 			continue;
+		level_frame(l->placed ? l->origin : world_origin);
 		cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
 		kept = (unsigned short *)list_take((int)(l->tri_count * 3 * sizeof(unsigned short) + 3) & ~3);
 		if (!kept)
@@ -11159,7 +11612,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 			{
 				float point[3];
 
-				to_camera(&l->vertices[tri[corner]].x, point);
+				level_to_camera(&l->vertices[tri[corner]].x, point);
 				bits[corner] = outside(point);
 			}
 			if (!(bits[0] | bits[1] | bits[2]))
@@ -11177,7 +11630,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 				{
 					const struct ge_vertex *v = &l->vertices[tri[corner]];
 
-					to_camera_corner(&v->x, corners[corner]);
+					level_to_camera_corner(&v->x, corners[corner]);
 					corners[corner][3] = v->u;
 					corners[corner][4] = v->v;
 				}
@@ -11186,6 +11639,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 		}
 		if (kept_count && (draw = transparent_slot(key, u_scale, v_scale, u_offset, v_offset, blend, centroid)) != NULL)
 		{
+			level_matrix(&draw->matrix, l->placed ? l->origin : world_origin);
 			draw->vertices = l->vertices;
 			draw->indices = kept;
 			draw->index_count = (int)kept_count * 3;
@@ -11215,6 +11669,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 				out[index].y = c[8];
 				out[index].z = c[9];
 			}
+			level_matrix(&draw->matrix, l->placed ? l->origin : world_origin);
 			draw->vertices = out;
 			draw->indices = NULL;
 			draw->index_count = cut_count;
@@ -11301,7 +11756,7 @@ static int level_transparent_angle(const struct level_stream *stream, const unsi
 			{
 				float point[3];
 
-				to_camera(&stream->base[triangle[corner]].x, point);
+				level_to_camera(&stream->base[triangle[corner]].x, point);
 				code = outside(point);
 				vertex_codes[triangle[corner]] = (unsigned char)code;
 			}
@@ -11313,12 +11768,12 @@ static int level_transparent_angle(const struct level_stream *stream, const unsi
 		{
 			const struct ge_vertex *b = &stream->base[triangle[corner]];
 
-			to_camera_corner(&b->x, p[corner]);
+			level_to_camera_corner(&b->x, p[corner]);
 			p[corner][3] = b->u;
 			p[corner][4] = b->v;
 		}
 		units = seethrough_next_depth & SEETHROUGH_EXACT_DEPTH ? 0 :
-			overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
+			overlay_units(p[0], p[1], p[2], overlay_answer(stream, indices, triangle_count, index));
 		if (units > on_wall)
 			on_wall = units;
 		if (units < 0 && (overlay_free_far > 0 ? !free_push || -units < free_push : -units > free_push))
@@ -11368,6 +11823,7 @@ static int level_transparent_angle(const struct level_stream *stream, const unsi
 	}
 	for (index = 0; index + 2 < at; index += 3)
 		level_angle_colors(out + index, mode, fade, draw->blend, draw->tint);
+	level_matrix(&draw->matrix, stream->origin);
 	draw->vertices = out;
 	draw->indices = NULL;
 	draw->index_count = at - at % 3;
@@ -11407,6 +11863,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 	stream = level_stream_get(vertices, NULL, vertex_count);
 	if (!stream)
 		return;
+	level_frame(stream->origin);
 	for (index = 0; index < triangle_count * 3; index++)
 	{
 		unsigned int vertex = indices[index];
@@ -11444,7 +11901,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 			{
 				float point[3];
 
-				to_camera(&stream->base[triangle[corner]].x, point);
+				level_to_camera(&stream->base[triangle[corner]].x, point);
 				code = outside(point);
 				vertex_codes[triangle[corner]] = (unsigned char)code;
 			}
@@ -11466,8 +11923,8 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 					continue;
 				}
 				for (corner = 0; corner < 3; corner++)
-					to_camera(&stream->base[triangle[corner]].x, p[corner]);
-				units = overlay_units(p[0], p[1], p[2], overlay_answer(stream->base, indices, triangle_count, index));
+					level_to_camera(&stream->base[triangle[corner]].x, p[corner]);
+				units = overlay_units(p[0], p[1], p[2], overlay_answer(stream, indices, triangle_count, index));
 				overlay_triangle_bucket[kept_count] = overlay_bucket_of(units);
 				/* build 115: overlayfreefar (the default from build 116), the free bucket at its smallest push */
 				if (units < 0 && overlay_free_far > 0)
@@ -11488,13 +11945,13 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 			{
 				const struct ge_vertex *b = &stream->base[triangle[corner]];
 
-				to_camera_corner(&b->x, corners[corner]);
+				level_to_camera_corner(&b->x, corners[corner]);
 				corners[corner][3] = b->u;
 				corners[corner][4] = b->v;
 				corners[corner][5] = corners[corner][6] = 0.0f;
 			}
 			units = exact ? 0 : overlay_units(corners[0], corners[1], corners[2],
-				overlay_answer(stream->base, indices, triangle_count, index));
+				overlay_answer(stream, indices, triangle_count, index));
 			if (units > cut_units)
 				cut_units = units;
 			if (units < 0 && (overlay_free_far > 0 ? !cut_units_free || -units < cut_units_free : -units > cut_units_free))
@@ -11512,6 +11969,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				most = bucket_units[bucket];
 		if ((draw = transparent_slot(key, u_scale, v_scale, u_offset, v_offset, blend, centroid)) != NULL)
 		{
+			level_matrix(&draw->matrix, stream->origin);
 			draw->vertices = stream->base;
 			draw->indices = kept;
 			draw->index_count = (int)kept_count * 3;
@@ -11542,6 +12000,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 					memcpy(gathered + 3 * count, kept + 3 * t, 3 * sizeof(unsigned short));
 					count++;
 				}
+			level_matrix(&draw->matrix, stream->origin);
 			draw->vertices = stream->base;
 			draw->indices = gathered;
 			draw->index_count = (int)count * 3;
@@ -11571,6 +12030,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 			out[index].u = c[3];
 			out[index].v = c[4];
 		}
+		level_matrix(&draw->matrix, stream->origin);
 		draw->vertices = out;
 		draw->indices = NULL;
 		draw->index_count = cut_count;
@@ -12668,6 +13128,28 @@ static void level_streams_trim(void)
 		;
 }
 
+/* at the frame's end, when the GE and the Media Engine are done with them:
+the copies drawn this frame moved to the level's origin, if it moved. The
+rest move when they are next drawn */
+static void level_copies_follow(void)
+{
+	unsigned int start;
+	int index;
+
+	if (level_local <= 0 || !level_origin_set)
+		return;
+	start = sceKernelGetSystemTimeLow();
+	for (index = 0; index < LEVEL_STREAMS; index++)
+	{
+		struct level_stream *stream = &level_streams[index];
+
+		if (stream->source && stream->base && stream->last_frame == stream_frame &&
+			memcmp(stream->origin, level_origin, sizeof(level_origin)))
+			level_copy_follow(stream, level_origin);
+	}
+	level_move_us += sceKernelGetSystemTimeLow() - start;
+}
+
 static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
 {
 	struct level_stream *stream;
@@ -12684,6 +13166,12 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	stream = level_stream_find(vertices);
 	if (!stream)
 		return;
+	/* the shadow's frame from the copy's origin, as its positions are
+	(psp_ge_shadow_draw puts it back) */
+	level_frame(stream->origin);
+	shadow.position[0] -= stream->origin[0];
+	shadow.position[1] -= stream->origin[1];
+	shadow.position[2] -= stream->origin[2];
 	/* build 87: the pieces the level drew, where the stencil bake cut */
 	if (stream->bake)
 	{
@@ -12706,7 +13194,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 			return;
 		for (corner = 0; corner < 3; corner++)
 		{
-			to_camera_corner(&stream->base[triangle[corner]].x, corners[corner]);
+			level_to_camera_corner(&stream->base[triangle[corner]].x, corners[corner]);
 			bits[corner] = outside(corners[corner]);
 		}
 		if (bits[0] & bits[1] & bits[2])
@@ -12746,7 +13234,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 	if (shadow_mode == 2)
 	{
-		float d[3] = { shadow.position[0] - camera_eye[0], shadow.position[1] - camera_eye[1], shadow.position[2] - camera_eye[2] };
+		float d[3] = { shadow.position[0] - level_eye[0], shadow.position[1] - level_eye[1], shadow.position[2] - level_eye[2] };
 		float distance = sqrtf(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]), lift, units;
 
 		if (distance < projection_near)
@@ -12766,8 +13254,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_COLOR, 0, 0);
 	/* far off, the fog leaves the frame alone */
 	sceGuFog(fog_near, fog_far, 0xFF000000);
-	sceGumMatrixMode(GU_MODEL);
-	world_model();
+	level_model(stream->origin);
 	if (kept_count && shadow_mode == 1)
 	{
 		/* the wall's draw repeated: its vertex array, the kept triangles'
@@ -12789,7 +13276,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 
 				for (corner = 0; corner < 3; corner++)
 				{
-					to_camera(&stream->base[triangle[corner]].x, c);
+					level_to_camera(&stream->base[triangle[corner]].x, c);
 					bits |= outside(c);
 				}
 				if (bits)
@@ -12847,6 +13334,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 				cut_count, NULL, pieces);
 	}
+	world_model();
 	sceGuFog(fog_near, fog_far, fog_color);
 	ge_blend(0);
 	sceGuDepthMask(GU_FALSE);
@@ -12864,8 +13352,11 @@ void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned s
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SHADOW); /* build 103 */
 	unsigned int start = ge_clock();
+	float position[3];
 
+	memcpy(position, shadow.position, sizeof(position));
 	psp_ge_shadow_draw_body(vertices, vertex_count, indices, triangle_count);
+	memcpy(shadow.position, position, sizeof(position));
 	ge_entry_us[7] += ge_clock() - start;
 }
 
@@ -13202,7 +13693,7 @@ step = 1 / (61439 * near)), and never past the near plane. It skips
 light_lift_corner's rounding to whole depth steps, a sub-step difference */
 static inline void light_lift_corner_merged(struct shadow_vertex *corner, float step)
 {
-	float dx = corner->x - camera_eye[0], dy = corner->y - camera_eye[1], dz = corner->z - camera_eye[2];
+	float dx = corner->x - level_eye[0], dy = corner->y - level_eye[1], dz = corner->z - level_eye[2];
 	float depth = dx * camera_forward[0] + dy * camera_forward[1] + dz * camera_forward[2], inverse, share, low, high,
 		most, scale;
 
@@ -13217,14 +13708,14 @@ static inline void light_lift_corner_merged(struct shadow_vertex *corner, float 
 	if (share > most)
 		share = most;
 	scale = 1.0f - share;
-	corner->x = camera_eye[0] + dx * scale;
-	corner->y = camera_eye[1] + dy * scale;
-	corner->z = camera_eye[2] + dz * scale;
+	corner->x = level_eye[0] + dx * scale;
+	corner->y = level_eye[1] + dy * scale;
+	corner->z = level_eye[2] + dz * scale;
 }
 
 static void light_lift_corner(struct shadow_vertex *corner)
 {
-	float dx = corner->x - camera_eye[0], dy = corner->y - camera_eye[1], dz = corner->z - camera_eye[2];
+	float dx = corner->x - level_eye[0], dy = corner->y - level_eye[1], dz = corner->z - level_eye[2];
 	float depth = dx * camera_forward[0] + dy * camera_forward[1] + dz * camera_forward[2], lift, scale;
 
 	if (depth <= projection_near)
@@ -13235,9 +13726,9 @@ static void light_lift_corner(struct shadow_vertex *corner)
 		lift = depth - projection_near;
 	/* along the line of sight, the depth shrinks by the same share */
 	scale = (depth - lift) / depth;
-	corner->x = camera_eye[0] + dx * scale;
-	corner->y = camera_eye[1] + dy * scale;
-	corner->z = camera_eye[2] + dz * scale;
+	corner->x = level_eye[0] + dx * scale;
+	corner->y = level_eye[1] + dy * scale;
+	corner->z = level_eye[2] + dz * scale;
 }
 
 static int light_band(float squared)
@@ -13393,7 +13884,7 @@ static void light_split(float p[3][3], float uv[3][2], const unsigned int normal
 		memset(corners, 0, sizeof(corners));
 		for (corner = 0; corner < 3; corner++)
 		{
-			to_camera_corner(p[corner], corners[corner]);
+			level_to_camera_corner(p[corner], corners[corner]);
 			corners[corner][3] = uv[corner][0];
 			corners[corner][4] = uv[corner][1];
 			corners[corner][5] = reach[corner];
@@ -13429,6 +13920,12 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	stream = level_stream_find(vertices);
 	if (!stream)
 		return;
+	/* the light from the copy's origin, as its positions are
+	(psp_ge_light_draw puts it back) */
+	level_frame(stream->origin);
+	light.position[0] -= stream->origin[0];
+	light.position[1] -= stream->origin[1];
+	light.position[2] -= stream->origin[2];
 	/* build 87: the pieces the level drew, where the stencil bake cut */
 	if (stream->bake)
 	{
@@ -13598,19 +14095,19 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			here instead (lightmemocheck found it on d20) */
 			if (memo->tag != ((light_memo_draw << 16) | triangle[corner]))
 			{
-				to_camera(&stream->base[triangle[corner]].x, direct);
+				level_to_camera(&stream->base[triangle[corner]].x, direct);
 				memo = NULL;
 			}
 			else if (!memo->camera_known)
 			{
-				to_camera(&stream->base[triangle[corner]].x, memo->camera);
+				level_to_camera(&stream->base[triangle[corner]].x, memo->camera);
 				memo->camera_known = 1;
 			}
 			else if (light_memo_check)
 			{
 				float again[3];
 
-				to_camera(&stream->base[triangle[corner]].x, again);
+				level_to_camera(&stream->base[triangle[corner]].x, again);
 				if (memcmp(again, memo->camera, sizeof(again)))
 					light_memo_mismatches++;
 				light_memo_checks++;
@@ -13726,8 +14223,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	ge_blend(1);
 	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
 	sceGuFog(fog_near, fog_far, 0xFF000000);
-	sceGumMatrixMode(GU_MODEL);
-	world_model();
+	level_model(stream->origin);
 	if (whole_count)
 	{
 		/* mode 1: the level's vertex array (positions and base texture
@@ -13801,7 +14297,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			for (c = 0; c < 3; c++)
 			{
 				const struct shadow_vertex *v = &out[3 * t + c];
-				float dx = v->x - camera_eye[0], dy = v->y - camera_eye[1], dz = v->z - camera_eye[2];
+				float dx = v->x - level_eye[0], dy = v->y - level_eye[1], dz = v->z - level_eye[2];
 				float d2 = dx * dx + dy * dy + dz * dz;
 
 				if (d2 < nearest)
@@ -13864,7 +14360,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				light_lift_corner(&pieces[index]);
 			else if (light_mode == 2)
 			{
-				float dx = c[7] - camera_eye[0], dy = c[8] - camera_eye[1], dz = c[9] - camera_eye[2];
+				float dx = c[7] - level_eye[0], dy = c[8] - level_eye[1], dz = c[9] - level_eye[2];
 				float d2 = dx * dx + dy * dy + dz * dz;
 
 				if (d2 < nearest)
@@ -13881,6 +14377,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 				cut_count, NULL, pieces);
 	}
+	world_model();
 	for (index = 0; index < 3; index++)
 		light.color[index] = saved[index];
 	if (spot)
@@ -13904,9 +14401,13 @@ void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned sh
 	ge_kind(KIND_LIGHT); /* build 103 */
 	unsigned int start = ge_clock(), end;
 
+	float position[3];
+
 	light_call_start = start; /* 119c's probe */
 	light_post_start = 0;
+	memcpy(position, light.position, sizeof(position));
 	psp_ge_light_draw_body(vertices, vertex_count, indices, triangle_count, base_key);
+	memcpy(light.position, position, sizeof(position));
 	end = ge_clock();
 	if (light_post_start)
 		light_post_us += end - light_post_start;
@@ -14157,6 +14658,48 @@ static int decal_project_hit(const float *a, const float *b, const float *c, con
 		fabsf(c[0] * g->n[0] + c[1] * g->n[1] + c[2] * g->n[2] - g->d) < 0.08f;
 }
 
+/* the origin decals are given from: the level's, so they sit on the level's
+numbers */
+static const float *decal_origin(void)
+{
+	return level_local > 0 && level_origin_set ? level_origin : world_origin;
+}
+
+/* a plane's texture matrix (world to the decal's coordinates) and the model
+matrix, for drawing a level copy's own positions */
+static void decal_project_copy(const struct decal_plane *g, const float *origin)
+{
+	ScePspFMatrix4 m;
+
+	memset(&m, 0, sizeof(m));
+	m.x.x = g->gu[0]; m.y.x = g->gu[1]; m.z.x = g->gu[2];
+	m.w.x = g->cu + g->gu[0] * origin[0] + g->gu[1] * origin[1] + g->gu[2] * origin[2];
+	m.x.y = g->gv[0]; m.y.y = g->gv[1]; m.z.y = g->gv[2];
+	m.w.y = g->cv + g->gv[0] * origin[0] + g->gv[1] * origin[1] + g->gv[2] * origin[2];
+	m.w.z = 1.0f;
+	m.w.w = 1.0f;
+	/* straight to the GE (pspgum's texture matrix slot isn't sent; as the
+	spotlight's cone) */
+	sceGuSetMatrix(GU_TEXTURE, &m);
+	level_model(origin);
+}
+
+/* decal_project_hit for a copy's positions */
+static int decal_project_hit_copy(const float *origin, const float *a, const float *b, const float *c,
+	const struct decal_plane *g)
+{
+	float w[3][3];
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		w[0][k] = a[k] + origin[k];
+		w[1][k] = b[k] + origin[k];
+		w[2][k] = c[k] + origin[k];
+	}
+	return decal_project_hit(w[0], w[1], w[2], g);
+}
+
 static int decal_project_draw(const unsigned char *in, int quad_count)
 {
 	struct decal_plane planes[8];
@@ -14255,7 +14798,6 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 	for (p = 0; p < plane_count; p++)
 	{
 		struct decal_plane *g = &planes[p];
-		ScePspFMatrix4 m;
 		int k;
 
 		for (k = 0; k < 3; k++)
@@ -14263,14 +14805,6 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 			g->low[k] -= 0.05f;
 			g->high[k] += 0.05f;
 		}
-		memset(&m, 0, sizeof(m));
-		m.x.x = g->gu[0]; m.y.x = g->gu[1]; m.z.x = g->gu[2]; m.w.x = g->cu;
-		m.x.y = g->gv[0]; m.y.y = g->gv[1]; m.z.y = g->gv[2]; m.w.y = g->cv;
-		m.w.z = 1.0f;
-		m.w.w = 1.0f;
-		/* straight to the GE (pspgum's texture matrix slot isn't sent; as the
-		spotlight's cone) */
-		sceGuSetMatrix(GU_TEXTURE, &m);
 		slot = decal_cache_find(decal_plane_key(g->n, g->d, g->low, g->high));
 		scan = (int)(stream_frame - slot->scanned) >= (slot->count ? DECAL_RESCAN : DECAL_RESCAN_EMPTY);
 		if (scan)
@@ -14298,6 +14832,8 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 				remembered triangle with a corner outside the near plane or the
 				guard band was cut up or left out by the base pass this frame
 				(the classifier's own test): its pieces are found below */
+				if (drawn)
+					level_frame(stream->origin);
 				for (; h < slot->count && slot->hit[h].stream == stream; h++)
 					if (drawn && slot->hit[h].source == stream->source)
 					{
@@ -14307,7 +14843,7 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 						{
 							float camera[3];
 
-							to_camera(&stream->base[slot->hit[h].tri[c]].x, camera);
+							level_to_camera(&stream->base[slot->hit[h].tri[c]].x, camera);
 							out = outside(camera);
 						}
 						if (out)
@@ -14324,6 +14860,7 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 					if (list)
 					{
 						memcpy(list, project_indices, count * 3 * sizeof(unsigned short));
+						decal_project_copy(g, stream->origin);
 						sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 							count * 3, list, stream->base);
 						triangles += count;
@@ -14349,7 +14886,8 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 			{
 				const unsigned short *tri = f->indices + 3 * t;
 
-				if (decal_project_hit(&stream->base[tri[0]].x, &stream->base[tri[1]].x, &stream->base[tri[2]].x, g))
+				if (decal_project_hit_copy(stream->origin, &stream->base[tri[0]].x, &stream->base[tri[1]].x,
+					&stream->base[tri[2]].x, g))
 				{
 					project_indices[3 * count] = tri[0];
 					project_indices[3 * count + 1] = tri[1];
@@ -14378,6 +14916,7 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 				if (list)
 				{
 					memcpy(list, project_indices, count * 3 * sizeof(unsigned short));
+					decal_project_copy(g, stream->origin);
 					sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 						count * 3, list, stream->base);
 					triangles += count;
@@ -14386,7 +14925,7 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 			/* the corners cut at the near plane, as the base pass drew them */
 			count = 0;
 			for (t = 0; f->cut && t + 2 < f->cut_count && count < 1024; t += 3)
-				if (decal_project_hit(&f->cut[t].x, &f->cut[t + 1].x, &f->cut[t + 2].x, g))
+				if (decal_project_hit_copy(stream->origin, &f->cut[t].x, &f->cut[t + 1].x, &f->cut[t + 2].x, g))
 				{
 					project_indices[3 * count] = (unsigned short)t;
 					project_indices[3 * count + 1] = (unsigned short)(t + 1);
@@ -14400,6 +14939,7 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 				if (list)
 				{
 					memcpy(list, project_indices, count * 3 * sizeof(unsigned short));
+					decal_project_copy(g, stream->origin);
 					sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 						count * 3, list, f->cut);
 					triangles += count;
@@ -14410,6 +14950,8 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 	sceGuDisable(GU_CULL_FACE);
 	sceGuDepthFunc(GU_GEQUAL);
+	/* the caller's own draw, if it falls back, is given from decal_origin */
+	level_model(decal_origin());
 	if (triangles)
 	{
 		decals_projected++;
@@ -14440,6 +14982,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	is worked out from it before the pull moves its corners) */
 	float level_corners[3][3];
 	short level_uv[3][2];
+	const float *origin = decal_origin();
 
 	if (!frame_open || !vertices || quad_count <= 0 || quad_count > 256 || intensity <= 0 || list_full())
 		return;
@@ -14609,9 +15152,9 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 			{
 				struct decal_vertex_ge *o = &out[6 * k_quad + corner];
 
-				o->x = pulled[fan[corner]][0];
-				o->y = pulled[fan[corner]][1];
-				o->z = pulled[fan[corner]][2];
+				o->x = pulled[fan[corner]][0] - origin[0];
+				o->y = pulled[fan[corner]][1] - origin[1];
+				o->z = pulled[fan[corner]][2] - origin[2];
 				memcpy(&o->u, (const unsigned char *)p[fan[corner]] + 12, 4);
 			}
 		}
@@ -14702,8 +15245,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	}
 	sceGuFog(fog_near, fog_far, fog);
 	sceGuColor(fragment);
-	sceGumMatrixMode(GU_MODEL);
-	world_model();
+	level_model(origin);
 	if (permanent && decal_project && level_compact <= 0 &&
 		(project_start = decal_clock(), project_done = decal_project_draw(in, original_quads),
 		decal_project_us += (decal_clock() - project_start) * DECAL_TIMED_ONE_IN, project_done))
@@ -14714,6 +15256,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 			decals_project_fallback++;
 		sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_16BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D, quad_count * 6, NULL, out);
 	}
+	world_model();
 	sceGuTexLevelMode(tex_level_mode, tex_bias);
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDisable(GU_ALPHA_TEST);
@@ -15425,6 +15968,7 @@ void psp_ge_frame_end(void)
 		if (psp_geo_open_count())
 			level_streams_trim();
 		arena_frame_end(); /* build 111: compaction, the heap's copies brought back */
+		level_copies_follow();
 		stream_frame++;
 		frame_end_us[2] += sceKernelGetSystemTimeLow() - mark;
 		win_after_us += sceKernelGetSystemTimeLow() - mark;
@@ -15444,6 +15988,13 @@ void psp_ge_frame_end(void)
 			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, stencil_mode, bake_substituted,
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
+		if (level_local > 0)
+			platform_log("GE: the level's origin (%.0f %.0f %.0f), moved %lu times; copies moved to it %lu (%lu vertices, %lu us), left for being out of exact reach %lu (last 300 frames)",
+				level_origin[0], level_origin[1], level_origin[2], level_origin_moves, level_copies_moved,
+				level_vertices_moved, level_move_us, level_copies_left);
+		else if (level_local == 0)
+			platform_log("GE: the level's origin: the world's (levellocaloff)");
+		level_origin_moves = level_copies_moved = level_vertices_moved = level_move_us = level_copies_left = 0;
 		{
 			/* build 119: the light pass's surface lists sorted (psp_fixups.py, structure_render.c#surfacesort) */
 			extern unsigned long psp_surface_sorts, psp_surface_sorts_in_order, psp_surface_sort_mismatches,
@@ -15910,9 +16461,9 @@ static void me_angle_measure(const struct ge_vertex *stream, const unsigned shor
 		me_classify_on = psp_keep("meclassify");
 	if (!me_classify_on || !psp_me_running() || count <= 0 || count > ANGLE_TRIANGLES)
 		return;
-	me_angle_view[0] = camera_eye[0];
-	me_angle_view[1] = camera_eye[1];
-	me_angle_view[2] = camera_eye[2];
+	me_angle_view[0] = level_eye[0];
+	me_angle_view[1] = level_eye[1];
+	me_angle_view[2] = level_eye[2];
 	me_angle_view[3] = detail_far_squared;
 	/* everything the ME reads (the vertices, a list written this frame, the
 	view) to RAM; nothing of the output left in this cache */
@@ -15970,7 +16521,7 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 		me_classify_on = psp_keep("meclassify");
 	if (!me_classify_on || !psp_me_running() || highest < lowest)
 		return;
-	me_view[0] = camera_eye[0]; me_view[1] = camera_eye[1]; me_view[2] = camera_eye[2];
+	me_view[0] = level_eye[0]; me_view[1] = level_eye[1]; me_view[2] = level_eye[2];
 	me_view[3] = camera_right[0]; me_view[4] = camera_right[1]; me_view[5] = camera_right[2];
 	me_view[6] = camera_up[0]; me_view[7] = camera_up[1]; me_view[8] = camera_up[2];
 	me_view[9] = camera_forward[0]; me_view[10] = camera_forward[1]; me_view[11] = camera_forward[2];
