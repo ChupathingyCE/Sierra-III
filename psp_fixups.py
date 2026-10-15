@@ -17374,6 +17374,28 @@ pf.append((o, n))
 FIXES_129_PERIODIC = pf
 FIXES_129["source/math/periodic_functions.c#fraction"] = FIXES_129_PERIODIC
 
+# The collision log's periods, too, only in builds with the debug tools.
+# Build 106 stopped the log's per-call clock reads and counts outside
+# PSP_DEBUG_TOOLS builds, but each period still cleared its 2,952-byte
+# figures as it began and copied them out as it ended, ~73 times a second for
+# a debug display the PSP never shows: 0.2 ms a frame in b127's ladder
+# profile (collision_log_end_period 38 us a call, begin 12.5). The period's
+# number is still kept, so the asserts see what they did
+FIXES_129["source/physics/collision_usage.c#periods"] = [
+("""	memset(&collision_usage_current, 0, sizeof(collision_usage_current));
+	collision_usage_current_period = time_period;""",
+ """#if !defined(HALO_PSP) || defined(PSP_DEBUG_TOOLS)
+	memset(&collision_usage_current, 0, sizeof(collision_usage_current));
+#endif
+	collision_usage_current_period = time_period;"""),
+("""	collision_usage_buffer[collision_usage_current_period] = collision_usage_current;
+	collision_usage_current_period = NONE;""",
+ """#if !defined(HALO_PSP) || defined(PSP_DEBUG_TOOLS)
+	collision_usage_buffer[collision_usage_current_period] = collision_usage_current;
+#endif
+	collision_usage_current_period = NONE;"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
