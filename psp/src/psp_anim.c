@@ -107,6 +107,7 @@ unsigned long repeats = 0;
 static unsigned long lookups = 0, hits = 0, misses = 0, reads = 0, read_bytes = 0, evictions = 0,
 	failures = 0, no_room = 0, other_threads = 0;
 static unsigned long read_us = 0, read_worst_us = 0;
+extern volatile unsigned long psp_stick_read_us; /* build 126: every blocking Memory Stick read's time (psp_frametrace.c) */
 static unsigned long window_reads = 0, window_us = 0, window_worst_us = 0;
 static SceUID game_thread = 0;
 /* set by the power callback's thread before the PSP sleeps (a carved arena's
@@ -348,6 +349,7 @@ static void read_pages(unsigned int first_page, unsigned int count, unsigned int
 	}
 	took = sceKernelGetSystemTimeLow() - start;
 	read_us += took;
+	psp_stick_read_us += took; /* build 126: frametrace */
 	window_us += took;
 	reads++;
 	window_reads++;

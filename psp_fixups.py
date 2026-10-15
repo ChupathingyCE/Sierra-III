@@ -16339,7 +16339,537 @@ static void biped_update_physics(
 		collision_count = collision_move_pill("""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()):
+
+FIXES_126 = {}
+# RV2: a path search's state cleared by its header alone. path_state_new
+# cleared the whole 82 KB state (1,024 nodes, the heap, the hash table) before
+# every search: in b30's beach fight a quarter of each firing position
+# selection's cycles (halo-ce-vita's measurement on our map), and a sweep that
+# evicts the whole 16 KB data cache five times over. Every caller runs one
+# path_state_find on a state fresh from path_state_new, and that search sets up
+# the rest itself: path_state_reset fills the hash table and starts node_count
+# and heap_count; a node is read only once made (node_index < node_count), and
+# a heap entry only below heap_count, each written as the heap grows to it. So
+# clearing the header (everything before the node list), heap_count, and each
+# node as it is made leaves every byte a search reads as the whole clear did:
+# the searches answer exactly as before. With debug storage the whole state is
+# cleared, as path_state_find copies all of it there.
+# From BirchWoodGod's halo-ce-vita (ai/path.c, HALO_AI_PATH_STATE_VERIFY), after
+# JackTulli's Halo 64 (H2); used with his permission (README, Credits).
+# "pathclearfull" (keep.txt): the whole clear, as before.
+# "pathclearpoison" (a check): the rest of the state filled with 0xA5 instead,
+# so a read of anything a search hasn't written changes the game, which the
+# state CRC against "pathclearfull" shows.
+FIXES_126["source/ai/path.c#clear"] = [
+("""void path_state_new(
+	struct path_input const *input,
+	struct path_state *state,
+	struct path_debug_storage *debug)
+{
+	csmemset(state, 0, sizeof(*state));
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV2): how path_state_new clears a state.
+1: the header alone (the default); 0: all of it ("pathclearfull");
+2: the header, the rest poisoned ("pathclearpoison", a check) */
+int psp_keep(const char *name);
+static int psp_path_clear = -1;
+
+static int psp_path_clear_mode(
+	void)
+{
+	if (psp_path_clear < 0)
+		psp_path_clear = psp_keep("pathclearfull") ? 0 : psp_keep("pathclearpoison") ? 2 : 1;
+	return psp_path_clear;
+}
+#endif
+
+void path_state_new(
+	struct path_input const *input,
+	struct path_state *state,
+	struct path_debug_storage *debug)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_126, RV2): the header alone; a search sets up the
+	rest (see there) */
+	if (psp_path_clear_mode() && !debug)
+	{
+		csmemset(state, 0, offsetof(struct path_state, node_list));
+		if (psp_path_clear == 2)
+		{
+			csmemset(state->node_list, 0xA5,
+				sizeof(*state) - offsetof(struct path_state, node_list));
+		}
+		state->heap_count = 0;
+	}
+	else
+#endif
+	csmemset(state, 0, sizeof(*state));
+"""),
+("""			node_index = state->node_count++;
+			initial_node = &state->node_list[node_index];
+""", """			node_index = state->node_count++;
+			initial_node = &state->node_list[node_index];
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_126, RV2): the node as the whole clear left it */
+			if (psp_path_clear_mode())
+			{
+				csmemset(initial_node, 0, sizeof(*initial_node));
+			}
+#endif
+"""),
+("""							new_node_index = state->node_count++;
+							state->hash_table[hash_slot] = new_node_index;
+							state->node_list[new_node_index].heap_location = NONE;
+""", """							new_node_index = state->node_count++;
+							state->hash_table[hash_slot] = new_node_index;
+#ifdef HALO_PSP
+							/* psp_fixups.py (FIXES_126, RV2): the node as the whole clear left it */
+							if (psp_path_clear_mode())
+							{
+								csmemset(&state->node_list[new_node_index], 0,
+									sizeof(state->node_list[new_node_index]));
+							}
+#endif
+							state->node_list[new_node_index].heap_location = NONE;
+"""),
+]
+
+# RV1: a deleted object's fix-up walks only the objects that can hold a
+# reference to it. Every deleted object (each projectile that hits) walked
+# every object in the game: about 1,000 on b30's beach (halo-ce-vita's count),
+# each visit reading the object's header, datum and type definition, which on
+# our 16 KB cache evicts the tick's working set at every hit. Only two kinds of
+# object act on it: a type whose definition, or a part of it, has a
+# handle_deleted_object (units, through bipeds and vehicles, and projectiles),
+# and an object whose umbrella shield names it. object_new sets the umbrella
+# shield to NONE, damage.c only reads it, and nothing else writes it, so no
+# object ever names one, and the walk can skip the other types: the handlers
+# run on the same objects, in the same order.
+# From BirchWoodGod's halo-ce-vita (objects/objects.c,
+# object_types_handling_deleted_objects); used with his permission.
+# "deletedwalkall" (keep.txt): every object, as before.
+# "deletedcheck" (a check): every object, as before, logging any object of a
+# skipped type whose umbrella shield named the deleted object (none expected).
+FIXES_126["source/objects/objects.c#deleted"] = [
+("""void objects_fix_for_deleted_object(
+	long deleted_object_index)
+{
+	struct object_datum *object;
+
+	struct object_iterator iterator;
+	object_iterator_new(&iterator, _object_mask_all, 0);
+
+	for (object = (struct object_datum *)object_iterator_next(&iterator);
+		object;
+		object = (struct object_datum *)object_iterator_next(&iterator))
+	{
+		if (object->object.umbrella_shield_object_index==deleted_object_index)
+		{
+			object->object.umbrella_shield_object_index = NONE;
+		}
+		object_type_handle_deleted_object(iterator.index, deleted_object_index);
+	}
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV1): the types whose definition, or a part of
+it, handles a deleted object, read once from the constant definitions; and
+the walk: 1 those types alone (the default), 0 every object
+("deletedwalkall"), 2 every object, checked ("deletedcheck") */
+int psp_keep(const char *name);
+static int psp_deleted_walk = -1;
+static unsigned long psp_deleted_types;
+static unsigned long psp_deleted_strays;
+
+static int psp_deleted_walk_mode(
+	void)
+{
+	if (psp_deleted_walk < 0)
+	{
+		short type;
+
+		psp_deleted_types = 0;
+		for (type = 0; type < NUMBER_OF_OBJECT_TYPES; type++)
+		{
+			struct object_type_definition *definition = object_type_definition_get(type);
+			short part;
+
+			for (part = 0; definition->part_definitions[part]; part++)
+			{
+				if (definition->part_definitions[part]->handle_deleted_object)
+				{
+					psp_deleted_types |= 1UL << type;
+				}
+			}
+		}
+		psp_deleted_walk = psp_keep("deletedwalkall") ? 0 : psp_keep("deletedcheck") ? 2 : 1;
+		platform_psp_log("deleted objects: the fix-up walks %s (types 0x%lx have a handler)",
+			psp_deleted_walk == 1 ? "those types alone" : psp_deleted_walk == 2 ? "every object, checked (deletedcheck)" : "every object (deletedwalkall)",
+			psp_deleted_types);
+	}
+	return psp_deleted_walk;
+}
+#endif
+
+void objects_fix_for_deleted_object(
+	long deleted_object_index)
+{
+	struct object_datum *object;
+
+	struct object_iterator iterator;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_126, RV1): only the types with a handler (see there) */
+	int psp_walk = psp_deleted_walk_mode();
+
+	object_iterator_new(&iterator, psp_walk == 1 ? psp_deleted_types : _object_mask_all, 0);
+#else
+	object_iterator_new(&iterator, _object_mask_all, 0);
+#endif
+
+	for (object = (struct object_datum *)object_iterator_next(&iterator);
+		object;
+		object = (struct object_datum *)object_iterator_next(&iterator))
+	{
+		if (object->object.umbrella_shield_object_index==deleted_object_index)
+		{
+#ifdef HALO_PSP
+			if (psp_walk == 2 && !TEST_FLAG(psp_deleted_types, object->object.type) &&
+				psp_deleted_strays++ < 8)
+			{
+				platform_psp_log("deletedcheck: object 0x%lx (type %d) had deleted object 0x%lx as its umbrella shield",
+					iterator.index, (int)object->object.type, deleted_object_index);
+			}
+#endif
+			object->object.umbrella_shield_object_index = NONE;
+		}
+		object_type_handle_deleted_object(iterator.index, deleted_object_index);
+	}
+"""),
+]
+
+# RV4, first part: two exact cuts in the AI's path work, the hot code of
+# b30's fight. From BirchWoodGod's halo-ce-vita (V5 and V6 of its
+# HALO_AI_PATH_STATE_VERIFY group); used with his permission.
+# - V5, the nearby firing positions test (actor_nearby_firing_positions):
+#   a ground actor's 4-unit path search ran before the walk over the
+#   encounter's positions, though only a position within 4 units ever asks
+#   it. It is made when the walk first finds one; with none, never. The search
+#   is the same and the walk asks it the same questions, so the answer is the
+#   same. It changes only the path meters, which only the AI debug display
+#   reads (outside the game state).
+# - V6, path smoothing's scan (path_smooth): each pass tested the steps from
+#   the first, and keeps only the run of colliding steps that reaches the last
+#   one (its first step and that step's edge). From the last back, that run is
+#   found as it ends, and the steps before it are never tested (every step,
+#   when the last is clear). A pill test reads the structure alone and changes
+#   nothing a later test reads (two warn-once flags), and nothing after the scan
+#   reads its result, so each pass smooths as before.
+# "aipathold" (keep.txt): both as before. "aipathcheck" (a check): the
+# smoothing scans both ways and logs any pass where they differ (none
+# expected); V5 needs no check of its own (the state CRC shows any change).
+FIXES_126["source/ai/actor_firing_position.c#nearby"] = [
+("""boolean actor_nearby_firing_positions(
+	long actor_index,""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV4 V5): 1: the 4-unit search made when it is
+first needed (the default); 0: before the walk ("aipathold") */
+int psp_keep(const char *name);
+static int psp_nearby_lazy = -1;
+
+static int psp_nearby_lazy_mode(
+	void)
+{
+	if (psp_nearby_lazy < 0)
+		psp_nearby_lazy = !psp_keep("aipathold");
+	return psp_nearby_lazy;
+}
+#endif
+
+boolean actor_nearby_firing_positions(
+	long actor_index,"""),
+("""		struct path_state state;
+		short firing_position_index;
+
+		if (!actor->state.flying)
+		{
+			struct path_input input;
+
+			path_input_new(
+				&input,
+				definition->moving.pathfinding_radius,
+				TRUE,
+				NONE);
+			path_input_set_start(&input, test_point, test_surface_index);
+			path_input_set_search_bounds(&input, 4.0f);
+			path_state_new(&input, &state, NULL);
+			path_state_find(&state);
+		}
+""", """		struct path_state state;
+		short firing_position_index;
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_126, RV4 V5): the search's input made here, the
+		search itself when a position within 4 units first asks it */
+		struct path_input psp_input;
+		boolean psp_searched = FALSE;
+
+		if (!actor->state.flying)
+		{
+			path_input_new(
+				&psp_input,
+				definition->moving.pathfinding_radius,
+				TRUE,
+				NONE);
+			path_input_set_start(&psp_input, test_point, test_surface_index);
+			path_input_set_search_bounds(&psp_input, 4.0f);
+			if (!psp_nearby_lazy_mode())
+			{
+				path_state_new(&psp_input, &state, NULL);
+				path_state_find(&state);
+				psp_searched = TRUE;
+			}
+		}
+#else
+		if (!actor->state.flying)
+		{
+			struct path_input input;
+
+			path_input_new(
+				&input,
+				definition->moving.pathfinding_radius,
+				TRUE,
+				NONE);
+			path_input_set_start(&input, test_point, test_surface_index);
+			path_input_set_search_bounds(&input, 4.0f);
+			path_state_new(&input, &state, NULL);
+			path_state_find(&state);
+		}
+#endif
+"""),
+("""					real distance;
+
+					path_state_estimated_distance(""", """					real distance;
+
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_126, RV4 V5): the first position within
+					4 units makes the search */
+					if (!psp_searched)
+					{
+						path_state_new(&psp_input, &state, NULL);
+						path_state_find(&state);
+						psp_searched = TRUE;
+					}
+#endif
+					path_state_estimated_distance("""),
+]
+
+FIXES_126["source/ai/path_smoothing.c#scan"] = [
+("""void path_smooth(
+	struct path_state *state,""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV4 V6): how path_smooth scans its steps.
+1: from the last back (the default); 0: from the first ("aipathold");
+2: both, compared ("aipathcheck") */
+int psp_keep(const char *name);
+static int psp_smooth_scan = -1;
+static unsigned long psp_smooth_passes, psp_smooth_mismatches;
+
+static int psp_smooth_scan_mode(
+	void)
+{
+	if (psp_smooth_scan < 0)
+		psp_smooth_scan = psp_keep("aipathold") ? 0 : psp_keep("aipathcheck") ? 2 : 1;
+	return psp_smooth_scan;
+}
+#endif
+
+void path_smooth(
+	struct path_state *state,"""),
+("""			for (i = step_index; i < raw_step_count; i++)
+			{
+				if (structure_test_pill2d(
+					state->structure,
+					state->input.ignore_broken_surfaces,
+					&current_position,
+					current_surface_index,
+					(real_point2d const *)&raw_steps[i].point,
+					raw_steps[i].surface_index,
+					0.3f,
+					FLAG(_path_test_pill_endpoint_near_wall_ok_bit),
+					&collision_result))
+				{
+					if (!collision_active)
+					{
+						collision_edge_index = collision_result.edge_index;
+						collision_step_index = i;
+						collision_active = TRUE;
+					}
+				}
+				else if (collision_active)
+				{
+					collision_step_index = NONE;
+					collision_edge_index = NONE;
+					collision_active = FALSE;
+				}
+			}
+""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_126, RV4 V6): from the last step back, the
+			run of colliding steps that reaches the last one, found as it ends
+			(see there) */
+			if (psp_smooth_scan_mode())
+			{
+				for (i = raw_step_count - 1; i >= step_index; i--)
+				{
+					if (!structure_test_pill2d(
+						state->structure,
+						state->input.ignore_broken_surfaces,
+						&current_position,
+						current_surface_index,
+						(real_point2d const *)&raw_steps[i].point,
+						raw_steps[i].surface_index,
+						0.3f,
+						FLAG(_path_test_pill_endpoint_near_wall_ok_bit),
+						&collision_result))
+					{
+						break;
+					}
+					collision_edge_index = collision_result.edge_index;
+					collision_step_index = i;
+					collision_active = TRUE;
+				}
+			}
+			if (psp_smooth_scan != 1)
+			{
+				/* "aipathold": the game's scan, which decides; "aipathcheck":
+				the game's scan beside the one above, compared */
+				short scan_step_index = collision_step_index;
+				long scan_edge_index = collision_edge_index;
+				boolean scan_active = collision_active;
+
+				collision_step_index = NONE;
+				collision_edge_index = NONE;
+				collision_active = FALSE;
+#endif
+			for (i = step_index; i < raw_step_count; i++)
+			{
+				if (structure_test_pill2d(
+					state->structure,
+					state->input.ignore_broken_surfaces,
+					&current_position,
+					current_surface_index,
+					(real_point2d const *)&raw_steps[i].point,
+					raw_steps[i].surface_index,
+					0.3f,
+					FLAG(_path_test_pill_endpoint_near_wall_ok_bit),
+					&collision_result))
+				{
+					if (!collision_active)
+					{
+						collision_edge_index = collision_result.edge_index;
+						collision_step_index = i;
+						collision_active = TRUE;
+					}
+				}
+				else if (collision_active)
+				{
+					collision_step_index = NONE;
+					collision_edge_index = NONE;
+					collision_active = FALSE;
+				}
+			}
+#ifdef HALO_PSP
+				if (psp_smooth_scan == 2)
+				{
+					psp_smooth_passes++;
+					if (scan_active != collision_active ||
+						(collision_active && (scan_step_index != collision_step_index || scan_edge_index != collision_edge_index)))
+					{
+						if (psp_smooth_mismatches++ < 8)
+						{
+							platform_psp_log("aipathcheck: smoothing steps %d-%d: from the last %d step %d edge %ld, from the first %d step %d edge %ld",
+								(int)step_index, (int)raw_step_count - 1, (int)scan_active, (int)scan_step_index, scan_edge_index,
+								(int)collision_active, (int)collision_step_index, collision_edge_index);
+						}
+					}
+					if (psp_smooth_passes % 2000 == 0)
+					{
+						platform_psp_log("aipathcheck: %lu smoothing passes compared, %lu differed",
+							psp_smooth_passes, psp_smooth_mismatches);
+					}
+				}
+			}
+#endif
+"""),
+]
+
+# RB1: the weapon interface state zeroed before it's filled. The HUD keeps it
+# on the stack unset, and weapon_build_weapon_interface_state fills only the
+# weapon's own magazines, so a one-magazine weapon's second magazine was
+# whatever the stack held: it could set off the HUD's secondary warnings ("NO
+# FUEL" beside "NO AMMO", the empty-secondary sound) and the swap prompt's
+# depleted test, differently from build to build. Every caller is the HUD's.
+# A restoration of the Xbox's HUD [U]. DamnationCE's fix (xshxdex98, CC0,
+# 488bd83e), found by BirchWoodGod's halo-ce-vita (research_vita.md section 9).
+# "weaponstateold" (keep.txt): as before.
+FIXES_126["source/items/weapons.c#interfacestate"] = [
+("""void weapon_build_weapon_interface_state(
+	long weapon_index,
+	struct weapon_interface_state *state)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RB1): whether the state is zeroed first (see
+there); -1 not read yet */
+int psp_keep(const char *name);
+static int psp_weapon_state_zeroed = -1;
+#endif
+
+void weapon_build_weapon_interface_state(
+	long weapon_index,
+	struct weapon_interface_state *state)
+{"""),
+("""	short magazine_index;
+
+	state->heat = weapon->weapon.heat;""", """	short magazine_index;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_126, RB1): nothing left as the stack held it */
+	if (psp_weapon_state_zeroed < 0)
+		psp_weapon_state_zeroed = !psp_keep("weaponstateold");
+	if (psp_weapon_state_zeroed)
+		csmemset(state, 0, sizeof(*state));
+#endif
+	state->heat = weapon->weapon.heat;"""),
+]
+
+# RH1: a unit's aiming change as x86 computes it when the unit has no aiming
+# speed limit. aiming_velocity_maximum 0 makes the change angle / 0: +infinity
+# for a turn, which pins to 1 everywhere, but NaN for a unit standing still,
+# which x86 (the Xbox, and the desktop servers) converts to the byte 0 and the
+# PSP's FPU to 255. The byte feeds the unit's exported "aiming change"
+# function (units.c, _unit_function_aiming_change), so any tag driving a
+# shader or animation from it saw a still unit as turning at full speed. Halo
+# 64's fix (JackTulli, CC0; research_halo64.md H1) spells out x86's answers.
+# A restoration. "aimchangeold" (keep.txt): as before.
+FIXES_126["source/units/units.c#aimchange"] = [
+("""			real change = angle / (unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND);
+""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_126, RH1): x86's answers for a zero
+			maximum (see there) */
+			static int psp_aim_change_x86 = -1;
+			real psp_maximum = unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND;
+			real change;
+
+			if (psp_aim_change_x86 < 0)
+			{
+				extern int psp_keep(const char *name);
+
+				psp_aim_change_x86 = !psp_keep("aimchangeold");
+			}
+			if (psp_aim_change_x86 && !(psp_maximum > 0.f))
+				change = angle > 0.f ? 1.f : 0.f;
+			else
+				change = angle / psp_maximum;
+#else
+			real change = angle / (unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND);
+#endif
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
