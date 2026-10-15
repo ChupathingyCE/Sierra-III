@@ -2,6 +2,8 @@
 
 `review_b126.md` lists every change and why (the levers in detail: `review_levers126.md`). b125 never reached your PSP, so its tests are tonight's, on b126. The bake is unchanged (`campaign121`).
 
+`halo_psp_b126.zip` (SHA-256 `4b3071710bb09efb74b047a65ebef2716beecbd289aeeee30f13a7f986b36bd5`), EBOOT `f1150b2f200ccb62ad1bd1210e0b5f7b5dd7d1a5c16979fc2acf70c5e1def713`: built from commit `e59706b` on `w126` (lab sierra-build 38709588486). Heap 5,684 KB (b125: 5,680); program text 4.9 KB smaller; 0 symbols stubbed. **Its own profile** (`campaign-b126`, counted at `c3d9a81`, 13 runs), the first fresh one since b122: 0 coverage mismatches. Release check (lab 38709536698): play and both seeds identical to b125 at every common tick on d20, a50 and c20; b30 and c40 shots right; Blood Gulch plays. For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
+
 The rig answers what needs no eyes: the GE's precision on the PSP-1000 (this morning: b122's way scatters 0.44–0.49 px, b125's local origin 0.025 px, so it's enough as built), the ME restart under `mewaketest` (restarted in 47 ms), the levers' timing, `cutless`'s timing. Your tests are the ones that need eyes, feel and hands.
 
 ## On the PSP

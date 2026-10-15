@@ -12,6 +12,10 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 The first three come from BirchWoodGod's halo-ce-vita (used with his permission), RB1 from DamnationCE (CC0) via the Vita port's notes, RH1 from JackTulli's Halo 64 (CC0). Each names its source in its commit and review, and the README's Credits names the ports.
 
+## Release check
+
+Lab 38709536698, against b125 as built: the play hash and both seeds identical at every common tick on d20 (15,095), a50 (25,231) and c20 (18,991) [E]; the whole state differs where expected (RB1's `hud weapon interface`, RH1's byte in `objects`, the decal vertex cache that always differs across builds, and the allocations that follow the emulator's speed). b30 and c40 shots right; the multiplayer build plays Blood Gulch at 30 fps. b126 is built with its own profile, `campaign-b126` (0 coverage mismatches).
+
 ## What it's worth
 
 - **Cache models** [E] (lab 38698483247): the three levers together cut **b30's beach tick ~7.7%** (37.4 against 40.5 ms a tick; instructions −8.1%). b30's two sides play alike, not the same, so take the figure as an estimate: without the audio mixing, which these runs did on the main CPU and which differed between the sides, it's −6.9% of the tick's instructions. a50's opening: −0.4% (little path work there).
