@@ -40,7 +40,7 @@ return TRUE;             /* out of reach: the test would add nothing */
 
 **Exact** [E]: 0 of ~1.3 million poses checked differ (c20, a50, d20, b30); play and both seeds identical on a50, d20 and c20 (lab 38782815918); no system call in the ME's work, no line shared with the main CPU (lab 38786384396).
 
-**On the PSP.** The PSP-1000 on b30 (lab 38784132264 [M]): the ME made 99.997% of the poses with no job failing; the tick fell 1.4 ms (−2.5%) in the flight and 1.8 ms (−3.6%) in the cinematic. Less than the ~2.2 ms the decodes cost: the main CPU still copies each pose back cold and flushes its cache twice a tick, and the ME uses the shared bus while the frame is drawn (your question today; §3 measures it). The PSP-3000, on c20 with the check word, stopped answering after the launch (lab 38784036485). The emulator doesn't show it; its log is on the 3000's stick. **So it stays off by default.**
+**On the PSP.** The PSP-1000 on b30, eight runs (lab 38784132264, 38789615962 [M]): the ME made 99.997% of the poses with no job failing; the flight's tick fell 1.15 ms (−2.0%, four runs a side), the cinematic's 0.7–1.8 ms, and the beach's and bunker's not at all (in the noise). Less than the ~2.2 ms the decodes cost: the main CPU still copies each pose back cold and flushes its cache twice a tick, and the ME uses the shared bus while the frame is drawn (your question today; §3 measures it). The PSP-3000, on c20 with the check word, stopped answering after the launch (lab 38784036485). The emulator doesn't show it; its log is on the 3000's stick. **So it stays off by default.**
 
 ## §3 `posetime` (`psp_fixups.py` FIXES_133 `objects.c#posetime`)
 
