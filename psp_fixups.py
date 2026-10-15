@@ -16434,6 +16434,117 @@ void path_state_new(
 """),
 ]
 
+# RV1: a deleted object's fix-up walks only the objects that can hold a
+# reference to it. Every deleted object (each projectile that hits) walked
+# every object in the game: about 1,000 on b30's beach (halo-ce-vita's count),
+# each visit reading the object's header, datum and type definition, which on
+# our 16 KB cache evicts the tick's working set at every hit. Only two kinds of
+# object act on it: a type whose definition, or a part of it, has a
+# handle_deleted_object (units, through bipeds and vehicles, and projectiles),
+# and an object whose umbrella shield names it. object_new sets the umbrella
+# shield to NONE, damage.c only reads it, and nothing else writes it, so no
+# object ever names one, and the walk can skip the other types: the handlers
+# run on the same objects, in the same order.
+# From BirchWoodGod's halo-ce-vita (objects/objects.c,
+# object_types_handling_deleted_objects); used with his permission.
+# "deletedwalkall" (keep.txt): every object, as before.
+# "deletedcheck" (a check): every object, as before, logging any object of a
+# skipped type whose umbrella shield named the deleted object (none expected).
+FIXES_126["source/objects/objects.c#deleted"] = [
+("""void objects_fix_for_deleted_object(
+	long deleted_object_index)
+{
+	struct object_datum *object;
+
+	struct object_iterator iterator;
+	object_iterator_new(&iterator, _object_mask_all, 0);
+
+	for (object = (struct object_datum *)object_iterator_next(&iterator);
+		object;
+		object = (struct object_datum *)object_iterator_next(&iterator))
+	{
+		if (object->object.umbrella_shield_object_index==deleted_object_index)
+		{
+			object->object.umbrella_shield_object_index = NONE;
+		}
+		object_type_handle_deleted_object(iterator.index, deleted_object_index);
+	}
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV1): the types whose definition, or a part of
+it, handles a deleted object, read once from the constant definitions; and
+the walk: 1 those types alone (the default), 0 every object
+("deletedwalkall"), 2 every object, checked ("deletedcheck") */
+int psp_keep(const char *name);
+static int psp_deleted_walk = -1;
+static unsigned long psp_deleted_types;
+static unsigned long psp_deleted_strays;
+
+static int psp_deleted_walk_mode(
+	void)
+{
+	if (psp_deleted_walk < 0)
+	{
+		short type;
+
+		psp_deleted_types = 0;
+		for (type = 0; type < NUMBER_OF_OBJECT_TYPES; type++)
+		{
+			struct object_type_definition *definition = object_type_definition_get(type);
+			short part;
+
+			for (part = 0; definition->part_definitions[part]; part++)
+			{
+				if (definition->part_definitions[part]->handle_deleted_object)
+				{
+					psp_deleted_types |= 1UL << type;
+				}
+			}
+		}
+		psp_deleted_walk = psp_keep("deletedwalkall") ? 0 : psp_keep("deletedcheck") ? 2 : 1;
+		platform_psp_log("deleted objects: the fix-up walks %s (types 0x%lx have a handler)",
+			psp_deleted_walk == 1 ? "those types alone" : psp_deleted_walk == 2 ? "every object, checked (deletedcheck)" : "every object (deletedwalkall)",
+			psp_deleted_types);
+	}
+	return psp_deleted_walk;
+}
+#endif
+
+void objects_fix_for_deleted_object(
+	long deleted_object_index)
+{
+	struct object_datum *object;
+
+	struct object_iterator iterator;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_126, RV1): only the types with a handler (see there) */
+	int psp_walk = psp_deleted_walk_mode();
+
+	object_iterator_new(&iterator, psp_walk == 1 ? psp_deleted_types : _object_mask_all, 0);
+#else
+	object_iterator_new(&iterator, _object_mask_all, 0);
+#endif
+
+	for (object = (struct object_datum *)object_iterator_next(&iterator);
+		object;
+		object = (struct object_datum *)object_iterator_next(&iterator))
+	{
+		if (object->object.umbrella_shield_object_index==deleted_object_index)
+		{
+#ifdef HALO_PSP
+			if (psp_walk == 2 && !TEST_FLAG(psp_deleted_types, object->object.type) &&
+				psp_deleted_strays++ < 8)
+			{
+				platform_psp_log("deletedcheck: object 0x%lx (type %d) had deleted object 0x%lx as its umbrella shield",
+					iterator.index, (int)object->object.type, deleted_object_index);
+			}
+#endif
+			object->object.umbrella_shield_object_index = NONE;
+		}
+		object_type_handle_deleted_object(iterator.index, deleted_object_index);
+	}
+"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
