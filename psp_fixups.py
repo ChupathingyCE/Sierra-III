@@ -17527,6 +17527,28 @@ FIXES_131 = {}
 # main CPU ("poseahead"), to prove the bookkeeping exact ("poseaheadcheck"
 # decodes anyway and compares bit for bit); the Media Engine takes the making
 # next, during the frame's drawing
+FIXES_131["source/models/model_animation_definitions.h#poseahead"] = [
+("""	if (__builtin_expect(address < 0x0C000000UL, 1))
+		return (byte *)address;
+	{
+		/* psp_fixups.py (FIXES_122): psp_anim_lock's first test, inline */""",
+ """	if (__builtin_expect(address < 0x0C000000UL, 1))
+		return (byte *)address;
+	{
+		/* psp_fixups.py (FIXES_131 #poseahead): on the Media Engine (or in
+		the emulator's simulation of it: psp_me_context), only the bytes
+		already resident, never a read, and nothing of this CPU's written */
+		extern volatile unsigned int psp_me_context;
+		void *psp_anim_on_me(unsigned long address, unsigned long size);
+		unsigned int psp_sp;
+
+		__asm__ ("move %0, $sp" : "=r"(psp_sp));
+		if (psp_me_context != 0 || (psp_sp & 0x1FFFFFFFu) < 0x01000000u)
+			return (byte *)psp_anim_on_me(address, (unsigned long)size);
+	}
+	{
+		/* psp_fixups.py (FIXES_122): psp_anim_lock's first test, inline */"""),
+]
 FIXES_131["source/objects/objects.c#poseahead"] = [
 ("""#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_130 #posepredict) */""",
@@ -17569,17 +17591,30 @@ int psp_me_ring_ready(void);
 int psp_me_push_poses(const void *entries, unsigned int count, void *arena, unsigned int arena_bytes,
 	unsigned int *ticket);
 int psp_me_wait(unsigned int ticket, unsigned int *results);
+void psp_me_hold(unsigned int ticket, void (*collect)(void));
 
 /* on the Media Engine (psp_me.c's ring, ME_JOB_POSES): the entries' poses.
 The decode reads only tag data and writes only its pose */
 void psp_pose_me_make(const unsigned int *args, unsigned int *results)
 {
 	struct psp_pose_job_entry const *entries = (struct psp_pose_job_entry const *)args[0];
-	unsigned int count = args[1], k;
+	unsigned int count = args[1], k, control;
+	extern unsigned int psp_anim_me_missed[16];
 
+	/* the main CPU's FPU control for the decodes (psp_me_push_poses) */
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[2]));
 	for (k = 0; k < count; k++)
+	{
+		unsigned int missed = psp_anim_me_missed[0];
+
 		animation_get_node_orientations(entries[k].model, entries[k].animation, (short)entries[k].frame,
 			entries[k].pose);
+		/* a page that wasn't resident (only by a fault): this pose unmade */
+		if (psp_anim_me_missed[0] != missed)
+			*(unsigned long *)entries[k].pose = PSP_POSE_UNWRITTEN;
+	}
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
 	results[0] = count;
 }
 static struct psp_pose_ahead *psp_pose_ahead_slots;
@@ -17591,6 +17626,8 @@ static unsigned long psp_pose_ahead_used, psp_pose_ahead_made, psp_pose_ahead_un
 int psp_keep(const char *name);
 int psp_keep_loaded(void);
 void platform_psp_log(const char *format, ...);
+
+static void psp_pose_ahead_collect(void);
 
 static int psp_pose_ahead_on(void)
 {
@@ -17609,6 +17646,12 @@ static int psp_pose_ahead_on(void)
 			psp_pose_ahead_slots = (struct psp_pose_ahead *)calloc(PSP_POSE_SLOTS, sizeof(*psp_pose_ahead_slots));
 			psp_pose_ahead_arena = (unsigned char *)memalign(64, PSP_POSE_ARENA);
 			psp_pose_job = (struct psp_pose_job_entry *)memalign(64, PSP_POSE_SLOTS * sizeof(*psp_pose_job));
+			{
+				extern void (*psp_anim_me_settle)(void);
+
+				if (psp_pose_ahead_me)
+					psp_anim_me_settle = psp_pose_ahead_collect;
+			}
 			if (!psp_pose_ahead_slots || !psp_pose_ahead_arena || !psp_pose_job)
 			{
 				platform_psp_log("poseahead: no room for its %u KB; off", PSP_POSE_ARENA / 1024);
@@ -17629,6 +17672,7 @@ static void psp_pose_ahead_collect(void)
 	if (!psp_pose_job_out)
 		return;
 	psp_pose_job_out = 0;
+	psp_me_hold(0, NULL);
 	ok = psp_me_wait(psp_pose_job_ticket, results);
 	if (!ok)
 		psp_pose_job_failed++;
@@ -17652,6 +17696,34 @@ static void psp_pose_ahead_collect(void)
 		}
 	}
 	psp_pose_job_count = 0;
+}
+
+/* the bytes the decode will ask psp_animation_data for: a compressed
+animation's whole compressed block, or the one frame (model_animations.c's
+animation_get_frame_data and keyframe readers), in the tags or resident */
+static boolean psp_pose_ahead_me_can(struct animation const *animation, short frame)
+{
+	void *psp_anim_resident(unsigned long address, unsigned long size);
+	extern boolean hs_model_animation_compression_enabled;
+	unsigned long address = (unsigned long)animation->data.address, offset, size;
+	boolean compressed = TEST_FLAG(animation->flags, _animation_compressed_bit) &&
+		(hs_model_animation_compression_enabled || !animation->compressed_data_offset);
+
+	if (compressed)
+	{
+		offset = (unsigned long)animation->compressed_data_offset;
+		size = (unsigned long)animation->data.size - offset;
+	}
+	else
+	{
+		offset = (unsigned long)frame * (unsigned long)animation->frame_size;
+		size = (unsigned long)animation->frame_size;
+	}
+	if (!size || (long)size < 0)
+		return FALSE;
+	if (address + offset + size <= 0x0C000000UL)
+		return TRUE;
+	return address + offset >= 0x0C000000UL && psp_anim_resident(address + offset, size) != NULL;
 }
 
 /* a new map: its tags may sit where the last map's did */
@@ -17745,10 +17817,10 @@ static void psp_pose_ahead_make(void)
 		}
 		slot->pose = (real_orientation *)(psp_pose_ahead_arena + at);
 		*(unsigned long *)slot->pose = PSP_POSE_UNWRITTEN;
-		/* the ME takes the animations whose data is in the tags (the
-		pack's, streamed by psp_anim.c, may move before it reads them) */
-		if (psp_pose_ahead_me &&
-			(unsigned long)slot->animation->data.address + (unsigned long)slot->animation->data.size < 0x0C000000UL)
+		/* the ME takes the poses whose frame data is in the tags or
+		resident in the animation cache, which moves no page until the
+		job is collected (psp_anim_me_settle) */
+		if (psp_pose_ahead_me && psp_pose_ahead_me_can(slot->animation, slot->frame))
 		{
 			struct psp_pose_job_entry *entry = &psp_pose_job[psp_pose_job_count];
 
@@ -17779,6 +17851,7 @@ static void psp_pose_ahead_make(void)
 		{
 			psp_pose_job_out = 1;
 			psp_pose_job_jobs++;
+			psp_me_hold(psp_pose_job_ticket, psp_pose_ahead_collect);
 		}
 		else
 		{

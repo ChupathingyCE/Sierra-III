@@ -84,6 +84,8 @@ int psp_me_ring_ready(void);
 void psp_me_writeback(const void *start, unsigned int bytes);
 int psp_me_push(const struct psp_me_job *job, unsigned int *ticket);
 int psp_me_wait(unsigned int ticket, unsigned int *results);
+/* a pushed job collected later: collect runs before the ring would reuse its entry */
+void psp_me_hold(unsigned int ticket, void (*collect)(void));
 void psp_me_ring_test(void);
 /* a long ring job's step, on the ME: the debug stash notes it, and an audio
 block waiting is mixed now (audio comes before every other job). Nothing

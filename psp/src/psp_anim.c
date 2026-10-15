@@ -206,9 +206,64 @@ static unsigned int slot_address(unsigned int slot)
 	return slot < block_slots[0] ? block_at[0] + (slot << page_shift) : block_at[1] + ((slot - block_slots[0]) << page_shift);
 }
 
+/* next tick's poses on the Media Engine (psp_fixups.py FIXES_131 #poseahead):
+while a job is out the ME reads this cache's pages through psp_anim_on_me, so
+nothing that moves a page (a read into a slot, forgetting them all) happens
+until the job is collected: objects.c sets this to its collector */
+void (*psp_anim_me_settle)(void) = NULL;
+
+static void settle_me(void)
+{
+	if (psp_anim_me_settle)
+		psp_anim_me_settle();
+}
+
+/* the range's bytes if every page of it is resident, side by side in one
+block; NULL otherwise. Reads the page table only: safe on the Media Engine
+while this CPU leaves the table alone (settle_me) */
+void *psp_anim_resident(unsigned long address, unsigned long size)
+{
+	unsigned int first_page, last_page, count, k;
+	int slot;
+
+	if (!slot_count || !page_slot || address < animation_first || address + size > animation_end || !size)
+		return NULL;
+	first_page = (address - page_base) >> page_shift;
+	last_page = (address + size - 1 - page_base) >> page_shift;
+	count = last_page - first_page + 1;
+	slot = page_slot[first_page];
+	for (k = 1; slot >= 0 && k < count; k++)
+		if (page_slot[first_page + k] != slot + (int)k)
+			slot = -1;
+	if (slot < 0 || ((unsigned int)slot < block_slots[0] && (unsigned int)slot + count > block_slots[0]))
+		return NULL;
+	return (void *)(slot_address((unsigned int)slot) + (address - (page_base + (first_page << page_shift))));
+}
+
+/* psp_animation_data on the Media Engine (or in the emulator's simulation of
+it): the resident bytes, never a read. A range not resident (the main CPU
+checks before it lists a pose, so only by a fault) is noted in a word of the
+ME's own and answered with zeros, so the decode runs to its end (with zeros
+for offsets and counts it reads only the first few hundred bytes); the job
+then marks that pose unmade */
+unsigned int psp_anim_me_missed[16] __attribute__((aligned(64)));
+static const unsigned char me_zeros[4096] __attribute__((aligned(64)));
+
+void *psp_anim_on_me(unsigned long address, unsigned long size)
+{
+	void *at = psp_anim_resident(address, size);
+
+	if (at)
+		return at;
+	psp_anim_me_missed[0]++;
+	return (void *)me_zeros;
+}
+
 static void forget_all(void)
 {
 	unsigned int index;
+
+	settle_me();
 
 	if (page_slot)
 		for (index = 0; index < page_count; index++)
@@ -420,6 +475,7 @@ void *psp_anim_lock(unsigned long address, unsigned long size)
 	else
 	{
 		misses++;
+		settle_me();
 		slot = choose_slots(count);
 		if (slot < 0)
 		{

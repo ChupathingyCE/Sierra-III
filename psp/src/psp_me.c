@@ -1572,6 +1572,19 @@ static __attribute__((noinline, cold)) int ring_fail(int why, unsigned int ticke
 	return 0;
 }
 
+/* a job collected later than the ring's next ME_RING_ENTRIES pushes would
+allow (next tick's poses, collected after the frame's drawing has pushed
+its own jobs): its collector runs before the push that would reuse its
+entry, so its answer is never written over */
+static unsigned int ring_held_ticket;
+static void (*ring_held_collect)(void);
+
+void psp_me_hold(unsigned int ticket, void (*collect)(void))
+{
+	ring_held_ticket = ticket;
+	ring_held_collect = collect;
+}
+
 /* a job handed to the ring: 1, with its ticket for psp_me_wait; 0 if the
 ring can't take it (off, full, the ME busy with a long slot job, or a
 transfer that breaks the rules above): the caller does the work itself */
@@ -1582,6 +1595,13 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 
 	if (!psp_me_ring_ready())
 		return 0;
+	if (ring_held_collect && ring_next - ring_held_ticket >= ME_RING_ENTRIES - 1)
+	{
+		void (*collect)(void) = ring_held_collect;
+
+		ring_held_collect = NULL;
+		collect();
+	}
 	start = sceKernelGetSystemTimeLow();
 	/* a render or probe job holds the ME for milliseconds (gemeon's are
 	~10 ms on the PSP, review_b120.md 5): a ring job behind it would be
@@ -1693,11 +1713,16 @@ int psp_me_push_poses(const void *entries, unsigned int count, void *arena, unsi
 	unsigned int *ticket)
 {
 	struct psp_me_job job;
+	unsigned int control;
 
 	memset(&job, 0, sizeof(job));
 	job.type = ME_JOB_POSES;
 	job.args[0] = (unsigned int)entries;
 	job.args[1] = count;
+	/* this CPU's FPU control (rounding, flushing, traps): the ME decodes
+	under the same, so its arithmetic is this CPU's bit for bit */
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	job.args[2] = control;
 	job.input[0] = NULL;
 	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
 	job.output = arena;
