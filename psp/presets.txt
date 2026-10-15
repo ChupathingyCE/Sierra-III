@@ -13,5 +13,5 @@
 10 A/B, see-through on the VFPU (c40): nearauto assettrack geo2 seethroughvfpu
 11 A/B, far machines and half-rate posing (c20): nearauto assettrack geo2 machinesfar posehalf
 12 A/B, scenery at half rate: nearauto assettrack geo2 sceneryhalf
-13 Pelican wall as before (small cut buffer): nearauto assettrack geo2 cutroomoff
+13 Pelican wall as before (cut pieces past the fixed buffer lost): nearauto assettrack geo2 cutstreamoff
 14 look check, near plane pinned: assettrack geo2 near4
