@@ -18289,6 +18289,7 @@ struct psp_nmr_slot
 	unsigned short nodes;
 	unsigned char read;      /* the first read's class since the compute (0: none yet) */
 	unsigned char outside;   /* computed outside objects_update */
+	unsigned char type;      /* the object's type (biped, vehicle, weapon, ...) */
 };
 static struct psp_nmr_slot *psp_nmr_slots = NULL; /* 48 KB, from the heap when asked for */
 static int psp_nmr_on = -1;
@@ -18302,8 +18303,14 @@ static unsigned long long psp_nmr_nodes[6];
 static unsigned long psp_nmr_computes[6];
 /* class 2's distance, in top-level objects: the next one, 2-4, 5-16, more */
 static unsigned long long psp_nmr_gap_nodes[4];
-static unsigned long psp_nmr_site[PSP_NMR_SITES];
-static unsigned long long psp_nmr_site_nodes[PSP_NMR_SITES];
+/* the call sites of the first reads, by nodes: [0] another object's update,
+[1] the object's own update or its attachments' */
+static unsigned long psp_nmr_site[2][PSP_NMR_SITES];
+static unsigned long long psp_nmr_site_nodes[2][PSP_NMR_SITES];
+/* by object type, the nodes a compute made and those needed inside
+objects_update (classes 1 and 2) */
+#define PSP_NMR_TYPES 12
+static unsigned long long psp_nmr_type_nodes[PSP_NMR_TYPES], psp_nmr_type_needed[PSP_NMR_TYPES];
 int psp_keep(const char *name);
 int psp_keep_loaded(void);
 void platform_psp_log(const char *format, ...);
@@ -18340,6 +18347,12 @@ static void psp_nmr_close(struct psp_nmr_slot *slot)
 		return;
 	psp_nmr_nodes[kind] += slot->nodes;
 	psp_nmr_computes[kind]++;
+	if (!slot->outside && slot->type < PSP_NMR_TYPES)
+	{
+		psp_nmr_type_nodes[slot->type] += slot->nodes;
+		if (kind == 1 || kind == 2)
+			psp_nmr_type_needed[slot->type] += slot->nodes;
+	}
 	slot->tick = 0;
 }
 
@@ -18358,6 +18371,7 @@ static void psp_nmr_computed(long object_index)
 	slot->nodes = (unsigned short)(object_get(object_index)->object.node_matrices.size / (short)sizeof(real_matrix4x3));
 	slot->read = 0;
 	slot->outside = !psp_nmr_in_update;
+	slot->type = (unsigned char)object_get(object_index)->object.type;
 }
 
 static void psp_nmr_read(long object_index, void *site)
@@ -18375,13 +18389,20 @@ static void psp_nmr_read(long object_index, void *site)
 	else
 		kind = psp_current_phase == 1 ? 3 : 4;
 	slot->read = (unsigned char)kind;
-	if (kind == 2 && !slot->outside)
+	if ((kind == 1 || kind == 2) && !slot->outside)
 	{
-		unsigned long gap = psp_nmr_tops - slot->tops;
+		int table = kind == 2 ? 0 : 1;
+		unsigned long *sites = psp_nmr_site[table];
+		unsigned long long *nodes = psp_nmr_site_nodes[table];
 
-		psp_nmr_gap_nodes[gap <= 1 ? 0 : gap <= 4 ? 1 : gap <= 16 ? 2 : 3] += slot->nodes;
+		if (kind == 2)
+		{
+			unsigned long gap = psp_nmr_tops - slot->tops;
+
+			psp_nmr_gap_nodes[gap <= 1 ? 0 : gap <= 4 ? 1 : gap <= 16 ? 2 : 3] += slot->nodes;
+		}
 		for (k = 0; k < PSP_NMR_SITES; k++)
-			if (psp_nmr_site[k] == (unsigned long)site || !psp_nmr_site[k])
+			if (sites[k] == (unsigned long)site || !sites[k])
 				break;
 		if (k == PSP_NMR_SITES)
 		{
@@ -18389,13 +18410,13 @@ static void psp_nmr_read(long object_index, void *site)
 			int least = 0;
 
 			for (k = 1; k < PSP_NMR_SITES; k++)
-				if (psp_nmr_site_nodes[k] < psp_nmr_site_nodes[least])
+				if (nodes[k] < nodes[least])
 					least = k;
 			k = least;
-			psp_nmr_site_nodes[k] = 0;
+			nodes[k] = 0;
 		}
-		psp_nmr_site[k] = (unsigned long)site;
-		psp_nmr_site_nodes[k] += slot->nodes;
+		sites[k] = (unsigned long)site;
+		nodes[k] += slot->nodes;
 	}
 }
 
@@ -18413,9 +18434,12 @@ static void psp_nmr_tick_start(void)
 	psp_nmr_in_update = 1;
 	if (++psp_nmr_ticks % 900 == 0)
 	{
-		unsigned long long all = 0, in_update = 0, gaps = 0;
-		char sites[PSP_NMR_SITES * 24];
-		int at = 0;
+		static const char *const type_names[PSP_NMR_TYPES] = {
+			"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+			"machine", "control", "light fixture", "placeholder", "sound scenery"};
+		unsigned long long all = 0, in_update = 0, gaps = 0, own = 0;
+		char sites[PSP_NMR_SITES * 24], types[PSP_NMR_TYPES * 48];
+		int at = 0, table;
 
 		for (k = 0; k < 6; k++)
 			all += psp_nmr_nodes[k];
@@ -18435,12 +18459,34 @@ static void psp_nmr_tick_start(void)
 			(unsigned long)(psp_nmr_nodes[3] * 100 / in_update), (unsigned long)(psp_nmr_nodes[4] * 100 / in_update),
 			(unsigned long)(psp_nmr_nodes[0] * 100 / in_update), psp_nmr_computes[5],
 			(unsigned long)(psp_nmr_nodes[5] * 100 / all));
-		for (k = 0; k < PSP_NMR_SITES && psp_nmr_site[k]; k++)
-			at += snprintf(sites + at, sizeof(sites) - at, " %08lx:%lu%%", psp_nmr_site[k],
-				(unsigned long)(psp_nmr_site_nodes[k] * 100 / gaps));
-		platform_psp_log("nmreaders: another object's reads, by nodes: the next object %lu%%, 2-4 objects later %lu%%, 5-16 %lu%%, more %lu%%; their call sites:%s",
-			(unsigned long)(psp_nmr_gap_nodes[0] * 100 / gaps), (unsigned long)(psp_nmr_gap_nodes[1] * 100 / gaps),
-			(unsigned long)(psp_nmr_gap_nodes[2] * 100 / gaps), (unsigned long)(psp_nmr_gap_nodes[3] * 100 / gaps), sites);
+		for (k = 0; k < PSP_NMR_SITES; k++)
+			own += psp_nmr_site_nodes[1][k];
+		if (!own)
+			own = 1;
+		for (table = 0; table < 2; table++)
+		{
+			at = 0;
+			sites[0] = 0;
+			for (k = 0; k < PSP_NMR_SITES && psp_nmr_site[table][k]; k++)
+				at += snprintf(sites + at, sizeof(sites) - at, " %08lx:%lu%%", psp_nmr_site[table][k],
+					(unsigned long)(psp_nmr_site_nodes[table][k] * 100 / (table ? own : gaps)));
+			if (!table)
+				platform_psp_log("nmreaders: another object's reads, by nodes: the next object %lu%%, 2-4 objects later %lu%%, 5-16 %lu%%, more %lu%%; their call sites:%s",
+					(unsigned long)(psp_nmr_gap_nodes[0] * 100 / gaps), (unsigned long)(psp_nmr_gap_nodes[1] * 100 / gaps),
+					(unsigned long)(psp_nmr_gap_nodes[2] * 100 / gaps), (unsigned long)(psp_nmr_gap_nodes[3] * 100 / gaps), sites);
+			else
+				platform_psp_log("nmreaders: the reads by the object's own update or its attachments, their call sites by nodes:%s", sites);
+		}
+		at = 0;
+		types[0] = 0;
+		for (k = 0; k < PSP_NMR_TYPES; k++)
+			if (psp_nmr_type_nodes[k])
+				at += snprintf(types + at, sizeof(types) - at, " %s %lu (%lu%% needed)", type_names[k],
+					(unsigned long)(psp_nmr_type_nodes[k] / 900),
+					(unsigned long)(psp_nmr_type_needed[k] * 100 / psp_nmr_type_nodes[k]));
+		platform_psp_log("nmreaders: by type, nodes a tick and the share needed inside objects_update:%s", types);
+		memset(psp_nmr_type_nodes, 0, sizeof(psp_nmr_type_nodes));
+		memset(psp_nmr_type_needed, 0, sizeof(psp_nmr_type_needed));
 		memset(psp_nmr_nodes, 0, sizeof(psp_nmr_nodes));
 		memset(psp_nmr_computes, 0, sizeof(psp_nmr_computes));
 		memset(psp_nmr_gap_nodes, 0, sizeof(psp_nmr_gap_nodes));
