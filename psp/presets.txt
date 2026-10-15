@@ -15,3 +15,4 @@
 12 play, stick reads logged: nearauto assettrack geo2 iostats
 13 showcase, the openings' cutscenes one after another: nearauto assettrack geo2 sceneladder
 14 play, frames timed: nearauto assettrack geo2 frametrace
+15 sleep, ME never started (exit last): nearauto assettrack geo2 nomeaudio
