@@ -2101,6 +2101,9 @@ is left out (clip_triangle); "cutlessoff" draws them */
 #define SCREEN_MARGIN_PIXELS 8.0f
 static float screen_x = 1.0f, screen_y = 1.0f;
 static int cut_less = 1, guard_wide = 0;
+/* recon, "cutlessmaskN": off-screen triangles and pieces left out only for
+the kinds whose bits are set in N (1 << CUT_LEVEL ...); all by default */
+static int cut_less_mask = -1;
 /* build 118: the lengths of the guard band's side planes' normals as
 outside() writes them (x = guard_x z has (1, 0, -guard_x)), set with
 guard_x and guard_y, so a sphere can be tested against those planes
@@ -3505,6 +3508,7 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 {
 	float buffer[2][12][CORNER_FLOATS];
 	int count = 3, plane, index, source = 0, added = 0, k;
+	int less = cut_less && (cut_less_mask >> store->kind & 1);
 
 	if (cut_count_on)
 	{
@@ -3515,11 +3519,11 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 		else
 			tally->guard_only++;
 	}
-	if ((cut_less || cut_count_on) && piece_off_screen(polygon[0], polygon[1], polygon[2]))
+	if ((less || cut_count_on) && piece_off_screen(polygon[0], polygon[1], polygon[2]))
 	{
 		if (cut_count_on)
 			cut_tally[store->kind].whole_off++;
-		if (cut_less)
+		if (less)
 		{
 			store->dropped++;
 			return 0;
@@ -3558,11 +3562,11 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 		const float *a = buffer[source][0], *b = buffer[source][index], *c = buffer[source][index + 1];
 		float (*piece)[CORNER_FLOATS];
 
-		if ((cut_less || cut_count_on) && piece_off_screen(a, b, c))
+		if ((less || cut_count_on) && piece_off_screen(a, b, c))
 		{
 			if (cut_count_on)
 				cut_tally[store->kind].off_screen++;
-			if (cut_less)
+			if (less)
 			{
 				store->dropped++;
 				continue;
@@ -7400,6 +7404,13 @@ static void cut_take(void)
 	cut_stream = !psp_keep("cutstreamoff");
 	cut_less = cut_stream && !psp_keep("cutlessoff");
 	guard_wide = cut_stream && psp_keep("guardwide");
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		cut_less_mask = psp_keep_number("cutlessmask", -1);
+		if (cut_less_mask != -1)
+			platform_log("GE: cutlessmask%d: off-screen cuts left out for those kinds only", cut_less_mask);
+	}
 	cut_count_on = psp_keep("cutcount");
 	if (!cut_stream)
 		platform_log("GE: cutstreamoff: cut pieces past the fixed buffers are lost, pieces off the screen drawn");
