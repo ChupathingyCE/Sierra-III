@@ -32,11 +32,15 @@ About 300 s of beach; the log's own clock reads add a little to each call.
 
 All collision: about 11% of real time, roughly a fifth of the tick [U: nested calls counted once].
 
+## a50 for comparison [M]
+
+a50's opening hands off (lab 38732215900; tick 28 ms, 10 fps): **biped movement is 11.5% of real time** (68,334 calls at 505 µs, the level BSP sphere 363 µs of it, against b30's 106: a denser level), bipeds 16.2 ms of the 28 ms tick. And **nearauto spent 3.9 ms a frame** deciding the near plane, with four sphere tests about the eye at 1.26 ms each, most of them touching the level. `anysphere` (`obscurer128` branch) answers them with a walk that stops at the first surface: no answer differs out of 74,705 checked, and play is exact; in the emulator the decision drops 79%.
+
 ## What it says
 
 1. **Node matrices are the largest single item** (6.9 ms a tick). The code is math over animation data, the same for every object, and independent between objects once their animation state is set. Exact on the Media Engine (same FPU code), if the main CPU has other work while it runs. On the VFPU it would be faster but not bit-exact (plays the same; needs side-by-sides).
-2. **Biped movement collision** (~4 ms a tick): the plan's next ME item. Each call is a walk of the level's BSP around the biped's sphere (~106 µs) and a gather of nearby objects. "Still" bipeds sweep too (1,900 of 3,000 sweeps a window), and the sphere memo answers only ~5% of level queries, so their spheres move slightly each tick.
-3. **Exact, smaller, now:** the obscurer ray (0.6%, built); attached lights reconnected once a frame instead of every tick (LD1, ~1.3 ms a tick at two ticks a frame; render-only data, but keeping the drawing identical needs care).
+2. **Biped movement collision** (~4 ms a tick on b30, a quarter of a50's tick): the plan's next ME item. Each call is a walk of the level's BSP around the biped's sphere (~106 µs) and a gather of nearby objects. "Still" bipeds sweep too (1,900 of 3,000 sweeps a window), and the sphere memo answers only ~5% of level queries, so their spheres move slightly each tick.
+3. **Exact, smaller, now:** the obscurer ray (0.6%, built); nearauto's early-out sphere test (a50's 3.9 ms a frame, built); attached lights reconnected once a frame instead of every tick (LD1, ~1.3 ms a tick at two ticks a frame; render-only data, but keeping the drawing identical needs care).
 4. **Not where the time is:** the lookups and the code layout (inlining both ways, `-Os`): measured today in the cache models, all slower.
 
 ## Sources
