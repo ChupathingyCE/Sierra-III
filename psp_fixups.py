@@ -16797,6 +16797,52 @@ void path_smooth(
 """),
 ]
 
+# The sound cache's "stabbed" dump left out. When a sound finds no room, the
+# game writes the whole cache's layout to d:\stabbed.txt for its developers
+# (lruv_debug_to_file), mid-game, at most every 10 s. A PSP build has no use
+# for it: the port's own line (FIXES_113 "#noroom") already names the sound,
+# the longest run the cache could clear and what playing sounds hold, in the
+# log. And d20 played hands off in the emulator (w125, no statecrc) stops
+# right after the dump's "SOUND CACHE BLOWN" at game time 482, log and
+# heartbeat included (lab 38688506641): the marks below say whether it stops
+# inside the dump. Nothing the game reads changes.
+# "stabbedfile" (keep.txt): the dump written as before, with a log line on
+# each side of it.
+FIXES_126["source/cache/xbox_sound_cache.c#stabbed"] = [
+("""static void sound_cache_start_loading_sound(
+	struct sound_permutation *sound)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126): the stabbed dump written only with
+"stabbedfile" (see there); -1 not read yet */
+int psp_keep(const char *name);
+static int psp_stabbed_file = -1;
+#endif
+
+static void sound_cache_start_loading_sound(
+	struct sound_permutation *sound)
+{"""),
+("""		lruv_debug_to_file(
+			"d:\\\\stabbed.txt",""", """#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_126): the dump only with "stabbedfile" (see there) */
+		if (psp_stabbed_file < 0)
+			psp_stabbed_file = psp_keep("stabbedfile");
+		if (psp_stabbed_file)
+			platform_psp_log("sound cache: the stabbed dump begins (stabbedfile)");
+		if (psp_stabbed_file)
+#endif
+		lruv_debug_to_file(
+			"d:\\\\stabbed.txt","""),
+("""			scenario_debug_to_file,
+			cache_block_get_sound_permutation_name);
+		xbox_sound_cache_globals.last_allocation_failure_time =""", """			scenario_debug_to_file,
+			cache_block_get_sound_permutation_name);
+#ifdef HALO_PSP
+		if (psp_stabbed_file)
+			platform_psp_log("sound cache: the stabbed dump ends");
+#endif
+		xbox_sound_cache_globals.last_allocation_failure_time ="""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
