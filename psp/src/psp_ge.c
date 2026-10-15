@@ -8785,6 +8785,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	int alpha_tested)
 {
 	ScePspFMatrix4 model;
+	/* "nobackpass" (recon): a two-sided part's back faces left out */
+	static int back_pass_off = -1;
 	int base_alpha = 0, textured, soft = 0, two_sided = (alpha_tested & 2) != 0;
 	struct skin_part *skin = NULL;
 
@@ -9022,7 +9024,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	if (soft)
 		foliage_soft_pass(vertices, indices, index_count, strip, skin, &model);
 	part_add(8);
-	if (two_sided && model_cull && model_camouflage <= 0.0f)
+	if (back_pass_off < 0)
+		back_pass_off = psp_keep("nobackpass");
+	if (two_sided && model_cull && model_camouflage <= 0.0f && !back_pass_off)
 	{
 		int index;
 
@@ -9287,17 +9291,21 @@ static unsigned char seethrough_next_model = SEETHROUGH_MODULATE;
 static unsigned long seethrough_added_draws = 0, seethrough_flat_draws = 0;
 /* How the Xbox depth-tests a see-through surface: LESSEQUAL, with a depth
 bias only for a shader flagged decal (rasterizer_xbox_transparent_geometry.c;
-shaders.c, shader_is_decal); the water shader's base map clamped at its edges
-(rasterizer_xbox_water.c). The port's nudges stand in for the decal bias on
+shaders.c, shader_is_decal). And how it addresses the map: clamped where the
+map's flags say (generic and chicago), always for the water shader's base map
+(rasterizer_xbox_water.c), repeated otherwise. The port's nudges stand in for the decal bias on
 16-bit depth; a surface that isn't a decal gets none, as on the Xbox, so the
 far ocean wins its ties with the seabed instead of losing them as the near
 plane changes, and the ocean's draws stop taking different pushes (the steps
 along the shore). Read from the shader tag on the engine's side (the queue
 may run deferred), in the tint call's flags. Keep words "seethroughpush" and
-"waterwrap": the port's pushes and the repeating water map */
+"seethroughwrap": the port's pushes, and every map repeated */
 #define SEETHROUGH_EXACT_DEPTH 16
-#define SEETHROUGH_CLAMPED 32
+#define SEETHROUGH_CLAMP_U 32
+#define SEETHROUGH_CLAMP_V 64
+#define SEETHROUGH_CLAMPED (SEETHROUGH_CLAMP_U | SEETHROUGH_CLAMP_V)
 static unsigned char seethrough_next_depth = 0;
+static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
 static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
 call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
@@ -10353,6 +10361,13 @@ void psp_ge_seethrough_tint(unsigned int tint)
 
 /* the engine side's call before each see-through queue call: the shader's
 tint from the texture pack (psp_tex.c; white for a shader it has none for) */
+/* the map psp_transparent_map chose for a generic or chicago shader: whether
+it is clamped in u and in v (the engine side, just before the shader call) */
+void psp_ge_seethrough_map_clamp(int u, int v)
+{
+	seethrough_map_clamp = (u ? SEETHROUGH_CLAMP_U : 0) | (v ? SEETHROUGH_CLAMP_V : 0);
+}
+
 void psp_ge_seethrough_shader(unsigned int shader)
 {
 	static int pushed = -1, wrapped = -1;
@@ -10362,7 +10377,7 @@ void psp_ge_seethrough_shader(unsigned int shader)
 	if (pushed < 0)
 	{
 		pushed = psp_keep("seethroughpush");
-		wrapped = psp_keep("waterwrap");
+		wrapped = psp_keep("seethroughwrap");
 	}
 	if (shader)
 	{
@@ -10377,9 +10392,10 @@ void psp_ge_seethrough_shader(unsigned int shader)
 
 		if (!pushed && !decal && type >= 5 && type <= 10)
 			flags |= SEETHROUGH_EXACT_DEPTH;
-		if (!wrapped && type == 7)
-			flags |= SEETHROUGH_CLAMPED;
+		if (!wrapped)
+			flags |= type == 7 ? SEETHROUGH_CLAMPED : type == 5 || type == 6 ? seethrough_map_clamp : 0;
 	}
+	seethrough_map_clamp = 0;
 
 	seethrough_tint_set(tint, flags, shader);
 }
@@ -11638,8 +11654,32 @@ static void transparent_flush_body(void)
 			char const *shader_name = PSP_ME_WORK() || !draw->shader ? NULL : psp_shader_tag_name((void const *)draw->shader);
 
 			if (shader_name)
+			{
+				const char *definition = (const char *)draw->shader;
+				short type = *(const short *)(definition + 36);
+
 				platform_log("tdump: %d/%d shader %s (type %d, depth mode %d)", index, transparent_count, shader_name,
-					*(const short *)((const char *)draw->shader + 36), draw->depth_mode);
+					type, draw->depth_mode);
+				if (type == 5 || type == 6)
+				{
+					/* every map of a generic or chicago shader: the GE draws one */
+					extern unsigned int psp_tex_bitmap_key(long bitmap_tag_index, int bitmap);
+					int chicago = type == 6, stride = chicago ? 220 : 100, scale_at = chicago ? 84 : 4;
+					int map_at = chicago ? 120 : 40, m;
+					long count = *(const long *)(definition + 84);
+					const char *maps = *(const char *const *)(definition + 88);
+
+					for (m = 0; maps && m < count && m < 4; m++)
+					{
+						const char *map = maps + stride * m;
+						char const *map_name = psp_bitmap_tag_name((void const *)psp_tex_bitmap_key(*(const long *)(map + map_at), 0));
+
+						platform_log("tdump: %d/%d   map %d %s flags %04x scale %.2f %.2f%s", index, transparent_count, m,
+							map_name ? map_name : "?", *(const unsigned short *)map, *(const float *)(map + scale_at),
+							*(const float *)(map + scale_at + 4), (unsigned int)draw->key == psp_tex_bitmap_key(*(const long *)(map + map_at), 0) ? " (drawn)" : "");
+					}
+				}
+			}
 			platform_log("tdump: %d/%d key %08x (%s) sky %d level %d fp %d sprites %d blend %d dist %.1f count %d cut %d units %d at %.2f %.2f %.2f depth test %u mfp %d",
 				index, transparent_count, draw->key, name ? name : "no tag", draw->sky, draw->level, draw->first_person,
 				draw->sprites, draw->blend, sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,
@@ -11748,7 +11788,8 @@ static void transparent_flush_body(void)
 		sceGumLoadMatrix(&draw->matrix);
 		if (draw->depth_mode & SEETHROUGH_CLAMPED)
 		{
-			sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+			sceGuTexWrap(draw->depth_mode & SEETHROUGH_CLAMP_U ? GU_CLAMP : GU_REPEAT,
+				draw->depth_mode & SEETHROUGH_CLAMP_V ? GU_CLAMP : GU_REPEAT);
 			seethrough_clamped_draws++;
 		}
 		if (draw->doubled)
