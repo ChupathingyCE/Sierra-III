@@ -18,8 +18,11 @@ Lab 38709536698, against b125 as built: the play hash and both seeds identical a
 
 ## What it's worth
 
-- **Cache models** [E] (lab 38698483247): the three levers together cut **b30's beach tick ~7.7%** (37.4 against 40.5 ms a tick; instructions −8.1%). b30's two sides play alike, not the same, so take the figure as an estimate: without the audio mixing, which these runs did on the main CPU and which differed between the sides, it's −6.9% of the tick's instructions. a50's opening: −0.4% (little path work there).
-- **The PSP-1000** [M] (lab 38699650570, b30 on the b113 route, on/off/on/off): the flight, where both sides play the same game, **−0.9% tick** (real). The landing and the beach can't judge it: after ~tick 1,350 b30's play parts between keep sets (the Media Engine's audio timing), so the sides fight different fights there [U]. A second A/B with `nomeaudio`, which keeps play the same, is running (`build_b126.md` will carry its figures).
+- **The PSP-1000** [M], b30 on the b113 route, on/off/on/off: **about 1% of the tick.**
+  - With the Media Engine's audio (lab 38699650570): the flight's tick **−0.9%** (real).
+  - With `nomeaudio` (lab 38706758115), the tick with the levers against without: flight −0.1%, landing +0.4%, beach −1.3%, all in the noise.
+  - The beach can only be judged by repeats: the PSP's play parts between runs of the *same* side from ~tick 1,600 (the dead bodies differ), `nomeaudio` or not [M].
+- **Cache models** [E] (lab 38698483247): beach tick −7.7% (instructions −8.1%), a50's opening −0.4%. b30's two sides played different fights there, and the PSP doesn't find the 7.7%, so read it as play that differed, not the levers [U]. The exact pairs (play identical at every tick) are the levers' proof of exactness, not of worth.
 
 ## `frametrace` (`psp/src/psp_frametrace.c`, `tools/frametrace.py`)
 
@@ -28,6 +31,8 @@ Lab 38709536698, against b125 as built: the play hash and both seeds identical a
 **What.** With the word, each frame is timed end to end and split into its ticks, its drawing, the frame's end (waiting for the GE, the swap), the rest, and the blocking Memory Stick reads made meanwhile. Every 300 frames one log line gives the window's average, its frames over 66.7 ms and the game time lost, its three slowest frames split, and the run's 99th and 99.9th percentile frame times (a 1 ms histogram, allocated only when the word is on). `python3 tools/frametrace.py LOG` prints the summary and groups the slow frames by what took most of each.
 
 **Proven** [E] (lab 38701110999): play and seeds identical with it on (d20, 32,041 ticks); its lines come out every 300 frames and read back.
+
+**First PSP figures** [M] (lab 38706758115, b30's b113 route, `nomeaudio`, four runs): 99% 340–347 ms, 99.9% 489–652 ms; every frame over 66.7 ms, so the game played 32–34% of real time. The windows' slowest frames: drawing 13–17, ticks 13–15, stick reads 1 (768–1,138 ms, mostly reading). The worst of those is the log's doing: near game time 3,600 the log's write held the stick 1.3–1.5 s and an animation read waited ~770 ms behind it (b127's `logbatch127` starts on the log's side).
 
 **Hooks.** `psp_tick_account` and `psp_frame_account` (`psp_platform.c`) pass each tick's and frame's time; the texture, geometry and animation readers add each blocking read's time to `psp_stick_read_us` (asynchronous geometry reads, which overlap other work, aren't counted).
 
