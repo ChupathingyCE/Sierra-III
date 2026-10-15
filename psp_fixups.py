@@ -17434,6 +17434,86 @@ FIXES_130["source/cache/cache_files_windows.c#readswait"] = [
 }"""),
 ]
 
+# "posepredict" (recon): how often a tick's base pose could have been made
+# ahead. Node matrices are the largest tick step on b30 and c20 on the
+# PSP-1000 (6.9 and 5.6 ms a tick) and the next Media Engine job is to take
+# part of them: the base animation's decode (animation_get_node_orientations)
+# reads only the model, the animation and an integer frame, so the ME could
+# make next tick's during this frame's drawing, and the tick would use it
+# when the animation and frame are the ones it guessed (the same function on
+# the same inputs: the same bits). This counts, per object, whether each
+# tick's base pose is the frame after its last one (a guess that holds), the
+# same frame again, or another animation; and the time the decode takes
+FIXES_130["source/objects/objects.c#posepredict"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_130 #posepredict) */
+static int psp_pose_predict = -1;
+static struct psp_pose_last { long object_index; const void *animation; short frame; } *psp_pose_last; /* 12 KB, only with the word */
+static unsigned long psp_pose_calls, psp_pose_next, psp_pose_same, psp_pose_other, psp_pose_new, psp_pose_us;
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+static void psp_pose_predict_note(long object_index, struct animation const *animation, short frame, unsigned long us)
+{
+	struct psp_pose_last *last;
+
+	if (!psp_pose_last)
+	{
+		psp_pose_last = (struct psp_pose_last *)calloc(1024, sizeof(*psp_pose_last));
+		if (!psp_pose_last)
+		{
+			psp_pose_predict = 0;
+			return;
+		}
+	}
+	last = &psp_pose_last[(unsigned long)object_index & 1023];
+	psp_pose_calls++;
+	psp_pose_us += us;
+	if (last->object_index == object_index && last->animation == animation)
+	{
+		if (frame == last->frame)
+			psp_pose_same++;
+		else if (animation->frame_count > 0 && frame == (last->frame + 1) % animation->frame_count)
+			psp_pose_next++;
+		else
+			psp_pose_other++;
+	}
+	else
+		psp_pose_new++;
+	last->object_index = object_index;
+	last->animation = animation;
+	last->frame = frame;
+	if (psp_pose_calls % 20000 == 0)
+		platform_psp_log("posepredict: %lu base poses; the frame after the last %lu, the same frame %lu, another frame %lu, another animation or object %lu; decode %lu us a pose",
+			psp_pose_calls, psp_pose_next, psp_pose_same, psp_pose_other, psp_pose_new, psp_pose_us / psp_pose_calls);
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP"""),
+("""				animation_get_node_orientations(model, animation, frame_index, node_orientations);
+				world_relative = TEST_FLAG(animation->flags, _animation_world_relative_bit);""",
+ """#ifdef HALO_PSP
+				if (psp_pose_predict < 0)
+					psp_pose_predict = psp_keep("posepredict") != 0;
+				if (psp_pose_predict)
+				{
+					unsigned long start = psp_microseconds();
+
+					animation_get_node_orientations(model, animation, frame_index, node_orientations);
+					psp_pose_predict_note(object_index, animation, frame_index, psp_microseconds() - start);
+				}
+				else
+#endif
+				animation_get_node_orientations(model, animation, frame_index, node_orientations);
+				world_relative = TEST_FLAG(animation->flags, _animation_world_relative_bit);"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 

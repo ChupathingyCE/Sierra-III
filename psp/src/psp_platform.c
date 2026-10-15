@@ -932,7 +932,7 @@ static void keep_load(void)
 	platform_log("keep words, build 127's: speed off: logeachline (each log line written at once for the first 20 s, its newline apart)");
 	platform_log("keep words, build 128's: speed off: obscurertest (the camera's ray through every object as each model pass begins, which only a debug display reads), nearautofull (nearauto's level spheres gathered whole, not stopped at the first surface); check: nearautocheck");
 	platform_log("keep words, build 129's: speed off: flaresfull (a flare's ray tests the objects even when the level hides it), fractiondouble (the animations' and periodic functions' fractions in software double); check: flarescheck, fractioncheck");
-	platform_log("keep words, build 130's instruments (opt-in): framecrc (each finished picture hashed and logged with the game time; tools/framecmp.py compares two runs), readswait (every cache file read waited for as it is asked, so pictures do not depend on read timing; slower)");
+	platform_log("keep words, build 130's instruments (opt-in): posepredict (how often a tick's base pose is the frame after its last), framecrc (each finished picture hashed and logged with the game time; tools/framecmp.py compares two runs), readswait (every cache file read waited for as it is asked, so pictures do not depend on read timing; slower)");
 	platform_log("keep words, build 130's default change (Sheepdog01, 2026-10-15): cutless on (triangles and cut pieces wholly off the screen left out); cutlessoff cuts and draws them as before");
 }
 
