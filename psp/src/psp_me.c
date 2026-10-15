@@ -39,9 +39,11 @@ reset through the kernel. The library's sleep handler (it replaces the
 firmware's own ME one) holds it in reset too. After a stop every job runs on
 the main CPU instead.
 
-After a sleep the ME is started again ("the wake" below), unless
-"mewakeoff": the same reset release as at launch, from the main thread at a
-frame's end, once no job of any slot or ring ticket can still be out.
+After a sleep the ME stays stopped unless "mewake" asks for it to be
+started again ("the wake" below): a reset release from the main thread at a
+frame's end, once no job of any slot or ring ticket can still be out. On
+the PSP-1000 the first such restart found no ME answering, and the HOME exit
+after it hung the PSP, so it is opt-in until a PSP shows it working.
 
 The ME is the firmware's until the next reboot of the PSP once taken: XMB
 music and video stay off until then. PPSSPP doesn't run ME code at all:
@@ -277,6 +279,79 @@ static volatile int me_state = 0;
 /* counted by the kernel's sleep and wake handlers: a restart that sees it
 move slept again partway, and the ME may be in reset under it */
 static volatile unsigned int me_sleeps = 0;
+/* The reset register holds every block's reset, not only the ME's: written
+whole, a hold or a release also releases whatever the firmware's drivers
+hold in reset at that moment (mid-sleep, mid-wake). So the ME's two bits are
+set and cleared alone, as the firmware's own sysreg driver does.
+"meresetwhole": the whole-register writes again */
+static int me_reset_whole = 0;
+
+/* The system registers that decide whether the ME can run, as the main CPU
+sees them: resets (0xbc10004c), bus clocks (0xbc100050: the ME's is bit 0),
+clocks (0xbc100058) and AVC power (0xbc100070); with them, the ME's start
+marks (below). Read at launch, in the kernel's sleep and wake handlers,
+around a restart's release and at exit, so the log shows what a sleep
+changes */
+struct me_sysregs
+{
+	unsigned int reset, bus_clock, clock, avc, marks[2];
+};
+static struct me_sysregs regs_launch, regs_sleep, regs_wake, regs_exit;
+
+/* kernel mode only, like the registers */
+static inline void reset_hold(void)
+{
+	if (me_reset_whole)
+		HW_SYS_RESET_ENABLE = SC_HW_RESET;
+	else
+	{
+		u32 interrupts;
+
+		meLibSuspendCpuIntr(interrupts);
+		HW_SYS_RESET_ENABLE |= SC_HW_RESET;
+		meLibResumeCpuIntr(interrupts);
+	}
+	meLibSync();
+}
+
+static inline void reset_release(void)
+{
+	if (me_reset_whole)
+		HW_SYS_RESET_ENABLE = 0;
+	else
+	{
+		u32 interrupts;
+
+		meLibSuspendCpuIntr(interrupts);
+		HW_SYS_RESET_ENABLE &= ~SC_HW_RESET;
+		meLibResumeCpuIntr(interrupts);
+	}
+	meLibSync();
+}
+
+/* Two words of the ME's reset-vector SRAM, written by the ME as its start
+goes on, so a start that never answers still says how far it got. Away from
+the library's shared words (0xbfc00600) and the firmware's RPC words, which
+are idle while the ME runs our code */
+#define ME_MARK_START   0xbfc006c0 /* the wake's start stub (psp_me_wake_stub) */
+#define ME_MARK_PROCESS 0xbfc006c4 /* meLibOnProcess */
+#define ME_MARK_STUB_IN     0x57a90001u
+#define ME_MARK_STUB_DONE   0x57a90002u
+#define ME_MARK_PROCESS_IN  0x57a90003u
+#define ME_MARK_PROCESS_RUN 0x57a90004u
+
+/* kernel mode only: the registers and the SRAM are out of a user thread's
+reach */
+static inline void sysregs_read(struct me_sysregs *regs)
+{
+	regs->reset = HW_SYS_RESET_ENABLE;
+	regs->bus_clock = HW_SYS_BUS_CLOCK_ENABLE;
+	regs->clock = hw(0xbc100058);
+	regs->avc = HW_SYS_AVC_POWER;
+	regs->marks[0] = hw(ME_MARK_START);
+	regs->marks[1] = hw(ME_MARK_PROCESS);
+}
+
 /* 1 while a client thread is inside a slot's job (psp_me_run, or from
 psp_me_submit to the end of psp_me_finish). Each slot has one client thread,
 the flag's only writer; it is raised before that thread looks at me_state,
@@ -711,6 +786,8 @@ void meLibOnProcess(void)
 	int ring_ready = 0; /* the main CPU has turned the ring on */
 	unsigned int ring_popped = 0, ring_last_look = 0, ring_quiet = RING_LINGER_PASSES;
 
+	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
+	meLibSync();
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
 	Sheepdog01's PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
 	0. MIPS32r2's Cause bit 27 (DC, "disable count") stops it; the firmware
@@ -730,6 +807,8 @@ void meLibOnProcess(void)
 		control->cause_after = cause;
 	}
 	meLibDcacheWritebackInvalidateAll();
+	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_RUN;
+	meLibSync();
 	for (;;)
 	{
 		int k;
@@ -801,16 +880,16 @@ has the ME answering again. Nothing more here: kernel mode is no place to
 wait for the ME, and the game's threads may be anywhere in a job */
 void meLibOnSleep(void)
 {
-	HW_SYS_RESET_ENABLE = SC_HW_RESET;
-	meLibSync();
+	sysregs_read(&regs_sleep);
+	reset_hold();
 	me_state = -1;
 	me_sleeps++;
 }
 
 void meLibOnWake(void)
 {
-	HW_SYS_RESET_ENABLE = SC_HW_RESET;
-	meLibSync();
+	sysregs_read(&regs_wake);
+	reset_hold();
 	me_state = -1;
 	me_sleeps++;
 }
@@ -886,8 +965,13 @@ static void me_wake(void)
 
 static int me_hold_reset(void)
 {
-	HW_SYS_RESET_ENABLE = SC_HW_RESET;
-	meLibSync();
+	reset_hold();
+	return 0;
+}
+
+static int me_sysregs_kernel(void *regs)
+{
+	sysregs_read((struct me_sysregs *)regs);
 	return 0;
 }
 
@@ -909,6 +993,12 @@ int psp_is_emulator(void)
 any other reason than a sleep (a job that timed out, HOME), since an ME that
 failed once is not trusted again by a wake */
 static int me_restartable = 0;
+/* 1 from a release of the ME's reset (launch, a restart) until it is seen
+halted or is held in reset again: while set, the ME may still be running
+our code, and the exit holds it before the firmware takes the PSP back */
+static int me_maybe_running = 0;
+/* the library's kernel helper is loaded: kernel calls can be made */
+static int me_kernel_ready = 0;
 
 static void me_stop(const char *why, int for_sleep)
 {
@@ -929,6 +1019,7 @@ static void me_stop(const char *why, int for_sleep)
 			sceKernelDelayThread(1000);
 			me_wake();
 		}
+		me_maybe_running = 0;
 		if (control->stop == 2)
 			platform_log("ME: stopped (%s); halted itself after %d ms; the main CPU runs its jobs from here", why, k);
 		else
@@ -954,15 +1045,40 @@ void psp_me_sleep_stop(void)
 	me_stop("sleep", 1);
 }
 
-/* the old name (psp_platform.c's HOME callback) */
-void psp_meaudio_stop(const char *why)
-{
-	psp_me_stop(why);
-}
-
 static void stop_at_exit(void)
 {
 	psp_me_stop("exit");
+}
+
+static void sysregs_line(char *line, int size, const char *name, const struct me_sysregs *regs)
+{
+	snprintf(line, size, "%s %08x %08x %08x %08x (marks %08x %08x)", name, regs->reset, regs->bus_clock, regs->clock,
+		regs->avc, regs->marks[0], regs->marks[1]);
+}
+
+/* HOME, or the game's own exit: the firmware reboots into the XMB and boots
+its own ME image there, and that boot waits for the ME without a time limit.
+So the ME is left as the firmware leaves it before a boot: halted, or held
+in reset, never running our code. Nothing here waits on the ME for longer
+than the stop's 100 ms. The registers go to the log, against launch's, for
+a hang that comes after this */
+void psp_me_exit(const char *why)
+{
+	char line[96];
+
+	me_stop(why, 0);
+	if (!me_kernel_ready)
+		return;
+	if (me_maybe_running)
+	{
+		kcall_2(me_hold_reset, 0);
+		me_maybe_running = 0;
+		platform_log("ME: held in reset for the exit (a restart may have had it running)");
+	}
+	kcall_3(me_sysregs_kernel, 0, &regs_exit);
+	sysregs_line(line, sizeof(line), "exit", &regs_exit);
+	platform_log("ME: system registers (reset, bus clocks, clocks, AVC power) at %s; %s %08x %08x %08x %08x", line,
+		"launch", regs_launch.reset, regs_launch.bus_clock, regs_launch.clock, regs_launch.avc);
 }
 
 /* launch (build 87: on unless the launch menu's "nomeaudio"): the ME started,
@@ -1014,6 +1130,7 @@ int psp_me_start(void)
 		char folder[256];
 		int have = getcwd(folder, sizeof(folder)) != NULL;
 
+		me_reset_whole = psp_keep("meresetwhole");
 		platform_log("ME: starting the Media Engine (a hang here: hold the power switch up 10 s; launch with nomeaudio)");
 		psp_log_flush();
 		chdir("ms0:/halo");
@@ -1021,6 +1138,10 @@ int psp_me_start(void)
 		if (have)
 			chdir(folder);
 	}
+	/* the library's kernel helper is in from here; the ME's reset was
+	released whether or not the start below sees it running */
+	me_kernel_ready = table >= 0 || table < -4;
+	me_maybe_running = table >= 0;
 	if (table < 0)
 	{
 		me_state = -1;
@@ -1036,6 +1157,7 @@ int psp_me_start(void)
 	{
 		me_state = -1;
 		kcall_2(me_hold_reset, 0);
+		me_maybe_running = 0;
 		platform_log("ME: the ME didn't start (alive %u -> %u in 20 ms; table %d); held in reset", before, control->alive, table);
 		return 0;
 	}
@@ -1056,6 +1178,14 @@ int psp_me_start(void)
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
+	kcall_3(me_sysregs_kernel, 0, &regs_launch);
+	{
+		char line[96];
+
+		sysregs_line(line, sizeof(line), "launch", &regs_launch);
+		platform_log("ME: system registers (reset, bus clocks, clocks, AVC power) at %s%s", line,
+			me_reset_whole ? "; meresetwhole: the reset register written whole" : "");
+	}
 	if (me_halting)
 		platform_log("ME: mehalt: the ME halts when idle and is woken by interrupt");
 	if (ring_on)
@@ -1684,7 +1814,7 @@ void psp_me_ring_test(void)
 	ringtest_bursts++;
 }
 
-/* ---------- the wake: the ME started again after a sleep
+/* ---------- the wake: the ME started again after a sleep ("mewake")
 
 The kernel's sleep handler holds the ME in reset from the sleep on. Once the
 wake is complete the power callback asks for a restart (psp_me_wake_request),
@@ -1695,27 +1825,100 @@ and the main thread carries it out at a frame's end (psp_me_wake_poll):
   through slot_busy, frame end by frame end;
 - me_state stays -1 until the ME answers, so until then every client takes
   its job back to the main CPU, as after the sleep.
-Only the library's reset has to be done again (meLibReset): the ME's code
-runs from this program in main RAM, which the PSP keeps through a sleep, and
-its stack is in its own eDRAM, made anew at each start. The one thing in the
-ME's reset-vector SRAM is the library's 264-byte start handler, copied again
-by meLibReset whether or not the sleep kept it. */
-#define WAKE_ANSWER_US 100000 /* the ME's first idle poll after the release, at most */
+The ME's code runs from this program in main RAM, which the PSP keeps
+through a sleep, and its stack is in its own eDRAM, made anew at each start.
+What the sleep does take is the ME's state: a sleep powers it down, and the
+library's sleep handler has replaced the firmware's own, which on a wake
+would turn the ME's bus clock back on and boot it with its caches cleared
+(the firmware's me_wrapper, as uOFW reads it). The restart does those two
+things itself, then the library's start (psp_me_wake_stub,
+me_restart_kernel). The first try, without them, found no ME answering
+within 100 ms on a PSP-1000 [M] */
+#define WAKE_ANSWER_US 300000 /* the ME's first idle poll after the release, at most */
+
+/* What the firmware's ME boot code does first (its me_wrapper's boot code),
+before any read through a cache: both caches' tags cleared, so nothing in
+them is taken for data or written back. A sleep powers the ME down, so its
+caches wake holding noise, and meLibOnProcess's first act, a write-back of
+the whole data cache, would write every noisy dirty line to wherever its tag
+points. At launch the firmware's boot has already cleared them, which is why
+the library's start handler can go without. The loops are the firmware's,
+sized from the ME's own Config register. The library's handler is copied
+straight after this, so the ME runs on into it; the two marks say how far
+it got. Copied to the reset vector, never run in place */
+__asm__(
+	".section .text\n"
+	".balign 4\n"
+	".set push\n"
+	".set noreorder\n"
+	".set noat\n"
+	".globl psp_me_wake_stub\n"
+	"psp_me_wake_stub:\n"
+	"	lui	$k0, 0xbfc0\n"
+	"	lui	$k1, 0x57a9\n"
+	"	ori	$k1, $k1, 1\n"
+	"	sw	$k1, 0x6c0($k0)\n"
+	"	sync\n"
+	"	mtc0	$zero, $28\n"
+	"	mtc0	$zero, $29\n"
+	"	li	$t9, 2048\n"
+	"	mfc0	$t0, $16\n"
+	"	ext	$t0, $t0, 9, 3\n"
+	"	sllv	$k1, $t9, $t0\n"
+	"1:	addi	$k1, $k1, -64\n"
+	"	bnez	$k1, 1b\n"
+	"	cache	0x1, 0($k1)\n"
+	"	mfc0	$t0, $16\n"
+	"	ext	$t0, $t0, 6, 3\n"
+	"	sllv	$k1, $t9, $t0\n"
+	"2:	addi	$k1, $k1, -64\n"
+	"	bnez	$k1, 2b\n"
+	"	cache	0x11, 0($k1)\n"
+	"	sync\n"
+	"	lui	$k1, 0x57a9\n"
+	"	ori	$k1, $k1, 2\n"
+	"	sw	$k1, 0x6c0($k0)\n"
+	"	sync\n"
+	".globl psp_me_wake_stub_end\n"
+	"psp_me_wake_stub_end:\n"
+	".set pop\n"
+	".previous\n");
+extern const char psp_me_wake_stub[], psp_me_wake_stub_end[];
 
 static volatile int wake_pending = 0;
 static unsigned long long wake_mark;
 static unsigned int wake_frames; /* frame ends spent waiting for the clients */
-static char wake_line[240];
+static char wake_line[240], wake_regs_line[480];
 static volatile int wake_line_ready = 0;
+/* the registers and marks around the restart's release */
+static struct me_sysregs regs_release_before, regs_release_after, regs_answer;
 
 /* for the heartbeat (psp_me_report), which says it once */
 static void wake_report(const char *format, ...)
 {
 	va_list list;
+	char before[96], after[96];
 
 	va_start(list, format);
 	vsnprintf(wake_line, sizeof(wake_line), format, list);
 	va_end(list);
+	wake_regs_line[0] = '\0';
+	if (me_restartable == 1)
+	{
+		char launch[96], sleep[96], wake[96];
+
+		sysregs_line(launch, sizeof(launch), "launch", &regs_launch);
+		sysregs_line(sleep, sizeof(sleep), "sleep", &regs_sleep);
+		sysregs_line(wake, sizeof(wake), "wake", &regs_wake);
+		before[0] = after[0] = '\0';
+		if (regs_answer.reset | regs_answer.bus_clock)
+		{
+			sysregs_line(before, sizeof(before), "; release", &regs_release_before);
+			sysregs_line(after, sizeof(after), " ->", &regs_answer);
+		}
+		snprintf(wake_regs_line, sizeof(wake_regs_line),
+			"ME: system registers (reset, bus clocks, clocks, AVC power) at %s; %s; %s%s%s", launch, sleep, wake, before, after);
+	}
 	wake_line_ready = 1;
 }
 
@@ -1729,10 +1932,48 @@ void psp_me_wake_request(void)
 	wake_pending = 1;
 }
 
-static int me_release_kernel(void)
+/* The release, in kernel mode: as the firmware boots the ME (its
+me_wrapper), the ME's bus clock on and its reset held while its reset
+vector is written; then the vector written with the cache clear first and
+the library's start after it (meLibReset's copy, moved along by the stub's
+length; the handler has no address of its own in it: one branch relative,
+one jump to meLibOnPreProcess's absolute address); then the caches written
+back and the reset's two bits let go */
+static int me_restart_kernel(void *unused)
 {
-	meLibReset();
+	unsigned int stub = (unsigned int)(psp_me_wake_stub_end - psp_me_wake_stub);
+	unsigned int handler = (unsigned int)(&__stop__me_section - &__start__me_section);
+	u32 interrupts;
+
+	(void)unused;
+	sysregs_read(&regs_release_before);
+	reset_hold();
+	meLibSuspendCpuIntr(interrupts);
+	HW_SYS_BUS_CLOCK_ENABLE |= 1;
+	meLibResumeCpuIntr(interrupts);
+	hw(ME_MARK_START) = 0;
+	hw(ME_MARK_PROCESS) = 0;
+	memcpy((void *)ME_HANDLER_BASE, psp_me_wake_stub, stub);
+	memcpy((void *)(ME_HANDLER_BASE + stub), &__start__me_section, handler);
+	sceKernelDcacheWritebackInvalidateAll();
+	sceKernelIcacheInvalidateAll();
+	reset_release();
+	sysregs_read(&regs_release_after);
 	return 0;
+}
+
+/* how far the ME's start got, from its marks */
+static const char *wake_stage(const struct me_sysregs *regs)
+{
+	if (regs->marks[1] == ME_MARK_PROCESS_RUN)
+		return "into its loop (past its first cache write-back)";
+	if (regs->marks[1] == ME_MARK_PROCESS_IN)
+		return "into the game's ME code, not past its first cache write-back";
+	if (regs->marks[0] == ME_MARK_STUB_DONE)
+		return "past the cache clear, not into the game's ME code (the library's start handler: its VME wait, or the jump)";
+	if (regs->marks[0] == ME_MARK_STUB_IN)
+		return "into the cache clear, not out of it";
+	return "nowhere: not its first instruction (power, clock or reset)";
 }
 
 void psp_me_wake_poll(void)
@@ -1750,11 +1991,12 @@ void psp_me_wake_poll(void)
 		wake_pending = 0;
 		return;
 	}
-	if (psp_keep("mewakeoff") || !me_restartable)
+	if (!psp_keep("mewake") || psp_keep("mewakeoff") || !me_restartable)
 	{
 		wake_pending = 0;
 		wake_report("ME: stays stopped after the wake (%s); the main CPU runs its jobs",
-			me_restartable ? "mewakeoff" : "it was stopped for a failure before the sleep");
+			!me_restartable ? "it was stopped for a failure before the sleep" :
+			psp_keep("mewake") ? "mewakeoff" : "the restart is opt-in: mewake");
 		return;
 	}
 	for (k = 0; k < ME_SLOTS; k++)
@@ -1791,14 +2033,18 @@ void psp_me_wake_poll(void)
 		return;
 	}
 	release = now;
-	kcall_2(me_release_kernel, 0);
+	me_maybe_running = 1;
+	kcall_3(me_restart_kernel, 0, 0);
 	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
 		sceKernelDelayThread(500);
+	kcall_3(me_sysregs_kernel, 0, &regs_answer);
 	if (control->alive == 0 || me_sleeps != sleeps)
 	{
 		kcall_2(me_hold_reset, 0);
-		wake_report("ME: restart after the wake FAILED (%s); held in reset, the main CPU runs its jobs",
-			control->alive == 0 ? "no idle poll within 100 ms of the reset's release" : "the PSP slept again meanwhile");
+		me_maybe_running = 0;
+		wake_report("ME: restart after the wake FAILED (%s; the ME's start got %s); held in reset, the main CPU runs its jobs",
+			control->alive == 0 ? "no idle poll within 300 ms of the reset's release" : "the PSP slept again meanwhile",
+			wake_stage(&regs_answer));
 		return;
 	}
 	me_state = 1;
@@ -1958,6 +2204,8 @@ void psp_me_report(void)
 	{
 		wake_line_ready = 0;
 		platform_log("%s", wake_line);
+		if (wake_regs_line[0])
+			platform_log("%s", wake_regs_line);
 	}
 	report_mark = now;
 	for (k = 0; k < ME_SLOTS; k++)
