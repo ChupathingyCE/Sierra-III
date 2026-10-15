@@ -2551,6 +2551,13 @@ wall in b63 run B, shots 33 and 35). Each frame:
 The near plane is then 4, 2 or 1 times the game's. The cost is measured
 (the log's "near plane" line) */
 extern unsigned char collision_test_sphere(const float *center, float radius, long ignore_object_index);
+/* the same answer by a walk that stops at the first surface or edge it
+finds (psp_fixups.py, collisions.c#anysphere): most of these spheres touch
+the level, and the full test gathered everything inside them first.
+"nearautofull": the full test */
+extern unsigned char psp_collision_test_sphere_any(const float *center, float radius, long ignore_object_index);
+static int near_auto_full = -1, near_auto_check = -1;
+static unsigned long near_auto_checked = 0, near_auto_differed = 0;
 static int near_auto = 0;
 static int near_scale = -1; /* build 77: file scope, for the debug menu */
 /* build 79's GE antialias flag ("geaa", GU_LINE_SMOOTH) is gone in build 80:
@@ -2607,6 +2614,11 @@ static float near_plane_auto(const float *eye, float game_near)
 
 	/* build 90: for psp_ge_model_shape this frame */
 	player_seated = psp_player_seated();
+	if (near_auto_full < 0)
+	{
+		near_auto_full = psp_keep("nearautofull") != 0;
+		near_auto_check = psp_keep("nearautocheck") != 0;
+	}
 	near_object_distance_last = near_object_distance;
 	near_object_distance = 1e30f;
 	/* build 106: the nearest model's limit first, and the level tested
@@ -2620,11 +2632,23 @@ static float near_plane_auto(const float *eye, float game_near)
 	if (object_scale < 16)
 		near_auto_by_objects++;
 	for (scale = object_scale; scale > 1; scale /= 2)
-		if (!collision_test_sphere(eye, game_near * scale * 1.4f, -1))
+	{
+		int touches = near_auto_full > 0 ? collision_test_sphere(eye, game_near * scale * 1.4f, -1) :
+			psp_collision_test_sphere_any(eye, game_near * scale * 1.4f, -1);
+
+		/* "nearautocheck": both tests, their answers compared */
+		if (near_auto_check > 0)
+		{
+			near_auto_checked++;
+			if (!collision_test_sphere(eye, game_near * scale * 1.4f, -1) != !touches)
+				near_auto_differed++;
+		}
+		if (!touches)
 		{
 			level_scale = scale;
 			break;
 		}
+	}
 	scale = level_scale;
 	near_auto_chosen[scale >= 4 ? 2 : scale == 2 ? 1 : 0]++;
 	if (scale >= 8)
@@ -16475,6 +16499,8 @@ void psp_ge_frame_end(void)
 						near_auto ? " (nearauto)" : " (fixed)", near_auto_chosen[2], near_auto_chosen_high[0], near_auto_chosen_high[1], near_auto_chosen[1], near_auto_chosen[0],
 						near_auto_by_objects, near_auto_frames ? near_auto_us / near_auto_frames : 0, level_draws_inside / 300,
 						level_draws_classified / 300, angle_far_triangles / 300, detail_passes_skipped_far / 300);
+					if (near_auto_check > 0)
+						platform_log("GE: nearautocheck: %lu sphere answers compared, %lu differed", near_auto_checked, near_auto_differed);
 					platform_log("GE: uv centring %s: %lu draws, largest shift %.0f repeats; GE serial %s",
 						uv_centre > 0 ? "on" : "off", uv_centred_draws / 300, uv_shift_largest,
 						ge_serial > 0 ? "on (the frame end's wait is the GE's whole busy time)" : "off");

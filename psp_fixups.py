@@ -17022,6 +17022,153 @@ FIXES_128["source/rasterizer/rasterizer.c#obscurer"] = [
 	{"""),
 ]
 
+# "Does this sphere touch the level?" answered with a walk that stops at the
+# first surface or edge it finds. nearauto (psp_ge.c, near_plane_auto) asks
+# it of up to four spheres about the eye each frame, largest first, and
+# collision_test_sphere answered each with the full gather of every leaf,
+# surface, edge and vertex inside. On a50 the PSP-1000 spent 3.9 ms a frame
+# deciding (lab 38732215900: 8,112 such sphere tests at 1.26 ms each in
+# 300 s, the collision log's unknown user), most of them on the spheres that
+# do touch, which an early stop makes cheap. The same yes or no, so the same
+# near plane: only the walk's work changes. Nothing else asks this way: the
+# memo (#spherememo) is left out of these walks and every other query walks
+# as before. "nearautofull": the full test, as before
+FIXES_128["source/physics/collision_bsp.c#anysphere"] = [
+("""static void psp_bsp2d_test_sphere(
+	struct psp_sphere_walk_data *walk,
+	long child_index,
+	short depth)
+{
+	struct test_sphere_data *data = walk->data;
+""", """/* psp_fixups.py (FIXES_128): an early-out walk for "does the sphere touch
+the level" (psp_collision_test_sphere_any, collisions.c) */
+int psp_sphere_any = 0, psp_sphere_any_found = 0;
+
+static void psp_bsp2d_test_sphere(
+	struct psp_sphere_walk_data *walk,
+	long child_index,
+	short depth)
+{
+	struct test_sphere_data *data = walk->data;
+
+	if (psp_sphere_any_found)
+		return;
+"""),
+("""	psp_surface_test_sphere(data, child_index & LONG_MAX);
+}""", """	psp_surface_test_sphere(data, child_index & LONG_MAX);
+	/* collision_bsp_test_sphere's answer is any surface or edge */
+	if (psp_sphere_any && (data->result->surface_count > 0 || data->result->edge_count > 0))
+		psp_sphere_any_found = 1;
+}"""),
+("""static void psp_bsp3d_test_sphere(
+	struct psp_sphere_walk_data *walk,
+	long node_index,
+	short depth)
+{
+	struct test_sphere_data *data = walk->data;
+""", """static void psp_bsp3d_test_sphere(
+	struct psp_sphere_walk_data *walk,
+	long node_index,
+	short depth)
+{
+	struct test_sphere_data *data = walk->data;
+
+	if (psp_sphere_any_found)
+		return;
+"""),
+("""			psp_st_references++;
+			if (!psp_stack_counts[bucket])""", """			if (psp_sphere_any_found)
+				break;
+			psp_st_references++;
+			if (!psp_stack_counts[bucket])"""),
+("""	if (!psp_surface_test_on)
+	{
+		bsp3d_test_sphere_recursive(data, 0, 0);
+		return;
+	}
+	if (psp_surface_test_check)
+		psp_st_check_context = *data;
+""", """	if (!psp_surface_test_on)
+	{
+		bsp3d_test_sphere_recursive(data, 0, 0);
+		return;
+	}
+	if (psp_sphere_any)
+	{
+		/* the early-out walk: the port's own (it can stop), and none of the
+		counts that steer the other walks */
+		if (++psp_surface_walk == 0)
+		{
+			csmemset(psp_surfaces_seen, 0, sizeof(psp_surfaces_seen));
+			psp_surface_walk = 1;
+		}
+		psp_surfaces_seen_count = 0;
+		walk.data = data;
+		walk.designator = 0;
+		psp_bsp3d_test_sphere(&walk, 0, 0);
+		return;
+	}
+	if (psp_surface_test_check)
+		psp_st_check_context = *data;
+"""),
+("""		if (psp_sphere_memo_on)
+		{
+			keyed = psp_sphere_memo_key(&key, bsp, breakable_surface_count, breakable_surface_flags, center, radius);""",
+ """		/* (the early-out walks are neither asked of the memo nor kept in it) */
+		extern int psp_sphere_any;
+
+		if (psp_sphere_memo_on && !psp_sphere_any)
+		{
+			keyed = psp_sphere_memo_key(&key, bsp, breakable_surface_count, breakable_surface_flags, center, radius);"""),
+]
+FIXES_128["source/physics/collisions.c#anysphere"] = [
+("""boolean collision_test_point(
+	unsigned long flags,
+	real_point3d const *point,
+	long ignore_object_index)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_128): collision_test_sphere's answer with the walk
+that stops at the first surface or edge (collision_bsp.c#anysphere) */
+extern int psp_sphere_any, psp_sphere_any_found;
+
+boolean psp_collision_test_sphere_any(
+	real_point3d const *center,
+	real radius,
+	long ignore_object_index)
+{
+	boolean result;
+	struct collision_bsp_test_sphere_result sphere_result;
+
+	if (bsp3d_test_point(global_bsp3d_get(), 0, center) != NONE)
+	{
+		psp_sphere_any = 1;
+		psp_sphere_any_found = 0;
+		result = collision_bsp_test_sphere(
+			global_collision_bsp_get(),
+			MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+			breakable_surface_flags_get(),
+			center,
+			radius,
+			&sphere_result);
+		psp_sphere_any = 0;
+		psp_sphere_any_found = 0;
+		if (!result)
+		{
+			return result;
+		}
+	}
+
+	return TRUE;
+}
+#endif
+
+boolean collision_test_point(
+	unsigned long flags,
+	real_point3d const *point,
+	long ignore_object_index)
+{"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
