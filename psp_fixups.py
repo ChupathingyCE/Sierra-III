@@ -17938,7 +17938,131 @@ void objects_initialize_for_new_map("""),
 #else"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()):
+# ---------- FIXES_132: recon for the level sphere walk's surface tests (X9)
+
+FIXES_132 = {}
+
+FIXES_132["source/physics/collision_bsp.c#surfacebound"] = [
+("""/* psp_fixups.py (FIXES_128): an early-out walk for "does the sphere touch
+the level" (psp_collision_test_sphere_any, collisions.c) */""",
+"""#if defined(PSP_DEBUG_TOOLS)
+/* psp_fixups.py (FIXES_132 #surfacebound, recon): what a bounding sphere for
+each surface could answer before its rings are walked. Counted per surface
+the walk tests: added, hit at a vertex or edge, and out of reach (the sphere
+farther from the surface's bounding sphere than both radii and a margin); an
+out-of-reach surface that is added or hit would make the idea inexact, so
+that count must stay 0 */
+static unsigned long psp_sb_tested, psp_sb_added, psp_sb_features, psp_sb_far, psp_sb_far_hit, psp_sb_edges;
+
+static int psp_surface_far(struct test_sphere_data const *data, long surface_index)
+{
+	struct collision_surface const *surface;
+	long edge_index;
+	short edge_count;
+	real center_x = 0.f, center_y = 0.f, center_z = 0.f, bound_squared = 0.f, reach;
+	real delta_x, delta_y, delta_z;
+	int pass, vertices = 0;
+
+	if (!collision_bsp_valid_surface_index(data->bsp, surface_index))
+		return 0;
+	surface = TAG_BLOCK_GET_ELEMENT(
+		&data->bsp->surfaces,
+		surface_index,
+		struct collision_surface);
+	if (!collision_surface_edge_ring_continues(data->bsp, surface->first_edge_index, 0))
+		return 0;
+	/* the ring's vertices: their mean, then the farthest from it */
+	for (pass = 0; pass < 2; pass++)
+	{
+		edge_index = surface->first_edge_index;
+		edge_count = 0;
+		do
+		{
+			struct collision_edge const *edge = TAG_BLOCK_GET_ELEMENT(
+				&data->bsp->edges,
+				edge_index,
+				struct collision_edge);
+			boolean reverse = edge->surface_indices[1] == surface_index;
+			struct collision_vertex const *vertex = TAG_BLOCK_GET_ELEMENT(
+				&data->bsp->vertices,
+				edge->vertex_indices[reverse],
+				struct collision_vertex);
+
+			if (!pass)
+			{
+				center_x += vertex->point.x;
+				center_y += vertex->point.y;
+				center_z += vertex->point.z;
+				vertices++;
+			}
+			else
+			{
+				delta_x = vertex->point.x - center_x;
+				delta_y = vertex->point.y - center_y;
+				delta_z = vertex->point.z - center_z;
+				if (delta_x * delta_x + delta_y * delta_y + delta_z * delta_z > bound_squared)
+					bound_squared = delta_x * delta_x + delta_y * delta_y + delta_z * delta_z;
+			}
+			edge_index = edge->edge_indices[reverse];
+		}
+		while (edge_index != surface->first_edge_index &&
+			collision_surface_edge_ring_continues(data->bsp, edge_index, ++edge_count));
+		if (!pass)
+		{
+			center_x /= (real)vertices;
+			center_y /= (real)vertices;
+			center_z /= (real)vertices;
+		}
+	}
+	psp_sb_edges += (unsigned long)vertices;
+	reach = square_root(bound_squared) + data->radius;
+	reach += reach * 0.001f + 0.0001f;
+	delta_x = data->center->x - center_x;
+	delta_y = data->center->y - center_y;
+	delta_z = data->center->z - center_z;
+	return delta_x * delta_x + delta_y * delta_y + delta_z * delta_z > reach * reach;
+}
+#endif
+
+/* psp_fixups.py (FIXES_128): an early-out walk for "does the sphere touch
+the level" (psp_collision_test_sphere_any, collisions.c) */"""),
+("""	psp_surface_test_sphere(data, child_index & LONG_MAX);
+	/* collision_bsp_test_sphere's answer is any surface or edge */""",
+"""#if defined(PSP_DEBUG_TOOLS)
+	{
+		long surfaces = data->result->surface_count, features = data->result->edge_count + data->result->vertex_count;
+		int far = psp_surface_far(data, child_index & LONG_MAX);
+
+		psp_surface_test_sphere(data, child_index & LONG_MAX);
+		psp_sb_tested++;
+		if (data->result->surface_count != surfaces)
+			psp_sb_added++;
+		if (data->result->edge_count + data->result->vertex_count != features)
+			psp_sb_features++;
+		if (far)
+		{
+			psp_sb_far++;
+			if (data->result->surface_count != surfaces ||
+				data->result->edge_count + data->result->vertex_count != features)
+				psp_sb_far_hit++;
+		}
+	}
+#else
+	psp_surface_test_sphere(data, child_index & LONG_MAX);
+#endif
+	/* collision_bsp_test_sphere's answer is any surface or edge */"""),
+("""	psp_st_surfaces = psp_st_again = psp_st_compared = psp_st_differed = psp_st_engine = 0;
+	psp_st_window = tick;""",
+"""	psp_st_surfaces = psp_st_again = psp_st_compared = psp_st_differed = psp_st_engine = 0;
+	psp_st_window = tick;
+#if defined(PSP_DEBUG_TOOLS)
+	platform_psp_log("surfacebound: %lu surfaces tested (%lu ring vertices), %lu added, %lu hit at a vertex or edge; %lu out of reach by their bounding spheres, %lu of those added or hit",
+		psp_sb_tested, psp_sb_edges, psp_sb_added, psp_sb_features, psp_sb_far, psp_sb_far_hit);
+	psp_sb_tested = psp_sb_edges = psp_sb_added = psp_sb_features = psp_sb_far = psp_sb_far_hit = 0;
+#endif"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
