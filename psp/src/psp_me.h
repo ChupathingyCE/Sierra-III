@@ -31,13 +31,16 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 int psp_me_finish(int which, unsigned int *results);
 
 /* sleep and wake: the power callback stops the ME as the PSP sleeps and asks
-for a restart once it is awake; the main thread's frame end carries the
-restart out ("mewakeoff" keeps the ME stopped, as before) */
+for a restart once it is awake; with "mewake" the main thread's frame end
+carries the restart out, and otherwise the ME stays stopped */
 void psp_me_sleep_stop(void);
 void psp_me_wake_request(void);
 void psp_me_wake_poll(void);
 /* "mewaketest": a sleep's hold on the ME, without a sleep */
 void psp_me_wake_test_sleep(void);
+/* the exit (HOME, the game's own): the ME stopped, and held in reset if it
+may still be running, before the firmware takes the PSP back */
+void psp_me_exit(const char *why);
 
 /* The job ring (ME phase 1, keep word "meslant" turns it on): jobs handed
 to the ME without a slot of their own, collected later. Each job is a leaf:

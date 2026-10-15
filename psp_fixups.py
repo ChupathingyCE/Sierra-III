@@ -16306,20 +16306,42 @@ static int psp_lit_item_reason(struct object_header_datum const *header)
 	return 0;
 }
 
+/* Each item's last reason is remembered in a set of two, so two lit items
+whose indexes share a set don't push each other out and print a line every
+tick; and each item prints a few lines at most, so one that keeps changing
+reason can't fill the log either. Log lines are stick writes, which streaming
+waits behind */
+#define PSP_LIT_ITEM_LINES 4
+
 static void psp_lit_item_seen(struct object_header_datum const *header, short absolute_index)
 {
-	static struct { short identifier; signed char reason; } last[64];
+	static struct { short identifier; signed char reason; unsigned char lines; } last[64][2];
+	static unsigned char newest[64];
 	static int lines = 0;
 	struct item_datum const *item = (struct item_datum const *)header->datum;
-	int slot = absolute_index & 63;
+	int set = absolute_index & 63, way;
 	int reason = psp_lit_item_reason(header);
 
 	psp_items_lit_updated++;
 	psp_items_lit_reason[reason]++;
-	if (last[slot].identifier == header->identifier && last[slot].reason == reason)
+	if (last[set][0].identifier == header->identifier)
+		way = 0;
+	else if (last[set][1].identifier == header->identifier)
+		way = 1;
+	else
+	{
+		way = !newest[set];
+		last[set][way].identifier = header->identifier;
+		last[set][way].reason = -1;
+		last[set][way].lines = 0;
+	}
+	newest[set] = (unsigned char)way;
+	if (last[set][way].reason == reason)
 		return;
-	last[slot].identifier = header->identifier;
-	last[slot].reason = (signed char)reason;
+	last[set][way].reason = (signed char)reason;
+	if (last[set][way].lines >= PSP_LIT_ITEM_LINES)
+		return;
+	last[set][way].lines++;
 	if (lines++ < 400)
 		platform_psp_log("sleep: lit item %s #%d: %s (t=%ld; speed %.5f, spin %.5f; item flags %04x, on structure %d, surface %ld)",
 			tag_get_name(item->definition_index), absolute_index, psp_lit_reason_names[reason], game_time_get(),

@@ -895,7 +895,7 @@ static void keep_load(void)
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
 	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
 	platform_log("keep words, build 122's behaviour calls (opt-in, for Sheepdog01's A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
-	platform_log("keep words, the Media Engine's wake: fix off: mewakeoff (stays stopped after a sleep); recon: mewaketest");
+	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it); fix off: meresetwhole (the reset register written whole); recon: mewaketest");
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf; recon: noglowpass nobackpass");
 }
@@ -1184,7 +1184,7 @@ void psp_fpu_mask_traps(void)
 /* ---------- exit */
 
 void psp_tex_save_learned(void);
-void psp_meaudio_stop(const char *why);
+void psp_me_exit(const char *why);
 
 /* builds 88-104 kept ms0:/halo/log/exit.txt open from start-up to record
 how far the HOME exit got. It answered its question (b90: ARK-4 Kommander's
@@ -1197,12 +1197,12 @@ static int exit_callbacks_registered[3] = { 1, 1, 1 };
 static void exit_game(const char *why)
 {
 	exiting = 1;
-	/* build 89: the Media Engine stopped FIRST, before any Memory Stick
-	work: the XMB reloads over the memory it runs from (build 44's audio
-	sample crashed the PSP on HOME), and b87-b88 put file writes ahead of
-	it, which would hang the exit there if a write blocked instead of
-	failing (review) */
-	psp_meaudio_stop(why);
+	/* the Media Engine first, before any Memory Stick work: the XMB reloads
+	over the memory it runs from (an ME left running crashed the PSP on
+	HOME), and a file write that blocked ahead of it would hang the exit
+	there. psp_me_exit leaves it halted or held in reset, the states the
+	firmware's own ME boot starts from */
+	psp_me_exit(why);
 	platform_log("%s: exiting", why);
 	log_flush();
 	/* build 89: no texture save here any more. The learned binds are saved
@@ -2000,9 +2000,9 @@ steps in order: the console has no way to wait */
 		platform_log("reopentest: %s", line);
 	}
 	/* keep.txt's "mewaketest": the ME held in reset as a sleep holds it, at
-	15 s of game time, and the wake's restart asked for 3 s later, so play
-	runs on the main CPU alone between; against "mewaketest mewakeoff", play
-	must stay exact (statecrc) */
+	15 s of game time, and the wake's restart asked for 3 s later (it
+	happens with "mewake"), so play runs on the main CPU alone between;
+	with and without "mewake", play must stay exact (statecrc) */
 	if ((ticks_seen == 450 || ticks_seen == 540) && psp_keep("mewaketest"))
 	{
 		void psp_me_wake_test_sleep(void);
