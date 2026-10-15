@@ -50,3 +50,12 @@ Node matrices lead on b30 (the slowest map) and c20, and in total (17.4 against 
 4. Cache models and a PSP A/B on c20 and b30.
 
 Keep words to come: the job on by default once proven; an off word, and a check word.
+
+## Where it stands (2026-10-15, `mepose131` dcf09cb)
+
+Keep words: `poseahead` (the main CPU makes them ahead: plumbing only), `poseaheadme` (the ME makes them), `poseaheadcheck` (every pose made ahead and used is also decoded and compared, bit for bit).
+
+- **Exact** [E]: 0 of ~1.3 million poses checked differ on c20, a50, d20 and b30 (lab 38782815918); play and both seeds identical to the default at every common tick on a50, d20 and c20.
+- **The ME's rules** [E]: no system call in the job's work; no line written by both CPUs outside the game thread's stack, where the emulator runs the ME's job (lab 38786384396).
+- **On the PSP-1000, b30** [M] (lab 38784132264, repeat 2): the ME made 99.997% of the poses, no job failed; tick −1.4 ms (−2.5%) in the flight and −1.8 ms (−3.6%) in the cinematic, both real; the frame −0.9% in the flight; landing and beach in the noise. Against ~2.2 ms of decodes a tick (the PSP-3000's b30, above), about two thirds; the rest would go to listing, the hand-over's cache work and the copies [U].
+- **On the PSP-3000, c20, with the check word** [M] (lab 38784036485): the PSP stopped answering after the launch. Not seen in the emulator; the log on its stick should say how far it got. Until that's understood the job stays opt-in.
