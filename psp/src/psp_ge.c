@@ -2104,11 +2104,11 @@ static float guard_x, guard_y;
 /* the screen's side planes as the guard planes are written (x = screen_x z),
 with a margin of SCREEN_MARGIN_PIXELS for the GE's rounding and the TAA's
 jitter: a triangle or cut piece wholly past one of them should draw no pixel.
-"cutless" leaves them out (clip_triangle) */
+by default they are left out (clip_triangle; "cutlessoff" keeps them) */
 #define SCREEN_MARGIN_PIXELS 8.0f
 static float screen_x = 1.0f, screen_y = 1.0f;
 static int cut_less = 0, guard_wide = 0;
-/* recon, "cutlessmaskN" (with "cutless"): off-screen triangles and pieces
+/* recon, "cutlessmaskN": off-screen triangles and pieces
 left out only for the kinds whose bits are set in N (1 << CUT_LEVEL ...) */
 static int cut_less_mask = -1;
 /* build 118: the lengths of the guard band's side planes' normals as
@@ -3939,10 +3939,12 @@ static inline int piece_off_screen(const float *a, const float *b, const float *
 fan, go into store as a triangle list; returns how many corners it added.
 Most triangles sent here reach past the screen's side (the guard planes are
 6 screens out), and most of their pieces land wholly off the screen.
-"cutless": a triangle wholly off it is not cut at all, and a piece wholly off
-it is not stored. Neither should draw a pixel, yet the emulator's frames move
-by one or two colour steps in scattered pixels, for reasons not yet found
-(docs/review_cutstream.md), so it is opt-in, Sheepdog01's call */
+By default a triangle wholly off it is not cut at all, and a piece wholly
+off it is not stored. Neither should draw a pixel, yet the emulator's frames
+move by one or two colour steps in scattered pixels, for reasons not yet
+found (docs/review_cutstream.md). Sheepdog01 saw no difference on the PSP and
+chose it on for the frame rate (a10 crosses 15 fps with it); "cutlessoff"
+cuts them as before */
 static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_store *store)
 {
 	float buffer[2][12][CORNER_FLOATS];
@@ -8183,7 +8185,7 @@ void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c *
 static void cut_take(void)
 {
 	cut_stream = !psp_keep("cutstreamoff");
-	cut_less = cut_stream && psp_keep("cutless");
+	cut_less = cut_stream && !psp_keep("cutlessoff");
 	guard_wide = cut_stream && psp_keep("guardwide");
 	{
 		extern int psp_keep_number(const char *prefix, int fallback);
@@ -8195,8 +8197,8 @@ static void cut_take(void)
 	cut_count_on = psp_keep("cutcount");
 	if (!cut_stream)
 		platform_log("GE: cutstreamoff: cut pieces past the fixed buffers are lost, pieces off the screen drawn");
-	if (cut_less)
-		platform_log("GE: cutless: triangles and pieces wholly off the screen left out");
+	if (!cut_less)
+		platform_log("GE: cutlessoff: triangles and pieces wholly off the screen cut and drawn, as before b130");
 	if (guard_wide)
 		platform_log("GE: guardwide: the guard planes at %d pixels from the screen's centre", (int)GUARD_PIXELS);
 	model_cut = psp_scratch_take(sizeof(float[MAXIMUM_MODEL_CUT_CORNERS][CORNER_FLOATS]), "the models' cut corners");
