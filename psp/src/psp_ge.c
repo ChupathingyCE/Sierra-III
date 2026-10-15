@@ -4327,7 +4327,7 @@ heap has the room. What is drawn otherwise doesn't change. "streamroomoff":
 tried again on every draw. "streamsqueezeN" (test): the copies held to N KB
 of the arena and given no heap room, the pressure made where the emulator
 can show it */
-#define STREAM_WAITING 16
+#define STREAM_WAITING 64
 #define STREAM_HEAP_RETRY 30
 static int stream_room = -1;         /* -1: not read; 1: on; 0: "streamroomoff" */
 static int stream_room_building = 0; /* the frame end's build, past the wait */
