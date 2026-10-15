@@ -2468,6 +2468,8 @@ static const float world_origin[3] = { 0.0f, 0.0f, 0.0f };
 static float level_origin[3];
 static int level_origin_set = 0;
 static float level_eye[3];
+/* a copy was drawn from an origin other than level_origin this frame */
+static int level_copies_behind = 0;
 static unsigned long level_origin_moves = 0, level_copies_moved = 0, level_copies_left = 0,
 	level_vertices_moved = 0, level_move_us = 0;
 
@@ -2494,6 +2496,8 @@ static void level_model(const float *origin)
 /* the eye seen from a copy's origin, for the CPU's tests of its positions */
 static inline void level_frame(const float *origin)
 {
+	if (origin[0] != level_origin[0] || origin[1] != level_origin[1] || origin[2] != level_origin[2])
+		level_copies_behind = 1;
 	level_eye[0] = camera_eye[0] - origin[0];
 	level_eye[1] = camera_eye[1] - origin[1];
 	level_eye[2] = camera_eye[2] - origin[2];
@@ -13142,8 +13146,9 @@ static void level_copies_follow(void)
 	unsigned int start;
 	int index;
 
-	if (level_local <= 0 || !level_origin_set)
+	if (level_local <= 0 || !level_origin_set || !level_copies_behind)
 		return;
+	level_copies_behind = 0;
 	start = sceKernelGetSystemTimeLow();
 	for (index = 0; index < LEVEL_STREAMS; index++)
 	{
