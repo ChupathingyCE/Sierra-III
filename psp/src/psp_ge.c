@@ -16147,6 +16147,29 @@ void psp_ge_frame_end(void)
 		if (waited > ge_wait_worst)
 			ge_wait_worst = waited;
 		{
+			/* "framecrc": each finished picture hashed (FNV-1a over its
+			480 x 272 pixels, before the debug overlay) and logged with the
+			game time. Two runs that play the same (fixedticks fixedseed) then
+			show whether a change draws exactly the same picture
+			(tools/framecmp.py). Recon only: it reads VRAM every frame */
+			static int frame_crc = -1;
+
+			if (frame_crc < 0)
+				frame_crc = psp_keep("framecrc") != 0;
+			if (frame_crc)
+			{
+				extern long psp_game_time_peek(void);
+				const unsigned int *pixels = (const unsigned int *)(0x44000000 + (unsigned int)draw_buffer);
+				unsigned int hash = 2166136261u;
+				int row, pair;
+
+				for (row = 0; row < SCREEN_HEIGHT; row++)
+					for (pair = 0; pair < SCREEN_WIDTH / 2; pair++)
+						hash = (hash ^ pixels[row * (BUFFER_WIDTH / 2) + pair]) * 16777619u;
+				platform_log("framecrc %lu %ld %08x", frames, psp_game_time_peek(), hash);
+			}
+		}
+		{
 			/* build 77: the debug menu and overlay, by the CPU into the
 			finished frame (psp_debug.c), after the screenshot so shots never
 			show it ("menushot": before, for testing the menu itself) */
