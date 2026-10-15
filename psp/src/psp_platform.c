@@ -405,6 +405,23 @@ static void log_batch_grow(void)
 	platform_log("log: the blackbox's batch, 32 KB from free memory");
 }
 
+/* "logeachline": each line written at once until 20 s after launch, its
+newline in a write of its own (the way to compare against) */
+int psp_keep_loaded(void);
+
+static int log_each_line(void)
+{
+	static int word = -1;
+
+	if (word < 0 && psp_keep_loaded())
+		word = psp_keep("logeachline") != 0;
+	return word > 0;
+}
+
+/* a line and its newline, joined for one write; only touched under the
+log's lock */
+static char log_line_joined[640];
+
 void psp_log_write(const char *text)
 {
 	SceUID file;
@@ -434,8 +451,21 @@ void psp_log_write(const char *text)
 	file = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
 	if (file >= 0)
 	{
-		sceIoWrite(file, text, strlen(text));
-		sceIoWrite(file, "\n", 1);
+		int length = strlen(text);
+
+		/* each write rewrites a sector of the stick, so a separate newline
+		nearly doubled a line's cost */
+		if (locked && length < (int)sizeof(log_line_joined) && !log_each_line())
+		{
+			memcpy(log_line_joined, text, length);
+			log_line_joined[length] = '\n';
+			sceIoWrite(file, log_line_joined, length + 1);
+		}
+		else
+		{
+			sceIoWrite(file, text, length);
+			sceIoWrite(file, "\n", 1);
+		}
 		sceIoClose(file);
 	}
 	else if (file != log_failure)
@@ -898,6 +928,7 @@ static void keep_load(void)
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf; recon: noglowpass nobackpass");
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
 	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times)");
+	platform_log("keep words, build 127's: speed off: logeachline (each log line written at once for the first 20 s, its newline apart)");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -2606,7 +2637,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 			psp_game_state_report();
 		}
-		if (ticks >= 0 && beat > 20)
+		/* once the game runs, its lines wait in the batch for the beat's
+		write: a line written at once costs the stick an open, a write and a
+		close, and a map's first seconds log the most while it streams the
+		most (lab 38616912734, b30: the log held the stick 7.1 s up to tick
+		400, and geometry waited 0.58 s behind it). A crash still writes the
+		batch (psp_crash.c); a hang loses at most the beat's lines */
+		if (ticks >= 0 && (beat > 20 || !log_each_line()))
 			log_batching = 1;
 		if (ticks >= 0)
 		{

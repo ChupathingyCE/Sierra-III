@@ -513,6 +513,7 @@ def link(objs, stubs):
            "--wrap=sceIoOpen,--wrap=sceIoLseek32,--wrap=sceIoLseek,--wrap=sceIoRead,--wrap=sceIoReadAsync,--wrap=sceIoClose,"
            "--wrap=sceDmacMemcpy,--wrap=sceGeListEnQueue,--wrap=sceDisplaySetFrameBuf,--wrap=sceIoWrite,--wrap=sceIoGetstat,"
            "--wrap=sceIoDopen,--wrap=sceIoDclose,--wrap=open,--wrap=sceIoWaitAsync,--wrap=sceIoPollAsync,--wrap=sceIoChangeAsyncPriority,"
+           "--wrap=sceIoRemove,--wrap=sceIoRename,"
            # build 106: condition variables that sleep instead of polling (psp_libc.c)
            "--wrap=pthread_cond_init,--wrap=pthread_cond_destroy,--wrap=pthread_cond_wait,--wrap=pthread_cond_timedwait,"
            "--wrap=pthread_cond_signal,--wrap=pthread_cond_broadcast,"
