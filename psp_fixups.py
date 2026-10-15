@@ -78,6 +78,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		int chicago = type == 6, stride = chicago ? 220 : 100, scale_at = chicago ? 84 : 4;
 		char const *maps = *(char const *const *)(definition + 88) + (first_map_type != 0 ? stride : 0), *map = maps;
 		int map_at = chicago ? 120 : 40, animation_at = chicago ? 164 : 44, count, index, bitmap = 0;
+		int clamp_u = 0, clamp_v = 0;
 
 		count = map_count - (first_map_type != 0 ? 1 : 0);
 		if (*(unsigned char const *)(definition + 41) & 0x80)
@@ -109,6 +110,20 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		}
 		key = psp_tex_bitmap_key(*(long const *)(map + map_at), bitmap);
 		{
+			/* the map's own clamping, as the Xbox sets its address modes
+			(rasterizer_xbox_transparent_geometry.c): the map's flags word,
+			u and v clamped at bits 1 and 2 (generic) or 2 and 3 (chicago).
+			b30's shore waves are a clamped strip; repeated, its edge came
+			back as hard bands along the beach */
+			extern void psp_ge_seethrough_map_clamp(int u, int v);
+			unsigned short map_flags = *(unsigned short const *)map;
+			int u_bit = chicago ? 4 : 2, v_bit = chicago ? 8 : 4;
+
+			clamp_u = (map_flags & u_bit) != 0;
+			clamp_v = (map_flags & v_bit) != 0;
+			psp_ge_seethrough_map_clamp(clamp_u, clamp_v);
+		}
+		{
 			struct render_animation animation;
 			real_vector4d u_transform, v_transform;
 			float map_u = *(float const *)(map + scale_at), map_v = *(float const *)(map + scale_at + 4);
@@ -123,10 +138,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			/* the GE scales and shifts (no rotation) */
 			*u_scale = u_transform.n[0] != 0.0f ? u_transform.n[0] : 1.0f;
 			*v_scale = v_transform.n[1] != 0.0f ? v_transform.n[1] : 1.0f;
-			/* textures repeat: only the fraction matters, and the GE's floats
-			are short */
-			*u_offset = u_transform.n[3] - floorf(u_transform.n[3]);
-			*v_offset = v_transform.n[3] - floorf(v_transform.n[3]);
+			/* a repeating map needs only the fraction, and the GE's floats
+			are short; a clamped one needs all of it */
+			*u_offset = clamp_u ? u_transform.n[3] : u_transform.n[3] - floorf(u_transform.n[3]);
+			*v_offset = clamp_v ? v_transform.n[3] : v_transform.n[3] - floorf(v_transform.n[3]);
 		}
 		*blend = *(short const *)(definition + 44);
 		{
