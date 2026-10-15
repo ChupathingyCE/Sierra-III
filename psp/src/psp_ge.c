@@ -3368,7 +3368,11 @@ enum { CUT_LEVEL, CUT_RIGID, CUT_SKIN, CUT_SEE, CUT_OTHER, CUT_KINDS };
 struct cut_store
 {
 	float (*head)[CORNER_FLOATS];
-	int head_room, count, lost, kind;
+	/* dropped: triangles and pieces left out wholly off the screen. A draw's
+	decisions that asked whether it had cut pieces (whether to draw at all,
+	whether it reaches the detail fade) count them too, so they come out as
+	they did when those pieces were drawn */
+	int head_room, count, lost, dropped, kind;
 	struct cut_spill *first, *last;
 	/* the block cut_at read last, and the index of its first corner past head */
 	struct cut_spill *read;
@@ -3381,7 +3385,7 @@ static void cut_store_begin(struct cut_store *store, float (*head)[CORNER_FLOATS
 {
 	store->head = head;
 	store->head_room = head_room;
-	store->count = store->lost = 0;
+	store->count = store->lost = store->dropped = 0;
 	store->kind = kind;
 	store->first = store->last = store->read = NULL;
 	store->read_base = 0;
@@ -3516,7 +3520,10 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 		if (cut_count_on)
 			cut_tally[store->kind].whole_off++;
 		if (cut_less)
+		{
+			store->dropped++;
 			return 0;
+		}
 	}
 	memcpy(buffer[0], polygon, 3 * sizeof(polygon[0]));
 	for (plane = 0; plane < 5 && count >= 3; plane++)
@@ -3556,7 +3563,10 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 			if (cut_count_on)
 				cut_tally[store->kind].off_screen++;
 			if (cut_less)
+			{
+				store->dropped++;
 				continue;
+			}
 		}
 		piece = cut_piece(store);
 		if (!piece)
@@ -5750,7 +5760,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		me_classify_measure(stream, lowest, highest);
 	if (cut_count > clip_peak)
 		clip_peak = cut_count;
-	if (kept_count + cut_count == 0)
+	if (kept_count + cut_count == 0 && !pieces_store.dropped)
 		return;
 	/* build 40: nothing left out, so the GE reads the game's own triangle
 	list, which the game wrote this frame into memory the CPU caches. The GE
@@ -5793,7 +5803,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		every kept triangle past the detail fade, the detail passes were
 		skipped for them too (the ground at the feet lost its detail map when
 		the rest of a large material's visible triangles were far; review) */
-		if (cut_count > 0)
+		if (cut_count > 0 || pieces_store.dropped)
 			angle_near_any = 1;
 	}
 	/* build 66: the cut corners as GE vertices, once for the base passes and
@@ -8866,7 +8876,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 				else
 					model_cut_count = 0;
 			}
-			if (!count && !model_cut_count)
+			if (!count && !model_cut_count && !pieces_store.dropped)
 			{
 				world_model();
 				return;
@@ -12505,7 +12515,7 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 		}
 		cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &pieces_store);
 	}
-	if (!kept_count && !cut_count)
+	if (!kept_count && !cut_count && !pieces_store.dropped)
 		return;
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexMode(GU_PSM_8888, 0, 0, 0);
@@ -13460,7 +13470,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		light_triangles_lit += probe_lit;
 	}
 	near_clip = near_saved;
-	if (!kept_count && !cut_count && !whole_count)
+	if (!kept_count && !cut_count && !whole_count && !light_pieces.dropped)
 		return;
 	/* the light's colour, times the surface's average colour for a spotlight */
 	for (index = 0; index < 3; index++)
