@@ -5269,8 +5269,10 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 			stream_waiting[k].arena_after = stream_frame + STREAM_HEAP_RETRY;
 		stream_room_building = 0;
 	}
-	if ((stream_waiting_count || stream_room_waits + stream_room_built + stream_room_tries != stream_room_seen) &&
-		stream_frame - stream_room_log_frame >= 30)
+	/* once a second while anything happens; every ten while a material only waits */
+	if ((stream_room_waits + stream_room_built + stream_room_tries != stream_room_seen &&
+		stream_frame - stream_room_log_frame >= 30) ||
+		(stream_waiting_count && stream_frame - stream_room_log_frame >= 300))
 	{
 		platform_log("GE: level copies short of room: %lu materials have waited, %d waiting now, %lu of their draws skipped; "
 			"built at a frame's end %lu of %lu tries (%lu compactions for it), the heap asked %lu times",
