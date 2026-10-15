@@ -10,7 +10,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 ## Release check
 
-RELEASE_CHECK
+Lab 38803195090, against b130 as built: play and both seeds identical at every common tick on d20 (14,856), a50 (25,231) and c20 (19,285) [E]; the whole state differs from the first tick, as it does whenever a build's allocations change (surface bounds' 40 KB table). The logs read whole. b30 and c40 shots right; the multiplayer build plays Blood Gulch. Built from `646c3f6` (lab sierra-build 38803284593).
 
 ## §1 Surfaces out of reach passed over (`psp_fixups.py` FIXES_132 `collision_bsp.c#surfacebound`)
 

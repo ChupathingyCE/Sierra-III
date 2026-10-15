@@ -2,7 +2,7 @@
 
 `review_b131.md` lists every change and why. b127–b130 never reached your PSP, so their tests are tonight's, on b131 (the same eight). The bake is unchanged (`campaign121`).
 
-`halo_psp_b131.zip` (SHA-256 `4647a058d19864ec48340d5e26c1ccb68455977c7f399467f65c4e0cd7d67a6e`), EBOOT `5de9704feba8492e5a83759307b53935d01986ae9de2791016817c8ccb51a5dd`: built from commit `646c3f6` on `w131` (lab sierra-build 38803284593). Heap 5,660 KB (b130's 5,672: the pose job's code and surface bounds' table pointer; its 40 KB table comes out of the heap at the first walk). **Its own profile** (`campaign-b131`, counted at `e508844`, 13 runs). Release check (lab 38803195090): RCRESULT For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
+`halo_psp_b131.zip` (SHA-256 `4647a058d19864ec48340d5e26c1ccb68455977c7f399467f65c4e0cd7d67a6e`), EBOOT `5de9704feba8492e5a83759307b53935d01986ae9de2791016817c8ccb51a5dd`: built from commit `646c3f6` on `w131` (lab sierra-build 38803284593). Heap 5,660 KB (b130's 5,672: the pose job's code and surface bounds' table pointer; its 40 KB table comes out of the heap at the first walk). **Its own profile** (`campaign-b131`, counted at `e508844`, 13 runs). Release check (lab 38803195090): play and both seeds identical to b130 at every common tick on d20 (14,856), a50 (25,231) and c20 (19,285) [E]; b30 and c40 shots right; the multiplayer build plays Blood Gulch. For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
 
 **What's new for you:** nothing to see: b131 plays and looks as b130 does. Bipeds' movement passes over level surfaces that can't touch them (`surfaceboundoff`, or preset 4, tests them all as before). In the cache model a50's tick is 2.8% faster and b30's 2.0% [E]; exact (every walk compared with the engine's own, play identical). The Media Engine pose job is in but off: it hung the PSP-3000 once today, so no preset uses it tonight.
 
@@ -10,15 +10,7 @@
 
 ## On the PSP
 
-**First, the lab's PSP-3000** (it hung on the ME pose job today, lab 38784036485): hold POWER until it switches off, switch it on, and before starting PSP RIG AGENT pull its log in USB mode (the next rig run deletes `log.txt`):
-```fish
-# Desktop (X3D), the PSP-3000 in USB mode
-pspmount
-mkdir -p $HOME/psp/logs
-tar czf $HOME/psp/logs/mepose131_psp3000_hang.tgz -C $psp/halo log
-umount $psp
-```
-Then leave USB mode, start PSP RIG AGENT, and replug its USB cable.
+**First, the lab's PSP-3000** (it hung on the ME pose job today, lab 38784036485): hold POWER until it switches off, switch it on, start PSP RIG AGENT, and replug its USB cable. That's all: tell me it's back, and the lab's `psp-probe recover=38784036485-1-r1` gets the hung run's log off its stick without touching anything else (its agent hands over an unfinished run's results only for that run's own job, and never runs a job twice).
 
 **Install** (the EBOOT and the presets):
 ```fish
