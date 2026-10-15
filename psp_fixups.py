@@ -18129,7 +18129,136 @@ the level" (psp_collision_test_sphere_any, collisions.c) */"""),
 	psp_sb_tests = psp_sb_passed = psp_sb_made = 0;"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()):
+# ---------- FIXES_133: the pose job's parts timed on the PSP ("posetime")
+
+FIXES_133 = {}
+
+FIXES_133["source/objects/objects.c#posetime"] = [
+("""static void psp_pose_ahead_collect(void)
+{
+	unsigned int results[11];""",
+"""static void psp_pose_ahead_collect_work(void)
+{
+	unsigned int results[11];"""),
+("""/* the bytes the decode will ask psp_animation_data for: a compressed""",
+"""/* psp_fixups.py (FIXES_133 #posetime): where the main CPU's time goes with
+the poses made ahead, measured on the PSP. "posetime" times the collect (the
+wait and the cache drop), the takes (the copies), the listing, the making
+(with the push, and the poses made here) and the push alone, and logs them a
+tick, every 900 ticks. The clock reads add a little to each part */
+static int psp_pose_time = -1;
+static unsigned long psp_pt_collect_us, psp_pt_collects, psp_pt_take_us, psp_pt_takes, psp_pt_taken,
+	psp_pt_list_us, psp_pt_make_us, psp_pt_push_us, psp_pt_ticks;
+static unsigned long psp_pt_nested_us; /* collects inside a take, so the take's own time leaves them out */
+
+static void psp_pose_ahead_collect(void)
+{
+	unsigned long start;
+
+	if (psp_pose_time <= 0 || !psp_pose_job_out)
+	{
+		psp_pose_ahead_collect_work();
+		return;
+	}
+	start = psp_microseconds();
+	psp_pose_ahead_collect_work();
+	start = psp_microseconds() - start;
+	psp_pt_collect_us += start;
+	psp_pt_nested_us += start;
+	psp_pt_collects++;
+}
+
+/* the bytes the decode will ask psp_animation_data for: a compressed"""),
+("""static boolean psp_pose_ahead_take(long object_index, struct model const *model, struct animation const *animation,
+	short frame, real_orientation *out)
+{""",
+"""static boolean psp_pose_ahead_take_work(long object_index, struct model const *model, struct animation const *animation,
+	short frame, real_orientation *out)
+{"""),
+("""/* the guess for this object's next tick: the frame after this one */""",
+"""/* psp_fixups.py (FIXES_133 #posetime) */
+static boolean psp_pose_ahead_take(long object_index, struct model const *model, struct animation const *animation,
+	short frame, real_orientation *out)
+{
+	unsigned long start, nested;
+	boolean taken;
+
+	if (psp_pose_time < 0 && psp_keep_loaded())
+		psp_pose_time = psp_keep("posetime") != 0;
+	if (psp_pose_time <= 0)
+		return psp_pose_ahead_take_work(object_index, model, animation, frame, out);
+	nested = psp_pt_nested_us;
+	start = psp_microseconds();
+	taken = psp_pose_ahead_take_work(object_index, model, animation, frame, out);
+	psp_pt_take_us += psp_microseconds() - start - (psp_pt_nested_us - nested);
+	psp_pt_takes++;
+	if (taken)
+		psp_pt_taken++;
+	return taken;
+}
+
+/* the guess for this object's next tick: the frame after this one */"""),
+("""/* after a tick's objects: this tick's poses are spent, the next tick's made */
+static void psp_pose_ahead_make(void)
+{""",
+"""/* psp_fixups.py (FIXES_133 #posetime): the push, timed */
+static int psp_pose_push_timed(unsigned int at)
+{
+	unsigned long start = psp_pose_time > 0 ? psp_microseconds() : 0;
+	int pushed = psp_me_push_poses(psp_pose_job, (unsigned int)psp_pose_job_count, psp_pose_ahead_arena, at,
+		&psp_pose_job_ticket);
+
+	if (psp_pose_time > 0)
+		psp_pt_push_us += psp_microseconds() - start;
+	return pushed;
+}
+
+/* after a tick's objects: this tick's poses are spent, the next tick's made */
+static void psp_pose_ahead_make_work(void)
+{"""),
+("""psp_me_push_poses(psp_pose_job, (unsigned int)psp_pose_job_count, psp_pose_ahead_arena, at, &psp_pose_job_ticket))""",
+"""psp_pose_push_timed(at))"""),
+("""/* psp_fixups.py (FIXES_130 #posepredict) */""",
+"""/* psp_fixups.py (FIXES_133 #posetime) */
+static void psp_pose_ahead_make(void)
+{
+	unsigned long start, nested;
+
+	if (psp_pose_time <= 0 || psp_pose_ahead_mode <= 0)
+	{
+		psp_pose_ahead_make_work();
+		return;
+	}
+	nested = psp_pt_nested_us;
+	start = psp_microseconds();
+	psp_pose_ahead_make_work();
+	psp_pt_make_us += psp_microseconds() - start - (psp_pt_nested_us - nested);
+	if (++psp_pt_ticks % 900 == 0)
+	{
+		platform_psp_log("posetime: a tick: collect %lu us (%lu collects), takes %lu us (%lu calls, %lu taken), listing %lu us, making %lu us (the push %lu us)",
+			psp_pt_collect_us / 900, psp_pt_collects, psp_pt_take_us / 900, psp_pt_takes, psp_pt_taken,
+			psp_pt_list_us / 900, psp_pt_make_us / 900, psp_pt_push_us / 900);
+		psp_pt_collect_us = psp_pt_collects = psp_pt_take_us = psp_pt_takes = psp_pt_taken = 0;
+		psp_pt_list_us = psp_pt_make_us = psp_pt_push_us = 0;
+	}
+}
+
+/* psp_fixups.py (FIXES_130 #posepredict) */"""),
+("""				psp_pose_ahead_list(object_index, model, animation, frame_index);
+#else""",
+"""				if (psp_pose_time > 0)
+				{
+					unsigned long psp_list_start = psp_microseconds();
+
+					psp_pose_ahead_list(object_index, model, animation, frame_index);
+					psp_pt_list_us += psp_microseconds() - psp_list_start;
+				}
+				else
+					psp_pose_ahead_list(object_index, model, animation, frame_index);
+#else"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
