@@ -18258,7 +18258,45 @@ static void psp_pose_ahead_make(void)
 #else"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()):
+# ---------- FIXES_135: the ME pose job on by default (lever MP)
+#
+# b131 shipped it off after the PSP-3000 hung once with it on; that hang came
+# at the ME's start-up, before any map loaded (lab 38784036485, its log
+# recovered), and the same configuration then ran clean and bit-exact on the
+# 3000 (lab 38812680216). On the PSP-1000 it takes ~1.15 ms off b30's flight
+# tick (2.0%). On by default wherever the ME runs the job ring; "poseaheadoff"
+# turns it off, "poseahead" makes the poses on the main CPU (the plumbing
+# alone), "poseaheadcheck" compares each one with the main CPU's decode.
+# Without the ME (nomeaudio), it stays off: making them on the main CPU
+# would only add the copies
+FIXES_135 = {}
+
+FIXES_135["source/objects/objects.c#poseaheadon"] = [
+("""		psp_pose_ahead_me = psp_keep("poseaheadme") != 0;
+		psp_pose_ahead_mode = psp_keep("poseaheadcheck") ? 2 : psp_keep("poseahead") || psp_pose_ahead_me ? 1 : 0;
+""",
+"""		/* psp_fixups.py (FIXES_135 #poseaheadon) ("poseaheadme" is the default) */
+		psp_pose_ahead_me = !psp_keep("poseaheadoff") && !psp_keep("poseahead") && psp_me_ring_ready();
+		psp_pose_ahead_mode = psp_keep("poseaheadoff") ? 0 :
+			psp_keep("poseaheadcheck") ? 2 : psp_keep("poseahead") || psp_pose_ahead_me ? 1 : 0;
+"""),
+("""#ifdef PSP_TICK_STEPS
+		/* the step profile's marks would be written from the ME */
+		psp_pose_ahead_me = 0;
+#endif
+""",
+"""#ifdef PSP_TICK_STEPS
+		/* the step profile's marks would be written from the ME */
+		psp_pose_ahead_me = 0;
+		/* psp_fixups.py (FIXES_135 #poseaheadon): and the default isn't
+		moved onto the main CPU, which would add the copies to the steps */
+		if (!psp_keep("poseahead") && !psp_keep("poseaheadcheck"))
+			psp_pose_ahead_mode = 0;
+#endif
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_135.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

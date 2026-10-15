@@ -979,6 +979,23 @@ static int me_sysregs_kernel(void *regs)
 	return 0;
 }
 
+/* the launch's read, with the ME running: the system registers alone, not
+the ME's two words in its own RAM, which it may be running from or writing.
+The one hang seen at start-up (the PSP-3000) came after the line before this
+read and before its own; reading the ME's RAM under its feet is the one part
+of the read no other moment does. "memarksatlaunch" reads them as before */
+static int me_sysregs_running_kernel(void *regs)
+{
+	struct me_sysregs *r = (struct me_sysregs *)regs;
+
+	r->reset = HW_SYS_RESET_ENABLE;
+	r->bus_clock = HW_SYS_BUS_CLOCK_ENABLE;
+	r->clock = hw(0xbc100058);
+	r->avc = HW_SYS_AVC_POWER;
+	r->marks[0] = r->marks[1] = 0;
+	return 0;
+}
+
 static int emulator(void)
 {
 	int result = 0;
@@ -1182,7 +1199,7 @@ int psp_me_start(void)
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
-	kcall_3(me_sysregs_kernel, 0, &regs_launch);
+	kcall_3(psp_keep("memarksatlaunch") ? me_sysregs_kernel : me_sysregs_running_kernel, 0, &regs_launch);
 	{
 		char line[96];
 
