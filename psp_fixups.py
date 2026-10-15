@@ -18258,6 +18258,319 @@ static void psp_pose_ahead_make(void)
 #else"""),
 ]
 
+# ---------- FIXES_134: who reads node matrices within their tick ("nmreaders")
+#
+# Recon for lever NW (node matrices whole on the Media Engine): phase A's
+# cache split puts its ceiling at -5.4 ms a tick on b30 and -4.3 on c20, but
+# the ME can only take matrices the main CPU doesn't need straight away. Each
+# compute is classed by its first read after it: by its own object's update
+# or its attachments' (needed at once), by another object's update later in
+# objects_update (and how many objects later), later in the tick, while the
+# frame is drawn, or not at all before it is computed again. Weighted by
+# nodes, the classes say how much of the work could be handed over and how
+# much slack each part has. The readers of the second class are listed by
+# call site. Emulator recon: the counting costs time
+FIXES_134 = {}
+
+FIXES_134["source/objects/objects.c#nmreaders"] = [
+("""real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{
+""",
+"""/* psp_fixups.py (FIXES_134 #nmreaders): the slots, one an object index */
+#define PSP_NMR_SLOTS 2048
+#define PSP_NMR_SITES 12
+struct psp_nmr_slot
+{
+	long object_index;
+	unsigned long tick;      /* the tick of the last compute (0: none) */
+	unsigned long tops;      /* objects_update's top-level objects updated before it */
+	long top;                /* the top-level object whose update computed it */
+	unsigned short nodes;
+	unsigned char read;      /* the first read's class since the compute (0: none yet) */
+	unsigned char outside;   /* computed outside objects_update */
+	unsigned char type;      /* the object's type (biped, vehicle, weapon, ...) */
+};
+static struct psp_nmr_slot *psp_nmr_slots = NULL; /* 48 KB, from the heap when asked for */
+static int psp_nmr_on = -1;
+static int psp_nmr_in_update = 0;
+static unsigned long psp_nmr_tick = 1, psp_nmr_tops = 0, psp_nmr_ticks = 0;
+static long psp_nmr_top = NONE;
+/* by class: 0 not read, 1 by its own object's update, 2 by another object's,
+3 later in the tick, 4 outside the tick (drawing); 5 computed outside
+objects_update */
+static unsigned long long psp_nmr_nodes[6];
+static unsigned long psp_nmr_computes[6];
+/* class 2's distance, in top-level objects: the next one, 2-4, 5-16, more */
+static unsigned long long psp_nmr_gap_nodes[4];
+/* the call sites of the first reads, by nodes: [0] another object's update,
+[1] the object's own update or its attachments' */
+static unsigned long psp_nmr_site[2][PSP_NMR_SITES];
+static unsigned long long psp_nmr_site_nodes[2][PSP_NMR_SITES];
+/* by object type, the nodes a compute made and those needed inside
+objects_update (classes 1 and 2) */
+#define PSP_NMR_TYPES 12
+static unsigned long long psp_nmr_type_nodes[PSP_NMR_TYPES], psp_nmr_type_needed[PSP_NMR_TYPES];
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+void platform_psp_log(const char *format, ...);
+extern volatile int psp_current_phase;
+
+static int psp_nmr_ready(void)
+{
+	if (psp_nmr_on < 0)
+	{
+		if (!psp_keep_loaded())
+			return 0;
+		psp_nmr_on = psp_keep("nmreaders") != 0;
+		if (psp_nmr_on)
+		{
+			psp_nmr_slots = (struct psp_nmr_slot *)calloc(PSP_NMR_SLOTS, sizeof(*psp_nmr_slots));
+			if (!psp_nmr_slots)
+			{
+				platform_psp_log("nmreaders: no room for its %u KB; off",
+					(unsigned)(PSP_NMR_SLOTS * sizeof(*psp_nmr_slots) / 1024));
+				psp_nmr_on = 0;
+			}
+		}
+	}
+	return psp_nmr_on;
+}
+
+/* a compute's class, counted when the next compute of its object, or the next
+objects_update, closes it */
+static void psp_nmr_close(struct psp_nmr_slot *slot)
+{
+	int kind = slot->outside ? 5 : slot->read;
+
+	if (!slot->tick)
+		return;
+	psp_nmr_nodes[kind] += slot->nodes;
+	psp_nmr_computes[kind]++;
+	if (!slot->outside && slot->type < PSP_NMR_TYPES)
+	{
+		psp_nmr_type_nodes[slot->type] += slot->nodes;
+		if (kind == 1 || kind == 2)
+			psp_nmr_type_needed[slot->type] += slot->nodes;
+	}
+	slot->tick = 0;
+}
+
+static void psp_nmr_computed(long object_index)
+{
+	struct psp_nmr_slot *slot;
+
+	if (psp_nmr_ready() <= 0 || object_index == NONE)
+		return;
+	slot = &psp_nmr_slots[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (PSP_NMR_SLOTS - 1)];
+	psp_nmr_close(slot);
+	slot->object_index = object_index;
+	slot->tick = psp_nmr_tick;
+	slot->tops = psp_nmr_tops;
+	slot->top = psp_nmr_top;
+	slot->nodes = (unsigned short)(object_get(object_index)->object.node_matrices.size / (short)sizeof(real_matrix4x3));
+	slot->read = 0;
+	slot->outside = !psp_nmr_in_update;
+	slot->type = (unsigned char)object_get(object_index)->object.type;
+}
+
+static void psp_nmr_read(long object_index, void *site)
+{
+	struct psp_nmr_slot *slot;
+	int kind, k;
+
+	if (psp_nmr_on <= 0 || object_index == NONE)
+		return;
+	slot = &psp_nmr_slots[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (PSP_NMR_SLOTS - 1)];
+	if (!slot->tick || slot->object_index != object_index || slot->read)
+		return;
+	if (psp_nmr_in_update)
+		kind = slot->top == psp_nmr_top ? 1 : 2;
+	else
+		kind = psp_current_phase == 1 ? 3 : 4;
+	slot->read = (unsigned char)kind;
+	if ((kind == 1 || kind == 2) && !slot->outside)
+	{
+		int table = kind == 2 ? 0 : 1;
+		unsigned long *sites = psp_nmr_site[table];
+		unsigned long long *nodes = psp_nmr_site_nodes[table];
+
+		if (kind == 2)
+		{
+			unsigned long gap = psp_nmr_tops - slot->tops;
+
+			psp_nmr_gap_nodes[gap <= 1 ? 0 : gap <= 4 ? 1 : gap <= 16 ? 2 : 3] += slot->nodes;
+		}
+		for (k = 0; k < PSP_NMR_SITES; k++)
+			if (sites[k] == (unsigned long)site || !sites[k])
+				break;
+		if (k == PSP_NMR_SITES)
+		{
+			/* full: the lightest site makes room */
+			int least = 0;
+
+			for (k = 1; k < PSP_NMR_SITES; k++)
+				if (nodes[k] < nodes[least])
+					least = k;
+			k = least;
+			nodes[k] = 0;
+		}
+		sites[k] = (unsigned long)site;
+		nodes[k] += slot->nodes;
+	}
+}
+
+/* objects_update's start: the last tick's computes closed, and every 900
+ticks the shares logged */
+static void psp_nmr_tick_start(void)
+{
+	int k;
+
+	if (psp_nmr_ready() <= 0)
+		return;
+	for (k = 0; k < PSP_NMR_SLOTS; k++)
+		psp_nmr_close(&psp_nmr_slots[k]);
+	psp_nmr_tick++;
+	psp_nmr_in_update = 1;
+	if (++psp_nmr_ticks % 900 == 0)
+	{
+		static const char *const type_names[PSP_NMR_TYPES] = {
+			"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+			"machine", "control", "light fixture", "placeholder", "sound scenery"};
+		unsigned long long all = 0, in_update = 0, gaps = 0, own = 0;
+		char sites[PSP_NMR_SITES * 24], types[PSP_NMR_TYPES * 48];
+		int at = 0, table;
+
+		for (k = 0; k < 6; k++)
+			all += psp_nmr_nodes[k];
+		in_update = all - psp_nmr_nodes[5];
+		for (k = 0; k < 4; k++)
+			gaps += psp_nmr_gap_nodes[k];
+		if (!all)
+			all = 1;
+		if (!in_update)
+			in_update = 1;
+		if (!gaps)
+			gaps = 1;
+		platform_psp_log("nmreaders: %lu computes in objects_update (%lu nodes a tick); by nodes, first read by its own object's update or attachments %lu%%, by another object's update %lu%%, later in the tick %lu%%, while drawing %lu%%, not before the next compute %lu%%; %lu computes outside objects_update (%lu%% of all nodes)",
+			psp_nmr_computes[0] + psp_nmr_computes[1] + psp_nmr_computes[2] + psp_nmr_computes[3] + psp_nmr_computes[4],
+			(unsigned long)(in_update / 900),
+			(unsigned long)(psp_nmr_nodes[1] * 100 / in_update), (unsigned long)(psp_nmr_nodes[2] * 100 / in_update),
+			(unsigned long)(psp_nmr_nodes[3] * 100 / in_update), (unsigned long)(psp_nmr_nodes[4] * 100 / in_update),
+			(unsigned long)(psp_nmr_nodes[0] * 100 / in_update), psp_nmr_computes[5],
+			(unsigned long)(psp_nmr_nodes[5] * 100 / all));
+		for (k = 0; k < PSP_NMR_SITES; k++)
+			own += psp_nmr_site_nodes[1][k];
+		if (!own)
+			own = 1;
+		for (table = 0; table < 2; table++)
+		{
+			at = 0;
+			sites[0] = 0;
+			for (k = 0; k < PSP_NMR_SITES && psp_nmr_site[table][k]; k++)
+				at += snprintf(sites + at, sizeof(sites) - at, " %08lx:%lu%%", psp_nmr_site[table][k],
+					(unsigned long)(psp_nmr_site_nodes[table][k] * 100 / (table ? own : gaps)));
+			if (!table)
+				platform_psp_log("nmreaders: another object's reads, by nodes: the next object %lu%%, 2-4 objects later %lu%%, 5-16 %lu%%, more %lu%%; their call sites:%s",
+					(unsigned long)(psp_nmr_gap_nodes[0] * 100 / gaps), (unsigned long)(psp_nmr_gap_nodes[1] * 100 / gaps),
+					(unsigned long)(psp_nmr_gap_nodes[2] * 100 / gaps), (unsigned long)(psp_nmr_gap_nodes[3] * 100 / gaps), sites);
+			else
+				platform_psp_log("nmreaders: the reads by the object's own update or its attachments, their call sites by nodes:%s", sites);
+		}
+		at = 0;
+		types[0] = 0;
+		for (k = 0; k < PSP_NMR_TYPES; k++)
+			if (psp_nmr_type_nodes[k])
+				at += snprintf(types + at, sizeof(types) - at, " %s %lu (%lu%% needed)", type_names[k],
+					(unsigned long)(psp_nmr_type_nodes[k] / 900),
+					(unsigned long)(psp_nmr_type_needed[k] * 100 / psp_nmr_type_nodes[k]));
+		platform_psp_log("nmreaders: by type, nodes a tick and the share needed inside objects_update:%s", types);
+		memset(psp_nmr_type_nodes, 0, sizeof(psp_nmr_type_nodes));
+		memset(psp_nmr_type_needed, 0, sizeof(psp_nmr_type_needed));
+		memset(psp_nmr_nodes, 0, sizeof(psp_nmr_nodes));
+		memset(psp_nmr_computes, 0, sizeof(psp_nmr_computes));
+		memset(psp_nmr_gap_nodes, 0, sizeof(psp_nmr_gap_nodes));
+		memset(psp_nmr_site, 0, sizeof(psp_nmr_site));
+		memset(psp_nmr_site_nodes, 0, sizeof(psp_nmr_site_nodes));
+	}
+}
+
+real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on > 0)
+		psp_nmr_read(object_index, __builtin_return_address(0));
+"""),
+("""real_matrix4x3 *object_get_node_matrix(
+	long object_index,
+	short node_index)
+{
+""",
+"""real_matrix4x3 *object_get_node_matrix(
+	long object_index,
+	short node_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on > 0)
+		psp_nmr_read(object_index, __builtin_return_address(0));
+"""),
+("""void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+	{
+""",
+"""void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_computed(object_index);
+	{
+"""),
+("""	profile_enter(section);
+
+	object_globals->active_garbage_object_count = 0;
+""",
+"""	profile_enter(section);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_tick_start();
+#endif
+
+	object_globals->active_garbage_object_count = 0;
+"""),
+("""					psp_object_start = psp_microseconds();
+					psp_object_update(object_index, i, object_header);
+""",
+"""					/* psp_fixups.py (FIXES_134 #nmreaders) */
+					psp_nmr_top = object_index;
+					psp_nmr_tops++;
+					psp_object_start = psp_microseconds();
+					psp_object_update(object_index, i, object_header);
+"""),
+("""				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
+""",
+"""#ifdef HALO_PSP
+				/* psp_fixups.py (FIXES_134 #nmreaders) */
+				psp_nmr_top = DATUM_INDEX_NEW(i, object_header->identifier);
+				psp_nmr_tops++;
+#endif
+				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
+"""),
+("""#ifdef HALO_PSP
+	psp_pose_ahead_make();
+""",
+"""#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	psp_nmr_in_update = 0;
+	psp_pose_ahead_make();
+"""),
+]
+
 # ---------- FIXES_135: the ME pose job on by default (lever MP)
 #
 # b131 shipped it off after the PSP-3000 hung once with it on; that hang came
@@ -18296,7 +18609,7 @@ FIXES_135["source/objects/objects.c#poseaheadon"] = [
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_135.items()):
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
