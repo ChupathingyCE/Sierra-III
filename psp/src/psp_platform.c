@@ -16,12 +16,8 @@ pthreads):
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
 #define PSP_BUILD_NUMBER 124
-/* build 110: the engine base the build was made from (psp_build.py) */
-#ifdef PSP_CHUPATHINGYCE
+/* the engine base the build was made from, for the log */
 #define PSP_ENGINE_BASE "ChupathingyCE"
-#else
-#define PSP_ENGINE_BASE "halo-ce-universal"
-#endif
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
 float psp_budget_last[7];
 #include <psputils.h>

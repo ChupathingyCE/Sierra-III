@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Builds the PSP bring-up EBOOT of halo-ce-universal or ChupathingyCE.
+"""Builds Sierra-III's EBOOT from ChupathingyCE's engine.
 
-1. Mirrors the repository into build/tree (build_var.py's mirror: the
-   GCC-vs-clang textual fixes) and applies psp_fixups.py.
+1. Mirrors the engine into build/tree (mirror() below: the GCC-vs-clang
+   textual fixes) and applies psp_fixups.py.
 2. Compiles the game (source/), the port's game-side files
    (port/linux/game), the Linux platform layer files that build as they are
    against the PSP toolchain's SDL3 and pthreads, and the PSP files
@@ -13,7 +13,7 @@
 
 usage: psp_build.py [--jobs N]
 environment: HALO_REPO (default /tmp/halo-sp), PSP_OUT (default /tmp/psp_halo)"""
-import os, re, shlex, struct, subprocess, sys
+import os, re, shlex, shutil, struct, subprocess, sys
 from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -55,10 +55,6 @@ CAMPAIGN_KEEPS = ("source/bungie_net/common/thread_win32.c",)
 def multiplayer_unit(rel):
     return rel.startswith(MULTIPLAYER_UNITS) and rel not in CAMPAIGN_KEEPS
 
-# build 110: the engine base. ChupathingyCE (a fork of OpenCE, on the same
-# line as halo-ce-universal) has the 64-bit address helpers in
-# source/cseries/xbox_address.h; psp_fixups.py tells the bases apart the same way
-CHUPA = os.path.exists(os.path.join(REPO, "source/cseries/xbox_address.h"))
 # ChupathingyCE's desktop features the PSP build leaves out (its configure
 # turns them on for every desktop build):
 # - Custom Edition (Halo PC) maps: their own 23 MB tag cache, Halo PC's layouts
@@ -79,7 +75,7 @@ CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c"
                        "port/linux/game/tag_schema_", "port/linux/game/tag_validate",
                        "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c")
 def desktop_unit(rel):
-    return CHUPA and rel.startswith(CHUPA_DESKTOP_UNITS)
+    return rel.startswith(CHUPA_DESKTOP_UNITS)
 
 PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch"]
 
@@ -108,7 +104,7 @@ TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
 DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
 # build 110: PSP_MAP_CHECKS=1 keeps ChupathingyCE's checks of a map's data as
 # the tick reads it (animations, collision walks). Off by default: the PSP's
-# maps are its own bake, read as halo-ce-universal reads them (psp_fixups.py,
+# maps are its own bake, trusted as the Xbox game trusts its own (psp_fixups.py,
 # FIXES_CHUPA "trusted maps")
 MAP_CHECKS = os.environ.get("PSP_MAP_CHECKS", "") == "1"
 # PGO, the profile-guided build (big_levers.md section 6, L4).
@@ -206,7 +202,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_CHUPATHINGYCE=1"] if CHUPA else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -267,15 +263,14 @@ def units():
         # built as the networking units it stands in for
         items.append((os.path.join(HERE, "psp/src/psp_campaign.c"),
                       ninja_flags("build/linux/obj/source/networking/network_game_globals.o"), []))
-    if CHUPA:
-        # build 110: what the desktop units left out answered for the PSP
-        # (CHUPA_DESKTOP_UNITS): the game's calls built as the game's port
-        # units are, the platform layer's as sdl_platform.c is (its flags
-        # carry the version)
-        items.append((os.path.join(HERE, "psp/src/psp_chupa.c"),
-                      ninja_flags("build/linux/obj/port/linux/game/pal_tags.o"), []))
-        items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
-                      ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
+    # what the desktop units left out answered for the PSP
+    # (CHUPA_DESKTOP_UNITS): the game's calls built as the game's port units
+    # are, the platform layer's as sdl_platform.c is (its flags carry the
+    # version)
+    items.append((os.path.join(HERE, "psp/src/psp_chupa.c"),
+                  ninja_flags("build/linux/obj/port/linux/game/pal_tags.o"), []))
+    items.append((os.path.join(HERE, "psp/src/psp_chupa_platform.c"),
+                  ninja_flags("build/linux/obj/port/linux/src/sdl_platform.o"), compat))
     # build 108: built as pal_tags.c is, the other in-place fix of a map's tags
     # as they load (the game's headers, so its layout table is checked against them)
     items.append((os.path.join(HERE, "psp/src/psp_tag_layouts.c"),
@@ -526,14 +521,49 @@ def link(objs, stubs):
            "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     return subprocess.run(cmd, capture_output=True, text=True)
 
+# ---------- the mirror: the engine as GCC can compile it
+# The engine's Linux build relies on clang's MSVC extensions in a few places
+# GCC refuses: "static __inline" (the MSVC prefix maps __inline to a weak
+# inline) and the "ui64"/"i64" integer suffixes. The mirror rewrites them
+# and leaves the checkout itself untouched.
+STATIC_INLINE = re.compile(r"\bstatic(\s+)(__inline|_inline|__forceinline)\b")
+MSVC_SUFFIX = re.compile(r"\b(0x[0-9A-Fa-f]+|[0-9]+)(ui64|i64)\b")
+
+def mirror():
+    for top in ("source", "port", "build/linux"):
+        src_top = os.path.join(REPO, top)
+        for root, dirs, files in os.walk(src_top):
+            for f in files:
+                src = os.path.join(root, f)
+                dst = os.path.join(TREE, os.path.relpath(src, REPO))
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if f.endswith((".c", ".h")):
+                    text = open(src, errors="surrogateescape").read()
+                    text = STATIC_INLINE.sub(lambda m: "static" + m.group(1) + ("__inline__ __attribute__((always_inline))" if m.group(2) == "__forceinline" else "__inline__"), text)
+                    text = MSVC_SUFFIX.sub(lambda m: m.group(1) + ("ULL" if m.group(2) == "ui64" else "LL"), text)
+                    if os.path.exists(dst) and open(dst, errors="surrogateescape").read() == text:
+                        continue
+                    open(dst, "w", errors="surrogateescape").write(text)
+                elif not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+    # the generated header marks every inline function #pragma weak; drop the
+    # names some unit declares static (GCC refuses a weak static)
+    statics = set()
+    for root, dirs, files in os.walk(os.path.join(TREE, "source")):
+        for f in files:
+            if f.endswith((".c", ".h")):
+                for m in re.finditer(r"\bstatic[ \t]+[^;{()\n=]*?\b(\w+)[ \t]*\(", open(os.path.join(root, f), errors="surrogateescape").read()):
+                    statics.add(m.group(1))
+    sem = os.path.join(TREE, "build/linux/halo_msvc_semantics.h")
+    lines = open(sem).read().splitlines()
+    kept = [l for l in lines if not (l.startswith("#pragma weak ") and l.split()[2] in statics)]
+    open(sem, "w").write("\n".join(kept) + "\n")
+
+
 def main():
     global HEAP_KB
-    sys.path.insert(0, HERE)
     os.environ["HALO_REPO"] = REPO
-    os.environ["PSP_BUILD"] = OUT
-    import build_var
-    build_var.REPO, build_var.TREE = REPO, TREE
-    build_var.mirror()
+    mirror()
     subprocess.run([sys.executable, os.path.join(HERE, "psp_fixups.py"), TREE], check=True)
     if PGO:
         link_path = os.path.join(TREE, "sierra")
@@ -541,7 +571,7 @@ def main():
             os.remove(link_path)
         os.symlink(HERE, link_path)
     if PGO == "use":
-        import shutil, tarfile
+        import tarfile
         shutil.rmtree(PGO_DIR, ignore_errors=True)
         os.makedirs(PGO_DIR)
         with tarfile.open(os.path.join(HERE, "pgo", PGO_PROFILE + ".tgz")) as t:

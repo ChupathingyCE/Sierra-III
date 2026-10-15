@@ -76,7 +76,7 @@ load them, and build 108 still loads maps baked before it.
 - Invader (`invader/`) is GPLv3 (LICENSES/). This is a modified version: the
   full source is in `invader-src.tar.gz`, and `invader-psp-fork.patch` is the
   change against upstream Invader (commit d43ce55).
-- The game code the build runs is halo-ce-universal (CC0).
+- The game code the build runs is ChupathingyCE (CC0).
 - atracdenc (`atracdenc/`, when bundled) is LGPL-2.1 (LICENSES/); its source
   is in `atracdenc-src.tar.gz`. The libraries beside it (libsndfile and its
   codecs) are the build machine's, under their own licences.
