@@ -17514,7 +17514,241 @@ void object_compute_node_matrices(
 				world_relative = TEST_FLAG(animation->flags, _animation_world_relative_bit);"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()):
+FIXES_131 = {}
+# Next tick's base poses made ahead (lever MP, docs/me_poses.md). The base
+# pose, animation_get_node_orientations(model, animation, frame), reads only
+# the model, the animation (tag data, fixed within a map) and an integer
+# frame, and each tick's is the frame after the object's last one 97-99.5%
+# of the time (posepredict). So as a tick poses an object, the guess for the
+# next tick is listed; after the tick's objects are updated the list is
+# decoded into a buffer; and the next tick copies a pose whose model,
+# animation and frame are the ones guessed instead of decoding it: the same
+# function on the same inputs, the same bits. This step makes them on the
+# main CPU ("poseahead"), to prove the bookkeeping exact ("poseaheadcheck"
+# decodes anyway and compares bit for bit); the Media Engine takes the making
+# next, during the frame's drawing
+FIXES_131["source/objects/objects.c#poseahead"] = [
+("""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_130 #posepredict) */""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_131 #poseahead): the guesses, by object (a slot each,
+by the object's index; two objects on one slot: the second one listed
+decodes as before), and the poses made from them, in an arena */
+#include <malloc.h>
+#define PSP_POSE_SLOTS 256
+#define PSP_POSE_ARENA (64 * 1024)
+/* a word no decode writes (a signalling NaN with a payload): still there
+after the decode, the function wrote nothing (its checks failed), and the
+pose isn't used */
+#define PSP_POSE_UNWRITTEN 0x7F8DEAD1u
+struct psp_pose_ahead
+{
+	long object_index;
+	struct model const *model;
+	struct animation const *animation;
+	short frame;
+	short node_count;
+	short state; /* 0 nothing; 1 listed for the next tick; 2 made */
+	real_orientation *pose;
+};
+static struct psp_pose_ahead *psp_pose_ahead_slots;
+static unsigned char *psp_pose_ahead_arena;
+static short psp_pose_ahead_listed[PSP_POSE_SLOTS];
+static int psp_pose_ahead_count, psp_pose_ahead_mode = -1; /* 0 off, 1 on, 2 on and checked */
+static unsigned long psp_pose_ahead_used, psp_pose_ahead_made, psp_pose_ahead_unwritten, psp_pose_ahead_full,
+	psp_pose_ahead_checked, psp_pose_ahead_differed, psp_pose_ahead_ticks;
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
+void platform_psp_log(const char *format, ...);
+
+static int psp_pose_ahead_on(void)
+{
+	if (psp_pose_ahead_mode < 0)
+	{
+		if (!psp_keep_loaded())
+			return 0;
+		psp_pose_ahead_mode = psp_keep("poseaheadcheck") ? 2 : psp_keep("poseahead") ? 1 : 0;
+		if (psp_pose_ahead_mode)
+		{
+			psp_pose_ahead_slots = (struct psp_pose_ahead *)calloc(PSP_POSE_SLOTS, sizeof(*psp_pose_ahead_slots));
+			psp_pose_ahead_arena = (unsigned char *)memalign(64, PSP_POSE_ARENA);
+			if (!psp_pose_ahead_slots || !psp_pose_ahead_arena)
+			{
+				platform_psp_log("poseahead: no room for its %u KB; off", PSP_POSE_ARENA / 1024);
+				psp_pose_ahead_mode = 0;
+			}
+		}
+	}
+	return psp_pose_ahead_mode;
+}
+
+/* a new map: its tags may sit where the last map's did */
+static void psp_pose_ahead_forget(void)
+{
+	if (psp_pose_ahead_slots)
+		memset(psp_pose_ahead_slots, 0, PSP_POSE_SLOTS * sizeof(*psp_pose_ahead_slots));
+	psp_pose_ahead_count = 0;
+}
+
+/* this pose, if it was made ahead: copied into out (or, checked, decoded and
+compared); FALSE: decode it as before */
+static boolean psp_pose_ahead_take(long object_index, struct model const *model, struct animation const *animation,
+	short frame, real_orientation *out)
+{
+	struct psp_pose_ahead *slot;
+
+	if (!psp_pose_ahead_on())
+		return FALSE;
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
+	if (slot->state != 2 || slot->object_index != object_index || slot->model != model ||
+		slot->animation != animation || slot->frame != frame)
+		return FALSE;
+	if (psp_pose_ahead_mode == 2)
+	{
+		animation_get_node_orientations(model, animation, frame, out);
+		psp_pose_ahead_checked++;
+		if (csmemcmp(out, slot->pose, slot->node_count * sizeof(real_orientation)))
+			psp_pose_ahead_differed++;
+	}
+	else
+		csmemcpy(out, slot->pose, slot->node_count * sizeof(real_orientation));
+	psp_pose_ahead_used++;
+	return TRUE;
+}
+
+/* the guess for this object's next tick: the frame after this one */
+static void psp_pose_ahead_list(long object_index, struct model const *model, struct animation const *animation,
+	short frame)
+{
+	struct psp_pose_ahead *slot;
+
+	if (!psp_pose_ahead_mode || animation->frame_count <= 0 || animation->node_count <= 0 ||
+		animation->node_count > MAXIMUM_NODES_PER_MODEL)
+		return;
+	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
+	if (slot->state == 1 && slot->object_index != object_index)
+		return;
+	if (slot->state != 1)
+	{
+		if (psp_pose_ahead_count >= PSP_POSE_SLOTS)
+			return;
+		psp_pose_ahead_listed[psp_pose_ahead_count++] = (short)(slot - psp_pose_ahead_slots);
+	}
+	slot->object_index = object_index;
+	slot->model = model;
+	slot->animation = animation;
+	slot->frame = (short)((frame + 1) % animation->frame_count);
+	slot->node_count = animation->node_count;
+	slot->state = 1;
+}
+
+/* after a tick's objects: this tick's poses are spent, the next tick's made */
+static void psp_pose_ahead_make(void)
+{
+	unsigned int at = 0;
+	int k;
+
+	if (psp_pose_ahead_mode <= 0)
+		return;
+	for (k = 0; k < PSP_POSE_SLOTS; k++)
+		if (psp_pose_ahead_slots[k].state == 2)
+			psp_pose_ahead_slots[k].state = 0;
+	for (k = 0; k < psp_pose_ahead_count; k++)
+	{
+		struct psp_pose_ahead *slot = &psp_pose_ahead_slots[psp_pose_ahead_listed[k]];
+		unsigned int bytes = ((unsigned int)slot->node_count * sizeof(real_orientation) + 63) & ~63u;
+
+		if (slot->state != 1)
+			continue;
+		slot->state = 0;
+		if (at + bytes > PSP_POSE_ARENA)
+		{
+			psp_pose_ahead_full++;
+			continue;
+		}
+		slot->pose = (real_orientation *)(psp_pose_ahead_arena + at);
+		*(unsigned long *)slot->pose = PSP_POSE_UNWRITTEN;
+		animation_get_node_orientations(slot->model, slot->animation, slot->frame, slot->pose);
+		if (*(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN)
+		{
+			psp_pose_ahead_unwritten++;
+			continue;
+		}
+		at += bytes;
+		slot->state = 2;
+		psp_pose_ahead_made++;
+	}
+	psp_pose_ahead_count = 0;
+	if (++psp_pose_ahead_ticks % 900 == 0)
+		platform_psp_log("poseahead: %lu poses made ahead, %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB",
+			psp_pose_ahead_made, psp_pose_ahead_used, psp_pose_ahead_checked, psp_pose_ahead_differed,
+			psp_pose_ahead_unwritten, psp_pose_ahead_full, PSP_POSE_ARENA / 1024);
+}
+
+/* psp_fixups.py (FIXES_130 #posepredict) */"""),
+("""#ifdef HALO_PSP
+				if (psp_pose_predict < 0)
+					psp_pose_predict = psp_keep("posepredict") != 0;
+				if (psp_pose_predict)
+				{
+					unsigned long start = psp_microseconds();
+
+					animation_get_node_orientations(model, animation, frame_index, node_orientations);
+					psp_pose_predict_note(object_index, animation, frame_index, psp_microseconds() - start);
+				}
+				else
+#endif
+				animation_get_node_orientations(model, animation, frame_index, node_orientations);""",
+ """#ifdef HALO_PSP
+				if (psp_pose_predict < 0)
+					psp_pose_predict = psp_keep("posepredict") != 0;
+				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
+					;
+				else if (psp_pose_predict)
+				{
+					unsigned long start = psp_microseconds();
+
+					animation_get_node_orientations(model, animation, frame_index, node_orientations);
+					psp_pose_predict_note(object_index, animation, frame_index, psp_microseconds() - start);
+				}
+				else
+					animation_get_node_orientations(model, animation, frame_index, node_orientations);
+				psp_pose_ahead_list(object_index, model, animation, frame_index);
+#else
+				animation_get_node_orientations(model, animation, frame_index, node_orientations);
+#endif"""),
+("""#ifdef HALO_PSP
+static int psp_pose_on;
+#endif
+
+void objects_initialize_for_new_map(""",
+ """#ifdef HALO_PSP
+static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+#endif
+
+void objects_initialize_for_new_map("""),
+("""	psp_pose_on = -1;
+#endif
+	damage_initialize_for_new_map();""",
+ """	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+#endif
+	damage_initialize_for_new_map();"""),
+("""#ifdef HALO_PSP
+	psp_object_start = psp_microseconds();
+	objects_garbage_collection();
+	psp_object_account(13, psp_microseconds() - psp_object_start);
+#else""",
+ """#ifdef HALO_PSP
+	psp_pose_ahead_make();
+	psp_object_start = psp_microseconds();
+	objects_garbage_collection();
+	psp_object_account(13, psp_microseconds() - psp_object_start);
+#else"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
