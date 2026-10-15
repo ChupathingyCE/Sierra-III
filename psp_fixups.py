@@ -16869,7 +16869,7 @@ FIXES_126["source/units/units.c#aimchange"] = [
 """),
 ]
 
-FIXES_127 = {}
+FIXES_128 = {}
 # The collision log by user, for recon builds (PSP_DEBUG_TOOLS=1): Bungie's
 # log (collision_usage.c) counts and times every collision call by function
 # and by who asked (projectiles, bipeds, the AI's lines of sight, ...), but
@@ -16879,7 +16879,7 @@ FIXES_127 = {}
 # moving collision to the Media Engine would take off b30's tick, where the
 # collision functions are ~16% of it in the cache models (lab 38698483247).
 # Plays no differently: the log reads the calls, it decides nothing
-FIXES_127["source/physics/collision_usage.c#report"] = [
+FIXES_128["source/physics/collision_usage.c#report"] = [
 ("""	collision_usage_buffer[collision_usage_current_period] = collision_usage_current;
 	collision_usage_current_period = NONE;
 
@@ -16887,7 +16887,7 @@ FIXES_127["source/physics/collision_usage.c#report"] = [
 }
 """, """#if defined(HALO_PSP) && defined(PSP_DEBUG_TOOLS)
 	{
-		/* psp_fixups.py (FIXES_127): every period's figures added up for
+		/* psp_fixups.py (FIXES_128): every period's figures added up for
 		psp_collision_report */
 		extern struct collision_function psp_collision_totals[NUMBER_OF_COLLISION_FUNCTION_TYPES];
 		short function_index, user_index;
@@ -16911,7 +16911,7 @@ FIXES_127["source/physics/collision_usage.c#report"] = [
 }
 
 #ifdef HALO_PSP
-/* psp_fixups.py (FIXES_127): the collision log by user since the last
+/* psp_fixups.py (FIXES_128): the collision log by user since the last
 report (PSP_DEBUG_TOOLS builds; nothing otherwise). Times are the
 performance counter's microseconds, so a call's own clock reads are in them */
 #ifdef PSP_DEBUG_TOOLS
@@ -16990,7 +16990,7 @@ void psp_collision_report(void)
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_127.items()):
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
