@@ -16339,7 +16339,102 @@ static void biped_update_physics(
 		collision_count = collision_move_pill("""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()):
+
+FIXES_126 = {}
+# RV2: a path search's state cleared by its header alone. path_state_new
+# cleared the whole 82 KB state (1,024 nodes, the heap, the hash table) before
+# every search: in b30's beach fight a quarter of each firing position
+# selection's cycles (halo-ce-vita's measurement on our map), and a sweep that
+# evicts the whole 16 KB data cache five times over. Every caller runs one
+# path_state_find on a state fresh from path_state_new, and that search sets up
+# the rest itself: path_state_reset fills the hash table and starts node_count
+# and heap_count; a node is read only once made (node_index < node_count), and
+# a heap entry only below heap_count, each written as the heap grows to it. So
+# clearing the header (everything before the node list), heap_count, and each
+# node as it is made leaves every byte a search reads as the whole clear did:
+# the searches answer exactly as before. With debug storage the whole state is
+# cleared, as path_state_find copies all of it there.
+# From BirchWoodGod's halo-ce-vita (ai/path.c, HALO_AI_PATH_STATE_VERIFY), after
+# JackTulli's Halo 64 (H2); used with his permission (README, Credits).
+# "pathclearfull" (keep.txt): the whole clear, as before.
+# "pathclearpoison" (a check): the rest of the state filled with 0xA5 instead,
+# so a read of anything a search hasn't written changes the game, which the
+# state CRC against "pathclearfull" shows.
+FIXES_126["source/ai/path.c#clear"] = [
+("""void path_state_new(
+	struct path_input const *input,
+	struct path_state *state,
+	struct path_debug_storage *debug)
+{
+	csmemset(state, 0, sizeof(*state));
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV2): how path_state_new clears a state.
+1: the header alone (the default); 0: all of it ("pathclearfull");
+2: the header, the rest poisoned ("pathclearpoison", a check) */
+int psp_keep(const char *name);
+static int psp_path_clear = -1;
+
+static int psp_path_clear_mode(
+	void)
+{
+	if (psp_path_clear < 0)
+		psp_path_clear = psp_keep("pathclearfull") ? 0 : psp_keep("pathclearpoison") ? 2 : 1;
+	return psp_path_clear;
+}
+#endif
+
+void path_state_new(
+	struct path_input const *input,
+	struct path_state *state,
+	struct path_debug_storage *debug)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_126, RV2): the header alone; a search sets up the
+	rest (see there) */
+	if (psp_path_clear_mode() && !debug)
+	{
+		csmemset(state, 0, offsetof(struct path_state, node_list));
+		if (psp_path_clear == 2)
+		{
+			csmemset(state->node_list, 0xA5,
+				sizeof(*state) - offsetof(struct path_state, node_list));
+		}
+		state->heap_count = 0;
+	}
+	else
+#endif
+	csmemset(state, 0, sizeof(*state));
+"""),
+("""			node_index = state->node_count++;
+			initial_node = &state->node_list[node_index];
+""", """			node_index = state->node_count++;
+			initial_node = &state->node_list[node_index];
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_126, RV2): the node as the whole clear left it */
+			if (psp_path_clear_mode())
+			{
+				csmemset(initial_node, 0, sizeof(*initial_node));
+			}
+#endif
+"""),
+("""							new_node_index = state->node_count++;
+							state->hash_table[hash_slot] = new_node_index;
+							state->node_list[new_node_index].heap_location = NONE;
+""", """							new_node_index = state->node_count++;
+							state->hash_table[hash_slot] = new_node_index;
+#ifdef HALO_PSP
+							/* psp_fixups.py (FIXES_126, RV2): the node as the whole clear left it */
+							if (psp_path_clear_mode())
+							{
+								csmemset(&state->node_list[new_node_index], 0,
+									sizeof(state->node_list[new_node_index]));
+							}
+#endif
+							state->node_list[new_node_index].heap_location = NONE;
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
