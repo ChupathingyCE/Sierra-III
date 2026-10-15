@@ -1,6 +1,10 @@
 # Review: build 127
 
-For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used here"). b127 is b126 (`review_b126.md`) plus the branch below, and **its own profile** (`campaign-b127`). b126 never reached your PSP, so its tests carry over (`build_b127.md`). Labels: [M] measured on a PSP, [E] emulator, [D] read in code, [U] inference.
+For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used here"). b127 is b126 (`review_b126.md`) plus the branch below, and **its own profile** (`campaign-b127`).
+
+## Release check
+
+Lab 38726145459, against b126 as built: play and both seeds identical at every common tick on d20 (15,091), a50 (25,200) and c20 (18,946) [E]; the whole state differs only where builds always do (the decal vertex cache, the speed-following allocations). The logs read whole, none dropped. b30 and c40 shots right; the multiplayer build plays Blood Gulch. Built from `25f7c80` (lab sierra-build 38726220580). b126 never reached your PSP, so its tests carry over (`build_b127.md`). Labels: [M] measured on a PSP, [E] emulator, [D] read in code, [U] inference.
 
 | Branch | What | Kind | Default | Words | Review |
 |---|---|---|---|---|---|
