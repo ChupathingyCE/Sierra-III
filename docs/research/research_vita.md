@@ -11,7 +11,7 @@ Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or dat
 - code he credits to others, such as iamhaller's networking or Bruno Santana's settings work (ask them, or take the idea only);
 - upstream decomp and OpenCE code, which is CC0 anyway.
 
-Anything taken still names the Vita port in its commit and review. A written line of the grant (a Discord message saved in the lab's notes, or a comment on his repo) is worth keeping, so the permission outlives the chat.
+Anything taken still names the Vita port in its commit and review. The exchange is transcribed in the lab's research notes (its `permissions.md`). His words: "Dude steal away I want to try your port sometime!"
 
 **Where to read it.** `port/vita/README.md` (settings, the profiles' costs, debug switches), `ROADMAP.md` and the main README's Performance section. Engine changes carry `/* port: */` or `/* (port) */` comments under `#ifdef HALO_LINUX` (the Vita builds the Linux platform layer); the speed ones name their map and their measurement.
 
