@@ -2626,8 +2626,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 			if (ticks >= 0 && beat > 20 && (beat % 6) == 0)
 			{
+				/* the collision log by user (collision_usage.c; recon builds
+				with PSP_DEBUG_TOOLS only, a no-op otherwise) */
+				extern void psp_collision_report(void);
+
 				psp_stick_report();
 				psp_threads_report();
+				psp_collision_report();
 			}
 		}
 		if (ticks >= 0 && (beat % 6) == 3)

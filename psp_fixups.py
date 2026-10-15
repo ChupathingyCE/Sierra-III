@@ -16869,7 +16869,128 @@ FIXES_126["source/units/units.c#aimchange"] = [
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()):
+FIXES_127 = {}
+# The collision log by user, for recon builds (PSP_DEBUG_TOOLS=1): Bungie's
+# log (collision_usage.c) counts and times every collision call by function
+# and by who asked (projectiles, bipeds, the AI's lines of sight, ...), but
+# only for a debug display, and keeps one period. Here each period's figures
+# are added up and psp_collision_report (the heartbeat, every 30 s) logs who
+# used the collision code and for how long. The question it answers: what
+# moving collision to the Media Engine would take off b30's tick, where the
+# collision functions are ~16% of it in the cache models (lab 38698483247).
+# Plays no differently: the log reads the calls, it decides nothing
+FIXES_127["source/physics/collision_usage.c#report"] = [
+("""	collision_usage_buffer[collision_usage_current_period] = collision_usage_current;
+	collision_usage_current_period = NONE;
+
+	return;
+}
+""", """#if defined(HALO_PSP) && defined(PSP_DEBUG_TOOLS)
+	{
+		/* psp_fixups.py (FIXES_127): every period's figures added up for
+		psp_collision_report */
+		extern struct collision_function psp_collision_totals[NUMBER_OF_COLLISION_FUNCTION_TYPES];
+		short function_index, user_index;
+
+		for (function_index = 0; function_index < NUMBER_OF_COLLISION_FUNCTION_TYPES; function_index++)
+		{
+			for (user_index = 0; user_index < NUMBER_OF_COLLISION_USER_TYPES; user_index++)
+			{
+				struct collision_log const *usage = &collision_usage_current.function[function_index].usage_by_user[user_index];
+
+				psp_collision_totals[function_index].usage_by_user[user_index].calls += usage->calls;
+				psp_collision_totals[function_index].usage_by_user[user_index].elapsed_time += usage->elapsed_time;
+			}
+		}
+	}
+#endif
+	collision_usage_buffer[collision_usage_current_period] = collision_usage_current;
+	collision_usage_current_period = NONE;
+
+	return;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_127): the collision log by user since the last
+report (PSP_DEBUG_TOOLS builds; nothing otherwise). Times are the
+performance counter's microseconds, so a call's own clock reads are in them */
+#ifdef PSP_DEBUG_TOOLS
+struct collision_function psp_collision_totals[NUMBER_OF_COLLISION_FUNCTION_TYPES];
+#endif
+void platform_psp_log(const char *format, ...);
+
+void psp_collision_report(void)
+{
+#ifdef PSP_DEBUG_TOOLS
+	__int64 by_user[NUMBER_OF_COLLISION_USER_TYPES];
+	long calls_by_user[NUMBER_OF_COLLISION_USER_TYPES];
+	char line[480];
+	int length, k, shown;
+	short function_index, user_index;
+
+	csmemset(by_user, 0, sizeof(by_user));
+	csmemset(calls_by_user, 0, sizeof(calls_by_user));
+	for (function_index = 0; function_index < NUMBER_OF_COLLISION_FUNCTION_TYPES; function_index++)
+		for (user_index = 0; user_index < NUMBER_OF_COLLISION_USER_TYPES; user_index++)
+		{
+			by_user[user_index] += psp_collision_totals[function_index].usage_by_user[user_index].elapsed_time;
+			calls_by_user[user_index] += psp_collision_totals[function_index].usage_by_user[user_index].calls;
+		}
+	length = snprintf(line, sizeof(line), "collision by user since the last report (calls, ms):");
+	for (shown = 0; shown < 10; shown++)
+	{
+		short best = NONE;
+
+		for (user_index = 0; user_index < NUMBER_OF_COLLISION_USER_TYPES; user_index++)
+			if (calls_by_user[user_index] > 0 && (best == NONE || by_user[user_index] > by_user[best]))
+				best = user_index;
+		if (best == NONE)
+			break;
+		length += snprintf(line + length, sizeof(line) - length, " %s %ld %.1f;", global_collision_user_names[best],
+			calls_by_user[best], (double)by_user[best] / 1000.0);
+		calls_by_user[best] = 0;
+		if (length >= (int)sizeof(line) - 1)
+			break;
+	}
+	if (shown)
+		platform_psp_log("%s", line);
+	/* the largest user and function pairs */
+	length = snprintf(line, sizeof(line), "collision by user and call (calls, ms):");
+	for (k = 0; k < 10; k++)
+	{
+		short best_function = NONE, best_user = NONE;
+
+		for (function_index = 0; function_index < NUMBER_OF_COLLISION_FUNCTION_TYPES; function_index++)
+			for (user_index = 0; user_index < NUMBER_OF_COLLISION_USER_TYPES; user_index++)
+			{
+				struct collision_log const *usage = &psp_collision_totals[function_index].usage_by_user[user_index];
+
+				if (usage->calls > 0 && (best_function == NONE ||
+					usage->elapsed_time > psp_collision_totals[best_function].usage_by_user[best_user].elapsed_time))
+				{
+					best_function = function_index;
+					best_user = user_index;
+				}
+			}
+		if (best_function == NONE)
+			break;
+		length += snprintf(line + length, sizeof(line) - length, " %s %s %ld %.1f;", global_collision_user_names[best_user],
+			global_collision_function_names[best_function], psp_collision_totals[best_function].usage_by_user[best_user].calls,
+			(double)psp_collision_totals[best_function].usage_by_user[best_user].elapsed_time / 1000.0);
+		psp_collision_totals[best_function].usage_by_user[best_user].calls = 0;
+		if (length >= (int)sizeof(line) - 1)
+			break;
+	}
+	if (k)
+		platform_psp_log("%s", line);
+	csmemset(psp_collision_totals, 0, sizeof(psp_collision_totals));
+#endif
+}
+#endif
+"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_127.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
