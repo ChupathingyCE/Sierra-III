@@ -16843,6 +16843,78 @@ static void sound_cache_start_loading_sound(
 		xbox_sound_cache_globals.last_allocation_failure_time ="""),
 ]
 
+# RB1: the weapon interface state zeroed before it's filled. The HUD keeps it
+# on the stack unset, and weapon_build_weapon_interface_state fills only the
+# weapon's own magazines, so a one-magazine weapon's second magazine was
+# whatever the stack held: it could set off the HUD's secondary warnings ("NO
+# FUEL" beside "NO AMMO", the empty-secondary sound) and the swap prompt's
+# depleted test, differently from build to build. Every caller is the HUD's.
+# A restoration of the Xbox's HUD [U]. DamnationCE's fix (xshxdex98, CC0,
+# 488bd83e), found by BirchWoodGod's halo-ce-vita (research_vita.md section 9).
+# "weaponstateold" (keep.txt): as before.
+FIXES_126["source/items/weapons.c#interfacestate"] = [
+("""void weapon_build_weapon_interface_state(
+	long weapon_index,
+	struct weapon_interface_state *state)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RB1): whether the state is zeroed first (see
+there); -1 not read yet */
+int psp_keep(const char *name);
+static int psp_weapon_state_zeroed = -1;
+#endif
+
+void weapon_build_weapon_interface_state(
+	long weapon_index,
+	struct weapon_interface_state *state)
+{"""),
+("""	short magazine_index;
+
+	state->heat = weapon->weapon.heat;""", """	short magazine_index;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_126, RB1): nothing left as the stack held it */
+	if (psp_weapon_state_zeroed < 0)
+		psp_weapon_state_zeroed = !psp_keep("weaponstateold");
+	if (psp_weapon_state_zeroed)
+		csmemset(state, 0, sizeof(*state));
+#endif
+	state->heat = weapon->weapon.heat;"""),
+]
+
+# RH1: a unit's aiming change as x86 computes it when the unit has no aiming
+# speed limit. aiming_velocity_maximum 0 makes the change angle / 0: +infinity
+# for a turn, which pins to 1 everywhere, but NaN for a unit standing still,
+# which x86 (the Xbox, and the desktop servers) converts to the byte 0 and the
+# PSP's FPU to 255. The byte feeds the unit's exported "aiming change"
+# function (units.c, _unit_function_aiming_change), so any tag driving a
+# shader or animation from it saw a still unit as turning at full speed. Halo
+# 64's fix (JackTulli, CC0; research_halo64.md H1) spells out x86's answers.
+# A restoration. "aimchangeold" (keep.txt): as before.
+FIXES_126["source/units/units.c#aimchange"] = [
+("""			real change = angle / (unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND);
+""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_126, RH1): x86's answers for a zero
+			maximum (see there) */
+			static int psp_aim_change_x86 = -1;
+			real psp_maximum = unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND;
+			real change;
+
+			if (psp_aim_change_x86 < 0)
+			{
+				extern int psp_keep(const char *name);
+
+				psp_aim_change_x86 = !psp_keep("aimchangeold");
+			}
+			if (psp_aim_change_x86 && !(psp_maximum > 0.f))
+				change = angle > 0.f ? 1.f : 0.f;
+			else
+				change = angle / psp_maximum;
+#else
+			real change = angle / (unit_definition->unit.aiming_velocity_maximum/TICKS_PER_SECOND);
+#endif
+"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
