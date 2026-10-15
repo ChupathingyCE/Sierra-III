@@ -15,7 +15,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 129
+#define PSP_BUILD_NUMBER 130
 /* the engine base the build was made from, for the log */
 #define PSP_ENGINE_BASE "ChupathingyCE"
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
