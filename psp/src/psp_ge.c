@@ -9108,28 +9108,6 @@ range), without writing depth or fog, so the level covers it wherever the
 level is */
 static unsigned long sky_draws = 0, sky_parts_start = 0, sky_parts = 0;
 static int in_sky = 0;
-/* The sky is drawn around the eye at 1/1024 of its size (render_sky.c), so
-its lower parts come within the world's near plane; the Xbox draws the sky's
-see-through parts with the near plane at 1/256 of a unit
-(rasterizer_xbox_transparent_geometry.c, rasterizer_set_frustum_z). Cut at
-the world's, the sky lost the band along the horizon, and the frame's clear
-colour showed between the sky and the far ocean (the white bar). Its depth
-is the far end of the range whatever the projection, so a nearer plane costs
-nothing in precision. Keep word "skyclipped": the world's near plane */
-#define SKY_NEAR 0.00390625f
-static int sky_clipped = -1;
-
-static void sky_projection(int on)
-{
-	if (sky_clipped < 0)
-		sky_clipped = psp_keep("skyclipped");
-	if (sky_clipped)
-		return;
-	near_clip = on ? SKY_NEAR : projection_near;
-	sceGumMatrixMode(GU_PROJECTION);
-	perspective(projection_fov * (180.0f / 3.14159265f), on ? SKY_NEAR : projection_near, projection_far);
-	sceGumMatrixMode(GU_MODEL);
-}
 
 void psp_ge_sky(int on)
 {
@@ -9144,14 +9122,12 @@ void psp_ge_sky(int on)
 	if (on)
 	{
 		sky_draws++;
-		sky_projection(1);
 		sceGuDepthRange(1, 0);
 		sceGuDepthMask(GU_TRUE);
 		sceGuDisable(GU_FOG);
 	}
 	else
 	{
-		sky_projection(0);
 		sceGuDepthRange(WORLD_DEPTH_NEAR, 0);
 		sceGuDepthMask(GU_FALSE);
 		sceGuEnable(GU_FOG);
@@ -11743,7 +11719,6 @@ static void transparent_flush_body(void)
 		}
 		else if (draw->sky)
 		{
-			sky_projection(1);
 			sceGuDepthRange(1, 0);
 			sceGuDisable(GU_FOG);
 		}
@@ -11911,10 +11886,7 @@ static void transparent_flush_body(void)
 		if (draw->sky == 2)
 			sceGuEnable(GU_DEPTH_TEST);
 		else if (draw->sky)
-		{
-			sky_projection(0);
 			sceGuDepthRange(WORLD_DEPTH_NEAR, 0);
-		}
 		transparent_drawn++;
 	}
 	world_model();
