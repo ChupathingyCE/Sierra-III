@@ -9304,9 +9304,16 @@ may run deferred), in the tint call's flags. Keep words "seethroughpush" and
 #define SEETHROUGH_CLAMP_U 32
 #define SEETHROUGH_CLAMP_V 64
 #define SEETHROUGH_CLAMPED (SEETHROUGH_CLAMP_U | SEETHROUGH_CLAMP_V)
+/* A water shader flagged for atmospheric fog fades its added reflection with
+the fog (rasterizer_xbox_water.c: the final combiner takes the fog factor).
+The GE's fog mixes toward its colour, so an added draw gets the fog colour
+black: it adds less with distance and nothing at the fog's end. Unfogged, the
+far ocean stayed bright against the fog-coloured sky at the horizon (the
+white bar between them). Keep word "waterunfogged": as before */
+#define SEETHROUGH_FOG_FADE 128
 static unsigned char seethrough_next_depth = 0;
 static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
-static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0;
+static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0, seethrough_fog_faded_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
 call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
 not a meter). Builds 21-115 dropped meter shaders: the plasma weapons' heat
@@ -10347,7 +10354,7 @@ static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shade
 {
 	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 3, tint, (unsigned int)flags, shader, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	seethrough_next_tint = tint;
-	seethrough_next_depth = (unsigned char)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED));
+	seethrough_next_depth = (unsigned char)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED | SEETHROUGH_FOG_FADE));
 	flags &= 15;
 	seethrough_next_doubled = (unsigned char)(flags == 1);
 	seethrough_next_model = flags == 2 ? SEETHROUGH_ADD : flags == 3 ? SEETHROUGH_FLAT : SEETHROUGH_MODULATE;
@@ -10370,7 +10377,7 @@ void psp_ge_seethrough_map_clamp(int u, int v)
 
 void psp_ge_seethrough_shader(unsigned int shader)
 {
-	static int pushed = -1, wrapped = -1;
+	static int pushed = -1, wrapped = -1, unfogged = -1;
 	int flags = 0;
 	unsigned int tint = psp_tex_shader_tint(shader, &flags);
 
@@ -10378,6 +10385,7 @@ void psp_ge_seethrough_shader(unsigned int shader)
 	{
 		pushed = psp_keep("seethroughpush");
 		wrapped = psp_keep("seethroughwrap");
+		unfogged = psp_keep("waterunfogged");
 	}
 	if (shader)
 	{
@@ -10394,6 +10402,9 @@ void psp_ge_seethrough_shader(unsigned int shader)
 			flags |= SEETHROUGH_EXACT_DEPTH;
 		if (!wrapped)
 			flags |= type == 7 ? SEETHROUGH_CLAMPED : type == 5 || type == 6 ? seethrough_map_clamp : 0;
+		/* water's flags word at +40: bit 2 atmospheric fog */
+		if (!unfogged && type == 7 && (*(const unsigned short *)(definition + 40) & 4))
+			flags |= SEETHROUGH_FOG_FADE;
 	}
 	seethrough_map_clamp = 0;
 
@@ -11713,6 +11724,12 @@ static void transparent_flush_body(void)
 		}
 		else if (draw->blend == 0)
 			sceGuEnable(GU_FOG);
+		else if (draw->blend == 3 && (draw->depth_mode & SEETHROUGH_FOG_FADE))
+		{
+			sceGuFog(fog_near, fog_far, 0);
+			sceGuEnable(GU_FOG);
+			seethrough_fog_faded_draws++;
+		}
 		else
 			/* added or multiplied light fades by its own: no fog colour on top */
 			sceGuDisable(GU_FOG);
@@ -11854,6 +11871,8 @@ static void transparent_flush_body(void)
 			sceGuDisable(GU_FRAGMENT_2X);
 		if (draw->depth_mode & SEETHROUGH_CLAMPED)
 			sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+		if (draw->blend == 3 && (draw->depth_mode & SEETHROUGH_FOG_FADE) && !draw->sky)
+			sceGuFog(fog_near, fog_far, fog_color);
 		if (draw->tint_model != SEETHROUGH_MODULATE)
 			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 		if (draw->tint_model == SEETHROUGH_FLAT)
@@ -15462,9 +15481,9 @@ void psp_ge_frame_end(void)
 		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu, added %lu, flat %lu",
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
 			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws);
-		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu",
-			seethrough_exact_draws, seethrough_clamped_draws);
-		seethrough_exact_draws = seethrough_clamped_draws = 0;
+		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu",
+			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws);
+		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = 0;
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;
