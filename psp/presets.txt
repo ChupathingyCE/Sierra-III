@@ -13,3 +13,4 @@
 10 Pelican wall as before (pieces lost): nearauto assettrack geo2 cutstreamoff
 11 sleep as before (ME stays off): nearauto assettrack geo2 mewakeoff
 12 look check, near plane pinned: assettrack geo2 near4
+13 showcase, the openings' cutscenes one after another: nearauto assettrack geo2 sceneladder
