@@ -2355,12 +2355,39 @@ static void ge_initialize(void)
 its position, forward and up directions and vertical field of view */
 static float camera_eye[3];
 
-/* a model matrix made relative to the camera */
+/* The GE's world space has its origin at ge_eye, the eye rounded so that each
+coordinate fits the GE's 24-bit matrix words exactly; the view matrix moves
+the last fraction, ge_eye_camera (ge_eye seen from the eye, along the
+camera's right, up and forward). Why: the level's vertices are world
+positions, so its model matrix carries the eye's whole position, and the GE
+drops the low 8 bits of every matrix word. Hundreds of units out (c40's
+control room is 692 units from the origin, a10's flyby 593), that is up to
+1/64 of a unit, and as the eye moves the dropped part jumps about, so the
+level shook against the models, whose matrices are small (LK22). With the
+origin on a value the GE keeps exactly, the level's translation arrives
+whole, and the remainder in the view is a fraction of a unit, which its
+24 bits carry to within a millionth. "levelexactoff": the origin at the eye,
+the view a pure turn, as before */
+static float ge_eye[3], ge_eye_camera[3];
+static int level_exact = -1;
+
+/* the value the GE keeps of a matrix word: the low 8 bits dropped (pspgu
+sends a float's top 24 bits) */
+static float ge_matrix_float(float f)
+{
+	union { float f; unsigned int u; } bits;
+
+	bits.f = f;
+	bits.u &= ~0xFFu;
+	return bits.f;
+}
+
+/* a model matrix made relative to the GE's world origin */
 static void relative(ScePspFMatrix4 *m)
 {
-	m->w.x -= camera_eye[0];
-	m->w.y -= camera_eye[1];
-	m->w.z -= camera_eye[2];
+	m->w.x -= ge_eye[0];
+	m->w.y -= ge_eye[1];
+	m->w.z -= ge_eye[2];
 }
 
 /* the model matrix for anything given in world coordinates (the level,
@@ -3033,23 +3060,35 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		/* build 113: "shoteveryN": a screenshot every N seconds of game time,
 		at most 24 (emulator runs have no hands for select + right). Asked
 		for as the frame begins, so "tdump" lists the frame's see-through
-		draws too */
+		draws too. "shotrunN": each of those moments takes N frames in a
+		row (at most 72 shots then), so a frame-to-frame change (a wobble,
+		a flicker) can be told from motion by comparing neighbours */
 		extern volatile int psp_screenshot_requested;
 		extern int psp_keep_number(const char *prefix, int fallback);
 		extern long psp_game_time_peek(void);
-		static int shot_every = -2, shots_asked = 0;
+		static int shot_every = -2, shot_run = 1, shot_run_left = 0, shots_asked = 0, shots_most = 24;
 		static long shot_next = -1;
 
 		if (shot_every == -2)
+		{
 			shot_every = psp_keep_number("shotevery", 0);
-		if (shot_every > 0 && shots_asked < 24)
+			shot_run = psp_keep_number("shotrun", 1);
+			if (shot_run < 1)
+				shot_run = 1;
+			if (shot_run > 1)
+				shots_most = 72;
+		}
+		if (shot_every > 0 && shots_asked < shots_most)
 		{
 			long now = psp_game_time_peek(), period = (long)shot_every * 30;
 
 			if (shot_next >= 0 && now >= shot_next)
+				shot_run_left = shot_run;
+			if (shot_run_left > 0)
 			{
 				psp_screenshot_requested = 1;
 				shots_asked++;
+				shot_run_left--;
 			}
 			if (shot_next < 0 || now >= shot_next)
 				shot_next = (now / period + 1) * period;
@@ -3141,13 +3180,22 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	eye.x = position[0]; eye.y = position[1]; eye.z = position[2];
 	center.x = eye.x + forward[0]; center.y = eye.y + forward[1]; center.z = eye.z + forward[2];
 	upward.x = up[0]; upward.y = up[1]; upward.z = up[2];
-	/* camera-relative (build 35): the GE keeps its matrices as 24-bit
-	floats, so a view matrix carrying the camera's world position (a hundred
-	units out on Blood Gulch) and a model matrix carrying the model's lost
-	about a millimetre each; next to the camera that is several pixels, and
-	the first-person weapon crumpled as its bones moved. The view is now the
-	camera's turn alone, and every model matrix is made relative to the
-	camera on the CPU, in full floats (relative(), world_model()) */
+	/* camera-relative: the GE keeps its matrices as 24-bit floats, so a
+	view matrix carrying the camera's world position (a hundred units out on
+	Blood Gulch) and a model matrix carrying the model's lost about a
+	millimetre each; next to the camera that is several pixels, and the
+	first-person weapon crumpled as its bones moved. So the view is the
+	camera's turn plus the fraction between the eye and ge_eye, and every
+	model matrix is made relative to ge_eye on the CPU, in full floats
+	(relative(), world_model()) */
+	if (level_exact < 0)
+		level_exact = !psp_keep("levelexactoff");
+	{
+		int k;
+
+		for (k = 0; k < 3; k++)
+			ge_eye[k] = level_exact ? ge_matrix_float(position[k]) : position[k];
+	}
 	{
 		ScePspFVector3 origin = { 0.0f, 0.0f, 0.0f }, ahead;
 
@@ -3155,6 +3203,16 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		sceGumMatrixMode(GU_VIEW);
 		sceGumLoadIdentity();
 		sceGumLookAt(&origin, &ahead, &upward);
+		if (level_exact)
+		{
+			/* a point given from ge_eye, moved to be given from the eye */
+			ScePspFVector3 shift;
+
+			shift.x = ge_eye[0] - position[0];
+			shift.y = ge_eye[1] - position[1];
+			shift.z = ge_eye[2] - position[2];
+			sceGumTranslate(&shift);
+		}
 	}
 	(void)center;
 	frame_open = 1;
@@ -3184,6 +3242,14 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		guard_x = guard_y * (float)SCREEN_WIDTH / SCREEN_HEIGHT;
 		guard_x_length = sqrtf(1.0f + guard_x * guard_x); /* build 118 */
 		guard_y_length = sqrtf(1.0f + guard_y * guard_y);
+	}
+	{
+		float d[3];
+
+		d[0] = ge_eye[0] - camera_eye[0]; d[1] = ge_eye[1] - camera_eye[1]; d[2] = ge_eye[2] - camera_eye[2];
+		ge_eye_camera[0] = d[0] * camera_right[0] + d[1] * camera_right[1] + d[2] * camera_right[2];
+		ge_eye_camera[1] = d[0] * camera_up[0] + d[1] * camera_up[1] + d[2] * camera_up[2];
+		ge_eye_camera[2] = d[0] * camera_forward[0] + d[1] * camera_forward[1] + d[2] * camera_forward[2];
 	}
 	sceGumMatrixMode(GU_MODEL);
 	world_model();
@@ -3273,12 +3339,12 @@ static void corner_verdict_reset(void)
 	}
 }
 
-/* the same for a camera-relative world position */
+/* the same for a position in the GE's world space (from ge_eye) */
 static inline int model_corner_out(float x, float y, float z, float limit)
 {
-	return camera_corner_out(x * camera_right[0] + y * camera_right[1] + z * camera_right[2],
-		x * camera_up[0] + y * camera_up[1] + z * camera_up[2],
-		x * camera_forward[0] + y * camera_forward[1] + z * camera_forward[2], limit);
+	return camera_corner_out(x * camera_right[0] + y * camera_right[1] + z * camera_right[2] + ge_eye_camera[0],
+		x * camera_up[0] + y * camera_up[1] + z * camera_up[2] + ge_eye_camera[1],
+		x * camera_forward[0] + y * camera_forward[1] + z * camera_forward[2] + ge_eye_camera[2], limit);
 }
 
 /* a model-space point through a part's camera-relative matrix into camera
@@ -3294,9 +3360,9 @@ static inline void model_to_camera(const ScePspFMatrix4 *m, const float *p, floa
 	float y = m->x.y * p[0] + m->y.y * p[1] + m->z.y * p[2] + m->w.y;
 	float z = m->x.z * p[0] + m->y.z * p[1] + m->z.z * p[2] + m->w.z;
 
-	out[0] = x * camera_right[0] + y * camera_right[1] + z * camera_right[2];
-	out[1] = x * camera_up[0] + y * camera_up[1] + z * camera_up[2];
-	out[2] = x * camera_forward[0] + y * camera_forward[1] + z * camera_forward[2];
+	out[0] = x * camera_right[0] + y * camera_right[1] + z * camera_right[2] + ge_eye_camera[0];
+	out[1] = x * camera_up[0] + y * camera_up[1] + z * camera_up[2] + ge_eye_camera[1];
+	out[2] = x * camera_forward[0] + y * camera_forward[1] + z * camera_forward[2] + ge_eye_camera[2];
 }
 
 /* the signed distance of a point inside one plane (positive inside) */
@@ -5866,12 +5932,12 @@ void psp_ge_model_point_light(const float *position, unsigned int color)
 	if (model_point_count >= 2 || !position)
 		return;
 	/* the GE lights after the model matrix, and this file's model matrices
-	have the camera at the origin (relative), so the light's place is
-	given from the camera too (an independent review; at replay, after
-	GE_DEFER, the camera is the one the model is drawn from) */
-	model_point_position[model_point_count].x = position[0] - camera_eye[0];
-	model_point_position[model_point_count].y = position[1] - camera_eye[1];
-	model_point_position[model_point_count].z = position[2] - camera_eye[2];
+	have ge_eye at the origin (relative), so the light's place is given
+	from there too (at replay, after GE_DEFER, the camera is the one the
+	model is drawn from) */
+	model_point_position[model_point_count].x = position[0] - ge_eye[0];
+	model_point_position[model_point_count].y = position[1] - ge_eye[1];
+	model_point_position[model_point_count].z = position[2] - ge_eye[2];
 	model_point_color[model_point_count] = color;
 	model_point_count++;
 }
@@ -7767,7 +7833,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						depth_row[slot][axis][0] = model->x.x * d[0] + model->x.y * d[1] + model->x.z * d[2];
 						depth_row[slot][axis][1] = model->y.x * d[0] + model->y.y * d[1] + model->y.z * d[2];
 						depth_row[slot][axis][2] = model->z.x * d[0] + model->z.y * d[1] + model->z.z * d[2];
-						depth_row[slot][axis][3] = model->w.x * d[0] + model->w.y * d[1] + model->w.z * d[2];
+						depth_row[slot][axis][3] = model->w.x * d[0] + model->w.y * d[1] + model->w.z * d[2] +
+							ge_eye_camera[axis];
 					}
 				}
 			}
@@ -8047,10 +8114,10 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 								float at[3], normal[3], uv[2], world[3];
 
 								skin_corner(record, skin->weights, uv_at, bone, at, normal, uv);
-								/* camera-relative to world, for the camera-space corner */
-								world[0] = at[0] + camera_eye[0];
-								world[1] = at[1] + camera_eye[1];
-								world[2] = at[2] + camera_eye[2];
+								/* the GE's world space to world, for the camera-space corner */
+								world[0] = at[0] + ge_eye[0];
+								world[1] = at[1] + ge_eye[1];
+								world[2] = at[2] + ge_eye[2];
 								to_camera(world, polygon[k]);
 								polygon[k][3] = uv[0];
 								polygon[k][4] = uv[1];
@@ -8212,7 +8279,7 @@ static void rigid_rows_for(const ScePspFMatrix4 *model)
 		rigid_rows[axis][0] = model->x.x * d[0] + model->x.y * d[1] + model->x.z * d[2];
 		rigid_rows[axis][1] = model->y.x * d[0] + model->y.y * d[1] + model->y.z * d[2];
 		rigid_rows[axis][2] = model->z.x * d[0] + model->z.y * d[1] + model->z.z * d[2];
-		rigid_rows[axis][3] = model->w.x * d[0] + model->w.y * d[1] + model->w.z * d[2];
+		rigid_rows[axis][3] = model->w.x * d[0] + model->w.y * d[1] + model->w.z * d[2] + ge_eye_camera[axis];
 	}
 }
 
@@ -14733,8 +14800,9 @@ static void screenshot(void)
 	sceIoClose(file);
 	/* where from (build 35): the debug camera can then go back there
 	(camera.txt: position, forward, up, field of view) */
-	platform_log("[t %.1f] screenshot: %s (frame %lu) from %.2f %.2f %.2f looking %.2f %.2f %.2f", seconds, path, frames,
-		camera_eye[0], camera_eye[1], camera_eye[2], camera_forward[0], camera_forward[1], camera_forward[2]);
+	platform_log("[t %.1f] screenshot: %s (frame %lu) from %.2f %.2f %.2f looking %.2f %.2f %.2f, near plane %.4f", seconds, path,
+		frames, camera_eye[0], camera_eye[1], camera_eye[2], camera_forward[0], camera_forward[1], camera_forward[2],
+		projection_near);
 }
 
 /* build 74: the frame end's parts over each heartbeat window, for the log's

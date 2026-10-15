@@ -890,6 +890,7 @@ static void keep_load(void)
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
 	platform_log("keep words, build 123's: speed off: aiprofilefull; speed, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash meraysminN weapontracksleep; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); lit items: litemsawake; recon: activecensus");
+	platform_log("keep words, build 124's: restorations off: levelexactoff (the level drawn from the eye as the GE rounds it); tests: shotrunN (N frames in a row at each shotevery moment)");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
 	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
