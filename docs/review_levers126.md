@@ -50,7 +50,7 @@ Branches stacked on `w125` (`dce92ba`, b125's code): `rv2` → `rv1` → `rv4` �
 
 **Kind.** A restoration of the Xbox's HUD [U]: on, `weaponstateold` restores the old behaviour. The fix is DamnationCE's (xshxdex98, CC0, `488bd83e`), found through the Vita port's notes (`research_vita.md` §9).
 
-**Proven:** batch `restore126` (state pairs against `weaponstateold`: expected the same play, as only the HUD reads it). *Results to be added.*
+**Checked** [E] (lab 38699998102, `restore126`): against `weaponstateold`, play and both seeds identical at every tick on d20 (15,539), a50 (25,768) and c20 (19,641). The whole state differs in one allocation, `hud weapon interface`, from tick 30: the zeroed state itself.
 
 ## 5. RH1: aiming change with no aiming limit (`units/units.c`)
 
@@ -58,7 +58,7 @@ Branches stacked on `w125` (`dce92ba`, b125's code): `rv2` → `rv1` → `rv4` �
 
 **Kind.** A restoration: on, `aimchangeold` restores the old behaviour. From JackTulli's Halo 64 (CC0; `research_halo64.md` H1).
 
-**Proven:** batch `restore126` (state pairs against `aimchangeold`: play may part where such a unit exists, which then shows which). *Results to be added.*
+**Checked** [E] (lab 38699998102): against `aimchangeold`, play and both seeds identical at every tick on d20 (15,511), a50 (25,861) and c20 (19,641). The whole state differs in `objects` from tick 30 on all three: the units' aiming-change byte, 0 now where the PSP gave 255. So still units with no aiming limit are common, and any tag reading this function now sees what the Xbox shows.
 
 ## Not taken: the stabbed dump
 
