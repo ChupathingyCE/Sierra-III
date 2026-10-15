@@ -28,11 +28,11 @@ return TRUE;             /* out of reach: the test would add nothing */
 
 **Why.** It's a cache-miss lever (your steer today): the sphere walk is the tick's largest source of data misses on a50 (17% of them), and most of its cost is walking rings of edges and vertices scattered through memory. The recon (lab 38790928679 [E], every test counted): **85% of a50's surface tests are out of reach**, 67% of b30's, 61% of d20's, 33% of c20's.
 
-**Exact** [D, E]. A surface's vertices and edges lie inside its bounding sphere, and so does the point the sphere's centre projects onto when the test finds it inside the face (that point is less than the sphere's radius from the centre, since the sphere straddles the face's plane). So a sphere farther away than both radii touches none of them. The margin (a thousandth of the reach, plus 0.0001 of a world unit) covers the rounding of these sums at the level's coordinates. In the recon, none of 17 million out-of-reach surfaces would have been added or hit. Checks: CHECKS
+**Exact** [D, E]. A surface's vertices and edges lie inside its bounding sphere, and so does the point the sphere's centre projects onto when the test finds it inside the face (that point is less than the sphere's radius from the centre, since the sphere straddles the face's plane). So a sphere farther away than both radii touches none of them. The margin (a thousandth of the reach, plus 0.0001 of a world unit) covers the rounding of these sums at the level's coordinates. In the recon, none of 17 million out-of-reach surfaces would have been added or hit. Checks (lab 38793200211 [E]): every walk compared with the engine's own (`surfacetestcheck`), 0 of 197,649 differ on a50 and 0 of 372,128 on b30's route; play and both seeds identical to `surfaceboundoff` at every tick on a50 (19,291) and d20 (11,530).
 
 **Memory.** 40 KB, allocated at the first walk; if there's no room the log says so and the walk tests every surface as before. Only the level's collision BSP uses the table (objects' BSPs would empty it); it's emptied when a map loads or the BSP changes (`psp_sphere_memo_forget`).
 
-**Worth.** WORTH
+**Worth** [E, cache model, to game time 120 s; lab 38793200211]: a50's tick 20.46 → 19.89 ms (−2.8%: 5.2% fewer instructions, 2.6% fewer data misses), b30's 42.25 → 41.40 ms (−2.0%). In play, 88% of a50's surfaces about to be tested are passed over; the table makes a bounding sphere for about one test in six. The PSP's figure comes from tonight's ladder.
 
 ## §2 Next tick's base poses made ahead (`psp_fixups.py` FIXES_131 `objects.c#poseahead`, `model_animation_definitions.h#poseahead`; `psp_me.c` `ME_JOB_POSES`; `psp_anim.c`)
 

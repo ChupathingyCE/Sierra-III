@@ -4,7 +4,7 @@
 
 ZIPLINE
 
-**What's new for you:** nothing to see: b131 plays and looks as b130 does. Bipeds' movement passes over level surfaces that can't touch them (`surfaceboundoff`, or preset 4, tests them all as before). WORTHLINE The Media Engine pose job is in but off: it hung the PSP-3000 once today, so no preset uses it tonight.
+**What's new for you:** nothing to see: b131 plays and looks as b130 does. Bipeds' movement passes over level surfaces that can't touch them (`surfaceboundoff`, or preset 4, tests them all as before). In the cache model a50's tick is 2.8% faster and b30's 2.0% [E]; exact (every walk compared with the engine's own, play identical). The Media Engine pose job is in but off: it hung the PSP-3000 once today, so no preset uses it tonight.
 
 **What's faster from b130, still in:** `cutless` (a10 14.7 → 15.9 fps, c40 13.9 → 14.6 on the PSP-1000); c20's flares' walls and fractions; b30's flight tick −3.7%.
 
