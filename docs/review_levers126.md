@@ -1,15 +1,16 @@
-# Review: the research levers, first batch (`rv2`, `rv1`, `rv4`, `stabbed`)
+# Review: the research levers, first batch (`rv2`, `rv1`, `rv4`, `restore126`)
 
 For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used here"). Same shape as the other reviews: **what**, **key lines**, **why**, **proven**, **default**. Labels: [M] measured on a PSP, [E] emulator, [D] read in code, [U] inference.
 
-Four branches stacked on `w125` (`dce92ba`, b125's code): `rv2` → `rv1` → `rv4` → `stabbed`. All of it lives in one new fixup group, `FIXES_126` in `psp_fixups.py`, plus one log line in `psp_platform.c`. The first three are exact speed-ups taken from BirchWoodGod's [halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita) (used with his permission; README, Credits); the fourth is a fix.
+Branches stacked on `w125` (`dce92ba`, b125's code): `rv2` → `rv1` → `rv4` → `stabbed` → `restore126`. All of it lives in one new fixup group, `FIXES_126` in `psp_fixups.py`, plus one log line in `psp_platform.c`. The first three are exact speed-ups taken from BirchWoodGod's [halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita) (used with his permission; README, Credits); RB1 and RH1 are restorations.
 
 | Change | Kind | Default | Words |
 |---|---|---|---|
 | 1. RV2: a path search's state cleared by its header alone | exact speed-up | **on** | `pathclearfull` (off), `pathclearpoison` (check) |
 | 2. RV1: a deleted object's fix-up walks only the types with a handler | exact speed-up | **on** | `deletedwalkall` (off), `deletedcheck` (check) |
 | 3. RV4, first part: the nearby test searches when needed; smoothing scans from the last step | exact speed-up | **on** | `aipathold` (off), `aipathcheck` (check) |
-| 4. The sound cache's "stabbed" dump file left out | fix | **on** | `stabbedfile` (the dump as before) |
+| 4. RB1: the HUD's weapon state zeroed before it's filled | restoration | **on** | `weaponstateold` (off) |
+| 5. RH1: a still unit's aiming change as x86 gives it | restoration | **on** | `aimchangeold` (off) |
 
 **How exactness is judged** (as since b117): the game played hands off with `fixedticks fixedseed statecrc` on d20, a50 and c20, the lever on against its off word, one build. The **play hash** (every object's kind, place, motion, facing, health, parent, animation) and **both random seeds** must match at every tick. The whole-state hash may differ only in allocations already known to follow the emulator's speed (the render and collision marks in `objects`, looping sounds, particles, contrails, first-person weapons); each run's last checkpoint, cut by the wall, is left out.
 
@@ -43,11 +44,25 @@ Four branches stacked on `w125` (`dce92ba`, b125's code): `rv2` → `rv1` → `r
 
 **Not yet:** V4 (a firing position's line of sight stops once its answer can't change the choice) and V7 (perception's per-refresh facts). V4 changes `ai_test_line_of_sight`, which the Media Engine's ray code also wraps; its worth is to be sized from the cache-model run before it's built.
 
-## 4. The stabbed dump (`cache/xbox_sound_cache.c`)
+## 4. RB1: the HUD's weapon state (`items/weapons.c`)
 
-**What.** When a sound finds no room, the game wrote the sound cache's whole layout to `d:\stabbed.txt` mid-game, a file for Bungie's developers. A PSP build has no reader for it; the port's own log line (b113's) already names the sound, the longest run the cache could clear and what playing sounds held. It's now left out; `stabbedfile` writes it as before, with a log line on each side.
+**What.** `weapon_build_weapon_interface_state` fills only the weapon's own magazines, and every caller (all HUD code) keeps the state on the stack unset. So a one-magazine weapon's second magazine was whatever the stack held, which could set off the HUD's secondary warnings ("NO FUEL" beside "NO AMMO", the empty-secondary sound) and the swap prompt's depleted test, differently from build to build. The state is now zeroed first.
 
-**Why now.** d20 played hands off in the emulator (w125, no `statecrc`) stops right after "SOUND CACHE BLOWN" at game time 482, log and heartbeat together (lab 38688506641). Batch `stabbed126` tells whether the stop is inside the dump. *Results to be added.*
+**Kind.** A restoration of the Xbox's HUD [U]: on, `weaponstateold` restores the old behaviour. The fix is DamnationCE's (xshxdex98, CC0, `488bd83e`), found through the Vita port's notes (`research_vita.md` §9).
+
+**Proven:** batch `restore126` (state pairs against `weaponstateold`: expected the same play, as only the HUD reads it). *Results to be added.*
+
+## 5. RH1: aiming change with no aiming limit (`units/units.c`)
+
+**What.** A unit whose `aiming_velocity_maximum` is 0 computed its aiming change as angle / 0. Turning, that's +infinity, which pins to 1 everywhere. Standing still, it's 0/0, a NaN: x86 (the Xbox, the desktop servers) turns that into the byte 0, the PSP's FPU into 255. The byte feeds the unit's exported "aiming change" function, so a tag driving a shader or animation from it saw a still unit as turning at full speed. x86's answers are now spelled out.
+
+**Kind.** A restoration: on, `aimchangeold` restores the old behaviour. From JackTulli's Halo 64 (CC0; `research_halo64.md` H1).
+
+**Proven:** batch `restore126` (state pairs against `aimchangeold`: play may part where such a unit exists, which then shows which). *Results to be added.*
+
+## Not taken: the stabbed dump
+
+When a sound finds no room the game writes the sound cache's layout to `d:\stabbed.txt`. d20 played hands off in the emulator stopped right after that point on two earlier w125 commits (`d18a1d0`, `33cf9a8`; five runs, lab 38688506641), so a branch left the dump out and logged around it. It wasn't the cause (lab 38697891379): with the dump written, it began and ended normally, and the sound cache blew in every run without a stop. The stop doesn't reproduce on b125's code (`dce92ba`) or this stack, so the change was taken back out [E]. Most likely streamoom's or trim125's heap changes removed it; timing hiding it isn't ruled out [U]. On the PSP, opening `d:\` simply fails, so the dump costs almost nothing there.
 
 ## Worth
 

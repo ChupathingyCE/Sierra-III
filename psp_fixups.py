@@ -16797,52 +16797,6 @@ void path_smooth(
 """),
 ]
 
-# The sound cache's "stabbed" dump left out. When a sound finds no room, the
-# game writes the whole cache's layout to d:\stabbed.txt for its developers
-# (lruv_debug_to_file), mid-game, at most every 10 s. A PSP build has no use
-# for it: the port's own line (FIXES_113 "#noroom") already names the sound,
-# the longest run the cache could clear and what playing sounds hold, in the
-# log. And d20 played hands off in the emulator (w125, no statecrc) stops
-# right after the dump's "SOUND CACHE BLOWN" at game time 482, log and
-# heartbeat included (lab 38688506641): the marks below say whether it stops
-# inside the dump. Nothing the game reads changes.
-# "stabbedfile" (keep.txt): the dump written as before, with a log line on
-# each side of it.
-FIXES_126["source/cache/xbox_sound_cache.c#stabbed"] = [
-("""static void sound_cache_start_loading_sound(
-	struct sound_permutation *sound)
-{""", """#ifdef HALO_PSP
-/* psp_fixups.py (FIXES_126): the stabbed dump written only with
-"stabbedfile" (see there); -1 not read yet */
-int psp_keep(const char *name);
-static int psp_stabbed_file = -1;
-#endif
-
-static void sound_cache_start_loading_sound(
-	struct sound_permutation *sound)
-{"""),
-("""		lruv_debug_to_file(
-			"d:\\\\stabbed.txt",""", """#ifdef HALO_PSP
-		/* psp_fixups.py (FIXES_126): the dump only with "stabbedfile" (see there) */
-		if (psp_stabbed_file < 0)
-			psp_stabbed_file = psp_keep("stabbedfile");
-		if (psp_stabbed_file)
-			platform_psp_log("sound cache: the stabbed dump begins (stabbedfile)");
-		if (psp_stabbed_file)
-#endif
-		lruv_debug_to_file(
-			"d:\\\\stabbed.txt","""),
-("""			scenario_debug_to_file,
-			cache_block_get_sound_permutation_name);
-		xbox_sound_cache_globals.last_allocation_failure_time =""", """			scenario_debug_to_file,
-			cache_block_get_sound_permutation_name);
-#ifdef HALO_PSP
-		if (psp_stabbed_file)
-			platform_psp_log("sound cache: the stabbed dump ends");
-#endif
-		xbox_sound_cache_globals.last_allocation_failure_time ="""),
-]
-
 # RB1: the weapon interface state zeroed before it's filled. The HUD keeps it
 # on the stack unset, and weapon_build_weapon_interface_state fills only the
 # weapon's own magazines, so a one-magazine weapon's second magazine was
