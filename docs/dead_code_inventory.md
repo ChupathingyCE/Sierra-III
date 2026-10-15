@@ -26,7 +26,7 @@ It measures which of the program's code ran and which data only unrun code uses,
 | Player update queues (`update_client_globals`, `update_server_globals`; `player_queues_new.o` 91 in all) | 83 | One player, a queue 1–2 deep [U] |
 | `features` (ragdoll scratch) | 44 | Could share another scratch buffer [U] |
 | Lens flares: `local_lens_flare_parameters`, `…_occlusion_test_results` | 70 | Peaks not measured |
-| `compressed_monk_tone` (in the EBOOT's data too) | 18 | Never plays [E, b107] |
+| `compressed_monk_tone` (in the EBOOT's data too) | 18 | Never plays [E, b107]: only the Xbox's disc-to-hard-drive copy starts the loading screen. **Keep the sound, move it** (Sheepdog01, 2026-10-14): it becomes the rebuilt loading screen's, baked from the player's disc (`plan_loading_screen.md`) |
 
 **Suggested next:** group 2 (the biggest, and the same technique as group 4), then the scanf engine. The data trims need a lab batch each.
 
