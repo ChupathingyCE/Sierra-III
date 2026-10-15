@@ -16526,22 +16526,56 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 				for (word = 0; word < count && first < 0; word++)
 					if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
 						first = word;
-				if ((after != before || first >= 0) && psp_items_sleep_wrong++ < 8)
-				{
-					long shown = 0;
+				/* a checksum that moved while sleeping would leave the datum
+				as the update makes it is a wake, not a change: the sleeping
+				path's own functions (functions_active_flags, which the
+				checksum compares, flips as a function crosses its bound), or
+				its tracked object or what it carries. Only a datum that
+				sleeping would leave otherwise counts as changed */
+				static unsigned long woken_functions = 0, woken_outside = 0;
 
-					platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
-						tag_get_name(sleeper->definition_index), game_time_get(), before, after);
-					for (word = 0; word < count && shown < 12; word++)
-						if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
-						{
-							platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
-								word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
-							shown++;
-						}
-					if (!shown)
-						platform_psp_log("sleep: itemsleepcheck:   no word of its own changed (what it carries, or its tracked object)");
+				if (first >= 0)
+				{
+					if (psp_items_sleep_wrong++ < 8)
+					{
+						long shown = 0;
+
+						platform_psp_log("sleep: itemsleepcheck: %s changed while asleep (t=%ld, checksum %08lx -> %08lx)",
+							tag_get_name(sleeper->definition_index), game_time_get(), before, after);
+						for (word = 0; word < count && shown < 12; word++)
+							if (word != 2 && word != 0x1B4 / 4 && asleep[word] != ((unsigned long const *)header->datum)[word])
+							{
+								platform_psp_log("sleep: itemsleepcheck:   word %ld (byte 0x%lx) asleep %08lx, updated %08lx",
+									word, word * 4, asleep[word], ((unsigned long const *)header->datum)[word]);
+								shown++;
+							}
+					}
+				}
+				else if (after != before)
+				{
+					struct psp_checksum_rules rules;
+					long moved = -1;
+
+					psp_checksum_rules_for(header, &rules);
+					for (word = 0; word < count && moved < 0; word++)
+						if (psp_checksum_word(&rules, word, copy[word]) !=
+							psp_checksum_word(&rules, word, ((unsigned long const *)header->datum)[word]))
+							moved = word;
+					if (moved >= 0)
+						woken_functions++;
+					else
+						woken_outside++;
+					if (woken_functions + woken_outside <= 4)
+						platform_psp_log("sleep: itemsleepcheck: %s woken, not changed (t=%ld): %s%s", tag_get_name(sleeper->definition_index),
+							game_time_get(), moved >= 0 ? "a compared word its sleeping functions also make, word " : "its tracked object or what it carries",
+							moved >= 0 ? (moved == (long)(offsetof(struct object_datum, object.functions_active_flags) / 4) ? "functions_active_flags" : "other") : "");
 				}"""),
+("""				if (psp_items_sleep_checked % 30000 == 0)
+					platform_psp_log("sleep: itemsleepcheck: %lu sleeper updates, %lu changed one",
+						psp_items_sleep_checked, psp_items_sleep_wrong);""",
+"""				if (psp_items_sleep_checked % 30000 == 0)
+					platform_psp_log("sleep: itemsleepcheck: %lu sleeper updates, %lu changed one; woken, not changed: %lu by its own functions, %lu by its tracked object or what it carries",
+						psp_items_sleep_checked, psp_items_sleep_wrong, woken_functions, woken_outside);"""),
 ("""long psp_items_lit_reason[6];
 """, """long psp_items_lit_reason[6];
 /* psp_fixups.py (FIXES_123L): weapons that track an object may sleep, with
