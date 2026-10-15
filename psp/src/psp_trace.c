@@ -177,6 +177,11 @@ static SceUID io_real(SceUID fd)
 	return fd >= 0 && fd < TRACE_FILES && reopen_table[fd].path[0] ? reopen_table[fd].real : fd;
 }
 
+static const char *path_of_fd(SceUID fd)
+{
+	return fd >= 0 && fd < TRACE_FILES && reopen_table[fd].path[0] ? reopen_table[fd].path : NULL;
+}
+
 static void reopen_note(SceUID fd, const char *path, int flags, SceMode mode)
 {
 	if (fd < 0)
@@ -312,7 +317,26 @@ static struct stick_thread
 	unsigned int calls, waits, start;
 	unsigned long long in_us, wait_us;
 	unsigned int worst_in_us, worst_wait_us;
+	const char *op;  /* the outermost call, for the slow calls' report */
+	char what[24];   /* its file's name */
 } stick_threads[STICK_THREADS], stick_spare;
+
+/* The stick's slow calls, a quarter second and more: the lock's totals say
+how long each thread held it, not which call it was. A b126 run on the
+PSP-1000 had the log's thread hold the stick 1.46 s in one call, with an
+animation read stalled behind it (lab 38706758115). The slowest four of
+each report's window are kept */
+#define STICK_SLOW_US 250000
+#define STICK_SLOW_KEPT 4
+static struct stick_slow
+{
+	SceUID thread;
+	const char *op;
+	char what[24];
+	unsigned int took_ms;
+	long game_time;
+} stick_slow[STICK_SLOW_KEPT];
+static unsigned int stick_slow_calls = 0;
 static volatile int stick_enabled = -1;
 int psp_keep_loaded(void);
 
@@ -448,6 +472,41 @@ static void stick_take(void)
 	stick_take_kind(IO_OTHER);
 }
 
+/* stick_take_kind, naming the call and its file for the slow calls'
+report (a call made inside another keeps the outer one's name) */
+static void stick_take_op(int kind, const char *op, const char *path)
+{
+	struct stick_thread *thread;
+
+	stick_take_kind(kind);
+	thread = stick_thread_of(sceKernelGetThreadId());
+	if (thread->depth == 1)
+	{
+		const char *slash = path ? strrchr(path, '/') : NULL;
+
+		thread->op = op;
+		snprintf(thread->what, sizeof(thread->what), "%s", slash ? slash + 1 : path ? path : "?");
+	}
+}
+
+static void stick_slow_note(struct stick_thread *thread, unsigned int took)
+{
+	extern long psp_game_time_peek(void);
+	int k, least = 0;
+
+	stick_slow_calls++;
+	for (k = 1; k < STICK_SLOW_KEPT; k++)
+		if (stick_slow[k].took_ms < stick_slow[least].took_ms)
+			least = k;
+	if (took / 1000 <= stick_slow[least].took_ms)
+		return;
+	stick_slow[least].thread = thread->id;
+	stick_slow[least].op = thread->op ? thread->op : "call";
+	memcpy(stick_slow[least].what, thread->what, sizeof(stick_slow[least].what));
+	stick_slow[least].took_ms = took / 1000;
+	stick_slow[least].game_time = psp_game_time_peek();
+}
+
 static void stick_give(void)
 {
 	struct stick_thread *thread = stick_thread_of(sceKernelGetThreadId());
@@ -456,6 +515,10 @@ static void stick_give(void)
 	if (thread->depth <= 0 || --thread->depth > 0)
 		return;
 	took = sceKernelGetSystemTimeLow() - thread->start;
+	if (took >= STICK_SLOW_US)
+		stick_slow_note(thread, took);
+	thread->op = NULL;
+	thread->what[0] = 0;
 	thread->calls++;
 	thread->in_us += took;
 	if (took > thread->worst_in_us)
@@ -504,6 +567,25 @@ void psp_stick_report(void)
 			length += snprintf(line + length, sizeof(line) - length, ";");
 	}
 	platform_log("%s", line);
+	if (stick_slow_calls)
+	{
+		int k;
+
+		length = snprintf(line, sizeof(line), "stick: %u calls of 250 ms or more since the last report; the slowest:", stick_slow_calls);
+		for (k = 0; k < STICK_SLOW_KEPT && length < (int)sizeof(line) - 1; k++)
+		{
+			char name[32];
+
+			if (!stick_slow[k].took_ms)
+				continue;
+			length += snprintf(line + length, sizeof(line) - length, " %s %s %s %u ms at game time %ld;",
+				psp_thread_name(stick_slow[k].thread, name, sizeof(name)), stick_slow[k].op, stick_slow[k].what,
+				stick_slow[k].took_ms, stick_slow[k].game_time);
+		}
+		platform_log("%s", line);
+		stick_slow_calls = 0;
+		memset(stick_slow, 0, sizeof(stick_slow));
+	}
 	if (io_on())
 	{
 		/* build 115: "iostats": each stream's window since the last report */
@@ -860,7 +942,7 @@ SceUID __wrap_sceIoOpen(const char *file, int flags, SceMode mode)
 
 	if (!quiet)
 		psp_trace_line("open %s (flags %x)", file, flags);
-	stick_take_kind(kind_of_path(file));
+	stick_take_op(kind_of_path(file), "open", file);
 	fd = __real_sceIoOpen(file, flags, mode);
 	reopen_note(fd, file, flags, mode);
 	stick_give();
@@ -891,7 +973,7 @@ int __wrap_sceIoLseek32(SceUID fd, int offset, int whence)
 {
 	int result;
 
-	stick_take_kind(kind_of_fd(fd));
+	stick_take_op(kind_of_fd(fd), "seek", path_of_fd(fd));
 	result = __real_sceIoLseek32(io_real(fd), offset, whence);
 	stick_give();
 	if (fd >= 0 && fd < TRACE_FILES)
@@ -906,7 +988,7 @@ SceOff __wrap_sceIoLseek(SceUID fd, SceOff offset, int whence)
 {
 	SceOff result;
 
-	stick_take_kind(kind_of_fd(fd));
+	stick_take_op(kind_of_fd(fd), "seek", path_of_fd(fd));
 	result = __real_sceIoLseek(io_real(fd), offset, whence);
 	stick_give();
 	if (fd >= 0 && fd < TRACE_FILES)
@@ -924,7 +1006,7 @@ int __wrap_sceIoRead(SceUID fd, void *data, SceSize size)
 	psp_trace_line("read %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
 	int kind = kind_of_fd(fd);
 
-	stick_take_kind(kind);
+	stick_take_op(kind, "read", path_of_fd(fd));
 	result = __real_sceIoRead(io_real(fd), data, size);
 	stick_give();
 	if (io_stats > 0 && result > 0)
@@ -949,7 +1031,7 @@ int __wrap_sceIoReadAsync(SceUID fd, void *data, SceSize size)
 	psp_trace_line("read async %s %d into %08x, %u bytes", name_of(fd), (int)fd, (unsigned)data, (unsigned)size);
 	int kind = kind_of_fd(fd);
 
-	stick_take_kind(kind);
+	stick_take_op(kind, "read async", path_of_fd(fd));
 	result = __real_sceIoReadAsync(io_real(fd), data, size);
 	stick_give();
 	if (io_stats > 0 && result >= 0)
@@ -968,7 +1050,7 @@ int __wrap_sceIoClose(SceUID fd)
 
 	if (traced)
 		psp_trace_line("close %s %d", name_of(fd), (int)fd);
-	stick_take_kind(kind_of_fd(fd));
+	stick_take_op(kind_of_fd(fd), "close", path_of_fd(fd));
 	result = __real_sceIoClose(io_real(fd));
 	if (fd >= 0 && fd < TRACE_FILES)
 		reopen_table[fd].path[0] = 0;
@@ -1096,7 +1178,7 @@ int __wrap_sceIoWrite(SceUID fd, const void *data, SceSize size)
 
 	int kind = kind_of_fd(fd);
 
-	stick_take_kind(kind);
+	stick_take_op(kind, "write", path_of_fd(fd));
 	result = __real_sceIoWrite(io_real(fd), data, size);
 	stick_give();
 	if (io_stats > 0 && result > 0)
@@ -1111,8 +1193,32 @@ int __wrap_sceIoGetstat(const char *file, SceIoStat *stat)
 {
 	int result;
 
-	stick_take();
+	stick_take_op(IO_OTHER, "stat", file);
 	result = __real_sceIoGetstat(file, stat);
+	stick_give();
+	return result;
+}
+
+/* removing and renaming change the folder and its table on the stick, as
+a write does: through the lock, and timed */
+int __real_sceIoRemove(const char *file);
+int __wrap_sceIoRemove(const char *file)
+{
+	int result;
+
+	stick_take_op(kind_of_path(file), "remove", file);
+	result = __real_sceIoRemove(file);
+	stick_give();
+	return result;
+}
+
+int __real_sceIoRename(const char *from, const char *to);
+int __wrap_sceIoRename(const char *from, const char *to)
+{
+	int result;
+
+	stick_take_op(kind_of_path(from), "rename", from);
+	result = __real_sceIoRename(from, to);
 	stick_give();
 	return result;
 }
@@ -1124,7 +1230,7 @@ SceUID __wrap_sceIoDopen(const char *dirname)
 {
 	SceUID fd;
 
-	stick_take();
+	stick_take_op(IO_OTHER, "open folder", dirname);
 	fd = __real_sceIoDopen(dirname);
 	stick_give();
 	if (fd >= 0)
