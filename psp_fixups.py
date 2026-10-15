@@ -17548,9 +17548,40 @@ struct psp_pose_ahead
 	struct animation const *animation;
 	short frame;
 	short node_count;
-	short state; /* 0 nothing; 1 listed for the next tick; 2 made */
+	short state; /* 0 nothing; 1 listed for the next tick; 2 made; 3 being made on the ME */
 	real_orientation *pose;
 };
+/* the Media Engine's part ("poseaheadme"): one entry a pose, in the order
+listed; the ME decodes them into the arena while this CPU draws the frame */
+struct psp_pose_job_entry
+{
+	struct model const *model;
+	struct animation const *animation;
+	real_orientation *pose;
+	long frame;
+};
+static struct psp_pose_job_entry *psp_pose_job;
+static short psp_pose_job_slot[PSP_POSE_SLOTS];
+static int psp_pose_job_count, psp_pose_job_out, psp_pose_ahead_me;
+static unsigned int psp_pose_job_ticket;
+static unsigned long psp_pose_job_jobs, psp_pose_job_poses, psp_pose_job_failed;
+int psp_me_ring_ready(void);
+int psp_me_push_poses(const void *entries, unsigned int count, void *arena, unsigned int arena_bytes,
+	unsigned int *ticket);
+int psp_me_wait(unsigned int ticket, unsigned int *results);
+
+/* on the Media Engine (psp_me.c's ring, ME_JOB_POSES): the entries' poses.
+The decode reads only tag data and writes only its pose */
+void psp_pose_me_make(const unsigned int *args, unsigned int *results)
+{
+	struct psp_pose_job_entry const *entries = (struct psp_pose_job_entry const *)args[0];
+	unsigned int count = args[1], k;
+
+	for (k = 0; k < count; k++)
+		animation_get_node_orientations(entries[k].model, entries[k].animation, (short)entries[k].frame,
+			entries[k].pose);
+	results[0] = count;
+}
 static struct psp_pose_ahead *psp_pose_ahead_slots;
 static unsigned char *psp_pose_ahead_arena;
 static short psp_pose_ahead_listed[PSP_POSE_SLOTS];
@@ -17567,12 +17598,18 @@ static int psp_pose_ahead_on(void)
 	{
 		if (!psp_keep_loaded())
 			return 0;
-		psp_pose_ahead_mode = psp_keep("poseaheadcheck") ? 2 : psp_keep("poseahead") ? 1 : 0;
+		psp_pose_ahead_me = psp_keep("poseaheadme") != 0;
+		psp_pose_ahead_mode = psp_keep("poseaheadcheck") ? 2 : psp_keep("poseahead") || psp_pose_ahead_me ? 1 : 0;
+#ifdef PSP_TICK_STEPS
+		/* the step profile's marks would be written from the ME */
+		psp_pose_ahead_me = 0;
+#endif
 		if (psp_pose_ahead_mode)
 		{
 			psp_pose_ahead_slots = (struct psp_pose_ahead *)calloc(PSP_POSE_SLOTS, sizeof(*psp_pose_ahead_slots));
 			psp_pose_ahead_arena = (unsigned char *)memalign(64, PSP_POSE_ARENA);
-			if (!psp_pose_ahead_slots || !psp_pose_ahead_arena)
+			psp_pose_job = (struct psp_pose_job_entry *)memalign(64, PSP_POSE_SLOTS * sizeof(*psp_pose_job));
+			if (!psp_pose_ahead_slots || !psp_pose_ahead_arena || !psp_pose_job)
 			{
 				platform_psp_log("poseahead: no room for its %u KB; off", PSP_POSE_ARENA / 1024);
 				psp_pose_ahead_mode = 0;
@@ -17582,9 +17619,45 @@ static int psp_pose_ahead_on(void)
 	return psp_pose_ahead_mode;
 }
 
+/* the ME's poses back: each one it wrote is made; the rest (or all of them,
+if the job failed) are decoded by this CPU as before */
+static void psp_pose_ahead_collect(void)
+{
+	unsigned int results[11];
+	int ok, k;
+
+	if (!psp_pose_job_out)
+		return;
+	psp_pose_job_out = 0;
+	ok = psp_me_wait(psp_pose_job_ticket, results);
+	if (!ok)
+		psp_pose_job_failed++;
+	for (k = 0; k < psp_pose_job_count; k++)
+	{
+		struct psp_pose_ahead *slot = &psp_pose_ahead_slots[psp_pose_job_slot[k]];
+
+		if (slot->state != 3)
+			continue;
+		if (ok && *(unsigned long *)slot->pose != PSP_POSE_UNWRITTEN)
+		{
+			slot->state = 2;
+			psp_pose_ahead_made++;
+			psp_pose_job_poses++;
+		}
+		else
+		{
+			slot->state = 0;
+			if (ok)
+				psp_pose_ahead_unwritten++;
+		}
+	}
+	psp_pose_job_count = 0;
+}
+
 /* a new map: its tags may sit where the last map's did */
 static void psp_pose_ahead_forget(void)
 {
+	psp_pose_ahead_collect();
 	if (psp_pose_ahead_slots)
 		memset(psp_pose_ahead_slots, 0, PSP_POSE_SLOTS * sizeof(*psp_pose_ahead_slots));
 	psp_pose_ahead_count = 0;
@@ -17599,6 +17672,8 @@ static boolean psp_pose_ahead_take(long object_index, struct model const *model,
 
 	if (!psp_pose_ahead_on())
 		return FALSE;
+	if (psp_pose_job_out)
+		psp_pose_ahead_collect();
 	slot = &psp_pose_ahead_slots[(unsigned long)object_index & (PSP_POSE_SLOTS - 1)];
 	if (slot->state != 2 || slot->object_index != object_index || slot->model != model ||
 		slot->animation != animation || slot->frame != frame)
@@ -17650,9 +17725,11 @@ static void psp_pose_ahead_make(void)
 
 	if (psp_pose_ahead_mode <= 0)
 		return;
+	psp_pose_ahead_collect();
 	for (k = 0; k < PSP_POSE_SLOTS; k++)
 		if (psp_pose_ahead_slots[k].state == 2)
 			psp_pose_ahead_slots[k].state = 0;
+	psp_pose_job_count = 0;
 	for (k = 0; k < psp_pose_ahead_count; k++)
 	{
 		struct psp_pose_ahead *slot = &psp_pose_ahead_slots[psp_pose_ahead_listed[k]];
@@ -17668,6 +17745,22 @@ static void psp_pose_ahead_make(void)
 		}
 		slot->pose = (real_orientation *)(psp_pose_ahead_arena + at);
 		*(unsigned long *)slot->pose = PSP_POSE_UNWRITTEN;
+		/* the ME takes the animations whose data is in the tags (the
+		pack's, streamed by psp_anim.c, may move before it reads them) */
+		if (psp_pose_ahead_me &&
+			(unsigned long)slot->animation->data.address + (unsigned long)slot->animation->data.size < 0x0C000000UL)
+		{
+			struct psp_pose_job_entry *entry = &psp_pose_job[psp_pose_job_count];
+
+			entry->model = slot->model;
+			entry->animation = slot->animation;
+			entry->pose = slot->pose;
+			entry->frame = slot->frame;
+			psp_pose_job_slot[psp_pose_job_count++] = (short)(slot - psp_pose_ahead_slots);
+			at += bytes;
+			slot->state = 3;
+			continue;
+		}
 		animation_get_node_orientations(slot->model, slot->animation, slot->frame, slot->pose);
 		if (*(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN)
 		{
@@ -17679,10 +17772,34 @@ static void psp_pose_ahead_make(void)
 		psp_pose_ahead_made++;
 	}
 	psp_pose_ahead_count = 0;
+	if (psp_pose_job_count)
+	{
+		if (psp_me_ring_ready() &&
+			psp_me_push_poses(psp_pose_job, (unsigned int)psp_pose_job_count, psp_pose_ahead_arena, at, &psp_pose_job_ticket))
+		{
+			psp_pose_job_out = 1;
+			psp_pose_job_jobs++;
+		}
+		else
+		{
+			/* no ME to take them: made here, as without the word */
+			for (k = 0; k < psp_pose_job_count; k++)
+			{
+				struct psp_pose_ahead *slot = &psp_pose_ahead_slots[psp_pose_job_slot[k]];
+
+				animation_get_node_orientations(slot->model, slot->animation, slot->frame, slot->pose);
+				slot->state = *(unsigned long *)slot->pose == PSP_POSE_UNWRITTEN ? 0 : 2;
+				if (slot->state == 2)
+					psp_pose_ahead_made++;
+			}
+			psp_pose_job_count = 0;
+		}
+	}
 	if (++psp_pose_ahead_ticks % 900 == 0)
-		platform_psp_log("poseahead: %lu poses made ahead, %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB",
-			psp_pose_ahead_made, psp_pose_ahead_used, psp_pose_ahead_checked, psp_pose_ahead_differed,
-			psp_pose_ahead_unwritten, psp_pose_ahead_full, PSP_POSE_ARENA / 1024);
+		platform_psp_log("poseahead: %lu poses made ahead (%lu by the ME in %lu jobs, %lu jobs failed), %lu used (%lu checked, %lu differed); %lu unwritten, %lu past the arena's %u KB",
+			psp_pose_ahead_made, psp_pose_job_poses, psp_pose_job_jobs, psp_pose_job_failed, psp_pose_ahead_used,
+			psp_pose_ahead_checked, psp_pose_ahead_differed, psp_pose_ahead_unwritten, psp_pose_ahead_full,
+			PSP_POSE_ARENA / 1024);
 }
 
 /* psp_fixups.py (FIXES_130 #posepredict) */"""),

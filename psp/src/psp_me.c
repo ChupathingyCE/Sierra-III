@@ -76,6 +76,7 @@ unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results);
 void psp_perception_me_rays(const unsigned int *args, unsigned int *results);
+void psp_pose_me_make(const unsigned int *args, unsigned int *results); /* objects.c (psp_fixups.py FIXES_131) */
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -690,6 +691,9 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		break;
 	case ME_JOB_PERC_RAYS:
 		psp_perception_me_rays(args, results);
+		break;
+	case ME_JOB_POSES:
+		psp_pose_me_make(args, results);
 		break;
 	default:
 		status = RING_BAD_TYPE;
@@ -1678,6 +1682,27 @@ int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, u
 	job.output_bytes = answer_bytes;
 	if (!job.args[ME_RING_ARG_CONTINUES])
 		psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
+}
+
+/* next tick's base poses (psp_fixups.py FIXES_131, objects.c #poseahead): a
+decode reads only tag data (the model, the animation, both fixed within a
+map), so the whole cache is handed over as for the rays, and the job writes
+only the poses, in the arena (output) */
+int psp_me_push_poses(const void *entries, unsigned int count, void *arena, unsigned int arena_bytes,
+	unsigned int *ticket)
+{
+	struct psp_me_job job;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_POSES;
+	job.args[0] = (unsigned int)entries;
+	job.args[1] = count;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = arena;
+	job.output_bytes = arena_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
 	return psp_me_push(&job, ticket);
 }
 
