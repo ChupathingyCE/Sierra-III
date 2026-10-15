@@ -2380,9 +2380,10 @@ its position, forward and up directions and vertical field of view */
 static float camera_eye[3];
 
 /* The GE's world space has its origin at ge_eye, the eye rounded so that each
-coordinate fits the GE's 24-bit matrix words exactly; the view matrix moves
-the last fraction, ge_eye_camera (ge_eye seen from the eye, along the
-camera's right, up and forward). Why: the level's vertices are world
+coordinate fits the GE's 24-bit matrix words exactly (with levellocal, its
+offset from level_origin does); the view matrix moves the last fraction,
+ge_eye_camera (ge_eye seen from the eye, along the camera's right, up and
+forward). Why: the level's vertices are world
 positions, so its model matrix carries the eye's whole position, and the GE
 drops the low 8 bits of every matrix word. Hundreds of units out (c40's
 control room is 692 units from the origin, a10's flyby 593), that is up to
@@ -2744,8 +2745,9 @@ static float geprec_draw(int mode, const float *eye, const float *forward, const
 
 	for (k = 0; k < 3; k++)
 	{
-		g[k] = exact ? ge_matrix_float(eye[k]) : eye[k];
 		from[k] = local ? origin[k] : 0.0f;
+		/* as psp_ge_window_begin rounds ge_eye */
+		g[k] = !exact ? eye[k] : local ? from[k] + ge_matrix_float(eye[k] - from[k]) : ge_matrix_float(eye[k]);
 	}
 	sceGuStart(GU_DIRECT, display_list);
 	sceGuDisable(GU_DEPTH_TEST);
@@ -3527,16 +3529,20 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	(relative(), world_model()) */
 	if (level_exact < 0)
 		level_exact = !psp_keep("levelexactoff");
-	{
-		int k;
-
-		for (k = 0; k < 3; k++)
-			ge_eye[k] = level_exact ? ge_matrix_float(position[k]) : position[k];
-	}
 	if (level_local < 0)
 		level_local = !psp_keep("levellocaloff");
 	if (level_local)
 		level_origin_follow(position);
+	{
+		int k;
+
+		/* from level_origin, the level's translation (its origin less
+		ge_eye) is the rounded part itself, whole in the GE's words however
+		near the world's origin the eye is */
+		for (k = 0; k < 3; k++)
+			ge_eye[k] = !level_exact ? position[k] :
+				level_local ? level_origin[k] + ge_matrix_float(position[k] - level_origin[k]) : ge_matrix_float(position[k]);
+	}
 	{
 		ScePspFVector3 origin = { 0.0f, 0.0f, 0.0f }, ahead;
 
