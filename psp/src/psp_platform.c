@@ -897,6 +897,7 @@ static void keep_load(void)
 	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
 	platform_log("keep words, build 122's behaviour calls (opt-in, for Sheepdog01's A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
 	platform_log("keep words, the Media Engine's wake: fix off: mewakeoff (stays stopped after a sleep); recon: mewaketest");
+	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf; recon: noglowpass nobackpass");
 }
 
