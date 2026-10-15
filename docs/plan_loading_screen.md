@@ -1,6 +1,6 @@
 # Plan: the loading screen, rebuilt as a set piece
 
-Sheepdog01, 2026-10-14: preserve the original loading screen and its chant, but not where it lives now; rebuild it for our own loading, and use it as padding so the level can load and settle before play starts. Not scheduled yet: campaign speed work comes first.
+Sheepdog01, 2026-10-14: preserve the original loading screen and its chant, but not where it lives now; rebuild it for our own loading, and use it as padding so the level can load and settle before play starts. On the list after the campaign's loading is reworked (Sheepdog01: low-hanging fruit once that's done).
 
 Labels: [M] PSP, [E] emulator, [D] code, [U] inference.
 
