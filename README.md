@@ -66,6 +66,15 @@ Unzip the build zip at the Memory Stick's root: `PSP/GAME/halo/` (EBOOT.PBP, the
 
 This repository was created on 2026-10-09. The history before then was rebuilt from the source snapshots kept for each build, one commit per snapshot, tagged by build (`b87` to `b110`). Builds 1 to 86 survive only as binaries. Every build's zip is kept in one private Release, `build-archive`; a build gets a Release of its own only when it's shared.
 
+## Credits
+
+What Sierra-III is built on (the decomp, ChupathingyCE, Invader, the Media Engine library, PPSSPP, pspdev) is in `UPSTREAM.md`. Beyond that, Sierra-III learns from other ports of the same decomp, and credits each one whose ideas or code it takes:
+
+- **[halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita)** by BirchWoodGod, Halo CE on the PS Vita: exact speed-ups to the campaign's AI and collision walks, and test methods (`docs/research/research_vita.md`). Used with his permission.
+- **[Halo 64](https://github.com/JackTulli/halo-64)** by JackTulli, Halo CE's multiplayer on the Nintendo 64 (CC0): fixes and speed-ups for a MIPS console (`docs/research/research_halo64.md`).
+
+Each borrowed change also names its source in its commit message and its build's review.
+
 ## Licence
 
 None chosen yet. The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
