@@ -15,19 +15,6 @@ TREE = sys.argv[1]
 CHECK_ONLY = os.environ.get("PSP_FIXUPS_CHECK", "") == "1"
 
 
-# the engine base being patched: ChupathingyCE has the 64-bit address helpers
-BASE = "chupathingyce" if os.path.exists(os.path.join(TREE, "source/cseries/xbox_address.h")) else "halo-ce-universal"
-
-
-class Either:
-    """one change, written for each engine base the port builds on while it
-    moves from halo-ce-universal to ChupathingyCE (docs/chupa_rebase.md):
-    universal=(old, new) and chupa=(old, new), each applied only on its own
-    base and required to match there exactly once. None: nothing to change on
-    that base. When the move is done the universal halves go"""
-    def __init__(self, universal=None, chupa=None):
-        self.pair = universal if BASE == "halo-ce-universal" else chupa
-
 FIXES = {
 # the GE renderer's first slice (psp_ge.c): the level, from the lightmap pass
 "source/rasterizer/rasterizer.c": [
@@ -651,18 +638,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 # map-read requests that follow it on the heap, and the next read went to a
 # garbage address (found replaying fire, melee and grenade in the emulator)
 "source/cache/xbox_sound_cache.c": [
-Either(universal=("""		"xbox sound cache",
-		1024,
-		12,""",
- """		"xbox sound cache",
-#ifdef HALO_PSP
-		PSP_SOUND_CACHE_SIZE >> 12,
-#else
-		1024,
-#endif
-		12,"""),
- # ChupathingyCE
- chupa=("""	SOUND_CACHE_PAGE_COUNT = 1024,
+("""	SOUND_CACHE_PAGE_COUNT = 1024,
 	SOUND_CACHE_PAGE_SIZE_BITS = 12,""",
   """#ifdef HALO_PSP
 	/* the PSP's sound memory, chosen at start-up (psp_platform.c's
@@ -671,7 +647,7 @@ Either(universal=("""		"xbox sound cache",
 #else
 	SOUND_CACHE_PAGE_COUNT = 1024,
 #endif
-	SOUND_CACHE_PAGE_SIZE_BITS = 12,""")),
+	SOUND_CACHE_PAGE_SIZE_BITS = 12,"""),
 ],
 # a player on a multiplayer map loaded the campaign way (init.txt's
 # map_name: there are no menus to start a game through yet). Its spawn
@@ -756,32 +732,7 @@ Either(universal=("""		"xbox sound cache",
 	}
 #endif
 	exit_code = thread->start(thread->parameter);"""),
-Either(universal=("""	fputs("halo-linux: ", stderr);
-	va_start(arguments, format);
-	vfprintf(stderr, format, arguments);
-	va_end(arguments);
-	fputc('\\n', stderr);""",
- """#ifdef HALO_PSP
-	/* each line opened, appended and closed: a crash can't lose it in an
-	unwritten directory entry (psp_platform.c; psp_fixups.py) */
-	{
-		extern void psp_log_write(const char *text);
-		char line[512];
-
-		va_start(arguments, format);
-		vsnprintf(line, sizeof(line) - 1, format, arguments);
-		va_end(arguments);
-		psp_log_write(line);
-	}
-#else
-	fputs("halo-linux: ", stderr);
-	va_start(arguments, format);
-	vfprintf(stderr, format, arguments);
-	va_end(arguments);
-	fputc('\\n', stderr);
-#endif"""),
- # ChupathingyCE
- chupa=("""	fputs(PLATFORM_LOG_PREFIX, stderr);
+("""	fputs(PLATFORM_LOG_PREFIX, stderr);
 	va_start(arguments, format);
 #ifdef HALO_64BIT
 	vsnprintf(buffer, sizeof(buffer), format, arguments);
@@ -818,7 +769,7 @@ Either(universal=("""	fputs("halo-linux: ", stderr);
 	fputs(buffer, stderr);
 #endif
 	fputc('\\n', stderr);
-#endif""")),
+#endif"""),
 ("	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);",
  """#ifdef HALO_PSP
 	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB
@@ -1052,23 +1003,7 @@ query */
 #endif"""),
 ],
 "port/linux/src/platform.h": [
-Either(universal=("#define PLATFORM_CONTIGUOUS_BASE 0x80000000UL\n#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL /* a 128 MB development kit */",
- """#ifdef HALO_PSP
-/* PSP: no address window. Addresses 0x88000000 and up are the kernel's
-view of RAM, so physical and virtual addresses stay identical; every
-user-RAM address counts as contiguous (psp_memory.c; psp_fixups.py). */
-#define PLATFORM_CONTIGUOUS_BASE 0x00000000UL
-#ifdef PSP_RECON_64MB
-#define PLATFORM_CONTIGUOUS_SIZE 0x0C000000UL
-#else
-#define PLATFORM_CONTIGUOUS_SIZE 0x0A000000UL
-#endif
-#else
-#define PLATFORM_CONTIGUOUS_BASE 0x80000000UL
-#define PLATFORM_CONTIGUOUS_SIZE 0x08000000UL /* a 128 MB development kit */
-#endif"""),
- # ChupathingyCE
- chupa=("""#define PLATFORM_CONTIGUOUS_BASE 0x80000000U
+("""#define PLATFORM_CONTIGUOUS_BASE 0x80000000U
 #ifdef HALO_ANDROID
 /* a 128 MB development kit's: Android's guest image is linked just above it
 (port/android/include/halo_android_abi.h) */
@@ -1101,28 +1036,10 @@ development kit's, for their larger texture cache (halo_port_capacity.h);
 port/windows/src/win32_memory_watch.c has the same */
 #define PLATFORM_CONTIGUOUS_SIZE 0x20000000U
 #endif
-#endif""")),
+#endif"""),
 ],
 "source/cache/physical_memory_map.c": [
-Either(universal=("#define TAG_CACHE_BASE_ADDRESS 0x803A6000\n#define TAG_CACHE_SIZE 0x1600000\n#define TEXTURE_CACHE_SIZE 0x1600000\n#define SOUND_CACHE_SIZE 0x400000\n",
- """#ifdef HALO_PSP
-/* PSP: the tag window sits near the top of user RAM, under the 1 MB left
-for thread stacks; maps are built for it (invader-build -X 0x09600000
--T 0x900000). The texture and sound caches are what the null renderer and
-null audio need for now. */
-#define TAG_CACHE_BASE_ADDRESS 0x09600000
-#define TAG_CACHE_SIZE PSP_TAG_CACHE_SIZE
-#define TEXTURE_CACHE_SIZE PSP_TEXTURE_CACHE_SIZE
-#define SOUND_CACHE_SIZE PSP_SOUND_CACHE_SIZE
-#else
-#define TAG_CACHE_BASE_ADDRESS 0x803A6000
-#define TAG_CACHE_SIZE 0x1600000
-#define TEXTURE_CACHE_SIZE 0x1600000
-#define SOUND_CACHE_SIZE 0x400000
-#endif
-"""),
- # ChupathingyCE
- chupa=("""#define TAG_CACHE_BASE_ADDRESS 0x803A6000
+("""#define TAG_CACHE_BASE_ADDRESS 0x803A6000
 /* (the native builds': halo_port_capacity.h) */
 #define TEXTURE_CACHE_SIZE HALO_PORT_TEXTURE_CACHE_SIZE
 #define SOUND_CACHE_SIZE 0x400000
@@ -1140,7 +1057,7 @@ for thread stacks; maps are built for it (invader-build -X 0x09600000
 #define TEXTURE_CACHE_SIZE HALO_PORT_TEXTURE_CACHE_SIZE
 #define SOUND_CACHE_SIZE 0x400000
 #endif
-""")),
+"""),
 ],
 "source/cache/cache_files.c": [
 ("""		if (cache_file_header_verify(&cache_file_globals.header, scenario_name, TRUE))
@@ -1194,14 +1111,6 @@ for thread stacks; maps are built for it (invader-build -X 0x09600000
  "		PSP_TAG_CACHE_SIZE - cache_file_globals.header.tag_data_size);"),
 ],
 "source/cache/xbox_texture_cache.c": [
-Either(universal=("	XBOX_TEXTURE_CACHE_PAGE_COUNT = 0x580,",
- "	XBOX_TEXTURE_CACHE_PAGE_COUNT = PSP_TEXTURE_CACHE_SIZE / (1 << 14),"),
- # ChupathingyCE: HALO_PORT_TEXTURE_CACHE_SIZE >> 14, the PSP's from psp_capacity.h
- chupa=None),
-Either(universal=("	XBOX_TEXTURE_CACHE_SIZE = 0x1600000,",
- "	XBOX_TEXTURE_CACHE_SIZE = PSP_TEXTURE_CACHE_SIZE,"),
- # ChupathingyCE: HALO_PORT_TEXTURE_CACHE_SIZE (psp_capacity.h)
- chupa=None),
 # the guard kept free at both ends while map copying borrows the cache; the
 # PSP never copies maps (psp_fixups.py)
 ("	XBOX_TEXTURE_CACHE_STEAL_GUARD_SIZE = 0x104000,",
@@ -1225,29 +1134,7 @@ Either(universal=("	XBOX_TEXTURE_CACHE_SIZE = 0x1600000,",
 	psp_request_callers[request_index] = __builtin_return_address(0);
 #endif
 	request->pending = TRUE;"""),
-Either(universal=("""			file = cached_map_file_get_handle(cache_file_globals.open_map_file_index);
-			match_assert(
-				"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files_windows.c",
-				1327,
-				!best_request->running);""",
- """			file = cached_map_file_get_handle(cache_file_globals.open_map_file_index);
-#ifdef HALO_PSP
-			/* a request with no buffer: what is in the slot, and who asked */
-			if (!best_request->buffer)
-			{
-				long slot = best_request - cache_file_globals.requests;
-
-				platform_psp_log("cache: slot %ld pending with no buffer: size %ld offset 0x%lx event %p blocking %d running %d; last asked for by %p",
-					slot, best_request->size, (unsigned long)best_request->overlapped.Offset, best_request->overlapped.hEvent,
-					best_request->blocking, best_request->running, psp_request_callers[slot]);
-			}
-#endif
-			match_assert(
-				"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files_windows.c",
-				1327,
-				!best_request->running);"""),
- # ChupathingyCE
- chupa=("""			file = cached_map_file_get_handle(cache_file_globals.open_map_file_index);
+("""			file = cached_map_file_get_handle(cache_file_globals.open_map_file_index);
 #ifdef HALO_CUSTOM_EDITION""",
   """			file = cached_map_file_get_handle(cache_file_globals.open_map_file_index);
 #ifdef HALO_PSP
@@ -1261,7 +1148,7 @@ Either(universal=("""			file = cached_map_file_get_handle(cache_file_globals.ope
 					best_request->blocking, best_request->running, psp_request_callers[slot]);
 			}
 #endif
-#ifdef HALO_CUSTOM_EDITION""")),
+#ifdef HALO_CUSTOM_EDITION"""),
 ("""static struct cache_file_runtime_globals cache_file_globals;""",
  """static struct cache_file_runtime_globals cache_file_globals;
 #ifdef HALO_PSP
@@ -1543,6 +1430,77 @@ def interpolation_players(tree):
     text = text.replace(anchor, anchor + INTERPOLATION_PLAYERS)
     open(path, "w", errors="surrogateescape").write(text)
     return 1
+
+# ---------- b125: the PC renderer's GL path out of the link
+# ChupathingyCE draws by translating the game's Direct3D 8 calls into OpenGL
+# (d3d8_gl.c; gl_functions.c loads the GL entry points; nv2a_*.c translate
+# the Xbox shaders). On the PSP that path never runs: psp_sdl.c's
+# SDL_CreateWindow always fails, so gl_initialize is never called and
+# device.gl_ready stays FALSE, and psp_ge.c draws instead. The code was
+# still linked, because the calls into it are ordinary branches the
+# compiler can't prove dead. This pass makes them provably dead: the call
+# goes, and every test of gl_ready reads a constant FALSE, so the compiler
+# drops the guarded code and --gc-sections drops the translator, the
+# loader and the GL headers' users with it. Exact: only code that never ran
+# leaves (docs/dead_code_inventory.md, group 4).
+GL_NEVER_DEFINE = """#ifdef HALO_PSP
+/* the PSP never makes a GL device (psp_fixups.py, gl_never) */
+#define DEVICE_GL_READY FALSE
+#else
+#define DEVICE_GL_READY device.gl_ready
+#endif
+"""
+GL_NEVER_CALL = ("""			platform_video_initialize(width, height))
+			gl_initialize();
+		else
+""", """			platform_video_initialize(width, height))
+#ifdef HALO_PSP
+			; /* never taken: SDL_CreateWindow fails on the PSP (psp_sdl.c) */
+#else
+			gl_initialize();
+#endif
+		else
+""")
+GL_NEVER_WINDOW = ("""	if (!platform_window)
+	{
+		platform_log("SDL_CreateWindow failed: %s", SDL_GetError());
+		return FALSE;
+	}
+""", """	if (!platform_window)
+	{
+		platform_log("SDL_CreateWindow failed: %s", SDL_GetError());
+		return FALSE;
+	}
+#ifdef HALO_PSP
+	/* never reached: the PSP's SDL_CreateWindow always fails (psp_sdl.c), so
+	the GL context and gl_functions_load below drop out of the link */
+	return FALSE;
+#endif
+""")
+GL_READY_READ = re.compile(r"\bdevice\.gl_ready\b(?!\s*=[^=])")
+
+def gl_never(tree):
+    path = os.path.join(tree, "port/linux/src/d3d8_gl.c")
+    text = open(path, errors="surrogateescape").read()
+    if "DEVICE_GL_READY" in text:
+        return 0
+    anchor = '#include "xgpu.h"\n'
+    reads = len(GL_READY_READ.findall(text))
+    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 10:
+        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 10 tests of gl_ready, found %d tests" % reads)
+    text = GL_READY_READ.sub("DEVICE_GL_READY", text)
+    text = text.replace(GL_NEVER_CALL[0], GL_NEVER_CALL[1])
+    text = text.replace(anchor, anchor + GL_NEVER_DEFINE)
+    open(path, "w", errors="surrogateescape").write(text)
+    # and the platform layer's loader call, after the window it never gets
+    path = os.path.join(tree, "port/linux/src/sdl_platform.c")
+    text = open(path, errors="surrogateescape").read()
+    if text.count(GL_NEVER_WINDOW[0]) != 1:
+        sys.exit("psp_fixups: sdl_platform.c: expected SDL_CreateWindow's one failure test")
+    text = text.replace(GL_NEVER_WINDOW[0], GL_NEVER_WINDOW[1])
+    open(path, "w", errors="surrogateescape").write(text)
+    return 2
+
 
 def float_colours(tree):
     changed = 0
@@ -3420,10 +3378,7 @@ FIXES_19 = {
 "source/cache/xbox_texture_cache.c": [
 ("void *_texture_cache_bitmap_get_hardware_format(\n\tstruct bitmap_data *bitmap,",
  KEEP_DECLARATION + "\nvoid *_texture_cache_bitmap_get_hardware_format(\n\tstruct bitmap_data *bitmap,"),
-Either(universal=("\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\tif (bitmap->cache_block_index == NONE && load)",
- "#ifdef HALO_PSP\n\t/* the null path's textures are never drawn, and a blocking load waits on\n\tthe Memory Stick (psp_fixups.py) */\n\tif (psp_ge_active() && !PSP_KEEP_ONCE(\"textures\"))\n\t{\n\t\t/* a stand-in, never drawn with: the HUD checks a texture is there before\n\t\tit draws, and the GE takes its textures from the map's texture pack\n\t\t(build 20) */\n\t\tstatic unsigned long psp_texture_stand_in[16];\n\n\t\treturn psp_texture_stand_in;\n\t}\n#endif\n\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\tif (bitmap->cache_block_index == NONE && load)"),
- # ChupathingyCE
- chupa=("""	if (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))
+("""	if (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))
 	{
 		/* port: a cache block that isn't this bitmap's""",
   """#ifdef HALO_PSP
@@ -3441,15 +3396,12 @@ Either(universal=("\tif (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))\n\t{\n\t\
 #endif
 	if (TEST_FLAG(bitmap->flags, _bitmap_cached_bit))
 	{
-		/* port: a cache block that isn't this bitmap's""")),
+		/* port: a cache block that isn't this bitmap's"""),
 ],
 "port/linux/src/sdl_platform.c": [
 ("int halo_interpolation_enabled(void)\n{",
  KEEP_DECLARATION + "\nint halo_interpolation_enabled(void)\n{"),
-Either(universal=("\tif (enabled < 0)\n\t\tenabled = config_boolean(\"display.interpolation\");",
- "#ifdef HALO_PSP\n\t/* off unless keep.txt names it: the PSP draws fewer frames than ticks\n\t(psp_fixups.py) */\n\tif (enabled < 0)\n\t\tenabled = psp_keep(\"interpolation\");\n#else\n\tif (enabled < 0)\n\t\tenabled = config_boolean(\"display.interpolation\");\n#endif"),
- # ChupathingyCE
- chupa=("""	if (read_at != config_changes())
+("""	if (read_at != config_changes())
 	{
 		read_at = config_changes();
 		enabled = config_boolean("display.interpolation");
@@ -3468,7 +3420,7 @@ Either(universal=("\tif (enabled < 0)\n\t\tenabled = config_boolean(\"display.in
 		read_at = config_changes();
 		enabled = config_boolean("display.interpolation");
 	}
-#endif""")),
+#endif"""),
 ],
 "source/objects/objects.c": [
 ("void objects_update(\n\tvoid)\n{",
@@ -4421,24 +4373,7 @@ boolean game_state_write_to_file(
 			xbox_game_state_globals.buffer_size, &bytes_written, NULL) &&
 		bytes_written == xbox_game_state_globals.buffer_size)
 #endif"""),
-Either(universal=("""	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
-			INVALID_SET_FILE_POINTER &&
-		ReadFile(xbox_game_state_globals.handle, xbox_game_state_globals.buffer,
-			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
-		bytes_read == xbox_game_state_globals.buffer_size)""",
- """#ifdef HALO_PSP
-	(void)bytes_read;
-	if (psp_state_read(xbox_game_state_globals.handle, (byte *)xbox_game_state_globals.buffer,
-		xbox_game_state_globals.buffer_size))
-#else
-	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
-			INVALID_SET_FILE_POINTER &&
-		ReadFile(xbox_game_state_globals.handle, xbox_game_state_globals.buffer,
-			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
-		bytes_read == xbox_game_state_globals.buffer_size)
-#endif"""),
- # ChupathingyCE
- chupa=("""	/* port: read beside the game state, and taken once checked */
+("""	/* port: read beside the game state, and taken once checked */
 	image = malloc(xbox_game_state_globals.buffer_size);
 	if (image &&
 		SetFilePointer(xbox_game_state_globals.handle, 0, NULL, FILE_BEGIN) !=
@@ -4464,7 +4399,7 @@ Either(universal=("""	if (SetFilePointer(xbox_game_state_globals.handle, 0, NULL
 			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
 		bytes_read == xbox_game_state_globals.buffer_size &&
 		game_state_image_accept(image, xbox_game_state_globals.buffer_size))
-#endif""")),
+#endif"""),
 ]
 
 # build 26: the Memory Stick's free space from the PSP itself (newlib's
@@ -5049,86 +4984,7 @@ static void structure_visibility_traverse_subclusters(
 # frame on Blood Gulch for some 60 portals); within one walk the camera is the
 # same, so each is worked out once and kept
 FIXES_31["source/structures/structure_visibility.c#hulls"] = [
-Either(universal=("""static short portal_hull_from_portal(
-	short portal_index,
-	boolean direction,
-	struct portal_hull *result)
-{
-	struct structure_bsp *structure = global_structure_bsp_get();
-	struct structure_visibility_portal *portal = TAG_BLOCK_GET_ELEMENT(
-		&structure->cluster_portals,
-		portal_index,
-		struct structure_visibility_portal);
-
-	return portal_hull_from_points(""",
- """#ifdef HALO_PSP
-#define PSP_HULL_CACHE 128
-#define PSP_HULL_VERTICES 8
-static struct
-{
-	unsigned long walk;
-	long key;
-	short result, vertex_count;
-	real_point2d vertices[PSP_HULL_VERTICES];
-} psp_hull_cache[PSP_HULL_CACHE];
-static unsigned long psp_portal_walk_id = 1, psp_hull_hits = 0, psp_hull_misses = 0;
-
-static short portal_hull_from_portal_uncached(
-	short portal_index,
-	boolean direction,
-	struct portal_hull *result);
-
-static short portal_hull_from_portal(
-	short portal_index,
-	boolean direction,
-	struct portal_hull *result)
-{
-	long key = 2 * (long)portal_index + (direction ? 1 : 0);
-	unsigned int slot = (unsigned int)key & (PSP_HULL_CACHE - 1);
-	short answer;
-
-	if (psp_hull_cache[slot].walk == psp_portal_walk_id && psp_hull_cache[slot].key == key)
-	{
-		psp_hull_hits++;
-		result->vertex_count = psp_hull_cache[slot].vertex_count;
-		if (result->vertex_count > 0)
-			csmemcpy(result->vertices, psp_hull_cache[slot].vertices,
-				result->vertex_count * sizeof(real_point2d));
-		return psp_hull_cache[slot].result;
-	}
-	psp_hull_misses++;
-	answer = portal_hull_from_portal_uncached(portal_index, direction, result);
-	if (result->vertex_count <= PSP_HULL_VERTICES)
-	{
-		psp_hull_cache[slot].walk = psp_portal_walk_id;
-		psp_hull_cache[slot].key = key;
-		psp_hull_cache[slot].result = answer;
-		psp_hull_cache[slot].vertex_count = result->vertex_count;
-		if (result->vertex_count > 0)
-			csmemcpy(psp_hull_cache[slot].vertices, result->vertices,
-				result->vertex_count * sizeof(real_point2d));
-	}
-	return answer;
-}
-
-static short portal_hull_from_portal_uncached(
-#else
-static short portal_hull_from_portal(
-#endif
-	short portal_index,
-	boolean direction,
-	struct portal_hull *result)
-{
-	struct structure_bsp *structure = global_structure_bsp_get();
-	struct structure_visibility_portal *portal = TAG_BLOCK_GET_ELEMENT(
-		&structure->cluster_portals,
-		portal_index,
-		struct structure_visibility_portal);
-
-	result->vertex_count = 0;
-	return portal_hull_from_points("""),
- # ChupathingyCE
- chupa=("""static short portal_hull_from_portal(
+("""static short portal_hull_from_portal(
 	short portal_index,
 	boolean direction,
 	struct portal_hull *result)
@@ -5207,7 +5063,7 @@ static short portal_hull_from_portal(
 
 	result->vertex_count = 0;
 	/* port: a portal (from the map) whose plane is no plane is not seen
-""")),
+"""),
 ]
 
 # build 32: a vehicle's update, split (psp_platform.c's object report)
@@ -5652,23 +5508,7 @@ FIXES_36["source/main/main.c"] = [
 # build 44: the text picture's cache lines go out when a character is added
 # to it, not every time one is drawn (psp_ge.c's text_character)
 FIXES_36["source/rasterizer/rasterizer_text.c"] = [
-Either(universal=("""		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
-
-		hardware_character_cache.x0 += font_character->bitmap_width;""",
- """		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
-#ifdef HALO_PSP
-		{
-			/* the GE's copy of the picture (psp_ge.c; psp_fixups.py) */
-			extern void psp_ge_text_changed(void const *bitmap, int x, int y, int width, int height);
-
-			psp_ge_text_changed(hardware_character_cache.bitmap, hardware_character->x0, hardware_character->y0,
-				font_character->bitmap_width, font_character->bitmap_height);
-		}
-#endif
-
-		hardware_character_cache.x0 += font_character->bitmap_width;"""),
- # ChupathingyCE
- chupa=("""		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
+("""		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
 
 		hardware_character_cache.x0 += cell_width;""",
   """		rasterizer_bitmap_changed(hardware_character_cache.bitmap);
@@ -5683,7 +5523,7 @@ Either(universal=("""		rasterizer_bitmap_changed(hardware_character_cache.bitmap
 		}
 #endif
 
-		hardware_character_cache.x0 += cell_width;""")),
+		hardware_character_cache.x0 += cell_width;"""),
 ]
 
 # build 44: where a driven vehicle's physics spends its time (8-10 ms a tick
@@ -6308,25 +6148,7 @@ static __inline__ void *psp_tag_block_element(struct tag_block const *block, lon
 # own index is the answer in a consistent map, which Invader's are; "verifytags"
 # in keep.txt restores the lookup. tag_loaded itself is counted per frame
 FIXES_36["source/tag_files/tag_groups.c#verify"] = [
-Either(universal=("""	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_groups.c", 3055, reference);
-	index = tag_loaded(reference->group_tag, reference->name);
-""",
- """	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_groups.c", 3055, reference);
-#ifdef HALO_PSP
-	{
-		extern int psp_keep(const char *name);
-		static int verify = -1;
-
-		if (verify < 0)
-			verify = psp_keep("verifytags");
-		if (!verify)
-			return reference->index;
-	}
-#endif
-	index = tag_loaded(reference->group_tag, reference->name);
-"""),
- # ChupathingyCE
- chupa=("""	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_groups.c", 3055, reference);
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_groups.c", 3055, reference);
 #ifdef HALO_CUSTOM_EDITION
 """,
   """	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_groups.c", 3055, reference);
@@ -6342,38 +6164,10 @@ Either(universal=("""	match_assert("c:\\\\halo\\\\SOURCE\\\\tag_files\\\\tag_gro
 	}
 #endif
 #ifdef HALO_CUSTOM_EDITION
-""")),
+"""),
 ]
 FIXES_36["source/cache/cache_files.c#tagloaded"] = [
-Either(universal=("""	short absolute_index;
-	long result = NONE;
-
-	if (cache_file_globals.tags_loaded)
-	{
-		match_assert(
-			"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files.c",
-			346,
-			global_tag_instances);
-""",
- """	short absolute_index;
-	long result = NONE;
-
-#ifdef HALO_PSP
-	{
-		extern unsigned long psp_tag_loaded_calls;
-
-		psp_tag_loaded_calls++;
-	}
-#endif
-	if (cache_file_globals.tags_loaded)
-	{
-		match_assert(
-			"c:\\\\halo\\\\SOURCE\\\\cache\\\\cache_files.c",
-			346,
-			global_tag_instances);
-"""),
- # ChupathingyCE
- chupa=("""	long absolute_index;
+("""	long absolute_index;
 	long result = NONE;
 
 	if (cache_file_globals.tags_loaded)
@@ -6389,7 +6183,7 @@ Either(universal=("""	short absolute_index;
 	}
 #endif
 	if (cache_file_globals.tags_loaded)
-	{""")),
+	{"""),
 ]
 
 FIXES_36["source/main/main.c#throttle"] = [
@@ -7034,51 +6828,7 @@ static void psp_surface_reference(struct tag_block const *block, long index, lon
 """
 
 FIXES_36["source/structures/structure_visibility.c#packed"] = [
-Either(universal=("""					real_point3d const *vertex0 = (real_point3d const *)(
-						(byte *)material->compressed_vertex_data.address +
-						surface->vertex_indices[0] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
-					real_point3d const *vertex1 = (real_point3d const *)(
-						(byte *)material->compressed_vertex_data.address +
-						surface->vertex_indices[1] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
-					real_point3d const *vertex2 = (real_point3d const *)(
-						(byte *)material->compressed_vertex_data.address +
-						surface->vertex_indices[2] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
-
-					if (render_frustum_triangle_visible(
-						frustum,
-						vertex0,
-						vertex1,
-						vertex2))
-""",
-"""#ifdef HALO_PSP
-					real_point3d points[3];
-					real_point3d const *vertex0 = &points[0];
-					real_point3d const *vertex1 = &points[1];
-					real_point3d const *vertex2 = &points[2];
-
-					psp_material_vertex_point(material, surface->vertex_indices[0], &points[0]);
-					psp_material_vertex_point(material, surface->vertex_indices[1], &points[1]);
-					psp_material_vertex_point(material, surface->vertex_indices[2], &points[2]);
-#else
-					real_point3d const *vertex0 = (real_point3d const *)(
-						(byte *)material->compressed_vertex_data.address +
-						surface->vertex_indices[0] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
-					real_point3d const *vertex1 = (real_point3d const *)(
-						(byte *)material->compressed_vertex_data.address +
-						surface->vertex_indices[1] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
-					real_point3d const *vertex2 = (real_point3d const *)(
-						(byte *)material->compressed_vertex_data.address +
-						surface->vertex_indices[2] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
-#endif
-
-					if (render_frustum_triangle_visible(
-						frustum,
-						vertex0,
-						vertex1,
-						vertex2))
-"""),
- # ChupathingyCE
- chupa=("""					real_point3d const *vertex0 = (real_point3d const *)(
+("""					real_point3d const *vertex0 = (real_point3d const *)(
 						(byte *)xbox_pointer(material->compressed_vertex_data.address) +
 						surface->vertex_indices[0] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
 					real_point3d const *vertex1 = (real_point3d const *)(
@@ -7108,27 +6858,9 @@ Either(universal=("""					real_point3d const *vertex0 = (real_point3d const *)(
 						(byte *)xbox_pointer(material->compressed_vertex_data.address) +
 						surface->vertex_indices[2] * COMPRESSED_STRUCTURE_VERTEX_SIZE);
 #endif
-""")),
+"""),
 # the cluster's list, consumed per material
-Either(universal=("""				surface_index = *surface_index_buffer++;
-				match_assert(
-					"c:\\\\halo\\\\SOURCE\\\\structures\\\\structure_visibility.c",
-					0x1A0,
-					surface_index_buffer-(long *) cluster->surface_indices.address<=cluster->surface_indices.count);
-""",
-"""#ifdef HALO_PSP
-				surface_index = PSP_SURFACE_INDEX(&cluster->surface_indices, consumed_surface_index_count);
-				(void)surface_index_buffer;
-#else
-				surface_index = *surface_index_buffer++;
-				match_assert(
-					"c:\\\\halo\\\\SOURCE\\\\structures\\\\structure_visibility.c",
-					0x1A0,
-					surface_index_buffer-(long *) cluster->surface_indices.address<=cluster->surface_indices.count);
-#endif
-"""),
- # ChupathingyCE
- chupa=("""				surface_index = *surface_index_buffer++;
+("""				surface_index = *surface_index_buffer++;
 #ifdef HALO_64BIT
 				match_assert(
 					"c:\\\\halo\\\\SOURCE\\\\structures\\\\structure_visibility.c",
@@ -7158,9 +6890,9 @@ Either(universal=("""				surface_index = *surface_index_buffer++;
 					surface_index_buffer-(long *) cluster->surface_indices.address<=cluster->surface_indices.count);
 #endif
 #endif
-""")),
+"""),
 # ChupathingyCE only: its vertex count check, in the packed layout's vertex size
-Either(chupa=("""			vertex_limit = material->compressed_vertex_data.size / COMPRESSED_STRUCTURE_VERTEX_SIZE;
+("""			vertex_limit = material->compressed_vertex_data.size / COMPRESSED_STRUCTURE_VERTEX_SIZE;
 """,
   """#ifdef HALO_PSP
 			/* psp_fixups.py: a packed map's vertices are 6 bytes (PSP_BSP_PACKED) */
@@ -7168,56 +6900,9 @@ Either(chupa=("""			vertex_limit = material->compressed_vertex_data.size / COMPR
 #else
 			vertex_limit = material->compressed_vertex_data.size / COMPRESSED_STRUCTURE_VERTEX_SIZE;
 #endif
-""")),
-# the subclusters' lists: the frustum pass
-Either(universal=("""			surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
-			for (surface_list_index = 0;
-				(short)surface_list_index < subcluster->surface_indices.count;
-				surface_index_buffer++, surface_list_index++)
-			{
-				if (!BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer))
-				{
-					if (render.environment_surface_count >= MAXIMUM_RENDERED_ENVIRONMENT_SURFACES)
-					{
-						break;
-					}
-
-					BIT_VECTOR_SET_FLAG(render.environment_surface_flags, *surface_index_buffer, TRUE);
-""",
-"""#ifdef HALO_PSP
-			surface_index_buffer = NULL;
-			for (surface_list_index = 0;
-				(short)surface_list_index < subcluster->surface_indices.count;
-				surface_list_index++)
-			{
-				long psp_surface_index = PSP_SURFACE_INDEX(&subcluster->surface_indices, surface_list_index);
-
-				if (!BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, psp_surface_index))
-				{
-					if (render.environment_surface_count >= MAXIMUM_RENDERED_ENVIRONMENT_SURFACES)
-					{
-						break;
-					}
-
-					BIT_VECTOR_SET_FLAG(render.environment_surface_flags, psp_surface_index, TRUE);
-#else
-			surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
-			for (surface_list_index = 0;
-				(short)surface_list_index < subcluster->surface_indices.count;
-				surface_index_buffer++, surface_list_index++)
-			{
-				if (!BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer))
-				{
-					if (render.environment_surface_count >= MAXIMUM_RENDERED_ENVIRONMENT_SURFACES)
-					{
-						break;
-					}
-
-					BIT_VECTOR_SET_FLAG(render.environment_surface_flags, *surface_index_buffer, TRUE);
-#endif
 """),
- # ChupathingyCE
- chupa=("""			surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
+# the subclusters' lists: the frustum pass
+("""			surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
 			for (surface_list_index = 0;
 				(short)surface_list_index < subcluster->surface_indices.count;
 				surface_index_buffer++, surface_list_index++)
@@ -7286,64 +6971,9 @@ Either(universal=("""			surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster
 
 					BIT_VECTOR_SET_FLAG(render.environment_surface_flags, *surface_index_buffer, TRUE);
 #endif
-""")),
-# the subclusters' lists: the bounded-surfaces pass
-Either(universal=("""				long *surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
-				long surface_list_index;
-
-				for (surface_list_index = 0;
-					(short)surface_list_index < subcluster->surface_indices.count;
-					surface_index_buffer++, surface_list_index++)
-				{
-					if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer) &&
-						!BIT_VECTOR_TEST_FLAG(surface_flags, *surface_index_buffer))
-					{
-						if (found_count >= maximum_count)
-						{
-							break;
-						}
-
-						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
-""",
-"""#ifdef HALO_PSP
-				long surface_list_index;
-
-				for (surface_list_index = 0;
-					(short)surface_list_index < subcluster->surface_indices.count;
-					surface_list_index++)
-				{
-					long psp_surface_index = PSP_SURFACE_INDEX(&subcluster->surface_indices, surface_list_index);
-
-					if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, psp_surface_index) &&
-						!BIT_VECTOR_TEST_FLAG(surface_flags, psp_surface_index))
-					{
-						if (found_count >= maximum_count)
-						{
-							break;
-						}
-
-						BIT_VECTOR_SET_FLAG(surface_flags, psp_surface_index, TRUE);
-#else
-				long *surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
-				long surface_list_index;
-
-				for (surface_list_index = 0;
-					(short)surface_list_index < subcluster->surface_indices.count;
-					surface_index_buffer++, surface_list_index++)
-				{
-					if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, *surface_index_buffer) &&
-						!BIT_VECTOR_TEST_FLAG(surface_flags, *surface_index_buffer))
-					{
-						if (found_count >= maximum_count)
-						{
-							break;
-						}
-
-						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
-#endif
 """),
- # ChupathingyCE
- chupa=("""				long *surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
+# the subclusters' lists: the bounded-surfaces pass
+("""				long *surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&subcluster->surface_indices, 0, long);
 				long surface_list_index;
 
 				for (surface_list_index = 0;
@@ -7417,21 +7047,7 @@ Either(universal=("""				long *surface_index_buffer = TAG_BLOCK_GET_ELEMENT(&sub
 						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
 						surface_indices[found_count++] = *surface_index_buffer;
 #endif
-""")),
-Either(universal=("""						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
-#endif
-						surface_indices[found_count++] = *surface_index_buffer;
-""",
-"""						BIT_VECTOR_SET_FLAG(surface_flags, *surface_index_buffer, TRUE);
-#endif
-#ifdef HALO_PSP
-						surface_indices[found_count++] = psp_surface_index;
-#else
-						surface_indices[found_count++] = *surface_index_buffer;
-#endif
 """),
- # ChupathingyCE: the store is in the pair above
- chupa=None),
 # leaf surface references in the bounded-surfaces pass
 ("""			struct structure_visibility_surface_reference *reference = TAG_BLOCK_GET_ELEMENT(
 				&structure->surface_references,
@@ -7546,23 +7162,14 @@ FIXES_36["source/structures/structures.c#packed"] = [
 ]
 
 FIXES_36["source/structures/structures.c#readers"] = [
-Either(universal=("""#define structure_material_get_vertex(material, vertex_index) \\
-	((struct environment_vertex_compressed const *) \\
-		(material)->compressed_vertex_data.address + (vertex_index))
-""",
-"""#define structure_material_get_vertex(material, vertex_index) \\
-	((struct environment_vertex_compressed const *) \\
-		(material)->compressed_vertex_data.address + (vertex_index))
-""" + PSP_BSP_READERS),
- # ChupathingyCE
- chupa=("""#define structure_material_get_vertex(material, vertex_index) \\
+("""#define structure_material_get_vertex(material, vertex_index) \\
 	((struct environment_vertex_compressed const *) \\
 		xbox_pointer((material)->compressed_vertex_data.address) + (vertex_index))
 """,
   """#define structure_material_get_vertex(material, vertex_index) \\
 	((struct environment_vertex_compressed const *) \\
 		xbox_pointer((material)->compressed_vertex_data.address) + (vertex_index))
-""" + PSP_BSP_READERS)),
+""" + PSP_BSP_READERS),
 ]
 FIXES_36["source/structures/structure_visibility.c#readers"] = [
 ("""	COMPRESSED_STRUCTURE_VERTEX_SIZE = 0x20,
@@ -7749,31 +7356,7 @@ def packed_designators(tree):
 # 2026-10-05: game time 0 forever, step main_update_time). The emulator's
 # date happened to give a positive value
 FIXES_36["port/linux/src/xbox_kernel.c#clock"] = [
-Either(universal=("""DWORD WINAPI GetTickCount(void)
-{
-	struct timespec now;
-
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (DWORD)((unsigned long long)now.tv_sec * 1000ULL + (unsigned long long)now.tv_nsec / 1000000ULL);
-}
-""",
-"""#ifdef HALO_PSP
-long long sceKernelGetSystemTimeWide(void); /* microseconds since the PSP booted (psp_fixups.py) */
-#endif
-DWORD WINAPI GetTickCount(void)
-{
-#ifdef HALO_PSP
-	return (DWORD)((unsigned long long)sceKernelGetSystemTimeWide() / 1000ULL);
-#else
-	struct timespec now;
-
-	clock_gettime(CLOCK_MONOTONIC, &now);
-	return (DWORD)((unsigned long long)now.tv_sec * 1000ULL + (unsigned long long)now.tv_nsec / 1000000ULL);
-#endif
-}
-"""),
- # ChupathingyCE
- chupa=("""static unsigned long long platform_clock_nanoseconds(void)
+("""static unsigned long long platform_clock_nanoseconds(void)
 {
 	static unsigned long long start;""",
   """#ifdef HALO_PSP
@@ -7786,40 +7369,23 @@ static unsigned long long platform_clock_nanoseconds(void)
 #else
 static unsigned long long platform_clock_nanoseconds(void)
 {
-	static unsigned long long start;""")),
+	static unsigned long long start;"""),
 # ChupathingyCE only: the end of the desktop clock
-Either(chupa=("""	return value - __atomic_load_n(&start, __ATOMIC_RELAXED);
+("""	return value - __atomic_load_n(&start, __ATOMIC_RELAXED);
 }
 """,
   """	return value - __atomic_load_n(&start, __ATOMIC_RELAXED);
 }
 #endif
-""")),
-Either(universal=("""BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *count)
-{
-	struct timespec now;
-
-	clock_gettime(CLOCK_MONOTONIC, &now);
-""",
-"""BOOL WINAPI QueryPerformanceCounter(LARGE_INTEGER *count)
-{
-	struct timespec now;
-
-#ifdef HALO_PSP
-	count->QuadPart = (LONGLONG)sceKernelGetSystemTimeWide();
-	return TRUE;
-#endif
-	clock_gettime(CLOCK_MONOTONIC, &now);
 """),
- # ChupathingyCE
- chupa=("""	count->QuadPart = (LONGLONG)(platform_clock_nanoseconds() / (1000000000ULL / PLATFORM_PERFORMANCE_FREQUENCY));""",
+("""	count->QuadPart = (LONGLONG)(platform_clock_nanoseconds() / (1000000000ULL / PLATFORM_PERFORMANCE_FREQUENCY));""",
   """#ifdef HALO_PSP
 	/* the PSP's counter is in microseconds already: no 64-bit division for
 	a clock read hundreds of times a frame (psp_fixups.py) */
 	count->QuadPart = (LONGLONG)sceKernelGetSystemTimeWide();
 #else
 	count->QuadPart = (LONGLONG)(platform_clock_nanoseconds() / (1000000000ULL / PLATFORM_PERFORMANCE_FREQUENCY));
-#endif""")),
+#endif"""),
 ]
 # and the frame pacing never sleeps longer than a frame, whatever the clock says
 FIXES_36["source/main/main.c#sleep"] = [
@@ -8081,30 +7647,7 @@ FIXES_106["source/objects/objects.c#garbage"] = [
 # answers from the tags, or through the animation cache (psp_anim.c). The
 # pointer is good for the length of the caller's call, as before
 FIXES_106["source/models/model_animation_definitions.h"] = [
-Either(universal=("""#define animation_get_default_data(animation) ((animation)->default_data.address)
-""",
- """#define animation_get_default_data(animation) ((animation)->default_data.address)
-
-#ifdef HALO_PSP
-/* psp_fixups.py (build 106): size bytes of an animation's frame data, offset
-bytes in: in the tags, or, for a map built with its animations outside its
-tags (invader-build -M), in its geometry pack, through the animation cache
-(psp_anim.c), which reads them in if they aren't in RAM. The pointer stays
-good while the caller works on this animation (the cache keeps the last
-few ranges it handed out) */
-void *psp_anim_lock(unsigned long address, unsigned long size);
-static __inline__ byte *psp_animation_data(struct tag_data const *data, long offset, long size)
-{
-	unsigned long address = (unsigned long)data->address + (unsigned long)offset;
-
-	if (__builtin_expect(address < 0x0C000000UL, 1))
-		return (byte *)address;
-	return (byte *)psp_anim_lock(address, (unsigned long)size);
-}
-#endif
-"""),
- # ChupathingyCE
- chupa=("""#define animation_get_default_data(animation) xbox_pointer((animation)->default_data.address)
+("""#define animation_get_default_data(animation) xbox_pointer((animation)->default_data.address)
 """,
   """#define animation_get_default_data(animation) xbox_pointer((animation)->default_data.address)
 
@@ -8125,7 +7668,7 @@ static __inline__ byte *psp_animation_data(struct tag_data const *data, long off
 	return (byte *)psp_anim_lock(address, (unsigned long)size);
 }
 #endif
-""")),
+"""),
 ]
 FIXES_106["source/models/model_animation_definitions.c"] = [
 ("""	compressed = TEST_FLAG(animation->flags, _animation_compressed_bit) && hs_model_animation_compression_enabled;
@@ -8215,35 +7758,7 @@ FIXES_106["source/models/model_animations.c#frames"] = [
 # freed the tag's (with free(), on tag memory): it now takes any table that
 # agrees with its own header
 FIXES_106["source/hs/hs.c"] = [
-Either(universal=("""	scenario = global_scenario_index != NONE ? global_scenario_get() : NULL;
-	if (scenario &&
-		scenario->hs_syntax_data.size ==
-			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node))
-	{
-		return;
-	}
-""",
- """	scenario = global_scenario_index != NONE ? global_scenario_get() : NULL;
-	if (scenario &&
-		scenario->hs_syntax_data.size ==
-			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node))
-	{
-		return;
-	}
-#ifdef HALO_PSP
-	/* psp_fixups.py (build 106): a table sized to the map (invader-build -Y) */
-	if (scenario && scenario->hs_syntax_data.address &&
-		scenario->hs_syntax_data.size > (long)sizeof(struct data_array) &&
-		((struct data_array *)scenario->hs_syntax_data.address)->maximum_count <= MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO &&
-		scenario->hs_syntax_data.size == (long)(sizeof(struct data_array) +
-			((struct data_array *)scenario->hs_syntax_data.address)->maximum_count * sizeof(struct hs_syntax_node)))
-	{
-		return;
-	}
-#endif
-"""),
- # ChupathingyCE
- chupa=("""	/* port: as the map holds it only when it is sound */
+("""	/* port: as the map holds it only when it is sound */
 	if (scenario &&
 		scenario->hs_syntax_data.size ==
 			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node) &&
@@ -8258,9 +7773,9 @@ Either(universal=("""	scenario = global_scenario_index != NONE ? global_scenario
 			sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node) &&
 #endif
 		hs_scenario_syntax_data_valid(scenario))
-""")),
+"""),
 # ChupathingyCE only: its script data check, for a table sized to the map (its header)
-Either(chupa=("""	return data->signature == 'd@t@' &&
+("""	return data->signature == 'd@t@' &&
 		data->maximum_count == MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO &&
 		data->size == sizeof(struct hs_syntax_node) &&
 		data->valid &&
@@ -8277,9 +7792,9 @@ Either(chupa=("""	return data->signature == 'd@t@' &&
 #endif
 		data->size == sizeof(struct hs_syntax_node) &&
 		data->valid &&
-""")),
+"""),
 # ChupathingyCE only: its script data check, for a table sized to the map
-Either(chupa=("""	long const syntax_data_size =
+("""	long const syntax_data_size =
 		sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node);
 """,
   """#ifdef HALO_PSP
@@ -8291,7 +7806,7 @@ Either(chupa=("""	long const syntax_data_size =
 	long const syntax_data_size =
 		sizeof(struct data_array)+MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO*sizeof(struct hs_syntax_node);
 #endif
-""")),
+"""),
 ]
 
 # build 106: datum_get, cheaper. The emulator's PC samples (tools/pcprofile.py)
@@ -8492,37 +8007,6 @@ FIXES_106["source/memory/data.c#verify"] = [
 """),
 ]
 FIXES_106["source/cseries/profile.c#texture"] = [
-Either(universal=("""void profile_texture_start(
-	void)
-{
-	profile_timesection_begin_now(&profile_globals.current_frame.texture);
-""",
- """void profile_texture_start(
-	void)
-{
-#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
-	/* psp_fixups.py (build 106): the frame profiler's texture time, unused */
-	return;
-#endif
-	profile_timesection_begin_now(&profile_globals.current_frame.texture);
-"""),
- # ChupathingyCE: times the texture only while the profiler's graph or dumps read it
- chupa=None),
-Either(universal=("""void profile_texture_end(
-	void)
-{
-	profile_timesection_end_now(&profile_globals.current_frame.texture);
-""",
- """void profile_texture_end(
-	void)
-{
-#if defined(HALO_PSP) && !defined(PSP_DEBUG_TOOLS)
-	return;
-#endif
-	profile_timesection_end_now(&profile_globals.current_frame.texture);
-"""),
- # ChupathingyCE: (as profile_texture_start)
- chupa=None),
 ]
 
 # build 106: datum_get inline where it is hottest. datum_get itself is
@@ -8595,19 +8079,12 @@ FIXES_106["source/objects/objects.c#inline"] = [
 /* ---------- constants */"""),
 ]
 FIXES_106["source/objects/object_lights.c#inline"] = [
-Either(universal=("""#include "units/units.h"
-
-/* ---------- constants */""",
- """#include "units/units.h"
-""" + _PSP_DATUM_INLINE + """
-/* ---------- constants */"""),
- # ChupathingyCE
- chupa=("""#include "units/units.h"
+("""#include "units/units.h"
 
 /* port: port/linux/src (halo.log) */""",
  """#include "units/units.h"
 """ + _PSP_DATUM_INLINE + """
-/* port: port/linux/src (halo.log) */""")),
+/* port: port/linux/src (halo.log) */"""),
 ]
 # build 106: game_sound_update in four steps for the profile. Sheepdog01's b105
 # run: 11.5 ms a frame (median of 94 windows; up to 16.4), against about 1 ms
@@ -9271,22 +8748,7 @@ __attribute__((packed))
 # PSP it is left out: the BSP's read writes its own share, and the bytes
 # between stay the cache's. Also up to 3.8 MB of memory writes a BSP switch
 FIXES_107["source/cache/cache_files.c#bspfill"] = [
-Either(universal=("""	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
-	csmemset(
-		tag_cache_base_address + cache_file_globals.header.tag_data_size,
-		0xCD,
-		PSP_TAG_CACHE_SIZE - cache_file_globals.header.tag_data_size);""",
- """	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
-#ifndef HALO_PSP
-	csmemset(
-		tag_cache_base_address + cache_file_globals.header.tag_data_size,
-		0xCD,
-		PSP_TAG_CACHE_SIZE - cache_file_globals.header.tag_data_size);
-#else
-	(void)tag_cache_base_address;
-#endif"""),
- # ChupathingyCE
- chupa=("""	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
+("""	tag_cache_base_address = physical_memory_get_tag_cache_base_address();
 #ifdef HALO_CUSTOM_EDITION
 	/* port: (not a Custom Edition map's: its tags are in a tag cache of their
 	own, and may be more than the Xbox's holds) */
@@ -9309,7 +8771,7 @@ Either(universal=("""	tag_cache_base_address = physical_memory_get_tag_cache_bas
 		PSP_TAG_CACHE_SIZE - cache_file_globals.header.tag_data_size);
 #else
 	(void)tag_cache_base_address;
-#endif""")),
+#endif"""),
 ]
 # build 107: a read request is published by setting its slot's "pending", and
 # the reader thread takes any slot that is pending and not running. The C
@@ -9596,39 +9058,7 @@ void psp_cluster_unlink_counts(unsigned long *direct, unsigned long *walked, uns
 
 void cluster_partition_reconnect(
 	struct cluster_partition *partition,"""),
-Either(universal=("""		short const cluster_index = cluster_indices[cluster_index_index];
-
-		reference_list_add(
-			partition->cluster_reference_data,
-			first_cluster_reference,
-			cluster_index);
-
-		reference_list_add(
-			partition->data_reference_data,
-			cluster_partition_get_first_reference(partition, cluster_index),
-			datum_index);
-""",
- """		short const cluster_index = cluster_indices[cluster_index_index];
-#ifdef HALO_PSP
-		long psp_cluster_before = *first_cluster_reference;
-		long psp_data_before = *cluster_partition_get_first_reference(partition, cluster_index);
-#endif
-
-		reference_list_add(
-			partition->cluster_reference_data,
-			first_cluster_reference,
-			cluster_index);
-
-		reference_list_add(
-			partition->data_reference_data,
-			cluster_partition_get_first_reference(partition, cluster_index),
-			datum_index);
-#ifdef HALO_PSP
-		psp_cluster_links(partition, psp_cluster_before, first_cluster_reference, psp_data_before, cluster_index);
-#endif
-"""),
- # ChupathingyCE
- chupa=("""		short const cluster_index = cluster_indices[cluster_index_index];
+("""		short const cluster_index = cluster_indices[cluster_index_index];
 		/* port: reference_list_add's, noting where the references are */
 		long cluster_reference_index = cluster_partition_port_add(
 			partition->cluster_reference_data,
@@ -9685,33 +9115,8 @@ Either(universal=("""		short const cluster_index = cluster_indices[cluster_index
 				data_reference_index;
 		}
 #endif
-""")),
-Either(universal=("""		datum_delete(partition->cluster_reference_data, cluster_reference_index);
-
-		reference_list_remove(
-			partition->data_reference_data,
-			cluster_partition_get_first_reference(partition, cluster_index),
-			datum_index);
-""",
- """		datum_delete(partition->cluster_reference_data, cluster_reference_index);
-
-#ifdef HALO_PSP
-		if (psp_cluster_unlink(partition, cluster_index, datum_index, cluster_reference->pad))
-			psp_unlinks_direct++;
-		else
-		{
-			psp_unlinks_walked++;
-#endif
-		reference_list_remove(
-			partition->data_reference_data,
-			cluster_partition_get_first_reference(partition, cluster_index),
-			datum_index);
-#ifdef HALO_PSP
-		}
-#endif
 """),
- # ChupathingyCE
- chupa=("""		datum_delete(partition->cluster_reference_data, cluster_reference_index);
+("""		datum_delete(partition->cluster_reference_data, cluster_reference_index);
 
 		/* port: reference_list_remove's, starting where the reference was
 		put */
@@ -9746,9 +9151,9 @@ Either(universal=("""		datum_delete(partition->cluster_reference_data, cluster_r
 			datum_index,
 			data_reference_index);
 #endif
-""")),
+"""),
 # ChupathingyCE only: its side arrays of reference places, which the PSP keeps in the references themselves
-Either(chupa=("""	partition->port_previous_references = debug_malloc(HALO_PORT_MAXIMUM_CLUSTER_REFERENCES * sizeof(long), FALSE,
+("""	partition->port_previous_references = debug_malloc(HALO_PORT_MAXIMUM_CLUSTER_REFERENCES * sizeof(long), FALSE,
 		__FILE__, __LINE__);
 	partition->port_cluster_data_references = debug_malloc(HALO_PORT_MAXIMUM_CLUSTER_REFERENCES * sizeof(long), FALSE,
 		__FILE__, __LINE__);
@@ -9765,7 +9170,7 @@ Either(chupa=("""	partition->port_previous_references = debug_malloc(HALO_PORT_M
 	partition->port_cluster_data_references = debug_malloc(HALO_PORT_MAXIMUM_CLUSTER_REFERENCES * sizeof(long), FALSE,
 		__FILE__, __LINE__);
 #endif
-""")),
+"""),
 ("""		if (reference->datum_index == datum_index)
 		{
 			datum_delete(array, *reference_index);
@@ -10020,25 +9425,7 @@ static void memory_pool_verify(
 # free index at the end, until a datum is deleted (datum_delete lowers it).
 # ChupathingyCE's fix (source/memory/data.c there), as the PSP's
 FIXES_108["source/memory/data.c#full"] = [
-Either(universal=("""		absolute_index++;
-		header = (struct datum_header *)((byte *)header+size);
-	}
-
-	return result;
-}""",
- """		absolute_index++;
-		header = (struct datum_header *)((byte *)header+size);
-	}
-#ifdef HALO_PSP
-	/* psp_fixups.py (build 108): FIXES_108 data.c#full */
-	if (result == NONE)
-		data->first_free_absolute_index = data->maximum_count;
-#endif
-
-	return result;
-}"""),
- # ChupathingyCE: the fix is there already; nothing changes
- chupa=("""	if (result == NONE)
+("""	if (result == NONE)
 		data->first_free_absolute_index = data->maximum_count;
 
 	return result;
@@ -10047,7 +9434,7 @@ Either(universal=("""		absolute_index++;
 		data->first_free_absolute_index = data->maximum_count;
 
 	return result;
-}""")),
+}"""),
 ]
 
 # The main menu (ui.map) starts its intro movie, and the attract mode its
@@ -10125,23 +9512,14 @@ FIXES_108["source/sound/sound_dsound_xbox.c#permutations"] = [
 						channel->playing_permutation ? channel->playing_permutation->name : "",
 						channel->queued_permutation ? channel->queued_permutation->name : "");
 #endif"""),
-Either(universal=("""					"trying to queue sound %s but it's outside the valid range. (%ld)",
-					channel->playing_permutation->name,""",
- """					"trying to queue sound %s but it's outside the valid range. (%ld)",
-#ifdef HALO_PSP
-					"", /* psp_fixups.py (build 108): permutations carry no names */
-#else
-					channel->playing_permutation->name,
-#endif"""),
- # ChupathingyCE
- chupa=("""					"trying to queue sound %.32s but it's outside the valid range. (%ld)",
+("""					"trying to queue sound %.32s but it's outside the valid range. (%ld)",
 					channel->playing_permutation->name,""",
   """					"trying to queue sound %.32s but it's outside the valid range. (%ld)",
 #ifdef HALO_PSP
 					"", /* psp_fixups.py (build 108): permutations carry no names */
 #else
 					channel->playing_permutation->name,
-#endif""")),
+#endif"""),
 ]
 # build 109: the marker lookups remembered. A unit's weapon, an AI's aim, an
 # effect's attachment each look their markers up by name every tick
@@ -10560,8 +9938,7 @@ FIXES_112["source/render/render.c#bench"] = [
 # ---------- ChupathingyCE only (the rebase)
 # Changes only ChupathingyCE's own code needs: what it added since its fork
 # that reads a field the PSP's slim layouts leave out, or allocates what the
-# PSP's heap can't hold. Each is Either(chupa=...): halo-ce-universal has
-# nothing to change. docs/chupa_rebase.md has the rebase as a whole
+# PSP's heap can't hold. docs/chupa_rebase.md has the rebase as a whole
 FIXES_CHUPA = {}
 # ChupathingyCE reads a saved game into a second game state and takes it
 # once game_state_image_accept has checked it (pools, lists and caches as
@@ -10570,7 +9947,7 @@ FIXES_CHUPA = {}
 # read would then delete the save. On the PSP the image is the game state
 # itself: read in place, checked in place, and not copied onto itself
 FIXES_CHUPA["source/saved games/game_state_xbox.c#image"] = [
-Either(chupa=("""boolean game_state_read_from_file(
+("""boolean game_state_read_from_file(
 	void)
 {""",
  """#ifdef HALO_PSP
@@ -10587,66 +9964,66 @@ game was before ChupathingyCE's check */
 
 boolean game_state_read_from_file(
 	void)
-{""")),
-Either(chupa=("""	free(image);
+{"""),
+("""	free(image);
 
 	return result;""",
  """	GAME_STATE_IMAGE_DELETE(image);
 
-	return result;""")),
+	return result;"""),
 # the core load (core_load)
-Either(chupa=("""	void *image = malloc(buffer_size);
+("""	void *image = malloc(buffer_size);
 
 	sprintf(path,""",
  """	void *image = GAME_STATE_IMAGE_NEW(buffer, buffer_size);
 
-	sprintf(path,""")),
-Either(chupa=("""	CloseHandle(file);
+	sprintf(path,"""),
+("""	CloseHandle(file);
 	free(image);
 
 	return;""",
  """	CloseHandle(file);
 	GAME_STATE_IMAGE_DELETE(image);
 
-	return;""")),
+	return;"""),
 # the saved game the main menu resumes
-Either(chupa=("""		void *image = malloc(buffer_size);
+("""		void *image = malloc(buffer_size);
 
 		if (!image ||""",
  """		void *image = GAME_STATE_IMAGE_NEW(buffer, buffer_size);
 
-		if (!image ||""")),
-Either(chupa=("""		(void)buffer;
+		if (!image ||"""),
+("""		(void)buffer;
 		free(image);
 		CloseHandle(file);""",
  """		(void)buffer;
 		GAME_STATE_IMAGE_DELETE(image);
-		CloseHandle(file);""")),
+		CloseHandle(file);"""),
 ]
 FIXES_CHUPA["source/saved games/game_state.c#image"] = [
-Either(chupa=("""	csmemcpy(game_state_globals.base_address, image, size);
+("""	csmemcpy(game_state_globals.base_address, image, size);
 	error(_error_silent, "the saved game is taken");""",
  """	/* (the PSP reads it in place: psp_fixups.py, FIXES_CHUPA) */
 	if ((void *)image != (void *)game_state_globals.base_address)
 		csmemcpy(game_state_globals.base_address, image, size);
-	error(_error_silent, "the saved game is taken");""")),
+	error(_error_silent, "the saved game is taken");"""),
 ]
 # ChupathingyCE's loader checks a map's tags and BSPs against the tag
 # window's size in physical_memory_map.h (cache_files.c, and the tag schema
 # check port/linux/game/tag_validate.c)
 FIXES_CHUPA["source/cache/physical_memory_map.h#window"] = [
-Either(chupa=("""#define TAG_CACHE_SIZE 0x1600000""",
+("""#define TAG_CACHE_SIZE 0x1600000""",
  """#ifdef HALO_PSP
 /* the PSP's tag window (psp_capacity.h; psp_fixups.py) */
 #define TAG_CACHE_SIZE PSP_TAG_CACHE_SIZE
 #else
 #define TAG_CACHE_SIZE 0x1600000
-#endif""")),
+#endif"""),
 ]
 # ChupathingyCE names a code address with the dynamic loader's dladdr
 # (posix_describe_address, for the game's stack dump); the PSP has none
 FIXES_CHUPA["port/linux/src/posix_files.c#dladdr"] = [
-Either(chupa=("""#include <dlfcn.h>
+("""#include <dlfcn.h>
 #include <stdio.h>
 """,
  """#include <stdio.h>
@@ -10659,14 +10036,14 @@ void posix_describe_address(void *address, char *buffer, posix_ulong size)
 }
 #else
 #include <dlfcn.h>
-""")),
-Either(chupa=("""		snprintf(buffer, size, "%p ?????", address);
+"""),
+("""		snprintf(buffer, size, "%p ?????", address);
 	}
 }""",
  """		snprintf(buffer, size, "%p ?????", address);
 	}
 }
-#endif""")),
+#endif"""),
 ]
 # ChupathingyCE's static memory, sized for a desktop, from what the PSP
 # keeps: the program's static memory comes off the heap's end (psp_build.py
@@ -10684,7 +10061,7 @@ Either(chupa=("""		snprintf(buffer, size, "%p ?????", address);
 # - desktop OpenGL's sampler objects and the texture lookups remembered:
 #   the null renderer has no samplers; the lookups halo-ce-universal's 64
 FIXES_CHUPA["source/hs/hs.c#walk"] = [
-Either(chupa=("""static short hs_expression_refusal(
+("""static short hs_expression_refusal(
 	long root_expression_index,
 	char const **name)
 {
@@ -10736,29 +10113,29 @@ static short hs_expression_refusal(
 	static long stack[MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO+1];
 #endif
 	long stack_count = 0;
-""")),
+"""),
 ]
 FIXES_CHUPA["source/tag_files/tag_groups.c#empty"] = [
-Either(chupa=("""	TAG_EMPTY_DATA_SIZE = 0x10000,""",
+("""	TAG_EMPTY_DATA_SIZE = 0x10000,""",
  """#ifdef HALO_PSP
 	/* (psp_fixups.py, FIXES_CHUPA: the largest tag root is the scenario's,
 	1,456 bytes) */
 	TAG_EMPTY_DATA_SIZE = 0x2000,
 #else
 	TAG_EMPTY_DATA_SIZE = 0x10000,
-#endif""")),
+#endif"""),
 ]
 FIXES_CHUPA["source/game/game_engine.c#homes"] = [
-Either(chupa=("""	MAXIMUM_VEHICLE_HOMES = 1024""",
+("""	MAXIMUM_VEHICLE_HOMES = 1024""",
  """#ifdef HALO_PSP
 	/* (psp_fixups.py, FIXES_CHUPA: the Xbox maps' most) */
 	MAXIMUM_VEHICLE_HOMES = 80
 #else
 	MAXIMUM_VEHICLE_HOMES = 1024
-#endif""")),
+#endif"""),
 ]
 FIXES_CHUPA["source/objects/object_lights.c#clusters"] = [
-Either(chupa=("""	LIGHTS_PORT_MAXIMUM_ENTRIES = HALO_PORT_MAXIMUM_CLUSTER_REFERENCES,""",
+("""	LIGHTS_PORT_MAXIMUM_ENTRIES = HALO_PORT_MAXIMUM_CLUSTER_REFERENCES,""",
  """#ifdef HALO_PSP
 	/* (psp_fixups.py, FIXES_CHUPA: b30 peaks at 294 of the light
 	partition's references [E]; past this many a cluster's lights are
@@ -10766,35 +10143,35 @@ Either(chupa=("""	LIGHTS_PORT_MAXIMUM_ENTRIES = HALO_PORT_MAXIMUM_CLUSTER_REFERE
 	LIGHTS_PORT_MAXIMUM_ENTRIES = 448,
 #else
 	LIGHTS_PORT_MAXIMUM_ENTRIES = HALO_PORT_MAXIMUM_CLUSTER_REFERENCES,
-#endif""")),
+#endif"""),
 ]
 FIXES_CHUPA["source/saved games/game_state.c#allocations"] = [
-Either(chupa=("""	MAXIMUM_GAME_STATE_ALLOCATIONS = 256,""",
+("""	MAXIMUM_GAME_STATE_ALLOCATIONS = 256,""",
  """#ifdef HALO_PSP
 	/* (psp_fixups.py, FIXES_CHUPA: the game state's allocations a map
 	makes are 81 or fewer, the pools among them fewer still [E]) */
 	MAXIMUM_GAME_STATE_ALLOCATIONS = 128,
 #else
 	MAXIMUM_GAME_STATE_ALLOCATIONS = 256,
-#endif""")),
+#endif"""),
 ]
 FIXES_CHUPA["port/linux/src/d3d8_gl.c#samplers"] = [
-Either(chupa=("""#define SAMPLER_CACHE_SIZE 512""",
+("""#define SAMPLER_CACHE_SIZE 512""",
  """#ifdef HALO_PSP
 /* (psp_fixups.py, FIXES_CHUPA: the null renderer makes none) */
 #define SAMPLER_CACHE_SIZE 16
 #else
 #define SAMPLER_CACHE_SIZE 512
-#endif""")),
+#endif"""),
 ]
 FIXES_CHUPA["port/linux/src/xbox_textures.c#recent"] = [
-Either(chupa=("""#define RECENT_TEXTURE_COUNT 512""",
+("""#define RECENT_TEXTURE_COUNT 512""",
  """#ifdef HALO_PSP
 /* (psp_fixups.py, FIXES_CHUPA: halo-ce-universal's count) */
 #define RECENT_TEXTURE_COUNT 64
 #else
 #define RECENT_TEXTURE_COUNT 512
-#endif""")),
+#endif"""),
 ]
 # ChupathingyCE widens the overshield's and the camouflage's render spheres
 # to their meshes as a map loads, reading the meshes through the tags'
@@ -10802,7 +10179,7 @@ Either(chupa=("""#define RECENT_TEXTURE_COUNT 512""",
 # (psp_geo.c), so those buffers point at nothing: b30 crashed reading
 # outside RAM as it loaded [E]. Their spheres stay the tags', as on the Xbox
 FIXES_CHUPA["source/cache/cache_files.c#powerups"] = [
-Either(chupa=("""			/* The two powerups' authored render spheres can be smaller than
+("""			/* The two powerups' authored render spheres can be smaller than
 			 * their rigid meshes. Derive their bounds while tags are writable. */
 			models_fix_powerup_render_bounds();""",
  """#ifndef HALO_PSP
@@ -10813,7 +10190,7 @@ Either(chupa=("""			/* The two powerups' authored render spheres can be smaller 
 			/* psp_fixups.py (FIXES_CHUPA): the powerups' meshes are in the
 			geometry pack, not behind the tags' vertex buffers this reads:
 			their render spheres stay the tags', as on the Xbox */
-#endif""")),
+#endif"""),
 ]
 # ChupathingyCE's heap use at run time, which the static memory above doesn't
 # show: b30's beach took about 900 KB more heap than halo-ce-universal's [E].
@@ -10824,21 +10201,21 @@ Either(chupa=("""			/* The two powerups' authored render spheres can be smaller 
 #   (256 KB) standing for text drawn by the desktop's renderer, which the
 #   PSP has none of (psp_chupa_platform.c: no high-resolution font)
 FIXES_CHUPA["source/interface/ui_widget.c#pool"] = [
-Either(chupa=("""	WIDGET_MEMORY_POOL_SIZE = 0x40000,""",
+("""	WIDGET_MEMORY_POOL_SIZE = 0x40000,""",
  """#ifdef HALO_PSP
 	/* (psp_fixups.py, FIXES_CHUPA: the Xbox's, for the Xbox's menus) */
 	WIDGET_MEMORY_POOL_SIZE = 0x4000,
 #else
 	WIDGET_MEMORY_POOL_SIZE = 0x40000,
-#endif""")),
+#endif"""),
 ]
 FIXES_CHUPA["source/rasterizer/rasterizer_text.c#atlas"] = [
-Either(chupa=("""			/* port: the high-res text atlas's placeholder */
+("""			/* port: the high-res text atlas's placeholder */
 			hires_text_atlas = bitmap_2d_new(""",
  """#ifndef HALO_PSP
 			/* port: the high-res text atlas's placeholder */
-			hires_text_atlas = bitmap_2d_new(""")),
-Either(chupa=("""					HIRES_TEXT_ATLAS_BITMAP_SIZE,
+			hires_text_atlas = bitmap_2d_new("""),
+("""					HIRES_TEXT_ATLAS_BITMAP_SIZE,
 					HIRES_TEXT_ATLAS_BITMAP_SIZE);
 			}""",
  """					HIRES_TEXT_ATLAS_BITMAP_SIZE,
@@ -10847,7 +10224,7 @@ Either(chupa=("""					HIRES_TEXT_ATLAS_BITMAP_SIZE,
 #else
 			/* (psp_fixups.py, FIXES_CHUPA: no high-resolution text on the
 			PSP, so no atlas: 256 KB of heap) */
-#endif""")),
+#endif"""),
 ]
 # Trusted maps. ChupathingyCE checks a map's data each time the tick reads it
 # (each animation keyframe against its data's size, each node a collision
@@ -10861,7 +10238,7 @@ Either(chupa=("""					HIRES_TEXT_ATLAS_BITMAP_SIZE,
 # them. PSP_MAP_CHECKS=1 (psp_build.py) builds them in, for a map that isn't
 # the bake's or a comparison
 FIXES_CHUPA["source/physics/collision_bsp.c#trusted"] = [
-Either(chupa=("""	long *nodes_left)
+("""	long *nodes_left)
 {
 	if (node_index < bsp->bsp3d.nodes.count &&""",
  """	long *nodes_left)
@@ -10870,8 +10247,8 @@ Either(chupa=("""	long *nodes_left)
 	/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted) */
 	return TRUE;
 #endif
-	if (node_index < bsp->bsp3d.nodes.count &&""")),
-Either(chupa=("""	long *nodes_left)
+	if (node_index < bsp->bsp3d.nodes.count &&"""),
+("""	long *nodes_left)
 {
 	if (node_index < bsp->bsp2d.nodes.count &&""",
  """	long *nodes_left)
@@ -10880,8 +10257,8 @@ Either(chupa=("""	long *nodes_left)
 	/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted) */
 	return TRUE;
 #endif
-	if (node_index < bsp->bsp2d.nodes.count &&""")),
-Either(chupa=("""	struct collision_leaf const *leaf;
+	if (node_index < bsp->bsp2d.nodes.count &&"""),
+("""	struct collision_leaf const *leaf;
 
 	if (leaf_index >= 0 && leaf_index < bsp->leaves.count)""",
  """	struct collision_leaf const *leaf;
@@ -10890,14 +10267,14 @@ Either(chupa=("""	struct collision_leaf const *leaf;
 	/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted) */
 	return TRUE;
 #endif
-	if (leaf_index >= 0 && leaf_index < bsp->leaves.count)""")),
+	if (leaf_index >= 0 && leaf_index < bsp->leaves.count)"""),
 ]
 # (and a surface's ring of edges: checked at every edge of every surface a
 # walk tests, from several files, so on the PSP the header makes it TRUE where
 # it is called; the definition's name is in parentheses so the macro leaves
 # it alone)
 FIXES_CHUPA["source/physics/collision_bsp.h#trusted"] = [
-Either(chupa=("""boolean collision_surface_edge_ring_continues(
+("""boolean collision_surface_edge_ring_continues(
 	struct collision_bsp const *bsp,
 	long edge_index,
 	short edge_count);
@@ -10911,10 +10288,10 @@ Either(chupa=("""boolean collision_surface_edge_ring_continues(
 #define collision_surface_edge_ring_continues(bsp, edge_index, edge_count) \\
 	((void)(bsp), (void)(edge_index), (void)(edge_count), TRUE)
 #endif
-""")),
+"""),
 ]
 FIXES_CHUPA["source/physics/collision_bsp.c#ring"] = [
-Either(chupa=("""boolean collision_surface_edge_ring_continues(
+("""boolean collision_surface_edge_ring_continues(
 	struct collision_bsp const *bsp,
 	long edge_index,
 	short edge_count)
@@ -10923,10 +10300,10 @@ Either(chupa=("""boolean collision_surface_edge_ring_continues(
 	struct collision_bsp const *bsp,
 	long edge_index,
 	short edge_count)
-{""")),
+{"""),
 ]
 FIXES_CHUPA["source/models/model_animations.c#trusted"] = [
-Either(chupa=("""	long size = animation->data.size;
+("""	long size = animation->data.size;
 
 	if (offset<0 || offset>size)""",
  """	long size = animation->data.size;
@@ -10935,8 +10312,8 @@ Either(chupa=("""	long size = animation->data.size;
 	/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted) */
 	return TRUE;
 #endif
-	if (offset<0 || offset>size)""")),
-Either(chupa=("""	long frame_offset = animation_frame_data_offset(animation, frame_index);
+	if (offset<0 || offset>size)"""),
+("""	long frame_offset = animation_frame_data_offset(animation, frame_index);
 	short node_count = animation->node_count;
 	char const *problem = NULL;
 """,
@@ -10948,47 +10325,47 @@ Either(chupa=("""	long frame_offset = animation_frame_data_offset(animation, fra
 	/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted) */
 	return TRUE;
 #endif
-""")),
+"""),
 ]
 # ChupathingyCE's checks of a sound's map data name the pitch range or the
 # permutation; on the PSP they carry no names (FIXES_108
 # sound_definitions.h#layouts)
 FIXES_CHUPA["source/sound/sound_definitions.c#names"] = [
-Either(chupa=("""			"pitch range %s picks from %d of its %d permutations",
+("""			"pitch range %s picks from %d of its %d permutations",
 			range->name,""",
  """			"pitch range %s picks from %d of its %d permutations",
 #ifdef HALO_PSP
 			"", /* psp_fixups.py (FIXES_CHUPA): pitch ranges carry no names */
 #else
 			range->name,
-#endif""")),
-Either(chupa=("""			"pitch range %s forces permutation %d of %d",
+#endif"""),
+("""			"pitch range %s forces permutation %d of %d",
 			range->name,""",
  """			"pitch range %s forces permutation %d of %d",
 #ifdef HALO_PSP
 			"", /* psp_fixups.py (FIXES_CHUPA): pitch ranges carry no names */
 #else
 			range->name,
-#endif""")),
-Either(chupa=("""				"permutation %s is followed by permutation %d of %d",
+#endif"""),
+("""				"permutation %s is followed by permutation %d of %d",
 				permutation->name,""",
  """				"permutation %s is followed by permutation %d of %d",
 #ifdef HALO_PSP
 				"", /* psp_fixups.py (FIXES_CHUPA): permutations carry no names */
 #else
 				permutation->name,
-#endif""")),
+#endif"""),
 ]
 FIXES_CHUPA["source/cache/xbox_sound_cache.c#names"] = [
-Either(chupa=("""					"sound permutation %.32s names cache block %08x (not its own)",
+("""					"sound permutation %.32s names cache block %08x (not its own)",
 					sound->name,""",
  """					"sound permutation %.32s names cache block %08x (not its own)",
 #ifdef HALO_PSP
 					"", /* psp_fixups.py (FIXES_CHUPA): permutations carry no names */
 #else
 					sound->name,
-#endif""")),
-Either(chupa=("""				"sound permutation %.32s of %d bytes not loaded",
+#endif"""),
+("""				"sound permutation %.32s of %d bytes not loaded",
 				sound->name,""",
  """#ifdef HALO_PSP
 				/* psp_fixups.py (FIXES_CHUPA): permutations carry no names; the
@@ -10998,7 +10375,7 @@ Either(chupa=("""				"sound permutation %.32s of %d bytes not loaded",
 #else
 				"sound permutation %.32s of %d bytes not loaded",
 				sound->name,
-#endif""")),
+#endif"""),
 ]
 # Build 112: halo-ce-universal's upstream patch 0002 (cold or compiled-out
 # asserts, float rounding) never reached ChupathingyCE. psp_build.py passes
@@ -11013,7 +10390,7 @@ Either(chupa=("""				"sound permutation %.32s of %d bytes not loaded",
 # linked for it). A float rounds to the nearest integer exactly in float, so
 # rintf gives the same bits
 FIXES_CHUPA["source/cseries/cseries.h#asserts"] = [
-Either(chupa=("""#define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
+("""#define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
 #define match_vassert(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
 #define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }""",
  """/* psp_fixups.py (FIXES_CHUPA, build 112): PSP_ASSERTS_OFF compiles the
@@ -11029,8 +10406,8 @@ fatal asserts out; PSP_ASSERTS_COLD marks them unlikely, so their calls go to
 #define match_assert(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), TRUE); }
 #define match_vassert(file, line, expr, string) if (!(expr)) { release_assert_failed(RELEASE_ASSERT_MESSAGE(string), MATCH_FILE(file), MATCH_LINE(line), TRUE); }
 #endif
-#define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }""")),
-Either(chupa=("""#ifdef HALO_RELEASE
+#define match_warn(file, line, expr) if (!(expr)) { release_assert_failed(#expr, MATCH_FILE(file), MATCH_LINE(line), FALSE); }"""),
+("""#ifdef HALO_RELEASE
 void release_assert_failed(char const *information, char const *file, long line, boolean fatal);
 #endif""",
  """#ifdef HALO_RELEASE
@@ -11039,14 +10416,14 @@ void release_assert_failed(char const *information, char const *file, long line,
 	__attribute__((cold)) /* psp_fixups.py (FIXES_CHUPA, build 112) */
 #endif
 	;
-#endif""")),
-Either(chupa=("""	/* FISTP: round to nearest under the default control word */
+#endif"""),
+("""	/* FISTP: round to nearest under the default control word */
 	result = (long)__builtin_rint((double)value);""",
  """	/* FISTP: round to nearest under the default control word.
 	psp_fixups.py (FIXES_CHUPA, build 112): rounded in float. A float is
 	exact in a double and its nearest integer is exact in a float, so the
 	result is the same, without a software double round trip on the PSP */
-	result = (long)__builtin_rintf(value);""")),
+	result = (long)__builtin_rintf(value);"""),
 ]
 
 # ---------- build 113: the flip prompt watched, and a fixture for it
@@ -16974,21 +16351,17 @@ for rel, changes in FIXES.items():
         continue
     applied = 0
     for change in changes:
-        if isinstance(change, Either):
-            if change.pair is None:
-                continue
-            change = change.pair
         applied += 1
         old, new = change
         count = text.count(old)
         if count != 1:
-            failures.append("psp_fixups: %s (%s): expected 1 match, found %d:\n%s" % (rel, BASE, count, old[:200]))
+            failures.append("psp_fixups: %s: expected 1 match, found %d:\n%s" % (rel, count, old[:200]))
             if not CHECK_ONLY:
                 sys.exit(failures[-1])
             continue
         text = text.replace(old, new)
     if CHECK_ONLY or not applied:
-        # (a file whose changes are all the other base's is left as it is)
+        # (a file with no changes left is left as it is)
         continue
     # the sizes go after the file's first #include, so its headers come first
     if rel.endswith(".h"):
@@ -17006,3 +16379,4 @@ print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned ac
 print("psp_fixups: AI debugger state on demand in %d files" % ai_debug_shrink(TREE))
 print("psp_fixups: colour conversions in single precision in %d files" % float_colours(TREE))
 print("psp_fixups: render interpolation for one local player in %d files" % interpolation_players(TREE))
+print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))

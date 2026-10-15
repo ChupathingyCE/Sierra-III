@@ -300,7 +300,6 @@ boolean network_objects_may_delete(long object_index) { (void)object_index; retu
 /* the automated system-link tests: none */
 void network_test_update(boolean main_menu_loaded, real seconds) { (void)main_menu_loaded; (void)seconds; }
 
-#ifdef PSP_CHUPATHINGYCE
 /* ---------- ChupathingyCE's network co-op and its netcode additions (build 110)
 
 ChupathingyCE plays the campaign over the network (port/linux/game/
@@ -495,4 +494,3 @@ global_network_game_server_get first, or run only on a co-op host) */
 struct network_game *network_game_server_get_game(struct network_game_server *server) { (void)server; return NULL; }
 boolean network_game_server_kick_player(char const *text) { (void)text; return FALSE; }
 void network_game_server_port_cooperative_won(char const *next_map) { (void)next_map; }
-#endif

@@ -13,7 +13,6 @@
 #   PSPDEV   the pspdev toolchain (required, e.g. /opt/pspdev)
 #   CACHE    where the engine and me-core-mapper builds are kept
 #            (default ${XDG_CACHE_HOME:-~/.cache}/sierra-iii)
-#   ENGINE   chupa (default) or universal: which engine base
 #   JOBS     compile jobs (default: every CPU)
 #   LABEL    the zip's name (default: the commit's short hash)
 #   PSP_*    build switches, passed to psp_build.py (CLAUDE.md lists them)
@@ -36,7 +35,6 @@ OUT=${1:?usage: tools/build_release.sh <output folder>}
 mkdir -p "$OUT"; OUT=$(cd "$OUT" && pwd)
 : "${PSPDEV:?PSPDEV must name the pspdev toolchain (docs/toolchain.md)}"
 CACHE=${CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/sierra-iii}
-ENGINE=${ENGINE:-chupa}
 JOBS=${JOBS:-$(nproc)}
 LABEL=${LABEL:-$(git -C "$SRC" rev-parse --short=10 HEAD)}
 export PATH="$PSPDEV/bin:$PATH"
@@ -83,29 +81,21 @@ fi
 unlock_entry
 
 # --- the engine, checked out and configured once per pin ---------------------
-case $ENGINE in
-    chupa)     url=$ENGINE_CHUPA_URL;     commit=$ENGINE_CHUPA_COMMIT ;;
-    universal) url=$ENGINE_UNIVERSAL_URL; commit=$ENGINE_UNIVERSAL_COMMIT ;;
-    *) echo "build: ENGINE is chupa or universal, not '$ENGINE'" >&2; exit 1 ;;
-esac
-ENGINE_DIR=$CACHE/engine-$ENGINE-$commit
+url=$ENGINE_CHUPA_URL; commit=$ENGINE_CHUPA_COMMIT
+ENGINE_DIR=$CACHE/engine-chupa-$commit
 lock_entry "$ENGINE_DIR"
 if [[ ! -f $ENGINE_DIR/build/linux/halo_msvc_semantics.h ]]; then
-    log "engine $ENGINE $commit: checking out into $ENGINE_DIR"
+    log "engine $commit: checking out into $ENGINE_DIR"
     rm -rf "$ENGINE_DIR.part"
     fetch_at "$url" "$commit" "$ENGINE_DIR.part"
-    if [[ $ENGINE == universal ]]; then
-        git -C "$ENGINE_DIR.part" -c user.name=build -c user.email=build@localhost am -q "$SRC"/upstream/halo-ce-universal/*.patch
-    fi
-    if [[ $ENGINE == chupa ]]; then cfg=(--no-game-browser); else cfg=(); fi
-    (cd "$ENGINE_DIR.part" && python3 configure.py "${cfg[@]}" >> "$OUT/build.log" 2>&1 \
+    (cd "$ENGINE_DIR.part" && python3 configure.py --no-game-browser >> "$OUT/build.log" 2>&1 \
         && ninja build/linux/halo_msvc_semantics.h build/linux/platform_msvc_semantics.h >> "$OUT/build.log" 2>&1)
     rm -rf "$ENGINE_DIR"; mv "$ENGINE_DIR.part" "$ENGINE_DIR"
 fi
 unlock_entry
 
 # --- the port --------------------------------------------------------------------
-log "Sierra-III $(git -C "$SRC" rev-parse HEAD) on $ENGINE, $JOBS jobs"
+log "Sierra-III $(git -C "$SRC" rev-parse HEAD), $JOBS jobs"
 (cd "$SRC" && HALO_REPO="$ENGINE_DIR" PSP_OUT="$OUT/build" PSP_MECORE="$MECORE_DIR" \
     python3 psp_build.py --jobs "$JOBS") >> "$OUT/build.log" 2>&1 || { tail -30 "$OUT/build.log"; exit 1; }
 # the two helper modules, built from copies so the checkout stays untouched

@@ -53,7 +53,7 @@ What it does, in order:
 
 You get `~/sierra-out/halo_psp_<commit>.zip`, plus `halo.elf`, `halo.map` (the link map) and `build.log`. The first build takes 5 to 10 minutes; later ones about 2.
 
-**Options** (environment variables): `JOBS=8`, `LABEL=b114` (the zip's name), `ENGINE=universal` (the previous engine base), and the build switches in `CLAUDE.md` (`PSP_GAME_OPT=-Os`, …).
+**Options** (environment variables): `JOBS=8`, `LABEL=b114` (the zip's name), and the build switches in `CLAUDE.md` (`PSP_GAME_OPT=-Os`, …).
 
 ## 4. Check you built the same bytes
 
