@@ -17258,6 +17258,122 @@ unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare
 				psp_ge_widget_occlusion(visible > 0);"""),
 ]
 
+# The fractions of the animations and periodic functions in single precision
+# (E16 again, lever PQ). (real)fmod((double)x, 1.0) and
+# (real)floor(fabs(x)) take the double library on the PSP (software, a few
+# hundred cycles a call), for a float x every time: the frame fractions of
+# every animated node's channels, the aim and the overlays, and the periodic
+# functions that drive objects' and shaders' function values. For a normal
+# float the fraction is x less its integer part, a float exactly, so the
+# single-precision answer has the same bits; zeros keep fmod's sign, and
+# infinities and NaNs take the double path. Build 115 held this back on a
+# check made before statecmp's play hash; the whole-state differences it saw
+# (the decal vertex cache, objects, actors) are those every build pair shows.
+# Keep words "fractiondouble" (the double path, as before) and
+# "fractioncheck" (both, compared; the heartbeat logs the count)
+FIXES_129["port/include/halo_math.h#fraction"] = [
+("""#define fmod(x, y) PSP_NARROW2(fmod, (fmod), x, y)
+#endif
+""",
+ """#define fmod(x, y) PSP_NARROW2(fmod, (fmod), x, y)
+
+/* (real)fmod((double)x, 1.0) and (real)floor(fabs((double)x)) for a float x
+with the same bits, in single precision. A normal float's fraction is x less
+its integer part, which a float holds exactly (the subtraction loses
+nothing); |x| below 1 is its own fraction, and from 2^23 up every float is
+an integer. fmod gives a zero the sign of x. Infinities and NaNs take the
+double path. psp_platform.c reads the keep words */
+extern int psp_fraction_word; /* -1 until read; 0 single, 1 double, 2 both, compared */
+int psp_fraction_word_read(void);
+float psp_fraction_compared(float x, float single, int floor_of_abs);
+static inline float psp_fraction_single(float x)
+{
+	union { float f; unsigned int u; } bits;
+	unsigned int exponent;
+	float fraction;
+
+	bits.f = x;
+	exponent = (bits.u >> 23) & 0xff;
+	if (exponent < 127)
+		return x;
+	if (exponent >= 127 + 23)
+		return x < 0.0f ? -0.0f : 0.0f;
+	fraction = x - (float)(int)x;
+	if (fraction == 0.0f)
+		return x < 0.0f ? -0.0f : 0.0f;
+	return fraction;
+}
+static inline float psp_fraction_of(float x)
+{
+	int word = psp_fraction_word >= 0 ? psp_fraction_word : psp_fraction_word_read();
+	union { float f; unsigned int u; } bits;
+
+	bits.f = x;
+	if (word == 1 || ((bits.u >> 23) & 0xff) == 0xff)
+		return (float)(fmod)((double)x, 1.0);
+	if (word == 2)
+		return psp_fraction_compared(x, psp_fraction_single(x), 0);
+	return psp_fraction_single(x);
+}
+static inline float psp_floor_of_abs(float x)
+{
+	int word = psp_fraction_word >= 0 ? psp_fraction_word : psp_fraction_word_read();
+
+	if (word == 1 || x != x)
+		return (float)(floor)((fabs)((double)x));
+	if (word == 2)
+		return psp_fraction_compared(x, floorf(fabsf(x)), 1);
+	return floorf(fabsf(x));
+}
+#endif
+"""),
+]
+FIXES_129["source/models/model_animations.c#fraction"] = [
+("""	fraction = (real)fmod((double)real_frame_index, 1.0);
+	frame_index = (short)fast_ftol((real)floor(fabs(real_frame_index)));""",
+ """#ifdef HALO_PSP
+	fraction = psp_fraction_of(real_frame_index);
+	frame_index = (short)fast_ftol(psp_floor_of_abs(real_frame_index));
+#else
+	fraction = (real)fmod((double)real_frame_index, 1.0);
+	frame_index = (short)fast_ftol((real)floor(fabs(real_frame_index)));
+#endif"""),
+("""	real fraction = (real)fmod((double)real_frame_index, 1.0);""",
+ """#ifdef HALO_PSP
+	real fraction = psp_fraction_of(real_frame_index);
+#else
+	real fraction = (real)fmod((double)real_frame_index, 1.0);
+#endif"""),
+("""	yaw_fraction = (real)fmod((double)yaw_frame, 1.0);""",
+ """#ifdef HALO_PSP
+	yaw_fraction = psp_fraction_of(yaw_frame);
+#else
+	yaw_fraction = (real)fmod((double)yaw_frame, 1.0);
+#endif"""),
+("""	pitch_fraction = (real)fmod((double)pitch_frame, 1.0);""",
+ """#ifdef HALO_PSP
+	pitch_fraction = psp_fraction_of(pitch_frame);
+#else
+	pitch_fraction = (real)fmod((double)pitch_frame, 1.0);
+#endif"""),
+]
+def frac(var, indent, lead):
+    old = "%s%s(real)fmod((double)%s, 1.0);" % (indent, lead, var)
+    new = "#ifdef HALO_PSP\n%s%spsp_fraction_of(%s);\n#else\n%s\n#endif" % (indent, lead, var, old)
+    return old, new
+pf=[]
+for case, var in [("_periodic_function_slide:", "x"), ("_periodic_function_slide_variable_period:", "random_x"),
+                  ("_periodic_function_diagonal_wave:", "x"), ("_periodic_function_diagonal_wave_variable_period:", "random_x"),
+                  ("_periodic_function_spark:", "random_x")]:
+    o, n = frac(var, "\t\t\t", "result = ")
+    pf.append(("\t\tcase %s\n%s" % (case, o), "\t\tcase %s\n%s" % (case, n)))
+o, n = frac("time", "\t\t", "fraction = ")
+pf.append(("\t\ttime *= 25.6f;\n" + o, "\t\ttime *= 25.6f;\n" + n))
+o, n = frac("scaled", "\t\t", "fraction = ")
+pf.append((o, n))
+FIXES_129_PERIODIC = pf
+FIXES_129["source/math/periodic_functions.c#fraction"] = FIXES_129_PERIODIC
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 

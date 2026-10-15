@@ -29,6 +29,7 @@ float psp_budget_last[7];
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <unistd.h>
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
 #define SDL_MAIN_HANDLED
@@ -930,6 +931,7 @@ static void keep_load(void)
 	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times)");
 	platform_log("keep words, build 127's: speed off: logeachline (each log line written at once for the first 20 s, its newline apart)");
 	platform_log("keep words, build 128's: speed off: obscurertest (the camera's ray through every object as each model pass begins, which only a debug display reads), nearautofull (nearauto's level spheres gathered whole, not stopped at the first surface); check: nearautocheck");
+	platform_log("keep words, build 129's: speed off: flaresfull (a flare's ray tests the objects even when the level hides it), fractiondouble (the animations' and periodic functions' fractions in software double); check: flarescheck, fractioncheck");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -937,6 +939,40 @@ asks before it caches its answer) */
 int psp_keep_loaded(void)
 {
 	return keep_words[0] != 0;
+}
+
+/* The fractions' path (halo_math.h's psp_fraction_of, psp_fixups.py):
+single precision unless "fractiondouble"; "fractioncheck" makes both and
+compares them. Read once keep.txt is in; until then, single */
+int psp_fraction_word = -1;
+static unsigned long fraction_checked = 0, fraction_differed = 0;
+
+int psp_fraction_word_read(void)
+{
+	if (!psp_keep_loaded())
+		return 0;
+	psp_fraction_word = psp_keep("fractioncheck") ? 2 : psp_keep("fractiondouble") ? 1 : 0;
+	return psp_fraction_word;
+}
+
+/* the double path's answer, after counting whether the single one has its bits */
+float psp_fraction_compared(float x, float single, int floor_of_abs)
+{
+	float twice = floor_of_abs ? (float)(floor)((fabs)((double)x)) : (float)(fmod)((double)x, 1.0);
+	union { float f; unsigned int u; } of, a, b;
+
+	of.f = x;
+	a.f = single;
+	b.f = twice;
+	fraction_checked++;
+	if (a.u != b.u)
+	{
+		if (fraction_differed < 8)
+			platform_log("fractioncheck: %s of %08x: single %08x, double %08x",
+				floor_of_abs ? "floor" : "fraction", of.u, a.u, b.u);
+		fraction_differed++;
+	}
+	return twice;
 }
 
 /* build 106: the cache file thread's priority, set from that thread when it
@@ -2634,6 +2670,8 @@ static int heartbeat_thread(SceSize args, void *argp)
 				psp_stick_report();
 				psp_threads_report();
 				psp_collision_report();
+				if (psp_fraction_word == 2)
+					platform_log("fractioncheck: %lu fractions compared, %lu differed", fraction_checked, fraction_differed);
 			}
 		}
 		if (ticks >= 0 && (beat % 6) == 3)
