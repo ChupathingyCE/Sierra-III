@@ -1431,6 +1431,77 @@ def interpolation_players(tree):
     open(path, "w", errors="surrogateescape").write(text)
     return 1
 
+# ---------- b125: the PC renderer's GL path out of the link
+# ChupathingyCE draws by translating the game's Direct3D 8 calls into OpenGL
+# (d3d8_gl.c; gl_functions.c loads the GL entry points; nv2a_*.c translate
+# the Xbox shaders). On the PSP that path never runs: psp_sdl.c's
+# SDL_CreateWindow always fails, so gl_initialize is never called and
+# device.gl_ready stays FALSE, and psp_ge.c draws instead. The code was
+# still linked, because the calls into it are ordinary branches the
+# compiler can't prove dead. This pass makes them provably dead: the call
+# goes, and every test of gl_ready reads a constant FALSE, so the compiler
+# drops the guarded code and --gc-sections drops the translator, the
+# loader and the GL headers' users with it. Exact: only code that never ran
+# leaves (docs/dead_code_inventory.md, group 4).
+GL_NEVER_DEFINE = """#ifdef HALO_PSP
+/* the PSP never makes a GL device (psp_fixups.py, gl_never) */
+#define DEVICE_GL_READY FALSE
+#else
+#define DEVICE_GL_READY device.gl_ready
+#endif
+"""
+GL_NEVER_CALL = ("""			platform_video_initialize(width, height))
+			gl_initialize();
+		else
+""", """			platform_video_initialize(width, height))
+#ifdef HALO_PSP
+			; /* never taken: SDL_CreateWindow fails on the PSP (psp_sdl.c) */
+#else
+			gl_initialize();
+#endif
+		else
+""")
+GL_NEVER_WINDOW = ("""	if (!platform_window)
+	{
+		platform_log("SDL_CreateWindow failed: %s", SDL_GetError());
+		return FALSE;
+	}
+""", """	if (!platform_window)
+	{
+		platform_log("SDL_CreateWindow failed: %s", SDL_GetError());
+		return FALSE;
+	}
+#ifdef HALO_PSP
+	/* never reached: the PSP's SDL_CreateWindow always fails (psp_sdl.c), so
+	the GL context and gl_functions_load below drop out of the link */
+	return FALSE;
+#endif
+""")
+GL_READY_READ = re.compile(r"\bdevice\.gl_ready\b(?!\s*=[^=])")
+
+def gl_never(tree):
+    path = os.path.join(tree, "port/linux/src/d3d8_gl.c")
+    text = open(path, errors="surrogateescape").read()
+    if "DEVICE_GL_READY" in text:
+        return 0
+    anchor = '#include "xgpu.h"\n'
+    reads = len(GL_READY_READ.findall(text))
+    if text.count(anchor) != 1 or text.count(GL_NEVER_CALL[0]) != 1 or reads != 10:
+        sys.exit("psp_fixups: d3d8_gl.c: expected the xgpu.h include, gl_initialize's one call and 10 tests of gl_ready, found %d tests" % reads)
+    text = GL_READY_READ.sub("DEVICE_GL_READY", text)
+    text = text.replace(GL_NEVER_CALL[0], GL_NEVER_CALL[1])
+    text = text.replace(anchor, anchor + GL_NEVER_DEFINE)
+    open(path, "w", errors="surrogateescape").write(text)
+    # and the platform layer's loader call, after the window it never gets
+    path = os.path.join(tree, "port/linux/src/sdl_platform.c")
+    text = open(path, errors="surrogateescape").read()
+    if text.count(GL_NEVER_WINDOW[0]) != 1:
+        sys.exit("psp_fixups: sdl_platform.c: expected SDL_CreateWindow's one failure test")
+    text = text.replace(GL_NEVER_WINDOW[0], GL_NEVER_WINDOW[1])
+    open(path, "w", errors="surrogateescape").write(text)
+    return 2
+
+
 def float_colours(tree):
     changed = 0
     for rel in FLOAT_COLOUR_FILES:
@@ -16286,3 +16357,4 @@ print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned ac
 print("psp_fixups: AI debugger state on demand in %d files" % ai_debug_shrink(TREE))
 print("psp_fixups: colour conversions in single precision in %d files" % float_colours(TREE))
 print("psp_fixups: render interpolation for one local player in %d files" % interpolation_players(TREE))
+print("psp_fixups: the GL renderer compiled out in %d files" % gl_never(TREE))

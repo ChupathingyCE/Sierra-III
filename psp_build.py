@@ -33,11 +33,15 @@ TAG_WINDOW_BASE = 0x09600000   # psp_capacity.h, physical_memory_map.c
 PROGRAM_BASE = 0x08804000      # where the kernel loads the module (first fit, low)
 STACK_RESERVE = 0x40000        # main thread and other low allocations made before the heap
 
+# The Linux platform layer's files the PSP compiles. Left out because
+# nothing of them would link (b125): gl_functions (the GL loader),
+# nv2a_psh (the pixel shader translator) and xgpu_text, which only the GL
+# renderer used (psp_fixups.py, gl_never), and xiso (the PSP reads its own
+# bake, never a disc image).
 PLATFORM_FILES = [
     "bink_null", "xbox_xapi", "xbox_files", "xbox_kernel", "msvc_crt", "msvc_wide", "posix_files",
     "xnet", "halo_linker_common", "port_config", "sdl_platform", "xinput_sdl", "dsound_sdl",
-    "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_psh", "nv2a_vsh", "xgpu_text", "gl_functions",
-    "xiso", "xbdm",
+    "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_vsh", "xbdm",
 ]
 # build 107: the campaign-only engine. Co-op and multiplayer become a branch
 # of their own, with their own budgets (Sheepdog01, 2026-10-08), so the campaign

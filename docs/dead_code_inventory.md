@@ -2,11 +2,39 @@
 
 It measures which of the program's code ran and which data only unrun code uses, groups the rest by what it's for, and says what cutting each group would take.
 
+## Status at b125 (2026-10-14, `trim125`)
+
+**Done:**
+- Group 1 (multiplayer) and three data items, in b107 (below).
+- **Group 4, the PC graphics shims: −111 KB of program, +108 KB of heap** (`review_trim125.md`). The fix wasn't leaving files out: the GL code was reachable through branches the compiler couldn't prove dead, so `psp_fixups.py`'s `gl_never` makes them provably dead.
+- **Group 5 (zlib's inflate):** already gone; nothing of it is in b124's link map [D].
+- **The retired engine base:** its fixup halves, build switch, pin, patches and the first link harness are out of the repo (exact: identical EBOOT).
+
+**Still linked, with b124's sizes** (link map, no PGO) [D]. The coverage is b107's, so each needs a fresh read before it's cut:
+
+| What | KB | What cutting takes | Risk |
+|---|---:|---|---|
+| **Group 2, debug and development tools:** `ai_debug.o` 61, `profile.o` 29, `render_debug.o` 18, `collision_debug.o` 7.5, `rasterizer_xbox_profile.o` 6.3, `editor_flying_camera.o` 5, `rasterizer_debug.o` 4.8, `debug_memory.o` 4.6, `ai_profile.o` 3.6, others 3.7 | **~144** | Most of it hangs off debug flags tested at run time: make them compile-time constants outside `PSP_DEBUG_TOOLS`, as `gl_never` does. Keep the console and `cheats.o`: the bench runner needs console commands | low–medium |
+| **libc's scanf engine** (`vfscanf`, `svfscanf`, `svfiscanf`) | ~30 | Replace the one `sscanf` in `psp_sdl.c` and the `fscanf`s in `psp_tick_account` and the director's camera file with small parsers | low |
+| `tiff_file.o`, `s3tc.o` | 3 | Leave the units out | low |
+| **Group 6**, the Xbox rasterizer's replaced draw paths | ~150 (b107) | Function by function | medium |
+
+**Data sized for the Xbox, still as it was** (b124 symbols) [D]. Each runs, so each needs its peak measured or a check mode before shrinking:
+
+| What | KB | Campaign need |
+|---|---:|---|
+| Player update queues (`update_client_globals`, `update_server_globals`; `player_queues_new.o` 91 in all) | 83 | One player, a queue 1–2 deep [U] |
+| `features` (ragdoll scratch) | 44 | Could share another scratch buffer [U] |
+| Lens flares: `local_lens_flare_parameters`, `…_occlusion_test_results` | 70 | Peaks not measured |
+| `compressed_monk_tone` (in the EBOOT's data too) | 18 | Never plays [E, b107] |
+
+**Suggested next:** group 2 (the biggest, and the same technique as group 4), then the scanf engine. The data trims need a lab batch each.
+
 **Since done in b107 (dev tree; b107_candidates.md items 8–9):**
 - Group 1 is out: Sheepdog01 chose a campaign-only engine, with co-op and multiplayer as their own branch.
 - Cut to the PSP's needs: the lens-flare marker table, the query slots and the vertex shader copies.
 - **The program: 5.16 → 4.45 MB; the heap: 5,376 → 6,080 KB.**
-- The other groups are still report only.
+- The other groups were left as report only (see the b125 status above).
 
 **Headline: about 0.8 MB of the 5.16 MB program can come out of the campaign build, and 0.2–0.3 MB more of data is sized for the Xbox's limits.**
 - The biggest part is the multiplayer and networking code and its buffers: about 0.55 MB. It runs in the campaign, but only to do nothing.
