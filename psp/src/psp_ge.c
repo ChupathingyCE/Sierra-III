@@ -16162,13 +16162,25 @@ void psp_ge_frame_end(void)
 			{
 				extern long psp_game_time_peek(void);
 				const unsigned int *pixels = (const unsigned int *)(0x44000000 + (unsigned int)draw_buffer);
-				unsigned int hash = 2166136261u;
-				int row, pair;
+				unsigned int hash = 2166136261u, tile[16];
+				int row, pair, k;
 
+				/* the whole picture's hash, then a 4 x 4 grid of tiles'
+				(120 x 68 pixels each), so a difference can be placed */
+				for (k = 0; k < 16; k++)
+					tile[k] = 2166136261u;
 				for (row = 0; row < SCREEN_HEIGHT; row++)
 					for (pair = 0; pair < SCREEN_WIDTH / 2; pair++)
-						hash = (hash ^ pixels[row * (BUFFER_WIDTH / 2) + pair]) * 16777619u;
-				platform_log("framecrc %lu %ld %08x", frames, psp_game_time_peek(), hash);
+					{
+						unsigned int word = pixels[row * (BUFFER_WIDTH / 2) + pair];
+						unsigned int *t = &tile[(row / (SCREEN_HEIGHT / 4)) * 4 + pair / (SCREEN_WIDTH / 8)];
+
+						hash = (hash ^ word) * 16777619u;
+						*t = (*t ^ word) * 16777619u;
+					}
+				platform_log("framecrc %lu %ld %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
+					frames, psp_game_time_peek(), hash, tile[0], tile[1], tile[2], tile[3], tile[4], tile[5], tile[6], tile[7],
+					tile[8], tile[9], tile[10], tile[11], tile[12], tile[13], tile[14], tile[15]);
 			}
 		}
 		{
