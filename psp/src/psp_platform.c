@@ -891,6 +891,7 @@ static void keep_load(void)
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
 	platform_log("keep words, build 123's: speed off: aiprofilefull; speed, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash meraysminN weapontracksleep; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); lit items: litemsawake; recon: activecensus");
 	platform_log("keep words, build 124's: speed off: weapontrackawake (weapontracksleep retired); retired: cutroom cutroomoff (see the cut stream's line); restorations off: levelexactoff (the level drawn from the eye as the GE rounds it), machinefuncsheld (sleeping machines hold their functions); checks: funccheck; tests: shotrunN (N frames in a row at each shotevery moment)");
+	platform_log("keep words, the scene ladder: sceneladder (each campaign map's opening cutscene, one after another; the game plays on after the last)");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
 	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
@@ -1707,14 +1708,97 @@ static int map_on_stick(const char *name)
 	return sceIoGetstat(path, &stat) >= 0;
 }
 
-static void ladder_tick(unsigned long ticks_seen)
+/* Loads the map after `from` in the campaign's order, passing over any not
+on the stick; 0 when `from` was the last one there */
+static int ladder_load_next(const char *from)
 {
 	static const char *const order[] = { "a10", "a30", "a50", "b30", "b40", "c10", "c20", "c40", "d20", "d40" };
+	int k, at = -1;
+
+	for (k = 0; k < (int)(sizeof(order) / sizeof(order[0])); k++)
+		if (!strcmp(order[k], from))
+			at = k;
+	for (k = at + 1; k < (int)(sizeof(order) / sizeof(order[0])); k++)
+		if (map_on_stick(order[k]))
+		{
+			extern unsigned char hs_compile_and_evaluate(const char *source);
+			char command[64];
+
+			snprintf(command, sizeof(command), "map_name levels\\%s\\%s", order[k], order[k]);
+			platform_log("ladder: %s's turn is over; %s next", from, order[k]);
+			hs_compile_and_evaluate(command);
+			return 1;
+		}
+	return 0;
+}
+
+/* keep.txt's "sceneladder": the openings' cutscenes only, for a showcase
+(Sheepdog01, 2026-10-14). A map's turn ends once its cutscene has been over for
+SCENE_SETTLE of game time: several openings run one scene into the next
+with a moment's gap, and the wait keeps a chain whole. A map whose
+cutscene hasn't started by SCENE_WAIT has none, and is passed over;
+SCENE_LIMIT is a backstop for a scene that never ends. After the last map
+the game plays on rather than quitting: a game that exits by itself can
+leave the PSP hung, and a video wants to end on the picture */
+#define SCENE_WAIT (30 * 30)
+#define SCENE_SETTLE (3 * 30)
+#define SCENE_LIMIT (15 * 60 * 30)
+
+static void scene_ladder_tick(unsigned long ticks_seen)
+{
+	extern unsigned char cinematic_in_progress(void); /* the engine's boolean */
+	static char map[32];
+	static unsigned long started, last_scene;
+	static int seen_scene, asked, done;
+
+	if (done || !current_map[0] || !strcmp(current_map, "ui"))
+		return;
+	if (strcmp(map, current_map) != 0)
+	{
+		snprintf(map, sizeof(map), "%s", current_map);
+		started = ticks_seen;
+		seen_scene = asked = 0;
+		platform_log("scene ladder: %s, waiting for its cutscene", map);
+		return;
+	}
+	if (asked)
+		return; /* the next map is loading */
+	if (cinematic_in_progress())
+	{
+		if (!seen_scene)
+			platform_log("scene ladder: %s's cutscene began at game time %lu", map, ticks_seen - started);
+		seen_scene = 1;
+		last_scene = ticks_seen;
+		if (ticks_seen - started < SCENE_LIMIT)
+			return;
+		platform_log("scene ladder: %s's cutscene still running at the limit", map);
+	}
+	else if (seen_scene ? ticks_seen - last_scene < SCENE_SETTLE : ticks_seen - started < SCENE_WAIT)
+		return;
+	else if (!seen_scene)
+		platform_log("scene ladder: %s has no opening cutscene", map);
+	asked = 1;
+	if (!ladder_load_next(map))
+	{
+		platform_log("scene ladder: %s was the last map on the stick; playing on", map);
+		done = 1;
+	}
+}
+
+static void ladder_tick(unsigned long ticks_seen)
+{
 	static long ladder_ticks = -1;
 	static unsigned long ladder_next = 0;
 	static char ladder_map[32];
-	int k, at = -1;
+	static int scenes = -1;
 
+	if (scenes < 0)
+		scenes = psp_keep("sceneladder");
+	if (scenes)
+	{
+		scene_ladder_tick(ticks_seen);
+		return;
+	}
 	if (ladder_ticks < 0)
 		ladder_ticks = (long)psp_keep_number("ladder", 0) * 30;
 	if (ladder_ticks <= 0 || !current_map[0] || !strcmp(current_map, "ui"))
@@ -1729,20 +1813,8 @@ static void ladder_tick(unsigned long ticks_seen)
 	}
 	if (ticks_seen != ladder_next)
 		return;
-	for (k = 0; k < (int)(sizeof(order) / sizeof(order[0])); k++)
-		if (!strcmp(order[k], ladder_map))
-			at = k;
-	for (k = at + 1; k < (int)(sizeof(order) / sizeof(order[0])); k++)
-		if (map_on_stick(order[k]))
-		{
-			extern unsigned char hs_compile_and_evaluate(const char *source);
-			char command[64];
-
-			snprintf(command, sizeof(command), "map_name levels\\%s\\%s", order[k], order[k]);
-			platform_log("ladder: %s's turn is over; %s next", ladder_map, order[k]);
-			hs_compile_and_evaluate(command);
-			return;
-		}
+	if (ladder_load_next(ladder_map))
+		return;
 	platform_log("ladder: %s was the last map on the stick", ladder_map);
 	exit_game("ladder done");
 }
