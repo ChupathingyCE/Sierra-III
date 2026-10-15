@@ -17396,7 +17396,45 @@ FIXES_129["source/physics/collision_usage.c#periods"] = [
 	collision_usage_current_period = NONE;"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()):
+FIXES_130 = {}
+# "readswait" (recon): every cache file read (textures, sounds, the second
+# BSP: the reader thread's requests) waited for as it is asked, so what a
+# frame finds loaded never depends on how fast the Memory Stick (or the
+# emulator's host) answered. With fixedticks a run then draws the same
+# pictures every time (framecrc, tools/framecmp.py): d20 drew a different
+# picture in 3,740 of 12,237 frames between two runs of one build without
+# it (lab 38762220140). Slower; never for play
+FIXES_130["source/cache/cache_files_windows.c#readswait"] = [
+("""	request->pending = TRUE;
+#endif
+	cache_file_windows_thread_wake();
+
+	return request_index;
+}""",
+ """	request->pending = TRUE;
+#endif
+	cache_file_windows_thread_wake();
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_130 #readswait) */
+		int psp_keep(const char *name);
+		int psp_keep_loaded(void);
+		int sceKernelDelayThread(unsigned int delay);
+		static int reads_wait = -1;
+
+		if (reads_wait < 0 && psp_keep_loaded())
+			reads_wait = psp_keep("readswait") != 0;
+		if (reads_wait > 0)
+			while (*(volatile boolean *)completion_flag_reference == FALSE)
+				sceKernelDelayThread(100);
+	}
+#endif
+
+	return request_index;
+}"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
