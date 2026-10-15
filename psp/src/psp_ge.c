@@ -4313,6 +4313,42 @@ static unsigned long arena_heap_live = 0;
 /* the largest free block at the last frame's end, for the log */
 static unsigned int arena_largest = 0;
 static int level_stream_let_go_oldest(void);
+
+/* A level material whose copy finds no room, in the arena or on the general
+heap, once every copy not drawn so far in the frame has been let go: what the
+arena still holds is on screen, and the heap has no piece large enough. Tried
+again on its next draw, it would let go the copies not yet drawn in that frame
+(which the frame then builds again, reading the geometry pack) and fail again,
+every frame. Such a material waits instead: its draws skip it at no cost, and
+at a frame's end, when the GE is done and the arena's blocks may move, it is
+built if the room free and the copies not drawn that frame hold it (the arena
+compacted first if that room is split), or, once a second, if the general
+heap has the room. What is drawn otherwise doesn't change. "streamroomoff":
+tried again on every draw. "streamsqueezeN" (test): the copies held to N KB
+of the arena and given no heap room, the pressure made where the emulator
+can show it */
+#define STREAM_WAITING 64
+#define STREAM_HEAP_RETRY 30
+static int stream_room = -1;         /* -1: not read; 1: on; 0: "streamroomoff" */
+static int stream_room_building = 0; /* the frame end's build, past the wait */
+static int arena_squeeze = 0;        /* "streamsqueezeN": KB */
+static struct
+{
+	const void *vertices, *lightmap_vertices;
+	int count;
+	/* frames: last drawn; the next try on the heap, and on the arena's room
+	after a try there failed */
+	unsigned int wanted, heap_after, arena_after;
+} stream_waiting[STREAM_WAITING];
+static int stream_waiting_count = 0;
+/* the material level_stream_get was asked for (vertices is replaced by the
+pack's bytes on the way) */
+static const void *stream_asked, *stream_asked_lightmap;
+static int stream_asked_count;
+static unsigned long stream_room_waits = 0, stream_room_skips = 0, stream_room_built = 0, stream_room_tries = 0,
+	stream_room_heap_tries = 0, stream_room_compactions = 0, stream_room_seen = 0;
+static unsigned int stream_room_log_frame = 0;
+static void *arena_take(unsigned int size, void **owner);
 static unsigned int stream_size(const struct level_stream *stream);
 
 static struct arena_block *arena_next(struct arena_block *block)
@@ -4327,6 +4363,7 @@ static void __attribute__((cold)) arena_start(void)
 	struct arena_block *first;
 
 	arena_state = 0;
+	stream_room = !psp_keep("streamroomoff");
 	if (psp_keep("noarena"))
 	{
 		platform_log("GE: the copies' arena: off (noarena); copies from the general heap");
@@ -4345,6 +4382,18 @@ static void __attribute__((cold)) arena_start(void)
 	first->owner = NULL;
 	arena_state = 1;
 	platform_log("GE: the copies' arena: %u KB", ARENA_BYTES / 1024);
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		arena_squeeze = psp_keep_number("streamsqueeze", 0);
+	}
+	/* held by no copy for good: compaction keeps it at the start */
+	if (arena_squeeze > 0 && (unsigned int)arena_squeeze * 1024 < ARENA_BYTES)
+	{
+		arena_take(ARENA_BYTES - (unsigned int)arena_squeeze * 1024, NULL);
+		platform_log("GE: streamsqueeze (test): the copies held to %d KB of the arena, none from the general heap",
+			arena_squeeze);
+	}
 }
 
 /* the smallest free block holding size bytes (header included), split if
@@ -4381,6 +4430,7 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 {
 	unsigned int size = (bytes + sizeof(struct arena_block) + ARENA_ALIGN - 1) & ~(ARENA_ALIGN - 1);
 	void *pointer = NULL;
+	int overflow = 0;
 
 	if (arena_state < 0)
 		arena_start();
@@ -4390,11 +4440,25 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 			arena_let_go++;
 		if (pointer)
 			return pointer;
+		if (arena_squeeze > 0)
+			return NULL;
+		/* counted once the heap gives the piece: a refusal counted as a piece
+		there kept the migration walking the copies every frame for nothing */
+		overflow = 1;
+		if (stream_room <= 0)
+		{
+			arena_from_heap++;
+			arena_heap_live++;
+		}
+	}
+	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign) */
+	pointer = memalign(ARENA_ALIGN, bytes);
+	if (pointer && overflow && stream_room > 0)
+	{
 		arena_from_heap++;
 		arena_heap_live++;
 	}
-	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign) */
-	return memalign(ARENA_ALIGN, bytes);
+	return pointer;
 }
 
 static void copy_free(void *pointer)
@@ -4823,6 +4887,66 @@ static void __attribute__((cold)) arena_frame_end(void)
 	}
 	if (arena_heap_live)
 		arena_migrate();
+}
+
+/* level_stream_get's question: 1 when the material waits for room (its draw
+skips it). The frame end's own build passes */
+static int stream_room_ask(const void *vertices, const void *lightmap_vertices, int count)
+{
+	int k;
+
+	stream_asked = vertices;
+	stream_asked_lightmap = lightmap_vertices;
+	stream_asked_count = count;
+	if (stream_room_building)
+		return 0;
+	for (k = 0; k < stream_waiting_count; k++)
+		if (stream_waiting[k].vertices == vertices)
+		{
+			stream_waiting[k].wanted = stream_frame;
+			stream_room_skips++;
+			return 1;
+		}
+	return 0;
+}
+
+/* the material just asked for found no room: it waits. With the list full it
+is tried again on its next draw, as without the list */
+static void stream_room_wait(void)
+{
+	int k;
+
+	for (k = 0; k < stream_waiting_count && stream_waiting[k].vertices != stream_asked; k++)
+		;
+	if (k == stream_waiting_count)
+	{
+		if (k == STREAM_WAITING)
+			return;
+		stream_waiting[k].vertices = stream_asked;
+		stream_waiting[k].lightmap_vertices = stream_asked_lightmap;
+		stream_waiting[k].count = stream_asked_count;
+		stream_waiting[k].heap_after = stream_frame + STREAM_HEAP_RETRY;
+		stream_waiting[k].arena_after = stream_frame;
+		stream_waiting_count++;
+		if (++stream_room_waits <= 8)
+			platform_log("GE: no room for a material's copy (%d vertices): it waits for room at a frame's end",
+				stream_asked_count);
+	}
+	stream_waiting[k].wanted = stream_frame;
+}
+
+/* what a copy of count vertices takes from the arena, headers included */
+static unsigned int stream_room_need(int count, int lightmap, int compact)
+{
+	unsigned int header = sizeof(struct arena_block) + ARENA_ALIGN - 1, need;
+
+	need = (((unsigned int)count * sizeof(struct ge_vertex) + header) & ~(ARENA_ALIGN - 1)) +
+		(((unsigned int)count * sizeof(unsigned int) + header) & ~(ARENA_ALIGN - 1));
+	if (lightmap)
+		need *= 2;
+	if (compact)
+		need += (lightmap ? 2 : 1) * (((unsigned int)count * sizeof(struct compact_vertex) + header) & ~(ARENA_ALIGN - 1));
+	return need;
 }
 
 unsigned int psp_geo_address_of(const void *ptr);
@@ -5344,6 +5468,8 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 		stream->last_frame = stream_frame;
 		return stream;
 	}
+	if (stream_room > 0 && stream_room_ask(vertices, lightmap_vertices, count))
+		return NULL;
 	if (PSP_ME_WORK())
 	{
 		int k;
@@ -5402,7 +5528,10 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	}
 	if (!stream->base || (lightmap_vertices && (!stream->lightmap || !stream->radiosity)) || !stream->normals)
 	{
-		platform_log("GE: no memory for a material's vertices (%d)", count);
+		if (stream_room > 0)
+			stream_room_wait();
+		else
+			platform_log("GE: no memory for a material's vertices (%d)", count);
 		stream_free(stream->base);
 		stream_free(stream->lightmap);
 		copy_free(stream->normals);
@@ -5516,6 +5645,99 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 		ge_writeback(stream->lightmap, count * sizeof(struct ge_vertex));
 	stream_bytes += stream_size(stream);
 	return stream;
+}
+
+/* at the frame's end, after the arena's housekeeping: the materials waiting
+for room (stream_room above) built where there is room now. A material not
+drawn this frame stops waiting; its next draw tries as any new one does */
+static void __attribute__((cold)) stream_room_frame_end(void)
+{
+	unsigned int room = 0;
+	int k, index;
+
+	for (k = 0; k < stream_waiting_count; k++)
+		if (stream_waiting[k].wanted != stream_frame)
+			stream_waiting[k--] = stream_waiting[--stream_waiting_count];
+	if (stream_waiting_count && arena_state > 0)
+	{
+		/* free, and held by copies not on screen this frame (let go first) */
+		room = ARENA_BYTES - (unsigned int)arena_used;
+		for (index = 0; index < LEVEL_STREAMS; index++)
+		{
+			const struct level_stream *stream = &level_streams[index];
+
+			if (stream->base && stream->last_frame != stream_frame && (char *)stream->base >= arena &&
+				(char *)stream->base < arena + ARENA_BYTES)
+				room += stream_room_need(stream->count, stream->lightmap != NULL, stream->compact_base != NULL);
+		}
+	}
+	for (k = 0; k < stream_waiting_count; k++)
+	{
+		const void *vertices = stream_waiting[k].vertices, *lightmap_vertices = stream_waiting[k].lightmap_vertices;
+		int count = stream_waiting[k].count;
+		unsigned int need = stream_room_need(count, lightmap_vertices != NULL, level_compact > 0);
+		int on_arena = 0;
+
+		if (arena_state > 0 && need <= room && (int)(stream_frame - stream_waiting[k].arena_after) >= 0)
+		{
+			struct arena_block *block;
+			unsigned int largest = 0;
+
+			while (ARENA_BYTES - (unsigned int)arena_used < need && level_stream_let_go_oldest())
+				arena_let_go++;
+			for (block = (struct arena_block *)arena; block; block = arena_next(block))
+				if (!block->used && block->size > largest)
+					largest = block->size;
+			if (largest < need)
+			{
+				arena_compact();
+				stream_room_compactions++;
+			}
+			room -= need;
+			on_arena = 1;
+		}
+		else if (!arena_squeeze && (int)(stream_frame - stream_waiting[k].heap_after) >= 0)
+		{
+			/* asked past the heap's accounting: a refusal here is a question,
+			not a failure to report */
+			extern void *__real_memalign(size_t alignment, size_t size);
+			unsigned int bytes = (unsigned int)count * sizeof(struct ge_vertex);
+			void *first = __real_memalign(ARENA_ALIGN, bytes);
+			void *second = first && lightmap_vertices ? __real_memalign(ARENA_ALIGN, bytes) : NULL;
+			int fits = first && (!lightmap_vertices || second);
+
+			free(second);
+			free(first);
+			stream_waiting[k].heap_after = stream_frame + STREAM_HEAP_RETRY;
+			stream_room_heap_tries++;
+			if (!fits)
+				continue;
+		}
+		else
+			continue;
+		stream_room_tries++;
+		stream_room_building = 1;
+		if (level_stream_get(vertices, lightmap_vertices, count))
+		{
+			stream_room_built++;
+			stream_waiting[k--] = stream_waiting[--stream_waiting_count];
+		}
+		else if (on_arena)
+			stream_waiting[k].arena_after = stream_frame + STREAM_HEAP_RETRY;
+		stream_room_building = 0;
+	}
+	/* once a second while anything happens; every ten while a material only waits */
+	if ((stream_room_waits + stream_room_built + stream_room_tries != stream_room_seen &&
+		stream_frame - stream_room_log_frame >= 30) ||
+		(stream_waiting_count && stream_frame - stream_room_log_frame >= 300))
+	{
+		platform_log("GE: level copies short of room: %lu materials have waited, %d waiting now, %lu of their draws skipped; "
+			"built at a frame's end %lu of %lu tries (%lu compactions for it), the heap asked %lu times",
+			stream_room_waits, stream_waiting_count, stream_room_skips, stream_room_built, stream_room_tries,
+			stream_room_compactions, stream_room_heap_tries);
+		stream_room_seen = stream_room_waits + stream_room_built + stream_room_tries;
+		stream_room_log_frame = stream_frame;
+	}
 }
 
 int psp_tex_bind(unsigned int key, int *has_alpha);
@@ -9623,6 +9845,7 @@ void psp_ge_forget_level(void)
 	/* build 64: the overlays' on-a-wall answers belong to this BSP */
 	overlay_backing_forget();
 	stream_bytes = 0;
+	stream_waiting_count = 0;
 	platform_log("GE: the level's vertex copies let go (a new BSP or map)");
 }
 
@@ -15980,6 +16203,8 @@ void psp_ge_frame_end(void)
 			level_streams_trim();
 		arena_frame_end(); /* build 111: compaction, the heap's copies brought back */
 		level_copies_follow();
+		if (stream_room > 0)
+			stream_room_frame_end(); /* after the move: a copy built now takes level_origin */
 		stream_frame++;
 		frame_end_us[2] += sceKernelGetSystemTimeLow() - mark;
 		win_after_us += sceKernelGetSystemTimeLow() - mark;
