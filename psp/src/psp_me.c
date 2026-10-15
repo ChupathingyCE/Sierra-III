@@ -33,11 +33,15 @@ While idle, the ME reads the uncached words once every ~25 us and otherwise
 spins in registers: the bus is the PSP's scarce resource (memory_traffic.md).
 
 Stopping: the ME must be stopped before the PSP leaves the game (HOME, quit)
-or sleeps (build 44's audio sample, which never stopped its ME, crashed the
-PSP on HOME). Stop asks, waits for the ME to acknowledge and halt itself;
-with no answer it holds the ME in reset through the kernel. The library's
-sleep handler (it replaces the firmware's own ME one) holds it in reset too.
-After a stop every job runs on the main CPU instead.
+or sleeps (an ME left running crashed the PSP on HOME). Stop asks, waits for
+the ME to acknowledge and halt itself; with no answer it holds the ME in
+reset through the kernel. The library's sleep handler (it replaces the
+firmware's own ME one) holds it in reset too. After a stop every job runs on
+the main CPU instead.
+
+After a sleep the ME is started again ("the wake" below), unless
+"mewakeoff": the same reset release as at launch, from the main thread at a
+frame's end, once no job of any slot or ring ticket can still be out.
 
 The ME is the firmware's until the next reboot of the PSP once taken: XMB
 music and video stay off until then. PPSSPP doesn't run ME code at all:
@@ -49,6 +53,7 @@ licence, copyright (c) 2025-2026 mcidclan (m-c/d, m-cid); LICENSE-mecore.md
 ships beside the EBOOT. */
 #include <pspkernel.h>
 #include <pspiofilemgr.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -269,6 +274,15 @@ static inline void lines_drop(unsigned int start, unsigned int bytes)
 /* 0 off, 1 the ME runs the jobs, 2 simulated (the emulator: the main CPU
 runs them), -1 stopped (after HOME, quit, sleep or a failure) */
 static volatile int me_state = 0;
+/* counted by the kernel's sleep and wake handlers: a restart that sees it
+move slept again partway, and the ME may be in reset under it */
+static volatile unsigned int me_sleeps = 0;
+/* 1 while a client thread is inside a slot's job (psp_me_run, or from
+psp_me_submit to the end of psp_me_finish). Each slot has one client thread,
+the flag's only writer; it is raised before that thread looks at me_state,
+so the wake's restart, which finds every flag down while me_state is still
+-1, knows no thread can be inside a slot's words until it sets me_state */
+static volatile int slot_busy[ME_SLOTS];
 static unsigned int slot_request[ME_SLOTS];
 static unsigned int last_job_us[ME_SLOTS]; /* build 87: psp_me_last_job_us */
 /* the ME's cycle counter, counts a microsecond (measured at start) */
@@ -734,6 +748,9 @@ void meLibOnProcess(void)
 			if ((features & ME_FEATURE_RING) && !ring_ready)
 			{
 				ring_ready = 1;
+				/* 0 at launch; after a wake the main CPU has moved both
+				counters past every ticket handed out before the sleep */
+				ring_popped = RING_POPPED;
 				ring_last_look = me_cycles();
 			}
 		}
@@ -779,12 +796,15 @@ void meLibOnProcess(void)
 
 /* the library's sleep handler (its replacement for the firmware's own ME one)
 calls these in kernel mode: the ME held in reset through the sleep and after
-it; the main CPU runs the jobs from then on */
+it, and the main CPU runs the jobs until the wake's restart (psp_me_wake_poll)
+has the ME answering again. Nothing more here: kernel mode is no place to
+wait for the ME, and the game's threads may be anywhere in a job */
 void meLibOnSleep(void)
 {
 	HW_SYS_RESET_ENABLE = SC_HW_RESET;
 	meLibSync();
 	me_state = -1;
+	me_sleeps++;
 }
 
 void meLibOnWake(void)
@@ -792,6 +812,7 @@ void meLibOnWake(void)
 	HW_SYS_RESET_ENABLE = SC_HW_RESET;
 	meLibSync();
 	me_state = -1;
+	me_sleeps++;
 }
 
 /* ---------- the main CPU's side */
@@ -884,11 +905,18 @@ int psp_is_emulator(void)
 	return emulator();
 }
 
-void psp_me_stop(const char *why)
+/* 1 (the ME's) or 2 (simulated) once started at launch; 0 after a stop for
+any other reason than a sleep (a job that timed out, HOME), since an ME that
+failed once is not trusted again by a wake */
+static int me_restartable = 0;
+
+static void me_stop(const char *why, int for_sleep)
 {
 	volatile struct me_control *control = CONTROL;
 	int k;
 
+	if (me_state > 0 && !for_sleep)
+		me_restartable = 0;
 	if (me_state == 1)
 	{
 		/* build 89: no new jobs from here; one already asked for is served
@@ -915,7 +943,18 @@ void psp_me_stop(const char *why)
 		me_state = -1;
 }
 
-/* the old name (psp_platform.c's HOME and sleep callbacks) */
+void psp_me_stop(const char *why)
+{
+	me_stop(why, 0);
+}
+
+/* the power callback's, as the PSP goes to sleep: the wake may start it again */
+void psp_me_sleep_stop(void)
+{
+	me_stop("sleep", 1);
+}
+
+/* the old name (psp_platform.c's HOME callback) */
 void psp_meaudio_stop(const char *why)
 {
 	psp_me_stop(why);
@@ -963,6 +1002,7 @@ int psp_me_start(void)
 	if (emulator())
 	{
 		me_state = 2;
+		me_restartable = 2;
 		platform_log("ME: the emulator runs no ME code; each job is SIMULATED (the main CPU runs it)%s",
 			ring_on ? "; the job ring on (meslant)" : "");
 		return 1;
@@ -1006,6 +1046,7 @@ int psp_me_start(void)
 		me_cycles_per_us = us ? (float)cycles / (float)us : 0.0f;
 	}
 	me_state = 1;
+	me_restartable = 1;
 	atexit(stop_at_exit);
 	/* mehalt only now, so the start check above saw the ME polling */
 	me_halting = psp_keep("mehalt");
@@ -1048,7 +1089,7 @@ or on this CPU when simulated. args as the job type takes them; results
 filled. Returns 1 when done, 0 if the ME failed (it is stopped then; the
 caller runs the job its own way). first_look_us: how long the job is
 expected to take, the first sleep before looking (then every 0.1 ms) */
-int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
+static int me_run_slot(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
 	unsigned int first_look_us)
 {
 	volatile struct me_slot *slot;
@@ -1056,7 +1097,7 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 	unsigned long waited, me_us;
 	int k;
 
-	if (me_state <= 0 || which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS)
+	if (me_state <= 0 || arg_count > ME_JOB_ARGS)
 		return 0;
 	slot = SLOT(which);
 	start = sceKernelGetSystemTimeWide();
@@ -1120,6 +1161,19 @@ int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_c
 	return 1;
 }
 
+int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
+	unsigned int first_look_us)
+{
+	int done;
+
+	if (which < 0 || which >= ME_SLOTS)
+		return 0;
+	slot_busy[which] = 1;
+	done = me_run_slot(which, type, args, arg_count, results, first_look_us);
+	slot_busy[which] = 0;
+	return done;
+}
+
 /* build 118: a job handed over without waiting (L1 step 4, psp_ge.c's
 "gemeoverlap"): the main CPU goes on with its own work and finishes the job
 later with psp_me_finish. One job a slot at a time. Returns 1 if handed over
@@ -1134,8 +1188,15 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	volatile struct me_slot *slot;
 	int k;
 
-	if (me_state <= 0 || which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS || submitted[which])
+	if (which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS || submitted[which])
 		return 0;
+	/* down again at psp_me_finish's end */
+	slot_busy[which] = 1;
+	if (me_state <= 0)
+	{
+		slot_busy[which] = 0;
+		return 0;
+	}
 	slot = SLOT(which);
 	slot->type = type;
 	for (k = 0; k < arg_count; k++)
@@ -1173,7 +1234,7 @@ at most */
 #define FINISH_SPIN_NOPS_SLOW 1000 /* "mefinishslow": ~3 us at 333 MHz */
 #define FINISH_SLOW_CLOCK_EVERY 16 /* "mefinishslow": the clock every 16th look */
 
-int psp_me_finish(int which, unsigned int *results)
+static int me_finish_slot(int which, unsigned int *results)
 {
 	static int slow = -1;
 	volatile struct me_slot *slot;
@@ -1181,8 +1242,6 @@ int psp_me_finish(int which, unsigned int *results)
 	unsigned long waited, looks = 0;
 	int k, state;
 
-	if (which < 0 || which >= ME_SLOTS || !submitted[which])
-		return 0;
 	if (slow < 0)
 		slow = psp_keep("mefinishslow");
 	state = submitted[which];
@@ -1247,6 +1306,17 @@ int psp_me_finish(int which, unsigned int *results)
 	return 1;
 }
 
+int psp_me_finish(int which, unsigned int *results)
+{
+	int done;
+
+	if (which < 0 || which >= ME_SLOTS || !submitted[which])
+		return 0;
+	done = me_finish_slot(which, results);
+	slot_busy[which] = 0;
+	return done;
+}
+
 /* ---------- the job ring, the main CPU's side */
 
 /* a job that isn't done this long after its push is reported, and the main
@@ -1264,6 +1334,10 @@ extern volatile unsigned int psp_me_window[16];
 static unsigned int ring_next = 0;        /* the next ticket */
 static unsigned int ring_popped_seen = 0; /* popped, as last read */
 static int ring_dead = 0;                 /* a job failed: the ring takes no more */
+/* the first ticket after the wake's restart; tickets before it went to an ME
+that was reset, and their entries hold no answer for them */
+static unsigned int ring_epoch = 0;
+static int ring_restarted = 0;
 static unsigned int ring_push_mark[ME_RING_ENTRIES]; /* the push's time, a ticket's */
 static unsigned int ring_thread = 0;      /* simulated: the producer's thread, for psp_me_context */
 static struct
@@ -1489,8 +1563,13 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 
 	if (ring_next - ticket - 1 >= ME_RING_ENTRIES)
 		return 0;
-	if (me_state == 2)
+	/* simulated, the push opened the window, whatever has stopped since */
+	if (me_restartable == 2 || me_state == 2)
 		psp_me_window[0] = 0;
+	/* without this, popped (moved past it by the restart) would say it was
+	done, and another job's answer would stop the ring for the session */
+	if (ring_restarted && ticket - ring_epoch >= ring_next - ring_epoch)
+		return ring_fail(0, ticket, index);
 	if ((int)(RING_POPPED - ticket) > 0)
 		ring_stats.at_once++;
 	else
@@ -1603,6 +1682,155 @@ void psp_me_ring_test(void)
 		ringtest_jobs++;
 	}
 	ringtest_bursts++;
+}
+
+/* ---------- the wake: the ME started again after a sleep
+
+The kernel's sleep handler holds the ME in reset from the sleep on. Once the
+wake is complete the power callback asks for a restart (psp_me_wake_request),
+and the main thread carries it out at a frame's end (psp_me_wake_poll):
+- that thread is the ring's one producer, and between frames it has no ring
+  job half handed over, and the render slot's half has been waited for;
+- the other slots' threads (audio, the heartbeat's probe) are waited for
+  through slot_busy, frame end by frame end;
+- me_state stays -1 until the ME answers, so until then every client takes
+  its job back to the main CPU, as after the sleep.
+Only the library's reset has to be done again (meLibReset): the ME's code
+runs from this program in main RAM, which the PSP keeps through a sleep, and
+its stack is in its own eDRAM, made anew at each start. The one thing in the
+ME's reset-vector SRAM is the library's 264-byte start handler, copied again
+by meLibReset whether or not the sleep kept it. */
+#define WAKE_ANSWER_US 100000 /* the ME's first idle poll after the release, at most */
+
+static volatile int wake_pending = 0;
+static unsigned long long wake_mark;
+static unsigned int wake_frames; /* frame ends spent waiting for the clients */
+static char wake_line[240];
+static volatile int wake_line_ready = 0;
+
+/* for the heartbeat (psp_me_report), which says it once */
+static void wake_report(const char *format, ...)
+{
+	va_list list;
+
+	va_start(list, format);
+	vsnprintf(wake_line, sizeof(wake_line), format, list);
+	va_end(list);
+	wake_line_ready = 1;
+}
+
+/* the power callback, the wake complete */
+void psp_me_wake_request(void)
+{
+	if (me_state == 0)
+		return;
+	wake_mark = sceKernelGetSystemTimeWide();
+	wake_frames = 0;
+	wake_pending = 1;
+}
+
+static int me_release_kernel(void)
+{
+	meLibReset();
+	return 0;
+}
+
+void psp_me_wake_poll(void)
+{
+	volatile struct me_control *control = CONTROL;
+	unsigned long long release, now;
+	unsigned int sleeps;
+	int k;
+
+	if (!wake_pending)
+		return;
+	if (me_state > 0)
+	{
+		/* no sleep reached the ME: nothing to start */
+		wake_pending = 0;
+		return;
+	}
+	if (psp_keep("mewakeoff") || !me_restartable)
+	{
+		wake_pending = 0;
+		wake_report("ME: stays stopped after the wake (%s); the main CPU runs its jobs",
+			me_restartable ? "mewakeoff" : "it was stopped for a failure before the sleep");
+		return;
+	}
+	for (k = 0; k < ME_SLOTS; k++)
+		if (slot_busy[k] || submitted[k])
+		{
+			wake_frames++;
+			return;
+		}
+	wake_pending = 0;
+	sleeps = me_sleeps;
+	/* every word the ME reads at its start, as at launch; the slots and the
+	ring carried on from where the main CPU's counters are, so a ticket or
+	request number handed out before the sleep can never be taken for one
+	of the new ME's */
+	control->stop = control->alive = control->clock = control->jobs = 0;
+	control->halted = 0;
+	for (k = 0; k < ME_SLOTS; k++)
+		SLOT(k)->request = SLOT(k)->done = slot_request[k];
+	ring_epoch = ring_next;
+	ring_restarted = 1;
+	ring_popped_seen = ring_next;
+	RING_PUSHED = RING_POPPED = ring_next;
+	/* before the release, where launch sets them after its start check: the
+	ME reads them on its first pass, so the ring is served from the first
+	frame (a ring job not done in 10 ms turns the ring off for the session) */
+	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u);
+	__asm__ __volatile__("sync");
+	now = sceKernelGetSystemTimeWide();
+	if (me_restartable == 2)
+	{
+		me_state = 2;
+		wake_report("ME (simulated): restarted after wake in %lu ms (%u frame ends waiting for its clients)",
+			(unsigned long)((now - wake_mark) / 1000), wake_frames);
+		return;
+	}
+	release = now;
+	kcall_2(me_release_kernel, 0);
+	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
+		sceKernelDelayThread(500);
+	if (control->alive == 0 || me_sleeps != sleeps)
+	{
+		kcall_2(me_hold_reset, 0);
+		wake_report("ME: restart after the wake FAILED (%s); held in reset, the main CPU runs its jobs",
+			control->alive == 0 ? "no idle poll within 100 ms of the reset's release" : "the PSP slept again meanwhile");
+		return;
+	}
+	me_state = 1;
+	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release; %u frame ends waiting for its clients)",
+		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release), wake_frames);
+}
+
+static int me_sleep_kernel(void)
+{
+	meLibOnSleep();
+	return 0;
+}
+
+/* "mewaketest": what a sleep does to the ME, without one, so the restart
+can be run where the PSP can't sleep (the emulator) and on the PSP without
+a hand on the power switch. The wake (psp_me_wake_request) is the caller's */
+void psp_me_wake_test_sleep(void)
+{
+	if (me_state <= 0)
+	{
+		platform_log("mewaketest: the ME isn't running; nothing to test");
+		return;
+	}
+	psp_me_sleep_stop();
+	if (me_restartable == 1)
+		kcall_2(me_sleep_kernel, 0);
+	else
+	{
+		me_state = -1;
+		me_sleeps++;
+	}
+	platform_log("mewaketest: the ME stopped and held as a sleep holds it");
 }
 
 /* build 87: the last job's own code time on the ME, in microseconds (its
@@ -1726,6 +1954,11 @@ void psp_me_report(void)
 
 	if (!me_state)
 		return;
+	if (wake_line_ready)
+	{
+		wake_line_ready = 0;
+		platform_log("%s", wake_line);
+	}
 	report_mark = now;
 	for (k = 0; k < ME_SLOTS; k++)
 	{

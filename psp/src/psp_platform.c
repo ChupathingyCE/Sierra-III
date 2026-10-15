@@ -894,6 +894,7 @@ static void keep_load(void)
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
 	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
 	platform_log("keep words, build 122's behaviour calls (opt-in, for Sheepdog01's A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
+	platform_log("keep words, the Media Engine's wake: fix off: mewakeoff (stays stopped after a sleep); recon: mewaketest");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -1242,15 +1243,17 @@ void psp_tex_resume(void);
 void psp_geo_suspend(void);
 void psp_geo_resume(void);
 void psp_io_reopen_all(int shift, char *line, int size);
+void psp_me_sleep_stop(void);
+void psp_me_wake_request(void);
 
 static int power_callback(int unknown, int flags, void *argument)
 {
 	(void)unknown; (void)argument;
 	if (flags & PSP_POWER_CB_SUSPENDING)
 	{
-		/* build 86: the Media Engine stopped before the sleep (the main CPU
-		mixes from then on) */
-		psp_meaudio_stop("sleep");
+		/* the Media Engine stopped before the sleep: the main CPU runs its
+		jobs until the wake's restart has it answering again */
+		psp_me_sleep_stop();
 		/* build 68: the geometry cache's blocks are in the same partition; its
 		read in flight is waited for first */
 		psp_geo_suspend();
@@ -1269,6 +1272,9 @@ static int power_callback(int unknown, int flags, void *argument)
 		}
 		psp_tex_resume();
 		psp_geo_resume();
+		/* not here: this thread can't know the game's threads are out of
+		the ME's jobs. The main thread's next frame end starts it */
+		psp_me_wake_request();
 	}
 	return 0;
 }
@@ -1989,6 +1995,23 @@ steps in order: the console has no way to wait */
 		psp_geo_settle();
 		psp_io_reopen_all(1, line, sizeof(line));
 		platform_log("reopentest: %s", line);
+	}
+	/* keep.txt's "mewaketest": the ME held in reset as a sleep holds it, at
+	15 s of game time, and the wake's restart asked for 3 s later, so play
+	runs on the main CPU alone between; against "mewaketest mewakeoff", play
+	must stay exact (statecrc) */
+	if ((ticks_seen == 450 || ticks_seen == 540) && psp_keep("mewaketest"))
+	{
+		void psp_me_wake_test_sleep(void);
+		void psp_me_wake_request(void);
+
+		if (ticks_seen == 450)
+			psp_me_wake_test_sleep();
+		else
+		{
+			platform_log("mewaketest: the wake");
+			psp_me_wake_request();
+		}
 	}
 	/* keep.txt's "exitatN": back to the menu at N seconds of game time, so
 	two emulator runs (the cache models' A/Bs) cover the same ticks and
