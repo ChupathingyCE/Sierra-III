@@ -929,6 +929,7 @@ static void keep_load(void)
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
 	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times)");
 	platform_log("keep words, build 127's: speed off: logeachline (each log line written at once for the first 20 s, its newline apart)");
+	platform_log("keep words, build 128's: speed off: obscurertest (the camera's ray through every object as each model pass begins, which only a debug display reads)");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock

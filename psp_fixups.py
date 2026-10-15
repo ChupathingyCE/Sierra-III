@@ -16990,6 +16990,38 @@ void psp_collision_report(void)
 """),
 ]
 
+# The obscurer test skipped: rasterizer_models_begin casts a ray 10,000
+# units from the camera through every object type, each time models begin
+# (each object pass, each flag, the camouflage pass), to find the object in
+# front of the camera; its only reader is the debug display of a model's
+# vertices (rasterizer_debug_model_vertices). In the emulator's collision log
+# it was ~1% of b30's collision time (the "debug" user). Exact: nothing but
+# that display reads the answer. "obscurertest" casts it as before
+FIXES_128["source/rasterizer/rasterizer.c#obscurer"] = [
+("""	struct collision_result collision;
+	real_vector3d vector;
+
+	if (!skip_obscurer_test)
+	{""", """	struct collision_result collision;
+	real_vector3d vector;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_128): only the debug display of a model's
+	vertices reads the answer */
+	{
+		static int psp_obscurer_test = -1;
+		int psp_keep(const char *name);
+
+		if (psp_obscurer_test < 0)
+			psp_obscurer_test = psp_keep("obscurertest") != 0;
+		if (!psp_obscurer_test && !rasterizer_debug_model_vertices_enabled)
+			skip_obscurer_test = TRUE;
+	}
+#endif
+	if (!skip_obscurer_test)
+	{"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
