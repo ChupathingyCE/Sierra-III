@@ -10350,7 +10350,8 @@ static unsigned int widget_key = 0;
 static int widget_depth = 1;
 static unsigned long widget_sprites = 0, widget_begins = 0, widget_untextured = 0, occlusion_tests = 0,
 	occlusion_visible = 0;
-extern unsigned long psp_occlusion_rays_cast, psp_occlusion_rays_kept; /* rasterizer_lights.c (psp_fixups.py) */
+extern unsigned long psp_occlusion_rays_cast, psp_occlusion_rays_kept; /* rasterizer_xbox_widgets.c (psp_fixups.py) */
+extern unsigned long psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed; /* rasterizer_xbox_widgets.c (psp_fixups.py) */
 
 void psp_ge_widget_begin(int depth_test)
 {
@@ -16390,6 +16391,8 @@ void psp_ge_frame_end(void)
 				arena_compactions, arena_moved_kb, arena_migrated);
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
+		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
+			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
 		if (frames > 1)
 		{
 			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",

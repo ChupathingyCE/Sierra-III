@@ -17169,7 +17169,96 @@ boolean collision_test_point(
 {"""),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()):
+FIXES_129 = {}
+# A flare's ray asks the level first. The flare test (b31, b116) casts a ray
+# from the eye to the flare against the level and the objects in its way,
+# and a flare shows only if the ray meets nothing or the sky. The level is
+# walked first and objects are tested only in the leaves the ray crossed up
+# to its wall, where a hit can only bring the answer nearer: so when the
+# level alone meets a wall that is not sky, the answer is "hidden" whatever
+# the objects say, and their test is skipped. On c20 (lab 38745678938) the
+# flare test was 6.9 ms a frame and nine flare answers in ten hidden. Exact:
+# the same answers; only the objects' marks (the ray stamped the objects it
+# tested) differ. Keep words "flaresfull" (the full test always, as before)
+# and "flarescheck" (both, and the answers compared in the log)
+FIXES_129["source/rasterizer/xbox/rasterizer_xbox_widgets.c#walls"] = [
+("""/* build 116: characters in a flare's way (b113 #2) */
+static unsigned long psp_flare_bipeds = 0;""",
+ """/* build 116: characters in a flare's way (b113 #2) */
+static unsigned long psp_flare_bipeds = 0;
+static int psp_flare_walls = -1, psp_flare_walls_check = 0;
+unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare_walls_differed = 0; /* psp_ge.c logs them */"""),
+("""				/* the level's sky surfaces (no material) are where the
+				sky is drawn: a ray that meets one has reached the sky */
+				if (!collision_test_vector(
+					FLAG(_collision_test_front_facing_surfaces_bit) |
+						FLAG(_collision_test_ignore_invisible_surfaces_bit) |
+						FLAG(_collision_test_structure_bit) |
+						FLAG(_collision_test_objects_bit) |
+						_collision_test_objects_sight_blocking_flags | psp_flare_bipeds,
+					&global_window_parameters.camera.position,
+					&ray,
+					NONE,
+					&collision) ||
+					(collision.type == _collision_result_structure && collision.material_index == NONE))
+					visible = (long)(pixel_count * MIN(on_screen, 1.0f));
+				psp_ge_widget_occlusion(visible > 0);""",
+ """				{
+					boolean level_hides = FALSE;
+
+					if (psp_flare_walls < 0)
+					{
+						psp_flare_walls = !psp_keep("flaresfull");
+						psp_flare_walls_check = psp_keep("flarescheck") != 0;
+					}
+					/* the level alone, with the full test's surface flags:
+					a wall that is not sky hides the flare whatever the
+					objects say, as they can only meet the ray nearer */
+					if (psp_flare_walls || psp_flare_walls_check)
+					{
+						level_hides = collision_test_vector(
+							FLAG(_collision_test_front_facing_surfaces_bit) |
+								FLAG(_collision_test_ignore_invisible_surfaces_bit) |
+								FLAG(_collision_test_structure_bit),
+							&global_window_parameters.camera.position,
+							&ray,
+							NONE,
+							&collision) && collision.material_index != NONE;
+					}
+					if (level_hides && !psp_flare_walls_check)
+					{
+						psp_flare_walls_hidden++;
+					}
+					else
+					{
+						/* the level's sky surfaces (no material) are where the
+						sky is drawn: a ray that meets one has reached the sky */
+						if (!collision_test_vector(
+							FLAG(_collision_test_front_facing_surfaces_bit) |
+								FLAG(_collision_test_ignore_invisible_surfaces_bit) |
+								FLAG(_collision_test_structure_bit) |
+								FLAG(_collision_test_objects_bit) |
+								_collision_test_objects_sight_blocking_flags | psp_flare_bipeds,
+							&global_window_parameters.camera.position,
+							&ray,
+							NONE,
+							&collision) ||
+							(collision.type == _collision_result_structure && collision.material_index == NONE))
+							visible = (long)(pixel_count * MIN(on_screen, 1.0f));
+						if (psp_flare_walls_check)
+						{
+							psp_flare_walls_checked++;
+							if (level_hides)
+								psp_flare_walls_hidden++;
+							if (level_hides && visible > 0)
+								psp_flare_walls_differed++;
+						}
+					}
+				}
+				psp_ge_widget_occlusion(visible > 0);"""),
+]
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
