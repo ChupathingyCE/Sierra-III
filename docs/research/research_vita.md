@@ -4,7 +4,14 @@ A tour of BirchWoodGod's [halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-
 
 Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. The Vita port's own numbers are from Vita hardware, its Linux harness or callgrind's Cortex-A9 model, and are marked as theirs.
 
-**Licence: read before borrowing code.** The Vita port is **GPL-3.0-only**: its generated tag layouts come from Invader's GPL definitions, and the licence covers the whole port. The decomp and OpenCE underneath stay CC0. Sierra-III has no licence chosen yet (`README.md`). Until Sheepdog01 decides, we take the *ideas* and write our own code, crediting the Vita port in the commit and the review, rather than copying its code.
+**Licence: read before borrowing code.** The Vita port is **GPL-3.0-only**: its generated tag layouts come from Invader's GPL definitions, and the licence covers the whole port. The decomp and OpenCE underneath stay CC0. Sierra-III has no licence chosen yet (`README.md`).
+
+**Permission (Sheepdog01, 2026-10-14):** BirchWoodGod, the port's author, told Sheepdog01 on Discord that Sierra-III may take from it as it pleases. That covers the code he wrote. It can't cover what isn't his to grant:
+- `port/linux/src/tag_layouts.h` and anything else generated from Invader (GPL-3, SnowyMouse's);
+- code he credits to others, such as iamhaller's networking or Bruno Santana's settings work (ask them, or take the idea only);
+- upstream decomp and OpenCE code, which is CC0 anyway.
+
+Anything taken still names the Vita port in its commit and review. A written line of the grant (a Discord message saved in the lab's notes, or a comment on his repo) is worth keeping, so the permission outlives the chat.
 
 **Where to read it.** `port/vita/README.md` (settings, the profiles' costs, debug switches), `ROADMAP.md` and the main README's Performance section. Engine changes carry `/* port: */` or `/* (port) */` comments under `#ifdef HALO_LINUX` (the Vita builds the Linux platform layer); the speed ones name their map and their measurement.
 
