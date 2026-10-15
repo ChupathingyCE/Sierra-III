@@ -896,7 +896,7 @@ static void keep_load(void)
 	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it); fix off: meresetwhole (the reset register written whole); recon: mewaketest");
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf; recon: noglowpass nobackpass");
-	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1); checks: pathclearpoison deletedcheck");
+	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock

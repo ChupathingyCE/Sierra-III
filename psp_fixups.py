@@ -16545,6 +16545,258 @@ void objects_fix_for_deleted_object(
 """),
 ]
 
+# RV4, first part: two exact cuts in the AI's path work, the hot code of
+# b30's fight. From BirchWoodGod's halo-ce-vita (V5 and V6 of its
+# HALO_AI_PATH_STATE_VERIFY group); used with his permission.
+# - V5, the nearby firing positions test (actor_nearby_firing_positions):
+#   a ground actor's 4-unit path search ran before the walk over the
+#   encounter's positions, though only a position within 4 units ever asks
+#   it. It is made when the walk first finds one; with none, never. The search
+#   is the same and the walk asks it the same questions, so the answer is the
+#   same. It changes only the path meters, which only the AI debug display
+#   reads (outside the game state).
+# - V6, path smoothing's scan (path_smooth): each pass tested the steps from
+#   the first, and keeps only the run of colliding steps that reaches the last
+#   one (its first step and that step's edge). From the last back, that run is
+#   found as it ends, and the steps before it are never tested (every step,
+#   when the last is clear). A pill test reads the structure alone and changes
+#   nothing a later test reads (two warn-once flags), and nothing after the scan
+#   reads its result, so each pass smooths as before.
+# "aipathold" (keep.txt): both as before. "aipathcheck" (a check): the
+# smoothing scans both ways and logs any pass where they differ (none
+# expected); V5 needs no check of its own (the state CRC shows any change).
+FIXES_126["source/ai/actor_firing_position.c#nearby"] = [
+("""boolean actor_nearby_firing_positions(
+	long actor_index,""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV4 V5): 1: the 4-unit search made when it is
+first needed (the default); 0: before the walk ("aipathold") */
+int psp_keep(const char *name);
+static int psp_nearby_lazy = -1;
+
+static int psp_nearby_lazy_mode(
+	void)
+{
+	if (psp_nearby_lazy < 0)
+		psp_nearby_lazy = !psp_keep("aipathold");
+	return psp_nearby_lazy;
+}
+#endif
+
+boolean actor_nearby_firing_positions(
+	long actor_index,"""),
+("""		struct path_state state;
+		short firing_position_index;
+
+		if (!actor->state.flying)
+		{
+			struct path_input input;
+
+			path_input_new(
+				&input,
+				definition->moving.pathfinding_radius,
+				TRUE,
+				NONE);
+			path_input_set_start(&input, test_point, test_surface_index);
+			path_input_set_search_bounds(&input, 4.0f);
+			path_state_new(&input, &state, NULL);
+			path_state_find(&state);
+		}
+""", """		struct path_state state;
+		short firing_position_index;
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_126, RV4 V5): the search's input made here, the
+		search itself when a position within 4 units first asks it */
+		struct path_input psp_input;
+		boolean psp_searched = FALSE;
+
+		if (!actor->state.flying)
+		{
+			path_input_new(
+				&psp_input,
+				definition->moving.pathfinding_radius,
+				TRUE,
+				NONE);
+			path_input_set_start(&psp_input, test_point, test_surface_index);
+			path_input_set_search_bounds(&psp_input, 4.0f);
+			if (!psp_nearby_lazy_mode())
+			{
+				path_state_new(&psp_input, &state, NULL);
+				path_state_find(&state);
+				psp_searched = TRUE;
+			}
+		}
+#else
+		if (!actor->state.flying)
+		{
+			struct path_input input;
+
+			path_input_new(
+				&input,
+				definition->moving.pathfinding_radius,
+				TRUE,
+				NONE);
+			path_input_set_start(&input, test_point, test_surface_index);
+			path_input_set_search_bounds(&input, 4.0f);
+			path_state_new(&input, &state, NULL);
+			path_state_find(&state);
+		}
+#endif
+"""),
+("""					real distance;
+
+					path_state_estimated_distance(""", """					real distance;
+
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_126, RV4 V5): the first position within
+					4 units makes the search */
+					if (!psp_searched)
+					{
+						path_state_new(&psp_input, &state, NULL);
+						path_state_find(&state);
+						psp_searched = TRUE;
+					}
+#endif
+					path_state_estimated_distance("""),
+]
+
+FIXES_126["source/ai/path_smoothing.c#scan"] = [
+("""void path_smooth(
+	struct path_state *state,""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_126, RV4 V6): how path_smooth scans its steps.
+1: from the last back (the default); 0: from the first ("aipathold");
+2: both, compared ("aipathcheck") */
+int psp_keep(const char *name);
+static int psp_smooth_scan = -1;
+static unsigned long psp_smooth_passes, psp_smooth_mismatches;
+
+static int psp_smooth_scan_mode(
+	void)
+{
+	if (psp_smooth_scan < 0)
+		psp_smooth_scan = psp_keep("aipathold") ? 0 : psp_keep("aipathcheck") ? 2 : 1;
+	return psp_smooth_scan;
+}
+#endif
+
+void path_smooth(
+	struct path_state *state,"""),
+("""			for (i = step_index; i < raw_step_count; i++)
+			{
+				if (structure_test_pill2d(
+					state->structure,
+					state->input.ignore_broken_surfaces,
+					&current_position,
+					current_surface_index,
+					(real_point2d const *)&raw_steps[i].point,
+					raw_steps[i].surface_index,
+					0.3f,
+					FLAG(_path_test_pill_endpoint_near_wall_ok_bit),
+					&collision_result))
+				{
+					if (!collision_active)
+					{
+						collision_edge_index = collision_result.edge_index;
+						collision_step_index = i;
+						collision_active = TRUE;
+					}
+				}
+				else if (collision_active)
+				{
+					collision_step_index = NONE;
+					collision_edge_index = NONE;
+					collision_active = FALSE;
+				}
+			}
+""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_126, RV4 V6): from the last step back, the
+			run of colliding steps that reaches the last one, found as it ends
+			(see there) */
+			if (psp_smooth_scan_mode())
+			{
+				for (i = raw_step_count - 1; i >= step_index; i--)
+				{
+					if (!structure_test_pill2d(
+						state->structure,
+						state->input.ignore_broken_surfaces,
+						&current_position,
+						current_surface_index,
+						(real_point2d const *)&raw_steps[i].point,
+						raw_steps[i].surface_index,
+						0.3f,
+						FLAG(_path_test_pill_endpoint_near_wall_ok_bit),
+						&collision_result))
+					{
+						break;
+					}
+					collision_edge_index = collision_result.edge_index;
+					collision_step_index = i;
+					collision_active = TRUE;
+				}
+			}
+			if (psp_smooth_scan != 1)
+			{
+				/* "aipathold": the game's scan, which decides; "aipathcheck":
+				the game's scan beside the one above, compared */
+				short scan_step_index = collision_step_index;
+				long scan_edge_index = collision_edge_index;
+				boolean scan_active = collision_active;
+
+				collision_step_index = NONE;
+				collision_edge_index = NONE;
+				collision_active = FALSE;
+#endif
+			for (i = step_index; i < raw_step_count; i++)
+			{
+				if (structure_test_pill2d(
+					state->structure,
+					state->input.ignore_broken_surfaces,
+					&current_position,
+					current_surface_index,
+					(real_point2d const *)&raw_steps[i].point,
+					raw_steps[i].surface_index,
+					0.3f,
+					FLAG(_path_test_pill_endpoint_near_wall_ok_bit),
+					&collision_result))
+				{
+					if (!collision_active)
+					{
+						collision_edge_index = collision_result.edge_index;
+						collision_step_index = i;
+						collision_active = TRUE;
+					}
+				}
+				else if (collision_active)
+				{
+					collision_step_index = NONE;
+					collision_edge_index = NONE;
+					collision_active = FALSE;
+				}
+			}
+#ifdef HALO_PSP
+				if (psp_smooth_scan == 2)
+				{
+					psp_smooth_passes++;
+					if (scan_active != collision_active ||
+						(collision_active && (scan_step_index != collision_step_index || scan_edge_index != collision_edge_index)))
+					{
+						if (psp_smooth_mismatches++ < 8)
+						{
+							platform_psp_log("aipathcheck: smoothing steps %d-%d: from the last %d step %d edge %ld, from the first %d step %d edge %ld",
+								(int)step_index, (int)raw_step_count - 1, (int)scan_active, (int)scan_step_index, scan_edge_index,
+								(int)collision_active, (int)collision_step_index, collision_edge_index);
+						}
+					}
+					if (psp_smooth_passes % 2000 == 0)
+					{
+						platform_psp_log("aipathcheck: %lu smoothing passes compared, %lu differed",
+							psp_smooth_passes, psp_smooth_mismatches);
+					}
+				}
+			}
+#endif
+"""),
+]
+
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
