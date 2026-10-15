@@ -17938,128 +17938,195 @@ void objects_initialize_for_new_map("""),
 #else"""),
 ]
 
-# ---------- FIXES_132: recon for the level sphere walk's surface tests (X9)
+# ---------- FIXES_132: the level sphere walk passes over surfaces out of reach (X9)
 
 FIXES_132 = {}
 
 FIXES_132["source/physics/collision_bsp.c#surfacebound"] = [
+("""/* a map's tags loaded, or the collision BSP set: every answer forgotten */
+void psp_sphere_memo_forget(void)
+{
+	csmemset(psp_sphere_memo, 0, sizeof(psp_sphere_memo));
+}""",
+"""/* psp_fixups.py (FIXES_132 #surfacebound): its table is the BSP's */
+static int psp_surface_bounds_stale = 1;
+
+/* a map's tags loaded, or the collision BSP set: every answer forgotten */
+void psp_sphere_memo_forget(void)
+{
+	csmemset(psp_sphere_memo, 0, sizeof(psp_sphere_memo));
+	psp_surface_bounds_stale = 1;
+}"""),
 ("""/* psp_fixups.py (FIXES_128): an early-out walk for "does the sphere touch
 the level" (psp_collision_test_sphere_any, collisions.c) */""",
-"""#if defined(PSP_DEBUG_TOOLS)
-/* psp_fixups.py (FIXES_132 #surfacebound, recon): what a bounding sphere for
-each surface could answer before its rings are walked. Counted per surface
-the walk tests: added, hit at a vertex or edge, and out of reach (the sphere
-farther from the surface's bounding sphere than both radii and a margin); an
-out-of-reach surface that is added or hit would make the idea inexact, so
-that count must stay 0 */
-static unsigned long psp_sb_tested, psp_sb_added, psp_sb_features, psp_sb_far, psp_sb_far_hit, psp_sb_edges;
-
-static int psp_surface_far(struct test_sphere_data const *data, long surface_index)
+"""/* psp_fixups.py (FIXES_132 #surfacebound): a level surface whose bounding
+sphere is out of the sphere's reach is passed over without walking its rings.
+Its vertices and edges lie inside its bounding sphere, and so would the point
+the sphere's centre projects onto if the test found it inside the surface; a
+sphere farther from that bounding sphere than both radii (and a margin for
+rounding) touches none of them, so the test would add nothing. Most surfaces
+a walk reaches are like that where the level is dense: 85% of a50's tests
+(its bipeds' movement), 67% of b30's, 61% of d20's, and none of them would
+have been added (emulator, every test compared). The bounding spheres (the
+ring's vertices' mean, then the farthest vertex from it) are made as surfaces
+are first tested and kept by surface index in a table of the level BSP's
+alone, so objects' BSPs don't empty it. "surfaceboundoff" walks every ring;
+"surfacetestcheck" compares each walk with the engine's own */
+#define PSP_SURFACE_BOUNDS 2048
+struct psp_surface_bound
 {
-	struct collision_surface const *surface;
-	long edge_index;
-	short edge_count;
-	real center_x = 0.f, center_y = 0.f, center_z = 0.f, bound_squared = 0.f, reach;
-	real delta_x, delta_y, delta_z;
-	int pass, vertices = 0;
+	long surface_index; /* NONE: empty */
+	real x, y, z, radius;
+};
+static struct psp_surface_bound *psp_surface_bounds = NULL;
+static int psp_surface_bound_on = -1;
+static unsigned long psp_sb_tests, psp_sb_passed, psp_sb_made;
 
-	if (!collision_bsp_valid_surface_index(data->bsp, surface_index))
-		return 0;
-	surface = TAG_BLOCK_GET_ELEMENT(
-		&data->bsp->surfaces,
-		surface_index,
-		struct collision_surface);
-	if (!collision_surface_edge_ring_continues(data->bsp, surface->first_edge_index, 0))
-		return 0;
-	/* the ring's vertices: their mean, then the farthest from it */
-	for (pass = 0; pass < 2; pass++)
+/* TRUE: the surface is out of the sphere's reach (the test would add
+nothing); FALSE: test it */
+static boolean psp_surface_out_of_reach(
+	struct test_sphere_data const *data,
+	long surface_index)
+{
+	struct psp_surface_bound *bound;
+	real reach, delta_x, delta_y, delta_z;
+
+	if (psp_surface_bound_on <= 0 || data->bsp != global_collision_bsp)
+		return FALSE;
+	if (psp_surface_bounds_stale)
 	{
-		edge_index = surface->first_edge_index;
-		edge_count = 0;
-		do
-		{
-			struct collision_edge const *edge = TAG_BLOCK_GET_ELEMENT(
-				&data->bsp->edges,
-				edge_index,
-				struct collision_edge);
-			boolean reverse = edge->surface_indices[1] == surface_index;
-			struct collision_vertex const *vertex = TAG_BLOCK_GET_ELEMENT(
-				&data->bsp->vertices,
-				edge->vertex_indices[reverse],
-				struct collision_vertex);
+		long k;
 
+		for (k = 0; k < PSP_SURFACE_BOUNDS; k++)
+			psp_surface_bounds[k].surface_index = NONE;
+		psp_surface_bounds_stale = 0;
+	}
+	psp_sb_tests++;
+	bound = &psp_surface_bounds[(unsigned long)surface_index & (PSP_SURFACE_BOUNDS - 1)];
+	if (bound->surface_index != surface_index)
+	{
+		struct collision_surface const *surface;
+		long edge_index;
+		short edge_count;
+		real center_x = 0.f, center_y = 0.f, center_z = 0.f, bound_squared = 0.f;
+		int pass, vertices = 0;
+
+		/* (as the test does: a surface that is no surface, or whose ring
+		doesn't go on, is left to it) */
+		if (!collision_bsp_valid_surface_index(data->bsp, surface_index))
+			return FALSE;
+		surface = TAG_BLOCK_GET_ELEMENT(
+			&data->bsp->surfaces,
+			surface_index,
+			struct collision_surface);
+		if (!collision_surface_edge_ring_continues(data->bsp, surface->first_edge_index, 0))
+			return FALSE;
+		for (pass = 0; pass < 2; pass++)
+		{
+			edge_index = surface->first_edge_index;
+			edge_count = 0;
+			do
+			{
+				struct collision_edge const *edge = TAG_BLOCK_GET_ELEMENT(
+					&data->bsp->edges,
+					edge_index,
+					struct collision_edge);
+				boolean reverse = edge->surface_indices[1] == surface_index;
+				struct collision_vertex const *vertex = TAG_BLOCK_GET_ELEMENT(
+					&data->bsp->vertices,
+					edge->vertex_indices[reverse],
+					struct collision_vertex);
+
+				if (!pass)
+				{
+					center_x += vertex->point.x;
+					center_y += vertex->point.y;
+					center_z += vertex->point.z;
+					vertices++;
+				}
+				else
+				{
+					delta_x = vertex->point.x - center_x;
+					delta_y = vertex->point.y - center_y;
+					delta_z = vertex->point.z - center_z;
+					if (delta_x * delta_x + delta_y * delta_y + delta_z * delta_z > bound_squared)
+						bound_squared = delta_x * delta_x + delta_y * delta_y + delta_z * delta_z;
+				}
+				edge_index = edge->edge_indices[reverse];
+			}
+			while (edge_index != surface->first_edge_index &&
+				collision_surface_edge_ring_continues(data->bsp, edge_index, ++edge_count));
 			if (!pass)
 			{
-				center_x += vertex->point.x;
-				center_y += vertex->point.y;
-				center_z += vertex->point.z;
-				vertices++;
+				center_x /= (real)vertices;
+				center_y /= (real)vertices;
+				center_z /= (real)vertices;
 			}
-			else
-			{
-				delta_x = vertex->point.x - center_x;
-				delta_y = vertex->point.y - center_y;
-				delta_z = vertex->point.z - center_z;
-				if (delta_x * delta_x + delta_y * delta_y + delta_z * delta_z > bound_squared)
-					bound_squared = delta_x * delta_x + delta_y * delta_y + delta_z * delta_z;
-			}
-			edge_index = edge->edge_indices[reverse];
 		}
-		while (edge_index != surface->first_edge_index &&
-			collision_surface_edge_ring_continues(data->bsp, edge_index, ++edge_count));
-		if (!pass)
-		{
-			center_x /= (real)vertices;
-			center_y /= (real)vertices;
-			center_z /= (real)vertices;
-		}
+		bound->surface_index = surface_index;
+		bound->x = center_x;
+		bound->y = center_y;
+		bound->z = center_z;
+		bound->radius = square_root(bound_squared);
+		psp_sb_made++;
 	}
-	psp_sb_edges += (unsigned long)vertices;
-	reach = square_root(bound_squared) + data->radius;
+	/* the margin: a thousandth of the reach and a ten-thousandth of a world
+	unit, well past the rounding of these sums at the level's coordinates */
+	reach = bound->radius + data->radius;
 	reach += reach * 0.001f + 0.0001f;
-	delta_x = data->center->x - center_x;
-	delta_y = data->center->y - center_y;
-	delta_z = data->center->z - center_z;
-	return delta_x * delta_x + delta_y * delta_y + delta_z * delta_z > reach * reach;
+	delta_x = data->center->x - bound->x;
+	delta_y = data->center->y - bound->y;
+	delta_z = data->center->z - bound->z;
+	if (delta_x * delta_x + delta_y * delta_y + delta_z * delta_z <= reach * reach)
+		return FALSE;
+	psp_sb_passed++;
+	return TRUE;
 }
-#endif
 
 /* psp_fixups.py (FIXES_128): an early-out walk for "does the sphere touch
 the level" (psp_collision_test_sphere_any, collisions.c) */"""),
 ("""	psp_surface_test_sphere(data, child_index & LONG_MAX);
 	/* collision_bsp_test_sphere's answer is any surface or edge */""",
-"""#if defined(PSP_DEBUG_TOOLS)
-	{
-		long surfaces = data->result->surface_count, features = data->result->edge_count + data->result->vertex_count;
-		int far = psp_surface_far(data, child_index & LONG_MAX);
-
-		psp_surface_test_sphere(data, child_index & LONG_MAX);
-		psp_sb_tested++;
-		if (data->result->surface_count != surfaces)
-			psp_sb_added++;
-		if (data->result->edge_count + data->result->vertex_count != features)
-			psp_sb_features++;
-		if (far)
-		{
-			psp_sb_far++;
-			if (data->result->surface_count != surfaces ||
-				data->result->edge_count + data->result->vertex_count != features)
-				psp_sb_far_hit++;
-		}
-	}
-#else
+"""	/* psp_fixups.py (FIXES_132 #surfacebound) */
+	if (psp_surface_out_of_reach(data, child_index & LONG_MAX))
+		return;
 	psp_surface_test_sphere(data, child_index & LONG_MAX);
-#endif
 	/* collision_bsp_test_sphere's answer is any surface or edge */"""),
+("""	if (psp_surface_test_on < 0)
+	{
+		psp_surface_test_on = !psp_keep("surfacetestold");
+		psp_surface_test_check = psp_keep("surfacetestcheck");
+	}""",
+"""	if (psp_surface_test_on < 0)
+	{
+		psp_surface_test_on = !psp_keep("surfacetestold");
+		psp_surface_test_check = psp_keep("surfacetestcheck");
+	}
+	/* psp_fixups.py (FIXES_132 #surfacebound) */
+	if (psp_surface_bound_on < 0)
+	{
+		psp_surface_bound_on = !psp_keep("surfaceboundoff");
+		if (psp_surface_bound_on)
+		{
+			psp_surface_bounds = (struct psp_surface_bound *)malloc(PSP_SURFACE_BOUNDS * sizeof(*psp_surface_bounds));
+			if (!psp_surface_bounds)
+			{
+				platform_psp_log("surfacebound: no room for its %u KB; off",
+					(unsigned)(PSP_SURFACE_BOUNDS * sizeof(*psp_surface_bounds) / 1024));
+				psp_surface_bound_on = 0;
+			}
+			psp_surface_bounds_stale = 1;
+		}
+	}"""),
 ("""	psp_st_surfaces = psp_st_again = psp_st_compared = psp_st_differed = psp_st_engine = 0;
 	psp_st_window = tick;""",
 """	psp_st_surfaces = psp_st_again = psp_st_compared = psp_st_differed = psp_st_engine = 0;
 	psp_st_window = tick;
-#if defined(PSP_DEBUG_TOOLS)
-	platform_psp_log("surfacebound: %lu surfaces tested (%lu ring vertices), %lu added, %lu hit at a vertex or edge; %lu out of reach by their bounding spheres, %lu of those added or hit",
-		psp_sb_tested, psp_sb_edges, psp_sb_added, psp_sb_features, psp_sb_far, psp_sb_far_hit);
-	psp_sb_tested = psp_sb_edges = psp_sb_added = psp_sb_features = psp_sb_far = psp_sb_far_hit = 0;
-#endif"""),
+	/* psp_fixups.py (FIXES_132 #surfacebound) */
+	if (psp_surface_bound_on > 0)
+		platform_psp_log("surfacebound: %lu level surfaces about to be tested, %lu passed over (out of reach); %lu bounding spheres made",
+			psp_sb_tests, psp_sb_passed, psp_sb_made);
+	psp_sb_tests = psp_sb_passed = psp_sb_made = 0;"""),
 ]
 
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()):
