@@ -315,27 +315,48 @@ def dpad(layers, lit, size):
         dpad_leaf(layers, turns, size, 0.44, *offsets[name])
 
 
+def fillet(corner, toward_a, toward_b, radius, steps=64):
+    """a corner where two straight edges meet, rounded by a circular arc of
+    this radius that meets each edge without a bend (its curve the same all
+    the way round): the points from edge a's side to edge b's. toward_a and
+    toward_b are points along each edge away from the corner"""
+    def unit(v):
+        length = math.hypot(v[0], v[1])
+        return (v[0] / length, v[1] / length)
+
+    a = unit((toward_a[0] - corner[0], toward_a[1] - corner[1]))
+    b = unit((toward_b[0] - corner[0], toward_b[1] - corner[1]))
+    half = math.acos(max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1]))) / 2.0
+    reach = radius / math.tan(half)
+    start = (corner[0] + a[0] * reach, corner[1] + a[1] * reach)
+    end = (corner[0] + b[0] * reach, corner[1] + b[1] * reach)
+    bisector = unit((a[0] + b[0], a[1] + b[1]))
+    centre = (corner[0] + bisector[0] * radius / math.sin(half), corner[1] + bisector[1] * radius / math.sin(half))
+    first = math.atan2(start[1] - centre[1], start[0] - centre[0])
+    last = math.atan2(end[1] - centre[1], end[0] - centre[0])
+    sweep = (last - first + math.pi) % (2 * math.pi) - math.pi
+    return [(centre[0] + radius * math.cos(first + sweep * k / steps),
+             centre[1] + radius * math.sin(first + sweep * k / steps)) for k in range(steps + 1)]
+
+
 def shoulder_outline():
     """the PSP's L button (Sheepdog01, 2026-10-16: "the exact shape"), in its own
-    box from 0 to 1 each way, and the box's width over its height. Lines and
-    curves fitted to a trace of a PSP-3000 photo (the trace itself was too
-    ragged), the angles sharpened and the upper curve made rounder (Sheepdog01): a
-    flat top and bottom; the outer side a straight slant, curving round
-    into the top; the inner side a straight slant meeting the top in one
-    sharp angle, then curving into the bottom. Worked in units of the
+    box from 0 to 1 each way, and the box's width over its height. Fitted to
+    a trace of a PSP-3000 photo (the trace itself was too ragged), the angles
+    sharpened and the curves made rounder (Sheepdog01): a flat top and bottom; the
+    outer side a straight slant (1.3 across for each 1 down); the inner side
+    a straight slant (1.2 across for each 1 down) meeting the top in one
+    sharp angle. Two of the corners are rounded by circular arcs (fillet), so
+    each bend is even, with no kink where it meets the straight edges: the
+    outer top corner, and the inner bottom corner. Worked in units of the
     height, then scaled into the box"""
     top_outer, top_inner = (1.3, 0.0), (3.4, 0.0)
     bottom_outer = (0.0, 1.0)
-    # the inner slant (1.2 across for each 1 down) to 0.4 of the way down,
-    # then a broad curve into the bottom (Sheepdog01), its control where the slant
-    # would meet the bottom
-    slant_end, control, bottom_inner = (2.92, 0.4), (2.2, 1.0), (1.55, 1.0)
-    # the outer top corner rounded over 0.8 of the height along each side:
-    # back down the outer slant (1.3 across for each 1 down), and along the top
-    along = 0.8 / (1.3 ** 2 + 1.0) ** 0.5
-    round_start, round_end = (1.3 - 1.3 * along, along), (1.3 + 0.8, 0.0)
-    points = ([round_end, top_inner, slant_end] + bezier(slant_end, control, bottom_inner)[1:] +
-              [bottom_outer] + bezier(round_start, top_outer, round_end)[:-1])
+    # where the inner slant would meet the bottom
+    bottom_inner = (3.4 - 1.2, 1.0)
+    upper = fillet(top_outer, bottom_outer, top_inner, 2.3)
+    lower = fillet(bottom_inner, top_inner, bottom_outer, 2.5)
+    points = [top_inner] + lower + [bottom_outer] + upper
     width = top_inner[0]
     return [(x / width, y) for x, y in points], width
 
