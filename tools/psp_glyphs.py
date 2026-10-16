@@ -27,6 +27,7 @@ usage: python3 tools/psp_glyphs.py ENGINE_CHECKOUT OUT_DIR [--cell=32] [--header
 (the repo's copies: OUT_DIR psp/glyphs, --header=psp/src/psp_glyphs.h;
 ENGINE_CHECKOUT for Overpass, ChupathingyCE's port/assets/fonts)"""
 
+import math
 import os
 import sys
 
@@ -186,23 +187,38 @@ def rotate(points, quarter):
     return out
 
 
-DPAD_LEAF = [(0.315, 0.02), (0.685, 0.02), (0.685, 0.3), (0.5, 0.475), (0.315, 0.3)]
-DPAD_ARROW = [(0.5, 0.08), (0.6, 0.23), (0.4, 0.23)]
+# one leaf of the D-pad as the up button, pointing in to the pad's middle,
+# and its arrow (solid: the PSP's outlined ones are lost at the HUD's size);
+# the whole pad's leaves are these at a third of the size, round the middle
+DPAD_LEAF = [(0.14, 0.05), (0.86, 0.05), (0.86, 0.58), (0.5, 0.95), (0.14, 0.58)]
+DPAD_ARROW = [(0.5, 0.16), (0.69, 0.44), (0.31, 0.44)]
 DPAD_TURNS = {"up": 0, "right": 1, "down": 2, "left": 3}
 
 
+def dpad_leaf(layers, turns, size, scale=1.0, dx=0.0, dy=0.0):
+    """a leaf turned to its direction, drawn at scale about the point dx, dy
+    from the cell's middle"""
+    def place(points):
+        return [((0.5 + (x - 0.5) * scale + dx) * size, (0.5 + (y - 0.5) * scale + dy) * size)
+                for x, y in rotate(points, turns)]
+
+    mask = blank(size, size)
+    ImageDraw.Draw(mask).polygon(place(DPAD_LEAF), fill=255)
+    glass(layers, rounded(mask, size * 0.03 * scale))
+    arrow = blank(size, size)
+    ImageDraw.Draw(arrow).polygon(place(DPAD_ARROW), fill=255)
+    symbol(layers, arrow)
+
+
 def dpad(layers, lit, size):
-    """the PSP-1000's D-pad: four pointed leaves, each with its arrow (solid:
-    the PSP's outlined ones are lost at the HUD's size); the pressed one lit,
-    the rest faint (all lit when none is named)"""
+    """a D-pad button: the one leaf of the PSP-1000's pad, pointing in to the
+    middle; with none named, the whole pad (the four leaves round it)"""
+    if lit is not None:
+        dpad_leaf(layers, DPAD_TURNS[lit], size)
+        return
+    offsets = {"up": (0.0, -0.25), "right": (0.25, 0.0), "down": (0.0, 0.25), "left": (-0.25, 0.0)}
     for name, turns in DPAD_TURNS.items():
-        strength = 1.0 if lit is None or lit == name else 0.3
-        mask = blank(size, size)
-        ImageDraw.Draw(mask).polygon(points_at(rotate(DPAD_LEAF, turns), size), fill=255)
-        glass(layers, rounded(mask, size * 0.02), strength)
-        arrow = blank(size, size)
-        ImageDraw.Draw(arrow).polygon(points_at(rotate(DPAD_ARROW, turns), size), fill=255)
-        symbol(layers, arrow, strength)
+        dpad_leaf(layers, turns, size, 0.46, *offsets[name])
 
 
 def bezier(a, control, b, steps=24):
@@ -212,12 +228,15 @@ def bezier(a, control, b, steps=24):
 
 
 def shoulder(layers, letter, size, font):
-    """the PSP's L or R: a tab with a straight front, a slanted inner side
-    and a back curved round the corner of the PSP; R is L mirrored"""
-    shape = [(0.07, 0.74), (0.93, 0.74), (0.76, 0.3)] + bezier((0.76, 0.3), (0.2, 0.18), (0.07, 0.5))
+    """the PSP's L or R, after Sheepdog01's sketch and a PSP-3000's photo: a tab
+    flat along its top and bottom, its inner side a straight slant, its back
+    a smooth convex curve round the PSP's rounded corner, from the flat top
+    down to the bottom; the hard corners stay sharp (rounded only enough not
+    to sparkle). R is L mirrored"""
+    shape = [(0.97, 0.19), (0.74, 0.81), (0.03, 0.81)] + bezier((0.03, 0.81), (0.07, 0.21), (0.46, 0.19))
     mask = blank(size, size)
     ImageDraw.Draw(mask).polygon(points_at(shape, size), fill=255)
-    mask = rounded(mask, size * 0.03)
+    mask = rounded(mask, size * 0.012)
     if letter == "R":
         mask = mask.transpose(Image.FLIP_LEFT_RIGHT)
     glass(layers, mask)
@@ -225,8 +244,8 @@ def shoulder(layers, letter, size, font):
     draw = ImageDraw.Draw(mark)
     box = draw.textbbox((0, 0), letter, font=font)
     width, height = box[2] - box[0], box[3] - box[1]
-    cx = 0.45 if letter == "L" else 0.55
-    draw.text((cx * size - width / 2 - box[0], 0.585 * size - height / 2 - box[1]), letter, font=font, fill=255)
+    cx = 0.52 if letter == "L" else 0.48
+    draw.text((cx * size - width / 2 - box[0], 0.5 * size - height / 2 - box[1]), letter, font=font, fill=255)
     symbol(layers, mark)
 
 
@@ -252,17 +271,24 @@ def cluster(layers, size):
 
 
 def pill(layers, text, cells, size, font):
-    """START or SELECT: the small oval key with its name on it"""
+    """START or SELECT, after Sheepdog01's sketch: the PSP-1000's key, flat along
+    its top and curved underneath like a shallow bowl, its name on it (the
+    two keys are one shape)"""
     width = cells * size
+    left, right, top, bottom = 0.06 * size, width - 0.06 * size, 0.22 * size, 0.8 * size
+    # the bowl: half an ellipse below the flat top, its ends a little
+    # rounded where they meet the top
+    steps = 48
+    edge = [(left + (right - left) * (0.5 - 0.5 * math.cos(math.pi * i / steps)),
+             top + (bottom - top) * math.sin(math.pi * i / steps) ** 0.8) for i in range(steps + 1)]
     mask = blank(width, size)
-    ImageDraw.Draw(mask).rounded_rectangle((0.08 * size, 0.24 * size, width - 0.08 * size, 0.76 * size),
-                                           radius=0.26 * size, fill=255)
-    glass(layers, mask)
+    ImageDraw.Draw(mask).polygon([(left, top)] + edge + [(right, top)], fill=255)
+    glass(layers, rounded(mask, size * 0.015))
     mark = blank(width, size)
     draw = ImageDraw.Draw(mark)
     box = draw.textbbox((0, 0), text, font=font)
     tw, th = box[2] - box[0], box[3] - box[1]
-    draw.text(((width - tw) / 2 - box[0], (size - th) / 2 - box[1]), text, font=font, fill=255)
+    draw.text(((width - tw) / 2 - box[0], 0.44 * size - th / 2 - box[1]), text, font=font, fill=255)
     symbol(layers, mark)
 
 
