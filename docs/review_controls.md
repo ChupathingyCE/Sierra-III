@@ -95,7 +95,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - **Glass, in the UI's colour:**
     - Each texel is a coverage and a shade (4 bits each, one byte: 32 KB, the GE's 8-bit indexed format).
     - At draw, `glyph_palette` turns the shade into colour from the colour the game hands the icon, which is its text colour. Shade 0 is that colour at 15%, 0.7 the colour itself, and above it the colour lightens to white.
-    - So the body is the colour a little darkened and half see-through, with a crisp gloss over its upper part, a little light along its bottom edge and a bright rim; the symbol is near white and solid. The glyphs sit in the HUD's blue in play and in the menus' colour in the menus.
+    - So the body is one flat shade of the colour, half see-through, under a light crisp gloss over its upper part, with a bright rim; the symbol is near white and solid. That's the satin finish, Sheepdog01's pick from four (`--finish=` in the tool: gloss, solid, soft, satin). The glyphs sit in the HUD's blue in play and in the menus' colour in the menus.
   - `psp/glyphs/psp_glyphs.png` is a preview, in the HUD's blue and in white.
   - **Resolution:** the shapes are geometry, drawn at 4× and reduced.
     - The game carries 32-px cells; the HUD draws glyphs about 18 px high [U: from the mock; `glyphs2`'s shots will say].

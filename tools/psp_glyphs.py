@@ -77,9 +77,12 @@ BODY_ALPHA = 0.5
 # the glass's finish (--finish=): "gloss", a body darker toward the bottom
 # under a crisp gloss over its upper part, with light along the bottom edge;
 # "solid", one shade between the gloss and the body, no gloss; "soft", that
-# shade with a thin soft highlight inside the top edge. Each keeps the rim
-FINISH = "gloss"
-SOLID = 0.58
+# shade with a thin soft highlight inside the top edge; "satin", that shade
+# under the gloss, lighter (SATIN_GLOSS of its strength): Sheepdog01's pick, B+ "and
+# some gloss" (2026-10-16). Each keeps the rim
+FINISH = "satin"
+SOLID = 0.72
+SATIN_GLOSS = 0.45
 GLOSS = 0.9
 GLOW = 0.8
 RIM = 0.88
@@ -149,6 +152,11 @@ def glass(layers, mask, strength=1.0, body=None):
     else:
         shade = SOLID
     layers.over(m, BODY_ALPHA * strength, shade)
+    if FINISH == "satin":
+        gloss = blank(mask.width, mask.height)
+        ImageDraw.Draw(gloss).ellipse((x0 - (x1 - x0) * 0.3, y0 - (y1 - y0) * 0.6, x1 + (x1 - x0) * 0.3,
+                                       y0 + (y1 - y0) * 0.48), fill=255)
+        layers.over(as_array(gloss) * m * (0.55 - 0.3 * top), SATIN_GLOSS * strength, GLOSS)
     if FINISH != "gloss":
         if FINISH == "soft":
             # a thin highlight just inside the top edge, fading downward
@@ -440,12 +448,14 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     header_path = None
     master = "--master" in sys.argv[1:]
-    global FINISH, SOLID
+    global FINISH, SOLID, SATIN_GLOSS
     for a in sys.argv[1:]:
         if a.startswith("--finish="):
             FINISH = a.split("=", 1)[1]
         elif a.startswith("--solid="):
             SOLID = float(a.split("=", 1)[1])
+        elif a.startswith("--satin="):
+            SATIN_GLOSS = float(a.split("=", 1)[1])
     for a in sys.argv[1:]:
         if a.startswith("--cell="):
             CELL = int(a.split("=", 1)[1])
