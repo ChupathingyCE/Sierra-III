@@ -19855,6 +19855,82 @@ static void unit_update_driver_and_gunner(
 	}
 """),
 ]
+# a push (blasts, physics, a vehicle's bump): wake135a's wakecheck found
+# corpses, dropped weapons and a grenade changed asleep with nothing marking them
+FIXES_WAKE["source/units/bipeds.c#wake_biped_accelerate"] = [
+("""
+void biped_accelerate(
+	long biped_index,
+	real_vector3d *acceleration)
+{
+""", """
+void biped_accelerate(
+	long biped_index,
+	real_vector3d *acceleration)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(biped_index);
+	}
+"""),
+]
+FIXES_WAKE["source/units/vehicles.c#wake_vehicle_accelerate"] = [
+("""
+void vehicle_accelerate(
+	long vehicle_index,
+	real_vector3d const *acceleration)
+{
+""", """
+void vehicle_accelerate(
+	long vehicle_index,
+	real_vector3d const *acceleration)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(vehicle_index);
+	}
+"""),
+]
+FIXES_WAKE["source/items/projectiles.c#wake_projectile_accelerate"] = [
+("""
+void projectile_accelerate(
+	long projectile_index,
+	real_vector3d const *acceleration)
+{
+""", """
+void projectile_accelerate(
+	long projectile_index,
+	real_vector3d const *acceleration)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(projectile_index);
+	}
+"""),
+]
+FIXES_WAKE["source/items/items.c#wake_item_accelerate"] = [
+("""
+void item_accelerate(
+	long item_index,
+	real_vector3d const *acceleration,
+	boolean detonates_explosives)
+{
+""", """
+void item_accelerate(
+	long item_index,
+	real_vector3d const *acceleration,
+	boolean detonates_explosives)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(item_index);
+	}
+"""),
+]
 # the render state cache reassigned: the datum's cached_render_state_index
 # changes, which the checksum sees (kept as before: the sleeper wakes)
 FIXES_WAKE["source/render/render_objects.c#wake_render_state"] = [
