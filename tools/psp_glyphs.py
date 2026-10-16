@@ -74,6 +74,12 @@ DARK_EDGE = 0.0
 BODY_TOP, BODY_BOTTOM = 0.5, 0.36
 # how much of the picture behind the glass body hides (the rest shows through)
 BODY_ALPHA = 0.5
+# the glass's finish (--finish=): "gloss", a body darker toward the bottom
+# under a crisp gloss over its upper part, with light along the bottom edge;
+# "solid", one shade between the gloss and the body, no gloss; "soft", that
+# shade with a thin soft highlight inside the top edge. Each keeps the rim
+FINISH = "gloss"
+SOLID = 0.58
 GLOSS = 0.9
 GLOW = 0.8
 RIM = 0.88
@@ -136,8 +142,21 @@ def glass(layers, mask, strength=1.0, body=None):
     top = np.clip(top, 0.0, 1.0)
     m = as_array(mask)
     layers.over(as_array(grown(mask, size * 0.025)), 0.35 * strength, DARK_EDGE)
-    shade = BODY_TOP + (BODY_BOTTOM - BODY_TOP) * top if body is None else body
+    if body is not None:
+        shade = body
+    elif FINISH == "gloss":
+        shade = BODY_TOP + (BODY_BOTTOM - BODY_TOP) * top
+    else:
+        shade = SOLID
     layers.over(m, BODY_ALPHA * strength, shade)
+    if FINISH != "gloss":
+        if FINISH == "soft":
+            # a thin highlight just inside the top edge, fading downward
+            edge = np.clip(1.0 - top / 0.22, 0.0, 1.0) * as_array(shrunk(mask, max(1, size * 0.03)))
+            layers.over(edge, 0.35 * strength, GLOSS)
+        rim = as_array(mask) - as_array(shrunk(mask, max(1, size * 0.02)))
+        layers.over(np.clip(rim, 0.0, 1.0), 0.8 * strength, RIM)
+        return
     # the gloss: an ellipse over the upper part, its lower edge crisp (a
     # reflection's edge, the glassy look) and fading a little toward it
     gloss = blank(mask.width, mask.height)
@@ -421,6 +440,12 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     header_path = None
     master = "--master" in sys.argv[1:]
+    global FINISH, SOLID
+    for a in sys.argv[1:]:
+        if a.startswith("--finish="):
+            FINISH = a.split("=", 1)[1]
+        elif a.startswith("--solid="):
+            SOLID = float(a.split("=", 1)[1])
     for a in sys.argv[1:]:
         if a.startswith("--cell="):
             CELL = int(a.split("=", 1)[1])
