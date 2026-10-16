@@ -35,12 +35,30 @@ The ONLINE GAMES build moved onto b135 (ChupathingyCE `v0.7.5d`, network version
 | 38952663446 | 3000 | Rat Race | `tunnelpoll` on: the join failed, round trips up to 4 s. Off: joined, dropped |
 | 38954892605 | 3000 | (menu) | WLAN power save off |
 
-**Ruled out:** falling behind the host (it drops when it keeps up too); the tunnel thread's priority; select (on time, descriptors ≤12, reading every socket each pass changes nothing); streams running out of room, closing or dying; WLAN power save on the 3000.
+**Ruled out:** falling behind the host (it drops when it keeps up too); the tunnel thread's priority; streams running out of room, closing or dying; WLAN power save on the 3000; the desktop's firewall (ufw and NetworkManager's hotspot table pass the flow; nothing logged).
 
-**What remains:** within seconds of the game starting, the host's packets stop reaching the tunnel, and round trips swing from 50 ms to 4 s. That points at the path, the hotspot's and the routers' NATs or queues, or at the host [U].
+## The capture that found it [M] (sierra-hw 38958361231, Sheepdog01's `tcpdump` on the hotspot)
 
-## The next test (needs Sheepdog01's desktop)
+| On the hotspot, 14:56:47–14:57:11 | |
+|---|---|
+| The host's packets to the PSP | 50–80 a second, 1,442 in all, all to the tunnel's port (61839) |
+| Read by the PSP's tunnel (its log) | about 190 |
+| The PSP's packets out | in bursts (37, 25, 27, 42, 20) between up to 5 s of none; then 300 at once after the host had stopped |
 
-A public game on the same network as the PSP. On Sheepdog01's machine the desktop's ChupathingyCE dedicated server hosts publicly with internet play on, and the PSP joins it from ONLINE GAMES through the tunnel, over the hotspot.
-- **If it plays for minutes:** the PSP's tunnel works, and the internet path is the problem.
-- **If it drops the same way:** the problem is on the PSP's side.
+**The packets reached the PSP, and its tunnel didn't read them**, in both directions. That is also why the stack's pool filled ~8 KB a second, and why round trips swung to seconds.
+
+**The likely reason [D, U]:** the tunnel's thread asks select about 10–25 sockets at once. libcglue's `select` (`select.o`) asks the firmware one socket at a time, each in a set of which it clears only newlib's 64 bits while setting the socket's bit anywhere up to 256 (from bits 5–7 of the firmware's number). For a firmware number of 64 or more, the bit lands in stale words and in libcglue's own result sets, and the firmware is asked about the wrong sockets. The game alone (one socket a call) plays a local server well.
+
+## Two replacements for select (keep words, both off by default)
+
+| Keep word | What | Emulator [E] | PSP-3000 [M] |
+|---|---|---|---|
+| `inetpoll` | `sceNetInetPoll` over all the sockets | plays a local server; the emulator's poll ignores its timeout (the rest is waited out) | **hung the PSP** (38964850877; no log) |
+| `inetselect` | libcglue's way, one socket at a time, each set 1,024 bits cleared whole | plays a local server (38975717470); selects take their timeout | not yet tried |
+
+The select report now gives the highest firmware socket number asked about. If it reads 64 or more on a PSP, the theory holds.
+
+## The next tests (both PSPs need hands first)
+
+1. **Recover both PSPs** (hold POWER, switch on, start PSP RIG AGENT, replug USB), then `psp-probe recover=` for 38964850877's log.
+2. **The PSP-3000, `keepsets="- | inetselect"`**, with the hotspot capture running: the firmware numbers, and whether the tunnel keeps up.
