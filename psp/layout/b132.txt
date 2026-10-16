@@ -7659,7 +7659,7 @@
 *psp/src/psp_tag_layouts.o(.text.psp_slim_block_compare)
 *psp/src/psp_tag_layouts.o(.text.psp_slim_collect)
 *psp/src/psp_tag_layouts.o(.text.psp_tag_layouts_loaded)
-*ccBa7fus.ltrans0.ltrans.o(.text)
+*cc*.ltrans0.ltrans.o(.text)
 *libpspgum.a:sceGumLoadIdentity.o(.text)
 *libpspgum.a:sceGumLoadMatrix.o(.text)
 *libpspgum.a:sceGumMatrixMode.o(.text)
