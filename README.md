@@ -72,7 +72,7 @@ What Sierra-III is built on (the decomp, ChupathingyCE, Invader, the Media Engin
 
 - **[halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita)** by BirchWoodGod, Halo CE on the PS Vita: exact speed-ups to the campaign's AI and collision walks, and test methods (`docs/research/research_vita.md`). Used with his permission.
 - **[Halo 64](https://github.com/JackTulli/halo-64)** by JackTulli, Halo CE's multiplayer on the Nintendo 64 (CC0): fixes and speed-ups for a MIPS console (`docs/research/research_halo64.md`).
-- **Input Prompts** by [Kenney](https://www.kenney.nl) (CC0), the button glyphs ChupathingyCE's own menus use: the PSP's face buttons in `psp/glyphs/psp_glyphs.png` are drawn from its PlayStation font (`tools/psp_glyphs.py`); the D-pad, shoulders, nub and Select chords are drawn in the same style. The letters are Overpass (Red Hat, SIL OFL 1.1), from ChupathingyCE's assets.
+- **Overpass** (Red Hat, SIL OFL 1.1), from ChupathingyCE's assets: the letters on the PSP button glyphs (`psp/glyphs/psp_glyphs.png`, drawn by `tools/psp_glyphs.py` in the shapes of the PSP-1000's buttons).
 
 Each borrowed change also names its source in its commit message and its build's review.
 

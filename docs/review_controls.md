@@ -85,8 +85,18 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 - **Why (Sheepdog01):** "so we can have the UI reflect and ground the fact that this isn't an xbox".
 - **The sheet:**
   - `tools/psp_glyphs.py` draws 18 glyphs: △ ○ ✕ □, the D-pad (each arm and whole), L, R, the nub, the face-button diamond (moving), START, SELECT, and the chords SELECT + ↑ / ↓ / L.
-  - The face buttons come from Kenney's Input Prompts (CC0), the font ChupathingyCE's browser uses for its button glyphs, Sheepdog01's inspiration for the design. The rest are drawn in the same style, with Overpass (OFL) for the letters.
-  - The output is a 256×128 PNG and a header with the layout and the sheet as 4-bit alpha (16 KB, white at 16 levels, so the game's tint colours it).
+  - Each glyph has the shape of the PSP-1000's own button (Sheepdog01, 2026-10-16):
+    - the face buttons are round buttons with their outlined symbol;
+    - the D-pad is four pointed leaves, each with its arrow (solid, as an outline is lost at the HUD's size), the pressed one lit;
+    - L and R are slanted tabs with a curved back, mirrored;
+    - the nub is a checkered disc;
+    - START and SELECT are the small oval keys.
+  - All of it is drawn by the script; only the letters are a font (Overpass, OFL).
+  - **Glass, in the UI's colour:**
+    - Each texel is a coverage and a shade (4 bits each, one byte: 32 KB, the GE's 8-bit indexed format).
+    - At draw, `glyph_palette` turns the shade into colour from the colour the game hands the icon, which is its text colour. Shade 0 is that colour at 15%, 0.7 the colour itself, and above it the colour lightens to white.
+    - So the body is the colour a little darkened, the gloss and rim are lighter, and the symbol is near white. The glyphs sit in the HUD's blue in play and in the menus' colour in the menus.
+  - `psp/glyphs/psp_glyphs.png` is a preview, in the HUD's blue and in white.
 - **The map:**
   - `glyphs_in_play` and `glyphs_in_menus` take the engine's 18 icons (A … right stick) to glyphs by survey table A. In play, A is D-pad ↑; in the menus, ✕.
   - The engine has already turned each prompt's control into an Xbox button through the profile's preset, so the glyphs follow the presets with no more work.
@@ -97,10 +107,13 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - `screen_quad` sends that key to `glyph_quad`, which:
     - draws the cell at the quad's height, in the glyph's own shape;
     - centres it when it's narrower, or starts at the quad's left edge;
-    - uses the quad's colour, blend and HUD zoom;
+    - uses the quad's place and the HUD's zoom;
+    - takes its palette from the quad's colour (1 KB of the display list a glyph, written back by `list_take`);
+    - blends as glass, over what's behind, whatever the icon's own blend: added, as most HUD icons are, the dark body would vanish;
     - binds the sheet with the ordinary `sceGu` calls, which clear `psp_tex`'s bind memo.
+  - **The colour:** both icon sites hand a glyph the text's colour, not the Xbox button's own (A green, B red …).
   - A wide glyph moves the text's cursor on by the extra width (`psp_button_glyph_extra`, the same rule in game units).
-- **Cost:** one 2-vertex sprite per icon, as before, plus a CLUT and texture bind (~10 words). The sheet is the EBOOT's own data, never written, so there's no cache writeback.
+- **Cost:** one 2-vertex sprite per icon, as before, plus a 256-entry palette worked out (a few µs [U]) and a CLUT and texture bind (~10 words). The sheet is the EBOOT's own data, never written, so there's no cache writeback.
 - **Off:** `xboxglyphs` draws the Xbox's icons from the map, as before.
 - **Open:**
   - Prompts whose meaning changed with §2 ("Press X to enter") need their wording changed at bake.
@@ -113,6 +126,5 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 ## Credits
 
-- Kenney, Input Prompts (CC0): the face-button glyphs, via the font in ChupathingyCE's `port/linux/ui/fonts/`.
-- Overpass (OFL): the letters on the L, R, START and SELECT glyphs.
-- Both are in the README's Credits.
+- Overpass (Red Hat, OFL): the letters on the L, R, START and SELECT glyphs, from ChupathingyCE's assets. It's in the README's Credits.
+- The glyphs' look was inspired by ChupathingyCE's button glyphs (Kenney's Input Prompts). No art of theirs is used since the redesign.

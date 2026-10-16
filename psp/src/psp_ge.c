@@ -13085,6 +13085,41 @@ static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter
 	return computed;
 }
 
+/* the glyph sheet's palette for one colour: each texel is alpha << 4 |
+shade (tools/psp_glyphs.py, palette(): the same rule), and the shade runs
+from the colour darkened to 15% (0), through the colour itself (0.7 of the
+way), to white, so the glass takes the colour the game gave the icon, its
+text's. Written into the display list's memory (list_take writes it back
+before the GE reads it), 1 KB a glyph drawn: a frame has a handful */
+static unsigned int *glyph_palette(unsigned int abgr)
+{
+	unsigned int *palette = list_take(256 * 4 + 16);
+	float tint[3] = { (float)(abgr & 0xFF), (float)((abgr >> 8) & 0xFF), (float)((abgr >> 16) & 0xFF) };
+	float alpha = (float)(abgr >> 24) / (15.0f * 255.0f), colour[16][3];
+	int shade, a, c;
+
+	if (!palette)
+		return NULL;
+	palette = (unsigned int *)(((unsigned int)palette + 15) & ~15u);
+	for (shade = 0; shade < 16; shade++)
+	{
+		float s = shade / 15.0f;
+
+		for (c = 0; c < 3; c++)
+			colour[shade][c] = s <= 0.7f ? tint[c] * (0.15f + 0.85f * s / 0.7f) :
+				tint[c] + (255.0f - tint[c]) * ((s - 0.7f) / 0.3f);
+	}
+	for (a = 0; a < 16; a++)
+	{
+		unsigned int level = (unsigned int)(a * alpha * 255.0f + 0.5f) << 24;
+
+		for (shade = 0; shade < 16; shade++)
+			palette[a << 4 | shade] = level | (unsigned int)colour[shade][2] << 16 |
+				(unsigned int)colour[shade][1] << 8 | (unsigned int)colour[shade][0];
+	}
+	return palette;
+}
+
 /* a glyph in the icon's quad: as tall as the quad, its own shape across;
 centred when it is narrower, else from the quad's left edge (the text's
 cursor moves on by the difference: psp_button_glyph_extra, psp_sdl.c) */
@@ -13093,6 +13128,7 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 {
 	unsigned short const *cell = psp_glyph_cells[glyph];
 	struct hud_vertex *out;
+	unsigned int *palette;
 	float x0 = in[0].x, x1 = in[0].x, y0 = in[0].y, y1 = in[0].y, wide;
 	int corner;
 
@@ -13107,8 +13143,9 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 	if (wide <= x1 - x0)
 		x0 += (x1 - x0 - wide) * 0.5f;
 	x1 = x0 + wide;
+	palette = glyph_palette(argb_to_abgr(in[0].argb, red, green, blue, fade));
 	out = list_take(2 * sizeof(struct hud_vertex));
-	if (!out)
+	if (!out || !palette)
 		return;
 	if (hud_snap < 0)
 		hud_snap = !psp_keep("hudnosnap");
@@ -13118,7 +13155,7 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 	out[0].v = cell[1] + 0.5f;
 	out[1].u = cell[0] + cell[2] - 0.5f;
 	out[1].v = cell[1] + cell[3] - 0.5f;
-	out[0].color = out[1].color = argb_to_abgr(in[0].argb, red, green, blue, fade);
+	out[0].color = out[1].color = 0xFFFFFFFF;
 	out[0].x = hud_pixel((x0 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
 	out[0].y = hud_pixel((y0 + offset_y) * ui_scale_y * hud_zoom);
 	out[1].x = hud_pixel((x1 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
@@ -13126,17 +13163,21 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 	out[0].z = out[1].z = 0.0f;
 	/* the sheet is the EBOOT's own data, never written, so there is no
 	cache to write back */
-	sceGuClutMode(GU_PSM_8888, 0, 0x0F, 0);
-	sceGuClutLoad(16 / 8, psp_glyph_palette);
-	sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+	sceGuClutLoad(256 / 8, palette);
+	sceGuTexMode(GU_PSM_T8, 0, 0, 0);
 	sceGuTexImage(0, PSP_GLYPH_SHEET_WIDTH, PSP_GLYPH_SHEET_HEIGHT, PSP_GLYPH_SHEET_WIDTH, psp_glyph_pixels);
 	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 	sceGuDisable(GU_DEPTH_TEST);
 	sceGuDisable(GU_FOG);
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
-	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
-	hud_blend(blend);
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+	/* glass over the picture whatever the icon's own blend: added, as the
+	HUD's icons mostly are, its dark body would vanish */
+	(void)blend;
+	ge_blend(1);
+	sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
 	ge_kind(KIND_HUD);
 	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
 	ge_blend(0);

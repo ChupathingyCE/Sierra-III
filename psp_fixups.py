@@ -19690,6 +19690,19 @@ static void render_state_bitmap(
 									psp_icon_drawing = NONE;
 #endif
 								}"""),
+("""			TEST_FLAG(icon->flags, _hud_icon_use_color_bit) ? icon->color : color,
+			FALSE);
+#ifdef HALO_PSP
+		psp_ge_glyph_next(NONE);""",
+ """#ifdef HALO_PSP
+			/* a glyph takes the text's colour, not the Xbox button's own (A
+			green, B red ...): psp_ge.c tints the glass with it */
+			psp_glyph != NONE ? color :
+#endif
+			TEST_FLAG(icon->flags, _hud_icon_use_color_bit) ? icon->color : color,
+			FALSE);
+#ifdef HALO_PSP
+		psp_ge_glyph_next(NONE);"""),
 ]
 
 FIXES_CONTROLS["source/interface/ui_widget.c#glyphs"] = [
@@ -19761,6 +19774,15 @@ static void render_state_bitmap(
 #endif
 	}
 """),
+("""				if (icon->color == 0 || ignore_icon_color)""",
+ """#ifdef HALO_PSP
+				/* a glyph takes the text's colour, not the Xbox button's own:
+				psp_ge.c tints the glass with it */
+				if (psp_button_glyph(icon_index, TRUE, NULL) >= 0)
+					icon_color = text_color;
+				else
+#endif
+				if (icon->color == 0 || ignore_icon_color)"""),
 ("""				render_state_bitmap(
 					bounds,
 					&cursor_bounds,
