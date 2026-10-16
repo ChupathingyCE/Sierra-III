@@ -18651,12 +18651,15 @@ static long *psp_nwb_list = NULL;
 static unsigned char *psp_nwb_post = NULL;
 /* a compute entry's inputs record (psp_nwb_inputs), -1 for a postprocess */
 static short *psp_nwb_record = NULL;
+/* an entry already run: a reader runs only its object's own entries, out of
+the list's order (the blocks are independent), and the rest stay batched */
+static unsigned char *psp_nwb_ran = NULL;
 static int psp_nwb_count = 0, psp_nwb_done = 0, psp_nwb_records = 0;
 static int psp_nwb_open = 0;
 static int psp_nwb_on = -1, psp_nwb_held = 0;
 static unsigned long psp_nwb_types = 0;
 static unsigned char psp_nwb_waiting[MAXIMUM_OBJECTS_PER_MAP / 8];
-static unsigned short *psp_nwb_last = NULL;
+static unsigned short *psp_nwb_last = NULL, *psp_nwb_first = NULL;
 /* a waiting compute's inputs from the object's own fields, as they stood
 where it would have run. The object's update
 recomputes its function values (which its overlays read) right after that
@@ -18800,26 +18803,31 @@ static void psp_nwb_compute(long object_index, long absolute, int entry)
 	}
 }
 
-/* the entries up to and including the given one, in order; an object
-deleted meanwhile is passed over. A reader inside an entry may run later
-ones: psp_nwb_done moves before each runs */
+/* one entry, unless it has run; an object deleted meanwhile is passed over.
+It is marked before it runs, so a reader inside it can't run it again */
+static void psp_nwb_run_entry(int k)
+{
+	long object_index = psp_nwb_list[k];
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (psp_nwb_ran[k])
+		return;
+	psp_nwb_ran[k] = 1;
+	if (psp_nwb_last[absolute] == k)
+		psp_nwb_waiting[absolute >> 3] &= (unsigned char)~(1 << (absolute & 7));
+	if (!object_header_try_and_get(object_index))
+		return;
+	if (psp_nwb_post[k])
+		object_postprocess_node_matrices(object_index);
+	else
+		psp_nwb_compute(object_index, absolute, k);
+}
+
+/* the entries up to and including the given one, in order */
 static void psp_nwb_run_to(int last)
 {
 	while (psp_nwb_done <= last)
-	{
-		int k = psp_nwb_done++;
-		long object_index = psp_nwb_list[k];
-		long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
-
-		if (psp_nwb_last[absolute] == k)
-			psp_nwb_waiting[absolute >> 3] &= (unsigned char)~(1 << (absolute & 7));
-		if (!object_header_try_and_get(object_index))
-			continue;
-		if (psp_nwb_post[k])
-			object_postprocess_node_matrices(object_index);
-		else
-			psp_nwb_compute(object_index, absolute, k);
-	}
+		psp_nwb_run_entry(psp_nwb_done++);
 }
 
 /* objects_update's main loop begins: entries may be listed until psp_nwb_close */
@@ -18841,8 +18849,11 @@ static void psp_nwb_begin(void)
 			psp_nwb_list = (long *)malloc(PSP_NWB_MAX * sizeof(*psp_nwb_list));
 			psp_nwb_post = (unsigned char *)malloc(PSP_NWB_MAX * sizeof(*psp_nwb_post));
 			psp_nwb_record = (short *)malloc(PSP_NWB_MAX * sizeof(*psp_nwb_record));
+			psp_nwb_ran = (unsigned char *)malloc(PSP_NWB_MAX * sizeof(*psp_nwb_ran));
+			psp_nwb_first = (unsigned short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_first));
 			psp_nwb_inputs = malloc(PSP_NWB_RECORDS * sizeof(*psp_nwb_inputs));
-			if (!psp_nwb_last || !psp_nwb_list || !psp_nwb_post || !psp_nwb_record || !psp_nwb_inputs)
+			if (!psp_nwb_last || !psp_nwb_list || !psp_nwb_post || !psp_nwb_record || !psp_nwb_ran || !psp_nwb_first ||
+				!psp_nwb_inputs)
 				psp_nwb_on = 0;
 			psp_nwb_check = psp_keep("nwbatchcheck") != 0;
 			if (psp_nwb_check)
@@ -18860,6 +18871,12 @@ static void psp_nwb_list_entry(long object_index, int post)
 {
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
+	int last = psp_nwb_last[absolute];
+
+	/* the object's first entry this tick, unless one of its own still waits */
+	if (!psp_nwb_waits(absolute) || last >= psp_nwb_count || psp_nwb_list[last] != object_index || psp_nwb_ran[last])
+		psp_nwb_first[absolute] = (unsigned short)psp_nwb_count;
+	psp_nwb_ran[psp_nwb_count] = 0;
 	psp_nwb_post[psp_nwb_count] = (unsigned char)post;
 	psp_nwb_record[psp_nwb_count] = -1;
 	if (!post)
@@ -18882,7 +18899,7 @@ static int psp_nwb_pending(long object_index)
 		return -1;
 	last = psp_nwb_last[absolute];
 	/* the bit can belong to an object deleted since, its slot given to this one */
-	if (last < psp_nwb_done || last >= psp_nwb_count || psp_nwb_list[last] != object_index)
+	if (last < psp_nwb_done || last >= psp_nwb_count || psp_nwb_list[last] != object_index || psp_nwb_ran[last])
 		return -1;
 	return last;
 }
@@ -18947,12 +18964,17 @@ static int psp_nwb_put_post(long object_index)
 /* a reader wants an object's matrices before the end of the loop */
 static void psp_nwb_settle(long object_index)
 {
-	int last = psp_nwb_pending(object_index);
+	int last = psp_nwb_pending(object_index), first, k;
 
 	if (last < 0)
 		return;
 	psp_nwb_early++;
-	psp_nwb_run_to(last);
+	/* its own entries only (with, held, its attachments' between them) */
+	first = psp_nwb_first[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)];
+	if (first > last || first < 0 || psp_nwb_list[first] != object_index)
+		first = psp_nwb_done;
+	for (k = first; k <= last; k++)
+		psp_nwb_run_entry(k);
 }
 
 /* "nwbatchsort": the waiting blocks (a top-level object's entries, with its
@@ -18966,7 +18988,7 @@ static int psp_nwb_sort_on = -1;
 static struct psp_nwb_sorting
 {
 	long list[PSP_NWB_MAX];
-	unsigned char post[PSP_NWB_MAX];
+	unsigned char post[PSP_NWB_MAX], ran[PSP_NWB_MAX];
 	short record[PSP_NWB_MAX];
 	int start[PSP_NWB_BLOCKS + 1];
 	long key[PSP_NWB_BLOCKS];
@@ -19043,6 +19065,7 @@ static void psp_nwb_sort(void)
 		{
 			psp_nwb_sorting->list[n] = psp_nwb_list[e];
 			psp_nwb_sorting->record[n] = psp_nwb_record[e];
+			psp_nwb_sorting->ran[n] = psp_nwb_ran[e];
 			psp_nwb_sorting->post[n++] = psp_nwb_post[e];
 		}
 	}
@@ -19052,10 +19075,15 @@ static void psp_nwb_sort(void)
 
 		psp_nwb_list[first + k] = object_index;
 		psp_nwb_record[first + k] = psp_nwb_sorting->record[k];
+		psp_nwb_ran[first + k] = psp_nwb_sorting->ran[k];
 		psp_nwb_post[first + k] = psp_nwb_sorting->post[k];
 		if (object_index != NONE)
 			psp_nwb_last[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)] = (unsigned short)(first + k);
 	}
+	/* and each object's first entry, which a reader starts from */
+	for (k = n - 1; k >= 0; k--)
+		if (psp_nwb_list[first + k] != NONE)
+			psp_nwb_first[DATUM_INDEX_TO_ABSOLUTE_INDEX(psp_nwb_list[first + k])] = (unsigned short)(first + k);
 }
 
 /* the bounding sphere of an object about to be tested by another (the
@@ -19082,7 +19110,7 @@ static void psp_nwb_close(void)
 	psp_nwb_close_us += psp_microseconds() - start;
 	if (psp_nwb_on > 0 && ++psp_nwb_ticks % 300 == 0)
 	{
-		platform_psp_log("nwbatch: %lu computes put off in 300 ticks (%lu of them attachments'), %lu runs of the list early for a read, %lu past the list, %lu moved or reanimated meanwhile (their inputs put back); the batch at the loop's end %.2f ms a tick",
+		platform_psp_log("nwbatch: %lu computes put off in 300 ticks (%lu of them attachments'), %lu objects made early for a reader or a writer, %lu past the list, %lu moved or reanimated meanwhile (their inputs put back); the batch at the loop's end %.2f ms a tick",
 			psp_nwb_put_off, psp_nwb_attached, psp_nwb_early, psp_nwb_full, psp_nwb_moved, (float)psp_nwb_close_us / 300000.0f);
 		psp_nwb_put_off = psp_nwb_attached = psp_nwb_early = psp_nwb_full = psp_nwb_moved = psp_nwb_close_us = 0;
 		if (psp_nwb_check)
