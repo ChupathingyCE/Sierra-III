@@ -348,6 +348,9 @@ static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))
 #define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
 static void inflight_hand_over(void);
 static int stall_force; /* (defined with the stall wrapper) */
+/* TEMP (geinflight bring-up): the first frames' steps, logged */
+static int inflight_trace_left = 60;
+#define INFLIGHT_TRACE(...) do { if (inflight_on && inflight_trace_left > 0) { inflight_trace_left--; platform_log(__VA_ARGS__); } } while (0)
 /* set by the frame's job itself (its args), so the ME never reads the main
 CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
@@ -559,6 +562,7 @@ static void inflight_wait_me(void);
 
 static void inflight_sync(void)
 {
+	INFLIGHT_TRACE("GE: geinflight trace: sync, %u words waiting, me out %d", defer_used, inflight_me_out);
 	inflight_frames++;
 	inflight_words += defer_used;
 	if (defer_used > inflight_words_most)
@@ -1456,6 +1460,7 @@ static void defer_drain(void)
 	/* the GE given what the run wrote (the newest stall address it kept) */
 	if (stall_me_address)
 	{
+		INFLIGHT_TRACE("GE: geinflight trace: drain end passes stall %p on", stall_me_address);
 		stall_forwarded++;
 		list_write_back(stall_me_address); /* build 114: listcachedall */
 		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
@@ -1474,6 +1479,7 @@ static void inflight_show(void)
 {
 	if (!inflight_list_ended)
 		return;
+	INFLIGHT_TRACE("GE: geinflight trace: show");
 	inflight_list_ended = 0;
 	psp_me_wake_poll();
 	psp_me_ring_test();
@@ -3681,6 +3687,7 @@ static PSP_MAIN_SIDE int window_recorded = 0; /* geinflight: this frame's first 
 
 static float window_begin_main(const float *position, float z_near, float z_far)
 {
+	INFLIGHT_TRACE("GE: geinflight trace: window main part (recording %d)", INFLIGHT_RECORDING() ? 1 : 0);
 	if (!ge_ready)
 	{
 		ge_initialize();
@@ -3776,6 +3783,7 @@ static void window_begin_list(const float *position, const float *forward, const
 
 	if (frame_open)
 		return;
+	INFLIGHT_TRACE("GE: geinflight trace: window list part (replaying %d)", defer_replaying);
 	lit_forget(2); /* build 114: statememo */
 	sceGuFog(fog_near, fog_far, fog_color);
 	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
@@ -16444,6 +16452,7 @@ static int frame_end_list(void)
 	stall_force = 1;
 	sceGuFinish();
 	stall_force = 0;
+	INFLIGHT_TRACE("GE: geinflight trace: list ended, kept stall %p, ME work %d", stall_me_address, PSP_ME_WORK() ? 1 : 0);
 	return 1;
 }
 
@@ -16457,7 +16466,9 @@ static void frame_end_show(void)
 		frame's list. Long waits: the GE is the limit (fill, passes); short:
 		the CPU is, and drawing overlapped with the next frame's work would
 		gain little */
+		INFLIGHT_TRACE("GE: geinflight trace: waiting for the GE");
 		sceGuSync(0, 0);
+		INFLIGHT_TRACE("GE: geinflight trace: the GE done");
 		waited = sceKernelGetSystemTimeLow() - mark;
 		ge_wait_us += waited;
 		win_ge_us += waited;
