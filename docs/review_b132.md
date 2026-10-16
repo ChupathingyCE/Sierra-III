@@ -4,10 +4,14 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 | Branch | What | Kind | Default | Words | Review |
 |---|---|---|---|---|---|
-| `order132` | The code laid out by its calls (phase B, T2): a link order file | exact speed-up | (§1) | the build switch `PSP_TEXT_LAYOUT` | §1 |
+| `order132` | A code order the link can follow (phase B): b132's own layout kept for later builds; call-graph orders built and scored, none shipped | tooling, exact | off (b132 links as its profile places it) | the build switch `PSP_TEXT_LAYOUT` | §1 |
 | `mpon132` | The Media Engine pose job on by default | exact speed-up | on | `poseaheadoff` (off); `poseahead`, `poseaheadcheck` | §2 |
 | `mpon132` | The launch's register read leaves the ME's own RAM alone | safety | on | `memarksatlaunch` (as before) | §3 |
 | `nmreaders132` | Who reads each object's node matrices within the tick | recon | off | `nmreaders` | §4 |
+
+## Release check
+
+Lab 38834044173, against b131 as built: play and both seeds identical at every common tick on d20 (15,380), a50 (25,957) and c20 (19,615) [E], with the pose job on (the emulator runs the ME's work inside the push); the whole state differs from the first tick, as it does whenever a build's allocations change. The logs read whole. b30 and c40 shots right; the multiplayer build plays Blood Gulch. Built from `1fc417f` (code as at the profile's commit `65150f5`; lab sierra-build 38834087925).
 
 ## Why b131 was slower than b130
 
@@ -15,7 +19,11 @@ b131's ladder on the PSP-1000 ticked 10–17% slower than b130's on c10, a30, c4
 
 ## §1 The code laid out by its calls (`psp_build.py` `PSP_TEXT_LAYOUT`; the lab's `tools/codeorder.py`; `docs/order_file.md`)
 
-(To come: the layout chosen, its scores on the ten maps, and the build's check.)
+**What.** `docs/order_file.md` has the method. `PSP_TEXT_LAYOUT=<name>` links the code in the order a placement file of `psp/layout/` gives (`*<object>(<section>)` lines); without it, the build links as before. Two files exist:
+- **`psp/layout/b132.txt`: b132's own order, kept.** The lab's `codeorder.py --keep` wrote it from b132's link map. A build of b132 linked through it put all 8,082 code sections at b132's own addresses (lab sierra-build 38833047050) [D]. Later builds can link in b132's order whatever their own profile does.
+- The call-graph orders (the lab's `psp/sierra/layouts/`), scored in the cache model, not linked.
+
+**Why b132 ships without one.** b132's profile placed the code well: against b131 its tick I-misses fall 3–27% on all ten maps [E, lab cm132], and its PSP-1000 ladder ticks under b130's everywhere [M, lab 38827551482]. The call-graph order (Pettis and Hansen, from every call on all ten maps) scored about the same over whole runs, not better (c10 −19.6% against b132's −14.6%; elsewhere a point or so behind) [E, lab score131]. Next: scores of the tick alone, at the build's 64-byte function steps, and an order from the temporal graph with placement by cache set (lab levers T2, TG, LK).
 
 ## §2 The ME pose job on by default (`psp_fixups.py` FIXES_135 `objects.c#poseaheadon`)
 
