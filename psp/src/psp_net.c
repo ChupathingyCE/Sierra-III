@@ -930,6 +930,97 @@ static void add_all(int const *list, int const *count, fd_set *set, int *highest
 	}
 }
 
+/* select through the firmware's own poll (keep word inetpoll), in place of
+libcglue's select. In a public game on the PSP-3000 (sierra-hw 38958361231)
+the desktop's capture saw 1,442 of the host's packets sent to the tunnel's
+port, while the tunnel read about 190, and the game's own packets went out
+in bursts after seconds of nothing: the sockets held them, and select didn't
+say they were ready [U]. libcglue's select asks the firmware one socket at a
+time, with no wait, between sleeps it times with clock(). sceNetInetPoll
+asks for them all at once and waits in the firmware. Its descriptors are the
+firmware's: libcglue's table holds each (the descriptor first, its kind at
+byte 16, 3 for a socket, as libcglue's own accept reads it); any descriptor
+not a socket leaves the call to libcglue's select. -1: not one */
+extern void *__descriptormap[];
+
+static int firmware_socket(int descriptor)
+{
+	const unsigned char *entry;
+
+	if (descriptor < 0 || descriptor >= 1024)
+		return -1;
+	entry = __descriptormap[descriptor];
+	if (!entry || entry[16] != 3)
+		return -1;
+	return *(const int *)entry;
+}
+
+/* the sets' ready descriptors, as select gives them; -2 when a descriptor
+isn't a socket (the caller uses libcglue's select) */
+static int inet_poll(int count, fd_set *read_set, fd_set *write_set, fd_set *error_set, long timeout_ms)
+{
+	SceNetInetPollfd polls[64];
+	int descriptors[64];
+	int used = 0, index, result, ready = 0;
+
+	for (index = 0; index < count && index < FD_SETSIZE; index++)
+	{
+		short events = 0;
+
+		if (read_set && FD_ISSET(index, read_set))
+			events |= SCE_NET_INET_POLLIN;
+		if (write_set && FD_ISSET(index, write_set))
+			events |= SCE_NET_INET_POLLOUT;
+		if (error_set && FD_ISSET(index, error_set))
+			events |= SCE_NET_INET_POLLPRI;
+		if (!events)
+			continue;
+		if (used == (int)(sizeof(polls) / sizeof(polls[0])) || (polls[used].fd = firmware_socket(index)) < 0)
+			return -2;
+		polls[used].events = events;
+		polls[used].revents = 0;
+		descriptors[used++] = index;
+	}
+	result = sceNetInetPoll(polls, (size_t)used, (int)timeout_ms);
+	if (result < 0)
+	{
+		errno = sceNetInetGetErrno();
+		return -1;
+	}
+	if (read_set)
+		FD_ZERO(read_set);
+	if (write_set)
+		FD_ZERO(write_set);
+	if (error_set)
+		FD_ZERO(error_set);
+	for (index = 0; index < used; index++)
+	{
+		short got = polls[index].revents;
+		short asked = polls[index].events;
+
+		/* (an error or a hang-up is readable and writeable, as select has it:
+		the call that follows says which) */
+		if (read_set && (asked & SCE_NET_INET_POLLIN) &&
+			(got & (SCE_NET_INET_POLLIN | SCE_NET_INET_POLLERR | SCE_NET_INET_POLLHUP)))
+		{
+			FD_SET(descriptors[index], read_set);
+			ready++;
+		}
+		if (write_set && (asked & SCE_NET_INET_POLLOUT) &&
+			(got & (SCE_NET_INET_POLLOUT | SCE_NET_INET_POLLERR | SCE_NET_INET_POLLHUP)))
+		{
+			FD_SET(descriptors[index], write_set);
+			ready++;
+		}
+		if (error_set && (asked & SCE_NET_INET_POLLPRI) && (got & (SCE_NET_INET_POLLPRI | SCE_NET_INET_POLLERR)))
+		{
+			FD_SET(descriptors[index], error_set);
+			ready++;
+		}
+	}
+	return ready;
+}
+
 /* how long select takes against what it was asked to wait: the tunnel's
 thread passes through its loop between selects (psp_net_select_report) */
 static struct
@@ -939,12 +1030,15 @@ static struct
 	unsigned int longest_us;
 	/* the highest descriptor asked of select; FD_SETSIZE is 64 */
 	int highest;
+	/* inetpoll's calls left to libcglue's select: a descriptor not a socket */
+	unsigned long not_sockets;
 } select_times;
 
 void psp_net_select_report(char *text, int size)
 {
-	snprintf(text, (size_t)size, "selects %lu, %llu ms in all, the longest %u ms, %lu over their timeout by 20 ms; the highest descriptor asked %d",
-		select_times.calls, select_times.us / 1000, select_times.longest_us / 1000, select_times.late, select_times.highest);
+	snprintf(text, (size_t)size, "selects %lu, %llu ms in all, the longest %u ms, %lu over their timeout by 20 ms; the highest descriptor asked %d; %lu left to libcglue (inetpoll)",
+		select_times.calls, select_times.us / 1000, select_times.longest_us / 1000, select_times.late, select_times.highest,
+		select_times.not_sockets);
 }
 
 int posix_socket_select(int *read, int *read_count, int *write, int *write_count,
@@ -981,8 +1075,23 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 	{
 		unsigned int start = sceKernelGetSystemTimeLow(), took;
 
-		result = select(highest + 1, read ? &read_set : NULL, write ? &write_set : NULL, error ? &error_set : NULL,
-			infinite ? NULL : &timeout);
+		static int use_poll = -1;
+
+		if (use_poll < 0 && psp_keep_loaded())
+			use_poll = psp_keep("inetpoll");
+		result = -2;
+		if (use_poll > 0)
+		{
+			long timeout_ms = infinite ? -1 : (long)timeout_seconds * 1000 + ((long)timeout_microseconds + 999) / 1000;
+
+			result = inet_poll(highest + 1, read ? &read_set : NULL, write ? &write_set : NULL,
+				error ? &error_set : NULL, timeout_ms);
+			if (result == -2)
+				select_times.not_sockets++;
+		}
+		if (result == -2)
+			result = select(highest + 1, read ? &read_set : NULL, write ? &write_set : NULL, error ? &error_set : NULL,
+				infinite ? NULL : &timeout);
 		took = sceKernelGetSystemTimeLow() - start;
 		if (!infinite)
 		{

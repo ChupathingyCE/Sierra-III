@@ -50,6 +50,8 @@ void platform_log(const char *format, ...);
 /* psp_platform.c's keep words: one word; a prefix and a number */
 int psp_keep(const char *name);
 int psp_keep_number(const char *prefix, int fallback);
+/* whether keep.txt has been read yet */
+int psp_keep_loaded(void);
 
 /* ---------- the ad hoc layer (psp_net_adhoc.c)
 
