@@ -18789,12 +18789,97 @@ static void psp_nwb_settle(long object_index)
 	psp_nwb_run_to(last);
 }
 
+/* "nwbatchsort": the waiting blocks (a top-level object's entries, with its
+attachments' between) in order of their objects' animation graphs, so
+objects that share one run one after another while its tag data is in the
+data cache. A block's own entries keep their order, and blocks are
+independent of each other (each top-level object's subtree reads only its
+own nodes), so the order between blocks changes nothing they make */
+#define PSP_NWB_BLOCKS 512
+static int psp_nwb_sort_on = -1;
+static long psp_nwb_sorted[PSP_NWB_MAX];
+static unsigned char psp_nwb_sorted_post[PSP_NWB_MAX];
+
+static void psp_nwb_sort(void)
+{
+	static int start[PSP_NWB_BLOCKS + 1];
+	static long key[PSP_NWB_BLOCKS];
+	static short order[PSP_NWB_BLOCKS];
+	int blocks = 0, k, first, n = 0;
+
+	/* blocks begin at a top-level object's compute; the first whole one at
+	or after psp_nwb_done (a read may have run part of the one before) */
+	for (first = psp_nwb_done; first < psp_nwb_count; first++)
+	{
+		struct object_datum *object;
+
+		if (psp_nwb_post[first] || !object_header_try_and_get(psp_nwb_list[first]))
+			continue;
+		object = object_get(psp_nwb_list[first]);
+		if (object->object.parent_object_index == NONE)
+			break;
+	}
+	for (k = first; k < psp_nwb_count && blocks < PSP_NWB_BLOCKS; k++)
+	{
+		struct object_datum *object;
+
+		if (psp_nwb_post[k] || !object_header_try_and_get(psp_nwb_list[k]))
+			continue;
+		object = object_get(psp_nwb_list[k]);
+		if (object->object.parent_object_index != NONE)
+			continue;
+		start[blocks] = k;
+		key[blocks] = object->object.animation.animation_graph_index;
+		order[blocks] = (short)blocks;
+		blocks++;
+	}
+	if (blocks < 2 || k < psp_nwb_count)
+		return;
+	start[blocks] = psp_nwb_count;
+	/* stable insertion sort of the blocks by key */
+	for (k = 1; k < blocks; k++)
+	{
+		short b = order[k];
+		int j = k;
+
+		while (j > 0 && key[order[j - 1]] > key[b])
+		{
+			order[j] = order[j - 1];
+			j--;
+		}
+		order[j] = b;
+	}
+	for (k = 0; k < blocks; k++)
+	{
+		int e;
+
+		for (e = start[order[k]]; e < start[order[k] + 1]; e++)
+		{
+			psp_nwb_sorted[n] = psp_nwb_list[e];
+			psp_nwb_sorted_post[n++] = psp_nwb_post[e];
+		}
+	}
+	for (k = 0; k < n; k++)
+	{
+		long object_index = psp_nwb_sorted[k];
+
+		psp_nwb_list[first + k] = object_index;
+		psp_nwb_post[first + k] = psp_nwb_sorted_post[k];
+		if (object_index != NONE)
+			psp_nwb_last[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)] = (unsigned short)(first + k);
+	}
+}
+
 /* the loop is over: the rest, in order */
 static void psp_nwb_close(void)
 {
 	unsigned long start = psp_microseconds();
 
 	psp_nwb_open = 0;
+	if (psp_nwb_sort_on < 0)
+		psp_nwb_sort_on = psp_keep("nwbatchsort") != 0;
+	if (psp_nwb_sort_on)
+		psp_nwb_sort();
 	psp_nwb_run_to(psp_nwb_count - 1);
 	psp_nwb_count = psp_nwb_done = 0;
 	psp_nwb_close_us += psp_microseconds() - start;

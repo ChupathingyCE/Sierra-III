@@ -938,7 +938,7 @@ static void keep_load(void)
 	platform_log("keep words, build 131's: speed off: surfaceboundoff (the level sphere walk tests every surface it reaches, out of reach or not); check: surfacetestcheck");
 	platform_log("keep words, build 132's: speed off: poseaheadoff (the Media Engine pose job off: on by default where the ME runs the job ring); as before: memarksatlaunch (the launch's register read also reads the ME's own two words while it runs)");
 	platform_log("keep words, build 132's recon (emulator): nmreaders (who first reads each object's node matrices after they're computed, by nodes, and the call sites of other objects' reads)");
-	platform_log("keep words, build 133's, opt-in for its A/B: nwbatch (node matrices made together after objects_update's loop, lever NW's first step); nwbatchheld (bipeds' with what they hold too); nwbatchnobipeds (bipeds' made in their update, as before)");
+	platform_log("keep words, build 133's, opt-in for its A/B: nwbatch (node matrices made together after objects_update's loop, lever NW's first step); nwbatchheld (bipeds' with what they hold too); nwbatchsort (the batch in order of animation graph); nwbatchnobipeds (bipeds' made in their update, as before)");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
