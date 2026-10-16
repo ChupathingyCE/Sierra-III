@@ -6,7 +6,10 @@
 
 **What's new for you:** the engine is ChupathingyCE `v0.7.5d` (was `v0.7.4e`). Of upstream's changes, what reaches the campaign: checkpoints wait 240 game ticks for a safe moment, as on the Xbox (they counted frames); the weapon HUD's second magazine no longer replaces the first's overlays; no shield damage sound while an overshield drains. Campaign play is otherwise unchanged (the release check above). Multiplayer: upstream's network version is 29 (`review_b135.md` §1).
 
-**Speed against b134** [M, the PSP-3000's ladder, lab 38925966052 against 38913265535]: within ~1–2% on every map but c10, +3.6% (20.0 against 19.3 ms). One run; the program's code grew 10 KB with upstream's changes, which moves where the hot code sits, and c10 is the map most sensitive to it. Not run on the PSP-1000 (another session had it).
+**Speed against b134** [M, the ladder's tick]:
+- **Within ~1–2% on every map but c10**, on both PSPs.
+- **c10's tick +4.7% on the PSP-1000** (20.1 against 19.2 ms; the PSP-3000 +3.6%), yet its frame rate (9.9 fps) and game speed (19.9 ticks a second) are b134's on this stretch. The program's code grew 10 KB with upstream's changes, which moves where the hot code sits; c10 is the map most sensitive to it. Left as it is for the release candidate (re-placing the code is the speed plan's P1.5).
+- Labs: PSP-1000 38930738904 against 38913257588; PSP-3000 38925966052 against 38913265535.
 
 ## On the PSP
 
