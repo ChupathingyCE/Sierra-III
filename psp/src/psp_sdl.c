@@ -326,6 +326,46 @@ static void controls_update(const SceCtrlData *pad, unsigned int now)
 	action_down = x_down;
 }
 
+/* the PSP glyph for each of the engine's button icons (hud_messaging.c and
+ui_widget.c's: A, B, X, Y, black, white, left and right trigger, the D-pad's
+four, start, back, the two stick clicks, then the two sticks), in play and in
+the menus, which map the buttons differently (above). The sticks' icons
+follow the profile's stick preset by themselves (the engine swaps them for
+southpaw). The sheet is tools/psp_glyphs.py's, psp/glyphs/psp_glyphs.png;
+the prompts are to draw from it (docs/game_feature_survey.md, section 4.7) */
+#include "psp_glyphs.h"
+#define PSP_BUTTON_ICONS 18
+static const unsigned char glyphs_in_play[PSP_BUTTON_ICONS] =
+{
+	PSP_GLYPH_DPAD_UP, PSP_GLYPH_DPAD_DOWN, PSP_GLYPH_DPAD_LEFT, PSP_GLYPH_DPAD_RIGHT,
+	PSP_GLYPH_SELECT_L, PSP_GLYPH_SELECT_UP, PSP_GLYPH_L, PSP_GLYPH_R,
+	PSP_GLYPH_DPAD_UP, PSP_GLYPH_DPAD_DOWN, PSP_GLYPH_DPAD_LEFT, PSP_GLYPH_DPAD_RIGHT,
+	PSP_GLYPH_START, PSP_GLYPH_SELECT, PSP_GLYPH_SELECT_DOWN, PSP_GLYPH_SELECT,
+	PSP_GLYPH_FACE, PSP_GLYPH_NUB,
+};
+static const unsigned char glyphs_in_menus[PSP_BUTTON_ICONS] =
+{
+	PSP_GLYPH_CROSS, PSP_GLYPH_CIRCLE, PSP_GLYPH_SQUARE, PSP_GLYPH_TRIANGLE,
+	PSP_GLYPH_SELECT_L, PSP_GLYPH_SELECT_UP, PSP_GLYPH_L, PSP_GLYPH_R,
+	PSP_GLYPH_DPAD_UP, PSP_GLYPH_DPAD_DOWN, PSP_GLYPH_DPAD_LEFT, PSP_GLYPH_DPAD_RIGHT,
+	PSP_GLYPH_START, PSP_GLYPH_SELECT, PSP_GLYPH_SELECT_DOWN, PSP_GLYPH_SELECT,
+	PSP_GLYPH_NUB, PSP_GLYPH_NUB,
+};
+
+/* the glyph and its cell on the sheet (x, y, width, height in pixels); -1
+for an icon the PSP has no glyph for */
+int psp_button_glyph(int icon, int menus, unsigned short cell[4])
+{
+	int glyph;
+
+	if (icon < 0 || icon >= PSP_BUTTON_ICONS)
+		return -1;
+	glyph = (menus ? glyphs_in_menus : glyphs_in_play)[icon];
+	if (cell)
+		memcpy(cell, psp_glyph_cells[glyph], sizeof(psp_glyph_cells[glyph]));
+	return glyph;
+}
+
 /* the engine's port controls (input_abstraction.c, psp_fixups.py
 FIXES_CONTROLS): a reload tap, once; the action held, never reloading; the
 crouch toggle let through at any speed */
