@@ -132,11 +132,11 @@ static int adhoc_result(int result)
 }
 
 /* the errno of a failed call as Winsock's code; -1. An errno this doesn't
-know is logged the first time (its numbering is the firmware's, which
-libcglue passes through as it is) */
+know is logged the first time it comes, each of the first few (its numbering
+is the firmware's, which libcglue passes through as it is) */
 static int fail(void)
 {
-	static int unknown_logged;
+	static int unknown_seen[8], unknown_count;
 
 	switch (errno)
 	{
@@ -176,11 +176,17 @@ static int fail(void)
 	case EHOSTUNREACH: last_error = WSAEHOSTUNREACH; break;
 	default:
 		last_error = WSAEINVAL;
-		if (!unknown_logged)
 		{
-			unknown_logged = 1;
-			platform_log("network: a socket call failed with errno %d, which this doesn't know (taken as WSAEINVAL)",
-				errno);
+			int index;
+
+			for (index = 0; index < unknown_count && unknown_seen[index] != errno; index++)
+				;
+			if (index == unknown_count && unknown_count < (int)(sizeof(unknown_seen) / sizeof(unknown_seen[0])))
+			{
+				unknown_seen[unknown_count++] = errno;
+				platform_log("network: a socket call failed with errno %d, which this doesn't know (taken as WSAEINVAL)",
+					errno);
+			}
 		}
 		break;
 	}

@@ -162,6 +162,7 @@ void platform_log(const char *format, ...);
 heard and why any were turned away) */
 void psp_signal_report(char *text, int size);
 void psp_lobby_report(char *text, int size);
+void psp_tunnel_report(char *text, int size);
 /* (psp_internet.c: whether a file is on the Memory Stick) */
 int psp_file_exists(const char *path);
 /* (psp_internet.c: the tunnel's thread above the game thread in a game) */
@@ -737,9 +738,13 @@ void psp_online_test_update(
 	says whether the menus are calling it at all) */
 	if (now - test_logged_time >= LOG_INTERVAL)
 	{
+		char text[640];
+
 		test_logged_time = now;
 		platform_log("online games: test: screen %s, processed %lu times, %d games", online.active ? "open" : "closed",
 			online.processed, online.count);
+		psp_tunnel_report(text, sizeof(text));
+		platform_log("online games: tunnel: %s", text);
 	}
 	if (!online.active)
 		return;

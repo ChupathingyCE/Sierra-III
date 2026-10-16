@@ -10972,6 +10972,103 @@ void psp_internet_start(void)
 int WSAAPI WSAStartup(WORD version_requested, LPWSADATA data)
 {"""),
 ]
+# ... and what the tunnel's streams are doing, for the ONLINE GAMES test's
+# line every 10 s: in each public game the PSP joined, the host's reliable
+# messages stopped within seconds, and nothing in the log says whether a
+# stream closed, ran out of room, or KCP gave up on the link
+FIXES_INTERNET["port/linux/src/p2p.c#tunnelreport"] = [
+("""static void stream_writeable(struct stream *stream)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (internet play): the tunnel's peers and streams, in a line */
+void psp_tunnel_report(char *text, int size)
+{
+	unsigned long now;
+	int index, length;
+
+	pthread_mutex_lock(&p2p_lock);
+	now = p2p_now();
+	length = snprintf(text, (size_t)size, "streams refused for room %lu, closed here %lu (last error %d), links dead %lu",
+		psp_streams.refused, psp_streams.local_closes, psp_streams.last_close_error, psp_streams.dead);
+	for (index = 0; index < P2P_MAXIMUM_PEERS && length < size; index++)
+	{
+		struct peer const *peer = &p2p.peers[index];
+
+		if (peer->used)
+			length += snprintf(text + length, (size_t)(size - length), "; peer %d%s%s heard %lu ms ago, round trip %lu",
+				index, peer->is_host ? " (host)" : "", peer->connected ? "" : " (not connected)",
+				now - peer->heard_time, peer->round_trip);
+	}
+	for (index = 0; index < MAXIMUM_STREAMS && length < size; index++)
+	{
+		struct stream const *stream = &p2p.streams[index];
+
+		if (stream->used)
+			length += snprintf(text + length, (size_t)(size - length),
+				"; stream %d: state %d%s%s, pending %d, kcp receive %lu+%lu, send %lu+%lu, rto %ld%s",
+				index, stream->state, stream->local_closed ? " closed here" : "", stream->remote_closed ? " closed there" : "",
+				stream->pending_size, (unsigned long)stream->kcp->nrcv_que, (unsigned long)stream->kcp->nrcv_buf,
+				(unsigned long)stream->kcp->nsnd_que, (unsigned long)stream->kcp->nsnd_buf, (long)stream->kcp->rx_rto,
+				stream->kcp->state == (IUINT32)-1 ? " DEAD" : "");
+	}
+	pthread_mutex_unlock(&p2p_lock);
+}
+#endif
+
+static void stream_writeable(struct stream *stream)
+{"""),
+("""static struct stream *stream_new(int peer_index, IUINT32 conversation)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (internet play): what became of the streams (psp_tunnel_report) */
+static struct
+{
+	unsigned long refused, local_closes, dead;
+	int last_close_error;
+} psp_streams;
+#endif
+
+static struct stream *stream_new(int peer_index, IUINT32 conversation)
+{"""),
+("""static void stream_local_closed(struct stream *stream)
+{
+	close_socket(&stream->socket);""",
+ """static void stream_local_closed(struct stream *stream)
+{
+#ifdef HALO_PSP
+	if (!stream->local_closed)
+	{
+		psp_streams.local_closes++;
+		psp_streams.last_close_error = posix_socket_last_error();
+	}
+#endif
+	close_socket(&stream->socket);"""),
+("""		ikcp_setmtu(stream->kcp, KCP_MTU);
+		return stream;
+	}
+	return NULL;
+}""",
+ """		ikcp_setmtu(stream->kcp, KCP_MTU);
+		return stream;
+	}
+#ifdef HALO_PSP
+	psp_streams.refused++;
+#endif
+	return NULL;
+}"""),
+("""		stream->kcp->state == (IUINT32)-1)
+	{
+		stream_free(stream);
+	}""",
+ """		stream->kcp->state == (IUINT32)-1)
+	{
+#ifdef HALO_PSP
+		if (stream->kcp->state == (IUINT32)-1)
+			psp_streams.dead++;
+#endif
+		stream_free(stream);
+	}"""),
+]
 # the tunnel's thread, known to psp_internet.c, which raises it in a game
 FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
 ("""	(void)unused;
