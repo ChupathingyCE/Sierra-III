@@ -232,22 +232,29 @@ def dpad(layers, lit, size):
         dpad_leaf(layers, turns, size, 0.44, *offsets[name])
 
 
-# the PSP's L button, traced from a photo of a PSP-3000 (Sheepdog01, 2026-10-16:
-# "the exact shape"): its outline row by row, in its own box (width 3.3 times
-# its height) from 0 to 1 each way. The outer side runs down in a straight
-# slant from a rounded top corner; the inner side curves down into the flat
-# bottom
-SHOULDER_L = [(0.303, 0.0), (0.277, 0.037), (0.255, 0.074), (0.236, 0.111), (0.221, 0.148), (0.206, 0.185),
-              (0.191, 0.222), (0.176, 0.259), (0.165, 0.296), (0.154, 0.333), (0.146, 0.37), (0.135, 0.407),
-              (0.124, 0.444), (0.112, 0.481), (0.105, 0.519), (0.097, 0.556), (0.09, 0.593), (0.079, 0.63),
-              (0.067, 0.667), (0.056, 0.704), (0.045, 0.741), (0.037, 0.778), (0.03, 0.815), (0.022, 0.852),
-              (0.011, 0.889), (0.004, 0.926), (0.0, 0.963), (0.0, 1.0), (0.562, 1.0), (0.562, 0.963),
-              (0.618, 0.926), (0.663, 0.889), (0.693, 0.852), (0.712, 0.815), (0.727, 0.778), (0.742, 0.741),
-              (0.749, 0.704), (0.757, 0.667), (0.768, 0.63), (0.779, 0.593), (0.79, 0.556), (0.798, 0.519),
-              (0.809, 0.481), (0.82, 0.444), (0.828, 0.407), (0.835, 0.37), (0.843, 0.333), (0.854, 0.296),
-              (0.861, 0.259), (0.873, 0.222), (0.884, 0.185), (0.903, 0.148), (0.914, 0.111), (0.933, 0.074),
-              (0.959, 0.037), (1.0, 0.0)]
-SHOULDER_ASPECT = 3.3
+def shoulder_outline():
+    """the PSP's L button (Sheepdog01, 2026-10-16: "the exact shape"), in its own
+    box from 0 to 1 each way, and the box's width over its height. Lines and
+    curves fitted to a trace of a PSP-3000 photo (the trace itself was too
+    ragged): a flat top and bottom; the outer side a straight slant, rounded
+    into the top; the inner side a straight slant meeting the top in one
+    sharp angle, then curving into the bottom. Worked in units of the
+    height, then scaled into the box"""
+    top_outer, top_inner = (1.0, 0.0), (3.224, 0.0)
+    bottom_outer = (0.0, 1.0)
+    # the inner slant (0.924 across for each 1 down) to three quarters of
+    # the way down, then into the bottom, its control where the slant would
+    # meet it
+    slant_end, control, bottom_inner = (2.531, 0.75), (2.3, 1.0), (1.964, 1.0)
+    # the outer top corner rounded over 0.18 of the height along each side
+    round_start, round_end = (0.873, 0.127), (1.18, 0.0)
+    points = ([round_end, top_inner, slant_end] + bezier(slant_end, control, bottom_inner)[1:] +
+              [bottom_outer] + bezier(round_start, top_outer, round_end)[:-1])
+    width = top_inner[0]
+    return [(x / width, y) for x, y in points], width
+
+
+SHOULDER_L, SHOULDER_ASPECT = shoulder_outline()
 
 
 def shoulder(layers, letter, cells, size, font):
@@ -259,7 +266,6 @@ def shoulder(layers, letter, cells, size, font):
     x0, y0 = (width - shape_width) / 2, (size - shape_height) / 2
     mask = blank(width, size)
     ImageDraw.Draw(mask).polygon([(x0 + x * shape_width, y0 + y * shape_height) for x, y in SHOULDER_L], fill=255)
-    mask = rounded(mask, size * 0.01)
     if letter == "R":
         mask = mask.transpose(Image.FLIP_LEFT_RIGHT)
     glass(layers, mask)
