@@ -146,6 +146,8 @@ static struct
 	boolean maps_checked;
 	unsigned long logged_time;
 	long accounts;
+	/* browser_screen_process's calls, for the hands-free test's line */
+	unsigned long processed;
 } online;
 
 /* (network_client_manager.c: the game whose host's identifier the invite
@@ -543,6 +545,7 @@ void browser_screen_process(
 {
 	struct event_record event;
 
+	online.processed++;
 	check_maps();
 	fetch_games();
 	if (system_milliseconds() - online.logged_time >= LOG_INTERVAL)
@@ -692,7 +695,7 @@ void psp_online_test_update(
 	boolean main_menu_loaded)
 {
 	static int mode = -1, done_seconds;
-	static unsigned long menu_time, opened_time;
+	static unsigned long menu_time, opened_time, test_logged_time;
 	static boolean opened, join_tried;
 	unsigned long now = system_milliseconds();
 
@@ -725,6 +728,14 @@ void psp_online_test_update(
 		opened = TRUE;
 		opened_time = now;
 		return;
+	}
+	/* (the screen's own lines come from browser_screen_process; this one
+	says whether the menus are calling it at all) */
+	if (now - test_logged_time >= LOG_INTERVAL)
+	{
+		test_logged_time = now;
+		platform_log("online games: test: screen %s, processed %lu times, %d games", online.active ? "open" : "closed",
+			online.processed, online.count);
 	}
 	if (!online.active)
 		return;
