@@ -10988,7 +10988,10 @@ void psp_tunnel_report(char *text, int size)
 
 	pthread_mutex_lock(&p2p_lock);
 	now = p2p_now();
-	length = snprintf(text, (size_t)size, "streams refused for room %lu, closed here %lu (last error %d), links dead %lu",
+	length = snprintf(text, (size_t)size, "thread passes %lu; packets %lu (read errors %lu, last %d; not the tunnel's %lu; "
+		"no peer %lu, stale %lu, unsealed %lu); streams refused for room %lu, closed here %lu (last error %d), links dead %lu",
+		psp_streams.passes, psp_streams.packets, psp_streams.read_errors, psp_streams.last_read_error, psp_streams.not_tunnel,
+		psp_streams.no_peer, psp_streams.stale, psp_streams.unsealed,
 		psp_streams.refused, psp_streams.local_closes, psp_streams.last_close_error, psp_streams.dead);
 	for (index = 0; index < P2P_MAXIMUM_PEERS && length < size; index++)
 	{
@@ -11025,11 +11028,90 @@ static struct
 {
 	unsigned long refused, local_closes, dead;
 	int last_close_error;
+	/* the tunnel socket's packets: read, and turned away by kind; the
+	thread's passes */
+	unsigned long packets, read_errors, not_tunnel, no_peer, stale, unsealed, passes;
+	int last_read_error;
 } psp_streams;
 #endif
 
 static struct stream *stream_new(int peer_index, IUINT32 conversation)
 {"""),
+("""	peer = find_peer(packet + 1);
+	if (!peer)
+		return;
+	/* each packet once, sealed by the peer for this direction, its header
+	and all */
+	counter = packet_counter(packet);
+	if (!packet_fresh(peer, counter))
+		return;
+	packet_nonce(packet, nonce);
+	inner_size = p2p_aead_open(peer->receive_key, nonce, packet, TUNNEL_HEADER_SIZE, packet + TUNNEL_HEADER_SIZE,
+		size - TUNNEL_HEADER_SIZE, inner);
+	if (inner_size < 1)
+		return;""",
+ """	peer = find_peer(packet + 1);
+	if (!peer)
+	{
+#ifdef HALO_PSP
+		psp_streams.no_peer++;
+#endif
+		return;
+	}
+	/* each packet once, sealed by the peer for this direction, its header
+	and all */
+	counter = packet_counter(packet);
+	if (!packet_fresh(peer, counter))
+	{
+#ifdef HALO_PSP
+		psp_streams.stale++;
+#endif
+		return;
+	}
+	packet_nonce(packet, nonce);
+	inner_size = p2p_aead_open(peer->receive_key, nonce, packet, TUNNEL_HEADER_SIZE, packet + TUNNEL_HEADER_SIZE,
+		size - TUNNEL_HEADER_SIZE, inner);
+	if (inner_size < 1)
+	{
+#ifdef HALO_PSP
+		psp_streams.unsealed++;
+#endif
+		return;
+	}"""),
+("""		int size = posix_socket_recvfrom(p2p.tunnel_socket, packet, sizeof(packet), 0, &from, &from_length);
+
+		if (size < 0)
+			break;
+		tunnel_received(packet, size, &from);""",
+ """		int size = posix_socket_recvfrom(p2p.tunnel_socket, packet, sizeof(packet), 0, &from, &from_length);
+
+		if (size < 0)
+		{
+#ifdef HALO_PSP
+			if (!would_block())
+			{
+				psp_streams.read_errors++;
+				psp_streams.last_read_error = posix_socket_last_error();
+			}
+#endif
+			break;
+		}
+#ifdef HALO_PSP
+		psp_streams.packets++;
+		if (size < 1 || packet[0] != TUNNEL_MAGIC)
+			psp_streams.not_tunnel++;
+#endif
+		tunnel_received(packet, size, &from);"""),
+("""		int wait = LOOP_INTERVAL * 5;
+		int index, asked;
+""",
+ """		int wait = LOOP_INTERVAL * 5;
+		int index, asked;
+
+#ifdef HALO_PSP
+		psp_streams.passes++;
+#endif
+"""),
 ("""static void stream_local_closed(struct stream *stream)
 {
 	close_socket(&stream->socket);""",
