@@ -1602,14 +1602,18 @@ static int census_tint_count = 0;
 static unsigned long census_tint_passes = 0, census_tint_unkept = 0, census_tint_bytes16 = 0, census_tint_bytes8 = 0;
 
 static unsigned long census_light_draws[2] = { 0, 0 }, census_light_looked[2] = { 0, 0 };
-/* the light pass by surface: within a frame, how many lights draw each surface
-(the same vertices and indices), so the report can say what drawing a surface
-once for all the lights that reach it would save */
+/* the light pass by surface: within a frame, how many lights draw each level
+vertex buffer, and how many of their triangles another light already drew that
+frame (a triangle is its buffer and its three vertex indices: each light hands
+over a triangle list of its own, so the lists themselves never repeat). What
+drawing a surface once for all the lights that reach it would save */
 #define CENSUS_SURFACES 512
 static struct { const void *vertices; const unsigned short *indices; long triangles; int lights; } census_surfaces[CENSUS_SURFACES];
 static int census_surface_count = 0;
 static unsigned long census_surface_lost = 0, census_surfaces_lit[4] = { 0 }, census_surface_draws = 0;
-static unsigned long census_surface_triangles = 0, census_surface_repeat_triangles = 0;
+static unsigned long census_surface_triangles = 0, census_surface_repeat_triangles = 0, census_triangles_lost = 0;
+#define CENSUS_TRIANGLES 8192 /* a frame's triangles seen, by hash (32 KB) */
+static unsigned int census_triangle_seen[CENSUS_TRIANGLES];
 static unsigned long census_light_run_triangles = 0, census_light_runs_out = 0;
 
 char *tag_get_name(long tag_index);
@@ -1687,13 +1691,37 @@ static void census_light_surface(const void *vertices, const unsigned short *ind
 {
 	int k;
 
+	long t;
+
 	census_surface_draws++;
 	census_surface_triangles += (unsigned long)triangles;
+	for (t = 0; t < triangles; t++)
+	{
+		const unsigned short *v = indices + 3 * t;
+		unsigned int hash = ((unsigned int)vertices * 2654435761u) ^ (v[0] * 40503u) ^ (v[1] * 2246822519u) ^ (v[2] * 3266489917u);
+		unsigned int slot, probe;
+
+		hash |= 1; /* 0 is an empty slot */
+		for (slot = hash % CENSUS_TRIANGLES, probe = 0; probe < 32; probe++, slot = (slot + 1) % CENSUS_TRIANGLES)
+		{
+			if (census_triangle_seen[slot] == hash)
+			{
+				census_surface_repeat_triangles++;
+				break;
+			}
+			if (!census_triangle_seen[slot])
+			{
+				census_triangle_seen[slot] = hash;
+				break;
+			}
+		}
+		if (probe == 32)
+			census_triangles_lost++;
+	}
 	for (k = 0; k < census_surface_count; k++)
-		if (census_surfaces[k].vertices == vertices && census_surfaces[k].indices == indices)
+		if (census_surfaces[k].vertices == vertices)
 		{
 			census_surfaces[k].lights++;
-			census_surface_repeat_triangles += (unsigned long)triangles;
 			return;
 		}
 	if (census_surface_count == CENSUS_SURFACES)
@@ -1790,13 +1818,13 @@ static void census_report(void)
 		}
 		platform_log("%s", line);
 	}
-	platform_log("drawcensus: light pass by surface, a frame: %.1f draws on %.1f surfaces (lit by 1 light %.1f, 2 %.1f, 3 %.1f, 4 or more %.1f; %lu draws not kept); %.0f triangles drawn, %.0f of them again on a surface another light already drew (%.0f%%)",
+	platform_log("drawcensus: light pass by surface, a frame: %.1f draws on %.1f surfaces (lit by 1 light %.1f, 2 %.1f, 3 %.1f, 4 or more %.1f; %lu draws not kept); %.0f triangles drawn, %.0f of them a triangle another light already drew (%.0f%%; %lu not tracked)",
 		census_surface_draws / frames,
 		(census_surfaces_lit[0] + census_surfaces_lit[1] + census_surfaces_lit[2] + census_surfaces_lit[3]) / frames,
 		census_surfaces_lit[0] / frames, census_surfaces_lit[1] / frames, census_surfaces_lit[2] / frames, census_surfaces_lit[3] / frames,
 		census_surface_lost, census_surface_triangles / frames, census_surface_repeat_triangles / frames,
-		census_surface_triangles ? 100.0f * census_surface_repeat_triangles / census_surface_triangles : 0.0f);
-	census_surface_draws = census_surface_triangles = census_surface_repeat_triangles = census_surface_lost = 0;
+		census_surface_triangles ? 100.0f * census_surface_repeat_triangles / census_surface_triangles : 0.0f, census_triangles_lost);
+	census_surface_draws = census_surface_triangles = census_surface_repeat_triangles = census_surface_lost = census_triangles_lost = 0;
 	memset(census_surfaces_lit, 0, sizeof(census_surfaces_lit));
 	platform_log("drawcensus: light pass %.1f draws a frame (%.1f spotlights, %.1f point lights), %.1f triangles looked at (%.1f of them the spotlights'); %.1f in runs of 16 wholly beyond the light's radius (%.0f%% of the runs' triangles)",
 		(census_light_draws[0] + census_light_draws[1]) / frames, census_light_draws[1] / frames, census_light_draws[0] / frames,
@@ -1819,6 +1847,7 @@ static void census_frame(void)
 	for (k = 0; k < census_surface_count; k++)
 		census_surfaces_lit[census_surfaces[k].lights >= 4 ? 3 : census_surfaces[k].lights - 1]++;
 	census_surface_count = 0;
+	memset(census_triangle_seen, 0, sizeof(census_triangle_seen));
 }
 #define CENSUS(call) call
 #else

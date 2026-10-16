@@ -66,7 +66,16 @@ The emulator batch (recon134a, lab 38920291358, counts and shares) [E], the PSP-
 | Who wakes sleepers? | 0.00–0.26% of sleeper checks find a change (b30), 0–0.2% (a50, d20) | Being told on a write would remove nearly all of the checks' 3.8–6.8 ms a tick on b30, if every writer can be found |
 | The near-plane load | b30: the Pelican's own cabin (5,742 rigid + 5,774 bending triangles a frame). a30: lifepod_crashed and the marines | The Pelican as a near layer of its own, as the first-person weapon is |
 
-Not answered here: who reads other objects' data mid-tick (the loop split's map, A4), which needs a tracer of its own.
+### The object access trace (objtrace134, 2026-10-16) [E]
+
+The emulator's `PSP_OBJTRACE` (the lab's `halo-local.patch` item 17) with the keep word `objtrace`: every load and store into an object's data under the strict interpreter, counted by instruction. Eight maps, 120 s of game time each, b30 on the b113 route to 150 s (lab 38947079338).
+
+| Question | Answer | So |
+|---|---|---|
+| Who reads other objects' data during an update? (A4) | 0.02–9% of object-data loads land in another family's data (b30 1.6%, a30 9%, c10 0.02%); 1–35 cross stores a tick. The readers are almost only bipeds, projectiles and vehicles: collision against scenery (`matrix4x3_inverse`, `matrix4x3_transform_point` on the target's nodes; `object_get_features_in_sphere`, `object_test_vector`) and other bipeds' positions. Scenery, machines, items and the rest read no other family | Object updates are nearly independent. The quiet types can be grouped and run back to back (lever TG); units and projectiles keep their order. Moving machines (lifts) are the case statecrc must check |
+| Who writes a sleeping object from outside its own update? (WT) | Leaving out the object marker (`object_mark_function`: word 2, which the checksum already skips) and memory moves (the pool compacting, a slot reused): 0.002–0.65 changing stores a tick, from a short list: `object_get_cached_render_lighting`, `object_cause_damage`, `object_set_garbage`, `object_set_visibility`, `unit_control`, `object_new`, and connecting and disconnecting from the map on a BSP switch (d20) | Being told on a write is feasible: the writers are few and named. Hands-off runs miss scripts, the player and blasts, so the list needs a read of the code to be exact |
+| Can a cache of the most-drawn tints work? | The 32 most drawn triples cover 93–100% of passes on a10, a50, b40, c10, c20 (350–900 KB at 16 bits), but 47% on b30, 63% on a30, 66% on d20 (~1 MB); b30 needs 128 (3.7 MB) for 98% | A tint cache helps most maps, not b30's ride |
+| Do lights repeat a surface? | Not answerable by list: each light hands over a triangle list of its own. The census now counts repeated triangles by identity; next batch | |
 
 ### Lab notes from the runs
 
