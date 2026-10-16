@@ -19506,6 +19506,31 @@ FIXES_137["source/main/main.c#watermark"] = [
 	if (main_menu_is_active())"""),
 ]
 
+# ---------- FIXES_FRONT: the front end (docs/plan_front_end.md)
+FIXES_FRONT = {}
+
+# The front door: unless the launch menu was asked for (L held, menu.txt) or
+# the run is scripted, the game starts on its main menu. init.txt still holds
+# the launch menu's last map_name, which would take the game straight into
+# that level, so those lines are skipped; the rest of init.txt runs.
+FIXES_FRONT["source/main/console.c#frontdoor"] = [
+("""			strtok(buffer, "\\r\\n\\t");
+""", """			strtok(buffer, "\\r\\n\\t");
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_FRONT) */
+			{
+				extern int psp_front_door_main_menu(void);
+
+				if (psp_front_door_main_menu() && !strncmp(buffer, "map_name", 8))
+				{
+					error(_error_log, "init: %s (skipped: the game starts on its main menu)", buffer);
+					continue;
+				}
+			}
+#endif
+"""),
+]
+
 # The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
@@ -19520,7 +19545,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_FRONT.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

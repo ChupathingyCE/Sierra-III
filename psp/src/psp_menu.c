@@ -12,9 +12,17 @@ plain text console on the frame buffer; the GE isn't up yet). Two pages:
   keep.txt. Words the menu doesn't list (anything typed by hand) are kept.
 
 Up/down move, left/right or cross toggle, L/R or triangle switch pages,
-start saves both files and starts the game. Not shown when
-ms0:/halo/input.txt (a scripted run: the emulator) or ms0:/halo/nomenu.txt
-exists; the files are then read as they are, as before. */
+start saves both files and starts the game.
+
+The front door (docs/plan_front_end.md): which screen the game starts on.
+- ms0:/halo/input.txt (a scripted run: the rigs, the emulator) or
+  ms0:/halo/nomenu.txt: no launch menu; init.txt and keep.txt are read as
+  they are.
+- ms0:/halo/menu.txt, or L held as the game starts: this launch menu.
+- otherwise: the game's own main menu, as on the Xbox. init.txt still runs,
+  without its map_name lines (psp_front_door_main_menu, read by the engine's
+  console_startup: psp_fixups.py FIXES_FRONT), so the launch menu keeps the
+  last map it chose. */
 #include <pspkernel.h>
 #include <pspctrl.h>
 #include <pspdebug.h>
@@ -229,6 +237,29 @@ static int file_exists(const char *path)
 	SceIoStat status;
 
 	return sceIoGetstat(path, &status) >= 0;
+}
+
+void platform_log(const char *format, ...);
+
+/* set when the game starts on its main menu, so init.txt's map_name lines
+(the launch menu's last choice) don't take it straight into a level */
+static int front_door_main_menu = 0;
+
+int psp_front_door_main_menu(void)
+{
+	return front_door_main_menu;
+}
+
+/* the buttons held as the game starts; reading waits for the next sample,
+so it sees the pad as it is now */
+static unsigned int buttons_held(void)
+{
+	SceCtrlData pad;
+
+	sceCtrlSetSamplingCycle(0);
+	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
+	sceCtrlReadBufferPositive(&pad, 1);
+	return pad.Buttons;
 }
 
 static int map_type(const char *path)
@@ -519,7 +550,23 @@ void psp_menu(int build)
 	int done = 0, repeat = 0;
 
 	if (file_exists(DATA_ROOT "/input.txt") || file_exists(DATA_ROOT "/nomenu.txt"))
+	{
+		platform_log("front door: a scripted run (input.txt or nomenu.txt): init.txt as it is");
 		return;
+	}
+	/* held as the game starts, L would also count as the menu's first
+	press (a page back): the held buttons are the starting point */
+	last = buttons_held();
+	if (last & PSP_CTRL_LTRIGGER)
+		platform_log("front door: the launch menu (L held)");
+	else if (file_exists(DATA_ROOT "/menu.txt") || file_exists(DATA_ROOT "/menudump.txt"))
+		platform_log("front door: the launch menu (menu.txt or menudump.txt)");
+	else
+	{
+		front_door_main_menu = 1;
+		platform_log("front door: the main menu (L held at start-up or " DATA_ROOT "/menu.txt: the launch menu)");
+		return;
+	}
 	int back = 0, dump_menu = -1;
 
 	scan_maps();
