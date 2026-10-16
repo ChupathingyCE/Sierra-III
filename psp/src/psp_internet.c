@@ -119,19 +119,29 @@ void p2p_discord_sanitize(char *destination, int size, const char *source, int n
 
 p2p.c does all of internet play's network work on one thread: the tunnel,
 its KCP streams, the signalling and the lobby. It starts at 0x5c, far below
-the game thread's 0x20, and the PSP runs a thread only while
-every higher one waits. In a game the PSP can't keep up with, the game
-thread runs one to two and a half seconds of catch-up ticks without waiting,
-and the tunnel can go that long without running: in a 12-player public
-game the host's messages stopped within seconds of the join, and the
-client gave up (docs/milestone_first_public_game.md). 0x1f: above the game
-thread and below the vertical blank's 0x1e. The thread waits in select()
-between packets and KCP's 10 ms clock, so it takes only what it needs.
-"tunnelslow" leaves it at pspdev's default, for comparing */
+the game thread's 0x20, and the PSP runs a thread only while every higher
+one waits.
+- In a game the PSP can't keep up with, the game thread runs one to two and
+  a half seconds of catch-up ticks without waiting, and the tunnel can go
+  that long without running: the host's messages stopped within seconds of
+  the join, and the client gave up (docs/milestone_first_public_game.md). So
+  in a game the thread runs at 0x1f: above the game thread, below the
+  vertical blank's 0x1e. It waits in select() between packets and KCP's
+  clock, so there it takes only what it needs.
+- In the menus it stays at 0x5c. While ONLINE GAMES browses, the thread
+  checks thousands of signed listings; above the game thread it kept the
+  menus' start-up thread (saved profiles and playlists, slow on the stick)
+  from ever finishing, and the menus never ran the screen (sierra-hw
+  38939812478, its A/B with tunnelslow).
+"tunnelslow" keeps it at 0x5c in games too, for comparing */
 #define PSP_TUNNEL_PRIORITY 0x1f
 int psp_keep(const char *name);
 void platform_log(const char *format, ...);
 
+static SceUID tunnel_thread = -1;
+static int tunnel_priority = -1;
+
+/* the thread, as it starts (p2p.c's #priority fixup) */
 void psp_internet_thread_priority(void)
 {
 	SceKernelThreadInfo info;
@@ -139,16 +149,21 @@ void psp_internet_thread_priority(void)
 	memset(&info, 0, sizeof(info));
 	info.size = sizeof(info);
 	sceKernelReferThreadStatus(0, &info);
-	if (psp_keep("tunnelslow"))
-	{
-		platform_log("internet play's thread: priority 0x%x left as it is (tunnelslow)", info.currentPriority);
+	tunnel_thread = sceKernelGetThreadId();
+	tunnel_priority = info.currentPriority;
+	platform_log("internet play's thread (%s): priority 0x%x; 0x%x in a game%s", info.name, tunnel_priority,
+		PSP_TUNNEL_PRIORITY, psp_keep("tunnelslow") ? " (not: tunnelslow)" : "");
+}
+
+/* in a game (1: the screen joined one) or browsing the menus (0) */
+void psp_internet_tunnel_priority(int in_game)
+{
+	int priority = in_game && !psp_keep("tunnelslow") ? PSP_TUNNEL_PRIORITY : tunnel_priority;
+
+	if (tunnel_thread < 0 || priority < 0)
 		return;
-	}
-	if (sceKernelChangeThreadPriority(0, PSP_TUNNEL_PRIORITY) < 0)
-		platform_log("internet play's thread: priority 0x%x; the change to 0x%x was refused", info.currentPriority, PSP_TUNNEL_PRIORITY);
-	else
-		platform_log("internet play's thread (%s): priority 0x%x, now 0x%x (above the game thread's: tunnelslow undoes it)",
-			info.name, info.currentPriority, PSP_TUNNEL_PRIORITY);
+	if (sceKernelChangeThreadPriority(tunnel_thread, priority) < 0)
+		platform_log("internet play's thread: the change to 0x%x was refused", priority);
 }
 
 /* ---------- the Memory Stick */

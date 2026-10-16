@@ -164,6 +164,8 @@ void psp_signal_report(char *text, int size);
 void psp_lobby_report(char *text, int size);
 /* (psp_internet.c: whether a file is on the Memory Stick) */
 int psp_file_exists(const char *path);
+/* (psp_internet.c: the tunnel's thread above the game thread in a game) */
+void psp_internet_tunnel_priority(int in_game);
 struct halo_ui_pointer;
 
 /* ---------- private code */
@@ -379,6 +381,7 @@ static void wait_for_host(
 		online.connecting = FALSE;
 		online.active = FALSE;
 		p2p_lobby_browse(FALSE);
+		psp_internet_tunnel_priority(1);
 		ui_widgets_close_all();
 		ui_widget_load_by_name_or_tag(
 			"ui\\shell\\main_menu\\multiplayer_type_select\\connected\\pregame\\connected_pregame_screen",
@@ -537,6 +540,7 @@ void browser_screen_open(
 	if (!ui_online_games_start_network())
 		set_status("Couldn't start the network.");
 	p2p_lobby_browse(TRUE);
+	psp_internet_tunnel_priority(0);
 	fetch_games();
 }
 

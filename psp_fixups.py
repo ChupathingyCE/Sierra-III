@@ -10972,7 +10972,7 @@ void psp_internet_start(void)
 int WSAAPI WSAStartup(WORD version_requested, LPWSADATA data)
 {"""),
 ]
-# the tunnel's thread above the game thread (psp_internet.c says why)
+# the tunnel's thread, known to psp_internet.c, which raises it in a game
 FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
 ("""	(void)unused;
 	pthread_mutex_lock(&p2p_lock);
@@ -10981,8 +10981,8 @@ FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
 """,
  """	(void)unused;
 #ifdef HALO_PSP
-	/* psp_fixups.py (internet play): above the game thread, which runs
-	seconds of catch-up ticks without waiting (psp_internet.c) */
+	/* psp_fixups.py (internet play): above the game thread in a game,
+	which runs seconds of catch-up ticks without waiting (psp_internet.c) */
 	{
 		extern void psp_internet_thread_priority(void);
 		psp_internet_thread_priority();
