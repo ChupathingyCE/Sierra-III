@@ -2,14 +2,15 @@
 
 For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used here"). The `controls` branch is `w134` plus the renderer session's controls and glyph groundwork, kept apart so the main session can fold or rework it (Sheepdog01, 2026-10-16). The design and the scheme tables are in `docs/game_feature_survey.md` §4 (on the `renderer` branch). Labels: [M] measured on a PSP, [E] emulator, [D] read in code, [U] inference.
 
-## Where it stands (2026-10-16)
+## Where it stands (2026-10-16, evening)
 
-- **Branch:** `controls` at d7232b9, on `w134`. The campaign and multiplayer builds compile (lab 38937812305, 38937818323; the multiplayer build of the controls alone: 38937050710).
-- **Emulator checks:** `controls1` (crouch, reload and action on d20 under a scripted pad; strict; southpaw) and `glyphs1` (the glyphs on b30 and a10, against `xboxglyphs`). Their results are under "The checks".
+- **Branch:** `controls` at 8ec201c, on `w134`. Its campaign and multiplayer builds compile (lab 38968289976, 38968284599); every glyph change on the way was built for multiplayer too.
+- **Checked on the emulator:** the controls (`controls1`, `controls2`) and the glyphs drawn in play (`glyphs1`, `glyphs2`), each with a strict run that found nothing. The results are under "The checks", and in the lab's findings.
+- **Waiting:** `glyphs3`, the glyphs as Sheepdog01 finally chose them, on a10's prompt with shots; the art changed since `glyphs2`, and the drawing only by the 80% height.
+- **Needs Sheepdog01's hands:** the launch menu's NUB page (the menu never shows in a scripted run): one pass on each PSP, then the `nub.txt` it wrote and some play. Then the crouch, the reload tap and action hold, and the glyphs, by hand.
 - **Not built yet:**
   - `nublearn`: a save during play costs a Memory Stick write, so it waits for a background save like the texture totals'.
-  - The prompt wording at bake.
-  - The string survey (§4.7 of the survey).
+  - The prompt wording at bake, and the string survey (§4.7 of the survey): they read the maps' strings, game data, so they're for Sheepdog01's machine, not the lab's runners.
 - **Nothing here touches the simulation's rules.** The engine's own port paths (the Linux keyboard's) carry the crouch and the reload/action split. The multiplayer build's server sees the same control bits a desktop player's keyboard sends.
 
 | Change | What | Kind | Default | Words | Review |
@@ -23,7 +24,16 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 ## The checks
 
-(Filled in from `controls1` and `glyphs1`.)
+All on the emulator [E], the b134 bake (`campaign121`), b134's profile.
+
+| Batch | Build | What | Result |
+|---|---|---|---|
+| `controls1` (lab 38937056277) | 54cf66c | d20, a scripted pad: three rounds of Select + ↓, 4 s forward, a d-pad ← tap, a 1.2 s hold, Select + ↓; strict; southpaw from keep words | Toggles 5, taps 3 (reloads taken 3), holds 3 (actions counted 1: a counting fault, below). Strict: 0 sites in 4,407 ticks. Southpaw ran clean |
+| `controls2` (lab 38942074408) | a70bf60 | The same script with the crouch toggle and with `crouchhold`; strict | Toggle: crouched 100% through each forward hold, 3.6 units walked per 4 s. `crouchhold`: standing, 8.5 units. So the crouch holds at full travel and walks at crouch speed (42%). Actions counted 3 of 3. Strict: 0 sites |
+| `glyphs1` (lab 38939015112) | d7232b9 | b30's route and a10's opening, with the glyphs and with `xboxglyphs` | a10: 536 glyphs drawn, the first at game time ~7,200 (the cryo prompts); b30's route raised no prompt. All four runs clean |
+| `glyphs2` (lab 38952337764) | f2783e5 | a10's cryo prompt with shots timed to it, with and without `xboxglyphs`; strict | "Use [nub] to look around" drawn with the PSP's nub where the Xbox's right stick was, in the text's colour. Strict: 0 sites with 531 glyphs drawn (the 8-bit sheet and the per-glyph palette) |
+
+**The fault the checks found:** the engine asks for the action-only bit only while the action bit is set, so the hold counter's edge test never saw the release between two holds, and counted only the first. The bit itself was right on every tick. Now counted once a hold (`psp_input_port_action_only`), and `controls2` counts 3 of 3.
 
 ## §1 Crouch, toggled (`psp/src/psp_sdl.c`: `controls_update`, `psp_input_port_crouch`; `psp_fixups.py`: `FIXES_CONTROLS[...input_abstraction.c#controls]`)
 
