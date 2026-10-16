@@ -40,9 +40,25 @@ Each compute inside `objects_update` is classed by its first read after it, weig
 2. **A biped and what it holds:** the whole subtree's computes and postprocesses as one ME job, in the order the main CPU would run them, so the held weapon reads its parent's node on the ME. That needs the attachments' type updates moved ahead of the parent's compute, which changes the order of reads and writes. It's exact only if no attachment's type update reads its parent's new matrices, and the statecrc pairs must show it.
 3. **Every compute the same arithmetic on both CPUs:** the ME has no VFPU, and `psp_vfpu_matrix4x3_multiply` differs from the FPU in the last bit. Either the FPU path everywhere (the engine's own arithmetic) or the main CPU never computes a deferred object's matrices.
 
+## What the ME would have to run (`tools/mewalk.py`) [D]
+
+The walk from `object_compute_node_matrices` and the five types' `*_preprocess_node_orientations` (the type table's one indirect call), stopping at the log and assert paths: 242 functions, 98 KB of code. What the ME can't run, and what each needs:
+
+| Found | Where | What it needs |
+|---|---|---|
+| **Animation reads from the stick** | `animation_get_node_orientations` → `animation_get_frame_data` → `psp_anim_lock` → `psp_geo_pack_read` (the animation cache pages frames in on a miss) | The pose job's way (`psp_anim.c`): on the ME, `psp_anim_on_me` reads resident pages only, and a range not resident marks the object unmade, for the main CPU to compute when it reads it; nothing moves a page while a job is out (`settle_me`). The base pose is mostly made ahead already; the overlays (`overlay_animation_apply_*`) and the types' preprocess (aiming, looking) read other animations through the same lock. Misses are rare (b30's beach: 214 in 9 minutes) |
+| **The VFPU** | `matrix4x3_multiply` → `psp_vfpu_matrix4x3_multiply` (41 instructions) | `psp_vfpu.c`'s `fpu_multiply` on the ME, and on the main CPU too for a deferred object's compute, so both CPUs give the same bits. Objects computed only on the main CPU keep the VFPU |
+| Lazy allocations | `psp_pose_ahead_take_work` (`memalign`), the `nmreaders` table (`calloc`) | Made before the first hand-over |
+| Settling the ME's rays | `psp_merays_settle` at the compute's start | Settled once before the hand-over, not per object |
+| Counters and notes the main CPU owns | `psp_object_epoch++` (perception's facts go stale), `psp_nmr_computed`, `psp_pose_predict_note`, `psp_pose_ahead_list` (next tick's pose), the timing hooks | Done by the main CPU when it hands the object over; the pose listing reads only the animation state, which the compute doesn't change |
+| Error reports | `object_definition_data_error`, `model_data_report_once`, `csprintf` (a map's bad data) | The job notes the object and the main CPU reports it |
+
+The type preprocess functions add no firmware calls of their own. `psp_keep` inside the compute is read once and cached (`psp_pose_predict < 0`).
+
+**The check that keeps it exact:** with the job on, `nwcheck` computes each deferred object again on the main CPU (the FPU's way) and compares bit for bit, as `poseaheadcheck` does for the pose job. Against b132 the bits differ wherever the VFPU's last bit did, so b132's statecrc isn't the reference; `nwcheck` is.
+
 ## Before any code
 
-- The inputs a compute reads (the object's position and orientation, its animation state, its parent's node, the model and animation tags, the pose made ahead) must not change while the ME computes. Which tick steps after `objects_update` write objects (scripts, effects, damage) decides how long a hand-over may run.
+- The inputs a compute reads (the object's position and orientation, its animation state, its parent's node, the model and animation tags, the pose made ahead) must not change while the ME computes. **`objects_update` is the tick's last large step** (`game.c`) [D]: after it come only `players_update_after_game`, `hud_update`, `player_effect_update` and the data checks, then the frame. Scripts, effects, AI and units all run before it. So a job handed over inside `objects_update` runs beside the main CPU's remaining object updates and those few steps, and must be done before the matrices' next reader: the frame's drawing, or, in a frame of two ticks, the next tick's early steps (units, AI, effects) and its interpolation copy. Which of those steps write objects is the next thing to read.
 - The matrices' block and the object's other fields must not share a cache line that both CPUs write (the emulator's write trace, `mewrites`).
-- `tools/mewalk.py` on the compute: 0 firmware calls, 0 VFPU, 0 indirect calls it can't follow.
 - The order of work puts C (coarse ME jobs, chunked with audio between chunks) before D: one hand-over for the whole update's matrices, not one per object.
