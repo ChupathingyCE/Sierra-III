@@ -348,6 +348,10 @@ static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))
 #define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
 static void inflight_hand_over(void);
 static int stall_force; /* (defined with the stall wrapper) */
+/* set by the frame's job itself (its args), so the ME never reads the main
+CPU's words for it: publish each stall address, and serve the ring's jobs
+between records (geinflight) */
+static int replay_inflight = 0;
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
@@ -951,6 +955,7 @@ Media Engine's job (psp_ge_me_replay) */
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
 	extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
+	extern void psp_me_serve_ring(void); /* psp_me.c */
 	unsigned int at = 0, records = 0;
 
 	while (at < used)
@@ -962,7 +967,14 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		/* build 113: on the ME, an audio block asked for meanwhile is mixed
 		between records rather than after the whole run (psp_me.c) */
 		if (on_me && (++records & 31) == 0)
+		{
 			psp_me_serve_audio();
+			/* geinflight: the frame's job lasts a frame, so a ring job the
+			next ticks hand over (perception's rays) runs between records
+			rather than after it */
+			if (replay_inflight)
+				psp_me_serve_ring();
+		}
 
 		at += buffer[at].u >> 8;
 		switch (kind)
@@ -1138,7 +1150,9 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	Simulated (args[3] 0), the main CPU runs it: marked as before */
 	if (!args[3])
 		psp_me_context = args[2] ? args[2] : 1;
+	replay_inflight = args[4] == 2;
 	defer_replay((const defer_word *)args[0], args[1], (int)args[3]);
+	replay_inflight = 0;
 	results[0] = args[1];
 	/* build 118: gemeoverlap (args[4]): the newest stall address the run
 	kept goes back in the slot (uncached), for the main CPU to pass on, and
@@ -1355,7 +1369,7 @@ static void inflight_hand_over(void)
 	args[1] = defer_used;
 	args[2] = defer_me_thread;
 	args[3] = 0; /* (psp_me.c sets it: on the ME or not) */
-	args[4] = 1; /* the newest stall address back in the results */
+	args[4] = 2; /* the newest stall address back in the results, and published as it moves */
 	psp_me_window[0] = 1;
 	inflight_me_out = 1;
 	/* simulated (the emulator), the job runs inside psp_me_submit, here */
@@ -2222,7 +2236,7 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 		stall_me_address = stall;
 		/* geinflight on the Media Engine: the list's lines to RAM, then the
 		address published for the main CPU's forwarding thread */
-		if (psp_on_me() && inflight_me_out)
+		if (psp_on_me() && replay_inflight)
 		{
 			list_write_back(stall);
 			INFLIGHT_STALL[1] = (unsigned int)qid;

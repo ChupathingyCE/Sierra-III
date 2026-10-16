@@ -584,6 +584,24 @@ void psp_me_serve_audio(void)
 	me_audio_now();
 }
 
+/* the ring as the ME's loop last left it, for a long slot job to serve
+between its steps (psp_me_serve_ring). The ME's own words: the main CPU
+never reads or writes them */
+static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look);
+static unsigned int ring_popped_now = 0, ring_last_look_now = 0;
+static int ring_ready_now = 0;
+
+/* called by the frame's job on the ME (geinflight, psp_ge.c's replay) every
+few records: the ring's waiting jobs (perception's rays from the next
+ticks) run now instead of after the whole frame. They read and write only
+their own inputs and outputs, which the frame's records never touch */
+void psp_me_serve_ring(void)
+{
+	if (!psp_on_me() || !ring_ready_now || RING_PUSHED == ring_popped_now)
+		return;
+	ring_popped_now = me_ring_drain(ring_popped_now, &ring_last_look_now);
+}
+
 /* a ring job's step (psp_me.h): the slant job every 64 triangles (~1 us
 each, b90), the rays' job every ray (~27 us: a job of 16 is ~430 us [M]), so
 an audio block waits that long at most for the ME instead of a whole job, or
@@ -849,7 +867,16 @@ void meLibOnProcess(void)
 			volatile struct me_slot *slot = SLOT(k);
 
 			if (slot->request != slot->done)
+			{
+				/* a long job may serve the ring itself (psp_me_serve_ring) */
+				ring_popped_now = ring_popped;
+				ring_last_look_now = ring_last_look;
+				ring_ready_now = ring_ready;
 				me_serve(slot, sums);
+				ring_ready_now = 0;
+				ring_popped = ring_popped_now;
+				ring_last_look = ring_last_look_now;
+			}
 			if (k == ME_SLOT_AUDIO && ring_ready)
 			{
 				unsigned int before = ring_popped;
