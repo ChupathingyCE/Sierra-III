@@ -4,7 +4,7 @@
 1 play, b133 as it ships: nearauto assettrack geo2
 2 ladder, every opening 90 s, frames timed: nearauto assettrack geo2 gebusy iostats ladder90 frametrace
 3 cinematic bench, stops by itself: nearauto assettrack geo2 gebusy exitat70
-4 play, the speed-ups off (b121 to b133): nearauto assettrack geo2 percold surfacetestold machinesawake meslantoff meraysoff posingold animlockcall aiprofilefull weapontrackawake pathclearfull deletedwalkall aipathold logeachline obscurertest nearautofull flaresfull fractiondouble cutlessoff surfaceboundoff poseaheadoff nwbatchoff
+4 play, the speed-ups off (b121 to b133): nearauto assettrack geo2 percold surfacetestold machinesawake meslantoff meraysoff posingold animlockcall aiprofilefull weapontrackawake pathclearfull deletedwalkall aipathold logeachline obscurertest nearautofull flaresfull fractiondouble cutlessoff surfaceboundoff poseaheadoff
 5 play, b125's fixes off (as b124, ME restart aside): nearauto assettrack geo2 levellocaloff streamroomoff seethroughpush seethroughwrap waterunfogged meresetwhole
 6 dither A/B, half strength: nearauto assettrack geo2 ditherhalf
 7 dither A/B, off: nearauto assettrack geo2 nodither
@@ -16,4 +16,4 @@
 13 showcase, the openings' cutscenes one after another: nearauto assettrack geo2 sceneladder
 14 play, frames timed: nearauto assettrack geo2 frametrace
 15 sleep, ME never started (exit last): nearauto assettrack geo2 nomeaudio
-16 play, node matrices in each update, as b132 (nwbatchoff): nearauto assettrack geo2 nwbatchoff
+16 play, scenery's node matrices together (nwbatch): nearauto assettrack geo2 nwbatch

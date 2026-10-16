@@ -18621,12 +18621,15 @@ FIXES_135["source/objects/objects.c#poseaheadon"] = [
 # no parent and no attachments have their computes and postprocesses put off: each is listed where it would have run, and the list is run in
 # order at the end of the loop, one after another, on the same CPU; each
 # fetches its code once, not once an object (the PSP-3000: b30's 36 computes
-# a tick cost 0.61 ms there against ~3 ms inside the loop). That list is the
+# a tick cost 0.61 ms there against ~3 ms inside the loop; c10's ~300 cost
+# 9.7 ms there against ~3 ms inside it). That list is the
 # job the Media Engine version takes over. Play exact (state CRC pairs on c20,
 # d20, a50, b30): readers and writers of a waiting object settle it first, and
 # each compute from the list reads the inputs its object had at its update.
-# On by default; "nwbatchoff" turns it off; "nwbatchwide" puts off machines',
-# controls' and bipeds' too, which on c20 cost more than they saved.
+# Opt-in ("nwbatch"): b30's few heavy scenery computes gain, c10's hundreds of
+# light ones lose more (each made out of the loop takes its object cold);
+# "nwbatchwide" puts off machines', controls' and bipeds' too, which on c20
+# cost more than they saved.
 # "nwbatchheld" also puts off a biped's with what it holds: the biped's
 # compute, then each attachment's compute and postprocess as their updates
 # reach them, then the biped's postprocess, the order objects_update would
@@ -18839,9 +18842,12 @@ static void psp_nwb_begin(void)
 	if (psp_nwb_on < 0)
 	{
 		psp_nwb_held = psp_keep("nwbatchheld") != 0;
-		/* "nwbatchoff": each compute in its object's update ("nwbatch", the
-		old opt-in, is still accepted and changes nothing) */
-		psp_nwb_on = psp_nwb_held || !psp_keep("nwbatchoff");
+		/* opt-in: on c10 the batch cost 9.7 ms a tick for ~300 light scenery
+		computes that cost ~3 ms in their updates, each taking its object's
+		datum and blocks cold out of the loop (the PSP-3000's ladder, lab
+		38884427350), while b30's few heavy ones gained; "nwbatchoff" still
+		wins over it */
+		psp_nwb_on = psp_nwb_held || (psp_keep("nwbatch") && !psp_keep("nwbatchoff"));
 		/* scenery and its kin only: on the PSP-3000 b30's scenery computes
 		cost a fifth as much made together (lab 38871696661), while c20's
 		machines cost the same either way and its unarmed bipeds were nearly
