@@ -6,7 +6,10 @@
 
 **What's new for you:** the launch menu shows every preset again (one row each, the cursor's keep words below the list); b132's preset 15 was missing. Otherwise b133 plays and looks as b132 did. Preset 16 tries the node-matrix batch (`nwbatch`): play exact, faster on b30, slower on c10 and c20, so it's off unless asked.
 
-**Speed against b132:** TODO (the PSP-1000's ladder).
+**Speed against b132** [M, the ladder's tick, both PSPs agree]:
+- **Within ~1% on most maps:** a50, b30, c20, c40, d20.
+- **Slower on c10 (+6.9%) and a30 (+3–4%).** The batch's switched-off code makes each object's update ~2.5 KB bigger, and the update no longer fits the instruction cache: the same instructions, 19–26% more instruction misses (the cache model, lab 38903261679). b134 takes that code out of the build.
+- Labs: PSP-1000 38905744440 against b132's 38827551482; PSP-3000 38899916249 against 38884473198.
 
 Two earlier b133s were never posted:
 - `1fff864` had the batch on and a profile counted with it on. The PSP-3000's ladder had it slower than b132 on most maps (c10 +34%).
