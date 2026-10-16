@@ -187,11 +187,21 @@ def rotate(points, quarter):
     return out
 
 
-# one leaf of the D-pad as the up button, pointing in to the pad's middle,
-# and its arrow (solid: the PSP's outlined ones are lost at the HUD's size);
-# the whole pad's leaves are these at a third of the size, round the middle
-DPAD_LEAF = [(0.14, 0.05), (0.86, 0.05), (0.86, 0.58), (0.5, 0.95), (0.14, 0.58)]
-DPAD_ARROW = [(0.5, 0.16), (0.69, 0.44), (0.31, 0.44)]
+def bezier(a, control, b, steps=24):
+    return [((1 - t) ** 2 * a[0] + 2 * (1 - t) * t * control[0] + t * t * b[0],
+             (1 - t) ** 2 * a[1] + 2 * (1 - t) * t * control[1] + t * t * b[1])
+            for t in (i / steps for i in range(steps + 1))]
+
+
+# one leaf of the D-pad as the up button, as a PSP-3000's photo shows it
+# (Sheepdog01): its outer edge gently bowed, straight sides for its outer half, then
+# a taper to a point at the pad's middle; corners and point rounded (DPAD_ROUND,
+# drawn as rounded()). Its arrow is solid, as the PSP's outline is lost at the
+# HUD's size
+DPAD_LEAF = ([(0.1, 0.5), (0.1, 0.17)] + bezier((0.1, 0.17), (0.5, 0.0), (0.9, 0.17))[1:] +
+             [(0.9, 0.5), (0.5, 0.92)])
+DPAD_ARROW = [(0.5, 0.2), (0.67, 0.44), (0.33, 0.44)]
+DPAD_ROUND = 0.055
 DPAD_TURNS = {"up": 0, "right": 1, "down": 2, "left": 3}
 
 
@@ -204,27 +214,22 @@ def dpad_leaf(layers, turns, size, scale=1.0, dx=0.0, dy=0.0):
 
     mask = blank(size, size)
     ImageDraw.Draw(mask).polygon(place(DPAD_LEAF), fill=255)
-    glass(layers, rounded(mask, size * 0.03 * scale))
+    glass(layers, rounded(mask, size * DPAD_ROUND * scale))
     arrow = blank(size, size)
     ImageDraw.Draw(arrow).polygon(place(DPAD_ARROW), fill=255)
     symbol(layers, arrow)
 
 
 def dpad(layers, lit, size):
-    """a D-pad button: the one leaf of the PSP-1000's pad, pointing in to the
-    middle; with none named, the whole pad (the four leaves round it)"""
+    """a D-pad button: the one leaf of the PSP's pad, pointing in to the
+    middle; with none named, the whole pad, its four leaves spaced round the
+    middle as the PSP's are (a gap between the points)"""
     if lit is not None:
         dpad_leaf(layers, DPAD_TURNS[lit], size)
         return
-    offsets = {"up": (0.0, -0.25), "right": (0.25, 0.0), "down": (0.0, 0.25), "left": (-0.25, 0.0)}
+    offsets = {"up": (0.0, -0.275), "right": (0.275, 0.0), "down": (0.0, 0.275), "left": (-0.275, 0.0)}
     for name, turns in DPAD_TURNS.items():
-        dpad_leaf(layers, turns, size, 0.46, *offsets[name])
-
-
-def bezier(a, control, b, steps=24):
-    return [((1 - t) ** 2 * a[0] + 2 * (1 - t) * t * control[0] + t * t * b[0],
-             (1 - t) ** 2 * a[1] + 2 * (1 - t) * t * control[1] + t * t * b[1])
-            for t in (i / steps for i in range(steps + 1))]
+        dpad_leaf(layers, turns, size, 0.44, *offsets[name])
 
 
 def shoulder(layers, letter, size, font):

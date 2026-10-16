@@ -87,7 +87,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - `tools/psp_glyphs.py` draws 18 glyphs: △ ○ ✕ □, the D-pad (each arm and whole), L, R, the nub, the face-button diamond (moving), START, SELECT, and the chords SELECT + ↑ / ↓ / L.
   - Each glyph has the shape of the PSP-1000's own button (Sheepdog01, 2026-10-16):
     - the face buttons are round buttons with their outlined symbol;
-    - each D-pad glyph is that one leaf of the pad, pointing in to its middle, with its arrow (solid, as an outline is lost at the HUD's size);
+    - each D-pad glyph is that one leaf of the pad (after a PSP-3000 photo: a gently bowed outer edge with rounded corners, straight sides, then a taper to a rounded point at the pad's middle), with its arrow (solid, as an outline is lost at the HUD's size); the whole pad spaces its four leaves as the PSP does;
     - L and R are tabs flat along their top and bottom, with a straight slanted inner side and a smooth convex back round the PSP's corner (after Sheepdog01's sketch and a PSP-3000 photo), mirrored;
     - the nub is a checkered disc;
     - START and SELECT are the PSP-1000's flat-topped bowl keys (Sheepdog01's sketch), each with its name.
