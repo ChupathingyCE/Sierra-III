@@ -19779,6 +19779,38 @@ static void render_state_bitmap(
 #endif"""),
 ]
 
+FIXES_CONTROLS["source/units/bipeds.c#controls"] = [
+("""	biped_verify_object_vectors(biped_index, "post-update");
+	profile_exit(biped_update_section);
+
+	return TRUE;
+}""",
+ """	biped_verify_object_vectors(biped_index, "post-update");
+	profile_exit(biped_update_section);
+
+	return TRUE;
+}
+
+#ifdef HALO_PSP
+/* how far the local player's biped is crouched, 0 to 1 (-1: no biped), for
+the heartbeat's controls line, which shows the crouch toggle taking hold
+(psp_platform.c; psp_fixups.py FIXES_CONTROLS). On the game's thread */
+float psp_player_crouch(void)
+{
+	long player_index;
+	struct biped_datum *biped;
+
+	if (!game_in_progress())
+		return -1.0f;
+	player_index = local_player_get_player_index(0);
+	if (player_index == NONE || player_get(player_index)->unit_index == NONE)
+		return -1.0f;
+	biped = biped_try_and_get(player_get(player_index)->unit_index);
+	return biped ? biped->biped.crouch : -1.0f;
+}
+#endif"""),
+]
+
 SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 

@@ -2711,10 +2711,12 @@ static int heartbeat_thread(SceSize args, void *argp)
 				psp_nub_seen[2], psp_nub_seen[3]);
 			{
 				extern volatile unsigned int controls_events[5];
+				extern float psp_player_crouch(void);
 
 				if (controls_events[0] | controls_events[1] | controls_events[2])
-					platform_log("controls (since launch): crouch toggled %u times; d-pad left tapped %u times (the game reloaded %u), held %u times (the game acted %u)",
-						controls_events[0], controls_events[1], controls_events[3], controls_events[2], controls_events[4]);
+					platform_log("controls (since launch): crouch toggled %u times; d-pad left tapped %u times (the game reloaded %u), held %u times (the game acted %u); crouched %d%% now",
+						controls_events[0], controls_events[1], controls_events[3], controls_events[2], controls_events[4],
+						(int)(psp_player_crouch() * 100.0f));
 			}
 			if ((beat & 1) == 0)
 			{

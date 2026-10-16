@@ -410,12 +410,16 @@ int psp_input_port_reload(void)
 
 int psp_input_port_action_only(void)
 {
-	static int was = 0;
+	/* counted once a hold: the engine asks only while the action bit is
+	set, so it never sees the release between two holds */
+	static unsigned int counted_hold = 0;
 	int now = action_split_on > 0 && action_acting;
 
-	if (now && !was)
+	if (now && counted_hold != controls_events[2])
+	{
+		counted_hold = controls_events[2];
 		controls_events[4]++;
-	was = now;
+	}
 	return now;
 }
 
