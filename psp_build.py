@@ -368,12 +368,35 @@ def compile_one(item):
         # tree: a function's file name is part of its profile's checksum, so
         # counts made on the lab's runner match a build on any machine
         cmd = [a.replace(HERE + "/", "sierra/") for a in cmd]
+    # PGO=use: a counted unit compiles with its warnings on (they change no
+    # code), so GCC's word that it dropped a function's counts reaches
+    # profile_mismatches(); -w hides it (b133's d9e7cf3 ran 3-20% slower
+    # with five hot functions compiled without their counts, unseen)
+    checked = PGO == "use" and any(a.startswith("-fprofile-use=") for a in cmd)
+    plain = cmd
+    if checked:
+        cmd = [a for a in cmd if a != "-w"]
     r = subprocess.run(cmd, cwd=TREE, capture_output=True, text=True)
+    if r.returncode and checked:
+        # (a unit that only compiles with -w: compiled as before, unchecked)
+        cmd = plain
+        r = subprocess.run(cmd, cwd=TREE, capture_output=True, text=True)
     if r.returncode and "-mno-explicit-relocs" in cmd:
         # inline assembly that uses $at (".set noat") needs explicit relocations
         r = subprocess.run([a for a in cmd if a not in ("-mno-explicit-relocs", "-freorder-blocks-and-partition")],
                            cwd=TREE, capture_output=True, text=True)
     return src, r.returncode, r.stderr, obj
+
+def profile_mismatches(results):
+    """the functions GCC compiled without their counts: their code changed
+    since the profile was counted (GCC checks each function's branches)"""
+    found = []
+    for src, code, err, obj in results:
+        for line in err.splitlines():
+            if "does not match its profile data" in line:
+                m = re.search(r"function '([^']+)'", line)
+                found.append("%s: %s" % (src, m.group(1) if m else line.strip()))
+    return sorted(set(found))
 
 LIBS = ["-lpspvram", "-lpspaudio", "-lpspvfpu", "-lpspdisplay", "-lpspgum", "-lpspgu", "-lpspge",
         "-lpsphprm", "-lpspdmac", "-lpspctrl", "-lpsppower", "-lpthread", "-lpsprtc", "-lpspdebug", "-lme-core", "-lm"]
@@ -606,6 +629,17 @@ def main():
           "; failures in compile_errors.txt: " + ", ".join(os.path.basename(s) for s, e in bad) if bad else ""))
     if bad:
         sys.exit("not linking: %d units failed to compile" % len(bad))
+    if PGO == "use":
+        mismatched = profile_mismatches(results)
+        with open(os.path.join(OUT, "pgo_mismatch.txt"), "w") as f:
+            f.write("".join(m + "\n" for m in mismatched))
+        print("pgo: %d functions compiled without their counts (the code changed since pgo/%s.tgz was counted)%s"
+              % (len(mismatched), PGO_PROFILE, ": pgo_mismatch.txt" if mismatched else ""))
+        for m in mismatched[:20]:
+            print("  " + m)
+        # PSP_PGO_STRICT=1 (a release): its profile must be counted at its own code
+        if mismatched and os.environ.get("PSP_PGO_STRICT", "") == "1":
+            sys.exit("not linking: PSP_PGO_STRICT=1 and the profile doesn't match the code; count it at this commit")
     objs = [o for s, c, e, o in results if not c]
     stubs = set()
     for attempt in range(6):
