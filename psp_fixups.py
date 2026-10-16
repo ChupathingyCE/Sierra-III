@@ -18870,6 +18870,15 @@ static void psp_nwb_sort(void)
 	}
 }
 
+/* the bounding sphere of an object about to be tested by another (the
+compute sets it, so a put-off object's would still be last tick's):
+objects_in_sphere and the collision tests' sphere copies call this */
+void psp_nwb_sphere_read(long object_index)
+{
+	if (psp_nwb_count > psp_nwb_done)
+		psp_nwb_settle(object_index);
+}
+
 /* the loop is over: the rest, in order */
 static void psp_nwb_close(void)
 {
@@ -18960,6 +18969,44 @@ real_matrix4x3 *object_get_node_matrices(
 		if (object_header->identifier)
 		{
 			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);"""),
+("""	for (object_index = 0; object_index<object_count_in_clusters && result<maximum_count; ++object_index)
+	{
+		struct object_datum *object = object_get(temporary_object_indices[object_index]);
+		if (TEST_FLAG(type_flags, object->object.type) &&""",
+"""	for (object_index = 0; object_index<object_count_in_clusters && result<maximum_count; ++object_index)
+	{
+		struct object_datum *object = object_get(temporary_object_indices[object_index]);
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_136 #nwbatch): its sphere as this tick's compute left it */
+		psp_nwb_sphere_read(temporary_object_indices[object_index]);
+#endif
+		if (TEST_FLAG(type_flags, object->object.type) &&"""),
+]
+
+FIXES_136["source/physics/collisions.c#nwbatch"] = [
+("""static struct psp_object_sphere const *psp_sphere_of(long object_index)
+{
+	struct psp_object_sphere const *sphere = &psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)];
+""",
+"""void psp_nwb_sphere_read(long object_index);
+
+static struct psp_object_sphere const *psp_sphere_of(long object_index)
+{
+	struct psp_object_sphere const *sphere = &psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)];
+
+	/* psp_fixups.py (FIXES_136 #nwbatch): as this tick's compute left it */
+	psp_nwb_sphere_read(object_index);
+"""),
+("""				short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+				struct psp_object_sphere const *sphere = &psp_object_spheres[absolute_index];
+
+				/* collision_test_vector's order""",
+"""				short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+				struct psp_object_sphere const *sphere = &psp_object_spheres[absolute_index];
+
+				/* psp_fixups.py (FIXES_136 #nwbatch): as this tick's compute left it */
+				psp_nwb_sphere_read(object_index);
+				/* collision_test_vector's order"""),
 ]
 
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()):
