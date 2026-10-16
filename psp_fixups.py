@@ -18654,11 +18654,14 @@ static short *psp_nwb_record = NULL;
 /* an entry already run: a reader runs only its object's own entries, out of
 the list's order (the blocks are independent), and the rest stay batched */
 static unsigned char *psp_nwb_ran = NULL;
-static int psp_nwb_count = 0, psp_nwb_done = 0, psp_nwb_records = 0;
+/* psp_nwb_count and psp_nwb_waiting are global: the collision tests read
+them in line (collisions.c's psp_nwb_sphere_read) */
+int psp_nwb_count = 0;
+static int psp_nwb_done = 0, psp_nwb_records = 0;
 static int psp_nwb_open = 0;
 static int psp_nwb_on = -1, psp_nwb_held = 0;
 static unsigned long psp_nwb_types = 0;
-static unsigned char psp_nwb_waiting[MAXIMUM_OBJECTS_PER_MAP / 8];
+unsigned char psp_nwb_waiting[MAXIMUM_OBJECTS_PER_MAP / 8];
 static unsigned short *psp_nwb_last = NULL, *psp_nwb_first = NULL;
 /* a waiting compute's inputs from the object's own fields, as they stood
 where it would have run. The object's update
@@ -18988,6 +18991,15 @@ static void psp_nwb_settle(long object_index)
 		psp_nwb_run_entry(k);
 }
 
+/* a reader of an object: its waiting entries, if it has any. The bit is
+tested in line, as readers are many and waiting objects few */
+#define PSP_NWB_READ(index) do { \
+		unsigned long psp_nwb_absolute = (unsigned long)(index) & 0xFFFFUL; \
+		if (psp_nwb_count && psp_nwb_absolute < MAXIMUM_OBJECTS_PER_MAP && \
+			((psp_nwb_waiting[psp_nwb_absolute >> 3] >> (psp_nwb_absolute & 7)) & 1)) \
+			psp_nwb_settle(index); \
+	} while (0)
+
 /* "nwbatchsort": the waiting blocks (a top-level object's entries, with its
 attachments' between) in order of their objects' animation graphs, so
 objects that share one run one after another while its tag data is in the
@@ -19102,8 +19114,13 @@ compute sets it, so a put-off object's would still be last tick's):
 objects_in_sphere and the collision tests' sphere copies call this */
 void psp_nwb_sphere_read(long object_index)
 {
-	if (psp_nwb_count > psp_nwb_done)
-		psp_nwb_settle(object_index);
+	PSP_NWB_READ(object_index);
+}
+
+/* the collision tests' way in, once their in-line test found the bit set */
+void psp_nwb_sphere_settle(long object_index)
+{
+	psp_nwb_settle(object_index);
 }
 
 /* the loop is over: the rest, in order */
@@ -19133,8 +19150,7 @@ real_matrix4x3 *object_get_node_matrices(
 	long object_index)
 {
 	/* psp_fixups.py (FIXES_136 #nwbatch) */
-	if (psp_nwb_count > psp_nwb_done)
-		psp_nwb_settle(object_index);
+	PSP_NWB_READ(object_index);
 	/* psp_fixups.py (FIXES_134 #nmreaders) */"""),
 ("""	short node_index)
 {
@@ -19142,8 +19158,7 @@ real_matrix4x3 *object_get_node_matrices(
 """	short node_index)
 {
 	/* psp_fixups.py (FIXES_136 #nwbatch) */
-	if (psp_nwb_count > psp_nwb_done)
-		psp_nwb_settle(object_index);
+	PSP_NWB_READ(object_index);
 	/* psp_fixups.py (FIXES_134 #nmreaders) */"""),
 ("""		int psp_pose_skipped = psp_pose_half_skips(object_index, object);
 """,
@@ -19207,7 +19222,7 @@ real_matrix4x3 *object_get_node_matrices(
 		struct object_datum *object = object_get(temporary_object_indices[object_index]);
 #ifdef HALO_PSP
 		/* psp_fixups.py (FIXES_136 #nwbatch): its sphere as this tick's compute left it */
-		psp_nwb_sphere_read(temporary_object_indices[object_index]);
+		PSP_NWB_READ(temporary_object_indices[object_index]);
 #endif
 		if (TEST_FLAG(type_flags, object->object.type) &&"""),
 ]
@@ -19251,7 +19266,20 @@ FIXES_136["source/physics/collisions.c#nwbatch"] = [
 {
 	struct psp_object_sphere const *sphere = &psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)];
 """,
-"""void psp_nwb_sphere_read(long object_index);
+"""/* a waiting object's sphere made current before a test reads it; the
+waiting bit is tested here, in line, as the collision tests ask for
+thousands of spheres a tick and nearly none are waiting */
+extern int psp_nwb_count;
+extern unsigned char psp_nwb_waiting[];
+void psp_nwb_sphere_settle(long object_index);
+
+static inline void psp_nwb_sphere_read(long object_index)
+{
+	unsigned long absolute = (unsigned long)object_index & 0xFFFFUL;
+
+	if (psp_nwb_count && absolute < MAXIMUM_OBJECTS_PER_MAP && ((psp_nwb_waiting[absolute >> 3] >> (absolute & 7)) & 1))
+		psp_nwb_sphere_settle(object_index);
+}
 
 static struct psp_object_sphere const *psp_sphere_of(long object_index)
 {
