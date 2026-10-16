@@ -48,7 +48,8 @@ CELL = 32
 # drawn this many times larger and reduced, for clean edges
 SCALE = 8
 
-# (name, kind, what, cells)
+# (name, kind, what, cells): a chord's cells are its two buttons' and the
+# plus's between them (PLUS_CELLS)
 GLYPHS = [
     ("cross", "face", "cross", 1),
     ("circle", "face", "circle", 1),
@@ -65,9 +66,9 @@ GLYPHS = [
     ("face", "cluster", None, 1),
     ("start", "pill", "START", 2),
     ("select", "pill", "SELECT", 2),
-    ("select_up", "chord", ("select", "dpad_up"), 3),
-    ("select_down", "chord", ("select", "dpad_down"), 3),
-    ("select_l", "chord", ("select", "l"), 4),
+    ("select_up", "chord", ("select", "dpad_up"), None),
+    ("select_down", "chord", ("select", "dpad_down"), None),
+    ("select_l", "chord", ("select", "l"), None),
 ]
 
 # the shades (0-1, see the docstring)
@@ -485,17 +486,22 @@ def paste(target, source, x, y, scale=1.0):
     target.a[region] = a + target.a[region] * (1.0 - a)
 
 
+# the room a chord's plus takes between its two buttons, in cells: narrow, so
+# the chords keep the sheet at 256 x 128
+PLUS_CELLS = 0.45
+
+
 def chord(layers, first, second, size, font):
-    """SELECT at four fifths, a plus, then the other button at the right
-    end: as many cells as the two take, with a cell between them"""
+    """two buttons pressed together: each at its own size, never scaled
+    (Sheepdog01), with a plus between them"""
     total = layers.a.shape[1]
-    paste(layers, first, 0, round(size * 0.1), 0.8)
+    paste(layers, first, 0, 0)
     paste(layers, second, total - second.a.shape[1], 0)
     mark = blank(total, size)
     draw = ImageDraw.Draw(mark)
     box = draw.textbbox((0, 0), "+", font=font)
     width, height = box[2] - box[0], box[3] - box[1]
-    middle = (first.a.shape[1] * 0.8 + total - second.a.shape[1]) / 2
+    middle = (first.a.shape[1] + total - second.a.shape[1]) / 2
     draw.text((middle - width / 2 - box[0], (size - height) / 2 - box[1]), "+", font=font, fill=255)
     symbol(layers, mark)
 
@@ -548,9 +554,15 @@ def main():
     pill_font = ImageFont.truetype(letter_path, big * 3 // 10)
     plus_font = ImageFont.truetype(letter_path, big // 2)
 
+    # each glyph's width in the sheet's pixels: whole cells, or for a chord its
+    # parts' widths and the plus's
+    widths = {}
+    for name, kind, what, cells in GLYPHS:
+        widths[name] = (widths[what[0]] + round(PLUS_CELLS * CELL) + widths[what[1]] if kind == "chord"
+                        else cells * CELL)
     drawn = {}
     for name, kind, what, cells in GLYPHS:
-        layers = Layers(big * cells, big)
+        layers = Layers(widths[name] * SCALE, big)
         if kind == "face":
             face_button(layers, what, big)
         elif kind == "dpad":
@@ -567,26 +579,27 @@ def main():
             chord(layers, drawn[what[0]], drawn[what[1]], big, plus_font)
         drawn[name] = layers
 
-    # packed left to right in rows of 8 cells, a wide glyph never split
+    # packed left to right in rows 8 cells wide, a glyph never split; places
+    # in pixels (a chord isn't whole cells)
     columns = 8
     places, x, y = [], 0, 0
     for name, kind, what, cells in GLYPHS:
-        if x + cells > columns:
+        if x + widths[name] > columns * CELL:
             x, y = 0, y + 1
-        places.append((name, x, y, cells))
-        x += cells
+        places.append((name, x, y, widths[name]))
+        x += widths[name]
     rows = y + 1
     sheet_a = np.zeros((rows * CELL, columns * CELL), np.float32)
     sheet_p = np.zeros_like(sheet_a)
-    for name, x, y, cells in places:
+    for name, x, y, width in places:
         layers = drawn[name]
         # reduced by averaging each SCALE x SCALE block (premultiplied, so
         # the shade at an edge stays the edge's own)
         h, w = layers.a.shape
         a = layers.a.reshape(h // SCALE, SCALE, w // SCALE, SCALE).mean(axis=(1, 3))
         p = layers.p.reshape(h // SCALE, SCALE, w // SCALE, SCALE).mean(axis=(1, 3))
-        sheet_a[y * CELL:(y + 1) * CELL, x * CELL:(x + cells) * CELL] = a
-        sheet_p[y * CELL:(y + 1) * CELL, x * CELL:(x + cells) * CELL] = p
+        sheet_a[y * CELL:(y + 1) * CELL, x:x + width] = a
+        sheet_p[y * CELL:(y + 1) * CELL, x:x + width] = p
     shade = np.where(sheet_a > 1e-4, sheet_p / np.maximum(sheet_a, 1e-4), 0.0)
     os.makedirs(out, exist_ok=True)
     if master:
@@ -625,8 +638,8 @@ def main():
             header.write("\tPSP_GLYPH_%s,\n" % name.upper())
         header.write("\tPSP_GLYPH_COUNT\n};\n")
         header.write("static const unsigned short psp_glyph_cells[PSP_GLYPH_COUNT][4] =\n{\n")
-        for name, x, y, cells in places:
-            header.write("\t{ %d, %d, %d, %d }, /* %s */\n" % (x * CELL, y * CELL, cells * CELL, CELL, name))
+        for name, x, y, width in places:
+            header.write("\t{ %d, %d, %d, %d }, /* %s */\n" % (x, y * CELL, width, CELL, name))
         header.write("};\n")
         # only psp_ge.c, which draws them, asks for the texels: one byte
         # each, alpha << 4 | shade (glyph_palette there turns them to colour)

@@ -84,7 +84,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 - **Why (Sheepdog01):** "so we can have the UI reflect and ground the fact that this isn't an xbox".
 - **The sheet:**
-  - `tools/psp_glyphs.py` draws 18 glyphs: △ ○ ✕ □, the D-pad (each arm and whole), L, R, the nub, the face-button diamond (moving), START, SELECT, and the chords SELECT + ↑ / ↓ / L.
+  - `tools/psp_glyphs.py` draws 18 glyphs: △ ○ ✕ □, the D-pad (each arm and whole), L, R, the nub, the face-button diamond (moving), START, SELECT, and the chords SELECT + ↑ / ↓ / L (each button at its own size, never scaled, with a plus between: Sheepdog01).
   - Each glyph has the shape of the PSP-1000's own button (Sheepdog01, 2026-10-16):
     - the face buttons are round buttons with their outlined symbol;
     - each D-pad glyph is that one leaf of the pad (after a PSP-3000 photo: a slightly bowed outer edge with rounded corners, long straight sides, then a short taper to a rounded point at the pad's middle), with its arrow: the face buttons' triangle at about 60% of its size, outlined with their stroke, centred on the leaf; the whole pad spaces its four leaves as the PSP does, and the face-button cluster takes the same spacing;
