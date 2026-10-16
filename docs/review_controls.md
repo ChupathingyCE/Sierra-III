@@ -97,7 +97,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
     - At draw, `glyph_palette` turns the shade into colour from the colour the game hands the icon, which is its text colour. Shade 0 is that colour at 15%, 0.7 the colour itself, and above it the colour lightens to white.
     - So the body is one flat shade of the colour, half see-through, under a light crisp gloss over its upper part, with a bright rim; the symbol is near white and solid. That's the satin finish, Sheepdog01's pick from four (`--finish=` in the tool: gloss, solid, soft, satin). The glyphs sit in the HUD's blue in play and in the menus' colour in the menus.
   - `psp/glyphs/psp_glyphs.png` is a preview, in the HUD's blue and in white.
-  - **Resolution:** the shapes are geometry, drawn at 4× and reduced.
+  - **Resolution:** the shapes are geometry, drawn at 8× and reduced. Rims, edges and rounded corners come from each pixel's straight-line distance to the shape's edge (scipy's distance transform), so they're the same width at every angle; square grow and shrink filters left the slants blotchy (Sheepdog01).
     - The game carries 32-px cells; the HUD draws glyphs about 18 px high [U: from the mock; `glyphs2`'s shots will say].
     - A larger sheet would be worse, not better: the GE would shrink it more than twice over with no mipmaps, which shimmers, and it would take 4× the memory (128 KB at 64-px cells).
     - `psp/glyphs/psp_glyphs_master.png` is a 128-px-cell copy at full precision (`--master`), for looking at and for other uses.

@@ -32,7 +32,7 @@ README): full precision, not cut to 4 bits, in white and in the HUD's blue.
 
 usage: python3 tools/psp_glyphs.py ENGINE_CHECKOUT OUT_DIR [--cell=32] [--header=PATH]
        python3 tools/psp_glyphs.py ENGINE_CHECKOUT OUT_DIR --master [--cell=128]
-(the repo's copies: OUT_DIR psp/glyphs, --header=psp/src/psp_glyphs.h, and
+(needs numpy, Pillow and scipy; the repo's copies: OUT_DIR psp/glyphs, --header=psp/src/psp_glyphs.h, and
 --master --cell=128 for psp/glyphs/psp_glyphs_master.png; ENGINE_CHECKOUT for
 Overpass, ChupathingyCE's port/assets/fonts)"""
 
@@ -41,11 +41,12 @@ import os
 import sys
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageDraw, ImageFont
+from scipy.ndimage import distance_transform_edt
 
 CELL = 32
 # drawn this many times larger and reduced, for clean edges
-SCALE = 4
+SCALE = 8
 
 # (name, kind, what, cells)
 GLYPHS = [
@@ -112,21 +113,33 @@ def as_array(mask):
     return np.asarray(mask, np.float32) / 255.0
 
 
+def distance(mask):
+    """each pixel's signed distance to the shape's edge, in pixels (negative
+    inside): measured in a straight line, so anything built from it (a rim,
+    an edge, a rounded corner) is the same width at every angle, which
+    square grow and shrink filters aren't on a slant"""
+    inside = np.asarray(mask) >= 128
+    return distance_transform_edt(~inside) - distance_transform_edt(inside)
+
+
+def within(field, limit):
+    return Image.fromarray(np.where(field <= limit, 255, 0).astype(np.uint8), "L")
+
+
 def rounded(mask, radius):
-    """the shape's corners rounded: blurred and cut back at half"""
+    """the shape's outer corners rounded to true arcs of this radius: shrunk
+    by it, then grown back by it"""
     if radius < 1:
         return mask
-    return mask.filter(ImageFilter.GaussianBlur(radius)).point(lambda v: 255 if v >= 128 else 0)
+    return within(distance(within(distance(mask), -radius)), radius)
 
 
 def grown(mask, pixels):
-    size = 2 * int(pixels) + 1
-    return mask.filter(ImageFilter.MaxFilter(size)) if size > 1 else mask
+    return within(distance(mask), pixels) if pixels >= 0.5 else mask
 
 
 def shrunk(mask, pixels):
-    size = 2 * int(pixels) + 1
-    return mask.filter(ImageFilter.MinFilter(size)) if size > 1 else mask
+    return within(distance(mask), -pixels) if pixels >= 0.5 else mask
 
 
 def bounds(mask):
