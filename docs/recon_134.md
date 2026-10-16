@@ -50,3 +50,26 @@ Two more come from existing switches: `PSP_TICK_STEPS=1` splits the tick by step
 - **drawcensus:** the light runs' share is d20's exact cut (ceiling ~7–11 ms a frame [U]); the tint triples' size says whether baking the tint fits in memory (−25 ms of GE time on b30's ride [U]); the near-eye definitions say what a30's 22 ms is.
 - **sleepcensus:** a wake rate far below the checks makes change tracking worth its proof of every writer.
 - **The tick steps:** what in the vehicles' and the bipeds' time is exact to skip, and which AI phases the far-actor question (Sheepdog01's call) would touch.
+
+## What came back (2026-10-16)
+
+The emulator batch (recon134a, lab 38920291358, counts and shares) [E], the PSP-1000 (lab 38925285127) [M], and ChupathingyCE's desktop build (pc-chupa 38927713634) [E].
+
+| Question | Answer | So |
+|---|---|---|
+| Do the two CPUs slow each other? (mebus, b30, the PSP-1000) | The ME on scattered misses: the main CPU's tick +11.9% (nine windows, +6.4 to +13.3%), the ME −15%. With arithmetic between its loads: +5% and −10% | The bus has room. Lever 1 holds at −10% to −36% a frame (b30 −25%) [U], with the main CPU's share taken 12% slower |
+| Can a whole frame be recorded? (gedefer, b30) | ~1,780 calls, ~100 KB a frame on the busiest stretch; drains only at frame end, window begin and HUD text changes | Two frame buffers of ~128 KB, and those three calls become the frame's boundaries |
+| What are b30's ride's ~154 models? | 98 scenery (boulders 40, trees ~30, shrubs 13, crates 9), 26 bipeds, 25 weapons; 101 of them under 16 px on the PSP's screen | |
+| Does the original draw fewer? | No. At 16:9 it draws 155.5 against the port's 153.8, the same scenery (98.2). At 4:3 it draws 120 (the narrower view) | No restoration to be had: b30's drawing needs cheaper draws (the renderer session's precompiled lists), not fewer |
+| Can every tint be baked? | b30 has 231 distinct change-colour triples: 6.9 MB of tinted copies at 16 bits, 3.4 MB at 8; a30 and d20 ~3 MB | Not all: a cache of the most-drawn ones, sized by how often each is drawn |
+| d20's light pass | 163 point-light draws a frame (no spotlights), 8,379 triangles; only 21% in runs of 16 wholly beyond the light | The exact run cull saves ~21% of the loop, not the half hoped for. Merging the lights that reach the same surface into one draw is the next question |
+| Who wakes sleepers? | 0.00–0.26% of sleeper checks find a change (b30), 0–0.2% (a50, d20) | Being told on a write would remove nearly all of the checks' 3.8–6.8 ms a tick on b30, if every writer can be found |
+| The near-plane load | b30: the Pelican's own cabin (5,742 rigid + 5,774 bending triangles a frame). a30: lifepod_crashed and the marines | The Pelican as a near layer of its own, as the first-person weapon is |
+
+Not answered here: who reads other objects' data mid-tick (the loop split's map, A4), which needs a tracer of its own.
+
+### Lab notes from the runs
+
+- The ME load first stopped the ME for the session: an audio block waited behind it past 100 ms. It now mixes audio inside the load, as the GE layer's replay does.
+- Perception's rays (on the ME by default) took the ME back at once each tick; `meraysoff` gave the load whole ticks.
+- The PC's trace mode asks for a 480×272 window, under the desktop build's 640×480 minimum, so it plays 4:3 at 1280×960. Frames mode (960×544, 16:9) fails at its shots step without a `shoteveryN` word.
