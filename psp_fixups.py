@@ -19595,6 +19595,190 @@ static void set_local_player_controls_from_player_profile(
 """),
 ]
 
+FIXES_CONTROLS["source/interface/hud_messaging.c#glyphs"] = [
+("""static void render_state_bitmap(
+	rectangle2d *bounds,
+	rectangle2d *cursor_bounds,
+	pixel32 color,
+	struct icon_hud_element_definition const *icon)
+{""",
+ """#ifdef HALO_PSP
+/* the PSP's button glyphs in place of the Xbox's icons (psp_sdl.c,
+psp_button_glyph; psp_ge.c draws them): the button icon being drawn, as the
+caller knows it and this function doesn't (NONE for any other icon) */
+static short psp_icon_drawing = NONE;
+extern int psp_button_glyph(int icon, int menus, unsigned short cell[4]);
+extern float psp_button_glyph_extra(int glyph, float icon_width, float icon_height);
+extern void psp_ge_glyph_next(int glyph);
+#endif
+static void render_state_bitmap(
+	rectangle2d *bounds,
+	rectangle2d *cursor_bounds,
+	pixel32 color,
+	struct icon_hud_element_definition const *icon)
+{"""),
+("""	real_rectangle2d const *clip = NULL;
+	real scale;
+	point2d point;
+
+	if (icon->frame_rate)
+		frame_index = game_time_get() / icon->frame_rate;""",
+ """	real_rectangle2d const *clip = NULL;
+	real scale;
+	point2d point;
+#ifdef HALO_PSP
+	int psp_glyph = psp_icon_drawing != NONE ? psp_button_glyph(psp_icon_drawing, FALSE, NULL) : NONE;
+#endif
+
+	if (icon->frame_rate)
+		frame_index = game_time_get() / icon->frame_rate;"""),
+("""		hud_draw_bitmap_direct(
+			bitmap,
+			_hud_corner_bottom_left,""",
+ """#ifdef HALO_PSP
+		psp_ge_glyph_next(psp_glyph);
+#endif
+		hud_draw_bitmap_direct(
+			bitmap,
+			_hud_corner_bottom_left,"""),
+("""			FALSE);
+		if (TEST_FLAG(icon->flags, _hud_icon_absolute_width_bit))
+			cursor_bounds->x0 = (short)(icon->width_offset * scale + point.x);""",
+ """			FALSE);
+#ifdef HALO_PSP
+		psp_ge_glyph_next(NONE);
+#endif
+		if (TEST_FLAG(icon->flags, _hud_icon_absolute_width_bit))
+			cursor_bounds->x0 = (short)(icon->width_offset * scale + point.x);"""),
+("""			cursor_bounds->x0 = (short)(
+				(bitmap->width + icon->width_offset) * scale + point.x);
+		}
+	}
+""",
+ """			cursor_bounds->x0 = (short)(
+				(bitmap->width + icon->width_offset) * scale + point.x);
+		}
+#ifdef HALO_PSP
+		if (psp_glyph != NONE)
+		{
+			cursor_bounds->x0 += (short)psp_button_glyph_extra(psp_glyph,
+				(clip ? clip->x1 - clip->x0 : 1.0f) * bitmap->width * scale,
+				(clip ? clip->y1 - clip->y0 : 1.0f) * bitmap->height * scale);
+		}
+#endif
+	}
+"""),
+("""								else
+								{
+									render_state_bitmap(
+										&line_bounds,
+										&line_cursor,
+										pixel_color,
+										icon);
+								}""",
+ """								else
+								{
+#ifdef HALO_PSP
+									psp_icon_drawing = icon_index;
+#endif
+									render_state_bitmap(
+										&line_bounds,
+										&line_cursor,
+										pixel_color,
+										icon);
+#ifdef HALO_PSP
+									psp_icon_drawing = NONE;
+#endif
+								}"""),
+]
+
+FIXES_CONTROLS["source/interface/ui_widget.c#glyphs"] = [
+("""static void render_state_bitmap(
+	rectangle2d *bounds,
+	rectangle2d *cursor_bounds,
+	pixel32 color,
+	struct icon_hud_element_definition *icon)
+{""",
+ """#ifdef HALO_PSP
+/* the PSP's button glyphs in place of the Xbox's icons (psp_sdl.c,
+psp_button_glyph; psp_ge.c draws them): the button icon being drawn, as the
+caller knows it and this function doesn't (NONE for any other icon) */
+static short psp_icon_drawing = NONE;
+extern int psp_button_glyph(int icon, int menus, unsigned short cell[4]);
+extern float psp_button_glyph_extra(int glyph, float icon_width, float icon_height);
+extern void psp_ge_glyph_next(int glyph);
+#endif
+static void render_state_bitmap(
+	rectangle2d *bounds,
+	rectangle2d *cursor_bounds,
+	pixel32 color,
+	struct icon_hud_element_definition *icon)
+{"""),
+("""	real_rectangle2d const *clip;
+	real scale;
+	point2d point;
+
+	global_scenario_get();""",
+ """	real_rectangle2d const *clip;
+	real scale;
+	point2d point;
+#ifdef HALO_PSP
+	int psp_glyph = psp_icon_drawing != NONE ? psp_button_glyph(psp_icon_drawing, TRUE, NULL) : NONE;
+#endif
+
+	global_scenario_get();"""),
+("""		hud_draw_bitmap_direct(
+			bitmap,
+			_hud_anchor_bottom_left,""",
+ """#ifdef HALO_PSP
+		psp_ge_glyph_next(psp_glyph);
+#endif
+		hud_draw_bitmap_direct(
+			bitmap,
+			_hud_anchor_bottom_left,"""),
+("""			FALSE);
+		if (TEST_FLAG(icon->flags, _hud_icon_absolute_width_bit))
+			cursor_bounds->x0 = icon->width_offset + point.x;""",
+ """			FALSE);
+#ifdef HALO_PSP
+		psp_ge_glyph_next(NONE);
+#endif
+		if (TEST_FLAG(icon->flags, _hud_icon_absolute_width_bit))
+			cursor_bounds->x0 = icon->width_offset + point.x;"""),
+("""		else
+			cursor_bounds->x0 = bitmap->width + icon->width_offset + point.x;
+	}
+""",
+ """		else
+			cursor_bounds->x0 = bitmap->width + icon->width_offset + point.x;
+#ifdef HALO_PSP
+		if (psp_glyph != NONE)
+		{
+			cursor_bounds->x0 += (short)psp_button_glyph_extra(psp_glyph,
+				(clip ? clip->x1 - clip->x0 : 1.0f) * bitmap->width * scale,
+				(clip ? clip->y1 - clip->y0 : 1.0f) * bitmap->height * scale);
+		}
+#endif
+	}
+"""),
+("""				render_state_bitmap(
+					bounds,
+					&cursor_bounds,
+					(real_argb_color_to_pixel32(&icon_color) & 0x00ffffff) | alpha,
+					icon);""",
+ """#ifdef HALO_PSP
+				psp_icon_drawing = icon_index;
+#endif
+				render_state_bitmap(
+					bounds,
+					&cursor_bounds,
+					(real_argb_color_to_pixel32(&icon_color) & 0x00ffffff) | alpha,
+					icon);
+#ifdef HALO_PSP
+				psp_icon_drawing = NONE;
+#endif"""),
+]
+
 SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 

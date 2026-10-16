@@ -12651,6 +12651,8 @@ struct hud_vertex
 	unsigned int color;
 	float x, y, z;
 };
+#define PSP_GLYPH_PIXELS
+#include "psp_glyphs.h"
 
 /* the game's dynamic_screen_vertex: position, texture coordinates, colour (ARGB) */
 struct game_screen_vertex
@@ -12846,10 +12848,32 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 }
 
 /* the HUD's quads, timed for the log (build 31) */
+/* the PSP's button glyphs in place of the Xbox's button icons
+(docs/game_feature_survey.md, section 4.7). The game draws an icon as a HUD
+quad of the icon's bitmap; hud_messaging.c and ui_widget.c (psp_fixups.py
+FIXES_CONTROLS) mark the glyph just before, and the quad they draw then
+takes the glyph's key: a number no bitmap's address can be, which carries
+through the defer queue unchanged. The quad keeps the game's place, size and
+colour for the icon; only the picture is the PSP's */
+#define GLYPH_KEY_BASE 0x100u
+static PSP_MAIN_SIDE int glyph_next = -1;
+static unsigned long glyphs_drawn = 0;
+
+void psp_ge_glyph_next(int glyph)
+{
+	glyph_next = glyph >= 0 && glyph < PSP_GLYPH_COUNT ? glyph : -1;
+}
+
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
 	hud_quad_dump(vertices, key, blend, red, green, blue, fade, meter_parameters, wrapped);
+	/* the mark is the game thread's: not read again when the queue replays */
+	if (glyph_next >= 0 && !defer_replaying && !psp_on_me())
+	{
+		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
+		glyph_next = -1;
+	}
 	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,
 		wrapped, u_scale, v_scale)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -13061,6 +13085,68 @@ static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter
 	return computed;
 }
 
+/* a glyph in the icon's quad: as tall as the quad, its own shape across;
+centred when it is narrower, else from the quad's left edge (the text's
+cursor moves on by the difference: psp_button_glyph_extra, psp_sdl.c) */
+static void glyph_quad(struct game_screen_vertex const *in, int glyph, short blend, float red, float green,
+	float blue, float fade, float offset_x, float offset_y)
+{
+	unsigned short const *cell = psp_glyph_cells[glyph];
+	struct hud_vertex *out;
+	float x0 = in[0].x, x1 = in[0].x, y0 = in[0].y, y1 = in[0].y, wide;
+	int corner;
+
+	for (corner = 1; corner < 4; corner++)
+	{
+		x0 = fminf(x0, in[corner].x);
+		x1 = fmaxf(x1, in[corner].x);
+		y0 = fminf(y0, in[corner].y);
+		y1 = fmaxf(y1, in[corner].y);
+	}
+	wide = (y1 - y0) * cell[2] / cell[3];
+	if (wide <= x1 - x0)
+		x0 += (x1 - x0 - wide) * 0.5f;
+	x1 = x0 + wide;
+	out = list_take(2 * sizeof(struct hud_vertex));
+	if (!out)
+		return;
+	if (hud_snap < 0)
+		hud_snap = !psp_keep("hudnosnap");
+	/* half a texel in from the cell's edges, so the filter doesn't take in
+	the neighbouring glyph */
+	out[0].u = cell[0] + 0.5f;
+	out[0].v = cell[1] + 0.5f;
+	out[1].u = cell[0] + cell[2] - 0.5f;
+	out[1].v = cell[1] + cell[3] - 0.5f;
+	out[0].color = out[1].color = argb_to_abgr(in[0].argb, red, green, blue, fade);
+	out[0].x = hud_pixel((x0 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
+	out[0].y = hud_pixel((y0 + offset_y) * ui_scale_y * hud_zoom);
+	out[1].x = hud_pixel((x1 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
+	out[1].y = hud_pixel((y1 + offset_y) * ui_scale_y * hud_zoom);
+	out[0].z = out[1].z = 0.0f;
+	/* the sheet is the EBOOT's own data, never written, so there is no
+	cache to write back */
+	sceGuClutMode(GU_PSM_8888, 0, 0x0F, 0);
+	sceGuClutLoad(16 / 8, psp_glyph_palette);
+	sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+	sceGuTexImage(0, PSP_GLYPH_SHEET_WIDTH, PSP_GLYPH_SHEET_HEIGHT, PSP_GLYPH_SHEET_WIDTH, psp_glyph_pixels);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_FOG);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
+	hud_blend(blend);
+	ge_kind(KIND_HUD);
+	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
+	ge_blend(0);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuEnable(GU_FOG);
+	sceGuEnable(GU_DEPTH_TEST);
+	if (!glyphs_drawn++)
+		platform_log("GE: the PSP's button glyphs drawn for the game's button icons (\"xboxglyphs\" draws the Xbox's)");
+}
+
 static void screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
@@ -13075,6 +13161,12 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 	transparent_flush();
 	if (list_full())
 		return;
+	if (key - GLYPH_KEY_BASE < PSP_GLYPH_COUNT && !meter)
+	{
+		glyph_quad(in, (int)(key - GLYPH_KEY_BASE), blend, red, green, blue, fade, offset_x, offset_y);
+		hud_quads++;
+		return;
+	}
 	if (!psp_tex_size(key, &width, &height))
 	{
 		/* a HUD picture the texture pack doesn't have: named once each */
@@ -16277,6 +16369,8 @@ void psp_ge_frame_end(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		if (glyphs_drawn)
+			platform_log("GE: button glyphs drawn %lu (since the start)", glyphs_drawn);
 		cut_count_report(frames == 1 ? 1 : 300);
 		/* build 87: its own line (the one above passed the log's line length) */
 		/* build 89: the counters over these 300 frames (they were never

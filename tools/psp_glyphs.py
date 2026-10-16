@@ -11,7 +11,11 @@ the Select chords), shapes drawn here in the same style.
 Every glyph is white on transparent, so the game tints it as it tints the
 Xbox's. Cells are CELL pixels high, one to three cells wide; the sheet's
 layout is written beside it as a C table (psp_glyphs.h), in the order of
-GLYPHS below, which psp_sdl.c's maps from Xbox buttons refer to.
+GLYPHS below, which psp_sdl.c's maps from Xbox buttons refer to. The header
+also carries the sheet itself, for psp_ge.c: 4-bit alpha (the GE's T4, two
+texels a byte, the left one in the low nibble) and its 16-entry palette,
+white at 16 levels of alpha. Sixteen levels are plenty for a glyph's
+anti-aliased edge at the HUD's sizes, and it is 16 KB at 256 x 128.
 
 usage: python3 tools/psp_glyphs.py ENGINE_CHECKOUT OUT_DIR [--cell=32] [--header=PATH]
 (the repo's copies: OUT_DIR psp/glyphs, --header=psp/src/psp_glyphs.h)"""
@@ -216,6 +220,20 @@ def main():
         for name, x, y, cells in places:
             header.write("\t{ %d, %d, %d, %d }, /* %s */\n" % (x * CELL, y * CELL, cells * CELL, CELL, name))
         header.write("};\n")
+        # only psp_ge.c, which draws them, asks for the pixels
+        header.write("#ifdef PSP_GLYPH_PIXELS\n")
+        header.write("static const unsigned int psp_glyph_palette[16] __attribute__((aligned(64))) =\n{\n")
+        header.write("".join("\t0x%02XFFFFFF,\n" % (level * 17) for level in range(16)))
+        header.write("};\n")
+        alpha = sheet.getchannel("A").load()
+        packed = bytearray()
+        for py in range(rows * CELL):
+            for px in range(0, columns * CELL, 2):
+                packed.append((alpha[px, py] + 8) // 17 | ((alpha[px + 1, py] + 8) // 17) << 4)
+        header.write("static const unsigned char psp_glyph_pixels[%d] __attribute__((aligned(16))) =\n{\n" % len(packed))
+        for at in range(0, len(packed), 32):
+            header.write("\t" + ",".join("%d" % b for b in packed[at:at + 32]) + ",\n")
+        header.write("};\n#endif\n")
     print("psp_glyphs: %d glyphs, sheet %dx%d" % (len(places), columns * CELL, rows * CELL))
 
 

@@ -365,17 +365,35 @@ static const unsigned char glyphs_in_menus[PSP_BUTTON_ICONS] =
 };
 
 /* the glyph and its cell on the sheet (x, y, width, height in pixels); -1
-for an icon the PSP has no glyph for */
+for an icon the PSP has no glyph for, or with "xboxglyphs" (the Xbox's icons,
+as the maps have them) */
 int psp_button_glyph(int icon, int menus, unsigned short cell[4])
 {
+	static int xbox = -1;
 	int glyph;
 
-	if (icon < 0 || icon >= PSP_BUTTON_ICONS)
+	if (xbox < 0)
+		xbox = psp_keep("xboxglyphs");
+	if (xbox || icon < 0 || icon >= PSP_BUTTON_ICONS)
 		return -1;
 	glyph = (menus ? glyphs_in_menus : glyphs_in_play)[icon];
 	if (cell)
 		memcpy(cell, psp_glyph_cells[glyph], sizeof(psp_glyph_cells[glyph]));
 	return glyph;
+}
+
+/* how much further the text moves on past a glyph than past the icon it
+stands for, in the game's screen units: the glyph is drawn at the icon's
+height in its own shape (psp_ge.c, glyph_quad), so a wide one (Select + up)
+takes more room than the Xbox's round button */
+float psp_button_glyph_extra(int glyph, float icon_width, float icon_height)
+{
+	float wide;
+
+	if (glyph < 0 || glyph >= PSP_GLYPH_COUNT)
+		return 0.0f;
+	wide = icon_height * psp_glyph_cells[glyph][2] / psp_glyph_cells[glyph][3];
+	return wide > icon_width ? wide - icon_width : 0.0f;
 }
 
 /* the engine's port controls (input_abstraction.c, psp_fixups.py
