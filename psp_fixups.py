@@ -18640,18 +18640,22 @@ FIXES_136["source/objects/objects.c#nwbatch"] = [
 """/* psp_fixups.py (FIXES_136 #nwbatch): the computes and postprocesses put
 off, in the order they would have run; the first psp_nwb_done of them have
 run. A bit an absolute index says an object has an entry still to run, and
-psp_nwb_last its last entry (taken from the heap while nwbatch is on) */
-#define PSP_NWB_MAX 2048
-static long psp_nwb_list[PSP_NWB_MAX];
-static unsigned char psp_nwb_post[PSP_NWB_MAX];
-static int psp_nwb_count = 0, psp_nwb_done = 0;
+psp_nwb_last its last entry. The lists come from the heap while nwbatch is
+on (c20's opening puts off ~90 computes a tick, d20 ~50, b30 10-40) */
+#define PSP_NWB_MAX 1024
+#define PSP_NWB_RECORDS 512
+static long *psp_nwb_list = NULL;
+static unsigned char *psp_nwb_post = NULL;
+/* a compute entry's inputs record (psp_nwb_inputs), -1 for a postprocess */
+static short *psp_nwb_record = NULL;
+static int psp_nwb_count = 0, psp_nwb_done = 0, psp_nwb_records = 0;
 static int psp_nwb_open = 0;
 static int psp_nwb_on = -1, psp_nwb_held = 0;
 static unsigned long psp_nwb_types = 0;
 static unsigned char psp_nwb_waiting[MAXIMUM_OBJECTS_PER_MAP / 8];
 static unsigned short *psp_nwb_last = NULL;
-/* by absolute index, a waiting compute's inputs from the object's own
-fields, as they stood where it would have run. The object's update
+/* a waiting compute's inputs from the object's own fields, as they stood
+where it would have run. The object's update
 recomputes its function values (which its overlays read) right after that
 point, and another object's update may move it, turn it or start another
 animation on it before the list runs (a shot, a seat, a door): the compute
@@ -18735,10 +18739,10 @@ static void psp_nwb_compute(long object_index, long absolute, int entry)
 		radius = object->object.bounding_sphere_radius;
 	}
 	psp_nwb_inputs_get(object, &now);
-	moved = csmemcmp(&now, &psp_nwb_inputs[absolute], offsetof(struct psp_nwb_inputs, functions)) != 0;
+	moved = csmemcmp(&now, &psp_nwb_inputs[psp_nwb_record[entry]], offsetof(struct psp_nwb_inputs, functions)) != 0;
 	if (moved)
 		psp_nwb_moved++;
-	psp_nwb_inputs_put(object, &psp_nwb_inputs[absolute]);
+	psp_nwb_inputs_put(object, &psp_nwb_inputs[psp_nwb_record[entry]]);
 	psp_nwb_self = object_index;
 	object_compute_node_matrices(object_index);
 	psp_nwb_self = self;
@@ -18749,7 +18753,7 @@ static void psp_nwb_compute(long object_index, long absolute, int entry)
 	if (csmemcmp(psp_nwb_kept, nodes, size) || csmemcmp(&center, &object->object.bounding_sphere_center, sizeof(center)) ||
 		radius != object->object.bounding_sphere_radius)
 	{
-		struct psp_nwb_inputs const *was = &psp_nwb_inputs[absolute];
+		struct psp_nwb_inputs const *was = &psp_nwb_inputs[psp_nwb_record[entry]];
 
 		psp_nwb_differed++;
 		if (psp_nwb_check_reports++ < 40)
@@ -18813,8 +18817,11 @@ static void psp_nwb_begin(void)
 		if (psp_nwb_on)
 		{
 			psp_nwb_last = (unsigned short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_last));
-			psp_nwb_inputs = malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_inputs));
-			if (!psp_nwb_last || !psp_nwb_inputs)
+			psp_nwb_list = (long *)malloc(PSP_NWB_MAX * sizeof(*psp_nwb_list));
+			psp_nwb_post = (unsigned char *)malloc(PSP_NWB_MAX * sizeof(*psp_nwb_post));
+			psp_nwb_record = (short *)malloc(PSP_NWB_MAX * sizeof(*psp_nwb_record));
+			psp_nwb_inputs = malloc(PSP_NWB_RECORDS * sizeof(*psp_nwb_inputs));
+			if (!psp_nwb_last || !psp_nwb_list || !psp_nwb_post || !psp_nwb_record || !psp_nwb_inputs)
 				psp_nwb_on = 0;
 			psp_nwb_check = psp_keep("nwbatchcheck") != 0;
 			if (psp_nwb_check)
@@ -18833,8 +18840,12 @@ static void psp_nwb_list_entry(long object_index, int post)
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	psp_nwb_post[psp_nwb_count] = (unsigned char)post;
+	psp_nwb_record[psp_nwb_count] = -1;
 	if (!post)
-		psp_nwb_inputs_get(object_get(object_index), &psp_nwb_inputs[absolute]);
+	{
+		psp_nwb_record[psp_nwb_count] = (short)psp_nwb_records;
+		psp_nwb_inputs_get(object_get(object_index), &psp_nwb_inputs[psp_nwb_records++]);
+	}
 	psp_nwb_last[absolute] = (unsigned short)psp_nwb_count;
 	psp_nwb_list[psp_nwb_count++] = object_index;
 	psp_nwb_waiting[absolute >> 3] |= (unsigned char)(1 << (absolute & 7));
@@ -18879,7 +18890,7 @@ static int psp_nwb_put(long object_index, struct object_datum const *object)
 		if (parent_waits < 0)
 			return 0;
 	}
-	if (psp_nwb_count == PSP_NWB_MAX)
+	if (psp_nwb_count == PSP_NWB_MAX || psp_nwb_records == PSP_NWB_RECORDS)
 	{
 		/* no room: what this compute reads, made first */
 		psp_nwb_full++;
@@ -18931,15 +18942,35 @@ independent of each other (each top-level object's subtree reads only its
 own nodes), so the order between blocks changes nothing they make */
 #define PSP_NWB_BLOCKS 512
 static int psp_nwb_sort_on = -1;
-static long psp_nwb_sorted[PSP_NWB_MAX];
-static unsigned char psp_nwb_sorted_post[PSP_NWB_MAX];
+static struct psp_nwb_sorting
+{
+	long list[PSP_NWB_MAX];
+	unsigned char post[PSP_NWB_MAX];
+	short record[PSP_NWB_MAX];
+	int start[PSP_NWB_BLOCKS + 1];
+	long key[PSP_NWB_BLOCKS];
+	short order[PSP_NWB_BLOCKS];
+} *psp_nwb_sorting = NULL;
 
 static void psp_nwb_sort(void)
 {
-	static int start[PSP_NWB_BLOCKS + 1];
-	static long key[PSP_NWB_BLOCKS];
-	static short order[PSP_NWB_BLOCKS];
+	int *start;
+	long *key;
+	short *order;
 	int blocks = 0, k, first, n = 0;
+
+	if (!psp_nwb_sorting)
+	{
+		psp_nwb_sorting = malloc(sizeof(*psp_nwb_sorting));
+		if (!psp_nwb_sorting)
+		{
+			psp_nwb_sort_on = 0;
+			return;
+		}
+	}
+	start = psp_nwb_sorting->start;
+	key = psp_nwb_sorting->key;
+	order = psp_nwb_sorting->order;
 
 	/* blocks begin at a top-level object's compute; the first whole one at
 	or after psp_nwb_done (a read may have run part of the one before) */
@@ -18989,16 +19020,18 @@ static void psp_nwb_sort(void)
 
 		for (e = start[order[k]]; e < start[order[k] + 1]; e++)
 		{
-			psp_nwb_sorted[n] = psp_nwb_list[e];
-			psp_nwb_sorted_post[n++] = psp_nwb_post[e];
+			psp_nwb_sorting->list[n] = psp_nwb_list[e];
+			psp_nwb_sorting->record[n] = psp_nwb_record[e];
+			psp_nwb_sorting->post[n++] = psp_nwb_post[e];
 		}
 	}
 	for (k = 0; k < n; k++)
 	{
-		long object_index = psp_nwb_sorted[k];
+		long object_index = psp_nwb_sorting->list[k];
 
 		psp_nwb_list[first + k] = object_index;
-		psp_nwb_post[first + k] = psp_nwb_sorted_post[k];
+		psp_nwb_record[first + k] = psp_nwb_sorting->record[k];
+		psp_nwb_post[first + k] = psp_nwb_sorting->post[k];
 		if (object_index != NONE)
 			psp_nwb_last[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index)] = (unsigned short)(first + k);
 	}
@@ -19024,7 +19057,7 @@ static void psp_nwb_close(void)
 	if (psp_nwb_sort_on)
 		psp_nwb_sort();
 	psp_nwb_run_to(psp_nwb_count - 1);
-	psp_nwb_count = psp_nwb_done = 0;
+	psp_nwb_count = psp_nwb_done = psp_nwb_records = 0;
 	psp_nwb_close_us += psp_microseconds() - start;
 	if (psp_nwb_on > 0 && ++psp_nwb_ticks % 300 == 0)
 	{
