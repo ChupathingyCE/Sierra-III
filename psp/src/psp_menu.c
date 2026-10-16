@@ -410,6 +410,8 @@ static void save_files(int map)
 	}
 }
 
+static void nub_draw(SceCtrlData const *pad);
+
 static void draw(int page, int cursor, int map, int build, SceCtrlData const *pad)
 {
 	int i;
