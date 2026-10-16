@@ -23,6 +23,7 @@ bring-up build doesn't use.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 void platform_log(const char *format, ...);
 
@@ -116,6 +117,9 @@ static SDL_JoystickID gamepad_list[2];
 /* the gamepad list (SDL_GetGamepads, below) is static: never freed */
 void SDL_free(void *memory) { if (memory != (void *)gamepad_list) free(memory); }
 const char *SDL_GetError(void) { return "not available on the PSP"; }
+/* the settings' parser (port_config.c) compares names and "true"/"false" with it: a
+stub's 0 would make every name match */
+int SDL_strncasecmp(const char *a, const char *b, size_t length) { return strncasecmp(a, b, length); }
 bool SDL_SetHint(const char *name, const char *value) { (void)name; (void)value; return true; }
 SDL_ThreadID SDL_GetCurrentThreadID(void) { return (SDL_ThreadID)sceKernelGetThreadId(); }
 char *SDL_GetClipboardText(void) { char *text = malloc(1); if (text) text[0] = 0; return text; }

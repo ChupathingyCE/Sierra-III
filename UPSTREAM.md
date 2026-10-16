@@ -4,7 +4,7 @@ Sierra-III doesn't copy anyone's source into this repository. It pins each upstr
 
 | Piece | Upstream | Pinned at | Our changes | Licence |
 |---|---|---|---|---|
-| **Engine (current base)** | [ChupathingyCE](https://github.com/ChupathingyCE/chupathingyce) (tag `v0.7.4e`, network version 28) | `f8abf2162aa4d4be8ba85ecd63396c776ff92faf` | None in the checkout: `psp_fixups.py` changes a mirror of it at build time | its `LICENSE.md` |
+| **Engine (current base)** | [ChupathingyCE](https://github.com/ChupathingyCE/chupathingyce) (tag `v0.7.5d`, network version 29) | `d98982b8e92c1bf2c96cf9953b9b890b2a421616` | None in the checkout: `psp_fixups.py` changes a mirror of it at build time | its `LICENSE.md` |
 | **Invader** (the map builder the bake uses) | [SnowyMouse/invader](https://github.com/SnowyMouse/invader) | `d43ce550db5b6b68ddea0d4c2080b616555e5279`; submodule `ext/riat` at `c1380cbfc708d89a3713af57b48d3f4368c34f8a` | `upstream/invader/psp-fork.patch` (apply with `git apply`) | GPLv3 |
 | **Media Engine library** | [mcidclan/psp-media-engine-custom-core](https://github.com/mcidclan/psp-media-engine-custom-core) (me-core-mapper) | `727421b4d5f006f298f22451864a464eb0e7fd20` | None. `tools/build_release.sh` builds it with cmake into its cache (`PSP_MECORE` points `psp_build.py` at it) | MIT (shipped beside the EBOOT as `LICENSE-mecore.md`) |
 | **PPSSPP** (the test harness only) | [hrydgard/ppsspp](https://github.com/hrydgard/ppsspp) | `tools/ppsspp_BASE_COMMIT.txt` | `tools/ppsspp_local_patches.diff`: PSP-1000 memory in headless, the strict interpreter, the cache model, the handle trace, the emulated RAM in a memfd (so instances run side by side in a container) | GPLv2+ |

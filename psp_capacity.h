@@ -72,6 +72,16 @@ build 30 (that switch thrashes it, but works). */
 #define HALO_PORT_MAXIMUM_RENDERED_ENVIRONMENT_SURFACES 16384
 #define HALO_PORT_MAXIMUM_DYNAMIC_TRIANGLES 32768
 
+/* ---------- transparent geometry, particles and lights a frame draws
+
+The Xbox's, as ChupathingyCE's Android guest and Xbox builds keep them: the
+desktop builds' larger lists (2048, 2048, 512) are per-frame arrays the
+PSP's heap can't spare */
+
+#define HALO_PORT_MAXIMUM_TRANSPARENT_GEOMETRY_GROUPS 384
+#define HALO_PORT_MAXIMUM_RENDERED_PARTICLE_GROUPS 512
+#define HALO_PORT_MAXIMUM_RENDERED_LIGHTS 128
+
 /* ---------- AI */
 
 #define HALO_PORT_MAXIMUM_ACTORS 256

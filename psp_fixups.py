@@ -1004,12 +1004,13 @@ query */
 ],
 "port/linux/src/platform.h": [
 ("""#define PLATFORM_CONTIGUOUS_BASE 0x80000000U
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) && !defined(HALO_64BIT)
 /* a 128 MB development kit's: Android's guest image is linked just above it
 (port/android/include/halo_android_abi.h) */
 #define PLATFORM_CONTIGUOUS_SIZE 0x08000000U
 #else
-/* the desktop builds' (Linux, macOS, Windows): four times a 128 MB
+/* the desktop builds' (Linux, macOS, Windows) and the native 64-bit
+Android build's: four times a 128 MB
 development kit's, for their larger texture cache (halo_port_capacity.h);
 port/windows/src/win32_memory_watch.c has the same */
 #define PLATFORM_CONTIGUOUS_SIZE 0x20000000U
@@ -1026,12 +1027,13 @@ user-RAM address counts as contiguous (psp_memory.c; psp_fixups.py). */
 #endif
 #else
 #define PLATFORM_CONTIGUOUS_BASE 0x80000000U
-#ifdef HALO_ANDROID
+#if defined(HALO_ANDROID) && !defined(HALO_64BIT)
 /* a 128 MB development kit's: Android's guest image is linked just above it
 (port/android/include/halo_android_abi.h) */
 #define PLATFORM_CONTIGUOUS_SIZE 0x08000000U
 #else
-/* the desktop builds' (Linux, macOS, Windows): four times a 128 MB
+/* the desktop builds' (Linux, macOS, Windows) and the native 64-bit
+Android build's: four times a 128 MB
 development kit's, for their larger texture cache (halo_port_capacity.h);
 port/windows/src/win32_memory_watch.c has the same */
 #define PLATFORM_CONTIGUOUS_SIZE 0x20000000U
@@ -16823,17 +16825,15 @@ void weapon_build_weapon_interface_state(
 	long weapon_index,
 	struct weapon_interface_state *state)
 {"""),
-("""	short magazine_index;
-
-	state->heat = weapon->weapon.heat;""", """	short magazine_index;
-
-#ifdef HALO_PSP
-	/* psp_fixups.py (FIXES_126, RB1): nothing left as the stack held it */
+("""	csmemset(state, 0, sizeof(*state));
+	state->heat = weapon->weapon.heat;""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_126, RB1; ChupathingyCE clears it too from
+	v0.7.5): "weaponstateold" leaves the stack's values, as before */
 	if (psp_weapon_state_zeroed < 0)
 		psp_weapon_state_zeroed = !psp_keep("weaponstateold");
 	if (psp_weapon_state_zeroed)
-		csmemset(state, 0, sizeof(*state));
 #endif
+	csmemset(state, 0, sizeof(*state));
 	state->heat = weapon->weapon.heat;"""),
 ]
 
@@ -19486,6 +19486,26 @@ FIXES_136["source/items/weapons.c#nwbatch"] = [
 """),
 ]
 
+# ---------- FIXES_137: ChupathingyCE v0.7.5d (the engine pin moved for b135)
+FIXES_137 = {}
+
+# The build's version drawn in the bottom right corner (main menu, or
+# display.version_watermark): build_identity.c, which names it, is desktop
+# code the PSP doesn't build, and the PSP has its own launch menu and log
+# line for the build. Without this the menu would draw the string a stub's
+# NULL points to.
+FIXES_137["source/main/main.c#watermark"] = [
+("""	boolean shown;
+
+	if (main_menu_is_active())""", """	boolean shown;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_137) */
+	return;
+#endif
+	if (main_menu_is_active())"""),
+]
+
 # The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
@@ -19500,7 +19520,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
