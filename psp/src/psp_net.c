@@ -981,29 +981,24 @@ static int inet_poll(int count, fd_set *read_set, fd_set *write_set, fd_set *err
 		polls[used].revents = 0;
 		descriptors[used++] = index;
 	}
-	result = sceNetInetPoll(polls, (size_t)used, (int)timeout_ms);
+	{
+		unsigned int start = sceKernelGetSystemTimeLow();
+
+		result = sceNetInetPoll(polls, (size_t)used, (int)timeout_ms);
+		/* (the emulator's poll comes back at once with nothing ready, whatever
+		the timeout (lab sierra-netplay 38962975417); if a PSP's ever does, a
+		raised thread would spin: the rest of the wait in steps of 1 ms) */
+		while (result == 0 && timeout_ms > 0 &&
+			(long)((sceKernelGetSystemTimeLow() - start) / 1000) < timeout_ms)
+		{
+			sceKernelDelayThread(1000);
+			result = sceNetInetPoll(polls, (size_t)used, 0);
+		}
+	}
 	if (result < 0)
 	{
 		errno = sceNetInetGetErrno();
 		return -1;
-	}
-	/* (a few calls in the log, to see what comes back ready: the emulator's
-	runs pass through the tunnel's loop ~1,000 times a second with it) */
-	{
-		static unsigned long calls;
-
-		calls++;
-		if (calls == 2000 || calls == 20000 || calls == 60000)
-		{
-			char text[400];
-			int length = snprintf(text, sizeof(text), "network: inetpoll call %lu, %ld ms asked, %d ready:", calls,
-				timeout_ms, result);
-
-			for (index = 0; index < used && length < (int)sizeof(text); index++)
-				length += snprintf(text + length, sizeof(text) - (size_t)length, " %d(fw %d) %x/%x", descriptors[index],
-					polls[index].fd, (unsigned)polls[index].events, (unsigned)(unsigned short)polls[index].revents);
-			platform_log("%s", text);
-		}
 	}
 	if (read_set)
 		FD_ZERO(read_set);
