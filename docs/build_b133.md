@@ -2,13 +2,15 @@
 
 `review_b133.md` lists every change and why. The bake is unchanged (`campaign121`).
 
-`halo_psp_b133.zip` (SHA-256 `ada3c3bdc131b2e934fc9bfaad9223814c1e10e6a10ffee6f23fa5b049e44891`), EBOOT `7af48b322e469a1181df91a87894b944827c336e8bd120e50344e3ec777f7e36`: built from commit `d9e7cf3` on `w133` (lab sierra-build 38895660524). Heap 5,644 KB (b132: 5,656). **Built with b132's profile and b132's own code order** (`campaign-b132`, `PSP_TEXT_LAYOUT=b132`): review §4 says why. Release check (lab 38895023525): play and both seeds identical to b132 at every tick on d20, a50 and c20 (12,000 each) [E]; b30 and c40 shots right; the multiplayer build plays Blood Gulch. For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
+`halo_psp_b133.zip` (SHA-256 `0d4f41e41c7d0a2de5f736a7ad0f040fe3250a0eae48703b5a0d68de243ea768`), EBOOT `203742294e80bd1dfb832a837d12025b65101bc3a23cdef657d26ab1b0e2ef09`: built from commit `405ca12` on `w133` (lab sierra-build 38903119127). Heap 5,644 KB (b132: 5,656). **Its own profile** (`campaign-b133`, 13 runs counted at `d9e7cf3` with the batch off) **and b132's code order** (`PSP_TEXT_LAYOUT=b132`): review §4 says why. Release check (lab 38899909814): play and both seeds identical to b132 at every tick on d20, a50 and c20 (12,000 each) [E]; b30 and c40 shots right; the multiplayer build plays Blood Gulch. For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
 
 **What's new for you:** the launch menu shows every preset again (one row each, the cursor's keep words below the list); b132's preset 15 was missing. Otherwise b133 plays and looks as b132 did. Preset 16 tries the node-matrix batch (`nwbatch`): play exact, faster on b30, slower on c10 and c20, so it's off unless asked.
 
 **Speed against b132:** TODO (the PSP-1000's ladder).
 
-A first b133 (`1fff864`, never posted) shipped the batch on and had its own profile; the PSP-3000's ladder had it slower than b132 on most maps (c10 +34%), so this one replaces it (review §1, §4).
+Two earlier b133s were never posted:
+- `1fff864` had the batch on and a profile counted with it on. The PSP-3000's ladder had it slower than b132 on most maps (c10 +34%).
+- `d9e7cf3` had the batch off and b132's profile, which doesn't match b133's object loop. Both PSPs' ladders had it 3–20% slower than b132 (review §4).
 
 ## On the PSP
 

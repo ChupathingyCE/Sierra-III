@@ -1,17 +1,17 @@
 # Review: build 133
 
-For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used here"). b133 is b132 (`review_b132.md`) plus the branches below, built with b132's profile and b132's own code order. Labels: [M] measured on a PSP, [E] emulator, [D] read in code, [U] inference.
+For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used here"). b133 is b132 (`review_b132.md`) plus the branches below, built with its own profile and b132's own code order. Labels: [M] measured on a PSP, [E] emulator, [D] read in code, [U] inference.
 
 | Branch | What | Kind | Default | Words | Review |
 |---|---|---|---|---|---|
 | `nwbatch133`, `nwheld133`, `nwhook134` | Scenery's node matrices made together after the objects' loop (lever NW's first step) | exact speed-up on some maps, a loss on others | off | `nwbatch` (preset 16); `nwbatchwide`, `nwbatchheld`, `nwbatchsort`; `nwbatchcheck` | §1 |
 | `menu133` | The launch menu's presets one row each, up to 22; preset 15 shows again | fix | on | none | §2 |
 | `nwheld133` | `statefullall`: every object's whole datum at one tick; `tools/datumdiff.py` | recon | off | `statefullall` | §3 |
-| `w133` | b132's profile and kept code order; the order's file covers hot and cold parts | build | on | the build switch `PSP_TEXT_LAYOUT` | §4 |
+| `w133` | Its own profile, counted with the batch off; b132's kept code order, the order's file covering hot and cold parts | build | on | the build switch `PSP_TEXT_LAYOUT` | §4 |
 
 ## Release check
 
-Lab 38895023525, against b132 as built: play and both seeds identical at every tick on d20, a50 and c20 (12,000 each) [E], the pose job made by the simulated ME on both sides; the whole state differs from the first tick, as it does whenever a build's allocations change. The logs read whole. b30 and c40 shots right; the multiplayer build plays Blood Gulch. Built from `d9e7cf3` (lab sierra-build 38895660524).
+Lab 38899909814, against b132 as built: play and both seeds identical at every tick on d20, a50 and c20 (12,000 each) [E], the pose job made by the simulated ME on both sides; the whole state differs from the first tick, as it does whenever a build's allocations change. The logs read whole. b30 and c40 shots right; the multiplayer build plays Blood Gulch. Built from `405ca12` (lab sierra-build 38903119127).
 
 ## §1 Scenery's node matrices made together after the objects' loop (`psp_fixups.py` FIXES_136; lever NB, NW step 1; `docs/plan_node_matrices_me.md`)
 
@@ -62,15 +62,21 @@ if (!psp_pose_skipped && !(psp_nwb_later && psp_nwb_put_post(object_index)))
 
 **What.** With `statecrc` and `stateobjectsN`: every object's whole datum, word by word, at tick N; `tools/datumdiff.py` compares two runs' dumps object by object. Two runs whose objects allocation parts while play stays the same say which fields (it found §1's pass mark and padding). Test word only.
 
-## §4 b132's profile and code order (`psp/layout/b132.txt`, `PSP_TEXT_LAYOUT=b132`)
+## §4 Its own profile, and b132's code order (`pgo/campaign-b133.tgz`; `psp/layout/b132.txt`, `PSP_TEXT_LAYOUT=b132`)
 
-**What.** b133 is built with b132's profile (`campaign-b132`) and linked in b132's own code order. The order's file was rewritten so each function's line names both its hot and its plain section, and a cold part b132 didn't have goes right after it:
+**The profile.** Counted at `d9e7cf3` (b133's code) with the batch off, as it ships: the ten openings and b30's routes (lab 38898595862, 38898695813).
+
+**Why its own.** `d9e7cf3` was built with b132's profile, and both PSPs' ladders had it 3–20% slower than b132 (c10 +19%, b30 +6%; lab 38895069416, 38897313153) [M].
+- GCC drops a function's counts when its branches changed, and the batch's hooks changed five hot functions'. `objects_update` and `object_compute_node_matrices` were compiled without counts: `objects_update`'s hot code went from 5.4 to 8.2 KB [D, the link maps].
+- With its own profile, seven maps are back within ~1% of b132 on the PSP-3000 (lab 38899916249) [M]. c10 is still +6.9% and a30 +4%. `objects_update`'s hot part is still 7.5 KB against b132's 5.4 [D]: the batch's dormant hooks sit in it, run for each of c10's ~300 scenery objects a tick. b134 takes them out of the loop's code (`plan_memory_stalls.md`).
+
+**The code order.** b133 is linked in b132's own code order. The order's file was rewritten so each function's line names both its hot and its plain section, and a cold part b132 didn't have goes right after it:
 
 ```
 *source/objects/objects.o(.text.hot.object_get_node_matrix .text.object_get_node_matrix)
 *source/objects/objects.o(.text.unlikely.object_get_node_matrix)
 ```
 
-**Why.** The code layout is still a lottery (the profile places the hot code; b131 lost 10–17% to it). b133's own profile was counted with the batch on, and that first build was slower than b132 on most maps on the PSP-3000's ladder; with the batch off, its code is b132's but for the menu and §1's dormant checks, so b132's measured-good layout is the safe choice until phase B's own layout replaces it. As written, the file named sections as b132 had them; b133's code split `object_get_node_matrix` into hot and cold parts and changed `object_compute_node_matrices` (its counts dropped, so it isn't "hot" now), and the parts the file didn't name went to the end of the code, past the 16-bit branches' reach: the link failed (relocation truncated, lab 38893068103). `codeorder.py --keep` and `--color` now write placements the same way (lab).
+**Why.** The code layout is still a lottery (b131 lost 10–17% to it). With the batch off, b133's code is b132's but for the menu and §1's dormant checks, so b132's measured-good order is the safe choice until a layout from b133's own graph replaces it. As written, the file named sections as b132 had them; b133's code split `object_get_node_matrix` into hot and cold parts and changed `object_compute_node_matrices` (its counts dropped, so it isn't "hot" now), and the parts the file didn't name went to the end of the code, past the 16-bit branches' reach: the link failed (relocation truncated, lab 38893068103). `codeorder.py --keep` and `--color` now write placements the same way (lab).
 
 **Next for the layout (phase B).** The temporal graph's placement by cache set beats b132's order on every map in the cache model (lab score131c), but only up to ~93% of the fetches can be placed without gaps a link can't make; the next build's layout comes from its own graph and its own profile.

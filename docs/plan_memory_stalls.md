@@ -55,6 +55,8 @@ Where the tick has to go (b30's beach, from `optimization_ranking.md` §1): 61.7
    - Exact by construction, checked with the play hash.
 3. **Batch where code is heavy and data is small** (nwbatch's rule, made explicit). The batch pays when the code fetched once outweighs the data fetched cold. Pick by the P1.1 table, per type and per pass, not by guessing.
 4. **Shrink the hot code:**
+   - **Dormant features out of the hot loop's code.** b133's batch, off, still grew `objects_update`'s hot part from 5.4 to 7.5 KB with its own profile [D], and c10 ran +6.9% [M]. Opt-in work that hooks the per-object path goes behind a build switch, not only a keep word.
+   - **Untrained code split cold.** The profile build uses partial training (`PSP_PGO_PARTIAL=1`, chosen when the profile was one map's opening). It treats code the training never reached as unknown rather than cold, so that code stays inside the hot functions: `objects_update`'s cold part is 96 bytes [D]. With 13 runs over ten maps, `PSP_PGO_PARTIAL=0` may now pay. Score it in the model. Its risk is paths the training missed (later stretches of a map), so measure those too.
    - the assert audit (X10: up to 447 KB less code [D]);
    - an inlining budget for the hot units (T4);
    - more cold splits (T6).
