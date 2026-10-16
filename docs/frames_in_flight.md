@@ -144,16 +144,12 @@ The lag is felt in play, so it counts as a change Sheepdog01 judges. The feature
 
 ## 4. Build and test order
 
-Keep word `geinflight` (with `gedefer gemeon`). Off, nothing changes. In the emulator, which runs no ME code, the same word **simulates** it: the main CPU carries out frame N at the sync point, after frame N+1's ticks, marked as the ME's work (`gemesim`). The simulation reproduces every hazard of §3.3.
+Keep word `geinflight` (with `gedefer`). Off, nothing changes.
 
-1. **F0, in the emulator: is it exact?**
-   - Build: the sync point, the two splits, the decal copy, the 128 KB buffer, the text wait.
-   - Lab batch, all ten levels: `gedefer gemeon` against `gedefer gemeon geinflight`, with `fixedticks fixedseed drawhash statecrc mewrites`.
-   - Passes when:
-     - each frame's list is the same (`tools/drawcmp.py`);
-     - play is the same (statecrc);
-     - no line is written by both CPUs;
-     - the log gives each map's most words in a frame.
+1. **F0, the order alone (built, branch `inflight`):** `geinflight` writes the frame's end and the next frame's first window down too, so the main CPU carries frame N out at the next frame's first call, after N+1's ticks: the order the ME version will run in, with no work moved. Both calls are carried out whole here (their splits are F1's), the decal vertices are copied into the record, and the buffer is 128 KB. The log's `geinflight` line gives the KB a frame written down (average and fullest).
+   - Lab batch `inflight135a`: `gedefer` against `gedefer geinflight` on eight maps, with `fixedticks fixedseed statecrc framecrc` (`framecrc` hashes each finished picture; `tools/framecmp.py` and `tools/statecmp.py`, on the renderer branch, compare two runs), and b30 plain twice as the control.
+   - Passes when every picture and every tick's state is the same. A difference is something the next frame's ticks changed under a waiting frame: a pointer §3.3 missed.
+   - The ME's own checks, `gemesim` (system calls) and `mewrites` (lines both CPUs write), come with F1, once the work moves.
 2. **F1, the ME for real:**
    - Ring jobs run inside the replay.
    - The mailbox replaces the whole-cache drops.
