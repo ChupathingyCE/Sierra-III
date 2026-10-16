@@ -19492,6 +19492,109 @@ FIXES_136["source/items/weapons.c#nwbatch"] = [
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
 # more instruction misses). A shelved group is named by its key's tag
 # ("<file>#<tag>"); the shelved experiments are listed in docs/shelf.md.
+# ---------- FIXES_CONTROLS: the PSP's controls (docs/game_feature_survey.md, section 4)
+#
+# psp_sdl.c keeps the crouch toggle and splits the X button into a reload tap
+# and an action hold; the engine takes them through the port controls its
+# keyboard already uses (input_abstraction.c). The profile's controller
+# settings take keep words until Halo's own menu can set them (player_ui.c).
+FIXES_CONTROLS = {}
+
+FIXES_CONTROLS["source/input/input_abstraction.c#controls"] = [
+("""	return controller_index >= 0 && controller_index < MAXIMUM_GAMEPADS &&
+		keyboard_controls[controller_index].reload_ticks != 0;
+}""",
+ """#ifdef HALO_PSP
+	{
+		/* a tap of the PSP's d-pad left (psp_sdl.c; psp_fixups.py FIXES_CONTROLS) */
+		extern int psp_input_port_reload(void);
+
+		if (controller_index == 0 && psp_input_port_reload())
+			return TRUE;
+	}
+#endif
+	return controller_index >= 0 && controller_index < MAXIMUM_GAMEPADS &&
+		keyboard_controls[controller_index].reload_ticks != 0;
+}"""),
+("""	return controller_index >= 0 && controller_index < MAXIMUM_GAMEPADS &&
+		keyboard_controls[controller_index].ticks[_game_control_crouch] != 0;
+}""",
+ """#ifdef HALO_PSP
+	{
+		/* the PSP's crouch toggle, at any speed (psp_sdl.c; psp_fixups.py FIXES_CONTROLS) */
+		extern int psp_input_port_crouch(void);
+
+		if (controller_index == 0 && psp_input_port_crouch())
+			return TRUE;
+	}
+#endif
+	return controller_index >= 0 && controller_index < MAXIMUM_GAMEPADS &&
+		keyboard_controls[controller_index].ticks[_game_control_crouch] != 0;
+}"""),
+("""	return controller_index >= 0 && controller_index < MAXIMUM_GAMEPADS &&
+		keyboard_controls[controller_index].ticks[_game_control_action] != 0;
+}""",
+ """#ifdef HALO_PSP
+	{
+		/* the PSP's d-pad left held: acting, never reloading (psp_sdl.c;
+		psp_fixups.py FIXES_CONTROLS) */
+		extern int psp_input_port_action_only(void);
+
+		if (controller_index == 0 && psp_input_port_action_only())
+			return TRUE;
+	}
+#endif
+	return controller_index >= 0 && controller_index < MAXIMUM_GAMEPADS &&
+		keyboard_controls[controller_index].ticks[_game_control_action] != 0;
+}"""),
+]
+
+FIXES_CONTROLS["source/interface/player_ui.c#controls"] = [
+("""static void clear_profile_edit_data(
+	void);
+""",
+ """static void clear_profile_edit_data(
+	void);
+#ifdef HALO_PSP
+static void set_local_player_controls_from_player_profile(
+	short local_player_index);
+#endif
+"""),
+("""	player_ui_globals.edit_profile_index = NONE;
+	player_ui_globals.initialized = TRUE;
+	return;
+}""",
+ """	player_ui_globals.edit_profile_index = NONE;
+	player_ui_globals.initialized = TRUE;
+#ifdef HALO_PSP
+	{
+		/* with no profile loaded, the controls are the engine's defaults
+		(input_abstraction.c); a profile keep word sets them from the default
+		profile instead (psp_sdl.c; psp_fixups.py FIXES_CONTROLS) */
+		extern int psp_input_profile_words(void);
+
+		if (psp_input_profile_words())
+			set_local_player_controls_from_player_profile(0);
+	}
+#endif
+	return;
+}"""),
+("""	controls = &player_ui_globals.local_players[local_player_index].profile.controller_settings;
+""",
+ """	controls = &player_ui_globals.local_players[local_player_index].profile.controller_settings;
+#ifdef HALO_PSP
+	{
+		/* buttonpresetN, stickpresetN, looksensN, lookinvert (psp_sdl.c;
+		psp_fixups.py FIXES_CONTROLS) */
+		extern void psp_input_profile_overrides(unsigned char *, unsigned char *, unsigned char *, unsigned char *);
+
+		psp_input_profile_overrides(&controls->button_preset, &controls->joystick_preset, &controls->look_sensitivity,
+			(unsigned char *)&controls->invert_look);
+	}
+#endif
+"""),
+]
+
 SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 
@@ -19500,7 +19603,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_CONTROLS.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
