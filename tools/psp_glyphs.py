@@ -23,9 +23,18 @@ one byte a texel (alpha << 4 | shade): the GE's 8-bit indexed format, 32 KB.
 psp_glyphs.png beside it is a preview in the HUD's blue on the left and white
 on the right.
 
+The shapes are geometry, so they draw at any size. The sheet the game
+carries is sized for the screen (32-pixel cells for glyphs drawn about 18
+pixels high): larger, the GE would shrink it more than twice over with no
+mipmaps, which shimmers, and it would take four times the memory. --master
+writes a large copy for looking at and for other uses (the menu art, the
+README): full precision, not cut to 4 bits, in white and in the HUD's blue.
+
 usage: python3 tools/psp_glyphs.py ENGINE_CHECKOUT OUT_DIR [--cell=32] [--header=PATH]
-(the repo's copies: OUT_DIR psp/glyphs, --header=psp/src/psp_glyphs.h;
-ENGINE_CHECKOUT for Overpass, ChupathingyCE's port/assets/fonts)"""
+       python3 tools/psp_glyphs.py ENGINE_CHECKOUT OUT_DIR --master [--cell=128]
+(the repo's copies: OUT_DIR psp/glyphs, --header=psp/src/psp_glyphs.h, and
+--master --cell=128 for psp/glyphs/psp_glyphs_master.png; ENGINE_CHECKOUT for
+Overpass, ChupathingyCE's port/assets/fonts)"""
 
 import math
 import os
@@ -411,6 +420,7 @@ def main():
     global CELL
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     header_path = None
+    master = "--master" in sys.argv[1:]
     for a in sys.argv[1:]:
         if a.startswith("--cell="):
             CELL = int(a.split("=", 1)[1])
@@ -465,11 +475,26 @@ def main():
         sheet_a[y * CELL:(y + 1) * CELL, x * CELL:(x + cells) * CELL] = a
         sheet_p[y * CELL:(y + 1) * CELL, x * CELL:(x + cells) * CELL] = p
     shade = np.where(sheet_a > 1e-4, sheet_p / np.maximum(sheet_a, 1e-4), 0.0)
+    os.makedirs(out, exist_ok=True)
+    if master:
+        # palette()'s rule at full precision: shade and alpha as drawn
+        def tinted(tint):
+            base = np.array(tint, np.float32)
+            s3 = shade[..., None]
+            colour = np.where(s3 <= 0.7, base * (0.15 + 0.85 * s3 / 0.7), base + (255.0 - base) * ((s3 - 0.7) / 0.3))
+            rgba = np.concatenate([colour, sheet_a[..., None] * 255.0], axis=2)
+            return Image.fromarray(np.clip(np.rint(rgba), 0, 255).astype(np.uint8), "RGBA")
+
+        image = Image.new("RGBA", (columns * CELL * 2 + CELL // 4, rows * CELL), (0, 0, 0, 0))
+        image.alpha_composite(tinted((96, 160, 255)), (0, 0))
+        image.alpha_composite(tinted((235, 235, 235)), (columns * CELL + CELL // 4, 0))
+        image.save(os.path.join(out, "psp_glyphs_master.png"), optimize=True)
+        print("psp_glyphs: master, %d glyphs at %d-pixel cells" % (len(places), CELL))
+        return
     alpha4 = np.clip(np.rint(sheet_a * 15.0), 0, 15).astype(np.uint8)
     shade4 = np.clip(np.rint(shade * 15.0), 0, 15).astype(np.uint8)
     indices = (alpha4 << 4) | np.where(alpha4 > 0, shade4, 0).astype(np.uint8)
 
-    os.makedirs(out, exist_ok=True)
     # the preview: the sheet as the GE draws it, in the HUD's blue and in white
     blue = palette((96, 160, 255))[indices]
     white = palette((235, 235, 235))[indices]

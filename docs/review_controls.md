@@ -97,6 +97,10 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
     - At draw, `glyph_palette` turns the shade into colour from the colour the game hands the icon, which is its text colour. Shade 0 is that colour at 15%, 0.7 the colour itself, and above it the colour lightens to white.
     - So the body is the colour a little darkened and half see-through, with a crisp gloss over its upper part, a little light along its bottom edge and a bright rim; the symbol is near white and solid. The glyphs sit in the HUD's blue in play and in the menus' colour in the menus.
   - `psp/glyphs/psp_glyphs.png` is a preview, in the HUD's blue and in white.
+  - **Resolution:** the shapes are geometry, drawn at 4× and reduced.
+    - The game carries 32-px cells; the HUD draws glyphs about 18 px high [U: from the mock; `glyphs2`'s shots will say].
+    - A larger sheet would be worse, not better: the GE would shrink it more than twice over with no mipmaps, which shimmers, and it would take 4× the memory (128 KB at 64-px cells).
+    - `psp/glyphs/psp_glyphs_master.png` is a 128-px-cell copy at full precision (`--master`), for looking at and for other uses.
 - **The map:**
   - `glyphs_in_play` and `glyphs_in_menus` take the engine's 18 icons (A … right stick) to glyphs by survey table A. In play, A is D-pad ↑; in the menus, ✕.
   - The engine has already turned each prompt's control into an Xbox button through the profile's preset, so the glyphs follow the presets with no more work.
