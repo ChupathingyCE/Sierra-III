@@ -247,7 +247,8 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT /* build 117 */
+	DEFER_MODEL_POINT_LIGHT /* build 117 */,
+	DEFER_FRAME_END, DEFER_WINDOW_BEGIN /* geinflight */
 };
 typedef union
 {
@@ -320,6 +321,19 @@ static const unsigned char *overlay_answers = NULL;
 static int overlay_answers_for(const void *vertices, int vertex_count, const unsigned short *indices,
 	long triangle_count, unsigned char *out);
 static PSP_MAIN_SIDE unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
+/* "geinflight" (with gedefer; docs/frames_in_flight.md): the frame's end and
+the next frame's first window are written down too, so a frame is carried out
+only at the next frame's first call, after that frame's ticks: the order the
+Media Engine version will run in (the ME carrying out frame N while the main
+CPU ticks N+1). Carried out here on the main CPU, it moves no work; what it
+gives is that order, so the emulator's drawhash and statecrc show anything the
+next ticks change under a frame still waiting. A frame is written down whole,
+so the buffer is sized for b30's busiest (~100 KB a frame, recon_134.md) */
+#define DEFER_INFLIGHT_WORDS (128 * 1024 / 4)
+static PSP_MAIN_SIDE int inflight_on = 0;
+static PSP_MAIN_SIDE int inflight_pending = 0; /* a frame's end is written down and waits */
+static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
+extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
 static void defer_hand_over(void); /* build 118: gemeoverlap */
 static void list_write_back(const void *stall); /* build 114: listcachedall */
@@ -355,6 +369,9 @@ the ME: there the test is psp_on_me(), its own stack */
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
 #define GE_DEFER(record, ...) do { if (DEFER_RECORDING() && !defer_paused && (record)) return __VA_ARGS__; } while (0)
+/* a frame's boundaries are written down only in a game: the menus and loads
+run as with gedefer alone */
+#define INFLIGHT_RECORDING() (inflight_on && DEFER_RECORDING() && psp_game_running())
 
 int psp_keep(const char *name);
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
@@ -430,7 +447,11 @@ static void defer_frame_begin(void)
 		asked = psp_keep("gedefer") || me_bench;
 		if (asked)
 		{
-			defer_buffer = memalign(64, DEFER_WORDS * sizeof(defer_word));
+			/* geinflight: a whole frame's buffer; not with the overlap's
+			halves or mebench's turns, which hand work over within a frame */
+			unsigned int words = psp_keep("geinflight") && !me_bench && !psp_keep("gemeoverlap") ? DEFER_INFLIGHT_WORDS : DEFER_WORDS;
+
+			defer_buffer = memalign(64, words * sizeof(defer_word));
 			defer_nodes = memalign(64, DEFER_MAX_NODES * NODE_FLOATS * sizeof(float));
 			if (!defer_buffer || !defer_nodes)
 			{
@@ -444,7 +465,13 @@ static void defer_frame_begin(void)
 			else
 			{
 				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer",
-					(unsigned int)(DEFER_WORDS * sizeof(defer_word) / 1024));
+					(unsigned int)(words * sizeof(defer_word) / 1024));
+				if (words == DEFER_INFLIGHT_WORDS)
+				{
+					inflight_on = 1;
+					defer_limit = words;
+					platform_log("GE: geinflight: each frame carried out at the next frame's first call, after its ticks");
+				}
 				if (psp_keep("gemesim"))
 				{
 					defer_me_thread = (unsigned int)sceKernelGetThreadId();
@@ -497,10 +524,23 @@ static void defer_frame_begin(void)
 /* room for a call of words words of arguments (what is waiting is carried
 out first if the buffer is full); NULL if the call is too large to defer,
 after carrying out what is waiting, so the call runs as it comes */
+/* geinflight: the frame waiting is carried out before the next frame's first
+call is written down (the Media Engine version's one wait a frame) */
+static void inflight_sync(void)
+{
+	inflight_frames++;
+	inflight_words += defer_used;
+	if (defer_used > inflight_words_most)
+		inflight_words_most = defer_used;
+	defer_drain_for("the next frame's first call (geinflight)");
+}
+
 static defer_word *defer_take(int kind, unsigned int words)
 {
 	defer_word *at;
 
+	if (inflight_pending)
+		inflight_sync();
 	if (words > DEFER_LARGEST)
 	{
 		defer_too_large++;
@@ -832,7 +872,16 @@ static int defer_screen_flash(short type, float intensity, float const *argb)
 static int defer_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
-	defer_word *at = defer_take(DEFER_DECAL, 8);
+	/* geinflight: the decals' vertices are rewritten by the next frame's
+	ticks, before the frame is carried out, so they're copied (16 bytes a
+	corner, psp_ge_decal_body; at most 256 quads drawn) */
+	int copied = inflight_on && vertices && quad_count > 0 && quad_count <= 256 ? quad_count * 4 * 4 : 0;
+	defer_word *at = defer_take(DEFER_DECAL, 8 + copied);
+
+	if (!at)
+		return 0; /* too large: carried out as it comes, after what waits */
+	if (copied)
+		memcpy(at + 8, vertices, copied * sizeof(defer_word));
 
 	at[0].p = vertices;
 	at[1].i = quad_count;
@@ -842,6 +891,18 @@ static int defer_decal(void const *vertices, int quad_count, unsigned int key, s
 	at[5].i = intensity;
 	at[6].i = alpha_tested;
 	at[7].i = permanent;
+	return 1;
+}
+
+static int defer_window_begin(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far)
+{
+	defer_word *at = defer_take(DEFER_WINDOW_BEGIN, 3 + 3 * (1 + 3));
+
+	at[0].f = vertical_field_of_view;
+	at[1].f = z_near;
+	at[2].f = z_far;
+	defer_copy(defer_copy(defer_copy(at + 3, position, 3), forward, 3), up, 3);
 	return 1;
 }
 
@@ -995,8 +1056,19 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		case DEFER_SCREEN_FLASH:
 			psp_ge_screen_flash((short)w[0].i, w[1].f, defer_copy_back(w + 2, &rest, 4));
 			break;
+		case DEFER_FRAME_END:
+			psp_ge_frame_end();
+			break;
+		case DEFER_WINDOW_BEGIN:
+			a = defer_copy_back(w + 3, &rest, 3);
+			b = defer_copy_back(rest, &rest, 3);
+			c = defer_copy_back(rest, &rest, 3);
+			psp_ge_window_begin(a, b, c, w[0].f, w[1].f, w[2].f);
+			break;
 		case DEFER_DECAL:
-			psp_ge_decal(w[0].p, w[1].i, w[2].u, (short)w[3].i, w[4].u, w[5].i, w[6].i, w[7].i);
+			/* the record's own copy of the vertices when it has one (geinflight) */
+			psp_ge_decal((w[-1].u >> 8) - 1 > 8 ? (const void *)(w + 8) : w[0].p, w[1].i, w[2].u, (short)w[3].i, w[4].u, w[5].i,
+				w[6].i, w[7].i);
 			break;
 		case DEFER_BLIPS_BEGIN:
 			psp_ge_blips_begin();
@@ -1204,6 +1276,7 @@ static void defer_drain(void)
 			me_wrote = 0;
 		}
 		defer_drains++;
+		inflight_pending = 0;
 		return;
 	}
 	defer_replaying = 1;
@@ -1224,6 +1297,7 @@ static void defer_drain(void)
 	defer_used = 0;
 	defer_replaying = 0;
 	defer_drains++;
+	inflight_pending = 0;
 }
 
 /* the messages the Media Engine's work logged: each format with a count */
@@ -3410,6 +3484,9 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 {
 	ScePspFVector3 eye, center, upward;
 
+	/* geinflight: written down, carried out with the rest of the frame */
+	if (INFLIGHT_RECORDING() && defer_window_begin(position, forward, up, vertical_field_of_view, z_near, z_far))
+		return;
 	/* one window a frame: the GE's frame takes the first window's camera,
 	and the later ones (letterbox bars, the non-player overlays: 2-D, on
 	the same screen) draw into it. (build 112: they change nothing, so
@@ -16076,6 +16153,14 @@ void psp_ge_frame_window(char *text, int size)
 
 void psp_ge_frame_end(void)
 {
+	/* geinflight: the frame waits, written down whole, for the next frame's
+	first call */
+	if (INFLIGHT_RECORDING())
+	{
+		defer_words(DEFER_FRAME_END, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+		inflight_pending = 1;
+		return;
+	}
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	unsigned int flush_mark;
 
@@ -16448,6 +16533,13 @@ void psp_ge_frame_end(void)
 			if (defer_on)
 				platform_log("GE: gedefer: %lu calls deferred, carried out in %lu runs (%lu when the buffer filled); ran as they came: %lu models with more than %d nodes, %lu calls too large",
 					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES, defer_too_large);
+			if (inflight_on && inflight_frames)
+			{
+				platform_log("GE: geinflight: %lu frames carried out after the next frame's ticks, %lu KB a frame written down (fullest %lu KB of %u)",
+					inflight_frames, inflight_words * sizeof(defer_word) / 1024 / inflight_frames,
+					inflight_words_most * (unsigned long)sizeof(defer_word) / 1024, (unsigned int)(DEFER_INFLIGHT_WORDS * sizeof(defer_word) / 1024));
+				inflight_frames = inflight_words = inflight_words_most = 0;
+			}
 			if (defer_on)
 			{
 				char sites[400];
