@@ -117,7 +117,11 @@ static char extra_words[384] = ""; /* build 116: 384 (256), for the longer prese
 so a test is one press instead of a dozen toggles. Applying one sets exactly
 its words: the options it names on, every other option off, its other words
 kept as "other words" */
-#define MAXIMUM_PRESETS 14 /* two rows each, within the 34-row screen */
+/* one row each and the cursor's words under the list: 3 header rows, 22
+names, a blank, 5 rows of words and the applied line take 32 of the screen's
+34 rows (a line past the last row wraps to the top) */
+#define MAXIMUM_PRESETS 22
+#define PRESET_WORD_ROWS 5
 #define PRESET_NAME 48
 /* build 116: 320 (200 before): b116's "every restoration off" preset is 199 */
 #define PRESET_WORDS 320
@@ -125,6 +129,9 @@ kept as "other words" */
 under one of the heap's 64 KB steps) */
 static struct preset { char name[PRESET_NAME]; char words[PRESET_WORDS]; } *presets = NULL;
 static int preset_count = 0, preset_applied = -1;
+/* lines past MAXIMUM_PRESETS: said on the page, so a test's preset can't go
+missing without a word */
+static int presets_left_out = 0;
 
 static void load_presets(void)
 {
@@ -134,6 +141,7 @@ static void load_presets(void)
 	int length;
 
 	preset_count = 0;
+	presets_left_out = 0;
 	if (file < 0)
 		return;
 	text = malloc(TEXT_BYTES);
@@ -154,12 +162,17 @@ static void load_presets(void)
 		return;
 	}
 	text[length] = '\0';
-	for (line = strtok_r(text, "\r\n", &save); line && preset_count < MAXIMUM_PRESETS; line = strtok_r(NULL, "\r\n", &save))
+	for (line = strtok_r(text, "\r\n", &save); line; line = strtok_r(NULL, "\r\n", &save))
 	{
 		char *colon = strchr(line, ':');
 
 		if (line[0] == '#' || !colon)
 			continue;
+		if (preset_count == MAXIMUM_PRESETS)
+		{
+			presets_left_out++;
+			continue;
+		}
 		*colon = '\0';
 		snprintf(presets[preset_count].name, PRESET_NAME, "%s", line);
 		for (colon++; *colon == ' '; colon++)
@@ -405,20 +418,27 @@ static void draw(int page, int cursor, int map, int build)
 		"up/down move, left/right/cross toggle, START plays\n\n");
 	if (page == 2)
 	{
-		/* build 114 */
 		for (i = 0; i < preset_count; i++)
 		{
 			pspDebugScreenSetTextColor(i == cursor ? 0xFF00FFFF : 0xFFFFFFFF);
 			pspDebugScreenPrintf(" %c %-.62s\n", i == preset_applied ? '*' : ' ', presets[i].name);
-			pspDebugScreenSetTextColor(0xFFAAAAAA);
-			pspDebugScreenPrintf("     %-.62s\n", presets[i].words);
 		}
 		if (!preset_count)
 			pspDebugScreenPrintf(" no presets (ms0:/halo/presets.txt: one a line, \"name: keep words\")\n");
 		else
 		{
+			/* the cursor's words, padded so a shorter set covers the last one */
+			const char *words = cursor >= 0 && cursor < preset_count ? presets[cursor].words : "";
+			int row, length = (int)strlen(words);
+
 			pspDebugScreenSetTextColor(0xFFAAAAAA);
-			pspDebugScreenPrintf("\n %s\n", preset_applied >= 0 ? "applied: the options page shows its words" : "");
+			pspDebugScreenPrintf("\n");
+			for (row = 0; row < PRESET_WORD_ROWS; row++)
+				pspDebugScreenPrintf("   %-64.64s\n", row * 64 < length ? words + row * 64 : "");
+			if (presets_left_out)
+				pspDebugScreenSetTextColor(0xFF4040FF);
+			pspDebugScreenPrintf(" %-66.66s\n", presets_left_out ? "presets.txt holds more than this page: those past it left out" :
+				preset_applied >= 0 ? "applied: the options page shows its words" : "");
 		}
 	}
 	else if (page == 0)

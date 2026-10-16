@@ -112,6 +112,14 @@ cp "$OUT/build/EBOOT.PBP" "$OUT/crash/halo_crash.prx" "$OUT/profile/halo_profile
 cp "$MECORE_DIR/LICENSE.md" "$pkg/PSP/GAME/halo/LICENSE-mecore.md"
 top=(PSP)
 if [[ -f $SRC/psp/presets.txt ]]; then
+    # the launch menu takes MAXIMUM_PRESETS (psp_menu.c); one past it would be
+    # a test Sheepdog01 can't start
+    most=$(sed -n 's/^#define MAXIMUM_PRESETS \([0-9]*\).*/\1/p' "$SRC/psp/src/psp_menu.c")
+    count=$(grep -v '^#' "$SRC/psp/presets.txt" | grep -c ':' || true)
+    if [[ -z $most || $count -gt $most ]]; then
+        echo "build_release: psp/presets.txt has $count presets; the launch menu holds ${most:-?}" >&2
+        exit 1
+    fi
     mkdir -p "$pkg/halo"; cp "$SRC/psp/presets.txt" "$pkg/halo/presets.txt"; top+=(halo)
 fi
 # every file and folder carries the commit's time and fixed permissions, so
