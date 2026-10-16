@@ -332,6 +332,11 @@ so the buffer is sized for b30's busiest (~100 KB a frame, recon_134.md) */
 #define DEFER_INFLIGHT_WORDS (128 * 1024 / 4)
 static PSP_MAIN_SIDE int inflight_on = 0;
 static PSP_MAIN_SIDE int inflight_pending = 0; /* a frame's end is written down and waits */
+/* the waiting frame's list has ended (its window was open): the main CPU's
+part of its end runs once the run is over (defer_drain). Written in the
+run, read after it */
+static int inflight_list_ended = 0;
+static void inflight_show(void);
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
@@ -433,6 +438,10 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 void psp_ge_text_character(void const *vertices);
 void psp_ge_text_end(void);
 int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y);
+static void window_begin_list(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far);
+static int frame_end_list(void);
+static void frame_end_show(void);
 void psp_ge_frame_end(void);
 void psp_ge_window_begin(const float *position, const float *forward, const float *up,
 	float vertical_field_of_view, float z_near, float z_far);
@@ -1062,13 +1071,13 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_screen_flash((short)w[0].i, w[1].f, defer_copy_back(w + 2, &rest, 4));
 			break;
 		case DEFER_FRAME_END:
-			psp_ge_frame_end();
+			inflight_list_ended = frame_end_list();
 			break;
 		case DEFER_WINDOW_BEGIN:
 			a = defer_copy_back(w + 3, &rest, 3);
 			b = defer_copy_back(rest, &rest, 3);
 			c = defer_copy_back(rest, &rest, 3);
-			psp_ge_window_begin(a, b, c, w[0].f, w[1].f, w[2].f);
+			window_begin_list(a, b, c, w[0].f, w[1].f, w[2].f);
 			break;
 		case DEFER_DECAL:
 			/* the record's own copy of the vertices when it has one (geinflight) */
@@ -1303,6 +1312,19 @@ static void defer_drain(void)
 	defer_replaying = 0;
 	defer_drains++;
 	inflight_pending = 0;
+	inflight_show();
+}
+
+/* geinflight: the main CPU's part of a frame's end, once its list has ended
+and the GE has been given all of it */
+static void inflight_show(void)
+{
+	if (!inflight_list_ended)
+		return;
+	inflight_list_ended = 0;
+	psp_me_wake_poll();
+	psp_me_ring_test();
+	frame_end_show();
 }
 
 /* the messages the Media Engine's work logged: each format with a count */
@@ -3484,21 +3506,19 @@ void psp_ge_window_target(int target)
 		win_other_targets++;
 }
 
-void psp_ge_window_begin(const float *position, const float *forward, const float *up,
-	float vertical_field_of_view, float z_near, float z_far)
-{
-	ScePspFVector3 eye, center, upward;
+/* a frame's window begins in two parts. The main CPU's (the first window of
+a frame): what reads the game or the level, or writes what the list's builder
+reads (the near plane's choice, the level's origin, the shots asked for, the
+recorder's frame), and its answer, the world's near plane. The list's: the
+GE's state, the camera, the list's start. geinflight writes the list's part
+down for the Media Engine's turn (docs/frames_in_flight.md); otherwise the
+two run back to back. One window a frame: the GE's frame takes the first
+window's camera, and the later ones (letterbox bars, the non-player
+overlays: 2-D, on the same screen) draw into it */
+static PSP_MAIN_SIDE int window_recorded = 0; /* geinflight: this frame's first window is written down */
 
-	/* geinflight: written down, carried out with the rest of the frame */
-	if (INFLIGHT_RECORDING() && defer_window_begin(position, forward, up, vertical_field_of_view, z_near, z_far))
-		return;
-	/* one window a frame: the GE's frame takes the first window's camera,
-	and the later ones (letterbox bars, the non-player overlays: 2-D, on
-	the same screen) draw into it. (build 112: they change nothing, so
-	they don't make the waiting calls run either; the first does) */
-	if (frame_open)
-		return;
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+static float window_begin_main(const float *position, float z_near, float z_far)
+{
 	if (!ge_ready)
 	{
 		ge_initialize();
@@ -3543,50 +3563,15 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 				shot_next = (now / period + 1) * period;
 		}
 	}
+	defer_frame_begin(); /* build 112 */
+	if (vm_on < 0)
+		vm_reset(); /* build 116: vrammodels, after a new map or BSP */
+	/* the list's start hands it to the GE (a system call): the main CPU's,
+	before any of the frame's draws are carried out */
 	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
 	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : display_list_size;
 	sceGuStart(GU_DIRECT, list_in_vram ? (void *)(0x04000000 + VRAM_BENCH_START) : (void *)display_list);
 	list_cached_frame_start(list_in_vram); /* build 114: listcachedall */
-	lit_forget(2); /* build 114: statememo */
-	sceGuFog(fog_near, fog_far, fog_color);
-	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
-	if (vram_busy)
-		vram_busy_load();
-	hud_phase = 0;
-	ge_kinds_frame_begin(); /* build 103 */
-	defer_frame_begin(); /* build 112 */
-	taa_done = 0;
-	taa_frame++;
-	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
-	{
-		/* a quarter pixel each way on alternate frames */
-		float sign = (taa_frame & 1) ? 0.25f : -0.25f;
-
-		taa_jitter_x = sign * 2.0f / SCREEN_WIDTH;
-		taa_jitter_y = sign * 2.0f / SCREEN_HEIGHT;
-	}
-	else
-		taa_jitter_x = taa_jitter_y = 0.0f;
-	if (magenta < 0)
-		magenta = psp_keep("clearmagenta");
-	if (clear_blue < 0)
-		clear_blue = psp_keep("clearblue");
-	sceGuClearColor(magenta ? 0xFFFF00FF : clear_blue ? SKY_COLOR : window_clear_color);
-	sceGuClearDepth(0);
-	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
-	ge_dither(1); /* build 116: the world's draws */
-	if (vm_on < 0)
-		vm_reset(); /* build 116: vrammodels, after a new map or BSP */
-	/* build 63: the world's depth state from a known start each frame, so a
-	slip the frame before (a test left off, a nudge left on) can't carry */
-	sceGuEnable(GU_DEPTH_TEST);
-	sceGuDepthFunc(GU_GEQUAL);
-	sceGuDepthOffset(0);
-
-	if (!(z_near > 0.01f))
-		z_near = 0.05f;
-	if (!(z_far > z_near))
-		z_far = 1000.0f;
 	{
 		/* build 49: the depth buffer is 16 bits (the Xbox's 24), and a
 		perspective depth spends most of its steps near the eye: the step at
@@ -3613,6 +3598,55 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		else if (!near_auto)
 			z_near *= near_scale;
 	}
+	if (level_exact < 0)
+		level_exact = !psp_keep("levelexactoff");
+	if (level_local < 0)
+		level_local = !psp_keep("levellocaloff");
+	if (level_local)
+		level_origin_follow(position);
+	return z_near;
+}
+
+static void window_begin_list(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far)
+{
+	ScePspFVector3 eye, center, upward;
+
+	if (frame_open)
+		return;
+	lit_forget(2); /* build 114: statememo */
+	sceGuFog(fog_near, fog_far, fog_color);
+	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
+	if (vram_busy)
+		vram_busy_load();
+	hud_phase = 0;
+	ge_kinds_frame_begin(); /* build 103 */
+	taa_done = 0;
+	taa_frame++;
+	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
+	{
+		/* a quarter pixel each way on alternate frames */
+		float sign = (taa_frame & 1) ? 0.25f : -0.25f;
+
+		taa_jitter_x = sign * 2.0f / SCREEN_WIDTH;
+		taa_jitter_y = sign * 2.0f / SCREEN_HEIGHT;
+	}
+	else
+		taa_jitter_x = taa_jitter_y = 0.0f;
+	if (magenta < 0)
+		magenta = psp_keep("clearmagenta");
+	if (clear_blue < 0)
+		clear_blue = psp_keep("clearblue");
+	sceGuClearColor(magenta ? 0xFFFF00FF : clear_blue ? SKY_COLOR : window_clear_color);
+	sceGuClearDepth(0);
+	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+	ge_dither(1); /* build 116: the world's draws */
+	/* build 63: the world's depth state from a known start each frame, so a
+	slip the frame before (a test left off, a nudge left on) can't carry */
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuDepthOffset(0);
+
 	near_clip = z_near;
 	sceGumMatrixMode(GU_PROJECTION);
 	perspective(vertical_field_of_view * (180.0f / 3.14159265f), z_near, z_far);
@@ -3637,12 +3671,6 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	camera's turn plus the fraction between the eye and ge_eye, and every
 	model matrix is made relative to ge_eye on the CPU, in full floats
 	(relative(), world_model()) */
-	if (level_exact < 0)
-		level_exact = !psp_keep("levelexactoff");
-	if (level_local < 0)
-		level_local = !psp_keep("levellocaloff");
-	if (level_local)
-		level_origin_follow(position);
 	{
 		int k;
 
@@ -3723,6 +3751,35 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	}
 	sceGumMatrixMode(GU_MODEL);
 	world_model();
+}
+
+void psp_ge_window_begin(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far)
+{
+	if (!(z_near > 0.01f))
+		z_near = 0.05f;
+	if (!(z_far > z_near))
+		z_far = 1000.0f;
+	/* geinflight: the main CPU's part now, the list's written down for the
+	frame's turn */
+	if (INFLIGHT_RECORDING())
+	{
+		/* the frame waiting goes first: its list reads what the main
+		CPU's part changes (the level's origin, the recorder's frame) */
+		if (inflight_pending)
+			inflight_sync();
+		if (!window_recorded)
+		{
+			window_recorded = 1;
+			z_near = window_begin_main(position, z_near, z_far);
+		}
+		if (defer_window_begin(position, forward, up, vertical_field_of_view, z_near, z_far))
+			return;
+	}
+	if (frame_open)
+		return;
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	window_begin_list(position, forward, up, vertical_field_of_view, window_begin_main(position, z_near, z_far), z_far);
 }
 
 /* a point in camera space: x right, y up, z forward (distance ahead) */
@@ -16164,24 +16221,35 @@ void psp_ge_frame_end(void)
 	{
 		defer_words(DEFER_FRAME_END, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		inflight_pending = 1;
+		window_recorded = 0;
 		return;
 	}
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
-	unsigned int flush_mark;
-
 	/* the ring's one producer, between frames: where the ME can be restarted
 	after a sleep (a slot job still out puts it off to a later frame end) */
 	psp_me_wake_poll();
 	if (!frame_open)
 		return;
 	psp_me_ring_test(); /* "meringtest" (psp_me.c); off: one test a frame */
-	flush_mark = sceKernelGetSystemTimeLow();
+	frame_end_list();
+	frame_end_show();
+}
+
+/* the frame's end in two parts, as its window's begin: the list's (its last
+draws and its finish: the Media Engine's turn under geinflight) and the main
+CPU's (the GE waited for, the picture shown, the frame's reads and logs) */
+static int frame_end_list(void)
+{
+	unsigned int flush_mark;
+
+	if (!frame_open)
+		return 0;
+	flush_mark = ge_clock();
 	win_transparent += transparent_count;
 	transparent_flush();
 	taa_resolve();
 	ge_kinds_frame_end(); /* build 103 */
-	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
-	win_flush_us += sceKernelGetSystemTimeLow() - flush_mark;
+	win_flush_us += ge_clock() - flush_mark;
 	win_frames++;
 	win_draws += draws_this_frame;
 	win_triangles += triangles_this_frame;
@@ -16196,27 +16264,37 @@ void psp_ge_frame_end(void)
 		{
 			list_peak = used;
 			if (used > display_list_size * 7 / 8)
-				platform_log("GE: display list %d of %d bytes used", used, display_list_size);
+				ge_log("GE: display list %d of %d bytes used", used, display_list_size);
 		}
 	}
+	/* the frame's data to RAM before the list's last stall moves (on the
+	Media Engine its job's end writes its cache back) */
+	if (!PSP_ME_WORK())
 	{
-		/* build 44: the frame end's own parts, timed (the profile's
-		psp_frame_account step cost 1.3 ms a frame in build 42) */
-		unsigned int mark = sceKernelGetSystemTimeLow(), waited;
+		unsigned int mark = ge_clock();
 
 		sceKernelDcacheWritebackAll();
-		frame_end_us[0] += sceKernelGetSystemTimeLow() - mark;
-		win_writeback_us += sceKernelGetSystemTimeLow() - mark;
-		mark = sceKernelGetSystemTimeLow();
-		/* build 48: the finish's stall update always reaches the GE */
-		stall_force = 1;
-		sceGuFinish();
+		frame_end_us[0] += ge_clock() - mark;
+		win_writeback_us += ge_clock() - mark;
+	}
+	/* build 48: the finish's stall update always reaches the GE */
+	stall_force = 1;
+	sceGuFinish();
+	stall_force = 0;
+	return 1;
+}
+
+static void frame_end_show(void)
+{
+	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
+	{
+		unsigned int mark = sceKernelGetSystemTimeLow(), waited;
+
 		/* build 35: how long the CPU waits here for the GE to finish the
 		frame's list. Long waits: the GE is the limit (fill, passes); short:
 		the CPU is, and drawing overlapped with the next frame's work would
 		gain little */
 		sceGuSync(0, 0);
-		stall_force = 0;
 		waited = sceKernelGetSystemTimeLow() - mark;
 		ge_wait_us += waited;
 		win_ge_us += waited;
