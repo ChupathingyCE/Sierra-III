@@ -292,6 +292,8 @@ def centroid(points):
 # radius ARROW_R), outlined with their stroke, centred on the leaf (its
 # centre of area on the leaf's)
 ARROW_R = 0.27
+# the arrow's stroke, as a share of the face buttons' (--arrow=)
+ARROW_STROKE = 1.0
 LEAF_MIDDLE = centroid(DPAD_LEAF)
 DPAD_ARROW = [(x - sum(p[0] for p in triangle(0, 0, ARROW_R)) / 3 + LEAF_MIDDLE[0],
                y - sum(p[1] for p in triangle(0, 0, ARROW_R)) / 3 + LEAF_MIDDLE[1]) for x, y in triangle(0, 0, ARROW_R)]
@@ -309,7 +311,7 @@ def dpad_leaf(layers, turns, size, scale=1.0, dx=0.0, dy=0.0):
     ImageDraw.Draw(mask).polygon(place(DPAD_LEAF), fill=255)
     glass(layers, rounded(mask, size * DPAD_ROUND * scale))
     arrow = blank(size, size)
-    outline(ImageDraw.Draw(arrow), place(DPAD_ARROW), size * FACE_R * STROKE * scale)
+    outline(ImageDraw.Draw(arrow), place(DPAD_ARROW), size * FACE_R * STROKE * ARROW_STROKE * scale)
     symbol(layers, arrow)
 
 
@@ -517,7 +519,7 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     header_path = None
     master = "--master" in sys.argv[1:]
-    global FINISH, SOLID, SATIN_GLOSS, RIM_WIDTH, SPREAD
+    global FINISH, SOLID, SATIN_GLOSS, RIM_WIDTH, SPREAD, ARROW_STROKE
     for a in sys.argv[1:]:
         if a.startswith("--finish="):
             FINISH = a.split("=", 1)[1]
@@ -529,6 +531,8 @@ def main():
             RIM_WIDTH = float(a.split("=", 1)[1])
         elif a.startswith("--spread="):
             SPREAD = float(a.split("=", 1)[1])
+        elif a.startswith("--arrow="):
+            ARROW_STROKE = float(a.split("=", 1)[1])
     for a in sys.argv[1:]:
         if a.startswith("--cell="):
             CELL = int(a.split("=", 1)[1])
