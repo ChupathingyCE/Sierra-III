@@ -4,7 +4,7 @@ Sierra-III is a native PSP-1000 port of Halo: Combat Evolved, built on a decompi
 
 ## Rules
 
-- **No game data, ever.** That means no maps, extracted tags, baked packs (`.map .pgeo .ptex .pstn .vram`), sounds or textures from the disc, in any commit, release or log. `.gitignore` enforces the common cases. Before a push, check that every binary or large file is ours.
+- **No game data, ever.** That means no maps, extracted tags, baked packs (`.map .pgeo .ptex .pstn .vram`), sounds or textures from the disc, in any commit, release, Actions artifact or log. Game data stays in Sheepdog01's local environment (Sheepdog01, 2026-10-15): it may move between his own machines on his own network, and never touches GitHub. `.gitignore` enforces the common cases. Before a push, check that every binary or large file is ours.
   - **One exception** (Sheepdog01, 2026-10-12): the XMB art in `psp/xmb/` may use stills of Sheepdog01's own gameplay footage (recorded from PC ChupathingyCE), under Microsoft's Game Content Usage Rules; the README carries their notice. Only the exported XMB images: never the raw captures or cutouts, nothing extracted from the game's files, no Microsoft logos.
 - **No Sony firmware.** `flash0:` modules (e.g. `lowio.prx`) stay off the repo; describing them in docs is fine.
 - **Test scaffolding goes in the lab repository, not here.** That covers run specs, workflows, run scripts and results. This repo holds only what the port needs to build, bake and be tested by hand. Sessions that work on the lab get its name and rules from its own CLAUDE.md; `docs/testing_pipeline.md` describes its shape.
@@ -78,7 +78,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
   - `PSP_DCACHE` / `PSP_ICACHE`: the cache model, with exact tick counts.
 
   `tools/emu.sh LABEL` does one run. It is driven by environment variables (map, keep words, input script, route, strict mode, wall time) and summarised by `tools/strictfilter.py`. The Pelican flight into b30 is the fair A/B stretch; beach battles vary ~10% between runs.
-- **The lab's runners:** builds, bakes and emulator runs (many at once, as batches) can go to Sheepdog01's desktop through the lab repository's workflows. Its README describes them; maps never leave that machine.
+- **The lab's runners:** builds, bakes and emulator runs (many at once, as batches) can go to Sheepdog01's desktop through the lab repository's workflows. Its README describes them; maps stay on Sheepdog01's machines and never touch GitHub.
 - **Hardware:** Sheepdog01 runs the build and sends back `halo/log/` (`log.txt`, `profile.txt`, `crash.txt`, shots). `tools/hwreport.py` reads the `hwprofile` lines.
 
 ## Installing (Sheepdog01's machine, fish)

@@ -25,7 +25,7 @@ A change goes through the emulator first (does it work, is it exact, what does i
 **The pieces:**
 1. **A private repository for the test scaffolding**, apart from the port's: run specs, workflows, run scripts, emulator patches, and a results branch. The port's repository holds only what it needs to build, bake and be tested by hand.
 2. **Self-hosted CI runners** (GitHub Actions) on a desktop that holds the maps and disc images. They run in rootless containers, pull jobs over outbound HTTPS (nothing connects in), and are registered only to the private repository. Two runners, so a compile never waits behind an emulator run: a build runner (6 threads) and an emu runner (10 threads, 16 GB).
-3. **Mounts:** the maps and disc images read-only; a scratch folder per job; a folder for maps the bake makes, which never leaves the machine.
+3. **Mounts:** the maps and disc images read-only; a scratch folder per job; a folder for maps the bake makes, which stays on your own machines and out of every repository.
 4. **Workflows**, each a thin wrapper around a script:
    - *build*: a commit to a release zip and its link map (`tools/build_release.sh`);
    - *test*: build, then one emulator run: map, keep words, init lines, an input script, a route, wall seconds, the strict interpreter, the cache models;
