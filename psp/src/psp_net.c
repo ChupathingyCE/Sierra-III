@@ -955,6 +955,73 @@ static int firmware_socket(int descriptor)
 	return *(const int *)entry;
 }
 
+/* select through the firmware's own select, all the sockets in one call
+(keep word inetselect). libcglue's select asks the firmware one socket at a
+time, each in a set it clears only 64 bits of (newlib's fd_set) while
+setting the socket's bit up to 256 (its code: the word from bits 5 to 7 of
+the firmware's number): a firmware number of 64 or more sets its bit past
+the cleared words, into libcglue's own result sets, and the firmware is
+asked about whatever was there [D, libcglue's select.o]. The sets here are
+256 bits, cleared whole; a number past them leaves the call to libcglue's
+select. -2: not done (the caller uses libcglue's) */
+enum { FIRMWARE_SET_WORDS = 8 };
+
+static int inet_select(int count, fd_set *read_set, fd_set *write_set, fd_set *error_set,
+	long seconds, long microseconds, int infinite)
+{
+	unsigned int sets[3][FIRMWARE_SET_WORDS];
+	fd_set *game_sets[3] = { read_set, write_set, error_set };
+	int firmware[64];
+	int index, kind, highest = -1, result, ready = 0;
+	SceNetInetTimeval timeout;
+
+	memset(sets, 0, sizeof(sets));
+	for (index = 0; index < count && index < FD_SETSIZE; index++)
+	{
+		int asked = 0;
+
+		firmware[index] = -1;
+		for (kind = 0; kind < 3; kind++)
+			asked |= game_sets[kind] && FD_ISSET(index, game_sets[kind]);
+		if (!asked)
+			continue;
+		firmware[index] = firmware_socket(index);
+		if (firmware[index] < 0 || firmware[index] >= FIRMWARE_SET_WORDS * 32)
+			return -2;
+		for (kind = 0; kind < 3; kind++)
+		{
+			if (game_sets[kind] && FD_ISSET(index, game_sets[kind]))
+				sets[kind][firmware[index] >> 5] |= 1u << (firmware[index] & 31);
+		}
+		if (firmware[index] > highest)
+			highest = firmware[index];
+	}
+	timeout.tv_sec = (uint32_t)seconds;
+	timeout.tv_usec = (uint32_t)microseconds;
+	result = sceNetInetSelect(highest + 1, read_set ? (fd_set *)sets[0] : NULL, write_set ? (fd_set *)sets[1] : NULL,
+		error_set ? (fd_set *)sets[2] : NULL, infinite ? NULL : &timeout);
+	if (result < 0)
+	{
+		errno = sceNetInetGetErrno();
+		return -1;
+	}
+	for (kind = 0; kind < 3; kind++)
+	{
+		if (!game_sets[kind])
+			continue;
+		FD_ZERO(game_sets[kind]);
+		for (index = 0; index < count && index < FD_SETSIZE; index++)
+		{
+			if (firmware[index] >= 0 && (sets[kind][firmware[index] >> 5] >> (firmware[index] & 31) & 1))
+			{
+				FD_SET(index, game_sets[kind]);
+				ready++;
+			}
+		}
+	}
+	return ready;
+}
+
 /* the sets' ready descriptors, as select gives them; -2 when a descriptor
 isn't a socket (the caller uses libcglue's select) */
 static int inet_poll(int count, fd_set *read_set, fd_set *write_set, fd_set *error_set, long timeout_ms)
@@ -1043,15 +1110,18 @@ static struct
 	unsigned int longest_us;
 	/* the highest descriptor asked of select; FD_SETSIZE is 64 */
 	int highest;
-	/* inetpoll's calls left to libcglue's select: a descriptor not a socket */
+	/* inetpoll's or inetselect's calls left to libcglue's select: a
+	descriptor not a socket */
 	unsigned long not_sockets;
+	/* the highest firmware number of a socket asked about */
+	int highest_firmware;
 } select_times;
 
 void psp_net_select_report(char *text, int size)
 {
-	snprintf(text, (size_t)size, "selects %lu, %llu ms in all, the longest %u ms, %lu over their timeout by 20 ms; the highest descriptor asked %d; %lu left to libcglue (inetpoll)",
+	snprintf(text, (size_t)size, "selects %lu, %llu ms in all, the longest %u ms, %lu over their timeout by 20 ms; the highest descriptor asked %d (firmware number %d); %lu left to libcglue (inetpoll, inetselect)",
 		select_times.calls, select_times.us / 1000, select_times.longest_us / 1000, select_times.late, select_times.highest,
-		select_times.not_sockets);
+		select_times.highest_firmware, select_times.not_sockets);
 }
 
 int posix_socket_select(int *read, int *read_count, int *write, int *write_count,
@@ -1088,12 +1158,35 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 	{
 		unsigned int start = sceKernelGetSystemTimeLow(), took;
 
-		static int use_poll = -1;
+		static int use_poll = -1, use_select = -1;
 
 		if (use_poll < 0 && psp_keep_loaded())
+		{
 			use_poll = psp_keep("inetpoll");
+			use_select = psp_keep("inetselect");
+		}
+		/* (the firmware's numbers for what's asked: past 63, libcglue's
+		select asks the firmware about the wrong sockets) */
+		for (index = 0; index <= highest && index < FD_SETSIZE; index++)
+		{
+			if ((read && FD_ISSET(index, &read_set)) || (write && FD_ISSET(index, &write_set)) ||
+				(error && FD_ISSET(index, &error_set)))
+			{
+				int number = firmware_socket(index);
+
+				if (number > select_times.highest_firmware)
+					select_times.highest_firmware = number;
+			}
+		}
 		result = -2;
-		if (use_poll > 0)
+		if (use_select > 0)
+		{
+			result = inet_select(highest + 1, read ? &read_set : NULL, write ? &write_set : NULL,
+				error ? &error_set : NULL, (long)timeout_seconds, (long)timeout_microseconds, infinite);
+			if (result == -2)
+				select_times.not_sockets++;
+		}
+		if (result == -2 && use_poll > 0)
 		{
 			long timeout_ms = infinite ? -1 : (long)timeout_seconds * 1000 + ((long)timeout_microseconds + 999) / 1000;
 
