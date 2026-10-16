@@ -955,71 +955,85 @@ static int firmware_socket(int descriptor)
 	return *(const int *)entry;
 }
 
-/* select through the firmware's own select, all the sockets in one call
-(keep word inetselect). libcglue's select asks the firmware one socket at a
-time, each in a set it clears only 64 bits of (newlib's fd_set) while
-setting the socket's bit up to 256 (its code: the word from bits 5 to 7 of
-the firmware's number): a firmware number of 64 or more sets its bit past
-the cleared words, into libcglue's own result sets, and the firmware is
-asked about whatever was there [D, libcglue's select.o]. The sets here are
-256 bits, cleared whole; a number past them leaves the call to libcglue's
-select. -2: not done (the caller uses libcglue's) */
-enum { FIRMWARE_SET_WORDS = 8 };
+/* select through the firmware's select (keep word inetselect), one socket
+at a time as libcglue's does, without its fault. libcglue clears only
+newlib's 64 bits of the set it hands the firmware while setting the
+socket's bit anywhere up to 256 (the word from bits 5 to 7 of the
+firmware's number) [D, libcglue's select.o]: for a firmware number of 64 or
+more, the bit lands past the cleared words, in libcglue's own result sets,
+and the firmware is asked about whatever was there. That would explain the
+tunnel missing its ready sockets once a join had made more of them, where
+the game alone, with few sockets, plays a local server well [U]. Here each
+socket gets a set of 1,024 bits cleared whole (the firmware's size isn't
+documented; this covers both readings), asked with no wait, in rounds 0.5 ms
+apart until something is ready or the timeout ends, as libcglue's rounds.
+(All the sockets in one call, with the firmware waiting, broke play against
+a local server in the emulator: lab sierra-netplay 38972177737.) -2: not
+done (the caller uses libcglue's select) */
+enum { FIRMWARE_SET_WORDS = 32 };
+
+static int firmware_ready(int number, int kind)
+{
+	unsigned int set[FIRMWARE_SET_WORDS];
+	SceNetInetTimeval no_wait = { 0, 0 };
+
+	memset(set, 0, sizeof(set));
+	set[number >> 5] = 1u << (number & 31);
+	return sceNetInetSelect(number + 1, kind == 0 ? (fd_set *)set : NULL, kind == 1 ? (fd_set *)set : NULL,
+		kind == 2 ? (fd_set *)set : NULL, &no_wait) > 0;
+}
 
 static int inet_select(int count, fd_set *read_set, fd_set *write_set, fd_set *error_set,
 	long seconds, long microseconds, int infinite)
 {
-	unsigned int sets[3][FIRMWARE_SET_WORDS];
 	fd_set *game_sets[3] = { read_set, write_set, error_set };
+	fd_set asked[3];
 	int firmware[64];
-	int index, kind, highest = -1, result, ready = 0;
-	SceNetInetTimeval timeout;
+	int index, kind, ready;
+	unsigned int start = sceKernelGetSystemTimeLow();
+	unsigned long long wait_us = (unsigned long long)seconds * 1000000u + (unsigned long long)microseconds;
 
-	memset(sets, 0, sizeof(sets));
+	for (kind = 0; kind < 3; kind++)
+	{
+		FD_ZERO(&asked[kind]);
+		if (game_sets[kind])
+			asked[kind] = *game_sets[kind];
+	}
 	for (index = 0; index < count && index < FD_SETSIZE; index++)
 	{
-		int asked = 0;
-
 		firmware[index] = -1;
 		for (kind = 0; kind < 3; kind++)
-			asked |= game_sets[kind] && FD_ISSET(index, game_sets[kind]);
-		if (!asked)
+		{
+			if (game_sets[kind] && FD_ISSET(index, &asked[kind]))
+				break;
+		}
+		if (kind == 3)
 			continue;
 		firmware[index] = firmware_socket(index);
 		if (firmware[index] < 0 || firmware[index] >= FIRMWARE_SET_WORDS * 32)
 			return -2;
+	}
+	for (;;)
+	{
+		ready = 0;
 		for (kind = 0; kind < 3; kind++)
 		{
-			if (game_sets[kind] && FD_ISSET(index, game_sets[kind]))
-				sets[kind][firmware[index] >> 5] |= 1u << (firmware[index] & 31);
-		}
-		if (firmware[index] > highest)
-			highest = firmware[index];
-	}
-	timeout.tv_sec = (uint32_t)seconds;
-	timeout.tv_usec = (uint32_t)microseconds;
-	result = sceNetInetSelect(highest + 1, read_set ? (fd_set *)sets[0] : NULL, write_set ? (fd_set *)sets[1] : NULL,
-		error_set ? (fd_set *)sets[2] : NULL, infinite ? NULL : &timeout);
-	if (result < 0)
-	{
-		errno = sceNetInetGetErrno();
-		return -1;
-	}
-	for (kind = 0; kind < 3; kind++)
-	{
-		if (!game_sets[kind])
-			continue;
-		FD_ZERO(game_sets[kind]);
-		for (index = 0; index < count && index < FD_SETSIZE; index++)
-		{
-			if (firmware[index] >= 0 && (sets[kind][firmware[index] >> 5] >> (firmware[index] & 31) & 1))
+			if (!game_sets[kind])
+				continue;
+			FD_ZERO(game_sets[kind]);
+			for (index = 0; index < count && index < FD_SETSIZE; index++)
 			{
-				FD_SET(index, game_sets[kind]);
-				ready++;
+				if (firmware[index] >= 0 && FD_ISSET(index, &asked[kind]) && firmware_ready(firmware[index], kind))
+				{
+					FD_SET(index, game_sets[kind]);
+					ready++;
+				}
 			}
 		}
+		if (ready || (!infinite && (unsigned long long)(sceKernelGetSystemTimeLow() - start) >= wait_us))
+			return ready;
+		sceKernelDelayThread(500);
 	}
-	return ready;
 }
 
 /* the sets' ready descriptors, as select gives them; -2 when a descriptor
