@@ -6,7 +6,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 - **Branch:** `controls` at 8ec201c, on `w134`. Its campaign and multiplayer builds compile (lab 38968289976, 38968284599); every glyph change on the way was built for multiplayer too.
 - **Checked on the emulator:** the controls (`controls1`, `controls2`) and the glyphs drawn in play (`glyphs1`, `glyphs2`), each with a strict run that found nothing. The results are under "The checks", and in the lab's findings.
-- **Waiting:** `glyphs3`, the glyphs as Sheepdog01 finally chose them, on a10's prompt with shots; the art changed since `glyphs2`, and the drawing only by the 80% height.
+- **Waiting:** `glyphs4` (8ec201c), the glyphs as Sheepdog01 finally chose them (with the chords at full size, the 80% height and NUB), on a10's prompt with shots. A queued batch runs the build its file named at the dispatch, so `glyphs2` and `glyphs3` ran earlier versions than their files were later edited to (e02007d, eedbd45).
 - **Needs Sheepdog01's hands:** the launch menu's NUB page (the menu never shows in a scripted run): one pass on each PSP, then the `nub.txt` it wrote and some play. Then the crouch, the reload tap and action hold, and the glyphs, by hand.
 - **Not built yet:**
   - `nublearn`: a save during play costs a Memory Stick write, so it waits for a background save like the texture totals'.
@@ -31,7 +31,8 @@ All on the emulator [E], the b134 bake (`campaign121`), b134's profile.
 | `controls1` (lab 38937056277) | 54cf66c | d20, a scripted pad: three rounds of Select + ↓, 4 s forward, a d-pad ← tap, a 1.2 s hold, Select + ↓; strict; southpaw from keep words | Toggles 5, taps 3 (reloads taken 3), holds 3 (actions counted 1: a counting fault, below). Strict: 0 sites in 4,407 ticks. Southpaw ran clean |
 | `controls2` (lab 38942074408) | a70bf60 | The same script with the crouch toggle and with `crouchhold`; strict | Toggle: crouched 100% through each forward hold, 3.6 units walked per 4 s. `crouchhold`: standing, 8.5 units. So the crouch holds at full travel and walks at crouch speed (42%). Actions counted 3 of 3. Strict: 0 sites |
 | `glyphs1` (lab 38939015112) | d7232b9 | b30's route and a10's opening, with the glyphs and with `xboxglyphs` | a10: 536 glyphs drawn, the first at game time ~7,200 (the cryo prompts); b30's route raised no prompt. All four runs clean |
-| `glyphs2` (lab 38952337764) | f2783e5 | a10's cryo prompt with shots timed to it, with and without `xboxglyphs`; strict | "Use [nub] to look around" drawn with the PSP's nub where the Xbox's right stick was, in the text's colour. Strict: 0 sites with 531 glyphs drawn (the 8-bit sheet and the per-glyph palette) |
+| `glyphs2` (lab 38952337764) | e02007d | a10's cryo prompt with shots timed to it, with and without `xboxglyphs`; strict | "Use [nub] to look around" drawn with the PSP's nub where the Xbox's right stick was, in the text's colour. Strict: 0 sites with 531 glyphs drawn (the 8-bit sheet and the per-glyph palette) |
+| `glyphs3` (lab 38958840446) | eedbd45 | The same prompt with the dome finish, the thicker rim and the finer D-pad arrows | Drawn as designed; the glass is see-through, so the room behind shows through the nub's body. Clean |
 
 **The fault the checks found:** the engine asks for the action-only bit only while the action bit is set, so the hold counter's edge test never saw the release between two holds, and counted only the first. The bit itself was right on every tick. Now counted once a hold (`psp_input_port_action_only`), and `controls2` counts 3 of 3.
 
