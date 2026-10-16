@@ -51,7 +51,7 @@ The rig ran mpb3 (`dff6bd4`, its code as at `7f0dc04`) with `nearauto nomeaudio 
 | Where the tick goes | bipeds 21 ms (30 biped updates a tick), weapons 12 ms (49 a tick, 42 asleep) |
 | Heap top | 3,612 of 3,744 KB |
 
-About 20 s after the join the client gave up (`timeout in network_connection_idle`, "the game host went down") and went back to the main menu. It gives up after 15 s without the host's reliable messages, so they stopped within about 10 s of the join. The likeliest reason [U]: the tunnel's thread has pspdev's default priority, 0x3c [D], below the game thread's 0x20, and the game thread's catch-up frames ran 1–2.5 s without waiting, so the tunnel got no time (`milestone_first_public_game.md`).
+About 20 s after the join the client gave up (`timeout in network_connection_idle`, "the game host went down") and went back to the main menu. It gives up after 15 s without the host's reliable messages, so they stopped within about 10 s of the join. The likeliest reason [U]: the tunnel's thread runs at 0x5c, far below the game thread's 0x20 (mpb4's log [E]), and the game thread's catch-up frames ran 1–2.5 s without waiting, so the tunnel got no time (`milestone_first_public_game.md`).
 
 **Not the cause:** the run's one failed heap request was the GE's 1,056 KB vertex-copies arena, which fell back to the general heap as built.
 

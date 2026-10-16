@@ -236,6 +236,8 @@ static struct
 	int connected;
 	/* when the last join failed (sceKernelGetSystemTimeLow); 0: none */
 	unsigned int failed_at;
+	/* a join has failed this run, so internet play may be off (wifi_join) */
+	int join_failed;
 	/* this machine's address and its network's broadcast address, network
 	byte order */
 	unsigned long address, broadcast;
@@ -482,6 +484,7 @@ static int wifi_join(void)
 	{
 		platform_log("network: the WLAN switch is off");
 		wifi.failed_at = sceKernelGetSystemTimeLow() | 1;
+		wifi.join_failed = 1;
 		return -1;
 	}
 	profile = psp_keep_number("netprofile", 1);
@@ -489,6 +492,7 @@ static int wifi_join(void)
 	{
 		platform_log("network: the PSP has no network connection number %d (Settings, Network Settings)", profile);
 		wifi.failed_at = sceKernelGetSystemTimeLow() | 1;
+		wifi.join_failed = 1;
 		return -1;
 	}
 	platform_log("network: joining network connection %d", profile);
@@ -500,11 +504,21 @@ static int wifi_join(void)
 	{
 		wifi_leave();
 		wifi.failed_at = sceKernelGetSystemTimeLow() | 1;
+		wifi.join_failed = 1;
 		return result < 0 ? result : -1;
 	}
 	wifi.connected = 1;
 	wifi.failed_at = 0;
 	platform_log("network: up in %u ms", (sceKernelGetSystemTimeLow() - start) / 1000);
+	/* internet play opens its socket at start-up, and is off for the run if
+	that first join failed; a later join starts it (xnet.c's fixup). Not on
+	the first join: internet play's own socket call is making it */
+	if (wifi.join_failed)
+	{
+		void psp_internet_start(void);
+
+		psp_internet_start();
+	}
 	return 0;
 }
 

@@ -10951,6 +10951,27 @@ FIXES_INTERNET["port/linux/game/map_families.c#downloaded"] = [
 #endif
 """),
 ]
+# ... and started again once the PSP has joined its network, when it couldn't
+# start at WSAStartup: the access point refused the PSP's first try once
+# (sierra-hw 38936073185), the tunnel's socket failed with it, and internet
+# play stayed off while the PSP's next try joined (psp_net.c calls this)
+FIXES_INTERNET["port/linux/src/xnet.c#retry"] = [
+("""int WSAAPI WSAStartup(WORD version_requested, LPWSADATA data)
+{""",
+ """#if defined(HALO_PSP) && defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (internet play): p2p_initialize does nothing once running */
+void psp_internet_start(void)
+{
+	unsigned long local;
+
+	platform_log("Internet play: starting, now the PSP has joined its network");
+	p2p_initialize(local_address_setting(&local) ? local : loopback_address());
+}
+#endif
+
+int WSAAPI WSAStartup(WORD version_requested, LPWSADATA data)
+{"""),
+]
 # the tunnel's thread above the game thread (psp_internet.c says why)
 FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
 ("""	(void)unused;

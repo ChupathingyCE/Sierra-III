@@ -118,8 +118,8 @@ void p2p_discord_sanitize(char *destination, int size, const char *source, int n
 /* ---------- the tunnel's thread
 
 p2p.c does all of internet play's network work on one thread: the tunnel,
-its KCP streams, the signalling and the lobby. pspdev's pthreads start at
-0x3c, below the game thread's 0x20, and the PSP runs a thread only while
+its KCP streams, the signalling and the lobby. It starts at 0x5c, far below
+the game thread's 0x20, and the PSP runs a thread only while
 every higher one waits. In a game the PSP can't keep up with, the game
 thread runs one to two and a half seconds of catch-up ticks without waiting,
 and the tunnel can go that long without running: in a 12-player public
