@@ -3683,10 +3683,13 @@ down for the Media Engine's turn (docs/frames_in_flight.md); otherwise the
 two run back to back. One window a frame: the GE's frame takes the first
 window's camera, and the later ones (letterbox bars, the non-player
 overlays: 2-D, on the same screen) draw into it */
-static PSP_MAIN_SIDE int window_recorded = 0; /* geinflight: this frame's first window is written down */
+/* this frame's first window has had its main CPU's part (cleared at the frame's
+end): a later window of the frame, recorded or not, must not start a list */
+static PSP_MAIN_SIDE int window_main_done = 0;
 
 static float window_begin_main(const float *position, float z_near, float z_far)
 {
+	window_main_done = 1;
 	INFLIGHT_TRACE("GE: geinflight trace: window main part (recording %d)", INFLIGHT_RECORDING() ? 1 : 0);
 	if (!ge_ready)
 	{
@@ -3938,11 +3941,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		CPU's part changes (the level's origin, the recorder's frame) */
 		if (inflight_pending)
 			inflight_sync();
-		if (!window_recorded)
-		{
-			window_recorded = 1;
+		if (!window_main_done)
 			z_near = window_begin_main(position, z_near, z_far);
-		}
 		if (defer_window_begin(position, forward, up, vertical_field_of_view, z_near, z_far))
 			return;
 	}
@@ -16391,7 +16391,7 @@ void psp_ge_frame_end(void)
 	{
 		defer_words(DEFER_FRAME_END, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		inflight_pending = 1;
-		window_recorded = 0;
+		window_main_done = 0;
 		inflight_hand_over();
 		return;
 	}
@@ -16458,6 +16458,7 @@ static int frame_end_list(void)
 
 static void frame_end_show(void)
 {
+	window_main_done = 0;
 	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
 	{
 		unsigned int mark = sceKernelGetSystemTimeLow(), waited;
