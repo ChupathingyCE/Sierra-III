@@ -49,15 +49,15 @@ GLYPHS = [
     ("dpad_left", "dpad", "left", 1),
     ("dpad_right", "dpad", "right", 1),
     ("dpad", "dpad", None, 1),
-    ("l", "shoulder", "L", 1),
-    ("r", "shoulder", "R", 1),
+    ("l", "shoulder", "L", 2),
+    ("r", "shoulder", "R", 2),
     ("nub", "nub", None, 1),
     ("face", "cluster", None, 1),
     ("start", "pill", "START", 2),
     ("select", "pill", "SELECT", 2),
     ("select_up", "chord", ("select", "dpad_up"), 3),
     ("select_down", "chord", ("select", "dpad_down"), 3),
-    ("select_l", "chord", ("select", "l"), 3),
+    ("select_l", "chord", ("select", "l"), 4),
 ]
 
 # the shades (0-1, see the docstring)
@@ -232,25 +232,42 @@ def dpad(layers, lit, size):
         dpad_leaf(layers, turns, size, 0.44, *offsets[name])
 
 
-def shoulder(layers, letter, size, font):
-    """the PSP's L or R, after Sheepdog01's sketch and a PSP-3000's photo: a tab
-    flat along its top and bottom, its inner side a straight slant, its back
-    a smooth convex curve round the PSP's rounded corner, from the flat top
-    down to the bottom; the hard corners stay sharp (rounded only enough not
-    to sparkle). R is L mirrored"""
-    shape = [(0.97, 0.19), (0.74, 0.81), (0.03, 0.81)] + bezier((0.03, 0.81), (0.07, 0.21), (0.46, 0.19))
-    mask = blank(size, size)
-    ImageDraw.Draw(mask).polygon(points_at(shape, size), fill=255)
-    mask = rounded(mask, size * 0.012)
+# the PSP's L button, traced from a photo of a PSP-3000 (Sheepdog01, 2026-10-16:
+# "the exact shape"): its outline row by row, in its own box (width 3.3 times
+# its height) from 0 to 1 each way. The outer side runs down in a straight
+# slant from a rounded top corner; the inner side curves down into the flat
+# bottom
+SHOULDER_L = [(0.303, 0.0), (0.277, 0.037), (0.255, 0.074), (0.236, 0.111), (0.221, 0.148), (0.206, 0.185),
+              (0.191, 0.222), (0.176, 0.259), (0.165, 0.296), (0.154, 0.333), (0.146, 0.37), (0.135, 0.407),
+              (0.124, 0.444), (0.112, 0.481), (0.105, 0.519), (0.097, 0.556), (0.09, 0.593), (0.079, 0.63),
+              (0.067, 0.667), (0.056, 0.704), (0.045, 0.741), (0.037, 0.778), (0.03, 0.815), (0.022, 0.852),
+              (0.011, 0.889), (0.004, 0.926), (0.0, 0.963), (0.0, 1.0), (0.562, 1.0), (0.562, 0.963),
+              (0.618, 0.926), (0.663, 0.889), (0.693, 0.852), (0.712, 0.815), (0.727, 0.778), (0.742, 0.741),
+              (0.749, 0.704), (0.757, 0.667), (0.768, 0.63), (0.779, 0.593), (0.79, 0.556), (0.798, 0.519),
+              (0.809, 0.481), (0.82, 0.444), (0.828, 0.407), (0.835, 0.37), (0.843, 0.333), (0.854, 0.296),
+              (0.861, 0.259), (0.873, 0.222), (0.884, 0.185), (0.903, 0.148), (0.914, 0.111), (0.933, 0.074),
+              (0.959, 0.037), (1.0, 0.0)]
+SHOULDER_ASPECT = 3.3
+
+
+def shoulder(layers, letter, cells, size, font):
+    """the PSP's L or R in its traced shape (SHOULDER_L; R is L mirrored),
+    as wide as the glyph allows and centred, its letter in the middle"""
+    width = cells * size
+    shape_width = width * 0.94
+    shape_height = shape_width / SHOULDER_ASPECT
+    x0, y0 = (width - shape_width) / 2, (size - shape_height) / 2
+    mask = blank(width, size)
+    ImageDraw.Draw(mask).polygon([(x0 + x * shape_width, y0 + y * shape_height) for x, y in SHOULDER_L], fill=255)
+    mask = rounded(mask, size * 0.01)
     if letter == "R":
         mask = mask.transpose(Image.FLIP_LEFT_RIGHT)
     glass(layers, mask)
-    mark = blank(size, size)
+    mark = blank(width, size)
     draw = ImageDraw.Draw(mark)
     box = draw.textbbox((0, 0), letter, font=font)
-    width, height = box[2] - box[0], box[3] - box[1]
-    cx = 0.52 if letter == "L" else 0.48
-    draw.text((cx * size - width / 2 - box[0], 0.5 * size - height / 2 - box[1]), letter, font=font, fill=255)
+    tw, th = box[2] - box[0], box[3] - box[1]
+    draw.text(((width - tw) / 2 - box[0], size / 2 - th / 2 - box[1]), letter, font=font, fill=255)
     symbol(layers, mark)
 
 
@@ -311,14 +328,16 @@ def paste(target, source, x, y, scale=1.0):
 
 
 def chord(layers, first, second, size, font):
-    """SELECT at four fifths, a plus, then the other button: three cells"""
+    """SELECT at four fifths, a plus, then the other button at the right
+    end: as many cells as the two take, with a cell between them"""
+    total = layers.a.shape[1]
     paste(layers, first, 0, round(size * 0.1), 0.8)
-    paste(layers, second, size * 2, 0)
-    mark = blank(size * 3, size)
+    paste(layers, second, total - second.a.shape[1], 0)
+    mark = blank(total, size)
     draw = ImageDraw.Draw(mark)
     box = draw.textbbox((0, 0), "+", font=font)
     width, height = box[2] - box[0], box[3] - box[1]
-    middle = (first.a.shape[1] * 0.8 + size * 2) / 2
+    middle = (first.a.shape[1] * 0.8 + total - second.a.shape[1]) / 2
     draw.text((middle - width / 2 - box[0], (size - height) / 2 - box[1]), "+", font=font, fill=255)
     symbol(layers, mark)
 
@@ -364,7 +383,7 @@ def main():
         elif kind == "dpad":
             dpad(layers, what, big)
         elif kind == "shoulder":
-            shoulder(layers, what, big, letter_font)
+            shoulder(layers, what, cells, big, letter_font)
         elif kind == "nub":
             nub(layers, big)
         elif kind == "cluster":
