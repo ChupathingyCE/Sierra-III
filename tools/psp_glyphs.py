@@ -86,15 +86,16 @@ BODY_ALPHA = 0.5
 #   underlit  the other way: darker at the top, lighter at the bottom
 #   dome      lighter in the middle, darker toward the edges
 #   diagonal  lighter at the top left, darker at the bottom right
-FINISH = "satin"
+#   (Sheepdog01's pick, 2026-10-16: dome, at SPREAD 0.26)
+FINISH = "dome"
 SOLID = 0.72
 SATIN_GLOSS = 0.45
-SPREAD = 0.13
+SPREAD = 0.26
 GLOSS = 0.9
 GLOW = 0.8
 RIM = 0.88
 # the bright rim's width, for a cell's height (--rim=)
-RIM_WIDTH = 0.02
+RIM_WIDTH = 0.035
 SYMBOL = 0.96
 
 
@@ -293,7 +294,7 @@ def centroid(points):
 # centre of area on the leaf's)
 ARROW_R = 0.27
 # the arrow's stroke, as a share of the face buttons' (--arrow=)
-ARROW_STROKE = 1.0
+ARROW_STROKE = 0.75
 LEAF_MIDDLE = centroid(DPAD_LEAF)
 DPAD_ARROW = [(x - sum(p[0] for p in triangle(0, 0, ARROW_R)) / 3 + LEAF_MIDDLE[0],
                y - sum(p[1] for p in triangle(0, 0, ARROW_R)) / 3 + LEAF_MIDDLE[1]) for x, y in triangle(0, 0, ARROW_R)]
