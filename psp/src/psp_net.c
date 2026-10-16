@@ -923,12 +923,14 @@ static struct
 	unsigned long calls, late;
 	unsigned long long us;
 	unsigned int longest_us;
+	/* the highest descriptor asked of select; FD_SETSIZE is 64 */
+	int highest;
 } select_times;
 
 void psp_net_select_report(char *text, int size)
 {
-	snprintf(text, (size_t)size, "selects %lu, %llu ms in all, the longest %u ms, %lu over their timeout by 20 ms",
-		select_times.calls, select_times.us / 1000, select_times.longest_us / 1000, select_times.late);
+	snprintf(text, (size_t)size, "selects %lu, %llu ms in all, the longest %u ms, %lu over their timeout by 20 ms; the highest descriptor asked %d",
+		select_times.calls, select_times.us / 1000, select_times.longest_us / 1000, select_times.late, select_times.highest);
 }
 
 int posix_socket_select(int *read, int *read_count, int *write, int *write_count,
@@ -960,6 +962,8 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 	add_all(error, error_count, &error_set, &highest);
 	timeout.tv_sec = timeout_seconds;
 	timeout.tv_usec = timeout_microseconds;
+	if (highest > select_times.highest)
+		select_times.highest = highest;
 	{
 		unsigned int start = sceKernelGetSystemTimeLow(), took;
 

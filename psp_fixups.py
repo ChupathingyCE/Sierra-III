@@ -11102,6 +11102,46 @@ static struct stream *stream_new(int peer_index, IUINT32 conversation)
 			psp_streams.not_tunnel++;
 #endif
 		tunnel_received(packet, size, &from);"""),
+("""		/* a connection to the game that failed is in neither list */
+		for (index = 0; index < MAXIMUM_STREAMS; index++)""",
+ """#ifdef HALO_PSP
+		/* psp_fixups.py (internet play): with tunnelpoll, every socket read
+		each pass, ready or not (each handler stops at would-block): whether
+		the PSP's select misses ready sockets (psp_net.c's select report) */
+		{
+			extern int psp_keep(const char *name);
+			static int poll_all = -1;
+
+			if (poll_all < 0)
+				poll_all = psp_keep("tunnelpoll");
+			if (poll_all)
+			{
+				tunnel_readable();
+				for (index = 0; index < MAXIMUM_PROXIES; index++)
+				{
+					if (p2p.proxies[index].socket >= 0)
+						proxy_readable(&p2p.proxies[index]);
+				}
+				for (index = 0; index < MAXIMUM_LISTENERS; index++)
+				{
+					if (p2p.listeners[index].socket >= 0)
+						listener_readable(&p2p.listeners[index]);
+				}
+				for (index = 0; index < MAXIMUM_STREAMS; index++)
+				{
+					struct stream *stream = &p2p.streams[index];
+
+					if (stream->used && stream->socket >= 0 && stream->state == _stream_open_state &&
+						ikcp_waitsnd(stream->kcp) < STREAM_WINDOW)
+					{
+						stream_readable(stream);
+					}
+				}
+			}
+		}
+#endif
+		/* a connection to the game that failed is in neither list */
+		for (index = 0; index < MAXIMUM_STREAMS; index++)"""),
 ("""		int wait = LOOP_INTERVAL * 5;
 		int index, asked;
 """,
