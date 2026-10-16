@@ -18609,7 +18609,200 @@ FIXES_135["source/objects/objects.c#poseaheadon"] = [
 """),
 ]
 
-for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()):
+# ---------- FIXES_136: node matrices made together after objects_update's loop ("nwbatch")
+#
+# Lever NW, step 1 (docs/plan_node_matrices_me.md). objects_update makes each
+# object's node matrices in the middle of its update, between its type update
+# and its function values, so the compute's 8 KB of code and the type
+# updates' code take turns in the 16 KB instruction cache all through the
+# loop. With "nwbatch", an object with no parent and no attachments, of a type
+# whose matrices no other object's update needs at once, has its compute and
+# its postprocess put off to the end of the loop and made there, one after
+# another, on the same CPU. That list is the job the Media Engine version
+# takes over. A read of a put-off object's matrices before the end
+# (object_get_node_matrices, object_get_node_matrix: the readers inside the
+# loop all go through them) makes that object's first, so every reader sees
+# what it saw before. "nwbatchnobipeds" leaves bipeds out
+FIXES_136 = {}
+
+FIXES_136["source/objects/objects.c#nwbatch"] = [
+("""real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */""",
+"""/* psp_fixups.py (FIXES_136 #nwbatch): the computes put off, in the order
+their objects came; a bit an absolute index says which still wait */
+#define PSP_NWB_MAX 1024
+static long psp_nwb_list[PSP_NWB_MAX];
+static int psp_nwb_count = 0;
+static int psp_nwb_open = 0;
+static int psp_nwb_on = -1;
+static unsigned long psp_nwb_types = 0;
+static unsigned char psp_nwb_waiting[MAXIMUM_OBJECTS_PER_MAP / 8];
+static unsigned long psp_nwb_put_off = 0, psp_nwb_early = 0, psp_nwb_ticks = 0, psp_nwb_full = 0;
+static void object_postprocess_node_matrices(long object_index);
+
+static void psp_nwb_make(long object_index)
+{
+	object_compute_node_matrices(object_index);
+	object_postprocess_node_matrices(object_index);
+}
+
+/* objects_update's main loop begins: computes may be put off until
+psp_nwb_close */
+static void psp_nwb_begin(void)
+{
+	if (psp_nwb_on < 0)
+	{
+		psp_nwb_on = psp_keep("nwbatch") != 0;
+		psp_nwb_types = FLAG(_object_type_scenery) | FLAG(_object_type_machine) | FLAG(_object_type_control) |
+			FLAG(_object_type_light_fixture) | FLAG(_object_type_placeholder) | FLAG(_object_type_sound_scenery);
+		if (!psp_keep("nwbatchnobipeds"))
+			psp_nwb_types |= FLAG(_object_type_biped);
+	}
+	psp_nwb_open = psp_nwb_on > 0;
+}
+
+/* 1 when this object's compute and postprocess are put off */
+static int psp_nwb_put(long object_index, struct object_datum const *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (!psp_nwb_open || object->object.parent_object_index != NONE ||
+		object->object.first_child_object_index != NONE || !TEST_FLAG(psp_nwb_types, object->object.type) ||
+		absolute >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (psp_nwb_count == PSP_NWB_MAX)
+	{
+		psp_nwb_full++;
+		return 0;
+	}
+	psp_nwb_list[psp_nwb_count++] = object_index;
+	psp_nwb_waiting[absolute >> 3] |= (unsigned char)(1 << (absolute & 7));
+	psp_nwb_put_off++;
+	return 1;
+}
+
+/* a reader wants a put-off object's matrices before the end of the loop */
+static void psp_nwb_settle(long object_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	int k;
+
+	if (absolute >= MAXIMUM_OBJECTS_PER_MAP || !(psp_nwb_waiting[absolute >> 3] & (1 << (absolute & 7))))
+		return;
+	for (k = 0; k < psp_nwb_count && psp_nwb_list[k] != object_index; k++)
+		;
+	/* the bit can belong to an object deleted since, its slot given to this one */
+	if (k == psp_nwb_count)
+		return;
+	psp_nwb_waiting[absolute >> 3] &= (unsigned char)~(1 << (absolute & 7));
+	psp_nwb_list[k] = NONE;
+	psp_nwb_early++;
+	psp_nwb_make(object_index);
+}
+
+/* the loop is over: the rest, in their order; an object deleted meanwhile
+is passed over */
+static void psp_nwb_close(void)
+{
+	int k;
+
+	psp_nwb_open = 0;
+	for (k = 0; k < psp_nwb_count; k++)
+	{
+		long object_index = psp_nwb_list[k];
+		long absolute;
+
+		if (object_index == NONE)
+			continue;
+		absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		psp_nwb_waiting[absolute >> 3] &= (unsigned char)~(1 << (absolute & 7));
+		if (object_header_try_and_get(object_index))
+			psp_nwb_make(object_index);
+	}
+	psp_nwb_count = 0;
+	if (psp_nwb_on > 0 && ++psp_nwb_ticks % 300 == 0)
+	{
+		platform_psp_log("nwbatch: %lu computes put off in 300 ticks, %lu of them made early for a read, %lu past the list",
+			psp_nwb_put_off, psp_nwb_early, psp_nwb_full);
+		psp_nwb_put_off = psp_nwb_early = psp_nwb_full = 0;
+	}
+}
+
+real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{
+	/* psp_fixups.py (FIXES_136 #nwbatch) */
+	if (psp_nwb_count)
+		psp_nwb_settle(object_index);
+	/* psp_fixups.py (FIXES_134 #nmreaders) */"""),
+("""	short node_index)
+{
+	/* psp_fixups.py (FIXES_134 #nmreaders) */""",
+"""	short node_index)
+{
+	/* psp_fixups.py (FIXES_136 #nwbatch) */
+	if (psp_nwb_count)
+		psp_nwb_settle(object_index);
+	/* psp_fixups.py (FIXES_134 #nmreaders) */"""),
+("""		int psp_pose_skipped = psp_pose_half_skips(object_index, object);
+""",
+"""		int psp_pose_skipped = psp_pose_half_skips(object_index, object);
+		/* psp_fixups.py (FIXES_136 #nwbatch) */
+		int psp_nwb_later = 0;
+"""),
+("""			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped)
+			{
+				object_compute_node_matrices(object_index);
+			}""",
+"""			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped)
+			{
+				/* psp_fixups.py (FIXES_136 #nwbatch) */
+				psp_nwb_later = psp_nwb_put(object_index, object);
+				if (!psp_nwb_later)
+					object_compute_node_matrices(object_index);
+			}"""),
+("""		if (!psp_pose_skipped)
+			object_postprocess_node_matrices(object_index);""",
+"""		if (!psp_pose_skipped && !psp_nwb_later)
+			object_postprocess_node_matrices(object_index);"""),
+("""	psp_object_account(12, psp_microseconds() - psp_object_start);
+#endif
+
+	object_header = (struct object_header_datum *)xbox_pointer(object_header_data->data);""",
+"""	psp_object_account(12, psp_microseconds() - psp_object_start);
+	/* psp_fixups.py (FIXES_136 #nwbatch) */
+	psp_nwb_begin();
+#endif
+
+	object_header = (struct object_header_datum *)xbox_pointer(object_header_data->data);"""),
+("""		++i;
+	}
+
+	object_header = (struct object_header_datum *)xbox_pointer(object_header_data->data);
+	for (i = 0; i<object_header_data->count; ++object_header)
+	{
+		if (object_header->identifier)
+		{
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);""",
+"""		++i;
+	}
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_136 #nwbatch) */
+	psp_nwb_close();
+#endif
+
+	object_header = (struct object_header_datum *)xbox_pointer(object_header_data->data);
+	for (i = 0; i<object_header_data->count; ++object_header)
+	{
+		if (object_header->identifier)
+		{
+			SET_FLAG(object_header->flags, _object_header_do_not_update_bit, FALSE);"""),
+]
+
+
+for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
