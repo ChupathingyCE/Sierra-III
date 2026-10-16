@@ -18718,11 +18718,25 @@ static void psp_nwb_inputs_put(struct object_datum *object, struct psp_nwb_input
 	csmemcpy(object->object.outgoing_function_values, inputs->functions, sizeof(inputs->functions));
 }
 
+/* after the list's compute: what the object holds now, but for any byte the
+compute itself changed (a verify mending a facing, say), which keeps the
+compute's value, as it would have had */
+static void psp_nwb_inputs_merge(struct psp_nwb_inputs *now, struct psp_nwb_inputs const *put, struct psp_nwb_inputs const *after)
+{
+	unsigned char *n = (unsigned char *)now;
+	unsigned char const *p = (unsigned char const *)put, *a = (unsigned char const *)after;
+	unsigned int k;
+
+	for (k = 0; k < sizeof(*now); k++)
+		if (a[k] != p[k])
+			n[k] = a[k];
+}
+
 /* a waiting compute, made from the list */
 static void psp_nwb_compute(long object_index, long absolute, int entry)
 {
 	struct object_datum *object = object_get(object_index);
-	struct psp_nwb_inputs now;
+	struct psp_nwb_inputs now, after;
 	long self = psp_nwb_self;
 	real_matrix4x3 *nodes = NULL;
 	long size = 0;
@@ -18746,6 +18760,8 @@ static void psp_nwb_compute(long object_index, long absolute, int entry)
 	psp_nwb_self = object_index;
 	object_compute_node_matrices(object_index);
 	psp_nwb_self = self;
+	psp_nwb_inputs_get(object, &after);
+	psp_nwb_inputs_merge(&now, &psp_nwb_inputs[psp_nwb_record[entry]], &after);
 	psp_nwb_inputs_put(object, &now);
 	if (!psp_nwb_check)
 		return;
