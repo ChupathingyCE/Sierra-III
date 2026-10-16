@@ -88,7 +88,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - Each glyph has the shape of the PSP-1000's own button (Sheepdog01, 2026-10-16):
     - the face buttons are round buttons with their outlined symbol;
     - each D-pad glyph is that one leaf of the pad (after a PSP-3000 photo: a slightly bowed outer edge with rounded corners, long straight sides, then a short taper to a rounded point at the pad's middle), with its arrow (solid, as an outline is lost at the HUD's size); the whole pad spaces its four leaves as the PSP does, and the face-button cluster takes the same spacing;
-    - L and R are the PSP's shoulder tab, its lines and curves fitted to a trace of a PSP-3000 photo (Sheepdog01 asked for the exact shape; the raw trace was too ragged): flat top and bottom, a straight outer slant curving broadly into the top, a straight inner slant meeting the top in one sharp angle and curving into the bottom. It is 3.2 times as wide as it is tall, so they take two cells (R is L mirrored);
+    - L and R are the PSP's shoulder tab, its lines and curves fitted to a trace of a PSP-3000 photo (Sheepdog01 asked for the exact shape; the raw trace was too ragged): flat top and bottom, a straight outer slant curving broadly into the top, a straight inner slant meeting the top in one sharp angle and curving broadly into the bottom from less than halfway down. It is 3.2 times as wide as it is tall, so they take two cells (R is L mirrored);
     - the nub is a disc with a dense cross-hatch, as dense as still shows at 32 px;
     - START and SELECT are the PSP-1000's flat-topped bowl keys (Sheepdog01's sketch), each with its name.
   - All of it is drawn by the script; only the letters are a font (Overpass, OFL).

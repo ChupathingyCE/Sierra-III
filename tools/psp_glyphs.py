@@ -250,9 +250,10 @@ def shoulder_outline():
     height, then scaled into the box"""
     top_outer, top_inner = (1.3, 0.0), (3.4, 0.0)
     bottom_outer = (0.0, 1.0)
-    # the inner slant (1.2 across for each 1 down) to three quarters of the
-    # way down, then into the bottom, its control where the slant would meet it
-    slant_end, control, bottom_inner = (2.5, 0.75), (2.2, 1.0), (1.85, 1.0)
+    # the inner slant (1.2 across for each 1 down) to 0.4 of the way down,
+    # then a broad curve into the bottom (Sheepdog01), its control where the slant
+    # would meet the bottom
+    slant_end, control, bottom_inner = (2.92, 0.4), (2.2, 1.0), (1.55, 1.0)
     # the outer top corner rounded over 0.8 of the height along each side:
     # back down the outer slant (1.3 across for each 1 down), and along the top
     along = 0.8 / (1.3 ** 2 + 1.0) ** 0.5
