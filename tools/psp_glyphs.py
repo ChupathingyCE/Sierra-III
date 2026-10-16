@@ -423,14 +423,15 @@ def shoulder(layers, letter, cells, size, font):
     symbol(layers, mark)
 
 
-def nub(layers, size):
+def nub(layers, size, font):
     """the PSP's nub: a dark disc, its grip a dense cross-hatch (fine lines
-    both ways across it, lighter than the disc)"""
-    r = 0.42
+    both ways across it, lighter than the disc), named above it as the
+    Xbox's stick icons are ("RIGHT", "LEFT"): "NUB" (Sheepdog01)"""
+    r, cy = 0.33, 0.64
     mask = blank(size, size)
-    ImageDraw.Draw(mask).ellipse(((0.5 - r) * size, (0.5 - r) * size, (0.5 + r) * size, (0.5 + r) * size), fill=255)
+    ImageDraw.Draw(mask).ellipse(((0.5 - r) * size, (cy - r) * size, (0.5 + r) * size, (cy + r) * size), fill=255)
     # as dense as still shows at 32 pixels (finer averages to a flat grey)
-    lines = 6
+    lines = 5
     y, x = np.mgrid[0:size, 0:size].astype(np.float32)
     step = 2 * r * size / lines
     # each line a third of the spacing wide, at 45 degrees each way
@@ -439,6 +440,12 @@ def nub(layers, size):
     hatch = (one | other).astype(np.float32)
     body = 0.1 + 0.5 * hatch - 0.06 * (y / size)
     glass(layers, mask, body=body)
+    mark = blank(size, size)
+    draw = ImageDraw.Draw(mark)
+    box = draw.textbbox((0, 0), "NUB", font=font)
+    width, height = box[2] - box[0], box[3] - box[1]
+    draw.text(((size - width) / 2 - box[0], 0.03 * size - box[1]), "NUB", font=font, fill=255)
+    symbol(layers, mark)
 
 
 def cluster(layers, size):
@@ -485,6 +492,12 @@ def paste(target, source, x, y, scale=1.0):
     target.p[region] = p + target.p[region] * (1.0 - a)
     target.a[region] = a + target.a[region] * (1.0 - a)
 
+
+# how tall a glyph draws, as a share of the Xbox icon's box it replaces
+# (Sheepdog01: 80%, on the text's line); a glyph named over its button, as the
+# Xbox's stick icons are, takes the whole box as they do
+HEIGHT_SHARE = 0.8
+FULL_HEIGHT = {"nub"}
 
 # the room a chord's plus takes between its two buttons, in cells: narrow, so
 # the chords keep the sheet at 256 x 128
@@ -570,7 +583,7 @@ def main():
         elif kind == "shoulder":
             shoulder(layers, what, cells, big, letter_font)
         elif kind == "nub":
-            nub(layers, big)
+            nub(layers, big, pill_font)
         elif kind == "cluster":
             cluster(layers, big)
         elif kind == "pill":
@@ -641,6 +654,11 @@ def main():
         for name, x, y, width in places:
             header.write("\t{ %d, %d, %d, %d }, /* %s */\n" % (x, y * CELL, width, CELL, name))
         header.write("};\n")
+        header.write("/* how tall each draws, in percent of the Xbox icon's box (psp_ge.c, glyph_quad; psp_sdl.c,\n"
+                     "psp_button_glyph_extra) */\n")
+        header.write("static const unsigned char psp_glyph_height[PSP_GLYPH_COUNT] =\n{\n\t")
+        header.write(", ".join(str(100 if name in FULL_HEIGHT else round(HEIGHT_SHARE * 100)) for name, *_ in places))
+        header.write("\n};\n")
         # only psp_ge.c, which draws them, asks for the texels: one byte
         # each, alpha << 4 | shade (glyph_palette there turns them to colour)
         header.write("#ifdef PSP_GLYPH_PIXELS\n")

@@ -13120,9 +13120,10 @@ static unsigned int *glyph_palette(unsigned int abgr)
 	return palette;
 }
 
-/* a glyph in the icon's quad: as tall as the quad, its own shape across;
-centred when it is narrower, else from the quad's left edge (the text's
-cursor moves on by the difference: psp_button_glyph_extra, psp_sdl.c) */
+/* a glyph in the icon's quad: its share of the quad's height
+(psp_glyph_height) on the quad's bottom, its own shape across; centred when
+it is narrower, else from the quad's left edge (the text's cursor moves on
+by the difference: psp_button_glyph_extra, psp_sdl.c) */
 static void glyph_quad(struct game_screen_vertex const *in, int glyph, short blend, float red, float green,
 	float blue, float fade, float offset_x, float offset_y)
 {
@@ -13139,6 +13140,9 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 		y0 = fminf(y0, in[corner].y);
 		y1 = fmaxf(y1, in[corner].y);
 	}
+	/* the glyph's own share of the box's height, on the box's bottom (the
+	text's line) */
+	y0 = y1 - (y1 - y0) * psp_glyph_height[glyph] / 100.0f;
 	wide = (y1 - y0) * cell[2] / cell[3];
 	if (wide <= x1 - x0)
 		x0 += (x1 - x0 - wide) * 0.5f;

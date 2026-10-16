@@ -89,7 +89,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
     - the face buttons are round buttons with their outlined symbol;
     - each D-pad glyph is that one leaf of the pad (after a PSP-3000 photo: a slightly bowed outer edge with rounded corners, long straight sides, then a short taper to a rounded point at the pad's middle), with its arrow: the face buttons' triangle at about 60% of its size, outlined with their stroke, centred on the leaf; the whole pad spaces its four leaves as the PSP does, and the face-button cluster takes the same spacing;
     - L and R are the PSP's shoulder tab, after a trace of a PSP-3000 photo and shaped with Sheepdog01: flat top and bottom; both sides straight slants at 55°, the outer one curving broadly into the top and the inner one into the bottom; the two remaining points softened a little. Every corner is rounded with a curve whose bend rises and falls smoothly (a "continuous" corner), so none kinks where it meets a straight edge. They take two cells (R is L mirrored);
-    - the nub is a disc with a dense cross-hatch, as dense as still shows at 32 px;
+    - the nub is a disc with a dense cross-hatch, as dense as still shows at 32 px, named "NUB" above it as the Xbox's stick icons are named ("RIGHT");
     - START and SELECT are the PSP-1000's flat-topped bowl keys (Sheepdog01's sketch), each with its name.
   - All of it is drawn by the script; only the letters are a font (Overpass, OFL).
   - **Glass, in the UI's colour:**
@@ -109,7 +109,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - Just before `hud_draw_bitmap_direct`, `render_state_bitmap` tells `psp_ge.c` the glyph (`psp_ge_glyph_next`) and clears it after.
   - `psp_ge_screen_quad` swaps the next quad's key for a glyph key (0x100 + glyph, below any bitmap's address). The key then passes through the defer queue untouched.
   - `screen_quad` sends that key to `glyph_quad`, which:
-    - draws the cell at the quad's height, in the glyph's own shape;
+    - draws the cell at its share of the quad's height (80%, Sheepdog01; the nub, named like the Xbox's stick icons, the whole height), on the quad's bottom, in the glyph's own shape;
     - centres it when it's narrower, or starts at the quad's left edge;
     - uses the quad's place and the HUD's zoom;
     - takes its palette from the quad's colour (1 KB of the display list a glyph, written back by `list_take`);
