@@ -19516,11 +19516,364 @@ SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 
 
+# ---------- FIXES_WAKE: sleepers woken by writes (lever WT; docs/wake_on_write.md)
+# "wakeonwrite": a sleeper is checksummed only when something has marked it
+# (psp_wake) since its last check: the functions that change an object's
+# data from outside its own update. "wakecheck": every sleeper checksummed as
+# before, and one that changed unmarked logged (a writer the list misses).
+# Off: nothing changes. Each hook marks the object and the objects above it
+# (the checksum covers a family). Devices are left to the checksum: their
+# groups change without touching them
+FIXES_WAKE = {}
+
+FIXES_WAKE["source/objects/objects.c#wake"] = [
+("""static struct { short identifier; signed char quiet; unsigned char ground; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
+""", """static struct { short identifier; signed char quiet; unsigned char ground; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
+/* psp_fixups.py (FIXES_WAKE): marked since the last check (psp_wake) */
+static unsigned char psp_wake_marked[MAXIMUM_OBJECTS_PER_MAP];
+static int psp_wake_on = -1, psp_wake_check = 0;
+long psp_wake_skipped, psp_wake_checked, psp_wake_misses;
+
+void psp_wake(long object_index)
+{
+	int depth = 0;
+
+	while (object_index != NONE && depth++ < 8)
+	{
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		struct object_header_datum const *header;
+
+		if (absolute_index >= MAXIMUM_OBJECTS_PER_MAP || absolute_index >= object_header_data->count)
+			return;
+		header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + absolute_index;
+		if (!header->identifier || !header->datum)
+			return;
+		psp_wake_marked[absolute_index] = 1;
+		object_index = header->datum->object.parent_object_index;
+	}
+}
+"""),
+("""	else if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		(object->object.first_child_object_index == NONE || header->type == _object_type_vehicle))
+		before = psp_family_checksum(header);
+""", """	else if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		(object->object.first_child_object_index == NONE || header->type == _object_type_vehicle))
+		before = psp_wake_family_checksum(header, absolute_index); /* (FIXES_WAKE) */
+"""),
+("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{""", """/* psp_fixups.py (FIXES_WAKE): a sleeper nothing has marked keeps the
+checksum it slept with (wakeonwrite); a marked one, an awake one or a device
+is summed as before */
+static unsigned long psp_wake_family_checksum(struct object_header_datum const *header, short absolute_index)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long sum;
+	int marked = psp_wake_marked[absolute_index];
+
+	if (psp_wake_on < 0)
+	{
+		psp_wake_check = psp_keep("wakecheck") != 0;
+		psp_wake_on = psp_wake_check || psp_keep("wakeonwrite");
+	}
+	psp_wake_marked[absolute_index] = 0;
+	if (!psp_wake_on || marked || psp_sleep[absolute_index].identifier != header->identifier ||
+		psp_sleep[absolute_index].quiet < 2 || header->type == _object_type_machine || header->type == _object_type_control)
+		return psp_family_checksum(header);
+	if (!psp_wake_check)
+	{
+		psp_wake_skipped++;
+		return psp_sleep[absolute_index].checksum;
+	}
+	sum = psp_family_checksum(header);
+	psp_wake_checked++;
+	if (sum != psp_sleep[absolute_index].checksum && psp_wake_misses++ < 64)
+		platform_psp_log("wakecheck: %s (type %d) changed asleep, unmarked, at tick %ld",
+			tag_get_name(object->definition_index), header->type, game_time_get());
+	if (psp_wake_checked % 30000 == 0)
+		platform_psp_log("wakecheck: %ld unmarked sleepers summed, %ld changed (writers missed)", psp_wake_checked, psp_wake_misses);
+	return sum;
+}
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{"""),
+]
+FIXES_WAKE["source/objects/damage.c#wake_object_cause_damage"] = [
+("""
+void object_cause_damage(
+	struct damage_data *damage,
+	long object_index,
+	short node_index,
+	short region_index,
+	short material_index,
+	real_vector3d const *object_normal)
+{
+""", """
+void object_cause_damage(
+	struct damage_data *damage,
+	long object_index,
+	short node_index,
+	short region_index,
+	short material_index,
+	real_vector3d const *object_normal)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_set_garbage"] = [
+("""
+void object_set_garbage(
+	long object_index,
+	boolean garbage)
+{
+""", """
+void object_set_garbage(
+	long object_index,
+	boolean garbage)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_set_visibility"] = [
+("""
+void object_set_visibility(
+	long object_index,
+	boolean visible_flag)
+{
+""", """
+void object_set_visibility(
+	long object_index,
+	boolean visible_flag)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_set_position"] = [
+("""
+void object_set_position(
+	long object_index,
+	real_point3d const *position,
+	real_vector3d const *forward,
+	real_vector3d const *up)
+{
+""", """
+void object_set_position(
+	long object_index,
+	real_point3d const *position,
+	real_vector3d const *forward,
+	real_vector3d const *up)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_attach_to_marker"] = [
+("""
+void object_attach_to_marker(
+	long parent_object_index,
+	char const *parent_marker_name,
+	long child_object_index,
+	char const *child_marker_name)
+{
+""", """
+void object_attach_to_marker(
+	long parent_object_index,
+	char const *parent_marker_name,
+	long child_object_index,
+	char const *child_marker_name)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(parent_object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_attach_to_node"] = [
+("""
+void object_attach_to_node(
+	long parent_object_index,
+	long child_object_index,
+	short parent_node_index)
+{
+""", """
+void object_attach_to_node(
+	long parent_object_index,
+	long child_object_index,
+	short parent_node_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(parent_object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_detach"] = [
+("""
+void object_detach(
+	long child_object_index)
+{
+""", """
+void object_detach(
+	long child_object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(child_object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_delete"] = [
+("""
+void object_delete(
+	long object_index)
+{
+""", """
+void object_delete(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_disconnect_from_map"] = [
+("""
+void object_disconnect_from_map(
+	long object_index)
+{
+""", """
+void object_disconnect_from_map(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_reconnect_to_map"] = [
+("""
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+""", """
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_activate"] = [
+("""
+void object_activate(
+	long object_index)
+{
+""", """
+void object_activate(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_deactivate"] = [
+("""
+void object_deactivate(
+	long object_index)
+{
+""", """
+void object_deactivate(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/units/units.c#wake_unit_control"] = [
+("""
+void unit_control(
+	long unit_index,
+	struct unit_control_data const *control_data)
+{
+""", """
+void unit_control(
+	long unit_index,
+	struct unit_control_data const *control_data)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(unit_index);
+	}
+"""),
+]
+FIXES_WAKE["source/units/units.c#wake_unit_update_driver_and_gunner"] = [
+("""
+static void unit_update_driver_and_gunner(
+	long unit_index)
+{
+""", """
+static void unit_update_driver_and_gunner(
+	long unit_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(unit_index);
+	}
+"""),
+]
+# the render state cache reassigned: the datum's cached_render_state_index
+# changes, which the checksum sees (kept as before: the sleeper wakes)
+FIXES_WAKE["source/render/render_objects.c#wake_render_state"] = [
+("""		render_state_index = datum_new(cached_object_render_states);
+""", """		render_state_index = datum_new(cached_object_render_states);
+		{
+			void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+			psp_wake(object_index);
+		}
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
