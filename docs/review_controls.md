@@ -104,7 +104,11 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 - **Off:** `xboxglyphs` draws the Xbox's icons from the map, as before.
 - **Open:**
   - Prompts whose meaning changed with §2 ("Press X to enter") need their wording changed at bake.
-  - `ui_widget.c`'s `button_mappings` swaps the crouch and zoom icons. Before trusting those two prompts, check whether that's the original's quirk.
+  - **The crouch and zoom icons are crossed in the original's own data** [D]:
+    - `button_mappings` in both `hud_messaging.c` and `ui_widget.c` takes the `crouch` token to game control 11 and `zoom` to 10.
+    - `input_abstraction.c` binds 10 to the left-stick click (crouch) and 11 to the right-stick click (zoom).
+    - The decomp matches the binary, and the token names list `crouch` before `zoom`, so on the Xbox too a `crouch` prompt would show the right-stick click.
+    - It matters only if a map's strings use those two tokens [U]; the string survey will say. The glyphs draw what the engine picks, so they inherit it. Correcting it would be a departure from the original's data, so it's Sheepdog01's call.
   - The multiplayer session's ONLINE GAMES prompts should use this sheet and map, so there's one set for both builds.
 
 ## Credits
