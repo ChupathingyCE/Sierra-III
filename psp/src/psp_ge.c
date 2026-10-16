@@ -433,6 +433,9 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 void psp_ge_text_character(void const *vertices);
 void psp_ge_text_end(void);
 int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y);
+void psp_ge_frame_end(void);
+void psp_ge_window_begin(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far);
 
 /* at each frame's start: whether this frame defers (the keep word, asked
 once; the buffer taken from the heap the first time) */
