@@ -87,6 +87,8 @@ SATIN_GLOSS = 0.45
 GLOSS = 0.9
 GLOW = 0.8
 RIM = 0.88
+# the bright rim's width, for a cell's height (--rim=)
+RIM_WIDTH = 0.02
 SYMBOL = 0.96
 
 
@@ -175,7 +177,7 @@ def glass(layers, mask, strength=1.0, body=None):
             # a thin highlight just inside the top edge, fading downward
             edge = np.clip(1.0 - top / 0.22, 0.0, 1.0) * as_array(shrunk(mask, max(1, size * 0.03)))
             layers.over(edge, 0.35 * strength, GLOSS)
-        rim = as_array(mask) - as_array(shrunk(mask, max(1, size * 0.02)))
+        rim = as_array(mask) - as_array(shrunk(mask, max(1, size * RIM_WIDTH)))
         layers.over(np.clip(rim, 0.0, 1.0), 0.8 * strength, RIM)
         return
     # the gloss: an ellipse over the upper part, its lower edge crisp (a
@@ -187,7 +189,7 @@ def glass(layers, mask, strength=1.0, body=None):
     # light along the bottom inside edge
     low = np.clip((top - 0.7) / 0.3, 0.0, 1.0)
     layers.over(m * low, 0.3 * strength, GLOW)
-    rim = as_array(mask) - as_array(shrunk(mask, max(1, size * 0.02)))
+    rim = as_array(mask) - as_array(shrunk(mask, max(1, size * RIM_WIDTH)))
     layers.over(np.clip(rim, 0.0, 1.0), 0.8 * strength, RIM)
 
 
@@ -315,50 +317,75 @@ def dpad(layers, lit, size):
         dpad_leaf(layers, turns, size, 0.44, *offsets[name])
 
 
-def fillet(corner, toward_a, toward_b, radius, steps=64):
-    """a corner where two straight edges meet, rounded by a circular arc of
-    this radius that meets each edge without a bend (its curve the same all
-    the way round): the points from edge a's side to edge b's. toward_a and
-    toward_b are points along each edge away from the corner"""
+def corner(at, toward_a, toward_b, reach, steps=96):
+    """a corner where two straight edges meet, rounded so that it bends
+    without a kink: the bend starts from nothing where it leaves edge a,
+    builds to its tightest at the middle and fades out again onto edge b
+    (its curvature rises and falls smoothly, as an icon's "continuous"
+    corners do: a circular arc's bend switches on all at once where the
+    straight ends, which the eye reads as a kink). reach: how far along each
+    edge from the corner the rounding starts. The points from edge a's side
+    to edge b's; toward_a and toward_b are points along each edge"""
+    if reach <= 0:
+        return [at]
+
     def unit(v):
         length = math.hypot(v[0], v[1])
         return (v[0] / length, v[1] / length)
 
-    a = unit((toward_a[0] - corner[0], toward_a[1] - corner[1]))
-    b = unit((toward_b[0] - corner[0], toward_b[1] - corner[1]))
-    half = math.acos(max(-1.0, min(1.0, a[0] * b[0] + a[1] * b[1]))) / 2.0
-    reach = radius / math.tan(half)
-    start = (corner[0] + a[0] * reach, corner[1] + a[1] * reach)
-    end = (corner[0] + b[0] * reach, corner[1] + b[1] * reach)
-    bisector = unit((a[0] + b[0], a[1] + b[1]))
-    centre = (corner[0] + bisector[0] * radius / math.sin(half), corner[1] + bisector[1] * radius / math.sin(half))
-    first = math.atan2(start[1] - centre[1], start[0] - centre[0])
-    last = math.atan2(end[1] - centre[1], end[0] - centre[0])
-    sweep = (last - first + math.pi) % (2 * math.pi) - math.pi
-    return [(centre[0] + radius * math.cos(first + sweep * k / steps),
-             centre[1] + radius * math.sin(first + sweep * k / steps)) for k in range(steps + 1)]
+    def cross(p, q):
+        return p[0] * q[1] - p[1] * q[0]
+
+    a = unit((toward_a[0] - at[0], toward_a[1] - at[1]))
+    b = unit((toward_b[0] - at[0], toward_b[1] - at[1]))
+    heading = math.atan2(-a[1], -a[0])
+    turn = (math.atan2(b[1], b[0]) - heading + math.pi) % (2 * math.pi) - math.pi
+    # the path for a length of 1: the heading turns by turn * (u - sin(2 pi u) / 2 pi),
+    # whose rate (the bend) is 0 at both ends and greatest in the middle
+    n = steps * 20
+    x = y = 0.0
+    path = [(0.0, 0.0)]
+    for k in range(n):
+        u = (k + 0.5) / n
+        angle = heading + turn * (u - math.sin(2 * math.pi * u) / (2 * math.pi))
+        x += math.cos(angle) / n
+        y += math.sin(angle) / n
+        path.append((x, y))
+    # scaled so that it ends on edge b (by symmetry, reach from the corner too)
+    length = -reach * cross(a, b) / cross(path[-1], b)
+    start = (at[0] + a[0] * reach, at[1] + a[1] * reach)
+    return [(start[0] + length * px, start[1] + length * py) for px, py in path[::n // steps]]
+
+
+# the shoulder's shape (Sheepdog01's picks, 2026-10-16): the two slanted sides at
+# SHOULDER_ANGLE degrees to the top and bottom; the outer top and inner
+# bottom corners rounded broadly (SHOULDER_CURVES: how far along each edge,
+# in units of the height); the two sharp points softened a little
+# (SHOULDER_POINTS)
+SHOULDER_ANGLE = 55.0
+SHOULDER_TOP = 2.1
+SHOULDER_CURVES = (0.78, 0.91)
+SHOULDER_POINTS = 0.07
 
 
 def shoulder_outline():
     """the PSP's L button (Sheepdog01, 2026-10-16: "the exact shape"), in its own
-    box from 0 to 1 each way, and the box's width over its height. Fitted to
-    a trace of a PSP-3000 photo (the trace itself was too ragged), the angles
-    sharpened and the curves made rounder (Sheepdog01): a flat top and bottom; the
-    outer side a straight slant (1.3 across for each 1 down); the inner side
-    a straight slant (1.2 across for each 1 down) meeting the top in one
-    sharp angle. Two of the corners are rounded by circular arcs (fillet), so
-    each bend is even, with no kink where it meets the straight edges: the
-    outer top corner, and the inner bottom corner. Worked in units of the
-    height, then scaled into the box"""
-    top_outer, top_inner = (1.3, 0.0), (3.4, 0.0)
-    bottom_outer = (0.0, 1.0)
-    # where the inner slant would meet the bottom
-    bottom_inner = (3.4 - 1.2, 1.0)
-    upper = fillet(top_outer, bottom_outer, top_inner, 2.3)
-    lower = fillet(bottom_inner, top_inner, bottom_outer, 2.5)
-    points = [top_inner] + lower + [bottom_outer] + upper
-    width = top_inner[0]
-    return [(x / width, y) for x, y in points], width
+    box from 0 to 1 each way, and the box's width over its height. After a
+    trace of a PSP-3000 photo (the trace itself too ragged), shaped with Sheepdog01:
+    a flat top and bottom; the outer side and the inner side straight slants
+    at SHOULDER_ANGLE, the outer one curving broadly into the top and the
+    inner one into the bottom; the other two corners points. Worked in units
+    of the height, then scaled into the box"""
+    slant = 1.0 / math.tan(math.radians(SHOULDER_ANGLE))
+    top_outer, top_inner = (slant, 0.0), (slant + SHOULDER_TOP, 0.0)
+    bottom_outer, bottom_inner = (0.0, 1.0), (SHOULDER_TOP, 1.0)
+    points = (corner(top_inner, top_outer, bottom_inner, SHOULDER_POINTS) +
+              corner(bottom_inner, top_inner, bottom_outer, SHOULDER_CURVES[1]) +
+              corner(bottom_outer, bottom_inner, top_outer, SHOULDER_POINTS) +
+              corner(top_outer, bottom_outer, top_inner, SHOULDER_CURVES[0]))
+    xs = [x for x, y in points]
+    left, width = min(xs), max(xs) - min(xs)
+    return [((x - left) / width, y) for x, y in points], width
 
 
 SHOULDER_L, SHOULDER_ASPECT = shoulder_outline()
@@ -482,7 +509,7 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     header_path = None
     master = "--master" in sys.argv[1:]
-    global FINISH, SOLID, SATIN_GLOSS
+    global FINISH, SOLID, SATIN_GLOSS, RIM_WIDTH
     for a in sys.argv[1:]:
         if a.startswith("--finish="):
             FINISH = a.split("=", 1)[1]
@@ -490,6 +517,8 @@ def main():
             SOLID = float(a.split("=", 1)[1])
         elif a.startswith("--satin="):
             SATIN_GLOSS = float(a.split("=", 1)[1])
+        elif a.startswith("--rim="):
+            RIM_WIDTH = float(a.split("=", 1)[1])
     for a in sys.argv[1:]:
         if a.startswith("--cell="):
             CELL = int(a.split("=", 1)[1])
