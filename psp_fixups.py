@@ -19007,6 +19007,186 @@ static struct psp_object_sphere const *psp_sphere_of(long object_index)
 				/* psp_fixups.py (FIXES_136 #nwbatch): as this tick's compute left it */
 				psp_nwb_sphere_read(object_index);
 				/* collision_test_vector's order"""),
+("""	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		if (object_index != ignore_object_index &&
+			!(object->object.flags & FLAG(_object_invisible_bit)))""",
+"""	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		/* psp_fixups.py (FIXES_136 #nwbatch) */
+		psp_nwb_sphere_read(object_index);
+		if (object_index != ignore_object_index &&
+			!(object->object.flags & FLAG(_object_invisible_bit)))"""),
+("""	struct collision_result *collision)
+{
+	boolean hit = FALSE;
+
+	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			TEST_FLAG(flags, object->object.type + _collision_test_objects_first_type_bit) &&
+			fast_vector_intersects_sphere(
+				point,""",
+"""	struct collision_result *collision)
+{
+	boolean hit = FALSE;
+
+	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		/* psp_fixups.py (FIXES_136 #nwbatch) */
+		psp_nwb_sphere_read(object_index);
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			TEST_FLAG(flags, object->object.type + _collision_test_objects_first_type_bit) &&
+			fast_vector_intersects_sphere(
+				point,"""),
+("""	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			TEST_FLAG(flags, object->object.type + _collision_test_objects_first_type_bit) &&
+			fast_vector_intersects_sphere(point, vector, &object->object.bounding_sphere_center,""",
+"""	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		/* psp_fixups.py (FIXES_136 #nwbatch) */
+		psp_nwb_sphere_read(object_index);
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			TEST_FLAG(flags, object->object.type + _collision_test_objects_first_type_bit) &&
+			fast_vector_intersects_sphere(point, vector, &object->object.bounding_sphere_center,"""),
+("""	do
+	{
+		struct object_datum *object = object_get(object_index);
+
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			!TEST_FLAG(object->object.flags, _object_no_collisions_bit) &&""",
+"""	do
+	{
+		struct object_datum *object = object_get(object_index);
+
+		/* psp_fixups.py (FIXES_136 #nwbatch) */
+		psp_nwb_sphere_read(object_index);
+		if (object_index != ignore_object_index &&
+			!TEST_FLAG(object->object.flags, _object_invisible_bit) &&
+			!TEST_FLAG(object->object.flags, _object_no_collisions_bit) &&"""),
+]
+
+FIXES_136["source/physics/physics.c#nwbatch"] = [
+("""	long biped_index)
+{
+	static real scales[] = { 0.5f, 0.25f, 1.0f };""",
+"""	long biped_index)
+{
+	static real scales[] = { 0.5f, 0.25f, 1.0f };
+	/* psp_fixups.py (FIXES_136 #nwbatch): the biped's sphere as this tick's compute left it */
+	void psp_nwb_sphere_read(long object_index);
+
+	psp_nwb_sphere_read(biped_index);"""),
+]
+FIXES_136["source/objects/damage.c#nwbatch"] = [
+("""	boolean damage_next_object)
+{
+	boolean did_damage;
+	boolean collision_blocked;
+	boolean infection_form;""",
+"""	boolean damage_next_object)
+{
+	boolean did_damage;
+	boolean collision_blocked;
+	boolean infection_form;
+	/* psp_fixups.py (FIXES_136 #nwbatch): the object's sphere as this tick's compute left it */
+	void psp_nwb_sphere_read(long object_index);
+
+	psp_nwb_sphere_read(object_index);"""),
+]
+FIXES_136["source/items/items.c#nwbatch"] = [
+("""		unit = unit_get(player->unit_index);
+		*position = unit->object.bounding_sphere_center;""",
+"""		unit = unit_get(player->unit_index);
+		{
+			/* psp_fixups.py (FIXES_136 #nwbatch) */
+			void psp_nwb_sphere_read(long object_index);
+
+			psp_nwb_sphere_read(player->unit_index);
+		}
+		*position = unit->object.bounding_sphere_center;"""),
+("""	*position = item->object.bounding_sphere_center;
+
+	return;""",
+"""	{
+		/* psp_fixups.py (FIXES_136 #nwbatch) */
+		void psp_nwb_sphere_read(long object_index);
+
+		psp_nwb_sphere_read(item_index);
+	}
+	*position = item->object.bounding_sphere_center;
+
+	return;"""),
+]
+FIXES_136["source/items/projectiles.c#nwbatch"] = [
+("""			target_distance = distance3d(
+				&target->object.bounding_sphere_center,""",
+"""			{
+				/* psp_fixups.py (FIXES_136 #nwbatch) */
+				void psp_nwb_sphere_read(long object_index);
+
+				psp_nwb_sphere_read(projectile->projectile.target_object_index);
+			}
+			target_distance = distance3d(
+				&target->object.bounding_sphere_center,"""),
+("""							real_point3d const *listener_position = &object_get(unit_index)->object.bounding_sphere_center;""",
+"""							real_point3d const *listener_position;
+							/* psp_fixups.py (FIXES_136 #nwbatch) */
+							void psp_nwb_sphere_read(long object_index);
+
+							psp_nwb_sphere_read(unit_index);
+							listener_position = &object_get(unit_index)->object.bounding_sphere_center;"""),
+]
+FIXES_136["source/units/bipeds.c#nwbatch"] = [
+("""			struct object_datum *target = object_get(
+				biped->biped.impact_target_object_index);""",
+"""			struct object_datum *target = object_get(
+				biped->biped.impact_target_object_index);
+			/* psp_fixups.py (FIXES_136 #nwbatch): its sphere as this tick's compute left it */
+			void psp_nwb_sphere_read(long object_index);
+
+			psp_nwb_sphere_read(biped->biped.impact_target_object_index);"""),
+]
+FIXES_136["source/devices/device_machines.c#nwbatch"] = [
+("""				struct unit_datum *unit = unit_get(*object_index);
+				struct unit_definition *unit_definition = unit_definition_get(unit->definition_index);""",
+"""				struct unit_datum *unit = unit_get(*object_index);
+				struct unit_definition *unit_definition = unit_definition_get(unit->definition_index);
+				/* psp_fixups.py (FIXES_136 #nwbatch): its sphere as this tick's compute left it */
+				void psp_nwb_sphere_read(long object_index);
+
+				psp_nwb_sphere_read(*object_index);"""),
+]
+FIXES_136["source/items/weapons.c#nwbatch"] = [
+("""			struct unit_datum *unit= unit_get(owner_object_index);
+			struct damage_data damage;
+""",
+"""			struct unit_datum *unit= unit_get(owner_object_index);
+			struct damage_data damage;
+			/* psp_fixups.py (FIXES_136 #nwbatch): the owner's sphere as this tick's compute left it */
+			void psp_nwb_sphere_read(long object_index);
+
+			psp_nwb_sphere_read(owner_object_index);
+"""),
 ]
 
 for rel, pairs in list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()):
