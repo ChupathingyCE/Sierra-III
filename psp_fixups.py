@@ -9801,8 +9801,10 @@ void psp_objects_play_dump(long tick)
 		watched = psp_keep("statewordsall") ? -2 : psp_keep_number("statewords", -1);
 		/* "statefullN": object N's whole datum, every word, 32 a line (the
 		play words leave out what drives them: a unit's desired facing, its
-		AI's target...) */
-		whole = psp_keep_number("statefull", -1);
+		AI's target...); "statefullall": every object's, at the window's
+		first tick only (two runs whose objects allocation parts with the
+		same play: which fields) */
+		whole = psp_keep("statefullall") ? -2 : psp_keep_number("statefull", -1);
 	}
 	if (first < 0 || tick < first || tick >= first + 48)
 		return;
@@ -9838,7 +9840,7 @@ void psp_objects_play_dump(long tick)
 				at += snprintf(text + at, sizeof(text) - at, " %08lx", words[k]);
 			platform_psp_log("state: words of object %08lx at tick %ld:%s", (unsigned long)iterator.index, tick, text);
 		}
-		if (whole >= 0 && (iterator.index & 0xFFFF) == whole)
+		if ((whole >= 0 && (iterator.index & 0xFFFF) == whole) || (whole == -2 && tick == first))
 		{
 			struct object_header_datum const *header = object_header_get(iterator.index);
 			unsigned long const *datum = (unsigned long const *)header->datum;
