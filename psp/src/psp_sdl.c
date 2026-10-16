@@ -206,6 +206,9 @@ swap hold on top. "actiontap": X as the engine reads it, as before.
 
 The nub: see nub_calibrate below. */
 static int crouch_toggle_on = -1, crouch_toggled = 0, crouch_chord_held = 0;
+/* crouch toggles, reload taps, action holds, and the reloads and actions the
+engine took (psp_input_port_*), for the heartbeat */
+volatile unsigned int controls_events[5];
 static int action_split_on = -1, action_down = 0, action_acting = 0, reload_pending = 0;
 static unsigned int action_hold_us = 250000, action_down_at = 0;
 /* the nub's rest point, its dead radius and its reach left, right, up and
@@ -311,16 +314,25 @@ static void controls_update(const SceCtrlData *pad, unsigned int now)
 		return;
 	}
 	chord = (b & (PSP_CTRL_SELECT | PSP_CTRL_DOWN)) == (PSP_CTRL_SELECT | PSP_CTRL_DOWN);
-	if (chord && !crouch_chord_held)
+	if (chord && !crouch_chord_held && crouch_toggle_on)
+	{
 		crouch_toggled = !crouch_toggled;
+		controls_events[0]++;
+	}
 	crouch_chord_held = chord;
 	x_down = (b & PSP_CTRL_LEFT) && !(b & PSP_CTRL_SELECT);
 	if (x_down && !action_down)
 		action_down_at = now;
 	if (x_down && !action_acting && now - action_down_at >= action_hold_us)
+	{
 		action_acting = 1;
+		controls_events[2]++;
+	}
 	if (!x_down && action_down && !action_acting)
+	{
 		reload_pending = 1;
+		controls_events[1]++;
+	}
 	if (!x_down)
 		action_acting = 0;
 	action_down = x_down;
@@ -374,12 +386,19 @@ int psp_input_port_reload(void)
 	if (!action_split_on || !reload_pending)
 		return 0;
 	reload_pending = 0;
+	controls_events[3]++;
 	return 1;
 }
 
 int psp_input_port_action_only(void)
 {
-	return action_split_on > 0 && action_acting;
+	static int was = 0;
+	int now = action_split_on > 0 && action_acting;
+
+	if (now && !was)
+		controls_events[4]++;
+	was = now;
+	return now;
 }
 
 int psp_input_port_crouch(void)

@@ -2709,6 +2709,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 			platform_log("%s | pad %04x stick %d,%d (%u reads; the nub has reached x %d-%d, y %d-%d)", player_text,
 				psp_pad_buttons & 0xFFFF, psp_pad_lx, psp_pad_ly, psp_pad_reads, psp_nub_seen[0], psp_nub_seen[1],
 				psp_nub_seen[2], psp_nub_seen[3]);
+			{
+				extern volatile unsigned int controls_events[5];
+
+				if (controls_events[0] | controls_events[1] | controls_events[2])
+					platform_log("controls (since launch): crouch toggled %u times; d-pad left tapped %u times (the game reloaded %u), held %u times (the game acted %u)",
+						controls_events[0], controls_events[1], controls_events[3], controls_events[2], controls_events[4]);
+			}
 			if ((beat & 1) == 0)
 			{
 				/* the sound mixer's cost (psp_dsound.c; build 25) */
