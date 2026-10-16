@@ -337,6 +337,16 @@ part of its end runs once the run is over (defer_drain). Written in the
 run, read after it */
 static int inflight_list_ended = 0;
 static void inflight_show(void);
+/* geinflight with gemeon (F1): the frame is handed to the Media Engine as its
+end is written down, and carried out there while the main CPU ticks the next
+frame. While it is out, the ME publishes each stall address it reaches in an
+uncached pair (the address, the list's id) and a thread of the main CPU's
+passes it to the GE, so the GE draws behind the ME rather than after it */
+static PSP_MAIN_SIDE int inflight_me_out = 0;
+static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
+static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */
+#define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
+static void inflight_hand_over(void);
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
@@ -540,12 +550,19 @@ out first if the buffer is full); NULL if the call is too large to defer,
 after carrying out what is waiting, so the call runs as it comes */
 /* geinflight: the frame waiting is carried out before the next frame's first
 call is written down (the Media Engine version's one wait a frame) */
+static void inflight_wait_me(void);
+
 static void inflight_sync(void)
 {
 	inflight_frames++;
 	inflight_words += defer_used;
 	if (defer_used > inflight_words_most)
 		inflight_words_most = defer_used;
+	if (inflight_me_out)
+	{
+		inflight_wait_me();
+		return;
+	}
 	defer_drain_for("the next frame's first call (geinflight)");
 }
 
@@ -1274,9 +1291,130 @@ static void defer_hand_over(void)
 	defer_used = 0;
 }
 
+/* ----- geinflight with gemeon: the frame on the Media Engine (F1,
+docs/frames_in_flight.md) */
+
+static PSP_MAIN_SIDE SceUID inflight_thread = -1;
+static PSP_MAIN_SIDE unsigned int inflight_forwarded_stall = 0;
+static PSP_MAIN_SIDE unsigned long inflight_forwards = 0;
+
+/* above the game's thread: once it runs it finishes its look before the game
+thread can go on, so the game thread's last forwarding at the frame's wait
+(defer_wait_me) is never followed by an older address from here */
+static int inflight_forwarder(SceSize args, void *argp)
+{
+	(void)args;
+	(void)argp;
+	for (;;)
+	{
+		if (!inflight_me_out)
+		{
+			sceKernelSleepThread();
+			continue;
+		}
+		{
+			unsigned int stall = INFLIGHT_STALL[0];
+
+			if (stall && stall != inflight_forwarded_stall)
+			{
+				inflight_forwarded_stall = stall;
+				inflight_forwards++;
+				__real_sceGeListUpdateStallAddr((int)INFLIGHT_STALL[1], (void *)stall);
+			}
+		}
+		sceKernelDelayThread(1000);
+	}
+	return 0;
+}
+
+static void inflight_hand_over(void)
+{
+	unsigned int args[5];
+
+	if (defer_me_on < 0)
+		defer_me_on = psp_keep("gemeon");
+	if (!defer_me_on || !psp_me_running() || !defer_used)
+		return; /* carried out on the main CPU at the next frame's first call */
+	if (inflight_thread < 0)
+	{
+		inflight_thread = sceKernelCreateThread("ge forward", inflight_forwarder, 0x10, 0x1000, 0, NULL);
+		if (inflight_thread < 0 || sceKernelStartThread(inflight_thread, 0, NULL) < 0)
+		{
+			platform_log("GE: geinflight: no forwarding thread (%08x); the frame is carried out on the main CPU",
+				(unsigned int)inflight_thread);
+			defer_me_on = 0;
+			return;
+		}
+	}
+	/* the records and what they point to that the main CPU wrote, to RAM */
+	sceKernelDcacheWritebackAll();
+	INFLIGHT_STALL[0] = 0;
+	inflight_forwarded_stall = 0;
+	args[0] = (unsigned int)defer_buffer;
+	args[1] = defer_used;
+	args[2] = defer_me_thread;
+	args[3] = 0; /* (psp_me.c sets it: on the ME or not) */
+	args[4] = 1; /* the newest stall address back in the results */
+	psp_me_window[0] = 1;
+	inflight_me_out = 1;
+	/* simulated (the emulator), the job runs inside psp_me_submit, here */
+	defer_replaying = 1;
+	if (!psp_me_submit(ME_SLOT_RENDER, ME_JOB_GE, args, 5))
+	{
+		defer_replaying = 0;
+		inflight_me_out = 0;
+		psp_me_window[0] = 0;
+		return;
+	}
+	defer_replaying = 0;
+	me_out = 1;
+	me_wrote = 1;
+	inflight_handed++;
+	sceKernelWakeupThread(inflight_thread);
+}
+
+/* the frame back from the Media Engine: waited for, the GE given the rest,
+what the ME wrote read fresh, and the main CPU's part of its end */
+static void inflight_wait_me(void)
+{
+	unsigned long failed = defer_me_failed;
+
+	inflight_me_out = 0;
+	defer_wait_me(); /* the last stall address passed on with it */
+	psp_me_window[0] = 0;
+	sceKernelDcacheWritebackInvalidateAll();
+	me_wrote = 0;
+	if (defer_me_failed != failed)
+	{
+		/* the ME stopped (HOME, sleep) with the frame perhaps half carried
+		out: the list ended where the main CPU last saw it, so the GE stops
+		there and nothing waits for ever; the main CPU carries the frames out
+		from here */
+		inflight_me_failed++;
+		defer_me_on = 0;
+		stall_force = 1;
+		sceGuFinish();
+		stall_force = 0;
+		inflight_list_ended = 1;
+		platform_log("GE: geinflight: the Media Engine failed with a frame out; the main CPU carries the frames out from here");
+	}
+	defer_used = 0;
+	defer_drains++;
+	inflight_pending = 0;
+	inflight_show();
+}
+
 /* ----- everything waiting, carried out in order */
 static void defer_drain(void)
 {
+	/* geinflight: a call that runs at once while the frame is out with the
+	Media Engine (a text update, a full buffer) waits for it */
+	if (inflight_me_out)
+	{
+		inflight_wait_me();
+		if (!defer_used)
+			return;
+	}
 	if (me_overlap)
 	{
 		/* build 118: the half being written out too, then both done, and
@@ -2081,6 +2219,15 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 	{
 		stall_me_qid = qid;
 		stall_me_address = stall;
+		/* geinflight on the Media Engine: the list's lines to RAM, then the
+		address published for the main CPU's forwarding thread */
+		if (psp_on_me() && inflight_me_out)
+		{
+			list_write_back(stall);
+			INFLIGHT_STALL[1] = (unsigned int)qid;
+			__asm__ __volatile__("sync");
+			INFLIGHT_STALL[0] = (unsigned int)stall;
+		}
 		return 0;
 	}
 	if (gebusy_on > 0)
@@ -16222,6 +16369,7 @@ void psp_ge_frame_end(void)
 		defer_words(DEFER_FRAME_END, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		inflight_pending = 1;
 		window_recorded = 0;
+		inflight_hand_over();
 		return;
 	}
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
@@ -16618,10 +16766,10 @@ static void frame_end_show(void)
 					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES, defer_too_large);
 			if (inflight_on && inflight_frames)
 			{
-				platform_log("GE: geinflight: %lu frames carried out after the next frame's ticks, %lu KB a frame written down (fullest %lu KB of %u)",
-					inflight_frames, inflight_words * sizeof(defer_word) / 1024 / inflight_frames,
+				platform_log("GE: geinflight: %lu frames carried out after the next frame's ticks (%lu of them on the Media Engine, %lu stall addresses passed on while out), %lu KB a frame written down (fullest %lu KB of %u)",
+					inflight_frames, inflight_handed, inflight_forwards, inflight_words * sizeof(defer_word) / 1024 / inflight_frames,
 					inflight_words_most * (unsigned long)sizeof(defer_word) / 1024, (unsigned int)(DEFER_INFLIGHT_WORDS * sizeof(defer_word) / 1024));
-				inflight_frames = inflight_words = inflight_words_most = 0;
+				inflight_frames = inflight_words = inflight_words_most = inflight_handed = inflight_forwards = 0;
 			}
 			if (defer_on)
 			{
