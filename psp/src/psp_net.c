@@ -379,6 +379,20 @@ static int wifi_read_addresses(void)
 	broadcast.s_addr = wifi.broadcast;
 	platform_log("network: on \"%s\" as %s, mask %s (broadcast %s)", ssid.ssid, ip.ip, mask.subNetMask,
 		inet_ntoa(broadcast));
+	/* (WLAN power save sleeps the radio between the access point's beacons,
+	which then holds what comes for the PSP: seconds of delay under a
+	stream of datagrams) */
+	{
+		union SceNetApctlInfo save;
+		int setting = -1;
+
+		if (sceNetApctlGetInfo(PSP_NET_APCTL_INFO_POWER_SAVE, &save) < 0)
+			save.powerSave = 0xFF;
+		sceUtilityGetSystemParamInt(PSP_SYSTEMPARAM_ID_INT_WLAN_POWERSAVE, &setting);
+		platform_log("network: WLAN power save %s (System Settings: %s)",
+			save.powerSave == 0xFF ? "unknown" : save.powerSave ? "on" : "off",
+			setting < 0 ? "unknown" : setting ? "on" : "off");
+	}
 	return 1;
 }
 
