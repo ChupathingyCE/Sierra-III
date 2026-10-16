@@ -18648,27 +18648,37 @@ static int psp_nwb_on = -1, psp_nwb_held = 0;
 static unsigned long psp_nwb_types = 0;
 static unsigned char psp_nwb_waiting[MAXIMUM_OBJECTS_PER_MAP / 8];
 static unsigned short *psp_nwb_last = NULL;
-/* by absolute index, a waiting compute's outgoing function values as they
-stood where it would have run: its overlays read them, and the object's own
-update recomputes them right after that point (object_compute_function_values) */
-static real (*psp_nwb_functions)[NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS] = NULL;
-/* "nwbatchcheck": each put-off compute is also made where it would have
-run, then made again from the list and compared bit for bit, and the first
-is kept, so the run plays as one without the batch would (its postprocesses
-still put off). A compute that differs is logged with what of its inputs
-changed in between: a writer the batch has missed */
+/* by absolute index, a waiting compute's inputs from the object's own
+fields, as they stood where it would have run. The object's update
+recomputes its function values (which its overlays read) right after that
+point, and another object's update may move it, turn it or start another
+animation on it before the list runs (a shot, a seat, a door): the compute
+from the list puts them back for its own duration, so it reads what it
+would have read */
 struct psp_nwb_inputs
 {
 	real_point3d position;
 	real_vector3d forward, up;
 	real scale;
 	unsigned long flags;
-	short graph, state, frame, interpolation_index, interpolation_count;
+	struct object_animation_state animation;
+	real functions[NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS];
 };
-static int psp_nwb_check = 0, psp_nwb_check_reports = 0;
 static struct psp_nwb_inputs *psp_nwb_inputs = NULL;
+/* the object whose compute the list is making: a compute from anywhere
+else first settles the object's own waiting one (object_compute_node_matrices) */
+static long psp_nwb_self = NONE;
+/* "nwbatchcheck": each put-off compute is also made where it would have
+run, then made again from the list and compared bit for bit, and the first
+is kept, so the run plays as one without the batch would (its postprocesses
+still put off). A compute that differs is logged with which of its inputs
+had changed since: something the batch doesn't put back */
+static int psp_nwb_check = 0, psp_nwb_check_reports = 0;
 static real_matrix4x3 *psp_nwb_kept = NULL;
 static unsigned long psp_nwb_checked = 0, psp_nwb_differed = 0;
+/* computes from the list whose object had been moved, turned or
+reanimated since its update (their inputs put back) */
+static unsigned long psp_nwb_moved = 0;
 static unsigned long psp_nwb_put_off = 0, psp_nwb_attached = 0, psp_nwb_early = 0, psp_nwb_ticks = 0, psp_nwb_full = 0;
 /* the batch's own time at the loop's end: what the Media Engine could take */
 static unsigned long psp_nwb_close_us = 0;
@@ -18687,22 +18697,32 @@ static void psp_nwb_inputs_get(struct object_datum const *object, struct psp_nwb
 	inputs->up = object->object.up;
 	inputs->scale = object->object.scale;
 	inputs->flags = object->object.flags;
-	inputs->graph = (short)object->object.animation.animation_graph_index;
-	inputs->state = object->object.animation.state.index;
-	inputs->frame = object->object.animation.state.frame_index;
-	inputs->interpolation_index = object->object.animation.interpolation_frame_index;
-	inputs->interpolation_count = object->object.animation.interpolation_frame_count;
+	inputs->animation = object->object.animation;
+	csmemcpy(inputs->functions, object->object.outgoing_function_values, sizeof(inputs->functions));
+}
+
+static void psp_nwb_inputs_put(struct object_datum *object, struct psp_nwb_inputs const *inputs)
+{
+	object->object.position = inputs->position;
+	object->object.forward = inputs->forward;
+	object->object.up = inputs->up;
+	object->object.scale = inputs->scale;
+	object->object.flags = inputs->flags;
+	object->object.animation = inputs->animation;
+	csmemcpy(object->object.outgoing_function_values, inputs->functions, sizeof(inputs->functions));
 }
 
 /* a waiting compute, made from the list */
 static void psp_nwb_compute(long object_index, long absolute, int entry)
 {
 	struct object_datum *object = object_get(object_index);
-	real now[NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS];
+	struct psp_nwb_inputs now;
+	long self = psp_nwb_self;
 	real_matrix4x3 *nodes = NULL;
 	long size = 0;
 	real_point3d center;
 	real radius = 0.f;
+	int moved;
 
 	if (psp_nwb_check)
 	{
@@ -18712,33 +18732,37 @@ static void psp_nwb_compute(long object_index, long absolute, int entry)
 		center = object->object.bounding_sphere_center;
 		radius = object->object.bounding_sphere_radius;
 	}
-	csmemcpy(now, object->object.outgoing_function_values, sizeof(now));
-	csmemcpy(object->object.outgoing_function_values, psp_nwb_functions[absolute], sizeof(now));
+	psp_nwb_inputs_get(object, &now);
+	moved = csmemcmp(&now, &psp_nwb_inputs[absolute], offsetof(struct psp_nwb_inputs, functions)) != 0;
+	if (moved)
+		psp_nwb_moved++;
+	psp_nwb_inputs_put(object, &psp_nwb_inputs[absolute]);
+	psp_nwb_self = object_index;
 	object_compute_node_matrices(object_index);
-	csmemcpy(object->object.outgoing_function_values, now, sizeof(now));
+	psp_nwb_self = self;
+	psp_nwb_inputs_put(object, &now);
 	if (!psp_nwb_check)
 		return;
 	psp_nwb_checked++;
 	if (csmemcmp(psp_nwb_kept, nodes, size) || csmemcmp(&center, &object->object.bounding_sphere_center, sizeof(center)) ||
 		radius != object->object.bounding_sphere_radius)
 	{
-		struct psp_nwb_inputs was, is;
+		struct psp_nwb_inputs const *was = &psp_nwb_inputs[absolute];
 
 		psp_nwb_differed++;
 		if (psp_nwb_check_reports++ < 40)
-		{
-			was = psp_nwb_inputs[absolute];
-			psp_nwb_inputs_get(object, &is);
 			platform_psp_log("nwbatchcheck: t=%ld %s (type %d, #%08lx), entry %d of %d: the list's compute differs (nodes %s, sphere %s); "
-				"since its update: position %d, facing %d, scale %d, flags %08lx -> %08lx, animation %d/%d/%d -> %d/%d/%d, interpolation %d/%d -> %d/%d",
+				"since its update (put back): position %d, facing %d, scale %d, flags %08lx -> %08lx, animation %d/%d/%d -> %d/%d/%d, interpolation %d/%d -> %d/%d",
 				game_time_get(), tag_get_name(object->definition_index), object_header_get(object_index)->type, (unsigned long)object_index,
 				entry, psp_nwb_count, csmemcmp(psp_nwb_kept, nodes, size) ? "differ" : "same",
 				csmemcmp(&center, &object->object.bounding_sphere_center, sizeof(center)) || radius != object->object.bounding_sphere_radius ? "differs" : "same",
-				csmemcmp(&was.position, &is.position, sizeof(is.position)) != 0,
-				csmemcmp(&was.forward, &is.forward, sizeof(is.forward)) || csmemcmp(&was.up, &is.up, sizeof(is.up)),
-				was.scale != is.scale, was.flags, is.flags, was.graph, was.state, was.frame, is.graph, is.state, is.frame,
-				was.interpolation_index, was.interpolation_count, is.interpolation_index, is.interpolation_count);
-		}
+				csmemcmp(&was->position, &now.position, sizeof(now.position)) != 0,
+				csmemcmp(&was->forward, &now.forward, sizeof(now.forward)) || csmemcmp(&was->up, &now.up, sizeof(now.up)),
+				was->scale != now.scale, was->flags, now.flags,
+				(int)was->animation.animation_graph_index, was->animation.state.index, was->animation.state.frame_index,
+				(int)now.animation.animation_graph_index, now.animation.state.index, now.animation.state.frame_index,
+				was->animation.interpolation_frame_index, was->animation.interpolation_frame_count,
+				now.animation.interpolation_frame_index, now.animation.interpolation_frame_count);
 		/* the compute where it would have run is the one kept */
 		csmemcpy(nodes, psp_nwb_kept, size);
 		object->object.bounding_sphere_center = center;
@@ -18787,15 +18811,14 @@ static void psp_nwb_begin(void)
 		if (psp_nwb_on)
 		{
 			psp_nwb_last = (unsigned short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_last));
-			psp_nwb_functions = malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_functions));
-			if (!psp_nwb_last || !psp_nwb_functions)
+			psp_nwb_inputs = malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_inputs));
+			if (!psp_nwb_last || !psp_nwb_inputs)
 				psp_nwb_on = 0;
 			psp_nwb_check = psp_keep("nwbatchcheck") != 0;
 			if (psp_nwb_check)
 			{
-				psp_nwb_inputs = malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_inputs));
 				psp_nwb_kept = malloc(MAXIMUM_NODES_PER_MODEL * sizeof(*psp_nwb_kept));
-				if (!psp_nwb_inputs || !psp_nwb_kept)
+				if (!psp_nwb_kept)
 					psp_nwb_check = 0;
 			}
 		}
@@ -18809,8 +18832,7 @@ static void psp_nwb_list_entry(long object_index, int post)
 
 	psp_nwb_post[psp_nwb_count] = (unsigned char)post;
 	if (!post)
-		csmemcpy(psp_nwb_functions[absolute], object_get(object_index)->object.outgoing_function_values,
-			sizeof(psp_nwb_functions[0]));
+		psp_nwb_inputs_get(object_get(object_index), &psp_nwb_inputs[absolute]);
 	psp_nwb_last[absolute] = (unsigned short)psp_nwb_count;
 	psp_nwb_list[psp_nwb_count++] = object_index;
 	psp_nwb_waiting[absolute >> 3] |= (unsigned char)(1 << (absolute & 7));
@@ -18867,7 +18889,6 @@ static int psp_nwb_put(long object_index, struct object_datum const *object)
 	{
 		/* before it is listed, so no reader inside settles it */
 		object_compute_node_matrices(object_index);
-		psp_nwb_inputs_get(object, &psp_nwb_inputs[absolute]);
 	}
 	psp_nwb_list_entry(object_index, 0);
 	psp_nwb_put_off++;
@@ -19005,9 +19026,9 @@ static void psp_nwb_close(void)
 	psp_nwb_close_us += psp_microseconds() - start;
 	if (psp_nwb_on > 0 && ++psp_nwb_ticks % 300 == 0)
 	{
-		platform_psp_log("nwbatch: %lu computes put off in 300 ticks (%lu of them attachments'), %lu runs of the list early for a read, %lu past the list; the batch at the loop's end %.2f ms a tick",
-			psp_nwb_put_off, psp_nwb_attached, psp_nwb_early, psp_nwb_full, (float)psp_nwb_close_us / 300000.0f);
-		psp_nwb_put_off = psp_nwb_attached = psp_nwb_early = psp_nwb_full = psp_nwb_close_us = 0;
+		platform_psp_log("nwbatch: %lu computes put off in 300 ticks (%lu of them attachments'), %lu runs of the list early for a read, %lu past the list, %lu moved or reanimated meanwhile (their inputs put back); the batch at the loop's end %.2f ms a tick",
+			psp_nwb_put_off, psp_nwb_attached, psp_nwb_early, psp_nwb_full, psp_nwb_moved, (float)psp_nwb_close_us / 300000.0f);
+		psp_nwb_put_off = psp_nwb_attached = psp_nwb_early = psp_nwb_full = psp_nwb_moved = psp_nwb_close_us = 0;
 		if (psp_nwb_check)
 			platform_psp_log("nwbatchcheck: %lu computes from the list compared, %lu differed (all so far)", psp_nwb_checked, psp_nwb_differed);
 	}
@@ -19094,6 +19115,40 @@ real_matrix4x3 *object_get_node_matrices(
 		psp_nwb_sphere_read(temporary_object_indices[object_index]);
 #endif
 		if (TEST_FLAG(type_flags, object->object.type) &&"""),
+]
+
+# what writes a waiting object's pose or reads the pose its compute makes,
+# from outside the list, settles it first, as it ran before them: a compute
+# from elsewhere (object_set_position, an attach or detach: the list's one,
+# with its postprocess, comes first, then this one, as on the Xbox), and an
+# interpolation started or shifted on it (which copies or moves the pose its
+# compute makes)
+FIXES_136["source/objects/objects.c#nwbatchwrites"] = [
+("""	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_computed(object_index);
+""",
+"""	/* psp_fixups.py (FIXES_136 #nwbatchwrites) */
+	if (psp_nwb_count > psp_nwb_done && object_index != psp_nwb_self)
+		psp_nwb_settle(object_index);
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_computed(object_index);
+"""),
+("""1523, !TEST_FLAG(_object_mask_cannot_interpolate, object->object.type));
+
+	memcpy(""",
+"""1523, !TEST_FLAG(_object_mask_cannot_interpolate, object->object.type));
+
+	/* psp_fixups.py (FIXES_136 #nwbatchwrites) */
+	psp_nwb_settle(object_index);
+	memcpy("""),
+("""1546, !TEST_FLAG(_object_mask_cannot_interpolate, object->object.type));
+""",
+"""1546, !TEST_FLAG(_object_mask_cannot_interpolate, object->object.type));
+	/* psp_fixups.py (FIXES_136 #nwbatchwrites) */
+	psp_nwb_settle(object_index);
+"""),
 ]
 
 FIXES_136["source/physics/collisions.c#nwbatch"] = [
