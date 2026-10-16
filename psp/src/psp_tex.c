@@ -1372,7 +1372,9 @@ BIND_BLOCK_QUARANTINE frames, as a list the GE is still drawing may CALL it.
 Never in the Media Engine's work. A block is written back from the data cache
 once, when it's made */
 #define BIND_BLOCK_WORDS 48 /* 8 + 4 a level (8 at most) + RET, to whole cache lines */
-#define BIND_BLOCKS 96
+/* b30's beach binds more than 96 textures in two frames (lab bindblk1: up to
+150 binds a frame found every slot in use) */
+#define BIND_BLOCKS 192
 #define BIND_BLOCK_QUARANTINE 2
 struct bind_block
 {
@@ -1386,6 +1388,7 @@ static short *bind_block_of = NULL; /* per entry: its block, or -1 */
 static int bind_block_entries = 0;
 static unsigned int bind_block_generation = 0;
 static unsigned long bind_blocks_called = 0, bind_blocks_made = 0, bind_blocks_full = 0;
+static unsigned int bind_blocks_full_frame = 0;
 
 /* the block for this entry at this address, made if need be; NULL when
 every slot is in use or still quarantined */
@@ -1412,12 +1415,20 @@ static const unsigned int *bind_block(int index, struct pack_entry const *entry,
 			bind_block_meta[slot].index = bind_block_entries && bind_block_meta[slot].index != -1 ? -2 : -1;
 		bind_block_entries = entry_count;
 		bind_block_generation = pack_generation;
+		bind_blocks_full_frame = 0;
 	}
 	slot = bind_block_of[index];
 	if (slot >= 0 && bind_block_meta[slot].index == index && bind_block_meta[slot].address == address)
 	{
 		bind_block_meta[slot].frame = frame;
 		return bind_block_words[slot];
+	}
+	/* every slot was in use at this frame's last look, and none comes out
+	of quarantine until the frame changes: no search */
+	if (bind_blocks_full_frame == frame)
+	{
+		bind_blocks_full++;
+		return NULL;
 	}
 	/* a free slot, else the longest unused one out of quarantine */
 	for (slot = 0; slot < BIND_BLOCKS; slot++)
@@ -1435,6 +1446,7 @@ static const unsigned int *bind_block(int index, struct pack_entry const *entry,
 	if (oldest < 0)
 	{
 		bind_blocks_full++;
+		bind_blocks_full_frame = frame;
 		return NULL;
 	}
 	slot = oldest;
