@@ -387,6 +387,11 @@ def compile_one(item):
                            cwd=TREE, capture_output=True, text=True)
     return src, r.returncode, r.stderr, obj
 
+# Functions whose code differs between the counting build and the using one
+# by design, so their counts never match: psp_tick_account dumps the counts
+# (PSP_PGO_GENERATE), main logs the profile's name (PSP_PGO_PROFILE)
+PGO_MODE_DEPENDENT = {("psp_platform.c", "main"), ("psp_platform.c", "psp_tick_account")}
+
 def profile_mismatches(results):
     """the functions GCC compiled without their counts: their code changed
     since the profile was counted (GCC checks each function's branches)"""
@@ -395,7 +400,9 @@ def profile_mismatches(results):
         for line in err.splitlines():
             if "does not match its profile data" in line:
                 m = re.search(r"function '([^']+)'", line)
-                found.append("%s: %s" % (src, m.group(1) if m else line.strip()))
+                name = m.group(1) if m else line.strip()
+                if (os.path.basename(src), name) not in PGO_MODE_DEPENDENT:
+                    found.append("%s: %s" % (src, name))
     return sorted(set(found))
 
 LIBS = ["-lpspvram", "-lpspaudio", "-lpspvfpu", "-lpspdisplay", "-lpspgum", "-lpspgu", "-lpspge",
