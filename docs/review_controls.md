@@ -6,14 +6,17 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 - **Branch:** `controls` at d7232b9, on `w134`. The campaign and multiplayer builds compile (lab 38937812305, 38937818323; the multiplayer build of the controls alone: 38937050710).
 - **Emulator checks:** `controls1` (crouch, reload and action on d20 under a scripted pad; strict; southpaw) and `glyphs1` (the glyphs on b30 and a10, against `xboxglyphs`). Their results are under "The checks".
-- **Not built yet:** the calibration screen in the launch menu (writes `nub.txt`), `nublearn`, the prompt wording at bake, and the string survey (§4.7 of the survey).
+- **Not built yet:**
+  - `nublearn`: a save during play costs a Memory Stick write, so it waits for a background save like the texture totals'.
+  - The prompt wording at bake.
+  - The string survey (§4.7 of the survey).
 - **Nothing here touches the simulation's rules.** The engine's own port paths (the Linux keyboard's) carry the crouch and the reload/action split. The multiplayer build's server sees the same control bits a desktop player's keyboard sends.
 
 | Change | What | Kind | Default | Words | Review |
 |---|---|---|---|---|---|
 | crouch toggle | Select + ↓ toggles crouch, which holds at any speed | control change (Sheepdog01's decision) | on | `crouchhold` (off) | §1 |
 | reload tap, action hold | D-pad ← tapped reloads; held 250 ms it acts and never reloads | control change (Sheepdog01's decision) | on | `actiontap` (off), `actionholdN` (ms) | §2 |
-| nub calibration | The nub's rest, dead radius and reach mapped onto the engine's dead zone and full scale | control change, opt-in | off (no `nub.txt`) | `ms0:/halo/nub.txt`, `nubdeadN`, `nubreachN` | §3 |
+| nub calibration | The nub's rest, dead radius and reach mapped onto the engine's dead zone and full scale; the launch menu's NUB page measures them | control change, opt-in | off (no `nub.txt`) | `ms0:/halo/nub.txt`, `nubdeadN`, `nubreachN` | §3 |
 | profile by keep words | The base game's button preset, stick preset, look sensitivity and invert, until its menu loads | control option | off | `buttonpresetN`, `stickpresetN`, `looksensN`, `lookinvert` | §4 |
 | counts | The heartbeat's pad line carries the nub's range; a line counts toggles, taps, holds and what the engine took | instrument | always (log lines) | — | §5 |
 | PSP button glyphs | The game's button icons drawn as the PSP's buttons, in play and in the menus | look change (Sheepdog01's direction; his A/B decides the default) | on | `xboxglyphs` (off) | §6 |
@@ -45,6 +48,16 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - Then each direction's reach (an ellipse) is mapped so that leaving the dead radius lands just past 9,000 and the reach lands on 32,767.
   - The engine's per-axis rescale then sees a straight line from 0 to full.
 - **Where it comes from:** `ms0:/halo/nub.txt` (`rest X Y`, `dead D`, `reach L R U D`, in the PSP's 0–255 units), or `nubdeadN` / `nubreachN` in percent.
+- **The launch menu's NUB page** (`psp_menu.c`: `nub_page`, `nub_work_out`, `nub_draw`; R past PRESETS) writes the file:
+  1. Let go and press ✕ after a second: the rest samples.
+  2. Roll the nub round its edge, then ✕: the furthest each way. It refuses until both axes have travelled 120 of 255.
+  3. Let go again, then ✕: where the nub comes back to.
+  4. It shows the result; ✕ saves, ○ leaves the file as it was. ○ on the first screen removes `nub.txt`.
+- **The values:**
+  - The rest point is the mean of both let-go steps.
+  - The dead radius is the furthest any let-go sample sat from it, plus 4, held between 8 and 40. So neither jitter nor where a worn nub settles moves the player.
+  - Each reach is the furthest seen less 2, so full scale is reached without pressing as hard as the measuring did.
+- **Testing it:** the menu isn't shown in scripted runs (the emulator, the rig), so the page needs Sheepdog01's hands: one pass on each PSP, then the `nub.txt` it wrote and a few minutes of play.
 - **Off:** with neither, the mapping is the old one, so the lab's sticks and input scripts play exactly as before.
 - **To choose values:** the heartbeat's pad line now carries the furthest the nub has gone each way (§5).
 
