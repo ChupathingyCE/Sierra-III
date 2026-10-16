@@ -19778,6 +19778,119 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 """),
 ]
 
+# "objtrace" (recon only): the table the emulator's object access trace reads
+# (the lab's PSP_OBJTRACE). At each objects_update the game lists every
+# object's data (where it lies, its type, the top-level object it belongs to,
+# whether it is asleep), and while a top-level object and its attachments
+# update, it names that object. The emulator then counts, by instruction, each
+# load and store that lands in another family's data during an update (the
+# map an object loop split into phases needs: who reads whom), and each store
+# into a sleeping object at any time, with whether it changed the bytes (the
+# writers a sleeper would have to be told by). docs/recon_134.md
+FIXES_RECON["source/objects/objects.c#objtrace"] = [
+("""void objects_update(
+	void)
+{
+	static struct profile_section section = {"objects_update", NONE, TRUE};
+""", """/* psp_fixups.py (FIXES_RECON #objtrace): the emulator reads these words by
+address (halo.elf's psp_objtrace), so their layout is fixed: magic, tick,
+the top-level object updating (its absolute index, or -1), entries, table */
+struct psp_objtrace_entry
+{
+	unsigned long begin, end;
+	short root;
+	unsigned char type, asleep;
+};
+volatile unsigned long psp_objtrace[8] __attribute__((aligned(64)));
+static struct psp_objtrace_entry *psp_objtrace_table = NULL;
+static int psp_objtrace_on = -1;
+
+static void psp_objtrace_publish(void)
+{
+	struct object_header_datum *header;
+	long count = object_header_data->count, i, asleep = 0, listed = 0;
+
+	if (psp_objtrace_on < 0)
+	{
+		psp_objtrace_on = psp_keep("objtrace") != 0;
+		if (psp_objtrace_on)
+		{
+			psp_objtrace_table = calloc(MAXIMUM_OBJECTS_PER_MAP, sizeof(*psp_objtrace_table));
+			if (!psp_objtrace_table)
+			{
+				platform_psp_log("objtrace: no room for its table; off");
+				psp_objtrace_on = 0;
+			}
+			else
+				platform_psp_log("objtrace: the object table published each tick at %p (the emulator's PSP_OBJTRACE)",
+					(void *)psp_objtrace);
+		}
+	}
+	if (!psp_objtrace_on)
+		return;
+	if (count > MAXIMUM_OBJECTS_PER_MAP)
+		count = MAXIMUM_OBJECTS_PER_MAP;
+	header = (struct object_header_datum *)xbox_pointer(object_header_data->data);
+	for (i = 0; i < count; i++, header++)
+	{
+		struct psp_objtrace_entry *entry = &psp_objtrace_table[i];
+
+		if (!header->identifier || !header->datum)
+		{
+			entry->begin = entry->end = 0;
+			continue;
+		}
+		{
+			long top = DATUM_INDEX_NEW(i, header->identifier);
+			int depth = 0;
+
+			while (object_get(top)->object.parent_object_index != NONE && depth++ < 16)
+				top = object_get(top)->object.parent_object_index;
+			entry->root = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(top);
+		}
+		entry->begin = (unsigned long)header->datum;
+		entry->end = entry->begin + (unsigned short)header->data_size;
+		entry->type = header->type;
+		entry->asleep = psp_sleep[i].identifier == header->identifier && psp_sleep[i].quiet >= 2;
+		asleep += entry->asleep;
+		listed++;
+	}
+	psp_objtrace[0] = 0x4F424A54; /* "OBJT" */
+	psp_objtrace[2] = (unsigned long)-1;
+	psp_objtrace[3] = (unsigned long)count;
+	psp_objtrace[4] = (unsigned long)psp_objtrace_table;
+	/* last: the emulator reloads the table when the tick changes */
+	psp_objtrace[1]++;
+	if (game_time_get() % 900 == 0)
+		platform_psp_log("objtrace: game time %ld: %ld objects listed, %ld of them asleep", game_time_get(), listed, asleep);
+}
+
+void objects_update(
+	void)
+{
+	static struct profile_section section = {"objects_update", NONE, TRUE};
+"""),
+("""	object_globals->active_garbage_object_count = 0;
+	
+	last_active_cluster_bits = object_globals->last_active_cluster_bits;
+""", """	object_globals->active_garbage_object_count = 0;
+	/* psp_fixups.py (FIXES_RECON #objtrace) */
+	psp_objtrace_publish();
+	
+	last_active_cluster_bits = object_globals->last_active_cluster_bits;
+"""),
+("""					psp_object_update(object_index, i, object_header);
+""", """					psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
+					psp_object_update(object_index, i, object_header);
+					psp_objtrace[2] = (unsigned long)-1;
+"""),
+("""				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
+""", """				psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
+				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
+				psp_objtrace[2] = (unsigned long)-1;
+"""),
+]
+
 
 # The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
