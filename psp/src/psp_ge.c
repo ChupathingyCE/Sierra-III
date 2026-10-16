@@ -1595,11 +1595,21 @@ static struct
 } census_near_table[CENSUS_NEAR_SLOTS];
 
 #define CENSUS_TINTS 512
-static struct { unsigned int base, change, color; } census_tints[CENSUS_TINTS];
+/* each triple's passes since the start and its tinted copy's size at 16 bits,
+so the report can say what a cache of the most drawn would hold and cover */
+static struct { unsigned int base, change, color; unsigned long passes, bytes16; } census_tints[CENSUS_TINTS];
 static int census_tint_count = 0;
 static unsigned long census_tint_passes = 0, census_tint_unkept = 0, census_tint_bytes16 = 0, census_tint_bytes8 = 0;
 
 static unsigned long census_light_draws[2] = { 0, 0 }, census_light_looked[2] = { 0, 0 };
+/* the light pass by surface: within a frame, how many lights draw each surface
+(the same vertices and indices), so the report can say what drawing a surface
+once for all the lights that reach it would save */
+#define CENSUS_SURFACES 512
+static struct { const void *vertices; const unsigned short *indices; long triangles; int lights; } census_surfaces[CENSUS_SURFACES];
+static int census_surface_count = 0;
+static unsigned long census_surface_lost = 0, census_surfaces_lit[4] = { 0 }, census_surface_draws = 0;
+static unsigned long census_surface_triangles = 0, census_surface_repeat_triangles = 0;
 static unsigned long census_light_run_triangles = 0, census_light_runs_out = 0;
 
 char *tag_get_name(long tag_index);
@@ -1650,7 +1660,10 @@ static void census_tint(unsigned int base, unsigned int change, unsigned int col
 	census_tint_passes++;
 	for (k = 0; k < census_tint_count; k++)
 		if (census_tints[k].base == base && census_tints[k].change == change && census_tints[k].color == color)
+		{
+			census_tints[k].passes++;
 			return;
+		}
 	if (census_tint_count == CENSUS_TINTS)
 	{
 		census_tint_unkept++;
@@ -1659,12 +1672,40 @@ static void census_tint(unsigned int base, unsigned int change, unsigned int col
 	census_tints[census_tint_count].base = base;
 	census_tints[census_tint_count].change = change;
 	census_tints[census_tint_count].color = color;
+	census_tints[census_tint_count].passes = 1;
+	census_tints[census_tint_count].bytes16 = 0;
 	census_tint_count++;
 	if (psp_tex_size(base, &width, &height))
 	{
+		census_tints[census_tint_count - 1].bytes16 = (unsigned long)width * height * 2;
 		census_tint_bytes16 += (unsigned long)width * height * 2;
 		census_tint_bytes8 += (unsigned long)width * height;
 	}
+}
+
+static void census_light_surface(const void *vertices, const unsigned short *indices, long triangles)
+{
+	int k;
+
+	census_surface_draws++;
+	census_surface_triangles += (unsigned long)triangles;
+	for (k = 0; k < census_surface_count; k++)
+		if (census_surfaces[k].vertices == vertices && census_surfaces[k].indices == indices)
+		{
+			census_surfaces[k].lights++;
+			census_surface_repeat_triangles += (unsigned long)triangles;
+			return;
+		}
+	if (census_surface_count == CENSUS_SURFACES)
+	{
+		census_surface_lost++;
+		return;
+	}
+	census_surfaces[census_surface_count].vertices = vertices;
+	census_surfaces[census_surface_count].indices = indices;
+	census_surfaces[census_surface_count].triangles = triangles;
+	census_surfaces[census_surface_count].lights = 1;
+	census_surface_count++;
 }
 
 static void census_light_run(long count, float nearest, float radius_squared)
@@ -1710,6 +1751,53 @@ static void census_report(void)
 	platform_log("%s", line);
 	platform_log("drawcensus: change-colour passes %.1f a frame; %d distinct base, multipurpose map and colour triples since the start (%lu more not kept); their base textures as tinted copies %lu KB at 16 bits, %lu KB at 8",
 		census_tint_passes / frames, census_tint_count, census_tint_unkept, census_tint_bytes16 / 1024, census_tint_bytes8 / 1024);
+	{
+		/* the triples by passes, most first: what a cache of the top N would
+		cover, and its size */
+		static const int sizes[5] = { 8, 16, 32, 64, 128 };
+		static unsigned char taken[CENSUS_TINTS];
+		unsigned long total = 0, covered = 0, bytes = 0;
+		int n = 0, next = 0;
+
+		for (k = 0; k < census_tint_count; k++)
+			total += census_tints[k].passes;
+		memset(taken, 0, sizeof(taken));
+		length = snprintf(line, sizeof(line), "drawcensus: tint cache, the most drawn triples since the start (of %lu passes):", total);
+		while (next < 5 && n < census_tint_count)
+		{
+			unsigned long most = 0;
+
+			best = -1;
+			for (k = 0; k < census_tint_count; k++)
+				if (!taken[k] && census_tints[k].passes >= most)
+				{
+					most = census_tints[k].passes;
+					best = k;
+				}
+			if (best < 0)
+				break;
+			taken[best] = 1;
+			covered += census_tints[best].passes;
+			bytes += census_tints[best].bytes16;
+			n++;
+			if (n == sizes[next] || n == census_tint_count)
+			{
+				length += snprintf(line + length, sizeof(line) - length, " top %d cover %.0f%% in %lu KB;",
+					n, total ? 100.0f * covered / total : 0.0f, bytes / 1024);
+				while (next < 5 && sizes[next] <= n)
+					next++;
+			}
+		}
+		platform_log("%s", line);
+	}
+	platform_log("drawcensus: light pass by surface, a frame: %.1f draws on %.1f surfaces (lit by 1 light %.1f, 2 %.1f, 3 %.1f, 4 or more %.1f; %lu draws not kept); %.0f triangles drawn, %.0f of them again on a surface another light already drew (%.0f%%)",
+		census_surface_draws / frames,
+		(census_surfaces_lit[0] + census_surfaces_lit[1] + census_surfaces_lit[2] + census_surfaces_lit[3]) / frames,
+		census_surfaces_lit[0] / frames, census_surfaces_lit[1] / frames, census_surfaces_lit[2] / frames, census_surfaces_lit[3] / frames,
+		census_surface_lost, census_surface_triangles / frames, census_surface_repeat_triangles / frames,
+		census_surface_triangles ? 100.0f * census_surface_repeat_triangles / census_surface_triangles : 0.0f);
+	census_surface_draws = census_surface_triangles = census_surface_repeat_triangles = census_surface_lost = 0;
+	memset(census_surfaces_lit, 0, sizeof(census_surfaces_lit));
 	platform_log("drawcensus: light pass %.1f draws a frame (%.1f spotlights, %.1f point lights), %.1f triangles looked at (%.1f of them the spotlights'); %.1f in runs of 16 wholly beyond the light's radius (%.0f%% of the runs' triangles)",
 		(census_light_draws[0] + census_light_draws[1]) / frames, census_light_draws[1] / frames, census_light_draws[0] / frames,
 		(census_light_looked[0] + census_light_looked[1]) / frames, census_light_looked[1] / frames, census_light_runs_out / frames,
@@ -1723,8 +1811,14 @@ static void census_report(void)
 
 static void census_frame(void)
 {
-	if (census_on > 0)
-		census_frames++;
+	int k;
+
+	if (census_on <= 0)
+		return;
+	census_frames++;
+	for (k = 0; k < census_surface_count; k++)
+		census_surfaces_lit[census_surfaces[k].lights >= 4 ? 3 : census_surfaces[k].lights - 1]++;
+	census_surface_count = 0;
 }
 #define CENSUS(call) call
 #else
@@ -14421,7 +14515,10 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	float census_run_nearest = 0.0f, census_radius_squared = light.radius * light.radius;
 
 	if (census_runs)
+	{
 		census_light_draws[spot]++;
+		census_light_surface(vertices, indices, triangle_count);
+	}
 #endif
 
 	if (probes_on)
