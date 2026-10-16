@@ -229,11 +229,13 @@ def centroid(points):
     return cx / (3.0 * area), cy / (3.0 * area)
 
 
-# the leaf's arrow: the face buttons' triangle, outlined with their stroke,
-# centred on the leaf (its centre of area on the leaf's)
+# the leaf's arrow: the face buttons' triangle smaller (as for a button of
+# radius ARROW_R), outlined with their stroke, centred on the leaf (its
+# centre of area on the leaf's)
+ARROW_R = 0.27
 LEAF_MIDDLE = centroid(DPAD_LEAF)
-DPAD_ARROW = [(x - sum(p[0] for p in triangle(0, 0, FACE_R)) / 3 + LEAF_MIDDLE[0],
-               y - sum(p[1] for p in triangle(0, 0, FACE_R)) / 3 + LEAF_MIDDLE[1]) for x, y in triangle(0, 0, FACE_R)]
+DPAD_ARROW = [(x - sum(p[0] for p in triangle(0, 0, ARROW_R)) / 3 + LEAF_MIDDLE[0],
+               y - sum(p[1] for p in triangle(0, 0, ARROW_R)) / 3 + LEAF_MIDDLE[1]) for x, y in triangle(0, 0, ARROW_R)]
 DPAD_TURNS = {"up": 0, "right": 1, "down": 2, "left": 3}
 
 
