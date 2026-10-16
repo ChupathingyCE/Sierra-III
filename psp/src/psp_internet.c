@@ -155,6 +155,18 @@ void psp_internet_thread_priority(void)
 		PSP_TUNNEL_PRIORITY, psp_keep("tunnelslow") ? " (not: tunnelslow)" : "");
 }
 
+/* the thread's priority now, for the ONLINE GAMES test's line; -1 before it starts */
+int psp_internet_thread_priority_now(void)
+{
+	SceKernelThreadInfo info;
+
+	if (tunnel_thread < 0)
+		return -1;
+	memset(&info, 0, sizeof(info));
+	info.size = sizeof(info);
+	return sceKernelReferThreadStatus(tunnel_thread, &info) < 0 ? -1 : info.currentPriority;
+}
+
 /* in a game (1: the screen joined one) or browsing the menus (0) */
 void psp_internet_tunnel_priority(int in_game)
 {

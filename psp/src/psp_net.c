@@ -64,6 +64,7 @@ gets a slot by its thread ID (error_slot). */
 #include <pthread.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <stdio.h>
 #include <string.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -915,6 +916,21 @@ static void add_all(int const *list, int const *count, fd_set *set, int *highest
 	}
 }
 
+/* how long select takes against what it was asked to wait: the tunnel's
+thread passes through its loop between selects (psp_net_select_report) */
+static struct
+{
+	unsigned long calls, late;
+	unsigned long long us;
+	unsigned int longest_us;
+} select_times;
+
+void psp_net_select_report(char *text, int size)
+{
+	snprintf(text, (size_t)size, "selects %lu, %llu ms in all, the longest %u ms, %lu over their timeout by 20 ms",
+		select_times.calls, select_times.us / 1000, select_times.longest_us / 1000, select_times.late);
+}
+
 int posix_socket_select(int *read, int *read_count, int *write, int *write_count,
 	int *error, int *error_count, posix_long timeout_seconds, posix_long timeout_microseconds, int infinite)
 {
@@ -944,8 +960,24 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 	add_all(error, error_count, &error_set, &highest);
 	timeout.tv_sec = timeout_seconds;
 	timeout.tv_usec = timeout_microseconds;
-	result = select(highest + 1, read ? &read_set : NULL, write ? &write_set : NULL, error ? &error_set : NULL,
-		infinite ? NULL : &timeout);
+	{
+		unsigned int start = sceKernelGetSystemTimeLow(), took;
+
+		result = select(highest + 1, read ? &read_set : NULL, write ? &write_set : NULL, error ? &error_set : NULL,
+			infinite ? NULL : &timeout);
+		took = sceKernelGetSystemTimeLow() - start;
+		if (!infinite)
+		{
+			unsigned int asked = (unsigned int)timeout_seconds * 1000000u + (unsigned int)timeout_microseconds;
+
+			select_times.calls++;
+			select_times.us += took;
+			if (took > select_times.longest_us)
+				select_times.longest_us = took;
+			if (took > asked + 20000)
+				select_times.late++;
+		}
+	}
 	if (result < 0)
 		return fail();
 	/* a socket whose connect failed: BSD reports it writeable, the failure

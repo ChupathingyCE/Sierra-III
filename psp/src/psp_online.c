@@ -163,6 +163,8 @@ heard and why any were turned away) */
 void psp_signal_report(char *text, int size);
 void psp_lobby_report(char *text, int size);
 void psp_tunnel_report(char *text, int size);
+void psp_net_select_report(char *text, int size);
+int psp_internet_thread_priority_now(void);
 /* (psp_internet.c: whether a file is on the Memory Stick) */
 int psp_file_exists(const char *path);
 /* (psp_internet.c: the tunnel's thread above the game thread in a game) */
@@ -355,6 +357,9 @@ static void join_selected(
 		return;
 	}
 	online.connecting = TRUE;
+	/* (the tunnel's handshake with the host needs its thread now; the
+	menus' start-up thread has finished by the time a game can be chosen) */
+	psp_internet_tunnel_priority(1);
 	csstrncpy(online.connecting_invite, game->invite, sizeof(online.connecting_invite) - 1);
 	online.connecting_invite[sizeof(online.connecting_invite) - 1] = 0;
 	csstrncpy(online.connecting_name, game->name, sizeof(online.connecting_name) - 1);
@@ -745,6 +750,8 @@ void psp_online_test_update(
 			online.processed, online.count);
 		psp_tunnel_report(text, sizeof(text));
 		platform_log("online games: tunnel: %s", text);
+		psp_net_select_report(text, sizeof(text));
+		platform_log("online games: tunnel: its thread at 0x%x; %s", psp_internet_thread_priority_now(), text);
 	}
 	if (!online.active)
 		return;
