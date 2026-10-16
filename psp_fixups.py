@@ -18649,6 +18649,8 @@ static unsigned long psp_nwb_types = 0;
 static unsigned char psp_nwb_waiting[MAXIMUM_OBJECTS_PER_MAP / 8];
 static unsigned short *psp_nwb_last = NULL;
 static unsigned long psp_nwb_put_off = 0, psp_nwb_attached = 0, psp_nwb_early = 0, psp_nwb_ticks = 0, psp_nwb_full = 0;
+/* the batch's own time at the loop's end: what the Media Engine could take */
+static unsigned long psp_nwb_close_us = 0;
 static void object_postprocess_node_matrices(long object_index);
 
 static int psp_nwb_waits(long absolute)
@@ -18790,14 +18792,17 @@ static void psp_nwb_settle(long object_index)
 /* the loop is over: the rest, in order */
 static void psp_nwb_close(void)
 {
+	unsigned long start = psp_microseconds();
+
 	psp_nwb_open = 0;
 	psp_nwb_run_to(psp_nwb_count - 1);
 	psp_nwb_count = psp_nwb_done = 0;
+	psp_nwb_close_us += psp_microseconds() - start;
 	if (psp_nwb_on > 0 && ++psp_nwb_ticks % 300 == 0)
 	{
-		platform_psp_log("nwbatch: %lu computes put off in 300 ticks (%lu of them attachments'), %lu runs of the list early for a read, %lu past the list",
-			psp_nwb_put_off, psp_nwb_attached, psp_nwb_early, psp_nwb_full);
-		psp_nwb_put_off = psp_nwb_attached = psp_nwb_early = psp_nwb_full = 0;
+		platform_psp_log("nwbatch: %lu computes put off in 300 ticks (%lu of them attachments'), %lu runs of the list early for a read, %lu past the list; the batch at the loop's end %.2f ms a tick",
+			psp_nwb_put_off, psp_nwb_attached, psp_nwb_early, psp_nwb_full, (float)psp_nwb_close_us / 300000.0f);
+		psp_nwb_put_off = psp_nwb_attached = psp_nwb_early = psp_nwb_full = psp_nwb_close_us = 0;
 	}
 }
 
