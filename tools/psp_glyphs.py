@@ -62,9 +62,12 @@ GLYPHS = [
 
 # the shades (0-1, see the docstring)
 DARK_EDGE = 0.0
-BODY_TOP, BODY_BOTTOM = 0.47, 0.30
-GLOSS = 0.84
-RIM = 0.86
+BODY_TOP, BODY_BOTTOM = 0.5, 0.36
+# how much of the picture behind the glass body hides (the rest shows through)
+BODY_ALPHA = 0.5
+GLOSS = 0.9
+GLOW = 0.8
+RIM = 0.88
 SYMBOL = 0.96
 
 
@@ -114,25 +117,29 @@ def bounds(mask):
 
 
 def glass(layers, mask, strength=1.0, body=None):
-    """a glass button of this shape: a dark edge to stand out from what is
-    behind, the body (the colour, darker toward the bottom; or the shades
-    given), a gloss over its upper part and a bright rim"""
+    """a glass button of this shape, mostly see-through: a faint dark edge
+    so it holds against a bright picture, a thin body (the colour, darker
+    toward the bottom; or the shades given), a crisp gloss over its upper
+    part, light gathered along its bottom edge as in glass, and a bright rim"""
     size = mask.height
     x0, y0, x1, y1 = bounds(mask)
     top = (np.arange(mask.height, dtype=np.float32)[:, None] - y0) / max(1, y1 - y0)
     top = np.clip(top, 0.0, 1.0)
     m = as_array(mask)
-    layers.over(as_array(grown(mask, size * 0.03)), 0.55 * strength, DARK_EDGE)
+    layers.over(as_array(grown(mask, size * 0.025)), 0.35 * strength, DARK_EDGE)
     shade = BODY_TOP + (BODY_BOTTOM - BODY_TOP) * top if body is None else body
-    layers.over(m, 0.9 * strength, shade)
-    # the gloss: an ellipse over the top of the shape, fading downward
+    layers.over(m, BODY_ALPHA * strength, shade)
+    # the gloss: an ellipse over the upper part, its lower edge crisp (a
+    # reflection's edge, the glassy look) and fading a little toward it
     gloss = blank(mask.width, mask.height)
-    ImageDraw.Draw(gloss).ellipse((x0 - (x1 - x0) * 0.25, y0 - (y1 - y0) * 0.55, x1 + (x1 - x0) * 0.25,
-                                   y0 + (y1 - y0) * 0.5), fill=255)
-    fade = np.clip(1.0 - top * 1.6, 0.0, 1.0)
-    layers.over(as_array(gloss) * m * fade, 0.55 * strength, GLOSS)
-    rim = as_array(mask) - as_array(shrunk(mask, max(1, size * 0.025)))
-    layers.over(np.clip(rim, 0.0, 1.0), 0.75 * strength, RIM)
+    ImageDraw.Draw(gloss).ellipse((x0 - (x1 - x0) * 0.3, y0 - (y1 - y0) * 0.6, x1 + (x1 - x0) * 0.3,
+                                   y0 + (y1 - y0) * 0.48), fill=255)
+    layers.over(as_array(gloss) * m * (0.55 - 0.3 * top), strength, GLOSS)
+    # light along the bottom inside edge
+    low = np.clip((top - 0.7) / 0.3, 0.0, 1.0)
+    layers.over(m * low, 0.3 * strength, GLOW)
+    rim = as_array(mask) - as_array(shrunk(mask, max(1, size * 0.02)))
+    layers.over(np.clip(rim, 0.0, 1.0), 0.8 * strength, RIM)
 
 
 def symbol(layers, mask, strength=1.0):
@@ -194,13 +201,13 @@ def bezier(a, control, b, steps=24):
 
 
 # one leaf of the D-pad as the up button, as a PSP-3000's photo shows it
-# (Sheepdog01): its outer edge gently bowed, straight sides for its outer half, then
-# a taper to a point at the pad's middle; corners and point rounded (DPAD_ROUND,
+# (Sheepdog01): its outer edge a little bowed, long straight sides, then a short
+# taper to a point at the pad's middle; corners and point rounded (DPAD_ROUND,
 # drawn as rounded()). Its arrow is solid, as the PSP's outline is lost at the
 # HUD's size
-DPAD_LEAF = ([(0.1, 0.5), (0.1, 0.17)] + bezier((0.1, 0.17), (0.5, 0.0), (0.9, 0.17))[1:] +
-             [(0.9, 0.5), (0.5, 0.92)])
-DPAD_ARROW = [(0.5, 0.2), (0.67, 0.44), (0.33, 0.44)]
+DPAD_LEAF = ([(0.1, 0.62), (0.1, 0.12)] + bezier((0.1, 0.12), (0.5, 0.04), (0.9, 0.12))[1:] +
+             [(0.9, 0.62), (0.5, 0.95)])
+DPAD_ARROW = [(0.5, 0.18), (0.67, 0.42), (0.33, 0.42)]
 DPAD_ROUND = 0.055
 DPAD_TURNS = {"up": 0, "right": 1, "down": 2, "left": 3}
 
@@ -236,18 +243,20 @@ def shoulder_outline():
     """the PSP's L button (Sheepdog01, 2026-10-16: "the exact shape"), in its own
     box from 0 to 1 each way, and the box's width over its height. Lines and
     curves fitted to a trace of a PSP-3000 photo (the trace itself was too
-    ragged): a flat top and bottom; the outer side a straight slant, rounded
+    ragged), the angles sharpened and the upper curve made rounder (Sheepdog01): a
+    flat top and bottom; the outer side a straight slant, curving round
     into the top; the inner side a straight slant meeting the top in one
     sharp angle, then curving into the bottom. Worked in units of the
     height, then scaled into the box"""
-    top_outer, top_inner = (1.0, 0.0), (3.224, 0.0)
+    top_outer, top_inner = (1.3, 0.0), (3.4, 0.0)
     bottom_outer = (0.0, 1.0)
-    # the inner slant (0.924 across for each 1 down) to three quarters of
-    # the way down, then into the bottom, its control where the slant would
-    # meet it
-    slant_end, control, bottom_inner = (2.531, 0.75), (2.3, 1.0), (1.964, 1.0)
-    # the outer top corner rounded over 0.18 of the height along each side
-    round_start, round_end = (0.873, 0.127), (1.18, 0.0)
+    # the inner slant (1.2 across for each 1 down) to three quarters of the
+    # way down, then into the bottom, its control where the slant would meet it
+    slant_end, control, bottom_inner = (2.5, 0.75), (2.2, 1.0), (1.85, 1.0)
+    # the outer top corner rounded over 0.8 of the height along each side:
+    # back down the outer slant (1.3 across for each 1 down), and along the top
+    along = 0.8 / (1.3 ** 2 + 1.0) ** 0.5
+    round_start, round_end = (1.3 - 1.3 * along, along), (1.3 + 0.8, 0.0)
     points = ([round_end, top_inner, slant_end] + bezier(slant_end, control, bottom_inner)[1:] +
               [bottom_outer] + bezier(round_start, top_outer, round_end)[:-1])
     width = top_inner[0]
@@ -278,23 +287,30 @@ def shoulder(layers, letter, cells, size, font):
 
 
 def nub(layers, size):
-    """the PSP's nub: a dark disc, densely dimpled (a checker of two shades)"""
+    """the PSP's nub: a dark disc, its grip a dense cross-hatch (fine lines
+    both ways across it, lighter than the disc)"""
     r = 0.42
     mask = blank(size, size)
     ImageDraw.Draw(mask).ellipse(((0.5 - r) * size, (0.5 - r) * size, (0.5 + r) * size, (0.5 + r) * size), fill=255)
-    cells = 7
+    # as dense as still shows at 32 pixels (finer averages to a flat grey)
+    lines = 6
     y, x = np.mgrid[0:size, 0:size].astype(np.float32)
-    step = 2 * r * size / cells
-    checker = ((np.floor((x - (0.5 - r) * size) / step) + np.floor((y - (0.5 - r) * size) / step)) % 2).astype(np.float32)
-    body = 0.2 + 0.2 * checker - 0.08 * (y / size)
+    step = 2 * r * size / lines
+    # each line a third of the spacing wide, at 45 degrees each way
+    one = ((x + y) % step) < step / 3
+    other = ((x - y) % step) < step / 3
+    hatch = (one | other).astype(np.float32)
+    body = 0.1 + 0.5 * hatch - 0.06 * (y / size)
     glass(layers, mask, body=body)
 
 
 def cluster(layers, size):
-    """the four face buttons in their diamond: the face buttons as a stick"""
-    r = 0.2
-    for kind, (cx, cy) in (("triangle", (0.5, 0.22)), ("square", (0.22, 0.5)), ("circle", (0.78, 0.5)),
-                           ("cross", (0.5, 0.78))):
+    """the four face buttons in their diamond (the face buttons as a stick),
+    spaced as the D-pad's leaves are: the same distance from the middle and
+    the same gap between them"""
+    r, out = 0.19, 0.285
+    for kind, (cx, cy) in (("triangle", (0.5, 0.5 - out)), ("square", (0.5 - out, 0.5)), ("circle", (0.5 + out, 0.5)),
+                           ("cross", (0.5, 0.5 + out))):
         face_button(layers, kind, size, cx, cy, r)
 
 

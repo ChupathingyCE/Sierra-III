@@ -87,15 +87,15 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - `tools/psp_glyphs.py` draws 18 glyphs: △ ○ ✕ □, the D-pad (each arm and whole), L, R, the nub, the face-button diamond (moving), START, SELECT, and the chords SELECT + ↑ / ↓ / L.
   - Each glyph has the shape of the PSP-1000's own button (Sheepdog01, 2026-10-16):
     - the face buttons are round buttons with their outlined symbol;
-    - each D-pad glyph is that one leaf of the pad (after a PSP-3000 photo: a gently bowed outer edge with rounded corners, straight sides, then a taper to a rounded point at the pad's middle), with its arrow (solid, as an outline is lost at the HUD's size); the whole pad spaces its four leaves as the PSP does;
-    - L and R are the PSP's shoulder tab, its lines and curves fitted to a trace of a PSP-3000 photo (Sheepdog01 asked for the exact shape; the raw trace was too ragged): flat top and bottom, a straight outer slant rounded into the top, a straight inner slant meeting the top in one sharp angle and curving into the bottom. It is 3.2 times as wide as it is tall, so they take two cells (R is L mirrored);
-    - the nub is a checkered disc;
+    - each D-pad glyph is that one leaf of the pad (after a PSP-3000 photo: a slightly bowed outer edge with rounded corners, long straight sides, then a short taper to a rounded point at the pad's middle), with its arrow (solid, as an outline is lost at the HUD's size); the whole pad spaces its four leaves as the PSP does, and the face-button cluster takes the same spacing;
+    - L and R are the PSP's shoulder tab, its lines and curves fitted to a trace of a PSP-3000 photo (Sheepdog01 asked for the exact shape; the raw trace was too ragged): flat top and bottom, a straight outer slant curving broadly into the top, a straight inner slant meeting the top in one sharp angle and curving into the bottom. It is 3.2 times as wide as it is tall, so they take two cells (R is L mirrored);
+    - the nub is a disc with a dense cross-hatch, as dense as still shows at 32 px;
     - START and SELECT are the PSP-1000's flat-topped bowl keys (Sheepdog01's sketch), each with its name.
   - All of it is drawn by the script; only the letters are a font (Overpass, OFL).
   - **Glass, in the UI's colour:**
     - Each texel is a coverage and a shade (4 bits each, one byte: 32 KB, the GE's 8-bit indexed format).
     - At draw, `glyph_palette` turns the shade into colour from the colour the game hands the icon, which is its text colour. Shade 0 is that colour at 15%, 0.7 the colour itself, and above it the colour lightens to white.
-    - So the body is the colour a little darkened, the gloss and rim are lighter, and the symbol is near white. The glyphs sit in the HUD's blue in play and in the menus' colour in the menus.
+    - So the body is the colour a little darkened and half see-through, with a crisp gloss over its upper part, a little light along its bottom edge and a bright rim; the symbol is near white and solid. The glyphs sit in the HUD's blue in play and in the menus' colour in the menus.
   - `psp/glyphs/psp_glyphs.png` is a preview, in the HUD's blue and in white.
 - **The map:**
   - `glyphs_in_play` and `glyphs_in_menus` take the engine's 18 icons (A … right stick) to glyphs by survey table A. In play, A is D-pad ↑; in the menus, ✕.
