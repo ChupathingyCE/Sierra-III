@@ -635,9 +635,15 @@ static void bus_load_job(const unsigned int *args, unsigned int *results)
 		for (k = 0; k < work; k++)
 			sink = sink * 31u + k;
 		bus_out[(n * 16u) % BUS_OUT_WORDS] = sink;
-		/* an audio block waiting is mixed first, as in every long ring job */
-		if ((++n & 255u) == 0)
+		/* an audio block waiting is mixed now, whether or not "meaudiofirst"
+		is on: the load holds the ME for a whole tick, and an audio block
+		left 100 ms stops the ME for the session (the first runs, lab
+		38920428263) */
+		if ((++n & 63u) == 0)
+		{
 			psp_me_ring_step(n);
+			me_audio_now();
+		}
 	}
 	results[0] = n;
 	results[1] = me_cycles() - start;
