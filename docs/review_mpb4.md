@@ -18,28 +18,42 @@ What changed since mpb3 (`7f0dc04`, on w131), in the order to read it. mpb4 is `
 - **Heap:** 3,724 KB (mpb3: 3,744).
 - **Stubbed:** `map_download_get`, `map_download_start`, `map_family_find`, `browser_screen_open_map_offer`, `text_hires_enabled`. Each caller reads 0 as "no" [D]: Custom Edition maps aren't found, no download starts, no map offer shows, no high-res text.
 
-## 3. The tunnel's thread above the game thread (`#priority`, `psp_internet.c`)
+## 3. The tunnel's thread above the game thread, from a join (`#priority`, `psp_internet.c`, `psp_online.c`)
 
-**Why:** in the first public game (sierra-hw 38918999662) the host's messages stopped within about 10 s of the join, and the client gave up.
-- Internet play does all its network work on one thread (`p2p.c`). It starts at priority 0x5c [E: mpb4's log], far below the game thread's 0x20.
-- The PSP's scheduler runs a thread only while every higher one waits [D]. Behind a game it couldn't keep up with, the game thread ran 1–2.5 s of catch-up ticks at a time without waiting, so the tunnel likely got no time [U].
+**Why:** in the first public game (sierra-hw 38918999662) the host's messages stopped within about 10 s of the join.
+- Internet play does all its network work on one thread (`p2p.c`). It starts at priority 0x5c [E], far below the game thread's 0x20.
+- The PSP's scheduler runs a thread only while every higher one waits [D].
 
-**The fix:** the thread raises itself to 0x1f as it starts: above the game thread, below the vertical blank thread (0x1e). It waits in `select()` between packets and KCP's clock, so it takes only what it needs: 0.0% of the CPU in mpb4's emulator runs [E].
+**The change:** the thread records itself as it starts. The screen raises it to 0x1f (above the game thread, below the vertical blank's 0x1e) when a join starts, and lowers it again when the screen opens.
+- **Not from the start [M]:** raised from the start (38938090605, 38939812478 run 1), it starved the menus' start-up thread (profiles and playlists, slow on the stick), and the menus never ran the screen.
+- **What it changed [M]:** in a join the thread passes through its loop ~100 times a second, where it managed ~5 at 0x5c (38950938673, 38947199244).
+- **What it didn't:** the drop. Raised, the PSP was still dropped (38941941105 run 1, 38950938673).
 
-```c
-	(void)unused;
-#ifdef HALO_PSP
-	{
-		extern void psp_internet_thread_priority(void);
-		psp_internet_thread_priority();
-	}
-#endif
-	pthread_mutex_lock(&p2p_lock);
-```
+**Keep word:** `tunnelslow` keeps it at 0x5c.
 
-**Keep word:** `tunnelslow` leaves it at 0x5c.
+## 4. Internet play started again after a failed join (`psp_net.c`, `xnet.c` `#retry`)
+
+The hotspot refused the PSP-1000's first Wi-Fi join once (38936073185). Internet play's socket failed with it at `WSAStartup`, and it stayed off while the next join worked. `psp_net.c` now notes any failed join, and the next one that succeeds calls `p2p_initialize` again, which does nothing once internet play runs.
+
+## 5. Diagnostics (`psp_online.c`, `p2p.c` `#tunnelreport`, `psp_net.c`)
+
+Every 10 s the hands-free test logs:
+- **The screen:** open or closed, how often processed, its games.
+- **The tunnel:**
+  - the thread's loop passes and its priority;
+  - the packets read, and which were turned away (not the tunnel's, no peer, stale, unsealed);
+  - streams refused, closed on the PSP's side (with the socket error) or dead;
+  - each peer's last packet and round trip;
+  - each stream's queues.
+- **Select:** calls, time, the longest call, overruns, the highest descriptor.
+
+Also:
+- Unknown socket errors are logged each the first time.
+- WLAN power save is logged at the join.
+- **`tunnelpoll`** reads every tunnel socket each pass, ready or not. As an A/B it ruled out select missing ready sockets.
 
 ## Open
 
-- Whether the raised thread keeps a public game alive on the PSP-1000 (`build_mpb4.md`).
-- The tick in a 12-player game (43 ms against the host's 33.3) and why 30 biped updates a tick.
+- **The drop** (`build_mpb4.md`): the host's packets stop reaching the tunnel within seconds of the game starting. Next: a public game hosted on Sheepdog01's own network.
+- The tick in a 12-player game, and why 30 biped updates a tick.
+- **Heap:** the top reached 3,716 of 3,720 KB in a join on the PSP-3000 (38950938673).
