@@ -487,7 +487,9 @@ static void defer_frame_begin(void)
 					(void)sceKernelGetSystemTimeLow();
 					psp_me_context = 0;
 				}
-				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench;
+				/* geinflight too: its frame is carried out after the next
+				ticks, so a query in them reads what is built, as on the ME */
+				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench || inflight_on;
 				if (me_bench)
 					platform_log("GE: mebench: the GE layer's work on the main CPU, on the ME serially, and overlapped, in turns of %d frames; the frame pacing off",
 						ME_BENCH_FRAMES);
