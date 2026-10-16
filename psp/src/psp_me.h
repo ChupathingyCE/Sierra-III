@@ -55,6 +55,11 @@ The ring serves one producer thread, the main CPU's renderer. */
 #define ME_JOB_RINGTEST 7 /* "meringtest": the ring's own check (psp_me_ring_test) */
 #define ME_JOB_PERC_RAYS 8 /* "meraysperc": perception's queued rays (actor_perception.c, psp_fixups.py FIXES_122) */
 #define ME_JOB_POSES 9 /* next tick's base poses (objects.c, psp_fixups.py FIXES_131 #poseahead) */
+#ifdef PSP_RECON
+#define ME_JOB_BUSLOAD 10 /* "mebusN": a memory load on the ME through a tick (psp_me_bus_phase) */
+/* the tick's start (phase 1) and end (phase 0), from psp_phase */
+void psp_me_bus_phase(int phase);
+#endif
 /* an input of this many bytes, from NULL: the job may read anywhere in main
 RAM (the level, the objects), so the main CPU writes back its whole cache
 before the push (psp_me_writeback(NULL, ME_RING_ALL_OF_RAM)) and the ME drops

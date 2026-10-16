@@ -99,6 +99,10 @@ HEAP_CEILING = TAG_WINDOW_BASE if BIG_RAM else GAME_STATE_BASE
 # PSP_TICK_STEPS=1 adds the tick breadcrumbs (bipeds, units, actors, object_update;
 # psp_fixups.py) that cost a few percent of the tick: recon builds only
 TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
+# PSP_RECON=1 builds in the recon censuses (psp_fixups.py FIXES_RECON, psp_ge.c's
+# draw census, psp_me.c's bus load): measuring instruments whose hooks sit in
+# hot code, so a release build carries none of them (docs/recon_134.md)
+RECON = os.environ.get("PSP_RECON", "") == "1"
 # build 105: PSP_DEBUG_TOOLS=1 keeps the developer instruments that cost
 # memory and that the game itself never needs (so far: the Media Engine
 # measure job "meclassify", 68 KB of buffers; the game's render-debug cache
@@ -206,7 +210,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -357,7 +361,8 @@ def compile_one(item):
         # the FPU's sqrt.s alone, without a library fallback that only sets
         # errno (the same results; an independent review)
         cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections", "-fno-math-errno",
-               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + [
+               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + (
+               ["-DPSP_RECON=1"] if RECON else []) + [
                "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
