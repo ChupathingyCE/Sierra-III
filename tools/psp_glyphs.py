@@ -155,13 +155,22 @@ def outline(draw, points, width):
     draw.line(points + points[:2], fill=255, width=int(width), joint="curve")
 
 
+# a face button's radius in its cell, and its symbols' stroke for a radius
+FACE_R = 0.44
+STROKE = 0.17
+
+
+def triangle(cx, cy, r):
+    """the face buttons' triangle for a button of radius r, pointing up"""
+    k = r * 0.52
+    return [(cx, cy - k * 1.05), (cx + k * 0.95, cy + k * 0.6), (cx - k * 0.95, cy + k * 0.6)]
+
+
 def face_symbol(draw, kind, cx, cy, r, size):
     """the PlayStation symbols as the PSP-1000 marks them: thin outlines"""
-    width = size * r * 0.17
+    width = size * r * STROKE
     if kind == "triangle":
-        k = r * 0.52
-        pts = [(cx, cy - k * 1.05), (cx + k * 0.95, cy + k * 0.6), (cx - k * 0.95, cy + k * 0.6)]
-        outline(draw, [(x * size, y * size) for x, y in pts], width)
+        outline(draw, [(x * size, y * size) for x, y in triangle(cx, cy, r)], width)
     elif kind == "circle":
         k = r * 0.46 * size
         draw.ellipse((cx * size - k, cy * size - k, cx * size + k, cy * size + k), outline=255, width=int(width))
@@ -175,7 +184,7 @@ def face_symbol(draw, kind, cx, cy, r, size):
         outline(draw, [(x * size, y * size) for x, y in pts], width)
 
 
-def face_button(layers, kind, size, cx=0.5, cy=0.5, r=0.44):
+def face_button(layers, kind, size, cx=0.5, cy=0.5, r=FACE_R):
     mask = blank(layers.a.shape[1], size)
     ImageDraw.Draw(mask).ellipse(((cx - r) * size, (cy - r) * size, (cx + r) * size, (cy + r) * size), fill=255)
     glass(layers, mask)
@@ -203,12 +212,28 @@ def bezier(a, control, b, steps=24):
 # one leaf of the D-pad as the up button, as a PSP-3000's photo shows it
 # (Sheepdog01): its outer edge a little bowed, long straight sides, then a short
 # taper to a point at the pad's middle; corners and point rounded (DPAD_ROUND,
-# drawn as rounded()). Its arrow is solid, as the PSP's outline is lost at the
-# HUD's size
+# drawn as rounded())
 DPAD_LEAF = ([(0.1, 0.62), (0.1, 0.12)] + bezier((0.1, 0.12), (0.5, 0.04), (0.9, 0.12))[1:] +
              [(0.9, 0.62), (0.5, 0.95)])
-DPAD_ARROW = [(0.5, 0.18), (0.67, 0.42), (0.33, 0.42)]
 DPAD_ROUND = 0.055
+
+
+def centroid(points):
+    """a polygon's centre of area"""
+    area = cx = cy = 0.0
+    for (x0, y0), (x1, y1) in zip(points, points[1:] + points[:1]):
+        cross = x0 * y1 - x1 * y0
+        area += cross
+        cx += (x0 + x1) * cross
+        cy += (y0 + y1) * cross
+    return cx / (3.0 * area), cy / (3.0 * area)
+
+
+# the leaf's arrow: the face buttons' triangle, outlined with their stroke,
+# centred on the leaf (its centre of area on the leaf's)
+LEAF_MIDDLE = centroid(DPAD_LEAF)
+DPAD_ARROW = [(x - sum(p[0] for p in triangle(0, 0, FACE_R)) / 3 + LEAF_MIDDLE[0],
+               y - sum(p[1] for p in triangle(0, 0, FACE_R)) / 3 + LEAF_MIDDLE[1]) for x, y in triangle(0, 0, FACE_R)]
 DPAD_TURNS = {"up": 0, "right": 1, "down": 2, "left": 3}
 
 
@@ -223,7 +248,7 @@ def dpad_leaf(layers, turns, size, scale=1.0, dx=0.0, dy=0.0):
     ImageDraw.Draw(mask).polygon(place(DPAD_LEAF), fill=255)
     glass(layers, rounded(mask, size * DPAD_ROUND * scale))
     arrow = blank(size, size)
-    ImageDraw.Draw(arrow).polygon(place(DPAD_ARROW), fill=255)
+    outline(ImageDraw.Draw(arrow), place(DPAD_ARROW), size * FACE_R * STROKE * scale)
     symbol(layers, arrow)
 
 
