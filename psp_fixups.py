@@ -18617,22 +18617,22 @@ FIXES_135["source/objects/objects.c#poseaheadon"] = [
 # object's node matrices in the middle of its update, between its type update
 # and its function values, so the compute's 8 KB of code and the type
 # updates' code take turns in the 16 KB instruction cache all through the
-# loop. An object with no parent and no attachments, of a type whose matrices
-# no other object's update needs at once, has its compute and its postprocess
-# put off: each is listed where it would have run, and the list is run in
+# loop. Scenery and its kin (sound scenery, light fixtures, placeholders) with
+# no parent and no attachments have their computes and postprocesses put off: each is listed where it would have run, and the list is run in
 # order at the end of the loop, one after another, on the same CPU; each
 # fetches its code once, not once an object (the PSP-3000: b30's 36 computes
 # a tick cost 0.61 ms there against ~3 ms inside the loop). That list is the
 # job the Media Engine version takes over. Play exact (state CRC pairs on c20,
 # d20, a50, b30): readers and writers of a waiting object settle it first, and
 # each compute from the list reads the inputs its object had at its update.
-# On by default; "nwbatchoff" turns it off.
+# On by default; "nwbatchoff" turns it off; "nwbatchwide" puts off machines',
+# controls' and bipeds' too, which on c20 cost more than they saved.
 # "nwbatchheld" also puts off a biped's with what it holds: the biped's
 # compute, then each attachment's compute and postprocess as their updates
 # reach them, then the biped's postprocess, the order objects_update would
 # have made them in (an attachment's compute reads its parent's node). Not
 # exact (an attachment's update changes the biped's animation state first) and
-# no faster, so opt-in. "nwbatchnobipeds" leaves bipeds out
+# no faster, so opt-in.
 FIXES_136 = {}
 
 FIXES_136["source/objects/objects.c#nwbatch"] = [
@@ -18839,10 +18839,21 @@ static void psp_nwb_begin(void)
 		/* "nwbatchoff": each compute in its object's update ("nwbatch", the
 		old opt-in, is still accepted and changes nothing) */
 		psp_nwb_on = psp_nwb_held || !psp_keep("nwbatchoff");
-		psp_nwb_types = FLAG(_object_type_scenery) | FLAG(_object_type_machine) | FLAG(_object_type_control) |
-			FLAG(_object_type_light_fixture) | FLAG(_object_type_placeholder) | FLAG(_object_type_sound_scenery);
-		if (!psp_keep("nwbatchnobipeds"))
-			psp_nwb_types |= FLAG(_object_type_biped);
+		/* scenery and its kin only: on the PSP-3000 b30's scenery computes
+		cost a fifth as much made together (lab 38871696661), while c20's
+		machines cost the same either way and its unarmed bipeds were nearly
+		all read by another object's update first, which made them in the
+		middle of that update instead (lab 38878940196: the tick 5% slower).
+		"nwbatchwide": machines, controls and bipeds too ("nwbatchnobipeds"
+		leaves the bipeds out of that) */
+		psp_nwb_types = FLAG(_object_type_scenery) | FLAG(_object_type_light_fixture) | FLAG(_object_type_placeholder) |
+			FLAG(_object_type_sound_scenery);
+		if (psp_keep("nwbatchwide"))
+		{
+			psp_nwb_types |= FLAG(_object_type_machine) | FLAG(_object_type_control);
+			if (!psp_keep("nwbatchnobipeds"))
+				psp_nwb_types |= FLAG(_object_type_biped);
+		}
 		if (psp_nwb_on)
 		{
 			psp_nwb_last = (unsigned short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nwb_last));
