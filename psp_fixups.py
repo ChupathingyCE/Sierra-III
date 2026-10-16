@@ -18617,19 +18617,22 @@ FIXES_135["source/objects/objects.c#poseaheadon"] = [
 # object's node matrices in the middle of its update, between its type update
 # and its function values, so the compute's 8 KB of code and the type
 # updates' code take turns in the 16 KB instruction cache all through the
-# loop. With "nwbatch", an object with no parent and no attachments, of a type
-# whose matrices no other object's update needs at once, has its compute and
-# its postprocess put off: each is listed where it would have run, and the
-# list is run in order at the end of the loop, one after another, on the same
-# CPU. That list is the job the Media Engine version takes over.
+# loop. An object with no parent and no attachments, of a type whose matrices
+# no other object's update needs at once, has its compute and its postprocess
+# put off: each is listed where it would have run, and the list is run in
+# order at the end of the loop, one after another, on the same CPU; each
+# fetches its code once, not once an object (the PSP-3000: b30's 36 computes
+# a tick cost 0.61 ms there against ~3 ms inside the loop). That list is the
+# job the Media Engine version takes over. Play exact (state CRC pairs on c20,
+# d20, a50, b30): readers and writers of a waiting object settle it first, and
+# each compute from the list reads the inputs its object had at its update.
+# On by default; "nwbatchoff" turns it off.
 # "nwbatchheld" also puts off a biped's with what it holds: the biped's
 # compute, then each attachment's compute and postprocess as their updates
 # reach them, then the biped's postprocess, the order objects_update would
-# have made them in (an attachment's compute reads its parent's node).
-# A read through object_get_node_matrices or object_get_node_matrix runs the
-# list up to the reader's object's last entry first, so every reader sees
-# what it saw before: inside the biped's own update its compute without the
-# postprocess, after it both. "nwbatchnobipeds" leaves bipeds out
+# have made them in (an attachment's compute reads its parent's node). Not
+# exact (an attachment's update changes the biped's animation state first) and
+# no faster, so opt-in. "nwbatchnobipeds" leaves bipeds out
 FIXES_136 = {}
 
 FIXES_136["source/objects/objects.c#nwbatch"] = [
@@ -18825,7 +18828,9 @@ static void psp_nwb_begin(void)
 	if (psp_nwb_on < 0)
 	{
 		psp_nwb_held = psp_keep("nwbatchheld") != 0;
-		psp_nwb_on = psp_keep("nwbatch") || psp_nwb_held;
+		/* "nwbatchoff": each compute in its object's update ("nwbatch", the
+		old opt-in, is still accepted and changes nothing) */
+		psp_nwb_on = psp_nwb_held || !psp_keep("nwbatchoff");
 		psp_nwb_types = FLAG(_object_type_scenery) | FLAG(_object_type_machine) | FLAG(_object_type_control) |
 			FLAG(_object_type_light_fixture) | FLAG(_object_type_placeholder) | FLAG(_object_type_sound_scenery);
 		if (!psp_keep("nwbatchnobipeds"))
