@@ -10,7 +10,7 @@
 
 ## On the PSP
 
-**Tests 1–4 carry over from b131** (they check the picture, which b132 doesn't change): if you've done them on b131, don't repeat them. **Tests 6–8, the sleep tests, belong on b132**: its ME starts differently and the pose job keeps the ME busy during play.
+**All eight tests on b132** (Sheepdog01, 20:55: b132 replaces b131 before its tests got going). Tests 1–4 check the picture, which b132 doesn't change from b131; tests 6–8 matter more on b132: its ME starts differently and the pose job keeps the ME busy during play.
 
 **If the PSP was the rig's**, first clear its last job off the stick (otherwise the game skips the launch menu and plays the rig's map):
 ```fish
@@ -47,7 +47,10 @@ umount $psp
 
 | # | Map, preset | Play | Stop | What it answers |
 |---|---|---|---|---|
-| 1–4 | as `build_b131.md` | | | Done on b131: they carry over |
+| 1 | Two Betrayals (c40), **1**, then **8** | The opening cutscene and the bridge; look at the terrain, the doorway and the dark grey pillars on the back wall | After the bridge, each time (~5 min each) | The level should hold still against the camera on 1 and dance as before on 8. If the pillars still flicker on 1, it's depth, not position |
+| 2 | The Pillar of Autumn (a10), **1** | The flyby (watch the window frame), then walk up to Captain Keyes. Glance at the HUD for stray warnings | After Keyes (~10 min) | The window frame steady; no drop to 9 fps near the bridge |
+| 3 | a10, **8** | The flyby only | After the flyby (~4 min) | The window frame as b124 drew it, against test 2 |
+| 4 | Keyes (d20) dark corridor, then b30's sky: **1**, **6**, **7** | Stand in the same spot on each preset | When you've compared (~10 min) | The dither: full (1), half (6), off (7). Which looks best is your call |
 | 5 | a10, **13** (the showcase), on the charger | Hands off | When d40 is playing on, HOME → exit (about half an hour [U]) | Every opening's cutscene, one after another, for the video |
 | 6 | b30, **1** | Play a minute, sleep with the power switch for ~10 s, wake, play 30 s, then HOME → exit | The XMB is back, or the PSP hangs (pull the battery) | The default's exit after a real sleep, now with the pose job keeping the ME busy |
 | 7 | b30, **9** (`mewake`) | The same as test 6 | The XMB is back, or the PSP hangs (pull the battery) | Whether the restart works after a real sleep: the log says `ME: restarted after the wake` |
