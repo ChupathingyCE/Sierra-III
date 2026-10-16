@@ -6,7 +6,10 @@
 
 **What's new for you:** nothing to see. b134 is b133 with the experiments that didn't pay put on the shelf (`docs/shelf.md`): the node-matrix batch is out of the build (preset 16 is gone), and the rest stay opt-in. The build now refuses to ship with a profile that doesn't match its code.
 
-**Speed against b133 and b132:** the PSPs' ladders are running (`3867f49`, the same code but the build number); this line follows when they land.
+**Speed against b133 and b132** [M, the ladder's tick, `3867f49`: the same code but the build number]:
+- **Back to b132:** within ~1–2% on every map on both PSPs. b133's c10 loss is gone (PSP-1000: 20.2 → 19.2 ms; b132 18.9), as is a30's (10.3 → 10.1).
+- **b30 on the PSP-1000 read +4.9%** (53.9 against 51.4 ms), not seen on the PSP-3000 (52.7 against 52.9). One run each; the 1000's b30 has read 51.4–54.7 across the last four builds, so treat it as unconfirmed.
+- Labs: PSP-1000 38913257588, PSP-3000 38913265535; b132's 38827551482, 38884473198.
 
 ## On the PSP
 
