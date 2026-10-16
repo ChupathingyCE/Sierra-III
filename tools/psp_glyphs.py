@@ -75,15 +75,21 @@ DARK_EDGE = 0.0
 BODY_TOP, BODY_BOTTOM = 0.5, 0.36
 # how much of the picture behind the glass body hides (the rest shows through)
 BODY_ALPHA = 0.5
-# the glass's finish (--finish=): "gloss", a body darker toward the bottom
-# under a crisp gloss over its upper part, with light along the bottom edge;
-# "solid", one shade between the gloss and the body, no gloss; "soft", that
-# shade with a thin soft highlight inside the top edge; "satin", that shade
-# under the gloss, lighter (SATIN_GLOSS of its strength): Sheepdog01's pick, B+ "and
-# some gloss" (2026-10-16). Each keeps the rim
+# the glass's finish (--finish=), each with the rim:
+#   gloss     a body darker toward the bottom under a crisp gloss over its
+#             upper part, with light along the bottom edge
+#   solid     one shade (SOLID), between the gloss's light and dark
+#   soft      that shade with a thin soft highlight inside the top edge
+#   satin     that shade under the gloss, lighter (SATIN_GLOSS of its
+#             strength): Sheepdog01's pick, "B+ and some gloss" (2026-10-16)
+#   vertical  lighter at the top, darker at the bottom (SPREAD either way)
+#   underlit  the other way: darker at the top, lighter at the bottom
+#   dome      lighter in the middle, darker toward the edges
+#   diagonal  lighter at the top left, darker at the bottom right
 FINISH = "satin"
 SOLID = 0.72
 SATIN_GLOSS = 0.45
+SPREAD = 0.13
 GLOSS = 0.9
 GLOW = 0.8
 RIM = 0.88
@@ -151,44 +157,46 @@ def bounds(mask):
 
 def glass(layers, mask, strength=1.0, body=None):
     """a glass button of this shape, mostly see-through: a faint dark edge
-    so it holds against a bright picture, a thin body (the colour, darker
-    toward the bottom; or the shades given), a crisp gloss over its upper
-    part, light gathered along its bottom edge as in glass, and a bright rim"""
+    so it holds against a bright picture, a thin body shaded by FINISH (or
+    the shades given), and a bright rim"""
     size = mask.height
     x0, y0, x1, y1 = bounds(mask)
-    top = (np.arange(mask.height, dtype=np.float32)[:, None] - y0) / max(1, y1 - y0)
-    top = np.clip(top, 0.0, 1.0)
+    top = np.clip((np.arange(mask.height, dtype=np.float32)[:, None] - y0) / max(1, y1 - y0), 0.0, 1.0)
+    left = np.clip((np.arange(mask.width, dtype=np.float32)[None, :] - x0) / max(1, x1 - x0), 0.0, 1.0)
+    # how far from the middle, 0 there and 1 at the box's edge (an ellipse)
+    out = np.sqrt((2.0 * left - 1.0) ** 2 + (2.0 * top - 1.0) ** 2)
     m = as_array(mask)
     layers.over(as_array(grown(mask, size * 0.025)), 0.35 * strength, DARK_EDGE)
     if body is not None:
         shade = body
     elif FINISH == "gloss":
         shade = BODY_TOP + (BODY_BOTTOM - BODY_TOP) * top
+    elif FINISH == "vertical":
+        shade = SOLID + SPREAD * (1.0 - 2.0 * top)
+    elif FINISH == "underlit":
+        shade = SOLID - SPREAD * (1.0 - 2.0 * top)
+    elif FINISH == "dome":
+        shade = SOLID + SPREAD * (1.0 - 2.0 * np.clip(out, 0.0, 1.0))
+    elif FINISH == "diagonal":
+        shade = SOLID + SPREAD * (1.0 - top - left)
     else:
         shade = SOLID
     layers.over(m, BODY_ALPHA * strength, shade)
-    if FINISH == "satin":
+    if FINISH in ("gloss", "satin"):
+        # the gloss: an ellipse over the upper part, its lower edge crisp (a
+        # reflection's edge, the glassy look) and fading a little toward it
         gloss = blank(mask.width, mask.height)
         ImageDraw.Draw(gloss).ellipse((x0 - (x1 - x0) * 0.3, y0 - (y1 - y0) * 0.6, x1 + (x1 - x0) * 0.3,
                                        y0 + (y1 - y0) * 0.48), fill=255)
-        layers.over(as_array(gloss) * m * (0.55 - 0.3 * top), SATIN_GLOSS * strength, GLOSS)
-    if FINISH != "gloss":
-        if FINISH == "soft":
-            # a thin highlight just inside the top edge, fading downward
-            edge = np.clip(1.0 - top / 0.22, 0.0, 1.0) * as_array(shrunk(mask, max(1, size * 0.03)))
-            layers.over(edge, 0.35 * strength, GLOSS)
-        rim = as_array(mask) - as_array(shrunk(mask, max(1, size * RIM_WIDTH)))
-        layers.over(np.clip(rim, 0.0, 1.0), 0.8 * strength, RIM)
-        return
-    # the gloss: an ellipse over the upper part, its lower edge crisp (a
-    # reflection's edge, the glassy look) and fading a little toward it
-    gloss = blank(mask.width, mask.height)
-    ImageDraw.Draw(gloss).ellipse((x0 - (x1 - x0) * 0.3, y0 - (y1 - y0) * 0.6, x1 + (x1 - x0) * 0.3,
-                                   y0 + (y1 - y0) * 0.48), fill=255)
-    layers.over(as_array(gloss) * m * (0.55 - 0.3 * top), strength, GLOSS)
-    # light along the bottom inside edge
-    low = np.clip((top - 0.7) / 0.3, 0.0, 1.0)
-    layers.over(m * low, 0.3 * strength, GLOW)
+        layers.over(as_array(gloss) * m * (0.55 - 0.3 * top), (1.0 if FINISH == "gloss" else SATIN_GLOSS) * strength,
+                    GLOSS)
+    if FINISH == "gloss":
+        # light along the bottom inside edge
+        layers.over(m * np.clip((top - 0.7) / 0.3, 0.0, 1.0), 0.3 * strength, GLOW)
+    if FINISH == "soft":
+        # a thin highlight just inside the top edge, fading downward
+        edge = np.clip(1.0 - top / 0.22, 0.0, 1.0) * as_array(shrunk(mask, max(1, size * 0.03)))
+        layers.over(edge, 0.35 * strength, GLOSS)
     rim = as_array(mask) - as_array(shrunk(mask, max(1, size * RIM_WIDTH)))
     layers.over(np.clip(rim, 0.0, 1.0), 0.8 * strength, RIM)
 
@@ -509,7 +517,7 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     header_path = None
     master = "--master" in sys.argv[1:]
-    global FINISH, SOLID, SATIN_GLOSS, RIM_WIDTH
+    global FINISH, SOLID, SATIN_GLOSS, RIM_WIDTH, SPREAD
     for a in sys.argv[1:]:
         if a.startswith("--finish="):
             FINISH = a.split("=", 1)[1]
@@ -519,6 +527,8 @@ def main():
             SATIN_GLOSS = float(a.split("=", 1)[1])
         elif a.startswith("--rim="):
             RIM_WIDTH = float(a.split("=", 1)[1])
+        elif a.startswith("--spread="):
+            SPREAD = float(a.split("=", 1)[1])
     for a in sys.argv[1:]:
         if a.startswith("--cell="):
             CELL = int(a.split("=", 1)[1])
