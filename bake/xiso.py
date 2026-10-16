@@ -8,7 +8,14 @@ usage (library):
     with XIso(path) as iso:
         for path, size in iso.files():     # 'maps/c20.map', ...
             ...
-        iso.extract('maps/c20.map', 'out/c20.map')"""
+        iso.extract('maps/c20.map', 'out/c20.map')
+
+usage (command line):
+    xiso.py <image>                        lists the files
+    xiso.py <image> <folder> [name ...]    copies maps/<name>.map out (every map
+                                           when no name is given), e.g. a
+                                           dedicated server's maps folder
+    xiso.py                                self-test"""
 import os, struct
 
 SECTOR = 2048
@@ -130,7 +137,18 @@ def make_test_image(path, files):
 
 if __name__ == '__main__':
     import sys, tempfile
-    if len(sys.argv) > 1:
+    if len(sys.argv) > 2:
+        os.makedirs(sys.argv[2], exist_ok=True)
+        with XIso(sys.argv[1]) as iso:
+            maps = {p.lower(): p for p, n in iso.files() if p.lower().startswith('maps/') and p.lower().endswith('.map')}
+            wanted = ['maps/%s.map' % name.lower() for name in sys.argv[3:]] or sorted(maps)
+            missing = [w for w in wanted if w not in maps]
+            if missing:
+                sys.exit('xiso: the image has no %s' % ', '.join(missing))
+            for w in wanted:
+                iso.extract(maps[w], os.path.join(sys.argv[2], os.path.basename(w)))
+                print('xiso: %s' % os.path.join(sys.argv[2], os.path.basename(w)))
+    elif len(sys.argv) > 1:
         with XIso(sys.argv[1]) as iso:
             for p, n in sorted(iso.files()):
                 print('%12d  %s' % (n, p))

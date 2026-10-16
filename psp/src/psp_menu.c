@@ -14,7 +14,12 @@ plain text console on the frame buffer; the GE isn't up yet). Two pages:
 Up/down move, left/right or cross toggle, L/R or triangle switch pages,
 start saves both files and starts the game. Not shown when
 ms0:/halo/input.txt (a scripted run: the emulator) or ms0:/halo/nomenu.txt
-exists; the files are then read as they are, as before. */
+exists; the files are then read as they are, as before.
+
+The multiplayer build (mp4): its files are in ms0:/halomp, the maps still
+in ms0:/halo/maps (psp_paths.h), and it starts on the game's own main menu,
+where a network game is joined: the launch menu shows only if
+ms0:/halomp/menu.txt exists (for its keep words, or a local game). */
 #include <pspkernel.h>
 #include <pspctrl.h>
 #include <pspdebug.h>
@@ -24,7 +29,8 @@ exists; the files are then read as they are, as before. */
 #include <string.h>
 #include <stdlib.h>
 
-#define DATA_ROOT "ms0:/halo"
+#include "psp_paths.h"
+#define DATA_ROOT PSP_DATA_ROOT
 #define MAXIMUM_MAPS 32
 #define NAME_LENGTH 40
 
@@ -248,7 +254,7 @@ static int map_type(const char *path)
 
 static void scan_maps(void)
 {
-	SceUID directory = sceIoDopen(DATA_ROOT "/maps");
+	SceUID directory = sceIoDopen(PSP_MAPS_ROOT);
 	SceIoDirent entry;
 
 	map_count = 0;
@@ -267,9 +273,9 @@ static void scan_maps(void)
 
 			memcpy(map->name, entry.d_name, length - 4);
 			map->name[length - 4] = '\0';
-			snprintf(path, sizeof(path), DATA_ROOT "/maps/%s", entry.d_name);
+			snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s", entry.d_name);
 			map->type = map_type(path);
-			snprintf(path, sizeof(path), DATA_ROOT "/maps/%s.ptex", map->name);
+			snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.ptex", map->name);
 			map->has_pack = file_exists(path);
 			map_count++;
 		}
@@ -451,7 +457,7 @@ static void draw(int page, int cursor, int map, int build)
 				maps[i].has_pack ? "textures" : "NO TEXTURE PACK");
 		}
 		if (!map_count)
-			pspDebugScreenPrintf(" no maps in ms0:/halo/maps\n");
+			pspDebugScreenPrintf(" no maps in " PSP_MAPS_ROOT "\n");
 	}
 	else
 	{
@@ -520,6 +526,10 @@ void psp_menu(int build)
 
 	if (file_exists(DATA_ROOT "/input.txt") || file_exists(DATA_ROOT "/nomenu.txt"))
 		return;
+#ifdef PSP_MULTIPLAYER
+	if (!file_exists(DATA_ROOT "/menu.txt"))
+		return;
+#endif
 	int back = 0, dump_menu = -1;
 
 	scan_maps();

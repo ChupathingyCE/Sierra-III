@@ -62,6 +62,12 @@ Then copy the output's `halo/` folder to the root of the Memory Stick. `bake/REA
 
 Unzip the build zip at the Memory Stick's root: `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`), and `halo/presets.txt` (the launch menu's test presets) when the build has one. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
 
+## Multiplayer
+
+The multiplayer build lives on the `mp-recon` branch. It is built with `PSP_MULTIPLAYER=1`, installs to `PSP/GAME/halomp` beside the campaign build, and keeps its settings in `ms0:/halomp`.
+
+A PSP-1000 has played whole games against a PC on ChupathingyCE's dedicated server, over the PC's own Wi-Fi hotspot. `docs/multiplayer_setup.md` walks through it: the build, the bake, the hotspot, ARK-4's WPA2 setting, the server and the stick.
+
 ## History
 
 This repository was created on 2026-10-09. The history before then was rebuilt from the source snapshots kept for each build, one commit per snapshot, tagged by build (`b87` to `b110`). Builds 1 to 86 survive only as binaries. Every build's zip is kept in one private Release, `build-archive`; a build gets a Release of its own only when it's shared.

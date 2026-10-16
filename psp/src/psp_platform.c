@@ -6,8 +6,9 @@ reuses as is (port/linux/src, built against the PSP toolchain's SDL3 and
 pthreads):
 - the program entry: module info, a fixed-size heap, exit handling, the
   log file, the data and save roots;
-- no network yet: posix_net.c's sockets fail cleanly, and internet play's
-  helpers (posix_update.c, posix_upnp.c, p2p.c) report nothing.
+- no network in the campaign build: posix_net.c's sockets fail cleanly
+  (the multiplayer build's are psp_net.c's), and internet play's helpers
+  (posix_update.c, posix_upnp.c, p2p.c) report nothing.
 */
 
 #include "platform.h"
@@ -42,7 +43,9 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(512);
 (psp_build.py sets it from the linked program's size) */
 PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
 
-#define DATA_ROOT "ms0:/halo"
+/* ms0:/halo, or the multiplayer build's ms0:/halomp (psp_paths.h) */
+#include "psp_paths.h"
+#define DATA_ROOT PSP_DATA_ROOT
 /* in a folder of its own: the game's own files (debug.txt, stderr.txt,
 gamestate.txt) are written next to each other in ms0:/halo, and a file's
 size lives in its folder's directory entries, so the log stays out of
@@ -1286,6 +1289,15 @@ static void exit_game(const char *why)
 	sceKernelExitGame();
 }
 
+#ifdef PSP_MULTIPLAYER
+/* the multiplayer build's own tests end the game this way too
+(psp_online.c's onlinedoneN, for the emulator) */
+void psp_exit_game(const char *why)
+{
+	exit_game(why);
+}
+#endif
+
 static int exit_callback(int a, int b, void *c)
 {
 	(void)a; (void)b; (void)c;
@@ -1307,7 +1319,7 @@ void psp_next_map_check(const char *scenario_path)
 	SceIoStat stat;
 
 	name = name ? name + 1 : scenario_path;
-	snprintf(path, sizeof(path), DATA_ROOT "/maps/%s.map", name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.map", name);
 	if (sceIoGetstat(path, &stat) >= 0)
 		return;
 	platform_log("level finished: the next map, %s, isn't on the memory stick (%s)", scenario_path, path);
@@ -2574,6 +2586,15 @@ static int heartbeat_thread(SceSize args, void *argp)
 				fc ? ft / 1000.0 / fc : 0.0, fm / 1000.0, fc / seconds,
 				scePowerGetCpuClockFrequencyInt(), sceKernelTotalFreeMemSize() / 1024,
 				heap_base ? (unsigned long)((char *)sbrk(0) - heap_base) / 1024 : 0, PSP_HEAP_KB);
+#ifdef PSP_MULTIPLAYER
+		/* mp3: the network stack's pool and the access point (psp_net.c) */
+		if (ticks >= 0 && last_ticks >= 0)
+		{
+			extern void psp_net_heartbeat(void);
+
+			psp_net_heartbeat();
+		}
+#endif
 		/* build 73: the Memory Stick reads of this window: how many, how
 		long in all, the slowest one (Sheepdog01's b71/b72: 1.7-5 s a frame at the
 		frame's end, the reads the suspects) */
@@ -2941,8 +2962,10 @@ int main(int argc, char **argv)
 	return halo_main();
 }
 
-/* ---------- no network yet */
+/* ---------- no network: the campaign build (the multiplayer build's
+sockets are psp_net.c's) */
 
+#ifndef PSP_MULTIPLAYER
 int posix_socket_last_error(void) { return 10050; /* WSAENETDOWN */ }
 int posix_socket(int family, int type, int protocol) { (void)family; (void)type; (void)protocol; return -1; }
 int posix_socket_close(int socket) { (void)socket; return -1; }
@@ -2977,7 +3000,11 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 }
 posix_ulong posix_local_ipv4_address(void) { return 0; }
 posix_ulong posix_resolve_ipv4(const char *host) { (void)host; return 0; }
+#endif
 
+/* (the campaign build's; the multiplayer build makes keys from its bytes, and
+has its own: psp_internet.c) */
+#ifndef PSP_MULTIPLAYER
 void posix_random_bytes(void *buffer, posix_ulong size)
 {
 	static SceKernelUtilsMt19937Context context;
@@ -2993,6 +3020,7 @@ void posix_random_bytes(void *buffer, posix_ulong size)
 	for (index = 0; index < size; index++)
 		bytes[index] = (unsigned char)sceKernelUtilsMt19937UInt(&context);
 }
+#endif
 
 int posix_upnp_forward_udp(unsigned short port, unsigned short preferred_port, posix_ulong *external_address,
 	unsigned short *external_port, char *error, int error_size)

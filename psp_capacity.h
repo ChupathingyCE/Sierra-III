@@ -52,6 +52,7 @@ typedef char halo_port_game_state_below_tag_window[
 
 The tag window is 9 MB at 0x09600000, under the 1 MB left for thread
 stacks; maps are baked for it (invader-build -X 0x09600000 -T 0x900000).
+The multiplayer build's is smaller (below).
 Build 44's recon variant (psp_build.py's PSP_BIG_RAM) has the Xbox's 22 MB,
 for 64 MB models and the emulator set to one.
 
@@ -61,6 +62,18 @@ build 30 (that switch thrashes it, but works). */
 
 #ifdef PSP_RECON_64MB
 #define PSP_TAG_CACHE_SIZE 0x01600000 /* (0x1600000) */
+#elif defined(PSP_MULTIPLAYER)
+/* The multiplayer build: 6 MB, the same base, ending 3 MB lower. The stock
+multiplayer maps take 2.3-3.3 MiB of tag space as baked (Invader's count:
+the tags and the BSP; Sidewinder the most, ui 1.06; the bake of
+2026-10-10), so 6 MB leaves room for custom maps. The bake builds the
+multiplayer maps and ui for it (bake.py's MULTIPLAYER_TAG_SPACE): a
+structure BSP loads at the end of the window it was built for, so they load
+in both builds. The 3 MB given back is user RAM outside the heap, where the
+network modules, the sound cache and the display list go (psp_memory.c's
+outside_alloc), and the heap keeps its room for the rest
+(docs/multiplayer_plan.md, section 4) */
+#define PSP_TAG_CACHE_SIZE 0x600000 /* (0x1600000) */
 #else
 #define PSP_TAG_CACHE_SIZE 0x900000 /* (0x1600000) */
 #endif

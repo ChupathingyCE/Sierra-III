@@ -78,8 +78,26 @@ CHUPA_DESKTOP_UNITS = ("port/linux/game/ce_", "port/linux/game/browser_screen.c"
                        "port/linux/game/menu_functions.c", "port/linux/game/menu_tags.c",
                        "port/linux/game/tag_schema_", "port/linux/game/tag_validate",
                        "port/linux/game/touch_game.c", "port/linux/game/hud_hires_tags.c")
+# ... except what the multiplayer build needs as it is: map_families.c names a
+# game's map in the game's protocol (an Xbox map as itself, a Custom Edition
+# map custom_maps\<name>), in the host's advertisement and settings and the
+# client's reading of them
+CHUPA_MULTIPLAYER_KEEPS = ("port/linux/game/map_families.c",)
+# internet play in the multiplayer build (mpb1): the engine's p2p layer and
+# what it's built on, compiled as the desktop compiles them
+INTERNET_UNITS = ("port/linux/src/p2p.c", "port/linux/src/p2p_signal.c", "port/linux/src/p2p_lobby.c",
+                  "port/linux/src/p2p_copies.c",
+                  "port/linux/src/p2p_crypto.c", "port/third_party/monocypher/monocypher.c",
+                  "port/third_party/monocypher/monocypher-ed25519.c", "port/third_party/kcp/ikcp.c")
+# ... and the Multiplayer menu's ONLINE GAMES item, which the engine builds
+# with its game browser (HALO_GAME_BROWSER): only these three units take the
+# flag, so the item, its screen's hooks and the Multiplayer menu's ending of
+# a game left behind come in without the web list, its stats and
+# moderation. The screen is the PSP's own (psp/src/psp_online.c)
+ONLINE_GAMES_UNITS = ("source/interface/ui_widget.c", "source/interface/ui_widget_event_handler_functions.c",
+                      "source/cache/cache_files.c")
 def desktop_unit(rel):
-    return rel.startswith(CHUPA_DESKTOP_UNITS)
+    return rel.startswith(CHUPA_DESKTOP_UNITS) and not (MULTIPLAYER and rel in CHUPA_MULTIPLAYER_KEEPS)
 
 PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace"]
 
@@ -206,7 +224,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -248,7 +266,8 @@ def units():
     if not MULTIPLAYER:
         game = [s for s in game if not multiplayer_unit(s)]
     game = [s for s in game if not desktop_unit(s)]
-    items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o"), []) for s in game]
+    items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o") +
+              (["-DHALO_GAME_BROWSER"] if MULTIPLAYER and s in ONLINE_GAMES_UNITS else []), []) for s in game]
     compat = ["-include", os.path.join(HERE, "psp/include/psp_compat.h")]
     for name in PLATFORM_FILES:
         s = "port/linux/src/%s.c" % name
@@ -267,6 +286,24 @@ def units():
         # built as the networking units it stands in for
         items.append((os.path.join(HERE, "psp/src/psp_campaign.c"),
                       ninja_flags("build/linux/obj/source/networking/network_game_globals.o"), []))
+    else:
+        # the PSP's sockets and Wi-Fi for xnet.c (plain C: compile_one), and
+        # the ad hoc layer it hands them to with keep word adhoc (mp5)
+        items.append((os.path.join(HERE, "psp/src/psp_net.c"), [], []))
+        items.append((os.path.join(HERE, "psp/src/psp_net_adhoc.c"), [], []))
+        # internet play (mpb1): the engine's own p2p layer as it is, on
+        # psp_net.c's sockets: the public games' listings and the invite
+        # tunnel. Discord, UPnP and the web game list stay out
+        # (psp_internet.c answers what they're asked)
+        for unit in INTERNET_UNITS:
+            items.append((unit, ninja_flags("build/linux/obj/" + unit[:-2] + ".o"),
+                          [] if unit.startswith("port/third_party/") else compat))
+        # ... the ONLINE GAMES screen, a game unit (built as the game's port
+        # units are), which reads the lobby through p2p.h
+        items.append((os.path.join(HERE, "psp/src/psp_internet.c"),
+                      ninja_flags("build/linux/obj/port/linux/src/p2p_crypto.o"), compat))
+        items.append((os.path.join(HERE, "psp/src/psp_online.c"),
+                      ninja_flags("build/linux/obj/port/linux/game/pal_tags.o"), ["-idirafter", "port/linux/src"]))
     # what the desktop units left out answered for the PSP
     # (CHUPA_DESKTOP_UNITS): the game's calls built as the game's port units
     # are, the platform layer's as sdl_platform.c is (its flags carry the
@@ -304,7 +341,10 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    "port/linux/src/nv2a_psh.c", "port/linux/src/nv2a_vsh.c", "port/linux/src/gl_functions.c",
                    "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c",
                    "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_chupa.c",
-                   "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c")
+                   "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c",
+                   # mpb1: internet play runs on its own threads, a join's
+                   # keys once; the ONLINE GAMES screen only in the menus
+                   "psp/src/psp_online.c", "psp/src/psp_internet.c") + INTERNET_UNITS
 def cold_code(rel):
     if os.environ.get("PSP_NO_COLD") or GAME_OPT != "-O2":
         return False
@@ -348,16 +388,20 @@ def compile_one(item):
     out = os.path.relpath(obj, TREE) if PGO else obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
-                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c")):
+                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         # (build 110: the launch menu, the crash handler's side, the overlay
         # and the load trace's wrappers for size; the rest for speed)
-        opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c", "psp_watch.c")) else "-O2"
+        opt = "-Os" if src.endswith(("psp_menu.c", "psp_crash.c", "psp_debug.c", "psp_trace.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c")) else "-O2"
         # after b116: -fno-math-errno, as the engine's units have: sqrtf is
         # the FPU's sqrt.s alone, without a library fallback that only sets
         # errno (the same results; an independent review)
         cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections", "-fno-math-errno",
-               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + [
+               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include",
+               # (psp_paths.h, by quoted includes only: psp/include's stand-in
+               # system headers stay out of these units)
+               "-iquote", os.path.join(HERE, "psp/include")] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (
+               pgo_flags(rel) if opt == "-O2" else []) + [
                "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)
@@ -407,6 +451,16 @@ def profile_mismatches(results):
 
 LIBS = ["-lpspvram", "-lpspaudio", "-lpspvfpu", "-lpspdisplay", "-lpspgum", "-lpspgu", "-lpspge",
         "-lpsphprm", "-lpspdmac", "-lpspctrl", "-lpsppower", "-lpthread", "-lpsprtc", "-lpspdebug", "-lme-core", "-lm"]
+# the multiplayer build's network (psp/src/psp_net.c): the stack, the access
+# point's connection and the WLAN switch. Not pspnet_inet or pspnet_resolver:
+# the toolchain's specs add those after libcglue, and naming them here as
+# well splits their import table, so calls reach the wrong functions
+# (multiplayer_recon.md, section 1.3). mp5: and the ad hoc libraries
+# (psp_net_adhoc.c), whose module is loaded only with keep word adhoc
+if MULTIPLAYER:
+    LIBS += ["-lpspnet_adhocctl", "-lpspnet_adhoc", "-lpspnet", "-lpspnet_apctl", "-lpspwlan",
+             # mpb1: the OpenPSID, for internet play's keys (psp_internet.c)
+             "-lpspopenpsid"]
 
 def elf_section_names(path):
     """the section names of a 32-bit little-endian ELF object (the PSP's)"""
@@ -678,8 +732,11 @@ def main():
         assert r.returncode == 0, r.stderr[-2000:]
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
+    # the title the XMB shows: the multiplayer build's is its own, so the two
+    # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart
+    title = os.environ.get("PSP_TITLE", "Halo PSP multiplayer" if MULTIPLAYER else "Halo PSP bring-up")
     subprocess.run(["mksfoex"] + (["-d", "MEMSIZE=1"] if BIG_RAM else []) +
-                   [os.environ.get("PSP_TITLE", "Halo PSP bring-up"), os.path.join(OUT, "PARAM.SFO")], check=True)
+                   [title, os.path.join(OUT, "PARAM.SFO")], check=True)
     icon0, icon1, pic0, pic1, snd0 = xmb_files()
     subprocess.run(["pack-pbp", os.path.join(OUT, "EBOOT.PBP"), os.path.join(OUT, "PARAM.SFO"),
                     icon0, icon1, pic0, pic1, snd0, os.path.join(OUT, "halo.prx"), "NULL"],

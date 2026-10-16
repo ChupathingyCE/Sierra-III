@@ -31,6 +31,7 @@ psp_geo_generation(), which changes with every load into the block. */
 #include <malloc.h>
 #include <string.h>
 #include "psp_me.h" /* psp_on_me */
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -731,7 +732,7 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 		return;
 	if (!outside)
 		return;
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.pgeo", name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pgeo", name);
 	pack = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (pack < 0)
 	{

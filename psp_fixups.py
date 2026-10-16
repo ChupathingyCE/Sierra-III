@@ -10430,6 +10430,918 @@ void release_assert_failed(char const *information, char const *file, long line,
 	result = (long)__builtin_rintf(value);"""),
 ]
 
+# ---------- the multiplayer build at the PC's session limits
+# (docs/multiplayer_plan.md, section 4). psp_limits.h gives the multiplayer
+# build the native builds' 128 players on 128 machines, so its game settings
+# record and messages match a PC's. As written, that sizes every record of
+# the game's host for 128 too: 2.1 MB more than at the Xbox's limits, 1.6 MB
+# of it the host's alone. A PSP meets 128 only as a client, so the host's
+# records are sized for a game a PSP hosts (PSP_HOST_*, psp_limits.h), and
+# the one record a client keeps that doesn't need its size is shortened.
+# Each file here is built only into the multiplayer build, except
+# player_queues_new.c, whose change is the multiplayer build's alone
+FIXES_MULTIPLAYER = {}
+# The host: its machines' slots. A joining machine's index is its slot's
+# (network_game_server_accept_client_machine_into_game), so with 16 slots
+# no machine index reaches 16, and every array the host keeps per machine
+# (each late joiner's starting players: 512 KB at 128) and every loop over
+# the game's machines here follows. Its game holds at most as many players
+# ... and the message handler's loops over those slots, which counted to its
+# own MAXIMUM_NETWORK_MACHINE_COUNT (128): past slot 15 the host's lookup
+# answers NULL, and the first message to every machine read through it
+# (network_game_server_send_message_to_all_machines). Found by the first
+# PSP-hosted game in the emulator (lab run 38344820258, 2026-10-12): the host
+# faulted at its game's first message to all machines
+FIXES_MULTIPLAYER["source/networking/network_server_message_handler.c#host"] = [
+("""	MAXIMUM_NETWORK_MACHINE_COUNT = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+	NETWORK_MESSAGE_BUFFER_SIZE = HALO_PORT_MAXIMUM_NETWORK_MESSAGE_SIZE,""",
+ """	MAXIMUM_NETWORK_MACHINE_COUNT = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+#ifdef HALO_PSP
+	/* psp_fixups.py (multiplayer): the host's machine slots, as
+	network_server_manager.c sizes them (a game the PSP hosts, psp_limits.h) */
+	NETWORK_GAME_SERVER_MACHINE_SLOTS = PSP_HOST_MAXIMUM_NETWORK_MACHINES,
+#else
+	NETWORK_GAME_SERVER_MACHINE_SLOTS = MAXIMUM_NETWORK_MACHINE_COUNT,
+#endif
+	NETWORK_MESSAGE_BUFFER_SIZE = HALO_PORT_MAXIMUM_NETWORK_MESSAGE_SIZE,"""),
+("""	for (client_index = 0; client_index < MAXIMUM_NETWORK_MACHINE_COUNT && count < maximum; client_index++)""",
+ """	for (client_index = 0; client_index < NETWORK_GAME_SERVER_MACHINE_SLOTS && count < maximum; client_index++)"""),
+("""	if (!VALID_INDEX(machine_index, MAXIMUM_NETWORK_MACHINE_COUNT))""",
+ """	if (!VALID_INDEX(machine_index, NETWORK_GAME_SERVER_MACHINE_SLOTS))"""),
+("""	if (!server)
+		return FALSE;
+	for (machine_index = 0; machine_index < MAXIMUM_NETWORK_MACHINE_COUNT; machine_index++)""",
+ """	if (!server)
+		return FALSE;
+	for (machine_index = 0; machine_index < NETWORK_GAME_SERVER_MACHINE_SLOTS; machine_index++)"""),
+("""		return FALSE;
+	}
+	for (machine_index = 0; machine_index < MAXIMUM_NETWORK_MACHINE_COUNT; machine_index++)""",
+ """		return FALSE;
+	}
+	for (machine_index = 0; machine_index < NETWORK_GAME_SERVER_MACHINE_SLOTS; machine_index++)"""),
+]
+FIXES_MULTIPLAYER["source/networking/network_server_manager.c#host"] = [
+("""	/* the native builds' session limits (port/linux/include/halo_port_limits.h) */
+	MAXIMUM_NETWORK_MACHINE_COUNT = HALO_PORT_MAXIMUM_NETWORK_MACHINES,""",
+ """	/* the native builds' session limits (port/linux/include/halo_port_limits.h) */
+#ifdef HALO_PSP
+	/* psp_fixups.py (multiplayer): a game the PSP hosts (psp_limits.h) */
+	MAXIMUM_NETWORK_MACHINE_COUNT = PSP_HOST_MAXIMUM_NETWORK_MACHINES,
+#else
+	MAXIMUM_NETWORK_MACHINE_COUNT = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+#endif"""),
+("""		server->game.maximum_players = (byte)PIN(network_game_server_port_settings.maximum_players, 2,
+			MAXIMUM_NETWORK_PLAYER_COUNT);""",
+ """		server->game.maximum_players = (byte)PIN(network_game_server_port_settings.maximum_players, 2,
+#ifdef HALO_PSP
+			/* psp_fixups.py (multiplayer): a game the PSP hosts */
+			PSP_HOST_MAXIMUM_NETWORK_PLAYERS);
+#else
+			MAXIMUM_NETWORK_PLAYER_COUNT);
+#endif"""),
+("""		server->game.maximum_players = MAXIMUM_NETWORK_PLAYER_COUNT;
+		network_game_server_port_settings_apply(server);""",
+ """#ifdef HALO_PSP
+		/* psp_fixups.py (multiplayer): a game the PSP hosts */
+		server->game.maximum_players = PSP_HOST_MAXIMUM_NETWORK_PLAYERS;
+#else
+		server->game.maximum_players = MAXIMUM_NETWORK_PLAYER_COUNT;
+#endif
+		network_game_server_port_settings_apply(server);"""),
+]
+# The host's checks of what clients report (where every player was for the
+# last second, what they carry and threw, what their explosions hit): 674
+# KB at 128 players. Every record here is the host's (network_damage_host_
+# tick, the report checks; a grenade is noted only by the host), every
+# index into them is checked against MAXIMUM_TRACKED_PLAYERS, and the
+# records are this file's own: defined after network_distributed.h, the name
+# sizes them and their checks for a game a PSP hosts. The other files' use
+# of it (a client's records too) keep the session's 128
+FIXES_MULTIPLAYER["port/linux/game/network_damage.c#host"] = [
+("""#include "network_distributed.h"
+
+#include <math.h>
+""",
+ """#include "network_distributed.h"
+
+#include <math.h>
+#ifdef HALO_PSP
+/* psp_fixups.py (multiplayer): this file's records are the host's alone,
+sized for a game the PSP hosts (psp_limits.h); network_distributed.h's
+enum keeps 128 for every other file */
+#define MAXIMUM_TRACKED_PLAYERS PSP_HOST_MAXIMUM_NETWORK_PLAYERS
+#endif
+"""),
+]
+# A client's queue of the host's game updates: 128 updates, each with an
+# action for every player (448 KB at 128 players). The distributed netcode's
+# client takes none of its actions (update_client_dequeue_distributed: its
+# own input and the host's relayed ones) nor its clock (game_time.c ticks a
+# client on its own clock); it only files each update in the window ahead of
+# its tick, and a local game takes each update in the frame it makes it.
+# 32 updates are a second ahead at 30 ticks a second (a power of two: the
+# queue is a ring indexed by the update's number). The campaign build keeps
+# 128: shortening its queue (about 50 KB) would be the campaign's own change
+# The script node table the game makes for itself: 19,001 nodes (371 KB) from
+# the heap, made at start-up, before any map, and kept (hs_allocate). A map
+# whose own table is sound runs from that table (hs_scenario_postprocess); the
+# game's own stands in only before a map and for a map whose script data
+# isn't sound, whose scripts are then turned off (hs_scenario_scripts_disable),
+# so nothing but the console's expressions, which the PSP has none of, takes
+# nodes from it. The tables the code already runs from are any size (the
+# bake's -Y: the nodes in use plus 512). The multiplayer maps have no scripts
+# at all, and Blood Gulch failed to load at the PC's limits for want of the
+# heap this holds (lab run 38075974578). The campaign build is unchanged:
+# the same 351 KB there is the campaign's own decision
+FIXES_MULTIPLAYER["source/hs/hs.c#standin"] = [
+("""	hs_syntax_data = data_new(
+		"script node",
+		MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO,
+		sizeof(struct hs_syntax_node));""",
+ """	hs_syntax_data = data_new(
+		"script node",
+#if defined(HALO_PSP) && defined(PSP_MULTIPLAYER)
+		/* psp_fixups.py (multiplayer): a stand-in's size, not a map's */
+		1024,
+#else
+		MAXIMUM_HS_SYNTAX_NODES_PER_SCENARIO,
+#endif
+		sizeof(struct hs_syntax_node));"""),
+]
+FIXES_MULTIPLAYER["source/game/player_queues_new.c#client"] = [
+("""	MAXIMUM_CLIENT_UPDATES = 128,""",
+ """#if defined(HALO_PSP) && defined(PSP_MULTIPLAYER)
+	/* psp_fixups.py (multiplayer): a second's updates, not four */
+	MAXIMUM_CLIENT_UPDATES = 32,
+#else
+	MAXIMUM_CLIENT_UPDATES = 128,
+#endif"""),
+]
+# mp4: the multiplayer build's own folder on the stick, ms0:/halomp (its
+# settings, init.txt, logs and saves: the data root, psp_paths.h), while
+# the maps stay in the campaign build's folder, ms0:/halo/maps, which both
+# builds read. So the game's d:\maps\ goes there, and the rest of d:\ to
+# this build's folder
+FIXES_MULTIPLAYER["port/linux/src/xbox_files.c#maps"] = [
+((
+"""		cursor += 2;
+	}
+
+	while (*cursor)
+	{
+		char component[256];""",
+"""		cursor += 2;
+	}
+#if defined(HALO_PSP) && defined(PSP_MULTIPLAYER)
+	/* psp_fixups.py (multiplayer): d:\\maps is the campaign build's folder's
+	(psp_paths.h) */
+	{
+		const char *rest = cursor;
+
+		while (*rest == '\\\\' || *rest == '/')
+			rest++;
+		if (!strcmp(resolved, platform_data_root()) && (rest[0] | 0x20) == 'm' && (rest[1] | 0x20) == 'a' &&
+			(rest[2] | 0x20) == 'p' && (rest[3] | 0x20) == 's' && (!rest[4] || rest[4] == '\\\\' || rest[4] == '/'))
+		{
+			snprintf(resolved, sizeof(resolved), "%s", PSP_MAPS_HOME);
+		}
+	}
+#endif
+
+	while (*cursor)
+	{
+		char component[256];""")),
+((
+"""const char *platform_data_root(void)
+{""",
+"""#if defined(HALO_PSP) && defined(PSP_MULTIPLAYER)
+#include "psp_paths.h" /* psp_fixups.py (multiplayer): PSP_MAPS_HOME */
+#endif
+
+const char *platform_data_root(void)
+{""")),
+]
+# ChupathingyCE's per-tick messages, a machine's to each other in one
+# datagram (a batch). The batch's bytes start 2 past a multiple of 4 (after
+# its size), and its header is written there through a pointer: the strict
+# interpreter's first finding in the network test (a 4-byte store at
+# 0x08cf82c2, distributed_batch_flush; docs/build_mp1.md). A message's
+# handlers read some entries through structure pointers too (pickups,
+# inputs, statistics), so each message is read where it starts at a
+# multiple of 8, from a copy if it doesn't
+FIXES_MULTIPLAYER["port/linux/game/network_distributed.c#aligned"] = [
+((
+"""struct distributed_batch
+{
+	word size;
+	byte data[DATAGRAM_MAXIMUM_SIZE];
+};""",
+"""struct distributed_batch
+{
+	word size;
+#ifdef HALO_PSP
+	/* psp_fixups.py (multiplayer): at a multiple of 8 (the PSP faults on a
+	4-byte store at an address that isn't a multiple of 4) */
+	byte data[DATAGRAM_MAXIMUM_SIZE] __attribute__((aligned(8)));
+#else
+	byte data[DATAGRAM_MAXIMUM_SIZE];
+#endif
+};""")),
+((
+"""	struct distributed_message_header header;
+	void const *entries = (byte const *)message + sizeof(header);
+	short index;
+	word entry_size;
+
+	/* (none between games: loading, or in the menus) */
+	if (size < sizeof(header) || !game_in_progress())
+		return;""",
+"""	struct distributed_message_header header;
+	void const *entries = (byte const *)message + sizeof(header);
+	short index;
+	word entry_size;
+#ifdef HALO_PSP
+	/* psp_fixups.py (multiplayer): a message that doesn't start at a
+	multiple of 8, copied there (its handlers read some entries through
+	structure pointers, and the PSP faults on a 4-byte load at an address
+	that isn't a multiple of 4) */
+	word psp_aligned[(sizeof(message_header) + DATAGRAM_MAXIMUM_SIZE + 1) / sizeof(word)] __attribute__((aligned(8)));
+#endif
+
+	/* (none between games: loading, or in the menus) */
+	if (size < sizeof(header) || !game_in_progress())
+		return;
+#ifdef HALO_PSP
+	if (((unsigned long)message & 7) && size <= sizeof(psp_aligned))
+	{
+		csmemcpy(psp_aligned, message, size);
+		message = psp_aligned;
+		entries = (byte const *)message + sizeof(header);
+	}
+#endif""")),
+((
+"""			word buffer[(sizeof(message_header) + DATAGRAM_MAXIMUM_SIZE + 1) / sizeof(word)];
+			word length;""",
+"""#ifdef HALO_PSP
+			/* psp_fixups.py (multiplayer): at a multiple of 8 (above) */
+			word buffer[(sizeof(message_header) + DATAGRAM_MAXIMUM_SIZE + 1) / sizeof(word)] __attribute__((aligned(8)));
+#else
+			word buffer[(sizeof(message_header) + DATAGRAM_MAXIMUM_SIZE + 1) / sizeof(word)];
+#endif
+			word length;""")),
+]
+
+# ---------- network packets: values at any byte offset (mp1 on the PSP)
+# A packet is written one value after another into a byte buffer
+# (data_encoding.c), so a 2-, 4- or 8-byte value can start at any address.
+# The engine swaps each value's bytes in place there, and reads a value back
+# by loading it from the buffer whole. The PSP faults on a 2-, 4- or 8-byte
+# load or store at an address that isn't a multiple of its size (a PC
+# doesn't; nor does the emulator's JIT, which the network tests ran on):
+# mp1's first search for games on hardware stopped in byte_swap_memory, "bad
+# address (load)" at 0x09fbe8a1 (docs/build_mp1.md). Here those bytes move
+# one at a time, which puts the same bytes on the wire. Both builds compile
+# these files; only network play reaches them
+FIXES_PACKET_ALIGNMENT = {}
+FIXES_PACKET_ALIGNMENT["source/memory/byte_swapping.c"] = [
+((
+"""/* ---------- public code */
+
+void byte_swap_memory(""",
+"""/* ---------- public code */
+
+#ifdef HALO_PSP
+/* psp_fixups.py: one value's bytes reversed a byte at a time, at any
+address: the same result as SWAP2, SWAP4 and SWAP8, which load the value
+whole */
+static void psp_reverse_bytes(byte *first, long size)
+{
+	byte *last = first + size - 1;
+
+	while (first < last)
+	{
+		byte kept = *first;
+
+		*first++ = *last;
+		*last-- = kept;
+	}
+}
+#endif
+
+void byte_swap_memory(""")),
+((
+"""		code==_2byte || code==_4byte || code==_8byte);
+
+	switch (code)
+	{""",
+"""		code==_2byte || code==_4byte || code==_8byte);
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py: values at any address (psp_reverse_bytes) */
+		long size = code == _2byte ? 2 : code == _4byte ? 4 : 8;
+		byte *value = memory;
+
+		for (; count > 0; count--, value += size)
+			psp_reverse_bytes(value, size);
+		return;
+	}
+#endif
+	switch (code)
+	{""")),
+# a structure's fields, by its definition (data_encode_structures puts the
+# structure at any offset of the packet)
+((
+"""					unsigned short value = *(unsigned short *)((byte *)data+offset);
+					*(unsigned short *)((byte *)data+offset) = (unsigned short)((value>>8) | (value<<8));""",
+"""#ifdef HALO_PSP
+					/* psp_fixups.py: at any address (psp_reverse_bytes) */
+					psp_reverse_bytes((byte *)data+offset, 2);
+#else
+					unsigned short value = *(unsigned short *)((byte *)data+offset);
+					*(unsigned short *)((byte *)data+offset) = (unsigned short)((value>>8) | (value<<8));
+#endif""")),
+((
+"""					*(unsigned long *)((byte *)data+offset) =
+						SWAP4(*(unsigned long *)((byte *)data+offset));""",
+"""#ifdef HALO_PSP
+					psp_reverse_bytes((byte *)data+offset, 4); /* psp_fixups.py */
+#else
+					*(unsigned long *)((byte *)data+offset) =
+						SWAP4(*(unsigned long *)((byte *)data+offset));
+#endif""")),
+((
+"""					*(unsigned __int64 *)((byte *)data+offset) =
+						SWAP8(*(unsigned __int64 *)((byte *)data+offset));""",
+"""#ifdef HALO_PSP
+					psp_reverse_bytes((byte *)data+offset, 8); /* psp_fixups.py */
+#else
+					*(unsigned __int64 *)((byte *)data+offset) =
+						SWAP8(*(unsigned __int64 *)((byte *)data+offset));
+#endif""")),
+]
+# reading a value back: data_decode_memory returns where it sits in the
+# packet (PSP_UNALIGNED_SHORT and the others: psp_limits.h)
+FIXES_PACKET_ALIGNMENT["source/memory/data_encoding.c"] = [
+((
+"""short data_decode_short(
+	struct data_encoding_state *state)
+{
+	short *value;
+
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? *value : 0;""",
+"""short data_decode_short(
+	struct data_encoding_state *state)
+{
+	short *value;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py: at any address */
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? PSP_UNALIGNED_SHORT(value) : 0;
+#else
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? *value : 0;
+#endif""")),
+((
+"""long data_decode_long(
+	struct data_encoding_state *state)
+{
+	long *value;
+
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? *value : 0;""",
+"""long data_decode_long(
+	struct data_encoding_state *state)
+{
+	long *value;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py: at any address */
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? (long)PSP_UNALIGNED_ULONG(value) : 0;
+#else
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? *value : 0;
+#endif""")),
+((
+"""__int64 data_decode_int64(
+	struct data_encoding_state *state)
+{
+	__int64 *value;
+
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? *value : 0;""",
+"""__int64 data_decode_int64(
+	struct data_encoding_state *state)
+{
+	__int64 *value;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py: at any address */
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? PSP_UNALIGNED_INT64(value) : 0;
+#else
+	return (value = data_decode_memory(state, 1, -sizeof(*value))) ? *value : 0;
+#endif""")),
+]
+
+# ---------- mpb1: internet play's capacities, for a PSP that joins
+# The engine's p2p layer (psp_build.py's INTERNET_UNITS) is sized for a PC
+# that may host 128 machines: its state took 3.1 MB, 2.6 MB of it the
+# streams' buffers (160 x 16 KB), and left the multiplayer build an 832 KB
+# heap. A PSP never hosts (docs/multiplayer_plan.md): it tunnels to one host,
+# through one or two of the game's connections and a few UDP stand-ins. Each
+# limit below is a capacity; nothing on the wire changes
+FIXES_INTERNET = {}
+FIXES_INTERNET["port/linux/src/p2p_internal.h#peers"] = [
+("""	P2P_MAXIMUM_PEERS = 127,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): a joiner tunnels to its host; room for a few more */
+	P2P_MAXIMUM_PEERS = 7,
+#else
+	P2P_MAXIMUM_PEERS = 127,
+#endif
+"""),
+]
+FIXES_INTERNET["port/linux/src/p2p.c#capacity"] = [
+("""	MAXIMUM_PROXIES = 512,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): the host's two or three ports, a few times over */
+	MAXIMUM_PROXIES = 16,
+#else
+	MAXIMUM_PROXIES = 512,
+#endif
+"""),
+("""	MAXIMUM_LISTENERS = 64,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): the game's own few */
+	MAXIMUM_LISTENERS = 8,
+#else
+	MAXIMUM_LISTENERS = 64,
+#endif
+"""),
+("""	MAXIMUM_STREAMS = 160,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): 16 KB each: the game's connection to its host, and a spare */
+	MAXIMUM_STREAMS = 2,
+#else
+	MAXIMUM_STREAMS = 160,
+#endif
+"""),
+]
+# ... and the client's join of a listed game, once its host advertises it
+# through the tunnel (network_game_client_join_invite_host): the engine
+# builds it only with its web game list (HALO_GAME_BROWSER); the PSP's
+# ONLINE GAMES screen (psp_online.c) joins through it the same way
+FIXES_INTERNET["source/networking/network_client_manager.h#invite"] = [
+("""#ifdef HALO_GAME_BROWSER
+/* the advertisement of the game an invite's host advertises (the game
+""",
+ """#if defined(HALO_GAME_BROWSER) || defined(HALO_PSP)
+/* the advertisement of the game an invite's host advertises (the game
+"""),
+]
+FIXES_INTERNET["source/networking/network_client_manager.c#invite"] = [
+("""#ifdef HALO_GAME_BROWSER
+/* the game list's game whose invite this machine joined (the Online Games
+""",
+ """#if defined(HALO_GAME_BROWSER) || defined(HALO_PSP)
+/* the game list's game whose invite this machine joined (the Online Games
+"""),
+]
+# ... but not the joined host's identifier: its record is kept only with
+# the web game list, for joining again once a map is downloaded
+FIXES_INTERNET["source/networking/network_client_manager.c#joinedhost"] = [
+("""void network_game_client_joined_host_identifier(
+	char *text,
+	long size)
+{
+	long index;
+
+	if (size < 13)
+		return;
+	for (index = 0; index < 6; index++)
+		snprintf(text + index * 2, 3, "%02x", network_game_client_joined_host[index]);
+}
+""",
+ """#ifdef HALO_GAME_BROWSER
+void network_game_client_joined_host_identifier(
+	char *text,
+	long size)
+{
+	long index;
+
+	if (size < 13)
+		return;
+	for (index = 0; index < 6; index++)
+		snprintf(text + index * 2, 3, "%02x", network_game_client_joined_host[index]);
+}
+#endif
+"""),
+]
+# ... and the list of downloaded Custom Edition maps (64 KB): the PSP
+# downloads none, and plays only the stock maps
+FIXES_INTERNET["port/linux/game/map_families.c#downloaded"] = [
+("""	MAXIMUM_DOWNLOADED_MAPS = 512,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): no map downloads on the PSP */
+	MAXIMUM_DOWNLOADED_MAPS = 8,
+#else
+	MAXIMUM_DOWNLOADED_MAPS = 512,
+#endif
+"""),
+]
+# the tunnel's thread above the game thread (psp_internet.c says why)
+FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
+("""	(void)unused;
+	pthread_mutex_lock(&p2p_lock);
+#ifndef HALO_ANDROID
+	/* (here: it may wait for a program) */
+""",
+ """	(void)unused;
+#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): above the game thread, which runs
+	seconds of catch-up ticks without waiting (psp_internet.c) */
+	{
+		extern void psp_internet_thread_priority(void);
+		psp_internet_thread_priority();
+	}
+#endif
+	pthread_mutex_lock(&p2p_lock);
+#ifndef HALO_ANDROID
+	/* (here: it may wait for a program) */
+"""),
+]
+# ... and the stand-ins by local port: a table of every port (128 KB) to
+# find one of 16, which a search of the 16 does as well
+FIXES_INTERNET["port/linux/src/p2p.c#proxyports"] = [
+("""/* the proxy (its index + 1) with each local port (all of theirs are on
+p2p.local_address) */
+static unsigned short proxy_by_port[65536];
+""",
+ """/* the proxy (its index + 1) with each local port (all of theirs are on
+p2p.local_address) */
+#ifdef HALO_PSP
+/* psp_fixups.py (internet play): its 16 stand-ins searched, for the 128 KB
+table of every port */
+static int psp_proxy_at_port(unsigned short port)
+{
+	int index;
+
+	for (index = 0; index < MAXIMUM_PROXIES; index++)
+	{
+		if (p2p.proxies[index].socket >= 0 && p2p.proxies[index].local_port == port)
+			return index + 1;
+	}
+	return 0;
+}
+#else
+static unsigned short proxy_by_port[65536];
+#endif
+"""),
+("""	proxy_by_port[proxy->local_port] = 0;
+""",
+ """#ifndef HALO_PSP
+	proxy_by_port[proxy->local_port] = 0;
+#endif
+"""),
+("""	proxy_by_port[free_proxy->local_port] = (unsigned short)(free_proxy - p2p.proxies + 1);
+""",
+ """#ifndef HALO_PSP
+	proxy_by_port[free_proxy->local_port] = (unsigned short)(free_proxy - p2p.proxies + 1);
+#endif
+"""),
+("""	else if (proxy_by_port[*port])
+	{
+		struct proxy const *proxy = &p2p.proxies[proxy_by_port[*port] - 1];
+""",
+ """#ifdef HALO_PSP
+	else if (psp_proxy_at_port(*port))
+	{
+		struct proxy const *proxy = &p2p.proxies[psp_proxy_at_port(*port) - 1];
+#else
+	else if (proxy_by_port[*port])
+	{
+		struct proxy const *proxy = &p2p.proxies[proxy_by_port[*port] - 1];
+#endif
+"""),
+]
+# ... and two brokers at once, not four: each is a TCP connection whose
+# buffers come from the stack's one pool (psp_net.c's NET_POOL_KB). The
+# first two are the brokers' file's own (opence.milenko.org, broker.emqx.io)
+FIXES_INTERNET["port/linux/src/p2p_signal.c#brokers"] = [
+("""	MAXIMUM_BROKERS = 4,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): two TCP connections from the stack's one pool */
+	MAXIMUM_BROKERS = 2,
+#else
+	MAXIMUM_BROKERS = 4,
+#endif
+"""),
+]
+# ... and ONLINE GAMES' description in the Multiplayer menu: the PSP's
+# screen lists internet play's public games, not the web game list
+FIXES_INTERNET["source/interface/ui_widget.c#onlinegames"] = [
+("""			string = L"Find and join games hosted \\r\\nover the internet, on the \\r\\ncommunity's game list.";
+""",
+ """#ifdef HALO_PSP
+			/* psp_fixups.py (internet play): the PSP's screen (psp_online.c) */
+			string = L"Find and join public games \\r\\nhosted over the internet.";
+#else
+			string = L"Find and join games hosted \\r\\nover the internet, on the \\r\\ncommunity's game list.";
+#endif
+"""),
+]
+# ... and the ONLINE GAMES screen's hands-free test (keep words onlinelist,
+# onlinetest: psp_online.c), driven from the frame hook the engine's own
+# scripted network tests use
+FIXES_INTERNET["port/linux/game/network_test.c#online"] = [
+("""	real seconds)
+{
+	if (!network_test.checked)
+		network_test_read_settings();
+""",
+ """	real seconds)
+{
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (internet play): the ONLINE GAMES screen's test */
+		extern void psp_online_test_update(boolean main_menu_loaded);
+
+		psp_online_test_update(main_menu_loaded);
+	}
+#endif
+	if (!network_test.checked)
+		network_test_read_settings();
+"""),
+]
+# mpb2: what internet play is doing, for the log. mpb1's first test on the
+# PSP-1000 listed no games and logged nothing between "only the first 2
+# brokers are used" and "0 public games": a broker that never connects, a
+# connection that never finishes MQTT's handshake, and listings that arrive
+# and are turned away all looked the same. psp_online.c logs these every
+# 10 s while ONLINE GAMES is up
+FIXES_INTERNET["port/linux/src/p2p_signal.c#report"] = [
+("""int p2p_signal_connected(void)
+{
+	int index;
+
+	for (index = 0; index < signalling.broker_count; index++)
+	{
+		if (signalling.brokers[index].state == _broker_ready)
+			return 1;
+	}
+	return 0;
+}
+""",
+ """int p2p_signal_connected(void)
+{
+	int index;
+
+	for (index = 0; index < signalling.broker_count; index++)
+	{
+		if (signalling.brokers[index].state == _broker_ready)
+			return 1;
+	}
+	return 0;
+}
+#ifdef HALO_PSP
+/* psp_fixups.py (internet play): each broker's state and failures so far,
+for the log */
+void psp_signal_report(char *text, int size)
+{
+	static const char *const states[] = { "idle", "connecting", "awaiting MQTT's answer", "ready" };
+	int index, used = 0;
+
+	text[0] = 0;
+	pthread_mutex_lock(&p2p_lock);
+	for (index = 0; index < signalling.broker_count && used < size - 1; index++)
+	{
+		struct broker const *broker = &signalling.brokers[index];
+
+		used += snprintf(text + used, (size_t)(size - used), "%s%s %s, %d failed", index ? "; " : "", broker->host,
+			broker->state >= 0 && broker->state < 4 ? states[broker->state] : "?", broker->failures);
+	}
+	if (!signalling.broker_count)
+		snprintf(text, (size_t)size, "no brokers (internet play not started)");
+	pthread_mutex_unlock(&p2p_lock);
+}
+#endif
+"""),
+]
+# ... and the listings the lobby heard, and why each one turned away was
+# turned away; and the PSP's clock. A listing carries its host's Unix time,
+# and one more than 10 minutes (kept by a broker) or an hour (published
+# live) from this machine's clock is dropped. A PSP's clock is whatever its
+# owner set (or 1 January after a flat clock battery). When no listing has
+# yet been in time and three live ones whose signatures hold agree on an
+# offset from the PSP's clock, that offset is taken (logged) and the windows
+# apply to it. One host with a wrong clock can't move it: in the emulator a
+# single host three hours off did, before the three were required (lab
+# sierra-netplay 38861729099)
+FIXES_INTERNET["port/linux/src/p2p_lobby.c#clock"] = [
+("""		memmove(lobby.queue, lobby.queue + 1, sizeof(*lobby.queue) * (size_t)(--lobby.queue_count));
+		if (!listing_read(queued.payload, queued.size, &listing) || listing.version < delta_legacy_minimum() ||
+			listing.version > delta_legacy_maximum() ||
+			!signing_key_hash(listing.key, key_hash) || memcmp(key_hash, queued.key_hash, P2P_KEY_HASH_SIZE))
+		{
+			continue;
+		}
+		/* a slot's retained copy: only one of about now (a host that died
+		left it, and nothing cleared it); a live one: not one long gone,
+		published again by someone who kept it */
+		{
+			long difference = (long)(listing.time - (unsigned long)time(NULL));
+			long window = queued.retained ? RETAINED_WINDOW : LIVE_WINDOW;
+
+			if (difference > window || difference < -window)
+				continue;
+		}
+		/* (the work, without the lock: the game's threads need not wait) */
+		pthread_mutex_unlock(&p2p_lock);
+		good = listing_signed(queued.payload, &listing);
+		pthread_mutex_lock(&p2p_lock);
+		if (good && lobby.browsing)
+			listing_take(&queued, &listing);
+""",
+ """		memmove(lobby.queue, lobby.queue + 1, sizeof(*lobby.queue) * (size_t)(--lobby.queue_count));
+#ifdef HALO_PSP
+		/* psp_fixups.py (internet play): each turned away is counted by its
+		reason, and the PSP's clock is set from the hosts' (above) */
+		psp_lobby.heard++;
+		if (!listing_read(queued.payload, queued.size, &listing))
+		{
+			psp_lobby.unreadable++;
+			continue;
+		}
+		if (listing.version < delta_legacy_minimum() || listing.version > delta_legacy_maximum())
+		{
+			psp_lobby.other_version++;
+			psp_lobby.last_version = listing.version;
+			continue;
+		}
+		if (!signing_key_hash(listing.key, key_hash) || memcmp(key_hash, queued.key_hash, P2P_KEY_HASH_SIZE))
+		{
+			psp_lobby.bad_key++;
+			continue;
+		}
+		{
+			long difference = (long)(listing.time - (unsigned long)time(NULL)) - psp_lobby.clock_offset;
+			long window = queued.retained ? RETAINED_WINDOW : LIVE_WINDOW;
+
+			if (difference > window || difference < -window)
+			{
+				psp_lobby.last_difference = difference;
+				if (queued.retained || psp_lobby.clock_set)
+				{
+					psp_lobby.off_clock++;
+					continue;
+				}
+				pthread_mutex_unlock(&p2p_lock);
+				good = listing_signed(queued.payload, &listing);
+				pthread_mutex_lock(&p2p_lock);
+				if (!good)
+				{
+					psp_lobby.bad_signature++;
+					continue;
+				}
+				/* (one host's clock can be wrong: the PSP's is taken as wrong only
+				when no listing has yet been in time, and three live ones agree) */
+				if (psp_lobby.candidates && labs(difference - psp_lobby.candidate) <= LIVE_WINDOW)
+					psp_lobby.candidates++;
+				else
+				{
+					psp_lobby.candidate = difference;
+					psp_lobby.candidates = 1;
+				}
+				if (psp_lobby.taken || psp_lobby.candidates < 3)
+				{
+					psp_lobby.off_clock++;
+					continue;
+				}
+				psp_lobby.clock_offset += psp_lobby.candidate;
+				psp_lobby.clock_set = 1;
+				platform_log("Internet play: this PSP's clock is off the hosts' by %+ld s; the listings' times are read with that",
+					-psp_lobby.clock_offset);
+				if (labs(difference - psp_lobby.candidate) <= window && lobby.browsing)
+				{
+					listing_take(&queued, &listing);
+					psp_lobby.taken++;
+				}
+				continue;
+			}
+		}
+		pthread_mutex_unlock(&p2p_lock);
+		good = listing_signed(queued.payload, &listing);
+		pthread_mutex_lock(&p2p_lock);
+		if (!good)
+			psp_lobby.bad_signature++;
+		else if (lobby.browsing)
+		{
+			listing_take(&queued, &listing);
+			psp_lobby.taken++;
+		}
+#else
+		if (!listing_read(queued.payload, queued.size, &listing) || listing.version < delta_legacy_minimum() ||
+			listing.version > delta_legacy_maximum() ||
+			!signing_key_hash(listing.key, key_hash) || memcmp(key_hash, queued.key_hash, P2P_KEY_HASH_SIZE))
+		{
+			continue;
+		}
+		/* a slot's retained copy: only one of about now (a host that died
+		left it, and nothing cleared it); a live one: not one long gone,
+		published again by someone who kept it */
+		{
+			long difference = (long)(listing.time - (unsigned long)time(NULL));
+			long window = queued.retained ? RETAINED_WINDOW : LIVE_WINDOW;
+
+			if (difference > window || difference < -window)
+				continue;
+		}
+		/* (the work, without the lock: the game's threads need not wait) */
+		pthread_mutex_unlock(&p2p_lock);
+		good = listing_signed(queued.payload, &listing);
+		pthread_mutex_lock(&p2p_lock);
+		if (good && lobby.browsing)
+			listing_take(&queued, &listing);
+#endif
+"""),
+("""static void update_browsing(void)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (internet play): the listings heard and why any were
+turned away, and the PSP's clock against the hosts' */
+static struct
+{
+	unsigned long heard, unreadable, other_version, bad_key, off_clock, bad_signature, taken;
+	int last_version;
+	long last_difference;
+	long clock_offset;
+	int clock_set;
+	/* the offset three live listings must agree on first */
+	long candidate;
+	int candidates;
+} psp_lobby;
+
+void psp_lobby_report(char *text, int size)
+{
+	pthread_mutex_lock(&p2p_lock);
+	snprintf(text, (size_t)size,
+		"%s; heard %lu, shown %lu; turned away: unreadable %lu, other version %lu (last %d), wrong key %lu, "
+		"off the clock %lu (last %+ld s), bad signature %lu; clock %s%ld s",
+		lobby.browsing ? "browsing" : "not browsing", psp_lobby.heard, psp_lobby.taken, psp_lobby.unreadable,
+		psp_lobby.other_version, psp_lobby.last_version, psp_lobby.bad_key, psp_lobby.off_clock,
+		psp_lobby.last_difference, psp_lobby.bad_signature, psp_lobby.clock_set ? "set from the hosts, " : "as is, ",
+		psp_lobby.clock_offset);
+	pthread_mutex_unlock(&p2p_lock);
+}
+#endif
+
+static void update_browsing(void)
+{"""),
+]
+FIXES_INTERNET["port/linux/src/p2p_lobby.c#capacity"] = [
+("""	MAXIMUM_GAMES = 256,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): the most the server browser shows */
+	MAXIMUM_GAMES = 64,
+#else
+	MAXIMUM_GAMES = 256,
+#endif
+"""),
+("""	MAXIMUM_TOMBSTONES = 256,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): withdrawn listings remembered */
+	MAXIMUM_TOMBSTONES = 64,
+#else
+	MAXIMUM_TOMBSTONES = 256,
+#endif
+"""),
+]
+FIXES_INTERNET["port/linux/src/p2p_signal.c#capacity"] = [
+("""	MAXIMUM_ASKERS = 256,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): joiners not yet proven: a host's concern */
+	MAXIMUM_ASKERS = 16,
+#else
+	MAXIMUM_ASKERS = 256,
+#endif
+"""),
+("""	MAXIMUM_USED_REQUESTS = 1024,
+""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (internet play): requests answered: a host's concern */
+	MAXIMUM_USED_REQUESTS = 64,
+#else
+	MAXIMUM_USED_REQUESTS = 1024,
+#endif
+"""),
+]
+
 # ---------- build 113: the flip prompt watched, and a fixture for it
 # (psp_watch.c; b113_candidates.md #10). "flipwatch" logs the prompt's four
 # conditions as they change for each vehicle the player's search looks at,
@@ -19520,7 +20432,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

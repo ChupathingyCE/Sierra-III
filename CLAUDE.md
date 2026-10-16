@@ -99,6 +99,7 @@ To quit the game: HOME → ARK-4 Kommander → Exit.
 - `docs/` holds every write-up about the port: build notes, reviews, hardware reports, plans. Start with `rebuild_plan.md`, `optimization_ranking.md`, `chupa_rebase.md` and `psp_hardware_reference.md`.
 - `docs/research/` holds the research behind the levers (the B-series source notes, the engine read-throughs). Cite it from a lever's doc rather than restating it.
 - **GitHub is the home; the claude.ai project ("PSP Game Development") is the summary.** Its `living/` docs (`STATE`, `RULES`, `ARCHITECTURE`, `HARDWARE`, `TOOLCHAIN`, `BENCHMARKS`) say where things stand and point here for detail. A new write-up goes in `docs/` first; the project gets a copy only when it should be read in chat.
+- Multiplayer: `multiplayer_setup.md` is the step-by-step (hotspot, ARK-4, server, stick, troubleshooting); `psp_wifi_hotspot.md` and `multiplayer_plan.md` are the reasons behind it.
 
 ## Slated to move to Sheepdog-01/Sheep-PSP-Tools
 
