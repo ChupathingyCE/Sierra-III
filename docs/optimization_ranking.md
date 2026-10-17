@@ -491,6 +491,7 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - `readerslow`, `nomeaudio`.
 - build 118: `verifyvectors` (X10, the vector checks), `tcutfull` (T1, the see-through cut's sphere test), `restlesscheck` (the restless back-off: every sleep candidate checked every tick).
 - build 119: `nearclusterfull` (NC, the near corner loop's runs of 16), `skinaxisloop` (SU, the corner sums' axes written out), `rigidrunsfull` (NR, the rigid near path's runs), `surfaceqsort` (SS, the light pass's surface bits), `vblankslow` (the clock fix: the vertical blank thread back below the game thread).
+- build 136: `wakeonwriteoff` (WT, wake-on-write: every sleeping object checksummed every tick again, not only those a writer marked; on by default in local games only, `wakeonwrite` puts it on in networked games too; `docs/wake_on_write.md`).
 
 Opt-in look calls (build 122, off, for Sheepdog01's A/B; `docs/review_b122_look.md`): `seethroughvfpu` (multi-node see-through parts placed on the VFPU), `lightmerge` (the light pass's bands drawn as one, each corner lifted), `foliagetwopass` (alpha-tested model parts' soft second pass), `sceneryhalf` (B2, build 107).
 
@@ -498,7 +499,7 @@ Opt-in speed calls (the cut stream, off, for Sheepdog01's A/B; `docs/review_cuts
 
 Pacing word: `novblankthrottle` turns the throttle off. Frames get faster, but the warthog bounces again.
 
-Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118), `nearclustercheck`, `skinaxischeck`, `rigidrunscheck`, `surfacesortcheck` (build 119), `meslantcheck`, `meringtest` (ME phase 1, with the opt-in `meslant`).
+Check words: `checksumcheck`, `spherecheck`, `unlinkcheck`, `nearcheck`, `skinvfpucheck`, `tcutcheck` (build 118), `nearclustercheck`, `skinaxischeck`, `rigidrunscheck`, `surfacesortcheck` (build 119), `meslantcheck`, `meringtest` (ME phase 1, with the opt-in `meslant`), `wakecheck` (build 136: every sleeper summed anyway, and an unmarked change logged with the words that changed).
 
 Instrument word: `probes` (build 119) splits the hot loops from their calls on the PSP: the near corner loop and bone slots, the level's passes by piece, the light draw before, in and after its triangle loop, the decal calls by piece. Off by default: each reading costs ~0.6 us.
 

@@ -19517,11 +19517,14 @@ SHELF = os.environ.get("PSP_SHELF", "") == "1"
 
 
 # ---------- FIXES_WAKE: sleepers woken by writes (lever WT; docs/wake_on_write.md)
-# "wakeonwrite": a sleeper is checksummed only when something has marked it
-# (psp_wake) since its last check: the functions that change an object's
-# data from outside its own update. "wakecheck": every sleeper checksummed as
-# before, and one that changed unmarked logged (a writer the list misses).
-# Off: nothing changes. Each hook marks the object and the objects above it
+# On by default in a local game: a sleeper is checksummed only when something
+# has marked it (psp_wake) since its last check: the functions that change an
+# object's data from outside its own update. Not in a networked game unless
+# "wakeonwrite" asks: the network's own writes weren't part of wakecheck's
+# proof. "wakeonwriteoff": every sleeper summed every tick, as before.
+# "wakecheck": every sleeper summed anyway, local or networked, and one that
+# changed unmarked logged (a writer the list misses). Both win over the off
+# word. Each hook marks the object and the objects above it
 # (the checksum covers a family). Devices are left to the checksum: their
 # groups change without touching them
 FIXES_WAKE = {}
@@ -19531,7 +19534,7 @@ FIXES_WAKE["source/objects/objects.c#wake"] = [
 """, """static struct { short identifier; signed char quiet; unsigned char ground; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
 /* psp_fixups.py (FIXES_WAKE): marked since the last check (psp_wake) */
 static unsigned char psp_wake_marked[MAXIMUM_OBJECTS_PER_MAP];
-static int psp_wake_on = -1, psp_wake_check = 0;
+static int psp_wake_on = -1, psp_wake_check = 0; /* on: 0 off, 1 in local games, 2 networked too */
 long psp_wake_skipped, psp_wake_checked, psp_wake_misses;
 /* wakecheck: each sleeper's bytes as last seen unchanged, so that a miss can
 name the words a missed writer changed (and from them, the writer) */
@@ -19605,8 +19608,8 @@ void psp_wake(long object_index)
 """),
 ("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
 {""", """/* psp_fixups.py (FIXES_WAKE): a sleeper nothing has marked keeps the
-checksum it slept with (wakeonwrite); a marked one, an awake one or a device
-is summed as before */
+checksum it slept with; a marked one, an awake one, a device, or any in a
+networked game (unless asked) is summed as before */
 static unsigned long psp_wake_family_checksum(struct object_header_datum const *header, short absolute_index)
 {
 	struct object_datum const *object = header->datum;
@@ -19616,7 +19619,7 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 	if (psp_wake_on < 0)
 	{
 		psp_wake_check = psp_keep("wakecheck") != 0;
-		psp_wake_on = psp_wake_check || psp_keep("wakeonwrite");
+		psp_wake_on = (psp_wake_check || psp_keep("wakeonwrite")) ? 2 : !psp_keep("wakeonwriteoff");
 		if (psp_wake_check)
 		{
 			psp_wake_copies = MAXIMUM_OBJECTS_PER_MAP;
@@ -19632,7 +19635,8 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 	}
 	psp_wake_marked[absolute_index] = 0;
 	if (!psp_wake_on || marked || psp_sleep[absolute_index].identifier != header->identifier ||
-		psp_sleep[absolute_index].quiet < 2 || header->type == _object_type_machine || header->type == _object_type_control)
+		psp_sleep[absolute_index].quiet < 2 || header->type == _object_type_machine || header->type == _object_type_control ||
+		(psp_wake_on == 1 && game_connection() != _game_connection_local))
 		return psp_family_checksum(header);
 	if (!psp_wake_check)
 	{
