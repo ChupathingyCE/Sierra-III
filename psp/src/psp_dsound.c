@@ -449,17 +449,43 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 	stream->current_right = target_right;
 	if (!target_left && !target_right && !left && !right)
 	{
-		/* silent: just advance. Build 89: not past the end of what's queued
-		(a silent voice that had run dry kept counting, so the start of what
-		the game queued next was skipped) */
+		/* silent: just advance, and never past the end of what's queued.
+		A voice that runs out inside the block stops at the end, as a heard
+		one does (not counted as a gap: nothing was heard): an overshoot left in frame would be
+		played off the start of the packet the game queues next (finished
+		packets wait for the game to collect them, so the queue doesn't look
+		empty and the position isn't reset) */
 		unsigned long long advance;
+		unsigned long position, queued = 0;
 
 		if (!current_packet(stream))
 			return 0;
-		advance = (unsigned long long)step * frames + stream->fraction;
+		for (position = 0; position < stream->packet_count; position++)
+		{
+			const struct voice_packet *candidate = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
 
-		stream->frame += (unsigned long)(advance >> 16);
-		stream->fraction = (unsigned long)(advance & 0xFFFF);
+			if (!candidate->finished)
+				queued += candidate->frames;
+		}
+		queued -= stream->frame;
+		advance = (unsigned long long)step * frames + stream->fraction;
+		if ((advance >> 16) < queued)
+		{
+			stream->frame += (unsigned long)(advance >> 16);
+			stream->fraction = (unsigned long)(advance & 0xFFFF);
+			stream->mixed_frames += frames;
+		}
+		else
+		{
+			unsigned long long reach = ((unsigned long long)queued << 16) - stream->fraction;
+			unsigned long played = (unsigned long)((reach + step - 1) / step);
+
+			if (played > frames)
+				played = frames;
+			stream->frame += queued;
+			stream->fraction = 0;
+			stream->mixed_frames += played;
+		}
 		current_packet(stream);
 		return 0;
 	}

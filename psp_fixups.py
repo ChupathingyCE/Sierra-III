@@ -23003,6 +23003,35 @@ byte compressed_monk_tone[18396]=
 			sizeof(compressed_monk_tone));
 #endif"""),
 ]
+# A full sound cache wrote the Xbox's debug dump (d:\stabbed.txt: the scenario,
+# the players and every page run, several hundred lines) to the Memory Stick in
+# the middle of a frame, at most once every 10 s (7 times in one b30 run). The
+# dump only reads; the failure itself stays in the log (FIXES_113's "sound
+# cache: no room" lines) and the 10 s gate is kept
+FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
+("""		lruv_debug_to_file(
+			"d:\\\\stabbed.txt",
+#ifdef HALO_PSP
+			tag_get_name(sound->runtime_tag_index), /* psp_fixups.py (build 108) */
+#else
+			sound->name,
+#endif
+			sound->samples.size,
+			xbox_sound_cache_globals.cache,
+			scenario_debug_to_file,
+			cache_block_get_sound_permutation_name);
+""",
+ """#ifndef HALO_PSP
+		lruv_debug_to_file(
+			"d:\\\\stabbed.txt",
+			sound->name,
+			sound->samples.size,
+			xbox_sound_cache_globals.cache,
+			scenario_debug_to_file,
+			cache_block_get_sound_permutation_name);
+#endif
+"""),
+]
 # The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
 # packets (about 743 ms) up at interrupt time, the port once a frame, so a
 # frame longer than that left long sounds silent. The queue's depth comes from
