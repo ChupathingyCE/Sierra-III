@@ -1,4 +1,4 @@
-# Review: the self-illumination glow maps (branch `glowmaps`)
+# Review: the self-illumination glow maps and the main menu showcase (branch `glowmaps`)
 
 Item 1 of `main_menu_restoration.md`: the main menu's white band across the ring, and every self-illuminated model part drawn in its flat colour. A restoration, so on by default; keep word **`glowflat`** draws the old pass. Labels: [M] PSP, [E] emulator, [D] code or data, [U] inference.
 
@@ -42,6 +42,23 @@ Item 1 of `main_menu_restoration.md`: the main menu's white band across the ring
 - Where that happened, a plain mask left the base without its detail (too bright, under a darkening detail map), and an inverse mask put the detail on in full.
 - Now `channel_at` resizes the one channel it needs, for the detail mask and the glow maps alike. It's a restoration at no frame cost (the bake only), so it is on by default. `texpack.py --premultiplied-masks` bakes the masks as before.
 - The bake's log names each shader the fix changed, with the share of its texels (`detail mask read on its own for …`), and a total (`detail masks: N shaders`).
+
+## The main menu as the hardware's showcase (Sheepdog01, 2026-10-16)
+
+The rule (Sierra-III `CLAUDE.md`): ui.map is a high-fidelity showcase, exempt from the frame-time limits on restorations, as long as nothing it does costs the other maps. So everything below takes effect on ui.map alone, and **`noshowcase`** turns all of it off.
+
+- **Its own pack, `ui_showcase.ptex`** (`texpack.py --showcase`; `bake.py` writes it beside `ui.ptex` for ui only):
+  - every map at its own size, up to the GE's 512 a side (no halving, no 128 px object cap, no 16-colour downgrade);
+  - objects, sky and level maps in **32-bit colour** (`GU_PSM_8888`, no palette), their levels swizzled as the 8-bit ones are. The glow maps and the detail-folded bases too.
+  - Kept on palettes: multipurpose maps (the change colour's mask reads their palette), lightmaps (the object lighting samples them), the HUD and menu sheets (meters), detail maps (the detail pass's grey). Their size still rises to their own.
+  - The bake's log lists every 32-bit texture with its size (`showcase: …`).
+- **`psp_tex.c`**: a pack candidate before the others, `<map>_showcase.ptex`, tried only when the map is `ui` and `noshowcase` isn't kept. A stick without it falls back to `ui.ptex`.
+  - `psp_tex_bind` draws a texture in its own colours: no palette loaded, the buffer width in pixels from 2 or 4 bytes a texel (`DIRECT`, `TEXEL_BYTES`).
+  - The palette readers (`psp_tex_palette`, `psp_tex_palette16`, `psp_tex_average`) pass such a texture by (its `clut` byte is 0xFF), so the meters, masks and the flashlight's average fall back as they do for a texture with no palette of the kind they want. The lightmap samplers already took only 8- and 4-bit textures.
+- **`psp_platform.c`**: `psp_showcase_map`, set as each map opens (ui and not `noshowcase`).
+- **`psp_fixups.py`** (`render_objects.c#lod`): on the showcase map every model takes its most detailed level, as the game already does for a cinematic's stars (`REAL_MAX`).
+
+Not yet: a 32-bit frame buffer (the screen is 16-bit everywhere; the space backdrop's gradients band), the hull's detail pass, the reflection pass.
 
 ## Checks
 

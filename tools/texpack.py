@@ -8,13 +8,14 @@ game finds a texture by the address of its bitmap_data in the tag window,
 which is fixed for a map built for the PSP (invader-build -X 0x09600000).
 
 usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means] [--no-glow-maps]
-       [--premultiplied-masks]
+       [--premultiplied-masks] [--showcase]
 
 File layout (little endian):
   header: 'PTX1', u32 count, u32 directory size
   directory, sorted by key: count x { u32 key (bitmap_data address),
-    u16 width, u16 height, u8 levels, u8 psm (5 = T8), u8 clut (0 = 5650,
-    3 = 8888), u8 flags (1 = has alpha), u32 offset, u32 size }
+    u16 width, u16 height, u8 levels, u8 psm (5 = T8, 4 = T4; 3 = 8888 in
+    its own colours, --showcase), u8 clut (0 = 5650, 3 = 8888; 0xFF none),
+    u8 flags (1 = has alpha), u32 offset, u32 size }
   tints, right after the directory: 'TNT1', u32 count, then count x
     { u32 shader tag address, u32 tint (ABGR) }, sorted by address: the
     see-through shaders' tints for the one map the GE draws of each
@@ -484,7 +485,30 @@ def alpha_tested_bitmaps(m, d):
     return names
 
 
-def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None):
+SHOWCASE = False    # --showcase: the main menu's pack at the most the GE can take
+# the classes a showcase pack keeps in their own colours; the rest keep
+# their palettes, which the runtime reads (meters, the change colour's mask,
+# the lightmaps' samples, the detail pass's grey)
+DIRECT_CLASSES = ('objects (soso)', 'sky', 'level (senv)')
+
+
+def direct_levels(small, tw, th, levels_wanted):
+    """a texture in its own colours, 32 bits a texel (GU_PSM_8888: bytes
+    r g b a), its levels swizzled as the T8 ones are, 16-byte rows"""
+    levels, w, h, img = [], tw, th, small
+    while len(levels) < levels_wanted:
+        row, rows = level_bytes(w * 4, h)
+        padded = np.zeros((rows, row), np.uint8)
+        padded[:h, :w * 4] = img.reshape(h, w * 4)
+        levels.append(swizzle_psp(padded.tobytes(), row, rows))
+        if w <= 8 or h <= 8:
+            break
+        w, h = max(1, w // 2), max(1, h // 2)
+        img = downscale(img, w, h)
+    return levels
+
+
+def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -498,6 +522,9 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     if cls == 'objects (soso)' and '\\fp\\' not in b['tag']:
         limit = OBJECT_SIDE
     if FULL_DETAIL and act == 'clut' and full_detail(b['tag']):
+        tw, th, limit = b['w'], b['h'], 512
+    # the showcase: every map at its own size, up to the GE's 512 a side
+    if SHOWCASE and act == 'clut' and cls != 'lightmap':
         tw, th, limit = b['w'], b['h'], 512
     while cls != 'lightmap' and max(tw, th) > limit:
         tw, th = max(1, tw // 2), max(1, th // 2)
@@ -527,6 +554,14 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     # the alpha (the shape), as the HUD's (psp_ge.c, meter_palette), and an
     # ordinary palette's entries are averages of both (b113_candidates.md #16)
     grid = (cls == 'ui/hud' and grey_meter(small)) or meter
+    if SHOWCASE and own_colours and cls in DIRECT_CLASSES and not grid and not own_levels:
+        dropped = 0
+        while (b['w'] >> dropped) > tw and dropped < 12:
+            dropped += 1
+        levels = direct_levels(small, tw, th, min(8, max(1, b['mips'] + 1 - dropped)))
+        # clut 0xFF: no palette, so the runtime's palette reads pass it by
+        return dict(w=tw, h=th, levels=len(levels), clut=0xFF, alpha=bool(small[:, :, 3].min() < 255),
+                    data=b''.join(levels), psm=3)
     if grid:
         grid_off = grid_offset(small)
         idx, pal, alpha = grid_index(small, grid_off), grid_palette(grid_off), True
@@ -626,9 +661,13 @@ def main():
                     help='no glow maps: the self-illumination pass adds its colour by the mask alone')
     ap.add_argument('--premultiplied-masks', action='store_true',
                     help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
+    ap.add_argument('--showcase', action='store_true',
+                    help='the main menu\'s pack: every map at its own size up to 512, objects, sky and level maps '
+                         'in 32-bit colour (ui.map; the levels never)')
     a = ap.parse_args()
-    global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS
+    global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS, SHOWCASE
     PREMULTIPLIED_MASKS = a.premultiplied_masks
+    SHOWCASE = a.showcase
     HUD_CLUT4 = a.hud_clut4
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
@@ -671,7 +710,9 @@ def main():
         tag_roles = roles.get(b['tag'], ())
         full_hud = not tag_roles or any('splitscreen' not in role for role in tag_roles)
         meter = b['tag'] in meter_maps
-        r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter)
+        # a multipurpose map's palette is read for the change colour's mask
+        own_colours = not any('multipurpose' in role for role in tag_roles)
+        r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter, own_colours=own_colours)
         if r is None:
             skipped[cls] = skipped.get(cls, 0) + 1
             continue
@@ -679,7 +720,8 @@ def main():
         r['name'] = b['tag']
         entries.append(r)
         if b['address'] in mlooks:
-            v = bake_one(m, b, cls, looks.get(b['address']), mlooks[b['address']], full_hud=full_hud, meter=meter)
+            v = bake_one(m, b, cls, looks.get(b['address']), mlooks[b['address']], full_hud=full_hud, meter=meter,
+                         own_colours=own_colours)
             if v is not None:
                 v['key'] = b['address'] | 1
                 v['name'] = b['tag'] + ' (with its detail map)'
@@ -772,6 +814,13 @@ def main():
         out += b'\0'
     out += blob
     open(a.out, 'wb').write(out)
+    if SHOWCASE:
+        own = [e for e in entries if e['psm'] == 3]
+        for e in sorted(own, key=lambda e: -len(e['data'])):
+            print('showcase: %s, %dx%d in 32-bit colour, %d levels, %d bytes' % (
+                e['name'], e['w'], e['h'], e['levels'], len(e['data'])), file=sys.stderr)
+        print('showcase: %d textures in 32-bit colour (%d bytes), every map at its own size up to 512' % (
+            len(own), sum(len(d) for d in {id(e['data']): e['data'] for e in own}.values())), file=sys.stderr)
     print('%s: %d textures, %d bytes; skipped %s' % (a.out, len(entries), len(out), skipped))
 
 

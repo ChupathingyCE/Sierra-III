@@ -1769,9 +1769,15 @@ menu on any campaign map. The map's name comes from the cache file's
 header as it opens (psp_map_opened, psp_fixups.py) */
 static char current_map[32];
 
+/* the main menu (ui.map) is the hardware's showcase (CLAUDE.md): the switches
+that raise its quality read this, so they never reach a level. "noshowcase"
+draws the menu as the levels are drawn */
+int psp_showcase_map = 0;
+
 void psp_map_opened(const char *name)
 {
 	snprintf(current_map, sizeof(current_map), "%s", name ? name : "");
+	psp_showcase_map = !strcmp(current_map, "ui") && !psp_keep("noshowcase");
 }
 
 static int map_on_stick(const char *name)

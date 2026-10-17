@@ -3479,7 +3479,7 @@ that really are double keep the double functions. */
 ],
 "source/render/render_objects.c#lod": [
 ("\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}",
- "#ifdef HALO_PSP\n\t/* the game measures pixels on a 480-line screen; the PSP's has 272, so\n\tmodels pick the level of detail Bungie's thresholds give at the size they\n\treally appear (build 19; fulllod in keep.txt turns it off; psp_fixups.py) */\n\tif (!PSP_KEEP_ONCE(\"fulllod\"))\n\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n#endif\n\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}"),
+ "#ifdef HALO_PSP\n\t/* the main menu is the hardware's showcase (CLAUDE.md): its models at\n\ttheir most detailed, as the game gives a cinematic's stars (above) */\n\t{\n\t\textern int psp_showcase_map;\n\n\t\tif (psp_showcase_map)\n\t\t\treturn REAL_MAX;\n\t}\n\t/* the game measures pixels on a 480-line screen; the PSP's has 272, so\n\tmodels pick the level of detail Bungie's thresholds give at the size they\n\treally appear (build 19; fulllod in keep.txt turns it off; psp_fixups.py) */\n\tif (!PSP_KEEP_ONCE(\"fulllod\"))\n\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n#endif\n\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}"),
 ],
 }
 

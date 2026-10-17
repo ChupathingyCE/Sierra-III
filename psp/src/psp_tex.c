@@ -61,6 +61,11 @@ static unsigned int vram_models_bytes = 0;
 /* the lightmap page the next level surfaces use (rasterizer.c, psp_fixups.py) */
 unsigned int psp_lightmap_key = 0;
 
+/* a texture in its own colours (GU_PSM_5650 to GU_PSM_8888), not indices
+into a palette; and the bytes a texel of a texture takes (T8 and direct) */
+#define DIRECT(entry) ((entry)->psm <= GU_PSM_8888)
+#define TEXEL_BYTES(entry) ((entry)->psm == GU_PSM_8888 ? 4u : DIRECT(entry) ? 2u : 1u)
+
 static SceUID pack = -1;
 static struct pack_entry *entries = NULL;
 static int entry_count = 0;
@@ -674,19 +679,30 @@ asset track ("assettrack", launch menu), the map's <map>_track.ptex when
 there is one, the same textures baked another way (lightmaps at half size),
 so one game runs either data set; "assetdetail", <map>_detail.ptex, a pack
 baked with some classes at full size (texpack.py --full-detail fp,...).
+Before them, the main menu's ui_showcase.ptex (texpack.py --showcase: every
+map at its own size, the objects and the sky in 32-bit colour), unless
+"noshowcase": the menu is the hardware's showcase (CLAUDE.md), and the pack
+is read on ui.map alone, so the levels never pay for it.
 Last, the usual <map>.ptex. Returns 0 for a candidate whose keep word is off */
-#define PACK_CANDIDATES 3
+#define PACK_CANDIDATES 4
 static int pack_candidate(const char *name, int which, char *path, int size, const char **word)
 {
 	static const char *const words[2] = { "assettrack", "assetdetail" }, *const suffixes[2] = { "_track", "_detail" };
 
 	*word = NULL;
-	if (which < 2)
+	if (which == 0)
 	{
-		if (!psp_keep(words[which]))
+		if (strcmp(name, "ui") != 0 || psp_keep("noshowcase"))
 			return 0;
-		*word = words[which];
-		snprintf(path, size, "ms0:/halo/maps/%s%s.ptex", name, suffixes[which]);
+		*word = "showcase";
+		snprintf(path, size, "ms0:/halo/maps/%s_showcase.ptex", name);
+	}
+	else if (which < 3)
+	{
+		if (!psp_keep(words[which - 1]))
+			return 0;
+		*word = words[which - 1];
+		snprintf(path, size, "ms0:/halo/maps/%s%s.ptex", name, suffixes[which - 1]);
 	}
 	else
 		snprintf(path, size, "ms0:/halo/maps/%s.ptex", name);
@@ -1246,8 +1262,10 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	last_frame[index] = frame;
 	if (bind_counts && bind_counts[index] < 65535)
 		bind_counts[index]++;
-	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit palette */
-	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
+	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit
+	palette; or a texture in its own colours (the showcase's, ui.map:
+	texpack.py --showcase), with no palette */
+	palette_bytes = DIRECT(entry) ? 0 : (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
 	address = resident_at[index];
 	/* build 114: statememo (above) */
 	if (memo_on < 0)
@@ -1261,19 +1279,23 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	}
 	psp_tex_binds_sent++;
 	start = address; /* where the texture starts (address moves past the palette and levels) */
-	__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
-	__real_sceGuClutLoad(palette_bytes / 32, (void *)address);
+	if (palette_bytes)
+	{
+		__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
+		__real_sceGuClutLoad(palette_bytes / 32, (void *)address);
+	}
 	__real_sceGuTexMode(entry->psm, entry->levels - 1, 0, 1);
 	address += palette_bytes;
 	width = entry->width;
 	height = entry->height;
 	for (level = 0; level < entry->levels; level++)
 	{
-		unsigned int bytes = entry->psm == GU_PSM_T4 ? (width + 1) / 2 : width;
+		unsigned int bytes = entry->psm == GU_PSM_T4 ? (width + 1) / 2 : width * TEXEL_BYTES(entry);
 		unsigned int row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u, rows = (height + 7) & ~7u;
 
 		/* the buffer width is in pixels */
-		__real_sceGuTexImage(level, width, height, entry->psm == GU_PSM_T4 ? row * 2 : row, (void *)address);
+		__real_sceGuTexImage(level, width, height, entry->psm == GU_PSM_T4 ? row * 2 : row / TEXEL_BYTES(entry),
+			(void *)address);
 		address += row * rows;
 		width = width > 1 ? width / 2 : 1;
 		height = height > 1 ? height / 2 : 1;
@@ -1301,7 +1323,7 @@ int psp_tex_palette(unsigned int key, const unsigned int **palette, int *count)
 {
 	int index = key && entries ? find(key) : -1;
 
-	if (index < 0 || !resident_at[index] || entries[index].clut != GU_PSM_8888)
+	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]) || entries[index].clut != GU_PSM_8888)
 		return 0;
 	*palette = (const unsigned int *)(resident_at[index] | 0x40000000);
 	*count = entries[index].psm == GU_PSM_T4 ? 16 : 256;
@@ -1344,7 +1366,7 @@ int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *cou
 {
 	int index = key && entries ? find(key) : -1;
 
-	if (index < 0 || !resident_at[index] || entries[index].clut != GU_PSM_5650)
+	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]) || entries[index].clut != GU_PSM_5650)
 		return 0;
 	*palette = (const unsigned short *)(resident_at[index] | 0x40000000);
 	*count = entries[index].psm == GU_PSM_T4 ? 16 : 256;
@@ -1361,7 +1383,7 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	unsigned int palette_bytes, bytes, row, rows, total, step, at, sum[3] = { 0, 0, 0 }, n = 0;
 	const unsigned char *texels;
 
-	if (index < 0 || !resident_at[index])
+	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]))
 		return 0;
 	if (averages_count != entry_count)
 	{
