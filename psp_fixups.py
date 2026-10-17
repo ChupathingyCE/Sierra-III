@@ -21233,6 +21233,262 @@ FIXES_FRONT["source/saved games/saved_game_files.c#bootvariants"] = [
 """),
 ]
 
+# The saved games' list, z:\saved\hdmu.map (saved_game_files.c), is a file of
+# fixed-size entries whose length says how many there are. Deleting a profile
+# moves the entries after it down one and shortens the file by one entry
+# (remove_nth_entry_in_mapfile). The PSP's C library can't shorten a file
+# (psp_libc.c's ftruncate only lengthens one, and reports success), so the
+# last entry stayed behind: deleting the newest profile left it listed with
+# its folder gone, and deleting any other listed the last one twice. The
+# profile screens then read the missing file again on every frame (about
+# 7 ms of Memory Stick a try), "failed to retrieve player profile" closed the
+# edit screen with the red "event handler function failed", and deleting the
+# leftover failed with "ghost meta data likely". A shorter length is now made
+# as pspsdk's own truncate() makes one: the part kept read, the file opened
+# again emptied, the part written back (only up to 64 KB kept: the list is
+# at most 52 KB, and nothing else the game shortens). The list is rebuilt
+# from the save folders at every launch, so a failure here lasts only until
+# the next one. Keep word "shrinkold": left as it is, as before.
+FIXES_FRONT["port/linux/src/xbox_files.c#shrink"] = [
+("BOOL WINAPI SetEndOfFile(HANDLE handle)\n{", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_FRONT #shrink): the handle keeps its place, at the
+new end, on a descriptor opened again */
+static BOOL psp_transfer_all(int descriptor, char *data, unsigned long size, int writing)
+{
+	while (size)
+	{
+		ssize_t count = writing ? write(descriptor, data, size) : read(descriptor, data, size);
+
+		if (count <= 0)
+			return FALSE;
+		data += count;
+		size -= (unsigned long)count;
+	}
+	return TRUE;
+}
+
+static BOOL psp_file_shorten(struct platform_file *file, unsigned long length)
+{
+	char *kept = NULL;
+	int descriptor;
+	BOOL success = FALSE;
+
+	if (length && !(kept = malloc(length)))
+	{
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	close(file->descriptor);
+	descriptor = open(file->path, O_RDONLY | O_CLOEXEC);
+	if (descriptor >= 0)
+	{
+		success = psp_transfer_all(descriptor, kept, length, 0);
+		close(descriptor);
+	}
+	/* a part that couldn't be read is left in the file, not lost */
+	descriptor = open(file->path, (success ? O_TRUNC : 0) | O_RDWR | O_CLOEXEC, 0644);
+	if (descriptor >= 0)
+	{
+		if (success)
+			success = psp_transfer_all(descriptor, kept, length, 1);
+		lseek(descriptor, (off_t)length, SEEK_SET);
+	}
+	else
+		success = FALSE;
+	file->descriptor = descriptor;
+	if (!success)
+		platform_set_last_error_from_errno(errno);
+	free(kept);
+	return success;
+}
+#endif
+
+BOOL WINAPI SetEndOfFile(HANDLE handle)
+{"""),
+("""	if (posix_seek(file->descriptor, 0, 0, SEEK_CUR, &low, &high) != 0 ||
+		posix_truncate(file->descriptor, low, high) != 0)
+	{
+		platform_set_last_error_from_errno(errno);
+		return FALSE;
+	}
+	return TRUE;
+}""", """#ifdef HALO_PSP
+	if (posix_seek(file->descriptor, 0, 0, SEEK_CUR, &low, &high) != 0)
+	{
+		platform_set_last_error_from_errno(errno);
+		return FALSE;
+	}
+	{
+		/* psp_fixups.py (FIXES_FRONT #shrink) */
+		extern int psp_keep(const char *name);
+		off_t end = lseek(file->descriptor, 0, SEEK_END);
+
+		lseek(file->descriptor, (off_t)low, SEEK_SET);
+		/* only files whose kept part fits a heap block: the saved games'
+		list is at most 100 entries (52 KB); the game state files are only
+		ever lengthened, and one left longer by an older build stays as it
+		was rather than needing 3 MB of heap */
+		if (!high && end > (off_t)low && low <= 0x10000 && !psp_keep("shrinkold"))
+			return psp_file_shorten(file, low);
+	}
+	if (posix_truncate(file->descriptor, low, high) != 0)
+#else
+	if (posix_seek(file->descriptor, 0, 0, SEEK_CUR, &low, &high) != 0 ||
+		posix_truncate(file->descriptor, low, high) != 0)
+#endif
+	{
+		platform_set_last_error_from_errno(errno);
+		return FALSE;
+	}
+	return TRUE;
+}"""),
+]
+
+# CopyFileA's 64 KB buffer was on the stack, and the game copies with it on
+# its player profile thread (a profile renamed: synchronize_metadata_display_
+# name_with_profile_name copies blam.sav and savegame.bin to the new name's
+# folder). The port gives such threads 48 KB of stack (CreateThread's floor),
+# so naming a new profile ran the thread 18 KB or more past its stack: Sheepdog01's
+# crash saving a new profile (pthread0007, a breakpoint in the firmware), and
+# the new name's folder left with its SaveMeta.xbx and no blam.sav, which
+# then refused that name for good ("maybe the name is already in use?"). On
+# the PSP the buffer is taken from the heap, or a small one on the stack when
+# the heap has no 64 KB to give. No keep word: the old way is the overflow.
+FIXES_FRONT["port/linux/src/xbox_files.c#copybuffer"] = [
+("""	char buffer[65536];
+	int source, destination;""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT #copybuffer): game threads have 48 KB of
+	stack */
+	char small_buffer[2048];
+	char *buffer = small_buffer;
+	size_t buffer_size = sizeof(small_buffer);
+#else
+	char buffer[65536];
+	size_t buffer_size = sizeof(buffer);
+#endif
+	int source, destination;"""),
+("""	for (;;)
+	{
+		ssize_t count = read(source, buffer, sizeof(buffer));""", """#ifdef HALO_PSP
+	{
+		char *heap_buffer = malloc(65536);
+
+		if (heap_buffer)
+		{
+			buffer = heap_buffer;
+			buffer_size = 65536;
+		}
+	}
+#endif
+	for (;;)
+	{
+		ssize_t count = read(source, buffer, buffer_size);"""),
+("""	close(source);
+	close(destination);
+	return success;
+}""", """	close(source);
+	close(destination);
+#ifdef HALO_PSP
+	if (buffer != small_buffer)
+		free(buffer);
+#endif
+	return success;
+}"""),
+]
+
+# A save folder holding its SaveMeta.xbx but neither blam.sav nor blam.lst
+# can't be listed, opened or deleted from the menus ("random crap found by
+# XFindNextSaveGame()"), yet its name is taken: XCreateSaveGame refuses any
+# name whose folder exists. On the Xbox the dashboard's memory screen could
+# remove one; the PSP has none, so the launch's enumeration removes them
+# (after its folder scan, not during it). Such folders came from a rename cut
+# short (the copy above). A save folder's delete also scans again while the
+# folder is still there, in case the stick's listing skipped an entry the
+# first pass removed beside it. Keep word "ghostskeep": both as before.
+FIXES_FRONT["port/linux/src/xbox_xapi.c#ghosts"] = [
+("""	delete_tree(directory);
+	return ERROR_SUCCESS;""", """#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_FRONT #ghosts) */
+		extern int psp_keep(const char *name);
+		int pass;
+
+		delete_tree(directory);
+		if (!psp_keep("ghostskeep"))
+		{
+			for (pass = 0; pass < 2 && GetFileAttributesA(directory) != (DWORD)-1; pass++)
+				delete_tree(directory);
+			if (GetFileAttributesA(directory) != (DWORD)-1)
+				return ERROR_DIR_NOT_EMPTY;
+		}
+	}
+#else
+	delete_tree(directory);
+#endif
+	return ERROR_SUCCESS;"""),
+]
+FIXES_FRONT["source/saved games/saved_game_files.c#ghosts"] = [
+("""	long number_of_enumerated_files = 0;
+
+	while (memory_unit_index <= _memory_unit_hard_drive)
+	{
+		if (take_mutex(saved_game_files_globals.general_mutex, SAVED_GAME_FILES_MUTEX_TIMEOUT))""", """	long number_of_enumerated_files = 0;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT #ghosts) */
+	enum { PSP_GHOSTS = 4 };
+	WCHAR psp_ghost_names[PSP_GHOSTS][MAX_GAMENAME];
+	char psp_ghost_folders[PSP_GHOSTS][16];
+	long psp_ghost_count = 0;
+#endif
+
+	while (memory_unit_index <= _memory_unit_hard_drive)
+	{
+		if (take_mutex(saved_game_files_globals.general_mutex, SAVED_GAME_FILES_MUTEX_TIMEOUT))"""),
+("""										wide_to_ascii(message, (char *)message, sizeof(message)));
+									file.type = NONE;""", """										wide_to_ascii(message, (char *)message, sizeof(message)));
+									file.type = NONE;
+#ifdef HALO_PSP
+									if (psp_ghost_count < PSP_GHOSTS)
+									{
+										csmemcpy(psp_ghost_names[psp_ghost_count], find_data.szSaveGameName,
+											sizeof(psp_ghost_names[psp_ghost_count]));
+										psp_ghost_names[psp_ghost_count][MAX_GAMENAME - 1] = 0;
+										csstrncpy(psp_ghost_folders[psp_ghost_count], find_data.wfd.cFileName,
+											sizeof(psp_ghost_folders[psp_ghost_count]) - 1);
+										psp_ghost_folders[psp_ghost_count][sizeof(psp_ghost_folders[psp_ghost_count]) - 1] = 0;
+										psp_ghost_count++;
+									}
+#endif"""),
+("""						while ((boolean)XFindNextSaveGame(find_handle, &find_data));
+
+						if (!XFindClose(find_handle))
+						{
+							error(_error_silent, "XFindClose() failed");
+						}
+""", """						while ((boolean)XFindNextSaveGame(find_handle, &find_data));
+
+						if (!XFindClose(find_handle))
+						{
+							error(_error_silent, "XFindClose() failed");
+						}
+#ifdef HALO_PSP
+						{
+							extern int psp_keep(const char *name);
+							extern void platform_log(const char *format, ...);
+							long ghost;
+
+							for (ghost = 0; ghost < psp_ghost_count && !psp_keep("ghostskeep"); ghost++)
+							{
+								platform_log("saved games: %s the save folder %s (no blam.sav or blam.lst)",
+									XDeleteSaveGame(root_path, psp_ghost_names[ghost]) ? "failed to delete" : "deleted",
+									psp_ghost_folders[ghost]);
+							}
+							psp_ghost_count = 0;
+						}
+#endif
+"""),
+]
+
 # ---------- FIXES_CONTROLS: the PSP's controls (docs/game_feature_survey.md, section 4)
 #
 # psp_sdl.c keeps the crouch toggle and splits the X button into a reload tap
