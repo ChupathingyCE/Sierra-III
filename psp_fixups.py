@@ -22519,11 +22519,257 @@ FIXES_LOADING["source/cache/cache_files.c#loading"] = [
 ]
 
 
+# ---------- sound (the sound session; docs/audio_fidelity.md)
+FIXES_SOUND = {}
+# Where sound_render's time goes, for the sound work's budget: a step before
+# each part, so profile.txt names them ("sound_render: …"). The last step goes
+# back to "sound_render", which the time after it was charged to before
+FIXES_SOUND["source/sound/sound_manager.c#sections"] = [
+("""		sound_manager_globals.platform_definition->begin_scene();
+
+		if (!sound_manager_globals.paused)
+		{
+			long render_time = system_milliseconds();
+""",
+ """#ifdef HALO_PSP
+		psp_step("sound_render: begin scene (the packets' callbacks)");
+#endif
+		sound_manager_globals.platform_definition->begin_scene();
+
+		if (!sound_manager_globals.paused)
+		{
+			long render_time = system_milliseconds();
+"""),
+("""			refresh_listener();
+			process_looping_sounds();
+			refresh_sounds();
+			prioritize_sounds();
+			update_channels();
+			sound_manager_globals.flip_flop = !sound_manager_globals.flip_flop;
+		}
+
+		sound_manager_globals.platform_definition->end_scene();
+	}
+
+	if (!sound_manager_globals.paused)
+	{
+		sound_cache_idle();
+	}
+""",
+ """#ifdef HALO_PSP
+			psp_step("sound_render: listener");
+			refresh_listener();
+			psp_step("sound_render: looping sounds");
+			process_looping_sounds();
+			psp_step("sound_render: refresh and obstruction");
+			refresh_sounds();
+			psp_step("sound_render: prioritise");
+			prioritize_sounds();
+			psp_step("sound_render: update channels");
+			update_channels();
+#else
+			refresh_listener();
+			process_looping_sounds();
+			refresh_sounds();
+			prioritize_sounds();
+			update_channels();
+#endif
+			sound_manager_globals.flip_flop = !sound_manager_globals.flip_flop;
+		}
+
+#ifdef HALO_PSP
+		psp_step("sound_render: end scene (packets queued)");
+#endif
+		sound_manager_globals.platform_definition->end_scene();
+	}
+
+#ifdef HALO_PSP
+	psp_step("sound_render: sound cache");
+#endif
+	if (!sound_manager_globals.paused)
+	{
+		sound_cache_idle();
+	}
+#ifdef HALO_PSP
+	psp_step("sound_render");
+#endif
+"""),
+]
+# Why the game stops the sounds it cuts off, and what class each stream plays
+# (psp_sound.h; the mixer counts and logs them): the reason is set around each
+# sound_stop call, so the mixer's flush inside it can read it
+FIXES_SOUND["source/sound/sound_manager.c#reasons"] = [
+("""/* ---------- globals */
+""",
+ """/* ---------- globals */
+
+#ifdef HALO_PSP
+#include "psp_sound.h" /* psp_fixups.py FIXES_SOUND */
+void psp_step(const char *name);
+#define PSP_STOP_REASON(reason) (psp_sound_stop_reason = (reason))
+#else
+#define PSP_STOP_REASON(reason) ((void)0)
+#endif
+"""),
+("""	sound_manager_globals.platform_definition->queue_sound_to_channel(
+		channel_index,
+		permutation);
+""",
+ """#ifdef HALO_PSP
+	psp_sound_queueing_class = sound_definition_get(sound_get(channel->sound_index)->definition_index)->sound_class;
+#endif
+	sound_manager_globals.platform_definition->queue_sound_to_channel(
+		channel_index,
+		permutation);
+#ifdef HALO_PSP
+	psp_sound_queueing_class = -1;
+#endif
+"""),
+("""			sound_stop(victim_sound_index);
+""",
+ """			PSP_STOP_REASON(PSP_STOP_INSTANCE_OLDER);
+			sound_stop(victim_sound_index);
+			PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+("""		   queue another permutation through the now-unowned channel. */
+		sound_stop(sound_index);
+""",
+ """		   queue another permutation through the now-unowned channel. */
+		PSP_STOP_REASON(PSP_STOP_INSTANCE_NEWER);
+		sound_stop(sound_index);
+		PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+("""		while (sound_index != NONE)
+		{
+			sound_stop(sound_index);
+			sound_index = data_next_index(sound_data, sound_index);
+		}
+""",
+ """		PSP_STOP_REASON(PSP_STOP_ALL);
+		while (sound_index != NONE)
+		{
+			sound_stop(sound_index);
+			sound_index = data_next_index(sound_data, sound_index);
+		}
+		PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+("""				channel_stop(channel_index);
+				channel->sound_index = NONE;
+""",
+ """				PSP_STOP_REASON(PSP_STOP_ALL);
+				channel_stop(channel_index);
+				PSP_STOP_REASON(PSP_STOP_OTHER);
+				channel->sound_index = NONE;
+"""),
+# refresh_sounds: of its three reasons only a lost source can cut a sound
+# playing (an idle channel has finished; dialog to dead players stops here
+# only when it has no voice, and fades out otherwise)
+("""		if (stop_sound)
+		{
+			sound_stop(sound_index);
+		}
+""",
+ """		if (stop_sound)
+		{
+			PSP_STOP_REASON(PSP_STOP_SOURCE_LOST);
+			sound_stop(sound_index);
+			PSP_STOP_REASON(PSP_STOP_OTHER);
+		}
+"""),
+("""				sound_stop(channel->sound_index);
+				channel->sound_index = NONE;
+				continue;
+""",
+ """				PSP_STOP_REASON(PSP_STOP_FADED);
+				sound_stop(channel->sound_index);
+				PSP_STOP_REASON(PSP_STOP_OTHER);
+				channel->sound_index = NONE;
+				continue;
+"""),
+("""						if (channel->sound_index != NONE)
+						{
+							sound_stop(channel->sound_index);
+						}
+""",
+ """						if (channel->sound_index != NONE)
+						{
+							PSP_STOP_REASON(PSP_STOP_PREEMPTED);
+							sound_stop(channel->sound_index);
+							PSP_STOP_REASON(PSP_STOP_OTHER);
+						}
+"""),
+("""				else
+				{
+					sound_stop(sound_index);
+				}
+			}
+			else if (sound->playing_channel_index == NONE &&""",
+ """				else
+				{
+					PSP_STOP_REASON(PSP_STOP_NO_CHANNEL);
+					sound_stop(sound_index);
+					PSP_STOP_REASON(PSP_STOP_OTHER);
+				}
+			}
+			else if (sound->playing_channel_index == NONE &&"""),
+("""								sound->permutation_index;
+						}
+						sound_stop(sound_index);
+""",
+ """								sound->permutation_index;
+						}
+						PSP_STOP_REASON(PSP_STOP_CACHE_MISS);
+						sound_stop(sound_index);
+						PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+]
+# The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
+# packets (about 743 ms) up at interrupt time, the port once a frame, so a
+# frame longer than that left long sounds silent. The queue's depth comes from
+# psp_stream_packets() (psp_dsound.c: 16 by default, "streampackets4" for the
+# Xbox's). After a pause the channel steps back over what it had queued; the
+# Xbox stepped back a full queue, which the 4-packet depth keeps exactly
+FIXES_SOUND["source/sound/sound_dsound_xbox.c#queue"] = [
+("""	while (channel->packet_count<MAXIMUM_SOUND_PACKETS && channel->playing_permutation)
+""",
+ """#ifdef HALO_PSP
+	extern int psp_stream_packets(void); /* psp_dsound.c */
+	while (channel->packet_count<psp_stream_packets() && channel->playing_permutation)
+#else
+	while (channel->packet_count<MAXIMUM_SOUND_PACKETS && channel->playing_permutation)
+#endif
+"""),
+("""			if (channel->state!=_sound_channel_idle)
+			{
+				IDirectSoundStream_Flush(channel->stream);
+""",
+ """			if (channel->state!=_sound_channel_idle)
+			{
+#ifdef HALO_PSP
+				extern int psp_stream_packets(void); /* psp_dsound.c */
+				real rewound_packets = psp_stream_packets() == MAXIMUM_SOUND_PACKETS ?
+					(real)MAXIMUM_SOUND_PACKETS : (real)channel->packet_count;
+#endif
+				IDirectSoundStream_Flush(channel->stream);
+"""),
+("""						MAXIMUM_COMPRESSED_SOUND_PACKET_SIZE : MAXIMUM_SOUND_PACKET_SIZE)*
+					(real)MAXIMUM_SOUND_PACKETS);
+""",
+ """						MAXIMUM_COMPRESSED_SOUND_PACKET_SIZE : MAXIMUM_SOUND_PACKET_SIZE)*
+#ifdef HALO_PSP
+					rewound_packets);
+#else
+					(real)MAXIMUM_SOUND_PACKETS);
+#endif
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_SOUND.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
