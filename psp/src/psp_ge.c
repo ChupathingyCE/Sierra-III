@@ -5724,6 +5724,13 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	}
 	size = sceIoLseek32(file, 0, PSP_SEEK_END);
 	sceIoLseek32(file, 0, PSP_SEEK_SET);
+	if (size == 64)
+	{
+		/* the header alone: the bake found no wall under a decal to cut */
+		sceIoClose(file);
+		platform_log("stencils: %s holds no cut walls (none on this map): the old nudge for every stencil", path);
+		return;
+	}
 	bake.file = size > 64 ? memalign(64, size) : NULL;
 	if (!bake.file || sceIoRead(file, bake.file, size) != size)
 	{
