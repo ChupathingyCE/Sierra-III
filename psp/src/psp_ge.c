@@ -9407,24 +9407,12 @@ a dormant block would cost (b133's nwbatch) */
 static void __attribute__((noinline, cold)) glow_clamp_pass(void *vertices, const unsigned short *indices,
 	long index_count, int strip, struct skin_part *skin, ScePspFMatrix4 *model)
 {
-	static int bias = -1;
-
 	if (!psp_tex_bind(glow_base_key, NULL))
 		return;
-	/* "glowclampbiasN": the cap's base N quarter levels coarser. On the
-	PSP the cap shimmered where the ring's bright clouds meet the dark
-	(the base at full brightness shows its aliasing that pass 1's lit base
-	hides; lab 39061166013); a coarser cap is smoother and still a cap */
-	if (bias < 0)
-		bias = psp_keep_number("glowclampbias", 0);
-	if (bias)
-		sceGuTexLevelMode(tex_level_mode, tex_bias + bias * 0.25f);
 	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuBlendFunc(GU_MIN, GU_FIX, GU_FIX, 0, 0);
 	model_geometry(vertices, indices, index_count, strip, skin, model);
-	if (bias)
-		sceGuTexLevelMode(tex_level_mode, tex_bias);
 	glow_clamped++;
 }
 static int glow_map_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
