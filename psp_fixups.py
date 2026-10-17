@@ -19516,11 +19516,615 @@ SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 
 
+# ---------- FIXES_WAKE: sleepers woken by writes (lever WT; docs/wake_on_write.md)
+# "wakeonwrite": a sleeper is checksummed only when something has marked it
+# (psp_wake) since its last check: the functions that change an object's
+# data from outside its own update. "wakecheck": every sleeper checksummed as
+# before, and one that changed unmarked logged (a writer the list misses).
+# Off: nothing changes. Each hook marks the object and the objects above it
+# (the checksum covers a family). Devices are left to the checksum: their
+# groups change without touching them
+FIXES_WAKE = {}
+
+FIXES_WAKE["source/objects/objects.c#wake"] = [
+("""static struct { short identifier; signed char quiet; unsigned char ground; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
+""", """static struct { short identifier; signed char quiet; unsigned char ground; unsigned long checksum; } psp_sleep[MAXIMUM_OBJECTS_PER_MAP];
+/* psp_fixups.py (FIXES_WAKE): marked since the last check (psp_wake) */
+static unsigned char psp_wake_marked[MAXIMUM_OBJECTS_PER_MAP];
+static int psp_wake_on = -1, psp_wake_check = 0;
+long psp_wake_skipped, psp_wake_checked, psp_wake_misses;
+/* wakecheck: each sleeper's bytes as last seen unchanged, so that a miss can
+name the words a missed writer changed (and from them, the writer) */
+#define PSP_WAKE_COPY_WORDS (2560 / 4)
+static int psp_wake_copies; /* every object's slot where the heap has room (PSP_BIG_RAM), else 256 shared by an index's low bits */
+static unsigned long *psp_wake_copy;
+static unsigned long psp_wake_copy_owner[MAXIMUM_OBJECTS_PER_MAP]; /* 0: none */
+#define PSP_WAKE_OWNER(header, absolute_index) ((unsigned long)(unsigned short)(header)->identifier << 16 | (unsigned short)(absolute_index))
+
+/* a slot is taken from a sleeper only once that one is gone or awake */
+static int psp_wake_slot_free(int slot, unsigned long owner)
+{
+	unsigned long held = psp_wake_copy_owner[slot];
+	short index = (short)(held & 0xFFFF);
+	struct object_header_datum const *header;
+
+	if (!held || held == owner || index >= object_header_data->count)
+		return 1;
+	header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + index;
+	return !header->identifier || (unsigned short)header->identifier != held >> 16 || psp_sleep[index].quiet < 2;
+}
+
+static void psp_wake_miss_words(struct object_header_datum const *header, short absolute_index)
+{
+	unsigned long const *now = (unsigned long const *)header->datum;
+	int slot = absolute_index % psp_wake_copies;
+	unsigned long const *was = psp_wake_copy + (long)slot * PSP_WAKE_COPY_WORDS;
+	long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
+	int told = 0;
+
+	if (!psp_wake_copy || psp_wake_copy_owner[slot] != PSP_WAKE_OWNER(header, absolute_index))
+	{
+		platform_psp_log("wakecheck:   (its bytes weren't kept: another sleeper had the slot)");
+		return;
+	}
+	for (w = 0; w < count && told < 8; w++)
+		if (w != 2 && was[w] != now[w])
+		{
+			platform_psp_log("wakecheck:   word %ld (byte 0x%lx) of %d: %08lx -> %08lx", w, w * 4, header->data_size, was[w], now[w]);
+			told++;
+		}
+	if (!told)
+		platform_psp_log("wakecheck:   no word of its first %ld bytes changed: one beyond them, or a child's", count * 4);
+}
+
+void psp_wake(long object_index)
+{
+	int depth = 0;
+
+	while (object_index != NONE && depth++ < 8)
+	{
+		long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+		struct object_header_datum const *header;
+
+		if (absolute_index >= MAXIMUM_OBJECTS_PER_MAP || absolute_index >= object_header_data->count)
+			return;
+		header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + absolute_index;
+		if (!header->identifier || !header->datum)
+			return;
+		psp_wake_marked[absolute_index] = 1;
+		object_index = header->datum->object.parent_object_index;
+	}
+}
+"""),
+("""	else if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		(object->object.first_child_object_index == NONE || header->type == _object_type_vehicle))
+		before = psp_family_checksum(header);
+""", """	else if (psp_sleep_enabled && may_sleep && absolute_index < MAXIMUM_OBJECTS_PER_MAP &&
+		(object->object.first_child_object_index == NONE || header->type == _object_type_vehicle))
+		before = psp_wake_family_checksum(header, absolute_index); /* (FIXES_WAKE) */
+"""),
+("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{""", """/* psp_fixups.py (FIXES_WAKE): a sleeper nothing has marked keeps the
+checksum it slept with (wakeonwrite); a marked one, an awake one or a device
+is summed as before */
+static unsigned long psp_wake_family_checksum(struct object_header_datum const *header, short absolute_index)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long sum;
+	int marked = psp_wake_marked[absolute_index];
+
+	if (psp_wake_on < 0)
+	{
+		psp_wake_check = psp_keep("wakecheck") != 0;
+		psp_wake_on = psp_wake_check || psp_keep("wakeonwrite");
+		if (psp_wake_check)
+		{
+			psp_wake_copies = MAXIMUM_OBJECTS_PER_MAP;
+			psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * psp_wake_copies);
+			if (!psp_wake_copy)
+			{
+				psp_wake_copies = 256;
+				psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * psp_wake_copies);
+			}
+			platform_psp_log("wakecheck: %s %d sleepers' bytes, to name a miss's words",
+				psp_wake_copy ? "keeping" : "no room for", psp_wake_copies);
+		}
+	}
+	psp_wake_marked[absolute_index] = 0;
+	if (!psp_wake_on || marked || psp_sleep[absolute_index].identifier != header->identifier ||
+		psp_sleep[absolute_index].quiet < 2 || header->type == _object_type_machine || header->type == _object_type_control)
+		return psp_family_checksum(header);
+	if (!psp_wake_check)
+	{
+		psp_wake_skipped++;
+		return psp_sleep[absolute_index].checksum;
+	}
+	sum = psp_family_checksum(header);
+	psp_wake_checked++;
+	if (sum != psp_sleep[absolute_index].checksum)
+	{
+		if (psp_wake_misses++ < 64)
+		{
+			platform_psp_log("wakecheck: %s (type %d) changed asleep, unmarked, at tick %ld",
+				tag_get_name(object->definition_index), header->type, game_time_get());
+			psp_wake_miss_words(header, absolute_index);
+		}
+		if (psp_wake_copy_owner[absolute_index % psp_wake_copies] == PSP_WAKE_OWNER(header, absolute_index))
+			psp_wake_copy_owner[absolute_index % psp_wake_copies] = 0;
+	}
+	else if (psp_wake_copy && psp_wake_slot_free(absolute_index % psp_wake_copies, PSP_WAKE_OWNER(header, absolute_index)))
+	{
+		int slot = absolute_index % psp_wake_copies;
+
+		csmemcpy(psp_wake_copy + (long)slot * PSP_WAKE_COPY_WORDS, header->datum,
+			header->data_size < 2560 ? header->data_size : 2560);
+		psp_wake_copy_owner[slot] = PSP_WAKE_OWNER(header, absolute_index);
+	}
+	if (psp_wake_checked % 30000 == 0)
+		platform_psp_log("wakecheck: %ld unmarked sleepers summed, %ld changed (writers missed)", psp_wake_checked, psp_wake_misses);
+	return sum;
+}
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{"""),
+]
+FIXES_WAKE["source/objects/damage.c#wake_object_cause_damage"] = [
+("""
+void object_cause_damage(
+	struct damage_data *damage,
+	long object_index,
+	short node_index,
+	short region_index,
+	short material_index,
+	real_vector3d const *object_normal)
+{
+""", """
+void object_cause_damage(
+	struct damage_data *damage,
+	long object_index,
+	short node_index,
+	short region_index,
+	short material_index,
+	real_vector3d const *object_normal)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+# a shield or body run out without object_cause_damage: physics' ground test
+# depletes the shield of whatever a mass point rests on (wake135c: a tree)
+FIXES_WAKE["source/objects/damage.c#wake_object_deplete"] = [
+("""void object_deplete_body(
+	long object_index)
+{
+""", """void object_deplete_body(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+("""void object_deplete_shield(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+""", """void object_deplete_shield(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_set_garbage"] = [
+("""
+void object_set_garbage(
+	long object_index,
+	boolean garbage)
+{
+""", """
+void object_set_garbage(
+	long object_index,
+	boolean garbage)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+		/* taking it off the garbage list rewrites the link of the one
+		before it (wake135d: corpses and a grenade) */
+		if (!garbage && TEST_FLAG(object_get(object_index)->object.flags, _object_garbage_bit))
+		{
+			long before = object_globals->first_garbage_object_index;
+
+			while (before != NONE && object_get(before)->object.next_garbage_object_index != object_index)
+				before = object_get(before)->object.next_garbage_object_index;
+			if (before != NONE)
+				psp_wake(before);
+		}
+	}
+"""),
+]
+# the AI asks a biped (a body too) for its pathfinding surface, which it
+# works out and keeps in the biped when it has moved (wake135d: an elite's and
+# a jackal's bodies). Marked only when the kept answer changed: the AI asks
+# often, and a mark costs the asked biped its checksum
+FIXES_WAKE["source/units/bipeds.c#wake_pathfinding"] = [
+("""long biped_find_pathfinding_surface_index(
+	long biped_index,
+	real_point3d *pathfinding_point)
+{
+""", """/* psp_fixups.py (FIXES_WAKE) */
+static long psp_biped_pathfinding_work(long biped_index, real_point3d *pathfinding_point);
+
+long biped_find_pathfinding_surface_index(
+	long biped_index,
+	real_point3d *pathfinding_point)
+{
+	void psp_wake(long object_index);
+	struct biped_datum *biped = biped_get(biped_index);
+	unsigned long first = offsetof(struct _biped_datum, pathfinding_surface_index);
+	unsigned long end = offsetof(struct _biped_datum, last_pathfinding_surface_index) + sizeof(biped->biped.last_pathfinding_surface_index);
+	unsigned char held[32];
+	long result;
+
+	csmemcpy(held, (unsigned char *)&biped->biped + first, end - first);
+	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
+	if (memcmp(held, (unsigned char *)&biped->biped + first, end - first) != 0)
+		psp_wake(biped_index);
+	return result;
+}
+
+static long psp_biped_pathfinding_work(
+	long biped_index,
+	real_point3d *pathfinding_point)
+{
+"""),
+]
+# a sleeper's functions, computed as its update would (FIXES_123L), may turn
+# one on or off: the active flags are a word the checksum compares, so in the
+# checksum's build that wakes it the next tick (wake135d: dropped weapons, Flood
+# bodies). The same mark keeps that
+FIXES_WAKE["source/objects/objects.c#wake_sleeper_functions"] = [
+("""static void psp_sleeper_functions(long object_index)
+{
+	object_type_export_function_values(object_index);
+	object_compute_function_values(object_index);
+	object_compute_change_colors(object_index);
+}""", """static void psp_sleeper_functions(long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	unsigned char active = object->object.functions_active_flags;
+
+	object_type_export_function_values(object_index);
+	object_compute_function_values(object_index);
+	object_compute_change_colors(object_index);
+	if (object->object.functions_active_flags != active)
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+}"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_set_visibility"] = [
+("""
+void object_set_visibility(
+	long object_index,
+	boolean visible_flag)
+{
+""", """
+void object_set_visibility(
+	long object_index,
+	boolean visible_flag)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_set_position"] = [
+("""
+void object_set_position(
+	long object_index,
+	real_point3d const *position,
+	real_vector3d const *forward,
+	real_vector3d const *up)
+{
+""", """
+void object_set_position(
+	long object_index,
+	real_point3d const *position,
+	real_vector3d const *forward,
+	real_vector3d const *up)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_attach_to_marker"] = [
+("""
+void object_attach_to_marker(
+	long parent_object_index,
+	char const *parent_marker_name,
+	long child_object_index,
+	char const *child_marker_name)
+{
+""", """
+void object_attach_to_marker(
+	long parent_object_index,
+	char const *parent_marker_name,
+	long child_object_index,
+	char const *child_marker_name)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(parent_object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_attach_to_node"] = [
+("""
+void object_attach_to_node(
+	long parent_object_index,
+	long child_object_index,
+	short parent_node_index)
+{
+""", """
+void object_attach_to_node(
+	long parent_object_index,
+	long child_object_index,
+	short parent_node_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(parent_object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_detach"] = [
+("""
+void object_detach(
+	long child_object_index)
+{
+""", """
+void object_detach(
+	long child_object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(child_object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_delete"] = [
+("""
+void object_delete(
+	long object_index)
+{
+""", """
+void object_delete(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_disconnect_from_map"] = [
+("""
+void object_disconnect_from_map(
+	long object_index)
+{
+""", """
+void object_disconnect_from_map(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_reconnect_to_map"] = [
+("""
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+""", """
+void object_reconnect_to_map(
+	long object_index,
+	struct location const *location)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_activate"] = [
+("""
+void object_activate(
+	long object_index)
+{
+""", """
+void object_activate(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/objects/objects.c#wake_object_deactivate"] = [
+("""
+void object_deactivate(
+	long object_index)
+{
+""", """
+void object_deactivate(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+FIXES_WAKE["source/units/units.c#wake_unit_control"] = [
+("""
+void unit_control(
+	long unit_index,
+	struct unit_control_data const *control_data)
+{
+""", """
+void unit_control(
+	long unit_index,
+	struct unit_control_data const *control_data)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(unit_index);
+	}
+"""),
+]
+FIXES_WAKE["source/units/units.c#wake_unit_update_driver_and_gunner"] = [
+("""
+static void unit_update_driver_and_gunner(
+	long unit_index)
+{
+""", """
+static void unit_update_driver_and_gunner(
+	long unit_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(unit_index);
+	}
+"""),
+]
+# a push (blasts, physics, a vehicle's bump): wake135a's wakecheck found
+# corpses, dropped weapons and a grenade changed asleep with nothing marking them
+FIXES_WAKE["source/units/bipeds.c#wake_biped_accelerate"] = [
+("""
+void biped_accelerate(
+	long biped_index,
+	real_vector3d *acceleration)
+{
+""", """
+void biped_accelerate(
+	long biped_index,
+	real_vector3d *acceleration)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(biped_index);
+	}
+"""),
+]
+FIXES_WAKE["source/units/vehicles.c#wake_vehicle_accelerate"] = [
+("""
+void vehicle_accelerate(
+	long vehicle_index,
+	real_vector3d const *acceleration)
+{
+""", """
+void vehicle_accelerate(
+	long vehicle_index,
+	real_vector3d const *acceleration)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(vehicle_index);
+	}
+"""),
+]
+FIXES_WAKE["source/items/projectiles.c#wake_projectile_accelerate"] = [
+("""
+void projectile_accelerate(
+	long projectile_index,
+	real_vector3d const *acceleration)
+{
+""", """
+void projectile_accelerate(
+	long projectile_index,
+	real_vector3d const *acceleration)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(projectile_index);
+	}
+"""),
+]
+FIXES_WAKE["source/items/items.c#wake_item_accelerate"] = [
+("""
+void item_accelerate(
+	long item_index,
+	real_vector3d const *acceleration,
+	boolean detonates_explosives)
+{
+""", """
+void item_accelerate(
+	long item_index,
+	real_vector3d const *acceleration,
+	boolean detonates_explosives)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(item_index);
+	}
+"""),
+]
+# the render state cache reassigned: the datum's cached_render_state_index
+# changes, which the checksum sees (kept as before: the sleeper wakes)
+FIXES_WAKE["source/render/render_objects.c#wake_render_state"] = [
+("""		render_state_index = datum_new(cached_object_render_states);
+""", """		render_state_index = datum_new(cached_object_render_states);
+		{
+			void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+			psp_wake(object_index);
+		}
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
