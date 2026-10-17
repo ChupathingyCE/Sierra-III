@@ -10980,6 +10980,17 @@ FIXES_INTERNET["port/linux/src/p2p.c#tunnelreport"] = [
 ("""static void stream_writeable(struct stream *stream)
 {""",
  """#ifdef HALO_PSP
+/* psp_fixups.py (internet play): the tunnel's packets read, by size */
+void psp_tunnel_sizes(char *text, int size)
+{
+	pthread_mutex_lock(&p2p_lock);
+	snprintf(text, (size_t)size, "packets read by size: under 600 %lu, 600-999 %lu, 1000-1199 %lu, 1200-1299 %lu, "
+		"1300-1399 %lu, 1400 and up %lu; the largest %d",
+		psp_streams.sizes[0], psp_streams.sizes[1], psp_streams.sizes[2], psp_streams.sizes[3], psp_streams.sizes[4],
+		psp_streams.sizes[5], psp_streams.largest);
+	pthread_mutex_unlock(&p2p_lock);
+}
+
 /* psp_fixups.py (internet play): the tunnel's peers and streams, in a line */
 void psp_tunnel_report(char *text, int size)
 {
@@ -11032,6 +11043,12 @@ static struct
 	thread's passes */
 	unsigned long packets, read_errors, not_tunnel, no_peer, stale, unsealed, passes;
 	int last_read_error;
+	/* the packets read by size, as tcpdump counts a UDP payload (under 600,
+	600-999, 1000-1199, 1200-1299, 1300-1399, 1400 and up), and the
+	largest: whether the host's large packets reach the tunnel at all (a
+	stream waits on one missing segment in every dropped game) */
+	unsigned long sizes[6];
+	int largest;
 } psp_streams;
 #endif
 
@@ -11098,6 +11115,9 @@ static struct stream *stream_new(int peer_index, IUINT32 conversation)
 		}
 #ifdef HALO_PSP
 		psp_streams.packets++;
+		psp_streams.sizes[size < 600 ? 0 : size < 1000 ? 1 : size < 1200 ? 2 : size < 1300 ? 3 : size < 1400 ? 4 : 5]++;
+		if (size > psp_streams.largest)
+			psp_streams.largest = size;
 		if (size < 1 || packet[0] != TUNNEL_MAGIC)
 			psp_streams.not_tunnel++;
 #endif

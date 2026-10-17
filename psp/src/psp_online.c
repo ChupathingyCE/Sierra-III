@@ -163,6 +163,7 @@ heard and why any were turned away) */
 void psp_signal_report(char *text, int size);
 void psp_lobby_report(char *text, int size);
 void psp_tunnel_report(char *text, int size);
+void psp_tunnel_sizes(char *text, int size);
 void psp_net_select_report(char *text, int size);
 int psp_internet_thread_priority_now(void);
 /* (psp_internet.c: whether a file is on the Memory Stick) */
@@ -749,6 +750,8 @@ void psp_online_test_update(
 		platform_log("online games: test: screen %s, processed %lu times, %d games", online.active ? "open" : "closed",
 			online.processed, online.count);
 		psp_tunnel_report(text, sizeof(text));
+		platform_log("online games: tunnel: %s", text);
+		psp_tunnel_sizes(text, sizeof(text));
 		platform_log("online games: tunnel: %s", text);
 		psp_net_select_report(text, sizeof(text));
 		platform_log("online games: tunnel: its thread at 0x%x; %s", psp_internet_thread_priority_now(), text);
