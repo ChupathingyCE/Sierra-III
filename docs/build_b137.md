@@ -2,7 +2,7 @@
 
 `review_b137.md` lists every change and why. **No new bake:** b137 runs on the b136 bake.
 
-ZIP_LINE
+`halo_psp_b137.zip` (SHA-256 `c3769e1a7183da0a5c74d6fb97cb127b21b4fff3d61c26863dc53bb3daa25959`), EBOOT `b22b5349a53b78b4593564d49720959f5b5c3f3f937b035df7ec6abd9605ab88`: built from commit `b7524d5` on `w137` (lab sierra-build 39036434369). Heap 5,600 KB (b136: 5,584). **Its own profile** (`campaign-b137`, 13 runs at `290fdaf` on the b136 bake), checked against the code (`PSP_PGO_STRICT=1`), and b132's code order. Release check (lab 39034419300): play and both seeds identical to b136 at every tick on d20, a50 and c20 (12,000 each) [E]; shots, the menu, a10's prompts and the menu into a10 right; Blood Gulch plays; strict clean. For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
 
 **What's new for you:**
 - **The menu answers sooner.** The saved-game check on the PSP-1000 took 26 s in b136; 1.8 s now (3.7 s on the build's first launch) [M]. The start-up's log also waits in a batch, so the stick isn't held at the first frame.
