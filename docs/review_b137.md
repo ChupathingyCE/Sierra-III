@@ -62,4 +62,10 @@ The controls' 32 KB glyph sheet left `.rodata`: run-length coded in the program 
 
 ## Release check
 
-(After the profile.)
+Lab 39034419300, strict with b137's own profile (`campaign-b137`, 13 runs at `290fdaf`: lab 39031784260, 39031780754), against b136 as built (`e41a305`) [E]:
+- **Play and both random seeds identical to b136 at every one of 12,000 ticks** on d20, a50 and c20 (`tools/statecmp.py`); the whole-state hashes differ in bookkeeping only (the decal vertex cache, contrails, particles, looping sounds, actors' and objects' allocations).
+- b30 and c40 shots right; the main menu's showcase and a10's prompts drawn; strict clean on every run.
+- The menu into a10 by the menus: the saved-game check 115 ms, the load 1,032 ms, the settle 4 frames (0 texture reads), then play.
+- The multiplayer build plays Blood Gulch (game time 12,008).
+
+The zip's commit (`b7524d5`) adds only the build number on its own line: the code differs from the release check's in 3 bytes (the number's immediates), and the profile matches every function (strict).
