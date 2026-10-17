@@ -227,6 +227,24 @@ def kmeans(points, k, iterations, seed=0):
     return centres, labels
 
 
+def best_kmeans(points, k, iterations, tries=None):
+    """the centres of the best of several k-means runs (the least summed
+    squared distance): a run's start decides much of where it ends, and with
+    few centres one bad start can leave a texture's few strong colours
+    (a muzzle flash's) without an entry of their own. Small palettes are
+    cheap, so 16 colours take 8 runs; 256 take 2"""
+    if tries is None:
+        tries = 8 if k <= 16 else 2
+    x = np.asarray(points, np.float64)
+    best = None
+    for seed in range(tries):
+        centres, labels = kmeans(x, k, iterations, seed)
+        cost = float(((x - centres[labels]) ** 2).sum())
+        if best is None or cost < best[0]:
+            best = (cost, centres)
+    return best[1]
+
+
 def nearest_centre(points, centres, chunk=16384):
     """each point's nearest centre, in chunks: |c|^2 - 2 x.c (|x|^2 is the
     same for every centre, so left out), in 32-bit floats: colours and Oklab
@@ -262,7 +280,7 @@ def quantize(img, colors):
         sample = pts if len(pts) <= 40000 else pts[np.random.RandomState(0).choice(len(pts), 40000, replace=False)]
         # up to 60 rounds (scikit-learn's call stopped at 25): fewer palettes
         # end worse than its did (8 of 48 against 11 at 25, test textures)
-        pal, _ = kmeans(sample, colors, 60)
+        pal = best_kmeans(sample, colors, 60)
         idx = nearest_centre(pts, pal)
     pal = np.clip(np.rint(pal), 0, 255).astype(np.uint8)
     if ch == 3:

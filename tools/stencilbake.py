@@ -607,10 +607,16 @@ def coverage_compare(stats, V, S, T, outs):
         return
     stats['compare: triangles compared'] += 1
     new_a, old_a = layer_areas(T, outs), layer_areas(old, outs)
-    scale = max(1e-12, abs(cross(V[0], V[1], V[2])) / 2)
+    # the source triangle is the faces' whole area (each cut covers it once)
+    scale = max(1e-12, sum(abs(cross(T['vertices'][a], T['vertices'][b], T['vertices'][c])) / 2
+                           for a, b, c in T['triangles']))
     worst = max([abs(n - o) / scale for n, o in zip(new_a, old_a)] + [0.0])
     if worst > 1e-6:
         stats['compare: layer coverage differs'] += 1
+        old_total = sum(abs(cross(old['vertices'][a], old['vertices'][b], old['vertices'][c])) / 2
+                        for a, b, c in old['triangles'])
+        print('compare: differs: the cut covers %.6g (Triangle\'s %.6g); layers %s against %s' % (
+            scale, old_total, ', '.join('%.6g' % x for x in new_a), ', '.join('%.6g' % x for x in old_a)))
     stats['compare: largest coverage difference (ppm of the triangle)'] = max(
         stats.get('compare: largest coverage difference (ppm of the triangle)', 0), int(round(worst * 1e6)))
 
