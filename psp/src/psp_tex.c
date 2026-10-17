@@ -43,7 +43,7 @@ struct pack_entry
 	unsigned int offset, size;
 };
 
-#define VRAM_CACHE_START 0x000D8000 /* after two frame buffers, the depth buffer, the motion sensor's 16 KB target and the button glyph sheet's 32 KB (psp_ge.c) */
+#define VRAM_CACHE_START 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
 #define VRAM_CACHE_END_FULL 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
 /* build 93: benchrun keeps VRAM's last 256 KB for its bus tests (the display
 list in VRAM, the VRAM-only GE load; psp_ge.c), for the whole run so every
@@ -52,7 +52,7 @@ switch has the same texture placement */
 static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
 /* build 117: the VRAM given to the model buffers by default, in KB */
-#define VRAM_MODELS_DEFAULT_KB 592 /* half the room after the glyph sheet (0xD8000 to the end: 1,184 KB): the most the check below allows, which refused 600 and left the models in main RAM */
+#define VRAM_MODELS_DEFAULT_KB 600
 /* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
 of the most-read model buffers (psp_tex_vram_models) */
 static unsigned int vram_models_bytes = 0;
@@ -254,6 +254,14 @@ reading, and how many frames drew something untextured meanwhile */
 static int squeezed = 0;
 /* build 68: the geometry cache's share at the end of the block (psp_geo.c) */
 static unsigned int ram_cache_bytes = 0, carved_bytes = 0;
+/* the first 32 KB of the RAM block hold the button glyph sheet (psp_ge.c,
+glyph_sheet), outside the texture cache. In VRAM the sheet cut the models'
+room (vrammodels' check allows at most half the room after it); here it
+costs the RAM cache 32 KB of its 4 MB. The block goes back to the system
+while the PSP sleeps, so each acquisition has a generation, and psp_ge.c
+unpacks the sheet again when it changes */
+#define GLYPH_ROOM_BYTES (32 * 1024)
+static unsigned int ram_cache_generation = 0;
 
 static void ram_cache_acquire(void)
 {
@@ -280,13 +288,16 @@ static void ram_cache_acquire(void)
 		size = 0;
 	if ((unsigned int)size > ram_cache_bytes - carved_bytes)
 		size = (int)(ram_cache_bytes - carved_bytes);
+	if (size < GLYPH_ROOM_BYTES)
+		size = GLYPH_ROOM_BYTES;
 	if (ram_cache)
 	{
-		arenas[1].start = arenas[1].next = (unsigned int)ram_cache;
+		ram_cache_generation++;
+		arenas[1].start = arenas[1].next = (unsigned int)ram_cache + GLYPH_ROOM_BYTES;
 		arenas[1].end = (unsigned int)ram_cache + size;
 		sceKernelDcacheWritebackInvalidateRange(ram_cache, given);
 	}
-	platform_log("textures: RAM cache %d KB (%s%s%s)", size / 1024, volatile_locked ? "volatile partition" : "heap",
+	platform_log("textures: RAM cache %d KB (%s%s%s; the glyph sheet's 32 KB before it)", (size - GLYPH_ROOM_BYTES) / 1024, volatile_locked ? "volatile partition" : "heap",
 		squeezed == 1 ? ", squeezed by keep.txt" : squeezed == 2 ? ", left empty by keep.txt" : "",
 		carved_bytes ? ", the rest the geometry cache's" : "");
 }
@@ -300,7 +311,7 @@ void *psp_tex_carve(unsigned int bytes)
 
 	if (!ram_cache)
 		ram_cache_acquire();
-	if (!ram_cache || bytes > ram_cache_bytes)
+	if (!ram_cache || bytes > ram_cache_bytes - GLYPH_ROOM_BYTES)
 		return NULL;
 	carved_bytes = bytes;
 	/* the cache runs to the carve, wherever the last map's carve left it: a
@@ -323,6 +334,16 @@ void *psp_tex_carve(unsigned int bytes)
 			resident_at[index] + alignment(entries[index].size) > arenas[1].end)
 			resident_at[index] = 0;
 	return bytes ? (void *)((unsigned int)ram_cache + ram_cache_bytes - carved_bytes) : NULL;
+}
+
+/* the glyph sheet's room at the RAM block's start (NULL without a block) and
+the block's generation: a new one means the sheet must be unpacked again */
+void *psp_tex_glyph_room(unsigned int *generation)
+{
+	if (!ram_cache)
+		ram_cache_acquire();
+	*generation = ram_cache_generation;
+	return ram_cache;
 }
 
 /* build 106: the bytes carved now (the geometry cache's, then the animation
