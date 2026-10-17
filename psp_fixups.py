@@ -775,9 +775,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 #endif"""),
 ("	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);",
  """#ifdef HALO_PSP
-	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB
-	(psp_fixups.py) */
-	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x10000 ? stack_size : 0x10000);
+	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB.
+	The deepest any of these threads has gone, in every log the lab holds
+	from both builds, is under 11 KB (the main menu's saved-game check;
+	the cache file thread under 5 KB, the others under 2 KB): 48 KB keeps
+	four times that. Stacks come from the free user RAM above the heap,
+	where what they leave can take a block off the heap (psp_ge.c's
+	see-through table) (psp_fixups.py) */
+	pthread_attr_setstacksize(&thread_attributes, stack_size > 0xC000 ? stack_size : 0xC000);
 #else
 	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);
 #endif"""),
@@ -789,6 +794,13 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 "source/rasterizer/rasterizer_lights.c": [
 ("static byte local_lens_flare_occlusion_test_results2[MAXIMUM_LENS_FLARE_MARKERS_PER_STRUCTURE+MAXIMUM_QUEUED_LENS_FLARES][MAXIMUM_WINDOWS];",
  "static byte local_lens_flare_occlusion_test_results2[PSP_LENS_FLARE_MARKERS+MAXIMUM_QUEUED_LENS_FLARES][PSP_LENS_FLARE_WINDOWS];"),
+# each light's flare results for one window, not the Xbox's four split-screen
+# views: 896 lights x 8 flares x 3 unused windows was 21 KB of .bss, and the
+# PSP draws one view (window 0, as the marker results above)
+("	byte data[MAXIMUM_LENS_FLARES_PER_LIGHT][MAXIMUM_WINDOWS];",
+ "	byte data[MAXIMUM_LENS_FLARES_PER_LIGHT][PSP_LENS_FLARE_WINDOWS];"),
+("		[lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask];",
+ "		[(lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) % PSP_LENS_FLARE_WINDOWS];"),
 ("""		local_lens_flare_count= 0;
 	}
 
