@@ -117,8 +117,14 @@ static int *error_slot(void)
 #define last_error (*error_slot())
 
 /* keep word "adhoc": every call goes to psp_net_adhoc.c (decided at
-start-up, psp_net_start) */
+start-up, psp_net_start). Ad hoc play needs a PSP that hosts, so a build
+that hosts nothing (no PSP_MP_HOST: psp_limits.h's PSP_MP_CLIENT_ONLY) has
+none, and the linker drops psp_net_adhoc.c's code */
+#ifdef PSP_MP_HOST
 static int adhoc_mode;
+#else
+enum { adhoc_mode = 0 };
+#endif
 
 /* an ad hoc call's answer (minus a Winsock code on failure) as this file's */
 static int adhoc_result(int result)
@@ -612,6 +618,7 @@ void psp_net_start(void)
 	wifi.start_tried = 1;
 	/* mp5: ad hoc, PSP to PSP (psp_net_adhoc.c), its own modules and the
 	same pool */
+#ifdef PSP_MP_HOST
 	if (psp_keep("adhoc"))
 	{
 		adhoc_mode = 1;
@@ -619,6 +626,7 @@ void psp_net_start(void)
 		psp_adhoc_start(pool_kb < 64 ? 64 : pool_kb > 1024 ? 1024 : pool_kb);
 		return;
 	}
+#endif
 	/* (what the modules and the stack take, measured: the RAM the
 	multiplayer build has to leave free outside its heap) */
 	free_kb = (int)sceKernelTotalFreeMemSize() / 1024;

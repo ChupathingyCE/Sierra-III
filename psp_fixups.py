@@ -10695,6 +10695,260 @@ FIXES_MULTIPLAYER["port/linux/game/network_distributed.c#aligned"] = [
 			word length;""")),
 ]
 
+# ---------- the multiplayer build as a client (Sheepdog01, 2026-10-17)
+# Hosting and ad hoc are dropped until the campaign reaches its performance
+# targets (they come back as co-op's prerequisite). psp_limits.h's
+# PSP_MP_CLIENT_ONLY (unless PSP_MP_HOST=1 or PSP_MP_COOP=1): no server is
+# ever created, so the host's records are one slot each, and the few that a
+# client's new game clears stop at their own size. Every other use of them
+# is behind a server (game_connection() is never _network_server without
+# one: the use map in docs/mp_client_only.md). About 590 KB of the heap
+FIXES_MPCLIENT = {}
+# the one way a server comes to exist: System Link's create, split screen,
+# the quick-setup host
+FIXES_MPCLIENT["source/networking/network_game_globals.c#client"] = [
+("""boolean create_global_network_game_server(
+	void)
+{
+""",
+ """boolean create_global_network_game_server(
+	void)
+{
+#ifdef PSP_MP_CLIENT_ONLY
+	/* psp_fixups.py (FIXES_MPCLIENT): this build joins games only */
+	return FALSE;
+#endif
+"""),
+]
+# The host's ring of its game updates. A local game (the main menu, a map
+# loaded on its own) builds each update and takes it at once
+# (update_client_local_ticks), so it needs one; only a host keeps more, for
+# its clients. The campaign build compiles this file too: unchanged there
+FIXES_MPCLIENT["source/game/player_queues_new.c#client"] = [
+("""	MAXIMUM_SERVER_UPDATES = 32,""",
+ """#ifdef PSP_MP_CLIENT_ONLY
+	/* psp_fixups.py (FIXES_MPCLIENT): a local game's one update */
+	MAXIMUM_SERVER_UPDATES = 1,
+#else
+	MAXIMUM_SERVER_UPDATES = 32,
+#endif"""),
+]
+# (each late joiner's starting players: one slot per machine, which
+# PSP_HOST_MAXIMUM_NETWORK_MACHINES already sizes; its two bounds follow it)
+FIXES_MPCLIENT["source/networking/network_server_manager.c#client"] = [
+("""	if (machine->machine_index >= 0 && machine->machine_index < MAXIMUM_NETWORK_MACHINE_COUNT)
+	{
+		csmemcpy(late_joiner_players[machine->machine_index], server->game.players,""",
+ """	if (machine->machine_index >= 0 && machine->machine_index < (short)NUMBEROF(late_joiner_players))
+	{
+		csmemcpy(late_joiner_players[machine->machine_index], server->game.players,"""),
+("""		machine->machine_index >= 0 && machine->machine_index < MAXIMUM_NETWORK_MACHINE_COUNT)
+	{
+		struct network_player *started = late_joiner_players[machine->machine_index];""",
+ """		machine->machine_index >= 0 && machine->machine_index < (short)NUMBEROF(late_joiner_players))
+	{
+		struct network_player *started = late_joiner_players[machine->machine_index];"""),
+]
+# The objects the host tells its clients about, and where each client's
+# players are. A client's new game clears its own records to the objects'
+# full count and the host's to theirs; the host's entry points return at
+# once, a second guard on top of the server they need
+NO_HOST = """#ifdef PSP_MP_CLIENT_ONLY
+	return; /* psp_fixups.py (FIXES_MPCLIENT): never a host */
+#endif
+"""
+FIXES_MPCLIENT["port/linux/game/network_objects.c#client"] = [
+("""static long objects_host_told[MAXIMUM_TRACKED_OBJECTS];""",
+ """/* psp_fixups.py (FIXES_MPCLIENT): the host's records, one slot each in a
+build that hosts nothing */
+#ifdef PSP_MP_CLIENT_ONLY
+#define HOST_OBJECTS 1
+#define HOST_MACHINES 1
+#define HOST_PLAYERS 1
+#else
+#define HOST_OBJECTS MAXIMUM_TRACKED_OBJECTS
+#define HOST_MACHINES HALO_PORT_MAXIMUM_NETWORK_MACHINES
+#define HOST_PLAYERS MAXIMUM_TRACKED_PLAYERS
+#endif
+static long objects_host_told[HOST_OBJECTS];"""),
+("""static boolean objects_host_state_moving[MAXIMUM_TRACKED_OBJECTS];
+static long objects_host_rest_times[MAXIMUM_TRACKED_OBJECTS];""",
+ """static boolean objects_host_state_moving[HOST_OBJECTS];
+static long objects_host_rest_times[HOST_OBJECTS];"""),
+("""} objects_host_inventories[MAXIMUM_TRACKED_OBJECTS];""",
+ """} objects_host_inventories[HOST_OBJECTS];"""),
+("""	long indices[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+	short player_unit_count;
+	real_point3d player_unit_origins[MAXIMUM_TRACKED_PLAYERS];""",
+ """	long indices[HOST_MACHINES];
+	short player_unit_count;
+	real_point3d player_unit_origins[HOST_PLAYERS];"""),
+("""		short vehicle_player_indices[MAXIMUM_LOCAL_PLAYERS];
+	} machines[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+} objects_host_viewers;""",
+ """		short vehicle_player_indices[MAXIMUM_LOCAL_PLAYERS];
+	} machines[HOST_MACHINES];
+} objects_host_viewers;"""),
+("""} objects_host_machines[HALO_PORT_MAXIMUM_NETWORK_MACHINES];""",
+ """} objects_host_machines[HOST_MACHINES];"""),
+("""} objects_host_vehicle_predictions[MAXIMUM_TRACKED_PLAYERS];""",
+ """} objects_host_vehicle_predictions[HOST_PLAYERS];"""),
+("""	static boolean seen[MAXIMUM_TRACKED_OBJECTS];
+	struct distributed_object_change_message message;
+	short count = 0;""",
+ """	static boolean seen[HOST_OBJECTS];
+	struct distributed_object_change_message message;
+	short count = 0;"""),
+("""	for (absolute_index = 0; absolute_index < MAXIMUM_TRACKED_OBJECTS; absolute_index++)
+	{
+		objects_host_told[absolute_index] = NONE;
+		objects_host_state_moving[absolute_index] = FALSE;
+		objects_host_rest_times[absolute_index] = NONE;
+		objects_host_inventories[absolute_index].carried_time = NONE;
+		objects_host_inventories[absolute_index].ammunition_time = NONE;
+		objects_client_has[absolute_index] = NONE;
+		objects_client_dead[absolute_index].object_index = NONE;
+	}""",
+ """	for (absolute_index = 0; absolute_index < HOST_OBJECTS; absolute_index++)
+	{
+		objects_host_told[absolute_index] = NONE;
+		objects_host_state_moving[absolute_index] = FALSE;
+		objects_host_rest_times[absolute_index] = NONE;
+		objects_host_inventories[absolute_index].carried_time = NONE;
+		objects_host_inventories[absolute_index].ammunition_time = NONE;
+	}
+	for (absolute_index = 0; absolute_index < MAXIMUM_TRACKED_OBJECTS; absolute_index++)
+	{
+		objects_client_has[absolute_index] = NONE;
+		objects_client_dead[absolute_index].object_index = NONE;
+	}"""),
+("""	for (machine_index = 0; machine_index < HALO_PORT_MAXIMUM_NETWORK_MACHINES; machine_index++)
+		objects_host_machines[machine_index].time = NONE;
+	csmemset(objects_host_vehicle_predictions, 0, sizeof(objects_host_vehicle_predictions));
+	for (index = 0; index < MAXIMUM_TRACKED_PLAYERS; index++)""",
+ """	for (machine_index = 0; machine_index < HOST_MACHINES; machine_index++)
+		objects_host_machines[machine_index].time = NONE;
+	csmemset(objects_host_vehicle_predictions, 0, sizeof(objects_host_vehicle_predictions));
+	for (index = 0; index < HOST_PLAYERS; index++)"""),
+("""void network_objects_host_tick(
+	void)
+{
+""",
+ """void network_objects_host_tick(
+	void)
+{
+""" + NO_HOST),
+("""void network_objects_client_asked(
+	long machine_index,
+	boolean again)
+{
+	struct distributed_object_change_message message;
+	short count = 0;
+	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, RELIABLE_ENTRIES(struct distributed_object_change));
+""",
+ """void network_objects_client_asked(
+	long machine_index,
+	boolean again)
+{
+	struct distributed_object_change_message message;
+	short count = 0;
+	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, RELIABLE_ENTRIES(struct distributed_object_change));
+""" + NO_HOST),
+("""void network_objects_handle_vehicle_prediction(
+	long machine_index,
+	void const *entries,
+	short count)
+{
+	struct distributed_object_state const *states = (struct distributed_object_state const *)entries;
+	short index;
+""",
+ """void network_objects_handle_vehicle_prediction(
+	long machine_index,
+	void const *entries,
+	short count)
+{
+	struct distributed_object_state const *states = (struct distributed_object_state const *)entries;
+	short index;
+""" + NO_HOST),
+("""void network_objects_apply_vehicle_predictions(
+	void)
+{
+	long now = game_time_get();
+	short player_index;
+""",
+ """void network_objects_apply_vehicle_predictions(
+	void)
+{
+	long now = game_time_get();
+	short player_index;
+""" + NO_HOST),
+]
+# The distributed netcode's host records, and its per-sender ones. A client
+# hears only the host (sender HOST_SENDER: a message with no machine index),
+# so with one sender slot the host is slot 0. A client's new game clears its
+# own records to the players' full count and the host's to theirs
+FIXES_MPCLIENT["port/linux/game/network_distributed.c#client"] = [
+("""	MAXIMUM_SENDERS = HALO_PORT_MAXIMUM_NETWORK_MACHINES + 1,
+	HOST_SENDER = HALO_PORT_MAXIMUM_NETWORK_MACHINES,""",
+ """#ifdef PSP_MP_CLIENT_ONLY
+	/* psp_fixups.py (FIXES_MPCLIENT): the host alone, a client's one sender */
+	MAXIMUM_SENDERS = 1,
+	HOST_SENDER = 0,
+#else
+	MAXIMUM_SENDERS = HALO_PORT_MAXIMUM_NETWORK_MACHINES + 1,
+	HOST_SENDER = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+#endif
+	/* the host's records' sizes: one slot each in a build that hosts nothing */
+#ifdef PSP_MP_CLIENT_ONLY
+	HOST_MACHINES = 1,
+	HOST_PLAYERS = 1,
+#else
+	HOST_MACHINES = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+	HOST_PLAYERS = MAXIMUM_TRACKED_PLAYERS,
+#endif"""),
+("""} distributed_predictions[MAXIMUM_TRACKED_PLAYERS];""", """} distributed_predictions[HOST_PLAYERS];"""),
+("""} distributed_accepted[MAXIMUM_TRACKED_PLAYERS];""", """} distributed_accepted[HOST_PLAYERS];"""),
+("""} distributed_host_speeds[MAXIMUM_TRACKED_PLAYERS];""", """} distributed_host_speeds[HOST_PLAYERS];"""),
+("""static boolean distributed_seen[HALO_PORT_MAXIMUM_NETWORK_MACHINES][MAXIMUM_TRACKED_PLAYERS];""",
+ """static boolean distributed_seen[HOST_MACHINES][MAXIMUM_TRACKED_PLAYERS];"""),
+("""} distributed_viewers[HALO_PORT_MAXIMUM_NETWORK_MACHINES][MAXIMUM_LOCAL_PLAYERS];""",
+ """} distributed_viewers[HOST_MACHINES][MAXIMUM_LOCAL_PLAYERS];"""),
+("""static struct distributed_unit_state distributed_host_states[MAXIMUM_TRACKED_PLAYERS];""",
+ """static struct distributed_unit_state distributed_host_states[HOST_PLAYERS];"""),
+("""static byte distributed_sends[HALO_PORT_MAXIMUM_NETWORK_MACHINES][MAXIMUM_TRACKED_PLAYERS];""",
+ """static byte distributed_sends[HOST_MACHINES][MAXIMUM_TRACKED_PLAYERS];"""),
+("""static struct distributed_client_identity distributed_client_identities[HALO_PORT_MAXIMUM_NETWORK_MACHINES];""",
+ """static struct distributed_client_identity distributed_client_identities[HOST_MACHINES];"""),
+("""	for (player_index = 0; player_index < MAXIMUM_TRACKED_PLAYERS; player_index++)
+	{
+		distributed_predictions[player_index].taken_host_time = NONE;
+		distributed_host_speeds[player_index].unit_index = NONE;
+		distributed_player_machines[player_index] = NONE;
+	}""",
+ """	for (player_index = 0; player_index < HOST_PLAYERS; player_index++)
+	{
+		distributed_predictions[player_index].taken_host_time = NONE;
+		distributed_host_speeds[player_index].unit_index = NONE;
+	}
+	for (player_index = 0; player_index < MAXIMUM_TRACKED_PLAYERS; player_index++)
+		distributed_player_machines[player_index] = NONE;"""),
+# (a machine's sender slot: none past the host's in a build with one)
+("""	if (machine_index < 0 || machine_index >= HALO_PORT_MAXIMUM_NETWORK_MACHINES)
+		return;
+	distributed_fill_header(message, type, count, size);
+	distributed_batch_add((short)machine_index, message, size, distributed_entry_size(count, size));""",
+ """	if (machine_index < 0 || machine_index >= HALO_PORT_MAXIMUM_NETWORK_MACHINES || machine_index >= HOST_SENDER)
+		return;
+	distributed_fill_header(message, type, count, size);
+	distributed_batch_add((short)machine_index, message, size, distributed_entry_size(count, size));"""),
+("""	if (machine_index < 0 || machine_index >= HALO_PORT_MAXIMUM_NETWORK_MACHINES)
+		return FALSE;
+	player_list = machine_get_player_list(machine_index);""",
+ """	if (machine_index < 0 || machine_index >= HOST_MACHINES || machine_index >= HOST_SENDER)
+		return FALSE;
+	player_list = machine_get_player_list(machine_index);"""),
+]
+
 # ---------- network packets: values at any byte offset (mp1 on the PSP)
 # A packet is written one value after another into a byte buffer
 # (data_encoding.c), so a 2-, 4- or 8-byte value can start at any address.
@@ -22511,7 +22765,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
