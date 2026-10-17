@@ -20,8 +20,6 @@ the menus' ui.map):
   5. bakes the level's wall decals into its walls (.pstn)
   6. reads the loading screen's chant from the disc's default.xbe into
      halo/chant.adp (lib/chant.py; the EBOOT carries no copy)
-  then, once: the loading screen's picture from the disc's maps/loading.tga
-     into halo/maps/loading.pic (lib/loading_picture.py; the EBOOT carries none)
   7. with --eboot: cuts the XMB menu's sound from the music on your disc and
      writes a copy of the release EBOOT with it (lib/snd0.py)
 
@@ -150,34 +148,6 @@ def gather(source, work, wanted):
                         iso.extract(listing[key], destination)
                     found[name] = destination
     return found
-
-
-def bake_loading_picture(source, work, out_maps):
-    """the loading screen's picture from the disc's maps/loading.tga into
-    halo/maps/loading.pic (lib/loading_picture.py); without it the loading
-    screen draws its trail alone"""
-    sys.path.insert(0, LIB)
-    import loading_picture
-    tga = None
-    if os.path.isdir(source):
-        for candidate in (os.path.join(source, 'loading.tga'), os.path.join(source, 'maps', 'loading.tga')):
-            if os.path.exists(candidate):
-                tga = candidate
-                break
-    else:
-        with XIso(source) as iso:
-            listing = {p.lower(): p for p, n in iso.files()}
-            if 'maps/loading.tga' in listing:
-                tga = os.path.join(work, 'retail', 'loading.tga')
-                if not os.path.exists(tga):
-                    iso.extract(listing['maps/loading.tga'], tga)
-    out = os.path.join(out_maps, 'loading.pic')
-    if not tga:
-        log('the loading picture: no maps/loading.tga in %s; the loading screen draws without it' % source)
-    elif loading_picture.write(tga, out):
-        log('the loading picture: %s into %s' % (os.path.basename(tga), out))
-    else:
-        log('the loading picture: %s is not an uncompressed true-colour TGA; left out' % tga)
 
 
 def bake_chant(source, work, output):
@@ -411,10 +381,6 @@ def main():
             failures.append(name)
             log('%s: FAILED: %s' % (name, e))
     bake_chant(a.source, work, a.output)
-    try:
-        bake_loading_picture(a.source, work, out_maps)
-    except Exception as e:
-        log('the loading picture: FAILED: %s' % e)
     if a.eboot:
         menu_eboot(a.eboot, a.music, music_source, a.output, work)
     if not a.keep_work:
