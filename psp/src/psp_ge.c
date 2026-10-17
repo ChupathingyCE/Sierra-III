@@ -4905,13 +4905,21 @@ draws skipped: the floor grating and some walls missing [E, hop-menu-a10;
 M, Sheepdog01's PSP-1000].
 
 On a map whose geometry cache is carved from the texture RAM cache (its
-textures stream as drawn anyway), the copies get a second room carved there
-too, below the geometry and animation caches' shares, as those carve theirs:
-the arena first, then the carve, then the general heap. The texture cache
-keeps the rest of the block. None on the showcase map (its textures are the
-point, and its copies fit the arena), nor with "noarena" (the general heap
-alone, as asked) or "streamsqueezeN" (a test of the arena's own pressure).
-"levelcarveN": its size in KB; "levelcarve0": none, the copies as before.
+textures stream as drawn anyway), the copies may take a second room from
+there too, below the geometry and animation caches' shares, as those carve
+theirs. Every texture byte it takes is one the texture cache can't hold
+(b30 drew untextured for thousands of frames with 512 KB taken at its open
+[E, lab 39061873821]), so it is taken only when the copies need it: at a
+frame's end (the GE done with the textures), when a copy found no room in the
+arena nor a piece of the general heap large enough, or materials wait for
+room that the rooms can't give, the carve grows downward by whole steps
+(LEVEL_CARVE_STEP) to cover it, the textures resident there forgotten as for
+any carve. Then copies go to the arena first, the carve next, the general
+heap last. A carve left empty for CARVE_IDLE_FRAMES goes back to the texture
+cache, and all of it at the map's end. None on the showcase map (its textures
+are the point), nor with "noarena" (the general heap alone, as asked) or
+"streamsqueezeN" (a test of the arena's own pressure). "levelcarveN": the
+most it may take, in KB; "levelcarve0": never, the copies as before.
 
 The block goes back to the system while the PSP sleeps, and the block
 headers in the carve with it. The power callback marks the carve lost: it
@@ -4921,7 +4929,9 @@ again from the geometry pack). Once the block is lent again (a new
 generation from the texture cache) at the same place, the carve starts again
 empty. Until then draws may read what the sleep left there, as the texture
 and geometry caches' do */
-#define LEVEL_CARVE_DEFAULT_KB 512
+#define LEVEL_CARVE_DEFAULT_KB 768
+#define LEVEL_CARVE_STEP (128 * 1024)
+#define CARVE_IDLE_FRAMES 300
 void *psp_tex_carve(unsigned int bytes);       /* psp_tex.c */
 unsigned int psp_tex_carved(void);
 void *psp_tex_carve_now(unsigned int *generation);
@@ -4931,6 +4941,14 @@ static volatile int carve_lost = 0;
 static int carve_dropping = 0;
 static unsigned int carve_generation = 0, carve_given = 0;
 static unsigned long carve_pieces = 0, carve_pieces_peak = 0, carve_peak = 0, carve_sleeps = 0;
+/* this map may carve (carve_most bytes at most, below carve_below bytes the
+other caches carved); what the copies found no room for since the last
+frame's end; a frame-end build that failed though the rooms had the bytes */
+static int carve_allowed = 0, carve_pack_short = 0;
+static unsigned int carve_most = 0, carve_below = 0, carve_want = 0, carve_idle = 0;
+static unsigned long carve_steps = 0, carve_returns = 0;
+unsigned int psp_tex_ram_textures(void);
+static void carve_release(void);
 
 /* a room that takes blocks now */
 static int room_open(const struct copy_room *room)
@@ -5124,33 +5142,21 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 		arena_from_heap++;
 		arena_heap_live++;
 	}
+	/* the rooms and the heap all refused it: the carve may grow for it at
+	the frame's end (carve_grow) */
+	if (!pointer && arena_state > 0)
+		carve_want += size;
 	return pointer;
 }
 
-static void copy_free(void *pointer)
+/* a used block given back to its room, merged with free neighbours */
+static void room_give(struct copy_room *room, struct arena_block *block)
 {
-	struct arena_block *block, *next;
-	struct copy_room *room;
+	struct arena_block *next;
 
-	if (!pointer)
-		return;
-	room = room_of(pointer);
-	if (!room)
-	{
-		if (arena_state > 0 && arena_heap_live)
-			arena_heap_live--;
-		free(pointer);
-		return;
-	}
-	/* a lost carve's headers may be the sleep's: it starts again empty */
-	if (room == CARVE_ROOM && (carve_lost || carve_dropping))
-		return;
-	block = (struct arena_block *)pointer - 1;
 	block->used = 0;
 	block->owner = NULL;
 	room->used -= block->size;
-	if (room == CARVE_ROOM && carve_pieces)
-		carve_pieces--;
 	next = arena_next(room, block);
 	if (next && !next->used)
 		block->size += next->size;
@@ -5167,6 +5173,28 @@ static void copy_free(void *pointer)
 	next = arena_next(room, block);
 	if (next)
 		next->previous = block->size;
+}
+
+static void copy_free(void *pointer)
+{
+	struct copy_room *room;
+
+	if (!pointer)
+		return;
+	room = room_of(pointer);
+	if (!room)
+	{
+		if (arena_state > 0 && arena_heap_live)
+			arena_heap_live--;
+		free(pointer);
+		return;
+	}
+	/* a lost carve's headers may be the sleep's: it starts again empty */
+	if (room == CARVE_ROOM && (carve_lost || carve_dropping))
+		return;
+	if (room == CARVE_ROOM && carve_pieces)
+		carve_pieces--;
+	room_give(room, (struct arena_block *)pointer - 1);
 }
 
 /* build 111: keeping the arena whole between frames.
@@ -5655,8 +5683,9 @@ static void __attribute__((cold)) carve_frame_end(void)
 	{
 		platform_log("GE: the level carve: the texture RAM cache came back with its carve at %08x, not %08x: none for the rest of the map",
 			(unsigned int)at, (unsigned int)CARVE_ROOM->start);
-		CARVE_ROOM->start = NULL;
 		carve_lost = 0;
+		carve_release();
+		carve_allowed = 0;
 		return;
 	}
 	carve_generation = generation;
@@ -5666,53 +5695,42 @@ static void __attribute__((cold)) carve_frame_end(void)
 }
 
 /* the map's tags are loaded and its geometry cache placed (psp_geo.c):
-the level carve, if the map carves one. The copies of the last map are gone
-(psp_ge_forget_map) */
+whether this map may carve, and how much. Nothing is taken yet. The copies of
+the last map are gone (psp_ge_forget_map) */
 void psp_ge_level_carve(int carve_from_textures)
 {
 	extern int psp_showcase_map;
-	unsigned int before, bytes;
 	int kb = psp_keep_number("levelcarve", LEVEL_CARVE_DEFAULT_KB);
-	void *at;
 
 	/* the geometry cache has carved afresh, so the last carve's bytes are
 	the texture cache's again whatever happened to them */
 	carve_let_go_copies();
 	CARVE_ROOM->start = NULL;
+	CARVE_ROOM->used = 0;
 	carve_lost = 0;
-	carve_given = 0;
-	carve_peak = carve_pieces = carve_pieces_peak = 0;
+	carve_allowed = carve_pack_short = 0;
+	carve_given = carve_want = carve_idle = 0;
+	carve_largest = 0;
+	carve_peak = carve_pieces = carve_pieces_peak = carve_steps = carve_returns = 0;
 	if (!carve_from_textures)
 		return; /* the geometry cache from the heap: the textures keep the whole block */
 	if (kb <= 0 || psp_showcase_map || psp_keep("noarena") || psp_keep_number("streamsqueeze", 0) > 0)
 	{
-		platform_log("GE: the level carve: none (%s)", kb <= 0 ? "levelcarve0" : psp_showcase_map ? "the showcase map" :
-			psp_keep("noarena") ? "noarena" : "streamsqueeze");
+		platform_log("GE: the level carve: never on this map (%s)", kb <= 0 ? "levelcarve0" : psp_showcase_map ?
+			"the showcase map" : psp_keep("noarena") ? "noarena" : "streamsqueeze");
 		return;
 	}
 	if (kb > 2048)
 		kb = 2048;
-	bytes = (unsigned int)kb * 1024;
-	before = psp_tex_carved();
-	at = psp_tex_carve(before + bytes);
-	if (!at)
-	{
-		platform_log("GE: the level carve: the texture RAM cache has no %d KB to give (%u KB carved already); none",
-			kb, before / 1024);
-		return;
-	}
-	CARVE_ROOM->start = at;
-	CARVE_ROOM->bytes = bytes;
-	room_reset(CARVE_ROOM);
-	carve_given = bytes;
-	psp_tex_carve_now(&carve_generation);
-	platform_log("GE: the level carve: %d KB at %08x from the texture RAM cache, below the %u KB the geometry and animation caches carved; copies past the arena's %u KB go there before the heap",
-		kb, (unsigned int)at, before / 1024, ARENA_BYTES / 1024);
+	carve_most = (unsigned int)kb * 1024;
+	carve_below = psp_tex_carved();
+	carve_allowed = 1;
+	platform_log("GE: the level carve: up to %d KB from the texture RAM cache, below the %u KB the geometry and animation caches carved, taken %u KB at a time only when the copies have no room in the arena or the heap; the texture RAM cache has %u KB",
+		kb, carve_below / 1024, LEVEL_CARVE_STEP / 1024, psp_tex_ram_textures() / 1024);
 }
 
-/* the map is left: the carve given back to the texture cache (the next map's
-geometry cache carves afresh). Its copies are let go already */
-static void carve_close(void)
+/* the carve given back whole to the texture cache; its copies let go */
+static void carve_release(void)
 {
 	if (!CARVE_ROOM->start)
 		return;
@@ -5720,8 +5738,139 @@ static void carve_close(void)
 	if (carve_given && psp_tex_carved() >= carve_given)
 		psp_tex_carve(psp_tex_carved() - carve_given);
 	CARVE_ROOM->start = NULL;
-	carve_given = 0;
+	CARVE_ROOM->used = 0;
+	carve_given = carve_idle = 0;
+	carve_largest = 0;
 	carve_lost = 0;
+	carve_returns++;
+}
+
+/* the map is left: the carve given back (the next map's geometry cache
+carves afresh) */
+static void carve_close(void)
+{
+	carve_release();
+	carve_allowed = 0;
+}
+
+/* at a frame's end (the GE done with the textures, no copy being built): the
+carve grown downward by whole steps to cover deficit bytes, up to its most;
+the textures resident in what it takes are forgotten (psp_tex_carve). 1: grown */
+static int __attribute__((cold)) carve_grow(unsigned int deficit)
+{
+	unsigned int step = (deficit + LEVEL_CARVE_STEP - 1) / LEVEL_CARVE_STEP * LEVEL_CARVE_STEP;
+	static unsigned int logged = 0;
+	char *at;
+
+	if (!carve_allowed || carve_lost || !deficit)
+		return 0;
+	if (step > carve_most - carve_given)
+		step = carve_most - carve_given;
+	if (!step)
+	{
+		if (!(logged & 1))
+			platform_log("GE: the level carve is at its most (%u KB) and the copies want %u KB more (levelcarveN)",
+				carve_given / 1024, deficit / 1024);
+		logged |= 1;
+		return 0;
+	}
+	/* the carve lies just below the other caches' shares: anything else
+	carved since would sit between */
+	if (psp_tex_carved() != carve_below + carve_given ||
+		!(at = psp_tex_carve(carve_below + carve_given + step)))
+	{
+		if (!(logged & 2))
+			platform_log("GE: the level carve can't grow by %u KB (%u KB carved, %u expected): the copies wait or use the heap",
+				step / 1024, psp_tex_carved() / 1024, (carve_below + carve_given) / 1024);
+		logged |= 2;
+		return 0;
+	}
+	if (!CARVE_ROOM->start)
+	{
+		CARVE_ROOM->start = at;
+		CARVE_ROOM->bytes = step;
+		room_reset(CARVE_ROOM);
+		psp_tex_carve_now(&carve_generation);
+	}
+	else
+	{
+		/* the new step lies right below the carve: a block of its own, given
+		back so it merges with the carve's first block if that is free */
+		struct arena_block *first = (struct arena_block *)at, *old = (struct arena_block *)CARVE_ROOM->start;
+
+		old->previous = step;
+		first->size = step;
+		first->previous = 0;
+		first->used = 1;
+		first->owner = NULL;
+		CARVE_ROOM->start = at;
+		CARVE_ROOM->bytes += step;
+		CARVE_ROOM->used += step;
+		room_give(CARVE_ROOM, first);
+	}
+	carve_given += step;
+	carve_steps++;
+	carve_idle = 0;
+	if (carve_steps <= 16)
+		platform_log("GE: the level carve grew %u KB to %u of %u KB at %08x (the copies wanted %u KB more); the texture RAM cache keeps %u KB",
+			step / 1024, carve_given / 1024, carve_most / 1024, (unsigned int)at, deficit / 1024, psp_tex_ram_textures() / 1024);
+	return 1;
+}
+
+/* at a frame's end, after the arena's housekeeping: what the copies lacked
+this frame (pieces no room took, and the materials waiting for more room
+than the rooms have, copies not drawn this frame counted as room), the carve
+grown for it; a carve left empty given back */
+static void __attribute__((cold)) carve_frame_grow(void)
+{
+	unsigned int deficit = carve_want;
+	int k, index;
+
+	carve_want = 0;
+	if (!carve_allowed || carve_lost)
+	{
+		carve_pack_short = 0;
+		return;
+	}
+	if (stream_room > 0 && stream_waiting_count)
+	{
+		unsigned int need = 0, room = rooms_free();
+
+		for (k = 0; k < stream_waiting_count; k++)
+			if (stream_waiting[k].wanted == ge_hot.stream_frame)
+				need += stream_room_need(stream_waiting[k].count, stream_waiting[k].lightmap_vertices != NULL, level_compact > 0);
+		if (need)
+		{
+			for (index = 0; index < LEVEL_STREAMS; index++)
+			{
+				const struct level_stream *stream = &level_streams[index];
+				struct copy_room *in = stream->base ? room_of(stream->base) : NULL;
+
+				if (in && room_open(in) && stream->last_frame != ge_hot.stream_frame)
+					room += stream_room_need(stream->count, stream->lightmap != NULL, stream->compact_base != NULL);
+			}
+			if (need > room && need - room > deficit)
+				deficit = need - room;
+		}
+	}
+	/* the bytes were there but not in blocks the pieces fit */
+	if (carve_pack_short && deficit < LEVEL_CARVE_STEP)
+		deficit = LEVEL_CARVE_STEP;
+	carve_pack_short = 0;
+	if (deficit && carve_grow(deficit))
+		for (k = 0; k < stream_waiting_count; k++)
+			stream_waiting[k].arena_after = ge_hot.stream_frame;
+	if (CARVE_ROOM->start && !carve_lost)
+	{
+		if (CARVE_ROOM->used)
+			carve_idle = 0;
+		else if (++carve_idle >= CARVE_IDLE_FRAMES)
+		{
+			carve_release();
+			platform_log("GE: the level carve, empty for %d frames, given back to the texture RAM cache (%u KB there now)",
+				CARVE_IDLE_FRAMES, psp_tex_ram_textures() / 1024);
+		}
+	}
 }
 
 /* with the copies' room reports: what the carve holds, and the most it has */
@@ -5729,14 +5878,16 @@ static void __attribute__((cold)) carve_report(void)
 {
 	int index, copies = 0;
 
-	if (!CARVE_ROOM->start)
+	if (!carve_allowed)
 		return;
-	for (index = 0; index < LEVEL_STREAMS; index++)
-		if (level_streams[index].base && carve_holds(&level_streams[index]))
-			copies++;
-	platform_log("GE: the level carve: %d copies with pieces in it now (%lu pieces, %lu of %u KB, largest free %u KB); peak %lu KB, %lu pieces; lost to a sleep %lu times%s",
-		copies, carve_pieces, CARVE_ROOM->used / 1024, CARVE_ROOM->bytes / 1024, carve_largest / 1024, carve_peak / 1024,
-		carve_pieces_peak, carve_sleeps, carve_lost ? " (lost now)" : "");
+	if (CARVE_ROOM->start)
+		for (index = 0; index < LEVEL_STREAMS; index++)
+			if (level_streams[index].base && carve_holds(&level_streams[index]))
+				copies++;
+	platform_log("GE: the level carve: %u of %u KB taken (%lu steps, given back %lu times), the texture RAM cache keeping %u KB; %d copies with pieces in it now (%lu pieces, %lu KB used, largest free %u KB); peak %lu KB, %lu pieces; lost to a sleep %lu times%s",
+		carve_given / 1024, carve_most / 1024, carve_steps, carve_returns, psp_tex_ram_textures() / 1024, copies, carve_pieces,
+		CARVE_ROOM->start ? CARVE_ROOM->used / 1024 : 0, carve_largest / 1024, carve_peak / 1024, carve_pieces_peak,
+		carve_sleeps, carve_lost ? " (lost now)" : "");
 }
 
 /* the power callback's thread, before the PSP sleeps: the carve goes back to
@@ -5761,21 +5912,23 @@ static void __attribute__((cold)) arena_frame_end(void)
 	carve_largest = largest[1];
 	if (arena_compact_on < 0)
 		arena_compact_on = !psp_keep("nocompact");
-	if (!arena_compact_on)
-		return;
-	overflowed = arena_from_heap != arena_seen_from_heap;
-	arena_seen_from_heap = arena_from_heap;
-	for (k = 0; k < 2; k++)
-		if (free_total[k] >= 64 * 1024 && largest[k] < free_total[k] / 2 &&
-			(overflowed || ge_hot.stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY))
-		{
-			arena_compact(&rooms[k]);
-			compacted = 1;
-		}
-	if (compacted)
-		arena_last_compact = ge_hot.stream_frame;
-	if (arena_heap_live)
-		arena_migrate();
+	if (arena_compact_on)
+	{
+		overflowed = arena_from_heap != arena_seen_from_heap;
+		arena_seen_from_heap = arena_from_heap;
+		for (k = 0; k < 2; k++)
+			if (free_total[k] >= 64 * 1024 && largest[k] < free_total[k] / 2 &&
+				(overflowed || ge_hot.stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY))
+			{
+				arena_compact(&rooms[k]);
+				compacted = 1;
+			}
+		if (compacted)
+			arena_last_compact = ge_hot.stream_frame;
+		if (arena_heap_live)
+			arena_migrate();
+	}
+	carve_frame_grow();
 }
 
 /* level_stream_get's question: 1 when the material waits for room (its draw
@@ -6635,7 +6788,10 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 			stream_waiting[k--] = stream_waiting[--stream_waiting_count];
 		}
 		else if (on_arena)
+		{
 			stream_waiting[k].arena_after = ge_hot.stream_frame + STREAM_HEAP_RETRY;
+			carve_pack_short = 1;
+		}
 		stream_room_building = 0;
 	}
 	/* once a second while anything happens; every ten while a material only waits */

@@ -362,6 +362,12 @@ void *psp_tex_carve_now(unsigned int *generation)
 	return (void *)((unsigned int)ram_cache + ram_cache_bytes - carved_bytes);
 }
 
+/* the RAM the texture cache itself has now, for the level carve's log */
+unsigned int psp_tex_ram_textures(void)
+{
+	return arenas[1].end > arenas[1].start ? arenas[1].end - arenas[1].start : 0;
+}
+
 /* build 106: the bytes carved now (the geometry cache's, then the animation
 cache's on top: psp_anim.c carves this plus its own) */
 unsigned int psp_tex_carved(void)
