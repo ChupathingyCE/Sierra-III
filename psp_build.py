@@ -28,7 +28,6 @@ SDK = PSPDEV + "/psp/sdk"
 # PSP_MECORE names a separate install prefix holding include/me-core-mapper and lib/
 MECORE = os.environ.get("PSP_MECORE", "")
 JOBS = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else 2
-GAME_STATE_BASE = 0x092A0000   # psp_capacity.h (build 113: 64 KB lower)
 TAG_WINDOW_BASE = 0x09600000   # psp_capacity.h, physical_memory_map.c
 PROGRAM_BASE = 0x08804000      # where the kernel loads the module (first fit, low)
 STACK_RESERVE = 0x40000        # main thread and other low allocations made before the heap
@@ -63,6 +62,9 @@ def multiplayer_unit(rel):
 # host (psp/src/psp_nocoop.c answers it, as the campaign build's does).
 # PSP_MP_COOP=1 builds the co-op units back in
 MP_COOP = os.environ.get("PSP_MP_COOP", "") == "1"
+# psp_capacity.h (build 113: 64 KB lower; the multiplayer build without
+# co-op 640 KB higher, its pools for AI small)
+GAME_STATE_BASE = 0x092A0000 + (0xA0000 if MULTIPLAYER and not MP_COOP and os.environ.get("PSP_BIG_RAM", "") != "1" else 0)
 COOP_UNITS = ("port/linux/game/coop_", "port/linux/game/network_coop.c", "port/linux/game/network_actors.c")
 def coop_unit(rel):
     return rel.startswith(COOP_UNITS)
@@ -243,7 +245,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -425,6 +427,7 @@ def compile_one(item):
                # (psp_paths.h, by quoted includes only: psp/include's stand-in
                # system headers stay out of these units)
                "-iquote", os.path.join(HERE, "psp/include")] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (
+               ["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (

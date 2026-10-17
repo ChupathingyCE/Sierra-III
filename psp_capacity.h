@@ -29,7 +29,7 @@ more below; the heap gives them. It must end at or below 0x09600000 */
 window (PSP_PGO=generate's counters need it) */
 #define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x0AC00000
 #else
-#define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x092A0000 /* PSP: just below the tag window (0x09600000) */
+#define HALO_PORT_GAME_STATE_BASE_ADDRESS (0x092A0000 + PSP_MP_GAME_STATE_SAVED) /* PSP: just below the tag window (0x09600000) */
 #endif
 /* PSP, build 107: 64 KB moved from the GPU part to the CPU part, the total
 unchanged. The GPU part holds only the decal vertices, 160 KB
@@ -40,7 +40,18 @@ since checkpoints save the whole buffer, but one more allocation would have
 put the CPU part's end inside the decal vertices) */
 /* build 113: 64 KB more, for the render-state cache's 256 more entries of
 256 bytes (b112 left 65 KB of the CPU part unallocated) */
-#define HALO_PORT_GAME_STATE_CPU_SIZE 0x325000 /* (0x305000; b107-b112 0x315000) */
+/* The multiplayer build, a client: its maps have no AI, so its actor and
+prop pools (457 and 234 KB; the multiplayer maps' peak is 0 of both) are
+kept small, and the game state's CPU part is 640 KB shorter. It starts 640
+KB higher, ending where it did, and the heap below takes the room
+(psp_build.py's GAME_STATE_BASE follows). PSP_MP_COOP=1 (co-op, a campaign
+game) keeps the campaign's pools */
+#if defined(PSP_MULTIPLAYER) && !defined(PSP_MP_COOP) && !defined(PSP_RECON_64MB)
+#define PSP_MP_GAME_STATE_SAVED 0xA0000
+#else
+#define PSP_MP_GAME_STATE_SAVED 0
+#endif
+#define HALO_PORT_GAME_STATE_CPU_SIZE (0x325000 - PSP_MP_GAME_STATE_SAVED) /* (0x305000; b107-b112 0x315000) */
 #define HALO_PORT_GAME_STATE_GPU_SIZE 0x30000 /* (0x40000) */
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
 #ifndef PSP_RECON_64MB
@@ -97,8 +108,14 @@ PSP's heap can't spare */
 
 /* ---------- AI */
 
+#if PSP_MP_GAME_STATE_SAVED
+/* the multiplayer build's (above); a custom map's few actors still fit */
+#define HALO_PORT_MAXIMUM_ACTORS 8
+#define HALO_PORT_MAXIMUM_PROPS 32
+#else
 #define HALO_PORT_MAXIMUM_ACTORS 256
 #define HALO_PORT_MAXIMUM_PROPS 768
+#endif
 #define HALO_PORT_MAXIMUM_SWARMS 32
 #define HALO_PORT_MAXIMUM_SWARM_COMPONENTS 256
 
