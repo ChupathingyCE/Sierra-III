@@ -353,6 +353,7 @@ static int inflight_finish_left = 0; /* geinflight: the list's finish waits for 
 CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
 static int replay_inflight = 0;
+static int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
@@ -515,6 +516,9 @@ static void defer_frame_begin(void)
 				/* geinflight too: its frame is carried out after the next
 				ticks, so a query in them reads what is built, as on the ME */
 				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench || inflight_on;
+				replay_kinds_on = psp_keep("mekinds") != 0;
+				if (replay_kinds_on)
+					platform_log("GE: mekinds: each record kind timed as it's carried out, the main CPU's and the ME's apart (a line each 300 frames)");
 				if (me_bench)
 					platform_log("GE: mebench: the GE layer's work on the main CPU, on the ME serially, and overlapped, in turns of %d frames; the frame pacing off",
 						ME_BENCH_FRAMES);
@@ -970,9 +974,73 @@ static void inflight_serve(void)
 	psp_me_serve_ring();
 }
 
+/* "mekinds" (recon): each record kind's time as it's carried out, kept apart
+for each CPU that carried it out. On the ME the frame's job is otherwise one
+number (ge_clock reads nothing there), and the ME takes 2-3x the main CPU's
+time for the same work: an A/B of the two sides by kind says where. The ME
+reads its cycle counter (one instruction); the main CPU the system clock,
+once a record. Simulated ME work (gemesim) isn't timed: the clock is a system
+call the ME can't make. Set at launch with the replay's other words; off, one
+test a run */
+#define REPLAY_SERVED (DEFER_WINDOW_BEGIN + 1) /* audio and the ring served between records */
+#define REPLAY_KINDS (REPLAY_SERVED + 1)
+struct replay_kind_times
+{
+	unsigned long long ticks[2][REPLAY_KINDS]; /* [0] main CPU, us; [1] ME, cycles */
+	unsigned int records[2][REPLAY_KINDS];
+	unsigned int runs[2];
+} __attribute__((aligned(64))); /* a line of its own: the ME writes it while the main CPU runs on */
+static struct replay_kind_times replay_kinds;
+static const char *const replay_kind_names[REPLAY_KINDS] =
+{
+	[0] = "unknown", [DEFER_MODEL_BEGIN] = "model begin", [DEFER_MODEL_SHAPE] = "model shape",
+	[DEFER_MODEL_EFFECT] = "model effect", [DEFER_MODEL_MULTIPURPOSE] = "model multipurpose",
+	[DEFER_DRAW_MODEL] = "model part draws", [DEFER_QUEUE_TRANSPARENT] = "see-through queued",
+	[DEFER_FOG] = "fog", [DEFER_WINDOW_TARGET] = "window target", [DEFER_LEVEL_DETAIL] = "level detail",
+	[DEFER_DRAW_LEVEL] = "level draws", [DEFER_SKY] = "sky", [DEFER_SPRITES] = "sprites",
+	[DEFER_WIDGET_BEGIN] = "widget begin", [DEFER_WIDGET_TEXTURE] = "widget texture",
+	[DEFER_WIDGET_OCCLUSION] = "widget occlusion", [DEFER_WIDGET_SPRITE] = "widget sprites",
+	[DEFER_QUEUE_LEVEL_TRANSPARENT] = "see-through level queued", [DEFER_HUD_ZOOM] = "hud zoom",
+	[DEFER_UI_CENTERED] = "ui centred", [DEFER_UI_SPACE] = "ui space", [DEFER_SCREEN_QUAD] = "screen quads",
+	[DEFER_SHADOW_BEGIN] = "shadow begin", [DEFER_SHADOW_DRAW] = "shadow draws", [DEFER_SHADOW_END] = "shadow end",
+	[DEFER_LIGHT_BEGIN] = "light begin", [DEFER_LIGHT_DRAW] = "light draws", [DEFER_SCREEN_FLASH] = "screen flash",
+	[DEFER_DECAL] = "decals", [DEFER_BLIPS_BEGIN] = "blips begin", [DEFER_BLIP] = "blips", [DEFER_BLIPS_END] = "blips end",
+	[DEFER_TEXT_CHARACTER] = "text characters", [DEFER_TEXT_END] = "text end", [DEFER_TEXT_BEGIN] = "text begin",
+	[DEFER_CONTRAIL] = "contrails", [DEFER_ZOOM_MASK] = "zoom mask", [DEFER_FOG_PLANAR] = "planar fog",
+	[DEFER_SEETHROUGH_TINT] = "see-through tint", [DEFER_SEETHROUGH_METER] = "see-through meters",
+	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_FRAME_END] = "frame end (list's part)",
+	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
+};
+
+static inline unsigned int replay_clock(int me)
+{
+	unsigned int count;
+
+	if (!me)
+		return sceKernelGetSystemTimeLow();
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+	return count;
+}
+
+/* the time since *mark to kind, on side's clock */
+static inline void replay_kinds_add(int side, int kind, unsigned int *mark)
+{
+	unsigned int now = replay_clock(side);
+
+	replay_kinds.ticks[side][kind] += now - *mark;
+	*mark = now;
+}
+
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
 	unsigned int at = 0, records = 0;
+	/* mekinds: timed only where the clock can be read (not gemesim's
+	simulated ME work) */
+	int side = psp_on_me(), timed = replay_kinds_on && (side || !psp_me_context), kind_before = -1;
+	unsigned int mark = timed ? replay_clock(side) : 0;
+
+	if (timed)
+		replay_kinds.runs[side]++;
 
 	while (at < used)
 	{
@@ -985,13 +1053,22 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		geinflight: the frame's job lasts a frame while the main CPU ticks,
 		which waits on both audio and the ring's jobs (perception's rays, the
 		poses), so they're served every record */
+		if (timed && kind_before >= 0)
+			replay_kinds_add(side, kind_before, &mark);
 		if (replay_inflight)
 			inflight_serve();
 		else if (on_me && (++records & 31) == 0)
 			psp_me_serve_audio();
+		if (timed && side)
+			replay_kinds_add(side, REPLAY_SERVED, &mark);
 
 		at += buffer[at].u >> 8;
 		psp_me_record_kind = kind;
+		if (timed)
+		{
+			kind_before = kind < REPLAY_KINDS - 1 ? kind : 0;
+			replay_kinds.records[side][kind_before]++;
+		}
 		switch (kind)
 		{
 		case DEFER_MODEL_BEGIN:
@@ -1149,6 +1226,73 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		}
 	}
+	if (timed && kind_before >= 0)
+		replay_kinds_add(side, kind_before, &mark);
+}
+
+/* mekinds: the frames since the last report by kind, the largest first, each
+CPU apart, on as many lines as the log's limit needs. Only while no frame is
+out with the ME, which writes the counts */
+static void replay_kinds_report(unsigned int frames)
+{
+	extern float psp_me_cycles_per_us(void);
+	int side;
+
+	if (!replay_kinds_on || inflight_me_out || !frames)
+		return;
+	for (side = 0; side < 2; side++)
+	{
+		const char *who = side ? "the ME" : "the main CPU";
+		float rate = side ? psp_me_cycles_per_us() : 1.0f;
+		unsigned long long all = 0;
+		unsigned char shown[REPLAY_KINDS];
+		char line[480], entry[120]; /* under the log's 512 */
+		int length, k;
+
+		if (!replay_kinds.runs[side])
+			continue;
+		if (rate <= 0.0f)
+		{
+			platform_log("GE: mekinds: the ME's times can't be given (its clock wasn't measured at start)");
+			continue;
+		}
+		for (k = 0; k < REPLAY_KINDS; k++)
+			all += replay_kinds.ticks[side][k];
+		length = snprintf(line, sizeof(line), "GE: mekinds, %s, us a frame over %u frames (%.2f runs a frame): all %.0f;",
+			who, frames, (float)replay_kinds.runs[side] / frames, (float)all / rate / frames);
+		memset(shown, 0, sizeof(shown));
+		for (;;)
+		{
+			int best = -1, size;
+			float us;
+
+			for (k = 0; k < REPLAY_KINDS; k++)
+				if (!shown[k] && replay_kinds.ticks[side][k] &&
+					(best < 0 || replay_kinds.ticks[side][k] > replay_kinds.ticks[side][best]))
+					best = k;
+			if (best < 0)
+				break;
+			shown[best] = 1;
+			us = (float)replay_kinds.ticks[side][best] / rate;
+			if (us / frames < 1.0f)
+				break; /* the rest are under a microsecond a frame */
+			size = replay_kinds.records[side][best] ?
+				snprintf(entry, sizeof(entry), " %s %.0f (%.1f a frame, %.1f us each);", replay_kind_names[best] ? replay_kind_names[best] : "?",
+					us / frames, (float)replay_kinds.records[side][best] / frames, us / replay_kinds.records[side][best]) :
+				snprintf(entry, sizeof(entry), " %s %.0f;", replay_kind_names[best], us / frames);
+			if (size >= (int)sizeof(entry))
+				size = sizeof(entry) - 1;
+			if (length + size >= (int)sizeof(line))
+			{
+				platform_log("%s", line);
+				length = snprintf(line, sizeof(line), "GE: mekinds, %s (more):", who);
+			}
+			memcpy(line + length, entry, size + 1);
+			length += size;
+		}
+		platform_log("%s", line);
+	}
+	memset(&replay_kinds, 0, sizeof(replay_kinds));
 }
 
 /* build 112: "gemeon" (with gedefer): the run carried out as the Media
@@ -16894,6 +17038,7 @@ static void frame_end_show(void)
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
 			ge_kinds_report(); /* build 103 */
+			replay_kinds_report(300); /* mekinds */
 			ge_reads_report(frames); /* build 115 */
 			vm_report(); /* build 116 */
 			/* build 112: every 300 frames, with the skinning plans' heap */

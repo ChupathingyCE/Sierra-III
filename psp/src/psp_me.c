@@ -2187,6 +2187,13 @@ unsigned int psp_me_last_job_us(int which)
 	return which >= 0 && which < ME_SLOTS ? last_job_us[which] : 0;
 }
 
+/* the ME's cycle counter's counts a microsecond, measured at start (0: not
+measured, so ME times can't be given) */
+float psp_me_cycles_per_us(void)
+{
+	return me_cycles_per_us;
+}
+
 /* the audio job's list: up to 256 voices, written through the uncached view */
 int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
 	unsigned long *clipped, unsigned long *waited_us)
