@@ -660,7 +660,32 @@ void psp_heap_line(char *line, int size)
 		info.uordblks / 1024, info.fordblks / 1024, info.ordblks, info.arena / 1024, psp_heap_failures);
 }
 
-void *__wrap_malloc(size_t size) { return heap_note(__real_malloc(size), size, "malloc", __builtin_return_address(0)); }
-void *__wrap_calloc(size_t count, size_t size) { return heap_note(__real_calloc(count, size), count * size, "calloc", __builtin_return_address(0)); }
-void *__wrap_realloc(void *pointer, size_t size) { return heap_note(__real_realloc(pointer, size), size, "realloc", __builtin_return_address(0)); }
-void *__wrap_memalign(size_t alignment, size_t size) { return heap_note(__real_memalign(alignment, size), size, "memalign", __builtin_return_address(0)); }
+/* work marked as the Media Engine's in the emulator (gemesim's psp_me_context)
+that asks for the heap: the heap's lock is a system call, which the ME can't
+make. Each caller is named once, so it can be moved to the main CPU */
+extern volatile unsigned int psp_me_context;
+#define HEAP_ME_CALLERS 16
+static void *heap_me_callers[HEAP_ME_CALLERS];
+
+static void heap_me_check(void *caller, size_t size, const char *how)
+{
+	int k;
+
+	unsigned int sp;
+
+	__asm__ ("move %0, $sp" : "=r"(sp));
+	if (!psp_me_context || (sp & 0x1FFFFFFFu) < 0x01000000u) /* not on the ME itself: no log from there */
+		return;
+	for (k = 0; k < HEAP_ME_CALLERS && heap_me_callers[k]; k++)
+		if (heap_me_callers[k] == caller)
+			return;
+	if (k == HEAP_ME_CALLERS)
+		return;
+	heap_me_callers[k] = caller;
+	platform_log("heap: %s of %u bytes in work meant for the Media Engine, from %p", how, (unsigned int)size, caller);
+}
+
+void *__wrap_malloc(size_t size) { heap_me_check(__builtin_return_address(0), size, "malloc"); return heap_note(__real_malloc(size), size, "malloc", __builtin_return_address(0)); }
+void *__wrap_calloc(size_t count, size_t size) { heap_me_check(__builtin_return_address(0), count * size, "calloc"); return heap_note(__real_calloc(count, size), count * size, "calloc", __builtin_return_address(0)); }
+void *__wrap_realloc(void *pointer, size_t size) { heap_me_check(__builtin_return_address(0), size, "realloc"); return heap_note(__real_realloc(pointer, size), size, "realloc", __builtin_return_address(0)); }
+void *__wrap_memalign(size_t alignment, size_t size) { heap_me_check(__builtin_return_address(0), size, "memalign"); return heap_note(__real_memalign(alignment, size), size, "memalign", __builtin_return_address(0)); }

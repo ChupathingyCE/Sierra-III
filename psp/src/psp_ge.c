@@ -347,7 +347,8 @@ static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
 static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */
 #define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
 static void inflight_hand_over(void);
-static int stall_force; /* (defined with the stall wrapper) */
+static int stall_force;
+static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */ /* (defined with the stall wrapper) */
 /* TEMP (geinflight bring-up): the first frames' steps, logged */
 static int inflight_trace_left = 60;
 #define INFLIGHT_TRACE(...) do { if (inflight_on && inflight_trace_left > 0) { inflight_trace_left--; platform_log(__VA_ARGS__); } } while (0)
@@ -1411,6 +1412,7 @@ static void inflight_wait_me(void)
 		from here */
 		inflight_me_failed++;
 		defer_me_on = 0;
+		inflight_finish_left = 0;
 		stall_force = 1;
 		sceGuFinish();
 		stall_force = 0;
@@ -16448,10 +16450,19 @@ static int frame_end_list(void)
 		frame_end_us[0] += ge_clock() - mark;
 		win_writeback_us += ge_clock() - mark;
 	}
-	/* build 48: the finish's stall update always reaches the GE */
-	stall_force = 1;
-	sceGuFinish();
-	stall_force = 0;
+	/* pspgu's finish holds off interrupts, a system call the Media Engine
+	can't make: in its work the list is finished by the main CPU, when the
+	frame is shown. The GE meanwhile has the frame's every draw and waits at
+	the stall, so the picture doesn't wait for it */
+	if (inflight_on && PSP_ME_WORK())
+		inflight_finish_left = 1;
+	else
+	{
+		/* the finish's stall update always reaches the GE */
+		stall_force = 1;
+		sceGuFinish();
+		stall_force = 0;
+	}
 	INFLIGHT_TRACE("GE: geinflight trace: list ended, kept stall %p, ME work %d", stall_me_address, PSP_ME_WORK() ? 1 : 0);
 	return 1;
 }
@@ -16459,6 +16470,13 @@ static int frame_end_list(void)
 static void frame_end_show(void)
 {
 	window_main_done = 0;
+	if (inflight_finish_left)
+	{
+		inflight_finish_left = 0;
+		stall_force = 1;
+		sceGuFinish();
+		stall_force = 0;
+	}
 	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
 	{
 		unsigned int mark = sceKernelGetSystemTimeLow(), waited;
