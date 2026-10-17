@@ -683,6 +683,33 @@ void psp_object_account(int type, unsigned long microseconds)
 	}
 }
 
+/* an object updated on a tick that isn't timed (psp_object_sample): counted,
+not timed */
+void psp_object_count(int type)
+{
+	if (type >= 0 && type < OBJECT_ACCOUNTS)
+		object_updates[type]++;
+}
+
+/* Each object's update is timed for the per-type report by a pair of clock
+reads, system calls of ~0.56 us each, and the object loop visits hundreds of
+objects a tick, sleepers included. The report averages ~600 ticks, so timing
+one tick in OBJECT_SAMPLE and scaling by it keeps it unbiased for 1/8 of the
+calls. "objecttimeall": every tick timed, as before. Returns the scale for
+this tick's times, or 0 for a tick that isn't timed */
+#define OBJECT_SAMPLE 8
+unsigned long psp_object_sample(void)
+{
+	static int every_tick = -1;
+	static unsigned int tick = 0;
+
+	if (every_tick < 0)
+		every_tick = psp_keep("objecttimeall") != 0;
+	if (every_tick)
+		return 1;
+	return (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
+}
+
 /* build 113: render_objects.c's counts (psp_fixups.py), since the last report */
 long psp_rendered_views, psp_rendered_full, psp_rendered_peak, psp_rendered_capacity, psp_render_states_new, psp_render_states_evicted;
 

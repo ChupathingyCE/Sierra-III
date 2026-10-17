@@ -2313,8 +2313,10 @@ KEEP_DECLARATION = "#ifdef HALO_PSP\nint psp_keep(const char *name); /* psp_plat
 # "awake" in keep.txt turns it off
 PSP_SLEEP_CODE = """#ifdef HALO_PSP
 void psp_object_account(int type, unsigned long microseconds); /* psp_platform.c; psp_fixups.py */
+void psp_object_count(int type); /* psp_platform.c */
+unsigned long psp_object_sample(void); /* psp_platform.c: this tick's scale for each object's time, 0 untimed */
 int psp_keep(const char *name);
-static unsigned long psp_object_start;
+static unsigned long psp_object_start, psp_object_scale;
 static int psp_sleep_enabled = -1;
 static int psp_sleep_debug = -1, psp_sleep_reports = 0, psp_vehicle_sleep_reports = 0;
 /* sleepdebug: one vehicle's data at the end of its update, to see what
@@ -3443,11 +3445,11 @@ FIXES_19 = {
 ("void objects_update(\n\tvoid)\n{",
  PSP_SLEEP_CODE + "\nvoid objects_update(\n\tvoid)\n{"),
 ("\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n",
- "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n#endif\n\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n"),
+ "#ifdef HALO_PSP\n\tpsp_object_scale = psp_object_sample();\n\tpsp_object_start = psp_microseconds();\n#endif\n\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n"),
 ("\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n",
  "\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n#ifdef HALO_PSP\n\tpsp_object_account(12, psp_microseconds() - psp_object_start);\n#endif\n"),
 ("\t\t\t\t\tobject_update(object_index);\n",
- "#ifdef HALO_PSP\n\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\tpsp_object_account(object_header->type, psp_microseconds() - psp_object_start);\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
+ "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
 ("\tobjects_garbage_collection();\n\n\tprofile_exit(section);",
  "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n\tobjects_garbage_collection();\n\tpsp_object_account(13, psp_microseconds() - psp_object_start);\n#else\n\tobjects_garbage_collection();\n#endif\n\n\tprofile_exit(section);"),
 ],
@@ -19767,14 +19769,12 @@ real_matrix4x3 *object_get_node_matrices(
 
 	object_globals->active_garbage_object_count = 0;
 """),
-("""					psp_object_start = psp_microseconds();
-					psp_object_update(object_index, i, object_header);
+("""					if (psp_object_scale)
 """,
 """					/* psp_fixups.py (FIXES_134 #nmreaders) */
 					psp_nmr_top = object_index;
 					psp_nmr_tops++;
-					psp_object_start = psp_microseconds();
-					psp_object_update(object_index, i, object_header);
+					if (psp_object_scale)
 """),
 ("""				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
 """,
