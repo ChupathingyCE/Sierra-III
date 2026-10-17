@@ -1339,10 +1339,44 @@ pattern: b116's test 1 showed it on shadows and particles, swinging up to
 140 of 255 under the Pelican's dust [M]. So the dither is on for draws that
 don't blend, and for the level's lightmap pass, which sets the level's
 brightness (where b113 #6's steps showed); off for every other blended
-draw. Keep word "ditherall": b116's dither on every draw of the world */
-static int dither_off = -1, dither_all = -1;
+draw. Keep word "ditherall": b116's dither on every draw of the world.
+
+"dithershift" (opt-in, the A/B for the dark bands): the passes that lay
+light over the level (its detail passes and the sky's layers, with the
+lightmap pass) dithered too, each with the matrix moved to the next of its 8
+places. A pixel's rounding then goes a different way from pass to pass, so
+no fixed pattern can build. Particles, shadows and decals stay undithered:
+the GE truncates, and reads the frame back with its top bits copied into
+the low ones (PPSSPP's model; "ditherprobe" measures the PSP's), so a pass
+that leaves a dark pixel almost as it was moves it down a step whenever its
+offset is negative, wherever the pattern stands; under many layers that
+adds up. "dithershiftall": every blended draw of the world dithered and
+moved, for the comparison */
+static int dither_off = -1, dither_all = -1, dither_shift = -1; /* 1 the passes, 2 every blend */
 static int dither_world = 0; /* the world's turn: the dither may be on */
 static int dither_now = -1, blend_now = 0; /* what the GE was last given */
+static int dither_place = 0;
+static unsigned long dither_moves = 0; /* passes dithered at a moved place, since the last report */
+static ScePspIMatrix4 dither_moved[8];
+
+/* the matrix at each of its 8 places: moved by (2, 2) it repeats. In this
+order every two passes in a row nearly cancel (-4 then 2, -3 then 3, ...)
+for every pixel, and eight give each pixel every offset once */
+static void dither_moves_make(const ScePspIMatrix4 *matrix)
+{
+	static const unsigned char places[8][2] = { { 0, 0 }, { 0, 1 }, { 2, 0 }, { 2, 1 }, { 1, 0 }, { 1, 1 }, { 3, 0 }, { 3, 1 } };
+	const int *from = &matrix->x.x; /* the 16 cells, row by row */
+	int k, row, column;
+
+	for (k = 0; k < 8; k++)
+	{
+		int *to = &dither_moved[k].x.x;
+
+		for (row = 0; row < 4; row++)
+			for (column = 0; column < 4; column++)
+				to[row * 4 + column] = from[((row + places[k][1]) & 3) * 4 + ((column + places[k][0]) & 3)];
+	}
+}
 
 static void dither_set(int on)
 {
@@ -1355,6 +1389,26 @@ static void dither_set(int on)
 	dither_now = on;
 }
 
+/* a pass that lays light over what's drawn: the dither on, at its next place */
+static void ge_dither_pass(void)
+{
+	if (!dither_world || dither_shift <= 0)
+		return;
+	dither_place = (dither_place + 1) & 7;
+	dither_moves++;
+	sceGuSetDither(&dither_moved[dither_place]);
+	dither_set(1);
+}
+
+/* after the blend is on, for a pass that lays light over the level (its
+detail passes, the sky's layers): under "dithershift" those, and only
+those, are dithered ("dithershiftall" has done it in ge_blend) */
+static void ge_layer_dither(void)
+{
+	if (dither_shift == 1)
+		ge_dither_pass();
+}
+
 /* the world's turn begins (1) or ends (0) */
 static void ge_dither(int on)
 {
@@ -1364,18 +1418,31 @@ static void ge_dither(int on)
 	span, half the pattern; the 5-bit steps come back as half-steps */
 	static const ScePspIMatrix4 matrix = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
 	static const ScePspIMatrix4 half = { { -2, 0, -2, 0 }, { 1, -1, 1, -1 }, { -2, 0, -2, 0 }, { 1, -1, 1, -1 } };
-	static int dither_half = -1;
+	/* "ditherlift" (opt-in, with dithershift's A/B): every offset 4 higher.
+	The matrix above is centred for a GE that rounds; one that truncates
+	(PPSSPP's, and ditherprobe's row 0 on the PSP) loses half a step with it
+	on every dithered draw, which shows most in the dark. Lifted, a
+	truncating write is right on average */
+	static ScePspIMatrix4 chosen;
 
 	if (dither_off < 0)
 	{
+		const int *from = psp_keep("ditherhalf") ? &half.x.x : &matrix.x.x;
+		int *to = &chosen.x.x, lift = psp_keep("ditherlift") ? 4 : 0, cell;
+
 		dither_off = psp_keep("nodither");
 		dither_all = psp_keep("ditherall");
-		dither_half = psp_keep("ditherhalf");
+		for (cell = 0; cell < 16; cell++)
+			to[cell] = from[cell] + lift;
+		dither_shift = psp_keep("dithershiftall") ? 2 : psp_keep("dithershift");
+		if (dither_shift)
+			dither_moves_make(&chosen);
 	}
 	if (dither_off)
 		return;
 	if (on)
-		sceGuSetDither(dither_half ? &half : &matrix);
+		sceGuSetDither(&chosen);
+	dither_place = 0; /* each frame starts at the same place: frame-locked shots repeat */
 	dither_world = on;
 	dither_now = -1; /* given again, so each frame starts from a known state */
 	dither_set(on && (dither_all || !blend_now));
@@ -1389,7 +1456,9 @@ static void ge_blend(int on)
 	else
 		sceGuDisable(GU_BLEND);
 	blend_now = on;
-	if (dither_world)
+	if (on && dither_shift == 2)
+		ge_dither_pass();
+	else if (dither_world)
 		dither_set(dither_all || !on);
 }
 
@@ -1398,7 +1467,9 @@ static void ge_blend_dithered(void)
 {
 	sceGuEnable(GU_BLEND);
 	blend_now = 1;
-	if (dither_world)
+	if (dither_shift > 0)
+		ge_dither_pass();
+	else if (dither_world)
 		dither_set(1);
 }
 
@@ -2312,6 +2383,129 @@ void psp_ge_fog_planar(float red, float green, float blue, float maximum_distanc
 /* the GE's own state, once: buffers, viewport, depth, fog */
 static void cut_take(void); /* below, by model_cut */
 
+/* "ditherprobe": what the GE does to a colour on its way into the 16-bit
+frame, measured once at start-up in the buffer not yet shown. Row 0: each
+value 0-255 drawn as it is; where each channel's code steps says whether
+the GE truncates (red at 8, 16, ...) or rounds (at 4, 12, ...). Rows 1-4
+start as row 0 and take one blended pass that ought to leave them as they
+are: 1 the frame times one; 2 the same, dithered by -1 everywhere; 3
+dithered by +7; 4 the frame times white. The codes that move in rows 2 and
+3 say how the frame is read back for blending: with its low bits 0, every
+code drops in row 2 and none rises in row 3; with them filled from the top
+bits (PPSSPP), only the darkest drop and all but the darkest rise. Rows 1
+and 4 say whether "times one" is exact. That decides which dither matrix
+leaves an unchanged pixel unchanged (dithershift's open question) */
+static void ge_dither_probe(void)
+{
+	static const ScePspIMatrix4 minus = { { -1, -1, -1, -1 }, { -1, -1, -1, -1 }, { -1, -1, -1, -1 }, { -1, -1, -1, -1 } };
+	static const ScePspIMatrix4 plus = { { 7, 7, 7, 7 }, { 7, 7, 7, 7 }, { 7, 7, 7, 7 }, { 7, 7, 7, 7 } };
+	static const char *const rows[5] = { "drawn as it is", "the frame times one", "dithered by -1",
+		"dithered by +7", "the frame times white" };
+	static const char *const names[3] = { "red", "green", "blue" };
+	static const int shifts[3] = { 0, 5, 11 }, masks[3] = { 0x1F, 0x3F, 0x1F };
+	struct probe_vertex { unsigned int color; short x, y, z, pad; } *v;
+	const volatile unsigned short *frame = (const volatile unsigned short *)0x44000000; /* draw buffer 0, uncached */
+	int x, row, channel;
+
+	sceGuStart(GU_DIRECT, display_list);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDisable(GU_BLEND);
+	sceGuDisable(GU_DITHER);
+	/* every value, one column each, down all five rows */
+	v = sceGuGetMemory(256 * 2 * sizeof(*v));
+	for (x = 0; x < 256; x++)
+	{
+		unsigned int grey = 0xFF000000 | (x << 16) | (x << 8) | x;
+
+		v[2 * x].color = v[2 * x + 1].color = grey;
+		v[2 * x].x = x; v[2 * x].y = 0;
+		v[2 * x + 1].x = x + 1; v[2 * x + 1].y = 5;
+		v[2 * x].z = v[2 * x + 1].z = 0;
+	}
+	(sceGuDrawArray)(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 512, NULL, v);
+	sceGuEnable(GU_BLEND);
+	for (row = 1; row < 5; row++)
+	{
+		v = sceGuGetMemory(2 * sizeof(*v));
+		v[0].color = v[1].color = 0xFFFFFFFF;
+		v[0].x = 0; v[0].y = row;
+		v[1].x = 256; v[1].y = row + 1;
+		v[0].z = v[1].z = 0;
+		if (row == 4)
+			sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_FIX, 0, 0);
+		else
+			sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0, 0xFFFFFF);
+		if (row == 2 || row == 3)
+		{
+			sceGuSetDither(row == 2 ? &minus : &plus);
+			sceGuEnable(GU_DITHER);
+		}
+		else
+			sceGuDisable(GU_DITHER);
+		(sceGuDrawArray)(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, NULL, v);
+	}
+	sceGuDisable(GU_DITHER);
+	sceGuDisable(GU_BLEND);
+	sceGuEnable(GU_FOG);
+	sceGuEnable(GU_DEPTH_TEST);
+	stall_force = 1;
+	sceGuFinish();
+	sceGuSync(0, 0);
+	stall_force = 0;
+
+	for (row = 0; row < 5; row++)
+	{
+		char line[400];
+		int length = snprintf(line, sizeof(line), "ditherprobe: row %d (%s):", row, rows[row]);
+
+		for (channel = 0; channel < 3 && length < (int)sizeof(line); channel++)
+		{
+			int shift = shifts[channel], mask = masks[channel];
+
+			if (row == 0)
+			{
+				/* the first four inputs at which the code steps up, and the top code */
+				int steps = 0, at[4] = { -1, -1, -1, -1 };
+
+				for (x = 1; x < 256 && steps < 4; x++)
+					if (((frame[x] >> shift) & mask) != ((frame[x - 1] >> shift) & mask))
+						at[steps++] = x;
+				length += snprintf(line + length, sizeof(line) - length, " %s steps at %d %d %d %d, 255 is %d;",
+					names[channel], at[0], at[1], at[2], at[3], (frame[255] >> shift) & mask);
+			}
+			else
+			{
+				/* against row 0: how many inputs moved each way, and the
+				highest that dropped, the lowest that rose */
+				int up = 0, down = 0, top_down = -1, low_up = -1;
+
+				for (x = 0; x < 256; x++)
+				{
+					int before = (frame[x] >> shift) & mask, after = (frame[row * BUFFER_WIDTH + x] >> shift) & mask;
+
+					if (after < before)
+					{
+						down++;
+						top_down = x;
+					}
+					else if (after > before)
+					{
+						up++;
+						if (low_up < 0)
+							low_up = x;
+					}
+				}
+				length += snprintf(line + length, sizeof(line) - length, " %s down %d (highest input %d), up %d (lowest %d);",
+					names[channel], down, top_down, up, low_up);
+			}
+		}
+		platform_log("%s", line);
+	}
+}
+
 static void ge_initialize(void)
 {
 	/* build 108: the scratchpad's pieces (psp_scratch.c), keep.txt read by now */
@@ -2362,6 +2556,8 @@ static void ge_initialize(void)
 	sceGuFinish();
 	sceGuSync(0, 0);
 	stall_force = 0;
+	if (psp_keep("ditherprobe"))
+		ge_dither_probe();
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
 	ge_ready = 1;
@@ -6793,6 +6989,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				sceGuFog(near, far > near ? far : near + 1.0f, detail_neutral(detail_key[pass]));
 				sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_SRC_COLOR, 0, 0);
 				ge_blend(1);
+				ge_layer_dither();
 				/* build 91: a detail map's smaller levels are faded toward a
 				colour other than their top level's average (Bungie's detail
 				fade: measured on Blood Gulch, "detail metal sratches" loses
@@ -12526,6 +12723,8 @@ static void transparent_flush_body(void)
 		}
 		else
 			hud_blend(draw->blend);
+		if (draw->sky)
+			ge_layer_dither();
 		if (draw->first_person)
 			use_projection(1);
 		/* build 35: the level's see-through surfaces (the base pillars'
@@ -16480,6 +16679,9 @@ void psp_ge_frame_end(void)
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, glow_mapped, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
+		if (dither_shift > 0)
+			platform_log("GE: %s: %lu passes dithered at a moved place", dither_shift == 2 ? "dithershiftall" : "dithershift", dither_moves);
+		dither_moves = 0;
 		if (frames > 1)
 		{
 			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",
