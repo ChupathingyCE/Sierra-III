@@ -11,7 +11,8 @@ draw at most once a frame. After the load, the settle draws the level's
 first view with no tick until its textures are in. The drawing itself is
 the GE layer's (psp_ge_loading_*, linked weakly): without it the screen
 holds as before, with the chant, the settle and the timings.
-Keep words: "loadingoff" (none of it), "chantoff", "settleoff", "settleN". */
+Keep words: "loadingoff" (none of it), "chantoff", "chantheap" (the chant's voices
+from the heap: psp_dsound.c), "settleoff", "settleN". */
 #include <math.h>
 #include <string.h>
 #include "psp_loading.h"

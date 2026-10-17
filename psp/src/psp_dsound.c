@@ -968,19 +968,11 @@ static ULONG STDMETHODCALLTYPE stream_add_reference(IDirectSoundStream *object)
 
 static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object);
 
-static ULONG STDMETHODCALLTYPE stream_release(IDirectSoundStream *object)
+/* out of the mixer's list: under the lock, so no block is mixing it */
+static void stream_unlink(struct psp_stream *stream)
 {
-	struct psp_stream *stream = stream_from_interface(object);
 	struct psp_stream **link;
-	ULONG count;
 
-	game_lock();
-	count = --stream->reference_count;
-	pthread_mutex_unlock(&mixer_lock);
-	if (count)
-		return count;
-
-	stream_flush(object);
 	game_lock();
 	for (link = &streams; *link; link = &(*link)->next)
 	{
@@ -991,6 +983,21 @@ static ULONG STDMETHODCALLTYPE stream_release(IDirectSoundStream *object)
 		}
 	}
 	pthread_mutex_unlock(&mixer_lock);
+}
+
+static ULONG STDMETHODCALLTYPE stream_release(IDirectSoundStream *object)
+{
+	struct psp_stream *stream = stream_from_interface(object);
+	ULONG count;
+
+	game_lock();
+	count = --stream->reference_count;
+	pthread_mutex_unlock(&mixer_lock);
+	if (count)
+		return count;
+
+	stream_flush(object);
+	stream_unlink(stream);
 	free(stream);
 	return 0;
 }
@@ -1237,16 +1244,12 @@ HRESULT WINAPI IDirectSound_SetOrientation(LPDIRECTSOUND sound, FLOAT x_front, F
 	return DS_OK;
 }
 
-HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDESC description,
-	LPDIRECTSOUNDSTREAM *result, LPUNKNOWN outer)
+/* a stream as DirectSound starts one, in STREAM_BYTES of 64-byte aligned
+memory, and in the mixer's list */
+static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description)
 {
-	struct psp_stream *stream = memalign(64, STREAM_BYTES);
 	const WAVEFORMATEX *format = description->lpwfxFormat;
 
-	(void)sound;
-	(void)outer;
-	if (!stream)
-		return E_OUTOFMEMORY;
 	memset(stream, 0, STREAM_BYTES);
 	stream->object.lpVtbl = &stream_vtable;
 	stream->reference_count = 1;
@@ -1271,6 +1274,18 @@ HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDE
 	stream->next = streams;
 	streams = stream;
 	pthread_mutex_unlock(&mixer_lock);
+}
+
+HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDESC description,
+	LPDIRECTSOUNDSTREAM *result, LPUNKNOWN outer)
+{
+	struct psp_stream *stream = memalign(64, STREAM_BYTES);
+
+	(void)sound;
+	(void)outer;
+	if (!stream)
+		return E_OUTOFMEMORY;
+	stream_start(stream, description);
 	*result = &stream->object;
 	return DS_OK;
 }
@@ -1467,7 +1482,35 @@ The Xbox played the chant through looping buffers, which this file leaves as
 null objects (above). psp_loading.c plays it on a stream instead: the whole
 sound queued as every packet a stream holds, all pointing at the same bytes,
 so it loops for as long as any load takes (64 passes, over a minute) without
-completions, which nothing runs during a blocking load. */
+completions, which nothing runs during a blocking load.
+
+The voices live here rather than on the heap: each load starts them before
+the old map is let go and stops them after the new one is in, so four
+blocks taken from the heap's holes for the length of a load split the room
+the level's large blocks were to have, and a level's stencil bake (one
+block of ~160 KB) could then find no hole large enough.
+"chantheap": from the heap at each load, as before. */
+
+#define LOOP_VOICES 4
+/* whole cache lines each (STREAM_BYTES), as the Media Engine's hand-over
+of a voice needs */
+static union
+{
+	struct psp_stream stream;
+	unsigned char bytes[STREAM_BYTES];
+} loop_voices[LOOP_VOICES] __attribute__((aligned(64)));
+static unsigned char loop_voice_used[LOOP_VOICES];
+static int loop_heap = -1;
+
+static int loop_voice_index(const void *voice)
+{
+	int k;
+
+	for (k = 0; k < LOOP_VOICES; k++)
+		if (voice == &loop_voices[k].stream)
+			return k;
+	return -1;
+}
 
 void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned long sample_rate,
 	unsigned long frequency, long millibels)
@@ -1475,7 +1518,7 @@ void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned lon
 	WAVEFORMATEX format;
 	DSSTREAMDESC description;
 	XMEDIAPACKET packet;
-	LPDIRECTSOUNDSTREAM stream;
+	LPDIRECTSOUNDSTREAM stream = NULL;
 	int k;
 
 	memset(&format, 0, sizeof(format));
@@ -1484,8 +1527,27 @@ void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned lon
 	format.nSamplesPerSec = sample_rate;
 	memset(&description, 0, sizeof(description));
 	description.lpwfxFormat = &format;
-	if (IDirectSound_CreateSoundStream(NULL, &description, &stream, NULL) != DS_OK)
-		return NULL;
+	if (loop_heap < 0)
+	{
+		extern int psp_keep(const char *word);
+
+		loop_heap = psp_keep("chantheap");
+	}
+	if (loop_heap)
+	{
+		if (IDirectSound_CreateSoundStream(NULL, &description, &stream, NULL) != DS_OK)
+			return NULL;
+	}
+	else
+	{
+		for (k = 0; k < LOOP_VOICES && loop_voice_used[k]; k++)
+			;
+		if (k == LOOP_VOICES)
+			return NULL;
+		loop_voice_used[k] = 1;
+		stream_start(&loop_voices[k].stream, &description);
+		stream = (LPDIRECTSOUNDSTREAM)&loop_voices[k].stream.object;
+	}
 	IDirectSoundStream_SetFrequency(stream, frequency);
 	IDirectSoundStream_SetVolume(stream, millibels);
 	memset(&packet, 0, sizeof(packet));
@@ -1504,8 +1566,17 @@ void psp_dsound_loop_volume(void *voice, long millibels)
 
 void psp_dsound_loop_stop(void *voice)
 {
+	int k;
+
 	if (!voice)
 		return;
 	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
-	stream_release((IDirectSoundStream *)voice);
+	k = loop_voice_index(voice);
+	if (k < 0)
+	{
+		stream_release((IDirectSoundStream *)voice);
+		return;
+	}
+	stream_unlink(&loop_voices[k].stream);
+	loop_voice_used[k] = 0;
 }
