@@ -31,7 +31,7 @@ The game title sits at the top (x 152–328, y 14–73), centred on the screen's
 
 ## The tile (2026-10-17)
 
-`psp/xmb/icon0.py` draws both builds' ICON0 from `sierra_mark.svg`: the first placeholder's steel plate, its 2 px border in the mark's amber (`#c29b63` → `#a06e26`), the mark as it sat on the wallpaper (PSP under the III, 120 px wide), and the build's name below it in Audiowide with the title's steel. The two entries differ only in that name.
+`psp/xmb/icon0.py` draws both builds' ICON0 from `sierra_mark.svg`: the first placeholder's steel plate, its 2 px border in the mark's amber (`#c29b63` → `#a06e26`), the mark as it sat on the wallpaper (PSP under the III, 120 px wide), the title's amber rule under SIERRA up to PSP (it ends where the III starts), and the build's name below it in Audiowide at 13 px with the title's steel, tracked a little tighter than COMBAT EVOLVED so MULTIPLAYER fits the mark's width. The two entries differ only in that name.
 
 - **Drawn at 4× and shrunk.** The mark's outline is about 1 px at tile size; drawn directly it breaks up (the lesson from designing it at 2×).
 - **Outline under fill.** The master asks for `paint-order="stroke"`, which cairosvg ignores; the script renders the outline and the fill as two passes so PSP's thin strokes keep their amber.

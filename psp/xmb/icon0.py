@@ -2,8 +2,9 @@
 """Draws ICON0.PNG, the game-list tile, for both builds from the Sierra-III mark.
 
 The tile: the steel plate and border of the first placeholder, the border in the mark's amber;
-the mark as it sits on the wallpaper (PSP under the III); the build named beneath it in
-Audiowide, the font of the title's COMBAT EVOLVED. Written to psp/xmb/<campaign|mp>/ICON0.PNG.
+the mark as it sits on the wallpaper (PSP under the III), with the title's amber rule under
+SIERRA running up to PSP; the build named beneath it in Audiowide, the font of the title's
+COMBAT EVOLVED. Written to psp/xmb/<campaign|mp>/ICON0.PNG.
 
 Drawn at 4x and shrunk to 144 x 80: the mark's outline is about one pixel wide at tile size,
 and drawn there directly it would break up (the wallpaper is drawn at 2x for the same reason).
@@ -32,9 +33,12 @@ STEEL_TOP, STEEL_BOTTOM = (0xe9, 0xee, 0xf2), (0x9a, 0xa7, 0xb2)
 BORDER = 2                           # px at tile size, as on the placeholder
 MARK_W = 120                         # the lettering's width at tile size (600 units in the SVG)
 MARK_X, MARK_Y = 12, 11              # top-left of the lettering
-LABEL_PX = 10                        # label font size at tile size
-LABEL_X, LABEL_BOTTOM = 13, 67       # left edge and baseline of the label
-TRACK = 0.14                         # label tracking, in ems: COMBAT EVOLVED is set wide
+RULE_Y, RULE_H = 37, 2               # the amber rule: top and height at tile size
+RULE_GAP = 3                         # space between the rule's end and PSP
+LABEL_PX = 13                        # label font size at tile size
+LABEL_X, LABEL_BOTTOM = 13, 68       # left edge and baseline of the label
+TRACK = 0.08                         # label tracking, in ems: wide like COMBAT EVOLVED, but
+                                     # tight enough for MULTIPLAYER to fit the mark's width
 
 
 def vgradient(size, top, bottom):
@@ -76,6 +80,14 @@ def mark(width):
     return out, 4 * scale
 
 
+def rule(width, height):
+    """The title's rule (the bar under HALO): amber, with a thin dark edge."""
+    edge = max(1, SS // 2)
+    out = Image.new("RGBA", (width + 2 * edge, height + 2 * edge), (6, 8, 10, 255))
+    out.paste(vgradient((width, height), AMBER_TOP, AMBER_BOTTOM), (edge, edge))
+    return out, edge
+
+
 def label(text, px):
     """The build's name, tracked out and filled with the title's steel."""
     font = ImageFont.truetype(os.path.join(HERE, "fonts", "Audiowide-Regular.ttf"), px)
@@ -100,6 +112,11 @@ def tile(name):
 
     m, margin = mark(MARK_W * SS)
     img.alpha_composite(with_shadow(m, dy=SS, blur=SS * 0.8), (round(MARK_X * SS - margin), round(MARK_Y * SS - margin)))
+
+    # PSP and the III both start at x 498 of the mark's 600 units
+    psp_x = MARK_X + MARK_W * 498 / 600
+    r, edge = rule(round((psp_x - RULE_GAP - MARK_X) * SS), RULE_H * SS)
+    img.alpha_composite(with_shadow(r, dy=SS // 2, blur=SS * 0.6), (MARK_X * SS - edge, RULE_Y * SS - edge))
 
     lab, ascent = label(name, LABEL_PX * SS)
     img.alpha_composite(with_shadow(lab, dy=SS, blur=SS * 0.6), (LABEL_X * SS, LABEL_BOTTOM * SS - ascent))
