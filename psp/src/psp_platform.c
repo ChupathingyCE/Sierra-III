@@ -184,6 +184,13 @@ static char *log_batch = log_batch_small, *log_copy = log_copy_small;
 static int log_batch_size = sizeof(log_batch_small);
 static int log_batch_length = 0, log_batch_dropped = 0;
 static volatile int log_batching = 0;
+/* a batch three quarters full wakes the heartbeat to write it, so the game
+thread never waits on the stick for the log: a write and a close can take
+over a second each on a busy stick, and the game's reads queue behind them.
+Created with the heartbeat; "logflushgame": the game thread writes it, as
+before */
+static SceUID log_wake = -1;
+static SceUID log_wake_thread = -1;
 
 static void log_flush(void);
 static int log_lock_take(void);
@@ -449,7 +456,12 @@ void psp_log_write(const char *text)
 		/* build 99: a batch three quarters full is written at once (the
 		blackbox's first frames stream hundreds of textures in one frame) */
 		if (log_batch_length > log_batch_size * 3 / 4)
-			log_flush();
+		{
+			if (log_wake >= 0 && sceKernelGetThreadId() != log_wake_thread)
+				sceKernelSignalSema(log_wake, 1); /* (a second signal while one waits is refused: harmless) */
+			else
+				log_flush();
+		}
 		return;
 	}
 	file = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
@@ -2556,6 +2568,11 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 	(void)args; (void)argp;
 	psp_fpu_mask_traps();
+	if (!psp_keep("logflushgame"))
+	{
+		log_wake_thread = sceKernelGetThreadId();
+		log_wake = sceKernelCreateSema("halo log wake", 0, 0, 1, NULL);
+	}
 	for (;;)
 	{
 		SceInt64 now;
@@ -2576,7 +2593,26 @@ static int heartbeat_thread(SceSize args, void *argp)
 			slices = blackbox ? (beat < 20 ? 4 : 20) : 1;
 			for (slice = 0; slice < slices; slice++)
 			{
-				sceKernelDelayThread((beat < 20 ? 1000000 : 5000000) / slices);
+				SceInt64 until = sceKernelGetSystemTimeWide() + (beat < 20 ? 1000000 : 5000000) / slices;
+
+				/* asleep for the slice, but up at once to write a filling batch */
+				for (;;)
+				{
+					SceInt64 left = until - sceKernelGetSystemTimeWide();
+					SceUInt timeout;
+
+					if (left <= 0)
+						break;
+					timeout = (SceUInt)left;
+					if (log_wake < 0)
+					{
+						sceKernelDelayThread(timeout);
+						break;
+					}
+					if (sceKernelWaitSema(log_wake, 1, &timeout) < 0)
+						break;
+					log_flush();
+				}
 				if (blackbox && slice + 1 < slices)
 					log_flush();
 			}
