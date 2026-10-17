@@ -302,10 +302,18 @@ void *psp_tex_carve(unsigned int bytes)
 	if (!ram_cache || bytes > ram_cache_bytes)
 		return NULL;
 	carved_bytes = bytes;
-	if (arenas[1].end > (unsigned int)ram_cache + ram_cache_bytes - carved_bytes)
-		arenas[1].end = (unsigned int)ram_cache + ram_cache_bytes - carved_bytes;
-	else if (!bytes && squeezed != 1 && squeezed != 2)
-		arenas[1].end = (unsigned int)ram_cache + ram_cache_bytes;
+	/* the cache runs to the carve, wherever the last map's carve left it: a
+	smaller carve gives the room back (a level's 1-2 MB, then the main
+	menu's own pack's size), as no carve at all always did */
+	{
+		unsigned int top = (unsigned int)ram_cache + ram_cache_bytes - carved_bytes;
+
+		if (squeezed == 1 && top > arenas[1].start + SQUEEZED_BYTES)
+			top = arenas[1].start + SQUEEZED_BYTES;
+		else if (squeezed == 2)
+			top = arenas[1].start;
+		arenas[1].end = top;
+	}
 	if (arenas[1].next > arenas[1].end)
 		arenas[1].next = arenas[1].start;
 	/* anything resident past the end is forgotten */

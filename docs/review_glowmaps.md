@@ -54,6 +54,7 @@ The rule (Sierra-III `CLAUDE.md`): ui.map is a high-fidelity showcase, exempt fr
   - The bake's log lists every 32-bit texture with its size (`showcase: …`).
 - **`ui_showcase_pal.ptex`** beside it (`--showcase --showcase-palettes`): the same sizes on 256-colour palettes, for the comparison; keep word **`showcasepal`** draws the menu from it.
 - **`psp_geo.c`**: on the showcase map the geometry cache carved from the texture RAM takes the pack's size and 64 KB (ui's pack is about 130 KB), not 1 MB, so about 800 KB more is left to the textures.
+- **`psp_tex.c`, `psp_tex_carve`**: the texture RAM cache's end now follows each map's carve both ways. Before, a smaller carve than the last map's (other than none) never gave the room back, so the menu after a level would have kept the level's 1-2 MB carve and overflowed with the showcase. A level's carve after the menu's shrinks the cache as it always did.
 - **`psp_tex.c`**: a pack candidate before the others, `<map>_showcase.ptex`, tried only when the map is `ui` and `noshowcase` isn't kept. A stick without it falls back to `ui.ptex`.
   - `psp_tex_bind` draws a texture in its own colours: no palette loaded, the buffer width in pixels from 2 or 4 bytes a texel (`DIRECT`, `TEXEL_BYTES`).
   - The palette readers (`psp_tex_palette`, `psp_tex_palette16`, `psp_tex_average`) pass such a texture by (its `clut` byte is 0xFF), so the meters, masks and the flashlight's average fall back as they do for a texture with no palette of the kind they want. The lightmap samplers already took only 8- and 4-bit textures.
