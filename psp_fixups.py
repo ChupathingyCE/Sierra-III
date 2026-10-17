@@ -23032,6 +23032,43 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
 #endif
 """),
 ]
+# A sound queued to a channel that is still playing but has nothing left to
+# submit. A permutation shorter than the stream's queue goes out whole the
+# moment it starts; its last packet moves the queued permutation (none yet)
+# to playing, so the channel plays on with no playing permutation. The sound
+# manager then queues the next one (the channel isn't "queued"), it is filed
+# as queued, and the fill, which reads only the playing permutation, never
+# sends it: when the queue drains the channel goes idle and the manager starts
+# another, so permutations were dropped (Sheepdog01, b138: the menu's music played
+# a fraction of a second at a time, skipping forward, with 16 packets; with
+# streampackets4 the manager is usually in time). The Xbox's 4 packets made it
+# rare. Such a sound now becomes the playing permutation and the queue is
+# topped up at once, so the stream carries on. "streamnolink": as before
+FIXES_SOUND["source/sound/sound_dsound_xbox.c#link"] = [
+("""		case _sound_channel_playing:
+			channel->state= _sound_channel_queued;
+			channel->queued_permutation= sound;
+			break;
+""",
+ """		case _sound_channel_playing:
+#ifdef HALO_PSP
+			{
+				extern int psp_stream_link(void); /* psp_dsound.c */
+
+				if (!channel->playing_permutation && psp_stream_link())
+				{
+					channel->playing_permutation= sound;
+					channel->sample_offset= 0;
+					dsound_channel_fill(index);
+					break;
+				}
+			}
+#endif
+			channel->state= _sound_channel_queued;
+			channel->queued_permutation= sound;
+			break;
+"""),
+]
 # The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
 # packets (about 743 ms) up at interrupt time, the port once a frame, so a
 # frame longer than that left long sounds silent. The queue's depth comes from

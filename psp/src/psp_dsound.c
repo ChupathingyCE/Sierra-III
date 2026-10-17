@@ -197,6 +197,9 @@ static unsigned long gap_record_count = 0;
 (sound skipped without a gap), and unplayed packets a flush threw away */
 static struct { long context, sound_class, bytes; unsigned long queued; } jump_records[GAP_RECORDS];
 static unsigned long jump_record_count = 0, flushed_unplayed = 0;
+/* permutations queued to a channel with nothing left to send (psp_stream_link) */
+static unsigned long stream_links = 0;
+static int stream_link_off = -1;
 extern unsigned long psp_last_frame_us; /* psp_platform.c, psp_frame_account */
 static unsigned long cut_sounds = 0, mix_worst_us = 0, lock_worst_us = 0, late_blocks = 0, clipped_blocks = 0, gap_worst_us = 0;
 
@@ -973,6 +976,10 @@ void psp_audio_report(void)
 	{
 		unsigned long k, shown = jump_record_count < GAP_RECORDS ? jump_record_count : GAP_RECORDS;
 
+		if (stream_links)
+			platform_log("audio: %lu permutations queued to a channel with nothing left to send (%s)", stream_links,
+				stream_link_off > 0 ? "streamnolink: filed as queued and dropped" : "linked on");
+		stream_links = 0;
 		if (jump_record_count || flushed_unplayed)
 			platform_log("audio: %lu packets didn't continue their sound where the last ended; %lu unplayed packets flushed",
 				jump_record_count, flushed_unplayed);
@@ -1014,6 +1021,21 @@ int psp_stream_packets(void)
 			packets == 4 ? ": the Xbox's depth" : "");
 	}
 	return packets;
+}
+
+/* sound_dsound_xbox.c's queue_sound: a permutation queued to a channel that
+plays on with nothing left to send becomes its playing permutation (psp_fixups.py
+FIXES_SOUND #link); "streamnolink" files it as queued, as before, where the
+fill never sent it. Counted for the log: each would have been a permutation
+dropped */
+int psp_stream_link(void)
+{
+	extern int psp_keep(const char *name);
+
+	if (stream_link_off < 0)
+		stream_link_off = psp_keep("streamnolink") != 0;
+	stream_links++;
+	return !stream_link_off;
 }
 
 /* ---------- completion */
