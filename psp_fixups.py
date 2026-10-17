@@ -19536,9 +19536,9 @@ long psp_wake_skipped, psp_wake_checked, psp_wake_misses;
 /* wakecheck: each sleeper's bytes as last seen unchanged, so that a miss can
 name the words a missed writer changed (and from them, the writer) */
 #define PSP_WAKE_COPY_WORDS (2560 / 4)
-#define PSP_WAKE_COPIES 256 /* by slot, an object index's low bits: the heap's room, not every sleeper's */
+static int psp_wake_copies; /* every object's slot where the heap has room (PSP_BIG_RAM), else 256 shared by an index's low bits */
 static unsigned long *psp_wake_copy;
-static unsigned long psp_wake_copy_owner[PSP_WAKE_COPIES]; /* 0: none */
+static unsigned long psp_wake_copy_owner[MAXIMUM_OBJECTS_PER_MAP]; /* 0: none */
 #define PSP_WAKE_OWNER(header, absolute_index) ((unsigned long)(unsigned short)(header)->identifier << 16 | (unsigned short)(absolute_index))
 
 /* a slot is taken from a sleeper only once that one is gone or awake */
@@ -19557,7 +19557,7 @@ static int psp_wake_slot_free(int slot, unsigned long owner)
 static void psp_wake_miss_words(struct object_header_datum const *header, short absolute_index)
 {
 	unsigned long const *now = (unsigned long const *)header->datum;
-	int slot = absolute_index % PSP_WAKE_COPIES;
+	int slot = absolute_index % psp_wake_copies;
 	unsigned long const *was = psp_wake_copy + (long)slot * PSP_WAKE_COPY_WORDS;
 	long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
 	int told = 0;
@@ -19619,9 +19619,15 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 		psp_wake_on = psp_wake_check || psp_keep("wakeonwrite");
 		if (psp_wake_check)
 		{
-			psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * PSP_WAKE_COPIES);
-			platform_psp_log("wakecheck: %s each sleeper's bytes, to name a miss's words",
-				psp_wake_copy ? "keeping" : "no room for");
+			psp_wake_copies = MAXIMUM_OBJECTS_PER_MAP;
+			psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * psp_wake_copies);
+			if (!psp_wake_copy)
+			{
+				psp_wake_copies = 256;
+				psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * psp_wake_copies);
+			}
+			platform_psp_log("wakecheck: %s %d sleepers' bytes, to name a miss's words",
+				psp_wake_copy ? "keeping" : "no room for", psp_wake_copies);
 		}
 	}
 	psp_wake_marked[absolute_index] = 0;
@@ -19643,12 +19649,12 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 				tag_get_name(object->definition_index), header->type, game_time_get());
 			psp_wake_miss_words(header, absolute_index);
 		}
-		if (psp_wake_copy_owner[absolute_index % PSP_WAKE_COPIES] == PSP_WAKE_OWNER(header, absolute_index))
-			psp_wake_copy_owner[absolute_index % PSP_WAKE_COPIES] = 0;
+		if (psp_wake_copy_owner[absolute_index % psp_wake_copies] == PSP_WAKE_OWNER(header, absolute_index))
+			psp_wake_copy_owner[absolute_index % psp_wake_copies] = 0;
 	}
-	else if (psp_wake_copy && psp_wake_slot_free(absolute_index % PSP_WAKE_COPIES, PSP_WAKE_OWNER(header, absolute_index)))
+	else if (psp_wake_copy && psp_wake_slot_free(absolute_index % psp_wake_copies, PSP_WAKE_OWNER(header, absolute_index)))
 	{
-		int slot = absolute_index % PSP_WAKE_COPIES;
+		int slot = absolute_index % psp_wake_copies;
 
 		csmemcpy(psp_wake_copy + (long)slot * PSP_WAKE_COPY_WORDS, header->datum,
 			header->data_size < 2560 ? header->data_size : 2560);
@@ -19681,6 +19687,37 @@ void object_cause_damage(
 	short material_index,
 	real_vector3d const *object_normal)
 {
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+]
+# a shield or body run out without object_cause_damage: physics' ground test
+# depletes the shield of whatever a mass point rests on (wake135c: a tree)
+FIXES_WAKE["source/objects/damage.c#wake_object_deplete"] = [
+("""void object_deplete_body(
+	long object_index)
+{
+""", """void object_deplete_body(
+	long object_index)
+{
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+"""),
+("""void object_deplete_shield(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+""", """void object_deplete_shield(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
 	{
 		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
 
