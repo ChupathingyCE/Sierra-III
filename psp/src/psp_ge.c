@@ -2563,6 +2563,7 @@ size, so a line that is the smallest mip level's colour shows the texture */
 static int magenta = -1;
 static int tex_level_mode = GU_TEXTURE_AUTO;
 static float tex_bias = 0.0f;
+#define SHOWCASE_BIAS_DEFAULT 20 /* quarter levels: the hull stable as the halved maps, and sharper (ringflicker6) */
 static int in_sky;
 static unsigned long ge_part_us[GE_PARTS], ge_part_calls[GE_PARTS];
 static const char *const ge_part_names[GE_PARTS] = {
@@ -3921,6 +3922,31 @@ void psp_ge_window_target(int target)
 		win_other_targets++;
 }
 
+/* the showcase's maps are full size, where every other map's pack halves
+them to the GE's budget, but the GE's automatic level for a model's part
+goes by depth, not by the map's size: the hull's 512-wide maps were drawn
+from levels two finer than the same view picks on a level, and shimmered as
+it moved. "showcasebiasN": N quarter levels coarser, on ui.map only (the
+showcase rule: nothing it does reaches the other maps) */
+extern int psp_showcase_map;
+static float tex_bias_base = -1.0f;
+static int showcase_applied = -1;
+
+int psp_keep_number(const char *prefix, int fallback);
+
+static void showcase_levels(void)
+{
+	if (!ge_ready)
+		return;
+	if (tex_bias_base < 0.0f)
+		tex_bias_base = tex_bias;
+	if (showcase_applied == psp_showcase_map)
+		return;
+	showcase_applied = psp_showcase_map;
+	tex_bias = tex_bias_base + (psp_showcase_map ? psp_keep_number("showcasebias", SHOWCASE_BIAS_DEFAULT) * 0.25f : 0.0f);
+	sceGuTexLevelMode(tex_level_mode, tex_bias);
+}
+
 void psp_ge_window_begin(const float *position, const float *forward, const float *up,
 	float vertical_field_of_view, float z_near, float z_far)
 {
@@ -4107,6 +4133,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	}
 	(void)center;
 	frame_open = 1;
+	/* inside the frame's list, so the GE takes it */
+	showcase_levels();
 	draws_this_frame = triangles_this_frame = clipped_this_frame = culled_this_frame = 0;
 	model_draws_this_frame = 0;
 
