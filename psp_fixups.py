@@ -358,7 +358,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			multipurpose map's alpha; build 31): the object's colour A to D,
 			as the shader's change colour source picks. Model shaders only:
 			these offsets mean something else in other shaders (build 116) */
-			extern void psp_ge_model_multipurpose(unsigned int, float const *, float const *);
+			extern void psp_ge_model_multipurpose(unsigned int, unsigned int, float const *, float const *);
 			extern real periodic_function_evaluate(short, real);
 			char const *definition = (char const *)shader;
 			boolean model_shader = base_key && *(short const *)(definition + 36) == 4;
@@ -395,7 +395,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					glow[2] *= psp_change_colors[glow_source - 1].blue;
 				}
 			}
-			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0, change, glow);
+			/* the glow map (the base x the green, baked for a self-illuminated
+			shader: texpack.py, glow_looks) is under the shader's address | 2 */
+			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0,
+				multipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);
 		}
 		{
 			boolean drawn;

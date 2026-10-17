@@ -362,7 +362,7 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp);
 void psp_ge_model_effect(int type, float intensity);
 void psp_ge_model_point_light(const float *position, unsigned int color);
-void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow);
+void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_key, float const *change, float const *glow);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
@@ -599,12 +599,14 @@ static int defer_model_point_light(const float *position, unsigned int color)
 	return 1;
 }
 
-static int defer_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
+static int defer_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_key, float const *change,
+	float const *glow)
 {
-	defer_word *at = defer_take(DEFER_MODEL_MULTIPURPOSE, 1 + 4 + 4);
+	defer_word *at = defer_take(DEFER_MODEL_MULTIPURPOSE, 2 + 4 + 4);
 
 	at[0].u = multipurpose_key;
-	defer_copy(defer_copy(at + 1, change, 3), glow, 3);
+	at[1].u = glow_key;
+	defer_copy(defer_copy(at + 2, change, 3), glow, 3);
 	return 1;
 }
 
@@ -896,8 +898,8 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_model_point_light(defer_copy_back(w + 1, &rest, 3), w[0].u);
 			break;
 		case DEFER_MODEL_MULTIPURPOSE:
-			a = defer_copy_back(w + 1, &rest, 3);
-			psp_ge_model_multipurpose(w[0].u, a, defer_copy_back(rest, &rest, 3));
+			a = defer_copy_back(w + 2, &rest, 3);
+			psp_ge_model_multipurpose(w[0].u, w[1].u, a, defer_copy_back(rest, &rest, 3));
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -8136,8 +8138,8 @@ multipurpose map with a palette worked out per entry (white toward the
 colour by the entry's alpha), multiplied into what the first pass drew */
 int psp_tex_palette(unsigned int key, const unsigned int **palette, int *count);
 int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *count);
-static unsigned int change_key = 0, change_color = 0xFFFFFFFF, glow_color = 0;
-static unsigned long change_passes = 0, glow_passes = 0;
+static unsigned int change_key = 0, change_color = 0xFFFFFFFF, glow_color = 0, glow_key = 0;
+static unsigned long change_passes = 0, glow_passes = 0, glow_mapped = 0;
 static int in_sky;
 
 struct skin_part;
@@ -8216,11 +8218,13 @@ static unsigned int abgr_from_rgb(float const *rgb)
 
 /* the model part's multipurpose map and the two colours it masks: the change
 colour (by its blue) and the self-illumination (by its green; build 31) */
-void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
+void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_map_key, float const *change,
+	float const *glow)
 {
 	GE_BENCH_SKIP();
-	GE_DEFER(defer_model_multipurpose(multipurpose_key, change, glow));
+	GE_DEFER(defer_model_multipurpose(multipurpose_key, glow_map_key, change, glow));
 	change_key = multipurpose_key;
+	glow_key = glow_map_key;
 	change_color = abgr_from_rgb(change);
 	glow_color = abgr_from_rgb(glow) & 0xFFFFFF;
 }
@@ -8243,6 +8247,41 @@ each one past the slots was worked out again into the display list: about
 1 KB each, up to half of the 100-160 KB of data the models copied into the
 list a frame */
 #define MULTIPURPOSE_CACHE 40
+int psp_tex_has(unsigned int key);
+
+/* the self-illumination with the pack's glow map (the base x the
+multipurpose map's green), times the colour, added: on the Xbox the colour
+by the mask is added to the lighting, which then multiplies the base map, so
+a lit-up area shows its own texture at full brightness (texpack.py,
+glow_looks). The mask alone, added as it was, drew the main menu's ring as a
+white band and every other self-illuminated part in its flat colour.
+"glowflat" (keep.txt) draws the mask alone again. A map not yet in memory
+leaves the part unlit this frame rather than flashing the flat colour */
+static int glow_flat = -1;
+
+static int glow_map_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
+	struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	if (!psp_tex_bind(glow_key, NULL))
+		return 0;
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+	sceGuColor(0xFF000000 | glow_color);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDepthFunc(GU_EQUAL);
+	sceGuDepthMask(GU_TRUE);
+	/* added light fades to nothing in the fog */
+	sceGuFog(fog_near, fog_far, 0xFF000000);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	ge_blend(1);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	ge_blend(0);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuDepthMask(GU_FALSE);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuColor(0xFFFFFFFF);
+	glow_mapped++;
+	return 1;
+}
 static unsigned int multipurpose_cache_palette[MULTIPURPOSE_CACHE][256] __attribute__((aligned(64)));
 static struct
 {
@@ -8270,6 +8309,17 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 			expand_6[entry] = (unsigned char)(entry * 255 / 63);
 	}
 
+	if (which && glow_key)
+	{
+		if (glow_flat < 0)
+		{
+			glow_flat = psp_keep("glowflat");
+			if (glow_flat)
+				platform_log("GE: glowflat: self-illumination as the colour by the mask, without the glow maps");
+		}
+		if (!glow_flat && psp_tex_has(glow_key))
+			return glow_map_pass(vertices, indices, index_count, strip, skin, model);
+	}
 	/* the Xbox's channel order, read off the Xbox disc's own Blood Gulch
 	(the cyborg's map: the armour plates solid in blue, alpha all white): red
 	the reflection mask, green self-illumination, blue the change colour,
@@ -16426,8 +16476,8 @@ void psp_ge_frame_end(void)
 			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
 				arena_used / 1024, ARENA_BYTES / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
 				arena_compactions, arena_moved_kb, arena_migrated);
-		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
-			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
+		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu (%lu with glow maps); meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
+			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, glow_mapped, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
 		if (frames > 1)

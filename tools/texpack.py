@@ -7,7 +7,7 @@ textures of 64 px and more, 512 px at most; lightmaps at full size). The
 game finds a texture by the address of its bitmap_data in the tag window,
 which is fixed for a map built for the PSP (invader-build -X 0x09600000).
 
-usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means]
+usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means] [--no-glow-maps]
 
 File layout (little endian):
   header: 'PTX1', u32 count, u32 directory size
@@ -29,6 +29,9 @@ File layout (little endian):
     sorted by address: only the shaders whose drawn map isn't the rule's.
     Only when there are any, after a 'TNT1' (of count 0 when no shader is
     tinted)
+  glow maps: directory entries keyed by a self-illuminated model shader's
+    tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
+    same texels share their data
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
     each level swizzled, rows padded to 16 bytes and to 8 rows
 """
@@ -176,6 +179,51 @@ def model_looks(m, d, B):
         looks.setdefault(key, dict(function=function, mask=mask, detail=detail, multipurpose=multipurpose,
                                    shader=t.name))
     return looks
+
+
+def glow_looks(m, B):
+    """soso shaders that light themselves: shader tag address -> the base
+    bitmap and multipurpose map to bake a glow map from. On the Xbox a model
+    shader's self-illumination (the multipurpose map's green times the
+    shader's colour) is added to the lighting, and the lighting multiplies the
+    base map (rasterizer_xbox_models.c, set_environment_shader_pixel_shader:
+    stage 1 adds R0 x C0 to V0, the later stages multiply by T0), so a lit-up
+    area shows its own base texture at full brightness. The GE adds the
+    colour in a pass of its own (psp_ge.c, multipurpose_pass), so it takes a
+    map of what that pass must add: the base x the green. Only shaders the
+    runtime gives a colour (a period, and a colour at either end); the key is
+    the shader's address | 2, which no bitmap's key can be"""
+    by_tag = {}
+    for b in B:
+        by_tag.setdefault(b['tag'], []).append(b)
+    glows = {}
+    for t in m.tags:
+        if t.group != 'soso' or not t.address:
+            continue
+        o = m.off(t.address)
+        period, = struct.unpack_from('<f', m.data, o + 116)
+        colours = struct.unpack_from('<6f', m.data, o + 120)
+        base_id, = struct.unpack_from('<i', m.data, o + 176)
+        multipurpose_id, = struct.unpack_from('<i', m.data, o + 200)
+        base, mp = m.by_id.get(base_id), m.by_id.get(multipurpose_id)
+        if period == 0.0 or not any(colours) or not base or not mp or base.name not in by_tag or mp.name not in by_tag:
+            continue
+        glows[t.address | 2] = dict(shader=t.name, base=by_tag[base.name][0], multipurpose=by_tag[mp.name][0])
+    return glows
+
+
+def apply_glow(img, multipurpose):
+    """what the self-illumination pass adds, at full colour: the base x the
+    multipurpose map's green, opaque (the pass draws its colour only)"""
+    h, w = img.shape[:2]
+    green = np.ascontiguousarray(multipurpose[:, :, 1])
+    # the channel on its own: PIL resizes RGBA premultiplied, and the green
+    # under a zero alpha (the detail mask) would come out black
+    if green.shape != (h, w):
+        green = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(green).resize((w, h)))
+    green = green[:, :, None].astype(np.float32) / 255.0
+    rgb = np.clip(img[:, :, :3].astype(np.float32) * green + 0.5, 0, 255).astype(np.uint8)
+    return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
 
 
 def apply_model_look(img, look):
@@ -419,7 +467,7 @@ def alpha_tested_bitmaps(m, d):
     return names
 
 
-def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
+def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -448,6 +496,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
         img = apply_look(img, look)
     if model_look:
         img = apply_model_look(img, model_look)
+    if glow is not None:
+        img = apply_glow(img, glow)
     own_levels = None
     if cls == 'detail':
         own_levels = None if os.environ.get('TEXPACK_DETAIL_DOWNSCALE') else detail_levels(m, b, tw, th)
@@ -555,6 +605,8 @@ def main():
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
     ap.add_argument('--tints-from-means', action='store_true',
                     help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
+    ap.add_argument('--no-glow-maps', action='store_true',
+                    help='no glow maps: the self-illumination pass adds its colour by the mask alone')
     a = ap.parse_args()
     global FULL_DETAIL, HUD_CLUT4
     HUD_CLUT4 = a.hud_clut4
@@ -615,6 +667,35 @@ def main():
                 print('  %s: detail map folded in for %s' % (b['tag'], mlooks[b['address']]['shader']), file=sys.stderr)
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
+    # the self-illuminated shaders' glow maps, at their base map's size and
+    # from the base the GE draws (with its detail map folded in, if it has
+    # one); shaders with the same two maps share one copy of the texels
+    glows = glow_looks(m, B) if not a.no_glow_maps else {}
+    made = {}
+    glow_bytes = 0
+    for key in sorted(glows):
+        g = glows[key]
+        base, mp = g['base'], g['multipurpose']
+        pair = (base['address'], mp['address'])
+        if pair not in made:
+            mp_img = decode(m, mp)
+            cls = refs.classify(roles.get(base['tag'], ()), base)
+            made[pair] = None if mp_img is None else bake_one(
+                m, base, cls, looks.get(base['address']), mlooks.get(base['address']), glow=mp_img)
+            if made[pair] is not None:
+                glow_bytes += len(made[pair]['data'])
+        r = made[pair]
+        if r is None:
+            print('glow map for %s: none (%s or %s not baked)' % (g['shader'], base['tag'], mp['tag']), file=sys.stderr)
+            continue
+        entries.append(dict(r, key=key, name=g['shader'] + ' (glow map)'))
+        print('glow map for %s: %s x the green of %s, %dx%d, %d bytes%s' % (
+            g['shader'], base['tag'], mp['tag'], r['w'], r['h'], len(r['data']),
+            '' if sum(1 for k in glows if (glows[k]['base']['address'], glows[k]['multipurpose']['address']) == pair) == 1
+            else ' (shared)'), file=sys.stderr)
+    print('glow maps: %d self-illuminated model shaders, %d maps, %d bytes%s' % (
+        len(glows), sum(1 for v in made.values() if v is not None), glow_bytes,
+        ' (--no-glow-maps)' if a.no_glow_maps else ''), file=sys.stderr)
     if HUD_CLUT4:
         print('HUD sheets: 16 colours allowed (--hud-clut4)', file=sys.stderr)
     else:
@@ -648,11 +729,16 @@ def main():
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16
     blob = bytearray()
     dir_bytes = bytearray()
+    placed = {}
     for e in entries:
-        start = offset + len(blob)
-        blob += e['data']
-        while len(blob) % 16:
-            blob += b'\0'
+        if id(e['data']) in placed:
+            start = placed[id(e['data'])]
+        else:
+            start = offset + len(blob)
+            placed[id(e['data'])] = start
+            blob += e['data']
+            while len(blob) % 16:
+                blob += b'\0'
         dir_bytes += struct.pack('<IHHBBBBII', e['key'], e['w'], e['h'], e['levels'], e['psm'], e['clut'],
                                  1 if e['alpha'] else 0, start, len(e['data']))
     out = bytearray(struct.pack('<4sII', b'PTX1', len(entries), directory)) + dir_bytes + tint_bytes
