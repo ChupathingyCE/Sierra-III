@@ -2315,6 +2315,9 @@ state of the last tick: frames alternating 1 and 2 ticks move the world in
 uneven steps, which reads as judder in fast turns (the warthog's donut
 bounce, Sheepdog01 b80: a candidate cause). keep word "interpolation" smooths it */
 static unsigned long ticks_per_frame_histogram[5];
+/* the last frame's length, for the mixer's dry gaps (psp_dsound.c): a gap
+follows a frame longer than the streams' queue */
+unsigned long psp_last_frame_us = 0;
 
 void psp_frame_account(unsigned long microseconds)
 {
@@ -2334,6 +2337,7 @@ void psp_frame_account(unsigned long microseconds)
 	psp_phase(0);
 	/* build 126: "frametrace" (psp_frametrace.c) */
 	psp_frametrace_frame(microseconds, ticks, psp_heartbeat_clock() - end_start);
+	psp_last_frame_us = microseconds;
 	frame_count++;
 	frame_total += microseconds;
 	if (microseconds > frame_maximum)

@@ -35,6 +35,7 @@ the game calls every frame, and from Flush, never from the audio thread.
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include "psp_sound.h"   /* what the engine tells the mixer: stop reasons, classes */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
@@ -110,6 +111,9 @@ struct psp_stream
 	the game then queues more (Sheepdog01's b86 run 2: regular breaks heard with
 	either mixer, the output never late) */
 	unsigned long dry_frames;
+	/* the game's sound class of what the stream plays (sound_manager.c's
+	channel_queue_sound names it), so a dry gap can say what fell silent */
+	long sound_class;
 
 	/* last, so a hand-over by ranges covers the fields above in a few whole
 	lines and only the queued packets' entries of this (psp_dsound_me_lines) */
@@ -166,6 +170,19 @@ reached the output late (a gap heard); and blocks that hit the 16-bit limit
 (distortion, not a gap) */
 /* build 87: voices that ran dry and were then fed more (a gap heard) */
 static unsigned long dry_gaps = 0, dry_gap_frames = 0, dry_gap_worst = 0;
+/* why the game stopped the sounds counted in cut_sounds (psp_sound.h), so
+the heard cut-offs can be told from sounds the game retired as the Xbox did */
+int psp_sound_stop_reason = PSP_STOP_OTHER;
+long psp_sound_queueing_class = -1;
+static unsigned long cut_by_reason[PSP_STOP_REASONS];
+/* the first dry gaps of each heartbeat window, kept to be logged there (the
+gap is seen with the mixer's lock held, where a log write could hold up the
+mixer): the channel, the sound's class, the silence and the frame before it,
+the long frames being the suspected cause */
+#define GAP_RECORDS 6
+static struct { long context, sound_class; unsigned long dry_ms, frame_ms; } gap_records[GAP_RECORDS];
+static unsigned long gap_record_count = 0;
+extern unsigned long psp_last_frame_us; /* psp_platform.c, psp_frame_account */
 static unsigned long cut_sounds = 0, mix_worst_us = 0, lock_worst_us = 0, late_blocks = 0, clipped_blocks = 0, gap_worst_us = 0;
 
 static float gain_from_millibels(LONG millibels)
@@ -895,11 +912,51 @@ void psp_audio_report(void)
 	platform_log("audio: the game waited for the mixer's lock %lu times, %lu us in all, %lu at most; voices that ran dry and were then fed more (a gap heard) %lu, %lu ms of silence in all, the longest %lu ms",
 		game_lock_waits, game_lock_wait_us, game_lock_worst_us, dry_gaps, dry_gap_frames * 1000 / OUTPUT_RATE,
 		dry_gap_worst * 1000 / OUTPUT_RATE);
+	if (cut_sounds)
+		platform_log("audio: cut by the game, by reason: an older like sound retired %lu, the new one retired %lu, its source gone %lu, the players dead %lu, faded out %lu, its voice taken %lu, no voice free %lu, not cached in time %lu, all stopped %lu, other %lu",
+			cut_by_reason[PSP_STOP_INSTANCE_OLDER], cut_by_reason[PSP_STOP_INSTANCE_NEWER], cut_by_reason[PSP_STOP_SOURCE_LOST],
+			cut_by_reason[PSP_STOP_PLAYERS_DEAD], cut_by_reason[PSP_STOP_FADED], cut_by_reason[PSP_STOP_PREEMPTED],
+			cut_by_reason[PSP_STOP_NO_CHANNEL], cut_by_reason[PSP_STOP_CACHE_MISS], cut_by_reason[PSP_STOP_ALL], cut_by_reason[PSP_STOP_OTHER]);
+	{
+		unsigned long k, shown = gap_record_count < GAP_RECORDS ? gap_record_count : GAP_RECORDS;
+
+		for (k = 0; k < shown; k++)
+			platform_log("audio: gap %lu of %lu: channel %ld, sound class %ld, %lu ms of silence, after a frame of %lu ms",
+				k + 1, gap_record_count, gap_records[k].context, gap_records[k].sound_class, gap_records[k].dry_ms,
+				gap_records[k].frame_ms);
+	}
+	gap_record_count = 0;
+	memset(cut_by_reason, 0, sizeof(cut_by_reason));
 	dry_gaps = dry_gap_frames = dry_gap_worst = 0;
 	game_lock_waits = game_lock_wait_us = game_lock_worst_us = 0;
 	me_blocks = me_wait_us = me_wait_worst_us = me_failures = me_overflows = ranges_blocks = 0;
 	mix_blocks = mix_microseconds = mix_voice_blocks = mix_peak_voices = 0;
 	mix_worst_us = lock_worst_us = late_blocks = clipped_blocks = gap_worst_us = cut_sounds = 0;
+}
+
+/* How many packets the game keeps queued on each stream: the Xbox kept 4
+(about 743 ms), and its packet callbacks topped them up at interrupt time; the
+port tops them up only once a frame (DirectSoundDoWork from sound_render), so
+a frame longer than the queue (a checkpoint save, a log close) left long sounds
+silent. The packets point into the sound cache, so a deeper queue costs no
+memory. "streampacketsN" sets N (2-32); "streampackets4" is the Xbox's depth */
+#define STREAM_PACKETS_DEFAULT 16
+int psp_stream_packets(void)
+{
+	extern int psp_keep_number(const char *prefix, int fallback);
+	static int packets = 0;
+
+	if (!packets)
+	{
+		packets = psp_keep_number("streampackets", STREAM_PACKETS_DEFAULT);
+		if (packets < 2)
+			packets = 2;
+		if (packets > 32)
+			packets = 32;
+		platform_log("audio: %d packets queued on each stream (about %d ms)%s", packets, packets * 186,
+			packets == 4 ? ": the Xbox's depth" : "");
+	}
+	return packets;
 }
 
 /* ---------- completion */
@@ -1043,8 +1100,18 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 		*input->pdwStatus = XMEDIAPACKET_STATUS_PENDING;
 	if (input->pdwCompletedSize)
 		*input->pdwCompletedSize = 0;
+	if (psp_sound_queueing_class >= 0)
+		stream->sound_class = psp_sound_queueing_class;
 	if (stream->packet_count && stream->dry_frames)
 	{
+		if (gap_record_count < GAP_RECORDS)
+		{
+			gap_records[gap_record_count].context = (long)stream->context;
+			gap_records[gap_record_count].sound_class = stream->sound_class;
+			gap_records[gap_record_count].dry_ms = stream->dry_frames * 1000 / OUTPUT_RATE;
+			gap_records[gap_record_count].frame_ms = psp_last_frame_us / 1000;
+		}
+		gap_record_count++;
 		dry_gaps++;
 		dry_gap_frames += stream->dry_frames;
 		if (stream->dry_frames > dry_gap_worst)
@@ -1078,7 +1145,10 @@ static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 	voice taken for a newer sound, or a sound the game gave up on): the
 	heard cut-offs, if the output itself never runs late */
 	if (stream->packet_count && !stream->packets[stream->packet_head].finished)
+	{
 		cut_sounds++;
+		cut_by_reason[psp_sound_stop_reason]++;
+	}
 	while (stream->packet_count)
 	{
 		struct voice_packet *head = &stream->packets[stream->packet_head];
@@ -1252,6 +1322,7 @@ HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDE
 	stream->reference_count = 1;
 	stream->callback = description->lpfnCallback;
 	stream->context = description->lpvContext;
+	stream->sound_class = -1;
 	stream->adpcm = format && format->wFormatTag == WAVE_FORMAT_XBOX_ADPCM;
 	stream->channels = format && format->nChannels == 2 ? 2 : 1;
 	stream->sample_rate = format ? format->nSamplesPerSec : 0;

@@ -646,7 +646,7 @@ void psp_threads_report(void)
 	SceUID ids[REPORT_THREADS];
 	unsigned long long now = sceKernelGetSystemTimeWide(), span = now - last_report_us;
 	unsigned long long counted = 0;
-	char line[700];
+	char line[512];
 	int count = 0, k, length;
 
 	if (sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, ids, REPORT_THREADS, &count) < 0)
@@ -686,6 +686,13 @@ void psp_threads_report(void)
 		/* the idle thread is the time nobody wanted the CPU: the remainder */
 		if (!strncmp(info.name, "idle", 4))
 			continue;
+		/* platform_log formats into 512 characters: the line goes out in
+		parts rather than lose its last threads (the audio thread among them) */
+		if (length > 400)
+		{
+			platform_log("%s", line);
+			length = snprintf(line, sizeof(line), "threads (continued):");
+		}
 		length += snprintf(line + length, sizeof(line) - length, " %s 0x%x %.1f%% %u;",
 			info.name, info.currentPriority,
 			last_report_us && span ? 100.0 * (double)(run_us - before_us) / (double)span : 0.0,
