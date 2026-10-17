@@ -2,7 +2,7 @@
 
 `review_b136.md` lists every change and why. **New bake:** `b136` (glow maps and the menu showcase need it; below).
 
-BUILD_LINE
+`halo_psp_b136.zip` (SHA-256 `305db5ac8d96bdb14f46e1fd2aba26ab5d3bc7d9565aebc22550991bb83f0e48`), EBOOT `23ab22506ce42bfd202e484ec6ddae4a0b3e4f04f949c41b0da980139357232a`: built from commit `e41a305` on `w136` (lab sierra-build 39019698297). Heap 5,584 KB (b135: 5,644). **Its own profile** (`campaign-b136`, 13 runs at `6d4807e` on the b136 bake), checked against the code (`PSP_PGO_STRICT=1`), and b132's code order. Release check (lab 39018086383): play and both seeds identical to b135 at every tick on d20, a50 and c20 (12,000 each) [E]; b30 and c40 shots right; the menu showcase and a10's glyph prompt right; strict clean. For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
 
 **What's new for you:**
 - **The game starts on its own main menu**, with its music, as on the Xbox. Hold **L** as it starts, or put `ms0:/halo/menu.txt` on the stick, for the launch menu. The menu still takes about 27 s before it answers the buttons (the saved-game check; the next start-up fix).
