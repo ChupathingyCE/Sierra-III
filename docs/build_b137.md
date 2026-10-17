@@ -2,7 +2,7 @@
 
 `review_b137.md` lists every change and why. **No new bake:** b137 runs on the b136 bake.
 
-`halo_psp_b137.zip` (SHA-256 `c3769e1a7183da0a5c74d6fb97cb127b21b4fff3d61c26863dc53bb3daa25959`), EBOOT `b22b5349a53b78b4593564d49720959f5b5c3f3f937b035df7ec6abd9605ab88`: built from commit `b7524d5` on `w137` (lab sierra-build 39036434369). Heap 5,600 KB (b136: 5,584). **Its own profile** (`campaign-b137`, 13 runs at `290fdaf` on the b136 bake), checked against the code (`PSP_PGO_STRICT=1`), and b132's code order. Release check (lab 39034419300): play and both seeds identical to b136 at every tick on d20, a50 and c20 (12,000 each) [E]; shots, the menu, a10's prompts and the menu into a10 right; Blood Gulch plays; strict clean. For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
+`halo_psp_b137.zip` (SHA-256 `6fd8a29a0a51068b8261150fcd4b4bb383582b4ce50a4b762a6c5c2db319021e`), EBOOT `41da2850afe3c500713beb2e1fa9979c22db70de626cb79b57c9ee67d416d640`: built from commit `7e52cd8` on `w137` (lab sierra-build 39037198387). Heap 5,600 KB (b136: 5,584). **Its own profile** (`campaign-b137`, 13 runs at `290fdaf` on the b136 bake), checked against the code (`PSP_PGO_STRICT=1`), and b132's code order. Release check (lab 39034419300): play and both seeds identical to b136 at every tick on d20, a50 and c20 (12,000 each) [E]; shots, the menu, a10's prompts and the menu into a10 right; Blood Gulch plays; strict clean. `7e52cd8` adds to the checked code only the models' VRAM room (592 KB, see below). For the archive: `releases.tsv` has the line; `publish-releases.sh tags` and `archive` on your machine.
 
 **What's new for you:**
 - **The menu answers sooner.** The saved-game check on the PSP-1000 took 26 s in b136; 1.8 s now (3.7 s on the build's first launch) [M]. The start-up's log also waits in a batch, so the stick isn't held at the first frame.
@@ -13,7 +13,7 @@
 - **The level's geometry shares the models' VRAM room** (exact): c20 and d20 frames 5–8% faster on the PSP-3000 [M].
 - **One fix the reviewer found:** a model's VRAM copy could be placed over one the GE was still reading (b136 had it with `vrammodels` on).
 
-SPEED_LINE
+**Speed on the PSP-1000** (ladder 39037203738 against b136's 39019552090, one run each, the same bake) [M]: drawing ms a frame c20 54.8 → 50.9 (−7%), d20 70.4 → 66.5 (−6%), d40 29.6 → 25.2, a10 30.6 → 28.1, c10 66.4 → 64.7, a30 100.3 → 98.0; b30, a50, b40 the same; ticks unchanged. The first candidate (`b7524d5`) was 20–30% slower: the glyph sheet's 32 KB of VRAM made vrammodels refuse its 600 KB, so every model came from main RAM (`vrammodels600 left off` in the log). `7e52cd8` sets the room to 592 KB.
 
 **A call for you:** the chant's 18 KB are disc audio, typed into upstream's decompiled source, so every EBOOT has carried them. b137 plays them and adds nothing. Keep them as upstream ships them, or bake them from your disc (b138)? Decide before any build is shared.
 
@@ -49,7 +49,7 @@ umount $psp
 |---|---|---|---|---|
 | 1 | Boot normally from the XMB | Time from the XMB to the menu answering; then Campaign into The Pillar of Autumn (a10); listen through the load | The cryo prompt shows | The start-up (and how long the boot log shows), the chant, the settle |
 | 2 | a10, preset **1** | Play to the end of a10 so it loads a30 | a30's first view | The trail between levels, the chant, the settle there |
-| 3 | The multiplayer build: `halo_psp_b137mp.zip` (SHA-256 `601d0d75…`, EBOOT `b0c8b601…`, lab sierra-build 39036478850, repacked into `PSP/GAME/halomp` as `multiplayer_setup.md` §1 does), unzipped over the stick as in §6; the mp134 maps | Join a `[C]` server of Milenko's, play a game on Prisoner if one runs | 5 min, or a drop | The heap on Prisoner, with the glyph sheet's 16 KB back |
+| 3 | The multiplayer build: `halo_psp_b137mp.zip` (SHA-256 `51d9bfb5…`, EBOOT `eccaff66…`, lab sierra-build 39037200812, repacked into `PSP/GAME/halomp` as `multiplayer_setup.md` §1 does), unzipped over the stick as in §6; the mp134 maps | Join a `[C]` server of Milenko's, play a game on Prisoner if one runs | 5 min, or a drop | The heap on Prisoner, with the glyph sheet's 16 KB back |
 
 b136's open tests (wake-on-write's hits on b30, the controls on a30, the sleep test with `nomeaudio`) move to b137.
 

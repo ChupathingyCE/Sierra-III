@@ -11,6 +11,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 | the VRAM-room fix (`f92eef1`, from `0299f6c`) | A model copy's room measured by its own size while it waits in quarantine | fix | on | — |
 | mp135 to `ae3329c` (`e9209e4`) | The errno race, KCP's 64 KB reserve and NULL checks, onlinejoin's underscore | multiplayer only | on in that build | `kcpreserveN` |
 | glowclamp (`220a387`) | The glow clamped to the base, as the Xbox's combiner does, on the showcase map | restoration | on | `glownoclamp`, `glowadd` |
+| vrammodels 592 KB (`7e52cd8`) | The models' VRAM room fits after the glyph sheet (600 KB was refused) | fix | on | `vrammodelsN` |
 | switch defines (`6c8415a`) | `PSP_DEBUG_TOOLS` and `PSP_TICK_STEPS` reach every unit | build | — | — |
 | levelvram (`d995716`, from `208a594`) | The level's vertex streams share vrammodels' VRAM room | speed, exact | on | `nolevelvram` |
 | glyphvram (`550e9c0`, from `b894cf6`) | The button glyph sheet run-length coded in the program, unpacked once into VRAM | memory | on | — |
@@ -68,4 +69,4 @@ Lab 39034419300, strict with b137's own profile (`campaign-b137`, 13 runs at `29
 - The menu into a10 by the menus: the saved-game check 115 ms, the load 1,032 ms, the settle 4 frames (0 texture reads), then play.
 - The multiplayer build plays Blood Gulch (game time 12,008).
 
-The zip's commit (`b7524d5`) adds only the build number on its own line: the code differs from the release check's in 3 bytes (the number's immediates), and the profile matches every function (strict).
+The zip's commit (`7e52cd8`) adds two things to the checked code, each on its own line so the profile still matches every function (strict): the build number (3 bytes of code, its immediates), and **the models' VRAM room, 592 KB.** The first candidate's PSP-1000 ladder (39034486402) was 20–30% slower than b136's: glyphvram's 32 KB left 1,184 KB of VRAM for textures and models, vrammodels' check (at most half) refused its 600 KB default, and every model and level stream was read from main RAM (`vrammodels600 left off`). 592 KB is the most the check allows. The ladder at `7e52cd8` (39037203738) [M]: drawing c20 −7%, d20 −6%, d40 −15%, a10 −8% against b136; b30, a50, b40 the same; ticks unchanged. The same accident showed that the GE's reads from main RAM cost the main CPU about one for one (`levers_next_b138.md`).
