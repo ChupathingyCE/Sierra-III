@@ -114,6 +114,10 @@ struct psp_stream
 	/* frames this voice was mixed (written by the mixer, on either CPU):
 	the loading chant's line says whether its voices played at all */
 	unsigned long mixed_frames;
+	/* the loudest gain it was prepared with, and how many blocks were
+	prepared: whether the loading chant was ever loud enough to hear */
+	int peak_gain;
+	unsigned long prepared_blocks;
 	/* the game's sound class of what the stream plays (sound_manager.c's
 	channel_queue_sound names it), so a dry gap can say what fell silent */
 	long sound_class;
@@ -416,6 +420,9 @@ static int prepare_voice(struct psp_stream *stream)
 	stream->step = (unsigned long)(((unsigned long long)(stream->frequency ? stream->frequency : stream->sample_rate) << 16) /
 		OUTPUT_RATE);
 	voice_gains(stream, &stream->target_left, &stream->target_right);
+	if (stream->target_left > stream->peak_gain)
+		stream->peak_gain = stream->target_left;
+	stream->prepared_blocks++;
 	return 1;
 }
 
@@ -442,17 +449,43 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 	stream->current_right = target_right;
 	if (!target_left && !target_right && !left && !right)
 	{
-		/* silent: just advance. Build 89: not past the end of what's queued
-		(a silent voice that had run dry kept counting, so the start of what
-		the game queued next was skipped) */
+		/* silent: just advance, and never past the end of what's queued.
+		A voice that runs out inside the block stops at the end, as a heard
+		one does (not counted as a gap: nothing was heard): an overshoot left in frame would be
+		played off the start of the packet the game queues next (finished
+		packets wait for the game to collect them, so the queue doesn't look
+		empty and the position isn't reset) */
 		unsigned long long advance;
+		unsigned long position, queued = 0;
 
 		if (!current_packet(stream))
 			return 0;
-		advance = (unsigned long long)step * frames + stream->fraction;
+		for (position = 0; position < stream->packet_count; position++)
+		{
+			const struct voice_packet *candidate = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
 
-		stream->frame += (unsigned long)(advance >> 16);
-		stream->fraction = (unsigned long)(advance & 0xFFFF);
+			if (!candidate->finished)
+				queued += candidate->frames;
+		}
+		queued -= stream->frame;
+		advance = (unsigned long long)step * frames + stream->fraction;
+		if ((advance >> 16) < queued)
+		{
+			stream->frame += (unsigned long)(advance >> 16);
+			stream->fraction = (unsigned long)(advance & 0xFFFF);
+			stream->mixed_frames += frames;
+		}
+		else
+		{
+			unsigned long long reach = ((unsigned long long)queued << 16) - stream->fraction;
+			unsigned long played = (unsigned long)((reach + step - 1) / step);
+
+			if (played > frames)
+				played = frames;
+			stream->frame += queued;
+			stream->fraction = 0;
+			stream->mixed_frames += played;
+		}
 		current_packet(stream);
 		return 0;
 	}
@@ -1648,9 +1681,9 @@ void psp_dsound_loop_stop(void *voice)
 	{
 		struct psp_stream *stream = stream_from_interface((IDirectSoundStream *)voice);
 
-		platform_log("audio: a loop voice stopped after %lu ms mixed (%s, frequency %lu, target gains %d/%d)",
-			stream->mixed_frames * 1000 / OUTPUT_RATE, loop_voice_index(voice) < 0 ? "heap" : "static slot",
-			(unsigned long)stream->frequency, stream->target_left, stream->target_right);
+		platform_log("audio: a loop voice stopped after %lu ms mixed in %lu blocks prepared (%s, frequency %lu, gain %d at the end, %d at its loudest, of %d)",
+			stream->mixed_frames * 1000 / OUTPUT_RATE, stream->prepared_blocks, loop_voice_index(voice) < 0 ? "heap" : "static slot",
+			(unsigned long)stream->frequency, stream->target_left, stream->peak_gain, GAIN_ONE);
 	}
 	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
 	k = loop_voice_index(voice);
