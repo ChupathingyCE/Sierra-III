@@ -851,6 +851,13 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 		}
 		psp_anim_map_opened(header[4], header[5], header[6], header[7], window_at, window_bytes, arena_carved);
 	}
+	/* after the animation cache's share: the level copies' room past their
+	arena, carved below it as this cache's was (psp_ge.c) */
+	{
+		extern void psp_ge_level_carve(int carve_from_textures);
+
+		psp_ge_level_carve(arena_carved);
+	}
 	{
 		/* the stencil bake, keyed by this pack's addresses */
 		extern void psp_ge_stencils_open(const char *name, unsigned int map_crc);
@@ -884,6 +891,11 @@ void psp_geo_suspend(void)
 	if (arena_carved)
 		forget_all();
 	psp_anim_suspend();
+	{
+		extern void psp_ge_level_carve_suspend(void);
+
+		psp_ge_level_carve_suspend();
+	}
 }
 
 void psp_geo_resume(void)
