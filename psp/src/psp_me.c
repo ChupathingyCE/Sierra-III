@@ -1361,6 +1361,10 @@ The caller writes back its data cache first, as for psp_me_run */
 static int submitted[ME_SLOTS]; /* 0 none, 1 out with the ME, 2 run here (simulated) */
 static unsigned long long submit_mark[ME_SLOTS];
 
+/* a slot job that serves the ring itself between its steps (geinflight's
+frame: its args[4] is 2): the ring takes jobs while it runs */
+static int slot_serves_ring[ME_SLOTS];
+
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count)
 {
 	volatile struct me_slot *slot;
@@ -1368,6 +1372,7 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 
 	if (which < 0 || which >= ME_SLOTS || arg_count > ME_JOB_ARGS || submitted[which])
 		return 0;
+	slot_serves_ring[which] = type == ME_JOB_GE && arg_count >= 5 && args[4] == 2;
 	/* down again at psp_me_finish's end */
 	slot_busy[which] = 1;
 	if (me_state <= 0)
@@ -1651,7 +1656,7 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 	~10 ms on the PSP, review_b120.md 5): a ring job behind it would be
 	waited for longer than its work is worth */
 	for (k = 0; k < ME_SLOTS; k++)
-		if (k != ME_SLOT_AUDIO && submitted[k])
+		if (k != ME_SLOT_AUDIO && submitted[k] && !slot_serves_ring[k])
 		{
 			ring_stats.refused_busy++;
 			return 0;

@@ -957,10 +957,21 @@ Media Engine's job (psp_ge_me_replay) */
 Engine's work (psp_libc.c): which kind of call led there */
 int psp_me_record_kind = 0;
 
+/* geinflight's frame on the ME: audio and the ring served now (both look at
+one uncached word each when there's nothing to do) */
+extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
+extern void psp_me_serve_ring(void); /* psp_me.c */
+
+static void inflight_serve(void)
+{
+	if (!psp_on_me())
+		return;
+	psp_me_serve_audio();
+	psp_me_serve_ring();
+}
+
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
-	extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
-	extern void psp_me_serve_ring(void); /* psp_me.c */
 	unsigned int at = 0, records = 0;
 
 	while (at < used)
@@ -970,16 +981,14 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		const void *a, *b, *c;
 
 		/* build 113: on the ME, an audio block asked for meanwhile is mixed
-		between records rather than after the whole run (psp_me.c) */
-		if (on_me && (++records & 31) == 0)
-		{
+		between records rather than after the whole run (psp_me.c).
+		geinflight: the frame's job lasts a frame while the main CPU ticks,
+		which waits on both audio and the ring's jobs (perception's rays, the
+		poses), so they're served every record */
+		if (replay_inflight)
+			inflight_serve();
+		else if (on_me && (++records & 31) == 0)
 			psp_me_serve_audio();
-			/* geinflight: the frame's job lasts a frame, so a ring job the
-			next ticks hand over (perception's rays) runs between records
-			rather than after it */
-			if (replay_inflight)
-				psp_me_serve_ring();
-		}
 
 		at += buffer[at].u >> 8;
 		psp_me_record_kind = kind;
@@ -12729,6 +12738,11 @@ static void transparent_flush_body(void)
 	for (index = 0; index < transparent_count; index++)
 	{
 		struct transparent_draw const *draw = &transparent[transparent_order[index]];
+
+		/* the frame's end is one record: its see-through draws can take
+		milliseconds, which audio and the ring mustn't wait out (geinflight) */
+		if (replay_inflight)
+			inflight_serve();
 
 		/* build 89: a slot whose filling never finished (see transparent_slot) */
 		if (!draw->vertices && !draw->cut_vertices)
