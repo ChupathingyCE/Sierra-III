@@ -233,6 +233,16 @@ enum
 	/* after a failed join, the sockets asked for meanwhile fail at once
 	(each join can take its whole timeout) */
 	JOIN_RETRY_US = 10 * 1000 * 1000,
+	/* the stack's own two threads (sceNetInit's callout and netintr: its
+	timers, and what moves arrived packets from the driver into the
+	sockets): above the game thread (0x20) and internet play's tunnel
+	(0x1f in a game), under the cache file thread (0x1c). The PSP shares no
+	time between threads of one priority, so at the game thread's own
+	priority they waited out every catch-up frame (0.5-2.5 s in a public
+	game): arrived packets overflowed the driver's queue, and sent ones left
+	in bursts (build_mpb4.md). Their work is short. Keep word netprioN
+	(decimal; netprio32: the game thread's) */
+	NET_THREAD_PRIORITY = 0x1d,
 };
 
 static struct
@@ -396,6 +406,42 @@ static int wifi_read_addresses(void)
 	return 1;
 }
 
+/* the priority sceNetInit gives the stack's threads (NET_THREAD_PRIORITY;
+psp_net_adhoc.c too) */
+int psp_net_stack_priority(void)
+{
+	int priority = psp_keep_number("netprio", NET_THREAD_PRIORITY);
+
+	return priority < 0x10 ? 0x10 : priority > 0x6f ? 0x6f : priority;
+}
+
+/* the stack's threads as the firmware has them, once it has started: to
+check their names and priorities on the PSP (the emulator makes its own) */
+void psp_net_log_threads(void)
+{
+	SceUID ids[64];
+	char line[256];
+	int count = 0, index, used = 0;
+
+	if (sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, ids, 64, &count) < 0)
+		count = 0;
+	line[0] = 0;
+	for (index = 0; index < count && index < 64; index++)
+	{
+		SceKernelThreadInfo info;
+
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		if (sceKernelReferThreadStatus(ids[index], &info) < 0 ||
+			strncmp(info.name, "SceNet", 6) != 0 || used >= (int)sizeof(line) - 48)
+			continue;
+		used += snprintf(line + used, sizeof(line) - (size_t)used, "%s%s 0x%x",
+			used ? ", " : "", info.name, info.currentPriority);
+	}
+	platform_log("network: the stack's threads, asked for at 0x%x: %s", psp_net_stack_priority(),
+		used ? line : "none seen");
+}
+
 /* the network modules loaded and the stack started, once (psp_memory.c calls
 it at start-up, when the game state and the tag window are placed) */
 void psp_net_start(void)
@@ -432,7 +478,8 @@ void psp_net_start(void)
 		/* the stack's buffers (NET_POOL_KB; pspsdk's samples: 128 KB) */
 		pool_kb = psp_keep_number("netpool", NET_POOL_KB);
 		pool_kb = pool_kb < 64 ? 64 : pool_kb > 1024 ? 1024 : pool_kb;
-		result = sceNetInit(pool_kb * 1024, 0x20, 4 * 1024, 0x20, 4 * 1024);
+		result = sceNetInit(pool_kb * 1024, psp_net_stack_priority(), 4 * 1024,
+			psp_net_stack_priority(), 4 * 1024);
 		wifi.net_started = result >= 0;
 	}
 	if (result >= 0)
@@ -455,6 +502,7 @@ void psp_net_start(void)
 	platform_log("network: the modules and the stack started in %u ms (a %d KB pool); user memory free %d KB (largest block %d KB), was %d KB (%d KB)",
 		(sceKernelGetSystemTimeLow() - start) / 1000, pool_kb, (int)sceKernelTotalFreeMemSize() / 1024,
 		(int)sceKernelMaxFreeMemSize() / 1024, free_kb, largest_kb);
+	psp_net_log_threads();
 }
 
 /* mp3: the heartbeat's network line (psp_platform.c), once the PSP has

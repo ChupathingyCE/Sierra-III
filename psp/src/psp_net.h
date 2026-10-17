@@ -52,6 +52,10 @@ int psp_keep(const char *name);
 int psp_keep_number(const char *prefix, int fallback);
 /* whether keep.txt has been read yet */
 int psp_keep_loaded(void);
+/* the priority of the stack's own threads (keep word netprioN), and a log
+line naming them as the firmware has them */
+int psp_net_stack_priority(void);
+void psp_net_log_threads(void);
 
 /* ---------- the ad hoc layer (psp_net_adhoc.c)
 

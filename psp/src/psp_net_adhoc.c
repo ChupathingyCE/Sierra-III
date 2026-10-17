@@ -424,7 +424,8 @@ int psp_adhoc_start(int pool_kb)
 	}
 	if (result >= 0)
 	{
-		result = sceNetInit(pool_kb * 1024, 0x20, 4 * 1024, 0x20, 4 * 1024);
+		result = sceNetInit(pool_kb * 1024, psp_net_stack_priority(), 4 * 1024,
+			psp_net_stack_priority(), 4 * 1024);
 		adhoc.net_started = result >= 0;
 	}
 	if (result >= 0)
