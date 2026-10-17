@@ -19,7 +19,8 @@ near white. glyph_palette in psp_ge.c and palette() here are the same rule.
 Cells are CELL pixels high, one to three cells wide, packed into rows of 8
 cells; psp_glyphs.h carries the layout (in the order of GLYPHS, which
 psp_sdl.c's maps from Xbox buttons refer to) and, for psp_ge.c, the sheet as
-one byte a texel (alpha << 4 | shade): the GE's 8-bit indexed format, 32 KB.
+one byte a texel (alpha << 4 | shade): the GE's 8-bit indexed format, 32 KB,
+run-length coded to about 14 (psp_ge.c unpacks it into VRAM at start-up).
 psp_glyphs.png beside it is a preview in the HUD's blue on the left and white
 on the right.
 
@@ -534,6 +535,65 @@ def palette(tint, fade=1.0):
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def packbits(data):
+    """run-length code the sheet as psp_ge.c's glyph_sheet_unpack reads it: a
+    control byte under 128 is followed by that many plus one bytes as they
+    are; 128 and over, by one byte repeated (control - 125) times, so runs of
+    3 to 130. The sheet is mostly empty: 32 KB codes to about 14"""
+    out, at, literal = bytearray(), 0, bytearray()
+
+    def flush():
+        if literal:
+            out.append(len(literal) - 1)
+            out.extend(literal)
+            literal.clear()
+    while at < len(data):
+        run = 1
+        while at + run < len(data) and data[at + run] == data[at] and run < 130:
+            run += 1
+        if run >= 3:
+            flush()
+            out += bytes((run + 125, data[at]))
+            at += run
+        else:
+            literal.append(data[at])
+            at += 1
+            if len(literal) == 128:
+                flush()
+    flush()
+    return bytes(out)
+
+
+def unpackbits(data, size):
+    out, at = bytearray(), 0
+    while at < len(data):
+        control = data[at]
+        if control < 128:
+            out += data[at + 1:at + 2 + control]
+            at += 2 + control
+        else:
+            out += bytes((data[at + 1],)) * (control - 125)
+            at += 2
+    assert len(out) == size
+    return bytes(out)
+
+
+def write_sheet(header, flat):
+    """the texels for psp_ge.c, which draws them (the only unit that asks):
+    one byte each, alpha << 4 | shade (glyph_palette there turns them to
+    colour), run-length coded; psp_ge.c unpacks them once into VRAM, so the
+    program, and with it each build's heap, carries 14 KB, not the sheet's 32"""
+    flat = bytes(int(b) for b in flat)
+    packed = packbits(flat)
+    assert unpackbits(packed, len(flat)) == flat
+    header.write("#ifdef PSP_GLYPH_PIXELS\n")
+    header.write("/* run-length coded (tools/psp_glyphs.py, packbits()): %d bytes unpacked */\n" % len(flat))
+    header.write("static const unsigned char psp_glyph_packed[%d] =\n{\n" % len(packed))
+    for at in range(0, len(packed), 32):
+        header.write("\t" + ",".join("%d" % b for b in packed[at:at + 32]) + ",\n")
+    header.write("};\n#endif\n")
+
+
 def main():
     global CELL
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
@@ -659,14 +719,7 @@ def main():
         header.write("static const unsigned char psp_glyph_height[PSP_GLYPH_COUNT] =\n{\n\t")
         header.write(", ".join(str(100 if name in FULL_HEIGHT else round(HEIGHT_SHARE * 100)) for name, *_ in places))
         header.write("\n};\n")
-        # only psp_ge.c, which draws them, asks for the texels: one byte
-        # each, alpha << 4 | shade (glyph_palette there turns them to colour)
-        header.write("#ifdef PSP_GLYPH_PIXELS\n")
-        flat = indices.reshape(-1)
-        header.write("static const unsigned char psp_glyph_pixels[%d] __attribute__((aligned(16))) =\n{\n" % len(flat))
-        for at in range(0, len(flat), 32):
-            header.write("\t" + ",".join("%d" % b for b in flat[at:at + 32]) + ",\n")
-        header.write("};\n#endif\n")
+        write_sheet(header, indices.reshape(-1))
     print("psp_glyphs: %d glyphs, sheet %dx%d" % (len(places), columns * CELL, rows * CELL))
 
 
