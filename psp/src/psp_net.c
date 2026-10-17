@@ -415,6 +415,28 @@ int psp_net_stack_priority(void)
 	return priority < 0x10 ? 0x10 : priority > 0x6f ? 0x6f : priority;
 }
 
+/* keep word netyieldN: in a game, the game thread waits 1 ms once every N
+ms of its ticks, so threads under it run (psp_platform.c's tick
+accounting calls this after each tick). A test of whether something under
+the game thread, which no log names (the Wi-Fi driver's), loses the host's
+packets while catch-up ticks run for seconds: it costs the game time */
+void psp_net_tick(void)
+{
+	static int every_ms = -1;
+	static unsigned int last;
+	unsigned int now;
+
+	if (every_ms < 0)
+		every_ms = psp_keep_loaded() ? psp_keep_number("netyield", 0) : -1;
+	if (every_ms <= 0 || !wifi.connected)
+		return;
+	now = sceKernelGetSystemTimeLow();
+	if (now - last < (unsigned int)every_ms * 1000)
+		return;
+	sceKernelDelayThread(1000);
+	last = sceKernelGetSystemTimeLow();
+}
+
 /* the stack's threads as the firmware has them, once it has started: to
 check their names and priorities on the PSP (the emulator makes its own) */
 void psp_net_log_threads(void)
@@ -489,7 +511,9 @@ void psp_net_start(void)
 	}
 	if (result >= 0)
 	{
-		result = sceNetApctlInit(0x1600, 0x42);
+		/* its thread: the access point's link (keep word apctlprioN, decimal;
+		the firmware's samples' 0x42 otherwise) */
+		result = sceNetApctlInit(0x1600, psp_keep_number("apctlprio", 0x42));
 		wifi.apctl_started = result >= 0;
 	}
 	if (result < 0)

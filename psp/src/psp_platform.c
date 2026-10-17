@@ -1916,6 +1916,13 @@ void psp_tick_account(unsigned long microseconds)
 
 	ticks_since_frame++;
 	bench_tick();
+#ifdef PSP_MULTIPLAYER
+	{
+		extern void psp_net_tick(void);
+
+		psp_net_tick();
+	}
+#endif
 	ceiling_tick(); /* build 112 */
 	/* build 95: the high-water marks, from the game thread every 5 s */
 	if (ticks_seen % 150 == 75)

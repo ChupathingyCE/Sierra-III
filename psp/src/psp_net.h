@@ -56,6 +56,8 @@ int psp_keep_loaded(void);
 line naming them as the firmware has them */
 int psp_net_stack_priority(void);
 void psp_net_log_threads(void);
+/* after each game tick: keep word netyieldN's wait */
+void psp_net_tick(void);
 
 /* ---------- the ad hoc layer (psp_net_adhoc.c)
 
