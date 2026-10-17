@@ -13835,7 +13835,6 @@ boolean psp_perception_unit_underwater(
 	if (slot && (slot->known & PSP_PERC_WATER) &&
 		slot->water_location.leaf_index == location->leaf_index &&
 		slot->water_location.cluster_index == location->cluster_index &&
-		slot->water_location.bonus == location->bonus &&
 		!memcmp(&slot->water_position, position, sizeof(*position)))
 	{
 		psp_perc_stats.hits++;
@@ -22507,11 +22506,44 @@ FIXES_LOADING["source/cache/cache_files.c#loading"] = [
 ]
 
 
+# ---------- FIXES_BONUS: an object's location.bonus made deterministic
+# struct location's last word, bonus, is written in play only by
+# scenario_location_award_bonus (to NONE); everywhere else it is copied
+# from a location on the stack that never set it, so objects, actors and
+# props carry stack garbage there. Play never reads it, but the sleep
+# checksum and the state hashes do, so a change that only moves the stack's
+# history (LD1, lab ld1why1 39045094664) made the pools differ and woke
+# sleepers for nothing. Set as award_bonus sets it, where the object's
+# location is stored. "bonusold": left as copied
+FIXES_BONUS = {}
+FIXES_BONUS["source/objects/objects.c#bonus"] = [
+("""		if (location->cluster_index!=NONE)
+		{
+			object->object.location = *location;
+""", """		if (location->cluster_index!=NONE)
+		{
+			object->object.location = *location;
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_BONUS) */
+			{
+				static int psp_bonus_old = -1;
+				int psp_keep(const char *name);
+
+				if (psp_bonus_old < 0)
+					psp_bonus_old = psp_keep("bonusold") != 0;
+				if (!psp_bonus_old)
+					object->object.location.bonus = NONE;
+			}
+#endif
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
