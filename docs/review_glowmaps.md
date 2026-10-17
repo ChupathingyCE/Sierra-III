@@ -47,7 +47,14 @@ Item 1 of `main_menu_restoration.md`: the main menu's white band across the ring
 
 | Check | What it shows | Result |
 |---|---|---|
-| Bake `glow135` (ui, a10, b30) | the census of glow maps and mended masks; the packs build | |
-| Menu, `glowflat` vs default | the ring shows its land, sea and cloud lit, not a white band | |
-| a10, b30, default vs `glowflat` vs `noglowpass` | Covenant and Pelican lights in their own colours; no frame cost | |
-| `PSP_MULTIPLAYER=1` compile | shared code still builds | |
+| Bake `glow135` (ui, a10, b30; lab 38988879171) | the census; the packs build | ok. ui: 3 shaders, 3 maps, 29 KB (both ring shaders, the plasma grenade's button). a10: 43 shaders, 36 maps, 420 KB. b30: 54 shaders, 45 maps, 555 KB. Detail masks changed by the fix: 0 shaders on these maps [D] |
+| `glow1` menu (lab 38991916734) | the ring | the inner ring shows its land, sea and cloud, brighter than with no pass; no white band. The hull stays dark metal (its base is dark, so base × green adds little). 9000 passes, all with glow maps [E] |
+| `glow1` a10, b30 | the levels | differences are small and local: the ring in a10's opening is textured, not a white arc; the assault rifle's display adds a little over its base where glowflat washed it flat blue [E] |
+| Frame time, same runs | cost | menu 2.2 ms all three ways; a10 and b30 within the runs' own spread (a10's noglowpass run was as slow as the glow-map run) [E] |
+| `PSP_MULTIPLAYER=1` (glow1, mp-bloodgulch) | shared code builds and plays | ok: built, ran clean on bloodgulch with mp134's packs (no glow maps: the old pass, 0 with maps) [E] |
+
+## Still open
+
+- **The ring's textures are at the object cap:** the inner ring reaches the PSP at 128 × 8 px, the hull 128 × 64. Item 2 of `main_menu_restoration.md` (the carve-out) is what gives the ring its detail back.
+- **The Xbox clamps lighting + self-illumination at 1 before it multiplies the base;** the port's sum can go past the base where a lit part is also in strong light. Not seen in the shots [U].
+- Judged against the formula, not a reference frame: the PC rig's frames (item 5) would settle it.
