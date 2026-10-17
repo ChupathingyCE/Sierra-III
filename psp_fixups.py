@@ -359,6 +359,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			as the shader's change colour source picks. Model shaders only:
 			these offsets mean something else in other shaders (build 116) */
 			extern void psp_ge_model_multipurpose(unsigned int, unsigned int, float const *, float const *);
+			extern int psp_showcase_map;
 			extern real periodic_function_evaluate(short, real);
 			char const *definition = (char const *)shader;
 			boolean model_shader = base_key && *(short const *)(definition + 36) == 4;
@@ -399,6 +400,26 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			shader: texpack.py, glow_looks) is under the shader's address | 2 */
 			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0,
 				multipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);
+			/* on the main menu, the detail map itself over the base that holds
+			its average (psp_ge.c, model_detail_pass): shaders with the double
+			multiply and no mask, whose folded base the pack has. Its scale is
+			on the base map's coordinates, v by the v scale too, as the Xbox's
+			vertex constants have it (rasterizer_xbox_models.c) */
+			if (psp_showcase_map)
+			{
+				extern void psp_ge_model_detail(unsigned int, float, float);
+				long detail = model_shader ? *(long const *)(definition + 232) : NONE;
+				float scale = model_shader ? *(float const *)(definition + 216) : 0.0f;
+				float v_detail = model_shader ? *(float const *)(definition + 236) : 0.0f;
+
+				if (scale == 0.0f)
+					scale = 1.0f;
+				if (v_detail == 0.0f)
+					v_detail = 1.0f;
+				psp_ge_model_detail(detail != NONE && (base_key & 1) && *(short const *)(definition + 212) == 0 &&
+					*(short const *)(definition + 214) == 0 ? psp_tex_bitmap_key(detail, 0) : 0,
+					(u_scale ? u_scale : 1.0f) * scale, (v_scale ? v_scale : 1.0f) * scale * v_detail);
+			}
 		}
 		{
 			boolean drawn;

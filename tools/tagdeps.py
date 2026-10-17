@@ -29,6 +29,7 @@ before the texel fit), how well each drawing model fits, and the combiner
 stages of a generic shader whose tint changed: derived colours and register
 wiring, no tag data."""
 import os
+import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +98,11 @@ def main():
     for tag in roots:
         show(tag, 0, '')
         print()
+    # model shaders (soso) whose name holds the pattern: how they are drawn
+    # on the PC (the base map's scale, the detail map's scale, function and
+    # mask, which maps are set), for checking what the PSP's one pass keeps.
+    # Numbers and enum names only
+    print_model_shaders(m, d, [t for t in m.tags if t.group == 'soso' and pattern in t.name.lower()])
     # every meter and plasma shader in the map, whoever uses it
     for group in ('smet', 'spla'):
         names = sorted(t.name for t in m.tags if t.group == group)
@@ -156,6 +162,38 @@ def main():
                 ', '.join('map %d %.5f' % (j, v) for j, v in sorted(found.shares.items())) or 'none'))
         print_tint_inputs(m, t, means, stages=not same)
     print('tints that change from the means\' (texels, the drawn map, the model): %d' % changed)
+
+
+def print_model_shaders(m, d, tags):
+    struct = d.groups.get('shader_model')
+    if not struct:
+        print('model shaders: no definition for soso here')
+        return
+    fields = d.fields(struct)
+    for t in sorted(tags, key=lambda t: t.name):
+        o = m.off(t.address)
+        if o is None:
+            continue
+        parts = []
+        for off, f, sz in fields:
+            name = f.get('name', '')
+            ftype = f['type']
+            if ftype == 'TagDependency':
+                target = struct_unpack('<i', m.data, o + off + 12)
+                parts.append('%s %s' % (name, 'set' if target != -1 else 'none'))
+            elif ftype in ('float', 'Fraction') and any(w in name for w in ('map u scale', 'map v scale', 'detail map', 'translucency', 'brightness')):
+                parts.append('%s %.4g' % (name, struct_unpack('<f', m.data, o + off)))
+            elif ftype in d.enums and name.startswith('detail'):
+                v = struct_unpack('<H', m.data, o + off)
+                options = d.enums[ftype].get('options', [])
+                parts.append('%s %s' % (name, options[v] if v < len(options) else v))
+            elif ftype in d.bitfields and 'flags' in name:
+                parts.append('%s 0x%x' % (name, struct_unpack('<H' if sz == 2 else '<I', m.data, o + off)))
+        print('model shader %s: %s' % (t.name, '; '.join(parts)))
+
+
+def struct_unpack(fmt, data, at):
+    return struct.unpack_from(fmt, data, at)[0]
 
 
 # the shader fields a tint depends on, by their tag enums' order
