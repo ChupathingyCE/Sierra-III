@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from halomap import Defs, CacheMap
 from assets import fo
 import refs
-from bitmap_bake import decode, downscale, quantize, kmeans, swizzle_psp, target, psnr, decode_dxt, decode_plain, BPP
+from bitmap_bake import decode, decode_bump, downscale, quantize, kmeans, swizzle_psp, target, psnr, decode_dxt, decode_plain, BPP
 from assets import FORMATS, TYPES, BTYPES, USAGES
 import seethrough
 
@@ -213,6 +213,69 @@ def glow_looks(m, B):
             continue
         glows[t.address | 2] = dict(shader=t.name, base=by_tag[base.name][0], multipurpose=by_tag[mp.name][0])
     return glows
+
+
+def relief_looks(m, d, B):
+    """senv shaders with a bump map: base bitmap address -> (the bump map's
+    entry, its scale on the base's coordinates). shader_environment's diffuse
+    properties are at +108: the bump map scale at +292, the bump map at +296
+    (its index at +308), the runtime scale (u, v) at +312, as
+    rasterizer_xbox_environment.c lays them out"""
+    by_tag = {}
+    for b in B:
+        by_tag.setdefault(b['tag'], []).append(b)
+    reliefs = {}
+    for t in m.tags:
+        if t.group != 'senv' or not t.address:
+            continue
+        o = m.off(t.address)
+        base_id, = struct.unpack_from('<i', m.data, o + 148)
+        bump_scale, = struct.unpack_from('<f', m.data, o + 292)
+        bump_id, = struct.unpack_from('<i', m.data, o + 308)
+        su, sv = struct.unpack_from('<2f', m.data, o + 312)
+        base, bump = m.by_id.get(base_id), m.by_id.get(bump_id)
+        if not base or not bump or base.name not in by_tag or bump.name not in by_tag:
+            continue
+        fallback = bump_scale if bump_scale else 1.0
+        reliefs.setdefault(by_tag[base.name][0]['address'], dict(
+            bump=by_tag[bump.name][0], u=su if su else fallback, v=sv if sv else fallback, shader=t.name))
+    return reliefs
+
+
+# the bump relief's light, in the bump map's own space (x along u, y along
+# v, z out of the surface): from up and to the side, as an emboss is lit.
+# The Xbox lights the bump per pixel from the lightmap's incident direction,
+# which differs surface by surface; a texture shared by many surfaces can
+# only take one direction
+RELIEF_LIGHT = np.array([-0.4, 0.4, 0.82], np.float32) / np.float32(np.linalg.norm([-0.4, 0.4, 0.82]))
+RELIEF_STRENGTH = 1.0
+NO_RELIEF = False   # --no-relief: the level's base maps without their bump relief
+
+
+def apply_relief(img, relief, m):
+    """the base map x its bump map's relief: dot(normal, light) over the flat
+    surface's, sampled where the base's texels fall on the tiled bump map
+    (bilinear, wrapped); a flat area keeps its colour"""
+    bump = decode_bump(m, relief['bump'])
+    if bump is None:
+        return img
+    normals = bump[:, :, :3].astype(np.float32) / 127.5 - 1.0
+    bh, bw = normals.shape[:2]
+    h, w = img.shape[:2]
+    u = ((np.arange(w, dtype=np.float32) + 0.5) / w * relief['u'] * bw - 0.5)[None, :].repeat(h, 0)
+    v = ((np.arange(h, dtype=np.float32) + 0.5) / h * relief['v'] * bh - 0.5)[:, None].repeat(w, 1)
+    u0, v0 = np.floor(u), np.floor(v)
+    fu, fv = (u - u0)[:, :, None], (v - v0)[:, :, None]
+    u0 = u0.astype(np.int64) % bw
+    v0 = v0.astype(np.int64) % bh
+    u1, v1 = (u0 + 1) % bw, (v0 + 1) % bh
+    n = (normals[v0, u0] * (1 - fu) * (1 - fv) + normals[v0, u1] * fu * (1 - fv) +
+         normals[v1, u0] * (1 - fu) * fv + normals[v1, u1] * fu * fv)
+    n /= np.maximum(np.linalg.norm(n, axis=2, keepdims=True), 1e-6)
+    shade = (n @ RELIEF_LIGHT) / RELIEF_LIGHT[2]
+    factor = np.clip(1.0 + RELIEF_STRENGTH * (shade - 1.0), 0.35, 1.65)[:, :, None]
+    rgb = np.clip(img[:, :, :3].astype(np.float32) * factor + 0.5, 0, 255).astype(np.uint8)
+    return np.concatenate([rgb, img[:, :, 3:4]], 2)
 
 
 PREMULTIPLIED_MASKS = False    # --premultiplied-masks: the detail masks read as before
@@ -741,7 +804,8 @@ def quality_note(cls, old, new):
     st[2] += new
 
 
-def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True):
+def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
+             relief=None):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -771,6 +835,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         img = dilate(img, LIGHTMAP_MASKS[(b['tag'], b['index'])], 2 * LIGHTMAP_SCALE + 2)
     if look:
         img = apply_look(img, look)
+    if relief:
+        img = apply_relief(img, relief, m)
     if model_look:
         img = apply_model_look(img, model_look)
     if glow is not None:
@@ -916,6 +982,8 @@ def main():
                     help='no glow maps: the self-illumination pass adds its colour by the mask alone')
     ap.add_argument('--premultiplied-masks', action='store_true',
                     help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
+    ap.add_argument('--no-relief', action='store_true',
+                    help="the level's base maps without their bump maps' relief (as before build 139)")
     ap.add_argument('--showcase', action='store_true',
                     help='the main menu\'s pack: every map at its own size up to 512, objects, sky and level maps '
                          'in their own colours (ui.map; the levels never)')
@@ -937,6 +1005,8 @@ def main():
     QUALITY, QUALITY_REPORT = a.quality, a.quality_report
     PREMULTIPLIED_MASKS = a.premultiplied_masks
     SHOWCASE = a.showcase
+    global NO_RELIEF
+    NO_RELIEF = a.no_relief
     SHOWCASE_32 = a.showcase_32
     HUD_CLUT4 = a.hud_clut4
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
@@ -972,6 +1042,8 @@ def main():
     skipped = {}
     looks = level_looks(m, d, B)
     mlooks = model_looks(m, d, B)
+    reliefs = relief_looks(m, d, B)
+    relief_count = 0
     print('%d level shaders: base maps baked with their detail maps' % len(looks), file=sys.stderr)
     for i, b in enumerate(B):
         cls = refs.classify(roles.get(b['tag'], ()), b)
@@ -989,6 +1061,14 @@ def main():
         r['key'] = b['address']
         r['name'] = b['tag']
         entries.append(r)
+        if b['address'] in reliefs and not NO_RELIEF:
+            v = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter, own_colours=own_colours,
+                         relief=reliefs[b['address']])
+            if v is not None:
+                v['key'] = b['address'] | 2
+                v['name'] = b['tag'] + ' (with its bump relief)'
+                entries.append(v)
+                relief_count += 1
         if b['address'] in mlooks:
             v = bake_one(m, b, cls, looks.get(b['address']), mlooks[b['address']], full_hud=full_hud, meter=meter,
                          own_colours=own_colours)
@@ -999,6 +1079,8 @@ def main():
                 print('  %s: detail map folded in for %s' % (b['tag'], mlooks[b['address']]['shader']), file=sys.stderr)
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
+    print('bump relief: %d level base maps baked with their bump maps\' relief (under the key | 2)%s' % (
+        relief_count, ' (--no-relief)' if NO_RELIEF else ''), file=sys.stderr)
     for shader, changed in MASKS_MENDED:
         print('detail mask read on its own for %s: %.0f%% of its texels changed%s' % (
             shader, 100.0 * changed, ' (--premultiplied-masks: kept as before)' if PREMULTIPLIED_MASKS else ''),

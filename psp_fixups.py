@@ -350,7 +350,9 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		restoration; keep word "senvflat" brings the flat colour back */
 		else if (shader && *(short const *)((char const *)shader + 36) == 3 && !PSP_KEEP_ONCE("senvflat"))
 		{
-			base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			extern unsigned int psp_relief_key(unsigned int);
+
+			base_key = psp_relief_key(psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0));
 			alpha_tested = *(unsigned short const *)((char const *)shader + 40) & 1;
 		}
 		{
@@ -449,7 +451,9 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		tested (tag offsets, from the tag definitions; build 20) */
 		if (shader && *(short const *)((char const *)shader + 36) == 3)
 		{
-			base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			extern unsigned int psp_relief_key(unsigned int);
+
+			base_key = psp_relief_key(psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0));
 			alpha_tested = *(unsigned short const *)((char const *)shader + 40) & 1;
 		}
 		{
@@ -4531,7 +4535,11 @@ FIXES_23["source/rasterizer/rasterizer.c"].append(
 			unsigned int base_key = 0;
 
 			if (shader && *(short const *)((char const *)shader + 36) == 3)
-				base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			{
+				extern unsigned int psp_relief_key(unsigned int);
+
+				base_key = psp_relief_key(psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0));
+			}
 			psp_environment_light(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
 				base_key);
 			return;

@@ -1687,6 +1687,20 @@ int psp_tex_has(unsigned int key)
 	return key && entries && find(key) >= 0;
 }
 
+/* a level (senv) base map's key with its bump map's relief baked in, when
+the pack has one (texpack.py, apply_relief: under the base's key | 2), else
+the key itself. The Xbox lights a level's bump map per pixel; the GE can't,
+so the bake folds the relief into the base, lit from one fixed direction.
+"norelief": the plain base map, as before */
+unsigned int psp_relief_key(unsigned int key)
+{
+	static int off = -1;
+
+	if (off < 0)
+		off = psp_keep("norelief");
+	return key && !off && psp_tex_has(key | 2) ? key | 2 : key;
+}
+
 int psp_tex_size(unsigned int key, int *width, int *height)
 {
 	int index = key && entries ? find(key) : -1;

@@ -137,6 +137,27 @@ def decode_plain(buf, w, h, fmt, swizzled):
     return p.reshape(h, w, 4)
 
 
+def decode_bump(m, b):
+    """a bump map's mip 0 as an RGBA array of normals (x, y, z in red, green
+    and blue, 0-255 for -1 to 1), or None. Halo's P8 bump maps (format 17)
+    go through the engine's vector palette; other formats decode as usual"""
+    if b['fmt'] != 17:
+        return decode(m, b)
+    from vector_palette import VECTOR_PALETTE
+    w, h = b['w'], b['h']
+    if b['type'] != '2d':
+        return None
+    raw = np.frombuffer(m.data[b['pixels_offset']:b['pixels_offset'] + w * h], np.uint8)
+    if raw.size < w * h:
+        return None
+    pal = np.array(VECTOR_PALETTE, np.uint32)
+    argb = pal[raw]
+    p = np.stack([(argb >> 16) & 255, (argb >> 8) & 255, argb & 255, argb >> 24], -1).astype(np.uint8)
+    if b['flags'] & 8:
+        return unswizzle_xbox(p, w, h)
+    return p.reshape(h, w, 4)
+
+
 def decode(m, b):
     """mip 0 (face 0 of a cube map) as an RGBA array, or None"""
     fmt, w, h = b['fmt'], b['w'], b['h']
