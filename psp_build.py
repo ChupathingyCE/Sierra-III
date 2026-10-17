@@ -28,7 +28,6 @@ SDK = PSPDEV + "/psp/sdk"
 # PSP_MECORE names a separate install prefix holding include/me-core-mapper and lib/
 MECORE = os.environ.get("PSP_MECORE", "")
 JOBS = int(sys.argv[sys.argv.index("--jobs") + 1]) if "--jobs" in sys.argv else 2
-GAME_STATE_BASE = 0x092A0000   # psp_capacity.h (build 113: 64 KB lower)
 TAG_WINDOW_BASE = 0x09600000   # psp_capacity.h, physical_memory_map.c
 PROGRAM_BASE = 0x08804000      # where the kernel loads the module (first fit, low)
 STACK_RESERVE = 0x40000        # main thread and other low allocations made before the heap
@@ -58,6 +57,22 @@ MULTIPLAYER_UNITS = ("source/networking/", "source/bungie_net/", "source/game/ga
 CAMPAIGN_KEEPS = ("source/bungie_net/common/thread_win32.c",)
 def multiplayer_unit(rel):
     return rel.startswith(MULTIPLAYER_UNITS) and rel not in CAMPAIGN_KEEPS
+# The multiplayer build is a client (Sheepdog01, 2026-10-17): it leaves out
+# ChupathingyCE's network co-op too, a game on a campaign map that needs a
+# host (psp/src/psp_nocoop.c answers it, as the campaign build's does).
+# PSP_MP_COOP=1 builds the co-op units back in
+MP_COOP = os.environ.get("PSP_MP_COOP", "") == "1"
+# ... and hosts nothing: PSP_MP_HOST=1 (or co-op, which needs a host) builds
+# hosting back in (psp_limits.h's PSP_MP_CLIENT_ONLY)
+MP_HOST = MP_COOP or os.environ.get("PSP_MP_HOST", "") == "1"
+# psp_capacity.h (build 113: 64 KB lower; the multiplayer build without
+# co-op 640 KB higher, its pools for AI small)
+GAME_STATE_BASE = 0x092A0000 + (0xA0000 if MULTIPLAYER and not MP_COOP and os.environ.get("PSP_BIG_RAM", "") != "1" else 0)
+COOP_UNITS = ("port/linux/game/coop_", "port/linux/game/network_coop.c", "port/linux/game/network_actors.c")
+def coop_unit(rel):
+    return rel.startswith(COOP_UNITS)
+def nocoop():
+    return not MULTIPLAYER or not MP_COOP
 
 # ChupathingyCE's desktop features the PSP build leaves out (its configure
 # turns them on for every desktop build):
@@ -233,7 +248,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -274,6 +289,8 @@ def units():
     game += sorted({m.group(1) + ".c" for m in re.finditer(r"^build/linux/obj/(port/linux/game/.*)\.o: linux_cc", targets, re.M)})
     if not MULTIPLAYER:
         game = [s for s in game if not multiplayer_unit(s)]
+    elif nocoop():
+        game = [s for s in game if not coop_unit(s)]
     game = [s for s in game if not desktop_unit(s)]
     items = [(s, ninja_flags("build/linux/obj/" + s[:-2] + ".o") +
               (["-DHALO_GAME_BROWSER"] if MULTIPLAYER and s in ONLINE_GAMES_UNITS else []), []) for s in game]
@@ -291,6 +308,9 @@ def units():
     memory_flags = ninja_flags("build/linux/obj/port/linux/src/xbox_memory.o")
     for name in PSP_FILES:
         items.append((os.path.join(HERE, "psp/src/%s.c" % name), memory_flags, compat))
+    if nocoop():
+        items.append((os.path.join(HERE, "psp/src/psp_nocoop.c"),
+                      ninja_flags("build/linux/obj/source/networking/network_game_globals.o"), []))
     if not MULTIPLAYER:
         # built as the networking units it stands in for
         items.append((os.path.join(HERE, "psp/src/psp_campaign.c"),
@@ -349,7 +369,7 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    "port/linux/src/posix_files.c", "port/linux/src/halo_linker_common.c",
                    "port/linux/src/nv2a_psh.c", "port/linux/src/nv2a_vsh.c", "port/linux/src/gl_functions.c",
                    "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c",
-                   "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_chupa.c",
+                   "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_nocoop.c", "psp/src/psp_chupa.c",
                    "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c",
                    # mpb1: internet play runs on its own threads, a join's
                    # keys once; the ONLINE GAMES screen only in the menus
@@ -410,6 +430,8 @@ def compile_one(item):
                # (psp_paths.h, by quoted includes only: psp/include's stand-in
                # system headers stay out of these units)
                "-iquote", os.path.join(HERE, "psp/include")] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (
+               ["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (
+               ["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
