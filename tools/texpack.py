@@ -582,6 +582,9 @@ def oklab_to_srgb(lab):
 # is installed, and both errors logged in Oklab, so a bake shows texture by
 # texture whether the numpy k-means is ever worse
 KMEANS_COMPARE = bool(os.environ.get('TEXPACK_KMEANS_COMPARE'))
+if KMEANS_COMPARE:
+    import atexit
+    atexit.register(lambda: kmeans_summary())
 
 
 def kmeans_compare(tag, img, colors, new_rec):
@@ -604,8 +607,30 @@ def kmeans_compare(tag, img, colors, new_rec):
         if has_alpha:
             e = e + ((rec[:, 3].astype(np.float32) - pts[:, 3]) / 255.0) ** 2
         return float(np.sqrt(e).mean())
-    print('kmeans compare: %s, %d colours, Oklab error old %.5f new %.5f' % (
-        tag, colors, error(old), error(new_rec.reshape(-1, 4)[:, :ch])))
+    e_old, e_new = error(old), error(new_rec.reshape(-1, 4)[:, :ch])
+    KMEANS_RESULTS.append((tag, colors, e_old, e_new))
+    print('kmeans compare: %s, %d colours, Oklab error old %.5f new %.5f' % (tag, colors, e_old, e_new))
+
+
+KMEANS_RESULTS = []
+
+
+def kmeans_summary():
+    """the compare's verdict for the bake's log: the means, how many
+    palettes came out worse and by how much, and the worst by name"""
+    if not KMEANS_RESULTS:
+        return
+    old = np.array([r[2] for r in KMEANS_RESULTS])
+    new = np.array([r[3] for r in KMEANS_RESULTS])
+    change = new / np.maximum(old, 1e-12) - 1
+    print('kmeans compare summary: %d palettes, mean Oklab error old %.5f new %.5f (%+.2f%%); worse by over 1%%: %d, '
+          'over 3%%: %d; better by over 1%%: %d' % (len(old), old.mean(), new.mean(), 100 * (new.mean() / old.mean() - 1),
+                                                  int((change > 0.01).sum()), int((change > 0.03).sum()),
+                                                  int((change < -0.01).sum())))
+    for k in np.argsort(-change)[:8]:
+        if change[k] > 0.01:
+            tag, colors, e_old, e_new = KMEANS_RESULTS[k]
+            print('kmeans compare worse: %s, %d colours, %.5f -> %.5f (%+.1f%%)' % (tag, colors, e_old, e_new, 100 * change[k]))
 
 
 def fit_palette(img, colors):

@@ -50,6 +50,7 @@ import argparse, hashlib, json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
 INVADER = os.path.join(HERE, 'invader')
+COMPARE_OLD = False
 # options every texpack.py run takes (--tints-from-means)
 TEXPACK_OPTIONS = []
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder, if any (else atracdenc on PATH)
@@ -161,6 +162,8 @@ def tool_env():
     env['LD_LIBRARY_PATH'] = os.path.join(INVADER, 'lib') + ':' + os.path.join(ATRACDENC, 'lib') + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
     env['HALO_PSP_INVADER_DEFINITIONS'] = os.path.join(INVADER, 'definitions')
     env['PYTHONPATH'] = LIB + (':' + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    if COMPARE_OLD:
+        env['TEXPACK_KMEANS_COMPARE'] = env['STENCIL_COMPARE'] = '1'
     return env
 
 
@@ -213,7 +216,8 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
-    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality '))
+    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
+                                'kmeans compare summary', 'kmeans compare worse'))
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
     if name == 'ui':
@@ -238,8 +242,10 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
              '--full-detail', detail] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
     if name != 'ui':
         log('%s: wall decals' % name)
+        start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'stencilbake.py'), final, pgeo, os.path.join(out_maps, name + '.pstn')],
             log_path, cwd=LIB, env=env)
+        echo_from(log_path, start, ('compare:', 'triangulation failed', 'points added', 'slivers dropped'))
     if not keep_work:
         shutil.rmtree(folder, ignore_errors=True)
     log('%s: done in %.0f s' % (name, time.time() - started))
@@ -298,7 +304,12 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
+    ap.add_argument('--compare-old', action='store_true',
+                    help="also make each palette and decal cut as the bake did before this one (scikit-learn's k-means, "
+                         'Triangle), and log how they compare: the new bake\'s proof (docs/bake_changes.md)')
     a = ap.parse_args()
+    global COMPARE_OLD
+    COMPARE_OLD = a.compare_old
     if a.tints_from_means:
         TEXPACK_OPTIONS.append('--tints-from-means')
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or ALL
