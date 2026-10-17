@@ -106,6 +106,11 @@ TICK_STEPS = os.environ.get("PSP_TICK_STEPS", "") == "1"
 # the heap gets the space. The campaign/multiplayer split will be a flavour
 # of the same kind
 DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
+# PSP_DITHERSHIFT=1: the GE's dither moved each pass (keep words dithershift,
+# dithershiftall). Its tests sit in psp_ge.c's hot paths, so a default build
+# leaves them out. Passed to psp_ge.c's own compile, which takes none of the
+# engine's defines
+DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # build 110: PSP_MAP_CHECKS=1 keeps ChupathingyCE's checks of a map's data as
 # the tick reads it (animations, collision walks). Off by default: the PSP's
 # maps are its own bake, trusted as the Xbox game trusts its own (psp_fixups.py,
@@ -357,7 +362,8 @@ def compile_one(item):
         # the FPU's sqrt.s alone, without a library fallback that only sets
         # errno (the same results; an independent review)
         cmd = ["psp-gcc", "-G0", opt, "-march=allegrex", "-ffunction-sections", "-fdata-sections", "-fno-math-errno",
-               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + [
+               "-ffile-prefix-map=" + HERE + "/=", "-I" + SDK + "/include"] + (pgo_flags(rel) if opt == "-O2" else []) + (
+               ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + [
                "-c", src, "-o", out]
         if src.endswith("psp_me.c"):
             # build 86: mcidclan's me-core-mapper headers (installed beside the SDK)

@@ -1352,6 +1352,13 @@ that leaves a dark pixel almost as it was moves it down a step whenever its
 offset is negative, wherever the pattern stands; under many layers that
 adds up. "dithershiftall": every blended draw of the world dithered and
 moved, for the comparison */
+/* the shift is built in only with PSP_DITHERSHIFT=1: its tests sit in the
+blend switches and in the detail and see-through loops, hot paths where
+code that does nothing still costs (b133's nwbatch hooks, c10 +7% while
+off). As 0, every test below folds away */
+#ifndef PSP_DITHERSHIFT
+#define PSP_DITHERSHIFT 0
+#endif
 static int dither_off = -1, dither_all = -1, dither_shift = -1; /* 1 the passes, 2 every blend */
 static int dither_world = 0; /* the world's turn: the dither may be on */
 static int dither_now = -1, blend_now = 0; /* what the GE was last given */
@@ -1392,7 +1399,7 @@ static void dither_set(int on)
 /* a pass that lays light over what's drawn: the dither on, at its next place */
 static void ge_dither_pass(void)
 {
-	if (!dither_world || dither_shift <= 0)
+	if (!PSP_DITHERSHIFT || !dither_world || dither_shift <= 0)
 		return;
 	dither_place = (dither_place + 1) & 7;
 	dither_moves++;
@@ -1405,7 +1412,7 @@ detail passes, the sky's layers): under "dithershift" those, and only
 those, are dithered ("dithershiftall" has done it in ge_blend) */
 static void ge_layer_dither(void)
 {
-	if (dither_shift == 1)
+	if (PSP_DITHERSHIFT && dither_shift == 1)
 		ge_dither_pass();
 }
 
@@ -1435,6 +1442,12 @@ static void ge_dither(int on)
 		for (cell = 0; cell < 16; cell++)
 			to[cell] = from[cell] + lift;
 		dither_shift = psp_keep("dithershiftall") ? 2 : psp_keep("dithershift");
+		if (dither_shift && !PSP_DITHERSHIFT)
+		{
+			platform_log("GE: %s kept, but this build has no dither shift (PSP_DITHERSHIFT=1 builds it)",
+				dither_shift == 2 ? "dithershiftall" : "dithershift");
+			dither_shift = 0;
+		}
 		if (dither_shift)
 			dither_moves_make(&chosen);
 	}
@@ -1456,7 +1469,7 @@ static void ge_blend(int on)
 	else
 		sceGuDisable(GU_BLEND);
 	blend_now = on;
-	if (on && dither_shift == 2)
+	if (PSP_DITHERSHIFT && on && dither_shift == 2)
 		ge_dither_pass();
 	else if (dither_world)
 		dither_set(dither_all || !on);
@@ -1467,7 +1480,7 @@ static void ge_blend_dithered(void)
 {
 	sceGuEnable(GU_BLEND);
 	blend_now = 1;
-	if (dither_shift > 0)
+	if (PSP_DITHERSHIFT && dither_shift > 0)
 		ge_dither_pass();
 	else if (dither_world)
 		dither_set(1);
@@ -2395,7 +2408,7 @@ code drops in row 2 and none rises in row 3; with them filled from the top
 bits (PPSSPP), only the darkest drop and all but the darkest rise. Rows 1
 and 4 say whether "times one" is exact. That decides which dither matrix
 leaves an unchanged pixel unchanged (dithershift's open question) */
-static void ge_dither_probe(void)
+static void __attribute__((noinline, cold)) ge_dither_probe(void)
 {
 	static const ScePspIMatrix4 minus = { { -1, -1, -1, -1 }, { -1, -1, -1, -1 }, { -1, -1, -1, -1 }, { -1, -1, -1, -1 } };
 	static const ScePspIMatrix4 plus = { { 7, 7, 7, 7 }, { 7, 7, 7, 7 }, { 7, 7, 7, 7 }, { 7, 7, 7, 7 } };
@@ -16679,9 +16692,11 @@ void psp_ge_frame_end(void)
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, glow_mapped, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
-		if (dither_shift > 0)
+		if (PSP_DITHERSHIFT && dither_shift > 0)
+		{
 			platform_log("GE: %s: %lu passes dithered at a moved place", dither_shift == 2 ? "dithershiftall" : "dithershift", dither_moves);
-		dither_moves = 0;
+			dither_moves = 0;
+		}
 		if (frames > 1)
 		{
 			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",
