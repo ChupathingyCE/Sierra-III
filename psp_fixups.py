@@ -19531,6 +19531,88 @@ FIXES_FRONT["source/main/console.c#frontdoor"] = [
 """),
 ]
 
+# The saved-game check the main menu waits on: no menu input until it ends
+# (ui_widget.c, perform_filesystem_initialization). On the Xbox it runs under
+# the intro movie; with no movie the wait shows, about a minute on Sheepdog01's
+# PSP-1000 (test 1). These lines time its parts, so the fix goes where the
+# time is: the Memory Stick's free-space count, the saved games' scan, or the
+# profiles' reads. One line each, once a start-up.
+FIXES_FRONT["source/saved games/saved_game_files.c#checktimes"] = [
+("""	short result = _saved_game_file_system_ok;
+
+	if (GetDiskFreeSpaceEx(""", """	short result = _saved_game_file_system_ok;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT) */
+	extern unsigned long psp_microseconds(void);
+	extern void platform_log(const char *format, ...);
+	unsigned long psp_check_start = psp_microseconds(), psp_scan_start = 0;
+#endif
+
+	if (GetDiskFreeSpaceEx("""),
+("""	else
+	{
+		HANDLE find_handle = XFindFirstSaveGame(""", """	else
+	{
+#ifdef HALO_PSP
+		psp_scan_start = psp_microseconds();
+		platform_log("front door: saved-game check: the free-space query took %lu ms",
+			(psp_scan_start - psp_check_start) / 1000);
+#endif
+		HANDLE find_handle = XFindFirstSaveGame("""),
+("""	return result;
+}
+
+boolean saved_game_file_name_unique(""", """#ifdef HALO_PSP
+	if (psp_scan_start)
+		platform_log("front door: saved-game check: the saved games' scan took %lu ms (result %d)",
+			(psp_microseconds() - psp_scan_start) / 1000, (int)result);
+#endif
+	return result;
+}
+
+boolean saved_game_file_name_unique("""),
+]
+FIXES_FRONT["source/interface/ui_widget.c#checktimes"] = [
+("""	widget_globals.filesystem_check_result = saved_game_perform_file_system_checks();
+	if (!widget_globals.filesystem_check_result)
+	{
+		word number_of_profiles = 1;
+		long profile_index;
+
+		playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+		player_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index, TRUE);
+		player_ui_get_player1_last_used_profile_index();
+	}
+""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT) */
+	extern unsigned long psp_microseconds(void);
+	extern void platform_log(const char *format, ...);
+	unsigned long psp_check_start = psp_microseconds();
+#endif
+	widget_globals.filesystem_check_result = saved_game_perform_file_system_checks();
+	if (!widget_globals.filesystem_check_result)
+	{
+		word number_of_profiles = 1;
+		long profile_index;
+#ifdef HALO_PSP
+		unsigned long psp_profiles_start = psp_microseconds();
+#endif
+
+		playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+		player_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index, TRUE);
+		player_ui_get_player1_last_used_profile_index();
+#ifdef HALO_PSP
+		platform_log("front door: saved-game check: the profiles' reads took %lu ms",
+			(psp_microseconds() - psp_profiles_start) / 1000);
+#endif
+	}
+#ifdef HALO_PSP
+	platform_log("front door: saved-game check: %lu ms in all; the menu takes input from here",
+		(psp_microseconds() - psp_check_start) / 1000);
+#endif
+"""),
+]
+
 # The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
