@@ -31,6 +31,14 @@ Item 1 of `main_menu_restoration.md`: the main menu's white band across the ring
 - The GE's frame line counts `(N with glow maps)` beside the self-illumination passes.
 - A pack without glow maps (every bake before this one) draws exactly as before.
 
+## The screen blend (branch `screenglow`, a fix after b136's freeze)
+
+Sheepdog01, 2026-10-17 01:30: RC polish, ahead of `levelvramN`. Added, the glow went past white wherever the base was already bright: the ring's clouds clipped.
+- `glow_map_pass` now blends `GU_FIX` 1 with `GU_ONE_MINUS_SRC_COLOR`: glow + frame × (1 − glow), a screen. Where the frame is dark it's the add; as the frame nears white, the glow's share shrinks, so bright clouds roll off instead of clipping.
+- Same pass, same texture, one blend word changed: no cost. Fogged to black, the glow is 0 and the frame is left as it was, as before.
+- Closer to the Xbox than the add (its clamp keeps a lit part at its base at most), not exact: see "Still open".
+- **On by default** (a step back toward the original); keep word **`glowadd`** draws it added. The old flat pass (`glowflat`, packs without glow maps) is unchanged.
+
 ## Cost
 
 - **Frame**: none expected; the same pass with a different texture, and no palette worked out per draw [U; checked in the emulator].
@@ -85,5 +93,5 @@ Bake only (`tools/texpack.py`, `--quality 2`): no memory, no frame cost. **Off b
 ## Still open
 
 - **The ring's textures are at the object cap:** the inner ring reaches the PSP at 128 × 8 px, the hull 128 × 64. Item 2 of `main_menu_restoration.md` (the carve-out) is what gives the ring its detail back.
-- **The Xbox clamps lighting + self-illumination at 1 before it multiplies the base;** the port's sum can go past the base where a lit part is also in strong light. Not seen in the shots [U].
+- **The Xbox clamps lighting + self-illumination at 1 before it multiplies the base.** The screen blend (below) keeps the ring's clouds from clipping, but where both are strong it still ends above the base. The exact clamp would be a second pass: the base drawn with `GU_MIN` over the glow's result, `min(frame + glow, base)` (fogged alike, it stays exact under fog), at the cost of a pass per self-illuminated part.
 - Judged against the formula, not a reference frame: the PC rig's frames (item 5) would settle it.
