@@ -172,11 +172,13 @@ static void *stream_alloc(unsigned int bytes, void **owner)
 	return copy_alloc(bytes, owner);
 }
 
+static void vm_level_forget(void *vertices); /* the copies' room, below */
 static void stream_free(void *pointer)
 {
 	/* VRAM is given back all at once, when the level's copies are let go */
 	if (((unsigned int)pointer & 0x0F000000u) == 0x04000000u)
 		return;
+	vm_level_forget(pointer);
 	copy_free(pointer);
 }
 static int list_bytes = DISPLAY_LIST_BYTES;
@@ -1298,6 +1300,8 @@ static const void *vm_redirect(const void *vertices, int count);
 static void vm_reset(void);
 static void vm_frame_end(void);
 static void vm_report(void);
+static void vm_level_note(void *vertices, unsigned int bytes);
+static void vm_level_move(void *from, void *to);
 #define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
 	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
 	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
@@ -5071,10 +5075,13 @@ static void __attribute__((cold)) arena_compact(void)
 			continue;
 		if ((char *)block != to)
 		{
+			void *was = block + 1;
+
 			memmove(to, block, size);
 			if (!first_moved)
 				first_moved = to;
 			moved += size;
+			vm_level_move(was, (struct arena_block *)to + 1);
 		}
 		block = (struct arena_block *)to;
 		block->previous = previous;
@@ -5115,6 +5122,7 @@ static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int 
 	if (ge_reads)
 		ge_writeback(to, bytes);
 	*field = to;
+	vm_level_move(piece, to);
 	free(piece);
 	if (arena_heap_live)
 		arena_heap_live--;
@@ -6010,8 +6018,12 @@ static void level_copy_follow(struct level_stream *stream, const float *origin)
 	}
 	memcpy(stream->origin, origin, sizeof(stream->origin));
 	ge_writeback(stream->base, stream->count * sizeof(struct ge_vertex));
+	vm_level_note(stream->base, stream->count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
+	{
 		ge_writeback(stream->lightmap, stream->count * sizeof(struct ge_vertex));
+		vm_level_note(stream->lightmap, stream->count * sizeof(struct ge_vertex));
+	}
 	if (stream->bake)
 		level_layers_follow(stream->bake->key, origin);
 	level_copies_moved++;
@@ -6210,8 +6222,12 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	if (level_compact)
 		compact_build(stream);
 	ge_writeback(stream->base, count * sizeof(struct ge_vertex));
+	vm_level_note(stream->base, count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
+	{
 		ge_writeback(stream->lightmap, count * sizeof(struct ge_vertex));
+		vm_level_note(stream->lightmap, count * sizeof(struct ge_vertex));
+	}
 	stream_bytes += stream_size(stream);
 	return stream;
 }
@@ -8236,6 +8252,7 @@ struct vm_entry
 {
 	unsigned int source, generation, bytes, at, reads, frame, released;
 	unsigned int held; /* the copy's own size, kept while it is in quarantine: bytes may already name a new buffer */
+	unsigned int level; /* a level stream: valid until released, no geometry-cache generation */
 };
 static struct vm_entry *vm = NULL;
 static unsigned short *vm_hash = NULL, *vm_order = NULL;
@@ -8260,6 +8277,7 @@ static struct vm_entry *vm_find(unsigned int source, int add)
 			vm[vm_count].at = VM_NONE;
 			vm[vm_count].released = 0;
 			vm[vm_count].reads = 0;
+			vm[vm_count].level = 0;
 			vm_hash[(h + probe) & (VM_HASH - 1)] = (unsigned short)(++vm_count);
 			return &vm[vm_count - 1];
 		}
@@ -8315,10 +8333,73 @@ static void vm_note(void *vertices, unsigned int bytes)
 	e = vm_find((unsigned int)vertices, 1);
 	if (!e)
 		return;
-	if (e->at != VM_NONE && (e->bytes != bytes || e->generation != psp_geo_generation(vertices)))
+	if (e->at != VM_NONE && (e->level || e->bytes != bytes || e->generation != psp_geo_generation(vertices)))
 		vm_release(e);
 	e->bytes = bytes;
 	e->generation = psp_geo_generation(vertices);
+	e->level = 0;
+}
+
+/* "nolevelvram": the level's streams kept out of the copies' room. On, they
+share it with the model buffers, ranked by the same reads a byte: the level's
+copies are the largest geometry the GE still reads from main RAM (600-760 KB
+a frame on a30, b30, c20, d20 [E, levelvram1]), and on c20 and d20 the
+models leave 226-365 KB of the room idle. A stream is valid until it is
+written again (its origin moved), freed, or moved by the arena; each of
+those releases its copy (the quarantine covers a list the GE is still
+drawing), so a stale copy is never drawn. The same bytes: the same pixels */
+static int vm_level_on = -1;
+
+/* a level stream just written (built, or its origin moved): its copy, if
+any, no longer holds its bytes */
+static void vm_level_note(void *vertices, unsigned int bytes)
+{
+	struct vm_entry *e;
+
+	if (vm_level_on < 0)
+		vm_level_on = !psp_keep("nolevelvram");
+	if (vm_on <= 0 || !vm_level_on || !vertices || PSP_ME_WORK() ||
+		(((unsigned int)vertices & 0x0F000000u) == 0x04000000u))
+		return;
+	e = vm_find((unsigned int)vertices, 1);
+	if (!e)
+		return;
+	vm_release(e);
+	e->bytes = bytes;
+	e->generation = 0;
+	e->level = 1;
+}
+
+/* a level stream let go: its copy goes with it */
+static void vm_level_forget(void *vertices)
+{
+	struct vm_entry *e;
+
+	if (vm_on <= 0 || !vertices)
+		return;
+	e = vm_find((unsigned int)vertices, 0);
+	if (!e || !e->level)
+		return;
+	vm_release(e);
+	e->reads = 0;
+	e->bytes = 0;
+}
+
+/* a level stream the arena moved (its bytes unchanged): known again at its
+new place, copied there afresh */
+static void vm_level_move(void *from, void *to)
+{
+	struct vm_entry *e;
+	unsigned int bytes;
+
+	if (vm_on <= 0 || !from)
+		return;
+	e = vm_find((unsigned int)from, 0);
+	if (!e || !e->level || !e->bytes)
+		return;
+	bytes = e->bytes;
+	vm_level_forget(from);
+	vm_level_note(to, bytes);
 }
 
 /* the gate: the copy's address for a buffer that has a good one */
@@ -8332,7 +8413,7 @@ static const void *vm_redirect(const void *vertices, int count)
 	if (!e)
 		return vertices;
 	vm_draws++;
-	if (psp_geo_generation(vertices) != e->generation)
+	if (!e->level && psp_geo_generation(vertices) != e->generation)
 	{
 		/* the cache has read other bytes into the block: model_convert
 		notes it afresh when it converts them */
