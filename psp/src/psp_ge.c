@@ -1553,7 +1553,17 @@ static int near_cluster_full = -1, near_cluster_check = 0;
 static unsigned long near_cluster_kept = 0, near_cluster_dropped = 0, near_cluster_mixed = 0, near_cluster_mismatches = 0;
 static unsigned long near_cluster_bytes = 0;
 /* build 119: the rigid near path's runs (rigid_run_verdict) */
-static int rigid_runs_full = -1, rigid_runs_check = 0;
+/* three words read on every draw or stream use, kept in one cache line:
+apart, each cost a data-cache miss of its own (recon's pass table: ~860
+misses a tick on b30) */
+static struct
+{
+	int rigid_runs_full;          /* the rigid runs' mode, worked out once */
+	unsigned int stream_frame;    /* the frame the level's streams were last used in */
+	unsigned long level_copies_left; /* the level's copies left out of exact reach */
+} ge_hot __attribute__((aligned(16))) = { -1, 1, 0 };
+
+static int rigid_runs_check = 0;
 static unsigned long rigid_runs_kept = 0, rigid_runs_dropped = 0, rigid_runs_mixed = 0, rigid_runs_mismatches = 0,
 	rigid_runs_made = 0, rigid_runs_bytes = 0;
 static int skin_axis_loop = -1, skin_axis_check = 0; /* build 119: model_geometry's corner sums, "skinaxisloop" */
@@ -1986,7 +1996,7 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 		if (skin_axis_check)
 			platform_log("GE: skinaxischeck: %lu corner sums compared with the loop's, %lu differed", skin_axis_checked, skin_axis_differ);
 		platform_log("GE: rigid near runs of %d triangles (%s): %.1f a frame kept whole, %.1f dropped whole, %.1f looked at corner by corner; %lu parts' spheres made (%lu KB)%s",
-			NEAR_CLUSTER_TRIANGLES, rigid_runs_full > 0 ? "off: rigidrunsfull" : "on", rigid_runs_kept / frames_seen,
+			NEAR_CLUSTER_TRIANGLES, ge_hot.rigid_runs_full > 0 ? "off: rigidrunsfull" : "on", rigid_runs_kept / frames_seen,
 			rigid_runs_dropped / frames_seen, rigid_runs_mixed / frames_seen, rigid_runs_made, rigid_runs_bytes / 1024,
 			rigid_runs_check ? (rigid_runs_mismatches ? "; rigidrunscheck: SOME TRIANGLES DISAGREED WITH THEIR RUN" : "; rigidrunscheck: all agreed") : "");
 		if (rigid_runs_check && rigid_runs_mismatches)
@@ -2979,7 +2989,7 @@ static int level_origin_set = 0;
 static float level_eye[3];
 /* a copy was drawn from an origin other than level_origin this frame */
 static int level_copies_behind = 0;
-static unsigned long level_origin_moves = 0, level_copies_moved = 0, level_copies_left = 0,
+static unsigned long level_origin_moves = 0, level_copies_moved = 0,
 	level_vertices_moved = 0, level_move_us = 0;
 
 /* a model matrix for positions given from origin: origin moved to ge_eye,
@@ -4795,7 +4805,6 @@ static int compact_build(struct level_stream *stream)
 }
 static struct level_stream level_streams[LEVEL_STREAMS];
 static unsigned long stream_bytes = 0;
-static unsigned int stream_frame = 1;
 static unsigned long streams_let_go = 0;
 /* build 68: the copies' budget while a geometry pack is open (its blocks come
 and go; the copies are what stays) */
@@ -5460,10 +5469,10 @@ static void __attribute__((cold)) arena_frame_end(void)
 	overflowed = arena_from_heap != arena_seen_from_heap;
 	arena_seen_from_heap = arena_from_heap;
 	if (free_total >= 64 * 1024 && largest < free_total / 2 &&
-		(overflowed || stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY))
+		(overflowed || ge_hot.stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY))
 	{
 		arena_compact();
-		arena_last_compact = stream_frame;
+		arena_last_compact = ge_hot.stream_frame;
 	}
 	if (arena_heap_live)
 		arena_migrate();
@@ -5483,7 +5492,7 @@ static int stream_room_ask(const void *vertices, const void *lightmap_vertices, 
 	for (k = 0; k < stream_waiting_count; k++)
 		if (stream_waiting[k].vertices == vertices)
 		{
-			stream_waiting[k].wanted = stream_frame;
+			stream_waiting[k].wanted = ge_hot.stream_frame;
 			stream_room_skips++;
 			return 1;
 		}
@@ -5505,14 +5514,14 @@ static void stream_room_wait(void)
 		stream_waiting[k].vertices = stream_asked;
 		stream_waiting[k].lightmap_vertices = stream_asked_lightmap;
 		stream_waiting[k].count = stream_asked_count;
-		stream_waiting[k].heap_after = stream_frame + STREAM_HEAP_RETRY;
-		stream_waiting[k].arena_after = stream_frame;
+		stream_waiting[k].heap_after = ge_hot.stream_frame + STREAM_HEAP_RETRY;
+		stream_waiting[k].arena_after = ge_hot.stream_frame;
 		stream_waiting_count++;
 		if (++stream_room_waits <= 8)
 			platform_log("GE: no room for a material's copy (%d vertices): it waits for room at a frame's end",
 				stream_asked_count);
 	}
-	stream_waiting[k].wanted = stream_frame;
+	stream_waiting[k].wanted = ge_hot.stream_frame;
 }
 
 /* what a copy of count vertices takes from the arena, headers included */
@@ -5917,7 +5926,7 @@ static const unsigned short *bake_substitute(struct level_stream *stream, const 
 		out += w->affected[r].count;
 		if (mark)
 		{
-			w->drawn_frame[r] = stream_frame;
+			w->drawn_frame[r] = ge_hot.stream_frame;
 			bake_pieces_drawn += w->affected[r].count;
 		}
 	}
@@ -6002,7 +6011,7 @@ static void level_copy_follow(struct level_stream *stream, const float *origin)
 
 	if (!level_reach(stream->low, stream->high, origin))
 	{
-		level_copies_left++;
+		ge_hot.level_copies_left++;
 		return;
 	}
 	for (axis = 0; axis < 3; axis++)
@@ -6049,7 +6058,7 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	stream = &level_streams[slot];
 	if (stream->source && stream->base)
 	{
-		stream->last_frame = stream_frame;
+		stream->last_frame = ge_hot.stream_frame;
 		return stream;
 	}
 	if (stream_room > 0 && stream_room_ask(vertices, lightmap_vertices, count))
@@ -6092,7 +6101,7 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	stream->source = key;
 	stream->count = count;
 	stream->original_count = count;
-	stream->last_frame = stream_frame;
+	stream->last_frame = ge_hot.stream_frame;
 	stream->uv_per_unit = 0.0f;
 	/* build 87: room for the stencil bake's pieces' vertices after the
 	material's own */
@@ -6244,7 +6253,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 	int k, index;
 
 	for (k = 0; k < stream_waiting_count; k++)
-		if (stream_waiting[k].wanted != stream_frame)
+		if (stream_waiting[k].wanted != ge_hot.stream_frame)
 			stream_waiting[k--] = stream_waiting[--stream_waiting_count];
 	if (stream_waiting_count && arena_state > 0)
 	{
@@ -6254,7 +6263,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 		{
 			const struct level_stream *stream = &level_streams[index];
 
-			if (stream->base && stream->last_frame != stream_frame && (char *)stream->base >= arena &&
+			if (stream->base && stream->last_frame != ge_hot.stream_frame && (char *)stream->base >= arena &&
 				(char *)stream->base < arena + ARENA_BYTES)
 				room += stream_room_need(stream->count, stream->lightmap != NULL, stream->compact_base != NULL);
 		}
@@ -6266,7 +6275,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 		unsigned int need = stream_room_need(count, lightmap_vertices != NULL, level_compact > 0);
 		int on_arena = 0;
 
-		if (arena_state > 0 && need <= room && (int)(stream_frame - stream_waiting[k].arena_after) >= 0)
+		if (arena_state > 0 && need <= room && (int)(ge_hot.stream_frame - stream_waiting[k].arena_after) >= 0)
 		{
 			struct arena_block *block;
 			unsigned int largest = 0;
@@ -6284,7 +6293,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 			room -= need;
 			on_arena = 1;
 		}
-		else if (!arena_squeeze && (int)(stream_frame - stream_waiting[k].heap_after) >= 0)
+		else if (!arena_squeeze && (int)(ge_hot.stream_frame - stream_waiting[k].heap_after) >= 0)
 		{
 			/* asked past the heap's accounting: a refusal here is a question,
 			not a failure to report */
@@ -6296,7 +6305,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 
 			free(second);
 			free(first);
-			stream_waiting[k].heap_after = stream_frame + STREAM_HEAP_RETRY;
+			stream_waiting[k].heap_after = ge_hot.stream_frame + STREAM_HEAP_RETRY;
 			stream_room_heap_tries++;
 			if (!fits)
 				continue;
@@ -6311,20 +6320,20 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 			stream_waiting[k--] = stream_waiting[--stream_waiting_count];
 		}
 		else if (on_arena)
-			stream_waiting[k].arena_after = stream_frame + STREAM_HEAP_RETRY;
+			stream_waiting[k].arena_after = ge_hot.stream_frame + STREAM_HEAP_RETRY;
 		stream_room_building = 0;
 	}
 	/* once a second while anything happens; every ten while a material only waits */
 	if ((stream_room_waits + stream_room_built + stream_room_tries != stream_room_seen &&
-		stream_frame - stream_room_log_frame >= 30) ||
-		(stream_waiting_count && stream_frame - stream_room_log_frame >= 300))
+		ge_hot.stream_frame - stream_room_log_frame >= 30) ||
+		(stream_waiting_count && ge_hot.stream_frame - stream_room_log_frame >= 300))
 	{
 		platform_log("GE: level copies short of room: %lu materials have waited, %d waiting now, %lu of their draws skipped; "
 			"built at a frame's end %lu of %lu tries (%lu compactions for it), the heap asked %lu times",
 			stream_room_waits, stream_waiting_count, stream_room_skips, stream_room_built, stream_room_tries,
 			stream_room_compactions, stream_room_heap_tries);
 		stream_room_seen = stream_room_waits + stream_room_built + stream_room_tries;
-		stream_room_log_frame = stream_frame;
+		stream_room_log_frame = ge_hot.stream_frame;
 	}
 }
 
@@ -6935,9 +6944,9 @@ static unsigned int frame_level_stamp = 0;
 static void frame_level_record(const struct level_stream *stream, const unsigned short *indices, int kept,
 	const struct ge_vertex *cut, int cut_count)
 {
-	if (frame_level_stamp != stream_frame)
+	if (frame_level_stamp != ge_hot.stream_frame)
 	{
-		frame_level_stamp = stream_frame;
+		frame_level_stamp = ge_hot.stream_frame;
 		frame_level_count = 0;
 	}
 	if (frame_level_count >= FRAME_LEVEL_DRAWS)
@@ -10295,12 +10304,12 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 
 			cut_store_begin(&pieces_store, model_cut, MAXIMUM_MODEL_CUT_CORNERS, CUT_RIGID);
 
-			if (rigid_runs_full < 0)
+			if (ge_hot.rigid_runs_full < 0)
 			{
-				rigid_runs_full = psp_keep("rigidrunsfull");
+				ge_hot.rigid_runs_full = psp_keep("rigidrunsfull");
 				rigid_runs_check = psp_keep("rigidrunscheck");
 			}
-			if (!rigid_runs_full && !model_drop)
+			if (!ge_hot.rigid_runs_full && !model_drop)
 			{
 				runs = rigid_runs_for(vertices, indices, index_count, strip);
 				if (runs)
@@ -12411,7 +12420,7 @@ static int overlay_on_a_wall(const struct level_stream *copy, const unsigned sho
 		static PSP_MAIN_SIDE unsigned int last_frame_seen = 0, last_key = 0;
 		static PSP_MAIN_SIDE long last_count = -1;
 
-		if (indices != last_list || stream != last_stream || stream_frame != last_frame_seen ||
+		if (indices != last_list || stream != last_stream || ge_hot.stream_frame != last_frame_seen ||
 			triangle_count != last_count)
 		{
 			unsigned int h = 2166136261u ^ (unsigned int)stream;
@@ -12421,7 +12430,7 @@ static int overlay_on_a_wall(const struct level_stream *copy, const unsigned sho
 				h = (h ^ indices[i]) * 16777619u;
 			last_list = indices;
 			last_stream = stream;
-			last_frame_seen = stream_frame;
+			last_frame_seen = ge_hot.stream_frame;
 			last_count = triangle_count;
 			last_key = h | 1;
 		}
@@ -12599,7 +12608,7 @@ static void bake_queue_layers(unsigned int stencil_key, unsigned int key, float 
 			const unsigned short *tri = l->tris + 4 * t;
 			int bits[3], corner;
 
-			if (tri[3] >= l->wall->affected_count || l->wall->drawn_frame[tri[3]] != stream_frame)
+			if (tri[3] >= l->wall->affected_count || l->wall->drawn_frame[tri[3]] != ge_hot.stream_frame)
 				continue;
 			for (corner = 0; corner < 3; corner++)
 			{
@@ -14282,7 +14291,7 @@ static int level_stream_let_go_oldest(void)
 	{
 		struct level_stream *stream = &level_streams[index];
 
-		if (!stream->source || !stream->base || stream->last_frame == stream_frame)
+		if (!stream->source || !stream->base || stream->last_frame == ge_hot.stream_frame)
 			continue;
 		if (oldest < 0 || stream->last_frame < level_streams[oldest].last_frame)
 			oldest = index;
@@ -14315,7 +14324,7 @@ static void level_copies_follow(void)
 	{
 		struct level_stream *stream = &level_streams[index];
 
-		if (stream->source && stream->base && stream->last_frame == stream_frame &&
+		if (stream->source && stream->base && stream->last_frame == ge_hot.stream_frame &&
 			memcmp(stream->origin, level_origin, sizeof(level_origin)))
 			level_copy_follow(stream, level_origin);
 	}
@@ -15835,7 +15844,7 @@ static struct decal_cache_slot *decal_cache_find(unsigned int key)
 	decal_cache_next = (decal_cache_next + 1) % DECAL_CACHE_PLANES;
 	slot->key = key;
 	slot->count = 0;
-	slot->scanned = stream_frame - DECAL_RESCAN;
+	slot->scanned = ge_hot.stream_frame - DECAL_RESCAN;
 	return slot;
 }
 
@@ -15917,7 +15926,7 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 	int plane_count = 0, quad, p, r, triangles = 0, scan;
 	struct decal_cache_slot *slot;
 
-	if (frame_level_stamp != stream_frame || !frame_level_count)
+	if (frame_level_stamp != ge_hot.stream_frame || !frame_level_count)
 		return 0;
 	for (quad = 0; quad < quad_count; quad++)
 	{
@@ -16017,10 +16026,10 @@ static int decal_project_draw(const unsigned char *in, int quad_count)
 			g->high[k] += 0.05f;
 		}
 		slot = decal_cache_find(decal_plane_key(g->n, g->d, g->low, g->high));
-		scan = (int)(stream_frame - slot->scanned) >= (slot->count ? DECAL_RESCAN : DECAL_RESCAN_EMPTY);
+		scan = (int)(ge_hot.stream_frame - slot->scanned) >= (slot->count ? DECAL_RESCAN : DECAL_RESCAN_EMPTY);
 		if (scan)
 		{
-			slot->scanned = stream_frame;
+			slot->scanned = ge_hot.stream_frame;
 			decal_cache_scans++;
 		}
 		else
@@ -17357,7 +17366,7 @@ void psp_ge_frame_end(void)
 		level_copies_follow();
 		if (stream_room > 0)
 			stream_room_frame_end(); /* after the move: a copy built now takes level_origin */
-		stream_frame++;
+		ge_hot.stream_frame++;
 		frame_end_us[2] += sceKernelGetSystemTimeLow() - mark;
 		win_after_us += sceKernelGetSystemTimeLow() - mark;
 	}
@@ -17381,10 +17390,10 @@ void psp_ge_frame_end(void)
 		if (level_local > 0)
 			platform_log("GE: the level's origin (%.0f %.0f %.0f), moved %lu times; copies moved to it %lu (%lu vertices, %lu us), left for being out of exact reach %lu (last 300 frames)",
 				level_origin[0], level_origin[1], level_origin[2], level_origin_moves, level_copies_moved,
-				level_vertices_moved, level_move_us, level_copies_left);
+				level_vertices_moved, level_move_us, ge_hot.level_copies_left);
 		else if (level_local == 0)
 			platform_log("GE: the level's origin: the world's (levellocaloff)");
-		level_origin_moves = level_copies_moved = level_vertices_moved = level_move_us = level_copies_left = 0;
+		level_origin_moves = level_copies_moved = level_vertices_moved = level_move_us = ge_hot.level_copies_left = 0;
 		{
 			/* build 119: the light pass's surface lists sorted (psp_fixups.py, structure_render.c#surfacesort) */
 			extern unsigned long psp_surface_sorts, psp_surface_sorts_in_order, psp_surface_sort_mismatches,
