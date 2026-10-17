@@ -80,11 +80,25 @@ Off unless named; none changes play.
 
 The front door (b136) decides the first screen for both builds, so `#ifdef PSP_MULTIPLAYER` / `menu.txt` in `psp_menu()` became redundant (`review_frontdoor.md`). Until the front door is merged, `mp135` alone shows the launch menu at start unless `nomenu.txt` or `input.txt` is on the stick.
 
+## 10. A failed socket call's error from the firmware, not from errno (`psp_net.c`, `call_error`)
+
+**Why [D, U]:** libcglue copies the firmware's error into newlib's `errno`, which on the PSP is one variable for every thread. The tunnel's thread (0x1f, above the game thread) writes it on each `accept` with nothing waiting, every ~10 ms in a game, and netpace preempts the game thread every 5 ms. So a read on the game's reliable endpoint that would block can reach `fail_in` with another thread's errno (0 or 2), which maps to WSAEINVAL, which the game takes as its connection broken: `_transport_error_endpoint_io` (three times, once with the tunnel's stream healthy). The earlier logs couldn't say: the 32 unknown-errno lines were spent on the tunnel's `accept` before each failure.
+- **The change:** `call_error()` asks the firmware again (`sceNetInetGetErrno`) right after the failed call and takes its code; `errno` only when the firmware says 0. The first 64 calls where the two differ are logged, with the thread.
+- **Keep word:** `libcerrno` puts back `errno` alone. On by default (it's a fix): multiplayer build only.
+- **Unverified:** whether the firmware's own code is kept per thread. The log line says: errno 0 or 2 beside the firmware's 11 (EAGAIN) confirms the race and the fix's source.
+
+## 11. KCP with a full heap (`psp_internet.c` KCP's reserve, `psp_fixups.py` `ikcp.c#nomemory`)
+
+**Why [M]:** a map's load takes the heap to its top (3,708 of 3,720 KB) while the host keeps sending, and `ikcp_input` wrote through the NULL its allocation returned: a bus error on the tunnel's thread, at the load, in a 13-player game (38987358496) and on a quiet `[C] Slayer` (39016196537 run 1).
+- **The reserve:** KCP's allocator (`ikcp_allocator`) asks the heap first and, when it has nothing, a reserve of 1,280-byte blocks (a full segment each) outside the heap, taken as the tunnel's thread starts, after the placed blocks, from the user RAM the heap never uses, leaving `OUTSIDE_RESERVE` free. Logged when it's first used and when a request is refused.
+- **The NULL checks:** a segment there's no memory for is neither kept nor acknowledged, so the host sends it again; an ack there's no room for is left out (no more `abort()`); the send side's asserts in front of its own NULL checks are gone.
+- **Keep word:** `kcpreserveN` (KB, 64 by default; `kcpreserve0`: none). The NULL checks have none: they change nothing until an allocation fails.
+- **Hot code:** none (multiplayer build only).
+
 ## Open
 
-- **`_transport_error_endpoint_io`** on the client's reliable endpoint (three times; once with a healthy stream).
+- **`_transport_error_endpoint_io`:** the errno race (§10) is the lead; the next run's `failed: errno ... the firmware's code` lines settle it.
 - netpace on the PSP-1000, and its cost in game time.
-- **KCP and a full heap:** `ikcp_malloc`'s NULL is written through (a crash in a 13-player game). Its allocations need a check or a reserve.
 - **A refused Wi-Fi join** isn't tried again until a socket is asked for.
 - The tick in a 12-player game, and why 30 biped updates a tick.
 - **Heap:** the top reached 3,716 of 3,720 KB in a join on the PSP-3000 (38950938673).
