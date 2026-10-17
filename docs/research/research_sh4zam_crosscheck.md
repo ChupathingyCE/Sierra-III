@@ -47,6 +47,12 @@ Sheepdog01, 2026-10-17, from a chat outside the sessions: someone suggested a "S
 - `-march=allegrex` is set, but no one has looked at our output (`research_blocked_list_index.md`, open questions) [D].
 - **Check:** `psp-objdump -d halo.elf | grep -cE '\s(min|max|movz|movn)\s'`. If zero, the toolchain isn't using them, and the 2025 upstream GCC patch series (`halo-psp-feasibility.md`) is the follow-up to read.
 
+## Status (2026-10-17, the master)
+
+- **Item 3, answered:** `-march=allegrex` is used. b137's strict build (`7e52cd8`) holds `min` 382, `max` 391, `movz` 659, `movn` 649, `ext` 1,594, `ins` 1,057, `seh` 2,518 [D, `psp-objdump -d halo.elf`]. Nothing to follow up.
+- **Item 1, built:** `tools/doublecalls.py` lists every function that calls a double helper, marks those the profile put in `.text.hot`, and with `--baseline tools/doublecalls_hot.txt` (b137's 18 hot ones) fails when a new one appears; it runs on each release build's `halo.elf`. b137 [D]: 184 functions call one, 18 of them hot. Most hot ones are a float passed to a log line's printf on a cold path; worth a look in the tick: `biped_update_physics` (`__divdf3` ×3, `__floatunsidf` ×6), `collision_get_features_in_sphere` (`__divdf3` ×3, `__floatunsidf` ×4), `vehicle_export_function_values` (`__divdf3` ×2, `__gtdf2`), `actor_look_decode_direction` (`__extendsfdf2` ×35), `halo_matrix` (×4). Recon's per-pass table says whether any runs per tick.
+- **Item 2:** joins P1.1's per-pass table (memset and memcpy cycles by caller), recon's; under the lever line it stays filler.
+
 ## Sources
 
 - SH4ZAM: github.com/gyrovorbis/sh4zam; Falco Girgis, FOSDEM 2026, "Accelerated Linear Algebra on the Sega Dreamcast with GCC".

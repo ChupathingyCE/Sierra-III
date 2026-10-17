@@ -1,0 +1,19 @@
+# b137's hot functions that call a double helper (tools/doublecalls.py --hot-only on b137's strict build, 7e52cd8)
+actor_emotion_update
+actor_look_decode_direction
+biped_update_physics
+breakable_surface_damage_area_of_effect
+collision_get_features_in_sphere
+encounters_update
+halo_exp
+halo_matrix
+overlay_on_a_wall
+psp_ge_frame_end
+psp_ge_queue_transparent
+psp_ge_screen_quad
+psp_ge_window_begin
+psp_vfpu_initialize
+rasterizer_psuedo_dynamic_screen_quad_draw
+read_controls
+transparent_flush
+vehicle_export_function_values
