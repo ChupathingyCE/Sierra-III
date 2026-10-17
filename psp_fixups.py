@@ -23299,9 +23299,16 @@ void objects_update(
 	
 	last_active_cluster_bits = object_globals->last_active_cluster_bits;
 """),
-("""					psp_object_update(object_index, i, object_header);
-""", """					psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
-					psp_object_update(object_index, i, object_header);
+("""					psp_nmr_tops++;
+					if (psp_object_scale)
+""", """					psp_nmr_tops++;
+					psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
+					if (psp_object_scale)
+"""),
+("""						psp_object_count(object_header->type);
+					}
+""", """						psp_object_count(object_header->type);
+					}
 					psp_objtrace[2] = (unsigned long)-1;
 """),
 ("""				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
