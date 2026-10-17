@@ -127,8 +127,14 @@ static int chant_read(void)
 {
 	if (!chant_tone_state)
 	{
+		/* the bake writes it into halo/ only; the multiplayer build
+		(ms0:/halomp) reads that copy when it has none of its own */
 		SceUID file = sceIoOpen(PSP_DATA_ROOT "/chant.adp", PSP_O_RDONLY, 0);
-		int got = file >= 0 ? sceIoRead(file, chant_tone, CHANT_BYTES) : -1;
+		int got;
+
+		if (file < 0)
+			file = sceIoOpen("ms0:/halo/chant.adp", PSP_O_RDONLY, 0);
+		got = file >= 0 ? sceIoRead(file, chant_tone, CHANT_BYTES) : -1;
 
 		if (file >= 0)
 			sceIoClose(file);
