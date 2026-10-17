@@ -64,9 +64,9 @@ Unzip the build zip at the Memory Stick's root: `PSP/GAME/halo/` (EBOOT.PBP, the
 
 ## Multiplayer
 
-The multiplayer build lives on the `mp-recon` branch. It is built with `PSP_MULTIPLAYER=1`, installs to `PSP/GAME/halomp` beside the campaign build, and keeps its settings in `ms0:/halomp`.
+The multiplayer build joins Halo PC's public ChupathingyCE games over the internet, from its ONLINE GAMES screen, on the thirteen multiplayer maps from the disc. Each release has its zip (`halo_psp_bNNNmp.zip`): it installs to `PSP/GAME/halomp` beside the campaign build, reads the same baked maps, and keeps its settings in `ms0:/halomp`. It is built from `main` with `PSP_MULTIPLAYER=1`. For now it only joins: no hosting, no PSP-to-PSP play (`docs/mp_client_only.md`).
 
-A PSP-1000 has played whole games against a PC on ChupathingyCE's dedicated server, over the PC's own Wi-Fi hotspot. `docs/multiplayer_setup.md` walks through it: the build, the bake, the hotspot, ARK-4's WPA2 setting, the server and the stick.
+`docs/multiplayer_setup.md` walks through it: the Wi-Fi a PSP can join, ARK-4's WPA2 setting, the online list, what to do when it goes wrong, and playing over your own PC's hotspot and dedicated server.
 
 ## History
 
