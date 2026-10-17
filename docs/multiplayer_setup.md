@@ -188,7 +188,7 @@ grep '^broadcast =' $STICK/halomp/config.toml      # one line
 
 - Why: Linux delivers a broadcast only to sockets bound to `0.0.0.0`, and the server is bound to `<hotspot-address>`. So the PSP's searches go straight to the server's address.
 
-**Optional keep words** (`halomp/keep.txt`, one line): `nearauto nomeaudio assettrack geo2 sound1024` is what the first whole game used.
+**Optional keep words** (`halomp/keep.txt`, one line): `nearauto assettrack geo2 sound1024`. The first whole game also had `nomeaudio`, which is no longer needed: the Media Engine and Wi-Fi run together under game traffic (2026-10-17, two `[C] Slayer` joins on the PSP-1000), and the word costs the main CPU the audio mixing, the slant sort and the pose job.
 
 ## 7. The desktop client (optional)
 
