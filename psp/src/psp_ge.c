@@ -3952,7 +3952,6 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	if (frame_open)
 		return;
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
-	showcase_levels();
 	if (!ge_ready)
 	{
 		ge_initialize();
@@ -4127,6 +4126,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	}
 	(void)center;
 	frame_open = 1;
+	/* inside the frame's list, so the GE takes it */
+	showcase_levels();
 	draws_this_frame = triangles_this_frame = clipped_this_frame = culled_this_frame = 0;
 	model_draws_this_frame = 0;
 
