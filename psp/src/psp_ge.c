@@ -10807,17 +10807,37 @@ static int transparent_full(void)
 	return transparent_count >= transparent_capacity;
 }
 
-/* once, with the display list (display_list_acquire) */
+/* at least this much stays free outside the heap once the table is there,
+for what may be made later: a thread (the main menu's saved-game check
+takes 48 KB while it runs), the blackbox's buffer (32 KB, or 8 when there's
+no room) */
+#define TRANSPARENT_TABLE_LEAVES_FREE (80 * 1024)
+
+/* once, with the display list (display_list_acquire). Like the list, from
+the free user RAM above the heap when it leaves enough there, else from
+the heap. "seethroughheap": from the heap, as before */
 static void transparent_table_acquire(void)
 {
 	int wanted = psp_keep("seethrough160") ? TRANSPARENT_DRAWS_B113 : MAXIMUM_TRANSPARENT_DRAWS;
+	int bytes = wanted * (int)sizeof(*transparent);
+	const char *where = "the heap";
+	SceUID block = -1;
 
 	if (transparent)
 		return;
-	transparent = memalign(16, wanted * sizeof(*transparent));
+	if (!psp_keep("seethroughheap") && (int)sceKernelTotalFreeMemSize() >= bytes + 64 + TRANSPARENT_TABLE_LEAVES_FREE)
+		block = sceKernelAllocPartitionMemory(2, "halo see-through table", PSP_SMEM_High, bytes + 64, NULL);
+	if (block >= 0)
+	{
+		transparent = (struct transparent_draw *)(((unsigned int)sceKernelGetBlockHeadAddr(block) + 63) & ~63u);
+		where = "free user RAM outside the heap";
+	}
+	else
+		transparent = memalign(16, bytes);
 	transparent_capacity = transparent ? wanted : 0;
-	platform_log("GE: the see-through table: %d draws a frame, %d KB from the heap%s", transparent_capacity,
-		(int)(wanted * sizeof(*transparent) / 1024), transparent ? "" : " (no memory: none drawn)");
+	platform_log("GE: the see-through table: %d draws a frame, %d KB from %s%s; then %d KB free in user RAM",
+		transparent_capacity, bytes / 1024, where, transparent ? "" : " (no memory: none drawn)",
+		sceKernelTotalFreeMemSize() / 1024);
 }
 
 static void hud_blend(short blend);
