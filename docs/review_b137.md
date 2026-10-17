@@ -12,6 +12,9 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 | mp135 to `ae3329c` (`e9209e4`) | The errno race, KCP's 64 KB reserve and NULL checks, onlinejoin's underscore | multiplayer only | on in that build | `kcpreserveN` |
 | glowclamp (`220a387`) | The glow clamped to the base, as the Xbox's combiner does, on the showcase map | restoration | on | `glownoclamp`, `glowadd` |
 | switch defines (`6c8415a`) | `PSP_DEBUG_TOOLS` and `PSP_TICK_STEPS` reach every unit | build | — | — |
+| levelvram (`d995716`, from `208a594`) | The level's vertex streams share vrammodels' VRAM room | speed, exact | on | `nolevelvram` |
+| glyphvram (`550e9c0`, from `b894cf6`) | The button glyph sheet run-length coded in the program, unpacked once into VRAM | memory | on | — |
+| loadingscreen (`290fdaf`, from `ec7e08a`) | The loading screen's picture: the Xbox's zooming, fading trail of the last frame; the settle's veil | front end, restoration | on | `loadingplain` |
 
 ## §Start The start-up
 
@@ -32,9 +35,10 @@ Left for later [D]: the multiplayer build's variants read twice, `hdmu.map` rebu
 - **Progress** (`psp_loading.c`): begin and end bracket the old map's disposal through the new map's load (`main.c`, both paths); the tag data, read in 256 KB pieces (`cache_files.c`; `loadwhole`: one read), reports each piece. loading1 [E]: play and both seeds identical with the pieces and with `loadwhole` at all 9,000 ticks.
 - **The chant:** the Xbox's own `progress_bar.c` setup played `compressed_monk_tone` as four looping buffers at four pitches (−4681, −6386, −3999, −8773 in 1/4096 octave from 48 kHz [U: the XDK's unit]: 21,738, 16,290, 24,397, 10,876 Hz), each swelling over its own range of the load, `sin(tπ)^0.3` of 3,500–4,500 mB over −5,000. The PSP's buffers are null objects, so each voice is a stream with the tone queued as every packet it holds (`psp_dsound_loop_start`): over a minute of loop with no completions, which a blocking load never runs.
 - **The settle** (`psp_main_settle`, main.c): after the load, the level's first view is drawn with no tick, as `main_loop` draws a frame, until the texture cache reads nothing for three frames in a row and the screen's progress has played out, capped at 3 s. The engine's frame-lock reset after a load drops the time. Campaign only (a game engine's frames wait for its third tick).
-- **Not yet:** the picture (the blur and `loading.tga` × its sliding mask: the renderer's `psp_ge_loading_frame`, `_veil`, `_capture`, weak). Without it the screen holds the menu's last frame, as before, with the chant.
+- **The picture** (the renderer's `loadingscreen`, `review_loadingscreen.md`): the Xbox's feedback trail of the frame shown when the load began, zooming and fading to black; the settle's frames under an opaque veil that ends on black. From the menu the menu has already faded to black, so the trail has nothing to carry; between levels it carries the level's last view. The `loading.tga` band needs the bake to carry the disc's picture: b138.
+- **The settle at boot** hung on its first frame (loading2: a10, b30 and Blood Gulch from `init.txt` sat at game time 0), so it runs only on the menu's and a level's own path (`de63bea`). loading3 [E]: the menu into a10 plays identically with and without it at all 29,825 ticks, both seeds; it read no textures there (a10's first view was already in VRAM from the learned set), so what it buys on the PSP is still to be measured.
 
-**For Sheepdog01:** the chant's 18 KB are disc audio, typed into upstream's decompiled source, so every Sierra-III EBOOT has carried them in `.data`. Before a public release: keep them as upstream does, or bake them from the player's disc and compile the engine's copy out.
+**For Sheepdog01:** the chant's 18 KB are disc audio, typed into upstream's decompiled source, so every Sierra-III EBOOT has carried them in `.data`; b137 plays that copy and adds nothing. The 06:00 report said b137 would bake it from the disc and compile the copy out: that isn't built, and compiling out alone would silence the chant. Before a public release: keep it as upstream does, or bake it (b138).
 
 ## §VRAM The VRAM-room overlap (the reviewer's 05:30 catch)
 
@@ -44,9 +48,17 @@ Left for later [D]: the multiplayer build's variants read twice, `hdmu.map` rebu
 
 `review_glowmaps.md`, "The clamp". On ui.map's showcase only: `min(base × lighting + glow, base)`, a `GU_MIN` pass with the base, out of line and cold; `multipurpose_pass` +168 B against b136. glowclamp1 [E]: by eye the ring matches ChupathingyCE's.
 
+## §Levelvram The level's streams in the models' VRAM room
+
+`review_levelvram.md`. The level's vertex streams are ranked with the model buffers by reads a byte and share the 600 KB room; released on rewrite, free and arena move. Exact (levelvram4: d20's play identical at all 6,000 ticks) [E]. PSP-3000 [M]: c20 frame −7% (39025354526), d20 −7.6% and −5.0% past the opening (39025400180). A PSP-1000 pair goes in the release check.
+
+## §Glyphs The glyph sheet in VRAM
+
+The controls' 32 KB glyph sheet left `.rodata`: run-length coded in the program (14 KB, `tools/psp_glyphs.py`), unpacked once into VRAM at 0xD0000; the texture cache starts 32 KB later. Heap +16 KB in both builds (the multiplayer build's Prisoner came within 4 KB of its heap's end on mp135). glyphvram1 [E]: the menu draws as before to the pixel.
+
 ## §MP The multiplayer fixes (multiplayer build only)
 
-`review_mpb4.md` 8–11. Verified joining and playing `[C] Slayer` on both PSPs (39017504866, 39024064182) [M]. Heap: 3,656 KB (b136 3,652): the reserve sits outside it.
+`review_mpb4.md` 8–11. Verified joining and playing `[C] Slayer` on both PSPs (39017504866, 39024064182) [M], and on `w137` `de63bea` (39030473538, PSP-3000: both runs to the wall, no drop, heap top 3,532 and 3,600 KB). Heap at the final code: 3,668 KB (b136 3,652).
 
 ## Release check
 
