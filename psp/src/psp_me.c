@@ -67,6 +67,7 @@ ships beside the EBOOT. */
 void platform_log(const char *format, ...);
 void psp_log_flush(void);
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 
 /* the jobs (their own files): run on the ME, or on the main CPU when
 simulated or after a stop */
@@ -607,6 +608,50 @@ void psp_me_ring_step(unsigned int step)
 	}
 }
 
+#ifdef PSP_RECON
+/* "mebusN" (keep.txt; PSP_RECON builds; docs/recon_134.md): how much the two
+CPUs slow each other when both wait on main RAM at once, the question behind
+running the display list's building on the ME beside the next tick. This
+job loads main RAM from the ME until the main CPU raises the stop word: a
+line at a scattered address, then N steps of arithmetic (mebus0: misses
+only; ~mebus50: about the main CPU's own mix, a miss every ~120 cycles), then
+a store into its 16 KB output, so its lines are written back as the GE
+layer's list would be. It reads memory no job writes into (user RAM, read
+only) and writes only its own output, so the game never sees it */
+static struct me_ring_counter bus_stop_storage;
+#define BUS_STOP (UNCACHED(&bus_stop_storage)->value)
+#define BUS_OUT_WORDS 4096
+static unsigned int bus_out[BUS_OUT_WORDS] __attribute__((aligned(64)));
+#define BUS_BASE 0x08900000u
+#define BUS_LINES (0x01000000u / 64)
+
+static void bus_load_job(const unsigned int *args, unsigned int *results)
+{
+	unsigned int work = args[0], limit = args[1], x = args[2] | 1u, sink = 0, n = 0, k, start = me_cycles();
+
+	while (!BUS_STOP && me_cycles() - start < limit)
+	{
+		x = x * 1664525u + 1013904223u;
+		sink += *(volatile const unsigned int *)(BUS_BASE + ((x >> 8) % BUS_LINES) * 64u);
+		for (k = 0; k < work; k++)
+			sink = sink * 31u + k;
+		bus_out[(n * 16u) % BUS_OUT_WORDS] = sink;
+		/* an audio block waiting is mixed now, whether or not "meaudiofirst"
+		is on: the load holds the ME for a whole tick, and an audio block
+		left 100 ms stops the ME for the session (the first runs, lab
+		38920428263) */
+		if ((++n & 63u) == 0)
+		{
+			psp_me_ring_step(n);
+			me_audio_now();
+		}
+	}
+	results[0] = n;
+	results[1] = me_cycles() - start;
+	results[2] = sink;
+}
+#endif
+
 /* "meringtest"'s job (psp_me_ring_test): each output word from its input
 word, and the input's sum, so a stale input line on the ME or a stale output
 line on the main CPU shows as a wrong word */
@@ -696,6 +741,11 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	case ME_JOB_POSES:
 		psp_pose_me_make(args, results);
 		break;
+#ifdef PSP_RECON
+	case ME_JOB_BUSLOAD:
+		bus_load_job(args, results);
+		break;
+#endif
 	default:
 		status = RING_BAD_TYPE;
 		break;
@@ -1134,6 +1184,9 @@ int psp_me_start(void)
 	for (k = 0; k < STASH_WORDS; k++)
 		STASH[k] = 0;
 	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest");
+#ifdef PSP_RECON
+	ring_on = ring_on || psp_keep_number("mebus", -1) >= 0;
+#endif
 	ring_push_drop = psp_keep("mepushdrop");
 	rays_batch = psp_keep("meraysbatch");
 	report_mark = sceKernelGetSystemTimeWide();
@@ -1606,6 +1659,11 @@ void psp_me_hold(unsigned int ticket, void (*collect)(void))
 /* a job handed to the ring: 1, with its ticket for psp_me_wait; 0 if the
 ring can't take it (off, full, the ME busy with a long slot job, or a
 transfer that breaks the rules above): the caller does the work itself */
+#ifdef PSP_RECON
+static void bus_collect(void);
+static int bus_running = 0;
+#endif
+
 int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 {
 	struct me_ring_request *request;
@@ -1613,6 +1671,11 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 
 	if (!psp_me_ring_ready())
 		return 0;
+#ifdef PSP_RECON
+	/* a real job goes first: "mebus"'s load stops and is collected */
+	if (bus_running && job->type != ME_JOB_BUSLOAD)
+		bus_collect();
+#endif
 	if (ring_held_collect && ring_next - ring_held_ticket >= ME_RING_ENTRIES - 1)
 	{
 		void (*collect)(void) = ring_held_collect;
@@ -2360,3 +2423,107 @@ void psp_me_report(void)
 	}
 	memset(stats, 0, sizeof(stats));
 }
+
+#ifdef PSP_RECON
+/* "mebusN"'s main CPU side (the load itself: bus_load_job). Each tick is
+loaded or not by a coin (not alternately: with two ticks a frame, the first
+and second tick of a frame differ), so the loaded and the unloaded ticks
+sample the same play. Every 300 ticks the ME's load is also run alone for
+8 ms, with the main CPU asleep, for its rate without the main CPU. The log
+line: the main CPU's tick with the ME loading against without, and the ME's
+loads a microsecond while the tick ran against alone */
+#define BUS_LIMIT_US 200000u
+static int bus_work = -2;
+static unsigned int bus_ticket, bus_coin = 0x2545F491u, bus_tick_start = 0, bus_loaded = 0;
+static unsigned long bus_ticks[2], bus_tick_us[2], bus_preempted;
+static unsigned long bus_loads, bus_load_cycles, bus_alone_loads, bus_alone_cycles;
+
+static int bus_start(void)
+{
+	struct psp_me_job job;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_BUSLOAD;
+	job.args[0] = (unsigned int)bus_work;
+	job.args[1] = (unsigned int)(BUS_LIMIT_US * (me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f));
+	job.args[2] = bus_coin;
+	job.output = bus_out;
+	job.output_bytes = sizeof(bus_out);
+	BUS_STOP = 0;
+	if (!psp_me_push(&job, &bus_ticket))
+		return 0;
+	bus_running = 1;
+	return 1;
+}
+
+/* the stop raised, then the job's end awaited here before psp_me_wait, which
+would take a job pushed a tick ago for one past its deadline */
+static void bus_finish(unsigned long *loads, unsigned long *cycles)
+{
+	unsigned int results[ME_RING_RESULTS], start = sceKernelGetSystemTimeLow(), k;
+
+	bus_running = 0;
+	BUS_STOP = 1;
+	while ((int)(RING_POPPED - bus_ticket) <= 0 && sceKernelGetSystemTimeLow() - start < BUS_LIMIT_US)
+		for (k = 0; k < RING_WAIT_NOPS; k++)
+			__asm__ __volatile__("nop");
+	if (psp_me_wait(bus_ticket, results))
+	{
+		*loads += results[0];
+		*cycles += results[1];
+	}
+}
+
+static void bus_collect(void)
+{
+	bus_preempted++;
+	bus_finish(&bus_loads, &bus_load_cycles);
+}
+
+void psp_me_bus_phase(int phase)
+{
+	unsigned int now;
+
+	if (bus_work == -2)
+		bus_work = emulator() ? -1 : psp_keep_number("mebus", -1);
+	if (bus_work < 0 || PSP_ME_WORK() || !psp_me_ring_ready())
+		return;
+	now = sceKernelGetSystemTimeLow();
+	if (phase == 1)
+	{
+		bus_coin = bus_coin * 1103515245u + 12345u;
+		bus_loaded = (bus_coin >> 16) & 1u;
+		if (bus_loaded && !bus_start())
+			bus_loaded = 0;
+		bus_tick_start = sceKernelGetSystemTimeLow();
+		return;
+	}
+	if (phase != 0 || !bus_tick_start)
+		return;
+	if (bus_running)
+		bus_finish(&bus_loads, &bus_load_cycles);
+	bus_ticks[bus_loaded]++;
+	bus_tick_us[bus_loaded] += now - bus_tick_start;
+	bus_tick_start = 0;
+	if (bus_ticks[0] + bus_ticks[1] >= 300 && bus_ticks[0] && bus_ticks[1])
+	{
+		float loaded = (float)bus_tick_us[1] / bus_ticks[1], unloaded = (float)bus_tick_us[0] / bus_ticks[0];
+		float per_us = me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f, during, alone;
+
+		if (bus_start())
+		{
+			sceKernelDelayThread(8000);
+			bus_finish(&bus_alone_loads, &bus_alone_cycles);
+		}
+		during = bus_load_cycles ? bus_loads * per_us / bus_load_cycles : 0.0f;
+		alone = bus_alone_cycles ? bus_alone_loads * per_us / bus_alone_cycles : 0.0f;
+		platform_log("mebus: work %d | ticks loaded %lu at %.2f ms, unloaded %lu at %.2f ms: the main CPU %+.1f%% | the ME %.3f loads a us during them (busy %.0f%% of the loaded ticks), %.3f alone: %+.1f%% | taken over by other ring jobs %lu",
+			bus_work, bus_ticks[1], loaded / 1000.0f, bus_ticks[0], unloaded / 1000.0f,
+			unloaded > 0.0f ? 100.0f * (loaded - unloaded) / unloaded : 0.0f,
+			during, bus_tick_us[1] ? 100.0f * (bus_load_cycles / per_us) / bus_tick_us[1] : 0.0f,
+			alone, alone > 0.0f ? 100.0f * (during - alone) / alone : 0.0f, bus_preempted);
+		bus_ticks[0] = bus_ticks[1] = bus_tick_us[0] = bus_tick_us[1] = bus_preempted = 0;
+		bus_loads = bus_load_cycles = bus_alone_loads = bus_alone_cycles = 0;
+	}
+}
+#endif

@@ -2380,6 +2380,9 @@ void psp_phase(int phase)
 	psp_current_phase = phase;
 	if (hwprofile_running)
 		halo_profile_phase(phase);
+#ifdef PSP_RECON
+	psp_me_bus_phase(phase); /* "mebusN" (psp_me.c) */
+#endif
 }
 
 static void hwprofile_start(const char *eboot_path)

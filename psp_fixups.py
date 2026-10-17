@@ -21764,11 +21764,427 @@ FIXES_WAKE["source/render/render_objects.c#wake_render_state"] = [
 ]
 
 
+# ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
+#
+# Measuring instruments, built only with PSP_RECON=1 (psp_build.py): their
+# hooks sit in hot code, and a hook costs even switched off (the shelf, below),
+# so no release build carries them. Each reads and changes nothing the game
+# uses, so play is the same with it on.
+FIXES_RECON = {}
+
+# "modelcensus" (keep.txt): every 5 s of game time, a log line of the models
+# drawn: a frame's count by object type and by size on screen (the level of
+# detail's pixels), and the definitions drawn most. b30's Pelican ride draws
+# ~167 models a frame at ~0.22 ms of CPU each (lab 38822408622); this says
+# what they are. The pairs name "modelcensus", so the lab's desktop hooks
+# (pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the same
+# count from the original, on the same stretch. It also names the definition
+# being drawn for psp_ge.c's draw census (psp_census_definition)
+FIXES_RECON["source/render/render_objects.c#modelcensus"] = [
+("""static void render_object_list(
+	struct object_render_data *data,
+	struct render_model_effect const *parent_model_effect,
+	long object_index)
+{
+	while (object_index != NONE)""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #modelcensus): "modelcensus" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+long game_time_get(void);
+
+/* the object being drawn, for psp_ge.c's draw census; -1 between objects */
+long psp_census_definition = -1;
+
+#define PSP_CENSUS_BANDS 7
+#define PSP_CENSUS_DEFINITIONS 64
+static int psp_census_on = -1;
+static long psp_census_window = -1;
+static unsigned long psp_census_frames, psp_census_listed, psp_census_models;
+static unsigned long psp_census_types[NUMBER_OF_OBJECT_TYPES];
+static unsigned long psp_census_bands[PSP_CENSUS_BANDS];
+static struct
+{
+	long definition;
+	unsigned long models;
+	int used;
+} psp_census_definitions[PSP_CENSUS_DEFINITIONS];
+
+static void psp_model_census_log(
+	void)
+{
+	static char const *const type_names[NUMBER_OF_OBJECT_TYPES] = {
+		"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+		"machine", "control", "light", "placeholder", "soundscenery"};
+	static char const *const band_names[PSP_CENSUS_BANDS] = {"<4", "4-8", "8-16", "16-32", "32-64", "64-128", ">=128"};
+	char types[256], bands[160], names[520];
+	int at = 0, k, shown;
+	unsigned char done[PSP_CENSUS_DEFINITIONS] = {0};
+
+	/* a frame's counts in tenths: whole numbers keep the log line's printing simple */
+	types[0] = bands[0] = names[0] = 0;
+	for (k = 0; k < NUMBER_OF_OBJECT_TYPES && at < (int)sizeof(types) - 32; k++)
+	{
+		if (psp_census_types[k])
+		{
+			at += snprintf(types + at, sizeof(types) - at, " %s %lu.%lu", type_names[k],
+				psp_census_types[k] / psp_census_frames, psp_census_types[k] * 10 / psp_census_frames % 10);
+		}
+	}
+	for (k = 0, at = 0; k < PSP_CENSUS_BANDS; k++)
+	{
+		at += snprintf(bands + at, sizeof(bands) - at, " %s %lu.%lu", band_names[k],
+			psp_census_bands[k] / psp_census_frames, psp_census_bands[k] * 10 / psp_census_frames % 10);
+	}
+	for (shown = 0, at = 0; shown < 10 && at < (int)sizeof(names) - 80; shown++)
+	{
+		int best = -1;
+
+		for (k = 0; k < PSP_CENSUS_DEFINITIONS; k++)
+		{
+			if (psp_census_definitions[k].used && !done[k] &&
+				(best < 0 || psp_census_definitions[k].models > psp_census_definitions[best].models))
+			{
+				best = k;
+			}
+		}
+		if (best < 0)
+		{
+			break;
+		}
+		done[best] = 1;
+		at += snprintf(names + at, sizeof(names) - at, " %s %lu.%lu;",
+			tag_name_strip_path(tag_get_name(psp_census_definitions[best].definition)),
+			psp_census_definitions[best].models / psp_census_frames,
+			psp_census_definitions[best].models * 10 / psp_census_frames % 10);
+	}
+	platform_psp_log("modelcensus: game time %ld | %lu frames | a frame: %lu.%lu objects listed, %lu.%lu models drawn | by type:%s | by pixels:%s | drawn most:%s",
+		game_time_get(), psp_census_frames,
+		psp_census_listed / psp_census_frames, psp_census_listed * 10 / psp_census_frames % 10,
+		psp_census_models / psp_census_frames, psp_census_models * 10 / psp_census_frames % 10,
+		types, bands, names);
+	psp_census_frames = psp_census_listed = psp_census_models = 0;
+	csmemset(psp_census_types, 0, sizeof(psp_census_types));
+	csmemset(psp_census_bands, 0, sizeof(psp_census_bands));
+	csmemset(psp_census_definitions, 0, sizeof(psp_census_definitions));
+}
+
+static void psp_model_census_frame(
+	void)
+{
+	long window;
+
+	if (psp_census_on < 0)
+	{
+		psp_census_on = psp_keep("modelcensus");
+	}
+	if (!psp_census_on)
+	{
+		return;
+	}
+	window = game_time_get() / 150;
+	if (window != psp_census_window)
+	{
+		if (psp_census_window >= 0 && psp_census_frames)
+		{
+			psp_model_census_log();
+		}
+		psp_census_window = window;
+	}
+	psp_census_frames++;
+	psp_census_listed += render_object_globals.rendered_object_count;
+}
+
+static void psp_model_census_model(
+	short type,
+	long definition,
+	real pixels)
+{
+	int band = 0;
+	unsigned int slot, probe;
+
+	psp_census_definition = definition;
+	if (psp_census_on <= 0)
+	{
+		return;
+	}
+	psp_census_models++;
+	if (type >= 0 && type < NUMBER_OF_OBJECT_TYPES)
+	{
+		psp_census_types[type]++;
+	}
+	while (band < PSP_CENSUS_BANDS - 1 && pixels >= (real)(4 << band))
+	{
+		band++;
+	}
+	psp_census_bands[band]++;
+	slot = ((unsigned int)definition * 2654435761u) % PSP_CENSUS_DEFINITIONS;
+	for (probe = 0; probe < PSP_CENSUS_DEFINITIONS; probe++, slot = (slot + 1) % PSP_CENSUS_DEFINITIONS)
+	{
+		if (!psp_census_definitions[slot].used)
+		{
+			psp_census_definitions[slot].used = 1;
+			psp_census_definitions[slot].definition = definition;
+		}
+		if (psp_census_definitions[slot].definition == definition)
+		{
+			psp_census_definitions[slot].models++;
+			break;
+		}
+	}
+}
+#endif
+
+static void render_object_list(
+	struct object_render_data *data,
+	struct render_model_effect const *parent_model_effect,
+	long object_index)
+{
+	while (object_index != NONE)"""),
+("""void render_objects(
+	void)
+{
+	struct object_render_data data;""", """#ifdef HALO_PSP
+static void psp_model_census_frame(void); /* psp_fixups.py (FIXES_RECON #modelcensus) */
+#endif
+
+void render_objects(
+	void)
+{
+	struct object_render_data data;"""),
+("""	rasterizer_models_begin(FALSE);
+	find_rendered_objects();
+""", """	rasterizer_models_begin(FALSE);
+	find_rendered_objects();
+#ifdef HALO_PSP
+	psp_model_census_frame(); /* psp_fixups.py (FIXES_RECON #modelcensus) */
+#endif
+"""),
+("""					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+						object_get_node_matrices(object_index),""",
+"""#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_RECON #modelcensus) */
+					psp_model_census_model(object->object.type, object->definition_index, level_of_detail_pixels);
+#endif
+					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+						object_get_node_matrices(object_index),"""),
+("""						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
+""", """						data->no_planar_fog ? FLAG(_render_model_no_planar_fog_bit) : 0);
+#ifdef HALO_PSP
+					psp_census_definition = -1; /* psp_fixups.py (FIXES_RECON #modelcensus) */
+#endif
+"""),
+]
+
+# "sleepcensus" (keep.txt): every 5 s of game time, a log line of the sleep
+# checks by object type: per tick, sleepers checked and how many of them had
+# changed (woken), and objects checked on their way to sleep. On b30 the
+# checks cost 3.8-6.8 ms a tick for 270-530 sleeping scenery objects
+# (lab 38881473541). If wakes are rare, being told a sleeper changed (when
+# something writes it) could replace checking every sleeper every tick
+FIXES_RECON["source/objects/objects.c#sleepcensus"] = [
+("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before = 0;""",
+"""/* psp_fixups.py (FIXES_RECON #sleepcensus): "sleepcensus" (see there) */
+static int psp_sleep_census_on = -1;
+static long psp_sleep_census_tick = -1;
+static unsigned long psp_sleep_census_ticks;
+static unsigned long psp_sleep_census_asleep[NUMBER_OF_OBJECT_TYPES], psp_sleep_census_woken[NUMBER_OF_OBJECT_TYPES],
+	psp_sleep_census_settling[NUMBER_OF_OBJECT_TYPES];
+
+static void psp_sleep_census(short type, int was_asleep, int same)
+{
+	static char const *const type_names[NUMBER_OF_OBJECT_TYPES] = {
+		"biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+		"machine", "control", "light", "placeholder", "soundscenery"};
+	long now;
+
+	if (psp_sleep_census_on < 0)
+		psp_sleep_census_on = psp_keep("sleepcensus");
+	if (!psp_sleep_census_on || type < 0 || type >= NUMBER_OF_OBJECT_TYPES)
+		return;
+	now = game_time_get();
+	if (now != psp_sleep_census_tick)
+	{
+		if (now % 150 == 0 && psp_sleep_census_ticks)
+		{
+			char line[400];
+			int at = 0, k;
+
+			line[0] = 0;
+			for (k = 0; k < NUMBER_OF_OBJECT_TYPES && at < (int)sizeof(line) - 60; k++)
+				if (psp_sleep_census_asleep[k] || psp_sleep_census_settling[k])
+					at += snprintf(line + at, sizeof(line) - at, " %s %.1f (%.3f; %.1f)", type_names[k],
+						(float)psp_sleep_census_asleep[k] / psp_sleep_census_ticks,
+						(float)psp_sleep_census_woken[k] / psp_sleep_census_ticks,
+						(float)psp_sleep_census_settling[k] / psp_sleep_census_ticks);
+			platform_psp_log("sleepcensus: game time %ld | per tick, by type: sleepers checked (of them woken; checked on the way to sleep):%s",
+				now, line);
+			psp_sleep_census_ticks = 0;
+			csmemset(psp_sleep_census_asleep, 0, sizeof(psp_sleep_census_asleep));
+			csmemset(psp_sleep_census_woken, 0, sizeof(psp_sleep_census_woken));
+			csmemset(psp_sleep_census_settling, 0, sizeof(psp_sleep_census_settling));
+		}
+		psp_sleep_census_tick = now;
+		psp_sleep_census_ticks++;
+	}
+	if (!was_asleep)
+		psp_sleep_census_settling[type]++;
+	else
+	{
+		psp_sleep_census_asleep[type]++;
+		psp_sleep_census_woken[type] += !same;
+	}
+}
+
+static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
+{
+	struct object_datum const *object = header->datum;
+	unsigned long before = 0;"""),
+("""	psp_objects_sleep_checked++;
+""", """	psp_objects_sleep_checked++;
+	/* psp_fixups.py (FIXES_RECON #sleepcensus) */
+	psp_sleep_census(header->type,
+		psp_sleep[absolute_index].identifier == header->identifier && psp_sleep[absolute_index].quiet >= 2,
+		psp_sleep[absolute_index].checksum == before);
+"""),
+]
+
+# "objtrace" (recon only): the table the emulator's object access trace reads
+# (the lab's PSP_OBJTRACE). At each objects_update the game lists every
+# object's data (where it lies, its type, the top-level object it belongs to,
+# whether it is asleep), and while a top-level object and its attachments
+# update, it names that object. The emulator then counts, by instruction, each
+# load and store that lands in another family's data during an update (the
+# map an object loop split into phases needs: who reads whom), and each store
+# into a sleeping object at any time, with whether it changed the bytes (the
+# writers a sleeper would have to be told by). docs/recon_134.md
+FIXES_RECON["source/objects/objects.c#objtrace"] = [
+("""void objects_update(
+	void)
+{
+	static struct profile_section section = {"objects_update", NONE, TRUE};
+""", """/* psp_fixups.py (FIXES_RECON #objtrace): the emulator reads these words by
+address (halo.elf's psp_objtrace), so their layout is fixed: magic, tick,
+the top-level object updating (its absolute index, or -1), entries, table */
+struct psp_objtrace_entry
+{
+	unsigned long begin, end;
+	short root;
+	unsigned char type, asleep;
+};
+volatile unsigned long psp_objtrace[8] __attribute__((aligned(64)));
+static struct psp_objtrace_entry *psp_objtrace_table = NULL;
+static int psp_objtrace_on = -1;
+
+static void psp_objtrace_publish(void)
+{
+	struct object_header_datum *header;
+	long count = object_header_data->count, i, asleep = 0, listed = 0;
+
+	if (psp_objtrace_on < 0)
+	{
+		psp_objtrace_on = psp_keep("objtrace") != 0;
+		if (psp_objtrace_on)
+		{
+			psp_objtrace_table = calloc(MAXIMUM_OBJECTS_PER_MAP, sizeof(*psp_objtrace_table));
+			if (!psp_objtrace_table)
+			{
+				platform_psp_log("objtrace: no room for its table; off");
+				psp_objtrace_on = 0;
+			}
+			else
+				platform_psp_log("objtrace: the object table published each tick at %p (the emulator's PSP_OBJTRACE)",
+					(void *)psp_objtrace);
+		}
+	}
+	if (!psp_objtrace_on)
+		return;
+	if (count > MAXIMUM_OBJECTS_PER_MAP)
+		count = MAXIMUM_OBJECTS_PER_MAP;
+	header = (struct object_header_datum *)xbox_pointer(object_header_data->data);
+	for (i = 0; i < count; i++, header++)
+	{
+		struct psp_objtrace_entry *entry = &psp_objtrace_table[i];
+
+		if (!header->identifier || !header->datum)
+		{
+			entry->begin = entry->end = 0;
+			continue;
+		}
+		{
+			long top = DATUM_INDEX_NEW(i, header->identifier);
+			int depth = 0;
+
+			while (object_get(top)->object.parent_object_index != NONE && depth++ < 16)
+				top = object_get(top)->object.parent_object_index;
+			entry->root = (short)DATUM_INDEX_TO_ABSOLUTE_INDEX(top);
+		}
+		entry->begin = (unsigned long)header->datum;
+		entry->end = entry->begin + (unsigned short)header->data_size;
+		entry->type = header->type;
+		entry->asleep = psp_sleep[i].identifier == header->identifier && psp_sleep[i].quiet >= 2;
+		asleep += entry->asleep;
+		listed++;
+	}
+	psp_objtrace[0] = 0x4F424A54; /* "OBJT" */
+	psp_objtrace[2] = (unsigned long)-1;
+	psp_objtrace[3] = (unsigned long)count;
+	psp_objtrace[4] = (unsigned long)psp_objtrace_table;
+	/* last: the emulator reloads the table when the tick changes */
+	psp_objtrace[1]++;
+	if (game_time_get() % 900 == 0)
+		platform_psp_log("objtrace: game time %ld: %ld objects listed, %ld of them asleep", game_time_get(), listed, asleep);
+}
+
+void objects_update(
+	void)
+{
+	static struct profile_section section = {"objects_update", NONE, TRUE};
+"""),
+("""	object_globals->active_garbage_object_count = 0;
+	
+	last_active_cluster_bits = object_globals->last_active_cluster_bits;
+""", """	object_globals->active_garbage_object_count = 0;
+	/* psp_fixups.py (FIXES_RECON #objtrace) */
+	psp_objtrace_publish();
+	
+	last_active_cluster_bits = object_globals->last_active_cluster_bits;
+"""),
+("""					psp_object_update(object_index, i, object_header);
+""", """					psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
+					psp_object_update(object_index, i, object_header);
+					psp_objtrace[2] = (unsigned long)-1;
+"""),
+("""				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
+""", """				psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
+				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
+				psp_objtrace[2] = (unsigned long)-1;
+"""),
+]
+
+
+# The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
+# with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
+# hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
+# b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
+# more instruction misses). A shelved group is named by its key's tag
+# ("<file>#<tag>"); the shelved experiments are listed in docs/shelf.md.
+SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
+SHELF = os.environ.get("PSP_SHELF", "") == "1"
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

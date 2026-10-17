@@ -61,6 +61,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_BIG_RAM=1` | 64 MB recon variant; never for play |
 | `PSP_TEXT_LAYOUT=coldfirst` | Hot/cold code layout |
 | `PSP_TICK_STEPS=1` | Per-step tick timing; recon only |
+| `PSP_RECON=1` | The recon censuses (`modelcensus`, `sleepcensus`, `drawcensus`, `mebusN`; `docs/recon_134.md`); recon only |
 | `PSP_NOINLINE=psp_ge,…` | Units whose path holds a listed word compiled without inlining, so the cache map names each helper; recon only |
 | `PSP_NO_COLD=1` | Everything at the hot optimisation level |
 | `PSP_SHELF=1` | Builds the shelved experiments back in (`docs/shelf.md`) |
