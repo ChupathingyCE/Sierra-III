@@ -21250,7 +21250,7 @@ name the words a missed writer changed (and from them, the writer) */
 #define PSP_WAKE_COPY_WORDS (2560 / 4)
 static int psp_wake_copies; /* every object's slot where the heap has room (PSP_BIG_RAM), else 256 shared by an index's low bits */
 static unsigned long *psp_wake_copy;
-static unsigned long psp_wake_copy_owner[MAXIMUM_OBJECTS_PER_MAP]; /* 0: none */
+static unsigned long *psp_wake_copy_owner; /* 0: none; allocated with the copies, so the play build's heap doesn't carry wakecheck's 8 KB */
 #define PSP_WAKE_OWNER(header, absolute_index) ((unsigned long)(unsigned short)(header)->identifier << 16 | (unsigned short)(absolute_index))
 
 /* a slot is taken from a sleeper only once that one is gone or awake */
@@ -21331,9 +21331,11 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 		psp_wake_on = (psp_wake_check || psp_keep("wakeonwrite")) ? 2 : !psp_keep("wakeonwriteoff");
 		if (psp_wake_check)
 		{
+			/* the copies' owners first: without them the copies can't be used */
+			psp_wake_copy_owner = (unsigned long *)calloc(MAXIMUM_OBJECTS_PER_MAP, sizeof(unsigned long));
 			psp_wake_copies = MAXIMUM_OBJECTS_PER_MAP;
-			psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * psp_wake_copies);
-			if (!psp_wake_copy)
+			psp_wake_copy = psp_wake_copy_owner ? (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * psp_wake_copies) : NULL;
+			if (psp_wake_copy_owner && !psp_wake_copy)
 			{
 				psp_wake_copies = 256;
 				psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * psp_wake_copies);
@@ -21362,7 +21364,7 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 				tag_get_name(object->definition_index), header->type, game_time_get());
 			psp_wake_miss_words(header, absolute_index);
 		}
-		if (psp_wake_copy_owner[absolute_index % psp_wake_copies] == PSP_WAKE_OWNER(header, absolute_index))
+		if (psp_wake_copy_owner && psp_wake_copy_owner[absolute_index % psp_wake_copies] == PSP_WAKE_OWNER(header, absolute_index))
 			psp_wake_copy_owner[absolute_index % psp_wake_copies] = 0;
 	}
 	else if (psp_wake_copy && psp_wake_slot_free(absolute_index % psp_wake_copies, PSP_WAKE_OWNER(header, absolute_index)))
