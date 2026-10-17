@@ -139,7 +139,9 @@ nothing waiting (every ~10 ms in a game), so a read that would block could
 come back here as errno 0 or 2, which the game takes as its connection
 broken ("_transport_error_endpoint_io"). The firmware's own code is asked
 again right after the call instead (keep word libcerrno: errno as before),
-and the first 64 calls where the two differ are logged */
+and the first 64 calls where the two differ are logged, accept's left out:
+its errno says 2 where the firmware says EAGAIN on every pass, which filled
+the 64 lines before a read could show (lab 39016196537, 39017504866) */
 static int call_error(const char *call)
 {
 	static int keep = -1, differ_logged;
@@ -152,7 +154,7 @@ static int call_error(const char *call)
 	firmware = sceNetInetGetErrno();
 	if (!firmware)
 		return library;
-	if (firmware != library && differ_logged < 64)
+	if (firmware != library && differ_logged < 64 && strcmp(call, "posix_socket_accept"))
 	{
 		SceKernelThreadInfo info;
 
