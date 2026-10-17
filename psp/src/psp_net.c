@@ -132,17 +132,49 @@ static int adhoc_result(int result)
 	return result;
 }
 
-/* the errno of a failed call as Winsock's code; -1. An errno this doesn't
+/* a failed call's error code. libcglue copies the firmware's error into
+newlib's errno, and on the PSP that is one variable for every thread: the
+tunnel's thread, above the game thread, writes it on every accept with
+nothing waiting (every ~10 ms in a game), so a read that would block could
+come back here as errno 0 or 2, which the game takes as its connection
+broken ("_transport_error_endpoint_io"). The firmware's own code is asked
+again right after the call instead (keep word libcerrno: errno as before),
+and the first 64 calls where the two differ are logged */
+static int call_error(const char *call)
+{
+	static int keep = -1, differ_logged;
+	int library = errno, firmware;
+
+	if (keep < 0)
+		keep = psp_keep("libcerrno");
+	if (keep)
+		return library;
+	firmware = sceNetInetGetErrno();
+	if (!firmware)
+		return library;
+	if (firmware != library && differ_logged < 64)
+	{
+		SceKernelThreadInfo info;
+
+		differ_logged++;
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		sceKernelReferThreadStatus(0, &info);
+		platform_log("network: %s failed: errno %d, the firmware's code %d (taken); thread %s, %u ms",
+			call, library, firmware, info.name, sceKernelGetSystemTimeLow() / 1000);
+	}
+	return firmware;
+}
+
+/* the error of a failed call as Winsock's code; -1. A code this doesn't
 know is logged each time, the first 32, with the call and the thread (its
-numbering is the firmware's, which libcglue passes through as it is). The
-game takes WSAEINVAL from a read as its connection broken: on the PSP, errno
-0 and 2 came just before each "_transport_error_endpoint_io"
-(sierra-hw 38989808944) */
+numbering is the firmware's, which libcglue passes through as it is) */
 static int fail_in(const char *call)
 {
 	static int unknown_logged;
+	int code = call_error(call);
 
-	switch (errno)
+	switch (code)
 	{
 	case EINTR: last_error = WSAEINTR; break;
 	case EINVAL: last_error = WSAEINVAL; break;
@@ -181,7 +213,7 @@ static int fail_in(const char *call)
 	default:
 		last_error = WSAEINVAL;
 		{
-			int error = errno;
+			int error = code;
 
 			if (unknown_logged < 32)
 			{
