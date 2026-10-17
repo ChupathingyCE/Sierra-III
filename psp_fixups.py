@@ -22249,11 +22249,136 @@ SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 
 
+# ---------- FIXES_LOADING: the loading screen (docs/plan_loading_screen.md)
+FIXES_LOADING = {}
+
+# A load (from the main menu, between levels, or at boot from init.txt) is
+# one blocking chain on the main thread, and nothing is drawn during it.
+# psp_loading.c keeps its progress and time; begin and end bracket the old
+# map's disposal through the new map's load, so the frame shown when the
+# load begins can be captured before the new map takes the texture cache.
+FIXES_LOADING["source/main/main.c#loading"] = [
+("""			game_dispose_from_old_map();
+			game_precache_new_map(options.map_name, TRUE);
+			game_unload();
+			main_new_map(&options);
+""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_LOADING) */
+			{
+				extern void psp_loading_begin(const char *map_name);
+
+				psp_loading_begin(options.map_name);
+			}
+#endif
+			game_dispose_from_old_map();
+			game_precache_new_map(options.map_name, TRUE);
+			game_unload();
+			main_new_map(&options);
+#ifdef HALO_PSP
+			{
+				extern void psp_loading_end(void);
+
+				psp_loading_end();
+			}
+#endif
+"""),
+("""		game_precache_new_map(options.map_name, TRUE);
+		game_dispose_from_old_map();
+		main_new_map(&options);
+""", """#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_LOADING) */
+		{
+			extern void psp_loading_begin(const char *map_name);
+
+			psp_loading_begin(options.map_name);
+		}
+#endif
+		game_precache_new_map(options.map_name, TRUE);
+		game_dispose_from_old_map();
+		main_new_map(&options);
+#ifdef HALO_PSP
+		{
+			extern void psp_loading_end(void);
+
+			psp_loading_end();
+		}
+#endif
+"""),
+]
+
+# The map's tag data was one read of several megabytes, which gives a loading
+# screen nothing to show between its start and its end. In 256 KB pieces the
+# screen moves with the load: the Memory Stick reads 32 KB pieces at 14.5 MB/s
+# against 15.7 at 64 KB (docs/streaming.md), so 256 KB costs next to nothing.
+# Keep word "loadwhole": one read, as before.
+FIXES_LOADING["source/cache/cache_files.c#loading"] = [
+("""			csmemset(tag_cache_base_address, 0xCD, PSP_TAG_CACHE_SIZE);
+			cache_file_read(
+				NONE,
+				cache_file_globals.header.tag_data_offset,
+				cache_file_globals.header.tag_data_size,
+				tag_cache_base_address,
+				&read_complete,
+				TRUE);
+			while (!read_complete)
+			{
+				SwitchToThread();
+			}
+""", """			csmemset(tag_cache_base_address, 0xCD, PSP_TAG_CACHE_SIZE);
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_LOADING) */
+			{
+				extern int psp_keep(const char *name);
+				extern void psp_loading_expect(unsigned long bytes);
+				extern void psp_loading_progress(unsigned long bytes);
+				long psp_size = cache_file_globals.header.tag_data_size;
+				long psp_piece = psp_keep("loadwhole") ? psp_size : 256 * 1024;
+				long psp_done = 0;
+
+				psp_loading_expect((unsigned long)psp_size);
+				read_complete = TRUE;
+				while (psp_done < psp_size && read_complete == TRUE)
+				{
+					long psp_bytes = psp_size - psp_done < psp_piece ? psp_size - psp_done : psp_piece;
+
+					read_complete = FALSE;
+					cache_file_read(
+						NONE,
+						cache_file_globals.header.tag_data_offset + psp_done,
+						psp_bytes,
+						(char *)tag_cache_base_address + psp_done,
+						&read_complete,
+						TRUE);
+					while (!read_complete)
+					{
+						SwitchToThread();
+					}
+					psp_done += psp_bytes;
+					psp_loading_progress((unsigned long)psp_bytes);
+				}
+			}
+#else
+			cache_file_read(
+				NONE,
+				cache_file_globals.header.tag_data_offset,
+				cache_file_globals.header.tag_data_size,
+				tag_cache_base_address,
+				&read_complete,
+				TRUE);
+			while (!read_complete)
+			{
+				SwitchToThread();
+			}
+#endif
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
