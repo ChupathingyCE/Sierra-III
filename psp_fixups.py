@@ -775,9 +775,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 #endif"""),
 ("	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);",
  """#ifdef HALO_PSP
-	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB
-	(psp_fixups.py) */
-	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x10000 ? stack_size : 0x10000);
+	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB.
+	The deepest any of these threads has gone, in every log the lab holds
+	from both builds, is under 11 KB (the main menu's saved-game check;
+	the cache file thread under 5 KB, the others under 2 KB): 48 KB keeps
+	four times that. Stacks come from the free user RAM above the heap,
+	where what they leave can take a block off the heap (psp_ge.c's
+	see-through table) (psp_fixups.py) */
+	pthread_attr_setstacksize(&thread_attributes, stack_size > 0xC000 ? stack_size : 0xC000);
 #else
 	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);
 #endif"""),
