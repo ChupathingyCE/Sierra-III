@@ -2981,6 +2981,15 @@ int main(int argc, char **argv)
 	thread = sceKernelCreateThread("halo heartbeat", heartbeat_thread, 0x18, 0x4000, 0, NULL);
 	if (thread >= 0)
 		sceKernelStartThread(thread, 0, NULL);
+	/* from here the start-up's lines wait in the batch for the heartbeat's
+	write each second, as the game's do once it runs: each line written at
+	once cost the stick an open, a write and a close, and the heartbeat's
+	(at a priority above the game's and the saved-game check's) held the
+	stick 3 s at the first frame on the PSP-1000 (lab 39021437349).
+	A crash still writes the batch (psp_crash.c); a hang loses at most a
+	second's lines. "logeachline": each line at once, as before */
+	if (thread >= 0 && !log_each_line())
+		log_batching = 1;
 
 	/* the crash handler's own test: with ms0:/halo/crashtest.txt present,
 	the game faults on purpose here, and the handler's screen should appear */

@@ -20915,6 +20915,59 @@ FIXES_FRONT["port/linux/src/xbox_files.c#pathscan"] = [
 		{"""),
 ]
 
+# The campaign build reads no game variants at start-up. The saved-game check
+# made the 26 default multiplayer variants (each compared with the stick's
+# copy) and then read all 26 again into the saved-game list: 130 stick calls
+# and ~3 s before the menu took input on the PSP-1000 (lab 39021437349), for
+# lists only a multiplayer menu shows. Now they're made, and listed, the
+# first time something asks for them, as the multiplayer build still does at
+# start-up. Keep word "bootvariants": at start-up, as before.
+FIXES_FRONT["source/interface/ui_widget.c#bootvariants"] = [
+("""		playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+		player_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index, TRUE);
+""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+		/* psp_fixups.py (FIXES_FRONT #bootvariants) */
+		{
+			extern int psp_keep(const char *name);
+
+			if (psp_keep("bootvariants"))
+				playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+		}
+#else
+		playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+#endif
+		player_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index, TRUE);
+"""),
+]
+
+FIXES_FRONT["source/saved games/playlist_profile.c#bootvariants"] = [
+("""void playlist_profiles_enumerate_available_to_local_player_index(
+	short local_player_index,""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (FIXES_FRONT #bootvariants): whether anything has asked for
+the game variants yet (saved_game_files.c lists them only then) */
+int psp_variants_asked(void)
+{
+	return playlist_profile_default_data.first_time != TRUE;
+}
+#endif
+
+void playlist_profiles_enumerate_available_to_local_player_index(
+	short local_player_index,"""),
+]
+
+FIXES_FRONT["source/saved games/saved_game_files.c#bootvariants"] = [
+("""	short number_of_playlist_files = enumerate_default_playlist_profiles();
+""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	/* psp_fixups.py (FIXES_FRONT #bootvariants): asking for them marks the
+	list for a fresh enumeration, which lists them then */
+	extern int psp_variants_asked(void);
+	short number_of_playlist_files = psp_variants_asked() ? enumerate_default_playlist_profiles() : 0;
+#else
+	short number_of_playlist_files = enumerate_default_playlist_profiles();
+#endif
+"""),
+]
+
 # ---------- FIXES_CONTROLS: the PSP's controls (docs/game_feature_survey.md, section 4)
 #
 # psp_sdl.c keeps the crouch toggle and splits the X button into a reload tap
