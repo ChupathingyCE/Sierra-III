@@ -22313,8 +22313,10 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			main_new_map(&options);
 #ifdef HALO_PSP
 			{
+				extern void psp_main_settle(void);
 				extern void psp_loading_end(void);
 
+				psp_main_settle();
 				psp_loading_end();
 			}
 #endif
@@ -22335,11 +22337,52 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 		main_new_map(&options);
 #ifdef HALO_PSP
 		{
+			extern void psp_main_settle(void);
 			extern void psp_loading_end(void);
 
+			psp_main_settle();
 			psp_loading_end();
 		}
 #endif
+"""),
+# The settle after a load (psp_loading.c): the level's first view drawn with
+# no tick while the texture cache fills, each frame as main_loop draws one.
+# Campaign only: a game engine's frames wait for its third tick.
+("""void main_loop(
+	void)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_LOADING) */
+void psp_main_settle(void)
+{
+	extern unsigned long psp_heartbeat_clock(void);
+	extern int psp_loading_settle_begin(void);
+	extern int psp_loading_settle_frame(void);
+	extern void psp_loading_settle_veil(void);
+
+	if (game_engine_running() || debug_no_drawing || !psp_loading_settle_begin())
+		return;
+	do
+	{
+		unsigned long psp_start = psp_heartbeat_clock();
+
+		render_interpolation_frame_begin();
+		psp_phase(2);
+		main_game_render(0.0);
+		psp_loading_settle_veil();
+		psp_frame_account(psp_heartbeat_clock() - psp_start);
+		render_interpolation_frame_end();
+		main_present_frame();
+	}
+	while (psp_loading_settle_frame());
+	/* nothing pressed while the screen stood still acts once play begins */
+	input_flush();
+}
+#endif
+
+void main_loop(
+	void)
+{
 """),
 ]
 

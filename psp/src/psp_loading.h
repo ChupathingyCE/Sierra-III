@@ -20,6 +20,11 @@ void psp_loading_progress(unsigned long bytes);
 void psp_loading_end(void);
 int psp_loading_active(void);
 
+/* The settle after the load (main.c's psp_main_settle draws its frames). */
+int psp_loading_settle_begin(void);
+int psp_loading_settle_frame(void);
+void psp_loading_settle_veil(void);
+
 /* The GE layer's side, weak: absent, nothing is drawn (as before). */
 void psp_ge_loading_frame(const struct psp_loading_view *view) __attribute__((weak));
 void psp_ge_loading_veil(const struct psp_loading_view *view) __attribute__((weak));

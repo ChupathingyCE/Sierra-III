@@ -1041,6 +1041,13 @@ static unsigned long read_us = 0, frame_read_us = 0, frame_read_worst = 0;
 extern volatile unsigned long psp_stick_read_us; /* build 126: every blocking Memory Stick read's time (psp_frametrace.c) */
 /* build 73: this heartbeat window's reads, for the log's io: line */
 static PSP_MAIN_SIDE unsigned long window_reads = 0, window_us = 0, window_worst_us = 0; /* build 118: the heartbeat resets them */
+/* every read, deferral and wait so far: the loading screen's settle waits
+for it to stop moving (psp_loading.c) */
+unsigned long psp_tex_load_count(void)
+{
+	return loads + misses + waits;
+}
+
 void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us)
 {
 	*reads = window_reads;
