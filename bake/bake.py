@@ -165,10 +165,17 @@ def bake_loading_picture(source, work, out_maps):
     else:
         with XIso(source) as iso:
             listing = {p.lower(): p for p, n in iso.files()}
-            if 'maps/loading.tga' in listing:
+            # maps/loading.tga where the Xbox reads it (d:\maps\); else any
+            # loading.tga on the disc, and the disc's pictures said in the log
+            found = 'maps/loading.tga' if 'maps/loading.tga' in listing else next(
+                (k for k in sorted(listing) if k.rsplit('/', 1)[-1] == 'loading.tga'), None)
+            if found:
                 tga = os.path.join(work, 'retail', 'loading.tga')
                 if not os.path.exists(tga):
-                    iso.extract(listing['maps/loading.tga'], tga)
+                    iso.extract(listing[found], tga)
+            else:
+                pictures = [listing[k] for k in sorted(listing) if k.endswith(('.tga', '.bmp', '.xpr'))]
+                log('the loading picture: the disc\'s pictures: %s' % (', '.join(pictures[:40]) or 'none'))
     out = os.path.join(out_maps, 'loading.pic')
     if not tga:
         log('the loading picture: no maps/loading.tga in %s; the loading screen draws without it' % source)
