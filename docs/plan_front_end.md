@@ -43,9 +43,15 @@ Labels: [M] PSP, [E] emulator, [D] code, [U] inference.
 
 - **The movies:** left out for now (Sheepdog01, 2026-10-16); they stay skipped.
 - **The launch menu:** behind L held at start-up, and `menu.txt` for a stick that should always open it (Sheepdog01, 2026-10-16).
-- **Button prompts: the PSP's, no A/B** (Sheepdog01, 2026-10-16). The glyphs are ready: the pinned ChupathingyCE carries Kenney's Input Prompts fonts (`port/linux/ui/fonts/input_playstation.ttf`, CC0; cross U+E04B, circle U+E041, square U+E051, triangle U+E053, as its `ui_overlay.c` maps them) [D]. The work in step 2 is finding where the Xbox menus draw their prompts (strings in the font, or bitmaps) and drawing the PSP's there. Credited to Kenney in the README's Credits.
+- **Button prompts: the PSP's, no A/B** (Sheepdog01, 2026-10-16). The glyphs are built: the `controls` branch (on `w134`, the renderer session's groundwork) carries Sheepdog01's own PSP glyph sheet in the EBOOT (`psp/glyphs/`, `tools/psp_glyphs.py`), drawn over the game's button icons in play and in the menus, `xboxglyphs` to turn it off (`review_controls.md` §6). The front end takes them by folding that branch in, not by new work.
 
 ## 5. Who touches what
+
+**Already done elsewhere** (2026-10-17), so not repeated here:
+- **The menu's look** (step 5): the renderer session's `glowmaps` branch (on `w135`, `docs/main_menu_restoration.md`): glow maps, the menu as the hardware's showcase (`ui_showcase.ptex`, `noshowcase` off).
+- **The main menu into the campaign** (part of step 2): checked there in the emulator (lab 39000246258): profile, difficulty, a10 plays. Open from it: a red engine line on the profile screen ("event handler new game if no plyr profiles failed") and a silent memory check at a10's load.
+- **The glyphs:** the `controls` branch (§4).
+
 
 - The menus are shared with the multiplayer build: front-end changes compile into it (`PSP_MULTIPLAYER=1`) and are announced to the multiplayer session before they land.
 - Drawing (`psp_ge.c`, the loading screen's picture, the menu's look) is the renderer session's.

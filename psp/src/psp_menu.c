@@ -565,6 +565,24 @@ void psp_menu(int build)
 	{
 		front_door_main_menu = 1;
 		platform_log("front door: the main menu (L held at start-up or " DATA_ROOT "/menu.txt: the launch menu)");
+		/* keep.txt is the launch menu's last choices, so the main menu
+		plays with them. A stick without one (fresh, or cleared) would
+		otherwise get none of the words a build ships with: those are the
+		first preset, which only the launch menu applies */
+		if (!file_exists(DATA_ROOT "/keep.txt"))
+		{
+			load_presets();
+			if (preset_count)
+			{
+				apply_preset(0);
+				save_files(-1);
+				platform_log("front door: no keep.txt; the first preset's words written to it (%s: %s)",
+					presets[0].name, presets[0].words);
+			}
+			free(presets);
+			presets = NULL;
+			preset_count = 0;
+		}
 		return;
 	}
 	int back = 0, dump_menu = -1;
