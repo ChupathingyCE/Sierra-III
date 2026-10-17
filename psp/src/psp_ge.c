@@ -250,7 +250,7 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT /* build 117 */
+	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL
 };
 typedef union
 {
@@ -366,6 +366,7 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 void psp_ge_model_effect(int type, float intensity);
 void psp_ge_model_point_light(const float *position, unsigned int color);
 void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_key, float const *change, float const *glow);
+void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
@@ -610,6 +611,16 @@ static int defer_model_multipurpose(unsigned int multipurpose_key, unsigned int 
 	at[0].u = multipurpose_key;
 	at[1].u = glow_key;
 	defer_copy(defer_copy(at + 2, change, 3), glow, 3);
+	return 1;
+}
+
+static int defer_model_detail(unsigned int detail_key, float u_scale, float v_scale)
+{
+	defer_word *at = defer_take(DEFER_MODEL_DETAIL, 3);
+
+	at[0].u = detail_key;
+	at[1].f = u_scale;
+	at[2].f = v_scale;
 	return 1;
 }
 
@@ -903,6 +914,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		case DEFER_MODEL_MULTIPURPOSE:
 			a = defer_copy_back(w + 2, &rest, 3);
 			psp_ge_model_multipurpose(w[0].u, w[1].u, a, defer_copy_back(rest, &rest, 3));
+			break;
+		case DEFER_MODEL_DETAIL:
+			psp_ge_model_detail(w[0].u, w[1].f, w[2].f);
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -9339,6 +9353,20 @@ void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_
 	glow_color = abgr_from_rgb(glow) & 0xFFFFFF;
 }
 
+/* the part's detail map on the main menu: its key (0 none) and its scale on
+the part's texture coordinates (psp_fixups.py: soso shaders, ui.map only) */
+static unsigned int model_detail_key = 0;
+static float model_detail_u = 1.0f, model_detail_v = 1.0f;
+
+void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale)
+{
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_model_detail(detail_key, u_scale, v_scale));
+	model_detail_key = detail_key;
+	model_detail_u = u_scale;
+	model_detail_v = v_scale;
+}
+
 /* a pass over the part's triangles with the multipurpose map's mask: 0 the
 change colour (white toward the colour by the blue, multiplied in), 1 the
 self-illumination (the colour by the green, added) */
@@ -9451,6 +9479,64 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 	sceGuColor(0xFFFFFFFF);
 	glow_mapped++;
 	return 1;
+}
+/* the model's detail map, as the Xbox draws it on a model shader without a
+detail mask: the base x 2 x the detail. The pack's base for such a shader
+already holds the detail's average (texpack.py, model_looks), and the detail
+map is packed scaled to an average of a half (neutral_detail) or with the
+Xbox's own levels, which fade toward it: drawn over the frame with the GE's
+2 x source x frame blend it adds only the pattern, and changes nothing where
+its levels have faded out. Last, after the self-illumination and its clamp:
+the Xbox multiplies base x detail by lighting plus glow, the same product.
+Main menu only (the outer ring's panel lines, detail scale 10: lab sierra-tags
+39063134715); every other map keeps the folded average alone, at no cost.
+"nomodeldetail": the folded average alone there too. "modeldetailbiasN": the
+detail's level N quarter levels coarser (the GE picks a model's level
+itself, and the map repeats ten times across the part) */
+static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, const unsigned short *indices,
+	long index_count, int strip, struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	static int off = -1, bias = 0, logs = 0;
+	static unsigned int logged[3];
+	int bound;
+
+	if (off < 0)
+	{
+		off = psp_keep("nomodeldetail");
+		bias = psp_keep_number("modeldetailbias", 0);
+	}
+	if (off)
+		return;
+	bound = psp_tex_bind(model_detail_key, NULL);
+	/* each detail map's first draw, logged: whether the pack holds it */
+	if (model_detail_key != logged[0] && model_detail_key != logged[1] && model_detail_key != logged[2])
+	{
+		logged[logs++ % 3] = model_detail_key;
+		if (logs <= 12)
+			platform_log("GE: model detail %08x at %.2f x %.2f: %s", model_detail_key, model_detail_u,
+				model_detail_v, bound ? "drawn" : "not in the pack");
+	}
+	if (!bound)
+		return;
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+	sceGuTexScale(model_detail_u, model_detail_v);
+	if (bias)
+		sceGuTexLevelMode(tex_level_mode, tex_bias + bias * 0.25f);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDepthFunc(GU_EQUAL);
+	sceGuDepthMask(GU_TRUE);
+	/* fogged toward its neutral colour, which the blend leaves unchanged */
+	sceGuFog(fog_near, fog_far, detail_neutral(model_detail_key));
+	sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_SRC_COLOR, 0, 0);
+	ge_blend(1);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	ge_blend(0);
+	if (bias)
+		sceGuTexLevelMode(tex_level_mode, tex_bias);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuDepthMask(GU_FALSE);
+	sceGuDepthFunc(GU_GEQUAL);
 }
 static unsigned int multipurpose_cache_palette[MULTIPURPOSE_CACHE][256] __attribute__((aligned(64)));
 static struct
@@ -11001,6 +11087,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		if (glow_color && !glow_off && multipurpose_pass(1, vertices, indices, index_count, strip, skin, &model))
 			glow_passes++;
 	}
+	if (textured && model_detail_key && psp_showcase_map && model_camouflage <= 0.0f && !in_sky)
+		model_detail_pass(vertices, indices, index_count, strip, skin, &model);
 	if (model_camouflage > 0.0f)
 	{
 		ge_blend(0);
