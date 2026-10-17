@@ -6140,6 +6140,86 @@ static struct bake_stencil *bake_stencil_of(unsigned int key)
 	return NULL;
 }
 
+/* The stencil bake is one block (up to ~162 KB on c20), and after a level
+change the heap's only free piece that large is its top, whose size follows
+what earlier levels left: the load's own small requests could eat it before
+the geometry pack opened and asked (lab heapladder1/2). So the block is
+taken right after the old map is let go, when the top is at its largest,
+and if even then there's no room, asked for again once the load has let go
+of its temporaries. "stencilsold": asked for only when the pack opens */
+static char stencils_next[64];
+static void *stencils_held = NULL;
+static int stencils_held_size = 0;
+static char stencils_pending[64];
+static unsigned int stencils_pending_crc = 0;
+static int stencils_old = -1;
+static int stencils_retrying = 0;
+
+static int stencils_old_way(void)
+{
+	if (stencils_old < 0)
+		stencils_old = psp_keep("stencilsold") != 0;
+	return stencils_old;
+}
+
+/* the next map, as the loading screen names it (psp_loading.c) */
+void psp_ge_stencils_expect(const char *map_name)
+{
+	const char *slash = map_name ? strrchr(map_name, '\\') : NULL;
+
+	snprintf(stencils_next, sizeof(stencils_next), "%s", slash ? slash + 1 : map_name ? map_name : "");
+}
+
+static void bake_forget(void);
+void psp_ge_stencils_open(const char *name, unsigned int map_crc);
+
+/* the end of game_dispose_from_old_map (psp_fixups.py): the old map's bake
+let go, and the next map's block taken while the heap's top is whole */
+void psp_ge_stencils_reserve(void)
+{
+	char path[128];
+	SceUID file;
+	int size;
+
+	if (stencils_old_way() || !stencils_next[0])
+		return;
+	GE_DEFER_DRAIN();
+	bake_forget();
+	free(stencils_held);
+	stencils_held = NULL;
+	stencils_held_size = 0;
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", stencils_next);
+	stencils_next[0] = 0;
+	file = sceIoOpen(path, PSP_O_RDONLY, 0);
+	if (file < 0)
+		return;
+	size = sceIoLseek32(file, 0, PSP_SEEK_END);
+	sceIoClose(file);
+	if (size <= 64)
+		return;
+	stencils_held = memalign(64, size);
+	if (stencils_held)
+		stencils_held_size = size;
+	platform_log("stencils: %s's %d KB %s as the old map was let go", path, size / 1024,
+		stencils_held ? "taken" : "found no room");
+}
+
+/* the end of the load (psp_loading.c): a bake that found no room when its
+pack opened is asked for again, the load's temporaries let go */
+void psp_ge_stencils_retry(void)
+{
+	char name[64];
+
+	if (!stencils_pending[0])
+		return;
+	snprintf(name, sizeof(name), "%s", stencils_pending);
+	stencils_pending[0] = 0;
+	platform_log("stencils: %s asked for again at the load's end", name);
+	stencils_retrying = 1;
+	psp_ge_stencils_open(name, stencils_pending_crc);
+	stencils_retrying = 0;
+}
+
 /* the map's .pstn, when its geometry pack opens (psp_geo.c) */
 void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 {
@@ -6160,7 +6240,28 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	}
 	size = sceIoLseek32(file, 0, PSP_SEEK_END);
 	sceIoLseek32(file, 0, PSP_SEEK_SET);
-	bake.file = size > 64 ? memalign(64, size) : NULL;
+	if (stencils_held && stencils_held_size == size)
+	{
+		bake.file = stencils_held;
+		stencils_held = NULL;
+		stencils_held_size = 0;
+	}
+	else
+	{
+		free(stencils_held);
+		stencils_held = NULL;
+		stencils_held_size = 0;
+		bake.file = size > 64 ? memalign(64, size) : NULL;
+		if (!bake.file && size > 64 && !stencils_old_way() && !stencils_retrying)
+		{
+			/* no room while the load holds its temporaries: once more at its end */
+			sceIoClose(file);
+			snprintf(stencils_pending, sizeof(stencils_pending), "%s", name);
+			stencils_pending_crc = map_crc;
+			platform_log("stencils: %s found no room for %d KB while the map loads; asked again at the load's end", path, size / 1024);
+			return;
+		}
+	}
 	if (!bake.file || sceIoRead(file, bake.file, size) != size)
 	{
 		sceIoClose(file);
