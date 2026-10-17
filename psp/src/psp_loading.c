@@ -16,6 +16,9 @@ from the heap: psp_dsound.c), "settleoff", "settleN". */
 #include <math.h>
 #include <string.h>
 #include "psp_loading.h"
+#include "psp_paths.h" /* PSP_DATA_ROOT: ms0:/halo or ms0:/halomp */
+#include <pspiofilemgr.h>
+#include <pspkernel.h>
 
 extern unsigned long psp_microseconds(void);
 extern void platform_log(const char *format, ...);
@@ -75,10 +78,16 @@ static float brightness_of(float progress)
 
 /* The chant: the Xbox's four looping copies of one tone at four pitches
 (progress_bar.c's SetPitch -4681, -6386, -3999, -8773, in 1/4096 octave from
-48 kHz), each swelling over its own part of the load. The bytes are the
-engine's own (progress_bar.c compressed_monk_tone, Xbox ADPCM at 22,050 Hz). */
+48 kHz), each swelling over its own part of the load. The tone is the
+game's own (Xbox ADPCM at 22,050 Hz in default.xbe), so the EBOOT carries no
+copy: the bake reads it from the player's disc into halo/chant.adp
+(bake/lib/chant.py), and the screen is silent without it. Static, so a load
+takes no heap block for it (the holes mem138 closed); written back before
+the Media Engine mixes it */
 #define CHANT_VOICES 4
-extern unsigned char compressed_monk_tone[18396];
+#define CHANT_BYTES 18396
+static unsigned char chant_tone[CHANT_BYTES] __attribute__((aligned(64)));
+static int chant_tone_state; /* 0 unread, 1 read, -1 missing */
 extern void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned long sample_rate,
 	unsigned long frequency, long millibels);
 extern void psp_dsound_loop_volume(void *voice, long millibels);
@@ -89,15 +98,32 @@ static const float chant_range[CHANT_VOICES][2] = { { 0.0f, 1.0f }, { 0.4f, 1.0f
 static const float chant_swell[CHANT_VOICES] = { 3500.0f, 4500.0f, 3500.0f, 4500.0f };
 static void *chant[CHANT_VOICES];
 
+static int chant_read(void)
+{
+	if (!chant_tone_state)
+	{
+		SceUID file = sceIoOpen(PSP_DATA_ROOT "/chant.adp", PSP_O_RDONLY, 0);
+		int got = file >= 0 ? sceIoRead(file, chant_tone, CHANT_BYTES) : -1;
+
+		if (file >= 0)
+			sceIoClose(file);
+		chant_tone_state = got == CHANT_BYTES ? 1 : -1;
+		if (chant_tone_state > 0)
+			sceKernelDcacheWritebackRange(chant_tone, CHANT_BYTES);
+		platform_log("loading: the chant %s", chant_tone_state > 0 ? "read from the bake (chant.adp)" :
+			"is silent: chant.adp isn't in the bake (re-bake from the disc to hear it)");
+	}
+	return chant_tone_state > 0;
+}
+
 static void chant_start(void)
 {
 	int k;
 
-	if (psp_keep("chantoff"))
+	if (psp_keep("chantoff") || !chant_read())
 		return;
 	for (k = 0; k < CHANT_VOICES; k++)
-		chant[k] = psp_dsound_loop_start(compressed_monk_tone, sizeof(compressed_monk_tone), 22050,
-			chant_frequency[k], -5000);
+		chant[k] = psp_dsound_loop_start(chant_tone, CHANT_BYTES, 22050, chant_frequency[k], -5000);
 }
 
 static void chant_gains(float progress)

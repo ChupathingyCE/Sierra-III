@@ -18,10 +18,12 @@ the menus' ui.map):
      track's version (_track.ptex: half-size lightmaps, and alpha-tested
      plants that keep their leaves at a distance; --no-track skips it)
   5. bakes the level's wall decals into its walls (.pstn)
-  6. with --eboot: cuts the XMB menu's sound from the music on your disc and
+  6. reads the loading screen's chant from the disc's default.xbe into
+     halo/chant.adp (lib/chant.py; the EBOOT carries no copy)
+  7. with --eboot: cuts the XMB menu's sound from the music on your disc and
      writes a copy of the release EBOOT with it (lib/snd0.py)
 
-The output folder then holds halo/maps/... (and, with --eboot,
+The output folder then holds halo/maps/... and halo/chant.adp (and, with --eboot,
 PSP/GAME/halo/EBOOT.PBP): copy its contents to the root of the Memory Stick.
 
 Options:
@@ -145,6 +147,33 @@ def gather(source, work, wanted):
                         iso.extract(listing[key], destination)
                     found[name] = destination
     return found
+
+
+def bake_chant(source, work, output):
+    """the loading screen's chant from the disc's default.xbe into halo/chant.adp
+    (lib/chant.py); without it the loading screen is silent"""
+    sys.path.insert(0, LIB)
+    import chant
+    xbe = None
+    if os.path.isdir(source):
+        for candidate in (os.path.join(source, 'default.xbe'), os.path.join(source, '..', 'default.xbe')):
+            if os.path.exists(candidate):
+                xbe = candidate
+                break
+    else:
+        with XIso(source) as iso:
+            listing = {p.lower(): p for p, n in iso.files()}
+            if 'default.xbe' in listing:
+                xbe = os.path.join(work, 'retail', 'default.xbe')
+                if not os.path.exists(xbe):
+                    iso.extract(listing['default.xbe'], xbe)
+    out = os.path.join(output, 'halo', 'chant.adp')
+    if not xbe:
+        log('the chant: no default.xbe in %s; the loading screen will be silent' % source)
+    elif chant.write(xbe, out):
+        log('the chant: read from %s into %s' % (os.path.basename(xbe), out))
+    else:
+        log('the chant: %s holds no chant this build knows; the loading screen will be silent' % xbe)
 
 
 def scenario_path(map_path, log_path):
@@ -340,6 +369,7 @@ def main():
         except Exception as e:
             failures.append(name)
             log('%s: FAILED: %s' % (name, e))
+    bake_chant(a.source, work, a.output)
     if a.eboot:
         menu_eboot(a.eboot, a.music, music_source, a.output, work)
     if not a.keep_work:

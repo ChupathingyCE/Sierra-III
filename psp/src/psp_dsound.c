@@ -111,6 +111,9 @@ struct psp_stream
 	the game then queues more (Sheepdog01's b86 run 2: regular breaks heard with
 	either mixer, the output never late) */
 	unsigned long dry_frames;
+	/* frames this voice was mixed (written by the mixer, on either CPU):
+	the loading chant's line says whether its voices played at all */
+	unsigned long mixed_frames;
 	/* the game's sound class of what the stream plays (sound_manager.c's
 	channel_queue_sound names it), so a dry gap can say what fell silent */
 	long sound_class;
@@ -493,6 +496,7 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 			done++;
 		}
 	}
+	stream->mixed_frames += done;
 	if (done < frames)
 		stream->dry_frames += frames - done;
 	return 1;
@@ -1641,6 +1645,13 @@ void psp_dsound_loop_stop(void *voice)
 
 	if (!voice)
 		return;
+	{
+		struct psp_stream *stream = stream_from_interface((IDirectSoundStream *)voice);
+
+		platform_log("audio: a loop voice stopped after %lu ms mixed (%s, frequency %lu, target gains %d/%d)",
+			stream->mixed_frames * 1000 / OUTPUT_RATE, loop_voice_index(voice) < 0 ? "heap" : "static slot",
+			(unsigned long)stream->frequency, stream->target_left, stream->target_right);
+	}
 	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
 	k = loop_voice_index(voice);
 	if (k < 0)

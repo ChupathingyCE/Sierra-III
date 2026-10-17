@@ -22976,6 +22976,33 @@ void psp_step(const char *name);
 						PSP_STOP_REASON(PSP_STOP_OTHER);
 """),
 ]
+# The loading chant's tone is the game's own bytes (default.xbe's .data;
+# docs/research/chant_provenance.md), so the PSP build doesn't carry this copy:
+# the port reads the player's bake instead (psp_loading.c, halo/chant.adp).
+# Unreferenced and static, the table is left out of the program; the Xbox
+# path that used it plays through DirectSound buffers, which are null objects
+# here
+FIXES_SOUND["source/interface/progress_bar.c#chant"] = [
+("""byte compressed_monk_tone[18396]=""",
+ """#ifdef HALO_PSP
+static const byte psp_disc_monk_tone[18396] __attribute__((unused))=
+#else
+byte compressed_monk_tone[18396]=
+#endif"""),
+("""		IDirectSoundBuffer_SetBufferData(progress_bar_globals.sounds[sound_index], compressed_monk_tone,
+			sizeof(compressed_monk_tone));
+		IDirectSoundBuffer_SetLoopRegion(progress_bar_globals.sounds[sound_index], 0,
+			sizeof(compressed_monk_tone));""",
+ """#ifdef HALO_PSP
+		IDirectSoundBuffer_SetBufferData(progress_bar_globals.sounds[sound_index], NULL, 0);
+		IDirectSoundBuffer_SetLoopRegion(progress_bar_globals.sounds[sound_index], 0, 0);
+#else
+		IDirectSoundBuffer_SetBufferData(progress_bar_globals.sounds[sound_index], compressed_monk_tone,
+			sizeof(compressed_monk_tone));
+		IDirectSoundBuffer_SetLoopRegion(progress_bar_globals.sounds[sound_index], 0,
+			sizeof(compressed_monk_tone));
+#endif"""),
+]
 # The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
 # packets (about 743 ms) up at interrupt time, the port once a frame, so a
 # frame longer than that left long sounds silent. The queue's depth comes from
