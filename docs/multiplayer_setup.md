@@ -16,7 +16,7 @@ If you haven't set up the campaign yet, do that first: `play.md` takes you from 
 
 - **The campaign's setup working:** a PSP on custom firmware (6.61 with ARK-4) and the maps baked from your own disc. Any PSP model works.
 - **The multiplayer maps in your bake:** `ui` and the thirteen multiplayer maps (`beavercreek bloodgulch boardingaction carousel chillout damnation hangemhigh longest prisoner putput ratrace sidewinder wizard`). A full bake has them; if you baked only some maps, bake these too: `--maps ui,beavercreek,bloodgulch,…` (`bake/README.md`).
-- **The multiplayer zip** of the same release as your campaign build: `halo_psp_bNNNmp.zip`.
+- **The multiplayer zip:** the release's `halo_psp_bNNNmp.zip`, on the same release page as the campaign zip and the bake bundle, from the same release as your campaign build.
 - **A Wi-Fi network with internet** that the PSP can join:
   - **WPA2-AES (CCMP) or open.** WPA3 and WPA2/WPA3 mixed modes don't work.
   - **2.4 GHz.** The PSP-1000 speaks only 802.11b, so on a router that turns 802.11b off (many do), it can't join. The PSP-2000 and 3000 also speak 802.11g.
