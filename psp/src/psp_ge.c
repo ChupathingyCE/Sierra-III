@@ -1941,7 +1941,7 @@ static void census_frame(void)
 #define CENSUS(call) ((void)0)
 #endif
 
-static void ge_kinds_report(void)
+static void __attribute__((noinline, cold)) ge_kinds_report(void)
 {
 	char line[600];
 	int length, k;
@@ -5325,7 +5325,7 @@ static int gr_by_value(const void *a, const void *b)
 	return l > r ? 1 : l < r ? -1 : 0;
 }
 
-static void ge_reads_report(unsigned long frames_now)
+static void __attribute__((noinline, cold)) ge_reads_report(unsigned long frames_now)
 {
 	extern long psp_game_time_peek(void);
 	unsigned long span = frames_now - gr_frames_mark;
@@ -5372,6 +5372,47 @@ static void ge_reads_report(unsigned long frames_now)
 		at += snprintf(line + at, sizeof(line) - at, " %u KB: %.0f%%;", steps_kb[step], ram ? 100.0 * taken / ram : 0.0);
 	}
 	platform_log("%s", line);
+	/* the same curve for the level's copies alone and the models alone: the
+	mixed curve fills every step with model buffers first, so it can't say
+	how much VRAM the level's streams would want beside vrammodels (the
+	split a "levelvramN" room would need). Each place's share is of its own
+	reads */
+	{
+		static const unsigned char places[2] = { GR_LEVEL, GR_GEOMETRY };
+		static const unsigned short place_kb[6] = { 64, 128, 192, 256, 384, 512 };
+		int p;
+
+		for (p = 0; p < 2; p++)
+		{
+			unsigned long long place_read = 0, place_size = 0;
+			int place_count = 0;
+
+			for (k = 0; k < n; k++)
+				if (gr_table[k].place == places[p])
+				{
+					place_read += gr_table[k].read;
+					place_size += gr_table[k].size;
+					place_count++;
+				}
+			at = snprintf(line, sizeof(line), "gereads: %s alone (%d buffers, %.0f KB, %.1f KB a frame read): VRAM holding the best",
+				gr_place_names[places[p]], place_count, place_size / 1024.0, place_read / 1024.0 / span);
+			for (step = 0; step < 6 && at < (int)sizeof(line) - 1; step++)
+			{
+				unsigned long long held = 0;
+
+				taken = 0;
+				for (k = 0; k < n; k++)
+					if (gr_table[k].place == places[p] && held + gr_table[k].size <= place_kb[step] * 1024ull)
+					{
+						held += gr_table[k].size;
+						taken += gr_table[k].read;
+					}
+				at += snprintf(line + at, sizeof(line) - at, " %u KB: %.0f%% (%.1f KB a frame);", place_kb[step],
+					place_read ? 100.0 * taken / place_read : 0.0, taken / 1024.0 / span);
+			}
+			platform_log("%s", line);
+		}
+	}
 	at = snprintf(line, sizeof(line), "gereads: best buffers (place, kind, KB, KB read a frame):");
 	for (k = 0; k < n && k < 8 && at < (int)sizeof(line) - 1; k++)
 		at += snprintf(line + at, sizeof(line) - at, " %s/%s %.1f %.1f;", gr_place_names[gr_table[k].place], kind_names[gr_table[k].kind],
