@@ -350,6 +350,18 @@ void *psp_tex_glyph_room(unsigned int *generation)
 	return ram_cache;
 }
 
+/* the lowest carved address while the volatile partition is lent (NULL while
+it isn't: asleep, or the heap's block instead), and the block's generation.
+The level carve (psp_ge.c) is carved last, so it starts there; a new
+generation says the block went back to the system and came again */
+void *psp_tex_carve_now(unsigned int *generation)
+{
+	*generation = ram_cache_generation;
+	if (!volatile_locked || !ram_cache || !carved_bytes)
+		return NULL;
+	return (void *)((unsigned int)ram_cache + ram_cache_bytes - carved_bytes);
+}
+
 /* build 106: the bytes carved now (the geometry cache's, then the animation
 cache's on top: psp_anim.c carves this plus its own) */
 unsigned int psp_tex_carved(void)
