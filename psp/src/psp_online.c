@@ -708,7 +708,8 @@ void psp_exit_game(const char *why);
 starts with it, so a run can be pointed at servers whose owner agreed to
 tests (Milenko's are named "[C] ..."). keep.txt is read here because the
 platform's keep words carry yes/no and numbers, not text; the value ends at
-a space or a comma, as the words do */
+a space or a comma, as the words do, so an underscore in it stands for a
+space ("onlinejoin=[C]_Slayer") */
 static void test_join_prefix(char *prefix, int size)
 {
 	static const char word[] = "onlinejoin=";
@@ -731,7 +732,7 @@ static void test_join_prefix(char *prefix, int size)
 		return;
 	found += sizeof(word) - 1;
 	for (count = 0; count < size - 1 && found[count] && !strchr(" \t\r\n,", found[count]); count++)
-		prefix[count] = found[count];
+		prefix[count] = found[count] == '_' ? ' ' : found[count];
 	prefix[count] = '\0';
 }
 
