@@ -53,6 +53,7 @@ static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
 /* build 117: the VRAM given to the model buffers by default, in KB */
 #define VRAM_MODELS_DEFAULT_KB 600
+#define VRAM_TEXTURES_LEAST (256 * 1024) /* the least VRAM the texture cache keeps beside the models' room */
 /* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
 of the most-read model buffers (psp_tex_vram_models) */
 static unsigned int vram_models_bytes = 0;
@@ -210,7 +211,10 @@ void psp_tex_close(void)
 	{
 		int kb = psp_keep_number("vrammodels", VRAM_MODELS_DEFAULT_KB);
 
-		if (kb >= 64 && (unsigned int)kb * 1024 <= (VRAM_CACHE_END_FULL - VRAM_CACHE_START) / 2)
+		/* at least 256 KB stay the textures': a 512 x 512 indexed map with its
+		levels (341 KB) can still sit in VRAM, and below that the set's best
+		third, worth most of its binds, would no longer fit */
+		if (kb >= 64 && (unsigned int)kb * 1024 <= VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST)
 		{
 			vram_models_bytes = (unsigned int)kb * 1024;
 			if (vram_cache_end > VRAM_CACHE_END_FULL - vram_models_bytes)
@@ -222,8 +226,8 @@ void psp_tex_close(void)
 			platform_log("textures: vrammodels0: the model buffers stay in main RAM (as b116 without the word)");
 		else
 			/* said, not silently left off (the emulator's vrammodels800 run) */
-			platform_log("textures: vrammodels%d left off: 64 KB up to half the texture cache's VRAM (%u KB)", kb,
-				(VRAM_CACHE_END_FULL - VRAM_CACHE_START) / 2048);
+			platform_log("textures: vrammodels%d left off: 64 KB up to %u KB (the textures keep %u)", kb,
+				(VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST) / 1024, VRAM_TEXTURES_LEAST / 1024);
 	}
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
@@ -256,7 +260,7 @@ static int squeezed = 0;
 static unsigned int ram_cache_bytes = 0, carved_bytes = 0;
 /* the first 32 KB of the RAM block hold the button glyph sheet (psp_ge.c,
 glyph_sheet), outside the texture cache. In VRAM the sheet cut the models'
-room (vrammodels' check allows at most half the room after it); here it
+room (vrammodels' check then refused its default); here it
 costs the RAM cache 32 KB of its 4 MB. The block goes back to the system
 while the PSP sleeps, so each acquisition has a generation, and psp_ge.c
 unpacks the sheet again when it changes */
