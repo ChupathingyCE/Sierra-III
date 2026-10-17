@@ -19740,8 +19740,81 @@ void object_set_garbage(
 		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
 
 		psp_wake(object_index);
+		/* taking it off the garbage list rewrites the link of the one
+		before it (wake135d: corpses and a grenade) */
+		if (!garbage && TEST_FLAG(object_get(object_index)->object.flags, _object_garbage_bit))
+		{
+			long before = object_globals->first_garbage_object_index;
+
+			while (before != NONE && object_get(before)->object.next_garbage_object_index != object_index)
+				before = object_get(before)->object.next_garbage_object_index;
+			if (before != NONE)
+				psp_wake(before);
+		}
 	}
 """),
+]
+# the AI asks a biped (a body too) for its pathfinding surface, which it
+# works out and keeps in the biped when it has moved (wake135d: an elite's and
+# a jackal's bodies). Marked only when the kept answer changed: the AI asks
+# often, and a mark costs the asked biped its checksum
+FIXES_WAKE["source/units/bipeds.c#wake_pathfinding"] = [
+("""long biped_find_pathfinding_surface_index(
+	long biped_index,
+	real_point3d *pathfinding_point)
+{
+""", """/* psp_fixups.py (FIXES_WAKE) */
+static long psp_biped_pathfinding_work(long biped_index, real_point3d *pathfinding_point);
+
+long biped_find_pathfinding_surface_index(
+	long biped_index,
+	real_point3d *pathfinding_point)
+{
+	void psp_wake(long object_index);
+	struct biped_datum *biped = biped_get(biped_index);
+	unsigned long first = offsetof(struct _biped_datum, pathfinding_surface_index);
+	unsigned long end = offsetof(struct _biped_datum, last_pathfinding_surface_index) + sizeof(biped->biped.last_pathfinding_surface_index);
+	unsigned char held[32];
+	long result;
+
+	csmemcpy(held, (unsigned char *)&biped->biped + first, end - first);
+	result = psp_biped_pathfinding_work(biped_index, pathfinding_point);
+	if (memcmp(held, (unsigned char *)&biped->biped + first, end - first) != 0)
+		psp_wake(biped_index);
+	return result;
+}
+
+static long psp_biped_pathfinding_work(
+	long biped_index,
+	real_point3d *pathfinding_point)
+{
+"""),
+]
+# a sleeper's functions, computed as its update would (FIXES_123L), may turn
+# one on or off: the active flags are a word the checksum compares, so in the
+# checksum's build that wakes it the next tick (wake135d: dropped weapons, Flood
+# bodies). The same mark keeps that
+FIXES_WAKE["source/objects/objects.c#wake_sleeper_functions"] = [
+("""static void psp_sleeper_functions(long object_index)
+{
+	object_type_export_function_values(object_index);
+	object_compute_function_values(object_index);
+	object_compute_change_colors(object_index);
+}""", """static void psp_sleeper_functions(long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	unsigned char active = object->object.functions_active_flags;
+
+	object_type_export_function_values(object_index);
+	object_compute_function_values(object_index);
+	object_compute_change_colors(object_index);
+	if (object->object.functions_active_flags != active)
+	{
+		void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+		psp_wake(object_index);
+	}
+}"""),
 ]
 FIXES_WAKE["source/objects/objects.c#wake_object_set_visibility"] = [
 ("""
