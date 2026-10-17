@@ -14,7 +14,8 @@ holds as before, with the chant, the settle and the timings.
 The same screen covers the start-up, from keep.txt's reading to the main
 menu ("the boot screen", below).
 Keep words: "loadingoff" (none of it), "chantoff", "chantheap" (the chant's voices
-from the heap: psp_dsound.c), "settleoff", "settleN"; the boot screen's "bootlog",
+from the heap: psp_dsound.c), "settleoff", "settleN", "loadholdN" (the screen's
+shortest showing, 6 s by default; "loadhold0" none); the boot screen's "bootlog",
 "boothintN", "bootsettleoff". */
 #include <math.h>
 #include <string.h>
@@ -48,6 +49,7 @@ static struct
 	int settle_frames;
 	int settle_quiet;         /* settle frames in a row that read no texture */
 	unsigned long settle_not_before_us; /* the settle lasts at least to here (0: no such end) */
+	unsigned long hold_us;    /* the screen's shortest showing, from begin_us (0: none) */
 } loading;
 
 /* the boot screen's state (below); "active" from the program's start until
@@ -194,6 +196,10 @@ static void update(int phase)
 		target = 1.0f;
 	else
 		target = loading.expected ? (float)loading.done / (float)loading.expected : 0.0f;
+	/* a load faster than the hold shows its progress by the clock, so the
+	chant's crescendo has its length */
+	if (loading.hold_us && target > (float)(now - loading.begin_us) / (float)loading.hold_us)
+		target = (float)(now - loading.begin_us) / (float)loading.hold_us;
 	if (target > 1.0f)
 		target = 1.0f;
 	loading.shown = ease(loading.shown, target, loading.draws ? (now - loading.last_draw_us) / 1e6f : 0.0f);
@@ -218,6 +224,11 @@ static void loading_begin(const char *map_name, int with_chant)
 	loading.screen = !psp_keep("loadingoff");
 	loading.boot = boot.active;
 	loading.begin_us = psp_microseconds();
+	/* the screen's shortest showing (Sheepdog01: the Xbox's chant needs a few
+	seconds, and the PSP loads a level in one or two), the load and the
+	settle hidden behind it; not at boot, whose screen has its own pace.
+	"loadholdN" sets N seconds, "loadhold0" shows it only as long as the load */
+	loading.hold_us = loading.screen && !loading.boot ? (unsigned long)psp_keep_number("loadhold", 6) * 1000000ul : 0;
 	strncpy(loading.map, map_name ? map_name : "?", sizeof(loading.map) - 1);
 	{
 		extern void psp_ge_stencils_expect(const char *map_name);
@@ -288,7 +299,7 @@ int psp_loading_settle_begin(void)
 {
 	if (!loading.active || psp_keep("settleoff"))
 		return 0;
-	return settle_start(0);
+	return settle_start(loading.hold_us ? loading.begin_us + loading.hold_us : 0);
 }
 
 int psp_loading_settle_frame(void)
