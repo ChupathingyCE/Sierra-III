@@ -29,6 +29,7 @@ The multiplayer build compiles the engine's p2p layer as it is
 #include <psprtc.h>
 #include <pspwlan.h>
 #include <pthread.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -141,11 +142,112 @@ void platform_log(const char *format, ...);
 static SceUID tunnel_thread = -1;
 static int tunnel_priority = -1;
 
+/* ---------- KCP's memory
+
+KCP (the tunnel's streams) allocates a block for every segment it holds,
+from the heap. A map's load takes the heap to its top while the host keeps
+sending, and ikcp_input wrote through the NULL it got back: a bus error on
+this thread (lab 38987358496, 39016196537). So KCP asks the heap first and,
+when the heap has nothing, a reserve of fixed blocks outside the heap, taken
+as internet play starts from user RAM the heap never uses (psp_memory.c
+keeps OUTSIDE_RESERVE of it free; this takes well under half of what is left
+then). ikcp.c's NULL checks (psp_fixups.py #nomemory) cover what is left over.
+Keep word kcpreserveN: the reserve in KB (kcpreserve0: none) */
+int psp_keep_number(const char *name, int otherwise);
+
+enum
+{
+	/* a segment's header (56 bytes) and the most one carries (KCP_MTU 1,200
+	less its 24-byte header), rounded up */
+	KCP_BLOCK_BYTES = 1280,
+	KCP_RESERVE_DEFAULT_KB = 64,
+	/* psp_memory.c's OUTSIDE_RESERVE: threads' stacks and the like */
+	KCP_RESERVE_LEAVES_FREE = 160 * 1024,
+};
+
+static char *kcp_reserve_start, *kcp_reserve_end;
+static void *kcp_reserve_free;
+static int kcp_reserve_used, kcp_reserve_peak, kcp_reserve_logged;
+static pthread_mutex_t kcp_reserve_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void *kcp_malloc(size_t size)
+{
+	void *block = malloc(size);
+
+	if (block)
+		return block;
+	pthread_mutex_lock(&kcp_reserve_lock);
+	if (size <= KCP_BLOCK_BYTES && kcp_reserve_free)
+	{
+		block = kcp_reserve_free;
+		kcp_reserve_free = *(void **)block;
+		if (++kcp_reserve_used > kcp_reserve_peak)
+			kcp_reserve_peak = kcp_reserve_used;
+	}
+	pthread_mutex_unlock(&kcp_reserve_lock);
+	if ((!block || kcp_reserve_used == 1) && kcp_reserve_logged < 16)
+	{
+		kcp_reserve_logged++;
+		platform_log("internet play: the heap is full: KCP's %u bytes %s (reserve: %d of its blocks in use, %d at most)",
+			(unsigned)size, block ? "from its reserve" : size > KCP_BLOCK_BYTES ? "too many for a reserve block: refused" :
+			"refused: the reserve is used up", kcp_reserve_used, kcp_reserve_peak);
+	}
+	return block;
+}
+
+static void kcp_free(void *block)
+{
+	if ((char *)block >= kcp_reserve_start && (char *)block < kcp_reserve_end)
+	{
+		pthread_mutex_lock(&kcp_reserve_lock);
+		*(void **)block = kcp_reserve_free;
+		kcp_reserve_free = block;
+		kcp_reserve_used--;
+		pthread_mutex_unlock(&kcp_reserve_lock);
+		return;
+	}
+	free(block);
+}
+
+/* before the tunnel makes its first stream (this thread's start) */
+static void kcp_reserve_begin(void)
+{
+	void ikcp_allocator(void *(*new_malloc)(size_t), void (*new_free)(void *));
+	int count = psp_keep_number("kcpreserve", KCP_RESERVE_DEFAULT_KB) * 1024 / KCP_BLOCK_BYTES, index;
+	unsigned long bytes = (unsigned long)count * KCP_BLOCK_BYTES;
+	SceUID block;
+
+	ikcp_allocator(kcp_malloc, kcp_free);
+	/* (once: internet play starts its thread again after a failed join) */
+	if (count <= 0 || kcp_reserve_start)
+		return;
+	if ((unsigned long)sceKernelTotalFreeMemSize() < bytes + 64 + KCP_RESERVE_LEAVES_FREE ||
+		(unsigned long)sceKernelMaxFreeMemSize() < bytes + 64 ||
+		(block = sceKernelAllocPartitionMemory(2, "halo kcp reserve", PSP_SMEM_High, bytes + 64, NULL)) < 0)
+	{
+		platform_log("internet play: no room for KCP's reserve of %lu KB outside the heap (%d KB free there)",
+			bytes / 1024, sceKernelTotalFreeMemSize() / 1024);
+		return;
+	}
+	kcp_reserve_start = (char *)(((unsigned long)sceKernelGetBlockHeadAddr(block) + 63) & ~63UL);
+	kcp_reserve_end = kcp_reserve_start + bytes;
+	for (index = count - 1; index >= 0; index--)
+	{
+		void **slot = (void **)(kcp_reserve_start + (unsigned long)index * KCP_BLOCK_BYTES);
+
+		*slot = kcp_reserve_free;
+		kcp_reserve_free = slot;
+	}
+	platform_log("internet play: KCP's reserve, %d blocks (%lu KB) outside the heap; %d KB still free there",
+		count, bytes / 1024, sceKernelTotalFreeMemSize() / 1024);
+}
+
 /* the thread, as it starts (p2p.c's #priority fixup) */
 void psp_internet_thread_priority(void)
 {
 	SceKernelThreadInfo info;
 
+	kcp_reserve_begin();
 	memset(&info, 0, sizeof(info));
 	info.size = sizeof(info);
 	sceKernelReferThreadStatus(0, &info);

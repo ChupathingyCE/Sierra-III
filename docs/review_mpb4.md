@@ -87,11 +87,18 @@ The front door (b136) decides the first screen for both builds, so `#ifdef PSP_M
 - **Keep word:** `libcerrno` puts back `errno` alone. On by default (it's a fix): multiplayer build only.
 - **Unverified:** whether the firmware's own code is kept per thread. The log line says: errno 0 or 2 beside the firmware's 11 (EAGAIN) confirms the race and the fix's source.
 
+## 11. KCP with a full heap (`psp_internet.c` KCP's reserve, `psp_fixups.py` `ikcp.c#nomemory`)
+
+**Why [M]:** a map's load takes the heap to its top (3,708 of 3,720 KB) while the host keeps sending, and `ikcp_input` wrote through the NULL its allocation returned: a bus error on the tunnel's thread, at the load, in a 13-player game (38987358496) and on a quiet `[C] Slayer` (39016196537 run 1).
+- **The reserve:** KCP's allocator (`ikcp_allocator`) asks the heap first and, when it has nothing, a reserve of 1,280-byte blocks (a full segment each) outside the heap, taken as the tunnel's thread starts, after the placed blocks, from the user RAM the heap never uses, leaving `OUTSIDE_RESERVE` free. Logged when it's first used and when a request is refused.
+- **The NULL checks:** a segment there's no memory for is neither kept nor acknowledged, so the host sends it again; an ack there's no room for is left out (no more `abort()`); the send side's asserts in front of its own NULL checks are gone.
+- **Keep word:** `kcpreserveN` (KB, 64 by default; `kcpreserve0`: none). The NULL checks have none: they change nothing until an allocation fails.
+- **Hot code:** none (multiplayer build only).
+
 ## Open
 
 - **`_transport_error_endpoint_io`:** the errno race (§10) is the lead; the next run's `failed: errno ... the firmware's code` lines settle it.
 - netpace on the PSP-1000, and its cost in game time.
-- **KCP and a full heap:** `ikcp_malloc`'s NULL is written through (a crash in a 13-player game). Its allocations need a check or a reserve.
 - **A refused Wi-Fi join** isn't tried again until a socket is asked for.
 - The tick in a 12-player game, and why 30 biped updates a tick.
 - **Heap:** the top reached 3,716 of 3,720 KB in a join on the PSP-3000 (38950938673).

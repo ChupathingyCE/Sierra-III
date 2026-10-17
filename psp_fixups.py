@@ -11232,6 +11232,41 @@ FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
 	/* (here: it may wait for a program) */
 """),
 ]
+# KCP with no memory: ikcp_input wrote through the NULL a full heap gave it
+# (a bus error on the tunnel's thread when a map's load took the heap to its
+# top while the host kept sending: lab 38987358496, 39016196537), and
+# ikcp_ack_push called abort(). A segment there's no memory for is now
+# neither kept nor acknowledged, so the sender sends it again; an ack there's
+# no room for is left out, the same. The send side already checked, behind
+# asserts that would abort first. psp_internet.c's reserve makes this rare
+FIXES_INTERNET["port/third_party/kcp/ikcp.c#nomemory"] = [
+("""				seg = ikcp_segment_new(kcp, old->len + extend);
+				assert(seg);
+				if (seg == NULL) {""",
+ """				seg = ikcp_segment_new(kcp, old->len + extend);
+				if (seg == NULL) {"""),
+("""		seg = ikcp_segment_new(kcp, size);
+		assert(seg);
+		if (seg == NULL) {""",
+ """		seg = ikcp_segment_new(kcp, size);
+		if (seg == NULL) {"""),
+("""		if (acklist == NULL) {
+			assert(acklist != NULL);
+			abort();
+		}""",
+ """		if (acklist == NULL) {
+			return;
+		}"""),
+("""				ikcp_ack_push(kcp, sn, ts);
+				if (_itimediff(sn, kcp->rcv_nxt) >= 0) {
+					seg = ikcp_segment_new(kcp, len);
+					seg->conv = conv;""",
+ """				seg = _itimediff(sn, kcp->rcv_nxt) >= 0 ? ikcp_segment_new(kcp, len) : NULL;
+				if (seg != NULL || _itimediff(sn, kcp->rcv_nxt) < 0)
+					ikcp_ack_push(kcp, sn, ts);
+				if (seg != NULL) {
+					seg->conv = conv;"""),
+]
 # ... and the stand-ins by local port: a table of every port (128 KB) to
 # find one of 16, which a search of the 16 does as well
 FIXES_INTERNET["port/linux/src/p2p.c#proxyports"] = [
