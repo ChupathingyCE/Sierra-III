@@ -20811,6 +20811,75 @@ FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
 # more instruction misses). A shelved group is named by its key's tag
 # ("<file>#<tag>"); the shelved experiments are listed in docs/shelf.md.
+# The start-up's saved-game check (the main menu waits on it): every Xbox
+# path went through platform_translate_path, which stats the drive's folder
+# and then, for each part of the path, opens its parent folder and reads it
+# entry by entry to match the name without regard to case, then stats the
+# match again. A read of z:\saved\playlists\default_playlist\NN\blam.lst
+# cost ~37 Memory Stick calls, and the check made 2,285 of them at ~10 ms
+# each (frontdoor4's stick report: 23.2 s of its 26.8 s). The Memory Stick
+# is FAT, which already matches names without regard to case, so on the PSP
+# the parts are joined as written (lever H6, optimization_ranking.md), and
+# each drive's folder is checked once a run. Keep word "pathscan": the scan,
+# as before.
+FIXES_FRONT["port/linux/src/xbox_files.c#pathscan"] = [
+("""		if (drive != 'd')
+		{
+			struct posix_file_information information;
+
+			snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
+			/* every Xbox drive always exists; create its directory on first use */
+			if (posix_stat(resolved, &information) != 0)
+				posix_make_directory(resolved);
+		}""", """		if (drive != 'd')
+		{
+			struct posix_file_information information;
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_FRONT #pathscan): each drive's folder is
+			made at most once a run */
+			static unsigned long psp_drives_known;
+			unsigned long psp_drive_bit = (drive >= 'a' && drive <= 'z') ? 1UL << (drive - 'a') : 0;
+#endif
+
+			snprintf(resolved, sizeof(resolved), "%s/%c", platform_save_root(), drive);
+			/* every Xbox drive always exists; create its directory on first use */
+#ifdef HALO_PSP
+			if (!psp_drive_bit || !(psp_drives_known & psp_drive_bit))
+			{
+				if (posix_stat(resolved, &information) != 0)
+					posix_make_directory(resolved);
+				psp_drives_known |= psp_drive_bit;
+			}
+#else
+			if (posix_stat(resolved, &information) != 0)
+				posix_make_directory(resolved);
+#endif
+		}"""),
+("""		if (posix_find_entry_case_insensitive(resolved, component, on_disk, sizeof(on_disk)))
+		{""", """#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_FRONT #pathscan): the Memory Stick is FAT,
+		which matches names without regard to case already, so the part is
+		taken as written (keep word "pathscan": the folder scanned, as
+		before; read once keep.txt is in) */
+		{
+			extern int psp_keep(const char *name);
+			extern int psp_keep_loaded(void);
+			static int psp_path_scan = -1;
+
+			if (psp_path_scan < 0 && psp_keep_loaded())
+				psp_path_scan = psp_keep("pathscan") != 0;
+			if (psp_path_scan <= 0)
+			{
+				length = strlen(resolved);
+				snprintf(resolved + length, sizeof(resolved) - length, "/%s", component);
+				continue;
+			}
+		}
+#endif
+		if (posix_find_entry_case_insensitive(resolved, component, on_disk, sizeof(on_disk)))
+		{"""),
+]
+
 # ---------- FIXES_CONTROLS: the PSP's controls (docs/game_feature_survey.md, section 4)
 #
 # psp_sdl.c keeps the crouch toggle and splits the X button into a reload tap
