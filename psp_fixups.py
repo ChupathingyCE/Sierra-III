@@ -19533,6 +19533,49 @@ FIXES_WAKE["source/objects/objects.c#wake"] = [
 static unsigned char psp_wake_marked[MAXIMUM_OBJECTS_PER_MAP];
 static int psp_wake_on = -1, psp_wake_check = 0;
 long psp_wake_skipped, psp_wake_checked, psp_wake_misses;
+/* wakecheck: each sleeper's bytes as last seen unchanged, so that a miss can
+name the words a missed writer changed (and from them, the writer) */
+#define PSP_WAKE_COPY_WORDS (2560 / 4)
+#define PSP_WAKE_COPIES 256 /* by slot, an object index's low bits: the heap's room, not every sleeper's */
+static unsigned long *psp_wake_copy;
+static unsigned long psp_wake_copy_owner[PSP_WAKE_COPIES]; /* 0: none */
+#define PSP_WAKE_OWNER(header, absolute_index) ((unsigned long)(unsigned short)(header)->identifier << 16 | (unsigned short)(absolute_index))
+
+/* a slot is taken from a sleeper only once that one is gone or awake */
+static int psp_wake_slot_free(int slot, unsigned long owner)
+{
+	unsigned long held = psp_wake_copy_owner[slot];
+	short index = (short)(held & 0xFFFF);
+	struct object_header_datum const *header;
+
+	if (!held || held == owner || index >= object_header_data->count)
+		return 1;
+	header = (struct object_header_datum const *)xbox_pointer(object_header_data->data) + index;
+	return !header->identifier || (unsigned short)header->identifier != held >> 16 || psp_sleep[index].quiet < 2;
+}
+
+static void psp_wake_miss_words(struct object_header_datum const *header, short absolute_index)
+{
+	unsigned long const *now = (unsigned long const *)header->datum;
+	int slot = absolute_index % PSP_WAKE_COPIES;
+	unsigned long const *was = psp_wake_copy + (long)slot * PSP_WAKE_COPY_WORDS;
+	long count = (header->data_size < 2560 ? header->data_size : 2560) / 4, w;
+	int told = 0;
+
+	if (!psp_wake_copy || psp_wake_copy_owner[slot] != PSP_WAKE_OWNER(header, absolute_index))
+	{
+		platform_psp_log("wakecheck:   (its bytes weren't kept: another sleeper had the slot)");
+		return;
+	}
+	for (w = 0; w < count && told < 8; w++)
+		if (w != 2 && was[w] != now[w])
+		{
+			platform_psp_log("wakecheck:   word %ld (byte 0x%lx) of %d: %08lx -> %08lx", w, w * 4, header->data_size, was[w], now[w]);
+			told++;
+		}
+	if (!told)
+		platform_psp_log("wakecheck:   no word of its first %ld bytes changed: one beyond them, or a child's", count * 4);
+}
 
 void psp_wake(long object_index)
 {
@@ -19574,6 +19617,12 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 	{
 		psp_wake_check = psp_keep("wakecheck") != 0;
 		psp_wake_on = psp_wake_check || psp_keep("wakeonwrite");
+		if (psp_wake_check)
+		{
+			psp_wake_copy = (unsigned long *)malloc(sizeof(unsigned long) * PSP_WAKE_COPY_WORDS * PSP_WAKE_COPIES);
+			platform_psp_log("wakecheck: %s each sleeper's bytes, to name a miss's words",
+				psp_wake_copy ? "keeping" : "no room for");
+		}
 	}
 	psp_wake_marked[absolute_index] = 0;
 	if (!psp_wake_on || marked || psp_sleep[absolute_index].identifier != header->identifier ||
@@ -19586,9 +19635,25 @@ static unsigned long psp_wake_family_checksum(struct object_header_datum const *
 	}
 	sum = psp_family_checksum(header);
 	psp_wake_checked++;
-	if (sum != psp_sleep[absolute_index].checksum && psp_wake_misses++ < 64)
-		platform_psp_log("wakecheck: %s (type %d) changed asleep, unmarked, at tick %ld",
-			tag_get_name(object->definition_index), header->type, game_time_get());
+	if (sum != psp_sleep[absolute_index].checksum)
+	{
+		if (psp_wake_misses++ < 64)
+		{
+			platform_psp_log("wakecheck: %s (type %d) changed asleep, unmarked, at tick %ld",
+				tag_get_name(object->definition_index), header->type, game_time_get());
+			psp_wake_miss_words(header, absolute_index);
+		}
+		if (psp_wake_copy_owner[absolute_index % PSP_WAKE_COPIES] == PSP_WAKE_OWNER(header, absolute_index))
+			psp_wake_copy_owner[absolute_index % PSP_WAKE_COPIES] = 0;
+	}
+	else if (psp_wake_copy && psp_wake_slot_free(absolute_index % PSP_WAKE_COPIES, PSP_WAKE_OWNER(header, absolute_index)))
+	{
+		int slot = absolute_index % PSP_WAKE_COPIES;
+
+		csmemcpy(psp_wake_copy + (long)slot * PSP_WAKE_COPY_WORDS, header->datum,
+			header->data_size < 2560 ? header->data_size : 2560);
+		psp_wake_copy_owner[slot] = PSP_WAKE_OWNER(header, absolute_index);
+	}
 	if (psp_wake_checked % 30000 == 0)
 		platform_psp_log("wakecheck: %ld unmarked sleepers summed, %ld changed (writers missed)", psp_wake_checked, psp_wake_misses);
 	return sum;
