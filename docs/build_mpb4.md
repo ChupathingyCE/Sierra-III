@@ -122,6 +122,27 @@ Full-size packets do reach the tunnel, but at about 1 in 7 of the mid-size ones'
 
 **What it points at [U]:** a weak or noisy radio link, where the longer a frame the likelier it is lost once the access point's own retries run out. Sheepdog01 saw the game connect for about 30 s and degrade.
 
+## Not the radio [M] (sierra-hw 38995031347, Sheepdog01's hotspot counters)
+
+The hotspot's queue for the PSP dropped nothing and handed the radio ~38 packets a second in each game; `tx failed` 11 of 4,366 frames; signal −31 dBm. The packets reached the PSP, and its radio acknowledged them: they were lost inside the PSP.
+
+## The Wi-Fi driver, starved [M] (sierra-hw 39007414238, 39009339059, PSP-3000, `dfa082e`)
+
+`dfa082e` lists every thread the firmware shows the program, once the PSP is on a network: the Wi-Fi driver's `SceWlanMac` and `SceWlanHal` run at **0x27**, under the game thread's 0x20. The firmware shares no time down the priorities, so through a catch-up tick of 100–500 ms the driver can't empty the radio's receive buffer, and full-size packets fill it fastest.
+
+`netpaceN` (same commit) tests it: a thread at 0x18 drops the game thread to 0x70 for 1 ms every N ms while on a network.
+
+| Run | netpace5 | Joined | Tunnel, packets/s | The host's stream | End |
+|---|---|---|---|---|---|
+| 39007414238 r1 | off | HALO UNIVERSAL, 12 players | 3.9 | `0+14`, `0+18` (behind a gap) | dropped (silence, then "host went down") |
+| 39007414238 r2 | on | never: its lobby showed 5 of 71 listings, its join stalled before STUN | – | – | inconclusive |
+| 39009339059 r1 | on | HALO UNIVERSAL | 37 | `0+0` | `_transport_error_endpoint_io` ~14 s in, the stream healthy (open bug, below) |
+| 39009339059 r2 | on | HALO UNIVERSAL | **34.5** | **`0+0` all run** | **played to the wall**, game tick 1,735 → 5,700+ at ~30 ticks/s |
+
+**netpace fixes the drop.** On by default in the multiplayer build from `mp135`'s next commit (`netpace0` turns it off); the campaign build doesn't compile it.
+
+**Open:** `_transport_error_endpoint_io` on the client's reliable endpoint, now three times (two pregames in 38989808944, one game in 39009339059 r1, just after "the host's clock is 60 ticks ahead"), with nothing in the stream to explain it; the PSP-1000 not yet run with netpace; netpace's cost in game time unmeasured.
+
 ## The next test
 
-The access point's own count (`iw dev wlan0 station dump` every 5 s on the desktop: signal, rate, retries, failures) during two more runs, and where the PSP-3000 sits against the desktop's antenna and its USB 3 ports.
+The same join on the PSP-1000 with netpace on by default; then `_transport_error_endpoint_io`.

@@ -425,13 +425,17 @@ int psp_net_stack_priority(void)
 	return priority < 0x10 ? 0x10 : priority > 0x6f ? 0x6f : priority;
 }
 
-/* keep word netpaceN: a thread above the game thread drops it to the
-bottom (0x70) for 1 ms every N ms while the PSP is on a network, wherever
-it is, so every thread under it runs, the Wi-Fi driver's included (no log
-names it). The hotspot hands the PSP ~38 packets a second in a game and
-its radio acknowledges them (Sheepdog01's queue and station counters,
-sierra-hw 38995031347), yet the tunnel reads 1-10: they are lost inside
-the PSP. A test: it costs the game thread about 1 ms in N */
+/* keep word netpaceN (on by default, netpace0 off): a thread above the game
+thread drops it to the bottom (0x70) for 1 ms every N ms while the PSP is
+on a network, so every thread under it runs. The Wi-Fi driver's threads
+(SceWlanMac, SceWlanHal) sit at 0x27, under the game thread's 0x20, and
+the firmware shares no time down the priorities: through a catch-up tick
+of 100-500 ms the driver can't empty the radio's receive buffer, and
+packets the radio already acknowledged are lost. That stalled the host's
+stream behind one missing segment and dropped the PSP from every public
+game within ~30 s. It costs the game thread at most 1 ms in N, less when
+the threads under it have nothing to do */
+#define NET_PACE_DEFAULT_MS 5
 static SceUID pace_game_thread = -1;
 static int pace_game_priority;
 static int pace_every_ms;
@@ -489,8 +493,9 @@ static void log_all_threads(const char *when)
 
 /* after each game tick (psp_platform.c's tick accounting): the thread list
 once the PSP is on a network, netpaceN's thread, and netyieldN (the game
-thread waits 1 ms once every N ms of its ticks, which in a heavy game is
-once a tick: netpace replaces it) */
+thread waits 1 ms once every N ms of its ticks; in a heavy game that is
+once a tick, too seldom for the driver, which is why netpace runs on a
+clock of its own) */
 void psp_net_tick(void)
 {
 	static int every_ms = -1, listed;
@@ -507,7 +512,7 @@ void psp_net_tick(void)
 	if (every_ms < 0)
 	{
 		every_ms = psp_keep_number("netyield", 0);
-		pace_every_ms = psp_keep_number("netpace", 0);
+		pace_every_ms = psp_keep_number("netpace", NET_PACE_DEFAULT_MS);
 		if (pace_every_ms > 0)
 		{
 			SceKernelThreadInfo info;

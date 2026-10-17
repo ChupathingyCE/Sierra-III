@@ -16,10 +16,9 @@ start saves both files and starts the game. Not shown when
 ms0:/halo/input.txt (a scripted run: the emulator) or ms0:/halo/nomenu.txt
 exists; the files are then read as they are, as before.
 
-The multiplayer build (mp4): its files are in ms0:/halomp, the maps still
-in ms0:/halo/maps (psp_paths.h), and it starts on the game's own main menu,
-where a network game is joined: the launch menu shows only if
-ms0:/halomp/menu.txt exists (for its keep words, or a local game). */
+The multiplayer build keeps its files in ms0:/halomp and its maps in
+ms0:/halo/maps (psp_paths.h); which screen it starts on is decided as for
+the campaign build. */
 #include <pspkernel.h>
 #include <pspctrl.h>
 #include <pspdebug.h>
@@ -526,10 +525,6 @@ void psp_menu(int build)
 
 	if (file_exists(DATA_ROOT "/input.txt") || file_exists(DATA_ROOT "/nomenu.txt"))
 		return;
-#ifdef PSP_MULTIPLAYER
-	if (!file_exists(DATA_ROOT "/menu.txt"))
-		return;
-#endif
 	int back = 0, dump_menu = -1;
 
 	scan_maps();

@@ -67,9 +67,23 @@ Off unless named; none changes play.
 - **Unknown errnos:** `fail()` and `succeed()` became macros over `fail_in` and `succeed_in` that carry the calling function's name (`__func__`), and every unknown errno is logged with the call and the thread, the first 32. It named errno 2 as the tunnel's `accept` with nothing waiting (harmless).
 - **The tunnel's packets by size** (`#tunnelreport`: `psp_streams.sizes`, `psp_tunnel_sizes`), in tcpdump's units, on a log line of their own every 10 s.
 
+## 8. The Wi-Fi driver gets time while online (`psp_net.c`, `dfa082e` and its follow-up)
+
+**Why:** the Wi-Fi driver's threads (`SceWlanMac`, `SceWlanHal`) sit at 0x27, under the game thread's 0x20, and the PSP gives no time to a lower priority while a higher one runs. A heavy public game's catch-up ticks run 100–500 ms without waiting, the driver's receive buffer overflows, and acknowledged packets are lost: the drop (`build_mpb4.md`).
+- **The change:** `pace_thread`, at 0x18, sleeps N ms, then (only while `wifi.connected`) moves the game thread to 0x70 for 1 ms and back. Its start is in `psp_net_tick`, the first tick on a network, which reads the game thread's own priority to restore.
+- **Keep word:** `netpaceN`; on by default at 5 (`NET_PACE_DEFAULT_MS`), `netpace0` off.
+- **What it changed [M]:** a public game played to the wall with the host's stream never behind (39009339059 run 2), where every run without it dropped within ~30 s.
+- **Also in `dfa082e`:** every thread the firmware lists, with its priority, logged once on a network (`log_all_threads`).
+- **Hot code:** none. `psp_net.c` is compiled only into the multiplayer build, and its per-tick call is inside `#ifdef PSP_MULTIPLAYER`.
+
+## 9. The launch menu's own check for the multiplayer build removed (`psp_menu.c`)
+
+The front door (b136) decides the first screen for both builds, so `#ifdef PSP_MULTIPLAYER` / `menu.txt` in `psp_menu()` became redundant (`review_frontdoor.md`). Until the front door is merged, `mp135` alone shows the launch menu at start unless `nomenu.txt` or `input.txt` is on the stick.
+
 ## Open
 
-- **The drop** (`build_mpb4.md`): the host's stream stalls behind one missing segment; full-size packets reach the tunnel far more rarely than smaller ones. Next: the access point's own counts, and the PSP's place against the antenna.
+- **`_transport_error_endpoint_io`** on the client's reliable endpoint (three times; once with a healthy stream).
+- netpace on the PSP-1000, and its cost in game time.
 - **KCP and a full heap:** `ikcp_malloc`'s NULL is written through (a crash in a 13-player game). Its allocations need a check or a reserve.
 - **A refused Wi-Fi join** isn't tried again until a socket is asked for.
 - The tick in a 12-player game, and why 30 biped updates a tick.
