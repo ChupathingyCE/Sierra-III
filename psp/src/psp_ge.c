@@ -16898,6 +16898,145 @@ static void stamp_build(const char *text)
 	}
 }
 
+static void screenshot(void);
+
+/* ---------- the loading screen (psp_loading.c drives it; psp_loading.h)
+
+The Xbox's loading picture (progress_bar.c, progress_bar_render), as far as
+it can be drawn without its loading.tga:
+- each frame starts black and the frame on the screen is drawn back over it
+  through a 4-tap blur, a little larger than the screen (texels 3 to 637 of
+  640 across a quad 1/128 wider and taller than the screen on each side) and
+  at 0.9, so the last picture zooms out and fades, a trail; above 0.9 of the
+  progress the trail's weight falls to 0 by the end;
+- over that, loading.tga times a soft band (a 128 x 16 mask, made in code)
+  that sweeps from the left to the right with the progress, at the
+  brightness sin(progress pi)^0.9, added. loading.tga is the disc's
+  (maps\loading.tga, which the Xbox copies to its utility drive at start-up);
+  the bake doesn't carry it yet, so that layer isn't drawn.
+On the PSP the blur's taps are 0.1 texel apart, so one bilinear tap stands
+for them [U]. The trail's source is whichever buffer is on the screen: the
+loading frames swap themselves, so each reads the one before; in the settle
+(the level's first view drawn with no tick) the veil draws the same trail
+opaque over the scene, so the view stays hidden and the screen ends on black,
+as the Xbox's did. "loadingplain": black frames, no trail; "loadshotsN": a
+screenshot every Nth loading frame (tests). */
+#include "psp_loading.h"
+
+int psp_keep_number(const char *prefix, int fallback);
+static int loading_on = -1, loading_shots = -1;
+static unsigned long loading_frames = 0;
+
+static unsigned int loading_front(void)
+{
+	/* the buffer on the screen: the one not being drawn */
+	return (unsigned int)draw_buffer == 0 ? FRAME_BYTES : 0;
+}
+
+/* the trail: the screen's picture, zoomed out a little and weighted, over
+nothing (src x weight + dst x 0), so it is opaque and needs no clear */
+static void loading_trail(float progress, int from_screen)
+{
+	struct trail_vertex { float u, v, x, y, z; } *v;
+	float weight = progress < 0.9f ? 0.9f : 0.9f - (progress - 0.9f) * 9.0f;
+	unsigned int fixed;
+	int strip, strips = SCREEN_WIDTH / 32;
+
+	if (loading_on < 0)
+	{
+		loading_on = !psp_keep("loadingplain");
+		loading_shots = psp_keep_number("loadshots", 0);
+	}
+	if (weight < 0.0f || !from_screen || !loading_on)
+		weight = 0.0f;
+	fixed = (unsigned int)(weight * 255.0f + 0.5f);
+	v = sceGuGetMemory(strips * 2 * sizeof(*v));
+	/* the Xbox's mapping, in the PSP's pixels: x' = 2.25 + (x + 1.875) x
+	634/645 and y' = (y + 1.0625) x 480/483.75 (its 640 x 480 scaled to 480
+	x 272), so the picture grows 1.7% across and 0.8% down a frame */
+	for (strip = 0; strip < strips; strip++)
+	{
+		float x0 = (float)(strip * 32), x1 = x0 + 32.0f;
+
+		v[2 * strip].u = 2.25f + (x0 + 1.875f) * (634.0f / 645.0f);
+		v[2 * strip].v = 1.0625f * (480.0f / 483.75f);
+		v[2 * strip].x = x0;
+		v[2 * strip].y = 0.0f;
+		v[2 * strip].z = 0.0f;
+		v[2 * strip + 1].u = 2.25f + (x1 + 1.875f) * (634.0f / 645.0f);
+		v[2 * strip + 1].v = (SCREEN_HEIGHT + 1.0625f) * (480.0f / 483.75f);
+		v[2 * strip + 1].x = x1;
+		v[2 * strip + 1].y = (float)SCREEN_HEIGHT;
+		v[2 * strip + 1].z = 0.0f;
+	}
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDepthMask(GU_TRUE);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexMode(GU_PSM_5650, 0, 0, 0);
+	sceGuTexImage(0, 512, 512, BUFFER_WIDTH, (void *)((unsigned int)sceGeEdramGetAddr() + loading_front()));
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuTexLevelMode(GU_TEXTURE_CONST, 0.0f);
+	sceGuTexFlush();
+	ge_blend(1);
+	/* undithered: the trail feeds on itself, and a dither would build up */
+	dither_set(0);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, fixed | (fixed << 8) | (fixed << 16), 0);
+	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, strips * 2, NULL, v);
+	/* as the frame's drawing expects them (buffer_state(0)) */
+	sceGuTexLevelMode(tex_level_mode, tex_bias);
+	ge_blend(0);
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuDepthMask(GU_FALSE);
+	sceGuEnable(GU_FOG);
+	loading_frames++;
+}
+
+/* the frame on the screen as the load begins: the buffer itself, which
+stays put while the loading frames draw into the other one and read it */
+const void *psp_ge_loading_capture(void)
+{
+	if (!ge_ready || frame_open)
+		return NULL;
+	loading_frames = 0;
+	return (const void *)((unsigned int)sceGeEdramGetAddr() + loading_front());
+}
+
+/* one whole frame of the load (phase 0), drawn and shown by itself: no game
+frame is open while the load runs */
+void psp_ge_loading_frame(const struct psp_loading_view *view)
+{
+	if (!ge_ready || frame_open || !view)
+		return;
+	sceGuStart(GU_DIRECT, display_list);
+	/* no picture to start from (a cold start): from black */
+	loading_trail(view->progress, view->captured != NULL);
+	stall_force = 1;
+	sceGuFinish();
+	sceGuSync(0, 0);
+	stall_force = 0;
+	if (loading_shots > 0 && loading_frames % (unsigned long)loading_shots == 1)
+		screenshot();
+	draw_buffer = sceGuSwapBuffers();
+}
+
+/* the settle (phase 1): over the level's first view, inside its open frame
+and before its swap; the world's see-through draws go first, so none lands
+on top */
+void psp_ge_loading_veil(const struct psp_loading_view *view)
+{
+	if (!frame_open || !view || PSP_ME_WORK())
+		return;
+	list_hud_phase();
+	loading_trail(view->progress, 1);
+	if (loading_shots > 0 && loading_frames % (unsigned long)loading_shots == 1)
+		psp_screenshot_requested = 1;
+}
+
 int psp_build_number(void);
 
 static void screenshot(void)
