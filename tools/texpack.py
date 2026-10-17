@@ -8,13 +8,13 @@ game finds a texture by the address of its bitmap_data in the tag window,
 which is fixed for a map built for the PSP (invader-build -X 0x09600000).
 
 usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means] [--no-glow-maps]
-       [--premultiplied-masks] [--showcase]
+       [--premultiplied-masks] [--showcase [--showcase-32 | --showcase-palettes]]
 
 File layout (little endian):
   header: 'PTX1', u32 count, u32 directory size
   directory, sorted by key: count x { u32 key (bitmap_data address),
-    u16 width, u16 height, u8 levels, u8 psm (5 = T8, 4 = T4; 3 = 8888 in
-    its own colours, --showcase), u8 clut (0 = 5650, 3 = 8888; 0xFF none),
+    u16 width, u16 height, u8 levels, u8 psm (5 = T8, 4 = T4; in its own colours,
+    --showcase: 3 = 8888, 0 = 5650), u8 clut (0 = 5650, 3 = 8888; 0xFF none),
     u8 flags (1 = has alpha), u32 offset, u32 size }
   tints, right after the directory: 'TNT1', u32 count, then count x
     { u32 shader tag address, u32 tint (ABGR) }, sorted by address: the
@@ -492,14 +492,34 @@ SHOWCASE = False    # --showcase: the main menu's pack at the most the GE can ta
 DIRECT_CLASSES = ('objects (soso)', 'sky', 'level (senv)')
 
 
-def direct_levels(small, tw, th, levels_wanted):
-    """a texture in its own colours, 32 bits a texel (GU_PSM_8888: bytes
-    r g b a), its levels swizzled as the T8 ones are, 16-byte rows"""
+SHOWCASE_32 = False  # --showcase-32: opaque maps in 32 bits too (for a 32-bit screen)
+SHOWCASE_PALETTES = False  # --showcase-palettes: full size, but every map on its palette
+BAYER = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16.0 - 0.5
+
+
+def to_5650(img):
+    """16-bit texels (GU_PSM_5650, red in the low bits), with a 4 x 4 ordered
+    dither: the GE's filter averages it back into the steps 5 and 6 bits
+    lose, where rounding alone would band a slow gradient (the sky's)"""
+    h, w = img.shape[:2]
+    noise = np.tile(BAYER, ((h + 3) // 4, (w + 3) // 4))[:h, :w]
+    def channel(c, bits):
+        steps = (1 << bits) - 1
+        return np.clip(np.floor(img[:, :, c].astype(np.float32) * steps / 255.0 + 0.5 + noise), 0, steps).astype(np.uint16)
+    return channel(0, 5) | (channel(1, 6) << 5) | (channel(2, 5) << 11)
+
+
+def direct_levels(small, tw, th, levels_wanted, wide):
+    """a texture in its own colours: 32 bits a texel (GU_PSM_8888: bytes
+    r g b a) when wide, else 16 (GU_PSM_5650); its levels swizzled as the
+    T8 ones are, 16-byte rows"""
     levels, w, h, img = [], tw, th, small
+    size = 4 if wide else 2
     while len(levels) < levels_wanted:
-        row, rows = level_bytes(w * 4, h)
+        row, rows = level_bytes(w * size, h)
         padded = np.zeros((rows, row), np.uint8)
-        padded[:h, :w * 4] = img.reshape(h, w * 4)
+        texels = img if wide else to_5650(img).astype('<u2').view(np.uint8)
+        padded[:h, :w * size] = texels.reshape(h, w * size)
         levels.append(swizzle_psp(padded.tobytes(), row, rows))
         if w <= 8 or h <= 8:
             break
@@ -554,14 +574,16 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     # the alpha (the shape), as the HUD's (psp_ge.c, meter_palette), and an
     # ordinary palette's entries are averages of both (b113_candidates.md #16)
     grid = (cls == 'ui/hud' and grey_meter(small)) or meter
-    if SHOWCASE and own_colours and cls in DIRECT_CLASSES and not grid and not own_levels:
+    if SHOWCASE and not SHOWCASE_PALETTES and own_colours and cls in DIRECT_CLASSES and not grid and not own_levels:
         dropped = 0
         while (b['w'] >> dropped) > tw and dropped < 12:
             dropped += 1
-        levels = direct_levels(small, tw, th, min(8, max(1, b['mips'] + 1 - dropped)))
+        alpha = bool(small[:, :, 3].min() < 255)
+        wide = alpha or SHOWCASE_32
+        levels = direct_levels(small, tw, th, min(8, max(1, b['mips'] + 1 - dropped)), wide)
         # clut 0xFF: no palette, so the runtime's palette reads pass it by
-        return dict(w=tw, h=th, levels=len(levels), clut=0xFF, alpha=bool(small[:, :, 3].min() < 255),
-                    data=b''.join(levels), psm=3)
+        return dict(w=tw, h=th, levels=len(levels), clut=0xFF, alpha=alpha, data=b''.join(levels),
+                    psm=3 if wide else 0)
     if grid:
         grid_off = grid_offset(small)
         idx, pal, alpha = grid_index(small, grid_off), grid_palette(grid_off), True
@@ -663,11 +685,18 @@ def main():
                     help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
     ap.add_argument('--showcase', action='store_true',
                     help='the main menu\'s pack: every map at its own size up to 512, objects, sky and level maps '
-                         'in 32-bit colour (ui.map; the levels never)')
+                         'in their own colours (ui.map; the levels never)')
+    ap.add_argument('--showcase-32', action='store_true',
+                    help='with --showcase: opaque maps in 32-bit colour too (by default 16-bit, dithered; '
+                         'the screen is 16-bit)')
+    ap.add_argument('--showcase-palettes', action='store_true',
+                    help='with --showcase: every map on a palette (256 colours), at its own size')
     a = ap.parse_args()
-    global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS, SHOWCASE
+    global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS, SHOWCASE, SHOWCASE_32, SHOWCASE_PALETTES
+    SHOWCASE_PALETTES = a.showcase_palettes
     PREMULTIPLIED_MASKS = a.premultiplied_masks
     SHOWCASE = a.showcase
+    SHOWCASE_32 = a.showcase_32
     HUD_CLUT4 = a.hud_clut4
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
@@ -815,11 +844,11 @@ def main():
     out += blob
     open(a.out, 'wb').write(out)
     if SHOWCASE:
-        own = [e for e in entries if e['psm'] == 3]
+        own = [e for e in entries if e['psm'] in (0, 3)]
         for e in sorted(own, key=lambda e: -len(e['data'])):
-            print('showcase: %s, %dx%d in 32-bit colour, %d levels, %d bytes' % (
-                e['name'], e['w'], e['h'], e['levels'], len(e['data'])), file=sys.stderr)
-        print('showcase: %d textures in 32-bit colour (%d bytes), every map at its own size up to 512' % (
+            print('showcase: %s, %dx%d in %d-bit colour, %d levels, %d bytes' % (
+                e['name'], e['w'], e['h'], 32 if e['psm'] == 3 else 16, e['levels'], len(e['data'])), file=sys.stderr)
+        print('showcase: %d textures in their own colours (%d bytes), every map at its own size up to 512' % (
             len(own), sum(len(d) for d in {id(e['data']): e['data'] for e in own}.values())), file=sys.stderr)
     print('%s: %d textures, %d bytes; skipped %s' % (a.out, len(entries), len(out), skipped))
 

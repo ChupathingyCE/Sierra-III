@@ -49,9 +49,11 @@ The rule (Sierra-III `CLAUDE.md`): ui.map is a high-fidelity showcase, exempt fr
 
 - **Its own pack, `ui_showcase.ptex`** (`texpack.py --showcase`; `bake.py` writes it beside `ui.ptex` for ui only):
   - every map at its own size, up to the GE's 512 a side (no halving, no 128 px object cap, no 16-colour downgrade);
-  - objects, sky and level maps in **32-bit colour** (`GU_PSM_8888`, no palette), their levels swizzled as the 8-bit ones are. The glow maps and the detail-folded bases too.
+  - objects, sky and level maps in **their own colours**, no palette: **16-bit** (`GU_PSM_5650`) with a 4 × 4 ordered dither baked in where the map is opaque (the screen is 16-bit, so 32 bits would show nothing more, and the GE's filter averages the dither into the steps 5 and 6 bits lose); **32-bit** (`GU_PSM_8888`) where it has an alpha, which 16-bit formats can't hold smoothly. Their levels swizzled as the 8-bit ones are. The glow maps and the detail-folded bases too. `--showcase-32` puts the opaque ones in 32 bits as well, for a 32-bit screen one day. A first bake with everything in 32 bits (showcase1) drew a 3.7 MB set into 3.6 MB of cache: the menu's widgets never loaded.
   - Kept on palettes: multipurpose maps (the change colour's mask reads their palette), lightmaps (the object lighting samples them), the HUD and menu sheets (meters), detail maps (the detail pass's grey). Their size still rises to their own.
   - The bake's log lists every 32-bit texture with its size (`showcase: …`).
+- **`ui_showcase_pal.ptex`** beside it (`--showcase --showcase-palettes`): the same sizes on 256-colour palettes, for the comparison; keep word **`showcasepal`** draws the menu from it.
+- **`psp_geo.c`**: on the showcase map the geometry cache carved from the texture RAM takes the pack's size and 64 KB (ui's pack is about 130 KB), not 1 MB, so about 800 KB more is left to the textures.
 - **`psp_tex.c`**: a pack candidate before the others, `<map>_showcase.ptex`, tried only when the map is `ui` and `noshowcase` isn't kept. A stick without it falls back to `ui.ptex`.
   - `psp_tex_bind` draws a texture in its own colours: no palette loaded, the buffer width in pixels from 2 or 4 bytes a texel (`DIRECT`, `TEXEL_BYTES`).
   - The palette readers (`psp_tex_palette`, `psp_tex_palette16`, `psp_tex_average`) pass such a texture by (its `clut` byte is 0xFF), so the meters, masks and the flashlight's average fall back as they do for a texture with no palette of the kind they want. The lightmap samplers already took only 8- and 4-bit textures.

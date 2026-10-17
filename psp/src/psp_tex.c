@@ -680,9 +680,10 @@ there is one, the same textures baked another way (lightmaps at half size),
 so one game runs either data set; "assetdetail", <map>_detail.ptex, a pack
 baked with some classes at full size (texpack.py --full-detail fp,...).
 Before them, the main menu's ui_showcase.ptex (texpack.py --showcase: every
-map at its own size, the objects and the sky in 32-bit colour), unless
+map at its own size, the objects and the sky in their own colours), unless
 "noshowcase": the menu is the hardware's showcase (CLAUDE.md), and the pack
-is read on ui.map alone, so the levels never pay for it.
+is read on ui.map alone, so the levels never pay for it. "showcasepal":
+ui_showcase_pal.ptex instead, the same sizes on 256-colour palettes.
 Last, the usual <map>.ptex. Returns 0 for a candidate whose keep word is off */
 #define PACK_CANDIDATES 4
 static int pack_candidate(const char *name, int which, char *path, int size, const char **word)
@@ -694,8 +695,8 @@ static int pack_candidate(const char *name, int which, char *path, int size, con
 	{
 		if (strcmp(name, "ui") != 0 || psp_keep("noshowcase"))
 			return 0;
-		*word = "showcase";
-		snprintf(path, size, "ms0:/halo/maps/%s_showcase.ptex", name);
+		*word = psp_keep("showcasepal") ? "showcasepal" : "showcase";
+		snprintf(path, size, "ms0:/halo/maps/%s_%s.ptex", name, psp_keep("showcasepal") ? "showcase_pal" : "showcase");
 	}
 	else if (which < 3)
 	{
