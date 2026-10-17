@@ -180,13 +180,74 @@ def psnr(a, b):
     return 99.0 if mse == 0 else 10 * math.log10(255.0 ** 2 / mse)
 
 
+def kmeans(points, k, iterations, seed=0):
+    """(centres k x d, labels): Lloyd's k-means from a k-means++ start, numpy
+    only, the same for a given seed on every machine. It stands where
+    scikit-learn's KMeans(n_init=1, random_state=seed) stood: k-means++ picks
+    each next centre with probability by its squared distance to the nearest
+    already chosen, taking the best of 2 + log(k) candidates as scikit-learn
+    does, then each round moves every centre to its points' mean. A centre
+    left with no points takes the point farthest from its own centre, so all
+    k entries stay in use"""
+    rng = np.random.RandomState(seed)
+    x = np.asarray(points, np.float64)
+    n = len(x)
+    xx = (x * x).sum(1)
+    trials = 2 + int(math.log(k))
+    centres = np.empty((k, x.shape[1]))
+    centres[0] = x[rng.randint(n)]
+    closest = ((x - centres[0]) ** 2).sum(1)
+    for c in range(1, k):
+        total = closest.sum()
+        if total <= 0:
+            centres[c:] = x[rng.randint(n, size=k - c)]
+            break
+        picks = np.searchsorted(np.cumsum(closest), rng.random_sample(trials) * total)
+        picks = np.minimum(picks, n - 1)
+        cand = x[picks]
+        tried = np.minimum(closest[None, :], xx[None, :] - 2.0 * cand @ x.T + (cand * cand).sum(1)[:, None])
+        best = int(np.argmin(tried.sum(1)))
+        centres[c] = x[picks[best]]
+        closest = tried[best]
+    labels = nearest_centre(x, centres)
+    for _ in range(iterations):
+        counts = np.bincount(labels, minlength=k)
+        sums = np.stack([np.bincount(labels, x[:, j], minlength=k) for j in range(x.shape[1])], 1)
+        moved = centres.copy()
+        used = counts > 0
+        moved[used] = sums[used] / counts[used, None]
+        if not used.all():
+            far = np.argsort(((x - moved[labels]) ** 2).sum(1))[::-1]
+            moved[~used] = x[far[:int((~used).sum())]]
+        new_labels = nearest_centre(x, moved)
+        centres = moved
+        if np.array_equal(new_labels, labels):
+            break
+        labels = new_labels
+    return centres, labels
+
+
+def nearest_centre(points, centres, chunk=16384):
+    """each point's nearest centre, in chunks: |c|^2 - 2 x.c (|x|^2 is the
+    same for every centre, so left out), in 32-bit floats: colours and Oklab
+    values are small enough that the order of the distances survives"""
+    x = np.asarray(points, np.float32)
+    c = np.asarray(centres, np.float32)
+    cc = (c * c).sum(1)
+    out = np.empty(len(x), np.int64)
+    for at in range(0, len(x), chunk):
+        d = x[at:at + chunk] @ (-2.0 * c.T)
+        d += cc
+        out[at:at + chunk] = np.argmin(d, 1)
+    return out
+
+
 def quantize(img, colors):
     """CLUT quantization; returns (indices HxW, palette Nx4 uint8, reconstructed
     RGBA, has_alpha).  Alpha is treated as data, not transparency: Halo's
     environment textures keep blend/specular masks in alpha and need the RGB
-    under alpha 0, so RGBA is clustered as a 4-D point (k-means, seeded by
-    k-means++ on a sample).  Opaque textures cluster RGB only."""
-    from sklearn.cluster import KMeans
+    under alpha 0, so RGBA is clustered as a 4-D point (kmeans() above,
+    seeded by k-means++ on a sample).  Opaque textures cluster RGB only."""
     h, w = img.shape[:2]
     has_alpha = img[:, :, 3].min() < 255
     ch = 4 if has_alpha else 3
@@ -199,9 +260,10 @@ def quantize(img, colors):
             np.argmin(((pts[:, None, :] - pal[None]) ** 2).sum(2), 1)
     else:
         sample = pts if len(pts) <= 40000 else pts[np.random.RandomState(0).choice(len(pts), 40000, replace=False)]
-        km = KMeans(n_clusters=colors, n_init=1, max_iter=25, random_state=0).fit(sample)
-        pal = km.cluster_centers_
-        idx = km.predict(pts)
+        # up to 60 rounds (scikit-learn's call stopped at 25): fewer palettes
+        # end worse than its did (8 of 48 against 11 at 25, test textures)
+        pal, _ = kmeans(sample, colors, 60)
+        idx = nearest_centre(pts, pal)
     pal = np.clip(np.rint(pal), 0, 255).astype(np.uint8)
     if ch == 3:
         pal = np.concatenate([pal, np.full((len(pal), 1), 255, np.uint8)], 1)

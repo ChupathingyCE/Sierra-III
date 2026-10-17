@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from halomap import Defs, CacheMap
 from assets import fo
 import refs
-from bitmap_bake import decode, downscale, quantize, swizzle_psp, target, psnr, decode_dxt, decode_plain, BPP
+from bitmap_bake import decode, downscale, quantize, kmeans, swizzle_psp, target, psnr, decode_dxt, decode_plain, BPP
 from assets import FORMATS, TYPES, BTYPES, USAGES
 import seethrough
 
@@ -577,11 +577,41 @@ def oklab_to_srgb(lab):
     return c * 255.0
 
 
+# TEXPACK_KMEANS_COMPARE=1 (the new bake's proof, docs/bake_changes.md): each
+# palette also made by scikit-learn's KMeans as the bake did before, where it
+# is installed, and both errors logged in Oklab, so a bake shows texture by
+# texture whether the numpy k-means is ever worse
+KMEANS_COMPARE = bool(os.environ.get('TEXPACK_KMEANS_COMPARE'))
+
+
+def kmeans_compare(tag, img, colors, new_rec):
+    try:
+        from sklearn.cluster import KMeans
+    except ImportError:
+        return
+    has_alpha = img[:, :, 3].min() < 255
+    ch = 4 if has_alpha else 3
+    pts = img.reshape(-1, 4)[:, :ch].astype(np.float32)
+    if len(np.unique(pts, axis=0)) <= colors:
+        return
+    sample = pts if len(pts) <= 40000 else pts[np.random.RandomState(0).choice(len(pts), 40000, replace=False)]
+    km = KMeans(n_clusters=colors, n_init=1, max_iter=25, random_state=0).fit(sample)
+    old = np.clip(np.rint(km.cluster_centers_), 0, 255)[km.predict(pts)]
+    want = srgb_to_oklab(pts[:, :3])
+
+    def error(rec):
+        e = ((srgb_to_oklab(rec[:, :3].astype(np.float32)) - want) ** 2).sum(1)
+        if has_alpha:
+            e = e + ((rec[:, 3].astype(np.float32) - pts[:, 3]) / 255.0) ** 2
+        return float(np.sqrt(e).mean())
+    print('kmeans compare: %s, %d colours, Oklab error old %.5f new %.5f' % (
+        tag, colors, error(old), error(new_rec.reshape(-1, 4)[:, :ch])))
+
+
 def fit_palette(img, colors):
     """(palette Nx4 uint8, has_alpha): k-means in Oklab (and alpha), as
     quantize does in RGB; a texture with no more colours than entries keeps
     its own"""
-    from sklearn.cluster import KMeans
     has_alpha = bool(img[:, :, 3].min() < 255)
     pts = img.reshape(-1, 4).astype(np.float32)
     if not has_alpha:
@@ -594,8 +624,7 @@ def fit_palette(img, colors):
         feats = srgb_to_oklab(sample[:, :3])
         if has_alpha:
             feats = np.concatenate([feats, sample[:, 3:4] / 255.0], 1)
-        km = KMeans(n_clusters=colors, n_init=1, max_iter=60, random_state=0).fit(feats)
-        centres = km.cluster_centers_
+        centres, _ = kmeans(feats, colors, 60)
         rgb = oklab_to_srgb(centres[:, :3])
         pal = np.concatenate([rgb, centres[:, 3:4] * 255.0], 1) if has_alpha else rgb
     pal = np.clip(np.rint(pal), 0, 255).astype(np.uint8)
@@ -756,11 +785,15 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
             quality_note(cls, blurred_psnr(small, as_drawn(old_pal, alpha)[old_idx]), blurred_psnr(small, rec))
     elif not grid and not own_levels:
         idx, pal, rec, alpha = quantize(small, 256)
+        if KMEANS_COMPARE:
+            kmeans_compare(b['tag'], small, 256, rec)
     # 16 colours where that is no worse than the 16-bit frame buffer itself
     # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
     bits = 8
     if not grid and tw >= 32 and th >= 8 and cls not in ('level (senv)', 'lightmap', 'sky', 'detail'):
         idx4, pal4, rec4, _ = quantize(small, 16)
+        if KMEANS_COMPARE:
+            kmeans_compare(b['tag'], small, 16, rec4)
         reference = small.copy()
         reference[:, :, 0] &= 0xF8
         reference[:, :, 1] &= 0xFC
