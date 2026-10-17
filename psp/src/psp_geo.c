@@ -279,6 +279,29 @@ static void poll(void)
 the animation cache (psp_anim.c), whose data shares this pack (invader-build
 -M). On the game thread, like the geometry cache's own reads; a geometry read
 in flight ("geoasync") is finished first. The bytes read, or a negative error */
+/* the seek and its read under one hold of the stick's lock (psp_trace.c);
+"geolockeach": the lock taken per call, as before */
+void psp_stick_hold(SceUID fd);
+void psp_stick_release(void);
+static int geo_lock_each = -1;
+static int geo_holding = 0;
+
+static void stick_hold_begin(void)
+{
+	if (geo_lock_each < 0)
+		geo_lock_each = psp_keep("geolockeach") != 0;
+	geo_holding = !geo_lock_each;
+	if (geo_holding)
+		psp_stick_hold(pack);
+}
+
+static void stick_hold_end(void)
+{
+	if (geo_holding)
+		psp_stick_release();
+	geo_holding = 0;
+}
+
 int psp_geo_pack_read(unsigned int address, void *to, unsigned int size)
 {
 	if (pack < 0 || address < EXTERNAL_BASE || address - EXTERNAL_BASE + size > pack_size)
@@ -290,9 +313,15 @@ int psp_geo_pack_read(unsigned int address, void *to, unsigned int size)
 		sceIoWaitAsync(pack, &result);
 		complete(result);
 	}
-	if (sceIoLseek32(pack, HEADER_BYTES + (address - EXTERNAL_BASE), PSP_SEEK_SET) < 0)
-		return -1;
-	return sceIoRead(pack, to, size);
+	{
+		int got;
+
+		stick_hold_begin();
+		got = sceIoLseek32(pack, HEADER_BYTES + (address - EXTERNAL_BASE), PSP_SEEK_SET) < 0 ? -1 :
+			sceIoRead(pack, to, size);
+		stick_hold_end();
+		return got;
+	}
 }
 
 /* starts the next queued read, if none is in flight and the block has room */
@@ -344,8 +373,10 @@ static int read_entry_now(struct geo_entry *e)
 	back to memory now rather than over the new bytes later */
 	sceKernelDcacheWritebackInvalidateRange((void *)at, alignment(e->size));
 	start = sceKernelGetSystemTimeLow();
+	stick_hold_begin();
 	got = sceIoLseek32(pack, HEADER_BYTES + (e->address - EXTERNAL_BASE), PSP_SEEK_SET) < 0 ? -1 :
 		sceIoRead(pack, (void *)at, e->size);
+	stick_hold_end();
 	if (got != (int)e->size)
 	{
 		if (failures++ < 8)

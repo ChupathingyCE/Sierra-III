@@ -541,6 +541,21 @@ static void stick_give(void)
 }
 
 /* the heartbeat's report: one line, the threads by name */
+/* a seek and the read it positions, under one hold of the lock: taken per
+call, another thread's write could slip in between and the read wait twice
+(a geometry read waited behind a log write, then again behind the log's
+close). The lock is re-entrant, so the wrapped calls inside keep this
+hold's name */
+void psp_stick_hold(SceUID fd)
+{
+	stick_take_op(kind_of_fd(fd), "read", path_of_fd(fd));
+}
+
+void psp_stick_release(void)
+{
+	stick_give();
+}
+
 void psp_stick_report(void)
 {
 	char line[400];
