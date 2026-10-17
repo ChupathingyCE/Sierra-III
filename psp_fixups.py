@@ -19506,6 +19506,130 @@ FIXES_137["source/main/main.c#watermark"] = [
 	if (main_menu_is_active())"""),
 ]
 
+# ---------- FIXES_FRONT: the front end (docs/plan_front_end.md)
+FIXES_FRONT = {}
+
+# The front door: unless the launch menu was asked for (L held, menu.txt) or
+# the run is scripted, the game starts on its main menu. init.txt still holds
+# the launch menu's last map_name, which would take the game straight into
+# that level, so those lines are skipped; the rest of init.txt runs.
+FIXES_FRONT["source/main/console.c#frontdoor"] = [
+("""			strtok(buffer, "\\r\\n\\t");
+""", """			strtok(buffer, "\\r\\n\\t");
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_FRONT) */
+			{
+				extern int psp_front_door_main_menu(void);
+
+				if (psp_front_door_main_menu() && !strncmp(buffer, "map_name", 8))
+				{
+					error(_error_log, "init: %s (skipped: the game starts on its main menu)", buffer);
+					continue;
+				}
+			}
+#endif
+"""),
+]
+
+# The saved-game check the main menu waits on: no menu input until it ends
+# (ui_widget.c, perform_filesystem_initialization). On the Xbox it runs under
+# the intro movie; with no movie the wait shows, about a minute on Sheepdog01's
+# PSP-1000 (test 1). These lines time its parts, so the fix goes where the
+# time is: the Memory Stick's free-space count, the saved games' scan, or the
+# profiles' reads. One line each, once a start-up.
+FIXES_FRONT["source/saved games/saved_game_files.c#checktimes"] = [
+("""	short result = _saved_game_file_system_ok;
+
+	if (GetDiskFreeSpaceEx(""", """	short result = _saved_game_file_system_ok;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT) */
+	extern unsigned long psp_microseconds(void);
+	extern void platform_log(const char *format, ...);
+	unsigned long psp_check_start = psp_microseconds(), psp_scan_start = 0;
+#endif
+
+	if (GetDiskFreeSpaceEx("""),
+("""	else
+	{
+		HANDLE find_handle = XFindFirstSaveGame(""", """	else
+	{
+#ifdef HALO_PSP
+		psp_scan_start = psp_microseconds();
+		platform_log("front door: saved-game check: the free-space query took %lu ms",
+			(psp_scan_start - psp_check_start) / 1000);
+#endif
+		HANDLE find_handle = XFindFirstSaveGame("""),
+("""	return result;
+}
+
+boolean saved_game_file_name_unique(""", """#ifdef HALO_PSP
+	if (psp_scan_start)
+		platform_log("front door: saved-game check: the saved games' scan took %lu ms (result %d)",
+			(psp_microseconds() - psp_scan_start) / 1000, (int)result);
+#endif
+	return result;
+}
+
+boolean saved_game_file_name_unique("""),
+]
+FIXES_FRONT["source/interface/ui_widget.c#checktimes"] = [
+("""	widget_globals.filesystem_check_result = saved_game_perform_file_system_checks();
+	if (!widget_globals.filesystem_check_result)
+	{
+		word number_of_profiles = 1;
+		long profile_index;
+
+		playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+		player_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index, TRUE);
+		player_ui_get_player1_last_used_profile_index();
+	}
+""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT) */
+	extern unsigned long psp_microseconds(void);
+	extern void platform_log(const char *format, ...);
+	unsigned long psp_check_start = psp_microseconds();
+#endif
+	widget_globals.filesystem_check_result = saved_game_perform_file_system_checks();
+	if (!widget_globals.filesystem_check_result)
+	{
+		word number_of_profiles = 1;
+		long profile_index;
+#ifdef HALO_PSP
+		unsigned long psp_profiles_start = psp_microseconds();
+#endif
+
+		playlist_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index);
+		player_profiles_enumerate_available_to_local_player_index(NONE, &number_of_profiles, &profile_index, TRUE);
+		player_ui_get_player1_last_used_profile_index();
+#ifdef HALO_PSP
+		platform_log("front door: saved-game check: the profiles' reads took %lu ms",
+			(psp_microseconds() - psp_profiles_start) / 1000);
+#endif
+	}
+#ifdef HALO_PSP
+	platform_log("front door: saved-game check: %lu ms in all; the menu takes input from here",
+		(psp_microseconds() - psp_check_start) / 1000);
+#endif
+"""),
+]
+
+# The main menu's saved-game check rewrote all 26 default multiplayer game
+# variants on every start-up (z:\saved\playlists\default_playlist\NN: the
+# folder emptied, the file created and written). z: is the Xbox's scratch
+# partition on its hard drive; on the PSP it is the Memory Stick, and that
+# rewrite was nearly all of the ~54 s the menu took no input on Sheepdog01's
+# PSP-1000 (frontdoor3's timers: the profiles' reads 54,195 ms). A variant
+# whose file already holds the same bytes is left as it is, so only a fresh
+# stick writes them, once. "variantswrite" writes them every time, as before.
+FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
+('\t\t\t_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\\\saved\\\\playlists\\\\default_playlist\\\\%02d", profile_index);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\tdirectory_create_or_delete_contents(path);\n\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\n\t\t\tdisplay_name = unicode_string_list_get_string(\n\t\t\t\tstring_list_index,\n\t\t\t\t(short)profile_index);\n\n\t\t\tcsmemcpy(\n\t\t\t\tblock,\n\t\t\t\t&variant,\n\t\t\t\tsizeof(struct game_variant));\n\t\t\tustrncpy(\n\t\t\t\t(wchar_t *)block,\n\t\t\t\tdisplay_name,\n\t\t\t\tMAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);\n\t\t\t((struct game_variant *)block)->human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;\n\t\t\t((struct game_variant *)block)->flags |= (short)(profile_index << 8);\n\t\t\tsaved_game_file_generate_checksum(\n\t\t\t\tblock,\n\t\t\t\tPLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,\n\t\t\t\t(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));\n\n\t\t\tif (file_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\tfile_create(&file) &&\n\t\t\t\tfile_open(&file, FLAG(_permission_write_bit)) &&\n\t\t\t\tfile_set_position(&file, 0))\n\t\t\t{\n\t\t\t\tfile_written = file_write(&file, sizeof(block), block);\n\t\t\t\tfile_close(&file);\n\t\t\t}\n\n',
+ '#ifdef HALO_PSP\n\t\t\t/* psp_fixups.py (FIXES_FRONT): the folder emptied and the file\n\t\t\twritten only when the file on the stick doesn\'t already hold\n\t\t\tthese bytes. Only the checksummed part is ever read back (the\n\t\t\trest of the block is whatever the stack held), so that\'s the\n\t\t\tpart compared */\n\t\t\t_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\\\saved\\\\playlists\\\\default_playlist\\\\%02d", profile_index);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\t{\n\t\t\t\tsize_t directory_length = strlen(path);\n\n\t\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\n\t\t\t\tdisplay_name = unicode_string_list_get_string(\n\t\t\t\t\tstring_list_index,\n\t\t\t\t\t(short)profile_index);\n\n\t\t\t\tcsmemcpy(\n\t\t\t\t\tblock,\n\t\t\t\t\t&variant,\n\t\t\t\t\tsizeof(struct game_variant));\n\t\t\t\tustrncpy(\n\t\t\t\t\t(wchar_t *)block,\n\t\t\t\t\tdisplay_name,\n\t\t\t\t\tMAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);\n\t\t\t\t((struct game_variant *)block)->human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;\n\t\t\t\t((struct game_variant *)block)->flags |= (short)(profile_index << 8);\n\t\t\t\tsaved_game_file_generate_checksum(\n\t\t\t\t\tblock,\n\t\t\t\t\tPLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,\n\t\t\t\t\t(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));\n\n\t\t\t\tif (!psp_keep("variantswrite") &&\n\t\t\t\t\tfile_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\t\tfile_exists(&file) &&\n\t\t\t\t\tfile_open(&file, FLAG(_permission_read_bit)))\n\t\t\t\t{\n\t\t\t\t\tbyte existing[SAVED_GAME_FILE_BLOCK_SIZE];\n\n\t\t\t\t\tif (file_read(&file, sizeof(existing), existing) &&\n\t\t\t\t\t\t!csmemcmp(existing, block, PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE + sizeof(XCALCSIG_SIGNATURE)))\n\t\t\t\t\t{\n\t\t\t\t\t\tfile_written = TRUE;\n\t\t\t\t\t\tpsp_variants_kept++;\n\t\t\t\t\t}\n\t\t\t\t\tfile_close(&file);\n\t\t\t\t}\n\n\t\t\t\tif (!file_written)\n\t\t\t\t{\n\t\t\t\t\tpath[directory_length] = 0;\n\t\t\t\t\tdirectory_create_or_delete_contents(path);\n\t\t\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\t\t\tif (file_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\t\t\tfile_create(&file) &&\n\t\t\t\t\t\tfile_open(&file, FLAG(_permission_write_bit)) &&\n\t\t\t\t\t\tfile_set_position(&file, 0))\n\t\t\t\t\t{\n\t\t\t\t\t\tfile_written = file_write(&file, sizeof(block), block);\n\t\t\t\t\t\tfile_close(&file);\n\t\t\t\t\t}\n\t\t\t\t}\n\t\t\t}\n#else\n\t\t\t_snprintf(path, MAXIMUM_FILENAME_LENGTH, "z:\\\\saved\\\\playlists\\\\default_playlist\\\\%02d", profile_index);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\t\t\tdirectory_create_or_delete_contents(path);\n\t\t\tcsstrncat(path, "\\\\blam.lst", MAXIMUM_FILENAME_LENGTH);\n\t\t\tpath[MAXIMUM_FILENAME_LENGTH] = 0;\n\n\t\t\tdisplay_name = unicode_string_list_get_string(\n\t\t\t\tstring_list_index,\n\t\t\t\t(short)profile_index);\n\n\t\t\tcsmemcpy(\n\t\t\t\tblock,\n\t\t\t\t&variant,\n\t\t\t\tsizeof(struct game_variant));\n\t\t\tustrncpy(\n\t\t\t\t(wchar_t *)block,\n\t\t\t\tdisplay_name,\n\t\t\t\tMAXIMUM_GAME_VARIANT_NAME_LENGTH - 1);\n\t\t\t((struct game_variant *)block)->human_readable_game_description[MAXIMUM_GAME_VARIANT_NAME_LENGTH - 1] = 0;\n\t\t\t((struct game_variant *)block)->flags |= (short)(profile_index << 8);\n\t\t\tsaved_game_file_generate_checksum(\n\t\t\t\tblock,\n\t\t\t\tPLAYLIST_PROFILE_CHECKSUM_DATA_SIZE,\n\t\t\t\t(XCALCSIG_SIGNATURE *)(block + PLAYLIST_PROFILE_CHECKSUM_DATA_SIZE));\n\n\t\t\tif (file_reference_create_from_path(&file, path, FALSE) &&\n\t\t\t\tfile_create(&file) &&\n\t\t\t\tfile_open(&file, FLAG(_permission_write_bit)) &&\n\t\t\t\tfile_set_position(&file, 0))\n\t\t\t{\n\t\t\t\tfile_written = file_write(&file, sizeof(block), block);\n\t\t\t\tfile_close(&file);\n\t\t\t}\n\n#endif\n'),
+('\t\tlong profile_index;\n\n\t\tfor (profile_index = 0;\n\t\t\tprofile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES;\n\t\t\tprofile_index++)',
+ '\t\tlong profile_index;\n#ifdef HALO_PSP\n\t\textern unsigned long psp_microseconds(void);\n\t\textern void platform_log(const char *format, ...);\n\t\textern int psp_keep(const char *name);\n\t\tunsigned long psp_variants_start = psp_microseconds();\n\t\tlong psp_variants_kept = 0;\n#endif\n\n\t\tfor (profile_index = 0;\n\t\t\tprofile_index < NUMBER_OF_DEFAULT_PLAYLIST_PROFILES;\n\t\t\tprofile_index++)'),
+('\t\tsaved_game_files_notify_memory_units_changed();\n\t}\n\telse\n\t{\n\t\terror(',
+ '#ifdef HALO_PSP\n\t\tplatform_log("front door: the default game variants: %ld already on the stick, %ld written (%lu ms)",\n\t\t\tpsp_variants_kept, (long)NUMBER_OF_DEFAULT_PLAYLIST_PROFILES - psp_variants_kept,\n\t\t\t(psp_microseconds() - psp_variants_start) / 1000);\n#endif\n\t\tsaved_game_files_notify_memory_units_changed();\n\t}\n\telse\n\t{\n\t\terror('),
+]
+
 # The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
@@ -20128,7 +20252,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items())):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items())):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
