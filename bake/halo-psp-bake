@@ -2,25 +2,32 @@
 # halo-psp-bake: the one-shot bake (bake.py says what it does).
 #   ./halo-psp-bake <Halo disc image or maps folder> <output folder> [options]
 # First run: makes a Python environment beside this script (.venv) with the
-# libraries the texture and decal bakes need (numpy, Pillow, shapely,
-# triangle, scikit-learn), and an internet connection that first time.
+# libraries the texture and decal bakes need (numpy, Pillow, shapely), and
+# an internet connection that first time.
 #
-# Which Python: one from 3.9 to 3.13. The decal bake's "triangle" has no
-# ready-made package for 3.14 yet, and its source no longer builds there
-# (Sheepdog01's CachyOS, b106). So the newest of python3.13 ... python3.9 found
-# is used, then python3 if it is one of them; failing that, uv (if it is
-# installed) fetches a Python 3.12 for the environment alone.
+# Which Python: one from 3.9 to 3.14 (all three libraries have ready-made
+# packages for each). The newest of python3.14 ... python3.9 found is used,
+# then python3 if it is one of them; failing that, uv (if it is installed)
+# fetches a Python 3.12 for the environment alone.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$HERE/.venv"
-PACKAGES=(numpy pillow shapely triangle scikit-learn)
+PACKAGES=(numpy pillow shapely)
+# --compare-old (the new bake's proof) also makes everything as the bake did
+# before, with the two libraries it no longer needs
+# (Triangle has no package for Python 3.14, so the proof's environment is
+# made from 3.13 or older)
+COMPARE=""
+for argument in "$@"; do [ "$argument" = --compare-old ] && COMPARE=1; done
+[ -n "$COMPARE" ] && PACKAGES+=(scikit-learn triangle)
 
-usable() { "$1" -c 'import sys; sys.exit(0 if (3, 9) <= sys.version_info[:2] <= (3, 13) else 1)' 2>/dev/null; }
+usable() { "$1" -c 'import sys; sys.exit(0 if (3, 9) <= sys.version_info[:2] <= (3, 14) else 1)' 2>/dev/null; }
 
 if [ ! -x "$VENV/bin/python" ]; then
   echo "halo-psp-bake: first run, setting up $VENV"
   PYTHON=""
-  for candidate in python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+  for candidate in python3.14 python3.13 python3.12 python3.11 python3.10 python3.9 python3; do
+    [ -n "$COMPARE" ] && [ "$candidate" = python3.14 ] && continue
     if command -v "$candidate" >/dev/null && usable "$candidate"; then
       PYTHON="$candidate"
       break
@@ -36,16 +43,18 @@ if [ ! -x "$VENV/bin/python" ]; then
     "$VENV/bin/python" -m pip install --quiet --upgrade pip || failed "updating pip failed"
     "$VENV/bin/python" -m pip install --quiet "${PACKAGES[@]}" || failed "installing ${PACKAGES[*]} failed"
   elif [ -n "$UV" ]; then
-    echo "halo-psp-bake: no Python 3.9-3.13 here; uv fetches a Python 3.12 for the bake alone"
+    echo "halo-psp-bake: no Python 3.9-3.14 here; uv fetches a Python 3.12 for the bake alone"
     "$UV" venv --python 3.12 "$VENV" || failed "uv venv failed"
     "$UV" pip install --python "$VENV/bin/python" "${PACKAGES[@]}" || failed "installing ${PACKAGES[*]} failed"
   else
-    echo "halo-psp-bake: the bake needs Python 3.9 to 3.13 (\"triangle\" doesn't build on 3.14 yet), and this"
+    echo "halo-psp-bake: the bake needs Python 3.9 to 3.14, and this"
     echo "system has $(python3 --version 2>&1 || echo 'no python3'). The simplest way: install uv, which fetches one"
     echo "for the bake alone, then run this again:"
     echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
     exit 1
   fi
+elif [ -n "$COMPARE" ] && ! "$VENV/bin/python" -c 'import sklearn, triangle' 2>/dev/null; then
+  "$VENV/bin/python" -m pip install --quiet scikit-learn triangle || { echo "halo-psp-bake: --compare-old: installing scikit-learn and triangle failed"; exit 1; }
 fi
 # the bundled Invader runs against the libraries beside it
 if ! LD_LIBRARY_PATH="$HERE/invader/lib" "$HERE/invader/bin/invader-info" --help >/dev/null 2>&1; then

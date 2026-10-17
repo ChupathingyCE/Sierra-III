@@ -5,10 +5,8 @@ map files the PSP build reads. Nothing from the game is included here.
 
 ## What you need
 
-- A Linux PC (x86-64) with Python 3.9 to 3.13 (`python3 -m venv` must work;
-  on Debian/Ubuntu: `sudo apt install python3-venv`). Python 3.14 alone won't
-  do yet: the decal bake's `triangle` doesn't build there. On a system whose
-  only Python is 3.14 (a current Arch or CachyOS), install
+- A Linux PC (x86-64) with Python 3.9 to 3.14 (`python3 -m venv` must work;
+  on Debian/Ubuntu: `sudo apt install python3-venv`). Without one, install
   [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`):
   the script then has uv fetch a Python 3.12 for the bake alone.
 - The bundled Invader needs glibc 2.39 or later (Ubuntu 24.04, Fedora 40, a

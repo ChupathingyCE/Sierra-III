@@ -20,6 +20,8 @@ the menus' ui.map):
   5. bakes the level's wall decals into its walls (.pstn)
   6. reads the loading screen's chant from the disc's default.xbe into
      halo/chant.adp (lib/chant.py; the EBOOT carries no copy)
+  then, once: the loading screen's picture from the disc's maps/loading.tga
+     into halo/maps/loading.pic (lib/loading_picture.py; the EBOOT carries none)
   7. with --eboot: cuts the XMB menu's sound from the music on your disc and
      writes a copy of the release EBOOT with it (lib/snd0.py)
 
@@ -52,6 +54,7 @@ import argparse, hashlib, json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
 INVADER = os.path.join(HERE, 'invader')
+COMPARE_OLD = False
 # options every texpack.py run takes (--tints-from-means)
 TEXPACK_OPTIONS = []
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder, if any (else atracdenc on PATH)
@@ -149,6 +152,34 @@ def gather(source, work, wanted):
     return found
 
 
+def bake_loading_picture(source, work, out_maps):
+    """the loading screen's picture from the disc's maps/loading.tga into
+    halo/maps/loading.pic (lib/loading_picture.py); without it the loading
+    screen draws its trail alone"""
+    sys.path.insert(0, LIB)
+    import loading_picture
+    tga = None
+    if os.path.isdir(source):
+        for candidate in (os.path.join(source, 'loading.tga'), os.path.join(source, 'maps', 'loading.tga')):
+            if os.path.exists(candidate):
+                tga = candidate
+                break
+    else:
+        with XIso(source) as iso:
+            listing = {p.lower(): p for p, n in iso.files()}
+            if 'maps/loading.tga' in listing:
+                tga = os.path.join(work, 'retail', 'loading.tga')
+                if not os.path.exists(tga):
+                    iso.extract(listing['maps/loading.tga'], tga)
+    out = os.path.join(out_maps, 'loading.pic')
+    if not tga:
+        log('the loading picture: no maps/loading.tga in %s; the loading screen draws without it' % source)
+    elif loading_picture.write(tga, out):
+        log('the loading picture: %s into %s' % (os.path.basename(tga), out))
+    else:
+        log('the loading picture: %s is not an uncompressed true-colour TGA; left out' % tga)
+
+
 def bake_chant(source, work, output):
     """the loading screen's chant from the disc's default.xbe into halo/chant.adp
     (lib/chant.py); without it the loading screen is silent"""
@@ -190,6 +221,8 @@ def tool_env():
     env['LD_LIBRARY_PATH'] = os.path.join(INVADER, 'lib') + ':' + os.path.join(ATRACDENC, 'lib') + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
     env['HALO_PSP_INVADER_DEFINITIONS'] = os.path.join(INVADER, 'definitions')
     env['PYTHONPATH'] = LIB + (':' + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    if COMPARE_OLD:
+        env['TEXPACK_KMEANS_COMPARE'] = env['STENCIL_COMPARE'] = '1'
     return env
 
 
@@ -242,7 +275,8 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
-    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality '))
+    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
+                                'kmeans compare summary', 'kmeans compare worse'))
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
     if name == 'ui':
@@ -267,8 +301,10 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
              '--full-detail', detail] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
     if name != 'ui':
         log('%s: wall decals' % name)
+        start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'stencilbake.py'), final, pgeo, os.path.join(out_maps, name + '.pstn')],
             log_path, cwd=LIB, env=env)
+        echo_from(log_path, start, ('compare:', 'triangulation failed', 'points added', 'slivers dropped'))
     if not keep_work:
         shutil.rmtree(folder, ignore_errors=True)
     log('%s: done in %.0f s' % (name, time.time() - started))
@@ -327,7 +363,12 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
+    ap.add_argument('--compare-old', action='store_true',
+                    help="also make each palette and decal cut as the bake did before this one (scikit-learn's k-means, "
+                         'Triangle), and log how they compare: the new bake\'s proof (docs/bake_changes.md)')
     a = ap.parse_args()
+    global COMPARE_OLD
+    COMPARE_OLD = a.compare_old
     if a.tints_from_means:
         TEXPACK_OPTIONS.append('--tints-from-means')
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or ALL
@@ -370,6 +411,10 @@ def main():
             failures.append(name)
             log('%s: FAILED: %s' % (name, e))
     bake_chant(a.source, work, a.output)
+    try:
+        bake_loading_picture(a.source, work, out_maps)
+    except Exception as e:
+        log('the loading picture: FAILED: %s' % e)
     if a.eboot:
         menu_eboot(a.eboot, a.music, music_source, a.output, work)
     if not a.keep_work:

@@ -29,9 +29,8 @@ Output, <map>.pstn next to the map, read by psp_ge.c (stencil_bake_*):
 usage: python3 stencilbake.py map.map map.pgeo out.pstn [--report]"""
 import sys, os, struct, math, collections
 import numpy as np
-import triangle
-from shapely.geometry import LineString
-from shapely.ops import unary_union
+from shapely.geometry import LineString, MultiPoint
+from shapely.ops import unary_union, polygonize, snap
 from bspread import load
 
 PLANE_GAP = 0.06        # a stencil's corners within this of the wall's plane (units; 18 cm)
@@ -333,17 +332,20 @@ def main(map_path, pgeo_path, out_path, report=False):
         if os.environ.get('STENCIL_DEBUG'):
             np.savez('/tmp/claude-0/tri_in.npz', V=V, S=S)
         try:
-            T = triangle.triangulate({'vertices': V, 'segments': S}, 'pQ')
+            tv, tt = pslg_triangulate(V, S)
         except Exception as ex:
             stats['triangulation failed'] += 1
             continue
+        T = {'vertices': tv, 'triangles': tt}
+        if STENCIL_COMPARE:
+            coverage_compare(stats, V, S, T, outs)
         if len(T['vertices']) != len(V):
-            # Triangle added points (crossing segments the noding missed): the
-            # new ones are interior points like any other
+            # crossings the noding above missed become points of their own:
+            # interior points like any other
             for k in range(len(V), len(T['vertices'])):
                 x, y = T['vertices'][k]
                 verts.append((x, y, ('i', round(x, 6), round(y, 6))))
-            stats['triangle added points'] += len(T['vertices']) - len(V)
+            stats['points added'] += len(T['vertices']) - len(V)
         tri_out = []
         layer_out = collections.defaultdict(list)
         for tri in T['triangles']:
@@ -415,6 +417,209 @@ def main(map_path, pgeo_path, out_path, report=False):
     return dict(mats=mats, walls=walls_m, stencils=stencils_m, overlaps=overlaps,
                 baked=baked_stencil_tris, report=report_lines, signs=signs, pack_crc=pack_crc,
                 out_walls=out_walls, out_layers=out_layers, stats=stats)
+
+
+def pslg_triangulate(V, S):
+    """(vertices, triangles) covering the faces a set of segments bounds: the
+    segments noded (shapely's unary_union: crossings the noding above missed
+    become new vertices, appended after V), the faces found by polygonize, each
+    face cut into triangles by ear clipping with its holes bridged in. Every
+    vertex on a face's boundary is a corner of its triangles, so faces meet
+    without T-junctions. numpy and shapely only (it replaces Triangle's
+    constrained Delaunay: different triangles, the same area per face)"""
+    verts = [tuple(map(float, v)) for v in V]
+    span = max(np.ptp(np.asarray(V, np.float64), 0).max(), 1e-12)
+    tol = span * 1e-7
+    grid = collections.defaultdict(list)
+
+    def cell(p):
+        return (int(math.floor(p[0] / tol)), int(math.floor(p[1] / tol)))
+    for i, v in enumerate(verts):
+        grid[cell(v)].append(i)
+
+    def index_of(p):
+        cx, cy = cell(p)
+        best = None
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for i in grid.get((cx + dx, cy + dy), ()):
+                    d = (verts[i][0] - p[0]) ** 2 + (verts[i][1] - p[1]) ** 2
+                    if d <= tol * tol and (best is None or d < best[0]):
+                        best = (d, i)
+        if best is not None:
+            return best[1]
+        verts.append((float(p[0]), float(p[1])))
+        grid[cell(p)].append(len(verts) - 1)
+        return len(verts) - 1
+
+    # a vertex a hair off a segment it lies on (an outline's corner on the
+    # source triangle's edge, worked out in floats) is snapped onto it, so the
+    # segment is split there, as Triangle's exact arithmetic would split it
+    lines = [LineString([verts[a], verts[b]]) for a, b in S]
+    noded = unary_union(snap(unary_union(lines), MultiPoint(verts), tol))
+    faces = polygonize(noded)
+    triangles = []
+    for face in faces:
+        rings = [face.exterior] + list(face.interiors)
+        loops = []
+        for k, ring in enumerate(rings):
+            ids = [index_of(p) for p in list(ring.coords)[:-1]]
+            ids = [v for j, v in enumerate(ids) if v != ids[j - 1]]
+            if len(ids) < 3:
+                continue
+            area = loop_area(verts, ids)
+            # the outside counter-clockwise, holes clockwise
+            if (area < 0) == (k == 0):
+                ids.reverse()
+            loops.append(ids)
+        if not loops:
+            continue
+        outer = bridge_holes(verts, loops[0], loops[1:])
+        triangles.extend(ear_clip(verts, outer))
+    return np.array(verts, np.float64), np.array(triangles, np.int32).reshape(-1, 3)
+
+
+def loop_area(verts, ids):
+    a = 0.0
+    for j in range(len(ids)):
+        x0, y0 = verts[ids[j - 1]]
+        x1, y1 = verts[ids[j]]
+        a += x0 * y1 - x1 * y0
+    return a / 2
+
+
+def cross(o, a, b):
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def segments_cross(p, q, r, s):
+    """whether segments pq and rs cross at a point inside both (touching at
+    an end counts as not crossing)"""
+    d1, d2 = cross(r, s, p), cross(r, s, q)
+    d3, d4 = cross(p, q, r), cross(p, q, s)
+    return ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)) and d1 and d2 and d3 and d4
+
+
+def bridge_holes(verts, outer, holes):
+    """one loop from the outside and its holes: each hole, rightmost first,
+    joined to the nearest outside vertex that a straight cut reaches without
+    crossing any edge, by a cut walked there and back"""
+    loop = list(outer)
+    for hole in sorted(holes, key=lambda h: -max(verts[v][0] for v in h)):
+        start = max(range(len(hole)), key=lambda j: (verts[hole[j]][0], -verts[hole[j]][1]))
+        m = verts[hole[start]]
+        edges = [(loop[j - 1], loop[j]) for j in range(len(loop))]
+        for h in holes:
+            edges += [(h[j - 1], h[j]) for j in range(len(h))]
+        best = None
+        for j, v in enumerate(loop):
+            p = verts[v]
+            # a vertex already on a cut appears twice: the cut joins the copy
+            # whose corner opens toward the hole
+            before, after = verts[loop[j - 1]], verts[loop[(j + 1) % len(loop)]]
+            if cross(before, p, after) > 0:
+                facing = cross(before, p, m) >= 0 and cross(p, after, m) >= 0
+            else:
+                facing = cross(before, p, m) >= 0 or cross(p, after, m) >= 0
+            if not facing:
+                continue
+            d = (p[0] - m[0]) ** 2 + (p[1] - m[1]) ** 2
+            if best is not None and d >= best[0]:
+                continue
+            if any(segments_cross(m, p, verts[a], verts[b]) for a, b in edges if v not in (a, b) and hole[start] not in (a, b)):
+                continue
+            best = (d, j)
+        if best is None:
+            continue
+        j = best[1]
+        turned = hole[start:] + hole[:start]
+        loop = loop[:j + 1] + turned + [turned[0], loop[j]] + loop[j + 1:]
+    return loop
+
+
+def ear_clip(verts, loop):
+    """triangles of a counter-clockwise loop (cuts to holes walk out and back,
+    so a vertex may appear twice): each pass takes the first convex corner
+    whose triangle holds no other vertex of the loop; corners in a straight
+    line stay until a neighbour's ear takes them along"""
+    ids = list(loop)
+    out = []
+    guard = 0
+    while len(ids) > 3 and guard < 4 * len(loop) * len(loop):
+        guard += 1
+        n = len(ids)
+        cut = False
+        for j in range(n):
+            a, b, c = ids[j - 1], ids[j], ids[(j + 1) % n]
+            pa, pb, pc = verts[a], verts[b], verts[c]
+            if cross(pa, pb, pc) <= 1e-14 * max(1.0, abs(pa[0]) + abs(pa[1])):
+                continue
+            inside = False
+            for v in ids:
+                if v in (a, b, c):
+                    continue
+                q = verts[v]
+                if cross(pa, pb, q) >= 0 and cross(pb, pc, q) >= 0 and cross(pc, pa, q) >= 0:
+                    inside = True
+                    break
+            if inside:
+                continue
+            out.append((a, b, c))
+            del ids[j]
+            cut = True
+            break
+        if not cut:
+            break
+    if len(ids) == 3 and cross(verts[ids[0]], verts[ids[1]], verts[ids[2]]) > 0:
+        out.append(tuple(ids))
+    return out
+
+# STENCIL_COMPARE=1 (the new bake's proof, docs/bake_changes.md): each source
+# triangle also cut by Triangle as the bake did before, where it is installed,
+# and the area each stencil layer covers compared, so a bake shows whether the
+# faces' triangulation ever covers a layer differently
+STENCIL_COMPARE = bool(os.environ.get('STENCIL_COMPARE'))
+
+
+def layer_areas(T, outs):
+    areas = []
+    vs = T['vertices']
+    for inside, (si, sti, sp, su) in outs:
+        total = 0.0
+        for a, b, c in T['triangles']:
+            cx = (vs[a][0] + vs[b][0] + vs[c][0]) / 3
+            cy = (vs[a][1] + vs[b][1] + vs[c][1]) / 3
+            if min(bary2((cx, cy), *sp)) < -1e-9:
+                continue
+            total += abs(cross(vs[a], vs[b], vs[c])) / 2
+        areas.append(total)
+    return areas
+
+
+def coverage_compare(stats, V, S, T, outs):
+    try:
+        import triangle
+        old = triangle.triangulate({'vertices': V, 'segments': S}, 'pQ')
+    except ImportError:
+        return
+    except Exception:
+        stats['compare: Triangle failed where the faces did not'] += 1
+        return
+    stats['compare: triangles compared'] += 1
+    new_a, old_a = layer_areas(T, outs), layer_areas(old, outs)
+    # the source triangle is the faces' whole area (each cut covers it once)
+    scale = max(1e-12, sum(abs(cross(T['vertices'][a], T['vertices'][b], T['vertices'][c])) / 2
+                           for a, b, c in T['triangles']))
+    worst = max([abs(n - o) / scale for n, o in zip(new_a, old_a)] + [0.0])
+    if worst > 1e-6:
+        stats['compare: layer coverage differs'] += 1
+        old_total = sum(abs(cross(old['vertices'][a], old['vertices'][b], old['vertices'][c])) / 2
+                        for a, b, c in old['triangles'])
+        print('compare: differs: the cut covers %.6g (Triangle\'s %.6g); layers %s against %s' % (
+            scale, old_total, ', '.join('%.6g' % x for x in new_a), ', '.join('%.6g' % x for x in old_a)))
+    stats['compare: largest coverage difference (ppm of the triangle)'] = max(
+        stats.get('compare: largest coverage difference (ppm of the triangle)', 0), int(round(worst * 1e6)))
+
 
 
 def V_or(verts, tri):
