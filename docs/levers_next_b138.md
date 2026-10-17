@@ -29,14 +29,16 @@ The heartbeat's `budget:` line (`psp_platform.c` ~2668): clock = ticks + drawing
 | 1 | **The GE's bytes off main RAM:** levelvram (in b137), then the next places by `gereads` (a30 still reads ~327 KB of models a frame from RAM; textures in RAM) | 5–10 ms a frame on c20, d20, a30 [U] | PSP-3000 c20 −7%, d20 −5 to −7.6% [M]; the 1:1 tax above [M] | Exact; VRAM room is the limit | renderer |
 | 2 | **Render-only tick work once a frame** (new; generalises LD1): lights re-linked once a frame, node matrices computed only when read | lights ~1.3 ms a tick on b30; matrices up to ~2 ms a tick on c20, d20 [U] | `object_connect_lights` 2.57 ms a tick on b30 [M]; 24–45% of nodes not read before the next compute [E, b132] | Play-exact only if lights are flushed before units update; a build switch for the accessor hooks | recon |
 | 3 | **The engine walk's pass table** (measure first) | the walk is 12–56 ms a frame (b30 55.8, 25% of the clock) [M]; the lever table barely touches it | the budget table | none: an instrument | recon |
-| 4 | **Frames in flight (L5)**, once unblocked | −16 to −35% of the clock if the ME runs the GE layer at 1.25× the main CPU's time [U]; ~0 or a loss at the measured 2.5–3.2× | two PSP-3000 A/Bs +3 to +25% slower [M] | one frame more input lag (Sheepdog01's call); +64–128 KB against 84 KB of headroom | recon measures (paused, Sheepdog01 02:01) |
+| 4 | **Frames in flight (L5)** (unpaused, Sheepdog01 08:54) | up to the whole main-CPU replay, 25–30% of the frame (c20 34 of 115 ms), if the ME's replay beside the ticks slows neither side [U] | mekinds [M, both PSPs]: the ME takes 0.45–0.92× the main CPU's time a record (replay a frame: b30 main 72.4 / ME 57.6 ms, c20 36.0 / 29.6); F1's 2.5–3.2× was the bus under overlap, not the ME (39047999180, 39048028093). Next: the rate when they overlap (`inflight`) | one frame more input lag (Sheepdog01's call); +64–128 KB against 84 KB of headroom | recon |
 | 5 | **P1.2 leaf passes** | node matrices 1.39 ms a tick plus ~1.1 ms of small passes: ~5% of b30's tick [E] | p11b136a/b | exact | recon |
 | 6 | **Change colour baked into the texture** (TB), with the empty glow passes (CP) | GE 25–28 ms a frame on b30's ride and landing [M], and CPU through the tax | 32 triples cover 93–100% on five maps [E] | exact; 350–900 KB of cache | renderer |
 | 7 | **Lights merged per surface** (new as a lever) | d20 ~5–10 ms a frame [U] | d20's light pass 22.5 ms a frame [M]; 45–51% of its triangles redrawn by another light [E] | same look, not bit-exact (clamping) | renderer |
 | 8 | **The Pelican's near layer** (PN) | 12.3 ms a frame on b30's cutscene and ride [M, PSP-3000] | `recon_134.md` | same look | renderer |
 | 9 | **Vehicles' update split per pass**, then a pose cache for parked ones | ~3 ms a vehicle a tick [M]; 136 k instructions, ~1,240 D-misses an update [E] | p11b136types | exact for the parked cache | recon |
 
-**Ride-alongs** (below the line): TP (0.9–1.2 ms a tick, built, `tp` `1f15429`); WS, the sleepers off the object walk (0.3–1.8 ms a tick [U], with #2 and #5); the scratchpad shared in time (15.1 of 16 KB is draw-only; the ticks use none); `vfpuskin` on a30 only; CP's empty glow passes (~0.45 ms).
+**In b138:** LD1 (attached lights linked once a frame; play-exact on a50, d20, c20, b30's parting is the emulator's sound clock [E]; gain [U] ~1.3 ms a tick on b30 until its PSP A/B, `- | nolightsframe`); DRAWCOLD (the debug vertex call off the part loop; 318 I-misses and 4.6 k instructions a tick on b30 [E]); `hotwords` (three hot statics in one cache line, ~860 D-misses a tick [E], ~0.18 ms [U]); BONUS (deterministic `location.bonus`; a fix, not a speed lever). b138's release check reports each one's misses removed at the final code (cache model, keepsets), the lesson of X8 and `nwbatch`. **LF** (light fixtures sleep, `fixturesleep`): play-exact, no gain on the emulator (Damnation 0.33 against 0.32 ms a tick [E]); a Damnation PSP A/B decides, b139.
+
+**Ride-alongs** (below the line): TP (0.9–1.2 ms a tick, in b138); WS, the sleepers off the object walk (0.3–1.8 ms a tick [U], with #2 and #5); the scratchpad shared in time (15.1 of 16 KB is draw-only; the ticks use none); `vfpuskin` on a30 only; CP's empty glow passes (~0.45 ms).
 
 ## Batching
 
@@ -51,7 +53,7 @@ The heartbeat's `budget:` line (`psp_platform.c` ~2668): clock = ticks + drawing
 
 - **The CPU and GE already overlap** (the GE draws behind the list as it fills): overlapping more gains ≤ 1.5 ms. The GE costs the CPU through the bus, not through waits.
 - **Moving the GE layer to the ME** is the big pipelining lever (#4), but on the PSP-3000 the ME took ~192 ms for what the main CPU does in ~60, so the CPU waited. Leads [D]: the replay skips the main CPU's memos (`psp_ge.c` ~12431–12469, ~7659); no VFPU on the ME (~9643); the ME shares the bus with a tick that misses heavily. Recording runs in series with the ME (two record buffers would fix it).
-- **The ME is idle ~94%** without render jobs. Node matrices or biped updates there have ceilings of −5.4 and −2.4 ms a tick on b30 [E], but L5 shows data-heavy ME work runs 2–3× slower under the bus: measure the ME's rate first.
+- **The ME is idle ~94%** without render jobs. Node matrices or biped updates there have ceilings of −5.4 and −2.4 ms a tick on b30 [E], and the ME's own rate is 0.45–0.92× the main CPU's [M, mekinds]; what slows ME work is the bus when both run at once (F1's 2.5–3.2×), so the cost to measure is the overlap.
 
 ## Shelved: retry or leave
 
@@ -59,7 +61,7 @@ The heartbeat's `budget:` line (`psp_platform.c` ~2668): clock = ticks + drawing
 |---|---|---|
 | `nwbatch` | retry narrowly | WT, b132's order and per-build profiles changed the loop; as the node-matrix pass of #2 or #5, on the PSP-1000 (measured on the 3000) |
 | X8 (lights re-linked only when moved) | retry as LD1 | rejected on instruction counts; the cost is misses |
-| L5 frames in flight | retry after the ME's rate on the PSP and two record buffers | only the 3000 measured it |
+| L5 frames in flight | retry: lever #4 | the ME's rate is measured on both PSPs (0.45–0.92× [M]); the overlap's cost is next |
 | `vfpuskin` | retry on a30 only | flat on b30 [M]; a30's corner loop is 21.9 ms a frame |
 | L1 `gemeoverlap`, `mewake`, `mefinishslow`, `statememo`, `listcachedall`, DB, DC, LB, code-layout ideas, `sceneryhalf`, `machinesfar`, `posehalf`, `posingmemo` | leave | measured flat or worse, or superseded |
 | `PSP_PGO_PARTIAL=0` | leave until the layout work | doesn't link (branch reach) |

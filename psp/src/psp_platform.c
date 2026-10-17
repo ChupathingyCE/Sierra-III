@@ -16,7 +16,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 137
+#define PSP_BUILD_NUMBER 138
 /* the engine base the build was made from, for the log */
 #define PSP_ENGINE_BASE "ChupathingyCE"
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
@@ -681,6 +681,33 @@ void psp_object_account(int type, unsigned long microseconds)
 		object_microseconds[type] += microseconds;
 		object_updates[type]++;
 	}
+}
+
+/* an object updated on a tick that isn't timed (psp_object_sample): counted,
+not timed */
+void psp_object_count(int type)
+{
+	if (type >= 0 && type < OBJECT_ACCOUNTS)
+		object_updates[type]++;
+}
+
+/* Each object's update is timed for the per-type report by a pair of clock
+reads, system calls of ~0.56 us each, and the object loop visits hundreds of
+objects a tick, sleepers included. The report averages ~600 ticks, so timing
+one tick in OBJECT_SAMPLE and scaling by it keeps it unbiased for 1/8 of the
+calls. "objecttimeall": every tick timed, as before. Returns the scale for
+this tick's times, or 0 for a tick that isn't timed */
+#define OBJECT_SAMPLE 8
+unsigned long psp_object_sample(void)
+{
+	static int every_tick = -1;
+	static unsigned int tick = 0;
+
+	if (every_tick < 0)
+		every_tick = psp_keep("objecttimeall") != 0;
+	if (every_tick)
+		return 1;
+	return (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
 }
 
 /* build 113: render_objects.c's counts (psp_fixups.py), since the last report */
@@ -2315,6 +2342,9 @@ state of the last tick: frames alternating 1 and 2 ticks move the world in
 uneven steps, which reads as judder in fast turns (the warthog's donut
 bounce, Sheepdog01 b80: a candidate cause). keep word "interpolation" smooths it */
 static unsigned long ticks_per_frame_histogram[5];
+/* the last frame's length, for the mixer's dry gaps (psp_dsound.c): a gap
+follows a frame longer than the streams' queue */
+unsigned long psp_last_frame_us = 0;
 
 void psp_frame_account(unsigned long microseconds)
 {
@@ -2334,6 +2364,7 @@ void psp_frame_account(unsigned long microseconds)
 	psp_phase(0);
 	/* build 126: "frametrace" (psp_frametrace.c) */
 	psp_frametrace_frame(microseconds, ticks, psp_heartbeat_clock() - end_start);
+	psp_last_frame_us = microseconds;
 	frame_count++;
 	frame_total += microseconds;
 	if (microseconds > frame_maximum)

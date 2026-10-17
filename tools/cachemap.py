@@ -39,6 +39,7 @@ LINES = (HI - LO) >> 6
 PROGRAM_BASE = 0x08804000
 PHASE_NAMES = ['other', 'tick', 'drawing', 'frame end']
 TAG_WINDOW = (0x09600000, 0x09F00000)
+# the campaign build's; the multiplayer build's starts at 0x09340000 (psp_capacity.h)
 GAME_STATE = (0x092A0000, 0x09600000)  # build 113 on (0x092B0000 to b112)
 
 

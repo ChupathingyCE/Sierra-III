@@ -775,9 +775,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 #endif"""),
 ("	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);",
  """#ifdef HALO_PSP
-	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB
-	(psp_fixups.py) */
-	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x10000 ? stack_size : 0x10000);
+	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB.
+	The deepest any of these threads has gone, in every log the lab holds
+	from both builds, is under 11 KB (the main menu's saved-game check;
+	the cache file thread under 5 KB, the others under 2 KB): 48 KB keeps
+	four times that. Stacks come from the free user RAM above the heap,
+	where what they leave can take a block off the heap (psp_ge.c's
+	see-through table) (psp_fixups.py) */
+	pthread_attr_setstacksize(&thread_attributes, stack_size > 0xC000 ? stack_size : 0xC000);
 #else
 	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);
 #endif"""),
@@ -789,6 +794,13 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 "source/rasterizer/rasterizer_lights.c": [
 ("static byte local_lens_flare_occlusion_test_results2[MAXIMUM_LENS_FLARE_MARKERS_PER_STRUCTURE+MAXIMUM_QUEUED_LENS_FLARES][MAXIMUM_WINDOWS];",
  "static byte local_lens_flare_occlusion_test_results2[PSP_LENS_FLARE_MARKERS+MAXIMUM_QUEUED_LENS_FLARES][PSP_LENS_FLARE_WINDOWS];"),
+# each light's flare results for one window, not the Xbox's four split-screen
+# views: 896 lights x 8 flares x 3 unused windows was 21 KB of .bss, and the
+# PSP draws one view (window 0, as the marker results above)
+("	byte data[MAXIMUM_LENS_FLARES_PER_LIGHT][MAXIMUM_WINDOWS];",
+ "	byte data[MAXIMUM_LENS_FLARES_PER_LIGHT][PSP_LENS_FLARE_WINDOWS];"),
+("		[lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask];",
+ "		[(lens_flare_parameters->compressed_window_index & _lens_flare_window_index_mask) % PSP_LENS_FLARE_WINDOWS];"),
 ("""		local_lens_flare_count= 0;
 	}
 
@@ -2301,8 +2313,10 @@ KEEP_DECLARATION = "#ifdef HALO_PSP\nint psp_keep(const char *name); /* psp_plat
 # "awake" in keep.txt turns it off
 PSP_SLEEP_CODE = """#ifdef HALO_PSP
 void psp_object_account(int type, unsigned long microseconds); /* psp_platform.c; psp_fixups.py */
+void psp_object_count(int type); /* psp_platform.c */
+unsigned long psp_object_sample(void); /* psp_platform.c: this tick's scale for each object's time, 0 untimed */
 int psp_keep(const char *name);
-static unsigned long psp_object_start;
+static unsigned long psp_object_start, psp_object_scale;
 static int psp_sleep_enabled = -1;
 static int psp_sleep_debug = -1, psp_sleep_reports = 0, psp_vehicle_sleep_reports = 0;
 /* sleepdebug: one vehicle's data at the end of its update, to see what
@@ -3431,11 +3445,11 @@ FIXES_19 = {
 ("void objects_update(\n\tvoid)\n{",
  PSP_SLEEP_CODE + "\nvoid objects_update(\n\tvoid)\n{"),
 ("\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n",
- "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n#endif\n\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n"),
+ "#ifdef HALO_PSP\n\tpsp_object_scale = psp_object_sample();\n\tpsp_object_start = psp_microseconds();\n#endif\n\tif (csmemcmp(last_active_cluster_bits, active_cluster_bits, BIT_VECTOR_SIZE_IN_BYTES(cluster_count)))\n"),
 ("\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n",
  "\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n#ifdef HALO_PSP\n\tpsp_object_account(12, psp_microseconds() - psp_object_start);\n#endif\n"),
 ("\t\t\t\t\tobject_update(object_index);\n",
- "#ifdef HALO_PSP\n\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\tpsp_object_account(object_header->type, psp_microseconds() - psp_object_start);\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
+ "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
 ("\tobjects_garbage_collection();\n\n\tprofile_exit(section);",
  "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n\tobjects_garbage_collection();\n\tpsp_object_account(13, psp_microseconds() - psp_object_start);\n#else\n\tobjects_garbage_collection();\n#endif\n\n\tprofile_exit(section);"),
 ],
@@ -10695,6 +10709,260 @@ FIXES_MULTIPLAYER["port/linux/game/network_distributed.c#aligned"] = [
 			word length;""")),
 ]
 
+# ---------- the multiplayer build as a client (Sheepdog01, 2026-10-17)
+# Hosting and ad hoc are dropped until the campaign reaches its performance
+# targets (they come back as co-op's prerequisite). psp_limits.h's
+# PSP_MP_CLIENT_ONLY (unless PSP_MP_HOST=1 or PSP_MP_COOP=1): no server is
+# ever created, so the host's records are one slot each, and the few that a
+# client's new game clears stop at their own size. Every other use of them
+# is behind a server (game_connection() is never _network_server without
+# one: the use map in docs/mp_client_only.md). About 590 KB of the heap
+FIXES_MPCLIENT = {}
+# the one way a server comes to exist: System Link's create, split screen,
+# the quick-setup host
+FIXES_MPCLIENT["source/networking/network_game_globals.c#client"] = [
+("""boolean create_global_network_game_server(
+	void)
+{
+""",
+ """boolean create_global_network_game_server(
+	void)
+{
+#ifdef PSP_MP_CLIENT_ONLY
+	/* psp_fixups.py (FIXES_MPCLIENT): this build joins games only */
+	return FALSE;
+#endif
+"""),
+]
+# The host's ring of its game updates. A local game (the main menu, a map
+# loaded on its own) builds each update and takes it at once
+# (update_client_local_ticks), so it needs one; only a host keeps more, for
+# its clients. The campaign build compiles this file too: unchanged there
+FIXES_MPCLIENT["source/game/player_queues_new.c#client"] = [
+("""	MAXIMUM_SERVER_UPDATES = 32,""",
+ """#ifdef PSP_MP_CLIENT_ONLY
+	/* psp_fixups.py (FIXES_MPCLIENT): a local game's one update */
+	MAXIMUM_SERVER_UPDATES = 1,
+#else
+	MAXIMUM_SERVER_UPDATES = 32,
+#endif"""),
+]
+# (each late joiner's starting players: one slot per machine, which
+# PSP_HOST_MAXIMUM_NETWORK_MACHINES already sizes; its two bounds follow it)
+FIXES_MPCLIENT["source/networking/network_server_manager.c#client"] = [
+("""	if (machine->machine_index >= 0 && machine->machine_index < MAXIMUM_NETWORK_MACHINE_COUNT)
+	{
+		csmemcpy(late_joiner_players[machine->machine_index], server->game.players,""",
+ """	if (machine->machine_index >= 0 && machine->machine_index < (short)NUMBEROF(late_joiner_players))
+	{
+		csmemcpy(late_joiner_players[machine->machine_index], server->game.players,"""),
+("""		machine->machine_index >= 0 && machine->machine_index < MAXIMUM_NETWORK_MACHINE_COUNT)
+	{
+		struct network_player *started = late_joiner_players[machine->machine_index];""",
+ """		machine->machine_index >= 0 && machine->machine_index < (short)NUMBEROF(late_joiner_players))
+	{
+		struct network_player *started = late_joiner_players[machine->machine_index];"""),
+]
+# The objects the host tells its clients about, and where each client's
+# players are. A client's new game clears its own records to the objects'
+# full count and the host's to theirs; the host's entry points return at
+# once, a second guard on top of the server they need
+NO_HOST = """#ifdef PSP_MP_CLIENT_ONLY
+	return; /* psp_fixups.py (FIXES_MPCLIENT): never a host */
+#endif
+"""
+FIXES_MPCLIENT["port/linux/game/network_objects.c#client"] = [
+("""static long objects_host_told[MAXIMUM_TRACKED_OBJECTS];""",
+ """/* psp_fixups.py (FIXES_MPCLIENT): the host's records, one slot each in a
+build that hosts nothing */
+#ifdef PSP_MP_CLIENT_ONLY
+#define HOST_OBJECTS 1
+#define HOST_MACHINES 1
+#define HOST_PLAYERS 1
+#else
+#define HOST_OBJECTS MAXIMUM_TRACKED_OBJECTS
+#define HOST_MACHINES HALO_PORT_MAXIMUM_NETWORK_MACHINES
+#define HOST_PLAYERS MAXIMUM_TRACKED_PLAYERS
+#endif
+static long objects_host_told[HOST_OBJECTS];"""),
+("""static boolean objects_host_state_moving[MAXIMUM_TRACKED_OBJECTS];
+static long objects_host_rest_times[MAXIMUM_TRACKED_OBJECTS];""",
+ """static boolean objects_host_state_moving[HOST_OBJECTS];
+static long objects_host_rest_times[HOST_OBJECTS];"""),
+("""} objects_host_inventories[MAXIMUM_TRACKED_OBJECTS];""",
+ """} objects_host_inventories[HOST_OBJECTS];"""),
+("""	long indices[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+	short player_unit_count;
+	real_point3d player_unit_origins[MAXIMUM_TRACKED_PLAYERS];""",
+ """	long indices[HOST_MACHINES];
+	short player_unit_count;
+	real_point3d player_unit_origins[HOST_PLAYERS];"""),
+("""		short vehicle_player_indices[MAXIMUM_LOCAL_PLAYERS];
+	} machines[HALO_PORT_MAXIMUM_NETWORK_MACHINES];
+} objects_host_viewers;""",
+ """		short vehicle_player_indices[MAXIMUM_LOCAL_PLAYERS];
+	} machines[HOST_MACHINES];
+} objects_host_viewers;"""),
+("""} objects_host_machines[HALO_PORT_MAXIMUM_NETWORK_MACHINES];""",
+ """} objects_host_machines[HOST_MACHINES];"""),
+("""} objects_host_vehicle_predictions[MAXIMUM_TRACKED_PLAYERS];""",
+ """} objects_host_vehicle_predictions[HOST_PLAYERS];"""),
+("""	static boolean seen[MAXIMUM_TRACKED_OBJECTS];
+	struct distributed_object_change_message message;
+	short count = 0;""",
+ """	static boolean seen[HOST_OBJECTS];
+	struct distributed_object_change_message message;
+	short count = 0;"""),
+("""	for (absolute_index = 0; absolute_index < MAXIMUM_TRACKED_OBJECTS; absolute_index++)
+	{
+		objects_host_told[absolute_index] = NONE;
+		objects_host_state_moving[absolute_index] = FALSE;
+		objects_host_rest_times[absolute_index] = NONE;
+		objects_host_inventories[absolute_index].carried_time = NONE;
+		objects_host_inventories[absolute_index].ammunition_time = NONE;
+		objects_client_has[absolute_index] = NONE;
+		objects_client_dead[absolute_index].object_index = NONE;
+	}""",
+ """	for (absolute_index = 0; absolute_index < HOST_OBJECTS; absolute_index++)
+	{
+		objects_host_told[absolute_index] = NONE;
+		objects_host_state_moving[absolute_index] = FALSE;
+		objects_host_rest_times[absolute_index] = NONE;
+		objects_host_inventories[absolute_index].carried_time = NONE;
+		objects_host_inventories[absolute_index].ammunition_time = NONE;
+	}
+	for (absolute_index = 0; absolute_index < MAXIMUM_TRACKED_OBJECTS; absolute_index++)
+	{
+		objects_client_has[absolute_index] = NONE;
+		objects_client_dead[absolute_index].object_index = NONE;
+	}"""),
+("""	for (machine_index = 0; machine_index < HALO_PORT_MAXIMUM_NETWORK_MACHINES; machine_index++)
+		objects_host_machines[machine_index].time = NONE;
+	csmemset(objects_host_vehicle_predictions, 0, sizeof(objects_host_vehicle_predictions));
+	for (index = 0; index < MAXIMUM_TRACKED_PLAYERS; index++)""",
+ """	for (machine_index = 0; machine_index < HOST_MACHINES; machine_index++)
+		objects_host_machines[machine_index].time = NONE;
+	csmemset(objects_host_vehicle_predictions, 0, sizeof(objects_host_vehicle_predictions));
+	for (index = 0; index < HOST_PLAYERS; index++)"""),
+("""void network_objects_host_tick(
+	void)
+{
+""",
+ """void network_objects_host_tick(
+	void)
+{
+""" + NO_HOST),
+("""void network_objects_client_asked(
+	long machine_index,
+	boolean again)
+{
+	struct distributed_object_change_message message;
+	short count = 0;
+	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, RELIABLE_ENTRIES(struct distributed_object_change));
+""",
+ """void network_objects_client_asked(
+	long machine_index,
+	boolean again)
+{
+	struct distributed_object_change_message message;
+	short count = 0;
+	short limit = MIN(MAXIMUM_ENTRIES_PER_MESSAGE, RELIABLE_ENTRIES(struct distributed_object_change));
+""" + NO_HOST),
+("""void network_objects_handle_vehicle_prediction(
+	long machine_index,
+	void const *entries,
+	short count)
+{
+	struct distributed_object_state const *states = (struct distributed_object_state const *)entries;
+	short index;
+""",
+ """void network_objects_handle_vehicle_prediction(
+	long machine_index,
+	void const *entries,
+	short count)
+{
+	struct distributed_object_state const *states = (struct distributed_object_state const *)entries;
+	short index;
+""" + NO_HOST),
+("""void network_objects_apply_vehicle_predictions(
+	void)
+{
+	long now = game_time_get();
+	short player_index;
+""",
+ """void network_objects_apply_vehicle_predictions(
+	void)
+{
+	long now = game_time_get();
+	short player_index;
+""" + NO_HOST),
+]
+# The distributed netcode's host records, and its per-sender ones. A client
+# hears only the host (sender HOST_SENDER: a message with no machine index),
+# so with one sender slot the host is slot 0. A client's new game clears its
+# own records to the players' full count and the host's to theirs
+FIXES_MPCLIENT["port/linux/game/network_distributed.c#client"] = [
+("""	MAXIMUM_SENDERS = HALO_PORT_MAXIMUM_NETWORK_MACHINES + 1,
+	HOST_SENDER = HALO_PORT_MAXIMUM_NETWORK_MACHINES,""",
+ """#ifdef PSP_MP_CLIENT_ONLY
+	/* psp_fixups.py (FIXES_MPCLIENT): the host alone, a client's one sender */
+	MAXIMUM_SENDERS = 1,
+	HOST_SENDER = 0,
+#else
+	MAXIMUM_SENDERS = HALO_PORT_MAXIMUM_NETWORK_MACHINES + 1,
+	HOST_SENDER = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+#endif
+	/* the host's records' sizes: one slot each in a build that hosts nothing */
+#ifdef PSP_MP_CLIENT_ONLY
+	HOST_MACHINES = 1,
+	HOST_PLAYERS = 1,
+#else
+	HOST_MACHINES = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
+	HOST_PLAYERS = MAXIMUM_TRACKED_PLAYERS,
+#endif"""),
+("""} distributed_predictions[MAXIMUM_TRACKED_PLAYERS];""", """} distributed_predictions[HOST_PLAYERS];"""),
+("""} distributed_accepted[MAXIMUM_TRACKED_PLAYERS];""", """} distributed_accepted[HOST_PLAYERS];"""),
+("""} distributed_host_speeds[MAXIMUM_TRACKED_PLAYERS];""", """} distributed_host_speeds[HOST_PLAYERS];"""),
+("""static boolean distributed_seen[HALO_PORT_MAXIMUM_NETWORK_MACHINES][MAXIMUM_TRACKED_PLAYERS];""",
+ """static boolean distributed_seen[HOST_MACHINES][MAXIMUM_TRACKED_PLAYERS];"""),
+("""} distributed_viewers[HALO_PORT_MAXIMUM_NETWORK_MACHINES][MAXIMUM_LOCAL_PLAYERS];""",
+ """} distributed_viewers[HOST_MACHINES][MAXIMUM_LOCAL_PLAYERS];"""),
+("""static struct distributed_unit_state distributed_host_states[MAXIMUM_TRACKED_PLAYERS];""",
+ """static struct distributed_unit_state distributed_host_states[HOST_PLAYERS];"""),
+("""static byte distributed_sends[HALO_PORT_MAXIMUM_NETWORK_MACHINES][MAXIMUM_TRACKED_PLAYERS];""",
+ """static byte distributed_sends[HOST_MACHINES][MAXIMUM_TRACKED_PLAYERS];"""),
+("""static struct distributed_client_identity distributed_client_identities[HALO_PORT_MAXIMUM_NETWORK_MACHINES];""",
+ """static struct distributed_client_identity distributed_client_identities[HOST_MACHINES];"""),
+("""	for (player_index = 0; player_index < MAXIMUM_TRACKED_PLAYERS; player_index++)
+	{
+		distributed_predictions[player_index].taken_host_time = NONE;
+		distributed_host_speeds[player_index].unit_index = NONE;
+		distributed_player_machines[player_index] = NONE;
+	}""",
+ """	for (player_index = 0; player_index < HOST_PLAYERS; player_index++)
+	{
+		distributed_predictions[player_index].taken_host_time = NONE;
+		distributed_host_speeds[player_index].unit_index = NONE;
+	}
+	for (player_index = 0; player_index < MAXIMUM_TRACKED_PLAYERS; player_index++)
+		distributed_player_machines[player_index] = NONE;"""),
+# (a machine's sender slot: none past the host's in a build with one)
+("""	if (machine_index < 0 || machine_index >= HALO_PORT_MAXIMUM_NETWORK_MACHINES)
+		return;
+	distributed_fill_header(message, type, count, size);
+	distributed_batch_add((short)machine_index, message, size, distributed_entry_size(count, size));""",
+ """	if (machine_index < 0 || machine_index >= HALO_PORT_MAXIMUM_NETWORK_MACHINES || machine_index >= HOST_SENDER)
+		return;
+	distributed_fill_header(message, type, count, size);
+	distributed_batch_add((short)machine_index, message, size, distributed_entry_size(count, size));"""),
+("""	if (machine_index < 0 || machine_index >= HALO_PORT_MAXIMUM_NETWORK_MACHINES)
+		return FALSE;
+	player_list = machine_get_player_list(machine_index);""",
+ """	if (machine_index < 0 || machine_index >= HOST_MACHINES || machine_index >= HOST_SENDER)
+		return FALSE;
+	player_list = machine_get_player_list(machine_index);"""),
+]
+
 # ---------- network packets: values at any byte offset (mp1 on the PSP)
 # A packet is written one value after another into a byte buffer
 # (data_encoding.c), so a 2-, 4- or 8-byte value can start at any address.
@@ -13835,7 +14103,6 @@ boolean psp_perception_unit_underwater(
 	if (slot && (slot->known & PSP_PERC_WATER) &&
 		slot->water_location.leaf_index == location->leaf_index &&
 		slot->water_location.cluster_index == location->cluster_index &&
-		slot->water_location.bonus == location->bonus &&
 		!memcmp(&slot->water_position, position, sizeof(*position)))
 	{
 		psp_perc_stats.hits++;
@@ -19755,14 +20022,12 @@ real_matrix4x3 *object_get_node_matrices(
 
 	object_globals->active_garbage_object_count = 0;
 """),
-("""					psp_object_start = psp_microseconds();
-					psp_object_update(object_index, i, object_header);
+("""					if (psp_object_scale)
 """,
 """					/* psp_fixups.py (FIXES_134 #nmreaders) */
 					psp_nmr_top = object_index;
 					psp_nmr_tops++;
-					psp_object_start = psp_microseconds();
-					psp_object_update(object_index, i, object_header);
+					if (psp_object_scale)
 """),
 ("""				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
 """,
@@ -22507,11 +22772,415 @@ FIXES_LOADING["source/cache/cache_files.c#loading"] = [
 ]
 
 
+# ---------- sound (the sound session; docs/audio_fidelity.md)
+FIXES_SOUND = {}
+# Where sound_render's time goes, for the sound work's budget: a step before
+# each part, so profile.txt names them ("sound_render: …"). The last step goes
+# back to "sound_render", which the time after it was charged to before
+FIXES_SOUND["source/sound/sound_manager.c#sections"] = [
+("""		sound_manager_globals.platform_definition->begin_scene();
+
+		if (!sound_manager_globals.paused)
+		{
+			long render_time = system_milliseconds();
+""",
+ """#ifdef HALO_PSP
+		psp_step("sound_render: begin scene (the packets' callbacks)");
+#endif
+		sound_manager_globals.platform_definition->begin_scene();
+
+		if (!sound_manager_globals.paused)
+		{
+			long render_time = system_milliseconds();
+"""),
+("""			refresh_listener();
+			process_looping_sounds();
+			refresh_sounds();
+			prioritize_sounds();
+			update_channels();
+			sound_manager_globals.flip_flop = !sound_manager_globals.flip_flop;
+		}
+
+		sound_manager_globals.platform_definition->end_scene();
+	}
+
+	if (!sound_manager_globals.paused)
+	{
+		sound_cache_idle();
+	}
+""",
+ """#ifdef HALO_PSP
+			psp_step("sound_render: listener");
+			refresh_listener();
+			psp_step("sound_render: looping sounds");
+			process_looping_sounds();
+			psp_step("sound_render: refresh and obstruction");
+			refresh_sounds();
+			psp_step("sound_render: prioritise");
+			prioritize_sounds();
+			psp_step("sound_render: update channels");
+			update_channels();
+#else
+			refresh_listener();
+			process_looping_sounds();
+			refresh_sounds();
+			prioritize_sounds();
+			update_channels();
+#endif
+			sound_manager_globals.flip_flop = !sound_manager_globals.flip_flop;
+		}
+
+#ifdef HALO_PSP
+		psp_step("sound_render: end scene (packets queued)");
+#endif
+		sound_manager_globals.platform_definition->end_scene();
+	}
+
+#ifdef HALO_PSP
+	psp_step("sound_render: sound cache");
+#endif
+	if (!sound_manager_globals.paused)
+	{
+		sound_cache_idle();
+	}
+#ifdef HALO_PSP
+	psp_step("sound_render");
+#endif
+"""),
+]
+# Why the game stops the sounds it cuts off, and what class each stream plays
+# (psp_sound.h; the mixer counts and logs them): the reason is set around each
+# sound_stop call, so the mixer's flush inside it can read it
+FIXES_SOUND["source/sound/sound_manager.c#reasons"] = [
+("""/* ---------- globals */
+""",
+ """/* ---------- globals */
+
+#ifdef HALO_PSP
+#include "psp_sound.h" /* psp_fixups.py FIXES_SOUND */
+void psp_step(const char *name);
+#define PSP_STOP_REASON(reason) (psp_sound_stop_reason = (reason))
+#else
+#define PSP_STOP_REASON(reason) ((void)0)
+#endif
+"""),
+("""	sound_manager_globals.platform_definition->queue_sound_to_channel(
+		channel_index,
+		permutation);
+""",
+ """#ifdef HALO_PSP
+	psp_sound_queueing_class = sound_definition_get(sound_get(channel->sound_index)->definition_index)->sound_class;
+#endif
+	sound_manager_globals.platform_definition->queue_sound_to_channel(
+		channel_index,
+		permutation);
+#ifdef HALO_PSP
+	psp_sound_queueing_class = -1;
+#endif
+"""),
+("""			sound_stop(victim_sound_index);
+""",
+ """			PSP_STOP_REASON(PSP_STOP_INSTANCE_OLDER);
+			sound_stop(victim_sound_index);
+			PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+("""		   queue another permutation through the now-unowned channel. */
+		sound_stop(sound_index);
+""",
+ """		   queue another permutation through the now-unowned channel. */
+		PSP_STOP_REASON(PSP_STOP_INSTANCE_NEWER);
+		sound_stop(sound_index);
+		PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+("""		while (sound_index != NONE)
+		{
+			sound_stop(sound_index);
+			sound_index = data_next_index(sound_data, sound_index);
+		}
+""",
+ """		PSP_STOP_REASON(PSP_STOP_ALL);
+		while (sound_index != NONE)
+		{
+			sound_stop(sound_index);
+			sound_index = data_next_index(sound_data, sound_index);
+		}
+		PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+("""				channel_stop(channel_index);
+				channel->sound_index = NONE;
+""",
+ """				PSP_STOP_REASON(PSP_STOP_ALL);
+				channel_stop(channel_index);
+				PSP_STOP_REASON(PSP_STOP_OTHER);
+				channel->sound_index = NONE;
+"""),
+# refresh_sounds: of its three reasons only a lost source can cut a sound
+# playing (an idle channel has finished; dialog to dead players stops here
+# only when it has no voice, and fades out otherwise)
+("""		if (stop_sound)
+		{
+			sound_stop(sound_index);
+		}
+""",
+ """		if (stop_sound)
+		{
+			PSP_STOP_REASON(PSP_STOP_SOURCE_LOST);
+			sound_stop(sound_index);
+			PSP_STOP_REASON(PSP_STOP_OTHER);
+		}
+"""),
+("""				sound_stop(channel->sound_index);
+				channel->sound_index = NONE;
+				continue;
+""",
+ """				PSP_STOP_REASON(PSP_STOP_FADED);
+				sound_stop(channel->sound_index);
+				PSP_STOP_REASON(PSP_STOP_OTHER);
+				channel->sound_index = NONE;
+				continue;
+"""),
+("""						if (channel->sound_index != NONE)
+						{
+							sound_stop(channel->sound_index);
+						}
+""",
+ """						if (channel->sound_index != NONE)
+						{
+							PSP_STOP_REASON(PSP_STOP_PREEMPTED);
+							sound_stop(channel->sound_index);
+							PSP_STOP_REASON(PSP_STOP_OTHER);
+						}
+"""),
+("""				else
+				{
+					sound_stop(sound_index);
+				}
+			}
+			else if (sound->playing_channel_index == NONE &&""",
+ """				else
+				{
+					PSP_STOP_REASON(PSP_STOP_NO_CHANNEL);
+					sound_stop(sound_index);
+					PSP_STOP_REASON(PSP_STOP_OTHER);
+				}
+			}
+			else if (sound->playing_channel_index == NONE &&"""),
+("""								sound->permutation_index;
+						}
+						sound_stop(sound_index);
+""",
+ """								sound->permutation_index;
+						}
+						PSP_STOP_REASON(PSP_STOP_CACHE_MISS);
+						sound_stop(sound_index);
+						PSP_STOP_REASON(PSP_STOP_OTHER);
+"""),
+]
+# The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
+# packets (about 743 ms) up at interrupt time, the port once a frame, so a
+# frame longer than that left long sounds silent. The queue's depth comes from
+# psp_stream_packets() (psp_dsound.c: 16 by default, "streampackets4" for the
+# Xbox's). After a pause the channel steps back over what it had queued; the
+# Xbox stepped back a full queue, which the 4-packet depth keeps exactly
+FIXES_SOUND["source/sound/sound_dsound_xbox.c#queue"] = [
+("""	while (channel->packet_count<MAXIMUM_SOUND_PACKETS && channel->playing_permutation)
+""",
+ """#ifdef HALO_PSP
+	extern int psp_stream_packets(void); /* psp_dsound.c */
+	while (channel->packet_count<psp_stream_packets() && channel->playing_permutation)
+#else
+	while (channel->packet_count<MAXIMUM_SOUND_PACKETS && channel->playing_permutation)
+#endif
+"""),
+("""			if (channel->state!=_sound_channel_idle)
+			{
+				IDirectSoundStream_Flush(channel->stream);
+""",
+ """			if (channel->state!=_sound_channel_idle)
+			{
+#ifdef HALO_PSP
+				extern int psp_stream_packets(void); /* psp_dsound.c */
+				real rewound_packets = psp_stream_packets() == MAXIMUM_SOUND_PACKETS ?
+					(real)MAXIMUM_SOUND_PACKETS : (real)channel->packet_count;
+#endif
+				IDirectSoundStream_Flush(channel->stream);
+"""),
+("""						MAXIMUM_COMPRESSED_SOUND_PACKET_SIZE : MAXIMUM_SOUND_PACKET_SIZE)*
+					(real)MAXIMUM_SOUND_PACKETS);
+""",
+ """						MAXIMUM_COMPRESSED_SOUND_PACKET_SIZE : MAXIMUM_SOUND_PACKET_SIZE)*
+#ifdef HALO_PSP
+					rewound_packets);
+#else
+					(real)MAXIMUM_SOUND_PACKETS);
+#endif
+"""),
+]
+
+
+# ---------- FIXES_BONUS: an object's location.bonus made deterministic
+# struct location's last word, bonus, is written in play only by
+# scenario_location_award_bonus (to NONE); everywhere else it is copied
+# from a location on the stack that never set it, so objects, actors and
+# props carry stack garbage there. Play never reads it, but the sleep
+# checksum and the state hashes do, so a change that only moves the stack's
+# history (LD1, lab ld1why1 39045094664) made the pools differ and woke
+# sleepers for nothing. Set as award_bonus sets it, where the object's
+# location is stored. "bonusold": left as copied
+FIXES_BONUS = {}
+FIXES_BONUS["source/objects/objects.c#bonus"] = [
+("""		if (location->cluster_index!=NONE)
+		{
+			object->object.location = *location;
+""", """		if (location->cluster_index!=NONE)
+		{
+			object->object.location = *location;
+#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_BONUS) */
+			{
+				static int psp_bonus_old = -1;
+				int psp_keep(const char *name);
+
+				if (psp_bonus_old < 0)
+					psp_bonus_old = psp_keep("bonusold") != 0;
+				if (!psp_bonus_old)
+					object->object.location.bonus = NONE;
+			}
+#endif
+"""),
+]
+
+
+# ---------- FIXES_DRAWCOLD: debug-only work out of the model draw path (lever #3)
+# rasterizer_debug_model_vertices runs after every model part's draw and
+# returns unless its debug display is on; the call alone cost b30's drawing
+# 318 I-misses and 4.6 k instructions a tick in the cache model (lab
+# p3walkb30a, 39038135510). Tested where it's called, it costs one load.
+# "debugvertexcall": called every part, as before
+FIXES_DRAWCOLD = {}
+FIXES_DRAWCOLD["source/models/models.c#debuggate"] = [
+("""									rasterizer_debug_model_vertices(object_index, skinning, part);
+""", """#ifdef HALO_PSP
+									/* psp_fixups.py (FIXES_DRAWCOLD) */
+									{
+										static int psp_vertex_call = -1;
+										int psp_keep(const char *name);
+
+										if (psp_vertex_call < 0)
+											psp_vertex_call = psp_keep("debugvertexcall") != 0;
+										if (rasterizer_debug_options.debug_model_vertices_enabled || psp_vertex_call)
+											rasterizer_debug_model_vertices(object_index, skinning, part);
+									}
+#else
+									rasterizer_debug_model_vertices(object_index, skinning, part);
+#endif
+"""),
+]
+
+
+# ---------- FIXES_LD1: attached lights re-linked once a frame (lever LD1)
+# object_connect_lights re-links every updated object's attached lights to the
+# map every tick (2.57 ms a tick on b30, PSP-1000), but only drawing reads the
+# links: the one simulation reader, unit_refresh_illumination, writes fields
+# nothing reads but a debug line, and upstream's server skips the cluster
+# join. So the links are made on the last tick before each drawn frame. Every
+# object is then re-linked on that tick in walk order, as before, so the
+# clusters' lists come out in the original order (machinesleep showed that
+# order picks a lit object's lights). One deferred on an earlier tick that
+# leaves the walk (deactivated) is linked then. "nolightsframe": every tick
+FIXES_LD1 = {}
+
+FIXES_LD1["source/objects/objects.c#lightsframe"] = [
+("""static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
+""", """static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
+/* psp_fixups.py (FIXES_LD1) */
+int psp_keep(const char *name);
+int psp_lights_link_tick = 1; /* game_time.c: this tick is the last before a frame */
+static int psp_lights_frame = -1;
+static unsigned long psp_lights_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32]; /* a bit an object (the multiplayer heap is tight) */
+#define PSP_LIGHTS_BIT(i) (1ul << ((i) & 31))
+
+/* 1: this tick's link is left to the frame's last tick */
+static int psp_lights_defer(long object_index)
+{
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (psp_lights_frame < 0)
+		psp_lights_frame = !psp_keep("nolightsframe");
+	if (absolute_index < 0 || absolute_index >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (!psp_lights_frame || psp_lights_link_tick)
+	{
+		psp_lights_pending[absolute_index >> 5] &= ~PSP_LIGHTS_BIT(absolute_index);
+		return 0;
+	}
+	psp_lights_pending[absolute_index >> 5] |= PSP_LIGHTS_BIT(absolute_index);
+	return 1;
+}
+
+/* an object leaving the walk with its link deferred: linked now, under the
+condition object_update links it */
+static void psp_lights_flush(long object_index)
+{
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct object_datum *object;
+
+	if (absolute_index < 0 || absolute_index >= MAXIMUM_OBJECTS_PER_MAP ||
+		!(psp_lights_pending[absolute_index >> 5] & PSP_LIGHTS_BIT(absolute_index)))
+		return;
+	psp_lights_pending[absolute_index >> 5] &= ~PSP_LIGHTS_BIT(absolute_index);
+	object = object_get(object_index);
+	if (TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&
+		(!TEST_FLAG(object->object.flags, _object_invisible_bit) ||
+			object_definition_get(object->definition_index)->object.model.index == NONE))
+		object_connect_lights(object_index, TRUE, TRUE);
+}
+"""),
+("""		{
+			object_connect_lights(object_index, TRUE, TRUE);
+		}
+#ifdef HALO_PSP
+""", """		{
+#ifdef HALO_PSP
+			if (!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+#endif
+			object_connect_lights(object_index, TRUE, TRUE);
+		}
+#ifdef HALO_PSP
+"""),
+("""->object.model.index == NONE))
+			object_connect_lights(object_index, TRUE, TRUE);
+		return;
+""", """->object.model.index == NONE) &&
+			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		return;
+"""),
+("""void object_deactivate(
+	long object_index)
+{
+""", """void object_deactivate(
+	long object_index)
+{
+	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+"""),
+]
+FIXES_LD1["source/game/game_time.c#lightsframe"] = [
+("""							unsigned long psp_start = psp_heartbeat_clock();
+
+""", """							unsigned long psp_start = psp_heartbeat_clock();
+							extern int psp_lights_link_tick; /* objects.c (FIXES_LD1) */
+
+							psp_lights_link_tick = update_index + 1 == server_updates;
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

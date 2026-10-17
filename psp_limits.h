@@ -99,8 +99,19 @@ and players. The host's own records (its machines' slots, what each late
 joiner was started with, where every player was to check what clients
 report) are sized for this, not for the session limits above, which a PSP
 only meets as a client (psp_fixups.py, FIXES_MULTIPLAYER) */
-#define PSP_HOST_MAXIMUM_NETWORK_MACHINES 16
 #define PSP_HOST_MAXIMUM_NETWORK_PLAYERS 16
+
+/* ... and a multiplayer build that hosts nothing (Sheepdog01, 2026-10-17: hosting
+and ad hoc come back after the campaign's performance targets, as co-op's
+prerequisite; PSP_MP_HOST=1, or PSP_MP_COOP=1, builds them back in). It
+joins games only, so the host's records are one slot each
+(psp_fixups.py, FIXES_MPCLIENT) */
+#if defined(PSP_MULTIPLAYER) && !defined(PSP_MP_HOST)
+#define PSP_MP_CLIENT_ONLY 1
+#define PSP_HOST_MAXIMUM_NETWORK_MACHINES 1
+#else
+#define PSP_HOST_MAXIMUM_NETWORK_MACHINES 16
+#endif
 
 /* a host polls its listening socket and one socket per machine; the Xbox's
 Winsock headers default to 64 (the prefix headers define FD_SETSIZE from
