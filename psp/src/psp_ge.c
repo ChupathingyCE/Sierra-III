@@ -16747,9 +16747,9 @@ it can be drawn without its loading.tga:
   progress the trail's weight falls to 0 by the end;
 - over that, loading.tga times a soft band (a 128 x 16 mask, made in code)
   that sweeps from the left to the right with the progress, at the
-  brightness sin(progress pi)^0.9, added. loading.tga is read from the
-  Xbox's utility drive (z:\maps\loading.tga), which the PSP has no copy of:
-  that layer waits for the PC reference to show what it draws.
+  brightness sin(progress pi)^0.9, added. loading.tga is the disc's
+  (maps\loading.tga, which the Xbox copies to its utility drive at start-up);
+  the bake doesn't carry it yet, so that layer isn't drawn.
 On the PSP the blur's taps are 0.1 texel apart, so one bilinear tap stands
 for them [U]. The trail's source is whichever buffer is on the screen: the
 loading frames swap themselves, so each reads the one before; in the settle
