@@ -9449,11 +9449,14 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 	base), as the Xbox caps a lit part at its own base. The base is fogged
 	as pass 1 was, so the clamp holds under fog too. A pass more per
 	self-illuminated part, which only the main menu may spend (b30 draws
-	~700 glow passes a frame). Keep word "glownoclamp": screened there too.
-	Against ChupathingyCE's frames, the ring was far dimmer than either the
-	add or the screen (lab pc-chupa 39014142915) */
+	~700 glow passes a frame). Against ChupathingyCE's frames, the ring was
+	far dimmer than either the add or the screen (lab pc-chupa 39014142915),
+	but on the PSP the clamp shows the base's aliasing where the ring is seen
+	edge on, which the screen hides under the glow (lab 39063835938: twice
+	the shimmer), and Sheepdog01 judged the ring fine without it. So off by default:
+	"glowclamp" turns it on ("glownoclamp" still says off) */
 	if (glow_no_clamp < 0)
-		glow_no_clamp = psp_keep("glownoclamp");
+		glow_no_clamp = !psp_keep("glowclamp");
 	clamped = psp_showcase_map && !glow_no_clamp && glow_base_key;
 	if (glow_add || clamped)
 		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
