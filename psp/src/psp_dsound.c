@@ -114,6 +114,10 @@ struct psp_stream
 	/* frames this voice was mixed (written by the mixer, on either CPU):
 	the loading chant's line says whether its voices played at all */
 	unsigned long mixed_frames;
+	/* where the last packet the game queued ended, and its permutation: a
+	packet of the same permutation that doesn't start there skips sound */
+	const unsigned char *queued_end;
+	const void *queued_context;
 	/* the loudest gain it was prepared with, and how many blocks were
 	prepared: whether the loading chant was ever loud enough to hear */
 	int peak_gain;
@@ -189,6 +193,10 @@ the long frames being the suspected cause */
 #define GAP_RECORDS 6
 static struct { long context, sound_class; unsigned long dry_ms, frame_ms; } gap_records[GAP_RECORDS];
 static unsigned long gap_record_count = 0;
+/* packets that didn't continue their permutation where the last one ended
+(sound skipped without a gap), and unplayed packets a flush threw away */
+static struct { long context, sound_class, bytes; unsigned long queued; } jump_records[GAP_RECORDS];
+static unsigned long jump_record_count = 0, flushed_unplayed = 0;
 extern unsigned long psp_last_frame_us; /* psp_platform.c, psp_frame_account */
 static unsigned long cut_sounds = 0, mix_worst_us = 0, lock_worst_us = 0, late_blocks = 0, clipped_blocks = 0, gap_worst_us = 0;
 
@@ -962,6 +970,18 @@ void psp_audio_report(void)
 				k + 1, gap_record_count, gap_records[k].context, gap_records[k].sound_class, gap_records[k].dry_ms,
 				gap_records[k].frame_ms);
 	}
+	{
+		unsigned long k, shown = jump_record_count < GAP_RECORDS ? jump_record_count : GAP_RECORDS;
+
+		if (jump_record_count || flushed_unplayed)
+			platform_log("audio: %lu packets didn't continue their sound where the last ended; %lu unplayed packets flushed",
+				jump_record_count, flushed_unplayed);
+		for (k = 0; k < shown; k++)
+			platform_log("audio: jump %lu of %lu: channel %ld, sound class %ld, %ld bytes from the last packet's end, %lu queued",
+				k + 1, jump_record_count, jump_records[k].context, jump_records[k].sound_class, jump_records[k].bytes,
+				jump_records[k].queued);
+	}
+	jump_record_count = flushed_unplayed = 0;
 	gap_record_count = 0;
 	memset(cut_by_reason, 0, sizeof(cut_by_reason));
 	dry_gaps = dry_gap_frames = dry_gap_worst = 0;
@@ -1144,6 +1164,20 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 		*input->pdwStatus = XMEDIAPACKET_STATUS_PENDING;
 	if (input->pdwCompletedSize)
 		*input->pdwCompletedSize = 0;
+	if (stream->queued_context && input->pContext == stream->queued_context && entry->data &&
+		entry->data != stream->queued_end)
+	{
+		if (jump_record_count < GAP_RECORDS)
+		{
+			jump_records[jump_record_count].context = (long)stream->context;
+			jump_records[jump_record_count].sound_class = stream->sound_class;
+			jump_records[jump_record_count].bytes = (long)(entry->data - stream->queued_end);
+			jump_records[jump_record_count].queued = stream->packet_count;
+		}
+		jump_record_count++;
+	}
+	stream->queued_end = entry->data ? entry->data + input->dwMaxSize : NULL;
+	stream->queued_context = input->pContext;
 	if (psp_sound_queueing_class >= 0)
 		stream->sound_class = psp_sound_queueing_class;
 	if (stream->packet_count && stream->dry_frames)
@@ -1193,6 +1227,14 @@ static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 		cut_sounds++;
 		cut_by_reason[psp_sound_stop_reason]++;
 	}
+	{
+		unsigned long position;
+
+		for (position = 0; position < stream->packet_count; position++)
+			if (!stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS].finished)
+				flushed_unplayed++;
+	}
+	stream->queued_context = NULL;
 	while (stream->packet_count)
 	{
 		struct voice_packet *head = &stream->packets[stream->packet_head];
