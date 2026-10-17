@@ -51,11 +51,12 @@ switch has the same texture placement */
 #define VRAM_BENCH_BYTES 0x40000
 static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
-/* build 117: the VRAM given to the model buffers by default, in KB */
-#define VRAM_MODELS_DEFAULT_KB 784
+/* the models' VRAM room by default, in KB: past 600 the texture cache is
+too small for b30, which then draws untextured for seconds at a time */
+#define VRAM_MODELS_DEFAULT_KB 600
 #define VRAM_TEXTURES_LEAST (256 * 1024) /* the least VRAM the texture cache keeps beside the models' room */
-/* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
-of the most-read model buffers (psp_tex_vram_models) */
+/* "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies of the
+most-read model buffers (psp_tex_vram_models) */
 static unsigned int vram_models_bytes = 0;
 #define LOAD_BUDGET_BYTES (96 * 1024) /* a frame's Memory Stick reads: ~7 ms */
 #define STAGING_BYTES (32 * 1024) /* build 68: 32 (was 64): 32 KB of zeroed data back; the Memory Stick gives 14.5 MB/s at 32 KB against 15.7 at 64 (halo_bench v10) */
