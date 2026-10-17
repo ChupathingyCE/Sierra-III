@@ -608,8 +608,13 @@ def kmeans_compare(tag, img, colors, new_rec):
             e = e + ((rec[:, 3].astype(np.float32) - pts[:, 3]) / 255.0) ** 2
         return float(np.sqrt(e).mean())
     e_old, e_new = error(old), error(new_rec.reshape(-1, 4)[:, :ch])
-    KMEANS_RESULTS.append((tag, colors, e_old, e_new))
-    print('kmeans compare: %s, %d colours, Oklab error old %.5f new %.5f' % (tag, colors, e_old, e_new))
+    # what k-means itself minimises: the summed squared distance in the
+    # clustered space (RGB or RGBA, 0-255), a mean per texel
+    sse_old = float(((old - pts) ** 2).sum(1).mean())
+    sse_new = float(((new_rec.reshape(-1, 4)[:, :ch].astype(np.float32) - pts) ** 2).sum(1).mean())
+    KMEANS_RESULTS.append((tag, colors, e_old, e_new, sse_old, sse_new))
+    print('kmeans compare: %s, %d colours, Oklab error old %.5f new %.5f; squared distance old %.2f new %.2f' % (
+        tag, colors, e_old, e_new, sse_old, sse_new))
 
 
 KMEANS_RESULTS = []
@@ -627,10 +632,14 @@ def kmeans_summary():
           'over 3%%: %d; better by over 1%%: %d' % (len(old), old.mean(), new.mean(), 100 * (new.mean() / old.mean() - 1),
                                                   int((change > 0.01).sum()), int((change > 0.03).sum()),
                                                   int((change < -0.01).sum())))
+    sse_change = np.array([r[5] / max(r[4], 1e-12) - 1 for r in KMEANS_RESULTS])
+    print('kmeans compare summary: the squared distance k-means minimises: worse by over 1%%: %d, over 3%%: %d; '
+          'better by over 1%%: %d' % (int((sse_change > 0.01).sum()), int((sse_change > 0.03).sum()), int((sse_change < -0.01).sum())))
     for k in np.argsort(-change)[:8]:
         if change[k] > 0.01:
-            tag, colors, e_old, e_new = KMEANS_RESULTS[k]
-            print('kmeans compare worse: %s, %d colours, %.5f -> %.5f (%+.1f%%)' % (tag, colors, e_old, e_new, 100 * change[k]))
+            tag, colors, e_old, e_new, s_old, s_new = KMEANS_RESULTS[k]
+            print('kmeans compare worse: %s, %d colours, %.5f -> %.5f (%+.1f%%); squared distance %.2f -> %.2f' % (
+                tag, colors, e_old, e_new, 100 * change[k], s_old, s_new))
 
 
 def fit_palette(img, colors):
