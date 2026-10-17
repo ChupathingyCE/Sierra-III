@@ -301,7 +301,7 @@ static void controls_update(const SceCtrlData *pad, unsigned int now)
 
 	if (crouch_toggle_on < 0)
 	{
-		int ms = psp_keep_number("actionhold", 250);
+		int ms = psp_keep_number("actionhold", 180);
 
 		crouch_toggle_on = !psp_keep("crouchhold");
 		action_split_on = !psp_keep("actiontap");
