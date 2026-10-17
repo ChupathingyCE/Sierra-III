@@ -9496,13 +9496,14 @@ static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, co
 	if (off)
 		return;
 	bound = psp_tex_bind(model_detail_key, NULL);
-	/* each detail map's first draw, logged: whether the pack holds it */
+	/* each detail map's first draw, logged: drawn, or not in memory yet
+	(still streaming in, or not in the pack) */
 	if (model_detail_key != logged[0] && model_detail_key != logged[1] && model_detail_key != logged[2])
 	{
 		logged[logs++ % 3] = model_detail_key;
 		if (logs <= 12)
 			platform_log("GE: model detail %08x at %.2f x %.2f: %s", model_detail_key, model_detail_u,
-				model_detail_v, bound ? "drawn" : "not in the pack");
+				model_detail_v, bound ? "drawn" : "not in memory yet");
 	}
 	if (!bound)
 		return;
