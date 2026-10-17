@@ -49,7 +49,7 @@ umount $psp
 |---|---|---|---|---|
 | 1 | Boot normally from the XMB | Time from the XMB to the menu answering; then Campaign into The Pillar of Autumn (a10); listen through the load | The cryo prompt shows | The start-up (and how long the boot log shows), the chant, the settle |
 | 2 | a10, preset **1** | Play to the end of a10 so it loads a30 | a30's first view | The trail between levels, the chant, the settle there |
-| 3 | The multiplayer build (its own zip) | Join a `[C]` server of Milenko's, play a game on Prisoner if one runs | 5 min, or a drop | The heap on Prisoner, with the glyph sheet's 16 KB back |
+| 3 | The multiplayer build: `halo_psp_b137mp.zip` (SHA-256 `601d0d75…`, EBOOT `b0c8b601…`, lab sierra-build 39036478850, repacked into `PSP/GAME/halomp` as `multiplayer_setup.md` §1 does), unzipped over the stick as in §6; the mp134 maps | Join a `[C]` server of Milenko's, play a game on Prisoner if one runs | 5 min, or a drop | The heap on Prisoner, with the glyph sheet's 16 KB back |
 
 b136's open tests (wake-on-write's hits on b30, the controls on a30, the sleep test with `nomeaudio`) move to b137.
 
