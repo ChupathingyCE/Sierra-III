@@ -52,8 +52,25 @@ Also:
 - WLAN power save is logged at the join.
 - **`tunnelpoll`** reads every tunnel socket each pass, ready or not. As an A/B it ruled out select missing ready sockets.
 
+## 6. The stack's own threads above the game thread (`psp_net.c`, `457b118`)
+
+**Why:** `sceNetInit` started the stack's timer thread and its network interrupt thread (what moves arrived packets from the Wi-Fi driver into the sockets) at 0x20, the game thread's own priority. The PSP shares no time between equal priorities [D], and in a public game the game thread catches up for 0.5–2.5 s without waiting, so the stack's pool drained in every game [M].
+- **The change:** `NET_THREAD_PRIORITY` 0x1d, through `psp_net_stack_priority()`, for both `sceNetInit` calls (internet and ad hoc): above the tunnel (0x1f in a game) and the game thread, under the cache file thread (0x1c).
+- **Keep word:** `netprioN` (decimal; `netprio32` puts back 0x20). The start-up log names the stack's threads as the firmware has them (`psp_net_log_threads`, `sceKernelGetThreadmanIdList`).
+- **What it changed [M]:** the pool no longer drains in a game (38987358496). It didn't stop the drop.
+
+## 7. Test switches and diagnostics (`795a0c2`, `b12a9f1`, `1073e50`)
+
+Off unless named; none changes play.
+- **`netyieldN`** (`psp_net_tick`, called after each tick from `psp_tick_account` in the multiplayer build only): while joined, the game thread waits 1 ms every N ms of ticks. `netyield10` didn't help [M].
+- **`apctlprioN`:** the access point thread's priority (0x42 otherwise).
+- **Unknown errnos:** `fail()` and `succeed()` became macros over `fail_in` and `succeed_in` that carry the calling function's name (`__func__`), and every unknown errno is logged with the call and the thread, the first 32. It named errno 2 as the tunnel's `accept` with nothing waiting (harmless).
+- **The tunnel's packets by size** (`#tunnelreport`: `psp_streams.sizes`, `psp_tunnel_sizes`), in tcpdump's units, on a log line of their own every 10 s.
+
 ## Open
 
-- **The drop** (`build_mpb4.md`): the host's packets stop reaching the tunnel within seconds of the game starting. Next: a public game hosted on Sheepdog01's own network.
+- **The drop** (`build_mpb4.md`): the host's stream stalls behind one missing segment; full-size packets reach the tunnel far more rarely than smaller ones. Next: the access point's own counts, and the PSP's place against the antenna.
+- **KCP and a full heap:** `ikcp_malloc`'s NULL is written through (a crash in a 13-player game). Its allocations need a check or a reserve.
+- **A refused Wi-Fi join** isn't tried again until a socket is asked for.
 - The tick in a 12-player game, and why 30 biped updates a tick.
 - **Heap:** the top reached 3,716 of 3,720 KB in a join on the PSP-3000 (38950938673).
