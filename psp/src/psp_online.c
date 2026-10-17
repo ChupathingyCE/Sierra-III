@@ -48,6 +48,8 @@ waited for, it stops waiting). */
 #include <string.h>
 #include <time.h>
 
+#include <pspiofilemgr.h>
+
 #include "p2p.h"
 #include "../include/psp_paths.h"
 
@@ -702,10 +704,42 @@ int psp_keep(const char *name);
 int psp_keep_number(const char *name, int otherwise);
 void psp_exit_game(const char *why);
 
+/* keep word onlinejoin=<prefix>: onlinetest joins only a game whose name
+starts with it, so a run can be pointed at servers whose owner agreed to
+tests (Milenko's are named "[C] ..."). keep.txt is read here because the
+platform's keep words carry yes/no and numbers, not text; the value ends at
+a space or a comma, as the words do */
+static void test_join_prefix(char *prefix, int size)
+{
+	static const char word[] = "onlinejoin=";
+	char text[512];
+	const char *found;
+	int length = 0, count;
+	/* (the firmware's own calls, as keep_load reads the file: the game's
+	fopen would take ms0:/ for an Xbox path under its data folder) */
+	SceUID file = sceIoOpen(PSP_DATA_ROOT "/keep.txt", PSP_O_RDONLY, 0);
+
+	prefix[0] = '\0';
+	if (file >= 0)
+	{
+		length = sceIoRead(file, text, sizeof(text) - 1);
+		sceIoClose(file);
+	}
+	text[length > 0 ? length : 0] = '\0';
+	found = strstr(text, word);
+	if (!found)
+		return;
+	found += sizeof(word) - 1;
+	for (count = 0; count < size - 1 && found[count] && !strchr(" \t\r\n,", found[count]); count++)
+		prefix[count] = found[count];
+	prefix[count] = '\0';
+}
+
 void psp_online_test_update(
 	boolean main_menu_loaded)
 {
 	static int mode = -1, done_seconds;
+	static char join_prefix[32];
 	static unsigned long menu_time, opened_time, test_logged_time;
 	static boolean opened, join_tried;
 	unsigned long now = system_milliseconds();
@@ -714,6 +748,12 @@ void psp_online_test_update(
 	{
 		mode = psp_keep("onlinetest") ? 2 : psp_keep("onlinelist") ? 1 : 0;
 		done_seconds = psp_keep_number("onlinedone", 0);
+		if (mode == 2)
+		{
+			test_join_prefix(join_prefix, (int)sizeof(join_prefix));
+			if (join_prefix[0])
+				platform_log("online games: test: joining only a game named \"%s...\" (onlinejoin=)", join_prefix);
+		}
 	}
 	if (!mode)
 		return;
@@ -773,7 +813,8 @@ void psp_online_test_update(
 			{
 				struct p2p_listing const *game = &online.games[index];
 
-				if (!psp_join_blocker(game) && (pass || game->dedicated))
+				if (!psp_join_blocker(game) && (pass || game->dedicated) &&
+					(!join_prefix[0] || !strncmp(game->name, join_prefix, strlen(join_prefix))))
 					break;
 			}
 		}
