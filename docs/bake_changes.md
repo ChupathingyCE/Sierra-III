@@ -37,4 +37,15 @@ Before the disc [E, synthetic]:
 - 48 test palettes (16 and 256 colours): the mean error 0.4% lower than scikit-learn's; single textures up to ~4% either way.
 - 1,200 random decal layouts: every layer's area the same to a millionth of the triangle wherever Triangle succeeded, and three it failed on ("topological inconsistency") cut correctly.
 
-On the disc: the proof bake `newbake138` (a10, b30, c20, d20, ui), then emulator shots of b30's and c20's decals against b136's bake. Results to follow here.
+On the disc [E]:
+- **Decals** (bake `newbake138b`, lab 39060964206): b30's 372 cuts identical in area, layer by layer; c20's 523 cuts identical but one, which differs by a millionth of its triangle.
+- **Palettes** (`newbake138b` and `newbake138c`, lab 39060964206 and 39064617089): the mean Oklab error 2.9–3.4% lower on every map. A few 16-colour palettes come out far worse by Oklab (sparks +265%, soft flares +237%, the HUD's ammo icons +223%), the same ones on every map and whatever the start. By the measure k-means itself minimises (the squared distance in RGBA), the new palettes fit better in 505 of a10's palettes by over 1% and worse in 82, and every Oklab outlier fits *better* (sparks 32.3 → 29.8): those are textures whose colour sits under transparent texels, where the two measures disagree, not worse fits.
+- **On the screen** (lab 39066154694, b138's code on both bakes, frame-locked): the same look. On c20, 5–18 thousand pixels a frame differ by a few levels (the new palettes), and 1–131 by more than 24 (the edge of a blue light's glow); b30's flight the same, with its decals placed and cut alike. The sparks and flares the Oklab outliers named draw as before.
+
+## The loading screen's picture (go_live 3.5)
+
+The bake also reads the disc's `maps/loading.tga` (the picture the Xbox's loading screen draws under its sweeping band) into `halo/maps/loading.pic`: 320 x 240 on a 256-colour palette from the same k-means, 76 KB (`bake/lib/loading_picture.py`). The EBOOT carries none of it. A bake without it still works: the loading screen then draws its trail alone.
+
+## What a player needs to do
+
+Bake again with build 139's bundle: the palettes and decal cuts change, and `loading.pic` is new.
