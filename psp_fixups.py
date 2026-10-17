@@ -23203,7 +23203,7 @@ FIXES_LD1["source/game/game_time.c#lightsframe"] = [
 ]
 
 
-# ---------- the campaign's update rings (b139; memory_savings S6, for a10's heap)
+# ---------- the campaign's update rings (memory_savings S6, for a10's heap)
 # A campaign game is local: each frame builds at most 7 ticks' updates
 # (game_time.c: a local connection's cap) and takes them all before the next
 # (update_client_local_ticks, then each tick's update_client_dequeue), and
