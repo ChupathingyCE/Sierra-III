@@ -36,6 +36,17 @@ struct psp_unaligned_ulong { unsigned long value; } __attribute__((packed));
 #else
 #define PSP_UNALIGNED_ULONG(address) (*(unsigned long *)(address))
 #endif
+/* the same for a short and a 64-bit value: a network packet's values sit at
+any byte offset (data_encoding.c, psp_fixups.py) */
+#ifdef HALO_PSP
+struct psp_unaligned_short { short value; } __attribute__((packed));
+struct psp_unaligned_int64 { long long value; } __attribute__((packed));
+#define PSP_UNALIGNED_SHORT(address) (((struct psp_unaligned_short *)(address))->value)
+#define PSP_UNALIGNED_INT64(address) (((struct psp_unaligned_int64 *)(address))->value)
+#else
+#define PSP_UNALIGNED_SHORT(address) (*(short *)(address))
+#define PSP_UNALIGNED_INT64(address) (*(long long *)(address))
+#endif
 /* build 116: the same for a float, and for three in a row (a point or a
 vector) copied to an aligned place. Bungie's compressed animations can hold
 their float tables at an address 2 past a multiple of 4: b115 faulted on a10's
@@ -67,10 +78,29 @@ one record (psp_fixups.py) */
 #define PSP_DEBUG_COUNT(count) (count)
 #endif
 
-/* ---------- session limits */
+/* ---------- session limits
 
+The campaign build keeps the Xbox's 16 players on 4 machines: it has one
+player, and these size records it still carries (halo-psp-feasibility.md,
+2026-10-01). The multiplayer build (psp_build.py's PSP_MULTIPLAYER) takes
+the native builds' 128 and 128: the game settings record goes over the wire
+as raw bytes, its size checked, so only the same limits can join a PC's
+game or let a PC join a PSP's (docs/multiplayer_plan.md, section 3). */
+#ifdef PSP_MULTIPLAYER
+#define HALO_PORT_MAXIMUM_NETWORK_PLAYERS 128
+#define HALO_PORT_MAXIMUM_NETWORK_MACHINES 128
+#else
 #define HALO_PORT_MAXIMUM_NETWORK_PLAYERS 16
 #define HALO_PORT_MAXIMUM_NETWORK_MACHINES 4
+#endif
+
+/* ... a game the PSP hosts: at most this many machines (its own included)
+and players. The host's own records (its machines' slots, what each late
+joiner was started with, where every player was to check what clients
+report) are sized for this, not for the session limits above, which a PSP
+only meets as a client (psp_fixups.py, FIXES_MULTIPLAYER) */
+#define PSP_HOST_MAXIMUM_NETWORK_MACHINES 16
+#define PSP_HOST_MAXIMUM_NETWORK_PLAYERS 16
 
 /* a host polls its listening socket and one socket per machine; the Xbox's
 Winsock headers default to 64 (the prefix headers define FD_SETSIZE from
@@ -118,12 +148,14 @@ client does not join a host of another version, but tells the player which
 is newer (network_client_manager.c). A host advertises it, with its netcode,
 in its game's advertisement's reserved bytes (network_server_message_handler.c),
 which hosts built before there was a version send as zeros: version 0.
-Raise it with any change to what the machines send each other. */
-#define HALO_PORT_NETWORK_VERSION 24
+Raise it with any change to what the machines send each other. The PSP's
+numbers are the engine pin's (ChupathingyCE v0.7.5d: 29, joining 11 to 30):
+move them with the pin, since the PSP compiles that pin's netcode */
+#define HALO_PORT_NETWORK_VERSION 29
 /* ... the versions whose hosts a client joins (ChupathingyCE: delta.h's
 table, DELTA_LEGACY_VERSIONS); code asks the functions, not the numbers */
 #define HALO_PORT_NETWORK_VERSION_MINIMUM 11
-#define HALO_PORT_NETWORK_VERSION_MAXIMUM 24
+#define HALO_PORT_NETWORK_VERSION_MAXIMUM 30
 int delta_legacy_announce(void);
 int delta_legacy_minimum(void);
 int delta_legacy_maximum(void);

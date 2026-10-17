@@ -27,6 +27,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include <pspsuspend.h>
 #include <pspdmac.h>
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
@@ -42,7 +43,7 @@ struct pack_entry
 	unsigned int offset, size;
 };
 
-#define VRAM_CACHE_START 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+#define VRAM_CACHE_START 0x000D8000 /* after two frame buffers, the depth buffer, the motion sensor's 16 KB target and the button glyph sheet's 32 KB (psp_ge.c) */
 #define VRAM_CACHE_END_FULL 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
 /* build 93: benchrun keeps VRAM's last 256 KB for its bus tests (the display
 list in VRAM, the VRAM-only GE load; psp_ge.c), for the whole run so every
@@ -51,7 +52,7 @@ switch has the same texture placement */
 static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
 /* build 117: the VRAM given to the model buffers by default, in KB */
-#define VRAM_MODELS_DEFAULT_KB 600
+#define VRAM_MODELS_DEFAULT_KB 592 /* half the room after the glyph sheet (0xD8000 to the end: 1,184 KB): the most the check below allows, which refused 600 and left the models in main RAM */
 /* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
 of the most-read model buffers (psp_tex_vram_models) */
 static unsigned int vram_models_bytes = 0;
@@ -60,6 +61,11 @@ static unsigned int vram_models_bytes = 0;
 
 /* the lightmap page the next level surfaces use (rasterizer.c, psp_fixups.py) */
 unsigned int psp_lightmap_key = 0;
+
+/* a texture in its own colours (GU_PSM_5650 to GU_PSM_8888), not indices
+into a palette; and the bytes a texel of a texture takes (T8 and direct) */
+#define DIRECT(entry) ((entry)->psm <= GU_PSM_8888)
+#define TEXEL_BYTES(entry) ((entry)->psm == GU_PSM_8888 ? 4u : DIRECT(entry) ? 2u : 1u)
 
 static SceUID pack = -1;
 static struct pack_entry *entries = NULL;
@@ -297,10 +303,18 @@ void *psp_tex_carve(unsigned int bytes)
 	if (!ram_cache || bytes > ram_cache_bytes)
 		return NULL;
 	carved_bytes = bytes;
-	if (arenas[1].end > (unsigned int)ram_cache + ram_cache_bytes - carved_bytes)
-		arenas[1].end = (unsigned int)ram_cache + ram_cache_bytes - carved_bytes;
-	else if (!bytes && squeezed != 1 && squeezed != 2)
-		arenas[1].end = (unsigned int)ram_cache + ram_cache_bytes;
+	/* the cache runs to the carve, wherever the last map's carve left it: a
+	smaller carve gives the room back (a level's 1-2 MB, then the main
+	menu's own pack's size), as no carve at all always did */
+	{
+		unsigned int top = (unsigned int)ram_cache + ram_cache_bytes - carved_bytes;
+
+		if (squeezed == 1 && top > arenas[1].start + SQUEEZED_BYTES)
+			top = arenas[1].start + SQUEEZED_BYTES;
+		else if (squeezed == 2)
+			top = arenas[1].start;
+		arenas[1].end = top;
+	}
 	if (arenas[1].next > arenas[1].end)
 		arenas[1].next = arenas[1].start;
 	/* anything resident past the end is forgotten */
@@ -516,12 +530,12 @@ static int bind_totals_load(void)
 	SceUID file;
 	int ok = 0, index;
 
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", map_name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.vram", map_name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (file < 0)
 	{
 		/* build 89: a save whose rename didn't happen (vram_write) */
-		snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram.tmp", map_name);
+		snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.vram.tmp", map_name);
 		file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	}
 	if (file < 0)
@@ -568,7 +582,7 @@ static int vram_write(const char *map, const unsigned int *totals, unsigned int 
 	SceUID file;
 	int ok = 0;
 
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", map);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.vram", map);
 	snprintf(temp, sizeof(temp), "%s.tmp", path);
 	file = sceIoOpen(temp, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	if (file < 0)
@@ -674,22 +688,34 @@ asset track ("assettrack", launch menu), the map's <map>_track.ptex when
 there is one, the same textures baked another way (lightmaps at half size),
 so one game runs either data set; "assetdetail", <map>_detail.ptex, a pack
 baked with some classes at full size (texpack.py --full-detail fp,...).
+Before them, the main menu's ui_showcase.ptex (texpack.py --showcase: every
+map at its own size, the objects and the sky in their own colours), unless
+"noshowcase": the menu is the hardware's showcase (CLAUDE.md), and the pack
+is read on ui.map alone, so the levels never pay for it. "showcasepal":
+ui_showcase_pal.ptex instead, the same sizes on 256-colour palettes.
 Last, the usual <map>.ptex. Returns 0 for a candidate whose keep word is off */
-#define PACK_CANDIDATES 3
+#define PACK_CANDIDATES 4
 static int pack_candidate(const char *name, int which, char *path, int size, const char **word)
 {
 	static const char *const words[2] = { "assettrack", "assetdetail" }, *const suffixes[2] = { "_track", "_detail" };
 
 	*word = NULL;
-	if (which < 2)
+	if (which == 0)
 	{
-		if (!psp_keep(words[which]))
+		if (strcmp(name, "ui") != 0 || psp_keep("noshowcase"))
 			return 0;
-		*word = words[which];
-		snprintf(path, size, "ms0:/halo/maps/%s%s.ptex", name, suffixes[which]);
+		*word = psp_keep("showcasepal") ? "showcasepal" : "showcase";
+		snprintf(path, size, PSP_MAPS_ROOT "/%s_%s.ptex", name, psp_keep("showcasepal") ? "showcase_pal" : "showcase");
+	}
+	else if (which < 3)
+	{
+		if (!psp_keep(words[which - 1]))
+			return 0;
+		*word = words[which - 1];
+		snprintf(path, size, PSP_MAPS_ROOT "/%s%s.ptex", name, suffixes[which - 1]);
 	}
 	else
-		snprintf(path, size, "ms0:/halo/maps/%s.ptex", name);
+		snprintf(path, size, PSP_MAPS_ROOT "/%s.ptex", name);
 	return 1;
 }
 
@@ -1015,6 +1041,13 @@ static unsigned long read_us = 0, frame_read_us = 0, frame_read_worst = 0;
 extern volatile unsigned long psp_stick_read_us; /* build 126: every blocking Memory Stick read's time (psp_frametrace.c) */
 /* build 73: this heartbeat window's reads, for the log's io: line */
 static PSP_MAIN_SIDE unsigned long window_reads = 0, window_us = 0, window_worst_us = 0; /* build 118: the heartbeat resets them */
+/* every read, deferral and wait so far: the loading screen's settle waits
+for it to stop moving (psp_loading.c) */
+unsigned long psp_tex_load_count(void)
+{
+	return loads + misses + waits;
+}
+
 void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us)
 {
 	*reads = window_reads;
@@ -1246,8 +1279,10 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	last_frame[index] = frame;
 	if (bind_counts && bind_counts[index] < 65535)
 		bind_counts[index]++;
-	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit palette */
-	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
+	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit
+	palette; or a texture in its own colours (the showcase's, ui.map:
+	texpack.py --showcase), with no palette */
+	palette_bytes = DIRECT(entry) ? 0 : (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
 	address = resident_at[index];
 	/* build 114: statememo (above) */
 	if (memo_on < 0)
@@ -1261,19 +1296,23 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	}
 	psp_tex_binds_sent++;
 	start = address; /* where the texture starts (address moves past the palette and levels) */
-	__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
-	__real_sceGuClutLoad(palette_bytes / 32, (void *)address);
+	if (palette_bytes)
+	{
+		__real_sceGuClutMode(entry->clut, 0, 0xFF, 0);
+		__real_sceGuClutLoad(palette_bytes / 32, (void *)address);
+	}
 	__real_sceGuTexMode(entry->psm, entry->levels - 1, 0, 1);
 	address += palette_bytes;
 	width = entry->width;
 	height = entry->height;
 	for (level = 0; level < entry->levels; level++)
 	{
-		unsigned int bytes = entry->psm == GU_PSM_T4 ? (width + 1) / 2 : width;
+		unsigned int bytes = entry->psm == GU_PSM_T4 ? (width + 1) / 2 : width * TEXEL_BYTES(entry);
 		unsigned int row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u, rows = (height + 7) & ~7u;
 
 		/* the buffer width is in pixels */
-		__real_sceGuTexImage(level, width, height, entry->psm == GU_PSM_T4 ? row * 2 : row, (void *)address);
+		__real_sceGuTexImage(level, width, height, entry->psm == GU_PSM_T4 ? row * 2 : row / TEXEL_BYTES(entry),
+			(void *)address);
 		address += row * rows;
 		width = width > 1 ? width / 2 : 1;
 		height = height > 1 ? height / 2 : 1;
@@ -1301,7 +1340,7 @@ int psp_tex_palette(unsigned int key, const unsigned int **palette, int *count)
 {
 	int index = key && entries ? find(key) : -1;
 
-	if (index < 0 || !resident_at[index] || entries[index].clut != GU_PSM_8888)
+	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]) || entries[index].clut != GU_PSM_8888)
 		return 0;
 	*palette = (const unsigned int *)(resident_at[index] | 0x40000000);
 	*count = entries[index].psm == GU_PSM_T4 ? 16 : 256;
@@ -1344,7 +1383,7 @@ int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *cou
 {
 	int index = key && entries ? find(key) : -1;
 
-	if (index < 0 || !resident_at[index] || entries[index].clut != GU_PSM_5650)
+	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]) || entries[index].clut != GU_PSM_5650)
 		return 0;
 	*palette = (const unsigned short *)(resident_at[index] | 0x40000000);
 	*count = entries[index].psm == GU_PSM_T4 ? 16 : 256;
@@ -1361,7 +1400,7 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	unsigned int palette_bytes, bytes, row, rows, total, step, at, sum[3] = { 0, 0, 0 }, n = 0;
 	const unsigned char *texels;
 
-	if (index < 0 || !resident_at[index])
+	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]))
 		return 0;
 	if (averages_count != entry_count)
 	{

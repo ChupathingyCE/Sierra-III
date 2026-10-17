@@ -31,6 +31,7 @@ psp_geo_generation(), which changes with every load into the block. */
 #include <malloc.h>
 #include <string.h>
 #include "psp_me.h" /* psp_on_me */
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -731,7 +732,7 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 		return;
 	if (!outside)
 		return;
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.pgeo", name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pgeo", name);
 	pack = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (pack < 0)
 	{
@@ -792,6 +793,16 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 				heap_arena = NULL;
 			}
 			arena_bytes = psp_keep("geo2") ? 2048 * 1024 : psp_keep("geo15") ? 1536 * 1024 : ARENA_BYTES;
+			/* the main menu, the showcase (CLAUDE.md): its whole pack (ui's
+			is about 130 KB) and 64 KB to spare, so the rest of the 1 MB is
+			left to the textures it draws at full size */
+			{
+				extern int psp_showcase_map;
+				unsigned int whole = ((pack_size + 0xFFFFu) & ~0xFFFFu) + 0x10000u;
+
+				if (psp_showcase_map && whole < arena_bytes)
+					arena_bytes = whole;
+			}
 			arena = psp_tex_carve(arena_bytes);
 			arena_carved = arena != NULL;
 		}

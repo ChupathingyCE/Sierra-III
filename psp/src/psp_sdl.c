@@ -20,10 +20,12 @@ bring-up build doesn't use.
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
 #include <psprtc.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 
@@ -43,7 +45,7 @@ static SceInt64 input_script_start = 0;
 
 static void input_script_load(void)
 {
-	FILE *file = fopen("ms0:/halo/input.txt", "r");
+	FILE *file = fopen(PSP_DATA_ROOT "/input.txt", "r");
 	char line[128];
 
 	if (!file)
@@ -99,7 +101,7 @@ static void controller_initialize(void)
 		{
 			SceIoStat status;
 
-			walk_test = sceIoGetstat("ms0:/halo/walktest.txt", &status) >= 0;
+			walk_test = sceIoGetstat(PSP_DATA_ROOT "/walktest.txt", &status) >= 0;
 			if (walk_test)
 				platform_log("walk test: holding forward, turning right (delete walktest.txt to stop)");
 		}
@@ -165,21 +167,297 @@ bool SDL_ResumeAudioStreamDevice(SDL_AudioStream *stream) { (void)stream; return
 
 /* ---------- the PSP's controls as one gamepad
 
-Placeholder mapping (the PSP has one stick; a real control scheme is a
-design decision for later):
-  analog stick        -> right stick (look)
+The PSP is one Xbox pad to the engine, and the engine's own profile settings
+(button and stick presets, look sensitivity, invert) apply on top of it, so
+every Halo layout works with this one physical layout
+(docs/game_feature_survey.md, section 4.5). In play:
+  nub                 -> right stick (look), calibrated if nub.txt says so
   triangle / cross    -> left stick up / down (move forward / back)
   square / circle     -> left stick left / right (strafe)
   R / L               -> right / left trigger (fire / grenade)
   d-pad up            -> A (jump)       d-pad down  -> B (melee)
-  d-pad left          -> X (reload)     d-pad right -> Y (switch weapon)
-  start / select      -> start / back */
+  d-pad left          -> X: a tap reloads, a hold acts (vehicles, switches)
+  d-pad right         -> Y (switch weapon)
+  select, tapped      -> right-stick click (zoom)
+  select + up         -> left shoulder (flashlight)
+  select + down       -> left-stick click (crouch), toggled
+  select + L          -> right shoulder (switch grenades)
+  select + right      -> a screenshot; select + left -> the debug menu
+  start               -> start
+In Halo's menus the buttons are the pad's own (cross A, circle B, square X,
+triangle Y; the D-pad and the nub move). */
 
 /* the last controls the game read, for the heartbeat (psp_platform.c) */
 volatile unsigned int psp_pad_buttons, psp_pad_reads;
 volatile int psp_pad_lx = 128, psp_pad_ly = 128;
 
 static int pad_swallowed = 0; /* build 77: the debug menu has the pad */
+
+/* ---------- crouch toggled, reload and action apart, the nub calibrated
+
+Crouch: the engine passes the crouch button on only while the move stick is
+short of 98% of its travel (player_control.c), the Xbox's own rule; the
+face buttons always move at full travel, so crouch worked only standing
+still. Select + down now toggles it, and the engine's port crouch path (the
+keyboard's, as Halo PC crouches at any speed) lets it through at any speed.
+"crouchhold": held, under the engine's rule, as before.
+
+X: the engine acts on a tap (vehicles, switches) and reloads when there is
+nothing to act on, so a reflexive reload could throw the player out of a
+vehicle. Now a tap of d-pad left reloads (the engine's reload control) and a
+hold past "actionholdN" ms (250 by default) acts, never reloading (the
+port's action-only control); picking a weapon up takes the engine's own
+swap hold on top. "actiontap": X as the engine reads it, as before.
+
+The nub: see nub_calibrate below. */
+static int crouch_toggle_on = -1, crouch_toggled = 0, crouch_chord_held = 0;
+/* crouch toggles, reload taps, action holds, and the reloads and actions the
+engine took (psp_input_port_*), for the heartbeat */
+volatile unsigned int controls_events[5];
+static int action_split_on = -1, action_down = 0, action_acting = 0, reload_pending = 0;
+static unsigned int action_hold_us = 250000, action_down_at = 0;
+/* the nub's rest point, its dead radius and its reach left, right, up and
+down, in the PSP's units (0-255, rest near 128); nub_calibrated 0: the
+mapping of builds 1-134 */
+static int nub_calibrated = -1;
+static float nub_rest_x = 128.0f, nub_rest_y = 128.0f, nub_dead = 24.0f, nub_reach[4] = { 127.0f, 127.0f, 127.0f, 127.0f };
+/* the furthest the nub has gone each way, for the heartbeat (and for
+choosing a calibration) */
+volatile int psp_nub_seen[4] = { 128, 128, 128, 128 };
+
+int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
+static int in_menus(void);
+
+/* ms0:/halo/nub.txt, "rest X Y", "dead D", "reach LEFT RIGHT UP DOWN" (in the
+PSP's units), or the keep words "nubdeadN" and "nubreachN" (percent of a
+half travel, 128) over the defaults; with neither, the nub maps as before */
+static void nub_calibrate_load(void)
+{
+	FILE *file = fopen("ms0:/halo/nub.txt", "r");
+	int dead = psp_keep_number("nubdead", -1), reach = psp_keep_number("nubreach", -1);
+	char line[96];
+
+	nub_calibrated = 0;
+	if (file)
+	{
+		while (fgets(line, sizeof(line), file))
+		{
+			float a, b, c, d;
+
+			if (sscanf(line, "rest %f %f", &a, &b) == 2)
+				nub_rest_x = a, nub_rest_y = b, nub_calibrated = 1;
+			else if (sscanf(line, "dead %f", &a) == 1)
+				nub_dead = a, nub_calibrated = 1;
+			else if (sscanf(line, "reach %f %f %f %f", &a, &b, &c, &d) == 4)
+				nub_reach[0] = a, nub_reach[1] = b, nub_reach[2] = c, nub_reach[3] = d, nub_calibrated = 1;
+		}
+		fclose(file);
+	}
+	if (dead >= 0)
+		nub_dead = dead * 1.28f, nub_calibrated = 1;
+	if (reach > 0)
+		nub_reach[0] = nub_reach[1] = nub_reach[2] = nub_reach[3] = reach * 1.28f, nub_calibrated = 1;
+	if (nub_calibrated)
+		platform_log("controls: the nub calibrated: rest %.0f %.0f, dead %.0f, reach %.0f %.0f %.0f %.0f (left right up down)",
+			(double)nub_rest_x, (double)nub_rest_y, (double)nub_dead, (double)nub_reach[0], (double)nub_reach[1],
+			(double)nub_reach[2], (double)nub_reach[3]);
+}
+
+/* the calibrated nub as the engine's right stick: a push just past the dead
+radius lands just past the engine's own dead zone (9,000 of 32,767 an axis,
+input_xbox.c), and the reach on full scale, so the engine's response curve,
+its acceleration when pegged and its aim assist see the range they were
+tuned for. The dead radius is round, so diagonals aren't cut */
+static void nub_calibrated_axes(unsigned char lx, unsigned char ly, Sint16 *x, Sint16 *y)
+{
+	const float engine_dead = 9001.0f / 32767.0f;
+	float dx = (float)lx - nub_rest_x, dy = (float)ly - nub_rest_y;
+	float rx = dx < 0.0f ? nub_reach[0] : nub_reach[1], ry = dy < 0.0f ? nub_reach[2] : nub_reach[3];
+	float nx = dx / (rx > 1.0f ? rx : 1.0f), ny = dy / (ry > 1.0f ? ry : 1.0f);
+	float r = sqrtf(dx * dx + dy * dy), n = sqrtf(nx * nx + ny * ny), reach, amount, ax, ay;
+
+	*x = *y = 0;
+	if (r <= nub_dead || n <= 0.0f)
+		return;
+	/* the reach in this direction (its ellipse), and how far between the
+	dead radius and it the nub is */
+	reach = r / n;
+	amount = reach > nub_dead ? (r - nub_dead) / (reach - nub_dead) : 1.0f;
+	amount = amount > 1.0f ? 1.0f : amount;
+	ax = nx / n * amount;
+	ay = ny / n * amount;
+	if (ax > 0.001f || ax < -0.001f)
+		*x = (Sint16)((ax < 0.0f ? -1.0f : 1.0f) * (engine_dead + (1.0f - engine_dead) * fabsf(ax)) * 32767.0f);
+	if (ay > 0.001f || ay < -0.001f)
+		*y = (Sint16)((ay < 0.0f ? -1.0f : 1.0f) * (engine_dead + (1.0f - engine_dead) * fabsf(ay)) * 32767.0f);
+}
+
+/* once a fresh read: the crouch toggle and X's tap or hold */
+static void controls_update(const SceCtrlData *pad, unsigned int now)
+{
+	unsigned int b = pad->Buttons;
+	int chord, x_down;
+
+	if (crouch_toggle_on < 0)
+	{
+		int ms = psp_keep_number("actionhold", 250);
+
+		crouch_toggle_on = !psp_keep("crouchhold");
+		action_split_on = !psp_keep("actiontap");
+		action_hold_us = (unsigned int)(ms < 50 ? 50 : ms > 2000 ? 2000 : ms) * 1000u;
+		nub_calibrate_load();
+	}
+	if (pad->Lx < psp_nub_seen[0]) psp_nub_seen[0] = pad->Lx;
+	if (pad->Lx > psp_nub_seen[1]) psp_nub_seen[1] = pad->Lx;
+	if (pad->Ly < psp_nub_seen[2]) psp_nub_seen[2] = pad->Ly;
+	if (pad->Ly > psp_nub_seen[3]) psp_nub_seen[3] = pad->Ly;
+	if (pad_swallowed || in_menus())
+	{
+		crouch_chord_held = 0;
+		action_down = action_acting = 0;
+		return;
+	}
+	chord = (b & (PSP_CTRL_SELECT | PSP_CTRL_DOWN)) == (PSP_CTRL_SELECT | PSP_CTRL_DOWN);
+	if (chord && !crouch_chord_held && crouch_toggle_on)
+	{
+		crouch_toggled = !crouch_toggled;
+		controls_events[0]++;
+	}
+	crouch_chord_held = chord;
+	x_down = (b & PSP_CTRL_LEFT) && !(b & PSP_CTRL_SELECT);
+	if (x_down && !action_down)
+		action_down_at = now;
+	if (x_down && !action_acting && now - action_down_at >= action_hold_us)
+	{
+		action_acting = 1;
+		controls_events[2]++;
+	}
+	if (!x_down && action_down && !action_acting)
+	{
+		reload_pending = 1;
+		controls_events[1]++;
+	}
+	if (!x_down)
+		action_acting = 0;
+	action_down = x_down;
+}
+
+/* the PSP glyph for each of the engine's button icons (hud_messaging.c and
+ui_widget.c's: A, B, X, Y, black, white, left and right trigger, the D-pad's
+four, start, back, the two stick clicks, then the two sticks), in play and in
+the menus, which map the buttons differently (above). The sticks' icons
+follow the profile's stick preset by themselves (the engine swaps them for
+southpaw). The sheet is tools/psp_glyphs.py's, psp/glyphs/psp_glyphs.png;
+the prompts are to draw from it (docs/game_feature_survey.md, section 4.7) */
+#include "psp_glyphs.h"
+#define PSP_BUTTON_ICONS 18
+static const unsigned char glyphs_in_play[PSP_BUTTON_ICONS] =
+{
+	PSP_GLYPH_DPAD_UP, PSP_GLYPH_DPAD_DOWN, PSP_GLYPH_DPAD_LEFT, PSP_GLYPH_DPAD_RIGHT,
+	PSP_GLYPH_SELECT_L, PSP_GLYPH_SELECT_UP, PSP_GLYPH_L, PSP_GLYPH_R,
+	PSP_GLYPH_DPAD_UP, PSP_GLYPH_DPAD_DOWN, PSP_GLYPH_DPAD_LEFT, PSP_GLYPH_DPAD_RIGHT,
+	PSP_GLYPH_START, PSP_GLYPH_SELECT, PSP_GLYPH_SELECT_DOWN, PSP_GLYPH_SELECT,
+	PSP_GLYPH_FACE, PSP_GLYPH_NUB,
+};
+static const unsigned char glyphs_in_menus[PSP_BUTTON_ICONS] =
+{
+	PSP_GLYPH_CROSS, PSP_GLYPH_CIRCLE, PSP_GLYPH_SQUARE, PSP_GLYPH_TRIANGLE,
+	PSP_GLYPH_SELECT_L, PSP_GLYPH_SELECT_UP, PSP_GLYPH_L, PSP_GLYPH_R,
+	PSP_GLYPH_DPAD_UP, PSP_GLYPH_DPAD_DOWN, PSP_GLYPH_DPAD_LEFT, PSP_GLYPH_DPAD_RIGHT,
+	PSP_GLYPH_START, PSP_GLYPH_SELECT, PSP_GLYPH_SELECT_DOWN, PSP_GLYPH_SELECT,
+	PSP_GLYPH_NUB, PSP_GLYPH_NUB,
+};
+
+/* the glyph and its cell on the sheet (x, y, width, height in pixels); -1
+for an icon the PSP has no glyph for, or with "xboxglyphs" (the Xbox's icons,
+as the maps have them) */
+int psp_button_glyph(int icon, int menus, unsigned short cell[4])
+{
+	static int xbox = -1;
+	int glyph;
+
+	if (xbox < 0)
+		xbox = psp_keep("xboxglyphs");
+	if (xbox || icon < 0 || icon >= PSP_BUTTON_ICONS)
+		return -1;
+	glyph = (menus ? glyphs_in_menus : glyphs_in_play)[icon];
+	if (cell)
+		memcpy(cell, psp_glyph_cells[glyph], sizeof(psp_glyph_cells[glyph]));
+	return glyph;
+}
+
+/* how much further the text moves on past a glyph than past the icon it
+stands for, in the game's screen units: the glyph is drawn at its share of
+the icon's height (psp_glyph_height) in its own shape (psp_ge.c, glyph_quad), so a wide one (Select + up)
+takes more room than the Xbox's round button */
+float psp_button_glyph_extra(int glyph, float icon_width, float icon_height)
+{
+	float wide;
+
+	if (glyph < 0 || glyph >= PSP_GLYPH_COUNT)
+		return 0.0f;
+	wide = icon_height * psp_glyph_height[glyph] / 100.0f * psp_glyph_cells[glyph][2] / psp_glyph_cells[glyph][3];
+	return wide > icon_width ? wide - icon_width : 0.0f;
+}
+
+/* the engine's port controls (input_abstraction.c, psp_fixups.py
+FIXES_CONTROLS): a reload tap, once; the action held, never reloading; the
+crouch toggle let through at any speed */
+int psp_input_port_reload(void)
+{
+	if (!action_split_on || !reload_pending)
+		return 0;
+	reload_pending = 0;
+	controls_events[3]++;
+	return 1;
+}
+
+int psp_input_port_action_only(void)
+{
+	/* counted once a hold: the engine asks only while the action bit is
+	set, so it never sees the release between two holds */
+	static unsigned int counted_hold = 0;
+	int now = action_split_on > 0 && action_acting;
+
+	if (now && counted_hold != controls_events[2])
+	{
+		counted_hold = controls_events[2];
+		controls_events[4]++;
+	}
+	return now;
+}
+
+int psp_input_port_crouch(void)
+{
+	return crouch_toggle_on > 0 && crouch_toggled;
+}
+
+/* the profile's controller settings from keep words, until Halo's own menu
+can set them (player_ui.c, set_local_player_controls_from_player_profile):
+"buttonpresetN" (0-4: default, swap triggers, swap A and left trigger, swap
+B and left trigger, swap B and right stick), "stickpresetN" (0-3: default,
+southpaw, legacy, legacy southpaw), "looksensN" (1-10), "lookinvert" */
+int psp_input_profile_words(void)
+{
+	return psp_keep_number("buttonpreset", -1) >= 0 || psp_keep_number("stickpreset", -1) >= 0 ||
+		psp_keep_number("looksens", -1) >= 0 || psp_keep("lookinvert");
+}
+
+void psp_input_profile_overrides(unsigned char *button_preset, unsigned char *joystick_preset,
+	unsigned char *look_sensitivity, unsigned char *invert_look)
+{
+	int n;
+
+	if ((n = psp_keep_number("buttonpreset", -1)) >= 0 && n <= 4)
+		*button_preset = (unsigned char)n;
+	if ((n = psp_keep_number("stickpreset", -1)) >= 0 && n <= 3)
+		*joystick_preset = (unsigned char)n;
+	if ((n = psp_keep_number("looksens", -1)) >= 1 && n <= 10)
+		*look_sensitivity = (unsigned char)n;
+	if (psp_keep("lookinvert"))
+		*invert_look = 1;
+}
 
 static SceCtrlData read_controls(void)
 {
@@ -227,6 +505,7 @@ static SceCtrlData read_controls(void)
 			psp_screenshot_requested = 1;
 		shot_held = shot;
 	}
+	controls_update(&pad, now);
 	psp_pad_buttons = pad.Buttons;
 	psp_pad_lx = pad.Lx;
 	psp_pad_ly = pad.Ly;
@@ -328,10 +607,10 @@ bool SDL_GetGamepadButton(SDL_Gamepad *gamepad, SDL_GamepadButton button)
 		{
 		case SDL_GAMEPAD_BUTTON_SOUTH: return !shift && (b & PSP_CTRL_UP) != 0;
 		case SDL_GAMEPAD_BUTTON_EAST: return !shift && (b & PSP_CTRL_DOWN) != 0;
-		case SDL_GAMEPAD_BUTTON_WEST: return !shift && (b & PSP_CTRL_LEFT) != 0;
+		case SDL_GAMEPAD_BUTTON_WEST: return action_split_on > 0 ? action_acting : !shift && (b & PSP_CTRL_LEFT) != 0;
 		case SDL_GAMEPAD_BUTTON_NORTH: return !shift && (b & PSP_CTRL_RIGHT) != 0;
 		case SDL_GAMEPAD_BUTTON_LEFT_SHOULDER: return shift && (b & PSP_CTRL_UP) != 0;
-		case SDL_GAMEPAD_BUTTON_LEFT_STICK: return shift && (b & PSP_CTRL_DOWN) != 0;
+		case SDL_GAMEPAD_BUTTON_LEFT_STICK: return crouch_toggle_on > 0 ? crouch_toggled : shift && (b & PSP_CTRL_DOWN) != 0;
 		/* build 77: the grenade switch is select + L (select + left opens
 		the debug menu) */
 		case SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER: return shift && (b & PSP_CTRL_LTRIGGER) != 0;
@@ -375,8 +654,16 @@ Sint16 SDL_GetGamepadAxis(SDL_Gamepad *gamepad, SDL_GamepadAxis axis)
 		return (pad.Buttons & PSP_CTRL_SQUARE) ? -32767 : (pad.Buttons & PSP_CTRL_CIRCLE) ? 32767 : 0;
 	case SDL_GAMEPAD_AXIS_LEFTY:
 		return (pad.Buttons & PSP_CTRL_TRIANGLE) ? -32767 : (pad.Buttons & PSP_CTRL_CROSS) ? 32767 : 0;
-	case SDL_GAMEPAD_AXIS_RIGHTX: return stick(pad.Lx);
-	case SDL_GAMEPAD_AXIS_RIGHTY: return stick(pad.Ly);
+	case SDL_GAMEPAD_AXIS_RIGHTX:
+	case SDL_GAMEPAD_AXIS_RIGHTY:
+		if (nub_calibrated > 0)
+		{
+			Sint16 x, y;
+
+			nub_calibrated_axes(pad.Lx, pad.Ly, &x, &y);
+			return axis == SDL_GAMEPAD_AXIS_RIGHTX ? x : y;
+		}
+		return stick(axis == SDL_GAMEPAD_AXIS_RIGHTX ? pad.Lx : pad.Ly);
 	/* select + L switches grenades, without throwing one (build 77) */
 	case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: return (pad.Buttons & PSP_CTRL_LTRIGGER) && !(pad.Buttons & PSP_CTRL_SELECT) ? 32767 : 0;
 	case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: return (pad.Buttons & PSP_CTRL_RTRIGGER) ? 32767 : 0;

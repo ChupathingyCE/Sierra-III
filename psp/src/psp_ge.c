@@ -45,6 +45,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <stdio.h>
 #include <malloc.h>
 #include <pspge.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
 
@@ -171,11 +172,13 @@ static void *stream_alloc(unsigned int bytes, void **owner)
 	return copy_alloc(bytes, owner);
 }
 
+static void vm_level_forget(void *vertices); /* the copies' room, below */
 static void stream_free(void *pointer)
 {
 	/* VRAM is given back all at once, when the level's copies are let go */
 	if (((unsigned int)pointer & 0x0F000000u) == 0x04000000u)
 		return;
+	vm_level_forget(pointer);
 	copy_free(pointer);
 }
 static int list_bytes = DISPLAY_LIST_BYTES;
@@ -362,7 +365,7 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 void psp_ge_model_shape(int first_person, const float *centroid, float radius, float near_fp, float far_fp);
 void psp_ge_model_effect(int type, float intensity);
 void psp_ge_model_point_light(const float *position, unsigned int color);
-void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow);
+void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_key, float const *change, float const *glow);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested);
@@ -599,12 +602,14 @@ static int defer_model_point_light(const float *position, unsigned int color)
 	return 1;
 }
 
-static int defer_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
+static int defer_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_key, float const *change,
+	float const *glow)
 {
-	defer_word *at = defer_take(DEFER_MODEL_MULTIPURPOSE, 1 + 4 + 4);
+	defer_word *at = defer_take(DEFER_MODEL_MULTIPURPOSE, 2 + 4 + 4);
 
 	at[0].u = multipurpose_key;
-	defer_copy(defer_copy(at + 1, change, 3), glow, 3);
+	at[1].u = glow_key;
+	defer_copy(defer_copy(at + 2, change, 3), glow, 3);
 	return 1;
 }
 
@@ -896,8 +901,8 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_model_point_light(defer_copy_back(w + 1, &rest, 3), w[0].u);
 			break;
 		case DEFER_MODEL_MULTIPURPOSE:
-			a = defer_copy_back(w + 1, &rest, 3);
-			psp_ge_model_multipurpose(w[0].u, a, defer_copy_back(rest, &rest, 3));
+			a = defer_copy_back(w + 2, &rest, 3);
+			psp_ge_model_multipurpose(w[0].u, w[1].u, a, defer_copy_back(rest, &rest, 3));
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -1295,6 +1300,8 @@ static const void *vm_redirect(const void *vertices, int count);
 static void vm_reset(void);
 static void vm_frame_end(void);
 static void vm_report(void);
+static void vm_level_note(void *vertices, unsigned int bytes);
+static void vm_level_move(void *from, void *to);
 #define sceGumDrawArray(p, v, c, i, d) do { if (!ge_draw_skipped()) { int ge_v_ = (v), ge_c_ = (c); \
 	const void *ge_i_ = (i), *ge_d_ = (d); if (vm_on > 0) ge_d_ = vm_redirect(ge_d_, ge_c_); \
 	if (ge_reads_on > 0) ge_reads_note(ge_v_, ge_c_, ge_i_, ge_d_); \
@@ -1337,10 +1344,51 @@ pattern: b116's test 1 showed it on shadows and particles, swinging up to
 140 of 255 under the Pelican's dust [M]. So the dither is on for draws that
 don't blend, and for the level's lightmap pass, which sets the level's
 brightness (where b113 #6's steps showed); off for every other blended
-draw. Keep word "ditherall": b116's dither on every draw of the world */
-static int dither_off = -1, dither_all = -1;
+draw. Keep word "ditherall": b116's dither on every draw of the world.
+
+"dithershift" (opt-in, the A/B for the dark bands): the passes that lay
+light over the level (its detail passes and the sky's layers, with the
+lightmap pass) dithered too, each with the matrix moved to the next of its 8
+places. A pixel's rounding then goes a different way from pass to pass, so
+no fixed pattern can build. Particles, shadows and decals stay undithered:
+the GE truncates, and reads the frame back with its top bits copied into
+the low ones (PPSSPP's model; "ditherprobe" measures the PSP's), so a pass
+that leaves a dark pixel almost as it was moves it down a step whenever its
+offset is negative, wherever the pattern stands; under many layers that
+adds up. "dithershiftall": every blended draw of the world dithered and
+moved, for the comparison */
+/* the shift is built in only with PSP_DITHERSHIFT=1: its tests sit in the
+blend switches and in the detail and see-through loops, hot paths where
+code that does nothing still costs (b133's nwbatch hooks, c10 +7% while
+off). As 0, every test below folds away */
+#ifndef PSP_DITHERSHIFT
+#define PSP_DITHERSHIFT 0
+#endif
+static int dither_off = -1, dither_all = -1, dither_shift = -1; /* 1 the passes, 2 every blend */
 static int dither_world = 0; /* the world's turn: the dither may be on */
 static int dither_now = -1, blend_now = 0; /* what the GE was last given */
+static int dither_place = 0;
+static unsigned long dither_moves = 0; /* passes dithered at a moved place, since the last report */
+static ScePspIMatrix4 dither_moved[8];
+
+/* the matrix at each of its 8 places: moved by (2, 2) it repeats. In this
+order every two passes in a row nearly cancel (-4 then 2, -3 then 3, ...)
+for every pixel, and eight give each pixel every offset once */
+static void dither_moves_make(const ScePspIMatrix4 *matrix)
+{
+	static const unsigned char places[8][2] = { { 0, 0 }, { 0, 1 }, { 2, 0 }, { 2, 1 }, { 1, 0 }, { 1, 1 }, { 3, 0 }, { 3, 1 } };
+	const int *from = &matrix->x.x; /* the 16 cells, row by row */
+	int k, row, column;
+
+	for (k = 0; k < 8; k++)
+	{
+		int *to = &dither_moved[k].x.x;
+
+		for (row = 0; row < 4; row++)
+			for (column = 0; column < 4; column++)
+				to[row * 4 + column] = from[((row + places[k][1]) & 3) * 4 + ((column + places[k][0]) & 3)];
+	}
+}
 
 static void dither_set(int on)
 {
@@ -1353,6 +1401,26 @@ static void dither_set(int on)
 	dither_now = on;
 }
 
+/* a pass that lays light over what's drawn: the dither on, at its next place */
+static void ge_dither_pass(void)
+{
+	if (!PSP_DITHERSHIFT || !dither_world || dither_shift <= 0)
+		return;
+	dither_place = (dither_place + 1) & 7;
+	dither_moves++;
+	sceGuSetDither(&dither_moved[dither_place]);
+	dither_set(1);
+}
+
+/* after the blend is on, for a pass that lays light over the level (its
+detail passes, the sky's layers): under "dithershift" those, and only
+those, are dithered ("dithershiftall" has done it in ge_blend) */
+static void ge_layer_dither(void)
+{
+	if (PSP_DITHERSHIFT && dither_shift == 1)
+		ge_dither_pass();
+}
+
 /* the world's turn begins (1) or ends (0) */
 static void ge_dither(int on)
 {
@@ -1362,18 +1430,37 @@ static void ge_dither(int on)
 	span, half the pattern; the 5-bit steps come back as half-steps */
 	static const ScePspIMatrix4 matrix = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
 	static const ScePspIMatrix4 half = { { -2, 0, -2, 0 }, { 1, -1, 1, -1 }, { -2, 0, -2, 0 }, { 1, -1, 1, -1 } };
-	static int dither_half = -1;
+	/* "ditherlift" (opt-in, with dithershift's A/B): every offset 4 higher.
+	The matrix above is centred for a GE that rounds; one that truncates
+	(PPSSPP's, and ditherprobe's row 0 on the PSP) loses half a step with it
+	on every dithered draw, which shows most in the dark. Lifted, a
+	truncating write is right on average */
+	static ScePspIMatrix4 chosen;
 
 	if (dither_off < 0)
 	{
+		const int *from = psp_keep("ditherhalf") ? &half.x.x : &matrix.x.x;
+		int *to = &chosen.x.x, lift = psp_keep("ditherlift") ? 4 : 0, cell;
+
 		dither_off = psp_keep("nodither");
 		dither_all = psp_keep("ditherall");
-		dither_half = psp_keep("ditherhalf");
+		for (cell = 0; cell < 16; cell++)
+			to[cell] = from[cell] + lift;
+		dither_shift = psp_keep("dithershiftall") ? 2 : psp_keep("dithershift");
+		if (dither_shift && !PSP_DITHERSHIFT)
+		{
+			platform_log("GE: %s kept, but this build has no dither shift (PSP_DITHERSHIFT=1 builds it)",
+				dither_shift == 2 ? "dithershiftall" : "dithershift");
+			dither_shift = 0;
+		}
+		if (dither_shift)
+			dither_moves_make(&chosen);
 	}
 	if (dither_off)
 		return;
 	if (on)
-		sceGuSetDither(dither_half ? &half : &matrix);
+		sceGuSetDither(&chosen);
+	dither_place = 0; /* each frame starts at the same place: frame-locked shots repeat */
 	dither_world = on;
 	dither_now = -1; /* given again, so each frame starts from a known state */
 	dither_set(on && (dither_all || !blend_now));
@@ -1387,7 +1474,9 @@ static void ge_blend(int on)
 	else
 		sceGuDisable(GU_BLEND);
 	blend_now = on;
-	if (dither_world)
+	if (PSP_DITHERSHIFT && on && dither_shift == 2)
+		ge_dither_pass();
+	else if (dither_world)
 		dither_set(dither_all || !on);
 }
 
@@ -1396,7 +1485,9 @@ static void ge_blend_dithered(void)
 {
 	sceGuEnable(GU_BLEND);
 	blend_now = 1;
-	if (dither_world)
+	if (PSP_DITHERSHIFT && dither_shift > 0)
+		ge_dither_pass();
+	else if (dither_world)
 		dither_set(1);
 }
 
@@ -1564,7 +1655,297 @@ static void ge_kinds_frame_end(void)
 	}
 }
 
-static void ge_kinds_report(void)
+/* ---------- the draw census ("drawcensus" in keep.txt; recon only)
+
+Three counts that size drawing levers before any is built (docs/recon_134.md).
+Each reads what the drawing already works out and changes nothing drawn.
+- Near the eye: the model definitions the near-plane work comes from (rigid
+  parts tested corner by corner, bending batches whose corners were worked
+  out). render_objects.c names the object being drawn in psp_census_definition
+  (psp_fixups.py, FIXES_RECON #modelcensus).
+- The change-colour pass: the distinct base texture, multipurpose map and
+  colour triples it multiplies together, and what a tinted copy of each base
+  texture would take, so baking the tint once can be weighed against a pass
+  a draw.
+- The light pass: its triangles that sit in runs of 16 (in the draw's order)
+  whose every corner lies beyond the light's radius, which a sphere a run
+  would skip whole; and the draws split between spotlights and point lights.
+Built only with PSP_RECON=1: even switched off, a hook in hot code costs
+(docs/shelf.md), so the release builds carry none of it. */
+#ifdef PSP_RECON
+extern long psp_census_definition; /* render_objects.c (psp_fixups.py, FIXES_RECON #modelcensus) */
+static int census_on = -1;
+static unsigned long census_frames = 0;
+
+#define CENSUS_NEAR_SLOTS 64
+static struct
+{
+	long definition;
+	int used;
+	unsigned long rigid_parts, rigid_triangles, bending_triangles;
+} census_near_table[CENSUS_NEAR_SLOTS];
+
+#define CENSUS_TINTS 512
+/* each triple's passes since the start and its tinted copy's size at 16 bits,
+so the report can say what a cache of the most drawn would hold and cover */
+static struct { unsigned int base, change, color; unsigned long passes, bytes16; } census_tints[CENSUS_TINTS];
+static int census_tint_count = 0;
+static unsigned long census_tint_passes = 0, census_tint_unkept = 0, census_tint_bytes16 = 0, census_tint_bytes8 = 0;
+
+static unsigned long census_light_draws[2] = { 0, 0 }, census_light_looked[2] = { 0, 0 };
+/* the light pass by surface: within a frame, how many lights draw each level
+vertex buffer, and how many of their triangles another light already drew that
+frame (a triangle is its buffer and its three vertex indices: each light hands
+over a triangle list of its own, so the lists themselves never repeat). What
+drawing a surface once for all the lights that reach it would save */
+#define CENSUS_SURFACES 512
+static struct { const void *vertices; const unsigned short *indices; long triangles; int lights; } census_surfaces[CENSUS_SURFACES];
+static int census_surface_count = 0;
+static unsigned long census_surface_lost = 0, census_surfaces_lit[4] = { 0 }, census_surface_draws = 0;
+static unsigned long census_surface_triangles = 0, census_surface_repeat_triangles = 0, census_triangles_lost = 0;
+#define CENSUS_TRIANGLES 8192 /* a frame's triangles seen, by hash (32 KB) */
+static unsigned int census_triangle_seen[CENSUS_TRIANGLES];
+static unsigned long census_light_run_triangles = 0, census_light_runs_out = 0;
+
+char *tag_get_name(long tag_index);
+int psp_tex_size(unsigned int key, int *width, int *height);
+
+static int census_wanted(void)
+{
+	if (census_on < 0)
+		census_on = psp_keep("drawcensus");
+	return census_on;
+}
+
+static void census_near(int rigid, long triangles)
+{
+	long definition = psp_census_definition;
+	unsigned int slot, probe;
+
+	if (!census_wanted() || definition == -1)
+		return;
+	slot = ((unsigned int)definition * 2654435761u) % CENSUS_NEAR_SLOTS;
+	for (probe = 0; probe < CENSUS_NEAR_SLOTS; probe++, slot = (slot + 1) % CENSUS_NEAR_SLOTS)
+	{
+		if (!census_near_table[slot].used)
+		{
+			census_near_table[slot].used = 1;
+			census_near_table[slot].definition = definition;
+		}
+		if (census_near_table[slot].definition == definition)
+		{
+			if (rigid)
+			{
+				census_near_table[slot].rigid_parts++;
+				census_near_table[slot].rigid_triangles += (unsigned long)triangles;
+			}
+			else
+				census_near_table[slot].bending_triangles += (unsigned long)triangles;
+			return;
+		}
+	}
+}
+
+static void census_tint(unsigned int base, unsigned int change, unsigned int color)
+{
+	int k, width, height;
+
+	if (!census_wanted())
+		return;
+	census_tint_passes++;
+	for (k = 0; k < census_tint_count; k++)
+		if (census_tints[k].base == base && census_tints[k].change == change && census_tints[k].color == color)
+		{
+			census_tints[k].passes++;
+			return;
+		}
+	if (census_tint_count == CENSUS_TINTS)
+	{
+		census_tint_unkept++;
+		return;
+	}
+	census_tints[census_tint_count].base = base;
+	census_tints[census_tint_count].change = change;
+	census_tints[census_tint_count].color = color;
+	census_tints[census_tint_count].passes = 1;
+	census_tints[census_tint_count].bytes16 = 0;
+	census_tint_count++;
+	if (psp_tex_size(base, &width, &height))
+	{
+		census_tints[census_tint_count - 1].bytes16 = (unsigned long)width * height * 2;
+		census_tint_bytes16 += (unsigned long)width * height * 2;
+		census_tint_bytes8 += (unsigned long)width * height;
+	}
+}
+
+static void census_light_surface(const void *vertices, const unsigned short *indices, long triangles)
+{
+	int k;
+
+	long t;
+
+	census_surface_draws++;
+	census_surface_triangles += (unsigned long)triangles;
+	for (t = 0; t < triangles; t++)
+	{
+		const unsigned short *v = indices + 3 * t;
+		unsigned int hash = ((unsigned int)vertices * 2654435761u) ^ (v[0] * 40503u) ^ (v[1] * 2246822519u) ^ (v[2] * 3266489917u);
+		unsigned int slot, probe;
+
+		hash |= 1; /* 0 is an empty slot */
+		for (slot = hash % CENSUS_TRIANGLES, probe = 0; probe < 32; probe++, slot = (slot + 1) % CENSUS_TRIANGLES)
+		{
+			if (census_triangle_seen[slot] == hash)
+			{
+				census_surface_repeat_triangles++;
+				break;
+			}
+			if (!census_triangle_seen[slot])
+			{
+				census_triangle_seen[slot] = hash;
+				break;
+			}
+		}
+		if (probe == 32)
+			census_triangles_lost++;
+	}
+	for (k = 0; k < census_surface_count; k++)
+		if (census_surfaces[k].vertices == vertices)
+		{
+			census_surfaces[k].lights++;
+			return;
+		}
+	if (census_surface_count == CENSUS_SURFACES)
+	{
+		census_surface_lost++;
+		return;
+	}
+	census_surfaces[census_surface_count].vertices = vertices;
+	census_surfaces[census_surface_count].indices = indices;
+	census_surfaces[census_surface_count].triangles = triangles;
+	census_surfaces[census_surface_count].lights = 1;
+	census_surface_count++;
+}
+
+static void census_light_run(long count, float nearest, float radius_squared)
+{
+	census_light_run_triangles += (unsigned long)count;
+	if (nearest > radius_squared)
+		census_light_runs_out += (unsigned long)count;
+}
+
+static void census_report(void)
+{
+	char line[700];
+	int length, shown, k, best;
+	unsigned long done[CENSUS_NEAR_SLOTS] = { 0 };
+	float frames = (float)census_frames;
+
+	if (census_on <= 0 || !census_frames)
+		return;
+	length = snprintf(line, sizeof(line), "drawcensus: near the eye, a frame over %lu frames, by definition (rigid parts, their triangles; bending triangles):",
+		census_frames);
+	for (shown = 0; shown < 8 && length < (int)sizeof(line) - 120; shown++)
+	{
+		unsigned long most = 0;
+
+		best = -1;
+		for (k = 0; k < CENSUS_NEAR_SLOTS; k++)
+		{
+			unsigned long triangles = census_near_table[k].rigid_triangles + census_near_table[k].bending_triangles;
+
+			if (census_near_table[k].used && !done[k] && triangles > most)
+			{
+				most = triangles;
+				best = k;
+			}
+		}
+		if (best < 0)
+			break;
+		done[best] = 1;
+		length += snprintf(line + length, sizeof(line) - length, " %s (%.1f, %.0f; %.0f);",
+			tag_get_name(census_near_table[best].definition), census_near_table[best].rigid_parts / frames,
+			census_near_table[best].rigid_triangles / frames, census_near_table[best].bending_triangles / frames);
+	}
+	platform_log("%s", line);
+	platform_log("drawcensus: change-colour passes %.1f a frame; %d distinct base, multipurpose map and colour triples since the start (%lu more not kept); their base textures as tinted copies %lu KB at 16 bits, %lu KB at 8",
+		census_tint_passes / frames, census_tint_count, census_tint_unkept, census_tint_bytes16 / 1024, census_tint_bytes8 / 1024);
+	{
+		/* the triples by passes, most first: what a cache of the top N would
+		cover, and its size */
+		static const int sizes[5] = { 8, 16, 32, 64, 128 };
+		static unsigned char taken[CENSUS_TINTS];
+		unsigned long total = 0, covered = 0, bytes = 0;
+		int n = 0, next = 0;
+
+		for (k = 0; k < census_tint_count; k++)
+			total += census_tints[k].passes;
+		memset(taken, 0, sizeof(taken));
+		length = snprintf(line, sizeof(line), "drawcensus: tint cache, the most drawn triples since the start (of %lu passes):", total);
+		while (next < 5 && n < census_tint_count)
+		{
+			unsigned long most = 0;
+
+			best = -1;
+			for (k = 0; k < census_tint_count; k++)
+				if (!taken[k] && census_tints[k].passes >= most)
+				{
+					most = census_tints[k].passes;
+					best = k;
+				}
+			if (best < 0)
+				break;
+			taken[best] = 1;
+			covered += census_tints[best].passes;
+			bytes += census_tints[best].bytes16;
+			n++;
+			if (n == sizes[next] || n == census_tint_count)
+			{
+				length += snprintf(line + length, sizeof(line) - length, " top %d cover %.0f%% in %lu KB;",
+					n, total ? 100.0f * covered / total : 0.0f, bytes / 1024);
+				while (next < 5 && sizes[next] <= n)
+					next++;
+			}
+		}
+		platform_log("%s", line);
+	}
+	platform_log("drawcensus: light pass by surface, a frame: %.1f draws on %.1f surfaces (lit by 1 light %.1f, 2 %.1f, 3 %.1f, 4 or more %.1f; %lu draws not kept); %.0f triangles drawn, %.0f of them a triangle another light already drew (%.0f%%; %lu not tracked)",
+		census_surface_draws / frames,
+		(census_surfaces_lit[0] + census_surfaces_lit[1] + census_surfaces_lit[2] + census_surfaces_lit[3]) / frames,
+		census_surfaces_lit[0] / frames, census_surfaces_lit[1] / frames, census_surfaces_lit[2] / frames, census_surfaces_lit[3] / frames,
+		census_surface_lost, census_surface_triangles / frames, census_surface_repeat_triangles / frames,
+		census_surface_triangles ? 100.0f * census_surface_repeat_triangles / census_surface_triangles : 0.0f, census_triangles_lost);
+	census_surface_draws = census_surface_triangles = census_surface_repeat_triangles = census_surface_lost = census_triangles_lost = 0;
+	memset(census_surfaces_lit, 0, sizeof(census_surfaces_lit));
+	platform_log("drawcensus: light pass %.1f draws a frame (%.1f spotlights, %.1f point lights), %.1f triangles looked at (%.1f of them the spotlights'); %.1f in runs of 16 wholly beyond the light's radius (%.0f%% of the runs' triangles)",
+		(census_light_draws[0] + census_light_draws[1]) / frames, census_light_draws[1] / frames, census_light_draws[0] / frames,
+		(census_light_looked[0] + census_light_looked[1]) / frames, census_light_looked[1] / frames, census_light_runs_out / frames,
+		census_light_run_triangles ? 100.0f * census_light_runs_out / census_light_run_triangles : 0.0f);
+	memset(census_near_table, 0, sizeof(census_near_table));
+	census_tint_passes = 0;
+	census_light_draws[0] = census_light_draws[1] = census_light_looked[0] = census_light_looked[1] = 0;
+	census_light_run_triangles = census_light_runs_out = 0;
+	census_frames = 0;
+}
+
+static void census_frame(void)
+{
+	int k;
+
+	if (census_on <= 0)
+		return;
+	census_frames++;
+	for (k = 0; k < census_surface_count; k++)
+		census_surfaces_lit[census_surfaces[k].lights >= 4 ? 3 : census_surfaces[k].lights - 1]++;
+	census_surface_count = 0;
+	memset(census_triangle_seen, 0, sizeof(census_triangle_seen));
+}
+#define CENSUS(call) call
+#else
+#define CENSUS(call) ((void)0)
+#endif
+
+static void __attribute__((noinline, cold)) ge_kinds_report(void)
 {
 	char line[600];
 	int length, k;
@@ -2310,6 +2691,131 @@ void psp_ge_fog_planar(float red, float green, float blue, float maximum_distanc
 /* the GE's own state, once: buffers, viewport, depth, fog */
 static void cut_take(void); /* below, by model_cut */
 
+/* "ditherprobe": what the GE does to a colour on its way into the 16-bit
+frame, measured once at start-up in the buffer not yet shown. Row 0: each
+value 0-255 drawn as it is; where each channel's code steps says whether
+the GE truncates (red at 8, 16, ...) or rounds (at 4, 12, ...). Rows 1-4
+start as row 0 and take one blended pass that ought to leave them as they
+are: 1 the frame times one; 2 the same, dithered by -1 everywhere; 3
+dithered by +7; 4 the frame times white. The codes that move in rows 2 and
+3 say how the frame is read back for blending: with its low bits 0, every
+code drops in row 2 and none rises in row 3; with them filled from the top
+bits (PPSSPP), only the darkest drop and all but the darkest rise. Rows 1
+and 4 say whether "times one" is exact. That decides which dither matrix
+leaves an unchanged pixel unchanged (dithershift's open question) */
+static void __attribute__((noinline, cold)) ge_dither_probe(void)
+{
+	static const ScePspIMatrix4 minus = { { -1, -1, -1, -1 }, { -1, -1, -1, -1 }, { -1, -1, -1, -1 }, { -1, -1, -1, -1 } };
+	static const ScePspIMatrix4 plus = { { 7, 7, 7, 7 }, { 7, 7, 7, 7 }, { 7, 7, 7, 7 }, { 7, 7, 7, 7 } };
+	static const char *const rows[5] = { "drawn as it is", "the frame times one", "dithered by -1",
+		"dithered by +7", "the frame times white" };
+	static const char *const names[3] = { "red", "green", "blue" };
+	static const int shifts[3] = { 0, 5, 11 }, masks[3] = { 0x1F, 0x3F, 0x1F };
+	struct probe_vertex { unsigned int color; short x, y, z, pad; } *v;
+	const volatile unsigned short *frame = (const volatile unsigned short *)0x44000000; /* draw buffer 0, uncached */
+	int x, row, channel;
+
+	sceGuStart(GU_DIRECT, display_list);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDisable(GU_BLEND);
+	sceGuDisable(GU_DITHER);
+	/* every value, one column each, down all five rows */
+	v = sceGuGetMemory(256 * 2 * sizeof(*v));
+	for (x = 0; x < 256; x++)
+	{
+		unsigned int grey = 0xFF000000 | (x << 16) | (x << 8) | x;
+
+		v[2 * x].color = v[2 * x + 1].color = grey;
+		v[2 * x].x = x; v[2 * x].y = 0;
+		v[2 * x + 1].x = x + 1; v[2 * x + 1].y = 5;
+		v[2 * x].z = v[2 * x + 1].z = 0;
+	}
+	(sceGuDrawArray)(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 512, NULL, v);
+	sceGuEnable(GU_BLEND);
+	for (row = 1; row < 5; row++)
+	{
+		v = sceGuGetMemory(2 * sizeof(*v));
+		v[0].color = v[1].color = 0xFFFFFFFF;
+		v[0].x = 0; v[0].y = row;
+		v[1].x = 256; v[1].y = row + 1;
+		v[0].z = v[1].z = 0;
+		if (row == 4)
+			sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_FIX, 0, 0);
+		else
+			sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0, 0xFFFFFF);
+		if (row == 2 || row == 3)
+		{
+			sceGuSetDither(row == 2 ? &minus : &plus);
+			sceGuEnable(GU_DITHER);
+		}
+		else
+			sceGuDisable(GU_DITHER);
+		(sceGuDrawArray)(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, NULL, v);
+	}
+	sceGuDisable(GU_DITHER);
+	sceGuDisable(GU_BLEND);
+	sceGuEnable(GU_FOG);
+	sceGuEnable(GU_DEPTH_TEST);
+	stall_force = 1;
+	sceGuFinish();
+	sceGuSync(0, 0);
+	stall_force = 0;
+
+	for (row = 0; row < 5; row++)
+	{
+		char line[400];
+		int length = snprintf(line, sizeof(line), "ditherprobe: row %d (%s):", row, rows[row]);
+
+		for (channel = 0; channel < 3 && length < (int)sizeof(line); channel++)
+		{
+			int shift = shifts[channel], mask = masks[channel];
+
+			if (row == 0)
+			{
+				/* the first four inputs at which the code steps up, and the top code */
+				int steps = 0, at[4] = { -1, -1, -1, -1 };
+
+				for (x = 1; x < 256 && steps < 4; x++)
+					if (((frame[x] >> shift) & mask) != ((frame[x - 1] >> shift) & mask))
+						at[steps++] = x;
+				length += snprintf(line + length, sizeof(line) - length, " %s steps at %d %d %d %d, 255 is %d;",
+					names[channel], at[0], at[1], at[2], at[3], (frame[255] >> shift) & mask);
+			}
+			else
+			{
+				/* against row 0: how many inputs moved each way, and the
+				highest that dropped, the lowest that rose */
+				int up = 0, down = 0, top_down = -1, low_up = -1;
+
+				for (x = 0; x < 256; x++)
+				{
+					int before = (frame[x] >> shift) & mask, after = (frame[row * BUFFER_WIDTH + x] >> shift) & mask;
+
+					if (after < before)
+					{
+						down++;
+						top_down = x;
+					}
+					else if (after > before)
+					{
+						up++;
+						if (low_up < 0)
+							low_up = x;
+					}
+				}
+				length += snprintf(line + length, sizeof(line) - length, " %s down %d (highest input %d), up %d (lowest %d);",
+					names[channel], down, top_down, up, low_up);
+			}
+		}
+		platform_log("%s", line);
+	}
+}
+
+static void glyph_sheet_unpack(void); /* the button glyphs, below */
+
 static void ge_initialize(void)
 {
 	/* build 108: the scratchpad's pieces (psp_scratch.c), keep.txt read by now */
@@ -2360,6 +2866,9 @@ static void ge_initialize(void)
 	sceGuFinish();
 	sceGuSync(0, 0);
 	stall_force = 0;
+	if (psp_keep("ditherprobe"))
+		ge_dither_probe();
+	glyph_sheet_unpack();
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
 	ge_ready = 1;
@@ -4569,10 +5078,13 @@ static void __attribute__((cold)) arena_compact(void)
 			continue;
 		if ((char *)block != to)
 		{
+			void *was = block + 1;
+
 			memmove(to, block, size);
 			if (!first_moved)
 				first_moved = to;
 			moved += size;
+			vm_level_move(was, (struct arena_block *)to + 1);
 		}
 		block = (struct arena_block *)to;
 		block->previous = previous;
@@ -4613,6 +5125,7 @@ static int __attribute__((cold)) arena_migrate_piece(void **field, unsigned int 
 	if (ge_reads)
 		ge_writeback(to, bytes);
 	*field = to;
+	vm_level_move(piece, to);
 	free(piece);
 	if (arena_heap_live)
 		arena_heap_live--;
@@ -4823,7 +5336,7 @@ static int gr_by_value(const void *a, const void *b)
 	return l > r ? 1 : l < r ? -1 : 0;
 }
 
-static void ge_reads_report(unsigned long frames_now)
+static void __attribute__((noinline, cold)) ge_reads_report(unsigned long frames_now)
 {
 	extern long psp_game_time_peek(void);
 	unsigned long span = frames_now - gr_frames_mark;
@@ -4870,6 +5383,47 @@ static void ge_reads_report(unsigned long frames_now)
 		at += snprintf(line + at, sizeof(line) - at, " %u KB: %.0f%%;", steps_kb[step], ram ? 100.0 * taken / ram : 0.0);
 	}
 	platform_log("%s", line);
+	/* the same curve for the level's copies alone and the models alone: the
+	mixed curve fills every step with model buffers first, so it can't say
+	how much VRAM the level's streams would want beside vrammodels (the
+	split a "levelvramN" room would need). Each place's share is of its own
+	reads */
+	{
+		static const unsigned char places[2] = { GR_LEVEL, GR_GEOMETRY };
+		static const unsigned short place_kb[6] = { 64, 128, 192, 256, 384, 512 };
+		int p;
+
+		for (p = 0; p < 2; p++)
+		{
+			unsigned long long place_read = 0, place_size = 0;
+			int place_count = 0;
+
+			for (k = 0; k < n; k++)
+				if (gr_table[k].place == places[p])
+				{
+					place_read += gr_table[k].read;
+					place_size += gr_table[k].size;
+					place_count++;
+				}
+			at = snprintf(line, sizeof(line), "gereads: %s alone (%d buffers, %.0f KB, %.1f KB a frame read): VRAM holding the best",
+				gr_place_names[places[p]], place_count, place_size / 1024.0, place_read / 1024.0 / span);
+			for (step = 0; step < 6 && at < (int)sizeof(line) - 1; step++)
+			{
+				unsigned long long held = 0;
+
+				taken = 0;
+				for (k = 0; k < n; k++)
+					if (gr_table[k].place == places[p] && held + gr_table[k].size <= place_kb[step] * 1024ull)
+					{
+						held += gr_table[k].size;
+						taken += gr_table[k].read;
+					}
+				at += snprintf(line + at, sizeof(line) - at, " %u KB: %.0f%% (%.1f KB a frame);", place_kb[step],
+					place_read ? 100.0 * taken / place_read : 0.0, taken / 1024.0 / span);
+			}
+			platform_log("%s", line);
+		}
+	}
 	at = snprintf(line, sizeof(line), "gereads: best buffers (place, kind, KB, KB read a frame):");
 	for (k = 0; k < n && k < 8 && at < (int)sizeof(line) - 1; k++)
 		at += snprintf(line + at, sizeof(line) - at, " %s/%s %.1f %.1f;", gr_place_names[gr_table[k].place], kind_names[gr_table[k].kind],
@@ -5127,7 +5681,7 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	const unsigned char *at, *end;
 
 	bake_forget();
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.pstn", name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (file < 0)
 	{
@@ -5467,8 +6021,12 @@ static void level_copy_follow(struct level_stream *stream, const float *origin)
 	}
 	memcpy(stream->origin, origin, sizeof(stream->origin));
 	ge_writeback(stream->base, stream->count * sizeof(struct ge_vertex));
+	vm_level_note(stream->base, stream->count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
+	{
 		ge_writeback(stream->lightmap, stream->count * sizeof(struct ge_vertex));
+		vm_level_note(stream->lightmap, stream->count * sizeof(struct ge_vertex));
+	}
 	if (stream->bake)
 		level_layers_follow(stream->bake->key, origin);
 	level_copies_moved++;
@@ -5667,8 +6225,12 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	if (level_compact)
 		compact_build(stream);
 	ge_writeback(stream->base, count * sizeof(struct ge_vertex));
+	vm_level_note(stream->base, count * sizeof(struct ge_vertex));
 	if (stream->lightmap)
+	{
 		ge_writeback(stream->lightmap, count * sizeof(struct ge_vertex));
+		vm_level_note(stream->lightmap, count * sizeof(struct ge_vertex));
+	}
 	stream_bytes += stream_size(stream);
 	return stream;
 }
@@ -6791,6 +7353,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				sceGuFog(near, far > near ? far : near + 1.0f, detail_neutral(detail_key[pass]));
 				sceGuBlendFunc(GU_ADD, GU_DST_COLOR, GU_SRC_COLOR, 0, 0);
 				ge_blend(1);
+				ge_layer_dither();
 				/* build 91: a detail map's smaller levels are faded toward a
 				colour other than their top level's average (Bungie's detail
 				fade: measured on Blood Gulch, "detail metal sratches" loses
@@ -7691,6 +8254,8 @@ Off by default: Sheepdog01's A/B (a cinematic's GE time, gebusy by kind). */
 struct vm_entry
 {
 	unsigned int source, generation, bytes, at, reads, frame, released;
+	unsigned int held; /* the copy's own size, kept while it is in quarantine: bytes may already name a new buffer */
+	unsigned int level; /* a level stream: valid until released, no geometry-cache generation */
 };
 static struct vm_entry *vm = NULL;
 static unsigned short *vm_hash = NULL, *vm_order = NULL;
@@ -7715,6 +8280,7 @@ static struct vm_entry *vm_find(unsigned int source, int add)
 			vm[vm_count].at = VM_NONE;
 			vm[vm_count].released = 0;
 			vm[vm_count].reads = 0;
+			vm[vm_count].level = 0;
 			vm_hash[(h + probe) & (VM_HASH - 1)] = (unsigned short)(++vm_count);
 			return &vm[vm_count - 1];
 		}
@@ -7770,10 +8336,73 @@ static void vm_note(void *vertices, unsigned int bytes)
 	e = vm_find((unsigned int)vertices, 1);
 	if (!e)
 		return;
-	if (e->at != VM_NONE && (e->bytes != bytes || e->generation != psp_geo_generation(vertices)))
+	if (e->at != VM_NONE && (e->level || e->bytes != bytes || e->generation != psp_geo_generation(vertices)))
 		vm_release(e);
 	e->bytes = bytes;
 	e->generation = psp_geo_generation(vertices);
+	e->level = 0;
+}
+
+/* "nolevelvram": the level's streams kept out of the copies' room. On, they
+share it with the model buffers, ranked by the same reads a byte: the level's
+copies are the largest geometry the GE still reads from main RAM (600-760 KB
+a frame on a30, b30, c20, d20 [E, levelvram1]), and on c20 and d20 the
+models leave 226-365 KB of the room idle. A stream is valid until it is
+written again (its origin moved), freed, or moved by the arena; each of
+those releases its copy (the quarantine covers a list the GE is still
+drawing), so a stale copy is never drawn. The same bytes: the same pixels */
+static int vm_level_on = -1;
+
+/* a level stream just written (built, or its origin moved): its copy, if
+any, no longer holds its bytes */
+static void vm_level_note(void *vertices, unsigned int bytes)
+{
+	struct vm_entry *e;
+
+	if (vm_level_on < 0)
+		vm_level_on = !psp_keep("nolevelvram");
+	if (vm_on <= 0 || !vm_level_on || !vertices || PSP_ME_WORK() ||
+		(((unsigned int)vertices & 0x0F000000u) == 0x04000000u))
+		return;
+	e = vm_find((unsigned int)vertices, 1);
+	if (!e)
+		return;
+	vm_release(e);
+	e->bytes = bytes;
+	e->generation = 0;
+	e->level = 1;
+}
+
+/* a level stream let go: its copy goes with it */
+static void vm_level_forget(void *vertices)
+{
+	struct vm_entry *e;
+
+	if (vm_on <= 0 || !vertices)
+		return;
+	e = vm_find((unsigned int)vertices, 0);
+	if (!e || !e->level)
+		return;
+	vm_release(e);
+	e->reads = 0;
+	e->bytes = 0;
+}
+
+/* a level stream the arena moved (its bytes unchanged): known again at its
+new place, copied there afresh */
+static void vm_level_move(void *from, void *to)
+{
+	struct vm_entry *e;
+	unsigned int bytes;
+
+	if (vm_on <= 0 || !from)
+		return;
+	e = vm_find((unsigned int)from, 0);
+	if (!e || !e->level || !e->bytes)
+		return;
+	bytes = e->bytes;
+	vm_level_forget(from);
+	vm_level_note(to, bytes);
 }
 
 /* the gate: the copy's address for a buffer that has a good one */
@@ -7787,7 +8416,7 @@ static const void *vm_redirect(const void *vertices, int count)
 	if (!e)
 		return vertices;
 	vm_draws++;
-	if (psp_geo_generation(vertices) != e->generation)
+	if (!e->level && psp_geo_generation(vertices) != e->generation)
 	{
 		/* the cache has read other bytes into the block: model_convert
 		notes it afresh when it converts them */
@@ -7835,7 +8464,7 @@ static unsigned int vm_place(unsigned int bytes)
 
 		if (e->at >= at + bytes)
 			return at;
-		at = (e->at + e->bytes + 15) & ~15u;
+		at = (e->at + e->held + 15) & ~15u;
 	}
 	return at + bytes <= vm_size ? at : VM_NONE;
 }
@@ -7896,6 +8525,7 @@ static void vm_frame_end(void)
 		}
 		memcpy((void *)((vm_base + at) | 0x40000000), (const void *)best->source, best->bytes);
 		best->at = at;
+		best->held = best->bytes;
 		best->released = 0;
 		budget -= best->bytes;
 		vm_copied += best->bytes;
@@ -8136,8 +8766,8 @@ multipurpose map with a palette worked out per entry (white toward the
 colour by the entry's alpha), multiplied into what the first pass drew */
 int psp_tex_palette(unsigned int key, const unsigned int **palette, int *count);
 int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *count);
-static unsigned int change_key = 0, change_color = 0xFFFFFFFF, glow_color = 0;
-static unsigned long change_passes = 0, glow_passes = 0;
+static unsigned int change_key = 0, change_color = 0xFFFFFFFF, glow_color = 0, glow_key = 0;
+static unsigned long change_passes = 0, glow_passes = 0, glow_mapped = 0;
 static int in_sky;
 
 struct skin_part;
@@ -8216,11 +8846,13 @@ static unsigned int abgr_from_rgb(float const *rgb)
 
 /* the model part's multipurpose map and the two colours it masks: the change
 colour (by its blue) and the self-illumination (by its green; build 31) */
-void psp_ge_model_multipurpose(unsigned int multipurpose_key, float const *change, float const *glow)
+void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_map_key, float const *change,
+	float const *glow)
 {
 	GE_BENCH_SKIP();
-	GE_DEFER(defer_model_multipurpose(multipurpose_key, change, glow));
+	GE_DEFER(defer_model_multipurpose(multipurpose_key, glow_map_key, change, glow));
 	change_key = multipurpose_key;
+	glow_key = glow_map_key;
 	change_color = abgr_from_rgb(change);
 	glow_color = abgr_from_rgb(glow) & 0xFFFFFF;
 }
@@ -8243,6 +8875,89 @@ each one past the slots was worked out again into the display list: about
 1 KB each, up to half of the 100-160 KB of data the models copied into the
 list a frame */
 #define MULTIPURPOSE_CACHE 40
+int psp_tex_has(unsigned int key);
+
+/* the self-illumination with the pack's glow map (the base x the
+multipurpose map's green), times the colour, added: on the Xbox the colour
+by the mask is added to the lighting, which then multiplies the base map, so
+a lit-up area shows its own texture at full brightness (texpack.py,
+glow_looks). The mask alone, added as it was, drew the main menu's ring as a
+white band and every other self-illuminated part in its flat colour.
+"glowflat" (keep.txt) draws the mask alone again. A map not yet in memory
+leaves the part unlit this frame rather than flashing the flat colour */
+static int glow_flat = -1;
+
+static int glow_add = -1, glow_no_clamp = -1;
+static unsigned int glow_base_key = 0; /* the part's base, for the clamp: psp_ge_draw_model_body */
+extern int psp_showcase_map;
+static unsigned long glow_clamped = 0;
+/* out of line and cold: only the main menu runs it, and glow_map_pass runs
+~700 times a frame on b30, where its size in the instruction cache is what
+a dormant block would cost (b133's nwbatch) */
+static void __attribute__((noinline, cold)) glow_clamp_pass(void *vertices, const unsigned short *indices,
+	long index_count, int strip, struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	if (!psp_tex_bind(glow_base_key, NULL))
+		return;
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuBlendFunc(GU_MIN, GU_FIX, GU_FIX, 0, 0);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	glow_clamped++;
+}
+static int glow_map_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
+	struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	int clamped;
+
+	if (!psp_tex_bind(glow_key, NULL))
+		return 0;
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+	sceGuColor(0xFF000000 | glow_color);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDepthFunc(GU_EQUAL);
+	sceGuDepthMask(GU_TRUE);
+	/* added light fades to nothing in the fog */
+	sceGuFog(fog_near, fog_far, 0xFF000000);
+	/* a screen blend, glow + frame x (1 - glow): the Xbox clamps lighting
+	plus self-illumination at 1 before the base multiplies it, so a lit part
+	never goes past its own base; added, the ring's bright clouds clipped to
+	white. Screened, the glow's share shrinks as the frame nears white, at
+	no cost (one pass either way). Not the clamp exactly: where both are
+	strong it still ends above the base. Keep word "glowadd": added */
+	if (glow_add < 0)
+	{
+		glow_add = psp_keep("glowadd");
+		if (glow_add)
+			platform_log("GE: glowadd: the glow maps added, not screened");
+	}
+	/* on the showcase map, the clamp itself: the glow added, then the
+	part's base drawn over it with GU_MIN, min(base x lighting + glow,
+	base), as the Xbox caps a lit part at its own base. The base is fogged
+	as pass 1 was, so the clamp holds under fog too. A pass more per
+	self-illuminated part, which only the main menu may spend (b30 draws
+	~700 glow passes a frame). Keep word "glownoclamp": screened there too.
+	Against ChupathingyCE's frames, the ring was far dimmer than either the
+	add or the screen (lab pc-chupa 39014142915) */
+	if (glow_no_clamp < 0)
+		glow_no_clamp = psp_keep("glownoclamp");
+	clamped = psp_showcase_map && !glow_no_clamp && glow_base_key;
+	if (glow_add || clamped)
+		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	else
+		sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_COLOR, 0xFFFFFF, 0);
+	ge_blend(1);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	if (clamped)
+		glow_clamp_pass(vertices, indices, index_count, strip, skin, model);
+	ge_blend(0);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuDepthMask(GU_FALSE);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuColor(0xFFFFFFFF);
+	glow_mapped++;
+	return 1;
+}
 static unsigned int multipurpose_cache_palette[MULTIPURPOSE_CACHE][256] __attribute__((aligned(64)));
 static struct
 {
@@ -8270,6 +8985,17 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 			expand_6[entry] = (unsigned char)(entry * 255 / 63);
 	}
 
+	if (which && glow_key)
+	{
+		if (glow_flat < 0)
+		{
+			glow_flat = psp_keep("glowflat");
+			if (glow_flat)
+				platform_log("GE: glowflat: self-illumination as the colour by the mask, without the glow maps");
+		}
+		if (!glow_flat && psp_tex_has(glow_key))
+			return glow_map_pass(vertices, indices, index_count, strip, skin, model);
+	}
 	/* the Xbox's channel order, read off the Xbox disc's own Blood Gulch
 	(the cyborg's map: the armour plates solid in blue, alpha all white): red
 	the reflection mask, green self-illumination, blue the change colour,
@@ -9146,6 +9872,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 						kept[out++] = draw[t + 2];
 					}
 				}
+				if (!whole_by_sphere)
+					CENSUS(census_near(0, (long)(draw_count / 3)));
 				if (probes_on && (!whole_by_sphere || near_sphere_check))
 				{
 					near_loop_us += probe_clock() - loop_start;
@@ -9339,6 +10067,7 @@ static int rigid_part_whole(const void *vertices, const unsigned short *indices,
 	corner_verdict_reset();
 	rigid_rows_for(model);
 	near_parts++;
+	CENSUS(census_near(1, triangles));
 	for (triangle = 0; triangle < triangles; triangle++)
 		if (part_triangle(indices, strip, triangle, corner) &&
 			(rigid_corner_bits(vertices, corner[0], model, limit) | rigid_corner_bits(vertices, corner[1], model, limit) |
@@ -9768,9 +10497,13 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		static int glow_off = -1;
 
 		if (change_color != 0xFFFFFFFF && multipurpose_pass(0, vertices, indices, index_count, strip, skin, &model))
+		{
 			change_passes++;
+			CENSUS(census_tint(base_key, change_key, change_color));
+		}
 		if (glow_off < 0)
 			glow_off = psp_keep("noglowpass");
+		glow_base_key = base_key; /* the clamp's base (glow_map_pass) */
 		if (glow_color && !glow_off && multipurpose_pass(1, vertices, indices, index_count, strip, skin, &model))
 			glow_passes++;
 	}
@@ -12476,6 +13209,8 @@ static void transparent_flush_body(void)
 		}
 		else
 			hud_blend(draw->blend);
+		if (draw->sky)
+			ge_layer_dither();
 		if (draw->first_person)
 			use_projection(1);
 		/* build 35: the level's see-through surfaces (the base pillars'
@@ -12651,6 +13386,46 @@ struct hud_vertex
 	unsigned int color;
 	float x, y, z;
 };
+#define PSP_GLYPH_PIXELS
+#include "psp_glyphs.h"
+
+/* the sheet's place in VRAM, between the motion sensor's target and the
+texture cache (psp_tex.c's VRAM_CACHE_START): 32 KB the EBOOT, and so each
+build's heap, no longer carries; the program holds the sheet run-length coded
+(14 KB) and unpacks it here once. VRAM keeps it through sleep, as it keeps the
+textures there */
+#define GLYPH_SHEET_VRAM 0x000D0000
+
+static void __attribute__((noinline, cold)) glyph_sheet_unpack(void)
+{
+	/* through the uncached mirror, so the GE reads what was written */
+	unsigned char *to = (unsigned char *)(0x44000000 + GLYPH_SHEET_VRAM);
+	unsigned char *const end = to + PSP_GLYPH_SHEET_WIDTH * PSP_GLYPH_SHEET_HEIGHT;
+	const unsigned char *from = psp_glyph_packed, *const last = psp_glyph_packed + sizeof(psp_glyph_packed);
+
+	/* tools/psp_glyphs.py, packbits(): a control byte under 128 is followed
+	by control + 1 bytes as they are; from 128, by one byte repeated
+	control - 125 times */
+	while (from < last && to < end)
+	{
+		unsigned int control = *from++, count;
+
+		if (control < 128)
+			for (count = control + 1; count && from < last && to < end; count--)
+				*to++ = *from++;
+		else if (from < last)
+		{
+			unsigned char value = *from++;
+
+			for (count = control - 125; count && to < end; count--)
+				*to++ = value;
+		}
+	}
+	if (to != end || from != last)
+		platform_log("GE: the button glyph sheet unpacked wrong (%d of %d bytes, %d of %d read): its prompts will look broken",
+			(int)(to - (end - PSP_GLYPH_SHEET_WIDTH * PSP_GLYPH_SHEET_HEIGHT)), PSP_GLYPH_SHEET_WIDTH * PSP_GLYPH_SHEET_HEIGHT,
+			(int)(from - psp_glyph_packed), (int)sizeof(psp_glyph_packed));
+}
 
 /* the game's dynamic_screen_vertex: position, texture coordinates, colour (ARGB) */
 struct game_screen_vertex
@@ -12846,10 +13621,32 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 }
 
 /* the HUD's quads, timed for the log (build 31) */
+/* the PSP's button glyphs in place of the Xbox's button icons
+(docs/game_feature_survey.md, section 4.7). The game draws an icon as a HUD
+quad of the icon's bitmap; hud_messaging.c and ui_widget.c (psp_fixups.py
+FIXES_CONTROLS) mark the glyph just before, and the quad they draw then
+takes the glyph's key: a number no bitmap's address can be, which carries
+through the defer queue unchanged. The quad keeps the game's place, size and
+colour for the icon; only the picture is the PSP's */
+#define GLYPH_KEY_BASE 0x100u
+static PSP_MAIN_SIDE int glyph_next = -1;
+static unsigned long glyphs_drawn = 0;
+
+void psp_ge_glyph_next(int glyph)
+{
+	glyph_next = glyph >= 0 && glyph < PSP_GLYPH_COUNT ? glyph : -1;
+}
+
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
 	hud_quad_dump(vertices, key, blend, red, green, blue, fade, meter_parameters, wrapped);
+	/* the mark is the game thread's: not read again when the queue replays */
+	if (glyph_next >= 0 && !defer_replaying && !psp_on_me())
+	{
+		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
+		glyph_next = -1;
+	}
 	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,
 		wrapped, u_scale, v_scale)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -13061,6 +13858,114 @@ static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter
 	return computed;
 }
 
+/* the glyph sheet's palette for one colour: each texel is alpha << 4 |
+shade (tools/psp_glyphs.py, palette(): the same rule), and the shade runs
+from the colour darkened to 15% (0), through the colour itself (0.7 of the
+way), to white, so the glass takes the colour the game gave the icon, its
+text's. Written into the display list's memory (list_take writes it back
+before the GE reads it), 1 KB a glyph drawn: a frame has a handful */
+static unsigned int *glyph_palette(unsigned int abgr)
+{
+	unsigned int *palette = list_take(256 * 4 + 16);
+	float tint[3] = { (float)(abgr & 0xFF), (float)((abgr >> 8) & 0xFF), (float)((abgr >> 16) & 0xFF) };
+	float alpha = (float)(abgr >> 24) / (15.0f * 255.0f), colour[16][3];
+	int shade, a, c;
+
+	if (!palette)
+		return NULL;
+	palette = (unsigned int *)(((unsigned int)palette + 15) & ~15u);
+	for (shade = 0; shade < 16; shade++)
+	{
+		float s = shade / 15.0f;
+
+		for (c = 0; c < 3; c++)
+			colour[shade][c] = s <= 0.7f ? tint[c] * (0.15f + 0.85f * s / 0.7f) :
+				tint[c] + (255.0f - tint[c]) * ((s - 0.7f) / 0.3f);
+	}
+	for (a = 0; a < 16; a++)
+	{
+		unsigned int level = (unsigned int)(a * alpha * 255.0f + 0.5f) << 24;
+
+		for (shade = 0; shade < 16; shade++)
+			palette[a << 4 | shade] = level | (unsigned int)colour[shade][2] << 16 |
+				(unsigned int)colour[shade][1] << 8 | (unsigned int)colour[shade][0];
+	}
+	return palette;
+}
+
+/* a glyph in the icon's quad: its share of the quad's height
+(psp_glyph_height) on the quad's bottom, its own shape across; centred when
+it is narrower, else from the quad's left edge (the text's cursor moves on
+by the difference: psp_button_glyph_extra, psp_sdl.c) */
+static void glyph_quad(struct game_screen_vertex const *in, int glyph, short blend, float red, float green,
+	float blue, float fade, float offset_x, float offset_y)
+{
+	unsigned short const *cell = psp_glyph_cells[glyph];
+	struct hud_vertex *out;
+	unsigned int *palette;
+	float x0 = in[0].x, x1 = in[0].x, y0 = in[0].y, y1 = in[0].y, wide;
+	int corner;
+
+	for (corner = 1; corner < 4; corner++)
+	{
+		x0 = fminf(x0, in[corner].x);
+		x1 = fmaxf(x1, in[corner].x);
+		y0 = fminf(y0, in[corner].y);
+		y1 = fmaxf(y1, in[corner].y);
+	}
+	/* the glyph's own share of the box's height, on the box's bottom (the
+	text's line) */
+	y0 = y1 - (y1 - y0) * psp_glyph_height[glyph] / 100.0f;
+	wide = (y1 - y0) * cell[2] / cell[3];
+	if (wide <= x1 - x0)
+		x0 += (x1 - x0 - wide) * 0.5f;
+	x1 = x0 + wide;
+	palette = glyph_palette(argb_to_abgr(in[0].argb, red, green, blue, fade));
+	out = list_take(2 * sizeof(struct hud_vertex));
+	if (!out || !palette)
+		return;
+	if (hud_snap < 0)
+		hud_snap = !psp_keep("hudnosnap");
+	/* half a texel in from the cell's edges, so the filter doesn't take in
+	the neighbouring glyph */
+	out[0].u = cell[0] + 0.5f;
+	out[0].v = cell[1] + 0.5f;
+	out[1].u = cell[0] + cell[2] - 0.5f;
+	out[1].v = cell[1] + cell[3] - 0.5f;
+	out[0].color = out[1].color = 0xFFFFFFFF;
+	out[0].x = hud_pixel((x0 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
+	out[0].y = hud_pixel((y0 + offset_y) * ui_scale_y * hud_zoom);
+	out[1].x = hud_pixel((x1 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
+	out[1].y = hud_pixel((y1 + offset_y) * ui_scale_y * hud_zoom);
+	out[0].z = out[1].z = 0.0f;
+	/* the sheet sits in VRAM, written once through the uncached mirror, so
+	there is no cache to write back */
+	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+	sceGuClutLoad(256 / 8, palette);
+	sceGuTexMode(GU_PSM_T8, 0, 0, 0);
+	sceGuTexImage(0, PSP_GLYPH_SHEET_WIDTH, PSP_GLYPH_SHEET_HEIGHT, PSP_GLYPH_SHEET_WIDTH,
+		(void *)(0x04000000 + GLYPH_SHEET_VRAM));
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_FOG);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+	/* glass over the picture whatever the icon's own blend: added, as the
+	HUD's icons mostly are, its dark body would vanish */
+	(void)blend;
+	ge_blend(1);
+	sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+	ge_kind(KIND_HUD);
+	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
+	ge_blend(0);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuEnable(GU_FOG);
+	sceGuEnable(GU_DEPTH_TEST);
+	if (!glyphs_drawn++)
+		platform_log("GE: the PSP's button glyphs drawn for the game's button icons (\"xboxglyphs\" draws the Xbox's)");
+}
+
 static void screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
 	float fade, float offset_x, float offset_y, void const *meter_parameters, int wrapped, float u_scale, float v_scale)
 {
@@ -13075,6 +13980,12 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 	transparent_flush();
 	if (list_full())
 		return;
+	if (key - GLYPH_KEY_BASE < PSP_GLYPH_COUNT && !meter)
+	{
+		glyph_quad(in, (int)(key - GLYPH_KEY_BASE), blend, red, green, blue, fade, offset_x, offset_y);
+		hud_quads++;
+		return;
+	}
 	if (!psp_tex_size(key, &width, &height))
 	{
 		/* a HUD picture the texture pack doesn't have: named once each */
@@ -14241,6 +15152,18 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	unsigned int light_loop_start = probe_clock(); /* build 119's probe */
 
 	unsigned long probe_looked = 0, probe_lit = 0; /* in registers; added once below */
+#ifdef PSP_RECON
+	/* the draw census's runs of 16 triangles: each run's nearest corner to the light */
+	int census_runs = census_wanted();
+	long census_run = -1, census_run_count = 0;
+	float census_run_nearest = 0.0f, census_radius_squared = light.radius * light.radius;
+
+	if (census_runs)
+	{
+		census_light_draws[spot]++;
+		census_light_surface(vertices, indices, triangle_count);
+	}
+#endif
 
 	if (probes_on)
 		light_setup_us += light_loop_start - light_call_start;
@@ -14342,6 +15265,29 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				light_memo_checks++;
 			}
 		}
+#ifdef PSP_RECON
+		if (census_runs)
+		{
+			float nearest = distance_squared3(source[0], light.position), d;
+
+			if ((d = distance_squared3(source[1], light.position)) < nearest)
+				nearest = d;
+			if ((d = distance_squared3(source[2], light.position)) < nearest)
+				nearest = d;
+			if ((index >> 4) != census_run)
+			{
+				if (census_run_count)
+					census_light_run(census_run_count, census_run_nearest, census_radius_squared);
+				census_run = index >> 4;
+				census_run_count = 0;
+				census_run_nearest = nearest;
+			}
+			else if (nearest < census_run_nearest)
+				census_run_nearest = nearest;
+			census_run_count++;
+			census_light_looked[spot]++;
+		}
+#endif
 		probe_looked++;
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			continue;
@@ -14440,6 +15386,10 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		}
 		light_emit(corners, out, &kept_count, &cut_count);
 	}
+#ifdef PSP_RECON
+	if (census_run_count)
+		census_light_run(census_run_count, census_run_nearest, census_radius_squared);
+#endif
 	if (probes_on)
 	{
 		light_post_start = probe_clock();
@@ -15948,6 +16898,145 @@ static void stamp_build(const char *text)
 	}
 }
 
+static void screenshot(void);
+
+/* ---------- the loading screen (psp_loading.c drives it; psp_loading.h)
+
+The Xbox's loading picture (progress_bar.c, progress_bar_render), as far as
+it can be drawn without its loading.tga:
+- each frame starts black and the frame on the screen is drawn back over it
+  through a 4-tap blur, a little larger than the screen (texels 3 to 637 of
+  640 across a quad 1/128 wider and taller than the screen on each side) and
+  at 0.9, so the last picture zooms out and fades, a trail; above 0.9 of the
+  progress the trail's weight falls to 0 by the end;
+- over that, loading.tga times a soft band (a 128 x 16 mask, made in code)
+  that sweeps from the left to the right with the progress, at the
+  brightness sin(progress pi)^0.9, added. loading.tga is the disc's
+  (maps\loading.tga, which the Xbox copies to its utility drive at start-up);
+  the bake doesn't carry it yet, so that layer isn't drawn.
+On the PSP the blur's taps are 0.1 texel apart, so one bilinear tap stands
+for them [U]. The trail's source is whichever buffer is on the screen: the
+loading frames swap themselves, so each reads the one before; in the settle
+(the level's first view drawn with no tick) the veil draws the same trail
+opaque over the scene, so the view stays hidden and the screen ends on black,
+as the Xbox's did. "loadingplain": black frames, no trail; "loadshotsN": a
+screenshot every Nth loading frame (tests). */
+#include "psp_loading.h"
+
+int psp_keep_number(const char *prefix, int fallback);
+static int loading_on = -1, loading_shots = -1;
+static unsigned long loading_frames = 0;
+
+static unsigned int loading_front(void)
+{
+	/* the buffer on the screen: the one not being drawn */
+	return (unsigned int)draw_buffer == 0 ? FRAME_BYTES : 0;
+}
+
+/* the trail: the screen's picture, zoomed out a little and weighted, over
+nothing (src x weight + dst x 0), so it is opaque and needs no clear */
+static void loading_trail(float progress, int from_screen)
+{
+	struct trail_vertex { float u, v, x, y, z; } *v;
+	float weight = progress < 0.9f ? 0.9f : 0.9f - (progress - 0.9f) * 9.0f;
+	unsigned int fixed;
+	int strip, strips = SCREEN_WIDTH / 32;
+
+	if (loading_on < 0)
+	{
+		loading_on = !psp_keep("loadingplain");
+		loading_shots = psp_keep_number("loadshots", 0);
+	}
+	if (weight < 0.0f || !from_screen || !loading_on)
+		weight = 0.0f;
+	fixed = (unsigned int)(weight * 255.0f + 0.5f);
+	v = sceGuGetMemory(strips * 2 * sizeof(*v));
+	/* the Xbox's mapping, in the PSP's pixels: x' = 2.25 + (x + 1.875) x
+	634/645 and y' = (y + 1.0625) x 480/483.75 (its 640 x 480 scaled to 480
+	x 272), so the picture grows 1.7% across and 0.8% down a frame */
+	for (strip = 0; strip < strips; strip++)
+	{
+		float x0 = (float)(strip * 32), x1 = x0 + 32.0f;
+
+		v[2 * strip].u = 2.25f + (x0 + 1.875f) * (634.0f / 645.0f);
+		v[2 * strip].v = 1.0625f * (480.0f / 483.75f);
+		v[2 * strip].x = x0;
+		v[2 * strip].y = 0.0f;
+		v[2 * strip].z = 0.0f;
+		v[2 * strip + 1].u = 2.25f + (x1 + 1.875f) * (634.0f / 645.0f);
+		v[2 * strip + 1].v = (SCREEN_HEIGHT + 1.0625f) * (480.0f / 483.75f);
+		v[2 * strip + 1].x = x1;
+		v[2 * strip + 1].y = (float)SCREEN_HEIGHT;
+		v[2 * strip + 1].z = 0.0f;
+	}
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDepthMask(GU_TRUE);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuTexMode(GU_PSM_5650, 0, 0, 0);
+	sceGuTexImage(0, 512, 512, BUFFER_WIDTH, (void *)((unsigned int)sceGeEdramGetAddr() + loading_front()));
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuTexLevelMode(GU_TEXTURE_CONST, 0.0f);
+	sceGuTexFlush();
+	ge_blend(1);
+	/* undithered: the trail feeds on itself, and a dither would build up */
+	dither_set(0);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, fixed | (fixed << 8) | (fixed << 16), 0);
+	sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, strips * 2, NULL, v);
+	/* as the frame's drawing expects them (buffer_state(0)) */
+	sceGuTexLevelMode(tex_level_mode, tex_bias);
+	ge_blend(0);
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuDepthMask(GU_FALSE);
+	sceGuEnable(GU_FOG);
+	loading_frames++;
+}
+
+/* the frame on the screen as the load begins: the buffer itself, which
+stays put while the loading frames draw into the other one and read it */
+const void *psp_ge_loading_capture(void)
+{
+	if (!ge_ready || frame_open)
+		return NULL;
+	loading_frames = 0;
+	return (const void *)((unsigned int)sceGeEdramGetAddr() + loading_front());
+}
+
+/* one whole frame of the load (phase 0), drawn and shown by itself: no game
+frame is open while the load runs */
+void psp_ge_loading_frame(const struct psp_loading_view *view)
+{
+	if (!ge_ready || frame_open || !view)
+		return;
+	sceGuStart(GU_DIRECT, display_list);
+	/* no picture to start from (a cold start): from black */
+	loading_trail(view->progress, view->captured != NULL);
+	stall_force = 1;
+	sceGuFinish();
+	sceGuSync(0, 0);
+	stall_force = 0;
+	if (loading_shots > 0 && loading_frames % (unsigned long)loading_shots == 1)
+		screenshot();
+	draw_buffer = sceGuSwapBuffers();
+}
+
+/* the settle (phase 1): over the level's first view, inside its open frame
+and before its swap; the world's see-through draws go first, so none lands
+on top */
+void psp_ge_loading_veil(const struct psp_loading_view *view)
+{
+	if (!frame_open || !view || PSP_ME_WORK())
+		return;
+	list_hud_phase();
+	loading_trail(view->progress, 1);
+	if (loading_shots > 0 && loading_frames % (unsigned long)loading_shots == 1)
+		psp_screenshot_requested = 1;
+}
+
 int psp_build_number(void);
 
 static void screenshot(void)
@@ -15963,8 +17052,8 @@ static void screenshot(void)
 	float seconds = psp_debug_seconds();
 
 	/* the next number after the highest shotNNN* already there */
-	sceIoMkdir("ms0:/halo/shots", 0777);
-	folder = sceIoDopen("ms0:/halo/shots");
+	sceIoMkdir(PSP_DATA_ROOT "/shots", 0777);
+	folder = sceIoDopen(PSP_DATA_ROOT "/shots");
 	if (folder >= 0)
 	{
 		memset(&entry, 0, sizeof(entry));
@@ -15981,7 +17070,7 @@ static void screenshot(void)
 		}
 		sceIoDclose(folder);
 	}
-	snprintf(path, sizeof(path), "ms0:/halo/shots/shot%03d_t%d.bmp", number, (int)seconds);
+	snprintf(path, sizeof(path), PSP_DATA_ROOT "/shots/shot%03d_t%d.bmp", number, (int)seconds);
 	{
 		const char *psp_preset_label(void);
 		const char *preset = psp_preset_label();
@@ -16090,6 +17179,7 @@ void psp_ge_frame_end(void)
 	transparent_flush();
 	taa_resolve();
 	ge_kinds_frame_end(); /* build 103 */
+	CENSUS(census_frame());
 	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
 	win_flush_us += sceKernelGetSystemTimeLow() - flush_mark;
 	win_frames++;
@@ -16277,6 +17367,8 @@ void psp_ge_frame_end(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		if (glyphs_drawn)
+			platform_log("GE: button glyphs drawn %lu (since the start)", glyphs_drawn);
 		cut_count_report(frames == 1 ? 1 : 300);
 		/* build 87: its own line (the one above passed the log's line length) */
 		/* build 89: the counters over these 300 frames (they were never
@@ -16426,16 +17518,22 @@ void psp_ge_frame_end(void)
 			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
 				arena_used / 1024, ARENA_BYTES / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
 				arena_compactions, arena_moved_kb, arena_migrated);
-		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu; meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
-			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
+		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu (%lu with glow maps, %lu clamped); meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
+			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, glow_mapped, glow_clamped, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
+		if (PSP_DITHERSHIFT && dither_shift > 0)
+		{
+			platform_log("GE: %s: %lu passes dithered at a moved place", dither_shift == 2 ? "dithershiftall" : "dithershift", dither_moves);
+			dither_moves = 0;
+		}
 		if (frames > 1)
 		{
 			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
 			ge_kinds_report(); /* build 103 */
+			CENSUS(census_report());
 			ge_reads_report(frames); /* build 115 */
 			vm_report(); /* build 116 */
 			/* build 112: every 300 frames, with the skinning plans' heap */

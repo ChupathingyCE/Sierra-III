@@ -35,6 +35,7 @@ the game calls every frame, and from Flush, never from the audio thread.
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 
@@ -808,7 +809,7 @@ static int audio_thread(SceSize arguments, void *argument)
 		/* keep.txt's "audiodump": the first 20 s of the mix into ms0:/halo/audio.raw
 		(22,050 Hz stereo 16-bit), to check the mixer off the PSP */
 		if (psp_keep("audiodump"))
-			dump = sceIoOpen("ms0:/halo/audio.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+			dump = sceIoOpen(PSP_DATA_ROOT "/audio.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	}
 	for (;;)
 	{
@@ -1459,3 +1460,52 @@ HRESULT WINAPI IDirectSoundBuffer_SetCurrentPosition(LPDIRECTSOUNDBUFFER buffer,
 HRESULT WINAPI IDirectSoundBuffer_SetLoopRegion(LPDIRECTSOUNDBUFFER buffer, DWORD loop_start, DWORD loop_length) { (void)buffer; (void)loop_start; (void)loop_length; return DS_OK; }
 HRESULT WINAPI IDirectSoundBuffer_SetPitch(LPDIRECTSOUNDBUFFER buffer, LONG pitch) { (void)buffer; (void)pitch; return DS_OK; }
 HRESULT WINAPI IDirectSoundBuffer_SetVolume(LPDIRECTSOUNDBUFFER buffer, LONG volume) { (void)buffer; (void)volume; return DS_OK; }
+
+/* ---------- a looping voice from memory (the loading screen's chant)
+
+The Xbox played the chant through looping buffers, which this file leaves as
+null objects (above). psp_loading.c plays it on a stream instead: the whole
+sound queued as every packet a stream holds, all pointing at the same bytes,
+so it loops for as long as any load takes (64 passes, over a minute) without
+completions, which nothing runs during a blocking load. */
+
+void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned long sample_rate,
+	unsigned long frequency, long millibels)
+{
+	WAVEFORMATEX format;
+	DSSTREAMDESC description;
+	XMEDIAPACKET packet;
+	LPDIRECTSOUNDSTREAM stream;
+	int k;
+
+	memset(&format, 0, sizeof(format));
+	format.wFormatTag = WAVE_FORMAT_XBOX_ADPCM;
+	format.nChannels = 1;
+	format.nSamplesPerSec = sample_rate;
+	memset(&description, 0, sizeof(description));
+	description.lpwfxFormat = &format;
+	if (IDirectSound_CreateSoundStream(NULL, &description, &stream, NULL) != DS_OK)
+		return NULL;
+	IDirectSoundStream_SetFrequency(stream, frequency);
+	IDirectSoundStream_SetVolume(stream, millibels);
+	memset(&packet, 0, sizeof(packet));
+	packet.pvBuffer = (LPVOID)adpcm;
+	packet.dwMaxSize = bytes;
+	for (k = 0; k < MAXIMUM_STREAM_PACKETS; k++)
+		stream_process((IDirectSoundStream *)stream, &packet, NULL);
+	return stream;
+}
+
+void psp_dsound_loop_volume(void *voice, long millibels)
+{
+	if (voice)
+		IDirectSoundStream_SetVolume((LPDIRECTSOUNDSTREAM)voice, millibels);
+}
+
+void psp_dsound_loop_stop(void *voice)
+{
+	if (!voice)
+		return;
+	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
+	stream_release((IDirectSoundStream *)voice);
+}

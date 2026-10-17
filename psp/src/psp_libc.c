@@ -9,8 +9,8 @@ compiled as plain C (no game prefix):
   ports compute them in double precision, bit-identical across machines
   for system link; the PSP computes them in single precision on its FPU
   (lever 1 in the feasibility notes), since it won't play against PCs;
-- internet play (p2p.c) and the Android GL host, which the PSP doesn't
-  have: they report nothing.
+- internet play (p2p.c; the campaign build only) and the Android GL host,
+  which the PSP doesn't have: they report nothing.
 */
 
 #include <errno.h>
@@ -307,7 +307,10 @@ double halo_log2(double x) { return log2f((float)x); }
 double halo_log10(double x) { return log10f((float)x); }
 double halo_pow(double x, double y) { return powf((float)x, (float)y); }
 
-/* ---------- no internet play (p2p.c) */
+/* ---------- no internet play (p2p.c): the campaign build. The multiplayer
+build has the engine's p2p layer itself (psp_build.py's INTERNET_UNITS) */
+
+#ifndef PSP_MULTIPLAYER
 
 const unsigned char *p2p_identifier(void) { static unsigned char identifier[16]; return identifier; }
 void p2p_hardware_id(char *hex, int size) { if (size > 0) { strncpy(hex, "5053500000000000", size - 1); hex[size - 1] = 0; } }
@@ -339,6 +342,11 @@ void p2p_initialize(unsigned long local_address) { (void)local_address; }
 /* (ChupathingyCE's: whether a hosted game is offered on the internet) */
 void p2p_set_hosting_allowed(int allowed) { (void)allowed; }
 void p2p_set_hosting_public(int public) { (void)public; }
+/* (ChupathingyCE's: what a hosted game shows in an invite's listing) */
+void p2p_set_game_listing(const char *name, const char *map, const char *gametype, int engine_type, int open,
+	int in_progress, int has_teams)
+{ (void)name; (void)map; (void)gametype; (void)engine_type; (void)open; (void)in_progress; (void)has_teams; }
+#endif
 
 /* ---------- no Android GL host */
 

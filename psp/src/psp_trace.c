@@ -21,6 +21,7 @@ own file is passed through untraced. */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -882,7 +883,7 @@ descriptors isn't counted or reported as a failure again */
 SceUID __real_sceIoOpen(const char *file, int flags, SceMode mode);
 void psp_handles_reserve(void)
 {
-	static const char path[] = "ms0:/halo/log/reserve.txt";
+	static const char path[] = PSP_DATA_ROOT "/log/reserve.txt";
 
 	if (handle_reserve >= 0)
 		return;

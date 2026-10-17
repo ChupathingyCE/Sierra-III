@@ -6,8 +6,9 @@ reuses as is (port/linux/src, built against the PSP toolchain's SDL3 and
 pthreads):
 - the program entry: module info, a fixed-size heap, exit handling, the
   log file, the data and save roots;
-- no network yet: posix_net.c's sockets fail cleanly, and internet play's
-  helpers (posix_update.c, posix_upnp.c, p2p.c) report nothing.
+- no network in the campaign build: posix_net.c's sockets fail cleanly
+  (the multiplayer build's are psp_net.c's), and internet play's helpers
+  (posix_update.c, posix_upnp.c, p2p.c) report nothing.
 */
 
 #include "platform.h"
@@ -15,7 +16,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 135
+#define PSP_BUILD_NUMBER 137
 /* the engine base the build was made from, for the log */
 #define PSP_ENGINE_BASE "ChupathingyCE"
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
@@ -42,7 +43,9 @@ PSP_MAIN_THREAD_STACK_SIZE_KB(512);
 (psp_build.py sets it from the linked program's size) */
 PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
 
-#define DATA_ROOT "ms0:/halo"
+/* ms0:/halo, or the multiplayer build's ms0:/halomp (psp_paths.h) */
+#include "psp_paths.h"
+#define DATA_ROOT PSP_DATA_ROOT
 /* in a folder of its own: the game's own files (debug.txt, stderr.txt,
 gamestate.txt) are written next to each other in ms0:/halo, and a file's
 size lives in its folder's directory entries, so the log stays out of
@@ -917,6 +920,7 @@ static void keep_load(void)
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
 	platform_log("keep words, build 123's: speed off: aiprofilefull; speed, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash meraysminN weapontracksleep; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); lit items: litemsawake; recon: activecensus");
+	platform_log("keep words, the controls: off: crouchhold (crouch held, under the engine's 98%% rule), actiontap (the X button as the engine reads it); actionholdN (ms before d-pad left acts, 250); the nub: nubdeadN nubreachN (percent of half travel; or ms0:/halo/nub.txt); the profile until Halo's menu sets it: buttonpresetN (0-4) stickpresetN (0-3) looksensN (1-10) lookinvert");
 	platform_log("keep words, build 124's: speed off: weapontrackawake (weapontracksleep retired); retired: cutroom cutroomoff (see the cut stream's line); restorations off: levelexactoff (the level drawn from the eye as the GE rounds it), machinefuncsheld (sleeping machines hold their functions); checks: funccheck; tests: shotrunN (N frames in a row at each shotevery moment)");
 	platform_log("keep words, the scene ladder: sceneladder (each campaign map's opening cutscene, one after another; the game plays on after the last)");
 	platform_log("keep words, the level copies' room: fix off: streamroomoff (a material with no room for its copy tried again on every draw); tests: streamsqueezeN (the copies held to N KB of the arena, none from the general heap)");
@@ -926,7 +930,7 @@ static void keep_load(void)
 	platform_log("keep words, build 122's behaviour calls (opt-in, for Sheepdog01's A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
 	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it); fix off: meresetwhole (the reset register written whole); recon: mewaketest");
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
-	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf; recon: noglowpass nobackpass");
+	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf ditherlift (offsets +4) dithershift (detail and sky passes dithered, the pattern moved each pass) dithershiftall (every blend); recon: noglowpass nobackpass ditherprobe (the GE's rounding, logged at start-up)");
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
 	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times)");
 	platform_log("keep words, build 127's: speed off: logeachline (each log line written at once for the first 20 s, its newline apart)");
@@ -938,6 +942,7 @@ static void keep_load(void)
 	platform_log("keep words, build 131's: speed off: surfaceboundoff (the level sphere walk tests every surface it reaches, out of reach or not); check: surfacetestcheck");
 	platform_log("keep words, build 132's: speed off: poseaheadoff (the Media Engine pose job off: on by default where the ME runs the job ring); as before: memarksatlaunch (the launch's register read also reads the ME's own two words while it runs)");
 	platform_log("keep words, build 132's recon (emulator): nmreaders (who first reads each object's node matrices after they're computed, by nodes, and the call sites of other objects' reads)");
+	platform_log("keep words, build 136's: wake-on-write on in local games (a sleeping object checksummed only when something marked it since its last check); speed off: wakeonwriteoff (every sleeper summed every tick); opt-in: wakeonwrite (on in networked games too); check: wakecheck (every sleeper summed anyway, an unmarked change logged with the words that changed). wakeonwrite and wakecheck win over the off word");
 	platform_log("keep words, shelved (docs/shelf.md): nwbatch and its kin built in only with PSP_SHELF=1; still built but shelved, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash (the b123 ME hygiene), mewake, mewarmtest, mefinishslow");
 }
 
@@ -1286,6 +1291,15 @@ static void exit_game(const char *why)
 	sceKernelExitGame();
 }
 
+#ifdef PSP_MULTIPLAYER
+/* the multiplayer build's own tests end the game this way too
+(psp_online.c's onlinedoneN, for the emulator) */
+void psp_exit_game(const char *why)
+{
+	exit_game(why);
+}
+#endif
+
 static int exit_callback(int a, int b, void *c)
 {
 	(void)a; (void)b; (void)c;
@@ -1307,7 +1321,7 @@ void psp_next_map_check(const char *scenario_path)
 	SceIoStat stat;
 
 	name = name ? name + 1 : scenario_path;
-	snprintf(path, sizeof(path), DATA_ROOT "/maps/%s.map", name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.map", name);
 	if (sceIoGetstat(path, &stat) >= 0)
 		return;
 	platform_log("level finished: the next map, %s, isn't on the memory stick (%s)", scenario_path, path);
@@ -1769,9 +1783,15 @@ menu on any campaign map. The map's name comes from the cache file's
 header as it opens (psp_map_opened, psp_fixups.py) */
 static char current_map[32];
 
+/* the main menu (ui.map) is the hardware's showcase (CLAUDE.md): the switches
+that raise its quality read this, so they never reach a level. "noshowcase"
+draws the menu as the levels are drawn */
+int psp_showcase_map = 0;
+
 void psp_map_opened(const char *name)
 {
 	snprintf(current_map, sizeof(current_map), "%s", name ? name : "");
+	psp_showcase_map = !strcmp(current_map, "ui") && !psp_keep("noshowcase");
 }
 
 static int map_on_stick(const char *name)
@@ -1904,6 +1924,13 @@ void psp_tick_account(unsigned long microseconds)
 
 	ticks_since_frame++;
 	bench_tick();
+#ifdef PSP_MULTIPLAYER
+	{
+		extern void psp_net_tick(void);
+
+		psp_net_tick();
+	}
+#endif
 	ceiling_tick(); /* build 112 */
 	/* build 95: the high-water marks, from the game thread every 5 s */
 	if (ticks_seen % 150 == 75)
@@ -2353,6 +2380,9 @@ void psp_phase(int phase)
 	psp_current_phase = phase;
 	if (hwprofile_running)
 		halo_profile_phase(phase);
+#ifdef PSP_RECON
+	psp_me_bus_phase(phase); /* "mebusN" (psp_me.c) */
+#endif
 }
 
 static void hwprofile_start(const char *eboot_path)
@@ -2574,6 +2604,15 @@ static int heartbeat_thread(SceSize args, void *argp)
 				fc ? ft / 1000.0 / fc : 0.0, fm / 1000.0, fc / seconds,
 				scePowerGetCpuClockFrequencyInt(), sceKernelTotalFreeMemSize() / 1024,
 				heap_base ? (unsigned long)((char *)sbrk(0) - heap_base) / 1024 : 0, PSP_HEAP_KB);
+#ifdef PSP_MULTIPLAYER
+		/* mp3: the network stack's pool and the access point (psp_net.c) */
+		if (ticks >= 0 && last_ticks >= 0)
+		{
+			extern void psp_net_heartbeat(void);
+
+			psp_net_heartbeat();
+		}
+#endif
 		/* build 73: the Memory Stick reads of this window: how many, how
 		long in all, the slowest one (Sheepdog01's b71/b72: 1.7-5 s a frame at the
 		frame's end, the reads the suspects) */
@@ -2701,8 +2740,22 @@ static int heartbeat_thread(SceSize args, void *argp)
 			extern volatile unsigned int psp_pad_buttons, psp_pad_reads;
 			extern volatile int psp_pad_lx, psp_pad_ly;
 
-			platform_log("%s | pad %04x stick %d,%d (%u reads)", player_text, psp_pad_buttons & 0xFFFF,
-				psp_pad_lx, psp_pad_ly, psp_pad_reads);
+			extern volatile int psp_nub_seen[4];
+
+			/* the nub's furthest each way since launch: what a nub.txt
+			calibration is chosen from (psp_sdl.c) */
+			platform_log("%s | pad %04x stick %d,%d (%u reads; the nub has reached x %d-%d, y %d-%d)", player_text,
+				psp_pad_buttons & 0xFFFF, psp_pad_lx, psp_pad_ly, psp_pad_reads, psp_nub_seen[0], psp_nub_seen[1],
+				psp_nub_seen[2], psp_nub_seen[3]);
+			{
+				extern volatile unsigned int controls_events[5];
+				extern float psp_player_crouch(void);
+
+				if (controls_events[0] | controls_events[1] | controls_events[2])
+					platform_log("controls (since launch): crouch toggled %u times; d-pad left tapped %u times (the game reloaded %u), held %u times (the game acted %u); crouched %d%% now",
+						controls_events[0], controls_events[1], controls_events[3], controls_events[2], controls_events[4],
+						(int)(psp_player_crouch() * 100.0f));
+			}
 			if ((beat & 1) == 0)
 			{
 				/* the sound mixer's cost (psp_dsound.c; build 25) */
@@ -2928,6 +2981,15 @@ int main(int argc, char **argv)
 	thread = sceKernelCreateThread("halo heartbeat", heartbeat_thread, 0x18, 0x4000, 0, NULL);
 	if (thread >= 0)
 		sceKernelStartThread(thread, 0, NULL);
+	/* from here the start-up's lines wait in the batch for the heartbeat's
+	write each second, as the game's do once it runs: each line written at
+	once cost the stick an open, a write and a close, and the heartbeat's
+	(at a priority above the game's and the saved-game check's) held the
+	stick 3 s at the first frame on the PSP-1000 (lab 39021437349).
+	A crash still writes the batch (psp_crash.c); a hang loses at most a
+	second's lines. "logeachline": each line at once, as before */
+	if (thread >= 0 && !log_each_line())
+		log_batching = 1;
 
 	/* the crash handler's own test: with ms0:/halo/crashtest.txt present,
 	the game faults on purpose here, and the handler's screen should appear */
@@ -2941,8 +3003,10 @@ int main(int argc, char **argv)
 	return halo_main();
 }
 
-/* ---------- no network yet */
+/* ---------- no network: the campaign build (the multiplayer build's
+sockets are psp_net.c's) */
 
+#ifndef PSP_MULTIPLAYER
 int posix_socket_last_error(void) { return 10050; /* WSAENETDOWN */ }
 int posix_socket(int family, int type, int protocol) { (void)family; (void)type; (void)protocol; return -1; }
 int posix_socket_close(int socket) { (void)socket; return -1; }
@@ -2977,7 +3041,11 @@ int posix_socket_select(int *read, int *read_count, int *write, int *write_count
 }
 posix_ulong posix_local_ipv4_address(void) { return 0; }
 posix_ulong posix_resolve_ipv4(const char *host) { (void)host; return 0; }
+#endif
 
+/* (the campaign build's; the multiplayer build makes keys from its bytes, and
+has its own: psp_internet.c) */
+#ifndef PSP_MULTIPLAYER
 void posix_random_bytes(void *buffer, posix_ulong size)
 {
 	static SceKernelUtilsMt19937Context context;
@@ -2993,6 +3061,7 @@ void posix_random_bytes(void *buffer, posix_ulong size)
 	for (index = 0; index < size; index++)
 		bytes[index] = (unsigned char)sceKernelUtilsMt19937UInt(&context);
 }
+#endif
 
 int posix_upnp_forward_udp(unsigned short port, unsigned short preferred_port, posix_ulong *external_address,
 	unsigned short *external_port, char *error, int error_size)

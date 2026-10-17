@@ -26,6 +26,7 @@ players.c), as the files have no header. */
 void menu_tags_loaded(char const *map_name);
 void menu_tags_unloaded(void);
 char const *pc_menus_root_name(void);
+char const *pc_menus_screen(char const *name);
 boolean pc_menu_tag(long tag_index);
 boolean pc_menu_frame_placement(struct bitmap_data const *bitmap, short *x, short *y, short *width, short *height);
 boolean pc_menu_text_color(struct widget_instance const *widget, real_rgb_color *rgb);
@@ -39,6 +40,9 @@ void menu_tags_unloaded(void) {}
 /* the main menu the game opens: the real one's answer with no menus built
 (the Xbox's own, as halo-ce-universal opens it) */
 char const *pc_menus_root_name(void) { return "ui\\shell\\main_menu\\main_menu"; }
+/* a screen the game opens (the multiplayer pregame and postgame), as itself:
+the real one's answer with no menus built */
+char const *pc_menus_screen(char const *name) { return name; }
 boolean pc_menu_tag(long tag_index) { (void)tag_index; return FALSE; }
 boolean pc_menu_frame_placement(struct bitmap_data const *bitmap, short *x, short *y, short *width, short *height)
 {
