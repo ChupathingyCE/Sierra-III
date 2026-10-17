@@ -8,10 +8,10 @@ The XMB shows five optional files packed into `EBOOT.PBP`. Each comes from a dif
 
 | Slot | Content | Source | Path |
 |---|---|---|---|
-| `ICON0.PNG` | Still tile | Ours | Committed, `psp/xmb/<build>/` |
+| `ICON0.PNG` | Still tile: the Sierra-III mark and the build's name | Ours (`icon0.py`) | Committed, `psp/xmb/<build>/` |
 | `ICON1.PMF` | The ring, spinning (silent loop) | Footage Sheepdog01 records from PC ChupathingyCE | Encoded once by Sheepdog01, shipped |
 | `PIC0.PNG` | Empty (see Layout) | n/a | Not packed |
-| `PIC1.PNG` | The Pillar of Autumn, with the game title and the Sierra-III mark baked in | Footage still from PC ChupathingyCE + our layers | Shipped |
+| `PIC1.PNG` | The Pillar of Autumn, with the game title baked in | Footage still from PC ChupathingyCE + our layers | Shipped |
 | `SND0.AT3` | A clip of the score | The user's own disc | Added by the bake, never shipped |
 | title text | "Halo: Combat Evolved…" | `PSP_TITLE` → PARAM.SFO | Build |
 
@@ -22,12 +22,21 @@ Why the split:
 
 ## Layout (revised 2026-10-12, after a hardware preview)
 
-The game title sits at the top (x 152–328, y 14–73) and the Sierra-III mark at the bottom (x 152–328, y 217–264), both centred on the screen's true centre (x 240). The middle half of the screen (y 68–204) is left to the wallpaper, the tile's row included.
+The game title sits at the top (x 152–328, y 14–73), centred on the screen's true centre (x 240). The bottom rail carries the title's amber rule in the same place relative to its rail (x 152–327, y 228–234); the Sierra-III mark that sat there (y 217–264) moved to the tile (2026-10-17, Sheepdog01). The middle half of the screen (y 68–204) is left to the wallpaper, the tile's row included.
 
 - **Baked into PIC1, not PIC0.** Where the XMB draws PIC0 isn't documented in what we checked [U]; PIC1 fills the 480×272 screen, so baking the title and mark into it puts every pixel where we drew it.
 - **Why not above and below the tile** (the first plan): on hardware, the other titles in the list sit there, and scrolling moves them through that whole column [M].
-- **Margins**: about 12 px to the list column and 13 px to the clock; the mark ends 8 px above the screen's bottom edge.
+- **Margins**: about 12 px to the list column and 13 px to the clock.
 - **The highlighted tile** sits at about (24, 101), 146×81 [M, from a photo, ±4 px].
+
+## The tile (2026-10-17)
+
+`psp/xmb/icon0.py` draws both builds' ICON0 from `sierra_mark.svg`: smoked glass (the patch of that build's PIC1 under the tile, at its measured spot (25, 101), darkened 45%: `GLASS_DIM`, `GLASS_BLUR`), the first placeholder's 2 px border in the mark's amber (`#c29b63` → `#a06e26`), the mark as it sat on the wallpaper (PSP under the III, 120 px wide), the title's amber rule under SIERRA up to PSP (it ends where the III starts), and the build's name below it in Audiowide at 13 px with the title's steel, tracked a little tighter than COMBAT EVOLVED so MULTIPLAYER fits the mark's width. The two entries differ only in that name.
+
+- **Glass, not a plate** (Sheepdog01, 2026-10-17): the tile fakes transparency over the wallpaper. Smoked, so the chrome holds up against the planet's limb, and so a few pixels' error in the measured position reads as a material edge rather than a jog. The wallpaper fades in only once the entry is highlighted; before that the tile sits on the XMB theme.
+- **Drawn at 4× and shrunk.** The mark's outline is about 1 px at tile size; drawn directly it breaks up (the lesson from designing it at 2×).
+- **Outline under fill.** The master asks for `paint-order="stroke"`, which cairosvg ignores; the script renders the outline and the fill as two passes so PSP's thin strokes keep their amber.
+- **How PIC1 lost the mark** (the layered title master isn't kept): `backdrop.py` at seed 7 plus `compose.py`'s rail maths rebuilds the wallpaper's plate exactly (0 difference outside the titles) [D], so the sky under the old mark is the original sky. The rule under HALO was lifted against that plate and laid on the bottom rail, 174 rows down (the rails sit at y 115 and 463 at 2×).
 
 ### Dead zones
 
@@ -114,7 +123,8 @@ The main menu's theme isn't in any script: ui.map's only script moves the camera
 - [ ] Encode `ICON1.PMF` (UMD Stream Composer under Wine; Sheepdog01's machine only).
 - [x] Find the icon tile's real position (photo, 2026-10-12).
 - [ ] Optional: refine the dead zones with a calibration grid shown as PIC1 on hardware.
-- [ ] Design the Sierra-III mark (the next piece; the title may be revisited once it exists).
+- [x] Design the Sierra-III mark (2026-10-12); its vector master committed as `psp/xmb/sierra_mark.svg` (2026-10-17).
+- [x] The mark moved from PIC1 to ICON0, on the placeholder's steel plate with an amber border (2026-10-17).
 - [x] Export the PIC1 (footage + title + mark) and drop PIC0.
 - [ ] Set `PSP_TITLE` for both builds.
 - [x] Add the GCUR notice to README.md.

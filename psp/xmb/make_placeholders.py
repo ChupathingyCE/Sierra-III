@@ -32,7 +32,8 @@ VARIANTS = {
     "mp": {"label": "MULTIPLAYER", "accent": (200, 140, 60)},
 }
 # Slots holding real art, skipped here.
-REAL = {("campaign", "PIC1.PNG"), ("campaign", "PIC0.PNG")}
+# The tiles are drawn from the Sierra-III mark by icon0.py.
+REAL = {("campaign", "PIC1.PNG"), ("campaign", "PIC0.PNG"), ("campaign", "ICON0.PNG"), ("mp", "ICON0.PNG")}
 STEEL_TOP, STEEL_BOTTOM = (34, 40, 46), (10, 12, 14)
 TEXT = (226, 230, 232)
 
