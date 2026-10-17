@@ -52,7 +52,7 @@ switch has the same texture placement */
 static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
 /* build 117: the VRAM given to the model buffers by default, in KB */
-#define VRAM_MODELS_DEFAULT_KB 600
+#define VRAM_MODELS_DEFAULT_KB 784
 #define VRAM_TEXTURES_LEAST (256 * 1024) /* the least VRAM the texture cache keeps beside the models' room */
 /* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
 of the most-read model buffers (psp_tex_vram_models) */
