@@ -3044,6 +3044,13 @@ int main(int argc, char **argv)
 		hwprofile_start(argc > 0 ? argv[0] : NULL);
 		bus_probe("at start-up, the GE idle");
 	}
+	{
+		/* the loading screen from here to the main menu, in place of the log
+		on the screen (psp_loading.c; the probe above wants the GE idle) */
+		extern void psp_loading_boot_begin(void);
+
+		psp_loading_boot_begin();
+	}
 
 	thread = sceKernelCreateThread("halo heartbeat", heartbeat_thread, 0x18, 0x4000, 0, NULL);
 	if (thread >= 0)

@@ -22704,6 +22704,70 @@ void main_loop(
 """),
 ]
 
+# The boot screen (psp_loading.c): the start-up's way to the main menu is a
+# load like any other, so its progress shows; then the menu's first frames,
+# drawn by main_loop as always, go under the veil until its textures are in,
+# and the menu takes no input meanwhile. A settle of its own frames, not
+# psp_main_settle's: at this point the port's vertical blank thread hasn't
+# started (main_initialize_time), and D3DDevice_Present waits for its flips.
+# Keep words: "bootsettleoff" (the menu at once), "bootlog" (no boot screen).
+FIXES_LOADING["source/main/main.c#bootscreen"] = [
+("""	if (main_globals.want_to_be_at_main_menu)
+	{
+		main_menu_load();
+		return;
+	}
+""", """	if (main_globals.want_to_be_at_main_menu)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_LOADING #bootscreen) */
+		extern void psp_loading_boot_menu_begin(void);
+		extern void psp_loading_boot_loaded(void);
+
+		psp_loading_boot_menu_begin();
+		main_menu_load();
+		psp_loading_boot_loaded();
+#else
+		main_menu_load();
+#endif
+		return;
+	}
+"""),
+("""					render_interpolation_frame_end();
+					profile_render_end();
+""", """#ifdef HALO_PSP
+					{
+						/* psp_fixups.py (FIXES_LOADING #bootscreen): the veil over
+						the main menu's first frames, before the frame is shown */
+						extern void psp_loading_boot_frame(void);
+
+						psp_loading_boot_frame();
+					}
+#endif
+					render_interpolation_frame_end();
+					profile_render_end();
+"""),
+]
+# (as the Xbox's widgets wait out its own loading screen, just above)
+FIXES_LOADING["source/interface/ui_widget.c#bootscreen"] = [
+("""	if (progress_bar_is_active())
+		return;
+	if (virtual_keyboard_active())
+""", """	if (progress_bar_is_active())
+		return;
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_LOADING #bootscreen) */
+		extern int psp_loading_holds_input(void);
+
+		if (psp_loading_holds_input())
+			return;
+	}
+#endif
+	if (virtual_keyboard_active())
+"""),
+]
+
 # The map's tag data was one read of several megabytes, which gives a loading
 # screen nothing to show between its start and its end. In 256 KB pieces the
 # screen moves with the load: the Memory Stick reads 32 KB pieces at 14.5 MB/s

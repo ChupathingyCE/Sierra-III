@@ -258,6 +258,15 @@ int psp_front_door_main_menu(void)
 	return front_door_main_menu;
 }
 
+/* set when this launch went through the launch menu: the boot screen's hint
+on how to open it is left out then (psp_loading.c) */
+static int front_door_launch_menu = 0;
+
+int psp_front_door_launch_menu(void)
+{
+	return front_door_launch_menu;
+}
+
 /* the buttons held as the game starts; reading waits for the next sample,
 so it sees the pad as it is now */
 static unsigned int buttons_held(void)
@@ -795,6 +804,7 @@ void psp_menu(int build)
 		}
 		return;
 	}
+	front_door_launch_menu = 1;
 	int back = 0, dump_menu = -1;
 
 	scan_maps();
