@@ -133,11 +133,14 @@ static int adhoc_result(int result)
 }
 
 /* the errno of a failed call as Winsock's code; -1. An errno this doesn't
-know is logged the first time it comes, each of the first few (its numbering
-is the firmware's, which libcglue passes through as it is) */
-static int fail(void)
+know is logged each time, the first 32, with the call and the thread (its
+numbering is the firmware's, which libcglue passes through as it is). The
+game takes WSAEINVAL from a read as its connection broken: on the PSP, errno
+0 and 2 came just before each "_transport_error_endpoint_io"
+(sierra-hw 38989808944) */
+static int fail_in(const char *call)
 {
-	static int unknown_seen[8], unknown_count;
+	static int unknown_logged;
 
 	switch (errno)
 	{
@@ -178,15 +181,18 @@ static int fail(void)
 	default:
 		last_error = WSAEINVAL;
 		{
-			int index;
+			int error = errno;
 
-			for (index = 0; index < unknown_count && unknown_seen[index] != errno; index++)
-				;
-			if (index == unknown_count && unknown_count < (int)(sizeof(unknown_seen) / sizeof(unknown_seen[0])))
+			if (unknown_logged < 32)
 			{
-				unknown_seen[unknown_count++] = errno;
-				platform_log("network: a socket call failed with errno %d, which this doesn't know (taken as WSAEINVAL)",
-					errno);
+				SceKernelThreadInfo info;
+
+				unknown_logged++;
+				memset(&info, 0, sizeof(info));
+				info.size = sizeof(info);
+				sceKernelReferThreadStatus(0, &info);
+				platform_log("network: %s failed with errno %d, which this doesn't know (taken as WSAEINVAL); thread %s, %u ms",
+					call, error, info.name, sceKernelGetSystemTimeLow() / 1000);
 			}
 		}
 		break;
@@ -194,13 +200,17 @@ static int fail(void)
 	return -1;
 }
 
-static int succeed(int result)
+static int succeed_in(int result, const char *call)
 {
 	if (result < 0)
-		return fail();
+		return fail_in(call);
 	last_error = 0;
 	return result;
 }
+
+/* each call's name for fail_in's log */
+#define fail() fail_in(__func__)
+#define succeed(result) succeed_in((result), __func__)
 
 /* ---------- Wi-Fi
 
