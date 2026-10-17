@@ -189,7 +189,7 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
-    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow '))
+    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask'))
     if track and name != 'ui':
         log('%s: textures, asset track (half-size lightmaps, plants kept whole at a distance)' % name)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),

@@ -8,6 +8,7 @@ game finds a texture by the address of its bitmap_data in the tag window,
 which is fixed for a map built for the PSP (invader-build -X 0x09600000).
 
 usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means] [--no-glow-maps]
+       [--premultiplied-masks]
 
 File layout (little endian):
   header: 'PTX1', u32 count, u32 directory size
@@ -212,16 +213,26 @@ def glow_looks(m, B):
     return glows
 
 
+PREMULTIPLIED_MASKS = False    # --premultiplied-masks: the detail masks read as before
+MASKS_MENDED = []              # (shader, share of texels) whose detail mask the fix changed
+
+
+def channel_at(image, channel, w, h):
+    """one channel of an image at w x h, 0-1. Resized on its own: PIL resizes
+    RGBA premultiplied, so a multipurpose map's red, green or blue under its
+    alpha (the detail mask, not a transparency) would come out darkened, and
+    black where that alpha is 0"""
+    one = np.ascontiguousarray(image[:, :, channel])
+    if one.shape != (h, w):
+        one = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(one).resize((w, h)))
+    return one[:, :, None].astype(np.float32) / 255.0
+
+
 def apply_glow(img, multipurpose):
     """what the self-illumination pass adds, at full colour: the base x the
     multipurpose map's green, opaque (the pass draws its colour only)"""
     h, w = img.shape[:2]
-    green = np.ascontiguousarray(multipurpose[:, :, 1])
-    # the channel on its own: PIL resizes RGBA premultiplied, and the green
-    # under a zero alpha (the detail mask) would come out black
-    if green.shape != (h, w):
-        green = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(green).resize((w, h)))
-    green = green[:, :, None].astype(np.float32) / 255.0
+    green = channel_at(multipurpose, 1, w, h)
     rgb = np.clip(img[:, :, :3].astype(np.float32) * green + 0.5, 0, 255).astype(np.uint8)
     return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
 
@@ -233,11 +244,17 @@ def apply_model_look(img, look):
     k = look['mask']
     mp = look['multipurpose']
     if k and mp is not None:
-        if mp.shape[:2] != (h, w):
-            mp = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(mp).resize((w, h)))
         channel = [None, 0, 0, 1, 1, 2, 2, 3, 3][k] if k < 9 else None
         if channel is not None:
-            mask = mp[:, :, channel:channel + 1].astype(np.float32) / 255.0
+            mask = channel_at(mp, channel, w, h)
+            if mp.shape[:2] != (h, w) and channel < 3:
+                old = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(mp).resize((w, h)))
+                old = old[:, :, channel:channel + 1].astype(np.float32) / 255.0
+                changed = float((np.abs(old - mask) > 2.0 / 255.0).mean())
+                if changed:
+                    MASKS_MENDED.append((look['shader'], changed))
+                if PREMULTIPLIED_MASKS:
+                    mask = old
             if k % 2 == 1:
                 mask = 1.0 - mask
     detail = look['detail'][None, None, :]
@@ -607,8 +624,11 @@ def main():
                     help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
     ap.add_argument('--no-glow-maps', action='store_true',
                     help='no glow maps: the self-illumination pass adds its colour by the mask alone')
+    ap.add_argument('--premultiplied-masks', action='store_true',
+                    help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
     a = ap.parse_args()
-    global FULL_DETAIL, HUD_CLUT4
+    global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS
+    PREMULTIPLIED_MASKS = a.premultiplied_masks
     HUD_CLUT4 = a.hud_clut4
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
@@ -667,6 +687,12 @@ def main():
                 print('  %s: detail map folded in for %s' % (b['tag'], mlooks[b['address']]['shader']), file=sys.stderr)
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
+    for shader, changed in MASKS_MENDED:
+        print('detail mask read on its own for %s: %.0f%% of its texels changed%s' % (
+            shader, 100.0 * changed, ' (--premultiplied-masks: kept as before)' if PREMULTIPLIED_MASKS else ''),
+            file=sys.stderr)
+    print('detail masks: %d shaders whose mask the resize had darkened' % len(set(s for s, _ in MASKS_MENDED)),
+          file=sys.stderr)
     # the self-illuminated shaders' glow maps, at their base map's size and
     # from the base the GE draws (with its detail map folded in, if it has
     # one); shaders with the same two maps share one copy of the texels

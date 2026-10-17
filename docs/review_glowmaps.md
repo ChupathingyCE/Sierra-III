@@ -36,15 +36,18 @@ Item 1 of `main_menu_restoration.md`: the main menu's white band across the ring
 - **Frame**: none expected; the same pass with a different texture, and no palette worked out per draw [U; checked in the emulator].
 - **Memory**: one texture per distinct (base, multipurpose) pair, at the base's baked size (soso: 128 px at most, 4 or 8 bits). The bake log's total says how much per map.
 
-## Noticed on the way, not changed
+## The detail masks read on their own (a restoration found on the way)
 
-- `apply_model_look` resizes the multipurpose map as RGBA with PIL, so where its size differs from the base's, the detail mask is read from premultiplied (darkened) channels. Fixing it changes the detail-folded bases of those shaders; it wants its own A/B.
+- `apply_model_look` (the detail map folded into a model's base at bake) resized the multipurpose map as RGBA with PIL when its size differed from the base's. PIL resizes RGBA premultiplied, so a mask in the red, green or blue channel came out **0 wherever the map's alpha is 0**, and a few percent dark where it's low: the alpha is the map's own detail mask, not a transparency [D, and a test of PIL].
+- Where that happened, a plain mask left the base without its detail (too bright, under a darkening detail map), and an inverse mask put the detail on in full.
+- Now `channel_at` resizes the one channel it needs, for the detail mask and the glow maps alike. It's a restoration at no frame cost (the bake only), so it is on by default. `texpack.py --premultiplied-masks` bakes the masks as before.
+- The bake's log names each shader the fix changed, with the share of its texels (`detail mask read on its own for …`), and a total (`detail masks: N shaders`).
 
 ## Checks
 
 | Check | What it shows | Result |
 |---|---|---|
-| Bake `glow135` (ui, a10, b30) | the census; the packs build | |
+| Bake `glow135` (ui, a10, b30) | the census of glow maps and mended masks; the packs build | |
 | Menu, `glowflat` vs default | the ring shows its land, sea and cloud lit, not a white band | |
 | a10, b30, default vs `glowflat` vs `noglowpass` | Covenant and Pelican lights in their own colours; no frame cost | |
 | `PSP_MULTIPLAYER=1` compile | shared code still builds | |
