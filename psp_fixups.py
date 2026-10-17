@@ -23069,6 +23069,38 @@ FIXES_SOUND["source/sound/sound_dsound_xbox.c#link"] = [
 			break;
 """),
 ]
+# Which path fades a looping sound out (Sheepdog01, b138: the menu's music fades
+# halfway through its second track and starts over at the first): each fade-out
+# of a sound that isn't an impulse is logged with its class, its track type
+# (1 start, 2 loop, 3 stopping, 4 stop), the mode (0 linear, 1 crossfade), its
+# length and whether a sound fades in in its place. The paths fade differently
+# (inaudible 2 s, a pitch range's crossfade 0.5 s, a track change by its tag),
+# so the line names the cause. The first 40 of a launch
+FIXES_SOUND["source/sound/sound_manager.c#fadelog"] = [
+("""	fade_start_time = sound_manager_globals.render_time - 1;
+""",
+ """#ifdef HALO_PSP
+	{
+		static int psp_fades_logged = 0;
+
+		if (fade_out_sound_index != NONE && psp_fades_logged < 40)
+		{
+			struct sound_datum *psp_sound = sound_get(fade_out_sound_index);
+
+			if (psp_sound->type != _sound_impulse)
+			{
+				psp_fades_logged++;
+				platform_psp_log("sound: a looping sound fades out: class %d, track type %d, mode %d over %ld ms%s, at %ld ms",
+					(int)sound_definition_get(psp_sound->definition_index)->sound_class, (int)psp_sound->type, (int)mode,
+					(long)(seconds * 1000.f), fade_in_sound_index != NONE ? ", another fading in" : "",
+					(long)sound_manager_globals.render_time);
+			}
+		}
+	}
+#endif
+	fade_start_time = sound_manager_globals.render_time - 1;
+"""),
+]
 # The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
 # packets (about 743 ms) up at interrupt time, the port once a frame, so a
 # frame longer than that left long sounds silent. The queue's depth comes from
