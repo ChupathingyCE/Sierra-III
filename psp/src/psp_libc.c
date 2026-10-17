@@ -682,7 +682,12 @@ static void heap_me_check(void *caller, size_t size, const char *how)
 	if (k == HEAP_ME_CALLERS)
 		return;
 	heap_me_callers[k] = caller;
-	platform_log("heap: %s of %u bytes in work meant for the Media Engine, from %p", how, (unsigned int)size, caller);
+	{
+		extern int psp_me_record_kind; /* psp_ge.c: the call being carried out */
+
+		platform_log("heap: %s of %u bytes in work meant for the Media Engine, from %p (GE layer call kind %d)",
+			how, (unsigned int)size, caller, psp_me_record_kind);
+	}
 }
 
 void *__wrap_malloc(size_t size) { heap_me_check(__builtin_return_address(0), size, "malloc"); return heap_note(__real_malloc(size), size, "malloc", __builtin_return_address(0)); }

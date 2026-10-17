@@ -347,11 +347,8 @@ static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
 static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */
 #define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
 static void inflight_hand_over(void);
-static int stall_force;
-static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */ /* (defined with the stall wrapper) */
-/* TEMP (geinflight bring-up): the first frames' steps, logged */
-static int inflight_trace_left = 60;
-#define INFLIGHT_TRACE(...) do { if (inflight_on && inflight_trace_left > 0) { inflight_trace_left--; platform_log(__VA_ARGS__); } } while (0)
+static int stall_force; /* (defined with the stall wrapper) */
+static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */
 /* set by the frame's job itself (its args), so the ME never reads the main
 CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
@@ -563,7 +560,6 @@ static void inflight_wait_me(void);
 
 static void inflight_sync(void)
 {
-	INFLIGHT_TRACE("GE: geinflight trace: sync, %u words waiting, me out %d", defer_used, inflight_me_out);
 	inflight_frames++;
 	inflight_words += defer_used;
 	if (defer_used > inflight_words_most)
@@ -957,6 +953,10 @@ static int defer_text_character(void const *vertices)
 
 /* ----- a run of records carried out in order: on the main CPU, or as the
 Media Engine's job (psp_ge_me_replay) */
+/* the record being carried out, for the heap's report of a call in the Media
+Engine's work (psp_libc.c): which kind of call led there */
+int psp_me_record_kind = 0;
+
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
 	extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
@@ -982,6 +982,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		}
 
 		at += buffer[at].u >> 8;
+		psp_me_record_kind = kind;
 		switch (kind)
 		{
 		case DEFER_MODEL_BEGIN:
@@ -1462,7 +1463,6 @@ static void defer_drain(void)
 	/* the GE given what the run wrote (the newest stall address it kept) */
 	if (stall_me_address)
 	{
-		INFLIGHT_TRACE("GE: geinflight trace: drain end passes stall %p on", stall_me_address);
 		stall_forwarded++;
 		list_write_back(stall_me_address); /* build 114: listcachedall */
 		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
@@ -1481,7 +1481,6 @@ static void inflight_show(void)
 {
 	if (!inflight_list_ended)
 		return;
-	INFLIGHT_TRACE("GE: geinflight trace: show");
 	inflight_list_ended = 0;
 	psp_me_wake_poll();
 	psp_me_ring_test();
@@ -3692,7 +3691,6 @@ static PSP_MAIN_SIDE int window_main_done = 0;
 static float window_begin_main(const float *position, float z_near, float z_far)
 {
 	window_main_done = 1;
-	INFLIGHT_TRACE("GE: geinflight trace: window main part (recording %d)", INFLIGHT_RECORDING() ? 1 : 0);
 	if (!ge_ready)
 	{
 		ge_initialize();
@@ -3788,7 +3786,6 @@ static void window_begin_list(const float *position, const float *forward, const
 
 	if (frame_open)
 		return;
-	INFLIGHT_TRACE("GE: geinflight trace: window list part (replaying %d)", defer_replaying);
 	lit_forget(2); /* build 114: statememo */
 	sceGuFog(fog_near, fog_far, fog_color);
 	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
@@ -8935,12 +8932,62 @@ drop it. "nearclusterfull": the loop for every triangle, as before;
 "nearclustercheck": the loop runs anyway and counts the triangles whose own
 verdict disagrees with their run's */
 
+/* the runs' spheres asked for in the Media Engine's work, made by the main
+CPU when the frame is shown (the heap is the main CPU's: its lock is a
+system call the ME can't make), so a part has them from its next frame.
+Meanwhile it takes the loop for every triangle, which gives the same
+answers ("nearclusterfull", "rigidrunsfull") */
+#define RUNS_WANTED 48
+static struct runs_want
+{
+	struct skin_batch *batch; /* a skinned batch's, or NULL: a rigid part's */
+	const struct skin_part *skin;
+	const void *vertices;
+	const unsigned short *indices;
+	long index_count;
+	int strip;
+} runs_wanted[RUNS_WANTED];
+static int runs_wanted_count = 0;
+static unsigned long runs_wanted_made = 0, runs_wanted_dropped = 0;
+
+static void runs_want(struct skin_batch *batch, const struct skin_part *skin, const void *vertices,
+	const unsigned short *indices, long index_count, int strip)
+{
+	int k;
+
+	for (k = 0; k < runs_wanted_count; k++)
+	{
+		struct runs_want const *w = &runs_wanted[k];
+
+		if (batch ? w->batch == batch :
+			!w->batch && w->vertices == vertices && w->indices == indices && w->index_count == index_count && w->strip == strip)
+			return;
+	}
+	if (runs_wanted_count == RUNS_WANTED)
+	{
+		runs_wanted_dropped++;
+		return;
+	}
+	runs_wanted[runs_wanted_count].batch = batch;
+	runs_wanted[runs_wanted_count].skin = skin;
+	runs_wanted[runs_wanted_count].vertices = vertices;
+	runs_wanted[runs_wanted_count].indices = indices;
+	runs_wanted[runs_wanted_count].index_count = index_count;
+	runs_wanted[runs_wanted_count].strip = strip;
+	runs_wanted_count++;
+}
+
 /* the runs' spheres, in the part's own space (the batch's records) */
 static void near_clusters_make(struct skin_batch *b, const struct skin_part *skin, const void *vertices)
 {
 	int triangles = b->index_count / 3, count = (triangles + NEAR_CLUSTER_TRIANGLES - 1) / NEAR_CLUSTER_TRIANGLES;
 	int uv_at = skin->stride - 24, c;
 
+	if (PSP_ME_WORK())
+	{
+		runs_want(b, skin, vertices, NULL, 0, 0);
+		return;
+	}
 	b->cluster_count = 0;
 	b->clusters = count > 0 ? malloc(count * sizeof(float[4])) : NULL;
 	if (!b->clusters)
@@ -9706,6 +9753,11 @@ static struct rigid_runs *rigid_runs_for(const void *vertices, const unsigned sh
 	}
 	if (triangles <= 0)
 		return NULL;
+	if (PSP_ME_WORK())
+	{
+		runs_want(NULL, NULL, vertices, indices, index_count, strip);
+		return NULL;
+	}
 	count = (int)((triangles + NEAR_CLUSTER_TRIANGLES - 1) / NEAR_CLUSTER_TRIANGLES);
 	if (slot->spheres)
 	{
@@ -16411,6 +16463,12 @@ void psp_ge_frame_end(void)
 /* the frame's end in two parts, as its window's begin: the list's (its last
 draws and its finish: the Media Engine's turn under geinflight) and the main
 CPU's (the GE waited for, the picture shown, the frame's reads and logs) */
+/* the list part's figures for the heartbeat's window: written where the list
+ends (on the Media Engine under geinflight) and added in by the main CPU
+when the frame is shown, since the heartbeat's thread clears the window's
+own counters whenever it reports them */
+static struct { unsigned long transparent, flush_us, draws, triangles, list_bytes; } list_part;
+
 static int frame_end_list(void)
 {
 	unsigned int flush_mark;
@@ -16418,20 +16476,19 @@ static int frame_end_list(void)
 	if (!frame_open)
 		return 0;
 	flush_mark = ge_clock();
-	win_transparent += transparent_count;
+	list_part.transparent = transparent_count;
 	transparent_flush();
 	taa_resolve();
 	ge_kinds_frame_end(); /* build 103 */
-	win_flush_us += ge_clock() - flush_mark;
-	win_frames++;
-	win_draws += draws_this_frame;
-	win_triangles += triangles_this_frame;
+	list_part.flush_us = ge_clock() - flush_mark;
+	list_part.draws = draws_this_frame;
+	list_part.triangles = triangles_this_frame;
 	/* the display list's high-water mark: it has no overflow check of its own
 	(build 19) */
 	{
 		int used = sceGuCheckList();
 
-		win_list_bytes += used;
+		list_part.list_bytes = used;
 
 		if (used > list_peak)
 		{
@@ -16463,12 +16520,40 @@ static int frame_end_list(void)
 		sceGuFinish();
 		stall_force = 0;
 	}
-	INFLIGHT_TRACE("GE: geinflight trace: list ended, kept stall %p, ME work %d", stall_me_address, PSP_ME_WORK() ? 1 : 0);
 	return 1;
+}
+
+/* the runs' spheres the Media Engine's work asked for (runs_want), made while
+the parts it drew are still resident: before the frame's end lets anything go */
+static void runs_wanted_make(void)
+{
+	int k;
+
+	for (k = 0; k < runs_wanted_count; k++)
+	{
+		struct runs_want const *w = &runs_wanted[k];
+
+		if (w->batch)
+		{
+			if (w->batch->cluster_count < 0)
+				near_clusters_make(w->batch, w->skin, w->vertices);
+		}
+		else
+			(void)rigid_runs_for(w->vertices, w->indices, w->index_count, w->strip);
+		runs_wanted_made++;
+	}
+	runs_wanted_count = 0;
 }
 
 static void frame_end_show(void)
 {
+	runs_wanted_make();
+	win_frames++;
+	win_transparent += list_part.transparent;
+	win_flush_us += list_part.flush_us;
+	win_draws += list_part.draws;
+	win_triangles += list_part.triangles;
+	win_list_bytes += list_part.list_bytes;
 	window_main_done = 0;
 	if (inflight_finish_left)
 	{
@@ -16485,9 +16570,7 @@ static void frame_end_show(void)
 		frame's list. Long waits: the GE is the limit (fill, passes); short:
 		the CPU is, and drawing overlapped with the next frame's work would
 		gain little */
-		INFLIGHT_TRACE("GE: geinflight trace: waiting for the GE");
 		sceGuSync(0, 0);
-		INFLIGHT_TRACE("GE: geinflight trace: the GE done");
 		waited = sceKernelGetSystemTimeLow() - mark;
 		ge_wait_us += waited;
 		win_ge_us += waited;
