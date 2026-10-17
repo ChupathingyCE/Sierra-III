@@ -531,7 +531,9 @@ def direct_levels(small, tw, th, levels_wanted, wide):
 
 # ---- how texels become palette indices (Sheepdog01, 2026-10-16: the textures'
 # blockiness and "oily" bands, everywhere). Three steps every 8- and 4-bit
-# texture goes through; --quality 1 bakes them as before.
+# texture goes through, with --quality 2. Measured closer to the source by
+# 2-9 dB a class, but on the PSP-1000 the two bakes were indistinguishable
+# (Sheepdog01, 2026-10-17), so the default stays 1: it bakes in half the time.
 #  - the palette is fitted in Oklab, a space where equal distances look
 #    equally different, so dark tones get entries of their own rather than
 #    sharing a few (RGB distance spends them on bright differences);
@@ -544,7 +546,7 @@ def direct_levels(small, tw, th, levels_wanted, wide):
 #  - sizes are made with a Lanczos filter, which keeps edges sharp where a
 #    box blurs them and steps them; alpha and lightmaps keep the box (a
 #    cut-out's coverage, a chart's dark gutter, would ring).
-QUALITY = 2
+QUALITY = 1
 QUALITY_REPORT = False
 QUALITY_STATS = {}
 DIFFUSE_STRENGTH = 0.75
@@ -853,9 +855,10 @@ def main():
     ap.add_argument('--showcase-32', action='store_true',
                     help='with --showcase: opaque maps in 32-bit colour too (by default 16-bit, dithered; '
                          'the screen is 16-bit)')
-    ap.add_argument('--quality', type=int, default=2, choices=(1, 2),
+    ap.add_argument('--quality', type=int, default=1, choices=(1, 2),
                     help='1: palettes fitted in RGB, texels mapped to the nearest entry, sizes by a box filter '
-                         '(as before); 2: Oklab fit, error diffusion, Lanczos (the default)')
+                         '(the default); 2: Oklab fit, error diffusion, Lanczos (closer to the source by 2-9 dB, '
+                         'but indistinguishable on the PSP-1000, and twice the palette step\'s bake time)')
     ap.add_argument('--quality-report', action='store_true',
                     help='also fit each texture the old way and log both against the source, per class')
     ap.add_argument('--showcase-palettes', action='store_true',

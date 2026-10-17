@@ -65,7 +65,7 @@ Not yet: a 32-bit frame buffer (the screen is 16-bit everywhere; the space backd
 
 ## Texture quality, every map (Sheepdog01, 2026-10-16: the blockiness and the "oily" bands)
 
-Bake only (`tools/texpack.py`): no memory, no frame cost; `--quality 1` bakes as before.
+Bake only (`tools/texpack.py`, `--quality 2`): no memory, no frame cost. **Off by default:** on the PSP-1000 the two bakes of b30 were indistinguishable at the same frames (Sheepdog01, 2026-10-17; lab 39003687041 against 39003707395, frame times within noise [M]), and it doubles the palette step's bake time. Kept as an option.
 - **The palette fitted in Oklab** (`fit_palette`): k-means on Oklab colour (and alpha) instead of RGB, 60 rounds on up to 100k texels. Equal distances there look equally different, so dark tones get entries of their own.
 - **Texels mapped by error diffusion** (`diffuse`): Floyd–Steinberg, serpentine, at 3/4 strength, against the palette as the GE draws it (a 16-bit palette's 5650 rounding included). A gradient between two entries comes out as grain the filter blends, not a contour. The alpha is matched, never diffused, so cut-outs and masks keep their edges. Not for the HUD and menus, meter grids or detail maps' own levels.
 - **Sizes by Lanczos** (`resample`): the halving and every mip level. Alpha and lightmaps keep the box filter (a cut-out's coverage, a chart's gutter would ring).
