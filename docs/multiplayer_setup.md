@@ -1,80 +1,126 @@
-# Multiplayer: setting it up
+# Multiplayer
 
-How to play the PSP build against a PC: a PSP-1000 joins ChupathingyCE's dedicated server on a Linux PC, over that PC's own Wi-Fi hotspot, and a desktop ChupathingyCE client can join the same game. This setup played the first whole PSP-vs-PC game on 2026-10-11 (`milestone_first_netgame.md`).
+The multiplayer build plays Halo PC's online games from a PSP. It lists the public games that ChupathingyCE servers announce on the internet, and it joins one from its **ONLINE GAMES** screen. The PC players in those games see a PSP as one more player.
 
-The reasons behind each step are in:
-- `psp_wifi_hotspot.md`: the network;
-- `multiplayer_plan.md`: the engine;
-- `build_mp1.md` to `build_mp4.md`: what each failure looked like.
+It is a separate build from the campaign: "Halo PSP multiplayer" in the XMB, beside "Halo PSP". The two share the maps on your Memory Stick.
 
-Commands are bash. In fish, write `set x (cmd)` where bash has `x=$(cmd)`.
+**What it does today:**
+- **Joins** public games on the thirteen multiplayer maps from the Xbox disc, with no password.
+- **Doesn't host.** It can't create a game, and two PSPs can't play each other directly (ad hoc). Both come back later, with campaign co-op.
+- **No custom maps.** A game on a map that isn't on the disc is listed but can't be joined.
+- **Slow in busy games.** The PSP runs at 5–8 fps in a game with a few players (a PSP-1000 on Prisoner with 7 players started at 7.7 fps) and slower as fights grow. Expect a quiet server to play best.
 
-## The picture
+If you haven't set up the campaign yet, do that first: `play.md` takes you from a stock PSP and your own disc to a playable game. This page adds only what multiplayer needs.
 
-```
-PSP-1000 ── Wi-Fi, WPA2 ──▶ the PC's Wi-Fi card: hotspot, <hotspot-address> ──▶ dedicated server
-                                                                  ▲
-                            desktop client, on the PC's wired address
-```
+## 1. What you need
 
-| Machine | Address | Why it matters |
-|---|---|---|
-| The PC, hotspot side | always `<hotspot-address>` | NetworkManager's shared mode gives itself this address. The server binds it |
-| The PSP | `10.42.0.x`, from the hotspot's DHCP (`<device-address>` so far, every time) | The server must name it: under ARK-4's WPA2 patch, the PSP hears no broadcasts |
-| Desktop client (optional) | the PC's wired address | The server tells machines apart by address, so the client can't share `<hotspot-address>` |
+- **The campaign's setup working:** a PSP on custom firmware (6.61 with ARK-4) and the maps baked from your own disc. Any PSP model works.
+- **The multiplayer maps in your bake:** `ui` and the thirteen multiplayer maps (`beavercreek bloodgulch boardingaction carousel chillout damnation hangemhigh longest prisoner putput ratrace sidewinder wizard`). A full bake has them; if you baked only some maps, bake these too: `--maps ui,beavercreek,bloodgulch,…` (`bake/README.md`).
+- **The multiplayer zip** of the same release as your campaign build: `halo_psp_bNNNmp.zip`.
+- **A Wi-Fi network with internet** that the PSP can join:
+  - **WPA2-AES (CCMP) or open.** WPA3 and WPA2/WPA3 mixed modes don't work.
+  - **2.4 GHz.** The PSP-1000 speaks only 802.11b, so on a router that turns 802.11b off (many do), it can't join. The PSP-2000 and 3000 also speak 802.11g.
+  - A phone's hotspot set to WPA2 and 2.4 GHz works, and so does a PC's (§7).
 
-## What you need
+## 2. Install
 
-- **A PSP-1000** on 6.61 with ARK-4. Others are untested.
-- **ARK-4's `wpa2` setting on for homebrew.** Without it, the PSP can't finish joining a WPA2 network (§4).
-- **A Linux PC with a Wi-Fi card that can be an access point.** Check with `iw list`: `* AP` must appear under "Supported interface modes". The card runs the hotspot and nothing else, so the PC stays online over Ethernet.
-- NetworkManager and ufw. With another firewall, open the same ports.
-- **Your own Halo Xbox disc image.** It is the source of the PSP's bake and of the server's maps. No game data is in any repository.
-- Toolchains: pspdev, this repository's **`mp-recon` branch**, and ChupathingyCE at the pin in `UPSTREAM.md`.
-
-## 1. The PSP build
+With the stick mounted at `$STICK`:
 
 ```bash
-git checkout mp-recon
-HALO_REPO=<engine checkout> PSP_OUT=<out> PSP_MULTIPLAYER=1 python3 psp_build.py --jobs 8
-make -C psp/crash && make -C psp/profile
+unzip -o halo_psp_bNNNmp.zip -d $STICK          # PSP/GAME/halomp/
 ```
 
-What `PSP_MULTIPLAYER=1` changes:
-- builds the netcode back in, with the PC's limits;
-- shrinks the tag window to 6 MB, which makes room for the network modules;
-- keeps the build's files in `ms0:/halomp`;
-- names the build "Halo PSP multiplayer" in the XMB. It sits beside the campaign build.
+The multiplayer build reads the maps from the campaign build's `halo/maps/`, so there is nothing more to copy. It keeps its own settings, saves and logs in `halomp/`, which it creates on its first launch.
 
-**Pack it.** The game finds its two helper modules beside its `EBOOT.PBP`:
+| Path | What |
+|---|---|
+| `PSP/GAME/halomp/` | the multiplayer build (the zip) |
+| `halo/maps/` | the bake, shared with the campaign build |
+| `halomp/config.toml` | the game's settings, written at the first launch |
+| `halomp/keep.txt` | keep words (optional, §8) |
+| `halomp/log/`, `halomp/crash.txt` | what the game writes |
+
+The stick rules are the campaign's: delete only inside `halo/`, `halomp/`, `PSP/GAME/halo/` and `PSP/GAME/halomp/`; leave ARK-4's files alone.
+
+## 3. ARK-4 and the PSP's network settings
+
+1. **ARK-4's WPA2 setting, for homebrew.** The PSP's own firmware knows only WPA1; ARK-4 patches in WPA2. Add this line to ARK-4's `SETTINGS.TXT` (one `runlevel, setting, on/off` a line; see the [ARK-4 wiki's settings page](https://github.com/PSP-Archive/ARK-4/wiki/settings)):
+
+   ```
+   always, wpa2, on
+   ```
+
+   - `always` covers homebrew, where the game runs. A setting for the XMB alone isn't enough.
+   - ARK-4 reads its settings at boot: restart the PSP after changing it.
+   - An open network doesn't need it.
+2. **The WLAN switch** (the PSP-1000's left side): on.
+3. **Settings → Network Settings → Infrastructure Mode:** add your network, security **WPA-PSK (AES)**, with its password. ARK-4 turns WPA into WPA2 when it joins.
+   - **Save it as connection 1.** The game joins connection 1 without asking. To use another, put `netprofileN` in `halomp/keep.txt` (§8).
+   - **Test Connection** in the same menu should succeed.
+4. **Settings → Power Save Settings → WLAN Power Save: Off.** With it on, the radio dozes and games lag.
+
+## 4. Play
+
+1. Start **Halo PSP multiplayer**. It boots to the game's main menu; the WLAN light shows it joining your network.
+2. **Multiplayer → ONLINE GAMES.** The list fills over a few seconds.
+3. Each row is a game: its name, map, game type, players (in it / most), ping, and whether you can join it.
+   - **Up/down** picks a game, **left/right** turns the page.
+   - **Cross** joins, **square** refreshes, **circle** goes back (while a host is being reached, it stops waiting).
+4. A game the PSP can't play is dimmed, with the reason:
+   - `Custom map: not on the PSP yet`: a map that isn't on the disc.
+   - `Co-op: not on the PSP yet`: a campaign game played together.
+   - `Map not on this Memory Stick`: a disc map missing from your bake (§1).
+   - `Password games: not yet`, `Not accepting players`, `Couldn't reach its host`.
+
+   After you pick a game, the status line may say `That game can't be joined from this version.` (a host too new or too old, §6) or `The host didn't answer.`
+5. After you join, the host's pregame lobby opens; the game starts when the host starts it.
+6. **To quit:** HOME → ARK-4's Kommander → Exit.
+
+Some servers turn the PSP away even when the list shows them joinable. `[C] Grifball`'s Open Pitch, for example, plays only between PC builds that have its Bomb mode, and refuses the PSP when it joins.
+
+## 5. If it doesn't work
+
+**First, the log.** The game rewrites `halomp/log/log.txt` at every launch and keeps the last 8 launches' as `log/NNN_log.txt`. Copy it off after a run that went wrong:
 
 ```bash
-mkdir -p pkg/PSP/GAME/halomp
-cp <out>/EBOOT.PBP psp/crash/halo_crash.prx psp/profile/halo_profile.prx pkg/PSP/GAME/halomp/
-cp <me-core-mapper checkout>/LICENSE.md pkg/PSP/GAME/halomp/LICENSE-mecore.md
-(cd pkg && zip -r ../halo_psp_mpN.zip PSP)
+tar czf mp_test.tgz -C $STICK/halomp log crash.txt
 ```
 
-## 2. The maps
+(`crash.txt` is there only after a crash; drop it from the command if it's missing.) Attach that file to an issue.
 
-Bake from the `mp-recon` checkout. Its bake does two things the multiplayer build needs:
-- **It keeps the disc's tag IDs** (`multiplayer_plan.md` §3.2). The netcode names object types by tag handle, so the PSP's maps must match the PC's.
-- **It builds the multiplayer maps and `ui` for the 6 MB window.** Bakes from `main`, or from before 2026-10-10, won't load in the multiplayer build.
+| What you see | Look for in `log.txt` | Cause | Fix |
+|---|---|---|---|
+| `Internet play is off (network.online in config.toml).` | | `online = false` under `[network]` in `halomp/config.toml` | Set it to `true`, or delete the line |
+| The list stays empty | `network: the access point refused the PSP or went out of range`, or no `network: on "<SSID>" as <address>` line | The PSP didn't join your Wi-Fi | §3: connection 1, WPA2-AES, 2.4 GHz with 802.11b allowed (PSP-1000), ARK-4's `wpa2` on, then restart the PSP |
+| The WLAN light blinks once or twice, then nothing | `network: joining network connection N` with another network | Connection 1 is another network | Save yours as connection 1, or `netprofileN` |
+| Joined Wi-Fi, but the list stays empty | `online games: lobby: browsing; heard 0` | No internet on that network, or a firewall blocking outgoing TCP | Try a phone's hotspot |
+| Every game says it can't be joined from this version | `not joining a host of network version N` | ChupathingyCE moved to a network version this build doesn't know | A newer release; meanwhile a fresh `legacy.json` (§8) |
+| Joined, then dropped back to the menu | `_transport_error_endpoint_io` or `links dead` above 0 | The connection to the host broke | A closer host (lower ping), a stronger signal, WLAN power save off |
+| Very low frame rate, the game lags then rushes | `heartbeat: … fps` lines | The PSP is behind the host in a busy game | A quieter server; this is being worked on |
+
+## 6. Network versions
+
+ChupathingyCE's servers announce an OpenCE network version. This build announces version 29 and joins hosts from 11 to 30, the same as ChupathingyCE 0.7.5d. If ChupathingyCE moves to a newer version before a new release, the PSP can read a newer table from `halomp/legacy.json`:
 
 ```bash
-bake/make_bundle.sh <bundle>            # once; needs the Invader fork built (bake/INVADER.md)
-<bundle>/halo-psp-bake <disc image> <maps out> --maps ui,bloodgulch
+curl -sL https://raw.githubusercontent.com/ChupathingyCE/chupathingyce/delta-table/legacy.json -o $STICK/halomp/legacy.json
 ```
 
-- Always include `ui`.
-- Blood Gulch with `ui` comes to ~90 MB.
-- The campaign build loads these maps too, so one `halo/maps` folder serves both builds.
+Without the file, the built-in numbers apply (the log says `no legacy table; the built-in numbers: announcing 29, joining 11 to 30`).
 
-## 3. The hotspot (on the PC)
+## 7. Advanced: your own server, over a PC's hotspot
 
-**Find your interface names** with `ip link`. Below, `wlan0` is the Wi-Fi card and `enp6s0` is Ethernet.
+A Linux PC can run ChupathingyCE's dedicated server and its own Wi-Fi hotspot, and the PSP joins it from **Multiplayer → System Link**, with no internet. Useful when no public game is quiet enough, or to play against friends on desktop ChupathingyCE. The first whole PSP-versus-PC game was played this way (`milestone_first_netgame.md`).
 
-**Make the profile once:**
+```
+PSP ── Wi-Fi, WPA2 ──▶ the PC's Wi-Fi card: hotspot, <hotspot-address> ──▶ dedicated server
+                                                               ▲
+                        desktop client (optional), on the PC's wired address
+```
+
+You need a Wi-Fi card that can be an access point (`iw list` shows `* AP` under "Supported interface modes"), NetworkManager, and ufw (or open the same ports in your firewall). Commands are bash; in fish, `set x (cmd)` where bash has `x=$(cmd)`. Below, `wlan0` is the Wi-Fi card and `enp6s0` the wired one (`ip link` shows yours).
+
+**The hotspot** (once):
 
 ```bash
 nmcli connection add type wifi ifname wlan0 con-name psp-ap autoconnect no ssid PSP-LAN \
@@ -84,15 +130,6 @@ nmcli connection add type wifi ifname wlan0 con-name psp-ap autoconnect no ssid 
   wifi-sec.pairwise ccmp wifi-sec.group ccmp wifi-sec.pmf disable \
   wifi-sec.psk "<8 to 63 characters>" \
   ipv4.method shared ipv6.method disabled
-```
-
-- `proto rsn` with `ccmp` is WPA2-AES, the only security ARK-4's patch speaks. The PC refused WPA1-TKIP.
-- `band bg`: the PSP-1000 is 802.11b only.
-- `ipv4.method shared`: NetworkManager runs DHCP on the hotspot, and the PC takes `<hotspot-address>`.
-
-**Open the firewall on the hotspot only:**
-
-```bash
 sudo ufw allow in on wlan0 to any port 67 proto udp comment 'psp-ap: DHCP'
 sudo ufw allow in on wlan0 to any port 53 comment 'psp-ap: DNS'
 sudo ufw route allow in on wlan0 out on enp6s0 comment 'psp-ap: internet via NAT'
@@ -100,41 +137,20 @@ sudo ufw allow in on wlan0 to any port 5150 proto udp comment 'halo: system link
 sudo ufw allow in on wlan0 to any port 5150 proto tcp comment 'halo: game connection'
 ```
 
-**Turn it on or off:** `nmcli connection up psp-ap` (or `down`). Keep it up only while you play.
+- `proto rsn` with `ccmp` is WPA2-AES, the only security ARK-4's patch speaks; `band bg` because the PSP-1000 is 802.11b only.
+- `ipv4.method shared`: the PC runs DHCP and takes `<hotspot-address>`. The PSP gets a `10.42.0.x` address (Test Connection shows it).
+- On and off: `nmcli connection up psp-ap` / `down`. Keep it up only while you play.
 
-## 4. The PSP
-
-1. **ARK-4:** add `always, wpa2, on` to ARK-4's `SETTINGS.TXT`. The format is one `runlevel, setting, on/off` a line; see the [ARK-4 wiki's settings page](https://github.com/PSP-Archive/ARK-4/wiki/settings).
-   - `always` covers homebrew, where the game runs. A setting for the XMB alone isn't enough.
-   - Settings are read at boot, so restart the PSP after changing it.
-2. **The WLAN switch** on the PSP-1000's left side: on.
-3. **Settings → Network Settings → Infrastructure Mode:** save `PSP-LAN` with security WPA-PSK (AES) and its password. ARK-4's patch turns WPA into WPA2 at the join.
-   - **Save it as connection 1.** The game joins connection 1 without asking (keep word `netprofileN` picks another).
-4. **Test Connection** in the same menu. It shows the PSP's address, which the server needs (§5).
-5. **Settings → Power Save Settings → WLAN Power Save: Off.** With power save on, the radio dozes and latency spikes.
-
-## 5. The server (on the PC)
-
-**Build** it from the same ChupathingyCE checkout:
+**The server**, from a ChupathingyCE checkout (the version in `UPSTREAM.md`), with the disc's own maps (not the PSP's bake) in its data folder:
 
 ```bash
-cd <engine checkout>
-ninja server-x64          # build/server-x64/chupathingyce-server
-```
-
-**Its data folder:** the disc's own maps (not the PSP's bake) and a playlist. `bake/xiso.py` copies maps out of the disc image:
-
-```bash
+cd <ChupathingyCE checkout> && ninja server-x64          # build/server-x64/chupathingyce-server
 mkdir -p ~/halo-server/maps ~/halo-server/playlists
-python3 -I bake/xiso.py <disc image> ~/halo-server/maps ui bloodgulch   # run from this checkout
+python3 -I <Sierra-III checkout>/bake/xiso.py <disc image> ~/halo-server/maps ui bloodgulch
 echo "bloodgulch slayer" > ~/halo-server/playlists/psp.txt
-```
 
-**Start it.** The hotspot must be up first, because the server binds `<hotspot-address>`:
-
-```bash
-PSP=<device-address>                                    # the PSP's address (§4, step 4)
-LAN=$(ip -4 -o addr show enp6s0 | grep -oP 'inet \K[\d.]+')   # the desktop client's, if one plays
+PSP=<device-address>                                        # the PSP's address
+LAN=$(ip -4 -o addr show enp6s0 | grep -oP 'inet \K[\d.]+')   # a desktop client's, if one plays
 cd ~/halo-server
 env HALO_DATA_ROOT=$PWD HALO_SAVE_ROOT=$PWD/save \
     HALO_DEDICATED=playlists/psp.txt HALO_DEDICATED_NAME=sierra-mp HALO_DEDICATED_PUBLIC=false \
@@ -142,143 +158,55 @@ env HALO_DATA_ROOT=$PWD HALO_SAVE_ROOT=$PWD/save \
     HALO_NET_ONLINE=false HALO_NET_BROWSER= HALO_NET_LIST_GAMES=false \
     HALO_NET_REPORT_GAMES=false HALO_NET_REPORT_EVENTS=false HALO_NET_ALLOW_UPNP=false \
     HALO_NET_ADDRESS=<hotspot-address> HALO_NET_BROADCAST=$PSP,$LAN \
-    <engine checkout>/build/server-x64/chupathingyce-server
+    <ChupathingyCE checkout>/build/server-x64/chupathingyce-server
 ```
 
-What the settings do:
-- **`HALO_NET_ADDRESS`**: system link runs on the hotspot.
-- **`HALO_NET_BROADCAST`**: the server answers searches to these addresses one by one, instead of by broadcast. The PSP hears no broadcasts under ARK-4's WPA2 patch (`psp_wifi_hotspot.md` §6).
-- **`HALO_DEDICATED_MINIMUM_PLAYERS`**: how many players the lobby waits for before the game starts.
-- **The `false`s and the empty `HALO_NET_BROWSER`** keep the server off every list. No invite links, no reports.
-- The server's log is `debug.txt` in the data folder. Ctrl+C stops it.
+- `HALO_NET_BROADCAST`: the server answers searches to these addresses one by one. Under ARK-4's WPA2 patch the PSP hears no broadcasts.
+- The `false`s and the empty `HALO_NET_BROWSER` keep the server off the public list.
+- Its log is `debug.txt` in the data folder; Ctrl+C stops it.
 
-**The legacy table.** ChupathingyCE's machines agree on which OpenCE network version to announce. They take it from a signed table passed between them (Delta Peer).
-- The PSP has no Delta Peer, so it reads the same table from a file on the stick (§6).
-- If a PC hands the server a newer table than the stick's, the PSP refuses the host. The PSP's log then says `not joining a host of network version N`.
-- To pin the server instead, give it a local table: `HALO_LEGACY_TABLE=<file>`, or `legacy_table` under `[network]` in the server's `config.toml`. The file's format is in `build_mp1.md`.
-
-## 6. The stick
-
-| Path | What |
-|---|---|
-| `PSP/GAME/halomp/` | the build's zip (§1) |
-| `halo/maps/` | the bake (§2), shared with the campaign build |
-| `halomp/config.toml` | the game's settings. The first launch writes it, with the network settings commented out |
-| `halomp/legacy.json` | ChupathingyCE's legacy table (§5) |
-| `halomp/keep.txt` | keep words (optional, below) |
-| `halomp/log/`, `halomp/crash.txt` | what the game writes |
-
-**Install**, with the stick mounted at `$STICK`:
-
-```bash
-unzip -o halo_psp_mpN.zip -d $STICK
-mkdir -p $STICK/halo/maps $STICK/halomp
-cp <maps out>/halo/maps/* $STICK/halo/maps/
-curl -sL https://raw.githubusercontent.com/ChupathingyCE/chupathingyce/delta-table/legacy.json -o $STICK/halomp/legacy.json
-```
-
-- The table is the one the PCs use. Refresh it when the PSP refuses a host's version (§9).
-
-**Launch once,** quit, and mount the stick again. Then point the PSP's searches at the server:
+**The PSP's searches** go to the server's address: launch the multiplayer build once, quit, and on the stick:
 
 ```bash
 sed -i -E 's/^(# )?broadcast = .*/broadcast = "<hotspot-address>"/' $STICK/halomp/config.toml
 grep '^broadcast =' $STICK/halomp/config.toml      # one line
 ```
 
-- Why: Linux delivers a broadcast only to sockets bound to `0.0.0.0`, and the server is bound to `<hotspot-address>`. So the PSP's searches go straight to the server's address.
+(Linux delivers a broadcast only to sockets bound to `0.0.0.0`, and the server is bound to `<hotspot-address>`.)
 
-**Optional keep words** (`halomp/keep.txt`, one line): `nearauto assettrack geo2 sound1024`. The first whole game also had `nomeaudio`, which is no longer needed: the Media Engine and Wi-Fi run together under game traffic (2026-10-17, two `[C] Slayer` joins on the PSP-1000), and the word costs the main CPU the audio mixing, the slant sort and the pose job.
-
-## 7. The desktop client (optional)
+**A desktop client** (optional) on the same PC:
 
 ```bash
-cd <engine checkout>
-ninja linux64             # build/linux64/halo; its first start sets up its maps
+cd <ChupathingyCE checkout> && ninja linux64             # build/linux64/halo
 cfg=build/linux64/config.toml
 LAN=$(ip -4 -o addr show enp6s0 | grep -oP 'inet \K[\d.]+')
 sed -i -E -e "s/^(# )?address = .*/address = \"$LAN\"/" \
     -e 's/^(# )?broadcast = .*/broadcast = "<hotspot-address>"/' \
     -e 's/^(# )?online = .*/online = false/' $cfg
-grep -E '^(address|broadcast|online) =' $cfg      # three lines
 ```
 
-- `address`: the PC's wired address, so it isn't the server's.
-- `broadcast`: its searches go to the server.
-- `online = false`: system link only.
-- To play in a window: F11, or `mode = "windowed"` under `[display]`.
+The server tells machines apart by address, so the client takes the PC's wired one.
 
-## 8. Play
+**Play:** hotspot up, server started, then on the PSP **Multiplayer → System Link → `sierra-mp`** (and the same on the desktop client).
 
-1. Hotspot up: `nmcli connection up psp-ap`.
-2. Start the server (§5).
-3. Start the desktop client, if one plays: Multiplayer → System Link → `sierra-mp`.
-4. Start "Halo PSP multiplayer" on the PSP. It starts on the game's main menu, and the WLAN light shows it joining.
-5. On the PSP: Multiplayer → System Link → `sierra-mp`.
-6. To quit on the PSP: HOME → Exit (with ARK-4's Kommander: HOME → Kommander → Exit).
-
-**Hands-free join (for tests):** with `network_test = "join"` under `[debug]` in `halomp/config.toml`, the PSP searches and joins by itself from the main menu. Set it to `""` to stop.
-
-## 9. Logs, and when it doesn't work
-
-**Collect after every run.** `log.txt` is wiped at each launch.
-
-```bash
-tar czf mpN_test.tgz -C $STICK/halomp log crash.txt -C ~/halo-server debug.txt
-```
-
-- `crash.txt` is only there after a crash. Drop it from the command if it's missing.
-- The PSP's clock may differ from the PC's by whole hours (Sheepdog01's: 5 h behind). Match the two logs by events, not by time.
-
-**The useful lines** in the PSP's `log.txt`:
-- `network: joining network connection N`
-- `network: on "<SSID>" as <address>`: joined the hotspot
-- `successfully joined a net game`
-- `network: the stack's pool …`: every heartbeat while joined
-
-**On the PC:**
+**When it doesn't work, on the PC:**
 - Did the PSP join the hotspot? `iw dev wlan0 station dump` shows `authorized: yes`.
-- The hotspot's own log: `sudo wpa_cli -p /run/wpa_supplicant -i wlan0 log_level debug`, then `journalctl -fu wpa_supplicant`. At the normal level, a failed join logs nothing.
-- Game traffic: `sudo tcpdump -ni any udp port 5150`.
+- A refused join logs nothing at the normal level: `sudo wpa_cli -p /run/wpa_supplicant -i wlan0 log_level debug`, then `journalctl -fu wpa_supplicant`. An EAPOL-Start from the PSP, then `reason 15`, means ARK-4's `wpa2` setting is off for homebrew.
+- Joined the hotspot but no game in System Link: the two 5150 rules (`sudo ufw status numbered`), the PSP's address in `HALO_NET_BROADCAST`, `broadcast = "<hotspot-address>"` in the PSP's `config.toml`.
+- Game traffic: `sudo tcpdump -ni any udp port 5150`. Collect the server's `debug.txt` with the PSP's log: `tar czf mp_test.tgz -C $STICK/halomp log -C ~/halo-server debug.txt`. The PSP's clock may be hours off the PC's: match the two logs by events.
 
-| What you see | Cause | Fix |
-|---|---|---|
-| The WLAN light blinks once or twice; the hotspot logs nothing | The PSP is joining another saved connection | Save the hotspot as connection 1, or keep word `netprofileN` (§4) |
-| PSP log: `joining` ↔ `exchanging keys`, then `no connection after 20 s`. Hotspot (debug level): an EAPOL-Start from the PSP, then `reason 15` | ARK-4's `wpa2` setting is off for homebrew | `always, wpa2, on`, then restart the PSP (§4) |
-| PSP joined the hotspot, but System Link shows no game | The firewall, or the server isn't answering the PSP's address | The two 5150 rules (`sudo ufw status numbered`); the PSP's address in `HALO_NET_BROADCAST`; `broadcast = "<hotspot-address>"` in the PSP's `config.toml` |
-| "net game handler failed" in red. PSP log: `not joining a host of network version N` | The server announces a version outside the stick's legacy table | A fresh `halomp/legacy.json` (§6), or pin the server (§5) |
-| The main menu stalls with music and no animation | The hands-free join retrying a host it refuses | As the row above; or `network_test = ""` |
-| Joined, then nothing sent or received after a few seconds | The network stack's memory pool ran dry (fixed in mp3) | The `network: the stack's pool …` lines; keep words `netpoolN`, `netbufN` |
-| `CRASH: bad address (load)` in packet code | A value read at an odd address (fixed in mp2) | `build_mp1.md`, Test 1, has how to resolve the address |
-| Server log: predictions refused; the PSP lags, then rushes | The PSP's long frames leave it behind, and it catches up too fast | Open (`build_mp3.md`); frame time is the fix |
+## 8. Settings and keep words
 
-## Settings and keep words (multiplayer build)
+Keep words go on one line in `halomp/keep.txt`. None is needed to play.
 
 | Where | Name | What it does |
 |---|---|---|
 | `keep.txt` | `netprofileN` | Join the PSP's saved connection N (default 1) |
+| `keep.txt` | `netpaceN` | Every N ms, give the Wi-Fi driver 1 ms of the CPU (default 5; `netpace0` off). Without it, busy games drop the PSP |
 | `keep.txt` | `netpoolN` | The network stack's pool in KB (64–1024; default 256) |
-| `keep.txt` | `netbufN` | A socket's buffers in KB at most (default 32; `netbuf0`: what the engine asks, 1 MB) |
-| `config.toml`, `[network]` | `broadcast` | Where the PSP's searches go: `"<hotspot-address>"` |
-| `config.toml`, `[network]` | `legacy_table` | A legacy table file other than `ms0:/halomp/legacy.json` |
-| `config.toml`, `[debug]` | `network_test` | `"join"`: search and join by itself |
-| `ms0:/halomp/menu.txt` | (the file) | Start on the launch menu instead of the game's main menu |
+| `keep.txt` | `netbufN` | A socket's buffers in KB at most (default 32) |
+| `config.toml`, `[network]` | `broadcast` | Where System Link searches go (§7) |
+| `config.toml`, `[network]` | `legacy_table` | A network-version table other than `halomp/legacy.json` (§6) |
+| `halomp/legacy.json` | (the file) | ChupathingyCE's network-version table (§6) |
 
-## Ad hoc: PSP to PSP, no PC (from mp5)
-
-Two or more PSPs play each other directly: no hotspot, no server, no PC. One PSP hosts and plays.
-- On every stick: the multiplayer build, the bake, and `adhoc` in `halomp/keep.txt`.
-- The same Ad Hoc channel on every PSP (Settings → Network Settings → Ad Hoc Mode).
-- One PSP creates the game from System Link; the others join it.
-
-PCs can't join an ad hoc game; the hotspot and ChupathingyCE servers above stay the main way to play. Details: `build_mp5.md`.
-
-## Without hardware
-
-The emulator can run the same join. `tools/emu.sh` with `DATA=halomp` uses the multiplayer build's folder.
-
-The lab's `sierra-netplay` workflow runs it all on one machine:
-- the dedicated server on `127.0.0.1`;
-- the PSP build in PPSSPP on `127.0.0.2`.
-
-Its `strict=1` input runs the strict interpreter. That interpreter reports the unaligned accesses the PSP faults on and the JIT forgives, so run network changes under it before hardware.
+The reasons behind each step, for the curious: `psp_wifi_hotspot.md` (the network), `multiplayer_plan.md` (the engine), `mp_client_only.md` (why it doesn't host), and the build notes `build_mp1.md` to `build_mpb4.md` (what each failure looked like).
