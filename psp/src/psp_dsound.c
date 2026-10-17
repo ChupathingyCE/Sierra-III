@@ -114,6 +114,10 @@ struct psp_stream
 	/* frames this voice was mixed (written by the mixer, on either CPU):
 	the loading chant's line says whether its voices played at all */
 	unsigned long mixed_frames;
+	/* the loudest gain it was prepared with, and how many blocks were
+	prepared: whether the loading chant was ever loud enough to hear */
+	int peak_gain;
+	unsigned long prepared_blocks;
 	/* the game's sound class of what the stream plays (sound_manager.c's
 	channel_queue_sound names it), so a dry gap can say what fell silent */
 	long sound_class;
@@ -416,6 +420,9 @@ static int prepare_voice(struct psp_stream *stream)
 	stream->step = (unsigned long)(((unsigned long long)(stream->frequency ? stream->frequency : stream->sample_rate) << 16) /
 		OUTPUT_RATE);
 	voice_gains(stream, &stream->target_left, &stream->target_right);
+	if (stream->target_left > stream->peak_gain)
+		stream->peak_gain = stream->target_left;
+	stream->prepared_blocks++;
 	return 1;
 }
 
@@ -1648,9 +1655,9 @@ void psp_dsound_loop_stop(void *voice)
 	{
 		struct psp_stream *stream = stream_from_interface((IDirectSoundStream *)voice);
 
-		platform_log("audio: a loop voice stopped after %lu ms mixed (%s, frequency %lu, target gains %d/%d)",
-			stream->mixed_frames * 1000 / OUTPUT_RATE, loop_voice_index(voice) < 0 ? "heap" : "static slot",
-			(unsigned long)stream->frequency, stream->target_left, stream->target_right);
+		platform_log("audio: a loop voice stopped after %lu ms mixed in %lu blocks prepared (%s, frequency %lu, gain %d at the end, %d at its loudest, of %d)",
+			stream->mixed_frames * 1000 / OUTPUT_RATE, stream->prepared_blocks, loop_voice_index(voice) < 0 ? "heap" : "static slot",
+			(unsigned long)stream->frequency, stream->target_left, stream->peak_gain, GAIN_ONE);
 	}
 	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
 	k = loop_voice_index(voice);
