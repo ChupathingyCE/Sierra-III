@@ -45,6 +45,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <stdio.h>
 #include <malloc.h>
 #include <pspge.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
 
@@ -5338,7 +5339,7 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	const unsigned char *at, *end;
 
 	bake_forget();
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.pstn", name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (file < 0)
 	{
@@ -16378,8 +16379,8 @@ static void screenshot(void)
 	float seconds = psp_debug_seconds();
 
 	/* the next number after the highest shotNNN* already there */
-	sceIoMkdir("ms0:/halo/shots", 0777);
-	folder = sceIoDopen("ms0:/halo/shots");
+	sceIoMkdir(PSP_DATA_ROOT "/shots", 0777);
+	folder = sceIoDopen(PSP_DATA_ROOT "/shots");
 	if (folder >= 0)
 	{
 		memset(&entry, 0, sizeof(entry));
@@ -16396,7 +16397,7 @@ static void screenshot(void)
 		}
 		sceIoDclose(folder);
 	}
-	snprintf(path, sizeof(path), "ms0:/halo/shots/shot%03d_t%d.bmp", number, (int)seconds);
+	snprintf(path, sizeof(path), PSP_DATA_ROOT "/shots/shot%03d_t%d.bmp", number, (int)seconds);
 	{
 		const char *psp_preset_label(void);
 		const char *preset = psp_preset_label();

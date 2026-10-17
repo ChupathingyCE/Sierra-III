@@ -27,6 +27,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include <pspsuspend.h>
 #include <pspdmac.h>
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
@@ -529,12 +530,12 @@ static int bind_totals_load(void)
 	SceUID file;
 	int ok = 0, index;
 
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", map_name);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.vram", map_name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	if (file < 0)
 	{
 		/* build 89: a save whose rename didn't happen (vram_write) */
-		snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram.tmp", map_name);
+		snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.vram.tmp", map_name);
 		file = sceIoOpen(path, PSP_O_RDONLY, 0);
 	}
 	if (file < 0)
@@ -581,7 +582,7 @@ static int vram_write(const char *map, const unsigned int *totals, unsigned int 
 	SceUID file;
 	int ok = 0;
 
-	snprintf(path, sizeof(path), "ms0:/halo/maps/%s.vram", map);
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.vram", map);
 	snprintf(temp, sizeof(temp), "%s.tmp", path);
 	file = sceIoOpen(temp, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	if (file < 0)
@@ -704,17 +705,17 @@ static int pack_candidate(const char *name, int which, char *path, int size, con
 		if (strcmp(name, "ui") != 0 || psp_keep("noshowcase"))
 			return 0;
 		*word = psp_keep("showcasepal") ? "showcasepal" : "showcase";
-		snprintf(path, size, "ms0:/halo/maps/%s_%s.ptex", name, psp_keep("showcasepal") ? "showcase_pal" : "showcase");
+		snprintf(path, size, PSP_MAPS_ROOT "/%s_%s.ptex", name, psp_keep("showcasepal") ? "showcase_pal" : "showcase");
 	}
 	else if (which < 3)
 	{
 		if (!psp_keep(words[which - 1]))
 			return 0;
 		*word = words[which - 1];
-		snprintf(path, size, "ms0:/halo/maps/%s%s.ptex", name, suffixes[which - 1]);
+		snprintf(path, size, PSP_MAPS_ROOT "/%s%s.ptex", name, suffixes[which - 1]);
 	}
 	else
-		snprintf(path, size, "ms0:/halo/maps/%s.ptex", name);
+		snprintf(path, size, PSP_MAPS_ROOT "/%s.ptex", name);
 	return 1;
 }
 

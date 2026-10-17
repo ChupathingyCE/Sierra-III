@@ -41,6 +41,21 @@ Each of these is a commit, tagged `bNNN` (`git checkout b108` gives that build's
 
 b109 was never shipped: its changes are in b110. `build_bNNN.md` and `hardware_bNNN.md` in this folder hold the longer reports.
 
+## Multiplayer (mp1 onward)
+
+Their own series (Sheepdog01, 2026-10-10), built from `mp-recon` with `PSP_MULTIPLAYER=1`; they install to `PSP/GAME/halomp` beside the campaign build. Not tagged yet.
+
+| Build | Commit | Date | What it brought |
+|---|---|---|---|
+| mp1 | `43ab51f` | 2026-10-10 19:58 | The first on hardware: Wi-Fi joined, the network modules measured; its first search faulted (`build_mp1.md`) |
+| mp2 | `29b2c87` | 2026-10-10 22:51 | Packets' values at any byte offset; joined and played, then the stack ran dry (`build_mp2.md`) |
+| mp3 | `33eee4b` | 2026-10-10 23:34 | The stack's pool and sockets bounded. **The first match against a PC** (`milestone_first_netgame.md`) |
+| mp4 | `2d57041` | 2026-10-11 00:54 | Its own folder on the stick (`ms0:/halomp`), the maps shared; the PSP reads a legacy table (`build_mp4.md`) |
+| mp5 | `090ee05` | 2026-10-13 00:57 | b117's engine; ad hoc PSP to PSP (keep word `adhoc`); a PSP can host. Emulator only so far (`build_mp5.md`) |
+| mpb1 | `b39d693` | 2026-10-15 21:55 | b131's engine (ChupathingyCE v0.7.4e, network version 28) and its internet play; the ONLINE GAMES screen; on the PSP the list stayed empty (`build_mpb1.md`) |
+| mpb2 | `1780aeb` | 2026-10-16 00:44 | Internet play explains itself in the log; the PSP's clock set from the hosts'; socket errors per thread (`build_mpb2.md`) |
+| mpb3 | `7f0dc04` | 2026-10-16 01:48 | One row per game; the clock offset from three agreeing hosts; the map check through the firmware. **The first public internet game** (`milestone_first_public_game.md`) |
+
 ## Binary only (b1–b86)
 
 These builds' source wasn't kept, only their zips. The milestones below come from the write-ups in this folder.

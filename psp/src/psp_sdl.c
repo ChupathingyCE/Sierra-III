@@ -25,6 +25,7 @@ bring-up build doesn't use.
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 
@@ -44,7 +45,7 @@ static SceInt64 input_script_start = 0;
 
 static void input_script_load(void)
 {
-	FILE *file = fopen("ms0:/halo/input.txt", "r");
+	FILE *file = fopen(PSP_DATA_ROOT "/input.txt", "r");
 	char line[128];
 
 	if (!file)
@@ -100,7 +101,7 @@ static void controller_initialize(void)
 		{
 			SceIoStat status;
 
-			walk_test = sceIoGetstat("ms0:/halo/walktest.txt", &status) >= 0;
+			walk_test = sceIoGetstat(PSP_DATA_ROOT "/walktest.txt", &status) >= 0;
 			if (walk_test)
 				platform_log("walk test: holding forward, turning right (delete walktest.txt to stop)");
 		}

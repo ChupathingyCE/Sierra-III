@@ -9,10 +9,11 @@ the menus' ui.map):
   1. reads the map out of the disc image (xiso.py: no other tool needed)
   2. checks it is the retail map this build was made for (hashes.json)
   3. extracts its tags and rebuilds the map for the PSP's memory with the
-     port's Invader (-X 0x09600000 -T 0x900000, model and level geometry and
-     the animations' frame data to a .pgeo pack, animations keyframed, the
-     script node table sized to the map, the BSPs' grass and the bytes the
-     port never reads left out)
+     port's Invader (-X 0x09600000 -T 0x900000, or 0x600000 for the
+     multiplayer maps and ui; model and level geometry and the animations'
+     frame data to a .pgeo pack, animations keyframed, the script node table
+     sized to the map, the BSPs' grass and the bytes the port never reads
+     left out)
   4. bakes the textures for the PSP's graphics chip (.ptex), and the asset
      track's version (_track.ptex: half-size lightmaps, and alpha-tested
      plants that keep their leaves at a distance; --no-track skips it)
@@ -71,8 +72,15 @@ ALL = CAMPAIGN + MULTIPLAYER + ['ui']
 # The XMB menu's sound: [MAP:]TAG[@START][+LENGTH] (snd0.py). Not chosen yet;
 # `--list-music` shows the candidates.
 MUSIC = ''
-BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-T', '0x900000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
+BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-U', '-l', '0', '-H', '-K', '0.25,0.003',
                '-M', '-Y', '512', '-D', '-Z']
+# the tag window a map is built for (-T; psp_capacity.h's PSP_TAG_CACHE_SIZE):
+# the campaign build's 9 MB, and the multiplayer build's 6 MB for the
+# multiplayer maps and ui (they take 2.3-3.3 MiB of tag space as baked). A
+# structure BSP loads at the end of the window it was built for, so a map
+# built for 6 MB loads in both builds
+TAG_SPACE = '0x900000'
+MULTIPLAYER_TAG_SPACE = '0x600000'
 
 
 def log(text):
@@ -177,11 +185,27 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         summary = [line for line in open(log_path, errors='replace') if line.startswith('soundpack ')]
         if summary:
             log('%s: %s' % (name, summary[-1].strip()))
+    # a multiplayer map keeps the disc map's tag order (invader-build -w):
+    # the netcode names objects' types by tag handle, so a PSP on a PC host
+    # needs every tag where the host's map has it (docs/multiplayer_plan.md,
+    # section 3.2; tools/tagorder.py checks a bake)
+    order = []
+    if name in MULTIPLAYER:
+        index = os.path.join(folder, name + '_index.txt')
+        run([sys.executable, os.path.join(LIB, 'tagindex.py'), os.path.join(folder, 'maps_in', name + '.map'), index],
+            log_path, env=env)
+        order = ['-w', index]
     log('%s: building %s for the PSP' % (name, scenario))
     built = os.path.join(folder, name + '_z.map')
     pgeo = os.path.join(out_maps, name + '.pgeo')
-    run([invader('invader-build')] + BUILD_FLAGS + ['-t', os.path.join(folder, 'tags'), '-G', pgeo, '-o', built, scenario],
-        log_path, env=env)
+    space = MULTIPLAYER_TAG_SPACE if name in MULTIPLAYER or name == 'ui' else TAG_SPACE
+    run([invader('invader-build')] + BUILD_FLAGS + ['-T', space] + order +
+        ['-t', os.path.join(folder, 'tags'), '-G', pgeo, '-o', built, scenario], log_path, env=env)
+    # the tag window's use (Invader's own count: the tags and the largest BSP),
+    # into the bake's log: the window is what a map must fit
+    for line in open(log_path, errors='replace'):
+        if line.startswith(('Tag space:', 'BSPs:')):
+            log('%s: %s' % (name, ' '.join(line.split())))
     final = os.path.join(out_maps, name + '.map')
     run([sys.executable, os.path.join(LIB, 'dez.py'), built, final], log_path, env=env)
     os.remove(built)

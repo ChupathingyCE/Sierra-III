@@ -120,6 +120,10 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 {
 	void *result = NULL;
 	long index;
+#ifdef PSP_MULTIPLAYER
+	long placed = 0;
+	int placed_now;
+#endif
 
 	if (size >= 0x10000)
 	{
@@ -174,7 +178,25 @@ void *platform_contiguous_alloc(unsigned long size, unsigned long alignment,
 		memset(result, 0, size);
 		set_protection((unsigned long)result, size, protect);
 	}
+#ifdef PSP_MULTIPLAYER
+	placed_now = result && in_user_ram(physical_address);
+	for (index = 0; index < MAXIMUM_PLACED_BLOCKS; index++)
+		placed += placed_blocks[index].address != 0;
+#endif
 	pthread_mutex_unlock(&memory_lock);
+#ifdef PSP_MULTIPLAYER
+	/* the multiplayer build: once the game state and the tag window have
+	their places, the network stack starts (psp_net.c). Its modules take
+	user RAM outside the heap: first, they take it before the caches that
+	also go there (outside_alloc), and can't land where those two blocks
+	must go */
+	if (placed_now && placed >= 2)
+	{
+		extern void psp_net_start(void);
+
+		psp_net_start();
+	}
+#endif
 	return result;
 }
 

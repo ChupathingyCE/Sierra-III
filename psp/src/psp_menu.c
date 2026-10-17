@@ -25,7 +25,10 @@ The front door (docs/plan_front_end.md): which screen the game starts on.
 - otherwise: the game's own main menu, as on the Xbox. init.txt still runs,
   without its map_name lines (psp_front_door_main_menu, read by the engine's
   console_startup: psp_fixups.py FIXES_FRONT), so the launch menu keeps the
-  last map it chose. */
+  last map it chose.
+
+The multiplayer build keeps its files in ms0:/halomp and its maps in
+ms0:/halo/maps (psp_paths.h); its front door is the same. */
 #include <pspkernel.h>
 #include <pspctrl.h>
 #include <pspdebug.h>
@@ -36,7 +39,8 @@ The front door (docs/plan_front_end.md): which screen the game starts on.
 #include <stdlib.h>
 #include <math.h>
 
-#define DATA_ROOT "ms0:/halo"
+#include "psp_paths.h"
+#define DATA_ROOT PSP_DATA_ROOT
 #define MAXIMUM_MAPS 32
 #define NAME_LENGTH 40
 
@@ -283,7 +287,7 @@ static int map_type(const char *path)
 
 static void scan_maps(void)
 {
-	SceUID directory = sceIoDopen(DATA_ROOT "/maps");
+	SceUID directory = sceIoDopen(PSP_MAPS_ROOT);
 	SceIoDirent entry;
 
 	map_count = 0;
@@ -302,9 +306,9 @@ static void scan_maps(void)
 
 			memcpy(map->name, entry.d_name, length - 4);
 			map->name[length - 4] = '\0';
-			snprintf(path, sizeof(path), DATA_ROOT "/maps/%s", entry.d_name);
+			snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s", entry.d_name);
 			map->type = map_type(path);
-			snprintf(path, sizeof(path), DATA_ROOT "/maps/%s.ptex", map->name);
+			snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.ptex", map->name);
 			map->has_pack = file_exists(path);
 			map_count++;
 		}
@@ -491,7 +495,7 @@ static void draw(int page, int cursor, int map, int build, SceCtrlData const *pa
 				maps[i].has_pack ? "textures" : "NO TEXTURE PACK");
 		}
 		if (!map_count)
-			pspDebugScreenPrintf(" no maps in ms0:/halo/maps\n");
+			pspDebugScreenPrintf(" no maps in " PSP_MAPS_ROOT "\n");
 	}
 	else
 	{

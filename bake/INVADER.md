@@ -20,5 +20,7 @@ libsquish-dev, qt6-base-dev, libsdl2-dev, and a Rust toolchain (cargo) for its
 
 The fork adds to upstream Invader (SnowyMouse/invader, commit d43ce55):
 `-X` (tag address), `-G` (model and level geometry to a separate pack), `-K`
-(keyframed animations), packed collision, and Windows-1252 script sources.
+(keyframed animations), packed collision, Windows-1252 script sources, and
+tag IDs in `-w`'s index (a line may end in a tab and the tag's ID in hex: the
+multiplayer maps keep the disc map's IDs, salts included).
 `invader-psp-fork.patch` is the whole change.

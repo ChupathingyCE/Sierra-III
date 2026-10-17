@@ -62,6 +62,7 @@ ships beside the EBOOT. */
 #include <unistd.h>
 #include <me-core-mapper/me-core.h>
 #include "psp_me.h"
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 void psp_log_flush(void);
@@ -1154,7 +1155,7 @@ int psp_me_start(void)
 		me_reset_whole = psp_keep("meresetwhole");
 		platform_log("ME: starting the Media Engine (a hang here: hold the power switch up 10 s; launch with nomeaudio)");
 		psp_log_flush();
-		chdir("ms0:/halo");
+		chdir(PSP_DATA_ROOT);
 		table = meLibDefaultInit();
 		if (have)
 			chdir(folder);

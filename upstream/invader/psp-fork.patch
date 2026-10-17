@@ -1,5 +1,5 @@
 diff --git a/include/invader/build/build_workload.hpp b/include/invader/build/build_workload.hpp
-index 317c74a..c8f35f4 100644
+index 317c74a9..105d9165 100644
 --- a/include/invader/build/build_workload.hpp
 +++ b/include/invader/build/build_workload.hpp
 @@ -46,6 +46,50 @@ namespace Invader {
@@ -53,7 +53,23 @@ index 317c74a..c8f35f4 100644
              
              /**
               * Tags directories to use
-@@ -96,6 +140,11 @@ namespace Invader {
+@@ -67,6 +111,15 @@ namespace Invader {
+              */
+             std::optional<std::vector<File::TagFilePath>> index;
+             
++            /**
++             * PSP port: the tag IDs the index gives, by tag index (0: none
++             * given there). A map built with them names each tag as the map
++             * the index was taken from does, its salt included: the network
++             * game sends tag IDs, and the Xbox maps' salts don't all follow
++             * the formula Invader uses
++             */
++            std::vector<std::uint32_t> psp_index_tag_ids;
++
+             /**
+              * Bitmap data
+              */
+@@ -96,6 +149,11 @@ namespace Invader {
               * Optimize for space?
               */
              bool optimize_space = false;
@@ -65,7 +81,7 @@ index 317c74a..c8f35f4 100644
              
              /**
               * Control how cache files are built. Changing these may result in an incompatible cache file
-@@ -297,6 +346,9 @@ namespace Invader {
+@@ -297,6 +355,9 @@ namespace Invader {
              /** This struct cannot be deduped */
              bool unsafe_to_dedupe = false;
  
@@ -75,7 +91,7 @@ index 317c74a..c8f35f4 100644
              /** BSP index */
              std::optional<std::size_t> bsp = 0;
  
-@@ -426,6 +478,27 @@ namespace Invader {
+@@ -426,6 +487,27 @@ namespace Invader {
          
          /** Scenario index? */
          std::size_t scenario_index;
@@ -103,7 +119,7 @@ index 317c74a..c8f35f4 100644
          
          /** 
           * Get the build parameters
-@@ -464,6 +537,13 @@ namespace Invader {
+@@ -464,6 +546,13 @@ namespace Invader {
          void generate_tag_array();
          void dedupe_structs();
          std::vector<std::vector<std::byte>> map_data_structs;
@@ -118,10 +134,18 @@ index 317c74a..c8f35f4 100644
          std::size_t generate_tag_data();
          void generate_bitmap_sound_data(std::size_t file_offset);
 diff --git a/src/build/build.cpp b/src/build/build.cpp
-index 56199ec..d4c8349 100644
+index 56199eca..89dc7b03 100644
 --- a/src/build/build.cpp
 +++ b/src/build/build.cpp
-@@ -66,12 +66,20 @@ int main(int argc, const char **argv) {
+@@ -4,6 +4,7 @@
+ #include <fstream>
+ #include <vector>
+ #include <cstring>
++#include <cstdlib>
+ #include <filesystem>
+ 
+ #include <invader/build/build_workload.hpp>
+@@ -66,12 +67,20 @@ int main(int argc, const char **argv) {
          bool use_filesystem_path = false;
          std::optional<std::string> rename_scenario;
          bool optimize_space = false;
@@ -142,7 +166,16 @@ index 56199ec..d4c8349 100644
          bool auto_forge = false;
          bool do_not_auto_forge = false;
          bool use_anniverary_mode = false;
-@@ -95,6 +103,14 @@ int main(int argc, const char **argv) {
+@@ -87,7 +96,7 @@ int main(int argc, const char **argv) {
+         CommandLineOption::from_preset(CommandLineOption::PRESET_COMMAND_LINE_OPTION_GAME_ENGINE),
+         CommandLineOption("quiet", 'q', 0, "Only output error messages."),
+         CommandLineOption("script-source", 'S', 1, "Specify the script source data location. Can be \"data\" or \"tags\". Default: tags", "<source>"),
+-        CommandLineOption("with-index", 'w', 1, "Use an index file for the tags, ensuring the map's tags are ordered in the same way.", "<file>"),
++        CommandLineOption("with-index", 'w', 1, "Use an index file for the tags, ensuring the map's tags are ordered in the same way. PSP port: a line may end in a tab and the tag's ID in hex, which the map then gives it.", "<file>"),
+         CommandLineOption("output", 'o', 1, "Output to a specific file.", "<file>"),
+         CommandLineOption("auto-forge", 'A', 0, "Ensure the map will be network compatible with the target engine's stock maps."),
+         CommandLineOption("forge-crc", 'C', 1, "Forge the CRC32 value of the map after building it.", "<crc>"),
+@@ -95,6 +104,14 @@ int main(int argc, const char **argv) {
          CommandLineOption("level", 'l', 1, "Set the compression level (Xbox maps only). Must be between 0 and 9. Default: 9", "<level>"),
          CommandLineOption("optimize", 'O', 0, "Optimize tag space. This will drastically increase the amount of time required to build the cache file."),
          CommandLineOption("hide-pedantic-warnings", 'H', 0, "Don't show minor warnings."),
@@ -157,7 +190,7 @@ index 56199ec..d4c8349 100644
          CommandLineOption("extend-file-limits", 'E', 0, "Extend file size limits to 2 GiB regardless of if the target engine will support the cache file."),
          CommandLineOption("build-string", 'B', 1, "Set the build string in the header.", "<ver>"),
          CommandLineOption("stock-resource-bounds", 'b', 0, "Only index tags if the tag's index is within stock Custom Edition's resource map bounds. (Custom Edition only)"),
-@@ -216,6 +232,37 @@ int main(int argc, const char **argv) {
+@@ -216,6 +233,37 @@ int main(int argc, const char **argv) {
              case 'O':
                  build_options.optimize_space = true;
                  break;
@@ -195,7 +228,40 @@ index 56199ec..d4c8349 100644
              case 'H':
                  build_options.hide_pedantic_warnings = true;
                  break;
-@@ -355,10 +402,28 @@ int main(int argc, const char **argv) {
+@@ -297,6 +345,7 @@ int main(int argc, const char **argv) {
+     try {
+         // Get the index
+         std::optional<std::vector<File::TagFilePath>> with_index;
++        std::vector<std::uint32_t> with_index_tag_ids; // PSP port
+         if(build_options.index.size()) {
+             with_index = std::vector<File::TagFilePath>();
+ 
+@@ -314,6 +363,24 @@ int main(int argc, const char **argv) {
+                     break;
+                 }
+ 
++                // PSP port: the tag's ID may follow a tab, in hex
++                // ("path.group<TAB>E811069C"): the map is built with it, so
++                // its tags are named as in the map the index came from
++                std::uint32_t tag_id = 0;
++                auto tab = tag.find('\t');
++                if(tab != std::string::npos) {
++                    auto id_text = tag.substr(tab + 1);
++                    char *id_end = nullptr;
++                    unsigned long id_value = std::strtoul(id_text.c_str(), &id_end, 16);
++                    if(id_text.empty() || *id_end != 0 || id_value > 0xFFFFFFFFUL || (id_value & 0xFFFF) != with_index->size()) {
++                        eprintf_error("Invalid index given. \"%s\" has a tag ID that isn't its index's.", tag.c_str());
++                        return EXIT_FAILURE;
++                    }
++                    tag_id = static_cast<std::uint32_t>(id_value);
++                    tag = tag.substr(0, tab);
++                }
++                with_index_tag_ids.push_back(tag_id);
++
+                 // Get the extension
+                 const char *extension = nullptr;
+                 for(char &c : tag) {
+@@ -355,10 +422,29 @@ int main(int argc, const char **argv) {
          parameters.data_directory = build_options.data;
          parameters.scenario = scenario;
          parameters.rename_scenario = build_options.rename_scenario;
@@ -217,6 +283,7 @@ index 56199ec..d4c8349 100644
 +        parameters.unchecked = build_options.unchecked;
          parameters.forge_crc = build_options.forged_crc;
          parameters.index = with_index;
++        parameters.psp_index_tag_ids = with_index_tag_ids;
  
 +        if(build_options.tag_address.has_value()) {
 +            parameters.details.build_tag_data_address = *build_options.tag_address;
@@ -225,7 +292,7 @@ index 56199ec..d4c8349 100644
              parameters.details.build_maximum_tag_space = *build_options.max_tag_space;
          }
 diff --git a/src/build/build_workload.cpp b/src/build/build_workload.cpp
-index 90ce795..df55a95 100644
+index 90ce795a..395e239f 100644
 --- a/src/build/build_workload.cpp
 +++ b/src/build/build_workload.cpp
 @@ -54,6 +54,7 @@ namespace Invader {
@@ -557,7 +624,7 @@ index 90ce795..df55a95 100644
          // Pointer offset to what struct
          struct PointerInternal {
              std::size_t from_offset;
-@@ -1199,7 +1495,30 @@ namespace Invader {
+@@ -1199,7 +1495,33 @@ namespace Invader {
  
          auto &cache_version = this->parameters->details.build_cache_file_engine;
  
@@ -585,11 +652,14 @@ index 90ce795..df55a95 100644
 +            external_data.insert(external_data.end(), s.data.begin(), s.data.end());
 +        }
 +
-+        auto recursively_generate_data = [&structs, &tags, &pointers, &pointers_64_bit, &pointer_of_tag_path, &cache_version, &external_data](std::vector<std::byte> &data, std::size_t struct_index, auto &recursively_generate_data) {
++        // PSP port: the tag IDs the index gave (-w)
++        auto &psp_index_tag_ids = this->parameters->psp_index_tag_ids;
++
++        auto recursively_generate_data = [&structs, &tags, &pointers, &pointers_64_bit, &pointer_of_tag_path, &cache_version, &external_data, &psp_index_tag_ids](std::vector<std::byte> &data, std::size_t struct_index, auto &recursively_generate_data) {
              auto &s = structs[struct_index];
  
              // Return the pointer thingy
-@@ -1207,6 +1526,16 @@ namespace Invader {
+@@ -1207,6 +1529,16 @@ namespace Invader {
                  return;
              }
  
@@ -606,7 +676,18 @@ index 90ce795..df55a95 100644
              // Set the offset thingy
              std::size_t offset = data.size();
              s.offset = offset;
-@@ -1254,11 +1583,15 @@ namespace Invader {
+@@ -1228,6 +1560,10 @@ namespace Invader {
+             for(auto &dependency : s.dependencies) {
+                 auto tag_index = dependency.tag_index;
+                 std::uint32_t full_id = static_cast<std::uint32_t>((tag_index + 0x6174) | 0x8000) << 16 | static_cast<std::uint16_t>(tag_index); // salt = (0x6174 'at' | 0x8000) + index
++                // PSP port: the index's ID, when it gives one (build.cpp checks its low half is the index)
++                if(tag_index < psp_index_tag_ids.size() && psp_index_tag_ids[tag_index] != 0) {
++                    full_id = psp_index_tag_ids[tag_index];
++                }
+                 HEK::TagID new_tag_id = { full_id };
+ 
+                 if(dependency.tag_id_only) {
+@@ -1254,11 +1590,15 @@ namespace Invader {
  
          // Adjust the pointers
          for(auto &p : pointers) {
@@ -624,7 +705,7 @@ index 90ce795..df55a95 100644
          }
  
          // Get the tag path pointers working
-@@ -1332,12 +1665,12 @@ namespace Invader {
+@@ -1332,12 +1672,12 @@ namespace Invader {
                      // Chu
                      for(auto &p : pointers) {
                          auto &struct_pointed_to = this->structs[p.to_struct];
@@ -639,7 +720,7 @@ index 90ce795..df55a95 100644
                          *reinterpret_cast<HEK::LittleEndian<HEK::Pointer64> *>(tag_data_b + p.from_offset) = static_cast<HEK::Pointer64>(base + *struct_pointed_to.offset + p.to_offset);
                      }
  
-@@ -1441,13 +1774,19 @@ namespace Invader {
+@@ -1441,13 +1781,19 @@ namespace Invader {
                  auto &sound_header = *reinterpret_cast<Parser::Sound::struct_little *>(sound_struct.data.data());
                  std::size_t pitch_range_count = sound_header.pitch_ranges.count.read();
                  auto &pitch_range_struct = this->structs[*sound_struct.resolve_pointer(&sound_header.pitch_ranges.pointer)];
@@ -663,7 +744,7 @@ index 90ce795..df55a95 100644
                          auto &index = t.asset_data[resource_index++];
                          if(index == static_cast<std::size_t>(~0)) {
                              continue;
-@@ -2349,6 +2688,10 @@ namespace Invader {
+@@ -2349,6 +2695,10 @@ namespace Invader {
          auto &vertices_array_struct = this->structs[vertices_array_struct_index];
          auto &indices_data_struct = this->structs[indices_data_struct_index];
          auto &vertices_data_struct = this->structs[vertices_data_struct_index];
@@ -675,7 +756,7 @@ index 90ce795..df55a95 100644
          // Add an entry for each part
          auto *indices_array_data = reinterpret_cast<HEK::CacheFileModelPartIndicesXbox *>((indices_array_struct.data = std::vector<std::byte>(part_count * sizeof(HEK::CacheFileModelPartIndicesXbox))).data());
 diff --git a/src/build/build_workload_dedupe.cpp b/src/build/build_workload_dedupe.cpp
-index 4fb2155..6dfdce1 100644
+index 4fb2155c..6dfdce10 100644
 --- a/src/build/build_workload_dedupe.cpp
 +++ b/src/build/build_workload_dedupe.cpp
 @@ -5,7 +5,7 @@ namespace Invader {
@@ -688,7 +769,7 @@ index 4fb2155..6dfdce1 100644
          }
          
 diff --git a/src/invader.cmake b/src/invader.cmake
-index 4965955..155b94a 100644
+index 49659552..155b94ad 100644
 --- a/src/invader.cmake
 +++ b/src/invader.cmake
 @@ -104,6 +104,7 @@ set(INVADER_SOURCE_FILES
@@ -700,7 +781,7 @@ index 4965955..155b94a 100644
      src/tag/parser/compile/object.cpp
      src/tag/parser/compile/particle.cpp
 diff --git a/src/tag/hek/definition/model_animations.json b/src/tag/hek/definition/model_animations.json
-index b113511..0ab20d1 100644
+index b113511b..0ab20d12 100644
 --- a/src/tag/hek/definition/model_animations.json
 +++ b/src/tag/hek/definition/model_animations.json
 @@ -844,6 +844,7 @@
@@ -712,7 +793,7 @@ index b113511..0ab20d1 100644
      },
      {
 diff --git a/src/tag/hek/definition/model_collision_geometry.json b/src/tag/hek/definition/model_collision_geometry.json
-index 9b080f1..b95e609 100644
+index 9b080f18..b95e609f 100644
 --- a/src/tag/hek/definition/model_collision_geometry.json
 +++ b/src/tag/hek/definition/model_collision_geometry.json
 @@ -434,7 +434,8 @@
@@ -733,7 +814,7 @@ index 9b080f1..b95e609 100644
 +]
 \ No newline at end of file
 diff --git a/src/tag/parser/compile/model_animations.cpp b/src/tag/parser/compile/model_animations.cpp
-index 5c6f917..405bf49 100644
+index 5c6f9179..405bf49e 100644
 --- a/src/tag/parser/compile/model_animations.cpp
 +++ b/src/tag/parser/compile/model_animations.cpp
 @@ -9,6 +9,8 @@ namespace Invader::Parser {
@@ -804,7 +885,7 @@ index 5c6f917..405bf49 100644
      }
  }
 diff --git a/src/tag/parser/compile/model_collision_geometry.cpp b/src/tag/parser/compile/model_collision_geometry.cpp
-index 1e8a799..6e02db2 100644
+index 1e8a7994..6e02db2f 100644
 --- a/src/tag/parser/compile/model_collision_geometry.cpp
 +++ b/src/tag/parser/compile/model_collision_geometry.cpp
 @@ -191,3 +191,33 @@ namespace Invader::Parser {
@@ -843,7 +924,7 @@ index 1e8a799..6e02db2 100644
 +}
 diff --git a/src/tag/parser/compile/psp_keyframes.cpp b/src/tag/parser/compile/psp_keyframes.cpp
 new file mode 100644
-index 0000000..ee00f26
+index 00000000..ee00f267
 --- /dev/null
 +++ b/src/tag/parser/compile/psp_keyframes.cpp
 @@ -0,0 +1,377 @@
@@ -1225,7 +1306,7 @@ index 0000000..ee00f26
 +    }
 +}
 diff --git a/src/tag/parser/compile/scenario/pre_compile.cpp b/src/tag/parser/compile/scenario/pre_compile.cpp
-index 4768566..afc8240 100644
+index 47685660..afc82405 100644
 --- a/src/tag/parser/compile/scenario/pre_compile.cpp
 +++ b/src/tag/parser/compile/scenario/pre_compile.cpp
 @@ -135,7 +135,57 @@ namespace Invader::Parser {
@@ -1310,7 +1391,7 @@ index 4768566..afc8240 100644
          for(auto &script : scenario.scripts) {
              if(script.script_type == HEK::ScenarioScriptType::SCENARIO_SCRIPT_TYPE_STUB) {
 diff --git a/src/tag/parser/compile/scenario_structure_bsp.cpp b/src/tag/parser/compile/scenario_structure_bsp.cpp
-index 8f3b624..dd7cab7 100644
+index 8f3b6248..dd7cab7c 100644
 --- a/src/tag/parser/compile/scenario_structure_bsp.cpp
 +++ b/src/tag/parser/compile/scenario_structure_bsp.cpp
 @@ -7,12 +7,31 @@

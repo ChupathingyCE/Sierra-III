@@ -6,10 +6,11 @@ here, on a stack of its own, in the crashed thread (crash_asm.S says why:
 pspsdk's handler returned a user-mode thread onto kernel code, and no crash
 in Sheepdog01's runs ever showed a report). From here everything the game can do
 works: the report is drawn on both of the GE's frame buffers, written to
-ms0:/halo/crash.txt, and the log's last lines are saved. The other threads
-go on (the heartbeat keeps logging, the sound may keep playing); the game
-thread, if it wasn't the one that crashed, stops at its next frame
-(psp_crashed) so the report stays on the screen.
+crash.txt in the build's folder (PSP_DATA_ROOT, psp_paths.h: ms0:/halo, or
+ms0:/halomp for the multiplayer build), and the log's last lines are saved.
+The other threads go on (the heartbeat keeps logging, the sound may keep
+playing); the game thread, if it wasn't the one that crashed, stops at its
+next frame (psp_crashed) so the report stays on the screen.
 
 "crashdraw" in keep.txt: the handler is called 20 s into play with the game
 thread's registers made up, no exception: checks this half in the emulator,
@@ -20,6 +21,7 @@ which has no exception handlers */
 #include <pspiofilemgr.h>
 #include <stdio.h>
 #include <string.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 void psp_log_flush(void);
@@ -90,14 +92,14 @@ static void draw_report(unsigned int base, const struct psp_crash_block *regs, c
 			snprintf(line, sizeof(line), "%08x %08x %08x %08x %08x %08x\n", word[0], word[1], word[2], word[3], word[4], word[5]);
 			pspDebugScreenPuts(line);
 		}
-	pspDebugScreenPuts("\nSaved to halo/crash.txt (if the Memory Stick still answers).\nTake a photo of this screen, then hold POWER.\n");
+	pspDebugScreenPuts("\nSaved to " PSP_DATA_ROOT "/crash.txt (if the Memory Stick still answers).\nTake a photo of this screen, then hold POWER.\n");
 }
 
 static int write_report(const struct psp_crash_block *regs, const char *thread_name)
 {
 	char line[200];
 	unsigned int code = (regs->cause >> 2) & 31, sp = regs->r[29], k;
-	SceUID file = sceIoOpen("ms0:/halo/crash.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	SceUID file = sceIoOpen(PSP_DATA_ROOT "/crash.txt", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 
 	if (file < 0)
 		return file;
@@ -130,7 +132,7 @@ static void test_shot(void)
 	unsigned int image = 480 * 3 * 272, size = 54 + image, value;
 	const volatile unsigned short *frame = (const volatile unsigned short *)0x44000000;
 	int x, y;
-	SceUID file = sceIoOpen("ms0:/halo/shots/crashdraw.bmp", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	SceUID file = sceIoOpen(PSP_DATA_ROOT "/shots/crashdraw.bmp", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 
 	if (file < 0)
 		return;

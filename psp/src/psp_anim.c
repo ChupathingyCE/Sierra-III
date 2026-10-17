@@ -51,6 +51,7 @@ the tag window alone. */
 #include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -182,7 +183,7 @@ static void trace_open(void)
 	if (!trace)
 		return;
 	trace_seen = trace + TRACE_WORDS;
-	trace_file = sceIoOpen("ms0:/halo/log/animtrace.bin", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+	trace_file = sceIoOpen(PSP_DATA_ROOT "/log/animtrace.bin", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	platform_log("animations: tracing every range asked for to log/animtrace.bin (%s)", trace_file >= 0 ? "open" : "couldn't open it");
 }
 

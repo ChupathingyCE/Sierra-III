@@ -35,6 +35,7 @@ the game calls every frame, and from Flush, never from the audio thread.
 #include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
+#include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
 
@@ -808,7 +809,7 @@ static int audio_thread(SceSize arguments, void *argument)
 		/* keep.txt's "audiodump": the first 20 s of the mix into ms0:/halo/audio.raw
 		(22,050 Hz stereo 16-bit), to check the mixer off the PSP */
 		if (psp_keep("audiodump"))
-			dump = sceIoOpen("ms0:/halo/audio.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+			dump = sceIoOpen(PSP_DATA_ROOT "/audio.raw", PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
 	}
 	for (;;)
 	{
