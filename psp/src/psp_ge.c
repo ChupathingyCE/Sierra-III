@@ -8194,6 +8194,7 @@ Off by default: Sheepdog01's A/B (a cinematic's GE time, gebusy by kind). */
 struct vm_entry
 {
 	unsigned int source, generation, bytes, at, reads, frame, released;
+	unsigned int held; /* the copy's own size, kept while it is in quarantine: bytes may already name a new buffer */
 };
 static struct vm_entry *vm = NULL;
 static unsigned short *vm_hash = NULL, *vm_order = NULL;
@@ -8338,7 +8339,7 @@ static unsigned int vm_place(unsigned int bytes)
 
 		if (e->at >= at + bytes)
 			return at;
-		at = (e->at + e->bytes + 15) & ~15u;
+		at = (e->at + e->held + 15) & ~15u;
 	}
 	return at + bytes <= vm_size ? at : VM_NONE;
 }
@@ -8399,6 +8400,7 @@ static void vm_frame_end(void)
 		}
 		memcpy((void *)((vm_base + at) | 0x40000000), (const void *)best->source, best->bytes);
 		best->at = at;
+		best->held = best->bytes;
 		best->released = 0;
 		budget -= best->bytes;
 		vm_copied += best->bytes;
