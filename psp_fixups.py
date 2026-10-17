@@ -23078,11 +23078,109 @@ FIXES_DRAWCOLD["source/models/models.c#debuggate"] = [
 ]
 
 
+# ---------- FIXES_LD1: attached lights re-linked once a frame (lever LD1)
+# object_connect_lights re-links every updated object's attached lights to the
+# map every tick (2.57 ms a tick on b30, PSP-1000), but only drawing reads the
+# links: the one simulation reader, unit_refresh_illumination, writes fields
+# nothing reads but a debug line, and upstream's server skips the cluster
+# join. So the links are made on the last tick before each drawn frame. Every
+# object is then re-linked on that tick in walk order, as before, so the
+# clusters' lists come out in the original order (machinesleep showed that
+# order picks a lit object's lights). One deferred on an earlier tick that
+# leaves the walk (deactivated) is linked then. "nolightsframe": every tick
+FIXES_LD1 = {}
+
+FIXES_LD1["source/objects/objects.c#lightsframe"] = [
+("""static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
+""", """static void object_connect_lights(long object_index, boolean disconnect, boolean reconnect);
+/* psp_fixups.py (FIXES_LD1) */
+int psp_keep(const char *name);
+int psp_lights_link_tick = 1; /* game_time.c: this tick is the last before a frame */
+static int psp_lights_frame = -1;
+static unsigned long psp_lights_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32]; /* a bit an object (the multiplayer heap is tight) */
+#define PSP_LIGHTS_BIT(i) (1ul << ((i) & 31))
+
+/* 1: this tick's link is left to the frame's last tick */
+static int psp_lights_defer(long object_index)
+{
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (psp_lights_frame < 0)
+		psp_lights_frame = !psp_keep("nolightsframe");
+	if (absolute_index < 0 || absolute_index >= MAXIMUM_OBJECTS_PER_MAP)
+		return 0;
+	if (!psp_lights_frame || psp_lights_link_tick)
+	{
+		psp_lights_pending[absolute_index >> 5] &= ~PSP_LIGHTS_BIT(absolute_index);
+		return 0;
+	}
+	psp_lights_pending[absolute_index >> 5] |= PSP_LIGHTS_BIT(absolute_index);
+	return 1;
+}
+
+/* an object leaving the walk with its link deferred: linked now, under the
+condition object_update links it */
+static void psp_lights_flush(long object_index)
+{
+	long absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct object_datum *object;
+
+	if (absolute_index < 0 || absolute_index >= MAXIMUM_OBJECTS_PER_MAP ||
+		!(psp_lights_pending[absolute_index >> 5] & PSP_LIGHTS_BIT(absolute_index)))
+		return;
+	psp_lights_pending[absolute_index >> 5] &= ~PSP_LIGHTS_BIT(absolute_index);
+	object = object_get(object_index);
+	if (TEST_FLAG(object->object.flags, _object_dynamic_lighting_recompute_bit) &&
+		(!TEST_FLAG(object->object.flags, _object_invisible_bit) ||
+			object_definition_get(object->definition_index)->object.model.index == NONE))
+		object_connect_lights(object_index, TRUE, TRUE);
+}
+"""),
+("""		{
+			object_connect_lights(object_index, TRUE, TRUE);
+		}
+#ifdef HALO_PSP
+""", """		{
+#ifdef HALO_PSP
+			if (!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+#endif
+			object_connect_lights(object_index, TRUE, TRUE);
+		}
+#ifdef HALO_PSP
+"""),
+("""->object.model.index == NONE))
+			object_connect_lights(object_index, TRUE, TRUE);
+		return;
+""", """->object.model.index == NONE) &&
+			!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+			object_connect_lights(object_index, TRUE, TRUE);
+		return;
+"""),
+("""void object_deactivate(
+	long object_index)
+{
+""", """void object_deactivate(
+	long object_index)
+{
+	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+"""),
+]
+FIXES_LD1["source/game/game_time.c#lightsframe"] = [
+("""							unsigned long psp_start = psp_heartbeat_clock();
+
+""", """							unsigned long psp_start = psp_heartbeat_clock();
+							extern int psp_lights_link_tick; /* objects.c (FIXES_LD1) */
+
+							psp_lights_link_tick = update_index + 1 == server_updates;
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
