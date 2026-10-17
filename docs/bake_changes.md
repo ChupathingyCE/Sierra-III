@@ -42,10 +42,10 @@ On the disc [E]:
 - **Palettes** (`newbake138b` and `newbake138c`, lab 39060964206 and 39064617089): the mean Oklab error 2.9–3.4% lower on every map. A few 16-colour palettes come out far worse by Oklab (sparks +265%, soft flares +237%, the HUD's ammo icons +223%), the same ones on every map and whatever the start. By the measure k-means itself minimises (the squared distance in RGBA), the new palettes fit better in 505 of a10's palettes by over 1% and worse in 82, and every Oklab outlier fits *better* (sparks 32.3 → 29.8): those are textures whose colour sits under transparent texels, where the two measures disagree, not worse fits.
 - **On the screen** (lab 39066154694, b138's code on both bakes, frame-locked): the same look. On c20, 5–18 thousand pixels a frame differ by a few levels (the new palettes), and 1–131 by more than 24 (the edge of a blue light's glow); b30's flight the same, with its decals placed and cut alike. The sparks and flares the Oklab outliers named draw as before.
 
-## The loading screen's picture (go_live 3.5)
+## No loading picture (go_live 3.5)
 
-The bake also reads the disc's `maps/loading.tga` (the picture the Xbox's loading screen draws under its sweeping band) into `halo/maps/loading.pic`: 320 x 240 on a 256-colour palette from the same k-means, 76 KB (`bake/lib/loading_picture.py`). The EBOOT carries none of it. A bake without it still works: the loading screen then draws its trail alone.
+The Xbox's loading screen reads `maps\loading.tga` from the disc (progress_bar.c), but the retail disc has none: its only pictures are two `xdemos/media` fonts (lab sierra-bake 39069579019). On the Xbox the copy fails quietly and the band draws over a black texture, so the retail loading screen is the trail alone, which the PSP already draws. The bake carries no loading picture.
 
 ## What a player needs to do
 
-Bake again with build 139's bundle: the palettes and decal cuts change, and `loading.pic` is new.
+Bake again with build 139's bundle: the palettes and decal cuts change.
