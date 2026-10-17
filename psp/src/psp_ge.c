@@ -2497,6 +2497,10 @@ static void display_list_report(void)
 		display_list_largest_kb, sceKernelTotalFreeMemSize() / 1024, sceKernelMaxFreeMemSize() / 1024);
 }
 static int ge_ready = 0, frame_open = 0;
+/* the boot screen has the GE (psp_ge_boot_start, with the loading screen
+below); frozen: a crash report is on the screen, and it draws no more */
+static int boot_up = 0;
+static volatile int boot_frozen = 0;
 /* the buffer being drawn (relative to VRAM), swapped each frame */
 static void *draw_buffer = (void *)0;
 static unsigned long frames = 0, draws_this_frame = 0, triangles_this_frame = 0;
@@ -2844,11 +2848,22 @@ static void ge_initialize(void)
 	/* build 108: the scratchpad's pieces (psp_scratch.c), keep.txt read by now */
 	extern void psp_profile_tables_take(void);
 
+	/* the boot screen's thread ends first: from here the game's thread alone
+	draws, and its stack is free again before the display list looks for room */
+	if (boot_up)
+	{
+		extern void psp_loading_boot_screen_stop(void);
+
+		psp_loading_boot_screen_stop();
+	}
 	cut_take();
 	psp_profile_tables_take();
 	display_list_acquire();
 	display_list_report();
-	sceGuInit();
+	/* (the boot screen started the GE already: a second start would register
+	its callbacks twice) */
+	if (!boot_up)
+		sceGuInit();
 	gebusy_start(); /* build 113 */
 	sceGuStart(GU_DIRECT, display_list);
 	sceGuDrawBuffer(GU_PSM_5650, (void *)0, BUFFER_WIDTH);
@@ -2889,6 +2904,11 @@ static void ge_initialize(void)
 	sceGuFinish();
 	sceGuSync(0, 0);
 	stall_force = 0;
+	draw_buffer = (void *)0; /* as sceGuDrawBuffer has it, whatever the boot screen swapped */
+	/* without the boot screen the buffers hold whatever VRAM held, and the
+	menu's settle draws its veil from the one on the screen */
+	if (!boot_up)
+		memset((void *)0x44000000, 0, 2 * FRAME_BYTES);
 	if (psp_keep("ditherprobe"))
 		ge_dither_probe();
 	sceDisplayWaitVblankStart();
@@ -17718,29 +17738,158 @@ static void loading_trail(float progress, int from_screen)
 	loading_frames++;
 }
 
+
+/* What the Xbox's picture can't show without the bake's loading.tga: the
+progress, as a thin bar low on the screen, and at boot a line of text
+(view->notice). From the menu the menu has faded to black before the load,
+so without them a load is a black screen. Each is drawn over a black patch
+a little larger than itself: the trail carries the frame before, and without
+the patch the bar and the text would trail out behind themselves (the trail
+grows 1.7% a frame about the screen's centre: 2 pixels a frame at the bar's
+ends). With the picture its sweeping band is the Xbox's own progress, so the
+bar stays off: loading_with_picture is for the renderer's loadingband to set
+when a load's picture is read. "loadingnobar": no bar. */
+static int loading_with_picture = 0;
+static int loading_bar_on = -1;
+/* pspdebug's 8 x 8 font, linked already for the on-screen log */
+extern unsigned char msx[];
+
+#define LOADING_BAR_WIDTH 160
+#define LOADING_BAR_Y 252
+#define LOADING_NOTICE_Y 234
+#define LOADING_NOTICE_MOST (SCREEN_WIDTH / 8)
+/* the boot screen's display list (psp_ge_boot_start, below): 64 KB of
+benchrun's VRAM region, where a frame with loadingband's band takes ~33 KB */
+#define BOOT_LIST_AT VRAM_BENCH_START
+
+static void loading_patch(int x0, int y0, int x1, int y1, unsigned int abgr)
+{
+	struct patch_vertex { unsigned int color; short x, y, z, pad; } *v = sceGuGetMemory(2 * sizeof(*v));
+
+	v[0].color = v[1].color = abgr;
+	v[0].x = (short)x0;
+	v[0].y = (short)y0;
+	v[1].x = (short)x1;
+	v[1].y = (short)y1;
+	v[0].z = v[1].z = v[0].pad = v[1].pad = 0;
+	/* the real call: list memory has no VRAM copy to look up, and a test's
+	draw skips mustn't take the screen's text away */
+	(sceGuDrawArray)(GU_SPRITES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_TRANSFORM_2D, 2, NULL, v);
+}
+
+/* the text as a 512 x 8 4-bit texture in the list (2 KB, made each frame:
+no VRAM or heap kept for it), drawn 1:1 and centred. In 4-bit texels a word
+is 8 texels, the first in the lowest bits, so a glyph's row is one word */
+static void loading_notice(const char *text, int y)
+{
+	struct notice_vertex { float u, v, x, y, z; } *v;
+	unsigned int *clut, *texels;
+	int length = (int)strlen(text), left, row, k, bit;
+
+	if (length > LOADING_NOTICE_MOST)
+		length = LOADING_NOTICE_MOST;
+	if (length <= 0)
+		return;
+	left = (SCREEN_WIDTH - length * 8) / 2;
+	clut = (unsigned int *)(((unsigned int)sceGuGetMemory(64 + 64 + 2048) + 63) & ~63u);
+	texels = clut + 16;
+	clut[0] = 0x00000000;
+	for (k = 1; k < 16; k++)
+		clut[k] = 0xFFFFFFFF;
+	for (row = 0; row < 8; row++)
+		for (k = 0; k < 64; k++)
+		{
+			/* the font's bit 7 is a glyph's left column */
+			unsigned int glyph_row = k < length ? msx[(unsigned char)text[k] * 8 + row] : 0, word = 0;
+
+			for (bit = 0; bit < 8; bit++)
+				if (glyph_row & (128u >> bit))
+					word |= 1u << (4 * bit);
+			texels[row * 64 + k] = word;
+		}
+	loading_patch(left - 6, y - 4, left + length * 8 + 6, y + 12, 0xFF000000);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuClutMode(GU_PSM_8888, 0, 0x0F, 0);
+	sceGuClutLoad(2, clut);
+	sceGuTexMode(GU_PSM_T4, 0, 0, 0);
+	sceGuTexImage(0, 512, 8, 512, texels);
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGBA);
+	sceGuTexFilter(GU_NEAREST, GU_NEAREST);
+	sceGuTexFlush();
+	sceGuEnable(GU_ALPHA_TEST);
+	sceGuAlphaFunc(GU_GREATER, 0, 0xFF);
+	v = sceGuGetMemory(2 * sizeof(*v));
+	v[0].u = 0.0f;
+	v[0].v = 0.0f;
+	v[0].x = (float)left;
+	v[0].y = (float)y;
+	v[1].u = (float)(length * 8);
+	v[1].v = 8.0f;
+	v[1].x = (float)(left + length * 8);
+	v[1].y = (float)(y + 8);
+	v[0].z = v[1].z = 0.0f;
+	(sceGuDrawArray)(GU_SPRITES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, v);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+}
+
+/* after loading_trail, in the same state it leaves */
+static void loading_overlay(const struct psp_loading_view *view)
+{
+	int bar, x0 = (SCREEN_WIDTH - LOADING_BAR_WIDTH) / 2;
+
+	if (loading_bar_on < 0)
+		loading_bar_on = !psp_keep("loadingnobar");
+	bar = loading_bar_on && !loading_with_picture;
+	if (!bar && !view->notice)
+		return;
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDepthMask(GU_TRUE);
+	sceGuDisable(GU_FOG);
+	sceGuDisable(GU_TEXTURE_2D);
+	if (bar)
+	{
+		float progress = view->progress < 0.0f ? 0.0f : view->progress > 1.0f ? 1.0f : view->progress;
+
+		loading_patch(x0 - 6, LOADING_BAR_Y - 4, x0 + LOADING_BAR_WIDTH + 6, LOADING_BAR_Y + 6, 0xFF000000);
+		loading_patch(x0, LOADING_BAR_Y, x0 + LOADING_BAR_WIDTH, LOADING_BAR_Y + 2, 0xFF404040);
+		loading_patch(x0, LOADING_BAR_Y, x0 + (int)(progress * LOADING_BAR_WIDTH + 0.5f), LOADING_BAR_Y + 2, 0xFFC0C0C0);
+	}
+	if (view->notice)
+		loading_notice(view->notice, LOADING_NOTICE_Y);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuDepthMask(GU_FALSE);
+	sceGuEnable(GU_FOG);
+}
+
 /* the frame on the screen as the load begins: the buffer itself, which
 stays put while the loading frames draw into the other one and read it */
 const void *psp_ge_loading_capture(void)
 {
-	if (!ge_ready || frame_open)
+	if ((!ge_ready && !boot_up) || frame_open)
 		return NULL;
 	loading_frames = 0;
 	return (const void *)((unsigned int)sceGeEdramGetAddr() + loading_front());
 }
 
 /* one whole frame of the load (phase 0), drawn and shown by itself: no game
-frame is open while the load runs */
+frame is open while the load runs. Before the game's first frame it is the
+boot screen's, on its own list (psp_ge_boot_start) */
 void psp_ge_loading_frame(const struct psp_loading_view *view)
 {
-	if (!ge_ready || frame_open || !view)
+	if ((!ge_ready && !boot_up) || frame_open || !view || boot_frozen)
 		return;
-	sceGuStart(GU_DIRECT, display_list);
+	sceGuStart(GU_DIRECT, ge_ready ? (void *)display_list : (void *)(0x04000000 + BOOT_LIST_AT));
 	/* no picture to start from (a cold start): from black */
 	loading_trail(view->progress, view->captured != NULL);
+	loading_overlay(view);
 	stall_force = 1;
 	sceGuFinish();
 	sceGuSync(0, 0);
 	stall_force = 0;
+	if (boot_frozen)
+		return;
 	if (loading_shots > 0 && loading_frames % (unsigned long)loading_shots == 1)
 		screenshot();
 	draw_buffer = sceGuSwapBuffers();
@@ -17755,8 +17904,66 @@ void psp_ge_loading_veil(const struct psp_loading_view *view)
 		return;
 	list_hud_phase();
 	loading_trail(view->progress, 1);
+	loading_overlay(view);
 	if (loading_shots > 0 && loading_frames % (unsigned long)loading_shots == 1)
 		psp_screenshot_requested = 1;
+}
+
+/* ---------- the boot screen (psp_loading.c drives it; Sheepdog01, 2026-10-17)
+
+Until the main menu's first frame the GE drew nothing, and the screen showed
+the log scrolling (psp_platform.c; "bootlog" keeps it so). Now the GE starts
+as soon as keep.txt is read, and the loading screen above shows the start-up:
+a cold start's black frames, the progress, and the hint psp_loading.c gives.
+The full display list can't be taken this early: it comes from the heap or
+user RAM, and taken first thing it lands where the tag window must go (build
+105). So the boot screen has a list of its own in VRAM, in benchrun's
+region, which nothing uses until the first frame: the texture cache's VRAM
+fills only once the GE has the screen (psp_tex_screen_free), and the models'
+copies only as frames draw. The GE reads a list in VRAM written through the
+uncached view (pspgu's), so nothing needs writing back. The first frame's
+ge_initialize ends the boot screen's thread and carries on from here. */
+
+int psp_ge_boot_start(void)
+{
+	extern void psp_screen_log_freeze(void);
+
+	if (ge_ready || boot_up)
+		return boot_up;
+	/* the log's lines go on to log.txt; none to the screen */
+	psp_screen_log_freeze();
+	sceGuInit();
+	sceGuStart(GU_DIRECT, (void *)(0x04000000 + BOOT_LIST_AT));
+	sceGuDrawBuffer(GU_PSM_5650, (void *)0, BUFFER_WIDTH);
+	sceGuDispBuffer(SCREEN_WIDTH, SCREEN_HEIGHT, (void *)FRAME_BYTES, BUFFER_WIDTH);
+	sceGuDepthBuffer((void *)(2 * FRAME_BYTES), BUFFER_WIDTH);
+	sceGuOffset(2048 - SCREEN_WIDTH / 2, 2048 - SCREEN_HEIGHT / 2);
+	sceGuViewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
+	sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+	sceGuEnable(GU_SCISSOR_TEST);
+	sceGuDisable(GU_DEPTH_TEST);
+	sceGuDisable(GU_CULL_FACE);
+	sceGuDisable(GU_LIGHTING);
+	stall_force = 1;
+	sceGuFinish();
+	sceGuSync(0, 0);
+	stall_force = 0;
+	/* both frame buffers black before either shows (the uncached view) */
+	memset((void *)0x44000000, 0, 2 * FRAME_BYTES);
+	draw_buffer = (void *)0;
+	sceDisplayWaitVblankStart();
+	sceGuDisplay(GU_TRUE);
+	boot_up = 1;
+	platform_log("GE: the boot screen from here (bootlog: the log on the screen instead); its list in VRAM at %06x",
+		BOOT_LIST_AT);
+	return 1;
+}
+
+/* the crash handler's report is drawn into both frame buffers: the boot
+screen stops drawing over it (psp_crash.c) */
+void psp_ge_boot_freeze(void)
+{
+	boot_frozen = 1;
 }
 
 int psp_build_number(void);

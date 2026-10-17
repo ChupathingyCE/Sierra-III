@@ -175,6 +175,12 @@ void psp_crash_entry(struct psp_crash_block *regs)
 	if (sceKernelReferThreadStatus(sceKernelGetThreadId(), &info) >= 0)
 		thread_name = info.name;
 	/* the screen first (nothing in it can wait on anything), then the file */
+	{
+		/* the boot screen's thread would draw over the report */
+		extern void psp_ge_boot_freeze(void);
+
+		psp_ge_boot_freeze();
+	}
 	draw_report(0x04000000, regs, thread_name);
 	draw_report(0x04044000, regs, thread_name);
 	{
