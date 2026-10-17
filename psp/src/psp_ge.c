@@ -8259,6 +8259,7 @@ white band and every other self-illuminated part in its flat colour.
 leaves the part unlit this frame rather than flashing the flat colour */
 static int glow_flat = -1;
 
+static int glow_add = -1;
 static int glow_map_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
@@ -8271,7 +8272,22 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 	sceGuDepthMask(GU_TRUE);
 	/* added light fades to nothing in the fog */
 	sceGuFog(fog_near, fog_far, 0xFF000000);
-	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	/* a screen blend, glow + frame x (1 - glow): the Xbox clamps lighting
+	plus self-illumination at 1 before the base multiplies it, so a lit part
+	never goes past its own base; added, the ring's bright clouds clipped to
+	white. Screened, the glow's share shrinks as the frame nears white, at
+	no cost (one pass either way). Not the clamp exactly: where both are
+	strong it still ends above the base. Keep word "glowadd": added */
+	if (glow_add < 0)
+	{
+		glow_add = psp_keep("glowadd");
+		if (glow_add)
+			platform_log("GE: glowadd: the glow maps added, not screened");
+	}
+	if (glow_add)
+		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	else
+		sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_COLOR, 0xFFFFFF, 0);
 	ge_blend(1);
 	model_geometry(vertices, indices, index_count, strip, skin, model);
 	ge_blend(0);
