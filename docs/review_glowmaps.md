@@ -63,6 +63,15 @@ The rule (Sierra-III `CLAUDE.md`): ui.map is a high-fidelity showcase, exempt fr
 
 Not yet: a 32-bit frame buffer (the screen is 16-bit everywhere; the space backdrop's gradients band), the hull's detail pass, the reflection pass.
 
+## Texture quality, every map (Sheepdog01, 2026-10-16: the blockiness and the "oily" bands)
+
+Bake only (`tools/texpack.py`): no memory, no frame cost; `--quality 1` bakes as before.
+- **The palette fitted in Oklab** (`fit_palette`): k-means on Oklab colour (and alpha) instead of RGB, 60 rounds on up to 100k texels. Equal distances there look equally different, so dark tones get entries of their own.
+- **Texels mapped by error diffusion** (`diffuse`): Floyd–Steinberg, serpentine, at 3/4 strength, against the palette as the GE draws it (a 16-bit palette's 5650 rounding included). A gradient between two entries comes out as grain the filter blends, not a contour. The alpha is matched, never diffused, so cut-outs and masks keep their edges. Not for the HUD and menus, meter grids or detail maps' own levels.
+- **Sizes by Lanczos** (`resample`): the halving and every mip level. Alpha and lightmaps keep the box filter (a cut-out's coverage, a chart's gutter would ring).
+- **Measured in the bake's log** with `--quality-report`: per class, the PSNR against the source after a 3 × 3 blur (what the screen's filtering sees), old way and new. On a synthetic dark gradient: 40.2 → 45.6 dB at 256 colours, 37.1 → 40.0 at 16 [E].
+- Bake time: about twice the palette step's (the diffusion is a Python loop: ~2 s for 256 × 256).
+
 ## Checks
 
 | Check | What it shows | Result |

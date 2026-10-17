@@ -9,6 +9,7 @@ which is fixed for a map built for the PSP (invader-build -X 0x09600000).
 
 usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means] [--no-glow-maps]
        [--premultiplied-masks] [--showcase [--showcase-32 | --showcase-palettes]]
+       [--quality 1|2] [--quality-report]
 
 File layout (little endian):
   header: 'PTX1', u32 count, u32 directory size
@@ -528,6 +529,153 @@ def direct_levels(small, tw, th, levels_wanted, wide):
     return levels
 
 
+# ---- how texels become palette indices (Sheepdog01, 2026-10-16: the textures'
+# blockiness and "oily" bands, everywhere). Three steps every 8- and 4-bit
+# texture goes through; --quality 1 bakes them as before.
+#  - the palette is fitted in Oklab, a space where equal distances look
+#    equally different, so dark tones get entries of their own rather than
+#    sharing a few (RGB distance spends them on bright differences);
+#  - texels are mapped onto it with error diffusion (Floyd-Steinberg,
+#    serpentine, at 3/4 strength): each texel's rounding is carried to its
+#    neighbours, so a gradient between two entries comes out as fine grain
+#    the GE's filter blends, not as a flat step with a hard contour. Against
+#    the palette as drawn (a 16-bit palette's 5650 rounding included). Not
+#    the alpha: cut-outs and masks keep their edges;
+#  - sizes are made with a Lanczos filter, which keeps edges sharp where a
+#    box blurs them and steps them; alpha and lightmaps keep the box (a
+#    cut-out's coverage, a chart's dark gutter, would ring).
+QUALITY = 2
+QUALITY_REPORT = False
+QUALITY_STATS = {}
+DIFFUSE_STRENGTH = 0.75
+
+
+def srgb_to_oklab(rgb):
+    c = rgb / 255.0
+    c = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    l = 0.4122214708 * c[:, 0] + 0.5363325363 * c[:, 1] + 0.0514459929 * c[:, 2]
+    m_ = 0.2119034982 * c[:, 0] + 0.6806995451 * c[:, 1] + 0.1073969566 * c[:, 2]
+    s_ = 0.0883024619 * c[:, 0] + 0.2817188376 * c[:, 1] + 0.6299787005 * c[:, 2]
+    l, m_, s_ = np.cbrt(l), np.cbrt(m_), np.cbrt(s_)
+    return np.stack([0.2104542553 * l + 0.7936177850 * m_ - 0.0040720468 * s_,
+                     1.9779984951 * l - 2.4285922050 * m_ + 0.4505937099 * s_,
+                     0.0259040371 * l + 0.7827717662 * m_ - 0.8086757660 * s_], 1)
+
+
+def oklab_to_srgb(lab):
+    l = lab[:, 0] + 0.3963377774 * lab[:, 1] + 0.2158037573 * lab[:, 2]
+    m_ = lab[:, 0] - 0.1055613458 * lab[:, 1] - 0.0638541728 * lab[:, 2]
+    s_ = lab[:, 0] - 0.0894841775 * lab[:, 1] - 1.2914855480 * lab[:, 2]
+    l, m_, s_ = l ** 3, m_ ** 3, s_ ** 3
+    c = np.stack([4.0767416621 * l - 3.3077115913 * m_ + 0.2309699292 * s_,
+                  -1.2684380046 * l + 2.6097574011 * m_ - 0.3413193965 * s_,
+                  -0.0041960863 * l - 0.7034186147 * m_ + 1.7076147010 * s_], 1)
+    c = np.clip(c, 0, 1)
+    c = np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
+    return c * 255.0
+
+
+def fit_palette(img, colors):
+    """(palette Nx4 uint8, has_alpha): k-means in Oklab (and alpha), as
+    quantize does in RGB; a texture with no more colours than entries keeps
+    its own"""
+    from sklearn.cluster import KMeans
+    has_alpha = bool(img[:, :, 3].min() < 255)
+    pts = img.reshape(-1, 4).astype(np.float32)
+    if not has_alpha:
+        pts = pts[:, :3]
+    uniq = np.unique(pts, axis=0)
+    if len(uniq) <= colors:
+        pal = uniq
+    else:
+        sample = pts if len(pts) <= 100000 else pts[np.random.RandomState(0).choice(len(pts), 100000, replace=False)]
+        feats = srgb_to_oklab(sample[:, :3])
+        if has_alpha:
+            feats = np.concatenate([feats, sample[:, 3:4] / 255.0], 1)
+        km = KMeans(n_clusters=colors, n_init=1, max_iter=60, random_state=0).fit(feats)
+        centres = km.cluster_centers_
+        rgb = oklab_to_srgb(centres[:, :3])
+        pal = np.concatenate([rgb, centres[:, 3:4] * 255.0], 1) if has_alpha else rgb
+    pal = np.clip(np.rint(pal), 0, 255).astype(np.uint8)
+    if not has_alpha:
+        pal = np.concatenate([pal, np.full((len(pal), 1), 255, np.uint8)], 1)
+    if len(pal) < colors:
+        pal = np.concatenate([pal, np.zeros((colors - len(pal), 4), np.uint8)])
+    return pal, has_alpha
+
+
+def as_drawn(pal, alpha):
+    """the palette's colours as the GE draws them: a 16-bit palette's 5650
+    rounding, widened back to 8 bits"""
+    shown = pal.astype(np.float32).copy()
+    if not alpha:
+        for c, bits in ((0, 5), (1, 6), (2, 5)):
+            v = pal[:, c].astype(np.int32) >> (8 - bits)
+            shown[:, c] = (v * 255 + ((1 << bits) - 1) // 2) // ((1 << bits) - 1)
+    return shown
+
+
+def diffuse(img, pal, alpha, count):
+    """indices into the palette's first count entries, by error diffusion of
+    the colour (the alpha matched, not diffused)"""
+    h, w = img.shape[:2]
+    ch = 4 if alpha else 3
+    P = as_drawn(pal[:count], alpha)[:, :ch]
+    work = img[:, :, :ch].astype(np.float32).copy()
+    out = np.zeros((h, w), np.int32)
+    k = DIFFUSE_STRENGTH / 16.0
+    for y in range(h):
+        forward = y % 2 == 0
+        d = 1 if forward else -1
+        row = work[y]
+        below = work[y + 1] if y + 1 < h else None
+        for x in (range(w) if forward else range(w - 1, -1, -1)):
+            v = row[x]
+            i = int(((P - v) ** 2).sum(1).argmin())
+            out[y, x] = i
+            e = v - P[i]
+            if ch == 4:
+                e[3] = 0.0
+            e *= k
+            if 0 <= x + d < w:
+                row[x + d] += 7 * e
+            if below is not None:
+                if 0 <= x - d < w:
+                    below[x - d] += 3 * e
+                below[x] += 5 * e
+                if 0 <= x + d < w:
+                    below[x + d] += e
+    return out
+
+
+def resample(img, tw, th, cls):
+    """a smaller size: Lanczos on the colour, the box on the alpha and on
+    lightmaps (see above); downscale as before with --quality 1"""
+    if QUALITY < 2 or cls == 'lightmap' or (img.shape[1] == tw and img.shape[0] == th):
+        return downscale(img, tw, th)
+    from PIL import Image
+    rgb = np.array(Image.fromarray(np.ascontiguousarray(img[:, :, :3]), 'RGB').resize((tw, th), Image.Resampling.LANCZOS))
+    a = np.array(Image.fromarray(np.ascontiguousarray(img[:, :, 3]), 'L').resize((tw, th), Image.Resampling.BOX))
+    return np.concatenate([rgb, a[:, :, None]], 2)
+
+
+def blurred_psnr(a, b):
+    """PSNR of the colour after a 3 x 3 box blur of both, as the screen's
+    filtering would see them (dither grain counts as the average it makes)"""
+    def blur(x):
+        x = x[:, :, :3].astype(np.float32)
+        p = np.pad(x, ((1, 1), (1, 1), (0, 0)), mode='edge')
+        return sum(p[dy:dy + x.shape[0], dx:dx + x.shape[1]] for dy in range(3) for dx in range(3)) / 9.0
+    return psnr(blur(a), blur(b))
+
+
+def quality_note(cls, old, new):
+    st = QUALITY_STATS.setdefault(cls, [0, 0.0, 0.0])
+    st[0] += 1
+    st[1] += old
+    st[2] += new
+
+
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
@@ -567,7 +715,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         own_levels = None if os.environ.get('TEXPACK_DETAIL_DOWNSCALE') else detail_levels(m, b, tw, th)
         if not own_levels:
             img = neutral_detail(img)
-    small = own_levels[0] if own_levels else downscale(img, tw, th)
+    small = own_levels[0] if own_levels else resample(img, tw, th, cls)
     # build 116: a meter shader's map (the plasma weapons' gauges, the
     # Warthog's meters) takes the grid too, always: the GE works its colours
     # out per palette entry from the blue (the position along the meter) and
@@ -593,7 +741,18 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         every = np.concatenate([l.reshape(-1, 1, 4) for l in own_levels], 0)
         _, pal, _, alpha = quantize(every, 256)
         idx = nearest(small, pal, alpha)
-    else:
+    # the quality steps (above): not for the HUD and menus (drawn at their
+    # own size, where grain would show), the grid's exact entries, or a
+    # detail map's own levels
+    diffusing = QUALITY >= 2 and not grid and not own_levels and cls not in ('ui/hud', 'detail')
+    if diffusing:
+        pal, alpha = fit_palette(small, 256)
+        idx = diffuse(small, pal, alpha, 256)
+        rec = as_drawn(pal, alpha)[idx]
+        if QUALITY_REPORT:
+            old_idx, old_pal, _, _ = quantize(small, 256)
+            quality_note(cls, blurred_psnr(small, as_drawn(old_pal, alpha)[old_idx]), blurred_psnr(small, rec))
+    elif not grid and not own_levels:
         idx, pal, rec, alpha = quantize(small, 256)
     # 16 colours where that is no worse than the 16-bit frame buffer itself
     # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
@@ -609,6 +768,10 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
                 HUD_KEPT_8.append(b['tag'])
             else:
                 idx, pal, rec, bits = idx4, pal4[:16], rec4, 4
+                if diffusing:
+                    pal16, _ = fit_palette(small, 16)
+                    pal = pal16[:16]
+                    idx = diffuse(small, pal, alpha, 16)
     if alpha:
         palette = pal.astype(np.uint8).tobytes()                       # 8888, r g b a
         clut = 3
@@ -635,7 +798,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     if own_levels:
         source_levels = len(own_levels)
     while len(levels) < min(8, source_levels):
-        ix = idx if not levels else (grid_index(level_img, grid_off) if grid else nearest(level_img, pal, alpha))
+        ix = idx if not levels else (grid_index(level_img, grid_off) if grid else
+                                     diffuse(level_img, pal, alpha, len(pal)) if diffusing else nearest(level_img, pal, alpha))
         row, rows = level_bytes(w, h, bits)
         if bits == 4:
             pixels = np.zeros((rows, row * 2), np.uint8)
@@ -661,7 +825,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         if own_levels and len(levels) < len(own_levels):
             level_img = own_levels[len(levels)]
         else:
-            chain_img = downscale(chain_img, w, h)
+            chain_img = resample(chain_img, w, h, cls)
             level_img = keep_coverage(chain_img, top_coverage) if fix_coverage else chain_img
     data = palette + b''.join(levels)
     return dict(w=tw, h=th, levels=len(levels), clut=clut, alpha=alpha, data=data, psm=4 if bits == 4 else 5)
@@ -689,11 +853,18 @@ def main():
     ap.add_argument('--showcase-32', action='store_true',
                     help='with --showcase: opaque maps in 32-bit colour too (by default 16-bit, dithered; '
                          'the screen is 16-bit)')
+    ap.add_argument('--quality', type=int, default=2, choices=(1, 2),
+                    help='1: palettes fitted in RGB, texels mapped to the nearest entry, sizes by a box filter '
+                         '(as before); 2: Oklab fit, error diffusion, Lanczos (the default)')
+    ap.add_argument('--quality-report', action='store_true',
+                    help='also fit each texture the old way and log both against the source, per class')
     ap.add_argument('--showcase-palettes', action='store_true',
                     help='with --showcase: every map on a palette (256 colours), at its own size')
     a = ap.parse_args()
     global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS, SHOWCASE, SHOWCASE_32, SHOWCASE_PALETTES
     SHOWCASE_PALETTES = a.showcase_palettes
+    global QUALITY, QUALITY_REPORT
+    QUALITY, QUALITY_REPORT = a.quality, a.quality_report
     PREMULTIPLIED_MASKS = a.premultiplied_masks
     SHOWCASE = a.showcase
     SHOWCASE_32 = a.showcase_32
@@ -843,6 +1014,12 @@ def main():
         out += b'\0'
     out += blob
     open(a.out, 'wb').write(out)
+    print('quality %d: %s' % (QUALITY, 'palettes fitted in Oklab, texels by error diffusion, sizes by Lanczos'
+                              if QUALITY >= 2 else 'as before (RGB fit, nearest entry, box)'), file=sys.stderr)
+    for cls in sorted(QUALITY_STATS):
+        n, old, new = QUALITY_STATS[cls]
+        print('quality %s: %d textures, blurred PSNR %.2f dB as before, %.2f now' % (cls, n, old / n, new / n),
+              file=sys.stderr)
     if SHOWCASE:
         own = [e for e in entries if e['psm'] in (0, 3)]
         for e in sorted(own, key=lambda e: -len(e['data'])):
