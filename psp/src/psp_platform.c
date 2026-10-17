@@ -917,6 +917,7 @@ static void keep_load(void)
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
 	platform_log("keep words, build 123's: speed off: aiprofilefull; speed, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash meraysminN weapontracksleep; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); lit items: litemsawake; recon: activecensus");
+	platform_log("keep words, the controls: off: crouchhold (crouch held, under the engine's 98%% rule), actiontap (the X button as the engine reads it); actionholdN (ms before d-pad left acts, 250); the nub: nubdeadN nubreachN (percent of half travel; or ms0:/halo/nub.txt); the profile until Halo's menu sets it: buttonpresetN (0-4) stickpresetN (0-3) looksensN (1-10) lookinvert");
 	platform_log("keep words, build 124's: speed off: weapontrackawake (weapontracksleep retired); retired: cutroom cutroomoff (see the cut stream's line); restorations off: levelexactoff (the level drawn from the eye as the GE rounds it), machinefuncsheld (sleeping machines hold their functions); checks: funccheck; tests: shotrunN (N frames in a row at each shotevery moment)");
 	platform_log("keep words, the scene ladder: sceneladder (each campaign map's opening cutscene, one after another; the game plays on after the last)");
 	platform_log("keep words, the level copies' room: fix off: streamroomoff (a material with no room for its copy tried again on every draw); tests: streamsqueezeN (the copies held to N KB of the arena, none from the general heap)");
@@ -2708,8 +2709,22 @@ static int heartbeat_thread(SceSize args, void *argp)
 			extern volatile unsigned int psp_pad_buttons, psp_pad_reads;
 			extern volatile int psp_pad_lx, psp_pad_ly;
 
-			platform_log("%s | pad %04x stick %d,%d (%u reads)", player_text, psp_pad_buttons & 0xFFFF,
-				psp_pad_lx, psp_pad_ly, psp_pad_reads);
+			extern volatile int psp_nub_seen[4];
+
+			/* the nub's furthest each way since launch: what a nub.txt
+			calibration is chosen from (psp_sdl.c) */
+			platform_log("%s | pad %04x stick %d,%d (%u reads; the nub has reached x %d-%d, y %d-%d)", player_text,
+				psp_pad_buttons & 0xFFFF, psp_pad_lx, psp_pad_ly, psp_pad_reads, psp_nub_seen[0], psp_nub_seen[1],
+				psp_nub_seen[2], psp_nub_seen[3]);
+			{
+				extern volatile unsigned int controls_events[5];
+				extern float psp_player_crouch(void);
+
+				if (controls_events[0] | controls_events[1] | controls_events[2])
+					platform_log("controls (since launch): crouch toggled %u times; d-pad left tapped %u times (the game reloaded %u), held %u times (the game acted %u); crouched %d%% now",
+						controls_events[0], controls_events[1], controls_events[3], controls_events[2], controls_events[4],
+						(int)(psp_player_crouch() * 100.0f));
+			}
 			if ((beat & 1) == 0)
 			{
 				/* the sound mixer's cost (psp_dsound.c; build 25) */

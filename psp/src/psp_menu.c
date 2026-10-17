@@ -11,6 +11,9 @@ plain text console on the frame buffer; the GE isn't up yet). Two pages:
 - options: the keep words that matter day to day, as toggles, written to
   keep.txt. Words the menu doesn't list (anything typed by hand) are kept.
 
+- presets: named sets of keep words (ms0:/halo/presets.txt).
+- nub: the nub measured for ms0:/halo/nub.txt (nub_page, below).
+
 Up/down move, left/right or cross toggle, L/R or triangle switch pages,
 start saves both files and starts the game.
 
@@ -31,6 +34,7 @@ The front door (docs/plan_front_end.md): which screen the game starts on.
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <math.h>
 
 #define DATA_ROOT "ms0:/halo"
 #define MAXIMUM_MAPS 32
@@ -437,17 +441,22 @@ static void save_files(int map)
 	}
 }
 
-static void draw(int page, int cursor, int map, int build)
+static void nub_draw(SceCtrlData const *pad);
+
+static void draw(int page, int cursor, int map, int build, SceCtrlData const *pad)
 {
 	int i;
 
 	pspDebugScreenSetXY(0, 0);
 	pspDebugScreenSetTextColor(0xFFFFFFFF);
 	pspDebugScreenPrintf("Halo PSP build %d  preset %-4s  %-32s\n", build, preset_label[0] ? preset_label : "none",
-		page == 0 ? "MAPS  (R: options)" : page == 1 ? "OPTIONS  (L: maps, R: presets)" : "PRESETS  (L: options)");
-	pspDebugScreenPrintf(page == 2 ? "up/down move, cross applies, START plays\n\n" :
+		page == 0 ? "MAPS  (R: options)" : page == 1 ? "OPTIONS  (L: maps, R: presets)" :
+		page == 2 ? "PRESETS  (L: options, R: nub)" : "NUB  (L: presets)");
+	pspDebugScreenPrintf(page == 3 ? "START plays\n\n" : page == 2 ? "up/down move, cross applies, START plays\n\n" :
 		"up/down move, left/right/cross toggle, START plays\n\n");
-	if (page == 2)
+	if (page == 3)
+		nub_draw(pad);
+	else if (page == 2)
 	{
 		for (i = 0; i < preset_count; i++)
 		{
@@ -522,6 +531,203 @@ static void draw(int page, int cursor, int map, int build)
 	pspDebugScreenSetTextColor(0xFFFFFFFF);
 }
 
+/* ---------- the NUB page: the nub measured for ms0:/halo/nub.txt, which
+psp_sdl.c reads (nub_calibrate_load; docs/game_feature_survey.md, section
+4.6). Every PSP's nub rests and reaches differently, so it is measured, not
+assumed: let go (its rest point), roll it round its edge (its reach each way),
+let go again (where it comes back to: how far it lands from its rest sets the
+dead radius, so a nub that settles off-centre doesn't drift), then save.
+Circle removes the file, and the nub maps as it does without one */
+#define NUB_PATH DATA_ROOT "/nub.txt"
+#define NUB_SAMPLES 128
+/* the least samples a let-go step takes (about a second at the menu's 60 ms) */
+#define NUB_SETTLE 16
+enum { NUB_IDLE, NUB_REST, NUB_EDGE, NUB_RETURN, NUB_DONE };
+static struct
+{
+	/* first: the samples the first let-go took (at most half) */
+	int step, count, first;
+	unsigned char x[NUB_SAMPLES], y[NUB_SAMPLES];
+	int low[2], high[2];
+	float rest[2], dead, reach[4];
+	char saved[96], message[64];
+} nub;
+
+static void nub_read_saved(void)
+{
+	FILE *file = fopen(NUB_PATH, "r");
+	char line[48];
+	int at = 0;
+
+	nub.saved[0] = 0;
+	if (!file)
+	{
+		snprintf(nub.saved, sizeof(nub.saved), "none: the nub maps as it always has");
+		return;
+	}
+	while (fgets(line, sizeof(line), file) && at < (int)sizeof(nub.saved) - 2)
+	{
+		line[strcspn(line, "\r\n")] = 0;
+		at += snprintf(nub.saved + at, sizeof(nub.saved) - at, "%s%s", at ? ", " : "", line);
+	}
+	fclose(file);
+}
+
+/* the rest point is the mean of both let-go steps; the dead radius covers
+the furthest any let-go sample sat from it, with a margin, so neither the
+nub's jitter nor where it settles moves the player */
+static void nub_work_out(void)
+{
+	float sx = 0.0f, sy = 0.0f, far = 0.0f;
+	int i;
+
+	for (i = 0; i < nub.count; i++)
+	{
+		sx += nub.x[i];
+		sy += nub.y[i];
+	}
+	nub.rest[0] = sx / nub.count;
+	nub.rest[1] = sy / nub.count;
+	for (i = 0; i < nub.count; i++)
+	{
+		float dx = nub.x[i] - nub.rest[0], dy = nub.y[i] - nub.rest[1], d = dx * dx + dy * dy;
+
+		if (d > far)
+			far = d;
+	}
+	nub.dead = sqrtf(far) + 4.0f;
+	nub.dead = nub.dead < 8.0f ? 8.0f : nub.dead > 40.0f ? 40.0f : nub.dead;
+	/* a little short of the furthest seen, so full scale is reached without
+	pressing as hard as the measuring did */
+	nub.reach[0] = nub.rest[0] - nub.low[0] - 2.0f;
+	nub.reach[1] = nub.high[0] - nub.rest[0] - 2.0f;
+	nub.reach[2] = nub.rest[1] - nub.low[1] - 2.0f;
+	nub.reach[3] = nub.high[1] - nub.rest[1] - 2.0f;
+}
+
+static void nub_save(void)
+{
+	FILE *file = fopen(NUB_PATH, "w");
+
+	if (!file)
+	{
+		snprintf(nub.message, sizeof(nub.message), "couldn't write %s", NUB_PATH);
+		return;
+	}
+	fprintf(file, "rest %.1f %.1f\ndead %.1f\nreach %.1f %.1f %.1f %.1f\n", (double)nub.rest[0], (double)nub.rest[1],
+		(double)nub.dead, (double)nub.reach[0], (double)nub.reach[1], (double)nub.reach[2], (double)nub.reach[3]);
+	fclose(file);
+	snprintf(nub.message, sizeof(nub.message), "saved: the game uses it from this launch");
+}
+
+/* one pass of the menu's loop on the NUB page: the pad's fresh presses */
+static void nub_page(SceCtrlData const *pad, unsigned int pressed)
+{
+	int i;
+
+	if (nub.step == NUB_REST || nub.step == NUB_RETURN)
+	{
+		if (nub.count < (nub.step == NUB_REST ? NUB_SAMPLES / 2 : NUB_SAMPLES))
+		{
+			nub.x[nub.count] = pad->Lx;
+			nub.y[nub.count] = pad->Ly;
+			nub.count++;
+		}
+	}
+	else if (nub.step == NUB_EDGE)
+	{
+		unsigned char now[2] = { pad->Lx, pad->Ly };
+
+		for (i = 0; i < 2; i++)
+		{
+			if (now[i] < nub.low[i])
+				nub.low[i] = now[i];
+			if (now[i] > nub.high[i])
+				nub.high[i] = now[i];
+		}
+	}
+	if (pressed & PSP_CTRL_CIRCLE)
+	{
+		if (nub.step == NUB_IDLE)
+		{
+			sceIoRemove(NUB_PATH);
+			snprintf(nub.message, sizeof(nub.message), "removed: the nub maps as it always has");
+			nub_read_saved();
+		}
+		else
+			snprintf(nub.message, sizeof(nub.message), "left as it was");
+		nub.step = NUB_IDLE;
+		return;
+	}
+	if (!(pressed & PSP_CTRL_CROSS))
+		return;
+	nub.message[0] = 0;
+	switch (nub.step)
+	{
+	case NUB_IDLE:
+		nub.count = 0;
+		nub.step = NUB_REST;
+		break;
+	case NUB_REST:
+		if (nub.count < NUB_SETTLE)
+			return;
+		nub.first = nub.count;
+		nub.low[0] = nub.low[1] = 255;
+		nub.high[0] = nub.high[1] = 0;
+		nub.step = NUB_EDGE;
+		break;
+	case NUB_EDGE:
+		/* the edge reached each way, well past any dead radius */
+		if (nub.high[0] - nub.low[0] < 120 || nub.high[1] - nub.low[1] < 120)
+		{
+			snprintf(nub.message, sizeof(nub.message), "roll it further: all the way round its edge");
+			return;
+		}
+		nub.step = NUB_RETURN;
+		/* the second let-go's samples follow the first's */
+		break;
+	case NUB_RETURN:
+		if (nub.count < nub.first + NUB_SETTLE)
+			return;
+		nub_work_out();
+		nub.step = NUB_DONE;
+		break;
+	default:
+		nub_save();
+		nub_read_saved();
+		nub.step = NUB_IDLE;
+		break;
+	}
+}
+
+static void nub_draw(SceCtrlData const *pad)
+{
+	static const char *const steps[] = {
+		"cross: measure the nub   circle: remove nub.txt",
+		"1/3  let go of the nub, wait a second, then cross",
+		"2/3  roll the nub round its edge a few times, then cross",
+		"3/3  let go again, wait a second, then cross",
+		"cross: save   circle: leave it as it was",
+	};
+
+	pspDebugScreenPrintf(" nub now: x %3d  y %3d   (rest is near 128; 0 to 255 each way)\n\n", pad->Lx, pad->Ly);
+	pspDebugScreenSetTextColor(0xFF00FFFF);
+	pspDebugScreenPrintf(" %-66s\n\n", steps[nub.step]);
+	pspDebugScreenSetTextColor(0xFFFFFFFF);
+	if (nub.step == NUB_REST || nub.step == NUB_RETURN)
+		pspDebugScreenPrintf(" samples: %d\n", nub.step == NUB_RETURN ? nub.count - nub.first : nub.count);
+	if (nub.step == NUB_EDGE)
+		pspDebugScreenPrintf(" seen: x %d to %d, y %d to %d\n", nub.low[0], nub.high[0], nub.low[1], nub.high[1]);
+	if (nub.step == NUB_DONE)
+		pspDebugScreenPrintf(" rest %.1f %.1f, dead %.1f\n reach left %.0f, right %.0f, up %.0f, down %.0f\n",
+			(double)nub.rest[0], (double)nub.rest[1], (double)nub.dead, (double)nub.reach[0], (double)nub.reach[1],
+			(double)nub.reach[2], (double)nub.reach[3]);
+	pspDebugScreenSetTextColor(0xFFAAAAAA);
+	pspDebugScreenPrintf("\n nub.txt: %-.58s\n", nub.saved);
+	pspDebugScreenPrintf(" %-66s\n", nub.message);
+	pspDebugScreenPrintf("\n the game maps the nub's measured range onto Halo's own dead zone\n and full travel, so its aim curve and turn speed-up work as tuned\n");
+}
+
 static void toggle(int i)
 {
 	int j;
@@ -590,6 +796,7 @@ void psp_menu(int build)
 	scan_maps();
 	load_options();
 	load_presets(); /* build 114 */
+	nub_read_saved();
 	map = current_map();
 	cursor = map;
 	pspDebugScreenInit();
@@ -597,9 +804,10 @@ void psp_menu(int build)
 	pspDebugScreenClear();
 	sceCtrlSetSamplingCycle(0);
 	sceCtrlSetSamplingMode(PSP_CTRL_MODE_ANALOG);
+	sceCtrlReadBufferPositive(&pad, 1);
 	while (!done)
 	{
-		int count = page == 0 ? map_count : page == 1 ? OPTION_COUNT : preset_count;
+		int count = page == 0 ? map_count : page == 1 ? OPTION_COUNT : page == 2 ? preset_count : 0;
 		unsigned int pressed;
 		static int drawn_page = -1, drawn_cursor = -1, drawn_map = -1, drawn_preset = -2;
 		static unsigned int drawn_options = 0;
@@ -615,8 +823,9 @@ void psp_menu(int build)
 		one could leave the screen unchanged) */
 		for (k = 0; k < OPTION_COUNT; k++)
 			options_now = options_now * 31u + (unsigned int)options[k].on + 1u;
+		/* the NUB page shows the nub live, so it is drawn every pass */
 		if (page != drawn_page || cursor != drawn_cursor || map != drawn_map || options_now != drawn_options ||
-			preset_applied != drawn_preset)
+			preset_applied != drawn_preset || page == 3)
 		{
 			/* build 92: drawn whole into the buffer not on show, then shown
 			at the next vertical blank. b91's scrolling list redrew every
@@ -625,7 +834,7 @@ void psp_menu(int build)
 			back = !back;
 			pspDebugScreenSetBase((u32 *)(MENU_VRAM + back * MENU_BUFFER_BYTES));
 			pspDebugScreenClear();
-			draw(page, cursor, map, build);
+			draw(page, cursor, map, build, &pad);
 			sceKernelDcacheWritebackAll();
 			sceDisplayWaitVblankStart();
 			sceDisplaySetFrameBuf((void *)(MENU_VRAM + back * MENU_BUFFER_BYTES), 512, PSP_DISPLAY_PIXEL_FORMAT_8888,
@@ -654,17 +863,19 @@ void psp_menu(int build)
 			cursor = (cursor + count - 1) % count;
 		if ((pressed & PSP_CTRL_DOWN) && count)
 			cursor = (cursor + 1) % count;
-		/* build 114: three pages, R forward and L back (triangle: forward) */
+		/* four pages, R forward and L back (triangle: forward) */
 		if (pressed & (PSP_CTRL_RTRIGGER | PSP_CTRL_TRIANGLE))
 		{
-			page = (page + 1) % 3;
+			page = (page + 1) % 4;
 			cursor = page == 0 ? map : 0;
 		}
 		if (pressed & PSP_CTRL_LTRIGGER)
 		{
-			page = (page + 2) % 3;
+			page = (page + 3) % 4;
 			cursor = page == 0 ? map : 0;
 		}
+		if (page == 3)
+			nub_page(&pad, pressed);
 		if (pressed & (PSP_CTRL_CROSS | PSP_CTRL_LEFT | PSP_CTRL_RIGHT))
 		{
 			if (page == 0 && map_count)
