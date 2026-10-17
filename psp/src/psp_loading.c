@@ -167,6 +167,11 @@ void psp_loading_begin(const char *map_name)
 	loading.screen = !psp_keep("loadingoff");
 	loading.begin_us = psp_microseconds();
 	strncpy(loading.map, map_name ? map_name : "?", sizeof(loading.map) - 1);
+	{
+		extern void psp_ge_stencils_expect(const char *map_name);
+
+		psp_ge_stencils_expect(map_name);
+	}
 	captured = loading.screen && psp_ge_loading_capture ? psp_ge_loading_capture() : NULL;
 	if (loading.screen)
 		chant_start();
@@ -251,4 +256,9 @@ void psp_loading_end(void)
 	loading.active = 0;
 	chant_stop();
 	captured = NULL;
+	{
+		extern void psp_ge_stencils_retry(void);
+
+		psp_ge_stencils_retry();
+	}
 }
