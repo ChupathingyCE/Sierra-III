@@ -22507,11 +22507,38 @@ FIXES_LOADING["source/cache/cache_files.c#loading"] = [
 ]
 
 
+# ---------- FIXES_DRAWCOLD: debug-only work out of the model draw path (lever #3)
+# rasterizer_debug_model_vertices runs after every model part's draw and
+# returns unless its debug display is on; the call alone cost b30's drawing
+# 318 I-misses and 4.6 k instructions a tick in the cache model (lab
+# p3walkb30a, 39038135510). Tested where it's called, it costs one load.
+# "debugvertexcall": called every part, as before
+FIXES_DRAWCOLD = {}
+FIXES_DRAWCOLD["source/models/models.c#debuggate"] = [
+("""									rasterizer_debug_model_vertices(object_index, skinning, part);
+""", """#ifdef HALO_PSP
+									/* psp_fixups.py (FIXES_DRAWCOLD) */
+									{
+										static int psp_vertex_call = -1;
+										int psp_keep(const char *name);
+
+										if (psp_vertex_call < 0)
+											psp_vertex_call = psp_keep("debugvertexcall") != 0;
+										if (rasterizer_debug_options.debug_model_vertices_enabled || psp_vertex_call)
+											rasterizer_debug_model_vertices(object_index, skinning, part);
+									}
+#else
+									rasterizer_debug_model_vertices(object_index, skinning, part);
+#endif
+"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_DRAWCOLD.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
