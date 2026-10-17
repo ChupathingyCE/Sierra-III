@@ -43,7 +43,7 @@ struct pack_entry
 	unsigned int offset, size;
 };
 
-#define VRAM_CACHE_START 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+#define VRAM_CACHE_START 0x000D8000 /* after two frame buffers, the depth buffer, the motion sensor's 16 KB target and the button glyph sheet's 32 KB (psp_ge.c) */
 #define VRAM_CACHE_END_FULL 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
 /* build 93: benchrun keeps VRAM's last 256 KB for its bus tests (the display
 list in VRAM, the VRAM-only GE load; psp_ge.c), for the whole run so every

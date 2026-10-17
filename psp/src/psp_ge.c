@@ -2810,6 +2810,8 @@ static void __attribute__((noinline, cold)) ge_dither_probe(void)
 	}
 }
 
+static void glyph_sheet_unpack(void); /* the button glyphs, below */
+
 static void ge_initialize(void)
 {
 	/* build 108: the scratchpad's pieces (psp_scratch.c), keep.txt read by now */
@@ -2862,6 +2864,7 @@ static void ge_initialize(void)
 	stall_force = 0;
 	if (psp_keep("ditherprobe"))
 		ge_dither_probe();
+	glyph_sheet_unpack();
 	sceDisplayWaitVblankStart();
 	sceGuDisplay(GU_TRUE);
 	ge_ready = 1;
@@ -13264,6 +13267,44 @@ struct hud_vertex
 #define PSP_GLYPH_PIXELS
 #include "psp_glyphs.h"
 
+/* the sheet's place in VRAM, between the motion sensor's target and the
+texture cache (psp_tex.c's VRAM_CACHE_START): 32 KB the EBOOT, and so each
+build's heap, no longer carries; the program holds the sheet run-length coded
+(14 KB) and unpacks it here once. VRAM keeps it through sleep, as it keeps the
+textures there */
+#define GLYPH_SHEET_VRAM 0x000D0000
+
+static void __attribute__((noinline, cold)) glyph_sheet_unpack(void)
+{
+	/* through the uncached mirror, so the GE reads what was written */
+	unsigned char *to = (unsigned char *)(0x44000000 + GLYPH_SHEET_VRAM);
+	unsigned char *const end = to + PSP_GLYPH_SHEET_WIDTH * PSP_GLYPH_SHEET_HEIGHT;
+	const unsigned char *from = psp_glyph_packed, *const last = psp_glyph_packed + sizeof(psp_glyph_packed);
+
+	/* tools/psp_glyphs.py, packbits(): a control byte under 128 is followed
+	by control + 1 bytes as they are; from 128, by one byte repeated
+	control - 125 times */
+	while (from < last && to < end)
+	{
+		unsigned int control = *from++, count;
+
+		if (control < 128)
+			for (count = control + 1; count && from < last && to < end; count--)
+				*to++ = *from++;
+		else if (from < last)
+		{
+			unsigned char value = *from++;
+
+			for (count = control - 125; count && to < end; count--)
+				*to++ = value;
+		}
+	}
+	if (to != end || from != last)
+		platform_log("GE: the button glyph sheet unpacked wrong (%d of %d bytes, %d of %d read): its prompts will look broken",
+			(int)(to - (end - PSP_GLYPH_SHEET_WIDTH * PSP_GLYPH_SHEET_HEIGHT)), PSP_GLYPH_SHEET_WIDTH * PSP_GLYPH_SHEET_HEIGHT,
+			(int)(from - psp_glyph_packed), (int)sizeof(psp_glyph_packed));
+}
+
 /* the game's dynamic_screen_vertex: position, texture coordinates, colour (ARGB) */
 struct game_screen_vertex
 {
@@ -13775,12 +13816,13 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 	out[1].x = hud_pixel((x1 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
 	out[1].y = hud_pixel((y1 + offset_y) * ui_scale_y * hud_zoom);
 	out[0].z = out[1].z = 0.0f;
-	/* the sheet is the EBOOT's own data, never written, so there is no
-	cache to write back */
+	/* the sheet sits in VRAM, written once through the uncached mirror, so
+	there is no cache to write back */
 	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 	sceGuClutLoad(256 / 8, palette);
 	sceGuTexMode(GU_PSM_T8, 0, 0, 0);
-	sceGuTexImage(0, PSP_GLYPH_SHEET_WIDTH, PSP_GLYPH_SHEET_HEIGHT, PSP_GLYPH_SHEET_WIDTH, psp_glyph_pixels);
+	sceGuTexImage(0, PSP_GLYPH_SHEET_WIDTH, PSP_GLYPH_SHEET_HEIGHT, PSP_GLYPH_SHEET_WIDTH,
+		(void *)(0x04000000 + GLYPH_SHEET_VRAM));
 	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 	sceGuDisable(GU_DEPTH_TEST);
 	sceGuDisable(GU_FOG);
