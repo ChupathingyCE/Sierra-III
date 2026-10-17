@@ -22390,10 +22390,10 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 		main_new_map(&options);
 #ifdef HALO_PSP
 		{
-			extern void psp_main_settle(void);
 			extern void psp_loading_end(void);
 
-			psp_main_settle();
+			/* no settle at boot: nothing has been drawn yet, and the first
+			frame drawn from here never finished (loading2, lab 39027957157) */
 			psp_loading_end();
 		}
 #endif

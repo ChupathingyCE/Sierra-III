@@ -36,6 +36,7 @@ static struct
 	unsigned long settle_us;  /* the settle's start */
 	unsigned long settle_cap_us;
 	unsigned long settle_loads; /* the texture cache's count at the last settle frame */
+	unsigned long settle_loads_first; /* and at the settle's start */
 	int settle_frames;
 	int settle_quiet;         /* settle frames in a row that read no texture */
 } loading;
@@ -210,7 +211,7 @@ int psp_loading_settle_begin(void)
 		return 0;
 	loading.settle_cap_us = (unsigned long)cap * 1000000ul;
 	loading.settle_us = psp_microseconds();
-	loading.settle_loads = psp_tex_load_count();
+	loading.settle_loads = loading.settle_loads_first = psp_tex_load_count();
 	loading.settle_frames = 0;
 	loading.settle_quiet = 0;
 	return 1;
@@ -227,8 +228,8 @@ int psp_loading_settle_frame(void)
 	if ((loading.settle_frames >= 4 && loading.settle_quiet >= 3 && (!loading.screen || loading.shown >= 0.99f)) ||
 		psp_microseconds() - loading.settle_us >= loading.settle_cap_us)
 	{
-		platform_log("loading: %s settled in %lu ms, %d frames%s", loading.map,
-			(psp_microseconds() - loading.settle_us) / 1000, loading.settle_frames,
+		platform_log("loading: %s settled in %lu ms, %d frames, %lu texture reads and waits%s", loading.map,
+			(psp_microseconds() - loading.settle_us) / 1000, loading.settle_frames, count - loading.settle_loads_first,
 			loading.settle_quiet >= 3 ? "" : " (at the cap, still reading)");
 		return 0;
 	}
