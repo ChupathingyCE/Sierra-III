@@ -8762,10 +8762,29 @@ white band and every other self-illuminated part in its flat colour.
 leaves the part unlit this frame rather than flashing the flat colour */
 static int glow_flat = -1;
 
-static int glow_add = -1;
+static int glow_add = -1, glow_no_clamp = -1;
+static unsigned int glow_base_key = 0; /* the part's base, for the clamp: psp_ge_draw_model_body */
+extern int psp_showcase_map;
+static unsigned long glow_clamped = 0;
+/* out of line and cold: only the main menu runs it, and glow_map_pass runs
+~700 times a frame on b30, where its size in the instruction cache is what
+a dormant block would cost (b133's nwbatch) */
+static void __attribute__((noinline, cold)) glow_clamp_pass(void *vertices, const unsigned short *indices,
+	long index_count, int strip, struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	if (!psp_tex_bind(glow_base_key, NULL))
+		return;
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuBlendFunc(GU_MIN, GU_FIX, GU_FIX, 0, 0);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	glow_clamped++;
+}
 static int glow_map_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
+	int clamped;
+
 	if (!psp_tex_bind(glow_key, NULL))
 		return 0;
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
@@ -8787,12 +8806,25 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 		if (glow_add)
 			platform_log("GE: glowadd: the glow maps added, not screened");
 	}
-	if (glow_add)
+	/* on the showcase map, the clamp itself: the glow added, then the
+	part's base drawn over it with GU_MIN, min(base x lighting + glow,
+	base), as the Xbox caps a lit part at its own base. The base is fogged
+	as pass 1 was, so the clamp holds under fog too. A pass more per
+	self-illuminated part, which only the main menu may spend (b30 draws
+	~700 glow passes a frame). Keep word "glownoclamp": screened there too.
+	Against ChupathingyCE's frames, the ring was far dimmer than either the
+	add or the screen (lab pc-chupa 39014142915) */
+	if (glow_no_clamp < 0)
+		glow_no_clamp = psp_keep("glownoclamp");
+	clamped = psp_showcase_map && !glow_no_clamp && glow_base_key;
+	if (glow_add || clamped)
 		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
 	else
 		sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_COLOR, 0xFFFFFF, 0);
 	ge_blend(1);
 	model_geometry(vertices, indices, index_count, strip, skin, model);
+	if (clamped)
+		glow_clamp_pass(vertices, indices, index_count, strip, skin, model);
 	ge_blend(0);
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDepthMask(GU_FALSE);
@@ -10346,6 +10378,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		}
 		if (glow_off < 0)
 			glow_off = psp_keep("noglowpass");
+		glow_base_key = base_key; /* the clamp's base (glow_map_pass) */
 		if (glow_color && !glow_off && multipurpose_pass(1, vertices, indices, index_count, strip, skin, &model))
 			glow_passes++;
 	}
@@ -17182,8 +17215,8 @@ void psp_ge_frame_end(void)
 			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
 				arena_used / 1024, ARENA_BYTES / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
 				arena_compactions, arena_moved_kb, arena_migrated);
-		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu (%lu with glow maps); meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
-			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, glow_mapped, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
+		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu (%lu with glow maps, %lu clamped); meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
+			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, glow_mapped, glow_clamped, meter_worked, meter_reused, multipurpose_worked, multipurpose_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
 		if (PSP_DITHERSHIFT && dither_shift > 0)

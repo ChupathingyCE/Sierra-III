@@ -36,8 +36,18 @@ Item 1 of `main_menu_restoration.md`: the main menu's white band across the ring
 Sheepdog01, 2026-10-17 01:30: RC polish, ahead of `levelvramN`. Added, the glow went past white wherever the base was already bright: the ring's clouds clipped.
 - `glow_map_pass` now blends `GU_FIX` 1 with `GU_ONE_MINUS_SRC_COLOR`: glow + frame × (1 − glow), a screen. Where the frame is dark it's the add; as the frame nears white, the glow's share shrinks, so bright clouds roll off instead of clipping.
 - Same pass, same texture, one blend word changed: no cost. Fogged to black, the glow is 0 and the frame is left as it was, as before.
-- Closer to the Xbox than the add (its clamp keeps a lit part at its base at most), not exact: see "Still open".
-- **On by default** (a step back toward the original); keep word **`glowadd`** draws it added. The old flat pass (`glowflat`, packs without glow maps) is unchanged.
+- **Against the PC reference** (ChupathingyCE's frames of the same ticks, lab pc-chupa 39014142915) [E]: the PC's ring is far dimmer and less saturated than either; white on the ring 0.0% on the PC, 17.5% added, 0.1% screened. Screened is nearer, **not a restoration** (the first version of this section said "a step back toward the original" on reasoning alone; a reviewer session asked for the test).
+- **On by default** as an improvement over the add (Sheepdog01's call); keep word **`glowadd`** draws it added. The old flat pass (`glowflat`, packs without glow maps) is unchanged.
+
+## The clamp on the showcase map (branch `glowclamp`)
+
+The faithful fix: the Xbox's `base x min(lighting + glow, 1)`, which is `min(base x lighting + glow, base)`.
+- On the showcase map, `glow_map_pass` adds the glow (not screened), then draws the part's own base over it with `GU_MIN` (the GE's per-channel minimum; the blend factors are ignored). The base is fogged with pass 1's fog colour, so under fog the result is still the clamp: both sides of the minimum are the same mix with the fog.
+- The base comes from the model draw (`glow_base_key`, set only where a glow pass follows, so no other draw does more work).
+- A pass more per self-illuminated part: the main menu may spend it (the showcase rule); the levels may not (b30 draws ~700 glow passes a frame), so they keep the screen.
+- Change-coloured parts with a glow: the clamp caps at the plain base, not the change-coloured one (above the Xbox's cap where the change colour darkens). None on the menu.
+- Keep word **`glownoclamp`**: the screen on the showcase map too. The GE's report line counts `clamped`.
+- **Its size on the levels** (a reviewer's ask; the cost that matters is the instruction cache, as b133's nwbatch hooks showed): the clamp's pass is out of line in `.text.unlikely` (`glow_clamp_pass`, 224 bytes). `glow_map_pass` is inlined into `multipurpose_pass`, which grows 1,872 → 2,040 bytes against `screenglow` (+168; +264 with the pass inline), and `psp_ge_draw_model_body` +12 [D, psp-gcc 15.2.0 -O2]. Making the keep word's one-time read cold too made it larger (2,052), so it stays inline.
 
 ## Cost
 
@@ -93,5 +103,5 @@ Bake only (`tools/texpack.py`, `--quality 2`): no memory, no frame cost. **Off b
 ## Still open
 
 - **The ring's textures are at the object cap:** the inner ring reaches the PSP at 128 × 8 px, the hull 128 × 64. Item 2 of `main_menu_restoration.md` (the carve-out) is what gives the ring its detail back.
-- **The Xbox clamps lighting + self-illumination at 1 before it multiplies the base.** The screen blend (below) keeps the ring's clouds from clipping, but where both are strong it still ends above the base. The exact clamp would be a second pass: the base drawn with `GU_MIN` over the glow's result, `min(frame + glow, base)` (fogged alike, it stays exact under fog), at the cost of a pass per self-illuminated part.
+- **The Xbox clamps lighting + self-illumination at 1 before it multiplies the base.** On the showcase map, `glowclamp` does exactly that (above). On the levels, the screen still ends above the base where both are strong.
 - Judged against the formula, not a reference frame: the PC rig's frames (item 5) would settle it.
