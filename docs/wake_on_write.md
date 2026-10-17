@@ -1,6 +1,6 @@
 # Sleepers woken by writes (lever WT): design (2026-10-16)
 
-**Status:** a design; nothing built. Sized by recon 134 (`recon_134.md`: `sleepcensus`, and the object access trace `objtrace134`).
+**Status (2026-10-17):** built and measured on branch `wake-on-write` (`e2f4c79`), keep words `wakeonwrite` and `wakecheck`; to ship on by default in the next build. Play exact against the checksum (a50, c10, d20) and no missed writer left (b30, its route, c40) [E]; on the PSP-1000, b30's b113 route, the frame −5.4 to −8.7 ms (−3.7 to −4.8%) and the tick −2.3 to −2.8 ms [M]; on the PSP-3000, a50, the tick −1.6 ms (−6%) [M]. The writers it took beyond §2's list, the results and why the gain is the low end of §4's estimate: the lab's handoff of 2026-10-17 (recon) and its findings tables. Sized by recon 134 (`recon_134.md`: `sleepcensus`, and the object access trace `objtrace134`).
 
 Labels: **[M]** measured on a PSP · **[E]** emulator · **[D]** read in the code · **[U]** inference.
 
