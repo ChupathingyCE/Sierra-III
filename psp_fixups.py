@@ -358,7 +358,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			multipurpose map's alpha; build 31): the object's colour A to D,
 			as the shader's change colour source picks. Model shaders only:
 			these offsets mean something else in other shaders (build 116) */
-			extern void psp_ge_model_multipurpose(unsigned int, float const *, float const *);
+			extern void psp_ge_model_multipurpose(unsigned int, unsigned int, float const *, float const *);
 			extern real periodic_function_evaluate(short, real);
 			char const *definition = (char const *)shader;
 			boolean model_shader = base_key && *(short const *)(definition + 36) == 4;
@@ -395,7 +395,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					glow[2] *= psp_change_colors[glow_source - 1].blue;
 				}
 			}
-			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0, change, glow);
+			/* the glow map (the base x the green, baked for a self-illuminated
+			shader: texpack.py, glow_looks) is under the shader's address | 2 */
+			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0,
+				multipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);
 		}
 		{
 			boolean drawn;
@@ -3476,7 +3479,7 @@ that really are double keep the double functions. */
 ],
 "source/render/render_objects.c#lod": [
 ("\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}",
- "#ifdef HALO_PSP\n\t/* the game measures pixels on a 480-line screen; the PSP's has 272, so\n\tmodels pick the level of detail Bungie's thresholds give at the size they\n\treally appear (build 19; fulllod in keep.txt turns it off; psp_fixups.py) */\n\tif (!PSP_KEEP_ONCE(\"fulllod\"))\n\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n#endif\n\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}"),
+ "#ifdef HALO_PSP\n\t/* the main menu is the hardware's showcase (CLAUDE.md): its models at\n\ttheir most detailed, as the game gives a cinematic's stars (above) */\n\t{\n\t\textern int psp_showcase_map;\n\n\t\tif (psp_showcase_map)\n\t\t\treturn REAL_MAX;\n\t}\n\t/* the game measures pixels on a 480-line screen; the PSP's has 272, so\n\tmodels pick the level of detail Bungie's thresholds give at the size they\n\treally appear (build 19; fulllod in keep.txt turns it off; psp_fixups.py) */\n\tif (!PSP_KEEP_ONCE(\"fulllod\"))\n\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n#endif\n\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius);\n}"),
 ],
 }
 

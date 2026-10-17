@@ -7,13 +7,16 @@ textures of 64 px and more, 512 px at most; lightmaps at full size). The
 game finds a texture by the address of its bitmap_data in the tag window,
 which is fixed for a map built for the PSP (invader-build -X 0x09600000).
 
-usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means]
+usage: python3 texpack.py map.map out.ptex [--limit N] [--tints-from-means] [--no-glow-maps]
+       [--premultiplied-masks] [--showcase [--showcase-32 | --showcase-palettes]]
+       [--quality 1|2] [--quality-report]
 
 File layout (little endian):
   header: 'PTX1', u32 count, u32 directory size
   directory, sorted by key: count x { u32 key (bitmap_data address),
-    u16 width, u16 height, u8 levels, u8 psm (5 = T8), u8 clut (0 = 5650,
-    3 = 8888), u8 flags (1 = has alpha), u32 offset, u32 size }
+    u16 width, u16 height, u8 levels, u8 psm (5 = T8, 4 = T4; in its own colours,
+    --showcase: 3 = 8888, 0 = 5650), u8 clut (0 = 5650, 3 = 8888; 0xFF none),
+    u8 flags (1 = has alpha), u32 offset, u32 size }
   tints, right after the directory: 'TNT1', u32 count, then count x
     { u32 shader tag address, u32 tint (ABGR) }, sorted by address: the
     see-through shaders' tints for the one map the GE draws of each
@@ -29,6 +32,9 @@ File layout (little endian):
     sorted by address: only the shaders whose drawn map isn't the rule's.
     Only when there are any, after a 'TNT1' (of count 0 when no shader is
     tinted)
+  glow maps: directory entries keyed by a self-illuminated model shader's
+    tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
+    same texels share their data
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
     each level swizzled, rows padded to 16 bytes and to 8 rows
 """
@@ -178,6 +184,61 @@ def model_looks(m, d, B):
     return looks
 
 
+def glow_looks(m, B):
+    """soso shaders that light themselves: shader tag address -> the base
+    bitmap and multipurpose map to bake a glow map from. On the Xbox a model
+    shader's self-illumination (the multipurpose map's green times the
+    shader's colour) is added to the lighting, and the lighting multiplies the
+    base map (rasterizer_xbox_models.c, set_environment_shader_pixel_shader:
+    stage 1 adds R0 x C0 to V0, the later stages multiply by T0), so a lit-up
+    area shows its own base texture at full brightness. The GE adds the
+    colour in a pass of its own (psp_ge.c, multipurpose_pass), so it takes a
+    map of what that pass must add: the base x the green. Only shaders the
+    runtime gives a colour (a period, and a colour at either end); the key is
+    the shader's address | 2, which no bitmap's key can be"""
+    by_tag = {}
+    for b in B:
+        by_tag.setdefault(b['tag'], []).append(b)
+    glows = {}
+    for t in m.tags:
+        if t.group != 'soso' or not t.address:
+            continue
+        o = m.off(t.address)
+        period, = struct.unpack_from('<f', m.data, o + 116)
+        colours = struct.unpack_from('<6f', m.data, o + 120)
+        base_id, = struct.unpack_from('<i', m.data, o + 176)
+        multipurpose_id, = struct.unpack_from('<i', m.data, o + 200)
+        base, mp = m.by_id.get(base_id), m.by_id.get(multipurpose_id)
+        if period == 0.0 or not any(colours) or not base or not mp or base.name not in by_tag or mp.name not in by_tag:
+            continue
+        glows[t.address | 2] = dict(shader=t.name, base=by_tag[base.name][0], multipurpose=by_tag[mp.name][0])
+    return glows
+
+
+PREMULTIPLIED_MASKS = False    # --premultiplied-masks: the detail masks read as before
+MASKS_MENDED = []              # (shader, share of texels) whose detail mask the fix changed
+
+
+def channel_at(image, channel, w, h):
+    """one channel of an image at w x h, 0-1. Resized on its own: PIL resizes
+    RGBA premultiplied, so a multipurpose map's red, green or blue under its
+    alpha (the detail mask, not a transparency) would come out darkened, and
+    black where that alpha is 0"""
+    one = np.ascontiguousarray(image[:, :, channel])
+    if one.shape != (h, w):
+        one = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(one).resize((w, h)))
+    return one[:, :, None].astype(np.float32) / 255.0
+
+
+def apply_glow(img, multipurpose):
+    """what the self-illumination pass adds, at full colour: the base x the
+    multipurpose map's green, opaque (the pass draws its colour only)"""
+    h, w = img.shape[:2]
+    green = channel_at(multipurpose, 1, w, h)
+    rgb = np.clip(img[:, :, :3].astype(np.float32) * green + 0.5, 0, 255).astype(np.uint8)
+    return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
+
+
 def apply_model_look(img, look):
     rgb = img[:, :, :3].astype(np.float32) / 255.0
     h, w = rgb.shape[:2]
@@ -185,11 +246,17 @@ def apply_model_look(img, look):
     k = look['mask']
     mp = look['multipurpose']
     if k and mp is not None:
-        if mp.shape[:2] != (h, w):
-            mp = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(mp).resize((w, h)))
         channel = [None, 0, 0, 1, 1, 2, 2, 3, 3][k] if k < 9 else None
         if channel is not None:
-            mask = mp[:, :, channel:channel + 1].astype(np.float32) / 255.0
+            mask = channel_at(mp, channel, w, h)
+            if mp.shape[:2] != (h, w) and channel < 3:
+                old = np.array(__import__('PIL.Image', fromlist=['Image']).fromarray(mp).resize((w, h)))
+                old = old[:, :, channel:channel + 1].astype(np.float32) / 255.0
+                changed = float((np.abs(old - mask) > 2.0 / 255.0).mean())
+                if changed:
+                    MASKS_MENDED.append((look['shader'], changed))
+                if PREMULTIPLIED_MASKS:
+                    mask = old
             if k % 2 == 1:
                 mask = 1.0 - mask
     detail = look['detail'][None, None, :]
@@ -419,7 +486,199 @@ def alpha_tested_bitmaps(m, d):
     return names
 
 
-def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
+SHOWCASE = False    # --showcase: the main menu's pack at the most the GE can take
+# the classes a showcase pack keeps in their own colours; the rest keep
+# their palettes, which the runtime reads (meters, the change colour's mask,
+# the lightmaps' samples, the detail pass's grey)
+DIRECT_CLASSES = ('objects (soso)', 'sky', 'level (senv)')
+
+
+SHOWCASE_32 = False  # --showcase-32: opaque maps in 32 bits too (for a 32-bit screen)
+SHOWCASE_PALETTES = False  # --showcase-palettes: full size, but every map on its palette
+BAYER = np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]], np.float32) / 16.0 - 0.5
+
+
+def to_5650(img):
+    """16-bit texels (GU_PSM_5650, red in the low bits), with a 4 x 4 ordered
+    dither: the GE's filter averages it back into the steps 5 and 6 bits
+    lose, where rounding alone would band a slow gradient (the sky's)"""
+    h, w = img.shape[:2]
+    noise = np.tile(BAYER, ((h + 3) // 4, (w + 3) // 4))[:h, :w]
+    def channel(c, bits):
+        steps = (1 << bits) - 1
+        return np.clip(np.floor(img[:, :, c].astype(np.float32) * steps / 255.0 + 0.5 + noise), 0, steps).astype(np.uint16)
+    return channel(0, 5) | (channel(1, 6) << 5) | (channel(2, 5) << 11)
+
+
+def direct_levels(small, tw, th, levels_wanted, wide):
+    """a texture in its own colours: 32 bits a texel (GU_PSM_8888: bytes
+    r g b a) when wide, else 16 (GU_PSM_5650); its levels swizzled as the
+    T8 ones are, 16-byte rows"""
+    levels, w, h, img = [], tw, th, small
+    size = 4 if wide else 2
+    while len(levels) < levels_wanted:
+        row, rows = level_bytes(w * size, h)
+        padded = np.zeros((rows, row), np.uint8)
+        texels = img if wide else to_5650(img).astype('<u2').view(np.uint8)
+        padded[:h, :w * size] = texels.reshape(h, w * size)
+        levels.append(swizzle_psp(padded.tobytes(), row, rows))
+        if w <= 8 or h <= 8:
+            break
+        w, h = max(1, w // 2), max(1, h // 2)
+        img = downscale(img, w, h)
+    return levels
+
+
+# ---- how texels become palette indices (Sheepdog01, 2026-10-16: the textures'
+# blockiness and "oily" bands, everywhere). Three steps every 8- and 4-bit
+# texture goes through, with --quality 2. Measured closer to the source by
+# 2-9 dB a class, but on the PSP-1000 the two bakes were indistinguishable
+# (Sheepdog01, 2026-10-17), so the default stays 1: it bakes in half the time.
+#  - the palette is fitted in Oklab, a space where equal distances look
+#    equally different, so dark tones get entries of their own rather than
+#    sharing a few (RGB distance spends them on bright differences);
+#  - texels are mapped onto it with error diffusion (Floyd-Steinberg,
+#    serpentine, at 3/4 strength): each texel's rounding is carried to its
+#    neighbours, so a gradient between two entries comes out as fine grain
+#    the GE's filter blends, not as a flat step with a hard contour. Against
+#    the palette as drawn (a 16-bit palette's 5650 rounding included). Not
+#    the alpha: cut-outs and masks keep their edges;
+#  - sizes are made with a Lanczos filter, which keeps edges sharp where a
+#    box blurs them and steps them; alpha and lightmaps keep the box (a
+#    cut-out's coverage, a chart's dark gutter, would ring).
+QUALITY = 1
+QUALITY_REPORT = False
+QUALITY_STATS = {}
+DIFFUSE_STRENGTH = 0.75
+
+
+def srgb_to_oklab(rgb):
+    c = rgb / 255.0
+    c = np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    l = 0.4122214708 * c[:, 0] + 0.5363325363 * c[:, 1] + 0.0514459929 * c[:, 2]
+    m_ = 0.2119034982 * c[:, 0] + 0.6806995451 * c[:, 1] + 0.1073969566 * c[:, 2]
+    s_ = 0.0883024619 * c[:, 0] + 0.2817188376 * c[:, 1] + 0.6299787005 * c[:, 2]
+    l, m_, s_ = np.cbrt(l), np.cbrt(m_), np.cbrt(s_)
+    return np.stack([0.2104542553 * l + 0.7936177850 * m_ - 0.0040720468 * s_,
+                     1.9779984951 * l - 2.4285922050 * m_ + 0.4505937099 * s_,
+                     0.0259040371 * l + 0.7827717662 * m_ - 0.8086757660 * s_], 1)
+
+
+def oklab_to_srgb(lab):
+    l = lab[:, 0] + 0.3963377774 * lab[:, 1] + 0.2158037573 * lab[:, 2]
+    m_ = lab[:, 0] - 0.1055613458 * lab[:, 1] - 0.0638541728 * lab[:, 2]
+    s_ = lab[:, 0] - 0.0894841775 * lab[:, 1] - 1.2914855480 * lab[:, 2]
+    l, m_, s_ = l ** 3, m_ ** 3, s_ ** 3
+    c = np.stack([4.0767416621 * l - 3.3077115913 * m_ + 0.2309699292 * s_,
+                  -1.2684380046 * l + 2.6097574011 * m_ - 0.3413193965 * s_,
+                  -0.0041960863 * l - 0.7034186147 * m_ + 1.7076147010 * s_], 1)
+    c = np.clip(c, 0, 1)
+    c = np.where(c <= 0.0031308, c * 12.92, 1.055 * c ** (1 / 2.4) - 0.055)
+    return c * 255.0
+
+
+def fit_palette(img, colors):
+    """(palette Nx4 uint8, has_alpha): k-means in Oklab (and alpha), as
+    quantize does in RGB; a texture with no more colours than entries keeps
+    its own"""
+    from sklearn.cluster import KMeans
+    has_alpha = bool(img[:, :, 3].min() < 255)
+    pts = img.reshape(-1, 4).astype(np.float32)
+    if not has_alpha:
+        pts = pts[:, :3]
+    uniq = np.unique(pts, axis=0)
+    if len(uniq) <= colors:
+        pal = uniq
+    else:
+        sample = pts if len(pts) <= 100000 else pts[np.random.RandomState(0).choice(len(pts), 100000, replace=False)]
+        feats = srgb_to_oklab(sample[:, :3])
+        if has_alpha:
+            feats = np.concatenate([feats, sample[:, 3:4] / 255.0], 1)
+        km = KMeans(n_clusters=colors, n_init=1, max_iter=60, random_state=0).fit(feats)
+        centres = km.cluster_centers_
+        rgb = oklab_to_srgb(centres[:, :3])
+        pal = np.concatenate([rgb, centres[:, 3:4] * 255.0], 1) if has_alpha else rgb
+    pal = np.clip(np.rint(pal), 0, 255).astype(np.uint8)
+    if not has_alpha:
+        pal = np.concatenate([pal, np.full((len(pal), 1), 255, np.uint8)], 1)
+    if len(pal) < colors:
+        pal = np.concatenate([pal, np.zeros((colors - len(pal), 4), np.uint8)])
+    return pal, has_alpha
+
+
+def as_drawn(pal, alpha):
+    """the palette's colours as the GE draws them: a 16-bit palette's 5650
+    rounding, widened back to 8 bits"""
+    shown = pal.astype(np.float32).copy()
+    if not alpha:
+        for c, bits in ((0, 5), (1, 6), (2, 5)):
+            v = pal[:, c].astype(np.int32) >> (8 - bits)
+            shown[:, c] = (v * 255 + ((1 << bits) - 1) // 2) // ((1 << bits) - 1)
+    return shown
+
+
+def diffuse(img, pal, alpha, count):
+    """indices into the palette's first count entries, by error diffusion of
+    the colour (the alpha matched, not diffused)"""
+    h, w = img.shape[:2]
+    ch = 4 if alpha else 3
+    P = as_drawn(pal[:count], alpha)[:, :ch]
+    work = img[:, :, :ch].astype(np.float32).copy()
+    out = np.zeros((h, w), np.int32)
+    k = DIFFUSE_STRENGTH / 16.0
+    for y in range(h):
+        forward = y % 2 == 0
+        d = 1 if forward else -1
+        row = work[y]
+        below = work[y + 1] if y + 1 < h else None
+        for x in (range(w) if forward else range(w - 1, -1, -1)):
+            v = row[x]
+            i = int(((P - v) ** 2).sum(1).argmin())
+            out[y, x] = i
+            e = v - P[i]
+            if ch == 4:
+                e[3] = 0.0
+            e *= k
+            if 0 <= x + d < w:
+                row[x + d] += 7 * e
+            if below is not None:
+                if 0 <= x - d < w:
+                    below[x - d] += 3 * e
+                below[x] += 5 * e
+                if 0 <= x + d < w:
+                    below[x + d] += e
+    return out
+
+
+def resample(img, tw, th, cls):
+    """a smaller size: Lanczos on the colour, the box on the alpha and on
+    lightmaps (see above); downscale as before with --quality 1"""
+    if QUALITY < 2 or cls == 'lightmap' or (img.shape[1] == tw and img.shape[0] == th):
+        return downscale(img, tw, th)
+    from PIL import Image
+    rgb = np.array(Image.fromarray(np.ascontiguousarray(img[:, :, :3]), 'RGB').resize((tw, th), Image.Resampling.LANCZOS))
+    a = np.array(Image.fromarray(np.ascontiguousarray(img[:, :, 3]), 'L').resize((tw, th), Image.Resampling.BOX))
+    return np.concatenate([rgb, a[:, :, None]], 2)
+
+
+def blurred_psnr(a, b):
+    """PSNR of the colour after a 3 x 3 box blur of both, as the screen's
+    filtering would see them (dither grain counts as the average it makes)"""
+    def blur(x):
+        x = x[:, :, :3].astype(np.float32)
+        p = np.pad(x, ((1, 1), (1, 1), (0, 0)), mode='edge')
+        return sum(p[dy:dy + x.shape[0], dx:dx + x.shape[1]] for dy in range(3) for dx in range(3)) / 9.0
+    return psnr(blur(a), blur(b))
+
+
+def quality_note(cls, old, new):
+    st = QUALITY_STATS.setdefault(cls, [0, 0.0, 0.0])
+    st[0] += 1
+    st[1] += old
+    st[2] += new
+
+
+def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -433,6 +692,9 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
     if cls == 'objects (soso)' and '\\fp\\' not in b['tag']:
         limit = OBJECT_SIDE
     if FULL_DETAIL and act == 'clut' and full_detail(b['tag']):
+        tw, th, limit = b['w'], b['h'], 512
+    # the showcase: every map at its own size, up to the GE's 512 a side
+    if SHOWCASE and act == 'clut' and cls != 'lightmap':
         tw, th, limit = b['w'], b['h'], 512
     while cls != 'lightmap' and max(tw, th) > limit:
         tw, th = max(1, tw // 2), max(1, th // 2)
@@ -448,18 +710,30 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
         img = apply_look(img, look)
     if model_look:
         img = apply_model_look(img, model_look)
+    if glow is not None:
+        img = apply_glow(img, glow)
     own_levels = None
     if cls == 'detail':
         own_levels = None if os.environ.get('TEXPACK_DETAIL_DOWNSCALE') else detail_levels(m, b, tw, th)
         if not own_levels:
             img = neutral_detail(img)
-    small = own_levels[0] if own_levels else downscale(img, tw, th)
+    small = own_levels[0] if own_levels else resample(img, tw, th, cls)
     # build 116: a meter shader's map (the plasma weapons' gauges, the
     # Warthog's meters) takes the grid too, always: the GE works its colours
     # out per palette entry from the blue (the position along the meter) and
     # the alpha (the shape), as the HUD's (psp_ge.c, meter_palette), and an
     # ordinary palette's entries are averages of both (b113_candidates.md #16)
     grid = (cls == 'ui/hud' and grey_meter(small)) or meter
+    if SHOWCASE and not SHOWCASE_PALETTES and own_colours and cls in DIRECT_CLASSES and not grid and not own_levels:
+        dropped = 0
+        while (b['w'] >> dropped) > tw and dropped < 12:
+            dropped += 1
+        alpha = bool(small[:, :, 3].min() < 255)
+        wide = alpha or SHOWCASE_32
+        levels = direct_levels(small, tw, th, min(8, max(1, b['mips'] + 1 - dropped)), wide)
+        # clut 0xFF: no palette, so the runtime's palette reads pass it by
+        return dict(w=tw, h=th, levels=len(levels), clut=0xFF, alpha=alpha, data=b''.join(levels),
+                    psm=3 if wide else 0)
     if grid:
         grid_off = grid_offset(small)
         idx, pal, alpha = grid_index(small, grid_off), grid_palette(grid_off), True
@@ -469,7 +743,18 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
         every = np.concatenate([l.reshape(-1, 1, 4) for l in own_levels], 0)
         _, pal, _, alpha = quantize(every, 256)
         idx = nearest(small, pal, alpha)
-    else:
+    # the quality steps (above): not for the HUD and menus (drawn at their
+    # own size, where grain would show), the grid's exact entries, or a
+    # detail map's own levels
+    diffusing = QUALITY >= 2 and not grid and not own_levels and cls not in ('ui/hud', 'detail')
+    if diffusing:
+        pal, alpha = fit_palette(small, 256)
+        idx = diffuse(small, pal, alpha, 256)
+        rec = as_drawn(pal, alpha)[idx]
+        if QUALITY_REPORT:
+            old_idx, old_pal, _, _ = quantize(small, 256)
+            quality_note(cls, blurred_psnr(small, as_drawn(old_pal, alpha)[old_idx]), blurred_psnr(small, rec))
+    elif not grid and not own_levels:
         idx, pal, rec, alpha = quantize(small, 256)
     # 16 colours where that is no worse than the 16-bit frame buffer itself
     # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
@@ -485,6 +770,10 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
                 HUD_KEPT_8.append(b['tag'])
             else:
                 idx, pal, rec, bits = idx4, pal4[:16], rec4, 4
+                if diffusing:
+                    pal16, _ = fit_palette(small, 16)
+                    pal = pal16[:16]
+                    idx = diffuse(small, pal, alpha, 16)
     if alpha:
         palette = pal.astype(np.uint8).tobytes()                       # 8888, r g b a
         clut = 3
@@ -511,7 +800,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
     if own_levels:
         source_levels = len(own_levels)
     while len(levels) < min(8, source_levels):
-        ix = idx if not levels else (grid_index(level_img, grid_off) if grid else nearest(level_img, pal, alpha))
+        ix = idx if not levels else (grid_index(level_img, grid_off) if grid else
+                                     diffuse(level_img, pal, alpha, len(pal)) if diffusing else nearest(level_img, pal, alpha))
         row, rows = level_bytes(w, h, bits)
         if bits == 4:
             pixels = np.zeros((rows, row * 2), np.uint8)
@@ -537,7 +827,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False):
         if own_levels and len(levels) < len(own_levels):
             level_img = own_levels[len(levels)]
         else:
-            chain_img = downscale(chain_img, w, h)
+            chain_img = resample(chain_img, w, h, cls)
             level_img = keep_coverage(chain_img, top_coverage) if fix_coverage else chain_img
     data = palette + b''.join(levels)
     return dict(w=tw, h=th, levels=len(levels), clut=clut, alpha=alpha, data=data, psm=4 if bits == 4 else 5)
@@ -555,8 +845,32 @@ def main():
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
     ap.add_argument('--tints-from-means', action='store_true',
                     help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
+    ap.add_argument('--no-glow-maps', action='store_true',
+                    help='no glow maps: the self-illumination pass adds its colour by the mask alone')
+    ap.add_argument('--premultiplied-masks', action='store_true',
+                    help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
+    ap.add_argument('--showcase', action='store_true',
+                    help='the main menu\'s pack: every map at its own size up to 512, objects, sky and level maps '
+                         'in their own colours (ui.map; the levels never)')
+    ap.add_argument('--showcase-32', action='store_true',
+                    help='with --showcase: opaque maps in 32-bit colour too (by default 16-bit, dithered; '
+                         'the screen is 16-bit)')
+    ap.add_argument('--quality', type=int, default=1, choices=(1, 2),
+                    help='1: palettes fitted in RGB, texels mapped to the nearest entry, sizes by a box filter '
+                         '(the default); 2: Oklab fit, error diffusion, Lanczos (closer to the source by 2-9 dB, '
+                         'but indistinguishable on the PSP-1000, and twice the palette step\'s bake time)')
+    ap.add_argument('--quality-report', action='store_true',
+                    help='also fit each texture the old way and log both against the source, per class')
+    ap.add_argument('--showcase-palettes', action='store_true',
+                    help='with --showcase: every map on a palette (256 colours), at its own size')
     a = ap.parse_args()
-    global FULL_DETAIL, HUD_CLUT4
+    global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS, SHOWCASE, SHOWCASE_32, SHOWCASE_PALETTES
+    SHOWCASE_PALETTES = a.showcase_palettes
+    global QUALITY, QUALITY_REPORT
+    QUALITY, QUALITY_REPORT = a.quality, a.quality_report
+    PREMULTIPLIED_MASKS = a.premultiplied_masks
+    SHOWCASE = a.showcase
+    SHOWCASE_32 = a.showcase_32
     HUD_CLUT4 = a.hud_clut4
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
@@ -599,7 +913,9 @@ def main():
         tag_roles = roles.get(b['tag'], ())
         full_hud = not tag_roles or any('splitscreen' not in role for role in tag_roles)
         meter = b['tag'] in meter_maps
-        r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter)
+        # a multipurpose map's palette is read for the change colour's mask
+        own_colours = not any('multipurpose' in role for role in tag_roles)
+        r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter, own_colours=own_colours)
         if r is None:
             skipped[cls] = skipped.get(cls, 0) + 1
             continue
@@ -607,7 +923,8 @@ def main():
         r['name'] = b['tag']
         entries.append(r)
         if b['address'] in mlooks:
-            v = bake_one(m, b, cls, looks.get(b['address']), mlooks[b['address']], full_hud=full_hud, meter=meter)
+            v = bake_one(m, b, cls, looks.get(b['address']), mlooks[b['address']], full_hud=full_hud, meter=meter,
+                         own_colours=own_colours)
             if v is not None:
                 v['key'] = b['address'] | 1
                 v['name'] = b['tag'] + ' (with its detail map)'
@@ -615,6 +932,41 @@ def main():
                 print('  %s: detail map folded in for %s' % (b['tag'], mlooks[b['address']]['shader']), file=sys.stderr)
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
+    for shader, changed in MASKS_MENDED:
+        print('detail mask read on its own for %s: %.0f%% of its texels changed%s' % (
+            shader, 100.0 * changed, ' (--premultiplied-masks: kept as before)' if PREMULTIPLIED_MASKS else ''),
+            file=sys.stderr)
+    print('detail masks: %d shaders whose mask the resize had darkened' % len(set(s for s, _ in MASKS_MENDED)),
+          file=sys.stderr)
+    # the self-illuminated shaders' glow maps, at their base map's size and
+    # from the base the GE draws (with its detail map folded in, if it has
+    # one); shaders with the same two maps share one copy of the texels
+    glows = glow_looks(m, B) if not a.no_glow_maps else {}
+    made = {}
+    glow_bytes = 0
+    for key in sorted(glows):
+        g = glows[key]
+        base, mp = g['base'], g['multipurpose']
+        pair = (base['address'], mp['address'])
+        if pair not in made:
+            mp_img = decode(m, mp)
+            cls = refs.classify(roles.get(base['tag'], ()), base)
+            made[pair] = None if mp_img is None else bake_one(
+                m, base, cls, looks.get(base['address']), mlooks.get(base['address']), glow=mp_img)
+            if made[pair] is not None:
+                glow_bytes += len(made[pair]['data'])
+        r = made[pair]
+        if r is None:
+            print('glow map for %s: none (%s or %s not baked)' % (g['shader'], base['tag'], mp['tag']), file=sys.stderr)
+            continue
+        entries.append(dict(r, key=key, name=g['shader'] + ' (glow map)'))
+        print('glow map for %s: %s x the green of %s, %dx%d, %d bytes%s' % (
+            g['shader'], base['tag'], mp['tag'], r['w'], r['h'], len(r['data']),
+            '' if sum(1 for k in glows if (glows[k]['base']['address'], glows[k]['multipurpose']['address']) == pair) == 1
+            else ' (shared)'), file=sys.stderr)
+    print('glow maps: %d self-illuminated model shaders, %d maps, %d bytes%s' % (
+        len(glows), sum(1 for v in made.values() if v is not None), glow_bytes,
+        ' (--no-glow-maps)' if a.no_glow_maps else ''), file=sys.stderr)
     if HUD_CLUT4:
         print('HUD sheets: 16 colours allowed (--hud-clut4)', file=sys.stderr)
     else:
@@ -648,11 +1000,16 @@ def main():
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16
     blob = bytearray()
     dir_bytes = bytearray()
+    placed = {}
     for e in entries:
-        start = offset + len(blob)
-        blob += e['data']
-        while len(blob) % 16:
-            blob += b'\0'
+        if id(e['data']) in placed:
+            start = placed[id(e['data'])]
+        else:
+            start = offset + len(blob)
+            placed[id(e['data'])] = start
+            blob += e['data']
+            while len(blob) % 16:
+                blob += b'\0'
         dir_bytes += struct.pack('<IHHBBBBII', e['key'], e['w'], e['h'], e['levels'], e['psm'], e['clut'],
                                  1 if e['alpha'] else 0, start, len(e['data']))
     out = bytearray(struct.pack('<4sII', b'PTX1', len(entries), directory)) + dir_bytes + tint_bytes
@@ -660,6 +1017,19 @@ def main():
         out += b'\0'
     out += blob
     open(a.out, 'wb').write(out)
+    print('quality %d: %s' % (QUALITY, 'palettes fitted in Oklab, texels by error diffusion, sizes by Lanczos'
+                              if QUALITY >= 2 else 'as before (RGB fit, nearest entry, box)'), file=sys.stderr)
+    for cls in sorted(QUALITY_STATS):
+        n, old, new = QUALITY_STATS[cls]
+        print('quality %s: %d textures, blurred PSNR %.2f dB as before, %.2f now' % (cls, n, old / n, new / n),
+              file=sys.stderr)
+    if SHOWCASE:
+        own = [e for e in entries if e['psm'] in (0, 3)]
+        for e in sorted(own, key=lambda e: -len(e['data'])):
+            print('showcase: %s, %dx%d in %d-bit colour, %d levels, %d bytes' % (
+                e['name'], e['w'], e['h'], 32 if e['psm'] == 3 else 16, e['levels'], len(e['data'])), file=sys.stderr)
+        print('showcase: %d textures in their own colours (%d bytes), every map at its own size up to 512' % (
+            len(own), sum(len(d) for d in {id(e['data']): e['data'] for e in own}.values())), file=sys.stderr)
     print('%s: %d textures, %d bytes; skipped %s' % (a.out, len(entries), len(out), skipped))
 
 

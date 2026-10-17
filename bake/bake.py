@@ -189,7 +189,21 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
-    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets'))
+    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality '))
+    # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
+    # at the most the GE can take, beside the usual one ("noshowcase")
+    if name == 'ui':
+        log('%s: textures, the showcase' % name)
+        start = os.path.getsize(log_path)
+        run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_showcase.ptex'),
+             '--showcase'] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
+        echo_from(log_path, start, ('glow maps', 'showcase:'))
+        # the same sizes on palettes, for the comparison ("showcasepal")
+        log('%s: textures, the showcase on palettes' % name)
+        start = os.path.getsize(log_path)
+        run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_showcase_pal.ptex'),
+             '--showcase', '--showcase-palettes'] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
+        echo_from(log_path, start, ('textures,',))
     if track and name != 'ui':
         log('%s: textures, asset track (half-size lightmaps, plants kept whole at a distance)' % name)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
