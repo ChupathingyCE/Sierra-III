@@ -23176,11 +23176,41 @@ FIXES_LD1["source/game/game_time.c#lightsframe"] = [
 ]
 
 
+# ---------- the campaign's update rings (b139; memory_savings S6, for a10's heap)
+# A campaign game is local: each frame builds at most 7 ticks' updates
+# (game_time.c: a local connection's cap) and takes them all before the next
+# (update_client_local_ticks, then each tick's update_client_dequeue), and
+# nothing else fills either ring in the campaign build (the network handlers
+# aren't in it). So the client's ring needs 8 and gets 16 (a power of two:
+# it is indexed by the update's number), not 128 (66 KB at the campaign's 16
+# players), and the host's, read only right after each update is built, 1,
+# not 32 (16 KB). About 74 KB of .bss back to the heap; the multiplayer
+# build is untouched. PSP_CFLAGS=-DPSP_FULL_RINGS builds the old sizes
+FIXES_CAMPAIGNNET = {}
+FIXES_CAMPAIGNNET["source/game/player_queues_new.c#campaign"] = [
+("""	MAXIMUM_SERVER_UPDATES = 32,""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER) && !defined(PSP_FULL_RINGS)
+	/* psp_fixups.py (FIXES_CAMPAIGNNET): a local game's update, read as built */
+	MAXIMUM_SERVER_UPDATES = 1,
+#else
+	MAXIMUM_SERVER_UPDATES = 32,
+#endif"""),
+("""	MAXIMUM_CLIENT_UPDATES = 128,""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER) && !defined(PSP_FULL_RINGS)
+	/* psp_fixups.py (FIXES_CAMPAIGNNET): a frame's 7 ticks at most, taken
+	before the next frame's */
+	MAXIMUM_CLIENT_UPDATES = 16,
+#else
+	MAXIMUM_CLIENT_UPDATES = 128,
+#endif"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
