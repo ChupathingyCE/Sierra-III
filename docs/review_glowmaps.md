@@ -47,6 +47,7 @@ The faithful fix: the Xbox's `base x min(lighting + glow, 1)`, which is `min(bas
 - A pass more per self-illuminated part: the main menu may spend it (the showcase rule); the levels may not (b30 draws ~700 glow passes a frame), so they keep the screen.
 - Change-coloured parts with a glow: the clamp caps at the plain base, not the change-coloured one (above the Xbox's cap where the change colour darkens). None on the menu.
 - Keep word **`glownoclamp`**: the screen on the showcase map too. The GE's report line counts `clamped`.
+- **Its size on the levels** (a reviewer's ask; the cost that matters is the instruction cache, as b133's nwbatch hooks showed): the clamp's pass is out of line in `.text.unlikely` (`glow_clamp_pass`, 224 bytes). `glow_map_pass` is inlined into `multipurpose_pass`, which grows 1,872 → 2,040 bytes against `screenglow` (+168; +264 with the pass inline), and `psp_ge_draw_model_body` +12 [D, psp-gcc 15.2.0 -O2]. Making the keep word's one-time read cold too made it larger (2,052), so it stays inline.
 
 ## Cost
 

@@ -8263,6 +8263,20 @@ static int glow_add = -1, glow_no_clamp = -1;
 static unsigned int glow_base_key = 0; /* the part's base, for the clamp: psp_ge_draw_model_body */
 extern int psp_showcase_map;
 static unsigned long glow_clamped = 0;
+/* out of line and cold: only the main menu runs it, and glow_map_pass runs
+~700 times a frame on b30, where its size in the instruction cache is what
+a dormant block would cost (b133's nwbatch) */
+static void __attribute__((noinline, cold)) glow_clamp_pass(void *vertices, const unsigned short *indices,
+	long index_count, int strip, struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	if (!psp_tex_bind(glow_base_key, NULL))
+		return;
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuBlendFunc(GU_MIN, GU_FIX, GU_FIX, 0, 0);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	glow_clamped++;
+}
 static int glow_map_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
@@ -8306,14 +8320,8 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 		sceGuBlendFunc(GU_ADD, GU_FIX, GU_ONE_MINUS_SRC_COLOR, 0xFFFFFF, 0);
 	ge_blend(1);
 	model_geometry(vertices, indices, index_count, strip, skin, model);
-	if (clamped && psp_tex_bind(glow_base_key, NULL))
-	{
-		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
-		sceGuFog(fog_near, fog_far, fog_color);
-		sceGuBlendFunc(GU_MIN, GU_FIX, GU_FIX, 0, 0);
-		model_geometry(vertices, indices, index_count, strip, skin, model);
-		glow_clamped++;
-	}
+	if (clamped)
+		glow_clamp_pass(vertices, indices, index_count, strip, skin, model);
 	ge_blend(0);
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDepthMask(GU_FALSE);
