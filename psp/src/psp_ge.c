@@ -9357,9 +9357,6 @@ void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_
 the part's texture coordinates (psp_fixups.py: soso shaders, ui.map only) */
 static unsigned int model_detail_key = 0;
 static float model_detail_u = 1.0f, model_detail_v = 1.0f;
-/* the main menu's model part being drawn: its texture units per world unit
-(showcase_part_levels), 0 when the GE picks the level itself */
-static float showcase_uv_per_unit = 0.0f;
 
 void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale)
 {
@@ -9517,15 +9514,7 @@ static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, co
 	sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 	/* on the part's own coordinates, as the base: times the vertices' scale */
 	sceGuTexScale(model_u_scale * model_detail_u, model_v_scale * model_detail_v);
-	if (showcase_uv_per_unit > 0.0f)
-	{
-		int width = 0, height = 0;
-
-		psp_tex_size(model_detail_key, &width, &height);
-		texture_levels_by_distance(showcase_uv_per_unit, width, height,
-			sqrtf(fabsf(model_u_scale * model_detail_u * model_v_scale * model_detail_v)), tex_bias + bias * 0.25f);
-	}
-	else if (bias)
+	if (bias)
 		sceGuTexLevelMode(tex_level_mode, tex_bias + bias * 0.25f);
 	sceGuDisable(GU_ALPHA_TEST);
 	sceGuDepthFunc(GU_EQUAL);
@@ -9536,7 +9525,7 @@ static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, co
 	ge_blend(1);
 	model_geometry(vertices, indices, index_count, strip, skin, model);
 	ge_blend(0);
-	if (bias && showcase_uv_per_unit <= 0.0f)
+	if (bias)
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
 	sceGuFog(fog_near, fog_far, fog_color);
 	sceGuDepthMask(GU_FALSE);
@@ -10801,95 +10790,6 @@ static int rigid_run_verdict(const float *sphere, float stretch)
 	return sphere_beyond(centre, radius, NEAR_CLIP) ? 2 : 0;
 }
 
-/* The main menu's model parts take their texture level from each pixel's
-depth (the GE's slope mode, as the level's surfaces do: texture_levels_by_distance)
-instead of the GE's automatic level. The automatic level is one per triangle,
-and the ring's long triangles run from near the eye to far off seen edge on:
-one level for all of it is too fine at the far end, which shimmered as the
-ring turned (Sheepdog01, b138: "better square on, worse at an angle"; ringhw2 on the
-PSP-3000: the shimmer on the far band). Main menu only; "showcaseauto": the
-GE's automatic level there too. The part's density (texture units per model
-unit) is worked out once a part and kept */
-#define SHOWCASE_DENSITIES 64
-static struct
-{
-	const void *vertices;
-	const unsigned short *indices;
-	long index_count;
-	float uv_per_unit;
-} showcase_density[SHOWCASE_DENSITIES];
-static int showcase_slope = -1;
-
-static float model_uv_density(const unsigned char *vertices, int stride, const unsigned short *indices,
-	long index_count, int strip)
-{
-	float uv_area = 0.0f, world_area = 0.0f;
-	long t, triangles = strip ? index_count - 2 : index_count / 3;
-	int uv_at = stride - 24;
-
-	for (t = 0; t < triangles && t < 512; t++)
-	{
-		unsigned int at[3];
-		float uv[3][2], p[3][3];
-		int k;
-
-		for (k = 0; k < 3; k++)
-		{
-			at[k] = indices[strip ? t + k : 3 * t + k];
-			/* copied: a record's floats needn't be word aligned for the CPU */
-			memcpy(uv[k], vertices + stride * at[k] + uv_at, 8);
-			memcpy(p[k], vertices + stride * at[k] + uv_at + 12, 12);
-		}
-		{
-			float e1[3] = { p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2] };
-			float e2[3] = { p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2] };
-			float n[3] = { e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0] };
-
-			world_area += sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-			uv_area += fabsf((uv[1][0] - uv[0][0]) * (uv[2][1] - uv[0][1]) - (uv[2][0] - uv[0][0]) * (uv[1][1] - uv[0][1]));
-		}
-	}
-	return world_area > 0.0f ? sqrtf(uv_area / world_area) : 0.0f;
-}
-
-static void __attribute__((noinline, cold)) showcase_part_levels(void *vertices, const unsigned short *indices,
-	long index_count, int strip, struct skin_part *skin, const ScePspFMatrix4 *model, unsigned int base_key,
-	float u_scale, float v_scale)
-{
-	unsigned int slot = ((((unsigned int)vertices >> 4) ^ ((unsigned int)indices >> 1)) + (unsigned int)index_count) %
-		SHOWCASE_DENSITIES;
-	float scale = 1.0f;
-	int width = 0, height = 0;
-
-	if (showcase_slope < 0)
-		showcase_slope = !psp_keep("showcaseauto");
-	showcase_uv_per_unit = 0.0f;
-	if (!showcase_slope || !psp_tex_size(base_key, &width, &height))
-		return;
-	if (showcase_density[slot].vertices != vertices || showcase_density[slot].indices != indices ||
-		showcase_density[slot].index_count != index_count)
-	{
-		showcase_density[slot].vertices = vertices;
-		showcase_density[slot].indices = indices;
-		showcase_density[slot].index_count = index_count;
-		showcase_density[slot].uv_per_unit = model_uv_density(vertices, skin ? skin->stride : 24, indices,
-			index_count, strip);
-	}
-	/* a rigid part's node may scale it (the matrix's first axis); a skinned
-	part's nodes are taken as unscaled */
-	if (!skin)
-	{
-		float length = sqrtf(model->x.x * model->x.x + model->x.y * model->x.y + model->x.z * model->x.z);
-
-		if (length > 0.0f)
-			scale = 1.0f / length;
-	}
-	showcase_uv_per_unit = showcase_density[slot].uv_per_unit * scale;
-	texture_levels_by_distance(showcase_uv_per_unit, width, height,
-		sqrtf(fabsf(model_u_scale * (u_scale != 0.0f ? u_scale : 1.0f) * model_v_scale * (v_scale != 0.0f ? v_scale : 1.0f))),
-		tex_bias);
-}
-
 static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
@@ -11101,8 +11001,6 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			sceGuAlphaFunc(GU_GREATER, 0x7F, 0xFF);
 			sceGuEnable(GU_ALPHA_TEST);
 		}
-		if (psp_showcase_map && model_camouflage <= 0.0f && !in_sky)
-			showcase_part_levels(vertices, indices, index_count, strip, skin, &model, base_key, u_scale, v_scale);
 	}
 	else
 		sceGuColor(color);
@@ -11194,11 +11092,6 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		sceGuDisable(GU_ALPHA_TEST);
 		sceGuTexScale(1.0f, 1.0f);
 		sceGuDisable(GU_TEXTURE_2D);
-		if (showcase_uv_per_unit > 0.0f)
-		{
-			sceGuTexLevelMode(tex_level_mode, tex_bias);
-			showcase_uv_per_unit = 0.0f;
-		}
 	}
 	world_model();
 	model_cut_count = 0;
