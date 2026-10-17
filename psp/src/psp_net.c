@@ -425,20 +425,107 @@ int psp_net_stack_priority(void)
 	return priority < 0x10 ? 0x10 : priority > 0x6f ? 0x6f : priority;
 }
 
-/* keep word netyieldN: in a game, the game thread waits 1 ms once every N
-ms of its ticks, so threads under it run (psp_platform.c's tick
-accounting calls this after each tick). A test of whether something under
-the game thread, which no log names (the Wi-Fi driver's), loses the host's
-packets while catch-up ticks run for seconds: it costs the game time */
+/* keep word netpaceN: a thread above the game thread drops it to the
+bottom (0x70) for 1 ms every N ms while the PSP is on a network, wherever
+it is, so every thread under it runs, the Wi-Fi driver's included (no log
+names it). The hotspot hands the PSP ~38 packets a second in a game and
+its radio acknowledges them (Sheepdog01's queue and station counters,
+sierra-hw 38995031347), yet the tunnel reads 1-10: they are lost inside
+the PSP. A test: it costs the game thread about 1 ms in N */
+static SceUID pace_game_thread = -1;
+static int pace_game_priority;
+static int pace_every_ms;
+
+static int pace_thread(SceSize length, void *argument)
+{
+	(void)length;
+	(void)argument;
+	for (;;)
+	{
+		sceKernelDelayThread((SceUInt)pace_every_ms * 1000);
+		if (!wifi.connected)
+			continue;
+		sceKernelChangeThreadPriority(pace_game_thread, 0x70);
+		sceKernelDelayThread(1000);
+		sceKernelChangeThreadPriority(pace_game_thread, pace_game_priority);
+	}
+	return 0;
+}
+
+/* every thread the firmware lists to this program, with its priority, a few
+to a line: where the Wi-Fi driver's would sit against the game thread */
+static void log_all_threads(const char *when)
+{
+	SceUID ids[128];
+	char line[400];
+	int count = 0, index, used = 0, unreadable = 0;
+
+	if (sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, ids, 128, &count) < 0)
+		count = 0;
+	if (count > 128)
+		count = 128;
+	for (index = 0; index < count; index++)
+	{
+		SceKernelThreadInfo info;
+
+		memset(&info, 0, sizeof(info));
+		info.size = sizeof(info);
+		if (sceKernelReferThreadStatus(ids[index], &info) < 0)
+		{
+			unreadable++;
+			continue;
+		}
+		if (used > (int)sizeof(line) - 64)
+		{
+			platform_log("network: threads %s: %s", when, line);
+			used = 0;
+		}
+		used += snprintf(line + used, sizeof(line) - (size_t)used, "%s%s 0x%x", used ? ", " : "",
+			info.name, info.currentPriority);
+	}
+	platform_log("network: threads %s: %s; %d listed, %d not readable from here", when,
+		used ? line : "(none)", count, unreadable);
+}
+
+/* after each game tick (psp_platform.c's tick accounting): the thread list
+once the PSP is on a network, netpaceN's thread, and netyieldN (the game
+thread waits 1 ms once every N ms of its ticks, which in a heavy game is
+once a tick: netpace replaces it) */
 void psp_net_tick(void)
 {
-	static int every_ms = -1;
+	static int every_ms = -1, listed;
 	static unsigned int last;
 	unsigned int now;
 
+	if (!wifi.connected)
+		return;
+	if (!listed)
+	{
+		listed = 1;
+		log_all_threads("on the network");
+	}
 	if (every_ms < 0)
-		every_ms = psp_keep_loaded() ? psp_keep_number("netyield", 0) : -1;
-	if (every_ms <= 0 || !wifi.connected)
+	{
+		every_ms = psp_keep_number("netyield", 0);
+		pace_every_ms = psp_keep_number("netpace", 0);
+		if (pace_every_ms > 0)
+		{
+			SceKernelThreadInfo info;
+			SceUID pacer;
+
+			memset(&info, 0, sizeof(info));
+			info.size = sizeof(info);
+			pace_game_thread = sceKernelGetThreadId();
+			sceKernelReferThreadStatus(pace_game_thread, &info);
+			pace_game_priority = info.currentPriority;
+			pacer = sceKernelCreateThread("halo net pacer", pace_thread, 0x18, 2048, 0, NULL);
+			if (pacer >= 0)
+				sceKernelStartThread(pacer, 0, NULL);
+			platform_log("network: netpace: the game thread (0x%x) at 0x70 for 1 ms every %d ms%s",
+				pace_game_priority, pace_every_ms, pacer >= 0 ? "" : "; its thread wasn't made");
+		}
+	}
+	if (every_ms <= 0)
 		return;
 	now = sceKernelGetSystemTimeLow();
 	if (now - last < (unsigned int)every_ms * 1000)
