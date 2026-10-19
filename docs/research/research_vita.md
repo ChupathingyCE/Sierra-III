@@ -178,3 +178,19 @@ Not ours: the cloaked Flood slowdown in The Maw (#33) is the Vita GPU's screen c
 5. **The weapon interface fix:** did the HUD visibly change, and does anyone know what the Xbox showed?
 6. **The evasion bug:** has it ever been seen in a campaign level?
 7. **Would they like ours?** Exact machine and ground-weapon sleeping, the `tracked_object_index` fix, and surface dedup in the sphere walk (§6).
+
+## 12. Since `61debf0` (read 2026-10-19, at `b6a7a29`)
+
+**No new speed-ups.** [D] Main has six commits since `61debf0`, all README (the v1.1.0 video, a donation badge added and removed, PC players pointed to OpenCE); no branch has moved since 10-09. Every `perf/*` branch was already in `61debf0` except `perf/coop-host` (`05bcacf8`: a co-op host re-reads only the device groups `devices.c` marks as changed). That one is co-op only, so it isn't ours.
+
+A second pass over the `61debf0` tree found three switches the first read left out:
+
+| Switch (their file) | What it does | Exact? | For us |
+|---|---|---|---|
+| `HALO_SKY_LATE` (`render/render.c`, on by default) | The sky is drawn after the opaque scene, only on pixels still at the cleared depth. On the Vita's tile renderer, a blended layer drawn first is paid in full (one to two screens of fragments a frame). | Yes (every pixel ends the same, by their argument) | **Leave.** Our GE already draws the sky's see-through parts first in the end-of-frame transparent list, and its solid parts at the far plane without writing depth (`psp_ge.c`). The GE isn't a tile renderer, and on b136's ladder the CPU waits 0.3–0.4 ms a frame for it on a30, b30 and d20 [M]. Payout is ~0 on b30/a30/d20 until frames in flight (#4) make the GE the limit [U]. |
+| `HALO_AI_PERCEPTION_LOD=n` (`ai/actor_perception.c`) | Actors more than n units from every player refresh their props' line of sight every other tick. | No (AI behaviour) | **Leave.** He retired it for Bruno Santana's think rate (§3). Thinking less often is open to experiment here, but it ships only after an A/B (CLAUDE.md), and §3 already holds the better version. |
+| `HALO_DECAL_STACK_CAP=n` (`rasterizer_xbox_decals.c`, opt-in) | At most n decals drawn in one 0.15-unit cell; older ones under them are left out (a10's knot: ~800 quads, 2.4 screens of blended pixels). | No (an old mark that showed through goes) | **Shelf, Sheepdog01's call.** It detracts. GE fill only matters in decal piles, and the GE isn't the limit (above). |
+
+**Credit, if any is taken:** all three are BirchWoodGod's code under his grant (header), except the think rate, which is Bruno Santana's (idea only).
+
+**What we could offer back:** unchanged (§6, and `docs/for_other_ports/`). His crossplay is at network version 29, the same as ours (OpenCE build-206, ChupathingyCE 0.7.5b). That matters only once multiplayer is unshelved.

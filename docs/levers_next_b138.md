@@ -66,6 +66,8 @@ The heartbeat's `budget:` line (`psp_platform.c` ~2668): clock = ticks + drawing
 | L1 `gemeoverlap`, `mewake`, `mefinishslow`, `statememo`, `listcachedall`, DB, DC, LB, code-layout ideas, `sceneryhalf`, `machinesfar`, `posehalf`, `posingmemo` | leave | measured flat or worse, or superseded |
 | `PSP_PGO_PARTIAL=0` | leave until the layout work | doesn't link (branch reach) |
 | `geoasync` | only inside S1 | one reader of the stick |
+| Vita `HALO_SKY_LATE` (proposal, recon 10-19) | leave until #4 | exact, but it saves only GE fill. The GE isn't the limit (CPU waits 0.3–0.4 ms a frame on a30/b30/d20 [M]), and our sky is already drawn at the far plane without depth (`research_vita.md` §12) |
+| Vita `HALO_DECAL_STACK_CAP` (proposal, recon 10-19) | shelf, Sheepdog01's call | detracts (old marks under a pile go); GE fill only |
 
 ## Order
 
