@@ -78,8 +78,8 @@ def pure_python():
     import texpack
     with tempfile.TemporaryDirectory() as cache:
         texpack.PALETTE_CACHE = cache
-        made = texpack.palette(img, 16, 'smoke')
-        read = texpack.palette(img, 16, 'smoke')
+        made = texpack.make_palette(img, 16, "smoke")
+        read = texpack.make_palette(img, 16, "smoke")
         texpack.PALETTE_CACHE = None
         assert len(os.listdir(cache)) == 1, os.listdir(cache)
     assert all(np.array_equal(x, y) for x, y in zip(made[:3], read[:3])) and made[3] == read[3]

@@ -758,7 +758,7 @@ def cache_write(path, idx, pal, alpha):
             pass
 
 
-def palette(img, colors, cls):
+def make_palette(img, colors, cls):
     """quantize(img, colors), through the palette cache when there is one,
     timed for the profile"""
     started = time.perf_counter()
@@ -1080,7 +1080,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         # one palette for every level: the faded levels' near-greys need
         # entries of their own, which the top level alone wouldn't earn
         every = np.concatenate([l.reshape(-1, 1, 4) for l in own_levels], 0)
-        _, pal, _, alpha = palette(every, 256, cls)
+        _, pal, _, alpha = make_palette(every, 256, cls)
         idx = nearest(small, pal, alpha)
     # the quality steps (above): not for the HUD and menus (drawn at their
     # own size, where grain would show), the grid's exact entries, or a
@@ -1091,17 +1091,17 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         idx = diffuse(small, pal, alpha, 256)
         rec = as_drawn(pal, alpha)[idx]
         if QUALITY_REPORT:
-            old_idx, old_pal, _, _ = palette(small, 256, cls)
+            old_idx, old_pal, _, _ = make_palette(small, 256, cls)
             quality_note(cls, blurred_psnr(small, as_drawn(old_pal, alpha)[old_idx]), blurred_psnr(small, rec))
     elif not grid and not own_levels:
-        idx, pal, rec, alpha = palette(small, 256, cls)
+        idx, pal, rec, alpha = make_palette(small, 256, cls)
         if KMEANS_COMPARE:
             kmeans_compare(b['tag'], small, 256, rec)
     # 16 colours where that is no worse than the 16-bit frame buffer itself
     # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
     bits = 8
     if not grid and tw >= 32 and th >= 8 and cls not in ('level (senv)', 'lightmap', 'sky', 'detail'):
-        idx4, pal4, rec4, _ = palette(small, 16, cls)
+        idx4, pal4, rec4, _ = make_palette(small, 16, cls)
         if KMEANS_COMPARE:
             kmeans_compare(b['tag'], small, 16, rec4)
         reference = small.copy()
