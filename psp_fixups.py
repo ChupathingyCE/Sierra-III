@@ -22111,39 +22111,6 @@ static void psp_main_menu_without_other_mode(
 		longer matches, so a map's tags loaded again aren't cut twice) */
 		if (found[_psp_menu_entry_campaign] < 0 || found[_psp_menu_entry_multiplayer] < 0)
 			continue;
-		{
-			/* TEMPORARY DIAGNOSTIC: the main menu's structure, numbers only */
-			long c, h;
-
-			for (c = -1; c < count; c++)
-			{
-				long def_tag = c < 0 ? list_tag : children[c].widget_tag.index;
-				struct ui_widget_definition *d = ui_widget_definition_get(def_tag);
-				struct ui_widget_event_handler_reference *hs =
-					(struct ui_widget_event_handler_reference *)xbox_pointer(d->event_handlers.address);
-
-				error(_error_log, "menudiag: entry %ld type %d flags %08lx listflags %08lx children %ld handlers %ld mode %d",
-					c, (int)d->type, (unsigned long)d->flags, (unsigned long)d->list_flags, (long)d->child_widgets.count,
-					(long)d->event_handlers.count, c < 0 ? -1 : (int)psp_menu_entry_mode(def_tag, 1));
-				for (h = 0; h < d->event_handlers.count; h++)
-				{
-					long target = hs[h].widget_tag.index, k, rel = -9;
-					char const *name = target != NONE ? tag_get_name(target) : NULL;
-
-					if (target == NONE)
-						rel = -1;
-					else if (target == list_tag)
-						rel = -2;
-					for (k = 0; k < count; k++)
-						if (children[k].widget_tag.index == target)
-							rel = k;
-					if (rel == -9 && name && !strncmp(name, PSP_MULTIPLAYER_MENUS, sizeof(PSP_MULTIPLAYER_MENUS) - 1))
-						rel = -3;
-					error(_error_log, "menudiag:   handler %ld event %d flags %08lx function %d target %ld",
-						h, (int)hs[h].event_type, (unsigned long)hs[h].flags, (int)hs[h].function, rel);
-				}
-			}
-		}
 		/* the entries after it each take the place of the one before, so
 		the list closes up, and up and down move between what's left */
 		for (index = count - 1; index > found[dropped]; index--)
@@ -22263,34 +22230,6 @@ static void widget_instance_render_recursive(
 				psp_ge_glyph_next(NONE);
 #endif
 				draw_bitmap_texel_y = 0;"""),
-]
-
-FIXES_MENUS["source/interface/ui_widget.c#menudiag"] = [
-("""	if (result)
-		widget->parameters.list.last_list_tab_direction = 15;
-""",
- """	{
-		/* TEMPORARY DIAGNOSTIC */
-		static int told = 0;
-		struct widget_instance *c;
-		int i = 0, f = -1;
-		unsigned d = 0, v = 0;
-
-		for (c = widget->child; c; c = c->next, i++)
-		{
-			if (c == widget->focused_child)
-				f = i;
-			d |= (unsigned)(c->disabled ? 1 : 0) << i;
-			v |= (unsigned)(c->visible ? 1 : 0) << i;
-		}
-		if (told++ < 12)
-			error(_error_log, "menudiag: next: result %d focused %d of %d selected %d items %d disabled %x visible %x",
-				(int)result, f, i, (int)widget->parameters.list.selected_index,
-				(int)widget->parameters.list.number_of_items, d, v);
-	}
-	if (result)
-		widget->parameters.list.last_list_tab_direction = 15;
-"""),
 ]
 
 FIXES_MENUS["source/interface/virtual_keyboard.c#menus"] = [

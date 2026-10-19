@@ -17,10 +17,14 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 - **How:** when such a widget's picture is drawn, its quad is marked with the glyph (`psp_ge_glyph_next`), as the text's icons are, and the mark is cleared after the draw so an undrawn quad can't hand it on. The button's index is the engine's icon index (A, B, X, Y, black, white, … start, back), mapped with the menus' map: A ✕, B ○, X □, Y △, start START, back SELECT.
 - **The colour:** the label's text colour, as the text's icons take the text's (§6 of `review_controls.md`).
 
-## §2 The keyboard's legend (`virtual_keyboard.c` → `ui_widget.c`: `psp_keyboard_legend_glyphs`)
+## §2 The keyboard's legend (`virtual_keyboard.c` → `ui_widget.c`: `psp_keyboard_background`)
 
 - **Why:** the name entry's "=BACK" and "=ENTER" are part of its full-screen background picture (ChupathingyCE's own comment in `virtual_keyboard.c`), so there is no widget to swap.
-- **How:** after the background, each Xbox button's box (B at x 366–394, A at 468–496, y 412–442 in the menus' 640 × 480) is covered with the same picture's texels from x 336 on the same rows, where the band is empty, then the glyph is drawn in the button's own box (x 368–392 / 470–494, y 416–440) in the legend's blue. The places were measured on the walk's screenshots (menuwalk1, lab 39274068322), so they're good to about a texel [E]. `draw_bitmap_in_rect` gains a column to start from (`draw_bitmap_texel_x`), the twin of the port's `draw_bitmap_texel_y`. The picture itself is unchanged.
+- **How:** the background is drawn in parts round the two Xbox buttons' boxes (B at x 366–394, A at 468–496, y 412–442 in the menus' 640 × 480). Each box is filled from the same picture's texels at x 336 on the same rows, where the band is empty. Then the glyph is drawn in the button's own box (x 368–392 / 470–494, y 416–440) in the legend's blue.
+  - Drawing over the button instead only blends with it: the first try (menuglyphs1) showed the red and green through.
+  - The places were measured on the walk's screenshots (menuwalk1, lab 39274068322), so they're good to about a texel [E].
+  - `draw_bitmap_in_rect` gains a column to start from (`draw_bitmap_texel_x`), the twin of the port's `draw_bitmap_texel_y`.
+  - The picture itself is unchanged; with `xboxglyphs` it's drawn whole, as before.
 
 ## §3 The glyph map by context (`psp_sdl.c`: `psp_button_glyph`)
 
@@ -37,6 +41,8 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - **campaign:** the handler function "new game if no plyr profiles".
   
   Both are searched in the entry and in its children. The list that has exactly one of each is the main menu. The build's other mode is taken out of its `child_widgets`, and each entry after it takes the place of the one before, so the list closes up and up and down move only between what's left. Once one is cut the list no longer matches, so tags loaded again aren't cut twice. The log says "menus: the main menu without the … entry".
+- **What the list is** [D, from a numbers-only log in menuglyphs2]: a column list of four: CAMPAIGN, MULTIPLAYER, SETTINGS, and a fourth that runs the Xbox's demos, which disables itself when there are none. So the campaign build's list is CAMPAIGN, SETTINGS and the hidden demos entry.
+- **A held d-pad repeats:** in the emulator walks a press held 0.3 s stepped the list twice [E, menuglyphs3]. With two entries left, that lands back where it started (the hidden entry passes the focus on to the first). A tap moves one. On the old list the same hold went from CAMPAIGN to SETTINGS, which is why the earlier walks needed a second between presses.
 - **Off:** `menumultiplayer` (campaign build) or `menucampaign` (multiplayer build).
 
 ## §5 The red warning on the name entry (`ui_widget_event_handler_functions.c`)
