@@ -78,7 +78,9 @@ class XIso:
         """[(path, size)] with '/' separators"""
         return [(p, n) for p, s, n in self._walk(self.root_sector, self.root_size, '')]
 
-    def extract(self, path, destination):
+    def extract(self, path, destination, each=None):
+        """path copied to destination; each(chunk), when given, sees every
+        chunk as it is written (the guided bake hashes and counts them)"""
         for p, start, length in self._walk(self.root_sector, self.root_size, ''):
             if p.lower() == path.lower():
                 os.makedirs(os.path.dirname(os.path.abspath(destination)), exist_ok=True)
@@ -90,14 +92,18 @@ class XIso:
                         if not chunk:
                             raise IOError('%s: image ends inside %s' % (destination, path))
                         out.write(chunk)
+                        if each:
+                            each(chunk)
                         left -= len(chunk)
                 return length
         raise FileNotFoundError(path)
 
 
-def make_test_image(path, files):
-    """a minimal XDVDFS image of {name: bytes} in one folder 'maps' (for
-    testing the reader; directory entries in a degenerate right-leaning tree)"""
+def make_test_image(path, files, root_files=None):
+    """a minimal XDVDFS image of {name: bytes} in one folder 'maps', and
+    root_files ({name: bytes}) beside it (for testing the reader; directory
+    entries in a degenerate right-leaning tree)"""
+    root_files = root_files or {}
     names = sorted(files)
     data_sector = 40
     entries = []
@@ -106,6 +112,10 @@ def make_test_image(path, files):
     for n in names:
         layout.append((n, sector, len(files[n])))
         sector += (len(files[n]) + SECTOR - 1) // SECTOR
+    root_layout = []
+    for n in sorted(root_files):
+        root_layout.append((n, sector, len(root_files[n])))
+        sector += (len(root_files[n]) + SECTOR - 1) // SECTOR
     def table(items):
         blob = bytearray()
         offsets = []
@@ -122,7 +132,7 @@ def make_test_image(path, files):
         return bytes(blob)
     maps_table = table([(n, s, l, 0x20) for n, s, l in layout])
     maps_sector = 36
-    root_table = table([('maps', maps_sector, len(maps_table), 0x10)])
+    root_table = table([('maps', maps_sector, len(maps_table), 0x10)] + [(n, s, l, 0x20) for n, s, l in root_layout])
     root_sector = 34
     image = bytearray(sector * SECTOR)
     vd = MAGIC + struct.pack('<II', root_sector, len(root_table))
@@ -132,6 +142,8 @@ def make_test_image(path, files):
     image[maps_sector * SECTOR: maps_sector * SECTOR + len(maps_table)] = maps_table
     for n, s, l in layout:
         image[s * SECTOR: s * SECTOR + l] = files[n]
+    for n, s, l in root_layout:
+        image[s * SECTOR: s * SECTOR + l] = root_files[n]
     open(path, 'wb').write(bytes(image))
 
 
@@ -155,11 +167,14 @@ if __name__ == '__main__':
     else:
         d = tempfile.mkdtemp()
         files = {'c20.map': os.urandom(5000), 'ui.map': b'hello' * 1000, 'a10.map': b''}
-        make_test_image(os.path.join(d, 't.iso'), files)
+        make_test_image(os.path.join(d, 't.iso'), files, {'default.xbe': b'XBEH' * 300})
         with XIso(os.path.join(d, 't.iso')) as iso:
             listed = dict(iso.files())
-            assert set(listed) == {'maps/' + n for n in files}, listed
+            assert set(listed) == {'maps/' + n for n in files} | {'default.xbe'}, listed
             for n, b in files.items():
-                iso.extract('maps/' + n, os.path.join(d, n))
-                assert open(os.path.join(d, n), 'rb').read() == b
+                seen = []
+                iso.extract('maps/' + n, os.path.join(d, n), seen.append)
+                assert open(os.path.join(d, n), 'rb').read() == b == b''.join(seen)
+            iso.extract('default.xbe', os.path.join(d, 'default.xbe'))
+            assert open(os.path.join(d, 'default.xbe'), 'rb').read() == b'XBEH' * 300
         print('xiso self-test passed')

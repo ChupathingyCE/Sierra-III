@@ -9,7 +9,7 @@ These steps are for **release b139**, the first public release. It is the campai
 **Commands** are for a terminal on Linux or macOS (bash, zsh or dash all work). On Windows, each step says what to do in File Explorer or the Command Prompt instead. Three names stand for paths on your machine:
 - `$STICK`: where your PSP's Memory Stick is mounted (step 1, "Finding `$STICK`", shows how to find it).
 - `~/Downloads`: where you saved the release's files.
-- `$BAKE`: the bake bundle's folder, once unpacked (step 4): `~/Downloads/halo-psp-bake-linux-b139`, `-macos-b139` or `-windows-b139`.
+- `$BAKE`: the bake bundle's folder, once unpacked (step 4): `~/Downloads/halo-psp-bake` (on Windows, the `halo-psp-bake` folder wherever you unpacked it).
 
 ## 1. What you need
 
@@ -22,7 +22,7 @@ These steps are for **release b139**, the first public release. It is the campai
    - macOS 11 or later (Apple silicon or Intel);
    - Linux (x86-64) with glibc 2.28 or later: any distribution from 2018 on.
 
-   It needs **Python 3.9 to 3.14**; `bake/README.md` ("What you need") says how to install it on each system.
+   The bake uses the computer's own **Python** if it is 3.9 to 3.14; if there is none, it asks to download a portable one into its own folder. It needs the internet the first time.
 6. **About 8 GB free on the PC** while the bake runs. The result is about 2.9 GB; the rest is the bake's working files, which it deletes as it goes. <!-- TODO(master): the 8 GB is an estimate (the disc's maps, up to four maps' working files, the result); measure the peak on b139's full bake -->
 7. **A USB cable** for the PSP, or a card reader for the Memory Stick.
 
@@ -55,70 +55,95 @@ The PSP runs homebrew only on custom firmware. We don't write a CFW guide: follo
 The bake reads your disc's files out of an image you made. It takes any of these:
 - **A bare game-partition image** ("XISO"): what extract-xiso and most Xbox dumping tools make.
 - **A full Redump-style image** of the disc.
-- **A folder** with the disc's files. Point the bake at the folder that holds `default.xbe` and `maps/`, so it finds both (with only the maps, the loading screen is silent: step 4).
+- **A folder** with the disc's files: the one that holds `default.xbe` and `maps/`, so the bake finds both (with only the maps, the loading screen is silent: step 4).
 
 1. **Make the image from your own disc.** An ordinary PC DVD drive can't read an Xbox disc; Redump's guides describe ways to dump one. Don't download an image.
-2. **Check the image can be read.** The bake bundle (step 4) carries a small reader, `xiso.py`. Once you have the bundle unpacked:
+2. **The bake checks it for you** (step 4): before anything long starts, it reads every map it needs out of the image and checks each against the retail NTSC 01.10.12.2276 maps' SHA-256 (`hashes.json` in the bundle).
 
-   ```sh
-   python3 -I "$BAKE/xiso.py" ~/Halo.iso | grep 'maps/'
-   ```
-
-   On Windows, in a Command Prompt: `py -I %USERPROFILE%\Downloads\halo-psp-bake-windows-b139\xiso.py C:\Users\you\Halo.iso | findstr maps/`. It lists the image's files, here only the maps, with their sizes.
-3. **Check the revision.** The bake checks every map's SHA-256 against the retail NTSC 01.10.12.2276 maps (`hashes.json` in the bundle). The quickest test is a bake of the menu map alone, into a scratch folder:
-
-   ```sh
-   "$BAKE/halo-psp-bake" ~/Halo.iso ~/halo-psp-test --maps ui
-   ```
-
-   On Windows: `halo-psp-bake.cmd C:\Users\you\Halo.iso C:\halo-psp-test --maps ui`, in the bundle's folder. This also sets the bake up (its first run, step 4), so it is not wasted time. Delete the test folder afterwards.
-
-**Check:**
-- step 2 lists the maps, `maps/ui.map` among them (an image the reader can't open says `not an Xbox disc image`);
-- step 3 ends with `baked 1 of 1 maps`. If it says `ui: not the retail map this build expects`, the image is another version, region or a bad dump (step 4, "Hash mismatch").
+**Check:** in step 4, the bake's first stage ends with `[1/4] Your disc checks out`. If it says the disc is another version, or that some maps aren't the retail ones ("Hash mismatch", step 4), the image is another version or region, or a bad dump: make it again from your disc.
 
 ## 4. Baking the maps
 
-*Placeholder: this step is being written for b139's bake bundle. Until it is, `bake/README.md` describes the bake.*
+The bake turns your disc's maps into the files the PSP reads: each map rebuilt for the PSP's memory, plus its texture, geometry and wall-decal packs. It reads the loading screen's chant out of the disc's `default.xbe`, adds a clip of your disc's music to the game as the sound the PSP's menu plays on its entry, and puts the game and the maps together in one folder, ready for the stick.
 
-<!-- TODO(easybake): this step (go_live 2.4) is being written with the bundle's new double-click flow; nothing here until it lands. It covers:
-- download: the bundle for your system from the release (halo-psp-bake-<linux|macos|windows>-b139, .tar.gz or .zip, each with its .sha256), check it, unpack it;
-- the first run (the Python environment, the internet once), macOS's quarantine and Windows' SmartScreen (bake/README.md);
-- how long: about an hour for all 24 maps on an 8-core laptop;
-- disk: about 2.9 GB of result (step 1 has the free space);
-- the last lines when it worked (`baked 24 of 24 maps`, the chant read from default.xbe), "Hash mismatch", other failures and the per-map logs, a silent chant;
-- that a release says when its bundle changed and maps must be baked again (b139 does: bake_changes.md);
-- that the output is game data made from your disc: keep it on your own machines.
-Step 5 expects the output folder at ~/halo-psp-out (C:\halo-psp-out on Windows; its halo/ folder holds chant.adp and maps/). Steps 3, 6 and 8 point to this step's "Hash mismatch" and "The chant" by those names. -->
+**Use the bake bundle from the same release as the build zip.** A release says when its bundle changed and the maps must be baked again (b139 does: `bake_changes.md`).
+
+1. **Download** from the release page, **[Sierra-III-Release's releases](https://github.com/Sheepdog-01/Sierra-III-Release/releases)**, the build zip, `halo_psp_b139.zip`, and the bake bundle for your system:
+
+   | System | Bundle |
+   |---|---|
+   | Windows | `halo-psp-bake-windows-b139.zip` |
+   | macOS | `halo-psp-bake-macos-b139.tar.gz` |
+   | Linux | `halo-psp-bake-linux-b139.tar.gz` |
+
+   Each has a `.sha256` beside it, which the bundle's SHA-256 must equal (Windows PowerShell: `Get-FileHash <file>`; macOS: `shasum -a 256 <file>`; Linux: `sha256sum <file>`).
+2. **Unpack the bundle.** It makes one folder, `halo-psp-bake`. On Windows (right-click, *Extract All*), keep its path short: `C:\halo-psp-bake` always works, and the bake says if the path is too long.
+3. **Put in your two files:**
+   - your disc image (step 3) in `halo-psp-bake/1-PUT-YOUR-DISC-IMAGE-HERE`;
+   - the build zip, as downloaded, in `halo-psp-bake/2-PUT-THE-HALO-ZIP-HERE`.
+4. **Double-click the bake** in `halo-psp-bake`:
+   - **Windows:** `Bake Halo.cmd`. If *Windows protected your PC* appears: *More info*, *Run anyway*.
+   - **macOS:** `Bake Halo.command`. The first time, macOS says it can't check it: choose *Done*, then *System Settings*, *Privacy & Security*, and *Open Anyway* beside `Bake Halo.command`; double-click it again. (macOS 14 or earlier: right-click it, *Open*, *Open*.)
+   - **Linux:** `bake-halo.sh` (if asked, *Run*; or right-click, *Run as a Program*). If it only opens in an editor: `cd "$BAKE" && ./bake-halo.sh` in a terminal.
+5. **Let it run.** A window shows what it found, then four stages:
+
+   | Stage | What happens |
+   |---|---|
+   | `[1/4] Reading your disc` | every map read and checked (step 3) |
+   | `[2/4] Setting up` | the first time only: the bake's Python libraries, about 30 MB (and a portable Python first, if the computer has none: it asks) |
+   | `[3/4] Baking the maps` | the long part, several maps at once, with the time left. Leave the window open |
+   | `[4/4] Putting it together` | the game, its menu sound and the maps into `COPY-TO-MEMORY-STICK` |
+
+   It bakes the ten campaign levels and the menus (`ui`). **How long:** <!-- TODO(master): the campaign bake's time on b139's bundle --> **Disk:** it says how much it needs before it starts, and stops if the drive hasn't that much free (step 1).
+
+**Check:** the window ends with
+
+```
+Done in N min.
+
+Now copy the two folders inside COPY-TO-MEMORY-STICK (PSP and halo) to the top of your PSP's Memory Stick, merging them with the folders already there.
+```
+
+and `halo-psp-bake/COPY-TO-MEMORY-STICK` holds `PSP/GAME/halo/EBOOT.PBP`, `halo/chant.adp` and `halo/maps/`. Press Enter to close the window.
+
+**If it stops,** it says why in one sentence, and the details are in `halo-psp-bake/bake-log.txt`:
+- **A folder is empty, or holds two things:** put exactly one disc image in the first and the build zip in the second.
+- **Hash mismatch:** *This disc is another version of Halo*, or *N of the disc's maps (...) aren't the retail ones*: the image is another version or region, a modified map, or a damaged dump. Make it again from your disc (step 3). The bake stops before anything long starts, and bakes nothing.
+- **The path is too long for Windows,** or **not enough free space:** move the `halo-psp-bake` folder (to `C:\halo-psp-bake`, or a drive with more room) and double-click again.
+- **The bake of a map failed:** report it (step 8), with `bake-log.txt`.
+
+**Two notes that don't stop it** come at the end, when they apply:
+- *The menu sound couldn't be added*: the game plays, but its entry in the PSP's menu is silent.
+- **The chant:** *The loading screen's chant couldn't be read from your disc*: the game plays, but its loading screen is silent. Bake from the whole image, or from the folder that holds `default.xbe`.
+
+`bake/README.md` (also in the bundle) has the rest: the command line, its options, and what's in the bundle.
+
+<!-- TODO(master): when go_live 3.4 lands, say what the game shows for a bake from another bundle ("re-bake with bundle N") -->
+
+The output is game data made from your disc. Keep it on your own machines.
 
 ## 5. Installing on the Memory Stick
 
-You copy two things: the **build zip** (the game, from the release page) and the baked **`halo/` folder** (the maps and the chant).
+You copy one folder's contents: `COPY-TO-MEMORY-STICK` holds the **game** (the build zip's files, with the menu sound added to its EBOOT) and the **bake** (`halo/maps` and the chant), laid out as the stick wants them.
 
 1. Mount the stick (step 1) and set `STICK`.
-2. **Unzip the build** at the stick's root. The build zip, `halo_psp_b139.zip`, is on the same release page as the bake bundle.
+2. **When you bake again for a new release,** delete the old maps first, so no stale pack is left behind: `rm -rf "$STICK/halo/maps"`.
+3. **Copy the bake's folder** to the stick's root, merging (it's large, so it takes a while):
 
    ```sh
-   unzip -o ~/Downloads/halo_psp_b139.zip -d "$STICK"
+   cp -R "$BAKE/COPY-TO-MEMORY-STICK/." "$STICK/"
    ```
 
-3. **Copy the bake** to the stick's root (only `halo/`, not the whole output folder):
-
-   ```sh
-   cp -R ~/halo-psp-out/halo "$STICK/"
-   ```
-
-   It's large, so it takes a while. **When you bake again for a new release,** delete the old maps first, so no stale pack is left behind: `rm -rf "$STICK/halo/maps"`, then copy.
 4. Unmount the stick (step 1, "When you're done").
 
-**On Windows,** in File Explorer: open the zip, choose "Extract all" into a folder, and drag what it holds (the `PSP` folder, and a `halo` folder when the build has one) onto the stick's drive; then drag the bake's `halo` folder (in `C:\halo-psp-out`) onto the stick too. Explorer merges them into the folders already there; answer "Replace the files" if it asks. **On macOS,** use the Terminal commands above, not Finder: Finder can replace the stick's whole `PSP` folder, ARK-4's files with it.
+**On Windows,** in File Explorer: open `COPY-TO-MEMORY-STICK` and drag the two folders it holds (`PSP` and `halo`) onto the stick's drive. Explorer merges them into the folders already there; answer "Replace the files" if it asks. **On macOS,** use the Terminal command above, not Finder: Finder can replace the stick's whole `PSP` folder, ARK-4's files with it.
 
 **The stick, once installed:**
 
 | Path | What | From |
 |---|---|---|
-| `PSP/GAME/halo/` | the game: `EBOOT.PBP`, `halo_crash.prx`, `halo_profile.prx`, `LICENSE-mecore.md` | the build zip |
-| `halo/presets.txt` | the launch menu's presets (when the build has one) | the build zip |
+| `PSP/GAME/halo/` | the game: `EBOOT.PBP` (with your menu sound), `halo_crash.prx`, `halo_profile.prx`, `LICENSE-mecore.md` | the build zip, through the bake |
+| `halo/presets.txt` | the launch menu's presets (when the build has one) | the build zip, through the bake |
 | `halo/maps/` | each map's `.map` and its packs (`.ptex`, `_track.ptex`, `.pgeo`, `.pstn`) | your bake |
 | `halo/chant.adp` | the loading screen's chant | your bake |
 | `halo/log/`, `halo/shots/`, `halo/save/`, `halo/crash.txt`, `halo/stderr.txt` | what the game writes | the game |
@@ -132,7 +157,7 @@ You copy two things: the **build zip** (the game, from the release page) and the
 **Check:** before you unmount,
 
 ```sh
-unzip -p ~/Downloads/halo_psp_b139.zip PSP/GAME/halo/EBOOT.PBP | cmp - "$STICK/PSP/GAME/halo/EBOOT.PBP" && echo "the build is on the stick"
+cmp "$BAKE/COPY-TO-MEMORY-STICK/PSP/GAME/halo/EBOOT.PBP" "$STICK/PSP/GAME/halo/EBOOT.PBP" && echo "the build is on the stick"
 ls "$STICK/halo/chant.adp" "$STICK/halo/maps/ui.map" "$STICK/halo/maps/a10.ptex"
 ```
 
@@ -198,17 +223,17 @@ It writes your choices to `halo/keep.txt` (keep words, separated by spaces) and 
 2. **Open an issue** on **[Sierra-III-Release's issues page](https://github.com/Sheepdog-01/Sierra-III-Release/issues)** with:
    - the build number (the log's first line) and which zip you installed;
    - your PSP model (1000, 2000 or 3000) and your ARK-4 version;
-   - your PC's system (Windows, macOS or Linux), whether you baked with that release's bundle, and the bake's last lines;
+   - your PC's system (Windows, macOS or Linux), whether you baked with that release's bundle, and the bake's log (`bake-log.txt`, in the bundle's folder);
    - what you did, what you saw, and what you expected;
    - the log archive from step 1, the crash screen's photo if there was one, and a screenshot from `halo/shots/` if it shows the problem.
-3. **Never attach game files:** nothing from `halo/maps/`, no `chant.adp`, nothing from your disc image or the bake's `work/` folder except its `.log` files.
+3. **Never attach game files:** nothing from `halo/maps/`, no `chant.adp`, nothing from your disc image or `COPY-TO-MEMORY-STICK`. `bake-log.txt` holds none.
 
 **Common problems:**
 
 | What you see | Cause | Fix |
 |---|---|---|
 | The game isn't in Game → Memory Stick | The zip isn't at the stick's root, or ARK-4 isn't running | Step 5's check; step 2 |
-| The launch menu's MAPS page says `no maps in ms0:/halo/maps` | The bake isn't on the stick, or it's one folder too deep (`halo/halo/maps`) | Step 5.3 |
-| A map says `NO TEXTURE PACK`, or a level never loads | That map's bake failed or was skipped | The bake's log (step 4); bake that map again with `--maps <map>,ui` and copy `halo/` again |
+| The launch menu's MAPS page says `no maps in ms0:/halo/maps` | The bake isn't on the stick, or it's one folder too deep (`halo/halo/maps`, or `COPY-TO-MEMORY-STICK/halo/maps`) | Step 5.3 |
+| A map says `NO TEXTURE PACK`, or a level never loads | That map's files didn't all reach the stick | Step 5 again (delete `halo/maps` on the stick, then copy); if it persists, bake again (step 4) |
 | The loading screen is silent | No `chant.adp` on the stick | Step 4, "The chant" |
 | The game goes straight into a level, holding L shows no launch menu, or it starts in an odd state | Old `halo/init.txt`, `keep.txt`, `input.txt` or `nomenu.txt` left on the stick (from testing) | Delete those four files |

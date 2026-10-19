@@ -4,7 +4,11 @@
 # made-up data. No game data is ever read, made or uploaded here.
 #
 # Each bundle is an artifact named halo-psp-bake-<os>-<ref> (a .tar.gz, or a
-# .zip for Windows, and its SHA-256), for the release notes and the release.
+# .zip for Windows, and its SHA-256), for the release notes and the release;
+# inside, one folder, halo-psp-bake. Each is also checked the way a player
+# uses it (guided_check.py): its double-click file run with nobody there,
+# from stand-in inputs, and again with the system's Python out of sight, so
+# that it downloads the pinned portable Python and bakes on it.
 # The built tools are cached by what they are made from (build_tools.sh, the
 # Invader patches, the pins), so a run that changes only scripts skips the
 # build; the libraries and downloads are kept from the last run, failed or
@@ -94,18 +98,28 @@ jobs:
           run() { python bake/bundle/ci_run.py "$@"; }
           for py in /opt/python/cp39-cp39 /opt/python/cp314-cp314; do
             rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
-            b="/tmp/smoke/${{ steps.name.outputs.bundle }}"
+            b=/tmp/smoke/halo-psp-bake
             echo "== $py"
             run "setup on $py" "$py/bin/python" "$b/launcher.py" --setup
             run "smoke.py on $py" "$b/.venv/bin/python" bake/bundle/smoke.py "$b"
-            run "the sh wrapper" "$b/halo-psp-bake" --help
+            run "bake-halo.sh --help" "$b/bake-halo.sh" --help
+            run "halo-psp-bake --help (the lab's name)" "$b/halo-psp-bake" --help
           done
           run "--jobs check" "$b/.venv/bin/python" bake/bundle/jobs_check.py "$b"
+      - name: The double-click path (made-up inputs)
+        run: |
+          rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
+          python bake/bundle/ci_run.py "guided_check" python bake/bundle/guided_check.py /tmp/smoke/halo-psp-bake
+      - name: No Python on the system (the portable Python's download)
+        run: |
+          rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
+          echo "the system's own folders hold: $(ls /usr/bin/python* /bin/python* 2>/dev/null | tr '\n' ' ')"
+          python bake/bundle/ci_run.py "guided_check --no-python" python bake/bundle/guided_check.py /tmp/smoke/halo-psp-bake --no-python
       - name: The proof's environment (--compare-old, Python 3.13)
         run: |
           set -e
           rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
-          b="/tmp/smoke/${{ steps.name.outputs.bundle }}"
+          b=/tmp/smoke/halo-psp-bake
           python bake/bundle/ci_run.py "--compare-old setup" /opt/python/cp313-cp313/bin/python "$b/launcher.py" --setup --compare-old
           python bake/bundle/ci_run.py "--compare-old imports" "$b/.venv/bin/python" -c "import sklearn, triangle, numpy, PIL, shapely; print('scikit-learn', sklearn.__version__)"
       - name: Checksum
@@ -200,7 +214,7 @@ jobs:
           foreach ($py in '${{ steps.oldest.outputs.python-path }}', '${{ steps.newest.outputs.python-path }}') {
             Remove-Item -Recurse -Force smoke -ErrorAction SilentlyContinue
             Expand-Archive "dist/${{ steps.name.outputs.bundle }}.zip" smoke
-            $b = "smoke/${{ steps.name.outputs.bundle }}"
+            $b = "smoke/halo-psp-bake"
             Write-Host "== $py"
             & $py bake/bundle/ci_run.py "setup on $py" $py "$b/launcher.py" --setup; if ($LASTEXITCODE) { exit 1 }
             & $py bake/bundle/ci_run.py "smoke.py on $py" "$b/.venv/Scripts/python.exe" bake/bundle/smoke.py $b; if ($LASTEXITCODE) { exit 1 }
@@ -210,7 +224,21 @@ jobs:
           & "$b/.venv/Scripts/python.exe" -c "import sys; sys.path.insert(0, r'$b'); import bake; print('free memory', bake.free_memory(), 'default jobs', bake.default_jobs())"; if ($LASTEXITCODE) { exit 1 }
       - name: The .cmd wrapper
         shell: cmd
-        run: smoke\${{ steps.name.outputs.bundle }}\halo-psp-bake.cmd --help
+        run: call "smoke\halo-psp-bake\Bake Halo.cmd" --help
+      - name: The double-click path (made-up inputs)
+        shell: pwsh
+        run: |
+          $py = '${{ steps.newest.outputs.python-path }}'
+          Remove-Item -Recurse -Force smoke -ErrorAction SilentlyContinue
+          Expand-Archive "dist/${{ steps.name.outputs.bundle }}.zip" smoke
+          & $py bake/bundle/ci_run.py "guided_check" $py bake/bundle/guided_check.py smoke/halo-psp-bake; if ($LASTEXITCODE) { exit 1 }
+      - name: No Python on the system (the portable Python's download)
+        shell: pwsh
+        run: |
+          $py = '${{ steps.newest.outputs.python-path }}'
+          Remove-Item -Recurse -Force smoke -ErrorAction SilentlyContinue
+          Expand-Archive "dist/${{ steps.name.outputs.bundle }}.zip" smoke
+          & $py bake/bundle/ci_run.py "guided_check --no-python" $py bake/bundle/guided_check.py smoke/halo-psp-bake --no-python; if ($LASTEXITCODE) { exit 1 }
       - name: Checksum
         run: |
           cd dist && sha256sum "${{ steps.name.outputs.bundle }}.zip" | tee "${{ steps.name.outputs.bundle }}.zip.sha256"
@@ -294,15 +322,25 @@ jobs:
           run() { python3 bake/bundle/ci_run.py "$@"; }
           for py in "${{ steps.oldest.outputs.python-path }}" "${{ steps.newest.outputs.python-path }}"; do
             rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
-            b="/tmp/smoke/${{ steps.name.outputs.bundle }}"
+            b=/tmp/smoke/halo-psp-bake
             echo "== $py"
             run "setup on $py" "$py" "$b/launcher.py" --setup
             run "smoke.py on $py" "$b/.venv/bin/python" bake/bundle/smoke.py "$b"
-            run "the sh wrapper" "$b/halo-psp-bake" --help
+            run "Bake Halo.command --help" "$b/Bake Halo.command" --help
           done
           run "--jobs check" "$b/.venv/bin/python" bake/bundle/jobs_check.py "$b"
           "$b/.venv/bin/python" -c "import sys; sys.path.insert(0, '$b'); import bake; print('free memory', bake.free_memory(), 'default jobs', bake.default_jobs())"
           lipo -info "$b/invader/bin/invader-build" "$b/atracdenc/bin/atracdenc"
+      - name: The double-click path (made-up inputs)
+        run: |
+          rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
+          py="${{ steps.newest.outputs.python-path }}"
+          "$py" bake/bundle/ci_run.py "guided_check" "$py" bake/bundle/guided_check.py /tmp/smoke/halo-psp-bake
+      - name: No Python on the system (the portable Python's download)
+        run: |
+          rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
+          py="${{ steps.newest.outputs.python-path }}"
+          "$py" bake/bundle/ci_run.py "guided_check --no-python" "$py" bake/bundle/guided_check.py /tmp/smoke/halo-psp-bake --no-python
       - name: Checksum
         run: |
           cd dist && shasum -a 256 "${{ steps.name.outputs.bundle }}.tar.gz" | tee "${{ steps.name.outputs.bundle }}.tar.gz.sha256"

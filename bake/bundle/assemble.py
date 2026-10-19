@@ -5,8 +5,10 @@ checkout, the native tools build_tools.sh made, and every licence.
     assemble.py <tools folder> <bundle folder> [--target linux|macos|windows] [--archive]
 
 <tools folder> is build_tools.sh's output. The bundle folder is made afresh;
---archive also packs it beside itself (.tar.gz, or .zip for Windows) with one
-top folder, named as the bundle folder. Pure Python: runs on every OS."""
+--archive also packs it beside itself (.tar.gz, or .zip for Windows, named
+as the bundle folder) with one top folder, halo-psp-bake: short, as Windows
+counts every character of the paths the bake writes inside it. Pure Python:
+runs on every OS."""
 import argparse
 import glob
 import os
@@ -75,6 +77,32 @@ atracdenc with another libsndfile).
 '''
 
 TARGET_EXE = {'windows': '.exe', 'linux': '', 'macos': ''}
+# what the player double-clicks (the wrapper, halo-psp-bake or .cmd, under
+# the name each system runs on a double-click)
+START = {'linux': 'bake-halo.sh', 'macos': 'Bake Halo.command', 'windows': 'Bake Halo.cmd'}
+TOP = 'halo-psp-bake'
+# the guided bake's two input folders (guided.py), each with a note of what goes in it
+INPUTS = {
+    '1-PUT-YOUR-DISC-IMAGE-HERE': """Put your Halo disc image in this folder: one file, as your Xbox dumping
+tool made it (usually ending in .iso). It must be Halo: Combat Evolved for
+the original Xbox, NTSC (USA), version 01.10.12.2276; the bake checks.
+
+A folder with the disc's files works too (the one holding default.xbe and
+maps): put that folder here instead.
+
+Then start the bake: %s.
+""",
+    '2-PUT-THE-HALO-ZIP-HERE': """Put the Halo PSP release zip in this folder, as you downloaded it from
+the release page (halo_psp_bNNN.zip). There's no need to unpack it.
+
+The bake adds the menu sound, made from your disc, to the game inside it,
+and puts the game and the maps together in COPY-TO-MEMORY-STICK.
+
+Then start the bake: %s.
+""",
+}
+HOW_TO_START = {'linux': 'double-click bake-halo.sh (or run ./bake-halo.sh in a terminal)',
+                'macos': 'double-click "Bake Halo.command"', 'windows': 'double-click "Bake Halo.cmd"'}
 
 
 def copy(src, dst):
@@ -91,11 +119,24 @@ def assemble(tools, out, target):
         shutil.rmtree(out)
     os.makedirs(out)
     bake = os.path.join(REPO, 'bake')
-    for name in ('bake.py', 'xiso.py', 'launcher.py', 'requirements.txt', 'hashes.json', 'README.md', 'INVADER.md'):
+    for name in ('bake.py', 'guided.py', 'xiso.py', 'launcher.py', 'requirements.txt', 'hashes.json', 'README.md',
+                 'INVADER.md'):
         copy(os.path.join(bake, name), os.path.join(out, name))
+    newline = '\r\n' if target == 'windows' else '\n'
     wrapper = 'halo-psp-bake.cmd' if target == 'windows' else 'halo-psp-bake'
-    copy(os.path.join(bake, wrapper), os.path.join(out, wrapper))
-    executable(os.path.join(out, wrapper))
+    with open(os.path.join(bake, wrapper), encoding='utf-8') as f:
+        text = f.read().replace('\r\n', '\n')
+    # cmd.exe finds its labels reliably only in a file with Windows' line endings
+    with open(os.path.join(out, START[target]), 'w', encoding='utf-8', newline=newline) as f:
+        f.write(text)
+    executable(os.path.join(out, START[target]))
+    if target == 'linux':
+        # the command's own name, which automated runs call
+        os.symlink(START[target], os.path.join(out, 'halo-psp-bake'))
+    for folder, note in INPUTS.items():
+        os.makedirs(os.path.join(out, folder))
+        with open(os.path.join(out, folder, 'README.txt'), 'w', encoding='utf-8', newline=newline) as f:
+            f.write(note % HOW_TO_START[target])
     # every bake/lib script, whatever has been added since
     scripts = sorted(glob.glob(os.path.join(bake, 'lib', '*.py'))) + [os.path.join(REPO, 'tools', t) for t in TOOLS]
     os.makedirs(os.path.join(out, 'lib'))
@@ -140,8 +181,10 @@ def contents(out):
         if os.path.isfile(path):
             return os.path.getsize(path)
         return sum(os.path.getsize(os.path.join(root, f)) for root, _, files in os.walk(path) for f in files)
-    lines = ['%-28s %8.1f MB' % (name + ('/' if os.path.isdir(os.path.join(out, name)) else ''),
-                                  size(os.path.join(out, name)) / 1e6) for name in sorted(os.listdir(out))]
+    def text(n):
+        return '%8.1f MB' % (n / 1e6) if n >= 1e5 else '%8.1f KB' % (n / 1e3)
+    lines = ['%-28s %s' % (name + ('/' if os.path.isdir(os.path.join(out, name)) else ''), text(size(os.path.join(out, name))))
+             for name in sorted(os.listdir(out))]
     lines.append('LICENSES/: ' + ', '.join(sorted(d for d in os.listdir(os.path.join(out, 'LICENSES'))
                                                   if os.path.isdir(os.path.join(out, 'LICENSES', d)))))
     return lines
@@ -154,13 +197,16 @@ def archive(out, target):
         with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z:
             for root, dirs, files in os.walk(out):
                 dirs.sort()
+                # the empty input folders too
+                if root != out and not files and not dirs:
+                    z.write(root, os.path.join(TOP, os.path.relpath(root, out)))
                 for f in sorted(files):
                     full = os.path.join(root, f)
-                    z.write(full, os.path.relpath(full, parent))
+                    z.write(full, os.path.join(TOP, os.path.relpath(full, out)))
     else:
         path = os.path.join(parent, name + '.tar.gz')
         with tarfile.open(path, 'w:gz', compresslevel=9) as t:
-            t.add(out, arcname=name)       # keeps the executable bits
+            t.add(out, arcname=TOP)       # keeps the executable bits and the symlink
     return path
 
 
