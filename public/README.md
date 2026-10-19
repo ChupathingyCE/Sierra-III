@@ -52,15 +52,7 @@ It fetches the engine and the Media Engine library at the commits `upstream/pins
 
 ## Maps
 
-The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image:
-
-```
-<bundle>/halo-psp-bake <disc image> <maps out>       # halo-psp-bake.cmd on Windows
-```
-
-The bundle for your system (Windows, macOS or Linux) comes with each release; `bake/make_bundle.sh <out>` builds one from source.
-
-Then copy the output's `halo/` folder to the root of the Memory Stick. `bake/README.md` has the details.
+The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image with the bake bundle for your system (Windows, macOS or Linux), which comes with each release: put the disc image and the build zip in the bundle's two folders, double-click `Bake Halo` (`Bake Halo.cmd`, `Bake Halo.command` or `bake-halo.sh`), and copy what it puts in `COPY-TO-MEMORY-STICK` (the game, with its menu sound, and the maps) to the root of the Memory Stick. `bake/README.md` has the details and the command line; `bake/make_bundle.sh <out>` builds a bundle from source.
 
 ## Installing
 
