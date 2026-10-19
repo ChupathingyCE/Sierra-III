@@ -38,12 +38,13 @@ File layout (little endian):
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
     each level swizzled, rows padded to 16 bytes and to 8 rows
 """
-import sys, os, struct, argparse
+import sys, os, struct, argparse, hashlib, io, time
 import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'bake', 'lib'))  # the bake's readers (halomap.py, ...)
 from halomap import Defs, CacheMap
 from assets import fo
 import refs
+import bitmap_bake
 from bitmap_bake import decode, decode_bump, downscale, quantize, kmeans, swizzle_psp, target, psnr, decode_dxt, decode_plain, BPP
 from assets import FORMATS, TYPES, BTYPES, USAGES
 import seethrough
@@ -705,6 +706,214 @@ def kmeans_summary():
                 tag, colors, e_old, e_new, 100 * change[k], s_old, s_new))
 
 
+# The palette step (quantize) is most of a pack's time, and much of it
+# repeats: the asset track's pack makes every texture but the lightmaps again
+# from the same pixels, and maps share textures. --palette-cache DIR keeps
+# each palette, keyed by its input's pixels, the palette count and the
+# palette code itself, so a repeat reads it back instead (the bake points
+# every pack of every map at one folder). quantize() is seeded, so what comes
+# back is what it would have made: the same bytes in the pack.
+PALETTE_CACHE = None
+FAST_PALETTES = False     # --fast-palettes: bitmap_bake.fast_kmeans()
+# what the cache's keys hold besides the pixels: the code that makes the
+# palettes, so a changed bitmap_bake.py never reads an older one's
+with open(bitmap_bake.__file__, 'rb') as _f:
+    PALETTE_CODE = hashlib.sha256(_f.read()).hexdigest()
+del _f
+
+
+def pixels_hash(img):
+    h = hashlib.sha256(str((img.shape, img.dtype.str)).encode())
+    h.update(np.ascontiguousarray(img).tobytes())
+    return h.hexdigest()
+
+
+def cache_read(path):
+    try:
+        with open(path, 'rb') as f:
+            z = np.load(io.BytesIO(f.read()), allow_pickle=False)
+            idx, pal, alpha = z['idx'], z['pal'], bool(z['alpha'])
+    except (OSError, ValueError, KeyError):
+        return None
+    idx = idx.astype(np.int64)
+    return idx, pal, pal[idx], alpha
+
+
+def cache_write(path, idx, pal, alpha):
+    """written whole to a file of this process's own, then renamed into
+    place: a pack running beside this one (--jobs) reads either nothing or
+    the whole palette"""
+    buffer = io.BytesIO()
+    np.savez(buffer, idx=idx.astype(np.uint8), pal=pal, alpha=np.array(alpha))
+    part = '%s.%d.part' % (path, os.getpid())
+    try:
+        with open(part, 'wb') as f:
+            f.write(buffer.getvalue())
+        os.replace(part, path)
+    except OSError:
+        # another pack holds it open (Windows) or wrote it first: it is the same palette
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+
+
+def palette(img, colors, cls):
+    """quantize(img, colors), through the palette cache when there is one,
+    timed for the profile"""
+    started = time.perf_counter()
+    pixels = pixels_hash(img) if PALETTE_CACHE or PROFILE else None
+    path = None
+    if PALETTE_CACHE and not PALETTE_COMPARE:
+        key = hashlib.sha256(('%s %s %d %s' % (PALETTE_CODE, FAST_PALETTES, colors, pixels)).encode()).hexdigest()
+        path = os.path.join(PALETTE_CACHE, key + '.npz')
+        r = cache_read(path)
+        if r is not None:
+            profile_palette(pixels, colors, time.perf_counter() - started, 'hit')
+            return r
+    r = quantize(img, colors, fast=FAST_PALETTES)
+    seconds = time.perf_counter() - started
+    if path:
+        cache_write(path, r[0], r[1], r[3])
+    if PALETTE_COMPARE:
+        compared = time.perf_counter()
+        palette_compare(img, colors, cls, r, seconds, pixels)
+        PROFILE_NOW['compare'] = PROFILE_NOW.get('compare', 0.0) + time.perf_counter() - compared
+    profile_palette(pixels, colors, seconds, 'made')
+    return r
+
+
+# TEXPACK_PROFILE=1 (halo-psp-bake --profile): a line per texture with its
+# class, its sizes, the seconds in the palette step and in the rest, and a
+# short hash of the palette step's input pixels (never a name: these lines go
+# to the lab's logs); a summary at the end
+PROFILE = bool(os.environ.get('TEXPACK_PROFILE'))
+PROFILE_ROWS = []
+PROFILE_NOW = {}
+
+
+def profile_palette(pixels, colors, seconds, how):
+    if PROFILE:
+        PROFILE_NOW.setdefault('palettes', []).append((pixels, colors, seconds, how))
+
+
+def profiled(bake):
+    """bake_one, timed: the palettes it made and the rest"""
+    def timed(m, b, cls, *args, **kwargs):
+        if not PROFILE:
+            return bake(m, b, cls, *args, **kwargs)
+        PROFILE_NOW.clear()
+        started = time.perf_counter()
+        r = bake(m, b, cls, *args, **kwargs)
+        # the compare's second palettes are no part of a bake's time
+        total = time.perf_counter() - started - PROFILE_NOW.get('compare', 0.0)
+        palettes = PROFILE_NOW.get('palettes', [])
+        in_palettes = sum(p[2] for p in palettes)
+        row = dict(cls=cls.replace(' ', '_'), size='%dx%d' % (b['w'], b['h']),
+                   made='%dx%d/%d' % (r['w'], r['h'], 4 if r['psm'] == 4 else 8 if r['psm'] == 5 else 16)
+                   if r else 'skipped', palette=in_palettes, rest=total - in_palettes, palettes=palettes)
+        PROFILE_ROWS.append(row)
+        print('texprofile: %s %s %s -> %s palette %.3f s rest %.3f s in %s' % (
+            PROFILE_PACK, row['cls'], row['size'], row['made'], in_palettes, row['rest'],
+            ' '.join('%s/%d/%s' % (p[0][:12], p[1], p[3]) for p in palettes) or '-'))
+        return r
+    return timed
+
+
+def profile_summary(total):
+    """the pack's time by class, and how much of the palette step repeats"""
+    if not PROFILE:
+        return
+    rows = PROFILE_ROWS
+    baked = sum(r['palette'] + r['rest'] for r in rows)
+    print('texprofile summary: %s: %d textures in %.1f s (palettes %.1f s, the rest %.1f s); %.1f s outside them '
+          '(reading the map, tints, writing)' % (PROFILE_PACK, len(rows), baked, sum(r['palette'] for r in rows),
+                                                 sum(r['rest'] for r in rows), total - baked))
+    by_class = {}
+    for r in rows:
+        c = by_class.setdefault(r['cls'], [0, 0.0, 0.0])
+        c[0] += 1
+        c[1] += r['palette']
+        c[2] += r['rest']
+    for cls in sorted(by_class, key=lambda c: -(by_class[c][1] + by_class[c][2])):
+        n, pal, rest = by_class[cls]
+        print('texprofile class: %s: %s %d textures, palettes %.1f s, the rest %.1f s' % (PROFILE_PACK, cls, n, pal, rest))
+    palettes = [p for r in rows for p in r['palettes']]
+    seen = {}
+    for p in palettes:
+        seen.setdefault((p[0], p[1]), []).append(p)
+    repeats = [p for group in seen.values() for p in group[1:]]
+    hits = [p for p in palettes if p[3] == 'hit']
+    print('texprofile palettes: %s: %d made or read, %d distinct inputs; %d repeat one already in this pack '
+          '(%.1f s); %d read from the cache in %.2f s' % (PROFILE_PACK, len(palettes), len(seen), len(repeats),
+                                                          sum(p[2] for p in repeats), len(hits), sum(p[2] for p in hits)))
+
+
+# TEXPACK_PALETTE_COMPARE=1 (halo-psp-bake --compare-palettes; the fast
+# palettes' proof): each palette also made the other way (fast if the pack's
+# are the bake's own, and the other way round), timed, and both scored as
+# kmeans_compare scores them (Oklab error, and the squared distance k-means
+# minimises); a line per palette by class, size and pixel hash, a summary
+PALETTE_COMPARE = bool(os.environ.get('TEXPACK_PALETTE_COMPARE'))
+PALETTE_RESULTS = []
+
+
+def palette_compare(img, colors, cls, made, seconds, pixels):
+    has_alpha = img[:, :, 3].min() < 255
+    ch = 4 if has_alpha else 3
+    pts = img.reshape(-1, 4)[:, :ch].astype(np.float32)
+    if len(np.unique(pts, axis=0)) <= colors:
+        return
+    started = time.perf_counter()
+    other = quantize(img, colors, fast=not FAST_PALETTES)
+    other_seconds = time.perf_counter() - started
+    own, fast = (other, made) if FAST_PALETTES else (made, other)
+    own_s, fast_s = (other_seconds, seconds) if FAST_PALETTES else (seconds, other_seconds)
+    want = srgb_to_oklab(pts[:, :3])
+
+    def score(rec):
+        rec = rec.reshape(-1, 4)[:, :ch].astype(np.float32)
+        e = ((srgb_to_oklab(rec[:, :3]) - want) ** 2).sum(1)
+        if has_alpha:
+            e = e + ((rec[:, 3] - pts[:, 3]) / 255.0) ** 2
+        return float(np.sqrt(e).mean()), float(((rec - pts) ** 2).sum(1).mean())
+    (e_own, d_own), (e_fast, d_fast) = score(own[2]), score(fast[2])
+    row = (cls.replace(' ', '_'), colors, '%dx%d' % img.shape[1::-1], pixels[:12], own_s, fast_s, e_own, e_fast,
+           d_own, d_fast)
+    PALETTE_RESULTS.append(row)
+    print('palcompare: %s %d colours %s in %s: time %.3f -> %.3f s; Oklab error %.5f -> %.5f; squared distance '
+          '%.2f -> %.2f' % row)
+
+
+def palette_compare_summary():
+    if not PALETTE_RESULTS:
+        return
+    r = PALETTE_RESULTS
+    own_s, fast_s = sum(x[4] for x in r), sum(x[5] for x in r)
+    e_own, e_fast = np.array([x[6] for x in r]), np.array([x[7] for x in r])
+    d_own, d_fast = np.array([x[8] for x in r]), np.array([x[9] for x in r])
+    change = e_fast / np.maximum(e_own, 1e-12) - 1
+    d_change = d_fast / np.maximum(d_own, 1e-12) - 1
+    print('palcompare summary: %s: %d palettes, %.1f s -> %.1f s (x%.2f); mean Oklab error %.5f -> %.5f (%+.2f%%); '
+          'worse by over 1%%: %d, over 3%%: %d, over 10%%: %d; better by over 1%%: %d' % (
+              PROFILE_PACK, len(r), own_s, fast_s, own_s / max(fast_s, 1e-9), e_own.mean(), e_fast.mean(),
+              100 * (e_fast.mean() / e_own.mean() - 1), int((change > 0.01).sum()), int((change > 0.03).sum()),
+              int((change > 0.10).sum()), int((change < -0.01).sum())))
+    print('palcompare summary: %s: squared distance %.2f -> %.2f (%+.2f%%); worse by over 1%%: %d, over 3%%: %d, '
+          'over 10%%: %d; better by over 1%%: %d' % (
+              PROFILE_PACK, d_own.mean(), d_fast.mean(), 100 * (d_fast.mean() / d_own.mean() - 1),
+              int((d_change > 0.01).sum()), int((d_change > 0.03).sum()), int((d_change > 0.10).sum()),
+              int((d_change < -0.01).sum())))
+    for k in np.argsort(-change)[:8]:
+        if change[k] > 0.01:
+            print('palcompare worse: %s %d colours %s in %s: Oklab error %.5f -> %.5f (%+.1f%%); squared distance '
+                  '%.2f -> %.2f' % (r[k][0], r[k][1], r[k][2], r[k][3], r[k][6], r[k][7], 100 * change[k], r[k][8],
+                                    r[k][9]))
+
+
+PROFILE_PACK = 'pack'
+
+
 def fit_palette(img, colors):
     """(palette Nx4 uint8, has_alpha): k-means in Oklab (and alpha), as
     quantize does in RGB; a texture with no more colours than entries keeps
@@ -804,6 +1013,7 @@ def quality_note(cls, old, new):
     st[2] += new
 
 
+@profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
              relief=None):
     act, tw, th = target(b, cls)
@@ -870,7 +1080,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         # one palette for every level: the faded levels' near-greys need
         # entries of their own, which the top level alone wouldn't earn
         every = np.concatenate([l.reshape(-1, 1, 4) for l in own_levels], 0)
-        _, pal, _, alpha = quantize(every, 256)
+        _, pal, _, alpha = palette(every, 256, cls)
         idx = nearest(small, pal, alpha)
     # the quality steps (above): not for the HUD and menus (drawn at their
     # own size, where grain would show), the grid's exact entries, or a
@@ -881,17 +1091,17 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         idx = diffuse(small, pal, alpha, 256)
         rec = as_drawn(pal, alpha)[idx]
         if QUALITY_REPORT:
-            old_idx, old_pal, _, _ = quantize(small, 256)
+            old_idx, old_pal, _, _ = palette(small, 256, cls)
             quality_note(cls, blurred_psnr(small, as_drawn(old_pal, alpha)[old_idx]), blurred_psnr(small, rec))
     elif not grid and not own_levels:
-        idx, pal, rec, alpha = quantize(small, 256)
+        idx, pal, rec, alpha = palette(small, 256, cls)
         if KMEANS_COMPARE:
             kmeans_compare(b['tag'], small, 256, rec)
     # 16 colours where that is no worse than the 16-bit frame buffer itself
     # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
     bits = 8
     if not grid and tw >= 32 and th >= 8 and cls not in ('level (senv)', 'lightmap', 'sky', 'detail'):
-        idx4, pal4, rec4, _ = quantize(small, 16)
+        idx4, pal4, rec4, _ = palette(small, 16, cls)
         if KMEANS_COMPARE:
             kmeans_compare(b['tag'], small, 16, rec4)
         reference = small.copy()
@@ -998,7 +1208,20 @@ def main():
                     help='also fit each texture the old way and log both against the source, per class')
     ap.add_argument('--showcase-palettes', action='store_true',
                     help='with --showcase: every map on a palette (256 colours), at its own size')
+    ap.add_argument('--palette-cache', default=None,
+                    help='a folder where palettes are kept and read back by their input pixels (the bake passes one '
+                         'for all its packs); the pack comes out the same with it or without')
+    ap.add_argument('--fast-palettes', action='store_true',
+                    help='each k-means settled on a subsample before its last rounds on the whole sample '
+                         '(bitmap_bake.fast_kmeans): sooner, not the same palettes')
     a = ap.parse_args()
+    started = time.perf_counter()
+    global PALETTE_CACHE, FAST_PALETTES, PROFILE_PACK
+    PALETTE_CACHE, FAST_PALETTES = a.palette_cache, a.fast_palettes
+    if PALETTE_CACHE:
+        os.makedirs(PALETTE_CACHE, exist_ok=True)
+    stem = os.path.splitext(os.path.basename(a.out))[0]
+    PROFILE_PACK = stem.split('_', 1)[1] if '_' in stem else 'main'
     global FULL_DETAIL, HUD_CLUT4, PREMULTIPLIED_MASKS, SHOWCASE, SHOWCASE_32, SHOWCASE_PALETTES
     SHOWCASE_PALETTES = a.showcase_palettes
     global QUALITY, QUALITY_REPORT
@@ -1180,6 +1403,10 @@ def main():
         print('showcase: %d textures in their own colours (%d bytes), every map at its own size up to 512' % (
             len(own), sum(len(d) for d in {id(e['data']): e['data'] for e in own}.values())), file=sys.stderr)
     print('%s: %d textures, %d bytes; skipped %s' % (a.out, len(entries), len(out), skipped))
+    if FAST_PALETTES:
+        print('palettes: fast (--fast-palettes)', file=sys.stderr)
+    profile_summary(time.perf_counter() - started)
+    palette_compare_summary()
 
 
 if __name__ == '__main__':

@@ -68,8 +68,15 @@ numpy, Pillow and shapely (it needs the internet that once;
 `halo-psp-bake --setup` does only this). Then, for each map, it reads it from
 the image, checks it, rebuilds it for the PSP's memory, and bakes the
 textures, the asset track's textures (`_track.ptex`: half-size lightmaps,
-plants that keep their leaves at a distance) and the wall decals. Expect 3 to
-10 minutes a map, one after another (all 24: 45 to 60 minutes).
+plants that keep their leaves at a distance) and the wall decals. It bakes
+the ten campaign levels and the menus (`ui`); `--multiplayer` adds the
+thirteen multiplayer maps, for the multiplayer build. Expect 3 to 10 minutes
+a map, one after another (the campaign and menus: 25 to 45 minutes).
+
+A palette made once is kept while the bake runs (`<output>/work/palettes`)
+and read back wherever the same texture comes up again: in the asset
+track's pack and in other maps. `--no-cache` makes every one afresh; the
+maps come out the same either way.
 
 It bakes several maps at once: one per CPU, at most 4, and fewer when less
 than 8 GB of memory is free (a map can take 1 to 2 GB). `--jobs N` sets how
@@ -82,6 +89,7 @@ at full size (fp, weapons, vehicles, characters). The launch menu chooses:
 "asset track" uses the `_track` packs, "asset detail" the `_detail` ones.
 
 Only some maps: `--maps c20,bloodgulch,ui` (always include `ui`).
+All 24: `--multiplayer`.
 `--help` lists every option.
 
 ## The menu's sound

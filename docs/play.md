@@ -84,9 +84,10 @@ The bake reads your disc's files out of an image you made. It takes any of these
 <!-- TODO(easybake): this step (go_live 2.4) is being written with the bundle's new double-click flow; nothing here until it lands. It covers:
 - download: the bundle for your system from the release (halo-psp-bake-<linux|macos|windows>-b139, .tar.gz or .zip, each with its .sha256), check it, unpack it;
 - the first run (the Python environment, the internet once), macOS's quarantine and Windows' SmartScreen (bake/README.md);
-- how long: about an hour for all 24 maps on an 8-core laptop;
+- what it bakes: the campaign's ten levels and ui by default; `--multiplayer` adds the thirteen multiplayer maps (for the multiplayer build), `--maps` names some;
+- how long: about an hour for all 24 maps on an 8-core laptop (the campaign alone: TODO(fastbake), its measured time);
 - disk: about 2.9 GB of result (step 1 has the free space);
-- the last lines when it worked (`baked 24 of 24 maps`, the chant read from default.xbe), "Hash mismatch", other failures and the per-map logs, a silent chant;
+- the last lines when it worked (`baked 11 of 11 maps`, the chant read from default.xbe), "Hash mismatch", other failures and the per-map logs, a silent chant;
 - that a release says when its bundle changed and maps must be baked again (b139 does: bake_changes.md);
 - that the output is game data made from your disc: keep it on your own machines.
 Step 5 expects the output folder at ~/halo-psp-out (C:\halo-psp-out on Windows; its halo/ folder holds chant.adp and maps/). Steps 3, 6 and 8 point to this step's "Hash mismatch" and "The chant" by those names. -->
