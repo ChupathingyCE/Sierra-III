@@ -132,7 +132,7 @@ A missing write-back or drop on either CPU shows as a wrong word. That makes it 
 
 ## Proven [E] (the emulator runs no ME code: each ring job runs inside the push, on the main CPU, marked as the ME's work)
 
-Lab runs (lab-repo, `sierra-batch`): 38511103442 (121a), 38511131463 (121b), 38512381219 (121c), 38514031556 (121d), 38516586601 (121e), 38518966627 (121f, on the branch's code as it stands: `c21d91e`).
+Lab runs (the lab repository's `sierra-batch`): 38511103442 (121a), 38511131463 (121b), 38512381219 (121c), 38514031556 (121d), 38516586601 (121e), 38518966627 (121f, on the branch's code as it stands: `c21d91e`).
 
 - **Exact.** `meslantcheck` found **0 differing buckets or totals over 86.6 million triangles** handed to the ring: b30 16.0 million, a50 12.3, c20 51.2, d20 7.1. That covers runs with and without ME audio, the strict runs included. The game's play hash (`statecrc`) matched at every shared tick, word on and off, on d20 (10,720 ticks), a50 (17,155) and c20 (13,478) with `nomeaudio`. b30's play hash parts at tick ~1,357 only with ME audio on and the check's extra time, as it does across any timing change (b30's known audio-timing split). The whole-state hash differs in the `objects` record, which drawing writes and which the play hash leaves out. The same happens across `probes` on `w119` (lab 38443084885, from tick 102 on d20).
 - **Failures 0.** 0 fell back, 0 refused, 0 failed in every run.
