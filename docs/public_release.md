@@ -54,11 +54,11 @@ The first release, after the maintainer approves the tree:
 tools/public_export.py <commit> /tmp/public-bNNN --pgo campaign-bNNN --commit-message "Sierra-III bNNN"
 ```
 
-makes `/tmp/public-bNNN` a repository with that one commit, authored and committed as `Claude <noreply@anthropic.com>` (`PUBLIC_IDENTITY`: the author of the code, with no personal address); push it to the new repository by hand. Each later release: export into a new folder, copy it over a clone of the public repository (`rsync -a --delete --exclude .git <export>/ <clone>/`), and commit it as the same identity, one commit per release:
+makes `/tmp/public-bNNN` a repository with that one commit, authored and committed as `Sierra-III <noreply@sierra-iii.invalid>` (`PUBLIC_IDENTITY`: a project identity with no personal address; `.invalid` can never be a real mailbox); push it to the new repository by hand. Each later release: export into a new folder, copy it over a clone of the public repository (`rsync -a --delete --exclude .git <export>/ <clone>/`), and commit it as the same identity, one commit per release:
 
 ```
 git -C <clone> add -A
-git -C <clone> -c user.name=Claude -c user.email=noreply@anthropic.com commit -m "Sierra-III bNNN"
+git -C <clone> -c user.name=Sierra-III -c user.email=noreply@sierra-iii.invalid commit -m "Sierra-III bNNN"
 ```
 
 Nothing in the public tree names this repository's commit; the release notes give the build's hash.

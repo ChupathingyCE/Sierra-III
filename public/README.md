@@ -83,6 +83,6 @@ What Sierra-III is built on (the decomp, ChupathingyCE, Invader, the Media Engin
 
 ## Licence
 
-Sierra-III's own code, scripts, documents and images are under the MIT licence (`LICENSE`). `LICENSE` also names what it doesn't cover: the XMB wallpaper (below), our patches to Invader and PPSSPP (under those programs' GPL), and the third-party files carried as they are. The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
+Sierra-III's own code, scripts and documents are under the MIT licence (`LICENSE`). `LICENSE` also names what it doesn't cover: the XMB wallpaper (below), the project's own look (the Sierra mark and its XMB art, all rights reserved: a fork picks its own), our patches to Invader and PPSSPP (under those programs' GPL), and the third-party files carried as they are. The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
 
 Sierra-III was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. The only such assets in this repository are the campaign's XMB wallpaper (`psp/xmb/campaign/PIC1.PNG`), made from stills of our own gameplay footage. Halo: Combat Evolved © Microsoft Corporation.

@@ -24,8 +24,8 @@ SOFTWARE.
 What the MIT licence above does not cover
 -------------------------------------------------------------------------------
 
-The MIT licence covers Sierra-III's own code, scripts, documents and images.
-These files are not ours to license, or not under these terms:
+The MIT licence covers Sierra-III's own code, scripts and documents. These
+files are not ours to license, or not under these terms:
 
 1. psp/xmb/campaign/PIC1.PNG, the campaign's XMB wallpaper, is made with
    stills of Halo: Combat Evolved gameplay. It is used under Microsoft's
@@ -34,13 +34,19 @@ These files are not ours to license, or not under these terms:
    allow (not for commercial use). Halo: Combat Evolved (c) Microsoft
    Corporation. Sierra-III is not endorsed by or affiliated with Microsoft.
 
-2. Our patches to GPL programs keep those programs' licences:
+2. The project's own look is not under the MIT licence: the Sierra mark
+   (psp/xmb/sierra_mark.svg) and the XMB art made from it or for the
+   project (psp/xmb/campaign/ICON0.PNG, psp/xmb/mp/*.PNG). Copyright (c)
+   2026 The Sierra-III authors, all rights reserved: they may be shared only
+   as part of unmodified copies of Sierra-III. A fork picks its own look.
+
+3. Our patches to GPL programs keep those programs' licences:
    - upstream/invader/*.patch, changes to Invader: GNU GPL version 3
      (Invader's licence);
    - tools/ppsspp_local_patches.diff, changes to PPSSPP: GNU GPL version 2
      or later (PPSSPP's licence).
 
-3. Third-party files carried as they are, each under its own licence:
+4. Third-party files carried as they are, each under its own licence:
    - psp/xmb/fonts/Audiowide-Regular.ttf: the Audiowide font by Astigmatic,
      SIL Open Font License 1.1 (psp/xmb/fonts/OFL.txt);
    - psp/include/GLES2/, psp/include/GLES3/, psp/include/KHR/: the Khronos

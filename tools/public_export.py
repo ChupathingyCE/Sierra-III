@@ -43,7 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
 # the public history's author and committer (docs/public_release.md)
-PUBLIC_IDENTITY = ('Claude', 'noreply@anthropic.com')
+PUBLIC_IDENTITY = ('Sierra-III', 'noreply@sierra-iii.invalid')
 
 # ---------------------------------------------------------------------------
 # What goes out. First match wins; a tracked file matching none fails the
