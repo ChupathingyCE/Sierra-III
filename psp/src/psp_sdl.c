@@ -371,16 +371,28 @@ static const unsigned char glyphs_in_menus[PSP_BUTTON_ICONS] =
 
 /* the glyph and its cell on the sheet (x, y, width, height in pixels); -1
 for an icon the PSP has no glyph for, or with "xboxglyphs" (the Xbox's icons,
-as the maps have them) */
+as the maps have them). The map is the one the pad is in (in_menus), since a
+prompt drawn by the HUD over the pause menu, or a menu's text in play, means
+the buttons that work there. "glyphmapfixed" takes the caller's: menus from
+the menus' text, play from the HUD's.
+
+The menus have no black, white, triggers, stick clicks or right stick: their
+icons keep the play map's glyphs, as the menus name them only when they
+describe play's controls (the profile's settings) */
 int psp_button_glyph(int icon, int menus, unsigned short cell[4])
 {
-	static int xbox = -1;
+	static int xbox = -1, fixed = -1;
 	int glyph;
 
 	if (xbox < 0)
+	{
 		xbox = psp_keep("xboxglyphs");
+		fixed = psp_keep("glyphmapfixed");
+	}
 	if (xbox || icon < 0 || icon >= PSP_BUTTON_ICONS)
 		return -1;
+	if (!fixed)
+		menus = in_menus();
 	glyph = (menus ? glyphs_in_menus : glyphs_in_play)[icon];
 	if (cell)
 		memcpy(cell, psp_glyph_cells[glyph], sizeof(psp_glyph_cells[glyph]));

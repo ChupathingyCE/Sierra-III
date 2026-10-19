@@ -17909,7 +17909,7 @@ void psp_ge_loading_veil(const struct psp_loading_view *view)
 		psp_screenshot_requested = 1;
 }
 
-/* ---------- the boot screen (psp_loading.c drives it; Sheepdog01, 2026-10-17)
+/* ---------- the boot screen (psp_loading.c drives it; Sheepdog01's ask)
 
 Until the main menu's first frame the GE drew nothing, and the screen showed
 the log scrolling (psp_platform.c; "bootlog" keeps it so). Now the GE starts
