@@ -815,7 +815,7 @@ def profiled(bake):
         PROFILE_ROWS.append(row)
         print('texprofile: %s %s %s -> %s palette %.3f s rest %.3f s in %s' % (
             PROFILE_PACK, row['cls'], row['size'], row['made'], in_palettes, row['rest'],
-            ' '.join('%s/%d/%s' % (p[0][:12], p[1], p[3]) for p in palettes) or '-'))
+            ' '.join('%s/%d/%s/%.3f' % (p[0][:12], p[1], p[3], p[2]) for p in palettes) or '-'))
         return r
     return timed
 
