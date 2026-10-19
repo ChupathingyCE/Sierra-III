@@ -140,7 +140,7 @@ prints `the build is on the stick` and lists the three files. On Windows, check 
 
 ## 6. First launch
 
-1. On the PSP, open **Game → Memory Stick** and start **Halo PSP bring-up** (the game's name in the list, beside the Sierra-III tile). <!-- TODO(master): if the release sets PSP_TITLE, put its name here -->
+1. On the PSP, open **Game → Memory Stick** and start **Sierra-III: Halo CE port** (the game's name in the list, beside the Sierra-III tile). <!-- TODO(master): if the release sets PSP_TITLE, put its name here -->
 2. **The start-up.** The game shows a loading screen with a thin progress bar while it starts, then its menus. For the first 3 seconds the screen also says `Hold L as the game starts for the development menu` (the launch menu, below). <!-- TODO(master): the time from the XMB to the main menu on b139 (its hand test) --> The first launch of a new build takes a few seconds longer (the saved-game check).
 3. **The main menu** is Halo's own, with the ring behind it. It answers once its textures are in. In Halo's menus the buttons are the pad's: cross is A, circle B, square X, triangle Y; the d-pad and the nub move.
 4. **Starting a level.** Pick **Campaign** and a level. While it loads you hear the **chant**, as on the Xbox: four voices of the monk tone, swelling with the load. The loading screen stays at least 6 seconds, so the chant can swell as it does on the Xbox. Between levels the last view zooms out and fades. A level's first view stands still for up to 3 s while its textures arrive; then play starts.

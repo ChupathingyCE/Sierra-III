@@ -776,8 +776,10 @@ def main():
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
-    # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart
-    title = os.environ.get("PSP_TITLE", "Halo PSP multiplayer" if MULTIPLAYER else "Halo PSP bring-up")
+    # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart;
+    # the game is named only as what this ports, so the title claims no
+    # endorsement (Microsoft's Game Content Usage Rules)
+    title = os.environ.get("PSP_TITLE", "Sierra-III: Halo CE port (multiplayer)" if MULTIPLAYER else "Sierra-III: Halo CE port")
     subprocess.run(["mksfoex"] + (["-d", "MEMSIZE=1"] if BIG_RAM else []) +
                    [title, os.path.join(OUT, "PARAM.SFO")], check=True)
     icon0, icon1, pic0, pic1, snd0 = xmb_files()
