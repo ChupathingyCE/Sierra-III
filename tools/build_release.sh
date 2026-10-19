@@ -19,7 +19,7 @@
 #
 # writes into the output folder:
 #   halo_psp_<LABEL>.zip   PSP/GAME/halo/ (EBOOT.PBP, halo_crash.prx,
-#                          halo_profile.prx, LICENSE-mecore.md), and
+#                          halo_profile.prx, LICENSE-mecore.md, licenses/), and
 #                          halo/presets.txt when psp/presets.txt exists
 #   halo.elf, halo.map     the linked program and its link map
 #   build.log              everything the build printed
@@ -110,6 +110,28 @@ done
 pkg=$OUT/pkg; rm -rf "$pkg"; mkdir -p "$pkg/PSP/GAME/halo"
 cp "$OUT/build/EBOOT.PBP" "$OUT/crash/halo_crash.prx" "$OUT/profile/halo_profile.prx" "$pkg/PSP/GAME/halo/"
 cp "$MECORE_DIR/LICENSE.md" "$pkg/PSP/GAME/halo/LICENSE-mecore.md"
+# the toolchain's libraries linked into the EBOOT, whose licences ask for
+# their notices to travel with the binary (pspsdk BSD, libpspvram MIT; newlib
+# and pthread-embedded's LGPL, met by the port's source being public, so
+# anyone can relink against a changed library)
+lic=$PSPDEV/psp/share/licenses
+mkdir -p "$pkg/PSP/GAME/halo/licenses"
+for pair in pspsdk/LICENSE:pspsdk.txt libpspvram/LICENSE:libpspvram.txt \
+            newlib/COPYING.NEWLIB:newlib.txt pthread-embedded/COPYING.LIB:pthread-embedded.txt; do
+    [[ -f $lic/${pair%%:*} ]] || { echo "build_release: no $lic/${pair%%:*} in the toolchain" >&2; exit 1; }
+    cp "$lic/${pair%%:*}" "$pkg/PSP/GAME/halo/licenses/${pair#*:}"
+done
+cat > "$pkg/PSP/GAME/halo/licenses/README.txt" << 'EOF'
+EBOOT.PBP is linked with these libraries from the PSP toolchain (pspdev):
+  pspsdk            BSD licence           pspsdk.txt
+  libpspvram        MIT licence           libpspvram.txt
+  newlib            its licences          newlib.txt
+  pthread-embedded  LGPL 2.1              pthread-embedded.txt
+  me-core           MIT licence           ../LICENSE-mecore.md
+The game's own source, with which the EBOOT can be rebuilt and relinked
+against changed copies of these libraries, is at
+https://github.com/Sheepdog-01/Sierra-III (docs/toolchain.md).
+EOF
 top=(PSP)
 if [[ -f $SRC/psp/presets.txt ]]; then
     # the launch menu takes MAXIMUM_PRESETS (psp_menu.c); one past it would be
