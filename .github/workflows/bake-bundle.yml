@@ -1,0 +1,252 @@
+# The players' bake bundle (bake/README.md), one per OS, built from source on
+# GitHub's own runners: Invader (the port's fork) and atracdenc are compiled
+# here, the bake's scripts packed beside them, and each bundle checked on
+# made-up data. No game data is ever read, made or uploaded here.
+#
+# Each bundle is an artifact named halo-psp-bake-<os>-<ref> (a .tar.gz, or a
+# .zip for Windows, and its SHA-256), for the release notes and the release.
+name: bake-bundle
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['b*']
+    branches: [portable-bake]   # TEMPORARY: proves the workflow before it reaches main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bake-bundle-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # the libraries' and tools' build, reused while nothing it is made from changes
+  TOOLS_KEY: ${{ hashFiles('bake/bundle/build_tools.sh', 'upstream/invader/*.patch', 'upstream/pins.env') }}
+  DEPS_KEY: ${{ hashFiles('bake/bundle/build_tools.sh') }}
+
+jobs:
+  linux:
+    name: Linux x86-64 (glibc 2.28)
+    runs-on: ubuntu-24.04
+    # glibc 2.28: the bundle runs on any x86-64 Linux from 2018 on
+    container: quay.io/pypa/manylinux_2_28_x86_64:latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Name the bundle
+        id: name
+        run: |
+          ref=${GITHUB_REF_NAME//\//-}
+          [ "$GITHUB_REF_TYPE" = tag ] || ref="$ref-${GITHUB_SHA::7}"
+          echo "bundle=halo-psp-bake-linux-$ref" >> "$GITHUB_OUTPUT"
+      - name: Toolchain (cmake, ninja, Rust)
+        run: |
+          /opt/python/cp312-cp312/bin/python -m pip install --quiet cmake==3.31.6 ninja==1.13.0
+          echo /opt/python/cp312-cp312/bin >> "$GITHUB_PATH"
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain 1.90.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: tools
+        with:
+          path: bundle-tools
+          key: tools-linux-${{ env.TOOLS_KEY }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: |
+            bundle-work/deps
+            bundle-work/dl
+          key: deps-linux-${{ env.DEPS_KEY }}
+          restore-keys: deps-linux-
+      - name: Build Invader and atracdenc
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: bash bake/bundle/build_tools.sh bundle-work bundle-tools
+      - name: Check the glibc the tools need
+        run: |
+          need=$(objdump -T bundle-tools/invader/bin/* bundle-tools/atracdenc/bin/* | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1)
+          echo "the tools need $need"
+          [ "$(printf '%s\nGLIBC_2.28\n' "$need" | sort -V | tail -1)" = GLIBC_2.28 ] || { echo "::error::the tools need $need (over 2.28)"; exit 1; }
+          ! ldd bundle-tools/invader/bin/invader-build | grep -v -E 'linux-vdso|libc\.so|libm\.so|libpthread|libdl|librt|libgcc_s|ld-linux' | grep . ||
+            { echo "::error::invader-build links a library beyond glibc"; exit 1; }
+      - name: Assemble
+        run: python bake/bundle/assemble.py bundle-tools "dist/${{ steps.name.outputs.bundle }}" --target linux --archive
+      - name: Smoke test (oldest and newest Python, made-up data only)
+        run: |
+          pythons=$(ls -d /opt/python/cp3{9,10,11,12,13,14}-cp3{9,10,11,12,13,14} 2>/dev/null | sort -V | sed -n '1p;$p')
+          for py in $pythons; do
+            rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
+            b="/tmp/smoke/${{ steps.name.outputs.bundle }}"
+            echo "== $py"
+            "$py/bin/python" "$b/launcher.py" --setup
+            "$b/.venv/bin/python" bake/bundle/smoke.py "$b"
+            "$b/halo-psp-bake" --help > /dev/null
+          done
+      - name: Checksum
+        run: |
+          cd dist && sha256sum "${{ steps.name.outputs.bundle }}.tar.gz" | tee "${{ steps.name.outputs.bundle }}.tar.gz.sha256"
+          echo "- \`$(cat *.sha256)\` ($(du -h *.tar.gz | cut -f1))" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.name.outputs.bundle }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86-64
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # the scripts and patches must keep their line endings (bash reads them)
+      - run: git config --global core.autocrlf false
+        shell: pwsh
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: UCRT64
+          update: false
+          install: git curl tar xz
+          pacboy: gcc:p cmake:p ninja:p python:p rust:p
+      - name: Name the bundle
+        id: name
+        run: |
+          ref=${GITHUB_REF_NAME//\//-}
+          [ "$GITHUB_REF_TYPE" = tag ] || ref="$ref-${GITHUB_SHA::7}"
+          echo "bundle=halo-psp-bake-windows-$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: tools
+        with:
+          path: bundle-tools
+          key: tools-windows-${{ env.TOOLS_KEY }}
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: |
+            bundle-work/deps
+            bundle-work/dl
+          key: deps-windows-${{ env.DEPS_KEY }}
+          restore-keys: deps-windows-
+      - name: Build Invader and atracdenc
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: bash bake/bundle/build_tools.sh bundle-work bundle-tools
+      - name: Check the tools need no DLL beyond Windows' own
+        run: |
+          for f in bundle-tools/invader/bin/*.exe bundle-tools/atracdenc/bin/*.exe; do
+            extra=$(objdump -p "$f" | sed -n 's/^\s*DLL Name: //p' | grep -v -i -E '^(kernel32|advapi32|bcrypt|ntdll|userenv|ws2_32|shell32|user32|ole32|oleaut32|msvcrt|api-ms-win-.*|ucrtbase|secur32|crypt32|synchronization|psapi|shlwapi)\.dll$' || true)
+            echo "$f: $(objdump -p "$f" | sed -n 's/^\s*DLL Name: //p' | tr '\n' ' ')"
+            [ -z "$extra" ] || { echo "::error::$f needs $extra"; exit 1; }
+          done
+      - name: Assemble
+        run: python bake/bundle/assemble.py bundle-tools "dist/${{ steps.name.outputs.bundle }}" --target windows --archive
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: oldest
+        with:
+          python-version: '3.9'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: newest
+        with:
+          python-version: '3.14'
+      - name: Smoke test (Python 3.9 and 3.14, made-up data only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($py in '${{ steps.oldest.outputs.python-path }}', '${{ steps.newest.outputs.python-path }}') {
+            Remove-Item -Recurse -Force smoke -ErrorAction SilentlyContinue
+            Expand-Archive "dist/${{ steps.name.outputs.bundle }}.zip" smoke
+            $b = "smoke/${{ steps.name.outputs.bundle }}"
+            Write-Host "== $py"
+            & $py "$b/launcher.py" --setup; if ($LASTEXITCODE) { exit 1 }
+            & "$b/.venv/Scripts/python.exe" bake/bundle/smoke.py $b; if ($LASTEXITCODE) { exit 1 }
+          }
+      - name: The .cmd wrapper
+        shell: cmd
+        run: smoke\${{ steps.name.outputs.bundle }}\halo-psp-bake.cmd --help
+      - name: Checksum
+        run: |
+          cd dist && sha256sum "${{ steps.name.outputs.bundle }}.zip" | tee "${{ steps.name.outputs.bundle }}.zip.sha256"
+          echo "- \`$(cat *.sha256)\` ($(du -h *.zip | cut -f1))" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.name.outputs.bundle }}
+          path: |
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  macos:
+    name: macOS (universal, arm64 and x86-64)
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Name the bundle
+        id: name
+        run: |
+          ref=${GITHUB_REF_NAME//\//-}
+          [ "$GITHUB_REF_TYPE" = tag ] || ref="$ref-${GITHUB_SHA::7}"
+          echo "bundle=halo-psp-bake-macos-$ref" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: tools
+        with:
+          path: bundle-tools
+          key: tools-macos-${{ env.TOOLS_KEY }}
+      - name: Toolchain (ninja, Rust for both architectures)
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: |
+          command -v ninja || brew install ninja
+          command -v cmake || brew install cmake
+          if ! command -v rustup; then
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"; export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        if: steps.tools.outputs.cache-hit != 'true'
+        with:
+          path: |
+            bundle-work/arm64/deps
+            bundle-work/arm64/dl
+            bundle-work/x86_64/deps
+            bundle-work/x86_64/dl
+          key: deps-macos-${{ env.DEPS_KEY }}
+          restore-keys: deps-macos-
+      - name: Build Invader and atracdenc (arm64, x86-64, then universal)
+        if: steps.tools.outputs.cache-hit != 'true'
+        run: bash bake/bundle/build_tools.sh bundle-work bundle-tools
+      - name: Assemble
+        run: python3 bake/bundle/assemble.py bundle-tools "dist/${{ steps.name.outputs.bundle }}" --target macos --archive
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: oldest
+        with:
+          python-version: '3.10'
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        id: newest
+        with:
+          python-version: '3.14'
+      - name: Smoke test (Python 3.10 and 3.14, made-up data only)
+        run: |
+          for py in "${{ steps.oldest.outputs.python-path }}" "${{ steps.newest.outputs.python-path }}"; do
+            rm -rf /tmp/smoke && mkdir /tmp/smoke && tar -xzf "dist/${{ steps.name.outputs.bundle }}.tar.gz" -C /tmp/smoke
+            b="/tmp/smoke/${{ steps.name.outputs.bundle }}"
+            echo "== $py"
+            "$py" "$b/launcher.py" --setup
+            "$b/.venv/bin/python" bake/bundle/smoke.py "$b"
+            "$b/halo-psp-bake" --help > /dev/null
+          done
+          lipo -info "$b/invader/bin/invader-build" "$b/atracdenc/bin/atracdenc"
+      - name: Checksum
+        run: |
+          cd dist && shasum -a 256 "${{ steps.name.outputs.bundle }}.tar.gz" | tee "${{ steps.name.outputs.bundle }}.tar.gz.sha256"
+          echo "- \`$(cat *.sha256)\` ($(du -h *.tar.gz | cut -f1))" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.name.outputs.bundle }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error

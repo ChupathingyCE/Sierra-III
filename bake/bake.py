@@ -3,6 +3,7 @@
 into the map files the PSP build reads. One command:
 
     ./halo-psp-bake <your Halo disc image (.iso) or its maps folder> <output folder>
+    halo-psp-bake.cmd ...          (the same, on Windows)
 
 What it does, map by map (ten campaign levels, thirteen multiplayer maps and
 the menus' ui.map):
@@ -21,7 +22,8 @@ the menus' ui.map):
   6. reads the loading screen's chant from the disc's default.xbe into
      halo/chant.adp (lib/chant.py; the EBOOT carries no copy)
   7. with --eboot: cuts the XMB menu's sound from the music on your disc and
-     writes a copy of the release EBOOT with it (lib/snd0.py)
+     writes a copy of the release EBOOT with it (lib/snd0.py; the bundle's
+     atracdenc encodes it)
 
 The output folder then holds halo/maps/... and halo/chant.adp (and, with --eboot,
 PSP/GAME/halo/EBOOT.PBP): copy its contents to the root of the Memory Stick.
@@ -52,10 +54,11 @@ import argparse, hashlib, json, os, shutil, subprocess, sys, time
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
 INVADER = os.path.join(HERE, 'invader')
+EXE = '.exe' if os.name == 'nt' else ''
 COMPARE_OLD = False
 # options every texpack.py run takes (--tints-from-means)
 TEXPACK_OPTIONS = []
-ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder, if any (else atracdenc on PATH)
+ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
 sys.path.insert(0, HERE)
 from xiso import XIso
 
@@ -91,7 +94,7 @@ def log(text):
 
 
 def invader(tool):
-    path = os.path.join(INVADER, 'bin', tool)
+    path = os.path.join(INVADER, 'bin', tool + EXE)
     if not os.path.exists(path):
         sys.exit('halo-psp-bake: %s is missing (the bundle\'s invader/bin)' % path)
     return path
@@ -187,10 +190,13 @@ def scenario_path(map_path, log_path):
 
 
 def tool_env():
+    """the bundle's tools are linked statically, so they need no library
+    path; the scripts get the bundle's lib and Invader's definitions"""
     env = dict(os.environ)
-    env['LD_LIBRARY_PATH'] = os.path.join(INVADER, 'lib') + ':' + os.path.join(ATRACDENC, 'lib') + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
     env['HALO_PSP_INVADER_DEFINITIONS'] = os.path.join(INVADER, 'definitions')
-    env['PYTHONPATH'] = LIB + (':' + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    env['PYTHONPATH'] = LIB + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    # the scripts' text (logs, tag names) as UTF-8 whatever the system's code page
+    env['PYTHONUTF8'] = '1'
     if COMPARE_OLD:
         env['TEXPACK_KMEANS_COMPARE'] = env['STENCIL_COMPARE'] = '1'
     return env
@@ -281,8 +287,40 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
 
 
 def atracdenc():
-    bundled = os.path.join(ATRACDENC, 'bin', 'atracdenc')
-    return bundled if os.path.exists(bundled) else shutil.which('atracdenc')
+    """the menu sound's encoder: the bundle's, else one on PATH; with why
+    neither works when it's None"""
+    bundled = os.path.join(ATRACDENC, 'bin', 'atracdenc' + EXE)
+    why = []
+    for path, where, absent in ((bundled, 'the bundle\'s', 'none in the bundle\'s atracdenc/bin'),
+                                (shutil.which('atracdenc'), 'the one on PATH', 'none on PATH')):
+        if not path or not os.path.exists(path):
+            why.append(absent)
+            continue
+        try:
+            # it prints its usage and exits 0 when it can start at all
+            subprocess.run([path, '--help'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=True)
+            return path, None
+        except (OSError, subprocess.SubprocessError) as e:
+            why.append('%s (%s) does not start: %s' % (where, path, e))
+    return None, '; '.join(why)
+
+
+def atracdenc_warning(why):
+    """Loud but soft: the maps bake without it, and the menu sound is worth
+    having, so say what's missing and how to get it"""
+    lines = ['',
+             '*' * 72,
+             'WARNING: no working atracdenc (%s).' % why,
+             'The XMB menu sound is made with atracdenc: without it, the game\'s entry',
+             'in the PSP\'s menu stays silent. The maps bake as normal.',
+             'Strongly recommended: download the bundle for your system again (it',
+             'carries atracdenc in atracdenc/), or build atracdenc',
+             '(https://github.com/dcherednik/atracdenc) and put it on PATH, then',
+             'run the bake again with --eboot.',
+             '*' * 72,
+             '']
+    for line in lines:
+        log(line)
 
 
 def music_spec(spec):
@@ -301,8 +339,10 @@ def menu_eboot(eboot, spec, found, output, work):
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, 'EBOOT.PBP')
     source_map, clip = music_spec(spec) if spec else (None, None)
-    encoder = atracdenc()
-    why = ('no clip chosen (--music)' if not spec else 'atracdenc not found' if not encoder else
+    encoder, missing = atracdenc()
+    if not encoder:
+        atracdenc_warning(missing)
+    why = ('no clip chosen (--music)' if not spec else 'no working atracdenc' if not encoder else
            '%s.map not found' % source_map if source_map not in found else None)
     if why is None:
         log_path = os.path.join(work, 'snd0.log')
@@ -350,6 +390,13 @@ def main():
     os.makedirs(out_maps, exist_ok=True)
     if a.eboot and not os.path.isfile(a.eboot):
         sys.exit('halo-psp-bake: --eboot %s: no such file' % a.eboot)
+    # said at the start, so a long bake doesn't end in a surprise (and again
+    # at the end, with --eboot, where the sound is made)
+    encoder, missing = atracdenc()
+    if not encoder and not a.list_music:
+        atracdenc_warning(missing)
+    elif not a.eboot and not a.list_music:
+        log('the XMB menu sound: add --eboot <the release\'s EBOOT.PBP> to give the game\'s entry its sound')
     music_map = music_spec(a.music)[0] if a.eboot and a.music else None
     found = gather(a.source, work, wanted + ([music_map] if music_map and music_map not in wanted else []))
     if a.list_music:

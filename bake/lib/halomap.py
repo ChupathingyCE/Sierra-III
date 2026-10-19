@@ -10,9 +10,12 @@ Only reads; never writes the map.
 """
 import json, glob, os, struct, collections
 
-# build 102: the one-shot bake ships Invader's definitions beside it
-# (HALO_PSP_INVADER_DEFINITIONS: the definition JSON files and fourcc.hpp)
-DEF_DIR = os.environ.get('HALO_PSP_INVADER_DEFINITIONS', '/home/claude/invader/src/tag/hek/definition')
+# Invader's definitions (the definition JSON files and fourcc.hpp): where
+# HALO_PSP_INVADER_DEFINITIONS says (the bake sets it), else the bundle's own
+# beside lib/, else a development checkout's
+_BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'invader', 'definitions')
+DEF_DIR = os.environ.get('HALO_PSP_INVADER_DEFINITIONS') or (
+    _BUNDLED if os.path.isdir(_BUNDLED) else '/home/claude/invader/src/tag/hek/definition')
 
 PRIM = {
     'float': 4, 'int32': 4, 'uint32': 4, 'Angle': 4, 'Fraction': 4, 'ColorARGBInt': 4,
@@ -31,7 +34,7 @@ class Defs:
         self.structs, self.enums, self.bitfields = {}, {}, {}
         self.groups = {}   # group name -> struct name
         for fn in glob.glob(os.path.join(d, '*.json')):
-            for s in json.load(open(fn)):
+            for s in json.load(open(fn, encoding='utf-8')):
                 t = s['type']
                 if t == 'struct':
                     self.structs[s['name']] = s
@@ -89,11 +92,11 @@ def fourcc(v):
 
 # fourcc -> invader group name (from Invader include/invader/hek/fourcc.hpp)
 FOURCC_GROUP = {}
-_fh = (os.path.join(os.environ['HALO_PSP_INVADER_DEFINITIONS'], 'fourcc.hpp') if os.environ.get('HALO_PSP_INVADER_DEFINITIONS')
+_fh = (os.path.join(DEF_DIR, 'fourcc.hpp') if os.path.exists(os.path.join(DEF_DIR, 'fourcc.hpp'))
        else '/home/claude/invader/include/invader/hek/fourcc.hpp')
 if os.path.exists(_fh):
     import re
-    for m in re.finditer(r'TAG_FOURCC_(\w+) = 0x([0-9A-Fa-f]+)', open(_fh).read()):
+    for m in re.finditer(r'TAG_FOURCC_(\w+) = 0x([0-9A-Fa-f]+)', open(_fh, encoding='utf-8').read()):
         FOURCC_GROUP[fourcc(int(m.group(2), 16))] = m.group(1).lower()
 
 
