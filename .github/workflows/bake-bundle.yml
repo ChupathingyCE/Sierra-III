@@ -5,6 +5,9 @@
 #
 # Each bundle is an artifact named halo-psp-bake-<os>-<ref> (a .tar.gz, or a
 # .zip for Windows, and its SHA-256), for the release notes and the release.
+# The built tools are cached by what they are made from (build_tools.sh, the
+# Invader patches, the pins), so a run that changes only scripts skips the
+# build; the libraries are cached by build_tools.sh alone.
 name: bake-bundle
 
 on:
@@ -19,11 +22,6 @@ permissions:
 concurrency:
   group: bake-bundle-${{ github.ref }}
   cancel-in-progress: true
-
-env:
-  # the libraries' and tools' build, reused while nothing it is made from changes
-  TOOLS_KEY: ${{ hashFiles('bake/bundle/build_tools.sh', 'upstream/invader/*.patch', 'upstream/pins.env') }}
-  DEPS_KEY: ${{ hashFiles('bake/bundle/build_tools.sh') }}
 
 jobs:
   linux:
@@ -50,14 +48,14 @@ jobs:
         id: tools
         with:
           path: bundle-tools
-          key: tools-linux-${{ env.TOOLS_KEY }}
+          key: tools-linux-${{ hashFiles('bake/bundle/build_tools.sh', 'upstream/invader/*.patch', 'upstream/pins.env') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.tools.outputs.cache-hit != 'true'
         with:
           path: |
             bundle-work/deps
             bundle-work/dl
-          key: deps-linux-${{ env.DEPS_KEY }}
+          key: deps-linux-${{ hashFiles('bake/bundle/build_tools.sh') }}
           restore-keys: deps-linux-
       - name: Build Invader and atracdenc
         if: steps.tools.outputs.cache-hit != 'true'
@@ -122,14 +120,14 @@ jobs:
         id: tools
         with:
           path: bundle-tools
-          key: tools-windows-${{ env.TOOLS_KEY }}
+          key: tools-windows-${{ hashFiles('bake/bundle/build_tools.sh', 'upstream/invader/*.patch', 'upstream/pins.env') }}
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: steps.tools.outputs.cache-hit != 'true'
         with:
           path: |
             bundle-work/deps
             bundle-work/dl
-          key: deps-windows-${{ env.DEPS_KEY }}
+          key: deps-windows-${{ hashFiles('bake/bundle/build_tools.sh') }}
           restore-keys: deps-windows-
       - name: Build Invader and atracdenc
         if: steps.tools.outputs.cache-hit != 'true'
@@ -194,7 +192,7 @@ jobs:
         id: tools
         with:
           path: bundle-tools
-          key: tools-macos-${{ env.TOOLS_KEY }}
+          key: tools-macos-${{ hashFiles('bake/bundle/build_tools.sh', 'upstream/invader/*.patch', 'upstream/pins.env') }}
       - name: Toolchain (ninja, Rust for both architectures)
         if: steps.tools.outputs.cache-hit != 'true'
         run: |
@@ -213,7 +211,7 @@ jobs:
             bundle-work/arm64/dl
             bundle-work/x86_64/deps
             bundle-work/x86_64/dl
-          key: deps-macos-${{ env.DEPS_KEY }}
+          key: deps-macos-${{ hashFiles('bake/bundle/build_tools.sh') }}
           restore-keys: deps-macos-
       - name: Build Invader and atracdenc (arm64, x86-64, then universal)
         if: steps.tools.outputs.cache-hit != 'true'
