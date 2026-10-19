@@ -64,6 +64,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_TICK_STEPS=1` | Per-step tick timing; recon only |
 | `PSP_RECON=1` | The recon censuses (`modelcensus`, `sleepcensus`, `drawcensus`, `mebusN`; `docs/recon_134.md`); recon only |
 | `PSP_NOINLINE=psp_ge,…` | Units whose path holds a listed word compiled without inlining, so the cache map names each helper; recon only |
+| `PSP_POOLS_XBOX=1` | The Xbox's actor, prop, light and glow particle arrays and the game state as long as they need; for runs that measure the arrays' peaks |
 | `PSP_NO_COLD=1` | Everything at the hot optimisation level |
 | `PSP_SHELF=1` | Builds the shelved experiments back in (`docs/shelf.md`) |
 | `PSP_DITHERSHIFT=1` | Builds in the GE's dither moved each pass (keep words `dithershift`, `dithershiftall`; `docs/review_dithershift.md`): its tests sit in hot draw paths, so a default build leaves them out |
