@@ -23348,7 +23348,7 @@ byte compressed_monk_tone[18396]=
 # the players and every page run, several hundred lines) to the Memory Stick in
 # the middle of a frame, at most once every 10 s (7 times in one b30 run). The
 # dump only reads; the failure itself stays in the log (FIXES_113's "sound
-# cache: no room" lines) and the 10 s gate is kept
+# cache: no room" lines) and the 10 s gate is kept. "cachedump" writes it
 FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
 ("""		lruv_debug_to_file(
 			"d:\\\\stabbed.txt",
@@ -23362,7 +23362,21 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
 			scenario_debug_to_file,
 			cache_block_get_sound_permutation_name);
 """,
- """#ifndef HALO_PSP
+ """#ifdef HALO_PSP
+		/* "cachedump": the Xbox's dump, to the stick (a hitch: hundreds of lines) */
+		{
+			extern int psp_keep(const char *name);
+
+			if (psp_keep("cachedump"))
+				lruv_debug_to_file(
+					"d:\\\\stabbed.txt",
+					tag_get_name(sound->runtime_tag_index),
+					sound->samples.size,
+					xbox_sound_cache_globals.cache,
+					scenario_debug_to_file,
+					cache_block_get_sound_permutation_name);
+		}
+#else
 		lruv_debug_to_file(
 			"d:\\\\stabbed.txt",
 			sound->name,
@@ -23370,6 +23384,211 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
 			xbox_sound_cache_globals.cache,
 			scenario_debug_to_file,
 			cache_block_get_sound_permutation_name);
+#endif
+"""),
+]
+# A sound queued to a channel that is still playing but has nothing left to
+# submit. A permutation shorter than the stream's queue goes out whole the
+# moment it starts; its last packet moves the queued permutation (none yet)
+# to playing, so the channel plays on with no playing permutation. The sound
+# manager then queues the next one (the channel isn't "queued"), it is filed
+# as queued, and the fill, which reads only the playing permutation, never
+# sends it: when the queue drains the channel goes idle and the manager starts
+# another, so permutations are dropped: music plays a fraction of a second at
+# a time, skipping forward. A shallow queue (the Xbox's 4 packets) makes it
+# rare, since the manager usually queues the next permutation in time. Such a sound now becomes the playing permutation and the queue is
+# topped up at once, so the stream carries on. "streamnolink": as before
+FIXES_SOUND["source/sound/sound_dsound_xbox.c#link"] = [
+("""		case _sound_channel_playing:
+			channel->state= _sound_channel_queued;
+			channel->queued_permutation= sound;
+			break;
+""",
+ """		case _sound_channel_playing:
+#ifdef HALO_PSP
+			{
+				extern int psp_stream_link(void); /* psp_dsound.c */
+
+				if (!channel->playing_permutation && psp_stream_link())
+				{
+					channel->playing_permutation= sound;
+					channel->sample_offset= 0;
+					dsound_channel_fill(index);
+					break;
+				}
+			}
+#endif
+			channel->state= _sound_channel_queued;
+			channel->queued_permutation= sound;
+			break;
+"""),
+]
+# Which path fades a looping sound out (a fade with no cause in the log can't
+# be told from a sound bug): each fade-out
+# of a sound that isn't an impulse is logged with its class, its track type
+# (1 start, 2 loop, 3 stopping, 4 stop), the mode (0 linear, 1 crossfade), its
+# length and whether a sound fades in in its place. The paths fade differently
+# (inaudible 2 s, a pitch range's crossfade 0.5 s, a track change by its tag),
+# so the line names the cause. The first 40 of a launch
+FIXES_SOUND["source/sound/sound_manager.c#fadelog"] = [
+("""	fade_start_time = sound_manager_globals.render_time - 1;
+""",
+ """#ifdef HALO_PSP
+	{
+		static int psp_fades_logged = 0;
+
+		if (fade_out_sound_index != NONE && psp_fades_logged < 40)
+		{
+			struct sound_datum *psp_sound = sound_get(fade_out_sound_index);
+
+			if (psp_sound->type != _sound_impulse)
+			{
+				psp_fades_logged++;
+				platform_psp_log("sound: a looping sound fades out: class %d, track type %d, mode %d over %ld ms%s, at %ld ms",
+					(int)sound_definition_get(psp_sound->definition_index)->sound_class, (int)psp_sound->type, (int)mode,
+					(long)(seconds * 1000.f), fade_in_sound_index != NONE ? ", another fading in" : "",
+					(long)sound_manager_globals.render_time);
+			}
+		}
+	}
+#endif
+	fade_start_time = sound_manager_globals.render_time - 1;
+"""),
+]
+# E2 (audio_fidelity.md): the cache allocator added every run of pages (a
+# block or the gap before one) to every hole still open, up to 256 of them:
+# blocks x open holes a call, with up to 512 blocks. Holes close in the order
+# they opened (the assert at 351), so a hole's page count is the pages since
+# it opened (a running total less its start) and its last used tick the
+# largest since then (a falling deque of the runs' ticks, front dropped as the
+# holes it served close). The holes reach the choice in the same order with
+# the same values, so the same block is chosen. Caches with more pages than
+# the deque holds, and "lruvoldscan", use the loop as before
+FIXES_SOUND["source/memory/lruv_cache.c#window"] = [
+("""	hole_read_index = 0;
+	hole_write_index = 0;
+	pending_block_index = NONE;
+	page_index = 0;
+	block_index = cache->first_block_index;
+""",
+ """	hole_read_index = 0;
+	hole_write_index = 0;
+	pending_block_index = NONE;
+	page_index = 0;
+	block_index = cache->first_block_index;
+#ifdef HALO_PSP
+#define PSP_LRUV_RUNS 4096
+	{
+		extern int psp_keep(const char *name);
+		static int psp_window = -1;
+
+		if (psp_window < 0)
+			psp_window = !psp_keep("lruvoldscan");
+		if (psp_window && cache->page_count < PSP_LRUV_RUNS - 2)
+		{
+			/* a hole's pages and runs before it opened, by its ring slot */
+			static long psp_hole_pages_before[MAXIMUM_LRUV_CACHE_HOLES];
+			static long psp_hole_first_run[MAXIMUM_LRUV_CACHE_HOLES];
+			/* the runs' ticks, falling from front to back, and their run numbers */
+			static unsigned long psp_tick[PSP_LRUV_RUNS];
+			static long psp_tick_run[PSP_LRUV_RUNS];
+			long psp_front = 0, psp_back = 0, psp_pages = 0, psp_run = 0;
+
+			while (page_index < cache->page_count)
+			{
+				locked = FALSE;
+
+				if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)
+				{
+					hole = &holes[hole_write_index];
+					hole->block_index = pending_block_index;
+					hole->first_page_index = page_index;
+					hole->last_used_tick = 0;
+					hole->page_count = 0;
+					psp_hole_pages_before[hole_write_index] = psp_pages;
+					psp_hole_first_run[hole_write_index] = psp_run;
+					hole_write_index = NEXT_HOLE_INDEX(hole_write_index);
+				}
+
+				if (block_index == NONE)
+				{
+					last_used_tick = 0;
+					page_count = cache->page_count - page_index;
+					page_index = cache->page_count;
+				}
+				else
+				{
+					block = datum_get(cache->blocks, block_index);
+					if (page_index == block->first_page_index)
+					{
+						last_used_tick = block->last_used_tick;
+						page_count = block->page_count;
+						locked = cache->locked_block_proc &&
+							cache->locked_block_proc(block_index);
+						if ((unsigned long)block->last_used_tick == (unsigned long)cache->tick)
+							locked = TRUE;
+						else if (!locked &&
+							(oldest_unlocked_block_index == NONE ||
+							(unsigned long)block->last_used_tick < oldest_unlocked_tick))
+						{
+							oldest_unlocked_block_index = block_index;
+							oldest_unlocked_tick = block->last_used_tick;
+						}
+
+						page_index = block->first_page_index + block->page_count;
+						pending_block_index = block_index;
+						block_index = block->next_block_index;
+					}
+					else
+					{
+						last_used_tick = 0;
+						page_count = block->first_page_index - page_index;
+						match_assert(
+							"c:\\\\halo\\\\SOURCE\\\\memory\\\\lruv_cache.c",
+							311,
+							page_count>0);
+						page_index = block->first_page_index;
+					}
+				}
+
+				if (locked)
+				{
+					hole_read_index = hole_write_index;
+					psp_front = psp_back = 0;
+				}
+				else
+				{
+					while (psp_back > psp_front && psp_tick[psp_back - 1] <= (unsigned long)last_used_tick)
+						psp_back--;
+					psp_tick[psp_back] = last_used_tick;
+					psp_tick_run[psp_back] = psp_run;
+					psp_back++;
+					psp_pages += page_count;
+					while (hole_read_index != hole_write_index &&
+						psp_pages - psp_hole_pages_before[hole_read_index] >= desired_page_count)
+					{
+						int psp_high = cache == psp_lruv_high_cache && desired_page_count >= PSP_LRUV_HIGH_PAGES;
+
+						hole = &holes[hole_read_index];
+						while (psp_tick_run[psp_front] < psp_hole_first_run[hole_read_index])
+							psp_front++;
+						hole->page_count = psp_pages - psp_hole_pages_before[hole_read_index];
+						hole->last_used_tick = psp_tick[psp_front];
+						if (!found_hole || psp_high ||
+							(hole->last_used_tick < best_hole.last_used_tick ||
+							(hole->last_used_tick == best_hole.last_used_tick &&
+							 hole->page_count < best_hole.page_count)))
+						{
+							best_hole = *hole;
+							found_hole = TRUE;
+						}
+						hole_read_index = NEXT_HOLE_INDEX(hole_read_index);
+					}
+				}
+				psp_run++;
+			}
+		}
+	}
 #endif
 """),
 ]
