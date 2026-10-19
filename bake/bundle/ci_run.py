@@ -8,10 +8,14 @@ shows without opening the job's log.
 The output still streams to the log as it comes; the exit code passes
 through."""
 import collections
+import shutil
 import subprocess
 import sys
 
 title, command = sys.argv[1], sys.argv[2:]
+# by PATH, as the shell would: Windows itself looks in System32 first, where
+# bash.exe is WSL's, not MSYS2's
+command[0] = shutil.which(command[0]) or command[0]
 tail = collections.deque(maxlen=60)
 p = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
 for raw in p.stdout:
