@@ -50,7 +50,7 @@ def imports():
     import halomap
     d = halomap.Defs()
     assert 'Sound' in d.structs and 'ScenarioStructureBSP' in d.structs, 'Invader definitions incomplete'
-    assert halomap.FOURCC_GROUP.get('scnr') == 'scenario', 'fourcc.hpp not read'
+    assert halomap.FOURCC_GROUP.get('scnr') == 'scenario', 'the tag group table'
     ok('Invader definitions: %d structs, %d groups' % (len(d.structs), len(halomap.FOURCC_GROUP)))
 
 
