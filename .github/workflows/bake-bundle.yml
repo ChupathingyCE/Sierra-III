@@ -16,7 +16,6 @@ on:
   workflow_dispatch:
   push:
     tags: ['b*']
-    branches: [portable-bake]   # TEMPORARY: proves the workflow before it reaches main
 
 permissions:
   contents: read
