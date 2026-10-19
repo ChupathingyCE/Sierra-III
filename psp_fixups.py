@@ -23270,6 +23270,17 @@ FIXES_SOUND["source/units/bipeds.c#unarmed"] = [
 
 					psp_unarmed_melee = psp_keep("unarmedmelee") != 0;
 				}
+				if (weapon_index == NONE && biped->unit.parent_seat_index == NONE)
+				{
+					static int psp_unarmed_logged = 0;
+
+					if (psp_unarmed_logged < 4)
+					{
+						psp_unarmed_logged++;
+						platform_psp_log("melee: with no weapon, %s", psp_unarmed_melee ?
+							"played (unarmedmelee: as upstream)" : "refused (as the Xbox and PC games)");
+					}
+				}
 				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE && psp_unarmed_melee) ||
 #else
 				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE) ||
