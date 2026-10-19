@@ -21851,6 +21851,401 @@ float psp_player_crouch(void)
 #endif"""),
 ]
 
+# ---------- FIXES_MENUS: the menus as the PSP's (docs/review_menus.md)
+# Sheepdog01 (2026-10-19): the PSP's glyphs wherever an Xbox button shows, each
+# build's main menu without the other mode, the PSP named where the menus'
+# text names the Xbox. Keep words: "xboxglyphs" (the Xbox's buttons, here as
+# in play), "glyphmapfixed" (each icon site's own map, not the one the pad
+# is in), "menumultiplayer" / "menucampaign" (the entry back),
+# "menuwarnall" (the designed stop's red warning back), "xboxwording".
+FIXES_MENUS = {}
+
+FIXES_MENUS["source/interface/ui_widget.c#menus"] = [
+("""static short draw_bitmap_texel_y = 0;
+""",
+ """static short draw_bitmap_texel_y = 0;
+#ifdef HALO_PSP
+/* the same for the column: the virtual keyboard's legend covers its Xbox
+buttons with its own background from beside them (psp_keyboard_legend_glyphs) */
+static short draw_bitmap_texel_x = 0;
+#endif
+"""),
+("""			vertices[vertex_index].texture_coordinates.x =
+				(vertex_index % 3) ? texture_width : 0.0f;""",
+ """			vertices[vertex_index].texture_coordinates.x =
+#ifdef HALO_PSP
+				draw_bitmap_texel_x / bitmap_width +
+#endif
+				((vertex_index % 3) ? texture_width : 0.0f);"""),
+("""static void widget_instance_render_recursive(
+	struct widget_instance *widget,
+	rectangle2d *clip_rect,
+	point2d offset,
+	boolean focus,
+	boolean use_nifty_plasma_fx)
+{""",
+ """#ifdef HALO_PSP
+extern int psp_button_glyph(int icon, int menus, unsigned short cell[4]);
+extern void psp_ge_glyph_next(int glyph);
+
+/* a screen's button key ("a_butn" beside its "=SELECT" label) is a widget
+whose picture is the Xbox's button, so the text's icon hook never sees it:
+drawn as the PSP's glyph for that button in the menus, in its label's colour
+as the text's icons are (NONE: not a key, or "xboxglyphs") */
+static int psp_menu_key_glyph(
+	struct widget_instance *widget,
+	struct ui_widget_definition const *definition,
+	pixel32 *color)
+{
+	short button = ui_mouse_key_button(widget);
+	short best_distance = 17;
+	struct widget_instance *sibling;
+	int glyph;
+
+	if (button == NONE || (glyph = psp_button_glyph(button, TRUE, NULL)) < 0)
+		return NONE;
+	/* the label: the text box that starts just right of the key, as
+	ui_mouse_note_target pairs them */
+	for (sibling = widget->parent ? widget->parent->child : NULL; sibling; sibling = sibling->next)
+	{
+		struct ui_widget_definition const *label;
+		short distance;
+
+		if (sibling == widget || sibling->type != _ui_widget_type_text_box || !sibling->visible)
+			continue;
+		label = ui_widget_definition_get(sibling->definition_tag_index);
+		distance = (short)ABS(label->bounds.x0 + sibling->horizontal_offset -
+			(definition->bounds.x1 + widget->horizontal_offset));
+		if (distance < best_distance &&
+			label->bounds.y0 + sibling->vertical_offset < definition->bounds.y1 + widget->vertical_offset &&
+			label->bounds.y1 + sibling->vertical_offset > definition->bounds.y0 + widget->vertical_offset)
+		{
+			best_distance = distance;
+			*color = (*color & 0xFF000000) | (real_argb_color_to_pixel32(&label->text_color) & 0x00FFFFFF);
+		}
+	}
+	return glyph;
+}
+
+/* (virtual_keyboard.c) The keyboard's "=BACK" and "=ENTER" legends, Xbox
+buttons and all, are its background picture's own (virtual_keyboard.c's
+legend rectangles). Each button is covered with the background from the
+same rows left of the legends (no key or text there), then drawn as the
+PSP's glyph in the legends' blue. The places are measured on the rendered
+screen; the picture itself is left as it is */
+void psp_keyboard_legend_glyphs(
+	struct bitmap_data *bitmap)
+{
+	static short const buttons[2][3] =
+	{
+		{ _icon_b_button, 368, 392 },
+		{ _icon_a_button, 470, 494 },
+	};
+	short index;
+
+	for (index = 0; index < NUMBEROF(buttons); index++)
+	{
+		int glyph = psp_button_glyph(buttons[index][0], TRUE, NULL);
+		rectangle2d cover, face, texels;
+
+		if (glyph < 0)
+			continue;
+		cover.y0 = 412;
+		cover.y1 = 442;
+		cover.x0 = (short)(buttons[index][1] - 2);
+		cover.x1 = (short)(buttons[index][2] + 2);
+		texels.x0 = 0;
+		texels.y0 = 0;
+		texels.x1 = (short)(cover.x1 - cover.x0);
+		texels.y1 = (short)(cover.y1 - cover.y0);
+		draw_bitmap_texel_x = 336;
+		draw_bitmap_texel_y = cover.y0;
+		draw_bitmap_in_rect(bitmap, &cover, &texels, NULL, 0xffffffff, NULL, FALSE);
+		draw_bitmap_texel_x = 0;
+		draw_bitmap_texel_y = 0;
+		face.y0 = 416;
+		face.y1 = 440;
+		face.x0 = buttons[index][1];
+		face.x1 = buttons[index][2];
+		texels.x1 = (short)(face.x1 - face.x0);
+		texels.y1 = (short)(face.y1 - face.y0);
+		psp_ge_glyph_next(glyph);
+		draw_bitmap_in_rect(bitmap, &face, &texels, NULL, 0xff2090f0, NULL, FALSE);
+		psp_ge_glyph_next(NONE);
+	}
+}
+
+/* the main menu's entry for the mode a build hasn't got (the campaign
+build's MULTIPLAYER, whose menus' units are compiled out; the multiplayer
+build's CAMPAIGN), told by where it leads rather than by its place: an
+entry that opens a screen of the multiplayer menus, or the one that runs the
+new campaign's "new game if no plyr profiles" */
+#define PSP_MULTIPLAYER_MENUS "ui\\\\shell\\\\main_menu\\\\multiplayer_type_select\\\\"
+enum
+{
+	_psp_menu_entry_other = 0,
+	_psp_menu_entry_campaign,
+	_psp_menu_entry_multiplayer,
+
+	PSP_FUNCTION_NEW_GAME_IF_NO_PROFILES = 101,
+};
+
+static short psp_menu_entry_mode(
+	long definition_tag_index,
+	short depth)
+{
+	struct ui_widget_definition *definition;
+	struct ui_widget_event_handler_reference *handlers;
+	struct ui_widget_child_reference *children;
+	long index;
+
+	if (definition_tag_index == NONE)
+		return _psp_menu_entry_other;
+	definition = ui_widget_definition_get(definition_tag_index);
+	handlers = (struct ui_widget_event_handler_reference *)xbox_pointer(definition->event_handlers.address);
+	for (index = 0; index < definition->event_handlers.count; index++)
+	{
+		char const *name = handlers[index].widget_tag.index != NONE ? tag_get_name(handlers[index].widget_tag.index) : NULL;
+
+		if (TEST_FLAG(handlers[index].flags, _event_handler_run_function_bit) &&
+			handlers[index].function == PSP_FUNCTION_NEW_GAME_IF_NO_PROFILES)
+		{
+			return _psp_menu_entry_campaign;
+		}
+		if (name && !strncmp(name, PSP_MULTIPLAYER_MENUS, sizeof(PSP_MULTIPLAYER_MENUS) - 1))
+			return _psp_menu_entry_multiplayer;
+	}
+	/* (an entry may be a frame round the item that answers) */
+	if (depth > 0)
+	{
+		children = (struct ui_widget_child_reference *)xbox_pointer(definition->child_widgets.address);
+		for (index = 0; index < definition->child_widgets.count; index++)
+		{
+			short mode = psp_menu_entry_mode(children[index].widget_tag.index, (short)(depth - 1));
+
+			if (mode != _psp_menu_entry_other)
+				return mode;
+		}
+	}
+	return _psp_menu_entry_other;
+}
+
+static void psp_main_menu_without_other_mode(
+	void)
+{
+#ifdef PSP_MULTIPLAYER
+	short const dropped = _psp_menu_entry_campaign;
+	boolean const kept = PSP_KEEP_ONCE("menucampaign");
+#else
+	short const dropped = _psp_menu_entry_multiplayer;
+	boolean const kept = PSP_KEEP_ONCE("menumultiplayer");
+#endif
+	struct tag_iterator iterator;
+	long list_tag;
+	long lists = 0;
+
+	if (kept)
+		return;
+	tag_iterator_new(&iterator, UI_WIDGET_DEFINITION_TAG);
+	while ((list_tag = tag_iterator_next(&iterator)) != NONE)
+	{
+		struct ui_widget_definition *list = ui_widget_definition_get(list_tag);
+		struct ui_widget_child_reference *children =
+			(struct ui_widget_child_reference *)xbox_pointer(list->child_widgets.address);
+		short found[3] = { NONE, NONE, NONE };
+		short x[16], y[16];
+		long count = list->child_widgets.count;
+		long index;
+
+		if (count < 2 || count > NUMBEROF(x))
+			continue;
+		for (index = 0; index < count; index++)
+		{
+			struct ui_widget_definition const *item = children[index].widget_tag.index != NONE ?
+				ui_widget_definition_get(children[index].widget_tag.index) : NULL;
+			short mode = psp_menu_entry_mode(children[index].widget_tag.index, 1);
+
+			/* (a mode found twice: not the main menu) */
+			found[mode] = found[mode] == NONE ? (short)index : (short)-2;
+			x[index] = (short)((item ? item->bounds.x0 : 0) + children[index].horizontal_offset);
+			y[index] = (short)((item ? item->bounds.y0 : 0) + children[index].vertical_offset);
+		}
+		/* the main menu: one entry of each mode (dropped once, the list no
+		longer matches, so a map's tags loaded again aren't cut twice) */
+		if (found[_psp_menu_entry_campaign] < 0 || found[_psp_menu_entry_multiplayer] < 0)
+			continue;
+		/* the entries after it each take the place of the one before, so
+		the list closes up, and up and down move between what's left */
+		for (index = count - 1; index > found[dropped]; index--)
+		{
+			children[index].horizontal_offset = (short)(children[index].horizontal_offset + x[index - 1] - x[index]);
+			children[index].vertical_offset = (short)(children[index].vertical_offset + y[index - 1] - y[index]);
+		}
+		csmemmove(&children[found[dropped]], &children[found[dropped] + 1],
+			(count - found[dropped] - 1) * sizeof(*children));
+		list->child_widgets.count--;
+		lists++;
+	}
+	if (lists)
+		error(_error_log, "menus: the main menu without the %s entry (\\"%s\\" brings it back)",
+			dropped == _psp_menu_entry_campaign ? "campaign" : "multiplayer",
+			dropped == _psp_menu_entry_campaign ? "menucampaign" : "menumultiplayer");
+}
+
+/* the menus' text names the Xbox where the PSP is meant: each string list's
+"Xbox" made the PSP's, in place (only ever shorter, so every string keeps
+its own room). The longer phrases first, so the result reads naturally */
+static void psp_menu_strings_name_the_psp(
+	void)
+{
+	static struct
+	{
+		wchar_t const *from;
+		wchar_t const *to;
+	} const swaps[] =
+	{
+		{ L"Xbox video game system", L"PSP system" },
+		{ L"Xbox Video Game System", L"PSP System" },
+		{ L"Xbox console", L"PSP" },
+		{ L"Xbox Console", L"PSP" },
+		{ L"Xbox Hard Disk", L"Memory Stick" },
+		{ L"Xbox hard disk", L"Memory Stick" },
+		{ L"Xbox", L"PSP" },
+		{ L"XBOX", L"PSP" },
+	};
+	long counts[NUMBEROF(swaps)];
+	struct tag_iterator iterator;
+	long list_tag;
+	long total = 0;
+	long index;
+
+	if (PSP_KEEP_ONCE("xboxwording"))
+		return;
+	csmemset(counts, 0, sizeof(counts));
+	tag_iterator_new(&iterator, UNICODE_STRING_LIST_TAG);
+	while ((list_tag = tag_iterator_next(&iterator)) != NONE)
+	{
+		struct string_list *list = unicode_string_list_definition_get(list_tag);
+		long string_index;
+
+		for (string_index = 0; string_index < list->strings.count; string_index++)
+		{
+			struct string_list_entry *entry = TAG_BLOCK_GET_ELEMENT(&list->strings, string_index, struct string_list_entry);
+			long length = entry->string.size / (long)sizeof(wchar_t);
+			wchar_t *text = length > 0 ? tag_data_get_pointer(&entry->string, 0, entry->string.size) : NULL;
+			long at;
+
+			if (!text)
+				continue;
+			for (at = 0; at < length && text[at]; at++)
+			{
+				for (index = 0; index < NUMBEROF(swaps); index++)
+				{
+					long from = (long)wcslen(swaps[index].from);
+					long to = (long)wcslen(swaps[index].to);
+
+					if (at + from <= length && !wcsncmp(text + at, swaps[index].from, from))
+					{
+						csmemcpy(text + at, swaps[index].to, to * sizeof(wchar_t));
+						csmemmove(text + at + to, text + at + from, (length - at - from) * sizeof(wchar_t));
+						csmemset(text + length - (from - to), 0, (from - to) * sizeof(wchar_t));
+						at += to - 1;
+						counts[index]++;
+						total++;
+						break;
+					}
+				}
+			}
+		}
+	}
+	if (total)
+		error(_error_log, "menus: \\"Xbox\\" made the PSP's in the strings %ld times (%ld %ld %ld %ld %ld %ld %ld %ld by phrase; \\"xboxwording\\" keeps them)",
+			total, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7]);
+}
+
+/* (cache_files.c) each map's tags, as they load */
+void psp_menu_tags_loaded(
+	void)
+{
+	psp_main_menu_without_other_mode();
+	psp_menu_strings_name_the_psp();
+}
+#endif
+static void widget_instance_render_recursive(
+	struct widget_instance *widget,
+	rectangle2d *clip_rect,
+	point2d offset,
+	boolean focus,
+	boolean use_nifty_plasma_fx)
+{"""),
+("""				draw_bitmap_texel_y = texel_y;
+				draw_bitmap_in_rect(""",
+ """				draw_bitmap_texel_y = texel_y;
+#ifdef HALO_PSP
+				psp_ge_glyph_next(psp_menu_key_glyph(widget, definition, &color));
+#endif
+				draw_bitmap_in_rect("""),
+("""					FALSE);
+				draw_bitmap_texel_y = 0;""",
+ """					FALSE);
+#ifdef HALO_PSP
+				/* (a quad that wasn't drawn mustn't hand the glyph on) */
+				psp_ge_glyph_next(NONE);
+#endif
+				draw_bitmap_texel_y = 0;"""),
+]
+
+FIXES_MENUS["source/interface/virtual_keyboard.c#menus"] = [
+("""		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
+	}
+""",
+ """		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
+#ifdef HALO_PSP
+		{
+			/* the legends' Xbox buttons are the picture's own (ui_widget.c) */
+			extern void psp_keyboard_legend_glyphs(struct bitmap_data *bitmap);
+
+			psp_keyboard_legend_glyphs(bitmap);
+		}
+#endif
+	}
+"""),
+]
+
+FIXES_MENUS["source/cache/cache_files.c#menus"] = [
+("""				menu_tags_loaded(cache_file_globals.header.name);
+			}
+""",
+ """				menu_tags_loaded(cache_file_globals.header.name);
+			}
+#ifdef HALO_PSP
+			/* the menus as the PSP's (interface/ui_widget.c) */
+			{
+				extern void psp_menu_tags_loaded(void);
+
+				psp_menu_tags_loaded();
+			}
+#endif
+"""),
+]
+
+# "new game if no plyr profiles" answers FALSE by design when there are no
+# profiles: it has opened the name entry itself, and FALSE stops the
+# handler's own next screen (the profile list) from opening over it. The
+# Xbox noted that silently (error, _error_silent, in event_handler_dispatch);
+# ChupathingyCE's console warning drew it in red on the name entry. Not
+# warned for that one function; keep word "menuwarnall" warns as before.
+FIXES_MENUS["source/interface/ui_widget_event_handler_functions.c#menus"] = [
+("""		if (!result)
+			console_warning("event handler '%s' failed", event_handler_function_list.names[(short)function_index]);""",
+ """		if (!result
+#ifdef HALO_PSP
+			&& (function_index != 101 /* new game if no plyr profiles */ || PSP_KEEP_ONCE("menuwarnall"))
+#endif
+			)
+			console_warning("event handler '%s' failed", event_handler_function_list.names[(short)function_index]);"""),
+]
+
 SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 
@@ -23647,7 +24042,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
