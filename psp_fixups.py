@@ -21857,7 +21857,7 @@ float psp_player_crouch(void)
 # text names the Xbox. Keep words: "xboxglyphs" (the Xbox's buttons, here as
 # in play), "glyphmapfixed" (each icon site's own map, not the one the pad
 # is in), "menumultiplayer" / "menucampaign" (the entry back),
-# "menuwarnall" (the designed stop's red warning back), "xboxwording".
+# "menuwarnall" (the red warnings of designed stops back), "xboxwording".
 FIXES_MENUS = {}
 
 FIXES_MENUS["source/interface/ui_widget.c#menus"] = [
@@ -22264,20 +22264,23 @@ FIXES_MENUS["source/cache/cache_files.c#menus"] = [
 """),
 ]
 
-# "new game if no plyr profiles" answers FALSE by design when there are no
-# profiles: it has opened the name entry itself, and FALSE stops the
-# handler's own next screen (the profile list) from opening over it. The
-# Xbox noted that silently (error, _error_silent, in event_handler_dispatch);
-# ChupathingyCE's console warning drew it in red on the name entry. Not
-# warned for that one function; keep word "menuwarnall" warns as before.
+# A menu function's FALSE is often a designed stop, not a failure: "new game
+# if no plyr profiles" with no profiles has opened the name entry itself,
+# "player profile begin editing" on an empty slot has opened the "create a
+# new profile?" dialog, and FALSE stops the handler's own next screen from
+# opening over them. The Xbox noted each silently (error, _error_silent, in
+# event_handler_dispatch, still in debug.txt); ChupathingyCE's console
+# warning drew them in red over the menus. Now in debug.txt, by name, as the
+# Xbox's note; keep word "menuwarnall" draws them in red as before.
 FIXES_MENUS["source/interface/ui_widget_event_handler_functions.c#menus"] = [
 ("""		if (!result)
 			console_warning("event handler '%s' failed", event_handler_function_list.names[(short)function_index]);""",
- """		if (!result
-#ifdef HALO_PSP
-			&& (function_index != 101 /* new game if no plyr profiles */ || PSP_KEEP_ONCE("menuwarnall"))
+ """#ifdef HALO_PSP
+		if (!result && !PSP_KEEP_ONCE("menuwarnall"))
+			error(_error_silent, "event handler '%s' answered FALSE", event_handler_function_list.names[(short)function_index]);
+		else
 #endif
-			)
+		if (!result)
 			console_warning("event handler '%s' failed", event_handler_function_list.names[(short)function_index]);"""),
 ]
 

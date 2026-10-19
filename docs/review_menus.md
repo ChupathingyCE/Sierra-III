@@ -8,7 +8,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 | §2 keyboard legend | The name entry's "=BACK" and "=ENTER" buttons covered and drawn as the PSP's | look (Sheepdog01's direction) | on | `xboxglyphs` |
 | §3 the map by context | A glyph follows the pad's mode (menus or play), not the drawing site | fix | on | `glyphmapfixed` |
 | §4 the other mode hidden | The campaign build's main menu without MULTIPLAYER; the multiplayer build's without CAMPAIGN | look (Sheepdog01's direction) | on | `menumultiplayer`, `menucampaign` |
-| §5 the red warning | No red "event handler 'new game if no plyr profiles' failed" on the name entry | fix (the Xbox's own behaviour) | on | `menuwarnall` |
+| §5 the red warnings | No red "event handler '…' failed" over the menus for a function's designed stop (the name entry, an empty profile slot) | fix (the Xbox's own behaviour) | on | `menuwarnall` |
 | §6 the wording | "Xbox" in the menus' string lists made the PSP's, at load | look (Sheepdog01's direction) | on | `xboxwording` |
 
 ## §1 The menus' button keys (`ui_widget.c`: `psp_menu_key_glyph`, in `widget_instance_render_recursive`)
@@ -45,10 +45,14 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 - **A held d-pad repeats:** in the emulator walks a press held 0.3 s stepped the list twice [E, menuglyphs3]. With two entries left, that lands back where it started (the hidden entry passes the focus on to the first). A tap moves one. On the old list the same hold went from CAMPAIGN to SETTINGS, which is why the earlier walks needed a second between presses.
 - **Off:** `menumultiplayer` (campaign build) or `menucampaign` (multiplayer build).
 
-## §5 The red warning on the name entry (`ui_widget_event_handler_functions.c`)
+## §5 The red warnings over the menus (`ui_widget_event_handler_functions.c`)
 
-- **Cause** [D]: with no profiles, "new game if no plyr profiles" opens the name entry itself (`new_campaign_chosen`) and answers FALSE. The FALSE stops the handler's own next screen, the profile list, from opening over it. The Xbox logged that silently (`error(_error_silent, …)` in `event_handler_dispatch`, still in `debug.txt`). ChupathingyCE's `console_warning` for any FALSE drew it in red. So it isn't a PSP stub or a missing unit: the screen it leads to is the right one.
-- **Fix:** no console warning for that one function. `menuwarnall` warns as before.
+- **Cause** [D]: a menu function's FALSE is often a designed stop, not a failure:
+  - "new game if no plyr profiles", with no profiles, opens the name entry itself (`new_campaign_chosen`);
+  - "player profile begin editing", on an empty slot, opens the "create a new profile?" dialog (`display_error_deferred`).
+  
+  Either answers FALSE so that the handler's own next screen doesn't open over it. The Xbox noted that silently (`error(_error_silent, …)` in `event_handler_dispatch`, which `debug.txt` still shows). ChupathingyCE's `console_warning` for any FALSE drew it in red. So it isn't a PSP stub or a missing unit: the screens they lead to are the right ones (menuglyphs4).
+- **Fix:** the note goes to `debug.txt` by the function's name ("event handler '…' answered FALSE"), as the Xbox's silent note did, not in red over the menus. `menuwarnall` draws them in red as before.
 
 ## §6 The wording (`ui_widget.c`: `psp_menu_strings_name_the_psp`)
 
