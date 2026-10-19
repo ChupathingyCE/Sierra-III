@@ -19,7 +19,8 @@ HALO_REPO=${HALO_REPO:-/tmp/halo-sp}
 rm -rf $OUT; mkdir -p $OUT/lib $OUT/invader/bin $OUT/invader/lib $OUT/invader/definitions
 cp $P/bake/bake.py $P/bake/xiso.py $P/bake/halo-psp-bake $P/bake/README.md $P/bake/INVADER.md $P/bake/hashes.json $OUT/
 cp $P/tools/texpack.py $P/tools/stencilbake.py $P/tools/dez.py $P/tools/lightmap_masks.py $P/tools/bspread.py $OUT/lib/
-cp $P/bake/lib/snd0.py $P/bake/lib/chant.py $P/bake/lib/halomap.py $P/bake/lib/assets.py $P/bake/lib/refs.py $P/bake/lib/bitmap_bake.py $P/bake/lib/seethrough.py $P/bake/lib/soundpack.py $P/bake/lib/tagindex.py $OUT/lib/
+# every reader the bake has, so a new one is never left out
+cp $P/bake/lib/*.py $OUT/lib/
 # the bundle's own lib first: no paths into this machine
 sed -i "/'bake', 'lib'))  # the bake's readers/d" $OUT/lib/*.py
 B=$INVADER_BUILD

@@ -246,7 +246,7 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
     echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
-                                'kmeans compare summary', 'kmeans compare worse'))
+                                'kmeans compare summary', 'kmeans compare worse', 'bump relief'))
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
     if name == 'ui':
