@@ -762,7 +762,7 @@ def make_palette(img, colors, cls):
     """quantize(img, colors), through the palette cache when there is one,
     timed for the profile"""
     started = time.perf_counter()
-    pixels = pixels_hash(img) if PALETTE_CACHE or PROFILE else None
+    pixels = pixels_hash(img) if PALETTE_CACHE or PROFILE or PALETTE_COMPARE else None
     path = None
     if PALETTE_CACHE and not PALETTE_COMPARE:
         key = hashlib.sha256(('%s %s %d %s' % (PALETTE_CODE, FAST_PALETTES, colors, pixels)).encode()).hexdigest()
@@ -788,6 +788,12 @@ def make_palette(img, colors, cls):
 # short hash of the palette step's input pixels (never a name: these lines may
 # be shared as logs); a summary at the end
 PROFILE = bool(os.environ.get('TEXPACK_PROFILE'))
+
+
+def note(text):
+    """a profile or compare line, on the pack's other lines' stream, so the
+    two never interleave in the log"""
+    print(text, file=sys.stderr)
 PROFILE_ROWS = []
 PROFILE_NOW = {}
 
@@ -813,7 +819,7 @@ def profiled(bake):
                    made='%dx%d/%d' % (r['w'], r['h'], 4 if r['psm'] == 4 else 8 if r['psm'] == 5 else 16)
                    if r else 'skipped', palette=in_palettes, rest=total - in_palettes, palettes=palettes)
         PROFILE_ROWS.append(row)
-        print('texprofile: %s %s %s -> %s palette %.3f s rest %.3f s in %s' % (
+        note('texprofile: %s %s %s -> %s palette %.3f s rest %.3f s in %s' % (
             PROFILE_PACK, row['cls'], row['size'], row['made'], in_palettes, row['rest'],
             ' '.join('%s/%d/%s/%.3f' % (p[0][:12], p[1], p[3], p[2]) for p in palettes) or '-'))
         return r
@@ -826,7 +832,7 @@ def profile_summary(total):
         return
     rows = PROFILE_ROWS
     baked = sum(r['palette'] + r['rest'] for r in rows)
-    print('texprofile summary: %s: %d textures in %.1f s (palettes %.1f s, the rest %.1f s); %.1f s outside them '
+    note('texprofile summary: %s: %d textures in %.1f s (palettes %.1f s, the rest %.1f s); %.1f s outside them '
           '(reading the map, tints, writing)' % (PROFILE_PACK, len(rows), baked, sum(r['palette'] for r in rows),
                                                  sum(r['rest'] for r in rows), total - baked))
     by_class = {}
@@ -837,14 +843,14 @@ def profile_summary(total):
         c[2] += r['rest']
     for cls in sorted(by_class, key=lambda c: -(by_class[c][1] + by_class[c][2])):
         n, pal, rest = by_class[cls]
-        print('texprofile class: %s: %s %d textures, palettes %.1f s, the rest %.1f s' % (PROFILE_PACK, cls, n, pal, rest))
+        note('texprofile class: %s: %s %d textures, palettes %.1f s, the rest %.1f s' % (PROFILE_PACK, cls, n, pal, rest))
     palettes = [p for r in rows for p in r['palettes']]
     seen = {}
     for p in palettes:
         seen.setdefault((p[0], p[1]), []).append(p)
     repeats = [p for group in seen.values() for p in group[1:]]
     hits = [p for p in palettes if p[3] == 'hit']
-    print('texprofile palettes: %s: %d made or read, %d distinct inputs; %d repeat one already in this pack '
+    note('texprofile palettes: %s: %d made or read, %d distinct inputs; %d repeat one already in this pack '
           '(%.1f s); %d read from the cache in %.2f s' % (PROFILE_PACK, len(palettes), len(seen), len(repeats),
                                                           sum(p[2] for p in repeats), len(hits), sum(p[2] for p in hits)))
 
@@ -881,7 +887,7 @@ def palette_compare(img, colors, cls, made, seconds, pixels):
     row = (cls.replace(' ', '_'), colors, '%dx%d' % img.shape[1::-1], pixels[:12], own_s, fast_s, e_own, e_fast,
            d_own, d_fast)
     PALETTE_RESULTS.append(row)
-    print('palcompare: %s %d colours %s in %s: time %.3f -> %.3f s; Oklab error %.5f -> %.5f; squared distance '
+    note('palcompare: %s %d colours %s in %s: time %.3f -> %.3f s; Oklab error %.5f -> %.5f; squared distance '
           '%.2f -> %.2f' % row)
 
 
@@ -894,19 +900,19 @@ def palette_compare_summary():
     d_own, d_fast = np.array([x[8] for x in r]), np.array([x[9] for x in r])
     change = e_fast / np.maximum(e_own, 1e-12) - 1
     d_change = d_fast / np.maximum(d_own, 1e-12) - 1
-    print('palcompare summary: %s: %d palettes, %.1f s -> %.1f s (x%.2f); mean Oklab error %.5f -> %.5f (%+.2f%%); '
+    note('palcompare summary: %s: %d palettes, %.1f s -> %.1f s (x%.2f); mean Oklab error %.5f -> %.5f (%+.2f%%); '
           'worse by over 1%%: %d, over 3%%: %d, over 10%%: %d; better by over 1%%: %d' % (
               PROFILE_PACK, len(r), own_s, fast_s, own_s / max(fast_s, 1e-9), e_own.mean(), e_fast.mean(),
               100 * (e_fast.mean() / e_own.mean() - 1), int((change > 0.01).sum()), int((change > 0.03).sum()),
               int((change > 0.10).sum()), int((change < -0.01).sum())))
-    print('palcompare summary: %s: squared distance %.2f -> %.2f (%+.2f%%); worse by over 1%%: %d, over 3%%: %d, '
+    note('palcompare summary: %s: squared distance %.2f -> %.2f (%+.2f%%); worse by over 1%%: %d, over 3%%: %d, '
           'over 10%%: %d; better by over 1%%: %d' % (
               PROFILE_PACK, d_own.mean(), d_fast.mean(), 100 * (d_fast.mean() / d_own.mean() - 1),
               int((d_change > 0.01).sum()), int((d_change > 0.03).sum()), int((d_change > 0.10).sum()),
               int((d_change < -0.01).sum())))
     for k in np.argsort(-change)[:8]:
         if change[k] > 0.01:
-            print('palcompare worse: %s %d colours %s in %s: Oklab error %.5f -> %.5f (%+.1f%%); squared distance '
+            note('palcompare worse: %s %d colours %s in %s: Oklab error %.5f -> %.5f (%+.1f%%); squared distance '
                   '%.2f -> %.2f' % (r[k][0], r[k][1], r[k][2], r[k][3], r[k][6], r[k][7], 100 * change[k], r[k][8],
                                     r[k][9]))
 
