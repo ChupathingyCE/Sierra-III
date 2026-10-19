@@ -23251,6 +23251,30 @@ FIXES_SOUND["source/memory/lruv_cache.c#window"] = [
 #endif
 """),
 ]
+# Melee with no weapon: the Xbox and PC games block it (weapon_prevents_
+# melee_attack is TRUE for no weapon). ChupathingyCE lets a player with no
+# weapon melee, for multiplayer gametypes whose loadout is none (MrBruh,
+# c9ee319a), and the gate holds in the campaign too: before the first weapon
+# the player's melee rays hit the nearest wall and play its material's impact
+# sound, which the original never did. The campaign build blocks it again;
+# the multiplayer build keeps upstream's rule, in step with the PC servers.
+# "unarmedmelee": the campaign as upstream (a player with no weapon melees)
+FIXES_SOUND["source/units/bipeds.c#unarmed"] = [
+("""				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE) ||""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+				static int psp_unarmed_melee = -1;
+
+				if (psp_unarmed_melee < 0)
+				{
+					extern int psp_keep(const char *name);
+
+					psp_unarmed_melee = psp_keep("unarmedmelee") != 0;
+				}
+				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE && psp_unarmed_melee) ||
+#else
+				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE) ||
+#endif"""),
+]
 # The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
 # packets (about 743 ms) up at interrupt time, the port once a frame, so a
 # frame longer than that left long sounds silent. The queue's depth comes from
