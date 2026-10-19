@@ -22265,6 +22265,34 @@ static void widget_instance_render_recursive(
 				draw_bitmap_texel_y = 0;"""),
 ]
 
+FIXES_MENUS["source/interface/ui_widget.c#menudiag"] = [
+("""	if (result)
+		widget->parameters.list.last_list_tab_direction = 15;
+""",
+ """	{
+		/* TEMPORARY DIAGNOSTIC */
+		static int told = 0;
+		struct widget_instance *c;
+		int i = 0, f = -1;
+		unsigned d = 0, v = 0;
+
+		for (c = widget->child; c; c = c->next, i++)
+		{
+			if (c == widget->focused_child)
+				f = i;
+			d |= (unsigned)(c->disabled ? 1 : 0) << i;
+			v |= (unsigned)(c->visible ? 1 : 0) << i;
+		}
+		if (told++ < 12)
+			error(_error_log, "menudiag: next: result %d focused %d of %d selected %d items %d disabled %x visible %x",
+				(int)result, f, i, (int)widget->parameters.list.selected_index,
+				(int)widget->parameters.list.number_of_items, d, v);
+	}
+	if (result)
+		widget->parameters.list.last_list_tab_direction = 15;
+"""),
+]
+
 FIXES_MENUS["source/interface/virtual_keyboard.c#menus"] = [
 ("""		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
 	}
