@@ -235,16 +235,22 @@ def _argb(data, at):
     return np.array([r, g, b, a])
 
 
-def generic_result(m, o, maps):
+# the generic combiners' vertex colour 1 by the angle the surface is seen at:
+# fade(perpendicular) in red, green and alpha, fade(parallel) in blue (the
+# stage inputs' names). Face on, perpendicular is 0 and parallel 1
+VIEWS = {None: (0.5, 0.5, 0.5, 0.5), 'face': (0.0, 0.0, 1.0, 0.0), 'edge': (1.0, 1.0, 0.0, 1.0)}
+
+
+def generic_result(m, o, maps, view=None):
     """the shader's colour (n x RGBA, 0-1), each map given as its texels (n x
-    RGBA) or a mean (RGBA)"""
+    RGBA) or a mean (RGBA); view: the angle (VIEWS), the middle by default"""
     n = max([len(x) for x in maps[:4] if x is not None and np.ndim(x) == 2] or [1])
     stages_n, stages_p = struct.unpack_from('<iI', m.data, o + 96)
     reg = {k: np.zeros((n, 4)) for k in _REGISTERS}
     for i, x in enumerate(maps[:4]):
         reg['T%d' % i] = _rows(x, n)
     reg['V0'] = np.ones((n, 4))        # the diffuse light: unlit, white
-    reg['V1'] = np.full((n, 4), 0.5)   # the fades by angle: their middle
+    reg['V1'] = np.tile(np.array(VIEWS[view]), (n, 1))   # the fades by angle
     reg['R0'][:, 3] = reg['T0'][:, 3]  # the combiners start with map 0's alpha in scratch 0
     if stages_n <= 0:
         reg['R0'] = reg['T0'].copy()
@@ -372,6 +378,9 @@ def water_tint(m, o, means):
 # a colour more than this over its map's (the GE multiplies by at most 1)
 # is drawn doubled: the tint at half, the GE's colour doubling on
 DOUBLED_ABOVE = 1.02
+# a shader whose colour face on and edge on differ by more than this (0-1,
+# any channel) gets the two tints, blended per vertex by the angle
+ANGLE_APART = 2.0 / 255.0
 _LUMA = np.array([0.299, 0.587, 0.114])
 
 
@@ -399,6 +408,9 @@ class Tint:
     def __init__(self, tint, drawn, result, mean, model=MODULATE):
         self.tint, self.drawn, self.result, self.mean, self.model = tint, drawn, result, mean, model
         self.scale_drawn, self.alt, self.errors, self.shares = drawn, None, None, {}
+        # (face-on tint, edge-on tint), RGBA 0-1, for a generic shader whose
+        # combiners read the angle; None when the angle changes nothing
+        self.angle = None
 
     @property
     def doubled(self):
@@ -504,11 +516,11 @@ def shader_tint(m, tag, means, from_means=False):
     maps = _maps(m, o, kind)
     map_means = [means(i) for i, _ in maps]
 
-    def evaluate(group):
+    def evaluate(group, view=None):
         """the shader over the texels of the maps in group (one bitmap at one
         scale), every other map at its mean"""
         given = [means.texels(maps[i][0]) if i in group else map_means[i] for i in range(count)]
-        return generic_result(m, o, given) if kind == GENERIC else chicago_result(m, o, maps_p, count, given)
+        return generic_result(m, o, given, view) if kind == GENERIC else chicago_result(m, o, maps_p, count, given)
 
     def group_of(j):
         return {i for i in range(skip, count) if maps[i] == maps[j]}
@@ -559,7 +571,28 @@ def shader_tint(m, tag, means, from_means=False):
     found.scale_drawn, found.shares = scale_drawn, shares
     if drawn != scale_drawn:
         found.alt = tint_for(scale_drawn) or shader_tint(m, tag, means, from_means=True)
+    if kind == GENERIC and found.model in (MODULATE, DOUBLED):
+        _angle_tints(found, [evaluate(group_of(drawn), view) for view in ('face', 'edge')])
     return found
+
+
+def _angle_tints(found, results):
+    """found.angle from the shader's colour face on and edge on (results),
+    when the two differ by more than ANGLE_APART in a channel. Both are
+    drawn with one doubling, so the middle tint is redone to match it"""
+    if any(r is None for r in results):
+        return
+    face, edge = (r.mean(0) for r in results)
+    if np.abs(face - edge).max() <= ANGLE_APART:
+        return
+    floor = np.maximum(found.mean, 1.0 / 255.0)
+    quotients = [face / floor, edge / floor, found.result / floor]
+    doubled = any(q[:3].max() > DOUBLED_ABOVE for q in quotients)
+    half = 0.5 if doubled else 1.0
+    face_tint, edge_tint, middle = (np.clip(np.append(q[:3] * half, q[3]), 0.0, 1.0) for q in quotients)
+    if doubled != found.doubled:
+        found.tint, found.model = middle, DOUBLED if doubled else MODULATE
+    found.angle = (face_tint, edge_tint)
 
 
 def abgr(rgba):
