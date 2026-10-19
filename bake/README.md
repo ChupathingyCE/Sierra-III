@@ -67,7 +67,13 @@ numpy, Pillow and shapely (it needs the internet that once;
 the image, checks it, rebuilds it for the PSP's memory, and bakes the
 textures, the asset track's textures (`_track.ptex`: half-size lightmaps,
 plants that keep their leaves at a distance) and the wall decals. Expect 3 to
-10 minutes a map (all 24: an hour or two).
+10 minutes a map, one after another (all 24: 45 to 60 minutes).
+
+It bakes several maps at once: one per CPU, at most 4, and fewer when less
+than 8 GB of memory is free (a map can take 1 to 2 GB). `--jobs N` sets how
+many; `--jobs 1` bakes one after another. The maps come out the same either
+way. Each map's lines in the output start with its name, and each map's full
+log is in `<output>/work/<map>.log`; the end lists every map with its time.
 
 `--detail fp,vehicles` also bakes `_detail.ptex`, with those classes' textures
 at full size (fp, weapons, vehicles, characters). The launch menu chooses:
