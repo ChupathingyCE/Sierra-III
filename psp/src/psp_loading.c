@@ -355,7 +355,7 @@ void psp_loading_end(void)
 	}
 }
 
-/* ---------- the boot screen (Sheepdog01, 2026-10-17, his b138 hand test: the
+/* ---------- the boot screen (Sheepdog01, from his hand test: the
 loading screen over the start-up rather than the log scrolling; a few
 seconds' hint on the launch menu while the game loads behind it; the main
 menu settled before it is shown, so nothing pops in)

@@ -10730,7 +10730,7 @@ FIXES_MULTIPLAYER["port/linux/game/network_distributed.c#aligned"] = [
 			word length;""")),
 ]
 
-# ---------- the multiplayer build as a client (Sheepdog01, 2026-10-17)
+# ---------- the multiplayer build as a client (Sheepdog01's call)
 # Hosting and ad hoc are dropped until the campaign reaches its performance
 # targets (they come back as co-op's prerequisite). psp_limits.h's
 # PSP_MP_CLIENT_ONLY (unless PSP_MP_HOST=1 or PSP_MP_COOP=1): no server is
@@ -21126,7 +21126,7 @@ FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
  '#ifdef HALO_PSP\n\t\tplatform_log("front door: the default game variants: %ld already on the stick, %ld written (%lu ms)",\n\t\t\tpsp_variants_kept, (long)NUMBER_OF_DEFAULT_PLAYLIST_PROFILES - psp_variants_kept,\n\t\t\t(psp_microseconds() - psp_variants_start) / 1000);\n#endif\n\t\tsaved_game_files_notify_memory_units_changed();\n\t}\n\telse\n\t{\n\t\terror('),
 ]
 
-# The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
+# The shelf (Sheepdog01's rule): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
@@ -21852,7 +21852,7 @@ float psp_player_crouch(void)
 ]
 
 # ---------- FIXES_MENUS: the menus as the PSP's (docs/review_menus.md)
-# Sheepdog01 (2026-10-19): the PSP's glyphs wherever an Xbox button shows, each
+# Sheepdog01's call: the PSP's glyphs wherever an Xbox button shows, each
 # build's main menu without the other mode, the PSP named where the menus'
 # text names the Xbox. Keep words: "xboxglyphs" (the Xbox's buttons, here as
 # in play), "glyphmapfixed" (each icon site's own map, not the one the pad
@@ -23304,7 +23304,7 @@ void objects_update(
 ]
 
 
-# The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
+# The shelf (Sheepdog01's rule): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
