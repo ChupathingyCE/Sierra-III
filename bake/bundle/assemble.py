@@ -131,7 +131,7 @@ def assemble(tools, out, target):
         f.write(text)
     executable(os.path.join(out, START[target]))
     if target == 'linux':
-        # the command's own name, which the lab's runs call
+        # the command's own name, which automated runs call
         os.symlink(START[target], os.path.join(out, 'halo-psp-bake'))
     for folder, note in INPUTS.items():
         os.makedirs(os.path.join(out, folder))

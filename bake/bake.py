@@ -2,8 +2,10 @@
 """halo-psp-bake: your own copy of Halo (Xbox, NTSC, 01.10.12.2276) turned
 into the map files the PSP build reads. One command:
 
-    ./halo-psp-bake <your Halo disc image (.iso) or its maps folder> <output folder>
-    halo-psp-bake.cmd ...          (the same, on Windows)
+    ./bake-halo.sh <your Halo disc image (.iso) or its maps folder> <output folder>
+    "Bake Halo.command" ... (macOS), "Bake Halo.cmd" ... (Windows)
+(Double-clicked, with no arguments, the same file runs the guided bake,
+guided.py, from the bundle's two input folders.)
 
 What it does, map by map (ten campaign levels, thirteen multiplayer maps and
 the menus' ui.map):

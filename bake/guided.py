@@ -18,7 +18,7 @@ never touches a Memory Stick.
 
     halo-psp-bake <disc image or folder> <output folder> --guided [--zip ZIP] [bake options]
 
-does the same with the inputs named (the lab's runs): the stick's files, the
+does the same with the inputs named (automated runs): the stick's files, the
 log and temp/ go into the output folder.
 
 HALO_PSP_BAKE_YES=1 answers every question yes and never waits for Enter (the
@@ -50,8 +50,8 @@ YES = os.environ.get('HALO_PSP_BAKE_YES') == '1'
 # what a player may leave in an input folder beside the input itself
 IGNORED = {'readme.txt', 'desktop.ini', 'thumbs.db'}
 ARCHIVES = ('.zip', '.7z', '.rar', '.gz', '.xz', '.bz2', '.tar')
-# the sound bake the release is played and tested with (Sheepdog01's call: the
-# bake keeps --sound s9); bake.py's own default is the disc's sounds
+# the sound bake the release is played and tested with (the maintainer's
+# call: the bake keeps --sound s9); bake.py's own default is the disc's sounds
 SOUND = 's9'
 # Each map's minutes on a desktop with four maps baking at once, the first
 # guess at the time left: the maps that finish scale it to this machine
@@ -101,7 +101,7 @@ class Log:
 
 class Screen:
     """what the player sees: on a terminal, a status line rewritten in place
-    and a line per finished stage; elsewhere (a log, the lab), every line"""
+    and a line per finished stage; elsewhere (a log, a test run), every line"""
 
     def __init__(self, log):
         self.log = log
@@ -557,6 +557,12 @@ def parse(args):
 
 
 def main(args, launcher):
+    # a file name the console's code page can't show mustn't stop the bake
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors='replace')
+        except (AttributeError, ValueError):
+            pass
     disc_arg, out_arg, zip_arg, maps_arg, keep, extra = parse(args)
     named = disc_arg is not None
     if named and not out_arg:
@@ -781,8 +787,8 @@ def bake_all(screen, launcher, named, disc_arg, zip_arg, maps_arg, keep, extra, 
         screen.say('Now copy the two folders inside %s (PSP and halo) to the top of your PSP\'s Memory Stick, '
                    'merging them with the folders already there.' % STICK_DIR)
         if MACOS:
-            screen.say('In Finder, hold Option as you drop them and choose Merge. Never choose Replace: it would '
-                       'delete the stick\'s own folder of that name, with ARK-4 and your saves.')
+            screen.say('Use Terminal, not Finder (Finder can replace the stick\'s whole PSP folder, ARK-4\'s files '
+                       'with it): cp -R "%s/." /Volumes/<the stick\'s name>/' % stick)
         elif WINDOWS:
             screen.say('Windows merges the folders by itself; if it asks about files with the same name, choose '
                        '"Replace the files in the destination".')
