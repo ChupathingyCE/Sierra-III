@@ -121,7 +121,13 @@ ONLINE_GAMES_UNITS = ("source/interface/ui_widget.c", "source/interface/ui_widge
 def desktop_unit(rel):
     return rel.startswith(CHUPA_DESKTOP_UNITS) and not (MULTIPLAYER and rel in CHUPA_MULTIPLAYER_KEEPS)
 
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck"]
+# the bake format this build reads (bake/bake.py's BAKE_FORMAT): one number
+# for the bake's stamp and the game's check (psp/src/psp_bakecheck.c)
+_bake_format = re.search(r"^BAKE_FORMAT = (\d+)$", open(os.path.join(HERE, "bake", "bake.py"), encoding="utf-8").read(), re.M)
+if not _bake_format:
+    sys.exit("psp_build: no BAKE_FORMAT line in bake/bake.py")
+BAKE_FORMAT = int(_bake_format.group(1))
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
 # variant that trades speed tricks for smaller code: the hardware profiler
@@ -377,7 +383,7 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    "port/linux/src/nv2a_psh.c", "port/linux/src/nv2a_vsh.c", "port/linux/src/gl_functions.c",
                    "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c",
                    "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_nocoop.c", "psp/src/psp_chupa.c",
-                   "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c",
+                   "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c", "psp/src/psp_bakecheck.c",
                    # mpb1: internet play runs on its own threads, a join's
                    # keys once; the ONLINE GAMES screen only in the menus
                    "psp/src/psp_online.c", "psp/src/psp_internet.c") + INTERNET_UNITS
@@ -405,6 +411,8 @@ def compile_one(item):
         extra = extra + ["-fno-inline", "-fno-inline-small-functions", "-fno-inline-functions-called-once"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
+    if src.endswith("psp_bakecheck.c"):
+        defines.append("-DPSP_BAKE_FORMAT=%d" % BAKE_FORMAT)
     if src.endswith("psp_platform.c"):
         defines.append("-DPSP_HEAP_KB=%d" % HEAP_KB)
         if PGO == "use":
@@ -414,7 +422,7 @@ def compile_one(item):
     # 46 shipped with a stale psp_tex.o (reused without this check, so an
     # edit to psp_tex.c never reached the EBOOT): the learned-binds file was
     # written without "vramranked", as the first version did
-    if (os.environ.get("PSP_REUSE") and os.path.exists(obj) and not src.endswith("psp_platform.c")
+    if (os.environ.get("PSP_REUSE") and os.path.exists(obj) and not src.endswith(("psp_platform.c", "psp_bakecheck.c"))
             and os.path.getmtime(obj) > os.path.getmtime(os.path.join(TREE, src))):
         return src, 0, "", obj
     # PGO: the object named relative to the tree (the compiler's directory),

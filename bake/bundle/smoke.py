@@ -90,6 +90,15 @@ def pure_python():
     assert pcm.shape == (200 * 64, 2)
     ok('Xbox ADPCM decode, chant search (made-up bytes)')
 
+    import bake
+    out = tempfile.mkdtemp()
+    os.makedirs(os.path.join(out, 'halo'))
+    bake.write_stamp(out)
+    stamp = dict(line.split(': ', 1) for line in open(os.path.join(out, 'halo', 'bake.txt')).read().splitlines()
+                 if ': ' in line and not line.startswith('#'))
+    assert stamp['format'] == str(bake.BAKE_FORMAT) and stamp['bundle'] not in ('', 'unknown'), stamp
+    ok('the stamp: bake format %s, bundle %s' % (stamp['format'], stamp['bundle']))
+
 
 def menu_sound():
     import numpy as np

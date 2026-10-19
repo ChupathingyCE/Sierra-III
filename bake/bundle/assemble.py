@@ -12,6 +12,7 @@ import glob
 import os
 import shutil
 import stat
+import subprocess
 import sys
 import tarfile
 import zipfile
@@ -82,6 +83,18 @@ def copy(src, dst):
     shutil.copy2(src, dst)
 
 
+def commit():
+    """the checkout's commit: GitHub's for its runs (its containers may have
+    no git), else git's"""
+    if os.environ.get('GITHUB_SHA'):
+        return os.environ['GITHUB_SHA']
+    try:
+        return subprocess.run(['git', '-C', REPO, 'rev-parse', 'HEAD'], capture_output=True, text=True,
+                              timeout=30).stdout.strip() or 'unknown'
+    except (OSError, subprocess.SubprocessError):
+        return 'unknown'
+
+
 def executable(path):
     os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
@@ -93,6 +106,9 @@ def assemble(tools, out, target):
     bake = os.path.join(REPO, 'bake')
     for name in ('bake.py', 'xiso.py', 'launcher.py', 'requirements.txt', 'hashes.json', 'README.md', 'INVADER.md'):
         copy(os.path.join(bake, name), os.path.join(out, name))
+    # which bundle this is, for the stamp each bake writes (bake.py's bundle_label)
+    with open(os.path.join(out, 'bundle.txt'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write('name: %s\ncommit: %s\n' % (os.path.basename(os.path.abspath(out)), commit()))
     wrapper = 'halo-psp-bake.cmd' if target == 'windows' else 'halo-psp-bake'
     copy(os.path.join(bake, wrapper), os.path.join(out, wrapper))
     executable(os.path.join(out, wrapper))
