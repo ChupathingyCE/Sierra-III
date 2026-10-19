@@ -122,6 +122,10 @@ struct psp_stream
 	prepared: whether the loading chant was ever loud enough to hear */
 	int peak_gain;
 	unsigned long prepared_blocks;
+	/* "silentoverrun": a silent voice advances a whole block even past what
+	is queued, as before (set by the main CPU with the gains, read by the
+	mixer on either CPU) */
+	int silent_overrun;
 	/* the game's sound class of what the stream plays (sound_manager.c's
 	channel_queue_sound names it), so a dry gap can say what fell silent */
 	long sound_class;
@@ -431,6 +435,14 @@ static int prepare_voice(struct psp_stream *stream)
 	stream->step = (unsigned long)(((unsigned long long)(stream->frequency ? stream->frequency : stream->sample_rate) << 16) /
 		OUTPUT_RATE);
 	voice_gains(stream, &stream->target_left, &stream->target_right);
+	{
+		extern int psp_keep(const char *name);
+		static int overrun = -1;
+
+		if (overrun < 0)
+			overrun = psp_keep("silentoverrun") != 0;
+		stream->silent_overrun = overrun;
+	}
 	if (stream->target_left > stream->peak_gain)
 		stream->peak_gain = stream->target_left;
 	stream->prepared_blocks++;
@@ -480,7 +492,7 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 		}
 		queued -= stream->frame;
 		advance = (unsigned long long)step * frames + stream->fraction;
-		if ((advance >> 16) < queued)
+		if ((advance >> 16) < queued || stream->silent_overrun)
 		{
 			stream->frame += (unsigned long)(advance >> 16);
 			stream->fraction = (unsigned long)(advance & 0xFFFF);

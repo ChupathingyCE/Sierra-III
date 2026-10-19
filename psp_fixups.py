@@ -23007,7 +23007,7 @@ byte compressed_monk_tone[18396]=
 # the players and every page run, several hundred lines) to the Memory Stick in
 # the middle of a frame, at most once every 10 s (7 times in one b30 run). The
 # dump only reads; the failure itself stays in the log (FIXES_113's "sound
-# cache: no room" lines) and the 10 s gate is kept
+# cache: no room" lines) and the 10 s gate is kept. "cachedump" writes it
 FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
 ("""		lruv_debug_to_file(
 			"d:\\\\stabbed.txt",
@@ -23021,7 +23021,21 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
 			scenario_debug_to_file,
 			cache_block_get_sound_permutation_name);
 """,
- """#ifndef HALO_PSP
+ """#ifdef HALO_PSP
+		/* "cachedump": the Xbox's dump, to the stick (a hitch: hundreds of lines) */
+		{
+			extern int psp_keep(const char *name);
+
+			if (psp_keep("cachedump"))
+				lruv_debug_to_file(
+					"d:\\\\stabbed.txt",
+					tag_get_name(sound->runtime_tag_index),
+					sound->samples.size,
+					xbox_sound_cache_globals.cache,
+					scenario_debug_to_file,
+					cache_block_get_sound_permutation_name);
+		}
+#else
 		lruv_debug_to_file(
 			"d:\\\\stabbed.txt",
 			sound->name,
@@ -23039,10 +23053,9 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
 # manager then queues the next one (the channel isn't "queued"), it is filed
 # as queued, and the fill, which reads only the playing permutation, never
 # sends it: when the queue drains the channel goes idle and the manager starts
-# another, so permutations were dropped (Sheepdog01, b138: the menu's music played
-# a fraction of a second at a time, skipping forward, with 16 packets; with
-# streampackets4 the manager is usually in time). The Xbox's 4 packets made it
-# rare. Such a sound now becomes the playing permutation and the queue is
+# another, so permutations are dropped: music plays a fraction of a second at
+# a time, skipping forward. A shallow queue (the Xbox's 4 packets) makes it
+# rare, since the manager usually queues the next permutation in time. Such a sound now becomes the playing permutation and the queue is
 # topped up at once, so the stream carries on. "streamnolink": as before
 FIXES_SOUND["source/sound/sound_dsound_xbox.c#link"] = [
 ("""		case _sound_channel_playing:
@@ -23069,8 +23082,8 @@ FIXES_SOUND["source/sound/sound_dsound_xbox.c#link"] = [
 			break;
 """),
 ]
-# Which path fades a looping sound out (Sheepdog01, b138: the menu's music fades
-# halfway through its second track and starts over at the first): each fade-out
+# Which path fades a looping sound out (a fade with no cause in the log can't
+# be told from a sound bug): each fade-out
 # of a sound that isn't an impulse is logged with its class, its track type
 # (1 start, 2 loop, 3 stopping, 4 stop), the mode (0 linear, 1 crossfade), its
 # length and whether a sound fades in in its place. The paths fade differently
