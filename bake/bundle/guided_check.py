@@ -167,7 +167,9 @@ def env(hide_python=False):
 
 def double_click(bundle, hide_python=False):
     """the file a player double-clicks, with nobody there: (exit code, what it said)"""
-    r = subprocess.run([os.path.join(bundle, START)], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    # cmd.exe keeps the quotes round a path with a space only after "call"
+    command = ['cmd.exe', '/d', '/c', 'call', os.path.join(bundle, START)] if WINDOWS else [os.path.join(bundle, START)]
+    r = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                        stdin=subprocess.DEVNULL, env=env(hide_python), cwd=os.path.dirname(bundle), timeout=1800)
     return r.returncode, r.stdout.decode('utf-8', 'replace')
 
