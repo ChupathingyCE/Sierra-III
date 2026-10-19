@@ -18,4 +18,4 @@ Sierra-III runs Halo: Combat Evolved's campaign on a PSP-1000 (333 MHz MIPS, 24 
 
 **What isn't here.** No game data: no maps, tags, textures, sounds or strings from the disc. Our maps are baked from each player's own disc (`bake/README.md`).
 
-**How this was made.** Like the rest of Sierra-III, these pages were written with Claude and reviewed by Sheepdog01 (README, "How it's made").
+**How this was made.** Like the rest of Sierra-III, these pages were written with Claude; Sheepdog01 reviews them before they are published (README, "How it's made").
