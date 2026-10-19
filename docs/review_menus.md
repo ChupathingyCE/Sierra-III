@@ -51,7 +51,7 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
   - "new game if no plyr profiles", with no profiles, opens the name entry itself (`new_campaign_chosen`);
   - "player profile begin editing", on an empty slot, opens the "create a new profile?" dialog (`display_error_deferred`).
   
-  Either answers FALSE so that the handler's own next screen doesn't open over it. The Xbox noted that silently (`error(_error_silent, …)` in `event_handler_dispatch`, which `debug.txt` still shows). ChupathingyCE's `console_warning` for any FALSE drew it in red. So it isn't a PSP stub or a missing unit: the screens they lead to are the right ones (menuglyphs4).
+  Either answers FALSE so that the handler's own next screen doesn't open over it. The Xbox noted that silently (`error(_error_silent, …)` in `event_handler_dispatch`, which `debug.txt` still shows). ChupathingyCE's `console_warning` for any FALSE drew it in red. So it isn't a PSP stub or a missing unit: the screens they lead to are the right ones (menuglyphs4, menuglyphs5).
 - **Fix:** the note goes to `debug.txt` by the function's name ("event handler '…' answered FALSE"), as the Xbox's silent note did, not in red over the menus. `menuwarnall` draws them in red as before.
 
 ## §6 The wording (`ui_widget.c`: `psp_menu_strings_name_the_psp`)
@@ -71,4 +71,12 @@ For Sheepdog01 to read and question before testing (CLAUDE.md, "How AI is used h
 
 ## The checks
 
-On the emulator [E]: lab batch `menuglyphs1` (see the lab's findings): the menus with and without the keep words, a strict run, the pause menu in a10, the multiplayer build's main menu.
+On the emulator [E], the b136 bake (mp134 for the multiplayer build), screenshots only, nothing of the disc's text logged:
+
+| Batch (lab run) | Build | What it showed |
+|---|---|---|
+| menuglyphs1 (39287633149) | d50549f | The screens' keys drawn as ✕ ○ △ □; the main menu CAMPAIGN / SETTINGS (MULTIPLAYER / SETTINGS in the multiplayer build); "please don't turn off your PSP."; no red warning on the name entry; `old` (every change's keep word) as before. The keyboard's Xbox buttons still showed through their glyphs. Strict: 0 sites |
+| menuglyphs2, 3 (39289637103, 39291000841) | 3fe52df | The keyboard drawn in parts: ○=BACK ✕=ENTER, no Xbox buttons. A numbers-only log of the main menu's list (§4), and why down seemed not to move: each 0.3 s hold stepped twice |
+| menuglyphs4 (39293986776) | 04fa550 | With 0.1 s taps: down moves CAMPAIGN → SETTINGS; SETTINGS opens the profile list, whose footer reads △=CREATE NEW □=DELETE ○=BACK ✕=SELECT. A red "player profile begin editing" warning on an empty slot (§5) |
+| menuglyphs5 (39295618414) | 184604c | No red warning on the empty slot (its "create a new profile?" dialog opens, ○=CANCEL ✕=OK); the multiplayer build: down / up between MULTIPLAYER and SETTINGS, the Multiplayer screen's footer, "Connect up to four PSP video game systems". Strict: 0 sites |
+| menuglyphs6 (39297369980, 39297806437, 39298857780) | 184604c | The pause menu, not seen: a10's and d20's openings are cinematics, and on d20 at 62 s START stopped the game's clock but neither the game-time shots nor select + right's showed a menu. Open |
