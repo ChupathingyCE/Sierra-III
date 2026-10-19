@@ -180,7 +180,7 @@ jobs:
       - name: Check the tools need no DLL beyond Windows' own
         run: |
           for f in bundle-tools/invader/bin/*.exe bundle-tools/atracdenc/bin/*.exe; do
-            extra=$(objdump -p "$f" | sed -n 's/^\s*DLL Name: //p' | grep -v -i -E '^(kernel32|advapi32|bcrypt|ntdll|userenv|ws2_32|shell32|user32|ole32|oleaut32|msvcrt|api-ms-win-.*|ucrtbase|secur32|crypt32|synchronization|psapi|shlwapi)\.dll$' || true)
+            extra=$(objdump -p "$f" | sed -n 's/^\s*DLL Name: //p' | grep -v -i -E '^(kernel32|advapi32|bcrypt|ntdll|userenv|ws2_32|shell32|user32|ole32|oleaut32|msvcrt|api-ms-win-.*|ucrtbase|secur32|crypt32|synchronization|psapi|shlwapi|bcryptprimitives)\.dll$' || true)
             echo "::notice title=$(basename "$f") links::$(objdump -p "$f" | sed -n 's/^\s*DLL Name: //p' | tr '\n' ' ')"
             [ -z "$extra" ] || { echo "::error::$f needs $extra"; exit 1; }
           done
@@ -227,7 +227,6 @@ jobs:
   macos:
     name: macOS (universal, arm64 and x86-64)
     runs-on: macos-14
-    if: ${{ !contains(github.event.head_commit.message, '[skip mac]') }}   # TEMPORARY: while Windows is proved
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
