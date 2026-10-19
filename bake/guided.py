@@ -489,8 +489,8 @@ def run_bake(screen, launcher, command, maps, temp):
     code = process.wait()
     size, deepest = walk(temp)
     peak, longest = max(peak, size), max(longest, deepest)
-    screen.log.line('the longest path the bake wrote: %d characters inside temp/ (%d in all)'
-                    % (longest, len(temp) + 1 + longest))
+    screen.detail('the longest path the bake wrote: %d characters inside temp/ (%d in all)'
+                  % (longest, len(temp) + 1 + longest))
     return code, progress, notes, peak
 
 
@@ -713,7 +713,7 @@ def bake_all(screen, launcher, named, disc_arg, zip_arg, maps_arg, keep, extra, 
     command += extra
     screen.say('[3/4] Baking %d maps: this is the long part. Leave this window open.' % len(maps))
     code, progress, notes, peak = run_bake(screen, launcher, command, maps, temp)
-    log.line('the most disk the bake used: %s; per map: %s' % (size_text(peak), ', '.join(
+    screen.detail('the most disk the bake used: %s; per map: %s' % (size_text(peak), ', '.join(
         '%s %.0f s' % (n, s) for n, s in sorted(progress.done.items()))))
     if code or progress.failed:
         failed = progress.failed or [m for m in maps if m not in progress.done]
