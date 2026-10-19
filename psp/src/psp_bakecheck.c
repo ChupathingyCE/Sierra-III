@@ -13,8 +13,8 @@ plainly what to do, the log gets the same lines, and START quits to the XMB.
 Both builds read the maps in ms0:/halo (psp_paths.h), so one stamp serves
 both.
 
-Keep word "bakeany": the check is skipped (the lab's bakes made before the
-stamp). A scripted run (input.txt: the emulator, the rigs) shows the screen,
+Keep word "bakeany": the check is skipped (test bakes made before the
+stamp). A scripted run (input.txt: the emulator, test hardware) shows the screen,
 saves it as shots/bakecheck.bmp and quits a few seconds later, so the run
 ends rather than waiting for a button. */
 #include <pspctrl.h>
