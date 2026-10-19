@@ -129,6 +129,19 @@ def assemble(tools, out, target):
         f.write(''.join(readme))
 
 
+def contents(out):
+    """each top-level entry and LICENSES/ folder of the bundle, with its size"""
+    def size(path):
+        if os.path.isfile(path):
+            return os.path.getsize(path)
+        return sum(os.path.getsize(os.path.join(root, f)) for root, _, files in os.walk(path) for f in files)
+    lines = ['%-28s %8.1f MB' % (name + ('/' if os.path.isdir(os.path.join(out, name)) else ''),
+                                  size(os.path.join(out, name)) / 1e6) for name in sorted(os.listdir(out))]
+    lines.append('LICENSES/: ' + ', '.join(sorted(d for d in os.listdir(os.path.join(out, 'LICENSES'))
+                                                  if os.path.isdir(os.path.join(out, 'LICENSES', d)))))
+    return lines
+
+
 def archive(out, target):
     parent, name = os.path.split(os.path.abspath(out))
     if target == 'windows':
@@ -156,6 +169,11 @@ def main():
     a = ap.parse_args()
     assemble(a.tools, a.out, a.target)
     print('assemble: %s' % a.out)
+    lines = contents(a.out)
+    print('\n'.join('  ' + line for line in lines))
+    if os.environ.get('GITHUB_ACTIONS'):
+        # on the run's page, without opening the log
+        print('::notice title=bundle contents::' + '%0A'.join(lines))
     if a.archive:
         path = archive(a.out, a.target)
         print('assemble: %s (%.1f MB)' % (path, os.path.getsize(path) / 1e6))

@@ -161,7 +161,10 @@ jobs:
       - name: Build Invader and atracdenc
         id: build
         if: steps.tools.outputs.cache-hit != 'true'
-        run: python bake/bundle/ci_run.py build_tools.sh bash bake/bundle/build_tools.sh bundle-work bundle-tools
+        run: |
+          set -o pipefail; code=0
+          bash bake/bundle/build_tools.sh bundle-work bundle-tools 2>&1 | tee build.log || code=${PIPESTATUS[0]}
+          python bake/bundle/ci_run.py build_tools.sh --log build.log $code
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: always() && steps.tools.outputs.cache-hit != 'true'
         with:
