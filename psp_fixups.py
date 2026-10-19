@@ -21866,7 +21866,7 @@ FIXES_MENUS["source/interface/ui_widget.c#menus"] = [
  """static short draw_bitmap_texel_y = 0;
 #ifdef HALO_PSP
 /* the same for the column: the virtual keyboard's legend covers its Xbox
-buttons with its own background from beside them (psp_keyboard_legend_glyphs) */
+buttons with its own background from beside them (psp_keyboard_background) */
 static short draw_bitmap_texel_x = 0;
 #endif
 """),
@@ -21927,13 +21927,43 @@ static int psp_menu_key_glyph(
 	return glyph;
 }
 
+/* one part of the virtual keyboard's background, texel for texel: the
+screen's (x0, y0)-(x1, y1) from the picture's (texel_x, texel_y) */
+static void psp_keyboard_piece(
+	struct bitmap_data *bitmap,
+	short x0,
+	short y0,
+	short x1,
+	short y1,
+	short texel_x,
+	short texel_y)
+{
+	rectangle2d rect, texels;
+
+	rect.x0 = x0;
+	rect.y0 = y0;
+	rect.x1 = x1;
+	rect.y1 = y1;
+	texels.x0 = 0;
+	texels.y0 = 0;
+	texels.x1 = (short)(x1 - x0);
+	texels.y1 = (short)(y1 - y0);
+	draw_bitmap_texel_x = texel_x;
+	draw_bitmap_texel_y = texel_y;
+	draw_bitmap_in_rect(bitmap, &rect, &texels, NULL, 0xffffffff, NULL, FALSE);
+	draw_bitmap_texel_x = 0;
+	draw_bitmap_texel_y = 0;
+}
+
 /* (virtual_keyboard.c) The keyboard's "=BACK" and "=ENTER" legends, Xbox
-buttons and all, are its background picture's own (virtual_keyboard.c's
-legend rectangles). Each button is covered with the background from the
-same rows left of the legends (no key or text there), then drawn as the
-PSP's glyph in the legends' blue. The places are measured on the rendered
-screen; the picture itself is left as it is */
-void psp_keyboard_legend_glyphs(
+buttons and all, are its full-screen background picture's own
+(virtual_keyboard.c's legend rectangles). The picture is drawn in parts
+round the two buttons' boxes, each box filled from the same rows left of the
+legends (no key or text there; drawing over the button would only blend
+with it), then the PSP's glyph is drawn in each in the legends' blue. The
+places are measured on the rendered screen; the picture itself is left as
+it is. FALSE: drawn as the game draws it ("xboxglyphs") */
+boolean psp_keyboard_background(
 	struct bitmap_data *bitmap)
 {
 	static short const buttons[2][3] =
@@ -21941,38 +21971,45 @@ void psp_keyboard_legend_glyphs(
 		{ _icon_b_button, 368, 392 },
 		{ _icon_a_button, 470, 494 },
 	};
+	short const band_y0 = 412, band_y1 = 442, face_y0 = 416, face_y1 = 440, fill_x = 336;
+	int glyphs[NUMBEROF(buttons)];
+	short x = 0;
 	short index;
 
 	for (index = 0; index < NUMBEROF(buttons); index++)
 	{
-		int glyph = psp_button_glyph(buttons[index][0], TRUE, NULL);
-		rectangle2d cover, face, texels;
+		glyphs[index] = psp_button_glyph(buttons[index][0], TRUE, NULL);
+		if (glyphs[index] < 0)
+			return FALSE;
+	}
+	psp_keyboard_piece(bitmap, 0, 0, 640, band_y0, 0, 0);
+	psp_keyboard_piece(bitmap, 0, band_y1, 640, 480, 0, band_y1);
+	for (index = 0; index < NUMBEROF(buttons); index++)
+	{
+		short box_x0 = (short)(buttons[index][1] - 2), box_x1 = (short)(buttons[index][2] + 2);
 
-		if (glyph < 0)
-			continue;
-		cover.y0 = 412;
-		cover.y1 = 442;
-		cover.x0 = (short)(buttons[index][1] - 2);
-		cover.x1 = (short)(buttons[index][2] + 2);
-		texels.x0 = 0;
-		texels.y0 = 0;
-		texels.x1 = (short)(cover.x1 - cover.x0);
-		texels.y1 = (short)(cover.y1 - cover.y0);
-		draw_bitmap_texel_x = 336;
-		draw_bitmap_texel_y = cover.y0;
-		draw_bitmap_in_rect(bitmap, &cover, &texels, NULL, 0xffffffff, NULL, FALSE);
-		draw_bitmap_texel_x = 0;
-		draw_bitmap_texel_y = 0;
-		face.y0 = 416;
-		face.y1 = 440;
+		psp_keyboard_piece(bitmap, x, band_y0, box_x0, band_y1, x, band_y0);
+		psp_keyboard_piece(bitmap, box_x0, band_y0, box_x1, band_y1, fill_x, band_y0);
+		x = box_x1;
+	}
+	psp_keyboard_piece(bitmap, x, band_y0, 640, band_y1, x, band_y0);
+	for (index = 0; index < NUMBEROF(buttons); index++)
+	{
+		rectangle2d face, texels;
+
 		face.x0 = buttons[index][1];
 		face.x1 = buttons[index][2];
+		face.y0 = face_y0;
+		face.y1 = face_y1;
+		texels.x0 = 0;
+		texels.y0 = 0;
 		texels.x1 = (short)(face.x1 - face.x0);
 		texels.y1 = (short)(face.y1 - face.y0);
-		psp_ge_glyph_next(glyph);
+		psp_ge_glyph_next(glyphs[index]);
 		draw_bitmap_in_rect(bitmap, &face, &texels, NULL, 0xff2090f0, NULL, FALSE);
 		psp_ge_glyph_next(NONE);
 	}
+	return TRUE;
 }
 
 /* the main menu's entry for the mode a build hasn't got (the campaign
@@ -22074,6 +22111,39 @@ static void psp_main_menu_without_other_mode(
 		longer matches, so a map's tags loaded again aren't cut twice) */
 		if (found[_psp_menu_entry_campaign] < 0 || found[_psp_menu_entry_multiplayer] < 0)
 			continue;
+		{
+			/* TEMPORARY DIAGNOSTIC: the main menu's structure, numbers only */
+			long c, h;
+
+			for (c = -1; c < count; c++)
+			{
+				long def_tag = c < 0 ? list_tag : children[c].widget_tag.index;
+				struct ui_widget_definition *d = ui_widget_definition_get(def_tag);
+				struct ui_widget_event_handler_reference *hs =
+					(struct ui_widget_event_handler_reference *)xbox_pointer(d->event_handlers.address);
+
+				error(_error_log, "menudiag: entry %ld type %d flags %08lx listflags %08lx children %ld handlers %ld mode %d",
+					c, (int)d->type, (unsigned long)d->flags, (unsigned long)d->list_flags, (long)d->child_widgets.count,
+					(long)d->event_handlers.count, c < 0 ? -1 : (int)psp_menu_entry_mode(def_tag, 1));
+				for (h = 0; h < d->event_handlers.count; h++)
+				{
+					long target = hs[h].widget_tag.index, k, rel = -9;
+					char const *name = target != NONE ? tag_get_name(target) : NULL;
+
+					if (target == NONE)
+						rel = -1;
+					else if (target == list_tag)
+						rel = -2;
+					for (k = 0; k < count; k++)
+						if (children[k].widget_tag.index == target)
+							rel = k;
+					if (rel == -9 && name && !strncmp(name, PSP_MULTIPLAYER_MENUS, sizeof(PSP_MULTIPLAYER_MENUS) - 1))
+						rel = -3;
+					error(_error_log, "menudiag:   handler %ld event %d flags %08lx function %d target %ld",
+						h, (int)hs[h].event_type, (unsigned long)hs[h].flags, (int)hs[h].function, rel);
+				}
+			}
+		}
 		/* the entries after it each take the place of the one before, so
 		the list closes up, and up and down move between what's left */
 		for (index = count - 1; index > found[dropped]; index--)
@@ -22199,15 +22269,13 @@ FIXES_MENUS["source/interface/virtual_keyboard.c#menus"] = [
 ("""		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
 	}
 """,
- """		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
-#ifdef HALO_PSP
-		{
-			/* the legends' Xbox buttons are the picture's own (ui_widget.c) */
-			extern void psp_keyboard_legend_glyphs(struct bitmap_data *bitmap);
+ """#ifdef HALO_PSP
+		/* the legends' Xbox buttons are the picture's own (ui_widget.c) */
+		extern boolean psp_keyboard_background(struct bitmap_data *bitmap);
 
-			psp_keyboard_legend_glyphs(bitmap);
-		}
+		if (!psp_keyboard_background(bitmap))
 #endif
+		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
 	}
 """),
 ]
