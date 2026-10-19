@@ -115,6 +115,11 @@ def assemble(tools, out, target):
             sys.exit('assemble: %s%s is missing from %s' % (tool, exe, tools))
     licenses = os.path.join(out, 'LICENSES')
     shutil.copytree(os.path.join(tools, 'licenses'), licenses)
+    # Rust's standard library is linked into Invader on every OS, but MSYS2's
+    # Rust ships no licence texts: these are rustup's (MIT and Apache-2.0,
+    # the same for every release)
+    if not os.path.isdir(os.path.join(licenses, 'rust-std')):
+        shutil.copytree(os.path.join(REPO, 'bake', 'bundle', 'licenses', 'rust-std'), os.path.join(licenses, 'rust-std'))
     readme = [LICENSES_README]
     for what, licence, folder, source in COMPONENTS:
         if folder and not os.path.isdir(os.path.join(licenses, folder)):
