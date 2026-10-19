@@ -22,8 +22,8 @@ holding the made-up maps' hashes. Then:
   - nothing is written outside the bundle's folder.
 
 --no-python runs the bake from the image with the system's Python out of
-sight (PATH cut down to the system's own folders; on macOS, whose
-/usr/bin/python3 can't be hidden, HALO_PSP_BAKE_NO_SYSTEM_PYTHON=1), so the
+sight (PATH cut down to links to the shell tools the double-click file uses;
+on Windows, to System32 and PowerShell's folder), so the
 double-click file downloads the pinned portable Python and the bake runs on
 it; on macOS, with the bundle's tools quarantined as a browser's download
 leaves them, which the double-click file clears. Exits non-zero at the first
@@ -149,7 +149,12 @@ def release(path, as_folder=False):
     return files
 
 
-def env(hide_python=False):
+# what the double-click file runs besides Python (POSIX)
+SHELL_TOOLS = ['uname', 'dirname', 'sed', 'cut', 'tar', 'gzip', 'mkdir', 'rm', 'mv', 'curl', 'wget', 'sha256sum',
+               'shasum', 'perl', 'xattr', 'xcode-select']
+
+
+def env(hide_python=False, tools=None):
     e = dict(os.environ)
     e['HALO_PSP_BAKE_YES'] = '1'
     e.pop('PYTHONPATH', None)
@@ -159,18 +164,23 @@ def env(hide_python=False):
             e['PATH'] = os.pathsep.join([os.path.join(root, 'System32'),
                                          os.path.join(root, 'System32', 'WindowsPowerShell', 'v1.0')])
         else:
-            e['PATH'] = '/usr/bin:/bin'
-        if MACOS:
-            e['HALO_PSP_BAKE_NO_SYSTEM_PYTHON'] = '1'
+            # a PATH of the shell tools alone: no system folder, so no Python
+            os.makedirs(tools, exist_ok=True)
+            for name in SHELL_TOOLS:
+                found = shutil.which(name)
+                if found and not os.path.exists(os.path.join(tools, name)):
+                    os.symlink(found, os.path.join(tools, name))
+            e['PATH'] = tools
     return e
 
 
 def double_click(bundle, hide_python=False):
     """the file a player double-clicks, with nobody there: (exit code, what it said)"""
+    tools = None if WINDOWS or not hide_python else os.path.join(tempfile.mkdtemp(), 'bin')
     # cmd.exe keeps the quotes round a path with a space only after "call"
     command = ['cmd.exe', '/d', '/c', 'call', os.path.join(bundle, START)] if WINDOWS else [os.path.join(bundle, START)]
     r = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       stdin=subprocess.DEVNULL, env=env(hide_python), cwd=os.path.dirname(bundle), timeout=1800)
+                       stdin=subprocess.DEVNULL, env=env(hide_python, tools), cwd=os.path.dirname(bundle), timeout=1800)
     return r.returncode, r.stdout.decode('utf-8', 'replace')
 
 
