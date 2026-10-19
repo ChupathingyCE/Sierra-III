@@ -126,6 +126,9 @@ struct psp_stream
 	is queued, as before (set by the main CPU with the gains, read by the
 	mixer on either CPU) */
 	int silent_overrun;
+	/* "adpcmold": the header's sample left out and the padding nibble played,
+	as before (set with silent_overrun) */
+	int adpcm_old;
 	/* the game's sound class of what the stream plays (sound_manager.c's
 	channel_queue_sound names it), so a dry gap can say what fell silent */
 	long sound_class;
@@ -252,9 +255,13 @@ static inline int ima_expand(int nibble, int *predictor, int *index)
 }
 
 /* one Xbox ADPCM block of a packet into the stream's decoded block: per
-channel a 4-byte header (predictor, step index), then 4-byte groups of
-eight nibbles, low nibble first, alternating between channels; 64 samples
-per channel. The decoded block is always two channels (a mono one twice) */
+channel a 4-byte header (the block's first sample, step index), then 4-byte
+groups of eight nibbles, low nibble first, alternating between channels; 64
+samples per channel. The nibbles code the 63 samples after the header's: the
+64th only pads the block. Decoding it in place of the header's sample put a
+wrong sample in every 64, a buzz at 344 Hz in 22 kHz sounds (after
+ChupathingyCE's dsound_sdl.c decode_adpcm, Jeff Clark). "adpcmold" decodes
+as before. The decoded block is always two channels (a mono one twice) */
 static void decode_block(struct psp_stream *stream, const struct voice_packet *packet, long block)
 {
 	unsigned long channels = stream->channels;
@@ -267,17 +274,22 @@ static void decode_block(struct psp_stream *stream, const struct voice_packet *p
 		int predictor = (short)(header[0] | (header[1] << 8));
 		int index = header[2] > 88 ? 88 : header[2];
 		short *output = stream->decoded[block & 1] + channel;
+		unsigned long first = stream->adpcm_old ? 0 : 1;
 
+		if (first)
+			output[0] = (short)predictor;
 		for (group = 0; group < 8; group++)
 		{
 			const unsigned char *nibbles = data + 4 * channels + (group * channels + channel) * 4;
 
 			for (byte = 0; byte < 4; byte++)
 			{
-				unsigned long sample = group * 8 + byte * 2;
+				/* nibble n codes sample n + first */
+				unsigned long sample = group * 8 + byte * 2 + first;
 
 				output[2 * sample] = (short)ima_expand(nibbles[byte] & 0xf, &predictor, &index);
-				output[2 * (sample + 1)] = (short)ima_expand(nibbles[byte] >> 4, &predictor, &index);
+				if (sample + 1 < XBOX_ADPCM_BLOCK_SAMPLES)
+					output[2 * (sample + 1)] = (short)ima_expand(nibbles[byte] >> 4, &predictor, &index);
 			}
 		}
 	}
@@ -439,9 +451,15 @@ static int prepare_voice(struct psp_stream *stream)
 		extern int psp_keep(const char *name);
 		static int overrun = -1;
 
+		static int adpcm_old = -1;
+
 		if (overrun < 0)
+		{
 			overrun = psp_keep("silentoverrun") != 0;
+			adpcm_old = psp_keep("adpcmold") != 0;
+		}
 		stream->silent_overrun = overrun;
+		stream->adpcm_old = adpcm_old;
 	}
 	if (stream->target_left > stream->peak_gain)
 		stream->peak_gain = stream->target_left;
