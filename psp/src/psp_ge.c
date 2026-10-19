@@ -115,7 +115,7 @@ was what got cut */
 copy the wall's triangles under them, every spark is a sprite) */
 /* 512 KB (build 107): b106 on b30's beach filled 384 KB in the fight (models
 175 KB a frame, up to 235 model and 850 decal draws a frame skipped; the
-flicker Sheepdog01 saw). Before the level's first draw the models may use only
+flicker the tester saw). Before the level's first draw the models may use only
 the list less the HUD's, the see-through draws' and the level's reserves
 (about 200 KB of 384). The 128 KB come from the heap; the start-up buffers
 psp_memory.c now places outside it gave back more than that */
@@ -263,7 +263,7 @@ static defer_word *defer_buffer = NULL;
 static float *defer_nodes = NULL; /* the carried-out model's node matrices: model_nodes points here */
 /* "gemesim" (with gedefer): the carrying out marked as the Media Engine's
 work while it still runs on the main CPU. This word holds the game thread's
-id meanwhile; the emulator's ME-strict check (PSP_MESTRICT, the lab's
+id meanwhile; the emulator's ME-strict check (PSP_MESTRICT, a patched
 emu.sh) prints every system call that thread makes then: each is a gate the
 ME version must not reach (big_levers.md, L1 step 3) */
 volatile unsigned int psp_me_context = 0;
@@ -296,7 +296,7 @@ lists; the main CPU, the records' other half and the recorder's words
 (defer_used and the rest). The emulator runs no ME code: there the half is
 carried out at once on the main CPU, marked as the ME's work (gemesim), and
 psp_me_window says a half is out, for the emulator's write trace (keep word
-mewrites, the lab's PSP_MEWRITES), which lists every line both write */
+mewrites, the patched emulator's PSP_MEWRITES), which lists every line both write */
 #define DEFER_HALF (DEFER_WORDS / 2)
 static PSP_MAIN_SIDE int me_overlap = 0;      /* this session overlaps (decided once) */
 static PSP_MAIN_SIDE int defer_half = 0;      /* the half being written */
@@ -313,7 +313,7 @@ turns of ME_BENCH_FRAMES frames in one run, each frame's time (swap to swap,
 the frame pacing off) added to its way: on the main CPU as it comes (gedefer
 off), on the ME with the main CPU waiting (gemeon), and overlapped
 (gemeoverlap). One build and one run answer what the overlap is worth on the
-PSP, in the same stretch of play (the hardware runner's golden rule) */
+PSP, in the same stretch of play (the hardware tests' golden rule) */
 #define ME_BENCH_FRAMES 60
 static PSP_MAIN_SIDE int me_bench = -1, me_bench_way = 0, me_bench_settled = 0;
 static PSP_MAIN_SIDE unsigned long me_bench_frame = 0, me_bench_frames[3], me_bench_us[3];
@@ -1440,7 +1440,7 @@ static void ge_dither(int on)
 {
 	/* a 4x4 Bayer matrix spanning one 5-bit step (8 levels): enough to hide
 	red's and blue's steps, and two of green's 6-bit steps, so the pattern
-	shows most in green. "ditherhalf" (opt-in, Sheepdog01's look call): half the
+	shows most in green. "ditherhalf" (opt-in, a look call): half the
 	span, half the pattern; the 5-bit steps come back as half-steps */
 	static const ScePspIMatrix4 matrix = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
 	static const ScePspIMatrix4 half = { { -2, 0, -2, 0 }, { 1, -1, 1, -1 }, { -2, 0, -2, 0 }, { 1, -1, 1, -1 } };
@@ -1523,10 +1523,10 @@ int psp_keep(const char *name);
 
 /* ---------- build 103: what fills the display list, and the level's room
 
-Sheepdog01's b102 runs 3 and 6 (The Library): in the Flood fight the level
+b102's runs 3 and 6 (The Library): in the Flood fight the level
 vanished (0 level draws while 340 KB of the list was in use; 25,000 draws
 skipped), and in run 6 about 1,100 draws were skipped every frame for the
-last half of the run, with Sheepdog01 idling in a corner. Which kind of draw fills
+last half of the run, with the player idling in a corner. Which kind of draw fills
 the list wasn't logged. Each public entry now says what kind of draw it is
 (ge_kind); the bytes the list grows by are charged to the kind running,
 with its skipped draws; the report gives the average and the fullest frame,
@@ -1627,7 +1627,7 @@ static void ge_kinds_frame_begin(void)
 /* build 107: when the list is full, the smallest models on the screen go
 first. b106 on b30's beach: with the list full, whichever draws came last
 were skipped (up to 235 model draws a frame), a different set each frame, so
-rocks, crates and trees nearby flickered in and out (Sheepdog01). Now a model whose
+rocks, crates and trees nearby flickered in and out. Now a model whose
 bounding sphere is smaller on the screen than model_size_floor (its
 diameter, in pixels) isn't drawn. The floor rises by a quarter each frame
 that skipped model draws for room, up to MODEL_SIZE_FLOOR_MOST, and comes
@@ -2062,7 +2062,7 @@ static int list_full(void)
 
 /* build 40: the first-person weapon's see-through parts (the assault
 rifle's ammo display) are the nearest, so sorted far to near they came last,
-and a full list skipped exactly them (Sheepdog01: the display went blank in
+and a full list skipped exactly them (the display went blank in
 sustained fire). They may use a quarter of the HUD's reserve */
 static int list_full_first_person(void)
 {
@@ -2558,7 +2558,7 @@ drawing space, the screen in its middle: ge_initialize's offset); past that a
 corner wraps round. "guardwide" puts the planes at GUARD_PIXELS on both axes
 (128 pixels of margin), so fewer triangles are cut, but not pixel for pixel:
 a triangle drawn whole instead of as pieces rounds its colours and edges a
-little differently (docs/review_cutstream.md), so it is Sheepdog01's call */
+little differently (docs/review_cutstream.md), so it is the maintainer's call */
 #define GUARD 6.0f
 #define GUARD_PIXELS 1920.0f
 
@@ -2574,8 +2574,8 @@ first report (one timer reading) so the parts can be read net of it */
 4 base + detail maps (psp_sdl.c cycles it with select + left under "passes") */
 volatile int psp_pass_mode = 0;
 int psp_keep(const char *name);
-/* build 47, diagnostics for the dark lines on surfaces seen edge-on (Sheepdog01,
-b46): "clearmagenta" clears to magenta and leaves out the sky, so a crack
+/* build 47, diagnostics for the dark lines on surfaces seen edge-on
+(b46): "clearmagenta" clears to magenta and leaves out the sky, so a crack
 between triangles shows magenta; "nomip" draws every texture at its full
 size, so a line that is the smallest mip level's colour shows the texture */
 static int magenta = -1;
@@ -2884,7 +2884,7 @@ static void ge_initialize(void)
 	/* build 62: Gouraud, as the Xbox shades. Left flat from the first
 	untextured builds (build 14), every lit model took one colour a
 	triangle once the GE lit models (build 22 on): the facets on the
-	weapons' slides and barrels Sheepdog01 kept seeing. "flatshade": as before */
+	weapons' slides and barrels the tests kept showing. "flatshade": as before */
 	sceGuShadeModel(psp_keep("flatshade") ? GU_FLAT : GU_SMOOTH);
 	sceGuEnable(GU_CLIP_PLANES);
 	sceGuFog(fog_near, fog_far, fog_color);
@@ -2895,7 +2895,7 @@ static void ge_initialize(void)
 	(GPU/Software/Rasterizer.cpp CalculateSamplingParams), looks only at how
 	s changes across the screen and how t changes down it, so a surface
 	seen at a grazing angle gets a level too sharp for it: grass and dirt
-	alternate from row to row at their border (Sheepdog01, b49) */
+	alternate from row to row at their border (b49) */
 	tex_level_mode = psp_keep("nomip") ? GU_TEXTURE_CONST : GU_TEXTURE_AUTO;
 	tex_bias = psp_keep("mipbias2") ? 1.0f : psp_keep("mipbias1") ? 0.5f : 0.0f;
 	sceGuTexLevelMode(tex_level_mode, tex_bias);
@@ -3092,7 +3092,7 @@ static void level_origin_follow(const float *eye)
 
 /* build 64: "nearauto", the near plane moved out as far as what is near the
 eye allows. near4 (four times finer depth everywhere; the rock bases stop
-shimmering, Sheepdog01 b59) cut away walls within 0.25 of the eye (the bunker
+shimmering, b59) cut away walls within 0.25 of the eye (the bunker
 wall in b63 run B, shots 33 and 35). Each frame:
 - the level: the game's collision asks whether any structure surface lies
   within 1.4 x 4 x near of the eye, then within 1.4 x 2 x near (1.4: the
@@ -3114,13 +3114,13 @@ static int near_scale = -1; /* build 77: file scope, for the debug menu */
 /* build 79's GE antialias flag ("geaa", GU_LINE_SMOOTH) is gone in build 80:
 on the hardware it is for lines (PPSSPP's reading: the texture is looked up
 by screen position and alpha halved), and with triangles it painted every
-texture as blocks and checkerboards (Sheepdog01's b79 shots 000/002/014/015) */
+texture as blocks and checkerboards (b79's shots 000/002/014/015) */
 /* build 79: texture coordinates re-centred per level draw (the ground
 wobble). Blood Gulch's ground is one base texture across the whole terrain
 with the detail maps tiled x100 and x60 over it, so the detail pass's
 coordinates reach hundreds of repeats, and the cliffs' tens; if the GE
 carries them at reduced precision, fractions of a texel are lost and the
-pattern swims as the view moves (Sheepdog01, b64-b78: only the ground, worst on the
+pattern swims as the view moves (b64-b78: only the ground, worst on the
 detail maps up close). Each draw's coordinates are shifted by whole repeats
 to put the vertex nearest the eye near zero (sceGuTexOffset, applied after
 the pass's scale, so the shift is an integer in that texture's own repeats:
@@ -3145,7 +3145,7 @@ static unsigned long near_auto_chosen_high[2]; /* build 84: x8, x16 */
 
 /* build 84: candidates x16, x8, x4, x2, x1 (b64: x4, x2, x1). Each
 doubling halves a depth step at every distance, so the stencils' nudges can
-be half the lift for the same number of steps (Sheepdog01's b82-b83 runs: the
+be half the lift for the same number of steps (b82-b83's runs: the
 sweet spot between a stencil sinking, which is counted in steps, and
 bleeding through what stands in front, which is counted in units, moved
 with the distance; a finer step moves the two apart). The price is the
@@ -3223,7 +3223,7 @@ the world only, so the HUD and the debug menu never feed back into it.
 Settings live in the debug menu (psp_debug.c): strength off/25/37/50%,
 jitter, adaptive */
 int psp_taa_strength = 0, psp_taa_jitter = 0, psp_taa_adaptive = 1;
-/* build 78: jitter off by default (Sheepdog01's b77 run: everything vibrated). The
+/* build 78: jitter off by default (b77's run: everything vibrated). The
 blend feeds its own output back (out = a x last out + (1 - a) x new), so the
 two jittered positions never get equal weight: at 50% the newer one weighs
 2/3 and the older 1/3, alternating each frame, and the image rocks by about
@@ -3621,13 +3621,13 @@ maps on, 1 nudge ceiling on, 2 level pass mode (0-4), 3 near plane (0 auto,
 value, after setting it when set is non-zero */
 static int nudge_wide;
 static int shadow_mode = 0;
-/* build 86: the dynamic light pass, a test like b85's shadow one (Sheepdog01's b85
+/* build 86: the dynamic light pass, a test like b85's shadow one (b85's
 run: the shadow modes changed nothing, so the bright stripes beside the tank
 and on the bunker are this pass). 0 as before: the lit triangles copied into
 their own vertex format, depth EQUAL; 1 the level's own vertex array and
 format with the kept triangles' indices, one flat colour a draw; 2 depth
 GEQUAL with a nudge toward the eye; 3 the pass not drawn at all */
-/* build 87: the nudge by default (Sheepdog01's b86 run 1: it removed the stripes
+/* build 87: the nudge by default (b86's run 1: it removed the stripes
 and looked right; "level array", the level's own vertices, still striped) */
 static int light_mode = 2;
 void psp_ge_forget_level(void);
@@ -3637,7 +3637,7 @@ static int level_compact;
 static int detail_by_distance = 1;
 static int decal_project;
 static unsigned long light_index_triangles = 0, light_nudged_draws = 0, lights_skipped = 0;
-static int nudge_percent = 0; /* build 84: the lift limit off by default (Sheepdog01's b83 run) */
+static int nudge_percent = 0; /* build 84: the lift limit off by default (b83's run) */
 /* build 82: a test instrument. A fixed number of depth steps added to every
 nudge toward the eye (wall symbols and decals), from the debug menu: 0, 16,
 64, 256. With the slope nudges positive and sizeable (b81's tdump at red
@@ -3647,7 +3647,7 @@ large wall triangle; the floor that makes them whole measures it */
 static int nudge_floor = 0;
 /* build 83: the distance part of the nudge is a LIFT off the surface that
 grows with the distance, a share of it with a ceiling, replacing b54's
-fixed half centimetre. Sheepdog01's b82 run: the base emblems needed a floor of
+fixed half centimetre. b82's run: the base emblems needed a floor of
 16 steps from the tank at 20-30 units (0.4 units of lift there), none at
 4 units, where 256 steps (0.27 units) saw through the pillar; a fixed step
 count lifted far stencils through hills (16 steps at 100 units is 10
@@ -3655,7 +3655,7 @@ units). So: lift = min(share x distance, ceiling); 2% and 0.4 units give
 0.08 units at 4 units (77 steps, under the 256 that bled), 0.4 at 20 (15
 steps, the 16 that worked), 0.6 steps at 100 (the 3-step minimum). Both
 from the debug menu */
-static float nudge_lift_share = 0.01f, nudge_lift_ceiling = 0.2f; /* build 84: Sheepdog01's close-range best (b83) */
+static float nudge_lift_share = 0.01f, nudge_lift_ceiling = 0.2f; /* build 84: the close-range best (b83) */
 float psp_debug_seconds(void);
 static int detail_off;
 int psp_ge_setting(int which, int set, int value)
@@ -4087,7 +4087,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		distance z is about z * z / (near * 61439). At the game's near plane
 		a surface 30 units off resolves only to a few tenths of a unit, so
 		overlapping surfaces far off flicker and a rock's buried base pokes
-		through the ground (Sheepdog01, b48). "near2" / "near4" move the world's near
+		through the ground (b48). "near2" / "near4" move the world's near
 		plane out 2 or 4 times (2 or 4 times finer everywhere; the price:
 		walls closer than the new plane are cut open). The first-person
 		weapon has its own projection and depth range */
@@ -4100,7 +4100,7 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		}
 		/* build 108: nearauto only in a game. Between maps (a load's
 		frames, the error loop when a map is missing) the level and the
-		player are gone, and its tests read them (Sheepdog01's b107 b30 run: a bus
+		player are gone, and its tests read them (b107's b30 run: a bus
 		error at the level's end); the game's own plane then */
 		if (near_auto && psp_game_running())
 			z_near = near_plane_auto(position, z_near);
@@ -4271,7 +4271,7 @@ static inline int outside(const float *v)
 /* build 42: a model corner the GE can't take: behind the near plane (with
 a margin), or so far to a side that its screen position overflows the GE's
 2048 pixels, where it wraps round and the triangle becomes a long spike
-across the screen (Sheepdog01's warthog roll bars and axles passing the camera) */
+across the screen (the Warthog's roll bars and axles passing the camera) */
 static inline int camera_corner_out(float x, float y, float z, float limit)
 {
 	return z < limit || x > guard_x * z || x < -guard_x * z || y > guard_y * z || y < -guard_y * z;
@@ -4520,7 +4520,7 @@ Most triangles sent here reach past the screen's side (the guard planes are
 By default a triangle wholly off it is not cut at all, and a piece wholly
 off it is not stored. Neither should draw a pixel, yet the emulator's frames
 move by one or two colour steps in scattered pixels, for reasons not yet
-found (docs/review_cutstream.md). Sheepdog01 saw no difference on the PSP and
+found (docs/review_cutstream.md). the tester saw no difference on the PSP and
 chose it on for the frame rate (a10 crosses 15 fps with it); "cutlessoff"
 cuts them as before */
 static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_store *store)
@@ -4936,14 +4936,14 @@ of level copies a frame [D, the a10 diagnosis] against the arena's 1,056 KB,
 and the general heap, at its end there (23 KB free of 5,604 KB), had no piece
 for the rest. The materials left over waited for room the whole time, their
 draws skipped: the floor grating and some walls missing [E, hop-menu-a10;
-M, Sheepdog01's PSP-1000].
+M, a PSP-1000].
 
 On a map whose geometry cache is carved from the texture RAM cache (its
 textures stream as drawn anyway), the copies may take a second room from
 there too, below the geometry and animation caches' shares, as those carve
 theirs. Every texture byte it takes is one the texture cache can't hold
 (b30 drew untextured for thousands of frames with 512 KB taken at its open
-[E, lab 39061873821]), so it is taken only when the copies need it: at a
+[E]), so it is taken only when the copies need it: at a
 frame's end (the GE done with the textures), when a copy found no room in the
 arena nor a piece of the general heap large enough, or materials wait for
 room that the rooms can't give, the carve grows downward by whole steps
@@ -6177,7 +6177,7 @@ static struct bake_stencil *bake_stencil_of(unsigned int key)
 /* The stencil bake is one block (up to ~162 KB on c20), and after a level
 change the heap's only free piece that large is its top, whose size follows
 what earlier levels left: the load's own small requests could eat it before
-the geometry pack opened and asked (lab heapladder1/2). So the block is
+the geometry pack opened and asked (the heap ladder runs). So the block is
 taken right after the old map is let go, when the top is at its largest,
 and if even then there's no room, asked for again once the load has let go
 of its temporaries. "stencilsold": asked for only when the pack opens */
@@ -6960,7 +6960,7 @@ the GE's automatic choice. The automatic choice (as PPSSPP models it,
 GPU/Software/Rasterizer.cpp) looks only at how s changes across the screen
 and t down it, so on ground seen at a slant it depends on how the texture
 happens to lie: turn, and the level changes, and the ground and the bullet
-holes on it shimmer and change shape (Sheepdog01, b57; holes on the walls, which
+holes on it shimmer and change shape (b57; holes on the walls, which
 face the eye, stayed still). In slope mode the GE takes the level from each
 pixel's depth: log2(2 x w x slope), w its distance. With a surface's texels
 per world unit known, slope = texels per unit / (2 x pixels per unit at
@@ -7031,7 +7031,7 @@ static float texture_levels_by_distance(float uv_per_unit, int width, int height
 takes the level from each pixel's depth alone, as for a surface facing the
 eye; one seen at a slant is squeezed on the screen by 1 / cos(angle) across
 the slant, and the Xbox's choice (by how fast the texture changes across
-the screen, in either direction) is that much blurrier there. Sheepdog01's b63 run
+the screen, in either direction) is that much blurrier there. b63's run
 B: by distance alone, crisp floors but the ground swam outside and the
 cliffs' feet looked aliased. The GE's slope is one value a draw, so each
 level draw's triangles are sorted into buckets by their slant (half a level
@@ -7461,10 +7461,10 @@ map, so a pass that is skipped, mipped down or faded out changes nothing; it
 fades to that neutral grey from DETAIL_NEAR to DETAIL_FAR (or the fog's
 far end), where the maps would only shimmer at 272 lines */
 /* build 57: 8 to 24 units (was 20 to 60): far off, the detail maps' pattern
-only beat against the pixels (the canyon bands; Sheepdog01 preferred the walls
+only beat against the pixels (the canyon bands; the walls looked better
 without them, b54 shots 24-25), and at 272 lines it can't be seen there
 anyway. "detailfar": the old range */
-/* build 64: 20 to 60 by default (Sheepdog01's b63 runs A and B: no bands with the
+/* build 64: 20 to 60 by default (b63's runs A and B: no bands with the
 Xbox's faded levels, pack 59). "detailnear": 8 to 24 (b57-b63) */
 #define DETAIL_NEAR (detail_far ? 20.0f : 8.0f)
 #define DETAIL_FAR (detail_far ? 60.0f : 24.0f)
@@ -7541,7 +7541,7 @@ static unsigned long me_classify_jobs, me_classify_vertices, me_classify_mismatc
 triangle list, cut-up corners), for the permanent decals (psp_ge_decal),
 which are drawn afterwards on these very triangles with depth EQUAL: the
 stencil bake's method, without a bake (the game builds these decals as the
-map loads). Sheepdog01's b87 run 2: the scenario's painted symbols on the base
+map loads). b87's run 2: the scenario's painted symbols on the base
 blocks partly sank into them on the PSP (whole in the emulator) */
 #define FRAME_LEVEL_DRAWS 96
 static struct frame_level_draw
@@ -7737,8 +7737,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	list, which the game wrote this frame into memory the CPU caches. The GE
 	draws as soon as a draw is listed, before the frame's end writes the cache
 	back, so it read whatever an earlier frame left there: the level's
-	triangles came and went with the view (Sheepdog01's canyon walls, the same way
-	each time he turned). Out of the cache first, as the meters (build 39) */
+	triangles came and went with the view (the canyon walls, the same way
+	each time the view turned). Out of the cache first, as the meters (build 39) */
 	if (!kept)
 		ge_writeback(indices, triangle_count * 3 * sizeof(unsigned short));
 	/* build 64: sorted by slant (angle_sort; the copy, if one is made, is the
@@ -7933,7 +7933,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			/* build 56: the detail maps a level and a half blurrier. They
 			tile tens of times across a surface, and the GE's choice of level
 			(too sharp at a slant, see ge_initialize) left their fine pattern
-			beating against the pixels: the canyon walls' bands (Sheepdog01's b54
+			beating against the pixels: the canyon walls' bands (b54's
 			pass screenshots: present with the detail maps, gone without).
 			A detail map's smaller levels fade to its neutral average, so
 			blurrier only means less of a pattern that couldn't be seen.
@@ -7956,7 +7956,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				detail_scale = sqrtf(fabsf(detail_u[pass] * detail_v[pass]));
 				/* build 64: by distance again (b59-b63: the GE's own choice,
 				which on the PSP went too blurry at a slant: the bunker floor
-				and the grass lost their detail, Sheepdog01's b63 run A against B),
+				and the grass lost their detail, b63's run A against B),
 				with the slant added back per triangle (the angle buckets
 				below). "detailauto": the GE's own choice */
 				if (detail_slope < 0)
@@ -7984,7 +7984,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				43% of its brightness by its eighth level, "detail grass" turns
 				purple), so two triangles side by side in different slant
 				buckets showed a step in brightness along their shared edge
-				(Sheepdog01, b90 run 1, the base floors). The GE's slope mode picks the
+				(b90 run 1, the base floors). The GE's slope mode picks the
 				level per pixel by depth, which changes smoothly; the buckets
 				only add the slant, per triangle. Base maps keep the buckets
 				(their levels keep their average). "slant per triangle (old)"
@@ -8145,7 +8145,7 @@ void psp_ge_model_point_light(const float *position, unsigned int color)
 /* build 38: whether the next model is the first-person weapon (its own
 projection and depth slice), and whether its bounding sphere comes within
 reach of the near plane: the GE draws a triangle that reaches behind the eye
-as a wedge across the screen (Sheepdog01's b37 shot of a rock in the cave), so
+as a wedge across the screen (b37's shot of a rock in the cave), so
 those models' triangles are checked one by one (psp_ge_draw_model) */
 static void use_projection(int first_person)
 {
@@ -8198,7 +8198,7 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 		sphere's nearest depth is c[2] - radius and its widest reach to a
 		side |c| + radius; if that reach can pass the guard band at that
 		depth, some corner may land past the GE's 2048 pixels and wrap into
-		a spike (Sheepdog01, b54: a warthog beside him, its wheel arm's triangle
+		a spike (b54: a warthog beside the player, its wheel arm's triangle
 		swept across the screen). Then each triangle is checked, as for
 		models at the eye */
 		/* build 64: the nearest model to the eye, for nearauto's next frame */
@@ -8210,7 +8210,7 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 			near_plane_auto). Build 90: only while the player sits in a
 			vehicle (the one he is in). On foot against the tank, the eye is
 			inside its large sphere too, and b84-b89 then let the near plane
-			out to 25 cm and cut the hull open (Sheepdog01's b87 shot 029): on foot
+			out to 25 cm and cut the hull open (b87's shot 029): on foot
 			such a sphere counts as touching the eye. Build 116: and in a
 			first-person seat (psp_player_seated 2: a Pelican's bench) */
 			if (reach < 0.0f && player_seated != 1)
@@ -8869,7 +8869,7 @@ above) hands the GE the copy instead. The same bytes: the same pixels.
   still drawing may read it).
 - Never from the Media Engine's side (it can't see VRAM, and the tables are
   the main CPU's): the gate leaves its draws alone.
-Off by default: Sheepdog01's A/B (a cinematic's GE time, gebusy by kind). */
+Off by default: an A/B (a cinematic's GE time, gebusy by kind). */
 #define VM_ENTRIES 1024
 #define VM_HASH 2048
 #define VM_NONE 0xFFFFFFFFu
@@ -9406,7 +9406,7 @@ pass 1's own texels are equal, so they are left alone) and without writing
 depth, so the texels pass 1 threw away fade the edge in. It costs a second
 model_geometry for every alpha-tested part, and the faded edge is drawn in
 object order, so something drawn later behind it covers it. A look change
-for Sheepdog01's A/B */
+for an A/B */
 static int foliage_two_pass = -1;
 static unsigned long foliage_second_passes = 0;
 
@@ -9575,10 +9575,10 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 	as pass 1 was, so the clamp holds under fog too. A pass more per
 	self-illuminated part, which only the main menu may spend (b30 draws
 	~700 glow passes a frame). Against ChupathingyCE's frames, the ring was
-	far dimmer than either the add or the screen (lab pc-chupa 39014142915),
+	far dimmer than either the add or the screen (the desktop build's frames),
 	but on the PSP the clamp shows the base's aliasing where the ring is seen
-	edge on, which the screen hides under the glow (lab 39063835938: twice
-	the shimmer), and Sheepdog01 judged the ring fine without it. So off by default:
+	edge on, which the screen hides under the glow (the emulator: twice
+	the shimmer), and the ring was judged fine without it. So off by default:
 	"glowclamp" turns it on ("glownoclamp" still says off) */
 	if (glow_no_clamp < 0)
 		glow_no_clamp = !psp_keep("glowclamp");
@@ -9607,8 +9607,8 @@ Xbox's own levels, which fade toward it: drawn over the frame with the GE's
 2 x source x frame blend it adds only the pattern, and changes nothing where
 its levels have faded out. Last, after the self-illumination and its clamp:
 the Xbox multiplies base x detail by lighting plus glow, the same product.
-Main menu only (the outer ring's panel lines, detail scale 10: lab sierra-tags
-39063134715); every other map keeps the folded average alone, at no cost.
+Main menu only (the outer ring's panel lines, detail scale 10, read from
+the tags); every other map keeps the folded average alone, at no cost.
 "nomodeldetail": the folded average alone there too. "modeldetailbiasN": the
 detail's level N quarter levels coarser (the GE picks a model's level
 itself, and the map repeats ten times across the part) */
@@ -9794,7 +9794,7 @@ static int multipurpose_pass(int which, void *vertices, const unsigned short *in
 /* build 87: "skincut" (on by default; "noskincut": dropped, as builds 41-86).
 A bending model's triangle reaching past the near plane used to be left
 out whole: the tank's treads and the warthog's wheels opened holes when the
-driving camera came close (Sheepdog01's b79 shots 5 and 6, and the distance where
+driving camera came close (b79's shots 5 and 6, and the distance where
 it stops). Now its three corners are bent on the CPU, by the same weights
 and node matrices the GE uses, and cut at the near plane and guard band as
 the level's triangles are; the pieces are drawn already bent (the model
@@ -10296,7 +10296,7 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				camera behind it: its roll bars, turret, axles) drops the
 				triangles not wholly in front of the near plane, as rigid ones
 				have since build 38. A corner behind the eye, given to the GE,
-				lands on the far side of the screen: the long spikes Sheepdog01 saw.
+				lands on the far side of the screen: the long spikes the tester saw.
 				The CPU works out each corner's depth from its weights */
 				/* build 107: the copy of the triangles drawn as they are is taken
 				at the first one that isn't (dropped or cut), with those before it;
@@ -10969,7 +10969,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			of this function does. Returning with this part's matrix still
 			loaded moved every level draw after it by the part's placement:
 			the whole level vanished while a model near the eye had all its
-			triangles left out (Sheepdog01's b58 spot at 33.2 -90.2, and the flicker
+			triangles left out (b58's spot at 33.2 -90.2, and the flicker
 			getting into the warthog) */
 			if (!kept)
 			{
@@ -10983,7 +10983,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			and drawn from model_cut (model_geometry). Dropped whole as before
 			(build 38 to 59), the triangle of a rock or wall nearest the eye
 			went missing whenever a corner reached past the screen's edge
-			(Sheepdog01's b59 rock shots), and a part with every triangle so placed
+			(b59's rock shots), and a part with every triangle so placed
 			disappeared. "modeldrop": as before */
 			/* (rigid_part_whole has reset corner_verdict, set rigid_rows and
 			worked out the corners up to the first triangle not wholly inside) */
@@ -11146,7 +11146,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	}
 	/* build 36: back faces culled, as the Xbox culls them (D3DCULL_CCW). Drawn,
 	a two-sided leaf's two triangles share their 16-bit depth and the lit one
-	and the dark one took turns as the plant swayed (Sheepdog01, b35). A two-sided
+	and the dark one took turns as the plant swayed (b35). A two-sided
 	shader's back faces are then drawn with the light from the other side,
 	as the Xbox's second pass flips the normals */
 	if (model_cull < 0)
@@ -11559,7 +11559,7 @@ static void transparent_table_acquire(void)
 
 static void hud_blend(short blend);
 
-/* build 36: a node matrix far off or not a number (Sheepdog01 saw something stretch
+/* build 36: a node matrix far off or not a number (the tester saw something stretch
 across the screen as the warthog rolled over a ghost): counted, and the
 first few logged with the frame */
 static unsigned long wild_nodes = 0;
@@ -11707,7 +11707,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	if (vertex_count > 2 * CONTRAIL_PAIRS)
 		vertex_count = 2 * CONTRAIL_PAIRS;
 	{
-		/* build 114: the pairs the GE can't take (b113 Test 3: Sheepdog01 saw the
+		/* build 114: the pairs the GE can't take (b113 Test 3: the tester saw the
 		plasma rifle's shots "streak badly and don't always render"). A
 		corner behind the near plane, or so far to a side that its screen
 		position passes the GE's 2048 pixels, wraps the triangle into a spike
@@ -12008,8 +12008,8 @@ level is: triangles wholly inside kept, wholly outside a plane skipped, the
 rest cut on the CPU. These parts were given to the GE whole. The sky is
 one: a dome some 40 units round the eye, its planet a single quad that at
 some headings has a corner behind the eye, and the GE then drew nothing of
-it (Sheepdog01's b59 shots 67-70, the planet gone while in view; reproduced in the
-emulator at his spot, 29.9 -114.4, "skydump") */
+it (b59's shots 67-70, the planet gone while in view; reproduced in the
+emulator at that spot, 29.9 -114.4, "skydump") */
 static void transparent_cut(struct transparent_draw *draw, int vertex_count)
 {
 	const unsigned short *indices = draw->indices;
@@ -12261,7 +12261,7 @@ work. "seethroughvfpu" (keep.txt, off): each node's matrix is loaded into the
 VFPU once per run of vertices on it, and a vertex is one vhtfm4. The VFPU
 sums the products in its own order, so a vertex can land a last bit away
 from the FPU's: a placement change too small to see, but not bit-exact, so
-it is Sheepdog01's call after an A/B. Never in the Media Engine's work (no VFPU) */
+it is the maintainer's call after an A/B. Never in the Media Engine's work (no VFPU) */
 static int seethrough_vfpu = -1;
 static unsigned long seethrough_vfpu_vertices = 0;
 
@@ -12812,7 +12812,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	slot's last user left: after a frame with more first-person see-through
 	parts (the pistol's), some of the level's painted symbols, the cave
 	fungus and the teleporter's beam went out in the weapon's depth slice,
-	in front of everything (Sheepdog01's b62 shots 6, 18-21; "tdump" showed
+	in front of everything (b62's shots 6, 18-21; "tdump" showed
 	level draws marked first-person). Turning or zooming changed the counts
 	and the slots, so it came and went */
 	draw->first_person = 0;
@@ -12838,11 +12838,11 @@ depth steps. Two parts:
   a pixel's depth change, more where their corners lie far off. Seen
   face-on that is a step or two; seen at a slant it is tens of steps a pixel,
   and a fixed nudge lost: the symbols went missing on one side of a line
-  across them (Sheepdog01's b59 shots 78-80). 1/z is linear across the screen for a
+  across them (b59's shots 78-80). 1/z is linear across the screen for a
   plane n.P = d in camera space: per pixel it changes by |n.x| or |n.y| /
   (pixels per unit x d), and the depth by that times near x 61439.
 "overlaynoslope": the distance part only (b54-b59) */
-/* build 62: two pixels' worth (b60-61: one; Sheepdog01's b61 run: the symbols still
+/* build 62: two pixels' worth (b60-61: one; b61's run: the symbols still
 cut off). "overlayslope1" / "overlayslope4": one or four */
 static float overlay_slope_pixels = 2.0f;
 static int overlay_slope = -1;
@@ -12878,7 +12878,7 @@ surface turns edge-on (its plane passes near the eye), up to the 4096-step
 cap; at the 16-bit depth's far end a step is metres (z^2 / (near x 61439):
 0.33 units at 50 units, near x2), so a symbol, a wall stencil or a decal
 batch could beat whole walls in front of it for the frame or two it was
-edge-on (Sheepdog01's b75 run: "anything 2d ... visible through walls for a frame
+edge-on (b75's run: "anything 2d ... visible through walls for a frame
 or two"). Graphics APIs have the same knob: polygon offset clamp.
 build 80: measured as the LIFT OFF THE SURFACE, not along the line of
 sight. b76's 0.03 units along the view was barely a depth step at 25-30
@@ -12932,9 +12932,9 @@ static float slope_units_capped(float units, const float *a, const float *b, con
 
 /* build 65: a triangle standing free (not on a wall) is nudged away from the
 eye instead, by the distance part: where its edge meets something solid (the
-teleporter's shield inside its frame, Sheepdog01's b64 shot 37: a green line along
+teleporter's shield inside its frame, b64's shot 37: a green line along
 the frame's edge) the solid side now wins the tie. Returned negative.
-build 115: "overlayfreefar" (A/B; Sheepdog01's b114 run: b30's ocean "clips through
+build 115: "overlayfreefar" (A/B; b114's run: b30's ocean "clips through
 the terrain under the water surface to varying degrees" in the flight). The
 ocean is free (the collision has no surface at the water: water is a fog
 plane there), and a draw goes out at the LARGEST push of its triangles. A
@@ -12947,7 +12947,7 @@ step (the solid side still wins an exact tie), and a draw takes the
 SMALLEST push of its free triangles (one constant offset is a lift that
 grows with the square of the distance, so the far end decides).
 build 116: on by default, a restoration (the ocean behind the seabed, as
-the Xbox draws it: Sheepdog01's b115 test 5 on the PSP); keep word
+the Xbox draws it: b115's test 5 on the PSP); keep word
 "overlayfreenear": as builds 65-115 */
 static int overlay_free_far = -1, overlay_wall_near = -1;
 static int overlay_units(const float *a, const float *b, const float *c, int on_a_wall)
@@ -12995,8 +12995,8 @@ static int overlay_units(const float *a, const float *b, const float *c, int on_
 	with the square of the distance, so a triangle reaching from the near
 	plane outward, its nudge sized at the near end (up to the 4,096-step
 	cap), was lifted ~10 units at 3 units off: b30's bunker glass floor
-	drawn through the hallway wall (b113 #13, b116 test 1, lab batch
-	pointlights118 [E]), and likely c40's bridge glass through Chief's legs
+	drawn through the hallway wall (b113 #13, b116 test 1, the emulator's
+	pointlights118 batch [E]), and likely c40's bridge glass through Chief's legs
 	(b116 test 3) [U]. Keep word "overlaywallnear": as before */
 	if (overlay_wall_near < 0)
 		overlay_wall_near = psp_keep("overlaywallnear");
@@ -13044,7 +13044,7 @@ static unsigned char overlay_triangle_bucket[OVERLAY_TRIANGLES];
 /* build 64: whether a see-through level triangle lies on a wall. The slope
 part of the nudge is for symbols painted on a wall; a surface standing free
 (the teleporter's shield: a thin upright panel) seen nearly edge-on got the
-largest nudge of all and drew in front of the frame round it (Sheepdog01, b62-b63:
+largest nudge of all and drew in front of the frame round it (b62-b63:
 the beam through the frame, near its axis). Asked once per triangle of the
 game's collision: is there a surface within 4 cm in front of it or behind
 it (a ray through its middle along its normal; the see-through surfaces
@@ -13054,7 +13054,7 @@ struct collision_result_space { unsigned char bytes[0x50]; } __attribute__((alig
 extern unsigned char collision_test_vector(unsigned long flags, const float *point, const float *vector,
 	long ignore_object_index, struct collision_result_space *collision);
 /* build 84: 2048, replaced round-robin when full (b81's 512 filled within a
-minute at one base, Sheepdog01's b83 run: 31,250 lookups overflowed and were treated
+minute at one base, b83's run: 31,250 lookups overflowed and were treated
 as on a wall, the beam among them) */
 #define OVERLAY_BACKINGS 2048
 /* build 81: keyed by the indices' LASTING identity. Since build 68 the
@@ -13063,7 +13063,7 @@ for other data once evicted: keyed by the pointer (b64-b80), red base's
 symbols found blue base's answers at the same address (the two bases are
 mirror copies, the same counts), so some triangles were "free" and nudged
 AWAY from the eye into their wall. The symbols tore along triangle edges and
-one sank entirely (Sheepdog01's b79-b80 runs at red base); in the whole of those
+one sank entirely (b79-b80's runs at red base); in the whole of those
 runs only the first 226 triangles were ever asked. The key is the pack
 address when the indices are the cache's, the pointer otherwise */
 static struct
@@ -13814,7 +13814,7 @@ static void transparent_flush_body(void)
 	see-through parts, whatever is current. A flush can come while the
 	first-person projection is still set (no model end after the weapon's
 	last part); the level's painted symbols and the cave's fungus were then
-	drawn in the weapon's depth slice, in front of everything (Sheepdog01, b61:
+	drawn in the weapon's depth slice, in front of everything (b61:
 	only with the pistol out, gone when zoomed, when no weapon is drawn) */
 	if (model_first_person)
 	{
@@ -13971,7 +13971,7 @@ static void transparent_flush_body(void)
 			/* build 54: the nudge sized by distance, as build 52 did for
 			decals: a fixed 24 depth steps is metres far off (the base's
 			painted symbols showed through whatever stood in front of them,
-			Sheepdog01 b50-b52) and almost nothing near. Now about half a centimetre
+			b50-b52) and almost nothing near. Now about half a centimetre
 			at the overlay's distance (draw->distance is its square), never
 			under 3 steps; "overlayoffset": the fixed 24 */
 			int units = LEVEL_OVERLAY_OFFSET;
@@ -14297,7 +14297,7 @@ filter spreads it over two. On whole pixels a texel drawn at its own size
 (hud177) is exactly one pixel, as the screen copy relies on (shift 0, above);
 at other zooms the edges at least stop smearing, and every element is as
 sharp as every other. A slanted quad's corners move by at most half a pixel.
-On by default since Sheepdog01's A/B; "hudnosnap" turns it off */
+On by default since its A/B; "hudnosnap" turns it off */
 static int hud_snap = -1;
 
 static float hud_pixel(float position)
@@ -14440,7 +14440,7 @@ mask's alpha instead, a stand-in for the soft edge (strength 85 of 255);
 without one, the whole alpha, as the Xbox. One quad over the 3D view, before
 the HUD. The mask is drawn for 4:3 (640x480): its square is kept round in
 the middle of the 480x272 screen, and the sides take its edge texels
-(clamped). The emulator's first run (38088924310) darkened the pistol's
+(clamped). The emulator's first run darkened the pistol's
 zoom by the whole alpha: a clear circle about half the screen's height in a
 black surround, which the Xbox's zoom doesn't show [U: as the game is
 remembered; the shaders say the mask weighs the blur] */
@@ -14615,7 +14615,7 @@ static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter
 	address on at every draw), long before the frame's end writes the
 	cache back: a meter worked out afresh was drawn with whatever that slot
 	held in memory before, a meter's previous value, for one frame each time
-	it changed (Sheepdog01's "rubber banding" ammo and flashlight meters). The
+	it changed (the "rubber banding" ammo and flashlight meters). The
 	display list's own memory is uncached, so only the kept slots need it */
 	if (!hit && computed >= &meter_cache_palette[0][0] && computed < &meter_cache_palette[METER_CACHE][0])
 		ge_writeback(computed, count * 4);
@@ -14850,7 +14850,7 @@ static struct
 static unsigned long shadows_drawn = 0, shadow_begins = 0, shadow_requests = 0;
 /* build 85: a test of equal-depth drawing on the hardware. The shadow pass
 re-draws the level's own triangles with the depth test EQUAL and the blob
-on top, and on the PSP they fight in a dotted pattern (Sheepdog01, b79-b84: the
+on top, and on the PSP they fight in a dotted pattern (b79-b84: the
 stripes beside the tank, the shadow on the bunker wall), while the
 lightmap pass, which does the same with the wall's own vertex array and
 index list, never does. Three ways, from the debug menu:
@@ -15420,7 +15420,7 @@ static unsigned int light_color(float reach)
 /* build 36: a spotlight's cone as a texture projected from the light, so its
 round edge is drawn per pixel. Lit per vertex, a terrain triangle several
 metres across took the cone's value at its corners only: the flashlight
-showed as lit triangles (Sheepdog01, b35). The GE has one texture a pass, so the
+showed as lit triangles (b35). The GE has one texture a pass, so the
 surface's own texture can't also be multiplied in; the light carries the
 texture's average colour instead (psp_tex_average), over the frame that
 already shows the texture */
@@ -15621,7 +15621,7 @@ corner by its own distance instead, as the cut pieces already are, and draws
 all of them at once. A band's nudge may lift a corner up to four times what
 its distance asks, so the merged lift is smaller for most corners: the
 light can sit a hair deeper into a surface it fights with. That is a look
-change, so it is Sheepdog01's call after an A/B (d20, where lights are many) */
+change, so it is the maintainer's call after an A/B (d20, where lights are many) */
 static int light_merge = -1;
 static unsigned long light_merged_draws = 0;
 
@@ -15678,7 +15678,7 @@ static int light_band(float squared)
 
 /* ---------- build 103: lit triangles split near the light
 
-Sheepdog01, b102 (The Library): the flashlight barely showed on floors and lit
+b102 (The Library): the flashlight barely showed on floors and lit
 walls only from very close. The Xbox measures the light's falloff per pixel
 (a 32x32x32 attenuation texture indexed by the pixel's offset from the
 light, 0.5/radius: rasterizer_xbox_environment.c); the GE pass measures it
@@ -16507,7 +16507,7 @@ static unsigned long decals_wholly_left_out = 0;
 /* "decalnocull": quads off the screen go through the work too (to time it) */
 static int decal_cull = -1;
 
-#define DECAL_MINIMUM_PIXELS 2.0f /* build 58: 2 (was 3: a little too far out, Sheepdog01 b57) */
+#define DECAL_MINIMUM_PIXELS 2.0f /* build 58: 2 (was 3: a little too far out, b57) */
 
 
 /* build 90: a permanent decal (the level's painted symbols) drawn on the
@@ -16979,7 +16979,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	/* build 52: a decal lies on its surface and must win the depth test
 	against it. A fixed depth offset (48 steps, build 36) is the wrong size
 	at both ends of the 16-bit depth range: near the eye 48 steps are under
-	a centimetre (the decal and the ground took turns as Sheepdog01 walked up to
+	a centimetre (the decal and the ground took turns as the player walked up to
 	them), far off they are metres (wall stencils showed through objects in
 	front). Each corner now moves toward the eye along its own line of sight
 	by about two depth steps at its distance (a step is z^2 / (near x
@@ -16989,7 +16989,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		/* build 57: decals smaller than DECAL_MINIMUM_PIXELS across on the
 		screen are left out. A distant bullet hole covers a pixel or two, and
 		at 272 lines it lit a pixel one frame and none the next as the view
-		moved: the blinking Sheepdog01 saw at a distance (b50-b56; a larger depth
+		moved: the blinking the tester saw at a distance (b50-b56; a larger depth
 		nudge changed nothing, so it wasn't the depth test). "decalall": all */
 		/* build 106: and quads wholly outside the view are left out before
 		any of the work below (b30's beach: 6-11 ms a frame in decals by the
@@ -17158,10 +17158,10 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 	sceGuEnable(GU_TEXTURE_2D);
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 	sceGuDepthMask(GU_TRUE);
-	/* build 36: 48 (was 32): bullet holes still sank into walls now and then (Sheepdog01, b35).
+	/* build 36: 48 (was 32): bullet holes still sank into walls now and then (b35).
 	build 65: with the pull, the slope part on top: a scorch or bullet hole on
-	ground seen at a slant lost the depth test across whole triangles (Sheepdog01's
-	b64 shot 40, a scorch cut off along a ground seam; the floor's bullet
+	ground seen at a slant lost the depth test across whole triangles
+	(b64 shot 40, a scorch cut off along a ground seam; the floor's bullet
 	holes flickering while the walls' didn't, b56). "decalnoslope": the pull
 	alone */
 	/* build 76: the slope part is in each quad's pull now; "decalbatch": the
@@ -17620,7 +17620,7 @@ volatile int psp_screenshot_requested = 0;
 /* build 92: each shot stamped with the build, the run's seconds (the T of
 the overlay and the log's [t ...]) and the frame, burned into the bottom
 centre and put in the file name (shot004_t108.bmp). Not the PSP's clock:
-Sheepdog01's is unreliable. A 5 x 7 font of the characters it needs */
+the test PSP's is unreliable. A 5 x 7 font of the characters it needs */
 static const unsigned char stamp_font[][7] = {
 	{ 14, 17, 19, 21, 25, 17, 14 }, { 4, 12, 4, 4, 4, 4, 14 }, { 14, 17, 1, 2, 4, 8, 31 },
 	{ 31, 2, 4, 2, 1, 17, 14 }, { 2, 6, 10, 18, 31, 2, 2 }, { 31, 16, 30, 1, 1, 17, 14 },
@@ -17934,7 +17934,7 @@ void psp_ge_loading_veil(const struct psp_loading_view *view)
 		psp_screenshot_requested = 1;
 }
 
-/* ---------- the boot screen (psp_loading.c drives it; Sheepdog01's ask)
+/* ---------- the boot screen (psp_loading.c drives it)
 
 Until the main menu's first frame the GE drew nothing, and the screen showed
 the log scrolling (psp_platform.c; "bootlog" keeps it so). Now the GE starts
@@ -18085,7 +18085,7 @@ static void screenshot(void)
 }
 
 /* build 74: the frame end's parts over each heartbeat window, for the log's
-frameend: line (psp_platform.c). Sheepdog01's b72/b73 runs: the step holding the
+frameend: line (psp_platform.c). b72/b73's runs: the step holding the
 frame end took 0.8 s a frame, growing by ~15 ms each frame, with no Memory
 Stick reads; the per-300-frame report never came at 1 fps */
 static PSP_MAIN_SIDE unsigned long win_frames = 0, win_flush_us = 0, win_writeback_us = 0, win_ge_us = 0, win_ge_worst = 0,

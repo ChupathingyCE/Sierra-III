@@ -12,12 +12,12 @@ Everything needed to go from a clean Linux machine to a release zip, maps and a 
 
 ## 1. The machine
 
-Any x86-64 Linux. The project builds on Ubuntu 24.04 (the build machines) and CachyOS. Install:
+Any x86-64 Linux. The project builds on Ubuntu 24.04 and on Arch-based systems. Install:
 
 ```sh
 # Ubuntu / Debian
 sudo apt install git python3 python3-venv ninja-build cmake build-essential xxd curl
-# Arch / CachyOS
+# Arch and Arch-based
 sudo pacman -S --needed git python ninja cmake base-devel xxd curl
 ```
 
@@ -53,7 +53,7 @@ What it does, in order:
 
 You get `~/sierra-out/halo_psp_<commit>.zip`, plus `halo.elf`, `halo.map` (the link map) and `build.log`. The first build takes 5 to 10 minutes; later ones about 2.
 
-**Options** (environment variables): `JOBS=8`, `LABEL=b114` (the zip's name), and the build switches in `CLAUDE.md` (`PSP_GAME_OPT=-Os`, …).
+**Options** (environment variables): `JOBS=8`, `LABEL=b114` (the zip's name), and the build switches (`PSP_GAME_OPT=-Os`, …; each is described where `psp_build.py` reads it).
 
 ## 4. Check you built the same bytes
 
@@ -63,7 +63,7 @@ The same commit builds the same bytes on any machine: the compile records no pat
 sha256sum ~/sierra-out/build/EBOOT.PBP | cut -c1-16
 ```
 
-should equal the EBOOT hash in that build's notes (`docs/build_bNNN.md`, "EBOOT …"). If it doesn't, the toolchain differs (step 2).
+should equal the EBOOT hash in that build's notes ("EBOOT …"), built with the switches they name (a release is built with its profile, `PSP_PGO=use PSP_PGO_PROFILE=<name>`). If it doesn't, the toolchain or the switches differ (step 2).
 
 ## 5. Bake the maps from your own disc
 
@@ -79,7 +79,7 @@ The result (`~/halo-psp-out/halo/`) is game data: keep it on your own machines.
 1. A PSP running custom firmware (built and tested on a PSP-1000 with 6.61 and ARK-4).
 2. Unzip the build zip at the Memory Stick's root: it makes `PSP/GAME/halo/` (and `halo/presets.txt`, the launch menu's test presets, if the build has them).
 3. Copy the baked `halo/` folder to the stick's root, so it holds `halo/maps/`.
-4. Launch "halo" from the game menu. The launch menu picks the map and the keep words (`CLAUDE.md`, "Keep words").
+4. Launch "halo" from the game menu. The launch menu picks the map and the keep words (`ms0:/halo/keep.txt`; `psp_keep()` in `psp/src/psp_platform.c` reads them).
 
 The game writes its log to `halo/log/log.txt` (the last 8 launches are kept as `log/NNN_log.txt`), its profile to `log/profile.txt`, screenshots (select + right) to `halo/shots/`, and `halo/crash.txt` if it crashes.
 
@@ -101,7 +101,7 @@ Then one run with `tools/emu.sh` (its header lists every setting): it sets up a 
 - `STRICT=1`: the strict interpreter (slow).
 - `PSP_DCACHE=1` / `PSP_ICACHE=1`: the cache models (on the interpreter), with exact miss counts.
 
-What the emulator can and can't tell you: it says *where* time goes and whether the game behaves; only a PSP says *how long* (it has no bus contention and no uncached-store cost). `docs/testing_pipeline.md` describes how the project runs many emulator tests at once.
+What the emulator can and can't tell you: it says *where* time goes and whether the game behaves; only a PSP says *how long* (it has no bus contention and no uncached-store cost). The project's own harness, which runs many of these at once, isn't part of the source.
 
 ## If something fails
 

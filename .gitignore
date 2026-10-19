@@ -59,7 +59,7 @@ halo.map
 flash0/
 *.bin
 
-# 4. Hardware logs and emulator runs live in the private lab repo, not here.
+# 4. Hardware logs and emulator runs: never committed.
 /logs/
 /runs/
 *.tgz

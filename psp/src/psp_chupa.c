@@ -72,7 +72,7 @@ ChupathingyCE checks every tag of a map against its group's schema as the
 map loads: a bit per byte of the tag window (1.1 MB on the PSP) and a walk
 of all its tags. The schemas are the Xbox's layouts, and the PSP's bake
 changes them (slim blocks, packed BSP vertices, geometry in the pack), so
-the PSP's maps would be refused. They are its own bake of Sheepdog01's disc, read
+the PSP's maps would be refused. They are its own bake of a retail disc, read
 as halo-ce-universal reads every map: as they are. */
 
 boolean tag_validate_tags(void *tag_header, long tag_data_size, long file_length, char const *map_name);

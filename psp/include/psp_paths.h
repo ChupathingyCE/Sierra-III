@@ -2,7 +2,7 @@
 
 The campaign build keeps everything in ms0:/halo. The multiplayer build
 (PSP_MULTIPLAYER) keeps its own in ms0:/halomp: config.toml, keep.txt,
-init.txt, the log, saves, the crash report, screenshots (Sheepdog01, 2026-10-11:
+init.txt, the log, saves, the crash report, screenshots (2026-10-11:
 both builds ready on one stick, nothing swapped between them). The maps
 stay in the campaign build's folder, and both builds read them there: one
 bake to keep up to date. xbox_files.c's d:\maps (psp_fixups.py) and the

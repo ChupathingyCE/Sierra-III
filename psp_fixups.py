@@ -55,7 +55,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 	/* build 107: a first map that is a cube map (the shader's "first map
 	type": a reflection) is passed over for the next one, which the GE can
 	draw. b30's ocean ("water simple": a reflection cube, then three ripple
-	maps) had no map at all and wasn't drawn: the white water Sheepdog01 saw (b106) */
+	maps) had no map at all and wasn't drawn: the white water the tester saw (b106) */
 	short first_map_type = (type == 5 || type == 6) ? *(short const *)(definition + 42) : 0;
 	long map_count = (type == 5 || type == 6) ? *(long const *)(definition + 84) : 0;
 
@@ -801,7 +801,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 ("	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);",
  """#ifdef HALO_PSP
 	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB.
-	The deepest any of these threads has gone, in every log the lab holds
+	The deepest any of these threads has gone, in every log of the test runs
 	from both builds, is under 11 KB (the main menu's saved-game check;
 	the cache file thread under 5 KB, the others under 2 KB): 48 KB keeps
 	four times that. Stacks come from the free user RAM above the heap,
@@ -2057,7 +2057,7 @@ boolean psp_model_draw(
 /* build 108: the local player's unit for the helpers below, or NONE. Only
 while a game is in progress: between maps the player and object tables are
 disposed but still hold the last map's indices, so reading them asserts
-(data.c#396 data->valid) and then faults. Sheepdog01's b107 run of b30: the level
+(data.c#396 data->valid) and then faults. b107's run of b30: the level
 ended, b40 wasn't on the stick, the game's error loop drew a frame, and
 nearauto's psp_player_seated read the gone player's unit (object index
 #906, a bus error in object_get_and_verify_type) */
@@ -2117,8 +2117,8 @@ void psp_player_snapshot(char *text, int size)
 }
 
 /* build 59: the local player put at a spot and turned to a direction
-(ms0:/halo/teleport.txt, psp_platform.c), for repeating what Sheepdog01 saw at a
-place his screenshots name */
+(ms0:/halo/teleport.txt, psp_platform.c), for repeating what the tester saw at a
+place the screenshots name */
 void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz)
 {
 	long unit_index = psp_local_unit(NULL);
@@ -2285,7 +2285,7 @@ PRELUDE = '''/* PSP sizes (psp_fixups.py) */
 PSP_TEXTURE_CACHE_SIZE, are psp_capacity.h's: every file reads them, not
 only the files changed here) */
 #define PSP_TEXTURE_STEAL_GUARD 0x4000
-/* build 102: 1.125 MB (was 1 MB): Sheepdog01's b101 Library run streamed 99 MB of
+/* build 102: 1.125 MB (was 1 MB): b101's Library run streamed 99 MB of
 sound in 6.5 minutes through the 1 MB cache (2,954 loads, 35 failed for
 room, the last second's working set up to 1000 KB); half of the 256 KB the
 build gave back to the heap (AI debugger, log buffers). Build 107: chosen at
@@ -2690,7 +2690,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 A sleeping body skips its whole update, and its own bytes don't change when
 what it rests on goes away, so a body that came to rest on something else
 (another body that was cleared away, a vehicle, the player) stayed in the
-air (Sheepdog01's b113 Test 3: an Elite's body hanging above the beach). On the
+air (b113's Test 3: an Elite's body hanging above the beach). On the
 Xbox its physics runs every tick and finds itself airborne the tick its
 support goes (bipeds.c: the at-rest bit is worked out afresh each tick).
 The level never moves, so a body it holds can only start moving if
@@ -2802,7 +2802,7 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 	if (header->type == _object_type_vehicle)
 	{
 		/* build 40: each vehicle kind's update time, parked (at rest) or
-		not (Sheepdog01: the warthog and the scorpion cost far more than the ghost;
+		not (the warthog and the scorpion cost far more than the ghost;
 		their physics tags have 15 and 18 mass points to the ghost's 5,
 		each tested against the ground every tick) */
 		static struct { long definition; unsigned long us[2], count[2]; } psp_vehicle_cost[8];
@@ -2849,7 +2849,7 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 	}
 	/* build 102: idle machines sleep too, as scenery does: a machine whose
 	update leaves it byte-identical twice running is skipped until something
-	changes it. Sheepdog01's b101 Library combat: 61 machines (doors, lifts, the
+	changes it. b101's Library combat: 61 machines (doors, lifts, the
 	elevator's parts) cost 7.5 ms a tick. What a machine reads besides its own
 	bytes is covered: its power and position groups (a switch, a script) go
 	into the checksum (psp_family_checksum); an automatic door still runs on
@@ -2902,7 +2902,7 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 		psp_sleepy_update(object_index, absolute_index, header, may);
 		return;
 	}
-	/* build 105: a settled corpse sleeps as idle scenery does. Sheepdog01's b102
+	/* build 105: a settled corpse sleeps as idle scenery does. b102's
 	run 3: 116 biped updates a tick in the Library's first Flood fight with
 	at most 35 actors, about 0.74 ms each; the garbage collector never takes
 	a body a player can see. Only a truly dead one (garbage: a Flood combat
@@ -3166,7 +3166,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		would (object_update's object_connect_lights): to the same places,
 		but first in their clusters' lists, where every light the tick
 		reconnects goes. Without it the lists' order changed (machinesleep on
-		d20, lab 38526377504), and with it the lights a lit object picks */
+		d20), and with it the lights a lit object picks */
 		if (header->type == _object_type_machine &&
 			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&
 			(!TEST_FLAG(sleeper->object.flags, _object_invisible_bit) ||
@@ -5178,7 +5178,7 @@ FIXES_31["source/objects/objects.c#vehicles"] = [
 """),
 ]
 
-# build 36: particles. Sheepdog01's b35 run: under sustained assault rifle fire the
+# build 36: particles. b35's run: under sustained assault rifle fire the
 # game's frame step (particles_update, particle_systems_update...) took 15-39
 # ms a frame and render_particles 10-14 more: each free particle (a spark, a
 # chip of rock) runs point physics with a collision ray every frame, and
@@ -5392,7 +5392,7 @@ void matrix4x3_multiply(
 ]
 
 # build 36: the HUD. At the Xbox's size the HUD covers the same share of the
-# PSP's screen as of a TV, which on 4.3 inches is small (Sheepdog01, b35). Halo
+# PSP's screen as of a TV, which on 4.3 inches is small (b35). Halo
 # places each element from a corner (or the centre) of the window's bounds,
 # so the weapon and unit HUD and the messages are laid out in a window k
 # times smaller and the GE draws them k times larger: every element grows
@@ -5403,7 +5403,7 @@ void matrix4x3_multiply(
 # The default, 848 / 480 = 1.767, is the zoom at which a HUD texel is one
 # PSP pixel (480/848 x 1.767 = 1.000, 272/480 x 1.767 = 1.001); with hudsnap
 # (psp_ge.c, hud_draw) the HUD is drawn 1:1, with nothing left to filter.
-# Sheepdog01 chose it over 1.5 by A/B (hardware_b120.md, test 4b)
+# chosen over 1.5 by A/B (hardware_b120.md, test 4b)
 FIXES_36["source/interface/hud.c"] = [
 ("""void hud_draw_screen(
 	void)
@@ -5418,7 +5418,7 @@ side (the game's own window units; hud_draw.c's hud_calculate_point) */
 short psp_hud_push = 0;
 #define PSP_HUD_PUSH 32
 /* the top corners' elements move this far up, for the room the 1:1 zoom
-takes (Sheepdog01, test 4b: closer to the top edge); about 12 PSP pixels, leaving
+takes (test 4b: closer to the top edge); about 12 PSP pixels, leaving
 the ammo and shield bars ~6 pixels from the edge */
 short psp_hud_push_up = 0;
 #define PSP_HUD_PUSH_UP 7
@@ -5506,7 +5506,7 @@ void hud_draw_screen(
 
 # build 40: the corner elements pushed out toward the screen's sides. Halo
 # keeps them a TV's safe area in from each edge, which the zoom made larger
-# still (Sheepdog01, b39: "push it more to the outer sides horizontally"). A fixed
+# still (b39: "push it more to the outer sides horizontally"). A fixed
 # distance, so the elements of one corner keep their places to each other
 FIXES_36["source/interface/hud_draw.c"] = [
 ("""		point.y = placement->offset.y *
@@ -5534,7 +5534,7 @@ FIXES_36["source/interface/hud_draw.c"] = [
 # which a thread of the port's (d3d8_gl.c) moves on at 60 Hz; a PSP thread
 # runs until it waits, so the spinning game thread kept that thread from
 # ever running, and after a second the game gave up on its frame-rate
-# control (Sheepdog01's red "stuck waiting for VBLANK callback!"). Waiting a
+# control (the red "stuck waiting for VBLANK callback!"). Waiting a
 # millisecond at a time lets it run
 FIXES_36["source/main/main.c"] = [
 ("""				if (precache_in_progress)
@@ -6185,7 +6185,7 @@ static __inline__ void *psp_tag_block_element(struct tag_block const *block, lon
 # build 66: Halo's adaptive vertical-blank throttle off on the PSP. It paces
 # frames to whole vertical-blank intervals (2 = 30 fps, 3 = 20, 4 = 15) and
 # steps the interval down after repeated misses, then SLEEPS to pad every
-# frame out to it: Sheepdog01's b64 run spent 3.9 ms a frame in
+# frame out to it: b64's run spent 3.9 ms a frame in
 # main_rasterizer_throttle at 21 fps. Without it the frame runs as fast as it
 # can, capped at 30 fps by the millisecond branch. "vblankthrottle": as before
 # build 66: verify_tag_reference looked every reference up by NAME (tag_loaded:
@@ -6248,7 +6248,7 @@ FIXES_36["source/main/main.c#throttle"] = [
 		extern int psp_keep(const char *name);
 		static int vblank_throttle = -1;
 
-		/* build 90: on by default (Sheepdog01's b87 run 3: with it the warthog's
+		/* build 90: on by default (b87's run 3: with it the warthog's
 		rubber banding was almost gone; with interpolation it was worse).
 		"novblankthrottle" turns it off, and benchrun runs without it so its
 		figures stay comparable with earlier runs'; build 112: ceilingbench
@@ -6271,7 +6271,7 @@ FIXES_36["source/effects/particles.c"] = [
 {""",
  """#ifdef HALO_PSP
 /* build 38: the budget for particles in flight (128 refused smoke, debris
-and explosion parts with the sparks, Sheepdog01's "missing effects"), and how many
+and explosion parts with the sparks, the "missing effects"), and how many
 of them run their physics each frame: each costs about 70 us (the wind where
 it is and a collision ray); past the budget they take turns, every second
 or third frame with the time they missed (the particle's own clock and
@@ -6281,7 +6281,7 @@ animation still run every frame) */
 static float psp_particle_dt[HALO_PORT_MAXIMUM_PARTICLES];
 /* build 39: a new particle runs its physics every frame for its first few
 (the spark off a pistol hit is gone in a quarter second: waiting a turn in
-its first frames left it hanging where it was born, Sheepdog01's "mistimed" shots).
+its first frames left it hanging where it was born, the "mistimed" shots).
 Only older ones take turns */
 #define PSP_PARTICLE_YOUNG_FRAMES 6
 static unsigned char psp_particle_age[HALO_PORT_MAXIMUM_PARTICLES];
@@ -6293,7 +6293,7 @@ static int psp_particle_budget = -1;
 static long psp_free_particles = 0;
 static unsigned long psp_particles_thinned = 0, psp_particles_refused = 0, psp_particle_updates = 0, psp_particle_physics = 0;
 static unsigned long psp_particle_us = 0, psp_particles_peak = 0, psp_particles_live_total = 0;
-/* build 46: which particles cost the time (Sheepdog01: the sparks off a vehicle's
+/* build 46: which particles cost the time (the sparks off a vehicle's
 scrapes look like the assault rifle's): made and physics time per
 particle definition, the top ones logged with the particles line */
 #define PSP_PARTICLE_KINDS 32
@@ -6342,7 +6342,7 @@ void particle_new(
 		/* build 41: past 96 in flight, every second new one is left out,
 		past 160 two of three: a big burst (the tank shell's) comes out
 		thinner but on time, where the budget alone took it whole and then
-		refused everything after (Sheepdog01: dense, and a big cut in frames) */
+		refused everything after (dense, and a big cut in frames) */
 		if (psp_particle_budget != 0x7FFF && psp_free_particles >= 96)
 		{
 			static unsigned long psp_thin = 0;
@@ -6762,7 +6762,7 @@ void sample_lightmap(
 # lightmap's colour and the surface texture's, from the texture pack
 # (psp_tex.c's psp_tex_light_texel): the game's bitmaps have no pixels here,
 # so bitmap_2d_get_pixel answered "none", white, and every object was lit as
-# if it stood in full light (Sheepdog01, b101). "lightwhite" in keep.txt: as before
+# if it stood in full light (b101). "lightwhite" in keep.txt: as before
 FIXES_36["source/objects/object_lights.c#lightmapsample"] = [
 ("""	pixel32_to_real_rgb_color(
 		bitmap_2d_get_pixel(bitmap, &texcoord, 1.0f),
@@ -7400,7 +7400,7 @@ def packed_designators(tree):
 # throttle off (build 66) the frame loop measures its first frame against a
 # start time of 0, and that wall-clock value read as a signed long is
 # negative for 24.8 days out of every 49.7, depending on the PSP's date: the
-# game then asked to Sleep() for weeks before its first tick (Sheepdog01's b70 run,
+# game then asked to Sleep() for weeks before its first tick (b70's run,
 # 2026-10-05: game time 0 forever, step main_update_time). The emulator's
 # date happened to give a positive value
 FIXES_36["port/linux/src/xbox_kernel.c#clock"] = [
@@ -7460,7 +7460,7 @@ FIXES_36["source/main/main.c#sleep"] = [
 ]
 
 # build 101: "crumbs" (psp_trace.c): the last steps drawn straight onto the
-# screen, so a freeze that takes the whole PSP down (Sheepdog01's b100 runs: no
+# screen, so a freeze that takes the whole PSP down (b100's runs: no
 # crash report, no sound, no input; the crash handler's own test froze the
 # same way) leaves the last thing the game started on the frozen picture
 def _crumb(name, detail="0"):
@@ -7491,7 +7491,7 @@ FIXES_36["source/effects/effects.c#crumbs"] = [
 # one byte into its struct, after a one-byte boolean: on x86 a misaligned
 # word just works, on the PSP's MIPS it is an address error. The strict
 # emulator caught it on a grenade's blast (breakable_surface_extant, from
-# breakable_surface_damage_area_of_effect); Sheepdog01's b97-b100 freezes in The
+# breakable_surface_damage_area_of_effect); b97-b100's freezes in The
 # Library came at grenades and shots near the Flood. Aligned on 4 bytes now
 FIXES_36["source/physics/breakable_surfaces.c#aligned"] = [
 ("\tboolean enabled;\n\tbyte breakable_surface_flags[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO][32];\n",
@@ -7614,7 +7614,7 @@ FIXES_105["source/render/render_debug.c"] = [
 ]
 
 # build 106: what the garbage collector does, for the corpse-sleep tests
-# (b105 run 1: Sheepdog01 saw bodies vanish once he looked away, well below the 50
+# (b105 run 1: bodies vanished once the view turned away, well below the 50
 # active ones that start a collection on their own). Counted by reason; the
 # heartbeat's objects line reports them
 FIXES_106 = {}
@@ -8134,7 +8134,7 @@ FIXES_106["source/objects/object_lights.c#inline"] = [
 """ + _PSP_DATUM_INLINE + """
 /* port: port/linux/src (halo.log) */"""),
 ]
-# build 106: game_sound_update in four steps for the profile. Sheepdog01's b105
+# build 106: game_sound_update in four steps for the profile. b105's
 # run: 11.5 ms a frame (median of 94 windows; up to 16.4), against about 1 ms
 # in the emulator on b30. Its parts: the cluster's sound environment, the
 # potentially audible set (every cluster against the camera's), the
@@ -8184,7 +8184,7 @@ FIXES_106["source/sound/game_sound.c#steps"] = [
 # gets a collision test from the camera (structure, water, objects, scenery,
 # machines) every frame it is refreshed: the emulator's step-tagged PC samples
 # put The Library's "game_sound_update: looping sounds" step at 6.3% of the
-# time, two thirds of it these tests; Sheepdog01's b105 run measured the step at
+# time, two thirds of it these tests; b105's run measured the step at
 # 11.5 ms a frame. Two changes:
 # - source_audible: a sound past its maximum distance is out whatever the test
 #   says, so it isn't tested (exact: the same sounds are heard);
@@ -8334,7 +8334,7 @@ void compute_sound_obstruction(
 """),
 ]
 # build 117: looked for again by default: the GE lights models by them now
-# (b116 test 1: Sheepdog01 saw no lighting on actors). "nopointlights": as before.
+# (b116 test 1: the tester saw no lighting on actors). "nopointlights": as before.
 # build 106: an object's dynamic point lights (muzzle flashes, plasma bolts)
 # are looked for only to pick the Xbox's vertex shader with
 # per-vertex point lights (rasterizer_xbox_models.c); the GE draws a model
@@ -8455,7 +8455,7 @@ FIXES_106["source/objects/widgets/lightning.c"] = [
 # highest-priority ready thread and never shares the CPU between equals, so a
 # read that has finished in the driver waits for the game thread to block
 # before its thread can issue the next one, and it keeps the stick's lock
-# meanwhile. Sheepdog01's b105 run: 87 ms a call for reads the stick does in about
+# meanwhile. b105's run: 87 ms a call for reads the stick does in about
 # 4 ms. The thread sleeps in the driver nearly all the time, so it costs the
 # game thread little CPU. psp_platform.c's psp_cache_thread_priority has the
 # rule and the keep word ("readerslow" leaves it where pthreads put it)
@@ -9236,7 +9236,7 @@ void cluster_partition_reconnect(
 """),
 ]
 
-# build 108: Sheepdog01's b107 run of b30, to the level's end (docs/hardware_b107.md)
+# build 108: b107's run of b30, to the level's end (docs/hardware_b107.md)
 FIXES_108 = {}
 # b30's floors are mirrors: the security room's at z 9.95 (BSP b30a, cluster
 # 48) and the map room's at z -14.92 (b30b, cluster 14). With one in view the
@@ -10282,7 +10282,7 @@ FIXES_CHUPA["source/rasterizer/rasterizer_text.c#atlas"] = [
 # hand-made map can't send the game outside the data. On b30's beach they
 # were 1-2% of the tick's instructions [E], and they make the hot code
 # bigger (docs/chupa_rebase.md). The PSP's maps are
-# its own bake of Sheepdog01's disc, and the retail BSPs and animations are sound
+# its own bake of a retail disc, and the retail BSPs and animations are sound
 # (ChupathingyCE's own notes say so), so the PSP reads them as
 # halo-ce-universal does: these checks answer TRUE and the compiler drops
 # them. PSP_MAP_CHECKS=1 (psp_build.py) builds them in, for a map that isn't
@@ -10496,7 +10496,7 @@ FIXES_MULTIPLAYER = {}
 # own MAXIMUM_NETWORK_MACHINE_COUNT (128): past slot 15 the host's lookup
 # answers NULL, and the first message to every machine read through it
 # (network_game_server_send_message_to_all_machines). Found by the first
-# PSP-hosted game in the emulator (lab run 38344820258, 2026-10-12): the host
+# PSP-hosted game in the emulator (2026-10-12): the host
 # faulted at its game's first message to all machines
 FIXES_MULTIPLAYER["source/networking/network_server_message_handler.c#host"] = [
 ("""	MAXIMUM_NETWORK_MACHINE_COUNT = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
@@ -10598,7 +10598,7 @@ enum keeps 128 for every other file */
 # nodes from it. The tables the code already runs from are any size (the
 # bake's -Y: the nodes in use plus 512). The multiplayer maps have no scripts
 # at all, and Blood Gulch failed to load at the PC's limits for want of the
-# heap this holds (lab run 38075974578). The campaign build is unchanged:
+# heap this holds. The campaign build is unchanged:
 # the same 351 KB there is the campaign's own decision
 FIXES_MULTIPLAYER["source/hs/hs.c#standin"] = [
 ("""	hs_syntax_data = data_new(
@@ -10738,7 +10738,7 @@ FIXES_MULTIPLAYER["port/linux/game/network_distributed.c#aligned"] = [
 			word length;""")),
 ]
 
-# ---------- the multiplayer build as a client (Sheepdog01's call)
+# ---------- the multiplayer build as a client (the maintainer's call)
 # Hosting and ad hoc are dropped until the campaign reaches its performance
 # targets (they come back as co-op's prerequisite). psp_limits.h's
 # PSP_MP_CLIENT_ONLY (unless PSP_MP_HOST=1 or PSP_MP_COOP=1): no server is
@@ -11253,7 +11253,7 @@ FIXES_INTERNET["port/linux/game/map_families.c#downloaded"] = [
 ]
 # ... and started again once the PSP has joined its network, when it couldn't
 # start at WSAStartup: the access point refused the PSP's first try once
-# (sierra-hw 38936073185), the tunnel's socket failed with it, and internet
+# (a hardware run), the tunnel's socket failed with it, and internet
 # play stayed off while the PSP's next try joined (psp_net.c calls this)
 FIXES_INTERNET["port/linux/src/xnet.c#retry"] = [
 ("""int WSAAPI WSAStartup(WORD version_requested, LPWSADATA data)
@@ -11534,7 +11534,7 @@ FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
 ]
 # KCP with no memory: ikcp_input wrote through the NULL a full heap gave it
 # (a bus error on the tunnel's thread when a map's load took the heap to its
-# top while the host kept sending: lab 38987358496, 39016196537), and
+# top while the host kept sending: two emulator runs), and
 # ikcp_ack_push called abort(). A segment there's no memory for is now
 # neither kept nor acknowledged, so the sender sends it again; an ack there's
 # no room for is left out, the same. The send side already checked, behind
@@ -11733,8 +11733,8 @@ void psp_signal_report(char *text, int size)
 # yet been in time and three live ones whose signatures hold agree on an
 # offset from the PSP's clock, that offset is taken (logged) and the windows
 # apply to it. One host with a wrong clock can't move it: in the emulator a
-# single host three hours off did, before the three were required (lab
-# sierra-netplay 38861729099)
+# single host three hours off did, before the three were required (a
+# netplay run)
 FIXES_INTERNET["port/linux/src/p2p_lobby.c#clock"] = [
 ("""		memmove(lobby.queue, lobby.queue + 1, sizeof(*lobby.queue) * (size_t)(--lobby.queue_count));
 		if (!listing_read(queued.payload, queued.size, &listing) || listing.version < delta_legacy_minimum() ||
@@ -11943,7 +11943,7 @@ FIXES_INTERNET["port/linux/src/p2p_signal.c#capacity"] = [
 # the player's action and button, the flip and the vehicle physics' upending.
 # "flipfixture" (debug tools only: it moves a vehicle) puts the vehicle nearest
 # the player upside down just in front of him, two seconds into the map, so
-# the emulator can reproduce Sheepdog01's sequence with no hands.
+# the emulator can reproduce the hand-played sequence.
 FIXES_113 = {}
 FIXES_113["source/game/players.c#flipwatch"] = [
 ("""static void player_examine_nearby_vehicle(
@@ -12008,7 +12008,7 @@ static void psp_flip_fixture(long unit_index)
 		real dz = object->object.position.z - unit->object.position.z;
 		real distance = dx * dx + dy * dy + dz * dz;
 
-		/* a Warthog first (Sheepdog01's sightings), else the nearest */
+		/* a Warthog first (as seen in the hardware tests), else the nearest */
 		if (object->object.parent_object_index == NONE && distance < 30.0f * 30.0f &&
 			strstr(tag_get_name(object->definition_index), "warthog") != NULL)
 			distance -= 30.0f * 30.0f;
@@ -12416,7 +12416,7 @@ void rasterizer_screen_effect(
 	{
 		static int psp_zoom_mask = -1;
 
-		/* "zoommaskfull": the whole alpha always, for Sheepdog01 to compare */
+		/* "zoommaskfull": the whole alpha always, to compare */
 		if (psp_zoom_mask < 0)
 			psp_zoom_mask = psp_keep("zoommaskfull") ? 2 : psp_keep("zoommask");
 		/* the whole alpha with no blur; a third with one, the blur's
@@ -12431,7 +12431,7 @@ void rasterizer_screen_effect(
 
 
 # build 113: the sound cache's placement (b113_candidates.md #24; keep word
-# "soundplace", Sheepdog01's call). b112 run 6 dropped sounds while only 650-1,100 KB
+# "soundplace", the maintainer's call). b112 run 6 dropped sounds while only 650-1,100 KB
 # of its 1,792 were playing: a sound needs one run of the cache's pages, and
 # sounds still playing (or loading) can't be pushed out, so where they sit
 # splits the space. Big sounds (32 KB and up: dialogue, engine and ambient
@@ -12581,7 +12581,7 @@ FIXES_113["source/cache/xbox_sound_cache.c#noroom"] = [
 
 # ---------- build 114
 FIXES_114 = {}
-# build 114: "drawdistN" (B9, optimization_ranking.md; Sheepdog01 approved it as a
+# build 114: "drawdistN" (B9, optimization_ranking.md; approved as a
 # switch to try): the far clip at N world units outside cutscenes. The
 # engine already brings each window's far clip in to its fog when the fog is
 # fully dense there (just above); the cap goes beside it, for the render and
@@ -12880,7 +12880,7 @@ FIXES_116["source/rasterizer/rasterizer.c#planarfog"] = [
 # frame indices words, both fine at 2-byte alignment. The last pair is the
 # default translation animation_get_node_orientations copies itself for a
 # node without translation keyframes: the strict interpreter stopped b115.1
-# there on a10, a30 and c40 at the same game times b115 stopped (lab batch
+# there on a10, a30 and c40 at the same game times b115 stopped (the batch
 # campaign-strict-b1151)
 FIXES_116["source/models/model_animations.c#unaligned"] = [
 ("""	node_header = ((unsigned long const *)(data+header->translation_node_headers_offset))[adjusted_node_index];""",
@@ -12973,7 +12973,7 @@ FIXES_118["source/units/units.c#verify"] = [
 # about a quarter of a50's tick in the cache model (tickmap118). Its answer
 # depends only on its inputs: the BSP (tag data, fixed until the next map or
 # BSP switch), the centre and radius, and the breakable surfaces' flags. The
-# probe that came first (lab run 38368364688) found 53-59% of a50's queries
+# probe that came first found 53-59% of a50's queries
 # repeat one of the tick before exactly (a standing biped asks the same thing
 # every tick), b30 38%, c10 43%, d20 15-32%, c20 13%; none repeat within a
 # tick. So a small table keeps recent answers under all their inputs, compared
@@ -14886,14 +14886,14 @@ FIXES_121["source/devices/device_machines.c#machinetime"] = [
 
 # The level sphere walk (collision_bsp_test_sphere), which a biped's physics
 # asks ~20 times a tick: on a50 it is a quarter of the tick's instructions
-# (cachemap, lab 38512475945: bsp2d 12.8%, bsp3d 10.6%, the edge test 4.1%).
+# (cachemap: bsp2d 12.8%, bsp3d 10.6%, the edge test 4.1%).
 # Three changes, each giving the walk's own answer, list for list, in order.
 # They pay only on a walk that reaches several leaves (a50: ~48 a walk, half
 # its surface tests repeats); a walk of a leaf or two (c20: 1.7, 12% repeats)
-# costs more with their bookkeeping (lab 38525896825: c20 +1.05%), and so
+# costs more with their bookkeeping (c20 +1.05%), and so
 # does any walk through a copy of the engine's code instead of the engine's
-# own (switching a walk over at its third leaf still cost c20 +0.80%, lab
-# 38539791064: the copy's code and data misses). So each walk is the engine's
+# own (switching a walk over at its third leaf still cost c20 +0.80%,
+# the copy's code and data misses). So each walk is the engine's
 # own while the last walks averaged three leaves or fewer, and otherwise a
 # copy with all three changes:
 # - a leaf's reference is looked for in the plane stack through 64 buckets
@@ -16557,7 +16557,7 @@ FIXES_122["source/objects/objects.c#merays"] = [
 )]
 
 
-# B1 in docs/optimization_ranking.md, Sheepdog01's to judge after an A/B: far actors
+# B1 in docs/optimization_ranking.md, to be judged after an A/B: far actors
 # service their props at half rate. Bungie's actor_perception_update already
 # services one prop an actor a tick, the first whose stepped timer reaches the
 # last tick's highest, and non-enemies and far props less often; on an
@@ -16762,7 +16762,7 @@ void psp_perception_queue("""),
 				prop_timer >= actor->meta.highest_prop_timer)"""),
 ]
 
-# Two behaviour A/Bs for Sheepdog01 (docs/optimization_ranking.md section 6, B3 and
+# Two behaviour A/Bs (docs/optimization_ranking.md section 6, B3 and
 # B4; docs/review_b122_farrate.md). Both off by default and campaign only:
 # - "machinesfar": an always-moving machine (type 2: c20's gears and
 #   platforms) that is far from the player, out of view and carrying nothing
@@ -17265,14 +17265,14 @@ int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 
 		would (object_update's object_connect_lights): to the same places,
 		but first in their clusters' lists, where every light the tick
 		reconnects goes. Without it the lists' order changed (machinesleep on
-		d20, lab 38526377504), and with it the lights a lit object picks */
+		d20), and with it the lights a lit object picks */
 		if (header->type == _object_type_machine &&
 			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&""",
 """		/* a sleeping machine's or item's lights are still reconnected as its
 		update would (object_update's object_connect_lights): to the same
 		places, but first in their clusters' lists, where every light the
 		tick reconnects goes. Without it the lists' order changed
-		(machinesleep on d20, lab 38526377504), and with it the lights a lit
+		(machinesleep on d20), and with it the lights a lit
 		object picks. Only items with lights pay for the test below */
 		if ((header->type == _object_type_machine ||
 				((header->type == _object_type_weapon || header->type == _object_type_equipment) &&
@@ -18385,7 +18385,7 @@ FIXES_128 = {}
 # are added up and psp_collision_report (the heartbeat, every 30 s) logs who
 # used the collision code and for how long. The question it answers: what
 # moving collision to the Media Engine would take off b30's tick, where the
-# collision functions are ~16% of it in the cache models (lab 38698483247).
+# collision functions are ~16% of it in the cache models.
 # Plays no differently: the log reads the calls, it decides nothing
 FIXES_128["source/physics/collision_usage.c#report"] = [
 ("""	collision_usage_buffer[collision_usage_current_period] = collision_usage_current;
@@ -18535,7 +18535,7 @@ FIXES_128["source/rasterizer/rasterizer.c#obscurer"] = [
 # it of up to four spheres about the eye each frame, largest first, and
 # collision_test_sphere answered each with the full gather of every leaf,
 # surface, edge and vertex inside. On a50 the PSP-1000 spent 3.9 ms a frame
-# deciding (lab 38732215900: 8,112 such sphere tests at 1.26 ms each in
+# deciding (8,112 such sphere tests at 1.26 ms each in
 # 300 s, the collision log's unknown user), most of them on the spheres that
 # do touch, which an early stop makes cheap. The same yes or no, so the same
 # near plane: only the walk's work changes. Nothing else asks this way: the
@@ -18684,7 +18684,7 @@ FIXES_129 = {}
 # walked first and objects are tested only in the leaves the ray crossed up
 # to its wall, where a hit can only bring the answer nearer: so when the
 # level alone meets a wall that is not sky, the answer is "hidden" whatever
-# the objects say, and their test is skipped. On c20 (lab 38745678938) the
+# the objects say, and their test is skipped. On c20 the
 # flare test was 6.9 ms a frame and nine flare answers in ten hidden. Exact:
 # the same answers; only the objects' marks (the ray stamped the objects it
 # tested) differ. Keep words "flaresfull" (the full test always, as before)
@@ -18911,7 +18911,7 @@ FIXES_130 = {}
 # emulator's host) answered. With fixedticks a run then draws the same
 # pictures every time (framecrc, tools/framecmp.py): d20 drew a different
 # picture in 3,740 of 12,237 frames between two runs of one build without
-# it (lab 38762220140). Slower; never for play
+# it. Slower; never for play
 FIXES_130["source/cache/cache_files_windows.c#readswait"] = [
 ("""	request->pending = TRUE;
 #endif
@@ -20080,9 +20080,9 @@ real_matrix4x3 *object_get_node_matrices(
 # ---------- FIXES_135: the ME pose job on by default (lever MP)
 #
 # b131 shipped it off after the PSP-3000 hung once with it on; that hang came
-# at the ME's start-up, before any map loaded (lab 38784036485, its log
+# at the ME's start-up, before any map loaded (its log
 # recovered), and the same configuration then ran clean and bit-exact on the
-# 3000 (lab 38812680216). On the PSP-1000 it takes ~1.15 ms off b30's flight
+# 3000. On the PSP-1000 it takes ~1.15 ms off b30's flight
 # tick (2.0%). On by default wherever the ME runs the job ring; "poseaheadoff"
 # turns it off, "poseahead" makes the poses on the main CPU (the plumbing
 # alone), "poseaheadcheck" compares each one with the main CPU's decode.
@@ -20348,15 +20348,15 @@ static void psp_nwb_begin(void)
 		psp_nwb_held = psp_keep("nwbatchheld") != 0;
 		/* opt-in: on c10 the batch cost 9.7 ms a tick for ~300 light scenery
 		computes that cost ~3 ms in their updates, each taking its object's
-		datum and blocks cold out of the loop (the PSP-3000's ladder, lab
-		38884427350), while b30's few heavy ones gained; "nwbatchoff" still
+		datum and blocks cold out of the loop (the PSP-3000's
+		ladder), while b30's few heavy ones gained; "nwbatchoff" still
 		wins over it */
 		psp_nwb_on = psp_nwb_held || (psp_keep("nwbatch") && !psp_keep("nwbatchoff"));
 		/* scenery and its kin only: on the PSP-3000 b30's scenery computes
-		cost a fifth as much made together (lab 38871696661), while c20's
+		cost a fifth as much made together, while c20's
 		machines cost the same either way and its unarmed bipeds were nearly
 		all read by another object's update first, which made them in the
-		middle of that update instead (lab 38878940196: the tick 5% slower).
+		middle of that update instead (the tick 5% slower).
 		"nwbatchwide": machines, controls and bipeds too ("nwbatchnobipeds"
 		leaves the bipeds out of that) */
 		psp_nwb_types = FLAG(_object_type_scenery) | FLAG(_object_type_light_fixture) | FLAG(_object_type_placeholder) |
@@ -21037,7 +21037,7 @@ FIXES_FRONT["source/main/console.c#frontdoor"] = [
 
 # The saved-game check the main menu waits on: no menu input until it ends
 # (ui_widget.c, perform_filesystem_initialization). On the Xbox it runs under
-# the intro movie; with no movie the wait shows, about a minute on Sheepdog01's
+# the intro movie; with no movie the wait shows, about a minute on a
 # PSP-1000 (test 1). These lines time its parts, so the fix goes where the
 # time is: the Memory Stick's free-space count, the saved games' scan, or the
 # profiles' reads. One line each, once a start-up.
@@ -21121,7 +21121,7 @@ FIXES_FRONT["source/interface/ui_widget.c#checktimes"] = [
 # variants on every start-up (z:\saved\playlists\default_playlist\NN: the
 # folder emptied, the file created and written). z: is the Xbox's scratch
 # partition on its hard drive; on the PSP it is the Memory Stick, and that
-# rewrite was nearly all of the ~54 s the menu took no input on Sheepdog01's
+# rewrite was nearly all of the ~54 s the menu took no input on a
 # PSP-1000 (frontdoor3's timers: the profiles' reads 54,195 ms). A variant
 # whose file already holds the same bytes is left as it is, so only a fresh
 # stick writes them, once. "variantswrite" writes them every time, as before.
@@ -21134,7 +21134,7 @@ FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
  '#ifdef HALO_PSP\n\t\tplatform_log("front door: the default game variants: %ld already on the stick, %ld written (%lu ms)",\n\t\t\tpsp_variants_kept, (long)NUMBER_OF_DEFAULT_PLAYLIST_PROFILES - psp_variants_kept,\n\t\t\t(psp_microseconds() - psp_variants_start) / 1000);\n#endif\n\t\tsaved_game_files_notify_memory_units_changed();\n\t}\n\telse\n\t{\n\t\terror('),
 ]
 
-# The shelf (Sheepdog01's rule): experiments kept, not deleted, but built only
+# The shelf (a project rule): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
@@ -21212,7 +21212,7 @@ FIXES_FRONT["port/linux/src/xbox_files.c#pathscan"] = [
 # The campaign build reads no game variants at start-up. The saved-game check
 # made the 26 default multiplayer variants (each compared with the stick's
 # copy) and then read all 26 again into the saved-game list: 130 stick calls
-# and ~3 s before the menu took input on the PSP-1000 (lab 39021437349), for
+# and ~3 s before the menu took input on the PSP-1000, for
 # lists only a multiplayer menu shows. Now they're made, and listed, the
 # first time something asks for them, as the multiplayer build still does at
 # start-up. Keep word "bootvariants": at start-up, as before.
@@ -21377,7 +21377,7 @@ BOOL WINAPI SetEndOfFile(HANDLE handle)
 # its player profile thread (a profile renamed: synchronize_metadata_display_
 # name_with_profile_name copies blam.sav and savegame.bin to the new name's
 # folder). The port gives such threads 48 KB of stack (CreateThread's floor),
-# so naming a new profile ran the thread 18 KB or more past its stack: Sheepdog01's
+# so naming a new profile ran the thread 18 KB or more past its stack: the
 # crash saving a new profile (pthread0007, a breakpoint in the firmware), and
 # the new name's folder left with its SaveMeta.xbx and no blam.sav, which
 # then refused that name for good ("maybe the name is already in use?"). On
@@ -21860,7 +21860,7 @@ float psp_player_crouch(void)
 ]
 
 # ---------- FIXES_MENUS: the menus as the PSP's (docs/review_menus.md)
-# Sheepdog01's call: the PSP's glyphs wherever an Xbox button shows, each
+# the maintainer's call: the PSP's glyphs wherever an Xbox button shows, each
 # build's main menu without the other mode, the PSP named where the menus'
 # text names the Xbox. Keep words: "xboxglyphs" (the Xbox's buttons, here as
 # in play), "glyphmapfixed" (each icon site's own map, not the one the pad
@@ -22917,9 +22917,9 @@ FIXES_RECON = {}
 # "modelcensus" (keep.txt): every 5 s of game time, a log line of the models
 # drawn: a frame's count by object type and by size on screen (the level of
 # detail's pixels), and the definitions drawn most. b30's Pelican ride draws
-# ~167 models a frame at ~0.22 ms of CPU each (lab 38822408622); this says
-# what they are. The pairs name "modelcensus", so the lab's desktop hooks
-# (pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the same
+# ~167 models a frame at ~0.22 ms of CPU each; this says
+# what they are. The pairs name "modelcensus", so desktop hooks
+# carry them to ChupathingyCE's own build: the same
 # count from the original, on the same stretch. It also names the definition
 # being drawn for psp_ge.c's draw census (psp_census_definition)
 FIXES_RECON["source/render/render_objects.c#modelcensus"] = [
@@ -23126,7 +23126,7 @@ void render_objects(
 # checks by object type: per tick, sleepers checked and how many of them had
 # changed (woken), and objects checked on their way to sleep. On b30 the
 # checks cost 3.8-6.8 ms a tick for 270-530 sleeping scenery objects
-# (lab 38881473541). If wakes are rare, being told a sleeper changed (when
+# (the emulator). If wakes are rare, being told a sleeper changed (when
 # something writes it) could replace checking every sleeper every tick
 FIXES_RECON["source/objects/objects.c#sleepcensus"] = [
 ("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
@@ -23199,7 +23199,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 ]
 
 # "objtrace" (recon only): the table the emulator's object access trace reads
-# (the lab's PSP_OBJTRACE). At each objects_update the game lists every
+# (the patched emulator's PSP_OBJTRACE). At each objects_update the game lists every
 # object's data (where it lies, its type, the top-level object it belongs to,
 # whether it is asleep), and while a top-level object and its attachments
 # update, it names that object. The emulator then counts, by instruction, each
@@ -23319,7 +23319,7 @@ void objects_update(
 ]
 
 
-# The shelf (Sheepdog01's rule): experiments kept, not deleted, but built only
+# The shelf (a project rule): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
@@ -23383,7 +23383,7 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			extern void psp_loading_end(void);
 
 			/* no settle at boot: nothing has been drawn yet, and the first
-			frame drawn from here never finished (loading2, lab 39027957157) */
+			frame drawn from here never finished (the loading2 runs) */
 			psp_loading_end();
 		}
 #endif
@@ -24075,7 +24075,7 @@ FIXES_SOUND["source/units/bipeds.c#unarmed"] = [
 				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE) ||
 #endif"""),
 ]
-# The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
+# The dry gaps (the "sound cutting out"): the Xbox topped each stream's 4
 # packets (about 743 ms) up at interrupt time, the port once a frame, so a
 # frame longer than that left long sounds silent. The queue's depth comes from
 # psp_stream_packets() (psp_dsound.c: 16 by default, "streampackets4" for the
@@ -24123,7 +24123,7 @@ FIXES_SOUND["source/sound/sound_dsound_xbox.c#queue"] = [
 # from a location on the stack that never set it, so objects, actors and
 # props carry stack garbage there. Play never reads it, but the sleep
 # checksum and the state hashes do, so a change that only moves the stack's
-# history (LD1, lab ld1why1 39045094664) made the pools differ and woke
+# history (LD1, the ld1why1 runs) made the pools differ and woke
 # sleepers for nothing. Set as award_bonus sets it, where the object's
 # location is stored. "bonusold": left as copied
 FIXES_BONUS = {}
@@ -24153,8 +24153,8 @@ FIXES_BONUS["source/objects/objects.c#bonus"] = [
 # ---------- FIXES_DRAWCOLD: debug-only work out of the model draw path (lever #3)
 # rasterizer_debug_model_vertices runs after every model part's draw and
 # returns unless its debug display is on; the call alone cost b30's drawing
-# 318 I-misses and 4.6 k instructions a tick in the cache model (lab
-# p3walkb30a, 39038135510). Tested where it's called, it costs one load.
+# 318 I-misses and 4.6 k instructions a tick in the cache model
+# (p3walkb30a). Tested where it's called, it costs one load.
 # "debugvertexcall": called every part, as before
 FIXES_DRAWCOLD = {}
 FIXES_DRAWCOLD["source/models/models.c#debuggate"] = [
@@ -24308,8 +24308,8 @@ FIXES_CAMPAIGNNET["source/game/player_queues_new.c#campaign"] = [
 # ---------- FIXES_STENCILS: the stencil bake's block taken as the old map goes
 # The .pstn is read into one block (~162 KB on c20), and after a level change
 # the heap's only free piece that large is its top; the load's own small
-# requests could eat it before the geometry pack opened and asked (lab
-# heapladder1/2). psp_ge_stencils_reserve takes it here, the old map let go
+# requests could eat it before the geometry pack opened and asked (the
+# heap ladder runs). psp_ge_stencils_reserve takes it here, the old map let go
 FIXES_STENCILS = {}
 FIXES_STENCILS["source/game/game.c#stencilsfirst"] = [
 ("""	ui_widgets_close_all();

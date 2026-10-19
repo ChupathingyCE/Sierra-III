@@ -230,7 +230,7 @@ static void loading_begin(const char *map_name, int with_chant)
 	loading.screen = !psp_keep("loadingoff");
 	loading.boot = boot.active;
 	loading.begin_us = psp_microseconds();
-	/* the screen's shortest showing (Sheepdog01: the Xbox's chant needs a few
+	/* the screen's shortest showing (the Xbox's chant needs a few
 	seconds, and the PSP loads a level in one or two), the load and the
 	settle hidden behind it; not at boot, whose screen has its own pace.
 	"loadholdN" sets N seconds, "loadhold0" shows it only as long as the load */
@@ -355,7 +355,7 @@ void psp_loading_end(void)
 	}
 }
 
-/* ---------- the boot screen (Sheepdog01, from his hand test: the
+/* ---------- the boot screen (from the hand test: the
 loading screen over the start-up rather than the log scrolling; a few
 seconds' hint on the launch menu while the game loads behind it; the main
 menu settled before it is shown, so nothing pops in)

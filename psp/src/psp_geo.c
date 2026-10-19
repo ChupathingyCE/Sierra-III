@@ -11,7 +11,7 @@ every pointer to it in the tags is 0x0C000000 + its offset in that file.
 This cache turns such a pointer back into bytes in RAM: psp_geo_lock(address,
 size) answers with a resident copy, or NULL and a read queued. Reads are
 asynchronous (sceIoReadAsync: the Memory Stick's DMA fills the block while
-the CPU goes on; halo_bench v10 on Sheepdog01's PSP-1000: a 1 MB read in 65 ms with
+the CPU goes on; halo_bench v10 on a PSP-1000: a 1 MB read in 65 ms with
 97% of the CPU kept, as long as the file's async priority sits above the
 game thread's, or the completion never runs). A block that isn't there yet
 is skipped for a frame, as the Xbox's texture cache skipped a texture.

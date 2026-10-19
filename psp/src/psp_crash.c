@@ -4,7 +4,7 @@ halo_crash.prx (psp/crash) catches the CPU's exception, saves the registers
 into the block below and returns from the exception into psp_crash_entry,
 here, on a stack of its own, in the crashed thread (crash_asm.S says why:
 pspsdk's handler returned a user-mode thread onto kernel code, and no crash
-in Sheepdog01's runs ever showed a report). From here everything the game can do
+in the hardware runs ever showed a report). From here everything the game can do
 works: the report is drawn on both of the GE's frame buffers, written to
 crash.txt in the build's folder (PSP_DATA_ROOT, psp_paths.h: ms0:/halo, or
 ms0:/halomp for the multiplayer build), and the log's last lines are saved.

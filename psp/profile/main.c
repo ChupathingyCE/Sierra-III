@@ -170,7 +170,7 @@ int module_start(SceSize args, void *argp)
 		/* the free-size calls don't check the partition exists (uofw
 		partition.c: MpidToCB(mpid)->firstCtlBlk); a PSP-1000 has no
 		partitions 7 and 8, and asking crashed sysmem with a bus error
-		(Sheepdog01, b44). sceKernelQueryMemoryPartitionInfo does check: ask it
+		(b44). sceKernelQueryMemoryPartitionInfo does check: ask it
 		first, and skip empty partitions too */
 		for (id = 0; id < PARTITIONS; id++)
 		{

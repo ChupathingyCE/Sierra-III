@@ -18,12 +18,12 @@ The campaign build (`PSP/GAME/halo`) and the multiplayer build (`PSP/GAME/halomp
 
 ## Art
 
-- **The campaign's `PIC1.PNG` is real art** (2026-10-12): the generated backdrop (`backdrop.py`), the ring and the Pillar of Autumn cut from Sheepdog01's PC captures (`compose/`), and the game title at the top. The bottom carries the title's rule on the lower rail; the Sierra-III mark moved to the tile (2026-10-17). It stands in until Sheepdog01 recaptures on his ultrawide (`docs/xmb_menu.md`).
+- **The campaign's `PIC1.PNG` is real art** (2026-10-12): the generated backdrop (`backdrop.py`), the ring and the Pillar of Autumn cut from our PC captures (`compose/`), and the game title at the top. The bottom carries the title's rule on the lower rail; the Sierra-III mark moved to the tile (2026-10-17). It stands in until a recapture on an ultrawide screen (`docs/xmb_menu.md`).
 - **Both `ICON0.PNG` tiles are real art** (2026-10-17), drawn by `icon0.py` from `sierra_mark.svg`, the mark's vector master. The label is Audiowide (`fonts/`, with its OFL licence).
 - Everything else is a placeholder drawn by `make_placeholders.py`. Re-running it leaves real art alone (`REAL` in the script).
 - Real art replaces the PNGs in place, at exactly these sizes. Keep the layered masters (at 2–4× size) wherever you draw; only the exported PNGs live here.
 - Export plain 8-bit PNGs: non-interlaced, no metadata. The XMB can show a blank tile for anything fancier.
-- Art must be ours, with one exception: stills of Sheepdog01's own gameplay footage, under Microsoft's Game Content Usage Rules (CLAUDE.md; the README carries their notice). Only the exported images: never the raw captures or cutouts, nothing extracted from the game's files, no Microsoft logos.
+- Art must be ours, with one exception: stills of our own gameplay footage, under Microsoft's Game Content Usage Rules (CLAUDE.md; the README carries their notice). Only the exported images: never the raw captures or cutouts, nothing extracted from the game's files, no Microsoft logos.
 
 ## Sound
 

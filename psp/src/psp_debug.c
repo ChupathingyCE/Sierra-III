@@ -263,7 +263,7 @@ void psp_debug_draw(void *vram)
 		address. b77-b79 took it relative to the current draw buffer, and
 		when that was the second one the clear landed 256 KB further on,
 		over the start of the VRAM texture cache: the HUD's textures, which
-		are loaded once, went purple for the rest of the run (Sheepdog01's b79 runs
+		are loaded once, went purple for the rest of the run (b79's runs
 		1 and 2; 50/50 by which buffer was current when the menu first opened) */
 		pspDebugScreenInitEx((void *)(0x44000000 + 2 * 512 * 272 * 2), PSP_DISPLAY_PIXEL_FORMAT_565, 0);
 		pspDebugScreenClearLineDisable();

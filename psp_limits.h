@@ -101,7 +101,7 @@ report) are sized for this, not for the session limits above, which a PSP
 only meets as a client (psp_fixups.py, FIXES_MULTIPLAYER) */
 #define PSP_HOST_MAXIMUM_NETWORK_PLAYERS 16
 
-/* ... and a multiplayer build that hosts nothing (Sheepdog01, 2026-10-17: hosting
+/* ... and a multiplayer build that hosts nothing (2026-10-17: hosting
 and ad hoc come back after the campaign's performance targets, as co-op's
 prerequisite; PSP_MP_HOST=1, or PSP_MP_COOP=1, builds them back in). It
 joins games only, so the host's records are one slot each

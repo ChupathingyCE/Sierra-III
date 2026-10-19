@@ -132,8 +132,8 @@ one waits.
 - In the menus it stays at 0x5c. While ONLINE GAMES browses, the thread
   checks thousands of signed listings; above the game thread it kept the
   menus' start-up thread (saved profiles and playlists, slow on the stick)
-  from ever finishing, and the menus never ran the screen (sierra-hw
-  38939812478, its A/B with tunnelslow).
+  from ever finishing, and the menus never ran the screen (a hardware
+  run, its A/B with tunnelslow).
 "tunnelslow" keeps it at 0x5c in games too, for comparing */
 #define PSP_TUNNEL_PRIORITY 0x1f
 int psp_keep(const char *name);
@@ -147,7 +147,7 @@ static int tunnel_priority = -1;
 KCP (the tunnel's streams) allocates a block for every segment it holds,
 from the heap. A map's load takes the heap to its top while the host keeps
 sending, and ikcp_input wrote through the NULL it got back: a bus error on
-this thread (lab 38987358496, 39016196537). So KCP asks the heap first and,
+this thread (two emulator runs). So KCP asks the heap first and,
 when the heap has nothing, a reserve of fixed blocks outside the heap, taken
 as internet play starts from user RAM the heap never uses (psp_memory.c
 keeps OUTSIDE_RESERVE of it free; this takes well under half of what is left

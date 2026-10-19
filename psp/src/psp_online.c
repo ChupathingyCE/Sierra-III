@@ -684,7 +684,7 @@ void browser_screen_pointer(
 
 /* ---------- the hands-free test (keep words onlinelist, onlinetest, onlinedoneN)
 
-For the lab's emulator, which has no one to press buttons: once the main
+For an emulator run, which has no one to press buttons: once the main
 menu has been up a few seconds the screen opens by itself (and logs, as it
 always does while up). With onlinetest, the first game it can join is
 joined, as cross would. onlinedoneN ends the game N seconds after the

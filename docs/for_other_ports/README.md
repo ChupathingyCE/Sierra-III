@@ -10,7 +10,7 @@ Sierra-III runs Halo: Combat Evolved's campaign on a PSP-1000 (333 MHz MIPS, 24 
 
 **How to read the evidence.** Every figure says where it came from: **[M]** measured on a PSP, **[E]** our emulator (PPSSPP with a cache model), **[D]** read in the code or data, **[U]** our inference. A figure names its build (`bNNN`) and its level (`a10` … `d40`, the campaign's map names; `b30` is The Silent Cartographer). Each item points to the doc, commit or `psp_fixups.py` group that holds the detail.
 
-**Where the sources are.** A bare doc name (`review_b138.md`) is in `docs/`; research notes are in `docs/research/`; other paths are from the repository's root. Lab run numbers in those docs refer to our own test lab and aren't public.
+**Where the sources are.** A bare doc name (`review_b138.md`) is in `docs/`; research notes are in `docs/research/`; other paths are from the repository's root. Most of the docs cited are development notes that stay with the development repository, and run numbers refer to our own test runs: neither is public.
 
 **Where the code is.** We never edit the engine. Every engine change is an anchored text replacement in `psp_fixups.py`, applied to a copy of ChupathingyCE at build time (`psp_architecture.md` §1). So "FIXES_126" means a group in that file, and each group's comment says what the change does and why. Nearly every change also has a keep word that turns it off at launch.
 
@@ -18,4 +18,4 @@ Sierra-III runs Halo: Combat Evolved's campaign on a PSP-1000 (333 MHz MIPS, 24 
 
 **What isn't here.** No game data: no maps, tags, textures, sounds or strings from the disc. Our maps are baked from each player's own disc (`bake/README.md`).
 
-**How this was made.** Like the rest of Sierra-III, these pages were written with Claude; Sheepdog01 reviews them before they are published (README, "How it's made").
+**How this was made.** Like the rest of Sierra-III, these pages were written with Claude; the maintainer reviews them before they are published (README, "How it's made").

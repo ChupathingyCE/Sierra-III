@@ -23,4 +23,4 @@ Sierra-III doesn't copy anyone's source into this repository. It pins each upstr
 
 The rebase to ChupathingyCE is written up in `docs/chupa_rebase.md`.
 
-**halo-ce-universal is retired** (Sheepdog01, 2026-10-13). ChupathingyCE became independent of OpenCE on Oct 9 and tags its releases; halo-ce-universal (OpenCE) moves fast and away from the original. Its pin, its two patches and the fixups' universal halves left the tree in b125; the builds made on it stay reproducible from their own commits, which still carry them. **Pin ChupathingyCE to its release tags** (`vX.Y.Z`), not to commits between them.
+**halo-ce-universal is retired** (2026-10-13). ChupathingyCE became independent of OpenCE on Oct 9 and tags its releases; halo-ce-universal (OpenCE) moves fast and away from the original. Its pin, its two patches and the fixups' universal halves left the tree in b125; the builds made on it stay reproducible from their own commits, which still carry them. **Pin ChupathingyCE to its release tags** (`vX.Y.Z`), not to commits between them.

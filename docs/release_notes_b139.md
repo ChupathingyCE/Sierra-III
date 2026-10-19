@@ -21,7 +21,7 @@ The draft of the text for b139's GitHub Release. The master fills the TODOs when
 
 **What it is:** the whole campaign, all ten levels, on a PSP-1000 at its standard 333 MHz. It doesn't run at full speed yet: the heaviest stretches are slow (README, "Where it stands"). **Multiplayer isn't part of this release.**
 
-<!-- TODO(master): known issues from build_b139.md and Sheepdog01's hand test -->
+<!-- TODO(master): known issues from build_b139.md and the hand test -->
 
 **Licences and credits:** Sierra-III's own code is under the licence in `LICENSE`. <!-- TODO(master): once go_live 4.1 lands, name it (MIT, psp/xmb/ carved out) --> The engine, the bake's tools and the libraries carry their own licences (`UPSTREAM.md`); each bake bundle lists its components in `LICENSES/README.txt` and carries the source of its GPL and LGPL parts in `source/`. The game zip carries the Media Engine library's licence (`LICENSE-mecore.md`). README's Credits name the ports and fonts we borrow from.
 

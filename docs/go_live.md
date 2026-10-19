@@ -5,7 +5,7 @@ Sheepdog01, 2026-10-17 12:44: **the repo goes live when three things hold**, and
 2. **Documentation complete enough that someone can follow it to a playable game on their own PSP**, from a stock PSP and their own Xbox disc.
 3. **Every legal point and attribution settled.**
 
-How it goes out (Sheepdog01, 12:11 and 12:38): Sierra-III stays private as the dev repo; `Sheepdog-01/Sierra-III-Release` mirrors `main` and the release tags (same hashes) and carries the bake bundle, so players bake their own maps. Before the mirror goes live, `public-prep` (docs and config: the LICENSE, README fixes, home paths as variables, a docs index, a gitleaks guardrail) merges into `main`.
+How it goes out (Sheepdog01, 2026-10-19, replacing the 12:11 and 12:38 plan of a same-hash mirror): Sierra-III stays private as the dev repo; `Sheepdog-01/Sierra-III-Release` is a separate repository with a fresh history, one commit per release, each the tree `tools/public_export.py` builds (`docs/public_release.md`), and it carries the bake bundle, so players bake their own maps. Before the mirror goes live, `public-prep` (docs and config: the LICENSE, README fixes, home paths as variables, a docs index, a gitleaks guardrail) merges into `main`.
 
 Owners: **M** master, **R** renderer, **S** sound, **MP** multiplayer, **Sheepdog01**. Each line is done when its proof is named beside it.
 

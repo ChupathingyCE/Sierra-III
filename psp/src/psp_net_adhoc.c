@@ -449,7 +449,7 @@ int psp_adhoc_start(int pool_kb)
 	}
 	/* the loopback's buffers: from the user RAM outside the heap when there's
 	room (the modules' neighbours there; a PSP host's heap peaked at 4,148
-	of 4,152 KB in the emulator's first ad hoc game, lab run 38347513849),
+	of 4,152 KB in the emulator's first ad hoc game),
 	else from the heap */
 	{
 		unsigned long streams = LOOP_STREAMS * sizeof(*adhoc.streams);

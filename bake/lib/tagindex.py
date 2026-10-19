@@ -12,7 +12,7 @@ host's map names it (docs/multiplayer_plan.md, section 3.2). The disc maps'
 salts don't all follow Invader's formula (Blood Gulch: the last 114 tags'
 are 1 or 2 more), so the IDs are carried over; the port's Invader fork reads
 them (upstream Invader takes only the path). Reads a retail map compressed
-or not. The group names are Invader's (fourcc.hpp, through halomap.py)."""
+or not. The group names are halomap.py's table, spelled as Invader spells them."""
 import os, struct, sys, tempfile, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,8 +23,6 @@ def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     source, out = sys.argv[1], sys.argv[2]
-    if not FOURCC_GROUP:
-        sys.exit('tagindex: no Invader group names (HALO_PSP_INVADER_DEFINITIONS)')
     data = open(source, 'rb').read()
     length, = struct.unpack_from('<I', data, 8)
     with tempfile.TemporaryDirectory() as folder:

@@ -3,7 +3,7 @@
 
 A lightmap page holds many charts (patches of the level unwrapped flat) with
 dark gutters between them. Shrunk as it is, each chart's edge texels average
-in the gutter and the level's seams go dark (Sheepdog01's b47 dark lines, when the
+in the gutter and the level's seams go dark (b47's dark lines, when the
 pages had mip levels). So, before shrinking, each page's charts are found by
 drawing the level's own lightmap texture coordinates into a mask, and the
 colours are grown outward from the charts into the gutters; then the gutters

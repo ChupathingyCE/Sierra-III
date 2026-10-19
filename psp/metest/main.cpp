@@ -1,7 +1,7 @@
 /*
 HALO_ME_TEST (build 44, 2026-10-03)
 
-A first run of code on the PSP's Media Engine (its second CPU) on Sheepdog01's
+A first run of code on the PSP's Media Engine (its second CPU) on a
 PSP-1000: does it start, does it run C compiled into this program (with the
 FPU and the C library's maths), how fast does it mix sound compared with the
 main CPU, and does the PSP come back cleanly afterwards.

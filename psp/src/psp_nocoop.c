@@ -4,7 +4,7 @@ Both builds compile this file. The campaign build leaves out all the
 netcode (psp_campaign.c answers the rest); the multiplayer build leaves out
 only the co-op units, unless PSP_MP_COOP=1 builds them back in. Co-op is a
 network game on a campaign map, and it needs a host: the multiplayer build
-neither hosts nor carries the campaign's maps (Sheepdog01, 2026-10-17: hosting
+neither hosts nor carries the campaign's maps (2026-10-17: hosting
 comes back after the campaign's performance targets, as co-op's
 prerequisite). Leaving the units out frees their code and tables. */
 
