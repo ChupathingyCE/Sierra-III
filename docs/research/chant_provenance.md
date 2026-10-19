@@ -1,6 +1,6 @@
 # The loading chant's bytes: where they came from (2026-10-17)
 
-Sheepdog01's question (09:02): should ChupathingyCE carry `compressed_monk_tone` in its source at all? He suspected "the exact kind" of mistake that slips through upstream. This note answers it for the port's go-live (`go_live.md` 3.5) and for a possible upstream issue. Not legal advice. Labels: [D] read in code or git history, [W] the web, [U] inference.
+The question: should ChupathingyCE carry `compressed_monk_tone` in its source at all? It looked like "the exact kind" of mistake that slips through upstream. This note answers it for the port's go-live (`go_live.md` 3.5) and for a possible upstream issue. Not legal advice. Labels: [D] read in code or git history, [W] the web, [U] inference.
 
 ## What it is
 
@@ -31,4 +31,4 @@ So the project's own notes said not to do this, and then it was done.
 
 - Every Sierra-III EBOOT has carried these bytes, and with them so have the `build-archive` zips. That conflicts with the port's own rule, "No game data, ever" (`CLAUDE.md`) [D].
 - **The fix (b139, `plan_loading_screen.md` §1):** the bake reads the 18,396 bytes from the player's own `default.xbe` at the known offset and checks them against a hash kept in the source (a hash isn't game data); the EBOOT links without the array, and the loading screen is silent if the bake has no chant [U].
-- **Upstream:** a plain issue is appropriate: file and line, commit `4f4c8502`, CONTRIBUTING's "Game files" and their own note in `62b3cec7`, suggesting the bytes load from the XBE at run time (silent when missing), with no bytes attached. As a removal backed by their own rule it also fits the port's upstreaming rule, if Sheepdog01 wants to send the fix himself [U].
+- **Upstream:** a plain issue is appropriate: file and line, commit `4f4c8502`, CONTRIBUTING's "Game files" and their own note in `62b3cec7`, suggesting the bytes load from the XBE at run time (silent when missing), with no bytes attached. As a removal backed by their own rule it also fits the port's upstreaming rule, if the maintainer sends the fix [U].

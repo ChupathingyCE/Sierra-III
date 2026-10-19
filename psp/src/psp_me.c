@@ -3,9 +3,9 @@ job slots and the ME's own timing).
 
 The PSP's second CPU, the Media Engine (ME), does nothing for the game: its
 firmware runs the XMB's music and video decoders, which Halo doesn't use.
-Build 44's test (halo_me, Sheepdog01's PSP-1000, 2026-10-03) ran our C on it with
+Build 44's test (halo_me, a PSP-1000, 2026-10-03) ran our C on it with
 mcidclan's me-core-mapper library; build 86 gave it the game's sound mixer
-(Sheepdog01's b86 run 2: ~2,500 blocks, none failed, a clean HOME exit).
+(b86's run 2: ~2,500 blocks, none failed, a clean HOME exit).
 
 A job, start to end:
 	1. the main CPU writes its cache back, so main RAM holds what the ME
@@ -589,7 +589,7 @@ void psp_me_serve_audio(void)
 /* a ring job's step (psp_me.h): the slant job every 64 triangles (~1 us
 each, b90), the rays' job every ray (~27 us: a job of 16 is ~430 us [M]), so
 an audio block waits that long at most for the ME instead of a whole job, or
-eight of them queued (Sheepdog01, 2026-10-14: audio comes before everything else on
+eight of them queued (2026-10-14: audio comes before everything else on
 the ME). Mixing here is exact: the audio job reads and writes only the
 voices, its output and its own sums, none of which a ring job touches */
 void psp_me_ring_step(unsigned int step)
@@ -638,8 +638,8 @@ static void bus_load_job(const unsigned int *args, unsigned int *results)
 		bus_out[(n * 16u) % BUS_OUT_WORDS] = sink;
 		/* an audio block waiting is mixed now, whether or not "meaudiofirst"
 		is on: the load holds the ME for a whole tick, and an audio block
-		left 100 ms stops the ME for the session (the first runs, lab
-		38920428263) */
+		left 100 ms stops the ME for the session (the first
+		runs) */
 		if ((++n & 63u) == 0)
 		{
 			psp_me_ring_step(n);
@@ -844,7 +844,7 @@ void meLibOnProcess(void)
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
 	meLibSync();
 	/* build 88: the cycle counter (coprocessor 0 register 9) stood still on
-	Sheepdog01's PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
+	a PSP-1000 (b87: "runs at 0.0 a microsecond"), so every ME time read
 	0. MIPS32r2's Cause bit 27 (DC, "disable count") stops it; the firmware
 	may leave it set on the ME. Cleared here; Cause before and after go to
 	the log either way */

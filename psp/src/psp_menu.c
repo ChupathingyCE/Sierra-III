@@ -60,7 +60,7 @@ struct option
 	int on;
 };
 
-/* build 93: trimmed (Sheepdog01): near2, near4, overlayslope1, overlayslope4,
+/* build 93: trimmed: near2, near4, overlayslope1, overlayslope4,
 decalall, flatshade, tdump, visdump, noboxtest, detailallfar, levelcompact and
 interpolation left the menu. They still work typed into keep.txt, and the
 menu keeps them there as "other words" */
@@ -202,7 +202,7 @@ static void load_presets(void)
 /* the preset the game was started with, for the launch menu's header and
 the screenshots' stamp line: its number (the digits its name starts with, or
 its place in the list), "+" once an option is changed after it; empty when
-none was applied (a lab run's keep.txt, or words set by hand) */
+none was applied (a test run's keep.txt, or words set by hand) */
 static char preset_label[8] = "";
 
 const char *psp_preset_label(void)
@@ -830,8 +830,8 @@ void psp_menu(int build)
 
 		/* build 71: redrawn only when something changed, at the start of a
 		vertical blank. The debug screen draws straight into the picture on
-		show, so clearing and redrawing it 16 times a second flickered (Sheepdog01,
-		b70) */
+		show, so clearing and redrawing it 16 times a second flickered
+		(b70) */
 		/* build 114: a hash of every option (b71-b113 packed them as bits of
 		one int, and options past the 32nd wrapped onto the first: toggling
 		one could leave the screen unchanged) */
@@ -844,7 +844,7 @@ void psp_menu(int build)
 			/* build 92: drawn whole into the buffer not on show, then shown
 			at the next vertical blank. b91's scrolling list redrew every
 			line on each move straight into the picture on show, which takes
-			longer than a blank: the D-pad flicker (Sheepdog01, b91) */
+			longer than a blank: the D-pad flicker (b91) */
 			back = !back;
 			pspDebugScreenSetBase((u32 *)(MENU_VRAM + back * MENU_BUFFER_BYTES));
 			pspDebugScreenClear();

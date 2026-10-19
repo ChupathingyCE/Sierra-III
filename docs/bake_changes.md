@@ -1,6 +1,6 @@
 # The new bake (go_live 3.3): numpy, Pillow and shapely only
 
-From build 139 the bake needs three Python libraries, and any Python from 3.9 to 3.14. Two it used to need are gone: scikit-learn (the palettes) and Triangle (the wall decals' cuts). Triangle has no package for Python 3.14 and its source no longer builds there, which shut out current Arch and CachyOS systems; scikit-learn was a large dependency for one function. Labels: [M] PSP, [E] emulator or measured on the bake, [D] code, [U] inference.
+From build 139 the bake needs three Python libraries, and any Python from 3.9 to 3.14. Two it used to need are gone: scikit-learn (the palettes) and Triangle (the wall decals' cuts). Triangle has no package for Python 3.14 and its source no longer builds there, which shut out current Arch-based systems; scikit-learn was a large dependency for one function. Labels: [M] PSP, [E] emulator or measured on the bake, [D] code, [U] inference.
 
 **Re-bake needed:** yes. The packs (`.ptex`) and the decal files (`.pstn`) come out different byte for byte, though they draw the same (below). A build from 139 on works with a bake from the new bundle; a bake from an older bundle still loads, but the release names the bundle it was checked with (go_live 3.4 adds the check).
 
@@ -28,7 +28,7 @@ A wall triangle under a decal is cut along the decal's outline, so the part unde
 
 ## The proof
 
-`--compare-old` (the lab's `sierra-bake compare=yes`) makes each palette and each decal cut both ways in the same bake, with scikit-learn and Triangle installed for that alone, and logs:
+`--compare-old` makes each palette and each decal cut both ways in the same bake, with scikit-learn and Triangle installed for that alone, and logs:
 
 - `kmeans compare summary`: the mean Oklab error old and new over every palette, and how many came out worse by more than 1% and 3%; `kmeans compare worse`: the worst eight by name. Outliers go to side-by-sides.
 - The decals' `compare:` counts: how many source triangles were compared, how many layers covered a different area (more than a millionth of the triangle), the largest difference, and where Triangle failed and the faces didn't.
@@ -38,13 +38,13 @@ Before the disc [E, synthetic]:
 - 1,200 random decal layouts: every layer's area the same to a millionth of the triangle wherever Triangle succeeded, and three it failed on ("topological inconsistency") cut correctly.
 
 On the disc [E]:
-- **Decals** (bake `newbake138b`, lab 39060964206): b30's 372 cuts identical in area, layer by layer; c20's 523 cuts identical but one, which differs by a millionth of its triangle.
-- **Palettes** (`newbake138b` and `newbake138c`, lab 39060964206 and 39064617089): the mean Oklab error 2.9–3.4% lower on every map. A few 16-colour palettes come out far worse by Oklab (sparks +265%, soft flares +237%, the HUD's ammo icons +223%), the same ones on every map and whatever the start. By the measure k-means itself minimises (the squared distance in RGBA), the new palettes fit better in 505 of a10's palettes by over 1% and worse in 82, and every Oklab outlier fits *better* (sparks 32.3 → 29.8): those are textures whose colour sits under transparent texels, where the two measures disagree, not worse fits.
-- **On the screen** (lab 39066154694, b138's code on both bakes, frame-locked): the same look. On c20, 5–18 thousand pixels a frame differ by a few levels (the new palettes), and 1–131 by more than 24 (the edge of a blue light's glow); b30's flight the same, with its decals placed and cut alike. The sparks and flares the Oklab outliers named draw as before.
+- **Decals** (bake `newbake138b`): b30's 372 cuts identical in area, layer by layer; c20's 523 cuts identical but one, which differs by a millionth of its triangle.
+- **Palettes** (`newbake138b` and `newbake138c`): the mean Oklab error 2.9–3.4% lower on every map. A few 16-colour palettes come out far worse by Oklab (sparks +265%, soft flares +237%, the HUD's ammo icons +223%), the same ones on every map and whatever the start. By the measure k-means itself minimises (the squared distance in RGBA), the new palettes fit better in 505 of a10's palettes by over 1% and worse in 82, and every Oklab outlier fits *better* (sparks 32.3 → 29.8): those are textures whose colour sits under transparent texels, where the two measures disagree, not worse fits.
+- **On the screen** (b138's code on both bakes, frame-locked, in the emulator): the same look. On c20, 5–18 thousand pixels a frame differ by a few levels (the new palettes), and 1–131 by more than 24 (the edge of a blue light's glow); b30's flight the same, with its decals placed and cut alike. The sparks and flares the Oklab outliers named draw as before.
 
 ## No loading picture (go_live 3.5)
 
-The Xbox's loading screen reads `maps\loading.tga` from the disc (progress_bar.c), but the retail disc has none: its only pictures are two `xdemos/media` fonts (lab sierra-bake 39069579019). On the Xbox the copy fails quietly and the band draws over a black texture, so the retail loading screen is the trail alone, which the PSP already draws. The bake carries no loading picture.
+The Xbox's loading screen reads `maps\loading.tga` from the disc (progress_bar.c), but the retail disc has none: its only pictures are two `xdemos/media` fonts. On the Xbox the copy fails quietly and the band draws over a black texture, so the retail loading screen is the trail alone, which the PSP already draws. The bake carries no loading picture.
 
 ## What a player needs to do
 

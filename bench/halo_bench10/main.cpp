@@ -1,7 +1,7 @@
 /*
 halo_bench v10: the Memory Stick and the Media Engine, measured for the port.
 
-Questions, each answered on Sheepdog01's PSP-1000 (the emulator models neither):
+Questions, each answered on a PSP-1000 (the emulator models neither):
   Memory Stick (the game's texture and sound streaming)
   1. How fast are sequential reads at each request size, 512 bytes to 1 MB,
      and what does each call cost on its own?

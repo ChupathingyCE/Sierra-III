@@ -4,14 +4,14 @@ A tour of BirchWoodGod's [halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-
 
 Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. The Vita port's own numbers are from Vita hardware, its Linux harness or callgrind's Cortex-A9 model, and are marked as theirs.
 
-**Licence: read before borrowing code.** The Vita port is **GPL-3.0-only**: its generated tag layouts come from Invader's GPL definitions, and the licence covers the whole port. The decomp and OpenCE underneath stay CC0. Sierra-III has no licence chosen yet (`README.md`).
+**Licence: read before borrowing code.** The Vita port is **GPL-3.0-only**: its generated tag layouts come from Invader's GPL definitions, and the licence covers the whole port. The decomp and OpenCE underneath stay CC0. Sierra-III's own code is MIT (`LICENSE`), with the carve-outs it names.
 
-**Permission (Sheepdog01, 2026-10-14):** BirchWoodGod, the port's author, told Sheepdog01 on Discord that Sierra-III may take from it as it pleases. That covers the code he wrote. It can't cover what isn't his to grant:
+**Permission (2026-10-14):** BirchWoodGod, the port's author, told the maintainer (Sheepdog-01) on Discord that Sierra-III may take from it as it pleases. That covers the code he wrote. It can't cover what isn't his to grant:
 - `port/linux/src/tag_layouts.h` and anything else generated from Invader (GPL-3, SnowyMouse's);
 - code he credits to others, such as iamhaller's networking or Bruno Santana's settings work (ask them, or take the idea only);
 - upstream decomp and OpenCE code, which is CC0 anyway.
 
-Anything taken still names the Vita port in its commit and review. The exchange is transcribed in the lab's research notes (its `permissions.md`). His words: "Dude steal away I want to try your port sometime!"
+Anything taken still names the Vita port in its commit and review. The exchange is kept in the project's private research notes. His words: "Dude steal away I want to try your port sometime!"
 
 **Where to read it.** `port/vita/README.md` (settings, the profiles' costs, debug switches), `ROADMAP.md` and the main README's Performance section. Engine changes carry `/* port: */` or `/* (port) */` comments under `#ifdef HALO_LINUX` (the Vita builds the Linux platform layer); the speed ones name their map and their measurement.
 
@@ -69,7 +69,7 @@ These are smaller changes inside the same hot code: `actor_firing_position.c`, p
 | Prefetch hints in perception (`__builtin_prefetch`; ~1,600 misses a tick in the props walk) | `prefetch_map.md`: on the PSP a fill blocks every load, so hints gain little without reshaping the code. The *targets* they name (the props walk, the cluster object walk) are worth checking against our map |
 | `tag_loaded` answers memoized | `verify_tag_reference` answered from the reference (b66) |
 
-## 3. The A/B shelf (behaviour changes, Sheepdog01's call)
+## 3. The A/B shelf (behaviour changes, the maintainer's call)
 
 Their settings panel sorts these by cost, and the profiles have been played by real players: useful evidence of what passes a feel test.
 
@@ -189,7 +189,7 @@ A second pass over the `61debf0` tree found three switches the first read left o
 |---|---|---|---|
 | `HALO_SKY_LATE` (`render/render.c`, on by default) | The sky is drawn after the opaque scene, only on pixels still at the cleared depth. On the Vita's tile renderer, a blended layer drawn first is paid in full (one to two screens of fragments a frame). | Yes (every pixel ends the same, by their argument) | **Leave.** Our GE already draws the sky's see-through parts first in the end-of-frame transparent list, and its solid parts at the far plane without writing depth (`psp_ge.c`). The GE isn't a tile renderer, and on b136's ladder the CPU waits 0.3–0.4 ms a frame for it on a30, b30 and d20 [M]. Payout is ~0 on b30/a30/d20 until frames in flight (#4) make the GE the limit [U]. |
 | `HALO_AI_PERCEPTION_LOD=n` (`ai/actor_perception.c`) | Actors more than n units from every player refresh their props' line of sight every other tick. | No (AI behaviour) | **Leave.** He retired it for Bruno Santana's think rate (§3). Thinking less often is open to experiment here, but it ships only after an A/B (CLAUDE.md), and §3 already holds the better version. |
-| `HALO_DECAL_STACK_CAP=n` (`rasterizer_xbox_decals.c`, opt-in) | At most n decals drawn in one 0.15-unit cell; older ones under them are left out (a10's knot: ~800 quads, 2.4 screens of blended pixels). | No (an old mark that showed through goes) | **Shelf, Sheepdog01's call.** It detracts. GE fill only matters in decal piles, and the GE isn't the limit (above). |
+| `HALO_DECAL_STACK_CAP=n` (`rasterizer_xbox_decals.c`, opt-in) | At most n decals drawn in one 0.15-unit cell; older ones under them are left out (a10's knot: ~800 quads, 2.4 screens of blended pixels). | No (an old mark that showed through goes) | **Shelf, the maintainer's call.** It detracts. GE fill only matters in decal piles, and the GE isn't the limit (above). |
 
 **Credit, if any is taken:** all three are BirchWoodGod's code under his grant (header), except the think rate, which is Bruno Santana's (idea only).
 

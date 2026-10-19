@@ -4,8 +4,8 @@ smaller for the PSP, before invader-build builds the map from them.
 The disc stores effects and dialogue at 22,050 Hz (some stereo) and music
 and some ambience at 44,100 Hz stereo, all Xbox ADPCM. The port mixes at
 22,050 Hz (psp_dsound.c), so everything above 11 kHz is lost on the PSP
-anyway, and an effect played in 3D is mixed as mono. streaming.md S9 (Sheepdog01,
-2026-10-11: "a reduction in resource usage with near zero quality cost"):
+anyway, and an effect played in 3D is mixed as mono. streaming.md S9
+(2026-10-11: "a reduction in resource usage with near zero quality cost"):
 
     s9    every sound at 22,050 Hz at most; effects mono; music stereo
     s10   s9, and footsteps, impacts and casings at 11,025 Hz (S10: a

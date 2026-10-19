@@ -21,7 +21,7 @@ REPO = os.environ.get("HALO_REPO", "/tmp/halo-sp")
 OUT = os.environ.get("PSP_OUT", "/tmp/psp_halo")
 TREE = os.path.join(OUT, "tree")
 OBJ = os.path.join(OUT, "obj")
-# The toolchain: $PSPDEV as pspdev sets it (/opt/psp/pspdev here, /opt/pspdev in the lab runner)
+# The toolchain: $PSPDEV as pspdev sets it (/opt/psp/pspdev or /opt/pspdev)
 PSPDEV = os.environ.get("PSPDEV", "/opt/psp/pspdev")
 SDK = PSPDEV + "/psp/sdk"
 # mcidclan's me-core-mapper: installed into the toolchain by default (its "make install");
@@ -43,7 +43,7 @@ PLATFORM_FILES = [
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_vsh", "xbdm",
 ]
 # build 107: the campaign-only engine. Co-op and multiplayer become a branch
-# of their own, with their own budgets (Sheepdog01, 2026-10-08), so the campaign
+# of their own, with their own budgets (2026-10-08), so the campaign
 # build leaves out the networking, the netcode and the multiplayer game
 # engines: 0.55 MB of code and buffers (docs/dead_code_inventory.md).
 # psp/src/psp_campaign.c answers what the campaign still calls in them, "no
@@ -57,7 +57,7 @@ MULTIPLAYER_UNITS = ("source/networking/", "source/bungie_net/", "source/game/ga
 CAMPAIGN_KEEPS = ("source/bungie_net/common/thread_win32.c",)
 def multiplayer_unit(rel):
     return rel.startswith(MULTIPLAYER_UNITS) and rel not in CAMPAIGN_KEEPS
-# The multiplayer build is a client (Sheepdog01, 2026-10-17): it leaves out
+# The multiplayer build is a client (2026-10-17): it leaves out
 # ChupathingyCE's network co-op too, a game on a campaign map that needs a
 # host (psp/src/psp_nocoop.c answers it, as the campaign build's does).
 # PSP_MP_COOP=1 builds the co-op units back in
@@ -195,7 +195,7 @@ PGO_EXTRA = os.environ.get("PSP_PGO_EXTRA", "").replace(",", " ").split()
 #   size, which lost (more instructions, more misses on b30)
 # - PSP_PGO_HOT_PERMILLE=N: --param hot-bb-count-ws-permille; GCC reads it
 #   only with LTO, so it changes nothing here (the sweep's control)
-# These are switches of their own because a lab build switch's value can't
+# These are switches of their own because a test harness's switch value can't
 # hold an "=" (PSP_NAME=letters, digits and -_.,)
 for _sw, _flag, _default in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction=", ""),
                              ("PSP_PGO_HOT_PERMILLE", "--param=hot-bb-count-ws-permille=", ""),
@@ -453,7 +453,7 @@ def compile_one(item):
         # PGO: the port's own files named through the tree's link to the
         # checkout (tree/sierra), as the engine's are named relative to the
         # tree: a function's file name is part of its profile's checksum, so
-        # counts made on the lab's runner match a build on any machine
+        # counts made on one machine match a build on any machine
         cmd = [a.replace(HERE + "/", "sierra/") for a in cmd]
     # PGO=use: a counted unit compiles with its warnings on (they change no
     # code), so GCC's word that it dropped a function's counts reaches
@@ -588,7 +588,7 @@ def link(objs, stubs):
     #     T1). Only a PGO build has .text.hot sections;
     #   a file name: coldfirst, then that file's hot functions in its order
     #     (one section name a line, tools/icache_order.py's order.txt); or,
-    #     when its lines are placements ("*<object>(<section>)", the lab's
+    #     when its lines are placements ("*<object>(<section>)", the test
     #     tools/codeorder.py: the call graph's order, T2), those in its order
     #     and nothing first, each function's cold part placed beside it.
     # A linker script gives each input section to the first rule that

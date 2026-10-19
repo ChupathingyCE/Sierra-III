@@ -5,8 +5,8 @@ and then "returns" from the exception into the handler, which runs in the
 mode the crashed thread was in. pspsdk was written for firmware where games
 ran in kernel mode; ours runs in user mode, and the handler's code is in this
 kernel module, so the return lands a user-mode thread on kernel code: another
-exception at once, the same handler again, for ever. Every crash in Sheepdog01's
-runs froze with nothing on the screen, then the PSP switched itself off; so
+exception at once, the same handler again, for ever. Every crash in the
+hardware runs froze with nothing on the screen, then the PSP switched itself off; so
 did the deliberate one (crashplay, b100 run 2).
 
 So, as ARK-4's own crash screen module does (extras/modules/bsod): the

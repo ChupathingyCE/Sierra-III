@@ -2,7 +2,7 @@
 changes (build 113). Each is a keep word, off unless asked for, and costs
 nothing while off but the test of its word.
 
-"flipwatch": the vehicle flip prompt (b113_candidates.md #10). Sheepdog01's sequence,
+"flipwatch": the vehicle flip prompt (b113_candidates.md #10). The sequence seen
 across several builds: a vehicle flips, the player walks up, the prompt to
 flip it appears, goes before he can press, and never comes back however he
 walks around it. The prompt is worked out every tick from four conditions

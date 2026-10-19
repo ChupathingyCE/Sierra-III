@@ -147,7 +147,7 @@ broken ("_transport_error_endpoint_io"). The firmware's own code is asked
 again right after the call instead (keep word libcerrno: errno as before),
 and the first 64 calls where the two differ are logged, accept's left out:
 its errno says 2 where the firmware says EAGAIN on every pass, which filled
-the 64 lines before a read could show (lab 39016196537, 39017504866) */
+the 64 lines before a read could show (two emulator runs) */
 static int call_error(const char *call)
 {
 	static int keep = -1, differ_logged;
@@ -847,7 +847,7 @@ int posix_socket_connect(int socket, const void *address, int address_length)
 	/* a non-blocking connect under way: Winsock's WSAEWOULDBLOCK, which the
 	game waits on, as posix_net.c answers (POSIX's EINPROGRESS, as
 	WSAEINPROGRESS, is a failure to it: the first emulator join,
-	sierra-netplay 38083830124) */
+	a netplay run) */
 	result = connect(socket, (struct sockaddr *)&psp, sizeof(psp));
 	if (result < 0 && errno == EINPROGRESS)
 	{
@@ -1147,7 +1147,7 @@ static void add_all(int const *list, int const *count, fd_set *set, int *highest
 }
 
 /* select through the firmware's own poll (keep word inetpoll), in place of
-libcglue's select. In a public game on the PSP-3000 (sierra-hw 38958361231)
+libcglue's select. In a public game on a PSP-3000
 the desktop's capture saw 1,442 of the host's packets sent to the tunnel's
 port, while the tunnel read about 190, and the game's own packets went out
 in bursts after seconds of nothing: the sockets held them, and select didn't
@@ -1184,7 +1184,7 @@ socket gets a set of 1,024 bits cleared whole (the firmware's size isn't
 documented; this covers both readings), asked with no wait, in rounds 0.5 ms
 apart until something is ready or the timeout ends, as libcglue's rounds.
 (All the sockets in one call, with the firmware waiting, broke play against
-a local server in the emulator: lab sierra-netplay 38972177737.) -2: not
+a local server in the emulator.) -2: not
 done (the caller uses libcglue's select) */
 enum { FIRMWARE_SET_WORDS = 32 };
 
@@ -1283,7 +1283,7 @@ static int inet_poll(int count, fd_set *read_set, fd_set *write_set, fd_set *err
 
 		result = sceNetInetPoll(polls, (size_t)used, (int)timeout_ms);
 		/* (the emulator's poll comes back at once with nothing ready, whatever
-		the timeout (lab sierra-netplay 38962975417); if a PSP's ever does, a
+		the timeout (a netplay run); if a PSP's ever does, a
 		raised thread would spin: the rest of the wait in steps of 1 ms) */
 		while (result == 0 && timeout_ms > 0 &&
 			(long)((sceKernelGetSystemTimeLow() - start) / 1000) < timeout_ms)

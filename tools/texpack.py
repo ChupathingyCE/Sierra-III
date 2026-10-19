@@ -392,7 +392,7 @@ GRID_PALETTE = np.array([[min(255, (i >> 2) * 4 + 2)] * 3 + [(i & 3) * 85] for i
 # 60 rounds are greys 4, 8 ... 240, and its meter (alpha multiplier 4, bias 2)
 # fills a round while its grey is below 4 x rounds + 2. The grid's greys were
 # 4k + 2, so round 60's 240 became 242, equal to the full magazine's 242: the
-# last round never lit (Sheepdog01, every build). The offset is now the bitmap's
+# last round never lit (every build). The offset is now the bitmap's
 # commonest grey modulo 4 (0 here), so greys on the 4-step stay exact
 def grid_offset(img):
     a = img[:, :, 3] > 0
@@ -444,7 +444,7 @@ def detail_levels(m, b, tw, th):
     "detail rock sandstone" keeps half the contrast of a plain downscale at
     its sixth level, "detail grass" a third. Downscaled from the top level as
     before, the small levels kept the full pattern, and at a middle distance
-    the canyon walls showed it as bands (Sheepdog01, b56-b59). All levels are scaled
+    the canyon walls showed it as bands (b56-b59). All levels are scaled
     by the top level's average, so a faded level fades to the neutral grey"""
     dropped = 0
     while (b['w'] >> dropped) > tw and dropped < 12:
@@ -477,7 +477,7 @@ LIGHTMAP_MASKS = {}
 # top level's coverage (texpack.py --alpha-coverage). A box filter averages a
 # leaf's edge with the air around it, so at each smaller level fewer texels
 # pass the GE's alpha test (alpha > 127) and a far plant thins out and
-# shimmers as the level changes (Sheepdog01: the flickering plants, b62 shot 11).
+# shimmers as the level changes (the flickering plants, b62 shot 11).
 # Each level's alpha is scaled so the same share of it passes as at the top
 # (Castano's coverage-preserving mipmaps)
 ALPHA_COVERAGE = False
@@ -592,11 +592,11 @@ def direct_levels(small, tw, th, levels_wanted, wide):
     return levels
 
 
-# ---- how texels become palette indices (Sheepdog01, 2026-10-16: the textures'
+# ---- how texels become palette indices (2026-10-16: the textures'
 # blockiness and "oily" bands, everywhere). Three steps every 8- and 4-bit
 # texture goes through, with --quality 2. Measured closer to the source by
 # 2-9 dB a class, but on the PSP-1000 the two bakes were indistinguishable
-# (Sheepdog01, 2026-10-17), so the default stays 1: it bakes in half the time.
+# (2026-10-17), so the default stays 1: it bakes in half the time.
 #  - the palette is fitted in Oklab, a space where equal distances look
 #    equally different, so dark tones get entries of their own rather than
 #    sharing a few (RGB distance spends them on bright differences);
@@ -924,7 +924,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     # + 1, less the levels dropped above the baked size). Blood Gulch's 15
     # lightmaps have none on the Xbox; baked with a chain, their small levels
     # mixed each lightmap page's charts and dark gutters together, and
-    # surfaces seen edge-on or far off took that dark mix (Sheepdog01's dark lines,
+    # surfaces seen edge-on or far off took that dark mix (the dark lines,
     # gone with "nomip", b47)
     dropped = 0
     while (b['w'] >> dropped) > tw and dropped < 12:

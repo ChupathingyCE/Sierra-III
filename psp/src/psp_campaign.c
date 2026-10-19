@@ -3,7 +3,7 @@
 The campaign build leaves out the networking, the netcode and the
 multiplayer game engines (psp_build.py's MULTIPLAYER_UNITS;
 docs/dead_code_inventory.md). Co-op and multiplayer become a branch of their
-own, with their own budgets (Sheepdog01, 2026-10-08).
+own, with their own budgets (2026-10-08).
 
 What the campaign still calls in those units is answered here, each the way
 the real function answers when there is no network game: no client, no

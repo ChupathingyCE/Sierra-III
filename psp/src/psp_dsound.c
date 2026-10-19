@@ -108,7 +108,7 @@ struct psp_stream
 	int target_left, target_right;
 	/* build 87: frames this voice had nothing queued to play while the game
 	still had it playing (written by the mixer, on either CPU): a gap, if
-	the game then queues more (Sheepdog01's b86 run 2: regular breaks heard with
+	the game then queues more (b86's run 2: regular breaks heard with
 	either mixer, the output never late) */
 	unsigned long dry_frames;
 	/* frames this voice was mixed (written by the mixer, on either CPU):
@@ -181,7 +181,7 @@ static float master_volume = 1.0f;
 
 /* the mixer's own accounting, for the log */
 static unsigned long mix_blocks = 0, mix_microseconds = 0, mix_voice_blocks = 0, mix_peak_voices = 0;
-/* build 40 (Sheepdog01: sound cutting out in the heaviest fighting): which of
+/* build 40 (sound cutting out in the heaviest fighting): which of
 three it is. The worst block's mixing time and the longest wait for the
 mixer's lock (the game holds it to start and change sounds); blocks that
 reached the output late (a gap heard); and blocks that hit the 16-bit limit

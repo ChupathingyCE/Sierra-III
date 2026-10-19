@@ -135,7 +135,7 @@ EOF
 top=(PSP)
 if [[ -f $SRC/psp/presets.txt ]]; then
     # the launch menu takes MAXIMUM_PRESETS (psp_menu.c); one past it would be
-    # a test Sheepdog01 can't start
+    # a test the menu can't start
     most=$(sed -n 's/^#define MAXIMUM_PRESETS \([0-9]*\).*/\1/p' "$SRC/psp/src/psp_menu.c")
     count=$(grep -v '^#' "$SRC/psp/presets.txt" | grep -c ':' || true)
     if [[ -z $most || $count -gt $most ]]; then

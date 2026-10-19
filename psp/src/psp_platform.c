@@ -202,7 +202,7 @@ void psp_log_flush(void)
 }
 
 /* build 99: the blackbox batches from the first frame (b98 wrote each
-traced line at once until 20 s in: Sheepdog01's b98 run 2 started very slowly), and
+traced line at once until 20 s in: b98's run 2 started very slowly), and
 the game thread writes the batch at every frame's end, so a freeze loses at
 most the frame it happened in */
 static volatile int log_frame_flush = 0;
@@ -321,7 +321,7 @@ void psp_log_exiting(void)
 {
 	exiting = 1;
 }
-/* build 104: and in play, at most half a second: b103 run 1 (Sheepdog01) hung
+/* build 104: and in play, at most half a second: b103 run 1 hung
 loading The Library with the game thread holding this lock while it waited
 on another (psp_trace.c's handle table), and the heartbeat waited here
 forever behind it. A wait that times out goes on without the lock (two
@@ -638,7 +638,7 @@ void psp_step(const char *name)
 		extern void psp_trace_line(const char *format, ...);
 
 		/* build 99: in play (the blackbox), each step the first time it
-		runs: a freeze after something new happens (Sheepdog01's b97/b98: the first
+		runs: a freeze after something new happens (b97/b98: the first
 		shot at an infection form) shows which code it entered */
 		static const char *seen[2048];
 
@@ -965,8 +965,8 @@ static void keep_load(void)
 	platform_log("keep words, the level copies' room: fix off: streamroomoff (a material with no room for its copy tried again on every draw); tests: streamsqueezeN (the copies held to N KB of the arena, none from the general heap); levelcarveN (KB of the texture RAM cache for the copies past the arena, on maps whose geometry cache is carved there; 512 by default, levelcarve0 none)");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
-	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
-	platform_log("keep words, build 122's behaviour calls (opt-in, for Sheepdog01's A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
+	platform_log("keep words, build 122's look calls (opt-in, for an A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
+	platform_log("keep words, build 122's behaviour calls (opt-in, for an A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
 	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it); fix off: meresetwhole (the reset register written whole); recon: mewaketest");
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf ditherlift (offsets +4) dithershift (detail and sky passes dithered, the pattern moved each pass) dithershiftall (every blend); recon: noglowpass nobackpass ditherprobe (the GE's rounding, logged at start-up)");
@@ -976,7 +976,7 @@ static void keep_load(void)
 	platform_log("keep words, build 128's: speed off: obscurertest (the camera's ray through every object as each model pass begins, which only a debug display reads), nearautofull (nearauto's level spheres gathered whole, not stopped at the first surface); check: nearautocheck");
 	platform_log("keep words, build 129's: speed off: flaresfull (a flare's ray tests the objects even when the level hides it), fractiondouble (the animations' and periodic functions' fractions in software double); check: flarescheck, fractioncheck");
 	platform_log("keep words, build 130's instruments (opt-in): posepredict (how often a tick's base pose is the frame after its last), framecrc (each finished picture hashed and logged with the game time; tools/framecmp.py compares two runs), readswait (every cache file read waited for as it is asked, so pictures do not depend on read timing; slower)");
-	platform_log("keep words, build 130's default change (Sheepdog01, 2026-10-15): cutless on (triangles and cut pieces wholly off the screen left out); cutlessoff cuts and draws them as before");
+	platform_log("keep words, build 130's default change (2026-10-15): cutless on (triangles and cut pieces wholly off the screen left out); cutlessoff cuts and draws them as before");
 	platform_log("keep words, build 131's (opt-in while proven): poseahead (next tick's base poses made ahead on the main CPU), poseaheadme (made ahead on the Media Engine during the frame's drawing, for animations in the tags or resident in the animation cache), poseaheadcheck (made ahead and decoded anyway, compared bit for bit)");
 	platform_log("keep words, build 131's: speed off: surfaceboundoff (the level sphere walk tests every surface it reaches, out of reach or not); check: surfacetestcheck");
 	platform_log("keep words, build 132's: speed off: poseaheadoff (the Media Engine pose job off: on by default where the ME runs the job ring); as before: memarksatlaunch (the launch's register read also reads the ME's own two words while it runs)");
@@ -1307,7 +1307,7 @@ void psp_me_exit(const char *why);
 
 /* builds 88-104 kept ms0:/halo/log/exit.txt open from start-up to record
 how far the HOME exit got. It answered its question (b90: ARK-4 Kommander's
-Exit, the only way Sheepdog01 quits, never calls the exit callback at all), and
+Exit, the usual way to quit, never calls the exit callback at all), and
 build 105 gives its descriptor back: b104 run 1 showed the PSP lets the
 game hold only about ten files at once */
 static int exit_callbacks_registered[3] = { 1, 1, 1 };
@@ -1347,7 +1347,7 @@ static int exit_callback(int a, int b, void *c)
 }
 
 /* build 108: a level's end asks for the next map (main_change_map_name,
-psp_fixups.py). The stick holds the maps Sheepdog01 baked, not the whole campaign,
+psp_fixups.py). The stick holds the maps baked for the test, not the whole campaign,
 and with the next one missing the game showed its "damaged disc" error and
 looped there for good; b107's run of b30 crashed in that loop instead. The
 level is finished, so the run ends here: the game exits, the log saying
@@ -1487,7 +1487,7 @@ static const struct
 {
 	/* build 88: z 0.55 (b87's 0.20 put the feet in the floor: the game
 	pushed the player 0.8 units away each time, and b87 placed him again
-	every window, which made this view's numbers noisy; Sheepdog01's b86 spot
+	every window, which made this view's numbers noisy; b86's spot
 	itself reads 0.53) */
 	{ "blue base, b86 spot", { 37.74f, -88.22f, 0.55f, 0.25f, 0.97f, 0.0f } },
 	{ "red base front", { 95.0f, -172.0f, 0.45f, 0.0f, 1.0f, 0.05f } },
@@ -1642,7 +1642,7 @@ static void bench_tick(void)
 	else if (config == BENCH_VRAM_BUSY)
 		psp_ge_setting(22, 1, -1);	/* the load's size held: measure */
 	/* build 88: put at the spot when the view changes, and again only if the
-	game has moved the player off it (b87: every window, and Sheepdog01 saw the
+	game has moved the player off it (b87: every window, and the tester saw the
 	teleport repeat; each one can hitch the window it starts) */
 	{
 		extern int psp_player_origin(float *out);
@@ -1784,7 +1784,7 @@ static void stack_report(void)
 			continue;
 		/* build 97: our own threads' stacks only. b95/b96 read every
 		thread's, the system's idle threads too, whose stacks are kernel
-		memory: on the PSP a user-mode read there is an exception (Sheepdog01's b96
+		memory: on the PSP a user-mode read there is an exception (b96's
 		runs 1 and 2 both died at tick 75, the first time this ran; the
 		emulator doesn't protect kernel memory) */
 		if (!(info.attr & PSP_THREAD_ATTR_USER) || (unsigned int)info.stack < 0x08800000u ||
@@ -1814,8 +1814,8 @@ static void bus_probe(const char *when); /* build 105, below */
 
 
 /* build 117: keep.txt's "ladderN": the campaign's openings one after
-another, N seconds of game time each, with nobody at the controls (Sheepdog01,
-2026-10-12: a test session that runs itself). N seconds into a map, the
+another, N seconds of game time each, with nobody at the controls
+(2026-10-12: a test session that runs itself). N seconds into a map, the
 next one in the campaign's order loads; one that isn't on the stick is
 passed over, and after the last the game exits. Start it from the launch
 menu on any campaign map. The map's name comes from the cache file's
@@ -1867,7 +1867,7 @@ static int ladder_load_next(const char *from)
 }
 
 /* keep.txt's "sceneladder": the openings' cutscenes only, for a showcase
-(Sheepdog01, 2026-10-14). A map's turn ends once its cutscene has been over for
+(2026-10-14). A map's turn ends once its cutscene has been over for
 SCENE_SETTLE of game time: several openings run one scene into the next
 with a moment's gap, and the wait keeps a chain whole. A map whose
 cutscene hasn't started by SCENE_WAIT has none, and is passed over;
@@ -2138,7 +2138,7 @@ steps in order: the console has no way to wait */
 	forward_y forward_z": the player put at each spot in turn, at that many
 	seconds of play (game ticks), each line once. A route replayed from a
 	hardware log's "player: at" lines (tools/route_from_log.py), so the
-	emulator can size the caches on the route Sheepdog01 actually played */
+	emulator can size the caches on the route actually played */
 	{
 		static FILE *route = NULL;
 		static int route_done = 0;
@@ -2352,7 +2352,7 @@ void psp_phase(int phase);
 4+). With interpolation off (its default on the PSP), a frame shows the
 state of the last tick: frames alternating 1 and 2 ticks move the world in
 uneven steps, which reads as judder in fast turns (the warthog's donut
-bounce, Sheepdog01 b80: a candidate cause). keep word "interpolation" smooths it */
+bounce, b80: a candidate cause). keep word "interpolation" smooths it */
 static unsigned long ticks_per_frame_histogram[5];
 /* the last frame's length, for the mixer's dry gaps (psp_dsound.c): a gap
 follows a frame longer than the streams' queue */
@@ -2681,7 +2681,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 		}
 #endif
 		/* build 73: the Memory Stick reads of this window: how many, how
-		long in all, the slowest one (Sheepdog01's b71/b72: 1.7-5 s a frame at the
+		long in all, the slowest one (b71/b72: 1.7-5 s a frame at the
 		frame's end, the reads the suspects) */
 		if (ticks >= 0 && last_ticks >= 0)
 		{
@@ -2764,7 +2764,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 			psp_handles_reserve();
 		}
 		/* build 103: the game counts as activity, so the firmware doesn't dim
-		the backlight (Sheepdog01, b102: the screen went dark after a while without
+		the backlight (b102: the screen went dark after a while without
 		buttons; the analog stick alone doesn't reset the timer) or put the PSP
 		to sleep during play, a cutscene or a bench left alone */
 		if (ticks >= 0)
@@ -2797,7 +2797,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 		/* once the game runs, its lines wait in the batch for the beat's
 		write: a line written at once costs the stick an open, a write and a
 		close, and a map's first seconds log the most while it streams the
-		most (lab 38616912734, b30: the log held the stick 7.1 s up to tick
+		most (b30 in the emulator: the log held the stick 7.1 s up to tick
 		400, and geometry waited 0.58 s behind it). A crash still writes the
 		batch (psp_crash.c); a hang loses at most the beat's lines */
 		if (ticks >= 0 && (beat > 20 || !log_each_line()))
@@ -3059,7 +3059,7 @@ int main(int argc, char **argv)
 	write each second, as the game's do once it runs: each line written at
 	once cost the stick an open, a write and a close, and the heartbeat's
 	(at a priority above the game's and the saved-game check's) held the
-	stick 3 s at the first frame on the PSP-1000 (lab 39021437349).
+	stick 3 s at the first frame on the PSP-1000.
 	A crash still writes the batch (psp_crash.c); a hang loses at most a
 	second's lines. "logeachline": each line at once, as before */
 	if (thread >= 0 && !log_each_line())

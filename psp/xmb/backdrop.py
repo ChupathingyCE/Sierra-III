@@ -2,7 +2,7 @@
 """Draws an original space backdrop for PIC1: deep space, a nebula band, stars and a planet.
 
 Everything here is generated, so it is ours to ship. The ship and the ring go on top as
-separate layers (footage or Sheepdog01's own art).
+separate layers (footage or our own art).
 
 Drawn at 2x (960 x 544) and shrunk to 480 x 272, so edges and stars come out smooth.
 

@@ -3,7 +3,7 @@
 
 Why. The heartbeat logs averages and each window's worst frame. Averages can't
 tell a steady overrun from a rare hitch, and at 30 ticks a second the game loses
-time only on a frame over 66.7 ms (two ticks' worth): the floor Sheepdog01 set, 15 fps
+time only on a frame over 66.7 ms (two ticks' worth): the project's floor, 15 fps
 at 30 ticks a second, is a question about the slow frames, not the mean.
 
 What. With the keep word each frame is timed from the end of one to the end of

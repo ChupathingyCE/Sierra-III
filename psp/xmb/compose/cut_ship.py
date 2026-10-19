@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cuts the ship out of Sheepdog01's third capture (1081 x 660): a solid hull layer and an additive glow
+"""Cuts the ship out of the third capture (1081 x 660): a solid hull layer and an additive glow
 layer for the engine plumes.
 
 Hull: GrabCut, seeded from a rough hand outline (probably ship), its eroded core (definitely ship)

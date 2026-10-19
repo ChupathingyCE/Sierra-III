@@ -206,7 +206,7 @@ void psp_tex_close(void)
 	benchrun, whose rooms are up there.
 	Build 117: 600 KB by default (b116 test 2 [M]: the models' GE time 31%
 	less in b30's cinematic and 44% less in the flight after it, the flight
-	16% faster; Sheepdog01's call, 2026-10-12). "vrammodels0" turns it off */
+	16% faster; the maintainer's call, 2026-10-12). "vrammodels0" turns it off */
 	vram_models_bytes = 0;
 	if (!psp_keep("benchrun"))
 	{
@@ -251,7 +251,7 @@ static int volatile_locked = 0;
 
 /* build 67: "texsqueeze" caps the RAM cache at 1 MB and "texvramonly" leaves
 it empty, so a map that otherwise fits the caches whole (Blood Gulch: 5 MB in
-1.2 MB of VRAM and the 4 MB partition, 0 evictions in Sheepdog01's b64 run) has to
+1.2 MB of VRAM and the 4 MB partition, 0 evictions in b64's run) has to
 stream textures from the Memory Stick during play. The first measure of
 in-play streaming on hardware: loads, waits, evictions, the worst frame's
 reading, and how many frames drew something untextured meanwhile */
@@ -1507,7 +1507,7 @@ ambient and its two distant lights' strength, the surface's texture colour
 bitmap's pixels in the texture cache (bitmap_2d_get_pixel); here the pixels
 are in this pack, the game's bitmaps have none, and the read answered
 "none", white: every object, characters, vehicles and scenery alike, lit as
-if it stood in full light (Sheepdog01, b101: "the lighting seems to be ignored by
+if it stood in full light (b101: "the lighting seems to be ignored by
 characters and vehicle models, as well as some rocks"). So the samples come
 from here: the texel itself when the texture is resident (exact: the
 lightmap's colours through its palette); else, while the map loads (static
