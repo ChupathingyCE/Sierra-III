@@ -43,9 +43,10 @@ Options:
     --detail fp,vehicles        also bake _detail.ptex with these classes at
                                 full size (fp, weapons, vehicles, characters):
                                 the launch menu's "assetdetail" uses them
-    --sound s9                  the sound bake (build 116, streaming.md S9):
+    --sound s9                  the sound bake (the default; streaming.md S9):
                                 every sound at 22,050 Hz at most, effects mono,
-                                music stereo, still Xbox ADPCM (lib/soundpack.py)
+                                music stereo, still Xbox ADPCM (lib/soundpack.py);
+                                --sound none keeps the disc's sounds as they are
     --eboot PATH                the release's EBOOT.PBP: a copy with the menu
                                 sound goes to <output>/PSP/GAME/<its folder>/
     --music [MAP:]TAG[@START][+LENGTH]
@@ -478,7 +479,7 @@ def main():
     ap.add_argument('--keep-work', action='store_true')
     ap.add_argument('--force', action='store_true')
     ap.add_argument('--detail', default='')
-    ap.add_argument('--sound', default='', choices=['', 's9', 's10'])
+    ap.add_argument('--sound', default='s9', choices=['none', 's9', 's10'])
     ap.add_argument('--eboot', default='')
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
@@ -490,6 +491,8 @@ def main():
                     help="also make each palette and decal cut as the bake did before this one (scikit-learn's k-means, "
                          'Triangle), and log how they compare: the new bake\'s proof (docs/bake_changes.md)')
     a = ap.parse_args()
+    if a.sound == 'none':
+        a.sound = ''
     global COMPARE_OLD
     COMPARE_OLD = a.compare_old
     if a.tints_from_means:

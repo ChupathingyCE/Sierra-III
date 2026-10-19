@@ -111,9 +111,9 @@ or the options below (on Windows `"Bake Halo.cmd" ...`, on macOS
 The output folder then holds `halo/maps/` and `halo/chant.adp` (and, with
 `--eboot`, `PSP/GAME/halo/EBOOT.PBP`): copy its contents to the stick. Unlike
 the double-click, it doesn't check the disc first (a map that doesn't match
-is skipped, or baked anyway with `--force`), and it takes the disc's sounds
-as they are unless given `--sound s9`, the sound bake the release is tested
-with.
+is skipped, or baked anyway with `--force`), and like it, it bakes the sounds
+the way the release is tested (`--sound s9`; `--sound none` keeps the disc's
+as they are).
 
 | Option | What it does |
 |---|---|
@@ -121,7 +121,7 @@ with.
 | `--multiplayer` | the thirteen multiplayer maps too |
 | `--jobs N` | bake N maps at once (default: one per CPU, at most 4, fewer with under 8 GB of memory free; the maps come out the same either way); each map's own log is in `<output>/work/<map>.log` |
 | `--detail fp,vehicles` | also bake `_detail.ptex`, those classes' textures at full size (`fp`, `weapons`, `vehicles`, `characters`), for the launch menu's "asset detail" |
-| `--sound s9` | every sound at 22,050 Hz at most, effects mono, music stereo |
+| `--sound s9` | the default: every sound at 22,050 Hz at most, effects mono, music stereo (`none`: the disc's sounds as they are) |
 | `--eboot PATH` | the release's `EBOOT.PBP`: a copy with the menu sound goes to `<output>/PSP/GAME/halo/` (`halomp/` for the multiplayer build's) |
 | `--music [MAP:]TAG[@START][+LENGTH]` | another clip for the menu sound; `--maps ui --list-music` lists a map's music and lengths |
 | `--setup` | only set up the Python environment and check the tools |

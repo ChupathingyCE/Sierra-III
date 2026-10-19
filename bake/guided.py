@@ -50,8 +50,7 @@ YES = os.environ.get('HALO_PSP_BAKE_YES') == '1'
 # what a player may leave in an input folder beside the input itself
 IGNORED = {'readme.txt', 'desktop.ini', 'thumbs.db'}
 ARCHIVES = ('.zip', '.7z', '.rar', '.gz', '.xz', '.bz2', '.tar')
-# the sound bake the release is played and tested with (the maintainer's
-# call: the bake keeps --sound s9); bake.py's own default is the disc's sounds
+# the sound bake the release is played and tested with, as bake.py's default
 SOUND = 's9'
 # Each map's minutes on a desktop with four maps baking at once, the first
 # guess at the time left: the maps that finish scale it to this machine
