@@ -20,7 +20,9 @@ map files the PSP build reads. Nothing from the game is included here.
   bare game-partition image (what most Xbox dumping tools and extract-xiso
   make) or a full Redump image both work. A folder with the disc's maps
   (`maps/*.map`) works too.
-- About 3 GB free while it runs; the result is about 1.6 GB.
+- About 8 GB free while it runs; the result is about 2.9 GB (all 24 maps).
+  <!-- the result from the last full bake (b121's, 2.78 GB) and b139's larger
+  packs; the 8 GB is an estimate until b139's full bake is measured -->
 
 ## Get the bundle
 
