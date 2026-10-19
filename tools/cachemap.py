@@ -42,7 +42,7 @@ TAG_WINDOW = (0x09600000, 0x09F00000)
 # the campaign build's; the multiplayer build's starts at 0x09340000, a
 # PSP_POOLS_XBOX=1 build's (and one from before the campaign's pools were cut)
 # at 0x092A0000 (psp_capacity.h)
-GAME_STATE = (0x092FA000, 0x09600000)  # (0x092B0000 to b112)
+GAME_STATE = (0x092FA000, 0x09600000)
 
 
 def load_dump(path):
