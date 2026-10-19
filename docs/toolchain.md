@@ -70,7 +70,7 @@ should equal the EBOOT hash in that build's notes (`docs/build_bNNN.md`, "EBOOT 
 The PSP can't read the Xbox maps directly: they're rebuilt for its memory, and their textures, geometry and stencils are baked into packs it streams.
 
 1. **The bake tool:** the release's bundle for your OS (Windows, macOS, Linux), built by `.github/workflows/bake-bundle.yml`. Or build one here: `bake/make_bundle.sh <out>` compiles the Invader fork (`upstream/invader/psp-fork.patch`) and atracdenc from source (`bake/bundle/build_tools.sh`) and makes the self-contained `halo-psp-bake` folder.
-2. **Bake:** `<out>/halo-psp-bake ~/Halo.iso ~/halo-psp-out`. Details, the disc version it expects, and the Python requirements are in `bake/README.md`. All maps take an hour or two; `--maps b30,ui` does just one.
+2. **Bake:** `<out>/halo-psp-bake ~/Halo.iso ~/halo-psp-out`. Details, the disc version it expects, and the Python requirements are in `bake/README.md`. All maps take 45 to 60 minutes one after another, less with several at once (`--jobs`, by default one per CPU up to 4); `--maps b30,ui` does just those.
 
 The result (`~/halo-psp-out/halo/`) is game data: keep it on your own machines.
 
