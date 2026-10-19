@@ -11434,7 +11434,20 @@ the map hardly shows in the shader at all, flat (a10's cryo glass) */
 #define SEETHROUGH_ADD 1
 #define SEETHROUGH_FLAT 2
 static unsigned char seethrough_next_model = SEETHROUGH_MODULATE;
-static unsigned long seethrough_added_draws = 0, seethrough_flat_draws = 0;
+static unsigned long seethrough_added_draws = 0, seethrough_flat_draws = 0, seethrough_rounded_draws = 0;
+/* The GE rounds a blend's result down to the frame's 5-6-5 steps, so a faint
+flat tint added over the frame loses up to a step a channel: a10's cryo glass,
+(9,10,7) a pane, adds (8,8,0), olive where the Xbox adds a grey. A flat tint
+is one colour, so half a step added to it first makes the round down land on
+the nearest step, without a dither's pattern. "flatnoround": as before */
+static int flat_round = -1;
+static unsigned int flat_color; /* the draw's rounded tint, 0 when not rounded */
+static unsigned int flat_rounded(unsigned int color)
+{
+	unsigned int r = (color & 0xFF) + 4, g = ((color >> 8) & 0xFF) + 2, b = ((color >> 16) & 0xFF) + 4;
+
+	return (color & 0xFF000000) | ((b > 255 ? 255 : b) << 16) | ((g > 255 ? 255 : g) << 8) | (r > 255 ? 255 : r);
+}
 /* How the Xbox depth-tests a see-through surface: LESSEQUAL, with a depth
 bias only for a shader flagged decal (rasterizer_xbox_transparent_geometry.c;
 shaders.c, shader_is_decal). And how it addresses the map: clamped where the
@@ -13995,6 +14008,7 @@ static void transparent_flush_body(void)
 			sceGuEnable(GU_FRAGMENT_2X);
 			seethrough_doubled_draws++;
 		}
+		flat_color = 0;
 		if (draw->tint_model == SEETHROUGH_ADD)
 		{
 			sceGuTexFunc(GU_TFX_ADD, GU_TCC_RGBA);
@@ -14007,6 +14021,17 @@ static void transparent_flush_body(void)
 			gives its alpha. A draw coloured per vertex takes the tint */
 			unsigned int flat = draw->sprites || draw->colored ? draw->tint : draw->color;
 
+			if (flat_round < 0)
+				flat_round = !psp_keep("flatnoround");
+			/* only where the frame takes the colour whole (an added blend)
+			and undithered; a coloured draw's colours are its corners' */
+			if (flat_round && !draw->sprites && !draw->colored && !draw->doubled && !draw->sky &&
+				(draw->blend == 3 || draw->blend == 7) && dither_all <= 0 && flat != 0xFFFFFFFF)
+			{
+				flat = flat_rounded(flat);
+				flat_color = flat;
+				seethrough_rounded_draws++;
+			}
 			sceGuTexFunc(GU_TFX_BLEND, GU_TCC_RGBA);
 			sceGuTexEnvColor(flat & 0x00FFFFFF);
 			seethrough_flat_draws++;
@@ -14014,7 +14039,7 @@ static void transparent_flush_body(void)
 		/* build 116: the shader's fade as one colour (sprites and coloured
 		draws carry their own) */
 		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
-			sceGuColor(draw->color);
+			sceGuColor(flat_color ? flat_color : draw->color);
 		if (draw->sprites)
 			/* (build 113: a contrail is a strip; sprites and widgets lists) */
 			sceGumDrawArray(draw->strip ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
@@ -18351,9 +18376,9 @@ void psp_ge_frame_end(void)
 			for (way = 0; way < 3; way++)
 				me_bench_frames[way] = me_bench_us[way] = 0;
 		}
-		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu, added %lu, flat %lu",
+		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu, added %lu, flat %lu (rounded %lu)",
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
-			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws);
+			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws, seethrough_rounded_draws);
 		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu",
 			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws);
 		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = 0;
@@ -18362,6 +18387,7 @@ void psp_ge_frame_end(void)
 		seethrough_doubled_draws = 0;
 		seethrough_added_draws = 0;
 		seethrough_flat_draws = 0;
+		seethrough_rounded_draws = 0;
 		if (seethrough_lit_draws || model_point_parts)
 			platform_log("GE: after build 116, last 300 frames: glass parts lit by their model's light %lu; model parts lit by point lights %lu",
 				seethrough_lit_draws, model_point_parts);
