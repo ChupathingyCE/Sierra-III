@@ -3,6 +3,7 @@
 into the map files the PSP build reads. One command:
 
     ./halo-psp-bake <your Halo disc image (.iso) or its maps folder> <output folder>
+    halo-psp-bake.cmd ...          (the same, on Windows)
 
 What it does, map by map (ten campaign levels, thirteen multiplayer maps and
 the menus' ui.map):
@@ -21,7 +22,8 @@ the menus' ui.map):
   6. reads the loading screen's chant from the disc's default.xbe into
      halo/chant.adp (lib/chant.py; the EBOOT carries no copy)
   7. with --eboot: cuts the XMB menu's sound from the music on your disc and
-     writes a copy of the release EBOOT with it (lib/snd0.py)
+     writes a copy of the release EBOOT with it (lib/snd0.py; the bundle's
+     atracdenc encodes it)
 
 The output folder then holds halo/maps/... and halo/chant.adp (and, with --eboot,
 PSP/GAME/halo/EBOOT.PBP): copy its contents to the root of the Memory Stick.
@@ -30,6 +32,11 @@ Options:
     --maps a10,c20,bloodgulch   only these maps (default: all found)
     --no-track                  skip the asset track's _track.ptex
     --keep-work                 keep the extracted tags (several GB)
+    --jobs N                    bake N maps at once (default: one per CPU, at
+                                most 4, fewer with under 8 GB of memory free;
+                                1: one after another). The maps come out the
+                                same whatever N is; each map's own log is in
+                                <output>/work/<map>.log
     --force                     bake maps whose hashes don't match
     --detail fp,vehicles        also bake _detail.ptex with these classes at
                                 full size (fp, weapons, vehicles, characters):
@@ -47,15 +54,16 @@ Options:
                                 the packs were before (lib/seethrough.py)
 
 Nothing from the game is in this tool; it only converts the copy you own."""
-import argparse, hashlib, json, os, shutil, subprocess, sys, time
+import argparse, concurrent.futures, hashlib, json, os, shutil, subprocess, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
 INVADER = os.path.join(HERE, 'invader')
+EXE = '.exe' if os.name == 'nt' else ''
 COMPARE_OLD = False
 # options every texpack.py run takes (--tints-from-means)
 TEXPACK_OPTIONS = []
-ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder, if any (else atracdenc on PATH)
+ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
 sys.path.insert(0, HERE)
 from xiso import XIso
 
@@ -86,12 +94,17 @@ TAG_SPACE = '0x900000'
 MULTIPLAYER_TAG_SPACE = '0x600000'
 
 
+# maps bake side by side (--jobs): one line at a time, whole
+LOG_LOCK = threading.Lock()
+
+
 def log(text):
-    print(time.strftime('%H:%M:%S ') + text, flush=True)
+    with LOG_LOCK:
+        print(time.strftime('%H:%M:%S ') + text, flush=True)
 
 
 def invader(tool):
-    path = os.path.join(INVADER, 'bin', tool)
+    path = os.path.join(INVADER, 'bin', tool + EXE)
     if not os.path.exists(path):
         sys.exit('halo-psp-bake: %s is missing (the bundle\'s invader/bin)' % path)
     return path
@@ -107,15 +120,15 @@ def run(command, log_path, cwd=None, env=None):
         raise RuntimeError('%s failed (%d); the end of %s:\n%s' % (os.path.basename(command[0]), r.returncode, log_path, tail))
 
 
-def echo_from(log_path, start, markers):
+def echo_from(name, log_path, start, markers):
     """the lines a step added to a map's own log (from byte start) that
-    hold one of markers, into the bake's log (build 116: the texture pack's
-    see-through tints and meter maps; names and colours only)"""
+    hold one of markers, into the bake's log under the map's name (the
+    texture pack's see-through tints and meter maps; names and colours only)"""
     with open(log_path, errors='replace') as f:
         f.seek(start)
         for line in f.read().splitlines():
             if any(marker in line for marker in markers):
-                log('  ' + line.strip())
+                log('%s:   %s' % (name, line.strip()))
 
 
 def sha256(path):
@@ -187,10 +200,13 @@ def scenario_path(map_path, log_path):
 
 
 def tool_env():
+    """the bundle's tools are linked statically, so they need no library
+    path; the scripts get the bundle's lib and Invader's definitions"""
     env = dict(os.environ)
-    env['LD_LIBRARY_PATH'] = os.path.join(INVADER, 'lib') + ':' + os.path.join(ATRACDENC, 'lib') + (':' + env['LD_LIBRARY_PATH'] if env.get('LD_LIBRARY_PATH') else '')
     env['HALO_PSP_INVADER_DEFINITIONS'] = os.path.join(INVADER, 'definitions')
-    env['PYTHONPATH'] = LIB + (':' + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    env['PYTHONPATH'] = LIB + (os.pathsep + env['PYTHONPATH'] if env.get('PYTHONPATH') else '')
+    # the scripts' text (logs, tag names) as UTF-8 whatever the system's code page
+    env['PYTHONUTF8'] = '1'
     if COMPARE_OLD:
         env['TEXPACK_KMEANS_COMPARE'] = env['STENCIL_COMPARE'] = '1'
     return env
@@ -205,6 +221,10 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     log_path = os.path.join(work, name + '.log')
     open(log_path, 'w').close()
     env = tool_env()
+    if env.get('STENCIL_DEBUG'):
+        # with maps baking side by side, each keeps its own cut inputs
+        env['STENCIL_DEBUG'] = os.path.join(env['STENCIL_DEBUG'], name)
+        os.makedirs(env['STENCIL_DEBUG'], exist_ok=True)
     shutil.copyfile(retail, os.path.join(folder, 'maps_in', name + '.map'))
     log('%s: extracting its tags' % name)
     # -n: a campaign map's (and the menus') own globals tag too
@@ -245,7 +265,7 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
-    echo_from(log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
+    echo_from(name, log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
                                 'kmeans compare summary', 'kmeans compare worse', 'bump relief'))
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
@@ -254,13 +274,13 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_showcase.ptex'),
              '--showcase'] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
-        echo_from(log_path, start, ('glow maps', 'showcase:'))
+        echo_from(name, log_path, start, ('glow maps', 'showcase:'))
         # the same sizes on palettes, for the comparison ("showcasepal")
         log('%s: textures, the showcase on palettes' % name)
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_showcase_pal.ptex'),
              '--showcase', '--showcase-palettes'] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
-        echo_from(log_path, start, ('textures,',))
+        echo_from(name, log_path, start, ('textures,',))
     if track and name != 'ui':
         log('%s: textures, asset track (half-size lightmaps, plants kept whole at a distance)' % name)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
@@ -274,15 +294,97 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'stencilbake.py'), final, pgeo, os.path.join(out_maps, name + '.pstn')],
             log_path, cwd=LIB, env=env)
-        echo_from(log_path, start, ('compare:', 'triangulation failed', 'points added', 'slivers dropped'))
+        echo_from(name, log_path, start, ('compare:', 'triangulation failed', 'points added', 'slivers dropped'))
     if not keep_work:
         shutil.rmtree(folder, ignore_errors=True)
     log('%s: done in %.0f s' % (name, time.time() - started))
+    return time.time() - started
+
+
+def free_memory():
+    """bytes of memory free for new work (available, on Linux), or None
+    when this system won't say"""
+    try:
+        if sys.platform.startswith('linux'):
+            with open('/proc/meminfo') as f:
+                for line in f:
+                    if line.startswith('MemAvailable:'):
+                        return int(line.split()[1]) * 1024
+        elif sys.platform == 'darwin':
+            out = subprocess.run(['vm_stat'], capture_output=True, text=True, timeout=10).stdout
+            page = int(out.split('page size of')[1].split()[0])
+            pages = {k.strip(): int(v.strip().rstrip('.')) for k, v in
+                     (line.split(':', 1) for line in out.splitlines()[1:] if ':' in line)}
+            # what macOS hands out without swapping: free, plus caches it drops
+            return page * sum(pages.get('Pages ' + k, 0) for k in ('free', 'inactive', 'speculative', 'purgeable'))
+        elif os.name == 'nt':
+            import ctypes
+
+            class Status(ctypes.Structure):
+                _fields_ = [('dwLength', ctypes.c_ulong), ('dwMemoryLoad', ctypes.c_ulong)] + \
+                           [(n, ctypes.c_ulonglong) for n in ('total', 'avail', 'totalPage', 'availPage',
+                                                                'totalVirtual', 'availVirtual', 'availExtended')]
+            status = Status()
+            status.dwLength = ctypes.sizeof(Status)
+            if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+                return status.avail
+    except Exception:
+        pass
+    return None
+
+
+# a map's invader-build and texture packs can take 1-2 GB each; four maps
+# at once is where the gain levels off on a desktop's disk and memory
+MAX_DEFAULT_JOBS = 4
+MEMORY_PER_JOB = 2 << 30
+
+
+def default_jobs():
+    """(jobs, why): min(CPUs, 4), fewer when free memory is under 8 GB"""
+    jobs = min(os.cpu_count() or 1, MAX_DEFAULT_JOBS)
+    free = free_memory()
+    if free is not None and free < MAX_DEFAULT_JOBS * MEMORY_PER_JOB:
+        by_memory = max(1, int(free // MEMORY_PER_JOB))
+        if by_memory < jobs:
+            return by_memory, '%.1f GB of memory free, about 2 GB a map' % (free / 2 ** 30)
+    return jobs, '%d CPU%s' % (os.cpu_count() or 1, '' if os.cpu_count() == 1 else 's')
 
 
 def atracdenc():
-    bundled = os.path.join(ATRACDENC, 'bin', 'atracdenc')
-    return bundled if os.path.exists(bundled) else shutil.which('atracdenc')
+    """the menu sound's encoder: the bundle's, else one on PATH; with why
+    neither works when it's None"""
+    bundled = os.path.join(ATRACDENC, 'bin', 'atracdenc' + EXE)
+    why = []
+    for path, where, absent in ((bundled, 'the bundle\'s', 'none in the bundle\'s atracdenc/bin'),
+                                (shutil.which('atracdenc'), 'the one on PATH', 'none on PATH')):
+        if not path or not os.path.exists(path):
+            why.append(absent)
+            continue
+        try:
+            # it prints its usage and exits 0 when it can start at all
+            subprocess.run([path, '--help'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60, check=True)
+            return path, None
+        except (OSError, subprocess.SubprocessError) as e:
+            why.append('%s (%s) does not start: %s' % (where, path, e))
+    return None, '; '.join(why)
+
+
+def atracdenc_warning(why):
+    """Loud but soft: the maps bake without it, and the menu sound is worth
+    having, so say what's missing and how to get it"""
+    lines = ['',
+             '*' * 72,
+             'WARNING: no working atracdenc (%s).' % why,
+             'The XMB menu sound is made with atracdenc: without it, the game\'s entry',
+             'in the PSP\'s menu stays silent. The maps bake as normal.',
+             'Strongly recommended: download the bundle for your system again (it',
+             'carries atracdenc in atracdenc/), or build atracdenc',
+             '(https://github.com/dcherednik/atracdenc) and put it on PATH, then',
+             'run the bake again with --eboot.',
+             '*' * 72,
+             '']
+    for line in lines:
+        log(line)
 
 
 def music_spec(spec):
@@ -301,8 +403,10 @@ def menu_eboot(eboot, spec, found, output, work):
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, 'EBOOT.PBP')
     source_map, clip = music_spec(spec) if spec else (None, None)
-    encoder = atracdenc()
-    why = ('no clip chosen (--music)' if not spec else 'atracdenc not found' if not encoder else
+    encoder, missing = atracdenc()
+    if not encoder:
+        atracdenc_warning(missing)
+    why = ('no clip chosen (--music)' if not spec else 'no working atracdenc' if not encoder else
            '%s.map not found' % source_map if source_map not in found else None)
     if why is None:
         log_path = os.path.join(work, 'snd0.log')
@@ -319,6 +423,50 @@ def menu_eboot(eboot, spec, found, output, work):
     log('menu sound skipped (%s); %s is the release EBOOT as it is' % (why, out))
 
 
+def bake_maps(names, found, out_maps, work, a):
+    """Each map in its own work folder, its own log (work/<map>.log) and its
+    own outputs, with the same commands and environment whatever --jobs is:
+    no step reads another map's files, so the maps come out byte for byte
+    the same however many bake at once. Returns the maps that failed."""
+    if a.jobs < 0:
+        sys.exit('halo-psp-bake: --jobs must be 1 or more')
+    jobs, why = (a.jobs, 'as asked') if a.jobs else default_jobs()
+    jobs = max(1, min(jobs, len(names) or 1))
+    if len(names) > 1:
+        log('baking %d maps, %d at a time (%s); each map\'s own log is in %s' % (len(names), jobs, why, work))
+    results = {}
+
+    def one(name):
+        try:
+            results[name] = ('ok', bake_map(name, found[name], out_maps, work, not a.no_track, a.keep_work,
+                                            a.detail, a.sound))
+        except Exception as e:
+            results[name] = ('FAILED', None)
+            log('%s: FAILED: %s' % (name, e))
+
+    if jobs == 1:
+        for name in names:
+            one(name)
+    else:
+        # threads are enough: every step is a separate process
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
+        try:
+            for future in [pool.submit(one, name) for name in names]:
+                future.result()
+        except KeyboardInterrupt:
+            # the steps under way got the same interrupt; start no more
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown()
+    if len(names) > 1:
+        log('the maps:')
+        for name in names:
+            status, seconds = results.get(name, ('not run', None))
+            log('  %-15s %-7s %6s   %s' % (name, status, '%.0f s' % seconds if seconds is not None else '',
+                                          os.path.join(work, name + '.log')))
+    return [name for name in names if results.get(name, ('',))[0] != 'ok']
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('source', help='your Halo disc image, or a folder holding its maps')
@@ -333,6 +481,9 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
+    ap.add_argument('--jobs', type=int, default=0,
+                    help='maps baked at once (default: as many as the CPUs, at most 4, fewer when under 8 GB of '
+                         'memory is free; 1 bakes them one after another). The maps come out the same whatever it is')
     ap.add_argument('--compare-old', action='store_true',
                     help="also make each palette and decal cut as the bake did before this one (scikit-learn's k-means, "
                          'Triangle), and log how they compare: the new bake\'s proof (docs/bake_changes.md)')
@@ -350,6 +501,13 @@ def main():
     os.makedirs(out_maps, exist_ok=True)
     if a.eboot and not os.path.isfile(a.eboot):
         sys.exit('halo-psp-bake: --eboot %s: no such file' % a.eboot)
+    # said at the start, so a long bake doesn't end in a surprise (and again
+    # at the end, with --eboot, where the sound is made)
+    encoder, missing = atracdenc()
+    if not encoder and not a.list_music:
+        atracdenc_warning(missing)
+    elif not a.eboot and not a.list_music:
+        log('the XMB menu sound: add --eboot <the release\'s EBOOT.PBP> to give the game\'s entry its sound')
     music_map = music_spec(a.music)[0] if a.eboot and a.music else None
     found = gather(a.source, work, wanted + ([music_map] if music_map and music_map not in wanted else []))
     if a.list_music:
@@ -371,15 +529,7 @@ def main():
                 '; baking anyway (--force)' if a.force else '; skipped (--force bakes it anyway)'))
             if not a.force:
                 del found[name]
-    failures = []
-    for name in wanted:
-        if name not in found:
-            continue
-        try:
-            bake_map(name, found[name], out_maps, work, not a.no_track, a.keep_work, a.detail, a.sound)
-        except Exception as e:
-            failures.append(name)
-            log('%s: FAILED: %s' % (name, e))
+    failures = bake_maps([m for m in wanted if m in found], found, out_maps, work, a)
     bake_chant(a.source, work, a.output)
     if a.eboot:
         menu_eboot(a.eboot, a.music, music_source, a.output, work)

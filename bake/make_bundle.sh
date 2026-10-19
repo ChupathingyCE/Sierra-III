@@ -1,49 +1,16 @@
-#!/bin/bash
-# Assembles halo-psp-bake/ (and a .tar.gz): the bake's scripts from this checkout,
-# Invader's binaries from a built fork.
-# usage: make_bundle.sh [OUT]
+#!/usr/bin/env bash
+# Makes the bake bundle for this machine's OS from this checkout: builds the
+# native tools from source (bundle/build_tools.sh: the port's Invader and
+# atracdenc), then puts the bundle together and packs it (bundle/assemble.py).
+# The release's bundles come from the bake-bundle workflow
+# (.github/workflows/bake-bundle.yml), one per OS, the same way.
+#   make_bundle.sh [OUT]      default: ./halo-psp-bake
 # environment:
-#   INVADER        the Invader fork checkout (default /home/claude/invader): upstream d43ce55 +
-#                  upstream/invader/psp-fork.patch (a new file added with git add -N, so the patch has it)
-#   INVADER_BUILD  where it was built (default INVADER/build); left out of the source archive
-#   HALO_REPO  the engine checkout, for its licence (default /tmp/halo-sp)
-#   ATRACDENC  an atracdenc checkout built in ATRACDENC/build (the menu sound's encoder;
-#              github.com/dcherednik/atracdenc, cb17070). Unset: the bundle has none, and
-#              the bake uses atracdenc from PATH or skips the menu sound
-set -e
-OUT=${1:-/tmp/claude-0/halo-psp-bake}
+#   WORK   the build's work folder (default: OUT-work); kept, so a second
+#          run reuses the libraries it built
+set -euo pipefail
 P=$(cd "$(dirname "$0")/.." && pwd)
-INVADER=${INVADER:-/home/claude/invader}
-INVADER_BUILD=${INVADER_BUILD:-$INVADER/build}
-HALO_REPO=${HALO_REPO:-/tmp/halo-sp}
-rm -rf $OUT; mkdir -p $OUT/lib $OUT/invader/bin $OUT/invader/lib $OUT/invader/definitions
-cp $P/bake/bake.py $P/bake/xiso.py $P/bake/halo-psp-bake $P/bake/README.md $P/bake/INVADER.md $P/bake/hashes.json $OUT/
-cp $P/tools/texpack.py $P/tools/stencilbake.py $P/tools/dez.py $P/tools/lightmap_masks.py $P/tools/bspread.py $OUT/lib/
-# every reader the bake has, so a new one is never left out
-cp $P/bake/lib/*.py $OUT/lib/
-# the bundle's own lib first: no paths into this machine
-sed -i "/'bake', 'lib'))  # the bake's readers/d" $OUT/lib/*.py
-B=$INVADER_BUILD
-cp $B/invader-build $B/invader-extract $B/invader-info $OUT/invader/bin/
-cp $B/libinvader.so $OUT/invader/lib/
-for lib in libFLAC.so.12 libvorbisenc.so.2 libvorbisfile.so.3 libvorbis.so.0 libogg.so.0 libsquish.so.0 libgomp.so.1; do
-  src=$(ldd $B/invader-build | awk -v l=$lib '$1==l {print $3}'); [ -n "$src" ] && cp -L "$src" $OUT/invader/lib/
-done
-cp $INVADER/src/tag/hek/definition/*.json $OUT/invader/definitions/
-cp $INVADER/include/invader/hek/fourcc.hpp $OUT/invader/definitions/
-(cd $(dirname $INVADER) && tar czf $OUT/invader-src.tar.gz --exclude=$(basename $INVADER)/build \
-  --exclude=$(basename $INVADER)/$(realpath --relative-to=$INVADER $B) $(basename $INVADER))
-# the working tree against upstream, so changes not yet committed are in the patch too
-(cd $INVADER && git diff d43ce55 > $OUT/invader-psp-fork.patch) || true
-if [ -n "$ATRACDENC" ]; then
-  mkdir -p $OUT/atracdenc/bin $OUT/atracdenc/lib
-  A=$ATRACDENC/build/src/atracdenc
-  cp $A $OUT/atracdenc/bin/
-  # libsndfile and its codecs, beside it; the C and C++ runtimes come from the system
-  ldd $A | awk '$3 ~ /^\// {print $3}' | grep -v -E '/(libc|libm|libstdc\+\+|libgcc_s|ld-linux[^/]*)\.so' |
-    while read -r lib; do cp -L "$lib" $OUT/atracdenc/lib/; done
-  (cd $(dirname $ATRACDENC) && tar czf $OUT/atracdenc-src.tar.gz --exclude=$(basename $ATRACDENC)/build $(basename $ATRACDENC))
-fi
-mkdir -p $OUT/LICENSES; [ -n "$ATRACDENC" ] && cp $ATRACDENC/LICENSE $OUT/LICENSES/atracdenc-LICENSE.txt; cp $INVADER/LICENSE.md $OUT/LICENSES/invader-LICENSE.md; cp $INVADER/gplv3.txt $OUT/LICENSES/ 2>/dev/null || true; cp $HALO_REPO/LICENSE.md $OUT/LICENSES/engine-LICENSE.md
-(cd $(dirname $OUT) && tar czf $(basename $OUT).tar.gz $(basename $OUT))
-du -sh $OUT $OUT.tar.gz
+OUT=${1:-$PWD/halo-psp-bake}
+WORK=${WORK:-$OUT-work}
+bash "$P/bake/bundle/build_tools.sh" "$WORK" "$WORK/tools"
+python3 "$P/bake/bundle/assemble.py" "$WORK/tools" "$OUT" --archive

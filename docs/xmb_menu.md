@@ -84,7 +84,7 @@ Built 2026-10-12: `bake/lib/snd0.py`, run by `halo-psp-bake --eboot <release EBO
 1. Find the clip by **tag path**, not byte offset. Tag paths are the same across releases; offsets aren't. The spec is `[MAP:]TAG[@START][+LENGTH]` (map `ui` by default, 0 s, 30 s). A sound_looping tag gives its first track's start sound, then one pass of its loop.
 2. Follow the music's chunk chain (each ~1.3 s permutation names the next) and decode it: Xbox ADPCM, the same arithmetic as the port's `psp_dsound.c`. A 22.05 kHz or mono sound is brought up to 44.1 kHz stereo.
 3. Cut, fade in (0.02 s) and out (2 s, equal-power), and set the peak to −3 dBFS: the XMB plays it the instant the entry is highlighted.
-4. Encode to ATRAC3 (LP2, 132 kbps, RIFF) with `atracdenc` (dcherednik/atracdenc, `cb17070`), bundled by `make_bundle.sh` when `ATRACDENC` names a built checkout, else taken from PATH. 30 s comes to about 484 KB.
+4. Encode to ATRAC3 (LP2, 132 kbps, RIFF) with `atracdenc` (dcherednik/atracdenc, `cb17070`), built into every bake bundle (`bake/bundle/build_tools.sh`, on a static libsndfile), else taken from PATH. 30 s comes to about 484 KB.
 5. Repack the EBOOT. A PBP is a header of eight offsets followed by its sections, so swapping SND0 means slicing the sections and writing a new header. It's plain Python with no PSP toolchain, and the program section is untouched. The copy goes to `<output>/PSP/GAME/<halo|halomp>/`.
 
 **Best-effort:** with no clip chosen, no encoder, or no map, the bake says why and copies the EBOOT unchanged. Sound must never be why an install fails.

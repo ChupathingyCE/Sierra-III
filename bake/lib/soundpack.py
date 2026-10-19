@@ -191,7 +191,7 @@ class Definitions:
     def __init__(self, folder):
         self.structs, self.enums, self.bitfields = {}, {}, {}
         for path in glob.glob(os.path.join(folder, '*.json')):
-            for item in json.load(open(path)):
+            for item in json.load(open(path, encoding='utf-8')):
                 kind = item.get('type')
                 if kind == 'struct':
                     self.structs[item['name']] = item

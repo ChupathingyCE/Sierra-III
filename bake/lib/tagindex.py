@@ -41,7 +41,8 @@ def main():
         if tag.index != position or tag.tag_id & 0xFFFF != position:
             sys.exit('tagindex: tag %d is listed at %d' % (tag.index, position))
         lines.append('%s.%s\t%08X\n' % (tag.name, FOURCC_GROUP[tag.group], tag.tag_id & 0xFFFFFFFF))  # (CacheMap's is signed)
-    with open(out, 'w', encoding='latin1') as f:
+    # '\n' on every system: the fork's index reader takes the ID to the end of the line
+    with open(out, 'w', encoding='latin1', newline='\n') as f:
         f.writelines(lines)
     print('tagindex: %d tags in %s' % (len(lines), out))
 

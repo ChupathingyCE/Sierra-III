@@ -329,8 +329,10 @@ def main(map_path, pgeo_path, out_path, report=False):
                         segs.add((min(va, vb), max(va, vb)))
         V = np.array([(x, y) for x, y, _ in verts], np.float64)
         S = np.array(sorted(segs), np.int32).reshape(-1, 2)
+        # STENCIL_DEBUG=<folder>: each cut's input (outlines and edges), the
+        # last one kept, for replaying a cut that fails
         if os.environ.get('STENCIL_DEBUG'):
-            np.savez('/tmp/claude-0/tri_in.npz', V=V, S=S)
+            np.savez(os.path.join(os.environ['STENCIL_DEBUG'], 'tri_in.npz'), V=V, S=S)
         try:
             tv, tt = pslg_triangulate(V, S)
         except Exception as ex:

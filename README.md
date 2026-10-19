@@ -52,9 +52,10 @@ It fetches the engine and the Media Engine library at the commits `upstream/pins
 The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image:
 
 ```
-bake/make_bundle.sh <out>                  # once: needs the Invader fork built (UPSTREAM.md)
-<out>/halo-psp-bake <disc image> <maps out>
+<bundle>/halo-psp-bake <disc image> <maps out>       # halo-psp-bake.cmd on Windows
 ```
+
+The bundle for your system (Windows, macOS or Linux) comes with each release; `bake/make_bundle.sh <out>` builds one from source.
 
 Then copy the output's `halo/` folder to the root of the Memory Stick. `bake/README.md` has the details.
 
