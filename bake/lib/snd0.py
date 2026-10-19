@@ -57,8 +57,9 @@ SND0 = 5      # the PBP's sections: PARAM.SFO, ICON0, ICON1, PIC0, PIC1, SND0, D
 
 def decode_xbox_adpcm(data, channels, frames_wanted=None):
     """Xbox ADPCM bytes -> int16 array (frames, channels). Per block, per
-    channel: the header, then 4-byte groups of eight nibbles, low nibble
-    first, alternating between channels (as psp_dsound.c decode_block)."""
+    channel: the header (the block's first sample), then 4-byte groups of
+    eight nibbles, low nibble first, alternating between channels, coding the
+    63 samples after it; the 64th nibble pads (as psp_dsound.c decode_block)."""
     block = BLOCK_BYTES * channels
     blocks = len(data) // block
     if frames_wanted is not None:
@@ -71,10 +72,15 @@ def decode_xbox_adpcm(data, channels, frames_wanted=None):
             base = b * block
             predictor = struct.unpack_from('<h', data, base + 4 * c)[0]
             index = min(data[base + 4 * c + 2], 88)
+            add(predictor)
+            coded = 0
             for group in range(8):
                 g = base + 4 * channels + (group * channels + c) * 4
                 for byte in data[g:g + 4]:
                     for nibble in (byte & 15, byte >> 4):
+                        coded += 1
+                        if coded >= BLOCK_SAMPLES:
+                            break
                         step = STEPS[index]
                         diff = step >> 3
                         if nibble & 4: diff += step
