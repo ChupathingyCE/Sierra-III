@@ -289,18 +289,26 @@ RUSTLIC=$(find "$RUSTDOC" "$(rustc --print sysroot)/share/licenses" -maxdepth 2 
                -o -name 'LICENSE-APACHE' \) 2>/dev/null || true)
 # shellcheck disable=SC2086
 [[ -n $RUSTLIC ]] && lic rust-std $RUSTLIC
-# The C++ runtime linked in statically (gcc's on Linux and Windows); on
-# Windows the MinGW-w64 runtime and its threads library (winpthreads) too
+# The C++ runtime linked in statically (gcc's on Linux and Windows): its
+# runtime library exception
 if [[ $TARGET != macos ]]; then
   GCCEXC=$(find "$RUSTDOC" "${MINGW_PREFIX:-/nonexistent}/share/licenses" /usr/share/doc -maxdepth 3 -type f \
-             -iname '*exception*3.1*' 2>/dev/null | head -1 || true)
+             \( -iname '*exception*3.1*' -o -name 'COPYING.RUNTIME' -o -iname 'RUNTIME.LIBRARY.EXCEPTION*' \) \
+             2>/dev/null | head -1 || true)
   [[ -n $GCCEXC ]] && lic gcc-runtime "$GCCEXC"
 fi
+# On Windows, MinGW-w64's runtime and winpthreads too. They are matched by
+# their package's own folder (the prefix itself, /ucrt64, holds "crt") and
+# copied under its name, as several packages ship a file called LICENSE
 if [[ $TARGET == windows ]]; then
-  MW=$(find "${MINGW_PREFIX:-/nonexistent}/share/licenses" /usr/share/doc/mingw-w64-common -maxdepth 2 -type f \
-         \( -ipath '*pthread*' -o -ipath '*crt*' -o -name copyright \) 2>/dev/null | head -8 || true)
-  # shellcheck disable=SC2086
-  [[ -n $MW ]] && lic mingw-w64 $MW
+  for dir in "${MINGW_PREFIX:-/nonexistent}"/share/licenses/* /usr/share/doc/mingw-w64-common; do
+    case ${dir##*/} in *crt*|*winpthread*|mingw-w64-common) ;; *) continue ;; esac
+    for f in "$dir"/*; do
+      [[ -f $f && $f != *.gz ]] || continue
+      mkdir -p "$OUT/licenses/mingw-w64"
+      cp "$f" "$OUT/licenses/mingw-w64/${dir##*/}-${f##*/}"
+    done
+  done
 fi
 # The engine the PSP build runs (none of its code is here; CC0)
 mkdir -p "$OUT/licenses/chupathingyce"

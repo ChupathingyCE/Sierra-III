@@ -227,6 +227,7 @@ jobs:
   macos:
     name: macOS (universal, arm64 and x86-64)
     runs-on: macos-14
+    if: ${{ !contains(github.event.head_commit.message, '[skip mac]') }}   # TEMPORARY: while Windows is proved
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
