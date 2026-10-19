@@ -66,7 +66,10 @@ set "DL=%HERE%.python-download"
 if exist "%DL%" rmdir /s /q "%DL%"
 mkdir "%DL%\unpacked"
 echo Downloading %PBS_FILE% ...
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; $ProgressPreference = 'SilentlyContinue'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $file = Join-Path $env:DL 'python.tar.gz'; try { Invoke-WebRequest -UseBasicParsing -Uri $env:PBS_URL -OutFile $file } catch { Write-Host ('The download failed: ' + $_.Exception.Message); exit 1 }; $h = (Get-FileHash -Algorithm SHA256 $file).Hash.ToLower(); if ($h -ne $env:PBS_SHA) { Write-Host ('The download is not the file the bake expects (its SHA-256 is ' + $h + ', not ' + $env:PBS_SHA + '), so it was not used.'); exit 2 }"
+rem .NET alone, no PowerShell modules: a PSModulePath left by PowerShell 7 (or
+rem anything else) can keep Windows PowerShell from loading them
+set "PSModulePath="
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference = 'Stop'; [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $file = $env:DL + '\python.tar.gz'; try { [Net.WebClient]::new().DownloadFile($env:PBS_URL, $file) } catch { [Console]::WriteLine('The download failed: ' + $_.Exception.Message); exit 1 }; $h = [BitConverter]::ToString([Security.Cryptography.SHA256]::Create().ComputeHash([IO.File]::ReadAllBytes($file))).Replace('-', '').ToLower(); if ($h -ne $env:PBS_SHA) { [Console]::WriteLine('The download is not the file the bake expects (its SHA-256 is ' + $h + ', not ' + $env:PBS_SHA + '), so it was not used.'); exit 2 }"
 if errorlevel 1 goto failed
 rem Windows' own tar (Windows 10 1803 on): another tar on PATH may read C: as a host name
 if not exist "%SystemRoot%\System32\tar.exe" (
