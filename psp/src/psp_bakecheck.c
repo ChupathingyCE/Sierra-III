@@ -46,7 +46,8 @@ void psp_exit_game(const char *why);
 struct stamp
 {
 	int found;    /* the file could be read */
-	int format;   /* 0: no format line */
+	int has_format;
+	int format;
 	char bundle[32];
 	char commit[16];
 	char baked[24];
@@ -95,7 +96,10 @@ static void read_stamp(struct stamp *s)
 	for (line = text; line && *line; line = strchr(line, '\n') ? strchr(line, '\n') + 1 : NULL)
 	{
 		if (strncmp(line, "format:", 7) == 0)
+		{
+			s->has_format = 1;
 			s->format = atoi(line + 7);
+		}
 		else if (strncmp(line, "bundle:", 7) == 0)
 			copy_value(s->bundle, sizeof(s->bundle), line + 7);
 		else if (strncmp(line, "commit:", 7) == 0)
@@ -162,7 +166,8 @@ static void say(const char *format, ...)
 	va_start(arguments, format);
 	vsnprintf(lines[line_count], sizeof(lines[0]), format, arguments);
 	va_end(arguments);
-	platform_log("bake check: %s", lines[line_count]);
+	if (lines[line_count][0])
+		platform_log("bake check: %s", lines[line_count]);
 	line_count++;
 }
 
@@ -227,7 +232,7 @@ void psp_bake_check(void)
 		return;
 	}
 	read_stamp(&s);
-	if (s.found && s.format == PSP_BAKE_FORMAT)
+	if (s.found && s.has_format && s.format == PSP_BAKE_FORMAT)
 	{
 		platform_log("bake check: %s says bake format %d, bundle %s (commit %s, baked %s): this build's format",
 			STAMP_PATH, s.format, s.bundle, s.commit[0] ? s.commit : "?", s.baked[0] ? s.baked : "?");
@@ -241,14 +246,14 @@ void psp_bake_check(void)
 		say("NO MAPS FOUND");
 		say("There are no baked maps in ms0:/halo/maps.");
 		say("");
-		say("On your computer, bake your Halo disc with the bake");
-		say("bundle that came with this build (b%d), then copy the", build);
-		say("halo folder it makes to the root of the Memory Stick.");
+		say("Bake your Halo disc on your computer with the bundle");
+		say("that came with this build (b%d), then copy the halo", build);
+		say("folder it makes to the root of the Memory Stick.");
 	}
-	else if (s.found && s.format > PSP_BAKE_FORMAT)
+	else if (s.found && s.has_format && s.format > PSP_BAKE_FORMAT)
 	{
 		say("THESE MAPS ARE NEWER THAN THIS BUILD");
-		say("They were baked with bundle %s (bake format %d);", s.bundle, s.format);
+		say("They were baked with bundle %s (format %d);", s.bundle, s.format);
 		say("this build reads bake format %d.", PSP_BAKE_FORMAT);
 		say("");
 		say("Install the build that came with bundle %s, or bake", s.bundle);
@@ -257,17 +262,17 @@ void psp_bake_check(void)
 	else
 	{
 		say("YOUR MAPS NEED BAKING AGAIN");
-		if (s.found && s.format > 0)
-			say("They were baked with bundle %s (bake format %d);", s.bundle, s.format);
+		if (s.found && s.has_format)
+			say("These maps were baked with bundle %s (format %d).", s.bundle, s.format);
 		else if (s.found)
-			say("Their stamp, halo/bake.txt, can't be read;");
+			say("Their stamp (halo/bake.txt) can't be read.");
 		else
-			say("They have no stamp (halo/bake.txt): an older bundle;");
-		say("this build needs bake format %d, from its own bundle (b%d).", PSP_BAKE_FORMAT, build);
+			say("These maps have no stamp: an older bundle made them.");
+		say("This build needs bake format %d: its own bundle, b%d.", PSP_BAKE_FORMAT, build);
 		say("");
-		say("On your computer, bake your disc again with the bundle");
+		say("Bake your disc again on your computer with the bundle");
 		say("that came with this build, then copy the halo folder");
-		say("it makes to the root of the Memory Stick, over the old one.");
+		say("it makes to the Memory Stick's root, over the old one.");
 	}
 	show_and_quit();
 }
