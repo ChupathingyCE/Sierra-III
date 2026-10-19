@@ -785,8 +785,8 @@ def make_palette(img, colors, cls):
 
 # TEXPACK_PROFILE=1 (halo-psp-bake --profile): a line per texture with its
 # class, its sizes, the seconds in the palette step and in the rest, and a
-# short hash of the palette step's input pixels (never a name: these lines go
-# to the lab's logs); a summary at the end
+# short hash of the palette step's input pixels (never a name: these lines may
+# be shared as logs); a summary at the end
 PROFILE = bool(os.environ.get('TEXPACK_PROFILE'))
 PROFILE_ROWS = []
 PROFILE_NOW = {}

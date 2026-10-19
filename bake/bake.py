@@ -88,7 +88,7 @@ MULTIPLAYER = ['beavercreek', 'bloodgulch', 'boardingaction', 'carousel', 'chill
                'longest', 'prisoner', 'putput', 'ratrace', 'sidewinder', 'wizard']
 ALL = CAMPAIGN + MULTIPLAYER + ['ui']
 # what the bake makes unless --maps or --multiplayer says otherwise: the
-# release is the campaign build (Sheepdog01, 2026-10-19)
+# release is the campaign build
 DEFAULT = CAMPAIGN + ['ui']
 # -M (build 106): animation frame data to the .pgeo pack, read through the
 # game's animation cache; -Y 512: the script node table sized to the nodes in
