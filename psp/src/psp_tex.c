@@ -1152,6 +1152,13 @@ unsigned long psp_tex_load_count(void)
 	return loads + misses + waits;
 }
 
+/* frames that drew something untextured so far: "transwalk" reads it across
+a BSP switch (psp_fixups.py, FIXES_TRANSITIONS) */
+unsigned long psp_tex_untextured_frames(void)
+{
+	return untextured_frames;
+}
+
 void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us)
 {
 	*reads = window_reads;

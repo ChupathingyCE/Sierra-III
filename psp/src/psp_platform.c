@@ -962,6 +962,7 @@ static void keep_load(void)
 	platform_log("keep words, the controls: off: crouchhold (crouch held, under the engine's 98%% rule), actiontap (the X button as the engine reads it), menuselectpress (select in the menus is back on its press, chords and all, not a tap); actionholdN (ms before d-pad left acts, 180); the nub: nubdeadN nubreachN (percent of half travel; or ms0:/halo/nub.txt); the profile until Halo's menu sets it: buttonpresetN (0-4) stickpresetN (0-3) looksensN (1-10) lookinvert");
 	platform_log("keep words, build 124's: speed off: weapontrackawake (weapontracksleep retired); retired: cutroom cutroomoff (see the cut stream's line); restorations off: levelexactoff (the level drawn from the eye as the GE rounds it), machinefuncsheld (sleeping machines hold their functions); checks: funccheck; tests: shotrunN (N frames in a row at each shotevery moment)");
 	platform_log("keep words, the scene ladder: sceneladder (each campaign map's opening cutscene, one after another; the game plays on after the last)");
+	platform_log("keep words, the transition check (opt-in): transwalk (each loading zone of the level in turn, then any BSP none reaches, forced), transwalkN (N s at each), transwon (then the mission's end, game_won, and 20 s into what follows)");
 	platform_log("keep words, the level copies' room: fix off: streamroomoff (a material with no room for its copy tried again on every draw); tests: streamsqueezeN (the copies held to N KB of the arena, none from the general heap); levelcarveN (KB of the texture RAM cache for the copies past the arena, on maps whose geometry cache is carved there; 512 by default, levelcarve0 none)");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
@@ -1331,7 +1332,8 @@ static void exit_game(const char *why)
 }
 
 /* for the other units: the multiplayer build's own tests (psp_online.c's
-onlinedoneN, for the emulator), and the bake check (psp_bakecheck.c) */
+onlinedoneN, for the emulator), the bake check (psp_bakecheck.c) and the
+transition check's end (psp_fixups.py, FIXES_TRANSITIONS) */
 void psp_exit_game(const char *why)
 {
 	exit_game(why);
@@ -2315,6 +2317,11 @@ steps in order: the console has no way to wait */
 	}
 #endif
 	ladder_tick(ticks_seen); /* build 117 */
+	{
+		extern void psp_transwalk_tick(void); /* psp_fixups.py (FIXES_TRANSITIONS) */
+
+		psp_transwalk_tick();
+	}
 	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
 	{
 		/* the main loop does both between ticks, as for the campaign's own

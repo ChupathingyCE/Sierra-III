@@ -2240,6 +2240,610 @@ void psp_collision_test(const float *fixed_origin)
 ''',
 }
 
+
+# ---------- FIXES_TRANSITIONS: the release's transition check ("transwalk")
+# Code appended to players.c, beside the other helpers that move the local
+# player: the loading zones are players.c's own records
+APPEND["source/game/players.c"] += r'''
+#ifdef HALO_PSP
+/* "transwalk" (keep.txt): every BSP switch of a level and its mission's end,
+reached without hands, for the release's transition check. The game switches
+BSPs itself when the player stands in one of the scenario's loading zones
+(its BSP switch trigger volumes, players_update_before_game above) while the
+zone's source BSP is loaded; the level's scripts switch the others. So the
+player is put inside each zone in turn, from its source BSP, and the switch
+that follows is the game's own. A zone whose source isn't loaded is reached
+through the zones that lead there, as a player would walk; only a BSP no
+zone leads to is switched to by force, the way a zone switches
+(main_switch_structure_bsp). Each switch is logged with the time across it
+and, 8 s on, what the level drew flat, the frames that drew something
+untextured and the heap's failed requests since; a shot before each step,
+and 2 and 7 s after each switch. "transwalkN": N s at each step (10).
+"transwon": then the mission's end (game_won, as a level's last script calls
+it), and the run ends 25 s into whatever follows */
+#define TRANSWALK_ZONES 128
+#define TRANSWALK_BSPS 16
+enum
+{
+	_transwalk_wait,	/* for the player, out of the opening cinematic */
+	_transwalk_zones,
+	_transwalk_force,	/* the BSPs no zone led to */
+	_transwalk_won,
+	_transwalk_next,	/* in the map that followed the mission's end */
+	_transwalk_done
+};
+
+static struct
+{
+	char map[64];
+	int phase;
+	long next, cinematic_since, no_player_since, teleport_at, settle_at, report_at, shot_at[2];
+	short zone, zone_to, forced, forced_for, travels, bsp, placed_for;
+	unsigned long textured, flat, untextured, failures;
+	unsigned long switches, by_zone, by_force, by_script, quiet, placed;
+	unsigned int last_us, won_us;
+	unsigned short seen, asked;
+	unsigned char tried[TRANSWALK_ZONES];
+	char won_from[64];
+} transwalk;
+
+static struct scenario_bsp_switch_trigger_volume *transwalk_zone(short index)
+{
+	return TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->bsp_switch_trigger_volumes, index,
+		struct scenario_bsp_switch_trigger_volume);
+}
+
+static short transwalk_zone_count(void)
+{
+	return (short)MIN(global_scenario_get()->bsp_switch_trigger_volumes.count, TRANSWALK_ZONES);
+}
+
+static struct scenario_trigger_volume *transwalk_volume(short zone_index)
+{
+	struct scenario *scenario = global_scenario_get();
+	short volume = transwalk_zone(zone_index)->trigger_volume_index;
+
+	if (volume < 0 || volume >= scenario->trigger_volumes.count)
+		return NULL;
+	return TAG_BLOCK_GET_ELEMENT(&scenario->trigger_volumes, volume, struct scenario_trigger_volume);
+}
+
+/* a point of the volume (or of the volume grown by "scale" about its middle)
+inside the loaded BSP's open space and outside every zone that would switch
+away from it ("avoid": the loaded BSP, or NONE to allow them): the nearest
+column to the middle, its lowest such point, so the player stands rather than
+falls. A zone's middle can lie outside one of its two BSPs (the void past a
+doorway), where the game neither switches nor draws */
+static boolean transwalk_spot(struct scenario_trigger_volume *volume, real scale, short avoid, real_point3d *spot,
+	real_vector3d *facing)
+{
+	real_matrix4x3 matrix;
+	real best = -1.0f;
+	int i, j, k;
+	short zone, count = transwalk_zone_count();
+
+	if (volume->type == _scenario_trigger_volume_type_oriented)
+	{
+		matrix4x3_from_point_and_vectors(&matrix, &volume->position, &volume->forward, &volume->up);
+		*facing = volume->forward;
+	}
+	else
+	{
+		facing->i = 1.0f; facing->j = 0.0f; facing->k = 0.0f;
+	}
+	for (i = -2; i <= 2; i++)
+		for (j = -2; j <= 2; j++)
+		{
+			real distance = (real)(i * i + j * j);
+
+			if (best >= 0.0f && distance >= best)
+				continue;
+			for (k = 0; k <= 4; k++)
+			{
+				real_point3d local, point;
+				struct location location;
+				real fi = 0.5f + scale * (real)i / 4.0f, fj = 0.5f + scale * (real)j / 4.0f, fk = (real)k / 4.0f;
+				boolean blocked = FALSE;
+
+				/* the bottom and top rows a little inside, off the floor and the ceiling */
+				fk = 0.1f + 0.8f * fk;
+				if (volume->type == _scenario_trigger_volume_type_oriented)
+				{
+					local.x = volume->extents.i * fi;
+					local.y = volume->extents.j * fj;
+					local.z = volume->extents.k * fk;
+					matrix4x3_transform_point(&matrix, &local, &point);
+				}
+				else
+				{
+					point.x = volume->bounds.x0 + (volume->bounds.x1 - volume->bounds.x0) * fi;
+					point.y = volume->bounds.y0 + (volume->bounds.y1 - volume->bounds.y0) * fj;
+					point.z = volume->bounds.z0 + (volume->bounds.z1 - volume->bounds.z0) * fk;
+				}
+				scenario_location_from_point(&location, &point);
+				if (location.cluster_index == NONE || location.leaf_index == NONE)
+					continue;
+				for (zone = 0; avoid != NONE && zone < count && !blocked; zone++)
+				{
+					struct scenario_bsp_switch_trigger_volume *other = transwalk_zone(zone);
+
+					blocked = other->source_structure_bsp_index == avoid &&
+						scenario_trigger_volume_test_point(other->trigger_volume_index, &point);
+				}
+				if (blocked)
+					continue;
+				*spot = point;
+				best = distance;
+				break;
+			}
+		}
+	return best >= 0.0f;
+}
+
+/* the player's bounding sphere, which the zones' test reads, put at "spot" */
+static void transwalk_put(real_point3d const *spot, real_vector3d const *facing)
+{
+	long unit_index = psp_local_unit(NULL);
+	struct object_datum *object;
+	real_point3d origin;
+
+	if (unit_index == NONE)
+		return;
+	object = object_get(unit_index);
+	/* a seat holds the unit where its vehicle is */
+	if (object->object.parent_object_index != NONE)
+		unit_scripting_exit_vehicle(unit_index);
+	object_get_origin(unit_index, &origin);
+	psp_player_teleport(
+		spot->x - (object->object.bounding_sphere_center.x - origin.x),
+		spot->y - (object->object.bounding_sphere_center.y - origin.y),
+		spot->z - (object->object.bounding_sphere_center.z - origin.z),
+		facing->i, facing->j, facing->k);
+}
+
+static void transwalk_enter(short index)
+{
+	struct scenario_bsp_switch_trigger_volume *zone = transwalk_zone(index);
+	struct scenario_trigger_volume *volume = transwalk_volume(index);
+	real_point3d spot;
+	real_vector3d facing;
+	boolean inside;
+
+	if (psp_local_unit(NULL) == NONE || !volume)
+	{
+		platform_psp_log("transitions: loading zone #%d not entered (%s)", index,
+			volume ? "no player" : "no such trigger volume");
+		return;
+	}
+	inside = transwalk_spot(volume, 1.0f, NONE, &spot, &facing);
+	if (!inside)
+	{
+		/* nowhere inside the loaded BSP: the middle, as a last resort */
+		if (volume->type == _scenario_trigger_volume_type_oriented)
+		{
+			real_matrix4x3 matrix;
+			real_point3d local;
+
+			local.x = volume->extents.i * 0.5f;
+			local.y = volume->extents.j * 0.5f;
+			local.z = volume->extents.k * 0.5f;
+			matrix4x3_from_point_and_vectors(&matrix, &volume->position, &volume->forward, &volume->up);
+			matrix4x3_transform_point(&matrix, &local, &spot);
+		}
+		else
+		{
+			spot.x = (volume->bounds.x0 + volume->bounds.x1) * 0.5f;
+			spot.y = (volume->bounds.y0 + volume->bounds.y1) * 0.5f;
+			spot.z = (volume->bounds.z0 + volume->bounds.z1) * 0.5f;
+		}
+	}
+	transwalk_put(&spot, &facing);
+	platform_psp_log("transitions: into loading zone #%d (BSP %d -> %d) at %.1f %.1f %.1f%s", index,
+		zone->source_structure_bsp_index, zone->destination_structure_bsp_index, spot.x, spot.y, spot.z,
+		inside ? "" : " (its middle: no point of it is inside the BSP)");
+}
+
+/* after a switch: a player left outside the new BSP (the game neither draws
+nor moves him there) is put inside it, in the zone he came through or one
+that leads to the BSP, short of any zone that would switch away again */
+static void transwalk_settle(void)
+{
+	long unit_index = psp_local_unit(NULL);
+	struct location location;
+	real_point3d spot;
+	real_vector3d facing;
+	short k, count = transwalk_zone_count(), bsp = global_structure_bsp_index;
+	int pass;
+
+	if (unit_index == NONE)
+		return;
+	scenario_location_from_point(&location, &object_get(unit_index)->object.bounding_sphere_center);
+	if (location.cluster_index != NONE && location.leaf_index != NONE)
+		return;
+	for (pass = 0; pass < 3; pass++)
+		for (k = 0; k < count; k++)
+		{
+			struct scenario_bsp_switch_trigger_volume *zone = transwalk_zone(k);
+			struct scenario_trigger_volume *volume = transwalk_volume(k);
+			boolean candidate = pass < 2 ? zone->destination_structure_bsp_index == bsp :
+				zone->source_structure_bsp_index == bsp;
+
+			if (volume && candidate && transwalk_spot(volume, pass == 0 ? 1.0f : 2.5f, bsp, &spot, &facing))
+			{
+				transwalk_put(&spot, &facing);
+				transwalk.placed++;
+				platform_psp_log("transitions: the player was outside BSP %d: put inside it by loading zone #%d, at %.1f %.1f %.1f",
+					bsp, k, spot.x, spot.y, spot.z);
+				return;
+			}
+		}
+	platform_psp_log("transitions: the player is outside BSP %d, and no zone of it has a point inside", bsp);
+}
+
+static void transwalk_counts(unsigned long *textured, unsigned long *flat, unsigned long *untextured)
+{
+	extern void psp_ge_level_draw_counts(unsigned long *textured, unsigned long *flat); /* psp_ge.c */
+	extern unsigned long psp_tex_untextured_frames(void); /* psp_tex.c */
+
+	psp_ge_level_draw_counts(textured, flat);
+	*untextured = psp_tex_untextured_frames();
+}
+
+/* the switch just seen: what caused it, and the counts its report compares */
+static void transwalk_switched(short from, short to, long now, unsigned int gap_us)
+{
+	extern volatile unsigned long psp_heap_failures; /* psp_libc.c */
+	char how[48];
+
+	if (transwalk.zone != NONE && to == transwalk.zone_to)
+	{
+		snprintf(how, sizeof(how), "loading zone #%d", transwalk.zone);
+		transwalk.by_zone++;
+		transwalk.zone = NONE;
+	}
+	else if (to == transwalk.forced)
+	{
+		snprintf(how, sizeof(how), "force");
+		transwalk.by_force++;
+		transwalk.forced = NONE;
+	}
+	else
+	{
+		snprintf(how, sizeof(how), "the level's scripts (or a revert)");
+		transwalk.by_script++;
+	}
+	transwalk.switches++;
+	platform_psp_log("transitions: BSP %d -> %d at game time %ld by %s; %u ms across the switch", from, to, now, how,
+		gap_us / 1000);
+	if (to >= 0 && to < TRANSWALK_BSPS)
+		transwalk.seen |= (unsigned short)(1u << to);
+	transwalk_counts(&transwalk.textured, &transwalk.flat, &transwalk.untextured);
+	transwalk.failures = psp_heap_failures;
+	transwalk.settle_at = now + 3;
+	transwalk.shot_at[0] = now + 60;
+	transwalk.shot_at[1] = now + 210;
+	transwalk.report_at = now + 240;
+}
+
+static void transwalk_report(void)
+{
+	extern volatile unsigned long psp_heap_failures; /* psp_libc.c */
+	extern void psp_heap_line(char *line, int size); /* psp_libc.c */
+	unsigned long textured, flat, untextured;
+	char heap[200];
+
+	transwalk_counts(&textured, &flat, &untextured);
+	psp_heap_line(heap, sizeof(heap));
+	platform_psp_log("transitions: 8 s in BSP %d: level draws %lu textured, %lu flat; %lu frames drew something untextured; %lu heap requests failed; %s",
+		transwalk.bsp, textured - transwalk.textured, flat - transwalk.flat, untextured - transwalk.untextured,
+		psp_heap_failures - transwalk.failures, heap);
+}
+
+static void transwalk_summary(void)
+{
+	char list[64];
+	int length = 0;
+	short k, count = (short)global_scenario_get()->structure_bsp_references.count;
+	unsigned long untried = 0;
+
+	list[0] = 0;
+	for (k = 0; k < count && k < TRANSWALK_BSPS; k++)
+		if (transwalk.seen & (1u << k))
+			length += snprintf(list + length, sizeof(list) - length, " %d", k);
+	for (k = 0; k < transwalk_zone_count(); k++)
+		untried += !transwalk.tried[k];
+	platform_psp_log("transitions: %s: %lu switches (%lu by loading zones, %lu forced, %lu by the scripts or reverts); %lu zones left no switch, %lu not tried; the player put back inside %lu times; BSPs loaded:%s (of %d)",
+		transwalk.map, transwalk.switches, transwalk.by_zone, transwalk.by_force, transwalk.by_script, transwalk.quiet,
+		untried, transwalk.placed, list, count);
+}
+
+/* the first zone of the shortest way through the zones from the loaded BSP
+to the source of a zone not tried yet, or NONE */
+static short transwalk_route(short from)
+{
+	short parent_zone[TRANSWALK_BSPS], queue[TRANSWALK_BSPS], head = 0, tail = 0, k, count = transwalk_zone_count();
+	boolean reached[TRANSWALK_BSPS];
+
+	if (from < 0 || from >= TRANSWALK_BSPS)
+		return NONE;
+	csmemset(reached, 0, sizeof(reached));
+	reached[from] = TRUE;
+	parent_zone[from] = NONE;
+	queue[tail++] = from;
+	while (head < tail)
+	{
+		short bsp = queue[head++];
+
+		for (k = 0; k < count; k++)
+			if (!transwalk.tried[k] && transwalk_zone(k)->source_structure_bsp_index == bsp && bsp != from)
+			{
+				/* back along the way to its first zone */
+				short at = bsp, first = NONE;
+
+				while (at != from)
+				{
+					first = parent_zone[at];
+					at = transwalk_zone(first)->source_structure_bsp_index;
+				}
+				return first;
+			}
+		for (k = 0; k < count; k++)
+		{
+			struct scenario_bsp_switch_trigger_volume *zone = transwalk_zone(k);
+			short to = zone->destination_structure_bsp_index;
+
+			if (zone->source_structure_bsp_index == bsp && to >= 0 && to < TRANSWALK_BSPS && !reached[to])
+			{
+				reached[to] = TRUE;
+				parent_zone[to] = k;
+				queue[tail++] = to;
+			}
+		}
+	}
+	return NONE;
+}
+
+static void transwalk_step_into(short k, long now, long dwell, boolean travel)
+{
+	extern volatile int psp_screenshot_requested; /* psp_ge.c */
+
+	if (travel)
+		platform_psp_log("transitions: on the way, through loading zone #%d", k);
+	transwalk.tried[k] = 1;
+	transwalk.zone = k;
+	transwalk.zone_to = transwalk_zone(k)->destination_structure_bsp_index;
+	psp_screenshot_requested = 1;
+	transwalk.teleport_at = now + 15;
+	transwalk.next = now + dwell;
+}
+
+void psp_transwalk_tick(void)
+{
+	static int asked = -1, won = 0;
+	static long dwell = 300;
+	extern volatile int psp_screenshot_requested; /* psp_ge.c */
+	extern unsigned int sceKernelGetSystemTimeLow(void);
+	extern boolean hs_compile_and_evaluate(char const *source); /* hs.c */
+	extern void psp_exit_game(const char *why); /* psp_platform.c */
+	unsigned int now_us = sceKernelGetSystemTimeLow(), gap_us;
+	struct scenario *scenario;
+	const char *map;
+	long now;
+	short bsp, k, count;
+
+	if (asked < 0)
+	{
+		won = psp_keep("transwon");
+		dwell = (long)psp_keep_number("transwalk", 10) * 30;
+		asked = won || psp_keep("transwalk") || psp_keep_number("transwalk", 0) > 0;
+	}
+	if (!asked)
+		return;
+	gap_us = now_us - transwalk.last_us;
+	transwalk.last_us = now_us;
+	/* after game_won the game may leave play (the credits, the menu):
+	timed by the clock */
+	if ((transwalk.phase == _transwalk_won && now_us - transwalk.won_us > 120000000u) ||
+		(transwalk.phase == _transwalk_next && now_us - transwalk.won_us > 25000000u))
+	{
+		if (transwalk.phase == _transwalk_won)
+			platform_psp_log("transitions: no new level in play 120 s after %s's game_won", transwalk.won_from);
+		psp_exit_game("transitions done");
+		return;
+	}
+	if (!game_in_progress() || global_scenario_index == NONE)
+		return;
+	scenario = global_scenario_get();
+	now = game_time_get();
+	bsp = global_structure_bsp_index;
+	map = tag_get_name(global_scenario_index);
+	/* by name: a map's scenario is its first tag, so every map's has the same index */
+	if (strcmp(transwalk.map, map) != 0)
+	{
+		if (transwalk.phase == _transwalk_won)
+		{
+			platform_psp_log("transitions: the mission's end: %s won, %s in play (BSP %d); the run ends 25 s on",
+				transwalk.won_from, map, bsp);
+			transwalk.phase = _transwalk_next;
+			transwalk.won_us = now_us;
+			transwalk.shot_at[0] = now + 90;
+			transwalk.shot_at[1] = now + 300;
+			transwalk.report_at = now + 240;
+			transwalk_counts(&transwalk.textured, &transwalk.flat, &transwalk.untextured);
+		}
+		else if (transwalk.phase != _transwalk_next)
+		{
+			unsigned int keep = transwalk.last_us;
+
+			csmemset(&transwalk, 0, sizeof(transwalk));
+			transwalk.last_us = keep;
+			transwalk.phase = _transwalk_wait;
+			transwalk.next = now + 30;
+			transwalk.zone = transwalk.zone_to = transwalk.forced = transwalk.forced_for = NONE;
+			transwalk.cinematic_since = transwalk.no_player_since = transwalk.teleport_at = -1;
+			transwalk.settle_at = transwalk.report_at = transwalk.shot_at[0] = transwalk.shot_at[1] = -1;
+			platform_psp_log("transitions: %s: %ld BSPs, %ld loading zones, %ld trigger volumes; BSP %d loaded",
+				map, scenario->structure_bsp_references.count, scenario->bsp_switch_trigger_volumes.count,
+				scenario->trigger_volumes.count, bsp);
+			if (bsp >= 0 && bsp < TRANSWALK_BSPS)
+				transwalk.seen |= (unsigned short)(1u << bsp);
+		}
+		snprintf(transwalk.map, sizeof(transwalk.map), "%s", map);
+		transwalk.bsp = bsp;
+	}
+	if (bsp != transwalk.bsp)
+	{
+		transwalk_switched(transwalk.bsp, bsp, now, gap_us);
+		transwalk.bsp = bsp;
+	}
+	if (now == transwalk.settle_at && transwalk.phase < _transwalk_won)
+		transwalk_settle();
+	if (now == transwalk.shot_at[0] || now == transwalk.shot_at[1])
+		psp_screenshot_requested = 1;
+	if (now == transwalk.report_at)
+		transwalk_report();
+	if (now == transwalk.teleport_at && transwalk.zone != NONE)
+		transwalk_enter(transwalk.zone);
+	if (now < transwalk.next || transwalk.phase >= _transwalk_won)
+		return;
+	if (transwalk.phase == _transwalk_done)
+	{
+		psp_exit_game("transitions done");
+		return;
+	}
+	/* a cinematic holds the player where its script puts him: a step waits
+	for it, up to 3 minutes for the opening's and 1 minute for any other.
+	With no player for 2 minutes (lost, and the level not brought back),
+	the walk ends there */
+	if (psp_local_unit(NULL) == NONE || cinematic_in_progress())
+	{
+		boolean gone = psp_local_unit(NULL) == NONE;
+
+		if (transwalk.cinematic_since < 0)
+			transwalk.cinematic_since = now;
+		if (gone && transwalk.no_player_since < 0)
+			transwalk.no_player_since = now;
+		if (gone && transwalk.phase != _transwalk_wait && now - transwalk.no_player_since >= 3600)
+		{
+			platform_psp_log("transitions: no player since game time %ld: the walk ends", transwalk.no_player_since);
+			transwalk.phase = _transwalk_force;
+			for (k = 0; k < transwalk_zone_count(); k++)
+				if (!transwalk.tried[k])
+					platform_psp_log("transitions: loading zone #%d (BSP %d -> %d) not tried", k,
+						transwalk_zone(k)->source_structure_bsp_index, transwalk_zone(k)->destination_structure_bsp_index);
+			transwalk.asked = 0xFFFF;
+		}
+		else if (now - transwalk.cinematic_since < (transwalk.phase == _transwalk_wait ? 5400 : 1800))
+		{
+			transwalk.next = now + 30;
+			return;
+		}
+		else
+			platform_psp_log("transitions: going on at game time %ld, %s", now, gone ? "with no player" : "in a cinematic");
+	}
+	if (psp_local_unit(NULL) != NONE)
+		transwalk.no_player_since = -1;
+	transwalk.cinematic_since = -1;
+	if (transwalk.phase == _transwalk_wait)
+	{
+		platform_psp_log("transitions: play from game time %ld", now);
+		transwalk.phase = _transwalk_zones;
+	}
+	if (transwalk.zone != NONE)
+	{
+		real_point3d origin;
+		long unit_index = psp_local_unit(NULL);
+
+		origin.x = origin.y = origin.z = 0.0f;
+		if (unit_index != NONE)
+			object_get_origin(unit_index, &origin);
+		platform_psp_log("transitions: loading zone #%d (BSP %d -> %d) left no switch in %ld s; the player at %.1f %.1f %.1f, BSP %d",
+			transwalk.zone, transwalk_zone(transwalk.zone)->source_structure_bsp_index, transwalk.zone_to, dwell / 30,
+			origin.x, origin.y, origin.z, bsp);
+		transwalk.quiet++;
+		transwalk.zone = NONE;
+	}
+	if (transwalk.forced != NONE)
+	{
+		platform_psp_log("transitions: BSP %d, forced, didn't load (BSP %d is)", transwalk.forced, bsp);
+		transwalk.forced = NONE;
+	}
+	count = transwalk_zone_count();
+	if (transwalk.phase == _transwalk_zones)
+	{
+		for (k = 0; k < count; k++)
+			if (!transwalk.tried[k] && transwalk_zone(k)->source_structure_bsp_index == bsp)
+				break;
+		if (k < count)
+		{
+			transwalk_step_into(k, now, dwell, FALSE);
+			return;
+		}
+		/* none from here: on through the zones toward one, as a player would
+		walk (a few tries: the scripts may switch back) */
+		k = transwalk.travels < 24 ? transwalk_route(bsp) : NONE;
+		if (k != NONE)
+		{
+			transwalk.travels++;
+			transwalk_step_into(k, now, dwell, TRUE);
+			return;
+		}
+		/* no way there through the zones: the next one's source, by force */
+		for (k = 0; k < count; k++)
+			if (!transwalk.tried[k])
+				break;
+		if (k < count)
+		{
+			short from = transwalk_zone(k)->source_structure_bsp_index;
+
+			if (transwalk.forced_for == k || from < 0 || from >= scenario->structure_bsp_references.count)
+			{
+				platform_psp_log("transitions: loading zone #%d not reached (BSP %d, its source, didn't stay loaded)", k, from);
+				transwalk.tried[k] = 1;
+				transwalk.next = now + 1;
+				return;
+			}
+			transwalk.forced_for = k;
+			transwalk.forced = from;
+			platform_psp_log("transitions: BSP %d forced at game time %ld, for loading zone #%d: no zone leads there from BSP %d", from, now, k, bsp);
+			psp_screenshot_requested = 1;
+			main_switch_structure_bsp(from);
+			transwalk.next = now + 150;
+			return;
+		}
+		transwalk.phase = _transwalk_force;
+	}
+	for (k = 0; k < scenario->structure_bsp_references.count && k < TRANSWALK_BSPS; k++)
+		if (!(transwalk.seen & (1u << k)) && !(transwalk.asked & (1u << k)))
+			break;
+	if (k < scenario->structure_bsp_references.count && k < TRANSWALK_BSPS)
+	{
+		transwalk.asked |= (unsigned short)(1u << k);
+		transwalk.forced = k;
+		platform_psp_log("transitions: BSP %d forced at game time %ld: no loading zone led to it", k, now);
+		psp_screenshot_requested = 1;
+		main_switch_structure_bsp(k);
+		transwalk.next = now + dwell;
+		return;
+	}
+	transwalk_summary();
+	if (won)
+	{
+		snprintf(transwalk.won_from, sizeof(transwalk.won_from), "%s", transwalk.map);
+		platform_psp_log("transitions: game_won at game time %ld", now);
+		psp_screenshot_requested = 1;
+		transwalk.phase = _transwalk_won;
+		transwalk.won_us = now_us;
+		hs_compile_and_evaluate("game_won");
+		return;
+	}
+	transwalk.phase = _transwalk_done;
+	transwalk.next = now + 60;
+}
+#endif
+'''
+
+
 def appended(tree):
     for rel, code in APPEND.items():
         path = os.path.join(tree, rel)
