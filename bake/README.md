@@ -70,8 +70,9 @@ the image, checks it, rebuilds it for the PSP's memory, and bakes the
 textures, the asset track's textures (`_track.ptex`: half-size lightmaps,
 plants that keep their leaves at a distance) and the wall decals. It bakes
 the ten campaign levels and the menus (`ui`); `--multiplayer` adds the
-thirteen multiplayer maps, for the multiplayer build. Expect 3 to 10 minutes
-a map, one after another (the campaign and menus: 25 to 45 minutes).
+thirteen multiplayer maps, for the multiplayer build. Expect 1 to 4 minutes
+a map on an 8-core PC, four at a time: about 10 minutes for the campaign and
+menus, longer on fewer cores.
 
 A palette made once is kept while the bake runs (`<output>/work/palettes`)
 and read back wherever the same texture comes up again: in the asset

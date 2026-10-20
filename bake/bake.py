@@ -31,7 +31,7 @@ PSP/GAME/halo/EBOOT.PBP): copy its contents to the root of the Memory Stick.
 Options:
     --maps a10,c20,bloodgulch   only these maps (default: the campaign's and ui)
     --multiplayer               the multiplayer maps too (for the multiplayer
-                                build; they add about 40% to the bake)
+                                build)
     --no-track                  skip the asset track's _track.ptex
     --keep-work                 keep the extracted tags (several GB)
     --jobs N                    bake N maps at once (default: one per CPU, at

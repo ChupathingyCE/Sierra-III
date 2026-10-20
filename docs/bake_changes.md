@@ -46,6 +46,52 @@ On the disc [E]:
 
 The Xbox's loading screen reads `maps\loading.tga` from the disc (progress_bar.c), but the retail disc has none: its only pictures are two `xdemos/media` fonts. On the Xbox the copy fails quietly and the band draws over a black texture, so the retail loading screen is the trail alone, which the PSP already draws. The bake carries no loading picture.
 
+## A faster bake: the same maps, sooner
+
+The campaign and menus (10 levels and ui) baked in 9.0 minutes where they took 101 [E: one 8-core, 16-thread desktop, four maps at a time, the same disc]. All 55 output files are byte for byte the bake's before (size and SHA-256). Most of the gain is the first change below; the rest is the palette cache.
+
+### What changed
+
+- **One BLAS thread in each step** (`bake.py`, `tool_env()`). numpy's linear algebra runs a thread per CPU in every process by default, and the bake runs four maps at once, so each palette's small matrix products were fought over by 4 x 16 threads that wait by spinning. The bake now sets `OPENBLAS_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS` and `VECLIB_MAXIMUM_THREADS` to 1 for its steps. The sums are the same on one thread (the products split over rows, never along the 3 or 4 colour channels they add). Synthetic, two processes on two CPUs: a 256-colour palette 6.5 s -> 2.2 s, the same bytes [E].
+- **A palette cache** (`texpack.py --palette-cache`; the bake's `<output>/work/palettes`, `--no-cache` without). Each palette is kept by a hash of its input pixels, the colour count and `bitmap_bake.py` itself, and read back wherever the same input comes up: the asset track's pack makes every texture but the lightmaps again from the same pixels, and maps share textures. A palette is written to a file of its own, then renamed into place, so maps baking side by side read a whole one or none. The cache is emptied at the start and removed at the end (kept with `--keep-work`).
+- **The biggest maps first** (by the retail map's size): the last map to finish isn't a long one started late (on the campaign with four at a time, ~8% sooner by a schedule of earlier per-map times [U]).
+- **The campaign by default**: `--multiplayer` adds the thirteen multiplayer maps (the release is the campaign build).
+
+### The profile (`--profile`) [E, the 9-minute bake]
+
+Per texture, its class, sizes, seconds in the palette step and the rest, and a short hash of its input pixels (no names).
+
+- Texture packs are nearly all of a map's time; extracting, building and the wall decals take ~20 s a map together.
+- 29,127 palettes asked for: 21,913 (75%) read from the cache. Made, those would have cost 2,686 CPU-seconds, 68% of the palette step's time without the cache.
+- By pack: the asset track's packs read 100% of their non-lightmap palettes from the main pack's; the main packs read 76% of their non-lightmap palettes from other maps (each map's distinct inputs shared with another map: 56-84%, ui 28%). Lightmaps are each map's own (1% read back).
+- What's left: 1,246 s of palettes (606 s of them lightmaps, main and track) and 306 s of the rest, of CPU time over 11 maps.
+
+### Not measured on their own
+
+The no-cache bake with one BLAS thread wasn't run again; from the profile, it would take about 20 minutes on that machine (the 2,686 CPU-seconds the cache saved, four maps at a time) [U]: so ~5x from the threads, ~2.2x more from the cache.
+
+### The fast palettes (`--fast-palettes`): off, for a decision
+
+Not exact. Each k-means run settles on a seeded 8,192-point subsample, then takes at most 10 rounds on the whole sample; both stop once no centre moves by 0.5 (`bitmap_bake.fast_kmeans()`). The same starts and tries as now. `--compare-palettes` makes every palette both ways in one bake and logs time and error by class, size and pixel hash.
+
+Four maps (a10, b30, c20, ui), every pack, 6,763 palettes [E]:
+
+| Palettes | n | Time now -> fast | Mean Oklab error | Worse by >3% / >10% | Better by >1% |
+|---|---|---|---|---|---|
+| all | 6,763 | 1,200 -> 749 s (x1.60) | 0.00687 -> 0.00695 (+1.1%) | 12.2% / 5.3% | 14.9% |
+| level (senv), 256 | 260 | 132 -> 61 s (x2.15) | -0.1% | 12.3% / 5.4% | 16.2% |
+| lightmaps, 256 | 724 | 162 -> 107 s (x1.51) | +0.4% | 20.4% / 11.6% | 11.9% |
+| objects (soso), 16 | 1,147 | 149 -> 83 s (x1.80) | +3.0% | 13.1% / 7.0% | 17.6% |
+| objects (soso), 256 | 880 | 198 -> 133 s (x1.49) | -0.3% | 12.2% / 5.7% | 23.6% |
+| HUD and menus, 16 | 1,021 | 145 -> 97 s (x1.50) | +2.8% | 11.9% / 3.4% | 11.3% |
+| HUD and menus, 256 | 453 | 194 -> 112 s (x1.73) | -0.5% | 27.2% / 13.7% | 27.4% |
+| the rest, 16 / 256 | 1,518 / 760 | 221 -> 157 s | -0.6% / +0.2% | 2.6% / 13.9% (>3%) | 10.0% |
+
+- The squared distance k-means minimises: +0.3% over all.
+- The worst are 16-colour object and HUD sheets: up to +277% Oklab error on one object texture, +100-200% on five HUD sheets, the same textures in every map. Most of the >10% cases are textures whose error is near zero either way: of palettes with an Oklab error over 0.001, 2.2% are worse by over 10%.
+- **What it would save:** with the cache, the palettes left are 1,246 CPU-seconds of the 9-minute bake (half of them lightmaps). At x1.6 that is ~470 CPU-seconds, about 2 minutes off 9 [U].
+- **Recommendation:** leave it off. The exact changes above took the bake from 101 to 9 minutes; this would take ~2 more, and its 16-colour outliers would need side-by-sides on the PSP first.
+
 ## What a player needs to do
 
 Bake again with build 139's bundle: the palettes and decal cuts change.
