@@ -25780,6 +25780,279 @@ real_matrix4x3 *object_get_node_matrices(
 ]
 
 
+# ---------- FIXES_OBJWALK: the collision tests' object loops in line (lever CW)
+# collision_test_vector and collision_get_features_in_sphere walk every
+# collideable object of each cluster they reach (b30's beach: ~50 objects a
+# vector test, ~11 M objects a 108 s run) and reject ~95% of them on the
+# sphere copy. Each object cost three calls across units (the cluster
+# partition's next reference, the sphere copy, fast_vector_intersects_sphere),
+# ~100 instructions, most of them the calls' frames (-fno-omit-frame-pointer).
+# Here the reference list's step and the sphere test are in line; the same
+# list is walked in the same order and the same float operations decide
+# (-ffp-contract=off), so the same objects are tested. "objwalkold": the
+# calls, as before
+FIXES_OBJWALK = {}
+FIXES_OBJWALK["source/math/real_math.h#objwalk"] = [
+("""boolean fast_vector_intersects_sphere(real_point3d const *point, real_vector3d const *vector, real_point3d const *center, real radius);
+""", """boolean fast_vector_intersects_sphere(real_point3d const *point, real_vector3d const *vector, real_point3d const *center, real radius);
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_OBJWALK): fast_vector_intersects_sphere's test, in
+line for the collision tests' object loops; the function is this too */
+static __inline__ boolean psp_vector_intersects_sphere(
+	real_point3d const *point,
+	real_vector3d const *vector,
+	real_point3d const *center,
+	real radius)
+{
+	real_point3d p = {point->x-center->x, point->y-center->y, point->z - center->z};
+	real c = (p.x*p.x) + (p.y*p.y) + (p.z*p.z) - (radius*radius);
+	real b;
+	real a;
+	real disc;
+	real neg_a_minus_b;
+
+	if (c < 0.f)
+		return TRUE;
+	b = vector->i*p.x + vector->j*p.y + vector->k*p.z;
+	if (b >= 0.f)
+		return FALSE;
+	a = vector->i*vector->i + vector->j*vector->j + vector->k*vector->k;
+	disc = b * b - a * c;
+	if (disc <= 0.f)
+		return FALSE;
+	neg_a_minus_b = -a - b;
+	if (neg_a_minus_b < 0.f)
+		return TRUE;
+	return neg_a_minus_b * neg_a_minus_b < disc;
+}
+#endif
+"""),
+]
+FIXES_OBJWALK["source/math/real_math.c#objwalk"] = [
+("""	real radius)
+{
+	real_point3d p = {point->x-center->x, point->y-center->y, point->z - center->z};
+	real c = (p.x*p.x) + (p.y*p.y) + (p.z*p.z) - (radius*radius);
+	real_vector3d direction;
+""", """	real radius)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_OBJWALK): one copy of the test (real_math.h) */
+	return psp_vector_intersects_sphere(point, vector, center, radius);
+#else
+	real_point3d p = {point->x-center->x, point->y-center->y, point->z - center->z};
+	real c = (p.x*p.x) + (p.y*p.y) + (p.z*p.z) - (radius*radius);
+	real_vector3d direction;
+"""),
+("""				if (neg_a_minus_b < 0.f)
+				{
+					return TRUE;
+				}
+				else
+				{
+					return neg_a_minus_b * neg_a_minus_b < disc;
+				}
+			}
+		}
+	}
+}""", """				if (neg_a_minus_b < 0.f)
+				{
+					return TRUE;
+				}
+				else
+				{
+					return neg_a_minus_b * neg_a_minus_b < disc;
+				}
+			}
+		}
+	}
+#endif
+}"""),
+]
+FIXES_OBJWALK["source/physics/collisions.c#objwalk"] = [
+("""#include "objects/objects.h"
+""", """#include "objects/objects.h"
+#ifdef HALO_PSP
+#include "objects/reference_lists.h" /* psp_fixups.py (FIXES_OBJWALK) */
+#endif
+"""),
+# the sphere-copy check out of line, so psp_sphere_of is small enough to go in line
+("""	if (psp_sphere_check < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_sphere_check = psp_keep("spherecheck");
+	}
+	if (psp_sphere_check)
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		psp_sphere_checked++;
+		if (memcmp(&object->object.bounding_sphere_center, &sphere->center, sizeof(sphere->center)) ||
+			memcmp(&object->object.bounding_sphere_radius, &sphere->radius, sizeof(sphere->radius)))
+			psp_sphere_wrong++;
+	}
+	psp_sphere_tests++;
+	return sphere;
+}
+
+/* object_test_vector's own sphere test */
+static boolean psp_sphere_may_cross(
+	long object_index,
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+	if (fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;""", """	/* psp_fixups.py (FIXES_OBJWALK): -1 until the keep word is read */
+	if (psp_sphere_check)
+		psp_sphere_compare(object_index, sphere);
+	psp_sphere_tests++;
+	return sphere;
+}
+
+/* psp_fixups.py (FIXES_OBJWALK): "objwalkold" walks through the calls */
+static int psp_objwalk_old = -1;
+
+static __inline__ boolean psp_objwalk_inline(void)
+{
+	if (psp_objwalk_old < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_objwalk_old = psp_keep("objwalkold") != 0;
+	}
+	return !psp_objwalk_old;
+}
+
+/* cluster_get_next_collideable_object, in line: reference_lists.h's step */
+static __inline__ long psp_next_collideable(boolean walk_inline, long *reference_index)
+{
+	if (walk_inline)
+	{
+		struct data_reference const *reference;
+
+		if (*reference_index == NONE)
+			return NONE;
+		reference = (struct data_reference const *)psp_datum_get_inline(
+			collideable_object_cluster_partition.data_reference_data, *reference_index);
+		*reference_index = reference->next_reference_index;
+		return reference->datum_index;
+	}
+	return cluster_get_next_collideable_object(reference_index);
+}
+
+/* object_test_vector's own sphere test */
+static __inline__ boolean psp_sphere_may_cross(
+	boolean walk_inline,
+	long object_index,
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+	if (walk_inline ? psp_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius) :
+		fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;"""),
+("""static struct psp_object_sphere const *psp_sphere_of(long object_index)
+{""", """static void psp_sphere_compare(long object_index, struct psp_object_sphere const *sphere) __attribute__((noinline));
+static __inline__ struct psp_object_sphere const *psp_sphere_of(long object_index) __attribute__((always_inline));
+
+/* psp_fixups.py (FIXES_OBJWALK): "spherecheck", each sphere copy compared
+with the datum's */
+static void psp_sphere_compare(long object_index, struct psp_object_sphere const *sphere)
+{
+	struct object_datum const *object;
+
+	if (psp_sphere_check < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_sphere_check = psp_keep("spherecheck");
+		if (!psp_sphere_check)
+			return;
+	}
+	object = object_get(object_index);
+	psp_sphere_checked++;
+	if (memcmp(&object->object.bounding_sphere_center, &sphere->center, sizeof(sphere->center)) ||
+		memcmp(&object->object.bounding_sphere_radius, &sphere->radius, sizeof(sphere->radius)))
+		psp_sphere_wrong++;
+}
+
+static struct psp_object_sphere const *psp_sphere_of(long object_index)
+{"""),
+("""				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+
+					for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+						object_index != NONE;
+						object_index = cluster_get_next_collideable_object(&reference_index))
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_cross(object_index, point, vector) &&
+#endif""", """				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_OBJWALK) */
+					boolean walk_inline = psp_objwalk_inline();
+
+					for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+						object_index != NONE;
+						object_index = psp_next_collideable(walk_inline, &reference_index))
+#else
+					for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+						object_index != NONE;
+						object_index = cluster_get_next_collideable_object(&reference_index))
+#endif
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_cross(walk_inline, object_index, point, vector) &&
+#endif"""),
+("""				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+
+					for (object_index = cluster_get_first_collideable_object(
+							&reference_index,
+							cluster_index);
+						object_index != NONE;
+						object_index = cluster_get_next_collideable_object(&reference_index))
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_touch(""", """				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_OBJWALK) */
+					boolean walk_inline = psp_objwalk_inline();
+#endif
+
+					for (object_index = cluster_get_first_collideable_object(
+							&reference_index,
+							cluster_index);
+						object_index != NONE;
+#ifdef HALO_PSP
+						object_index = psp_next_collideable(walk_inline, &reference_index))
+#else
+						object_index = cluster_get_next_collideable_object(&reference_index))
+#endif
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_touch("""),
+]
+
+
 # ---------- FIXES_POOLS: the glow particles' array at the PSP's size
 # glow.c sizes it with an enum of its own, not one of the engine's
 # capacities, so psp_capacity.h's size (the campaign's, with the actor,
@@ -25800,7 +26073,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_NMSKIP.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
