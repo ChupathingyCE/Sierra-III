@@ -54,8 +54,8 @@ So the programme's rule: **few, large, asynchronous jobs, handed over without wa
 | Question | Instrument | Status |
 |---|---|---|
 | (a) **How much each CPU slows when both run, by kind of ME work**: scattered misses in main RAM, light main-RAM traffic, eDRAM only; on both PSPs | `mebusN` (PSP_RECON builds; ticks loaded by a coin against unloaded), with `mebusedram` for the eDRAM kind | done: §4 |
-| (b) **Does anything but our ME code write the eDRAM**, over a ladder of all ten maps; how deep the ME's stack reaches; the ME's speed from eDRAM against main RAM | `edramcheck` (now: the bottom 192 KB hashed and watched, 256 KB–1.5 MB patterned, the stretch below the stack patterned for its reach); every `mebus` window times the load alone in both memories | running |
-| (c) **SL, the slant split, on today's build**: what it's worth now | `- \| meslantoff` on the same ladder | running, with (b) |
+| (b) **Does anything but our ME code write the eDRAM**, over a ladder of all ten maps; how deep the ME's stack reaches; the ME's speed from eDRAM against main RAM | `edramcheck` (now: the bottom 192 KB hashed and watched, 256 KB–1.5 MB patterned, the stretch below the stack patterned for its reach); every `mebus` window times the load alone in both memories | eDRAM clean and speed done: §4. **Stack reach not measured** (the PSP-3000's ME stack is above 2 MB): needs a PSP-1000 run |
+| (c) **SL, the slant split, on today's build**: what it's worth now | `- \| meslantoff` on the same ladder | done (PSP-3000): §4 |
 
 **Instruments added for stage 0** (this branch):
 - `mebusedram` (with `mebusN`): the ME's load runs on its own eDRAM, reads and stores both. The line `mebus: work N eDRAM | … the main CPU +x% | the ME … alone: … | alone in main RAM …` gives the main CPU's cost of work that never leaves the ME, and the ME's eDRAM rate against main RAM's for the same work.
@@ -108,6 +108,37 @@ What it means:
 - **For the jobs:** inputs that live in the eDRAM (tables, resident data) and the ME's private state there are nearly free to the main CPU; an ME loop must not poll a main-RAM word every step. The batches' limit word is read once a record, and a record is microseconds of work, so its share is small [U]; the standard pass should still count it.
 
 
+### (b) Does anything else write the eDRAM; how deep does the ME's stack reach [M, PSP-3000]
+
+`edramcheck` on the ten-map ladder (45 s a map), two runs on the PSP-3000 (one with `meslantoff`), the default build otherwise (PGO, ME ring on):
+
+- **Clean.** 4 passes, 120 pieces of 64 KB checked in each run: **0 patterned pieces changed** (256 KB–1,984 KB), **0 hashes moved** (0–192 KB). No alarm; nothing but our own ME code wrote the checked stretches during play, ring jobs (slant sort, audio mixing) included. The coverage is 4 passes of the 30 pieces, so a write that came and went between two visits could hide; each stretch was visited about every 30 s across all ten maps [U].
+- **The stack's reach is not measured.** `psp_me.c` reports a reach only when the ME's own stack lies below 2 MB (a PSP-1000); this PSP-3000 printed no reach line, which fits its stack sitting above 2 MB (its eDRAM is 4 MB). The final line's "stack's deepest 0 KB" means "not seen", not "unused". What the run does show: nothing wrote 1.5 MB–1,984 KB, so on this PSP the room R2 would use is free of the ME's stack. The R2 gate (reach leaving at least 1 MB on the PSP-1000) needs the same ladder on the PSP-1000: `edramcheck` alone, no keep sets, `wall` 1,800.
+- **The 192–256 KB stretch** is still unwatched (`mebusedram` scratch there); `meedramstate` stays off by default.
+
+### (c) What the slant split (SL) is worth now [M, PSP-3000]
+
+The same two runs: the split on (default) against `meslantoff`, build otherwise equal, one run a side, so fps and ticks carry the runs' few-percent spread. `edramcheck` was on in both, and its probe job (about 3 ms of the ME's time a heartbeat) can delay a slant job's pick-up, so the split reads slightly worse here than it would without.
+
+The sort's cost is the GE layer's "angle buckets" line (µs a frame, per 300-frame window); the windows match in draws within 3% between the sides. Mean µs a frame sorting, split on / off, and the sort's cost per draw on against off:
+
+| Map | Sort µs a frame, on / off | Per draw, on ÷ off | fps on / off | Tick ms on / off | Ticks a second on / off |
+|---|---|---|---|---|---|
+| a10 | 2,585 / 3,408 | 0.75 | 16.2 / 15.9 | 7.8 / 7.8 | 29.4 / 29.1 |
+| a30 | 2,218 / 2,826 | 0.79 | 7.5 / 7.6 | 8.6 / 8.5 | 15.1 / 15.0 |
+| a50 | 1,642 / 1,991 | 0.82 | 10.7 / 10.7 | 18.3 / 18.0 | 21.4 / 21.4 |
+| b30 | 2,395 / 3,042 | 0.79 | 4.4 / 4.4 | 47.4 / 47.6 | 8.9 / 8.9 |
+| b40 | 786 / 856 | 0.91 | 17.5 / 16.7 | 10.9 / 11.0 | 28.9 / 28.9 |
+| c10 | 1,953 / 2,199 | 0.90 | 9.1 / 9.0 | 16.9 / 17.2 | 18.1 / 17.9 |
+| c20 | 2,834 / 3,196 | 0.88 | 10.9 / 10.9 | 24.0 / 24.1 | 21.7 / 21.8 |
+| c40 | 1,028 / 1,156 | 0.89 | 20.2 / 20.4 | 12.3 / 12.3 | 29.6 / 29.9 |
+| d20 | 1,693 / 1,412 | 1.19 | 7.2 / 7.1 | 36.3 / 38.1 | 14.5 / 14.3 |
+| d40 | 4,625 / 6,857 | 0.69 | 24.4 / 23.9 | 1.5 / 1.7 | 30.0 / 29.9 |
+
+- **The split still shortens the sort** in nine maps of ten: 0.69–0.91 of the single-CPU cost per draw, 0.07–2.2 ms a frame (d40 most, a10, b30, a30 about 0.6–0.8 ms). That matches b121's 0.6–1.4 ms on b30 and c20 [M]; the ME takes 23–46% of the triangles.
+- **It's worth 0.1–1.3% of a frame, 5% on d40**, so fps and ticks a second agree between the sides within the noise of one run each (largest gap 0.8 fps, b40, with 4–5 heartbeats a side). The ladder can't show a gain this small; `abreport.py` needs repeats and gives no verdict on one run a side.
+- **d20 runs the other way** (the split costs 1.19 per draw, 0.3 ms a frame). Its ring jobs took the ME 0.5–1.0 ms each against 0.15–0.3 ms elsewhere, with picks-up of 0.3–1.3 ms, so the ME was slow or busy there. A cause isn't found [U]: the probe's 3 ms jobs, the stick or the bus are candidates; the rerun without `edramcheck` (and a `mebus`-style quiet window) would tell. For now SL stays on by default: it is exact, small and positive on nine maps.
+
 ## 5. R2: the sound cache in eDRAM (plan)
 
 **What it frees:** the sound cache, 1,792 KB of heap (`psp_sound_cache_bytes`), in both builds. The PSP-1000's heap has ~147 KB free at worst.
@@ -124,7 +155,7 @@ What it means:
 - **The main CPU can't mix any more.** With the ME stopped (HOME, a failure, after a sleep: MW), there is no sound, unless a small main-RAM cache is kept as the fallback (512 KB, `sound512`), allocated only when the ME stops. That changes behaviour (sound after a sleep), so R2 is opt-in, decided by an A/B on the PSP-1000.
 - The emulator can't run it (no eDRAM): there the cache stays in main RAM, and the staging and the upload job are simulated, so the plumbing is proven but the eDRAM path only on the PSP.
 
-**Gate:** `edramcheck` clean over the ladder on the PSP-1000, and the stack's reach leaving at least 1 MB.
+**Gate:** `edramcheck` clean over the ladder on the PSP-1000, and the stack's reach leaving at least 1 MB. Status: clean on the PSP-3000 (§4 (b)); the PSP-1000's run and the stack's reach are still to do.
 
 ## 6. For the jobs' branch: what's ready
 
