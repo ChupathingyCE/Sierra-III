@@ -126,6 +126,10 @@ cinematic ticks were longer with it among the words on */
 /* "meyieldoff": a slot job doesn't serve the ring between its steps, and
 the ring refuses pushes while one is out, as before batches */
 #define ME_FEATURE_NO_YIELD 32u
+/* "meedramstate": the ME's private state (below) kept in its eDRAM. Off
+until a PSP run shows that stretch of the eDRAM is ours: edramcheck watches
+0-192 KB and patterns from 256 KB, not between */
+#define ME_FEATURE_EDRAM_STATE 64u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -581,9 +585,10 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	__asm__ __volatile__("sync");
 }
 
-/* The ME's own state, in its eDRAM (psp_me.h's map): what only the ME reads
-and writes stays off the shared bus and off any line the main CPU might hold.
-Only ever touched on the ME */
+/* The ME's own state: with "meedramstate" in its eDRAM (psp_me.h's map), so
+what only the ME reads and writes stays off the shared bus; otherwise in main
+RAM on lines of its own, which the main CPU never touches. Only ever touched
+on the ME */
 struct me_private
 {
 	/* the ring as the ME's loop last left it, for a slot job that serves the
@@ -592,10 +597,14 @@ struct me_private
 	/* 1 inside a ring job: a yield there mixes audio but runs no ring job
 	(the ring's jobs run in order, and this one isn't popped yet) */
 	unsigned int in_ring;
+	unsigned int pad[12];
 };
-#define ME_PRIVATE ((volatile struct me_private *)(ME_EDRAM + ME_EDRAM_PRIVATE))
-/* the sums of audio blocks mixed inside other jobs (4 KB) */
-#define ME_AUDIO_SUMS ((int *)(ME_EDRAM + ME_EDRAM_PRIVATE + 0x1000))
+static struct me_private me_private_main __attribute__((aligned(64)));
+/* the sums of audio blocks mixed inside other jobs (4 KB in the eDRAM) */
+static int me_audio_sums_main[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
+#define ME_EDRAM_STATE_ON (CONTROL->features & ME_FEATURE_EDRAM_STATE)
+#define ME_PRIVATE (ME_EDRAM_STATE_ON ? (volatile struct me_private *)(ME_EDRAM + ME_EDRAM_PRIVATE) : &me_private_main)
+#define ME_AUDIO_SUMS (ME_EDRAM_STATE_ON ? (int *)(ME_EDRAM + ME_EDRAM_PRIVATE + 0x1000) : me_audio_sums_main)
 
 /* the audio slot's job, if one is waiting: 1 when one was mixed. Only on
 the ME (a long job's step, psp_me_yield) */
@@ -1001,8 +1010,10 @@ void meLibOnProcess(void)
 		control->cause_after = cause;
 	}
 	meLibDcacheWritebackInvalidateAll();
-	ME_PRIVATE->ring_ready = 0;
-	ME_PRIVATE->in_ring = 0;
+	/* the features aren't set yet: the main-RAM copy; the eDRAM copy is
+	written before each job that reads it */
+	me_private_main.ring_ready = 0;
+	me_private_main.in_ring = 0;
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_RUN;
 	meLibSync();
 	for (;;)
@@ -1412,7 +1423,7 @@ int psp_me_start(void)
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
 		(psp_keep("meaudiofirst") ? ME_FEATURE_AUDIO_FIRST : 0u) |
 		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u) |
-		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u);
+		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -2608,7 +2619,7 @@ void psp_me_wake_poll(void)
 	ME reads them on its first pass, so the ring is served from the first
 	frame (a ring job not done in 10 ms turns the ring off for the session) */
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
-		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u);
+		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u);
 	__asm__ __volatile__("sync");
 	now = sceKernelGetSystemTimeWide();
 	if (me_restartable == 2)

@@ -53,9 +53,9 @@ So the programme's rule: **few, large, asynchronous jobs, handed over without wa
 
 | Question | Instrument | Status |
 |---|---|---|
-| (a) **How much each CPU slows when both run, by kind of ME work**: scattered misses in main RAM, light main-RAM traffic, eDRAM only; on both PSPs | `mebusN` (PSP_RECON builds; ticks loaded by a coin against unloaded), with `mebusedram` for the eDRAM kind | running |
-| (b) **Does anything but our ME code write the eDRAM**, over a ladder of all ten maps; how deep the ME's stack reaches; the ME's speed from eDRAM against main RAM | `edramcheck` (now: the bottom 192 KB hashed and watched, 256 KB–1.5 MB patterned, the stretch below the stack patterned for its reach); every `mebus` window times the load alone in both memories | queued after (a) |
-| (c) **SL, the slant split, on today's build**: what it's worth now | `- \| meslantoff` on the same ladder | queued after (a) |
+| (a) **How much each CPU slows when both run, by kind of ME work**: scattered misses in main RAM, light main-RAM traffic, eDRAM only; on both PSPs | `mebusN` (PSP_RECON builds; ticks loaded by a coin against unloaded), with `mebusedram` for the eDRAM kind | done: §4 |
+| (b) **Does anything but our ME code write the eDRAM**, over a ladder of all ten maps; how deep the ME's stack reaches; the ME's speed from eDRAM against main RAM | `edramcheck` (now: the bottom 192 KB hashed and watched, 256 KB–1.5 MB patterned, the stretch below the stack patterned for its reach); every `mebus` window times the load alone in both memories | running |
+| (c) **SL, the slant split, on today's build**: what it's worth now | `- \| meslantoff` on the same ladder | running, with (b) |
 
 **Instruments added for stage 0** (this branch):
 - `mebusedram` (with `mebusN`): the ME's load runs on its own eDRAM, reads and stores both. The line `mebus: work N eDRAM | … the main CPU +x% | the ME … alone: … | alone in main RAM …` gives the main CPU's cost of work that never leaves the ME, and the ME's eDRAM rate against main RAM's for the same work.
@@ -88,7 +88,25 @@ Built by the jobs' own branch on these foundations, each through the standard pa
 
 ## 4. Results
 
-(Filled as each run is read.)
+### (a) How much the two CPUs slow each other, by kind of ME work [M]
+
+b30's opening route, nine 300-tick windows a run, on each PSP; ticks loaded by a coin against unloaded, so both sides sample the same play. The ME's rate alone is its 8 ms calibration with the main CPU asleep, the quiet ones (about a third read ~24% lower in both memories: the GE drawing meanwhile).
+
+| ME work | Main CPU's tick, PSP-3000 | PSP-1000 | The ME during the tick against alone |
+|---|---|---|---|
+| Scattered misses in main RAM, a store each (`mebus0`) | **+11.0%** (+8.5 to +13.9) | **+10.3%** (+7.9 to +12.2) | 1.02 against 1.20 loads a µs: −15% |
+| The same with 50 steps of arithmetic between (`mebus50`, about the main CPU's own mix) | **+4.5%** (+0.1 to +6.5) | **+4.5%** (+1.4 to +6.7) | 0.49 against 0.55: −11% |
+| Scattered misses in the ME's eDRAM (`mebus0 mebusedram`) | **≤ +3.2%** | **≤ +3.2%** | 1.22 against 1.43: −14% |
+| Mixed, in eDRAM (`mebus50 mebusedram`) | **≤ +0.9%** (−1.9 to +3.1) | **≤ +0.8%** (−1.9 to +2.7) | 0.52 against 0.59: −11% |
+
+**The ME's eDRAM against main RAM, alone:** 1.425 loads a µs against 1.20 (+19%, about 130 ns less a load); with arithmetic between, +7%.
+
+What it means:
+- **The two PSPs are one.** Every kind agrees within 0.7 points, and the PSP-1000's earlier figures (+11.9%, +5.0%) sit inside these windows' spread.
+- **The bus has room.** ME work as heavy in misses as anything we'd give it costs the tick a tenth; work shaped like the main CPU's own costs it a twentieth. Jobs beside the tick keep their ceiling, less these shares [U].
+- **Work that stays in the eDRAM costs the main CPU a third or less of the same work in main RAM**, and the eDRAM figures are upper bounds: this run's load read its stop word from main RAM, uncached, every load, a bus trip of its own. That poll is also why the ME loses the same 11–15% in either memory, and why the eDRAM's lead over main RAM reads as only ~130 ns a load. The instrument now polls every 16th load; a rerun reads the eDRAM itself [U].
+- **For the jobs:** inputs that live in the eDRAM (tables, resident data) and the ME's private state there are nearly free to the main CPU; an ME loop must not poll a main-RAM word every step. The batches' limit word is read once a record, and a record is microseconds of work, so its share is small [U]; the standard pass should still count it.
+
 
 ## 5. R2: the sound cache in eDRAM (plan)
 
