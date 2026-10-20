@@ -194,3 +194,7 @@ A second pass over the `61debf0` tree found three switches the first read left o
 **Credit, if any is taken:** all three are BirchWoodGod's code under his grant (header), except the think rate, which is Bruno Santana's (idea only).
 
 **What we could offer back:** unchanged (§6, and `docs/for_other_ports/`). His crossplay is at network version 29, the same as ours (OpenCE build-206, ChupathingyCE 0.7.5b). That matters only once multiplayer is unshelved.
+
+## 13. Addendum (2026-10-20): insider.16
+
+`1.1.1-insider.16` (`82a9f97e`, a pre-release developer package) is read in `research_vita_insider16.md`. Most of it is multiplayer, menus and Forge. One tick idea is worth a count: dark attached lights left off the map (L1), against `object_connect_lights`' 2.57 ms a tick on b30. There is a client clock fix for the multiplayer session (L3), and nothing new for the look list.
