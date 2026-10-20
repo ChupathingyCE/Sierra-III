@@ -759,8 +759,21 @@ so for any record either the ME sees the limit or the main CPU sees the claim
 (psp_me_batch_need waits out the second case for that one record). A record
 is written back before done passes it. args: 0 the batch, 1 first, 2 count,
 3 the main CPU's FPU control word, 4 make, 5 the records, 6 a record's bytes,
-7-14 make's own */
+7-14 make's own.
+
+done is one word for the whole batch, so psp_me_batch_need trusts every
+handed-over record below it. That holds because a job ends early only at the
+limit, which only falls: every job after it withdraws at its first record, and
+done never passes a record the ME didn't make */
 static int batch_sim_half = 0; /* "mebatchsimhalf": the main CPU's, read by the simulated ME */
+/* the batch whose job the simulated ME stopped partway: an ME that is behind,
+which a real one is while the main CPU takes records back. The jobs after
+it wait behind it, as they would in the ring, so they make nothing; jobs that
+made records after the stop would carry done past the ones never made */
+static const struct psp_me_batch *batch_sim_behind = NULL;
+/* whole jobs before the stop, 0-3 by turns, so the ME's records, the ones
+taken back and the ones never handed over fall in different places each pass */
+static unsigned int batch_sim_passes = 0, batch_sim_whole = 0;
 
 static void batch_job(const unsigned int *args, unsigned int *results, int on_me)
 {
@@ -777,7 +790,17 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	it there leaves the rest for psp_me_batch_need to take back, so that path
 	is proven where play can be compared */
 	if (!on_me && batch_sim_half)
-		end = args[1] + args[2] / 2;
+	{
+		if (batch_sim_behind == b)
+			end = r;
+		else if (batch_sim_whole)
+			batch_sim_whole--;
+		else if (!batch_sim_behind && args[2] > 1)
+		{
+			end = args[1] + args[2] / 2;
+			batch_sim_behind = b;
+		}
+	}
 	if (on_me)
 	{
 		__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
@@ -2098,6 +2121,9 @@ int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *recor
 
 void psp_me_batch_begin(struct psp_me_batch *b)
 {
+	if (batch_sim_behind == b)
+		batch_sim_behind = NULL;
+	batch_sim_whole = batch_sim_passes++ & 3u;
 	b->added = b->handed = b->ticket_count = 0;
 	b->limit_now = 0xFFFFFFFFu;
 	UNCACHED(&b->limit)->value = 0xFFFFFFFFu;
