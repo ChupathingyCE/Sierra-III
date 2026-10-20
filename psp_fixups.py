@@ -26050,6 +26050,62 @@ void rasterizer_model_transparent_geometry_submit(
 # product) draws the shader's first other map once more over the same
 # triangles, with that map's own scale and animation, blended as the shader
 # blends, at GENERIC_NOISE_LEVEL of its strength and untinted
+# "lightdump" (a look instrument): on a screenshot's frame, each dynamic
+# light the level's light pass takes: its tag, colour, radius, place and
+# cone. A light's colour comes from its tag's functions and its object's
+# change colours, so a frame lit in a colour the original doesn't show is
+# traced to the light that brings it
+FIXES_MODELS["source/interface/hud_draw.c#lightname"] = [
+("""		if (tag_get(0x73686472, tag_index) == shader)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+#endif
+""",
+ """		if (tag_get(0x73686472, tag_index) == shader)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+
+/* the light tag whose definition this is, or NULL ("lightdump") */
+char const *psp_light_tag_name(void const *definition)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, 0x6C696768 /* ligh */);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		if (tag_get(0x6C696768, tag_index) == definition)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+#endif
+"""),
+]
+FIXES_MODELS["source/rasterizer/rasterizer.c#lightdump"] = [
+("""				psp_ge_light_begin(&light->position.x, &light->forward.i, &light->color.red, light->radius,""",
+ """				extern volatile int psp_screenshot_requested;
+
+				if (psp_screenshot_requested && PSP_KEEP_ONCE("lightdump"))
+				{
+					extern char const *psp_light_tag_name(void const *definition);
+					char const *name = definition ? psp_light_tag_name(definition) : NULL;
+
+					platform_log("lightdump: light %ld of %ld %s colour %.3f %.3f %.3f radius %.2f at %.2f %.2f %.2f facing %.2f %.2f %.2f cone %.3f %.3f",
+						light_index, rasterizer_lights.light_count, name ? name : "(no tag)",
+						light->color.red, light->color.green, light->color.blue, light->radius,
+						light->position.x, light->position.y, light->position.z,
+						light->forward.i, light->forward.j, light->forward.k,
+						definition ? *(float const *)(definition + 28) : -1.0f,
+						definition ? *(float const *)(definition + 32) : -1.0f);
+				}
+				psp_ge_light_begin(&light->position.x, &light->forward.i, &light->color.red, light->radius,"""),
+]
+
 FIXES_MODELS["source/rasterizer/rasterizer.c#genericnoise"] = [
 ("""static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,""",
  """/* the map psp_transparent_map draws in place of the bake's choice, counted
