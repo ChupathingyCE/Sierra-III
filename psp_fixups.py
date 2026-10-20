@@ -3979,6 +3979,7 @@ FIXES_22 = {
  """#ifdef HALO_PSP
 int psp_ge_active(void);
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
+void psp_dynamic_vertices_release(long dynamic_vertex_buffer_index); /* psp_fixups.py */
 #endif
 
 void build_sprites_end(
@@ -4002,6 +4003,24 @@ void build_sprites_end(
 #endif
 			rasterizer_dynamic_vertices_unlock(group->vertex_buffer_index);
 			if (TEST_FLAG(data->flags, _build_sprites_screen_space_bit))"""),
+# the groups' vertices given back once the GE layer has copied them, last
+# first (each is the top of the stack only once those after it are gone)
+("""	SET_FLAG(data->flags, _build_sprites_valid_bit, FALSE);
+	return;
+}
+
+void build_sprite_prepare_for_window(void)""",
+ """#ifdef HALO_PSP
+	if (psp_ge_active() && !TEST_FLAG(data->flags, _build_sprites_screen_space_bit))
+		for (group_index = data->group_count - 1; group_index >= 0; group_index--)
+			if (data->groups[group_index].vertices)
+				psp_dynamic_vertices_release(data->groups[group_index].vertex_buffer_index);
+#endif
+	SET_FLAG(data->flags, _build_sprites_valid_bit, FALSE);
+	return;
+}
+
+void build_sprite_prepare_for_window(void)"""),
 ],
 }
 
@@ -4716,6 +4735,26 @@ format before (psp_state_read reads either) */
 #define PSP_STATE_RAW_ABOVE ((PSP_STATE_PAGE - PSP_STATE_PAGE_WORDS / 8) / 4) /* 992 words: past this, raw */
 #define PSP_STATE_STAGE 32768
 static unsigned long psp_state_words_header[PSP_STATE_WORDS_HEADER / 4];
+static byte psp_state_stage_reserved[PSP_STATE_STAGE + 63] __attribute__((aligned(64)));
+int psp_keep(const char *name);
+
+/* each write's time, so a slow checkpoint can be told apart from a slow
+stick: on the PSP-1000 most checkpoints write at the stick's ~6 MB/s, but
+some one 32 KB write takes 0.8 s (the screenshots' and the log's writes
+show the same spikes) */
+static unsigned long psp_state_writes = 0, psp_state_write_worst_us = 0;
+
+static int psp_state_write_timed(HANDLE handle, void const *bytes, unsigned long size, unsigned long *written)
+{
+	unsigned long start = psp_microseconds(), took;
+	int ok = WriteFile(handle, bytes, size, written, NULL) ? 1 : 0;
+
+	took = psp_microseconds() - start;
+	psp_state_writes++;
+	if (took > psp_state_write_worst_us)
+		psp_state_write_worst_us = took;
+	return ok;
+}
 
 static unsigned long psp_state_entry_bytes(unsigned short count)
 {
@@ -4737,9 +4776,19 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 
 	if (size % PSP_STATE_PAGE || 16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER)
 		return FALSE;
-	/* build 117: the stage 64-byte aligned (an independent review: b115's
-	fast path wrote straight from the game state's aligned buffer) */
-	stage_block = (byte *)malloc(PSP_STATE_STAGE + 63);
+	/* the stage 64-byte aligned (an independent review: b115's fast path
+	wrote straight from the game state's aligned buffer). It is reserved for
+	the whole run: taken from the heap at each checkpoint, it failed whenever
+	the heap was tight (a fragmented heap late in a long level), and the
+	checkpoint fell back to the page format, 2 MB written whole, 1.1-1.2 s.
+	"statestagemalloc": from the heap at each checkpoint, as before */
+	{
+		static int from_heap = -1;
+
+		if (from_heap < 0)
+			from_heap = psp_keep("statestagemalloc");
+		stage_block = from_heap ? (byte *)malloc(PSP_STATE_STAGE + 63) : psp_state_stage_reserved;
+	}
 	if (!stage_block)
 		return FALSE;
 	stage = (byte *)(((unsigned long)stage_block + 63) & ~63UL);
@@ -4765,8 +4814,9 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 	header[1] = size;
 	header[2] = pages;
 	header[3] = stream;
+	psp_state_writes = psp_state_write_worst_us = 0;
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
-		!WriteFile(handle, header, PSP_STATE_WORDS_HEADER, &written, NULL) || written != PSP_STATE_WORDS_HEADER)
+		!psp_state_write_timed(handle, header, PSP_STATE_WORDS_HEADER, &written) || written != PSP_STATE_WORDS_HEADER)
 		ok = FALSE;
 	for (page = 0; ok && page < pages; page++)
 	{
@@ -4786,7 +4836,7 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 			it for the next one is [U]) */
 			unsigned long whole = used & ~(unsigned long)(PSP_STATE_PAGE - 1);
 
-			ok = WriteFile(handle, stage, whole, &written, NULL) && written == whole;
+			ok = psp_state_write_timed(handle, stage, whole, &written) && written == whole;
 			if (!ok)
 				break;
 			memmove(stage, stage + whole, used - whole);
@@ -4811,13 +4861,168 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 		used += bytes;
 	}
 	if (ok && used)
-		ok = WriteFile(handle, stage, used, &written, NULL) && written == used;
-	free(stage_block);
+		ok = psp_state_write_timed(handle, stage, used, &written) && written == used;
+	if (stage_block != psp_state_stage_reserved)
+		free(stage_block);
 	if (ok)
-		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms",
+		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms (%lu writes, the slowest %lu ms)",
 			kept, pages, (PSP_STATE_WORDS_HEADER + stream) / 1024, kept * PSP_STATE_PAGE / 1024,
-			(psp_microseconds() - start) / 1000);
+			(psp_microseconds() - start) / 1000, psp_state_writes, psp_state_write_worst_us / 1000);
 	return ok;
+}
+
+/* "statedelta" (opt-in, for a PSP A/B): each page at a fixed place in the
+file (4 KB of header, then page n at 4 KB + n * 4 KB), and a checkpoint
+writes only the pages that changed since the last one, straight from the
+game state (no stage). Between b30's checkpoints 20-60% of the kept pages
+change, so it writes 0.4-1.2 MB where the compact format writes 1.3-1.5 MB;
+the stick's 0.8 s spikes come about once every few MB written, so fewer
+bytes should mean fewer of them [U]. A page is "changed" when its 64-bit
+hash (two lanes: FNV-1a and a rotate-add) differs from the one it had when
+written; the hashes describe the file, so they are forgotten whenever the
+file is opened or a write fails, and the next checkpoint writes every page.
+Runs of pages to write are joined across gaps of up to PSP_STATE_DELTA_GAP
+pages (an unchanged page is rewritten rather than paying a seek and a write
+call). The header goes last, with the map of non-empty pages */
+#define PSP_STATE_SIGNATURE_DELTA 0x44535350 /* 'PSSD' */
+#define PSP_STATE_DELTA_HEADER 4096
+#define PSP_STATE_DELTA_PAGES 1024
+#define PSP_STATE_DELTA_GAP 3
+static unsigned long psp_state_delta_hash[PSP_STATE_DELTA_PAGES][2];
+static unsigned char psp_state_delta_dirty[PSP_STATE_DELTA_PAGES / 8];
+static int psp_state_delta_valid = 0;
+
+void psp_state_file_opened(void)
+{
+	psp_state_delta_valid = 0;
+}
+
+static boolean psp_state_write_delta(HANDLE handle, byte const *buffer, unsigned long size)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, changed = 0, bytes = 0;
+	unsigned long start = psp_microseconds(), scan_us;
+	byte *map = (byte *)&header[4];
+	boolean ok = TRUE;
+
+	if (size % PSP_STATE_PAGE || pages > PSP_STATE_DELTA_PAGES || 16 + PSP_STATE_MAP_BYTES(pages) > PSP_STATE_DELTA_HEADER)
+		return FALSE;
+	csmemset(header, 0, PSP_STATE_DELTA_HEADER);
+	csmemset(psp_state_delta_dirty, 0, sizeof(psp_state_delta_dirty));
+	for (page = 0; page < pages; page++)
+	{
+		unsigned long const *words = (unsigned long const *)(buffer + page * PSP_STATE_PAGE);
+		unsigned long fnv = 0x811C9DC5UL, rot = 0x9E3779B9UL, any = 0;
+		long w;
+
+		for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
+		{
+			unsigned long word = words[w];
+
+			any |= word;
+			fnv = (fnv ^ word) * 16777619UL;
+			rot = ((rot << 7) | (rot >> 25)) + word;
+		}
+		if (!any)
+			fnv = rot = 0; /* an empty page: nothing to write, and its hash says so */
+		else
+		{
+			map[page >> 3] |= 1 << (page & 7);
+			kept++;
+		}
+		if (!psp_state_delta_valid || psp_state_delta_hash[page][0] != fnv || psp_state_delta_hash[page][1] != rot)
+		{
+			psp_state_delta_hash[page][0] = fnv;
+			psp_state_delta_hash[page][1] = rot;
+			if (any)
+			{
+				psp_state_delta_dirty[page >> 3] |= 1 << (page & 7);
+				changed++;
+			}
+		}
+	}
+	scan_us = psp_microseconds() - start;
+	header[0] = PSP_STATE_SIGNATURE_DELTA;
+	header[1] = size;
+	header[2] = pages;
+	psp_state_writes = psp_state_write_worst_us = 0;
+	for (page = 0; ok && page < pages; )
+	{
+		unsigned long last, end, gap;
+
+		if (!(psp_state_delta_dirty[page >> 3] & (1 << (page & 7))))
+		{
+			page++;
+			continue;
+		}
+		/* the run: from this page to the last dirty one reachable across
+		gaps of at most PSP_STATE_DELTA_GAP clean pages */
+		last = page;
+		for (end = page + 1, gap = 0; end < pages && gap <= PSP_STATE_DELTA_GAP; end++)
+		{
+			if (psp_state_delta_dirty[end >> 3] & (1 << (end & 7)))
+			{
+				last = end;
+				gap = 0;
+			}
+			else
+				gap++;
+		}
+		end = last + 1;
+		if (SetFilePointer(handle, PSP_STATE_DELTA_HEADER + page * PSP_STATE_PAGE, NULL, FILE_BEGIN) ==
+				INVALID_SET_FILE_POINTER ||
+			!psp_state_write_timed(handle, buffer + page * PSP_STATE_PAGE, (end - page) * PSP_STATE_PAGE, &written) ||
+			written != (end - page) * PSP_STATE_PAGE)
+			ok = FALSE;
+		bytes += (end - page) * PSP_STATE_PAGE;
+		page = end;
+	}
+	if (ok && (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+		!psp_state_write_timed(handle, header, PSP_STATE_DELTA_HEADER, &written) || written != PSP_STATE_DELTA_HEADER))
+		ok = FALSE;
+	if (!ok)
+	{
+		psp_state_delta_valid = 0;
+		return FALSE;
+	}
+	platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu changed (%s), %lu KB written in %lu ms (scan %lu ms; %lu writes, the slowest %lu ms) [statedelta]",
+		kept, pages, changed, psp_state_delta_valid ? "since the last checkpoint" : "every page: the first since the file opened",
+		(bytes + PSP_STATE_DELTA_HEADER) / 1024, (psp_microseconds() - start) / 1000, scan_us / 1000, psp_state_writes,
+		psp_state_write_worst_us / 1000);
+	psp_state_delta_valid = 1;
+	return TRUE;
+}
+
+/* the delta format's pages: each run of kept pages read from its own place */
+static boolean psp_state_read_delta(HANDLE handle, byte *buffer, unsigned long size, unsigned long const *first)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, read;
+	byte const *map = (byte const *)&header[4];
+
+	if (pages > PSP_STATE_DELTA_PAGES || 16 + PSP_STATE_MAP_BYTES(pages) > PSP_STATE_HEADER)
+		return FALSE;
+	csmemcpy(header, first, PSP_STATE_HEADER);
+	for (page = 0; page < pages; )
+	{
+		unsigned long run = 0;
+
+		if (!(map[page >> 3] & (1 << (page & 7))))
+		{
+			csmemset(buffer + page * PSP_STATE_PAGE, 0, PSP_STATE_PAGE);
+			page++;
+			continue;
+		}
+		while (page + run < pages && (map[(page + run) >> 3] & (1 << ((page + run) & 7))))
+			run++;
+		if (SetFilePointer(handle, PSP_STATE_DELTA_HEADER + page * PSP_STATE_PAGE, NULL, FILE_BEGIN) ==
+				INVALID_SET_FILE_POINTER ||
+			!ReadFile(handle, buffer + page * PSP_STATE_PAGE, run * PSP_STATE_PAGE, &read, NULL) ||
+			read != run * PSP_STATE_PAGE)
+			return FALSE;
+		page += run;
+	}
+	return TRUE;
 }
 
 /* header: signature, size, page count, then one bit per page */
@@ -4830,6 +5035,17 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
 	psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+	{
+		static int delta = -1;
+
+		if (delta < 0)
+			delta = psp_keep("statedelta");
+		if (delta && psp_state_write_delta(handle, buffer, size))
+		{
+			psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+			return TRUE;
+		}
+	}
 	{
 		/* build 116 (R10): the compact format, unless "statepages" (or it
 		can't: no room for its staging buffer); the pages as before then */
@@ -4989,6 +5205,8 @@ static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
 		return FALSE;
 	if (header[0] == PSP_STATE_SIGNATURE_WORDS)
 		return psp_state_read_words(handle, buffer, size, header);
+	if (header[0] == PSP_STATE_SIGNATURE_DELTA)
+		return psp_state_read_delta(handle, buffer, size, header);
 	if (header[0] != PSP_STATE_SIGNATURE)
 		return FALSE;
 	csmemset(buffer, 0, size);
@@ -5060,6 +5278,16 @@ boolean game_state_write_to_file(
 			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
 		bytes_read == xbox_game_state_globals.buffer_size &&
 		game_state_image_accept(image, xbox_game_state_globals.buffer_size))
+#endif"""),
+# statedelta's page hashes describe the file: a file opened anew is unknown
+("""		xbox_game_state_globals.file_open = TRUE;""",
+ """		xbox_game_state_globals.file_open = TRUE;
+#ifdef HALO_PSP
+		{
+			void psp_state_file_opened(void);
+
+			psp_state_file_opened();
+		}
 #endif"""),
 ]
 
@@ -5871,6 +6099,7 @@ FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#highwater"] =
 peak kept for the heartbeat (psp_platform.c) */
 static long psp_dynamic_vertex_peak[NUMBER_OF_RASTERIZER_VERTEX_TYPES], psp_dynamic_triangle_peak = 0,
 	psp_dynamic_buffer_peak[2];
+static unsigned long psp_dynamic_released = 0, psp_dynamic_released_vertices = 0; /* psp_dynamic_vertices_release */
 
 void psp_dynamic_geometry_report(void)
 {
@@ -5888,11 +6117,85 @@ void psp_dynamic_geometry_report(void)
 			vertex_type, psp_dynamic_vertex_peak[vertex_type], dynamic_vertices.groups[vertex_type].total_vertex_count,
 			psp_dynamic_vertex_peak[vertex_type] * size / 1024, dynamic_vertices.groups[vertex_type].total_vertex_count * size / 1024);
 	}
-	platform_psp_log("dynamic geometry, frame peaks:%s triangles %ld of %d (%ld of %d KB); buffers %ld and %ld of %d and %d",
+	platform_psp_log("dynamic geometry, frame peaks:%s triangles %ld of %d (%ld of %d KB); buffers %ld and %ld of %d and %d; given back once copied %lu groups (%lu vertices)",
 		line, psp_dynamic_triangle_peak, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES,
 		psp_dynamic_triangle_peak * 6 / 1024, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES * 6 / 1024,
 		psp_dynamic_buffer_peak[0], psp_dynamic_buffer_peak[1], RASTERIZER_MAXIMUM_DYNAMIC_VERTEX_BUFFERS,
-		RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS);
+		RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS, psp_dynamic_released, psp_dynamic_released_vertices);
+}
+#endif
+
+#ifdef HALO_PSP
+/* The dynamic vertices of a sprite group or a contrail are given back once
+the GE layer has copied them into its display list (build_sprites_end and
+render_contrail, psp_fixups.py): the buffer is a stack per vertex type, so a
+group that is the top of its stack pops off it. On the Xbox the GPU reads
+them later in the frame, so every group of the frame held its room to the
+end, each at its definition's most sprites: a30's and b30's fights filled
+all 4,096 vertices (1,024 sprites) and later sprites and contrails weren't
+drawn ("build_sprite failed to allocate dynamic vertices"). Exact: the same
+vertices are copied either way. "dynamickeep": held to the frame's end */
+int psp_keep(const char *name);
+
+void psp_dynamic_vertices_release(
+	long dynamic_vertex_buffer_index)
+{
+	static int keep = -1;
+	struct dynamic_vertex_buffer *buffer;
+	struct dynamic_vertex_group *group;
+
+	if (dynamic_vertex_buffer_index == NONE || dynamic_vertex_buffer_index < 0 ||
+		dynamic_vertex_buffer_index >= dynamic_vertices.buffer_count)
+		return;
+	if (keep < 0)
+		keep = psp_keep("dynamickeep");
+	if (keep)
+		return;
+	buffer = &dynamic_vertices.buffers[dynamic_vertex_buffer_index];
+	if (buffer->type < 0 || buffer->type >= NUMBER_OF_RASTERIZER_VERTEX_TYPES)
+		return;
+	group = &dynamic_vertices.groups[buffer->type];
+	/* the frame's peak is what the stack reached, not where it ends */
+	if (group->vertex_count > psp_dynamic_vertex_peak[buffer->type])
+		psp_dynamic_vertex_peak[buffer->type] = group->vertex_count;
+	if (dynamic_vertices.buffer_count > psp_dynamic_buffer_peak[0])
+		psp_dynamic_buffer_peak[0] = dynamic_vertices.buffer_count;
+	if (buffer->vertex_count <= 0 || buffer->vertex_start_index + buffer->vertex_count != group->vertex_count)
+		return;
+	group->vertex_count = buffer->vertex_start_index;
+	psp_dynamic_released++;
+	psp_dynamic_released_vertices += buffer->vertex_count;
+	buffer->vertex_count = 0;
+	if (dynamic_vertex_buffer_index == dynamic_vertices.buffer_count - 1)
+		dynamic_vertices.buffer_count--;
+}
+
+/* the same for a contrail's triangles, which the GE layer never reads (it
+draws the strip from the corners alone) */
+void psp_dynamic_triangles_release(
+	long dynamic_triangle_buffer_index)
+{
+	static int keep = -1;
+	struct dynamic_triangle_buffer *buffer;
+
+	if (dynamic_triangle_buffer_index == NONE || dynamic_triangle_buffer_index < 0 ||
+		dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count)
+		return;
+	if (keep < 0)
+		keep = psp_keep("dynamickeep");
+	if (keep)
+		return;
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (dynamic_triangles.triangle_count > psp_dynamic_triangle_peak)
+		psp_dynamic_triangle_peak = dynamic_triangles.triangle_count;
+	if (dynamic_triangles.buffer_count > psp_dynamic_buffer_peak[1])
+		psp_dynamic_buffer_peak[1] = dynamic_triangles.buffer_count;
+	if (buffer->triangle_count <= 0 || buffer->triangle_start_index + buffer->triangle_count != dynamic_triangles.triangle_count)
+		return;
+	dynamic_triangles.triangle_count = buffer->triangle_start_index;
+	buffer->triangle_count = 0;
+	if (dynamic_triangle_buffer_index == dynamic_triangles.buffer_count - 1)
+		dynamic_triangles.buffer_count--;
 }
 #endif
 
@@ -6917,6 +7220,154 @@ particle definition, the top ones logged with the particles line */
 static struct { long definition_index; unsigned long made, physics, us; } psp_particle_kinds[PSP_PARTICLE_KINDS];
 unsigned long psp_slip_effects = 0; /* vehicles.c's create_slipping_effects (psp_fixups.py) */
 char *tag_get_name(long tag_index);
+/* "particlecensus": which effects make the most particles in a fight,
+and which the budget and the burst thinning leave out (the ranks of what
+to keep are set from it). Per particle definition, over each 30 s: free
+particles made, refused over the budget and left out thinning; attached
+ones made (never refused). Contrails (made, and failed for room) and
+effects that failed for room are counted with them (contrails.c,
+effects.c) */
+#define PSP_CENSUS_KINDS 64
+struct psp_census_kind { long definition_index; unsigned long made, refused, thinned, attached; };
+static struct psp_census_kind psp_census[PSP_CENSUS_KINDS];
+static unsigned long psp_census_lost = 0;
+unsigned long psp_census_contrails_made = 0, psp_census_contrails_failed = 0, psp_census_effects_failed = 0;
+int psp_census_on = -1;
+
+static struct psp_census_kind *psp_census_kind(long definition_index)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 26, n;
+
+	for (n = 0; n < PSP_CENSUS_KINDS; n++, k = (k + 1) % PSP_CENSUS_KINDS)
+	{
+		if (psp_census[k].definition_index == definition_index &&
+			(psp_census[k].made | psp_census[k].refused | psp_census[k].thinned | psp_census[k].attached))
+			return &psp_census[k];
+		if (!(psp_census[k].made | psp_census[k].refused | psp_census[k].thinned | psp_census[k].attached))
+		{
+			psp_census[k].definition_index = definition_index;
+			return &psp_census[k];
+		}
+	}
+	psp_census_lost++;
+	return NULL;
+}
+
+#define PSP_CENSUS(definition, field) \
+	do { if (psp_census_on > 0) { struct psp_census_kind *psp_c = psp_census_kind(definition); if (psp_c) psp_c->field++; } } while (0)
+
+static void psp_census_report(void)
+{
+	char line[1024];
+	int length, shown, k;
+	unsigned long made = 0, refused = 0, thinned = 0, attached = 0;
+
+	for (k = 0; k < PSP_CENSUS_KINDS; k++)
+	{
+		made += psp_census[k].made;
+		refused += psp_census[k].refused;
+		thinned += psp_census[k].thinned;
+		attached += psp_census[k].attached;
+	}
+	platform_psp_log("particle census over 30 s: free %lu made, %lu refused over the budget, %lu left out thinning; attached %lu made; contrails %lu made, %lu failed for room; effects failed for room %lu; kinds past the table %lu",
+		made, refused, thinned, attached, psp_census_contrails_made, psp_census_contrails_failed, psp_census_effects_failed,
+		psp_census_lost);
+	/* the kinds by what was asked for (made, refused and thinned), most first */
+	length = snprintf(line, sizeof(line), "particle census by kind (free made, refused, thinned; attached made):");
+	for (shown = 0; shown < 16; shown++)
+	{
+		int best = -1;
+		unsigned long best_total = 0;
+
+		for (k = 0; k < PSP_CENSUS_KINDS; k++)
+		{
+			unsigned long total = psp_census[k].made + psp_census[k].refused + psp_census[k].thinned + psp_census[k].attached;
+
+			if (total && total > best_total)
+			{
+				best = k;
+				best_total = total;
+			}
+		}
+		if (best < 0 || length > (int)sizeof(line) - 128)
+			break;
+		{
+			const char *name = tag_get_name(psp_census[best].definition_index);
+			const char *slash = name ? strrchr(name, '\\\\') : NULL;
+
+			length += snprintf(line + length, sizeof(line) - length, " %s %lu %lu %lu %lu;",
+				slash ? slash + 1 : name ? name : "?", psp_census[best].made, psp_census[best].refused,
+				psp_census[best].thinned, psp_census[best].attached);
+		}
+		psp_census[best].made = psp_census[best].refused = psp_census[best].thinned = psp_census[best].attached = 0;
+	}
+	platform_psp_log("%s", line);
+	memset(psp_census, 0, sizeof(psp_census));
+	psp_census_lost = psp_census_contrails_made = psp_census_contrails_failed = psp_census_effects_failed = 0;
+}
+
+/* "particleranks": which free particles the budget and the burst thinning
+give up first, by the definition's tag path (worked out once a definition).
+ 1: a slow projectile's own visuals (plasma, needles, the fuel rod, rockets,
+    grenades): never refused or thinned;
+ 2: tracers: never refused, thinned only by their own rule (one in N);
+ 3: the rest (impacts, sparks, flashes, blood): the budget and thinning as
+    before, and past three quarters of the budget only those within
+    PSP_RANK3_NEAR world units of the eye (nearest first);
+ 4: smoke, debris, dust and ambient effects: thinned from PSP_RANK4_THIN
+    free particles and refused at PSP_RANK4_BUDGET, so they give way first.
+The budget's count still includes ranks 1 and 2, so a fight full of them
+leaves less room for 3 and 4 */
+#include "camera/observer.h"
+#define PSP_RANK_SLOTS 128
+#define PSP_RANK3_NEAR 10.0f
+#define PSP_RANK4_THIN 48
+#define PSP_RANK4_BUDGET 192
+static struct { long definition_index; unsigned char rank, keep_one_in; unsigned short count; } psp_ranks[PSP_RANK_SLOTS];
+static int psp_ranks_on = -1;
+static const struct { const char *part; unsigned char rank, keep_one_in; } psp_rank_rules[] = {
+	{ "tracer", 2, 1 },
+	{ "grenade", 1, 1 }, { "needle", 1, 1 }, { "fuel rod", 1, 1 }, { "rocket", 1, 1 },
+	{ "projectile", 1, 1 }, { "bolt", 1, 1 },
+	{ "smoke", 4, 1 }, { "debris", 4, 1 }, { "dust", 4, 1 }, { "smolder", 4, 1 }, { "drifting", 4, 1 },
+	{ "lingering", 4, 1 }, { "ambient", 4, 1 }, { "gravel", 4, 1 }, { "chips", 4, 1 }, { "casing", 4, 1 },
+	{ "spray", 4, 1 }, { "steam", 4, 1 }, { "flame", 4, 1 },
+};
+
+static int psp_particle_rank(long definition_index, int *keep_one_in)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 25, n;
+
+	for (n = 0; n < PSP_RANK_SLOTS; n++, k = (k + 1) % PSP_RANK_SLOTS)
+	{
+		if (psp_ranks[k].rank && psp_ranks[k].definition_index == definition_index)
+			break;
+		if (!psp_ranks[k].rank)
+		{
+			const char *name = tag_get_name(definition_index);
+			unsigned int r;
+
+			psp_ranks[k].definition_index = definition_index;
+			psp_ranks[k].rank = 3;
+			psp_ranks[k].keep_one_in = 1;
+			for (r = 0; name && r < sizeof(psp_rank_rules) / sizeof(psp_rank_rules[0]); r++)
+				if (strstr(name, psp_rank_rules[r].part))
+				{
+					psp_ranks[k].rank = psp_rank_rules[r].rank;
+					psp_ranks[k].keep_one_in = psp_rank_rules[r].keep_one_in;
+					break;
+				}
+			break;
+		}
+	}
+	if (n == PSP_RANK_SLOTS)
+		return 3;
+	*keep_one_in = psp_ranks[k].keep_one_in;
+	if (psp_ranks[k].keep_one_in > 1 && ++psp_ranks[k].count % psp_ranks[k].keep_one_in)
+		*keep_one_in = 0; /* this one is left out */
+	return psp_ranks[k].rank;
+}
+
 static int psp_particle_kind(long definition_index)
 {
 	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 27, n;
@@ -6947,26 +7398,58 @@ void particle_new(
 
 	particle->flags = 0;""",
  """#ifdef HALO_PSP
+	if (psp_census_on < 0)
+		psp_census_on = psp_keep("particlecensus");
 	if (data->object_index == NONE)
 	{
+		int psp_rank = 3, psp_keep_this = 1;
+		long psp_budget, psp_thin_from;
+
 		if (psp_particle_budget < 0)
 			psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
-		if (psp_free_particles >= psp_particle_budget)
+		if (psp_ranks_on < 0)
+			psp_ranks_on = psp_keep("particleranks");
+		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF)
+			psp_rank = psp_particle_rank(data->definition_index, &psp_keep_this);
+		if (psp_rank == 2 && !psp_keep_this)
+		{
+			psp_particles_thinned++;
+			PSP_CENSUS(data->definition_index, thinned);
+			return;
+		}
+		psp_budget = psp_rank == 4 ? PSP_RANK4_BUDGET : psp_particle_budget;
+		psp_thin_from = psp_rank == 4 ? PSP_RANK4_THIN : 96;
+		if (psp_rank >= 3 && psp_free_particles >= psp_budget)
 		{
 			psp_particles_refused++;
+			PSP_CENSUS(data->definition_index, refused);
 			return;
+		}
+		if (psp_rank == 3 && psp_ranks_on > 0 && psp_free_particles >= psp_budget * 3 / 4)
+		{
+			struct observer_result const *psp_eye = observer_get_camera(0);
+			real psp_dx = data->position.x - psp_eye->position.x, psp_dy = data->position.y - psp_eye->position.y,
+				psp_dz = data->position.z - psp_eye->position.z;
+
+			if (psp_dx * psp_dx + psp_dy * psp_dy + psp_dz * psp_dz > PSP_RANK3_NEAR * PSP_RANK3_NEAR)
+			{
+				psp_particles_refused++;
+				PSP_CENSUS(data->definition_index, refused);
+				return;
+			}
 		}
 		/* build 41: past 96 in flight, every second new one is left out,
 		past 160 two of three: a big burst (the tank shell's) comes out
 		thinner but on time, where the budget alone took it whole and then
 		refused everything after (dense, and a big cut in frames) */
-		if (psp_particle_budget != 0x7FFF && psp_free_particles >= 96)
+		if (psp_rank >= 3 && psp_particle_budget != 0x7FFF && psp_free_particles >= psp_thin_from)
 		{
 			static unsigned long psp_thin = 0;
 
-			if (++psp_thin % (psp_free_particles >= 160 ? 3 : 2))
+			if (++psp_thin % (psp_free_particles >= psp_thin_from + 64 ? 3 : 2))
 			{
 				psp_particles_thinned++;
+				PSP_CENSUS(data->definition_index, thinned);
 				return;
 			}
 		}
@@ -6980,7 +7463,12 @@ void particle_new(
 	/* counted at once, so one frame's burst meets the budget too (the
 	count was only last frame's) */
 	if (data->object_index == NONE)
+	{
 		psp_free_particles++;
+		PSP_CENSUS(data->definition_index, made);
+	}
+	else
+		PSP_CENSUS(data->definition_index, attached);
 	{
 		int psp_kind = psp_particle_kind(data->definition_index);
 
@@ -7149,12 +7637,60 @@ void particle_new(
 			}
 			platform_psp_log("%s", line);
 			memset(psp_particle_kinds, 0, sizeof(psp_particle_kinds));
+			if (psp_census_on > 0)
+				psp_census_report();
 		}
 		}
 	}
 #endif
 	profile_exit(particles_update_section);
 """),
+]
+
+# particlecensus (particles.c above): contrails made and failed for room,
+# and effects that failed for room, counted with the particles
+FIXES_36["source/effects/contrails.c#census"] = [
+("""		contrail_index = datum_new(contrail_data);
+		if (contrail_index != NONE)
+		{""",
+ """		contrail_index = datum_new(contrail_data);
+#ifdef HALO_PSP
+		{
+			extern int psp_census_on;
+			extern unsigned long psp_census_contrails_made, psp_census_contrails_failed;
+
+			if (psp_census_on > 0)
+			{
+				if (contrail_index != NONE)
+					psp_census_contrails_made++;
+				else
+					psp_census_contrails_failed++;
+			}
+		}
+#endif
+		if (contrail_index != NONE)
+		{"""),
+]
+FIXES_36["source/effects/effects.c#census"] = [
+("""			if (effect_index != NONE)
+			{
+				struct effect_datum *effect = effect_get(effect_index);
+
+				effect->definition_index = definition_index;""",
+ """#ifdef HALO_PSP
+			{
+				extern int psp_census_on;
+				extern unsigned long psp_census_effects_failed;
+
+				if (effect_index == NONE && psp_census_on > 0)
+					psp_census_effects_failed++;
+			}
+#endif
+			if (effect_index != NONE)
+			{
+				struct effect_datum *effect = effect_get(effect_index);
+
+				effect->definition_index = definition_index;"""),
 ]
 
 # build 68: object lighting reads three of a material's vertices for their
@@ -12985,10 +13521,12 @@ FIXES_113["source/render/render_objects.c#renderstates"] = [
 ]
 
 
-# build 113: contrails, the Covenant weapons' tracers (b113_candidates.md #1;
-# keep word "contrails"): the strip render_contrail builds goes to the GE's
-# see-through draws (psp_ge.c, psp_ge_contrail) instead of the
-# transparent-geometry groups the PSP never draws. Without the word, as before
+# build 113: contrails, the weapons' tracers (b113_candidates.md #1): the
+# strip render_contrail builds goes to the GE's see-through draws (psp_ge.c,
+# psp_ge_contrail) instead of the transparent-geometry groups the PSP never
+# draws. Off by default: in a firefight they cost about 1.2 ms a frame in
+# the emulator [E] (7%), more than the quality-only rule for b139 allows;
+# keep word "contrails": drawn (the tracers' restoration, H28)
 FIXES_113["source/render/render_contrails.c#contrails"] = [
 ("""static void render_contrail(
 	struct contrail_datum *contrail,
@@ -13000,6 +13538,8 @@ FIXES_113["source/render/render_contrails.c#contrails"] = [
 int psp_keep(const char *name);
 int psp_ge_active(void);
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend); /* psp_ge.c */
+void psp_dynamic_vertices_release(long dynamic_vertex_buffer_index); /* psp_fixups.py */
+void psp_dynamic_triangles_release(long dynamic_triangle_buffer_index);
 #endif
 
 static void render_contrail(
@@ -13015,6 +13555,9 @@ static void render_contrail(
 			{
 				static int psp_contrails = -1;
 
+				/* the tracers of the Covenant weapons and the rifles are
+				contrails, so without them most fire shows none; "contrails"
+				draws them (off by default for what they cost in a fight) */
 				if (psp_contrails < 0)
 					psp_contrails = psp_keep("contrails");
 				if (psp_contrails && psp_ge_active())
@@ -13027,6 +13570,8 @@ static void render_contrail(
 					rasterizer_dynamic_vertices_unlock(vertex_buffer_index);
 					rasterizer_dynamic_triangles_delete(triangle_buffer_index);
 					rasterizer_dynamic_vertices_delete(vertex_buffer_index);
+					psp_dynamic_vertices_release(vertex_buffer_index);
+					psp_dynamic_triangles_release(triangle_buffer_index);
 					rasterizer_globals.current_lock_operation = _rasterizer_lock_none;
 					return;
 				}

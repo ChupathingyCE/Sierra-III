@@ -76,6 +76,19 @@ static int entry_count = 0;
 it was drawn in */
 static unsigned int *resident_at = NULL, *last_frame = NULL;
 static unsigned char *resident_in = NULL;
+/* the textures the HUD and the other screen-space draws use (the meters,
+the crosshair, the motion sensor, the text): kept as long as they're drawn
+within RECENT_FRAMES, whatever the frame's other textures need, and read past
+the frame's read budget when missing. The HUD draws last in a frame, so in
+the next frame's first pass its textures were last frame's, and when both
+caches were full of this frame's (a fight under load), the second pass
+evicted them; the HUD then lost parts until they were read again, and at
+low frame rates the budget was spent before the HUD's turn. 1: pinned.
+"hudpinoff": as before */
+static unsigned char *hud_pinned = NULL;
+static int hud_pin_on = -1;
+static unsigned long hud_misses = 0, hud_reads_past_budget = 0, hud_untextured = 0;
+int psp_tex_screen_pass = 0; /* psp_ge.c: set while the screen-space draws are made */
 /* build 44: binds per entry since the last report, to see which textures
 the GE samples most and whether those are the ones in VRAM (the GE reads
 VRAM about ten times faster than main memory: YAPSPD 11.7) */
@@ -168,6 +181,8 @@ void psp_tex_close(void)
 	free(resident_at);
 	free(last_frame);
 	free(resident_in);
+	free(hud_pinned);
+	hud_pinned = NULL;
 	free(averages);
 	averages = NULL;
 	averages_count = 0;
@@ -841,6 +856,7 @@ void psp_tex_map_opened(const char *name)
 	resident_at = calloc(header[1], sizeof(unsigned int));
 	last_frame = calloc(header[1], sizeof(unsigned int));
 	resident_in = calloc(header[1], 1);
+	hud_pinned = calloc(header[1], 1);
 	bind_counts = calloc(header[1], sizeof(unsigned short));
 	if (!ram_cache)
 		ram_cache_acquire();
@@ -1080,7 +1096,8 @@ static int find(unsigned int key)
 last `recent` frames (1: this frame only) */
 static int protected_at(int index, int which, unsigned int recent)
 {
-	return resident_at[index] && resident_in[index] == which && last_frame[index] + recent > frame;
+	return resident_at[index] && resident_in[index] == which &&
+		(last_frame[index] + recent > frame || (hud_pinned && hud_pinned[index] && last_frame[index] + RECENT_FRAMES > frame));
 }
 
 static unsigned int fits(int which, unsigned int start, unsigned int size, unsigned int recent)
@@ -1367,8 +1384,12 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	entry = &entries[index];
 	if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
 		return bind_standin(entry, has_alpha);
+	if (hud_pin_on < 0)
+		hud_pin_on = !psp_keep("hudpinoff");
 	if (!resident_at[index])
 	{
+		int screen = psp_tex_screen_pass, past_budget = screen && hud_pin_on > 0;
+
 		misses++;
 		if (PSP_ME_WORK())
 		{
@@ -1376,12 +1397,22 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 			frame_untextured = 1;
 			return 0;
 		}
-		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+		if (screen)
 		{
+			hud_misses++;
+			if (frame_loaded >= LOAD_BUDGET_BYTES && past_budget)
+				hud_reads_past_budget++;
+		}
+		if ((frame_loaded >= LOAD_BUDGET_BYTES && !past_budget) || !load(index))
+		{
+			if (screen)
+				hud_untextured++;
 			frame_untextured = 1;
 			return 0;
 		}
 	}
+	if (psp_tex_screen_pass && hud_pin_on > 0 && hud_pinned && !PSP_ME_WORK())
+		hud_pinned[index] = 1;
 	if (last_frame[index] != frame)
 	{
 		frame_set_bytes += alignment(entry->size);
@@ -1824,6 +1855,9 @@ void psp_tex_frame_end(void)
 		platform_log("textures: %lu loaded (%lu KB), %lu requests waited for the next frame, %lu for room; %lu evicted; largest frame %lu textures, %lu KB; %lu frames drew something untextured (longest run %lu)",
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
+	if (entries && frame % 300 == 0)
+		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured",
+			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured);
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
 	if (entries && frame % 300 == 0 && (wanted_total || wanted_dropped))

@@ -1604,6 +1604,12 @@ static void ge_kind(int kind)
 		kind_frame_bytes[ge_kind_now] += now - kind_mark;
 	kind_mark = now;
 	ge_kind_now = kind;
+	if (!PSP_ME_WORK())
+	{
+		extern int psp_tex_screen_pass; /* psp_tex.c: the HUD's textures pinned */
+
+		psp_tex_screen_pass = kind == KIND_HUD || kind == KIND_SCREEN;
+	}
 	if (!(kind_seen & (1u << kind)) && kind_order_length < KINDS)
 	{
 		kind_seen |= 1u << kind;
@@ -1621,6 +1627,12 @@ static void ge_kinds_frame_begin(void)
 	kind_seen = 0;
 	kind_order_length = 0;
 	ge_kind_now = KIND_OTHER;
+	if (!PSP_ME_WORK())
+	{
+		extern int psp_tex_screen_pass;
+
+		psp_tex_screen_pass = 0;
+	}
 	level_begun = 0;
 	if (level_reserve_on < 0)
 		level_reserve_on = !psp_keep("nolevelreserve");
@@ -11688,7 +11700,7 @@ int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_k
 	return result;
 }
 
-/* ---------- contrails (build 113, b113_candidates.md #1; keep word "contrails")
+/* ---------- contrails (b113_candidates.md #1; opt-in, "contrails" on)
 
 The trail behind a projectile (the plasma rifle's and pistol's bolts, the
 needler's needles): render_contrails.c builds a strip of quads along the
