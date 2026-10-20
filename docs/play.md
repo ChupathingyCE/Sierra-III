@@ -94,7 +94,7 @@ The bake turns your disc's maps into the files the PSP reads: each map rebuilt f
    | `[3/4] Baking the maps` | the long part, several maps at once, with the time left. Leave the window open |
    | `[4/4] Putting it together` | the game, its menu sound and the maps into `COPY-TO-MEMORY-STICK` |
 
-   It bakes the ten campaign levels and the menus (`ui`). **How long:** <!-- TODO(master): the campaign bake's time on b139's bundle --> **Disk:** it says how much it needs before it starts, and stops if the drive hasn't that much free (step 1).
+   It bakes the ten campaign levels and the menus (`ui`). **How long:** about 10 minutes on an 8-core PC, longer on fewer cores. <!-- TODO(master): confirm from b139's bake --> **Disk:** it says how much it needs before it starts, and stops if the drive hasn't that much free (step 1).
 
 **Check:** the window ends with
 
@@ -118,7 +118,7 @@ and `halo-psp-bake/COPY-TO-MEMORY-STICK` holds `PSP/GAME/halo/EBOOT.PBP`, `halo/
 
 `bake/README.md` (also in the bundle) has the rest: the command line, its options, and what's in the bundle.
 
-<!-- TODO(master): when go_live 3.4 lands, say what the game shows for a bake from another bundle ("re-bake with bundle N") -->
+If the maps on the stick were baked with another bundle, the game says so as it starts (**YOUR MAPS NEED BAKING AGAIN**, or **THESE MAPS ARE NEWER THAN THIS BUILD**) and names the bundle to use, instead of drawing them wrong. Bake again with this release's bundle.
 
 The output is game data made from your disc. Keep it on your own machines.
 
@@ -165,7 +165,7 @@ prints `the build is on the stick` and lists the three files. On Windows, check 
 
 ## 6. First launch
 
-1. On the PSP, open **Game → Memory Stick** and start **Sierra-III: Halo CE port** (the game's name in the list, beside the Sierra-III tile). <!-- TODO(master): if the release sets PSP_TITLE, put its name here -->
+1. On the PSP, open **Game → Memory Stick** and start **Sierra-III: Halo CE port** (the game's name in the list, beside the Sierra-III tile).
 2. **The start-up.** The game shows a loading screen with a thin progress bar while it starts, then its menus. For the first 3 seconds the screen also says `Hold L as the game starts for the development menu` (the launch menu, below). <!-- TODO(master): the time from the XMB to the main menu on b139 (its hand test) --> The first launch of a new build takes a few seconds longer (the saved-game check).
 3. **The main menu** is Halo's own, with the ring behind it. It answers once its textures are in. In Halo's menus the buttons are the pad's: cross is A, circle B, square X, triangle Y; the d-pad and the nub move.
 4. **Starting a level.** Pick **Campaign** and a level. While it loads you hear the **chant**, as on the Xbox: four voices of the monk tone, swelling with the load. The loading screen stays at least 6 seconds, so the chant can swell as it does on the Xbox. Between levels the last view zooms out and fades. A level's first view stands still for up to 3 s while its textures arrive; then play starts.

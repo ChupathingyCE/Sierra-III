@@ -7,8 +7,8 @@ into the map files the PSP build reads. One command:
 (Double-clicked, with no arguments, the same file runs the guided bake,
 guided.py, from the bundle's two input folders.)
 
-What it does, map by map (ten campaign levels, thirteen multiplayer maps and
-the menus' ui.map):
+What it does, map by map (the ten campaign levels and the menus' ui.map; with
+--multiplayer, the thirteen multiplayer maps too):
   1. reads the map out of the disc image (xiso.py: no other tool needed)
   2. checks it is the retail map this build was made for (hashes.json)
   3. extracts its tags and rebuilds the map for the PSP's memory with the
@@ -32,7 +32,9 @@ The output folder then holds halo/maps/..., halo/chant.adp and halo/bake.txt
 PSP/GAME/halo/EBOOT.PBP): copy its contents to the root of the Memory Stick.
 
 Options:
-    --maps a10,c20,bloodgulch   only these maps (default: all found)
+    --maps a10,c20,bloodgulch   only these maps (default: the campaign's and ui)
+    --multiplayer               the multiplayer maps too (for the multiplayer
+                                build)
     --no-track                  skip the asset track's _track.ptex
     --keep-work                 keep the extracted tags (several GB)
     --jobs N                    bake N maps at once (default: one per CPU, at
@@ -56,6 +58,18 @@ Options:
     --tints-from-means          the see-through shaders' tints from every
                                 map's mean, on the runtime's own map, as
                                 the packs were before (lib/seethrough.py)
+    --no-cache                  make every palette afresh: by default a
+                                palette made once is kept (<output>/work/
+                                palettes) for the textures that repeat in
+                                the asset track's pack and in other maps.
+                                The maps come out the same either way
+    --fast-palettes             palettes found sooner, not the same ones
+                                (texpack.py --fast-palettes; on trial)
+    --profile                   log each texture's class, size and seconds
+                                (texpack.py; no names), and a summary
+    --compare-palettes          make each palette both ways, the bake's own
+                                and the fast one, and log their times and
+                                errors (the fast palettes' proof)
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
@@ -65,6 +79,8 @@ LIB = os.path.join(HERE, 'lib')
 INVADER = os.path.join(HERE, 'invader')
 EXE = '.exe' if os.name == 'nt' else ''
 COMPARE_OLD = False
+PROFILE = False             # --profile
+COMPARE_PALETTES = False    # --compare-palettes
 # options every texpack.py run takes (--tints-from-means)
 TEXPACK_OPTIONS = []
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
@@ -75,6 +91,9 @@ CAMPAIGN = ['a10', 'a30', 'a50', 'b30', 'b40', 'c10', 'c20', 'c40', 'd20', 'd40'
 MULTIPLAYER = ['beavercreek', 'bloodgulch', 'boardingaction', 'carousel', 'chillout', 'damnation', 'hangemhigh',
                'longest', 'prisoner', 'putput', 'ratrace', 'sidewinder', 'wizard']
 ALL = CAMPAIGN + MULTIPLAYER + ['ui']
+# what the bake makes unless --maps or --multiplayer says otherwise: the
+# release is the campaign build
+DEFAULT = CAMPAIGN + ['ui']
 # -M (build 106): animation frame data to the .pgeo pack, read through the
 # game's animation cache; -Y 512: the script node table sized to the nodes in
 # use plus 512 spare. Maps built with either need build 106 or later.
@@ -131,6 +150,11 @@ def run(command, log_path, cwd=None, env=None):
     if r.returncode:
         tail = open(log_path, errors='replace').read()[-1500:]
         raise RuntimeError('%s failed (%d); the end of %s:\n%s' % (os.path.basename(command[0]), r.returncode, log_path, tail))
+
+
+# the lines --profile and --compare-palettes add to a map's log, into the
+# bake's (texture classes, sizes and pixel hashes only, no names)
+MEASURES = ('texprofile', 'palcompare')
 
 
 def echo_from(name, log_path, start, markers):
@@ -253,6 +277,16 @@ def tool_env():
     env['PYTHONUTF8'] = '1'
     if COMPARE_OLD:
         env['TEXPACK_KMEANS_COMPARE'] = env['STENCIL_COMPARE'] = '1'
+    if PROFILE:
+        env['TEXPACK_PROFILE'] = '1'
+    if COMPARE_PALETTES:
+        env['TEXPACK_PALETTE_COMPARE'] = '1'
+    # one thread of numpy's linear algebra in each step: the bake runs its
+    # maps side by side (--jobs), and each library's own threads, one per
+    # CPU in every step at once, fought over the CPUs (OpenBLAS's wait by
+    # spinning). The palettes' sums are the same on one thread as on many
+    for name in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS', 'VECLIB_MAXIMUM_THREADS'):
+        env[name] = '1'
     return env
 
 
@@ -310,7 +344,7 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
     echo_from(name, log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
-                                'kmeans compare summary', 'kmeans compare worse', 'bump relief'))
+                                'kmeans compare summary', 'kmeans compare worse', 'bump relief') + MEASURES)
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
     if name == 'ui':
@@ -318,21 +352,25 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_showcase.ptex'),
              '--showcase'] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
-        echo_from(name, log_path, start, ('glow maps', 'showcase:'))
+        echo_from(name, log_path, start, ('glow maps', 'showcase:') + MEASURES)
         # the same sizes on palettes, for the comparison ("showcasepal")
         log('%s: textures, the showcase on palettes' % name)
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_showcase_pal.ptex'),
              '--showcase', '--showcase-palettes'] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
-        echo_from(name, log_path, start, ('textures,',))
+        echo_from(name, log_path, start, ('textures,',) + MEASURES)
     if track and name != 'ui':
         log('%s: textures, asset track (half-size lightmaps, plants kept whole at a distance)' % name)
+        start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
              '--lightmap-scale', '2', '--alpha-coverage', '--pgeo', pgeo] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
+        echo_from(name, log_path, start, MEASURES)
     if detail and name != 'ui':
         log('%s: textures at full size for %s' % (name, detail))
+        start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_detail.ptex'),
              '--full-detail', detail] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
+        echo_from(name, log_path, start, MEASURES)
     if name != 'ui':
         log('%s: wall decals' % name)
         start = os.path.getsize(log_path)
@@ -492,10 +530,14 @@ def bake_maps(names, found, out_maps, work, a):
         for name in names:
             one(name)
     else:
-        # threads are enough: every step is a separate process
+        # threads are enough: every step is a separate process. The biggest
+        # maps start first, so the last to finish isn't a long one started
+        # late while the others sit idle (on the campaign, 4 at a time: ~8%
+        # sooner). The maps come out the same in any order
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=jobs)
         try:
-            for future in [pool.submit(one, name) for name in names]:
+            by_size = sorted(names, key=lambda name: -os.path.getsize(found[name]))
+            for future in [pool.submit(one, name) for name in by_size]:
                 future.result()
         except KeyboardInterrupt:
             # the steps under way got the same interrupt; start no more
@@ -515,7 +557,14 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('source', help='your Halo disc image, or a folder holding its maps')
     ap.add_argument('output', help='where the halo/maps folder is written')
-    ap.add_argument('--maps', default='', help='comma-separated map names (default: all)')
+    ap.add_argument('--maps', default='', help='comma-separated map names (default: the campaign\'s and ui)')
+    ap.add_argument('--multiplayer', action='store_true', help='the multiplayer maps too')
+    ap.add_argument('--no-cache', action='store_true',
+                    help='make every palette afresh (the maps come out the same either way)')
+    ap.add_argument('--fast-palettes', action='store_true', help='palettes found sooner, not the same ones (on trial)')
+    ap.add_argument('--profile', action='store_true', help="log each texture's class, size and seconds, and a summary")
+    ap.add_argument('--compare-palettes', action='store_true',
+                    help='make each palette both ways, the bake\'s own and the fast one, and log how they compare')
     ap.add_argument('--no-track', action='store_true')
     ap.add_argument('--keep-work', action='store_true')
     ap.add_argument('--force', action='store_true')
@@ -534,17 +583,27 @@ def main():
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD
-    COMPARE_OLD = a.compare_old
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES
+    COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
     if a.tints_from_means:
         TEXPACK_OPTIONS.append('--tints-from-means')
-    wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or ALL
+    if a.fast_palettes:
+        TEXPACK_OPTIONS.append('--fast-palettes')
+    wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or \
+        CAMPAIGN + (MULTIPLAYER if a.multiplayer else []) + ['ui']
     unknown = [m for m in wanted if m not in ALL]
     if unknown:
         sys.exit('halo-psp-bake: unknown map(s) %s; the maps are %s' % (', '.join(unknown), ', '.join(ALL)))
     out_maps = os.path.join(a.output, 'halo', 'maps')
     work = os.path.join(a.output, 'work')
     os.makedirs(out_maps, exist_ok=True)
+    # one palette cache for every pack of every map in this bake, emptied
+    # first: a bake never reads palettes another bake left
+    palettes = os.path.abspath(os.path.join(work, 'palettes'))
+    shutil.rmtree(palettes, ignore_errors=True)
+    if not a.no_cache and not a.list_music:
+        os.makedirs(palettes)
+        TEXPACK_OPTIONS.extend(['--palette-cache', palettes])
     if a.eboot and not os.path.isfile(a.eboot):
         sys.exit('halo-psp-bake: --eboot %s: no such file' % a.eboot)
     # said at the start, so a long bake doesn't end in a surprise (and again
@@ -582,6 +641,7 @@ def main():
         menu_eboot(a.eboot, a.music, music_source, a.output, work)
     if not a.keep_work:
         shutil.rmtree(os.path.join(work, 'retail'), ignore_errors=True)
+        shutil.rmtree(palettes, ignore_errors=True)
     log('baked %d of %d maps into %s%s' % (len(found) - len(failures), len(wanted), out_maps,
         '; failed: ' + ', '.join(failures) if failures else ''))
     log('copy %s to the root of the Memory Stick (it holds maps/)' % os.path.join(a.output, 'halo')

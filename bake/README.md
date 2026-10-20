@@ -51,7 +51,7 @@ copy to the Memory Stick. Nothing from the game is included here.
    |---|---|---|
    | 1/4 Reading your disc | each map read and checked against the retail disc's hashes | a minute or two |
    | 2/4 Setting up | the bake's Python libraries, the first time only | a minute or two (then seconds) |
-   | 3/4 Baking the maps | each map rebuilt for the PSP's memory, its textures and wall decals baked; several maps at once, with the time left | the long part <!-- TODO(master): the campaign bake's time from b139's bake --> |
+   | 3/4 Baking the maps | each map rebuilt for the PSP's memory, its textures and wall decals baked; several maps at once, with the time left | the long part: about 10 minutes on an 8-core PC, longer on fewer cores <!-- TODO(master): confirm from b139's bake --> |
    | 4/4 Putting it together | the game, its menu sound and the maps into `COPY-TO-MEMORY-STICK` | seconds |
 
    It ends by saying what to copy where. Press Enter to close the window.
@@ -119,6 +119,7 @@ as they are).
 |---|---|
 | `--maps c20,bloodgulch,ui` | only these maps (always include `ui`, the menus) |
 | `--multiplayer` | the thirteen multiplayer maps too |
+| `--no-cache` | make every palette afresh (by default a palette made once is kept in `<output>/work/palettes` for the textures that come up again in the asset track's pack and in other maps; the maps come out the same either way) |
 | `--jobs N` | bake N maps at once (default: one per CPU, at most 4, fewer with under 8 GB of memory free; the maps come out the same either way); each map's own log is in `<output>/work/<map>.log` |
 | `--detail fp,vehicles` | also bake `_detail.ptex`, those classes' textures at full size (`fp`, `weapons`, `vehicles`, `characters`), for the launch menu's "asset detail" |
 | `--sound s9` | the default: every sound at 22,050 Hz at most, effects mono, music stereo (`none`: the disc's sounds as they are) |

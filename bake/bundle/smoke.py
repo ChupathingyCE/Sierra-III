@@ -73,6 +73,21 @@ def pure_python():
     assert centres.shape == (8, 3) and len(set(labels.tolist())) == 8
     ok('palettes: 16 colours for random texels (mean error %.1f), k-means' % error)
 
+    # the palette cache: what it reads back is what quantize made, on this
+    # OS's file system (the write's rename into place included)
+    import texpack
+    with tempfile.TemporaryDirectory() as cache:
+        texpack.PALETTE_CACHE = cache
+        made = texpack.make_palette(img, 16, "smoke")
+        read = texpack.make_palette(img, 16, "smoke")
+        texpack.PALETTE_CACHE = None
+        assert len(os.listdir(cache)) == 1, os.listdir(cache)
+    assert all(np.array_equal(x, y) for x, y in zip(made[:3], read[:3])) and made[3] == read[3]
+    assert np.array_equal(made[0], indices) and np.array_equal(made[1], palette)
+    fast = bitmap_bake.quantize(img, 16, fast=True)
+    assert np.abs(fast[2][:, :, :3].astype(int) - img[:, :, :3]).mean() < 40
+    ok('palette cache: a palette read back the same as made; fast palettes')
+
     import stencilbake
     V = np.array([(0, 0), (4, 0), (4, 4), (0, 4), (1, 1), (3, 1), (3, 3), (1, 3)], np.float64)
     S = np.array([(0, 1), (1, 2), (2, 3), (3, 0), (4, 5), (5, 6), (6, 7), (7, 4)], np.int32)

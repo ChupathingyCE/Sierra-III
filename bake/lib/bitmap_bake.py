@@ -201,15 +201,14 @@ def psnr(a, b):
     return 99.0 if mse == 0 else 10 * math.log10(255.0 ** 2 / mse)
 
 
-def kmeans(points, k, iterations, seed=0):
+def kmeans(points, k, iterations, seed=0, tol=0.0):
     """(centres k x d, labels): Lloyd's k-means from a k-means++ start, numpy
     only, the same for a given seed on every machine. It stands where
     scikit-learn's KMeans(n_init=1, random_state=seed) stood: k-means++ picks
     each next centre with probability by its squared distance to the nearest
     already chosen, taking the best of 2 + log(k) candidates as scikit-learn
-    does, then each round moves every centre to its points' mean. A centre
-    left with no points takes the point farthest from its own centre, so all
-    k entries stay in use"""
+    does, then each round moves every centre to its points' mean (lloyd()).
+    tol: see lloyd()"""
     rng = np.random.RandomState(seed)
     x = np.asarray(points, np.float64)
     n = len(x)
@@ -230,6 +229,17 @@ def kmeans(points, k, iterations, seed=0):
         best = int(np.argmin(tried.sum(1)))
         centres[c] = x[picks[best]]
         closest = tried[best]
+    return lloyd(x, centres, iterations, tol)
+
+
+def lloyd(x, centres, iterations, tol=0.0):
+    """(centres, labels) after up to iterations rounds of Lloyd's k-means
+    from these centres, stopping when no point changes centre. A centre
+    left with no points takes the point farthest from its own centre, so
+    every entry stays in use. tol > 0 also stops once every centre is in
+    use and none moved by more than tol in a round (the fast palettes';
+    0, the bake's own palettes, waits for the points to settle)"""
+    k = len(centres)
     labels = nearest_centre(x, centres)
     for _ in range(iterations):
         counts = np.bincount(labels, minlength=k)
@@ -241,10 +251,13 @@ def kmeans(points, k, iterations, seed=0):
             far = np.argsort(((x - moved[labels]) ** 2).sum(1))[::-1]
             moved[~used] = x[far[:int((~used).sum())]]
         new_labels = nearest_centre(x, moved)
+        settled = tol > 0 and used.all() and float(np.abs(moved - centres).max()) < tol
         centres = moved
         if np.array_equal(new_labels, labels):
             break
         labels = new_labels
+        if settled:
+            break
     return centres, labels
 
 
@@ -266,6 +279,34 @@ def best_kmeans(points, k, iterations, tries=None):
     return best[1]
 
 
+# the fast palettes (quantize(fast=True); texpack --fast-palettes): each
+# k-means run settles on a seeded subsample of FAST_SAMPLE points, where a
+# round costs a fifth as much, then takes at most FAST_REFINE rounds on the
+# whole sample from there; both stop once no centre moves by FAST_TOL (a
+# quarter or so of the palette's own rounding to whole levels)
+FAST_SAMPLE = 8192
+FAST_REFINE = 10
+FAST_TOL = 0.5
+
+
+def fast_kmeans(points, k, iterations, tries=None):
+    """best_kmeans()'s palette, sooner: the same starts and the same number
+    of tries, each settled on a subsample first, then refined on every
+    point; the best by the summed squared distance over every point"""
+    if tries is None:
+        tries = 8 if k <= 16 else 2
+    x = np.asarray(points, np.float64)
+    head = x if len(x) <= FAST_SAMPLE else x[np.random.RandomState(1).choice(len(x), FAST_SAMPLE, replace=False)]
+    best = None
+    for seed in range(tries):
+        centres, _ = kmeans(head, k, iterations, seed, FAST_TOL)
+        centres, labels = lloyd(x, centres, FAST_REFINE, FAST_TOL)
+        cost = float(((x - centres[labels]) ** 2).sum())
+        if best is None or cost < best[0]:
+            best = (cost, centres)
+    return best[1]
+
+
 def nearest_centre(points, centres, chunk=16384):
     """each point's nearest centre, in chunks: |c|^2 - 2 x.c (|x|^2 is the
     same for every centre, so left out), in 32-bit floats: colours and Oklab
@@ -281,12 +322,13 @@ def nearest_centre(points, centres, chunk=16384):
     return out
 
 
-def quantize(img, colors):
+def quantize(img, colors, fast=False):
     """CLUT quantization; returns (indices HxW, palette Nx4 uint8, reconstructed
     RGBA, has_alpha).  Alpha is treated as data, not transparency: Halo's
     environment textures keep blend/specular masks in alpha and need the RGB
     under alpha 0, so RGBA is clustered as a 4-D point (kmeans() above,
-    seeded by k-means++ on a sample).  Opaque textures cluster RGB only."""
+    seeded by k-means++ on a sample).  Opaque textures cluster RGB only.
+    fast: the palette by fast_kmeans() (texpack --fast-palettes)"""
     h, w = img.shape[:2]
     has_alpha = img[:, :, 3].min() < 255
     ch = 4 if has_alpha else 3
@@ -301,7 +343,7 @@ def quantize(img, colors):
         sample = pts if len(pts) <= 40000 else pts[np.random.RandomState(0).choice(len(pts), 40000, replace=False)]
         # up to 60 rounds (scikit-learn's call stopped at 25): fewer palettes
         # end worse than its did (8 of 48 against 11 at 25, test textures)
-        pal = best_kmeans(sample, colors, 60)
+        pal = (fast_kmeans if fast else best_kmeans)(sample, colors, 60)
         idx = nearest_centre(pts, pal)
     pal = np.clip(np.rint(pal), 0, 255).astype(np.uint8)
     if ch == 3:
