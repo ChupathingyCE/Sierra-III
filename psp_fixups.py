@@ -23084,6 +23084,8 @@ static short draw_bitmap_texel_x = 0;
  """#ifdef HALO_PSP
 extern int psp_button_glyph(int icon, int menus, unsigned short cell[4]);
 extern void psp_ge_glyph_next(int glyph);
+/* (its label to its right: psp_ge.c draws a larger glyph away from it) */
+extern void psp_ge_glyph_next_labelled(int glyph);
 
 /* a screen's button key ("a_butn" beside its "=SELECT" label) is a widget
 whose picture is the Xbox's button, so the text's icon hook never sees it:
@@ -23202,7 +23204,7 @@ boolean psp_keyboard_background(
 		texels.y0 = 0;
 		texels.x1 = (short)(face.x1 - face.x0);
 		texels.y1 = (short)(face.y1 - face.y0);
-		psp_ge_glyph_next(glyphs[index]);
+		psp_ge_glyph_next_labelled(glyphs[index]);
 		draw_bitmap_in_rect(bitmap, &face, &texels, NULL, 0xff2090f0, NULL, FALSE);
 		psp_ge_glyph_next(NONE);
 	}
@@ -23416,7 +23418,7 @@ static void widget_instance_render_recursive(
 				draw_bitmap_in_rect(""",
  """				draw_bitmap_texel_y = texel_y;
 #ifdef HALO_PSP
-				psp_ge_glyph_next(psp_menu_key_glyph(widget, definition, &color));
+				psp_ge_glyph_next_labelled(psp_menu_key_glyph(widget, definition, &color));
 #endif
 				draw_bitmap_in_rect("""),
 ("""					FALSE);

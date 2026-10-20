@@ -445,14 +445,18 @@ int psp_button_glyph(int icon, int menus, unsigned short cell[4])
 /* how much further the text moves on past a glyph than past the icon it
 stands for, in the game's screen units: the glyph is drawn at its share of
 the icon's height (psp_glyph_height) in its own shape (psp_ge.c, glyph_quad), so a wide one (Select + up)
-takes more room than the Xbox's round button */
+takes more room than the Xbox's round button, and a glyph the menus draw
+larger ("menuglyphN") more again */
+float psp_ge_menu_glyph_zoom(int glyph, int menus);
+
 float psp_button_glyph_extra(int glyph, float icon_width, float icon_height)
 {
 	float wide;
 
 	if (glyph < 0 || glyph >= PSP_GLYPH_COUNT)
 		return 0.0f;
-	wide = icon_height * psp_glyph_height[glyph] / 100.0f * psp_glyph_cells[glyph][2] / psp_glyph_cells[glyph][3];
+	wide = icon_height * psp_glyph_height[glyph] / 100.0f * psp_ge_menu_glyph_zoom(glyph, in_menus()) *
+		psp_glyph_cells[glyph][2] / psp_glyph_cells[glyph][3];
 	return wide > icon_width ? wide - icon_width : 0.0f;
 }
 

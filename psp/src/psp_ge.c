@@ -14274,7 +14274,49 @@ typedef char meter_words_check[sizeof(struct psp_seethrough_meter) == METER_WORD
 fills the PSP's screen; the menus' 640 x 480 (4:3) is pillarboxed, as the
 3D view behind them isn't */
 static float ui_scale_x = SCREEN_WIDTH / GAME_SCREEN_WIDTH, ui_scale_y = SCREEN_HEIGHT / GAME_SCREEN_HEIGHT;
-static float ui_offset_x = 0.0f;
+static float ui_offset_x = 0.0f, ui_offset_y = 0.0f;
+
+/* The menus drawn larger: "menuzoomN", N percent (110, 115), about the
+screen's centre. On the PSP's 4.3 inches the menus' text, at the TV's share
+of the screen, reads small. One zoom for the whole 640 x 480 page keeps every
+box and line where it was against the others, so nothing comes to overlap;
+115 is the most that keeps the Xbox's title-safe area (32 of 480 from each
+edge, where its menus lay out) on the screen: 240 / 208. Off (100) by
+default: a change of look, settled by an A/B */
+#define MENU_ZOOM_MOST 115
+static float menu_zoom = 0.0f;
+
+/* the menus' button glyphs drawn larger, "menuglyphN", N percent (125, 150):
+a screen key's glyph (its label to its right) grows up and to the left,
+into the gap before the key ahead of it; a glyph in a line of text grows up
+and to the right, the line's cursor moving on by as much (psp_sdl.c,
+psp_button_glyph_extra), and no taller than its line's icon box. Off (100)
+by default */
+#define MENU_GLYPH_MOST 150
+static float menu_glyph_zoom = 0.0f;
+
+static float keep_percent(const char *prefix, int most)
+{
+	int percent = psp_keep_number(prefix, 100);
+
+	return (percent < 100 ? 100 : percent > most ? most : percent) / 100.0f;
+}
+
+/* how much larger a glyph in a menu's text draws (1: not in the menus, or
+"menuglyphN" not set); psp_sdl.c widens the text's cursor by the same */
+static float menu_glyph_zoom_get(void)
+{
+	if (menu_glyph_zoom == 0.0f)
+		menu_glyph_zoom = keep_percent("menuglyph", MENU_GLYPH_MOST);
+	return menu_glyph_zoom;
+}
+
+float psp_ge_menu_glyph_zoom(int glyph, int menus)
+{
+	if (!menus || glyph < 0 || glyph >= PSP_GLYPH_COUNT)
+		return 1.0f;
+	return fminf(menu_glyph_zoom_get(), 100.0f / psp_glyph_height[glyph]);
+}
 /* build 36: the HUD laid out in a smaller window (hud.c, psp_fixups.py) is
 drawn this much larger */
 static float hud_zoom = 1.0f;
@@ -14300,10 +14342,18 @@ void psp_ge_ui_space(int width, int height)
 		return;
 	if (ui_centered)
 		width = 640;
+	if (menu_zoom == 0.0f)
+		menu_zoom = keep_percent("menuzoom", MENU_ZOOM_MOST);
 	ui_scale_y = (float)SCREEN_HEIGHT / height;
+	ui_offset_y = 0.0f;
 	if (width * 3 <= height * 4 + 4)
 	{
 		/* 4:3 or narrower: square pixels, centred */
+		if (ui_centered)
+		{
+			ui_scale_y *= menu_zoom;
+			ui_offset_y = (SCREEN_HEIGHT - height * ui_scale_y) * 0.5f;
+		}
 		ui_scale_x = ui_scale_y;
 		ui_offset_x = (SCREEN_WIDTH - width * ui_scale_x) * 0.5f;
 	}
@@ -14385,7 +14435,7 @@ static void hud_draw(struct game_screen_vertex const *in, int width, int height,
 		out[index].v = in[index].v * hud_v_scale * height;
 		out[index].color = argb_to_abgr(use_vertex_color ? in[index].argb : color, red, green, blue, fade);
 		out[index].x = hud_pixel((in[index].x + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
-		out[index].y = hud_pixel((in[index].y + offset_y) * ui_scale_y * hud_zoom);
+		out[index].y = hud_pixel((in[index].y + offset_y) * ui_scale_y * hud_zoom + ui_offset_y);
 		out[index].z = 0.0f;
 	}
 	sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 4, NULL, out);
@@ -14457,12 +14507,20 @@ takes the glyph's key: a number no bitmap's address can be, which carries
 through the defer queue unchanged. The quad keeps the game's place, size and
 colour for the icon; only the picture is the PSP's */
 #define GLYPH_KEY_BASE 0x100u
+/* in the key, beside the glyph: its label is to its right (a menu's screen
+key), so a larger glyph grows away from it */
+#define GLYPH_LABELLED 0x80u
 static PSP_MAIN_SIDE int glyph_next = -1;
 static unsigned long glyphs_drawn = 0;
 
 void psp_ge_glyph_next(int glyph)
 {
 	glyph_next = glyph >= 0 && glyph < PSP_GLYPH_COUNT ? glyph : -1;
+}
+
+void psp_ge_glyph_next_labelled(int glyph)
+{
+	glyph_next = glyph >= 0 && glyph < PSP_GLYPH_COUNT ? glyph | (int)GLYPH_LABELLED : -1;
 }
 
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
@@ -14725,8 +14783,8 @@ static unsigned int *glyph_palette(unsigned int abgr)
 (psp_glyph_height) on the quad's bottom, its own shape across; centred when
 it is narrower, else from the quad's left edge (the text's cursor moves on
 by the difference: psp_button_glyph_extra, psp_sdl.c) */
-static void glyph_quad(struct game_screen_vertex const *in, int glyph, short blend, float red, float green,
-	float blue, float fade, float offset_x, float offset_y)
+static void glyph_quad(struct game_screen_vertex const *in, int glyph, int labelled, short blend, float red,
+	float green, float blue, float fade, float offset_x, float offset_y)
 {
 	unsigned short const *cell = psp_glyph_cells[glyph];
 	struct hud_vertex *out;
@@ -14743,12 +14801,27 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 		y1 = fmaxf(y1, in[corner].y);
 	}
 	/* the glyph's own share of the box's height, on the box's bottom (the
-	text's line) */
-	y0 = y1 - (y1 - y0) * psp_glyph_height[glyph] / 100.0f;
-	wide = (y1 - y0) * cell[2] / cell[3];
-	if (wide <= x1 - x0)
-		x0 += (x1 - x0 - wide) * 0.5f;
-	x1 = x0 + wide;
+	text's line), larger in the menus with "menuglyphN" */
+	{
+		float zoom = !ui_centered ? 1.0f : labelled ? menu_glyph_zoom_get() : psp_ge_menu_glyph_zoom(glyph, 1);
+		float box = x1 - x0, height = (y1 - y0) * psp_glyph_height[glyph] / 100.0f;
+
+		/* a screen key's glyph keeps the right edge it has at its own size */
+		if (labelled && zoom > 1.0f)
+		{
+			wide = height * cell[2] / cell[3];
+			x1 = wide <= box ? x0 + (box + wide) * 0.5f : x0 + wide;
+			x0 = x1 - wide * zoom;
+		}
+		else
+		{
+			wide = height * zoom * cell[2] / cell[3];
+			if (wide <= box)
+				x0 += (box - wide) * 0.5f;
+			x1 = x0 + wide;
+		}
+		y0 = y1 - height * zoom;
+	}
 	palette = glyph_palette(argb_to_abgr(in[0].argb, red, green, blue, fade));
 	out = list_take(2 * sizeof(struct hud_vertex));
 	sheet = glyph_sheet();
@@ -14764,9 +14837,9 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 	out[1].v = cell[1] + cell[3] - 0.5f;
 	out[0].color = out[1].color = 0xFFFFFFFF;
 	out[0].x = hud_pixel((x0 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
-	out[0].y = hud_pixel((y0 + offset_y) * ui_scale_y * hud_zoom);
+	out[0].y = hud_pixel((y0 + offset_y) * ui_scale_y * hud_zoom + ui_offset_y);
 	out[1].x = hud_pixel((x1 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
-	out[1].y = hud_pixel((y1 + offset_y) * ui_scale_y * hud_zoom);
+	out[1].y = hud_pixel((y1 + offset_y) * ui_scale_y * hud_zoom + ui_offset_y);
 	out[0].z = out[1].z = 0.0f;
 	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 	sceGuClutLoad(256 / 8, palette);
@@ -14807,9 +14880,10 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 	transparent_flush();
 	if (list_full())
 		return;
-	if (key - GLYPH_KEY_BASE < PSP_GLYPH_COUNT && !meter)
+	if (((key - GLYPH_KEY_BASE) & ~GLYPH_LABELLED) < PSP_GLYPH_COUNT && !meter)
 	{
-		glyph_quad(in, (int)(key - GLYPH_KEY_BASE), blend, red, green, blue, fade, offset_x, offset_y);
+		glyph_quad(in, (int)((key - GLYPH_KEY_BASE) & ~GLYPH_LABELLED), ((key - GLYPH_KEY_BASE) & GLYPH_LABELLED) != 0,
+			blend, red, green, blue, fade, offset_x, offset_y);
 		hud_quads++;
 		return;
 	}
@@ -17653,7 +17727,7 @@ static void text_character(void const *vertices)
 		out[corner].v = in[corner].v;
 		out[corner].color = argb_to_abgr(in[corner].argb, 1.0f, 1.0f, 1.0f, 1.0f);
 		out[corner].x = (in[corner].x + text_offset_x) * ui_scale_x * hud_zoom + ui_offset_x;
-		out[corner].y = (in[corner].y + text_offset_y) * ui_scale_y * hud_zoom;
+		out[corner].y = (in[corner].y + text_offset_y) * ui_scale_y * hud_zoom + ui_offset_y;
 		out[corner].z = 0.0f;
 	}
 	sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 4, NULL, out);
