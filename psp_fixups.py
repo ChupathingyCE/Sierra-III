@@ -26050,11 +26050,20 @@ void rasterizer_model_transparent_geometry_submit(
 # product) draws the shader's first other map once more over the same
 # triangles, with that map's own scale and animation, blended as the shader
 # blends, at GENERIC_NOISE_LEVEL of its strength and untinted
-# "lightdump" (a look instrument): on a screenshot's frame, each dynamic
-# light the level's light pass takes: its tag, colour, radius, place and
-# cone. A light's colour comes from its tag's functions and its object's
-# change colours, so a frame lit in a colour the original doesn't show is
-# traced to the light that brings it
+# A dynamic light's gel. The Xbox shapes each dynamic light on the level
+# with its gel, a cube map turned by the light's yaw, roll and pitch
+# functions over game time (rasterizer_xbox_environment.c,
+# _rasterizer_environment_diffuse_light_begin): a10's alert lights are
+# rotating beacons, red beams sweeping the walls. The GE's light pass lights
+# by distance, cone and angle only (psp_ge.c), so each alert light flooded
+# the walls around it with its full red every frame, and the hard edge
+# where that red met an unlit recess showed through Cortana's hologram as a
+# seam. A light without a cone (cosines -1; a spotlight's cone already
+# comes from psp_ge.c's projected cone) now carries its gel's average
+# colour: the beams' light over a turn, not their sweep. A restoration of
+# the light's level, on by default; keep word "nogel": the full colour.
+# "lightdump" (an instrument): on a screenshot's frame, each light the
+# level's light pass takes, with its tag, colour, gel and cone
 FIXES_MODELS["source/interface/hud_draw.c#lightname"] = [
 ("""		if (tag_get(0x73686472, tag_index) == shader)
 			return tag_get_name(tag_index);
@@ -26086,24 +26095,38 @@ char const *psp_light_tag_name(void const *definition)
 #endif
 """),
 ]
-FIXES_MODELS["source/rasterizer/rasterizer.c#lightdump"] = [
+FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 ("""				psp_ge_light_begin(&light->position.x, &light->forward.i, &light->color.red, light->radius,""",
  """				extern volatile int psp_screenshot_requested;
+				extern int psp_tex_average_known(unsigned int key, unsigned int *abgr);
+				real_rgb_color colour = light->color;
+				/* the gel's tag index (+0x70: its reference's index at +12)
+				and the cone's cutoff cosine, -1 for a light without one */
+				long gel = definition ? *(long const *)(definition + 0x70) : NONE;
+				unsigned int average = 0;
+				int gel_known = gel != NONE && psp_tex_average_known(psp_tex_bitmap_key(gel, 0), &average);
 
+				if (gel_known && *(float const *)(definition + 32) <= -0.99f && !PSP_KEEP_ONCE("nogel"))
+				{
+					colour.red *= (float)(average & 0xFF) / 255.0f;
+					colour.green *= (float)((average >> 8) & 0xFF) / 255.0f;
+					colour.blue *= (float)((average >> 16) & 0xFF) / 255.0f;
+				}
 				if (psp_screenshot_requested && PSP_KEEP_ONCE("lightdump"))
 				{
 					extern char const *psp_light_tag_name(void const *definition);
 					char const *name = definition ? psp_light_tag_name(definition) : NULL;
 
-					platform_log("lightdump: light %ld of %ld %s colour %.3f %.3f %.3f radius %.2f at %.2f %.2f %.2f facing %.2f %.2f %.2f cone %.3f %.3f",
+					platform_log("lightdump: light %ld of %ld %s colour %.3f %.3f %.3f drawn %.3f %.3f %.3f gel %ld %s %08x radius %.2f at %.2f %.2f %.2f facing %.2f %.2f %.2f cone %.3f %.3f",
 						light_index, rasterizer_lights.light_count, name ? name : "(no tag)",
-						light->color.red, light->color.green, light->color.blue, light->radius,
-						light->position.x, light->position.y, light->position.z,
+						light->color.red, light->color.green, light->color.blue,
+						colour.red, colour.green, colour.blue, gel, gel_known ? "average" : "unknown", average,
+						light->radius, light->position.x, light->position.y, light->position.z,
 						light->forward.i, light->forward.j, light->forward.k,
 						definition ? *(float const *)(definition + 28) : -1.0f,
 						definition ? *(float const *)(definition + 32) : -1.0f);
 				}
-				psp_ge_light_begin(&light->position.x, &light->forward.i, &light->color.red, light->radius,"""),
+				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,"""),
 ]
 
 FIXES_MODELS["source/rasterizer/rasterizer.c#genericnoise"] = [
