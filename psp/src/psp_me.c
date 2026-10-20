@@ -123,6 +123,9 @@ cinematic ticks were longer with it among the words on */
 #define ME_FEATURE_AUDIO_RANGES 8u
 /* the debug stash kept, when "mestash" asks for it (a hang to diagnose) */
 #define ME_FEATURE_STASH 16u
+/* "meyieldoff": a slot job doesn't serve the ring between its steps, and
+the ring refuses pushes while one is out, as before batches */
+#define ME_FEATURE_NO_YIELD 32u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -578,17 +581,35 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	__asm__ __volatile__("sync");
 }
 
-/* the audio slot's job, if one is waiting: 1 when one was mixed */
+/* The ME's own state, in its eDRAM (psp_me.h's map): what only the ME reads
+and writes stays off the shared bus and off any line the main CPU might hold.
+Only ever touched on the ME */
+struct me_private
+{
+	/* the ring as the ME's loop last left it, for a slot job that serves the
+	ring between its steps (psp_me_yield); ring_ready 0 outside such a job */
+	unsigned int ring_ready, ring_popped, ring_last_look;
+	/* 1 inside a ring job: a yield there mixes audio but runs no ring job
+	(the ring's jobs run in order, and this one isn't popped yet) */
+	unsigned int in_ring;
+};
+#define ME_PRIVATE ((volatile struct me_private *)(ME_EDRAM + ME_EDRAM_PRIVATE))
+/* the sums of audio blocks mixed inside other jobs (4 KB) */
+#define ME_AUDIO_SUMS ((int *)(ME_EDRAM + ME_EDRAM_PRIVATE + 0x1000))
+
+/* the audio slot's job, if one is waiting: 1 when one was mixed. Only on
+the ME (a long job's step, psp_me_yield) */
 static int me_audio_now(void)
 {
-	static int sums[MIX_FRAMES_MAX * 2] __attribute__((aligned(64)));
 	volatile struct me_slot *slot = SLOT(ME_SLOT_AUDIO);
 
 	if (slot->request == slot->done)
 		return 0;
-	me_serve(slot, sums);
+	me_serve(slot, ME_AUDIO_SUMS);
 	return 1;
 }
+
+static unsigned int me_ring_drain(unsigned int popped, unsigned int *last_look);
 
 /* called by a long job on the ME (the GE layer's replay, psp_ge.c's
 defer_replay) every few records: an audio block asked for meanwhile is mixed
@@ -598,7 +619,24 @@ and 7 of 109 were late [M] (b113_candidates.md, step 4b). Only ever called on
 the ME (the replay's on-the-ME argument) */
 void psp_me_serve_audio(void)
 {
+	psp_me_yield();
+}
+
+void psp_me_yield(void)
+{
+	volatile struct me_private *p;
+
+	if (!psp_on_me())
+		return;
 	me_audio_now();
+	p = ME_PRIVATE;
+	if (p->ring_ready && !p->in_ring && RING_PUSHED != p->ring_popped)
+	{
+		unsigned int last_look = p->ring_last_look;
+
+		p->ring_popped = me_ring_drain(p->ring_popped, &last_look);
+		p->ring_last_look = last_look;
+	}
 }
 
 /* a ring job's step (psp_me.h): the slant job every 64 triangles (~1 us
@@ -644,9 +682,9 @@ static struct me_ring_counter bus_stop_storage;
 static unsigned int bus_out[BUS_OUT_WORDS] __attribute__((aligned(64)));
 #define BUS_BASE 0x08900000u
 #define BUS_LINES (0x01000000u / 64)
-#define BUS_EDRAM_BASE 0x80040000u
+#define BUS_EDRAM_BASE (ME_EDRAM + ME_EDRAM_RESIDENT)
 #define BUS_EDRAM_LINES (0x00100000u / 64)
-#define BUS_EDRAM_OUT 0x80030000u
+#define BUS_EDRAM_OUT (ME_EDRAM + ME_EDRAM_SCRATCH)
 
 static void bus_load_job(const unsigned int *args, unsigned int *results)
 {
@@ -696,6 +734,67 @@ static void ring_test_job(const unsigned int *args, unsigned int *results)
 	}
 	results[0] = sum;
 	results[1] = args[2];
+}
+
+/* ---------- batches (psp_me.h): the ME's side
+
+One ring job makes records [first, first + count) of a batch, in order. Before
+each it claims the record (started), then reads the main CPU's limit: a
+record at or past it has been taken back, so the claim is withdrawn and the
+job ends. The main CPU writes the limit before it reads started, and the ME
+writes started before it reads the limit, all uncached with a sync between,
+so for any record either the ME sees the limit or the main CPU sees the claim
+(psp_me_batch_need waits out the second case for that one record). A record
+is written back before done passes it. args: 0 the batch, 1 first, 2 count,
+3 the main CPU's FPU control word, 4 make, 5 the records, 6 a record's bytes,
+7-14 make's own */
+static int batch_sim_half = 0; /* "mebatchsimhalf": the main CPU's, read by the simulated ME */
+
+static void batch_job(const unsigned int *args, unsigned int *results, int on_me)
+{
+	struct psp_me_batch *b = (struct psp_me_batch *)args[0];
+	volatile unsigned int *limit = &UNCACHED(&b->limit)->value, *started = &UNCACHED(&b->started)->value;
+	volatile unsigned int *done = &UNCACHED(&b->done)->value;
+	psp_me_record_fn make = (psp_me_record_fn)args[4];
+	unsigned char *records = (unsigned char *)args[5];
+	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6], made = 0, control = 0, user[ME_BATCH_ARGS], k;
+
+	for (k = 0; k < ME_BATCH_ARGS; k++)
+		user[k] = args[7 + k];
+	/* the emulator runs a pushed job inside the push: making only half of
+	it there leaves the rest for psp_me_batch_need to take back, so that path
+	is proven where play can be compared */
+	if (!on_me && batch_sim_half)
+		end = args[1] + args[2] / 2;
+	if (on_me)
+	{
+		__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+		__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[3]));
+	}
+	for (; r < end; r++)
+	{
+		unsigned char *record = records + r * bytes;
+
+		*started = r + 1;
+		__asm__ __volatile__("sync");
+		if (r >= *limit)
+		{
+			*started = r;
+			__asm__ __volatile__("sync");
+			break;
+		}
+		make(record, user);
+		if (on_me)
+			lines_writeback((unsigned int)record, bytes);
+		__asm__ __volatile__("sync");
+		*done = r + 1;
+		__asm__ __volatile__("sync");
+		made++;
+		psp_me_ring_step(r);
+	}
+	if (on_me)
+		__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+	results[0] = made;
 }
 
 /* the word a job's stack allowance below the caller's stack pointer */
@@ -754,7 +853,10 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	sentinel = ring_sentinel(request->type == ME_JOB_PERC_RAYS ? RING_RAYS_STACK_BYTES : RING_JOB_STACK_BYTES);
 	*sentinel = RING_SENTINEL;
 	if (on_me)
+	{
+		ME_PRIVATE->in_ring = 1;
 		job_start = me_cycles();
+	}
 	switch (request->type)
 	{
 	case ME_JOB_SLANT:
@@ -769,6 +871,9 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	case ME_JOB_POSES:
 		psp_pose_me_make(args, results);
 		break;
+	case ME_JOB_BATCH:
+		batch_job(args, results, on_me);
+		break;
 #ifdef PSP_RECON
 	case ME_JOB_BUSLOAD:
 		bus_load_job(args, results);
@@ -779,7 +884,10 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		break;
 	}
 	if (on_me)
+	{
 		job_end = me_cycles();
+		ME_PRIVATE->in_ring = 0;
+	}
 	/* a job that ran past its stack allowance may have written over whatever
 	lies below it: reported, and the ring stops */
 	if (*sentinel != RING_SENTINEL)
@@ -890,6 +998,8 @@ void meLibOnProcess(void)
 		control->cause_after = cause;
 	}
 	meLibDcacheWritebackInvalidateAll();
+	ME_PRIVATE->ring_ready = 0;
+	ME_PRIVATE->in_ring = 0;
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_RUN;
 	meLibSync();
 	for (;;)
@@ -928,7 +1038,26 @@ void meLibOnProcess(void)
 			volatile struct me_slot *slot = SLOT(k);
 
 			if (slot->request != slot->done)
+			{
+				volatile struct me_private *p = ME_PRIVATE;
+
+				if (k != ME_SLOT_AUDIO)
+				{
+					p->ring_ready = ring_ready && !(control->features & ME_FEATURE_NO_YIELD);
+					p->ring_popped = ring_popped;
+					p->ring_last_look = ring_last_look;
+					p->in_ring = 0;
+				}
 				me_serve(slot, sums);
+				if (k != ME_SLOT_AUDIO)
+				{
+					if (p->ring_popped != ring_popped)
+						ring_quiet = 0;
+					ring_popped = p->ring_popped;
+					ring_last_look = p->ring_last_look;
+					p->ring_ready = 0;
+				}
+			}
 			if (k == ME_SLOT_AUDIO && ring_ready)
 			{
 				unsigned int before = ring_popped;
@@ -1002,6 +1131,7 @@ static int ring_push_drop = 0;
 /* perception's rays: one cache hand-over for a tick's jobs, not one a job
 ("meraysbatch"; otherwise one a job, as before) */
 static int rays_batch = 0;
+static int me_yield_off = 0;
 
 /* The slant split is on by default: the rig showed it exact (0 of 414,000
 triangles differing, 0 failed jobs) and a little faster (b30 and c20: the
@@ -1211,12 +1341,13 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(stash_storage, sizeof(stash_storage));
 	for (k = 0; k < STASH_WORDS; k++)
 		STASH[k] = 0;
-	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest");
+	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest") || psp_keep("mebatchtest");
 #ifdef PSP_RECON
 	ring_on = ring_on || psp_keep_number("mebus", -1) >= 0;
 #endif
 	ring_push_drop = psp_keep("mepushdrop");
 	rays_batch = psp_keep("meraysbatch");
+	me_yield_off = psp_keep("meyieldoff");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -1277,7 +1408,8 @@ int psp_me_start(void)
 	me_halting = psp_keep("mehalt");
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
 		(psp_keep("meaudiofirst") ? ME_FEATURE_AUDIO_FIRST : 0u) |
-		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u);
+		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u) |
+		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -1415,6 +1547,9 @@ can't take it (off, stopped, a job already out): the caller runs it itself.
 The caller writes back its data cache first, as for psp_me_run */
 static int submitted[ME_SLOTS]; /* 0 none, 1 out with the ME, 2 run here (simulated) */
 static unsigned long long submit_mark[ME_SLOTS];
+/* the slot job out serves the ring between its steps (the GE layer's
+replay yields every 32 records): pushes go on while it runs */
+static int slot_yields[ME_SLOTS];
 
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count)
 {
@@ -1434,6 +1569,7 @@ int psp_me_submit(int which, unsigned int type, const unsigned int *args, int ar
 	slot->type = type;
 	for (k = 0; k < arg_count; k++)
 		slot->args[k] = args[k];
+	slot_yields[which] = type == ME_JOB_GE && !me_yield_off;
 	submit_mark[which] = sceKernelGetSystemTimeWide();
 	if (me_state == 2)
 	{
@@ -1716,7 +1852,7 @@ int psp_me_push(const struct psp_me_job *job, unsigned int *ticket)
 	~10 ms on the PSP, review_b120.md 5): a ring job behind it would be
 	waited for longer than its work is worth */
 	for (k = 0; k < ME_SLOTS; k++)
-		if (k != ME_SLOT_AUDIO && submitted[k])
+		if (k != ME_SLOT_AUDIO && submitted[k] && !slot_yields[k])
 		{
 			ring_stats.refused_busy++;
 			return 0;
@@ -1904,6 +2040,293 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	if (result->look_cycles > ring_stats.look_worst_cycles)
 		ring_stats.look_worst_cycles = result->look_cycles;
 	return 1;
+}
+
+/* ---------- batches: the main CPU's side (psp_me.h has the contract) */
+
+/* a record's state, the main CPU's own byte */
+#define BATCH_ADDED 0   /* filled here, not handed over */
+#define BATCH_OUT 1     /* in a job pushed to the ME */
+#define BATCH_HERE 2    /* made by the main CPU */
+#define BATCH_BY_ME 3   /* made by the ME, its lines dropped here */
+/* the most a record the ME is on may hold the main CPU */
+#define BATCH_RECORD_DEADLINE_US 10000
+
+static struct
+{
+	unsigned long passes, by_me, by_main, taken, waits, refused, late;
+} batch_stats;
+
+int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *records, unsigned char *state,
+	unsigned int record_bytes, unsigned int capacity, unsigned int chunk, const unsigned int *args)
+{
+	unsigned int k;
+
+	if (((unsigned int)b & 63u) || !make || !records || !state || !record_bytes || (record_bytes & 63u) ||
+		((unsigned int)records & 63u) || !capacity || !chunk || !ring_in_ram((unsigned int)records, capacity * record_bytes))
+		return 0;
+	memset(b, 0, sizeof(*b));
+	/* the words go through the uncached view only: no cached copy of their
+	lines may be left here to be written back over the ME's */
+	sceKernelDcacheWritebackInvalidateRange(b, 3 * sizeof(struct psp_me_batch_word));
+	b->make = make;
+	b->records = (unsigned char *)records;
+	b->state = state;
+	b->record_bytes = record_bytes;
+	b->capacity = capacity;
+	b->chunk = chunk;
+	for (k = 0; k < ME_BATCH_ARGS; k++)
+		b->args[k] = args ? args[k] : 0;
+	batch_sim_half = psp_keep("mebatchsimhalf");
+	psp_me_batch_begin(b);
+	return 1;
+}
+
+void psp_me_batch_begin(struct psp_me_batch *b)
+{
+	b->added = b->handed = b->ticket_count = 0;
+	b->limit_now = 0xFFFFFFFFu;
+	UNCACHED(&b->limit)->value = 0xFFFFFFFFu;
+	UNCACHED(&b->started)->value = 0;
+	UNCACHED(&b->done)->value = 0;
+	__asm__ __volatile__("sync");
+}
+
+/* records [b->handed, end) to the ME as one ring job; left here if the ring
+can't take it */
+static void batch_hand(struct psp_me_batch *b, unsigned int end)
+{
+	struct psp_me_job job;
+	unsigned int first = b->handed, k, ticket, control;
+
+	if (end <= first || b->ticket_count >= ME_BATCH_TICKETS || !psp_me_ring_ready())
+		return;
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_BATCH;
+	job.args[0] = (unsigned int)b;
+	job.args[1] = first;
+	job.args[2] = end - first;
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	job.args[3] = control;
+	job.args[4] = (unsigned int)b->make;
+	job.args[5] = (unsigned int)b->records;
+	job.args[6] = b->record_bytes;
+	for (k = 0; k < ME_BATCH_ARGS; k++)
+		job.args[7 + k] = b->args[k];
+	job.input[0] = b->records + first * b->record_bytes;
+	job.input_bytes[0] = (end - first) * b->record_bytes;
+	psp_me_writeback(job.input[0], job.input_bytes[0]);
+	if (!psp_me_push(&job, &ticket))
+	{
+		b->refused++;
+		return;
+	}
+	for (k = first; k < end; k++)
+		b->state[k] = BATCH_OUT;
+	b->tickets[b->ticket_count++] = ticket;
+	b->handed = end;
+}
+
+void *psp_me_batch_add(struct psp_me_batch *b, unsigned int *index)
+{
+	if (b->added >= b->capacity)
+		return NULL;
+	/* the records before this one are filled: a chunk's worth goes now */
+	if (b->added - b->handed >= b->chunk)
+		batch_hand(b, b->added);
+	*index = b->added;
+	b->state[b->added] = BATCH_ADDED;
+	return b->records + b->added++ * b->record_bytes;
+}
+
+void psp_me_batch_close(struct psp_me_batch *b)
+{
+	batch_hand(b, b->added);
+}
+
+static void batch_make_here(struct psp_me_batch *b, unsigned int index)
+{
+	b->make(b->records + index * b->record_bytes, b->args);
+	b->state[index] = BATCH_HERE;
+	b->by_main++;
+}
+
+int psp_me_batch_need(struct psp_me_batch *b, unsigned int index)
+{
+	volatile unsigned int *started = &UNCACHED(&b->started)->value, *done = &UNCACHED(&b->done)->value;
+	unsigned char *record = b->records + index * b->record_bytes;
+	unsigned int start;
+
+	if (index >= b->added)
+		return 0;
+	switch (b->state[index])
+	{
+	case BATCH_BY_ME:
+		return 1;
+	case BATCH_HERE:
+		return 0;
+	case BATCH_ADDED:
+		/* never handed over: what was added before it goes now, if the
+		ring takes it, and this one is made here */
+		if (index >= b->handed)
+		{
+			batch_hand(b, index);
+			/* this one, and any before it the ring refused, stay here */
+			b->handed = index + 1;
+		}
+		batch_make_here(b, index);
+		return 0;
+	}
+	if (index >= b->limit_now)
+	{
+		batch_make_here(b, index);
+		return 0;
+	}
+	if (*done <= index)
+	{
+		/* not finished: taken back unless the ME has claimed it */
+		b->limit_now = index;
+		UNCACHED(&b->limit)->value = index;
+		__asm__ __volatile__("sync");
+		if (*started > index)
+		{
+			b->waits++;
+			start = sceKernelGetSystemTimeLow();
+			while (*done <= index && *started > index)
+			{
+				/* a record held this long, or an ME stopped meanwhile: the
+				ME is stopped (it halts once done, or is held in reset), and
+				what it made is used only if it finished */
+				if (!psp_me_ring_ready() || sceKernelGetSystemTimeLow() - start > BATCH_RECORD_DEADLINE_US)
+				{
+					if (psp_me_ring_ready())
+					{
+						batch_stats.late++;
+						platform_log("ME: a batch record (%u) held past %u ms; the ME is stopped", index,
+							BATCH_RECORD_DEADLINE_US / 1000);
+						psp_me_stop("a batch record late");
+					}
+					break;
+				}
+			}
+		}
+		if (*done <= index)
+		{
+			b->taken++;
+			batch_make_here(b, index);
+			return 0;
+		}
+	}
+	/* the ME's answer, past the copy this CPU had from before the hand-over */
+	__asm__ __volatile__("sync");
+	lines_drop((unsigned int)record, b->record_bytes);
+	b->state[index] = BATCH_BY_ME;
+	b->by_me++;
+	return 1;
+}
+
+void psp_me_batch_finish(struct psp_me_batch *b)
+{
+	unsigned int index, k, results[ME_RING_RESULTS];
+
+	for (index = 0; index < b->added; index++)
+		psp_me_batch_need(b, index);
+	/* every record is made; the jobs only have their withdrawn claims left,
+	and must be done before the arena or the words are used again */
+	for (k = 0; k < b->ticket_count; k++)
+		if (ring_next - b->tickets[k] - 1 < ME_RING_ENTRIES)
+			psp_me_wait(b->tickets[k], results);
+	b->ticket_count = 0;
+	batch_stats.passes++;
+	batch_stats.by_me += b->by_me;
+	batch_stats.by_main += b->by_main;
+	batch_stats.taken += b->taken;
+	batch_stats.waits += b->waits;
+	batch_stats.refused += b->refused;
+	b->by_me = b->by_main = b->taken = b->waits = b->refused = 0;
+}
+
+/* "mebatchtest": a batch's own check, once a frame. Each record's answer is
+a function of its inputs, made by the ME or here, and checked here against
+the same function. Records are needed in a scrambled order as they are
+added, so every path runs: made by the ME, never handed over, taken back,
+and (on the PSP) the ME on the record at that moment */
+#define BATCHTEST_RECORDS 48
+#define BATCHTEST_WORDS 16
+static unsigned int batchtest_records[BATCHTEST_RECORDS][BATCHTEST_WORDS] __attribute__((aligned(64)));
+static unsigned char batchtest_state[BATCHTEST_RECORDS];
+static struct psp_me_batch batchtest_batch;
+static int batchtest_on = -1;
+static unsigned int batchtest_seq;
+static unsigned long batchtest_checked, batchtest_wrong;
+
+/* words 0-7 in, 8-15 out: a few hundred cycles of integer work, so the ME
+is often still on a record when the main CPU asks for it */
+static void batchtest_make(void *record, const unsigned int *args)
+{
+	unsigned int *w = (unsigned int *)record, h = args[0], k, j;
+
+	for (k = 0; k < 8; k++)
+	{
+		h ^= w[k];
+		for (j = 0; j < 24; j++)
+			h = h * 2654435761u + (h >> 13) + j;
+		w[8 + k] = h;
+	}
+}
+
+void psp_me_batch_test(void)
+{
+	unsigned int args[ME_BATCH_ARGS] = { 0x9E3779B9u }, index, k, i, scramble;
+	unsigned int expect[BATCHTEST_WORDS];
+	unsigned int *w;
+
+	if (PSP_ME_WORK())
+		return;
+	if (batchtest_on < 0)
+	{
+		batchtest_on = psp_keep("mebatchtest");
+		if (batchtest_on && !psp_me_batch_init(&batchtest_batch, batchtest_make, batchtest_records, batchtest_state,
+				sizeof(batchtest_records[0]), BATCHTEST_RECORDS, 6, args))
+			batchtest_on = 0;
+	}
+	if (!batchtest_on)
+		return;
+	batchtest_seq++;
+	psp_me_batch_begin(&batchtest_batch);
+	scramble = batchtest_seq * 2246822519u;
+	for (k = 0; k < BATCHTEST_RECORDS; k++)
+	{
+		w = (unsigned int *)psp_me_batch_add(&batchtest_batch, &index);
+		if (!w)
+			break;
+		for (i = 0; i < 8; i++)
+			w[i] = batchtest_seq * 0x01000193u ^ (index << 16) ^ i;
+		/* now and then a record already added is needed, the last one
+		(never handed over) among them */
+		scramble = scramble * 1103515245u + 12345u;
+		if (((scramble >> 16) & 7u) == 0)
+			psp_me_batch_need(&batchtest_batch, (scramble >> 20) % (index + 1));
+	}
+	psp_me_batch_close(&batchtest_batch);
+	for (k = 0; k < batchtest_batch.added; k++)
+	{
+		/* the order scrambled: a stride coprime with the count */
+		index = (k * 7u + batchtest_seq) % batchtest_batch.added;
+		psp_me_batch_need(&batchtest_batch, index);
+		w = batchtest_records[index];
+		for (i = 0; i < BATCHTEST_WORDS; i++)
+			expect[i] = i < 8 ? (batchtest_seq * 0x01000193u ^ (index << 16) ^ i) : 0;
+		batchtest_make(expect, args);
+		for (i = 0; i < BATCHTEST_WORDS; i++)
+			if (w[i] != expect[i])
+			{
+				batchtest_wrong++;
+				break;
+			}
+		batchtest_checked++;
+	}
+	psp_me_batch_finish(&batchtest_batch);
 }
 
 /* "meringtest": the ring's own check, a burst of ME_RING_ENTRIES jobs at each
@@ -2181,7 +2604,8 @@ void psp_me_wake_poll(void)
 	/* before the release, where launch sets them after its start check: the
 	ME reads them on its first pass, so the ring is served from the first
 	frame (a ring job not done in 10 ms turns the ring off for the session) */
-	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u);
+	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
+		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u);
 	__asm__ __volatile__("sync");
 	now = sceKernelGetSystemTimeWide();
 	if (me_restartable == 2)
@@ -2492,6 +2916,18 @@ void psp_me_report(void)
 		platform_log("ME: since start: %u audio blocks mixed before or inside a ring job, %u of all its audio blocks handed over by ranges; ring jobs %u begun, %u ended; slot jobs %u begun, %u ended",
 			stash[STASH_AUDIO_INSIDE], stash[STASH_AUDIO_RANGES], stash[STASH_RING_BEGUN], stash[STASH_RING_ENDED],
 			stash[STASH_SLOT_BEGUN], stash[STASH_SLOT_ENDED]);
+	}
+	if (batch_stats.passes)
+	{
+		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu), waits for a record the ME was on %lu, hand-overs refused %lu, late %lu%s",
+			batch_stats.passes, batch_stats.by_me, batch_stats.by_main, batch_stats.taken, batch_stats.waits,
+			batch_stats.refused, batch_stats.late, batch_sim_half ? " (mebatchsimhalf: the simulated ME makes half of each job)" : "");
+		memset(&batch_stats, 0, sizeof(batch_stats));
+	}
+	if (batchtest_checked)
+	{
+		platform_log("ME: batchtest: %lu records checked, %lu wrong", batchtest_checked, batchtest_wrong);
+		batchtest_checked = batchtest_wrong = 0;
 	}
 	if (ringtest_bursts)
 	{
