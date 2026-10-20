@@ -8130,6 +8130,25 @@ static unsigned int color_from_rgb(const float *rgb)
 	return 0xFF000000 | (b << 16) | (g << 8) | r;
 }
 
+/* "modelambientN", "modellightN": the models' ambient light and distant
+lights times N percent (100 when absent), to find how far the GE's lighting
+falls short of the original's in shade (the PC reference draws first-person
+weapons and armour lighter there) before a default is chosen. Read without a
+log line: this may first run on the Media Engine, which mustn't print */
+static float model_ambient_gain = -1.0f, model_light_gain = 1.0f;
+
+static unsigned int color_from_rgb_scaled(const float *rgb, float gain)
+{
+	float scaled[3];
+
+	if (gain == 1.0f)
+		return color_from_rgb(rgb);
+	scaled[0] = rgb[0] * gain;
+	scaled[1] = rgb[1] * gain;
+	scaled[2] = rgb[2] * gain;
+	return color_from_rgb(scaled);
+}
+
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
@@ -8143,14 +8162,19 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	model_node_count = node_matrix_count;
 	model_u_scale = u_scale != 0.0f ? u_scale : 1.0f;
 	model_v_scale = v_scale != 0.0f ? v_scale : 1.0f;
-	model_ambient = ambient ? color_from_rgb(ambient) : MODEL_LIGHT;
+	if (model_ambient_gain < 0.0f)
+	{
+		model_ambient_gain = (float)psp_keep_number("modelambient", 100) * 0.01f;
+		model_light_gain = (float)psp_keep_number("modellight", 100) * 0.01f;
+	}
+	model_ambient = ambient ? color_from_rgb_scaled(ambient, model_ambient_gain) : MODEL_LIGHT;
 	model_light_count = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
 	model_point_count = 0; /* build 117: psp_ge_model_point_light follows */
 	for (index = 0; index < model_light_count; index++)
 	{
 		const float *light = index ? light1 : light0;
 
-		model_light_color[index] = color_from_rgb(light);
+		model_light_color[index] = color_from_rgb_scaled(light, model_light_gain);
 		/* the GE wants the direction toward the light */
 		model_light_toward[index].x = -light[3];
 		model_light_toward[index].y = -light[4];
