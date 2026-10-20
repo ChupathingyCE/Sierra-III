@@ -25608,6 +25608,83 @@ void psp_points_hand_over(void)
 		psp_points_stats.refused++;
 }
 
+/* mepointscheck: which fields of two answers differ, a bit each (the normal
+and material only where both collided) */
+static unsigned int psp_points_differ(struct psp_point_answer const *a, struct psp_point_answer const *b)
+{
+	unsigned int mask = 0;
+
+	if (a->result != b->result)
+		mask |= 1;
+	if (a->leaf_index != b->leaf_index)
+		mask |= 2;
+	if (a->cluster_index != b->cluster_index)
+		mask |= 4;
+	if (memcmp(&a->position, &b->position, sizeof(a->position)))
+		mask |= 8;
+	if (memcmp(&a->velocity, &b->velocity, sizeof(a->velocity)))
+		mask |= 16;
+	if (!a->collided != !b->collided)
+		mask |= 32;
+	else if (a->collided && memcmp(&a->normal, &b->normal, sizeof(a->normal)))
+		mask |= 64;
+	if (a->collided && b->collided && a->material_type != b->material_type)
+		mask |= 128;
+	return mask;
+}
+
+static void psp_points_mask_names(unsigned int mask, char *text)
+{
+	static char const *const names[8] = { "result", "leaf", "cluster", "position", "velocity", "collided", "normal", "material" };
+	int k;
+
+	text[0] = 0;
+	for (k = 0; k < 8; k++)
+		if (mask & (1u << k))
+		{
+			strcat(text, text[0] ? "," : "");
+			strcat(text, names[k]);
+		}
+	if (!text[0])
+		strcpy(text, "none");
+}
+
+#define PSP_POINTS_BITS(v) (*(unsigned long const *)&(v))
+
+static void psp_points_report_answer(char const *who, struct psp_point_answer const *a)
+{
+	platform_psp_log("mepointscheck:   %s result %lx leaf %ld cluster %d position %08lx %08lx %08lx velocity %08lx %08lx %08lx "
+		"collided %ld normal %08lx %08lx %08lx material %d",
+		who, (unsigned long)a->result, a->leaf_index, a->cluster_index, PSP_POINTS_BITS(a->position.x),
+		PSP_POINTS_BITS(a->position.y), PSP_POINTS_BITS(a->position.z), PSP_POINTS_BITS(a->velocity.i),
+		PSP_POINTS_BITS(a->velocity.j), PSP_POINTS_BITS(a->velocity.k), a->collided,
+		a->collided ? PSP_POINTS_BITS(a->normal.i) : 0, a->collided ? PSP_POINTS_BITS(a->normal.j) : 0,
+		a->collided ? PSP_POINTS_BITS(a->normal.k) : 0, a->collided ? a->material_type : 0);
+}
+
+/* a difference, every field in hex: this CPU's answer, the ME's, and the
+ME's copy run here from the listed inputs, and those inputs */
+static void psp_points_report(int kind, long slot, struct psp_point_input const *in, struct psp_point_answer const *mine,
+	struct psp_point_answer const *me, struct psp_point_answer const *now)
+{
+	char fields[80], now_mine[80], now_me[80];
+
+	psp_points_mask_names(psp_points_differ(mine, me), fields);
+	psp_points_mask_names(psp_points_differ(now, mine), now_mine);
+	psp_points_mask_names(psp_points_differ(now, me), now_me);
+	platform_psp_log("mepointscheck: kind %d slot %ld differs in %s; the ME's copy here differs from this CPU's in %s, "
+		"from the ME's in %s", kind, slot, fields, now_mine, now_me);
+	platform_psp_log("mepointscheck:   listed definition %p leaf %ld cluster %d position %08lx %08lx %08lx velocity %08lx %08lx %08lx "
+		"radius %08lx dt %08lx",
+		(void const *)in->definition, in->leaf_index, in->cluster_index, PSP_POINTS_BITS(in->position.x),
+		PSP_POINTS_BITS(in->position.y), PSP_POINTS_BITS(in->position.z), PSP_POINTS_BITS(in->velocity.i),
+		PSP_POINTS_BITS(in->velocity.j), PSP_POINTS_BITS(in->velocity.k), PSP_POINTS_BITS(in->radius),
+		PSP_POINTS_BITS(in->dt));
+	psp_points_report_answer("this CPU", mine);
+	psp_points_report_answer("the ME  ", me);
+	psp_points_report_answer("ME copy ", now);
+}
+
 static int psp_points_same(struct psp_point_input const *in, struct point_physics_definition const *definition,
 	struct location const *location, real_point3d const *position, real_vector3d const *velocity, real radius, real dt)
 {
@@ -25681,10 +25758,34 @@ unsigned long psp_point_physics(
 							(collided && (memcmp(&here_normal, &answer->normal, sizeof(here_normal)) ||
 								here_material != answer->material_type)))
 						{
-							if (psp_points_stats.differed++ < 8)
-								platform_psp_log("mepointscheck: kind %d slot %ld differs: flags %lx/%lx position %f %f %f / %f %f %f",
-									kind, slot, here, (unsigned long)answer->result, here_position.x, here_position.y,
-									here_position.z, answer->position.x, answer->position.y, answer->position.z);
+							if (psp_points_stats.differed++ < 12)
+								{
+									struct psp_point_answer mine, now;
+									struct location now_location;
+
+									mine.result = (long)here;
+									mine.leaf_index = here_location.leaf_index;
+									mine.cluster_index = here_location.cluster_index;
+									mine.material_type = here_material;
+									mine.position = here_position;
+									mine.velocity = here_velocity;
+									mine.normal = here_normal;
+									mine.collided = collided;
+									/* the ME's copy run here and now from the listed inputs: equal to
+									this CPU's answer, the inputs moved on after the hand-over; equal to
+									the ME's, the two copies differ */
+									now_location.leaf_index = in->leaf_index;
+									now_location.cluster_index = in->cluster_index;
+									now_location.bonus = 0;
+									now.position = in->position;
+									now.velocity = in->velocity;
+									now.material_type = NONE;
+									now.result = psp_point_physics_quiet(in->definition, &now_location, &now.position, &now.velocity,
+										&now.normal, &now.material_type, &now.collided, in->radius, in->dt);
+									now.leaf_index = now_location.leaf_index;
+									now.cluster_index = now_location.cluster_index;
+									psp_points_report(kind, slot, in, &mine, answer, &now);
+								}
 						}
 						/* play goes on from this CPU's own answer */
 						*location = here_location;

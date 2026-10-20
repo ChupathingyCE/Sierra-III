@@ -58,6 +58,7 @@ ships beside the EBOOT. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 #include <unistd.h>
 #include <me-core-mapper/me-core.h>
@@ -1583,20 +1584,65 @@ static int ring_in_ram(unsigned int address, unsigned int bytes)
 	return !bytes || (at >= 0x08000000u && at + bytes <= 0x0C000000u && at + bytes > at);
 }
 
+/* the emulator's stand-in for the ME's own stack (in its eDRAM on the PSP):
+a job's locals written through pointers (a ray's leaf list, say) would
+otherwise land below the producer's stack pointer, on lines the producer
+writes again as soon as the push returns, and the write trace would count
+them as written by both CPUs. psp_me_sim_call(index, top, fn) runs fn(index)
+with its stack pointer just below top (the words it keeps above the
+callee's argument area) */
+#define RING_SIM_STACK_BYTES (48 * 1024)
+void psp_me_sim_call(unsigned int index, void *top, void (*fn)(unsigned int));
+__asm__(
+	".text\n"
+	".globl psp_me_sim_call\n"
+	".ent psp_me_sim_call\n"
+	"psp_me_sim_call:\n"
+	".set push\n"
+	".set noreorder\n"
+	"	addiu $a1, $a1, -32\n"
+	"	sw $ra, 16($a1)\n"
+	"	sw $sp, 20($a1)\n"
+	"	jalr $a2\n"
+	"	move $sp, $a1\n"
+	"	lw $ra, 16($sp)\n"
+	"	lw $sp, 20($sp)\n"
+	"	jr $ra\n"
+	"	nop\n"
+	".set pop\n"
+	".end psp_me_sim_call\n");
+
+static void ring_run_simulated(unsigned int index)
+{
+	ring_run(index, 0, 0);
+}
+
 /* the emulator: the job's code here and now, marked as the ME's for the
-ME-strict check and the write trace (emu.sh's gemesim and mewrites); the
-window stays open until the wait. Cold, as the failure paths below: the
-PSP's push and wait stay fewer cache lines */
+ME-strict check and the write trace (emu.sh's gemesim and mewrites), on a
+stack of its own as on the ME; the window stays open until the wait. Cold,
+as the failure paths below: the PSP's push and wait stay fewer cache lines */
 static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int index, unsigned int t)
 {
+	static unsigned char *sim_stack = NULL;
+	static int sim_stack_tried = 0;
 	unsigned int job_start;
 
 	if (!ring_thread)
 		ring_thread = (unsigned int)sceKernelGetThreadId();
+	if (!sim_stack_tried)
+	{
+		sim_stack_tried = 1;
+		sim_stack = (unsigned char *)memalign(64, RING_SIM_STACK_BYTES);
+		if (!sim_stack)
+			platform_log("ME (simulated): no room for the job stack; jobs run on the producer's");
+	}
 	psp_me_window[0] = 1;
 	job_start = sceKernelGetSystemTimeLow();
 	psp_me_context = ring_thread;
-	ring_run(index, 0, 0);
+	if (sim_stack)
+		psp_me_sim_call(index, sim_stack + RING_SIM_STACK_BYTES, ring_run_simulated);
+	else
+		ring_run(index, 0, 0);
 	psp_me_context = 0;
 	ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
 	RING_POPPED = t + 1;
