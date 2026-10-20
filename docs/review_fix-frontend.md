@@ -1,6 +1,6 @@
 # Review: fix-frontend (b139's front-end findings)
 
-Branch `fix-frontend`, off `w139`. Four changes for b139's hand test: the release's all-levels profile, the menus drawn larger (H11, off by default), the XMB tile's glass frosted (H13), and the main menu's ring (H2, H15, H16). Each section: what changed, its key lines, why, the evidence, and its cost in frame time.
+Branch `fix-frontend`, off `w139`. Four changes for b139's hand test: the release's all-levels profile, the menus drawn larger (H11, on by default), the XMB tile's glass frosted (H13), and the main menu's ring (H2, H15, H16). Each section: what changed, its key lines, why, the evidence, and its cost in frame time.
 
 ## 1. The all-levels profile in the release
 
@@ -21,17 +21,17 @@ Branch `fix-frontend`, off `w139`. Four changes for b139's hand test: the releas
 
 **Keep word:** none: it's a file. Delete `halo/save/u/UDATA/1483099185B9/` to remove it.
 
-## 2. H11: the menus drawn larger (`menuzoomN`, `menuglyphN`), off by default
+## 2. H11: the menus drawn larger (`menuzoomN`, `menuglyphN`), on by default
 
-**What:** two keep words, both off (100) unless set:
+**What:** two keep words, defaulting to `menuzoom115 menuglyph125` (owner's call: on by default); a number in `keep.txt` wins, and `menuzoom100 menuglyph100` gives the original size back (both clamp at 100 from below):
 - `menuzoomN` (100 to 115): the whole 640 x 480 menu page drawn N% larger about the screen's centre, while the menus are centred (`ui_centered`). One zoom for the whole page keeps every box where it was against the others, so nothing comes to overlap. 115 is the most that keeps the Xbox's title-safe area (32 of 480 lines from each edge) on the screen: 240 / 208.
 - `menuglyphN` (100 to 150): the menus' button glyphs drawn N% larger. A screen key's glyph (its label to its right: the footer keys and the keyboard's legend) grows up and to the left, keeping its right edge by its label. A glyph in a line of text grows up and to the right, no taller than its line's icon box, and the text's cursor moves on by as much (`psp_button_glyph_extra`).
 
 **Key lines:** `psp/src/psp_ge.c`: `keep_percent`, `menu_zoom` in `psp_ge_ui_space` (with `ui_offset_y`, added to `hud_draw`, `glyph_quad` and `text_character`), `psp_ge_menu_glyph_zoom`, `psp_ge_glyph_next_labelled`; `psp/src/psp_sdl.c`: `psp_button_glyph_extra`; `psp_fixups.py` (`FIXES_MENUS`): the footer keys and the keyboard legend call `psp_ge_glyph_next_labelled`.
 
-**Why off:** a change of look, not a restoration: the menus are laid out for a TV, and on the PSP's 4.3 inches the text reads small. The size is a choice to make from the shots.
+**Why on:** a change of look, not a restoration: the menus are laid out for a TV, and on the PSP's 4.3 inches the text reads small. Owner's call: on by default, at the pair the shots favoured.
 
-**The A/B for the pick:** front1, see Results. To choose, set one pair in `keep.txt`, e.g. `menuzoom115 menuglyph125`.
+**The A/B for the pick:** front1, see Results. To change it, set a pair in `keep.txt`, e.g. `menuzoom108 menuglyph150`, or `menuzoom100 menuglyph100` for the original size.
 
 **Cost:** menus only; nothing in play (the zoom applies only while the menus are centred, and the glyph zoom only in the menus).
 

@@ -11700,7 +11700,7 @@ int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_k
 	return result;
 }
 
-/* ---------- contrails (b113_candidates.md #1; opt-in, "contrails" on)
+/* ---------- contrails (b113_candidates.md #1; on by default, "nocontrails" off)
 
 The trail behind a projectile (the plasma rifle's and pistol's bolts, the
 needler's needles): render_contrails.c builds a strip of quads along the
@@ -14281,33 +14281,35 @@ screen's centre. On the PSP's 4.3 inches the menus' text, at the TV's share
 of the screen, reads small. One zoom for the whole 640 x 480 page keeps every
 box and line where it was against the others, so nothing comes to overlap;
 115 is the most that keeps the Xbox's title-safe area (32 of 480 from each
-edge, where its menus lay out) on the screen: 240 / 208. Off (100) by
-default: a change of look, settled by an A/B */
+edge, where its menus lay out) on the screen: 240 / 208. 115 by default;
+"menuzoom100" draws the menus at the TV's size again */
 #define MENU_ZOOM_MOST 115
+#define MENU_ZOOM_DEFAULT 115
 static float menu_zoom = 0.0f;
 
 /* the menus' button glyphs drawn larger, "menuglyphN", N percent (125, 150):
 a screen key's glyph (its label to its right) grows up and to the left,
 into the gap before the key ahead of it; a glyph in a line of text grows up
 and to the right, the line's cursor moving on by as much (psp_sdl.c,
-psp_button_glyph_extra), and no taller than its line's icon box. Off (100)
-by default */
+psp_button_glyph_extra), and no taller than its line's icon box. 125 by
+default; "menuglyph100" draws them at the original size */
 #define MENU_GLYPH_MOST 150
+#define MENU_GLYPH_DEFAULT 125
 static float menu_glyph_zoom = 0.0f;
 
-static float keep_percent(const char *prefix, int most)
+static float keep_percent(const char *prefix, int fallback, int most)
 {
-	int percent = psp_keep_number(prefix, 100);
+	int percent = psp_keep_number(prefix, fallback);
 
 	return (percent < 100 ? 100 : percent > most ? most : percent) / 100.0f;
 }
 
 /* how much larger a glyph in a menu's text draws (1: not in the menus, or
-"menuglyphN" not set); psp_sdl.c widens the text's cursor by the same */
+"menuglyph100"); psp_sdl.c widens the text's cursor by the same */
 static float menu_glyph_zoom_get(void)
 {
 	if (menu_glyph_zoom == 0.0f)
-		menu_glyph_zoom = keep_percent("menuglyph", MENU_GLYPH_MOST);
+		menu_glyph_zoom = keep_percent("menuglyph", MENU_GLYPH_DEFAULT, MENU_GLYPH_MOST);
 	return menu_glyph_zoom;
 }
 
@@ -14343,7 +14345,7 @@ void psp_ge_ui_space(int width, int height)
 	if (ui_centered)
 		width = 640;
 	if (menu_zoom == 0.0f)
-		menu_zoom = keep_percent("menuzoom", MENU_ZOOM_MOST);
+		menu_zoom = keep_percent("menuzoom", MENU_ZOOM_DEFAULT, MENU_ZOOM_MOST);
 	ui_scale_y = (float)SCREEN_HEIGHT / height;
 	ui_offset_y = 0.0f;
 	if (width * 3 <= height * 4 + 4)
