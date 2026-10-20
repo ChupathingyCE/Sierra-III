@@ -1435,7 +1435,7 @@ int psp_me_start(void)
 	/* nomeaudio keeps the ME off unless a ring client asks for it; the
 	mixer then stays on the main CPU (psp_dsound.c) */
 	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest") && !psp_keep("meraysperc") &&
-		!psp_keep("mepoints")))
+		psp_keep("nomepoints")))
 		return me_state > 0;
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
@@ -1454,7 +1454,7 @@ int psp_me_start(void)
 	for (k = 0; k < STASH_WORDS; k++)
 		STASH[k] = 0;
 	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest") || psp_keep("mebatchtest") ||
-		psp_keep("mepoints");
+		!psp_keep("nomepoints");
 #ifdef PSP_RECON
 	ring_on = ring_on || psp_keep_number("mebus", -1) >= 0;
 #endif

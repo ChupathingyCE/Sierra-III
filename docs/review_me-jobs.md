@@ -75,3 +75,7 @@ Then [in flight]:
 | `mepoints` | off | Hands the frame's particle and contrail point physics to the ME |
 | `mepointscheck` | off | Makes every point on the main CPU too and reports each differing answer |
 | `mepointsminN` | 8 | The fewest points worth a job |
+
+## On by default
+
+`mepoints` is on by default from w140; `nomepoints` turns it off (`psp_me.c` and `psp_points_begin` read the off word). It is exact, and the PSP A/Bs above found it no slower anywhere and a little faster in fights. A strict-profile release build needs the profile taken again for `collisions.c` and `point_physics.c`, whose code the hand-over changes.

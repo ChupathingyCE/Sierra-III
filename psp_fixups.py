@@ -26449,7 +26449,8 @@ void objects_update(
 #   and only the ME writes the answers and its progress word; only the main
 #   CPU writes the list and its own word. The main CPU drops an answer's line
 #   before reading it.
-# "mepoints" turns it on (off by default until a PSP A/B measures it);
+# On by default: exact, and on the PSP no slower anywhere and a little
+# faster in fights; "nomepoints" leaves every point to the main CPU;
 # "mepointscheck" also makes every taken point here and compares, bit for bit
 # (play then uses the main CPU's own answers); "mepointsminN" the fewest
 # listed points worth a hand-over (8 unless set)
@@ -27012,7 +27013,7 @@ int psp_points_begin(void)
 {
 	if (psp_points_on < 0)
 	{
-		psp_points_on = psp_keep("mepoints");
+		psp_points_on = !psp_keep("nomepoints");
 		psp_points_check = psp_keep("mepointscheck");
 		psp_points_min = psp_keep_number("mepointsmin", 8);
 		if (psp_points_on)
