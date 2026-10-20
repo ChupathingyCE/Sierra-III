@@ -23,6 +23,20 @@ The cache model's tick phase on the a10 and c10 openings, hands off, ticks 0-135
 - The profile is worth -10.1% on a10 and -15.2% on c10 to b139, but only -1.2% and -9.3% to w140. That gap is the rise.
 - c10 off one lever group at a time (b139's profile): objwalk+typehdr 8,309 M, exact group 8,373 M, GL1+GL2 8,255 M, ME group 8,941 M (fetches -3.5%, I-misses +31%), against w140's 8,259 M. The emulator runs the ME's jobs on the main CPU, so the ME group's timing is the PSP's to settle [D] (`media_engine.md`).
 
+## With its own profile
+
+The cache model, same stretch: w140 with `campaign-w140` (strict) runs 2,006 M cycles on a10 (-0.7% against b139) and 7,725 M on c10 (-7.3%). The rise is gone [E].
+
+On the PSP, w140 with b139's profile, a keep-word A/B in one build, ticks 675-1350, mean of 2 runs [M]:
+
+| set | a10 (PSP-3000) | c10 (PSP-1000) |
+|---|---|---|
+| as built | 8.15 ms | 18.23 ms |
+| ME group off (`megraceoff meclaimold nomepoints`) | 8.13 ms | 18.18 ms |
+| every pass-2 off word | 8.21 ms | 19.06 ms |
+
+The ME group doesn't carry the rise on the PSP either, and the levers together save 0.7% on a10 and 4.6% on c10.
+
 ## The change
 
 `pgo/campaign-w140.tgz`: w140 509ec38's own counts, 13 counting runs (the openings of a10, a30, a50, b40, c10, c20, c40, d20, d40, b30's flight and its three routes; the same recipe as campaign-b139), merged with `tools/pgo_merge.sh`. Build w140 with `PSP_PGO_PROFILE=campaign-w140` and `PSP_PGO_STRICT=1`.
