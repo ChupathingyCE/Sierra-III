@@ -25300,11 +25300,75 @@ FIXES_GEFEED["source/rasterizer/xbox/rasterizer_xbox.c#gefeed"] = [
 ]
 
 
+# ---------- FIXES_WS: sleeping scenery passed over in the object walk (lever WS)
+# Under wake-on-write, a sleeping piece of scenery nothing has marked gets the
+# same answer every tick: still asleep, with three counters moved. Reaching
+# that answer went through psp_object_update's type tests and
+# psp_sleepy_update's checks, with calls to small functions spread over the
+# program (the clock, the connection, the flip watch), each likely a cache
+# miss; b30's walk passes ~300 such sleepers a tick. The walk now asks the
+# same questions inline and moves the same counters. Anything the full path
+# would treat differently (marked, not settled, restless, a zero checksum, a
+# child, the check modes, networked games without wakeonwrite) takes the full
+# path. "sleeperwalk" (keep.txt): every sleeper through the full path
+FIXES_WS = {}
+
+FIXES_WS["source/objects/objects.c#sleeperwalk"] = [
+("\nvoid objects_update(\n\tvoid)\n{",
+ """
+/* psp_fixups.py (FIXES_WS): whether this tick's walk may pass over settled
+scenery itself; decided as the tick's walk starts */
+static int psp_ws_keep = -1, psp_ws_ready = 0;
+long psp_ws_passed;
+
+static void psp_ws_tick_begin(void)
+{
+	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+	/* each switch the full path reads, once it has been read */
+	psp_ws_ready = psp_ws_keep && psp_sleep_enabled == 1 && psp_scenery_half == 0 && psp_restless_on >= 0 &&
+		psp_wake_on > 0 && !psp_wake_check && psp_func_check == 0 &&
+		(psp_wake_on == 2 || game_connection() == _game_connection_local);
+}
+
+/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object;
+
+	if (!psp_ws_ready || header->type != _object_type_scenery || absolute_index >= MAXIMUM_OBJECTS_PER_MAP ||
+		psp_wake_marked[absolute_index] || psp_sleep[absolute_index].identifier != header->identifier ||
+		psp_sleep[absolute_index].quiet < 2 || !psp_sleep[absolute_index].checksum ||
+		(psp_restless_on && (psp_restless[absolute_index] & PSP_RESTLESS_SKIPPING)))
+		return 0;
+	object = header->datum;
+	if (object->object.first_child_object_index != NONE)
+		return 0;
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+		++object_globals->active_garbage_object_count;
+	psp_ws_passed++;
+	return 1;
+}
+
+void objects_update(
+	void)
+{"""),
+("#ifdef HALO_PSP\n\tpsp_object_scale = psp_object_sample();\n",
+ "#ifdef HALO_PSP\n\tpsp_object_scale = psp_object_sample();\n\tpsp_ws_tick_begin(); /* psp_fixups.py (FIXES_WS) */\n"),
+("\t\t\t\t\tpsp_nmr_tops++;\n\t\t\t\t\tif (psp_object_scale)\n",
+ "\t\t\t\t\tpsp_nmr_tops++;\n\t\t\t\t\tif (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\telse if (psp_object_scale)\n"),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
