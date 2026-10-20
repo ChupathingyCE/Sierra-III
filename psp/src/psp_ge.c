@@ -11520,8 +11520,8 @@ struct transparent_draw
 	blended per vertex by the angle in place of tint; 0 for one tint */
 	unsigned char angle_tinted;
 	unsigned int tint_face, tint_edge;
-	/* SEETHROUGH_EXACT_DEPTH and SEETHROUGH_CLAMPED (below) */
-	unsigned char depth_mode;
+	/* SEETHROUGH_EXACT_DEPTH, SEETHROUGH_CLAMPED and SEETHROUGH_ONE_SIDED (below) */
+	unsigned short depth_mode;
 	/* after b116: the shader (its tag's definition) the part was queued
 	with, for tdump; 0 for sprites and parts queued without one */
 	unsigned int shader;
@@ -11609,9 +11609,17 @@ white bar between them). Keep word "waterunfogged": as before */
 #define SEETHROUGH_FOG_FADE 128
 /* the shader has tints face on and edge on (seethrough_tint_set's flags) */
 #define SEETHROUGH_ANGLE_TINTED 256
-static unsigned char seethrough_next_depth = 0;
+/* A generic or chicago shader without its two-sided flag (bit 2 of the flags
+byte at +41) is drawn front faces only on the level, as the Xbox's
+environment passes cull (D3DCULL_CCW). Drawn both sides with the overlay's
+nudge toward the eye, a back face at a silhouette corner passed the depth
+test over the front face beside it: a dashed one-pixel line along a pillar's
+edge (b30's interior). Keep word "overlaysnocull": both sides, as before */
+#define SEETHROUGH_ONE_SIDED 512
+static unsigned short seethrough_next_depth = 0;
 static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
 static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0, seethrough_fog_faded_draws = 0;
+static unsigned long seethrough_culled_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
 call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
 not a meter). Builds 21-115 dropped meter shaders: the plasma weapons' heat
@@ -12688,7 +12696,8 @@ static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shade
 	seethrough_next_angle = (flags & SEETHROUGH_ANGLE_TINTED) != 0;
 	seethrough_next_face = face;
 	seethrough_next_edge = edge;
-	seethrough_next_depth = (unsigned char)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED | SEETHROUGH_FOG_FADE));
+	seethrough_next_depth = (unsigned short)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED | SEETHROUGH_FOG_FADE |
+		SEETHROUGH_ONE_SIDED));
 	flags &= 15;
 	seethrough_next_doubled = (unsigned char)(flags == 1);
 	seethrough_next_model = flags == 2 ? SEETHROUGH_ADD : flags == 3 ? SEETHROUGH_FLAT : SEETHROUGH_MODULATE;
@@ -12711,7 +12720,7 @@ void psp_ge_seethrough_map_clamp(int u, int v)
 
 void psp_ge_seethrough_shader(unsigned int shader)
 {
-	static int pushed = -1, wrapped = -1, unfogged = -1;
+	static int pushed = -1, wrapped = -1, unfogged = -1, both_sides = -1;
 	int flags = 0;
 	unsigned int tint = psp_tex_shader_tint(shader, &flags), face = 0, edge = 0;
 
@@ -12720,6 +12729,7 @@ void psp_ge_seethrough_shader(unsigned int shader)
 		pushed = psp_keep("seethroughpush");
 		wrapped = psp_keep("seethroughwrap");
 		unfogged = psp_keep("waterunfogged");
+		both_sides = psp_keep("overlaysnocull");
 	}
 	if (shader)
 	{
@@ -12734,6 +12744,8 @@ void psp_ge_seethrough_shader(unsigned int shader)
 
 		if (!pushed && !decal && type >= 5 && type <= 10)
 			flags |= SEETHROUGH_EXACT_DEPTH;
+		if (!both_sides && (type == 5 || type == 6) && !(definition[41] & 4))
+			flags |= SEETHROUGH_ONE_SIDED;
 		if (!wrapped)
 			flags |= type == 7 ? SEETHROUGH_CLAMPED : type == 5 || type == 6 ? seethrough_map_clamp : 0;
 		/* water's flags word at +40: bit 2 atmospheric fog */
@@ -14006,6 +14018,8 @@ static void transparent_flush_body(void)
 		list_limit = list_bytes - HUD_RESERVE;
 	if (overlays_off < 0)
 		overlays_off = psp_keep("nooverlays");
+	if (level_cull < 0)
+		level_cull = psp_keep("nocull") ? 0 : psp_keep("cullflip") ? 2 : 1;
 	/* build 62: the world's projection and depth slice for the world's
 	see-through parts, whatever is current. A flush can come while the
 	first-person projection is still set (no model end after the weapon's
@@ -14188,6 +14202,14 @@ static void transparent_flush_body(void)
 				seethrough_exact_draws++;
 			}
 			sceGuDepthOffset(units);
+			/* the level's own triangles and their cut pieces keep the base
+			pass's winding; a bake's stencil layers (level 3) don't */
+			if ((draw->depth_mode & SEETHROUGH_ONE_SIDED) && draw->level <= 2 && level_cull)
+			{
+				sceGuFrontFace(level_cull == 1 ? LEVEL_FRONT : (LEVEL_FRONT == GU_CW ? GU_CCW : GU_CW));
+				sceGuEnable(GU_CULL_FACE);
+				seethrough_culled_draws++;
+			}
 		}
 		sceGuTexScale(draw->u_scale, draw->v_scale);
 		sceGuTexOffset(draw->u_offset, draw->v_offset);
@@ -14279,7 +14301,10 @@ static void transparent_flush_body(void)
 		if (draw->tint_model == SEETHROUGH_FLAT)
 			sceGuTexEnvColor(0xFFFFFFFF);
 		if (draw->level)
+		{
 			sceGuDepthOffset(0);
+			sceGuDisable(GU_CULL_FACE);
+		}
 		if (draw->level >= 3)
 			sceGuDepthFunc(GU_GEQUAL);
 		if (draw->first_person)
@@ -18676,9 +18701,9 @@ void psp_ge_frame_end(void)
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
 			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws, seethrough_rounded_draws,
 			seethrough_angle_tinted_draws);
-		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu",
-			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws);
-		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = 0;
+		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu; level draws front faces only %lu",
+			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws, seethrough_culled_draws);
+		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = seethrough_culled_draws = 0;
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;

@@ -1778,15 +1778,15 @@ int psp_tex_has(unsigned int key)
 the pack has one (texpack.py, apply_relief: under the base's key | 2), else
 the key itself. The Xbox lights a level's bump map per pixel; the GE can't,
 so the bake folds the relief into the base, lit from one fixed direction.
-Off unless "relief" is kept: a bake whose relief was sampled at the base's
-texels streaked a30's cliffs (the bump's fine detail aliased into vertical
-lines along the stretched walls). "norelief" still forces it off */
+The bake filters the bump over each base texel's footprint; sampled one
+bump texel per base texel, it aliased into vertical streaks along a30's
+stretched cliff walls. Keep word "norelief": no relief */
 unsigned int psp_relief_key(unsigned int key)
 {
 	static int on = -1;
 
 	if (on < 0)
-		on = psp_keep("relief") && !psp_keep("norelief");
+		on = !psp_keep("norelief");
 	return key && on && psp_tex_has(key | 2) ? key | 2 : key;
 }
 
