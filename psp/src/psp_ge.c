@@ -17131,6 +17131,7 @@ struct decal_vertex_ge
 };
 
 static int decal_pull = -1, decal_big = 0, decal_all = -1, decal_slope = -1, decal_batch = 0;
+static int decal_square = -1;
 static unsigned long decals_small = 0, decals_offscreen = 0;
 /* build 106: decal calls with no quad on the screen, left before the bind */
 static unsigned long decals_wholly_left_out = 0;
@@ -17815,7 +17816,15 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		}
 		fragment = 0xFF000000 | (r[2] << 16) | (r[1] << 8) | r[0];
 		constant = 0xFF000000 | (e[2] << 16) | (e[1] << 8) | e[0];
-		sceGuTexFunc(GU_TFX_BLEND, GU_TCC_RGB);
+		/* an alpha-tested decal (a10's floor markings) is cut out by its
+		map's alpha on the Xbox (rasterizer_xbox_decals.c: the alpha test
+		reads r0.a, the texel's); with the texel's alpha left out the test
+		saw the fragment's 0xFF and drew the whole quad as a square. The
+		multiply blends read no alpha, so the colour is unchanged.
+		"decalsquare": as before */
+		if (decal_square < 0)
+			decal_square = psp_keep("decalsquare");
+		sceGuTexFunc(GU_TFX_BLEND, alpha_tested && alpha && !decal_square ? GU_TCC_RGBA : GU_TCC_RGB);
 		sceGuTexEnvColor(constant);
 		/* the frame times twice this, or this */
 		if (half)
