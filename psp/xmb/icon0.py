@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Draws ICON0.PNG, the game-list tile, for both builds from the Sierra-III mark.
 
-The tile: smoked glass over the wallpaper (the patch of PIC1 it covers, darkened) inside the
-first placeholder's border, in the mark's amber;
+The tile: frosted smoked glass over the wallpaper (the patch of PIC1 it covers, blurred and
+darkened) inside the first placeholder's border, in the mark's amber;
 the mark as it sits on the wallpaper (PSP under the III), with the title's amber rule under
 SIERRA running up to PSP; the build named beneath it in Audiowide, the font of the title's
 COMBAT EVOLVED. Written to psp/xmb/<campaign|mp>/ICON0.PNG.
@@ -33,7 +33,11 @@ STEEL_TOP, STEEL_BOTTOM = (0xe9, 0xee, 0xf2), (0x9a, 0xa7, 0xb2)
 # Where the XMB draws the highlighted tile over PIC1 (docs/xmb_menu.md: about (24, 101), 146 x 81,
 # measured from a photo, +-4 px); the 144 x 80 tile centred there.
 TILE_AT = (25, 101)
-GLASS_DIM, GLASS_BLUR = 0.45, 0.0
+# Frosted, not clear: on the PSP the tile isn't where the photo put it (the patch's planet edge
+# showed shifted left of the wallpaper's), and it moves as the XMB brings the entry into focus.
+# Blurred this much (tile px), the patch keeps only the scene's colours, which line up at any
+# offset the XMB gives it; a sharp edge jogs at a pixel or two.
+GLASS_DIM, GLASS_BLUR = 0.45, 14.0
 
 BORDER = 2                           # px at tile size, as on the placeholder
 MARK_W = 120                         # the lettering's width at tile size (600 units in the SVG)
