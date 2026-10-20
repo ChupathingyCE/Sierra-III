@@ -15140,8 +15140,47 @@ static void level_copies_follow(void)
 	level_move_us += sceKernelGetSystemTimeLow() - start;
 }
 
+/* A receiving vertex's corner, worked out once per shadow draw instead of
+once per triangle that uses it: the receivers come as an index list, and
+most of its vertices are shared by several triangles. The same functions on
+the same floats, so the same corners. "shadowmemooff" (keep.txt): each
+triangle's corners worked out afresh */
+#define SHADOW_MEMO 64
+struct shadow_memo
+{
+	int key; /* the vertex's index + 1; 0: empty */
+	int bits, shaded;
+	unsigned int color;
+	float camera[3], u, v;
+};
+static int shadow_memo_on = -1;
+
+static inline struct shadow_memo *shadow_memo_at(struct shadow_memo *memo, const struct ge_vertex *base, unsigned short index)
+{
+	struct shadow_memo *m = &memo[index & (SHADOW_MEMO - 1)];
+
+	if (m->key != index + 1)
+	{
+		m->key = index + 1;
+		level_to_camera(&base[index].x, m->camera);
+		m->bits = outside(m->camera);
+		m->shaded = 0;
+	}
+	return m;
+}
+
+static inline void shadow_memo_shade(struct shadow_memo *m, const struct ge_vertex *b)
+{
+	if (!m->shaded)
+	{
+		shadow_corner(&b->x, &m->u, &m->v, &m->color);
+		m->shaded = 1;
+	}
+}
+
 static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
 {
+	struct shadow_memo memo[SHADOW_MEMO];
 	struct level_stream *stream;
 	struct shadow_vertex *out;
 	long index, kept_count = 0;
@@ -15174,7 +15213,62 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 		}
 	}
 	out = scratch_vertices;
-	for (index = 0; index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
+	if (shadow_memo_on < 0)
+		shadow_memo_on = !psp_keep("shadowmemooff");
+	if (shadow_memo_on)
+	{
+		int k;
+
+		for (k = 0; k < SHADOW_MEMO; k++)
+			memo[k].key = 0;
+	}
+	for (index = 0; shadow_memo_on && index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
+	{
+		const unsigned short *triangle = indices + 3 * index;
+		struct shadow_memo *m[3];
+		int corner;
+
+		if (triangle[0] >= vertex_count || triangle[1] >= vertex_count || triangle[2] >= vertex_count)
+			return;
+		for (corner = 0; corner < 3; corner++)
+			m[corner] = shadow_memo_at(memo, stream->base, triangle[corner]);
+		if (m[0]->bits & m[1]->bits & m[2]->bits)
+			continue;
+		for (corner = 0; corner < 3; corner++)
+			shadow_memo_shade(m[corner], &stream->base[triangle[corner]]);
+		if (!(m[0]->bits | m[1]->bits | m[2]->bits))
+		{
+			for (corner = 0; corner < 3; corner++)
+			{
+				const struct ge_vertex *b = &stream->base[triangle[corner]];
+				struct shadow_vertex *o = &out[3 * kept_count + corner];
+
+				o->u = m[corner]->u; o->v = m[corner]->v; o->color = m[corner]->color;
+				o->x = b->x; o->y = b->y; o->z = b->z;
+			}
+			kept_count++;
+			continue;
+		}
+		{
+			float corners[3][CORNER_FLOATS];
+
+			for (corner = 0; corner < 3; corner++)
+			{
+				const struct ge_vertex *b = &stream->base[triangle[corner]];
+				float *c = corners[corner];
+
+				c[0] = m[corner]->camera[0]; c[1] = m[corner]->camera[1]; c[2] = m[corner]->camera[2];
+				c[3] = m[corner]->u;
+				c[4] = m[corner]->v;
+				c[5] = (float)(m[corner]->color & 0xFF);
+				c[6] = (float)((m[corner]->color >> 8) & 0xFF);
+				c[7] = b->x; c[8] = b->y; c[9] = b->z;
+				c[10] = 0.0f;
+			}
+			cut_count += clip_triangle(corners, m[0]->bits | m[1]->bits | m[2]->bits, &pieces_store);
+		}
+	}
+	for (index = 0; !shadow_memo_on && index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
 		float corners[3][CORNER_FLOATS] = { { 0.0f } };

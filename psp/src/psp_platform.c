@@ -548,6 +548,16 @@ struct profile_front_entry
 static struct profile_front_entry *profile_front = NULL; /* [PROFILE_FRONT] */
 static int profile_used = 0;
 
+/* The steps are timed in one frame of every few, and the profile's figures
+scaled up by the frames they stand for. A busy frame passes 2,000 steps or
+more (b30's beach), each a clock read (a system call) and a table lookup,
+and only the profile reads what they measure. "stepsall" (keep.txt) times
+every frame */
+#define STEPS_TIMED_EVERY 4
+static int steps_every = STEPS_TIMED_EVERY;
+static int steps_timed = 1;
+static unsigned long steps_frame = 0, steps_window_frames = 0, steps_window_timed = 0;
+
 void *psp_scratch_take(unsigned int bytes, const char *what);
 
 void psp_profile_tables_take(void)
@@ -567,6 +577,7 @@ static void profile_forget(void)
 	memset(profile_slots, 0, PROFILE_SLOTS * sizeof(*profile_slots));
 	memset(profile_front, 0, PROFILE_FRONT * sizeof(*profile_front));
 	profile_used = 0;
+	steps_window_frames = steps_window_timed = 0;
 }
 
 static struct profile_slot *profile_slot_for(const char *name)
@@ -601,6 +612,32 @@ windows and the per-type object lines then read 0; the heartbeat's frame and
 tick times stay. Set when keep.txt is read */
 int psp_timers_off = 0;
 
+/* at each frame's end: whether the next frame's steps are timed. The step
+running across the edge is closed or opened here, so each timed frame's
+time is all charged and an untimed frame's none */
+static void steps_frame_edge(void)
+{
+	int next = ++steps_frame % steps_every == 0;
+	unsigned int now;
+
+	steps_window_frames++;
+	if (next)
+		steps_window_timed++;
+	if (next == steps_timed || psp_timers_off)
+		return;
+	now = sceKernelGetSystemTimeLow();
+	if (!next && profile_last_name && profile_slots)
+	{
+		struct profile_slot *slot = profile_slot_for(profile_last_name);
+
+		slot->microseconds += now - profile_last_time;
+		slot->calls++;
+	}
+	profile_last_name = next ? last_step : NULL;
+	profile_last_time = now;
+	steps_timed = next;
+}
+
 void psp_step(const char *name)
 {
 	unsigned int now;
@@ -618,17 +655,19 @@ void psp_step(const char *name)
 		}
 		return;
 	}
-	now = sceKernelGetSystemTimeLow();
-
-	if (profile_last_name && profile_slots)
+	if (steps_timed)
 	{
-		struct profile_slot *slot = profile_slot_for(profile_last_name);
+		now = sceKernelGetSystemTimeLow();
+		if (profile_last_name && profile_slots)
+		{
+			struct profile_slot *slot = profile_slot_for(profile_last_name);
 
-		slot->microseconds += now - profile_last_time;
-		slot->calls++;
+			slot->microseconds += now - profile_last_time;
+			slot->calls++;
+		}
+		profile_last_name = name;
+		profile_last_time = now;
 	}
-	profile_last_name = name;
-	profile_last_time = now;
 	last_step = name;
 	if (step_count < STEP_LOG_LIMIT)
 		platform_log("step %d: %s", ++step_count, name);
@@ -763,6 +802,12 @@ static void object_report(SceUID file, unsigned long ticks)
 			ticks ? (double)psp_items_lit_reason[5] / ticks : 0.0);
 		platform_log("  weapons on the ground per tick: %.2f updated, %.2f asleep",
 			ticks ? (double)psp_weapons_ground / ticks : 0.0, ticks ? (double)psp_weapons_asleep / ticks : 0.0);
+		{
+			extern long psp_ws_passed; /* objects.c (psp_fixups.py FIXES_WS) */
+
+			platform_log("  sleeping scenery passed over in the walk per tick: %.2f", ticks ? (double)psp_ws_passed / ticks : 0.0);
+			psp_ws_passed = 0;
+		}
 		memset(psp_items_lit_reason, 0, sizeof(psp_items_lit_reason));
 		psp_weapons_ground = psp_weapons_asleep = 0;
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
@@ -937,6 +982,7 @@ static void keep_load(void)
 	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
+	steps_every = keep_search("stepsall") ? 1 : STEPS_TIMED_EVERY;
 	if (keep_cache_lock < 0)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
@@ -983,6 +1029,7 @@ static void keep_load(void)
 	platform_log("keep words, build 132's: speed off: poseaheadoff (the Media Engine pose job off: on by default where the ME runs the job ring); as before: memarksatlaunch (the launch's register read also reads the ME's own two words while it runs)");
 	platform_log("keep words, build 132's recon (emulator): nmreaders (who first reads each object's node matrices after they're computed, by nodes, and the call sites of other objects' reads)");
 	platform_log("keep words, build 136's: wake-on-write on in local games (a sleeping object checksummed only when something marked it since its last check); speed off: wakeonwriteoff (every sleeper summed every tick); opt-in: wakeonwrite (on in networked games too); check: wakecheck (every sleeper summed anyway, an unmarked change logged with the words that changed). wakeonwrite and wakecheck win over the off word");
+	platform_log("keep words, the profile: stepsall (every frame's steps timed; otherwise one frame in %d, and profile.txt's figures scaled by the frames each stands for)", STEPS_TIMED_EVERY);
 	platform_log("keep words, shelved (docs/shelf.md): nwbatch and its kin built in only with PSP_SHELF=1; still built but shelved, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash (the b123 ME hygiene), mewake, mewarmtest, mefinishslow");
 }
 
@@ -1238,6 +1285,8 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 	SceUID file;
 	char line[160];
 
+	double scale;
+
 	if (!profile_slots)
 		return;
 	memcpy(copy, profile_slots, sizeof(copy));
@@ -1246,12 +1295,18 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 		profile_slots[index].microseconds = 0;
 		profile_slots[index].calls = 0;
 	}
+	/* the untimed frames' share, as the timed ones spent it */
+	scale = steps_window_timed ? (double)steps_window_frames / steps_window_timed : 1.0;
+	steps_window_frames = steps_window_timed = 0;
 	for (index = 0; index < PROFILE_SLOTS; index++)
 	{
 		if (copy[index].name && copy[index].microseconds)
 		{
-			copy[used++] = copy[index];
-			total += copy[index].microseconds;
+			copy[used] = copy[index];
+			copy[used].microseconds = (unsigned long)(copy[index].microseconds * scale + 0.5);
+			copy[used].calls = (unsigned long)(copy[index].calls * scale + 0.5);
+			total += copy[used].microseconds;
+			used++;
 		}
 	}
 	qsort(copy, used, sizeof(copy[0]), profile_compare);
@@ -2383,6 +2438,7 @@ void psp_frame_account(unsigned long microseconds)
 	psp_frametrace_frame(microseconds, ticks, psp_heartbeat_clock() - end_start);
 	psp_last_frame_us = microseconds;
 	frame_count++;
+	steps_frame_edge();
 	frame_total += microseconds;
 	if (microseconds > frame_maximum)
 		frame_maximum = microseconds;
