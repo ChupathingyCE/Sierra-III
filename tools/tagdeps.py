@@ -164,6 +164,77 @@ def main():
                 ', '.join('map %d %.5f' % (j, v) for j, v in sorted(found.shares.items())) or 'none'))
         print_tint_inputs(m, t, means, stages=not same or len(shaders) <= 4 or '--stages' in sys.argv)
     print('tints that change from the means\' (texels, the drawn map, the model): %d' % changed)
+    for t in sorted((t for t in m.tags if t.group == 'sgla' and pattern in t.name.lower()), key=lambda t: t.name):
+        print_glass_reflection(m, t, means)
+
+
+def glass_reflection_mix(cube, cube8, tint, alpha):
+    """the Xbox glass reflection pass's average added colour for one view
+    angle: the tint (the parallel and perpendicular colours mixed by the
+    angle's cosine squared) mixes the cube map's texel raised to the eighth
+    power (its combiners square it three times) toward the texel itself, and
+    the mixed brightness scales the sum (rasterizer_xbox_transparent_geometry.c,
+    the glass reflection pass: stages 0-4 and the final combiner)"""
+    return [alpha * ((1.0 - t) * c8 + t * c) for c, c8, t in zip(cube, cube8, tint)]
+
+
+def print_glass_reflection(m, t, means):
+    """a glass shader's reflection as the Xbox draws it: its type, the two
+    colours and brightnesses, the cube map's six faces' mean and mean eighth
+    power, and the average it adds face on, at 45 degrees and edge on,
+    beside what the PSP adds from the pack's patch (the first face's mean)"""
+    import numpy as np
+    import seethrough
+    from bitmap_bake import BPP
+    o = m.off(t.address)
+    flags, = struct.unpack_from('<H', m.data, o + 40)
+    kind, = struct.unpack_from('<h', m.data, o + 138)
+    perpendicular = struct.unpack_from('<4f', m.data, o + 140)
+    parallel = struct.unpack_from('<4f', m.data, o + 156)
+    reflection, = struct.unpack_from('<i', m.data, o + 184)
+    diffuse, = struct.unpack_from('<i', m.data, o + 356)
+    target = m.by_id.get(reflection)
+    print('glass %s: reflection type %d, flags %04x, diffuse map %s, perpendicular %.3f x %s, parallel %.3f x %s, '
+          'cube %s' % (t.name, kind, flags, 'none' if diffuse == -1 else 'set', perpendicular[0],
+                       ' '.join('%.3f' % v for v in perpendicular[1:]), parallel[0],
+                       ' '.join('%.3f' % v for v in parallel[1:]), target.name if target is not None else 'none'))
+    b = means.first.get(target.name) if target is not None else None
+    if not b or b['type'] != 'cube':
+        return
+    bpp = BPP[b['fmt']] if b['fmt'] < len(BPP) else 0
+    face = seethrough._face_bytes(b, bpp) if bpp else 0
+    faces = []
+    for stride in (face, (face + 127) // 128 * 128):
+        if stride and 6 * stride == b['pixels_size']:
+            for k in range(6):
+                img = seethrough.decode(m, dict(b, pixels_offset=b['pixels_offset'] + k * stride, pixels_size=stride))
+                if img is None:
+                    print('  face %d unreadable' % k)
+                    return
+                faces.append(img.reshape(-1, 4)[:, :3].astype(np.float64) / 255.0)
+            break
+    if not faces:
+        print('  faces not placed (%d bytes)' % b['pixels_size'])
+        return
+    for k, f in enumerate(faces):
+        print('  face %d: mean %s; eighth power %s' % (
+            k, ' '.join('%.3f' % v for v in f.mean(0)), ' '.join('%.3f' % v for v in (f ** 8).mean(0))))
+    every = np.concatenate(faces)
+    cube, cube8, first = every.mean(0), (every ** 8).mean(0), faces[0].mean(0)
+    print('  six faces: mean %s; eighth power %s' % (' '.join('%.3f' % v for v in cube),
+                                                     ' '.join('%.3f' % v for v in cube8)))
+    for name, c in (('face on', 1.0), ('45 degrees', 0.7071), ('edge on', 0.0)):
+        w = c * c
+        tint = [parallel[j] + (perpendicular[j] - parallel[j]) * w for j in (1, 2, 3)]
+        alpha = parallel[0] + (perpendicular[0] - parallel[0]) * w
+        xbox = glass_reflection_mix(cube, cube8, tint, alpha)
+        # the PSP: the patch (first face's mean) x each colour x its
+        # brightness, mixed by the cosine itself
+        psp = [first[j] * (parallel[j + 1] * parallel[0] + (perpendicular[j + 1] * perpendicular[0] -
+                                                           parallel[j + 1] * parallel[0]) * c) for j in (0, 1, 2)]
+        print('  %s: Xbox adds %s (x255: %s); the PSP adds %s (x255: %s)' % (
+            name, ' '.join('%.3f' % v for v in xbox), ' '.join('%d' % round(255 * v) for v in xbox),
+            ' '.join('%.3f' % v for v in psp), ' '.join('%d' % round(255 * v) for v in psp)))
 
 
 def print_model_shaders(m, d, tags):
