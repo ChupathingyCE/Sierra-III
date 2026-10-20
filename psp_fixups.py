@@ -2953,6 +2953,9 @@ KEEP_DECLARATION = "#ifdef HALO_PSP\nint psp_keep(const char *name); /* psp_plat
 PSP_SLEEP_CODE = """#ifdef HALO_PSP
 void psp_object_account(int type, unsigned long microseconds); /* psp_platform.c; psp_fixups.py */
 void psp_object_count(int type); /* psp_platform.c */
+#if PSP_DEBUG_TOOLS
+void psp_vehicle_account(long definition_index, unsigned long microseconds); /* psp_platform.c: "vehiclecost" */
+#endif
 unsigned long psp_object_sample(void); /* psp_platform.c: this tick's scale for each object's time, 0 untimed */
 int psp_keep(const char *name);
 static unsigned long psp_object_start, psp_object_scale;
@@ -4088,7 +4091,7 @@ FIXES_19 = {
 ("\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n",
  "\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n#ifdef HALO_PSP\n\tpsp_object_account(12, psp_microseconds() - psp_object_start);\n#endif\n"),
 ("\t\t\t\t\tobject_update(object_index);\n",
- "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
+ "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n#if PSP_DEBUG_TOOLS\n\t\t\t\t\t\tif (object_header->type == _object_type_vehicle)\n\t\t\t\t\t\t\tpsp_vehicle_account(object_header->datum->definition_index, (psp_microseconds() - psp_object_start) * psp_object_scale);\n#endif\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
 ("\tobjects_garbage_collection();\n\n\tprofile_exit(section);",
  "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n\tobjects_garbage_collection();\n\tpsp_object_account(13, psp_microseconds() - psp_object_start);\n#else\n\tobjects_garbage_collection();\n#endif\n\n\tprofile_exit(section);"),
 ],
@@ -12574,24 +12577,37 @@ void psp_flipwatch_flip(long vehicle_index, int approach_type);
 char *tag_get_name(long tag_index);
 #if PSP_DEBUG_TOOLS
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 void platform_psp_log(const char *format, ...);
 
-/* "flipfixture": a Warthog within 30 units of the player (else the nearest
-vehicle) put upside down just in front of him, touching his search's sphere,
-once, at game time 60; at game time 150, once it has fallen and settled,
-where it lies against the player */
-static void psp_flip_fixture(long unit_index)
+/* "flipfixture": a Warthog within 30 units of the player (else one made from
+the map's Warthog tag, else the nearest vehicle) put upside down just in front
+of him, touching his search's sphere, once, at game time 60 (flipfixtureatN:
+at N, for a campaign map's player once he is on the ground); 90 ticks later,
+once it has fallen and settled, where it lies against the player.
+"flippressN": the action button held for ticks N to N+9, so the flip comes
+at a game time of the test's choosing (an input script's times are the
+clock's). Answers whether to hold the action button this tick */
+long psp_drive_warthog_definition(void); /* FIXES_DRIVE */
+
+static int psp_flip_fixture(long unit_index)
 {
 	static int fixture = -1;
-	static long placed = NONE;
+	static long placed = NONE, at = 60, press = -1;
 	struct object_iterator iterator;
 	struct object_datum *object, *unit;
-	long best = NONE;
+	long best = NONE, warthog;
 	real best_distance = 30.0f * 30.0f;
+	int pressing;
 
 	if (fixture < 0)
+	{
 		fixture = psp_keep("flipfixture");
-	if (placed != NONE && game_time_get() >= 150)
+		at = psp_keep_number("flipfixtureat", 60);
+		press = psp_keep_number("flippress", -1);
+	}
+	pressing = press >= 0 && game_time_get() >= press && game_time_get() < press + 10;
+	if (placed != NONE && game_time_get() >= at + 90)
 	{
 		struct object_datum *vehicle = object_try_and_get_and_verify_type(placed, _object_mask_vehicle);
 
@@ -12610,8 +12626,8 @@ static void psp_flip_fixture(long unit_index)
 				vehicle->object.bounding_sphere_radius, unit->object.bounding_sphere_radius);
 		placed = NONE;
 	}
-	if (!fixture || game_time_get() < 60)
-		return;
+	if (!fixture || game_time_get() < at)
+		return pressing;
 	fixture = 0;
 	unit = object_get(unit_index);
 	object_iterator_new(&iterator, _object_mask_vehicle, 0);
@@ -12632,10 +12648,22 @@ static void psp_flip_fixture(long unit_index)
 			best = iterator.index;
 		}
 	}
+	if ((best == NONE || best_distance >= 0.0f) && (warthog = psp_drive_warthog_definition()) != NONE)
+	{
+		struct object_placement_data data;
+
+		object_placement_data_new(&data, warthog, NONE);
+		data.position = unit->object.position;
+		data.position.z += 3.0f;
+		best = object_new(&data);
+		unit = object_get(unit_index);
+		if (best != NONE)
+			platform_psp_log("flipfixture: no Warthog within 30 units of the player: %s made", tag_get_name(warthog));
+	}
 	if (best == NONE)
 	{
 		platform_psp_log("flipfixture: no vehicle within 30 units of the player");
-		return;
+		return pressing;
 	}
 	{
 		struct object_datum *vehicle = object_get(best);
@@ -12677,6 +12705,7 @@ static void psp_flip_fixture(long unit_index)
 		platform_psp_log("flipfixture: %s #%08lx put upside down %.2f units in front of the player (%.2f %.2f %.2f)",
 			tag_get_name(vehicle->definition_index), (unsigned long)best, offset, place.x, place.y, place.z);
 	}
+	return pressing;
 }
 #endif
 #endif
@@ -12717,7 +12746,8 @@ static void player_examine_nearby_vehicle(
 						!player_handle_action(iterator.datum_index) &&""",
  """#ifdef HALO_PSP
 #if PSP_DEBUG_TOOLS
-					psp_flip_fixture(player->unit_index);
+					if (psp_flip_fixture(player->unit_index))
+						SET_FLAG(action->control_flags, _unit_control_action_bit, TRUE);
 #endif
 					if (psp_flipwatch_on())
 						psp_flipwatch_player(player->action_result, player->action_object_index,
@@ -23518,6 +23548,264 @@ FIXES_WAKE["source/render/render_objects.c#wake_render_state"] = [
 		}
 """),
 ]
+# the player's flip: the vehicle's upending flag and approach side, written
+# into a vehicle that has usually been asleep since it came to rest upside
+# down. Unmarked, the sleeper keeps its old checksum, its update never runs,
+# the torque never starts and the flag never clears, so the prompt never
+# comes back (wakecheck's hands-off ladder has no player to press, so it
+# couldn't see this writer). "flipwakeoff": the flip left unmarked, for an A/B
+FIXES_WAKE["source/game/players.c#wake_flip"] = [
+("""		target_vehicle->vehicle.unknown42A = 0;
+""", """		target_vehicle->vehicle.unknown42A = 0;
+		if (!PSP_KEEP_ONCE("flipwakeoff"))
+		{
+			void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+			psp_wake(player->action_object_index);
+		}
+"""),
+]
+
+# ---------- FIXES_DRIVE: a scripted Warthog drive, the same on the PSP and the PC
+# A drive the emulator and ChupathingyCE's desktop build can both play with no
+# hands, so their vehicle physics compare on the same input: the lab's PC
+# hooks carry these pairs to the desktop tree by their keep word, and there
+# the guard is opened, so on the PC they are built whatever the build. On the
+# PSP only in PSP_DEBUG_TOOLS builds: it creates and moves a vehicle.
+# "drivetest" (keep.txt): at game time drivetestatN (2700, b30's beach after
+# the landing), the AI erased (and again every second, so only the vehicle's
+# own physics plays), a Warthog made where the player stands, facing the
+# nearest scenery 4-25 units off, and the player put in its driver's seat.
+# Then a fixed schedule of throttle and steering, by ticks from the start:
+# 0-30 still; 30-180 full ahead at the scenery (a collision with an object);
+# 180-240 reverse; 240-540 full ahead, steering hard left (a donut); 540-840
+# hard right; 840-900 still. Each tick of it logs the Warthog's place,
+# motion, facing and spin ("drivetest:" lines; Sierra-III tools/drivecmp.py
+# compares two runs)
+FIXES_DRIVE = {}
+FIXES_DRIVE["source/units/units.c#drivetest"] = [
+("""					_unit_animation_postpone_weapon_ik_until_interpolation_ends_bit,
+					FALSE);
+			}
+		}
+	}
+
+	return;
+}
+""", """					_unit_animation_postpone_weapon_ik_until_interpolation_ends_bit,
+					FALSE);
+			}
+		}
+	}
+
+	return;
+}
+
+#ifdef HALO_PSP
+#if !defined(__psp__) || defined(PSP_DEBUG_TOOLS)
+/* "drivetest": psp_fixups.py's FIXES_DRIVE says what it plays */
+#include "cache/cache_files.h"
+#include "hs/hs.h"
+#include "tag_files/tag_files.h"
+#include "units/vehicle_definitions.h"
+
+int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
+void platform_psp_log(const char *format, ...);
+
+#define PSP_DRIVE_TICKS 900
+static int psp_drive_on = -1;
+static long psp_drive_start, psp_drive_vehicle = NONE, psp_drive_target = NONE;
+static struct unit_control_data psp_drive_control_data;
+
+/* the map's Warthog: the vehicle tag whose name ends in "warthog" */
+long psp_drive_warthog_definition(void)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, VEHICLE_DEFINITION_TAG);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		char const *name = tag_get_name(tag_index);
+		size_t length = strlen(name);
+
+		if (length >= 7 && !strcmp(name + length - 7, "warthog"))
+			return tag_index;
+	}
+	return NONE;
+}
+
+/* a horizontal unit vector from a to b; FALSE when they are on one vertical */
+static boolean psp_drive_heading(real_point3d const *a, real_point3d const *b, real_vector3d *heading)
+{
+	real length;
+
+	heading->i = b->x - a->x;
+	heading->j = b->y - a->y;
+	heading->k = 0.0f;
+	length = (real)sqrt(heading->i * heading->i + heading->j * heading->j);
+	if (length < 0.001f)
+		return FALSE;
+	heading->i /= length;
+	heading->j /= length;
+	return TRUE;
+}
+
+static void psp_drive_begin(long unit_index)
+{
+	struct object_datum *unit = object_get(unit_index);
+	struct object_iterator iterator;
+	struct object_datum *object;
+	struct object_placement_data data;
+	struct unit_definition *definition;
+	long warthog = psp_drive_warthog_definition();
+	real best = 25.0f * 25.0f;
+	real_vector3d heading;
+	short seat_index;
+
+	hs_compile_and_evaluate("ai_erase_all");
+	if (warthog == NONE)
+	{
+		platform_psp_log("drivetest: t=%ld no Warthog in this map's tags", game_time_get());
+		return;
+	}
+	object_iterator_new(&iterator, _object_mask_scenery, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		real dx = object->object.position.x - unit->object.position.x;
+		real dy = object->object.position.y - unit->object.position.y;
+		real distance = dx * dx + dy * dy;
+
+		if (distance >= 4.0f * 4.0f && distance < best && object->object.bounding_sphere_radius >= 0.5f)
+		{
+			best = distance;
+			psp_drive_target = iterator.index;
+		}
+	}
+	heading.i = unit->object.forward.i;
+	heading.j = unit->object.forward.j;
+	heading.k = 0.0f;
+	if (psp_drive_target != NONE)
+		psp_drive_heading(&unit->object.position, &object_get(psp_drive_target)->object.position, &heading);
+	object_placement_data_new(&data, warthog, NONE);
+	data.position = unit->object.position;
+	data.position.z += 0.8f;
+	data.forward = heading;
+	data.up = *global_up3d;
+	psp_drive_vehicle = object_new(&data);
+	if (psp_drive_vehicle == NONE)
+	{
+		platform_psp_log("drivetest: t=%ld the Warthog couldn't be made", game_time_get());
+		return;
+	}
+	definition = unit_definition_get(object_get(psp_drive_vehicle)->definition_index);
+	for (seat_index = 0; seat_index < definition->unit.seats.count; seat_index++)
+		if (TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&definition->unit.seats, seat_index, struct unit_seat)->flags, _unit_seat_driver_bit))
+			break;
+	if (seat_index == definition->unit.seats.count || !unit_enter_seat(unit_index, psp_drive_vehicle, seat_index))
+		platform_psp_log("drivetest: t=%ld the player couldn't take the driver's seat", game_time_get());
+	unit = object_get(unit_index);
+	platform_psp_log("drivetest: t=%ld %s #%08lx made at %.4f %.4f %.4f heading %.4f %.4f; target %s at %.4f %.4f %.4f radius %.3f",
+		game_time_get(), tag_get_name(warthog), (unsigned long)psp_drive_vehicle, data.position.x, data.position.y, data.position.z,
+		heading.i, heading.j, psp_drive_target != NONE ? tag_get_name(object_get(psp_drive_target)->definition_index) : "none",
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.x : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.y : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.z : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.bounding_sphere_radius : 0.0f);
+}
+
+/* the player's control during the drive: the schedule's throttle and a
+facing the Warthog steers to (at the target, or square to its left or right
+for full lock) */
+struct unit_control_data const *psp_drive_control(long unit_index, struct unit_control_data const *control_data)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	struct object_datum *vehicle;
+	real_vector3d facing;
+	long now, step;
+	real throttle = 0.0f;
+	int steer = 0;
+
+	if (psp_drive_on < 0)
+	{
+		psp_drive_on = psp_keep("drivetest");
+		psp_drive_start = psp_keep_number("drivetestat", 2700);
+	}
+	if (!psp_drive_on || unit->unit.player_index == NONE || (now = game_time_get()) < psp_drive_start)
+		return control_data;
+	if (psp_drive_on == 1)
+	{
+		psp_drive_on = 2;
+		psp_drive_begin(unit_index);
+	}
+	step = now - psp_drive_start;
+	if (psp_drive_vehicle == NONE || step > PSP_DRIVE_TICKS ||
+		!(vehicle = (struct object_datum *)object_try_and_get_and_verify_type(psp_drive_vehicle, _object_mask_vehicle)))
+		return control_data;
+	if (step % 30 == 0 && step > 0)
+		hs_compile_and_evaluate("ai_erase_all");
+	if (step >= 30 && step < 180)
+		throttle = 1.0f;
+	else if (step >= 180 && step < 240)
+		throttle = -1.0f;
+	else if (step >= 240 && step < 540)
+		throttle = 1.0f, steer = 1;
+	else if (step >= 540 && step < 840)
+		throttle = 1.0f, steer = -1;
+	facing.i = vehicle->object.forward.i;
+	facing.j = vehicle->object.forward.j;
+	facing.k = 0.0f;
+	if (steer)
+	{
+		real i = facing.i;
+
+		facing.i = -steer * facing.j;
+		facing.j = steer * i;
+	}
+	else if (psp_drive_target != NONE && object_try_and_get_and_verify_type(psp_drive_target, _object_mask_scenery))
+		psp_drive_heading(&vehicle->object.position, &object_get(psp_drive_target)->object.position, &facing);
+	if (normalize3d(&facing) < 0.001f)
+		facing = *global_forward3d;
+	psp_drive_control_data = *control_data;
+	psp_drive_control_data.control_flags = 0;
+	psp_drive_control_data.primary_trigger = 0.0f;
+	psp_drive_control_data.throttle.i = throttle;
+	psp_drive_control_data.throttle.j = 0.0f;
+	psp_drive_control_data.throttle.k = 0.0f;
+	psp_drive_control_data.facing_vector = facing;
+	psp_drive_control_data.aiming_vector = facing;
+	psp_drive_control_data.looking_vector = facing;
+	platform_psp_log("drivetest: t=%ld step %ld throttle %.0f steer %d | pos %.4f %.4f %.4f vel %.4f %.4f %.4f "
+		"fwd %.4f %.4f %.4f up %.4f %.4f %.4f spin %.4f %.4f %.4f", now, step, throttle, steer,
+		vehicle->object.position.x, vehicle->object.position.y, vehicle->object.position.z,
+		vehicle->object.translational_velocity.i, vehicle->object.translational_velocity.j, vehicle->object.translational_velocity.k,
+		vehicle->object.forward.i, vehicle->object.forward.j, vehicle->object.forward.k,
+		vehicle->object.up.i, vehicle->object.up.j, vehicle->object.up.k,
+		vehicle->object.angular_velocity.i, vehicle->object.angular_velocity.j, vehicle->object.angular_velocity.k);
+	return &psp_drive_control_data;
+}
+#endif
+#endif
+"""),
+("""	if (unit->unit.player_index == NONE)
+		network_actors_note_control(unit_index, control_data);
+""", """#ifdef HALO_PSP
+#if !defined(__psp__) || defined(PSP_DEBUG_TOOLS)
+	{
+		/* "drivetest" (psp_fixups.py's FIXES_DRIVE): may make a vehicle,
+		so the unit is looked up again */
+		struct unit_control_data const *psp_drive_control(long unit_index, struct unit_control_data const *control_data);
+
+		control_data = psp_drive_control(unit_index, control_data);
+		unit = unit_get(unit_index);
+	}
+#endif
+#endif
+	if (unit->unit.player_index == NONE)
+		network_actors_note_control(unit_index, control_data);
+"""),
+]
 
 
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
@@ -24963,7 +25251,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

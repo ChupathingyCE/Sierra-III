@@ -710,6 +710,7 @@ one tick in OBJECT_SAMPLE and scaling by it keeps it unbiased for 1/8 of the
 calls. "objecttimeall": every tick timed, as before. Returns the scale for
 this tick's times, or 0 for a tick that isn't timed */
 #define OBJECT_SAMPLE 8
+static unsigned long object_scale_now;
 unsigned long psp_object_sample(void)
 {
 	static int every_tick = -1;
@@ -718,9 +719,57 @@ unsigned long psp_object_sample(void)
 	if (every_tick < 0)
 		every_tick = psp_keep("objecttimeall") != 0;
 	if (every_tick)
-		return 1;
-	return (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
+		return object_scale_now = 1;
+	return object_scale_now = (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
 }
+
+#if PSP_DEBUG_TOOLS
+/* "vehiclecost": the vehicles' updates timed by definition, so a flier's or a
+Warthog's tick cost reads apart from the rest (the per-type line sums every
+vehicle). Timed on the sampled ticks only, so counts are scaled as times are */
+#define VEHICLE_ACCOUNTS 16
+static struct { long definition_index; unsigned long microseconds, updates; } vehicle_accounts[VEHICLE_ACCOUNTS];
+static int vehicle_cost = -1;
+
+void psp_vehicle_account(long definition_index, unsigned long microseconds)
+{
+	int k;
+
+	if (vehicle_cost < 0)
+		vehicle_cost = psp_keep("vehiclecost") != 0;
+	if (!vehicle_cost)
+		return;
+	for (k = 0; k < VEHICLE_ACCOUNTS && vehicle_accounts[k].updates && vehicle_accounts[k].definition_index != definition_index; k++)
+		;
+	if (k == VEHICLE_ACCOUNTS)
+		return;
+	vehicle_accounts[k].definition_index = definition_index;
+	vehicle_accounts[k].microseconds += microseconds;
+	vehicle_accounts[k].updates += object_scale_now;
+}
+
+static void vehicle_report(unsigned long ticks)
+{
+	char *tag_get_name(long tag_index);
+	char line[512];
+	int length, k;
+
+	if (vehicle_cost <= 0 || !ticks)
+		return;
+	length = snprintf(line, sizeof(line), "vehiclecost: ms per tick (updates per tick, us each):");
+	for (k = 0; k < VEHICLE_ACCOUNTS && vehicle_accounts[k].updates; k++)
+	{
+		char const *name = tag_get_name(vehicle_accounts[k].definition_index), *last = strrchr(name, '\\');
+
+		if (length < (int)sizeof(line) - 64)
+			length += snprintf(line + length, sizeof(line) - length, " %s %.2f (%.2f, %lu);", last ? last + 1 : name,
+				vehicle_accounts[k].microseconds / 1000.0 / ticks, (double)vehicle_accounts[k].updates / ticks,
+				vehicle_accounts[k].microseconds / vehicle_accounts[k].updates);
+	}
+	platform_log("  %s", line);
+	memset(vehicle_accounts, 0, sizeof(vehicle_accounts));
+}
+#endif
 
 /* build 113: render_objects.c's counts (psp_fixups.py), since the last report */
 long psp_rendered_views, psp_rendered_full, psp_rendered_peak, psp_rendered_capacity, psp_render_states_new, psp_render_states_evicted;
@@ -730,6 +779,9 @@ static void object_report(SceUID file, unsigned long ticks)
 	char line[1024];
 	int length, type;
 
+#if PSP_DEBUG_TOOLS
+	vehicle_report(ticks);
+#endif
 	length = snprintf(line, sizeof(line), "objects_update by type, ms per tick (updates per tick):");
 	for (type = 0; type < OBJECT_ACCOUNTS_FIRST_LINE && length < (int)sizeof(line) - 64; type++)
 	{
