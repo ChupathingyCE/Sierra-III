@@ -13121,8 +13121,8 @@ the GE's destination factor: the frame times the tint, plus the reflection,
 which is what the Xbox's two passes give. Without it the glass was clear: the
 Pelican's canopy showed its lit cockpit where the original's is smoked
 violet, with the reflection on top. A tint map can't ride a fixed factor:
-such glass leaves the frame as it is (none in the campaign's glass without a
-diffuse map [D]). The tint colour at +84, the tint map's index at +112.
+such glass leaves the frame as it is (the Pelican's and the lifepod's
+glass have none). The tint colour at +84, the tint map's index at +112.
 "glassnotint": the frame left as it is, as before */
 static int glass_tint_off = -1;
 static unsigned long glass_tinted_draws = 0;
