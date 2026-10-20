@@ -8278,10 +8278,43 @@ static unsigned long two_sided_draws = 0;
 static int model_cull = -1;
 int psp_keep(const char *name);
 
+/* An object whose tag says its transparency self-occludes (Cortana) is
+drawn by the Xbox in two goes: every see-through part of it writes its depth
+with colour off and both sides drawn, then the parts draw as usual, so only
+her nearest surface shows (rasterizer_xbox_transparent_geometry.c, the
+modifier effect, type 2). Drawn without it, her hair's and head's back
+layers blend over her face in the order they sort, and where her parts
+meet that shows as a hard edge. Each such model gets a number its parts
+carry (model_occluder; 0 for none). Her model on a level that asks for it
+(models.c's cortana hack, the type's second byte here) also sorts after
+every other see-through draw, as the Xbox's sort puts her.
+"noselfocclude": neither, as before */
+static unsigned short model_occluder = 0, model_occluder_last = 0;
+static unsigned char model_sorted_last = 0;
+static int self_occlude = -1;
+static unsigned long self_occlude_parts = 0, self_occlude_runs = 0;
+
 void psp_ge_model_effect(int type, float intensity)
 {
+	int sorted_last = (type >> 8) & 1;
+
 	GE_BENCH_SKIP();
 	GE_DEFER(defer_model_effect(type, intensity));
+	type &= 0xFF;
+	if (self_occlude < 0)
+		self_occlude = !psp_keep("noselfocclude");
+	model_occluder = 0;
+	model_sorted_last = 0;
+	if (self_occlude)
+	{
+		if (type == 2)
+		{
+			if (++model_occluder_last == 0)
+				model_occluder_last = 1;
+			model_occluder = model_occluder_last;
+		}
+		model_sorted_last = (unsigned char)sorted_last;
+	}
 	model_camouflage = type == 1 && intensity > 0.0f ? (intensity > 1.0f ? 1.0f : intensity) : 0.0f;
 }
 
@@ -11474,6 +11507,10 @@ struct transparent_draw
 	/* a model part whose shader isn't two-sided: its back faces culled
 	(PSP_SEETHROUGH_ONE_SIDED; seethrough_cull) */
 	unsigned char one_sided;
+	/* a self-occluding object's part: its object's number (model_occluder),
+	0 for every other draw; and whether it sorts after every other draw */
+	unsigned short occluder;
+	unsigned char sorted_last;
 };
 
 /* build 116: a meter shader's blends, as the Xbox sets them
@@ -11493,6 +11530,15 @@ psp_ge_seethrough_shader); the call's pieces all take it, and it goes back
 to white when the call returns. Untinted, b30's ocean drew white */
 static unsigned int seethrough_next_tint = 0xFFFFFFFF;
 static unsigned int seethrough_next_shader = 0; /* after b116: for tdump */
+/* a generic shader that asks to be left out of its object's effect (its flags
+byte +41, bit 5: shader_ignores_effect): no part in a self-occluding
+object's depth */
+static int seethrough_ignores_effect(unsigned int shader)
+{
+	const unsigned char *definition = (const unsigned char *)shader;
+
+	return shader && *(const short *)(definition + 36) == 5 && (definition[41] & 0x20) != 0;
+}
 /* build 116: the tint is half the shader's colour, drawn with the GE's
 colour doubling (a shader brighter than its map: Cortana, the holograms) */
 static unsigned char seethrough_next_doubled = 0;
@@ -11706,6 +11752,8 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 	}
 	draw = &transparent[transparent_count++];
 	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -11840,6 +11888,8 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 	}
 	draw = &transparent[transparent_count++];
 	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -11994,6 +12044,8 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 	}
 	draw = &transparent[transparent_count++];
 	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -12408,6 +12460,8 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	}
 	draw = &transparent[transparent_count++];
 	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -12495,6 +12549,8 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->v_offset = v_offset;
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
 	draw->one_sided = PSP_SEETHROUGH_ONE_SIDED(blend) && seethrough_cull_on();
+	draw->occluder = in_sky || seethrough_ignores_effect(seethrough_next_shader) ? 0 : model_occluder;
+	draw->sorted_last = model_sorted_last;
 	draw->tint = seethrough_next_tint;
 	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
@@ -12898,6 +12954,8 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	}
 	draw = &transparent[transparent_count++];
 	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -13928,9 +13986,57 @@ extern volatile int psp_screenshot_requested;
 static int tdump = -1;
 static long tskip = -1; /* "tskipN" (transparent_flush_body) */
 
+/* whether draw a goes after draw b: far to near, Cortana's parts on a level
+that asks for it after every other (psp_ge_model_effect) */
+static int transparent_later(const struct transparent_draw *a, const struct transparent_draw *b)
+{
+	if (a->sorted_last != b->sorted_last)
+		return a->sorted_last;
+	return a->distance < b->distance;
+}
+
+/* the depth of one self-occluding object's run of parts (the draws from
+order position index on that carry its number), both sides, nothing else
+written, as the Xbox's first go (psp_ge_model_effect). The parts then draw
+as usual, and only their nearest surface passes the depth test */
+static void transparent_occluder_depth(int index)
+{
+	unsigned short occluder = transparent[transparent_order[index]].occluder;
+
+	self_occlude_runs++;
+	sceGuPixelMask(0xFFFFFFFF);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDepthMask(GU_FALSE);
+	for (; index < transparent_count; index++)
+	{
+		struct transparent_draw const *draw = &transparent[transparent_order[index]];
+		int middle = draw->colored ? GU_COLOR_8888 : GU_NORMAL_8BIT;
+
+		if (draw->occluder != occluder)
+			break;
+		/* (a first-person part keeps its own projection: left to draw as before) */
+		if ((!draw->vertices && !draw->cut_vertices) || draw->sprites || draw->level || draw->sky ||
+			draw->first_person || list_full())
+			continue;
+		sceGumLoadMatrix(&draw->matrix);
+		if (draw->index_count > 0)
+			sceGumDrawArray(draw->strip ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
+				GU_TEXTURE_32BITF | middle | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				draw->index_count, draw->indices, draw->vertices);
+		if (draw->cut_count > 0 && draw->cut_vertices)
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | middle | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+				draw->cut_count, NULL, draw->cut_vertices);
+		self_occlude_parts++;
+	}
+	sceGuDepthMask(GU_TRUE);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuPixelMask(0);
+}
+
 static void transparent_flush_body(void)
 {
 	int saved_limit = list_limit;
+	unsigned short occluder_drawn = 0;
 
 	int index, other;
 
@@ -13954,7 +14060,7 @@ static void transparent_flush_body(void)
 	/* far to near (the sky's parts count as farthest) */
 	for (index = 0; index < transparent_count; index++)
 	{
-		for (other = index; other > 0 && transparent[transparent_order[other - 1]].distance < transparent[index].distance; other--)
+		for (other = index; other > 0 && transparent_later(&transparent[transparent_order[other - 1]], &transparent[index]); other--)
 			transparent_order[other] = transparent_order[other - 1];
 		transparent_order[other] = index;
 	}
@@ -14029,6 +14135,10 @@ static void transparent_flush_body(void)
 		}
 		if (tskip > 0 && draw->key == (unsigned int)tskip)
 			continue;
+		/* a self-occluding object's run of parts: its depth first */
+		if (draw->occluder && draw->occluder != occluder_drawn)
+			transparent_occluder_depth(index);
+		occluder_drawn = draw->occluder;
 		if ((draw->first_person ? list_full_first_person() : list_full()) || (draw->level && overlays_off) ||
 			!psp_tex_bind(draw->key, NULL))
 			continue;
@@ -18528,9 +18638,11 @@ void psp_ge_frame_end(void)
 			unsigned long layers_queued, layers_unmapped;
 
 			psp_transparent_layers_counts(&layers_queued, &layers_unmapped);
-			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise)",
-				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts, psp_transparent_noise_count());
+			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise); self-occluding objects' depth first %lu times, %lu parts (noselfocclude: none)",
+				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts, psp_transparent_noise_count(),
+				self_occlude_runs, self_occlude_parts);
 		}
+		self_occlude_runs = self_occlude_parts = 0;
 		seethrough_culled_draws = 0;
 		camo_shimmer_parts = 0;
 		seethrough_angle_draws = 0;

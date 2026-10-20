@@ -284,7 +284,12 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			/* and active camouflage: how see-through the model is (build 30) */
 			extern void psp_ge_model_effect(int type, float intensity);
 
-			psp_ge_model_effect(parameters->effect.type, parameters->effect.intensity);
+			/* (and, in the type's second byte, whether it's Cortana's model on a
+			level that sorts her see-through parts last: models.c's cortana hack) */
+			extern boolean rasterizer_model_cortana_hack;
+
+			psp_ge_model_effect(parameters->effect.type | (rasterizer_model_cortana_hack ? 0x100 : 0),
+				parameters->effect.intensity);
 		}
 		psp_animation_valid = parameters->animation.values != NULL;
 		if (psp_animation_valid)
@@ -25162,6 +25167,20 @@ static void psp_transparent_noise(struct shader const *shader, short permutation
 	if (!maps || map_count - skip < 2)
 		return;
 	drawn = psp_tex_shader_map((unsigned int)shader);
+	if (drawn < 0)
+	{
+		/* a shader the bake left to the runtime's rule (psp_transparent_map,
+		the camouflage powerup's among them): the smallest scale after the
+		first map the GE can draw */
+		for (drawn = skip, index = 1; index < map_count - skip && index < 4; index++)
+		{
+			float scale = *(float const *)(maps + 100 * (skip + index) + 4);
+			float best = *(float const *)(maps + 100 * drawn + 4);
+
+			if (scale != 0.0f && (best == 0.0f || scale <= best))
+				drawn = (int)(skip + index);
+		}
+	}
 	if (drawn < skip || drawn >= map_count)
 		return;
 	for (index = skip; index < map_count && index < 4; index++)
