@@ -15736,6 +15736,18 @@ static int outside_cone(const float *p0, const float *p1, const float *p2, float
 /* the light pass's cut pieces (psp_ge_light_draw_body begins it) */
 static struct cut_store light_pieces;
 
+/* Mode 2 lifts the light toward the eye so that cut and split pieces, whose
+corners are new, still land on the surface the base pass drew. A whole
+triangle kept as the level drew it has the base pass's own corners, so it
+lands on the very same depths (as the lightmap pass does) and needs no lift.
+Lifted, a face seen edge-on put its light over the face in front of it along
+the corner between them: a bright line or dashes, the full height of a
+pillar. Those triangles are drawn without the lift. Keep word "lightliftall":
+every triangle lifted */
+static int light_exact_on = -1, light_emit_exact = 0;
+static unsigned char light_exact_of[SCRATCH_TRIANGLES];
+static unsigned long light_exact_triangles = 0;
+
 /* one lit triangle (corners: camera space, texture coordinates, the light's
 reach at 5, the world position at 7): kept, cut up, or skipped by the view */
 static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
@@ -15758,6 +15770,7 @@ static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *ou
 			*(float *)&o->color = corners[corner][5]; /* coloured once the tint is known */
 			o->x = corners[corner][7]; o->y = corners[corner][8]; o->z = corners[corner][9];
 		}
+		light_exact_of[*kept_count] = (unsigned char)light_emit_exact;
 		(*kept_count)++;
 		return;
 	}
@@ -15870,6 +15883,15 @@ with an edge longer than a fifth of the light's radius is now split into
 four, again and again (four levels at most) where it can reach the light,
 and each piece lit at its own corners. Keep word "nolightsplit": as before */
 static int light_split_on = -1;
+
+/* The split decided per edge, not per triangle: two triangles sharing an
+edge split it alike, at the same midpoint (0.5 * (a + b) is the same float
+from either end), so their pieces meet corner to corner. Decided per
+triangle, a neighbour split one level less put its long edge against the
+other's two halves: a T-junction, which the GE rasterises with hairline
+gaps, dark along the seams of the flashlight's pool. Keep word
+"lightsplitold": the per-triangle split */
+static int light_split_edges = -1;
 static unsigned long light_split_triangles = 0, light_split_pieces = 0;
 
 static void light_emit_spot(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
@@ -15925,6 +15947,17 @@ static float distance_squared3(const float *a, const float *b)
 
 static float light_split_tangent = 1.0f;
 
+/* symmetric in a and b, bit for bit, so both triangles on an edge agree */
+static int light_edge_splits(const float *a, const float *b)
+{
+	float near_a = distance_squared3(a, light.position), near_b = distance_squared3(b, light.position);
+	float split = 0.5f * sqrtf(near_a < near_b ? near_a : near_b);
+
+	if (split < 0.2f * light.radius)
+		split = 0.2f * light.radius;
+	return distance_squared3(a, b) > split * split;
+}
+
 static void light_split(float p[3][3], float uv[3][2], const unsigned int normal[3], int depth,
 	struct shadow_vertex *out, long *kept_count, int *cut_count)
 {
@@ -15959,7 +15992,58 @@ static void light_split(float p[3][3], float uv[3][2], const unsigned int normal
 	split = 0.5f * nearest;
 	if (split < 0.2f * light.radius)
 		split = 0.2f * light.radius;
-	if (depth < 3 && longest > split)
+	if (light_split_edges < 0)
+		light_split_edges = !psp_keep("lightsplitold");
+	if (light_split_edges)
+	{
+		/* halve the longest edge that needs it, then the halves again: six
+		halvings, about the old three levels of four (64 pieces at most) */
+		int pick = -1;
+		float pick_length = 0.0f;
+
+		for (corner = 0; corner < 3 && depth < 6; corner++)
+		{
+			const float *a = p[corner], *b = p[(corner + 1) % 3];
+			float length = distance_squared3(a, b);
+
+			if (length > pick_length && light_edge_splits(a, b))
+			{
+				pick = corner;
+				pick_length = length;
+			}
+		}
+		if (pick >= 0)
+		{
+			int next = (pick + 1) % 3, other = (pick + 2) % 3, k;
+			float half[2][3][3], half_uv[2][3][2], m[3], muv[2];
+			unsigned int half_normal[3];
+
+			for (k = 0; k < 3; k++)
+				m[k] = 0.5f * (p[pick][k] + p[next][k]);
+			muv[0] = 0.5f * (uv[pick][0] + uv[next][0]);
+			muv[1] = 0.5f * (uv[pick][1] + uv[next][1]);
+			/* (pick, m, other) and (m, next, other): the parent's winding */
+			memcpy(half[0][0], p[pick], sizeof(m));
+			memcpy(half[0][1], m, sizeof(m));
+			memcpy(half[0][2], p[other], sizeof(m));
+			memcpy(half[1][0], m, sizeof(m));
+			memcpy(half[1][1], p[next], sizeof(m));
+			memcpy(half[1][2], p[other], sizeof(m));
+			memcpy(half_uv[0][0], uv[pick], sizeof(muv));
+			memcpy(half_uv[0][1], muv, sizeof(muv));
+			memcpy(half_uv[0][2], uv[other], sizeof(muv));
+			memcpy(half_uv[1][0], muv, sizeof(muv));
+			memcpy(half_uv[1][1], uv[next], sizeof(muv));
+			memcpy(half_uv[1][2], uv[other], sizeof(muv));
+			light_split_pieces++;
+			/* level surfaces are flat: one normal does for the pieces */
+			half_normal[0] = half_normal[1] = half_normal[2] = normal[pick];
+			light_split(half[0], half_uv[0], half_normal, depth + 1, out, kept_count, cut_count);
+			light_split(half[1], half_uv[1], half_normal, depth + 1, out, kept_count, cut_count);
+			return;
+		}
+	}
+	else if (depth < 3 && longest > split)
 	{
 		float m[3][3], muv[3][2], piece[3][3], piece_uv[3][2];
 		unsigned int piece_normal[3];
@@ -16332,7 +16416,11 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				continue;
 			}
 		}
+		if (light_exact_on < 0)
+			light_exact_on = !psp_keep("lightliftall");
+		light_emit_exact = light_exact_on;
 		light_emit(corners, out, &kept_count, &cut_count);
+		light_emit_exact = 0;
 	}
 #ifdef PSP_RECON
 	if (census_run_count)
@@ -16439,11 +16527,12 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		stood that close in front of it (review). Within a band (distances
 		doubling) the lift is at most 4 times the one asked for */
 		unsigned char band_of[SCRATCH_TRIANGLES];
-		long band_count[LIGHT_BANDS], t;
-		float band_near[LIGHT_BANDS];
+		/* and one more band, LIGHT_BANDS: the exact triangles, no lift */
+		long band_count[LIGHT_BANDS + 1], t;
+		float band_near[LIGHT_BANDS + 1];
 		int b;
 
-		for (b = 0; b < LIGHT_BANDS; b++)
+		for (b = 0; b <= LIGHT_BANDS; b++)
 		{
 			band_count[b] = 0;
 			band_near[b] = 1e30f;
@@ -16462,13 +16551,13 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				if (d2 < nearest)
 					nearest = d2;
 			}
-			b = light_band(nearest);
+			b = light_exact_of[t] ? LIGHT_BANDS : light_band(nearest);
 			band_of[t] = (unsigned char)b;
 			band_count[b]++;
 			if (nearest < band_near[b])
 				band_near[b] = nearest;
 		}
-		for (b = 0; b < LIGHT_BANDS; b++)
+		for (b = 0; b <= LIGHT_BANDS; b++)
 		{
 			struct shadow_vertex *copy;
 			long n = 0;
@@ -16481,7 +16570,9 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			for (t = 0; t < kept_count; t++)
 				if (band_of[t] == b)
 					memcpy(copy + 3 * n++, out + 3 * t, 3 * sizeof(struct shadow_vertex));
-			sceGuDepthOffset(light_nudge_units(sqrtf(band_near[b])));
+			if (b == LIGHT_BANDS)
+				light_exact_triangles += n;
+			sceGuDepthOffset(b == LIGHT_BANDS ? 0 : light_nudge_units(sqrtf(band_near[b])));
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 				(int)n * 3, NULL, copy);
 			light_nudged_draws++;
@@ -18512,8 +18603,8 @@ void psp_ge_frame_end(void)
 		/* build 89: the counters over these 300 frames (they were never
 		reset, so a bench window's line carried every earlier window's;
 		review), and the ME's part on a line of its own (512 characters) */
-		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes (last 300 frames)",
-			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, stencil_mode, bake_substituted,
+		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped, %lu unlifted; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes (last 300 frames)",
+			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, light_exact_triangles, stencil_mode, bake_substituted,
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		if (level_local > 0)
@@ -18607,7 +18698,7 @@ void psp_ge_frame_end(void)
 		if (light_merge > 0)
 			platform_log("GE: lightmerge: merged light draws, last 300 frames: %lu", light_merged_draws);
 		light_merged_draws = 0;
-		light_index_triangles = light_nudged_draws = lights_skipped = 0;
+		light_index_triangles = light_nudged_draws = lights_skipped = light_exact_triangles = 0;
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;
 		/* build 90 */
