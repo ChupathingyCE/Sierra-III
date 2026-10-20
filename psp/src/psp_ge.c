@@ -3142,6 +3142,8 @@ static void uv_shift(float scale_u, float scale_v)
 	sceGuTexOffset(su, sv);
 }
 static float near_object_distance = 1e30f, near_object_distance_last = 1e30f;
+/* "neardump": the nearest model's sphere radius, for the screenshot frames' line */
+static float near_object_radius = 0.0f, near_object_radius_last = 0.0f;
 static unsigned long near_auto_us = 0, near_auto_frames = 0, near_auto_chosen[3], near_auto_by_objects = 0;
 static unsigned long near_auto_chosen_high[2]; /* build 84: x8, x16 */
 
@@ -3174,6 +3176,8 @@ static float near_plane_auto(const float *eye, float game_near)
 	}
 	near_object_distance_last = near_object_distance;
 	near_object_distance = 1e30f;
+	near_object_radius_last = near_object_radius;
+	near_object_radius = 0.0f;
 	/* build 106: the nearest model's limit first, and the level tested
 	only at the scales it leaves (each test is a sphere query of the level,
 	1.2 ms a frame in the emulator at b30's beach, where the marines held
@@ -3203,6 +3207,17 @@ static float near_plane_auto(const float *eye, float game_near)
 		}
 	}
 	scale = level_scale;
+	{
+		/* "neardump": on a screenshot's frame, what decided its near plane */
+		extern volatile int psp_screenshot_requested;
+		static int dump = -1;
+
+		if (dump < 0)
+			dump = psp_keep("neardump");
+		if (dump && psp_screenshot_requested)
+			platform_log("neardump: near plane x%d (objects allow x%d, the level x%d); nearest model's sphere %.3f from the eye (radius %.3f), seated %d",
+				scale, object_scale, level_scale, near_object_distance_last, near_object_radius_last, player_seated);
+	}
 	near_auto_chosen[scale >= 4 ? 2 : scale == 2 ? 1 : 0]++;
 	if (scale >= 8)
 		near_auto_chosen_high[scale == 16 ? 1 : 0]++;
@@ -4007,16 +4022,20 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		for as the frame begins, so "tdump" lists the frame's see-through
 		draws too. "shotrunN": each of those moments takes N frames in a
 		row (at most 72 shots then), so a frame-to-frame change (a wobble,
-		a flicker) can be told from motion by comparing neighbours */
+		a flicker) can be told from motion by comparing neighbours.
+		"shotfromN": none before N seconds of game time, so the shots can
+		cover a stretch late in a map (the PC reference's rule, so a PSP shot
+		and a PC frame share their ticks) */
 		extern volatile int psp_screenshot_requested;
 		extern int psp_keep_number(const char *prefix, int fallback);
 		extern long psp_game_time_peek(void);
 		static int shot_every = -2, shot_run = 1, shot_run_left = 0, shots_asked = 0, shots_most = 24;
-		static long shot_next = -1;
+		static long shot_next = -1, shot_from = 0;
 
 		if (shot_every == -2)
 		{
 			shot_every = psp_keep_number("shotevery", 0);
+			shot_from = (long)psp_keep_number("shotfrom", 0) * 30;
 			shot_run = psp_keep_number("shotrun", 1);
 			if (shot_run < 1)
 				shot_run = 1;
@@ -4027,6 +4046,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		{
 			long now = psp_game_time_peek(), period = (long)shot_every * 30;
 
+			if (shot_next < 0 && shot_from > 0)
+				shot_next = shot_from;
 			if (shot_next >= 0 && now >= shot_next)
 				shot_run_left = shot_run;
 			if (shot_run_left > 0)
@@ -8227,7 +8248,10 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 			if (reach < 0.0f && player_seated != 1)
 				reach = 0.0f;
 			if (reach >= 0.0f && reach < near_object_distance)
+			{
 				near_object_distance = reach;
+				near_object_radius = radius;
+			}
 		}
 		{
 			float nearest = c[2] - radius;
@@ -8245,6 +8269,11 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 shimmer that bends what is behind it; the GE draws it faint, see-through by
 the camouflage's amount, without writing depth */
 static float model_camouflage = 0.0f;
+/* "camoshimmer": the camouflaged model's own map added at this much of
+full (0-255) in place of the faded draw (psp_ge_draw_model_body) */
+#define CAMO_SHIMMER_LEVEL 48
+static int camo_shimmer = -1;
+static unsigned long camo_shimmer_parts = 0;
 static unsigned long two_sided_draws = 0;
 static int model_cull = -1;
 int psp_keep(const char *name);
@@ -11144,7 +11173,29 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	else
 		sceGuColor(color);
 	model_lighting(1);
-	if (model_camouflage > 0.0f)
+	if (camo_shimmer < 0)
+		camo_shimmer = psp_keep("camoshimmer");
+	if (model_camouflage > 0.0f && camo_shimmer > 0 && textured)
+	{
+		/* "camoshimmer" (a look call, off by default): the Xbox bends what
+		lies behind a camouflaged model, which the GE can't sample; in its
+		place the model's own map, unlit, added faintly over the frame and
+		drifting a little each frame, so the outline catches the eye as the
+		Xbox's shimmer does instead of vanishing against a dark room. One
+		pass, as the faded draw it replaces */
+		unsigned int level = (unsigned int)(model_camouflage * CAMO_SHIMMER_LEVEL);
+		float drift = (float)(taa_frame & 255) * (1.0f / 256.0f);
+
+		model_lighting(0);
+		sceGuColor(0xFF000000u | ((level + level / 4) << 16) | (level << 8) | level);
+		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+		sceGuTexOffset(drift, drift * 0.5f);
+		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+		ge_blend(1);
+		sceGuDepthMask(GU_TRUE);
+		camo_shimmer_parts++;
+	}
+	else if (model_camouflage > 0.0f)
 	{
 		/* the model's own colour faded to a trace (15% at full camouflage) */
 		int alpha = (int)((1.0f - model_camouflage * 0.85f) * 255.0f);
@@ -11225,6 +11276,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	{
 		ge_blend(0);
 		sceGuDepthMask(GU_FALSE);
+		if (camo_shimmer > 0 && textured)
+			sceGuTexOffset(0.0f, 0.0f);
 	}
 	if (textured)
 	{
@@ -11418,6 +11471,9 @@ struct transparent_draw
 	blend BLEND_METER_TINT or BLEND_METER_BRIGHTNESS and the meter's tint
 	colour (ARGB) in tint; NULL for every other draw */
 	const unsigned int *clut;
+	/* a model part whose shader isn't two-sided: its back faces culled
+	(PSP_SEETHROUGH_ONE_SIDED; seethrough_cull) */
+	unsigned char one_sided;
 };
 
 /* build 116: a meter shader's blends, as the Xbox sets them
@@ -11649,6 +11705,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 		cx += in[4 * sprite].x; cy += in[4 * sprite].y; cz += in[4 * sprite].z;
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -11782,6 +11839,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 		cx += v->x; cy += v->y; cz += v->z;
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -11935,6 +11993,7 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 		o->z = centre[2] + camera_right[2] * offset[k][0] - camera_up[2] * offset[k][1];
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -12299,6 +12358,23 @@ static void seethrough_vfpu_place(const float *p, float *q)
 		: : "r"(p), "r"(q) : "memory");
 }
 
+/* A see-through model part is drawn one-sided unless its shader is
+two-sided, as the Xbox draws it (rasterizer_xbox_transparent_geometry.c:
+D3DCULL_CCW unless the shader's two-sided flag; the flag rides in the queue's
+blend word, PSP_SEETHROUGH_ONE_SIDED). Both sides drawn, an added hologram
+(Cortana) took her back's light on top of her front's: brighter, and her
+far side's markings over her face, inside out. "seethroughtwosided": every
+see-through part drawn from both sides, as before */
+static int seethrough_cull = -1;
+static unsigned long seethrough_culled_draws = 0;
+
+static int seethrough_cull_on(void)
+{
+	if (seethrough_cull < 0)
+		seethrough_cull = !psp_keep("seethroughtwosided");
+	return seethrough_cull;
+}
+
 static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
@@ -12331,6 +12407,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		}
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -12417,6 +12494,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->u_offset = u_offset;
 	draw->v_offset = v_offset;
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
+	draw->one_sided = PSP_SEETHROUGH_ONE_SIDED(blend) && seethrough_cull_on();
 	draw->tint = seethrough_next_tint;
 	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
@@ -12819,6 +12897,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 		return NULL;
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -14047,6 +14126,13 @@ static void transparent_flush_body(void)
 		sceGuTexScale(draw->u_scale, draw->v_scale);
 		sceGuTexOffset(draw->u_offset, draw->v_offset);
 		sceGumLoadMatrix(&draw->matrix);
+		if (draw->one_sided)
+		{
+			/* the model's own winding, as its solid parts are culled */
+			sceGuFrontFace(LEVEL_FRONT);
+			sceGuEnable(GU_CULL_FACE);
+			seethrough_culled_draws++;
+		}
 		if (draw->depth_mode & SEETHROUGH_CLAMPED)
 		{
 			sceGuTexWrap(draw->depth_mode & SEETHROUGH_CLAMP_U ? GU_CLAMP : GU_REPEAT,
@@ -14118,6 +14204,8 @@ static void transparent_flush_body(void)
 		}
 		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
 			sceGuColor(0xFFFFFFFF);
+		if (draw->one_sided)
+			sceGuDisable(GU_CULL_FACE);
 		if (draw->clut)
 		{
 			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
@@ -18434,6 +18522,16 @@ void psp_ge_frame_end(void)
 		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu",
 			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws);
 		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = 0;
+		{
+			extern void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped);
+			unsigned long layers_queued, layers_unmapped;
+
+			psp_transparent_layers_counts(&layers_queued, &layers_unmapped);
+			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer)",
+				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts);
+		}
+		seethrough_culled_draws = 0;
+		camo_shimmer_parts = 0;
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;

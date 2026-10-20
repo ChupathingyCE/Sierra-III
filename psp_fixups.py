@@ -151,6 +151,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			if (!PSP_KEEP_ONCE("seethroughflat"))
 				*blend = PSP_SEETHROUGH_PACK(*blend, fade_mode, fade, keep_with_camouflage);
 		}
+		/* a shader that isn't two-sided (its flags byte, bit 2) is drawn
+		from the front only, as the Xbox culls it (psp_ge.c, seethrough_cull) */
+		if (!(*(unsigned char const *)(definition + 41) & 4))
+			*blend = (short)(*blend | PSP_SEETHROUGH_ONE_SIDED_BIT);
 	}
 	else if (type == 7)
 		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
@@ -23536,6 +23540,29 @@ FIXES_RECON = {}
 # carry them to ChupathingyCE's own build: the same
 # count from the original, on the same stretch. It also names the definition
 # being drawn for psp_ge.c's draw census (psp_census_definition)
+# "scriptsdump": the scenario's script names and types at load, so a run's
+# commands can wake one (a level's late cutscene reached without playing to it)
+FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
+("""	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
+	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+	{""",
+ """	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
+	{
+		/* psp_fixups.py (FIXES_RECON #scriptsdump) */
+		extern int psp_keep(const char *name);
+		extern void platform_psp_log(const char *format, ...);
+
+		if (psp_keep("scriptsdump"))
+			for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+			{
+				struct hs_script const *script = TAG_BLOCK_GET_ELEMENT(&scenario->hs_scripts, script_index, struct hs_script);
+
+				platform_psp_log("scriptsdump: %d %.32s type %d", (int)script_index, script->name, (int)script->script_type);
+			}
+	}
+	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+	{"""),
+]
 FIXES_RECON["source/render/render_objects.c#modelcensus"] = [
 ("""static void render_object_list(
 	struct object_render_data *data,
@@ -24959,11 +24986,126 @@ FIXES_POOLS["source/objects/widgets/glow.c#pools"] = [
 ]
 
 
+# ---------- FIXES_MODELS: models drawn as the Xbox draws them (b139's hand test)
+# A generic or chicago see-through shader can carry extra layers: other
+# see-through shaders drawn over the same triangles first (the Xbox's
+# transparent_geometry_layer_draw, rasterizer_xbox_transparent_geometry.c:
+# the layers, then the shader itself, nested up to two deep). The GE drew
+# the shader alone, so a powerup on the ground lost the patterns turning
+# over its sphere. Each layer goes to the GE's see-through queue just before
+# its shader, with the same sort point, so the queue keeps the Xbox's order.
+# A restoration, on by default; keep word "nolayers": the shader alone
+FIXES_MODELS = {}
+# glass that isn't two-sided (its flags word +40, bit 2) is drawn from the
+# front only, as the Xbox culls it; generic and chicago shaders take theirs
+# in psp_transparent_map itself (psp_ge.c, seethrough_cull)
+FIXES_MODELS["source/rasterizer/rasterizer.c#glasscull"] = [
+("""		if (object && !PSP_KEEP_ONCE("glassflat"))
+			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+	}
+	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))""",
+ """		if (object && !PSP_KEEP_ONCE("glassflat"))
+			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+		if (!(*(unsigned short const *)(definition + 40) & 4))
+			*blend = (short)(*blend | PSP_SEETHROUGH_ONE_SIDED_BIT);
+	}
+	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))"""),
+]
+FIXES_MODELS["source/rasterizer/rasterizer.c#layers"] = [
+("""void rasterizer_model_transparent_geometry_submit(
+	struct shader *shader,
+	short shader_permutation_index,""",
+ """#ifdef HALO_PSP
+/* a shader's extra layers (+72: a block of tag references, the tag index at
++12 in each), each queued as its own see-through draw of the same triangles,
+its own layers first. psp_transparent_map's state (the clamp, the meter) is
+the last call's, so the caller works its own shader out again after this */
+static unsigned long psp_transparent_layers_queued = 0, psp_transparent_layers_unmapped = 0;
+
+static void psp_transparent_layers(struct shader const *shader, short permutation,
+	struct triangle_buffer const *triangle_buffer, long triangle_count, struct vertex_buffer const *vertex_buffer,
+	real_point3d const *centroid, int depth)
+{
+	extern void psp_ge_transparent(struct triangle_buffer const *, long, struct vertex_buffer const *,
+		unsigned int, float, float, float, float, short, float const *);
+	extern void psp_ge_seethrough_shader(unsigned int shader);
+	extern void psp_ge_seethrough_meter(const void *meter);
+	char const *definition = (char const *)shader;
+	short type = shader ? *(short const *)(definition + 36) : -1;
+	long count, layer;
+	char const *layers;
+
+	if ((type != 5 && type != 6) || depth >= 2)
+		return;
+	count = *(long const *)(definition + 72);
+	layers = *(char const *const *)(definition + 76);
+	for (layer = 0; layers && layer < count && layer < 8; layer++)
+	{
+		long index = *(long const *)(layers + 16 * layer + 12);
+		struct shader const *layer_shader;
+		float u_scale, v_scale, u_offset, v_offset;
+		short blend;
+		unsigned int key;
+
+		if (index == NONE)
+			continue;
+		layer_shader = (struct shader const *)shader_definition_get(index);
+		if (!layer_shader)
+			continue;
+		psp_transparent_layers(layer_shader, permutation, triangle_buffer, triangle_count, vertex_buffer, centroid,
+			depth + 1);
+		key = psp_transparent_map(layer_shader, permutation, TRUE, &u_scale, &v_scale, &u_offset, &v_offset, &blend);
+		if (!key)
+		{
+			psp_transparent_layers_unmapped++;
+			continue;
+		}
+		psp_ge_seethrough_shader((unsigned int)layer_shader);
+		psp_ge_seethrough_meter(psp_transparent_meter);
+		psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset, v_offset,
+			blend, &centroid->x);
+		psp_transparent_layers_queued++;
+	}
+}
+
+/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped)
+{
+	*queued = psp_transparent_layers_queued;
+	*unmapped = psp_transparent_layers_unmapped;
+	psp_transparent_layers_queued = psp_transparent_layers_unmapped = 0;
+}
+#endif
+
+void rasterizer_model_transparent_geometry_submit(
+	struct shader *shader,
+	short shader_permutation_index,"""),
+("""			if (sort_filth)
+				*(short *)((char *)sort_filth + 8) = NONE;
+			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+			{""",
+ """			if (sort_filth)
+				*(short *)((char *)sort_filth + 8) = NONE;
+			/* the shader's extra layers first (FIXES_MODELS #layers) */
+			if (dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE && shader &&
+				(*(short const *)((char const *)shader + 36) == 5 || *(short const *)((char const *)shader + 36) == 6) &&
+				*(long const *)((char const *)shader + 72) > 0 && !PSP_KEEP_ONCE("nolayers"))
+			{
+				psp_transparent_layers(shader, shader_permutation_index, triangle_buffer, triangle_count, vertex_buffer,
+					centroid, 0);
+				key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale, &u_offset,
+					&v_offset, &blend);
+			}
+			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+			{"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_MODELS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
