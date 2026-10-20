@@ -25002,6 +25002,52 @@ no objects): the same tests in the same order, writing only its stack and
 *collision. A ray that would report a map's bad leaf, material or fog chain
 (the main CPU's reports, once each) or that asks for more is left to the
 main CPU: -1 */
+/* scenario_location_from_point's answer (bsp3d_test_point's walk, then the
+leaf's cluster). A node or plane the map doesn't have would be reported
+there, so it is left to the main CPU: -1 */
+static short psp_location_from_point_quiet(struct location *location, real_point3d const *point)
+{
+	struct bsp3d const *bsp = global_bsp3d_get();
+	struct structure_bsp *structure_bsp = global_structure_bsp_get();
+	long node_index = 0, leaf_index, cluster_index;
+	short depth = 0;
+
+	do
+	{
+		struct bsp3d_node const *node;
+
+		if (node_index < 0 || node_index >= bsp->nodes.count || depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
+			return -1;
+		node = TAG_BLOCK_GET_ELEMENT(&bsp->nodes, node_index, struct bsp3d_node);
+		if ((unsigned long)node->plane_designator >= (unsigned long)bsp->planes.count)
+			return -1;
+		node_index = node->children[plane3d_distance_to_point(
+			TAG_BLOCK_GET_ELEMENT(&bsp->planes, node->plane_designator, real_plane3d), point) >= 0.f];
+	}
+	while (!(node_index & LONG_MIN));
+
+	leaf_index = node_index != NONE ? node_index & LONG_MAX : NONE;
+	cluster_index = NONE;
+	if (leaf_index != NONE)
+	{
+		if ((leaf_index & LONG_MAX) >= structure_bsp->leaves.count)
+			leaf_index = NONE;
+		else
+		{
+			cluster_index = TAG_BLOCK_GET_ELEMENT(&structure_bsp->leaves, leaf_index & LONG_MAX,
+				struct structure_leaf)->cluster_index;
+			if (cluster_index != NONE && !VALID_INDEX(cluster_index, structure_bsp->clusters.count))
+			{
+				leaf_index = NONE;
+				cluster_index = NONE;
+			}
+		}
+	}
+	location->leaf_index = leaf_index;
+	location->cluster_index = (short)cluster_index;
+	return FALSE;
+}
+
 short psp_collision_test_vector_points(
 	unsigned long flags,
 	real_point3d const *point,
@@ -25158,6 +25204,14 @@ short psp_collision_test_vector_points(
 			}
 		}
 	}
+	else
+	{
+		/* the engine's ray with nothing to test still moves the location to
+		its end: particles without structure or water collisions change leaf
+		this way, so the ME must too */
+		add_vectors3d((real_vector3d const *)point, vector, (real_vector3d *)&collision->point);
+		return psp_location_from_point_quiet(&collision->location, &collision->point);
+	}
 
 	if (!hit)
 		collision->t = 1.0f;
@@ -25170,50 +25224,6 @@ boolean collision_test_pill(
 	unsigned long flags,"""),
 ]
 FIXES_MEJOBS["source/physics/point_physics.c#mepoints"] = [
-("""unsigned long point_physics_update(
-	unsigned long flags,""",
- """#ifdef HALO_PSP
-/* psp_fixups.py (FIXES_MEJOBS #mepoints): mepointscheck's note of each ray a
-point casts, taken only while a check arms it */
-struct psp_points_note
-{
-	long rays;
-	real_point3d point[2];
-	real_vector3d delta[2];
-	struct location start[2], end[2];
-	long hit[2];
-	real t[2];
-};
-struct psp_points_note *psp_points_note_main = NULL, *psp_points_note_quiet = NULL;
-
-static void psp_points_note_take(struct psp_points_note *note, real_point3d const *point, real_vector3d const *vector,
-	struct collision_result const *collision, long hit)
-{
-	if (note->rays < 2)
-	{
-		note->point[note->rays] = *point;
-		note->delta[note->rays] = *vector;
-		note->start[note->rays] = collision->start_location;
-		note->end[note->rays] = collision->location;
-		note->hit[note->rays] = hit;
-		note->t[note->rays] = collision->t;
-	}
-	note->rays++;
-}
-
-static boolean psp_points_test_vector(unsigned long flags, real_point3d const *point, real_vector3d const *vector,
-	struct collision_result *collision)
-{
-	boolean hit = collision_test_vector(flags, point, vector, NONE, collision);
-
-	if (psp_points_note_main)
-		psp_points_note_take(psp_points_note_main, point, vector, collision, hit);
-	return hit;
-}
-#endif
-
-unsigned long point_physics_update(
-	unsigned long flags,"""),
 # the location word after the cluster index is no part of the answer (nothing
 # reads it, and a collision result leaves it unset): kept as the point had it,
 # so the ME's answers and the main CPU's leave the same bytes
@@ -25224,11 +25234,7 @@ unsigned long point_physics_update(
 					*location = collision.location;
 				}
 """,
- """#ifdef HALO_PSP
-			if (!psp_points_test_vector(collision_flags, position, &delta, &collision))
-#else
-			if (!collision_test_vector(collision_flags, position, &delta, NONE, &collision))
-#endif
+ """			if (!collision_test_vector(collision_flags, position, &delta, NONE, &collision))
 			{
 				if (collision.location.leaf_index != NONE)
 				{
@@ -25268,11 +25274,7 @@ static void render_debug_point_physics(""",
 #include <stdlib.h>
 #include <math.h>
 #include "breakable_surfaces.h"
-#include "collision_bsp.h"
 
-boolean psp_collision_bsp_test_vector_quiet(unsigned long flags, struct collision_bsp const *bsp,
-	short breakable_surface_count, byte const *breakable_surface_flags, real_point3d const *point,
-	real_vector3d const *vector, real maximum_t, struct collision_bsp_test_vector_result *result);
 short psp_collision_test_vector_points(unsigned long flags, real_point3d const *point, real_vector3d const *vector,
 	struct collision_result *collision);
 int psp_keep(const char *name);
@@ -25447,8 +25449,6 @@ static long psp_point_physics_quiet(
 			hit = psp_collision_test_vector_points(collision_flags, position, &delta, &collision);
 			if (hit < 0)
 				return -1;
-			if (psp_points_note_quiet)
-				psp_points_note_take(psp_points_note_quiet, position, &delta, &collision, hit);
 			if (!hit)
 			{
 				if (collision.location.leaf_index != NONE)
@@ -25739,63 +25739,6 @@ static void psp_points_report(int kind, long slot, struct psp_point_input const 
 	psp_points_report_answer("ME copy ", now);
 }
 
-/* each CPU's rays, then both BSP walks run here on this CPU's first ray and
-on the ME copy's: the same walk, so any difference left is in its entry */
-static void psp_points_report_walk(char const *who, int quiet, real_point3d const *point, real_vector3d const *delta)
-{
-	struct collision_bsp_test_vector_result result;
-	unsigned long bsp_flags = FLAG(_collision_test_front_facing_surfaces_bit);
-	boolean hit;
-	real_point3d end;
-
-	result.leaf_count = 0;
-	if (quiet)
-		hit = psp_collision_bsp_test_vector_quiet(bsp_flags, global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
-			breakable_surface_flags_get(), point, delta, REAL_MAX, &result);
-	else
-		hit = collision_bsp_test_vector(bsp_flags, global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
-			breakable_surface_flags_get(), point, delta, REAL_MAX, &result);
-	end.x = point->x + delta->i;
-	end.y = point->y + delta->j;
-	end.z = point->z + delta->k;
-	platform_psp_log("mepointscheck:   walk %s hit %d t %08lx leaves %ld: %ld %ld %ld %ld %ld %ld; the end's leaf %ld",
-		who, (int)hit, PSP_POINTS_BITS(result.t), result.leaf_count,
-		result.leaf_count > 0 ? result.leaf_indices[0] : -2, result.leaf_count > 1 ? result.leaf_indices[1] : -2,
-		result.leaf_count > 2 ? result.leaf_indices[2] : -2, result.leaf_count > 3 ? result.leaf_indices[3] : -2,
-		result.leaf_count > 4 ? result.leaf_indices[4] : -2,
-		result.leaf_count > 0 ? result.leaf_indices[result.leaf_count - 1] : -2,
-		scenario_leaf_index_from_point(&end));
-}
-
-static void psp_points_report_note(char const *who, struct psp_points_note const *note)
-{
-	long k;
-
-	platform_psp_log("mepointscheck:   rays %s %ld", who, note->rays);
-	for (k = 0; k < note->rays && k < 2; k++)
-		platform_psp_log("mepointscheck:     ray %ld point %08lx %08lx %08lx delta %08lx %08lx %08lx hit %ld t %08lx "
-			"start %ld/%d end %ld/%d", k, PSP_POINTS_BITS(note->point[k].x), PSP_POINTS_BITS(note->point[k].y),
-			PSP_POINTS_BITS(note->point[k].z), PSP_POINTS_BITS(note->delta[k].i), PSP_POINTS_BITS(note->delta[k].j),
-			PSP_POINTS_BITS(note->delta[k].k), note->hit[k], PSP_POINTS_BITS(note->t[k]), note->start[k].leaf_index,
-			note->start[k].cluster_index, note->end[k].leaf_index, note->end[k].cluster_index);
-}
-
-static void psp_points_report_rays(struct psp_points_note const *here, struct psp_points_note const *now)
-{
-	psp_points_report_note("this CPU", here);
-	psp_points_report_note("ME copy ", now);
-	if (here->rays > 0)
-	{
-		psp_points_report_walk("engine's on this CPU's ray", 0, &here->point[0], &here->delta[0]);
-		psp_points_report_walk("quiet    on this CPU's ray", 1, &here->point[0], &here->delta[0]);
-	}
-	if (now->rays > 0)
-	{
-		psp_points_report_walk("engine's on the copy's ray", 0, &now->point[0], &now->delta[0]);
-		psp_points_report_walk("quiet    on the copy's ray", 1, &now->point[0], &now->delta[0]);
-	}
-}
-
 static int psp_points_same(struct psp_point_input const *in, struct point_physics_definition const *definition,
 	struct location const *location, real_point3d const *position, real_vector3d const *velocity, real radius, real dt)
 {
@@ -25856,14 +25799,8 @@ unsigned long psp_point_physics(
 						real_point3d here_position = *position;
 						real_vector3d here_velocity = *translational_velocity, here_normal;
 						short here_material = NONE;
-						struct psp_points_note here_note;
-						unsigned long here;
-
-						here_note.rays = 0;
-						psp_points_note_main = &here_note;
-						here = point_physics_update(0, definition, &here_location, NONE, &here_position,
+						unsigned long here = point_physics_update(0, definition, &here_location, NONE, &here_position,
 							&here_velocity, NULL, &here_normal, &here_material, radius, dt);
-						psp_points_note_main = NULL;
 						int collided = (here & (FLAG(_point_physics_collided_with_structure_bit) |
 							FLAG(_point_physics_collided_with_water_bit))) != 0;
 
@@ -25879,7 +25816,6 @@ unsigned long psp_point_physics(
 								{
 									struct psp_point_answer mine, now;
 									struct location now_location;
-									struct psp_points_note now_note;
 
 									mine.result = (long)here;
 									mine.leaf_index = here_location.leaf_index;
@@ -25898,15 +25834,11 @@ unsigned long psp_point_physics(
 									now.position = in->position;
 									now.velocity = in->velocity;
 									now.material_type = NONE;
-									now_note.rays = 0;
-									psp_points_note_quiet = &now_note;
 									now.result = psp_point_physics_quiet(in->definition, &now_location, &now.position, &now.velocity,
 										&now.normal, &now.material_type, &now.collided, in->radius, in->dt);
-									psp_points_note_quiet = NULL;
 									now.leaf_index = now_location.leaf_index;
 									now.cluster_index = now_location.cluster_index;
 									psp_points_report(kind, slot, in, &mine, answer, &now);
-									psp_points_report_rays(&here_note, &now_note);
 								}
 						}
 						/* play goes on from this CPU's own answer */
