@@ -2,7 +2,7 @@
 
 Branch `fix-models`, off `w139`. Every change has a keep word; restorations are on by default, the look call (H35) is off. Evidence labels as in CLAUDE.md: [M] measured on the PSP, [E] emulator, [D] read in code or data, [U] inference. Costs are game-time figures from the emulator on the same stretch, before and after.
 
-Status: **code in; the a10 bake and the restorations' cost read back; H1/H3 shots and H39's repro pending** (their first window, a10 at 107-117 s, turned out to be the cryo room after the opening cinematic). Sections marked PENDING are filled in when they read back.
+Status: **code in; the a10 bake, the restorations' cost, a10's opening and b30's extraction read back; Cortana's scene (H1, H3), H36's composites check and H39 under cache pressure pending.** Sections marked PENDING are filled in when they read back.
 
 **Cost of the restorations [E]** (emulator, the same stretch, before = `seethroughtwosided nolayers nearseatcine`): b30's opening Pelican flight, game time 0-1,532: mean frame 31.45 -> 31.47 ms, tick 16.16 -> 16.16 ms; a10's opening, game time 0-3,468: frame 14.11 -> 14.13 ms, tick 2.10 -> 2.09 ms. Within noise: nothing to hold back.
 
@@ -17,7 +17,7 @@ if (!seated_in_cinematics && cinematic_in_progress())
 	return 0;
 ```
 
-Keep word `nearseatcine`: the old answer. Cost: one call per frame; the plane may now sit at x1 during close-ups (coarser depth there, as on foot beside a model). At a10 107-117 s (the cryo room, light-bar test) both sides read x1, `seated 0`: the cinematic is over by then [E]. PENDING: neardump and shots across the opening cinematic (game time 2-100 s), before against fixed.
+Keep word `nearseatcine`: the old answer. Cost: one call per frame; the plane may now sit at x1 during close-ups (coarser depth there, as on foot beside a model). At a10 107-117 s (the cryo room, light-bar test) both sides read x1, `seated 0`: the cinematic is over by then [E]. Across the opening cinematic (game time 2-95 s: the flyover, the bridge, Keyes' first close-ups), before against fixed: `seated 0` on every shot frame on both sides, neardump identical, Keyes' head whole in every close-up on both sides; the plane sits at x1-x4 in the close-ups, each time with a model near enough to cap it (e.g. x4 with the nearest sphere 0.78 away) [E]. So in this window the fix changes nothing, and nothing needed it. The hand test's near-plane counts over the same scene match the emulator's (x16 only over the flyover, x1-x4 with models capping on the bridge) [M]. PENDING: Cortana's scene (game time 95-200 s), where the hand test saw the cut heads.
 
 ## H3: Cortana inside out (restoration, on) and her clipping tint (bake)
 
@@ -27,7 +27,7 @@ Keep word `nearseatcine`: the old answer. Cost: one call per frame; the plane ma
 
 ## H17: the Pelican's cockpit frame flickering light green
 
-[U] the cockpit's see-through parts drawn from both sides: back and front faces at the same depth swap order from frame to frame. The H3 change (one-sided) should settle it. b30's opening flight from inside the troop bay, three frames a moment, shows the cockpit frame steady and grey on both sides [E]: not reproduced there. The hand test saw it on a Pelican seen from outside; PENDING: the extraction Pelican's cockpit from below (the H39 repro).
+[U] the cockpit's see-through parts drawn from both sides: back and front faces at the same depth swap order from frame to frame. The H3 change (one-sided) should settle it. b30's opening flight from inside the troop bay, three frames a moment, shows the cockpit frame steady and grey on both sides [E]: not reproduced there. The hand test saw it on a Pelican seen from outside. The extraction Pelican from below, hovering over the player for 90 s of game time (24 shots, one-sided on), shows no green and no flicker on its cockpit frame [E]. Verdict: not reproduced; the one-sided change is the likely fix [U] (the same two-faces-at-one-depth cause as H3), to be confirmed on the PSP.
 
 ## H34: no flashlight under active camouflage (the original's behaviour; no change)
 
@@ -43,7 +43,12 @@ The Xbox draws active camouflage as a refraction of what's behind; the GE can't 
 
 ## H39: b30's Pelican off its path while its markers keep the place
 
-[D] poseahead is exact by design (all RAM written back before the push; animation pages written back after reads). The repro needs b30's extraction script: `scriptsdump` (recon builds) names it, then the console reaches it with `poseaheadoff` / `poseaheadcheck`. b30's scripts include `extraction_build` (static), `pelican_fade` (dormant), `cutscene_extraction_exit` (static) [E]. On b30's opening flight `poseaheadcheck` compared 72,782 poses made ahead with the main CPU's: 0 differed [E]. PENDING: the extraction Pelican (`extraction_build` called at the hand test's spot, poseahead default, off and checked; and the extraction cinematic).
+[D] poseahead is exact by design (all RAM written back before the push; animation pages written back after reads). The repro needs b30's extraction script: `scriptsdump` (recon builds) names it, then the console reaches it with `poseaheadoff` / `poseaheadcheck`. b30's scripts include `extraction_build` (static), `pelican_fade` (dormant), `cutscene_extraction_exit` (static) [E]. On b30's opening flight `poseaheadcheck` compared 72,782 poses made ahead with the main CPU's: 0 differed [E]. The extraction Pelican, `extraction_build` called at the hand test's spot (the hand test's camera within 0.7 m), 90 s of game time with it hovering overhead [E]:
+- poseahead default against `poseaheadoff`: the shots differ only in the HUD (11-42 pixels a shot); the Pelican is whole, its markings on the hull, on both;
+- `poseaheadcheck`: 199,833 poses made ahead compared with the main CPU's, 0 differed;
+- `cutscene_extraction_exit` (the cinematic): the Pelican whole through the climb.
+
+Verdict: **not reproduced from a fresh load; poseahead cleared.** The hand test reached the Pelican after about 25 minutes of play, with the object render-state cache full (512 of 512, the oldest pushed out each view) and geometry streaming [M]; the emulator's fresh load has neither. The hand test's shots show the hull pitched while its lettering and strips (separate parts of the same model) keep the scripted place: parts of one model drawn from different node matrices, which points at per-part state that survives a cache's turnover rather than at the pose itself [U]. PENDING: the same call with the render-state cache halved (`renderstates256`). No change on this branch until a repro shows the cause.
 
 ## Instruments added
 
