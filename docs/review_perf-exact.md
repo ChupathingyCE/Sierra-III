@@ -2,13 +2,22 @@
 
 Three speed-ups that change no game state and no frame, each on by default and each with a keep word that restores the old path. A fourth target, the blob shadows' surface query, is sized here but not built yet.
 
-Status: written against w140; the campaign and multiplayer builds compile. Play is proven exact in the emulator [E]; the pictures are not yet (see Evidence). The PSP timing A/B is read (Evidence, "PSP-1000"): the three together are 3.2% faster a frame on a10, nearly all of it in drawing.
+Status: written against w140; the campaign and multiplayer builds compile. Play is proven exact in the emulator [E]; the pictures are exact for WS and not for SR (see Evidence): SR's memo draws some blob shadows differently and is off the "exact" list until fixed. The PSP timing A/B is read (Evidence, "PSP-1000"): the three together are 3.2% faster a frame on a10, nearly all of it in drawing.
 
 ## Evidence
 
 - **Play [E]:** `statecrc` on against off (all three words together, `fixedticks fixedseed readswait`, hand-test routes): the play hash and both random seeds are identical at every tick on a30 (4,500 ticks), a10 (9,600) and c10 (3,600, the opening). Strict runs: 0 sites, no crash. The whole-state hash differs, only in `objects`, `object looping sounds`, `particle`, `contrail point` and `hud unit interface` (and late in a10 `actor` and `prop`), the parts drawing and the sound mixer write into; `tools/statecmp.py` does not tell which lever writes which (a per-object dump with each lever alone would).
 - **b30 [E]:** its play hash parts at tick 1,326 and the seeds at 3,703, as every b30 pair does for any change that moves the emulator's speed (`big_levers.md`, `review_lk22b.md`: 1,326). So b30 gives no verdict; a30, a10 and c10 are the proof.
-- **Pictures (`framecrc`) [E], open:** on against off, pictures differ in 123 of 2,244 frames (a30), 361 of 4,790 (a10) and 45 of 1,799 (c10). The same build twice already differs in about 2% of frames with `readswait` (a10: 181 of 8,706; the cause is outside the GE's list), so these rates are not yet a verdict. A second batch plays each map's baseline twice and each of SR and WS switched off alone, to say whether the gap is noise and which lever, if any, shows.
+- **Pictures (`framecrc`) [E]: WS exact in pictures, SR is not.** On against all three off: pictures differ in 123 of 2,244 frames (a30), 361 of 4,790 (a10) and 45 of 1,799 (c10). A second batch, on one machine (a hardware renderer's output differs between machines, so it is only ever compared within one batch), ran the baseline (`on2`), `shadowmemooff` alone (SR off) and `sleeperwalk` alone (WS off), same words otherwise. Each frame's three hashes were sorted into "all equal", "one run odd" and "all differ":
+
+  | map (frames) | all equal | baseline odd | WS-off odd | SR-off odd | all differ |
+  |---|---|---|---|---|---|
+  | a30 (2,244) | 2,094 | 35 | 33 | **68** | 14 |
+  | a10 (4,790) | 4,425 | 92 | 57 | **191** | 25 |
+  | c10 (1,799) | 1,754 | 0 | 0 | **43** | 2 |
+
+  Same-build noise (`readswait` still leaves some) shows as every run being odd about equally often; the baseline and WS-off runs are (35 against 33, 92 against 57, 0 against 0), so WS changes no pixel beyond noise. The SR-off run is odd 2 to 3 times as often on a30 and a10, and on c10, where the other two never part, in 43 frames (2.4%) that only the SR-off run draws differently. So SR's memo changes pixels. First frames where only the SR-off run differs: a30 frame 7 (game time 16), 16 (34), 28 (58); a10 frame 750 (1,506), 771 (1,548), 779 (1,564); c10 frame 37 (76), 44 (90), 46 (94). The differences are small: in 1 to 3 of the 16 tiles a frame (a10 up to 9), c10 in the middle-left tiles and mostly in the opening's first 10% and one stretch near 40%. Hash-only, so how many pixels is not known.
+  - Likely cause [D], untested [U]: the memo is indexed by `index & 63`, and a triangle takes its three corners' slots one after another, so two corners whose indices differ by a multiple of 64 evict each other and the earlier corner's pointer then reads the later vertex's values. A key check per corner after all three lookups (or a memo that cannot collide inside a triangle) would settle it; `shadow_memo_at` in `psp_ge.c`.
 - **Gain, cache model [E]:** b30 route, 5,400 ticks, the three together: modelled cost (fetches + 71 x misses) 108.6G against 113.5G, **-4.4%**: tick phase -5.5% (fetches -7.8%), drawing -2.6%, other -10.1%. The runs part at tick 1,326 (b30), so play differs slightly. The model cannot give each lever alone; the PSP A/B measures time.
 - **PSP-1000, a10 route, A/B [M]:** one build, the three words off against on (`shadowmemooff sleeperwalk stepsall`), two runs a side, the route to game time 18,000 (600 s), `hwprofile` and `frametrace` on; all four runs ended in the game, no crash. Levers on against off, per run and stretch (`tools/abreport.py`), the whole route: **frame 70.2 ms against 72.5 (-2.2 ms, -3.2%)**, drawing 47.4 against 49.4 (-2.0 ms, -4.0%), a tick 7.7 against 7.8 (-0.1 ms, -0.9%, inside the repeats' spread). With the same game time, the levers-on runs drew 9,051 frames against 8,870 (+2.0%).
   - By stretch (60 s each, game ticks in brackets): frame gap -0.1 ms (0-1,800, the opening, inside the spread), then -1.8, -3.5, -2.4, -2.5, -3.2, -4.1, -4.3, -3.2, -3.3 ms (-2.5% to -5.2%); every stretch after the opening is beyond the spread. Drawing carries it: -1.4 to -3.7 ms in every stretch after the opening. The tick gap is -0.1 ms in eight of ten stretches (six flagged beyond the spread, only because the repeats agree to 0.1 ms) and 0 in the others.
@@ -24,7 +33,7 @@ Status: written against w140; the campaign and multiplayer builds compile. Play 
 - The per-triangle clear is gone. The clip path sets the one field the clear used to give it (`c[10] = 0`), so the clipped pieces are the same.
 - `shadowmemooff` runs the old loop, which is kept beside the new one.
 
-Why exact: the memo stores the same float results the old code computed from the same inputs, in the same order of operations [D]. Play identical [E]; the pictures' proof is open (Evidence). In the cache model `psp_ge_shadow_draw_body` plus `shadow_corner` are 2.4% (a30) to 3.2% (b30) of the drawing phase's fetches, so the memo's gain is about 1% of drawing [E].
+Meant to be exact: the memo stores the same float results the old code computed from the same inputs, in the same order of operations [D]. Play identical [E]; the pictures are not identical: see Evidence, "Pictures", for the likely cause (two corners of one triangle sharing a memo slot). In the cache model `psp_ge_shadow_draw_body` plus `shadow_corner` are 2.4% (a30) to 3.2% (b30) of the drawing phase's fetches, so the memo's gain is about 1% of drawing [E].
 
 ## WS: settled scenery passed over in the object walk (`sleeperwalk`)
 
@@ -34,7 +43,7 @@ Why exact: the memo stores the same float results the old code computed from the
 - It moves the same counters the asleep branch moves, so the log and the wake logic see no difference.
 - A log line, "sleeping scenery passed over in the walk per tick", shows it working.
 
-Why exact: the same objects are updated in the same order; the skipped call had no side effects beyond those counters [D]. Play hash and seeds identical on and off on a30, a10 and c10 [E].
+Why exact: the same objects are updated in the same order; the skipped call had no side effects beyond those counters [D]. Play hash and seeds identical on and off on a30, a10 and c10, and its pictures differ from the baseline no more than the baseline differs from itself (Evidence, "Pictures") [E].
 
 ## PS: the profile's steps timed one frame in four (`stepsall`)
 
