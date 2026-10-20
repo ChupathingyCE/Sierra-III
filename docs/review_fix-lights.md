@@ -210,9 +210,26 @@ face at a silhouette corner passed the depth test over the front face beside it.
 triangles and their cut pieces are culled; a bake's stencil layers keep both sides. **Keep word:**
 `overlaysnocull` (both sides, as before). **Key lines:** `psp/src/psp_ge.c`, `SEETHROUGH_ONE_SIDED`
 (set in `psp_ge_seethrough_shader`, used in `transparent_flush_body`); the "see-through depth" stats line
-counts "level draws front faces only". **Evidence:** [D] so far; the proof run (new with `tdump` at the
-shots, against `overlaysnocull`) is queued. **Cost:** expected none or a gain (fewer pixels); measured in
-the proof run.
+counts "level draws front faces only". **Evidence [E], proof run read: the fix does NOT remove the line.** At
+b30's corner shots (011, 012) the dashes are the same 46 of 46 pixels with the fix and with `overlaysnocull`
+(the two shots differ by 426 and 1,800 pixels, none of them the dashes). The cull is active: the stats line
+counts 289 to 3,842 level draws front faces only per 300 frames in the fix run, 0 in `overlaysnocull`. So the
+dashes are drawn by a surface that faces the eye (or by a shader with the two-sided flag), not by a back face.
+**What `tdump` shows at shot 011:** the see-through draws that frame are the light strips (`light bright
+overhead`, `light dim blue`, `light dim white`, `light bright white`, bitmap `lights small strips`) and `glow
+tech` (`alpha grate`), all level draws with the one-sided flag (depth mode 512 or 528), so culled; and the
+two-sided ones, `light fixture vol` (depth mode 16, `light fixture ceiling1`, 78 triangles, at about 13 from
+the eye, in the camera's direction), `holo control` and `holo control warning`. `tdump` lists a frame's
+draws, not where on the screen each lands, so the shader at the dashes is not named: candidates are the
+two-sided `light fixture vol` (a volume's cone seen edge-on, both sides with the nudge) and the front faces of
+a light strip or `glow tech` at the pillar's edge. **Status: H33 NOT fixed.** The cull stays (it is the
+Xbox's rule and costs nothing) but is not the cause. **Next [U]:** a keep word that skips see-through draws by
+shader-name substring (one per candidate) in one batch, or `tdump` with each draw's screen bounding box.
+**Other overlays [E]:** across the 17 shots of the run the new build differs from `overlaysnocull` only in
+moving things (the plasma bolt, foliage, the rifle's sway, water) and the clock: no overlay has disappeared
+(shots 7 and 14 looked at; shots 0-4 identical). **Cost [E]:** frame 6.48 ms against 6.84 ms (game time
+3,000-5,000, 7 and 6 heartbeats; tick 2.54 against 2.67): no cost, within the spread. Multiplayer build of
+this code compiles (`PSP_MULTIPLAYER=1`, 5.94 MB, EBOOT d4fff1451e541484).
 
 **H23 and the unlifted band [E].** At the hand test's tunnel camera (shot 031, the same position and
 direction to two decimals), the emulator's flashlight never takes the split: 0 triangles split in all three
