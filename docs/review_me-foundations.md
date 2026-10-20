@@ -87,6 +87,7 @@ Nothing here changes play by default. The one default path it touches (the job r
   - the longest wait for a record, and the longest stretch between two looks in one wait (anything in milliseconds is a thread above the game's);
   - past 10 ms: done at a second look / slow / late.
 - **Cost.** None on the usual path: a subtraction and a compare more per look while waiting, and one uncached store when the ME withdraws. Compiled clean, campaign and `PSP_MULTIPLAYER=1`.
+- **A lever found on the way** [U]: the heartbeat's report each second runs above the game's priority, so whatever it costs comes out of a frame. Its own time is not measured yet; if it is milliseconds, it could be formatted at a lower priority or spread over frames.
 - **Proof wanted** (PSP, the same route and words): no "held past" line, the ME running to the exit in every run, `batchtest` 0 wrong. A "done at a second look" line, with a gap of milliseconds, confirms the cause. A "slow" line with a stash dump would mean the ME itself was held instead.
 
 **Cost.** None by default: no client uses batches yet; `mebatchtest` is a check word.
