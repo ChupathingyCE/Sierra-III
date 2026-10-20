@@ -164,10 +164,20 @@ def level_looks(m, d, B):
         secondary = detail_colour(m, d, by_tag, secondary_id)
         micro = detail_colour(m, d, by_tag, micro_id)
         key = by_tag[base.name][0]['address']
-        looks.setdefault(key, dict(function=function, primary=primary, secondary=secondary,
-                                   micro_function=micro_function, micro=micro,
-                                   alpha_tested=bool(flags & 1), shader=t.name))
+        look = looks.setdefault(key, dict(function=function, primary=primary, secondary=secondary,
+                                          micro_function=micro_function, micro=micro,
+                                          alpha_tested=bool(flags & 1), shader=t.name))
+        # the map keeps its alpha when any shader that draws it tests it (a30's
+        # tree line: drawn first by a shader that doesn't, it lost its cut-outs
+        # for the one that does); a shader that doesn't test it ignores it
+        if flags & 1 and LOOK_ALPHA_ANY:
+            look['alpha_tested'] = True
     return looks
+
+
+# --look-alpha-first: a base map's alpha kept or dropped by the first level
+# shader that draws it alone (as before)
+LOOK_ALPHA_ANY = True
 
 
 def model_looks(m, d, B):
@@ -1370,6 +1380,9 @@ def main():
     ap.add_argument('--no-composites', action='store_true',
                     help='no see-through composites: each shader drawn as one of its maps and a tint, as before '
                          '(seethrough.COMPOSITES)')
+    ap.add_argument('--look-alpha-first', action='store_true',
+                    help='a level base map keeps its alpha only when the first shader that draws it tests it (as '
+                         'before; LOOK_ALPHA_ANY)')
     ap.add_argument('--effects-clut4', action='store_true',
                     help='effects and see-through shaders\' maps may take 16 colours (as before)')
     ap.add_argument('--tints-from-means', action='store_true',
@@ -1576,6 +1589,8 @@ def main():
     composites = {}
     composite_bytes = 0
     seethrough.COMPOSITES = not a.no_composites
+    global LOOK_ALPHA_ANY
+    LOOK_ALPHA_ANY = not a.look_alpha_first
     if SHOWCASE:
         seethrough.COMPOSITE_SIDE = 512
     by_tag = {}

@@ -14611,6 +14611,41 @@ char const *psp_shader_tag_name(void const *shader)
 	}
 	return NULL;
 }
+
+#if PSP_DEBUG_TOOLS
+/* "sdump", once a map: each alpha-tested level shader whose base map an
+earlier level shader (in the tags' order, the bake's) also draws without
+the alpha test. The bake folds a base map's detail maps in by the first
+shader to use it, and keeps the map's alpha only when that one tests it */
+void psp_sdump_shared_bases(void)
+{
+	struct tag_iterator outer, inner;
+	long tested_index, other_index;
+	extern void platform_log(const char *format, ...);
+
+	tag_iterator_new(&outer, 0x73656E76 /* senv */);
+	while ((tested_index = tag_iterator_next(&outer)) != NONE)
+	{
+		char const *tested = (char const *)tag_get(0x73656E76, tested_index);
+		long base = *(long const *)(tested + 148);
+
+		if (!(*(unsigned short const *)(tested + 40) & 1) || base == NONE)
+			continue;
+		tag_iterator_new(&inner, 0x73656E76);
+		while ((other_index = tag_iterator_next(&inner)) != NONE && other_index != tested_index)
+		{
+			char const *other = (char const *)tag_get(0x73656E76, other_index);
+
+			if (*(long const *)(other + 148) == base && !(*(unsigned short const *)(other + 40) & 1))
+			{
+				platform_log("sdump: base map %s: alpha tested by %s, drawn first untested by %s", tag_get_name(base),
+					tag_get_name(tested_index), tag_get_name(other_index));
+				break;
+			}
+		}
+	}
+}
+#endif
 #endif
 
 void hud_draw_bitmap(

@@ -7085,7 +7085,21 @@ static int sdump_wanted(void)
 		sdump_limits[2] = psp_keep_number("sboxr", SCREEN_WIDTH);
 		sdump_limits[3] = psp_keep_number("sboxb", SCREEN_HEIGHT);
 	}
-	return sdump && psp_screenshot_requested && !PSP_ME_WORK();
+	if (sdump && psp_screenshot_requested && !PSP_ME_WORK())
+	{
+		static int listed = 0;
+
+		/* once a run: a run plays one map */
+		if (!listed)
+		{
+			extern void psp_sdump_shared_bases(void); /* hud_draw.c (psp_fixups.py) */
+
+			listed = 1;
+			psp_sdump_shared_bases();
+		}
+		return 1;
+	}
+	return 0;
 }
 
 /* box: left, top, right, bottom in pixels, from camera-space points. A point
