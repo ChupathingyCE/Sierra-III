@@ -14,7 +14,20 @@ Branch `fix-cortana`, off the w139 merge of fix-models and fix-lights. Evidence 
 
 `FIXES_MODELS` `#lightgel`: a light with no cone (a spotlight's cone already comes from the GE's projected cone) carries its gel's average colour, read from the pack (`psp_tex_average_known` on the gel's bitmap, definition +0x70). That is the beams' light averaged over a turn, not their sweep: a restoration of the light's level only. `nogel`: the full colour, as before.
 
-**Not yet effective [E].** The b139a bake doesn't carry the gels: `lightdump` reports the alert light's gel as `unknown` on every frame, so the change falls through and the look is unchanged (cost nil). It needs the gel cube maps (or their averages) in the pack: a bake change. Until then the seam stays.
+**The bake (`tools/texpack.py`) [D].** The pack carries every cube map as an 8 x 8 patch of its average colour (the cube patches, under the bitmap's own key; `--no-cube-patches` leaves them out, and with them the gels). A light's gel is a cube map, so it already had a patch, but of its first face only, and a beacon's beams sit on some faces and miss others. `gel_bitmaps` names the bitmaps only lights use (`ligh` primary or secondary cube map, nothing else), and for those `gel_average` takes the mean over all six faces: when each face is padded to an alignment it reads each face's top level; unpadded, it averages the whole data (top levels weigh three quarters, every face alike), which holds however faces and levels interleave. `cube_patch` takes that colour in place of the first face's. Nothing else in the pack changes: only those gels' one palette entry. No new bake switch.
+
+**The A/B [E]** (bake from this branch's bundle, a10 b30 ui; a10 game 100-121 s, a shot a second; b30's Pelican flight and beach fight to 240 s; default against `nogel`, both with `lightdump`):
+- `lightdump` now reads the alert light's gel as `average`, (24, 28, 24) of 255: a mostly dark gel with narrow beams. Drawn colour 0.094 0.019 0.018 against 1.000 0.169 0.188.
+- The seam: the pillar's red edge behind her at x ~174 (shots at game ~108 and ~110 s, rows where `nogel` steps by 20 or more) falls from 37 and 46 red levels to 11 and 21: about what turning the whole light pass off gave (15), and the walls read grey as on the PC. The frame's mean red drops 6-12 levels; green and blue move under 1.5. The pillar's edge is still faintly there (the level's own lighting).
+- Cost: nil. Work per frame identical to 0.01 ms in all four profile windows on a10; `lights_render_diffuse` the same.
+- b30: no dimming. Every light in the fight (assault rifle, plasma pistol and rifle muzzle flashes, frag) has no gel (index -1), so the change never applies; work per frame within 0.4 ms a window either way (timing drift: the runs end 27 ticks apart).
+- Shots: nogel left, gel right, kept off the repository.
+
+**Still open.** The seam through her fades to the pillar's faint edge (the level's own lighting, which the PC shows too); the beacons give their average, not their sweep (below).
+
+**A sweeping gel (not built) [U].** The Xbox draws the gel per pixel, turned over game time; the averaged gel is right on average and wrong at any instant (no moving beams). Two ways to have the sweep:
+- Per vertex, on the CPU, in the light pass that already lights each vertex (falloff, cone, angle): rotate the light-to-vertex direction by the gel's matrix (one matrix a light a frame), pick the face, sample a small baked gel (six 8 x 8 faces, under a new key bit). About 30-40% more work a lit vertex for gelled lights only; a10's light pass is 3.8-5.5 ms a frame in this stretch, so up to ~1-2 ms where beacons are in view. But level walls have few vertices and the beams are narrow: they would fall between vertices and flicker. Not recommended.
+- Per pixel, on the GE: draw each beacon's beams as projected textures (the GE's texture matrix from positions, divided by q), one or two beam projections a beacon, the matrix turned each frame by the gel's functions. GE cost: one more textured pass over the triangles the light already reaches; no CPU work a vertex. This is the faithful one, and a look call for Sheepdog01 after its own A/B.
 
 ## Instrument
 
