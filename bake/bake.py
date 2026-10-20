@@ -168,7 +168,7 @@ def run(command, log_path, cwd=None, env=None):
 MEASURES = ('texprofile', 'palcompare')
 # every pack's lines on its textures' alpha (--alpha-audit's name each
 # texture: tag names and counts, never texels)
-ALPHA_LINES = ('alpha shapes', 'effects kept at 8 bits', 'alpha audit')
+ALPHA_LINES = ('alpha shapes', 'effects kept at 8 bits', 'alpha audit', 'cut-outs')
 ALPHA_AUDIT = False         # --alpha-audit
 
 

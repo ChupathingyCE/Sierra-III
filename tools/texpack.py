@@ -172,7 +172,37 @@ def level_looks(m, d, B):
         # for the one that does); a shader that doesn't test it ignores it
         if flags & 1 and LOOK_ALPHA_ANY:
             look['alpha_tested'] = True
+        # the Xbox alpha-tests a level shader on its bump map's alpha, not the
+        # base map's (rasterizer_xbox_environment.c: stage 0 is the bump map
+        # unless it is the specular mask); the GE tests the base map, so the
+        # bump map's alpha goes into it
+        bump_id, = struct.unpack_from('<i', m.data, o + 308)
+        bump = m.by_id.get(bump_id)
+        if flags & 1 and not flags & 2 and CUTOUT_FROM_BUMP and bump and bump.name in by_tag and 'cutout' not in look:
+            bump_scale, = struct.unpack_from('<f', m.data, o + 292)
+            su, sv = struct.unpack_from('<2f', m.data, o + 312)
+            fallback = bump_scale if bump_scale else 1.0
+            look['cutout'] = dict(bump=by_tag[bump.name][0], u=su if su else fallback, v=sv if sv else fallback)
     return looks
+
+
+# --no-cutout-bump: alpha-tested level shaders cut out by their base map's
+# alpha (as before), not their bump map's
+CUTOUT_FROM_BUMP = True
+CUTOUTS = []   # (base map, bump map) whose alpha came from the bump map
+
+
+def cutout_alpha(img, cutout, m):
+    """the alpha the Xbox tests: the bump map's, at each of the base's texels
+    on the bump map tiled by its scale (nearest), or None"""
+    bump = decode_bump(m, cutout['bump'])
+    if bump is None:
+        return None
+    bh, bw = bump.shape[:2]
+    h, w = img.shape[:2]
+    u = np.floor((np.arange(w) + 0.5) / w * cutout['u'] * bw).astype(np.int64) % bw
+    v = np.floor((np.arange(h) + 0.5) / h * cutout['v'] * bh).astype(np.int64) % bh
+    return bump[v[:, None], u[None, :], 3:4]
 
 
 # --look-alpha-first: a base map's alpha kept or dropped by the first level
@@ -437,7 +467,12 @@ def neutral_detail(img):
     return np.concatenate([out, np.full_like(img[:, :, 3:4], 255)], 2)
 
 
-def apply_look(img, look):
+def apply_look(img, look, m=None):
+    if look.get('cutout') is not None and m is not None:
+        alpha = cutout_alpha(img, look['cutout'], m)
+        if alpha is not None:
+            img = np.concatenate([img[:, :, :3], alpha], 2)
+            CUTOUTS.append((look['shader'], look['cutout']['bump']['tag']))
     rgb = img[:, :, :3].astype(np.float32) / 255.0
     a = img[:, :, 3:4].astype(np.float32) / 255.0
     p, q = look['primary'], look['secondary']
@@ -1217,7 +1252,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         from lightmap_masks import dilate
         img = dilate(img, LIGHTMAP_MASKS[(b['tag'], b['index'])], 2 * LIGHTMAP_SCALE + 2)
     if look:
-        img = apply_look(img, look)
+        img = apply_look(img, look, m)
     if relief:
         img = apply_relief(img, relief, m)
         if img is None:
@@ -1380,6 +1415,9 @@ def main():
     ap.add_argument('--no-composites', action='store_true',
                     help='no see-through composites: each shader drawn as one of its maps and a tint, as before '
                          '(seethrough.COMPOSITES)')
+    ap.add_argument('--no-cutout-bump', action='store_true',
+                    help='alpha-tested level shaders cut out by their base map\'s alpha, as before, not their bump '
+                         'map\'s (CUTOUT_FROM_BUMP)')
     ap.add_argument('--look-alpha-first', action='store_true',
                     help='a level base map keeps its alpha only when the first shader that draws it tests it (as '
                          'before; LOOK_ALPHA_ANY)')
@@ -1443,6 +1481,9 @@ def main():
     d = Defs()
     m = CacheMap(a.map)
     global ALPHA_COVERAGE, ALPHA_TESTED, ALPHA_SPLIT, EFFECTS_CLUT4
+    global LOOK_ALPHA_ANY, CUTOUT_FROM_BUMP
+    LOOK_ALPHA_ANY = not a.look_alpha_first
+    CUTOUT_FROM_BUMP = not a.no_cutout_bump
     ALPHA_SPLIT, EFFECTS_CLUT4 = not a.no_alpha_split, a.effects_clut4
     ALPHA_TESTED = alpha_tested_bitmaps(m, d)
     if a.alpha_coverage:
@@ -1512,6 +1553,9 @@ def main():
                 print('  %s: detail map folded in for %s' % (b['tag'], mlooks[b['address']]['shader']), file=sys.stderr)
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
+    print('cut-outs: %d level base maps alpha-tested by their bump maps\' alpha%s' % (
+        len(set(CUTOUTS)), ': ' + ', '.join('%s (%s)' % c for c in sorted(set(CUTOUTS))[:12]) if CUTOUTS else ''),
+        file=sys.stderr)
     print('bump relief: %d level base maps baked with their bump maps\' relief (under the key | 2)%s' % (
         relief_count, ' (--no-relief)' if NO_RELIEF else ' (unfiltered)' if OLD_RELIEF else ''), file=sys.stderr)
     print('cube maps: %d averaged into 8 x 8 patches (model reflections)' % len(CUBE_PATCHES), file=sys.stderr)
@@ -1589,8 +1633,6 @@ def main():
     composites = {}
     composite_bytes = 0
     seethrough.COMPOSITES = not a.no_composites
-    global LOOK_ALPHA_ANY
-    LOOK_ALPHA_ANY = not a.look_alpha_first
     if SHOWCASE:
         seethrough.COMPOSITE_SIDE = 512
     by_tag = {}
