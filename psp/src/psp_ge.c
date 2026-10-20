@@ -378,7 +378,9 @@ void psp_ge_fog_planar(float red, float green, float blue, float maximum_distanc
 void psp_ge_seethrough_tint(unsigned int tint);
 void psp_ge_seethrough_shader(unsigned int shader);
 void psp_ge_seethrough_meter(const void *meter);
-static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shader);
+static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shader, unsigned int face,
+	unsigned int edge);
+int psp_tex_shader_angle_tints(unsigned int shader, unsigned int *face, unsigned int *edge);
 unsigned int psp_tex_shader_tint(unsigned int shader, int *flags);
 int psp_tex_resident(unsigned int key);
 void psp_ge_window_target(int target);
@@ -933,7 +935,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_fog_planar(w[0].f, w[1].f, w[2].f, w[3].f, w[4].f);
 			break;
 		case DEFER_SEETHROUGH_TINT: /* build 116 */
-			seethrough_tint_set(w[0].u, (int)w[1].u, w[2].u);
+			seethrough_tint_set(w[0].u, (int)w[1].u, w[2].u, w[3].u, w[4].u);
 			break;
 		case DEFER_SEETHROUGH_METER: /* build 116 */
 			psp_ge_seethrough_meter(w[0].u ? (const void *)(w + 1) : NULL);
@@ -11386,6 +11388,10 @@ struct transparent_draw
 	SEETHROUGH_FLAT (the tint alone, TFX_BLEND); the alpha is multiplied
 	in all three */
 	unsigned char tint_model;
+	/* the shader's tints face on and edge on (psp_tex_shader_angle_tints),
+	blended per vertex by the angle in place of tint; 0 for one tint */
+	unsigned char angle_tinted;
+	unsigned int tint_face, tint_edge;
 	/* SEETHROUGH_EXACT_DEPTH and SEETHROUGH_CLAMPED (below) */
 	unsigned char depth_mode;
 	/* after b116: the shader (its tag's definition) the part was queued
@@ -11425,6 +11431,9 @@ static unsigned int seethrough_next_shader = 0; /* after b116: for tdump */
 /* build 116: the tint is half the shader's colour, drawn with the GE's
 colour doubling (a shader brighter than its map: Cortana, the holograms) */
 static unsigned char seethrough_next_doubled = 0;
+static unsigned char seethrough_next_angle = 0;
+static unsigned int seethrough_next_face, seethrough_next_edge;
+static unsigned long seethrough_angle_tinted_draws = 0;
 static unsigned long seethrough_doubled_draws = 0;
 /* the next queue call's tint model (struct transparent_draw, tint_model):
 the bake's fit of the shader over its map's texels (seethrough.py). A
@@ -11470,6 +11479,8 @@ black: it adds less with distance and nothing at the fog's end. Unfogged, the
 far ocean stayed bright against the fog-coloured sky at the horizon (the
 white bar between them). Keep word "waterunfogged": as before */
 #define SEETHROUGH_FOG_FADE 128
+/* the shader has tints face on and edge on (seethrough_tint_set's flags) */
+#define SEETHROUGH_ANGLE_TINTED 256
 static unsigned char seethrough_next_depth = 0;
 static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
 static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0, seethrough_fog_faded_draws = 0;
@@ -12402,6 +12413,9 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->doubled = seethrough_next_doubled;
 	draw->tint_model = seethrough_next_model;
 	draw->depth_mode = seethrough_next_depth;
+	draw->angle_tinted = seethrough_next_angle && seethrough_next_model == SEETHROUGH_MODULATE;
+	draw->tint_face = seethrough_next_face;
+	draw->tint_edge = seethrough_next_edge;
 	draw->color = draw->tint;
 	draw->colored = 0;
 	if (clut)
@@ -12435,7 +12449,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		float fade = seethrough_fade(blend);
 		int mode = PSP_SEETHROUGH_MODE(blend);
 
-		if (mode != 0 && vertex_count <= 4096)
+		if ((mode != 0 || draw->angle_tinted) && vertex_count <= 4096)
 			seethrough_vertex_colors(draw, vertex_count, draw->vertices != vertices, mode, fade);
 		else if (fade < 1.0f)
 			draw->color = seethrough_tinted(seethrough_color((int)(fade * 255.0f + 0.5f), draw->blend), draw->tint);
@@ -12494,6 +12508,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
 	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
+	seethrough_next_angle = 0;
 	seethrough_next_model = SEETHROUGH_MODULATE;
 	seethrough_next_depth = 0;
 	seethrough_meter_next = 0; /* and its meter */
@@ -12530,10 +12545,14 @@ static unsigned int seethrough_color(int f, int blend)
 /* the next queue call's tint, its model as the pack gives it
 (psp_tex_shader_tint: 0 modulate, 1 modulate doubled, 2 added, 3 flat) and
 its shader (the tag's definition, for tdump; 0 for none) */
-static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shader)
+static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shader, unsigned int face,
+	unsigned int edge)
 {
-	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 3, tint, (unsigned int)flags, shader, 0, 0, 0, 0, 0)); /* build 112: gedefer */
+	GE_DEFER(defer_words(DEFER_SEETHROUGH_TINT, 5, tint, (unsigned int)flags, shader, face, edge, 0, 0, 0)); /* build 112: gedefer */
 	seethrough_next_tint = tint;
+	seethrough_next_angle = (flags & SEETHROUGH_ANGLE_TINTED) != 0;
+	seethrough_next_face = face;
+	seethrough_next_edge = edge;
 	seethrough_next_depth = (unsigned char)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED | SEETHROUGH_FOG_FADE));
 	flags &= 15;
 	seethrough_next_doubled = (unsigned char)(flags == 1);
@@ -12543,7 +12562,7 @@ static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shade
 
 void psp_ge_seethrough_tint(unsigned int tint)
 {
-	seethrough_tint_set(tint, 0, 0);
+	seethrough_tint_set(tint, 0, 0, 0, 0);
 }
 
 /* the engine side's call before each see-through queue call: the shader's
@@ -12559,7 +12578,7 @@ void psp_ge_seethrough_shader(unsigned int shader)
 {
 	static int pushed = -1, wrapped = -1, unfogged = -1;
 	int flags = 0;
-	unsigned int tint = psp_tex_shader_tint(shader, &flags);
+	unsigned int tint = psp_tex_shader_tint(shader, &flags), face = 0, edge = 0;
 
 	if (pushed < 0)
 	{
@@ -12587,8 +12606,10 @@ void psp_ge_seethrough_shader(unsigned int shader)
 			flags |= SEETHROUGH_FOG_FADE;
 	}
 	seethrough_map_clamp = 0;
+	if (shader && psp_tex_shader_angle_tints(shader, &face, &edge))
+		flags |= SEETHROUGH_ANGLE_TINTED;
 
-	seethrough_tint_set(tint, flags, shader);
+	seethrough_tint_set(tint, flags, shader, face, edge);
 }
 
 /* build 116: the next queue call's meter (struct psp_seethrough_meter), or
@@ -12606,6 +12627,23 @@ void psp_ge_seethrough_meter(const void *meter)
 }
 
 /* two colours multiplied channel by channel (ABGR, 0-255 each) */
+/* a shader's tint at a vertex seen at c (|cos| of the angle between its
+normal and the view: 1 face on), between its tints edge on and face on */
+static unsigned int seethrough_angle_tint(const struct transparent_draw *draw, float c)
+{
+	unsigned int out = 0;
+	int shift, w = (int)(c * 256.0f);
+
+	w = w < 0 ? 0 : w > 256 ? 256 : w;
+	for (shift = 0; shift < 32; shift += 8)
+	{
+		int edge = (draw->tint_edge >> shift) & 255, face = (draw->tint_face >> shift) & 255;
+
+		out |= (unsigned int)((edge * (256 - w) + face * w + 128) >> 8) << shift;
+	}
+	return out;
+}
+
 static unsigned int seethrough_tinted(unsigned int color, unsigned int tint)
 {
 	unsigned int out = 0;
@@ -12747,16 +12785,18 @@ static void seethrough_vertex_colors(struct transparent_draw *draw, int vertex_c
 		}
 		c = nn > 0.0f ? fabsf(wn[0] * camera_forward[0] + wn[1] * camera_forward[1] + wn[2] * camera_forward[2]) /
 			sqrtf(nn) : 1.0f;
-		a = mode == 1 ? 1.0f - c : c;
+		a = mode == 0 ? 1.0f : mode == 1 ? 1.0f - c : c;
 		*(unsigned int *)(record + 8) = seethrough_tinted(seethrough_color((int)(fade * a * 255.0f + 0.5f), draw->blend),
-			draw->tint);
+			draw->angle_tinted ? seethrough_angle_tint(draw, c) : draw->tint);
 	}
 	draw->vertices = records;
 	draw->colored = 1;
 	if (mode == SEETHROUGH_LIT)
 		seethrough_lit_draws++;
-	else
+	else if (mode != 0)
 		seethrough_angle_draws++;
+	if (draw->angle_tinted)
+		seethrough_angle_tinted_draws++;
 }
 
 static struct transparent_draw *transparent_slot(unsigned int key, float u_scale, float v_scale, float u_offset,
@@ -12794,6 +12834,7 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 	draw->doubled = seethrough_next_doubled;
 	draw->tint_model = seethrough_next_model;
 	draw->depth_mode = seethrough_next_depth;
+	draw->angle_tinted = 0;
 	draw->color = seethrough_tinted(seethrough_fades(draw->blend) && PSP_SEETHROUGH_FADE(blend) < 1.0f ?
 		seethrough_color((int)(PSP_SEETHROUGH_FADE(blend) * 255.0f + 0.5f), draw->blend) : 0xFFFFFFFF, draw->tint);
 	draw->colored = 0;
@@ -13786,6 +13827,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	seethrough_next_tint = 0xFFFFFFFF; /* build 116: this call's tint is used */
 	seethrough_next_shader = 0;
 	seethrough_next_doubled = 0;
+	seethrough_next_angle = 0;
 	seethrough_next_model = SEETHROUGH_MODULATE;
 	seethrough_next_depth = 0;
 	ge_entry_us[3] += ge_clock() - start;
@@ -18376,9 +18418,10 @@ void psp_ge_frame_end(void)
 			for (way = 0; way < 3; way++)
 				me_bench_frames[way] = me_bench_us[way] = 0;
 		}
-		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu, added %lu, flat %lu (rounded %lu)",
+		platform_log("GE: build 116 restorations, last 300 frames: see-through parts faded by angle %lu (%lu of them the level's); windows in planar fog %lu; meter parts %lu (%lu left out: map not loaded yet or no palette); see-through draws doubled %lu, added %lu, flat %lu (rounded %lu), tinted by angle %lu",
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
-			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws, seethrough_rounded_draws);
+			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws, seethrough_rounded_draws,
+			seethrough_angle_tinted_draws);
 		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu",
 			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws);
 		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = 0;
@@ -18388,6 +18431,7 @@ void psp_ge_frame_end(void)
 		seethrough_added_draws = 0;
 		seethrough_flat_draws = 0;
 		seethrough_rounded_draws = 0;
+		seethrough_angle_tinted_draws = 0;
 		if (seethrough_lit_draws || model_point_parts)
 			platform_log("GE: after build 116, last 300 frames: glass parts lit by their model's light %lu; model parts lit by point lights %lu",
 				seethrough_lit_draws, model_point_parts);

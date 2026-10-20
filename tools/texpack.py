@@ -32,6 +32,12 @@ File layout (little endian):
     sorted by address: only the shaders whose drawn map isn't the rule's.
     Only when there are any, after a 'TNT1' (of count 0 when no shader is
     tinted)
+  tints by angle, right after the drawn maps: 'TNA1', u32 count, then count x
+    { u32 shader tag address (bits 0 and 1 as its 'TNT1' entry), u32 the tint
+    face on (ABGR), u32 the tint edge on }, sorted by address: the generic
+    shaders whose combiners read the angle the surface is seen at (Cortana),
+    blended per vertex by that angle. Only when there are any, after a 'TND1'
+    (of count 0 when no drawn map is chosen)
   glow maps: directory entries keyed by a self-illuminated model shader's
     tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
     same texels share their data
@@ -1136,14 +1142,23 @@ def main():
         len(tints), sum(1 for k in tints if k & 3 == seethrough.DOUBLED), sum(1 for k in tints if k & 3 == seethrough.ADD),
         sum(1 for k in tints if k & 3 == seethrough.FLAT), len(drawn),
         ' (tints from the maps\' means: --tints-from-means)' if a.tints_from_means else ''), file=sys.stderr)
+    angled = sorted(key for key in tints if tints[key][2].angle is not None)
+    for key in angled:
+        face, edge = tints[key][2].angle
+        print('  tints by angle for %s: face on %08x, edge on %08x' % (
+            names[key & ~3], seethrough.abgr(face), seethrough.abgr(edge)), file=sys.stderr)
     tint_bytes = b''
     if tints or drawn:
         tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
             struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
-        if drawn:
+        if drawn or angled:
             tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
                 struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
                             drawn[address].alt.word()) for address in sorted(drawn))
+        if angled:
+            tint_bytes += struct.pack('<4sI', b'TNA1', len(angled)) + b''.join(
+                struct.pack('<III', key, seethrough.abgr(tints[key][2].angle[0]),
+                            seethrough.abgr(tints[key][2].angle[1])) for key in angled)
     header = 12
     directory = 20 * len(entries)
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16

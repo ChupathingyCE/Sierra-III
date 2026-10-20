@@ -102,6 +102,13 @@ maps; the tint for the rule's map, for the keep word drawnmapscale) sorted
 by address. A pack without them leaves every shader to the rule */
 static unsigned int *drawn_maps = NULL;
 static int drawn_map_count = 0;
+/* the shaders whose combiners read the angle a surface is seen at (texpack.py
+'TNA1'): triples of (the shader's tag address with its tint's flags, the tint
+face on, the tint edge on) sorted by address, blended per vertex by the angle
+(psp_ge.c); without them those shaders draw at the middle angle's tint, so
+Cortana's face-on body was as bright as her rim. "noangletint": the middle */
+static unsigned int *angle_tints = NULL;
+static int angle_tint_count = 0;
 static int drawn_map_scale(void);
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
 static unsigned short vram_pending[512];
@@ -167,6 +174,9 @@ void psp_tex_close(void)
 	free(tints);
 	tints = NULL;
 	tint_count = 0;
+	free(angle_tints);
+	angle_tints = NULL;
+	angle_tint_count = 0;
 	free(drawn_maps);
 	drawn_maps = NULL;
 	drawn_map_count = 0;
@@ -868,15 +878,31 @@ void psp_tex_map_opened(const char *name)
 			}
 		}
 		if (tables && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
-			table[0] == 0x31444E54 /* TND1 */ && table[1] > 0 && table[1] <= 4096 &&
-			(drawn_maps = malloc(table[1] * 12)) != NULL)
+			table[0] == 0x31444E54 /* TND1 */ && table[1] <= 4096)
 		{
-			if (sceIoRead(file, drawn_maps, table[1] * 12) == (int)(table[1] * 12))
-				drawn_map_count = (int)table[1];
+			tables = 2;
+			if (table[1] > 0 && (drawn_maps = malloc(table[1] * 12)) != NULL)
+			{
+				if (sceIoRead(file, drawn_maps, table[1] * 12) == (int)(table[1] * 12))
+					drawn_map_count = (int)table[1];
+				else
+				{
+					free(drawn_maps);
+					drawn_maps = NULL;
+					tables = 0;
+				}
+			}
+		}
+		if (tables == 2 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
+			table[0] == 0x31414E54 /* TNA1 */ && table[1] > 0 && table[1] <= 4096 &&
+			(angle_tints = malloc(table[1] * 12)) != NULL)
+		{
+			if (sceIoRead(file, angle_tints, table[1] * 12) == (int)(table[1] * 12))
+				angle_tint_count = (int)table[1];
 			else
 			{
-				free(drawn_maps);
-				drawn_maps = NULL;
+				free(angle_tints);
+				angle_tints = NULL;
 			}
 		}
 		platform_log("textures: see-through tints for %d shaders%s; drawn maps chosen by the bake for %d%s", tint_count,
@@ -884,6 +910,9 @@ void psp_tex_map_opened(const char *name)
 			drawn_map_count ? (drawn_map_scale() ? " (drawnmapscale: the smallest scale's instead)" : "") :
 			" (none in this pack: the smallest scale's for all)");
 	}
+	if (angle_tint_count)
+		platform_log("textures: tints by angle for %d shaders%s", angle_tint_count,
+			psp_keep("noangletint") ? " (noangletint: the middle angle's)" : "");
 	platform_log("textures: %s, %d textures; caches %d KB of VRAM and %d KB of RAM", path, entry_count,
 		(VRAM_CACHE_END - VRAM_CACHE_START) / 1024, (int)(arenas[1].end - arenas[1].start) / 1024);
 	{
@@ -982,6 +1011,37 @@ unsigned int psp_tex_shader_tint(unsigned int shader, int *flags)
 			high = middle - 1;
 	}
 	return 0xFFFFFFFF;
+}
+
+/* a see-through shader's tints face on and edge on (ABGR, with the flags of
+its psp_tex_shader_tint), or 0 when it has none (or "noangletint", "notint",
+"drawnmapscale") */
+int psp_tex_shader_angle_tints(unsigned int shader, unsigned int *face, unsigned int *edge)
+{
+	static int off = -1;
+	int low = 0, high = angle_tint_count - 1;
+
+	if (!angle_tints)
+		return 0;
+	if (off < 0)
+		off = psp_keep("noangletint") || psp_keep("notint") || drawn_map_scale();
+	while (!off && low <= high)
+	{
+		int middle = (low + high) / 2;
+		unsigned int address = angle_tints[3 * middle] & ~3u;
+
+		if (address == shader)
+		{
+			*face = angle_tints[3 * middle + 1];
+			*edge = angle_tints[3 * middle + 2];
+			return 1;
+		}
+		if (address < shader)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return 0;
 }
 
 static int find(unsigned int key)
