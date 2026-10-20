@@ -11950,15 +11950,53 @@ pair the one it is drawn from (itself, or the nearest one before it) */
 #define CONTRAIL_PAIRS 256
 static unsigned char contrail_pair_ok[CONTRAIL_PAIRS];
 static short contrail_pair_from[CONTRAIL_PAIRS];
-static unsigned long contrail_pairs_folded = 0, contrails_out_of_view = 0;
+static unsigned long contrail_pairs_folded = 0, contrails_out_of_view = 0, contrails_faded = 0;
 
-static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
+/* The Xbox's effect shader takes the vertex alpha into the colour wherever
+the framebuffer blend has no alpha of its own (rasterizer_xbox_transparent_
+geometry.c, the effect's last combiner): added, subtracted and max colours
+are scaled by it, multiplied and min colours move toward white by it, double
+multiplied toward grey. A contrail's alpha is its fade, by the states over
+each point's life and to zero at both ends, so on the GE's added blend,
+which never reads alpha, the trail drew at full strength from muzzle to
+projectile: a line. Here the corners' colours take their alpha as the Xbox
+does. Keep word "contrailsflat": as before (alpha left to the blend) */
+static unsigned int contrail_faded_color(unsigned int abgr, int blend)
+{
+	unsigned int a = abgr >> 24, r = abgr & 0xFF, g = (abgr >> 8) & 0xFF, b = (abgr >> 16) & 0xFF, toward;
+
+	switch (blend)
+	{
+	case 3: case 4: case 6: case 7: /* add, subtract, max, alpha-multiply-add */
+		r = r * a / 255; g = g * a / 255; b = b * a / 255;
+		break;
+	case 1: case 2: case 5: /* multiply, double multiply, min */
+		toward = blend == 2 ? 128 : 255;
+		r = (r * a + toward * (255 - a)) / 255;
+		g = (g * a + toward * (255 - a)) / 255;
+		b = (b * a + toward * (255 - a)) / 255;
+		break;
+	default: /* alpha blend: the GE reads the alpha itself */
+		break;
+	}
+	return (abgr & 0xFF000000) | (b << 16) | (g << 8) | r;
+}
+
+static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned int bitmap_key, short packed)
 {
 	struct game_sprite_vertex const *in = vertices;
 	struct sprite_vertex *out;
 	struct transparent_draw *draw;
 	int segments = vertex_count / 2 - 1, corner;
 	float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+	/* the blend in the low byte; the shader's map flags above it
+	(render_contrails.c's call: bit 1 u clamped, bit 2 v clamped) */
+	short blend = (short)(packed & 0xFF);
+	int map_flags = (packed >> 8) & 0xFF;
+	static int flat = -1;
+
+	if (flat < 0)
+		flat = psp_keep("contrailsflat");
 
 	if (!frame_open || !vertices || segments <= 0 || !bitmap_key || list_full())
 		return 0;
@@ -12022,10 +12060,18 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 		o->u = v->u;
 		o->v = v->v;
 		o->color = (argb & 0xFF00FF00) | ((argb >> 16) & 0xFF) | ((argb & 0xFF) << 16);
+		if (!flat)
+			o->color = contrail_faded_color(o->color, blend);
 		o->x = v->x; o->y = v->y; o->z = v->z;
 		cx += v->x; cy += v->y; cz += v->z;
 	}
+	if (!flat)
+		contrails_faded++;
 	draw = &transparent[transparent_count++];
+	/* the slot's last user's depth and wrap flags would stay otherwise; the
+	map repeats along the trail unless the shader clamps it, as on the Xbox */
+	draw->depth_mode = flat ? 0 :
+		(unsigned short)(((map_flags & 2) ? SEETHROUGH_CLAMP_U : 0) | ((map_flags & 4) ? SEETHROUGH_CLAMP_V : 0));
 	draw->one_sided = 0;
 	draw->occluder = 0;
 	draw->sorted_last = 0;
@@ -19080,10 +19126,10 @@ void psp_ge_frame_end(void)
 		decal_cache_scans = decal_cache_uses = decal_project_us = 0;
 		/* build 113 */
 		if (contrails_queued || contrails_out_of_view)
-			platform_log("GE: contrails (contrails): %lu queued, %lu segments; %lu pairs of corners folded away (behind the "
+			platform_log("GE: contrails (contrails): %lu queued (%lu faded by their alpha), %lu segments; %lu pairs of corners folded away (behind the "
 				"near plane or past the GE's range), %lu contrails wholly out of view (last 300 frames)", contrails_queued,
-				contrail_segments, contrail_pairs_folded, contrails_out_of_view);
-		contrails_queued = contrail_segments = contrail_pairs_folded = contrails_out_of_view = 0;
+				contrails_faded, contrail_segments, contrail_pairs_folded, contrails_out_of_view);
+		contrails_queued = contrail_segments = contrail_pairs_folded = contrails_out_of_view = contrails_faded = 0;
 		if (zoom_masks || zoom_masks_missing)
 			platform_log("GE: zoom masks (zoommask): %lu drawn, %lu not in the texture pack (last 300 frames)", zoom_masks,
 				zoom_masks_missing);

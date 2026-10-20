@@ -13632,10 +13632,13 @@ static void render_contrail(
 					psp_contrails = !psp_keep("nocontrails");
 				if (psp_contrails && psp_ge_active())
 				{
-					/* the shader's blend: contrail shaders lay out their first
-					words as effect shaders do (flags, then the blend function) */
+					/* the shader's blend and its map's clamp flags: contrail
+					shaders lay out their first words as effect shaders do
+					(flags, the blend function, the fade mode, the map's flags) */
+					struct shader_effect_definition const *effect = (struct shader_effect_definition const *)shader;
+
 					psp_ge_contrail(first_vertex, vertex_count, (unsigned int)bitmap,
-						((struct shader_effect_definition const *)shader)->framebuffer_blend_function);
+						(short)((effect->framebuffer_blend_function & 0xFF) | ((effect->primary_map_flags & 6) << 8)));
 					rasterizer_dynamic_triangles_unlock(triangle_buffer_index);
 					rasterizer_dynamic_vertices_unlock(vertex_buffer_index);
 					rasterizer_dynamic_triangles_delete(triangle_buffer_index);
