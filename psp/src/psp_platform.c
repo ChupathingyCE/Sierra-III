@@ -999,7 +999,7 @@ static void keep_load(void)
 	/* build 115 */
 	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar");
 	/* build 116: the restorations are on by default; these words turn each off */
-	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages");
+	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nearseatcine nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
 	speed defaults' off words */
 	platform_log("keep words, build 117's restorations off: hudonemap glassflat lightcutone geoshare nopointlights ditherall; speed: vrammodels0; tests: ladderN exitatN");
@@ -1035,6 +1035,7 @@ static void keep_load(void)
 	platform_log("keep words, build 132's: speed off: poseaheadoff (the Media Engine pose job off: on by default where the ME runs the job ring); as before: memarksatlaunch (the launch's register read also reads the ME's own two words while it runs)");
 	platform_log("keep words, build 132's recon (emulator): nmreaders (who first reads each object's node matrices after they're computed, by nodes, and the call sites of other objects' reads)");
 	platform_log("keep words, build 136's: wake-on-write on in local games (a sleeping object checksummed only when something marked it since its last check); speed off: wakeonwriteoff (every sleeper summed every tick); opt-in: wakeonwrite (on in networked games too); check: wakecheck (every sleeper summed anyway, an unmarked change logged with the words that changed). wakeonwrite and wakecheck win over the off word");
+	platform_log("keep words, models as the Xbox draws them: restorations off: seethroughtwosided (see-through parts drawn from both sides), nolayers (shaders' extra layers left out), nearseatcine (a seated player's cinematics keep the near plane out), noselfocclude (Cortana's back layers drawn over her front, her parts sorted with the rest); look calls (opt-in, for an A/B): camoshimmer (active camouflage as its own map added faintly), genericnoise (a generic shader's second map drawn again over it, moving); instruments: neardump (what set the near plane, on shot frames), shotfromN (shots start at N s), scriptsdump (scenario scripts at load; recon builds)");
 	platform_log("keep words, shelved (docs/shelf.md): nwbatch and its kin built in only with PSP_SHELF=1; still built but shelved, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash (the b123 ME hygiene), mewake, mewarmtest, mefinishslow");
 }
 
