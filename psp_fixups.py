@@ -25225,6 +25225,560 @@ FIXES_STENCILS["source/game/game.c#stencilsfirst"] = [
 ]
 
 
+
+# ---------- FIXES_NMSKIP: node matrices left to the frame's last tick (lever #2)
+# With two ticks a frame (b30, a30, c20, d20), each object's node matrices are
+# made on both, and the first tick's are overwritten by the second's before a
+# frame draws them. For an object nothing else reads in between, the first
+# compute is work nobody sees (nmreaders: 24-45% of the nodes made in the
+# object loop on b30, c20, d20 are not read before the next compute). This
+# leaves that compute out on every tick but a frame's last, for scenery, sound
+# scenery and placeholders that hold and are held by nothing. It stays exact:
+# - Nothing tests these objects' collision (they have no collision model), so
+#   neither the collision tests nor the Media Engine's rays, which read node
+#   matrices without the accessors, ever look at them.
+# - Their bounding spheres, which code everywhere reads without asking, can't
+#   change: the root node's inputs (position, facing, scale, mirroring, the
+#   animation playing) are those its last compute read, and the animation
+#   leaves the root alone (no node-0 channel, no overlays), so the compute
+#   would write the sphere it holds.
+# - A read through the accessors, or a deactivation, makes the left-out
+#   compute first, from the inputs the object had where it was left out (its
+#   game time too), as nwbatch's list did; a later compute anywhere replaces
+#   it whole; the frame's last tick makes those still left.
+# "nmskip": on (opt-in until its PSP A/B). "nmskipcheck": makes every compute
+# as before, but checks each would-be skip (the sphere and root unchanged) and
+# each read's catch-up (bit for bit against the compute it stands in for), and
+# logs what each costs. Not with nwbatch (the shelf).
+FIXES_NMSKIP = {}
+
+FIXES_NMSKIP["source/saved games/game_state.c#nmskip"] = [
+("""static game_state_before_load_proc before_load_procs[] =
+{""",
+ """#ifdef HALO_PSP
+void psp_nms_game_state_loading(void); /* objects.c (psp_fixups.py, FIXES_NMSKIP) */
+#endif
+
+static game_state_before_load_proc before_load_procs[] =
+{"""),
+("""	cluster_partitions_port_forget,
+};""",
+ """	cluster_partitions_port_forget,
+#ifdef HALO_PSP
+	psp_nms_game_state_loading,
+#endif
+};"""),
+]
+
+FIXES_NMSKIP["source/objects/objects.c#nmskip"] = [
+("""#define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + game_time_get())""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_NMSKIP): a left-out compute made later reads the game
+time it was left out at */
+extern long psp_nms_settle_time;
+#define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + (psp_nms_settle_time != NONE ? psp_nms_settle_time : game_time_get()))
+/* a reader of an object whose compute was left out has it made first; the
+bit is tested in line, as readers are many and left-out computes few */
+extern int psp_nms_count;
+extern unsigned long psp_nms_pending[];
+void psp_nms_settle(long object_index);
+static void psp_nms_forget(void);
+#define PSP_NMS_READ(index) do { \\
+		unsigned long psp_nms_absolute = (unsigned long)(index) & 0xFFFFUL; \\
+		if (psp_nms_count && psp_nms_absolute < MAXIMUM_OBJECTS_PER_MAP && \\
+			((psp_nms_pending[psp_nms_absolute >> 5] >> (psp_nms_absolute & 31)) & 1)) \\
+			psp_nms_settle(index); \\
+	} while (0)
+#else
+#define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + game_time_get())
+#endif"""),
+("""real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{""",
+ """/* psp_fixups.py (FIXES_NMSKIP): the computes left out until the frame's
+last tick. A bit an absolute index marks an object whose compute is owed;
+its entry keeps what that compute would have read. Each object's last
+compute's root inputs are kept in a small direct-mapped table, so a skip
+can see the root (and the sphere) wouldn't move */
+#define PSP_NMS_ENTRIES 256
+#define PSP_NMS_ROOTS 256
+#define PSP_NMS_TYPES (FLAG(_object_type_scenery) | FLAG(_object_type_sound_scenery) | FLAG(_object_type_placeholder))
+struct psp_nms_inputs
+{
+	real_point3d position;
+	real_vector3d forward, up;
+	real scale;
+	unsigned long flags;
+	struct object_animation_state animation;
+	long parent_object_index;
+	short parent_node_index;
+	real functions[NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS];
+};
+struct psp_nms_entry
+{
+	long object_index;
+	long time;
+	struct psp_nms_inputs inputs;
+};
+struct psp_nms_root
+{
+	long object_index;
+	real_point3d position;
+	real_vector3d forward, up;
+	real scale;
+	unsigned long mirrored;
+	long graph;
+	short state;
+};
+long psp_nms_settle_time = NONE;
+/* read in line by the accessors: no left-out computes, no test */
+int psp_nms_count = 0;
+unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;
+static short *psp_nms_entry_of = NULL;
+static struct psp_nms_entry *psp_nms_entries = NULL;
+static short psp_nms_free[PSP_NMS_ENTRIES];
+static int psp_nms_free_count = 0;
+static struct psp_nms_root *psp_nms_roots = NULL;
+static real_matrix4x3 *psp_nms_kept = NULL;
+static unsigned long psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded,
+	psp_nms_read, psp_nms_frame_end, psp_nms_stale, psp_nms_refused[6], psp_nms_gate_wrong,
+	psp_nms_made_differs, psp_nms_made_checked, psp_nms_skip_us, psp_nms_check_reports;
+static void psp_nms_settle_absolute(long absolute, int at_frame_end);
+
+static void psp_nms_inputs_get(struct object_datum const *object, struct psp_nms_inputs *inputs)
+{
+	csmemset(inputs, 0, sizeof(*inputs));
+	inputs->position = object->object.position;
+	inputs->forward = object->object.forward;
+	inputs->up = object->object.up;
+	inputs->scale = object->object.scale;
+	inputs->flags = object->object.flags;
+	inputs->animation = object->object.animation;
+	inputs->parent_object_index = object->object.parent_object_index;
+	inputs->parent_node_index = object->object.parent_node_index;
+	csmemcpy(inputs->functions, object->object.outgoing_function_values, sizeof(inputs->functions));
+}
+
+static void psp_nms_inputs_put(struct object_datum *object, struct psp_nms_inputs const *inputs)
+{
+	object->object.position = inputs->position;
+	object->object.forward = inputs->forward;
+	object->object.up = inputs->up;
+	object->object.scale = inputs->scale;
+	object->object.flags = inputs->flags;
+	object->object.animation = inputs->animation;
+	object->object.parent_object_index = inputs->parent_object_index;
+	object->object.parent_node_index = inputs->parent_node_index;
+	csmemcpy(object->object.outgoing_function_values, inputs->functions, sizeof(inputs->functions));
+}
+
+static int psp_nms_waits(long absolute)
+{
+	return (psp_nms_pending[absolute >> 5] >> (absolute & 31)) & 1;
+}
+
+static void psp_nms_release(long absolute)
+{
+	psp_nms_pending[absolute >> 5] &= ~(1ul << (absolute & 31));
+	psp_nms_free[psp_nms_free_count++] = psp_nms_entry_of[absolute];
+	psp_nms_count--;
+}
+
+/* the root inputs each compute read (object_compute_node_matrices' end) */
+__attribute__((noinline)) static void psp_nms_note(long object_index, struct object_datum const *object)
+{
+	struct psp_nms_root *root = &psp_nms_roots[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (PSP_NMS_ROOTS - 1)];
+
+	root->object_index = object_index;
+	root->position = object->object.position;
+	root->forward = object->object.forward;
+	root->up = object->object.up;
+	root->scale = object->object.scale;
+	root->mirrored = object->object.flags & FLAG(_object_mirrored_bit);
+	root->graph = object->object.animation.animation_graph_index;
+	root->state = object->object.animation.state.index;
+}
+
+static int psp_nms_root_same(long object_index, struct object_datum const *object)
+{
+	struct psp_nms_root const *root = &psp_nms_roots[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (PSP_NMS_ROOTS - 1)];
+
+	return root->object_index == object_index &&
+		!csmemcmp(&root->position, &object->object.position, sizeof(root->position)) &&
+		!csmemcmp(&root->forward, &object->object.forward, sizeof(root->forward)) &&
+		!csmemcmp(&root->up, &object->object.up, sizeof(root->up)) &&
+		!csmemcmp(&root->scale, &object->object.scale, sizeof(root->scale)) &&
+		root->mirrored == (object->object.flags & FLAG(_object_mirrored_bit)) &&
+		root->graph == object->object.animation.animation_graph_index &&
+		root->state == object->object.animation.state.index;
+}
+
+/* 1 when the animation leaves the root node where its default puts it: no
+channel of node 0 in the animation playing, and no overlays (an overlay is
+weighted by a function value, which moves even a constant channel) */
+static int psp_nms_root_still(struct object_datum const *object, struct object_definition const *definition)
+{
+	if (definition->object.animation_graph.index != NONE &&
+		animation_graph_definition_get(definition->object.animation_graph.index)->object_overlays.count > 0)
+		return 0;
+	if (object->object.animation.animation_graph_index != NONE && object->object.animation.state.index != NONE)
+	{
+		struct animation_graph *graph = animation_graph_definition_get(object->object.animation.animation_graph_index);
+		struct animation const *animation;
+
+		if (!VALID_INDEX(object->object.animation.state.index, graph->animations.count))
+			return 0;
+		animation = TAG_BLOCK_GET_ELEMENT(&graph->animations, object->object.animation.state.index, struct animation);
+		if ((animation->nodes_with_translation_flags[0] | animation->nodes_with_rotation_flags[0] |
+			animation->nodes_with_scale_flags[0]) & 1)
+			return 0;
+	}
+	return 1;
+}
+
+__attribute__((noinline)) static int psp_nms_begin(void)
+{
+	extern int psp_lights_link_tick; /* FIXES_LD1: the frame's last tick */
+
+	if (psp_nms_on < 0)
+	{
+		int k;
+
+		psp_nms_check = psp_keep("nmskipcheck") != 0;
+		psp_nms_on = psp_nms_check || psp_keep("nmskip");
+		if (psp_nms_on)
+		{
+			psp_nms_entry_of = (short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nms_entry_of));
+			psp_nms_entries = (struct psp_nms_entry *)malloc(PSP_NMS_ENTRIES * sizeof(*psp_nms_entries));
+			psp_nms_roots = (struct psp_nms_root *)calloc(PSP_NMS_ROOTS, sizeof(*psp_nms_roots));
+			if (psp_nms_check)
+				psp_nms_kept = (real_matrix4x3 *)malloc(MAXIMUM_NODES_PER_MODEL * sizeof(*psp_nms_kept));
+			if (!psp_nms_entry_of || !psp_nms_entries || !psp_nms_roots || (psp_nms_check && !psp_nms_kept))
+				psp_nms_on = 0;
+			for (k = 0; k < PSP_NMS_ROOTS && psp_nms_roots; k++)
+				psp_nms_roots[k].object_index = NONE;
+			for (k = 0; k < PSP_NMS_ENTRIES; k++)
+				psp_nms_free[k] = (short)k;
+			psp_nms_free_count = PSP_NMS_ENTRIES;
+		}
+	}
+	if (psp_nms_on <= 0)
+		return 0;
+	psp_nms_ticks++;
+	if (psp_lights_link_tick)
+		psp_nms_last_ticks++;
+	return !psp_lights_link_tick;
+}
+
+/* 1 when this compute (and the postprocess after it, which these types
+don't have) is left to the frame's last tick */
+__attribute__((noinline)) static int psp_nms_skip(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct object_definition const *definition = object_definition_get(object->definition_index);
+	struct psp_nms_entry *entry;
+	extern unsigned long psp_object_epoch;
+	extern int psp_merays_out;
+	void psp_merays_settle(void);
+	int reason;
+
+	psp_nms_seen++;
+	if (object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE)
+		reason = 0;
+	else if (definition->object.collision_model.index != NONE)
+		reason = 1;
+	else if (object->object.animation.interpolation_frame_count)
+		reason = 2;
+	else if (!psp_nms_root_still(object, definition))
+		reason = 3;
+	else if (!psp_nms_root_same(object_index, object))
+		reason = 4;
+	else if (!psp_nms_free_count && !psp_nms_waits(absolute))
+		reason = 5;
+	else
+		reason = -1;
+	if (reason >= 0)
+	{
+		psp_nms_refused[reason]++;
+		return 0;
+	}
+	if (psp_nms_check)
+	{
+		/* made as before; the skip's claims checked against it */
+		real_matrix4x3 root = ((real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices))[0];
+		real_point3d center = object->object.bounding_sphere_center;
+		real radius = object->object.bounding_sphere_radius;
+		unsigned long start = psp_microseconds();
+
+		object_compute_node_matrices(object_index);
+		psp_nms_skip_us += psp_microseconds() - start;
+		if (csmemcmp(&root, object_header_block_get(object_index, &object->object.node_matrices), sizeof(root)) ||
+			csmemcmp(&center, &object->object.bounding_sphere_center, sizeof(center)) ||
+			radius != object->object.bounding_sphere_radius)
+		{
+			psp_nms_gate_wrong++;
+			if (psp_nms_check_reports++ < 20)
+				platform_psp_log("nmskipcheck: t=%ld %s (#%08lx): the root or sphere moved though the skip's test passed",
+					game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index);
+		}
+	}
+	else
+	{
+		/* what the compute counts on entry (FIXES_121, FIXES_122) */
+		if (psp_merays_out)
+			psp_merays_settle();
+		psp_object_epoch++;
+	}
+	if (psp_nms_waits(absolute))
+	{
+		/* an earlier tick's, which this one's replaces */
+		psp_nms_release(absolute);
+		psp_nms_superseded++;
+	}
+	psp_nms_entry_of[absolute] = psp_nms_free[--psp_nms_free_count];
+	entry = &psp_nms_entries[psp_nms_entry_of[absolute]];
+	entry->object_index = object_index;
+	entry->time = game_time_get();
+	psp_nms_inputs_get(object, &entry->inputs);
+	psp_nms_pending[absolute >> 5] |= 1ul << (absolute & 31);
+	psp_nms_count++;
+	psp_nms_skipped++;
+	return 1;
+}
+
+/* a compute anywhere replaces the one left out (object_compute_node_matrices) */
+__attribute__((noinline)) static void psp_nms_drop(long object_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute) &&
+		psp_nms_entries[psp_nms_entry_of[absolute]].object_index == object_index)
+	{
+		psp_nms_release(absolute);
+		psp_nms_superseded++;
+	}
+}
+
+/* the left-out compute, made now from its entry's inputs and game time; the
+object's inputs as they are now are put back after, but for any the compute
+itself changed (a facing it mended), as nwbatch's list did */
+static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
+{
+	struct object_datum *object = object_get(object_index);
+	struct psp_nms_inputs now, after;
+	extern unsigned long psp_object_epoch;
+	unsigned long epoch = psp_object_epoch;
+	unsigned char *n = (unsigned char *)&now;
+	unsigned char const *p = (unsigned char const *)&entry->inputs, *a = (unsigned char const *)&after;
+	unsigned int k;
+
+	psp_nms_inputs_get(object, &now);
+	psp_nms_inputs_put(object, &entry->inputs);
+	psp_nms_settle_time = entry->time;
+	object_compute_node_matrices(object_index);
+	psp_nms_settle_time = NONE;
+	/* the skip counted it already */
+	psp_object_epoch = epoch;
+	psp_nms_inputs_get(object, &after);
+	for (k = 0; k < sizeof(now); k++)
+		if (a[k] != p[k])
+			n[k] = a[k];
+	psp_nms_inputs_put(object, &now);
+}
+
+__attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int at_frame_end)
+{
+	struct psp_nms_entry entry = psp_nms_entries[psp_nms_entry_of[absolute]];
+	long now = game_time_get();
+	struct object_datum *object;
+	real_matrix4x3 *nodes;
+	long size;
+	real_point3d center;
+	real radius;
+
+	psp_nms_release(absolute);
+	/* its object gone, or a game state from another time (a revert) */
+	if (!object_header_try_and_get(entry.object_index) || entry.time > now || now - entry.time > 8)
+	{
+		psp_nms_stale++;
+		return;
+	}
+	if (at_frame_end)
+		psp_nms_frame_end++;
+	else
+		psp_nms_read++;
+	if (!psp_nms_check)
+	{
+		psp_nms_make(entry.object_index, &entry);
+		return;
+	}
+	/* the compute already made where the skip would have been is what the
+	reader sees; the catch-up is made, compared, and taken back */
+	object = object_get(entry.object_index);
+	nodes = (real_matrix4x3 *)object_header_block_get(entry.object_index, &object->object.node_matrices);
+	size = MIN((long)object->object.node_matrices.size, (long)(MAXIMUM_NODES_PER_MODEL * sizeof(real_matrix4x3)));
+	csmemcpy(psp_nms_kept, nodes, size);
+	center = object->object.bounding_sphere_center;
+	radius = object->object.bounding_sphere_radius;
+	psp_nms_make(entry.object_index, &entry);
+	psp_nms_made_checked++;
+	if (csmemcmp(psp_nms_kept, nodes, size) || csmemcmp(&center, &object->object.bounding_sphere_center, sizeof(center)) ||
+		radius != object->object.bounding_sphere_radius)
+	{
+		psp_nms_made_differs++;
+		if (psp_nms_check_reports++ < 20)
+			platform_psp_log("nmskipcheck: t=%ld %s (#%08lx): the catch-up from tick %ld differs from the compute it stands in for",
+				now, tag_get_name(object->definition_index), (unsigned long)entry.object_index, entry.time);
+	}
+	csmemcpy(nodes, psp_nms_kept, size);
+	object->object.bounding_sphere_center = center;
+	object->object.bounding_sphere_radius = radius;
+	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(entry.object_index) < MAXIMUM_OBJECTS_PER_MAP)
+	{
+		psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(entry.object_index)].center = center;
+		psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(entry.object_index)].radius = radius;
+	}
+}
+
+/* a reader of an object whose compute was left out: made first */
+__attribute__((noinline)) void psp_nms_settle(long object_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
+		psp_nms_settle_absolute(absolute, 0);
+}
+
+/* the objects' loop is over: on the frame's last tick, what is left is made */
+__attribute__((noinline)) static void psp_nms_close(void)
+{
+	long word;
+
+	psp_nms_open = 0;
+	if (psp_nms_on <= 0)
+		return;
+	if (psp_nms_count && psp_lights_link_tick)
+	{
+		for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
+			while (psp_nms_pending[word])
+				psp_nms_settle_absolute(word * 32 + __builtin_ctz(psp_nms_pending[word]), 1);
+	}
+	if (psp_nms_ticks >= 900)
+	{
+		platform_psp_log("nmskip: %lu ticks (%lu a frame's last): %lu computes of scenery and its kin on the others, %lu left out "
+			"(%lu replaced by a later compute, %lu made for a reader, %lu at the frame's end, %lu stale); kept: attached %lu, "
+			"collision model %lu, interpolating %lu, root animated %lu, root moved or unknown %lu, no room %lu",
+			psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded, psp_nms_read,
+			psp_nms_frame_end, psp_nms_stale, psp_nms_refused[0], psp_nms_refused[1], psp_nms_refused[2],
+			psp_nms_refused[3], psp_nms_refused[4], psp_nms_refused[5]);
+		if (psp_nms_check)
+			platform_psp_log("nmskipcheck: the skips' test wrong %lu of %lu; catch-ups differing %lu of %lu; "
+				"the computes it would leave out %.3f ms a tick",
+				psp_nms_gate_wrong, psp_nms_skipped, psp_nms_made_differs, psp_nms_made_checked,
+				(float)psp_nms_skip_us / (float)psp_nms_ticks / 1000.0f);
+		psp_nms_ticks = psp_nms_last_ticks = psp_nms_seen = psp_nms_skipped = psp_nms_superseded = 0;
+		psp_nms_read = psp_nms_frame_end = psp_nms_stale = psp_nms_skip_us = 0;
+		csmemset(psp_nms_refused, 0, sizeof(psp_nms_refused));
+	}
+}
+
+/* a map's objects go: nothing of theirs is owed */
+static void psp_nms_forget(void)
+{
+	long k;
+
+	if (psp_nms_on <= 0)
+		return;
+	csmemset(psp_nms_pending, 0, sizeof(psp_nms_pending));
+	psp_nms_count = 0;
+	for (k = 0; k < PSP_NMS_ENTRIES; k++)
+		psp_nms_free[k] = (short)k;
+	psp_nms_free_count = PSP_NMS_ENTRIES;
+	for (k = 0; k < PSP_NMS_ROOTS; k++)
+		psp_nms_roots[k].object_index = NONE;
+}
+
+/* a game state is loaded (a revert): its objects' matrices are as it was
+saved, so nothing is owed, and no root input noted before stands */
+void psp_nms_game_state_loading(void)
+{
+	psp_nms_forget();
+}
+
+real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{"""),
+# the accessors: what they hand out is made first
+("""		psp_nmr_read(object_index, __builtin_return_address(0));
+	/* while a frame is drawn""",
+ """		psp_nmr_read(object_index, __builtin_return_address(0));
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+	/* while a frame is drawn"""),
+("""		psp_nmr_read(object_index, __builtin_return_address(0));
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 1060""",
+ """		psp_nmr_read(object_index, __builtin_return_address(0));
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 1060"""),
+# a deactivated object leaves the loop with its matrices as they should be
+("""	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+""",
+ """	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+"""),
+# a compute anywhere replaces a left-out one whole
+("""	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_computed(object_index);
+""",
+ """	/* psp_fixups.py (FIXES_NMSKIP) */
+	if (psp_nms_count)
+		psp_nms_drop(object_index);
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_computed(object_index);
+"""),
+# ... and notes what it placed the root from
+("""	/* psp_fixups.py (build 107): and its copy */
+	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) < MAXIMUM_OBJECTS_PER_MAP)""",
+ """	/* psp_fixups.py (FIXES_NMSKIP) */
+	if (psp_nms_on > 0 && TEST_FLAG(PSP_NMS_TYPES, object->object.type))
+		psp_nms_note(object_index, object);
+	/* psp_fixups.py (build 107): and its copy */
+	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) < MAXIMUM_OBJECTS_PER_MAP)"""),
+# the skip: a left-out compute takes its postprocess with it, as posehalf's does
+("""			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped)
+""",
+ """			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped &&
+				!(psp_nms_open && TEST_FLAG(PSP_NMS_TYPES, object->object.type) &&
+					(psp_pose_skipped = psp_nms_skip(object_index, object)) != 0)) /* psp_fixups.py (FIXES_NMSKIP) */
+"""),
+("""	psp_object_account(12, psp_microseconds() - psp_object_start);
+""",
+ """	psp_object_account(12, psp_microseconds() - psp_object_start);
+	psp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */
+"""),
+("""	psp_nmr_in_update = 0;
+	psp_pose_ahead_make();
+""",
+ """	psp_nmr_in_update = 0;
+	psp_nms_close(); /* psp_fixups.py (FIXES_NMSKIP) */
+	psp_pose_ahead_make();
+"""),
+("""void objects_dispose_from_old_map(
+	void)
+{
+""",
+ """void objects_dispose_from_old_map(
+	void)
+{
+#ifdef HALO_PSP
+	psp_nms_forget(); /* psp_fixups.py (FIXES_NMSKIP) */
+#endif
+"""),
+]
+
+
 # ---------- FIXES_POOLS: the glow particles' array at the PSP's size
 # glow.c sizes it with an enum of its own, not one of the engine's
 # capacities, so psp_capacity.h's size (the campaign's, with the actor,
@@ -25245,7 +25799,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_NMSKIP.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
