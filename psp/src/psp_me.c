@@ -695,7 +695,10 @@ static void bus_load_job(const unsigned int *args, unsigned int *results)
 	unsigned int base = edram ? BUS_EDRAM_BASE : BUS_BASE, lines = edram ? BUS_EDRAM_LINES : BUS_LINES;
 	unsigned int *out = edram ? (unsigned int *)BUS_EDRAM_OUT : bus_out;
 
-	while (!BUS_STOP && me_cycles() - start < limit)
+	/* the stop word is an uncached main-RAM read: polled every load, it put a
+	bus trip into every eDRAM load and hid the eDRAM's rate behind it, so it
+	is read every 16th */
+	while (((n & 15u) || !BUS_STOP) && me_cycles() - start < limit)
 	{
 		x = x * 1664525u + 1013904223u;
 		sink += *(volatile const unsigned int *)(base + ((x >> 8) % lines) * 64u);
