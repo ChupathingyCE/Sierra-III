@@ -20,4 +20,9 @@ particle_census[k].from_effect = effect != -1;
 
 **Cost:** none outside recon builds. Both counters exist only with `PSP_RECON=1` and their keep words; nothing a play build runs changed.
 
-**Proof** [E]: an emulator batch on b30 with `objcost particlecensus` should print rows per definition and per effect (the lab's findings, measurements.tsv, carry the run).
+**Proof** [M]: a 450 s b30 replay on the PSP-1000 with `objcost particlecensus geocluster` prints rows per definition (named, not "?"; the by-type line too) and per effect in every ten-second window; the figures are in the lab's findings (measurements.tsv). Three things the run showed: the instrumented build costs 15% of the frame (+18 ms of 121, 16 of them in the tick), so its absolute times are an upper bound; `tools/passtable.py` mistook the census rows for steps (see below); and `hwthreads` gave nonsense on hardware (below).
+
+## Found reading the first instrumented hardware run
+
+- **passtable.py reads the census rows as steps.** `profile.txt` now holds `objcost:` and `particlecensus:` rows inside each window; the parser skips a row when a colon sits in its first 12 characters, which holds for `objcost:` and not for `particlecensus:`, so every effect row became a step (172 ms a frame of "unclassified"). Fix: skip both prefixes outright. Not yet made.
+- **`hwthreads` is unusable on the PSP-1000.** In 223 of 226 windows the shares exceed 100% (others 1,000-40,000%, idle up to a wrapped 4.8e15%, no switches counted after load) [M]. Only the loading line is sane. `psp/profile/main.c`'s `threads_account` needs debugging on hardware (units of the run clocks, the idle clock wrapping, which thread the phase calls come from).
