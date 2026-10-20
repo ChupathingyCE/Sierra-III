@@ -13100,6 +13100,18 @@ the distance (the debug menu: off, 1, 2, 4, 8%; default 2), never under
 0.01 units (3 cm). "nudgewide": no ceiling (b60-b75) */
 static int nudge_wide = -1;
 static unsigned long nudges_clamped = 0, nudges_asked = 0;
+/* A surface seen nearly edge-on gets no slope part. Its depth changes by
+thousands of steps across two pixels, so the slope part (uncapped: the lift
+limit is off by default) moved it most of the way to the eye, and a light
+strip on a wall behind a pillar drew as a dashed bright line on the pillar's
+face. The Xbox draws the level's overlays with no depth bias at all, so it
+never shows them through what stands in front. Edge-on, a surface covers a
+pixel or two, and losing its slope part costs at most those pixels to its
+own wall. "nudgeedgeN": the cosine (in hundredths) between the view and the
+surface's normal under which the slope part is dropped; "nudgeedge0" keeps
+it at every angle */
+static float nudge_edge_cos = -1.0f;
+static unsigned long nudges_edge_on = 0;
 static float slope_units_capped(float units, const float *a, const float *b, const float *c, float reference)
 {
 	float ceiling, nearest = a[2], lift, cos_angle, length;
@@ -13109,7 +13121,20 @@ static float slope_units_capped(float units, const float *a, const float *b, con
 
 	if (nudge_wide < 0)
 		nudge_wide = psp_keep("nudgewide");
+	if (nudge_edge_cos < 0.0f)
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		nudge_edge_cos = psp_keep_number("nudgeedge", 10) * 0.01f;
+	}
 	nudges_asked++;
+	length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * sqrtf(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+	cos_angle = length > 0.0f ? fabsf(n[0] * m[0] + n[1] * m[1] + n[2] * m[2]) / length : 1.0f;
+	if (units > 0.0f && cos_angle < nudge_edge_cos)
+	{
+		nudges_edge_on++;
+		return 0.0f;
+	}
 	if (nudge_wide || nudge_percent <= 0)
 		return units;
 	if (b[2] < nearest) nearest = b[2];
@@ -13124,8 +13149,6 @@ static float slope_units_capped(float units, const float *a, const float *b, con
 	lift = nudge_percent * 0.01f * nearest;
 	if (lift < 0.01f)
 		lift = 0.01f;
-	length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * sqrtf(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
-	cos_angle = length > 0.0f ? fabsf(n[0] * m[0] + n[1] * m[1] + n[2] * m[2]) / length : 1.0f;
 	if (cos_angle < 0.02f)
 		cos_angle = 0.02f;
 	ceiling = (lift / cos_angle) * projection_near * 61439.0f / (nearest * nearest);
@@ -18903,13 +18926,13 @@ void psp_ge_frame_end(void)
 
 					for (b = 0; b < ANGLE_BUCKETS; b++)
 						all += angle_triangles[b];
-					platform_log("GE: angle buckets: %lu draws, %lu us a frame sorting (the bucket loop alone %lu); triangles by 1/cos (1, 1.4, 2, 2.8, 4, 5.7, 8): %lu%% %lu%% %lu%% %lu%% %lu%% %lu%% %lu%%; overlays: %lu asked of the collision (%lu on a wall, %lu free, %lu us in all; %d draws remembered, %lu replaced); slope nudges %lu, held to the lift limit (%d%% of the distance) %lu%s",
+					platform_log("GE: angle buckets: %lu draws, %lu us a frame sorting (the bucket loop alone %lu); triangles by 1/cos (1, 1.4, 2, 2.8, 4, 5.7, 8): %lu%% %lu%% %lu%% %lu%% %lu%% %lu%% %lu%%; overlays: %lu asked of the collision (%lu on a wall, %lu free, %lu us in all; %d draws remembered, %lu replaced); slope nudges %lu, held to the lift limit (%d%% of the distance) %lu, dropped edge-on %lu%s",
 						angle_draws, angle_us / 300, angle_loop_us / 300, all ? angle_triangles[0] * 100 / all : 0, all ? angle_triangles[1] * 100 / all : 0,
 						all ? angle_triangles[2] * 100 / all : 0, all ? angle_triangles[3] * 100 / all : 0,
 						all ? angle_triangles[4] * 100 / all : 0, all ? angle_triangles[5] * 100 / all : 0,
-						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped,
+						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped, nudges_edge_on,
 						nudge_wide > 0 ? " (nudgewide: not held)" : "");
-					nudges_asked = nudges_clamped = 0;
+					nudges_asked = nudges_clamped = nudges_edge_on = 0;
 					if (me_slant > 0)
 						platform_log("GE: meslant: %lu of %lu sorted draws split with the Media Engine, %lu triangles of %lu (%lu%%) bucketed there; %lu fell back to this CPU; meslantcheck: %lu triangles checked, %lu answers differing",
 							me_slant_split, me_slant_draws, me_slant_triangles, all, all ? me_slant_triangles * 100 / all : 0,
