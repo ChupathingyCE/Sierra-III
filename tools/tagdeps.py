@@ -7,11 +7,13 @@ groups that lead to what is drawn or fired: a weapon to its first-person
 model and its projectile, a model to its shaders, a projectile to its
 attachments (contrails, lights, particle systems, effects).
 
-    python3 tagdeps.py MAP PATTERN [--depth N] [--all]
+    python3 tagdeps.py MAP PATTERN [--depth N] [--all] [--stages]
 
   PATTERN  part of a tag name, e.g. "plasma rifle" (case does not matter)
   --depth  how many steps to follow (default 3)
   --all    follow every group, not only those below
+  --stages every see-through shader's combiner stages (always when the
+           pattern matches four or fewer)
 
 Prints names and groups only: no tag data leaves the machine. Uses the bake's
 map reader (bake/lib/halomap.py) and Invader's tag definitions
@@ -160,7 +162,7 @@ def main():
             print('    fit over the texels: error modulate %.5f, add %.5f, flat %.5f; each map\'s share of the output: %s' % (
                 found.errors['modulate'], found.errors['add'], found.errors['flat'],
                 ', '.join('map %d %.5f' % (j, v) for j, v in sorted(found.shares.items())) or 'none'))
-        print_tint_inputs(m, t, means, stages=not same)
+        print_tint_inputs(m, t, means, stages=not same or len(shaders) <= 4 or '--stages' in sys.argv)
     print('tints that change from the means\' (texels, the drawn map, the model): %d' % changed)
 
 
@@ -228,9 +230,13 @@ def print_tint_inputs(m, t, means, stages=False):
         u, v = struct.unpack_from('<ff', m.data, mo + stride * i + scale_at)
         target = m.by_id.get(tid)
         mean = means(tid)
-        print('    map %d: %s, scale %g x %g, mean %s' % (
+        # the bitmap's kind: a bump or vector map read as colours averages
+        # its normals, not what the combiners make of them
+        b = means.first.get(target.name) if target is not None else None
+        kind_text = ', %s %s %s %dx%d' % (b['usage'], b['type'], b['format'], b['w'], b['h']) if b else ''
+        print('    map %d: %s, scale %g x %g, mean %s%s' % (
             i, target.name if target is not None else 'none', u, v,
-            ' '.join('%.2f' % x for x in mean) if mean is not None else 'unreadable'))
+            ' '.join('%.2f' % x for x in mean) if mean is not None else 'unreadable', kind_text))
     if stages and kind == seethrough.GENERIC:
         for line in stage_lines(m, o):
             print('    ' + line)
