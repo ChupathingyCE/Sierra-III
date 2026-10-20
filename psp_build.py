@@ -798,8 +798,8 @@ def main():
                    check=True, capture_output=True)
     print("wrote", os.path.join(OUT, "EBOOT.PBP"))
 
-# The release's ready-made profile, every campaign level open (Sheepdog01,
-# 2026-10-20): its own slot, so unzipping a new build over the stick never
+# The release's ready-made profile, every campaign level open: its own
+# slot, so unzipping a new build over the stick never
 # touches a player's profiles. Built from code each build (psp/seed/
 # all_levels.c), so it follows the save format: the profile's bytes from the
 # engine's headers, the checksum, the folder and its meta file from the save

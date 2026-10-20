@@ -14270,7 +14270,7 @@ of the screen, reads small. One zoom for the whole 640 x 480 page keeps every
 box and line where it was against the others, so nothing comes to overlap;
 115 is the most that keeps the Xbox's title-safe area (32 of 480 from each
 edge, where its menus lay out) on the screen: 240 / 208. Off (100) by
-default: the look is Sheepdog01's call */
+default: a change of look, settled by an A/B */
 #define MENU_ZOOM_MOST 115
 static float menu_zoom = 0.0f;
 
