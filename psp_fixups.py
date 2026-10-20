@@ -24976,7 +24976,7 @@ void object_compute_node_matrices(
 # 1,200 times a tick on b30's beach (18% of the calls, the tick's most-missed
 # load with no window for a prefetch). The header beside the data pointer
 # carries the same type, written with it when the object is made and never
-# changed (object_new_by_definition sets both from the definition), so the
+# changed (object_new sets both from the definition), so the
 # check passes and fails exactly as before. "notypehdr": the object's own
 FIXES_CACHE["source/objects/objects.c#typehdr"] = [
 ("""	struct object_datum *result = object_header_get(object_index)->datum;
