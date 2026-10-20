@@ -250,7 +250,7 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL
+	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED
 };
 typedef union
 {
@@ -375,6 +375,8 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	short blend, const float *centroid);
 void psp_ge_fog(const float *color, float minimum_distance, float maximum_distance, float density);
 void psp_ge_fog_planar(float red, float green, float blue, float maximum_distance, float density);
+void psp_ge_fog_submerged(float i, float j, float k, float d, unsigned int color, float density, float depth,
+	float distance);
 void psp_ge_seethrough_tint(unsigned int tint);
 void psp_ge_seethrough_shader(unsigned int shader);
 void psp_ge_seethrough_meter(const void *meter);
@@ -933,6 +935,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_FOG_PLANAR: /* build 116 */
 			psp_ge_fog_planar(w[0].f, w[1].f, w[2].f, w[3].f, w[4].f);
+			break;
+		case DEFER_FOG_SUBMERGED:
+			psp_ge_fog_submerged(w[0].f, w[1].f, w[2].f, w[3].f, w[4].u, w[5].f, w[6].f, w[7].f);
 			break;
 		case DEFER_SEETHROUGH_TINT: /* build 116 */
 			seethrough_tint_set(w[0].u, (int)w[1].u, w[2].u, w[3].u, w[4].u);
@@ -2717,6 +2722,55 @@ void psp_ge_fog_planar(float red, float green, float blue, float maximum_distanc
 	r = (int)(red * 255.0f); g = (int)(green * 255.0f); b = (int)(blue * 255.0f);
 	r = r < 0 ? 0 : r > 255 ? 255 : r; g = g < 0 ? 0 : g > 255 ? 255 : g; b = b < 0 ? 0 : b > 255 ? 255 : b;
 	planar_color = 0xFF000000 | (b << 16) | (g << 8) | r;
+}
+
+/* The planar fog seen from above: the window's fog plane and its planar
+fog (psp_fixups.py FIXES_OCEAN). The Xbox fogs every level surface by a
+pass of its own, ZFUNC EQUAL over what was drawn, blending the planar
+colour by a density worked out per vertex from how deep the vertex lies
+below the fog's plane and how far it is from the eye
+(rasterizer_xbox_environment_fog.c, structure_render_fog). With the eye
+above the plane nothing of that reaches psp_ge_fog_planar, so a sea floor
+was fogged by the atmospheric fog alone: b30's ocean, where the water's
+added colour lies over the seabed, came out violet instead of the deep
+green-blue the planar colour gives it. Here each level draw with part of its
+box below the plane gets that pass, with the eye above. Keep word
+"oceanfogold": as before; "oceanfogseg": the distance counted only along
+the part of the sight line below the plane */
+static float submerged_plane[4];
+static unsigned int submerged_color = 0;
+static float submerged_density = 0.0f, submerged_inverse_depth = 0.0f, submerged_inverse_distance = 0.0f;
+static int submerged_old = -1, submerged_segment = -1;
+static unsigned long submerged_draws = 0, submerged_triangles = 0, submerged_vertices = 0, submerged_us = 0,
+	submerged_dropped = 0, submerged_windows = 0, submerged_changes = 0;
+
+void psp_ge_fog_submerged(float i, float j, float k, float d, unsigned int color, float density, float depth,
+	float distance)
+{
+	GE_DEFER(defer_words(DEFER_FOG_SUBMERGED, 8, defer_bits(i), defer_bits(j), defer_bits(k), defer_bits(d), color,
+		defer_bits(density), defer_bits(depth), defer_bits(distance)));
+	if (submerged_old < 0)
+	{
+		submerged_old = psp_keep("oceanfogold");
+		submerged_segment = psp_keep("oceanfogseg");
+	}
+	if (density > 1.0f)
+		density = 1.0f;
+	if (density <= 0.001f || depth <= 0.0f || distance <= 0.0f)
+		density = 0.0f;
+	else
+		submerged_windows++;
+	if (density > 0.0f && (color != submerged_color || density != submerged_density) && submerged_changes++ < 8)
+		platform_log("GE: planar fog below the plane %.3f %.3f %.3f d %.2f: colour %06x, density %.2f, depth %.2f, distance %.1f%s",
+			i, j, k, d, color & 0xFFFFFF, density, depth, distance, submerged_old ? " (oceanfogold: not drawn)" : "");
+	submerged_plane[0] = i;
+	submerged_plane[1] = j;
+	submerged_plane[2] = k;
+	submerged_plane[3] = d;
+	submerged_color = color & 0xFFFFFF;
+	submerged_density = density;
+	submerged_inverse_depth = density > 0.0f ? 1.0f / depth : 0.0f;
+	submerged_inverse_distance = density > 0.0f ? 1.0f / distance : 0.0f;
 }
 
 /* the GE's own state, once: buffers, viewport, depth, fog */
@@ -7585,6 +7639,111 @@ static void frame_level_record(const struct level_stream *stream, const unsigned
 	frame_level_count++;
 }
 
+/* the planar fog pass over one level draw (psp_ge_fog_submerged): the
+planar colour, its alpha the density at each vertex, blended over what the
+draw's passes left where they drew (depth equal), in the positions those
+passes used (the 16-bit copy or the floats) so the depths agree. The pieces
+cut at the near plane are left out: they lie at the eye, above the water
+with the eye above it but for the shallows underfoot. Counted with
+"oceanfogold" too, so both sides of an A/B say what the pass would cost */
+static void submerged_pass(const struct level_stream *stream, const unsigned short *draw, long kept_count,
+	unsigned int lowest, unsigned int highest)
+{
+	const float *n = submerged_plane;
+	float lowest_height = -n[3], d, eye_height;
+	unsigned int start, i, count;
+	int axis, compact = compact_now != NULL;
+
+	if (kept_count <= 0)
+		return;
+	/* the box's corner farthest below the plane (world positions) */
+	for (axis = 0; axis < 3; axis++)
+		lowest_height += n[axis] * (n[axis] > 0.0f ? stream->low[axis] : stream->high[axis]);
+	if (lowest_height >= 0.0f)
+		return;
+	/* the plane in the stream's own frame; the eye in fog is psp_ge_fog_planar's */
+	d = n[3] - (n[0] * stream->origin[0] + n[1] * stream->origin[1] + n[2] * stream->origin[2]);
+	eye_height = n[0] * level_eye[0] + n[1] * level_eye[1] + n[2] * level_eye[2] - d;
+	if (eye_height < 0.0f)
+		return;
+	start = ge_clock();
+	count = highest - lowest + 1;
+	submerged_draws++;
+	submerged_triangles += kept_count;
+	submerged_vertices += count;
+	if (!submerged_old)
+	{
+		struct submerged_float { unsigned int color; float x, y, z; } *floats = NULL;
+		struct submerged_short { unsigned int color; short x, y, z, pad; } *shorts = NULL;
+		void *taken = list_take(count * (compact ? sizeof(*shorts) : sizeof(*floats)));
+
+		if (!taken)
+		{
+			submerged_dropped++;
+			submerged_us += ge_clock() - start;
+			return;
+		}
+		if (compact)
+			shorts = taken;
+		else
+			floats = taken;
+		for (i = 0; i < count; i++)
+		{
+			const struct ge_vertex *v = &stream->base[lowest + i];
+			float depth = d - (n[0] * v->x + n[1] * v->y + n[2] * v->z), density = 0.0f;
+			unsigned int alpha = 0;
+
+			if (depth > 0.0f)
+			{
+				float dx = v->x - level_eye[0], dy = v->y - level_eye[1], dz = v->z - level_eye[2];
+				float distance = sqrtf(dx * dx + dy * dy + dz * dz), a, b;
+
+				if (submerged_segment)
+					distance *= depth / (depth + eye_height);
+				a = depth * submerged_inverse_depth;
+				b = distance * submerged_inverse_distance;
+				density = submerged_density * (a < 1.0f ? a : 1.0f) * (b < 1.0f ? b : 1.0f);
+				alpha = (unsigned int)(density * 255.0f + 0.5f);
+			}
+			if (compact)
+			{
+				const struct compact_vertex *c = &compact_now->compact_base[lowest + i];
+
+				shorts[i].color = (alpha << 24) | submerged_color;
+				shorts[i].x = c->x;
+				shorts[i].y = c->y;
+				shorts[i].z = c->z;
+				shorts[i].pad = 0;
+			}
+			else
+			{
+				floats[i].color = (alpha << 24) | submerged_color;
+				floats[i].x = v->x;
+				floats[i].y = v->y;
+				floats[i].z = v->z;
+			}
+		}
+		sceGuDepthFunc(GU_EQUAL);
+		sceGuDepthMask(GU_TRUE);
+		sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
+		ge_blend(1);
+		if (compact)
+		{
+			compact_begin(0);
+			sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				(int)kept_count * 3, draw, shorts - lowest);
+			compact_end();
+		}
+		else
+			sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				(int)kept_count * 3, draw, floats - lowest);
+		ge_blend(0);
+		sceGuDepthMask(GU_FALSE);
+		sceGuDepthFunc(GU_GEQUAL);
+	}
+	submerged_us += ge_clock() - start;
+}
+
 static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
@@ -8022,6 +8181,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		level_detail_us += probe_clock() - probe_mark;
 		sceGuDisable(GU_TEXTURE_2D);
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
+		if (submerged_density > 0.0f)
+			submerged_pass(stream, draw, kept_count, lowest, highest);
 		/* build 90: for the permanent decals (not with the 16-bit copies,
 		which go through another vertex path) */
 		if (!compact_now && !alpha_tested)
@@ -18636,6 +18797,11 @@ void psp_ge_frame_end(void)
 		seethrough_vfpu_vertices = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
+		if (submerged_windows)
+			platform_log("GE: ocean fog, last 300 frames: windows with planar fog %lu; level draws below the plane with the eye above %lu, triangles %lu, vertices %lu, %lu us on the CPU%s; left out (list full) %lu",
+				submerged_windows, submerged_draws, submerged_triangles, submerged_vertices, submerged_us,
+				submerged_old ? " (oceanfogold: counted, not drawn)" : "", submerged_dropped);
+		submerged_windows = submerged_draws = submerged_triangles = submerged_vertices = submerged_us = submerged_dropped = 0;
 		if (light_merge > 0)
 			platform_log("GE: lightmerge: merged light draws, last 300 frames: %lu", light_merged_draws);
 		light_merged_draws = 0;

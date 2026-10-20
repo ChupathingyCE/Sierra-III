@@ -27582,6 +27582,37 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
+# ---------- FIXES_OCEAN: the planar fog seen from above (a restoration)
+# The Xbox fogs every level surface below the fog's plane by a pass of its
+# own (rasterizer_xbox_environment_fog.c), with the eye above the plane too;
+# FIXES_116's planar fog reaches only an eye inside it. Each window hands the
+# GE the settled plane and planar fog (psp_ge.c, psp_ge_fog_submerged), which
+# draws that pass over the level draws reaching below the plane. Keep word
+# "oceanfogold": as before
+FIXES_OCEAN = {}
+FIXES_OCEAN["source/rasterizer/rasterizer.c#oceanfog"] = [
+("""		psp_ge_fog_planar(settled->planar_color.red, settled->planar_color.green, settled->planar_color.blue,
+			settled->planar_maximum_distance, settled->planar_maximum_density * eye);""",
+ """		psp_ge_fog_planar(settled->planar_color.red, settled->planar_color.green, settled->planar_color.blue,
+			settled->planar_maximum_distance, settled->planar_maximum_density * eye);
+		{
+			/* psp_fixups.py (FIXES_OCEAN): the same planar fog, for the surfaces below the plane */
+			extern void psp_ge_fog_submerged(float i, float j, float k, float d, unsigned int color, float density,
+				float depth, float distance);
+			unsigned int r = (unsigned int)((settled->planar_color.red < 0.0f ? 0.0f : settled->planar_color.red > 1.0f ? 1.0f :
+				settled->planar_color.red) * 255.0f + 0.5f);
+			unsigned int g = (unsigned int)((settled->planar_color.green < 0.0f ? 0.0f : settled->planar_color.green > 1.0f ? 1.0f :
+				settled->planar_color.green) * 255.0f + 0.5f);
+			unsigned int b = (unsigned int)((settled->planar_color.blue < 0.0f ? 0.0f : settled->planar_color.blue > 1.0f ? 1.0f :
+				settled->planar_color.blue) * 255.0f + 0.5f);
+
+			psp_ge_fog_submerged(settled->plane.n.i, settled->plane.n.j, settled->plane.n.k, settled->plane.d,
+				(b << 16) | (g << 8) | r, settled->planar_mode == 1 ? settled->planar_maximum_density : 0.0f,
+				settled->planar_maximum_depth, settled->planar_maximum_distance);
+		}"""),
+]
+
+
 # ---------- FIXES_SOUNDEDRAM: R2, the sound cache in the Media Engine's eDRAM
 # ("soundedram", psp_dsound.c; docs/me_programme.md section 5). With the word
 # off every change here does what the code did before: the start-up block is
@@ -27695,7 +27726,7 @@ void sound_cache_idle(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
