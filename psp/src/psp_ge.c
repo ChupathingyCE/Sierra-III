@@ -15154,6 +15154,19 @@ struct shadow_memo
 	float camera[3], u, v;
 };
 static int shadow_memo_on = -1;
+/* "shadowmemocheck" (keep.txt): every corner the memo hands out is worked out
+again the old loop's way and compared bit for bit, so the memo's exactness is
+counted rather than inferred from pictures, which also move with timing */
+static int shadow_memo_check = -1;
+static unsigned long shadow_memo_checks = 0, shadow_memo_mismatches = 0, shadow_memo_logged = 0;
+
+static inline unsigned int shadow_float_bits(float f)
+{
+	union { float f; unsigned int u; } bits;
+
+	bits.f = f;
+	return bits.u;
+}
 
 static inline void shadow_memo_fill(struct shadow_memo *m, const struct ge_vertex *base, unsigned short index)
 {
@@ -15179,6 +15192,28 @@ static inline void shadow_memo_shade(struct shadow_memo *m, const struct ge_vert
 		shadow_corner(&b->x, &m->u, &m->v, &m->color);
 		m->shaded = 1;
 	}
+}
+
+static void shadow_memo_verify(const struct shadow_memo *m, const struct ge_vertex *base, unsigned short index, int shaded)
+{
+	const struct ge_vertex *b = &base[index];
+	float camera[3], u = 0.0f, v = 0.0f;
+	unsigned int color = 0;
+	int bad;
+
+	level_to_camera(&b->x, camera);
+	bad = m->key != index + 1 || memcmp(camera, m->camera, sizeof(camera)) || outside(camera) != m->bits;
+	if (shaded)
+	{
+		shadow_corner(&b->x, &u, &v, &color);
+		bad |= memcmp(&u, &m->u, sizeof(u)) || memcmp(&v, &m->v, sizeof(v)) || color != m->color;
+	}
+	if (bad && shadow_memo_mismatches < 4)
+		platform_log("GE: shadow memo mismatch at vertex %u: key %d bits %d/%d camera %08x/%08x u %08x/%08x color %08x/%08x",
+			index, m->key, m->bits, outside(camera), shadow_float_bits(camera[0]), shadow_float_bits(m->camera[0]),
+			shadow_float_bits(u), shadow_float_bits(m->u), color, m->color);
+	shadow_memo_mismatches += bad != 0;
+	shadow_memo_checks++;
 }
 
 static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count)
@@ -15217,7 +15252,15 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	}
 	out = scratch_vertices;
 	if (shadow_memo_on < 0)
-		shadow_memo_on = !psp_keep("shadowmemooff");
+	{
+		shadow_memo_check = psp_keep("shadowmemocheck") != 0;
+		shadow_memo_on = shadow_memo_check || !psp_keep("shadowmemooff");
+	}
+	if (shadow_memo_check && shadow_memo_checks >= shadow_memo_logged + 50000)
+	{
+		platform_log("GE: shadow memo checked %lu corners, %lu mismatches", shadow_memo_checks, shadow_memo_mismatches);
+		shadow_memo_logged = shadow_memo_checks;
+	}
 	if (shadow_memo_on)
 	{
 		int k;
@@ -15244,6 +15287,17 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 				shadow_memo_fill(&own[corner], stream->base, triangle[corner]);
 				m[corner] = &own[corner];
 			}
+		if (shadow_memo_check)
+		{
+			int kept = !(m[0]->bits & m[1]->bits & m[2]->bits);
+
+			for (corner = 0; corner < 3; corner++)
+			{
+				if (kept)
+					shadow_memo_shade(m[corner], &stream->base[triangle[corner]]);
+				shadow_memo_verify(m[corner], stream->base, triangle[corner], kept);
+			}
+		}
 		if (m[0]->bits & m[1]->bits & m[2]->bits)
 			continue;
 		for (corner = 0; corner < 3; corner++)
