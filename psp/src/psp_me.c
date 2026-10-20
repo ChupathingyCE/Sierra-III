@@ -132,6 +132,10 @@ the ring refuses pushes while one is out, as before batches */
 until a PSP run shows that stretch of the eDRAM is ours: edramcheck watches
 0-192 KB and patterns from 256 KB, not between */
 #define ME_FEATURE_EDRAM_STATE 64u
+/* "meclaimold": a batch job claims its record before it looks at the limit,
+as before the stale-claim fix (batch_job says why that order holds the main
+CPU) */
+#define ME_FEATURE_CLAIM_OLD 128u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -810,6 +814,8 @@ static const struct psp_me_batch *batch_sim_behind = NULL;
 /* whole jobs before the stop, 0-3 by turns, so the ME's records, the ones
 taken back and the ones never handed over fall in different places each pass */
 static unsigned int batch_sim_passes = 0, batch_sim_whole = 0;
+/* "meclaimold", for the simulated ME (the real one reads ME_FEATURE_CLAIM_OLD) */
+static int me_claim_old = 0;
 
 static void batch_job(const unsigned int *args, unsigned int *results, int on_me)
 {
@@ -819,6 +825,7 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	psp_me_record_fn make = (psp_me_record_fn)args[4];
 	unsigned char *records = (unsigned char *)args[5];
 	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6], made = 0, control = 0, user[ME_BATCH_ARGS], k;
+	int claim_old = on_me ? (CONTROL->features & ME_FEATURE_CLAIM_OLD) != 0 : me_claim_old;
 
 	for (k = 0; k < ME_BATCH_ARGS; k++)
 		user[k] = args[7 + k];
@@ -846,6 +853,17 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 	{
 		unsigned char *record = records + r * bytes;
 
+		/* A record at the limit is declined before it is claimed. started
+		is one word for every job of the batch: a later job that claimed its
+		first record and then withdrew would leave started at that record,
+		past one an earlier job had withdrawn at, and the main CPU would wait
+		for that one as if the ME still held it (until its deadline) */
+		if (!claim_old && r >= *limit)
+		{
+			*withdrawn = *withdrawn + 1;
+			__asm__ __volatile__("sync");
+			break;
+		}
 		*started = r + 1;
 		__asm__ __volatile__("sync");
 		if (r >= *limit)
@@ -1444,6 +1462,7 @@ int psp_me_start(void)
 	rays_batch = psp_keep("meraysbatch");
 	me_yield_off = psp_keep("meyieldoff");
 	me_grace_off = psp_keep("megraceoff");
+	me_claim_old = psp_keep("meclaimold");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -1505,7 +1524,8 @@ int psp_me_start(void)
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
 		(psp_keep("meaudiofirst") ? ME_FEATURE_AUDIO_FIRST : 0u) |
 		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u) |
-		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u);
+		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
+		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -2259,6 +2279,9 @@ static struct
 	the longest stretch between two looks in one (a thread above the game's
 	ran meanwhile) */
 	unsigned long withdrawn, wait_worst_us, gap_worst_us;
+	/* waits ended because every job of the batch had ended with the record
+	not made: a claim left behind by a later job's withdrawal */
+	unsigned long stale;
 } batch_stats;
 
 
@@ -2410,6 +2433,14 @@ int psp_me_batch_need(struct psp_me_batch *b, unsigned int index)
 				reset, and what it made is used only if it finished */
 				if (!psp_me_ring_ready())
 					break;
+				/* the batch's last job ended: nothing on the ME will make
+				this record, whatever started says */
+				if (!me_grace_off && (int)(RING_POPPED - b->tickets[b->ticket_count - 1]) > 0)
+				{
+					if (*done <= index)
+						batch_stats.stale++;
+					break;
+				}
 				now = sceKernelGetSystemTimeLow();
 				gap = now - last;
 				if (gap > batch_stats.gap_worst_us)
@@ -2855,7 +2886,8 @@ void psp_me_wake_poll(void)
 	ME reads them on its first pass, so the ring is served from the first
 	frame (a ring job not done in 10 ms turns the ring off for the session) */
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
-		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u);
+		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
+		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u);
 	__asm__ __volatile__("sync");
 	now = sceKernelGetSystemTimeWide();
 	if (me_restartable == 2)
@@ -3169,9 +3201,9 @@ void psp_me_report(void)
 	}
 	if (batch_stats.passes)
 	{
-		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu; jobs the ME ended at the limit %lu), waits for a record the ME was on %lu (longest %lu us, longest between two looks %lu us), hand-overs refused %lu; past %u ms: done at a second look %lu, slow %lu, late %lu%s",
+		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu; jobs the ME ended at the limit %lu), waits for a record the ME was on %lu (longest %lu us, longest between two looks %lu us), hand-overs refused %lu; stale claims taken back %lu; past %u ms: done at a second look %lu, slow %lu, late %lu%s",
 			batch_stats.passes, batch_stats.by_me, batch_stats.by_main, batch_stats.taken, batch_stats.withdrawn, batch_stats.waits,
-			batch_stats.wait_worst_us, batch_stats.gap_worst_us, batch_stats.refused, BATCH_RECORD_DEADLINE_US / 1000,
+			batch_stats.wait_worst_us, batch_stats.gap_worst_us, batch_stats.refused, batch_stats.stale, BATCH_RECORD_DEADLINE_US / 1000,
 			batch_stats.second_look, batch_stats.slow, batch_stats.late, batch_sim_half ? " (mebatchsimhalf: the simulated ME makes half of each job)" : "");
 		memset(&batch_stats, 0, sizeof(batch_stats));
 	}
