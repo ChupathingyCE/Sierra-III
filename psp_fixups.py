@@ -25113,7 +25113,7 @@ void rasterizer_model_transparent_geometry_submit(
 # Where the rest moves, still tints lose it: the camouflage powerup's noise
 # turning over its sphere is drawn as its still mask. The bake's composites
 # can't hold it either (a noise that scrolls under a mask that doesn't).
-# genericnoise (opt-in, Sheepdog01's call: an added pass is not the combiners'
+# genericnoise (opt-in, a look call: an added pass is not the combiners'
 # product) draws the shader's first other map once more over the same
 # triangles, with that map's own scale and animation, blended as the shader
 # blends, at GENERIC_NOISE_LEVEL of its strength and untinted
