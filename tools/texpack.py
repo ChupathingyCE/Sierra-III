@@ -313,16 +313,63 @@ def apply_relief(img, relief, m):
     return np.concatenate([rgb, img[:, :, 3:4]], 2)
 
 
-def cube_patch(m, b):
+def gel_average(m, b):
+    """a light's gel cube map's mean colour over all six faces, or None. The
+    Xbox turns the gel over game time, so a wall near the light sees its beams
+    sweep past; the six faces' mean is that light averaged over a turn
+    (rasterizer.c's light begin multiplies a light without a cone by it). One
+    face won't do: a beacon's beam may sit on one face and miss another.
+    Faces padded to an alignment hold each face's whole mip chain in turn, so
+    each face's top level is read; unpadded data is averaged whole (top levels
+    weigh three quarters, every face alike), whichever way its faces and
+    levels interleave"""
+    fmt, w, h = b['fmt'], b['w'], b['h']
+    if b['type'] != 'cube' or fmt in (17,) or BPP[fmt] == 0:
+        return None
+    dxt = FORMATS[fmt].startswith('DXT')
+    block = 8 if FORMATS[fmt] == 'DXT1' else 16
+    chain, lw, lh = 0, w, h
+    for _ in range(b['mips'] + 1):
+        chain += max(1, (lw + 3) // 4) * max(1, (lh + 3) // 4) * block if dxt else lw * lh * BPP[fmt] // 8
+        lw, lh = max(1, lw // 2), max(1, lh // 2)
+    size = b['pixels_size']
+    if size < 6 * chain:
+        return None
+    data = m.data[b['pixels_offset']:b['pixels_offset'] + size]
+    if size > 6 * chain:
+        stride = size // 6
+        top = max(1, (w + 3) // 4) * max(1, (h + 3) // 4) * block if dxt else w * h * BPP[fmt] // 8
+        data = b''.join(data[k * stride:k * stride + top] for k in range(6))
+    else:
+        data = data[:6 * chain]
+    if dxt:
+        img = decode_dxt(data, 4, len(data) // block * 4, FORMATS[fmt])
+    else:
+        img = decode_plain(data, len(data) * 8 // BPP[fmt], 1, fmt, False)
+    if img is None:
+        return None
+    return [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
+
+
+def gel_bitmaps(roles):
+    """bitmap tag names lights use as their gel and nothing else uses"""
+    return set(tag for tag, rs in roles.items()
+               if rs and all(r.startswith('ligh:') and r.endswith('cube map') for r in rs))
+
+
+def cube_patch(m, b, rgb=None):
     """a cube map's average colour as an 8 x 8 patch of that one colour,
     under the cube map's own key: the GE draws no cube maps, and a model's
     reflection is folded into its lighting by this average (psp_ge.c,
     psp_ge_model_reflection). The first face stands for the six (the bitmap's
-    data starts with it)"""
-    img = decode(m, b)
-    if img is None:
-        return None
-    r, g, bl = [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
+    data starts with it), unless rgb gives the colour (a light's gel)"""
+    if rgb is not None:
+        r, g, bl = rgb
+    else:
+        img = decode(m, b)
+        if img is None:
+            return None
+        r, g, bl = [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
     entry = (r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11)          # GU_PSM_5650, as the packed palettes
     palette = np.array([entry] + [0] * 15, '<u2').tobytes()
     row, rows = level_bytes(8, 8, 4)
@@ -1336,6 +1383,7 @@ def main():
     mlooks = model_looks(m, d, B)
     reliefs = relief_looks(m, d, B)
     relief_count = 0
+    gels = gel_bitmaps(roles)
     print('%d level shaders: base maps baked with their detail maps' % len(looks), file=sys.stderr)
     for i, b in enumerate(B):
         cls = refs.classify(roles.get(b['tag'], ()), b)
@@ -1348,9 +1396,13 @@ def main():
         own_colours = not any('multipurpose' in role for role in tag_roles)
         r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter, own_colours=own_colours)
         if r is None and b['type'] == 'cube' and b['index'] == 0 and not NO_CUBE_PATCHES:
-            r = cube_patch(m, b)
+            rgb = gel_average(m, b) if b['tag'] in gels else None
+            r = cube_patch(m, b, rgb)
             if r is not None:
                 CUBE_PATCHES.append(b['tag'])
+                if rgb is not None:
+                    print('  light gel %s: six faces\' mean %d %d %d' % (b['tag'], rgb[0], rgb[1], rgb[2]),
+                          file=sys.stderr)
         if r is None:
             skipped[cls] = skipped.get(cls, 0) + 1
             continue
