@@ -15,6 +15,8 @@ The ME can't touch VRAM, but it needn't: the gate only puts the copy's address i
 
 **Step 1 (built: keep word `mevram`, off by default):** the ME's side of the gate reads the table and uses a good copy; it releases and moves nothing. Its reads, which the ranking needs, go in a tally only the ME's side writes (one word an entry, the counters on a line of their own), folded into the table at the frame's end once the ME is done. The same bytes, the same pixels: frames must be identical with and without it.
 
+**Test word `mevramdry` (off):** the ME's reads go in the tally and the ranking exactly as with `mevram`, so the frame's end uploads and evicts the same bytes, but the ME's draws keep reading main RAM. Against `mevram` and plain, it tells apart what the upload work does to the emulator's speed (and so to the speed-following state) from what drawing from the copies does to the pictures.
+
 ## 2. What the GE reads from main RAM today (the plain build, the main CPU's draws)
 
 Per frame, KB, mean / most, from memcensus1's `gereads` on the hand-test routes [E bytes; they don't depend on timing]:

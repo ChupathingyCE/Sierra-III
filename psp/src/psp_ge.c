@@ -8911,8 +8911,12 @@ it is good, nothing is released or moved. The reads the ranking needs go in
 a tally only the ME's side writes (an entry's index; the last two words its
 draws and redirects), folded in at the frame's end once the ME is done. The
 same bytes: the same pixels */
-static int vm_me_on = 0;
+static int vm_me_on = 0, vm_me_dry = 0;
 static unsigned int *vm_me_tally = NULL;
+/* "mevramdry" (a test, off): the ME's reads go in the tally and the
+ranking as with mevram, so the frame's end uploads and evicts the same, but
+the ME's draws keep reading main RAM. Set against mevram it tells the
+upload work's cost to the emulator's speed apart from what the copies draw */
 #define VM_TALLY_WORDS (VM_ENTRIES + 16) /* the counters on a line of their own */
 
 /* the entry for a buffer's address, or NULL (adding it when asked) */
@@ -8966,7 +8970,8 @@ static void vm_reset(void)
 	memset(vm_hash, 0, VM_HASH * sizeof(unsigned short));
 	vm_count = 0;
 	vm_on = 1;
-	if (psp_keep("mevram"))
+	vm_me_dry = psp_keep("mevramdry");
+	if (psp_keep("mevram") || vm_me_dry)
 	{
 		if (!vm_me_tally)
 			vm_me_tally = memalign(64, VM_TALLY_WORDS * sizeof(unsigned int));
@@ -8993,6 +8998,8 @@ static const void * __attribute__((noinline)) vm_redirect_me(const void *vertice
 	if (e->at == VM_NONE || e->released)
 		return vertices;
 	vm_me_tally[VM_ENTRIES + 1]++;
+	if (vm_me_dry)
+		return vertices;
 	return (const void *)(vm_base + e->at);
 }
 
