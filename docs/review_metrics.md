@@ -119,3 +119,7 @@ By map, the frame total is 0.70 / 0.71 (b30, against the PSP-1000 / PSP-3000), 0
 | **total** | 12117 |  | 111415 |  | 13969 |  | 127297 |  | 7987 |  | 55301 |  |
 
 Sound runs on the main CPU here (`nomeaudio`), so its row is what the ME takes off the PSP's main CPU; I-misses are small for it (1-2% of the total) and its fetches large. `funcfetches.txt` counts instructions, not data, so a pass's data cost (M3's D-miss rates, `cachemap.txt`) is not in this table.
+
+## M6: the limits per map
+
+`docs/plan_m6_limits.md`: per map (b30, a30, a10), the frame with memory waits, drawing or the tick removed, and split across the main CPU and the ME, against 15/15 and 30/30; then the levers re-ranked. In short [U on M inputs]: 15/15 is reachable on all three (a10 now, a30 with the GE layer on the ME, b30 with that and ~10 ms off its tick); 30/30 is in sight only on a10; drawing alone is over 30/30's budget on every map, and the GE's own time (a30 39 ms a frame mean [M]) walls a30's 30/30. The GE's bytes off main RAM rank first, as the gate for the split.
