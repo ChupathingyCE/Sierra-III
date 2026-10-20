@@ -25246,7 +25246,8 @@ FIXES_STENCILS["source/game/game.c#stencilsfirst"] = [
 #   compute first, from the inputs the object had where it was left out (its
 #   game time too), as nwbatch's list did; a later compute anywhere replaces
 #   it whole; the frame's last tick makes those still left.
-# "nmskip": on (opt-in until its PSP A/B). "nmskipcheck": makes every compute
+# "nmskip": on (shelved, opt-in: small and not exact, docs/review_perf-levers.md).
+# "nmskipcheck": makes every compute
 # as before, but checks each would-be skip (the sphere and root unchanged) and
 # each read's catch-up (bit for bit against the compute it stands in for), and
 # logs what each costs. Not with nwbatch (the shelf).
