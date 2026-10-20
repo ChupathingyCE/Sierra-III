@@ -24,8 +24,13 @@ streaks.
 - `psp_fixups.py`, the level detail scale: a relief texture lives under its base's key `| 2`, so the
   base's size is read from `base_key & ~3u`, not from the relief key (it read the wrong header before).
 
-**Cost:** off by default saves relief's texture fetches and memory [E: below]. **For the owner's call:** whether
-the filtered relief goes back on (A/B: a30 cliffs, relief on the new bake against off and the old bake).
+**Cost:** none measurable either way [E]: a30's cliff stretch, game ticks 600-2,900, 37.5 / 14.2 ms a frame off
+against 37.6 / 14.2 with relief on the new bake.
+
+**A/B [E]** (a30's two cliff spots, emulator size): the filtered relief on the new bake differs from relief off
+by 0.2-2.4 levels of 255 on average, the old bake's relief by 1.7-2.7 with single pixels up to 255. No streaks
+show at the emulator's size in any of the three. **For the owner's call:** whether `relief` goes back on with
+the new bake; it adds little that shows, so off stays the default.
 
 ## H22: shiny objects too dark in shade
 
@@ -45,8 +50,20 @@ lighting is dark, while the original keeps a grey sheen.
   pass. The cube's average comes from an 8 x 8 patch the pack now stores (`texpack.py`, `cube_patch`),
   else 0.35.
 
-**Cost:** no extra pass; one division per textured part [E: below]. It restores the original's look, so
-it is on by default. Tuning against the PC reference: below.
+**Cost [E]:** b30's beach spots, game ticks 5,400-7,000: 25.9 ms a frame with it, 25.6 without (+1%).
+It restores the original's look, so it is on by default.
+
+**Look [E]:** at the beach's still spots the fold lightens 6-8 thousand pixels by more than 8 levels (the
+marines' armour, the Pelicans) and darkens almost none. It is a small part of the gap: against the PC
+reference at the opening (same flight, by tick), the first-person rifle in shade averages 27/36/39 on the
+PSP and 47/52/56 on the PC, while the lit beach matches (107 against 108). The shaded cliffs (lightmaps,
+not models) are darker on the PSP too (31/30/16 against 40/36/37), so part of the gap is not the models'.
+
+**Tuning (in test):** keep numbers `modelambientN` and `modellightN` scale the models' ambient light and
+distant lights by N percent (`psp_ge_model_begin`; 100 when absent; read once, without a log line, since
+the Media Engine may be first to ask). An emulator batch at the opening tries 150 and 200 against the
+PC's frames; the default follows from it. The fold itself (`ambient_with_reflection`) is model-generic:
+any lit, textured model part with a reflection cube gets it, so the menu ring's hull can take it as is.
 
 ## H9: a10's floor glass a black pit
 
@@ -59,6 +76,9 @@ so the dark pipes under it showed through untouched.
 **Key lines:** `psp_fixups.py`, FIXES_118 `glasslit` (the type 8 branch); `psp/src/psp_ge.c`,
 `psp_ge_seethrough_shader` (`SEETHROUGH_ANGLE_TINTED` for those shaders). Needs a bake with cube patches.
 Not yet drawn: the glass's own tint pass (the frame times its tint colour).
+**Evidence:** not yet: the first emulator A/B never reached the glass (its route moved the player while
+seated in the opening's cryo tube, so every spot was taken from the tube). Asked again with the player
+taken out of the tube first. **Cost [E]:** nothing measurable over a10's opening (3.9 / 3.8 ms a frame).
 
 ## H23: dark hairlines along seams under the flashlight (restoration, on by default)
 
