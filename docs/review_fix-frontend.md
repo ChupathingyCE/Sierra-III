@@ -60,7 +60,7 @@ Open: the tag listing for the sky shader (maps, scales, combiner stages) is queu
 Emulator batch front1 (the branch's code at its previous head, on the b139a bake; the later commits change only docs and comments) and the multiplayer compile.
 
 - **Multiplayer build:** `PSP_MULTIPLAYER=1` compiles and links (program 5.93 MB, heap 5168 KB, 5 symbols stubbed), build job ok. Nothing was run, as the rules say.
-- **The all-levels profile:** the menu's profile list shows "All Levels" (Controls Default, Difficulty Legendary, Current Level The Maw) beside the two empty slots; selecting it opens the Load Level list, whose first page (The Pillar of Autumn, Halo, The Truth and Reconciliation) shows every level unlocked with its difficulty marks. The walk's later steps (the rights through the other seven levels) did not run: the batch's `exitatN` counts game seconds at 30 ticks, the input script's seconds are 60 ticks, so the walk ended at script second 11. A second batch with the exit moved out (`front2`) is queued to read the other seven levels, the keyboard and its legend at each size.
+- **The all-levels profile:** the menu's profile list shows "All Levels" (Controls Default, Difficulty Legendary, Current Level The Maw) beside the two empty slots; selecting it opens the Load Level list, whose first page (The Pillar of Autumn, Halo, The Truth and Reconciliation) shows every level unlocked with its difficulty marks. The walk's later steps (the rights through the other seven levels) did not run in front1: the batch's `exitatN` counts game seconds at 30 ticks, the input script's seconds are 60 ticks, so the walk ended at script second 11. The other seven are read from front2's walk, below.
 - **Clean runs [E]:** the four menu runs, the three pause-menu runs, the profile walk and the strict menu walk (largest size) all ended normally: no fault, no crash.txt, strict: 0 distinct sites.
 - **Cost [E]:** none measurable. The menu runs at 100, 115/125, 115/150 and 108/125 report the same frame CPU time (5.14 ms average at game time 504); the three pause-menu runs the same (9.57 ms average while paused). The zoom changes where the menu's quads land, not how many are drawn. The GE's own time is not in the emulator's figures: the menus are small and no part of play touches them.
 
@@ -79,4 +79,27 @@ In `/tmp/claude-0/overnight/morning/h11/` (local screenshots, 480 x 272, not com
 | `front1_pause-115-150_pausemenu.png` | Pause menu at `menuzoom115 menuglyph150`. |
 | `front1_profile-walk_loadlevel.png` | The Load Level page with the all-levels profile (levels unlocked, difficulty marks). |
 
-To choose: look at the four profile-list shots for the page, the pause shots for the box with a few lines, and pick the pair; set it in `keep.txt`. The keyboard at each size comes from front2, queued behind the lab's other batches.
+To choose: look at the four profile-list shots for the page, the pause shots for the box with a few lines, and pick the pair; set it in `keep.txt`.
+
+### front2: the keyboard at each size
+
+Emulator batch front2 (the branch's code at `ae223d7`, b139a bake): the four menu runs to script second 12, one strict menu run (115/150) to second 16, and the all-levels walk. All six ended normally: no fault, no crash.txt, strict: 0 distinct sites. A screenshot batch stops at its 24th shot (`shotevery1` is a shot every half script second, so second 12): the keyboard opens at second 12, the last shot of each plain run, and the strict run (`shotevery2`) shows it at seconds 12 to 16.
+
+| File | Shows |
+|---|---|
+| `front2_menu-100_keyboard.png` | "Enter name" keyboard at the default size: the footer legend ("=BACK =ENTER") has small glyphs and sits at the bottom of the dark band. |
+| `front2_menu-108-125_keyboard.png` | `menuzoom108 menuglyph125`: a little larger; the legend glyphs larger; the title and prompt clear the top edge. |
+| `front2_menu-115-125_keyboard.png` | `menuzoom115 menuglyph125`: the grid and name box 15% larger; the legend's glyphs larger; the whole page still inside the screen. |
+| `front2_menu-115-150_keyboard.png` | `menuzoom115 menuglyph150`: as the last, the legend's glyphs at their biggest; the legend stays inside the screen. |
+| `front2_menu-strict-115-150_keyboard_t16.png` | The strict run's keyboard at script second 16 (115/150): the same page after four seconds, nothing moved or cut off. |
+
+Cost [E]: none; the four runs end at the same game time (988) as each other.
+
+### front2: all ten levels open
+
+The walk (two crosses, then nine rights, one shot a script second) steps the Load Level list through every level of the all-levels profile: The Pillar of Autumn, Halo, The Truth and Reconciliation, The Silent Cartographer, Assault on the Control Room, 343 Guilty Spark, The Library, Two Betrayals, Keyes, The Maw. Each has its picture and blurb and three difficulty medals under it; none is greyed or locked. Both timings of the walk end normally, strict 0 sites, game time 1458. (An earlier try pressed a third cross, which chose the first level and opened Choose Difficulty: a script mistake, not the menu.)
+
+| File | Shows |
+|---|---|
+| `front2_profile-walk_levellist_mid.png` | The list at script second 14, the middle pages: the highlight moves one level at a time and the page scrolls. |
+| `front2_profile-walk_levellist_last-page.png` | The last page: Two Betrayals, Keyes, The Maw, the highlight on The Maw, three medals each. |
