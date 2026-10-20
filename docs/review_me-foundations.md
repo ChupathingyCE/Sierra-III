@@ -62,6 +62,34 @@ Nothing here changes play by default. The one default path it touches (the job r
 
 **Default.** Off. Turn on after a PSP run with `meedramstate meringtest` on the ladder.
 
-## 5. For decision: R2, the sound cache in the eDRAM
+## 5. R2: the sound cache in the eDRAM (`soundedram`, `soundgeo`)
 
-Not built. Its plan is `me_programme.md` §5: 1,792 KB of heap freed in both builds, but the main CPU can't reach the eDRAM, so **with the ME stopped (HOME, a failure, after a sleep) there would be no sound** unless a 512 KB main-RAM fallback cache is kept. That changes behaviour, so it's a call to make after an A/B on the PSP-1000, and it is gated on `edramcheck` coming back clean with the stack's reach leaving at least 1 MB. That gate is met on both PSPs (§1): clean over the ladder, the stack never below 1,984 KB on the PSP-1000.
+Built for a trial (the decision to try it is taken; whether it stays is the PSP A/B's). Plan and gate: `me_programme.md` §5; the gate is met on both PSPs (§1).
+
+**What.**
+- `soundedram`: the sound cache lives in the ME's eDRAM, 256 KB–1,920 KB (1,664 KB), instead of 1,792 KB of main RAM. The engine is given the eDRAM address as the cache's base; only the ME, where the mixer runs, ever reads it.
+- The stick reader can't write eDRAM, so each sound is read in pieces of 60 KB into two 64 KB staging slots in main RAM, and an ME slot job (`ME_JOB_SOUNDCOPY`, up to four pieces a job) copies them into place. The engine's `loaded` flag is set when the last piece is in.
+- **Fallback:** the first time the ME stops (a failure, a sleep, HOME), the eDRAM is taken as lost for the session, even if `mewake` restarts the ME. From then on every voice playing from the cache is mixed silent (the mixer's own silent path: the position moves on, nothing is read), and new loads are marked failed. The log says so once (`sound eDRAM: … taken as lost`). The main CPU never touches an eDRAM address: `cache_lines` skips them, and when it mixes (the ME stopped, or the debug menu's mixer switch) it mutes those voices first.
+- `soundgeo`: the start-up sound block keeps the size it always had (1,792 KB); the part the sound cache doesn't take becomes a second stretch of the geometry cache's ring. With `soundedram` on the PSP that is 1,664 KB (the block less the staging); with `sound512` and no eDRAM, 1,280 KB. Without `soundgeo`, `soundedram` takes only the 128 KB staging at start-up and the rest stays the heap's.
+- The emulator has no eDRAM: there `soundedram` runs **simulated**, the cache in main RAM at the eDRAM's 1,664 KB, with the same staging and copy jobs (run by the main CPU as the simulated ME's), so everything but the eDRAM itself is the PSP's path. The heap is as it is today there, so the emulator can't show the freed RAM; `sound512 soundgeo` stands in for the geometry side.
+
+**Key lines.**
+- `psp_dsound.c`, section "R2": `psp_sound_edram_mode` (refused with `edramcheck`, which patterns the same stretch, or with the ME off); `psp_sound_block_bytes` / `psp_sound_cache_place` (what start-up takes and where the cache goes); `psp_sound_upload_start` / `psp_sound_upload_poll` (the game thread, once a frame from `sound_cache_idle`: collect the copy job only once done, `psp_me_submitted_done`; drop pieces of a load that is gone or failed; set `loaded`; start reads; hand what's read to the ME in the order it was asked for); `mute_cache_voices` and `edram_unreachable`, called in `mix()` before a main-CPU mix and before an ME mix after a loss.
+- `psp_sound_cache_alive` (`psp_fixups.py` FIXES_SOUNDEDRAM, in `xbox_sound_cache.c`): a sound deleted while it loads (a flush) may have its pages given to another sound; each piece is copied, and `loaded` set, only while the datum's identifier, sound and address are still the load's. The original game read straight into the block and had no such check.
+- `psp_me.c`: `ME_JOB_SOUNDCOPY` in `run_job` (an eDRAM destination is refused off the ME); `psp_me_stops`, counted in `me_stop`; `psp_me_submitted_done`. `psp_me.h`: `ME_EDRAM_SOUND` / `ME_EDRAM_SOUND_END`.
+- `psp_geo.c`: `extra_start`/`extra_end`, `stretch_end`, `largest_stretch`; `allocate` runs the ring from the end of one stretch to the start of the other. `psp_geo_range` (for `gereads`) still names only the first stretch.
+- `psp_platform.c` `psp_sound_cache_bytes`: the eDRAM's room caps the cache.
+
+**Why.** The freed main RAM is the point (`me_programme.md` §5; MC3 in `memory_census.md`): a10's 900-frame geometry working set is about 2.7 MB against `geo2`'s 2 MB and a10 has no tag-window room to borrow. A side effect worth measuring: the mixer's sample reads leave the shared bus (they are eDRAM reads on the ME now), and §4 (a) puts ME main-RAM streaming at +10–11% on the main CPU's tick while it runs [M]; the copy jobs put some of that traffic back, but only once per sound loaded [U].
+
+**What it costs.**
+- **The cache is 128 KB smaller** (1,664 KB against 1,792, 7%). The edge measured on d40's opening (b107, emulator): 1,536 KB failed 144 loads for room, 1,920 KB none [E]; 1,664 KB should drop a few on the heaviest maps [U]. The 256 KB–1,920 KB stretch is all the eDRAM there is on the PSP-1000 below the ME's stack's 128 KB (twice the 64 KB the ladder measured) [M for the reach]. It also takes the room `me_programme.md` held for resident job data; R2 and a resident job table can't both have it.
+- **A sound is ready a frame or two later**: two staging slots, read and copied in a pipeline paced by the game's frame. The report line gives the mean and worst milliseconds from asked to loaded.
+- **The trade accepted for the trial:** no sound after the ME stops (after a sleep, by default, the ME stays stopped). No main-RAM fallback cache is kept; that would give back 512 KB of what R2 frees.
+- Frame and tick time: nothing per frame on the main CPU beyond the poll; per sound loaded, a `sceKernelDcacheWritebackInvalidateRange` over the staged piece and the ME's copy (about 1 ms of ME time per 120 KB [U]). To be measured: the emulator batch (game time, the same stretch, on against off) and the PSP A/B.
+
+**Proven.** Compiled locally (campaign and `PSP_MULTIPLAYER=1`); the emulator batch (a10, a30, b30, off against on; a10 strict with `gemesim mewrites`; `statecrc` pairs; a stop at 15 s with `mewaketest mewake`) is in flight. The eDRAM path itself only the PSP can prove.
+
+**PSP A/B (next).** One hardware job: the commit the emulator batch ran, a10 on the route of the b139 hand test, keep `nearauto assettrack geo2 exitat300`, sides `-` and `soundedram soundgeo`, each twice, about 20 minutes a run, the b139 release bake and PGO profile; either PSP. Read: `sound eDRAM:` (the mode line says "in the ME's eDRAM"; sounds in, 0 failed, ms to loaded), `sound cache:` failed for room, `geometry:` misses and miss frames, the tick time and fps per stretch (`tools/abreport.py`), no crash. Then a listen on the next hand test: does sound start late anywhere?
+
+**Default.** Both off. `soundedram` is refused with `edramcheck`. Turn either off by leaving its word out.

@@ -80,7 +80,7 @@ Every later ME job (particles, node matrices, frames in flight, the collision co
 3. **The ME's own data in its own memory.** An eDRAM map (`psp_me.h`): 0–192 KB left as found; 192–208 KB `mebusedram`'s scratch; 208–256 KB the ME's private state (the ring cursor its loop and a yielding job share; the mixing sums of audio blocks mixed inside ring jobs); 256 KB–1.5 MB room for resident data (R2, job tables); 1.5–2 MB the stack. What the ME alone writes stays off the bus and off lines the main CPU might share. The private state goes there only with `meedramstate` until a PSP run shows 208–256 KB free (`edramcheck` covers 0–192 KB and 256 KB up); without it, it stays in main RAM on lines of its own.
 4. **One standard emulator pass for every ME job:** strict, `gemesim mewrites`, the job's check word, on the maps it touches. `mestrict.txt` must list no system call made in the job's work; `mewrites.txt`, named by `mewrites.py`, must list no line both CPUs wrote except the emulator's own stack (where the simulated ME runs). A job isn't ready until this pass is clean and its check word shows 0 differing.
 5. **Not yet: the ME's hot code in eDRAM.** The ME runs our code from main RAM. A copy in eDRAM keeps calls into main-RAM code working (a `jal` from 0x80xxxxxx lands on the main RAM's 0x88xxxxxx view), but calls between copied functions would land back in main RAM, so only leaf loops could move without a second link of the code at eDRAM addresses. The jobs so far fit the ME's 16 KB instruction cache (the mixer, the slant loop, a ray) or miss little (the node matrices' 98 KB of code: I-misses 0.76% of fetches [E]); so code waits until a job's I-misses are measured to matter.
-6. **R2, the sound cache in eDRAM** (1,792 KB of heap freed, both builds), only if (b) shows the eDRAM clean. Its plan is §5.
+6. **R2, the sound cache in eDRAM** (1,664 KB of heap freed, both builds): built for a trial behind `soundedram` (and `soundgeo` for the geometry cache), §5.
 
 ### Stage 2 and on: the jobs
 
@@ -156,7 +156,12 @@ The sort's cost is the GE layer's "angle buckets" line (µs a frame, per 300-fra
 - **The main CPU can't mix any more.** With the ME stopped (HOME, a failure, after a sleep: MW), there is no sound, unless a small main-RAM cache is kept as the fallback (512 KB, `sound512`), allocated only when the ME stops. That changes behaviour (sound after a sleep), so R2 is opt-in, decided by an A/B on the PSP-1000.
 - The emulator can't run it (no eDRAM): there the cache stays in main RAM, and the staging and the upload job are simulated, so the plumbing is proven but the eDRAM path only on the PSP.
 
-**Gate:** `edramcheck` clean over the ladder on the PSP-1000, and the stack's reach leaving at least 1 MB. Status: clean on the PSP-3000 (§4 (b)); the PSP-1000's run and the stack's reach are still to do.
+**Gate:** `edramcheck` clean over the ladder on the PSP-1000, and the stack's reach leaving at least 1 MB. Status: met on both PSPs (§4 (b)).
+
+**As built (trial, off by default: `soundedram`, `soundgeo`; review_me-foundations.md §5).** It differs from the plan above in three ways:
+- The cache takes 256 KB–1,920 KB (1,664 KB, not 1,280): the stack's measured reach (64 KB) leaves room above 1.5 MB, and 1,280 KB would have dropped sounds on the heaviest maps. The ME's stack keeps the top 128 KB.
+- No main-RAM fallback cache: once the ME stops, sounds from the cache are mixed silent for the session (logged once), and nothing on the main CPU reads the eDRAM.
+- The freed main RAM is the heap's, or with `soundgeo` a second stretch of the geometry cache (1,664 KB: the start-up block less the 128 KB staging).
 
 ## 6. For the jobs' branch: what's ready
 
