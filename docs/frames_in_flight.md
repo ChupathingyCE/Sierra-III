@@ -144,21 +144,19 @@ The lag is felt in play, so it counts as a change Sheepdog01 judges. The feature
 
 ## 4. Build and test order
 
-Keep word `geinflight` (with `gedefer gemeon`). Off, nothing changes. In the emulator, which runs no ME code, the same word **simulates** it: the main CPU carries out frame N at the sync point, after frame N+1's ticks, marked as the ME's work (`gemesim`). The simulation reproduces every hazard of §3.3.
+Keep word `geinflight` (with `gedefer`). Off, nothing changes.
 
-1. **F0, in the emulator: is it exact?**
-   - Build: the sync point, the two splits, the decal copy, the 128 KB buffer, the text wait.
-   - Lab batch, all ten levels: `gedefer gemeon` against `gedefer gemeon geinflight`, with `fixedticks fixedseed drawhash statecrc mewrites`.
-   - Passes when:
-     - each frame's list is the same (`tools/drawcmp.py`);
-     - play is the same (statecrc);
-     - no line is written by both CPUs;
-     - the log gives each map's most words in a frame.
-2. **F1, the ME for real:**
-   - Ring jobs run inside the replay.
-   - The mailbox replaces the whole-cache drops.
-   - The swap happens at the sync.
-   - Check on the PSP: `sierra-hw psp=psp1000`, b30's route, `keepsets="- | geinflight" repeat=2`, read with `tools/abreport.py`. Then d20 and a30.
+1. **F0, the order alone (built, branch `inflight`):** `geinflight` writes the frame's end and the next frame's first window down too, so the main CPU carries frame N out at the next frame's first call, after N+1's ticks: the order the ME version will run in, with no work moved. Both calls are carried out whole here (their splits are F1's), the decal vertices are copied into the record, and the buffer is 128 KB. The log's `geinflight` line gives the KB a frame written down (average and fullest).
+   - Lab batch `inflight135a`: `gedefer` against `gedefer geinflight` on eight maps, with `fixedticks fixedseed statecrc framecrc` (`framecrc` hashes each finished picture; `tools/framecmp.py` and `tools/statecmp.py`, on the renderer branch, compare two runs), and b30 plain twice as the control.
+   - Passes when every picture and every tick's state is the same. A difference is something the next frame's ticks changed under a waiting frame: a pointer §3.3 missed.
+   - The ME's own checks, `gemesim` (system calls) and `mewrites` (lines both CPUs write), come with F1, once the work moves.
+2. **F1, the ME for real (built, branch `inflight`):** `gedefer gemeon geinflight`.
+   - **The splits:** the frame's end and its window's begin are each two parts. The list's part (the last draws and the finish; the camera and the GE's state) is written down and carried out with the frame. The main CPU's part runs at the main CPU's turn: the window's (the near plane's choice, the level's origin, the list's start, a system call) when it is written down, the end's (the GE waited for, the picture shown, the frame's reads and logs) once the GE has the whole frame.
+   - **The hand-over:** as the frame's end is written down, the main CPU writes its cache back and hands the whole buffer to the ME's render slot, and goes on to the next frame's ticks.
+   - **The GE behind the ME:** on the ME, each stall address is written back and published uncached; a main-CPU thread above the game's looks every millisecond while the frame is out and passes it on.
+   - **The wait:** at the next frame's first call (or a call that runs at once), the main CPU waits for the job, passes on the last stall address, drops its whole cache once (what the ME wrote read fresh), and runs the end's main part, the swap included. If the ME failed, the list is finished where the main CPU last saw it and the main CPU carries the frames out from there.
+   - **Ring jobs inside the frame's job:** every 32 records the frame's job mixes a waiting audio block and runs the ring's waiting jobs (perception's rays from the next ticks), so neither waits behind a whole frame. Whether the rays are better on the ME or on the main CPU (`meraysoff`) under geinflight is for the PSP to say.
+   - Checks: in the emulator, `gemesim` (the job simulated at the hand-over) with `mewrites` (lines both CPUs write while the frame is out) and `mestrict` (system calls in its work); on the PSP, `sierra-hw` `keepsets="- | gedefer gemeon geinflight" repeat=2`, b30's route, read with `tools/abreport.py`. Then d20 and a30.
 3. **F2: less lag.** The display thread swaps at the GE's finish.
 4. **F3: the ME starts sooner.** The ME starts on the frame's first half while the main CPU still records (gemeoverlap's halves, with the sync rule kept). Only once the ME's lane is the limit.
 
