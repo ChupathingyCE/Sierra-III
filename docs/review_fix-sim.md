@@ -45,11 +45,11 @@ Pass 1 of b139's hand-test fixes: the Warthog flip (H31), vehicles clipping and 
 - The gap in the circles is float rounding: a last-digit difference from step 2, grown over 750 ticks of full lock. The PSP wobbles no more than the PC (13.4 deg/s against 15.1).
 - The drive is bit-identical with every collision, sleep and pose speed-up on, all off, and each family alone off (surface test, sphere walk, sleep, poses). Their checks (`spherememocheck surfacetestcheck posingcheck poseaheadcheck wakecheck`) found 0 differences over the drive.
 
-**Not settled yet** (queued, results in the lab's findings):
-- **The engine pin.** b135 moved the pin from v0.7.4e to v0.7.5d, close to when H25 started. The same drive on the PC at v0.7.4e says whether ChupathingyCE's update changed the vehicle's collision. If it did, the original's behaviour is settled against the Xbox before anything changes.
+**Checked against the engine pin, and one open question** (results in the lab's findings):
+- **The engine pin: settled.** b135 moved the pin from v0.7.4e to v0.7.5d, close to when H25 started. The same drive on the PC at v0.7.4e is identical to v0.7.5d to every printed digit [E], so the pin move didn't change how the vehicle collides.
 - **The hardware.** The same drive on a PSP says whether the PSP's own FPU drives the emulator's drive.
 
-If both match, what the hand test saw is drawn rather than simulated (the camera, or how a pose is shown at the PSP's frame rate). That needs a new recon; nothing is changed for it on this branch. [U]
+If the hardware matches too, what the hand test saw is drawn rather than simulated (the camera, or how a pose is shown at the PSP's frame rate). That needs a new recon; nothing is changed for it on this branch. [U]
 
 ## 3. What each vehicle type costs a tick (H27), an instrument
 
