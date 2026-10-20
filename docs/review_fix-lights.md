@@ -88,8 +88,13 @@ but its first teleport still landed in the tube's frame (the player stood at the
 spot, the camera left in the tube: a black frame), and by the second spot the opening's "look around" test
 was still on screen with no HUD and a black corridor: the cryo look tests gate the scene, and a stick that
 only moves up and down doesn't pass them. Base and `glassnoreflection` frames were byte-identical (both
-black), so there is no verdict. Asked again with the stick swept in all four directions. **Cost [E]:**
-nothing measurable over a10's opening (3.9 / 3.8 ms a frame).
+black), so there is no verdict. **Cost [E]:** nothing measurable over a10's opening (3.9 / 3.8 ms a frame).
+
+**Third attempt [E]:** the stick swept right, left, up and down (two cycles, from 225 s) passes the cryo
+look tests: the prompt moves on to "exit the cryo-tube", the HUD comes up, and the maintenance tunnel
+(H23's spot, the hand test's camera) draws with the flashlight. The glass spot itself drew black after
+`switch_bsp 1`: the glass is in another structure. Next run holds the glass spot through BSPs 0, 2, 3
+and 4 in turn, base and `glassnoreflection`, to find it and give the A/B.
 
 ## H23: dark hairlines along seams under the flashlight (restoration, on by default)
 
@@ -133,7 +138,7 @@ the unlifted triangles ("unlifted"). **Evidence:** [D]; the emulator A/B at b30'
 `nolightpass` to show whether the light pass is the source at all, `stencilsnudge` for the stencil layers)
 is queued. **Cost:** to be measured (the same band loop, one more band).
 
-## H41: a light through a wall (restoration, on by default; proof pending)
+## H41: a light through a wall (restoration, on by default; fixed)
 
 **Evidence [E]:** at the hand test's spot (the same camera), the emulator draws the same green glow on the
 wall. `nowidgetsprites` removes it (3,641 pixels differ, all in the glow's square); `nolightpass` changes
@@ -147,8 +152,14 @@ test shared that shortened ray, so a wall within 0.15 of a lamp on its far side 
 test square is depth-tested at the flare's point, so any wall short of it hides it.
 
 **Keep word:** `flaresshort` (the shortened level ray, as before); `flaresdebug` logs the first 40 rays
-(point, distance, whether the level hides it). **Cost [D]:** none measurable: the same ray, 0.13 units
-longer. **Proof:** the next batch, the H41 spot new vs `flaresshort`, and the beach's flares unchanged.
+(point, distance, whether the level hides it).
+
+**Verdict: fixed [E].** At the hand test's camera the glow is gone: new against `flaresshort` differs in
+exactly the 3,641 pixels `nowidgetsprites` removed, dark where the old drew green (mean 9/23/22 against
+10/56/31). Every other shot of the run, the beach's eight included, is pixel-identical, and the first 40
+rays (all beach lamps) answer "level clear" both ways: no flare the level doesn't hide was lost. Over the
+run, 295 fewer flare sprites drawn (1,048 against 1,343), 110 more answers "hidden by the level".
+**Cost [E]:** none: the same 3,088 rays cast both ways; frame 29.47 against 29.48 ms over the run.
 
 ## H42: the bunker doorway
 
@@ -164,8 +175,22 @@ door in the hand test's shot are H41's. Open: the dark wedge inside the open doo
 stats line from 2,560 to 2,700 s), and the emulator draws the same dashed line at the same camera with
 `nolightpass` (only the clock's pixels differ) and with every light-pass keep word. The line (8-pixel
 dashes every ~31 rows, colour 115/149/148) is on a pillar's face seen edge-on. The light pass's unlifted
-triangles stay (exact, `lightliftall` turns them off) but fix nothing seen. Next: `clearmagenta` (a crack
-shows magenta), `nomip`, `nodetail`, `guardwide` at the same spots.
+triangles stay (exact, `lightliftall` turns them off) but fix nothing seen.
+
+**Round two [E]:** none of `clearmagenta`, `nomip`, `nodetail`, `guardwide` removes the line.
+`clearmagenta` changes no pixel (so no crack shows the cleared screen), `guardwide` 19 pixels (the guard
+band's cuts aren't it), `nodetail` leaves the dashes (44 of 46 pixels). `nomip` keeps the dashes in the
+same places but brighter and whiter: they sample a mipped texture, so they are drawn surface, not a hole.
+Candidates left: a see-through or decal surface along the corner, a crack showing a surface behind, or
+depth precision between the corner's faces. Asked next: `nooverlays`, `nodecals`, `nocull`, `near4`.
+Not yet compared with the PC: its runner can't place the camera at a given spot.
+
+**The unlifted light triangles under the flashlight [E]:** with the flashlight on through the same
+interior spots, new against `lightliftall` changes no level pixel (0-46 pixels, the clock); only the
+first-person rifle differs (new slightly brighter, 42/51/53 against 40/47/50 where they differ). Cost:
+frame 13.66 against 13.55 ms over game time 3,000-5,000 (+0.11 ms, +0.8%), tick unchanged. Whether to
+keep it waits on H23's tunnel A/B (`lightliftall` is in it): if it shows nothing there either, it costs
+time for nothing and should go off by default.
 
 ## H24
 
