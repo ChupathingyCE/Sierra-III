@@ -25108,6 +25108,104 @@ void rasterizer_model_transparent_geometry_submit(
 			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
 			{"""),
 ]
+# A generic shader's look comes from up to four maps through the Xbox's
+# combiners; the GE draws one (the map the bake chose, tinted by the rest).
+# Where the rest moves, still tints lose it: the camouflage powerup's noise
+# turning over its sphere is drawn as its still mask. The bake's composites
+# can't hold it either (a noise that scrolls under a mask that doesn't).
+# genericnoise (opt-in, Sheepdog01's call: an added pass is not the combiners'
+# product) draws the shader's first other map once more over the same
+# triangles, with that map's own scale and animation, blended as the shader
+# blends, at GENERIC_NOISE_LEVEL of its strength and untinted
+FIXES_MODELS["source/rasterizer/rasterizer.c#genericnoise"] = [
+("""static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,""",
+ """/* the map psp_transparent_map draws in place of the bake's choice, counted
+from the shader's first map (a cube map included); -1 the bake's */
+static int psp_transparent_map_forced = -1;
+
+static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,"""),
+("""			int chosen = psp_tex_shader_map((unsigned int)shader);
+""",
+ """			int chosen = psp_transparent_map_forced >= 0 ? psp_transparent_map_forced :
+				psp_tex_shader_map((unsigned int)shader);
+"""),
+("""/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts(""",
+ """#define GENERIC_NOISE_LEVEL 0.5f
+static unsigned long psp_transparent_noise_passes = 0;
+
+/* a generic shader's first map other than the one drawn (not a cube map,
+not the same bitmap), queued as a second draw of the same triangles */
+static void psp_transparent_noise(struct shader const *shader, short permutation,
+	struct triangle_buffer const *triangle_buffer, long triangle_count, struct vertex_buffer const *vertex_buffer,
+	real_point3d const *centroid)
+{
+	extern void psp_ge_transparent(struct triangle_buffer const *, long, struct vertex_buffer const *,
+		unsigned int, float, float, float, float, short, float const *);
+	extern void psp_ge_seethrough_shader(unsigned int shader);
+	extern void psp_ge_seethrough_meter(const void *meter);
+	extern int psp_tex_shader_map(unsigned int shader);
+	char const *definition = (char const *)shader;
+	long map_count, index;
+	int skip, drawn;
+	char const *maps;
+	float u_scale, v_scale, u_offset, v_offset;
+	short blend;
+	unsigned int key;
+
+	/* generic only, and not a numeric counter (its digits are the maps) */
+	if (!shader || *(short const *)(definition + 36) != 5 || (*(unsigned char const *)(definition + 41) & 0x80))
+		return;
+	map_count = *(long const *)(definition + 84);
+	maps = *(char const *const *)(definition + 88);
+	skip = *(short const *)(definition + 42) != 0 ? 1 : 0;
+	if (!maps || map_count - skip < 2)
+		return;
+	drawn = psp_tex_shader_map((unsigned int)shader);
+	if (drawn < skip || drawn >= map_count)
+		return;
+	for (index = skip; index < map_count && index < 4; index++)
+		if (index != drawn && *(long const *)(maps + 100 * index + 40) != *(long const *)(maps + 100 * drawn + 40) &&
+			*(long const *)(maps + 100 * index + 40) != NONE)
+			break;
+	if (index >= map_count || index >= 4)
+		return;
+	psp_transparent_map_forced = (int)index;
+	key = psp_transparent_map(shader, permutation, TRUE, &u_scale, &v_scale, &u_offset, &v_offset, &blend);
+	psp_transparent_map_forced = -1;
+	if (!key)
+		return;
+	blend = (short)((PSP_SEETHROUGH_PACK(PSP_SEETHROUGH_BLEND(blend), PSP_SEETHROUGH_MODE(blend),
+		PSP_SEETHROUGH_FADE(blend) * GENERIC_NOISE_LEVEL, PSP_SEETHROUGH_KEEP_WITH_CAMOUFLAGE(blend)) & 0x7fff) |
+		(blend & PSP_SEETHROUGH_ONE_SIDED_BIT));
+	psp_ge_seethrough_shader(0);
+	psp_ge_seethrough_meter(NULL);
+	psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset, v_offset,
+		blend, &centroid->x);
+	psp_transparent_noise_passes++;
+}
+
+/* for the GE's log line (psp_ge.c) */
+unsigned long psp_transparent_noise_count(void)
+{
+	unsigned long passes = psp_transparent_noise_passes;
+
+	psp_transparent_noise_passes = 0;
+	return passes;
+}
+
+/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts("""),
+("""				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);""",
+ """				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);
+				if (!psp_transparent_meter && PSP_KEEP_ONCE("genericnoise"))
+					psp_transparent_noise(shader, shader_permutation_index, triangle_buffer, triangle_count,
+						vertex_buffer, centroid);"""),
+]
 
 
 def shelved(groups):

@@ -18524,11 +18524,12 @@ void psp_ge_frame_end(void)
 		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = 0;
 		{
 			extern void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped);
+			extern unsigned long psp_transparent_noise_count(void);
 			unsigned long layers_queued, layers_unmapped;
 
 			psp_transparent_layers_counts(&layers_queued, &layers_unmapped);
-			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer)",
-				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts);
+			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise)",
+				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts, psp_transparent_noise_count());
 		}
 		seethrough_culled_draws = 0;
 		camo_shimmer_parts = 0;
