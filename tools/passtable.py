@@ -119,7 +119,8 @@ class Run:
                           "frames": int(m.group(2)), "ticks": int(m.group(3)), "steps": {}}
                 self.windows.append(window)
                 continue
-            if window is None or line.startswith("step ") or ":" in line[:12] and line.startswith(("objcost", "particlecensus")):
+            # objcost and particlecensus rows (instrumented runs) look like steps but are counters
+            if window is None or line.startswith(("step ", "objcost", "particlecensus")):
                 continue
             m = re.match(r"(.+?)\s+" + NUMBER + r"\s+" + NUMBER + r"\s+" + NUMBER + r"\s+" + NUMBER + r"$", line.rstrip())
             if m:
