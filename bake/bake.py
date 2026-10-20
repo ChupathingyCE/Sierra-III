@@ -27,7 +27,8 @@ the menus' ui.map):
      writes a copy of the release EBOOT with it (lib/snd0.py; the bundle's
      atracdenc encodes it)
 
-The output folder then holds halo/maps/... and halo/chant.adp (and, with --eboot,
+The output folder then holds halo/maps/..., halo/chant.adp and halo/bake.txt
+(the stamp the game checks: BAKE_FORMAT below) (and, with --eboot,
 PSP/GAME/halo/EBOOT.PBP): copy its contents to the root of the Memory Stick.
 
 Options:
@@ -57,7 +58,7 @@ Options:
                                 the packs were before (lib/seethrough.py)
 
 Nothing from the game is in this tool; it only converts the copy you own."""
-import argparse, concurrent.futures, hashlib, json, os, shutil, subprocess, sys, threading, time
+import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LIB = os.path.join(HERE, 'lib')
@@ -95,6 +96,15 @@ BUILD_FLAGS = ['-g', 'xbox-ntsc', '-X', '0x09600000', '-U', '-l', '0', '-H', '-K
 # built for 6 MB loads in both builds
 TAG_SPACE = '0x900000'
 MULTIPLAYER_TAG_SPACE = '0x600000'
+# The bake's format: what a build needs of the maps it reads. The bake writes
+# it into halo/bake.txt, and the game compares it with its own at start
+# (psp_build.py reads this line; psp/src/psp_bakecheck.c), so a player whose
+# maps came from another format is told to bake again, rather than seeing
+# the game draw wrong or crash. Raise it whenever a build would read the
+# maps from the bundle before it wrongly: a pack's layout, Invader's flags or
+# tag space, or anything a release says needs a re-bake. Builds that read the
+# same format share a bake.
+BAKE_FORMAT = 1
 
 
 # maps bake side by side (--jobs): one line at a time, whole
@@ -191,6 +201,37 @@ def bake_chant(source, work, output):
         log('the chant: read from %s into %s' % (os.path.basename(xbe), out))
     else:
         log('the chant: %s holds no chant this build knows; the loading screen will be silent' % xbe)
+
+
+def bundle_label():
+    """this bundle's short name for the stamp: the release's tag or the CI
+    run's ref (bundle.txt, which assemble.py writes), else the commit of the
+    checkout it runs from"""
+    name = commit = ''
+    try:
+        with open(os.path.join(HERE, 'bundle.txt'), encoding='utf-8') as f:
+            fields = dict(line.split(':', 1) for line in f if ':' in line)
+        name, commit = fields.get('name', '').strip(), fields.get('commit', '').strip()
+    except OSError:
+        try:
+            commit = subprocess.run(['git', '-C', HERE, 'rev-parse', 'HEAD'], capture_output=True, text=True,
+                                    timeout=30).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            pass
+    label = re.sub(r'^halo-psp-bake-?((linux|macos|windows)-)?', '', name)
+    return label or ('dev-' + commit[:7] if commit else 'unknown'), commit
+
+
+def write_stamp(output):
+    """halo/bake.txt: the bake's format and the bundle that made it, which
+    the game checks at start (BAKE_FORMAT)"""
+    label, commit = bundle_label()
+    path = os.path.join(output, 'halo', 'bake.txt')
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write('# halo-psp-bake: the format of these maps, which the game checks at start\n'
+                'format: %d\nbundle: %s\ncommit: %s\nbaked: %s\n'
+                % (BAKE_FORMAT, label, commit or 'unknown', time.strftime('%Y-%m-%d %H:%M')))
+    log('the stamp: %s (bake format %d, bundle %s)' % (path, BAKE_FORMAT, label))
 
 
 def scenario_path(map_path, log_path):
@@ -536,6 +577,7 @@ def main():
                 del found[name]
     failures = bake_maps([m for m in wanted if m in found], found, out_maps, work, a)
     bake_chant(a.source, work, a.output)
+    write_stamp(a.output)
     if a.eboot:
         menu_eboot(a.eboot, a.music, music_source, a.output, work)
     if not a.keep_work:

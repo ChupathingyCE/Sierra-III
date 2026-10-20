@@ -1330,14 +1330,12 @@ static void exit_game(const char *why)
 	sceKernelExitGame();
 }
 
-#ifdef PSP_MULTIPLAYER
-/* the multiplayer build's own tests end the game this way too
-(psp_online.c's onlinedoneN, for the emulator) */
+/* for the other units: the multiplayer build's own tests (psp_online.c's
+onlinedoneN, for the emulator), and the bake check (psp_bakecheck.c) */
 void psp_exit_game(const char *why)
 {
 	exit_game(why);
 }
-#endif
 
 static int exit_callback(int a, int b, void *c)
 {
@@ -3031,6 +3029,13 @@ int main(int argc, char **argv)
 		psp_menu(PSP_BUILD_NUMBER);
 	}
 	keep_load();
+	{
+		/* before anything reads the maps: a bake of another format is
+		explained on the screen rather than drawn wrong (psp_bakecheck.c) */
+		extern void psp_bake_check(void);
+
+		psp_bake_check();
+	}
 	{
 		/* build 37: the VFPU's matrix product, checked against the FPU */
 		extern void psp_vfpu_initialize(void);

@@ -134,6 +134,14 @@ Maps from this version of the tool are for **build 139 or later** (its
 palettes and wall decals are made differently: Sierra-III's
 `docs/bake_changes.md`). Bake again when a release says its bundle changed.
 
+The bake leaves a stamp beside the maps, `halo/bake.txt`: the bake format
+they are and the bundle that made them. The game reads it as it starts. If
+the maps are from a bundle whose format this build doesn't read (or have no
+stamp: bakes before build 139), it says so on the screen, "YOUR MAPS NEED
+BAKING AGAIN" with the bundle it needs, and START quits: bake again with the
+bundle that came with the build and copy the new `halo` folder over the old
+one. Builds that read the same format share a bake.
+
 ## What's inside, and the licences
 
 - `Bake Halo.cmd`, `Bake Halo.command` or `bake-halo.sh` (and on Linux
