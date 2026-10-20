@@ -65,6 +65,12 @@ the Media Engine may be first to ask). An emulator batch at the opening tries 15
 PC's frames; the default follows from it. The fold itself (`ambient_with_reflection`) is model-generic:
 any lit, textured model part with a reflection cube gets it, so the menu ring's hull can take it as is.
 
+**lights4 [E]:** `modelambient150/200`, `modellight150` and both move the world's models (up to 11k
+pixels differ) but leave the first-person rifle at 27/36-37/38-39 against the PC's 46-47/51/54-55: the
+rifle isn't lit through the scaled path, and its gap is hue as much as level (red 0.59 of the PC's, green
+and blue 0.70), as on the shaded cliffs (a level surface: 31/29/15 against 39/36/36). The default stays
+100 (no gain matches the PC); next is the first-person weapon's lighting, then the shared hue gap.
+
 ## H9: a10's floor glass a black pit
 
 **What:** level glass with no diffuse map draws its reflection: the cube map's patch, added, tinted
@@ -118,11 +124,39 @@ the unlifted triangles ("unlifted"). **Evidence:** [D]; the emulator A/B at b30'
 `nolightpass` to show whether the light pass is the source at all, `stencilsnudge` for the stencil layers)
 is queued. **Cost:** to be measured (the same band loop, one more band).
 
-## H41: a light through a wall; H42: the bunker's lighting
+## H41: a light through a wall (restoration, on by default; proof pending)
 
-Not yet decided: the A/Bs that tell the causes apart (`nowidgetsprites` and `nolightpass` for H41, a run
-without `assettrack` for H42) are queued at the hand test's spots. The first attempt never reached them:
-those spots are in b30's interior BSP, and a route that teleports there needs `switch_bsp 1` first.
+**Evidence [E]:** at the hand test's spot (the same camera), the emulator draws the same green glow on the
+wall. `nowidgetsprites` removes it (3,641 pixels differ, all in the glow's square); `nolightpass` changes
+nothing there. So it is a widget sprite: a lens flare, drawn without the depth test, whose ray test
+answered "visible". The bunker door's two green lamps in H42's shot shine through the wall the same way
+once the door has slid into it.
+
+**What:** the flare test's level-only ray now runs to the flare's own point (all but 2 cm). The full test's
+ray stops 0.15 short so as not to meet the flare's own object (characters in a flare's way); the level-only
+test shared that shortened ray, so a wall within 0.15 of a lamp on its far side never hid it. The Xbox's
+test square is depth-tested at the flare's point, so any wall short of it hides it.
+
+**Keep word:** `flaresshort` (the shortened level ray, as before); `flaresdebug` logs the first 40 rays
+(point, distance, whether the level hides it). **Cost [D]:** none measurable: the same ray, 0.13 units
+longer. **Proof:** the next batch, the H41 spot new vs `flaresshort`, and the beach's flares unchanged.
+
+## H42: the bunker doorway
+
+**Evidence [E]:** the emulator reaches the spot, but the door there is closed (the hand test saw it open),
+so the doorway's own lighting can't be compared yet. Full-size lightmaps (no `assettrack`) against the
+half-size ones differ only in detail at all four interior spots (mean absolute difference 1.2-3.9/255,
+mean brightness within 0.4): the half-size lightmaps are not the fault. The green glows beside the open
+door in the hand test's shot are H41's. Open: the dark wedge inside the open doorway, against the PC.
+
+## H33, read again: the line is not the light pass
+
+**Evidence [M][E]:** in the hand test's log the light pass drew nothing at H33's shots (0 triangles, every
+stats line from 2,560 to 2,700 s), and the emulator draws the same dashed line at the same camera with
+`nolightpass` (only the clock's pixels differ) and with every light-pass keep word. The line (8-pixel
+dashes every ~31 rows, colour 115/149/148) is on a pillar's face seen edge-on. The light pass's unlifted
+triangles stay (exact, `lightliftall` turns them off) but fix nothing seen. Next: `clearmagenta` (a crack
+shows magenta), `nomip`, `nodetail`, `guardwide` at the same spots.
 
 ## H24
 

@@ -19370,7 +19370,7 @@ FIXES_129["source/rasterizer/xbox/rasterizer_xbox_widgets.c#walls"] = [
 static unsigned long psp_flare_bipeds = 0;""",
  """/* build 116: characters in a flare's way (b113 #2) */
 static unsigned long psp_flare_bipeds = 0;
-static int psp_flare_walls = -1, psp_flare_walls_check = 0;
+static int psp_flare_walls = -1, psp_flare_walls_check = 0, psp_flare_level_short = 0, psp_flare_debug = 0;
 unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare_walls_differed = 0; /* psp_ge.c logs them */"""),
 ("""				/* the level's sky surfaces (no material) are where the
 				sky is drawn: a ray that meets one has reached the sky */
@@ -19394,20 +19394,48 @@ unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare
 					{
 						psp_flare_walls = !psp_keep("flaresfull");
 						psp_flare_walls_check = psp_keep("flarescheck") != 0;
+						psp_flare_level_short = psp_keep("flaresshort") != 0;
+						psp_flare_debug = psp_keep("flaresdebug") ? 40 : 0;
 					}
 					/* the level alone, with the full test's surface flags:
 					a wall that is not sky hides the flare whatever the
-					objects say, as they can only meet the ray nearer */
+					objects say, as they can only meet the ray nearer.
+					This ray runs to the flare's own point (all but 2 cm),
+					as the Xbox's test square is depth-tested there: the
+					ray above stops 0.15 short so as not to meet the
+					flare's own object, and the level has no such object.
+					Stopped short, a wall within 0.15 of a lamp on its far
+					side (or of a door's lamp slid into it) let the flare
+					shine through ("flaresshort": as before) */
 					if (psp_flare_walls || psp_flare_walls_check)
 					{
+						real_vector3d level_ray = ray;
+
+						if (!psp_flare_level_short)
+						{
+							real length;
+
+							vector_from_points3d(&global_window_parameters.camera.position, point, &level_ray);
+							length = magnitude3d(&level_ray);
+							if (length > 0.05f)
+								scale_vector3d(&level_ray, (length - 0.02f) / length, &level_ray);
+						}
 						level_hides = collision_test_vector(
 							FLAG(_collision_test_front_facing_surfaces_bit) |
 								FLAG(_collision_test_ignore_invisible_surfaces_bit) |
 								FLAG(_collision_test_structure_bit),
 							&global_window_parameters.camera.position,
-							&ray,
+							&level_ray,
 							NONE,
 							&collision) && collision.material_index != NONE;
+						if (psp_flare_debug > 0)
+						{
+							psp_flare_debug--;
+							platform_psp_log("flaresdebug: flare %ld at %.2f %.2f %.2f, %.2f from the eye: level %s (t %.3f, material %d)",
+								index, point->x, point->y, point->z, magnitude3d(&level_ray),
+								level_hides ? "hides it" : "clear", level_hides ? collision.t : 1.0f,
+								(int)collision.material_index);
+						}
 					}
 					if (level_hides && !psp_flare_walls_check)
 					{
