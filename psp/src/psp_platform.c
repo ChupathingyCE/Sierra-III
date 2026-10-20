@@ -1234,10 +1234,13 @@ code (each object's update and draw, each particle's birth), so only recon
 builds carry them, each behind its keep word */
 char *tag_get_name(long tag_index);
 
-/* a tag's name without its folders, for lines that must stay short */
+/* a tag's name without its folders, for lines that must stay short. A tag
+index carries its salt in the high half, and a map's salts are 0x8000 and
+over, so a real tag index is negative as a long: NONE (-1) is the only "no
+tag", here and in the counters below */
 static const char *tag_short_name(long tag)
 {
-	const char *name = tag >= 0 ? tag_get_name(tag) : NULL;
+	const char *name = tag != -1 ? tag_get_name(tag) : NULL;
 	const char *slash;
 
 	if (!name)
@@ -1261,7 +1264,7 @@ void psp_objcost(long definition, int type, int drawing, unsigned long microseco
 
 	if (objcost_on < 0)
 		objcost_on = psp_keep("objcost") != 0;
-	if (!objcost_on || definition < 0)
+	if (!objcost_on || definition == -1)
 		return;
 	k = ((unsigned long)definition * 2654435761u) >> 25;
 	for (n = 0; n < OBJCOST_SLOTS; n++, k = (k + 1) % OBJCOST_SLOTS)
@@ -1303,12 +1306,12 @@ long psp_particle_effect = -1;
 
 void psp_particle_census(long effect, long particle, int outcome)
 {
-	long tag = effect >= 0 ? effect : particle;
+	long tag = effect != -1 ? effect : particle;
 	unsigned int k, n;
 
 	if (particle_census_on < 0)
 		particle_census_on = psp_keep("particlecensus") != 0;
-	if (!particle_census_on || tag < 0 || outcome < 0 || outcome >= PARTICLE_OUTCOMES)
+	if (!particle_census_on || tag == -1 || outcome < 0 || outcome >= PARTICLE_OUTCOMES)
 		return;
 	k = ((unsigned long)tag * 2654435761u) >> 26;
 	for (n = 0; n < PARTICLE_CENSUS_SLOTS; n++, k = (k + 1) % PARTICLE_CENSUS_SLOTS)
@@ -1321,9 +1324,9 @@ void psp_particle_census(long effect, long particle, int outcome)
 		if (empty)
 		{
 			particle_census[k].tag = tag;
-			particle_census[k].from_effect = effect >= 0;
+			particle_census[k].from_effect = effect != -1;
 		}
-		if (particle_census[k].tag == tag && particle_census[k].from_effect == (effect >= 0))
+		if (particle_census[k].tag == tag && particle_census[k].from_effect == (effect != -1))
 		{
 			particle_census[k].count[outcome]++;
 			return;
