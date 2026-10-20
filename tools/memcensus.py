@@ -67,28 +67,29 @@ class Section:
         self.pools[name] = [peak, maximum, unit, source]
 
     def counter(self, metric, value):
-        """a counter that grows over the map (and restarts with it): the
-        growth since the last line, added to the total"""
+        """a counter that grows (some restart with each map, some run on from
+        the launch): the growth since its last line, wherever that was, goes to
+        this map; a counter lower than last time has restarted"""
         before = self.last.get(metric)
         self.last[metric] = value
-        if before is not None and value >= before:
-            self.total[metric] += value - before
-        elif before is None:
-            self.total[metric] += value
+        self.total[metric] += value - before if before is not None and value >= before else value
 
 
 def parse(paths, only_map=None):
     sections = OrderedDict()
     list_kb = None
+    vram_textures_kb = None
     for path in paths:
+        last = {}  # the counters' last values in this log, across its maps
         current = sections.setdefault('ui', Section('ui'))
+        current.last = last
         window = {}
         for raw in open(path, errors='replace'):
             line = raw.rstrip('\n')
             m = re.match(r'loading: levels\\\w+\\(\w+) begins', line)
             if m:
                 current = sections.setdefault(m.group(1), Section(m.group(1)))
-                current.last = {}
+                current.last = last
                 continue
             s = current
             m = re.match(r'heartbeat: game time (\d+) \(([\d.]+) ticks/s\) \| tick ([\d.]+) ms avg.*?frame ([\d.]+) ms avg.*?([\d.]+) fps', line)
@@ -251,15 +252,24 @@ def parse(paths, only_map=None):
                 window.update(cycles_m=v[0], memwait=v[1], dmiss=v[2], wb=v[3], imiss=v[4], uload=v[5], ustore=v[6],
                               bus=v[9], localbus=v[10])
                 continue
-            m = re.match(r'hardware by phase.*?: (.*)', line)
-            if m:
-                for phase, share, mem in re.findall(r' (other|tick|drawing|frame end) ([\d.]+)% \(memory ([\d.]+)%', line):
-                    window['phase_%s' % phase.replace(' ', '_')] = (num(share), num(mem))
+            if line.startswith('hardware by phase'):
+                for phase, share, mem, i, d, wb, ul, us in re.findall(
+                        r' (other|tick|drawing|frame end) ([\d.]+)% \(memory ([\d.]+)%, asleep [\d.]+%, I (\d+), D (\d+), wb (\d+), uncached loads (\d+) stores (\d+)\)', line):
+                    window['phase_%s' % phase.replace(' ', '_')] = tuple(num(x) for x in (share, mem, i, d, wb, ul, us))
                 continue
-            m = re.match(r'GE: what the draws made the GE read, KB a frame, by where it lives: (.*)', line)
+            m = re.match(r'gereads: game time \d+, \d+ frames, \d+ draws; KB a frame by place:(.*)', line)
             if m:
-                for place, kb in re.findall(r'([A-Za-z\' ()]+?) ([\d.]+)(?:;|$| \()', m.group(1)):
+                for place, kb in re.findall(r' ([^;]+?) ([\d.]+);', m.group(1)):
                     window['gereads %s' % place.strip()] = num(kb)
+                    s.most('gereads_%s' % place.strip().split(' ')[0], num(kb))
+                continue
+            m = re.match(r'textures: VRAM by binds per byte, best third \d+ binds in (\d+) KB, middle \d+ in (\d+) KB, worst \d+ in (\d+) KB', line)
+            if m:
+                s.most('vram_textures_kb', sum(num(x) for x in m.groups()), vram_textures_kb)
+                continue
+            m = re.match(r'textures: vrammodels: the top \d+ KB of VRAM for the model buffers; the texture cache (\d+) KB', line)
+            if m:
+                vram_textures_kb = num(m.group(1))
                 continue
             m = re.match(r'frameend: \d+ frames; a frame: .*?waiting for the GE ([\d.]+)', line)
             if m:
@@ -351,6 +361,38 @@ def bandwidth(s):
     return rows
 
 
+def contention(s):
+    """per phase over the map's windows: its share of the CPU's cycles, the
+    share of those spent waiting on memory, the cache lines moved (I- and
+    D-misses and write-backs) per million cycles, and the wait cycles per line
+    moved. With the bus quiet a miss costs about 72 cycles (halo_bench v7);
+    what a phase pays above that is what the other units' traffic (the GE's
+    main-RAM reads most: b93) adds to each of its misses"""
+    sums = defaultdict(lambda: [0.0] * 6)
+    for _, w in s.windows:
+        cycles = w.get('cycles_m')
+        if not cycles:
+            continue
+        for phase in ('tick', 'drawing', 'other', 'frame_end'):
+            p = w.get('phase_' + phase)
+            if not p or not p[0]:
+                continue
+            c = cycles * p[0] / 100.0  # this phase's M cycles in the window
+            acc = sums[phase]
+            acc[0] += c
+            acc[1] += c * p[1] / 100.0           # M cycles waiting
+            acc[2] += c * (p[2] + p[3]) / 1e6 * 1e6  # misses (per M cycles times M cycles)
+            acc[3] += c * p[4]                   # write-backs
+            acc[4] += c * (p[5] + p[6])          # uncached accesses
+    rows = []
+    total = sum(v[0] for v in sums.values()) or 1.0
+    for phase, (c, wait, misses, wb, unc, _) in sums.items():
+        lines = misses + wb
+        rows.append((phase, 100.0 * c / total, 100.0 * wait / c if c else 0, lines / c if c else 0,
+                     wait * 1e6 / lines if lines else 0, (lines * LINE) / c * 333 / 1e6 if c else 0))
+    return rows
+
+
 def report(sections, tsv=False):
     out = []
     for name, s in sections.items():
@@ -377,6 +419,15 @@ def report(sections, tsv=False):
         sets = sorted((k, v) for k, v in s.peak.items() if k.startswith('geometry_set_'))
         if sets:
             out.append('Geometry working set (most): ' + '; '.join('%s %.0f KB' % (k[13:], v) for k, v in sets) + '\n')
+        crow = contention(s)
+        if crow:
+            out.append('| Phase | Share of cycles | Waiting on memory | Lines moved per M cycles | Wait cycles per line | CPU traffic while in it, MB/s |\n|---|---:|---:|---:|---:|---:|')
+            for phase, share, wait, lines, per, mbs in sorted(crow, key=lambda r: -r[1]):
+                out.append('| %s | %.0f%% | %.1f%% | %.0f | %.0f | %.0f |' % (phase, share, wait, lines, per, mbs))
+            out.append('')
+        gr = sorted((k[8:], v) for k, v in s.peak.items() if k.startswith('gereads_'))
+        if gr:
+            out.append('GE reads, KB a frame (most of any window): ' + '; '.join('%s %.0f' % kv for kv in gr) + '\n')
         rows = bandwidth(s)
         if rows:
             rows.sort(key=lambda r: -(r.get('memwait') or r.get('ge_ram_MBs') or 0))
