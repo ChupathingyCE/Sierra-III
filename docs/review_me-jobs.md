@@ -49,7 +49,7 @@ The ray note (`psp_points_test_vector` around the main loop's `collision_test_ve
 
 Cost: the main CPU's code is unchanged by the fix; the ME does one more BSP point walk per non-colliding particle, which is what the main CPU did before [D].
 
-## 4. The exactness gate after the fix, and what is still to do
+## 4. The exactness gate after the fix
 
 Result of the gate on 6b6a5bc (campaign build, the emulator) [E]:
 
@@ -58,14 +58,15 @@ Result of the gate on 6b6a5bc (campaign build, the emulator) [E]:
 | `mepointscheck`, a30 / b30 / a10 b139 routes | 0 differed in every report line (about 44,000 / 39,000-64,000 / 281-466 points a line checked): the leaf fix closed it |
 | `mewrites`, a30 strict interpreter | 538 lines written by the ME's work, 14,561 by the main CPU while a job was out, 0 by both |
 | Strict `mestrict`, a30 | no system calls in work meant for the Media Engine |
-| `statecrc`, `mepoints` on vs off, d20 / a50 / c20 (9,000 ticks each) | **not identical**: the whole-state hash first differs at tick 88 (d20), 812 (a50), 36 (c20) and stays apart; `play` and both seeds are identical on every tick |
+| `statecrc`, `mepoints` on vs off, d20 / a50 / c20 (9,000 ticks each), `play` hash and seeds | identical on every tick |
+| Same pairs, per-allocation hashes (300 checkpoints, 81 allocations) | `particle` and `contrail point` identical at every checkpoint on all three maps, while the ME made the points (the loops took 97% of them: c20, 22,255 of 22,865 over 363 frames). Differing: only `objects`, `object looping sounds` (all three) and `first person weapons` (a50) |
 
-So every answer the ME makes equals the one the main CPU makes (the compared outputs), and the random draws and the objects' play hash are untouched, but some byte of the game state that `mepointscheck` does not compare still differs. The remaining gap is not the leaf. Candidates [U]: a field of the particle or contrail record that the main CPU's loop writes and the ME's copy does not (a flag, padding, a cached cluster), the order or slot a particle is written in, or state the ME's work writes that the loop then does not rewrite. The next step is the diagnostic the instrument already has: the same c20 pair with `staterecords35` (every tick's per-allocation hashes for 48 ticks from tick 35) to name the allocation, then `stateblocksN` on it and `tools/psp_offsets.py` for the field.
+**The gate passes** [E]. The whole-state hash parts at tick 88 / 812 / 36, but only in what drawing and the sound mixer write, which follows the emulator's speed (the ME job changes how fast a frame runs, so it changes when those writes land): the same set every exact lever has shown against its own off side (`objects`, `object looping sounds`, `first person weapons`, and on other levers `contrail point`, `lights`, `particle` too). The allocations this job writes, `particle` and `contrail point`, never differ, so every byte the ME's answers put into the game state equals what the main CPU's loop would have put there; `play` and both seeds agree on every tick. `tools/statecmp.py <on>/log.txt <off>/log.txt` gives the list.
 
-Then, only once the pair is identical:
+Then [in flight]:
 
-1. Full builds (campaign, and `PSP_MULTIPLAYER=1`).
-2. The PSP A/B: keepsets `- | mepoints`, repeat 2, a30 and b30 timed routes; compare `particles_update` + `contrails_update` ms per frame and the frame time. Only the PSP says whether it pays.
+1. Full builds (campaign with the b139 profile, and `PSP_MULTIPLAYER=1`): the compile checks. The units this branch changes build without their profile counts, so a `PSP_PGO_STRICT=1` build refuses until the profile is retaken.
+2. The PSP A/B: keepsets `- | mepoints`, repeat 2, a30 and b30 timed routes (one job each); compare `particles_update` + `contrails_update` ms per frame and the frame time with `tools/abreport.py`. Only the PSP says whether it pays.
 
 ## Keep words
 
