@@ -1282,6 +1282,220 @@ static int profile_compare(const void *a, const void *b)
 
 /* writes the window's table to log/profile.txt (and its top lines to the log)
 and starts a new one; frames is how many frames the window rendered */
+#ifdef PSP_RECON
+/* ---------- the measurement round's counters (PSP_RECON=1;
+docs/plan_measurement_round.md, the new counters). Their hooks sit in hot
+code (each object's update and draw, each particle's birth), so only recon
+builds carry them, each behind its keep word */
+char *tag_get_name(long tag_index);
+
+/* a tag's name without its folders, for lines that must stay short. A tag
+index carries its salt in the high half, and a map's salts are 0x8000 and
+over, so a real tag index is negative as a long: NONE (-1) is the only "no
+tag", here and in the counters below */
+static const char *tag_short_name(long tag)
+{
+	const char *name = tag != -1 ? tag_get_name(tag) : NULL;
+	const char *slash;
+
+	if (!name)
+		return "?";
+	slash = strrchr(name, '\\');
+	return slash ? slash + 1 : name;
+}
+
+/* "objcost": each object definition's cost, its updates on the tick (timed
+on the sampled ticks, objects.c, as the per-type line) and its drawing
+(render_objects.c's per-object call, with the objects it carries, and its
+shadow), FIXES_RECON #objcost. Which vehicle costs what (the Pelican, the
+dropship, the Banshee against the Warthog and the Scorpion) */
+#define OBJCOST_SLOTS 128
+static struct { long definition; int type; unsigned long tick_us, updates, draw_us, draws; } objcost[OBJCOST_SLOTS];
+static int objcost_on = -1;
+
+void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count)
+{
+	unsigned int k, n;
+
+	if (objcost_on < 0)
+		objcost_on = psp_keep("objcost") != 0;
+	if (!objcost_on || definition == -1)
+		return;
+	k = ((unsigned long)definition * 2654435761u) >> 25;
+	for (n = 0; n < OBJCOST_SLOTS; n++, k = (k + 1) % OBJCOST_SLOTS)
+	{
+		if (!objcost[k].updates && !objcost[k].draws)
+		{
+			objcost[k].definition = definition;
+			objcost[k].type = type;
+		}
+		if (objcost[k].definition == definition)
+		{
+			if (drawing)
+			{
+				objcost[k].draw_us += microseconds;
+				objcost[k].draws += count;
+			}
+			else
+			{
+				objcost[k].tick_us += microseconds;
+				objcost[k].updates += count;
+			}
+			return;
+		}
+	}
+}
+
+/* "particlecensus": particles asked for, by the effect that asked (or, for
+a particle made outside an effect, by the particle), and what became of
+each: made, left out unseen at birth, refused over the budget, thinned out
+of a burst, or no room in the pool (particles.c, effects.c; FIXES_RECON
+#particlecensus) */
+#define PARTICLE_CENSUS_SLOTS 64
+#define PARTICLE_OUTCOMES 5
+static const char *const particle_outcomes[PARTICLE_OUTCOMES] = { "made", "unseen", "budget", "thinned", "pool full" };
+static struct { long tag; int from_effect; unsigned long count[PARTICLE_OUTCOMES]; } particle_census[PARTICLE_CENSUS_SLOTS];
+static int particle_census_on = -1;
+/* the effect whose particle is being made (effects.c), -1 for none */
+long psp_particle_effect = -1;
+
+void psp_particle_census(long effect, long particle, int outcome)
+{
+	long tag = effect != -1 ? effect : particle;
+	unsigned int k, n;
+
+	if (particle_census_on < 0)
+		particle_census_on = psp_keep("particlecensus") != 0;
+	if (!particle_census_on || tag == -1 || outcome < 0 || outcome >= PARTICLE_OUTCOMES)
+		return;
+	k = ((unsigned long)tag * 2654435761u) >> 26;
+	for (n = 0; n < PARTICLE_CENSUS_SLOTS; n++, k = (k + 1) % PARTICLE_CENSUS_SLOTS)
+	{
+		int o, empty = 1;
+
+		for (o = 0; o < PARTICLE_OUTCOMES; o++)
+			if (particle_census[k].count[o])
+				empty = 0;
+		if (empty)
+		{
+			particle_census[k].tag = tag;
+			particle_census[k].from_effect = effect != -1;
+		}
+		if (particle_census[k].tag == tag && particle_census[k].from_effect == (effect != -1))
+		{
+			particle_census[k].count[outcome]++;
+			return;
+		}
+	}
+}
+
+static void recon_counters_report(SceUID file, double seconds, unsigned long frames, unsigned long ticks)
+{
+	static char report[6144];
+	char line[512];
+	int report_length = 0, length, k, shown;
+
+	if (objcost_on > 0 && (frames || ticks))
+	{
+		/* the costliest first: ms a tick updating plus ms a frame drawing */
+		static const char *const types[] = { "biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+			"machine", "control", "light", "placeholder", "sound scenery" };
+		double type_tick[12] = { 0 }, type_draw[12] = { 0 };
+
+		report_length += snprintf(report + report_length, sizeof(report) - report_length,
+			"objcost: %-36s %-10s %9s %9s %9s %9s\n", "definition", "type", "tick ms", "updates", "frame ms", "draws");
+		length = snprintf(line, sizeof(line), "objcost (ms a tick updating, updates a tick | ms a frame drawing, with what it carries, draws a frame):");
+		for (k = 0; k < OBJCOST_SLOTS; k++)
+			if (objcost[k].type >= 0 && objcost[k].type < 12)
+			{
+				type_tick[objcost[k].type] += ticks ? objcost[k].tick_us / 1000.0 / ticks : 0.0;
+				type_draw[objcost[k].type] += frames ? objcost[k].draw_us / 1000.0 / frames : 0.0;
+			}
+		for (shown = 0; shown < 24; shown++)
+		{
+			int best = -1;
+			double best_cost = 0.0;
+
+			for (k = 0; k < OBJCOST_SLOTS; k++)
+			{
+				double cost = (ticks ? objcost[k].tick_us / 1000.0 / ticks : 0.0) + (frames ? objcost[k].draw_us / 1000.0 / frames : 0.0);
+
+				if ((objcost[k].updates || objcost[k].draws) && cost > best_cost)
+				{
+					best = k;
+					best_cost = cost;
+				}
+			}
+			if (best < 0)
+				break;
+			report_length += snprintf(report + report_length, sizeof(report) - report_length, "objcost: %-36.36s %-10s %9.3f %9.2f %9.3f %9.2f\n",
+				tag_short_name(objcost[best].definition), objcost[best].type >= 0 && objcost[best].type < 12 ? types[objcost[best].type] : "?",
+				ticks ? objcost[best].tick_us / 1000.0 / ticks : 0.0, ticks ? (double)objcost[best].updates / ticks : 0.0,
+				frames ? objcost[best].draw_us / 1000.0 / frames : 0.0, frames ? (double)objcost[best].draws / frames : 0.0);
+			if (shown < 6 && length < (int)sizeof(line) - 80)
+				length += snprintf(line + length, sizeof(line) - length, " %.24s %.2f, %.1f | %.2f, %.1f;", tag_short_name(objcost[best].definition),
+					ticks ? objcost[best].tick_us / 1000.0 / ticks : 0.0, ticks ? (double)objcost[best].updates / ticks : 0.0,
+					frames ? objcost[best].draw_us / 1000.0 / frames : 0.0, frames ? (double)objcost[best].draws / frames : 0.0);
+			objcost[best].updates = objcost[best].draws = 0; /* shown: out of the running */
+		}
+		platform_log("%s", line);
+		length = snprintf(line, sizeof(line), "objcost by type (ms a tick updating | ms a frame drawing):");
+		for (k = 0; k < 12 && length < (int)sizeof(line) - 48; k++)
+			if (type_tick[k] > 0.0 || type_draw[k] > 0.0)
+				length += snprintf(line + length, sizeof(line) - length, " %s %.2f | %.2f;", types[k], type_tick[k], type_draw[k]);
+		platform_log("%s", line);
+		memset(objcost, 0, sizeof(objcost));
+	}
+	if (particle_census_on > 0)
+	{
+		unsigned long totals[PARTICLE_OUTCOMES] = { 0 };
+		int o;
+
+		for (k = 0; k < PARTICLE_CENSUS_SLOTS; k++)
+			for (o = 0; o < PARTICLE_OUTCOMES; o++)
+				totals[o] += particle_census[k].count[o];
+		length = snprintf(line, sizeof(line), "particlecensus over %.1f s: made %lu, unseen %lu, budget %lu, thinned %lu, pool full %lu; by effect (made/unseen/budget/thinned/full), the most asked first:",
+			seconds, totals[0], totals[1], totals[2], totals[3], totals[4]);
+		report_length += snprintf(report + report_length, sizeof(report) - report_length,
+			"particlecensus: %-36s %6s %8s %8s %8s %8s %8s\n", "effect (or particle)", "effect", particle_outcomes[0], particle_outcomes[1],
+			particle_outcomes[2], particle_outcomes[3], particle_outcomes[4]);
+		for (shown = 0; shown < 20; shown++)
+		{
+			int best = -1;
+			unsigned long best_asked = 0;
+
+			for (k = 0; k < PARTICLE_CENSUS_SLOTS; k++)
+			{
+				unsigned long asked = 0;
+
+				for (o = 0; o < PARTICLE_OUTCOMES; o++)
+					asked += particle_census[k].count[o];
+				if (asked > best_asked)
+				{
+					best = k;
+					best_asked = asked;
+				}
+			}
+			if (best < 0)
+				break;
+			report_length += snprintf(report + report_length, sizeof(report) - report_length, "particlecensus: %-36.36s %6s %8lu %8lu %8lu %8lu %8lu\n",
+				tag_short_name(particle_census[best].tag), particle_census[best].from_effect ? "yes" : "no",
+				particle_census[best].count[0], particle_census[best].count[1], particle_census[best].count[2],
+				particle_census[best].count[3], particle_census[best].count[4]);
+			if (shown < 6 && length < (int)sizeof(line) - 72)
+				length += snprintf(line + length, sizeof(line) - length, " %.24s %lu/%lu/%lu/%lu/%lu;", tag_short_name(particle_census[best].tag),
+					particle_census[best].count[0], particle_census[best].count[1], particle_census[best].count[2],
+					particle_census[best].count[3], particle_census[best].count[4]);
+			memset(particle_census[best].count, 0, sizeof(particle_census[best].count));
+		}
+		platform_log("%s", line);
+		memset(particle_census, 0, sizeof(particle_census));
+	}
+	if (file >= 0 && report_length)
+		sceIoWrite(file, report, report_length);
+}
+#endif
+
 static void profile_report(double seconds, unsigned long frames, unsigned long ticks)
 {
 	static struct profile_slot copy[PROFILE_SLOTS];
@@ -1340,6 +1554,9 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 	if (file >= 0)
 		sceIoWrite(file, report, report_length);
 	object_report(file, ticks);
+#ifdef PSP_RECON
+	recon_counters_report(file, seconds, frames, ticks);
+#endif
 	if (file >= 0)
 		sceIoClose(file);
 }
@@ -2479,7 +2696,14 @@ static struct
 	volatile unsigned long long phase_count[HW_PHASES][HW_COUNTERS];
 	volatile unsigned int phase_changes;
 	volatile unsigned int cop0_24;
+	/* the split by thread ("hwthreads"; psp/profile/main.c): per phase,
+	microseconds of the clock, of the other threads and of the idle thread,
+	and the thread switches */
+	volatile unsigned int threads_wanted;
+	volatile unsigned int threads_tracked;
+	volatile unsigned long long phase_threads[HW_PHASES][4];
 } hwprofile __attribute__((aligned(64)));
+static unsigned long long hwprofile_threads_last[HW_PHASES][4];
 static unsigned long long hwprofile_phase_last[HW_PHASES][HW_COUNTERS];
 static int partitions_reported = 0;
 static unsigned long long hwprofile_last[HW_COUNTERS];
@@ -2516,6 +2740,7 @@ static void hwprofile_start(const char *eboot_path)
 	snprintf(path, sizeof(path), "%s", eboot_path ? eboot_path : "ms0:/PSP/GAME/halo/EBOOT.PBP");
 	slash = strrchr(path, '/');
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_profile.prx");
+	hwprofile.threads_wanted = psp_keep("hwthreads") != 0;
 	module = sceKernelLoadModule(path, 0, NULL);
 	if (module >= 0)
 		module = sceKernelStartModule(module, sizeof(address), &address, &status, NULL);
@@ -2634,6 +2859,63 @@ static void hwprofile_report(void)
 			}
 		}
 		platform_log("hardware by phase, continued:%s", line);
+	}
+	{
+		/* Each phase's share of the clock: the system counter (0) runs at
+		333 MHz whatever the CPU does, while the CPU's (1), the shares
+		above, stops while the idle thread has the CPU halted. A window that
+		waits (a frame-rate cap, a load) shows its active phases larger by
+		the cycles' count than by the clock: the "missing third" of the
+		measurement round */
+		static const char *const names[HW_PHASES] = { "other", "tick", "drawing", "frame end" };
+		static unsigned long long system_last[HW_PHASES], active_last[HW_PHASES];
+		unsigned long long system[HW_PHASES], active[HW_PHASES], system_all = 0;
+		char line[400];
+		int length = 0, phase;
+
+		for (phase = 0; phase < HW_PHASES; phase++)
+		{
+			system[phase] = hwprofile.phase_count[phase][0] - system_last[phase];
+			active[phase] = hwprofile.phase_count[phase][1] - active_last[phase];
+			system_last[phase] = hwprofile.phase_count[phase][0];
+			active_last[phase] = hwprofile.phase_count[phase][1];
+			system_all += system[phase];
+		}
+		for (phase = 0; phase < HW_PHASES && length < (int)sizeof(line) - 64; phase++)
+			length += snprintf(line + length, sizeof(line) - length, " %s %.1f%% (halted %.1f%%);", names[phase],
+				system_all ? 100.0 * system[phase] / system_all : 0.0,
+				system[phase] && system[phase] > active[phase] ? 100.0 * (system[phase] - active[phase]) / system[phase] : 0.0);
+		platform_log("hardware by phase, of the clock (share of the system cycles; in brackets, the share of the phase the CPU was halted):%s", line);
+	}
+	if (hwprofile.threads_wanted)
+	{
+		/* "hwthreads": who ran in each phase, by the threads' run clocks:
+		the game's thread is the phase's clock less the other threads and
+		the idle thread */
+		static const char *const names[HW_PHASES] = { "other", "tick", "drawing", "frame end" };
+		unsigned long long d[HW_PHASES][4], clock_all = 0;
+		char line[500];
+		int length = 0, phase, k;
+
+		for (phase = 0; phase < HW_PHASES; phase++)
+			for (k = 0; k < 4; k++)
+			{
+				d[phase][k] = hwprofile.phase_threads[phase][k] - hwprofile_threads_last[phase][k];
+				hwprofile_threads_last[phase][k] = hwprofile.phase_threads[phase][k];
+			}
+		for (phase = 0; phase < HW_PHASES; phase++)
+			clock_all += d[phase][0];
+		for (phase = 0; phase < HW_PHASES && length < (int)sizeof(line) - 120; phase++)
+		{
+			double clock = d[phase][0] ? (double)d[phase][0] : 1.0;
+			unsigned long long busy = d[phase][1] + d[phase][2];
+			double game = d[phase][0] > busy ? (double)(d[phase][0] - busy) : 0.0;
+
+			length += snprintf(line + length, sizeof(line) - length, " %s %.1f%% (game %.1f%%, others %.1f%%, idle %.1f%%; %lu switches);",
+				names[phase], clock_all ? 100.0 * d[phase][0] / clock_all : 0.0,
+				100.0 * game / clock, 100.0 * d[phase][1] / clock, 100.0 * d[phase][2] / clock, (unsigned long)d[phase][3]);
+		}
+		platform_log("hardware by thread (each phase's share of the clock; in brackets, who had the CPU in it; %u threads):%s", hwprofile.threads_tracked, line);
 	}
 }
 

@@ -124,6 +124,70 @@ static unsigned int frame = 1, generation_counter = 0;
 static unsigned long hits = 0, misses = 0, loads = 0, load_bytes = 0, evictions = 0, too_big = 0, failures = 0,
 	miss_frames = 0, queue_full = 0, no_room = 0;
 static int frame_missed = 0;
+
+#ifdef PSP_RECON
+/* "geocluster" (PSP_RECON=1; docs/plan_measurement_round.md, the new
+counters): the misses by where the camera was, its BSP and cluster
+(structure_visibility_compute names it each frame, psp_fixups.py
+FIXES_RECON #geocluster), so a stretch's churn can be put on the map: the
+places whose geometry doesn't fit the cache together with their
+neighbours' */
+#define GEO_PLACES 64
+static struct { short bsp, cluster; unsigned long frames, misses, bytes; } geo_places[GEO_PLACES];
+static int geo_place = -1, geo_cluster_on = -1;
+
+void psp_geo_camera(short bsp, short cluster)
+{
+	unsigned int k, n;
+
+	if (geo_cluster_on < 0)
+		geo_cluster_on = psp_keep("geocluster") != 0;
+	if (!geo_cluster_on)
+		return;
+	geo_place = -1;
+	k = ((unsigned int)(unsigned short)cluster * 31u + (unsigned int)(unsigned short)bsp) % GEO_PLACES;
+	for (n = 0; n < GEO_PLACES; n++, k = (k + 1) % GEO_PLACES)
+	{
+		if (!geo_places[k].frames && !geo_places[k].misses)
+		{
+			geo_places[k].bsp = bsp;
+			geo_places[k].cluster = cluster;
+		}
+		if (geo_places[k].bsp == bsp && geo_places[k].cluster == cluster)
+		{
+			geo_place = (int)k;
+			geo_places[k].frames++;
+			return;
+		}
+	}
+}
+
+static void geo_places_report(void)
+{
+	char line[480];
+	int length, shown, k;
+
+	if (geo_cluster_on <= 0)
+		return;
+	length = snprintf(line, sizeof(line), "geometry by the camera's place (geocluster; bsp:cluster misses, KB asked, frames there), the most missed first:");
+	for (shown = 0; shown < 12 && length < (int)sizeof(line) - 40; shown++)
+	{
+		int best = -1;
+
+		for (k = 0; k < GEO_PLACES; k++)
+			if (geo_places[k].frames && (best < 0 || geo_places[k].misses > geo_places[best].misses))
+				best = k;
+		if (best < 0 || !geo_places[best].misses)
+			break;
+		length += snprintf(line + length, sizeof(line) - length, " %d:%d %lu %lu %lu;", geo_places[best].bsp, geo_places[best].cluster,
+			geo_places[best].misses, geo_places[best].bytes / 1024, geo_places[best].frames);
+		geo_places[best].frames = 0; /* shown: out of the running */
+	}
+	platform_log("%s", line);
+	memset(geo_places, 0, sizeof(geo_places));
+	geo_place = -1;
+}
+#endif
 static unsigned int read_start_us = 0;
 static unsigned long read_us = 0, read_worst_us = 0;
 extern volatile unsigned long psp_stick_read_us; /* build 126: every blocking Memory Stick read's time (psp_frametrace.c) */
@@ -630,6 +694,13 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 	}
 	misses++;
 	frame_missed = 1;
+#ifdef PSP_RECON
+	if (geo_place >= 0)
+	{
+		geo_places[geo_place].misses++;
+		geo_places[geo_place].bytes += size;
+	}
+#endif
 	if (inflight >= 0)
 	{
 		/* it may be the one just read */
@@ -928,6 +999,9 @@ void psp_geo_frame_end(void)
 		platform_log("geometry: resident lookups (the renderer's) by the slot table %lu, by the index %lu, scanned %lu; index made %lu times (%s); geoindexcheck: %lu compared, %lu differed",
 			place_slot_answers, place_index_answers, place_scans, place_builds,
 			place_index_on > 0 ? "on" : place_index_on == 0 ? "off: geoscan" : "not asked yet", place_checked, place_differed);
+#ifdef PSP_RECON
+		geo_places_report();
+#endif
 		psp_anim_report();
 	}
 	frame++;
