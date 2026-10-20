@@ -24959,11 +24959,1012 @@ FIXES_POOLS["source/objects/widgets/glow.c#pools"] = [
 ]
 
 
+# ---------- FIXES_MEJOBS: point physics on the Media Engine ("mepoints")
+# The frame's free particles and contrail points each run point_physics_update
+# (the wind where the point is, then up to three collision rays against the
+# level and its water): 12-24 us a point on the PSP-1000, ~100 points a frame
+# in a fight, and the same again for a vehicle's dust contrails. Each point's
+# physics reads only its own position, velocity and location, its physics tag,
+# the level's collision BSP, its water and the wind; so its answer can be made
+# anywhere, ahead of the loop that uses it.
+# - particles_update lists the points whose physics this frame will run (the
+#   turn rule of FIXES_36 predicted as the loop will apply it), then the
+#   contrails' points, and hands the last PSP_POINTS_MAX of them to the ME as
+#   one ring job. The ME makes them from the back of the list; the main CPU
+#   runs its loops from the front as before.
+# - As the main CPU reaches a listed point it takes the ME's answer if the ME
+#   has made it and the point's inputs are bit for bit the ones listed (and the
+#   level's breakable surfaces as they were); otherwise it makes the point
+#   itself, and moves the line the ME must not cross past it. Neither CPU ever
+#   waits for the other inside the loops: the two meet where they meet.
+# - The ME's copy of the physics (psp_point_physics_quiet) is the engine's,
+#   test for test and operation for operation, without the usage log, the
+#   collision-user stack and the reports of a map's bad data: a point that
+#   would report one is left to the main CPU. Its arithmetic is the main CPU's
+#   (the FPU's control word handed over, no VFPU on the way, no fused
+#   multiply-adds in the build).
+# - The ME writes each answer's line back before it says the answer is made,
+#   and only the ME writes the answers and its progress word; only the main
+#   CPU writes the list and its own word. The main CPU drops an answer's line
+#   before reading it.
+# "mepoints" turns it on (off by default until a PSP A/B measures it);
+# "mepointscheck" also makes every taken point here and compares, bit for bit
+# (play then uses the main CPU's own answers); "mepointsminN" the fewest
+# listed points worth a hand-over (8 unless set)
+FIXES_MEJOBS = {}
+FIXES_MEJOBS["source/physics/collisions.c#mepoints"] = [
+("""boolean collision_test_pill(
+	unsigned long flags,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_MEJOBS #mepoints): collision_test_vector for point
+physics on the Media Engine, for its flags only (the structure and the water,
+no objects): the same tests in the same order, writing only its stack and
+*collision. A ray that would report a map's bad leaf, material or fog chain
+(the main CPU's reports, once each) or that asks for more is left to the
+main CPU: -1 */
+short psp_collision_test_vector_points(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	struct collision_result *collision)
+{
+	boolean hit = FALSE;
+
+	if (TEST_FLAG(flags, _collision_test_objects_bit) ||
+		TEST_FLAG(flags, _collision_test_use_vehicle_physics_bit) ||
+		TEST_FLAG(flags, _collision_test_try_to_keep_location_valid_bit))
+		return -1;
+
+	collision->type = NONE;
+	collision->start_location.leaf_index = NONE;
+	collision->start_location.cluster_index = NONE;
+	collision->location.leaf_index = NONE;
+	collision->location.cluster_index = NONE;
+	collision->t = 1.0f;
+
+	if ((TEST_FLAG(flags, _collision_test_structure_bit) || TEST_FLAG(flags, _collision_test_media_bit)) &&
+		!debug_collision_skip_vectors)
+	{
+		struct structure_bsp *structure_bsp = global_structure_bsp_get();
+		unsigned long bsp_flags = 0;
+		struct collision_bsp_test_vector_result bsp_result;
+
+		if (!(flags & (FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_back_facing_surfaces_bit))))
+			flags |= FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_back_facing_surfaces_bit);
+		SET_FLAG(bsp_flags, _collision_test_front_facing_surfaces_bit, TEST_FLAG(flags, _collision_test_front_facing_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_back_facing_surfaces_bit, TEST_FLAG(flags, _collision_test_back_facing_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_ignore_two_sided_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_two_sided_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_ignore_invisible_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_invisible_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_ignore_breakable_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_breakable_surfaces_bit));
+
+		if (psp_collision_bsp_test_vector_quiet(bsp_flags, global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+			breakable_surface_flags_get(), point, vector, REAL_MAX, &bsp_result) &&
+			TEST_FLAG(flags, _collision_test_structure_bit))
+		{
+			long material_type = NONE;
+
+			collision->t = bsp_result.t;
+			collision->type = _collision_result_structure;
+			collision->plane = *bsp_result.plane;
+			if (bsp_result.plane_designator & LONG_MIN)
+				plane3d_negate(&collision->plane, &collision->plane);
+			/* collision_structure_material_type's answer, its reports left out */
+			if (bsp_result.material_index != NONE)
+			{
+				if (bsp_result.material_index < 0 || bsp_result.material_index >= structure_bsp->collision_materials.count)
+					return -1;
+				material_type = TAG_BLOCK_GET_ELEMENT(&structure_bsp->collision_materials, bsp_result.material_index,
+					struct structure_collision_material)->runtime_physics_material_type;
+				if (material_type != NONE && (material_type < 0 || material_type >= NUMBER_OF_MATERIAL_TYPES))
+					return -1;
+			}
+			collision->material_type = (short)material_type;
+			collision->surface_index = bsp_result.surface_index;
+			collision->plane_designator = bsp_result.plane_designator;
+			collision->flags = bsp_result.flags;
+			collision->breakable_surface_index = bsp_result.breakable_surface_index;
+			collision->material_index = bsp_result.material_index;
+			hit = TRUE;
+		}
+
+		if (bsp_result.leaf_count > 0)
+		{
+			long first = bsp_result.leaf_indices[0], last = bsp_result.leaf_indices[bsp_result.leaf_count - 1];
+
+			/* collision_cluster_index_from_leaf's answers, its report left out */
+			if ((first != NONE && (first & LONG_MAX) >= structure_bsp->leaves.count) ||
+				(last != NONE && (last & LONG_MAX) >= structure_bsp->leaves.count))
+				return -1;
+			collision->start_location.leaf_index = first;
+			collision->start_location.cluster_index = (short)collision_cluster_index_from_leaf(first);
+			collision->location.leaf_index = last;
+			collision->location.cluster_index = (short)collision_cluster_index_from_leaf(last);
+		}
+
+		if (TEST_FLAG(flags, _collision_test_media_bit) &&
+			collision->location.cluster_index != NONE)
+		{
+			struct structure_fog_plane const *fog_plane;
+			struct structure_fog_region const *fog_region;
+			struct structure_fog_palette_entry const *fog_palette_entry;
+			struct fog_definition const *fog = NULL;
+			long cluster_index = collision->location.cluster_index;
+			short fog_reference;
+
+			/* collision_cluster_fog_plane's answer; a chain it would report
+			is the main CPU's */
+			if (cluster_index < 0 || cluster_index >= structure_bsp->clusters.count)
+				return -1;
+			fog_reference = TAG_BLOCK_GET_ELEMENT(&structure_bsp->clusters, cluster_index, struct structure_cluster)->fog_reference;
+			if (fog_reference != NONE && TEST_FLAG((word)fog_reference, 15))
+			{
+				if ((fog_reference & SHORT_MAX) >= structure_bsp->fog_planes.count)
+					return -1;
+				fog_plane = TAG_BLOCK_GET_ELEMENT(&structure_bsp->fog_planes, fog_reference & SHORT_MAX, struct structure_fog_plane);
+				if (fog_plane->runtime_material_type != NONE)
+				{
+					if (fog_plane->region_index < 0 || fog_plane->region_index >= structure_bsp->fog_regions.count)
+						return -1;
+					fog_region = TAG_BLOCK_GET_ELEMENT(&structure_bsp->fog_regions, fog_plane->region_index, struct structure_fog_region);
+					if (fog_region->fog_palette_index < 0 || fog_region->fog_palette_index >= structure_bsp->fog_palette.count)
+						return -1;
+					fog_palette_entry = TAG_BLOCK_GET_ELEMENT(&structure_bsp->fog_palette, fog_region->fog_palette_index,
+						struct structure_fog_palette_entry);
+					if (fog_palette_entry->fog.index == NONE)
+						return -1;
+					fog = fog_definition_get(fog_palette_entry->fog.index);
+				}
+			}
+			if (fog)
+			{
+				real_plane3d plane;
+				real point_distance;
+				real vector_dot;
+
+				plane = fog_plane->plane;
+				plane.d -= fog->plane_distance;
+				point_distance = plane3d_distance_to_point(&plane, point);
+				vector_dot = dot_product3d(&plane.n, vector);
+
+				if ((point_distance > 0.0f) != (vector_dot > 0.0f) &&
+					fabs(point_distance) < fabs(vector_dot) &&
+					fabs(vector_dot) >= _real_epsilon)
+				{
+					real t = -(point_distance / vector_dot);
+
+					if (t < collision->t)
+					{
+						boolean negate = point_distance < 0.0f;
+						long material_type;
+
+						collision->t = t;
+						collision->plane = plane;
+						collision->type = _collision_result_media;
+						if (negate)
+						{
+							plane3d_negate(&collision->plane, &collision->plane);
+							material_type = _material_water;
+						}
+						else
+						{
+							material_type = fog_plane->runtime_material_type;
+							if (material_type < 0 || material_type >= NUMBER_OF_MATERIAL_TYPES)
+								material_type = NONE;
+						}
+						collision->material_type = (short)material_type;
+						hit = TRUE;
+					}
+				}
+			}
+		}
+	}
+
+	if (!hit)
+		collision->t = 1.0f;
+	COLLISION_POINT_FROM_LINE3D(point, vector, collision->t, &collision->point);
+	return hit;
+}
+#endif
+
+boolean collision_test_pill(
+	unsigned long flags,"""),
+]
+FIXES_MEJOBS["source/physics/point_physics.c#mepoints"] = [
+# the location word after the cluster index is no part of the answer (nothing
+# reads it, and a collision result leaves it unset): kept as the point had it,
+# so the ME's answers and the main CPU's leave the same bytes
+("""			if (!collision_test_vector(collision_flags, position, &delta, NONE, &collision))
+			{
+				if (collision.location.leaf_index != NONE)
+				{
+					*location = collision.location;
+				}
+""",
+ """			if (!collision_test_vector(collision_flags, position, &delta, NONE, &collision))
+			{
+				if (collision.location.leaf_index != NONE)
+				{
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+					location->leaf_index = collision.location.leaf_index;
+					location->cluster_index = collision.location.cluster_index;
+#else
+					*location = collision.location;
+#endif
+				}
+"""),
+("""			if (collision.location.leaf_index != NONE)
+			{
+				*location = collision.location;
+			}
+
+			position->x = collision.plane.n.i * offset + collision.point.x;""",
+ """			if (collision.location.leaf_index != NONE)
+			{
+#ifdef HALO_PSP
+				/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+				location->leaf_index = collision.location.leaf_index;
+				location->cluster_index = collision.location.cluster_index;
+#else
+				*location = collision.location;
+#endif
+			}
+
+			position->x = collision.plane.n.i * offset + collision.point.x;"""),
+("""/* ---------- private code */
+
+static void render_debug_point_physics(""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_MEJOBS #mepoints): see the notes there */
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include "breakable_surfaces.h"
+
+short psp_collision_test_vector_points(unsigned long flags, real_point3d const *point, real_vector3d const *vector,
+	struct collision_result *collision);
+int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
+unsigned long psp_microseconds(void);
+void platform_psp_log(const char *format, ...);
+int psp_me_ring_ready(void);
+int psp_me_push_points(const void *inputs, unsigned int count, void *answers, unsigned int answer_bytes,
+	unsigned int generation, void *main_word, void *me_word, unsigned int *ticket);
+int psp_me_wait(unsigned int ticket, unsigned int *results);
+void psp_me_ring_step(unsigned int step);
+
+/* the most points one hand-over lists: the ME's share is the back of the
+list, and a fight's ~100 particles a frame and a vehicle's dust fit */
+#define PSP_POINTS_MAX 128
+#define PSP_POINTS_SLOTS 1024 /* HALO_PORT_MAXIMUM_PARTICLES, HALO_PORT_MAXIMUM_CONTRAIL_POINTS */
+
+/* a listed point's inputs: the main CPU's, unchanged from the hand-over to
+the frame's end */
+struct psp_point_input
+{
+	struct point_physics_definition const *definition;
+	long leaf_index;
+	short cluster_index;
+	short kind; /* 0 a particle, 1 a contrail point */
+	real_point3d position;
+	real_vector3d velocity;
+	real radius;
+	real dt;
+	long slot;
+};
+
+/* its answer: the ME's, a line of its own */
+struct psp_point_answer
+{
+	long result; /* point_physics_update's flags, or -1: left to the main CPU */
+	long leaf_index;
+	short cluster_index;
+	short material_type;
+	real_point3d position;
+	real_vector3d velocity;
+	real_vector3d normal;
+	long collided; /* the normal and material written, as point_physics_update writes them */
+	long pad[3];
+};
+typedef char psp_point_answer_line_assert[sizeof(struct psp_point_answer) == 64 ? 1 : -1];
+
+/* a word with a line of its own, read and written through the uncached view
+only: the generation in the top half, a list index in the bottom */
+struct psp_points_word
+{
+	unsigned long value;
+	unsigned long pad[15];
+} __attribute__((aligned(64)));
+#define PSP_POINTS_UNCACHED(word) (*(volatile unsigned long *)((unsigned long)&(word)->value | 0x40000000u))
+
+/* the main CPU's: the ME starts no point below this index */
+static struct psp_points_word psp_points_main_word;
+/* the ME's: the lowest index it has made, all above it made too */
+static struct psp_points_word psp_points_me_word;
+
+static int psp_points_on = -1, psp_points_check = 0, psp_points_min = 8;
+static struct psp_point_input *psp_point_inputs; /* the list as it is made: PSP_POINTS_MAX, kept circular */
+static struct psp_point_answer *psp_point_answers;
+static unsigned char *psp_point_slots[2]; /* by kind, a slot's list index + 1, 0 none */
+static int psp_points_listed, psp_points_count, psp_points_out;
+static unsigned int psp_points_generation, psp_points_ticket;
+static unsigned long psp_points_cursor; /* the main CPU's word as it last wrote it */
+static byte psp_points_breakable[MAXIMUM_BREAKABLE_SURFACES_PER_MAP / 8];
+static struct
+{
+	unsigned long frames, jobs, listed, handed, taken, here, changed, unserved, compared, differed, refused, failed;
+	unsigned long me_made;
+} psp_points_stats;
+
+/* point_physics_update as the ME runs it: the same arithmetic in the same
+order, with the collision rays through psp_collision_test_vector_points.
+Flags 0, no force, the caller's location; -1: a point it doesn't serve
+(an argument out of the ordinary, which the main CPU asserts or reports) */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+static long psp_point_physics_quiet(
+	struct point_physics_definition const *definition,
+	struct location *location,
+	real_point3d *position,
+	real_vector3d *translational_velocity,
+	real_vector3d *collision_normal,
+	short *collision_material_type,
+	long *collided,
+	real radius,
+	real dt)
+{
+	unsigned long result = 0;
+
+	if (!valid_real_point3d(position) || !valid_real_vector3d(translational_velocity) || !(radius >= 0.0f) ||
+		debug_point_physics)
+		return -1;
+	*collided = 0;
+	if (dt != 0.0f)
+	{
+		struct collision_result collision;
+		real_vector3d wind_vector;
+		real_vector3d delta;
+		real_vector3d parallel;
+		real_vector3d perpendicular;
+		real radius_squared = radius * radius;
+		real radius_cubed = radius_squared * radius;
+		real mass = definition->runtime_mass_over_radius_cubed;
+		real buoyancy_scale;
+		real friction;
+		real dt_over_mass;
+		real offset;
+		real t;
+		unsigned long collision_flags;
+		long wind_flags;
+		boolean underwater;
+		short i;
+
+		wind_flags = 0;
+		SET_FLAG(wind_flags, _scenario_current_simple_bit, TEST_FLAG(definition->flags, _point_physics_simple_wind_bit));
+		SET_FLAG(wind_flags, _scenario_current_damped_bit, TEST_FLAG(definition->flags, _point_physics_damped_wind_bit));
+		underwater = scenario_get_current(location, position, &wind_vector, wind_flags);
+
+		if (underwater)
+		{
+			mass += global_water_mass_over_radius_cubed;
+			buoyancy_scale = definition->runtime_water_buoyancy_scale;
+			friction = definition->water_friction * radius_squared;
+			SET_FLAG(result, _point_physics_in_water_bit, TRUE);
+		}
+		else
+		{
+			mass += global_air_mass_over_radius_cubed;
+			buoyancy_scale = definition->runtime_air_buoyancy_scale;
+			friction = definition->air_friction * radius_squared;
+			SET_FLAG(result, _point_physics_in_air_bit, TRUE);
+		}
+
+		mass = mass * radius_cubed;
+		dt_over_mass = dt / mass;
+
+		if (TEST_FLAG(definition->flags, _point_physics_no_gravity_bit))
+			buoyancy_scale = 0.0f;
+
+		translational_velocity->k = ((global_gravity * TICKS_PER_SECOND) * TICKS_PER_SECOND) * buoyancy_scale * dt + translational_velocity->k;
+
+		if (mass == 0.0f)
+		{
+			t = (friction == 0.0f) ? 0.0f : 1.0f;
+		}
+		else
+		{
+			t = dt_over_mass * friction;
+			t = PIN(t, 0.0f, 1.0f);
+		}
+
+		translational_velocity->i += (wind_vector.i - translational_velocity->i) * t;
+		translational_velocity->j += (wind_vector.j - translational_velocity->j) * t;
+		translational_velocity->k += (wind_vector.k - translational_velocity->k) * t;
+
+		collision_flags = FLAG(_collision_test_front_facing_surfaces_bit);
+		SET_FLAG(collision_flags, _collision_test_media_bit, TEST_FLAG(definition->flags, _point_physics_water_collisions_bit));
+		SET_FLAG(collision_flags, _collision_test_structure_bit, TEST_FLAG(definition->flags, _point_physics_structure_collisions_bit));
+
+		for (i = 0; dt != 0.0f && i < MAXIMUM_POINT_PHYSICS_COLLISIONS; i++)
+		{
+			short hit;
+
+			delta.i = translational_velocity->i * dt;
+			delta.j = translational_velocity->j * dt;
+			delta.k = translational_velocity->k * dt;
+
+			hit = psp_collision_test_vector_points(collision_flags, position, &delta, &collision);
+			if (hit < 0)
+				return -1;
+			if (!hit)
+			{
+				if (collision.location.leaf_index != NONE)
+				{
+					location->leaf_index = collision.location.leaf_index;
+					location->cluster_index = collision.location.cluster_index;
+				}
+				*position = collision.point;
+				break;
+			}
+
+			offset = MIN(radius, 0.005f);
+
+			if (collision.type == _collision_result_media)
+				SET_FLAG(result, _point_physics_collided_with_water_bit, TRUE);
+			else if (collision.type == _collision_result_structure)
+				SET_FLAG(result, _point_physics_collided_with_structure_bit, TRUE);
+
+			*collision_normal = collision.plane.n;
+			*collision_material_type = collision.material_type;
+			*collided = 1;
+
+			component_vectors_from_normal3d(translational_velocity, &collision.plane.n, &parallel, &perpendicular);
+			translational_velocity->i = (1.0f - definition->contact_friction) * perpendicular.i - parallel.i * definition->elasticity;
+			translational_velocity->j = (1.0f - definition->contact_friction) * perpendicular.j - parallel.j * definition->elasticity;
+			translational_velocity->k = (1.0f - definition->contact_friction) * perpendicular.k - parallel.k * definition->elasticity;
+
+			if (collision.location.leaf_index != NONE)
+			{
+				location->leaf_index = collision.location.leaf_index;
+				location->cluster_index = collision.location.cluster_index;
+			}
+
+			position->x = collision.plane.n.i * offset + collision.point.x;
+			position->y = collision.plane.n.j * offset + collision.point.y;
+			position->z = collision.plane.n.k * offset + collision.point.z;
+
+			dt -= collision.t * dt;
+		}
+	}
+
+	return (long)result;
+}
+
+/* on the Media Engine (psp_me.c's ring, ME_JOB_POINTS): the list from its
+back, until the main CPU's word says it has got there. Writes only its
+answers' lines and its own word. args: the list, the answers, the count, the
+generation, the main CPU's FPU control, the two words */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+void psp_points_me_make(const unsigned int *args, unsigned int *results)
+{
+	struct psp_point_input const *inputs = (struct psp_point_input const *)args[0];
+	struct psp_point_answer *answers = (struct psp_point_answer *)args[1];
+	unsigned long count = args[2], generation = args[3] & 0xFFFFu, made = 0, unserved = 0;
+	struct psp_points_word *main_word = (struct psp_points_word *)args[5];
+	struct psp_points_word *me_word = (struct psp_points_word *)args[6];
+	unsigned int control;
+	long k;
+
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[4]));
+	for (k = (long)count - 1; k >= 0; k--)
+	{
+		struct psp_point_input const *in = &inputs[k];
+		struct psp_point_answer *answer = &answers[k];
+		unsigned long cursor = PSP_POINTS_UNCACHED(main_word);
+		struct location location;
+
+		if ((cursor >> 16) != generation || (unsigned long)k < (cursor & 0xFFFFu))
+			break;
+		/* audio first: a block waiting is mixed between two points */
+		psp_me_ring_step((unsigned int)k);
+		location.leaf_index = in->leaf_index;
+		location.cluster_index = in->cluster_index;
+		location.bonus = 0;
+		answer->position = in->position;
+		answer->velocity = in->velocity;
+		answer->result = psp_point_physics_quiet(in->definition, &location, &answer->position, &answer->velocity,
+			&answer->normal, &answer->material_type, &answer->collided, in->radius, in->dt);
+		answer->leaf_index = location.leaf_index;
+		answer->cluster_index = location.cluster_index;
+		if (answer->result < 0)
+			unserved++;
+		/* the line in main RAM before the word says it is made */
+		__builtin_allegrex_cache(0x1A, (unsigned int)answer);
+		__asm__ __volatile__("sync");
+		PSP_POINTS_UNCACHED(me_word) = (generation << 16) | (unsigned long)k;
+		__asm__ __volatile__("sync");
+		made++;
+	}
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+	results[0] = made;
+	results[1] = unserved;
+}
+
+/* 1: listing for this frame. The storage on first use; off for good if
+there is no room for it */
+int psp_points_begin(void)
+{
+	if (psp_points_on < 0)
+	{
+		psp_points_on = psp_keep("mepoints");
+		psp_points_check = psp_keep("mepointscheck");
+		psp_points_min = psp_keep_number("mepointsmin", 8);
+		if (psp_points_on)
+		{
+			psp_point_inputs = (struct psp_point_input *)memalign(64, PSP_POINTS_MAX * sizeof(struct psp_point_input));
+			psp_point_answers = (struct psp_point_answer *)memalign(64, PSP_POINTS_MAX * sizeof(struct psp_point_answer));
+			psp_point_slots[0] = (unsigned char *)calloc(2, PSP_POINTS_SLOTS);
+			psp_point_slots[1] = psp_point_slots[0] ? psp_point_slots[0] + PSP_POINTS_SLOTS : NULL;
+			if (!psp_point_inputs || !psp_point_answers || !psp_point_slots[0])
+			{
+				platform_psp_log("mepoints: no room for the list (%u bytes): off", (unsigned int)(PSP_POINTS_MAX *
+					(sizeof(struct psp_point_input) + sizeof(struct psp_point_answer)) + 2 * PSP_POINTS_SLOTS));
+				free(psp_point_inputs);
+				free(psp_point_answers);
+				free(psp_point_slots[0]);
+				psp_points_on = 0;
+			}
+			else
+			{
+				void sceKernelDcacheWritebackInvalidateRange(const void *start, unsigned int bytes);
+
+				/* no cached copy of the words on this CPU, ever: a line written
+				back late would land on the other CPU's word */
+				sceKernelDcacheWritebackInvalidateRange(&psp_points_main_word, sizeof(psp_points_main_word));
+				sceKernelDcacheWritebackInvalidateRange(&psp_points_me_word, sizeof(psp_points_me_word));
+				PSP_POINTS_UNCACHED(&psp_points_main_word) = 0;
+				platform_psp_log("mepoints: point physics on the Media Engine, up to %d points a frame (from %d)%s",
+					PSP_POINTS_MAX, psp_points_min, psp_points_check ? "; mepointscheck: every taken point compared" : "");
+			}
+		}
+	}
+	psp_points_listed = 0;
+	return psp_points_on && psp_me_ring_ready();
+}
+
+/* a point whose physics this frame will run, as the loop will run it */
+void psp_points_list(
+	int kind,
+	long slot,
+	struct point_physics_definition const *definition,
+	struct location const *location,
+	real_point3d const *position,
+	real_vector3d const *velocity,
+	real radius,
+	real dt)
+{
+	struct psp_point_input *in = &psp_point_inputs[psp_points_listed % PSP_POINTS_MAX];
+
+	if (slot < 0 || slot >= PSP_POINTS_SLOTS || debug_point_physics)
+		return;
+	in->definition = definition;
+	in->leaf_index = location->leaf_index;
+	in->cluster_index = location->cluster_index;
+	in->kind = (short)kind;
+	in->position = *position;
+	in->velocity = *velocity;
+	in->radius = radius;
+	in->dt = dt;
+	in->slot = slot;
+	psp_points_listed++;
+}
+
+/* the list's last PSP_POINTS_MAX points, in the order listed, to the ME */
+void psp_points_hand_over(void)
+{
+	int count = psp_points_listed < PSP_POINTS_MAX ? psp_points_listed : PSP_POINTS_MAX, k;
+
+	psp_points_stats.frames++;
+	psp_points_stats.listed += psp_points_listed;
+	psp_points_count = 0;
+	if (count < psp_points_min || count <= 0)
+		return;
+	/* the circular list turned so its oldest kept point is first */
+	if (psp_points_listed > PSP_POINTS_MAX)
+	{
+		int first = psp_points_listed % PSP_POINTS_MAX;
+		struct psp_point_input turned[16];
+
+		while (first > 0)
+		{
+			int step = first < 16 ? first : 16;
+
+			memcpy(turned, psp_point_inputs, step * sizeof(turned[0]));
+			memmove(psp_point_inputs, psp_point_inputs + step, (PSP_POINTS_MAX - step) * sizeof(turned[0]));
+			memcpy(psp_point_inputs + PSP_POINTS_MAX - step, turned, step * sizeof(turned[0]));
+			first -= step;
+		}
+	}
+	for (k = 0; k < count; k++)
+		psp_point_slots[psp_point_inputs[k].kind][psp_point_inputs[k].slot] = (unsigned char)(k + 1);
+	memcpy(psp_points_breakable, breakable_surface_flags_get(), sizeof(psp_points_breakable));
+	psp_points_count = count;
+	/* never 0, the words' value before any job */
+	psp_points_generation = (psp_points_generation + 1) & 0xFFFFu;
+	if (!psp_points_generation)
+		psp_points_generation = 1;
+	psp_points_cursor = (unsigned long)psp_points_generation << 16;
+	PSP_POINTS_UNCACHED(&psp_points_main_word) = psp_points_cursor;
+	__asm__ __volatile__("sync");
+	if (psp_me_push_points(psp_point_inputs, (unsigned int)count, psp_point_answers,
+		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation, &psp_points_main_word,
+		&psp_points_me_word, &psp_points_ticket))
+	{
+		psp_points_out = 1;
+		psp_points_stats.jobs++;
+		psp_points_stats.handed += count;
+	}
+	else
+		psp_points_stats.refused++;
+}
+
+static int psp_points_same(struct psp_point_input const *in, struct point_physics_definition const *definition,
+	struct location const *location, real_point3d const *position, real_vector3d const *velocity, real radius, real dt)
+{
+	unsigned long const *a = (unsigned long const *)&in->position, *b = (unsigned long const *)position;
+	unsigned long const *c = (unsigned long const *)&in->velocity, *d = (unsigned long const *)velocity;
+	union { real value; unsigned long bits; } r0, r1, t0, t1;
+
+	r0.value = in->radius;
+	r1.value = radius;
+	t0.value = in->dt;
+	t1.value = dt;
+	return in->definition == definition && in->leaf_index == location->leaf_index &&
+		in->cluster_index == location->cluster_index && a[0] == b[0] && a[1] == b[1] && a[2] == b[2] &&
+		c[0] == d[0] && c[1] == d[1] && c[2] == d[2] && r0.bits == r1.bits && t0.bits == t1.bits &&
+		!memcmp(psp_points_breakable, breakable_surface_flags_get(), sizeof(psp_points_breakable));
+}
+
+/* point_physics_update at a listed point's loop: the ME's answer when it
+has made it from these same inputs, else made here as before */
+unsigned long psp_point_physics(
+	int kind,
+	long slot,
+	unsigned long flags,
+	struct point_physics_definition const *definition,
+	struct location *location,
+	short force_weather_palette_index,
+	real_point3d *position,
+	real_vector3d *translational_velocity,
+	real_vector3d const *translational_force,
+	real_vector3d *collision_normal,
+	short *collision_material_type,
+	real radius,
+	real dt)
+{
+	if (psp_points_count && !flags && force_weather_palette_index == NONE && !translational_force &&
+		slot >= 0 && slot < PSP_POINTS_SLOTS && psp_point_slots[kind][slot])
+	{
+		int k = psp_point_slots[kind][slot] - 1;
+		struct psp_point_input const *in = &psp_point_inputs[k];
+
+		if (in->kind == kind && in->slot == slot &&
+			psp_points_same(in, definition, location, position, translational_velocity, radius, dt))
+		{
+			unsigned long made = psp_points_out ? PSP_POINTS_UNCACHED(&psp_points_me_word) : 0;
+
+			if (psp_points_out && (made >> 16) == psp_points_generation && (made & 0xFFFFu) <= (unsigned long)k)
+			{
+				struct psp_point_answer const *answer = &psp_point_answers[k];
+
+				__builtin_allegrex_cache(0x1B, (unsigned int)answer);
+				__asm__ __volatile__("sync");
+				if (answer->result >= 0)
+				{
+					psp_points_stats.taken++;
+					if (psp_points_check)
+					{
+						struct location here_location = *location;
+						real_point3d here_position = *position;
+						real_vector3d here_velocity = *translational_velocity, here_normal;
+						short here_material = NONE;
+						unsigned long here = point_physics_update(0, definition, &here_location, NONE, &here_position,
+							&here_velocity, NULL, &here_normal, &here_material, radius, dt);
+						int collided = (here & (FLAG(_point_physics_collided_with_structure_bit) |
+							FLAG(_point_physics_collided_with_water_bit))) != 0;
+
+						psp_points_stats.compared++;
+						if (here != (unsigned long)answer->result || here_location.leaf_index != answer->leaf_index ||
+							here_location.cluster_index != answer->cluster_index ||
+							memcmp(&here_position, &answer->position, sizeof(here_position)) ||
+							memcmp(&here_velocity, &answer->velocity, sizeof(here_velocity)) ||
+							(collided && (memcmp(&here_normal, &answer->normal, sizeof(here_normal)) ||
+								here_material != answer->material_type)))
+						{
+							if (psp_points_stats.differed++ < 8)
+								platform_psp_log("mepointscheck: kind %d slot %ld differs: flags %lx/%lx position %f %f %f / %f %f %f",
+									kind, slot, here, (unsigned long)answer->result, here_position.x, here_position.y,
+									here_position.z, answer->position.x, answer->position.y, answer->position.z);
+						}
+						/* play goes on from this CPU's own answer */
+						*location = here_location;
+						*position = here_position;
+						*translational_velocity = here_velocity;
+						if (collision_normal && collided)
+							*collision_normal = here_normal;
+						if (collision_material_type && collided)
+							*collision_material_type = here_material;
+						return here;
+					}
+					location->leaf_index = answer->leaf_index;
+					location->cluster_index = answer->cluster_index;
+					*position = answer->position;
+					*translational_velocity = answer->velocity;
+					if (answer->collided)
+					{
+						if (collision_normal)
+							*collision_normal = answer->normal;
+						if (collision_material_type)
+							*collision_material_type = answer->material_type;
+					}
+					return (unsigned long)answer->result;
+				}
+				psp_points_stats.unserved++;
+			}
+			else
+			{
+				/* made here: the ME starts nothing up to this point */
+				psp_points_stats.here++;
+				if (psp_points_out && (psp_points_cursor & 0xFFFFu) < (unsigned long)k + 1)
+				{
+					psp_points_cursor = ((unsigned long)psp_points_generation << 16) | ((unsigned long)k + 1);
+					PSP_POINTS_UNCACHED(&psp_points_main_word) = psp_points_cursor;
+				}
+			}
+		}
+		else
+			psp_points_stats.changed++;
+	}
+	return point_physics_update(flags, definition, location, force_weather_palette_index, position,
+		translational_velocity, translational_force, collision_normal, collision_material_type, radius, dt);
+}
+
+/* the frame's points done: the ME stopped and its job collected, so the
+list may be written again */
+void psp_points_end(void)
+{
+	int k;
+
+	if (psp_points_out)
+	{
+		unsigned int results[11] = { 0 };
+
+		PSP_POINTS_UNCACHED(&psp_points_main_word) = ((unsigned long)psp_points_generation << 16) | 0xFFFFu;
+		__asm__ __volatile__("sync");
+		if (psp_me_wait(psp_points_ticket, results))
+			psp_points_stats.me_made += results[0];
+		else
+			psp_points_stats.failed++;
+		psp_points_out = 0;
+	}
+	for (k = 0; k < psp_points_count; k++)
+		psp_point_slots[psp_point_inputs[k].kind][psp_point_inputs[k].slot] = 0;
+	psp_points_count = 0;
+	if (psp_points_on > 0)
+	{
+		static unsigned long mark = 0;
+		unsigned long now = psp_microseconds();
+
+		if (!mark)
+			mark = now;
+		if (now - mark >= 30000000UL)
+		{
+			unsigned long frames = psp_points_stats.frames ? psp_points_stats.frames : 1;
+
+			mark = now;
+			platform_psp_log("mepoints: over %lu frames, %lu points listed a frame; %lu hand-overs (%lu refused, %lu failed) of %lu points: "
+				"the ME made %lu, the loops took %lu of them, made %lu here first, %lu changed since listed, %lu left to this CPU; "
+				"checked %lu, %lu differed",
+				psp_points_stats.frames, psp_points_stats.listed / frames, psp_points_stats.jobs, psp_points_stats.refused,
+				psp_points_stats.failed, psp_points_stats.handed, psp_points_stats.me_made, psp_points_stats.taken,
+				psp_points_stats.here, psp_points_stats.changed, psp_points_stats.unserved, psp_points_stats.compared,
+				psp_points_stats.differed);
+			memset(&psp_points_stats, 0, sizeof(psp_points_stats));
+		}
+	}
+}
+#endif
+
+/* ---------- private code */
+
+static void render_debug_point_physics("""),
+]
+FIXES_MEJOBS["source/effects/particles.c#mepoints"] = [
+("""	psp_particle_frame++;
+#endif
+
+	profile_enter(particles_update_section);
+""",
+ """	psp_particle_frame++;
+#endif
+
+	profile_enter(particles_update_section);
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_MEJOBS #mepoints): the points whose physics
+		the loop below will run, with the dt and radius it will give them */
+		int psp_points_begin(void);
+		void psp_points_list(int kind, long slot, struct point_physics_definition const *definition,
+			struct location const *location, real_point3d const *position, real_vector3d const *velocity,
+			real radius, real dt);
+		void psp_points_hand_over(void);
+		void psp_contrails_points_list(real dt);
+
+		if (psp_points_begin())
+		{
+			long psp_index;
+
+			for (psp_index = data_next_index(particle_data, NONE);
+				psp_index != NONE;
+				psp_index = data_next_index(particle_data, psp_index))
+			{
+				struct particle_datum *psp_particle = particle_get(psp_index);
+				struct particle_definition *psp_definition;
+				long psp_slot = psp_index & 0xFFFF;
+				unsigned char psp_age;
+				real psp_new_age;
+
+				if (psp_particle->object_index != NONE ||
+					TEST_FLAG(psp_particle->flags, _particle_datum_at_rest_bit) ||
+					psp_slot >= HALO_PORT_MAXIMUM_PARTICLES)
+					continue;
+				psp_age = psp_particle_age[psp_slot];
+				if (psp_age < PSP_PARTICLE_YOUNG_FRAMES)
+					psp_age++;
+				if (psp_turn > 1 && psp_age >= PSP_PARTICLE_YOUNG_FRAMES && (psp_slot + psp_particle_frame) % psp_turn)
+					continue;
+				psp_definition = particle_definition_get(psp_particle->definition_index);
+				psp_new_age = dt + psp_particle->age;
+				if (psp_new_age >= psp_particle->lifespan && psp_particle->age != 0.0f &&
+					!psp_definition->final_sequence_count)
+					continue;
+				psp_points_list(0, psp_slot, point_physics_definition_get(psp_definition->physics.index),
+					&psp_particle->location, &psp_particle->position, &psp_particle->translational_velocity,
+					((psp_definition->radius_upper_bound - psp_definition->radius_lower_bound) *
+						(psp_new_age / psp_particle->lifespan) + psp_definition->radius_lower_bound) * psp_particle->radius,
+					dt + psp_particle_dt[psp_slot]);
+			}
+			psp_contrails_points_list(dt);
+			psp_points_hand_over();
+		}
+	}
+#endif
+"""),
+("""			collision_flags = point_physics_update(
+				0,
+				physics,
+				&particle->location,""",
+ """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+			unsigned long psp_point_physics(int kind, long slot, unsigned long flags,
+				struct point_physics_definition const *definition, struct location *location,
+				short force_weather_palette_index, real_point3d *position, real_vector3d *translational_velocity,
+				real_vector3d const *translational_force, real_vector3d *collision_normal,
+				short *collision_material_type, real radius, real dt);
+
+			collision_flags = psp_point_physics(0, particle_index & 0xFFFF,
+#else
+			collision_flags = point_physics_update(
+#endif
+				0,
+				physics,
+				&particle->location,"""),
+]
+FIXES_MEJOBS["source/effects/contrails.c#mepoints"] = [
+("""				if (state->physics.index != NONE)
+				{
+					point_physics_update(
+						0,""",
+ """				if (state->physics.index != NONE)
+				{
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+					unsigned long psp_point_physics(int kind, long slot, unsigned long flags,
+						struct point_physics_definition const *definition, struct location *location,
+						short force_weather_palette_index, real_point3d *position, real_vector3d *translational_velocity,
+						real_vector3d const *translational_force, real_vector3d *collision_normal,
+						short *collision_material_type, real radius, real dt);
+
+					psp_point_physics(1, contrail_point_index & 0xFFFF,
+#else
+					point_physics_update(
+#endif
+						0,"""),
+("""		contrail_verify(contrail_index);
+
+		if (instance_index == MAXIMUM_CONTRAIL_INSTANCES &&
+			contrail->object_index == NONE)
+		{
+			contrail_delete(contrail_index);
+		}
+	}
+
+	return;
+}""",
+ """		contrail_verify(contrail_index);
+
+		if (instance_index == MAXIMUM_CONTRAIL_INSTANCES &&
+			contrail->object_index == NONE)
+		{
+			contrail_delete(contrail_index);
+		}
+	}
+
+#ifdef HALO_PSP
+	{
+		void psp_points_end(void); /* point_physics.c (psp_fixups.py FIXES_MEJOBS #mepoints) */
+
+		psp_points_end();
+	}
+#endif
+	return;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_MEJOBS #mepoints): the contrails' points whose
+physics contrail_update_points will run this frame, from particles_update
+(before this file's loop: a contrail's state may still move on before its
+physics, and its point is then made here as before) */
+void psp_contrails_points_list(
+	real dt)
+{
+	void psp_points_list(int kind, long slot, struct point_physics_definition const *definition,
+		struct location const *location, real_point3d const *position, real_vector3d const *velocity,
+		real radius, real dt);
+	long contrail_index;
+
+	for (contrail_index = data_next_index(contrail_data, NONE);
+		contrail_index != NONE;
+		contrail_index = data_next_index(contrail_data, contrail_index))
+	{
+		struct contrail_datum *contrail = contrail_get(contrail_index);
+		struct contrail_definition *definition = contrail_definition_get(contrail->definition_index);
+		short instance_index;
+
+		for (instance_index = 0; instance_index < MAXIMUM_CONTRAIL_INSTANCES; instance_index++)
+		{
+			long contrail_point_index = contrail->first_contrail_point_indices[instance_index];
+
+			while (contrail_point_index != NONE)
+			{
+				struct contrail_point_datum *contrail_point = contrail_point_get(contrail_point_index);
+
+				if (!TEST_FLAG(contrail_point->flags, _contrail_point_expired_bit) &&
+					!TEST_FLAG(contrail_point->flags, _contrail_point_new_bit) &&
+					contrail_point->state_index >= 0 && contrail_point->state_index < definition->states.count)
+				{
+					struct contrail_point_state *state = TAG_BLOCK_GET_ELEMENT(&definition->states,
+						contrail_point->state_index, struct contrail_point_state);
+
+					if (state->physics.index != NONE)
+						psp_points_list(1, contrail_point_index & 0xFFFF, point_physics_definition_get(state->physics.index),
+							&contrail_point->location, &contrail_point->position, &contrail_point->velocity,
+							state->width * 0.5f, dt);
+				}
+				contrail_point_index = contrail_point->next_contrail_point_index;
+			}
+		}
+	}
+}
+#endif"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_MEJOBS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

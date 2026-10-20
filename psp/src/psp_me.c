@@ -79,6 +79,7 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results);
 void psp_perception_me_rays(const unsigned int *args, unsigned int *results);
 void psp_pose_me_make(const unsigned int *args, unsigned int *results); /* objects.c (psp_fixups.py FIXES_131) */
+void psp_points_me_make(const unsigned int *args, unsigned int *results); /* point_physics.c (psp_fixups.py FIXES_MEJOBS) */
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -723,7 +724,8 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		args[k] = request->args[k];
 	for (k = 0; k < ME_RING_RESULTS; k++)
 		results[k] = 0;
-	sentinel = ring_sentinel(request->type == ME_JOB_PERC_RAYS ? RING_RAYS_STACK_BYTES : RING_JOB_STACK_BYTES);
+	sentinel = ring_sentinel(request->type == ME_JOB_PERC_RAYS || request->type == ME_JOB_POINTS ?
+		RING_RAYS_STACK_BYTES : RING_JOB_STACK_BYTES);
 	*sentinel = RING_SENTINEL;
 	if (on_me)
 		job_start = me_cycles();
@@ -740,6 +742,9 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		break;
 	case ME_JOB_POSES:
 		psp_pose_me_make(args, results);
+		break;
+	case ME_JOB_POINTS:
+		psp_points_me_make(args, results);
 		break;
 #ifdef PSP_RECON
 	case ME_JOB_BUSLOAD:
@@ -1165,7 +1170,8 @@ int psp_me_start(void)
 
 	/* nomeaudio keeps the ME off unless a ring client asks for it; the
 	mixer then stays on the main CPU (psp_dsound.c) */
-	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest") && !psp_keep("meraysperc")))
+	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest") && !psp_keep("meraysperc") &&
+		!psp_keep("mepoints")))
 		return me_state > 0;
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
@@ -1183,7 +1189,7 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(stash_storage, sizeof(stash_storage));
 	for (k = 0; k < STASH_WORDS; k++)
 		STASH[k] = 0;
-	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest");
+	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest") || psp_keep("mepoints");
 #ifdef PSP_RECON
 	ring_on = ring_on || psp_keep_number("mebus", -1) >= 0;
 #endif
@@ -1808,6 +1814,36 @@ int psp_me_push_poses(const void *entries, unsigned int count, void *arena, unsi
 	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
 	job.output = arena;
 	job.output_bytes = arena_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
+}
+
+/* the frame's point physics (psp_fixups.py FIXES_MEJOBS, point_physics.c
+#mepoints): a point reads the level, its water, the wind and its tags, so
+the whole cache is handed over as for the rays. The ME writes only the
+answers (output) and its word; it reads the main CPU's word, which tells it
+where to stop, through the uncached view. Both words' lines are the callers' */
+int psp_me_push_points(const void *inputs, unsigned int count, void *answers, unsigned int answer_bytes,
+	unsigned int generation, void *main_word, void *me_word, unsigned int *ticket)
+{
+	struct psp_me_job job;
+	unsigned int control;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_POINTS;
+	job.args[0] = (unsigned int)inputs;
+	job.args[1] = (unsigned int)answers;
+	job.args[2] = count;
+	job.args[3] = generation;
+	/* this CPU's FPU control: the ME's arithmetic is then this CPU's */
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	job.args[4] = control;
+	job.args[5] = (unsigned int)main_word;
+	job.args[6] = (unsigned int)me_word;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = answers;
+	job.output_bytes = answer_bytes;
 	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
 	return psp_me_push(&job, ticket);
 }
