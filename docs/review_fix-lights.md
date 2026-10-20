@@ -82,9 +82,14 @@ so the dark pipes under it showed through untouched.
 **Key lines:** `psp_fixups.py`, FIXES_118 `glasslit` (the type 8 branch); `psp/src/psp_ge.c`,
 `psp_ge_seethrough_shader` (`SEETHROUGH_ANGLE_TINTED` for those shaders). Needs a bake with cube patches.
 Not yet drawn: the glass's own tint pass (the frame times its tint colour).
-**Evidence:** not yet: the first emulator A/B never reached the glass (its route moved the player while
-seated in the opening's cryo tube, so every spot was taken from the tube). Asked again with the player
-taken out of the tube first. **Cost [E]:** nothing measurable over a10's opening (3.9 / 3.8 ms a frame).
+**Evidence:** not yet [E]: two emulator A/Bs never reached the glass. The first moved the player while
+seated in the opening's cryo tube. The second took the player out of the tube first (`unit_exit_vehicle`),
+but its first teleport still landed in the tube's frame (the player stood at the tube's position plus the
+spot, the camera left in the tube: a black frame), and by the second spot the opening's "look around" test
+was still on screen with no HUD and a black corridor: the cryo look tests gate the scene, and a stick that
+only moves up and down doesn't pass them. Base and `glassnoreflection` frames were byte-identical (both
+black), so there is no verdict. Asked again with the stick swept in all four directions. **Cost [E]:**
+nothing measurable over a10's opening (3.9 / 3.8 ms a frame).
 
 ## H23: dark hairlines along seams under the flashlight (restoration, on by default)
 
@@ -103,8 +108,12 @@ as the hand test saw. Per edge, both triangles cut the shared edge at the same f
 (`0.5f * (a + b)` is the same from either end), so their pieces meet corner to corner.
 
 **Keep word:** `lightsplitold` (the per-triangle split); `nolightsplit` (no split, as before build 103).
-**Evidence:** [D] so far; the emulator A/B (a10's maintenance corridor, flashlight on: new, `lightsplitold`,
-both old) is queued. **Cost:** to be measured (piece counts are in the stats line as split pieces).
+**Evidence:** [D] so far; the emulator A/B on a10's corridor (flashlight on: new against `lightsplitold`)
+ran but gave no verdict [E]: both frames were the same black picture with the opening's look-test prompt
+(the player was placed but the cryo look tests were not passed, so the scene stayed gated and the
+flashlight showed nothing). Asked again with a stick sweep that tries to pass the tests; a b30 corridor
+A/B of the unlifted change with the flashlight on is in the same batch. **Cost:** to be measured (piece
+counts are in the stats line as split pieces).
 
 ## H33: a bright line along a corner seen edge-on (restoration, on by default)
 
