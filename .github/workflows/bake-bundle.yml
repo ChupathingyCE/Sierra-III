@@ -3,6 +3,9 @@
 # here, the bake's scripts packed beside them, and each bundle checked on
 # made-up data. No game data is ever read, made or uploaded here.
 #
+# A tag builds all three; a dispatched run builds Linux only unless asked
+# (platforms: all).
+#
 # Each bundle is an artifact named halo-psp-bake-<os>-<ref> (a .tar.gz, or a
 # .zip for Windows, and its SHA-256), for the release notes and the release;
 # inside, one folder, halo-psp-bake. Each is also checked the way a player
@@ -18,6 +21,12 @@ name: bake-bundle
 
 on:
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: "linux: the Linux bundle only (what the lab's bakes use); all: Linux, Windows and macOS (as a release tag builds)"
+        type: choice
+        options: [linux, all]
+        default: linux
   push:
     tags: ['b*']
 
@@ -136,6 +145,9 @@ jobs:
 
   windows:
     name: Windows x86-64
+    # a private repo's Windows minutes count twice and macOS ten times, so a
+    # dispatched run for the lab's bakes builds Linux only
+    if: github.event_name == 'push' || inputs.platforms == 'all'
     runs-on: windows-2022
     timeout-minutes: 90
     defaults:
@@ -253,6 +265,7 @@ jobs:
 
   macos:
     name: macOS (universal, arm64 and x86-64)
+    if: github.event_name == 'push' || inputs.platforms == 'all'
     runs-on: macos-14
     timeout-minutes: 120
     steps:
