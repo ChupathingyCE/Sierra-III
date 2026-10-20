@@ -13113,6 +13113,42 @@ void psp_ge_seethrough_shader(unsigned int shader)
 	seethrough_tint_set(tint, flags, shader, face, edge);
 }
 
+/* Glass multiplies what lies behind it by its tint colour before its
+reflection is added (rasterizer_xbox_transparent_geometry.c, the glass tint
+pass: the frame times the tint map times the tint colour). Glass drawn by its
+reflection alone is one added pass here, so the tint rides in that pass as
+the GE's destination factor: the frame times the tint, plus the reflection,
+which is what the Xbox's two passes give. Without it the glass was clear: the
+Pelican's canopy showed its lit cockpit where the original's is smoked
+violet, with the reflection on top. A tint map can't ride a fixed factor:
+such glass leaves the frame as it is (none in the campaign's glass without a
+diffuse map [D]). The tint colour at +84, the tint map's index at +112.
+"glassnotint": the frame left as it is, as before */
+static int glass_tint_off = -1;
+static unsigned long glass_tinted_draws = 0;
+
+static void __attribute__((noinline)) glass_tint_behind(unsigned int shader)
+{
+	const unsigned char *definition = (const unsigned char *)shader;
+	const float *tint = (const float *)(definition + 84);
+	unsigned int fix = 0;
+	int k;
+
+	if (glass_tint_off < 0)
+	{
+		glass_tint_off = psp_keep("glassnotint");
+		if (glass_tint_off)
+			platform_log("GE: glassnotint: glass leaves the frame behind it untinted");
+	}
+	if (glass_tint_off || *(const short *)(definition + 36) != 8 || *(const long *)(definition + 356) != -1 ||
+		*(const long *)(definition + 112) != -1 || tint[0] + tint[1] + tint[2] <= 0.0f)
+		return;
+	for (k = 0; k < 3; k++)
+		fix |= (unsigned int)PSP_CLAMP_255((int)(tint[k] * 255.0f + 0.5f)) << (8 * k);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, fix);
+	glass_tinted_draws++;
+}
+
 /* build 116: the next queue call's meter (struct psp_seethrough_meter), or
 NULL for a part that isn't one. The engine side calls it before every model
 part it queues (psp_fixups.py), so a meter never carries over to the next */
@@ -14573,7 +14609,12 @@ static void transparent_flush_body(void)
 			}
 		}
 		else
+		{
 			hud_blend(draw->blend);
+			/* glass drawn by its reflection: an added, angle-tinted part */
+			if (draw->blend == 3 && draw->angle_tinted && draw->shader)
+				glass_tint_behind(draw->shader);
+		}
 		if (draw->sky)
 			ge_layer_dither();
 		if (draw->first_person)
@@ -19239,11 +19280,12 @@ void psp_ge_frame_end(void)
 			unsigned long layers_queued, layers_unmapped;
 
 			psp_transparent_layers_counts(&layers_queued, &layers_unmapped);
-			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise); self-occluding objects' depth first %lu times, %lu parts (noselfocclude: none)",
+			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise); self-occluding objects' depth first %lu times, %lu parts (noselfocclude: none); glass draws tinting the frame behind %lu (glassnotint: none)",
 				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts, psp_transparent_noise_count(),
-				self_occlude_runs, self_occlude_parts);
+				self_occlude_runs, self_occlude_parts, glass_tinted_draws);
 		}
 		self_occlude_runs = self_occlude_parts = 0;
+		glass_tinted_draws = 0;
 		seethrough_culled_draws = 0;
 		camo_shimmer_parts = 0;
 		seethrough_angle_draws = 0;
