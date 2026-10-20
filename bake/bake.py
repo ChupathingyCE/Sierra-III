@@ -78,6 +78,9 @@ Options:
                                 and drawn texels
     --effects-clut4             effects and see-through maps may take 16
                                 colours (as before)
+    --drawn-by-shape            a see-through shader blended by its alpha
+                                draws the map that shapes what the frame
+                                shows (its mask), not only its colour
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
@@ -596,6 +599,8 @@ def main():
                          'does, packed and with the palettes as fitted before (names and counts only)')
     ap.add_argument('--no-alpha-split', action='store_true',
                     help='alpha-tested maps\' palettes fitted as one, as before')
+    ap.add_argument('--drawn-by-shape', action='store_true',
+                    help='see-through shaders blended by their alpha draw the map that shapes what the frame shows')
     ap.add_argument('--effects-clut4', action='store_true',
                     help='effects and see-through maps may take 16 colours, as before')
     ap.add_argument('--compare-old', action='store_true',
@@ -611,6 +616,8 @@ def main():
         TEXPACK_OPTIONS.append('--no-alpha-split')
     if a.effects_clut4:
         TEXPACK_OPTIONS.append('--effects-clut4')
+    if a.drawn_by_shape:
+        TEXPACK_OPTIONS.append('--drawn-by-shape')
     if a.tints_from_means:
         TEXPACK_OPTIONS.append('--tints-from-means')
     if a.fast_palettes:

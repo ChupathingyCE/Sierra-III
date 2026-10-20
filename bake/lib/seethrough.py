@@ -408,6 +408,9 @@ class Tint:
     def __init__(self, tint, drawn, result, mean, model=MODULATE):
         self.tint, self.drawn, self.result, self.mean, self.model = tint, drawn, result, mean, model
         self.scale_drawn, self.alt, self.errors, self.shares = drawn, None, None, {}
+        # each candidate map's share of the alpha (its variance when only
+        # that map varies), and the framebuffer blend: for texpack's audit
+        self.alpha_shares, self.blend = {}, None
         # (face-on tint, edge-on tint), RGBA 0-1, for a generic shader whose
         # combiners read the angle; None when the angle changes nothing
         self.angle = None
@@ -437,6 +440,33 @@ def _visible(result, blend):
     """what the frame gets of the shader's colour: through its alpha for an
     alpha blend, as it is otherwise"""
     return result[:, :3] * result[:, 3:4] if blend == 0 else result[:, :3]
+
+
+# DRAWN_BY_SHAPE (texpack --drawn-by-shape): a shader whose blend lets what
+# is behind it through by its alpha (alpha blend, alpha-multiply-add) draws
+# the map that carries most of what the frame shows over a dark background
+# and over a light one, so a map that only shapes the alpha (a mask: a
+# thruster's cone, a shore layer's fading edge) counts for the part of the
+# background it hides, not only for the colour it darkens
+DRAWN_BY_SHAPE = False
+SHAPE_BLENDS = (0, 7)
+
+
+def _shown(result, blend):
+    """the luminance the frame shows of the shader over black and over
+    white, side by side (n x 2)"""
+    lum = result[:, :3] @ _LUMA
+    if blend not in SHAPE_BLENDS:
+        return np.stack([lum, lum], 1)
+    a = result[:, 3]
+    src = lum * a if blend == 0 else lum
+    return np.stack([src, src + 1.0 - a], 1)
+
+
+def _share(result, blend):
+    if DRAWN_BY_SHAPE:
+        return float(_shown(result, blend).var(0).sum())
+    return float((_visible(result, blend) @ _LUMA).var())
 
 
 def _fit(result, texels, blend, fade_free):
@@ -551,13 +581,14 @@ def shader_tint(m, tag, means, from_means=False):
 
     # each candidate's share of the output: the variance of what the frame
     # gets when that map (with its layered copies) is the only one varying
-    shares = {}
+    shares, alpha_shares = {}, {}
     for j in range(skip, count):
         if any(maps[i] == maps[j] for i in shares) or means.texels(maps[j][0]) is None:
             continue
         result = evaluate(group_of(j))
         if result is not None:
-            shares[j] = float((_visible(result, blend) @ _LUMA).var())
+            shares[j] = _share(result, blend)
+            alpha_shares[j] = float(result[:, 3].var())
     drawn = scale_drawn
     if shares:
         best = max(shares, key=lambda j: shares[j])
@@ -568,7 +599,7 @@ def shader_tint(m, tag, means, from_means=False):
     if found is None:
         # a map that can't be sampled (3D, unreadable): from its mean
         return shader_tint(m, tag, means, from_means=True)
-    found.scale_drawn, found.shares = scale_drawn, shares
+    found.scale_drawn, found.shares, found.alpha_shares, found.blend = scale_drawn, shares, alpha_shares, blend
     if drawn != scale_drawn:
         found.alt = tint_for(scale_drawn) or shader_tint(m, tag, means, from_means=True)
     if kind == GENERIC and found.model in (MODULATE, DOUBLED):
@@ -601,6 +632,10 @@ def abgr(rgba):
     return (a << 24) | (b << 16) | (g << 8) | r
 
 
+# (shader name, Tint) for every shader the last tints() call worked out
+FOUND = []
+
+
 def tints(m, bitmaps, shaders=None, from_means=False):
     """({key: (ABGR, the shader's name, its Tint)}, {address: its Tint}): the
     first for every generic, chicago and water shader whose draw needs a tint
@@ -610,12 +645,14 @@ def tints(m, bitmaps, shaders=None, from_means=False):
     the one the runtime's own rule picks"""
     means = Means(m, bitmaps)
     out, drawn = {}, {}
+    del FOUND[:]
     for t in m.tags:
         if t.group not in ('sotr', 'schi', 'swat') or (shaders is not None and t.name not in shaders):
             continue
         found = shader_tint(m, t, means, from_means)
         if found is None:
             continue
+        FOUND.append((t.name, found))
         if not found.plain():
             out[t.address | found.flags()] = (found.word(), t.name, found)
         if found.drawn != found.scale_drawn:

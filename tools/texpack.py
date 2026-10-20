@@ -1307,6 +1307,9 @@ def main():
     ap.add_argument('--no-alpha-split', action='store_true',
                     help='alpha-tested maps\' palettes fitted as one 4-D k-means, the alpha test\'s sides '
                          'mixed in an entry (as before)')
+    ap.add_argument('--drawn-by-shape', action='store_true',
+                    help='see-through shaders that blend by their alpha draw the map that carries most of what the '
+                         'frame shows over dark and light backgrounds alike (seethrough.DRAWN_BY_SHAPE)')
     ap.add_argument('--effects-clut4', action='store_true',
                     help='effects and see-through shaders\' maps may take 16 colours (as before)')
     ap.add_argument('--tints-from-means', action='store_true',
@@ -1481,7 +1484,17 @@ def main():
             len(kept), (': ' + ', '.join(kept)) if kept else ''), file=sys.stderr)
     entries.sort(key=lambda e: e['key'])
     # the see-through shaders' tints and drawn maps (seethrough.py)
+    seethrough.DRAWN_BY_SHAPE = a.drawn_by_shape
     tints, drawn = seethrough.tints(m, bitmap_list(m, d), from_means=a.tints_from_means)
+    if ALPHA_AUDIT:
+        for name, found in seethrough.FOUND:
+            if not found.alpha_shares:
+                continue
+            shape = max(found.alpha_shares, key=lambda j: found.alpha_shares[j])
+            print('alpha audit: see-through %s: blend %s, map %d drawn (alpha variance %.4f), the alpha\'s most from map '
+                  '%d (%.4f)%s' % (name, found.blend, found.drawn, found.alpha_shares.get(found.drawn, 0.0), shape,
+                                   found.alpha_shares[shape], '' if shape == found.drawn else ' (not drawn)'),
+                  file=sys.stderr)
     names = {t.address: t.name for t in m.tags}
     for address in sorted(set(k & ~3 for k in tints) | set(drawn)):
         found = next((tints[k][2] for k in tints if k & ~3 == address), None) or drawn[address]
