@@ -38,6 +38,12 @@ File layout (little endian):
     shaders whose combiners read the angle the surface is seen at (Cortana),
     blended per vertex by that angle. Only when there are any, after a 'TND1'
     (of count 0 when no drawn map is chosen)
+  composites, right after the tints by angle: 'TNC1', u32 count, then count x
+    { u32 shader tag address, u32 the map the composite is drawn in place of
+    (its index in the shader's maps) }, sorted by address: the see-through
+    shaders drawn from a texture of their own (seethrough.composite), whose
+    directory entries are keyed by the shader's tag address | 1. Only when
+    there are any, after a 'TNA1' (of count 0 when no shader is angled)
   glow maps: directory entries keyed by a self-illuminated model shader's
     tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
     same texels share their data
@@ -90,14 +96,25 @@ def level_bytes(w, h, bits=8):
     return row, (h + 7) // 8 * 8
 
 
-def nearest(img, pal, alpha):
+def nearest(img, pal, alpha, split=False):
+    """each texel's nearest palette entry. split (a palette from
+    quantize_split): only among the entries on the texel's own side of the
+    alpha test, so a smaller level keeps the shape the top level's palette
+    was made for"""
     ch = 4 if alpha else 3
     pts = img.reshape(-1, 4)[:, :ch].astype(np.int32)
     p = pal[:, :ch].astype(np.int32)
     best = np.zeros(len(pts), np.int64)
     bestd = np.full(len(pts), 1 << 60, np.int64)
+    sides = None
+    if split and alpha:
+        pal_on = p[:, 3] >= bitmap_bake.ALPHA_SIDE
+        if pal_on.any() and (~pal_on).any():
+            sides = (pts[:, 3] >= bitmap_bake.ALPHA_SIDE)[:, None]
     for start in range(0, len(p), 64):
         d = ((pts[:, None, :] - p[None, start:start + 64, :]) ** 2).sum(2)
+        if sides is not None:
+            d = np.where(sides == pal_on[None, start:start + 64], d, 1 << 50)
         j = d.argmin(1)
         dj = d[np.arange(len(pts)), j]
         better = dj < bestd
@@ -549,6 +566,88 @@ ALPHA_TESTED = set()
 # 'HUD sheets' line, so a bake says whether this changed anything)
 HUD_CLUT4 = False
 HUD_KEPT_8 = []
+
+# Cut-outs, the textures the GE alpha-tests (a sign's letters, a grating, a
+# tree line): their palettes are fitted each side of the alpha test apart
+# (bitmap_bake.quantize_split), and their smaller levels mapped onto entries
+# of their own side, so no entry stands for both hidden and drawn texels;
+# --no-alpha-split fits them as one, as before. Effects and the see-through
+# shaders' maps stay at 8 bits (--effects-clut4: the 16-colour test may take
+# them, as before); EFFECTS_KEPT_8 lists the ones it would have taken, for
+# the log's 'effects kept at 8 bits' line
+ALPHA_SPLIT = True
+SHAPE_CLASSES = ('effects/sprites', 'transparent shaders')
+EFFECTS_CLUT4 = False
+EFFECTS_KEPT_8 = []
+# TEXPACK_ALPHA_AUDIT=1 (halo-psp-bake --alpha-audit): a line per texture
+# with alpha: how many of its texels the alpha test hides or draws otherwise
+# than the source does, packed, and with the palette as fitted before
+# (one 4-D k-means; scikit-learn's too, where it is installed); a summary
+ALPHA_AUDIT = bool(os.environ.get('TEXPACK_ALPHA_AUDIT'))
+ALPHA_AUDIT_ROWS = []
+
+
+def level_bytes_total(w, h, bits):
+    row, rows = level_bytes(w, h, bits)
+    return row * rows
+
+
+def alpha_shape(b, cls, look):
+    """'cutout' or None: whether this texture's palette is fitted each side
+    of the alpha test (see ALPHA_SPLIT). Only where the GE tests the alpha:
+    a blended map's alpha is a gradient on both sides of the test, and a
+    split would only take entries from its colour"""
+    if ALPHA_SPLIT and b['tag'] in ALPHA_TESTED and (look is None or look['alpha_tested']):
+        return 'cutout'
+    return None
+
+
+def test_flips(src, packed):
+    """the share of texels the GE's alpha test treats otherwise than the
+    source's alpha, and the mean alpha error (0-1)"""
+    a, p = src[:, :, 3].astype(np.int32), packed[:, :, 3].astype(np.int32)
+    side = bitmap_bake.ALPHA_SIDE
+    return float(((a >= side) != (p >= side)).mean()), float(np.abs(a - p).mean() / 255.0)
+
+
+def alpha_audit(b, cls, small, packed, bits, shape):
+    colours = 16 if bits == 4 else 256
+    flips, error = test_flips(small, packed)
+    before = quantize(small, colours)[2] if shape else packed
+    flips_before, error_before = test_flips(small, before)
+    old = ''
+    try:
+        from sklearn.cluster import KMeans
+        pts = small.reshape(-1, 4).astype(np.float32)
+        if len(np.unique(pts, axis=0)) > colours:
+            sample = pts if len(pts) <= 40000 else pts[np.random.RandomState(0).choice(len(pts), 40000, replace=False)]
+            km = KMeans(n_clusters=colours, n_init=1, max_iter=25, random_state=0).fit(sample)
+            fitted = np.clip(np.rint(km.cluster_centers_), 0, 255)[km.predict(pts)].reshape(small.shape)
+            old_flips, old_error = test_flips(small, fitted)
+            old = '; scikit-learn %.4f (%.4f)' % (old_flips, old_error)
+            ALPHA_AUDIT_ROWS.append((cls, shape, flips, flips_before, old_flips))
+        else:
+            ALPHA_AUDIT_ROWS.append((cls, shape, flips, flips_before, flips_before))
+    except ImportError:
+        ALPHA_AUDIT_ROWS.append((cls, shape, flips, flips_before, None))
+    covered = float((small[:, :, 3] >= bitmap_bake.ALPHA_SIDE).mean())
+    print('alpha audit: %s#%d %s %dx%d %d-bit %s: drawn %.3f; alpha-test flips (mean alpha error) packed %.4f (%.4f), '
+          'one 4-D fit %.4f (%.4f)%s' % (b['tag'], b['index'], cls.replace(' ', '_'), small.shape[1], small.shape[0], bits,
+                                         shape or 'plain', covered, flips, error, flips_before, error_before, old),
+          file=sys.stderr)
+
+
+def alpha_audit_summary():
+    if not ALPHA_AUDIT_ROWS:
+        return
+    for cls in sorted(set(r[0] for r in ALPHA_AUDIT_ROWS)):
+        rows = [r for r in ALPHA_AUDIT_ROWS if r[0] == cls]
+        def count(k, limit):
+            return sum(1 for r in rows if r[k] is not None and r[k] > limit)
+        print('alpha audit summary: %s: %d textures with alpha; alpha-test flips over 1%% / 10%% of texels: packed %d / %d, '
+              'one 4-D fit %d / %d, scikit-learn %d / %d' % (cls.replace(' ', '_'), len(rows), count(2, 0.01), count(2, 0.10),
+                                                        count(3, 0.01), count(3, 0.10), count(4, 0.01), count(4, 0.10)),
+              file=sys.stderr)
 # build 102: per-class detail (texpack.py --full-detail fp,vehicles,...):
 # these classes keep their top level (the bake otherwise halves every texture
 # of 64 px and more) and the 256 px cap rises to 512. A lever to try, not the
@@ -813,20 +912,23 @@ def cache_write(path, idx, pal, alpha):
             pass
 
 
-def make_palette(img, colors, cls):
+def make_palette(img, colors, cls, shape=None):
     """quantize(img, colors), through the palette cache when there is one,
-    timed for the profile"""
+    timed for the profile. shape: None, or 'cutout' (alpha_shape): fitted
+    each side of the alpha test apart (quantize_split)"""
     started = time.perf_counter()
     pixels = pixels_hash(img) if PALETTE_CACHE or PROFILE or PALETTE_COMPARE else None
     path = None
     if PALETTE_CACHE and not PALETTE_COMPARE:
-        key = hashlib.sha256(('%s %s %d %s' % (PALETTE_CODE, FAST_PALETTES, colors, pixels)).encode()).hexdigest()
+        # a split palette is another palette of the same pixels
+        mode = '' if shape is None else ' ' + shape
+        key = hashlib.sha256(('%s %s %d %s%s' % (PALETTE_CODE, FAST_PALETTES, colors, pixels, mode)).encode()).hexdigest()
         path = os.path.join(PALETTE_CACHE, key + '.npz')
         r = cache_read(path)
         if r is not None:
             profile_palette(pixels, colors, time.perf_counter() - started, 'hit')
             return r
-    r = quantize(img, colors, fast=FAST_PALETTES)
+    r = quantize(img, colors, fast=FAST_PALETTES, split=shape is not None, cutout=shape == 'cutout')
     seconds = time.perf_counter() - started
     if path:
         cache_write(path, r[0], r[1], r[3])
@@ -1076,7 +1178,7 @@ def quality_note(cls, old, new):
 
 @profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
-             relief=None):
+             relief=None, image=None):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -1098,7 +1200,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         tw, th = max(1, tw // 2), max(1, th // 2)
     if act != 'clut' or b['type'] != '2d' or not pow2(tw) or not pow2(th):
         return None
-    img = decode(m, b)
+    img = decode(m, b) if image is None else image
     if img is None:
         return None
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and (b['tag'], b['index']) in LIGHTMAP_MASKS:
@@ -1126,6 +1228,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     # the alpha (the shape), as the HUD's (psp_ge.c, meter_palette), and an
     # ordinary palette's entries are averages of both (b113_candidates.md #16)
     grid = (cls == 'ui/hud' and grey_meter(small)) or meter
+    shape = alpha_shape(b, cls, look) if not grid and not own_levels else None
     if SHOWCASE and not SHOWCASE_PALETTES and own_colours and cls in DIRECT_CLASSES and not grid and not own_levels:
         dropped = 0
         while (b['w'] >> dropped) > tw and dropped < 12:
@@ -1157,14 +1260,14 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
             old_idx, old_pal, _, _ = make_palette(small, 256, cls)
             quality_note(cls, blurred_psnr(small, as_drawn(old_pal, alpha)[old_idx]), blurred_psnr(small, rec))
     elif not grid and not own_levels:
-        idx, pal, rec, alpha = make_palette(small, 256, cls)
+        idx, pal, rec, alpha = make_palette(small, 256, cls, shape)
         if KMEANS_COMPARE:
             kmeans_compare(b['tag'], small, 256, rec)
     # 16 colours where that is no worse than the 16-bit frame buffer itself
     # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
     bits = 8
     if not grid and tw >= 32 and th >= 8 and cls not in ('level (senv)', 'lightmap', 'sky', 'detail'):
-        idx4, pal4, rec4, _ = make_palette(small, 16, cls)
+        idx4, pal4, rec4, _ = make_palette(small, 16, cls, shape)
         if KMEANS_COMPARE:
             kmeans_compare(b['tag'], small, 16, rec4)
         reference = small.copy()
@@ -1174,6 +1277,12 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         if psnr(small, rec4) >= psnr(small[:, :, :3], reference[:, :, :3]) - 1.0:
             if cls == 'ui/hud' and not HUD_CLUT4:
                 HUD_KEPT_8.append(b['tag'])
+            elif cls in SHAPE_CLASSES and not EFFECTS_CLUT4:
+                # an effect's soft glow or a see-through layer's fade is a
+                # gradient in its colour and alpha that the test above lets
+                # through while 16 colours step it: the hard-edged thrusters,
+                # the solid plasma glows, the water layers' borders
+                EFFECTS_KEPT_8.append((b['tag'], b['index'], level_bytes_total(tw, th, 8) - level_bytes_total(tw, th, 4)))
             else:
                 idx, pal, rec, bits = idx4, pal4[:16], rec4, 4
                 if diffusing:
@@ -1205,9 +1314,12 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     source_levels = max(1, b['mips'] + 1 - dropped)
     if own_levels:
         source_levels = len(own_levels)
+    if ALPHA_AUDIT and alpha and not grid:
+        alpha_audit(b, cls, small, pal[idx], bits, shape)
     while len(levels) < min(8, source_levels):
         ix = idx if not levels else (grid_index(level_img, grid_off) if grid else
-                                     diffuse(level_img, pal, alpha, len(pal)) if diffusing else nearest(level_img, pal, alpha))
+                                     diffuse(level_img, pal, alpha, len(pal)) if diffusing else
+                                     nearest(level_img, pal, alpha, split=shape is not None))
         row, rows = level_bytes(w, h, bits)
         if bits == 4:
             pixels = np.zeros((rows, row * 2), np.uint8)
@@ -1249,6 +1361,17 @@ def main():
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
+    ap.add_argument('--no-alpha-split', action='store_true',
+                    help='alpha-tested maps\' palettes fitted as one 4-D k-means, the alpha test\'s sides '
+                         'mixed in an entry (as before)')
+    ap.add_argument('--drawn-by-shape', action='store_true',
+                    help='see-through shaders that blend by their alpha draw the map that carries most of what the '
+                         'frame shows over dark and light backgrounds alike (seethrough.DRAWN_BY_SHAPE)')
+    ap.add_argument('--no-composites', action='store_true',
+                    help='no see-through composites: each shader drawn as one of its maps and a tint, as before '
+                         '(seethrough.COMPOSITES)')
+    ap.add_argument('--effects-clut4', action='store_true',
+                    help='effects and see-through shaders\' maps may take 16 colours (as before)')
     ap.add_argument('--tints-from-means', action='store_true',
                     help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
     ap.add_argument('--no-glow-maps', action='store_true',
@@ -1306,10 +1429,11 @@ def main():
         sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
     d = Defs()
     m = CacheMap(a.map)
-    global ALPHA_COVERAGE, ALPHA_TESTED
+    global ALPHA_COVERAGE, ALPHA_TESTED, ALPHA_SPLIT, EFFECTS_CLUT4
+    ALPHA_SPLIT, EFFECTS_CLUT4 = not a.no_alpha_split, a.effects_clut4
+    ALPHA_TESTED = alpha_tested_bitmaps(m, d)
     if a.alpha_coverage:
         ALPHA_COVERAGE = True
-        ALPHA_TESTED = alpha_tested_bitmaps(m, d)
         print('alpha coverage kept for %d alpha-tested bitmaps' % len(ALPHA_TESTED), file=sys.stderr)
     roles = refs.bitmap_roles(m, d)
     # build 116: the bitmaps meter shaders draw (bake_one gives them the grid)
@@ -1416,6 +1540,16 @@ def main():
     print('glow maps: %d self-illuminated model shaders, %d maps, %d bytes%s' % (
         len(glows), sum(1 for v in made.values() if v is not None), glow_bytes,
         ' (--no-glow-maps)' if a.no_glow_maps else ''), file=sys.stderr)
+    print('alpha shapes: %s; %d alpha-tested bitmaps' % (
+        'each side of the alpha test fitted apart' if ALPHA_SPLIT else 'one 4-D fit (--no-alpha-split)',
+        len(ALPHA_TESTED)), file=sys.stderr)
+    if EFFECTS_CLUT4:
+        print('effects kept at 8 bits: none (--effects-clut4)', file=sys.stderr)
+    else:
+        kept = sorted(set(EFFECTS_KEPT_8))
+        print('effects kept at 8 bits: %d maps the 16-colour test would have taken, %d bytes more at their top level' % (
+            len(kept), sum(k[2] for k in kept)), file=sys.stderr)
+    alpha_audit_summary()
     if HUD_CLUT4:
         print('HUD sheets: 16 colours allowed (--hud-clut4)', file=sys.stderr)
     else:
@@ -1424,8 +1558,56 @@ def main():
             len(kept), (': ' + ', '.join(kept)) if kept else ''), file=sys.stderr)
     entries.sort(key=lambda e: e['key'])
     # the see-through shaders' tints and drawn maps (seethrough.py)
+    seethrough.DRAWN_BY_SHAPE = a.drawn_by_shape
     tints, drawn = seethrough.tints(m, bitmap_list(m, d), from_means=a.tints_from_means)
+    if ALPHA_AUDIT:
+        for name, found in seethrough.FOUND:
+            if not found.alpha_shares:
+                continue
+            shape = max(found.alpha_shares, key=lambda j: found.alpha_shares[j])
+            print('alpha audit: see-through %s: blend %s, map %d drawn (alpha variance %.4f), the alpha\'s most from map '
+                  '%d (%.4f)%s' % (name, found.blend, found.drawn, found.alpha_shares.get(found.drawn, 0.0), shape,
+                                   found.alpha_shares[shape], '' if shape == found.drawn else ' (not drawn)'),
+                  file=sys.stderr)
     names = {t.address: t.name for t in m.tags}
+    # the see-through composites (seethrough.composite): under the shader's
+    # address | 1, which no bitmap's key can be, with the map each is drawn in
+    # place of ('TNC1'); the menu's up to the GE's 512 a side
+    composites = {}
+    composite_bytes = 0
+    seethrough.COMPOSITES = not a.no_composites
+    if SHOWCASE:
+        seethrough.COMPOSITE_SIDE = 512
+    by_tag = {}
+    for b in B:
+        by_tag.setdefault(b['tag'], b)
+    composite_means = seethrough.Means(m, B)
+    for name, found in (seethrough.FOUND if seethrough.COMPOSITES else []):
+        made = seethrough.composite(m, found.tag, composite_means, found)
+        if made is None:
+            continue
+        basis, img, why = made
+        if img is None:
+            print('composite for %s: none (%s)' % (name, why), file=sys.stderr)
+            continue
+        maps = seethrough._maps(m, m.off(found.tag.address), struct.unpack_from('<H', m.data, m.off(found.tag.address) + 36)[0])
+        t = m.by_id.get(maps[basis][0])
+        b = by_tag.get(t.name) if t is not None else None
+        if b is None:
+            continue
+        cls = refs.classify(roles.get(b['tag'], ()), b)
+        r = bake_one(m, dict(b, w=img.shape[1], h=img.shape[0]), cls, image=img)
+        if r is None:
+            print('composite for %s: none (%s not baked as %s)' % (name, b['tag'], cls), file=sys.stderr)
+            continue
+        entries.append(dict(r, key=found.tag.address | 1, name=name + ' (composite)'))
+        composites[found.tag.address] = basis
+        composite_bytes += len(r['data'])
+        print('composite for %s: %s; %dx%d baked, %d bytes' % (name, why, r['w'], r['h'], len(r['data'])),
+              file=sys.stderr)
+    print('composites: %d see-through shaders drawn from a texture of their own, %d bytes%s' % (
+        len(composites), composite_bytes, ' (--no-composites)' if a.no_composites else ''), file=sys.stderr)
+    entries.sort(key=lambda e: e['key'])
     for address in sorted(set(k & ~3 for k in tints) | set(drawn)):
         found = next((tints[k][2] for k in tints if k & ~3 == address), None) or drawn[address]
         alt = '' if found.alt is None else ' (the scale rule\'s map %d: tint %s)' % (found.scale_drawn, found.alt.name())
@@ -1442,17 +1624,20 @@ def main():
         print('  tints by angle for %s: face on %08x, edge on %08x' % (
             names[key & ~3], seethrough.abgr(face), seethrough.abgr(edge)), file=sys.stderr)
     tint_bytes = b''
-    if tints or drawn:
+    if tints or drawn or composites:
         tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
             struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
-        if drawn or angled:
+        if drawn or angled or composites:
             tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
                 struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
                             drawn[address].alt.word()) for address in sorted(drawn))
-        if angled:
+        if angled or composites:
             tint_bytes += struct.pack('<4sI', b'TNA1', len(angled)) + b''.join(
                 struct.pack('<III', key, seethrough.abgr(tints[key][2].angle[0]),
                             seethrough.abgr(tints[key][2].angle[1])) for key in angled)
+        if composites:
+            tint_bytes += struct.pack('<4sI', b'TNC1', len(composites)) + b''.join(
+                struct.pack('<II', address, composites[address]) for address in sorted(composites))
     header = 12
     directory = 20 * len(entries)
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16
