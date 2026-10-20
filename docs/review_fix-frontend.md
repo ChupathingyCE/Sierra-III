@@ -57,4 +57,26 @@ Open: the tag listing for the sky shader (maps, scales, combiner stages) is queu
 
 ## Results
 
-Pending: front1 (the menu at four sizes, the pause menu at three, the profile walk, one strict menu walk) and the multiplayer build's compile.
+Emulator batch front1 (the branch's code at its previous head, on the b139a bake; the later commits change only docs and comments) and the multiplayer compile.
+
+- **Multiplayer build:** `PSP_MULTIPLAYER=1` compiles and links (program 5.93 MB, heap 5168 KB, 5 symbols stubbed), build job ok. Nothing was run, as the rules say.
+- **The all-levels profile:** the menu's profile list shows "All Levels" (Controls Default, Difficulty Legendary, Current Level The Maw) beside the two empty slots; selecting it opens the Load Level list, whose first page (The Pillar of Autumn, Halo, The Truth and Reconciliation) shows every level unlocked with its difficulty marks. The walk's later steps (the rights through the other seven levels) did not run: the batch's `exitatN` counts game seconds at 30 ticks, the input script's seconds are 60 ticks, so the walk ended at script second 11. A second batch with the exit moved out (`front2`) is queued to read the other seven levels, the keyboard and its legend at each size.
+- **Clean runs [E]:** the four menu runs, the three pause-menu runs, the profile walk and the strict menu walk (largest size) all ended normally: no fault, no crash.txt, strict: 0 distinct sites.
+- **Cost [E]:** none measurable. The menu runs at 100, 115/125, 115/150 and 108/125 report the same frame CPU time (5.14 ms average at game time 504); the three pause-menu runs the same (9.57 ms average while paused). The zoom changes where the menu's quads land, not how many are drawn. The GE's own time is not in the emulator's figures: the menus are small and no part of play touches them.
+
+### The shots for H11's size
+
+In `/tmp/claude-0/overnight/morning/h11/` (local screenshots, 480 x 272, not committed). All from front1; the menu ones are the profile list at game time 8.5 s, the pause ones are the pause menu at game time 60.3 s on b40.
+
+| File | Shows |
+|---|---|
+| `front1_menu-100_profilelist.png` | Profile list at the default size (no keep word): small body text, footer glyphs at their old size. |
+| `front1_menu-115-125_profilelist.png` | `menuzoom115 menuglyph125`: everything 15% larger; the title sits about 7 px from the top, the footer glyphs larger. |
+| `front1_menu-115-150_profilelist.png` | `menuzoom115 menuglyph150`: same page, the footer glyphs at their biggest (150); the footer ends about 4 px above the bottom edge. |
+| `front1_menu-108-125_profilelist.png` | `menuzoom108 menuglyph125`: a smaller step, more margin all round. |
+| `front1_pause-100_pausemenu.png` | Pause menu at the default size. |
+| `front1_pause-115-125_pausemenu.png` | Pause menu at `menuzoom115 menuglyph125`. |
+| `front1_pause-115-150_pausemenu.png` | Pause menu at `menuzoom115 menuglyph150`. |
+| `front1_profile-walk_loadlevel.png` | The Load Level page with the all-levels profile (levels unlocked, difficulty marks). |
+
+To choose: look at the four profile-list shots for the page, the pause shots for the box with a few lines, and pick the pair; set it in `keep.txt`. The keyboard at each size comes from front2, queued behind the lab's other batches.
