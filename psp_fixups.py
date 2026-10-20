@@ -25171,6 +25171,124 @@ FIXES_LD1["source/game/game_time.c#lightsframe"] = [
 ]
 
 
+# ---------- FIXES_CACHE: the cache work (docs/cache_work.md)
+# nodeprefetch: each node's lines asked for while the node before it is
+# computed. object_compute_node_matrices writes each node's matrix into the
+# object's node block, which last tick's compute wrote and the rest of the
+# tick has since pushed out of the 16 KB data cache, so the matrix's first
+# stores wait a whole miss each for their lines (52 bytes: one or two 64-byte
+# lines), and the node's links in the model tag (parent, sibling, child) miss
+# too: the tick's top data-miss sites in the cache model. The walk is a queue,
+# so the node after next is often named already: its three lines are asked
+# for one node ahead of time, which is about the ~72 cycles a line takes to
+# land ("cache 0x1E" never stalls; halo_bench v7b), and the next node's when
+# the queue held nothing further. Each queued node is asked for once.
+# Exact: a prefetch changes no value. Off unless "nodeprefetch": in the cache
+# model it loses (each line lands ~40 of its ~72 cycles ahead, so the load
+# still waits, and the asking costs ~12 cycles a node), and the PSP shows no
+# gain it could be hiding.
+FIXES_CACHE = {}
+FIXES_CACHE["source/objects/objects.c#nodeprefetch"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_134 #nmreaders) */""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_CACHE): the line holding p asked for, without a wait */
+#define PSP_LINE_PREFETCH(p) __asm__ volatile ("cache 0x1E, 0(%0)" : : "r" (p))
+
+/* the lines node node_index's compute first touches: both ends of its matrix
+and its links in the model tag (a tag block without data is left alone: the
+pointer would name no memory) */
+static __inline__ void psp_node_lines_prefetch(
+	real_matrix4x3 *object_nodes,
+	struct model *model,
+	short node_index)
+{
+	PSP_LINE_PREFETCH(&object_nodes[node_index]);
+	PSP_LINE_PREFETCH(&object_nodes[node_index].position.z);
+	if (model->nodes.address)
+		PSP_LINE_PREFETCH(&((struct model_node *)model->nodes.address)[node_index].next_sibling_node_index);
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_134 #nmreaders) */"""),
+("""		node_index = 0;
+		node_count = 1;
+		unknown_var = 0;
+		node_stack[0] = 0;
+
+		while (TRUE)
+		{""", """		node_index = 0;
+		node_count = 1;
+		unknown_var = 0;
+		node_stack[0] = 0;
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_CACHE) */
+		const int psp_node_prefetch = PSP_KEEP_ONCE("nodeprefetch");
+		short psp_node_asked = 0; /* the queue's places asked for, up to here */
+
+		if (psp_node_prefetch)
+			psp_node_lines_prefetch(object_nodes, model, 0);
+#endif
+
+		while (TRUE)
+		{"""),
+("""			if (node_index==node_count)
+			{
+				break;
+			}""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_CACHE) */
+			if (psp_node_prefetch)
+			{
+				while (psp_node_asked<node_count-1 && psp_node_asked<node_index+1)
+					psp_node_lines_prefetch(object_nodes, model, node_stack[++psp_node_asked]);
+			}
+#endif
+			if (node_index==node_count)
+			{
+				break;
+			}"""),
+]
+
+# typehdr: object_get_and_verify_type checks the type its header holds. The
+# check read the type from the object's own data, a line the caller often
+# never touches otherwise, and in the cache model that one load missed about
+# 1,200 times a tick on b30's beach (18% of the calls, the tick's most-missed
+# load with no window for a prefetch). The header beside the data pointer
+# carries the same type, written with it when the object is made and never
+# changed (object_new sets both from the definition), so the
+# check passes and fails exactly as before. "notypehdr": the object's own
+FIXES_CACHE["source/objects/objects.c#typehdr"] = [
+("""	struct object_datum *result = object_header_get(object_index)->datum;
+
+	match_vassert(
+		"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+		1690,
+		TEST_FLAG(valid_type_flags, result->object.type),""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_CACHE) */
+	struct object_header_datum *psp_header = object_header_get(object_index);
+	struct object_datum *result = psp_header->datum;
+	const int psp_type = PSP_KEEP_ONCE("notypehdr") ? result->object.type : psp_header->type;
+#else
+	struct object_datum *result = object_header_get(object_index)->datum;
+#endif
+
+	match_vassert(
+		"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+		1690,
+#ifdef HALO_PSP
+		TEST_FLAG(valid_type_flags, psp_type),
+#else
+		TEST_FLAG(valid_type_flags, result->object.type),
+#endif"""),
+]
+
 # ---------- the campaign's update rings (memory_savings S6, for a10's heap)
 # A campaign game is local: each frame builds at most 7 ticks' updates
 # (game_time.c: a local connection's cap) and takes them all before the next
@@ -25368,7 +25486,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
