@@ -14,8 +14,19 @@ What this branch holds, and what the levers it was given are worth by the hardwa
 
 **Evidence:**
 - [D] The compiled `collision_test_vector` calls neither `psp_sphere_of` nor the sphere test on the in-line path. The old path's calls are still there for `objwalkold`.
-- The proof batch (statecrc pairs on b30's scripted drive and c40, plus a cache-model cost pair) is in flight. Its results go here.
-- **Expected:** ~0.4 G of a 108 s b30 run's ~15 G tick fetches (~2.5-3%) [U].
+- [E] **c40, 300 s (9,000 ticks), on against `objwalkold`:** the play hash and both random seeds are identical at every tick. The whole state differs only in `objects`, `object looping sounds`, `lights`, `hud unit interface` and `first person weapons`: what follows the speed of the run and what drawing writes, the set every exact change shows. Strict run: 0 sites, no crash.
+- [E] **b30, hands off to 108 s, with the scripted Warthog drive from game time 2700:** all 540 drive steps print the same position, velocity, facing and spin on and off. The play hash parts at tick 1,326 and the seeds at ~2,075, as every b30 pair does (the state differs from tick 718, before the drive starts), so b30 can't carry the proof; c40 does.
+- [E] **Cost, same drive, cache model, 3,240 ticks each:**
+
+  | | `objwalk` | `objwalkold` | change |
+  |---|---|---|---|
+  | tick fetches | 14,761.8 M | 15,361.2 M | **-599 M (-3.9%)**, -185 k a tick |
+  | tick D misses | 147.3 M | 149.0 M | -1.1% |
+  | tick I misses | 274.4 M | 276.9 M | -0.9% |
+  | modelled tick cost (fetches + 71 x misses) | | | **-2.0%**, -275 k cycles (~0.8 ms) a tick |
+
+  More than the 0.4 G expected: the AI's sight lines walk objects too, not only the vehicles' sweeps. The drawing phase's fetches also differ (-0.6%), so a little of the gap may be the pair drifting apart on b30. Both sides carry the debug-tools build's collision log, which `objwalk` doesn't touch. A function split of the saving isn't available (no `funcfetches` layout).
+- **Next:** a PSP pair on the same drive, `keepsets "- | objwalkold"`, 2 repeats. The modelled saving is a tick's ~0.8 ms [E/U]; the PSP says how much of it shows.
 - **Cost when off:** one flag test an object.
 
 ## Lever #9, vehicles: `vehicle_update` split by function
@@ -42,9 +53,8 @@ What the split rules out:
 - **The ground-plane sphere walks** are already the port's (`psp_bsp3d_test_sphere`, the sphere memo). A walk shared by a vehicle's 15 mass points would change the feature lists' order, so it isn't exact.
 
 **Next for #9:**
-1. Read `cwproof1`. Every tick's state must match on c40. b30 may drift after ~1,300 ticks, as it does for any change (perf-cache's nodepf1).
-2. If CW is exact, a PSP pair `keepsets="- | objwalkold" repeat=2` on b30's drive.
-3. What's left in the Warthog is the BSP walk itself, which a faster `psp_bsp3d_test_sphere` would serve. That's general collision work, not a vehicle lever.
+1. Read the PSP pair on b30's drive (`objwalk` against `objwalkold`) when it finishes.
+2. What's left in the Warthog is the BSP walk itself, which a faster `psp_bsp3d_test_sphere` would serve. That's general collision work, not a vehicle lever.
 
 ## The change: `nmskip` (shelved, opt-in, off)
 
