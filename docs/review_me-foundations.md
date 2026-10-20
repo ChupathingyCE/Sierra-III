@@ -57,7 +57,19 @@ Nothing here changes play by default. The one default path it touches (the job r
   | d20, strict | 99 | 4,752 | 1,031 | 3,721 | 255 | 0 | 0 |
 
   (Made here counts the records the ME never made, the taken-back ones among them.) The take-back path now runs (151-379 records a run) and every answer is right. Lines both CPUs wrote (strict runs): 62 on b30 and 61 on d20, down from 286 and 442. All of them are the test's own arena (one 8 KB stretch: 27 lines, `08ca8f40`-`08caae80`) and the emulator's stack (35 lines on b30, 34 on d20, `09fb9840`-`09fbf900`); the pose-ahead arena's lines are gone [E; stretches read from the addresses against the first pass's link map, the same build text]. The play of the strict runs ended with no strict site and no crash.
-- **Still PSP-only:** the waits ("waits for a record the ME was on" stays 0 because the emulator runs a pushed job inside the push) and the ME's own withdrawal (`r >= limit`). Both are the PSP run's question (`mebatchtest mestash meringtest`, `- | meedramstate`): waits above 0 mean real races were met, 0 wrong and late 0 mean the protocol held through them.
+- **On the PSP** (PSP-3000, b30 route to game time ~2,650, `mebatchtest mestash meringtest`, 4 runs: 2 with the keep alone, 2 with `meedramstate`) [M]: **0 wrong in 63,840-64,704 records a run (every run, both sides), `meringtest` 0 wrong in 10,664-10,792 jobs (the three runs with the ME running).** Real races were met and the protocol held through them:
+
+  | Run | Side | Passes | Made by the ME | Made here | Taken back | Waits for a record the ME was on | Hand-overs refused | Late |
+  |---|---|---|---|---|---|---|---|---|
+  | 1 | keep alone | 1,330 | 531 | 63,309 | 102 | 12 | 0 | 1 |
+  | 3 | keep alone | 1,333 | 7,568 | 56,416 | 1,537 | 201 | 21 | 0 |
+  | 2 | `meedramstate` | 1,349 | 7,815 | 56,937 | 1,555 | 201 | 9 | 0 |
+  | 4 | `meedramstate` | 1,347 | 7,771 | 56,885 | 1,551 | 192 | 8 | 0 |
+
+  - **Waits above 0 on every run (12-201):** the main CPU did meet a record the ME was on, and waited for that one record; every answer was right.
+  - **The ME's own withdrawal (`r >= limit`)** has no counter of its own; the 1,537-1,555 records taken back a run are the records it must have withdrawn from (the main CPU lowered `limit` over records the ME's job had yet to reach), so it ran, inferred from the counts rather than counted [U]. A counter would make it a [M] line.
+  - **Run 1 (keep alone): the deadline fired once**, at game time ~180 (the 6th batch pass of that stretch): "a batch record (9) held past 10 ms; the ME is stopped". The path worked as designed: the record was made on the main CPU, `late` 1, every later pass made here, 0 wrong, the game ran on to the exit. The ME stayed stopped for the rest of the run, so run 1 lost the ME's audio and ring work: **tick 57.1 ms against 47.7 ms in run 3 over game time 150-2,640** (one pair, so indicative; the frame by the clock 240 against 210 ms). Why the ME held one record for 10 ms in one run of four is **not known**: the ring's worst pick-up was 4.2 ms in the interval before and 5.4 ms in the one that stopped the ME (0.7-2 ms in the earlier ones), and the frames were slow (170 ms), but nothing in the log names the cause. `mestash` printed nothing here because the batch deadline path calls `psp_me_stop` without `me_stash_dump` (the stash is dumped only on the slot-job and ring-job late paths) [D].
+  - **`meedramstate`: no fault, no change.** Both runs with it ran to the exit with 0 wrong, 0 late and the same waits, take-back and ring-test figures as run 3. Timing over game time 150-2,640 (`abreport.py`): tick 47.0 ms (46.9, 47.2) against run 3's 47.7 (run 1 is the stopped-ME run, so the "keep alone" mean of 52.4 is not a fair side); the gap to run 3 is -1.5%, inside the runs' own spread, so the verdict is that it changes nothing measurable, as expected for 4 KB of state. 208-256 KB of the eDRAM took the ME's private stores through two runs (about 1,350 ring bursts each) without a fault.
 
 **Cost.** None by default: no client uses batches yet; `mebatchtest` is a check word.
 
@@ -67,9 +79,9 @@ Nothing here changes play by default. The one default path it touches (the job r
 
 **Key lines.** `psp_me.c`: `ME_PRIVATE` and `ME_AUDIO_SUMS` pick the copy by `ME_FEATURE_EDRAM_STATE`; the ME's start resets the main-RAM copy only (the features aren't set yet).
 
-**Why.** What the ME alone writes belongs off the shared bus (§1: eDRAM work costs the main CPU a third of main-RAM work). It's off by default because 192–256 KB is the one stretch `edramcheck` doesn't cover; 192–208 KB took `mebusedram`'s stores through eight PSP runs without a fault [M], 208–256 KB is unproven.
+**Why.** What the ME alone writes belongs off the shared bus (§1: eDRAM work costs the main CPU a third of main-RAM work). It's off by default because 192–256 KB is the one stretch `edramcheck` doesn't cover; 192–208 KB took `mebusedram`'s stores through eight PSP runs without a fault [M], 208–256 KB took two b30 runs (about 1,350 ring bursts each) with `meedramstate` without a fault or a timing change [M, section 3's PSP run].
 
-**Default.** Off. Turn on after a PSP run with `meedramstate meringtest` on the ladder.
+**Default.** Off. Turn on after a PSP run with `meedramstate meringtest` on the ladder (one b30 pair passed; the ladder is still to do).
 
 ## 5. R2: the sound cache in the eDRAM (`soundedram`, `soundgeo`)
 
