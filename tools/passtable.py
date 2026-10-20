@@ -24,6 +24,9 @@ round's M3, by pass.
 
 usage: passtable.py LOGDIR [LOGDIR2] [--map b30] [--from 90] [--to 450]
                     [--steps 4] [--unclassified]
+       passtable.py - --cachemap TO_A/cachemap.txt,TO_B/cachemap.txt --frames N
+                    (the cache model's functions by pass, the stretch between
+                    two runs of the same play)
 """
 import argparse, collections, os, re
 
@@ -150,6 +153,162 @@ def table(run, mapname, start, end):
     return windows, frames, seconds, passes, steps
 
 
+# the cache model's functions (cachemap.txt) into the same passes, and the
+# GE layer and the sound apart: a function there is the work itself, not a
+# step with what it calls. First match wins
+FUNCTION_PASSES = [
+    ("sound (the ME's on the PSP)", [r"^psp_dsound", r"^decode_block", r"^sound_", r"adpcm", r"^psp_meaudio"]),
+    ("GE layer", [r"^psp_ge_(?!.*shadow)(?!.*decal)", r"^psp_tex_", r"^psp_geo_", r"^sceGu", r"^sceGum", r"^__wrap_sceGe", r"^list_(take|full)",
+                  r"^psp_model_draw", r"^psp_vertex_lock", r"^resident_entry", r"^vm_redirect", r"^constants_store", r"^model_convert",
+                  r"^psp_anim", r"^psp_level_"]),
+    ("shadows", [r"shadow"]),
+    ("decals", [r"decal"]),
+    ("effects", [r"particle", r"contrail", r"^build_sprite", r"lens_flare", r"transparent", r"^render_effects", r"weather"]),
+    ("visibility", [r"^structure_visibility", r"^portal_", r"^convex_polygon", r"^render_frustum", r"^clip_triangle", r"^cluster_partition",
+                    r"^collision_bsp_test_vector", r"^find_rendered_objects", r"^structure_leaf", r"^lights_preprocess"]),
+    ("level", [r"^structure_render", r"^rasterizer_environment", r"lightmap", r"^render_sky", r"^structure_"]),
+    ("objects", [r"^model_", r"^render_model", r"^render_object", r"^object_", r"^rasterizer_model", r"^_rasterizer_model", r"^find_point_lights",
+                 r"^halo_matrix", r"^matrix4x3", r"^rigid_corner", r"^animation", r"^node_", r"^widgets_", r"^process_rendered_objects",
+                 r"^rasterizer_set_model"]),
+    ("HUD and menus", [r"^hud", r"^interface_", r"widget", r"^draw_string", r"^text_", r"^font", r"^rasterizer_draw", r"^motion_sensor"]),
+    ("helpers (libc, maths, tags, data arrays)", [r"^mem(set|cpy|cmp|move)", r"^tag_", r"^datum_", r"^data_", r"^__kernel", r"^__ieee754",
+                                                  r"^psp_step", r"^find$", r"^str", r"^sqrt", r"^cosf?$", r"^sinf?$"]),
+]
+# funcfetches.txt counts every function over the whole run, all phases: the
+# tick's work goes into passes of its own (first match wins, after the
+# drawing's above)
+TICK_FUNCTION_PASSES = [
+    ("tick: AI", [r"^actor", r"^ai_", r"^psp_perc", r"^psp_perception", r"^prop_", r"^cs_", r"^encounter", r"^swarm", r"^path", r"^sector", r"^character_", r"^command_",
+                  r"^danger_zone", r"^actor_perception", r"^ai_"]),
+    ("tick: units and bipeds", [r"^unit_", r"^biped_", r"^aiming_", r"^find_aim_assist", r"^player", r"^weapon_", r"^first_person_weapon", r"^vehicle_", r"^item_",
+                                r"^equipment_", r"^projectile", r"^damage_", r"^device", r"^machine"]),
+    ("collision and physics", [r"^collision", r"^psp_bsp[23]d", r"^fast_vector", r"^physics", r"^bsp3d", r"^bsp2d", r"^global_physics",
+                               r"^havok", r"^mass_point", r"^sphere_", r"^cylinder_", r"^object_.*collision", r"^psp_sphere_",
+                               r"^cluster_get_next_collideable", r"^convex_hull", r"^objects_in_(clusters|sphere)", r"^planes_intersect",
+                               r"^point_physics"]),
+    ("tick: object updates and sleep", [r"^objects_update", r"^psp_object_(update|count)", r"^psp_sleepy", r"^psp_checksum_span",
+                                        r"^light_(reconnect|compute|reach)", r"^effect_update", r"^objects_"]),
+    ("animation", [r"animation", r"^animate", r"^psp_pose", r"^quaternion", r"^pose_"]),
+    ("scripts", [r"^hs_", r"^recorded_animation", r"^scenario_"]),
+]
+MORE_FUNCTION_PASSES = [
+    ("soft double (the FPU is single)", [r"^__(pack|unpack)_d", r"^__(add|sub|mul|div)df3", r"^__truncdfsf2", r"^__extendsfdf2",
+                                         r"^__(fix|float)(un)?(si|di)df", r"^__(eq|ne|lt|le|gt|ge|un)df2", r"^__fixdfsi"]),
+    ("logging, debug text", [r"printf", r"^pspDebugScreen", r"^platform_log", r"^psp_crumb", r"^log_"]),
+    ("saves", [r"^game_state_write", r"^psp_checkpoint", r"^game_state_(save|revert)"]),
+    ("caches (lruv)", [r"^lruv_"]),
+    ("system", [r"^sce", r"^psp[Ss]dk", r"^XInput", r"^enumerate_memory_units", r"^D3D"]),
+]
+FUNCTION_PASSES = (FUNCTION_PASSES[:1] + MORE_FUNCTION_PASSES + TICK_FUNCTION_PASSES[2:4] + FUNCTION_PASSES[1:] + TICK_FUNCTION_PASSES[:2] +
+                   TICK_FUNCTION_PASSES[4:])
+for _name, _patterns in FUNCTION_PASSES:
+    if _name == "sound (the ME's on the PSP)":
+        _patterns += [r"^audio_thread", r"^dsound_", r"^update_channels", r"^compute_sound_obstruction", r"^game_sound"]
+    elif _name == "GE layer":
+        _patterns += [r"^ge_kind", r"^get_sprite_clip_rect", r"^multipurpose_pass", r"^gum", r"^skin_plan", r"^real_argb_color_to_pixel"]
+    elif _name == "visibility":
+        _patterns += [r"^render_camera_build_frustum"]
+    elif _name == "objects":
+        _patterns += [r"^psp_vfpu_matrix"]
+    elif _name == "helpers (libc, maths, tags, data arrays)":
+        _patterns += [r"^vfpu_", r"^vectors?3d", r"^reflect_vector", r"^atan", r"^rint", r"^floor", r"^fabs", r"^finite", r"^__udivdi3",
+                      r"^__divdi3", r"^cs(memcpy|memmove|memset|strcmp)", r"^memchr", r"^qsort", r"^global_(scenario|structure)",
+                      r"^game_time_get", r"^breakable_surface", r"^rotate_vector", r"^euler_angles", r"^component_vectors",
+                      r"^valid_real", r"^(transition|periodic)_function", r"^(real_)?seed_random", r"^real_", r"^psp_microseconds",
+                      r"^effect_real_random", r"^local_random", r"^game_connection"]
+FUNCTION_COMPILED = [(name, [re.compile(p) for p in patterns]) for name, patterns in FUNCTION_PASSES]
+
+
+def funcfetches_passes(paths, frames, ticks):
+    """every function's fetches and I-misses (funcfetches.txt, the cache
+    model with fabound), by pass; with two (to A, to B), their difference"""
+    tables = []
+    for path in paths:
+        t = {}
+        for line in open(path, errors="replace"):
+            f = line.split()
+            if len(f) == 5 and f[0].isdigit():
+                t[f[4]] = (int(f[0]), int(f[1]))
+        tables.append(t)
+    passes = collections.defaultdict(lambda: [0.0, 0.0])
+    for name in tables[-1]:
+        v = [tables[-1][name][k] - (tables[0].get(name, (0, 0))[k] if len(tables) == 2 else 0) for k in range(2)]
+        for k in range(2):
+            passes[classify_function(name)][k] += v[k]
+    total = [sum(p[k] for p in passes.values()) for k in range(2)]
+    print("\nthe cache model, every function by pass (%s), all phases: fetches and I-misses a frame (%.0f frames, %.0f ticks)" % (
+        " minus ".join(reversed(paths)) if len(paths) == 2 else paths[0], frames, ticks))
+    print("  %-44s %12s %7s %10s %7s" % ("pass", "fetches (k)", "%", "I-misses", "%"))
+    for name, (f, i) in sorted(passes.items(), key=lambda kv: -kv[1][0]):
+        print("  %-44s %12.1f %6.1f%% %10.0f %6.1f%%" % (name, f / frames / 1e3, 100.0 * f / total[0], i / frames, 100.0 * i / total[1]))
+
+
+def classify_function(name):
+    for pass_name, patterns in FUNCTION_COMPILED:
+        if any(p.search(name) for p in patterns):
+            return pass_name
+    return "the rest (functions outside the lists' top)"
+
+
+def cachemap_phase(path, phase):
+    """a phase's (fetches, I-misses, D-misses) by function, from the lists the
+    cache map prints (the top functions of each)"""
+    section, inside, out = None, False, collections.defaultdict(lambda: [0, 0, 0])
+    totals = None
+    for line in open(path, errors="replace"):
+        if line.startswith("== "):
+            inside = line[3:].strip() == phase
+            section = None
+            continue
+        if not inside:
+            m = re.match(r"\s*" + re.escape(phase) + r"\s+data:\s+\d+ cached accesses,\s+(\d+) misses.*instructions:\s+(\d+) fetches,\s+(\d+) misses", line)
+            if m:
+                totals = (int(m.group(2)), int(m.group(3)), int(m.group(1)))
+            continue
+        if line.startswith("data misses by the function"):
+            section = "d"
+        elif line.startswith("instruction fetches by function"):
+            section = "f"
+        elif line.startswith(("instruction misses by function", "data misses by", "instructions:", "hot lines")):
+            section = None
+        elif section == "d":
+            m = re.match(r"\s+(\d+)\s+[\d.]+%\s+(\S+)\s*$", line)
+            if m:
+                out[m.group(2)][2] += int(m.group(1))
+        elif section == "f":
+            m = re.match(r"\s+(\d+)\s+[\d.]+%\s+misses\s+(\d+)\s+\d+ B\s+(\S+)", line)
+            if m and out[m.group(3)][0] == 0:
+                out[m.group(3)][0] = int(m.group(1))
+                out[m.group(3)][1] = int(m.group(2))
+    return out, totals
+
+
+def cachemap_passes(paths, phase, frames):
+    """the passes' fetches and misses a frame in the model; with two maps
+    (to A, to B), their difference"""
+    tables = [cachemap_phase(p, phase) for p in paths]
+    names = set()
+    for t, _ in tables:
+        names |= set(t)
+    passes = collections.defaultdict(lambda: [0.0, 0.0, 0.0])
+    for name in names:
+        values = [t[name] if name in t else [0, 0, 0] for t, _ in tables]
+        v = [values[-1][k] - (values[0][k] if len(values) == 2 else 0) for k in range(3)]
+        for k in range(3):
+            passes[classify_function(name)][k] += v[k]
+    totals = [tables[-1][1][k] - (tables[0][1][k] if len(tables) == 2 else 0) for k in range(3)] if all(t[1] for t in tables) else None
+    if totals:
+        listed = [sum(p[k] for p in passes.values()) for k in range(3)]
+        passes["not in the lists"] = [totals[k] - listed[k] for k in range(3)]
+    print("\nthe cache model's %s phase by pass (%s), a frame over %.0f frames: fetches (thousands), I-misses, D-misses" % (
+        phase, " minus ".join(reversed(paths)) if len(paths) == 2 else paths[0], frames))
+    order = [n for n, _ in FUNCTION_PASSES] + ["the rest (functions outside the lists' top)", "not in the lists"]
+    for name in order:
+        if name in passes:
+            f, i, d = passes[name]
+            print("  %-44s %10.1f %10.0f %10.0f" % (name, f / frames / 1e3, i / frames, d / frames))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("folders", nargs="+")
@@ -158,7 +317,17 @@ def main():
     ap.add_argument("--to", dest="end", type=float, default=1e9)
     ap.add_argument("--steps", type=int, default=3, help="the largest steps shown under each pass")
     ap.add_argument("--unclassified", action="store_true", help="list every step no pass claims")
+    ap.add_argument("--cachemap", help="the cache model's cachemap.txt, or two (to A,to B) for a stretch: its functions by pass")
+    ap.add_argument("--phase", default="drawing", help="with --cachemap: the phase (other, tick, drawing, frame end)")
+    ap.add_argument("--frames", type=float, help="with --cachemap: the frames in it (fixedticks: ticks / 2)")
+    ap.add_argument("--funcfetches", help="the cache model's funcfetches.txt, or two (to A,to B): every function by pass")
     a = ap.parse_args()
+    if a.folders == ["-"]:
+        if a.cachemap:
+            cachemap_passes(a.cachemap.split(","), a.phase, a.frames or 1.0)
+        if a.funcfetches:
+            funcfetches_passes(a.funcfetches.split(","), a.frames or 1.0, 2.0 * (a.frames or 1.0))
+        return
     runs = [Run(f) for f in a.folders[:2]]
     results = [table(r, a.map, a.start, a.end) for r in runs]
     print("stretch: map %s, game time %.0f-%s s" % (a.map or "any", a.start, "end" if a.end >= 1e9 else "%.0f" % a.end))
@@ -193,6 +362,8 @@ def main():
             print(row)
     totals = [sum(res[3].values()) / 1000.0 / res[1] if res[1] else 0.0 for res in results]
     print("%-28s" % "all steps" + "".join(" %9.2f %6s" % (t, "") for t in totals))
+    if a.cachemap:
+        cachemap_passes(a.cachemap.split(","), a.phase, a.frames or 1.0)
     if a.unclassified:
         for k, res in enumerate(results):
             print("\nunclassified in run %d:" % (k + 1))
