@@ -23568,7 +23568,7 @@ FIXES_WAKE["source/game/players.c#wake_flip"] = [
 
 # ---------- FIXES_DRIVE: a scripted Warthog drive, the same on the PSP and the PC
 # A drive the emulator and ChupathingyCE's desktop build can both play with no
-# hands, so their vehicle physics compare on the same input: the lab's PC
+# hands, so their vehicle physics compare on the same input: the PC reference
 # hooks carry these pairs to the desktop tree by their keep word, and there
 # the guard is opened, so on the PC they are built whatever the build. On the
 # PSP only in PSP_DEBUG_TOOLS builds: it creates and moves a vehicle.
