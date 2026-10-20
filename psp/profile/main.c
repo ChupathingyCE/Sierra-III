@@ -45,6 +45,15 @@ struct totals
 	/* bit 0 of coprocessor 0's register 24: the firmware's own test for
 	the 04g+ boards' "L2" cache (uofw reboot/hw.c); 0 expected on a 1000 */
 	volatile unsigned int cop0_24;
+	/* the split by thread ("hwthreads"): the counters above see the whole
+	CPU, and its cycle counter stops while the idle thread has it halted, so
+	a phase's share of the cycles says nothing of who ran in it. With
+	threads_wanted set by the game before the module starts, each phase also
+	gets microseconds of the clock, of every other thread's running (the
+	threads' own run clocks) and of the idle thread, and the thread switches */
+	volatile unsigned int threads_wanted;
+	volatile unsigned int threads_tracked;
+	volatile unsigned long long phase_threads[PHASES][4]; /* clock, other threads, idle, switches */
 };
 
 static struct totals *table = 0;
@@ -70,6 +79,97 @@ between them then */
 static unsigned int phase_last[COUNTERS];
 static int phase_current = 0;
 
+/* the split by thread: the threads' ids, refreshed by the sampler, and each
+one's run clock when last read. Every thread but the game's is idle or
+waiting at the moment of a snapshot (the game's thread is the one calling,
+or the sampler is, and then the game's thread waits), so their run clocks
+are up to date; the game's own is the clock less the others and the idle */
+#define THREADS 96
+static SceUID thread_ids[THREADS];
+static unsigned long long thread_last[THREADS];
+static int thread_count = 0;
+static SceUID game_thread = -1;
+static unsigned long long clock_last, idle_last;
+static unsigned int switches_last;
+
+static unsigned long long run_clock(SceUID id)
+{
+	SceKernelThreadRunStatus status;
+
+	memset(&status, 0, sizeof(status));
+	status.size = sizeof(status);
+	if (sceKernelReferThreadRunStatus(id, &status) < 0)
+		return 0;
+	return ((unsigned long long)status.runClocks.hi << 32) | status.runClocks.low;
+}
+
+static void system_clocks(unsigned long long *idle, unsigned int *switches)
+{
+	SceKernelSystemStatus status;
+
+	memset(&status, 0, sizeof(status));
+	status.size = sizeof(status);
+	sceKernelReferSystemStatus(&status);
+	*idle = ((unsigned long long)status.idleClocks.hi << 32) | status.idleClocks.low;
+	*switches = status.threadSwitchCount;
+}
+
+/* the time since the last snapshot, to the phase that was running; called
+with interrupts off */
+static void threads_account(void)
+{
+	unsigned long long now = sceKernelGetSystemTimeWide(), idle, others = 0;
+	unsigned int switches;
+	int k;
+
+	for (k = 0; k < thread_count; k++)
+	{
+		unsigned long long run = run_clock(thread_ids[k]);
+
+		if (thread_ids[k] != game_thread && run >= thread_last[k])
+			others += run - thread_last[k];
+		thread_last[k] = run;
+	}
+	system_clocks(&idle, &switches);
+	table->phase_threads[phase_current][0] += now - clock_last;
+	table->phase_threads[phase_current][1] += others;
+	table->phase_threads[phase_current][2] += idle - idle_last;
+	table->phase_threads[phase_current][3] += switches - switches_last;
+	clock_last = now;
+	idle_last = idle;
+	switches_last = switches;
+}
+
+/* the sampler's: threads made since the last list join it from their run
+clock now, and those gone leave it */
+static void threads_list(void)
+{
+	SceUID ids[THREADS];
+	unsigned long long last[THREADS];
+	int count = 0, k, j;
+	int interrupts;
+
+	if (sceKernelGetThreadmanIdList(SCE_KERNEL_TMID_Thread, ids, THREADS, &count) < 0)
+		return;
+	if (count > THREADS)
+		count = THREADS;
+	interrupts = sceKernelCpuSuspendIntr();
+	threads_account();
+	for (k = 0; k < count; k++)
+	{
+		last[k] = 0;
+		for (j = 0; j < thread_count; j++)
+			if (thread_ids[j] == ids[k])
+				break;
+		last[k] = j < thread_count ? thread_last[j] : run_clock(ids[k]);
+	}
+	memcpy(thread_ids, ids, sizeof(SceUID) * count);
+	memcpy(thread_last, last, sizeof(unsigned long long) * count);
+	thread_count = count;
+	table->threads_tracked = count;
+	sceKernelCpuResumeIntr(interrupts);
+}
+
 static void phase_account(int next)
 {
 	unsigned int now[COUNTERS], k;
@@ -81,6 +181,8 @@ static void phase_account(int next)
 		table->phase_count[phase_current][k] += (unsigned int)(now[k] - phase_last[k]);
 		phase_last[k] = now[k];
 	}
+	if (table->threads_wanted && thread_count)
+		threads_account();
 	if (next >= 0)
 	{
 		phase_current = next & (PHASES - 1);
@@ -128,6 +230,8 @@ int halo_profile_phase(int phase)
 {
 	if (!table)
 		return -1;
+	if (game_thread < 0)
+		game_thread = sceKernelGetThreadId();
 	phase_account(phase);
 	return 0;
 }
@@ -148,6 +252,8 @@ static int sampler(SceSize args, void *argp)
 			last[k] = now[k];
 		}
 		phase_account(-1);
+		if (table->threads_wanted)
+			threads_list();
 		table->sequence++;
 	}
 	return 0;
@@ -200,6 +306,8 @@ int module_start(SceSize args, void *argp)
 			PROFILER[k] = 0;
 		PROFILER[0] = 1;
 		profiler_read(phase_last);
+		clock_last = sceKernelGetSystemTimeWide();
+		system_clocks(&idle_last, &switches_last);
 	}
 	thread = sceKernelCreateThread("halo profiler", sampler, 0x10, 0x800, 0, 0);
 	if (thread >= 0)

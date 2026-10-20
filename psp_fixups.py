@@ -23943,6 +23943,121 @@ SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
 
 
+# ---------- the measurement round's counters (docs/plan_measurement_round.md,
+# "the new counters"; docs/review_metrics.md). Each reads and changes
+# nothing the game uses, and each is off until its keep word.
+
+# "objcost": each object definition's cost, updating (timed on the ticks the
+# per-type line samples, so the same scale) and drawing (each rendered
+# object's call, with what it carries and its shadow); psp_platform.c's
+# psp_objcost and its report in profile.txt and the log
+FIXES_RECON["source/objects/objects.c#objcost"] = [
+("\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n",
+"""\t\t\t\t\t\t{
+\t\t\t\t\t\t\t/* psp_fixups.py (FIXES_RECON #objcost) */
+\t\t\t\t\t\t\textern void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count);
+\t\t\t\t\t\t\tunsigned long psp_us = (psp_microseconds() - psp_object_start) * psp_object_scale;
+
+\t\t\t\t\t\t\tpsp_object_account(object_header->type, psp_us);
+\t\t\t\t\t\t\tpsp_objcost(object_header->datum->definition_index, object_header->type, 0, psp_us, psp_object_scale);
+\t\t\t\t\t\t}
+"""),
+]
+FIXES_RECON["source/render/render_objects.c#objcost"] = [
+("\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];\n\t\trender_object(data);\n",
+"""\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];
+#ifdef HALO_PSP
+\t\t{
+\t\t\t/* psp_fixups.py (FIXES_RECON #objcost) */
+\t\t\textern void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count);
+\t\t\tunsigned long psp_start = psp_microseconds();
+
+\t\t\trender_object(data);
+\t\t\tpsp_objcost(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1,
+\t\t\t\tpsp_microseconds() - psp_start, 1);
+\t\t}
+#else
+\t\trender_object(data);
+#endif
+"""),
+]
+
+# "particlecensus": each particle asked for, by the effect that asked, and
+# what became of it (made, unseen at birth, over the budget, thinned out of a
+# burst, no room in the pool); psp_platform.c's psp_particle_census
+FIXES_RECON["source/effects/effects.c#particlecensus"] = [
+("\t\t\t\t\tparticle_new(&data);\n",
+"""#ifdef HALO_PSP
+\t\t\t\t\t{
+\t\t\t\t\t\t/* psp_fixups.py (FIXES_RECON #particlecensus): the effect asking */
+\t\t\t\t\t\textern long psp_particle_effect;
+
+\t\t\t\t\t\tpsp_particle_effect = effect->definition_index;
+\t\t\t\t\t\tparticle_new(&data);
+\t\t\t\t\t\tpsp_particle_effect = -1;
+\t\t\t\t\t}
+#else
+\t\t\t\t\tparticle_new(&data);
+#endif
+"""),
+]
+FIXES_RECON["source/effects/particles.c#particlecensus"] = [
+("\tif (location.leaf_index == NONE ||\n\t\t!new_particle_is_visible(definition, &location, &position, data->radius))\n\t{\n\t\treturn;\n\t}\n",
+"""\tif (location.leaf_index == NONE ||
+\t\t!new_particle_is_visible(definition, &location, &position, data->radius))
+\t{
+#ifdef HALO_PSP
+\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 1);
+#endif
+\t\treturn;
+\t}
+"""),
+("\t\t\tpsp_particles_refused++;\n\t\t\treturn;\n",
+ "\t\t\tpsp_particles_refused++;\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\treturn;\n"),
+("\t\t\t\tpsp_particles_thinned++;\n\t\t\t\treturn;\n",
+ "\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\t\treturn;\n"),
+("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n",
+"""\tparticle_index = datum_new(particle_data);
+
+\tif (particle_index == NONE)
+\t{
+#ifdef HALO_PSP
+\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 4);
+#endif
+\t\treturn;
+\t}
+#ifdef HALO_PSP
+\tpsp_particle_census(psp_particle_effect, data->definition_index, 0);
+"""),
+("void particle_new(\n\tstruct new_particle_data const *data)\n{",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #particlecensus): psp_platform.c */
+extern long psp_particle_effect;
+void psp_particle_census(long effect, long particle, int outcome);
+#endif
+
+void particle_new(
+\tstruct new_particle_data const *data)
+{"""),
+]
+
+# "geocluster": psp_geo.c's misses by where the camera is, named once a frame
+FIXES_RECON["source/structures/structure_visibility.c#geocluster"] = [
+("\tprofile_enter(render_structure_visibility_portal_traversal);\n\tif (render.cluster_index != NONE)\n",
+"""#ifdef HALO_PSP
+\t{
+\t\t/* psp_fixups.py (FIXES_RECON #geocluster) */
+\t\textern void psp_geo_camera(short bsp, short cluster);
+
+\t\tpsp_geo_camera(global_structure_bsp_index, (short)render.cluster_index);
+\t}
+#endif
+\tprofile_enter(render_structure_visibility_portal_traversal);
+\tif (render.cluster_index != NONE)
+"""),
+]
+
+
 # ---------- FIXES_LOADING: the loading screen (docs/plan_loading_screen.md)
 FIXES_LOADING = {}
 
