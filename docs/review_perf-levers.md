@@ -26,7 +26,8 @@ What this branch holds, and what the levers it was given are worth by the hardwa
   | modelled tick cost (fetches + 71 x misses) | | | **-2.0%**, -275 k cycles (~0.8 ms) a tick |
 
   More than the 0.4 G expected: the AI's sight lines walk objects too, not only the vehicles' sweeps. The drawing phase's fetches also differ (-0.6%), so a little of the gap may be the pair drifting apart on b30. Both sides carry the debug-tools build's collision log, which `objwalk` doesn't touch. A function split of the saving isn't available (no `funcfetches` layout).
-- **Next:** a PSP pair on the same drive, `keepsets "- | objwalkold"`, 2 repeats. The modelled saving is a tick's ~0.8 ms [E/U]; the PSP says how much of it shows.
+- [M] **PSP-3000, same drive (game time 90-108 s, ticks 2,700-3,240), `keepsets "- | objwalkold"`, 2 runs a side interleaved:** all four runs ended without a crash. A tick costs **26.9 ms** with `objwalk` (runs 27.1, 26.7) against **28.9 ms** with `objwalkold` (28.1, 29.7): **-2.0 ms (-7.0%)**, a gap larger than either side's own spread. That is more than the cache model's ~0.8 ms [E]: the in-line walk also drops the calls' stalls and reloads, which the model's fetch count doesn't price [U]. Over the whole run (ticks 300-3,240) the tick is 57.1 against 57.7 ms (-0.6 ms, -1.0%), as most of that stretch has no drive. The frame by the clock is -11.6 ms and the drawing -7.7 ms on `objwalk`; the lever doesn't touch drawing, so take the tick figure as its own and the rest as unexplained [U]. Both sides carry the debug-tools build's per-tick drive print and collision log.
+- **Verdict:** exact (c40's hashes, the drive's 540 steps) and a measured gain on hardware: on by default, `objwalkold` turns it off.
 - **Cost when off:** one flag test an object.
 
 ## Lever #9, vehicles: `vehicle_update` split by function
@@ -53,7 +54,7 @@ What the split rules out:
 - **The ground-plane sphere walks** are already the port's (`psp_bsp3d_test_sphere`, the sphere memo). A walk shared by a vehicle's 15 mass points would change the feature lists' order, so it isn't exact.
 
 **Next for #9:**
-1. Read the PSP pair on b30's drive (`objwalk` against `objwalkold`) when it finishes.
+1. Done: the PSP pair read, -2.0 ms a tick on the drive [M] (above).
 2. What's left in the Warthog is the BSP walk itself, which a faster `psp_bsp3d_test_sphere` would serve. That's general collision work, not a vehicle lever.
 
 ## The change: `nmskip` (shelved, opt-in, off)
