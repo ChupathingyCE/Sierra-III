@@ -179,7 +179,8 @@ def glass_reflection_mix(cube, cube8, tint, alpha):
 
 
 def print_glass_reflection(m, t, means):
-    """a glass shader's reflection as the Xbox draws it: its type, the two
+    """a glass shader's tint (the pass that multiplies what is behind it) and
+    its reflection as the Xbox draws it: its type, the two
     colours and brightnesses, the cube map's six faces' mean and mean eighth
     power, and the average it adds face on, at 45 degrees and edge on,
     beside what the PSP adds from the pack's patch (the first face's mean)"""
@@ -194,6 +195,11 @@ def print_glass_reflection(m, t, means):
     reflection, = struct.unpack_from('<i', m.data, o + 184)
     diffuse, = struct.unpack_from('<i', m.data, o + 356)
     target = m.by_id.get(reflection)
+    tint = struct.unpack_from('<3f', m.data, o + 84)
+    tint_map, = struct.unpack_from('<i', m.data, o + 112)
+    tint_target = m.by_id.get(tint_map)
+    print('glass %s: tint %s, tint map %s' % (t.name, ' '.join('%.3f' % v for v in tint),
+                                             tint_target.name if tint_target is not None else 'none'))
     print('glass %s: reflection type %d, flags %04x, diffuse map %s, perpendicular %.3f x %s, parallel %.3f x %s, '
           'cube %s' % (t.name, kind, flags, 'none' if diffuse == -1 else 'set', perpendicular[0],
                        ' '.join('%.3f' % v for v in perpendicular[1:]), parallel[0],
