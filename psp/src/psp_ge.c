@@ -15155,17 +15155,20 @@ struct shadow_memo
 };
 static int shadow_memo_on = -1;
 
+static inline void shadow_memo_fill(struct shadow_memo *m, const struct ge_vertex *base, unsigned short index)
+{
+	m->key = index + 1;
+	level_to_camera(&base[index].x, m->camera);
+	m->bits = outside(m->camera);
+	m->shaded = 0;
+}
+
 static inline struct shadow_memo *shadow_memo_at(struct shadow_memo *memo, const struct ge_vertex *base, unsigned short index)
 {
 	struct shadow_memo *m = &memo[index & (SHADOW_MEMO - 1)];
 
 	if (m->key != index + 1)
-	{
-		m->key = index + 1;
-		level_to_camera(&base[index].x, m->camera);
-		m->bits = outside(m->camera);
-		m->shaded = 0;
-	}
+		shadow_memo_fill(m, base, index);
 	return m;
 }
 
@@ -15225,13 +15228,22 @@ static void psp_ge_shadow_draw_body(const void *vertices, int vertex_count, cons
 	for (index = 0; shadow_memo_on && index < triangle_count && kept_count < SCRATCH_TRIANGLES; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
-		struct shadow_memo *m[3];
+		struct shadow_memo *m[3], own[2];
 		int corner;
 
 		if (triangle[0] >= vertex_count || triangle[1] >= vertex_count || triangle[2] >= vertex_count)
 			return;
 		for (corner = 0; corner < 3; corner++)
 			m[corner] = shadow_memo_at(memo, stream->base, triangle[corner]);
+		/* two corners whose indices share a slot: the later lookup took it, so
+		the earlier pointer would read the later vertex. That corner is worked
+		out again on the side (the last lookup can't be overtaken) */
+		for (corner = 0; corner < 2; corner++)
+			if (m[corner]->key != triangle[corner] + 1)
+			{
+				shadow_memo_fill(&own[corner], stream->base, triangle[corner]);
+				m[corner] = &own[corner];
+			}
 		if (m[0]->bits & m[1]->bits & m[2]->bits)
 			continue;
 		for (corner = 0; corner < 3; corner++)
