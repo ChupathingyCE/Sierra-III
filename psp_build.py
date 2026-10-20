@@ -70,11 +70,11 @@ MP_HOST = MP_COOP or os.environ.get("PSP_MP_HOST", "") == "1"
 # (psp_capacity.h's PSP_POOLS_GAME_STATE_SAVED). A layout, not a keep word:
 # for long runs that measure the arrays' peaks against the Xbox's limits
 POOLS_XBOX = os.environ.get("PSP_POOLS_XBOX", "") == "1"
-# psp_capacity.h (build 113: 64 KB lower; the multiplayer build without
-# co-op 640 KB higher, its pools for AI small; the campaign's 272 KB higher,
-# its pools for actors, props and glows smaller)
+# psp_capacity.h (the multiplayer build without co-op 640 KB higher, its
+# pools for AI small; the campaign's 400 KB higher, its arrays sized from
+# their peaks: PSP_POOLS_GAME_STATE_SAVED and PSP_POOLS_GPU_SAVED)
 GAME_STATE_BASE = 0x092A0000 + (0xA0000 if MULTIPLAYER and not MP_COOP and os.environ.get("PSP_BIG_RAM", "") != "1" else 0) + (
-    0x44000 if not MULTIPLAYER and not POOLS_XBOX else 0)
+    0x64000 if not MULTIPLAYER and not POOLS_XBOX else 0)
 COOP_UNITS = ("port/linux/game/coop_", "port/linux/game/network_coop.c", "port/linux/game/network_actors.c")
 def coop_unit(rel):
     return rel.startswith(COOP_UNITS)
