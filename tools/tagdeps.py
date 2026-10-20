@@ -237,9 +237,34 @@ def print_tint_inputs(m, t, means, stages=False):
         print('    map %d: %s, scale %g x %g, mean %s%s' % (
             i, target.name if target is not None else 'none', u, v,
             ' '.join('%.2f' % x for x in mean) if mean is not None else 'unreadable', kind_text))
+        if b and b['type'] == 'cube':
+            for line in cube_face_lines(m, b):
+                print('      ' + line)
     if stages and kind == seethrough.GENERIC:
         for line in stage_lines(m, o):
             print('    ' + line)
+
+
+def cube_face_lines(m, b):
+    """a cube map's faces in stored order: each face's mean, and its top and
+    bottom halves' (what a reflection sees depends on which faces and halves
+    it reaches, not on the six faces' mean)"""
+    import seethrough
+    from bitmap_bake import BPP
+    bpp = BPP[b['fmt']] if b['fmt'] < len(BPP) else 0
+    face = seethrough._face_bytes(b, bpp) if bpp else 0
+    for stride in (face, (face + 127) // 128 * 128):
+        if stride and 6 * stride == b['pixels_size']:
+            lines = []
+            for k in range(6):
+                img = seethrough.decode(m, dict(b, pixels_offset=b['pixels_offset'] + k * stride, pixels_size=stride))
+                if img is None:
+                    return ['face %d unreadable' % k]
+                h = img.shape[0] // 2
+                rgb = lambda x: ' '.join('%.2f' % v for v in x.reshape(-1, 4).mean(0)[:3] / 255.0)
+                lines.append('face %d: mean %s; top half %s; bottom half %s' % (k, rgb(img), rgb(img[:h]), rgb(img[h:])))
+            return lines
+    return ['faces not placed (%d bytes)' % b['pixels_size']]
 
 
 # the generic shader's combiner registers and mappings, for stage_lines
