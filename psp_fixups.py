@@ -24890,15 +24890,17 @@ FIXES_LD1["source/game/game_time.c#lightsframe"] = [
 
 
 # ---------- FIXES_CACHE: the cache work (docs/cache_work.md)
-# nodeprefetch: the next node's matrix line fetched while this node is
+# nodeprefetch: each node's lines asked for while the node before it is
 # computed. object_compute_node_matrices writes each node's matrix into the
 # object's node block, which last tick's compute wrote and the rest of the
-# tick has since pushed out of the 16 KB data cache, so each node's first
-# store waits a whole miss for its line (the top data-miss site of the tick
-# in the cache model: matrix4x3_rotation_from_quaternion's first store). The
-# walk's queue names the next node before this one is done, so its line is
-# asked for here and lands while this node's maths runs ("cache 0x1E" never
-# stalls, and its line is the cache's ~72 cycles later; halo_bench v7b).
+# tick has since pushed out of the 16 KB data cache, so the matrix's first
+# stores wait a whole miss each for their lines (52 bytes: one or two 64-byte
+# lines), and the node's links in the model tag (parent, sibling, child) miss
+# too: the tick's top data-miss sites in the cache model. The walk is a queue,
+# so the node after next is often named already: its three lines are asked
+# for one node ahead of time, which is about the ~72 cycles a line takes to
+# land ("cache 0x1E" never stalls; halo_bench v7b), and the next node's when
+# the queue held nothing further. Each queued node is asked for once.
 # Exact: a prefetch changes no value. "nonodeprefetch": none
 FIXES_CACHE = {}
 FIXES_CACHE["source/objects/objects.c#nodeprefetch"] = [
@@ -24909,6 +24911,20 @@ FIXES_CACHE["source/objects/objects.c#nodeprefetch"] = [
 	/* psp_fixups.py (FIXES_134 #nmreaders) */""", """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_CACHE): the line holding p asked for, without a wait */
 #define PSP_LINE_PREFETCH(p) __asm__ volatile ("cache 0x1E, 0(%0)" : : "r" (p))
+
+/* the lines node node_index's compute first touches: both ends of its matrix
+and its links in the model tag (a tag block without data is left alone: the
+pointer would name no memory) */
+static __inline__ void psp_node_lines_prefetch(
+	real_matrix4x3 *object_nodes,
+	struct model *model,
+	short node_index)
+{
+	PSP_LINE_PREFETCH(&object_nodes[node_index]);
+	PSP_LINE_PREFETCH(&object_nodes[node_index].position.z);
+	if (model->nodes.address)
+		PSP_LINE_PREFETCH(&((struct model_node *)model->nodes.address)[node_index].next_sibling_node_index);
+}
 #endif
 
 void object_compute_node_matrices(
@@ -24929,9 +24945,10 @@ void object_compute_node_matrices(
 #ifdef HALO_PSP
 		/* psp_fixups.py (FIXES_CACHE) */
 		const int psp_node_prefetch = !PSP_KEEP_ONCE("nonodeprefetch");
+		short psp_node_asked = 0; /* the queue's places asked for, up to here */
 
 		if (psp_node_prefetch)
-			PSP_LINE_PREFETCH(&object_nodes[0].position);
+			psp_node_lines_prefetch(object_nodes, model, 0);
 #endif
 
 		while (TRUE)
@@ -24940,10 +24957,12 @@ void object_compute_node_matrices(
 			{
 				break;
 			}""", """#ifdef HALO_PSP
-			/* psp_fixups.py (FIXES_CACHE): the first store of the next node's
-			matrix is its position's */
-			if (psp_node_prefetch && node_index<node_count)
-				PSP_LINE_PREFETCH(&object_nodes[node_stack[node_index]].position);
+			/* psp_fixups.py (FIXES_CACHE) */
+			if (psp_node_prefetch)
+			{
+				while (psp_node_asked<node_count-1 && psp_node_asked<node_index+1)
+					psp_node_lines_prefetch(object_nodes, model, node_stack[++psp_node_asked]);
+			}
 #endif
 			if (node_index==node_count)
 			{
