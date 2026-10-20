@@ -57,7 +57,7 @@ The header, whose line the lookup has just read for the data pointer, holds the 
 ## 3. Measured, not changed
 
 - **Prefetch in the code as it is** is worth 0.19–0.38 ms a tick at best (a `cache 0x1E` at every missing load, each at its best window), 4–5% of the data stall; moving up to three memory operations out of each window would reach 1.2–2.5 ms [E]. So only reshaped loops (next-item work) open real windows.
-- **Loop phasing** (P1.1's data side, the first footprints, c20's opening): `biped_update`'s single call runs more code than the 16 KB cache holds (299 lines of 256), and the calls of `unit_update` (384 lines a tick) and `object_update` (1,463) run more still, because each kind of object takes its own path. So phasing those can't keep their code resident; only `weapon_update` and `actor_look_update` fit, at few calls a tick [E]. b30's phased tick is in flight.
+- **Loop phasing** (P1.1's data side, the first footprints, c20's opening): `biped_update`'s single call runs more code than the 16 KB cache holds (299 lines of 256), and the calls of `unit_update` (384 lines a tick) and `object_update` (1,463) run more still, because each kind of object takes its own path. So phasing those can't keep their code resident; only `weapon_update` and `actor_look_update` fit, at few calls a tick [E]. The phasing score failed its own check (c10's node-matrix pass scores an 11.5% gain; the real batch lost 34%), so no phasing candidate is scored (`cache_work.md`, section 1).
 - **The node block made with `cache 0x18`** instead of prefetched (no read at all) is not built: a line can hold parts of two nodes, and the walk's order isn't the nodes' order, so a made line could wipe a node already written this tick.
 
 ## Tests

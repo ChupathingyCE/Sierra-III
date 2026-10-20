@@ -42,7 +42,9 @@ First results (c20's opening, 30 s; the switches' smoke run) [E]. A pass of one 
 | `biped_update` | 29 | 299 | 543 | 120 (28) | no |
 | `object_update` | 78 | 365 | 1,463 | 142 (38) | no |
 
-(Callees included; "own": lines no earlier call in the tick had touched, which a pass of its own would fetch again.) `biped_update`'s single call already runs more code than the cache holds, and `unit_update`'s calls together run half again as much, because each kind of unit takes its own path. So phasing those three can't keep their code resident; only the small ones fit, and they are few calls a tick. The split with its own clock agrees with the old one-pair split to the cycle on the same function (the switch's own check). b30's footprints and the phased tick against its base are in flight.
+(Callees included; "own": lines no earlier call in the tick had touched, which a pass of its own would fetch again.) `biped_update`'s single call already runs more code than the cache holds, and `unit_update`'s calls together run half again as much, because each kind of unit takes its own path. So phasing those three can't keep their code resident; only the small ones fit, and they are few calls a tick. The split with its own clock agrees with the old one-pair split to the cycle on the same function (the switch's own check).
+
+**The method's check failed** (c10, to 90 s, 2,700 ticks) [E]. The node-matrix pass (`object_compute_node_matrices`, 305 calls a tick) run as a pass of its own scores 14.44 ms a tick against 16.31 as built: a gain of 1.87 ms (11.5%), tick I-misses down 11,689 and D-misses up 1,739. The real batch of those calls (nwbatch) lost 34% of c10's tick on a PSP-3000, and the model scored its lean rebuild a loss, so the check expects a loss here. The reason is the score's own definition: it is the gain if the calls' order could change freely, with the pass's caches taking every call in order, and it counts nothing for what the restructuring costs (the loop that gathers the objects, state carried between the passes, the extra loads and stores). That cost is what the real batch paid. Phasing scores therefore give an upper bound whose sign can't be trusted, and the tables for b30, c20 and d20 (all five updates at once, and each alone) were not read. Phasing stays unscored until the method is given the restructuring's cost, or until a candidate is built for real and A/B'd in the model; the footprints (above) are the part of this that stands.
 
 ## 2. Prefetch
 
@@ -62,7 +64,7 @@ Still to score: the cluster reference walk (`cluster_partition_get_next_datum`, 
 
 ## 4. Loop phasing itself
 
-Only if section 1 shows it fits.
+Not started. Section 1: the code of the big updates doesn't fit the cache, and the model's phasing score failed its check, so a candidate needs the restructuring's cost counted before it is built.
 
 ## The model's own fix
 
