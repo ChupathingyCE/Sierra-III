@@ -29,31 +29,6 @@ Branch `fix-cortana`, off the w139 merge of fix-models and fix-lights. Evidence 
 - Per vertex, on the CPU, in the light pass that already lights each vertex (falloff, cone, angle): rotate the light-to-vertex direction by the gel's matrix (one matrix a light a frame), pick the face, sample a small baked gel (six 8 x 8 faces, under a new key bit). About 30-40% more work a lit vertex for gelled lights only; a10's light pass is 3.8-5.5 ms a frame in this stretch, so up to ~1-2 ms where beacons are in view. But level walls have few vertices and the beams are narrow: they would fall between vertices and flicker. Not recommended.
 - Per pixel, on the GE: draw each beacon's beams as projected textures (the GE's texture matrix from positions, divided by q), one or two beam projections a beacon, the matrix turned each frame by the gel's functions. GE cost: one more textured pass over the triangles the light already reaches; no CPU work a vertex. This is the faithful one, and a look call for Sheepdog01 after its own A/B.
 
-## The sweeping gel: design note (not built)
-
-Where it stands: a gelled light (a10's alert beacons) is drawn with its gel's average colour, so the beams are right on average and never sweep. The per-vertex way above is rejected: level walls have few vertices and the beams are narrow, so a beam falls between vertices and flickers as it turns. The choice left is a pass on the GE, and whether to pay for it is a look call.
-
-**What the Xbox does [D]** (`rasterizer_xbox_environment.c`, the diffuse light's begin): the gel is a cube map on texture stage 1, clamped, addressed by the direction from the light to each pixel in the light's frame. That frame is the light's forward and up turned by yaw, pitch and roll, each a periodic function of game time over its own period (the definition's gel block), rebuilt every frame. So the sweep is only a rotating matrix; the pixel work is one cube lookup.
-
-**The GE's limits [D].** No cube maps. It has a texture matrix with a projective divide (`GU_TEXTURE_MATRIX` from `GU_POSITION`, as the spotlight cone already uses in `psp_ge.c`'s light pass): one 2D texture projected from a point along one axis, mirrored behind it. A cube's six faces become up to six projections, or fewer where the gel is dark.
-
-**Options, cheapest first:**
-
-| | What | Look | Cost [U] | Work |
-|---|---|---|---|---|
-| G0 | As now: the average colour | no sweep; walls the right overall tint | nil (measured: within the runs' spread) | done |
-| G1 | The average, pulsed: the light's colour times a ramp of the angle between the gel's turned forward and the light-to-triangle direction, per draw (one dot product a light a frame, one a batch) | a blink in step with the beacon's turn, no beam shape | under 0.1 ms a frame; no new pass | small: CPU only, in the light begin |
-| G2 | One projected beam a gel: the gel's brightest face (found at bake time) as a 64 x 64 texture, projected along the turned axis with the cone's texture matrix machinery; the other faces' average as now | the main beam sweeps across the walls, per pixel, no flicker; a gel with beams on several faces shows only its strongest | one more textured pass over the triangles the light reaches, gelled lights only: a10's light pass is 3.8-5.5 ms a frame in the Cortana stretch, so roughly +0.5-1.5 ms where beacons are in view, near nothing elsewhere | medium: bake (pick and store the face), engine side (pass the gel's angles), GE (a second projection in the light pass) |
-| G3 | The whole cube: up to six projections a gel, each clipped to its face's frustum | as the Xbox | up to six times G2's pass; beyond what b139's frame time allows | large |
-
-**Recommendation [U]:** G2, behind a keep word, off by default until its A/B (a restoration in kind, but it costs frame time; b139's rule is that quality is what is free, so it waits for a build where the light pass has room, or for an ME/GE lever that pays for it). G1 is a cheap stopgap if a blink reads as the beacon's turn; it needs eyes to judge.
-
-**What an A/B would need:**
-- The gel bitmaps in the pack as real faces, not only the cube patches' 8 x 8 average (`tools/texpack.py`): a new bake for every A/B side, so the bake runs once with both sides' data and the keep word chooses.
-- The gel's angles from the light definition each frame (yaw, pitch, roll functions and periods, the block at the light tag's gel) handed with `psp_ge_light_begin`, beside the gel index the change already reads.
-- Emulator, a10's Cortana stretch (game 100-121 s, a shot a second) and the bridge with the beacons in view: G0 against G2 shots side by side, and the PC reference (`pc-chupa` frames, the same ticks with `fixedticks fixedseed`) for where the beams fall; heartbeats paired at equal game time for the light pass's ms (`light_loop_us` and the frame), two runs a side.
-- A map without gels (b30's fight) to show the default path unchanged, and the PSP-1000 only for the price once the emulator says it looks right.
-
 ## Instrument
 
 `lightdump` (keep word): on a screenshot's frame, each light the level's light pass takes: its tag (`psp_light_tag_name`, hud_draw.c), colour, colour drawn, gel index and average, radius, place, facing, cone.
