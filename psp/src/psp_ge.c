@@ -6957,6 +6957,15 @@ int psp_tex_bind(unsigned int key, int *has_alpha);
 int psp_tex_size(unsigned int key, int *width, int *height);
 static unsigned long textured_draws = 0, flat_draws = 0;
 
+/* the level's draws so far, textured and flat (not baked, or still on its
+way from the Memory Stick): "transwalk" reads them across a BSP switch
+(psp_fixups.py, FIXES_TRANSITIONS) */
+void psp_ge_level_draw_counts(unsigned long *textured, unsigned long *flat)
+{
+	*textured = textured_draws;
+	*flat = flat_draws;
+}
+
 /* build 58: the texture level chosen by distance ("slope" mode) instead of
 the GE's automatic choice. The automatic choice (as PPSSPP models it,
 GPU/Software/Rasterizer.cpp) looks only at how s changes across the screen
