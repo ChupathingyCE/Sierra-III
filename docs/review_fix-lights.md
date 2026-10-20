@@ -120,7 +120,7 @@ flashlight showed nothing). Asked again with a stick sweep that tries to pass th
 A/B of the unlifted change with the flashlight on is in the same batch. **Cost:** to be measured (piece
 counts are in the stats line as split pieces).
 
-## H33: a bright line along a corner seen edge-on (restoration, on by default)
+## H33: a bright line along a corner seen edge-on (restoration, on by default; the cause is in round four)
 
 **What:** in light mode 2 (the default), a whole triangle kept as the level drew it (no near-plane cut,
 no split) is drawn without the depth lift, in a seventh band at depth offset 0; cut and split pieces keep
@@ -249,3 +249,48 @@ BSPs 0, 3 and 4 draw black; BSP 2 draws the hand test's scene: the floor and a b
 `glassnoreflection` are pixel-identical there, and the frame counts 0 see-through draws (the hand test's log
 too, at that shot [M]): the glass isn't queued at all, so the reflection path never runs. Open: why the
 glass (type 8, no diffuse map) never reaches the see-through queue at that spot.
+
+## Round four: H33 found and fixed (two emulator batches)
+
+**Which draw [E].** At b30's corner shot, leaving out one see-through map at a time (`tskipN`, N the map's
+address from `tdump`) names it: without `lights small strips` (the light strips' bitmap: `light bright
+overhead`, `light dim white` and the rest) the dashes are gone (0 of 46 pixels); without `alpha grate` (glow
+tech), `light fixture vol` or `holo control` all 46 stay. The nudge settles it: `overlaynoslope` (no slope
+part) and `overlayslope1` (half of it) also remove all 46; `overlaynowall` keeps them. So the line is a light
+strip on a surface behind the pillar, front-facing but seen nearly edge-on, drawn in front of the pillar by
+the slope part of its nudge. That matches the hand note: a stencil showing through along its thinnest edge,
+seen at 90 degrees.
+
+**Why [D].** The slope part is two pixels' worth of the triangle's depth change across the screen. Edge-on
+that change is thousands of depth steps a pixel, and the lift limit that would hold it (`nudge_percent`) is
+off by default, so an edge-on strip moved most of the way to the eye (one strip draw went out at 1,521 steps
+where its neighbours had 15 to 40). Each strip covers a pixel or so edge-on, which is why the line is dashed.
+The Xbox draws the level's overlays with no depth bias at all (`D3DRS_ZBIAS` 0 in the environment passes), so
+the original never shows one through what stands in front of it.
+
+**Fix (restoration, on by default).** `slope_units_capped` drops the slope part for a triangle whose normal
+is within a cosine of 0.10 of square to the view (about 84 degrees and beyond); the distance part and the
+3-step floor stay. It covers the level's overlays and the decals (both callers). **Keep words:**
+`nudgeedge0` keeps the slope part at every angle (as before); `nudgeedgeN` sets the cosine in hundredths.
+The "overlays" stats line adds "dropped edge-on N".
+
+**Evidence [E], one batch, the same build:**
+
+| Run | Dash pixels (shots 011, 012) | Other shots against the fix |
+|---|---|---|
+| fix (cosine 0.10) | 0, 0 | - |
+| `nudgeedge0` (as before) | 46, 46 | 0-9 scattered pixels, edge-on specks |
+| `nudgeedge5` | 0, 0 | identical, all 17 shots |
+| `nudgeedge20` | 0, 0 | 3-4 pixels in 5 shots |
+
+a10's lights route (24 shots) against `nudgeedge0`: identical but for 11-13 scattered pixels along one
+edge-on line (shots 8-14) and a HUD prompt's fade a tenth of a second apart; no symbol, stencil or decal
+lost. The drop is common (in one 300-frame window on b30, 40,570 of 76,005 slope nudges were edge-on: the
+beach's ground overlays at a distance), and the shots show no overlay sinking into its surface for it.
+0.10 is the middle of three settings that all fix the spot; 0.05 and 0.10 give the same 17 shots.
+
+**Cost [E]:** b30 game time 3,000-5,000, frame 6.83 ms against 6.84 (tick 2.66 against 2.67); a10's route
+24.37 ms both. None.
+
+**Status: H33 fixed [E].** The PSP check is the hand test's own spot on the next build. The one-sided cull
+of round three stays: the Xbox's rule, free, and harmless across both maps' shots.
