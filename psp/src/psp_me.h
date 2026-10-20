@@ -145,8 +145,9 @@ struct psp_me_batch
 {
 	/* only ever through the uncached view: limit is the main CPU's (the ME
 	makes no record from it on), started and done the ME's (it claimed and
-	finished every record below them) */
-	struct psp_me_batch_word limit, started, done;
+	finished every record below them), withdrawn the ME's count of jobs it
+	ended at the limit */
+	struct psp_me_batch_word limit, started, done, withdrawn;
 	psp_me_record_fn make;
 	unsigned char *records;
 	unsigned char *state;       /* a byte a record, the main CPU's */

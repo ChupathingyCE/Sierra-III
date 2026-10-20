@@ -71,6 +71,24 @@ Nothing here changes play by default. The one default path it touches (the job r
   - **Run 1 (keep alone): the deadline fired once**, at game time ~180 (the 6th batch pass of that stretch): "a batch record (9) held past 10 ms; the ME is stopped". The path worked as designed: the record was made on the main CPU, `late` 1, every later pass made here, 0 wrong, the game ran on to the exit. The ME stayed stopped for the rest of the run, so run 1 lost the ME's audio and ring work: **tick 57.1 ms against 47.7 ms in run 3 over game time 150-2,640** (one pair, so indicative; the frame by the clock 240 against 210 ms). Why the ME held one record for 10 ms in one run of four is **not known**: the ring's worst pick-up was 4.2 ms in the interval before and 5.4 ms in the one that stopped the ME (0.7-2 ms in the earlier ones), and the frames were slow (170 ms), but nothing in the log names the cause. `mestash` printed nothing here because the batch deadline path calls `psp_me_stop` without `me_stash_dump` (the stash is dumped only on the slot-job and ring-job late paths) [D].
   - **`meedramstate`: no fault, no change.** Both runs with it ran to the exit with 0 wrong, 0 late and the same waits, take-back and ring-test figures as run 3. Timing over game time 150-2,640 (`abreport.py`): tick 47.0 ms (46.9, 47.2) against run 3's 47.7 (run 1 is the stopped-ME run, so the "keep alone" mean of 52.4 is not a fair side); the gap to run 3 is -1.5%, inside the runs' own spread, so the verdict is that it changes nothing measurable, as expected for 4 KB of state. 208-256 KB of the eDRAM took the ME's private stores through two runs (about 1,350 ring bursts each) without a fault.
 
+### The 10 ms deadline read again (`megraceoff` keeps the old behaviour)
+
+- **What the ME can be doing on a claimed record** [D]. Between `started = r + 1` and `done = r + 1`, `batch_job` runs only the limit check, `make` and the record's write-back. No yield, no audio mix (`psp_me_ring_step` mixes after `done`), no other ring job. `batchtest_make` is about 200 multiply-adds, a microsecond or two. Short of a bus stall, the ME cannot hold a test record for 10 ms.
+- **The ME wasn't hung** [M, run 1's log]. The stop line says "halted itself after 1 ms": the ME was back in its idle loop at the stop word's first check, so the job had ended.
+- **The likely cause is the main CPU, not the ME** [U]. The wait looks at `done`/`started` and then reads the clock. The heartbeat thread (priority 0x18, above the game's) formats and writes its whole report each second, and the stop line comes straight after one in the log. If the game thread is taken off the CPU between its look and its clock read, it comes back to a clock past 10 ms with the record already made, and stops a working ME. The ring's wait (`psp_me_wait`, 10 ms from the push) reads the clock the same way.
+- **Making the record here and keeping the ME running is not safe** [D]. The ME still finishes the record, and its write-back covers whole lines. Those can land after the main CPU's copy and overwrite what the client wrote once `psp_me_batch_need` returned. So the recoverable path waits for the ME instead of racing it.
+- **The change** (`psp_me_batch_need`, `psp_me_wait`):
+  - A wait past the deadline by the clock looks once more. If the record (or ring job) is done by then, it is used, the ME keeps running, and the event is counted ("done at a second look") and logged with how long the main CPU was off its wait just before.
+  - A batch record that really is still on the ME at 10 ms is counted as slow. The stash is dumped (where the ME is, its clock), and the main CPU waits up to 40 ms (`BATCH_RECORD_GIVEUP_US`, the limit an audio slot job has).
+  - Only a record still held at 40 ms stops the ME, as before, now with the stash dumped.
+  - `megraceoff` restores the old rule: the first wait past 10 ms stops the ME, with no second look.
+- **New counters on the `ME: batches:` line:**
+  - jobs the ME ended at the limit (its own withdrawals, counted by the ME in a fourth uncached word, `withdrawn`);
+  - the longest wait for a record, and the longest stretch between two looks in one wait (anything in milliseconds is a thread above the game's);
+  - past 10 ms: done at a second look / slow / late.
+- **Cost.** None on the usual path: a subtraction and a compare more per look while waiting, and one uncached store when the ME withdraws. Compiled clean, campaign and `PSP_MULTIPLAYER=1`.
+- **Proof wanted** (PSP, the same route and words): no "held past" line, the ME running to the exit in every run, `batchtest` 0 wrong. A "done at a second look" line, with a gap of milliseconds, confirms the cause. A "slow" line with a stash dump would mean the ME itself was held instead.
+
 **Cost.** None by default: no client uses batches yet; `mebatchtest` is a check word.
 
 ## 4. The ME's private state (`meedramstate`)

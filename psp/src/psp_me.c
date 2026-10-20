@@ -813,7 +813,7 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 {
 	struct psp_me_batch *b = (struct psp_me_batch *)args[0];
 	volatile unsigned int *limit = &UNCACHED(&b->limit)->value, *started = &UNCACHED(&b->started)->value;
-	volatile unsigned int *done = &UNCACHED(&b->done)->value;
+	volatile unsigned int *done = &UNCACHED(&b->done)->value, *withdrawn = &UNCACHED(&b->withdrawn)->value;
 	psp_me_record_fn make = (psp_me_record_fn)args[4];
 	unsigned char *records = (unsigned char *)args[5];
 	unsigned int r = args[1], end = args[1] + args[2], bytes = args[6], made = 0, control = 0, user[ME_BATCH_ARGS], k;
@@ -849,6 +849,7 @@ static void batch_job(const unsigned int *args, unsigned int *results, int on_me
 		if (r >= *limit)
 		{
 			*started = r;
+			*withdrawn = *withdrawn + 1;
 			__asm__ __volatile__("sync");
 			break;
 		}
@@ -1203,6 +1204,12 @@ static int ring_push_drop = 0;
 ("meraysbatch"; otherwise one a job, as before) */
 static int rays_batch = 0;
 static int me_yield_off = 0;
+/* "megraceoff": the ring's and the batches' deadlines as they were, the
+first wait past one stopping the ME (see BATCH_RECORD_DEADLINE_US) */
+static int me_grace_off = 0;
+/* lines said about waits past a deadline, at most DEADLINE_LINES */
+static unsigned int deadline_lines = 0;
+#define DEADLINE_LINES 8
 
 /* The slant split is on by default: the rig showed it exact (0 of 414,000
 triangles differing, 0 failed jobs) and a little faster (b30 and c20: the
@@ -1428,6 +1435,7 @@ int psp_me_start(void)
 	ring_push_drop = psp_keep("mepushdrop");
 	rays_batch = psp_keep("meraysbatch");
 	me_yield_off = psp_keep("meyieldoff");
+	me_grace_off = psp_keep("megraceoff");
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -2097,7 +2105,20 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 				if (me_state <= 0 || CONTROL->stop == 2)
 					return ring_fail(0, ticket, index);
 				if (now - ring_push_mark[index] > RING_DEADLINE_US)
+				{
+					/* as a batch record's: late only if still not done */
+					if (!me_grace_off && (int)(RING_POPPED - ticket) > 0)
+					{
+						if (deadline_lines < DEADLINE_LINES)
+						{
+							deadline_lines++;
+							platform_log("ME: ring job %u (type %u) past %u ms by the clock, done at the look after it (pushed %u us before)",
+								ticket, request->type, RING_DEADLINE_US / 1000, now - ring_push_mark[index]);
+						}
+						break;
+					}
 					return ring_fail(1, ticket, index);
+				}
 				/* mehalt: a wake that may have been lost (me_halt_idle) */
 				me_wake();
 			}
@@ -2138,13 +2159,25 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 #define BATCH_OUT 1     /* in a job pushed to the ME */
 #define BATCH_HERE 2    /* made by the main CPU */
 #define BATCH_BY_ME 3   /* made by the ME, its lines dropped here */
-/* the most a record the ME is on may hold the main CPU */
+/* the most a record the ME is on may hold the main CPU before it looks
+again: past it, a record still not done is slow, and one still not done at
+BATCH_RECORD_GIVEUP_US stops the ME (the limit a slot's audio job has).
+With "megraceoff", the first deadline stops the ME */
 #define BATCH_RECORD_DEADLINE_US 10000
+#define BATCH_RECORD_GIVEUP_US 40000
 
 static struct
 {
 	unsigned long passes, by_me, by_main, taken, waits, refused, late;
+	/* past the deadline by the clock: done at the look after it (this CPU
+	was off its wait meanwhile), or still on the ME (slow) */
+	unsigned long second_look, slow;
+	/* jobs the ME ended at the limit; the longest wait for a record, and
+	the longest stretch between two looks in one (a thread above the game's
+	ran meanwhile) */
+	unsigned long withdrawn, wait_worst_us, gap_worst_us;
 } batch_stats;
+
 
 int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *records, unsigned char *state,
 	unsigned int record_bytes, unsigned int capacity, unsigned int chunk, const unsigned int *args)
@@ -2157,7 +2190,7 @@ int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *recor
 	memset(b, 0, sizeof(*b));
 	/* the words go through the uncached view only: no cached copy of their
 	lines may be left here to be written back over the ME's */
-	sceKernelDcacheWritebackInvalidateRange(b, 3 * sizeof(struct psp_me_batch_word));
+	sceKernelDcacheWritebackInvalidateRange(b, 4 * sizeof(struct psp_me_batch_word));
 	b->make = make;
 	b->records = (unsigned char *)records;
 	b->state = state;
@@ -2181,6 +2214,7 @@ void psp_me_batch_begin(struct psp_me_batch *b)
 	UNCACHED(&b->limit)->value = 0xFFFFFFFFu;
 	UNCACHED(&b->started)->value = 0;
 	UNCACHED(&b->done)->value = 0;
+	UNCACHED(&b->withdrawn)->value = 0;
 	__asm__ __volatile__("sync");
 }
 
@@ -2282,25 +2316,65 @@ int psp_me_batch_need(struct psp_me_batch *b, unsigned int index)
 		__asm__ __volatile__("sync");
 		if (*started > index)
 		{
+			unsigned int now, last, gap, waited;
+			int slow = 0;
+
 			b->waits++;
-			start = sceKernelGetSystemTimeLow();
+			start = last = sceKernelGetSystemTimeLow();
 			while (*done <= index && *started > index)
 			{
-				/* a record held this long, or an ME stopped meanwhile: the
-				ME is stopped (it halts once done, or is held in reset), and
-				what it made is used only if it finished */
-				if (!psp_me_ring_ready() || sceKernelGetSystemTimeLow() - start > BATCH_RECORD_DEADLINE_US)
-				{
-					if (psp_me_ring_ready())
-					{
-						batch_stats.late++;
-						platform_log("ME: a batch record (%u) held past %u ms; the ME is stopped", index,
-							BATCH_RECORD_DEADLINE_US / 1000);
-						psp_me_stop("a batch record late");
-					}
+				/* an ME stopped meanwhile: it halts once done, or is held in
+				reset, and what it made is used only if it finished */
+				if (!psp_me_ring_ready())
 					break;
+				now = sceKernelGetSystemTimeLow();
+				gap = now - last;
+				if (gap > batch_stats.gap_worst_us)
+					batch_stats.gap_worst_us = gap;
+				last = now;
+				if (now - start <= BATCH_RECORD_DEADLINE_US)
+					continue;
+				if (!me_grace_off)
+				{
+					/* the look before this clock may be from before a
+					stretch this CPU spent on a thread above the game's: the
+					record counts as held only if it still is */
+					if (*done > index || *started <= index)
+					{
+						batch_stats.second_look++;
+						if (deadline_lines < DEADLINE_LINES)
+						{
+							deadline_lines++;
+							platform_log("ME: a batch record (%u) past %u ms by the clock (%u us), done at the look after it; this CPU was off its wait %u us just before",
+								index, BATCH_RECORD_DEADLINE_US / 1000, now - start, gap);
+						}
+						continue;
+					}
+					if (!slow)
+					{
+						slow = 1;
+						batch_stats.slow++;
+						if (deadline_lines < DEADLINE_LINES)
+						{
+							deadline_lines++;
+							platform_log("ME: a batch record (%u) still on the ME %u ms after the wait began; waiting to %u ms",
+								index, (now - start) / 1000, BATCH_RECORD_GIVEUP_US / 1000);
+							me_stash_dump("a batch record slow");
+						}
+					}
+					if (now - start <= BATCH_RECORD_GIVEUP_US)
+						continue;
 				}
+				batch_stats.late++;
+				platform_log("ME: a batch record (%u) held past %u ms; the ME is stopped", index,
+					(me_grace_off ? BATCH_RECORD_DEADLINE_US : BATCH_RECORD_GIVEUP_US) / 1000);
+				me_stash_dump("a batch record late");
+				psp_me_stop("a batch record late");
+				break;
 			}
+			waited = sceKernelGetSystemTimeLow() - start;
+			if (waited > batch_stats.wait_worst_us)
+				batch_stats.wait_worst_us = waited;
 		}
 		if (*done <= index)
 		{
@@ -2329,6 +2403,7 @@ void psp_me_batch_finish(struct psp_me_batch *b)
 		if (ring_next - b->tickets[k] - 1 < ME_RING_ENTRIES)
 			psp_me_wait(b->tickets[k], results);
 	b->ticket_count = 0;
+	batch_stats.withdrawn += UNCACHED(&b->withdrawn)->value;
 	batch_stats.passes++;
 	batch_stats.by_me += b->by_me;
 	batch_stats.by_main += b->by_main;
@@ -3011,9 +3086,10 @@ void psp_me_report(void)
 	}
 	if (batch_stats.passes)
 	{
-		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu), waits for a record the ME was on %lu, hand-overs refused %lu, late %lu%s",
-			batch_stats.passes, batch_stats.by_me, batch_stats.by_main, batch_stats.taken, batch_stats.waits,
-			batch_stats.refused, batch_stats.late, batch_sim_half ? " (mebatchsimhalf: the simulated ME makes half of each job)" : "");
+		platform_log("ME: batches: %lu passes; records made by the ME %lu, here %lu (taken back %lu; jobs the ME ended at the limit %lu), waits for a record the ME was on %lu (longest %lu us, longest between two looks %lu us), hand-overs refused %lu; past %u ms: done at a second look %lu, slow %lu, late %lu%s",
+			batch_stats.passes, batch_stats.by_me, batch_stats.by_main, batch_stats.taken, batch_stats.withdrawn, batch_stats.waits,
+			batch_stats.wait_worst_us, batch_stats.gap_worst_us, batch_stats.refused, BATCH_RECORD_DEADLINE_US / 1000,
+			batch_stats.second_look, batch_stats.slow, batch_stats.late, batch_sim_half ? " (mebatchsimhalf: the simulated ME makes half of each job)" : "");
 		memset(&batch_stats, 0, sizeof(batch_stats));
 	}
 	if (batchtest_checked)
