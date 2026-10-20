@@ -6587,10 +6587,12 @@ void psp_game_state_report(void)
 		}
 		else if (kind == 'm')
 		{
-			long in_use = pool->size - pool->free_size;
+			/* in KB, as the peak is kept (bytes against KB made this the use at the
+			moment, not the most) */
+			long in_use = (pool->size - pool->free_size) / 1024;
 
 			if (in_use > psp_state_records[k].peak)
-				psp_state_records[k].peak = (short)(in_use / 1024);
+				psp_state_records[k].peak = (short)in_use;
 			used = psp_state_records[k].peak;
 			of = pool->size / 1024;
 		}
@@ -23929,6 +23931,286 @@ void objects_update(
 """, """				psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
 				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
 				psp_objtrace[2] = (unsigned long)-1;
+"""),
+]
+
+# "poolpeaks" (keep.txt): which game-state arrays and pools could shrink
+# exactly on every map. At each level's end (psp_loading.c, before the old
+# level is let go) and every 60 s of game time (psp_platform.c), a line per
+# array: its maximum count and element size, the furthest index in use since
+# the level began (the count's high-water mark: an array can't be cut below
+# it), and the count and live datums now; for a memory pool, the most in use
+# and the furthest end a block reached. The count's high-water is caught
+# where the count grows (datum_new, datum_new_at_index), a hook in hot code,
+# so this is a recon instrument. The heartbeat's "game state:" survey samples
+# every 5 s and misses peaks between its looks
+FIXES_RECON["source/memory/data.c#poolpeaks"] = [
+("""long datum_new_at_index(
+	struct data_array *data,
+	long index)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #poolpeaks): "poolpeaks" (see there) */
+int psp_data_peaks_on;
+#define PSP_DATA_PEAKS 256
+static struct { struct data_array const *data; short peak; } psp_data_peaks[PSP_DATA_PEAKS];
+
+static unsigned int psp_data_peak_slot(struct data_array const *data)
+{
+	unsigned int slot = ((unsigned long)data >> 3) % PSP_DATA_PEAKS, probes;
+
+	for (probes = 0; probes < PSP_DATA_PEAKS; probes++, slot = (slot + 1) % PSP_DATA_PEAKS)
+		if (psp_data_peaks[slot].data == data || !psp_data_peaks[slot].data)
+			return slot;
+	return PSP_DATA_PEAKS;
+}
+
+static void psp_data_peak_note(struct data_array const *data)
+{
+	unsigned int slot = psp_data_peak_slot(data);
+
+	if (slot == PSP_DATA_PEAKS)
+		return;
+	psp_data_peaks[slot].data = data;
+	if (data->count > psp_data_peaks[slot].peak)
+		psp_data_peaks[slot].peak = data->count;
+}
+
+/* the furthest count since the last reset (0: it hasn't grown since) */
+short psp_data_peak(struct data_array const *data)
+{
+	unsigned int slot = psp_data_peak_slot(data);
+
+	return slot < PSP_DATA_PEAKS && psp_data_peaks[slot].data == data ? psp_data_peaks[slot].peak : 0;
+}
+
+void psp_data_peaks_reset(void)
+{
+	int k;
+
+	for (k = 0; k < PSP_DATA_PEAKS; k++)
+		psp_data_peaks[k].peak = 0;
+}
+#endif
+
+long datum_new_at_index(
+	struct data_array *data,
+	long index)
+{
+"""),
+("""			if (absolute_index>=data->count)
+			{
+				data->count = absolute_index+1;
+			}
+""", """			if (absolute_index>=data->count)
+			{
+				data->count = absolute_index+1;
+#ifdef HALO_PSP
+				if (psp_data_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+					psp_data_peak_note(data);
+#endif
+			}
+"""),
+("""			if (data->count<=absolute_index)
+			{
+				data->count = absolute_index+1;
+			}
+""", """			if (data->count<=absolute_index)
+			{
+				data->count = absolute_index+1;
+#ifdef HALO_PSP
+				if (psp_data_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+					psp_data_peak_note(data);
+#endif
+			}
+"""),
+]
+FIXES_RECON["source/memory/memory_pool.c#poolpeaks"] = [
+("""boolean memory_pool_block_allocate(
+	struct memory_pool *pool,
+	void **reference,
+	long size)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #poolpeaks): "poolpeaks" (see there). A pool
+hands out blocks after its last one and compacts when that fails, so both
+count: the most in use, and the furthest a block's end reached */
+int psp_memory_pool_peaks_on;
+#define PSP_POOL_PEAKS 8
+static struct { struct memory_pool const *pool; long least_free, furthest_end; } psp_pool_peaks[PSP_POOL_PEAKS];
+
+static long psp_memory_pool_end(struct memory_pool const *pool)
+{
+	return pool->last_block ?
+		(long)((byte *)pool->last_block + pool->last_block->size - (byte *)pool->base_address) : 0;
+}
+
+static int psp_memory_pool_slot(struct memory_pool const *pool)
+{
+	int k;
+
+	for (k = 0; k < PSP_POOL_PEAKS; k++)
+		if (psp_pool_peaks[k].pool == pool)
+			return k;
+	for (k = 0; k < PSP_POOL_PEAKS; k++)
+		if (!psp_pool_peaks[k].pool)
+		{
+			psp_pool_peaks[k].pool = pool;
+			psp_pool_peaks[k].least_free = pool->size;
+			psp_pool_peaks[k].furthest_end = 0;
+			return k;
+		}
+	return -1;
+}
+
+static void psp_memory_pool_note(struct memory_pool const *pool)
+{
+	int k = psp_memory_pool_slot(pool);
+	long end = psp_memory_pool_end(pool);
+
+	if (k < 0)
+		return;
+	if (pool->free_size < psp_pool_peaks[k].least_free)
+		psp_pool_peaks[k].least_free = pool->free_size;
+	if (end > psp_pool_peaks[k].furthest_end)
+		psp_pool_peaks[k].furthest_end = end;
+}
+
+/* since the last reset, now included */
+void psp_memory_pool_peak(struct memory_pool const *pool, long *least_free, long *furthest_end)
+{
+	int k;
+
+	psp_memory_pool_note(pool);
+	k = psp_memory_pool_slot(pool);
+	*least_free = k < 0 ? pool->free_size : psp_pool_peaks[k].least_free;
+	*furthest_end = k < 0 ? psp_memory_pool_end(pool) : psp_pool_peaks[k].furthest_end;
+}
+
+void psp_memory_pool_peaks_reset(void)
+{
+	int k;
+
+	for (k = 0; k < PSP_POOL_PEAKS; k++)
+		if (psp_pool_peaks[k].pool)
+		{
+			psp_pool_peaks[k].least_free = psp_pool_peaks[k].pool->size;
+			psp_pool_peaks[k].furthest_end = 0;
+		}
+}
+#endif
+
+boolean memory_pool_block_allocate(
+	struct memory_pool *pool,
+	void **reference,
+	long size)
+{
+"""),
+("""		pool->free_size -= block->size;
+""", """		pool->free_size -= block->size;
+#ifdef HALO_PSP
+		if (psp_memory_pool_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+			psp_memory_pool_note(pool);
+#endif
+"""),
+("""		block->size = actual_new_size;
+""", """		block->size = actual_new_size;
+#ifdef HALO_PSP
+		if (psp_memory_pool_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+			psp_memory_pool_note(pool);
+#endif
+"""),
+]
+FIXES_RECON["source/saved games/game_state.c#poolpeaks"] = [
+("""void *game_state_malloc(
+	const char *name,
+	const char *type,
+	long size)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #poolpeaks): "poolpeaks" (see there) */
+extern int psp_data_peaks_on, psp_memory_pool_peaks_on; /* data.c, memory_pool.c */
+short psp_data_peak(struct data_array const *data);
+void psp_data_peaks_reset(void);
+void psp_memory_pool_peak(struct memory_pool const *pool, long *least_free, long *furthest_end);
+void psp_memory_pool_peaks_reset(void);
+static int psp_pool_peaks_asked;
+
+/* after keep.txt is read (psp_platform.c) */
+void psp_pool_peaks_start(void)
+{
+	psp_pool_peaks_asked = psp_keep("poolpeaks") != 0;
+	psp_data_peaks_on = psp_memory_pool_peaks_on = psp_pool_peaks_asked;
+	if (psp_pool_peaks_asked)
+		platform_psp_log("poolpeaks: on");
+}
+
+/* each array: "name maximum x size: peak P, now C (L live)", with P the
+count's high-water since the level began, and the room above P */
+void psp_pool_peaks_report(const char *label, int level_end)
+{
+	char line[480], text[128];
+	int length = 0, k, added;
+	long above = 0;
+
+	if (!psp_pool_peaks_asked)
+		return;
+	for (k = 0; k < psp_state_record_count; k++)
+	{
+		const char *name = psp_state_records[k].name[0] ? psp_state_records[k].name : "?";
+		char kind = psp_state_records[k].type[0];
+
+		if (kind == 'd')
+		{
+			struct data_array const *data = psp_state_records[k].pointer;
+			short peak = psp_data_peak(data);
+
+			if (!data->valid)
+				continue;
+			if (data->count > peak)
+				peak = data->count;
+			above += (long)(data->maximum_count - peak) * data->size;
+			added = snprintf(text, sizeof(text), " %.28s %d x %d: peak %d, now %d (%d live);", name,
+				data->maximum_count, data->size, peak, data->count, data->actual_count);
+		}
+		else if (kind == 'm')
+		{
+			struct memory_pool const *pool = psp_state_records[k].pointer;
+			long least_free, furthest_end;
+
+			psp_memory_pool_peak(pool, &least_free, &furthest_end);
+			added = snprintf(text, sizeof(text), " %.28s pool %ld KB: peak %ld KB in use, furthest end %ld KB, now %ld KB;",
+				name, pool->size / 1024, (pool->size - least_free) / 1024, furthest_end / 1024,
+				(pool->size - pool->free_size) / 1024);
+		}
+		else
+			continue;
+		if (added >= (int)sizeof(text))
+			added = sizeof(text) - 1;
+		if (length && length + added >= (int)sizeof(line) - 48)
+		{
+			platform_psp_log("poolpeaks (%s):%s", label, line);
+			length = 0;
+		}
+		memcpy(line + length, text, added + 1);
+		length += added;
+	}
+	if (length)
+		platform_psp_log("poolpeaks (%s):%s", label, line);
+	platform_psp_log("poolpeaks (%s): %ld KB between the arrays' peaks and their maximums", label, above / 1024);
+	if (level_end)
+	{
+		psp_data_peaks_reset();
+		psp_memory_pool_peaks_reset();
+	}
+}
+#endif
+
+void *game_state_malloc(
+	const char *name,
+	const char *type,
+	long size)
+{
 """),
 ]
 

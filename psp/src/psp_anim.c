@@ -517,6 +517,13 @@ void psp_anim_close(void)
 	free_failure_blocks();
 }
 
+/* where its block in the tag window ends (0: none), so the geometry cache
+can take what lies past it (psp_geo.c, "geowindow") */
+unsigned int psp_anim_window_end(void)
+{
+	return block_slots[0] ? block_at[0] + (block_slots[0] << page_shift) : 0;
+}
+
 /* the pack holds animation data: bytes of it in [first, end) (offsets from
 the pack's data, as its header gives them), laid out for page (0: not laid
 out for one); window_at and window_bytes, the tag window's unused part (0:

@@ -18,6 +18,7 @@ from the heap: psp_dsound.c), "settleoff", "settleN", "loadholdN" (the screen's
 shortest showing, 6 s by default; "loadhold0" none); the boot screen's "bootlog",
 "boothintN", "bootsettleoff". */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include "psp_loading.h"
 #include "psp_paths.h" /* PSP_DATA_ROOT: ms0:/halo or ms0:/halomp */
@@ -29,6 +30,10 @@ extern void platform_log(const char *format, ...);
 extern int psp_keep(const char *name);
 extern int psp_keep_number(const char *prefix, int fallback);
 extern unsigned long psp_tex_load_count(void);
+/* "heapmap" (psp_libc.c) and "poolpeaks" (psp_fixups.py FIXES_RECON
+#poolpeaks, so linked weakly): measured where a level ends and begins */
+extern void psp_heap_map(const char *label);
+extern void psp_pool_peaks_report(const char *label, int level_end) __attribute__((weak));
 
 static struct
 {
@@ -225,6 +230,13 @@ static void update(int phase)
 
 static void loading_begin(const char *map_name, int with_chant)
 {
+	char label[80];
+
+	/* before the old level is let go */
+	snprintf(label, sizeof(label), "leaving for %s", map_name ? map_name : "?");
+	if (psp_pool_peaks_report)
+		psp_pool_peaks_report(label, 1);
+	psp_heap_map(label);
 	memset(&loading, 0, sizeof(loading));
 	loading.active = 1;
 	loading.screen = !psp_keep("loadingoff");
@@ -335,6 +347,8 @@ void psp_loading_settle_veil(void)
 
 void psp_loading_end(void)
 {
+	char label[80];
+
 	if (!loading.active)
 		return;
 	platform_log("loading: %s took %lu ms (%lu of %lu bytes counted, %lu frames drawn)", loading.map,
@@ -353,6 +367,10 @@ void psp_loading_end(void)
 
 		psp_ge_stencils_retry();
 	}
+	/* after the time above, which it would add to, and once the chant has
+	let its voices go */
+	snprintf(label, sizeof(label), "%s loaded", loading.map);
+	psp_heap_map(label);
 }
 
 /* ---------- the boot screen (from the hand test: the

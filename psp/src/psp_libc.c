@@ -632,6 +632,10 @@ running count */
 volatile unsigned long psp_heap_failures = 0;
 #define HEAP_FAILURES_LOGGED 64
 
+static void heap_map_tag(void *pointer, size_t size, const char *kind, void *caller); /* below */
+void psp_heap_map(const char *label); /* below */
+static struct heap_map_space *heap_map; /* below */
+
 static void *heap_note(void *result, size_t size, const char *kind, void *caller)
 {
 	if (result)
@@ -646,12 +650,21 @@ static void *heap_note(void *result, size_t size, const char *kind, void *caller
 		if (++psp_heap_failures <= HEAP_FAILURES_LOGGED)
 			platform_log("heap: %s of %u bytes FAILED (large requests so far %lu KB)%s", kind, (unsigned)size,
 				heap_large_total / 1024, psp_heap_failures == HEAP_FAILURES_LOGGED ? "; further failures are only counted" : "");
+		/* the map at the moment a large request finds no room: what took the
+		space the level change left */
+		if (heap_map && size >= 0x4000 && psp_heap_failures <= HEAP_FAILURES_LOGGED)
+			psp_heap_map("a failed request");
 	}
-	else if (size >= 0x10000)
+	else if (size >= 0x4000)
 	{
-		heap_large_total += size;
-		platform_log("heap: %s %u KB from %p (large requests so far %lu KB)", kind, (unsigned)(size / 1024),
-			caller, heap_large_total / 1024);
+		if (heap_map)
+			heap_map_tag(result, size, kind, caller);
+		if (size >= 0x10000)
+		{
+			heap_large_total += size;
+			platform_log("heap: %s %u KB from %p (large requests so far %lu KB)", kind, (unsigned)(size / 1024),
+				caller, heap_large_total / 1024);
+		}
 	}
 	return result;
 }
@@ -672,3 +685,328 @@ void *__wrap_malloc(size_t size) { return heap_note(__real_malloc(size), size, "
 void *__wrap_calloc(size_t count, size_t size) { return heap_note(__real_calloc(count, size), count * size, "calloc", __builtin_return_address(0)); }
 void *__wrap_realloc(void *pointer, size_t size) { return heap_note(__real_realloc(pointer, size), size, "realloc", __builtin_return_address(0)); }
 void *__wrap_memalign(size_t alignment, size_t size) { return heap_note(__real_memalign(alignment, size), size, "memalign", __builtin_return_address(0)); }
+
+/* ---------- the heap's map ("heapmap", keep.txt)
+
+A large request can fail with plenty free inside the heap when no single gap
+is large enough. The map says what splits it: when a level change starts
+(the old level still in) and once the new level has loaded and settled
+(psp_loading.c), newlib's chunks are walked in address order and every gap
+and every block of 16 KB or more is logged, at its offset in KB from the
+heap's start, with what asked for each block. The engine's blocks
+(debug_malloc, behind GlobalAlloc's 16-byte header) carry their own file and
+line; the rest are named by the caller recorded as they are made, which
+psp-addr2line -f -e halo.elf turns into a function. Newlib's allocator
+(dlmalloc 2.6) merges a freed chunk with its neighbours at once, so a chunk
+not marked in use is free space as the allocator sees it.
+
+Off, it costs one test on requests of 16 KB or more: its tables come from
+the heap only when the word is set */
+
+/* newlib's chunk header (mallocr.c): the size's low bit says whether the
+chunk before this one is in use; chunks are 16-byte aligned past it */
+struct heap_chunk
+{
+	unsigned long previous_size, size;
+};
+#define HEAP_CHUNK_SIZE(chunk) ((chunk)->size & ~3ul)
+#define HEAP_CHUNK_AFTER(chunk) ((struct heap_chunk *)((char *)(chunk) + HEAP_CHUNK_SIZE(chunk)))
+extern char *__malloc_sbrk_base;
+extern struct heap_chunk *__malloc_av_[]; /* [2]: the top chunk */
+void __malloc_lock(struct _reent *reent);
+void __malloc_unlock(struct _reent *reent);
+extern int sce_newlib_heap_kb_size; /* PSP_HEAP_SIZE_KB (psp_platform.c) */
+
+#define HEAP_MAP_LARGE 0x4000
+#define HEAP_MAP_TAGS 256
+#define HEAP_MAP_ENTRIES 384
+#define HEAP_MAP_BETWEEN 8
+/* past a chunk's request: its size field, the rounding to 16 and what
+memalign leaves rather than split off */
+#define HEAP_MAP_SLACK (4 + 15 + 32)
+
+struct heap_map_entry
+{
+	unsigned long offset, size;
+	const char *file;   /* the engine's record of the block, or NULL */
+	unsigned long tag;  /* the engine's line, or the caller's address */
+	char kind;          /* 'g' a gap, 't' the top gap, 'd' the engine's, 'm' 'c' 'r' 'a' by request, '?' */
+};
+
+struct heap_map_space
+{
+	struct { void *pointer, *caller; unsigned long size; char kind; } tags[HEAP_MAP_TAGS];
+	unsigned int next_tag;
+	struct heap_map_entry entries[HEAP_MAP_ENTRIES];
+	struct heap_map_entry between[HEAP_MAP_BETWEEN];
+};
+
+static int heap_map_fits(unsigned long chunk_size, unsigned long asked)
+{
+	return asked + 4 <= chunk_size && chunk_size <= asked + HEAP_MAP_SLACK;
+}
+
+/* whether a recorded block still looks in use at its size (read without
+the allocator's lock: a hint for which entry to give up, no more) */
+static int heap_map_tag_live(void *pointer, unsigned long asked)
+{
+	struct heap_chunk *chunk = (struct heap_chunk *)((char *)pointer - 8);
+
+	if (__malloc_sbrk_base == (char *)-1 || (char *)chunk < __malloc_sbrk_base || chunk >= __malloc_av_[2])
+		return 0;
+	return heap_map_fits(HEAP_CHUNK_SIZE(chunk), asked) && (HEAP_CHUNK_AFTER(chunk)->size & 1);
+}
+
+/* frees aren't seen here, so an entry can outlive its block: the map trusts
+one only where it finds a block of that size at that address. When the table
+is full, the oldest entry whose block is gone gives way */
+static void heap_map_tag(void *pointer, size_t size, const char *kind, void *caller)
+{
+	struct heap_map_space *space = heap_map;
+	unsigned int k, slot = HEAP_MAP_TAGS;
+	int interrupts = pspSdkDisableInterrupts();
+
+	for (k = 0; k < HEAP_MAP_TAGS; k++)
+		if (space->tags[k].pointer == pointer)
+		{
+			slot = k;
+			break;
+		}
+	for (k = 0; slot == HEAP_MAP_TAGS && k < HEAP_MAP_TAGS; k++)
+	{
+		unsigned int at = (space->next_tag + k) % HEAP_MAP_TAGS;
+
+		if (!space->tags[at].pointer || !heap_map_tag_live(space->tags[at].pointer, space->tags[at].size))
+			slot = at;
+	}
+	if (slot == HEAP_MAP_TAGS)
+		slot = space->next_tag;
+	space->next_tag = (slot + 1) % HEAP_MAP_TAGS;
+	space->tags[slot].pointer = pointer;
+	space->tags[slot].caller = caller;
+	space->tags[slot].size = size;
+	space->tags[slot].kind = kind[1] == 'e' ? 'a' : kind[0];
+	pspSdkEnableInterrupts(interrupts);
+}
+
+/* a source file's name, as the engine recorded it: in the program's image,
+which ends where the heap begins */
+static int heap_map_text(const char *text, const char *heap)
+{
+	return (unsigned long)text >= 0x08800000ul && text < heap && text[0] >= ' ' && text[0] < 127;
+}
+
+static void heap_map_name(struct heap_map_space *space, struct heap_chunk *chunk, unsigned long size,
+	struct heap_map_entry *entry)
+{
+	const unsigned long *words = (const unsigned long *)(chunk + 1);
+	int k;
+
+	entry->file = NULL;
+	entry->tag = 0;
+	entry->kind = '?';
+	/* GlobalAlloc's 16 bytes, then debug_malloc's header: signature, two
+	links, size, file, line (debug_memory.c) */
+	if (size >= 8 + 16 + 32 + 4 && words[4] == 0x2D2D2D3Eul && words[7] + 16 + 32 + 4 + 4 <= size &&
+		heap_map_text((const char *)words[8], __malloc_sbrk_base))
+	{
+		const char *file = (const char *)words[8], *c;
+
+		for (c = file; *c && c - file < 160; c++)
+			if (*c == '\\' || *c == '/')
+				file = c + 1;
+		entry->file = file;
+		entry->tag = words[9];
+		entry->kind = 'd';
+		return;
+	}
+	for (k = 0; k < HEAP_MAP_TAGS; k++)
+		if (space->tags[k].pointer == (const void *)words && heap_map_fits(size, space->tags[k].size))
+		{
+			entry->tag = (unsigned long)space->tags[k].caller;
+			entry->kind = space->tags[k].kind;
+			return;
+		}
+}
+
+static int heap_map_text_of(char *text, int size, const struct heap_map_entry *entry)
+{
+	switch (entry->kind)
+	{
+	case 'g': return snprintf(text, size, " +%luK gap %luK;", entry->offset / 1024, entry->size / 1024);
+	case 't': return snprintf(text, size, " +%luK top gap %luK;", entry->offset / 1024, entry->size / 1024);
+	case 'd': return snprintf(text, size, " +%luK %luK %.24s:%lu;", entry->offset / 1024, entry->size / 1024, entry->file, entry->tag);
+	case '?': return snprintf(text, size, " +%luK %luK ?;", entry->offset / 1024, entry->size / 1024);
+	default: return snprintf(text, size, " +%luK %luK %c@%08lx;", entry->offset / 1024, entry->size / 1024, entry->kind, entry->tag);
+	}
+}
+
+/* entries onto lines under the log's 512 bytes */
+static void heap_map_lines(const char *label, const char *heading, const struct heap_map_entry *entries, int count)
+{
+	char line[480], text[80];
+	int length = 0, k;
+
+	for (k = 0; k < count; k++)
+	{
+		int added = heap_map_text_of(text, sizeof(text), &entries[k]);
+
+		if (length && length + added >= (int)sizeof(line) - 64)
+		{
+			platform_log("heapmap (%s)%s:%s", label, heading, line);
+			length = 0;
+		}
+		memcpy(line + length, text, added + 1);
+		length += added;
+	}
+	if (length)
+		platform_log("heapmap (%s)%s:%s", label, heading, line);
+}
+
+/* after keep.txt is read (psp_platform.c) */
+void psp_heap_map_start(void)
+{
+	extern int psp_keep(const char *name);
+	struct heap_map_space *space;
+
+	if (heap_map || !psp_keep("heapmap"))
+		return;
+	space = __real_malloc(sizeof(*space));
+	if (!space)
+		return;
+	memset(space, 0, sizeof(*space));
+	heap_map = space;
+	platform_log("heapmap: on (%u bytes of tables from the heap)", (unsigned)sizeof(*space));
+}
+
+void psp_heap_map(const char *label)
+{
+	struct heap_map_space *space = heap_map;
+	struct heap_chunk *chunk, *first, *top;
+	char *base, *end, *taken;
+	unsigned long free_total = 0, used_total = 0, top_size = 0, untaken = 0, between_bytes = 0, stopped_size = 0;
+	unsigned long gap_offset[2] = { 0, 0 }, gap_size[2] = { 0, 0 }, low, high, stopped_at = ~0ul;
+	int gaps = 0, used = 0, entries = 0, more = 0, between = 0, between_count = 0, pass, k;
+
+	if (!space || __malloc_sbrk_base == (char *)-1)
+		return;
+	__malloc_lock(_REENT);
+	base = __malloc_sbrk_base;
+	top = __malloc_av_[2];
+	end = base + (unsigned long)sce_newlib_heap_kb_size * 1024;
+	taken = sbrk(0);
+	if (taken != (char *)-1 && taken < end)
+		untaken = end - taken;
+	first = (struct heap_chunk *)(base + ((16 - (((unsigned long)base + 8) & 15)) & 15));
+	for (pass = 0; pass < 2; pass++)
+	{
+		for (chunk = first; chunk != top; chunk = HEAP_CHUNK_AFTER(chunk))
+		{
+			unsigned long size = HEAP_CHUNK_SIZE(chunk), offset = (char *)chunk - base;
+			int in_use;
+
+			if (size < 16 || (char *)chunk + size > (char *)top)
+			{
+				stopped_at = offset;
+				stopped_size = size;
+				break;
+			}
+			in_use = HEAP_CHUNK_AFTER(chunk)->size & 1;
+			if (pass == 1)
+			{
+				/* what sits between the two largest gaps */
+				if (in_use && offset > low && offset < high)
+				{
+					between_count++;
+					between_bytes += size;
+					for (k = between; k > 0 && space->between[k - 1].size < size; k--)
+						if (k < HEAP_MAP_BETWEEN)
+							space->between[k] = space->between[k - 1];
+					if (k < HEAP_MAP_BETWEEN)
+					{
+						space->between[k].offset = offset;
+						space->between[k].size = size;
+						heap_map_name(space, chunk, size, &space->between[k]);
+						if (between < HEAP_MAP_BETWEEN)
+							between++;
+					}
+				}
+				continue;
+			}
+			if (in_use)
+			{
+				used++;
+				used_total += size;
+			}
+			else
+			{
+				gaps++;
+				free_total += size;
+				if (size > gap_size[0])
+				{
+					gap_size[1] = gap_size[0], gap_offset[1] = gap_offset[0];
+					gap_size[0] = size, gap_offset[0] = offset;
+				}
+				else if (size > gap_size[1])
+					gap_size[1] = size, gap_offset[1] = offset;
+			}
+			if (size < HEAP_MAP_LARGE)
+				continue;
+			if (entries == HEAP_MAP_ENTRIES)
+			{
+				more++;
+				continue;
+			}
+			space->entries[entries].offset = offset;
+			space->entries[entries].size = size;
+			if (in_use)
+				heap_map_name(space, chunk, size, &space->entries[entries]);
+			else
+				space->entries[entries].kind = 'g';
+			entries++;
+		}
+		if (pass == 1)
+			break;
+		/* the top chunk, and past it what the system hasn't handed over yet:
+		one gap, which a request can grow into */
+		if (top != first && (char *)top > base && (char *)top < end)
+		{
+			unsigned long offset = (char *)top - base;
+
+			top_size = HEAP_CHUNK_SIZE(top) + untaken;
+			gaps++;
+			free_total += top_size;
+			if (top_size > gap_size[0])
+			{
+				gap_size[1] = gap_size[0], gap_offset[1] = gap_offset[0];
+				gap_size[0] = top_size, gap_offset[0] = offset;
+			}
+			else if (top_size > gap_size[1])
+				gap_size[1] = top_size, gap_offset[1] = offset;
+			if (entries < HEAP_MAP_ENTRIES)
+			{
+				space->entries[entries].offset = offset;
+				space->entries[entries].size = top_size;
+				space->entries[entries].kind = 't';
+				entries++;
+			}
+		}
+		low = gap_offset[0] < gap_offset[1] ? gap_offset[0] : gap_offset[1];
+		high = gap_offset[0] < gap_offset[1] ? gap_offset[1] : gap_offset[0];
+	}
+	__malloc_unlock(_REENT);
+
+	platform_log("heapmap (%s): %lu KB heap at %08lx; %lu KB free in %d gaps, the largest %lu KB at +%luK, the next %lu KB at +%luK; "
+		"%lu KB in use in %d blocks; the top gap %lu KB, %lu KB of it not yet taken from the system",
+		label, (end - base) / 1024, (unsigned long)base, free_total / 1024, gaps, gap_size[0] / 1024, gap_offset[0] / 1024,
+		gap_size[1] / 1024, gap_offset[1] / 1024, used_total / 1024, used, top_size / 1024, untaken / 1024);
+	if (stopped_at != ~0ul)
+		platform_log("heapmap (%s): the walk stopped at +%luK, a chunk of %lu bytes: the allocator's records look damaged",
+			label, stopped_at / 1024, stopped_size);
+	heap_map_lines(label, " gaps and blocks of 16 KB or more", space->entries, entries);
+	if (more)
+		platform_log("heapmap (%s): %d more of 16 KB or more not listed", label, more);
+	platform_log("heapmap (%s): between the two largest gaps, %d blocks in use, %lu KB; the largest %d follow",
+		label, between_count, between_bytes / 1024, between);
+	heap_map_lines(label, " between", space->between, between);
+}

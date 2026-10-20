@@ -984,6 +984,8 @@ static void keep_load(void)
 	platform_log("keep words, build 132's recon (emulator): nmreaders (who first reads each object's node matrices after they're computed, by nodes, and the call sites of other objects' reads)");
 	platform_log("keep words, build 136's: wake-on-write on in local games (a sleeping object checksummed only when something marked it since its last check); speed off: wakeonwriteoff (every sleeper summed every tick); opt-in: wakeonwrite (on in networked games too); check: wakecheck (every sleeper summed anyway, an unmarked change logged with the words that changed). wakeonwrite and wakecheck win over the off word");
 	platform_log("keep words, shelved (docs/shelf.md): nwbatch and its kin built in only with PSP_SHELF=1; still built but shelved, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash (the b123 ME hygiene), mewake, mewarmtest, mefinishslow");
+	platform_log("keep words, the heap at each level change (opt-in): heapmap (its gaps and blocks of 16 KB or more, with what asked for each); recon builds only: poolpeaks (each game-state array's peak against its maximum)");
+	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -1995,6 +1997,14 @@ void psp_tick_account(unsigned long microseconds)
 		}
 		if (ticks_seen % 900 == 75)
 			stack_report();
+		if (ticks_seen % 1800 == 75)
+		{
+			/* "poolpeaks": the peaks so far, every 60 s of game time */
+			extern void psp_pool_peaks_report(const char *label, int level_end) __attribute__((weak));
+
+			if (psp_pool_peaks_report)
+				psp_pool_peaks_report("every 60 s", 0);
+		}
 	}
 
 	/* build 105: the bus probe's second reading, 10 s into play */
@@ -3036,6 +3046,19 @@ int main(int argc, char **argv)
 		psp_menu(PSP_BUILD_NUMBER);
 	}
 	keep_load();
+	{
+		/* "heapmap" and "poolpeaks": the heap's map and the game state's
+		peaks at each level change (psp_libc.c; psp_fixups.py FIXES_RECON
+		#poolpeaks, linked weakly) */
+		extern void psp_heap_map_start(void);
+		extern void psp_pool_peaks_start(void) __attribute__((weak));
+
+		psp_heap_map_start();
+		if (psp_pool_peaks_start)
+			psp_pool_peaks_start();
+		else if (psp_keep("poolpeaks"))
+			platform_log("poolpeaks: not in this build (PSP_RECON=1 builds it)");
+	}
 	{
 		/* before anything reads the maps: a bake of another format is
 		explained on the screen rather than drawn wrong (psp_bakecheck.c) */

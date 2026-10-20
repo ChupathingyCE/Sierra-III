@@ -42,6 +42,7 @@ void psp_anim_map_opened(unsigned int bytes, unsigned int first, unsigned int en
 void psp_anim_suspend(void);
 void psp_anim_report(void);
 void psp_anim_frame_end(void);
+unsigned int psp_anim_window_end(void);
 
 #define EXTERNAL_BASE 0x0C000000u
 #define HEADER_BYTES 64
@@ -68,12 +69,27 @@ static SceUID pack = -1;
 static unsigned int pack_size = 0;
 static char pack_name[64];
 static unsigned int arena_start = 0, arena_end = 0, arena_next = 0;
+/* "geowindow": a second region, the part of the tag window the map never
+uses past what the animation cache took (psp_geo_window). It is per map (the
+bake measures it over the map's BSPs) and many maps have none, so the cache
+never counts on it: without it the cache is the arena above, as before */
+static unsigned int extra_start = 0, extra_end = 0;
+
+static int in_cache(unsigned int a)
+{
+	return (a >= arena_start && a < arena_end) || (a >= extra_start && a < extra_end);
+}
 
 /* the cache's addresses, for "gereads" (psp_ge.c) */
 void psp_geo_range(unsigned int *start, unsigned int *end)
 {
 	*start = arena_start;
 	*end = arena_end;
+}
+
+int psp_geo_holds(unsigned int address)
+{
+	return in_cache(address);
 }
 /* the cache's size when it is carved from the texture RAM cache (a
 campaign map): 1 MB, or 1.5 / 2 MB with "geo15" / "geo2" (launch menu). At
@@ -119,6 +135,24 @@ static int alignment(unsigned int size)
 {
 	return (size + 63) & ~63u;
 }
+
+/* ---------- "memcensus" (docs/memory_census.md): what size would stop the
+churn. Two counts, read at each 300-frame report:
+- the working set: the bytes of every block wanted in the last 1, 5, 10 and
+  30 s of frames (an entry's last_frame), whether or not it is resident;
+- each read of a block read before, by the bytes the cache read between its
+  last read and this one. The arena is used as a ring, so a block survives
+  until about the cache's size has been read after it: a re-read at distance
+  d would have been a hit with a cache larger than d. Re-reads under the
+  cache's own size were lost to its gaps and the blocks it may not evict
+  (the policy's share, not the size's).
+Off: one test per read from the Memory Stick */
+static int census_on = -1;
+#define CENSUS_BUCKETS 7
+static unsigned int census_read_at[GEO_ENTRIES]; /* load_bytes + 1 at an entry's last read; 0: never read */
+static unsigned long census_rereads[CENSUS_BUCKETS], census_first = 0, census_forgotten = 0;
+static const char *const census_bucket_names[CENSUS_BUCKETS] = {
+	"under the cache's size", "+256 KB", "+512 KB", "+1 MB", "+2 MB", "+4 MB", "more" };
 
 /* the entries by external address, chained in buckets (the
 emulator's PC samples: 3% of b30's beach fight in finding an entry, a scan
@@ -184,7 +218,7 @@ static int fits(unsigned int start, unsigned int size)
 	unsigned int end = start + size;
 	int index;
 
-	if (end > arena_end)
+	if (!start || end > (start >= extra_start && start < extra_end ? extra_end : arena_end))
 		return 0;
 	for (index = 0; index < entry_count; index++)
 	{
@@ -201,12 +235,18 @@ static unsigned int allocate(unsigned int size)
 	unsigned int start = 0;
 	int index;
 
-	if (!arena_start || size > arena_end - arena_start)
+	if (!arena_start || (size > arena_end - arena_start && size > extra_end - extra_start))
 		return 0;
+	/* one ring through both regions: at its end, a region goes on at the
+	other's start */
 	if (fits(arena_next, size))
 		start = arena_next;
+	else if (extra_end > extra_start && arena_next >= arena_start && arena_next <= arena_end && fits(extra_start, size))
+		start = extra_start;
 	else if (fits(arena_start, size))
 		start = arena_start;
+	else if (fits(extra_start, size))
+		start = extra_start;
 	else
 		for (index = 0; index < entry_count && !start; index++)
 		{
@@ -235,6 +275,32 @@ static unsigned int allocate(unsigned int size)
 	return start;
 }
 
+static unsigned int cache_bytes(void)
+{
+	return (arena_end - arena_start) + (extra_end - extra_start);
+}
+
+/* a block has been read (before load_bytes counts it) */
+static void census_read(const struct geo_entry *e)
+{
+	int index = (int)(e - entries), bucket;
+	unsigned int distance, size;
+
+	if (census_on <= 0)
+		return;
+	if (!census_read_at[index])
+		census_first++;
+	else
+	{
+		distance = (unsigned int)load_bytes - (census_read_at[index] - 1);
+		size = cache_bytes();
+		bucket = distance < size ? 0 : distance < size + 256 * 1024 ? 1 : distance < size + 512 * 1024 ? 2 :
+			distance < size + 1024 * 1024 ? 3 : distance < size + 2048 * 1024 ? 4 : distance < size + 4096 * 1024 ? 5 : 6;
+		census_rereads[bucket]++;
+	}
+	census_read_at[index] = (unsigned int)load_bytes + 1;
+}
+
 /* the read in flight has finished with this result */
 static void complete(SceInt64 result)
 {
@@ -251,6 +317,7 @@ static void complete(SceInt64 result)
 		e->state = 3;
 		e->generation = ++generation_counter;
 		e->last_frame = frame;
+		census_read(e);
 		loads++;
 		load_bytes += e->size;
 	}
@@ -389,6 +456,7 @@ static int read_entry_now(struct geo_entry *e)
 	e->state = 3;
 	e->generation = ++generation_counter;
 	e->last_frame = frame;
+	census_read(e);
 	loads++;
 	load_bytes += e->size;
 	frame_read_bytes += e->size;
@@ -507,7 +575,10 @@ static struct geo_entry *entry_new(unsigned int address, unsigned int size)
 		if (e->at)
 			evictions++;
 		hash_remove((int)(e - entries));
+		if (census_on > 0 && census_read_at[e - entries])
+			census_forgotten++; /* its next read will look like a first one */
 	}
+	census_read_at[e - entries] = 0;
 	memset(e, 0, sizeof(*e));
 	e->address = address;
 	e->size = size;
@@ -623,7 +694,7 @@ static int resident_entry(const void *ptr)
 	short *at_slot = at_slot_cpu[PSP_ME_WORK() ? 1 : 0]; /* (the emulator's simulated ME work too, for its write trace) */
 	int index;
 
-	if (at < arena_start || at >= arena_end)
+	if (!in_cache(at))
 		return -1;
 	if (last_locked >= 0 && entry_holds(last_locked, at))
 		return last_locked;
@@ -662,6 +733,29 @@ int psp_geo_external(unsigned int address)
 	return pack >= 0 && address >= EXTERNAL_BASE && address < EXTERNAL_BASE + pack_size;
 }
 
+static void __attribute__((noinline, cold)) census_report(void)
+{
+	/* frames: about 1, 5, 10 and 30 s at 30 fps; at the frame rates the
+	PSP draws the busy maps (5-15 fps) they span 2-6 times as long */
+	static const unsigned int spans[4] = { 30, 150, 300, 900 };
+	unsigned int set[4] = { 0, 0, 0, 0 };
+	char line[400];
+	int index, k, at;
+
+	for (index = 0; index < entry_count; index++)
+		for (k = 0; k < 4; k++)
+			if (entries[index].last_frame && entries[index].last_frame + spans[k] > frame)
+				set[k] += alignment(entries[index].size);
+	platform_log("memcensus: geometry working set, KB wanted in the last frames: %u KB in 30 frames; %u KB in 150 frames; %u KB in 300 frames; %u KB in 900 frames (the cache %u KB; %d entries of %d)",
+		set[0] / 1024, set[1] / 1024, set[2] / 1024, set[3] / 1024, cache_bytes() / 1024, entry_count, GEO_ENTRIES);
+	at = snprintf(line, sizeof(line), "memcensus: geometry re-reads by bytes read since the block was last read (beyond the cache's size):");
+	for (k = 0; k < CENSUS_BUCKETS && at < (int)sizeof(line) - 1; k++)
+		at += snprintf(line + at, sizeof(line) - at, " %s: %lu;", census_bucket_names[k], census_rereads[k]);
+	if (at < (int)sizeof(line) - 1)
+		snprintf(line + at, sizeof(line) - at, " first reads %lu, entries forgotten %lu (since the map began)", census_first, census_forgotten);
+	platform_log("%s", line);
+}
+
 void psp_geo_frame_end(void)
 {
 	if (async_reads)
@@ -693,8 +787,10 @@ void psp_geo_frame_end(void)
 
 		platform_log("geometry: %lu hits, %lu misses (%lu frames missed something, %lu draws left out); %lu loaded (%lu KB), %lu evicted, %lu waited for room, %lu for the queue; %u blocks resident (%u KB of %u); reading %lu ms in all, worst frame %lu ms (%s); read past the frame's share for a draw %lu (%lu KB)",
 			hits, misses, miss_frames, psp_geometry_draws_missed, loads, load_bytes / 1024, evictions, no_room, queue_full,
-			resident, resident_bytes / 1024, (arena_end - arena_start) / 1024, read_us / 1000, frame_read_worst_us / 1000,
+			resident, resident_bytes / 1024, cache_bytes() / 1024, read_us / 1000, frame_read_worst_us / 1000,
 			async_reads ? "asynchronous" : "synchronous", past_share_reads, past_share_bytes / 1024);
+		if (census_on > 0)
+			census_report();
 		psp_anim_report();
 	}
 	frame++;
@@ -736,6 +832,29 @@ void psp_geo_close(void)
 	}
 	pack_size = 0;
 	arena_start = arena_end = arena_next = 0;
+	extra_start = extra_end = 0;
+}
+
+/* the tag window's part the map never uses, past what the animation cache
+took: "geowindow" makes it the cache's second region (64 KB or more); the
+census says where it lies either way */
+static void psp_geo_window(unsigned int window_at, unsigned int window_bytes, unsigned int tag_data_end, unsigned int window_end)
+{
+	unsigned int animation_end = psp_anim_window_end(), start, end;
+
+	start = animation_end > window_at ? animation_end : window_at;
+	start = (start + 63) & ~63u;
+	end = window_bytes ? (window_at + window_bytes) & ~63u : 0;
+	if (census_on > 0)
+		platform_log("memcensus: tag window: the tags end at %08x (%u KB into it), the window at %08x; the span no BSP of this map uses %u KB at %08x; the animation cache took %u KB of it; free span %u KB",
+			tag_data_end, (tag_data_end - 0x09600000u) / 1024, window_end, window_bytes / 1024, window_at,
+			animation_end > window_at ? (animation_end - window_at) / 1024 : 0, end > start ? (end - start) / 1024 : 0);
+	if (end <= start || end - start < 64 * 1024 || !psp_keep("geowindow"))
+		return;
+	extra_start = start;
+	extra_end = end;
+	platform_log("geometry: geowindow: %u KB more at %08x (the tag window's part this map never uses): the cache %u KB",
+		(end - start) / 1024, start, cache_bytes() / 1024);
 }
 
 /* a map's tags were loaded: its geometry pack, if it was built with one.
@@ -861,17 +980,18 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 	arena_start = arena_next = (unsigned int)arena;
 	arena_end = arena_start + arena_bytes;
 	hits = misses = loads = load_bytes = evictions = too_big = failures = miss_frames = queue_full = no_room = 0;
+	if (census_on < 0)
+		census_on = psp_keep("memcensus") != 0;
+	memset(census_read_at, 0, sizeof(census_read_at));
+	memset(census_rereads, 0, sizeof(census_rereads));
+	census_first = census_forgotten = 0;
 	read_us = read_worst_us = 0;
 	platform_log("geometry: %s, %u KB external; cache %u KB at %08x (%s)", path, pack_size / 1024, arena_bytes / 1024, arena_start,
 		arena_carved ? "from the texture RAM cache: its textures stream anyway" : "heap");
-	/* a map built with its animations outside (invader-build -M)
-	keeps their frame data at the front of this pack (the header's words 4-7:
-	bytes, first and end offsets, the page it is laid out for), read through
-	the animation cache; words 8-9 give the tag window's part the map never
-	uses, which the cache takes first if it really lies past the tags and
-	inside the window */
-	if (header[4] && header[6] > header[5] && header[6] <= pack_size)
 	{
+		/* words 8-9: the tag window's part the map never uses (the bake's
+		measure over its BSPs), checked to lie between the tags' end and the
+		window's */
 		unsigned int window_at = header[8], window_bytes = header[9];
 
 		if (window_bytes && (window_at < tag_data_end || window_at + window_bytes > window_end))
@@ -880,7 +1000,13 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 				window_bytes / 1024, window_at, tag_data_end, window_end);
 			window_at = window_bytes = 0;
 		}
-		psp_anim_map_opened(header[4], header[5], header[6], header[7], window_at, window_bytes, arena_carved);
+		/* a map built with its animations outside (invader-build -M)
+		keeps their frame data at the front of this pack (the header's words 4-7:
+		bytes, first and end offsets, the page it is laid out for), read through
+		the animation cache, which takes the window's part first */
+		if (header[4] && header[6] > header[5] && header[6] <= pack_size)
+			psp_anim_map_opened(header[4], header[5], header[6], header[7], window_at, window_bytes, arena_carved);
+		psp_geo_window(window_at, window_bytes, tag_data_end, window_end);
 	}
 	/* after the animation cache's share: the level copies' room past their
 	arena, carved below it as this cache's was (psp_ge.c) */

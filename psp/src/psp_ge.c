@@ -5395,6 +5395,7 @@ static struct gr_entry *gr_table = NULL;
 static unsigned long long gr_place_bytes[GR_PLACES], gr_kind_bytes[KINDS], gr_index_bytes = 0;
 static unsigned long gr_draws = 0, gr_dropped = 0, gr_frames_mark = 0;
 void psp_geo_range(unsigned int *start, unsigned int *end); /* psp_geo.c */
+int psp_geo_holds(unsigned int address);
 
 /* a GE vertex's size from its format word (the GE's own layout: weights,
 texture coordinates, colour, normal, position, each aligned to its size, the
@@ -5451,7 +5452,7 @@ static int gr_place(unsigned int address)
 	if (room_of((const void *)a))
 		return GR_LEVEL;
 	psp_geo_range(&geo_start, &geo_end);
-	if (geo_end > geo_start && a >= (geo_start & ~0x40000000u) && a < (geo_end & ~0x40000000u))
+	if ((geo_end > geo_start && a >= (geo_start & ~0x40000000u) && a < (geo_end & ~0x40000000u)) || psp_geo_holds(a))
 		return GR_GEOMETRY;
 	if (a >= 0x08400000u && a < 0x08800000u)
 		return GR_VOLATILE;
