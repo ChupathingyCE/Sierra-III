@@ -34,6 +34,10 @@ static real_rgb_color psp_change_colors[4];
 static boolean psp_change_colors_valid = FALSE;
 static long psp_unique_identifier = 0;
 static boolean psp_animation_valid = FALSE;
+/* the drawn object's reflection tint (its lighting's) and its distance
+along the view, for its parts' reflections (psp_ge.c, psp_ge_model_reflection) */
+static real_argb_color psp_reflection_tint;
+static real psp_model_camera_distance = 0.0f;
 unsigned int psp_tex_bitmap_key(long tag_index, int bitmap);
 int psp_tex_bitmap_count(long tag_index);
 
@@ -285,6 +289,11 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		psp_animation_valid = parameters->animation.values != NULL;
 		if (psp_animation_valid)
 			csmemcpy(psp_animation_values, parameters->animation.values, sizeof(psp_animation_values));
+		psp_reflection_tint = lighting->reflection_tint_color;
+		psp_model_camera_distance =
+			(parameters->centroid.x - global_window_parameters.camera.position.x) * global_window_parameters.camera.forward.i +
+			(parameters->centroid.y - global_window_parameters.camera.position.y) * global_window_parameters.camera.forward.j +
+			(parameters->centroid.z - global_window_parameters.camera.position.z) * global_window_parameters.camera.forward.k;
 		psp_unique_identifier = parameters->unique_identifier;
 		psp_change_colors_valid = parameters->animation.colors != NULL;
 		if (psp_change_colors_valid)
@@ -402,6 +411,39 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			shader: texpack.py, glow_looks) is under the shader's address | 2 */
 			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0,
 				multipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);
+			{
+				/* its reflection's strength and tint, as the Xbox's model draw
+				sets them (rasterizer_xbox_models.c): the brightness faded by
+				the distance between the shader's falloff and cutoff, both
+				times the lighting's reflection tint, the view's angle taken
+				as midway between the perpendicular and parallel ends. The
+				cube map at +356 (its index at +368), the distances at +316
+				and +320, the brightnesses at +324 and +340, the tints at +328
+				and +344 */
+				extern void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
+				long cube = model_shader ? *(long const *)(definition + 368) : NONE;
+				float reflection[3] = { 0.0f, 0.0f, 0.0f };
+
+				if (cube != NONE)
+				{
+					float falloff = *(float const *)(definition + 316), cutoff = *(float const *)(definition + 320);
+					float fraction = 1.0f, brightness;
+					float const *perpendicular = (float const *)(definition + 328), *parallel = (float const *)(definition + 344);
+					int channel;
+
+					if (cutoff != 0.0f && falloff != cutoff)
+					{
+						fraction = (psp_model_camera_distance - cutoff) / (falloff - cutoff);
+						fraction = fraction < 0.0f ? 0.0f : fraction > 1.0f ? 1.0f : fraction;
+					}
+					brightness = fraction * 0.5f * (*(float const *)(definition + 324) + *(float const *)(definition + 340)) *
+						psp_reflection_tint.alpha;
+					for (channel = 0; channel < 3; channel++)
+						reflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *
+							(&psp_reflection_tint.red)[channel];
+				}
+				psp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);
+			}
 			/* on the main menu, the detail map itself over the base that holds
 			its average (psp_ge.c, model_detail_pass): shaders with the double
 			multiply and no mask, whose folded base the pack has. Its scale is
@@ -512,8 +554,9 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					if ((*(unsigned short const *)(definition + 108) & 1) &&
 						*(short const *)(key + 4) > 0 && *(short const *)(key + 6) > 0)
 					{
-						scales[which][0] *= (float)*(short const *)(base_key + 4) / (float)*(short const *)(key + 4);
-						scales[which][1] *= (float)*(short const *)(base_key + 6) / (float)*(short const *)(key + 6);
+						/* the bitmap's own key: a relief version is under key | 2 */
+						scales[which][0] *= (float)*(short const *)((base_key & ~3u) + 4) / (float)*(short const *)(key + 4);
+						scales[which][1] *= (float)*(short const *)((base_key & ~3u) + 6) / (float)*(short const *)(key + 6);
 					}
 				}
 			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
@@ -14780,12 +14823,31 @@ FIXES_118["source/rasterizer/rasterizer.c#glasslit"] = [
 	}""",
  """	else if (type == 8)
 	{
+		extern int psp_tex_has(unsigned int key);
+		long reflection_map = *(long const *)(definition + 184);
+
 		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
 		*u_scale = *(float const *)(definition + 340);
 		*v_scale = *u_scale;
 		/* alpha-blended, lit (fade mode 3: psp_ge.c's SEETHROUGH_LIT) */
 		if (object && !PSP_KEEP_ONCE("glassflat"))
 			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+		/* glass with no diffuse map is its tint and its reflection on the
+		Xbox: without either drawn, a10's floor glass showed the dark pipes
+		under it as a black pit. Its reflection is drawn: the cube map's
+		average (the pack's patch of it) added, tinted between the parallel
+		and perpendicular colours by the angle it is seen at (psp_ge.c,
+		psp_ge_seethrough_shader). The perpendicular and parallel colours'
+		alphas at +140 and +156, the cube map's index at +184.
+		"glassnoreflection": not drawn, as before */
+		if (!key && reflection_map != NONE &&
+			(*(float const *)(definition + 140) > 0.0f || *(float const *)(definition + 156) > 0.0f) &&
+			psp_tex_has(psp_tex_bitmap_key(reflection_map, 0)) && !PSP_KEEP_ONCE("glassnoreflection"))
+		{
+			key = psp_tex_bitmap_key(reflection_map, 0);
+			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
 	}"""),
 ]
 
@@ -19884,7 +19946,7 @@ FIXES_129["source/rasterizer/xbox/rasterizer_xbox_widgets.c#walls"] = [
 static unsigned long psp_flare_bipeds = 0;""",
  """/* build 116: characters in a flare's way (b113 #2) */
 static unsigned long psp_flare_bipeds = 0;
-static int psp_flare_walls = -1, psp_flare_walls_check = 0;
+static int psp_flare_walls = -1, psp_flare_walls_check = 0, psp_flare_level_short = 0, psp_flare_debug = 0;
 unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare_walls_differed = 0; /* psp_ge.c logs them */"""),
 ("""				/* the level's sky surfaces (no material) are where the
 				sky is drawn: a ray that meets one has reached the sky */
@@ -19908,20 +19970,48 @@ unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare
 					{
 						psp_flare_walls = !psp_keep("flaresfull");
 						psp_flare_walls_check = psp_keep("flarescheck") != 0;
+						psp_flare_level_short = psp_keep("flaresshort") != 0;
+						psp_flare_debug = psp_keep("flaresdebug") ? 40 : 0;
 					}
 					/* the level alone, with the full test's surface flags:
 					a wall that is not sky hides the flare whatever the
-					objects say, as they can only meet the ray nearer */
+					objects say, as they can only meet the ray nearer.
+					This ray runs to the flare's own point (all but 2 cm),
+					as the Xbox's test square is depth-tested there: the
+					ray above stops 0.15 short so as not to meet the
+					flare's own object, and the level has no such object.
+					Stopped short, a wall within 0.15 of a lamp on its far
+					side (or of a door's lamp slid into it) let the flare
+					shine through ("flaresshort": as before) */
 					if (psp_flare_walls || psp_flare_walls_check)
 					{
+						real_vector3d level_ray = ray;
+
+						if (!psp_flare_level_short)
+						{
+							real length;
+
+							vector_from_points3d(&global_window_parameters.camera.position, point, &level_ray);
+							length = magnitude3d(&level_ray);
+							if (length > 0.05f)
+								scale_vector3d(&level_ray, (length - 0.02f) / length, &level_ray);
+						}
 						level_hides = collision_test_vector(
 							FLAG(_collision_test_front_facing_surfaces_bit) |
 								FLAG(_collision_test_ignore_invisible_surfaces_bit) |
 								FLAG(_collision_test_structure_bit),
 							&global_window_parameters.camera.position,
-							&ray,
+							&level_ray,
 							NONE,
 							&collision) && collision.material_index != NONE;
+						if (psp_flare_debug > 0)
+						{
+							psp_flare_debug--;
+							platform_psp_log("flaresdebug: flare %ld at %.2f %.2f %.2f, %.2f from the eye: level %s (t %.3f, material %d)",
+								index, point->x, point->y, point->z, magnitude3d(&level_ray),
+								level_hides ? "hides it" : "clear", level_hides ? collision.t : 1.0f,
+								(int)collision.material_index);
+						}
 					}
 					if (level_hides && !psp_flare_walls_check)
 					{
