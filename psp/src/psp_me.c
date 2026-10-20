@@ -486,19 +486,31 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		moved or left from elsewhere shows too. Only on the ME: the main CPU
 		can't see eDRAM (simulated, nothing is touched) */
 		unsigned int first = slot->args[1], bytes = slot->args[2], at, bad = 0, first_bad = 0xFFFFFFFFu, found = 0;
+		unsigned int hash = 0x811C9DC5u, sp;
 
 		if (!on_me)
 		{
 			slot->results[0] = 0xFFFFFFFFu;
 			break;
 		}
+		/* mode 2 hashes a stretch it must not write (the bottom of eDRAM,
+		nothing of ours); a fill never comes within 16 KB of this job's own
+		stack, so the stretch below the stack can be patterned while the ME
+		runs on it, and a later check finds how far down the stack reached */
+		__asm__ ("move %0, $sp" : "=r"(sp));
+		sp = (sp & 0x1FFFFFFFu) - 16 * 1024;
 		for (at = first; at < first + bytes; at += 4)
 		{
 			volatile unsigned int *word = (volatile unsigned int *)(0x80000000u + at);
 			unsigned int want = at ^ 0x5A5AA5A5u;
 
-			if (slot->args[0] == 0)
-				*word = want;
+			if (slot->args[0] == 2)
+				hash = (hash ^ *word) * 16777619u;
+			else if (slot->args[0] == 0)
+			{
+				if (at < sp)
+					*word = want;
+			}
 			else if (*word != want)
 			{
 				if (!bad++)
@@ -508,6 +520,9 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 				}
 			}
 		}
+		if (slot->args[0] == 2)
+			bad = hash;
+		slot->results[3] = sp + 16 * 1024;
 		slot->results[0] = bad;
 		slot->results[1] = first_bad;
 		slot->results[2] = found;
@@ -617,25 +632,38 @@ line at a scattered address, then N steps of arithmetic (mebus0: misses
 only; ~mebus50: about the main CPU's own mix, a miss every ~120 cycles), then
 a store into its 16 KB output, so its lines are written back as the GE
 layer's list would be. It reads memory no job writes into (user RAM, read
-only) and writes only its own output, so the game never sees it */
+only) and writes only its own output, so the game never sees it.
+"mebusedram" (with mebusN): the same load on the ME's own eDRAM, reads and
+stores both, so the line says what work that never leaves the ME costs the
+main CPU, the question behind putting ME jobs' data there. Its reads span
+1 MB of the stretch edramcheck patterns (reads only), its stores a 16 KB
+scratch below that stretch: not to be run with edramcheck's watch of it */
 static struct me_ring_counter bus_stop_storage;
 #define BUS_STOP (UNCACHED(&bus_stop_storage)->value)
 #define BUS_OUT_WORDS 4096
 static unsigned int bus_out[BUS_OUT_WORDS] __attribute__((aligned(64)));
 #define BUS_BASE 0x08900000u
 #define BUS_LINES (0x01000000u / 64)
+#define BUS_EDRAM_BASE 0x80040000u
+#define BUS_EDRAM_LINES (0x00100000u / 64)
+#define BUS_EDRAM_OUT 0x80030000u
 
 static void bus_load_job(const unsigned int *args, unsigned int *results)
 {
 	unsigned int work = args[0], limit = args[1], x = args[2] | 1u, sink = 0, n = 0, k, start = me_cycles();
+	/* args[3]: 1 for the eDRAM; the main CPU can't reach it, so a simulated
+	run (the emulator) keeps to main RAM */
+	int edram = args[3] && psp_on_me();
+	unsigned int base = edram ? BUS_EDRAM_BASE : BUS_BASE, lines = edram ? BUS_EDRAM_LINES : BUS_LINES;
+	unsigned int *out = edram ? (unsigned int *)BUS_EDRAM_OUT : bus_out;
 
 	while (!BUS_STOP && me_cycles() - start < limit)
 	{
 		x = x * 1664525u + 1013904223u;
-		sink += *(volatile const unsigned int *)(BUS_BASE + ((x >> 8) % BUS_LINES) * 64u);
+		sink += *(volatile const unsigned int *)(base + ((x >> 8) % lines) * 64u);
 		for (k = 0; k < work; k++)
 			sink = sink * 31u + k;
-		bus_out[(n * 16u) % BUS_OUT_WORDS] = sink;
+		out[(n * 16u) % BUS_OUT_WORDS] = sink;
 		/* an audio block waiting is mixed now, whether or not "meaudiofirst"
 		is on: the load holds the ME for a whole tick, and an audio block
 		left 100 ms stops the ME for the session (the first
@@ -2275,51 +2303,101 @@ Build 116: a 64 KB piece a heartbeat, for the fill as for the checks. b115
 filled the whole 1.25 MB in one job: 56 ms on the ME, so the audio job queued
 behind it passed its 40 ms limit and the ME was stopped for the session
 (hardware_b115.md, test 1). A piece is about 3 ms of the ME's time */
+/* Three stretches of the PSP-1000's 2 MB, one 64 KB piece a heartbeat each
+pass (~30 s a pass):
+- 0 to 192 KB, hashed, never written: whatever lies there is left as found,
+  and a hash that moves says something else writes it;
+- 256 KB to 1.5 MB, patterned: the room the ME's jobs and the sound cache
+  (R2) would take; any change is something else writing eDRAM;
+- 1.5 MB to 1,984 KB, patterned below the ME's stack: the stack grows down
+  from 2 MB, and the lowest word changed is how deep it has reached, the
+  room R2 must leave it. A change here is the ME's own, not an alarm, on a
+  PSP-1000; a slim's 4 MB put its stack at 4 MB (the job says where its own
+  stack is), so there this stretch is patterned room like the one before.
+192-256 KB is left out: mebusedram's scratch is there */
 #define EDRAM_PROBE_FIRST 0x40000u
 #define EDRAM_PROBE_END 0x180000u
 #define EDRAM_PROBE_PIECE 0x10000u
+#define EDRAM_HASH_END 0x30000u
+#define EDRAM_STACK_END 0x1F0000u
+#define EDRAM_HASH_PIECES (EDRAM_HASH_END / EDRAM_PROBE_PIECE)
+#define EDRAM_PIECES (EDRAM_HASH_PIECES + (EDRAM_STACK_END - EDRAM_PROBE_FIRST) / EDRAM_PROBE_PIECE)
+
+/* the piece's first byte, k counting the hashed pieces first */
+static unsigned int edram_piece(unsigned int k)
+{
+	return k < EDRAM_HASH_PIECES ? k * EDRAM_PROBE_PIECE : EDRAM_PROBE_FIRST + (k - EDRAM_HASH_PIECES) * EDRAM_PROBE_PIECE;
+}
+
 void psp_me_edram_probe(void)
 {
 	static int asked = -1;
-	static unsigned int fill_next = EDRAM_PROBE_FIRST, next = EDRAM_PROBE_FIRST, checked = 0, bad_pieces = 0;
-	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 };
+	static unsigned int prepared = 0, next = 0, checked = 0, bad_pieces = 0, hash_moved = 0, passes = 0;
+	static unsigned int stack_lowest = 0xFFFFFFFFu, hashes[EDRAM_HASH_PIECES];
+	unsigned int args[3], results[ME_JOB_RESULTS] = { 0 }, first;
 
 	if (asked < 0)
 		asked = psp_keep("edramcheck") != 0;
 	if (!asked || me_state != 1)
 		return;
-	if (fill_next < EDRAM_PROBE_END)
+	if (prepared < EDRAM_PIECES)
 	{
-		args[0] = 0;
-		args[1] = fill_next;
+		/* the first pass: the hashes taken, the pattern written */
+		first = edram_piece(prepared);
+		args[0] = prepared < EDRAM_HASH_PIECES ? 2 : 0;
+		args[1] = first;
 		args[2] = EDRAM_PROBE_PIECE;
 		if (psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 2000) && results[0] != 0xFFFFFFFFu)
 		{
-			fill_next += EDRAM_PROBE_PIECE;
-			if (fill_next >= EDRAM_PROBE_END)
-				platform_log("ME: edramcheck: eDRAM %u to %u KB filled with the pattern, %u KB a heartbeat",
-					EDRAM_PROBE_FIRST / 1024, EDRAM_PROBE_END / 1024, EDRAM_PROBE_PIECE / 1024);
+			if (prepared < EDRAM_HASH_PIECES)
+				hashes[prepared] = results[0];
+			if (++prepared == EDRAM_PIECES)
+				platform_log("ME: edramcheck: eDRAM 0-%u KB hashed, %u-%u KB patterned (the ME's stack's reach from %u KB), %u KB a heartbeat",
+					EDRAM_HASH_END / 1024, EDRAM_PROBE_FIRST / 1024, EDRAM_STACK_END / 1024, EDRAM_PROBE_END / 1024,
+					EDRAM_PROBE_PIECE / 1024);
 		}
 		return;
 	}
-	args[0] = 1;
-	args[1] = next;
+	first = edram_piece(next);
+	args[0] = next < EDRAM_HASH_PIECES ? 2 : 1;
+	args[1] = first;
 	args[2] = EDRAM_PROBE_PIECE;
 	if (!psp_me_run(ME_SLOT_PROBE, ME_JOB_EDRAM, args, 3, results, 2000) || results[0] == 0xFFFFFFFFu)
 		return;
 	checked++;
-	if (results[0])
+	if (next < EDRAM_HASH_PIECES)
+	{
+		if (results[0] != hashes[next])
+		{
+			hash_moved++;
+			platform_log("ME: edramcheck: eDRAM %u to %u KB changed (hash %08x, was %08x): something writes the bottom of eDRAM",
+				first / 1024, (first + EDRAM_PROBE_PIECE) / 1024, results[0], hashes[next]);
+			hashes[next] = results[0];
+		}
+	}
+	else if (first >= EDRAM_PROBE_END && results[3] < 0x200000u)
+	{
+		if (results[0] && results[1] < stack_lowest)
+		{
+			stack_lowest = results[1];
+			platform_log("ME: edramcheck: the ME's stack has reached down to %u KB (%u KB deep)", stack_lowest / 1024,
+				(0x200000u - stack_lowest) / 1024);
+		}
+	}
+	else if (results[0])
 	{
 		bad_pieces++;
 		platform_log("ME: edramcheck: %u words changed in eDRAM %u to %u KB, the first at %08x (now %08x)",
-			results[0], next / 1024, (next + EDRAM_PROBE_PIECE) / 1024, results[1], results[2]);
+			results[0], first / 1024, (first + EDRAM_PROBE_PIECE) / 1024, results[1], results[2]);
 	}
-	if ((checked % 40) == 0)
-		platform_log("ME: edramcheck: %u pieces of %u KB checked, %u with changes", checked, EDRAM_PROBE_PIECE / 1024,
-			bad_pieces);
-	next += EDRAM_PROBE_PIECE;
-	if (next >= EDRAM_PROBE_END)
-		next = EDRAM_PROBE_FIRST;
+	if (++next == EDRAM_PIECES)
+	{
+		next = 0;
+		if ((++passes % 4) == 0)
+			platform_log("ME: edramcheck: %u passes, %u pieces of %u KB checked; %u patterned pieces changed, %u hashes moved; the stack's deepest %u KB",
+				passes, checked, EDRAM_PROBE_PIECE / 1024, bad_pieces, hash_moved,
+				stack_lowest == 0xFFFFFFFFu ? 0 : (0x200000u - stack_lowest) / 1024);
+	}
 }
 
 void psp_me_report(void)
@@ -2433,12 +2511,12 @@ sample the same play. Every 300 ticks the ME's load is also run alone for
 line: the main CPU's tick with the ME loading against without, and the ME's
 loads a microsecond while the tick ran against alone */
 #define BUS_LIMIT_US 200000u
-static int bus_work = -2;
+static int bus_work = -2, bus_edram = 0;
 static unsigned int bus_ticket, bus_coin = 0x2545F491u, bus_tick_start = 0, bus_loaded = 0;
 static unsigned long bus_ticks[2], bus_tick_us[2], bus_preempted;
-static unsigned long bus_loads, bus_load_cycles, bus_alone_loads, bus_alone_cycles;
+static unsigned long bus_loads, bus_load_cycles, bus_alone_loads[2], bus_alone_cycles[2];
 
-static int bus_start(void)
+static int bus_start(int edram)
 {
 	struct psp_me_job job;
 
@@ -2447,6 +2525,7 @@ static int bus_start(void)
 	job.args[0] = (unsigned int)bus_work;
 	job.args[1] = (unsigned int)(BUS_LIMIT_US * (me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f));
 	job.args[2] = bus_coin;
+	job.args[3] = (unsigned int)edram;
 	job.output = bus_out;
 	job.output_bytes = sizeof(bus_out);
 	BUS_STOP = 0;
@@ -2485,7 +2564,10 @@ void psp_me_bus_phase(int phase)
 	unsigned int now;
 
 	if (bus_work == -2)
+	{
 		bus_work = emulator() ? -1 : psp_keep_number("mebus", -1);
+		bus_edram = psp_keep("mebusedram") != 0;
+	}
 	if (bus_work < 0 || PSP_ME_WORK() || !psp_me_ring_ready())
 		return;
 	now = sceKernelGetSystemTimeLow();
@@ -2493,7 +2575,7 @@ void psp_me_bus_phase(int phase)
 	{
 		bus_coin = bus_coin * 1103515245u + 12345u;
 		bus_loaded = (bus_coin >> 16) & 1u;
-		if (bus_loaded && !bus_start())
+		if (bus_loaded && !bus_start(bus_edram))
 			bus_loaded = 0;
 		bus_tick_start = sceKernelGetSystemTimeLow();
 		return;
@@ -2508,22 +2590,30 @@ void psp_me_bus_phase(int phase)
 	if (bus_ticks[0] + bus_ticks[1] >= 300 && bus_ticks[0] && bus_ticks[1])
 	{
 		float loaded = (float)bus_tick_us[1] / bus_ticks[1], unloaded = (float)bus_tick_us[0] / bus_ticks[0];
-		float per_us = me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f, during, alone;
+		float per_us = me_cycles_per_us > 0.0f ? me_cycles_per_us : 333.0f, during, alone, alone_other;
+		int m;
 
-		if (bus_start())
-		{
-			sceKernelDelayThread(8000);
-			bus_finish(&bus_alone_loads, &bus_alone_cycles);
-		}
+		/* the ME alone, the main CPU asleep: in the memory this run loads
+		first, then in the other, so every window also says how the eDRAM
+		compares with main RAM for the same work */
+		for (m = 0; m < 2; m++)
+			if (bus_start(m ? !bus_edram : bus_edram))
+			{
+				sceKernelDelayThread(8000);
+				bus_finish(&bus_alone_loads[m], &bus_alone_cycles[m]);
+			}
 		during = bus_load_cycles ? bus_loads * per_us / bus_load_cycles : 0.0f;
-		alone = bus_alone_cycles ? bus_alone_loads * per_us / bus_alone_cycles : 0.0f;
-		platform_log("mebus: work %d | ticks loaded %lu at %.2f ms, unloaded %lu at %.2f ms: the main CPU %+.1f%% | the ME %.3f loads a us during them (busy %.0f%% of the loaded ticks), %.3f alone: %+.1f%% | taken over by other ring jobs %lu",
-			bus_work, bus_ticks[1], loaded / 1000.0f, bus_ticks[0], unloaded / 1000.0f,
+		alone = bus_alone_cycles[0] ? bus_alone_loads[0] * per_us / bus_alone_cycles[0] : 0.0f;
+		alone_other = bus_alone_cycles[1] ? bus_alone_loads[1] * per_us / bus_alone_cycles[1] : 0.0f;
+		platform_log("mebus: work %d%s | ticks loaded %lu at %.2f ms, unloaded %lu at %.2f ms: the main CPU %+.1f%% | the ME %.3f loads a us during them (busy %.0f%% of the loaded ticks), %.3f alone: %+.1f%% | alone in %s %.3f | taken over by other ring jobs %lu",
+			bus_work, bus_edram ? " eDRAM" : "", bus_ticks[1], loaded / 1000.0f, bus_ticks[0], unloaded / 1000.0f,
 			unloaded > 0.0f ? 100.0f * (loaded - unloaded) / unloaded : 0.0f,
 			during, bus_tick_us[1] ? 100.0f * (bus_load_cycles / per_us) / bus_tick_us[1] : 0.0f,
-			alone, alone > 0.0f ? 100.0f * (during - alone) / alone : 0.0f, bus_preempted);
+			alone, alone > 0.0f ? 100.0f * (during - alone) / alone : 0.0f, bus_edram ? "main RAM" : "eDRAM", alone_other,
+			bus_preempted);
 		bus_ticks[0] = bus_ticks[1] = bus_tick_us[0] = bus_tick_us[1] = bus_preempted = 0;
-		bus_loads = bus_load_cycles = bus_alone_loads = bus_alone_cycles = 0;
+		bus_loads = bus_load_cycles = 0;
+		bus_alone_loads[0] = bus_alone_loads[1] = bus_alone_cycles[0] = bus_alone_cycles[1] = 0;
 	}
 }
 #endif
