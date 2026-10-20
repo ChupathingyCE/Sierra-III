@@ -11700,7 +11700,7 @@ int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_k
 	return result;
 }
 
-/* ---------- contrails (b113_candidates.md #1; on by default, "nocontrails" off)
+/* ---------- contrails (b113_candidates.md #1; opt-in, "contrails" on)
 
 The trail behind a projectile (the plasma rifle's and pistol's bolts, the
 needler's needles): render_contrails.c builds a strip of quads along the

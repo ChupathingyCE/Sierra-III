@@ -13494,8 +13494,9 @@ FIXES_113["source/render/render_objects.c#renderstates"] = [
 # build 113: contrails, the weapons' tracers (b113_candidates.md #1): the
 # strip render_contrail builds goes to the GE's see-through draws (psp_ge.c,
 # psp_ge_contrail) instead of the transparent-geometry groups the PSP never
-# draws. On by default since the tracers' restoration (H28); keep word
-# "nocontrails": thrown away, as before
+# draws. Off by default: in a firefight they cost about 1.2 ms a frame in
+# the emulator [E] (7%), more than the quality-only rule for b139 allows;
+# keep word "contrails": drawn (the tracers' restoration, H28)
 FIXES_113["source/render/render_contrails.c#contrails"] = [
 ("""static void render_contrail(
 	struct contrail_datum *contrail,
@@ -13524,11 +13525,11 @@ static void render_contrail(
 			{
 				static int psp_contrails = -1;
 
-				/* on by default: the tracers of the Covenant weapons and the
-				rifles are contrails, so without them most fire showed none.
-				"nocontrails": not drawn */
+				/* the tracers of the Covenant weapons and the rifles are
+				contrails, so without them most fire shows none; "contrails"
+				draws them (off by default for what they cost in a fight) */
 				if (psp_contrails < 0)
-					psp_contrails = !psp_keep("nocontrails");
+					psp_contrails = psp_keep("contrails");
 				if (psp_contrails && psp_ge_active())
 				{
 					/* the shader's blend: contrail shaders lay out their first
