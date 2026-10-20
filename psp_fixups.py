@@ -24970,6 +24970,39 @@ void object_compute_node_matrices(
 			}"""),
 ]
 
+# typehdr: object_get_and_verify_type checks the type its header holds. The
+# check read the type from the object's own data, a line the caller often
+# never touches otherwise, and in the cache model that one load missed about
+# 1,200 times a tick on b30's beach (18% of the calls, the tick's most-missed
+# load with no window for a prefetch). The header beside the data pointer
+# carries the same type, written with it when the object is made and never
+# changed (object_new_by_definition sets both from the definition), so the
+# check passes and fails exactly as before. "notypehdr": the object's own
+FIXES_CACHE["source/objects/objects.c#typehdr"] = [
+("""	struct object_datum *result = object_header_get(object_index)->datum;
+
+	match_vassert(
+		"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+		1690,
+		TEST_FLAG(valid_type_flags, result->object.type),""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_CACHE) */
+	struct object_header_datum *psp_header = object_header_get(object_index);
+	struct object_datum *result = psp_header->datum;
+	const int psp_type = PSP_KEEP_ONCE("notypehdr") ? result->object.type : psp_header->type;
+#else
+	struct object_datum *result = object_header_get(object_index)->datum;
+#endif
+
+	match_vassert(
+		"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+		1690,
+#ifdef HALO_PSP
+		TEST_FLAG(valid_type_flags, psp_type),
+#else
+		TEST_FLAG(valid_type_flags, result->object.type),
+#endif"""),
+]
 
 # ---------- the campaign's update rings (memory_savings S6, for a10's heap)
 # A campaign game is local: each frame builds at most 7 ticks' updates
