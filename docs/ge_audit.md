@@ -1,6 +1,6 @@
 # The GE audit: how the port feeds the GE, and what is left to squeeze (work in progress)
 
-Question: take a look at the GE, how we're using it, and how we can squeeze more performance from it. Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code, [U] inference. Unfinished: the measurements below are from existing logs; nothing new has been measured on the PSP yet.
+Question: take a look at the GE, how we're using it, and how we can squeeze more performance from it. Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code, [U] inference. The tables below are from existing logs; the new measurements are in "Next" and `docs/review_perf-ge.md`.
 
 ## Where things stand [M, b136 ladder on the PSP-1000 and b139's on the PSP-3000]
 
@@ -39,4 +39,8 @@ Not redone (measured before): EM, MB (instruction misses barely cost the PSP: ge
 
 ## Next
 
-The bus tax that remains, measured: a PSP A/B with `geserial` (the CPU's drawing with and without the GE overlapping) bounds every "fewer GE bytes" lever. Then GL1 and GL2 proven (statecrc, draw hash, `geoindexcheck` 0 differed), cache-model A/B, and one PSP keepsets job: `- | geoscan | vshconstants | bindblocks | geserial`.
+1. Prove GL1 and GL2 on the emulator (batch in flight): statecrc pairs old (`geoscan vshconstants`) against new on d20 (with the draw hash), c20 and a50; `geoindexcheck` on b30's route (0 differed); a10 under the strict interpreter; and the cache model on b30's route to 90 s, old against new, for their cost [E].
+2. One PSP job on b30's route, after the night's higher-priority hardware runs: `keepsets="- | geoscan vshconstants | bindblocks | geserial" repeat=2`. Each set against `-` gives: GL1+GL2's saving together, bindblocks' saving (then on by default if it saves), and `geserial`'s: the bus tax that any "fewer GE bytes" lever (GL3, DXT, VRAM moves) could at most recover.
+3. GL3 (skinning plans' index lists in VRAM) belongs with the VRAM-bytes lever #1; GL4 and the part timers wait on E2 (`lean`).
+
+The code's walk-through: `docs/review_perf-ge.md`.
