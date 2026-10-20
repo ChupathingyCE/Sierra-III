@@ -71,6 +71,13 @@ elif TOOL == 'texpack':
         f.write(digest(read(args[0]), [a for a in args[2:] if not os.path.isabs(a)],
                        read(value('--pgeo')) if '--pgeo' in args else b''))
     print('quality ' + os.path.basename(args[1]))
+elif TOOL == 'soundpack':
+    # the sound bake rewrites the extracted tags in place (bake.py's --sound)
+    path = os.path.join(args[0], 'scenario.tag')
+    data = read(path)
+    with open(path, 'wb') as f:
+        f.write(digest(data, args[1]))
+    print('soundpack ' + args[1] + ': stand-in')
 elif TOOL == 'stencilbake':
     with open(args[2], 'wb') as f:
         f.write(digest(read(args[0]), read(args[1])))
@@ -86,7 +93,7 @@ def make_bundle(source, folder):
     for name in ('bake.py', 'xiso.py', 'hashes.json'):
         shutil.copy(os.path.join(source, name), folder)
     stubs = [(os.path.join(folder, 'invader', 'bin', t), t) for t in ('invader-extract', 'invader-info', 'invader-build')]
-    stubs += [(os.path.join(folder, 'lib', t + '.py'), t) for t in ('tagindex', 'dez', 'texpack', 'stencilbake')]
+    stubs += [(os.path.join(folder, 'lib', t + '.py'), t) for t in ('tagindex', 'dez', 'texpack', 'stencilbake', 'soundpack')]
     for path, tool in stubs:
         with open(path, 'w') as f:
             f.write(STUB % {'python': sys.executable, 'tool': tool})

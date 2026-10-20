@@ -731,7 +731,7 @@ def bake_all(screen, launcher, named, disc_arg, zip_arg, maps_arg, keep, extra, 
     # [4/4] everything the stick needs, in one folder
     screen.status('[4/4] Putting it together ...')
     if named:
-        for part in ('halo/maps', 'halo/chant.adp'):
+        for part in ('halo/maps', 'halo/chant.adp', 'halo/bake.txt'):
             target = os.path.join(stick, *part.split('/'))
             shutil.rmtree(target, ignore_errors=True) if os.path.isdir(target) else (
                 os.remove(target) if os.path.exists(target) else None)
