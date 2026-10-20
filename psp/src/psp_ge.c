@@ -8899,6 +8899,22 @@ static int vm_count = 0;
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
 
+/* "mevram": the copies for the Media Engine's draws too (the GE layer
+carried out on the ME: gemeon, gemeoverlap, frames in flight). Without it
+the ME's side hands the GE every buffer in main RAM, so with the GE layer
+on the ME the GE reads all its geometry over the bus the tick misses on
+(the overlap runs: draws from a copy 0 of 0). The ME can't touch VRAM, but
+it needn't: it only puts the copy's address in the list, and the GE reads
+it. The table is the main CPU's, written only between the ME's runs and
+written back before each, so on the ME it is read-only: a copy is used when
+it is good, nothing is released or moved. The reads the ranking needs go in
+a tally only the ME's side writes (an entry's index; the last two words its
+draws and redirects), folded in at the frame's end once the ME is done. The
+same bytes: the same pixels */
+static int vm_me_on = 0;
+static unsigned int *vm_me_tally = NULL;
+#define VM_TALLY_WORDS (VM_ENTRIES + 16) /* the counters on a line of their own */
+
 /* the entry for a buffer's address, or NULL (adding it when asked) */
 static struct vm_entry *vm_find(unsigned int source, int add)
 {
@@ -8950,6 +8966,52 @@ static void vm_reset(void)
 	memset(vm_hash, 0, VM_HASH * sizeof(unsigned short));
 	vm_count = 0;
 	vm_on = 1;
+	if (psp_keep("mevram"))
+	{
+		if (!vm_me_tally)
+			vm_me_tally = memalign(64, VM_TALLY_WORDS * sizeof(unsigned int));
+		vm_me_on = vm_me_tally != NULL;
+		if (vm_me_tally)
+			memset(vm_me_tally, 0, VM_TALLY_WORDS * sizeof(unsigned int));
+		else
+			platform_log("GE: mevram: no room for its tally; off");
+	}
+}
+
+/* the Media Engine's side of the gate: the copy's address when it has a
+good one, the table left as it is */
+static const void * __attribute__((noinline)) vm_redirect_me(const void *vertices, int count)
+{
+	struct vm_entry *e = vm_find((unsigned int)vertices, 0);
+
+	if (!e)
+		return vertices;
+	vm_me_tally[VM_ENTRIES]++;
+	if (!e->level && psp_geo_generation(vertices) != e->generation)
+		return vertices;
+	vm_me_tally[e - vm] += (unsigned int)count;
+	if (e->at == VM_NONE || e->released)
+		return vertices;
+	vm_me_tally[VM_ENTRIES + 1]++;
+	return (const void *)(vm_base + e->at);
+}
+
+/* at the frame's end, the ME done: what its draws read, as the main CPU's
+own draws would have counted it */
+static void vm_me_fold(void)
+{
+	int k;
+
+	for (k = 0; k < vm_count; k++)
+		if (vm_me_tally[k])
+		{
+			vm[k].reads += vm_me_tally[k];
+			vm[k].frame = vm_frame;
+			vm_me_tally[k] = 0;
+		}
+	vm_draws += vm_me_tally[VM_ENTRIES];
+	vm_redirects += vm_me_tally[VM_ENTRIES + 1];
+	vm_me_tally[VM_ENTRIES] = vm_me_tally[VM_ENTRIES + 1] = 0;
 }
 
 /* a copy let go: its room comes back after the quarantine */
@@ -9047,7 +9109,7 @@ static const void *vm_redirect(const void *vertices, int count)
 	struct vm_entry *e;
 
 	if (PSP_ME_WORK() || !vertices)
-		return vertices;
+		return vm_me_on > 0 && vertices ? vm_redirect_me(vertices, count) : vertices;
 	e = vm_find((unsigned int)vertices, 0);
 	if (!e)
 		return vertices;
@@ -9114,6 +9176,8 @@ static void vm_frame_end(void)
 
 	if (vm_on <= 0)
 		return;
+	if (vm_me_on > 0)
+		vm_me_fold();
 	vm_frame++;
 	if ((vm_frame & 31) == 0)
 		for (k = 0; k < vm_count; k++)
