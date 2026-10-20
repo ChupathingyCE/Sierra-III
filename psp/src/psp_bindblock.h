@@ -3,8 +3,8 @@
 The words psp_tex_bind sends through pspgu (sceGuClutMode, sceGuClutLoad,
 sceGuTexMode, one sceGuTexImage a level, sceGuTexFilter; pspsdk's TexMode and
 TexImage each end with a TexFlush), written into a block the list CALLs, so
-the GE gets the same state. A header of its own, with no PSP calls, so the
-lab's host test can compare it with pspsdk's own functions word for word. */
+the GE gets the same state. A header of its own, with no PSP calls, so a
+host test can compare it with pspsdk's own functions word for word. */
 #ifndef PSP_BINDBLOCK_H
 #define PSP_BINDBLOCK_H
 

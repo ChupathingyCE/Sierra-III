@@ -1359,8 +1359,8 @@ void __wrap_sceGuTexFilter(int min, int mag)
 /* "bindblocks": a resident texture's bind words (its palette, mode, levels
 and filter: 8 words and 4 a level) written once into a block of their own and
 CALLed, instead of sent by a dozen pspgu calls a bind. The PSP-1000 puts the
-model parts' binds at 2.6 ms a frame on b30's flight (lab 38822408622,
-probes), ~11 us a bind; leaving 8% of them out (statememo, b114) saved
+model parts' binds at 2.6 ms a frame on b30's flight (probes), ~11 us a
+bind; leaving 8% of them out (statememo, b114) saved
 nothing measurable, so the cost is in each bind. The words are pspgu's own
 (pspsdk's sceGuClutMode, ClutLoad, TexMode, TexImage, TexFilter, flushes
 included), so the GE gets the same state; the draw hash follows the CALL and
