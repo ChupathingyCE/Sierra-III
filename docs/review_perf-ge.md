@@ -2,13 +2,13 @@
 
 Branch `perf-ge`, off `w140`. The question behind it: how the port uses the GE, and how to get more from it. The audit is `docs/ge_audit.md`; this walk-through covers the code. Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code, [U] inference.
 
-Every change has a keep word. Two are on by default (exact: the same play and the same GE work); bindblocks stays opt-in until its PSP A/B.
+Every change has a keep word. Two are on by default (exact: the same play and the same GE work); bindblocks stays opt-in: its PSP A/B shows no saving.
 
 | change | default | keep word (turns it off or on) | proof |
 |---|---|---|---|
-| GL1, the geometry cache's lookup by a sorted index | on | `geoscan` (the old scan), `geoindexcheck` (both, compared) | [E] 0 of 171,109 answers differed on b30's route; play and seeds identical on d20, c20, a50; strict clean; ~1.1 ms a frame in the cache model ("Evidence") |
+| GL1, the geometry cache's lookup by a sorted index | on | `geoscan` (the old scan), `geoindexcheck` (both, compared) | [E] 0 of 171,109 answers differed on b30's route; play and seeds identical on d20, c20, a50; strict clean; ~1.1 ms a frame in the cache model; with GL2, 2.4-6.1 ms a frame of drawing on the PSP-3000 ([M], "Evidence") |
 | GL2, the Xbox vertex-shader constants left unmade | on | `vshconstants` (made and stored as before) | [E] play and seeds identical on d20, c20, a50; strict clean; ~1.0-1.25 ms a frame in the cache model ("Evidence") |
-| BB, bindblocks (a texture's bind as a CALLed block) | off | `bindblocks` | exact on the emulator before (draw hash, statecrc); PSP A/B pending |
+| BB, bindblocks (a texture's bind as a CALLed block) | off | `bindblocks` | exact on the emulator before (draw hash, statecrc); [M] PSP A/B: drawing phase within the spread in every stretch, no saving shown |
 
 ## GL1: `resident_entry` answers misses by halving, not scanning (`psp/src/psp_geo.c`)
 
@@ -35,7 +35,7 @@ FIXES_GEFEED puts an early return, under `psp_vsh_constants_skip()`, at the top 
 
 ## BB: bindblocks (brought over from the renderer branch)
 
-The same commits as there (the bind words written once into a block per resident texture, 192 slots, CALLed instead of a dozen pspgu calls). Two comments lost the lab's name and a run number (the public export). Off by default until the PSP A/B says what it saves.
+The same commits as there (the bind words written once into a block per resident texture, 192 slots, CALLed instead of a dozen pspgu calls). Two comments lost the lab's name and a run number (the public export). Off by default: the PSP A/B shows no saving beyond the spread.
 
 ## Evidence
 
@@ -57,11 +57,14 @@ Emulator batch, all [E], hands off, `nearauto assettrack geo2 fixedticks fixedse
 | `memcmp`, 0.29 ms in the old run, below the new run's top-40 list | 0.29 ms | at most 0.14 ms | 0.15-0.29 ms (probably `constants_store`'s change check) [U] |
 | the two together | | | **~2.0-2.3 ms** |
 
-The drawing phase's whole count falls 5.1% in fetches and 10.7% in D misses; the tick phase moves -2.3% in accesses from the game's collision and sound-mix work, which a drawing change doesn't touch, so the whole-phase figure is not used. The budget lines in the same runs (windows not aligned to the same game time, so rough): the frame's CPU 32.4 -> 30.6 ms averaged over game time 300-2,700 (-1.8 ms), the GE renderer's part of it 18.3 -> 17.4 ms (-0.85 ms; -1.2 ms from 1,800 on, the heavy stretch). The two readings bracket the saving: about 1-2 ms a frame on b30 for GL1 and GL2 together, to be read against the PSP A/B.
+The drawing phase's whole count falls 5.1% in fetches and 10.7% in D misses; the tick phase moves -2.3% in accesses from the game's collision and sound-mix work, which a drawing change doesn't touch, so the whole-phase figure is not used. The budget lines in the same runs (windows not aligned to the same game time, so rough): the frame's CPU 32.4 -> 30.6 ms averaged over game time 300-2,700 (-1.8 ms), the GE renderer's part of it 18.3 -> 17.4 ms (-0.85 ms; -1.2 ms from 1,800 on, the heavy stretch). The two readings bracket the saving: about 1-2 ms a frame on b30 for GL1 and GL2 together in the model; the PSP A/B below measured more.
 
 `resident_entry` keeps 1.27 ms a frame: the last-locked and slot-table paths and the snapshot's rebuilds, not the scan. Counting calls by path would size what is left [U].
 
-PSP A/B (`keepsets="- | geoscan vshconstants | bindblocks | geserial" repeat=2` on b30's route): results pending.
+PSP A/B (PSP-3000, `keepsets="- | geoscan vshconstants | bindblocks | geserial" repeat=2` on b30's route, [M], `tools/abreport.py`; the table is in `docs/ge_audit.md`, "The PSP A/B"):
+- **GL1+GL2 (`-` against `geoscan vshconstants`): the drawing phase is 2.4 ms a frame faster in the cinematic (4.1%), 5.2 ms in the flight (4.8%) and 6.1 ms in the landing (4.9%)**, each larger than the repeats' own spread; the frame by the clock follows (-2.7, -5.1, -10.6 ms; the landing's also holds 2.4 ms of tick that these changes don't touch). On the beach the gap (0.3 ms) is inside the spread.
+- **bindblocks: no saving beyond the spread** (drawing -0.8 to +0.2 ms in all four stretches). Stays opt-in.
+- **geserial (the bound on fewer-GE-bytes levers): the CPU's drawing phase runs 17.4 / 15.6 / 13.8 / 6.5 ms a frame faster when the GE can't overlap it**; GL3, DXT and VRAM moves can recover at most a fraction of that.
 
 ## Builds
 
