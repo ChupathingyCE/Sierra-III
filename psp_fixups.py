@@ -24901,7 +24901,10 @@ FIXES_LD1["source/game/game_time.c#lightsframe"] = [
 # for one node ahead of time, which is about the ~72 cycles a line takes to
 # land ("cache 0x1E" never stalls; halo_bench v7b), and the next node's when
 # the queue held nothing further. Each queued node is asked for once.
-# Exact: a prefetch changes no value. "nonodeprefetch": none
+# Exact: a prefetch changes no value. Off unless "nodeprefetch": in the cache
+# model it loses (each line lands ~40 of its ~72 cycles ahead, so the load
+# still waits, and the asking costs ~12 cycles a node), and the PSP shows no
+# gain it could be hiding.
 FIXES_CACHE = {}
 FIXES_CACHE["source/objects/objects.c#nodeprefetch"] = [
 ("""void object_compute_node_matrices(
@@ -24944,7 +24947,7 @@ void object_compute_node_matrices(
 		node_stack[0] = 0;
 #ifdef HALO_PSP
 		/* psp_fixups.py (FIXES_CACHE) */
-		const int psp_node_prefetch = !PSP_KEEP_ONCE("nonodeprefetch");
+		const int psp_node_prefetch = PSP_KEEP_ONCE("nodeprefetch");
 		short psp_node_asked = 0; /* the queue's places asked for, up to here */
 
 		if (psp_node_prefetch)
