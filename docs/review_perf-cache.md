@@ -1,6 +1,6 @@
 # Review: perf-cache (the CPU caches: prefetch, data layout, loop phasing)
 
-Branch `perf-cache`, off w140 (w139's code and profile). Two exact changes, each in `FIXES_CACHE` (`psp_fixups.py`), each on by default with an off word. The measurements behind them are in `cache_work.md`. Labels: [E] emulator or cache model, [D] read in code, [U] inference. Nothing here has run on a PSP yet.
+Branch `perf-cache`, off w140 (w139's code and profile). Two exact changes, each in `FIXES_CACHE` (`psp_fixups.py`), each on by default with an off word. The measurements behind them are in `cache_work.md`. Labels: [E] emulator or cache model, [D] read in code, [U] inference. Nothing here has run on a PSP yet. **Scored in the cache model: `typehdr` wins a little and stays on; `nodeprefetch` loses, so its default should flip to off (an on word) unless the hardware A/B says otherwise.**
 
 ## 1. `nodeprefetch`: the node walk's lines asked for one node ahead
 
@@ -26,7 +26,9 @@ static __inline__ void psp_node_lines_prefetch(real_matrix4x3 *object_nodes, str
 
 The walk is a queue: each node done appends its sibling and first child. At the end of each node, every queued node up to the one after next that hasn't been asked for yet gets its three lines asked for (`cache 0x1E`, which never stalls); the root's are asked for before the walk. So each node is asked for once, about one node's compute ahead, more than the ~72 cycles a line takes to land. The queue's entries were range-checked when they were pushed; a tag block without data is skipped, so no prefetch names an address outside memory.
 
-**Evidence.** Compiled. Scoring in flight: the cache model on b30, c20 and d20 to 90 s, on against `nonodeprefetch`, with `statecrc` on both sides. Expected: most of the walk's 0.09–0.20 ms a tick [E].
+**Evidence** [E]. The cache model with timing, `statecrc` on both sides, c20 and d20 to 90 s (2,700 ticks) and b30's route to 85 s. **Exact:** play and both seeds are identical at every tick on c20 and d20; b30 is identical to tick 1,325 and then drifts, as it does on any change. **Cost, not gain:** the tick is 0.090 ms slower on c20 and 0.054 ms on d20 (b30 +0.26, indicative). The walk's two sites do nearly vanish from the miss list (c20: 707 → 352 and 413 → 0 misses a tick; data misses −734 a tick; the D-miss stall falls 0.16 ms), but the demand loads then wait ~33 of a fill's ~72 cycles (+0.15 ms), because the prefetch is only about one node's compute (~40 cycles) ahead, and each prefetch costs ~12 cycles of its own work. The tick below includes the state hash, the same on every side (`cache_work.md` section 2).
+
+**Verdict.** A loser in the model. Flip the default to off (an on word) or drop it; the hardware A/B (below) can overturn this, since it rests on the model's fill timing. Asking two nodes ahead would give the fill time, at the price of more lines held [U]; not built.
 
 **Cost.** Three cache ops and a compare a node; nothing else changes. Exact: a prefetch changes no value.
 
@@ -48,7 +50,7 @@ The walk is a queue: each node done appends its sibling and first child. At the 
 
 The header, whose line the lookup has just read for the data pointer, holds the same type: `object_new` writes both from the definition, and nothing writes either again [D]. So the check passes and fails exactly as before.
 
-**Evidence.** Compiled. Scoring in flight in the same batch, on against `notypehdr`, `statecrc` on both sides. At most ~0.26 ms a tick on b30 [E], less wherever the caller goes on to read the type's line anyway.
+**Evidence** [E]. The same runs. **Exact:** play and both seeds identical at every tick of c20 and d20 (b30 as above). The tick is **0.032 ms faster on c20 and 0.044 ms on d20** (b30 0.108, indicative), about 0.2% of a tick without the state hash [U]. The lookup's misses fall by half or more (c20 775 → 400 a tick, d20 836 → 326, b30 2,410 → 998), but 71%, 60% and 46% of the removed misses reappear in the callers, so the tick loses only 107, 205 and 765 data misses: below the ≤0.26 ms the site's count allowed.
 
 **Cost.** The keep check is a byte load and a branch on each call, on both sides of the A/B (~0.04 ms a tick on b30 [U]).
 
@@ -62,6 +64,6 @@ The header, whose line the lookup has just read for the data pointer, holds the 
 
 ## Tests
 
-- The cache-model batch above (both off words, b30/c20/d20, `statecrc`).
-- The multiplayer build (`PSP_MULTIPLAYER=1`) compiles: in flight.
-- If either wins in the model: a PSP-3000 keepsets A/B (`- | nonodeprefetch notypehdr`, repeat 2) on b30's route.
+- The cache-model batch (both off words, b30/c20/d20, `statecrc`): done, above. The state hash's whole-state differences (contrail point, lights, object looping sounds, objects) are what drawing writes and sit on both sides of every pair.
+- The multiplayer build (`PSP_MULTIPLAYER=1`) compiles (a full build, run on a build runner).
+- Queued: a PSP-3000 keepsets A/B on b30's route (`- | nonodeprefetch notypehdr`, two repeats). Its off side switches both levers off at once, so it reads the two together; the model says `typehdr` +0.03–0.04 ms and `nodeprefetch` −0.05–0.09 ms a tick, so a result near zero is the expected one, and a split into one lever per side is the next step if either direction shows.
