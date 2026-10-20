@@ -25,7 +25,17 @@ particle_census[k].from_effect = effect != -1;
 ## Found reading the first instrumented hardware run
 
 - **passtable.py read the census rows as steps** (fixed, `tools/passtable.py`). `profile.txt` holds `objcost` and `particlecensus` rows inside each window; the parser skipped a row only when a colon sat in its first 12 characters, which held for `objcost:` and not for `particlecensus:`, so every effect row became a step (172 ms a frame of "unclassified"). Both prefixes are now skipped outright; on the instrumented b30 run the unclassified pass falls to 10.5 ms a frame [M]. What is left in it is mostly `object_type_update` (4.2 ms), which no pass pattern claims.
-- **`hwthreads` is unusable on the PSP-1000.** In 223 of 226 windows the shares exceed 100% (others 1,000-40,000%, idle up to a wrapped 4.8e15%, no switches counted after load) [M]. Only the loading line is sane. `psp/profile/main.c`'s `threads_account` needs debugging on hardware (units of the run clocks, the idle clock wrapping, which thread the phase calls come from).
+- **`hwthreads` is unusable on the PSP-1000.** In 223 of 226 windows the shares exceed 100% (others 1,000-40,000%, idle up to a wrapped 4.8e15%, no switches counted after load) [M]. Only the loading line is sane. Fixed below.
+
+## `hwthreads`: the phase calls ran the refer calls as a user-mode caller
+
+**Cause** [M][D]: `halo_profile_phase` is a system call, so it runs with k1 marking a user-mode caller. The firmware then refuses `sceKernelReferThreadRunStatus` and `sceKernelReferSystemStatus` (their buffers sit on the call's kernel stack, and kernel threads' status isn't a user's to read). The module took each refusal as a reading of 0: every phase change zeroed the run clocks, the idle clock and the switch count, and the sampler's next (good) reading added each thread's whole lifetime. The run shows it: a window's switch count is the running total (576,363, then 1,177,113 later), and idle "wraps" when a good reading is followed by a zero. The loading lines are sane because no phase calls come then, only the sampler, a kernel thread. The emulator doesn't check k1, so it never showed.
+
+**Fix** (`psp/profile/main.c`):
+- `halo_profile_phase` clears k1 around its work (`pspSdkSetK1(0)`, restored on the way out), as the kernel's own system calls do.
+- `run_clock` and `system_clocks` return -1 on a refusal, and `threads_account` keeps the last reading then (and when the idle clock would go backwards), so a refusal costs a window's detail, never a lifetime's worth of time.
+
+**Proof:** the module compiles (`make` in `psp/profile/`) [D]; on hardware, pending one short b30 run with `hwthreads` (each window's game + others + idle should come to about 100%, switches in every phase).
 
 ## M3: the cache model against the PSP, by phase
 

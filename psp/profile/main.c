@@ -11,6 +11,7 @@ the CPU count wraps in 13 s at 333 MHz), and the game logs the differences.
 */
 
 #include <pspkernel.h>
+#include <pspsdk.h>
 #include <pspsysmem_kernel.h>
 #include <string.h>
 
@@ -92,45 +93,56 @@ static SceUID game_thread = -1;
 static unsigned long long clock_last, idle_last;
 static unsigned int switches_last;
 
-static unsigned long long run_clock(SceUID id)
+/* a failed refer returns -1 and leaves the last reading standing: taking
+it as 0 would turn the next good reading into the thread's whole lifetime */
+static int run_clock(SceUID id, unsigned long long *run)
 {
 	SceKernelThreadRunStatus status;
 
 	memset(&status, 0, sizeof(status));
 	status.size = sizeof(status);
 	if (sceKernelReferThreadRunStatus(id, &status) < 0)
-		return 0;
-	return ((unsigned long long)status.runClocks.hi << 32) | status.runClocks.low;
+		return -1;
+	*run = ((unsigned long long)status.runClocks.hi << 32) | status.runClocks.low;
+	return 0;
 }
 
-static void system_clocks(unsigned long long *idle, unsigned int *switches)
+static int system_clocks(unsigned long long *idle, unsigned int *switches)
 {
 	SceKernelSystemStatus status;
 
 	memset(&status, 0, sizeof(status));
 	status.size = sizeof(status);
-	sceKernelReferSystemStatus(&status);
+	if (sceKernelReferSystemStatus(&status) < 0)
+		return -1;
 	*idle = ((unsigned long long)status.idleClocks.hi << 32) | status.idleClocks.low;
 	*switches = status.threadSwitchCount;
+	return 0;
 }
 
 /* the time since the last snapshot, to the phase that was running; called
 with interrupts off */
 static void threads_account(void)
 {
-	unsigned long long now = sceKernelGetSystemTimeWide(), idle, others = 0;
-	unsigned int switches;
+	unsigned long long now = sceKernelGetSystemTimeWide(), idle = idle_last, others = 0;
+	unsigned int switches = switches_last;
 	int k;
 
 	for (k = 0; k < thread_count; k++)
 	{
-		unsigned long long run = run_clock(thread_ids[k]);
+		unsigned long long run;
 
+		if (run_clock(thread_ids[k], &run) < 0)
+			continue;
 		if (thread_ids[k] != game_thread && run >= thread_last[k])
 			others += run - thread_last[k];
 		thread_last[k] = run;
 	}
-	system_clocks(&idle, &switches);
+	if (system_clocks(&idle, &switches) < 0 || idle < idle_last)
+	{
+		idle = idle_last;
+		switches = switches_last;
+	}
 	table->phase_threads[phase_current][0] += now - clock_last;
 	table->phase_threads[phase_current][1] += others;
 	table->phase_threads[phase_current][2] += idle - idle_last;
@@ -161,7 +173,10 @@ static void threads_list(void)
 		for (j = 0; j < thread_count; j++)
 			if (thread_ids[j] == ids[k])
 				break;
-		last[k] = j < thread_count ? thread_last[j] : run_clock(ids[k]);
+		if (j < thread_count)
+			last[k] = thread_last[j];
+		else
+			run_clock(ids[k], &last[k]);
 	}
 	memcpy(thread_ids, ids, sizeof(SceUID) * count);
 	memcpy(thread_last, last, sizeof(unsigned long long) * count);
@@ -225,14 +240,23 @@ int halo_profile_bus_probe(unsigned int *pairs, int max_pairs)
 	return count;
 }
 
-/* the system call (exports.exp): the game's thread changes phase */
+/* the system call (exports.exp): the game's thread changes phase. A system
+call arrives with k1 marking a user-mode caller, and the firmware then
+refuses the refer calls' buffers (they're on this call's kernel stack) and
+kernel threads' status; with k1 cleared they answer as they do the sampler,
+which is a kernel thread. The emulator doesn't check k1, so only the PSP
+showed it */
 int halo_profile_phase(int phase)
 {
+	unsigned int k1;
+
 	if (!table)
 		return -1;
+	k1 = pspSdkSetK1(0);
 	if (game_thread < 0)
 		game_thread = sceKernelGetThreadId();
 	phase_account(phase);
+	pspSdkSetK1(k1);
 	return 0;
 }
 
