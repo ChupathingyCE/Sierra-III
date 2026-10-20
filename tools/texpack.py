@@ -257,18 +257,46 @@ def relief_looks(m, d, B):
 RELIEF_LIGHT = np.array([-0.4, 0.4, 0.82], np.float32) / np.float32(np.linalg.norm([-0.4, 0.4, 0.82]))
 RELIEF_STRENGTH = 1.0
 NO_RELIEF = False   # --no-relief: the level's base maps without their bump relief
+OLD_RELIEF = False  # --relief-unfiltered: the bump sampled at the base's texels unfiltered, as build 139
+# a bump map tiled so finely that one base texel spans more than this many
+# of its texels along either axis is left out: averaged down to the base's
+# texels it is nearly flat, and unfiltered it aliased into streaks (a30's
+# cliff walls, whose stretched coordinates drew them out into vertical lines)
+RELIEF_MAX_FOOTPRINT = 4.0
+RELIEF_SKIPPED = []   # (shader, bump texels per base texel along u, along v)
+
+
+def box_wrapped(a, kx, ky):
+    """each texel the mean of the kx x ky block of texels round it, the map
+    tiled (kx, ky at most RELIEF_MAX_FOOTPRINT rounded up, so a few shifts)"""
+    out = np.zeros_like(a)
+    for dy in range(ky):
+        for dx in range(kx):
+            out += np.roll(np.roll(a, dy - ky // 2, 0), dx - kx // 2, 1)
+    return out / float(kx * ky)
 
 
 def apply_relief(img, relief, m):
     """the base map x its bump map's relief: dot(normal, light) over the flat
     surface's, sampled where the base's texels fall on the tiled bump map
-    (bilinear, wrapped); a flat area keeps its colour"""
+    (bilinear, wrapped); a flat area keeps its colour. The bump is first
+    averaged over what one base texel covers of it, so relief finer than the
+    base can show averages out instead of aliasing; None when it is so fine
+    that nothing would be left (RELIEF_MAX_FOOTPRINT)"""
     bump = decode_bump(m, relief['bump'])
     if bump is None:
         return img
     normals = bump[:, :, :3].astype(np.float32) / 127.5 - 1.0
     bh, bw = normals.shape[:2]
     h, w = img.shape[:2]
+    if not OLD_RELIEF:
+        across_u, across_v = abs(relief['u']) * bw / w, abs(relief['v']) * bh / h
+        if max(across_u, across_v) > RELIEF_MAX_FOOTPRINT:
+            RELIEF_SKIPPED.append((relief['shader'], across_u, across_v))
+            return None
+        kx, ky = max(1, int(np.ceil(across_u - 0.25))), max(1, int(np.ceil(across_v - 0.25)))
+        if kx > 1 or ky > 1:
+            normals = box_wrapped(normals, kx, ky)
     u = ((np.arange(w, dtype=np.float32) + 0.5) / w * relief['u'] * bw - 0.5)[None, :].repeat(h, 0)
     v = ((np.arange(h, dtype=np.float32) + 0.5) / h * relief['v'] * bh - 0.5)[:, None].repeat(w, 1)
     u0, v0 = np.floor(u), np.floor(v)
@@ -283,6 +311,27 @@ def apply_relief(img, relief, m):
     factor = np.clip(1.0 + RELIEF_STRENGTH * (shade - 1.0), 0.35, 1.65)[:, :, None]
     rgb = np.clip(img[:, :, :3].astype(np.float32) * factor + 0.5, 0, 255).astype(np.uint8)
     return np.concatenate([rgb, img[:, :, 3:4]], 2)
+
+
+def cube_patch(m, b):
+    """a cube map's average colour as an 8 x 8 patch of that one colour,
+    under the cube map's own key: the GE draws no cube maps, and a model's
+    reflection is folded into its lighting by this average (psp_ge.c,
+    psp_ge_model_reflection). The first face stands for the six (the bitmap's
+    data starts with it)"""
+    img = decode(m, b)
+    if img is None:
+        return None
+    r, g, bl = [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
+    entry = (r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11)          # GU_PSM_5650, as the packed palettes
+    palette = np.array([entry] + [0] * 15, '<u2').tobytes()
+    row, rows = level_bytes(8, 8, 4)
+    level = swizzle_psp(bytes(row * rows), row, rows)                # every texel entry 0
+    return dict(w=8, h=8, levels=1, clut=0, alpha=False, data=palette + level, psm=4)
+
+
+NO_CUBE_PATCHES = False        # --no-cube-patches: no cube map averages in the pack (as build 139)
+CUBE_PATCHES = []
 
 
 PREMULTIPLIED_MASKS = False    # --premultiplied-masks: the detail masks read as before
@@ -1059,6 +1108,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         img = apply_look(img, look)
     if relief:
         img = apply_relief(img, relief, m)
+        if img is None:
+            return None
     if model_look:
         img = apply_model_look(img, model_look)
     if glow is not None:
@@ -1206,6 +1257,10 @@ def main():
                     help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
     ap.add_argument('--no-relief', action='store_true',
                     help="the level's base maps without their bump maps' relief (as before build 139)")
+    ap.add_argument('--no-cube-patches', action='store_true',
+                    help="no cube map averages in the pack (as build 139)")
+    ap.add_argument('--relief-unfiltered', action='store_true',
+                    help="the bump relief sampled at the base's texels without averaging (as build 139)")
     ap.add_argument('--showcase', action='store_true',
                     help='the main menu\'s pack: every map at its own size up to 512, objects, sky and level maps '
                          'in their own colours (ui.map; the levels never)')
@@ -1240,8 +1295,10 @@ def main():
     QUALITY, QUALITY_REPORT = a.quality, a.quality_report
     PREMULTIPLIED_MASKS = a.premultiplied_masks
     SHOWCASE = a.showcase
-    global NO_RELIEF
+    global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES
     NO_RELIEF = a.no_relief
+    OLD_RELIEF = a.relief_unfiltered
+    NO_CUBE_PATCHES = a.no_cube_patches
     SHOWCASE_32 = a.showcase_32
     HUD_CLUT4 = a.hud_clut4
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
@@ -1290,6 +1347,10 @@ def main():
         # a multipurpose map's palette is read for the change colour's mask
         own_colours = not any('multipurpose' in role for role in tag_roles)
         r = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter, own_colours=own_colours)
+        if r is None and b['type'] == 'cube' and b['index'] == 0 and not NO_CUBE_PATCHES:
+            r = cube_patch(m, b)
+            if r is not None:
+                CUBE_PATCHES.append(b['tag'])
         if r is None:
             skipped[cls] = skipped.get(cls, 0) + 1
             continue
@@ -1315,7 +1376,11 @@ def main():
         if i % 50 == 0:
             print('  %d/%d' % (i, len(B)), file=sys.stderr)
     print('bump relief: %d level base maps baked with their bump maps\' relief (under the key | 2)%s' % (
-        relief_count, ' (--no-relief)' if NO_RELIEF else ''), file=sys.stderr)
+        relief_count, ' (--no-relief)' if NO_RELIEF else ' (unfiltered)' if OLD_RELIEF else ''), file=sys.stderr)
+    print('cube maps: %d averaged into 8 x 8 patches (model reflections)' % len(CUBE_PATCHES), file=sys.stderr)
+    for shader, across_u, across_v in RELIEF_SKIPPED:
+        print('  bump relief left out for %s: %.1f x %.1f bump texels a base texel' % (shader, across_u, across_v),
+              file=sys.stderr)
     for shader, changed in MASKS_MENDED:
         print('detail mask read on its own for %s: %.0f%% of its texels changed%s' % (
             shader, 100.0 * changed, ' (--premultiplied-masks: kept as before)' if PREMULTIPLIED_MASKS else ''),

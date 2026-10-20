@@ -250,7 +250,7 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL
+	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL, DEFER_MODEL_REFLECTION
 };
 typedef union
 {
@@ -366,6 +366,7 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 void psp_ge_model_effect(int type, float intensity);
 void psp_ge_model_point_light(const float *position, unsigned int color);
 void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_key, float const *change, float const *glow);
+void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
 void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
@@ -613,6 +614,15 @@ static int defer_model_multipurpose(unsigned int multipurpose_key, unsigned int 
 	at[0].u = multipurpose_key;
 	at[1].u = glow_key;
 	defer_copy(defer_copy(at + 2, change, 3), glow, 3);
+	return 1;
+}
+
+static int defer_model_reflection(unsigned int cube_key, float const *rgb)
+{
+	defer_word *at = defer_take(DEFER_MODEL_REFLECTION, 1 + 4);
+
+	at[0].u = cube_key;
+	defer_copy(at + 1, rgb, 3);
 	return 1;
 }
 
@@ -919,6 +929,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_MODEL_DETAIL:
 			psp_ge_model_detail(w[0].u, w[1].f, w[2].f);
+			break;
+		case DEFER_MODEL_REFLECTION:
+			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 3));
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -6265,7 +6278,17 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	int size, k;
 	unsigned int header[16];
 	const unsigned char *at, *end;
+	static int mode_word = -1;
 
+	/* the debug menu's modes from keep.txt, for A/Bs without hands:
+	"stencilsslack" baked with two steps of slack, "stencilsnudge" the bake
+	off (the old nudge) */
+	if (mode_word < 0)
+	{
+		mode_word = psp_keep("stencilsnudge") ? 2 : psp_keep("stencilsslack") ? 1 : 0;
+		if (mode_word)
+			stencil_mode = mode_word;
+	}
 	bake_forget();
 	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
@@ -9506,6 +9529,73 @@ void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale)
 	model_detail_v = v_scale;
 }
 
+/* A model shader's reflection: on the Xbox its cube map, times the
+multipurpose map's red (the specular mask) and the tint and brightness the
+vertex program gives each vertex, is added over the lit base (the model
+pixel shader's last stage, rasterizer_xbox_models.c), so a shiny part keeps
+its sheen in shade, where the base x the lighting goes dark. The GE has no
+cube maps and one texture a pass. A pass of its own for every shiny part
+costs too much, so the reflection's average is folded into the part's
+ambient light: the base x (lighting + reflection / the base's average)
+matches base x lighting + reflection on average, at no cost. The shader's
+side (brightness, tints, the distance fade, the lighting's reflection tint)
+comes from psp_fixups.py; the cube map's average from the pack (an 8 x 8
+patch of it under its key, texpack.py), else REFLECTION_CUBE_DEFAULT.
+"noreflection": none, as before */
+#define REFLECTION_CUBE_DEFAULT 0.35f
+static unsigned int reflection_cube_key = 0;
+static float reflection_rgb[3] = { 0.0f, 0.0f, 0.0f };
+static int reflection_off = -1;
+static unsigned long reflection_parts = 0, reflection_cubes_known = 0;
+
+void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
+{
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_model_reflection(cube_key, rgb));
+	reflection_cube_key = cube_key;
+	reflection_rgb[0] = rgb ? rgb[0] : 0.0f;
+	reflection_rgb[1] = rgb ? rgb[1] : 0.0f;
+	reflection_rgb[2] = rgb ? rgb[2] : 0.0f;
+}
+
+int psp_tex_average_known(unsigned int key, unsigned int *abgr);
+
+/* the part's ambient with its reflection folded in, or the model's own */
+static unsigned int ambient_with_reflection(unsigned int base_key)
+{
+	unsigned int base, mask_abgr, cube_abgr;
+	float cube[3] = { REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT }, mask = 0.5f;
+	float ambient[3];
+	int channel;
+
+	if (reflection_off < 0)
+	{
+		reflection_off = psp_keep("noreflection");
+		if (reflection_off)
+			platform_log("GE: noreflection: model reflections not folded into their ambient light");
+	}
+	if (reflection_off || reflection_rgb[0] + reflection_rgb[1] + reflection_rgb[2] <= 0.004f ||
+		!psp_tex_average_known(base_key, &base))
+		return model_ambient;
+	if (reflection_cube_key && psp_tex_average_known(reflection_cube_key, &cube_abgr))
+	{
+		for (channel = 0; channel < 3; channel++)
+			cube[channel] = (float)((cube_abgr >> (8 * channel)) & 0xFF) * (1.0f / 255.0f);
+		reflection_cubes_known++;
+	}
+	if (change_key && psp_tex_average_known(change_key, &mask_abgr))
+		mask = (float)(mask_abgr & 0xFF) * (1.0f / 255.0f);
+	for (channel = 0; channel < 3; channel++)
+	{
+		float b = (float)((base >> (8 * channel)) & 0xFF) * (1.0f / 255.0f);
+
+		ambient[channel] = (float)((model_ambient >> (8 * channel)) & 0xFF) * (1.0f / 255.0f) +
+			reflection_rgb[channel] * cube[channel] * mask / (b > 0.08f ? b : 0.08f);
+	}
+	reflection_parts++;
+	return color_from_rgb(ambient);
+}
+
 /* a pass over the part's triangles with the multipurpose map's mask: 0 the
 change colour (white toward the colour by the blue, multiplied in), 1 the
 self-illumination (the colour by the green, added) */
@@ -10938,6 +11028,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	static int back_pass_off = -1;
 	int base_alpha = 0, textured, soft = 0, two_sided = (alpha_tested & 2) != 0;
 	struct skin_part *skin = NULL;
+	unsigned int part_ambient;
 
 	alpha_tested &= 1;
 	model_cut_count = 0;
@@ -11143,6 +11234,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	}
 	else
 		sceGuColor(color);
+	part_ambient = model_ambient;
+	if (textured && model_camouflage <= 0.0f && !in_sky)
+		model_ambient = ambient_with_reflection(base_key);
 	model_lighting(1);
 	if (model_camouflage > 0.0f)
 	{
@@ -11201,6 +11295,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	}
 	sceGuDisable(GU_CULL_FACE);
 	model_lighting(0);
+	model_ambient = part_ambient;
 	/* passes 2 and 3: the change colour multiplied in and the
 	self-illumination added, where pass 1 drew */
 	if (textured && change_key && model_camouflage <= 0.0f && !in_sky)
@@ -11874,6 +11969,13 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 {
 	GE_DEFER(defer_widget_sprite(point, radius, scale_x, scale_y, rotation, color)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
+	static int sprites_off = -1;
+
+	/* "nowidgetsprites": lens flares and glows left out, for A/Bs */
+	if (sprites_off < 0)
+		sprites_off = psp_keep("nowidgetsprites");
+	if (sprites_off)
+		return;
 	ge_kind(KIND_WIDGET); /* build 103 */
 	static const float corner_uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 	static const int fan[6] = { 0, 1, 2, 0, 2, 3 };
@@ -12617,6 +12719,25 @@ void psp_ge_seethrough_shader(unsigned int shader)
 	seethrough_map_clamp = 0;
 	if (shader && psp_tex_shader_angle_tints(shader, &face, &edge))
 		flags |= SEETHROUGH_ANGLE_TINTED;
+	/* glass with no diffuse map draws its reflection (psp_fixups.py,
+	psp_transparent_map): the perpendicular colour face on, the parallel one
+	edge on, each times its own alpha (argb floats at +140 and +156) */
+	if (shader && *(const short *)((const unsigned char *)shader + 36) == 8 &&
+		*(const long *)((const unsigned char *)shader + 356) == -1)
+	{
+		const float *perpendicular = (const float *)((const unsigned char *)shader + 140);
+		const float *parallel = (const float *)((const unsigned char *)shader + 156);
+		float a[3] = { perpendicular[1] * perpendicular[0], perpendicular[2] * perpendicular[0],
+			perpendicular[3] * perpendicular[0] };
+		float b[3] = { parallel[1] * parallel[0], parallel[2] * parallel[0], parallel[3] * parallel[0] };
+		float middle[3] = { 0.5f * (a[0] + b[0]), 0.5f * (a[1] + b[1]), 0.5f * (a[2] + b[2]) };
+
+		face = abgr_from_rgb(a);
+		edge = abgr_from_rgb(b);
+		/* the level's see-through draws take one tint: the two's middle */
+		tint = abgr_from_rgb(middle);
+		flags = (flags & ~15) | SEETHROUGH_ANGLE_TINTED;
+	}
 
 	seethrough_tint_set(tint, flags, shader, face, edge);
 }
@@ -15391,6 +15512,15 @@ void psp_ge_light_begin(const float *position, const float *forward, const float
 	GE_DEFER(defer_light_begin(position, forward, color, radius, cosine_falloff, cosine_cutoff)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	int k;
+	static int pass_off = -1;
+
+	/* "nolightpass": the debug menu's "not drawn" from keep.txt, for A/Bs */
+	if (pass_off < 0)
+	{
+		pass_off = psp_keep("nolightpass");
+		if (pass_off)
+			light_mode = 3;
+	}
 
 	light.open = frame_open && radius > 0.0f && color[0] + color[1] + color[2] > 0.01f;
 	for (k = 0; k < 3; k++)

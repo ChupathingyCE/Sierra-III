@@ -1565,6 +1565,26 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	return 1;
 }
 
+/* a texture's average once worked out, even after it has left memory;
+else worked out now, bringing it in without binding it if need be (a model
+reflection's cube map patch and multipurpose map, psp_ge.c). 0 when it
+can't be had this frame */
+int psp_tex_average_known(unsigned int key, unsigned int *abgr)
+{
+	int index = key && entries ? find(key) : -1;
+
+	if (index < 0)
+		return 0;
+	if (averages_count == entry_count && averages[index])
+	{
+		*abgr = averages[index];
+		return 1;
+	}
+	if (!resident_at[index] && !psp_tex_resident(key))
+		return 0;
+	return psp_tex_average(key, abgr);
+}
+
 /* ---------- build 102: object lighting from the lightmaps
 
 Halo lights an object from the level under it: a ray down finds the
@@ -1758,14 +1778,16 @@ int psp_tex_has(unsigned int key)
 the pack has one (texpack.py, apply_relief: under the base's key | 2), else
 the key itself. The Xbox lights a level's bump map per pixel; the GE can't,
 so the bake folds the relief into the base, lit from one fixed direction.
-"norelief": the plain base map, as before */
+Off unless "relief" is kept: a bake whose relief was sampled at the base's
+texels streaked a30's cliffs (the bump's fine detail aliased into vertical
+lines along the stretched walls). "norelief" still forces it off */
 unsigned int psp_relief_key(unsigned int key)
 {
-	static int off = -1;
+	static int on = -1;
 
-	if (off < 0)
-		off = psp_keep("norelief");
-	return key && !off && psp_tex_has(key | 2) ? key | 2 : key;
+	if (on < 0)
+		on = psp_keep("relief") && !psp_keep("norelief");
+	return key && on && psp_tex_has(key | 2) ? key | 2 : key;
 }
 
 int psp_tex_size(unsigned int key, int *width, int *height)
