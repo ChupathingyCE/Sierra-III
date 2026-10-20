@@ -54,7 +54,7 @@ So the programme's rule: **few, large, asynchronous jobs, handed over without wa
 | Question | Instrument | Status |
 |---|---|---|
 | (a) **How much each CPU slows when both run, by kind of ME work**: scattered misses in main RAM, light main-RAM traffic, eDRAM only; on both PSPs | `mebusN` (PSP_RECON builds; ticks loaded by a coin against unloaded), with `mebusedram` for the eDRAM kind | done: §4 |
-| (b) **Does anything but our ME code write the eDRAM**, over a ladder of all ten maps; how deep the ME's stack reaches; the ME's speed from eDRAM against main RAM | `edramcheck` (now: the bottom 192 KB hashed and watched, 256 KB–1.5 MB patterned, the stretch below the stack patterned for its reach); every `mebus` window times the load alone in both memories | eDRAM clean and speed done: §4. **Stack reach not measured** (the PSP-3000's ME stack is above 2 MB): needs a PSP-1000 run |
+| (b) **Does anything but our ME code write the eDRAM**, over a ladder of all ten maps; how deep the ME's stack reaches; the ME's speed from eDRAM against main RAM | `edramcheck` (now: the bottom 192 KB hashed and watched, 256 KB–1.5 MB patterned, the stretch below the stack patterned for its reach); every `mebus` window times the load alone in both memories | eDRAM clean on both PSPs and speed done: §4. **Stack reach measured on the PSP-1000: never below 1,984 KB** (the PSP-3000's ME stack is above 2 MB, so no reach there) |
 | (c) **SL, the slant split, on today's build**: what it's worth now | `- \| meslantoff` on the same ladder | done (PSP-3000): §4 |
 
 **Instruments added for stage 0** (this branch):
@@ -108,12 +108,13 @@ What it means:
 - **For the jobs:** inputs that live in the eDRAM (tables, resident data) and the ME's private state there are nearly free to the main CPU; an ME loop must not poll a main-RAM word every step. The batches' limit word is read once a record, and a record is microseconds of work, so its share is small [U]; the standard pass should still count it.
 
 
-### (b) Does anything else write the eDRAM; how deep does the ME's stack reach [M, PSP-3000]
+### (b) Does anything else write the eDRAM; how deep does the ME's stack reach [M, both PSPs]
 
 `edramcheck` on the ten-map ladder (45 s a map), two runs on the PSP-3000 (one with `meslantoff`), the default build otherwise (PGO, ME ring on):
 
 - **Clean.** 4 passes, 120 pieces of 64 KB checked in each run: **0 patterned pieces changed** (256 KB–1,984 KB), **0 hashes moved** (0–192 KB). No alarm; nothing but our own ME code wrote the checked stretches during play, ring jobs (slant sort, audio mixing) included. The coverage is 4 passes of the 30 pieces, so a write that came and went between two visits could hide; each stretch was visited about every 30 s across all ten maps [U].
 - **The stack's reach is not measured.** `psp_me.c` reports a reach only when the ME's own stack lies below 2 MB (a PSP-1000); this PSP-3000 printed no reach line, which fits its stack sitting above 2 MB (its eDRAM is 4 MB). The final line's "stack's deepest 0 KB" means "not seen", not "unused". What the run does show: nothing wrote 1.5 MB–1,984 KB, so on this PSP the room R2 would use is free of the ME's stack. The R2 gate (reach leaving at least 1 MB on the PSP-1000) needs the same ladder on the PSP-1000: `edramcheck` alone, no keep sets, `wall` 1,800.
+- **The same ladder on the PSP-1000** (`edramcheck` alone, ten-map ladder, the default build): **clean again**, 4 passes, 120 pieces of 64 KB, 0 patterned pieces changed and 0 hashes moved. This PSP's ME stack lies below 2 MB, so the reach branch ran (the log names it: "the ME's stack's reach from 1536 KB") and printed no reach line: no word changed anywhere in 1,536–1,984 KB, and the final line's "deepest 0 KB" is what `psp_me.c` prints when none changed [D]. So the ME's stack never went below 1,984 KB, at most the top 64 KB of its 2 MB [M]: **256–1,984 KB, about 1.7 MB, was untouched by it and by everything else.** R2's gate (the reach leaving at least 1 MB) is met on both PSPs; whether to build R2 stays a decision (§5). The main thread's own stack (a different stack) reached 361 of its 512 KB. Coverage as on the PSP-3000: 4 passes, so a write that came and went between two visits could hide [U].
 - **The 192–256 KB stretch** is still unwatched (`mebusedram` scratch there); `meedramstate` stays off by default.
 
 ### (c) What the slant split (SL) is worth now [M, PSP-3000]
