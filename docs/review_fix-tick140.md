@@ -37,6 +37,8 @@ On the PSP, w140 with b139's profile, a keep-word A/B in one build, ticks 675-13
 
 The ME group doesn't carry the rise on the PSP either, and the levers together save 0.7% on a10 and 4.6% on c10.
 
+The same build with its own profile, the same keep words and the same PSPs, mean of 2 runs [M]: a10 7.52 ms a tick (-7.7%; frame 41.4 ms, -3.6%), c10 16.63 ms (-8.8%; frame 64.0 ms, -5.3%). That takes back the whole rise seen against b139 (+5-6% a10, +10-12% c10).
+
 ## The change
 
 `pgo/campaign-w140.tgz`: w140 509ec38's own counts, 13 counting runs (the openings of a10, a30, a50, b40, c10, c20, c40, d20, d40, b30's flight and its three routes; the same recipe as campaign-b139), merged with `tools/pgo_merge.sh`. Build w140 with `PSP_PGO_PROFILE=campaign-w140` and `PSP_PGO_STRICT=1`.
