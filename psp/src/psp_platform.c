@@ -2322,6 +2322,34 @@ steps in order: the console has no way to wait */
 
 		psp_transwalk_tick();
 	}
+	{
+		/* "saveeveryN" (a checkpoint every N s of game time) and "revertatN"
+		(the last one reverted to at game second N): the checkpoint writer's
+		timing over many checkpoints on the PSP, and, with statecrc, whether a
+		format restores the game state exactly (two runs that differ only in
+		the format must play on identically after the revert) */
+		static int every = -2, revert_at = -2;
+
+		if (every == -2 && psp_keep_loaded())
+		{
+			every = psp_keep_number("saveevery", 0);
+			revert_at = psp_keep_number("revertat", 0);
+		}
+		if ((every > 0 && ticks_seen % ((unsigned long)every * 30) == 0) ||
+			(revert_at > 0 && ticks_seen == (unsigned long)revert_at * 30))
+		{
+			extern void main_save_map_nonsafe(void);
+			extern void main_revert_map(void);
+			int reverting = revert_at > 0 && ticks_seen == (unsigned long)revert_at * 30;
+
+			psp_player_snapshot(player_text, sizeof(player_text));
+			platform_log("saveevery: %s at tick %lu (%s)", reverting ? "revert" : "checkpoint", ticks_seen, player_text);
+			if (reverting)
+				main_revert_map();
+			else
+				main_save_map_nonsafe();
+		}
+	}
 	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
 	{
 		/* the main loop does both between ticks, as for the campaign's own

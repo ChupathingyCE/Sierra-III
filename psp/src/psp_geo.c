@@ -35,6 +35,7 @@ psp_geo_generation(), which changes with every load into the block. */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 /* the animation cache, this pack's second reader (psp_anim.c) */
 void psp_anim_close(void);
 void psp_anim_map_opened(unsigned int bytes, unsigned int first, unsigned int end, unsigned int page,
@@ -196,6 +197,53 @@ static int fits(unsigned int start, unsigned int size)
 	return 1;
 }
 
+/* The ring passes over blocks drawn in the last geo_keep_frames frames (a
+second chance), up to GEO_SKIP_STEPS times, before it evicts by position
+alone. Without it the ring evicted whatever it reached, oldest loaded first
+however often drawn: once a level's working set neared the cache's size,
+each wrap of the ring (about every 20 s on a10 and b30 on the PSP-1000)
+threw out blocks still in view, read them again within frames, and drew
+them late (0.7-1.6 MB a wrap). "geofifo" (or "geokeep0"): as before */
+#define GEO_SKIP_STEPS 16
+static int geo_keep_frames = -1;
+static unsigned long skips = 0, skip_fallbacks = 0;
+
+static int kept_entry(const struct geo_entry *e)
+{
+	return protected_entry(e) || (e->at && e->last_frame + (unsigned int)geo_keep_frames > frame);
+}
+
+static unsigned int allocate_skipping(unsigned int size)
+{
+	unsigned int at = arena_next;
+	int steps, index;
+
+	for (steps = 0; steps < GEO_SKIP_STEPS; steps++)
+	{
+		unsigned int past = 0;
+
+		if (at + size > arena_end)
+			at = arena_start;
+		for (index = 0; index < entry_count; index++)
+		{
+			const struct geo_entry *e = &entries[index];
+			unsigned int end;
+
+			if (!e->at || e->at >= at + size || e->at + alignment(e->size) <= at || !kept_entry(e))
+				continue;
+			end = e->at + alignment(e->size);
+			if (end > past)
+				past = end;
+		}
+		if (!past)
+			return at;
+		skips++;
+		at = past;
+	}
+	skip_fallbacks++;
+	return 0;
+}
+
 static unsigned int allocate(unsigned int size)
 {
 	unsigned int start = 0;
@@ -203,7 +251,13 @@ static unsigned int allocate(unsigned int size)
 
 	if (!arena_start || size > arena_end - arena_start)
 		return 0;
-	if (fits(arena_next, size))
+	if (geo_keep_frames < 0)
+		geo_keep_frames = psp_keep("geofifo") ? 0 : psp_keep_number("geokeep", 60);
+	if (geo_keep_frames > 0)
+		start = allocate_skipping(size);
+	if (start)
+		;
+	else if (fits(arena_next, size))
 		start = arena_next;
 	else if (fits(arena_start, size))
 		start = arena_start;
@@ -695,6 +749,8 @@ void psp_geo_frame_end(void)
 			hits, misses, miss_frames, psp_geometry_draws_missed, loads, load_bytes / 1024, evictions, no_room, queue_full,
 			resident, resident_bytes / 1024, (arena_end - arena_start) / 1024, read_us / 1000, frame_read_worst_us / 1000,
 			async_reads ? "asynchronous" : "synchronous", past_share_reads, past_share_bytes / 1024);
+		platform_log("geometry: the ring passed %lu blocks drawn in the last %d frames, and %lu times found none older",
+			skips, geo_keep_frames, skip_fallbacks);
 		psp_anim_report();
 	}
 	frame++;

@@ -77,7 +77,7 @@ static struct option options[] = {
 	{ "lean", "lean play: timers and overlay off (notimers nooverlay)", 0, 0 },
 	{ "statememo", "GE state the GE already has left out (binds, lighting)", 0, 0 },
 	/* build 113's switches (docs/build_b113.md) */
-	{ "contrails", "Covenant tracers (contrails) drawn", 0, 0 },
+	{ "nocontrails", "tracers (contrails) not drawn", 0, 0 },
 	{ "zoommask", "zoom: the mask as a soft edge (blur stand-in)", 6, 0 },
 	{ "zoommaskfull", "zoom: the mask at full strength", 6, 0 },
 	{ "gebusy", "GE busy time in the log", 0, 0 },
