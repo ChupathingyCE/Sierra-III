@@ -24889,6 +24889,69 @@ FIXES_LD1["source/game/game_time.c#lightsframe"] = [
 ]
 
 
+# ---------- FIXES_CACHE: the cache work (docs/cache_work.md)
+# nodeprefetch: the next node's matrix line fetched while this node is
+# computed. object_compute_node_matrices writes each node's matrix into the
+# object's node block, which last tick's compute wrote and the rest of the
+# tick has since pushed out of the 16 KB data cache, so each node's first
+# store waits a whole miss for its line (the top data-miss site of the tick
+# in the cache model: matrix4x3_rotation_from_quaternion's first store). The
+# walk's queue names the next node before this one is done, so its line is
+# asked for here and lands while this node's maths runs ("cache 0x1E" never
+# stalls, and its line is the cache's ~72 cycles later; halo_bench v7b).
+# Exact: a prefetch changes no value. "nonodeprefetch": none
+FIXES_CACHE = {}
+FIXES_CACHE["source/objects/objects.c#nodeprefetch"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_134 #nmreaders) */""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_CACHE): the line holding p asked for, without a wait */
+#define PSP_LINE_PREFETCH(p) __asm__ volatile ("cache 0x1E, 0(%0)" : : "r" (p))
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_134 #nmreaders) */"""),
+("""		node_index = 0;
+		node_count = 1;
+		unknown_var = 0;
+		node_stack[0] = 0;
+
+		while (TRUE)
+		{""", """		node_index = 0;
+		node_count = 1;
+		unknown_var = 0;
+		node_stack[0] = 0;
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_CACHE) */
+		const int psp_node_prefetch = !PSP_KEEP_ONCE("nonodeprefetch");
+
+		if (psp_node_prefetch)
+			PSP_LINE_PREFETCH(&object_nodes[0].position);
+#endif
+
+		while (TRUE)
+		{"""),
+("""			if (node_index==node_count)
+			{
+				break;
+			}""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_CACHE): the first store of the next node's
+			matrix is its position's */
+			if (psp_node_prefetch && node_index<node_count)
+				PSP_LINE_PREFETCH(&object_nodes[node_stack[node_index]].position);
+#endif
+			if (node_index==node_count)
+			{
+				break;
+			}"""),
+]
+
+
 # ---------- the campaign's update rings (memory_savings S6, for a10's heap)
 # A campaign game is local: each frame builds at most 7 ticks' updates
 # (game_time.c: a local connection's cap) and takes them all before the next
@@ -24963,7 +25026,7 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_CACHE.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
