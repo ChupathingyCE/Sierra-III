@@ -69,15 +69,32 @@ static SceUID pack = -1;
 static unsigned int pack_size = 0;
 static char pack_name[64];
 static unsigned int arena_start = 0, arena_end = 0, arena_next = 0;
-/* "geowindow": a second region, the part of the tag window the map never
-uses past what the animation cache took (psp_geo_window). It is per map (the
-bake measures it over the map's BSPs) and many maps have none, so the cache
-never counts on it: without it the cache is the arena above, as before */
+/* a second stretch of the ring, 0 to 0 when there is none: with "soundgeo",
+the main RAM the sound cache no longer takes (psp_dsound.c); otherwise, with
+"geowindow", the part of the tag window the map never uses past what the
+animation cache took (psp_geo_window). Both are per map, and many maps have
+no window part, so the cache never counts on it: without it the cache is the
+arena above */
 static unsigned int extra_start = 0, extra_end = 0;
+
+/* the end of the stretch that holds start (0 if neither does) */
+static unsigned int stretch_end(unsigned int start)
+{
+	if (start >= arena_start && start < arena_end)
+		return arena_end;
+	if (start >= extra_start && start < extra_end)
+		return extra_end;
+	return 0;
+}
+
+static unsigned int largest_stretch(void)
+{
+	return arena_end - arena_start > extra_end - extra_start ? arena_end - arena_start : extra_end - extra_start;
+}
 
 static int in_cache(unsigned int a)
 {
-	return (a >= arena_start && a < arena_end) || (a >= extra_start && a < extra_end);
+	return stretch_end(a) != 0;
 }
 
 /* the cache's addresses, for "gereads" (psp_ge.c) */
@@ -218,7 +235,7 @@ static int fits(unsigned int start, unsigned int size)
 	unsigned int end = start + size;
 	int index;
 
-	if (!start || end > (start >= extra_start && start < extra_end ? extra_end : arena_end))
+	if (end > stretch_end(start))
 		return 0;
 	for (index = 0; index < entry_count; index++)
 	{
@@ -235,17 +252,16 @@ static unsigned int allocate(unsigned int size)
 	unsigned int start = 0;
 	int index;
 
-	if (!arena_start || (size > arena_end - arena_start && size > extra_end - extra_start))
+	if (!arena_start || size > largest_stretch())
 		return 0;
-	/* one ring through both regions: at its end, a region goes on at the
-	other's start */
+	/* the ring runs on from the end of one stretch to the start of the other */
 	if (fits(arena_next, size))
 		start = arena_next;
-	else if (extra_end > extra_start && arena_next >= arena_start && arena_next <= arena_end && fits(extra_start, size))
+	else if (extra_start && arena_next >= arena_start && arena_next <= arena_end && fits(extra_start, size))
 		start = extra_start;
 	else if (fits(arena_start, size))
 		start = arena_start;
-	else if (fits(extra_start, size))
+	else if (extra_start && fits(extra_start, size))
 		start = extra_start;
 	else
 		for (index = 0; index < entry_count && !start; index++)
@@ -625,10 +641,10 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 			return (void *)e->at;
 		}
 	}
-	if (alignment(size) > arena_end - arena_start)
+	if (alignment(size) > largest_stretch())
 	{
 		if (too_big++ < 8)
-			platform_log("geometry: %u bytes at %08x is more than the cache's %u", size, address, arena_end - arena_start);
+			platform_log("geometry: %u bytes at %08x is more than the cache's %u", size, address, largest_stretch());
 		return NULL;
 	}
 	if (!e)
@@ -958,8 +974,8 @@ void psp_geo_close(void)
 }
 
 /* the tag window's part the map never uses, past what the animation cache
-took: "geowindow" makes it the cache's second region (64 KB or more); the
-census says where it lies either way */
+took: "geowindow" makes it the cache's second stretch (64 KB or more) unless
+"soundgeo" has it; the census says where it lies either way */
 static void psp_geo_window(unsigned int window_at, unsigned int window_bytes, unsigned int tag_data_end, unsigned int window_end)
 {
 	unsigned int animation_end = psp_anim_window_end(), start, end;
@@ -973,6 +989,13 @@ static void psp_geo_window(unsigned int window_at, unsigned int window_bytes, un
 			animation_end > window_at ? (animation_end - window_at) / 1024 : 0, end > start ? (end - start) / 1024 : 0);
 	if (end <= start || end - start < 64 * 1024 || !psp_keep("geowindow"))
 		return;
+	/* the ring has one second stretch, and "soundgeo" took it first */
+	if (extra_end > extra_start)
+	{
+		platform_log("geometry: geowindow: %u KB at %08x not used: the cache's second stretch is soundgeo's",
+			(end - start) / 1024, start);
+		return;
+	}
 	extra_start = start;
 	extra_end = end;
 	platform_log("geometry: geowindow: %u KB more at %08x (the tag window's part this map never uses): the cache %u KB",
@@ -1101,6 +1124,20 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 	}
 	arena_start = arena_next = (unsigned int)arena;
 	arena_end = arena_start + arena_bytes;
+	{
+		extern void *psp_sound_spare(unsigned long *bytes);
+		extern int psp_showcase_map;
+		unsigned long spare_bytes;
+		void *spare = psp_sound_spare(&spare_bytes);
+
+		/* (the main menu keeps its cache as it is) */
+		if (spare && !psp_showcase_map)
+		{
+			extra_start = (unsigned int)spare;
+			extra_end = extra_start + (unsigned int)spare_bytes;
+			platform_log("geometry: and %lu KB at %08x that the sound cache doesn't take (soundgeo)", spare_bytes / 1024, extra_start);
+		}
+	}
 	hits = misses = loads = load_bytes = evictions = too_big = failures = miss_frames = queue_full = no_room = 0;
 	if (census_on < 0)
 		census_on = psp_keep("memcensus") != 0;

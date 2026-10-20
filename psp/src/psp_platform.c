@@ -1256,13 +1256,19 @@ unsigned long psp_sound_cache_bytes(void)
 	{
 		int kb = psp_keep_number("sound", SOUND_CACHE_DEFAULT_KB);
 
+		/* "soundedram" (psp_dsound.c): the eDRAM's room at most */
+		extern unsigned long psp_sound_edram_bytes(void);
+		unsigned long room = psp_sound_edram_bytes();
+
 		if (kb < 512)
 			kb = 512;
 		if (kb > 4096)
 			kb = 4096;
 		bytes = ((unsigned long)kb * 1024) & ~0xFFFul;
+		if (room && bytes > room)
+			bytes = room;
 		platform_log("sound cache: %lu KB (%s)", bytes / 1024,
-			kb == SOUND_CACHE_DEFAULT_KB ? "the default" : "keep.txt's sound word");
+			room ? "soundedram: the ME's eDRAM" : kb == SOUND_CACHE_DEFAULT_KB ? "the default" : "keep.txt's sound word");
 	}
 	return bytes;
 }

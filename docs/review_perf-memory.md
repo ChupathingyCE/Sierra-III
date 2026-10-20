@@ -38,7 +38,7 @@ Key lines: `psp_capacity.h` (the six maxima; `PSP_POOLS_GAME_STATE_SAVED` 0x5C00
 
 ## 3. `geowindow` (`03c141a`, opt-in)
 
-The tag window is 9 MB; the largest BSP of a map and its tags use less on most maps, and the animation cache takes 512 KB from the span past them. `geowindow` makes what is left the geometry cache's second region (64 KB or more, from the bake's per-map count, checked against the tags' end and the window's end at load); with none the cache is its 2 MB arena as before.
+The tag window is 9 MB; the largest BSP of a map and its tags use less on most maps, and the animation cache takes 512 KB from the span past them. `geowindow` makes what is left the geometry cache's second region (64 KB or more, from the bake's per-map count, checked against the tags' end and the window's end at load); with none the cache is its 2 MB arena as before. With both `soundgeo` and `geowindow` on, the ring still has one second stretch: `soundgeo` takes it (set first, and larger than any window part measured), and `geowindow` logs that its part isn't used (`psp_geo_window`).
 
 Key lines (`psp_geo.c`): `in_cache` and `psp_geo_range` / `psp_geo_holds` (the second region counts as the cache's own for `gereads` and bounds checks); `fits` (the end limit is the region's own); `allocate` (one ring through both regions: at the ring's end it goes on at the other region's start, then the first free fit, then after a protected block); the load-time setup (`extra_start`, `extra_end`) from `psp_anim_window_end()` (`psp_anim.c`).
 

@@ -18340,6 +18340,7 @@ void psp_ge_frame_end(void)
 	if (!frame_open)
 		return;
 	psp_me_ring_test(); /* "meringtest" (psp_me.c); off: one test a frame */
+	psp_me_batch_test(); /* "mebatchtest" (psp_me.c); likewise */
 	flush_mark = sceKernelGetSystemTimeLow();
 	win_transparent += transparent_count;
 	transparent_flush();
