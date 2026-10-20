@@ -578,6 +578,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				}
 			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
 		}
+#ifdef PSP_DEBUG_TOOLS
+		{
+			/* "sdump" names the shader of what it lists (psp_ge.c) */
+			extern void psp_ge_sdump_shader(void const *shader);
+
+			psp_ge_sdump_shader(shader);
+		}
+#endif
 		psp_environment_draw(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
 			0xFF000000 | (b << 16) | (g << 8) | r, base_key, psp_lightmap_key, alpha_tested);
 	}
@@ -2918,6 +2926,29 @@ void psp_transwalk_tick(void)
 	}
 	transwalk.phase = _transwalk_done;
 	transwalk.next = now + 60;
+}
+#endif
+'''
+
+# "flycam" (debug tools; psp_platform.c's spot_visit): the debug camera put
+# at a spot, as debug_camera_load does from its file, for looking at a place
+# the player can't be brought to (a10's corridors behind its opening)
+APPEND["source/camera/director.c"] = r'''
+#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+void psp_director_fly(float x, float y, float z, float fx, float fy, float fz)
+{
+	struct director *director = director_get(0);
+	struct flying_camera *camera = (struct flying_camera *)director->camera_data;
+	real_point3d position;
+	real_vector3d forward;
+
+	position.x = x; position.y = y; position.z = z;
+	forward.i = fx; forward.j = fy; forward.k = fz;
+	if (normalize3d(&forward) == 0.f)
+		return;
+	flying_camera_new_from_point_and_vector(camera, &position, &forward);
+	director_set_camera(0, (director_camera_update_proc)flying_camera_update, FALSE);
+	director->camera_mode_index = _camera_flying;
 }
 #endif
 '''
@@ -14580,6 +14611,41 @@ char const *psp_shader_tag_name(void const *shader)
 	}
 	return NULL;
 }
+
+#if PSP_DEBUG_TOOLS
+/* "sdump", once a map: each alpha-tested level shader whose base map an
+earlier level shader (in the tags' order, the bake's) also draws without
+the alpha test. The bake folds a base map's detail maps in by the first
+shader to use it, and keeps the map's alpha only when that one tests it */
+void psp_sdump_shared_bases(void)
+{
+	struct tag_iterator outer, inner;
+	long tested_index, other_index;
+	extern void platform_log(const char *format, ...);
+
+	tag_iterator_new(&outer, 0x73656E76 /* senv */);
+	while ((tested_index = tag_iterator_next(&outer)) != NONE)
+	{
+		char const *tested = (char const *)tag_get(0x73656E76, tested_index);
+		long base = *(long const *)(tested + 148);
+
+		if (!(*(unsigned short const *)(tested + 40) & 1) || base == NONE)
+			continue;
+		tag_iterator_new(&inner, 0x73656E76);
+		while ((other_index = tag_iterator_next(&inner)) != NONE && other_index != tested_index)
+		{
+			char const *other = (char const *)tag_get(0x73656E76, other_index);
+
+			if (*(long const *)(other + 148) == base && !(*(unsigned short const *)(other + 40) & 1))
+			{
+				platform_log("sdump: base map %s: alpha tested by %s, drawn first untested by %s", tag_get_name(base),
+					tag_get_name(tested_index), tag_get_name(other_index));
+				break;
+			}
+		}
+	}
+}
+#endif
 #endif
 
 void hud_draw_bitmap(
@@ -26078,7 +26144,6 @@ FIXES_MODELS["source/interface/hud_draw.c#lightname"] = [
 	}
 	return NULL;
 }
-#endif
 """,
  """		if (tag_get(0x73686472, tag_index) == shader)
 			return tag_get_name(tag_index);
@@ -26100,7 +26165,6 @@ char const *psp_light_tag_name(void const *definition)
 	}
 	return NULL;
 }
-#endif
 """),
 ]
 FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
