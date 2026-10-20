@@ -535,6 +535,40 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		slot->results[2] = found;
 		break;
 	}
+	case ME_JOB_SOUNDCOPY:
+	{
+		/* "soundedram": up to four pieces (source, destination, bytes in
+		whole 16s), staged in main RAM by the stick reader, copied into the
+		sound cache. me_serve drops the ME's cache before the job (so the
+		staging is read fresh) and writes it back after (into the eDRAM). Off
+		the ME only when simulated, where the cache is in main RAM; an eDRAM
+		destination there is refused */
+		unsigned int k, copied = 0;
+
+		for (k = 0; k + 2 < ME_JOB_ARGS && slot->args[k + 2]; k += 3)
+		{
+			const unsigned int *from = (const unsigned int *)slot->args[k];
+			unsigned int *to = (unsigned int *)slot->args[k + 1], words = slot->args[k + 2] >> 2, w;
+
+			if (!on_me && (slot->args[k + 1] & 0x1FFFFFFFu) < 0x08000000u)
+			{
+				copied = 0xFFFFFFFFu;
+				break;
+			}
+			for (w = 0; w < words; w += 4)
+			{
+				unsigned int a = from[w], b = from[w + 1], c = from[w + 2], d = from[w + 3];
+
+				to[w] = a;
+				to[w + 1] = b;
+				to[w + 2] = c;
+				to[w + 3] = d;
+			}
+			copied += words << 2;
+		}
+		slot->results[0] = copied;
+		break;
+	}
 	default:
 		break;
 	}
@@ -1267,11 +1301,20 @@ static int me_maybe_running = 0;
 /* the library's kernel helper is loaded: kernel calls can be made */
 static int me_kernel_ready = 0;
 
+volatile unsigned int psp_me_stops = 0;
+
+int psp_me_simulated(void)
+{
+	return me_state == 2;
+}
+
 static void me_stop(const char *why, int for_sleep)
 {
 	volatile struct me_control *control = CONTROL;
 	int k;
 
+	if (me_state > 0)
+		psp_me_stops++;
 	if (me_state > 0 && !for_sleep)
 		me_restartable = 0;
 	if (me_state == 1)
@@ -1710,6 +1753,15 @@ static int me_finish_slot(int which, unsigned int *results)
 	if (waited > stats[which].wait_worst_us)
 		stats[which].wait_worst_us = waited;
 	return 1;
+}
+
+/* a job handed over with psp_me_submit is done (or was run here), so
+psp_me_finish won't wait; 0 while the ME is still on it, or none is out */
+int psp_me_submitted_done(int which)
+{
+	if (which < 0 || which >= ME_SLOTS || !submitted[which])
+		return 0;
+	return submitted[which] == 2 || SLOT(which)->done == slot_request[which];
 }
 
 int psp_me_finish(int which, unsigned int *results)

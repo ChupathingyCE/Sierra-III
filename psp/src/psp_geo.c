@@ -68,6 +68,24 @@ static SceUID pack = -1;
 static unsigned int pack_size = 0;
 static char pack_name[64];
 static unsigned int arena_start = 0, arena_end = 0, arena_next = 0;
+/* a second stretch of the ring, with "soundgeo": the main RAM the sound cache
+no longer takes (psp_dsound.c). 0 to 0 when there is none */
+static unsigned int extra_start = 0, extra_end = 0;
+
+/* the end of the stretch that holds start (0 if neither does) */
+static unsigned int stretch_end(unsigned int start)
+{
+	if (start >= arena_start && start < arena_end)
+		return arena_end;
+	if (start >= extra_start && start < extra_end)
+		return extra_end;
+	return 0;
+}
+
+static unsigned int largest_stretch(void)
+{
+	return arena_end - arena_start > extra_end - extra_start ? arena_end - arena_start : extra_end - extra_start;
+}
 
 /* the cache's addresses, for "gereads" (psp_ge.c) */
 void psp_geo_range(unsigned int *start, unsigned int *end)
@@ -184,7 +202,7 @@ static int fits(unsigned int start, unsigned int size)
 	unsigned int end = start + size;
 	int index;
 
-	if (end > arena_end)
+	if (end > stretch_end(start))
 		return 0;
 	for (index = 0; index < entry_count; index++)
 	{
@@ -201,12 +219,17 @@ static unsigned int allocate(unsigned int size)
 	unsigned int start = 0;
 	int index;
 
-	if (!arena_start || size > arena_end - arena_start)
+	if (!arena_start || size > largest_stretch())
 		return 0;
+	/* the ring runs on from the end of one stretch to the start of the other */
 	if (fits(arena_next, size))
 		start = arena_next;
+	else if (extra_start && arena_next >= arena_start && arena_next <= arena_end && fits(extra_start, size))
+		start = extra_start;
 	else if (fits(arena_start, size))
 		start = arena_start;
+	else if (extra_start && fits(extra_start, size))
+		start = extra_start;
 	else
 		for (index = 0; index < entry_count && !start; index++)
 		{
@@ -554,10 +577,10 @@ void *psp_geo_lock(unsigned int address, unsigned int size)
 			return (void *)e->at;
 		}
 	}
-	if (alignment(size) > arena_end - arena_start)
+	if (alignment(size) > largest_stretch())
 	{
 		if (too_big++ < 8)
-			platform_log("geometry: %u bytes at %08x is more than the cache's %u", size, address, arena_end - arena_start);
+			platform_log("geometry: %u bytes at %08x is more than the cache's %u", size, address, largest_stretch());
 		return NULL;
 	}
 	if (!e)
@@ -623,7 +646,7 @@ static int resident_entry(const void *ptr)
 	short *at_slot = at_slot_cpu[PSP_ME_WORK() ? 1 : 0]; /* (the emulator's simulated ME work too, for its write trace) */
 	int index;
 
-	if (at < arena_start || at >= arena_end)
+	if (!stretch_end(at))
 		return -1;
 	if (last_locked >= 0 && entry_holds(last_locked, at))
 		return last_locked;
@@ -693,7 +716,7 @@ void psp_geo_frame_end(void)
 
 		platform_log("geometry: %lu hits, %lu misses (%lu frames missed something, %lu draws left out); %lu loaded (%lu KB), %lu evicted, %lu waited for room, %lu for the queue; %u blocks resident (%u KB of %u); reading %lu ms in all, worst frame %lu ms (%s); read past the frame's share for a draw %lu (%lu KB)",
 			hits, misses, miss_frames, psp_geometry_draws_missed, loads, load_bytes / 1024, evictions, no_room, queue_full,
-			resident, resident_bytes / 1024, (arena_end - arena_start) / 1024, read_us / 1000, frame_read_worst_us / 1000,
+			resident, resident_bytes / 1024, (arena_end - arena_start + extra_end - extra_start) / 1024, read_us / 1000, frame_read_worst_us / 1000,
 			async_reads ? "asynchronous" : "synchronous", past_share_reads, past_share_bytes / 1024);
 		psp_anim_report();
 	}
@@ -736,6 +759,7 @@ void psp_geo_close(void)
 	}
 	pack_size = 0;
 	arena_start = arena_end = arena_next = 0;
+	extra_start = extra_end = 0;
 }
 
 /* a map's tags were loaded: its geometry pack, if it was built with one.
@@ -860,6 +884,20 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 	}
 	arena_start = arena_next = (unsigned int)arena;
 	arena_end = arena_start + arena_bytes;
+	{
+		extern void *psp_sound_spare(unsigned long *bytes);
+		extern int psp_showcase_map;
+		unsigned long spare_bytes;
+		void *spare = psp_sound_spare(&spare_bytes);
+
+		/* (the main menu keeps its cache as it is) */
+		if (spare && !psp_showcase_map)
+		{
+			extra_start = (unsigned int)spare;
+			extra_end = extra_start + (unsigned int)spare_bytes;
+			platform_log("geometry: and %lu KB at %08x that the sound cache doesn't take (soundgeo)", spare_bytes / 1024, extra_start);
+		}
+	}
 	hits = misses = loads = load_bytes = evictions = too_big = failures = miss_frames = queue_full = no_room = 0;
 	read_us = read_worst_us = 0;
 	platform_log("geometry: %s, %u KB external; cache %u KB at %08x (%s)", path, pack_size / 1024, arena_bytes / 1024, arena_start,

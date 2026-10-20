@@ -37,6 +37,7 @@ the game calls every frame, and from Flush, never from the audio thread.
 #include <string.h>
 #include "psp_sound.h"   /* what the engine tells the mixer: stop reasons, classes */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
+#include "psp_me.h"      /* the eDRAM map and the sound copy job (soundedram) */
 
 void platform_log(const char *format, ...);
 
@@ -639,7 +640,8 @@ static unsigned long cache_lines(const void *start, unsigned long bytes, int op)
 {
 	unsigned int line, first = (unsigned int)start & ~63u, end = (unsigned int)start + bytes;
 
-	if (!bytes || ((unsigned int)start & 0x40000000u))
+	/* (the eDRAM, "soundedram": no main-RAM line holds it) */
+	if (!bytes || ((unsigned int)start & 0x40000000u) || ((unsigned int)start & 0x1FFFFFFFu) < 0x08000000u)
 		return 0;
 	if (op == LINES_WRITEBACK)
 		for (line = first; line < end; line += 64)
@@ -742,6 +744,447 @@ int psp_dsound_me_lines(void *const *list, unsigned long count, unsigned long fr
 	return 1;
 }
 
+/* ---------- R2: the sound cache in the Media Engine's eDRAM ("soundedram")
+
+docs/me_programme.md, section 5. The sound cache moves out of main RAM into
+the ME's eDRAM (psp_me.h's ME_EDRAM_SOUND), and the main RAM it took is free:
+the heap's, or with "soundgeo" the geometry cache's (psp_geo.c).
+- The engine sees the cache at its eDRAM address, which only the ME can
+  reach. The mixer runs there, and nothing on the main CPU reads a sound's
+  bytes (cache_lines leaves them alone).
+- The stick reader can't write eDRAM either, so a sound is read a piece at a
+  time into a small staging area in main RAM, and an ME job
+  (ME_JOB_SOUNDCOPY) copies each piece into place. The engine's "loaded" is
+  set once the last piece is in, so a sound stays "loading" a frame or two
+  longer than it did.
+- The main CPU can't mix from it. Once the ME has stopped (a failure, a
+  sleep: the eDRAM is then taken as lost, even if a wake restarts the ME),
+  every voice playing from the cache is mixed silent and new loads are
+  marked failed: the sound goes quiet, and nothing reads eDRAM from the main
+  CPU. The log says so once.
+- The emulator has no eDRAM. There (mode 2) the cache stays in main RAM at
+  the eDRAM's size, and the staging and the copies run as the simulated ME's
+  jobs, so all of the PSP's path but the eDRAM itself is exercised. */
+#define SOUND_BLOCK_DEFAULT_BYTES (1792ul * 1024) /* psp_platform.c's SOUND_CACHE_DEFAULT_KB: what the cache took in main RAM */
+#define STAGE_SLOTS 2
+#define STAGE_SLOT_BYTES (64 * 1024)
+/* a whole number of the reader's 512-byte sectors; the last piece of a sound,
+which the reader rounds up to them, still fits its slot */
+#define STAGE_PIECE_BYTES (60 * 1024)
+#define UPLOADS_MAX 256
+#define READ_FAILED 2 /* cache_files.h's _cache_file_read_failed */
+
+short cache_file_read(long tag_index, long offset, long size, void *buffer, unsigned char *completion_flag,
+	unsigned char blocking);
+int psp_sound_cache_alive(void *datum, short identifier, void *sound, unsigned long address);
+unsigned long psp_sound_cache_bytes(void);
+int psp_me_start(void);
+int psp_keep(const char *word);
+
+struct upload
+{
+	unsigned char *dest;   /* the sound's block in the cache */
+	unsigned char *loaded; /* the engine's flag */
+	void *datum, *sound;
+	long tag_index, file_offset, size, issued, copied;
+	SceUInt64 start_us;
+	short identifier;
+	unsigned char outstanding, failed, dead, finished;
+};
+
+#define SLOT_FREE 0
+#define SLOT_READING 1
+#define SLOT_COPYING 2
+struct stage_slot
+{
+	unsigned char *buffer;
+	volatile unsigned char done; /* the reader's completion flag: 0 reading, 1 read, READ_FAILED */
+	unsigned char state;
+	int upload;
+	long offset, bytes;
+	unsigned int sequence;
+};
+
+static int edram_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
+static unsigned char *sound_block = NULL, *spare_start = NULL;
+static unsigned long block_bytes = 0, spare_bytes = 0;
+/* the cache's bytes, when the main CPU must not read them (modes 1 and 2) */
+static const unsigned char *edram_lo = NULL, *edram_hi = NULL;
+static unsigned int stops_at_start = 0;
+static int edram_lost = 0, copy_out = 0;
+static struct upload uploads[UPLOADS_MAX];
+static unsigned int upload_head = 0, upload_count = 0, next_sequence = 0;
+static struct stage_slot stage[STAGE_SLOTS];
+static unsigned long up_sounds = 0, up_bytes = 0, up_pieces = 0, up_jobs = 0, up_failed = 0, up_dropped = 0,
+	up_full = 0, up_after_loss = 0, up_wait_us = 0, up_worst_us = 0, muted_blocks = 0, muted_said = 0;
+
+int psp_sound_edram_mode(void)
+{
+	if (edram_mode < 0)
+	{
+		edram_mode = 0;
+		if (!psp_keep("soundedram"))
+			return 0;
+		if (psp_keep("edramcheck"))
+			platform_log("sound eDRAM: refused: edramcheck patterns the same stretch; the cache stays in main RAM");
+		else if (!psp_me_start())
+			platform_log("sound eDRAM: refused: the Media Engine is off (nomeaudio?); the cache stays in main RAM");
+		else
+			edram_mode = psp_me_simulated() ? 2 : 1;
+	}
+	return edram_mode;
+}
+
+/* the cache's room when it isn't in main RAM, 0 when it is */
+unsigned long psp_sound_edram_bytes(void)
+{
+	return psp_sound_edram_mode() ? ME_EDRAM_SOUND_END - ME_EDRAM_SOUND : 0;
+}
+
+/* what physical_memory_allocate takes from the heap at start-up for sound
+(psp_fixups.py FIXES_SOUNDEDRAM): the cache itself (mode 0, as before), the
+staging (mode 1), both (mode 2). With "soundgeo" at least the default
+cache's 1,792 KB, the part sound doesn't use being the geometry cache's */
+unsigned long psp_sound_block_bytes(void)
+{
+	unsigned long cache = psp_sound_cache_bytes(), stage_bytes = STAGE_SLOTS * STAGE_SLOT_BYTES, want;
+	int geo = psp_keep("soundgeo");
+
+	switch (psp_sound_edram_mode())
+	{
+	case 1:
+		want = geo && SOUND_BLOCK_DEFAULT_BYTES > stage_bytes ? SOUND_BLOCK_DEFAULT_BYTES : stage_bytes;
+		break;
+	case 2:
+		want = cache + stage_bytes;
+		break;
+	default:
+		want = geo && cache < SOUND_BLOCK_DEFAULT_BYTES ? SOUND_BLOCK_DEFAULT_BYTES : cache;
+		break;
+	}
+	return want;
+}
+
+/* the block taken (psp_sound_block_bytes' size): where the cache goes, which
+the engine keeps as the cache's base */
+void *psp_sound_cache_place(void *block)
+{
+	unsigned long cache = psp_sound_cache_bytes(), stage_bytes = STAGE_SLOTS * STAGE_SLOT_BYTES, used;
+	unsigned char *base;
+	int k;
+
+	sound_block = (unsigned char *)block;
+	block_bytes = psp_sound_block_bytes();
+	switch (psp_sound_edram_mode())
+	{
+	case 1:
+		base = (unsigned char *)(ME_EDRAM + ME_EDRAM_SOUND);
+		used = stage_bytes;
+		break;
+	case 2:
+		base = sound_block + stage_bytes;
+		used = stage_bytes + cache;
+		break;
+	default:
+		base = sound_block;
+		used = cache;
+		break;
+	}
+	if (edram_mode)
+	{
+		for (k = 0; k < STAGE_SLOTS; k++)
+			stage[k].buffer = sound_block + k * STAGE_SLOT_BYTES;
+		edram_lo = base;
+		edram_hi = base + cache;
+		stops_at_start = psp_me_stops;
+	}
+	if (psp_keep("soundgeo") && block_bytes >= used + 64 * 1024)
+	{
+		spare_start = sound_block + used;
+		spare_bytes = (unsigned long)(block_bytes - used) & ~63ul;
+	}
+	platform_log("sound eDRAM: %s; cache %lu KB at %08x, %lu KB taken from the heap at %08x (%lu KB staging), %lu KB spare%s",
+		edram_mode == 1 ? "the cache in the ME's eDRAM" : edram_mode == 2 ? "SIMULATED (the emulator: the cache stays in main RAM)" :
+		"off", cache / 1024, (unsigned int)base, block_bytes / 1024, (unsigned int)sound_block,
+		edram_mode ? stage_bytes / 1024 : 0, spare_bytes / 1024, spare_bytes ? " for the geometry cache (soundgeo)" : "");
+	return base;
+}
+
+/* the start-up block's part sound doesn't use, for the geometry cache
+("soundgeo"); NULL if none */
+void *psp_sound_spare(unsigned long *bytes)
+{
+	*bytes = spare_bytes;
+	return spare_bytes ? spare_start : NULL;
+}
+
+/* the block to give back (physical_memory_free) */
+void *psp_sound_block(void)
+{
+	return sound_block;
+}
+
+/* instead of the stick reader's read into the cache (xbox_sound_cache.c):
+the sound's pieces go through the staging */
+void psp_sound_upload_start(long tag_index, long file_offset, long size, void *dest, unsigned char *loaded, void *datum,
+	short identifier, void *sound)
+{
+	struct upload *u;
+
+	if (edram_lost || upload_count == UPLOADS_MAX)
+	{
+		/* failed, as a read that failed: the voices that play it are mixed
+		silent after a loss (mute_cache_voices) */
+		if (edram_lost)
+			up_after_loss++;
+		else
+			up_full++;
+		*loaded = READ_FAILED;
+		return;
+	}
+	u = &uploads[(upload_head + upload_count++) % UPLOADS_MAX];
+	memset(u, 0, sizeof(*u));
+	u->dest = (unsigned char *)dest;
+	u->loaded = loaded;
+	u->datum = datum;
+	u->sound = sound;
+	u->identifier = identifier;
+	u->tag_index = tag_index;
+	u->file_offset = file_offset;
+	u->size = size;
+	u->start_us = sceKernelGetSystemTimeWide();
+	*loaded = 0;
+}
+
+/* the map is going (sound_cache_close): no waiting load is the engine's any more */
+void psp_sound_upload_forget(void)
+{
+	unsigned int k;
+
+	for (k = 0; k < upload_count; k++)
+		uploads[(upload_head + k) % UPLOADS_MAX].dead = 1;
+}
+
+static void piece_done(struct stage_slot *slot, int copied)
+{
+	struct upload *u = &uploads[slot->upload];
+
+	u->outstanding--;
+	if (copied)
+		u->copied += slot->bytes;
+	else
+		u->failed = 1;
+	slot->state = SLOT_FREE;
+}
+
+static void edram_loss(const char *why)
+{
+	if (edram_lost)
+		return;
+	edram_lost = 1;
+	platform_log("sound eDRAM: %s: the sound cache in its eDRAM is taken as lost; sounds from it are silent from here on",
+		why);
+}
+
+/* the game thread, every frame (sound_cache_idle): collect the copy job,
+start reads into free staging, hand what was read to the ME */
+void psp_sound_upload_poll(void)
+{
+	unsigned int k;
+
+	if (edram_mode <= 0)
+		return;
+	/* collected once done, never waited for: the ME may be on a long job */
+	if (copy_out && (psp_me_submitted_done(ME_SLOT_PROBE) || psp_me_stops != stops_at_start))
+	{
+		unsigned int results[ME_JOB_RESULTS] = { 0 };
+		int ok = psp_me_finish(ME_SLOT_PROBE, results) && results[0] != 0xFFFFFFFFu;
+
+		copy_out = 0;
+		for (k = 0; k < STAGE_SLOTS; k++)
+			if (stage[k].state == SLOT_COPYING)
+				piece_done(&stage[k], ok);
+		if (!ok)
+			edram_loss("the copy job failed");
+	}
+	if (psp_me_stops != stops_at_start)
+		edram_loss("the Media Engine stopped");
+	if (muted_blocks && !muted_said)
+	{
+		muted_said = 1;
+		platform_log("sound eDRAM: voices from the cache mixed silent: the main CPU mixes and can't read the eDRAM");
+	}
+	/* pieces read for a load that's gone, or that failed */
+	for (k = 0; k < STAGE_SLOTS; k++)
+	{
+		struct stage_slot *slot = &stage[k];
+
+		if (slot->state != SLOT_READING || !slot->done)
+			continue;
+		if (slot->done == READ_FAILED)
+			up_failed++;
+		if (slot->done == READ_FAILED || edram_lost || uploads[slot->upload].dead)
+			piece_done(slot, 0);
+	}
+	/* loads with nothing left to do: the engine told */
+	for (k = 0; k < upload_count; k++)
+	{
+		struct upload *u = &uploads[(upload_head + k) % UPLOADS_MAX];
+
+		if (u->finished || u->outstanding)
+			continue;
+		if (edram_lost && !u->dead)
+			u->failed = 1;
+		if (!u->dead && !u->failed && u->copied < u->size)
+			continue;
+		u->finished = 1;
+		if (u->dead || !psp_sound_cache_alive(u->datum, u->identifier, u->sound, (unsigned long)u->dest))
+		{
+			up_dropped++;
+			continue;
+		}
+		*u->loaded = u->failed ? READ_FAILED : 1;
+		if (!u->failed)
+		{
+			unsigned long us = (unsigned long)(sceKernelGetSystemTimeWide() - u->start_us);
+
+			up_sounds++;
+			up_bytes += u->size;
+			up_wait_us += us;
+			if (us > up_worst_us)
+				up_worst_us = us;
+		}
+	}
+	while (upload_count && uploads[upload_head].finished)
+	{
+		upload_head = (upload_head + 1) % UPLOADS_MAX;
+		upload_count--;
+	}
+	if (edram_lost)
+		return;
+	/* new reads, in the loads' order */
+	for (k = 0; k < STAGE_SLOTS; k++)
+	{
+		struct stage_slot *slot = &stage[k];
+		unsigned int n;
+		struct upload *u = NULL;
+
+		if (slot->state != SLOT_FREE)
+			continue;
+		for (n = 0; n < upload_count && !u; n++)
+		{
+			struct upload *candidate = &uploads[(upload_head + n) % UPLOADS_MAX];
+
+			if (!candidate->finished && !candidate->dead && !candidate->failed && candidate->issued < candidate->size)
+				u = candidate;
+		}
+		if (!u)
+			break;
+		slot->upload = (int)(u - uploads);
+		slot->offset = u->issued;
+		slot->bytes = u->size - u->issued < STAGE_PIECE_BYTES ? u->size - u->issued : STAGE_PIECE_BYTES;
+		slot->sequence = next_sequence++;
+		slot->state = SLOT_READING;
+		slot->done = 0;
+		u->issued += slot->bytes;
+		u->outstanding++;
+		up_pieces++;
+		cache_file_read(u->tag_index, u->file_offset + slot->offset, slot->bytes, slot->buffer, (unsigned char *)&slot->done, 0);
+	}
+	/* what's read, to the ME in the order it was asked for: one job */
+	if (!copy_out)
+	{
+		unsigned int args[ME_JOB_ARGS] = { 0 }, n = 0, order[STAGE_SLOTS], m = 0, j;
+
+		for (k = 0; k < STAGE_SLOTS; k++)
+			if (stage[k].state == SLOT_READING && stage[k].done == 1)
+			{
+				for (j = m++; j > 0 && stage[order[j - 1]].sequence > stage[k].sequence; j--)
+					order[j] = order[j - 1];
+				order[j] = k;
+			}
+		for (j = 0; j < m && 3 * n + 2 < ME_JOB_ARGS; j++)
+		{
+			struct stage_slot *slot = &stage[order[j]];
+			struct upload *u = &uploads[slot->upload];
+			unsigned long bytes = (slot->bytes + 15) & ~15ul;
+
+			/* a sound deleted while it loaded: its block may be another's now */
+			if (u->dead || !psp_sound_cache_alive(u->datum, u->identifier, u->sound, (unsigned long)u->dest))
+			{
+				u->dead = 1;
+				piece_done(slot, 0);
+				continue;
+			}
+			sceKernelDcacheWritebackInvalidateRange(slot->buffer, (bytes + 63) & ~63ul);
+			args[3 * n] = (unsigned int)slot->buffer;
+			args[3 * n + 1] = (unsigned int)(u->dest + slot->offset);
+			args[3 * n + 2] = (unsigned int)bytes;
+			slot->state = SLOT_COPYING;
+			n++;
+		}
+		if (n)
+		{
+			if (psp_me_submit(ME_SLOT_PROBE, ME_JOB_SOUNDCOPY, args, ME_JOB_ARGS))
+			{
+				copy_out = 1;
+				up_jobs++;
+			}
+			else
+			{
+				for (k = 0; k < STAGE_SLOTS; k++)
+					if (stage[k].state == SLOT_COPYING)
+						stage[k].state = SLOT_READING;
+				if (!psp_me_running())
+					edram_loss("the Media Engine isn't running");
+			}
+		}
+	}
+}
+
+/* psp_sound_cache_report's line (every 5 s) */
+void psp_sound_upload_report(void)
+{
+	if (edram_mode <= 0)
+		return;
+	platform_log("sound eDRAM: %lu sounds in (%lu KB, %lu pieces, %lu copy jobs), each %lu ms from asked to loaded on average (worst %lu); %lu reads failed, %lu deleted while loading, %lu refused (queue full), %lu after the loss; %lu blocks with voices mixed silent%s",
+		up_sounds, up_bytes / 1024, up_pieces, up_jobs, up_sounds ? up_wait_us / up_sounds / 1000 : 0, up_worst_us / 1000,
+		up_failed, up_dropped, up_full, up_after_loss, muted_blocks, edram_lost ? "; LOST" : "");
+}
+
+/* voices playing from the cache, mixed silent where it can't be read: by the
+main CPU, or by an ME that has stopped since (its eDRAM taken as lost). The
+silent path of mix_voice only moves the position on */
+static int edram_unreachable(int on_me)
+{
+	return edram_hi && (!on_me || psp_me_stops != stops_at_start);
+}
+
+static void mute_cache_voices(struct psp_stream *const *list, unsigned long count)
+{
+	unsigned long k, position;
+	int any = 0;
+
+	for (k = 0; k < count; k++)
+	{
+		struct psp_stream *stream = list[k];
+
+		for (position = 0; position < stream->packet_count && position < MAXIMUM_STREAM_PACKETS; position++)
+		{
+			const struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+
+			if (!packet->finished && packet->data >= edram_lo && packet->data < edram_hi)
+			{
+				stream->target_left = stream->target_right = 0;
+				stream->current_left = stream->current_right = 0;
+				any = 1;
+				break;
+			}
+		}
+	}
+	muted_blocks += any;
+}
+
 #define VOICE_LIST_MAX 256
 int psp_meaudio_start(void);
 void psp_me_handover(int which, unsigned long us);
@@ -798,6 +1241,8 @@ static void mix(short *output, unsigned long frames)
 		}
 		list[count++] = stream;
 	}
+	if (on_me && edram_unreachable(1))
+		mute_cache_voices(list, count);
 	if (on_me)
 	{
 		unsigned long k, bytes = frames * OUTPUT_CHANNELS * sizeof(short);
@@ -852,7 +1297,11 @@ static void mix(short *output, unsigned long frames)
 			me_failures++;
 	}
 	if (!mixed)
+	{
+		if (edram_unreachable(0))
+			mute_cache_voices(list, count);
 		voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped);
+	}
 	pthread_mutex_unlock(&mixer_lock);
 	clipped_blocks += clipped != 0;
 	mix_blocks++;

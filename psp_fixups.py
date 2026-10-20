@@ -24963,7 +24963,120 @@ def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_SOUNDEDRAM: R2, the sound cache in the Media Engine's eDRAM
+# ("soundedram", psp_dsound.c; docs/me_programme.md section 5). With the word
+# off every change here does what the code did before: the start-up block is
+# the cache, and the stick reads straight into it
+FIXES_SOUNDEDRAM = {}
+FIXES_SOUNDEDRAM["source/cache/physical_memory_map.c#soundedram"] = [
+("""	physical_memory_map_globals.sound_cache_base_address = XPhysicalAlloc(SOUND_CACHE_SIZE, -1, 0, PAGE_READWRITE);""",
+ """#ifdef HALO_PSP
+	{
+		/* the block may be larger or smaller than the cache, and the cache
+		may not be in it (psp_dsound.c, "soundedram", "soundgeo") */
+		extern unsigned long psp_sound_block_bytes(void);
+		extern void *psp_sound_cache_place(void *block);
+		void *block = XPhysicalAlloc(psp_sound_block_bytes(), -1, 0, PAGE_READWRITE);
+
+		physical_memory_map_globals.sound_cache_base_address = block ? psp_sound_cache_place(block) : NULL;
+	}
+#else
+	physical_memory_map_globals.sound_cache_base_address = XPhysicalAlloc(SOUND_CACHE_SIZE, -1, 0, PAGE_READWRITE);
+#endif"""),
+("""		XPhysicalFree(physical_memory_map_globals.sound_cache_base_address);""",
+ """#ifdef HALO_PSP
+	{
+		extern void *psp_sound_block(void);
+
+		XPhysicalFree(psp_sound_block());
+	}
+#else
+		XPhysicalFree(physical_memory_map_globals.sound_cache_base_address);
+#endif"""),
+]
+FIXES_SOUNDEDRAM["source/cache/xbox_sound_cache.c#soundedram"] = [
+("""		cache_sound->sound = sound;
+		cache_file_read(
+			sound->cache_tag_index,
+			sound->samples.file_offset,
+			sound->samples.size,
+			cache_address,
+			&cache_sound->loaded,
+			FALSE);""",
+ """		cache_sound->sound = sound;
+#ifdef HALO_PSP
+		/* the cache in the ME's eDRAM: the read goes through main RAM */
+		if (psp_sound_edram_mode())
+			psp_sound_upload_start(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size,
+				cache_address, &cache_sound->loaded, cache_sound, cache_sound->identifier, sound);
+		else
+#endif
+		cache_file_read(
+			sound->cache_tag_index,
+			sound->samples.file_offset,
+			sound->samples.size,
+			cache_address,
+			&cache_sound->loaded,
+			FALSE);"""),
+("""void sound_cache_idle(
+	void)
+{
+	lruv_idle(xbox_sound_cache_globals.cache);""",
+ """#ifdef HALO_PSP
+int psp_sound_edram_mode(void);
+void psp_sound_upload_start(long tag_index, long file_offset, long size, void *dest, byte *loaded, void *datum,
+	short identifier, void *sound);
+void psp_sound_upload_poll(void);
+void psp_sound_upload_forget(void);
+void psp_sound_upload_report(void);
+
+/* "soundedram": a load's sound still the one its block was made for, before
+a piece is copied into the block and before the sound is called loaded */
+int psp_sound_cache_alive(void *datum, short identifier, void *sound, unsigned long address)
+{
+	struct xbox_cache_sound_datum *cache_sound = datum;
+
+	return cache_sound->identifier == identifier && cache_sound->sound == sound &&
+		(unsigned long)((struct sound_permutation *)sound)->cache_base_address == address;
+}
+#endif
+
+void sound_cache_idle(
+	void)
+{
+	lruv_idle(xbox_sound_cache_globals.cache);
+#ifdef HALO_PSP
+	psp_sound_upload_poll();
+#endif"""),
+("""void sound_cache_close(
+	void)
+{
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+""",
+ """void sound_cache_close(
+	void)
+{
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+
+#ifdef HALO_PSP
+	psp_sound_upload_forget();
+#endif
+"""),
+("""		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+}""",
+ """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+	{
+		extern void psp_sound_upload_report(void);
+
+		psp_sound_upload_report();
+	}
+}"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

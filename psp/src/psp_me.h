@@ -16,6 +16,7 @@
 #define ME_JOB_GE 4 /* build 112: a run of the GE layer's waiting calls (psp_ge.c, "gemeon") */
 #define ME_JOB_EDRAM 5 /* build 115: fill or check a stretch of the ME's eDRAM (edramcheck) */
 /* 6: ME_JOB_SLANT, a ring job (below) */
+#define ME_JOB_SOUNDCOPY 11 /* "soundedram": staged sound pieces copied into the sound cache in eDRAM (psp_dsound.c) */
 
 int psp_me_start(void);
 int psp_me_running(void);
@@ -29,6 +30,7 @@ void psp_me_edram_probe(void);
 /* build 118: a job handed over without waiting, then finished (gemeoverlap) */
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
+int psp_me_submitted_done(int which);
 
 /* sleep and wake: the power callback stops the ME as the PSP sleeps and asks
 for a restart once it is awake; with "mewake" the main thread's frame end
@@ -41,6 +43,11 @@ void psp_me_wake_test_sleep(void);
 /* the exit (HOME, the game's own): the ME stopped, and held in reset if it
 may still be running, before the firmware takes the PSP back */
 void psp_me_exit(const char *why);
+/* how many times the ME has stopped (a failure, a sleep, the exit): whatever
+it held in its eDRAM is taken as gone from the first stop on */
+extern volatile unsigned int psp_me_stops;
+/* 1 when the ME's jobs are simulated (the emulator: the main CPU runs them) */
+int psp_me_simulated(void);
 
 /* The job ring (ME phase 1, keep word "meslant" turns it on): jobs handed
 to the ME without a slot of their own, collected later. Each job is a leaf:
@@ -94,6 +101,12 @@ the main CPU can't reach it). docs/me_programme.md, stage 1 */
 #define ME_EDRAM_RESIDENT 0x40000u     /* to 1.5 MB: data jobs keep there */
 #define ME_EDRAM_RESIDENT_END 0x180000u
 #define ME_EDRAM_STACK_TOP 0x200000u   /* a PSP-1000's: the stack grows down from it */
+/* "soundedram" (R2): the sound cache takes 256 KB to 1,920 KB instead, the
+resident room and the top of the stack's half MB with it. On both PSPs the
+ME's stack never reached below 1,984 KB (edramcheck over the ten-map ladder),
+so 128 KB stays its, twice the reach measured */
+#define ME_EDRAM_SOUND 0x40000u
+#define ME_EDRAM_SOUND_END 0x1E0000u
 
 /* On the ME, inside a long job: an audio block waiting is mixed now and,
 from a slot job (not from inside a ring job), the ring's waiting jobs run.
