@@ -292,5 +292,7 @@ beach's ground overlays at a distance), and the shots show no overlay sinking in
 **Cost [E]:** b30 game time 3,000-5,000, frame 6.83 ms against 6.84 (tick 2.66 against 2.67); a10's route
 24.37 ms both. None.
 
+The multiplayer build of this code compiles (`PSP_MULTIPLAYER=1`, 5.94 MB, EBOOT 73b4b6d4dcb18e68).
+
 **Status: H33 fixed [E].** The PSP check is the hand test's own spot on the next build. The one-sided cull
 of round three stays: the Xbox's rule, free, and harmless across both maps' shots.
