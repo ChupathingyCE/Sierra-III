@@ -38,6 +38,12 @@ File layout (little endian):
     shaders whose combiners read the angle the surface is seen at (Cortana),
     blended per vertex by that angle. Only when there are any, after a 'TND1'
     (of count 0 when no drawn map is chosen)
+  composites, right after the tints by angle: 'TNC1', u32 count, then count x
+    { u32 shader tag address, u32 the map the composite is drawn in place of
+    (its index in the shader's maps) }, sorted by address: the see-through
+    shaders drawn from a texture of their own (seethrough.composite), whose
+    directory entries are keyed by the shader's tag address | 1. Only when
+    there are any, after a 'TNA1' (of count 0 when no shader is angled)
   glow maps: directory entries keyed by a self-illuminated model shader's
     tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
     same texels share their data
@@ -1123,7 +1129,7 @@ def quality_note(cls, old, new):
 
 @profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
-             relief=None):
+             relief=None, image=None):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -1145,7 +1151,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         tw, th = max(1, tw // 2), max(1, th // 2)
     if act != 'clut' or b['type'] != '2d' or not pow2(tw) or not pow2(th):
         return None
-    img = decode(m, b)
+    img = decode(m, b) if image is None else image
     if img is None:
         return None
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and (b['tag'], b['index']) in LIGHTMAP_MASKS:
@@ -1310,6 +1316,9 @@ def main():
     ap.add_argument('--drawn-by-shape', action='store_true',
                     help='see-through shaders that blend by their alpha draw the map that carries most of what the '
                          'frame shows over dark and light backgrounds alike (seethrough.DRAWN_BY_SHAPE)')
+    ap.add_argument('--no-composites', action='store_true',
+                    help='no see-through composites: each shader drawn as one of its maps and a tint, as before '
+                         '(seethrough.COMPOSITES)')
     ap.add_argument('--effects-clut4', action='store_true',
                     help='effects and see-through shaders\' maps may take 16 colours (as before)')
     ap.add_argument('--tints-from-means', action='store_true',
@@ -1496,6 +1505,44 @@ def main():
                                    found.alpha_shares[shape], '' if shape == found.drawn else ' (not drawn)'),
                   file=sys.stderr)
     names = {t.address: t.name for t in m.tags}
+    # the see-through composites (seethrough.composite): under the shader's
+    # address | 1, which no bitmap's key can be, with the map each is drawn in
+    # place of ('TNC1'); the menu's up to the GE's 512 a side
+    composites = {}
+    composite_bytes = 0
+    seethrough.COMPOSITES = not a.no_composites
+    if SHOWCASE:
+        seethrough.COMPOSITE_SIDE = 512
+    by_tag = {}
+    for b in B:
+        by_tag.setdefault(b['tag'], b)
+    composite_means = seethrough.Means(m, B)
+    for name, found in (seethrough.FOUND if seethrough.COMPOSITES else []):
+        made = seethrough.composite(m, found.tag, composite_means, found)
+        if made is None:
+            continue
+        basis, img, why = made
+        if img is None:
+            print('composite for %s: none (%s)' % (name, why), file=sys.stderr)
+            continue
+        maps = seethrough._maps(m, m.off(found.tag.address), struct.unpack_from('<H', m.data, m.off(found.tag.address) + 36)[0])
+        t = m.by_id.get(maps[basis][0])
+        b = by_tag.get(t.name) if t is not None else None
+        if b is None:
+            continue
+        cls = refs.classify(roles.get(b['tag'], ()), b)
+        r = bake_one(m, dict(b, w=img.shape[1], h=img.shape[0]), cls, image=img)
+        if r is None:
+            print('composite for %s: none (%s not baked as %s)' % (name, b['tag'], cls), file=sys.stderr)
+            continue
+        entries.append(dict(r, key=found.tag.address | 1, name=name + ' (composite)'))
+        composites[found.tag.address] = basis
+        composite_bytes += len(r['data'])
+        print('composite for %s: %s; %dx%d baked, %d bytes' % (name, why, r['w'], r['h'], len(r['data'])),
+              file=sys.stderr)
+    print('composites: %d see-through shaders drawn from a texture of their own, %d bytes%s' % (
+        len(composites), composite_bytes, ' (--no-composites)' if a.no_composites else ''), file=sys.stderr)
+    entries.sort(key=lambda e: e['key'])
     for address in sorted(set(k & ~3 for k in tints) | set(drawn)):
         found = next((tints[k][2] for k in tints if k & ~3 == address), None) or drawn[address]
         alt = '' if found.alt is None else ' (the scale rule\'s map %d: tint %s)' % (found.scale_drawn, found.alt.name())
@@ -1512,17 +1559,20 @@ def main():
         print('  tints by angle for %s: face on %08x, edge on %08x' % (
             names[key & ~3], seethrough.abgr(face), seethrough.abgr(edge)), file=sys.stderr)
     tint_bytes = b''
-    if tints or drawn:
+    if tints or drawn or composites:
         tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
             struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
-        if drawn or angled:
+        if drawn or angled or composites:
             tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
                 struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
                             drawn[address].alt.word()) for address in sorted(drawn))
-        if angled:
+        if angled or composites:
             tint_bytes += struct.pack('<4sI', b'TNA1', len(angled)) + b''.join(
                 struct.pack('<III', key, seethrough.abgr(tints[key][2].angle[0]),
                             seethrough.abgr(tints[key][2].angle[1])) for key in angled)
+        if composites:
+            tint_bytes += struct.pack('<4sI', b'TNC1', len(composites)) + b''.join(
+                struct.pack('<II', address, composites[address]) for address in sorted(composites))
     header = 12
     directory = 20 * len(entries)
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16

@@ -109,6 +109,14 @@ face on, the tint edge on) sorted by address, blended per vertex by the angle
 Cortana's face-on body was as bright as her rim. "noangletint": the middle */
 static unsigned int *angle_tints = NULL;
 static int angle_tint_count = 0;
+/* the see-through shaders drawn from a texture of their own (texpack.py
+'TNC1', seethrough.py composite): pairs of (the shader's tag address, the
+map the composite is drawn in place of) sorted by address; the texture is
+under the shader's address | 1. One map and a tint can't hold a shader whose
+look comes from two maps (a thruster's cone from one, its colour from
+another). "nocomposite": drawn as one map and a tint, as without them */
+static unsigned int *composites = NULL;
+static int composite_count = 0;
 static int drawn_map_scale(void);
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
 static unsigned short vram_pending[512];
@@ -177,6 +185,9 @@ void psp_tex_close(void)
 	free(angle_tints);
 	angle_tints = NULL;
 	angle_tint_count = 0;
+	free(composites);
+	composites = NULL;
+	composite_count = 0;
 	free(drawn_maps);
 	drawn_maps = NULL;
 	drawn_map_count = 0;
@@ -894,21 +905,39 @@ void psp_tex_map_opened(const char *name)
 			}
 		}
 		if (tables == 2 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
-			table[0] == 0x31414E54 /* TNA1 */ && table[1] > 0 && table[1] <= 4096 &&
-			(angle_tints = malloc(table[1] * 12)) != NULL)
+			table[0] == 0x31414E54 /* TNA1 */ && table[1] <= 4096)
 		{
-			if (sceIoRead(file, angle_tints, table[1] * 12) == (int)(table[1] * 12))
-				angle_tint_count = (int)table[1];
+			tables = 3;
+			if (table[1] > 0 && (angle_tints = malloc(table[1] * 12)) != NULL)
+			{
+				if (sceIoRead(file, angle_tints, table[1] * 12) == (int)(table[1] * 12))
+					angle_tint_count = (int)table[1];
+				else
+				{
+					free(angle_tints);
+					angle_tints = NULL;
+					tables = 0;
+				}
+			}
+		}
+		if (tables == 3 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
+			table[0] == 0x31434E54 /* TNC1 */ && table[1] > 0 && table[1] <= 4096 &&
+			(composites = malloc(table[1] * 8)) != NULL)
+		{
+			if (sceIoRead(file, composites, table[1] * 8) == (int)(table[1] * 8))
+				composite_count = (int)table[1];
 			else
 			{
-				free(angle_tints);
-				angle_tints = NULL;
+				free(composites);
+				composites = NULL;
 			}
 		}
 		platform_log("textures: see-through tints for %d shaders%s; drawn maps chosen by the bake for %d%s", tint_count,
 			tint_count ? "" : " (a pack baked before build 116: none)", drawn_map_count,
 			drawn_map_count ? (drawn_map_scale() ? " (drawnmapscale: the smallest scale's instead)" : "") :
 			" (none in this pack: the smallest scale's for all)");
+		platform_log("textures: see-through composites for %d shaders%s", composite_count,
+			composite_count && psp_keep("nocomposite") ? " (nocomposite: one map and a tint instead)" : "");
 	}
 	if (angle_tint_count)
 		platform_log("textures: tints by angle for %d shaders%s", angle_tint_count,
@@ -945,6 +974,41 @@ static int drawn_map_scale(void)
 	return on;
 }
 
+/* the map a see-through shader's composite is drawn in place of, or -1 when
+it has none (or "nocomposite", or "drawnmapscale": the composite is laid out
+on the bake's choice of map, so it goes with that choice) */
+int psp_tex_has(unsigned int key);
+
+static int composite_map(unsigned int shader)
+{
+	static int off = -1;
+	int low = 0, high = composite_count - 1;
+
+	if (off < 0)
+		off = psp_keep("nocomposite");
+	if (off || drawn_map_scale())
+		return -1;
+	while (composites && low <= high)
+	{
+		int middle = (low + high) / 2;
+
+		if (composites[2 * middle] == shader)
+			return psp_tex_has(shader | 1) ? (int)composites[2 * middle + 1] : -1;
+		if (composites[2 * middle] < shader)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return -1;
+}
+
+/* the key of a see-through shader's composite when it has one, else key (the
+map's own) */
+unsigned int psp_tex_composite_key(unsigned int shader, unsigned int key)
+{
+	return composite_map(shader) >= 0 ? shader | 1 : key;
+}
+
 /* a shader's place in the pack's drawn maps, or -1 */
 static int drawn_map_find(unsigned int shader)
 {
@@ -969,8 +1033,11 @@ static int drawn_map_find(unsigned int shader)
 shader's maps), or -1 for the runtime's smallest-scale rule */
 int psp_tex_shader_map(unsigned int shader)
 {
-	int found = drawn_map_scale() ? -1 : drawn_map_find(shader);
+	int found = composite_map(shader);
 
+	if (found >= 0)
+		return found;
+	found = drawn_map_scale() ? -1 : drawn_map_find(shader);
 	return found < 0 ? -1 : (int)drawn_maps[3 * found + 1];
 }
 
@@ -986,7 +1053,8 @@ unsigned int psp_tex_shader_tint(unsigned int shader, int *flags)
 		*flags = 0;
 	if (off < 0)
 		off = psp_keep("notint");
-	if (off)
+	/* a composite is the shader's whole colour already */
+	if (off || composite_map(shader) >= 0)
 		return 0xFFFFFFFF;
 	if (drawn_map_scale() && (found = drawn_map_find(shader)) >= 0)
 	{

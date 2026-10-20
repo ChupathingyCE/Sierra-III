@@ -96,6 +96,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			}
 		}
 		key = psp_tex_bitmap_key(*(long const *)(map + map_at), bitmap);
+		if (!(*(unsigned char const *)(definition + 41) & 0x80))
+		{
+			/* a shader the bake drew whole into a texture of its own, laid
+			out on this map (psp_tex.c, composite_map) */
+			extern unsigned int psp_tex_composite_key(unsigned int shader, unsigned int key);
+
+			key = psp_tex_composite_key((unsigned int)shader, key);
+		}
 		{
 			/* the map's own clamping, as the Xbox sets its address modes
 			(rasterizer_xbox_transparent_geometry.c): the map's flags word,
