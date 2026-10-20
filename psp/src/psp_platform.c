@@ -2006,6 +2006,32 @@ static void ladder_tick(unsigned long ticks_seen)
 	exit_game("ladder done");
 }
 
+/* teleport.txt's and route.txt's spot: the player put there and turned, or,
+with "flycam" (debug tools), the debug camera (debug_camera_load's flying
+camera) put there looking along the direction and the player left alone.
+The spot is then the eye, as a screenshot's "from" and "looking" give it,
+and neither a cutscene's camera nor where the player is gets in the way:
+a10's corridors can be seen while its opening still plays, their BSP put in
+with commands.txt's switch_bsp */
+static void spot_visit(const float *spot)
+{
+	extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
+#ifdef PSP_DEBUG_TOOLS
+	static int fly = -1;
+
+	if (fly < 0)
+		fly = psp_keep("flycam") != 0;
+	if (fly)
+	{
+		extern void psp_director_fly(float x, float y, float z, float fx, float fy, float fz); /* director.c (psp_fixups.py) */
+
+		psp_director_fly(spot[0], spot[1], spot[2], spot[3], spot[4], spot[5]);
+		return;
+	}
+#endif
+	psp_player_teleport(spot[0], spot[1], spot[2], spot[3], spot[4], spot[5]);
+}
+
 /* build 126: "frametrace" (psp_frametrace.c) */
 void psp_frametrace_tick(unsigned long microseconds);
 void psp_frametrace_frame(unsigned long draw_us, unsigned long ticks, unsigned long end_us);
@@ -2176,13 +2202,12 @@ steps in order: the console has no way to wait */
 
 		if (file)
 		{
-			extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
 			float p[6];
 
 			if (fscanf(file, "%f %f %f %f %f %f", &p[0], &p[1], &p[2], &p[3], &p[4], &p[5]) == 6)
 			{
 				platform_log("teleport.txt: to %.2f %.2f %.2f looking %.2f %.2f %.2f", p[0], p[1], p[2], p[3], p[4], p[5]);
-				psp_player_teleport(p[0], p[1], p[2], p[3], p[4], p[5]);
+				spot_visit(p);
 			}
 			fclose(file);
 		}
@@ -2222,9 +2247,7 @@ steps in order: the console has no way to wait */
 			if ((float)ticks_seen < next[0] * 30.0f)
 				break;
 			{
-				extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
-
-				psp_player_teleport(next[1], next[2], next[3], next[4], next[5], next[6]);
+				spot_visit(next + 1);
 				route_count++;
 				if (route_count % 10 == 1)
 					platform_log("route.txt: spot %lu at %.1f s: %.2f %.2f %.2f", route_count, next[0], next[1], next[2], next[3]);

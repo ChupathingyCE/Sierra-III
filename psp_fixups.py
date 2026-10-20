@@ -578,6 +578,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				}
 			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
 		}
+#ifdef PSP_DEBUG_TOOLS
+		{
+			/* "sdump" names the shader of what it lists (psp_ge.c) */
+			extern void psp_ge_sdump_shader(void const *shader);
+
+			psp_ge_sdump_shader(shader);
+		}
+#endif
 		psp_environment_draw(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
 			0xFF000000 | (b << 16) | (g << 8) | r, base_key, psp_lightmap_key, alpha_tested);
 	}
@@ -2918,6 +2926,29 @@ void psp_transwalk_tick(void)
 	}
 	transwalk.phase = _transwalk_done;
 	transwalk.next = now + 60;
+}
+#endif
+'''
+
+# "flycam" (debug tools; psp_platform.c's spot_visit): the debug camera put
+# at a spot, as debug_camera_load does from its file, for looking at a place
+# the player can't be brought to (a10's corridors behind its opening)
+APPEND["source/camera/director.c"] = r'''
+#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+void psp_director_fly(float x, float y, float z, float fx, float fy, float fz)
+{
+	struct director *director = director_get(0);
+	struct flying_camera *camera = (struct flying_camera *)director->camera_data;
+	real_point3d position;
+	real_vector3d forward;
+
+	position.x = x; position.y = y; position.z = z;
+	forward.i = fx; forward.j = fy; forward.k = fz;
+	if (normalize3d(&forward) == 0.f)
+		return;
+	flying_camera_new_from_point_and_vector(camera, &position, &forward);
+	director_set_camera(0, (director_camera_update_proc)flying_camera_update, FALSE);
+	director->camera_mode_index = _camera_flying;
 }
 #endif
 '''

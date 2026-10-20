@@ -7056,6 +7056,88 @@ static float pixels_per_unit(void)
 	return (SCREEN_HEIGHT * 0.5f) / fov_tan_half();
 }
 
+#ifdef PSP_DEBUG_TOOLS
+/* "sdump" (debug tools): on a screenshot's frame, every level, model and
+decal draw whose screen box meets the box of the keep words sboxlN, sboxtN,
+sboxrN, sboxbN (pixels; the whole screen when left out), with its map, its
+alpha test and whether the map has alpha, and for the level its shader. tdump
+lists only the see-through draws; this names what draws anything else that
+is on screen. Name lookups walk the tags, so not on the Media Engine */
+extern volatile int psp_screenshot_requested;
+static int sdump = -1, sdump_limits[4];
+static void const *sdump_shader = NULL;
+
+/* the environment shader of the level draw that follows (psp_fixups.py) */
+void psp_ge_sdump_shader(void const *shader)
+{
+	sdump_shader = shader;
+}
+
+static int sdump_wanted(void)
+{
+	if (sdump < 0)
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		sdump = psp_keep("sdump") != 0;
+		sdump_limits[0] = psp_keep_number("sboxl", 0);
+		sdump_limits[1] = psp_keep_number("sboxt", 0);
+		sdump_limits[2] = psp_keep_number("sboxr", SCREEN_WIDTH);
+		sdump_limits[3] = psp_keep_number("sboxb", SCREEN_HEIGHT);
+	}
+	return sdump && psp_screenshot_requested && !PSP_ME_WORK();
+}
+
+/* box: left, top, right, bottom in pixels, from camera-space points. A point
+behind the near plane makes the box the whole screen: the draw passes the
+eye, and its box can't be worked out from its corners */
+static void sdump_box_start(float *box)
+{
+	box[0] = box[1] = 1e30f;
+	box[2] = box[3] = -1e30f;
+}
+
+static void sdump_box_add(float *box, const float *c)
+{
+	float scale = pixels_per_unit(), x, y;
+
+	if (c[2] < NEAR_CLIP)
+	{
+		box[0] = box[1] = -1e29f;
+		box[2] = box[3] = 1e29f;
+		return;
+	}
+	x = SCREEN_WIDTH * 0.5f + c[0] / c[2] * scale;
+	y = SCREEN_HEIGHT * 0.5f - c[1] / c[2] * scale;
+	if (x < box[0]) box[0] = x;
+	if (y < box[1]) box[1] = y;
+	if (x > box[2]) box[2] = x;
+	if (y > box[3]) box[3] = y;
+}
+
+/* 1 when the box meets the screen and the asked-for box; text: the box */
+static int sdump_box_text(const float *box, char *text, int size)
+{
+	int l = box[0] < -9999.0f ? -9999 : (int)box[0], t = box[1] < -9999.0f ? -9999 : (int)box[1];
+	int r = box[2] > 9999.0f ? 9999 : (int)box[2], b = box[3] > 9999.0f ? 9999 : (int)box[3];
+
+	if (r < 0 || b < 0 || l >= SCREEN_WIDTH || t >= SCREEN_HEIGHT)
+		return 0;
+	if (r < sdump_limits[0] || b < sdump_limits[1] || l >= sdump_limits[2] || t >= sdump_limits[3])
+		return 0;
+	snprintf(text, size, "box %d %d %d %d", l, t, r, b);
+	return 1;
+}
+
+static char const *sdump_map_name(unsigned int key)
+{
+	extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
+	char const *name = key ? psp_bitmap_tag_name((void const *)(key & ~3u)) : NULL;
+
+	return name ? name : "?";
+}
+#endif
+
 /* texture coordinate units per world unit over a draw's triangles */
 static float uv_density(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count)
 {
@@ -7916,6 +7998,29 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	}
 	level_uv_us += probe_clock() - probe_mark;
 	level_probe_draws++;
+#ifdef PSP_DEBUG_TOOLS
+	if (sdump_wanted())
+	{
+		extern char const *psp_shader_tag_name(void const *shader); /* hud_draw.c (psp_fixups.py) */
+		float box[4], c[3];
+		char text[64];
+		char const *shader = sdump_shader ? (const char *)sdump_shader : NULL;
+		char const *shader_name = shader ? psp_shader_tag_name(shader) : NULL;
+		long corner;
+
+		sdump_box_start(box);
+		for (corner = 0; corner < triangle_count * 3; corner++)
+		{
+			level_to_camera(&stream->base[indices[corner]].x, c);
+			sdump_box_add(box, c);
+		}
+		if (sdump_box_text(box, text, sizeof(text)))
+			platform_log("sdump: level %s shader %s (type %d flags %04x kind %d) map %s alpha tested %d map alpha %d triangles %ld",
+				text, shader_name ? shader_name : "?", shader ? *(const short *)(shader + 36) : -1,
+				shader ? *(const unsigned short *)(shader + 40) : 0, shader ? *(const short *)(shader + 42) : -1,
+				sdump_map_name(base_key), alpha_tested, base_alpha, triangle_count);
+	}
+#endif
 	if (textured)
 	{
 		int base_width = 0, base_height = 0;
@@ -11315,6 +11420,30 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		}
 	}
 	textured = psp_tex_bind(base_key, &base_alpha);
+#ifdef PSP_DEBUG_TOOLS
+	/* a model's box: its sphere's (psp_ge_model_shape), the whole screen
+	without one (first person, the sky) */
+	if (sdump_wanted())
+	{
+		float box[4], c[3];
+		char text[64];
+		int corner;
+
+		sdump_box_start(box);
+		for (corner = 0; corner < 4; corner++)
+		{
+			float r = model_sphere_radius > 0.0f ? model_sphere_radius : 0.0f;
+
+			c[0] = model_sphere[0] + (corner & 1 ? r : -r);
+			c[1] = model_sphere[1] + (corner & 2 ? r : -r);
+			c[2] = model_sphere_radius > 0.0f ? model_sphere[2] - r : -1.0f;
+			sdump_box_add(box, c);
+		}
+		if (sdump_box_text(box, text, sizeof(text)))
+			platform_log("sdump: model %s map %s alpha tested %d map alpha %d sky %d first person %d indices %ld",
+				text, sdump_map_name(base_key), alpha_tested, base_alpha, in_sky, model_first_person, index_count);
+	}
+#endif
 	if (textured)
 	{
 		/* unlit for now: the texture dimmed toward the level's lighting */
@@ -14316,6 +14445,10 @@ static void transparent_flush_body(void)
 				index, transparent_count, draw->key, name ? name : "no tag", draw->sky, draw->level, draw->first_person,
 				draw->sprites, draw->blend, sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,
 				draw->matrix.w.x, draw->matrix.w.y, draw->matrix.w.z, state_depth, model_first_person);
+			/* the bake's tint as the draw carries it (the ocean's colour) */
+			platform_log("tdump: %d/%d tint %08x model %d doubled %d angle %d face %08x edge %08x colour %08x coloured %d",
+				index, transparent_count, draw->tint, draw->tint_model, draw->doubled, draw->angle_tinted,
+				draw->tint_face, draw->tint_edge, draw->color, draw->colored);
 		}
 		/* "tskipN": the see-through draws whose map is the bitmap_data at
 		address N (decimal; tdump prints it in hex) left out, to tell which
@@ -17721,6 +17854,24 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		}
 		if (!psp_tex_bind(key, &alpha))
 			return;
+#ifdef PSP_DEBUG_TOOLS
+		if (sdump_wanted())
+		{
+			float box[4], c[3];
+			char text[64];
+			int q;
+
+			sdump_box_start(box);
+			for (q = 0; q < original_quads * 4; q++)
+			{
+				to_camera((const float *)(in + 16 * q), c);
+				sdump_box_add(box, c);
+			}
+			if (sdump_box_text(box, text, sizeof(text)))
+				platform_log("sdump: decal %s map %s blend %d alpha tested %d map alpha %d permanent %d quads %d",
+					text, sdump_map_name(key), blend, alpha_tested, alpha, permanent, original_quads);
+		}
+#endif
 		out = list_take(kept * 6 * sizeof(struct decal_vertex_ge));
 		if (!out)
 			return;
