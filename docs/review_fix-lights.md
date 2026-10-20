@@ -8,15 +8,15 @@ A/Bs are below as they come in. Costs are game-time comparisons on the same stre
 
 ## H6: relief streaks on a30's cliffs
 
-**What:** relief (the bump map's shading baked into a second copy of the base texture) is now off by
-default; keep word `relief` turns it on. The bake's relief is fixed too, so `relief` is worth testing again.
+**What:** relief (the bump map's shading baked into a second copy of the base texture) stays on by default,
+now on a bake that filters the bump; keep word `norelief` turns it off. (`relief` no longer does anything.)
 
 **Why [U]:** the cliffs' bump maps tile far finer than their base maps. The bake sampled one bump texel per
 base texel, unfiltered, so the bumps aliased into stripes, and the cliffs' stretched UVs drew those as
 streaks.
 
 **Key lines:**
-- `psp/src/psp_tex.c`, `psp_relief_key`: `on = psp_keep("relief") && !psp_keep("norelief")`.
+- `psp/src/psp_tex.c`, `psp_relief_key`: `on = !psp_keep("norelief")`.
 - `tools/texpack.py`, `apply_relief`: the bump is box-filtered over each base texel's footprint before its
   shading is taken; relief is left out (logged "bump relief left out for ...") where a base texel covers
   more than `RELIEF_MAX_FOOTPRINT` (4) bump texels, since a filtered bump that fine is flat anyway.
@@ -29,8 +29,8 @@ against 37.6 / 14.2 with relief on the new bake.
 
 **A/B [E]** (a30's two cliff spots, emulator size): the filtered relief on the new bake differs from relief off
 by 0.2-2.4 levels of 255 on average, the old bake's relief by 1.7-2.7 with single pixels up to 255. No streaks
-show at the emulator's size in any of the three. **For the owner's call:** whether `relief` goes back on with
-the new bake; it adds little that shows, so off stays the default.
+show at the emulator's size in any of the three. **Owner's call (made):** relief on by default with the new
+bake, to be confirmed by eye on the PSP; `norelief` is the A/B's other side.
 
 ## H22: shiny objects too dark in shade
 
@@ -195,3 +195,40 @@ time for nothing and should go off by default.
 ## H24
 
 Waits on H6's A/B.
+
+## Round three (one emulator batch, the same build)
+
+**H33: the line is a level overlay [E].** At the b30 corner shot, `nooverlays` alone removes the dashes
+(46 of 46 dash pixels gone; 257 pixels differ from the base in that shot); `nodecals`, `nocull` and `near4`
+keep all 46. So it is a see-through surface on the level (a generic or chicago shader), drawn with the
+overlay's nudge toward the eye, not the base pass, a decal, the level's culling or depth precision.
+
+**Fix (restoration, on by default):** level see-through draws whose shader (generic or chicago) lacks the
+two-sided flag (bit 2 of the flags byte at +41) now draw front faces only, with the level's own winding,
+as the Xbox's environment passes cull (D3DCULL_CCW). The GE drew them both sides; with the nudge, a back
+face at a silhouette corner passed the depth test over the front face beside it. Only the level's own
+triangles and their cut pieces are culled; a bake's stencil layers keep both sides. **Keep word:**
+`overlaysnocull` (both sides, as before). **Key lines:** `psp/src/psp_ge.c`, `SEETHROUGH_ONE_SIDED`
+(set in `psp_ge_seethrough_shader`, used in `transparent_flush_body`); the "see-through depth" stats line
+counts "level draws front faces only". **Evidence:** [D] so far; the proof run (new with `tdump` at the
+shots, against `overlaysnocull`) is queued. **Cost:** expected none or a gain (fewer pixels); measured in
+the proof run.
+
+**H23 and the unlifted band [E].** At the hand test's tunnel camera (shot 031, the same position and
+direction to two decimals), the emulator's flashlight never takes the split: 0 triangles split in all three
+runs (new, `lightsplitold`, `nolightsplit`), where the hand test's log split about two triangles per cone
+draw over the same seconds [M]. So the emulator can't show the split's seams here: new and `lightsplitold`
+differ only by the clock and a ripple of one or two levels in the falloff's bands (the shot falls a tenth of
+a second apart). `lightliftall` (every triangle lifted, as in the hand-tested build) draws a dashed bright
+line along a diagonal seam (x 320-345, rows 162-188: 32 against 56-61) that new and `lightsplitold` don't:
+the same signature as the hand test's shot, which shows bright dashes along the tunnel's seams (66-69
+against 24-32 around them), not dark lines. **Verdict:** the unlifted band fixes the lift's share of H23 in
+the emulator, so it stays on by default (its 0.11 ms a frame buys this). Split pieces are still lifted, so
+on the PSP, where the tunnel does split, dashes may remain along split pieces: that needs the PSP (new
+against `lightliftall` and `lightsplitold` at the tunnel). The per-edge split itself is [D] only.
+
+**H9: the glass is in BSP 2, and the fix doesn't reach it [E].** Held at the hand test's camera (shot 018),
+BSPs 0, 3 and 4 draw black; BSP 2 draws the hand test's scene: the floor and a black pit. Base and
+`glassnoreflection` are pixel-identical there, and the frame counts 0 see-through draws (the hand test's log
+too, at that shot [M]): the glass isn't queued at all, so the reflection path never runs. Open: why the
+glass (type 8, no diffuse map) never reaches the see-through queue at that spot.
