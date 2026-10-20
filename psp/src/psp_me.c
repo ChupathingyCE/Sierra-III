@@ -58,6 +58,7 @@ ships beside the EBOOT. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <string.h>
 #include <unistd.h>
 #include <me-core-mapper/me-core.h>
@@ -79,6 +80,7 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results);
 void psp_perception_me_rays(const unsigned int *args, unsigned int *results);
 void psp_pose_me_make(const unsigned int *args, unsigned int *results); /* objects.c (psp_fixups.py FIXES_131) */
+void psp_points_me_make(const unsigned int *args, unsigned int *results); /* point_physics.c (psp_fixups.py FIXES_MEJOBS) */
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -920,7 +922,8 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		args[k] = request->args[k];
 	for (k = 0; k < ME_RING_RESULTS; k++)
 		results[k] = 0;
-	sentinel = ring_sentinel(request->type == ME_JOB_PERC_RAYS ? RING_RAYS_STACK_BYTES : RING_JOB_STACK_BYTES);
+	sentinel = ring_sentinel(request->type == ME_JOB_PERC_RAYS || request->type == ME_JOB_POINTS ?
+		RING_RAYS_STACK_BYTES : RING_JOB_STACK_BYTES);
 	*sentinel = RING_SENTINEL;
 	if (on_me)
 	{
@@ -943,6 +946,9 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 		break;
 	case ME_JOB_BATCH:
 		batch_job(args, results, on_me);
+		break;
+	case ME_JOB_POINTS:
+		psp_points_me_make(args, results);
 		break;
 #ifdef PSP_RECON
 	case ME_JOB_BUSLOAD:
@@ -1410,7 +1416,8 @@ int psp_me_start(void)
 
 	/* nomeaudio keeps the ME off unless a ring client asks for it; the
 	mixer then stays on the main CPU (psp_dsound.c) */
-	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest") && !psp_keep("meraysperc")))
+	if (me_state || (psp_keep("nomeaudio") && !psp_keep("meslant") && !psp_keep("meringtest") && !psp_keep("meraysperc") &&
+		!psp_keep("mepoints")))
 		return me_state > 0;
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
@@ -1428,7 +1435,8 @@ int psp_me_start(void)
 	sceKernelDcacheWritebackInvalidateRange(stash_storage, sizeof(stash_storage));
 	for (k = 0; k < STASH_WORDS; k++)
 		STASH[k] = 0;
-	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest") || psp_keep("mebatchtest");
+	ring_on = psp_me_slant_wanted() || psp_me_rays_wanted() || psp_keep("meringtest") || psp_keep("mebatchtest") ||
+		psp_keep("mepoints");
 #ifdef PSP_RECON
 	ring_on = ring_on || psp_keep_number("mebus", -1) >= 0;
 #endif
@@ -1838,20 +1846,65 @@ static int ring_in_ram(unsigned int address, unsigned int bytes)
 	return !bytes || (at >= 0x08000000u && at + bytes <= 0x0C000000u && at + bytes > at);
 }
 
+/* the emulator's stand-in for the ME's own stack (in its eDRAM on the PSP):
+a job's locals written through pointers (a ray's leaf list, say) would
+otherwise land below the producer's stack pointer, on lines the producer
+writes again as soon as the push returns, and the write trace would count
+them as written by both CPUs. psp_me_sim_call(index, top, fn) runs fn(index)
+with its stack pointer just below top (the words it keeps above the
+callee's argument area) */
+#define RING_SIM_STACK_BYTES (48 * 1024)
+void psp_me_sim_call(unsigned int index, void *top, void (*fn)(unsigned int));
+__asm__(
+	".text\n"
+	".globl psp_me_sim_call\n"
+	".ent psp_me_sim_call\n"
+	"psp_me_sim_call:\n"
+	".set push\n"
+	".set noreorder\n"
+	"	addiu $a1, $a1, -32\n"
+	"	sw $ra, 16($a1)\n"
+	"	sw $sp, 20($a1)\n"
+	"	jalr $a2\n"
+	"	move $sp, $a1\n"
+	"	lw $ra, 16($sp)\n"
+	"	lw $sp, 20($sp)\n"
+	"	jr $ra\n"
+	"	nop\n"
+	".set pop\n"
+	".end psp_me_sim_call\n");
+
+static void ring_run_simulated(unsigned int index)
+{
+	ring_run(index, 0, 0);
+}
+
 /* the emulator: the job's code here and now, marked as the ME's for the
-ME-strict check and the write trace (emu.sh's gemesim and mewrites); the
-window stays open until the wait. Cold, as the failure paths below: the
-PSP's push and wait stay fewer cache lines */
+ME-strict check and the write trace (emu.sh's gemesim and mewrites), on a
+stack of its own as on the ME; the window stays open until the wait. Cold,
+as the failure paths below: the PSP's push and wait stay fewer cache lines */
 static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int index, unsigned int t)
 {
+	static unsigned char *sim_stack = NULL;
+	static int sim_stack_tried = 0;
 	unsigned int job_start;
 
 	if (!ring_thread)
 		ring_thread = (unsigned int)sceKernelGetThreadId();
+	if (!sim_stack_tried)
+	{
+		sim_stack_tried = 1;
+		sim_stack = (unsigned char *)memalign(64, RING_SIM_STACK_BYTES);
+		if (!sim_stack)
+			platform_log("ME (simulated): no room for the job stack; jobs run on the producer's");
+	}
 	psp_me_window[0] = 1;
 	job_start = sceKernelGetSystemTimeLow();
 	psp_me_context = ring_thread;
-	ring_run(index, 0, 0);
+	if (sim_stack)
+		psp_me_sim_call(index, sim_stack + RING_SIM_STACK_BYTES, ring_run_simulated);
+	else
+		ring_run(index, 0, 0);
 	psp_me_context = 0;
 	ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
 	RING_POPPED = t + 1;
@@ -2069,6 +2122,36 @@ int psp_me_push_poses(const void *entries, unsigned int count, void *arena, unsi
 	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
 	job.output = arena;
 	job.output_bytes = arena_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
+}
+
+/* the frame's point physics (psp_fixups.py FIXES_MEJOBS, point_physics.c
+#mepoints): a point reads the level, its water, the wind and its tags, so
+the whole cache is handed over as for the rays. The ME writes only the
+answers (output) and its word; it reads the main CPU's word, which tells it
+where to stop, through the uncached view. Both words' lines are the callers' */
+int psp_me_push_points(const void *inputs, unsigned int count, void *answers, unsigned int answer_bytes,
+	unsigned int generation, void *main_word, void *me_word, unsigned int *ticket)
+{
+	struct psp_me_job job;
+	unsigned int control;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_POINTS;
+	job.args[0] = (unsigned int)inputs;
+	job.args[1] = (unsigned int)answers;
+	job.args[2] = count;
+	job.args[3] = generation;
+	/* this CPU's FPU control: the ME's arithmetic is then this CPU's */
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	job.args[4] = control;
+	job.args[5] = (unsigned int)main_word;
+	job.args[6] = (unsigned int)me_word;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = answers;
+	job.output_bytes = answer_bytes;
 	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
 	return psp_me_push(&job, ticket);
 }
