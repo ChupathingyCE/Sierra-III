@@ -35,4 +35,12 @@ What a still texture can't hold: the other maps' scrolling is frozen where it st
 ## H14, H29
 
 - **H14** (a30's distant tree line as olive cards): not a see-through shader and not the sky's `horizon land` (whose drawn map carries its alpha, 0.0002 of texels flipped) [E]. The cards sit along the cliff tops in the hand test's shot; which shader draws them is still open (the emulator's `tdump` lists only see-through shaders).
-- **H29** (oily floors): the PC build's ground shows fine detail where the emulator's is smooth; the open thread is the GE's dither on the undithered detail passes (`review_dithershift.md`), a look question for the hardware. The hardware A/B with `PSP_DITHERSHIFT=1` (`dithershift`, `dithershift ditherlift`) is in the lab under this branch's name.
+- **H29** (oily floors): the PC build's ground shows fine detail where the emulator's is smooth; the open thread is the GE's dither on the undithered detail passes (`review_dithershift.md`), a look question for the hardware. The hardware A/B (a `PSP_DITHERSHIFT=1` build, b30's Pelican flight and landing to game time 100 s, one run a side on the PSP-1000) [M]:
+
+  | Side | Frame ms (avg) | GE renderer CPU ms | Game time reached |
+  |---|---|---|---|
+  | as now | 52.1 | 19.1 | 2,962 |
+  | `dithershift` | 59.2 | 21.3 | 2,945 |
+  | `dithershift ditherlift` | 54.9 | 20.9 | 2,974 |
+
+  One run a side, inside the stretch's own spread (about 10%); the renderer's CPU looks ~2 ms higher with the shift, to be confirmed with `repeat=2`. The probe confirms the GE truncates to 5-6 bits (`ditherprobe` row 0: red and blue step at 8, green at 4), the drift `review_dithershift.md` describes. The look is Sheepdog01's call from the shots (`shotevery10`, same frames on each side); `dithershift` stays off by default and out of default builds (`PSP_DITHERSHIFT`).
