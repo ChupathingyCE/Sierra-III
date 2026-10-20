@@ -469,26 +469,6 @@ def _fit(result, texels, blend, fade_free):
     return tint, model, errors
 
 
-def _scales_up(m, o):
-    """whether a generic shader's stages scale an output by 2 or 4"""
-    stages_n, stages_p = struct.unpack_from('<iI', m.data, o + 96)
-    if stages_n <= 0:
-        return False
-    so = m.off(stages_p)
-    for s in range(min(stages_n, 7)):
-        colour_mapping, = struct.unpack_from('<h', m.data, so + 112 * s + 60 + 26)
-        alpha_mapping, = struct.unpack_from('<h', m.data, so + 112 * s + 88 + 22)
-        if colour_mapping in (2, 3) or alpha_mapping in (2, 3):
-            return True
-    return False
-
-
-def _shuffled(texels, i):
-    """a map's texels in a fixed order of its own (seeded by its place, so a
-    bake gives the same tints every time)"""
-    return texels[np.random.default_rng(1 + i).permutation(len(texels))]
-
-
 def _maps(m, o, kind):
     """[(bitmap tag id, (u scale, v scale))] of a generic or chicago shader"""
     count, maps_p = struct.unpack_from('<iI', m.data, o + 84)
@@ -536,21 +516,10 @@ def shader_tint(m, tag, means, from_means=False):
     maps = _maps(m, o, kind)
     map_means = [means(i) for i, _ in maps]
 
-    # a generic shader that scales a stage's output up clips wherever its
-    # other maps are bright, which their means would hide (Cortana: the noise
-    # mask times 4, so the PSP drew her brighter than the Xbox): for its tint,
-    # the other maps come in as their own texels, in an order unrelated to the
-    # drawn map's
-    spread = kind == GENERIC and _scales_up(m, o)
-
-    def other(i, spread_out):
-        texels = means.texels(maps[i][0]) if spread_out else None
-        return map_means[i] if texels is None else _shuffled(texels, i)
-
-    def evaluate(group, view=None, spread_out=False):
+    def evaluate(group, view=None):
         """the shader over the texels of the maps in group (one bitmap at one
-        scale), every other map at its mean (or its texels, spread_out)"""
-        given = [means.texels(maps[i][0]) if i in group else other(i, spread_out) for i in range(count)]
+        scale), every other map at its mean"""
+        given = [means.texels(maps[i][0]) if i in group else map_means[i] for i in range(count)]
         return generic_result(m, o, given, view) if kind == GENERIC else chicago_result(m, o, maps_p, count, given)
 
     def group_of(j):
@@ -572,7 +541,7 @@ def shader_tint(m, tag, means, from_means=False):
         texels = means.texels(maps[j][0])
         if texels is None:
             return None
-        result = evaluate(group_of(j), spread_out=spread)
+        result = evaluate(group_of(j))
         if result is None:
             return None
         tint, model, errors = _fit(result, texels, blend, fade_free)
@@ -603,7 +572,7 @@ def shader_tint(m, tag, means, from_means=False):
     if drawn != scale_drawn:
         found.alt = tint_for(scale_drawn) or shader_tint(m, tag, means, from_means=True)
     if kind == GENERIC and found.model in (MODULATE, DOUBLED):
-        _angle_tints(found, [evaluate(group_of(drawn), view, spread) for view in ('face', 'edge')])
+        _angle_tints(found, [evaluate(group_of(drawn), view) for view in ('face', 'edge')])
     return found
 
 
