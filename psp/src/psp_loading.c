@@ -394,6 +394,27 @@ static const char *boot_hint(unsigned long now)
 	return boot.active && boot.hint_us && now - boot.start_us < boot.hint_us ? BOOT_HINT : NULL;
 }
 
+/* the pause between the boot screen's frames, then, in the emulator, the end
+of any Media Engine job the game's thread is running. The emulator has no
+ME: the game's thread runs each job itself with psp_me_context set (psp_me.c,
+ring_push_simulated), and the GE layer takes all work done meanwhile for the
+ME's (PSP_ME_WORK). That word is global, so a boot frame drawn inside such a
+job would have its stall updates held for the game's thread to pass on: its
+list never reaches its FINISH, this thread waits on the GE for good, and the
+game's first frame waits behind it. Giving the CPU up lets the job finish.
+The first frame needs no wait: this thread starts it from main(), before the
+ME starts. On the PSP the ME runs its own jobs and the word stays 0. (A
+function of its own in the delay's place, so the boot thread keeps its
+profile) */
+static __attribute__((noinline)) void boot_frame_pause(void)
+{
+	extern volatile unsigned int psp_me_context;
+
+	sceKernelDelayThread(BOOT_FRAME_US);
+	while (psp_me_context)
+		sceKernelDelayThread(100);
+}
+
 static int boot_thread(SceSize args, void *argp)
 {
 	extern void psp_fpu_mask_traps(void);
@@ -425,7 +446,7 @@ static int boot_thread(SceSize args, void *argp)
 		view.notice = boot_hint(now);
 		psp_ge_loading_frame(&view);
 		boot.frames++;
-		sceKernelDelayThread(BOOT_FRAME_US);
+		boot_frame_pause();
 	}
 	return 0;
 }
