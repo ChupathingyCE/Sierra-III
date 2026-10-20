@@ -172,7 +172,8 @@ Nothing added to the release costs more than the emulator's resolution, except t
 - **Release check b139rc2** (strict, 13 runs): PASS 13/13. No segfault, no `crash.txt`, strict sites 0 in all 13 (the menu and a10 strict walks too). d20, a50 and c20: play and both seeds identical to b138 at all 12,000 ticks. `hop-menu-a10` loads a10 through the menus. Frames per second, rc2 against the first candidate's check: d20 11.0 / 10.9, a50 12.9 / 13.0, c20 12.1 / 12.1, b30 17.2 / 17.6, c40 28.7 / 29.1, a10 18.9 / 19.0 [E]. d20's sound cache failed for room 51 times (64 before).
 - **PSP ladder** (PSP-1000, all ten maps, quit by itself): PASS. No crash, 0 heap failures, Media Engine 0 failed jobs; sound cache failed for room 8 times (c10 7, d20 1) against 48 in the earlier ladder [M]. Against that ladder, which ran on the PSP-3000 on b139a: fps within 3% on all ten maps (a10 16.3 / 16.8, a30 7.8 / 7.8, a50 11.3 / 11.0, b30 4.5 / 4.3, b40 17.7 / 17.4, c10 9.0 / 9.2, c20 11.0 / 11.0, c40 20.7 / 20.8, d20 7.4 / 7.5, d40 24.9 / 25.1). **To watch:** tick c10 18.4 against 16.7 ms (+10%) and d20 36.3 against 34.6 (+5%), more than the two PSPs' usual 3%. The two ladders differ in PSP, bake and length (45 s against 90 s), so only a ladder on one PSP would tell; it is not a blocker.
 - **c10 faults** (§Memory): prop 512 kept; nothing blocks b139.
-- **Not in these checks:** the PGO strict link's result is in the build's log, not here; the emulator pictures of the 24 shots a run were not looked at.
+- **The build itself** (strict PGO, b139's own profile `campaign-b139c`): linked with 0 functions compiled without their profile counts; program 4.96 MB, heap 5,796 KB.
+- **Not in these checks:** the emulator pictures of the 24 shots a run were not looked at.
 
 ## §Test
 
