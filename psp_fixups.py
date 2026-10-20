@@ -2143,15 +2143,24 @@ he is in; psp_ge.c). Build 116 (b113 #17): 2 in a seat without the
 third-person camera (a Pelican's bench), where the vehicle's own walls are
 at the eye and its sphere holds the plane in as on foot; b90-b115 let the
 plane out to 16 x there and cut the cabin open. Keep word "nearseatedfar":
-1 in any seat, as before */
+1 in any seat, as before.
+In a cinematic the camera is the script's, not the seat's: a sphere around
+it belongs to whoever the shot is close on (a10's opening: the player rides
+the cryo tube while the camera sits at Keyes' and Cortana's faces, and the
+plane went out to 16 x and cut their heads open). So 0 there, as on foot.
+Keep word "nearseatcine": seated in cinematics too, as before */
 int psp_player_seated(void)
 {
-	static int far_in_any_seat = -1;
+	static int far_in_any_seat = -1, seated_in_cinematics = -1;
 	long unit_index = psp_local_unit(NULL);
 	struct unit_datum *unit;
 	struct object_datum *vehicle;
 
 	if (unit_index == NONE)
+		return 0;
+	if (seated_in_cinematics < 0)
+		seated_in_cinematics = psp_keep("nearseatcine") != 0;
+	if (!seated_in_cinematics && cinematic_in_progress())
 		return 0;
 	unit = unit_get(unit_index);
 	if (unit->object.parent_object_index == NONE)
