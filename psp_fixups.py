@@ -25940,12 +25940,14 @@ FIXES_MODELS = {}
 # front only, as the Xbox culls it; generic and chicago shaders take theirs
 # in psp_transparent_map itself (psp_ge.c, seethrough_cull)
 FIXES_MODELS["source/rasterizer/rasterizer.c#glasscull"] = [
-("""		if (object && !PSP_KEEP_ONCE("glassflat"))
-			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+("""			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
 	}
 	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))""",
- """		if (object && !PSP_KEEP_ONCE("glassflat"))
-			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+ """			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
 		if (!(*(unsigned short const *)(definition + 40) & 4))
 			*blend = (short)(*blend | PSP_SEETHROUGH_ONE_SIDED_BIT);
 	}
