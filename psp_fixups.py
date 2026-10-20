@@ -2259,7 +2259,8 @@ zone leads to is switched to by force, the way a zone switches
 and, 8 s on, what the level drew flat, the frames that drew something
 untextured and the heap's failed requests since; a shot before each step,
 and 2 and 7 s after each switch. "transwalkN": N s at each step (10).
-"transwon": then the mission's end (game_won, as a level's last script calls
+"transwaitN": the walk starts no sooner than N s in (a level whose opening
+holds the player without a cinematic: a10's cryo tests). "transwon": then the mission's end (game_won, as a level's last script calls
 it), and the run ends 25 s into whatever follows */
 #define TRANSWALK_ZONES 128
 #define TRANSWALK_BSPS 16
@@ -2278,12 +2279,12 @@ static struct
 	char map[64];
 	int phase;
 	long next, cinematic_since, no_player_since, teleport_at, settle_at, report_at, shot_at[2];
-	short zone, zone_to, forced, forced_for, travels, bsp, placed_for;
+	short zone, zone_to, forced, forced_for, travels, bsp;
 	unsigned long textured, flat, untextured, failures;
 	unsigned long switches, by_zone, by_force, by_script, quiet, placed;
 	unsigned int last_us, won_us;
 	unsigned short seen, asked;
-	unsigned char tried[TRANSWALK_ZONES];
+	unsigned char tried[TRANSWALK_ZONES], travelled[TRANSWALK_ZONES];
 	char won_from[64];
 } transwalk;
 
@@ -2592,7 +2593,10 @@ static short transwalk_route(short from)
 			struct scenario_bsp_switch_trigger_volume *zone = transwalk_zone(k);
 			short to = zone->destination_structure_bsp_index;
 
-			if (zone->source_structure_bsp_index == bsp && to >= 0 && to < TRANSWALK_BSPS && !reached[to])
+			/* a zone the level's scripts undid twice (c10's lift switches straight
+			back) isn't a way through */
+			if (zone->source_structure_bsp_index == bsp && to >= 0 && to < TRANSWALK_BSPS && !reached[to] &&
+				transwalk.travelled[k] < 2)
 			{
 				reached[to] = TRUE;
 				parent_zone[to] = k;
@@ -2608,7 +2612,11 @@ static void transwalk_step_into(short k, long now, long dwell, boolean travel)
 	extern volatile int psp_screenshot_requested; /* psp_ge.c */
 
 	if (travel)
+	{
 		platform_psp_log("transitions: on the way, through loading zone #%d", k);
+		if (transwalk.travelled[k] < 255)
+			transwalk.travelled[k]++;
+	}
 	transwalk.tried[k] = 1;
 	transwalk.zone = k;
 	transwalk.zone_to = transwalk_zone(k)->destination_structure_bsp_index;
@@ -2620,7 +2628,7 @@ static void transwalk_step_into(short k, long now, long dwell, boolean travel)
 void psp_transwalk_tick(void)
 {
 	static int asked = -1, won = 0;
-	static long dwell = 300;
+	static long dwell = 300, start = 0;
 	extern volatile int psp_screenshot_requested; /* psp_ge.c */
 	extern unsigned int sceKernelGetSystemTimeLow(void);
 	extern boolean hs_compile_and_evaluate(char const *source); /* hs.c */
@@ -2635,6 +2643,7 @@ void psp_transwalk_tick(void)
 	{
 		won = psp_keep("transwon");
 		dwell = (long)psp_keep_number("transwalk", 10) * 30;
+		start = (long)psp_keep_number("transwait", 0) * 30;
 		asked = won || psp_keep("transwalk") || psp_keep_number("transwalk", 0) > 0;
 	}
 	if (!asked)
@@ -2678,7 +2687,7 @@ void psp_transwalk_tick(void)
 			csmemset(&transwalk, 0, sizeof(transwalk));
 			transwalk.last_us = keep;
 			transwalk.phase = _transwalk_wait;
-			transwalk.next = now + 30;
+			transwalk.next = now + (start > 30 ? start : 30);
 			transwalk.zone = transwalk.zone_to = transwalk.forced = transwalk.forced_for = NONE;
 			transwalk.cinematic_since = transwalk.no_player_since = transwalk.teleport_at = -1;
 			transwalk.settle_at = transwalk.report_at = transwalk.shot_at[0] = transwalk.shot_at[1] = -1;
@@ -2712,7 +2721,8 @@ void psp_transwalk_tick(void)
 		return;
 	}
 	/* a cinematic holds the player where its script puts him: a step waits
-	for it, up to 3 minutes for the opening's and 1 minute for any other.
+	for it, up to 8 minutes for the opening's (c40's runs past 3) and 1 minute
+	for any other.
 	With no player for 2 minutes (lost, and the level not brought back),
 	the walk ends there */
 	if (psp_local_unit(NULL) == NONE || cinematic_in_progress())
@@ -2733,7 +2743,7 @@ void psp_transwalk_tick(void)
 						transwalk_zone(k)->source_structure_bsp_index, transwalk_zone(k)->destination_structure_bsp_index);
 			transwalk.asked = 0xFFFF;
 		}
-		else if (now - transwalk.cinematic_since < (transwalk.phase == _transwalk_wait ? 5400 : 1800))
+		else if (now - transwalk.cinematic_since < (transwalk.phase == _transwalk_wait ? 14400 : 1800))
 		{
 			transwalk.next = now + 30;
 			return;
