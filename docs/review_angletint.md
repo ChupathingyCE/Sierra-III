@@ -21,3 +21,11 @@ a = mode == 0 ? 1.0f : mode == 1 ? 1.0f - c : c;
 **Cost:** per part with angle tints, one normal transform and blend per vertex (as a part faded by angle already costs); nothing for other parts. The pack grows by 12 bytes per such shader.
 
 **Format:** the texture pack gains the optional `'TNA1'` table: a re-bake is needed for the fix to show.
+
+## Follow-up: clipping shaders' other maps per texel (bake-side only)
+
+**What the first bake showed:** no shader's colour changed with the angle; Cortana's combiners don't read it. Her body shader (three stages) mixes two particle-stream maps by the body map's alpha, adds a constant times the body map, then multiplies by the constant's alpha times the noise mask's blue, with the last stage's output **scaled by 4**. On the Xbox that clips wherever the noise is bright; the bake set the noise (and the streams) to their means, which never clip, so the tint came out brighter than the Xbox's average, and the GE then clipped her blue on screen (redder).
+
+**The change** (`bake/lib/seethrough.py`): for a generic shader whose stages scale an output by 2 or 4 (`_scales_up`), the tint is worked out with the other maps as their own texels, each in a fixed shuffled order of its own (`_shuffled`, seeded, so bakes stay byte-identical), so the mean includes the clipping. Which map is drawn is still chosen with the others at their means. Shaders without a scaled output are unchanged.
+
+**Risk:** every generic shader with a scaled output gets a new tint (the bake log's tint lines show which, against an earlier bake's). The EBOOT and the pack format are unchanged.
