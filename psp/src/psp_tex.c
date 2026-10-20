@@ -28,6 +28,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include <pspdmac.h>
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
+#include "psp_bindblock.h"
 
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
@@ -72,6 +73,8 @@ into a palette; and the bytes a texel of a texture takes (T8 and direct) */
 static SceUID pack = -1;
 static struct pack_entry *entries = NULL;
 static int entry_count = 0;
+/* each pack opened gets a number of its own (bindblocks: a block is its pack's) */
+static unsigned int pack_generation = 0;
 /* per entry: where it is in the cache (0 if not resident), the last frame
 it was drawn in */
 static unsigned int *resident_at = NULL, *last_frame = NULL;
@@ -853,6 +856,7 @@ void psp_tex_map_opened(const char *name)
 	}
 	pack = file;
 	entry_count = header[1];
+	pack_generation++;
 	{
 		/* the tints, right after the directory when the pack has them
 		('TNT1', a count, the pairs), then the drawn maps ('TND1', a count,
@@ -1352,6 +1356,114 @@ void __wrap_sceGuTexFilter(int min, int mag)
 	__real_sceGuTexFilter(min, mag);
 }
 
+/* "bindblocks": a resident texture's bind words (its palette, mode, levels
+and filter: 8 words and 4 a level) written once into a block of their own and
+CALLed, instead of sent by a dozen pspgu calls a bind. The PSP-1000 puts the
+model parts' binds at 2.6 ms a frame on b30's flight (probes), ~11 us a
+bind; leaving 8% of them out (statememo, b114) saved
+nothing measurable, so the cost is in each bind. The words are pspgu's own
+(pspsdk's sceGuClutMode, ClutLoad, TexMode, TexImage, TexFilter, flushes
+included), so the GE gets the same state; the draw hash follows the CALL and
+proves it. The only pspgu state the calls keep (the context's texture_mode)
+nothing reads. It is the texture slot table phase E needs, in a form the GE
+reads: a block holds where its texture sits, so it is good while that holds
+(the texture's index and address), and a slot is reused only after
+BIND_BLOCK_QUARANTINE frames, as a list the GE is still drawing may CALL it.
+Never in the Media Engine's work. A block is written back from the data cache
+once, when it's made */
+#define BIND_BLOCK_WORDS 48 /* 8 + 4 a level (8 at most) + RET, to whole cache lines */
+/* b30's beach binds more than 96 textures in two frames (lab bindblk1: up to
+150 binds a frame found every slot in use) */
+#define BIND_BLOCKS 192
+#define BIND_BLOCK_QUARANTINE 2
+struct bind_block
+{
+	int index;
+	unsigned int address, frame;
+};
+static int bind_blocks_on = -1;
+static unsigned int (*bind_block_words)[BIND_BLOCK_WORDS] = NULL;
+static struct bind_block bind_block_meta[BIND_BLOCKS];
+static short *bind_block_of = NULL; /* per entry: its block, or -1 */
+static int bind_block_entries = 0;
+static unsigned int bind_block_generation = 0;
+static unsigned long bind_blocks_called = 0, bind_blocks_made = 0, bind_blocks_full = 0;
+static unsigned int bind_blocks_full_frame = 0;
+
+/* the block for this entry at this address, made if need be; NULL when
+every slot is in use or still quarantined */
+static const unsigned int *bind_block(int index, struct pack_entry const *entry, unsigned int address,
+	unsigned int palette_bytes)
+{
+	int slot, oldest = -1;
+	unsigned int *w;
+
+	if (bind_block_generation != pack_generation || bind_block_entries != entry_count)
+	{
+		/* a new pack: the entries' blocks forgotten */
+		free(bind_block_of);
+		bind_block_of = malloc(entry_count * sizeof(*bind_block_of));
+		if (!bind_block_of)
+		{
+			bind_block_entries = 0;
+			return NULL;
+		}
+		memset(bind_block_of, 0xFF, entry_count * sizeof(*bind_block_of));
+		/* -1 free; -2 the last pack's, free once out of quarantine (a list
+		still in flight may CALL it) */
+		for (slot = 0; slot < BIND_BLOCKS; slot++)
+			bind_block_meta[slot].index = bind_block_entries && bind_block_meta[slot].index != -1 ? -2 : -1;
+		bind_block_entries = entry_count;
+		bind_block_generation = pack_generation;
+		bind_blocks_full_frame = 0;
+	}
+	slot = bind_block_of[index];
+	if (slot >= 0 && bind_block_meta[slot].index == index && bind_block_meta[slot].address == address)
+	{
+		bind_block_meta[slot].frame = frame;
+		return bind_block_words[slot];
+	}
+	/* every slot was in use at this frame's last look, and none comes out
+	of quarantine until the frame changes: no search */
+	if (bind_blocks_full_frame == frame)
+	{
+		bind_blocks_full++;
+		return NULL;
+	}
+	/* a free slot, else the longest unused one out of quarantine */
+	for (slot = 0; slot < BIND_BLOCKS; slot++)
+	{
+		if (bind_block_meta[slot].index == -1)
+		{
+			oldest = slot;
+			break;
+		}
+		if (bind_block_meta[slot].frame + BIND_BLOCK_QUARANTINE > frame)
+			continue;
+		if (oldest < 0 || bind_block_meta[slot].frame < bind_block_meta[oldest].frame)
+			oldest = slot;
+	}
+	if (oldest < 0)
+	{
+		bind_blocks_full++;
+		bind_blocks_full_frame = frame;
+		return NULL;
+	}
+	slot = oldest;
+	if (bind_block_meta[slot].index >= 0 && bind_block_meta[slot].index < bind_block_entries &&
+		bind_block_of[bind_block_meta[slot].index] == slot)
+		bind_block_of[bind_block_meta[slot].index] = -1;
+	w = bind_block_words[slot];
+	bind_block_fill(w, entry->clut, entry->psm, entry->levels, entry->width, entry->height, address, palette_bytes);
+	sceKernelDcacheWritebackRange(w, BIND_BLOCK_WORDS * 4);
+	bind_block_meta[slot].index = index;
+	bind_block_meta[slot].address = address;
+	bind_block_meta[slot].frame = frame;
+	bind_block_of[index] = (short)slot;
+	bind_blocks_made++;
+	return w;
+}
+
 /* makes the texture the GE's current one; 0 if it isn't there (yet) */
 int psp_tex_bind(unsigned int key, int *has_alpha)
 {
@@ -1406,6 +1518,30 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		return 1;
 	}
 	psp_tex_binds_sent++;
+	if (bind_blocks_on < 0)
+	{
+		bind_blocks_on = psp_keep("bindblocks");
+		if (bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
+			bind_blocks_on = 0;
+	}
+	if (bind_blocks_on && !PSP_ME_WORK())
+	{
+		const unsigned int *block = bind_block(index, entry, address, palette_bytes);
+
+		if (block)
+		{
+			/* BASE and CALL, as pspgu's sceGuCallList (without its stall update) */
+			sceGuSendCommandi(0x10, ((unsigned int)block >> 8) & 0xF0000);
+			sceGuSendCommandi(0x0A, (unsigned int)block & 0xFFFFFF);
+			bind_blocks_called++;
+			if (has_alpha)
+				*has_alpha = entry->flags & 1;
+			memo_key = key;
+			memo_address = address;
+			memo_frame = frame;
+			return 1;
+		}
+	}
 	start = address; /* where the texture starts (address moves past the palette and levels) */
 	if (palette_bytes)
 	{
@@ -1826,6 +1962,12 @@ void psp_tex_frame_end(void)
 			untextured_frames, untextured_run_worst);
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
+	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
+	{
+		platform_log("textures: bindblocks: %lu binds a frame CALLed a ready block, %lu blocks made a frame, %lu times every slot in use (last 300 frames)",
+			bind_blocks_called / 300, bind_blocks_made / 300, bind_blocks_full);
+		bind_blocks_called = bind_blocks_made = bind_blocks_full = 0;
+	}
 	if (entries && frame % 300 == 0 && (wanted_total || wanted_dropped))
 		platform_log("textures: %lu wanted by the Media Engine's work and read at the frame's end, %lu more than the list held (gemesim)",
 			wanted_total, wanted_dropped);

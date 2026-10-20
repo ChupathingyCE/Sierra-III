@@ -18743,6 +18743,24 @@ int psp_ge_active(void)
 	return ge_ready;
 }
 
+/* FIXES_GEFEED: whether the engine leaves the Xbox vertex shaders'
+constants unmade. The null renderer never makes a GL device, so nothing
+reads them; "vshconstants" makes and stores them as before. Asked before
+keep.txt is read, the answer is "leave them" and isn't kept */
+int psp_vsh_constants_skip(void)
+{
+	static int skip = -1;
+	extern int psp_keep_loaded(void);
+
+	if (skip < 0)
+	{
+		if (!psp_keep_loaded())
+			return 1;
+		skip = !psp_keep("vshconstants");
+	}
+	return skip;
+}
+
 /* ---------- build 87: the Media Engine's first render job, measure only
 ("meclassify" in the launch menu; off by default). Build 105: only in a
 build made with PSP_DEBUG_TOOLS=1 (psp_build.py); elsewhere it does nothing.

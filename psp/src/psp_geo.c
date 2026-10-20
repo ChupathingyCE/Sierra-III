@@ -688,24 +688,142 @@ static int entry_holds(int index, unsigned int at)
 	return e->at && e->state == 3 && at >= e->at && at < e->at + e->size;
 }
 
+/* The resident blocks in address order, searched by halving when the slot
+table doesn't know a pointer. A frame asks about more pointers than the 64
+slots hold (each pass of each part, its vertices and its indices: b30 draws
+~300 parts a frame), so most questions used to end in the scan, ~350 entries
+of 24 bytes: the drawing phase's most-missed data in the cache model
+(docs/ge_audit.md). Each key is a block's start in 64-byte units above the
+arena (blocks are aligned to 64) over its entry's index, so the 2 KB of keys
+stay in a few cache lines and the search reads no entry until its answer.
+The keys are a snapshot, made again only after the resident set has changed
+(a load or an eviction moves the stamp), at most once a frame. An answer is
+believed only once entry_holds confirms it, so a stale snapshot can only
+send a question on to the scan, never give a wrong entry: the same answers
+as the scan. Main CPU only (the ME's work keeps the scan). "geoscan": the
+scan as before; "geoindexcheck": both, answers compared in the report */
+#define PLACE_INDEX_BITS 9 /* GEO_ENTRIES = 512 */
+static unsigned int by_place[GEO_ENTRIES];
+static int by_place_count = -1, place_index_on = -1, place_index_check = 0;
+static unsigned int by_place_stamp = 0, by_place_frame = 0;
+static unsigned long place_slot_answers = 0, place_index_answers = 0, place_scans = 0, place_builds = 0,
+	place_checked = 0, place_differed = 0;
+
+static unsigned int place_stamp(void)
+{
+	return generation_counter * 2654435761u + (unsigned int)evictions * 40503u + (unsigned int)entry_count;
+}
+
+static void by_place_build(void)
+{
+	int index, n = 0, gap, i, j;
+
+	for (index = 0; index < entry_count; index++)
+		if (entries[index].at && entries[index].state == 3)
+			by_place[n++] = ((entries[index].at - arena_start) >> 6) << PLACE_INDEX_BITS | (unsigned int)index;
+	/* Shell sort (Ciura's gaps): no calls, no heap */
+	{
+		static const int gaps[] = { 132, 57, 23, 10, 4, 1 };
+		int g;
+
+		for (g = 0; g < (int)(sizeof(gaps) / sizeof(gaps[0])); g++)
+			for (gap = gaps[g], i = gap; i < n; i++)
+			{
+				unsigned int key = by_place[i];
+
+				for (j = i; j >= gap && by_place[j - gap] > key; j -= gap)
+					by_place[j] = by_place[j - gap];
+				by_place[j] = key;
+			}
+	}
+	by_place_count = n;
+	by_place_stamp = place_stamp();
+	by_place_frame = frame;
+	place_builds++;
+}
+
+/* the entry whose block starts last at or before at, if it holds at; -1 to scan */
+static int by_place_find(unsigned int at)
+{
+	unsigned int units = (at - arena_start) >> 6;
+	int low = 0, high, index;
+
+	if (by_place_count < 0 || by_place_stamp != place_stamp())
+	{
+		if (by_place_count >= 0 && by_place_frame == frame)
+			return -1;
+		by_place_build();
+	}
+	high = by_place_count - 1;
+	if (high < 0 || (by_place[0] >> PLACE_INDEX_BITS) > units)
+		return -1;
+	while (low < high)
+	{
+		int middle = (low + high + 1) >> 1;
+
+		if ((by_place[middle] >> PLACE_INDEX_BITS) <= units)
+			low = middle;
+		else
+			high = middle - 1;
+	}
+	index = (int)(by_place[low] & ((1u << PLACE_INDEX_BITS) - 1));
+	return entry_holds(index, at) ? index : -1;
+}
+
 static int resident_entry(const void *ptr)
 {
 	unsigned int at = (unsigned int)ptr, slot = (at >> 6) % AT_SLOTS;
-	short *at_slot = at_slot_cpu[PSP_ME_WORK() ? 1 : 0]; /* (the emulator's simulated ME work too, for its write trace) */
-	int index;
+	int me = PSP_ME_WORK();
+	short *at_slot = at_slot_cpu[me ? 1 : 0]; /* (the emulator's simulated ME work too, for its write trace) */
+	int index, found = -1;
 
 	if (!in_cache(at))
 		return -1;
 	if (last_locked >= 0 && entry_holds(last_locked, at))
 		return last_locked;
 	if (at_slot[slot] && entry_holds(at_slot[slot] - 1, at))
+	{
+		if (!me)
+			place_slot_answers++;
 		return at_slot[slot] - 1;
+	}
+	if (place_index_on < 0)
+	{
+		place_index_on = !psp_keep("geoscan") && arena_end - arena_start <= (65536u << 6);
+		place_index_check = psp_keep("geoindexcheck");
+	}
+	if (place_index_on && !me)
+	{
+		found = by_place_find(at);
+		if (found >= 0)
+		{
+			place_index_answers++;
+			if (!place_index_check)
+			{
+				at_slot[slot] = (short)(found + 1);
+				return found;
+			}
+		}
+	}
+	if (!me)
+		place_scans++;
 	for (index = 0; index < entry_count; index++)
 		if (entry_holds(index, at))
 		{
+			if (found >= 0)
+			{
+				place_checked++;
+				if (found != index)
+					place_differed++;
+			}
 			at_slot[slot] = (short)(index + 1);
 			return index;
 		}
+	if (found >= 0)
+	{
+		place_checked++;
+		place_differed++;
+	}
 	return -1;
 }
 
@@ -791,6 +909,9 @@ void psp_geo_frame_end(void)
 			async_reads ? "asynchronous" : "synchronous", past_share_reads, past_share_bytes / 1024);
 		if (census_on > 0)
 			census_report();
+		platform_log("geometry: resident lookups (the renderer's) by the slot table %lu, by the index %lu, scanned %lu; index made %lu times (%s); geoindexcheck: %lu compared, %lu differed",
+			place_slot_answers, place_index_answers, place_scans, place_builds,
+			place_index_on > 0 ? "on" : place_index_on == 0 ? "off: geoscan" : "not asked yet", place_checked, place_differed);
 		psp_anim_report();
 	}
 	frame++;
@@ -818,6 +939,7 @@ static void forget_all(void)
 	memset(hash_head, 0, sizeof(hash_head));
 	memset(at_slot_cpu, 0, sizeof(at_slot_cpu));
 	last_locked = -1;
+	by_place_count = -1;
 }
 
 void psp_geo_close(void)
