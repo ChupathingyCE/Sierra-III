@@ -2,6 +2,50 @@
 
 What this branch holds, and what the levers it was given are worth by the hardware's numbers. Labels: [M] measured on a PSP, [E] emulator or cache model, [D] read in code, [U] inference.
 
+## The change: `objwalk` (lever CW, exact, on by default)
+
+**What:** the collision tests' object loops in line. `FIXES_OBJWALK` in `psp_fixups.py` (applied after `FIXES_NMSKIP`).
+
+- `collision_test_vector` and `collision_get_features_in_sphere` walk every collideable object of each cluster they reach and reject ~95% on the sphere copy. Each object cost three calls across units: the cluster list's next reference (`cluster_get_next_collideable_object` → `cluster_partition_get_next_datum`), the sphere copy (`psp_sphere_of`) and `fast_vector_intersects_sphere`. With `-fno-omit-frame-pointer`, the calls' frames were ~40 of each object's ~100 instructions [E/U].
+- Now `psp_next_collideable` takes the list's step in line (`reference_lists.h`'s step, with `psp_datum_get_inline`), and `psp_vector_intersects_sphere` (`real_math.h`) is the sphere test in line. `fast_vector_intersects_sphere` now returns it, so the test has one copy.
+- `spherecheck`'s comparison moved out of line (`psp_sphere_compare`), so `psp_sphere_of` is small and always in line.
+- **Why it's exact:** the same list is walked in the same order, and the same float operations decide each test (`-ffp-contract=off`), so the same objects are marked and tested.
+- **Keep word:** `objwalkold`, the calls as before. Each loop tests one register flag an object.
+
+**Evidence:**
+- [D] The compiled `collision_test_vector` calls neither `psp_sphere_of` nor the sphere test on the in-line path. The old path's calls are still there for `objwalkold`.
+- The proof batch (statecrc pairs on b30's scripted drive and c40, plus a cache-model cost pair) is in flight. Its results go here.
+- **Expected:** ~0.4 G of a 108 s b30 run's ~15 G tick fetches (~2.5-3%) [U].
+- **Cost when off:** one flag test an object.
+
+## Lever #9, vehicles: `vehicle_update` split by function
+
+From the cache model on b30, hands off to 108 s, with the scripted Warthog drive from game time 2700 [E]. Each run was made with and without the drive, and with `vehicle_update` split onto caches of its own. All shares are of `vehicle_update`'s fetches, net of the debug-tools collision log.
+
+| | Driven Warthog | Pelicans (flight, landing, unloading) |
+|---|---|---|
+| An update | 589 k instructions, ~5,600 D-misses, 1.6 M cycles (4.8 ms at 333 MHz) | 116 k instructions, ~1,180 D-misses, 383 k cycles |
+| BSP sphere walks (ground plane: `collision_get_features_in_sphere`, `psp_bsp3d_test_sphere`, bsp2d) | **43%** | 14% |
+| Object walks (cluster lists, sphere copies) | **17%** | 3% |
+| BSP rays (`collision_bsp_test_vector_recursive`) | 11% | **29%** (thruster rays) |
+| Point location (`bsp3d_test_point`) | 7% | 11% |
+| Effects and markers | 3% | **18%** |
+| Other | 19% | 25% |
+
+`vehicle_update` is 8.6% of the tick's fetches while driving. On the PSP, a driven Warthog costs 6.8-7.8 ms a tick and two flying Pelicans 9.5-12.7 ms [M].
+
+What the split rules out:
+- **CT (reject by type before the sphere precheck): sized small, not built.** b30's collideable objects are mostly scenery, and every flag set that walks objects tests scenery. The AI's sight lines (0xC2AD) test vehicles, scenery and machines; vehicles' sweeps (0xC0A0) test scenery and machines. So a type test rejects only ~15-20% of objects. It would save ~60 instructions on each of those and cost ~4-8 on every object: ~0.3% of the tick at best.
+  - CT is exact only in the vector loop, where `object_test_vector` rejects a root, and so its children, on type. The sphere loop visits the children of a root of any type, so it can't reject there.
+  - CW takes the walk's cost instead.
+- **The Pelicans' thruster rays** (`create_pelican_effect`, ~11 a Pelican update) pick a random direction on the local seed each tick and feed effects. They test no objects (0x61) and take their location from the ray's leaves. Nothing in them memoises exactly.
+- **The ground-plane sphere walks** are already the port's (`psp_bsp3d_test_sphere`, the sphere memo). A walk shared by a vehicle's 15 mass points would change the feature lists' order, so it isn't exact.
+
+**Next for #9:**
+1. Read `cwproof1`. Every tick's state must match on c40. b30 may drift after ~1,300 ticks, as it does for any change (perf-cache's nodepf1).
+2. If CW is exact, a PSP pair `keepsets="- | objwalkold" repeat=2` on b30's drive.
+3. What's left in the Warthog is the BSP walk itself, which a faster `psp_bsp3d_test_sphere` would serve. That's general collision work, not a vehicle lever.
+
 ## The change: `nmskip` (shelved, opt-in, off)
 
 **What:** node matrices of still scenery-kin left to a frame's last tick (lever #2's matrix half, `levers_next_b138.md`). `FIXES_NMSKIP` in `psp_fixups.py` (applied after `FIXES_BONUS`); its header comment gives the rules.
