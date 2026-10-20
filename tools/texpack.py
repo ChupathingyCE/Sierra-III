@@ -1265,7 +1265,11 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         img = apply_glow(img, glow)
     own_levels = None
     if cls == 'detail':
-        own_levels = None if os.environ.get('TEXPACK_DETAIL_DOWNSCALE') else detail_levels(m, b, tw, th)
+        # the Xbox's own mip chain belongs to the bitmap, not to an image given
+        # in its place (whose size b now carries, so the chain's offsets
+        # would run past the bitmap's pixels)
+        own_levels = None if os.environ.get('TEXPACK_DETAIL_DOWNSCALE') or image is not None \
+            else detail_levels(m, b, tw, th)
         if not own_levels:
             img = neutral_detail(img)
     small = own_levels[0] if own_levels else resample(img, tw, th, cls)
@@ -1648,6 +1652,11 @@ def main():
         if b is None:
             continue
         cls = refs.classify(roles.get(b['tag'], ()), b)
+        if cls == 'detail':
+            # a detail bake levels the colours to grey and drops the alpha,
+            # which would undo the composite: the shader keeps its own maps
+            print('composite for %s: none (%s is baked as a detail map)' % (name, b['tag']), file=sys.stderr)
+            continue
         r = bake_one(m, dict(b, w=img.shape[1], h=img.shape[0]), cls, image=img)
         if r is None:
             print('composite for %s: none (%s not baked as %s)' % (name, b['tag'], cls), file=sys.stderr)
