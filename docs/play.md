@@ -209,7 +209,7 @@ It writes your choices to `halo/keep.txt` (keep words, separated by spaces) and 
 
 ## 8. When it goes wrong
 
-**The log.** The game rewrites `halo/log/log.txt` at every launch and keeps the last 8 launches' as `halo/log/NNN_log.txt`, so a missed copy can still be recovered. After a crash it also writes `halo/crash.txt`.
+**The log.** The game rewrites `halo/log/log.txt` at every launch and keeps the last 20 launches' as `halo/log/NNN_log.txt`, so a missed copy can still be recovered. After a crash it also writes `halo/crash.txt`.
 
 **A crash** shows a text screen that ends: `Saved to ms0:/halo/crash.txt (if the Memory Stick still answers). Take a photo of this screen, then hold POWER.` Take the photo, then hold POWER until the PSP turns off.
 

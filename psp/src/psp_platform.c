@@ -2894,16 +2894,16 @@ static void load_crash_handler(const char *eboot_path)
 	platform_log("crash handler %s: %s (0x%08x)", path, module >= 0 ? "installed" : "not loaded", (unsigned)module);
 }
 
-/* build 114: the last launch's files kept, numbered, in the log folder:
-log.txt, profile.txt and crash.txt become log/NNN_log.txt and so on (NNN
-counts launches), and only the last OLD_LAUNCHES sets stay. Until b113 the
-log was removed at every launch, so a test whose log wasn't pulled before
-the next launch was lost, and profile.txt gathered every launch's windows.
-Renamed within the one folder: whether the Memory Stick's driver moves a
-file to another folder isn't known, so crash.txt (in the data folder) is
-tried and left where it was if the rename fails. No keep word: keep.txt is
-read after this, and the cost is a few renames at start-up */
-#define OLD_LAUNCHES 8
+/* The last launches' files kept, numbered, in the log folder: log.txt,
+profile.txt and crash.txt become log/NNN_log.txt and so on (NNN counts
+launches), and only the last OLD_LAUNCHES sets stay, so a test whose log
+wasn't pulled before the next launch isn't lost, and profile.txt doesn't
+gather every launch's windows. Renamed within the one folder: whether the
+Memory Stick's driver moves a file to another folder isn't known, so
+crash.txt (in the data folder) is tried and left where it was if the rename
+fails. No keep word: keep.txt is read after this, and the cost is a few
+renames at start-up */
+#define OLD_LAUNCHES 20
 static void keep_last_launch(void)
 {
 	static const char *const names[3] = { LOG_FOLDER "/log.txt", LOG_FOLDER "/profile.txt", DATA_ROOT "/crash.txt" };

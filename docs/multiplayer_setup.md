@@ -80,7 +80,7 @@ Some servers turn the PSP away even when the list shows them joinable. `[C] Grif
 
 ## 5. If it doesn't work
 
-**First, the log.** The game rewrites `halomp/log/log.txt` at every launch and keeps the last 8 launches' as `log/NNN_log.txt`. Copy it off after a run that went wrong:
+**First, the log.** The game rewrites `halomp/log/log.txt` at every launch and keeps the last 20 launches' as `log/NNN_log.txt`. Copy it off after a run that went wrong:
 
 ```bash
 tar czf mp_test.tgz -C $STICK/halomp log crash.txt

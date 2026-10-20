@@ -81,7 +81,7 @@ The result (`~/halo-psp-out/halo/`) is game data: keep it on your own machines.
 3. Copy the baked `halo/` folder to the stick's root, so it holds `halo/maps/`.
 4. Launch "halo" from the game menu. The launch menu picks the map and the keep words (`ms0:/halo/keep.txt`; `psp_keep()` in `psp/src/psp_platform.c` reads them).
 
-The game writes its log to `halo/log/log.txt` (the last 8 launches are kept as `log/NNN_log.txt`), its profile to `log/profile.txt`, screenshots (select + right) to `halo/shots/`, and `halo/crash.txt` if it crashes.
+The game writes its log to `halo/log/log.txt` (the last 20 launches are kept as `log/NNN_log.txt`), its profile to `log/profile.txt`, screenshots (select + right) to `halo/shots/`, and `halo/crash.txt` if it crashes.
 
 ## 7. Test in the emulator (optional)
 
