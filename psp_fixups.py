@@ -24959,11 +24959,70 @@ FIXES_POOLS["source/objects/widgets/glow.c#pools"] = [
 ]
 
 
+# ---------- FIXES_GEFEED: the Xbox vertex shaders' constants left unmade
+# The PSP runs d3d8_gl.c as the null renderer: it never makes a GL device, so
+# the vertex constants it stores (constants_store) are read by nothing, and
+# the GE draws from the engine's own node matrices and lighting
+# (psp_ge_model_begin). Each model draw still wrote its nodes out as shader
+# constants and stored them, and its lighting too: ~1.5-2% of the drawing
+# phase in the cache model on b30 (docs/ge_audit.md). "vshconstants": made and
+# stored as before
+FIXES_GEFEED = {}
+FIXES_GEFEED["port/linux/src/d3d8_gl.c#gefeed"] = [
+("""void WINAPI D3DDevice_SetVertexShaderConstant(INT reg, CONST void *constant_data, DWORD constant_count)
+{
+	long first = reg + XGPU_VERTEX_CONSTANT_BIAS;
+""", """void WINAPI D3DDevice_SetVertexShaderConstant(INT reg, CONST void *constant_data, DWORD constant_count)
+{
+	long first = reg + XGPU_VERTEX_CONSTANT_BIAS;
+
+#ifdef HALO_PSP
+	{
+		extern int psp_vsh_constants_skip(void); /* psp_ge.c (FIXES_GEFEED) */
+
+		if (psp_vsh_constants_skip())
+			return;
+	}
+#endif
+"""),
+]
+FIXES_GEFEED["source/rasterizer/xbox/rasterizer_xbox.c#gefeed"] = [
+("""	if (rasterizer_debug_options.model_lighting_ambient > 0.0f)
+	{
+		csmemset(&lighting_constants, 0, sizeof(lighting_constants));""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_vsh_constants_skip(void); /* psp_ge.c (FIXES_GEFEED) */
+
+		if (psp_vsh_constants_skip())
+			return;
+	}
+#endif
+	if (rasterizer_debug_options.model_lighting_ambient > 0.0f)
+	{
+		csmemset(&lighting_constants, 0, sizeof(lighting_constants));"""),
+("""	for (node_index = 0; node_index < skinning->node_matrix_count; node_index++)
+	{
+		real scale = skinning->node_matrices[node_index].scale;""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_vsh_constants_skip(void); /* psp_ge.c (FIXES_GEFEED) */
+
+		if (psp_vsh_constants_skip())
+			return;
+	}
+#endif
+	for (node_index = 0; node_index < skinning->node_matrix_count; node_index++)
+	{
+		real scale = skinning->node_matrices[node_index].scale;"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
