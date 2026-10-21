@@ -16,7 +16,35 @@ That makes the vertex format itself the largest geometry lever, ahead of (a)-(e)
 
 Its cost is code, not bytes: the bake writes the new layout, `model_convert` becomes a copy, and every CPU reader of a converted vertex (the near-plane cut ~11846, the see-through colours ~13142, `model_to_camera` ~13220, ~13501, ~13614) reads s16 positions through the part's scale. A keep word can keep the float path for an A/B.
 
-(the census below: pending, lab sierra-tags 39676064840)
+### 1.1 The census (what the packs hold)
+
+Sierra-III `geocensus` 725f37a `tools/geocensus.py` (not for merge), run on bake b140x through the lab's sierra-tags (**39681278283**; the first run, 39676064840, read the five LOD cutoffs in reverse: Invader's definitions name them top down, the engine reads the first as the lowest level's). Counts and bytes from the maps' tags and the `.pgeo` [D]; "non-top" = a geometry never drawn at the top level, so it has a nearest drawn size (the next level's cutoff).
+
+| Map | `.pgeo` | Models: vertices (KB at 32 B) + indices | As 14-byte vertices | Non-top geometry | Level: rendered (32 B) + lightmap (8 B) vertices | Level bytes never read |
+|---|---:|---|---:|---:|---|---:|
+| b30 | 11,988 KB | 153,341 (4,792) + 511 | **-2,695 KB** | 1,813 of 5,303 KB | 95,041 + 89,745 (2,970 + 701 KB) | 743 KB |
+| c20 | 16,482 | 75,667 (2,365) + 249 | -1,330 | 778 of 2,614 | 314,692 + 299,190 (9,834 + 2,337) | 2,459 |
+| a10 | 30,953 | 127,772 (3,993) + 420 | -2,246 | 1,478 of 4,413 | 603,012 + 601,674 (18,844 + 4,701) | **4,711** |
+| a30 | 11,213 | 159,118 (4,972) + 538 | **-2,797** | 2,392 of 5,511 | 81,321 + 77,483 (2,541 + 605) | 635 |
+| d20 | 18,546 | 125,493 (3,922) + 436 | -2,206 | 1,612 of 4,357 | 279,510 + 276,942 (8,735 + 2,164) | 2,184 |
+
+The rest of each pack (~1.7-3.3 MB) is animation frame data (`-M`).
+
+### 1.2 The candidates, ranked by bytes per unit of look risk
+
+| # | Candidate | Pack (b30 / c20 / a10 / a30 / d20, KB) | Geometry cache and GE reads a frame | Look | Exact? |
+|---|---|---|---|---|---|
+| 1 | **(e) The level's binormal and tangent** (8 of each rendered vertex's 32 bytes): the level copies read only position, normal and uv, and the lightmap vertex's 8 bytes (`psp_ge.c` ~7616-7645 [D]); the engine's own CPU reads the 12-byte position copy in the BSP | **-743 / -2,459 / -4,711 / -635 / -2,184** (20% of the level's render data) | 0 GE (the copies don't change); 20% fewer bytes through the cache each time a material's copy is built or rebuilt (a10 let copies go 2,614 times in the hand test [M]); stick reads at load | none | **yes** (bytes never read) |
+| 2 | **(b) 8-bit indices for parts of <= 256 vertices** | 513 of 674 parts on b30: **-57 / -31 / -55 / -84 / -51** | the heap's skinning lists: b30 172 of 282 KB a frame fit (gl3count1 39642564211 [E]) -> ~-86 KB, a30 -24, c20 -7, d20 -15; plus the rigid parts' pack indices (b30 37 KB a frame, a30 15, c20 10, m6bytes2 [E]). **b30 ~0.9 ms, a30 ~0.3** beside the tick (9.6 us/KB) [E x U] | none | **yes** |
+| 3 | **(0) the 14-byte baked vertex** (§1.0) | **-2,695 / -1,330 / -2,246 / -2,797 / -2,206** | cache: -56% of the models' share; GE: -42% of model vertex bytes: main RAM b30 ~0.55, a30 ~0.9, c20 ~0.2 ms; VRAM room 1.7x the vertices: up to ~3-7 ms on b30's flight [U] | sub-pixel (first-person parts stay float) | no: "looks the same" class |
+| 4 | **(c) 8-bit positions for non-top geometry**, where the rounding is <= 0.5 PSP px at its nearest drawn size | vertices that pass (and with no radius or extent, unknown): b30 26,410 (20,686), c20 6,521 (14,785), a10 19,317 (19,373), a30 42,538 (26,456), d20 24,561 (21,794): 4 B each beside the 14-byte vertex: **-103 / -25 / -75 / -166 / -96** (9 B each beside today's 24: -232 / -57 / -170 / -374 / -216) | b30's play draws ~33% of its model triangles at the lowest level (~57 tree, shrub and boulder draws a frame, cull-lod [E]): ~0.1-0.2 ms [U] | <= 0.5 px at the nearest size (bound: the part's extent / 510 over the object's diameter) | no |
+| 5 | **(d) screen-bounded simplification**, non-top levels to k x D triangles at their nearest D PSP px (top level, first person, sky and cinematic stars untouched) | k12: **-251 / -207 / -244 / -353 / -171** (13-25% of non-top triangles); k4: -901 / -453 / -719 / -1,120 / -813 (42-59%) | play's share of model triangles over k x D: b30 21% (k12) / 30% (k4), a30 1.8-4.7%, c20 2.6-6.8% (S9, cull-lod [E]): ceilings b30 0.9-1.2 ms, a30 0.1-0.3 | <= ~0.5 px by construction, but a decimation is a new look path (silhouettes, seams, normals): Sheepdog01's call after an A/B | no; needs a bake tool |
+| 6 | **(a) LOD pixels at the PSP's 272 lines** | **0 from the pack**: the geometries it would leave unchosen (chosen only when the object's sphere is taller than the screen: b30 32 geometries, 713 KB; c20 307; a10 713; a30 1,239; d20 540, the characters' and weapons' super-high levels, cutoffs 280-500 px) are the cinematics' movie stars, which always draw the top level | play: -0.5% of b30's model vertices, -3.1% a30, 0 c20/d20; cinematics -2 to -4.5% (S8, cull-lod [E]): under the gate everywhere; 3.3 draws a frame on b30 drop below the lowest level and vanish 1.76x nearer | objects drop detail and vanish nearer: **detracts** | no |
+| - | Geometries no level ever selects (a higher level's cutoff at or below theirs) | b30 122, d20 122, others 0 | never read in play | none | yes, pack bytes only |
+
+**What it means.** The look-free bytes are in the format, not in the levels of detail: the level's unread binormal and tangent (0.6-4.7 MB of pack a map, exact) and 8-bit indices (exact, ~0.9 ms on b30) can go with no picture question; the 14-byte vertex is the large one (-1.3 to -2.8 MB of pack, -42% of every model vertex the GE reads, and the VRAM room's reach on b30) at the price of sub-pixel position rounding and the CPU readers' rewrite. Every LOD-side cut (a, d, partly c) changes the picture and is worth less: the PSP's real pixel scale would leave nothing removable from the pack, because the cinematics draw the top levels anyway.
+
+**Sheepdog01's calls in dig 1:** none for (e) and (b) (exact). The 14-byte vertex is a "looks the same" change: side-by-sides decide. (c), (d) and (a) detract and are not recommended at their prices.
 
 ## 2. The ledger, both pools
 
