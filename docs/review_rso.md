@@ -42,3 +42,14 @@ One test a model draw (`psp_rso_object`, set to NONE), one a part (`psp_rso_capt
 ## Tests to run (proof)
 
 framecrc and play, both seeds, identical with and without `rso` on b30, a30, c10 under `nomouth`; `rsocheck` 0 differ; heap lines on a30 and a10 unchanged; the cache model's objects pass on c10, a30, b30. Results: the lab's findings.
+
+## Proof and gain, first batch [E]
+
+The first batch (b30, a30, c10, a10; hands off, `fixedticks fixedseed nomouth statecrc framecrc`; cache models hands off to game time 120 s) on the first cut:
+- **Play and both random seeds the same at all 6,000 ticks** on every map, `rso`, `rsocheck` and `rsoall rsocheck` against off. The whole state differs in `objects` and `object looping sounds`, the allocations that follow the emulator's speed; two runs with it off agree in all of it on b30 and a30, and differ in `objects` on c10.
+- **But that proves nothing yet: no record was sent again.** Every log line shows 0 entries kept, 0 inputs changed and `rsocheck` 0 walks compared, while a30 kept 30-36 walks a window and c10 1.6. The stamp that ages the entries moved at each window begin, and a frame begins more than one (`rasterizer_window_begin` and the structure's lightmaps begin both start the GE's window), so the two-stamp limit dropped every entry before its object came round again. The stamp now moves at the frame's end.
+- **Most offered models weren't kept at all**: b30 85-94 a window, all of them; a30 74-98 of 105-134; c10 38 of 40; a10 2-8 of 3-8. The reasons were counted together (a glow that follows the time, a see-through part, the Xbox path); they are now counted apart. A self-illuminated shader whose two glow colours are equal glows the same at any time, so it no longer bars the model.
+- **Cost with nothing sent again**: the objects pass c10 3.26 -> 3.44, a30 7.20 -> 7.79 (`rsoall` 7.82), b30 7.87 -> 8.11 ms a frame in the cache model: keying and copying every kept walk.
+- Memory: 48 KB outside the heap on every map, 81-85 KB left free there; heap untouched.
+
+The second batch tests the fix on the same maps.
