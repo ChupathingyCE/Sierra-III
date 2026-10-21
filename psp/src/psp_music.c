@@ -1,0 +1,894 @@
+/* The music path (docs/plan_music_stream.md, keep word "musicstream", off by
+default): a map's music permutations come from its Vorbis pack (<map>.pmus,
+bake --music-stream) instead of the sound cache, and play on a 44.1 kHz
+channel of their own.
+
+The game never sees the difference. A music permutation the pack has gets a
+one-page block in the cache (its "stub") instead of its samples, and its
+stream stays a voice of the 22,050 Hz mixer, which advances it, completes its
+packets and ramps its gains exactly as before but mixes none of its samples
+(psp_dsound.c marks it). Each block the mixer says where each music voice
+was at the block's start and end, and with what gains; this side decodes
+those frames of the voice's chain and plays them, at twice the positions
+(the bake halved music to 22,050 Hz for the map, and the pack keeps it at
+44.1 kHz). So starts, stops, loops, alternates, crossfades and volume are
+the game's own.
+
+Here the decode runs on the main CPU, in the audio thread after the mix (the
+Media Engine's audio job is the next step). Tremor's allocations come from
+this file's pool (psp_build.py renames them at link), so the codec never
+enters the game's allocator and the pool can later move to the ME as a
+whole. The stick is read by a thread of its own, 16 KB at a time, one read
+in flight. A block whose packets aren't in RAM in time plays as silence and
+is counted, and the voice comes back with a short fade */
+
+#include <pspkernel.h>
+#include <pspaudio.h>
+#include <pspiofilemgr.h>
+#include <pspthreadman.h>
+#include <malloc.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+#include <tremor/ivorbiscodec.h>
+#include "psp_paths.h"
+
+void platform_log(const char *format, ...);
+int psp_keep(const char *word);
+
+#define PMUS_MAGIC 0x53554D50u /* "PMUS" */
+#define PMUS_VERSION 1
+#define OUT_FRAMES 1024        /* one 22,050 Hz mixer block (512 frames) at 44.1 kHz */
+#define VOICES 3               /* two music channels crossfading, and one starting */
+#define STUBS 160
+#define STUB_BYTES 4096
+#define PIECE_BYTES 16384
+#define INDEX_PACKETS 512      /* a 4 KB window of a chain's packet table */
+#define PCM_FRAMES 4096        /* a voice's decoded frames not yet played */
+#define POOL_BYTES (320 * 1024)
+#define FADE_FRAMES 220        /* 5 ms */
+
+struct pmus_header
+{
+	unsigned int magic, version, setups, entries, chains, entries_at, chains_at, keys, rate;
+};
+struct pmus_entry
+{
+	unsigned int hash;
+	unsigned short pitch, permutation;
+	unsigned int chain, start, frames, first;
+};
+struct pmus_chain
+{
+	unsigned int setup, packets, frames, index_at, packets_at, body;
+};
+
+/* a stub: one music permutation the cache holds as a page */
+struct stub
+{
+	const void *permutation;
+	const unsigned char *base;
+	long size;
+	int entry;
+	unsigned char *loaded;
+	unsigned int first_offset; /* the entry's first packet, bytes into the chain's packets */
+	int state;                 /* 0 free, 1 waiting for the reader, 2 ready */
+};
+
+/* one music voice's decoder and its window onto the stick */
+struct voice
+{
+	const void *owner;          /* the mixer's stream */
+	int chain;
+	unsigned int position;      /* the next frame the PCM queue gives, in the chain at 44.1 kHz */
+	int primed;                 /* decoding from a restart: the first packet gives nothing */
+	unsigned int next_packet;   /* the next packet to decode */
+	unsigned int next_offset;   /* its bytes into the chain's packets */
+	/* the index window: packets [index_first, index_first + index_count) */
+	unsigned int index_first, index_count, index_wanted;
+	unsigned int index[INDEX_PACKETS][2];
+	/* two pieces of packet bytes, each 16 KB from piece_at[k] in the chain's packets */
+	unsigned int piece_at[2], piece_wanted;
+	int piece_ok[2];
+	unsigned char piece[2][PIECE_BYTES];
+	short pcm[PCM_FRAMES * 2];
+	unsigned int pcm_frames;
+	int fade;                   /* frames into the fade-in after a dropout or a start */
+	int left, right;            /* the gains the last block ended on */
+	int used;                   /* blocks since it last played (frees the voice) */
+	vorbis_dsp_state dsp;
+	vorbis_block block;
+	int dsp_ready;
+};
+
+static struct
+{
+	int on;                     /* the pack is open and matches: the path runs this map */
+	SceUID file;
+	struct pmus_header header;
+	struct pmus_entry *entries;
+	struct pmus_chain *chains;
+	vorbis_info info;
+	vorbis_comment comment;
+	struct stub stubs[STUBS];
+	struct voice *voices[VOICES];
+	SceUID reader_wake, out_ready, out_free, io_lock, state_lock;
+	int out_channel;
+	short out[2][OUT_FRAMES * 2] __attribute__((aligned(64)));
+	int out_which;
+	/* counts, for the heartbeat */
+	unsigned long blocks, late_blocks, out_late, pieces, piece_worst_us, stubs_made, not_in_pack, restarts, decode_us,
+		decode_worst_us, playing_worst;
+} music;
+
+/* ---------- the pool (Tremor's malloc family, renamed at link) */
+
+static unsigned char *pool_next, *pool_end;
+static unsigned long pool_failed;
+
+void *mu_malloc(unsigned int bytes)
+{
+	unsigned char *p;
+
+	bytes = (bytes + 15) & ~15u;
+	if (!pool_next || pool_next + bytes + 16 > pool_end)
+	{
+		pool_failed++;
+		return NULL;
+	}
+	p = pool_next;
+	*(unsigned int *)p = bytes;
+	pool_next += bytes + 16;
+	return p + 16;
+}
+
+void *mu_calloc(unsigned int count, unsigned int size)
+{
+	void *p = mu_malloc(count * size);
+
+	if (p)
+		memset(p, 0, count * size);
+	return p;
+}
+
+void *mu_realloc(void *old, unsigned int bytes)
+{
+	unsigned int had;
+	void *p;
+
+	if (!old)
+		return mu_malloc(bytes);
+	had = *(unsigned int *)((unsigned char *)old - 16);
+	if (bytes <= had)
+		return old;
+	p = mu_malloc(bytes);
+	if (p)
+		memcpy(p, old, had);
+	return p;
+}
+
+/* Tremor frees only blocks it replaces with larger ones, and a voice's
+decoder is set up once and restarted, never freed: the pool levels off */
+void mu_free(void *p)
+{
+	(void)p;
+}
+
+/* ---------- the pack */
+
+unsigned int psp_music_hash(const char *path)
+{
+	unsigned int h = 0x811C9DC5u;
+
+	for (; *path; path++)
+	{
+		unsigned int c = (unsigned char)*path;
+
+		if (c >= 'A' && c <= 'Z')
+			c += 'a' - 'A';
+		if (c == '/')
+			c = '\\';
+		h = (h ^ c) * 0x01000193u;
+	}
+	return h;
+}
+
+static int read_at(unsigned int offset, void *buffer, unsigned int bytes)
+{
+	int got;
+
+	sceKernelWaitSema(music.io_lock, 1, NULL);
+	sceIoLseek32(music.file, (int)offset, PSP_SEEK_SET);
+	got = sceIoRead(music.file, buffer, bytes);
+	sceKernelSignalSema(music.io_lock, 1);
+	return got == (int)bytes;
+}
+
+static int entry_find(unsigned int hash, int pitch, int permutation)
+{
+	int low = 0, high = (int)music.header.entries - 1;
+
+	while (low <= high)
+	{
+		int middle = (low + high) / 2;
+		const struct pmus_entry *e = &music.entries[middle];
+		long d = e->hash != hash ? (e->hash < hash ? -1 : 1) : e->pitch != pitch ? e->pitch - pitch : e->permutation - permutation;
+
+		if (!d)
+			return middle;
+		if (d < 0)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return -1;
+}
+
+static void pack_close(const char *why)
+{
+	if (why)
+		platform_log("music: the pack %s; music plays from the cache this map", why);
+	music.on = 0;
+	if (music.file >= 0)
+		sceIoClose(music.file);
+	music.file = -1;
+}
+
+static int reader_thread(SceSize arguments, void *argument);
+static int output_thread(SceSize arguments, void *argument);
+
+static void start_once(void)
+{
+	static int started = 0;
+	unsigned char *pool;
+	int k;
+
+	if (started)
+		return;
+	started = 1;
+	pool = memalign(64, POOL_BYTES);
+	if (!pool)
+		return;
+	pool_next = pool;
+	pool_end = pool + POOL_BYTES;
+	/* the voices' windows and queues off the heap, not the codec's pool */
+	for (k = 0; k < VOICES; k++)
+	{
+		music.voices[k] = memalign(64, sizeof(struct voice));
+		if (music.voices[k])
+			memset(music.voices[k], 0, sizeof(struct voice));
+	}
+	music.state_lock = sceKernelCreateSema("music state", 0, 1, 1, NULL);
+	music.reader_wake = sceKernelCreateSema("music reader", 0, 0, 64, NULL);
+	music.io_lock = sceKernelCreateSema("music io", 0, 1, 1, NULL);
+	music.out_ready = sceKernelCreateSema("music out", 0, 0, 2, NULL);
+	music.out_free = sceKernelCreateSema("music free", 0, 2, 2, NULL);
+	music.out_channel = sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, OUT_FRAMES, PSP_AUDIO_FORMAT_STEREO);
+	/* below the mixer, which feeds it; the reader below the game */
+	k = sceKernelCreateThread("music out", output_thread, 0x13, 0x2000, 0, NULL);
+	if (k >= 0)
+		sceKernelStartThread(k, 0, NULL);
+	k = sceKernelCreateThread("music reader", reader_thread, 0x30, 0x2000, 0, NULL);
+	if (k >= 0)
+		sceKernelStartThread(k, 0, NULL);
+	platform_log("music: on: pool %u KB, 44.1 kHz channel %d", POOL_BYTES / 1024, music.out_channel);
+}
+
+/* the map's tags are in: its pack, if the keep word wants one (cache_files.c) */
+void psp_music_map_opened(const char *name)
+{
+	static int wanted = -1;
+	char path[128];
+	unsigned char *setup = NULL;
+	unsigned int bytes, k;
+
+	if (wanted < 0)
+		wanted = psp_keep("musicstream") != 0;
+	pack_close(NULL);
+	memset(music.stubs, 0, sizeof(music.stubs));
+	free(music.entries);
+	free(music.chains);
+	music.entries = NULL;
+	music.chains = NULL;
+	if (!wanted)
+		return;
+	start_once();
+	if (!pool_next || music.out_channel < 0)
+	{
+		platform_log("music: no pool or no channel; off");
+		return;
+	}
+	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pmus", name);
+	music.file = sceIoOpen(path, PSP_O_RDONLY, 0);
+	if (music.file < 0)
+	{
+		platform_log("music: no %s.pmus; music plays from the cache this map", name);
+		return;
+	}
+	music.on = 1;
+	if (!read_at(0, &music.header, sizeof(music.header)) || music.header.magic != PMUS_MAGIC ||
+		music.header.version != PMUS_VERSION || music.header.rate != 44100 || music.header.setups != 1)
+	{
+		pack_close("isn't one this build reads (one setup, version 1, 44.1 kHz)");
+		return;
+	}
+	music.entries = malloc(music.header.entries * sizeof(struct pmus_entry));
+	music.chains = malloc(music.header.chains * sizeof(struct pmus_chain));
+	bytes = music.header.entries_at - 64;
+	setup = malloc(bytes);
+	if (!music.entries || !music.chains || !setup ||
+		!read_at(music.header.entries_at, music.entries, music.header.entries * sizeof(struct pmus_entry)) ||
+		!read_at(music.header.chains_at, music.chains, music.header.chains * sizeof(struct pmus_chain)) ||
+		!read_at(64, setup, bytes))
+	{
+		free(setup);
+		pack_close("couldn't be read");
+		return;
+	}
+	{
+		/* the pack's own keys against its header: a pack cut short or written
+		by another bake is refused, not half trusted */
+		unsigned int keys = 0x811C9DC5u, e;
+
+		for (e = 0; e < music.header.entries; e++)
+		{
+			unsigned char key[8];
+
+			memcpy(key, &music.entries[e].hash, 4);
+			memcpy(key + 4, &music.entries[e].pitch, 2);
+			memcpy(key + 6, &music.entries[e].permutation, 2);
+			for (k = 0; k < 8; k++)
+				keys = (keys ^ key[k]) * 0x01000193u;
+		}
+		if (keys != music.header.keys)
+		{
+			free(setup);
+			pack_close("doesn't match its own keys");
+			return;
+		}
+	}
+	/* the codec setup once per run (every pack has the same one: stereo,
+	44.1 kHz, one quality) */
+	if (!music.info.codec_setup)
+	{
+		unsigned int at = 4;
+
+		vorbis_info_init(&music.info);
+		vorbis_comment_init(&music.comment);
+		for (k = 0; k < 3; k++)
+		{
+			ogg_packet op;
+			unsigned int size;
+
+			memcpy(&size, setup + at, 4);
+			memset(&op, 0, sizeof(op));
+			op.packet = setup + at + 4;
+			op.bytes = size;
+			op.b_o_s = k == 0;
+			op.packetno = k;
+			if (vorbis_synthesis_headerin(&music.info, &music.comment, &op))
+				break;
+			at += 4 + size;
+		}
+		if (k < 3)
+		{
+			free(setup);
+			vorbis_info_clear(&music.info);
+			memset(&music.info, 0, sizeof(music.info));
+			pack_close("has a codec setup Tremor refused");
+			return;
+		}
+	}
+	free(setup);
+	platform_log("music: %s.pmus: %u permutations in %u chains; pool %u KB used", name, music.header.entries,
+		music.header.chains, (unsigned)(pool_next - (pool_end - POOL_BYTES)) / 1024);
+}
+
+/* ---------- the cache's side (xbox_sound_cache.c, the stub path) */
+
+int psp_music_active(void)
+{
+	return music.on;
+}
+
+/* a music permutation about to be loaded: the stub's size if the pack has it
+(its samples' size and its frames agree), else 0 and it loads as before */
+long psp_music_stub(const void *permutation, const char *tag_path, int pitch, int index, long size)
+{
+	int entry, k, free_slot = -1;
+
+	if (!music.on)
+		return 0;
+	entry = entry_find(psp_music_hash(tag_path), pitch, index);
+	if (entry < 0 || size <= 0)
+	{
+		music.not_in_pack++;
+		return 0;
+	}
+	for (k = 0; k < STUBS; k++)
+	{
+		if (music.stubs[k].permutation == permutation)
+		{
+			free_slot = k;
+			break;
+		}
+		if (free_slot < 0 && !music.stubs[k].permutation)
+			free_slot = k;
+	}
+	if (free_slot < 0)
+	{
+		/* more music asked for than the table holds: the oldest is reused
+		(its permutation, if it plays again, asks again) */
+		static int next = 0;
+
+		free_slot = next;
+		next = (next + 1) % STUBS;
+	}
+	memset(&music.stubs[free_slot], 0, sizeof(struct stub));
+	music.stubs[free_slot].permutation = permutation;
+	music.stubs[free_slot].entry = entry;
+	music.stubs[free_slot].size = size;
+	return STUB_BYTES;
+}
+
+/* the range check of a packet's queueing (sound_dsound_xbox.c) */
+int psp_music_is_stub(const void *permutation)
+{
+	int k;
+
+	if (!music.on)
+		return 0;
+	for (k = 0; k < STUBS; k++)
+		if (music.stubs[k].permutation == permutation && music.stubs[k].state == 2)
+			return 1;
+	return 0;
+}
+
+/* the stub's block is placed: the reader finds the entry's first packet and
+sets loaded, as a sample read's completion would */
+void psp_music_request(const void *permutation, void *block, unsigned char *loaded)
+{
+	int k;
+
+	for (k = 0; k < STUBS; k++)
+		if (music.stubs[k].permutation == permutation)
+		{
+			music.stubs[k].base = block;
+			music.stubs[k].loaded = loaded;
+			music.stubs[k].state = 1;
+			music.stubs_made++;
+			sceKernelSignalSema(music.reader_wake, 1);
+			return;
+		}
+	*loaded = 1;
+}
+
+/* the mixer, as the game queues a packet (under its lock): whether it is a
+stub's, and where it starts in the chain at 44.1 kHz; scale is 44.1 kHz
+frames per 22,050 Hz frame of the stream */
+int psp_music_packet(const void *permutation, const unsigned char *data, unsigned long channels,
+	unsigned long *start, unsigned long *scale)
+{
+	int k;
+
+	if (!music.on || !data)
+		return 0;
+	for (k = 0; k < STUBS; k++)
+	{
+		const struct stub *s = &music.stubs[k];
+
+		if (s->permutation == permutation && s->state == 2 && data >= s->base && data < s->base + s->size)
+		{
+			const struct pmus_entry *e = &music.entries[s->entry];
+			unsigned long long frames = (unsigned long long)s->size * 64 / (36 * (channels ? channels : 1));
+
+			if (!frames)
+				return 0;
+			*scale = (unsigned long)(e->frames / frames);
+			if (*scale < 1 || *scale > 2)
+				return 0;
+			*start = e->start + (unsigned long)((unsigned long long)(data - s->base) * e->frames / (unsigned long long)s->size);
+			return 1 + e->chain;
+		}
+	}
+	return 0;
+}
+
+/* ---------- the reader */
+
+static unsigned int index_offset_walk(int chain, unsigned int from_packet, unsigned int from_offset, unsigned int to_packet)
+{
+	static unsigned int window[INDEX_PACKETS][2];
+	const struct pmus_chain *c = &music.chains[chain];
+
+	while (from_packet < to_packet)
+	{
+		unsigned int n = to_packet - from_packet, k;
+
+		if (n > INDEX_PACKETS)
+			n = INDEX_PACKETS;
+		if (!read_at(c->index_at + from_packet * 8, window, n * 8))
+			return 0xFFFFFFFFu;
+		for (k = 0; k < n; k++)
+			from_offset += window[k][0];
+		from_packet += n;
+	}
+	return from_offset;
+}
+
+static int reader_thread(SceSize arguments, void *argument)
+{
+	(void)arguments;
+	(void)argument;
+	for (;;)
+	{
+		int k;
+
+		sceKernelWaitSema(music.reader_wake, 1, NULL);
+		if (!music.on)
+			continue;
+		/* stubs first: the game waits on them */
+		for (k = 0; k < STUBS; k++)
+		{
+			struct stub *s = &music.stubs[k];
+
+			if (s->state == 1)
+			{
+				const struct pmus_entry *e = &music.entries[s->entry];
+
+				s->first_offset = index_offset_walk((int)e->chain, 0, 0, e->first ? e->first - 1 : 0);
+				s->state = 2;
+				if (s->loaded)
+					*s->loaded = 1;
+			}
+		}
+		for (k = 0; k < VOICES; k++)
+		{
+			struct voice *v = music.voices[k];
+			const struct pmus_chain *c;
+			SceUInt64 t;
+			int p;
+
+			if (!v || !v->owner)
+				continue;
+			c = &music.chains[v->chain];
+			t = sceKernelGetSystemTimeWide();
+			if (v->index_wanted != v->index_first || !v->index_count)
+			{
+				unsigned int first = v->index_wanted, n = c->packets - first;
+
+				if (n > INDEX_PACKETS)
+					n = INDEX_PACKETS;
+				static unsigned int spare[INDEX_PACKETS][2];
+
+				if (read_at(c->index_at + first * 8, spare, n * 8))
+				{
+					sceKernelWaitSema(music.state_lock, 1, NULL);
+					if (v->index_wanted == first)
+					{
+						memcpy(v->index, spare, n * 8);
+						v->index_first = first;
+						v->index_count = n;
+					}
+					sceKernelSignalSema(music.state_lock, 1);
+				}
+			}
+			for (p = 0; p < 2; p++)
+			{
+				unsigned int at = v->piece_wanted + (unsigned int)p * PIECE_BYTES, slot = (at / PIECE_BYTES) & 1, n;
+
+				if (at >= c->body || (v->piece_ok[slot] && v->piece_at[slot] == at))
+					continue;
+				n = c->body - at < PIECE_BYTES ? c->body - at : PIECE_BYTES;
+				v->piece_ok[slot] = 0;
+				if (read_at(c->packets_at + at, v->piece[slot], n))
+				{
+					v->piece_at[slot] = at;
+					v->piece_ok[slot] = 1;
+					music.pieces++;
+				}
+			}
+			t = sceKernelGetSystemTimeWide() - t;
+			if (t > music.piece_worst_us)
+				music.piece_worst_us = (unsigned long)t;
+		}
+	}
+	return 0;
+}
+
+/* ---------- decoding */
+
+static const unsigned char *packet_bytes(struct voice *v, unsigned int offset, unsigned int bytes)
+{
+	unsigned int at = offset & ~(PIECE_BYTES - 1), slot = (at / PIECE_BYTES) & 1;
+
+	if (!v->piece_ok[slot] || v->piece_at[slot] != at)
+		return NULL;
+	if (offset + bytes > at + PIECE_BYTES)
+		return NULL; /* across two pieces: copied below */
+	return v->piece[slot] + (offset - at);
+}
+
+static short clip16(int value)
+{
+	return (short)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
+}
+
+/* decode until the queue holds frames up to `until` (in the chain); 0 when
+a packet or the index isn't in RAM yet */
+static int decode_to(struct voice *v, unsigned int until)
+{
+	static unsigned char joined[PIECE_BYTES];
+
+	while (v->position + v->pcm_frames < until)
+	{
+		ogg_packet op;
+		ogg_int32_t **pcm;
+		const unsigned char *data;
+		unsigned int size, end, k;
+		int n;
+
+		if (v->next_packet < v->index_first || v->next_packet >= v->index_first + v->index_count)
+		{
+			v->index_wanted = v->next_packet;
+			return 0;
+		}
+		size = v->index[v->next_packet - v->index_first][0];
+		end = v->index[v->next_packet - v->index_first][1];
+		if (v->primed && v->next_packet + 1 < v->index_first + v->index_count &&
+			v->index[v->next_packet + 1 - v->index_first][1] <= v->position)
+		{
+			/* the packet after this one ends before the position: this one
+			isn't the overlap the position needs */
+			v->next_offset += size;
+			v->next_packet++;
+			continue;
+		}
+		data = packet_bytes(v, v->next_offset, size);
+		if (!data)
+		{
+			unsigned int first = PIECE_BYTES - (v->next_offset & (PIECE_BYTES - 1));
+			const unsigned char *a = packet_bytes(v, v->next_offset, first < size ? first : size);
+			const unsigned char *b = first < size ? packet_bytes(v, v->next_offset + first, size - first) : NULL;
+
+			if (!a || !b || size > PIECE_BYTES)
+				return 0;
+			memcpy(joined, a, first);
+			memcpy(joined + first, b, size - first);
+			data = joined;
+		}
+		memset(&op, 0, sizeof(op));
+		op.packet = (unsigned char *)data;
+		op.bytes = size;
+		op.granulepos = -1;
+		op.packetno = v->next_packet + 3;
+		if (vorbis_synthesis(&v->block, &op) == 0)
+			vorbis_synthesis_blockin(&v->dsp, &v->block);
+		while ((n = vorbis_synthesis_pcmout(&v->dsp, &pcm)) > 0)
+		{
+			/* this packet's frames end at `end`: the first after a restart
+			gives none, and those before the voice's position are dropped */
+			unsigned int from = end - (unsigned int)n, skip = 0, room;
+
+			if (v->primed)
+			{
+				v->primed = 0;
+				if (v->pcm_frames == 0 && v->position > from)
+					skip = v->position - from < (unsigned int)n ? v->position - from : (unsigned int)n;
+				else if (v->pcm_frames == 0)
+					v->position = from;
+			}
+			room = PCM_FRAMES - v->pcm_frames;
+			for (k = skip; k < (unsigned int)n && room; k++, room--)
+			{
+				v->pcm[v->pcm_frames * 2] = clip16(pcm[0][k] >> 9);
+				v->pcm[v->pcm_frames * 2 + 1] = clip16(pcm[1][k] >> 9);
+				v->pcm_frames++;
+			}
+			vorbis_synthesis_read(&v->dsp, n);
+		}
+		v->next_offset += size;
+		v->next_packet++;
+		if (v->next_offset >= v->piece_wanted + PIECE_BYTES + PIECE_BYTES / 2)
+		{
+			/* half the second piece played: the reader moves on a piece */
+			v->piece_wanted += PIECE_BYTES;
+			sceKernelSignalSema(music.reader_wake, 1);
+		}
+		if (v->next_packet >= v->index_first + v->index_count * 3 / 4 &&
+			v->index_first + v->index_count < music.chains[v->chain].packets)
+		{
+			v->index_wanted = v->next_packet;
+			sceKernelSignalSema(music.reader_wake, 1);
+		}
+	}
+	return 1;
+}
+
+/* the voice jumps: to another chain, or not where its queue would go on */
+static void voice_seek(struct voice *v, int chain, unsigned int position)
+{
+	const struct pmus_entry *best = NULL;
+	unsigned int e, offset;
+
+	/* the entry of this chain that holds the position: its first packet's
+	byte offset is the stub's, walked on through the index if need be */
+	for (e = 0; e < music.header.entries; e++)
+	{
+		const struct pmus_entry *x = &music.entries[e];
+
+		if ((int)x->chain == chain && x->start <= position && (!best || x->start > best->start))
+			best = x;
+	}
+	if (!best)
+		return;
+	offset = 0xFFFFFFFFu;
+	for (e = 0; e < STUBS; e++)
+		if (music.stubs[e].state == 2 && &music.entries[music.stubs[e].entry] == best)
+			offset = music.stubs[e].first_offset;
+	if (offset == 0xFFFFFFFFu)
+		return;
+	if (!v->dsp_ready)
+	{
+		vorbis_synthesis_init(&v->dsp, &music.info);
+		vorbis_block_init(&v->dsp, &v->block);
+		v->dsp_ready = 1;
+	}
+	else
+		vorbis_synthesis_restart(&v->dsp);
+	v->chain = chain;
+	v->next_packet = best->first ? best->first - 1 : 0;
+	v->next_offset = offset;
+	v->position = position;
+	v->primed = 1;
+	v->pcm_frames = 0;
+	v->index_wanted = v->next_packet;
+	v->index_count = 0;
+	v->piece_wanted = offset & ~(PIECE_BYTES - 1);
+	v->piece_ok[0] = v->piece_ok[1] = 0;
+	v->fade = 0;
+	music.restarts++;
+	sceKernelSignalSema(music.reader_wake, 1);
+}
+
+static struct voice *voice_for(const void *owner)
+{
+	int k, spare = -1;
+
+	for (k = 0; k < VOICES; k++)
+	{
+		if (music.voices[k] && music.voices[k]->owner == owner)
+			return music.voices[k];
+		if (spare < 0 && music.voices[k] && (!music.voices[k]->owner || music.voices[k]->used > 8))
+			spare = k;
+	}
+	if (spare < 0)
+		return NULL;
+	music.voices[spare]->owner = owner;
+	music.voices[spare]->chain = -1;
+	music.voices[spare]->left = music.voices[spare]->right = 0;
+	return music.voices[spare];
+}
+
+/* one mixer block's music (the audio thread, after the 22,050 Hz mix): each
+mark is a music voice's chain, its frames [from, to) at 44.1 kHz and its
+gains (14 bits) at the block's end */
+void psp_music_block(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
+	const int *left, const int *right, int count)
+{
+	static int sums[OUT_FRAMES * 2];
+	short *out;
+	int k, playing = 0;
+	SceUInt64 t0;
+
+	if (!music.on)
+		return;
+	if (sceKernelPollSema(music.out_free, 1) < 0)
+	{
+		music.out_late++;
+		return;
+	}
+	t0 = sceKernelGetSystemTimeWide();
+	sceKernelWaitSema(music.state_lock, 1, NULL);
+	memset(sums, 0, sizeof(sums));
+	for (k = 0; k < VOICES; k++)
+		if (music.voices[k])
+			music.voices[k]->used++;
+	for (k = 0; k < count; k++)
+	{
+		struct voice *v = voice_for(owners[k]);
+		unsigned long frames = to[k] - from[k], i, step;
+		int gain_left, gain_right, ramp_left, ramp_right;
+
+		if (!v || to[k] <= from[k])
+			continue;
+		v->used = 0;
+		if (v->chain != chains[k] || from[k] < v->position || from[k] > v->position + v->pcm_frames)
+			voice_seek(v, chains[k], (unsigned int)from[k]);
+		if (v->chain != chains[k] || !decode_to(v, (unsigned int)to[k]))
+		{
+			/* late: silent this block; the next block starts it again from
+			the packet before its position, with the fade */
+			music.late_blocks++;
+			v->chain = -1;
+			continue;
+		}
+		playing++;
+		/* drop what lies before the block (a skip the game made) */
+		if (from[k] > v->position)
+		{
+			unsigned int drop = (unsigned int)(from[k] - v->position);
+
+			memmove(v->pcm, v->pcm + drop * 2, (v->pcm_frames - drop) * 2 * sizeof(short));
+			v->pcm_frames -= drop;
+			v->position += drop;
+		}
+		/* the block's frames, stretched to the output's (pitch 1 is one to one) */
+		step = (frames << 16) / OUT_FRAMES;
+		gain_left = v->left << 8;
+		gain_right = v->right << 8;
+		ramp_left = ((left[k] - v->left) << 8) / OUT_FRAMES;
+		ramp_right = ((right[k] - v->right) << 8) / OUT_FRAMES;
+		for (i = 0; i < OUT_FRAMES; i++)
+		{
+			unsigned long f = (i * step) >> 16;
+			int fade = v->fade < FADE_FRAMES ? v->fade++ : FADE_FRAMES;
+
+			sums[2 * i] += ((v->pcm[2 * f] * (gain_left >> 8)) >> 14) * fade / FADE_FRAMES;
+			sums[2 * i + 1] += ((v->pcm[2 * f + 1] * (gain_right >> 8)) >> 14) * fade / FADE_FRAMES;
+			gain_left += ramp_left;
+			gain_right += ramp_right;
+		}
+		v->left = left[k];
+		v->right = right[k];
+		memmove(v->pcm, v->pcm + frames * 2, (v->pcm_frames - frames) * 2 * sizeof(short));
+		v->pcm_frames -= (unsigned int)frames;
+		v->position += (unsigned int)frames;
+	}
+	for (k = 0; k < VOICES; k++)
+		if (music.voices[k] && music.voices[k]->used > 8)
+			music.voices[k]->owner = NULL;
+	sceKernelSignalSema(music.state_lock, 1);
+	out = music.out[music.out_which];
+	for (k = 0; k < OUT_FRAMES * 2; k++)
+		out[k] = clip16(sums[k]);
+	music.out_which ^= 1;
+	sceKernelSignalSema(music.out_ready, 1);
+	music.blocks++;
+	if ((unsigned long)playing > music.playing_worst)
+		music.playing_worst = playing;
+	t0 = sceKernelGetSystemTimeWide() - t0;
+	music.decode_us += (unsigned long)t0;
+	if (t0 > music.decode_worst_us)
+		music.decode_worst_us = (unsigned long)t0;
+}
+
+static int output_thread(SceSize arguments, void *argument)
+{
+	int which = 0;
+
+	(void)arguments;
+	(void)argument;
+	for (;;)
+	{
+		sceKernelWaitSema(music.out_ready, 1, NULL);
+		sceAudioOutputBlocking(music.out_channel, PSP_AUDIO_VOLUME_MAX, music.out[which]);
+		which ^= 1;
+		sceKernelSignalSema(music.out_free, 1);
+	}
+	return 0;
+}
+
+/* the heartbeat's line */
+void psp_music_report(void)
+{
+#if PSP_METRICS
+	if (!music.on)
+		return;
+	platform_log("music: %lu blocks, late %lu, output full %lu; voices at most %lu; restarts %lu; pieces %lu (worst %lu us); "
+		"stubs %lu, not in the pack %lu; decode %lu us a block (worst %lu); pool %lu KB%s",
+		music.blocks, music.late_blocks, music.out_late, music.playing_worst, music.restarts, music.pieces,
+		music.piece_worst_us, music.stubs_made, music.not_in_pack, music.blocks ? music.decode_us / music.blocks : 0,
+		music.decode_worst_us, (unsigned long)(pool_next - (pool_end - POOL_BYTES)) / 1024, pool_failed ? ", full" : "");
+#endif
+}

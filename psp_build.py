@@ -121,7 +121,7 @@ ONLINE_GAMES_UNITS = ("source/interface/ui_widget.c", "source/interface/ui_widge
 def desktop_unit(rel):
     return rel.startswith(CHUPA_DESKTOP_UNITS) and not (MULTIPLAYER and rel in CHUPA_MULTIPLAYER_KEEPS)
 
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics", "psp_music"]
 # the bake format this build reads (bake/bake.py's BAKE_FORMAT): one number
 # for the bake's stamp and the game's check (psp/src/psp_bakecheck.c)
 _bake_format = re.search(r"^BAKE_FORMAT = (\d+)$", open(os.path.join(HERE, "bake", "bake.py"), encoding="utf-8").read(), re.M)
@@ -443,7 +443,8 @@ def compile_one(item):
     out = os.path.relpath(obj, TREE) if PGO else obj
     cmd = PSP + flags + extra + defines + ["-include", os.path.join(HERE, "psp_post.h"), "-c", src, "-o", out]
     if src.endswith(("psp_sdl.c", "psp_libc.c", "psp_ge.c", "psp_tex.c", "psp_vfpu.c", "psp_menu.c", "psp_geo.c", "psp_anim.c",
-                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c")):
+                     "psp_debug.c", "psp_me.c", "psp_trace.c", "psp_crash.c", "psp_watch.c", "psp_net.c", "psp_net_adhoc.c",
+                     "psp_music.c")):
         # plain C against the SDL3 headers, none of the game's MSVC prefix
         # (build 110: the launch menu, the crash handler's side, the overlay
         # and the load trace's wrappers for size; the rest for speed)
@@ -561,6 +562,17 @@ def hot_pairs(objs):
                 if n[10:] in cold:
                     lines.append('"%s"(.text.unlikely.%s)' % (o, n[10:]))
     return lines
+
+def music_libs():
+    """Tremor (libvorbisidec) with its allocations renamed to the music
+    path's pool (psp_music.c's mu_malloc): the link wraps malloc for the
+    game's allocator, which the decode must never call (it is to run on the
+    Media Engine). Then libogg, its bit reader"""
+    lib = os.path.join(PSPDEV, "psp", "lib")
+    renamed = os.path.join(OUT, "libmu_vorbisidec.a")
+    subprocess.run(["psp-objcopy"] + ["--redefine-sym=%s=mu_%s" % (n, n) for n in ("malloc", "calloc", "realloc", "free")] +
+                   [os.path.join(lib, "libvorbisidec.a"), renamed], check=True)
+    return ["-L" + OUT, "-lmu_vorbisidec", "-logg"]
 
 def link(objs, stubs):
     with open(os.path.join(OUT, "stubs.c"), "w") as f:
@@ -681,7 +693,7 @@ def link(objs, stubs):
            "--wrap=sceGuTexImage,--wrap=sceGuTexMode,--wrap=sceGuClutLoad,--wrap=sceGuClutMode,--wrap=sceGuTexFilter,"
            # build 114: list regions join the pending range (psp_ge.c, listcachedall)
            "--wrap=sceGuGetMemory",
-           "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
+           "@" + os.path.join(OUT, "objs.rsp"), SDK + "/lib/prxexports.o"] + music_libs() + LIBS + ["-o", os.path.join(OUT, "halo.elf")]
     return subprocess.run(cmd, capture_output=True, text=True)
 
 # ---------- the mirror: the engine as GCC can compile it
