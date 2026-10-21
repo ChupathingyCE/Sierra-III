@@ -32,6 +32,7 @@ Exact, but under the lever gate (a micro-lever must be >= ~1% of the binding lan
 | Experiment | Branch, keep words | Why shelved |
 |---|---|---|
 | The perception refresh skips objects that aren't bipeds, vehicles or projectiles (PRS; after halo-ce-vita's perception skip, BirchWoodGod) | `prs`; `percall` (off), `prscheck` (check) | Play and both seeds exact on b30, c20 and a30, 0 differences in 1.2 million objects passed over [E]. But it takes only 0.13 ms off b30's 40.8 ms tick in the cache model (~0.3%; half the count's 0.27), 0.03 on c20 and nothing on a30 [E], in hot code |
+| The BSP query cache, version 2: a per-object key, the last answers kept in state (BSPR v2) | `bspr2`; `bspsame` (off), `bspsamecheck` (check) | Play and both seeds exact on a30, b30 and c10, 0 answers differing [E]. Takes 0.78% off a30's fight tick and 0.73% off b30's in the cache model [E], under the 1% gate. Not built: rays almost never repeat (8 of 105,290 on b30), so a version 3 would give the 2 ray slots to spheres (6 in all); its D-miss saving (-1.2%) may weigh more on the PSP than the model's flat price, which only a PSP pair can show |
 
 ## Taking one off the shelf
 
