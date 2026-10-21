@@ -26,6 +26,20 @@ The port's mixer dropped four things the original passes to DirectSound. All fou
 
 Where the Xbox's own numbers could differ from these (the filter's slope, the cone's blend), the PC build is the check: a hand listen with the PC build beside the port, on the stretches below.
 
+## Proof [E]
+
+- **Play:** `statecrc` with `fixedticks fixedseed nomouth`, the effects on against `audioold`, and against the w140 build before them: the play hash and both random seeds are identical at every tick on b30 (the hand-test route, 6,000 ticks) and a10 (4,500), all three ways. The whole-state hash differs only in `objects`, `object looping sounds`, `first person weapons`, `particle` and `hud unit interface`: the parts that follow the run's speed. `hud unit interface` first differs at the same tick in all three pairs, `audioold` against the build before included, so it is the runs' own spread, not the effects.
+- **Engaged:** b30, of 260,308 voice blocks 14.9% muffled and 56.9% moved by Doppler; a10, of 80,672, 34.2% and 69.9%. No voice was quieter outside a cone on either map. With `audioold` all three counts are 0.
+- **The mixer's health, both sides:** the game never waited for the mixer's lock (0 waits), no voice ran dry, the packet jumps the mixer logs are as many as before (b30 209 / 203 / 199 with the effects, `audioold`, the build before).
+- Strict runs: 0 sites, no crash.
+
+## Cost
+
+- **Main CPU [E], ~0.01%:** the cache model on b30's flight (1,800 ticks), effects on against `audioold` twice. The two `audioold` runs are bit-identical, so the model's own spread is 0 and every difference is the effects'. The emulator has no Media Engine, so its main CPU mixes; by function, the whole gap (+323M instructions, +1.7%) is the mixer (`psp_dsound_mix_list` +314M, +20% of its own; `decode_block` +7M), which the PSP runs on the ME. Everything else, the audio thread's per-block Doppler ratio, filter coefficient and cone gain and the stream setters, adds 2.2M instructions over 1,800 ticks (+0.012%, ~1,230 a tick), and data misses rise by 0.03% in all. In the emulator's own clock that is 16.34 against 16.17 ms a tick and 37.07 against 36.80 ms a frame, all of it the mix.
+- **Media Engine [E]:** the audio job takes ~12% longer on b30 (about 23.0% of the ME against 20.6%), ~6% on a10. The ME is not the limit on any map measured.
+- **Memory:** 52 bytes a stream record; no tables.
+- If the ME is off (`nomeaudio`), the main CPU mixes and pays the mixer's +20% (~1.6% of the main CPU on b30 by the model).
+
 ## Listening checks for a hand test
 
 - Muffling: stand beside a closed door or behind a wall while a unit fires or speaks on the other side: duller, not only quieter; open the door and the highs return in the same moment. No click when a sound becomes muffled partway through.
