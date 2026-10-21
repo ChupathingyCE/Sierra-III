@@ -11458,6 +11458,41 @@ FIXES_CHUPA["source/saved games/game_state.c#allocations"] = [
 	MAXIMUM_GAME_STATE_ALLOCATIONS = 256,
 #endif"""),
 ]
+FIXES_CHUPA["port/linux/src/d3d8_gl.c#immediate"] = [
+("""		device.immediate_capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		device.immediate_vertices = realloc(device.immediate_vertices,
+			device.immediate_capacity * floats * sizeof(float));
+	}""",
+ """#ifdef HALO_PSP
+		/* a full heap can refuse the grow (64 KB first, then doubling), and
+		the copy below would then write through NULL. The old buffer and its
+		size stay, and the rest of the batch is dropped: End sees no vertices
+		and draws none of it, so no primitive is drawn in part. The same
+		allocation as before whenever the heap has room (psp_fixups.py,
+		FIXES_CHUPA) */
+		unsigned long capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		float *vertices = realloc(device.immediate_vertices, capacity * floats * sizeof(float));
+		static int refused;
+
+		if (!vertices)
+		{
+			if (!refused)
+				platform_log("immediate draw: no heap for %lu vertices (%lu bytes): such batches are skipped",
+					capacity, capacity * floats * (unsigned long)sizeof(float));
+			refused = 1;
+			device.immediate_active = FALSE;
+			device.immediate_count = 0;
+			return;
+		}
+		device.immediate_vertices = vertices;
+		device.immediate_capacity = capacity;
+#else
+		device.immediate_capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		device.immediate_vertices = realloc(device.immediate_vertices,
+			device.immediate_capacity * floats * sizeof(float));
+#endif
+	}"""),
+]
 FIXES_CHUPA["port/linux/src/d3d8_gl.c#samplers"] = [
 ("""#define SAMPLER_CACHE_SIZE 512""",
  """#ifdef HALO_PSP
