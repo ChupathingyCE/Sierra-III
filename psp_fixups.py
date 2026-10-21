@@ -29662,10 +29662,10 @@ static void decal_check("""),
 # siblings as before, without its call to object_get, its stamp, or the two
 # datum lines they touch. After halo-ce-vita's perception count (BirchWoodGod).
 # "percall": every object tested and stamped as before. "prscheck": the skip
-# decides, but each passed-over object is stamped anyway (the game state then
-# matches "percall" word for word) and its datum's type is checked against the
-# header's; every 150 ticks a "prscheck:" line gives the objects passed over
-# and the differences (0 expected)
+# decides, but each passed-over object is stamped anyway (the stamp "percall"
+# would give it) and its datum's type is checked against the header's; every
+# 150 ticks a "prscheck:" line gives the objects passed over and the
+# differences (0 expected)
 FIXES_PRS = {}
 FIXES_PRS["source/ai/actor_perception.c#prs"] = [
 (r"""static void actor_perception_refresh_test_object(
