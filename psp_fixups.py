@@ -23613,9 +23613,6 @@ void psp_sleep_forget(void)
 	csmemset(psp_wake_marked, 0, sizeof(psp_wake_marked));
 }
 """),
-("""	damage_initialize_for_new_map();""",
- """	psp_sleep_forget(); /* psp_fixups.py (FIXES_WAKE) */
-	damage_initialize_for_new_map();"""),
 ]
 FIXES_WAKE["source/saved games/game_state.c#wake_forget"] = [
 ("""static game_state_before_load_proc before_load_procs[] =
@@ -23630,6 +23627,14 @@ static game_state_before_load_proc before_load_procs[] =
 """, """	game_sound_clear,
 #ifdef HALO_PSP
 	psp_sleep_forget,
+#endif
+"""),
+# here rather than in objects_initialize_for_new_map: this unit isn't one the
+# profile counts, so a release's profile still matches
+("""	game_state_note_event("map start");
+""", """	game_state_note_event("map start");
+#ifdef HALO_PSP
+	psp_sleep_forget();
 #endif
 """),
 ]

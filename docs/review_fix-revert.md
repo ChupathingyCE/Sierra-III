@@ -15,7 +15,7 @@ Branch `fix-revert140`, off w140; the same change is `fix-revert`, off w139. Evi
 
 ## The change (on by default; keep word `sleepforgetoff`)
 
-`FIXES_WAKE` `objects.c#wake_forget` and `game_state.c#wake_forget`: `psp_sleep_forget` empties the three tables; it is one of `before_load_procs` (after `game_sound_clear`) and runs in `objects_initialize_for_new_map` (before `damage_initialize_for_new_map`). Every object is then summed afresh as a new one: identifier 0 never matches a live object, so every object is updated in the first two ticks after a load and may sleep from the third, as at a level's start. Exact by construction: it only makes checks run that the tables would have skipped. `sleepforgetoff`: the tables kept across a load, as before.
+`FIXES_WAKE` `objects.c#wake_forget` and `game_state.c#wake_forget`: `psp_sleep_forget` empties the three tables; it is one of `before_load_procs` (after `game_sound_clear`) and runs at the top of `game_state_initialize_for_new_map` (every map start, before the objects are made; a unit the profile doesn't count, so a release profile still matches). Every object is then summed afresh as a new one: identifier 0 never matches a live object, so every object is updated in the first two ticks after a load and may sleep from the third, as at a level's start. Exact by construction: it only makes checks run that the tables would have skipped. `sleepforgetoff`: the tables kept across a load, as before.
 
 **Cost:** about 20 KB of `memset` a load or map start, and two ticks with every object awake after it: what a level's first ticks cost.
 
