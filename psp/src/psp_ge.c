@@ -331,10 +331,46 @@ Media Engine version will run in (the ME carrying out frame N while the main
 CPU ticks N+1). Carried out here on the main CPU, it moves no work; what it
 gives is that order, so the emulator's drawhash and statecrc show anything the
 next ticks change under a frame still waiting. A frame is written down whole,
-so the buffer is sized for b30's busiest (~100 KB a frame, recon_134.md) */
-#define DEFER_INFLIGHT_WORDS (128 * 1024 / 4)
+so the buffer is sized for b30's busiest (~100 KB a frame, recon_134.md).
+A frame larger than the buffer is carried out in part when it fills, in the
+engine walk, and the main CPU waits for that part: on the Media Engine
+(gemeon) it sleeps through the ME's replay of it. b30's flight and landing
+fill it in 24-100% of frames, and the PSP-1000 waits 15-53 ms a frame there
+(docs/design_inflightkb.md). "inflightkbN": the buffer N KB (64 to
+1024) instead, so those frames go out whole after the next ticks. Exact: the
+same calls carried out in the same order; only when the part runs moves */
+#define DEFER_INFLIGHT_KB 128
+#define DEFER_INFLIGHT_KB_MIN 64
+#define DEFER_INFLIGHT_KB_MAX 1024
 static PSP_MAIN_SIDE int inflight_on = 0;
 static PSP_MAIN_SIDE int inflight_pending = 0; /* a frame's end is written down and waits */
+/* the frame being written down has written down its window's start: the
+GE layer's own frame_open stays the last frame's (shut at its show) until
+that start is carried out, so the answers the walk needs now (whether text
+is drawn) take this instead. "inflighttextold": frame_open, as before, which
+left out every string of a frame that hadn't filled the buffer by then */
+static PSP_MAIN_SIDE int inflight_window_written = 0, inflight_text_old = 0;
+static PSP_MAIN_SIDE unsigned long inflight_text_early = 0;
+/* the buffer in the texture RAM block's front room rather than the heap
+(psp_tex_inflight_room), and the block's generation when the records now
+in it were begun: a sleep gives the block back, so records begun before a
+new generation are not carried out (inflight_room_lost) */
+static PSP_MAIN_SIDE int inflight_room = 0;
+static PSP_MAIN_SIDE unsigned int inflight_room_generation = 0;
+static PSP_MAIN_SIDE unsigned long inflight_room_drops = 0;
+void *psp_tex_inflight_room(unsigned int *generation);
+static int frame_open; /* (defined with the GE's state, below) */
+static int inflight_room_lost(void);
+static void inflight_room_check(int mid_frame);
+/* the firmware saves the GE's and the ME's eDRAM into the block as the PSP
+goes to sleep, so the game thread writes no record there from the power
+callback (away) until the wake has the block back: it waits at its next
+record (parked), and the callback waits for that before giving the block
+back (psp_ge_inflight_room_suspend) */
+static volatile int inflight_room_away = 0, inflight_room_parked = 0;
+/* gedefer asked (-1 not yet; 0 off, also for good when the buffer has no
+room: defer_frame_begin, inflight_room_check) */
+static PSP_MAIN_SIDE int defer_asked = -1;
 /* the waiting frame's list has ended (its window was open): the main CPU's
 part of its end runs once the run is over (defer_drain). Written in the
 run, read after it */
@@ -358,6 +394,10 @@ between records (geinflight) */
 static int replay_inflight = 0;
 static int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
+/* the whole frame's words, the parts carried out when the buffer filled
+included (inflight_words counts only what is left at the sync) */
+static PSP_MAIN_SIDE unsigned long inflight_part_words = 0, inflight_whole_words = 0, inflight_whole_most = 0;
+static PSP_MAIN_SIDE unsigned int inflight_buffer_words = 0;
 extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
 static void defer_hand_over(void); /* build 118: gemeoverlap */
@@ -471,43 +511,88 @@ void psp_ge_frame_end(void);
 void psp_ge_window_begin(const float *position, const float *forward, const float *up,
 	float vertical_field_of_view, float z_near, float z_far);
 
+/* geinflight's buffer size in bytes from the keep words, or 0 when the
+buffer isn't geinflight's */
+static unsigned int inflight_buffer_bytes(void)
+{
+	extern int psp_keep_number(const char *prefix, int fallback);
+	int kb;
+
+	if (!psp_keep("geinflight") || !psp_keep("gedefer") || psp_keep("mebench") || psp_keep("gemeoverlap"))
+		return 0;
+	kb = psp_keep_number("inflightkb", DEFER_INFLIGHT_KB);
+	if (kb < DEFER_INFLIGHT_KB_MIN)
+		kb = DEFER_INFLIGHT_KB_MIN;
+	if (kb > DEFER_INFLIGHT_KB_MAX)
+		kb = DEFER_INFLIGHT_KB_MAX;
+	return (unsigned int)kb * 1024;
+}
+
+/* the bytes psp_tex.c keeps at the texture RAM block's front for the
+buffer, asked as the block is first taken (before any texture is in it).
+"inflightroom": the buffer lives there, off the general heap, and the
+texture RAM cache gives up that much instead. Not the default: at 224 KB
+it doubled b30's and a30's texture evictions and frames drawn with a
+texture missing (inflightkb2, docs/design_inflightkb.md) */
+unsigned int psp_ge_inflight_room_bytes(void)
+{
+	return psp_keep("inflightroom") ? inflight_buffer_bytes() : 0;
+}
+
 /* at each frame's start: whether this frame defers (the keep word, asked
-once; the buffer taken from the heap the first time) */
+once; the buffer taken the first time) */
 static void defer_frame_begin(void)
 {
-	static int asked = -1;
-
-	if (asked < 0)
+	if (defer_asked < 0)
 	{
 		/* build 118: mebench takes gedefer and gemeon with it */
 		me_bench = psp_keep("mebench");
-		asked = psp_keep("gedefer") || me_bench;
-		if (asked)
+		defer_asked = psp_keep("gedefer") || me_bench;
+		if (defer_asked)
 		{
 			/* geinflight: a whole frame's buffer; not with the overlap's
 			halves or mebench's turns, which hand work over within a frame */
-			unsigned int words = psp_keep("geinflight") && !me_bench && !psp_keep("gemeoverlap") ? DEFER_INFLIGHT_WORDS : DEFER_WORDS;
+			int inflight = psp_keep("geinflight") && !me_bench && !psp_keep("gemeoverlap");
+			unsigned int words = DEFER_WORDS;
 
-			defer_buffer = memalign(64, words * sizeof(defer_word));
+			if (inflight)
+			{
+				words = inflight_buffer_bytes() / sizeof(defer_word);
+				if (psp_ge_inflight_room_bytes())
+				{
+					/* the front room, if the block is the volatile
+					partition (else NULL: the heap, as below) */
+					defer_buffer = psp_tex_inflight_room(&inflight_room_generation);
+					inflight_room = defer_buffer != NULL;
+				}
+			}
+			if (!defer_buffer)
+				defer_buffer = memalign(64, words * sizeof(defer_word));
 			defer_nodes = memalign(64, DEFER_MAX_NODES * NODE_FLOATS * sizeof(float));
 			if (!defer_buffer || !defer_nodes)
 			{
-				free(defer_buffer);
+				if (!inflight_room)
+					free(defer_buffer);
 				free(defer_nodes);
 				defer_buffer = NULL;
 				defer_nodes = NULL;
-				asked = 0;
+				inflight_room = 0;
+				defer_asked = 0;
 				platform_log("GE: gedefer: no room for its buffer, off");
 			}
 			else
 			{
-				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer",
-					(unsigned int)(words * sizeof(defer_word) / 1024));
-				if (words == DEFER_INFLIGHT_WORDS)
+				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer (%s)",
+					(unsigned int)(words * sizeof(defer_word) / 1024),
+					inflight_room ? "the texture RAM block's front room, off the heap" : "from the heap");
+				if (inflight)
 				{
 					inflight_on = 1;
 					defer_limit = words;
-					platform_log("GE: geinflight: each frame carried out at the next frame's first call, after its ticks");
+					inflight_buffer_words = words;
+					inflight_text_old = psp_keep("inflighttextold") != 0;
+					platform_log("GE: geinflight: each frame carried out at the next frame's first call, after its ticks%s",
+						inflight_text_old ? "; inflighttextold: text drawn only once its frame's start is carried out" : "");
 				}
 				if (psp_keep("gemesim"))
 				{
@@ -544,7 +629,7 @@ static void defer_frame_begin(void)
 			}
 		}
 	}
-	defer_on = asked;
+	defer_on = defer_asked;
 	defer_paused = 0;
 	/* build 118: mebench's way for this frame (the ME idle here: the frame's
 	end carried everything out) */
@@ -576,6 +661,11 @@ static void inflight_sync(void)
 	inflight_words += defer_used;
 	if (defer_used > inflight_words_most)
 		inflight_words_most = defer_used;
+	inflight_part_words += defer_used;
+	inflight_whole_words += inflight_part_words;
+	if (inflight_part_words > inflight_whole_most)
+		inflight_whole_most = inflight_part_words;
+	inflight_part_words = 0;
 	if (inflight_me_out)
 	{
 		inflight_wait_me();
@@ -584,10 +674,21 @@ static void inflight_sync(void)
 	defer_drain_for("the next frame's first call (geinflight)");
 }
 
+static void __attribute__((noinline, cold)) inflight_room_park(void)
+{
+	inflight_room_parked = 1;
+	while (inflight_room_away)
+		sceKernelDelayThread(1000);
+	inflight_room_parked = 0;
+	inflight_room_check(1);
+}
+
 static defer_word *defer_take(int kind, unsigned int words)
 {
 	defer_word *at;
 
+	if (inflight_room_away)
+		inflight_room_park();
 	if (inflight_pending)
 		inflight_sync();
 	if (words > DEFER_LARGEST)
@@ -599,11 +700,15 @@ static defer_word *defer_take(int kind, unsigned int words)
 	if (defer_used + 1 + words > defer_limit)
 	{
 		defer_drains_full++;
+		if (inflight_on)
+			inflight_part_words += defer_used;
 		if (me_overlap)
 			defer_hand_over(); /* build 118: the half to the ME, the other one next */
 		else
 			defer_drain();
 	}
+	if (!defer_used && inflight_room)
+		(void)psp_tex_inflight_room(&inflight_room_generation);
 	at = defer_base + defer_used;
 	at->u = (unsigned int)kind | (1 + words) << 8;
 	defer_used += 1 + words;
@@ -1534,6 +1639,8 @@ static void inflight_hand_over(void)
 		defer_me_on = psp_keep("gemeon");
 	if (!defer_me_on || !psp_me_running() || !defer_used)
 		return; /* carried out on the main CPU at the next frame's first call */
+	if (inflight_room_lost())
+		return;
 	if (inflight_thread < 0)
 	{
 		inflight_thread = sceKernelCreateThread("ge forward", inflight_forwarder, 0x10, 0x1000, 0, NULL);
@@ -1604,6 +1711,102 @@ static void inflight_wait_me(void)
 	inflight_show();
 }
 
+/* geinflight's buffer in the texture RAM block (inflight_room): the PSP
+slept since the records waiting were begun (the block went back to the
+system and came again: a new generation), or the block is away. They may
+not be there any more, so they're dropped rather than carried out; a frame
+whose start was carried out before is ended where it is, so the next one
+can begin. 1 if they were dropped */
+static int inflight_room_lost(void)
+{
+	unsigned int generation;
+
+	if (!inflight_room || !defer_used)
+		return 0;
+	if (psp_tex_inflight_room(&generation) == (void *)defer_buffer && generation == inflight_room_generation)
+		return 0;
+	inflight_room_drops++;
+	platform_log("GE: geinflight: %u KB of records begun before a sleep dropped, not carried out (%lu times)",
+		(unsigned int)(defer_used * sizeof(defer_word) / 1024), inflight_room_drops);
+	defer_used = 0;
+	inflight_part_words = 0;
+	inflight_pending = 0;
+	if (frame_open)
+	{
+		/* as its record would be: carried out, not written down again */
+		defer_replaying = 1;
+		inflight_list_ended = frame_end_list();
+		defer_replaying = 0;
+		inflight_show();
+	}
+	return 1;
+}
+
+/* at each frame's first window, and after a sleep at the record the game
+thread waited at: if the block came back without the front room (the
+system kept the partition), the buffer moves to the heap; without room
+there, deferring stops for good at a frame's start, and mid-frame (the
+calls written down can't be run as they come) the game stops */
+static void inflight_room_check(int mid_frame)
+{
+	unsigned int generation, words = inflight_buffer_words;
+	void *room;
+
+	if (!inflight_room)
+		return;
+	room = psp_tex_inflight_room(&generation);
+	/* the same room, or the block given back for a sleep that hasn't come
+	(the threads stop soon after the power callback) */
+	if (room == (void *)defer_buffer || (!room && generation == inflight_room_generation))
+		return;
+	(void)inflight_room_lost();
+	inflight_room = 0;
+	defer_buffer = memalign(64, words * sizeof(defer_word));
+	if (!defer_buffer)
+	{
+		words = DEFER_INFLIGHT_KB * 1024 / sizeof(defer_word);
+		defer_buffer = memalign(64, words * sizeof(defer_word));
+	}
+	if (defer_buffer)
+	{
+		defer_base = defer_buffer;
+		defer_limit = inflight_buffer_words = words;
+		platform_log("GE: geinflight: the texture RAM block came back without its front room; %u KB of the heap for the records",
+			(unsigned int)(words * sizeof(defer_word) / 1024));
+		return;
+	}
+	if (mid_frame)
+	{
+		extern void psp_exit_game(const char *why);
+
+		psp_exit_game("geinflight: the texture RAM block came back from a sleep without its front room, and the heap has no room for the records");
+	}
+	defer_asked = 0;
+	defer_on = 0;
+	platform_log("GE: geinflight: the texture RAM block came back without its front room and the heap has none: gedefer off");
+}
+
+/* the power callback's thread (psp_platform.c), the ME stopped: the game
+thread held at its next record before the block goes back. A thread that
+isn't writing records (the ticks, a load) isn't waited for past 300 ms: it
+holds at its first one */
+void psp_ge_inflight_room_suspend(void)
+{
+	int waited;
+
+	if (!inflight_room)
+		return;
+	inflight_room_away = 1;
+	for (waited = 0; !inflight_room_parked && waited < 300; waited++)
+		sceKernelDelayThread(1000);
+}
+
+/* awake, the block taken again (psp_tex_resume): the game thread goes on */
+void psp_ge_inflight_room_resume(void)
+{
+	inflight_room_away = 0;
+}
+
 /* ----- everything waiting, carried out in order */
 static void defer_drain(void)
 {
@@ -1615,6 +1818,8 @@ static void defer_drain(void)
 		if (!defer_used)
 			return;
 	}
+	if (inflight_room_lost())
+		return;
 	if (me_overlap)
 	{
 		/* build 118: the half being written out too, then both done, and
@@ -4720,6 +4925,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		z_far = 1000.0f;
 	/* geinflight: the main CPU's part now, the list's written down for the
 	frame's turn */
+	if (!window_main_done)
+		inflight_room_check(0);
 	if (INFLIGHT_RECORDING())
 	{
 		/* the frame waiting goes first: its list reads what the main
@@ -4729,7 +4936,10 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		if (!window_main_done)
 			z_near = window_begin_main(position, z_near, z_far);
 		if (defer_window_begin(position, forward, up, vertical_field_of_view, z_near, z_far))
+		{
+			inflight_window_written = 1;
 			return;
+		}
 	}
 	if (frame_open)
 		return;
@@ -18536,12 +18746,18 @@ int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float off
 	if (DEFER_RECORDING() && !defer_paused)
 	{
 		const unsigned char *picture = bitmap;
-		int answer = frame_open && picture && *(void *const *)(picture + 44) && *(const short *)(picture + 12) == 9 &&
+		/* geinflight: the frame's start may be written down and not yet
+		carried out (frame_open is then still shut from the last frame's
+		show); it will be open when this is carried out */
+		int open = frame_open || (inflight_window_written && !inflight_text_old);
+		int answer = open && picture && *(void *const *)(picture + 44) && *(const short *)(picture + 12) == 9 &&
 			*(const short *)(picture + 4) > 0 && *(const short *)(picture + 6) > 0 &&
 			*(const short *)(picture + 4) <= 512 && *(const short *)(picture + 6) <= 512;
 
 		defer_words(DEFER_TEXT_BEGIN, 4, DEFER_P(bitmap), (unsigned int)blend, defer_bits(offset_x), defer_bits(offset_y),
 			0, 0, 0, 0);
+		if (answer && !frame_open)
+			inflight_text_early++;
 		return answer;
 	}
 	ge_kind(KIND_HUD); /* build 103 */
@@ -19148,6 +19364,7 @@ void psp_ge_frame_end(void)
 		defer_words(DEFER_FRAME_END, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 		inflight_pending = 1;
 		window_main_done = 0;
+		inflight_window_written = 0;
 		inflight_hand_over();
 		return;
 	}
@@ -19622,8 +19839,12 @@ static void frame_end_show(void)
 			{
 				platform_log("GE: geinflight: %lu frames carried out after the next frame's ticks (%lu of them on the Media Engine, %lu stall addresses passed on while out), %lu KB a frame written down (fullest %lu KB of %u)",
 					inflight_frames, inflight_handed, inflight_forwards, inflight_words * sizeof(defer_word) / 1024 / inflight_frames,
-					inflight_words_most * (unsigned long)sizeof(defer_word) / 1024, (unsigned int)(DEFER_INFLIGHT_WORDS * sizeof(defer_word) / 1024));
+					inflight_words_most * (unsigned long)sizeof(defer_word) / 1024, (unsigned int)(inflight_buffer_words * sizeof(defer_word) / 1024));
+				platform_log("GE: geinflight: whole frames %lu KB on average, %lu KB at most, the parts carried out when the buffer filled included (inflightkbN sizes the buffer); strings drawn though their frame's start was still written down %lu; records dropped for a sleep %lu times (since the start)",
+					inflight_whole_words * sizeof(defer_word) / 1024 / inflight_frames, inflight_whole_most * (unsigned long)sizeof(defer_word) / 1024,
+					inflight_text_early, inflight_room_drops);
 				inflight_frames = inflight_words = inflight_words_most = inflight_handed = inflight_forwards = 0;
+				inflight_whole_words = inflight_whole_most = inflight_text_early = 0;
 			}
 			if (defer_on)
 			{

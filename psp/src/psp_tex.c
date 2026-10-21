@@ -280,6 +280,18 @@ while the PSP sleeps, so each acquisition has a generation, and psp_ge.c
 unpacks the sheet again when it changes */
 #define GLYPH_ROOM_BYTES (32 * 1024)
 static unsigned int ram_cache_generation = 0;
+/* after the glyph sheet, geinflight's record buffer when "inflightroom"
+asks for it there (psp_ge.c, psp_ge_inflight_room_bytes): asked once, as
+the block is first taken, so no texture is ever in it; only in the
+volatile partition (the heap's 256 KB block keeps it all for textures) */
+unsigned int psp_ge_inflight_room_bytes(void);
+static int inflight_room_asked = 0;
+static unsigned int inflight_room_bytes = 0;
+
+static unsigned int front_bytes(void)
+{
+	return GLYPH_ROOM_BYTES + (volatile_locked ? inflight_room_bytes : 0);
+}
 
 static void ram_cache_acquire(void)
 {
@@ -298,6 +310,13 @@ static void ram_cache_acquire(void)
 	}
 	given = size;
 	ram_cache_bytes = (unsigned int)size;
+	if (!inflight_room_asked)
+	{
+		inflight_room_asked = 1;
+		inflight_room_bytes = (psp_ge_inflight_room_bytes() + 63) & ~63u;
+		if (inflight_room_bytes > ram_cache_bytes / 4)
+			inflight_room_bytes = 0;
+	}
 	if (!squeezed)
 		squeezed = psp_keep("texvramonly") ? 2 : psp_keep("texsqueeze") ? 1 : -1;
 	if (squeezed == 1 && size > SQUEEZED_BYTES)
@@ -306,18 +325,19 @@ static void ram_cache_acquire(void)
 		size = 0;
 	if ((unsigned int)size > ram_cache_bytes - carved_bytes)
 		size = (int)(ram_cache_bytes - carved_bytes);
-	if (size < GLYPH_ROOM_BYTES)
-		size = GLYPH_ROOM_BYTES;
+	if ((unsigned int)size < front_bytes())
+		size = (int)front_bytes();
 	if (ram_cache)
 	{
 		ram_cache_generation++;
-		arenas[1].start = arenas[1].next = (unsigned int)ram_cache + GLYPH_ROOM_BYTES;
+		arenas[1].start = arenas[1].next = (unsigned int)ram_cache + front_bytes();
 		arenas[1].end = (unsigned int)ram_cache + size;
 		sceKernelDcacheWritebackInvalidateRange(ram_cache, given);
 	}
-	platform_log("textures: RAM cache %d KB (%s%s%s; the glyph sheet's 32 KB before it)", (size - GLYPH_ROOM_BYTES) / 1024, volatile_locked ? "volatile partition" : "heap",
+	platform_log("textures: RAM cache %d KB (%s%s%s; the glyph sheet's 32 KB before it, then %u KB of geinflight's records)",
+		(int)(size - front_bytes()) / 1024, volatile_locked ? "volatile partition" : "heap",
 		squeezed == 1 ? ", squeezed by keep.txt" : squeezed == 2 ? ", left empty by keep.txt" : "",
-		carved_bytes ? ", the rest the geometry cache's" : "");
+		carved_bytes ? ", the rest the geometry cache's" : "", (front_bytes() - GLYPH_ROOM_BYTES) / 1024);
 }
 
 /* build 68: bytes at the end of the RAM block for the geometry cache (0 gives
@@ -329,7 +349,7 @@ void *psp_tex_carve(unsigned int bytes)
 
 	if (!ram_cache)
 		ram_cache_acquire();
-	if (!ram_cache || bytes > ram_cache_bytes - GLYPH_ROOM_BYTES)
+	if (!ram_cache || bytes > ram_cache_bytes - front_bytes())
 		return NULL;
 	carved_bytes = bytes;
 	/* the cache runs to the carve, wherever the last map's carve left it: a
@@ -362,6 +382,18 @@ void *psp_tex_glyph_room(unsigned int *generation)
 		ram_cache_acquire();
 	*generation = ram_cache_generation;
 	return ram_cache;
+}
+
+/* geinflight's record buffer in the front room (NULL without one: no
+volatile partition, asleep, or the room not asked for) and the block's
+generation: records begun in an older one were in the block the system had
+while the PSP slept */
+void *psp_tex_inflight_room(unsigned int *generation)
+{
+	*generation = ram_cache_generation;
+	if (!volatile_locked || !ram_cache || !inflight_room_bytes)
+		return NULL;
+	return (void *)((unsigned int)ram_cache + GLYPH_ROOM_BYTES);
 }
 
 /* the lowest carved address while the volatile partition is lent (NULL while
