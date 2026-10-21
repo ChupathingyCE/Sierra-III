@@ -578,7 +578,7 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
-    # --no-exact-clut: the same, for callers whose option check takes letters only (the lab's sierra-bake)
+    # --no-exact-clut: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-exact', '--no-exact-clut', dest='no_clut4_exact', action='store_true',
                     help='leave at 8 bits the textures of 16 colours or fewer that 4 bits would draw the same')
     ap.add_argument('--jobs', type=int, default=0,
