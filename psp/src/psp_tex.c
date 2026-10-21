@@ -1341,6 +1341,8 @@ static int load(int index)
 	return load_into(index, -1);
 }
 
+extern volatile int psp_ge_show_busy; /* psp_ge.c */
+
 static int load_into(int index, int only)
 {
 	struct pack_entry const *entry = &entries[index];
@@ -1356,10 +1358,12 @@ static int load_into(int index, int only)
 		at = allocate(which = 0, alignment(entry->size), RECENT_FRAMES);
 	if (!at && only != 0)
 		at = allocate(which = 1, alignment(entry->size), RECENT_FRAMES);
+	/* the frame the GE may still be drawing (geshow2: shown off the game
+	thread) keeps its textures too */
 	if (!at && only != 1)
-		at = allocate(which = 0, alignment(entry->size), 1);
+		at = allocate(which = 0, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	if (!at && only != 0)
-		at = allocate(which = 1, alignment(entry->size), 1);
+		at = allocate(which = 1, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	if (!at)
 	{
 		waits++;
