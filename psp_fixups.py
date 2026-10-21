@@ -4696,6 +4696,7 @@ static boolean psp_state_page_empty(unsigned long const *words)
 /* build 116 (R11): the log holds its writes around a checkpoint, so the
 sound reader has the Memory Stick first after it (psp_platform.c) */
 void psp_log_hold(unsigned int milliseconds);
+#include "psp_metrics.h"
 #define PSP_STATE_LOG_HOLD_MS 2500
 
 /* build 116 (R10): the checkpoint's pages stored compactly. b115 test 1
@@ -4824,6 +4825,7 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, start = psp_microseconds();
 	byte *map = (byte *)&header[3];
 
+	PSP_METRICS_EVENT(PSP_METRICS_CHECKPOINT); /* the slow frame that follows is the checkpoint's (psp_metrics.c) */
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
 	psp_log_hold(PSP_STATE_LOG_HOLD_MS);
@@ -4980,6 +4982,7 @@ static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
 	unsigned long pages = size / PSP_STATE_PAGE, page, read;
 	byte const *map = (byte const *)&header[3];
 
+	PSP_METRICS_EVENT(PSP_METRICS_REVERT);
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!ReadFile(handle, header, PSP_STATE_HEADER, &read, NULL) || read != PSP_STATE_HEADER ||
 		header[1] != size || header[2] != pages)
@@ -10820,6 +10823,41 @@ FIXES_CHUPA["source/saved games/game_state.c#allocations"] = [
 #else
 	MAXIMUM_GAME_STATE_ALLOCATIONS = 256,
 #endif"""),
+]
+FIXES_CHUPA["port/linux/src/d3d8_gl.c#immediate"] = [
+("""		device.immediate_capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		device.immediate_vertices = realloc(device.immediate_vertices,
+			device.immediate_capacity * floats * sizeof(float));
+	}""",
+ """#ifdef HALO_PSP
+		/* a full heap can refuse the grow (64 KB first, then doubling), and
+		the copy below would then write through NULL. The old buffer and its
+		size stay, and the rest of the batch is dropped: End sees no vertices
+		and draws none of it, so no primitive is drawn in part. The same
+		allocation as before whenever the heap has room (psp_fixups.py,
+		FIXES_CHUPA) */
+		unsigned long capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		float *vertices = realloc(device.immediate_vertices, capacity * floats * sizeof(float));
+		static int refused;
+
+		if (!vertices)
+		{
+			if (!refused)
+				platform_log("immediate draw: no heap for %lu vertices (%lu bytes): such batches are skipped",
+					capacity, capacity * floats * (unsigned long)sizeof(float));
+			refused = 1;
+			device.immediate_active = FALSE;
+			device.immediate_count = 0;
+			return;
+		}
+		device.immediate_vertices = vertices;
+		device.immediate_capacity = capacity;
+#else
+		device.immediate_capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		device.immediate_vertices = realloc(device.immediate_vertices,
+			device.immediate_capacity * floats * sizeof(float));
+#endif
+	}"""),
 ]
 FIXES_CHUPA["port/linux/src/d3d8_gl.c#samplers"] = [
 ("""#define SAMPLER_CACHE_SIZE 512""",

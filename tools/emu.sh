@@ -48,5 +48,5 @@ rm -rf $RUNS/r_$L; mkdir -p $RUNS/r_$L
 cp $D/log/log.txt $D/log/profile.txt $D/log/animtrace.bin $D/shots/*.bmp $RUNS/r_$L/ 2>/dev/null
 [ -f $D/crash.txt ] && cp $D/crash.txt $RUNS/r_$L/
 S=$(python3 $HERE/strictfilter.py $RUNS/r_$L.txt 2>&1 | tail -1)
-T=$(grep -o "game time [-0-9]*" $RUNS/r_$L/log.txt 2>/dev/null | tail -1)
+T=$(grep -v "^metrics " $RUNS/r_$L/log.txt 2>/dev/null | grep -o "game time [-0-9]*" | tail -1) # the metrics lines name earlier game times (a low point's)
 echo "$L: $(grep -o 'bring-up build [0-9]*' $RUNS/r_$L/log.txt 2>/dev/null | head -1); segv $(grep -ic sigsegv $RUNS/r_$L.txt); shots $(ls $RUNS/r_$L/*.bmp 2>/dev/null | wc -l); $T; strict: $S; crash.txt $( [ -f $RUNS/r_$L/crash.txt ] && echo yes || echo no)"

@@ -32,6 +32,7 @@ psp_geo_generation(), which changes with every load into the block. */
 #include <string.h>
 #include "psp_me.h" /* psp_on_me */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
+#include "psp_metrics.h"
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -548,6 +549,7 @@ static int read_entry_now(struct geo_entry *e)
 	window_us += took;
 	if (took > window_worst_us)
 		window_worst_us = took;
+	PSP_METRICS_STICK(PSP_METRICS_GEOMETRY, e->size, took);
 	return 1;
 }
 
