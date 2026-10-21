@@ -51,7 +51,18 @@ With M6 #2 on (`gedefer geinflight gemeon`), the game thread waits at the next f
 
 **Compiles:** campaign PGO (build2), `PSP_MULTIPLAYER=1` and `PSP_METRICS=0` (build) of dc67317; the merge with w140 bc12443 (015c471, build). `pgo_mismatch.txt` lists the changed psp_ge.c functions (`psp_ge_draw_level_body`, `frame_end_show`, `defer_drain`, the forwarder and others): **a strict release link needs a new profile**. The PSP pairs run with `allowmismatch=yes`. Both sides run one EBOOT, so the A/B is fair.
 
-**PSP [M]:** the PSP-1000 pairs d40 and b40, `keepsets "- | geshow2"`, repeat 2, `showlat` on both sides: see the lab's findings for the figures.
+**PSP [M]** (PSP-1000, EBOOT 015c471, `nearauto gebusy assettrack geo2 nomouth showlat exitat120`, `keepsets "- | geshow2"`, repeat 2: on, off, on, off; every run exited in the game at game time ~3,570; the repeats agree within 0.1 ms):
+
+| d40, by game time | frame, plain -> geshow2 | drawing | tick |
+|---|---|---|---|
+| 150-570 | 43.9 -> 38.6 ms (22.8 -> 25.9 fps) | 38.7 -> 25.0 | 1.3 -> 1.4 |
+| 300-2,000 | 41.4 -> 38.6 (24.2 -> 25.9 fps) | 31.4 -> 22.3 | 2.7 -> 2.7 |
+| 2,000-2,700 | 35.0 -> 34.2 | 17.1 -> 13.8 | 4.9 -> 4.7 |
+| 2,700-end | 33.7 -> 33.4 | 16.0 -> 12.6 | 4.4 -> 4.2 |
+
+- **-3 to -5 ms where d40 is slow, not to the 30 fps cap.** On the PSP-1000 the GE's tail after the ME is 16-18 ms a frame (plain's `waiting for the GE`) and the ME's job ~15-16 ms. Once the record hides inside that tail, the frame is M + G ≈ 38.6 ms, §7.3's model with this PSP's G; §7.3's 33 ms came from the PSP-3000's figures. In the slowest window the game thread waits 11.4-11.7 ms a frame at the hand-over for the show: the GE's tail outlasting the record.
+- **Latency (`showlat`, window start to swap, 300-frame lines):** plain 36.9 / 46.3 / 39.7 / 34.9 / 33.2-36.7 ms; `geshow2` 41.3 / 63.0 / 60.5 / 40.7 / 35.7-39.8. That's **+17 to +21 ms in the slow stretch** and +2-3 ms where the frame is already at 30 fps. That's more than §7.3's +8 ms, because N's ME now waits for the GE's whole tail of N-1.
+- So on the PSP-1000 d40 trades ~+18 ms of latency for ~+3 fps in its slow stretch. That is Sheepdog01's call; it stays off. A gain that reaches the cap needs the GE's tail itself shorter (S10c can't beat M + G).
 
 ## Costs and risks
 
