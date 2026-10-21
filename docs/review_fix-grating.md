@@ -28,5 +28,9 @@ Two bake-side restorations, on by default, each with a bake option that turns it
 
 ## Checks
 
-- An all-maps bake with both on, then the same-eye emulator shots against the PC frames.
-- Every other map: the "cut-outs kept fine" line and the bake log's per-map sizes say what else changed.
+A test bake of a10, c10 and ui with both on, then the same-eye emulator shots and a cost pair (the same EBOOT on the test bake and on the release bake before it):
+
+- **Bake** [D]: "cut-outs kept fine" lists a10's two grating maps and c10's two b30 grate maps (`alpha grate`, `alpha grate b`), each 256 x 64 -> 512 x 128; no errors. `c10 moss` is listed among c10's cut-outs, now with its own map. a10.ptex +256 KB (+1.7%), c10.ptex +259 KB (+1.8%), the `_track` packs the same; ui unchanged; every .map, .pgeo and .pstn byte-for-byte the same size.
+- **Look** [E]: a10's grating draws as a fine diamond mesh at the eye where it drew as blobs, close to the PC frame; c10's moss draws as thin dark textured strands in the fog (the strips are gone), as on the PC. The draw dump shows `c10 moss1` with map alpha 1 (was 0).
+- **Cost** [E]: a10 at the grating: 126 textures loaded either way, 2,113 KB vs 2,049 KB; largest frame 1,638 KB vs 1,574 KB; 14 vs 13 frames drew something untextured (longest run 11 vs 10); frame time the same (12.81 ms mean). a10's opening (non-debug): +64 KB loaded, 17 vs 16 untextured frames, frame time the same (14.34 ms). c10 at the vines: 170 vs 167 textures, +3 KB, untextured the same, frame 24.33 vs 24.30 ms; c10's opening 24.68 vs 24.53 ms. Within the runs' spread; the extra untextured frame is the larger grating's first load.
+- **Still to do:** the all-maps bake (b30, and any other map using the b30 grates, picks up the finer cut-out too: its "cut-outs kept fine" lines say which).
