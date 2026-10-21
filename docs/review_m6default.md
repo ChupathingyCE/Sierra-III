@@ -40,3 +40,9 @@ None of the set has been played against a ChupathingyCE server. heaproom256 is a
 - Lab A/Bs that used no words as their "plain" side now get M6 #2 on that side. Plain is now `m6off`.
 - The geometry cache is 256 KB smaller with heaproom256, which costs a few % more misses (review_sv.md).
 - `listcachedall` is off whenever `gemeon` is on, as before. This now means always, unless `m6off` is given.
+
+## blipdepth on by default (with the exact CLUT4 set's merge)
+
+`keep_defaults_add` (`psp/src/psp_platform.c`) also adds `blipdepth` in the campaign build: the motion sensor's 64 x 64 target drawn in the depth buffer after the 3D pass, its 16 KB of VRAM given to the model copies (600 -> 616 KB; `docs/review_vrbroom.md`). It is added before the M6 #2 gate, so `m6off` and the instruments leave it on; `blipdepthoff` turns it off, `blipdepthcheck` still checks it.
+
+Why default: exact. Play identical every tick on b30 and a10 (lab vrbroom4, vrb2m1 under the M6 #2 defaults); its check found 0 differing frames in the emulator (0 of 2,059 and 2,394) and on the PSP-3000 (0 of 1,198 plain, 0 of 918 under M6 #2; lab sierra-hw 39626413267). Its own speed gain is small (0.07-0.29 ms a tick [U]); the 16 KB is the point.

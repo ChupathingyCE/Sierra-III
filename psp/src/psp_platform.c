@@ -1008,6 +1008,11 @@ static void keep_defaults_add(void)
 	int k;
 
 	keep_defaults_added[0] = '\0';
+	/* the motion sensor's target in the depth buffer (docs/review_vrbroom.md):
+	exact, and its 16 KB of VRAM go to the model copies; apart from M6 #2,
+	so m6off and the instruments leave it on */
+	if (!keep_search("blipdepthoff"))
+		keep_default_add("blipdepth");
 	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
 		return;
 	for (k = 0; k < (int)(sizeof(keep_defaults) / sizeof(keep_defaults[0])); k++)
@@ -1102,7 +1107,7 @@ static void keep_load(void)
 	platform_log("keep words, the heap at each level change (opt-in): heapmap (its gaps and blocks of 16 KB or more, with what asked for each); recon builds only: poolpeaks (each game-state array's peak against its maximum)");
 	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
 #ifndef PSP_MULTIPLAYER
-	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of them), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none with mebench gemeoverlap geserial",
+	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
 		keep_defaults_added[0] ? keep_defaults_added : " none");
 #endif
 }
