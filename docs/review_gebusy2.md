@@ -28,9 +28,9 @@ The keep word `gebusy2` turns on `gebusy` as well. Everything below is in `psp/s
 
 The frameend line's `GE busy X ms a frame, Y% of the clock` keeps its form, so `benchreport.py` and `memcensus.py` read it as before. Without `gebusy2` its suffix now reads `(the ME's lists not timed: gebusy2)`.
 
-**Cost:** under M6 #2, one SIGNAL+END (8 bytes) and one uncached board write per chunk on the ME. On the main CPU, one interrupt per chunk (a few us), as `gebusy` already costs when the main CPU builds, plus two interrupt-off sections per forward and per wait. The main CPU's interrupts take time from the tick, so `gebusy2` frames run a little slower than plain ones. Read the GE's time from it, and take the frame rate from runs without it.
+**Cost:** under M6 #2, one SIGNAL+END (8 bytes) and one uncached board write per chunk on the ME. On the main CPU, one interrupt per chunk (a few us), as `gebusy` already costs when the main CPU builds, plus two interrupt-off sections per forward and per wait. The main CPU's interrupts take time from the tick, so `gebusy2` frames run a little slower than plain ones. Read the GE's time from it, and take the frame rate from runs without it. (It hangs on the PSP as built: see "Results".)
 
-**Changed only under `gebusy2` or `metail`:** the list's last few draws go to the GE at the ME's frame end, not at the main CPU's finish. The picture and the play are the same (proof below). Only when the GE starts that tail moves.
+**Changed only under `gebusy2` or `metail`:** the list's last few draws go to the GE at the ME's frame end, not at the main CPU's finish. The play is the same at every tick, and the pictures differ from the default no more than the default differs from itself (proof below). Only when the GE starts that tail moves.
 
 ## `metail` (opt-in lever, off) [D]
 
@@ -42,7 +42,7 @@ Under M6 #2 the wrapper batches stall updates (`STALL_BATCH` 16). At the frame's
 ## Proof
 
 - Compiles: a host syntax check of `psp_ge.c` against pspsdk's headers, with the campaign, `PSP_MULTIPLAYER=1`, `PSP_RECON=1` and `PSP_METRICS=1` switches, gives no new warnings. The full builds are listed in the merge request.
-- Emulator [E]: see "Results" (filled in once read).
+- Emulator [E]: see "Results".
 
 ## Results
 
@@ -58,7 +58,24 @@ Under M6 #2 the wrapper batches stall updates (`STALL_BATCH` 16). At the frame's
 - The by-kind split agrees too: b30 models 22.6 / 23.0, level 2.0.
 - Old `gebusy` under M6 #2 reads the whole frame in the emulator only because there the simulated job passes the frame on all at once, just before the finish. On the PSP the forwarder passes it on during the ticks, so the finish sees only the tail (0.1-0.3 ms on a10).
 - **Play:** the play hash and both random seeds are the same at every one of 6,000 ticks on all three maps (default vs `gebusy2`).
-- **Pictures:** `framecrc` differs from the default under `gebusy2`, and also under the old `gebusy`, which adds no SIGNAL under M6 #2 and only registers the GE callbacks (637 of 2,998 b30 frames). See the follow-up batch below.
+- **Pictures:** `framecrc` differs from the default under `gebusy2`, and also under the old `gebusy`, which adds no SIGNAL under M6 #2 and only registers the GE callbacks (637 of 2,998 b30 frames).
+- **Do the default's pictures repeat?** No, not under M6 #2 in the emulator, so `framecrc` is no exactness test there; play is. The same EBOOT, the default twice on one host and in one batch: 488 of 2,998 b30 frames differ. The same EBOOT on two hosts with the same emulator: 2,906 b30, 2,386 a10, 2,642 d40 frames of ~2,990. Play and seeds stay the same at every tick in every pair.
+- **`metail` alone** against the default, one host, one batch: 505 b30 frames (inside the default's 488), 35 a10, 17 d40; play the same at every tick. Inside the default's own spread.
+- **`gebusy2`'s** differences (2,947 / 2,439 / 2,684) are larger than one host's default spread but no larger than the default's across two hosts. The instrument's interrupts likely shift the timing that decides which frames differ [U]; play is exact. It is a recon instrument, off by default.
 - **Compiles:** campaign (PGO), `PSP_MULTIPLAYER=1` and `PSP_METRICS=0` all build.
 
-**On the PSP:** pending. The spec is in the merge request.
+**On the PSP-1000 [M]** (one EBOOT, a10 and d40 hands off, `gebusy | gebusy2 | gebusy metail`, one run each):
+
+- **`gebusy2` hangs on the PSP.** On a10 it drew 2-3 frames and stopped at game time 9; on d40 it ran about 70 frames and stopped at game time 77, as the level's first draws began. The main CPU sat asleep in the drawing phase until the run's wall. The emulator never hung. The cause isn't read yet [U: the ME's SIGNAL+END reaching the GE through the ME's cache, or a SIGNAL slot never freed]. Until it is fixed, don't use `gebusy2` on hardware; it is off by default, and its off path is the same code as before.
+- **So the GE's busy time under M6 #2 is still unmeasured on the PSP.** What the `gebusy` side shows, from the main CPU's waits and the ME's job times:
+
+| Map, stretch | Frame | Ticks / drawing / rest | Main CPU waits for the ME / the GE | ME replay a job | Main CPU asleep | Binds |
+|---|---:|---|---|---:|---:|---|
+| a10 opening | 40.0 | 8.4 / 20.2 / 11.5 | 3.3 / 4.7 | 14.1 | 41% | no lane full (the GE or the refresh [U]) |
+| a10 middle | 46.3 | 12.4 / 28.8 / 5.0 | 10.2 / 3.3 | 27.8 | 29% | the ME's replay |
+| a10 beach | 90.4 | 46.0 / 41.1 / 3.2 | 7.5 / 1.4 | 40.8 | 12% | the main CPU |
+| d40 slow stretch | 43.9 / 38.6 | 1.8-3.6 / 38.7-25.6 / 3.5-9.4 | 7.2-4.8 / 15.5-9.3 | 13-14 | 48-49% | the GE |
+| d40 later | 34.8 / 33.6 | 4.4-5.0 / 15-16 / 14 | 2.3-1.6 / 1.9-1.3 | 17-19 | 35-39% | the 30 fps cap |
+
+  (ms a frame; drawing includes the waits.)
+- **`metail`: no gain.** a10 whole 54.6 -> 54.8 ms. The beach is 90.4 -> 87.8, but its GE wait moved only 0.15 ms and its tick 0.9, neither of which `metail` can remove. d40's slow stretch is 43.9 -> 44.0 and 38.6 -> 38.6, with the GE wait unchanged (15.5, 9.3). That wait is the GE still drawing the frame, not the unpublished tail. `metail` stays off; no merge request.
