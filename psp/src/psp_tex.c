@@ -1658,6 +1658,47 @@ int psp_tex_resident(unsigned int key)
 	return 1;
 }
 
+/* "texpretouch": a texture brought in as its draw is written down for the
+Media Engine's replay (psp_ge.c, the GE_DEFER records), so the replay's bind
+finds it there. The ME can't read the Memory Stick: a bind there that finds
+its texture missing only asks for it, the main CPU reads it at the frame's
+end, and every texture's first sight drew a frame (or more) untextured.
+Records are written while no replay runs and in the frame (this file's
+frame) the replay binds in, so a texture marked here is protected from the
+rest of the frame's loads as a bind would protect it. A texture already
+resident is only marked: that keeps it from being evicted by a later
+record's load before the replay draws it. A load the frame's budget or room
+refuses is left to the replay's bind, which counts it */
+static PSP_MAIN_SIDE unsigned long pretouch_calls = 0, pretouch_loads = 0, pretouch_refused = 0;
+
+void psp_tex_pretouch(unsigned int key)
+{
+	int index;
+
+	if (!key || !entries || PSP_ME_WORK())
+		return;
+	index = find(key);
+	if (index < 0)
+		return;
+	pretouch_calls++;
+	if (!resident_at[index])
+	{
+		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+		{
+			pretouch_refused++;
+			return;
+		}
+		misses++; /* as a bind's load counts: the log's waits stay misses - loads */
+		pretouch_loads++;
+	}
+	if (last_frame[index] != frame)
+	{
+		frame_set_bytes += alignment(entries[index].size);
+		frame_set_count++;
+	}
+	last_frame[index] = frame;
+}
+
 /* a resident texture's 16-bit (5650) palette, the same way (the change
 colour's mask, in a multipurpose map's blue; build 31) */
 int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *count)
@@ -2002,6 +2043,9 @@ void psp_tex_frame_end(void)
 			bind_blocks_called / 300, bind_blocks_made / 300, bind_blocks_full);
 		bind_blocks_called = bind_blocks_made = bind_blocks_full = 0;
 	}
+	if (entries && frame % 300 == 0 && pretouch_calls)
+		platform_log("textures: texpretouch: %lu textures touched as their draws were written down, %lu read then, %lu left to the replay (budget or room)",
+			pretouch_calls, pretouch_loads, pretouch_refused);
 	if (entries && frame % 300 == 0 && (wanted_total || wanted_dropped))
 		platform_log("textures: %lu wanted by the Media Engine's work and read at the frame's end, %lu more than the list held (gemesim)",
 			wanted_total, wanted_dropped);
