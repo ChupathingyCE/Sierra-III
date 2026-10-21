@@ -22,6 +22,7 @@ Sheepdog01's aim (2026-10-14): keep the sound as faithful to the Xbox as the har
 - **Memory Stick:** sound was 86% of reads in play (b101 [M]); S9 cut it to about a third [E]; most of the rest is re-reading evicted looping sounds (b115 [E]).
 - **Media Engine:** 5-15% for audio, 8-15% busy in all on the rig (b122) [M].
 - **The audio thread** sleeps while the ME mixes (`psp_me_run`: a first look after 0.2 ms, then every 0.1 ms), so its 1.3-3.6 ms wait a block costs the game only the wake-ups [D] (E7: start the first look at the last job's time).
+- **E3, the obstruction rays on the ME** (`review_e3.md`, `shelf.md`): built, exact, and shelved under the lever gate [E]. Only a sound at a spot heard before can wait a frame for the ME (b30 ~1 test a frame of ~9.8, a10 1.4, c10 1.2), so it can take ~0.1% of b30's frame at most [U]; the cache model shows none.
 
 ## The decision (Sheepdog01, 2026-10-14)
 
