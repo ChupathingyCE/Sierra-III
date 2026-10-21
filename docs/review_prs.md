@@ -12,7 +12,7 @@
 - *Children and siblings.* `first_child_object_index` and `next_object_index` are read from the same datum as before.
 - *What changes:* the `match_vassert` in `object_get_and_verify_type` isn't evaluated for the skipped objects (it can't fail with `_object_mask_all`), and the datum's first cache line isn't fetched for them, which is the gain.
 
-**Keep words:** `percall` turns the skip off (every object tested and stamped, as the engine does). `perccheck` lets the skip decide, then stamps each passed-over object anyway and checks the datum's type against the header's; every 150 ticks a `perccheck:` line gives the objects passed over and the differences (0 expected). With `perccheck` the game state matches `percall` word for word, whole-state hash included.
+**Keep words:** `percall` turns the skip off (every object tested and stamped, as the engine does). `prscheck` lets the skip decide, then stamps each passed-over object anyway and checks the datum's type against the header's; every 150 ticks a `prscheck:` line gives the objects passed over and the differences (0 expected). With `prscheck` the game state matches `percall` word for word, whole-state hash included.
 
 **Key lines** (psp_fixups.py, `FIXES_PRS["source/ai/actor_perception.c#prs"]`): at the top of the walk's loop, the header's type; for a type other than biped, vehicle or projectile, the child walk and the step to the next sibling from the datum, then `continue`. The check is a cold, out-of-line function.
 

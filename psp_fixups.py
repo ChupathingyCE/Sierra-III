@@ -29661,10 +29661,10 @@ static void decal_check("""),
 # type (typehdr: the same type as its datum's), walking its children and
 # siblings as before, without its call to object_get, its stamp, or the two
 # datum lines they touch. After halo-ce-vita's perception count (BirchWoodGod).
-# "percall": every object tested and stamped as before. "perccheck": the skip
+# "percall": every object tested and stamped as before. "prscheck": the skip
 # decides, but each passed-over object is stamped anyway (the game state then
 # matches "percall" word for word) and its datum's type is checked against the
-# header's; every 150 ticks a "perccheck:" line gives the objects passed over
+# header's; every 150 ticks a "prscheck:" line gives the objects passed over
 # and the differences (0 expected)
 FIXES_PRS = {}
 FIXES_PRS["source/ai/actor_perception.c#prs"] = [
@@ -29690,7 +29690,7 @@ static void __attribute__((noinline, cold)) psp_prs_check(long object_index, str
 	if (now % 150 == 0 && now != psp_prs_logged)
 	{
 		psp_prs_logged = now;
-		platform_psp_log("perccheck: game time %ld | passed over %lu, differences %lu", now, psp_prs_passed,
+		platform_psp_log("prscheck: game time %ld | passed over %lu, differences %lu", now, psp_prs_passed,
 			psp_prs_differences);
 	}
 }
@@ -29723,7 +29723,7 @@ static void actor_perception_refresh_test_object(
 		{
 			struct object_datum const *psp_object = psp_header->datum;
 
-			if (PSP_KEEP_ONCE("perccheck"))
+			if (PSP_KEEP_ONCE("prscheck"))
 				psp_prs_check(object_index, psp_object, psp_type);
 			if (psp_object->object.first_child_object_index != NONE)
 			{
