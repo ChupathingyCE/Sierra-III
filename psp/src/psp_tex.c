@@ -45,7 +45,13 @@ struct pack_entry
 	unsigned int offset, size;
 };
 
-#define VRAM_CACHE_START 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+#define VRAM_CACHE_START_FIXED 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+/* "blipdepth" (psp_ge.c, docs/review_vrbroom.md): the motion sensor's target
+drawn in the depth buffer instead, so its 16 KB at 0x0CC000 join the room
+shared by the textures and the copies */
+#define VRAM_CACHE_START_BLIPDEPTH 0x000CC000
+static unsigned int vram_cache_start = VRAM_CACHE_START_FIXED, vram_blip_freed = 0;
+#define VRAM_CACHE_START vram_cache_start
 #define VRAM_CACHE_END_FULL 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
 /* build 93: benchrun keeps VRAM's last 256 KB for its bus tests (the display
 list in VRAM, the VRAM-only GE load; psp_ge.c), for the whole run so every
@@ -126,7 +132,7 @@ struct arena
 };
 #define RAM_CACHE_BYTES (256 * 1024)
 static struct arena arenas[2] = {
-	{ 0x04000000 + VRAM_CACHE_START, 0x04000000 + VRAM_CACHE_END_FULL, 0x04000000 + VRAM_CACHE_START, 0x40000000 },
+	{ 0x04000000 + VRAM_CACHE_START_FIXED, 0x04000000 + VRAM_CACHE_END_FULL, 0x04000000 + VRAM_CACHE_START_FIXED, 0x40000000 },
 	{ 0, 0, 0, 0x40000000 } };
 static void *ram_cache = NULL;
 static unsigned int frame = 1, frame_loaded = 0;
@@ -148,6 +154,108 @@ static int alignment(unsigned int size)
 
 static void bind_totals_save(void);
 static void bind_totals_gather(void);
+
+/* "stripcensus" (docs/review_vrbroom.md): which textures the HUD
+binds, and which of them could live in the frame and depth buffers' padding
+strips instead of the cache. Each buffer is 512 pixels a row of which 480
+show, so pixels 480-511 of every row (64 bytes a row, 272 rows: 17 KB a
+buffer) are VRAM that nothing draws or shows. The GE samples a texture with
+any buffer width, so a texture fits a strip when a row of it takes at most 64
+bytes at a buffer width of 1,024 bytes: T8 up to 64 texels wide, 16-bit up to
+32, 32-bit up to 16 (T4's 2,048-texel width is past the GE's 2,044), its
+levels stacked down the strip, unswizzled. Its palette can't follow: a
+palette is read as one run of bytes. Per entry: the frames it was bound for
+the HUD, and the last such frame */
+static int strip_census = -1;
+static unsigned int *hud_bound = NULL;
+static int find(unsigned int key);
+
+static void strip_census_free(void)
+{
+	free(hud_bound);
+	hud_bound = NULL;
+}
+
+void psp_tex_hud_note(unsigned int key)
+{
+	int index;
+
+	if (strip_census < 0)
+		strip_census = psp_keep("stripcensus") != 0;
+	if (!strip_census || !entries || (index = find(key)) < 0)
+		return;
+	if (!hud_bound && !(hud_bound = calloc(entry_count, 2 * sizeof(unsigned int))))
+		return;
+	if (hud_bound[2 * index + 1] != frame)
+	{
+		hud_bound[2 * index]++;
+		hud_bound[2 * index + 1] = frame;
+	}
+}
+
+/* the rows a strip would need for the entry's levels, 0 when it can't fit */
+static unsigned int strip_rows(struct pack_entry const *entry)
+{
+	unsigned int width = entry->width, height = entry->height, rows = 0;
+	int level;
+
+	if (entry->psm == GU_PSM_T4 || (entry->psm == GU_PSM_T8 ? width : width * TEXEL_BYTES(entry)) > 64)
+		return 0;
+	for (level = 0; level < entry->levels; level++)
+	{
+		rows += height;
+		height = height > 1 ? height / 2 : 1;
+	}
+	return rows <= 272 ? rows : 0;
+}
+
+static void strip_census_report(unsigned int frames)
+{
+	char line[440]; /* the log's lines end at 512 characters */
+	int index, length = 0, count = 0, every = 0, fit = 0;
+	unsigned int bytes = 0, vram = 0, every_bytes = 0, fit_bytes = 0, fit_vram = 0, fit_palettes = 0, fit_rows = 0;
+
+	if (!hud_bound)
+		return;
+	for (index = 0; index < entry_count; index++)
+	{
+		struct pack_entry const *entry = &entries[index];
+		unsigned int size = alignment(entry->size), rows = strip_rows(entry), palette;
+		int in_vram = resident_at[index] && !resident_in[index];
+
+		if (!hud_bound[2 * index])
+			continue;
+		palette = DIRECT(entry) ? 0 : (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
+		count++;
+		bytes += size;
+		if (in_vram)
+			vram += size;
+		if (hud_bound[2 * index] * 10 >= frames * 9)
+		{
+			every++;
+			every_bytes += size;
+		}
+		if (rows)
+		{
+			fit++;
+			fit_bytes += size - palette;
+			fit_palettes += palette;
+			fit_rows += rows;
+			if (in_vram)
+				fit_vram += size;
+		}
+		if (length < (int)sizeof(line) - 72)
+			length += snprintf(line + length, sizeof(line) - length, " %08x %ux%u psm%u l%u %uB %s %u %s;", entry->key,
+				entry->width, entry->height, entry->psm, entry->levels, size, resident_at[index] ?
+				(resident_in[index] ? "RAM" : "VRAM") : "out", hud_bound[2 * index], rows ? "fits" : "-");
+		hud_bound[2 * index] = 0;
+	}
+	platform_log("textures: stripcensus: %d HUD textures over %u frames, %u KB (%u KB in VRAM); %d bound in 9 frames of 10 or more (%u KB); %d would fit the padding strips (%u KB of texels, %u KB of palettes that can't follow, %u rows of 816; %u KB of them in VRAM now)",
+		count, frames, bytes / 1024, vram / 1024, every, every_bytes / 1024, fit, fit_bytes / 1024, fit_palettes / 1024,
+		fit_rows, fit_vram / 1024);
+	if (length)
+		platform_log("textures: stripcensus (key size psm levels bytes place frames fit):%s", line);
+}
 /* build 89: the heartbeat's in-play save (psp_tex_save_pending) */
 static volatile int snapshot_pending = 0, snapshot_writing = 0;
 
@@ -193,6 +301,16 @@ void psp_tex_close(void)
 	free(bind_totals);
 	bind_totals = NULL;
 	entry_count = 0;
+	strip_census_free();
+	/* the sensor's 16 KB, when psp_ge.c draws its target in the depth buffer
+	(never under benchrun, whose rooms are fixed) */
+	{
+		extern int psp_ge_blip_room_freed(void);
+
+		vram_blip_freed = !psp_keep("benchrun") && psp_ge_blip_room_freed() ? VRAM_CACHE_START_FIXED - VRAM_CACHE_START_BLIPDEPTH : 0;
+		vram_cache_start = VRAM_CACHE_START_FIXED - vram_blip_freed;
+		arenas[0].start = 0x04000000 + VRAM_CACHE_START;
+	}
 	/* build 103: and 256 KB below that for the level's vertex copies
 	(psp_ge.c's setting 25, benchrun's "level vertices in VRAM") */
 	if (psp_keep("benchrun"))
@@ -229,13 +347,17 @@ void psp_tex_close(void)
 		/* at least 256 KB stay the textures': a 512 x 512 indexed map with its
 		levels (341 KB) can still sit in VRAM, and below that the set's best
 		third, worth most of its binds, would no longer fit */
-		if (kb >= 64 && (unsigned int)kb * 1024 <= VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST)
+		/* blipdepth's 16 KB go to the copies' room: a KB of VRAM holding
+		geometry takes ~5.6 times the bus reads off the ticks that a KB holding
+		textures does (docs/research/vram_budget.md section 3), and the
+		texture cache keeps its size, so the same textures fit as without it */
+		if (kb >= 64 && (unsigned int)kb * 1024 + vram_blip_freed <= VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST)
 		{
-			vram_models_bytes = (unsigned int)kb * 1024;
+			vram_models_bytes = (unsigned int)kb * 1024 + vram_blip_freed;
 			if (vram_cache_end > VRAM_CACHE_END_FULL - vram_models_bytes)
 				vram_cache_end = VRAM_CACHE_END_FULL - vram_models_bytes;
-			platform_log("textures: vrammodels: the top %d KB of VRAM for the model buffers; the texture cache %u KB",
-				kb, (vram_cache_end - VRAM_CACHE_START) / 1024);
+			platform_log("textures: vrammodels: the top %u KB of VRAM for the model buffers; the texture cache %u KB",
+				vram_models_bytes / 1024, (vram_cache_end - VRAM_CACHE_START) / 1024);
 		}
 		else if (!kb)
 			platform_log("textures: vrammodels0: the model buffers stay in main RAM (as b116 without the word)");
@@ -246,6 +368,12 @@ void psp_tex_close(void)
 	}
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
+	/* the VRAM it freed, per map */
+	if (vram_blip_freed)
+		platform_log("textures: blipdepth: the motion sensor's target in the depth buffer; %u KB freed at %06x, to the %s (%u KB; the texture cache %u KB)",
+			vram_blip_freed / 1024, VRAM_CACHE_START, vram_models_bytes ? "copies' room" : "texture cache",
+			vram_models_bytes ? vram_models_bytes / 1024 : (VRAM_CACHE_END - VRAM_CACHE_START) / 1024,
+			(VRAM_CACHE_END - VRAM_CACHE_START) / 1024);
 	arenas[1].next = arenas[1].start;
 }
 
@@ -1499,6 +1627,15 @@ static const unsigned int *bind_block(int index, struct pack_entry const *entry,
 }
 
 /* makes the texture the GE's current one; 0 if it isn't there (yet) */
+#ifdef PSP_RECON
+/* "txptcensus" (recon; psp_tex_pretouch): which textures the replay bound this frame */
+static int txc_on = -1;
+static struct pack_entry const *txc_for = NULL;
+static unsigned int *txc_bound_at = NULL;
+#define TXC_BOUND(index) do { if (txc_on > 0 && txc_for == entries) txc_bound_at[index] = frame; } while (0)
+#else
+#define TXC_BOUND(index) do { } while (0)
+#endif
 int psp_tex_bind(unsigned int key, int *has_alpha)
 {
 	int index, level;
@@ -1510,6 +1647,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	index = find(key);
 	if (index < 0)
 		return 0;
+	TXC_BOUND(index);
 	entry = &entries[index];
 	if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
 		return bind_standin(entry, has_alpha);
@@ -1656,6 +1794,212 @@ int psp_tex_resident(unsigned int key)
 	}
 	last_frame[index] = frame;
 	return 1;
+}
+
+/* "texpretouch": a texture brought in as its draw is written down for the
+Media Engine's replay (psp_ge.c, the GE_DEFER records), so the replay's bind
+finds it there. The ME can't read the Memory Stick: a bind there that finds
+its texture missing only asks for it, the main CPU reads it at the frame's
+end, and every texture's first sight drew a frame (or more) untextured.
+Records are written while no replay runs and in the frame (this file's
+frame) the replay binds in, so a texture marked here is protected from the
+rest of the frame's loads as a bind would protect it. A texture already
+resident is only marked: that keeps it from being evicted by a later
+record's load before the replay draws it. A load the frame's budget or room
+refuses is left to the replay's bind, which counts it.
+A mark holds room a bind can't then get, and records name textures the
+replay never binds (a culled run, a far surface's detail maps), so: a kind
+the replay binds only sometimes is marked only if it's already resident
+(resident_only: it costs no load and evicts nothing); and nothing more is
+marked once this frame's set nears the caches' room ("txptceilN", percent,
+85 by default: b30's beach marked 2,559 KB of 2,632 without it, and loads
+then waited for room). Past the ceiling the replay's binds ask for what's
+missing, as without texpretouch */
+#define PRETOUCH_KINDS 18
+static PSP_MAIN_SIDE unsigned long pretouch_calls = 0, pretouch_loads = 0, pretouch_refused = 0, pretouch_ceiling_stops = 0,
+	pretouch_not_resident = 0;
+/* the last texture each record kind asked for, and its frame: a level draw
+names its base and its lightmap in turn, so one memo for all kinds missed
+every time; a kind's runs of one texture come in a row */
+static PSP_MAIN_SIDE unsigned int pretouch_key[PRETOUCH_KINDS], pretouch_frame[PRETOUCH_KINDS];
+static PSP_MAIN_SIDE int pretouch_percent = -1;
+
+#ifdef PSP_RECON
+/* "txptcensus" (recon): per record kind, the textures marked in a frame
+against those the replay then bound, and those a filter passed over that
+the replay bound anyway (what the filters cost in looks) */
+static const char *const txc_names[PRETOUCH_KINDS] = { "levelbase", "lightmap", "leveldetail", "modelbase", "change",
+	"glow", "modeldetail", "sprite", "contrail", "widget", "seethrough", "levelseethrough", "screen", "zoom", "light",
+	"decal", "blip", "blipsend" };
+static int txc_wait_frames = 0;
+static unsigned int *txc_marked_at = NULL, *txc_skipped_at = NULL;
+static unsigned char *txc_kind = NULL;
+static unsigned long txc_waits_seen = 0, txc_frames = 0;
+static unsigned long txc_marked[PRETOUCH_KINDS], txc_marked_kb[PRETOUCH_KINDS], txc_unbound[PRETOUCH_KINDS],
+	txc_unbound_kb[PRETOUCH_KINDS], txc_skipped_bound[PRETOUCH_KINDS], txc_skipped[PRETOUCH_KINDS], txc_unannounced = 0;
+
+static int txc_ready(void)
+{
+	if (txc_on < 0)
+		txc_on = psp_keep("txptcensus") != 0;
+	if (!txc_on || !entries)
+		return 0;
+	if (txc_for != entries)
+	{
+		free(txc_marked_at);
+		free(txc_skipped_at);
+		free(txc_bound_at);
+		free(txc_kind);
+		txc_marked_at = calloc(entry_count, sizeof(unsigned int));
+		txc_skipped_at = calloc(entry_count, sizeof(unsigned int));
+		txc_bound_at = calloc(entry_count, sizeof(unsigned int));
+		txc_kind = calloc(entry_count, 1);
+		txc_for = entries;
+		if (!txc_marked_at || !txc_skipped_at || !txc_bound_at || !txc_kind)
+		{
+			txc_on = 0;
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static void txc_note(int index, int kind, int marked)
+{
+	if (!txc_ready())
+		return;
+	if (marked)
+		txc_marked_at[index] = frame;
+	else
+		txc_skipped_at[index] = frame;
+	txc_kind[index] = (unsigned char)kind;
+}
+
+static void txc_frame_end(void)
+{
+	unsigned long marked[PRETOUCH_KINDS] = { 0 }, unbound_kb[PRETOUCH_KINDS] = { 0 }, bound[PRETOUCH_KINDS] = { 0 };
+	unsigned long unannounced = 0;
+	int index, k, waited;
+	char line[600];
+	int at = 0;
+
+	line[0] = 0;
+
+	if (txc_on <= 0 || txc_for != entries || !entries)
+		return;
+	for (index = 0; index < entry_count; index++)
+	{
+		int was_bound = txc_bound_at[index] == frame;
+
+		k = txc_kind[index];
+		if (txc_marked_at[index] == frame)
+		{
+			marked[k]++;
+			txc_marked[k]++;
+			txc_marked_kb[k] += alignment(entries[index].size) / 1024;
+			if (was_bound)
+				bound[k]++;
+			else
+			{
+				unbound_kb[k] += alignment(entries[index].size);
+				txc_unbound[k]++;
+				txc_unbound_kb[k] += alignment(entries[index].size) / 1024;
+			}
+		}
+		else if (txc_skipped_at[index] == frame)
+		{
+			txc_skipped[k]++;
+			if (was_bound)
+				txc_skipped_bound[k]++;
+		}
+		else if (was_bound)
+			unannounced++;
+	}
+	txc_unannounced += unannounced;
+	txc_frames++;
+	waited = waits != txc_waits_seen;
+	txc_waits_seen = waits;
+	if (waited && txc_wait_frames < 8)
+	{
+		txc_wait_frames++;
+		for (k = 0; k < PRETOUCH_KINDS && at < (int)sizeof(line) - 48; k++)
+			if (marked[k])
+				at += snprintf(line + at, sizeof(line) - at, " %s %lu/%lu/%luKB", txc_names[k], marked[k], bound[k],
+					unbound_kb[k] / 1024);
+		platform_log("textures: txptcensus: frame %u waited for room (%lu in all); set %lu KB; marked/bound/unbound KB by kind:%s; bound unannounced %lu",
+			frame, waits, frame_set_bytes / 1024, line, unannounced);
+	}
+	if (frame % 300 == 0)
+	{
+		at = 0;
+		line[0] = 0;
+		for (k = 0; k < PRETOUCH_KINDS && at < (int)sizeof(line) - 56; k++)
+			if (txc_marked[k] || txc_skipped[k])
+				at += snprintf(line + at, sizeof(line) - at, " %s %lu/%lu/%lu/%lu", txc_names[k], txc_marked_kb[k],
+					txc_unbound_kb[k], txc_skipped[k], txc_skipped_bound[k]);
+		platform_log("textures: txptcensus: %lu frames; by kind marked KB/unbound KB/passed over/passed over but bound:%s; bound unannounced %lu",
+			txc_frames, line, txc_unannounced);
+	}
+}
+#else
+#define txc_note(index, kind, marked) do { } while (0)
+#endif
+
+/* resident_only: 1 marks the texture only if it's resident; 2 (the census
+alone) notes a key a filter passed over */
+void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
+{
+	int index;
+	unsigned int size, room;
+
+	if (!key || !entries || PSP_ME_WORK() || (unsigned int)kind >= PRETOUCH_KINDS)
+		return;
+	if (pretouch_frame[kind] == frame && pretouch_key[kind] == key)
+		return;
+	index = find(key);
+	if (index < 0)
+		return;
+	pretouch_key[kind] = key;
+	pretouch_frame[kind] = frame;
+	if (resident_only == 2)
+	{
+		txc_note(index, kind, 0);
+		return;
+	}
+	pretouch_calls++;
+	if (resident_at[index] && last_frame[index] == frame)
+		return; /* marked already, by a bind or another kind */
+	size = alignment(entries[index].size);
+	if (pretouch_percent < 0)
+		pretouch_percent = psp_keep_number("txptceil", 85);
+	room = (VRAM_CACHE_END - VRAM_CACHE_START) + (arenas[1].end - arenas[1].start);
+	if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent)
+	{
+		pretouch_ceiling_stops++;
+		txc_note(index, kind, 0);
+		return;
+	}
+	if (!resident_at[index])
+	{
+		if (resident_only)
+		{
+			pretouch_not_resident++;
+			txc_note(index, kind, 0);
+			return;
+		}
+		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+		{
+			pretouch_refused++;
+			txc_note(index, kind, 0);
+			return;
+		}
+		misses++; /* as a bind's load counts: the log's waits stay misses - loads */
+		pretouch_loads++;
+	}
+	frame_set_bytes += size;
+	frame_set_count++;
+	last_frame[index] = frame;
+	txc_note(index, kind, 1);
 }
 
 /* a resident texture's 16-bit (5650) palette, the same way (the change
@@ -1975,6 +2319,9 @@ void psp_tex_frame_end(void)
 	}
 	if (vram_pending_count && entries)
 		preload_vram();
+#ifdef PSP_RECON
+	txc_frame_end();
+#endif
 	if (frame_set_bytes > frame_set_peak)
 	{
 		frame_set_peak = frame_set_bytes;
@@ -2002,6 +2349,9 @@ void psp_tex_frame_end(void)
 			bind_blocks_called / 300, bind_blocks_made / 300, bind_blocks_full);
 		bind_blocks_called = bind_blocks_made = bind_blocks_full = 0;
 	}
+	if (entries && frame % 300 == 0 && pretouch_calls)
+		platform_log("textures: texpretouch: %lu textures touched as their draws were written down, %lu read then, %lu left to the replay (budget or room), %lu at the ceiling, %lu not resident (resident only)",
+			pretouch_calls, pretouch_loads, pretouch_refused, pretouch_ceiling_stops, pretouch_not_resident);
 	if (entries && frame % 300 == 0 && (wanted_total || wanted_dropped))
 		platform_log("textures: %lu wanted by the Media Engine's work and read at the frame's end, %lu more than the list held (gemesim)",
 			wanted_total, wanted_dropped);
@@ -2092,6 +2442,8 @@ void psp_tex_frame_end(void)
 			line, vram_binds, vram_bytes / 1024, ram_binds, ram_bytes / 1024);
 		learned_snapshot();
 	}
+	if (entries && hud_bound && frame % 900 == 600)
+		strip_census_report(900);
 	frame++;
 	frame_loaded = 0;
 }

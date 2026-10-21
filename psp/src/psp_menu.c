@@ -81,8 +81,14 @@ static struct option options[] = {
 	{ "zoommask", "zoom: the mask as a soft edge (blur stand-in)", 6, 0 },
 	{ "zoommaskfull", "zoom: the mask at full strength", 6, 0 },
 	{ "gebusy", "GE busy time in the log", 0, 0 },
+#ifdef PSP_MULTIPLAYER
 	{ "gedefer", "GE calls written down, carried out at frame end", 0, 0 },
 	{ "gemeon", "GE calls carried out on the ME (with gedefer)", 0, 0 },
+#else
+	/* the campaign has gedefer, gemeon and the rest of M6 #2 on unless
+	told otherwise (psp_platform.c, keep_defaults) */
+	{ "m6off", "frames in flight on the ME (M6 #2) OFF", 0, 0 },
+#endif
 	{ "weaksum", "b112's sleep checksum (the flip bug)", 0, 0 },
 	{ "renderstates256", "render-state cache 256 (b112's)", 0, 0 },
 	{ "benchrun", "benchmark: 4 views x 9 switches, ~6 min", 0, 0 },
