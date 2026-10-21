@@ -10396,6 +10396,38 @@ FIXES_112["source/game/game.c#statecrc"] = [
 	collision_log_end_period();
 	profile_tick_end();"""),
 ]
+# "nomouth" (keep.txt; a test word, off by default): lip sync is the one path
+# from the sound manager into game state. update_channels hands each speaking
+# unit a mouth aperture read at the channel's estimated play time, which
+# follows the clock and the mixer's progress, not game ticks; the aperture
+# drives an overlay animation on the unit's nodes, so anything that moves the
+# CPU's timing (heap layout, log volume, a faster draw path) can move a
+# unit's nodes, a weapon's marker and the shot it fires. That is why statecrc
+# runs part on changes that don't touch play. With the word, the aperture is
+# left out (mouths stay shut), so exactness runs compare play alone. Never for
+# play: it changes the look. Nothing changes with the word off
+FIXES_112["source/sound/game_sound.c#nomouth"] = [
+("""void game_sound_set_mouth_aperture(
+	long object_index,
+	real mouth_aperture)
+{
+""", """void game_sound_set_mouth_aperture(
+	long object_index,
+	real mouth_aperture)
+{
+#ifdef HALO_PSP
+	{
+		extern int psp_keep(const char *name);
+		static int nomouth = -1;
+
+		if (nomouth < 0)
+			nomouth = psp_keep("nomouth");
+		if (nomouth)
+			return;
+	}
+#endif
+"""),
+]
 FIXES_112["source/objects/objects.c#statecrc"] = [
 ("void objects_update(\n\tvoid)\n{",
  """#ifdef HALO_PSP
