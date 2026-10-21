@@ -1,5 +1,7 @@
 # Review: `gebusy2`, the GE's busy time under M6 #2 (branch `gebusy2`, base w140 bc12443)
 
+**`gebusy2` is hardware-unsafe until the fixed build (its own GE callbacks, below) has run on the PSP:** the first build hung the PSP-1000.
+
 An instrument, off by default, plus one small opt-in lever it uncovered (`metail`). Labels: [M] PSP, [E] emulator, [D] code, [U] inference.
 
 ## What `gebusy` measures under M6 #2 [D]
@@ -31,6 +33,17 @@ The frameend line's `GE busy X ms a frame, Y% of the clock` keeps its form, so `
 **Cost:** under M6 #2, one SIGNAL+END (8 bytes) and one uncached board write per chunk on the ME. On the main CPU, one interrupt per chunk (a few us), as `gebusy` already costs when the main CPU builds, plus two interrupt-off sections per forward and per wait. The main CPU's interrupts take time from the tick, so `gebusy2` frames run a little slower than plain ones. Read the GE's time from it, and take the frame rate from runs without it. (It hangs on the PSP as built: see "Results".)
 
 **Changed only under `gebusy2` or `metail`:** the list's last few draws go to the GE at the ME's frame end, not at the main CPU's finish. The play is the same at every tick, and the pictures differ from the default no more than the default differs from itself (proof below). Only when the GE starts that tail moves.
+
+## The hang on the PSP, and the fix [D]
+
+**Where it stopped [M] [D].** Both hung runs end the same way: frames stop, game time stops, the main CPU is asleep in the drawing phase, and the ME's audio and render jobs carry on with none failed. Under `geinflight` the frame's end runs at the next frame's first call, in the drawing phase: `inflight_wait_me` collects the ME's frame, writes the main CPU's cache back and drops it, then `frame_end_show` adds the finish (`sceGuFinish`) and waits for the GE (`sceGuSync`). The wait there never returned: the GE never reached the list's FINISH.
+
+**Why [D].** pspgu's signal callback (`callbackSig`, pspsdk `sceGuInit.c`) writes each signal's id into its settings, `gu_settings.signal_history[]`, and counts it in `gu_settings.signal_offset`. In the link map `gu_settings` sits at 0x415fb0 and `gu_contexts` at 0x415fec, so `signal_offset` and the history's last twelve entries share a 64-byte line (0x415fc0) with `gu_contexts[0].list.start` and `.current`: the list's write position, which the ME moves with every command it writes. Old `gebusy` never met this: its SIGNALs come only while the main CPU writes the list itself, and under M6 #2 it adds none. `gebusy2`'s SIGNALs come from the ME's chunks while the ME is still writing. Each one interrupts the main CPU, whose cache takes that line from RAM with the write position as RAM held it then (behind the ME's) and marks it dirty. When `inflight_wait_me` writes the main CPU's cache back (`sceKernelDcacheWritebackInvalidateAll`), that old position goes back over the ME's. The finish is then written at the old position, inside the part of the list the GE has already run, and the stall address handed over is behind the GE: the GE never reaches a FINISH, and the main CPU waits for ever [U: the exact way the old position breaks the list; the shared line and the write-back are read in code and the link map]. Whether the line is still dirty at that write-back depends on whether the tick evicted it first, which is why the hang came after a few frames on a10 and after about 70 on d40 [U]. The emulator has no caches that disagree, so it can't show this.
+
+**The fix.** Under `gebusy2` the lists get GE callbacks of our own: `gebusy_start` registers them with `sceGeSetCallback`, and the `sceGeListEnQueue` wrapper (`psp_trace.c`) passes their id in place of pspgu's (`psp_ge_list_callback`). They call `gebusy_signal` and `gebusy_finish` with the same 16-bit ids, and they write only `PSP_MAIN_SIDE` words, on cache lines of their own. pspgu's callback, its history and the event flag it sets are left out (nothing in the port reads them; pspgu's `sceGuSync` uses `sceGeDrawSync`). Plain `gebusy` keeps pspgu's callbacks as before. If `sceGeSetCallback` fails, `gebusy2` turns off and `gebusy` runs alone.
+
+- No other word the main CPU's interrupt writes is shared with the ME: `gebusy_signal`, `gebusy_finish` and `gebusy_add` touch only `PSP_MAIN_SIDE` sums, `gebusy_me_handed` and `gebusy_wait` likewise, and the board is read and written only through the uncached view [D].
+- Proof: the emulator (gebusy2's readings and play the same, below) and a PSP run of the fixed build, `keepsets="gebusy | gebusy2"` on a10 with `exitat60`, which must end in the game.
 
 ## `metail` (opt-in lever, off) [D]
 
@@ -66,7 +79,7 @@ Under M6 #2 the wrapper batches stall updates (`STALL_BATCH` 16). At the frame's
 
 **On the PSP-1000 [M]** (one EBOOT, a10 and d40 hands off, `gebusy | gebusy2 | gebusy metail`, one run each):
 
-- **`gebusy2` hangs on the PSP.** On a10 it drew 2-3 frames and stopped at game time 9; on d40 it ran about 70 frames and stopped at game time 77, as the level's first draws began. The main CPU sat asleep in the drawing phase until the run's wall. The emulator never hung. The cause isn't read yet [U: the ME's SIGNAL+END reaching the GE through the ME's cache, or a SIGNAL slot never freed]. Until it is fixed, don't use `gebusy2` on hardware; it is off by default, and its off path is the same code as before.
+- **`gebusy2` hung on the PSP** (the build before the fix below). On a10 it drew 2-3 frames and stopped at game time 9; on d40 it ran about 70 frames and stopped at game time 77, as the level's first draws began. The main CPU sat asleep in the drawing phase until the run's wall, the ME's render jobs all done and none failed. The emulator never hung. The cause and the fix are under "The hang on the PSP, and the fix" above. **Until the fixed build has run on the PSP, `gebusy2` is hardware-unsafe: don't use it there.** It is off by default, and its off path is the same code as before.
 - **So the GE's busy time under M6 #2 is still unmeasured on the PSP.** What the `gebusy` side shows, from the main CPU's waits and the ME's job times:
 
 | Map, stretch | Frame | Ticks / drawing / rest | Main CPU waits for the ME / the GE | ME replay a job | Main CPU asleep | Binds |
