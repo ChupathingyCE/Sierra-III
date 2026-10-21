@@ -29,6 +29,7 @@ arrives its surfaces are drawn in their flat colour. */
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include "psp_bindblock.h"
+#include "psp_metrics.h"
 
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
@@ -1242,6 +1243,7 @@ static int load_into(int index, int only)
 		window_us += took;
 		if (took > window_worst_us)
 			window_worst_us = took;
+		PSP_METRICS_STICK(PSP_METRICS_TEXTURES, entry->size, took);
 	}
 	resident_at[index] = at;
 	resident_in[index] = (unsigned char)which;

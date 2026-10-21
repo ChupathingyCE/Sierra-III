@@ -1040,3 +1040,61 @@ void psp_heap_map(const char *label)
 		label, between_count, between_bytes / 1024, between);
 	heap_map_lines(label, " between", space->between, between);
 }
+
+#if defined(PSP_METRICS) && PSP_METRICS
+/* for the per-map heap figures (psp_metrics.c): the heap's free space and
+its largest free block, which a large request needs, by heapmap's walk
+above without its tables. The top chunk counts with what the system hasn't
+handed over yet, since a request can grow into both */
+void psp_heap_survey(unsigned long *free_bytes, unsigned long *largest_bytes, unsigned long *used_bytes)
+{
+	struct heap_chunk *chunk, *first, *top;
+	char *base, *end, *taken;
+	unsigned long free_total = 0, used_total = 0, largest = 0, untaken = 0;
+
+	*free_bytes = *largest_bytes = *used_bytes = 0;
+	if (__malloc_sbrk_base == (char *)-1)
+		return;
+	__malloc_lock(_REENT);
+	base = __malloc_sbrk_base;
+	top = __malloc_av_[2];
+	end = base + (unsigned long)sce_newlib_heap_kb_size * 1024;
+	taken = sbrk(0);
+	if (taken != (char *)-1 && taken < end)
+		untaken = end - taken;
+	first = (struct heap_chunk *)(base + ((16 - (((unsigned long)base + 8) & 15)) & 15));
+	for (chunk = first; chunk != top; chunk = HEAP_CHUNK_AFTER(chunk))
+	{
+		unsigned long size = HEAP_CHUNK_SIZE(chunk);
+
+		if (size < 16 || (char *)chunk + size > (char *)top)
+			break;
+		if (HEAP_CHUNK_AFTER(chunk)->size & 1)
+			used_total += size;
+		else
+		{
+			free_total += size;
+			if (size > largest)
+				largest = size;
+		}
+	}
+	if (top != first && (char *)top > base && (char *)top < end)
+	{
+		unsigned long size = HEAP_CHUNK_SIZE(top) + untaken;
+
+		free_total += size;
+		if (size > largest)
+			largest = size;
+	}
+	else
+	{
+		free_total += untaken;
+		if (untaken > largest)
+			largest = untaken;
+	}
+	__malloc_unlock(_REENT);
+	*free_bytes = free_total;
+	*largest_bytes = largest;
+	*used_bytes = used_total;
+}
+#endif

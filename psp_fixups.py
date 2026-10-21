@@ -4696,6 +4696,7 @@ static boolean psp_state_page_empty(unsigned long const *words)
 /* build 116 (R11): the log holds its writes around a checkpoint, so the
 sound reader has the Memory Stick first after it (psp_platform.c) */
 void psp_log_hold(unsigned int milliseconds);
+#include "psp_metrics.h"
 #define PSP_STATE_LOG_HOLD_MS 2500
 
 /* build 116 (R10): the checkpoint's pages stored compactly. b115 test 1
@@ -4824,6 +4825,7 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, start = psp_microseconds();
 	byte *map = (byte *)&header[3];
 
+	PSP_METRICS_EVENT(PSP_METRICS_CHECKPOINT); /* a slow frame here is the checkpoint's (psp_metrics.c) */
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
 	psp_log_hold(PSP_STATE_LOG_HOLD_MS);
@@ -4980,6 +4982,7 @@ static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
 	unsigned long pages = size / PSP_STATE_PAGE, page, read;
 	byte const *map = (byte const *)&header[3];
 
+	PSP_METRICS_EVENT(PSP_METRICS_REVERT);
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!ReadFile(handle, header, PSP_STATE_HEADER, &read, NULL) || read != PSP_STATE_HEADER ||
 		header[1] != size || header[2] != pages)

@@ -22,6 +22,7 @@ shortest showing, 6 s by default; "loadhold0" none); the boot screen's "bootlog"
 #include <string.h>
 #include "psp_loading.h"
 #include "psp_paths.h" /* PSP_DATA_ROOT: ms0:/halo or ms0:/halomp */
+#include "psp_metrics.h"
 #include <pspiofilemgr.h>
 #include <pspkernel.h>
 
@@ -233,6 +234,7 @@ static void loading_begin(const char *map_name, int with_chant)
 	char label[80];
 
 	/* before the old level is let go */
+	PSP_METRICS_MAP_END(1);
 	snprintf(label, sizeof(label), "leaving for %s", map_name ? map_name : "?");
 	if (psp_pool_peaks_report)
 		psp_pool_peaks_report(label, 1);
@@ -371,6 +373,7 @@ void psp_loading_end(void)
 	let its voices go */
 	snprintf(label, sizeof(label), "%s loaded", loading.map);
 	psp_heap_map(label);
+	PSP_METRICS_MAP_PLAY(loading.map);
 }
 
 /* ---------- the boot screen (from the hand test: the

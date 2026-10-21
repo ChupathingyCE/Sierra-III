@@ -121,7 +121,7 @@ ONLINE_GAMES_UNITS = ("source/interface/ui_widget.c", "source/interface/ui_widge
 def desktop_unit(rel):
     return rel.startswith(CHUPA_DESKTOP_UNITS) and not (MULTIPLAYER and rel in CHUPA_MULTIPLAYER_KEEPS)
 
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics"]
 # the bake format this build reads (bake/bake.py's BAKE_FORMAT): one number
 # for the bake's stamp and the game's check (psp/src/psp_bakecheck.c)
 _bake_format = re.search(r"^BAKE_FORMAT = (\d+)$", open(os.path.join(HERE, "bake", "bake.py"), encoding="utf-8").read(), re.M)
@@ -156,6 +156,12 @@ RECON = os.environ.get("PSP_RECON", "") == "1"
 # the heap gets the space. The campaign/multiplayer split will be a flavour
 # of the same kind
 DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
+# PSP_METRICS: each map's figures in the log (psp/src/psp_metrics.c: where
+# each second went, the slow frames and what each was doing, the reads, the
+# heap's low point). On unless PSP_METRICS=0, so every test build has them; a
+# final release is built with PSP_METRICS=0, and then every hook
+# (psp/include/psp_metrics.h) compiles to nothing
+METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # PSP_DITHERSHIFT=1: the GE's dither moved each pass (keep words dithershift,
 # dithershiftall). Its tests sit in psp_ge.c's hot paths, so a default build
 # leaves them out. Passed to psp_ge.c's own compile, which takes none of the
@@ -266,7 +272,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -455,6 +461,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
+               ["-DPSP_METRICS=1"] if METRICS else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
                ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + [

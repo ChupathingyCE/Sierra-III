@@ -15,6 +15,12 @@ and profile.txt beside it when there is one) and prints:
   threads         each thread's CPU share (build 106 on)
   steps           the profile's steps, time-weighted over its windows
   trouble         lines that report a failure, counted by kind
+  per map         the metrics lines (builds without PSP_METRICS=0): each
+                  map's second split into tick, draw, frame end and rest;
+                  its frames over 100/250/500 ms and their causes; its own
+                  Memory Stick reads; the heap's low point and its largest
+                  free block's low point. A map's "ends" figures replace its
+                  "so far" ones
 
 Every figure is over the heartbeats in play: game time past --from (default
 150 ticks, after the load) and before --to, on a map other than the menu's
@@ -47,11 +53,61 @@ class Run:
         self.trouble = collections.Counter()
         self.peaks = {}
         self.pools = {}          # game-state pool: (highest peak, its limit)
+        self.metrics = {}        # map: {figure: value}, from the metrics lines
+        self.hitches = []        # (map, ms, game time, cause), the metrics hitch lines
+
+METRICS_LINES = {
+    "budget": (r"game time " + NUMBER + ", " + NUMBER + r" s played, " + NUMBER + " frames, " + NUMBER + r" ticks \| tick " + NUMBER +
+               r" ms/s \(" + NUMBER + " ticks/s x " + NUMBER + r" ms\) \| draw " + NUMBER + r" ms/s \(" + NUMBER + " fps x " + NUMBER +
+               r" ms\) \| frame end " + NUMBER + r" ms/s \| rest " + NUMBER + " ms/s",
+               ("game time", "seconds", "frames", "ticks", "tick ms/s", "ticks/s", "tick ms", "draw ms/s", "fps", "draw ms",
+                "frame end ms/s", "rest ms/s")),
+    "hitches": (r"over 100 ms " + NUMBER + ", over 250 ms " + NUMBER + ", over 500 ms " + NUMBER + "; worst " + NUMBER +
+                r" ms at game time " + NUMBER + r" \(([a-z ]+)\); causes of those over 100 ms: checkpoint " + NUMBER + ", cutscene " +
+                NUMBER + ", textures " + NUMBER + ", geometry " + NUMBER + ", animations " + NUMBER + ", map start " + NUMBER +
+                ", other " + NUMBER,
+                ("frames over 100 ms", "frames over 250 ms", "frames over 500 ms", "worst frame ms", "worst frame at", "worst frame cause",
+                 "hitches: checkpoint", "hitches: cutscene", "hitches: textures", "hitches: geometry", "hitches: animations",
+                 "hitches: map start", "hitches: other")),
+    "io": (r"textures " + NUMBER + " reads, " + NUMBER + " KB, " + NUMBER + " ms; geometry " + NUMBER + " reads, " + NUMBER + " KB, " +
+           NUMBER + " ms; animations " + NUMBER + " reads, " + NUMBER + " KB, " + NUMBER + " ms",
+           ("texture reads", "texture KB", "texture read ms", "geometry reads", "geometry KB", "geometry read ms",
+            "animation reads", "animation KB", "animation read ms")),
+    "heap": (r"free low " + NUMBER + " KB at game time " + NUMBER + "; largest block low " + NUMBER + " KB at game time " + NUMBER +
+             "; in use peak " + NUMBER + " KB; requests failed " + NUMBER + "; user memory free low " + NUMBER +
+             r" KB \(largest block " + NUMBER + r" KB\); " + NUMBER + " samples, walk " + NUMBER + " us",
+             ("heap free low KB", "heap free low at", "heap largest block low KB", "heap largest low at", "heap in use peak KB",
+              "heap requests failed", "user memory free low KB", "user memory largest low KB", "heap samples", "heap walk us")),
+}
+
+def read_metrics(line, run):
+    m = re.match(r"metrics (budget|hitches|io|heap) \((\S+), (ends|so far)\): (.*)", line)
+    if m:
+        kind, name, when, rest = m.groups()
+        pattern, fields = METRICS_LINES[kind]
+        m2 = re.match(pattern, rest)
+        if not m2:
+            run.trouble["metrics %s line not read: %s" % (kind, rest[:80])] += 1
+            return True
+        figures = run.metrics.setdefault(name, {})
+        if figures.get("_when " + kind) == "ends" and when == "so far":
+            figures = run.metrics[name] = {}   # the same map again (a revisit): its new figures
+        for field, value in zip(fields, m2.groups()):
+            figures[field] = value if field == "worst frame cause" else float(value)
+        figures["_when " + kind] = when
+        return True
+    m = re.match(r"metrics hitch \((\S+)\): " + NUMBER + r" ms at game time " + NUMBER + r", ([a-z ]+) \(", line)
+    if m:
+        run.hitches.append((m.group(1), float(m.group(2)), int(float(m.group(3))), m.group(4)))
+        return True
+    return False
 
 def read_log(path, run):
     pending = {}                 # lines since the last heartbeat
     for line in open(path, errors="replace"):
         line = line.rstrip("\n")
+        if line.startswith("metrics ") and read_metrics(line, run):
+            continue
         m = re.match(r"Halo PSP bring-up build (\d+)", line)
         if m:
             run.build = m.group(1)
@@ -333,6 +389,17 @@ def main():
             print("%-*s %s" % (pw, n, "   ".join(cells)))
 
     for k, r in enumerate(runs):
+        if r.metrics:
+            print("\n## Per map%s (the metrics lines: where each second went, slow frames, reads, the heap)\n"
+                  % (" in run " + "AB"[k] if len(runs) > 1 else ""))
+            fields = [f for kind in ("budget", "hitches", "io", "heap") for f in METRICS_LINES[kind][1]]
+            maps = list(r.metrics)
+            print("%-26s" % "" + "".join("%12s" % n[:11] for n in maps))
+            for f in fields:
+                print("%-26s" % f + "".join("%12s" % (fmt(r.metrics[n][f]) if isinstance(r.metrics[n].get(f), float)
+                                                        else r.metrics[n].get(f, "-")) for n in maps))
+            for name, ms, at, cause in r.hitches[:20]:
+                print("  hitch %-10s %6.0f ms at game time %6d: %s" % (name, ms, at, cause))
         if r.trouble:
             print("\n## Trouble%s (lines that report a failure, by kind)\n" % (" in run " + "AB"[k] if len(runs) > 1 else ""))
             for line, count in r.trouble.most_common(20):
