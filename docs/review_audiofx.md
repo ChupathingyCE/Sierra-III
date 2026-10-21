@@ -28,9 +28,9 @@ Where the Xbox's own numbers could differ from these (the filter's slope, the co
 
 ## Proof [E]
 
-- **Play:** `statecrc` with `fixedticks fixedseed nomouth`, the effects on against `audioold`, and against the w140 build before them: the play hash and both random seeds are identical at every tick on b30 (the hand-test route, 6,000 ticks) and a10 (4,500), all three ways. The whole-state hash differs only in `objects`, `object looping sounds`, `first person weapons`, `particle` and `hud unit interface`: the parts that follow the run's speed. `hud unit interface` first differs at the same tick in all three pairs, `audioold` against the build before included, so it is the runs' own spread, not the effects.
-- **Engaged:** b30, of 260,308 voice blocks 14.9% muffled and 56.9% moved by Doppler; a10, of 80,672, 34.2% and 69.9%. No voice was quieter outside a cone on either map. With `audioold` all three counts are 0.
-- **The mixer's health, both sides:** the game never waited for the mixer's lock (0 waits), no voice ran dry, the packet jumps the mixer logs are as many as before (b30 209 / 203 / 199 with the effects, `audioold`, the build before).
+- **Play:** `statecrc` with `fixedticks fixedseed nomouth`, the effects on against `audioold`, and against the w140 build before them: the play hash and both random seeds are identical at every tick on b30 (the hand-test route, 6,000 ticks) and a10 (4,500), all three ways; and, on the newer bake and profile, on b30 again and on the openings of c10 and d20 (6,000 ticks each), the effects on against `audioold`. The whole-state hash differs only in `objects`, `object looping sounds`, `first person weapons`, `particle` and `hud unit interface`: the parts that follow the run's speed. `hud unit interface` first differs at the same tick in all three pairs, `audioold` against the build before included, so it is the runs' own spread, not the effects.
+- **Engaged:** b30, of 260,308 voice blocks 14.9% muffled and 56.9% moved by Doppler (15.0% and 57.1% of 260,769 on the newer bake); a10, of 80,672, 34.2% and 69.9%; c10's opening, of 69,864, 17.4% and 27.9%; d20's opening, of 145,423, 43.4% and 41.9%. No voice was quieter outside a cone on any of the four. The count rises only for a voice heard outside its cone's inner half-angle, so 0 means either no sound on these stretches asked for a cone or the listener stayed inside every one: the cone path is untested in play [E]. With `audioold` all three counts are 0.
+- **The mixer's health, both sides:** the game never waited for the mixer's lock (0 waits), no voice ran dry, the packet jumps the mixer logs are as many as before (b30 209 / 203 / 199 with the effects, `audioold`, the build before; on the newer bake b30 215 / 204, c10 61 / 55, d20 94 / 98 with the effects and `audioold`, and no mixing block late on either side).
 - Strict runs: 0 sites, no crash.
 
 ## Cost
@@ -44,7 +44,7 @@ Where the Xbox's own numbers could differ from these (the filter's slope, the co
 
 - Muffling: stand beside a closed door or behind a wall while a unit fires or speaks on the other side: duller, not only quieter; open the door and the highs return in the same moment. No click when a sound becomes muffled partway through.
 - Doppler: a Banshee, Ghost or Warthog passing fast: rising then falling pitch; a stationary listener beside a stationary source: none. Your own movement: running toward a looping emitter lifts its pitch slightly. Nothing should warble or step when a source's speed changes.
-- Cones: a few machine and ambient emitters: quieter from behind than in front (on the stretches tested for this review no sound in the tags asked for a cone: if none is heard, that is the tags, not a failure).
+- Cones: a few machine and ambient emitters: quieter from behind than in front (on the stretches tested for this review, b30, a10 and the openings of c10 and d20, no voice was ever outside a cone: if none is heard, that is the tags or the spot, not a failure; a hand test that finds a cone emitter is the first check of this path).
 - `audioold` in the launch menu or keep.txt for the same spots, to compare.
 
 ## Fidelity, each off with `audioold` (psp_dsound.c only, the mixer)
