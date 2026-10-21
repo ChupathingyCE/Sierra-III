@@ -4,7 +4,19 @@ Sheepdog01, 2026-10-21 15:51-15:53: memory is now a lever. VRAM trades the textu
 
 ## 1. Geometry: what could go without degrading the look
 
-(pending: the geometry census, lab sierra-tags 39676064840)
+### 1.0 First, a correction: the 14-byte vertex was never built
+
+`asset_baking.md` §3.3's 14-byte vertex (s16 uv, s8 normal, s16 position) was the prototype's design (`model_geom.py`), not what the bake writes [D]. The `.pgeo` pack holds the Xbox's own model vertices, **32 bytes** each (`model_vertex_compressed`: float position, three packed vectors, s16 uv, nodes and weight; 68 bytes for the sky and parts too big for 16 bits), and 16-bit strip indices (`geometry_streaming.md`: `-G` moves the structs out unchanged). The runtime converts each block in place the first time it is drawn (`model_convert`, `psp_ge.c` ~10241): **24 bytes a rigid vertex** for the GE (float uv, s8 normal with the node in the pad byte, float position), skinned parts the weights plus the same 24. So the geometry cache holds 32 B a vertex, the VRAM copies and every GE read 24 B.
+
+That makes the vertex format itself the largest geometry lever, ahead of (a)-(e):
+
+| | Pack and geometry cache | GE reads (main RAM and VRAM copies) | Look | Exact? |
+|---|---|---|---|---|
+| **(0) 14-byte baked vertex** (s16 uv: the source is already s16, so exact; s8 normal: already the GE's; s16 position scaled per part through the model matrix) | 32 -> 14 B a vertex: **-56%** of the models' share of the pack (census below) and of the cache's working set (a10's 900-frame set 2,725 KB, b30 2,429 [E]) | 24 -> 14 B: **-42%** of model vertex bytes. Main RAM, the default set (m6bytes2 [E]): b30 138 KB a frame of model vertices -> -58 KB (**~0.55 ms** beside the tick at 9.6 us/KB), a30 229 -> -96 (~0.9), c20 56 -> -23 (~0.2). VRAM: the 616 KB room holds 1.7x the vertices; on b30's flight, where the room is the binding cost (CTNG: 15.9-17 us/KB [M]), that is worth up to the copies of ~440 KB more 24-byte data: **~3-7 ms a frame on the flight** [U: the room also holds level streams, and the slope is measured to +177 KB only] | sub-pixel: the position step is the part's span / 65,536 (0.19 mm for a 4.15 wu part [M, Blood Gulch]); first-person parts at the near plane (0.06 wu) would reach ~0.6 px: keep them float | no (positions rounded); "plays and looks the same" class, shown by side-by-sides |
+
+Its cost is code, not bytes: the bake writes the new layout, `model_convert` becomes a copy, and every CPU reader of a converted vertex (the near-plane cut ~11846, the see-through colours ~13142, `model_to_camera` ~13220, ~13501, ~13614) reads s16 positions through the part's scale. A keep word can keep the float path for an A/B.
+
+(the census below: pending, lab sierra-tags 39676064840)
 
 ## 2. The ledger, both pools
 
@@ -79,4 +91,33 @@ Sizes: w140 build log (sierra-hw 39640880636: program 5.01 MB, heap 5,876 KB), `
 
 ## 3. The CLUT4 look A/B (lightmaps and HUD sheets beyond the exact set)
 
-(pending: bake c4look1, batch c4look1)
+**The variant.** Sierra-III `clut4look` 63dd5e9 (off w140 bc12443; bake only, off by default): `halo-psp-bake --clut-look` (texpack `--clut4-look`) puts a lightmap or HUD sheet the bake makes CLUT8 at 16 colours when one palette over its whole chain passes the CLUT4W census's strict bar on every level (screen PSNR within 1 dB of CLUT8's or over 45 dB; no texel more than one 5-bit step past CLUT8's worst; `design_clut4w.md`). CLUT8's chain is kept; ui.map is untouched; meters and multipurpose maps stay out. Runtime unchanged (the GE and the texel readers take CLUT4 already [D, `psp_tex.c`]). Not merge-ready: the bake rule asks an all-maps bake first.
+
+**Bake c4look1** (lab sierra-bake 39675794133, bundle local:63dd5e9, c20, b30, ui) [D], beyond the exact set:
+
+| Map, pack | Lightmaps | HUD sheets | Total | Lowest level dB at 16 colours (median) |
+|---|---|---|---|---|
+| c20 main | 35 textures, **-493 KB** (227 missed the bar) | 13, -30 KB | **-523 KB** | lightmaps 48.3 (61.8), HUD 45.1 (52.9) |
+| c20 track (the shipped `assettrack`: half-size lightmaps) | 26, **-107 KB** | 13, -30 | **-137 KB** | 45.1 (46.0) |
+| b30 main | 1, -1 KB | 13, -30 | -31 KB | |
+| b30 track | 0 | 13, -30 | -30 KB | |
+
+The census's c20 figure (790 KB of strict lightmaps, one palette) is this 493 plus the 297 KB of lightmaps the exact set already took. On the shipped track pack the look set is worth 137 KB on c20 and 30 KB on b30.
+
+**The A/B** (lab sierra-batch **39680280258**, emupool x3d; one EBOOT w140 bc12443 both sides, bake b140x vs c4look1; hands off, `fixedticks fixedseed`, a shot every 5 s of game time to 100 s; plain run twice as the control; no `nomouth`). All 8 runs played to game time 2,971-2,977. Pixel differences per frame, the debug line (its clock) left out, 480 x 256 [E]:
+
+| Pair | Shots | Pixels differing, mean (worst shot) | Largest channel step | PSNR, worst shot |
+|---|---:|---|---:|---:|
+| c20 plain vs plain (control) | 19 | 0.00% (0.00%) | 0 | identical |
+| **c20 track: plain vs look** | 18 | **0.07% (0.33%, game time ~13-19 s)** | 17 | 61.6 dB |
+| **c20 main pack: plain vs look** | 19 | **0.03% (0.16%)** | 9 | 65.1 dB |
+| b30 plain vs plain (control) | 19 | 0.00% (0.02%) | 16 | 72.2 dB |
+| **b30 track: plain vs look** | 19 | **0.02% (0.05%)** | 16 | 68.5 dB |
+
+No pixel moved by 24 or more in any pair. c20's differences are faint dither-pattern changes on the lit walls (the opening's view up the Library's dome); b30's are inside the control's own run-to-run spread. (One c20 pair didn't match by name, shot 11: t79 vs t78.)
+
+**Texture bytes in these stretches** (`textures:` lines, whole run): c20 track loaded 2,398 -> 2,383 KB, largest frame 1,673 -> 1,656 KB, untextured frames 19 -> 17; c20 main 3,178 -> 3,060 KB, largest frame 2,225 -> 2,181, untextured 27 -> 22; b30 largest frame 2,413 -> 2,402. The hands-off openings bind few of the changed lightmaps: what the VRAM texture cache gains in play is up to the pack's saving (137 KB on c20's track pack, 30 KB on b30), and on c20 it is room the textures don't wait for (section 2.1), so it buys VSPLIT room, not fewer untextured frames.
+
+**The frames for Sheepdog01** (lab results branch, `sierra-batch/39680280258/<run>/shotNNN_tT.png`, the same names on both sides of a pair): `c20-plain-1` vs `c20-look` (track pack; most changed: `shot001_t13.png`, `shot002_t19.png`), `c20-plain-main` vs `c20-look-main` (full-size lightmaps; `shot001_t13.png`), `b30-plain-1` vs `b30-look` (`shot009_t104.png`); `c20-plain-2` and `b30-plain-2` are the controls.
+
+**Sheepdog01's call:** whether 16-colour lightmaps and HUD sheets (strict bar; at most a 17-level channel step on 0.3% of a frame here) look the same to him. The bytes: c20 -137 KB on the shipped track pack (-523 KB on the main pack), b30 -30 KB. If yes, it ships as its own pack beside the usual one with a keep word to pick it (`design_clut4w.md` recommendation 2), after the all-maps bake the bake rule asks.
