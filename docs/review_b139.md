@@ -46,6 +46,7 @@ H-numbers are b139's first hand test (PSP-1000). "Fixed [E]" means the emulator 
 | H35, H36 | Camouflaged Elites invisible; powerups plain | Opt-in looks, off (see §Calls); neither confirmed on screen [E] |
 | H39 | Pelican off its path | Not reproduced; poseahead cleared (0 of 199,833 poses differ) [E]. A PSP run waits for your word |
 | H42 | Bunker doorway light (a bright wedge beside the door frame) | **Fixed (restoration), bake side** [E]: the cause was the bake's lightmap halving averaging across a chart seam on the door-frame surface; the baker now halves each lightmap chart on its own with its edge texels clamped (`docs/review_fix-h42.md`; `--no-lm-chart-halve` turns it off). b30 doorway wedge gone, 0-37 px a shot elsewhere, play identical, same size (lab 39542362955). Needs the b139d bake. |
+| Crash (found 10-21) | A segfault writing address 0 in `immediate_emit` (ChupathingyCE's d3d8_gl.c) when the heap can't give the vertex buffer's next grow | **Fixed** [D, E]: the realloc's result is now checked; on failure the old buffer stays and that batch's excess is dropped, logged once (`docs/review_fix-rcheck.md`). Reproduced in the emulator by shifting a30's heap 128 KB (segfault at game time 640); with the fix it plays on. Exact whenever the grow succeeds. Exposed wherever the heap runs low (your hand test saw c10 at 16 KB free) |
 | H8 | Signs through the floor | Not touched |
 
 ## §Memory
