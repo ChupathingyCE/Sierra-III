@@ -381,7 +381,8 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
              '--lightmap-scale', '2', '--alpha-coverage', '--pgeo', pgeo] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
-        echo_from(name, log_path, start, MEASURES + ALPHA_LINES)
+        echo_from(name, log_path, start, ('lightmaps 1/', 'lightmaps whole', 'lightmap seams', 'lightmap charts')
+                  + MEASURES + ALPHA_LINES)
     if detail and name != 'ui':
         log('%s: textures at full size for %s' % (name, detail))
         start = os.path.getsize(log_path)
@@ -591,6 +592,20 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
+    # on by default: it restores the original's smooth lighting where plain
+    # halving flattens a small chart against its neighbour (a hard-edged step)
+    ap.add_argument('--lm-chart-halve', action='store_true', default=True,
+                    help="the asset track's lightmaps halved chart by chart where plain halving breaks a seam "
+                         "(texpack.py --lm-chart-halve; the default)")
+    ap.add_argument('--no-lm-chart-halve', dest='lm_chart_halve', action='store_false',
+                    help="the asset track's lightmaps halved plainly, as before")
+    ap.add_argument('--chart-max', type=int, default=-1,
+                    help="texpack.py --chart-max: --lm-chart-halve's largest chart, texels across (-1: texpack's own)")
+    ap.add_argument('--lightmap-seam-whole', action='store_true',
+                    help="texpack.py --lightmap-seam-whole: seam-breaking pages also baked whole (too many: off)")
+    ap.add_argument('--seam-step', type=int, default=0,
+                    help="the asset track's seam test (texpack.py --seam-step; 0: texpack's own)")
+    ap.add_argument('--seam-spots', type=int, default=0, help="texpack.py --seam-spots (0: texpack's own)")
     ap.add_argument('--jobs', type=int, default=0,
                     help='maps baked at once (default: as many as the CPUs, at most 4, fewer when under 8 GB of '
                          'memory is free; 1 bakes them one after another). The maps come out the same whatever it is')
@@ -622,6 +637,16 @@ def main():
         TEXPACK_OPTIONS.append('--tints-from-means')
     if a.fast_palettes:
         TEXPACK_OPTIONS.append('--fast-palettes')
+    if a.lm_chart_halve:
+        TEXPACK_OPTIONS.append('--lm-chart-halve')
+    if a.chart_max >= 0:
+        TEXPACK_OPTIONS.extend(['--chart-max', str(a.chart_max)])
+    if a.lightmap_seam_whole:
+        TEXPACK_OPTIONS.append('--lightmap-seam-whole')
+    if a.seam_step:
+        TEXPACK_OPTIONS.extend(['--seam-step', str(a.seam_step)])
+    if a.seam_spots:
+        TEXPACK_OPTIONS.extend(['--seam-spots', str(a.seam_spots)])
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or \
         CAMPAIGN + (MULTIPLAYER if a.multiplayer else []) + ['ui']
     unknown = [m for m in wanted if m not in ALL]
