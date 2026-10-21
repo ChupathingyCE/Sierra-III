@@ -2026,6 +2026,7 @@ static unsigned long list_full_skips = 0, hud_reserve_low = 0;
 static int list_limit = DISPLAY_LIST_BYTES - HUD_RESERVE - TRANSPARENT_RESERVE;
 static void transparent_flush(void);
 static void taa_resolve(void);
+static void blip_place(void);
 static int hud_phase = 0;
 
 /* build 116 (b113 #6): the world drawn with the GE's ordered dither, as a
@@ -2277,11 +2278,25 @@ static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
 static void gebusy_kind_cut(int kind);
+static int blip_depth_live; /* blipdepth (the motion sensor, below) */
+static unsigned long blip_depth_world_after;
+static unsigned long blip_depth_after_kind[KINDS], blip_depth_after_tested;
+
 static void ge_kind(int kind)
 {
 	unsigned int now;
 
 	gebusy_kind_cut(kind); /* build 115 */
+	/* (the see-through flush is counted where it has something to draw, and
+	the frame's end marks its kind as OTHER without drawing) */
+	if (__builtin_expect(blip_depth_live, 0) && kind != KIND_HUD && kind != KIND_SCREEN && kind != KIND_OTHER &&
+		kind != KIND_SEETHROUGH_FLUSH)
+	{
+		blip_depth_world_after++;
+		blip_depth_after_kind[kind]++;
+		if (sceGuGetStatus(GU_DEPTH_TEST))
+			blip_depth_after_tested++;
+	}
 	now = sceGuCheckList();
 
 	if (now > kind_mark)
@@ -3610,6 +3625,7 @@ static void ge_initialize(void)
 		sceGuInit();
 	gebusy_start(); /* build 113 */
 	sceGuStart(GU_DIRECT, display_list);
+	blip_place();
 	sceGuDrawBuffer(GU_PSM_5650, (void *)0, BUFFER_WIDTH);
 	sceGuDispBuffer(SCREEN_WIDTH, SCREEN_HEIGHT, (void *)FRAME_BYTES, BUFFER_WIDTH);
 	sceGuDepthBuffer((void *)(2 * FRAME_BYTES), BUFFER_WIDTH);
@@ -4842,6 +4858,7 @@ static void window_begin_list(const float *position, const float *forward, const
 	if (vram_busy)
 		vram_busy_load();
 	hud_phase = 0;
+	blip_depth_live = 0;
 	ge_kinds_frame_begin(); /* build 103 */
 	taa_done = 0;
 	taa_frame++;
@@ -7804,6 +7821,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 
 int psp_tex_bind(unsigned int key, int *has_alpha);
 int psp_tex_size(unsigned int key, int *width, int *height);
+void psp_tex_hud_note(unsigned int key); /* stripcensus */
 static unsigned long textured_draws = 0, flat_draws = 0;
 
 /* the level's draws so far, textured and flat (not baked, or still on its
@@ -14969,6 +14987,11 @@ static void transparent_flush_body(void)
 
 	if (!transparent_count)
 		return;
+	if (blip_depth_live)
+	{
+		blip_depth_world_after++;
+		blip_depth_after_kind[KIND_SEETHROUGH_FLUSH]++;
+	}
 	if (list_limit < list_bytes - HUD_RESERVE)
 		list_limit = list_bytes - HUD_RESERVE;
 	if (overlays_off < 0)
@@ -15638,6 +15661,7 @@ void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 		zoom_masks_missing++;
 		return;
 	}
+	psp_tex_hud_note(key);
 	out = list_take(2 * sizeof(struct hud_vertex));
 	if (!out)
 		return;
@@ -15937,6 +15961,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 	}
 	if (!psp_tex_bind(key, &alpha))
 		return;
+	psp_tex_hud_note(key);
 	{
 		/* the game's bitmap_data: width +4, height +6, flags +14 (bit 4: linear) */
 		const unsigned char *bitmap = (const unsigned char *)key;
@@ -18618,8 +18643,63 @@ texture cache; psp_tex.c). The sensor's square runs from -1 to 1. */
 
 #define BLIP_TARGET 0x000CC000
 #define BLIP_SIZE 64
+#define BLIP_BYTES (BLIP_SIZE * BLIP_SIZE * 4)
 static int blips_open = 0;
 static unsigned long blips_drawn = 0;
+
+/* "blipdepth" (docs/review_vrbroom.md): the target drawn in the depth
+buffer's first 16 KB (the top 16 rows' depth) instead, so the 16 KB at
+BLIP_TARGET join the room the textures and the copies share (psp_tex.c).
+The depth buffer is idle there: the sensor is drawn in the HUD's turn, after
+the world's last depth test, every HUD draw has the test off, the target is
+drawn black from scratch before its blips, and the next frame's clear wipes
+it before the world tests against it.
+"blipdepthcheck": the target in the same place, BLIP_TARGET kept, and drawn
+again there after the composite, so the frame's end can compare the two:
+whether the GE wrote anything of the 3D pass's depth over the target after
+it was drawn. The emulator has no GE caches; that question is the PSP's */
+#define BLIP_TARGET_DEPTH (2 * FRAME_BYTES)
+#define BLIP_CHECK_MOST 64
+#define BLIP_CHECK_FILL 0x5AA5C33Cu /* what the check leaves at BLIP_TARGET: still there means no sensor that frame */
+static unsigned int blip_target = BLIP_TARGET;
+static int blip_check = 0;
+/* the frame's blips, for the check's second drawing (on the CPU that draws
+the first) */
+static struct { float x, y, radius, red, green, blue; unsigned int key; } blip_record[BLIP_CHECK_MOST];
+static int blip_record_count = 0, blip_record_lost = 0;
+static unsigned long blip_check_frames = 0, blip_check_differ = 0, blip_check_words = 0, blip_check_lost = 0;
+/* the first difference: its byte in the target, the frame, and the two words */
+static unsigned int blip_check_first = 0xFFFFFFFFu, blip_check_first_depth = 0, blip_check_first_reference = 0;
+static unsigned long blip_check_first_frame = 0;
+/* draws of the world's kinds after the target was drawn in the depth
+buffer, in that frame: none is expected (ge_kind) */
+static int blip_depth_live = 0;
+static unsigned long blip_depth_world_after = 0;
+
+/* set as the GE starts; psp_tex.c asks whether the 16 KB are free */
+static void blip_place(void)
+{
+	blip_check = psp_keep("blipdepthcheck") != 0;
+	blip_target = blip_check || psp_keep("blipdepth") ? BLIP_TARGET_DEPTH : BLIP_TARGET;
+	if (blip_check)
+	{
+		volatile unsigned int *reference = (volatile unsigned int *)(0x44000000 + BLIP_TARGET);
+		int k;
+
+		for (k = 0; k < BLIP_BYTES / 4; k++)
+			reference[k] = BLIP_CHECK_FILL;
+	}
+	if (blip_check)
+		platform_log("GE: blipdepthcheck: the motion sensor's target in the depth buffer at %06x, drawn at %06x too and compared at each frame's end",
+			blip_target, BLIP_TARGET);
+	else if (blip_target != BLIP_TARGET)
+		platform_log("GE: blipdepth: the motion sensor's target in the depth buffer at %06x", blip_target);
+}
+
+int psp_ge_blip_room_freed(void)
+{
+	return psp_keep("blipdepth") && !psp_keep("blipdepthcheck");
+}
 
 struct blip_vertex
 {
@@ -18656,6 +18736,7 @@ static int blip_texture(unsigned int key, float *uv)
 
 	if (!key || !psp_tex_size(key, &width, &height) || !psp_tex_bind(key, &alpha))
 		return 0;
+	psp_tex_hud_note(key);
 	for (corner = 0; corner < 4; corner++)
 	{
 		uv[2 * corner] *= width;
@@ -18671,19 +18752,13 @@ static unsigned int blip_color(float red, float green, float blue)
 	return 0xFF000000 | (PSP_CLAMP_255(b) << 16) | (PSP_CLAMP_255(g) << 8) | PSP_CLAMP_255(r);
 }
 
-void psp_ge_blips_begin(void)
+/* the target made the GE's frame, and black */
+static void blip_target_open(unsigned int target)
 {
-	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
-	ge_kind(KIND_HUD); /* build 103 */
-	list_hud_phase();
 	static const float everywhere[8] = { -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f };
 	static const float nothing[8] = { 0 };
 
-	if (!frame_open || list_full())
-		return;
-	/* the world's see-through parts belong to the frame, not the target */
-	transparent_flush();
-	sceGuDrawBufferList(GU_PSM_8888, (void *)BLIP_TARGET, BLIP_SIZE);
+	sceGuDrawBufferList(GU_PSM_8888, (void *)target, BLIP_SIZE);
 	sceGuOffset(2048 - BLIP_SIZE / 2, 2048 - BLIP_SIZE / 2);
 	sceGuViewport(2048, 2048, BLIP_SIZE, BLIP_SIZE);
 	sceGuScissor(0, 0, BLIP_SIZE, BLIP_SIZE);
@@ -18698,39 +18773,71 @@ void psp_ge_blips_begin(void)
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	ge_blend(1);
+}
+
+void psp_ge_blips_begin(void)
+{
+	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+	ge_kind(KIND_HUD);
+	list_hud_phase();
+
+	if (!frame_open || list_full())
+		return;
+	/* the world's see-through parts belong to the frame, not the target */
+	transparent_flush();
+	blip_target_open(blip_target);
+	blip_depth_live = blip_target != BLIP_TARGET;
+	blip_record_count = blip_record_lost = 0;
 	blips_open = 1;
+}
+
+static int blip_draw(float x, float y, float radius, float red, float green, float blue, unsigned int key)
+{
+	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
+	float xy[8] = { x - radius, y + radius, x + radius, y + radius, x + radius, y - radius, x - radius, y - radius };
+
+	if (list_full() || !blip_texture(key, uv))
+		return 0;
+	/* added light */
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	blip_quad(uv, xy, blip_color(red, green, blue));
+	return 1;
 }
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
 	GE_PRETOUCH(key, TXPT_BLIP);
 	GE_DEFER(defer_words(DEFER_BLIP, 7, defer_bits(x), defer_bits(y), defer_bits(radius), defer_bits(red),
-		defer_bits(green), defer_bits(blue), key, 0)); /* build 112: gedefer */
+		defer_bits(green), defer_bits(blue), key, 0));
 	GE_BENCH_SKIP();
-	ge_kind(KIND_HUD); /* build 103 */
-	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
-	float xy[8] = { x - radius, y + radius, x + radius, y + radius, x + radius, y - radius, x - radius, y - radius };
+	ge_kind(KIND_HUD);
 
-	if (!blips_open || list_full() || !blip_texture(key, uv))
+	if (!blips_open || !blip_draw(x, y, radius, red, green, blue, key))
 		return;
-	/* added light */
-	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
-	blip_quad(uv, xy, blip_color(red, green, blue));
 	blips_drawn++;
+	if (blip_check)
+	{
+		if (blip_record_count < BLIP_CHECK_MOST)
+		{
+			blip_record[blip_record_count].x = x;
+			blip_record[blip_record_count].y = y;
+			blip_record[blip_record_count].radius = radius;
+			blip_record[blip_record_count].red = red;
+			blip_record[blip_record_count].green = green;
+			blip_record[blip_record_count].blue = blue;
+			blip_record[blip_record_count].key = key;
+			blip_record_count++;
+		}
+		else
+			blip_record_lost = 1;
+	}
 }
 
-void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
+/* the sweep and the mask over the target's blips */
+static void blip_target_close(float scale, unsigned int sweep_key, unsigned int mask_key)
 {
-	GE_PRETOUCH(sweep_key, TXPT_BLIPS_END);
-	GE_PRETOUCH(mask_key, TXPT_BLIPS_END);
-	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
-		mask_key, 0, 0, 0)); /* build 112: gedefer */
-	ge_kind(KIND_HUD); /* build 103 */
 	static const float square[8] = { -1.015625f, 1.046875f, 1.046875f, 1.046875f, 1.046875f, -1.015625f, -1.015625f, -1.015625f };
 
-	if (!blips_open)
-		return;
-	blips_open = 0;
 	{
 		/* the sweep: its colour added, the blips under it kept by its alpha */
 		float low = 0.5f - scale * 0.5f, high = 0.5f + scale * 0.5f;
@@ -18753,11 +18860,93 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 			blip_quad(uv, square, 0xFFFFFFFF);
 		}
 	}
-	/* back to the frame */
+}
+
+static void blip_frame_back(void)
+{
 	sceGuDrawBufferList(GU_PSM_5650, draw_buffer, BUFFER_WIDTH);
 	sceGuOffset(2048 - SCREEN_WIDTH / 2, 2048 - SCREEN_HEIGHT / 2);
 	sceGuViewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
 	sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+}
+
+/* blipdepthcheck: the frame's target drawn again at BLIP_TARGET, after the
+composite has read the one in the depth buffer (the picture is blipdepth's) */
+static void blip_check_draw(float scale, unsigned int sweep_key, unsigned int mask_key)
+{
+	int k;
+
+	if (blip_record_lost || list_full())
+	{
+		blip_check_lost++;
+		return;
+	}
+	blip_target_open(BLIP_TARGET);
+	for (k = 0; k < blip_record_count; k++)
+		blip_draw(blip_record[k].x, blip_record[k].y, blip_record[k].radius, blip_record[k].red, blip_record[k].green,
+			blip_record[k].blue, blip_record[k].key);
+	blip_target_close(scale, sweep_key, mask_key);
+	blip_frame_back();
+	/* the texture state the composite left, so the HUD's draws after it find
+	what they find without the check */
+	sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+	sceGuTexImage(0, BLIP_SIZE, BLIP_SIZE, BLIP_SIZE, (void *)(0x04000000 + blip_target));
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+}
+
+/* blipdepthcheck, at the frame's end with the GE done: the two targets
+compared word for word through the uncached view, and BLIP_TARGET filled so
+a frame without the sensor shows as one */
+static void blip_check_compare(void)
+{
+	volatile const unsigned int *depth = (volatile const unsigned int *)(0x44000000 + BLIP_TARGET_DEPTH);
+	volatile unsigned int *reference = (volatile unsigned int *)(0x44000000 + BLIP_TARGET);
+	unsigned int k, differ = 0;
+
+	if (reference[0] == BLIP_CHECK_FILL && reference[BLIP_BYTES / 8] == BLIP_CHECK_FILL &&
+		reference[BLIP_BYTES / 4 - 1] == BLIP_CHECK_FILL)
+		return;
+	/* colour only: the target's alpha bytes are the GE's stencil, which
+	these draws leave as they were (the depth's bytes in one, the fill in the
+	other); the composite reads the colour alone (GU_TCC_RGB, fixed blend) */
+	for (k = 0; k < BLIP_BYTES / 4; k++)
+		if ((depth[k] ^ reference[k]) & 0x00FFFFFFu)
+		{
+			if (!differ && !blip_check_differ)
+			{
+				blip_check_first = k * 4;
+				blip_check_first_depth = depth[k];
+				blip_check_first_reference = reference[k];
+				blip_check_first_frame = frames;
+			}
+			differ++;
+		}
+	blip_check_frames++;
+	if (differ)
+	{
+		blip_check_differ++;
+		blip_check_words += differ;
+	}
+	for (k = 0; k < BLIP_BYTES / 4; k++)
+		reference[k] = BLIP_CHECK_FILL;
+}
+
+void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
+{
+	GE_PRETOUCH(sweep_key, TXPT_BLIPS_END);
+	GE_PRETOUCH(mask_key, TXPT_BLIPS_END);
+	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
+		mask_key, 0, 0, 0));
+	ge_kind(KIND_HUD);
+
+	if (!blips_open)
+		return;
+	blips_open = 0;
+	blip_target_close(scale, sweep_key, mask_key);
+	/* back to the frame */
+	blip_frame_back();
 	if (!list_full())
 	{
 		/* the target, added over the sensor (42 of the game's pixels either
@@ -18770,7 +18959,7 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 
 		sceGuTexFlush();
 		sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-		sceGuTexImage(0, BLIP_SIZE, BLIP_SIZE, BLIP_SIZE, (void *)(0x04000000 + BLIP_TARGET));
+		sceGuTexImage(0, BLIP_SIZE, BLIP_SIZE, BLIP_SIZE, (void *)(0x04000000 + blip_target));
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
@@ -18785,6 +18974,8 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 		sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
 		}
 	}
+	if (blip_check)
+		blip_check_draw(scale, sweep_key, mask_key);
 	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_FOG);
@@ -19617,6 +19808,10 @@ static void frame_end_show(void)
 			win_ge_worst = waited;
 		if (waited > ge_wait_worst)
 			ge_wait_worst = waited;
+		/* blipdepthcheck: the GE has the whole frame done */
+		if (blip_check)
+			blip_check_compare();
+		blip_depth_live = 0;
 		{
 			/* "framecrc": each finished picture hashed (FNV-1a over its
 			480 x 272 pixels, before the debug overlay) and logged with the
@@ -19749,6 +19944,23 @@ static void frame_end_show(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		if (blip_target != BLIP_TARGET)
+		{
+			char kinds[KINDS * 12 + 1];
+			int length = 0, k;
+
+			for (k = 0; k < KINDS; k++)
+				if (blip_depth_after_kind[k])
+					length += snprintf(kinds + length, sizeof(kinds) - length, " %c%lu", kind_letters[k],
+						blip_depth_after_kind[k]);
+			kinds[length] = 0;
+			platform_log("GE: blipdepth: after the target, by kind:%s; %lu with the depth test on (since the start)",
+				length ? kinds : " none", blip_depth_after_tested);
+		}
+		if (blip_target != BLIP_TARGET)
+			platform_log("GE: blipdepth: %lu world draws after the target in the depth buffer; check: %lu frames compared, %lu differed (%lu words; the first at byte %u in frame %lu, depth %08x for %08x), %lu not drawn again (since the start)",
+				blip_depth_world_after, blip_check_frames, blip_check_differ, blip_check_words, blip_check_first,
+				blip_check_first_frame, blip_check_first_depth, blip_check_first_reference, blip_check_lost);
 		if (glyphs_drawn)
 			platform_log("GE: button glyphs drawn %lu (since the start)", glyphs_drawn);
 		cut_count_report(frames == 1 ? 1 : 300);
