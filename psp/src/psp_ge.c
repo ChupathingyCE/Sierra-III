@@ -331,8 +331,17 @@ Media Engine version will run in (the ME carrying out frame N while the main
 CPU ticks N+1). Carried out here on the main CPU, it moves no work; what it
 gives is that order, so the emulator's drawhash and statecrc show anything the
 next ticks change under a frame still waiting. A frame is written down whole,
-so the buffer is sized for b30's busiest (~100 KB a frame, recon_134.md) */
-#define DEFER_INFLIGHT_WORDS (128 * 1024 / 4)
+so the buffer is sized for b30's busiest (~100 KB a frame, recon_134.md).
+A frame larger than the buffer is carried out in part when it fills, in the
+engine walk, and the main CPU waits for that part: on the Media Engine
+(gemeon) it sleeps through the ME's replay of it. b30's flight and landing
+fill it in 24-100% of frames, and the PSP-1000 waits 15-53 ms a frame there
+(docs/design_inflightkb.md). "inflightkbN": the buffer N KB (64 to
+1024) instead, so those frames go out whole after the next ticks. Exact: the
+same calls carried out in the same order; only when the part runs moves */
+#define DEFER_INFLIGHT_KB 128
+#define DEFER_INFLIGHT_KB_MIN 64
+#define DEFER_INFLIGHT_KB_MAX 1024
 static PSP_MAIN_SIDE int inflight_on = 0;
 static PSP_MAIN_SIDE int inflight_pending = 0; /* a frame's end is written down and waits */
 /* the waiting frame's list has ended (its window was open): the main CPU's
@@ -358,6 +367,10 @@ between records (geinflight) */
 static int replay_inflight = 0;
 static int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
+/* the whole frame's words, the parts carried out when the buffer filled
+included (inflight_words counts only what is left at the sync) */
+static PSP_MAIN_SIDE unsigned long inflight_part_words = 0, inflight_whole_words = 0, inflight_whole_most = 0;
+static PSP_MAIN_SIDE unsigned int inflight_buffer_words = 0;
 extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
 static void defer_hand_over(void); /* build 118: gemeoverlap */
@@ -486,8 +499,20 @@ static void defer_frame_begin(void)
 		{
 			/* geinflight: a whole frame's buffer; not with the overlap's
 			halves or mebench's turns, which hand work over within a frame */
-			unsigned int words = psp_keep("geinflight") && !me_bench && !psp_keep("gemeoverlap") ? DEFER_INFLIGHT_WORDS : DEFER_WORDS;
+			int inflight = psp_keep("geinflight") && !me_bench && !psp_keep("gemeoverlap");
+			unsigned int words = DEFER_WORDS;
 
+			if (inflight)
+			{
+				extern int psp_keep_number(const char *prefix, int fallback);
+				int kb = psp_keep_number("inflightkb", DEFER_INFLIGHT_KB);
+
+				if (kb < DEFER_INFLIGHT_KB_MIN)
+					kb = DEFER_INFLIGHT_KB_MIN;
+				if (kb > DEFER_INFLIGHT_KB_MAX)
+					kb = DEFER_INFLIGHT_KB_MAX;
+				words = (unsigned int)kb * 1024 / sizeof(defer_word);
+			}
 			defer_buffer = memalign(64, words * sizeof(defer_word));
 			defer_nodes = memalign(64, DEFER_MAX_NODES * NODE_FLOATS * sizeof(float));
 			if (!defer_buffer || !defer_nodes)
@@ -503,10 +528,11 @@ static void defer_frame_begin(void)
 			{
 				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer",
 					(unsigned int)(words * sizeof(defer_word) / 1024));
-				if (words == DEFER_INFLIGHT_WORDS)
+				if (inflight)
 				{
 					inflight_on = 1;
 					defer_limit = words;
+					inflight_buffer_words = words;
 					platform_log("GE: geinflight: each frame carried out at the next frame's first call, after its ticks");
 				}
 				if (psp_keep("gemesim"))
@@ -576,6 +602,11 @@ static void inflight_sync(void)
 	inflight_words += defer_used;
 	if (defer_used > inflight_words_most)
 		inflight_words_most = defer_used;
+	inflight_part_words += defer_used;
+	inflight_whole_words += inflight_part_words;
+	if (inflight_part_words > inflight_whole_most)
+		inflight_whole_most = inflight_part_words;
+	inflight_part_words = 0;
 	if (inflight_me_out)
 	{
 		inflight_wait_me();
@@ -599,6 +630,8 @@ static defer_word *defer_take(int kind, unsigned int words)
 	if (defer_used + 1 + words > defer_limit)
 	{
 		defer_drains_full++;
+		if (inflight_on)
+			inflight_part_words += defer_used;
 		if (me_overlap)
 			defer_hand_over(); /* build 118: the half to the ME, the other one next */
 		else
@@ -19564,8 +19597,11 @@ static void frame_end_show(void)
 			{
 				platform_log("GE: geinflight: %lu frames carried out after the next frame's ticks (%lu of them on the Media Engine, %lu stall addresses passed on while out), %lu KB a frame written down (fullest %lu KB of %u)",
 					inflight_frames, inflight_handed, inflight_forwards, inflight_words * sizeof(defer_word) / 1024 / inflight_frames,
-					inflight_words_most * (unsigned long)sizeof(defer_word) / 1024, (unsigned int)(DEFER_INFLIGHT_WORDS * sizeof(defer_word) / 1024));
+					inflight_words_most * (unsigned long)sizeof(defer_word) / 1024, (unsigned int)(inflight_buffer_words * sizeof(defer_word) / 1024));
+				platform_log("GE: geinflight: whole frames %lu KB on average, %lu KB at most, the parts carried out when the buffer filled included (inflightkbN sizes the buffer)",
+					inflight_whole_words * sizeof(defer_word) / 1024 / inflight_frames, inflight_whole_most * (unsigned long)sizeof(defer_word) / 1024);
 				inflight_frames = inflight_words = inflight_words_most = inflight_handed = inflight_forwards = 0;
+				inflight_whole_words = inflight_whole_most = 0;
 			}
 			if (defer_on)
 			{
