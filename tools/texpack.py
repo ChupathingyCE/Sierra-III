@@ -16,7 +16,8 @@ File layout (little endian):
   directory, sorted by key: count x { u32 key (bitmap_data address),
     u16 width, u16 height, u8 levels, u8 psm (5 = T8, 4 = T4; in its own colours,
     --showcase: 3 = 8888, 0 = 5650), u8 clut (0 = 5650, 3 = 8888; 0xFF none),
-    u8 flags (1 = has alpha), u32 offset, u32 size }
+    u8 flags (1 = has alpha; 2 = an exact CLUT4: 8-bit texels in 16
+    colours, its average sampled as its CLUT8 layout's), u32 offset, u32 size }
   tints, right after the directory: 'TNT1', u32 count, then count x
     { u32 shader tag address, u32 tint (ABGR) }, sorted by address: the
     see-through shaders' tints for the one map the GE draws of each
@@ -1025,6 +1026,150 @@ def quality_note(cls, old, new):
     st[2] += new
 
 
+# ---- The exact set (docs/review_clut4exact.md). A CLUT8 texture whose
+# texels, over every level, use 16 palette words or fewer draws the same
+# texel for texel at 4 bits, and the GE samples CLUT4 faster from half the
+# bytes (design_clut4w.md). The 16-colour rule in bake_one leaves many such
+# textures at 8 bits: it skips lightmaps, level, sky and detail maps, keeps
+# HUD sheets at 8 and narrow maps whole, and its error test isn't needed
+# where nothing is lost. Each texture switched is proved in the bake: its
+# levels read back from both packings give the same words, and the runtime's
+# average (psp_tex_average) the same colour; any that don't stay CLUT8.
+# --no-clut4-exact keeps them all at 8 bits.
+CLUT4_EXACT = True
+# the pack flag that tells psp_tex_average to sample such a texture where its
+# CLUT8 layout's bytes were: object lighting and the flashlight then take
+# the same average colour from it as before
+CLUT4_EXACT_FLAG = 2
+CLUT4_EXACT_MADE = []     # (class, CLUT8 bytes, CLUT4 bytes) per texture switched
+CLUT4_EXACT_DIFFER = []   # the class of each that read back differently (kept at 8 bits)
+
+
+def palette_words(pal, alpha):
+    """each palette entry as the pack stores it: 8888 (r g b a bytes, one
+    little-endian word) or GU_PSM_5650 (r in the low bits)"""
+    if alpha:
+        return np.ascontiguousarray(pal.astype(np.uint8)).view('<u4').ravel()
+    r, g, bl = pal[:, 0].astype(np.uint16), pal[:, 1].astype(np.uint16), pal[:, 2].astype(np.uint16)
+    return ((r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11)).astype('<u2')
+
+
+def pack_level(ix, w, h, bits):
+    """one level's indices, swizzled (4 bits: the low nibble first)"""
+    row, rows = level_bytes(w, h, bits)
+    if bits == 4:
+        pixels = np.zeros((rows, row * 2), np.uint8)
+        pixels[:h, :w] = ix
+        packed = (pixels[:, 0::2] & 15) | ((pixels[:, 1::2] & 15) << 4)
+        return swizzle_psp(packed.astype(np.uint8).tobytes(), row, rows)
+    padded = np.zeros((rows, row), np.uint8)
+    padded[:h, :w] = ix
+    return swizzle_psp(padded.tobytes(), row, rows)
+
+
+def level_sizes(w, h, levels):
+    """each level's size, halved as the runtime halves them (psp_tex_bind)"""
+    sizes = []
+    for _ in range(levels):
+        sizes.append((w, h))
+        w, h = max(1, w // 2), max(1, h // 2)
+    return sizes
+
+
+def read_levels(t):
+    """(each level's indices, the palette's words) read back from a texture's
+    bytes as the GE reads them"""
+    four = t['psm'] == 4
+    words = np.frombuffer(t['data'], '<u4' if t['alpha'] else '<u2', 16 if four else 256)
+    at = len(words) * words.itemsize
+    out = []
+    for w, h in level_sizes(t['w'], t['h'], t['levels']):
+        row, rows = level_bytes(w, h, 4 if four else 8)
+        a = np.frombuffer(t['data'], np.uint8, row * rows, at).reshape(rows // 8, row // 16, 8, 16)
+        a = a.transpose(0, 2, 1, 3).reshape(rows, row)
+        if four:
+            a = np.stack([a & 15, a >> 4], 2).reshape(rows, row * 2)
+        out.append(a)
+        at += row * rows
+    return out, words
+
+
+def runtime_average(t):
+    """psp_tex_average's colour (psp_tex.c), worked out as it works it out: a
+    sample of the top level's bytes, padding included, through the palette.
+    An exact CLUT4 texture is sampled where its CLUT8 layout's bytes were"""
+    levels, words = read_levels(t)
+    top, (w, h) = levels[0], (t['w'], t['h'])
+    clut8_order = t['psm'] == 5 or t.get('flags', 0) & CLUT4_EXACT_FLAG
+    row, rows = level_bytes(w, h, 8 if clut8_order else 4)
+    total = row * rows
+    at = np.arange(0, total, total // 2048 + 1)
+    block, inside = at >> 7, at & 127
+    y = block // (row // 16) * 8 + (inside >> 4)
+    x = block % (row // 16) * 16 + (inside & 15)
+    if clut8_order:
+        # the texel each CLUT8 byte held; a padding byte reads entry 0
+        ix = np.where((x < w) & (y < h), top[np.minimum(y, top.shape[0] - 1), np.minimum(x, top.shape[1] - 1)], 0)
+    else:
+        ix = np.stack([top[y, 2 * x], top[y, 2 * x + 1]], 1).ravel()
+    c = words[ix].astype(np.int64)
+    if t['alpha']:
+        rgb = np.stack([c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF], 1)
+    else:
+        rgb = np.stack([(c & 31) * 255 // 31, ((c >> 5) & 63) * 255 // 63, (c >> 11) * 255 // 31], 1)
+    return tuple(int(v) for v in rgb.sum(0) // len(ix))
+
+
+def clut4_exact(made, cls, words, level_ix):
+    """made at 4 bits when its levels use 16 palette words or fewer and read
+    back the same, else made as it was"""
+    w, h = made['w'], made['h']
+    row, rows = level_bytes(w, h)
+    used = np.unique(np.concatenate([ix.ravel() for ix in level_ix]))
+    # a CLUT8 top level's padding bytes are index 0, and psp_tex_average
+    # samples them: where there are any, entry 0's word comes too, first
+    order = ([0] if row > w or rows > h else []) + [int(i) for i in used]
+    at = {}
+    for i in order:
+        at.setdefault(int(words[i]), len(at))
+    if len(at) > 16:
+        return made
+    remap = np.zeros(len(words), np.int64)
+    for i in used:
+        remap[i] = at[int(words[i])]
+    four = np.zeros(16, words.dtype)
+    four[list(at.values())] = list(at.keys())
+    levels = [pack_level(remap[ix], lw, lh, 4) for ix, (lw, lh) in zip(level_ix, level_sizes(w, h, len(level_ix)))]
+    made4 = dict(made, psm=4, flags=CLUT4_EXACT_FLAG, data=four.tobytes() + b''.join(levels))
+    (as8, words8), (as4, words4) = read_levels(made), read_levels(made4)
+    same = all(np.array_equal(words8[a[:lh, :lw]], words4[b[:lh, :lw]])
+               for a, b, (lw, lh) in zip(as8, as4, level_sizes(w, h, made['levels'])))
+    if not same or runtime_average(made) != runtime_average(made4):
+        CLUT4_EXACT_DIFFER.append(cls)
+        return made
+    CLUT4_EXACT_MADE.append((cls, len(made['data']), len(made4['data'])))
+    return made4
+
+
+def clut4_exact_report():
+    """the pack's 'clut4 exact' lines (the bake's log echoes them): classes,
+    counts and bytes, no names. Shared data is counted once per texture
+    baked, as the textures were made"""
+    before = sum(b for _, b, _ in CLUT4_EXACT_MADE)
+    after = sum(a for _, _, a in CLUT4_EXACT_MADE)
+    by_class = {}
+    for cls, b, a in CLUT4_EXACT_MADE:
+        n, saved = by_class.get(cls, (0, 0))
+        by_class[cls] = (n + 1, saved + b - a)
+    print('clut4 exact, %s pack: %d textures to 16 colours, %d -> %d bytes (saves %d KB); read back: %d the same, '
+          '%d differ (kept at 8 bits)%s' % (PROFILE_PACK, len(CLUT4_EXACT_MADE), before, after, (before - after) // 1024,
+                                            len(CLUT4_EXACT_MADE), len(CLUT4_EXACT_DIFFER),
+                                            '' if CLUT4_EXACT else ' (--no-clut4-exact: off)'), file=sys.stderr)
+    if by_class:
+        print('clut4 exact, %s pack, by class: %s' % (PROFILE_PACK, '; '.join(
+            '%s %d (%d KB)' % (cls, n, saved // 1024) for cls, (n, saved) in sorted(by_class.items()))), file=sys.stderr)
+
+
 @profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
              relief=None):
@@ -1129,15 +1274,11 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
                     pal16, _ = fit_palette(small, 16)
                     pal = pal16[:16]
                     idx = diffuse(small, pal, alpha, 16)
-    if alpha:
-        palette = pal.astype(np.uint8).tobytes()                       # 8888, r g b a
-        clut = 3
-    else:
-        r, g, bl = pal[:, 0].astype(np.uint16), pal[:, 1].astype(np.uint16), pal[:, 2].astype(np.uint16)
-        v = (r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11)              # GU_PSM_5650: r low bits
-        palette = v.astype('<u2').tobytes()
-        clut = 0
+    words = palette_words(pal, alpha)
+    palette = words.tobytes()
+    clut = 3 if alpha else 0
     levels = []
+    level_ix = []
     w, h, level_img = tw, th, small
     chain_img = small
     fix_coverage = ALPHA_COVERAGE and alpha and b['tag'] in ALPHA_TESTED and not own_levels and not grid
@@ -1157,16 +1298,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     while len(levels) < min(8, source_levels):
         ix = idx if not levels else (grid_index(level_img, grid_off) if grid else
                                      diffuse(level_img, pal, alpha, len(pal)) if diffusing else nearest(level_img, pal, alpha))
-        row, rows = level_bytes(w, h, bits)
-        if bits == 4:
-            pixels = np.zeros((rows, row * 2), np.uint8)
-            pixels[:h, :w] = ix
-            packed = (pixels[:, 0::2] & 15) | ((pixels[:, 1::2] & 15) << 4)      # low nibble first
-            levels.append(swizzle_psp(packed.astype(np.uint8).tobytes(), row, rows))
-        else:
-            padded = np.zeros((rows, row), np.uint8)
-            padded[:h, :w] = ix
-            levels.append(swizzle_psp(padded.tobytes(), row, rows))
+        levels.append(pack_level(ix, w, h, bits))
+        level_ix.append(ix)
         # a detail map tiles up to a hundred times across a surface, so it
         # mips down to a single texel: its average, the neutral grey (build 31)
         if cls == 'detail':
@@ -1185,7 +1318,12 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
             chain_img = resample(chain_img, w, h, cls)
             level_img = keep_coverage(chain_img, top_coverage) if fix_coverage else chain_img
     data = palette + b''.join(levels)
-    return dict(w=tw, h=th, levels=len(levels), clut=clut, alpha=alpha, data=data, psm=4 if bits == 4 else 5)
+    made = dict(w=tw, h=th, levels=len(levels), clut=clut, alpha=alpha, data=data, psm=4 if bits == 4 else 5)
+    # not the grid (its entries are positions along a meter) or a multipurpose
+    # map (the change colour reads 256 entries); the showcase stays as it is
+    if CLUT4_EXACT and bits == 8 and not grid and own_colours and not SHOWCASE:
+        made = clut4_exact(made, cls, words, level_ix)
+    return made
 
 
 def main():
@@ -1198,6 +1336,8 @@ def main():
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
+    ap.add_argument('--no-clut4-exact', action='store_true',
+                    help='textures of 16 colours or fewer that the 16-colour rule leaves at 8 bits stay at 8 bits')
     ap.add_argument('--tints-from-means', action='store_true',
                     help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
     ap.add_argument('--no-glow-maps', action='store_true',
@@ -1244,6 +1384,8 @@ def main():
     NO_RELIEF = a.no_relief
     SHOWCASE_32 = a.showcase_32
     HUD_CLUT4 = a.hud_clut4
+    global CLUT4_EXACT
+    CLUT4_EXACT = not a.no_clut4_exact
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
         sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
@@ -1404,7 +1546,7 @@ def main():
             while len(blob) % 16:
                 blob += b'\0'
         dir_bytes += struct.pack('<IHHBBBBII', e['key'], e['w'], e['h'], e['levels'], e['psm'], e['clut'],
-                                 1 if e['alpha'] else 0, start, len(e['data']))
+                                 (1 if e['alpha'] else 0) | e.get('flags', 0), start, len(e['data']))
     out = bytearray(struct.pack('<4sII', b'PTX1', len(entries), directory)) + dir_bytes + tint_bytes
     while len(out) < offset:
         out += b'\0'
@@ -1423,6 +1565,7 @@ def main():
                 e['name'], e['w'], e['h'], 32 if e['psm'] == 3 else 16, e['levels'], len(e['data'])), file=sys.stderr)
         print('showcase: %d textures in their own colours (%d bytes), every map at its own size up to 512' % (
             len(own), sum(len(d) for d in {id(e['data']): e['data'] for e in own}.values())), file=sys.stderr)
+    clut4_exact_report()
     print('%s: %d textures, %d bytes; skipped %s' % (a.out, len(entries), len(out), skipped))
     if FAST_PALETTES:
         print('palettes: fast (--fast-palettes)', file=sys.stderr)
