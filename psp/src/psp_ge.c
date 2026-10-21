@@ -5415,6 +5415,36 @@ sides. A request takes the smallest free block that holds it (best fit),
 split when what's left is worth keeping. "noarena" (keep word): the general
 heap only, as before. */
 #define ARENA_BYTES (LEVEL_STREAM_BUDGET + 32 * 1024)
+/* "heaproom": on a map that carves, HEAPROOM_BYTES of the arena's room moves
+to the level carve, taken whole at the map's open as the carve's floor (the
+level carve, below), so the general heap keeps those bytes. The volatile
+block pays for it: the geometry cache 256 KB less when it is over 1 MB
+(psp_geo.c), the textures the rest. The RAM budget census's replay of both
+rings on b30, a30 and d20 found the geometry cache's 256 KB free and the
+textures' 128 KB a few percent more reading (docs/review_sv.md) */
+#define HEAPROOM_BYTES (384 * 1024)
+/* the arena's size, settled once (0: not yet): ARENA_BYTES, or that less
+HEAPROOM_BYTES with the word. The arena is taken once and kept for every
+map, so it is smaller on every map; the maps that carve take the difference
+back at their open (one that doesn't, the main menu among them, has the
+smaller arena and the heap). Campaign only: the multiplayer build's maps
+keep their geometry cache in the heap and carve nothing */
+static unsigned int arena_room_bytes = 0;
+
+static unsigned int arena_size(void)
+{
+	int psp_keep(const char *name);
+
+	if (!arena_room_bytes)
+	{
+		arena_room_bytes = ARENA_BYTES;
+#ifndef PSP_MULTIPLAYER
+		if (psp_keep("heaproom"))
+			arena_room_bytes = ARENA_BYTES - HEAPROOM_BYTES;
+#endif
+	}
+	return arena_room_bytes;
+}
 #define ARENA_ALIGN 16
 #define ARENA_SPLIT_LEAST 64
 struct arena_block
@@ -5497,8 +5527,12 @@ frame's end; a frame-end build that failed though the rooms had the bytes */
 static int carve_allowed = 0, carve_pack_short = 0;
 static unsigned int carve_most = 0, carve_below = 0, carve_want = 0, carve_idle = 0;
 static unsigned long carve_steps = 0, carve_returns = 0;
+/* "heaproom": the bytes the carve keeps from the map's open to its end (0:
+none), the arena's share it stands in for */
+static unsigned int carve_floor = 0;
 unsigned int psp_tex_ram_textures(void);
 static void carve_release(void);
+static int carve_grow(unsigned int deficit);
 
 /* a room that takes blocks now */
 static int room_open(const struct copy_room *room)
@@ -5589,25 +5623,25 @@ static void __attribute__((cold)) arena_start(void)
 		platform_log("GE: the copies' arena: off (noarena); copies from the general heap");
 		return;
 	}
-	ARENA_ROOM->start = memalign(ARENA_ALIGN, ARENA_BYTES);
+	ARENA_ROOM->start = memalign(ARENA_ALIGN, arena_size());
 	if (!ARENA_ROOM->start)
 	{
-		platform_log("GE: the copies' arena: no room for %u KB; copies from the general heap", ARENA_BYTES / 1024);
+		platform_log("GE: the copies' arena: no room for %u KB; copies from the general heap", arena_room_bytes / 1024);
 		return;
 	}
-	ARENA_ROOM->bytes = ARENA_BYTES;
+	ARENA_ROOM->bytes = arena_room_bytes;
 	room_reset(ARENA_ROOM);
 	arena_state = 1;
-	platform_log("GE: the copies' arena: %u KB", ARENA_BYTES / 1024);
+	platform_log("GE: the copies' arena: %u KB", arena_room_bytes / 1024);
 	{
 		extern int psp_keep_number(const char *prefix, int fallback);
 
 		arena_squeeze = psp_keep_number("streamsqueeze", 0);
 	}
 	/* held by no copy for good: compaction keeps it at the start */
-	if (arena_squeeze > 0 && (unsigned int)arena_squeeze * 1024 < ARENA_BYTES)
+	if (arena_squeeze > 0 && (unsigned int)arena_squeeze * 1024 < arena_room_bytes)
 	{
-		arena_take(ARENA_ROOM, ARENA_BYTES - (unsigned int)arena_squeeze * 1024, NULL);
+		arena_take(ARENA_ROOM, arena_room_bytes - (unsigned int)arena_squeeze * 1024, NULL);
 		platform_log("GE: streamsqueeze (test): the copies held to %d KB of the arena, none from the general heap",
 			arena_squeeze);
 	}
@@ -5668,7 +5702,7 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 
 	if (arena_state < 0)
 		arena_start();
-	if (arena_state > 0 && (size <= ARENA_BYTES || (room_open(CARVE_ROOM) && size <= CARVE_ROOM->bytes)))
+	if (arena_state > 0 && (size <= ARENA_ROOM->bytes || (room_open(CARVE_ROOM) && size <= CARVE_ROOM->bytes)))
 	{
 		while (!(pointer = rooms_take(size, owner)) && level_stream_let_go_oldest())
 			arena_let_go++;
@@ -6261,6 +6295,7 @@ void psp_ge_level_carve(int carve_from_textures)
 	carve_lost = 0;
 	carve_allowed = carve_pack_short = 0;
 	carve_given = carve_want = carve_idle = 0;
+	carve_floor = 0;
 	carve_largest = 0;
 	carve_peak = carve_pieces = carve_pieces_peak = carve_steps = carve_returns = 0;
 	if (!carve_from_textures)
@@ -6278,6 +6313,27 @@ void psp_ge_level_carve(int carve_from_textures)
 	carve_allowed = 1;
 	platform_log("GE: the level carve: up to %d KB from the texture RAM cache, below the %u KB the geometry and animation caches carved, taken %u KB at a time only when the copies have no room in the arena or the heap; the texture RAM cache has %u KB",
 		kb, carve_below / 1024, LEVEL_CARVE_STEP / 1024, psp_tex_ram_textures() / 1024);
+	/* "heaproom": the arena's missing share taken now, kept to the map's
+	end, on top of what the carve may take as it goes (none with the arena
+	off: no room for it in the heap, and the copies go there whole) */
+	if (arena_size() < ARENA_BYTES && arena_state != 0)
+	{
+		unsigned int floor_bytes = ARENA_BYTES - arena_size();
+
+		carve_most += floor_bytes;
+		if (carve_grow(floor_bytes))
+		{
+			carve_floor = carve_given;
+			platform_log("GE: heaproom: %u KB of the copies' room in the level carve for this map, the arena keeping %u KB of the heap",
+				carve_floor / 1024, arena_room_bytes / 1024);
+		}
+		else
+		{
+			carve_most -= floor_bytes;
+			platform_log("GE: heaproom: no %u KB for the copies in the level carve on this map: the arena's %u KB and the heap",
+				floor_bytes / 1024, arena_room_bytes / 1024);
+		}
+	}
 }
 
 /* the carve given back whole to the texture cache; its copies let go */
@@ -6291,6 +6347,7 @@ static void carve_release(void)
 	CARVE_ROOM->start = NULL;
 	CARVE_ROOM->used = 0;
 	carve_given = carve_idle = 0;
+	carve_floor = 0;
 	carve_largest = 0;
 	carve_lost = 0;
 	carve_returns++;
@@ -6413,7 +6470,7 @@ static void __attribute__((cold)) carve_frame_grow(void)
 			stream_waiting[k].arena_after = ge_hot.stream_frame;
 	if (CARVE_ROOM->start && !carve_lost)
 	{
-		if (CARVE_ROOM->used)
+		if (CARVE_ROOM->used || carve_floor)
 			carve_idle = 0;
 		else if (++carve_idle >= CARVE_IDLE_FRAMES)
 		{
@@ -15864,7 +15921,8 @@ static int level_stream_let_go_oldest(void)
 /* the carve's room counts too: copies kept there cost the heap nothing */
 static void level_streams_trim(void)
 {
-	unsigned long budget = LEVEL_STREAM_BUDGET + (room_open(CARVE_ROOM) ? CARVE_ROOM->bytes : 0);
+	unsigned long budget = (ARENA_ROOM->bytes ? ARENA_ROOM->bytes - (ARENA_BYTES - LEVEL_STREAM_BUDGET) : LEVEL_STREAM_BUDGET) +
+		(room_open(CARVE_ROOM) ? CARVE_ROOM->bytes : 0);
 
 	while (stream_bytes > budget && level_stream_let_go_oldest())
 		;
@@ -19527,7 +19585,7 @@ static void frame_end_show(void)
 		if (arena_state > 0)
 		{
 			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
-				ARENA_ROOM->used / 1024, ARENA_BYTES / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
+				ARENA_ROOM->used / 1024, ARENA_ROOM->bytes / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
 				arena_compactions, arena_moved_kb, arena_migrated);
 			carve_report();
 		}
