@@ -28045,6 +28045,113 @@ FIXES_MUSIC["source/cache/cache_files.c#musicpack"] = [
 #endif"""),
 ]
 
+# recon: music's share of the sound cache and of its Memory Stick reads
+# ("sound cache, music:" every 5 s beside "sound cache:"), to price the music
+# path: what music holds of the cache at the report and what its loads read
+# from the stick. With the path (PSP_MUSIC=1, keep word musicstream), a stub
+# holds one page and its load reads nothing, so the two sides of an A/B give
+# the room the path frees and the reads it moves to its own reader
+FIXES_RECON["source/cache/xbox_sound_cache.c#musiccount"] = [
+("""	psp_sound_cache_largest = 0, psp_sound_cache_peak_pages = 0;
+""",
+ """	psp_sound_cache_largest = 0, psp_sound_cache_peak_pages = 0;
+static unsigned long psp_sound_music_loads = 0, psp_sound_music_load_bytes = 0, psp_sound_music_stub_loads = 0,
+	psp_sound_music_peak_bytes = 0, psp_sound_other_peak_bytes = 0;
+
+/* sound_classes.h's _sound_class_music, which this unit doesn't include */
+#define PSP_SOUND_CLASS_MUSIC 32
+long game_time_get(void);
+#if PSP_MUSIC
+int psp_music_is_stub(const void *permutation);
+#endif
+
+static boolean psp_sound_is_music(
+	struct sound_permutation const *sound)
+{
+	struct sound_definition const *definition;
+
+	if (!sound || sound->runtime_tag_index == NONE)
+		return FALSE;
+	definition = sound_definition_get(sound->runtime_tag_index);
+	return definition && definition->sound_class == PSP_SOUND_CLASS_MUSIC;
+}
+
+/* the cache's sounds at the report: bytes held, music's (a stub's one page)
+and the rest's, and of them the bytes playing */
+static void psp_sound_music_report(
+	void)
+{
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+	unsigned long music = 0, other = 0, music_playing = 0, other_playing = 0, music_sounds = 0, stubs = 0;
+
+	data_iterator_new(&iterator, xbox_sound_cache_globals.cache_sounds);
+	while ((cache_sound = data_iterator_next(&iterator)) != NULL)
+	{
+		unsigned long bytes;
+		boolean playing;
+
+		if (!cache_sound->sound)
+			continue;
+		bytes = (unsigned long)cache_sound->sound->samples.size;
+#if PSP_MUSIC
+		if (psp_music_is_stub(cache_sound->sound))
+		{
+			bytes = 4096;
+			stubs++;
+		}
+#endif
+		playing = cache_sound->software_reference_count != 0 || cache_sound->hardware_reference_count != 0;
+		if (psp_sound_is_music(cache_sound->sound))
+		{
+			music += bytes;
+			music_sounds++;
+			if (playing)
+				music_playing += bytes;
+		}
+		else
+		{
+			other += bytes;
+			if (playing)
+				other_playing += bytes;
+		}
+	}
+	if (music > psp_sound_music_peak_bytes)
+		psp_sound_music_peak_bytes = music;
+	if (other > psp_sound_other_peak_bytes)
+		psp_sound_other_peak_bytes = other;
+	platform_psp_log("sound cache, music: game time %ld; held %lu KB in %lu permutations, %lu of them stubs (peak %lu KB), playing %lu KB; the rest held %lu KB (peak %lu KB), playing %lu KB; "
+		"loads: music %lu (%lu KB of stick reads), stubs %lu, all %lu (%lu KB)",
+		game_time_get(), music / 1024, music_sounds, stubs, psp_sound_music_peak_bytes / 1024, music_playing / 1024,
+		other / 1024, psp_sound_other_peak_bytes / 1024, other_playing / 1024,
+		psp_sound_music_loads, psp_sound_music_load_bytes / 1024, psp_sound_music_stub_loads,
+		psp_sound_cache_loads, psp_sound_cache_load_bytes / 1024);
+}
+"""),
+("""		psp_sound_cache_load_bytes += sound->samples.size;
+""",
+ """#if PSP_MUSIC
+		/* a stub reads nothing from the stick: its samples are streamed */
+		if (psp_music_bytes)
+			psp_sound_music_stub_loads++;
+		else
+#endif
+		{
+			psp_sound_cache_load_bytes += sound->samples.size;
+			if (psp_sound_is_music(sound))
+			{
+				psp_sound_music_loads++;
+				psp_sound_music_load_bytes += sound->samples.size;
+			}
+		}
+"""),
+("""		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+""",
+ """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+	psp_sound_music_report();
+"""),
+]
+
 
 # ---------- FIXES_SOUNDEDRAM: R2, the sound cache in the Media Engine's eDRAM
 # ("soundedram", psp_dsound.c; docs/me_programme.md section 5). With the word
