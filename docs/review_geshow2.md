@@ -62,7 +62,18 @@ With M6 #2 on (`gedefer geinflight gemeon`), the game thread waits at the next f
 
 - **-3 to -5 ms where d40 is slow, not to the 30 fps cap.** On the PSP-1000 the GE's tail after the ME is 16-18 ms a frame (plain's `waiting for the GE`) and the ME's job ~15-16 ms. Once the record hides inside that tail, the frame is M + G ≈ 38.6 ms, §7.3's model with this PSP's G; §7.3's 33 ms came from the PSP-3000's figures. In the slowest window the game thread waits 11.4-11.7 ms a frame at the hand-over for the show: the GE's tail outlasting the record.
 - **Latency (`showlat`, window start to swap, 300-frame lines):** plain 36.9 / 46.3 / 39.7 / 34.9 / 33.2-36.7 ms; `geshow2` 41.3 / 63.0 / 60.5 / 40.7 / 35.7-39.8. That's **+17 to +21 ms in the slow stretch** and +2-3 ms where the frame is already at 30 fps. That's more than §7.3's +8 ms, because N's ME now waits for the GE's whole tail of N-1.
-- So on the PSP-1000 d40 trades ~+18 ms of latency for ~+3 fps in its slow stretch. That is Sheepdog01's call; it stays off. A gain that reaches the cap needs the GE's tail itself shorter (S10c can't beat M + G).
+- So on the PSP-1000 d40 trades ~+18 ms of latency for ~+3 fps in its slow stretch. That is Sheepdog01's call; it stays off.
+- **Why 38.6 and not 33** [M]: under `geshow2` the ME's job for N+1 starts only once the GE has ended N, so the ME's replay is on the critical path and the frame is M + G'. G' is the GE's tail with the record running beside it on the bus: `gebusy` reads 17-21 ms a frame plain and 22-25 with `geshow2` (41-46% -> 50-57% of the clock). 15.6 + ~23 = 38.6.
+
+| b40, by game time (same build and words, `exitat90`) | frame, plain -> geshow2 | drawing | tick |
+|---|---|---|---|
+| 150-570 | 39.7 -> 36.0 ms (25.2 -> 27.8 fps) | 21.5 -> 17.0 | 10.6 -> 11.0 |
+| 300-2,000 | 38.8 -> 35.5 (25.8 -> 28.2 fps) | 19.3 -> 15.4 | 12.7 -> 12.8 |
+| 2,000-2,700 | 34.8 -> 34.5 | 14.8 -> 14.3 | 15.2 -> 15.2 |
+
+- b40 [M]: 28.1 -> 29.0 fps over the whole run. Latency is +1.3 to +4.6 ms, because b40's GE tail is short. The game thread waits 0.0-1.2 ms a frame for the show.
+- With `geshow2`, b40's flight is bound by the CPU lane: 1.03 ticks x 12.8 + drawing 15.4 + rest ~7 = 35.5 ms. Reaching the cap there needs ~2 ms of CPU work, not more overlap.
+- **A variant that reaches the cap on d40** [U]: let the ME replay N+1 into a second list while the GE draws N's tail. N+1's first command waits behind a stall that the forwarding thread releases after N's swap, so no third framebuffer is needed. The frame becomes max(R + max(T, M) + rest, G') ≈ 26-31 ms on d40, and latency goes back to about plain's. The cost: no new memory, but what the GE reads must stay put for two unshown frames (geometry blocks, textures, level copies, index lists). That squeezes the texture cache and the copies' room. Not built. On today's figures it pays only on d40.
 
 ## Costs and risks
 
