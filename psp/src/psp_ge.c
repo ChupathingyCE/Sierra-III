@@ -250,7 +250,8 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED
+	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED,
+	DEFER_FRAME_END, DEFER_WINDOW_BEGIN
 };
 typedef union
 {
@@ -323,6 +324,41 @@ static const unsigned char *overlay_answers = NULL;
 static int overlay_answers_for(const void *vertices, int vertex_count, const unsigned short *indices,
 	long triangle_count, unsigned char *out);
 static PSP_MAIN_SIDE unsigned long defer_records = 0, defer_drains = 0, defer_drains_full = 0, defer_big_models = 0, defer_too_large = 0;
+/* "geinflight" (with gedefer; docs/frames_in_flight.md): the frame's end and
+the next frame's first window are written down too, so a frame is carried out
+only at the next frame's first call, after that frame's ticks: the order the
+Media Engine version will run in (the ME carrying out frame N while the main
+CPU ticks N+1). Carried out here on the main CPU, it moves no work; what it
+gives is that order, so the emulator's drawhash and statecrc show anything the
+next ticks change under a frame still waiting. A frame is written down whole,
+so the buffer is sized for b30's busiest (~100 KB a frame, recon_134.md) */
+#define DEFER_INFLIGHT_WORDS (128 * 1024 / 4)
+static PSP_MAIN_SIDE int inflight_on = 0;
+static PSP_MAIN_SIDE int inflight_pending = 0; /* a frame's end is written down and waits */
+/* the waiting frame's list has ended (its window was open): the main CPU's
+part of its end runs once the run is over (defer_drain). Written in the
+run, read after it */
+static int inflight_list_ended = 0;
+static void inflight_show(void);
+/* geinflight with gemeon (F1): the frame is handed to the Media Engine as its
+end is written down, and carried out there while the main CPU ticks the next
+frame. While it is out, the ME publishes each stall address it reaches in an
+uncached pair (the address, the list's id) and a thread of the main CPU's
+passes it to the GE, so the GE draws behind the ME rather than after it */
+static PSP_MAIN_SIDE int inflight_me_out = 0;
+static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
+static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */
+#define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
+static void inflight_hand_over(void);
+static int stall_force; /* (defined with the stall wrapper) */
+static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */
+/* set by the frame's job itself (its args), so the ME never reads the main
+CPU's words for it: publish each stall address, and serve the ring's jobs
+between records (geinflight) */
+static int replay_inflight = 0;
+static int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
+static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
+extern int psp_game_running(void); /* psp_fixups.py: players.c */
 static void defer_drain(void);
 static void defer_hand_over(void); /* build 118: gemeoverlap */
 static void list_write_back(const void *stall); /* build 114: listcachedall */
@@ -358,6 +394,9 @@ the ME: there the test is psp_on_me(), its own stack */
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
 #define GE_DEFER(record, ...) do { if (DEFER_RECORDING() && !defer_paused && (record)) return __VA_ARGS__; } while (0)
+/* a frame's boundaries are written down only in a game: the menus and loads
+run as with gedefer alone */
+#define INFLIGHT_RECORDING() (inflight_on && DEFER_RECORDING() && psp_game_running())
 
 int psp_keep(const char *name);
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
@@ -424,6 +463,13 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 void psp_ge_text_character(void const *vertices);
 void psp_ge_text_end(void);
 int psp_ge_text_begin(void const *bitmap, short blend, float offset_x, float offset_y);
+static void window_begin_list(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far);
+static int frame_end_list(void);
+static void frame_end_show(void);
+void psp_ge_frame_end(void);
+void psp_ge_window_begin(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far);
 
 /* at each frame's start: whether this frame defers (the keep word, asked
 once; the buffer taken from the heap the first time) */
@@ -438,7 +484,11 @@ static void defer_frame_begin(void)
 		asked = psp_keep("gedefer") || me_bench;
 		if (asked)
 		{
-			defer_buffer = memalign(64, DEFER_WORDS * sizeof(defer_word));
+			/* geinflight: a whole frame's buffer; not with the overlap's
+			halves or mebench's turns, which hand work over within a frame */
+			unsigned int words = psp_keep("geinflight") && !me_bench && !psp_keep("gemeoverlap") ? DEFER_INFLIGHT_WORDS : DEFER_WORDS;
+
+			defer_buffer = memalign(64, words * sizeof(defer_word));
 			defer_nodes = memalign(64, DEFER_MAX_NODES * NODE_FLOATS * sizeof(float));
 			if (!defer_buffer || !defer_nodes)
 			{
@@ -452,7 +502,13 @@ static void defer_frame_begin(void)
 			else
 			{
 				platform_log("GE: gedefer: the GE layer's calls deferred, %u KB of buffer",
-					(unsigned int)(DEFER_WORDS * sizeof(defer_word) / 1024));
+					(unsigned int)(words * sizeof(defer_word) / 1024));
+				if (words == DEFER_INFLIGHT_WORDS)
+				{
+					inflight_on = 1;
+					defer_limit = words;
+					platform_log("GE: geinflight: each frame carried out at the next frame's first call, after its ticks");
+				}
 				if (psp_keep("gemesim"))
 				{
 					defer_me_thread = (unsigned int)sceKernelGetThreadId();
@@ -465,7 +521,12 @@ static void defer_frame_begin(void)
 					(void)sceKernelGetSystemTimeLow();
 					psp_me_context = 0;
 				}
-				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench;
+				/* geinflight too: its frame is carried out after the next
+				ticks, so a query in them reads what is built, as on the ME */
+				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench || inflight_on;
+				replay_kinds_on = psp_keep("mekinds") != 0;
+				if (replay_kinds_on)
+					platform_log("GE: mekinds: each record kind timed as it's carried out, the main CPU's and the ME's apart (a line each 300 frames)");
 				if (me_bench)
 					platform_log("GE: mebench: the GE layer's work on the main CPU, on the ME serially, and overlapped, in turns of %d frames; the frame pacing off",
 						ME_BENCH_FRAMES);
@@ -505,10 +566,30 @@ static void defer_frame_begin(void)
 /* room for a call of words words of arguments (what is waiting is carried
 out first if the buffer is full); NULL if the call is too large to defer,
 after carrying out what is waiting, so the call runs as it comes */
+/* geinflight: the frame waiting is carried out before the next frame's first
+call is written down (the Media Engine version's one wait a frame) */
+static void inflight_wait_me(void);
+
+static void inflight_sync(void)
+{
+	inflight_frames++;
+	inflight_words += defer_used;
+	if (defer_used > inflight_words_most)
+		inflight_words_most = defer_used;
+	if (inflight_me_out)
+	{
+		inflight_wait_me();
+		return;
+	}
+	defer_drain_for("the next frame's first call (geinflight)");
+}
+
 static defer_word *defer_take(int kind, unsigned int words)
 {
 	defer_word *at;
 
+	if (inflight_pending)
+		inflight_sync();
 	if (words > DEFER_LARGEST)
 	{
 		defer_too_large++;
@@ -852,7 +933,16 @@ static int defer_screen_flash(short type, float intensity, float const *argb)
 static int defer_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
-	defer_word *at = defer_take(DEFER_DECAL, 8);
+	/* geinflight: the decals' vertices are rewritten by the next frame's
+	ticks, before the frame is carried out, so they're copied (16 bytes a
+	corner, psp_ge_decal_body; at most 256 quads drawn) */
+	int copied = inflight_on && vertices && quad_count > 0 && quad_count <= 256 ? quad_count * 4 * 4 : 0;
+	defer_word *at = defer_take(DEFER_DECAL, 8 + copied);
+
+	if (!at)
+		return 0; /* too large: carried out as it comes, after what waits */
+	if (copied)
+		memcpy(at + 8, vertices, copied * sizeof(defer_word));
 
 	at[0].p = vertices;
 	at[1].i = quad_count;
@@ -862,6 +952,18 @@ static int defer_decal(void const *vertices, int quad_count, unsigned int key, s
 	at[5].i = intensity;
 	at[6].i = alpha_tested;
 	at[7].i = permanent;
+	return 1;
+}
+
+static int defer_window_begin(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far)
+{
+	defer_word *at = defer_take(DEFER_WINDOW_BEGIN, 3 + 3 * (1 + 3));
+
+	at[0].f = vertical_field_of_view;
+	at[1].f = z_near;
+	at[2].f = z_far;
+	defer_copy(defer_copy(defer_copy(at + 3, position, 3), forward, 3), up, 3);
 	return 1;
 }
 
@@ -875,10 +977,89 @@ static int defer_text_character(void const *vertices)
 
 /* ----- a run of records carried out in order: on the main CPU, or as the
 Media Engine's job (psp_ge_me_replay) */
+/* the record being carried out, for the heap's report of a call in the Media
+Engine's work (psp_libc.c): which kind of call led there */
+int psp_me_record_kind = 0;
+
+/* geinflight's frame on the ME: audio and the ring served now (both look at
+one uncached word each when there's nothing to do). psp_me_yield serves both,
+and the ring takes pushes during any GE job unless "meyieldoff" */
+extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
+
+static void inflight_serve(void)
+{
+	if (!psp_on_me())
+		return;
+	psp_me_yield();
+}
+
+/* "mekinds" (recon): each record kind's time as it's carried out, kept apart
+for each CPU that carried it out. On the ME the frame's job is otherwise one
+number (ge_clock reads nothing there), and the ME takes 2-3x the main CPU's
+time for the same work: an A/B of the two sides by kind says where. The ME
+reads its cycle counter (one instruction); the main CPU the system clock,
+once a record. Simulated ME work (gemesim) isn't timed: the clock is a system
+call the ME can't make. Set at launch with the replay's other words; off, one
+test a run */
+#define REPLAY_SERVED (DEFER_WINDOW_BEGIN + 1) /* audio and the ring served between records */
+#define REPLAY_KINDS (REPLAY_SERVED + 1)
+struct replay_kind_times
+{
+	unsigned long long ticks[2][REPLAY_KINDS]; /* [0] main CPU, us; [1] ME, cycles */
+	unsigned int records[2][REPLAY_KINDS];
+	unsigned int runs[2];
+} __attribute__((aligned(64))); /* a line of its own: the ME writes it while the main CPU runs on */
+static struct replay_kind_times replay_kinds;
+static const char *const replay_kind_names[REPLAY_KINDS] =
+{
+	[0] = "unknown", [DEFER_MODEL_BEGIN] = "model begin", [DEFER_MODEL_SHAPE] = "model shape",
+	[DEFER_MODEL_EFFECT] = "model effect", [DEFER_MODEL_MULTIPURPOSE] = "model multipurpose",
+	[DEFER_DRAW_MODEL] = "model part draws", [DEFER_QUEUE_TRANSPARENT] = "see-through queued",
+	[DEFER_FOG] = "fog", [DEFER_WINDOW_TARGET] = "window target", [DEFER_LEVEL_DETAIL] = "level detail",
+	[DEFER_DRAW_LEVEL] = "level draws", [DEFER_SKY] = "sky", [DEFER_SPRITES] = "sprites",
+	[DEFER_WIDGET_BEGIN] = "widget begin", [DEFER_WIDGET_TEXTURE] = "widget texture",
+	[DEFER_WIDGET_OCCLUSION] = "widget occlusion", [DEFER_WIDGET_SPRITE] = "widget sprites",
+	[DEFER_QUEUE_LEVEL_TRANSPARENT] = "see-through level queued", [DEFER_HUD_ZOOM] = "hud zoom",
+	[DEFER_UI_CENTERED] = "ui centred", [DEFER_UI_SPACE] = "ui space", [DEFER_SCREEN_QUAD] = "screen quads",
+	[DEFER_SHADOW_BEGIN] = "shadow begin", [DEFER_SHADOW_DRAW] = "shadow draws", [DEFER_SHADOW_END] = "shadow end",
+	[DEFER_LIGHT_BEGIN] = "light begin", [DEFER_LIGHT_DRAW] = "light draws", [DEFER_SCREEN_FLASH] = "screen flash",
+	[DEFER_DECAL] = "decals", [DEFER_BLIPS_BEGIN] = "blips begin", [DEFER_BLIP] = "blips", [DEFER_BLIPS_END] = "blips end",
+	[DEFER_TEXT_CHARACTER] = "text characters", [DEFER_TEXT_END] = "text end", [DEFER_TEXT_BEGIN] = "text begin",
+	[DEFER_CONTRAIL] = "contrails", [DEFER_ZOOM_MASK] = "zoom mask", [DEFER_FOG_PLANAR] = "planar fog",
+	[DEFER_SEETHROUGH_TINT] = "see-through tint", [DEFER_SEETHROUGH_METER] = "see-through meters",
+	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_FRAME_END] = "frame end (list's part)",
+	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
+};
+
+static inline unsigned int replay_clock(int me)
+{
+	unsigned int count;
+
+	if (!me)
+		return sceKernelGetSystemTimeLow();
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+	return count;
+}
+
+/* the time since *mark to kind, on side's clock */
+static inline void replay_kinds_add(int side, int kind, unsigned int *mark)
+{
+	unsigned int now = replay_clock(side);
+
+	replay_kinds.ticks[side][kind] += now - *mark;
+	*mark = now;
+}
+
 static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 {
-	extern void psp_me_serve_audio(void); /* psp_me.c (build 113) */
 	unsigned int at = 0, records = 0;
+	/* mekinds: timed only where the clock can be read (not gemesim's
+	simulated ME work) */
+	int side = psp_on_me(), timed = replay_kinds_on && (side || !psp_me_context), kind_before = -1;
+	unsigned int mark = timed ? replay_clock(side) : 0;
+
+	if (timed)
+		replay_kinds.runs[side]++;
 
 	while (at < used)
 	{
@@ -887,11 +1068,26 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		const void *a, *b, *c;
 
 		/* build 113: on the ME, an audio block asked for meanwhile is mixed
-		between records rather than after the whole run (psp_me.c) */
-		if (on_me && (++records & 31) == 0)
+		between records rather than after the whole run (psp_me.c).
+		geinflight: the frame's job lasts a frame while the main CPU ticks,
+		which waits on both audio and the ring's jobs (perception's rays, the
+		poses), so they're served every record */
+		if (timed && kind_before >= 0)
+			replay_kinds_add(side, kind_before, &mark);
+		if (replay_inflight)
+			inflight_serve();
+		else if (on_me && (++records & 31) == 0)
 			psp_me_serve_audio();
+		if (timed && side)
+			replay_kinds_add(side, REPLAY_SERVED, &mark);
 
 		at += buffer[at].u >> 8;
+		psp_me_record_kind = kind;
+		if (timed)
+		{
+			kind_before = kind < REPLAY_KINDS - 1 ? kind : 0;
+			replay_kinds.records[side][kind_before]++;
+		}
 		switch (kind)
 		{
 		case DEFER_MODEL_BEGIN:
@@ -1021,8 +1217,19 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 		case DEFER_SCREEN_FLASH:
 			psp_ge_screen_flash((short)w[0].i, w[1].f, defer_copy_back(w + 2, &rest, 4));
 			break;
+		case DEFER_FRAME_END:
+			inflight_list_ended = frame_end_list();
+			break;
+		case DEFER_WINDOW_BEGIN:
+			a = defer_copy_back(w + 3, &rest, 3);
+			b = defer_copy_back(rest, &rest, 3);
+			c = defer_copy_back(rest, &rest, 3);
+			window_begin_list(a, b, c, w[0].f, w[1].f, w[2].f);
+			break;
 		case DEFER_DECAL:
-			psp_ge_decal(w[0].p, w[1].i, w[2].u, (short)w[3].i, w[4].u, w[5].i, w[6].i, w[7].i);
+			/* the record's own copy of the vertices when it has one (geinflight) */
+			psp_ge_decal((w[-1].u >> 8) - 1 > 8 ? (const void *)(w + 8) : w[0].p, w[1].i, w[2].u, (short)w[3].i, w[4].u, w[5].i,
+				w[6].i, w[7].i);
 			break;
 		case DEFER_BLIPS_BEGIN:
 			psp_ge_blips_begin();
@@ -1044,6 +1251,73 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		}
 	}
+	if (timed && kind_before >= 0)
+		replay_kinds_add(side, kind_before, &mark);
+}
+
+/* mekinds: the frames since the last report by kind, the largest first, each
+CPU apart, on as many lines as the log's limit needs. Only while no frame is
+out with the ME, which writes the counts */
+static void replay_kinds_report(unsigned int frames)
+{
+	extern float psp_me_cycles_per_us(void);
+	int side;
+
+	if (!replay_kinds_on || inflight_me_out || !frames)
+		return;
+	for (side = 0; side < 2; side++)
+	{
+		const char *who = side ? "the ME" : "the main CPU";
+		float rate = side ? psp_me_cycles_per_us() : 1.0f;
+		unsigned long long all = 0;
+		unsigned char shown[REPLAY_KINDS];
+		char line[480], entry[120]; /* under the log's 512 */
+		int length, k;
+
+		if (!replay_kinds.runs[side])
+			continue;
+		if (rate <= 0.0f)
+		{
+			platform_log("GE: mekinds: the ME's times can't be given (its clock wasn't measured at start)");
+			continue;
+		}
+		for (k = 0; k < REPLAY_KINDS; k++)
+			all += replay_kinds.ticks[side][k];
+		length = snprintf(line, sizeof(line), "GE: mekinds, %s, us a frame over %u frames (%.2f runs a frame): all %.0f;",
+			who, frames, (float)replay_kinds.runs[side] / frames, (float)all / rate / frames);
+		memset(shown, 0, sizeof(shown));
+		for (;;)
+		{
+			int best = -1, size;
+			float us;
+
+			for (k = 0; k < REPLAY_KINDS; k++)
+				if (!shown[k] && replay_kinds.ticks[side][k] &&
+					(best < 0 || replay_kinds.ticks[side][k] > replay_kinds.ticks[side][best]))
+					best = k;
+			if (best < 0)
+				break;
+			shown[best] = 1;
+			us = (float)replay_kinds.ticks[side][best] / rate;
+			if (us / frames < 1.0f)
+				break; /* the rest are under a microsecond a frame */
+			size = replay_kinds.records[side][best] ?
+				snprintf(entry, sizeof(entry), " %s %.0f (%.1f a frame, %.1f us each);", replay_kind_names[best] ? replay_kind_names[best] : "?",
+					us / frames, (float)replay_kinds.records[side][best] / frames, us / replay_kinds.records[side][best]) :
+				snprintf(entry, sizeof(entry), " %s %.0f;", replay_kind_names[best], us / frames);
+			if (size >= (int)sizeof(entry))
+				size = sizeof(entry) - 1;
+			if (length + size >= (int)sizeof(line))
+			{
+				platform_log("%s", line);
+				length = snprintf(line, sizeof(line), "GE: mekinds, %s (more):", who);
+			}
+			memcpy(line + length, entry, size + 1);
+			length += size;
+		}
+		platform_log("%s", line);
+	}
+	memset(&replay_kinds, 0, sizeof(replay_kinds));
 }
 
 /* build 112: "gemeon" (with gedefer): the run carried out as the Media
@@ -1060,7 +1334,9 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	Simulated (args[3] 0), the main CPU runs it: marked as before */
 	if (!args[3])
 		psp_me_context = args[2] ? args[2] : 1;
+	replay_inflight = args[4] == 2;
 	defer_replay((const defer_word *)args[0], args[1], (int)args[3]);
+	replay_inflight = 0;
 	results[0] = args[1];
 	/* build 118: gemeoverlap (args[4]): the newest stall address the run
 	kept goes back in the slot (uncached), for the main CPU to pass on, and
@@ -1214,9 +1490,131 @@ static void defer_hand_over(void)
 	defer_used = 0;
 }
 
+/* ----- geinflight with gemeon: the frame on the Media Engine (F1,
+docs/frames_in_flight.md) */
+
+static PSP_MAIN_SIDE SceUID inflight_thread = -1;
+static PSP_MAIN_SIDE unsigned int inflight_forwarded_stall = 0;
+static PSP_MAIN_SIDE unsigned long inflight_forwards = 0;
+
+/* above the game's thread: once it runs it finishes its look before the game
+thread can go on, so the game thread's last forwarding at the frame's wait
+(defer_wait_me) is never followed by an older address from here */
+static int inflight_forwarder(SceSize args, void *argp)
+{
+	(void)args;
+	(void)argp;
+	for (;;)
+	{
+		if (!inflight_me_out)
+		{
+			sceKernelSleepThread();
+			continue;
+		}
+		{
+			unsigned int stall = INFLIGHT_STALL[0];
+
+			if (stall && stall != inflight_forwarded_stall)
+			{
+				inflight_forwarded_stall = stall;
+				inflight_forwards++;
+				__real_sceGeListUpdateStallAddr((int)INFLIGHT_STALL[1], (void *)stall);
+			}
+		}
+		sceKernelDelayThread(1000);
+	}
+	return 0;
+}
+
+static void inflight_hand_over(void)
+{
+	unsigned int args[5];
+
+	if (defer_me_on < 0)
+		defer_me_on = psp_keep("gemeon");
+	if (!defer_me_on || !psp_me_running() || !defer_used)
+		return; /* carried out on the main CPU at the next frame's first call */
+	if (inflight_thread < 0)
+	{
+		inflight_thread = sceKernelCreateThread("ge forward", inflight_forwarder, 0x10, 0x1000, 0, NULL);
+		if (inflight_thread < 0 || sceKernelStartThread(inflight_thread, 0, NULL) < 0)
+		{
+			platform_log("GE: geinflight: no forwarding thread (%08x); the frame is carried out on the main CPU",
+				(unsigned int)inflight_thread);
+			defer_me_on = 0;
+			return;
+		}
+	}
+	/* the records and what they point to that the main CPU wrote, to RAM */
+	sceKernelDcacheWritebackAll();
+	INFLIGHT_STALL[0] = 0;
+	inflight_forwarded_stall = 0;
+	args[0] = (unsigned int)defer_buffer;
+	args[1] = defer_used;
+	args[2] = defer_me_thread;
+	args[3] = 0; /* (psp_me.c sets it: on the ME or not) */
+	args[4] = 2; /* the newest stall address back in the results, and published as it moves */
+	psp_me_window[0] = 1;
+	inflight_me_out = 1;
+	/* simulated (the emulator), the job runs inside psp_me_submit, here */
+	defer_replaying = 1;
+	if (!psp_me_submit(ME_SLOT_RENDER, ME_JOB_GE, args, 5))
+	{
+		defer_replaying = 0;
+		inflight_me_out = 0;
+		psp_me_window[0] = 0;
+		return;
+	}
+	defer_replaying = 0;
+	me_out = 1;
+	me_wrote = 1;
+	inflight_handed++;
+	sceKernelWakeupThread(inflight_thread);
+}
+
+/* the frame back from the Media Engine: waited for, the GE given the rest,
+what the ME wrote read fresh, and the main CPU's part of its end */
+static void inflight_wait_me(void)
+{
+	unsigned long failed = defer_me_failed;
+
+	inflight_me_out = 0;
+	defer_wait_me(); /* the last stall address passed on with it */
+	psp_me_window[0] = 0;
+	sceKernelDcacheWritebackInvalidateAll();
+	me_wrote = 0;
+	if (defer_me_failed != failed)
+	{
+		/* the ME stopped (HOME, sleep) with the frame perhaps half carried
+		out: the list ended where the main CPU last saw it, so the GE stops
+		there and nothing waits for ever; the main CPU carries the frames out
+		from here */
+		inflight_me_failed++;
+		defer_me_on = 0;
+		inflight_finish_left = 0;
+		stall_force = 1;
+		sceGuFinish();
+		stall_force = 0;
+		inflight_list_ended = 1;
+		platform_log("GE: geinflight: the Media Engine failed with a frame out; the main CPU carries the frames out from here");
+	}
+	defer_used = 0;
+	defer_drains++;
+	inflight_pending = 0;
+	inflight_show();
+}
+
 /* ----- everything waiting, carried out in order */
 static void defer_drain(void)
 {
+	/* geinflight: a call that runs at once while the frame is out with the
+	Media Engine (a text update, a full buffer) waits for it */
+	if (inflight_me_out)
+	{
+		inflight_wait_me();
+		if (!defer_used)
+			return;
+	}
 	if (me_overlap)
 	{
 		/* build 118: the half being written out too, then both done, and
@@ -1230,6 +1628,7 @@ static void defer_drain(void)
 			me_wrote = 0;
 		}
 		defer_drains++;
+		inflight_pending = 0;
 		return;
 	}
 	defer_replaying = 1;
@@ -1250,6 +1649,20 @@ static void defer_drain(void)
 	defer_used = 0;
 	defer_replaying = 0;
 	defer_drains++;
+	inflight_pending = 0;
+	inflight_show();
+}
+
+/* geinflight: the main CPU's part of a frame's end, once its list has ended
+and the GE has been given all of it */
+static void inflight_show(void)
+{
+	if (!inflight_list_ended)
+		return;
+	inflight_list_ended = 0;
+	psp_me_wake_poll();
+	psp_me_ring_test();
+	frame_end_show();
 }
 
 /* the messages the Media Engine's work logged: each format with a count */
@@ -2392,6 +2805,15 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 	{
 		stall_me_qid = qid;
 		stall_me_address = stall;
+		/* geinflight on the Media Engine: the list's lines to RAM, then the
+		address published for the main CPU's forwarding thread */
+		if (psp_on_me() && replay_inflight)
+		{
+			list_write_back(stall);
+			INFLIGHT_STALL[1] = (unsigned int)qid;
+			__asm__ __volatile__("sync");
+			INFLIGHT_STALL[0] = (unsigned int)stall;
+		}
 		return 0;
 	}
 	if (gebusy_on > 0)
@@ -4037,18 +4459,22 @@ static void showcase_levels(void)
 	sceGuTexLevelMode(tex_level_mode, tex_bias);
 }
 
-void psp_ge_window_begin(const float *position, const float *forward, const float *up,
-	float vertical_field_of_view, float z_near, float z_far)
-{
-	ScePspFVector3 eye, center, upward;
+/* a frame's window begins in two parts. The main CPU's (the first window of
+a frame): what reads the game or the level, or writes what the list's builder
+reads (the near plane's choice, the level's origin, the shots asked for, the
+recorder's frame), and its answer, the world's near plane. The list's: the
+GE's state, the camera, the list's start. geinflight writes the list's part
+down for the Media Engine's turn (docs/frames_in_flight.md); otherwise the
+two run back to back. One window a frame: the GE's frame takes the first
+window's camera, and the later ones (letterbox bars, the non-player
+overlays: 2-D, on the same screen) draw into it */
+/* this frame's first window has had its main CPU's part (cleared at the frame's
+end): a later window of the frame, recorded or not, must not start a list */
+static PSP_MAIN_SIDE int window_main_done = 0;
 
-	/* one window a frame: the GE's frame takes the first window's camera,
-	and the later ones (letterbox bars, the non-player overlays: 2-D, on
-	the same screen) draw into it. (build 112: they change nothing, so
-	they don't make the waiting calls run either; the first does) */
-	if (frame_open)
-		return;
-	GE_DEFER_DRAIN(); /* build 112: gedefer */
+static float window_begin_main(const float *position, float z_near, float z_far)
+{
+	window_main_done = 1;
 	if (!ge_ready)
 	{
 		ge_initialize();
@@ -4093,50 +4519,15 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 				shot_next = (now / period + 1) * period;
 		}
 	}
+	defer_frame_begin(); /* build 112 */
+	if (vm_on < 0)
+		vm_reset(); /* build 116: vrammodels, after a new map or BSP */
+	/* the list's start hands it to the GE (a system call): the main CPU's,
+	before any of the frame's draws are carried out */
 	/* build 93: the list in VRAM for benchrun's switch (from the next frame) */
 	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : display_list_size;
 	sceGuStart(GU_DIRECT, list_in_vram ? (void *)(0x04000000 + VRAM_BENCH_START) : (void *)display_list);
 	list_cached_frame_start(list_in_vram); /* build 114: listcachedall */
-	lit_forget(2); /* build 114: statememo */
-	sceGuFog(fog_near, fog_far, fog_color);
-	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
-	if (vram_busy)
-		vram_busy_load();
-	hud_phase = 0;
-	ge_kinds_frame_begin(); /* build 103 */
-	defer_frame_begin(); /* build 112 */
-	taa_done = 0;
-	taa_frame++;
-	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
-	{
-		/* a quarter pixel each way on alternate frames */
-		float sign = (taa_frame & 1) ? 0.25f : -0.25f;
-
-		taa_jitter_x = sign * 2.0f / SCREEN_WIDTH;
-		taa_jitter_y = sign * 2.0f / SCREEN_HEIGHT;
-	}
-	else
-		taa_jitter_x = taa_jitter_y = 0.0f;
-	if (magenta < 0)
-		magenta = psp_keep("clearmagenta");
-	if (clear_blue < 0)
-		clear_blue = psp_keep("clearblue");
-	sceGuClearColor(magenta ? 0xFFFF00FF : clear_blue ? SKY_COLOR : window_clear_color);
-	sceGuClearDepth(0);
-	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
-	ge_dither(1); /* build 116: the world's draws */
-	if (vm_on < 0)
-		vm_reset(); /* build 116: vrammodels, after a new map or BSP */
-	/* build 63: the world's depth state from a known start each frame, so a
-	slip the frame before (a test left off, a nudge left on) can't carry */
-	sceGuEnable(GU_DEPTH_TEST);
-	sceGuDepthFunc(GU_GEQUAL);
-	sceGuDepthOffset(0);
-
-	if (!(z_near > 0.01f))
-		z_near = 0.05f;
-	if (!(z_far > z_near))
-		z_far = 1000.0f;
 	{
 		/* build 49: the depth buffer is 16 bits (the Xbox's 24), and a
 		perspective depth spends most of its steps near the eye: the step at
@@ -4163,6 +4554,55 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		else if (!near_auto)
 			z_near *= near_scale;
 	}
+	if (level_exact < 0)
+		level_exact = !psp_keep("levelexactoff");
+	if (level_local < 0)
+		level_local = !psp_keep("levellocaloff");
+	if (level_local)
+		level_origin_follow(position);
+	return z_near;
+}
+
+static void window_begin_list(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far)
+{
+	ScePspFVector3 eye, center, upward;
+
+	if (frame_open)
+		return;
+	lit_forget(2); /* build 114: statememo */
+	sceGuFog(fog_near, fog_far, fog_color);
+	list_limit = list_bytes - HUD_RESERVE - TRANSPARENT_RESERVE;
+	if (vram_busy)
+		vram_busy_load();
+	hud_phase = 0;
+	ge_kinds_frame_begin(); /* build 103 */
+	taa_done = 0;
+	taa_frame++;
+	if (psp_taa_strength > 0 && psp_taa_jitter && !psp_soften && !taa_failed)
+	{
+		/* a quarter pixel each way on alternate frames */
+		float sign = (taa_frame & 1) ? 0.25f : -0.25f;
+
+		taa_jitter_x = sign * 2.0f / SCREEN_WIDTH;
+		taa_jitter_y = sign * 2.0f / SCREEN_HEIGHT;
+	}
+	else
+		taa_jitter_x = taa_jitter_y = 0.0f;
+	if (magenta < 0)
+		magenta = psp_keep("clearmagenta");
+	if (clear_blue < 0)
+		clear_blue = psp_keep("clearblue");
+	sceGuClearColor(magenta ? 0xFFFF00FF : clear_blue ? SKY_COLOR : window_clear_color);
+	sceGuClearDepth(0);
+	sceGuClear(GU_COLOR_BUFFER_BIT | GU_DEPTH_BUFFER_BIT);
+	ge_dither(1); /* build 116: the world's draws */
+	/* build 63: the world's depth state from a known start each frame, so a
+	slip the frame before (a test left off, a nudge left on) can't carry */
+	sceGuEnable(GU_DEPTH_TEST);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuDepthOffset(0);
+
 	near_clip = z_near;
 	sceGumMatrixMode(GU_PROJECTION);
 	perspective(vertical_field_of_view * (180.0f / 3.14159265f), z_near, z_far);
@@ -4187,12 +4627,6 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	camera's turn plus the fraction between the eye and ge_eye, and every
 	model matrix is made relative to ge_eye on the CPU, in full floats
 	(relative(), world_model()) */
-	if (level_exact < 0)
-		level_exact = !psp_keep("levelexactoff");
-	if (level_local < 0)
-		level_local = !psp_keep("levellocaloff");
-	if (level_local)
-		level_origin_follow(position);
 	{
 		int k;
 
@@ -4275,6 +4709,32 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	}
 	sceGumMatrixMode(GU_MODEL);
 	world_model();
+}
+
+void psp_ge_window_begin(const float *position, const float *forward, const float *up,
+	float vertical_field_of_view, float z_near, float z_far)
+{
+	if (!(z_near > 0.01f))
+		z_near = 0.05f;
+	if (!(z_far > z_near))
+		z_far = 1000.0f;
+	/* geinflight: the main CPU's part now, the list's written down for the
+	frame's turn */
+	if (INFLIGHT_RECORDING())
+	{
+		/* the frame waiting goes first: its list reads what the main
+		CPU's part changes (the level's origin, the recorder's frame) */
+		if (inflight_pending)
+			inflight_sync();
+		if (!window_main_done)
+			z_near = window_begin_main(position, z_near, z_far);
+		if (defer_window_begin(position, forward, up, vertical_field_of_view, z_near, z_far))
+			return;
+	}
+	if (frame_open)
+		return;
+	GE_DEFER_DRAIN(); /* build 112: gedefer */
+	window_begin_list(position, forward, up, vertical_field_of_view, window_begin_main(position, z_near, z_far), z_far);
 }
 
 /* a point in camera space: x right, y up, z forward (distance ahead) */
@@ -9060,6 +9520,26 @@ static int vm_count = 0;
 static unsigned int vm_base = 0, vm_size = 0, vm_frame = 0;
 static unsigned long vm_draws = 0, vm_redirects = 0, vm_copied = 0, vm_dropped = 0, vm_full = 0;
 
+/* "mevram": the copies for the Media Engine's draws too (the GE layer
+carried out on the ME: gemeon, gemeoverlap, frames in flight). Without it
+the ME's side hands the GE every buffer in main RAM, so with the GE layer
+on the ME the GE reads all its geometry over the bus the tick misses on
+(the overlap runs: draws from a copy 0 of 0). The ME can't touch VRAM, but
+it needn't: it only puts the copy's address in the list, and the GE reads
+it. The table is the main CPU's, written only between the ME's runs and
+written back before each, so on the ME it is read-only: a copy is used when
+it is good, nothing is released or moved. The reads the ranking needs go in
+a tally only the ME's side writes (an entry's index; the last two words its
+draws and redirects), folded in at the frame's end once the ME is done. The
+same bytes: the same pixels */
+static int vm_me_on = 0, vm_me_dry = 0;
+static unsigned int *vm_me_tally = NULL;
+/* "mevramdry" (a test, off): the ME's reads go in the tally and the
+ranking as with mevram, so the frame's end uploads and evicts the same, but
+the ME's draws keep reading main RAM. Set against mevram it tells the
+upload work's cost to the emulator's speed apart from what the copies draw */
+#define VM_TALLY_WORDS (VM_ENTRIES + 16) /* the counters on a line of their own */
+
 /* the entry for a buffer's address, or NULL (adding it when asked) */
 static struct vm_entry *vm_find(unsigned int source, int add)
 {
@@ -9111,6 +9591,55 @@ static void vm_reset(void)
 	memset(vm_hash, 0, VM_HASH * sizeof(unsigned short));
 	vm_count = 0;
 	vm_on = 1;
+	vm_me_dry = psp_keep("mevramdry");
+	if (psp_keep("mevram") || vm_me_dry)
+	{
+		if (!vm_me_tally)
+			vm_me_tally = memalign(64, VM_TALLY_WORDS * sizeof(unsigned int));
+		vm_me_on = vm_me_tally != NULL;
+		if (vm_me_tally)
+			memset(vm_me_tally, 0, VM_TALLY_WORDS * sizeof(unsigned int));
+		else
+			platform_log("GE: mevram: no room for its tally; off");
+	}
+}
+
+/* the Media Engine's side of the gate: the copy's address when it has a
+good one, the table left as it is */
+static const void * __attribute__((noinline)) vm_redirect_me(const void *vertices, int count)
+{
+	struct vm_entry *e = vm_find((unsigned int)vertices, 0);
+
+	if (!e)
+		return vertices;
+	vm_me_tally[VM_ENTRIES]++;
+	if (!e->level && psp_geo_generation(vertices) != e->generation)
+		return vertices;
+	vm_me_tally[e - vm] += (unsigned int)count;
+	if (e->at == VM_NONE || e->released)
+		return vertices;
+	vm_me_tally[VM_ENTRIES + 1]++;
+	if (vm_me_dry)
+		return vertices;
+	return (const void *)(vm_base + e->at);
+}
+
+/* at the frame's end, the ME done: what its draws read, as the main CPU's
+own draws would have counted it */
+static void vm_me_fold(void)
+{
+	int k;
+
+	for (k = 0; k < vm_count; k++)
+		if (vm_me_tally[k])
+		{
+			vm[k].reads += vm_me_tally[k];
+			vm[k].frame = vm_frame;
+			vm_me_tally[k] = 0;
+		}
+	vm_draws += vm_me_tally[VM_ENTRIES];
+	vm_redirects += vm_me_tally[VM_ENTRIES + 1];
+	vm_me_tally[VM_ENTRIES] = vm_me_tally[VM_ENTRIES + 1] = 0;
 }
 
 /* a copy let go: its room comes back after the quarantine */
@@ -9208,7 +9737,7 @@ static const void *vm_redirect(const void *vertices, int count)
 	struct vm_entry *e;
 
 	if (PSP_ME_WORK() || !vertices)
-		return vertices;
+		return vm_me_on > 0 && vertices ? vm_redirect_me(vertices, count) : vertices;
 	e = vm_find((unsigned int)vertices, 0);
 	if (!e)
 		return vertices;
@@ -9275,6 +9804,8 @@ static void vm_frame_end(void)
 
 	if (vm_on <= 0)
 		return;
+	if (vm_me_on > 0)
+		vm_me_fold();
 	vm_frame++;
 	if ((vm_frame & 31) == 0)
 		for (k = 0; k < vm_count; k++)
@@ -10224,12 +10755,62 @@ drop it. "nearclusterfull": the loop for every triangle, as before;
 "nearclustercheck": the loop runs anyway and counts the triangles whose own
 verdict disagrees with their run's */
 
+/* the runs' spheres asked for in the Media Engine's work, made by the main
+CPU when the frame is shown (the heap is the main CPU's: its lock is a
+system call the ME can't make), so a part has them from its next frame.
+Meanwhile it takes the loop for every triangle, which gives the same
+answers ("nearclusterfull", "rigidrunsfull") */
+#define RUNS_WANTED 48
+static struct runs_want
+{
+	struct skin_batch *batch; /* a skinned batch's, or NULL: a rigid part's */
+	const struct skin_part *skin;
+	const void *vertices;
+	const unsigned short *indices;
+	long index_count;
+	int strip;
+} runs_wanted[RUNS_WANTED];
+static int runs_wanted_count = 0;
+static unsigned long runs_wanted_made = 0, runs_wanted_dropped = 0;
+
+static void runs_want(struct skin_batch *batch, const struct skin_part *skin, const void *vertices,
+	const unsigned short *indices, long index_count, int strip)
+{
+	int k;
+
+	for (k = 0; k < runs_wanted_count; k++)
+	{
+		struct runs_want const *w = &runs_wanted[k];
+
+		if (batch ? w->batch == batch :
+			!w->batch && w->vertices == vertices && w->indices == indices && w->index_count == index_count && w->strip == strip)
+			return;
+	}
+	if (runs_wanted_count == RUNS_WANTED)
+	{
+		runs_wanted_dropped++;
+		return;
+	}
+	runs_wanted[runs_wanted_count].batch = batch;
+	runs_wanted[runs_wanted_count].skin = skin;
+	runs_wanted[runs_wanted_count].vertices = vertices;
+	runs_wanted[runs_wanted_count].indices = indices;
+	runs_wanted[runs_wanted_count].index_count = index_count;
+	runs_wanted[runs_wanted_count].strip = strip;
+	runs_wanted_count++;
+}
+
 /* the runs' spheres, in the part's own space (the batch's records) */
 static void near_clusters_make(struct skin_batch *b, const struct skin_part *skin, const void *vertices)
 {
 	int triangles = b->index_count / 3, count = (triangles + NEAR_CLUSTER_TRIANGLES - 1) / NEAR_CLUSTER_TRIANGLES;
 	int uv_at = skin->stride - 24, c;
 
+	if (PSP_ME_WORK())
+	{
+		runs_want(b, skin, vertices, NULL, 0, 0);
+		return;
+	}
 	b->cluster_count = 0;
 	b->clusters = count > 0 ? malloc(count * sizeof(float[4])) : NULL;
 	if (!b->clusters)
@@ -10998,6 +11579,11 @@ static struct rigid_runs *rigid_runs_for(const void *vertices, const unsigned sh
 	}
 	if (triangles <= 0)
 		return NULL;
+	if (PSP_ME_WORK())
+	{
+		runs_want(NULL, NULL, vertices, indices, index_count, strip);
+		return NULL;
+	}
 	count = (int)((triangles + NEAR_CLUSTER_TRIANGLES - 1) / NEAR_CLUSTER_TRIANGLES);
 	if (slot->spheres)
 	{
@@ -14050,6 +14636,11 @@ static void transparent_flush_body(void)
 	for (index = 0; index < transparent_count; index++)
 	{
 		struct transparent_draw const *draw = &transparent[transparent_order[index]];
+
+		/* the frame's end is one record: its see-through draws can take
+		milliseconds, which audio and the ring mustn't wait out (geinflight) */
+		if (replay_inflight)
+			inflight_serve();
 
 		/* build 89: a slot whose filling never finished (see transparent_slot) */
 		if (!draw->vertices && !draw->cut_vertices)
@@ -18492,9 +19083,17 @@ void psp_ge_frame_window(char *text, int size)
 
 void psp_ge_frame_end(void)
 {
+	/* geinflight: the frame waits, written down whole, for the next frame's
+	first call */
+	if (INFLIGHT_RECORDING())
+	{
+		defer_words(DEFER_FRAME_END, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+		inflight_pending = 1;
+		window_main_done = 0;
+		inflight_hand_over();
+		return;
+	}
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
-	unsigned int flush_mark;
-
 	/* the ring's one producer, between frames: where the ME can be restarted
 	after a sleep (a slot job still out puts it off to a later frame end) */
 	psp_me_wake_poll();
@@ -18502,49 +19101,122 @@ void psp_ge_frame_end(void)
 		return;
 	psp_me_ring_test(); /* "meringtest" (psp_me.c); off: one test a frame */
 	psp_me_batch_test(); /* "mebatchtest" (psp_me.c); likewise */
-	flush_mark = sceKernelGetSystemTimeLow();
-	win_transparent += transparent_count;
+	frame_end_list();
+	frame_end_show();
+}
+
+/* the frame's end in two parts, as its window's begin: the list's (its last
+draws and its finish: the Media Engine's turn under geinflight) and the main
+CPU's (the GE waited for, the picture shown, the frame's reads and logs) */
+/* the list part's figures for the heartbeat's window: written where the list
+ends (on the Media Engine under geinflight) and added in by the main CPU
+when the frame is shown, since the heartbeat's thread clears the window's
+own counters whenever it reports them */
+static struct { unsigned long transparent, flush_us, draws, triangles, list_bytes; } list_part;
+
+static int frame_end_list(void)
+{
+	unsigned int flush_mark;
+
+	if (!frame_open)
+		return 0;
+	flush_mark = ge_clock();
+	list_part.transparent = transparent_count;
 	transparent_flush();
 	taa_resolve();
 	ge_kinds_frame_end(); /* build 103 */
 	CENSUS(census_frame());
-	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
-	win_flush_us += sceKernelGetSystemTimeLow() - flush_mark;
-	win_frames++;
-	win_draws += draws_this_frame;
-	win_triangles += triangles_this_frame;
+	list_part.flush_us = ge_clock() - flush_mark;
+	list_part.draws = draws_this_frame;
+	list_part.triangles = triangles_this_frame;
 	/* the display list's high-water mark: it has no overflow check of its own
 	(build 19) */
 	{
 		int used = sceGuCheckList();
 
-		win_list_bytes += used;
+		list_part.list_bytes = used;
 
 		if (used > list_peak)
 		{
 			list_peak = used;
 			if (used > display_list_size * 7 / 8)
-				platform_log("GE: display list %d of %d bytes used", used, display_list_size);
+				ge_log("GE: display list %d of %d bytes used", used, display_list_size);
 		}
 	}
+	/* the frame's data to RAM before the list's last stall moves (on the
+	Media Engine its job's end writes its cache back) */
+	if (!PSP_ME_WORK())
 	{
-		/* build 44: the frame end's own parts, timed (the profile's
-		psp_frame_account step cost 1.3 ms a frame in build 42) */
-		unsigned int mark = sceKernelGetSystemTimeLow(), waited;
+		unsigned int mark = ge_clock();
 
 		sceKernelDcacheWritebackAll();
-		frame_end_us[0] += sceKernelGetSystemTimeLow() - mark;
-		win_writeback_us += sceKernelGetSystemTimeLow() - mark;
-		mark = sceKernelGetSystemTimeLow();
-		/* build 48: the finish's stall update always reaches the GE */
+		frame_end_us[0] += ge_clock() - mark;
+		win_writeback_us += ge_clock() - mark;
+	}
+	/* pspgu's finish holds off interrupts, a system call the Media Engine
+	can't make: in its work the list is finished by the main CPU, when the
+	frame is shown. The GE meanwhile has the frame's every draw and waits at
+	the stall, so the picture doesn't wait for it */
+	if (inflight_on && PSP_ME_WORK())
+		inflight_finish_left = 1;
+	else
+	{
+		/* the finish's stall update always reaches the GE */
 		stall_force = 1;
 		sceGuFinish();
+		stall_force = 0;
+	}
+	return 1;
+}
+
+/* the runs' spheres the Media Engine's work asked for (runs_want), made while
+the parts it drew are still resident: before the frame's end lets anything go */
+static void runs_wanted_make(void)
+{
+	int k;
+
+	for (k = 0; k < runs_wanted_count; k++)
+	{
+		struct runs_want const *w = &runs_wanted[k];
+
+		if (w->batch)
+		{
+			if (w->batch->cluster_count < 0)
+				near_clusters_make(w->batch, w->skin, w->vertices);
+		}
+		else
+			(void)rigid_runs_for(w->vertices, w->indices, w->index_count, w->strip);
+		runs_wanted_made++;
+	}
+	runs_wanted_count = 0;
+}
+
+static void frame_end_show(void)
+{
+	runs_wanted_make();
+	win_frames++;
+	win_transparent += list_part.transparent;
+	win_flush_us += list_part.flush_us;
+	win_draws += list_part.draws;
+	win_triangles += list_part.triangles;
+	win_list_bytes += list_part.list_bytes;
+	window_main_done = 0;
+	if (inflight_finish_left)
+	{
+		inflight_finish_left = 0;
+		stall_force = 1;
+		sceGuFinish();
+		stall_force = 0;
+	}
+	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
+	{
+		unsigned int mark = sceKernelGetSystemTimeLow(), waited;
+
 		/* build 35: how long the CPU waits here for the GE to finish the
 		frame's list. Long waits: the GE is the limit (fill, passes); short:
 		the CPU is, and drawing overlapped with the next frame's work would
 		gain little */
 		sceGuSync(0, 0);
-		stall_force = 0;
 		waited = sceKernelGetSystemTimeLow() - mark;
 		ge_wait_us += waited;
 		win_ge_us += waited;
@@ -18875,6 +19547,7 @@ void psp_ge_frame_end(void)
 				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
 			ge_kinds_report(); /* build 103 */
 			CENSUS(census_report());
+			replay_kinds_report(300); /* mekinds */
 			ge_reads_report(frames); /* build 115 */
 			vm_report(); /* build 116 */
 			/* build 112: every 300 frames, with the skinning plans' heap */
@@ -18887,6 +19560,13 @@ void psp_ge_frame_end(void)
 			if (defer_on)
 				platform_log("GE: gedefer: %lu calls deferred, carried out in %lu runs (%lu when the buffer filled); ran as they came: %lu models with more than %d nodes, %lu calls too large",
 					defer_records, defer_drains, defer_drains_full, defer_big_models, DEFER_MAX_NODES, defer_too_large);
+			if (inflight_on && inflight_frames)
+			{
+				platform_log("GE: geinflight: %lu frames carried out after the next frame's ticks (%lu of them on the Media Engine, %lu stall addresses passed on while out), %lu KB a frame written down (fullest %lu KB of %u)",
+					inflight_frames, inflight_handed, inflight_forwards, inflight_words * sizeof(defer_word) / 1024 / inflight_frames,
+					inflight_words_most * (unsigned long)sizeof(defer_word) / 1024, (unsigned int)(DEFER_INFLIGHT_WORDS * sizeof(defer_word) / 1024));
+				inflight_frames = inflight_words = inflight_words_most = inflight_handed = inflight_forwards = 0;
+			}
 			if (defer_on)
 			{
 				char sites[400];
