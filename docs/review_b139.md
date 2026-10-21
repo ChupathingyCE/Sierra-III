@@ -46,6 +46,7 @@ H-numbers are b139's first hand test (PSP-1000). "Fixed [E]" means the emulator 
 | H35, H36 | Camouflaged Elites invisible; powerups plain | Opt-in looks, off (see §Calls); neither confirmed on screen [E] |
 | H39 | Pelican off its path | Not reproduced; poseahead cleared (0 of 199,833 poses differ) [E]. A PSP run waits for your word |
 | H42 | Bunker doorway light (a bright wedge beside the door frame) | **Fixed (restoration), bake side** [E]: the cause was the bake's lightmap halving averaging across a chart seam on the door-frame surface; the baker now halves each lightmap chart on its own with its edge texels clamped (`docs/review_fix-h42.md`; `--no-lm-chart-halve` turns it off). b30 doorway wedge gone, 0-37 px a shot elsewhere, play identical, same size (lab 39542362955). Needs the b139d bake. |
+| Test 3 #3 | a10's decals and particles vanish in lit firefights (hand test 3, shots 010-011) | **Fixed (restoration)** [M cause, E cost]: the light pass filled the display list first (708 of 768 KB; 25,408 draws skipped), so decals and particles were the draws left out; light draws now stop 64 KB short of the limit (`docs/review_fix-listres.md`; `nolightreserve` turns it off). No cost in the emulator; the firefight wasn't reached there, so the PSP log's 'light draws held back' line confirms it (§Test). In the fullest frames the farthest lit surfaces lose dynamic light instead |
 | H8 | Signs through the floor | Not touched |
 
 ## §Memory

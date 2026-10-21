@@ -1557,6 +1557,17 @@ static const char *const kind_names[KINDS] = { "other", "sky", "level", "lights"
 	"models", "see-through queued", "decals", "sprites (particles)", "flares", "shadows", "see-through drawn", "screen quads", "HUD" };
 static const char kind_letters[KINDS] = { 'o', 'k', 'L', 'l', 'B', 'M', 'q', 'd', 'p', 'f', 's', 'T', 'Q', 'H' };
 #define LEVEL_RESERVE 0x18000 /* 96 KB */
+/* The decals' and particles' room. The light pass comes before them in the
+frame, and where many dynamic lights reach a lot of level (a10's lit
+corridors in a firefight) it can take most of the list by itself: then the
+blood, scorch marks and floor stencils, and the particles, were the draws
+left out, and whole decals vanished for as long as the fight lasted. Light
+draws now stop LIGHT_RESERVE bytes earlier; what the light pass loses is
+some light on the farthest surfaces in the fullest frames. Keep word
+"nolightreserve": as before */
+#define LIGHT_RESERVE 0x10000 /* 64 KB */
+static int light_reserve_on = -1;
+static unsigned long light_reserve_held = 0;
 static int ge_kind_now = KIND_OTHER, level_reserve_on = -1, level_begun = 0;
 static unsigned int kind_mark = 0, kind_seen = 0;
 static unsigned int kind_frame_bytes[KINDS], kind_peak_bytes[KINDS], kind_frame_skips[KINDS], kind_peak_skips[KINDS];
@@ -1649,6 +1660,8 @@ static void ge_kinds_frame_begin(void)
 	level_begun = 0;
 	if (level_reserve_on < 0)
 		level_reserve_on = !psp_keep("nolevelreserve");
+	if (light_reserve_on < 0)
+		light_reserve_on = !psp_keep("nolightreserve");
 }
 
 /* build 107: when the list is full, the smallest models on the screen go
@@ -2056,20 +2069,25 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
 	model_bone_loads = model_take_bytes = model_part_calls = model_bone_calls = model_bone_sub_bytes = 0;
-	platform_log("GE: fullest frame %u KB, kinds in order %s (L level, o other, k sky, l lights, B level see-through, M models, q see-through queued, d decals, p particles, f flares, s shadows, T see-through drawn, Q screen quads, H HUD); the level's reserve %s, held back %lu draws",
-		kind_peak_total / 1024, kind_peak_order, level_reserve_on > 0 ? "on" : "off", level_reserve_held);
+	platform_log("GE: fullest frame %u KB, kinds in order %s (L level, o other, k sky, l lights, B level see-through, M models, q see-through queued, d decals, p particles, f flares, s shadows, T see-through drawn, Q screen quads, H HUD); the level's reserve %s, held back %lu draws; the decals' and particles' reserve %s, light draws held back %lu",
+		kind_peak_total / 1024, kind_peak_order, level_reserve_on > 0 ? "on" : "off", level_reserve_held,
+		light_reserve_on > 0 ? "on" : "off", light_reserve_held);
 	memset(kind_bytes, 0, sizeof(kind_bytes));
 	memset(kind_skips, 0, sizeof(kind_skips));
 	kind_frames = 0;
 	kind_peak_total = 0;
 	level_reserve_held = 0;
+	light_reserve_held = 0;
 }
 
-/* the limit for the kind running: lower before the level has begun */
+/* the limit for the kind running: lower before the level has begun, and
+lower for the light pass */
 static int kind_limit(void)
 {
 	if (level_reserve_on > 0 && !level_begun && ge_kind_now != KIND_LEVEL && ge_kind_now != KIND_SKY && !hud_phase)
-		return list_limit - LEVEL_RESERVE;
+		return list_limit - LEVEL_RESERVE - (ge_kind_now == KIND_LIGHT && light_reserve_on > 0 ? LIGHT_RESERVE : 0);
+	if (ge_kind_now == KIND_LIGHT && light_reserve_on > 0 && !hud_phase)
+		return list_limit - LIGHT_RESERVE;
 	return list_limit;
 }
 
@@ -2083,7 +2101,12 @@ static int list_full(void)
 		platform_log("GE: the display list is full; draws skipped until the frame ends");
 	kind_frame_skips[ge_kind_now]++;
 	if (limit != list_limit && sceGuCheckList() < list_limit - DISPLAY_LIST_MARGIN)
-		level_reserve_held++;
+	{
+		if (ge_kind_now == KIND_LIGHT && light_reserve_on > 0)
+			light_reserve_held++;
+		else
+			level_reserve_held++;
+	}
 	return 1;
 }
 
