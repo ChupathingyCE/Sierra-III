@@ -27760,35 +27760,44 @@ FIXES_RSO["source/models/models.c#rso"] = [
 """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_RSO) */
 #define PSP_RSO_NODES 16
+#define PSP_RSO_REGIONS 16
 extern long psp_rso_object;
-int psp_rso_reuse(long object_index, void const *key, unsigned int key_bytes);
-void psp_rso_capture_end(void);
-struct psp_rso_key
-{
-	long model_index;
-	short level_of_detail;
-	short forced_shader_permutation_index;
-	unsigned long flags;
-	long node_count;
-	byte region_permutations[MAXIMUM_REGIONS_PER_OBJECT];
-	real_rgb_color change_colors[NUMBER_OF_OBJECT_CHANGE_COLORS];
-	real function_values[NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS];
-	struct render_lighting lighting;
-	real_point3d centroid;
-	real radius;
-	struct render_model_effect effect;
-	real_matrix4x3 node_matrices[PSP_RSO_NODES];
-};
+int psp_rso_find(long object_index, unsigned int const **kept, unsigned int *kept_words);
+int psp_rso_reuse(long object_index, int same);
+unsigned int *psp_rso_capture_end(unsigned int key_words);
 
-/* the key's bytes, or 0 where the walk reads more than these */
-static unsigned int psp_rso_key_make(
-	struct psp_rso_key *key,
+/* whether the walk reads only render_model's inputs, the model's tag data
+and the map's constants: no point lights (their list is the frame's), no
+effect, no first-person, shadow, sky or immediate flag, no debug view */
+static boolean psp_rso_keyable(real_matrix4x3 const *node_matrices, short node_count, short region_count,
+	struct render_lighting const *lighting, struct render_model_effect const *model_effect, unsigned long flags)
+{
+	return node_matrices && node_count > 0 && node_count <= PSP_RSO_NODES && region_count >= 0 &&
+		region_count <= PSP_RSO_REGIONS && !(flags & ~FLAG(_render_model_no_planar_fog_bit)) &&
+		lighting->point_light_count == 0 && model_effect->type == 0 /* none (render_objects.c's enum) */ &&
+		!rasterizer_model_cortana_hack && rasterizer_debug_options.debug_model_lod == NONE && !render_model_nodes &&
+		!render_model_markers && !render_model_vertex_counts && !render_model_index_counts && !render_model_no_geometry;
+}
+
+/* the key: the bytes of render_model's inputs that the walk reads, packed in
+words. The words before a field fix its length (the model index its region
+count, the node count its matrices), so two keys of different inputs differ
+before either is read past its end. Left out: the lighting's and the
+effect's padding, the point light indices (none are read with no point
+lights), and the effect's type (none). With key NULL, only its words; with
+fill, written there; else compared there in place, which stops at the first
+difference: 0 if they differ, else the words */
+static unsigned int psp_rso_key(
+	unsigned int *key,
+	unsigned int kept_words,
+	boolean fill,
 	long model_index,
 	struct model const *model,
 	real level_of_detail_pixels,
 	real_matrix4x3 const *node_matrices,
 	short node_count,
 	char const *region_permutation_indices,
+	short region_count,
 	real_rgb_color const *change_colors,
 	real const *function_values,
 	struct render_lighting const *lighting,
@@ -27798,31 +27807,47 @@ static unsigned int psp_rso_key_make(
 	short forced_shader_permutation_index,
 	unsigned long flags)
 {
+	unsigned int at = 0, head[5];
 	short level = NUMBER_OF_DETAIL_LEVELS_PER_MODEL - 1;
+	unsigned int effect_bytes = (unsigned int)((char const *)(model_effect + 1) - (char const *)&model_effect->intensity);
 
-	if (!node_matrices || node_count <= 0 || node_count > PSP_RSO_NODES ||
-		(flags & ~FLAG(_render_model_no_planar_fog_bit)) || lighting->point_light_count != 0 ||
-		model_effect->type != 0 /* none (render_objects.c's enum) */ || rasterizer_model_cortana_hack ||
-		rasterizer_debug_options.debug_model_lod != NONE || render_model_nodes || render_model_markers ||
-		render_model_vertex_counts || render_model_index_counts || render_model_no_geometry)
-		return 0;
+#define PSP_RSO_FIELD(pointer, bytes) \
+	do { \
+		unsigned int psp_rso_bytes = (unsigned int)(bytes); \
+		if (fill) \
+		{ \
+			key[at + (psp_rso_bytes + 3) / 4 - 1] = 0; \
+			csmemcpy(key + at, (pointer), psp_rso_bytes); \
+		} \
+		else if (at + (psp_rso_bytes + 3) / 4 > kept_words || memcmp(key + at, (pointer), psp_rso_bytes)) \
+			return 0; \
+		at += (psp_rso_bytes + 3) / 4; \
+	} while (0)
+
+	if (!key)
+		return 5 + (unsigned int)(region_count + 3) / 4 + 3 + 2 * 6 + 10 + (effect_bytes + 3) / 4 + 3 + 1 +
+			NUMBER_OF_OBJECT_CHANGE_COLORS * 3 + NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS + 12 * (unsigned int)node_count;
 	while (level > 0 && level_of_detail_pixels < model->detail_cutoff_pixels[level])
 		level--;
-	csmemset(key, 0, sizeof(*key));
-	key->model_index = model_index;
-	key->level_of_detail = level;
-	key->forced_shader_permutation_index = forced_shader_permutation_index;
-	key->flags = flags;
-	key->node_count = node_count;
-	csmemcpy(key->region_permutations, region_permutation_indices, sizeof(key->region_permutations));
-	csmemcpy(key->change_colors, change_colors, sizeof(key->change_colors));
-	csmemcpy(key->function_values, function_values, sizeof(key->function_values));
-	key->lighting = *lighting;
-	key->centroid = *centroid;
-	key->radius = radius;
-	key->effect = *model_effect;
-	csmemcpy(key->node_matrices, node_matrices, node_count * sizeof(real_matrix4x3));
-	return (unsigned int)((char const *)&key->node_matrices[node_count] - (char const *)key);
+	head[0] = (unsigned int)model_index;
+	head[1] = ((unsigned int)(unsigned short)level << 16) | (unsigned short)forced_shader_permutation_index;
+	head[2] = (unsigned int)flags;
+	head[3] = ((unsigned int)(unsigned short)lighting->distant_light_count << 16) | (unsigned short)node_count;
+	head[4] = (unsigned int)region_count;
+	PSP_RSO_FIELD(head, sizeof(head));
+	if (region_count)
+		PSP_RSO_FIELD(region_permutation_indices, region_count);
+	PSP_RSO_FIELD(&lighting->ambient_color, sizeof(lighting->ambient_color));
+	PSP_RSO_FIELD(lighting->distant_lights, sizeof(lighting->distant_lights));
+	PSP_RSO_FIELD(&lighting->reflection_tint_color, (char const *)(lighting + 1) - (char const *)&lighting->reflection_tint_color);
+	PSP_RSO_FIELD(&model_effect->intensity, effect_bytes);
+	PSP_RSO_FIELD(centroid, sizeof(*centroid));
+	PSP_RSO_FIELD(&radius, sizeof(radius));
+	PSP_RSO_FIELD(change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
+	PSP_RSO_FIELD(function_values, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS * sizeof(real));
+	PSP_RSO_FIELD(node_matrices, node_count * sizeof(real_matrix4x3));
+#undef PSP_RSO_FIELD
+	return fill || at == kept_words ? at : 0;
 }
 #endif
 
@@ -27841,24 +27866,30 @@ void render_model(
 		/* psp_fixups.py (FIXES_RSO): the records kept for these inputs, sent
 		again in place of the walk (psp_ge.c, rso) */
 		boolean psp_rso_walk = FALSE;
-		struct psp_rso_key psp_rso_key;
+		short psp_rso_regions = (short)MIN(model->regions.count, region_permutation_count);
 
 		if (psp_rso_object != NONE && psp_rso_object == unique_identifier)
 		{
-			unsigned int bytes = psp_rso_key_make(&psp_rso_key, model_index, model, level_of_detail_pixels,
-				node_matrices, node_count, region_permutation_indices, change_colors, function_values, lighting,
-				centroid, radius, model_effect, forced_shader_permutation_index, flags);
+			unsigned int const *kept;
+			unsigned int kept_words;
 
 			psp_rso_object = NONE;
-			if (bytes)
+			if (psp_rso_keyable(node_matrices, node_count, psp_rso_regions, lighting, model_effect, flags) &&
+				psp_rso_find(unique_identifier, &kept, &kept_words))
 			{
-				if (psp_rso_reuse(unique_identifier, &psp_rso_key, bytes))
+				int same = kept && psp_rso_key((unsigned int *)kept, kept_words, FALSE, model_index, model,
+					level_of_detail_pixels, node_matrices, node_count, region_permutation_indices, psp_rso_regions,
+					change_colors, function_values, lighting, centroid, radius, model_effect,
+					forced_shader_permutation_index, flags) != 0;
+				int reuse = psp_rso_reuse(unique_identifier, same);
+
+				if (reuse > 0)
 				{
 					rasterizer_model_cortana_hack = FALSE;
 					profile_exit(render_model_section);
 					return;
 				}
-				psp_rso_walk = TRUE;
+				psp_rso_walk = reuse == 0;
 			}
 		}
 #endif
@@ -27872,7 +27903,19 @@ void render_model(
 		}
 #ifdef HALO_PSP
 		if (psp_rso_walk)
-			psp_rso_capture_end(); /* psp_fixups.py (FIXES_RSO) */
+		{
+			/* psp_fixups.py (FIXES_RSO): the walk kept, and its key written
+			into the entry (the inputs are as they were before the walk) */
+			unsigned int words = psp_rso_key(NULL, 0, FALSE, model_index, model, level_of_detail_pixels,
+				node_matrices, node_count, region_permutation_indices, psp_rso_regions, change_colors,
+				function_values, lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+			unsigned int *key = psp_rso_capture_end(words);
+
+			if (key)
+				(void)psp_rso_key(key, words, TRUE, model_index, model, level_of_detail_pixels, node_matrices,
+					node_count, region_permutation_indices, psp_rso_regions, change_colors, function_values,
+					lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+		}
 #endif
 	}
 
