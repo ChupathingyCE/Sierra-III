@@ -53,3 +53,15 @@ The first batch (b30, a30, c10, a10; hands off, `fixedticks fixedseed nomouth st
 - Memory: 48 KB outside the heap on every map, 81-85 KB left free there; heap untouched.
 
 The second batch tests the fix on the same maps.
+
+## Proof and gain, second batch [E]
+
+The same runs on the fix (entries aged by frames, a constant glow kept, the reasons counted apart):
+- **Records are sent again now**: a frame of the cache runs' second 600-frame window, b30 56 of 93 offered, a30 50 of 134 (`rsoall` 54 of 155), c10 29 of 40; a10 offers 3-8 and sends 0-2.
+- **Play and both random seeds the same at all 6,000 ticks** on b30, a30, c10 and a10 (`rso`, `rsocheck`, a30 `rsoall rsocheck`), the whole state differing only where it follows the emulator's speed, as before. framecrc against off differs at b30 715, a30 1, c10 3, a10 1 frames of ~3,000, inside two runs with it off (b30 801, a30 3, c10 2): b30's frame hashes differ run to run, so they can't judge it there.
+- **`rsocheck` doesn't say 0 differ yet**: b30 47,720 of 114,483 compared walks, a30 1,718 of 111,017, c10 9,986 of 17,301; the first difference is always in a model shape record, word 6. That record is the one `rasterizer_model_end` writes with no centroid: `defer_copy` writes only the "none" flag and leaves the three centroid words as the buffer had them, and the replay never reads them [D]. Every map averages 2.6-2.9 differing words a differing walk, at most the three [U]. The compare must skip those words (or `defer_copy` write zeros there) before it can prove the rest exact.
+- **Why models aren't kept**, a frame of offered: no room (the 48 KB block full) b30 27, a30 42; a see-through part a30 25, b30 2; inputs changed since the last walk c10 10, a30 17, b30 8; a glow that follows the time only with `rsoall` (a30 4); the Xbox path ~0.
+- **Gain is small**: the record lane in the cache model c10 10.70 -> 10.42 ms a frame (-2.6%; objects pass 3.27 -> 2.91), a30 11.75 -> 11.83 (+0.7%; `rsoall` -0.7%), b30 16.96 -> 16.73 (-1.4%). The walk's steps fall by 0.71-0.91 ms, but render_model's own step grows by 0.39-0.87 ms: every offered object's key is zeroed (about 1 KB with 16 nodes' room), filled and compared, and each object sent again copies its records (4-5 thousand words a frame). At the share of the PSP's record time that is c10 ~0.7, a30 at most ~0.2 and b30 ~0.45 ms a frame [E x M], under the 1% gate on a30 and b30 and only at it on c10.
+- Memory: the heap's lines on a10 and a30 the same with it on (most in use, least free inside).
+
+**Not merged.** What would bring it over the gate [U]: compare the key's fields in place against the inputs instead of building a zeroed copy, and only the bytes used (about half the per-object cost); room for the objects that don't fit, by smaller entries or by keeping the most-sent ones rather than the first; with both, roughly a30 9%, b30 7% and c10 5% of the record lane. A see-through part's map animation reads the time, so keeping those models means working the animation out as the records are carried out; the objects whose inputs change need a count of which key field moves first.
