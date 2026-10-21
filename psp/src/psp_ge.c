@@ -6910,6 +6910,7 @@ address; in the geometry cache, their address in the pack, since the block
 they sit in can be reused for other vertices once they are evicted */
 int psp_geo_external(unsigned int address);
 void *psp_geo_lock(unsigned int address, unsigned int size);
+unsigned int psp_geo_level_stride(void);
 
 static const void *stream_key(const void *vertices)
 {
@@ -7521,6 +7522,10 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	unsigned int slot = ((unsigned int)key >> 5) % LEVEL_STREAMS, tries = 0;
 	struct level_stream *stream;
 	int index;
+	/* the bytes of a rendered vertex, and where its uv is (floats): the tags
+	and an older pack keep the Xbox's 32, binormal and tangent included */
+	unsigned int level_stride = 32;
+	int uv_at;
 
 	while (level_streams[slot].source && level_streams[slot].source != key)
 	{
@@ -7561,16 +7566,18 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	/* new, or let go when over budget (level_streams_trim): built here */
 	if (psp_geo_external((unsigned int)vertices))
 	{
-		/* the pack's bytes: the material's own vertices (32 each) and, when it
-		has them, the lightmap's (8 each) right after; one block */
+		/* the pack's bytes: the material's own vertices (level_stride each)
+		and, when it has them, the lightmap's (8 each) right after; one block */
 		unsigned int address = (unsigned int)vertices;
-		const char *raw = psp_geo_lock(address, (unsigned int)count * (lightmap_vertices ? 40 : 32));
+		const char *raw;
 
+		level_stride = psp_geo_level_stride();
+		raw = psp_geo_lock(address, (unsigned int)count * (level_stride + (lightmap_vertices ? 8u : 0u)));
 		if (!raw)
 			return NULL;
 		vertices = raw;
 		if (lightmap_vertices)
-			lightmap_vertices = raw + 32 * count;
+			lightmap_vertices = raw + level_stride * count;
 	}
 	stream->source = key;
 	stream->count = count;
@@ -7611,9 +7618,10 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 	stream->high[0] = stream->high[1] = stream->high[2] = -1e30f;
 	if (level_local < 0)
 		level_local = !psp_keep("levellocaloff");
+	uv_at = (int)(level_stride - 8) / 4;
 	for (index = 0; index < count; index++)
 	{
-		const float *vertex = (const float *)((const char *)vertices + 32 * index);
+		const float *vertex = (const float *)((const char *)vertices + level_stride * index);
 		struct ge_vertex *b = &stream->base[index];
 		int axis;
 
@@ -7625,7 +7633,7 @@ static struct level_stream *level_stream_get(const void *vertices, const void *l
 		{
 			b->x = vertex[0]; b->y = vertex[1]; b->z = vertex[2];
 		}
-		b->u = vertex[6]; b->v = vertex[7];
+		b->u = vertex[uv_at]; b->v = vertex[uv_at + 1];
 		stream->normals[index] = ((const unsigned int *)vertex)[3];
 		for (axis = 0; axis < 3; axis++)
 		{
