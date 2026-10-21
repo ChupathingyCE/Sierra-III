@@ -1499,6 +1499,15 @@ static const unsigned int *bind_block(int index, struct pack_entry const *entry,
 }
 
 /* makes the texture the GE's current one; 0 if it isn't there (yet) */
+#ifdef PSP_RECON
+/* "txptcensus" (recon; psp_tex_pretouch): which textures the replay bound this frame */
+static int txc_on = -1;
+static struct pack_entry const *txc_for = NULL;
+static unsigned int *txc_bound_at = NULL;
+#define TXC_BOUND(index) do { if (txc_on > 0 && txc_for == entries) txc_bound_at[index] = frame; } while (0)
+#else
+#define TXC_BOUND(index) do { } while (0)
+#endif
 int psp_tex_bind(unsigned int key, int *has_alpha)
 {
 	int index, level;
@@ -1694,9 +1703,8 @@ the replay bound anyway (what the filters cost in looks) */
 static const char *const txc_names[PRETOUCH_KINDS] = { "levelbase", "lightmap", "leveldetail", "modelbase", "change",
 	"glow", "modeldetail", "sprite", "contrail", "widget", "seethrough", "levelseethrough", "screen", "zoom", "light",
 	"decal", "blip", "blipsend" };
-static int txc_on = -1, txc_wait_frames = 0;
-static struct pack_entry const *txc_for = NULL;
-static unsigned int *txc_marked_at = NULL, *txc_skipped_at = NULL, *txc_bound_at = NULL;
+static int txc_wait_frames = 0;
+static unsigned int *txc_marked_at = NULL, *txc_skipped_at = NULL;
 static unsigned char *txc_kind = NULL;
 static unsigned long txc_waits_seen = 0, txc_frames = 0;
 static unsigned long txc_marked[PRETOUCH_KINDS], txc_marked_kb[PRETOUCH_KINDS], txc_unbound[PRETOUCH_KINDS],
@@ -1727,7 +1735,6 @@ static int txc_ready(void)
 	}
 	return 1;
 }
-#define TXC_BOUND(index) do { if (txc_on > 0 && txc_for == entries) txc_bound_at[index] = frame; } while (0)
 
 static void txc_note(int index, int kind, int marked)
 {
@@ -1807,7 +1814,6 @@ static void txc_frame_end(void)
 	}
 }
 #else
-#define TXC_BOUND(index) do { } while (0)
 #define txc_note(index, kind, marked) do { } while (0)
 #endif
 

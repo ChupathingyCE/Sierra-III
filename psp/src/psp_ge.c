@@ -10444,14 +10444,14 @@ void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_
 		glow (model_lighting's passes): a part with neither binds nothing
 		of these */
 		unsigned int glow_rgb = abgr_from_rgb(glow) & 0xFFFFFF;
-		int glow_mapped = glow_rgb && glow_map_key && psp_tex_has(glow_map_key);
-		int wanted_change = abgr_from_rgb(change) != 0xFFFFFFFF || (glow_rgb && !glow_mapped);
+		int mapped = glow_rgb && glow_map_key && psp_tex_has(glow_map_key);
+		int wanted_change = abgr_from_rgb(change) != 0xFFFFFFFF || (glow_rgb && !mapped);
 
 		if (pretouch_all || wanted_change)
 			GE_PRETOUCH(multipurpose_key, TXPT_CHANGE);
 		else
 			GE_PRETOUCH_PASSED(multipurpose_key, TXPT_CHANGE);
-		if (pretouch_all || glow_mapped)
+		if (pretouch_all || mapped)
 			GE_PRETOUCH(glow_map_key, TXPT_GLOW);
 		else
 			GE_PRETOUCH_PASSED(glow_map_key, TXPT_GLOW);
