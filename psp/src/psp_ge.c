@@ -2219,6 +2219,7 @@ static int kind_order_length = 0;
 static void gebusy_kind_cut(int kind);
 static int blip_depth_live; /* blipdepth (the motion sensor, below) */
 static unsigned long blip_depth_world_after;
+static unsigned long blip_depth_after_kind[KINDS], blip_depth_after_tested;
 
 static void ge_kind(int kind)
 {
@@ -2226,7 +2227,12 @@ static void ge_kind(int kind)
 
 	gebusy_kind_cut(kind); /* build 115 */
 	if (__builtin_expect(blip_depth_live, 0) && kind != KIND_HUD && kind != KIND_SCREEN)
+	{
 		blip_depth_world_after++;
+		blip_depth_after_kind[kind]++;
+		if (sceGuGetStatus(GU_DEPTH_TEST))
+			blip_depth_after_tested++;
+	}
 	now = sceGuCheckList();
 
 	if (now > kind_mark)
@@ -18734,8 +18740,11 @@ static void blip_check_compare(void)
 	if (reference[0] == BLIP_CHECK_FILL && reference[BLIP_BYTES / 8] == BLIP_CHECK_FILL &&
 		reference[BLIP_BYTES / 4 - 1] == BLIP_CHECK_FILL)
 		return;
+	/* colour only: the target's alpha bytes are the GE's stencil, which
+	these draws leave as they were (the depth's bytes in one, the fill in the
+	other); the composite reads the colour alone (GU_TCC_RGB, fixed blend) */
 	for (k = 0; k < BLIP_BYTES / 4; k++)
-		if (depth[k] != reference[k])
+		if ((depth[k] ^ reference[k]) & 0x00FFFFFFu)
 		{
 			if (!differ && !blip_check_differ)
 			{
@@ -19765,6 +19774,19 @@ static void frame_end_show(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		if (blip_target != BLIP_TARGET)
+		{
+			char kinds[KINDS * 12 + 1];
+			int length = 0, k;
+
+			for (k = 0; k < KINDS; k++)
+				if (blip_depth_after_kind[k])
+					length += snprintf(kinds + length, sizeof(kinds) - length, " %c%lu", kind_letters[k],
+						blip_depth_after_kind[k]);
+			kinds[length] = 0;
+			platform_log("GE: blipdepth: after the target, by kind:%s; %lu with the depth test on (since the start)",
+				length ? kinds : " none", blip_depth_after_tested);
+		}
 		if (blip_target != BLIP_TARGET)
 			platform_log("GE: blipdepth: %lu world draws after the target in the depth buffer; check: %lu frames compared, %lu differed (%lu words; the first at byte %u in frame %lu, depth %08x for %08x), %lu not drawn again (since the start)",
 				blip_depth_world_after, blip_check_frames, blip_check_differ, blip_check_words, blip_check_first,
