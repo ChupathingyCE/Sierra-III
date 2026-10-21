@@ -46,7 +46,7 @@ struct pack_entry
 };
 
 #define VRAM_CACHE_START_FIXED 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
-/* "blipdepth" (psp_ge.c, docs/design_vrbroom.md): the motion sensor's target
+/* "blipdepth" (psp_ge.c, docs/review_vrbroom.md): the motion sensor's target
 drawn in the depth buffer instead, so its 16 KB at 0x0CC000 join the room
 shared by the textures and the copies */
 #define VRAM_CACHE_START_BLIPDEPTH 0x000CC000
@@ -155,7 +155,7 @@ static int alignment(unsigned int size)
 static void bind_totals_save(void);
 static void bind_totals_gather(void);
 
-/* "stripcensus" (vrbroom, docs/design_vrbroom.md): which textures the HUD
+/* "stripcensus" (docs/review_vrbroom.md): which textures the HUD
 binds, and which of them could live in the frame and depth buffers' padding
 strips instead of the cache. Each buffer is 512 pixels a row of which 480
 show, so pixels 480-511 of every row (64 bytes a row, 272 rows: 17 KB a
@@ -368,7 +368,7 @@ void psp_tex_close(void)
 	}
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
-	/* the VRAM it freed, per map (vrbroom) */
+	/* the VRAM it freed, per map */
 	if (vram_blip_freed)
 		platform_log("textures: blipdepth: the motion sensor's target in the depth buffer; %u KB freed at %06x, to the %s (%u KB; the texture cache %u KB)",
 			vram_blip_freed / 1024, VRAM_CACHE_START, vram_models_bytes ? "copies' room" : "texture cache",

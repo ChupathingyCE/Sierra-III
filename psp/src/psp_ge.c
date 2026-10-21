@@ -18488,7 +18488,7 @@ texture cache; psp_tex.c). The sensor's square runs from -1 to 1. */
 static int blips_open = 0;
 static unsigned long blips_drawn = 0;
 
-/* "blipdepth" (docs/design_vrbroom.md): the target drawn in the depth
+/* "blipdepth" (docs/review_vrbroom.md): the target drawn in the depth
 buffer's first 16 KB (the top 16 rows' depth) instead, so the 16 KB at
 BLIP_TARGET join the room the textures and the copies share (psp_tex.c).
 The depth buffer is idle there: the sensor is drawn in the HUD's turn, after
@@ -18618,8 +18618,8 @@ static void blip_target_open(unsigned int target)
 
 void psp_ge_blips_begin(void)
 {
-	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
-	ge_kind(KIND_HUD); /* build 103 */
+	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+	ge_kind(KIND_HUD);
 	list_hud_phase();
 
 	if (!frame_open || list_full())
@@ -18648,9 +18648,9 @@ static int blip_draw(float x, float y, float radius, float red, float green, flo
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
 	GE_DEFER(defer_words(DEFER_BLIP, 7, defer_bits(x), defer_bits(y), defer_bits(radius), defer_bits(red),
-		defer_bits(green), defer_bits(blue), key, 0)); /* build 112: gedefer */
+		defer_bits(green), defer_bits(blue), key, 0));
 	GE_BENCH_SKIP();
-	ge_kind(KIND_HUD); /* build 103 */
+	ge_kind(KIND_HUD);
 
 	if (!blips_open || !blip_draw(x, y, radius, red, green, blue, key))
 		return;
@@ -18776,8 +18776,8 @@ static void blip_check_compare(void)
 void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
 {
 	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
-		mask_key, 0, 0, 0)); /* build 112: gedefer */
-	ge_kind(KIND_HUD); /* build 103 */
+		mask_key, 0, 0, 0));
+	ge_kind(KIND_HUD);
 
 	if (!blips_open)
 		return;
