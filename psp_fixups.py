@@ -27651,6 +27651,606 @@ FIXES_OCEAN["source/rasterizer/rasterizer.c#oceanfog"] = [
 ]
 
 
+# ---------- FIXES_BSPR: a biped's last answers kept in its own state ("bspsame" turns it off)
+# A standing biped, and a resting body, asks the collision BSPs the same
+# question tick after tick: its level sphere at the same centre and radius,
+# the same object's BSP in the object's own space, the same short rays from a
+# body's nodes. A walk's answer is a function of its arguments and of tag data
+# alone: the BSP (fixed while a map is loaded and its BSP set: every kept
+# answer is dropped at both, with the sphere memo, by moving the generation
+# all keys carry), the centre and radius (or the ray's ends, maximum t and
+# test flags), and, where the walk reads them, the breakable surfaces' count
+# and flags. Objects moving into the sphere change what the caller does with
+# the leaves (the cluster object lists are walked after this, every time),
+# not the BSP's answer. So each biped keeps its last few questions with their
+# answers in a tail of its own object datum (4 spheres, 2 rays: no table and
+# no heap; the tail moves with the datum when the object pool compacts, is
+# zeroed when a biped is made and whenever a game state is loaded). A
+# question is the key's 7 words (a ray's, 11) compared bit for bit, with the breakable flags as a generation that moves
+# whenever the flags read differ from the last ones seen: a match is the
+# walk's own answer, list for list, in order. Only inside biped_update (the
+# owner is the biped), and only on the main CPU. The early-out walk
+# (psp_sphere_any) stops at its first find, so it is neither asked nor kept.
+# It sits before the sphere memo: a kept answer never reaches that table.
+# "bspsame" (keep.txt): every question walks, as before; "bspsamecheck": a
+# match walks too, compares, uses the walk's answer, and the log counts any
+# difference
+FIXES_BSPR = {}
+# (the tail: the engine's biped datum is 0x480 bytes; 640 more hold the kept
+# answers, set at each map's start, so the word off costs the pool nothing)
+FIXES_BSPR["source/objects/object_types.c#bspsame"] = [
+("""	struct object_type_definition *definition = first_object_type_definition;
+	processed_bsp_flags = 0;
+""",
+ """	struct object_type_definition *definition = first_object_type_definition;
+	processed_bsp_flags = 0;
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_BSPR): with it on, each biped made from now
+		has its kept collision answers after its datum; off, the datum is
+		the engine's own size and nothing is kept */
+		int psp_keep(const char *name);
+
+		biped_data_definition.game_datum_size = psp_keep("bspsame") ? 0x480 : 0x480 + 640;
+	}
+#endif
+"""),
+]
+FIXES_BSPR["source/physics/collision_bsp.c#bspsame"] = [
+("""	csmemset(psp_sphere_memo, 0, sizeof(psp_sphere_memo));
+	psp_surface_bounds_stale = 1;
+}""",
+ """	csmemset(psp_sphere_memo, 0, sizeof(psp_sphere_memo));
+	psp_surface_bounds_stale = 1;
+	{
+		void psp_bspr_forget(void); /* psp_fixups.py (FIXES_BSPR) */
+
+		psp_bspr_forget();
+	}
+}"""),
+("""#endif
+
+boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,""",
+ """#endif
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_BSPR): see there */
+#include "objects/objects.h"
+#include "objects/object_types.h"
+extern int psp_sphere_any;
+#define PSP_BSPR_SPHERES 4
+#define PSP_BSPR_RAYS 2
+#define PSP_BSPR_SPHERE_LIST 36 /* surfaces, edges, vertices and leaves together */
+#define PSP_BSPR_RAY_LEAVES 16
+#define PSP_BSPR_FLAG_WORDS 8
+struct psp_bspr_sphere_slot
+{
+	/* the key: 7 words */
+	struct collision_bsp const *bsp;
+	unsigned long x, y, z, radius;
+	unsigned long generation;
+	long count;
+	/* the answer */
+	unsigned char surface_count, edge_count, vertex_count, leaf_count;
+	unsigned short list[PSP_BSPR_SPHERE_LIST];
+};
+struct psp_bspr_ray_slot
+{
+	/* the key: 11 words */
+	struct collision_bsp const *bsp;
+	unsigned long flags, px, py, pz, vx, vy, vz, maximum_t;
+	unsigned long generation;
+	long count;
+	/* the answer */
+	unsigned long t;
+	real_plane3d const *plane;
+	long surface_index, plane_designator;
+	byte flags_out, breakable_surface_index, hit, leaf_count;
+	short material_index;
+	unsigned short leaves[PSP_BSPR_RAY_LEAVES];
+};
+struct psp_bspr_state
+{
+	struct psp_bspr_sphere_slot spheres[PSP_BSPR_SPHERES];
+	struct psp_bspr_ray_slot rays[PSP_BSPR_RAYS];
+};
+/* the 640 bytes object_types.c adds to the biped datum */
+typedef char psp_bspr_state_fits[sizeof(struct psp_bspr_state) <= 640 ? 1 : -1];
+/* the biped being updated (bipeds.c): its header's datum pointer, NULL
+outside biped_update. Read through it at each question, so a datum moved by
+a compaction is still found; its tail starts 0x480 bytes in */
+void *const *psp_bspr_datum_at;
+static int psp_bspr_on = -1, psp_bspr_check = 0;
+/* the breakable flags last seen, and the generation every key carries
+(never 0, so a zeroed tail matches nothing) */
+static unsigned long psp_bspr_flags[PSP_BSPR_FLAG_WORDS], psp_bspr_generation = 1;
+static byte const *psp_bspr_flags_at;
+/* between a question and its answer: the slot to keep it in, or the match to check */
+static struct psp_bspr_sphere_slot psp_bspr_sphere_pending, *psp_bspr_sphere_into, *psp_bspr_sphere_checking;
+static struct psp_bspr_ray_slot psp_bspr_ray_pending, *psp_bspr_ray_into, *psp_bspr_ray_checking;
+static unsigned long psp_bspr_counts[8]; /* sphere asked, answered, kept, differed; the same for rays */
+static long psp_bspr_window = -1;
+
+static void psp_bspr_new_generation(void)
+{
+	if (++psp_bspr_generation == 0 || psp_bspr_generation == ~0UL)
+		psp_bspr_generation = 1;
+}
+
+/* a map's tags loaded or the BSP set: no biped's kept answer matches again */
+void psp_bspr_forget(void)
+{
+	psp_bspr_flags_at = NULL;
+	psp_bspr_new_generation();
+}
+
+/* a game state loaded (a revert, a saved game): its bipeds' tails were kept
+under generations of another run, so every one is cleared */
+void psp_bspr_forget_loaded(void)
+{
+	struct object_iterator iterator;
+	struct object_datum *object;
+
+	psp_bspr_forget();
+	object_iterator_new(&iterator, _object_mask_biped, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+		if (object_header_get(iterator.index)->data_size >= 0x480 + 640)
+			csmemset((byte *)object + 0x480, 0, 640);
+}
+
+static unsigned long psp_bspr_bits(real value)
+{
+	union { real f; unsigned long u; } v;
+
+	v.f = value;
+	return v.u;
+}
+
+/* the generation for a walk that reads count breakable flags at flags (it
+moves when they differ from the last seen); ~0 when they don't fit (not kept) */
+static unsigned long psp_bspr_flags_generation(short count, byte const *flags)
+{
+	long words, k;
+	int same;
+
+	if (!flags || count <= 0)
+		return psp_bspr_generation;
+	words = (count + 31) / 32;
+	if (words > PSP_BSPR_FLAG_WORDS)
+		return ~0UL;
+	same = flags == psp_bspr_flags_at;
+	for (k = 0; k < words && same; k++)
+		same = psp_bspr_flags[k] == ((unsigned long const *)flags)[k];
+	if (!same)
+	{
+		for (k = 0; k < words; k++)
+			psp_bspr_flags[k] = ((unsigned long const *)flags)[k];
+		psp_bspr_flags_at = flags;
+		psp_bspr_new_generation();
+	}
+	return psp_bspr_generation;
+}
+
+static void psp_bspr_report(void)
+{
+	long tick = game_time_get();
+
+	if (psp_bspr_window < 0 || tick < psp_bspr_window)
+		psp_bspr_window = tick;
+	if (tick - psp_bspr_window < 300)
+		return;
+	platform_psp_log("bspsame: %ld ticks to %ld, spheres %lu asked %lu answered %lu kept, rays %lu asked %lu answered %lu kept%s%lu %lu",
+		tick - psp_bspr_window, tick, psp_bspr_counts[0], psp_bspr_counts[1], psp_bspr_counts[2],
+		psp_bspr_counts[4], psp_bspr_counts[5], psp_bspr_counts[6],
+		psp_bspr_check ? "; bspsamecheck: answers that differed (spheres, rays) " : "; ",
+		psp_bspr_counts[3], psp_bspr_counts[7]);
+	csmemset(psp_bspr_counts, 0, sizeof(psp_bspr_counts));
+	psp_bspr_window = tick;
+}
+
+/* the owner's tail, or NULL (word off, or nobody being updated) */
+static struct psp_bspr_state *psp_bspr_state_get(void)
+{
+	if (psp_bspr_on < 0)
+	{
+		psp_bspr_on = !psp_keep("bspsame");
+		psp_bspr_check = psp_keep("bspsamecheck");
+	}
+	return psp_bspr_on && psp_bspr_datum_at ? (struct psp_bspr_state *)((byte *)*psp_bspr_datum_at + 0x480) : NULL;
+}
+
+/* TRUE: result holds the kept answer and the walk is not made */
+static boolean psp_bspr_sphere_take(struct collision_bsp const *bsp, short breakable_surface_count,
+	byte const *breakable_surface_flags, real_point3d const *center, real radius,
+	struct collision_bsp_test_sphere_result *result)
+{
+	struct psp_bspr_sphere_slot *key = &psp_bspr_sphere_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k, n;
+
+	psp_bspr_sphere_into = NULL;
+	psp_bspr_sphere_checking = NULL;
+	state = psp_bspr_state_get();
+	if (!state)
+		return FALSE;
+	if ((psp_bspr_counts[0] & 63) == 0)
+		psp_bspr_report();
+	if (psp_sphere_any)
+		return FALSE;
+	generation = psp_bspr_flags_generation(breakable_surface_count, breakable_surface_flags);
+	if (generation == ~0UL)
+		return FALSE;
+	psp_bspr_counts[0]++;
+	key->bsp = bsp;
+	key->x = psp_bspr_bits(center->x);
+	key->y = psp_bspr_bits(center->y);
+	key->z = psp_bspr_bits(center->z);
+	key->radius = psp_bspr_bits(radius);
+	key->generation = generation;
+	key->count = breakable_surface_count;
+	/* the same question lands in the same one of the biped's slots each tick */
+	w = &state->spheres[((((unsigned long)bsp >> 4) ^ key->x ^ (key->y >> 7) ^ key->radius) * 0x9E3779B1UL) >> 30];
+	if (w->bsp == key->bsp && w->x == key->x && w->y == key->y && w->z == key->z &&
+		w->radius == key->radius && w->generation == key->generation && w->count == key->count)
+	{
+		psp_bspr_counts[1]++;
+		if (psp_bspr_check)
+		{
+			psp_bspr_sphere_checking = w;
+			return FALSE;
+		}
+		result->surface_count = w->surface_count;
+		result->edge_count = w->edge_count;
+		result->vertex_count = w->vertex_count;
+		result->leaf_count = w->leaf_count;
+		n = 0;
+		for (k = 0; k < w->surface_count; k++) result->surface_indices[k] = w->list[n++];
+		for (k = 0; k < w->edge_count; k++) result->edge_indices[k] = w->list[n++];
+		for (k = 0; k < w->vertex_count; k++) result->vertex_indices[k] = w->list[n++];
+		for (k = 0; k < w->leaf_count; k++) result->leaf_indices[k] = w->list[n++];
+		return TRUE;
+	}
+	psp_bspr_sphere_into = w;
+	return FALSE;
+}
+
+/* after a walk: its answer kept (or, checking, compared with the match) */
+static void psp_bspr_sphere_keep(struct collision_bsp_test_sphere_result const *result)
+{
+	struct psp_bspr_sphere_slot *w = psp_bspr_sphere_checking;
+	long k, n;
+
+	if (w)
+	{
+		boolean same = result->surface_count == w->surface_count && result->edge_count == w->edge_count &&
+			result->vertex_count == w->vertex_count && result->leaf_count == w->leaf_count;
+
+		n = 0;
+		for (k = 0; same && k < w->surface_count; k++) same = result->surface_indices[k] == w->list[n++];
+		for (k = 0; same && k < w->edge_count; k++) same = result->edge_indices[k] == w->list[n++];
+		for (k = 0; same && k < w->vertex_count; k++) same = result->vertex_indices[k] == w->list[n++];
+		for (k = 0; same && k < w->leaf_count; k++) same = result->leaf_indices[k] == w->list[n++];
+		if (!same)
+			psp_bspr_counts[3]++;
+		psp_bspr_sphere_checking = NULL;
+		return;
+	}
+	w = psp_bspr_sphere_into;
+	if (!w)
+		return;
+	psp_bspr_sphere_into = NULL;
+	w->bsp = NULL; /* not a key until the answer is whole */
+	if (result->surface_count < 0 || result->edge_count < 0 || result->vertex_count < 0 || result->leaf_count < 0 ||
+		result->surface_count + result->edge_count + result->vertex_count + result->leaf_count > PSP_BSPR_SPHERE_LIST)
+		return;
+	n = 0;
+#define PSP_BSPR_COPY(count, indices) \\
+	for (k = 0; k < result->count; k++) \\
+	{ \\
+		if ((unsigned long)result->indices[k] > 0xFFFFUL) \\
+			return; \\
+		w->list[n++] = (unsigned short)result->indices[k]; \\
+	}
+	PSP_BSPR_COPY(surface_count, surface_indices)
+	PSP_BSPR_COPY(edge_count, edge_indices)
+	PSP_BSPR_COPY(vertex_count, vertex_indices)
+	PSP_BSPR_COPY(leaf_count, leaf_indices)
+#undef PSP_BSPR_COPY
+	w->surface_count = (unsigned char)result->surface_count;
+	w->edge_count = (unsigned char)result->edge_count;
+	w->vertex_count = (unsigned char)result->vertex_count;
+	w->leaf_count = (unsigned char)result->leaf_count;
+	w->x = psp_bspr_sphere_pending.x;
+	w->y = psp_bspr_sphere_pending.y;
+	w->z = psp_bspr_sphere_pending.z;
+	w->radius = psp_bspr_sphere_pending.radius;
+	w->generation = psp_bspr_sphere_pending.generation;
+	w->count = psp_bspr_sphere_pending.count;
+	w->bsp = psp_bspr_sphere_pending.bsp;
+	psp_bspr_counts[2]++;
+}
+
+/* TRUE: result and *return_value hold the kept answer and the walk is not made */
+static boolean psp_bspr_ray_take(unsigned long flags, struct collision_bsp const *bsp, short breakable_surface_count,
+	byte const *breakable_surface_flags, real_point3d const *point, real_vector3d const *vector, real maximum_t,
+	struct collision_bsp_test_vector_result *result, boolean *return_value)
+{
+	struct psp_bspr_ray_slot *key = &psp_bspr_ray_pending, *w;
+	struct psp_bspr_state *state;
+	unsigned long generation;
+	long k;
+
+	psp_bspr_ray_into = NULL;
+	psp_bspr_ray_checking = NULL;
+	state = psp_bspr_state_get();
+	if (!state)
+		return FALSE;
+	generation = psp_bspr_flags_generation(breakable_surface_count, breakable_surface_flags);
+	if (generation == ~0UL)
+		return FALSE;
+	psp_bspr_counts[4]++;
+	key->bsp = bsp;
+	key->flags = flags;
+	key->px = psp_bspr_bits(point->x);
+	key->py = psp_bspr_bits(point->y);
+	key->pz = psp_bspr_bits(point->z);
+	key->vx = psp_bspr_bits(vector->i);
+	key->vy = psp_bspr_bits(vector->j);
+	key->vz = psp_bspr_bits(vector->k);
+	key->maximum_t = psp_bspr_bits(maximum_t);
+	key->generation = generation;
+	key->count = breakable_surface_count;
+	w = &state->rays[((((unsigned long)bsp >> 4) ^ key->px ^ key->vx ^ flags) * 0x9E3779B1UL) >> 31];
+	if (w->bsp == key->bsp && w->px == key->px && w->py == key->py && w->pz == key->pz &&
+		w->vx == key->vx && w->vy == key->vy && w->vz == key->vz && w->maximum_t == key->maximum_t &&
+		w->flags == key->flags && w->generation == key->generation && w->count == key->count)
+	{
+		union { real f; unsigned long u; } v;
+
+		psp_bspr_counts[5]++;
+		if (psp_bspr_check)
+		{
+			psp_bspr_ray_checking = w;
+			return FALSE;
+		}
+		v.u = w->t;
+		result->t = v.f;
+		if (w->hit)
+		{
+			result->plane = w->plane;
+			result->surface_index = w->surface_index;
+			result->plane_designator = w->plane_designator;
+			result->flags = w->flags_out;
+			result->breakable_surface_index = w->breakable_surface_index;
+			result->material_index = w->material_index;
+		}
+		result->leaf_count = w->leaf_count;
+		for (k = 0; k < w->leaf_count; k++) result->leaf_indices[k] = w->leaves[k];
+		*return_value = w->hit;
+		return TRUE;
+	}
+	psp_bspr_ray_into = w;
+	return FALSE;
+}
+
+static void psp_bspr_ray_keep(struct collision_bsp_test_vector_result const *result, boolean return_value)
+{
+	struct psp_bspr_ray_slot *w = psp_bspr_ray_checking;
+	long k;
+
+	if (w)
+	{
+		boolean same = (return_value ? 1 : 0) == w->hit && psp_bspr_bits(result->t) == w->t &&
+			result->leaf_count == w->leaf_count;
+
+		if (same && w->hit)
+			same = result->plane == w->plane && result->surface_index == w->surface_index &&
+				result->plane_designator == w->plane_designator && result->flags == w->flags_out &&
+				result->breakable_surface_index == w->breakable_surface_index &&
+				result->material_index == w->material_index;
+		for (k = 0; same && k < w->leaf_count; k++) same = result->leaf_indices[k] == w->leaves[k];
+		if (!same)
+			psp_bspr_counts[7]++;
+		psp_bspr_ray_checking = NULL;
+		return;
+	}
+	w = psp_bspr_ray_into;
+	if (!w)
+		return;
+	psp_bspr_ray_into = NULL;
+	w->bsp = NULL;
+	if (result->leaf_count < 0 || result->leaf_count > PSP_BSPR_RAY_LEAVES)
+		return;
+	for (k = 0; k < result->leaf_count; k++)
+	{
+		if ((unsigned long)result->leaf_indices[k] > 0xFFFFUL)
+			return;
+		w->leaves[k] = (unsigned short)result->leaf_indices[k];
+	}
+	w->leaf_count = (byte)result->leaf_count;
+	w->t = psp_bspr_bits(result->t);
+	w->hit = return_value ? 1 : 0;
+	if (return_value)
+	{
+		w->plane = result->plane;
+		w->surface_index = result->surface_index;
+		w->plane_designator = result->plane_designator;
+		w->flags_out = result->flags;
+		w->breakable_surface_index = result->breakable_surface_index;
+		w->material_index = result->material_index;
+	}
+	w->flags = psp_bspr_ray_pending.flags;
+	w->px = psp_bspr_ray_pending.px;
+	w->py = psp_bspr_ray_pending.py;
+	w->pz = psp_bspr_ray_pending.pz;
+	w->vx = psp_bspr_ray_pending.vx;
+	w->vy = psp_bspr_ray_pending.vy;
+	w->vz = psp_bspr_ray_pending.vz;
+	w->maximum_t = psp_bspr_ray_pending.maximum_t;
+	w->generation = psp_bspr_ray_pending.generation;
+	w->count = psp_bspr_ray_pending.count;
+	w->bsp = psp_bspr_ray_pending.bsp;
+	psp_bspr_counts[6]++;
+}
+#endif
+
+boolean collision_bsp_test_sphere(
+	struct collision_bsp const *bsp,"""),
+("""	result->vertex_count = 0;
+
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (build 118): the answers remembered (#spherememo) */""",
+ """	result->vertex_count = 0;
+
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_BSPR): the biped's kept answer, or the walk */
+	if (!psp_bspr_sphere_take(bsp, breakable_surface_count, breakable_surface_flags, center, radius, result))
+#endif
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (build 118): the answers remembered (#spherememo) */"""),
+("""#else
+	bsp3d_test_sphere_recursive(&context, 0, 0);
+#endif
+	collision_log_end_time(""",
+ """#else
+	bsp3d_test_sphere_recursive(&context, 0, 0);
+#endif
+#ifdef HALO_PSP
+	psp_bspr_sphere_keep(result); /* psp_fixups.py (FIXES_BSPR) */
+#endif
+	collision_log_end_time("""),
+("""	t = PIN(maximum_t, 0.f, 1.f);
+	return_value = collision_bsp_test_vector_recursive(&context, 0, 0.f, t, 0);""",
+ """	t = PIN(maximum_t, 0.f, 1.f);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_BSPR): the biped's kept answer, or the walk */
+	if (!psp_bspr_ray_take(flags, bsp, breakable_surface_count, breakable_surface_flags, point, vector, maximum_t,
+		result, &return_value))
+#endif
+	return_value = collision_bsp_test_vector_recursive(&context, 0, 0.f, t, 0);
+#ifdef HALO_PSP
+	psp_bspr_ray_keep(result, return_value); /* psp_fixups.py (FIXES_BSPR) */
+#endif"""),
+]
+# (the owner: the biped being updated, its riders and its limp body included;
+# the one it interrupted comes back after it)
+FIXES_BSPR["source/units/bipeds.c#bspsame"] = [
+("""	profile_enter(biped_update_section);
+	biped_verify_object_vectors(biped_index, "pre-update");""",
+ """	profile_enter(biped_update_section);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_BSPR): this biped's kept answers, after its datum */
+	extern void *const *psp_bspr_datum_at;
+	void *const *psp_bspr_outer = psp_bspr_datum_at;
+	typedef char psp_bspr_datum_fits[sizeof(struct biped_datum) <= 0x480 ? 1 : -1];
+
+	{
+		struct object_header_datum *psp_bspr_header = object_header_get(biped_index);
+
+		psp_bspr_datum_at = psp_bspr_header->data_size >= 0x480 + 640 ? (void *const *)&psp_bspr_header->datum : NULL;
+	}
+#endif
+	biped_verify_object_vectors(biped_index, "pre-update");"""),
+("""	biped_verify_object_vectors(biped_index, "post-update");
+	profile_exit(biped_update_section);
+
+	return TRUE;
+}""",
+ """	biped_verify_object_vectors(biped_index, "post-update");
+#ifdef HALO_PSP
+	psp_bspr_datum_at = psp_bspr_outer; /* psp_fixups.py (FIXES_BSPR) */
+#endif
+	profile_exit(biped_update_section);
+
+	return TRUE;
+}"""),
+]
+# (a game state loaded: the bipeds' tails it brings are cleared)
+FIXES_BSPR["source/saved games/game_state.c#bspsame"] = [
+("""	for (i =NUMBEROF(after_load_procs); i>0; i--, proc++)
+	{
+		(*proc)();
+	}
+""",
+ """	for (i =NUMBEROF(after_load_procs); i>0; i--, proc++)
+	{
+		(*proc)();
+	}
+#ifdef HALO_PSP
+	{
+		void psp_bspr_forget_loaded(void); /* collision_bsp.c (psp_fixups.py, FIXES_BSPR) */
+
+		psp_bspr_forget_loaded();
+	}
+#endif
+"""),
+]
+# (the sleepers' checksum: an awake biped's kept answers change without the
+# biped changing, so they are skipped, not stepped, and the words after them
+# are counted as far as before: a biped sleeps exactly when it did, and the
+# reference sum ("checksumcheck") skips them the same way)
+FIXES_BSPR["source/objects/objects.c#bspsame"] = [
+("""	long functions_first, functions_end, colours_first, colours_end; /* and what it recomputes asleep */
+};""",
+ """	long functions_first, functions_end, colours_first, colours_end; /* and what it recomputes asleep */
+	long tail_first, tail_end; /* a biped's kept collision answers (FIXES_BSPR) */
+};"""),
+("""	rules->count = (header->data_size < 2048 ? header->data_size : 2048) / 4;""",
+ """	rules->count = (header->data_size < 2048 ? header->data_size : 2048) / 4;
+	rules->tail_first = rules->tail_end = -1;
+	if (header->type == _object_type_biped && header->data_size >= 0x480 + 640)
+	{
+		rules->tail_first = 0x480 / 4;
+		rules->tail_end = (0x480 + 640) / 4;
+		rules->count = (header->data_size < 2048 + 640 ? header->data_size : 2048 + 640) / 4;
+	}"""),
+("""		(index >= rules->colours_first && index < rules->colours_end))
+		return 0;""",
+ """		(index >= rules->colours_first && index < rules->colours_end) ||
+		(index >= rules->tail_first && index < rules->tail_end))
+		return 0;"""),
+("""	long touched[7][2], count = 0, index = 0, k, j;""",
+ """	long touched[8][2], count = 0, index = 0, k, j;"""),
+("""	PSP_TOUCHED(rules.colours_first, rules.colours_end);
+#undef PSP_TOUCHED""",
+ """	PSP_TOUCHED(rules.colours_first, rules.colours_end);
+	PSP_TOUCHED(rules.tail_first, rules.tail_end);
+#undef PSP_TOUCHED"""),
+("""		for (index = 0; index < rules.count; index++)
+			sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
+		return sum;
+	}
+	psp_lanes_start(lane);
+	for (index = 0; index < rules.count; index++)
+		psp_lane_step(lane, kind, index, psp_checksum_word(&rules, index, word[index]));
+	return psp_lanes_end(lane);""",
+ """		for (index = 0; index < rules.count; index++)
+			if (index < rules.tail_first || index >= rules.tail_end)
+				sum = PSP_CHECKSUM_STEP(sum, psp_checksum_word(&rules, index, word[index]));
+		return sum;
+	}
+	psp_lanes_start(lane);
+	for (index = 0; index < rules.count; index++)
+		if (index < rules.tail_first || index >= rules.tail_end)
+			psp_lane_step(lane, kind, index, psp_checksum_word(&rules, index, word[index]));
+	return psp_lanes_end(lane);"""),
+("""		for (index = first; index < end; index++)
+		{
+			unsigned long value = psp_checksum_word(&rules, index, word[index]);
+""",
+ """		index = first;
+		if (first == rules.tail_first)
+			index = end;
+		for (; index < end; index++)
+		{
+			unsigned long value = psp_checksum_word(&rules, index, word[index]);
+""")
+]
+
 # ---------- FIXES_SOUNDEDRAM: R2, the sound cache in the Media Engine's eDRAM
 # ("soundedram", psp_dsound.c; docs/me_programme.md section 5). With the word
 # off every change here does what the code did before: the start-up block is
@@ -27764,7 +28364,7 @@ void sound_cache_idle(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_BSPR.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
