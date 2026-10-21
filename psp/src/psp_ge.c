@@ -5625,22 +5625,26 @@ sides. A request takes the smallest free block that holds it (best fit),
 split when what's left is worth keeping. "noarena" (keep word): the general
 heap only, as before. */
 #define ARENA_BYTES (LEVEL_STREAM_BUDGET + 32 * 1024)
-/* "heaproom": on a map that carves, part of the arena's room moves to the
-level carve, taken whole at the map's open as the carve's floor (the level
-carve, below), so the general heap keeps those bytes. The volatile block pays
-for it: the geometry cache 256 KB less when it is over 1 MB (psp_geo.c), and
-with "heaproom" the textures 128 KB more. The RAM budget census's replay found
-the geometry cache's 256 KB free; the textures' 128 KB costs b30 texture loads
-and frames drawn with a texture missing, so "heaproom256" moves only the
-geometry's share (docs/review_sv.md) */
+/* "heaproom256": on a map that carves, 256 KB of the arena's room moves to
+the level carve, taken whole at the map's open as the carve's floor (the level
+carve, below), so the general heap keeps those bytes. The geometry cache pays
+for it, 256 KB less when it is over 1 MB (psp_geo.c); the RAM budget census's
+replay found those bytes free. Frames in flight (geinflight's buffer) and the
+Media Engine's VRAM copies take about 200 KB more of the heap, enough to run
+a30 out of it, so with geinflight and a geometry cache over 1 MB it is on by
+default; elsewhere the heap has room, and the move would cost the geometry
+cache's misses for nothing. "heaproomoff" turns it off, "heaproom256" on with
+any geometry cache (with a 1 MB one its bytes come from the textures). A
+384 KB size (128 KB more from the textures) cost b30 texture loads and frames
+drawn with a texture missing, so it is gone (docs/review_sv.md) */
 unsigned int psp_heaproom_bytes(void)
 {
 #ifndef PSP_MULTIPLAYER
 	int psp_keep(const char *name);
 
-	if (psp_keep("heaproom"))
-		return 384 * 1024;
-	if (psp_keep("heaproom256"))
+	if (psp_keep("heaproomoff"))
+		return 0;
+	if (psp_keep("heaproom256") || (inflight_buffer_bytes() && (psp_keep("geo2") || psp_keep("geo15"))))
 		return 256 * 1024;
 #endif
 	return 0; /* the multiplayer build's maps keep their geometry cache in the heap and carve nothing */
@@ -5739,7 +5743,7 @@ frame's end; a frame-end build that failed though the rooms had the bytes */
 static int carve_allowed = 0, carve_pack_short = 0;
 static unsigned int carve_most = 0, carve_below = 0, carve_want = 0, carve_idle = 0;
 static unsigned long carve_steps = 0, carve_returns = 0;
-/* "heaproom": the bytes the carve keeps from the map's open to its end (0:
+/* "heaproom256": the bytes the carve keeps from the map's open to its end (0:
 none), the arena's share it stands in for */
 static unsigned int carve_floor = 0;
 unsigned int psp_tex_ram_textures(void);
@@ -6525,7 +6529,7 @@ void psp_ge_level_carve(int carve_from_textures)
 	carve_allowed = 1;
 	platform_log("GE: the level carve: up to %d KB from the texture RAM cache, below the %u KB the geometry and animation caches carved, taken %u KB at a time only when the copies have no room in the arena or the heap; the texture RAM cache has %u KB",
 		kb, carve_below / 1024, LEVEL_CARVE_STEP / 1024, psp_tex_ram_textures() / 1024);
-	/* "heaproom": the arena's missing share taken now, kept to the map's
+	/* "heaproom256": the arena's missing share taken now, kept to the map's
 	end, on top of what the carve may take as it goes (none with the arena
 	off: no room for it in the heap, and the copies go there whole) */
 	if (arena_size() < ARENA_BYTES && arena_state != 0)

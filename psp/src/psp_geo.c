@@ -1165,9 +1165,9 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 			}
 			arena_bytes = psp_keep("geo2") ? 2048 * 1024 : psp_keep("geo15") ? 1536 * 1024 : ARENA_BYTES;
 #ifndef PSP_MULTIPLAYER
-			/* "heaproom", "heaproom256" (psp_ge.c): the level copies' room
-			that leaves the heap is carved below this cache; 256 KB of it
-			comes from here when it is over 1 MB, any more from the textures */
+			/* "heaproom256" (psp_ge.c): the level copies' room that leaves
+			the heap is carved below this cache, and comes from here when
+			it is over 1 MB */
 			{
 				extern unsigned int psp_heaproom_bytes(void);
 
