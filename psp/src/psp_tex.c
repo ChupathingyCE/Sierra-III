@@ -45,7 +45,13 @@ struct pack_entry
 	unsigned int offset, size;
 };
 
-#define VRAM_CACHE_START 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+#define VRAM_CACHE_START_FIXED 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+/* "blipdepth" (psp_ge.c, docs/design_vrbroom.md): the motion sensor's target
+drawn in the depth buffer instead, so its 16 KB at 0x0CC000 join the room
+shared by the textures and the copies */
+#define VRAM_CACHE_START_BLIPDEPTH 0x000CC000
+static unsigned int vram_cache_start = VRAM_CACHE_START_FIXED, vram_blip_freed = 0;
+#define VRAM_CACHE_START vram_cache_start
 #define VRAM_CACHE_END_FULL 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
 /* build 93: benchrun keeps VRAM's last 256 KB for its bus tests (the display
 list in VRAM, the VRAM-only GE load; psp_ge.c), for the whole run so every
@@ -126,7 +132,7 @@ struct arena
 };
 #define RAM_CACHE_BYTES (256 * 1024)
 static struct arena arenas[2] = {
-	{ 0x04000000 + VRAM_CACHE_START, 0x04000000 + VRAM_CACHE_END_FULL, 0x04000000 + VRAM_CACHE_START, 0x40000000 },
+	{ 0x04000000 + VRAM_CACHE_START_FIXED, 0x04000000 + VRAM_CACHE_END_FULL, 0x04000000 + VRAM_CACHE_START_FIXED, 0x40000000 },
 	{ 0, 0, 0, 0x40000000 } };
 static void *ram_cache = NULL;
 static unsigned int frame = 1, frame_loaded = 0;
@@ -148,6 +154,108 @@ static int alignment(unsigned int size)
 
 static void bind_totals_save(void);
 static void bind_totals_gather(void);
+
+/* "stripcensus" (vrbroom, docs/design_vrbroom.md): which textures the HUD
+binds, and which of them could live in the frame and depth buffers' padding
+strips instead of the cache. Each buffer is 512 pixels a row of which 480
+show, so pixels 480-511 of every row (64 bytes a row, 272 rows: 17 KB a
+buffer) are VRAM that nothing draws or shows. The GE samples a texture with
+any buffer width, so a texture fits a strip when a row of it takes at most 64
+bytes at a buffer width of 1,024 bytes: T8 up to 64 texels wide, 16-bit up to
+32, 32-bit up to 16 (T4's 2,048-texel width is past the GE's 2,044), its
+levels stacked down the strip, unswizzled. Its palette can't follow: a
+palette is read as one run of bytes. Per entry: the frames it was bound for
+the HUD, and the last such frame */
+static int strip_census = -1;
+static unsigned int *hud_bound = NULL;
+static int find(unsigned int key);
+
+static void strip_census_free(void)
+{
+	free(hud_bound);
+	hud_bound = NULL;
+}
+
+void psp_tex_hud_note(unsigned int key)
+{
+	int index;
+
+	if (strip_census < 0)
+		strip_census = psp_keep("stripcensus") != 0;
+	if (!strip_census || !entries || (index = find(key)) < 0)
+		return;
+	if (!hud_bound && !(hud_bound = calloc(entry_count, 2 * sizeof(unsigned int))))
+		return;
+	if (hud_bound[2 * index + 1] != frame)
+	{
+		hud_bound[2 * index]++;
+		hud_bound[2 * index + 1] = frame;
+	}
+}
+
+/* the rows a strip would need for the entry's levels, 0 when it can't fit */
+static unsigned int strip_rows(struct pack_entry const *entry)
+{
+	unsigned int width = entry->width, height = entry->height, rows = 0;
+	int level;
+
+	if (entry->psm == GU_PSM_T4 || (entry->psm == GU_PSM_T8 ? width : width * TEXEL_BYTES(entry)) > 64)
+		return 0;
+	for (level = 0; level < entry->levels; level++)
+	{
+		rows += height;
+		height = height > 1 ? height / 2 : 1;
+	}
+	return rows <= 272 ? rows : 0;
+}
+
+static void strip_census_report(unsigned int frames)
+{
+	char line[440]; /* the log's lines end at 512 characters */
+	int index, length = 0, count = 0, every = 0, fit = 0;
+	unsigned int bytes = 0, vram = 0, every_bytes = 0, fit_bytes = 0, fit_vram = 0, fit_palettes = 0, fit_rows = 0;
+
+	if (!hud_bound)
+		return;
+	for (index = 0; index < entry_count; index++)
+	{
+		struct pack_entry const *entry = &entries[index];
+		unsigned int size = alignment(entry->size), rows = strip_rows(entry), palette;
+		int in_vram = resident_at[index] && !resident_in[index];
+
+		if (!hud_bound[2 * index])
+			continue;
+		palette = DIRECT(entry) ? 0 : (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
+		count++;
+		bytes += size;
+		if (in_vram)
+			vram += size;
+		if (hud_bound[2 * index] * 10 >= frames * 9)
+		{
+			every++;
+			every_bytes += size;
+		}
+		if (rows)
+		{
+			fit++;
+			fit_bytes += size - palette;
+			fit_palettes += palette;
+			fit_rows += rows;
+			if (in_vram)
+				fit_vram += size;
+		}
+		if (length < (int)sizeof(line) - 72)
+			length += snprintf(line + length, sizeof(line) - length, " %08x %ux%u psm%u l%u %uB %s %u %s;", entry->key,
+				entry->width, entry->height, entry->psm, entry->levels, size, resident_at[index] ?
+				(resident_in[index] ? "RAM" : "VRAM") : "out", hud_bound[2 * index], rows ? "fits" : "-");
+		hud_bound[2 * index] = 0;
+	}
+	platform_log("textures: stripcensus: %d HUD textures over %u frames, %u KB (%u KB in VRAM); %d bound in 9 frames of 10 or more (%u KB); %d would fit the padding strips (%u KB of texels, %u KB of palettes that can't follow, %u rows of 816; %u KB of them in VRAM now)",
+		count, frames, bytes / 1024, vram / 1024, every, every_bytes / 1024, fit, fit_bytes / 1024, fit_palettes / 1024,
+		fit_rows, fit_vram / 1024);
+	if (length)
+		platform_log("textures: stripcensus (key size psm levels bytes place frames fit):%s", line);
+}
 /* build 89: the heartbeat's in-play save (psp_tex_save_pending) */
 static volatile int snapshot_pending = 0, snapshot_writing = 0;
 
@@ -193,6 +301,16 @@ void psp_tex_close(void)
 	free(bind_totals);
 	bind_totals = NULL;
 	entry_count = 0;
+	strip_census_free();
+	/* the sensor's 16 KB, when psp_ge.c draws its target in the depth buffer
+	(never under benchrun, whose rooms are fixed) */
+	{
+		extern int psp_ge_blip_room_freed(void);
+
+		vram_blip_freed = !psp_keep("benchrun") && psp_ge_blip_room_freed() ? VRAM_CACHE_START_FIXED - VRAM_CACHE_START_BLIPDEPTH : 0;
+		vram_cache_start = VRAM_CACHE_START_FIXED - vram_blip_freed;
+		arenas[0].start = 0x04000000 + VRAM_CACHE_START;
+	}
 	/* build 103: and 256 KB below that for the level's vertex copies
 	(psp_ge.c's setting 25, benchrun's "level vertices in VRAM") */
 	if (psp_keep("benchrun"))
@@ -229,13 +347,17 @@ void psp_tex_close(void)
 		/* at least 256 KB stay the textures': a 512 x 512 indexed map with its
 		levels (341 KB) can still sit in VRAM, and below that the set's best
 		third, worth most of its binds, would no longer fit */
-		if (kb >= 64 && (unsigned int)kb * 1024 <= VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST)
+		/* blipdepth's 16 KB go to the copies' room: a KB of VRAM holding
+		geometry takes ~5.6 times the bus reads off the ticks that a KB holding
+		textures does (docs/research/vram_budget.md section 3), and the
+		texture cache keeps its size, so the same textures fit as without it */
+		if (kb >= 64 && (unsigned int)kb * 1024 + vram_blip_freed <= VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST)
 		{
-			vram_models_bytes = (unsigned int)kb * 1024;
+			vram_models_bytes = (unsigned int)kb * 1024 + vram_blip_freed;
 			if (vram_cache_end > VRAM_CACHE_END_FULL - vram_models_bytes)
 				vram_cache_end = VRAM_CACHE_END_FULL - vram_models_bytes;
-			platform_log("textures: vrammodels: the top %d KB of VRAM for the model buffers; the texture cache %u KB",
-				kb, (vram_cache_end - VRAM_CACHE_START) / 1024);
+			platform_log("textures: vrammodels: the top %u KB of VRAM for the model buffers; the texture cache %u KB",
+				vram_models_bytes / 1024, (vram_cache_end - VRAM_CACHE_START) / 1024);
 		}
 		else if (!kb)
 			platform_log("textures: vrammodels0: the model buffers stay in main RAM (as b116 without the word)");
@@ -246,6 +368,12 @@ void psp_tex_close(void)
 	}
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
+	/* the VRAM it freed, per map (vrbroom) */
+	if (vram_blip_freed)
+		platform_log("textures: blipdepth: the motion sensor's target in the depth buffer; %u KB freed at %06x, to the %s (%u KB; the texture cache %u KB)",
+			vram_blip_freed / 1024, VRAM_CACHE_START, vram_models_bytes ? "copies' room" : "texture cache",
+			vram_models_bytes ? vram_models_bytes / 1024 : (VRAM_CACHE_END - VRAM_CACHE_START) / 1024,
+			(VRAM_CACHE_END - VRAM_CACHE_START) / 1024);
 	arenas[1].next = arenas[1].start;
 }
 
@@ -2092,6 +2220,8 @@ void psp_tex_frame_end(void)
 			line, vram_binds, vram_bytes / 1024, ram_binds, ram_bytes / 1024);
 		learned_snapshot();
 	}
+	if (entries && hud_bound && frame % 900 == 600)
+		strip_census_report(900);
 	frame++;
 	frame_loaded = 0;
 }
