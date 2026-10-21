@@ -361,14 +361,18 @@ facing, the outside volume past half the outside angle, between them a
 straight line in millibels. offset: listener to sound */
 static float cone_gain(const struct psp_stream *stream, const float *offset)
 {
-	float length, cosine, angle, inside, outside;
+	float length, facing, cosine, angle, inside, outside;
 
 	if (audio_old || stream->cone_inside >= 360 || stream->cone_outside_millibels >= 0)
 		return 1.0f;
 	length = sqrtf(dot3(offset, offset));
 	if (length < 1.0e-4f)
 		return 1.0f;
-	cosine = -dot3(offset, stream->cone_forward) / length;
+	/* the facing as the game gives it, not taken to be of unit length */
+	facing = sqrtf(dot3(stream->cone_forward, stream->cone_forward));
+	if (facing < 1.0e-4f)
+		return 1.0f;
+	cosine = -dot3(offset, stream->cone_forward) / (length * facing);
 	angle = acosf(cosine < -1.0f ? -1.0f : cosine > 1.0f ? 1.0f : cosine) * (180.0f / 3.14159265f);
 	inside = 0.5f * (float)stream->cone_inside;
 	outside = 0.5f * (float)(stream->cone_outside > stream->cone_inside ? stream->cone_outside : stream->cone_inside);
@@ -576,6 +580,9 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 {
 	unsigned long step = stream->step, done = 0;
 	int target_left = stream->target_left, target_right = stream->target_right, left, right, ramp_left, ramp_right;
+	/* the filter's state in registers: output may alias the record, so
+	fields written in the loop would be stored every sample */
+	int lowpass = stream->lowpass_coefficient, lowpass_left = stream->lowpass_left, lowpass_right = stream->lowpass_right;
 
 	if (!stream->gains_valid)
 	{
@@ -662,18 +669,20 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 				sample_left = l0;
 				sample_right = r0;
 			}
-			/* Q14 coefficient: a difference of up to 2^17 stays inside 32 bits */
-			if (stream->lowpass_coefficient < GAIN_ONE)
+			/* 16-bit samples: a difference under 2^16 times a Q14
+			coefficient stays inside 32 bits */
+			if (lowpass < GAIN_ONE)
 			{
-				stream->lowpass_left += ((sample_left - stream->lowpass_left) * stream->lowpass_coefficient) >> 14;
-				stream->lowpass_right += ((sample_right - stream->lowpass_right) * stream->lowpass_coefficient) >> 14;
-				sample_left = stream->lowpass_left;
-				sample_right = stream->lowpass_right;
+				lowpass_left += ((sample_left - lowpass_left) * lowpass) >> 14;
+				lowpass_right += ((sample_right - lowpass_right) * lowpass) >> 14;
+				sample_left = lowpass_left;
+				sample_right = lowpass_right;
 			}
 			else
 			{
-				stream->lowpass_left = sample_left;
-				stream->lowpass_right = sample_right;
+				/* so a filter that starts next block starts from the sound */
+				lowpass_left = sample_left;
+				lowpass_right = sample_right;
 			}
 			output[2 * done] += (sample_left * (left >> 8)) >> 14;
 			output[2 * done + 1] += (sample_right * (right >> 8)) >> 14;
@@ -685,6 +694,8 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 			done++;
 		}
 	}
+	stream->lowpass_left = lowpass_left;
+	stream->lowpass_right = lowpass_right;
 	stream->mixed_frames += done;
 	if (done < frames)
 		stream->dry_frames += frames - done;
