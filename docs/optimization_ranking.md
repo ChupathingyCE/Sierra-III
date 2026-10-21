@@ -496,6 +496,8 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 
 Opt-in look calls (build 122, off, for Sheepdog01's A/B; `docs/review_b122_look.md`): `seethroughvfpu` (multi-node see-through parts placed on the VFPU), `lightmerge` (the light pass's bands drawn as one, each corner lifted), `foliagetwopass` (alpha-tested model parts' soft second pass), `sceneryhalf` (B2, build 107).
 
+Opt-in, off (`docs/review_gebusy2.md`): `metail` (under M6 #2 the ME publishes its frame's last draws to the GE at its frame's end, not with the main CPU's finish after the next ticks; exact). Instrument `gebusy2`: `gebusy` with the ME's lists timed too.
+
 Opt-in speed calls (the cut stream, off, for Sheepdog01's A/B; `docs/review_cutstream.md`): `cutless` (triangles and cut pieces wholly off the screen not cut: −1.1 to −1.4 ms a frame of renderer CPU [E], but one or two colour steps move in scattered pixels in the emulator, cause not found), `guardwide` (the guard planes at 1920 pixels: not pixel for pixel, and no less cutting). The fix's off word: `cutstreamoff` (the fixed cut buffers, pieces past them lost). Recon: `cutcount`, `cutlessmaskN`.
 
 Pacing word: `novblankthrottle` turns the throttle off. Frames get faster, but the warthog bounces again.
