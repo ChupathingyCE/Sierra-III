@@ -529,16 +529,14 @@ static unsigned int inflight_buffer_bytes(void)
 }
 
 /* the bytes psp_tex.c keeps at the texture RAM block's front for the
-buffer, asked as the block is first taken (before any texture is in it):
-a buffer above the default's 128 KB lives there, off the general heap, and
-the texture RAM cache gives up that much instead ("inflightheap": the heap,
-as before). The default's 128 KB stays in the heap, so a run without
-inflightkbN keeps every cache's size */
+buffer, asked as the block is first taken (before any texture is in it).
+"inflightroom": the buffer lives there, off the general heap, and the
+texture RAM cache gives up that much instead. Not the default: at 224 KB
+it doubled b30's and a30's texture evictions and frames drawn with a
+texture missing (inflightkb2, docs/design_inflightkb.md) */
 unsigned int psp_ge_inflight_room_bytes(void)
 {
-	unsigned int bytes = inflight_buffer_bytes();
-
-	return bytes > DEFER_INFLIGHT_KB * 1024 && !psp_keep("inflightheap") ? bytes : 0;
+	return psp_keep("inflightroom") ? inflight_buffer_bytes() : 0;
 }
 
 /* at each frame's start: whether this frame defers (the keep word, asked

@@ -280,8 +280,8 @@ while the PSP sleeps, so each acquisition has a generation, and psp_ge.c
 unpacks the sheet again when it changes */
 #define GLYPH_ROOM_BYTES (32 * 1024)
 static unsigned int ram_cache_generation = 0;
-/* after the glyph sheet, geinflight's record buffer when it is larger than
-the heap's default (psp_ge.c, psp_ge_inflight_room_bytes): asked once, as
+/* after the glyph sheet, geinflight's record buffer when "inflightroom"
+asks for it there (psp_ge.c, psp_ge_inflight_room_bytes): asked once, as
 the block is first taken, so no texture is ever in it; only in the
 volatile partition (the heap's 256 KB block keeps it all for textures) */
 unsigned int psp_ge_inflight_room_bytes(void);
