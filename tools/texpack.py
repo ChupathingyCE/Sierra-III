@@ -638,6 +638,35 @@ def detail_levels(m, b, tw, th):
 # (lightmap_masks.py) so the shrinking mixes nothing dark into the seams
 LIGHTMAP_SCALE = 1
 LIGHTMAP_MASKS = {}
+# pages whose halving breaks a seam (lightmap_masks.py) are baked at full
+# size too, under the key | 1, which psp_tex.c draws instead ("lmhalfall":
+# not). A seam spot is broken when the halved page puts more than
+# SEAM_STEP (0-255) between its two sides than the full-size page does.
+# At 16, b30 kept 48 of its 50 seamed pages whole (1.8 MB: the halving undone);
+# the doorway's step is about 48, so 32 keeps it with room and leaves the
+# ordinary blur of halving alone. --seam-step and --seam-spots set them
+# That keeps too much (b30: 48 of 50 seamed pages, the halving undone, and
+# play follows, object lighting reading the lightmap): --lightmap-seam-whole.
+LIGHTMAP_SEAMS = {}
+LIGHTMAP_WHOLE = False         # --lightmap-seam-whole
+# --lm-chart-halve: chart-aware halving instead (lightmap_masks.chart_halve).
+# A chart whose halving widens a seam's step by more than SEAM_STEP, at
+# CHART_SPOTS spots or more, gets the half-size texels it reads refitted on
+# its own reads; the page keeps its half size, and every other texel, its
+# palette and its dithering stay as the plain halving made them
+LIGHTMAP_CHARTS = {}
+CHART_SPOTS = 1
+# only charts at most CHART_MAX texels across (their longer side, full size):
+# b30 has 1,699 charts whose seams halving widens by more than 32, nearly
+# all larger ones whose step is halving's ordinary blur; refitting them all
+# changed 40,839 texels (--chart-max 0)
+CHART_MAX = 8
+LIGHTMAP_CHART_LOG = []        # (tag, page, charts, texels, worst step before, after, fits left plain, sizes)
+SEAM_STEP = 32
+SEAM_SPOTS_BROKEN = 3          # three spots: one edge's worth
+SEAM_STEPS_LOGGED = (16, 32, 48, 64)
+LIGHTMAPS_KEPT_WHOLE = []      # (tag, page, spots broken, worst step, bytes)
+LIGHTMAP_SEAM_LOG = []         # (tag, page, spots, broken at each SEAM_STEPS_LOGGED, worst, kept whole)
 # build 102 (the asset track): alpha-tested textures' smaller levels keep the
 # top level's coverage (texpack.py --alpha-coverage). A box filter averages a
 # leaf's edge with the air around it, so at each smaller level fewer texels
@@ -1268,11 +1297,37 @@ def quality_note(cls, old, new):
     st[2] += new
 
 
+def seams_broken(m, b, cls):
+    """(spots broken, worst step) when the page b is halved as bake_one
+    halves it, against the page at full size; (0, 0) for a page without seams.
+    Notes the page's spots broken at each of SEAM_STEPS_LOGGED for the log,
+    so one bake shows what any SEAM_STEP would keep"""
+    page = (b['tag'], b['index'])
+    if page not in LIGHTMAP_SEAMS:
+        return 0, 0.0
+    from lightmap_masks import dilate, seam_steps
+    act, tw, th = target(b, cls)
+    tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
+    img = decode(m, b)
+    if img is None or act != 'clut' or b['type'] != '2d' or not pow2(tw) or not pow2(th):
+        return 0, 0.0
+    half = img
+    if page in LIGHTMAP_MASKS:
+        half = dilate(img, LIGHTMAP_MASKS[page], 2 * LIGHTMAP_SCALE + 2)
+    half = resample(half, tw, th, cls)
+    seams = LIGHTMAP_SEAMS[page]
+    worse = seam_steps(half, seams) - seam_steps(img, seams)
+    broken = int((worse > SEAM_STEP).sum())
+    LIGHTMAP_SEAM_LOG.append([b['tag'], b['index'], len(worse), [int((worse > t).sum()) for t in SEAM_STEPS_LOGGED],
+                              float(worse.max()), broken >= SEAM_SPOTS_BROKEN])
+    return broken, float(worse.max())
+
+
 @profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
-             relief=None, image=None):
+             relief=None, image=None, whole=False):
     act, tw, th = target(b, cls)
-    if cls == 'lightmap' and LIGHTMAP_SCALE > 1:
+    if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and not whole:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
     # HUD sheets (meters, numbers, reticles) at their full size: halved, the
     # digits and meter cells fall below a texel each (build 39). The big
@@ -1295,7 +1350,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     img = decode(m, b) if image is None else image
     if img is None:
         return None
-    if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and (b['tag'], b['index']) in LIGHTMAP_MASKS:
+    source = img
+    if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and not whole and (b['tag'], b['index']) in LIGHTMAP_MASKS:
         from lightmap_masks import dilate
         img = dilate(img, LIGHTMAP_MASKS[(b['tag'], b['index'])], 2 * LIGHTMAP_SCALE + 2)
     if look:
@@ -1318,6 +1374,15 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         if not own_levels:
             img = neutral_detail(img)
     small = own_levels[0] if own_levels else resample(img, tw, th, cls)
+    refit = None
+    if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and not whole and (b['tag'], b['index']) in LIGHTMAP_CHARTS:
+        from lightmap_masks import chart_halve
+        fitted, changed, stats = chart_halve(source, small, LIGHTMAP_CHARTS[(b['tag'], b['index'])],
+                                             SEAM_STEP, CHART_SPOTS, CHART_MAX)
+        LIGHTMAP_CHART_LOG.append((b['tag'], b['index'], stats['charts'], stats['texels'], stats['before'],
+                                   stats['after'], stats['skipped'], stats['sizes']))
+        if changed is not None and changed.any():
+            refit = (fitted, changed)
     # build 116: a meter shader's map (the plasma weapons' gauges, the
     # Warthog's meters) takes the grid too, always: the GE works its colours
     # out per palette entry from the blue (the position along the meter) and
@@ -1359,6 +1424,12 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         idx, pal, rec, alpha = make_palette(small, 256, cls, shape)
         if KMEANS_COMPARE:
             kmeans_compare(b['tag'], small, 256, rec)
+    if refit is not None:
+        # only the refitted texels change: the palette and the dithering
+        # elsewhere are the plain halving's, so the rest of the page is too
+        fitted, changed = refit
+        idx = idx.copy()
+        idx[changed] = nearest(fitted[changed][None], pal, alpha)[0]
     # 16 colours where that is no worse than the 16-bit frame buffer itself
     # (within 1 dB of its 5650 rounding): half the bytes (research/baker)
     bits = 8
@@ -1453,6 +1524,18 @@ def main():
     ap.add_argument('out')
     ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--lightmap-scale', type=int, default=1, help='asset track: lightmaps shrunk by this (2: half)')
+    ap.add_argument('--lightmap-seam-whole', action='store_true',
+                    help='asset track: pages whose halving breaks a seam also baked whole, under the key | 1')
+    ap.add_argument('--lm-chart-halve', action='store_true',
+                    help='asset track: chart-aware halving (charts whose halving breaks a seam refitted on their own reads)')
+    ap.add_argument('--chart-max', type=int, default=-1,
+                    help='asset track, --lm-chart-halve: only charts at most this many texels across (0: any; '
+                         '-1: CHART_MAX)')
+    ap.add_argument('--seam-step', type=int, default=0,
+                    help='asset track: a seam spot is broken when halving widens its step by more than this (1-255; 0: SEAM_STEP)')
+    ap.add_argument('--seam-spots', type=int, default=0,
+                    help='asset track: a page (--lightmap-seam-whole) or chart (--lm-chart-halve) with this many '
+                         'broken seam spots is treated (0: SEAM_SPOTS_BROKEN, CHART_SPOTS)')
     ap.add_argument('--pgeo', default=None, help='the map\'s geometry pack (default: beside the map) for the lightmap masks')
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
@@ -1547,14 +1630,26 @@ def main():
     B = bitmap_list(m, d)
     if a.limit:
         B = B[:a.limit]
-    global LIGHTMAP_SCALE, LIGHTMAP_MASKS
+    global LIGHTMAP_SCALE, LIGHTMAP_MASKS, LIGHTMAP_SEAMS, LIGHTMAP_WHOLE, SEAM_STEP, SEAM_SPOTS_BROKEN
+    global LIGHTMAP_CHARTS, CHART_SPOTS, CHART_MAX
     LIGHTMAP_SCALE = max(1, a.lightmap_scale)
+    SEAM_STEP = a.seam_step or SEAM_STEP
+    SEAM_SPOTS_BROKEN = a.seam_spots or SEAM_SPOTS_BROKEN
+    CHART_SPOTS = a.seam_spots or CHART_SPOTS
+    CHART_MAX = a.chart_max if a.chart_max >= 0 else CHART_MAX
     if LIGHTMAP_SCALE > 1:
         from lightmap_masks import page_masks
         sizes = {(b['tag'], b['index']): (b['w'], b['h']) for b in B
                  if refs.classify(roles.get(b['tag'], ()), b) == 'lightmap'}
         pgeo = a.pgeo or os.path.splitext(a.map)[0] + '.pgeo'
         LIGHTMAP_MASKS = page_masks(a.map, pgeo, sizes)
+        if a.lightmap_seam_whole:
+            from lightmap_masks import page_seams
+            LIGHTMAP_SEAMS = page_seams(a.map, pgeo, sizes)
+            LIGHTMAP_WHOLE = True
+        if a.lm_chart_halve:
+            from lightmap_masks import page_charts
+            LIGHTMAP_CHARTS = page_charts(a.map, pgeo, sizes)
         covered = sum(int(v.sum()) for v in LIGHTMAP_MASKS.values())
         total = sum(v.size for v in LIGHTMAP_MASKS.values())
         print('lightmaps 1/%d: %d of %d pages masked, %.0f%% of their texels in charts' % (
@@ -1591,6 +1686,15 @@ def main():
         r['key'] = b['address']
         r['name'] = b['tag']
         entries.append(r)
+        if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and LIGHTMAP_WHOLE:
+            broken, worst = seams_broken(m, b, cls)
+            if broken >= SEAM_SPOTS_BROKEN:
+                v = bake_one(m, b, cls, whole=True)
+                if v is not None:
+                    v['key'] = b['address'] | 1
+                    v['name'] = b['tag'] + ' (whole: its seams)'
+                    entries.append(v)
+                    LIGHTMAPS_KEPT_WHOLE.append((b['tag'], b['index'], broken, worst, len(v['data'])))
         if b['address'] in reliefs and not NO_RELIEF:
             v = bake_one(m, b, cls, looks.get(b['address']), full_hud=full_hud, meter=meter, own_colours=own_colours,
                          relief=reliefs[b['address']])
@@ -1612,6 +1716,31 @@ def main():
     print('cut-outs: %d level base maps alpha-tested by their bump maps\' alpha%s' % (
         len(set(CUTOUTS)), ': ' + ', '.join('%s (%s)' % c for c in sorted(set(CUTOUTS))[:12]) if CUTOUTS else ''),
         file=sys.stderr)
+    if LIGHTMAP_SCALE > 1 and LIGHTMAP_CHARTS:
+        fixed = [r for r in LIGHTMAP_CHART_LOG if r[3] or r[6]]
+        print('lightmap charts (--lm-chart-halve, step %d, %d spots, at most %s texels across): %d charts refitted '
+              'on %d of %d pages, %d texels' % (
+            SEAM_STEP, CHART_SPOTS, CHART_MAX or 'any', sum(r[2] for r in fixed), len(fixed), len(LIGHTMAP_CHART_LOG),
+            sum(r[3] for r in fixed)), file=sys.stderr)
+        from lightmap_masks import CHART_SIZES_LOGGED
+        sizes = np.sum([r[7] for r in LIGHTMAP_CHART_LOG], 0) if LIGHTMAP_CHART_LOG else []
+        print('lightmap charts: charts whose halving breaks a seam, by size: %s' % ', '.join(
+            '%s %d' % ('<= %d texels' % t if t else 'all', int(c))
+            for t, c in zip(list(CHART_SIZES_LOGGED) + [0], sizes)), file=sys.stderr)
+        for tag, page, charts, texels, before, after, skipped, _ in fixed:
+            print('lightmap charts: %s page %d: %d charts, %d texels, worst seam step %.0f -> %.0f%s' % (
+                tag, page, charts, texels, before, after, ', %d fits too large, left plain' % skipped if skipped else ''),
+                file=sys.stderr)
+    if LIGHTMAP_SCALE > 1 and LIGHTMAP_WHOLE:
+        print('lightmaps whole for their seams: %d of %d pages with seams (under the key | 1, %d KB)' % (
+            len(LIGHTMAPS_KEPT_WHOLE), len(LIGHTMAP_SEAMS), sum(k[4] for k in LIGHTMAPS_KEPT_WHOLE) // 1024),
+            file=sys.stderr)
+        print('lightmap seams (step %d, %d spots): spots broken by halving at more than %s' % (
+            SEAM_STEP, SEAM_SPOTS_BROKEN, '/'.join(str(t) for t in SEAM_STEPS_LOGGED)), file=sys.stderr)
+        for tag, page, spots, counts, worst, whole in LIGHTMAP_SEAM_LOG:
+            print('lightmap seams: %s page %d: %d spots, broken %s, worst %.0f%s' % (
+                tag, page, spots, '/'.join(str(c) for c in counts), worst, ', kept whole' if whole else ''),
+                file=sys.stderr)
     print('bump relief: %d level base maps baked with their bump maps\' relief (under the key | 2)%s' % (
         relief_count, ' (--no-relief)' if NO_RELIEF else ' (unfiltered)' if OLD_RELIEF else ''), file=sys.stderr)
     print('cube maps: %d averaged into 8 x 8 patches (model reflections)' % len(CUBE_PATCHES), file=sys.stderr)
