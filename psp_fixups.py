@@ -26215,12 +26215,22 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 				long gel = definition ? *(long const *)(definition + 0x70) : NONE;
 				unsigned int average = 0;
 				int gel_known = gel != NONE && psp_tex_average_known(psp_tex_bitmap_key(gel, 0), &average);
+				int gel_faced = 0;
+				/* the six faces' colours, then the gel's forward, left and up */
+				float gel_shape[27];
 
 				if (gel_known && *(float const *)(definition + 32) <= -0.99f && !PSP_KEEP_ONCE("nogel"))
 				{
-					colour.red *= (float)(average & 0xFF) / 255.0f;
-					colour.green *= (float)((average >> 8) & 0xFF) / 255.0f;
-					colour.blue *= (float)((average >> 16) & 0xFF) / 255.0f;
+					extern int psp_tex_gel_faces(unsigned int key, float *faces);
+
+					if (PSP_KEEP_ONCE("gelfaces") && psp_tex_gel_faces(psp_tex_bitmap_key(gel, 0), gel_shape))
+						gel_faced = psp_light_gel_frame(light, gel_shape + 18);
+					if (!gel_faced)
+					{
+						colour.red *= (float)(average & 0xFF) / 255.0f;
+						colour.green *= (float)((average >> 8) & 0xFF) / 255.0f;
+						colour.blue *= (float)((average >> 16) & 0xFF) / 255.0f;
+					}
 				}
 				if (psp_screenshot_requested && PSP_KEEP_ONCE("lightdump"))
 				{
@@ -26235,8 +26245,76 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 						light->forward.i, light->forward.j, light->forward.k,
 						definition ? *(float const *)(definition + 28) : -1.0f,
 						definition ? *(float const *)(definition + 32) : -1.0f);
+					if (gel_faced)
+						platform_log("lightdump: light %ld's gel faces %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f forward %.2f %.2f %.2f up %.2f %.2f %.2f",
+							light_index, gel_shape[0], gel_shape[1], gel_shape[2], gel_shape[3], gel_shape[4], gel_shape[5],
+							gel_shape[6], gel_shape[7], gel_shape[8], gel_shape[9], gel_shape[10], gel_shape[11],
+							gel_shape[12], gel_shape[13], gel_shape[14], gel_shape[15], gel_shape[16], gel_shape[17],
+							gel_shape[18], gel_shape[19], gel_shape[20], gel_shape[24], gel_shape[25], gel_shape[26]);
 				}
 				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,"""),
+("""				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,
+					definition ? *(float const *)(definition + 28) : -1.0f,
+					definition ? *(float const *)(definition + 32) : -1.0f);""",
+ """				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,
+					definition ? *(float const *)(definition + 28) : -1.0f,
+					definition ? *(float const *)(definition + 32) : -1.0f);
+				{
+					extern void psp_ge_light_gel(const float *gel);
+
+					psp_ge_light_gel(gel_faced ? gel_shape : NULL);
+				}"""),
+]
+
+# Keep word "gelfaces" (a restoration; off: the six faces' mean, as
+# before). The Xbox's light pass looks a light's gel
+# cube map up by the direction from the light to the surface in the gel's
+# frame, the light's forward and up turned by the gel's yaw, pitch and roll
+# over game time (the environment light vertex shader: +X forward, +Y left,
+# +Z up). One mean for the whole gel lit every wall around an alert light
+# alike; the bake now keeps each face's mean (texpack.py, gel_faces), and the
+# GE's light pass gives each vertex the faces its direction leans toward. The
+# gel's frame is worked out here as the Xbox's light begin does, with the
+# engine's own functions, so the beams turn as they do there
+FIXES_MODELS["source/rasterizer/rasterizer.c#gelframe"] = [
+("""static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,""",
+ """/* a light's gel frame (forward, left, up) at this frame's game time, as
+_rasterizer_environment_diffuse_light_begin turns it: the gel's yaw, pitch
+and roll functions and periods at +0x8e/+0x90, +0x9e/+0xa0 and
++0x96/+0x98 of the light's definition. 0 when a period isn't set */
+static int psp_light_gel_frame(struct rasterizer_light_submit_parameters const *light, float *frame)
+{
+	extern real periodic_function_evaluate(short function_type, real time);
+	char const *definition = (char const *)light->definition;
+	real yaw_period, pitch_period, roll_period, yaw, pitch, roll;
+	real_matrix4x3 rotation;
+	real_vector3d forward, up, left;
+
+	if (!definition)
+		return 0;
+	yaw_period = *(real const *)(definition + 0x90);
+	roll_period = *(real const *)(definition + 0x98);
+	pitch_period = *(real const *)(definition + 0xa0);
+	if (!(yaw_period > 0.0f) || !(pitch_period > 0.0f) || !(roll_period > 0.0f))
+		return 0;
+	yaw = periodic_function_evaluate(*(short const *)(definition + 0x8e),
+		global_frame_parameters.game_time_sec / yaw_period) * (2.0f * _pi);
+	pitch = periodic_function_evaluate(*(short const *)(definition + 0x9e),
+		global_frame_parameters.game_time_sec / pitch_period) * (2.0f * _pi);
+	roll = periodic_function_evaluate(*(short const *)(definition + 0x96),
+		global_frame_parameters.game_time_sec / roll_period) * (2.0f * _pi);
+	matrix4x3_rotation_from_angles(&rotation, yaw, pitch, roll);
+	matrix4x3_transform_normal(&rotation, &light->forward, &forward);
+	matrix4x3_transform_normal(&rotation, &light->up, &up);
+	cross_product3d(&forward, &up, &left);
+	normalize3d(&left);
+	frame[0] = forward.i; frame[1] = forward.j; frame[2] = forward.k;
+	frame[3] = left.i; frame[4] = left.j; frame[5] = left.k;
+	frame[6] = up.i; frame[7] = up.j; frame[8] = up.k;
+	return 1;
+}
+
+static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,"""),
 ]
 
 FIXES_MODELS["source/rasterizer/rasterizer.c#genericnoise"] = [

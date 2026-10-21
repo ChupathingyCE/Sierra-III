@@ -102,6 +102,16 @@ static char map_name[64];
 /* per entry: its average colour once worked out (psp_tex_average) */
 static unsigned int *averages = NULL;
 static int averages_count = 0;
+/* the light gels' six face colours (psp_tex_gel_faces) */
+#define GEL_FACES_MARK 0xFACE
+#define GEL_FACES_KEPT 16
+static struct
+{
+	unsigned int key;
+	int known;
+	float faces[18];
+} gel_faces_kept[GEL_FACES_KEPT];
+static int gel_faces_next = 0;
 /* the see-through shaders' tints (texpack.py), pairs of (the shader's tag
 address, its tint ABGR) sorted by address. Bits of the address: 0, the tint
 is half the colour, for the GE's colour doubling; 1, the tint is added to the
@@ -194,6 +204,7 @@ void psp_tex_close(void)
 	free(averages);
 	averages = NULL;
 	averages_count = 0;
+	memset(gel_faces_kept, 0, sizeof(gel_faces_kept));
 	free(tints);
 	tints = NULL;
 	tint_count = 0;
@@ -1682,6 +1693,50 @@ int psp_tex_average_known(unsigned int key, unsigned int *abgr)
 	if (!resident_at[index] && !psp_tex_resident(key))
 		return 0;
 	return psp_tex_average(key, abgr);
+}
+
+/* a light's gel patch's six face colours (red, green, blue 0-1 each, in
+the cube's face order: +X, -X, +Y, -Y, +Z, -Z), from palette entries 1-6
+where entry 15 marks them (texpack.py, cube_patch); kept per key, so a
+gel that has left memory isn't brought back each frame. 0 when the patch
+carries none or can't be had this frame */
+
+int psp_tex_gel_faces(unsigned int key, float *faces)
+{
+	int index = key && entries ? find(key) : -1, k;
+	const unsigned short *palette;
+
+	if (index < 0)
+		return 0;
+	for (k = 0; k < GEL_FACES_KEPT; k++)
+		if (gel_faces_kept[k].key == key)
+		{
+			if (gel_faces_kept[k].known)
+				memcpy(faces, gel_faces_kept[k].faces, sizeof(gel_faces_kept[k].faces));
+			return gel_faces_kept[k].known;
+		}
+	if (!resident_at[index] && !psp_tex_resident(key))
+		return 0;
+	k = gel_faces_next;
+	gel_faces_next = (gel_faces_next + 1) % GEL_FACES_KEPT;
+	gel_faces_kept[k].key = key;
+	gel_faces_kept[k].known = 0;
+	if (DIRECT(&entries[index]) || entries[index].clut != GU_PSM_5650 || entries[index].psm != GU_PSM_T4)
+		return 0;
+	palette = (const unsigned short *)(resident_at[index] | 0x40000000);
+	if (palette[15] != GEL_FACES_MARK)
+		return 0;
+	for (index = 0; index < 6; index++)
+	{
+		unsigned int c = palette[1 + index];
+
+		gel_faces_kept[k].faces[3 * index] = (float)(c & 31) / 31.0f;
+		gel_faces_kept[k].faces[3 * index + 1] = (float)((c >> 5) & 63) / 63.0f;
+		gel_faces_kept[k].faces[3 * index + 2] = (float)(c >> 11) / 31.0f;
+	}
+	gel_faces_kept[k].known = 1;
+	memcpy(faces, gel_faces_kept[k].faces, sizeof(gel_faces_kept[k].faces));
+	return 1;
 }
 
 /* ---------- build 102: object lighting from the lightmaps

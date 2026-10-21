@@ -240,6 +240,7 @@ instruction cache longer. The ME step moves the carrying out to the ME. Off
 #define SCREEN_VERTEX_WORDS 5 /* struct game_screen_vertex: x, y, u, v, argb */
 #define SPRITE_VERTEX_WORDS 6 /* struct game_sprite_vertex: x, y, z, u, v, argb */
 #define METER_WORDS 7 /* struct psp_seethrough_meter (the game's rasterizer_meter_parameters) */
+#define LIGHT_GEL_FLOATS 27 /* psp_ge_light_gel: six face colours, then the gel's forward, left and up */
 enum
 {
 	DEFER_MODEL_BEGIN = 1, DEFER_MODEL_SHAPE, DEFER_MODEL_EFFECT, DEFER_MODEL_MULTIPURPOSE, DEFER_DRAW_MODEL,
@@ -250,7 +251,7 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL, DEFER_MODEL_REFLECTION
+	DEFER_MODEL_POINT_LIGHT /* build 117 */, DEFER_MODEL_DETAIL, DEFER_MODEL_REFLECTION, DEFER_LIGHT_GEL
 };
 typedef union
 {
@@ -412,6 +413,7 @@ void psp_ge_shadow_draw(const void *vertices, int vertex_count, const unsigned s
 void psp_ge_shadow_end(void);
 void psp_ge_light_begin(const float *position, const float *forward, const float *color, float radius,
 	float cosine_falloff, float cosine_cutoff);
+void psp_ge_light_gel(const float *gel);
 void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key);
 void psp_ge_screen_flash(short type, float intensity, float const *argb);
@@ -847,6 +849,12 @@ static int defer_light_begin(const float *position, const float *forward, const 
 	return 1;
 }
 
+static int defer_light_gel(const float *gel)
+{
+	defer_copy(defer_take(DEFER_LIGHT_GEL, 1 + LIGHT_GEL_FLOATS), gel, LIGHT_GEL_FLOATS);
+	return 1;
+}
+
 static int defer_screen_flash(short type, float intensity, float const *argb)
 {
 	defer_word *at = defer_take(DEFER_SCREEN_FLASH, 2 + 5);
@@ -1022,6 +1030,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			a = defer_copy_back(w + 3, &rest, 3);
 			b = defer_copy_back(rest, &rest, 3);
 			psp_ge_light_begin(a, b, defer_copy_back(rest, &rest, 3), w[0].f, w[1].f, w[2].f);
+			break;
+		case DEFER_LIGHT_GEL:
+			psp_ge_light_gel(defer_copy_back(w, &rest, LIGHT_GEL_FLOATS));
 			break;
 		case DEFER_LIGHT_DRAW:
 			psp_ge_light_draw(w[0].p, w[1].i, (const unsigned short *)w[2].p, w[3].i, w[4].u);
@@ -16066,6 +16077,11 @@ static struct
 	float position[3], forward[3], color[3];
 	float radius, inverse_radius_squared, cosine_falloff, cosine_cutoff;
 	int open;
+	/* a gel's six face colours (+X, -X, +Y, -Y, +Z, -Z) and its frame
+	(forward, left, up: the cube's +X, +Y, +Z), when psp_ge_light_gel gave
+	them; gel 0 for a light lit by its colour alone */
+	int gel;
+	float gel_faces[18], gel_frame[9];
 } light;
 static unsigned long lights_drawn = 0;
 /* build 119's probe: the light pass's triangles looked at, and those with a
@@ -16107,6 +16123,55 @@ void psp_ge_light_begin(const float *position, const float *forward, const float
 	light.inverse_radius_squared = radius > 0.0f ? 1.0f / (radius * radius) : 0.0f;
 	light.cosine_cutoff = cosine_cutoff;
 	light.cosine_falloff = cosine_falloff > cosine_cutoff ? cosine_falloff : cosine_cutoff + 0.001f;
+	light.gel = 0;
+}
+
+/* the light just begun shaped by its gel (rasterizer.c, after the light's
+begin): the Xbox looks its gel cube map up by the direction from the light
+in the gel's turning frame, so a wall ahead of the light takes the +X face's
+colour and one above it the +Z face's. Each vertex takes the faces' mean
+colours, weighed by how far its direction leans toward each axis. NULL: by
+the colour alone */
+void psp_ge_light_gel(const float *gel)
+{
+	GE_DEFER(defer_light_gel(gel));
+	GE_BENCH_SKIP();
+	light.gel = gel != NULL;
+	if (gel)
+	{
+		memcpy(light.gel_faces, gel, sizeof(light.gel_faces));
+		memcpy(light.gel_frame, gel + 18, sizeof(light.gel_frame));
+	}
+}
+
+/* a vertex's gel colour (0-1 a channel): its direction from the light in
+the gel's frame, each axis weighed by its share of the squared length, on
+the face of that axis's sign */
+static void light_gel_at(const float *p, float *rgb)
+{
+	const float *f = light.gel_frame;
+	float d[3], x, y, z, xx, yy, zz, inverse;
+	const float *fx, *fy, *fz;
+
+	d[0] = p[0] - light.position[0];
+	d[1] = p[1] - light.position[1];
+	d[2] = p[2] - light.position[2];
+	x = d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
+	y = d[0] * f[3] + d[1] * f[4] + d[2] * f[5];
+	z = d[0] * f[6] + d[1] * f[7] + d[2] * f[8];
+	xx = x * x;
+	yy = y * y;
+	zz = z * z;
+	inverse = xx + yy + zz > 1e-12f ? 1.0f / (xx + yy + zz) : 0.0f;
+	xx *= inverse;
+	yy *= inverse;
+	zz *= inverse;
+	fx = light.gel_faces + (x >= 0.0f ? 0 : 3);
+	fy = light.gel_faces + (y >= 0.0f ? 6 : 9);
+	fz = light.gel_faces + (z >= 0.0f ? 12 : 15);
+	rgb[0] = xx * fx[0] + yy * fy[0] + zz * fz[0];
+	rgb[1] = xx * fx[1] + yy * fy[1] + zz * fz[1];
+	rgb[2] = xx * fx[2] + yy * fy[2] + zz * fz[2];
 }
 
 /* how much of the light reaches a vertex (0 to 1); cone: whether the
@@ -16124,6 +16189,10 @@ struct light_memo_entry
 	int camera_known;
 };
 static struct light_memo_entry light_memo[LIGHT_MEMO];
+/* and a gel light's colour at each, apart so other lights don't carry it:
+the tag it was worked out for */
+static unsigned int light_memo_gel_tag[LIGHT_MEMO];
+static float light_memo_gel[LIGHT_MEMO][3];
 static unsigned int light_memo_draw = 0;
 static int light_memo_check = -1; /* keep.txt's "lightmemocheck" */
 static unsigned long light_memo_checks = 0, light_memo_mismatches = 0;
@@ -16168,6 +16237,16 @@ static unsigned int light_color(float reach)
 {
 	int r = (int)(light.color[0] * reach * 255.0f), g = (int)(light.color[1] * reach * 255.0f),
 		b = (int)(light.color[2] * reach * 255.0f);
+
+	return 0xFF000000 | (PSP_CLAMP_255(b) << 16) | (PSP_CLAMP_255(g) << 8) | PSP_CLAMP_255(r);
+}
+
+/* a gel light's colour from its reach per channel (a cut corner's 5, 6
+and 10) */
+static unsigned int light_color_gel(float red, float green, float blue)
+{
+	int r = (int)(light.color[0] * red * 255.0f), g = (int)(light.color[1] * green * 255.0f),
+		b = (int)(light.color[2] * blue * 255.0f);
 
 	return 0xFF000000 | (PSP_CLAMP_255(b) << 16) | (PSP_CLAMP_255(g) << 8) | PSP_CLAMP_255(r);
 }
@@ -16341,7 +16420,10 @@ static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *ou
 			struct shadow_vertex *o = &out[3 * *kept_count + corner];
 
 			o->u = corners[corner][3]; o->v = corners[corner][4];
-			*(float *)&o->color = corners[corner][5]; /* coloured once the tint is known */
+			if (light.gel) /* no tint: a gel light is never a spotlight */
+				o->color = light_color_gel(corners[corner][5], corners[corner][6], corners[corner][10]);
+			else
+				*(float *)&o->color = corners[corner][5]; /* coloured once the tint is known */
 			o->x = corners[corner][7]; o->y = corners[corner][8]; o->z = corners[corner][9];
 		}
 		light_exact_of[*kept_count] = (unsigned char)light_emit_exact;
@@ -16681,7 +16763,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	/* build 86, modes 1 and 2: the whole triangles' indices (mode 1), their
 	reach summed for the flat colour; the nearest lit corner (mode 2) */
 	unsigned short *whole = NULL;
-	float reach_sum = 0.0f;
+	float reach_sum = 0.0f, gel_sum[3] = { 0.0f, 0.0f, 0.0f };
 	unsigned int average = 0xFFFFFFFF;
 	unsigned char *cone = NULL;
 	ScePspFMatrix4 cone_projection;
@@ -16753,6 +16835,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	if (++light_memo_draw > 0xFFFF)
 	{
 		memset(light_memo, 0, sizeof(light_memo));
+		memset(light_memo_gel_tag, 0, sizeof(light_memo_gel_tag));
 		light_memo_draw = 1;
 	}
 	unsigned int light_loop_start = probe_clock(); /* build 119's probe */
@@ -16937,6 +17020,38 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			corners[corner][6] = 0.0f;
 			corners[corner][10] = 0.0f;
 		}
+		if (light.gel)
+		{
+			/* reach per channel: 5, 6 and 10 are cut as one */
+			for (corner = 0; corner < 3; corner++)
+			{
+				unsigned int vertex = triangle[corner], tag = (light_memo_draw << 16) | vertex;
+				unsigned int slot = vertex & (LIGHT_MEMO - 1);
+				float rgb[3];
+
+				if (reach[corner] <= 0.0f)
+				{
+					rgb[0] = rgb[1] = rgb[2] = 0.0f;
+				}
+				else if (light_memo_gel_tag[slot] == tag)
+				{
+					rgb[0] = light_memo_gel[slot][0];
+					rgb[1] = light_memo_gel[slot][1];
+					rgb[2] = light_memo_gel[slot][2];
+				}
+				else
+				{
+					light_gel_at(source[corner], rgb);
+					light_memo_gel_tag[slot] = tag;
+					light_memo_gel[slot][0] = rgb[0];
+					light_memo_gel[slot][1] = rgb[1];
+					light_memo_gel[slot][2] = rgb[2];
+				}
+				corners[corner][5] = reach[corner] * rgb[0];
+				corners[corner][6] = reach[corner] * rgb[1];
+				corners[corner][10] = reach[corner] * rgb[2];
+			}
+		}
 		if (spot)
 		{
 			/* the projected cone mirrors behind the light, so the part of
@@ -16987,6 +17102,12 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				whole[3 * whole_count + 2] = triangle[2];
 				whole_count++;
 				reach_sum += reach[0] + reach[1] + reach[2];
+				if (light.gel)
+				{
+					gel_sum[0] += corners[0][5] + corners[1][5] + corners[2][5];
+					gel_sum[1] += corners[0][6] + corners[1][6] + corners[2][6];
+					gel_sum[2] += corners[0][10] + corners[1][10] + corners[2][10];
+				}
 				continue;
 			}
 		}
@@ -17017,8 +17138,9 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		saved[index] = light.color[index];
 		light.color[index] *= tint[index];
 	}
-	for (index = 0; index < kept_count * 3; index++)
-		out[index].color = light_color(*(float *)&out[index].color);
+	if (!light.gel)
+		for (index = 0; index < kept_count * 3; index++)
+			out[index].color = light_color(*(float *)&out[index].color);
 	sceGuEnable(GU_TEXTURE_2D);
 	if (spot)
 	{
@@ -17051,7 +17173,9 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		coordinates; a spotlight's cone comes from the texture matrix as
 		before), so the GE gets the very inputs the level's pass had. No
 		colour per corner in that format: the average reach, flat */
-		sceGuColor(light_color(reach_sum / (float)(whole_count * 3)));
+		sceGuColor(light.gel ? light_color_gel(gel_sum[0] / (float)(whole_count * 3),
+			gel_sum[1] / (float)(whole_count * 3), gel_sum[2] / (float)(whole_count * 3)) :
+			light_color(reach_sum / (float)(whole_count * 3)));
 		sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 			(int)whole_count * 3, whole, stream->base);
 		sceGuColor(0xFFFFFFFF);
@@ -17077,7 +17201,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 
 				v->u = c[3];
 				v->v = c[4];
-				v->color = light_color(c[5]);
+				v->color = light.gel ? light_color_gel(c[5], c[6], c[10]) : light_color(c[5]);
 				v->x = c[7];
 				v->y = c[8];
 				v->z = c[9];
@@ -17176,7 +17300,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 
 			pieces[index].u = c[3];
 			pieces[index].v = c[4];
-			pieces[index].color = light_color(c[5]);
+			pieces[index].color = light.gel ? light_color_gel(c[5], c[6], c[10]) : light_color(c[5]);
 			pieces[index].x = c[7];
 			pieces[index].y = c[8];
 			pieces[index].z = c[9];
