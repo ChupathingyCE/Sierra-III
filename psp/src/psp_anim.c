@@ -52,6 +52,7 @@ the tag window alone. */
 #include <string.h>
 #include <malloc.h>
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
+#include "psp_metrics.h"
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -406,6 +407,7 @@ static void read_pages(unsigned int first_page, unsigned int count, unsigned int
 	took = sceKernelGetSystemTimeLow() - start;
 	read_us += took;
 	psp_stick_read_us += took; /* build 126: frametrace */
+	PSP_METRICS_STICK(PSP_METRICS_ANIMATIONS, bytes, took);
 	window_us += took;
 	reads++;
 	window_reads++;
