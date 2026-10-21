@@ -1670,12 +1670,20 @@ resident is only marked: that keeps it from being evicted by a later
 record's load before the replay draws it. A load the frame's budget or room
 refuses is left to the replay's bind, which counts it */
 static PSP_MAIN_SIDE unsigned long pretouch_calls = 0, pretouch_loads = 0, pretouch_refused = 0;
+/* the last texture made resident and marked, and its frame: a model's
+parts and a level's runs of one texture come in a row, and a texture
+marked this frame stays resident to its end */
+static PSP_MAIN_SIDE int pretouch_index = -1;
+static PSP_MAIN_SIDE unsigned int pretouch_frame = 0;
 
 void psp_tex_pretouch(unsigned int key)
 {
 	int index;
 
 	if (!key || !entries || PSP_ME_WORK())
+		return;
+	if (frame == pretouch_frame && pretouch_index >= 0 && pretouch_index < entry_count &&
+		entries[pretouch_index].key == key && resident_at[pretouch_index])
 		return;
 	index = find(key);
 	if (index < 0)
@@ -1697,6 +1705,8 @@ void psp_tex_pretouch(unsigned int key)
 		frame_set_count++;
 	}
 	last_frame[index] = frame;
+	pretouch_index = index;
+	pretouch_frame = frame;
 }
 
 /* a resident texture's 16-bit (5650) palette, the same way (the change

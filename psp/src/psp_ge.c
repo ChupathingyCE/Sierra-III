@@ -437,10 +437,13 @@ out, not inside a model too big to defer, and written down */
 /* "texpretouch": a draw's texture read in as its record is written, for a
 replay that can't read it itself (the Media Engine's, or gemesim's standing
 for it): psp_tex_pretouch says why. Only while recording, so a draw carried
-out at once binds (and loads) as it always did */
+out at once binds (and loads) as it always did. Not with gemeoverlap: there
+the ME binds one half while this CPU writes the other, and both would write
+the texture cache's residency words through caches of their own */
 void psp_tex_pretouch(unsigned int key);
 static PSP_MAIN_SIDE int pretouch_on = 0;
-#define GE_PRETOUCH(key) do { if (pretouch_on && DEFER_RECORDING() && !defer_paused) psp_tex_pretouch(key); } while (0)
+static void pretouch(unsigned int key);
+#define GE_PRETOUCH(key) do { if (pretouch_on && !me_overlap && DEFER_RECORDING() && !defer_paused) pretouch(key); } while (0)
 /* a frame's boundaries are written down only in a game: the menus and loads
 run as with gedefer alone */
 #define INFLIGHT_RECORDING() (inflight_on && DEFER_RECORDING() && psp_game_running())
@@ -724,6 +727,18 @@ static defer_word *defer_take(int kind, unsigned int words)
 	defer_used += 1 + words;
 	defer_records++;
 	return at + 1;
+}
+
+/* the frame still out (geinflight) carried out first, as the record's own
+defer_take would: the ME then isn't running while the texture cache is
+changed here, and the load counts in the frame the replay binds in */
+static void pretouch(unsigned int key)
+{
+	if (inflight_room_away)
+		inflight_room_park();
+	if (inflight_pending)
+		inflight_sync();
+	psp_tex_pretouch(key);
 }
 
 /* n words copied, after one saying whether the pointer was NULL: 1 + n words */
