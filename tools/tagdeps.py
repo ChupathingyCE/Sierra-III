@@ -258,6 +258,34 @@ def print_level_shaders(m, d, tags):
         print('    cut-out: bump texels per baked base texel %.2f x %.2f; drawn %.3f at the bump\'s size, %.3f as baked; '
               'mean drawn run along a row %.1f bump texels, %.1f baked texels (%.1f bump texels long)' % (
                   u * bw / tw, v * bh / th, a.mean(), cut.mean(), runs(a), runs(cut), runs(cut) * u * bw / tw))
+        # what the GE draws: the bake's cut-out at the base map's own size,
+        # box-filtered to a baked size, magnified back bilinearly and tested
+        # (alpha > 0x7F); its mismatch against the cut-out at full size, and
+        # the lattice's period (the strongest repeat along a row and a column)
+        from PIL import Image
+        W, H = bb['w'], bb['h']
+        xs = np.floor((np.arange(W) + 0.5) / W * u * bw).astype(np.int64) % bw
+        ys = np.floor((np.arange(H) + 0.5) / H * v * bh).astype(np.int64) % bh
+        full = img[ys[:, None], xs[None, :], 3]
+        ref = full > 127
+
+        def period(x, axis):
+            f = np.abs(np.fft.rfft(x - x.mean(), axis=axis)).mean(1 - axis)
+            k = int(np.argmax(f[1:])) + 1
+            return x.shape[axis] / k
+
+        sizes = []
+        sw, sh = tw, th
+        while sw <= min(512, W) and sh <= min(512, H):
+            sizes.append((sw, sh))
+            sw, sh = sw * 2, sh * 2
+        parts = []
+        for sw, sh in sizes:
+            small = Image.fromarray(full).resize((sw, sh), Image.Resampling.BOX)
+            back = np.array(small.resize((W, H), Image.Resampling.BILINEAR)) > 127
+            parts.append('%dx%d: %.3f wrong, drawn %.3f' % (sw, sh, (back != ref).mean(), back.mean()))
+        print('    as the GE draws it: lattice period %.1f x %.1f base texels; %s' % (
+            period(ref.astype(np.float32), 1), period(ref.astype(np.float32), 0), '; '.join(parts)))
 
 
 def struct_unpack(fmt, data, at):
