@@ -16,4 +16,8 @@ Restoration: decals and particles are part of the original's frame, and the orig
 
 ## Cost
 
-One more comparison in `kind_limit` a draw (a kind test and a flag); no work added a frame otherwise. The emulator A/B on the same stretch is in the merge request.
+One more comparison in `kind_limit` a draw (a kind test and a flag); no work added a frame otherwise.
+
+**Emulator A/B [E]** (a10, the hand test's path to the decals' spot, then its camera held; on vs `nolightreserve`, at the 768 KB list and with `list512`; same game time each pair): frame 25.29 vs 25.29 ms and tick 2.979 vs 2.978 ms over the run (94 heartbeats), 25.18 vs 25.13 ms at the spot; with `list512` 24.70 vs 24.70 ms, tick 2.936 vs 2.937. No cost.
+
+**The repro is incomplete [E].** The emulator's replay reaches the spot without the hand test's firefight: at 768 KB the fullest frame is 698 KB, nothing is skipped there, the light pass takes 128 KB a frame (173 fullest), and the two sides draw the same. With `list512` the list fills (17,677 draws skipped in the run): the reserve held back 88 light draws in one 300-frame window (80 more skipped than without it), but that window drew no decals, so neither side skipped any; particles were skipped 0.1-1.3 a frame on both sides alike. So the emulator shows the reserve engages and costs nothing; that it keeps the decals in a lit firefight rests on the hardware log's by-kind figures above [M], and the next hardware run's by-kind line (`light draws held back N`, decals' skips) is its check.
