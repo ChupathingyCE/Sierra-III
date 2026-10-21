@@ -34,7 +34,18 @@ On w140 c4ee05f (M6 #2 on both sides), the PGO build, `fixedticks fixedseed nomo
 
 ## Gain
 
-GAIN
+Cache model [E] (tick-phase cycles: fetches + 72 x D-misses + 64 x I-misses), the PGO build, on against `bspsame`, `fixedticks fixedseed nomouth` on both sides:
+
+| Stretch | On (M cycles a tick) | Off | Saved | Fetches | D-misses | I-misses |
+|---|---|---|---|---|---|---|
+| a30's fight (game time 60-150 s, 2,700 ticks: the run to 150 s less the run to 60 s) | 9.446 | 9.521 | **75k (0.78%, 0.22 ms at 333 MHz)** | -0.57% | -1.24% | -0.65% |
+| b30's timed route to 125 s (3,750 ticks) | 12.128 | 12.217 | **90k (0.73%, 0.27 ms)** | -1.09% | -1.16% | -0.01% |
+
+Drawing is unchanged (a30's fight 2.387 against 2.390 M cycles a tick). Each walk saved is worth ~35k cycles on a30 (2.1 a tick) and ~17k on b30 (5.2 a tick). The first version, a shared table, cost b30 0.40% of its tick; this one gains 0.73% there.
+
+Bottleneck: a30's fight is 68-79% ticks on the PSP, so a tick saving reaches the frame there; b30's beach is mostly drawing.
+
+**Verdict: below the gate.** The gate is ~1% of a30's fight tick (0.29 ms of the model's 9.5 M cycles); the per-frame gate, halved for a tick lever, asks 0.32-0.59 ms a tick on a30 and 0.59 on b30. 0.78% (0.22 ms) and 0.73% (0.27 ms) are short of it on both stretches, so the lever is shelved, not merged. Rays are pure overhead (almost none repeat); the one idea not built is to drop the 2 ray slots for 6 sphere slots, which would keep more of b30's 43 sphere questions a tick. The memory-bound part (D-misses -1.2%) could be larger on the PSP than the model's flat miss price says; only a PSP pair would show it.
 
 ## Risk
 
