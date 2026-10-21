@@ -493,7 +493,7 @@ def cube_patch(m, b, rgb=None, faces=None):
 
 
 NO_CUBE_PATCHES = False        # --no-cube-patches: no cube map averages in the pack (as build 139)
-NO_GEL_FACES = False           # --no-gel-faces: a gel patch without its six faces (as build 139)
+NO_GEL_FACES = False           # --no-gel-faces: a gel patch with the single gel average only, the behaviour before per-face averages
 CUBE_PATCHES = []
 
 
@@ -1640,7 +1640,7 @@ def main():
     ap.add_argument('--no-cube-patches', action='store_true',
                     help="no cube map averages in the pack (as build 139)")
     ap.add_argument('--no-gel-faces', action='store_true',
-                    help="a light's gel patch without its six faces' colours (as build 139)")
+                    help="a light's gel patch with the single gel average only, the behaviour before per-face averages")
     ap.add_argument('--relief-unfiltered', action='store_true',
                     help="the bump relief sampled at the base's texels without averaging (as build 139)")
     ap.add_argument('--showcase', action='store_true',
