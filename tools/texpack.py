@@ -1170,14 +1170,16 @@ def clut4_exact_report():
             '%s %d (%d KB)' % (cls, n, saved // 1024) for cls, (n, saved) in sorted(by_class.items()))), file=sys.stderr)
 
 
-# ---- The CLUT4 look set (--clut4-look; Sheepdog01's A/B, docs/design_clut4w.md
-# recommendation 2). Lightmaps and HUD sheets that hold CLUT8's look at 16
-# colours under the census's strict bar: one palette for every level, each
-# level within 1 dB of CLUT8's screen PSNR (or over 45 dB) and no texel more
-# than one 5-bit step past CLUT8's worst. Unlike the exact set this is lossy,
-# so it stays an opt-in pack for the look A/B; the chain is CLUT8's own, so
-# nothing changes with distance but the colours.
-CLUT4_LOOK = False
+# ---- The CLUT4 look set (docs/review_clut4look.md, the census in
+# design_clut4w.md). Lightmaps and HUD sheets that hold CLUT8's look at 16
+# colours, for half the bytes in the VRAM texture cache and the GE's fastest
+# sampling. Unlike the exact set it is lossy, so each texture must pass the
+# census's strict bar: one palette for every level, each level within 1 dB of
+# CLUT8's screen PSNR (or over 45 dB) and no texel more than one 5-bit step
+# past CLUT8's worst; anything that misses stays CLUT8. The chain is CLUT8's
+# own, so nothing changes with distance but the colours. --no-clut4-look
+# leaves them all at 8 bits.
+CLUT4_LOOK = True
 CLUT4_LOOK_CLASSES = ('lightmap', 'ui/hud')
 CLUT4_LOOK_MADE = []     # (class, CLUT8 bytes, CLUT4 bytes, lowest dB at 8, lowest dB at 4)
 CLUT4_LOOK_FAILED = []   # the class of each tried that missed the bar
@@ -1427,9 +1429,9 @@ def main():
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
-    ap.add_argument('--clut4-look', action='store_true',
-                    help='lightmaps and HUD sheets at 16 colours where they pass the CLUT4W strict bar (lossy: '
-                         'a pack for Sheepdog01\'s look A/B, docs/design_clut4w.md)')
+    ap.add_argument('--no-clut4-look', action='store_true',
+                    help='lightmaps and HUD sheets stay at 8 bits even where 16 colours pass the CLUT4W strict bar '
+                         '(docs/review_clut4look.md)')
     ap.add_argument('--no-clut4-exact', action='store_true',
                     help='textures of 16 colours or fewer that the 16-colour rule leaves at 8 bits stay at 8 bits')
     ap.add_argument('--tints-from-means', action='store_true',
@@ -1482,7 +1484,7 @@ def main():
     CLUT4_EXACT = not a.no_clut4_exact
     global CLUT4_LOOK
     # ui.map is the showcase (CLAUDE.md): its packs keep every colour
-    CLUT4_LOOK = a.clut4_look and os.path.splitext(os.path.basename(a.map))[0] != 'ui'
+    CLUT4_LOOK = not a.no_clut4_look and os.path.splitext(os.path.basename(a.map))[0] != 'ui'
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
         sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
