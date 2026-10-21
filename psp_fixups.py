@@ -4825,7 +4825,7 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, start = psp_microseconds();
 	byte *map = (byte *)&header[3];
 
-	PSP_METRICS_EVENT(PSP_METRICS_CHECKPOINT); /* a slow frame here is the checkpoint's (psp_metrics.c) */
+	PSP_METRICS_EVENT(PSP_METRICS_CHECKPOINT); /* the slow frame that follows is the checkpoint's (psp_metrics.c) */
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
 	psp_log_hold(PSP_STATE_LOG_HOLD_MS);

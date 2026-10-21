@@ -1603,8 +1603,7 @@ static void exit_game(const char *why)
 	HOME), and a file write that blocked ahead of it would hang the exit
 	there. psp_me_exit leaves it halted or held in reset, the states the
 	firmware's own ME boot starts from */
-	psp_me_exit(why);
-	PSP_METRICS_MAP_END(0);
+	PSP_METRICS_ME_EXIT(why);
 	platform_log("%s: exiting", why);
 	log_flush();
 	/* build 89: no texture save here any more. The learned binds are saved
@@ -2636,8 +2635,7 @@ steps in order: the console has no way to wait */
 	tick_total += microseconds;
 	if (microseconds > tick_maximum)
 		tick_maximum = microseconds;
-	psp_frametrace_tick(microseconds); /* build 126 */
-	PSP_METRICS_TICK(microseconds);
+	PSP_METRICS_FRAMETRACE_TICK(microseconds); /* build 126 */
 }
 
 void psp_ge_frame_end(void);
@@ -2671,8 +2669,7 @@ void psp_frame_account(unsigned long microseconds)
 	psp_ge_frame_end();
 	psp_phase(0);
 	/* build 126: "frametrace" (psp_frametrace.c) */
-	psp_frametrace_frame(microseconds, ticks, psp_heartbeat_clock() - end_start);
-	PSP_METRICS_FRAME(microseconds, ticks, psp_heartbeat_clock() - end_start);
+	PSP_METRICS_FRAMETRACE_FRAME(microseconds, ticks, psp_heartbeat_clock() - end_start);
 	psp_last_frame_us = microseconds;
 	frame_count++;
 	steps_frame_edge();

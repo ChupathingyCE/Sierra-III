@@ -38,6 +38,10 @@ the frame (the largest), the map's first 30 frames, or other. */
 #include <pspsysmem.h>
 
 void platform_log(const char *format, ...);
+void psp_frametrace_tick(unsigned long microseconds);
+void psp_frametrace_frame(unsigned long draw_us, unsigned long ticks, unsigned long end_us);
+void psp_heap_map(const char *label);
+void psp_me_exit(const char *why);
 long psp_game_time_peek(void);
 unsigned long psp_heartbeat_clock(void);
 extern unsigned char cinematic_in_progress(void); /* the engine's boolean */
@@ -47,6 +51,7 @@ extern volatile unsigned long psp_heap_failures; /* psp_libc.c */
 unsigned long psp_metrics_stick_us[PSP_METRICS_STICK_KINDS];
 unsigned long psp_metrics_stick_reads[PSP_METRICS_STICK_KINDS];
 unsigned long psp_metrics_stick_bytes[PSP_METRICS_STICK_KINDS];
+volatile int psp_metrics_events; /* PSP_METRICS_CHECKPOINT | PSP_METRICS_REVERT since the last frame */
 
 #define HITCH_THRESHOLDS 3
 static const unsigned long hitch_us[HITCH_THRESHOLDS] = { 100000, 250000, 500000 };
@@ -78,7 +83,6 @@ static struct
 	unsigned long long wall_us, tick_us, draw_us, end_us;
 	unsigned long frames, ticks;
 	unsigned long frame_tick_us, frame_ticks; /* since the last frame */
-	int events;                           /* PSP_METRICS_CHECKPOINT | PSP_METRICS_REVERT since the last frame */
 	unsigned long frame_stick[PSP_METRICS_STICK_KINDS];
 	unsigned long hitches[HITCH_THRESHOLDS], causes[CAUSES], logged;
 	unsigned long worst_us;
@@ -160,7 +164,7 @@ static void report(const char *when)
 }
 
 /* a map's play begins: after its load and settle (psp_loading.c) */
-void psp_metrics_map_play(const char *map_name)
+static void map_play(const char *map_name)
 {
 	const char *name = map_name ? map_name : "?", *slash = strrchr(name, '\\');
 	int k;
@@ -183,7 +187,7 @@ void psp_metrics_map_play(const char *map_name)
 /* a map's play ends: a load begins (before the old map is let go) or the
 game exits. An exit may come from HOME's thread, which mustn't wait on the
 heap's lock: the heap's last sample is then the 5 s one */
-void psp_metrics_map_end(int on_game_thread)
+static void map_end(int on_game_thread)
 {
 	if (!m.playing)
 		return;
@@ -193,13 +197,27 @@ void psp_metrics_map_end(int on_game_thread)
 	m.playing = 0;
 }
 
-void psp_metrics_event(int event)
+void psp_metrics_leaving(const char *label)
 {
-	m.events |= event;
+	map_end(1);
+	psp_heap_map(label);
+}
+
+void psp_metrics_loaded(const char *label, const char *map_name)
+{
+	psp_heap_map(label);
+	map_play(map_name);
+}
+
+void psp_metrics_exit(const char *why)
+{
+	psp_me_exit(why);
+	map_end(0);
 }
 
 void psp_metrics_tick(unsigned long microseconds)
 {
+	psp_frametrace_tick(microseconds);
 	if (!m.playing)
 		return;
 	m.frame_tick_us += microseconds;
@@ -221,7 +239,7 @@ static int hitch_cause(unsigned long wall)
 	unsigned long most = 0;
 	int k, kind = -1;
 
-	if (m.events)
+	if (psp_metrics_events)
 		return CAUSE_CHECKPOINT;
 	if (cinematic_in_progress())
 		return CAUSE_CUTSCENE;
@@ -242,7 +260,7 @@ void psp_metrics_frame(unsigned long draw_us, unsigned long ticks, unsigned long
 	unsigned long now, wall, stick[PSP_METRICS_STICK_KINDS];
 	int k;
 
-	(void)ticks;
+	psp_frametrace_frame(draw_us, ticks, end_us);
 	if (!m.playing)
 		return;
 	now = psp_heartbeat_clock();
@@ -287,6 +305,6 @@ void psp_metrics_frame(unsigned long draw_us, unsigned long ticks, unsigned long
 	for (k = 0; k < PSP_METRICS_STICK_KINDS; k++)
 		m.frame_stick[k] = stick[k];
 	m.frame_tick_us = m.frame_ticks = 0;
-	m.events = 0;
+	psp_metrics_events = 0;
 }
 #endif
