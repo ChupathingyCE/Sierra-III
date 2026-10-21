@@ -46,4 +46,19 @@ Under M6 #2 the wrapper batches stall updates (`STALL_BATCH` 16). At the frame's
 
 ## Results
 
-(pending)
+**Emulator [E]** (one EBOOT; b30's route, a10, d40 hands off; `nomouth fixedticks fixedseed`, game time to ~5,950 ticks):
+
+| Map | `gebusy2`, M6 #2 (the default) | `gebusy`, `m6off` | `gebusy`, M6 #2 |
+|---|---:|---:|---:|
+| b30 | 18.7 ms a frame (max 43.4); 83.7 of 83.7 chunks a frame the ME's | 18.0 (max 41.6) | 18.4, all of it one FINISH chunk ("other") |
+| a10 | 8.0 (max 25.2); 33.3 of 33.4 the ME's | 6.7 (max 17.4) | |
+| d40 | 4.7 (max 7.8); 30.5 of 30.5 | 4.7 (max 8.0) | |
+
+- Under M6 #2 the new measure reads what `gebusy` reads where it works (`m6off`, every list kicked by the main CPU), in the emulator's own GE model. That is the plausibility check. The cache model has no GE figure to compare with.
+- The by-kind split agrees too: b30 models 22.6 / 23.0, level 2.0.
+- Old `gebusy` under M6 #2 reads the whole frame in the emulator only because there the simulated job passes the frame on all at once, just before the finish. On the PSP the forwarder passes it on during the ticks, so the finish sees only the tail (0.1-0.3 ms on a10).
+- **Play:** the play hash and both random seeds are the same at every one of 6,000 ticks on all three maps (default vs `gebusy2`).
+- **Pictures:** `framecrc` differs from the default under `gebusy2`, and also under the old `gebusy`, which adds no SIGNAL under M6 #2 and only registers the GE callbacks (637 of 2,998 b30 frames). See the follow-up batch below.
+- **Compiles:** campaign (PGO), `PSP_MULTIPLAYER=1` and `PSP_METRICS=0` all build.
+
+**On the PSP:** pending. The spec is in the merge request.
