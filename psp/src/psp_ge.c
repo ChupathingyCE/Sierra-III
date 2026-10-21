@@ -414,12 +414,12 @@ static int show2_copy_indices = 0;
 static PSP_MAIN_SIDE int show2_owed = 0; /* a show asked whose end the game thread hasn't taken yet */
 static PSP_MAIN_SIDE int show2_list_started = 0; /* the forwarding thread starts the next frame's list */
 static PSP_MAIN_SIDE SceUID show2_sema = -1;
-enum { SHOW2_HAND_OVER, SHOW2_DRAIN, SHOW2_COMPACT, SHOW2_FOLLOW, SHOW2_OTHER, SHOW2_WHYS };
+enum { SHOW2_HAND_OVER, SHOW2_DRAIN, SHOW2_COMPACT, SHOW2_FOLLOW, SHOW2_OTHER, SHOW3_ME_END, SHOW3_ROOM, SHOW2_WHYS };
 static PSP_MAIN_SIDE unsigned long show2_shows = 0, show2_waited[SHOW2_WHYS], show2_wait_us[SHOW2_WHYS];
 static PSP_MAIN_SIDE unsigned long show2_spared = 0;
 /* written by the replay, as the frame's other draw counts */
 static unsigned long show2_index_copies = 0, show2_index_bytes = 0;
-static void show_picture(void);
+static void show_picture(int show3);
 static void show2_list_start(void);
 static void show2_settle(int why);
 /* "showlat": each frame's time from its window's start (its ticks done, its
@@ -429,7 +429,68 @@ static PSP_MAIN_SIDE unsigned int frame_begin_us = 0, show_begin_us = 0;
 static PSP_MAIN_SIDE unsigned long show_lat_frames = 0, show_lat_sum = 0, show_lat_most = 0;
 static PSP_MAIN_SIDE unsigned long win_lat_frames = 0, win_lat_sum = 0, win_lat_most = 0;
 static PSP_MAIN_SIDE unsigned long show_frame_number = 0; /* the frame's number, for framecrc */
-static int show_shot = 0; /* the frame being shown takes a screenshot */
+static PSP_MAIN_SIDE int show_shot = 0; /* the frame being shown takes a screenshot */
+/* "geshow3" (with geinflight and gemeon; it uses geshow2's forwarding
+thread): the ME replays the next frame into a second display list while the
+GE draws the last one's tail. Under geshow2 the frame is the ME's job plus
+the GE's tail, because the ME's replay of N+1 waits until the GE has ended N
+and the one list is started again. Here the game thread starts N+1's list
+itself, in a part of the display list N's doesn't use, and hands N+1 to the
+ME without waiting for N's show:
+- N+1 draws into the buffer N's swap frees, so the swap's pointers move on the
+  game thread as N is asked to be shown (the replay reads them), and the
+  display is set by the forwarding thread only once the GE has reached N's
+  finish (its id: show3_finish_callback). Until then every stall address of
+  N+1's list is held back (show3_stall_held), so the GE can't start N+1 on the
+  buffer still on the screen.
+- At most two frames are out with the GE: the game thread takes N's show at
+  the ME's end of N+1 (inflight_show), before N+1's frame end lets anything
+  go, so at every place that reuses what the GE reads only N+1 is still
+  unshown: the protections of geshow2 hold (textures, level copies, the index
+  lists copied into the list, the geometry cache's and the bind blocks' last
+  two frames, the VRAM copies' quarantine), and N+1's list never overlaps N's.
+- The forwarding thread now runs beside the ME, so it writes no pspgu state
+  and no variable the ME writes near (only PSP_MAIN_SIDE ones).
+"geshow3check": each of those places counts the reuses whose last use was by
+a frame handed over and not yet shown (logically: from its hand-over to the
+game thread's taking of its show). The count, 0 for a sound run, is on the
+GE: geshow3: line */
+static PSP_MAIN_SIDE int show3_on = 0, show3_check = 0;
+static PSP_MAIN_SIDE int show3_now = 0; /* this frame's list finished with its id, its show to the forwarding thread */
+enum { SHOW3_TEX, SHOW3_BIND, SHOW3_GEO, SHOW3_LEVEL, SHOW3_VM, SHOW3_LIST, SHOW3_KINDS };
+static const char *const show3_kind_name[SHOW3_KINDS] = { "textures", "bind blocks", "geometry", "level copies", "VRAM copies", "list room" };
+/* each kind's frame counter as it was while a frame out with the GE was
+recorded ([0] the oldest), and how many frames are out */
+static PSP_MAIN_SIDE unsigned int show3_out_stamp[2][SHOW3_KINDS];
+static PSP_MAIN_SIDE int show3_out = 0;
+static PSP_MAIN_SIDE unsigned long show3_reused[SHOW3_KINDS], show3_checked[SHOW3_KINDS];
+/* the display list's part (byte offsets) the frame out uses, this frame's
+start, and the largest list lately (decaying), for the next room's size */
+static PSP_MAIN_SIDE unsigned int show3_list_from = 0, show3_list_to = 0, show3_list_start = 0, show3_list_peak = 0;
+static PSP_MAIN_SIDE void *show3_buffer = NULL; /* the buffer the frame being shown drew into */
+static PSP_MAIN_SIDE unsigned long show3_rooms_shared = 0, show3_rooms_whole = 0, show3_held = 0;
+/* written by the replay (a draw skipped for want of room in a shared part) */
+static unsigned long show3_room_skips = 0;
+/* the finish id each shown frame's list ends with, and the last one the GE
+reached (written by the GE's interrupt) */
+static PSP_MAIN_SIDE unsigned int show3_asked = 0;
+static PSP_MAIN_SIDE volatile unsigned int show3_finished = 0, show3_shown = 0;
+static PSP_MAIN_SIDE SceUID show3_flag = -1;
+/* the list started while the last frame wasn't shown: its stall address
+waits for that show (show3_gate_show), the newest kept */
+static PSP_MAIN_SIDE volatile int show3_gate_qid = -1;
+static PSP_MAIN_SIDE volatile unsigned int show3_gate_show = 0;
+static PSP_MAIN_SIDE void *volatile show3_gate_stall = NULL;
+#define SHOW3_ROOM_LEAST (192 * 1024)
+static void show3_finish_callback(int id); /* (with gebusy's) */
+static void show3_stamp_out(void); /* (with the VRAM copies') */
+static int ge_stall_pass(int qid, void *stall);
+void psp_ge_show3_reuse(int kind, unsigned int stamp);
+extern int psp_display_hold; /* psp_trace.c */
+int psp_display_release(void);
+extern volatile int psp_ge_enqueued;
+int sceGuFinishId(unsigned int id); /* pspgu: sceGuFinish with the FINISH's id */
+static PSP_MAIN_SIDE void *shot_buffer = NULL; /* the buffer screenshot() reads (the shown frame's) */
 static int stall_force; /* (defined with the stall wrapper) */
 static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */
 /* set by the frame's job itself (its args), so the ME never reads the main
@@ -1621,7 +1682,7 @@ static void defer_wait_me(void)
 	if (results[1])
 	{
 		stall_forwarded++;
-		__real_sceGeListUpdateStallAddr((int)results[2], (void *)results[1]);
+		ge_stall_pass((int)results[2], (void *)results[1]);
 	}
 }
 
@@ -1713,9 +1774,26 @@ static int inflight_forwarder(SceSize args, void *argp)
 		if (show2_asked)
 		{
 			show2_asked = 0;
-			show_picture(); /* waits for the GE's end of the frame */
-			show2_list_start();
-			psp_ge_show_busy = 0;
+			if (show3_on)
+			{
+				/* geshow3: the next frame's list is the game thread's;
+				the GE is let into it once this frame is on the screen */
+				unsigned int shown = show3_asked;
+				void *held;
+
+				show_picture(1); /* waits for the GE's finish of the frame */
+				show3_shown = shown;
+				__asm__ volatile("" ::: "memory");
+				held = show3_gate_stall;
+				if (held && show3_gate_show == shown)
+					__real_sceGeListUpdateStallAddr(show3_gate_qid, held);
+			}
+			else
+			{
+				show_picture(0); /* waits for the GE's end of the frame */
+				show2_list_start();
+				psp_ge_show_busy = 0;
+			}
 			sceKernelSignalSema(show2_sema, 1);
 			continue;
 		}
@@ -1731,7 +1809,7 @@ static int inflight_forwarder(SceSize args, void *argp)
 			{
 				inflight_forwarded_stall = stall;
 				inflight_forwards++;
-				__real_sceGeListUpdateStallAddr((int)INFLIGHT_STALL[1], (void *)stall);
+				ge_stall_pass((int)INFLIGHT_STALL[1], (void *)stall);
 			}
 		}
 		sceKernelDelayThread(inflight_forward_us);
@@ -1761,11 +1839,19 @@ static void inflight_hand_over(void)
 		}
 		if (show2_on < 0)
 			show2_on = psp_keep("geshow2") != 0;
+		show3_on = psp_keep("geshow3") != 0;
+		if (show3_on)
+		{
+			show2_on = 1;
+			show3_flag = sceKernelCreateEventFlag("ge finish", 0, 0, NULL);
+			if (show3_flag < 0)
+				show3_on = 0;
+		}
 		if (show2_on)
 		{
 			show2_sema = sceKernelCreateSema("ge show", 0, 0, 1, NULL);
 			if (show2_sema < 0)
-				show2_on = 0;
+				show2_on = show3_on = 0;
 		}
 		/* geshow2: the show's log lines and a shot's file writes run there too */
 		inflight_thread = sceKernelCreateThread("ge forward", inflight_forwarder, 0x10, show2_on ? 0x4000 : 0x1000, 0, NULL);
@@ -1774,8 +1860,15 @@ static void inflight_hand_over(void)
 			platform_log("GE: geinflight: no forwarding thread (%08x); the frame is carried out on the main CPU",
 				(unsigned int)inflight_thread);
 			defer_me_on = 0;
-			show2_on = 0;
+			show2_on = show3_on = 0;
 			return;
+		}
+		if (show3_on)
+		{
+			show3_check = psp_keep("geshow3check") != 0;
+			sceGuSetCallback(GU_CALLBACK_FINISH, show3_finish_callback);
+			platform_log("GE: geshow3: the next frame replayed by the ME into a second list while the GE ends the last; shown by the forwarding thread%s",
+				show3_check ? "; geshow3check: reuses of what the GE reads counted against the frames not yet shown" : "");
 		}
 		if (show2_on)
 		{
@@ -1784,8 +1877,12 @@ static void inflight_hand_over(void)
 				show2_copy_indices ? "" : "; geshow2nocopy: the engine's index lists handed to the GE as they are (the GE may draw a later frame's)");
 		}
 	}
-	/* geshow2: the list this frame draws into starts once the last frame is shown */
-	show2_settle(SHOW2_HAND_OVER);
+	/* geshow2: the list this frame draws into starts once the last frame is
+	shown (geshow3: its own list, its stall held back until that show) */
+	if (!show3_on)
+		show2_settle(SHOW2_HAND_OVER);
+	else if (show3_check && show3_out < 2)
+		show3_stamp_out();
 	/* the records and what they point to that the main CPU wrote, to RAM */
 	sceKernelDcacheWritebackAll();
 	INFLIGHT_STALL[0] = 0;
@@ -1984,7 +2081,7 @@ static void defer_drain(void)
 	{
 		stall_forwarded++;
 		list_write_back(stall_me_address); /* build 114: listcachedall */
-		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
+		ge_stall_pass(stall_me_qid, stall_me_address);
 		stall_me_address = NULL;
 	}
 	defer_used = 0;
@@ -2003,9 +2100,47 @@ static void inflight_show(void)
 	inflight_list_ended = 0;
 	psp_me_wake_poll();
 	psp_me_ring_test();
+	/* geshow3: the last frame's show, before this frame's end lets go of
+	anything, so only this frame stays out with the GE */
+	if (show3_on)
+		show2_settle(SHOW3_ME_END);
 	show2_now = show2_on > 0 && inflight_thread >= 0;
 	frame_end_show();
 	show2_now = 0;
+}
+
+/* geshow3: whether a stall address for the list started before the last
+frame was shown waits for that show. The newest is kept first, then the show
+looked at: the forwarding thread (above this one) marks the show, then passes
+on what is kept, so between them nothing is lost */
+static int show3_stall_held(int qid, void *stall)
+{
+	if (qid != show3_gate_qid)
+		return 0;
+	show3_gate_stall = stall;
+	__asm__ volatile("" ::: "memory");
+	if ((int)(show3_shown - show3_gate_show) >= 0)
+		return 0;
+	show3_held++;
+	return 1;
+}
+
+static int ge_stall_pass(int qid, void *stall)
+{
+	if (show3_gate_qid >= 0 && !psp_on_me() && show3_stall_held(qid, stall))
+		return 0;
+	return __real_sceGeListUpdateStallAddr(qid, stall);
+}
+
+/* geshow3check: a reuse of what the GE reads, of a kind whose last use was
+in the frame counter's frame stamp */
+void psp_ge_show3_reuse(int kind, unsigned int stamp)
+{
+	if (!show3_check || PSP_ME_WORK())
+		return;
+	show3_checked[kind]++;
+	if (show3_out > 0 && (int)(stamp - show3_out_stamp[0][kind]) >= 0)
+		show3_reused[kind]++;
 }
 
 /* geshow2: the game thread takes the end of the show it asked (the GE done
@@ -2022,6 +2157,15 @@ static void show2_settle(int why)
 	sceKernelWaitSema(show2_sema, 1, NULL);
 	show2_waited[why]++;
 	show2_wait_us[why] += sceKernelGetSystemTimeLow() - start;
+	if (show3_on)
+	{
+		psp_ge_show_busy = 0;
+		if (show3_out > 0)
+		{
+			memcpy(show3_out_stamp[0], show3_out_stamp[1], sizeof(show3_out_stamp[0]));
+			show3_out--;
+		}
+	}
 }
 
 /* geshow2: the show of the frame whose list has ended, asked of the
@@ -2876,6 +3020,8 @@ static int list_full(void)
 	if (!list_full_skips++)
 		platform_log("GE: the display list is full; draws skipped until the frame ends");
 	kind_frame_skips[ge_kind_now]++;
+	if (list_bytes < display_list_size)
+		show3_room_skips++;
 	if (limit != list_limit && sceGuCheckList() < list_limit - DISPLAY_LIST_MARGIN)
 		level_reserve_held++;
 	return 1;
@@ -3038,6 +3184,8 @@ static void *list_take(int bytes)
 		if (!list_full_skips++)
 			platform_log("GE: the display list is full (%d more bytes wanted); draws skipped until the frame ends", bytes);
 		kind_frame_skips[ge_kind_now]++;
+		if (list_bytes < display_list_size)
+			show3_room_skips++;
 		return NULL;
 	}
 	if (ge_kind_now == KIND_MODEL)
@@ -3136,6 +3284,18 @@ static void gebusy_finish(int id)
 	(void)id;
 	gebusy_add(gebusy_finish_handed, sceKernelGetSystemTimeLow(), gebusy_finish_kind);
 	gebusy_finishes++;
+}
+
+/* geshow3: the GE reached a list's finish (a shown frame's carries its id) */
+static void show3_finish_callback(int id)
+{
+	if (gebusy_on > 0)
+		gebusy_finish(id);
+	if (id)
+	{
+		show3_finished = (unsigned int)id;
+		sceKernelSetEventFlag(show3_flag, 1);
+	}
 }
 
 static void gebusy_start(void)
@@ -3245,13 +3405,13 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 	{
 		/* now and then, what the call itself costs */
 		unsigned int t0 = ge_clock();
-		int result = __real_sceGeListUpdateStallAddr(qid, stall);
+		int result = ge_stall_pass(qid, stall);
 
 		stall_timed_us += ge_clock() - t0;
 		stall_timed++;
 		return result;
 	}
-	return __real_sceGeListUpdateStallAddr(qid, stall);
+	return ge_stall_pass(qid, stall);
 }
 /* build 115: under gebusy, a change of kind hands the draws so far on as a
 chunk of the old kind (a stall update with its SIGNAL; sceGuGetMemory makes
@@ -3373,8 +3533,8 @@ first-person weapon, after the model ends or a new window begins) */
 static float model_sphere[3], model_sphere_radius = 0.0f;
 static unsigned long first_person_flushes = 0;
 /* build 118: frames by how long they were shown (psp_ge_frame_end) */
-static unsigned int swap_last = 0, swap_longest = 0;
-static unsigned long swap_shown[5];
+static PSP_MAIN_SIDE unsigned int swap_last = 0, swap_longest = 0;
+static PSP_MAIN_SIDE unsigned long swap_shown[5];
 static float projection_fov = 1.2f, projection_near = 0.0625f, projection_far = 1000.0f;
 static float first_person_near = 0.0117f, first_person_far = 1024.0f;
 static unsigned long near_models = 0, near_triangles_dropped = 0;
@@ -4874,6 +5034,108 @@ overlays: 2-D, on the same screen) draw into it */
 end): a later window of the frame, recorded or not, must not start a list */
 static PSP_MAIN_SIDE int window_main_done = 0;
 
+/* geshow3: the frame's show asked of the forwarding thread: the swap's
+pointers move now (the next frame's list and replay read them), the display
+waits for the GE's finish of this one */
+static void show3_ask(void)
+{
+	unsigned int end = ((unsigned int)gu_list->current & ~0x40000000u) - ((unsigned int)display_list & ~0x40000000u);
+
+	show2_shows++;
+	psp_ge_show_busy = 1;
+	show2_owed = 1;
+	show3_list_from = show3_list_start;
+	show3_list_to = end;
+	if (end - show3_list_start > show3_list_peak)
+		show3_list_peak = end - show3_list_start;
+	else
+		show3_list_peak -= show3_list_peak / 64;
+	show3_buffer = draw_buffer;
+	psp_display_hold = 1;
+	draw_buffer = sceGuSwapBuffers();
+	psp_display_hold = 0;
+	show2_asked = 1;
+	sceKernelWakeupThread(inflight_thread);
+}
+
+/* geshow3: the GE at the finish of the frame being shown. The event flag is
+a wake only: the finish's id is what's waited for, looked at every 2 ms
+whatever the flag does */
+static PSP_MAIN_SIDE unsigned long show3_given_up = 0;
+
+static void show3_wait_finish(unsigned int id)
+{
+	int looks = 0;
+
+	while (show3_finished != id)
+	{
+		SceUInt timeout = 2000;
+
+		/* a finish never reported (no frame takes 400 ms on the GE): the
+		show goes on rather than the game stopping, and it is counted */
+		if (++looks > 200)
+		{
+			if (!show3_given_up++)
+				platform_log("GE: geshow3: the GE's finish %u never came (last %u); shown without it", id, show3_finished);
+			return;
+		}
+		sceKernelWaitEventFlag(show3_flag, 1, PSP_EVENT_WAITOR | PSP_EVENT_WAITCLEAR, NULL, &timeout);
+	}
+}
+
+/* geshow3: this frame's list, in the part of the display list the frame out
+with the GE doesn't use (the larger of the two sides), if that holds well
+over the largest list lately; else it waits for that show and takes it all */
+static void show3_list_begin(void)
+{
+	unsigned int size = (unsigned int)display_list_size, at = 0, room = size, need, low, high;
+
+	need = show3_list_peak + show3_list_peak / 4 + 32 * 1024;
+	if (need < SHOW3_ROOM_LEAST)
+		need = SHOW3_ROOM_LEAST;
+	if (show2_owed)
+	{
+		low = show3_list_from & ~63u;
+		at = (show3_list_to + 63) & ~63u;
+		high = at < size ? size - at : 0;
+		if (low > high)
+		{
+			at = 0;
+			high = low;
+		}
+		room = high;
+		if (room < need)
+		{
+			show2_settle(SHOW3_ROOM);
+			at = 0;
+			room = size;
+		}
+	}
+	if (show2_owed)
+		show3_rooms_shared++;
+	else
+		show3_rooms_whole++;
+	if (show3_check)
+	{
+		show3_checked[SHOW3_LIST]++;
+		if (show2_owed && at < show3_list_to && at + room > show3_list_from)
+			show3_reused[SHOW3_LIST]++;
+	}
+	list_bytes = (int)room;
+	show3_list_start = at;
+	sceGuStart(GU_DIRECT, (void *)((unsigned int)display_list + at));
+	list_cached_frame_start(0);
+	if (show2_owed)
+	{
+		show3_gate_stall = NULL;
+		show3_gate_show = show3_asked;
+		__asm__ volatile("" ::: "memory");
+		show3_gate_qid = psp_ge_enqueued;
+	}
+	else
+		show3_gate_qid = -1;
+}
+
 /* the list a frame draws into: here at its window's start, or under geshow2
 by the forwarding thread once the last frame is shown */
 static void show2_list_start(void)
@@ -4942,6 +5204,8 @@ static float window_begin_main(const float *position, float z_near, float z_far)
 	list_bytes = list_in_vram ? VRAM_BENCH_BYTES : display_list_size;
 	if (show2_list_started)
 		show2_list_started = 0; /* geshow2: started by the show, after the swap */
+	else if (show3_on && !list_in_vram)
+		show3_list_begin();
 	else
 		show2_list_start();
 	{
@@ -5157,7 +5421,8 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 		return;
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	z_near = window_begin_main(position, z_near, z_far);
-	show2_settle(SHOW2_OTHER); /* geshow2: the list part runs now, into the list the show starts */
+	if (!show3_on)
+		show2_settle(SHOW2_OTHER); /* geshow2: the list part runs now, into the list the show starts */
 	window_begin_list(position, forward, up, vertical_field_of_view, z_near, z_far);
 }
 
@@ -10281,6 +10546,7 @@ static unsigned int vm_place(unsigned int bytes)
 			continue;
 		if (e->released && vm_frame >= e->released)
 		{
+			psp_ge_show3_reuse(SHOW3_VM, e->frame);
 			e->at = VM_NONE;
 			e->released = 0;
 			continue;
@@ -10365,6 +10631,20 @@ static void vm_frame_end(void)
 		budget -= best->bytes;
 		vm_copied += best->bytes;
 	}
+}
+
+/* geshow3check: a frame handed over, with each kind's frame counter as it
+records (its last uses are stamped with these) */
+static void show3_stamp_out(void)
+{
+	extern unsigned int psp_tex_frame_now(void), psp_geo_frame_now(void);
+	unsigned int *stamp = show3_out_stamp[show3_out++];
+
+	stamp[SHOW3_TEX] = stamp[SHOW3_BIND] = psp_tex_frame_now();
+	stamp[SHOW3_GEO] = psp_geo_frame_now();
+	stamp[SHOW3_LEVEL] = ge_hot.stream_frame;
+	stamp[SHOW3_VM] = vm_frame;
+	stamp[SHOW3_LIST] = 0;
 }
 
 static void vm_report(void)
@@ -13810,8 +14090,8 @@ turned back into the world's coordinates), then queued with an identity
 matrix: the kept ones indexed into the material's stream, the pieces as
 corners */
 static unsigned long level_transparent_draws = 0;
-static unsigned long ge_wait_us = 0, ge_wait_worst = 0;
-static unsigned long frame_end_us[3];
+static PSP_MAIN_SIDE unsigned long ge_wait_us = 0, ge_wait_worst = 0;
+static PSP_MAIN_SIDE unsigned long frame_end_us[3];
 
 /* build 116: a see-through shader's fade as a GE colour that the texture is
 multiplied by (TFX_MODULATE): for an alpha blend the alpha, for the added and
@@ -16405,6 +16685,7 @@ static int level_stream_let_go_oldest(void)
 	}
 	if (oldest < 0)
 		return 0;
+	psp_ge_show3_reuse(SHOW3_LEVEL, level_streams[oldest].last_frame);
 	level_stream_let_go(&level_streams[oldest]);
 	return 1;
 }
@@ -19689,7 +19970,7 @@ int psp_build_number(void);
 static void screenshot(void)
 {
 	static unsigned char rows[4 * SCREEN_WIDTH * 3];
-	const unsigned short *frame = (const unsigned short *)(0x44000000 + (unsigned int)draw_buffer);
+	const unsigned short *frame = (const unsigned short *)(0x44000000 + (unsigned int)(shot_buffer ? shot_buffer : draw_buffer));
 	unsigned char header[54];
 	unsigned int image = SCREEN_WIDTH * 3 * SCREEN_HEIGHT, size = 54 + image;
 	char path[64], text[48];
@@ -19933,19 +20214,25 @@ static void runs_wanted_make(void)
 /* the frame's picture: the GE's end waited for, the checks that read the
 finished frame, the overlay drawn into it, and the swap. On the game thread,
 or under geshow2 on the forwarding thread */
-static void show_picture(void)
+static void show_picture(int show3)
 {
 	unsigned int mark = sceKernelGetSystemTimeLow(), waited;
+	void *const buffer = show3 ? show3_buffer : draw_buffer;
 
 	/* build 35: how long the CPU waits here for the GE to finish the
 	frame's list. Long waits: the GE is the limit (fill, passes); short:
 	the CPU is, and drawing overlapped with the next frame's work would
-	gain little */
-	sceGuSync(0, 0);
+	gain little. geshow3: the next list is in the GE's queue already,
+	held at its start, so the wait is for this list's finish only */
+	if (show3)
+		show3_wait_finish(show3_asked & 0xFFFF);
+	else
+		sceGuSync(0, 0);
 	waited = sceKernelGetSystemTimeLow() - mark;
 	ge_wait_us += waited;
 	win_ge_us += waited;
-	vram_busy_calibrate(waited);
+	if (!show3)
+		vram_busy_calibrate(waited); /* (its sprites are the replay's) */
 	{
 		/* build 87: this frame's renderer CPU and GE wait, for the
 		heartbeat's window (psp_ge_budget) */
@@ -19963,24 +20250,29 @@ static void show_picture(void)
 		win_ge_worst = waited;
 	if (waited > ge_wait_worst)
 		ge_wait_worst = waited;
-	/* blipdepthcheck: the GE has the whole frame done */
-	if (blip_check)
-		blip_check_compare();
-	blip_depth_live = 0;
+	/* blipdepthcheck: the GE has the whole frame done (geshow3: the replay
+	of the next frame may be writing both; the window's start clears the
+	flag anyway) */
+	if (!show3)
+	{
+		if (blip_check)
+			blip_check_compare();
+		blip_depth_live = 0;
+	}
 	{
 		/* "framecrc": each finished picture hashed (FNV-1a over its
 		480 x 272 pixels, before the debug overlay) and logged with the
 		game time. Two runs that play the same (fixedticks fixedseed) then
 		show whether a change draws exactly the same picture
 		(tools/framecmp.py). Recon only: it reads VRAM every frame */
-		static int frame_crc = -1;
+		static PSP_MAIN_SIDE int frame_crc = -1;
 
 		if (frame_crc < 0)
 			frame_crc = psp_keep("framecrc") != 0;
 		if (frame_crc)
 		{
 			extern long psp_game_time_peek(void);
-			const unsigned int *pixels = (const unsigned int *)(0x44000000 + (unsigned int)draw_buffer);
+			const unsigned int *pixels = (const unsigned int *)(0x44000000 + (unsigned int)buffer);
 			unsigned int hash = 2166136261u, tile[16];
 			int row, pair, k;
 
@@ -20007,22 +20299,27 @@ static void show_picture(void)
 		finished frame (psp_debug.c), after the screenshot so shots never
 		show it ("menushot": before, for testing the menu itself) */
 		extern void psp_debug_draw(void *vram);
-		static int menu_shot = -1;
+		static PSP_MAIN_SIDE int menu_shot = -1;
 
 		if (menu_shot < 0)
 			menu_shot = psp_keep("menushot");
 		if (menu_shot)
-			psp_debug_draw((void *)(0x44000000 + (unsigned int)draw_buffer));
+			psp_debug_draw((void *)(0x44000000 + (unsigned int)buffer));
 		if (show_shot)
 		{
 			show_shot = 0;
+			shot_buffer = buffer;
 			screenshot();
+			shot_buffer = NULL;
 		}
 		if (!menu_shot)
-			psp_debug_draw((void *)(0x44000000 + (unsigned int)draw_buffer));
+			psp_debug_draw((void *)(0x44000000 + (unsigned int)buffer));
 	}
 	mark = sceKernelGetSystemTimeLow();
-	draw_buffer = sceGuSwapBuffers();
+	if (show3)
+		psp_display_release(); /* (the swap's pointers moved at the ask) */
+	else
+		draw_buffer = sceGuSwapBuffers();
 	frame_end_us[1] += sceKernelGetSystemTimeLow() - mark;
 	/* build 118: how long each frame stayed on the screen, in display
 	refreshes (60 a second): frames are shown at refreshes, so a frame
@@ -20076,11 +20373,22 @@ static void frame_end_show(void)
 	win_triangles += list_part.triangles;
 	win_list_bytes += list_part.list_bytes;
 	window_main_done = 0;
+	show3_now = 0;
 	if (inflight_finish_left)
 	{
 		inflight_finish_left = 0;
 		stall_force = 1;
-		sceGuFinish();
+		/* geshow3: the finish carries the frame's id (never 0), which the
+		forwarding thread waits for instead of the whole queue */
+		if (show2_now && show3_on && !list_in_vram)
+		{
+			if (!(++show3_asked & 0xFFFF))
+				show3_asked++;
+			sceGuFinishId(show3_asked & 0xFFFF);
+			show3_now = 1;
+		}
+		else
+			sceGuFinish();
 		stall_force = 0;
 	}
 	vm_frame_end(); /* build 116: vrammodels' copies for the next frame */
@@ -20096,10 +20404,16 @@ static void frame_end_show(void)
 		/* geshow2: the GE's tail waited out and the frame shown by the
 		forwarding thread, while this thread goes on; the rest here is the
 		game thread's (the tables the record path reads) */
-		if (show2_now)
+		if (show3_now)
+			show3_ask();
+		else if (show2_now && !show3_on)
 			show2_ask();
 		else
-			show_picture();
+		{
+			show2_settle(SHOW2_OTHER);
+			show_picture(0);
+			show3_out = 0;
+		}
 		cut_count_frame_end();
 		frame_open = 0;
 		mark = sceKernelGetSystemTimeLow();
@@ -20223,10 +20537,31 @@ static void frame_end_show(void)
 				waits += show2_waited[why];
 				us += show2_wait_us[why];
 			}
-			platform_log("GE: geshow2: %lu frames shown by the forwarding thread; the game thread waited for a show %lu times, %.1f ms a frame (at a hand-over %lu, %lu us; a call run at once %lu, %lu us; a compaction %lu; copies moved %lu; other %lu); level copies spared for the frame shown %lu; index lists copied %lu (%lu KB) (last 300 frames)",
+			platform_log("GE: geshow2: %lu frames shown by the forwarding thread; the game thread waited for a show %lu times, %.1f ms a frame (at a hand-over %lu, %lu us; a call run at once %lu, %lu us; a compaction %lu; copies moved %lu; other %lu; at the ME's end %lu, %lu us; for list room %lu); level copies spared for the frame shown %lu; index lists copied %lu (%lu KB) (last 300 frames)",
 				show2_shows, waits, us / 1000.0f / 300, show2_waited[SHOW2_HAND_OVER], show2_wait_us[SHOW2_HAND_OVER],
 				show2_waited[SHOW2_DRAIN], show2_wait_us[SHOW2_DRAIN], show2_waited[SHOW2_COMPACT], show2_waited[SHOW2_FOLLOW],
-				show2_waited[SHOW2_OTHER], show2_spared, show2_index_copies, show2_index_bytes / 1024);
+				show2_waited[SHOW2_OTHER], show2_waited[SHOW3_ME_END], show2_wait_us[SHOW3_ME_END], show2_waited[SHOW3_ROOM],
+				show2_spared, show2_index_copies, show2_index_bytes / 1024);
+			if (show3_on)
+			{
+				char text[320];
+				size_t used = 0;
+				unsigned long reused = 0;
+				int kind;
+
+				for (kind = 0; kind < SHOW3_KINDS; kind++)
+				{
+					reused += show3_reused[kind];
+					used += (size_t)snprintf(text + used, used < sizeof(text) ? sizeof(text) - used : 0, "%s %s %lu of %lu",
+						kind ? "," : "", show3_kind_name[kind], show3_reused[kind], show3_checked[kind]);
+				}
+				platform_log("GE: geshow3: lists in a part of the display list %lu, in all of it %lu (the largest lately %u KB); stall addresses held for a show %lu; draws skipped for room in a part %lu (last 300 frames); finishes not reported %lu (since the start)",
+					show3_rooms_shared, show3_rooms_whole, show3_list_peak / 1024, show3_held, show3_room_skips, show3_given_up);
+				if (show3_check)
+					platform_log("GE: geshow3check: %lu reuses of what the GE reads before its frame was shown (since the start):%s",
+						reused, text);
+				show3_rooms_shared = show3_rooms_whole = show3_held = show3_room_skips = 0;
+			}
 			show2_shows = show2_spared = show2_index_copies = show2_index_bytes = 0;
 			memset(show2_waited, 0, sizeof(show2_waited));
 			memset(show2_wait_us, 0, sizeof(show2_wait_us));

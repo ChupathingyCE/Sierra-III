@@ -287,6 +287,14 @@ static struct geo_entry *find(unsigned int address)
 	return NULL;
 }
 
+void psp_ge_show3_reuse(int kind, unsigned int stamp); /* psp_ge.c: geshow3check */
+
+/* the frame counter, for geshow3check's stamps (psp_ge.c) */
+unsigned int psp_geo_frame_now(void)
+{
+	return frame;
+}
+
 static int protected_entry(const struct geo_entry *e)
 {
 	return e->state == 2 || (e->at && e->last_frame + RECENT_FRAMES > frame);
@@ -347,6 +355,7 @@ static unsigned int allocate(unsigned int size)
 
 		if (e->at && e->at < start + size && e->at + alignment(e->size) > start)
 		{
+			psp_ge_show3_reuse(2, e->last_frame); /* geshow3check */
 			e->at = 0;
 			e->state = 0;
 			evictions++;
@@ -655,7 +664,10 @@ static struct geo_entry *entry_new(unsigned int address, unsigned int size)
 		if (!e)
 			return NULL;
 		if (e->at)
+		{
+			psp_ge_show3_reuse(2, e->last_frame); /* geshow3check */
 			evictions++;
+		}
 		hash_remove((int)(e - entries));
 		if (census_on > 0 && census_read_at[e - entries])
 			census_forgotten++; /* its next read will look like a first one */

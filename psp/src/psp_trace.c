@@ -1172,26 +1172,52 @@ int __wrap_sceDmacMemcpy(void *dst, const void *src, SceSize size)
 }
 
 int __real_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg);
+/* the id of the last list handed to the GE (geshow3, psp_ge.c) */
+volatile int psp_ge_enqueued = -1;
 int __wrap_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg)
 {
 	int result;
 
 	psp_trace_line("GE list %08x, stall %08x", (unsigned)list, (unsigned)stall);
 	result = __real_sceGeListEnQueue(list, stall, cbid, arg);
+	psp_ge_enqueued = result;
 	psp_trace_line("GE list = %d", result);
 	return result;
 }
 
 int __real_sceDisplaySetFrameBuf(void *top, int width, int format, int sync);
+/* geshow3 (psp_ge.c): the swap's pointers move on the game thread before the
+GE has ended the frame they show; the display is set by psp_display_release
+once it has */
+int psp_display_hold = 0;
+static void *display_held_top = NULL;
+static int display_held = 0, display_held_width = 0, display_held_format = 0, display_held_sync = 0;
 int __wrap_sceDisplaySetFrameBuf(void *top, int width, int format, int sync)
 {
 	int result;
 
+	if (psp_display_hold)
+	{
+		display_held_top = top;
+		display_held_width = width;
+		display_held_format = format;
+		display_held_sync = sync;
+		display_held = 1;
+		return 0;
+	}
 	psp_trace_line("display %08x, width %d, format %d, sync %d", (unsigned)top, width, format, sync);
 	psp_shown_buffer = (unsigned int)top;
 	result = __real_sceDisplaySetFrameBuf(top, width, format, sync);
 	psp_trace_line("display = %d", result);
 	return result;
+}
+
+int psp_display_release(void)
+{
+	if (!display_held)
+		return 0;
+	display_held = 0;
+	return __wrap_sceDisplaySetFrameBuf(display_held_top, display_held_width, display_held_format, display_held_sync);
 }
 
 int __real_sceIoWrite(SceUID fd, const void *data, SceSize size);
