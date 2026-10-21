@@ -434,6 +434,34 @@ the ME: there the test is psp_on_me(), its own stack */
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
 #define GE_DEFER(record, ...) do { if (DEFER_RECORDING() && !defer_paused && (record)) return __VA_ARGS__; } while (0)
+/* "texpretouch": a draw's texture read in as its record is written, for a
+replay that can't read it itself (the Media Engine's, or gemesim's standing
+for it): psp_tex_pretouch says why. Only while recording, so a draw carried
+out at once binds (and loads) as it always did. Not with gemeoverlap: there
+the ME binds one half while this CPU writes the other, and both would write
+the texture cache's residency words through caches of their own */
+void psp_tex_pretouch(unsigned int key, int kind, int resident_only);
+int psp_tex_has(unsigned int key);
+static PSP_MAIN_SIDE int pretouch_on = 0, pretouch_all = 0;
+static void pretouch(unsigned int key, int kind, int resident_only);
+/* the record kinds, for psp_tex_pretouch's memo and census (psp_tex.c's
+PRETOUCH_KINDS, txc_names) */
+enum { TXPT_LEVEL_BASE, TXPT_LIGHTMAP, TXPT_LEVEL_DETAIL, TXPT_MODEL_BASE, TXPT_CHANGE, TXPT_GLOW, TXPT_MODEL_DETAIL,
+	TXPT_SPRITE, TXPT_CONTRAIL, TXPT_WIDGET, TXPT_SEETHROUGH, TXPT_LEVEL_SEETHROUGH, TXPT_SCREEN, TXPT_ZOOM, TXPT_LIGHT,
+	TXPT_DECAL, TXPT_BLIP, TXPT_BLIPS_END };
+#define PRETOUCHING() (pretouch_on && !me_overlap && DEFER_RECORDING() && !defer_paused)
+#define GE_PRETOUCH(key, kind) do { if (PRETOUCHING()) pretouch(key, kind, 0); } while (0)
+/* a texture the replay binds only for some draws (a level's detail maps,
+only near the eye): marked only if it's resident already, so it costs no
+load and no room ("txptall": loaded too) */
+#define GE_PRETOUCH_IF_RESIDENT(key, kind) do { if (PRETOUCHING()) pretouch(key, kind, !pretouch_all); } while (0)
+/* a texture the replay won't bind for this record (the census, recon only,
+counts the ones it binds anyway) */
+#ifdef PSP_RECON
+#define GE_PRETOUCH_PASSED(key, kind) do { if (PRETOUCHING()) psp_tex_pretouch(key, kind, 2); } while (0)
+#else
+#define GE_PRETOUCH_PASSED(key, kind) do { } while (0)
+#endif
 /* a frame's boundaries are written down only in a game: the menus and loads
 run as with gedefer alone */
 #define INFLIGHT_RECORDING() (inflight_on && DEFER_RECORDING() && psp_game_running())
@@ -609,6 +637,11 @@ static void defer_frame_begin(void)
 				/* geinflight too: its frame is carried out after the next
 				ticks, so a query in them reads what is built, as on the ME */
 				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench || inflight_on;
+				pretouch_on = defer_me_semantics && psp_keep("texpretouch");
+				pretouch_all = psp_keep("txptall");
+				if (pretouch_on)
+					platform_log("GE: texpretouch: each recorded draw's textures read in as it is written down, for the replay's binds%s",
+						pretouch_all ? " (txptall: every texture a record names)" : "");
 				replay_kinds_on = psp_keep("mekinds") != 0;
 				if (replay_kinds_on)
 					platform_log("GE: mekinds: each record kind timed as it's carried out, the main CPU's and the ME's apart (a line each 300 frames)");
@@ -714,6 +747,18 @@ static defer_word *defer_take(int kind, unsigned int words)
 	defer_used += 1 + words;
 	defer_records++;
 	return at + 1;
+}
+
+/* the frame still out (geinflight) carried out first, as the record's own
+defer_take would: the ME then isn't running while the texture cache is
+changed here, and the load counts in the frame the replay binds in */
+static void pretouch(unsigned int key, int kind, int resident_only)
+{
+	if (inflight_room_away)
+		inflight_room_park();
+	if (inflight_pending)
+		inflight_sync();
+	psp_tex_pretouch(key, kind, resident_only);
 }
 
 /* n words copied, after one saying whether the pointer was NULL: 1 + n words */
@@ -8297,6 +8342,8 @@ static unsigned int detail_neutral(unsigned int key)
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v)
 {
+	GE_PRETOUCH_IF_RESIDENT(primary_key, TXPT_LEVEL_DETAIL);
+	GE_PRETOUCH_IF_RESIDENT(micro_key, TXPT_LEVEL_DETAIL);
 	GE_DEFER(defer_words(DEFER_LEVEL_DETAIL, 6, primary_key, defer_bits(primary_u), defer_bits(primary_v), micro_key,
 		defer_bits(micro_u), defer_bits(micro_v), 0, 0)); /* build 112: gedefer */
 	detail_key[0] = primary_key; detail_u[0] = primary_u; detail_v[0] = primary_v;
@@ -8944,6 +8991,8 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
+	GE_PRETOUCH(base_key, TXPT_LEVEL_BASE);
+	GE_PRETOUCH(lightmap_key, TXPT_LIGHTMAP);
 	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
 		lightmap_key, alpha_tested)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -10451,6 +10500,25 @@ void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_
 	float const *glow)
 {
 	GE_BENCH_SKIP();
+	if (PRETOUCHING())
+	{
+		/* the replay binds the multipurpose map for a change colour that
+		isn't white, or for a glow without its glow map; the glow map for a
+		glow (model_lighting's passes): a part with neither binds nothing
+		of these */
+		unsigned int glow_rgb = abgr_from_rgb(glow) & 0xFFFFFF;
+		int mapped = glow_rgb && glow_map_key && psp_tex_has(glow_map_key);
+		int wanted_change = abgr_from_rgb(change) != 0xFFFFFFFF || (glow_rgb && !mapped);
+
+		if (pretouch_all || wanted_change)
+			GE_PRETOUCH(multipurpose_key, TXPT_CHANGE);
+		else
+			GE_PRETOUCH_PASSED(multipurpose_key, TXPT_CHANGE);
+		if (pretouch_all || mapped)
+			GE_PRETOUCH(glow_map_key, TXPT_GLOW);
+		else
+			GE_PRETOUCH_PASSED(glow_map_key, TXPT_GLOW);
+	}
 	GE_DEFER(defer_model_multipurpose(multipurpose_key, glow_map_key, change, glow));
 	change_key = multipurpose_key;
 	glow_key = glow_map_key;
@@ -10466,6 +10534,7 @@ static float model_detail_u = 1.0f, model_detail_v = 1.0f;
 void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale)
 {
 	GE_BENCH_SKIP();
+	GE_PRETOUCH(detail_key, TXPT_MODEL_DETAIL);
 	GE_DEFER(defer_model_detail(detail_key, u_scale, v_scale));
 	model_detail_key = detail_key;
 	model_detail_u = u_scale;
@@ -12265,6 +12334,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	int alpha_tested)
 {
 	GE_BENCH_SKIP();
+	GE_PRETOUCH(base_key, TXPT_MODEL_BASE);
 	GE_DEFER(defer_draw_model(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key,
 		u_scale, v_scale, alpha_tested));
 	ge_kind(in_sky ? KIND_SKY : KIND_MODEL); /* build 103 */
@@ -12699,6 +12769,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world)
 {
+	GE_PRETOUCH(bitmap_key, TXPT_SPRITE);
 	GE_DEFER(defer_sprites(vertices, sprite_count, bitmap_key, blend, view_to_world), 1); /* build 112: gedefer */
 	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE); /* build 103 */
@@ -12839,6 +12910,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
 {
+	GE_PRETOUCH(bitmap_key, TXPT_CONTRAIL);
 	GE_DEFER(defer_contrail(vertices, vertex_count, bitmap_key, blend), 1);
 	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE);
@@ -12875,6 +12947,7 @@ void psp_ge_widget_begin(int depth_test)
 
 void psp_ge_widget_texture(unsigned int key)
 {
+	GE_PRETOUCH(key, TXPT_WIDGET);
 	GE_DEFER(defer_words(DEFER_WIDGET_TEXTURE, 1, key, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	widget_key = key;
 	if (!key)
@@ -13529,6 +13602,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	short blend, const float *centroid)
 {
 	GE_BENCH_SKIP();
+	GE_PRETOUCH(key, TXPT_SEETHROUGH);
 	GE_DEFER(defer_queue_transparent(vertices, vertex_count, uncompressed, indices, index_count, strip, key,
 		u_scale, v_scale, u_offset, v_offset, blend, centroid));
 	ge_kind(KIND_SEETHROUGH_QUEUE); /* build 103 */
@@ -14847,6 +14921,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
+	GE_PRETOUCH(key, TXPT_LEVEL_SEETHROUGH);
 	GE_DEFER(defer_queue_level_transparent(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale,
 		u_offset, v_offset, blend, centroid)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -15489,6 +15564,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
 		glyph_next = -1;
 	}
+	GE_PRETOUCH(key, TXPT_SCREEN);
 	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,
 		wrapped, u_scale, v_scale)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -15525,6 +15601,7 @@ static unsigned long zoom_masks = 0, zoom_masks_missing = 0;
 
 void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 {
+	GE_PRETOUCH(key, TXPT_ZOOM);
 	GE_DEFER(defer_words(DEFER_ZOOM_MASK, 2, key, strength, 0, 0, 0, 0, 0, 0));
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SCREEN);
@@ -17611,6 +17688,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
+	GE_PRETOUCH(base_key, TXPT_LIGHT);
 	GE_DEFER(defer_words(DEFER_LIGHT_DRAW, 5, DEFER_P(vertices), (unsigned int)vertex_count, DEFER_P(indices),
 		(unsigned int)triangle_count, base_key, 0, 0, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -18488,6 +18566,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
+	GE_PRETOUCH(key, TXPT_DECAL);
 	GE_DEFER(defer_decal(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	static unsigned int decal_calls = 0;
@@ -18608,6 +18687,7 @@ void psp_ge_blips_begin(void)
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
+	GE_PRETOUCH(key, TXPT_BLIP);
 	GE_DEFER(defer_words(DEFER_BLIP, 7, defer_bits(x), defer_bits(y), defer_bits(radius), defer_bits(red),
 		defer_bits(green), defer_bits(blue), key, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -18625,6 +18705,8 @@ void psp_ge_blip(float x, float y, float radius, float red, float green, float b
 
 void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
 {
+	GE_PRETOUCH(sweep_key, TXPT_BLIPS_END);
+	GE_PRETOUCH(mask_key, TXPT_BLIPS_END);
 	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
 		mask_key, 0, 0, 0)); /* build 112: gedefer */
 	ge_kind(KIND_HUD); /* build 103 */
