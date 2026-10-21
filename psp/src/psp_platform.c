@@ -991,7 +991,7 @@ static void keep_load(void)
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
 	/* build 115 */
-	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar inflightkbN");
+	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar inflightkbN inflightheap inflighttextold");
 	/* build 116: the restorations are on by default; these words turn each off */
 	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
@@ -1656,6 +1656,8 @@ void psp_geo_resume(void);
 void psp_io_reopen_all(int shift, char *line, int size);
 void psp_me_sleep_stop(void);
 void psp_me_wake_request(void);
+void psp_ge_inflight_room_suspend(void);
+void psp_ge_inflight_room_resume(void);
 
 static int power_callback(int unknown, int flags, void *argument)
 {
@@ -1665,6 +1667,9 @@ static int power_callback(int unknown, int flags, void *argument)
 		/* the Media Engine stopped before the sleep: the main CPU runs its
 		jobs until the wake's restart has it answering again */
 		psp_me_sleep_stop();
+		/* geinflight's records, when they live in the partition: the game
+		thread holds before its next one (psp_ge.c) */
+		psp_ge_inflight_room_suspend();
 		/* build 68: the geometry cache's blocks are in the same partition; its
 		read in flight is waited for first */
 		psp_geo_suspend();
@@ -1683,6 +1688,7 @@ static int power_callback(int unknown, int flags, void *argument)
 		}
 		psp_tex_resume();
 		psp_geo_resume();
+		psp_ge_inflight_room_resume();
 		/* not here: this thread can't know the game's threads are out of
 		the ME's jobs. The main thread's next frame end starts it */
 		psp_me_wake_request();
