@@ -27966,7 +27966,8 @@ FIXES_MUSIC["source/cache/xbox_sound_cache.c#musicstub"] = [
 		{
 			struct sound_definition *definition = sound_definition_get(sound->runtime_tag_index);
 
-			if (definition && definition->sound_class == _sound_class_music)
+			/* 32: _sound_class_music (sound_classes.h, not included here) */
+			if (definition && definition->sound_class == 32)
 			{
 				short pitch, index;
 
