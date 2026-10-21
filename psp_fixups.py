@@ -23590,6 +23590,54 @@ FIXES_WAKE["source/render/render_objects.c#wake_render_state"] = [
 		}
 """),
 ]
+# A game state loaded (a checkpoint revert, a saved game, a core load) puts
+# back every object's bytes without marking any, often under the identifier
+# the object slept with, and a new map or a map reset can deal a slot the
+# identifier its last owner had: either way an unmarked sleeper would keep the
+# checksum it slept with and skip its update on bytes that aren't the ones
+# summed. So both empty the sleep, restless and mark tables, and every object
+# is summed afresh as a new one (exact by construction: it only makes the
+# checks run). "sleepforgetoff" (keep.txt): the tables kept across, as before
+FIXES_WAKE["source/objects/objects.c#wake_forget"] = [
+("""long psp_objects_restless_skipped; /* updates made without the checks (the heartbeat's sleep line) */
+""", """long psp_objects_restless_skipped; /* updates made without the checks (the heartbeat's sleep line) */
+
+/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+	if (PSP_KEEP_ONCE("sleepforgetoff"))
+		return;
+	csmemset(psp_sleep, 0, sizeof(psp_sleep));
+	csmemset(psp_restless, 0, sizeof(psp_restless));
+	csmemset(psp_wake_marked, 0, sizeof(psp_wake_marked));
+}
+"""),
+]
+FIXES_WAKE["source/saved games/game_state.c#wake_forget"] = [
+("""static game_state_before_load_proc before_load_procs[] =
+{""",
+ """#ifdef HALO_PSP
+void psp_sleep_forget(void); /* objects.c (psp_fixups.py, FIXES_WAKE) */
+#endif
+
+static game_state_before_load_proc before_load_procs[] =
+{"""),
+("""	game_sound_clear,
+""", """	game_sound_clear,
+#ifdef HALO_PSP
+	psp_sleep_forget,
+#endif
+"""),
+# here rather than in objects_initialize_for_new_map: this unit isn't one the
+# profile counts, so a release's profile still matches
+("""	game_state_note_event("map start");
+""", """	game_state_note_event("map start");
+#ifdef HALO_PSP
+	psp_sleep_forget();
+#endif
+"""),
+]
 
 
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
