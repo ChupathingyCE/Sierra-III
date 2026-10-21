@@ -1646,6 +1646,14 @@ docs/frames_in_flight.md) */
 static PSP_MAIN_SIDE SceUID inflight_thread = -1;
 static PSP_MAIN_SIDE unsigned int inflight_forwarded_stall = 0;
 static PSP_MAIN_SIDE unsigned long inflight_forwards = 0;
+/* how long the forwarder sleeps between looks. Each wake preempts the game
+thread (25-32 us on the PSP-1000, 600-720 wakes a second at 1 ms:
+design_mepoll.md), and the GE's lane has room to take the list in larger
+steps: the frame's last stall address is passed on at the frame's wait
+(defer_wait_me) whatever the period, so a longer one never leaves the list
+short, it only lets the GE start each stretch up to a period later.
+"mepoll" makes it gefwdN ms (4 if not given); otherwise 1 ms, as before */
+static PSP_MAIN_SIDE unsigned int inflight_forward_us = 1000;
 
 /* above the game's thread: once it runs it finishes its look before the game
 thread can go on, so the game thread's last forwarding at the frame's wait
@@ -1671,7 +1679,7 @@ static int inflight_forwarder(SceSize args, void *argp)
 				__real_sceGeListUpdateStallAddr((int)INFLIGHT_STALL[1], (void *)stall);
 			}
 		}
-		sceKernelDelayThread(1000);
+		sceKernelDelayThread(inflight_forward_us);
 	}
 	return 0;
 }
@@ -1688,6 +1696,14 @@ static void inflight_hand_over(void)
 		return;
 	if (inflight_thread < 0)
 	{
+		if (psp_keep("mepoll"))
+		{
+			extern int psp_keep_number(const char *prefix, int fallback);
+			int ms = psp_keep_number("gefwd", 4);
+
+			inflight_forward_us = (unsigned int)(ms < 1 ? 1 : ms > 16 ? 16 : ms) * 1000;
+			platform_log("GE: geinflight: mepoll: the forwarding thread looks every %u ms", inflight_forward_us / 1000);
+		}
 		inflight_thread = sceKernelCreateThread("ge forward", inflight_forwarder, 0x10, 0x1000, 0, NULL);
 		if (inflight_thread < 0 || sceKernelStartThread(inflight_thread, 0, NULL) < 0)
 		{
