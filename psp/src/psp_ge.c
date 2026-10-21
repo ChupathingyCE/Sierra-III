@@ -5625,34 +5625,36 @@ sides. A request takes the smallest free block that holds it (best fit),
 split when what's left is worth keeping. "noarena" (keep word): the general
 heap only, as before. */
 #define ARENA_BYTES (LEVEL_STREAM_BUDGET + 32 * 1024)
-/* "heaproom": on a map that carves, HEAPROOM_BYTES of the arena's room moves
-to the level carve, taken whole at the map's open as the carve's floor (the
-level carve, below), so the general heap keeps those bytes. The volatile
-block pays for it: the geometry cache 256 KB less when it is over 1 MB
-(psp_geo.c), the textures the rest. The RAM budget census's replay of both
-rings on b30, a30 and d20 found the geometry cache's 256 KB free and the
-textures' 128 KB a few percent more reading (docs/review_sv.md) */
-#define HEAPROOM_BYTES (384 * 1024)
-/* the arena's size, settled once (0: not yet): ARENA_BYTES, or that less
-HEAPROOM_BYTES with the word. The arena is taken once and kept for every
-map, so it is smaller on every map; the maps that carve take the difference
-back at their open (one that doesn't, the main menu among them, has the
-smaller arena and the heap). Campaign only: the multiplayer build's maps
-keep their geometry cache in the heap and carve nothing */
+/* "heaproom": on a map that carves, part of the arena's room moves to the
+level carve, taken whole at the map's open as the carve's floor (the level
+carve, below), so the general heap keeps those bytes. The volatile block pays
+for it: the geometry cache 256 KB less when it is over 1 MB (psp_geo.c), and
+with "heaproom" the textures 128 KB more. The RAM budget census's replay found
+the geometry cache's 256 KB free; the textures' 128 KB costs b30 texture loads
+and frames drawn with a texture missing, so "heaproom256" moves only the
+geometry's share (docs/review_sv.md) */
+unsigned int psp_heaproom_bytes(void)
+{
+#ifndef PSP_MULTIPLAYER
+	int psp_keep(const char *name);
+
+	if (psp_keep("heaproom"))
+		return 384 * 1024;
+	if (psp_keep("heaproom256"))
+		return 256 * 1024;
+#endif
+	return 0; /* the multiplayer build's maps keep their geometry cache in the heap and carve nothing */
+}
+/* the arena's size, settled once (0: not yet): ARENA_BYTES less the heaproom
+share. The arena is taken once and kept for every map, so it is smaller on
+every map; the maps that carve take the difference back at their open (one
+that doesn't, the main menu among them, has the smaller arena and the heap) */
 static unsigned int arena_room_bytes = 0;
 
 static unsigned int arena_size(void)
 {
-	int psp_keep(const char *name);
-
 	if (!arena_room_bytes)
-	{
-		arena_room_bytes = ARENA_BYTES;
-#ifndef PSP_MULTIPLAYER
-		if (psp_keep("heaproom"))
-			arena_room_bytes = ARENA_BYTES - HEAPROOM_BYTES;
-#endif
-	}
+		arena_room_bytes = ARENA_BYTES - psp_heaproom_bytes();
 	return arena_room_bytes;
 }
 #define ARENA_ALIGN 16
