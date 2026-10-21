@@ -26,7 +26,20 @@ PGO: `rasterizer_lens_flare_submit_for_cluster` and the heartbeat's `object_repo
 
 ## Evidence
 
-(Filled in from the lab's emulator batch: exactness, lfscheck, heap, cache-model gain.)
+One EBOOT (PGO build, non-strict) runs both sides; on against `lfsonceoff`, with `lfscheck` as a third run. All with `nearauto assettrack geo2 fixedticks fixedseed nomouth`, hands off; a10 to 165 s, c20 to 150 s. Every run played to its end [E].
+
+- **Play exact** (`statecrc`, `tools/statecmp.py`): the play hash and both random seeds are the same at every tick, on against off and on against check, on a10 (4,950 ticks) and c20 (4,500). The whole-state hash differs only in the allocations known to follow the emulator's speed (`objects`, `object looping sounds`), as in every earlier exactness check.
+- **Axes exact** (`lfscheck`): every answer from the table, worked out again and compared, **0 differed** on a10 and c20 over the whole runs, and no marker past a full frame was ever kept.
+- **Pictures** (`framecrc`, `tools/framecmp.py`): not identical frame for frame, but nothing the change makes. On against off, 5 of 2,465 frames differ on a10 and 4 of 2,248 on c20. Each is a single frame on its own. Off against check also differs, at 2 frames on each map, although both submit every marker and use the same axes. Sorted three ways, each of the three runs is the odd one somewhere: on at 4 frames on a10 and 2 on c20, off at 1 and 2, check at 1 and 0. That is the run-to-run picture difference that follows the emulator's speed. The on side is the fastest of the three, so it is odd most often [E, U].
+- **The table is big enough** (lfscheck's count at each BSP's load): a10's two BSPs have 13 and 34 distinct direction triples among 790 and 505 markers, and c20's has 60 among 553, against 64 entries. On a10 the busy stretch's kept flares came from the table 100% of the time. On c20, where triples collide in the direct-mapped table, it was 44 of 48 a frame (92%). A miss only works the axes out, so a collision costs time, never correctness [E].
+- **The skip:** a10 fills the frame's 1,024 flares between game time about 3,650 and 4,200. There, 16-568 markers a frame (window means) are skipped past a full frame. Elsewhere, and on c20, it never fires [E].
+- **Heap:** the same on both sides (in use peak 5,501 KB on a10 and 5,382 KB on c20, free low 374 KB on a10, 0 requests failed). The table is 768 bytes of .bss, so the heap, sized from the program's end, is at most 1 KB smaller [D, E].
+- **Gain** (the cache models, hands off, `lights_preprocess_scene` ms a frame of the emulator's clock, by profile window):
+  - **a10's three windows from game time 3,136 to 4,114 (105-137 s, the doors on): 2.56 / 2.93 / 3.41 against 7.66 / 8.00 / 8.15, so 4.7-5.1 ms a frame less.** Over the whole run to game time 4,114 (frame-weighted), 1.67 ms a frame. Before the doors (to game time 3,136), 0.1-0.6 ms.
+  - **c20: 0.22-0.25 against 0.38-0.42, about 0.16 ms a frame.**
+  - The drawing phase's work over the whole run: a10's instruction fetches fall 11.7% (7,743 M to 6,839 M) and its data accesses 9.7%; c20's fall 3.1% and 2.2%. Data misses are unchanged (+0.1%).
+  - The flare occlusion tests and the other passes are unchanged, within the windows' spread.
+- **Priced** (a record lever, 1x): a10's gain is 1.67 ms a frame over the whole run and 4.7-5.1 ms over 105-137 s, against the 1% gate of 0.53 ms: **3x the gate whole, about 9x where a10's frame is slowest.** c20's 0.16 ms is a fifth of its 0.82 ms gate. It pays on a10 only, and costs nothing elsewhere. How much of a10's gain reaches the PSP's frame depends on whether the record lane binds in that stretch. Only a PSP pair says so [U].
 
 ## Other per-marker repeats in the flare submit [D]
 
