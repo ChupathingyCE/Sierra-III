@@ -355,6 +355,9 @@ static float dot3(const float *a, const float *b)
 }
 
 static int audio_old = -1; /* "audioold": muffling, Doppler and cones off */
+/* voice blocks each item changed, for the log: a count of 0 with the items
+on means the game never asked for it on that stretch */
+static unsigned long fx_prepared = 0, fx_muffled = 0, fx_shifted = 0, fx_coned = 0;
 
 /* DirectSound's cone: full inside half the inside angle of the sound's
 facing, the outside volume past half the outside angle, between them a
@@ -378,6 +381,7 @@ static float cone_gain(const struct psp_stream *stream, const float *offset)
 	outside = 0.5f * (float)(stream->cone_outside > stream->cone_inside ? stream->cone_outside : stream->cone_inside);
 	if (angle <= inside)
 		return 1.0f;
+	fx_coned++;
 	if (angle >= outside || outside <= inside)
 		return gain_from_millibels(stream->cone_outside_millibels);
 	return gain_from_millibels((LONG)(stream->cone_outside_millibels * (angle - inside) / (outside - inside)));
@@ -563,13 +567,19 @@ static int prepare_voice(struct psp_stream *stream)
 		float doppler = doppler_ratio(stream);
 
 		if (doppler != 1.0f)
+		{
 			rate = (unsigned long)(rate * doppler + 0.5f);
+			fx_shifted++;
+		}
 		stream->step = (unsigned long)(((unsigned long long)rate << 16) / OUTPUT_RATE);
 	}
 	voice_gains(stream, &stream->target_left, &stream->target_right);
 	if (stream->target_left > stream->peak_gain)
 		stream->peak_gain = stream->target_left;
 	stream->prepared_blocks++;
+	fx_prepared++;
+	if (stream->lowpass_coefficient < GAIN_ONE)
+		fx_muffled++;
 	return 1;
 }
 
@@ -1561,6 +1571,8 @@ void psp_audio_report(void)
 		platform_log("audio: Media Engine mixed %lu of the blocks (menu: %s), waited for %lu us a block on average, %lu at most (main CPU asleep meanwhile); %lu failed; %lu over the voice list; %lu handed over by ranges (the rest by the whole cache)",
 			me_blocks, me_wanted ? "ME" : "main CPU", me_blocks ? me_wait_us / me_blocks : 0, me_wait_worst_us, me_failures,
 			me_overflows, ranges_blocks);
+	platform_log("audio: of %lu voice blocks, muffled %lu, pitch moved by Doppler %lu, quieter outside a cone %lu%s",
+		fx_prepared, fx_muffled, fx_shifted, fx_coned, audio_old > 0 ? " (audioold: all off)" : "");
 	platform_log("audio: the game waited for the mixer's lock %lu times, %lu us in all, %lu at most; voices that ran dry and were then fed more (a gap heard) %lu, %lu ms of silence in all, the longest %lu ms",
 		game_lock_waits, game_lock_wait_us, game_lock_worst_us, dry_gaps, dry_gap_frames * 1000 / OUTPUT_RATE,
 		dry_gap_worst * 1000 / OUTPUT_RATE);
