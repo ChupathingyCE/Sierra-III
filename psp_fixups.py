@@ -27907,6 +27907,218 @@ FIXES_RSO["source/render/render_objects.c#rso"] = [
 ]
 
 
+# ---------- FIXES_LFS: the level's lens-flare markers, their axes worked out
+# only when kept, and remembered by their direction bytes
+# rasterizer_lens_flare_submit_for_cluster worked out each marker's direction
+# and up (a multiply, perpendicular3d, two normalize3d, two compressions with
+# six floor()s, which are double) every frame for every marker of every
+# drawn cluster, before rasterizer_lens_flare_submit's tests dropped most of
+# them (a10 from its first doors: 2,590 markers a frame, at most 1,024 kept).
+# Neither the tests nor anything else before the copy reads those two words,
+# and they depend only on the marker's three direction bytes, so they are
+# worked out after the submit, for the kept flare only, and remembered in a
+# small table keyed on the bytes. Once the frame's flares are full and the
+# overflow has been reported, the submit can keep nothing more, so the
+# frame's later markers skip the definition lookup and the call. Exact by
+# construction. "lfsonceoff" (keep.txt): as before; "lfscheck": every
+# remembered answer worked out again and compared, no marker skipped (each
+# one submitted and checked to have kept nothing), the BSP's distinct
+# direction triples counted once; both counted on the heartbeat's
+# "lens flare axes" line
+FIXES_LFS = {}
+FIXES_LFS["source/rasterizer/rasterizer_lights.c#lfs"] = [
+("""static long local_lens_flare_count = 0;
+""", """static long local_lens_flare_count = 0;
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_LFS): a marker's compressed direction and up by its
+three direction bytes. The answer is a function of the key alone, so an
+entry is never stale, across frames, BSPs or maps */
+#define PSP_LFS_MEMO_BITS 6
+struct psp_lfs_memo_entry
+{
+	unsigned long key; /* the three bytes and bit 24; 0 while empty */
+	unsigned long compressed_direction;
+	unsigned long compressed_up;
+};
+static struct psp_lfs_memo_entry psp_lfs_memo[1 << PSP_LFS_MEMO_BITS];
+static signed char psp_lfs_on = -1; /* -1 until keep.txt is read: the original path */
+static boolean psp_lfs_check = FALSE;
+static boolean psp_lfs_full_reported = FALSE; /* the submit's overflow error has been said */
+static struct structure_bsp *psp_lfs_counted_bsp = NULL;
+/* the heartbeat's "lens flare axes" line (psp_platform.c) */
+extern unsigned long psp_lfs_frames, psp_lfs_markers, psp_lfs_kept, psp_lfs_hits, psp_lfs_skipped, psp_lfs_wrong;
+
+static void psp_lfs_axes_worked_out(
+	struct structure_lens_flare_marker const *marker,
+	unsigned long *compressed_direction,
+	unsigned long *compressed_up)
+{
+	real_vector3d direction;
+	real_vector3d up;
+
+	set_real_vector3d(
+		&direction,
+		marker->i_direction*(1.0f/127.0f),
+		marker->j_direction*(1.0f/127.0f),
+		marker->k_direction*(1.0f/127.0f));
+
+	perpendicular3d(&direction, &up);
+	normalize3d(&direction);
+	normalize3d(&up);
+
+	*compressed_direction= compress_real_vector3d_to_int32_clamp(&direction);
+	*compressed_up= compress_real_vector3d_to_int32_clamp(&up);
+}
+
+static unsigned long psp_lfs_key(
+	struct structure_lens_flare_marker const *marker)
+{
+	return 0x01000000UL | ((unsigned long)(byte)marker->i_direction << 16) |
+		((unsigned long)(byte)marker->j_direction << 8) | (unsigned long)(byte)marker->k_direction;
+}
+
+/* the kept flare's two words, from the table or worked out into it */
+static void psp_lfs_axes(
+	struct structure_lens_flare_marker const *marker,
+	struct rasterizer_lens_flare_submit_parameters *kept)
+{
+	unsigned long key= psp_lfs_key(marker);
+	struct psp_lfs_memo_entry *entry= &psp_lfs_memo[(key * 2654435761UL) >> (32 - PSP_LFS_MEMO_BITS)];
+
+	psp_lfs_kept++;
+	if (entry->key == key)
+	{
+		psp_lfs_hits++;
+		if (psp_lfs_check)
+		{
+			unsigned long direction, up;
+
+			psp_lfs_axes_worked_out(marker, &direction, &up);
+			if (direction != entry->compressed_direction || up != entry->compressed_up)
+				psp_lfs_wrong++;
+		}
+	}
+	else
+	{
+		psp_lfs_axes_worked_out(marker, &entry->compressed_direction, &entry->compressed_up);
+		entry->key= key;
+	}
+	kept->compressed_direction= entry->compressed_direction;
+	kept->compressed_up= entry->compressed_up;
+}
+
+/* lfscheck: how many distinct direction triples the BSP's markers have,
+said once a BSP (the table's size against them) */
+static void psp_lfs_count_directions(
+	struct structure_bsp *structure_bsp)
+{
+	unsigned long keys[1024];
+	long distinct= 0, index, seen;
+
+	for (index= 0; index < structure_bsp->lens_flare_markers.count; index++)
+	{
+		struct structure_lens_flare_marker *marker=
+			TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flare_markers, index, struct structure_lens_flare_marker);
+		unsigned long key= psp_lfs_key(marker);
+
+		for (seen= 0; seen < distinct && seen < 1024 && keys[seen] != key; seen++)
+			;
+		if (seen == distinct)
+		{
+			if (distinct < 1024)
+				keys[distinct]= key;
+			distinct++;
+		}
+	}
+	platform_psp_log("lens flare axes: the BSP's %ld level markers have %ld%s distinct direction triples (a table of %d)",
+		structure_bsp->lens_flare_markers.count, distinct > 1024 ? 1024L : distinct, distinct > 1024 ? " or more" : "",
+		1 << PSP_LFS_MEMO_BITS);
+}
+#endif
+"""),
+("""		long marker_count= MIN(
+			structure_bsp->lens_flare_markers.count,
+			SHORT_MAX+1-MAXIMUM_QUEUED_LENS_FLARES);
+""", """		long marker_count= MIN(
+			structure_bsp->lens_flare_markers.count,
+			SHORT_MAX+1-MAXIMUM_QUEUED_LENS_FLARES);
+
+#ifdef HALO_PSP
+		if (psp_lfs_on < 0 && psp_keep_loaded())
+		{
+			psp_lfs_on= (signed char)!psp_keep("lfsonceoff");
+			psp_lfs_check= psp_lfs_on && psp_keep("lfscheck");
+		}
+		if (psp_lfs_check && structure_bsp != psp_lfs_counted_bsp)
+		{
+			psp_lfs_counted_bsp= structure_bsp;
+			psp_lfs_count_directions(structure_bsp);
+		}
+#endif
+"""),
+("""			structure_lens_flare= TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flares, marker->lens_flare_index, struct structure_lens_flare);
+
+			{
+				real_vector3d direction;""",
+ """#ifdef HALO_PSP
+			if (psp_lfs_on > 0)
+			{
+				long kept_before= local_lens_flare_count;
+				boolean full= kept_before >= MAXIMUM_LENS_FLARES_PER_FRAME;
+
+				psp_lfs_markers++;
+				if (full && psp_lfs_full_reported)
+				{
+					psp_lfs_skipped++;
+					if (!psp_lfs_check)
+						continue;
+				}
+				else if (full && global_window_parameters.rasterizer_target == _rasterizer_target_render_primary)
+				{
+					/* this submit says the overflow (once a run); later ones do nothing */
+					psp_lfs_full_reported= TRUE;
+				}
+
+				structure_lens_flare= TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flares, marker->lens_flare_index, struct structure_lens_flare);
+				parameters.definition= lens_flare_definition_get(structure_lens_flare->lens_flare.index);
+				parameters.position= marker->position;
+				parameters.compressed_direction= 0;
+				parameters.compressed_up= 0;
+				parameters.compressed_light_color= NONE;
+				parameters.light_identifier= NONE;
+				parameters.compressed_light_scale= 0;
+				parameters.light_index= (short)(structure_lens_flare_marker_index>>16);
+				parameters.lens_flare_index= (short)structure_lens_flare_marker_index;
+				parameters.compressed_window_index= (byte)render.window_index;
+
+				rasterizer_lens_flare_submit(&parameters);
+				if (local_lens_flare_count != kept_before)
+				{
+					if (full)
+						psp_lfs_wrong++; /* kept past full: a skip would have lost it */
+					psp_lfs_axes(marker, &local_lens_flare_parameters[kept_before]);
+				}
+				continue;
+			}
+#endif
+			structure_lens_flare= TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flares, marker->lens_flare_index, struct structure_lens_flare);
+
+			{
+				real_vector3d direction;"""),
+("""			extern long psp_lens_flare_peak;
+
+			if (local_lens_flare_count > psp_lens_flare_peak)
+				psp_lens_flare_peak = local_lens_flare_count;
+""", """			extern long psp_lens_flare_peak;
+
+			if (local_lens_flare_count > psp_lens_flare_peak)
+				psp_lens_flare_peak = local_lens_flare_count;
+			psp_lfs_frames++; /* psp_fixups.py (FIXES_LFS) */
+"""),
+]
+
+
 # ---------- FIXES_SOUNDEDRAM: R2, the sound cache in the Media Engine's eDRAM
 # ("soundedram", psp_dsound.c; docs/me_programme.md section 5). With the word
 # off every change here does what the code did before: the start-up block is
@@ -28020,7 +28232,7 @@ void sound_cache_idle(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
