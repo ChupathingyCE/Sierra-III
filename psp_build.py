@@ -196,14 +196,19 @@ PGO_EXTRA = os.environ.get("PSP_PGO_EXTRA", "").replace(",", " ").split()
 # - PSP_PGO_LOOP_TRANSFORMS=1: keeps GCC's loop unswitching, splitting,
 #   versioning for strides and predictive commoning, which copy loops (more
 #   code for the 16 KB instruction cache to hold); off unless set
-# - PSP_PGO_HOT_FRACTION=N: --param hot-bb-count-fraction (GCC's 10000
-#   unless set): a smaller N calls less code hot and optimises the rest for
-#   size, which lost (more instructions, more misses on b30)
+# - PSP_PGO_HOT_FRACTION=N: --param hot-bb-count-fraction: a block is hot
+#   when it ran at least 1/N as often as the program's busiest counter.
+#   20000 unless set (GCC's own is 10000): the threshold moves with each new
+#   profile's busiest counter, and one 4% higher left the tick's small
+#   animation and matrix helpers just under it, called rather than inlined
+#   (c10's tick +8% in the cache model, +10% on the PSP); at 20000 they
+#   stay inlined (docs/review_c10hot.md). A smaller N lost (more
+#   instructions, more misses on b30); 10000 builds GCC's own
 # - PSP_PGO_HOT_PERMILLE=N: --param hot-bb-count-ws-permille; GCC reads it
 #   only with LTO, so it changes nothing here (the sweep's control)
 # These are switches of their own because a test harness's switch value can't
 # hold an "=" (PSP_NAME=letters, digits and -_.,)
-for _sw, _flag, _default in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction=", ""),
+for _sw, _flag, _default in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction=", "20000"),
                              ("PSP_PGO_HOT_PERMILLE", "--param=hot-bb-count-ws-permille=", ""),
                              ("PSP_PGO_ALIGN_FUNCTIONS", "-falign-functions=", "64"),
                              ("PSP_PGO_ALIGN_LOOPS", "-falign-loops=", "32")):
