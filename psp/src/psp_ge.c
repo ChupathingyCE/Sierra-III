@@ -469,8 +469,25 @@ start, and the largest list lately (decaying), for the next room's size */
 static PSP_MAIN_SIDE unsigned int show3_list_from = 0, show3_list_to = 0, show3_list_start = 0, show3_list_peak = 0;
 static PSP_MAIN_SIDE void *show3_buffer = NULL; /* the buffer the frame being shown drew into */
 static PSP_MAIN_SIDE unsigned long show3_rooms_shared = 0, show3_rooms_whole = 0, show3_held = 0;
-/* written by the replay (a draw skipped for want of room in a shared part) */
-static unsigned long show3_room_skips = 0;
+/* written by the replay (a draw skipped for want of room in a shared part,
+which must never happen; a part grown into the rest of the list above it, or
+by a jump to the list's start) */
+static unsigned long show3_room_skips = 0, show3_grown = 0, show3_jumped = 0;
+/* the part this frame's list is in, set as the list starts (byte addresses,
+the uncached view's bit off): its end (0 for the whole list: the limits alone
+keep it inside), and what it can grow into once the GE has ended the frame
+out (SHOW3_GROW_UP: the list's end, for a part below that frame; SHOW3_GROW_JUMP:
+the list's start up to this part's, for a part above it). The replay reads and
+moves them */
+enum { SHOW3_GROW_NONE, SHOW3_GROW_UP, SHOW3_GROW_JUMP };
+static unsigned int show3_part_end = 0, show3_part_grow = SHOW3_GROW_NONE, show3_part_base = 0, show3_part_next = 0;
+static int show3_part_jumped = 0;
+/* [0] the last finish id the GE reached (its interrupt), [1] the one the
+frame out ends with (the game thread, as the part is taken): uncached, as the
+ME waits on them */
+static volatile unsigned int show3_ge_word[16] __attribute__((aligned(64)));
+#define SHOW3_GE_WORD ((volatile unsigned int *)(0x40000000u | (unsigned int)show3_ge_word))
+static int show3_room(unsigned int needed);
 /* the finish id each shown frame's list ends with, and the last one the GE
 reached (written by the GE's interrupt) */
 static PSP_MAIN_SIDE unsigned int show3_asked = 0;
@@ -3016,12 +3033,10 @@ static int list_full(void)
 	int limit = kind_limit();
 
 	if (sceGuCheckList() < limit - DISPLAY_LIST_MARGIN)
-		return 0;
+		return !show3_room(DISPLAY_LIST_MARGIN);
 	if (!list_full_skips++)
 		platform_log("GE: the display list is full; draws skipped until the frame ends");
 	kind_frame_skips[ge_kind_now]++;
-	if (list_bytes < display_list_size)
-		show3_room_skips++;
 	if (limit != list_limit && sceGuCheckList() < list_limit - DISPLAY_LIST_MARGIN)
 		level_reserve_held++;
 	return 1;
@@ -3097,6 +3112,75 @@ only the PSP shows whether a line was missed (a GE hang or a garbled
 frame) */
 struct gu_list_view { unsigned int *start, *current; int parent_context; };
 extern struct gu_list_view *gu_list; /* pspgu's (guInternal.h: GuDisplayList) */
+
+/* geshow3: room for needed more bytes where this frame's list is. The list
+limits are the whole list's, as without geshow3, so the same draws are
+skipped for them; a list in a part beside the frame out that outgrows the
+part waits for the GE's finish of that frame (its list is then free) and
+grows, upward into the rest of the list, or by a jump to the list's start.
+sceGuCheckList goes on counting the whole frame's bytes. 0: no room even so
+(a draw skipped, counted; never expected) */
+static int show3_room(unsigned int needed)
+{
+	unsigned int view = (unsigned int)gu_list->current & 0x40000000u;
+	unsigned int at = (unsigned int)gu_list->current & ~0x40000000u, used, waited = 0, mark;
+
+	if (!show3_part_end || at + needed + 16 <= show3_part_end)
+		return 1;
+	if (show3_part_grow == SHOW3_GROW_NONE)
+	{
+		show3_room_skips++;
+		return 0;
+	}
+	/* the finish never reported counts as no room: the GE may still read it */
+	mark = replay_clock(psp_on_me());
+	while (SHOW3_GE_WORD[0] != SHOW3_GE_WORD[1])
+	{
+		if (psp_on_me())
+		{
+			inflight_serve();
+			waited = replay_clock(1) - mark > 0x4000000u; /* ~0.4 s of the ME's count */
+		}
+		else
+		{
+			sceKernelDelayThread(200);
+			waited = replay_clock(0) - mark > 400000u;
+		}
+		if (waited)
+		{
+			show3_part_grow = SHOW3_GROW_NONE;
+			show3_room_skips++;
+			return 0;
+		}
+	}
+	if (show3_part_grow == SHOW3_GROW_UP)
+	{
+		show3_grown++;
+		show3_part_end = show3_part_next;
+	}
+	else
+	{
+		/* BASE then JUMP, as sceGuGetMemory's jump over its region; the GE
+		reaches it only once a later stall address is handed on */
+		unsigned int *word = gu_list->current;
+		unsigned int base = show3_part_base;
+
+		used = (unsigned int)sceGuCheckList() + 8;
+		word[0] = (16u << 24) | ((base >> 8) & 0xF0000u);
+		word[1] = (8u << 24) | (base & 0xFFFFFFu);
+		gu_list->current = (unsigned int *)(view | base);
+		gu_list->start = (unsigned int *)((view | base) - used);
+		show3_jumped++;
+		show3_part_jumped = 1;
+		show3_part_end = show3_part_next;
+	}
+	show3_part_grow = SHOW3_GROW_NONE;
+	at = (unsigned int)gu_list->current & ~0x40000000u;
+	if (at + needed + 16 <= show3_part_end)
+		return 1;
+	show3_room_skips++;
+	return 0;
+}
 static int list_all_cached = -1, list_cached_frame = 0;
 static unsigned int list_back_from = 0;
 /* while sceGuGetMemory runs: the region it hands out, not filled yet (its
@@ -3184,10 +3268,10 @@ static void *list_take(int bytes)
 		if (!list_full_skips++)
 			platform_log("GE: the display list is full (%d more bytes wanted); draws skipped until the frame ends", bytes);
 		kind_frame_skips[ge_kind_now]++;
-		if (list_bytes < display_list_size)
-			show3_room_skips++;
 		return NULL;
 	}
+	if (!show3_room((unsigned int)bytes + 2048 + 128))
+		return NULL;
 	if (ge_kind_now == KIND_MODEL)
 		model_take_bytes += bytes;
 	if (list_cached < 0)
@@ -3293,6 +3377,7 @@ static void show3_finish_callback(int id)
 		gebusy_finish(id);
 	if (id)
 	{
+		SHOW3_GE_WORD[0] = (unsigned int)id;
 		show3_finished = (unsigned int)id;
 		sceKernelSetEventFlag(show3_flag, 1);
 	}
@@ -5046,8 +5131,17 @@ static void show3_ask(void)
 	show2_owed = 1;
 	show3_list_from = show3_list_start;
 	show3_list_to = end;
-	if (end - show3_list_start > show3_list_peak)
-		show3_list_peak = end - show3_list_start;
+	if (show3_part_jumped)
+	{
+		/* in two pieces, the list's start and the part above: the next
+		frame waits for this one's show */
+		show3_list_from = 0;
+		show3_list_to = (unsigned int)display_list_size;
+	}
+	show3_part_jumped = 0;
+	show3_part_end = 0;
+	if ((unsigned int)sceGuCheckList() > show3_list_peak)
+		show3_list_peak = (unsigned int)sceGuCheckList();
 	else
 		show3_list_peak -= show3_list_peak / 64;
 	show3_buffer = draw_buffer;
@@ -5121,8 +5215,30 @@ static void show3_list_begin(void)
 		if (show2_owed && at < show3_list_to && at + room > show3_list_from)
 			show3_reused[SHOW3_LIST]++;
 	}
-	list_bytes = (int)room;
+	/* the whole list's limits: the part's own end is show3_room's */
+	list_bytes = (int)size;
 	show3_list_start = at;
+	show3_part_jumped = 0;
+	show3_part_end = 0;
+	show3_part_grow = SHOW3_GROW_NONE;
+	if (show2_owed)
+	{
+		unsigned int list = (unsigned int)display_list & ~0x40000000u;
+
+		show3_part_end = list + at + room;
+		show3_part_base = list;
+		if (at == 0)
+		{
+			show3_part_grow = SHOW3_GROW_UP;
+			show3_part_next = list + size;
+		}
+		else
+		{
+			show3_part_grow = SHOW3_GROW_JUMP;
+			show3_part_next = list + at;
+		}
+		SHOW3_GE_WORD[1] = show3_asked & 0xFFFF;
+	}
 	sceGuStart(GU_DIRECT, (void *)((unsigned int)display_list + at));
 	list_cached_frame_start(0);
 	if (show2_owed)
@@ -10546,7 +10662,12 @@ static unsigned int vm_place(unsigned int bytes)
 			continue;
 		if (e->released && vm_frame >= e->released)
 		{
-			psp_ge_show3_reuse(SHOW3_VM, e->frame);
+			/* no lookup hands out a released copy (both redirects test
+			released first), so its last read is in the release's frame at
+			the latest, though later lookups still move e->frame */
+			unsigned int last = e->released - VM_QUARANTINE_FRAMES - 1;
+
+			psp_ge_show3_reuse(SHOW3_VM, (int)(e->frame - last) < 0 ? e->frame : last);
 			e->at = VM_NONE;
 			e->released = 0;
 			continue;
@@ -20289,7 +20410,9 @@ static void show_picture(int show3)
 					hash = (hash ^ word) * 16777619u;
 					*t = (*t ^ word) * 16777619u;
 				}
-			platform_log("framecrc %lu %ld %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
+			/* the real log, not the ME's: the forwarding thread shows the
+			frame while the simulated ME's job marks the work the ME's */
+			(platform_log)("framecrc %lu %ld %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x %08x",
 				show_frame_number, psp_game_time_peek(), hash, tile[0], tile[1], tile[2], tile[3], tile[4], tile[5], tile[6], tile[7],
 				tile[8], tile[9], tile[10], tile[11], tile[12], tile[13], tile[14], tile[15]);
 		}
@@ -20555,12 +20678,12 @@ static void frame_end_show(void)
 					used += (size_t)snprintf(text + used, used < sizeof(text) ? sizeof(text) - used : 0, "%s %s %lu of %lu",
 						kind ? "," : "", show3_kind_name[kind], show3_reused[kind], show3_checked[kind]);
 				}
-				platform_log("GE: geshow3: lists in a part of the display list %lu, in all of it %lu (the largest lately %u KB); stall addresses held for a show %lu; draws skipped for room in a part %lu (last 300 frames); finishes not reported %lu (since the start)",
-					show3_rooms_shared, show3_rooms_whole, show3_list_peak / 1024, show3_held, show3_room_skips, show3_given_up);
+				platform_log("GE: geshow3: lists in a part of the display list %lu, in all of it %lu (the largest lately %u KB); stall addresses held for a show %lu; parts grown up %lu, by a jump %lu; draws skipped for room in a part %lu (last 300 frames); finishes not reported %lu (since the start)",
+					show3_rooms_shared, show3_rooms_whole, show3_list_peak / 1024, show3_held, show3_grown, show3_jumped, show3_room_skips, show3_given_up);
 				if (show3_check)
 					platform_log("GE: geshow3check: %lu reuses of what the GE reads before its frame was shown (since the start):%s",
 						reused, text);
-				show3_rooms_shared = show3_rooms_whole = show3_held = show3_room_skips = 0;
+				show3_rooms_shared = show3_rooms_whole = show3_held = show3_room_skips = show3_grown = show3_jumped = 0;
 			}
 			show2_shows = show2_spared = show2_index_copies = show2_index_bytes = 0;
 			memset(show2_waited, 0, sizeof(show2_waited));
