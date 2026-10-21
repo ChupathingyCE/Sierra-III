@@ -61,6 +61,8 @@ long psp_game_time_peek(void);
 long psp_garbage_runs[3], psp_garbage_removed, psp_garbage_bipeds_removed;
 /* build 107: the most lens flares a frame has submitted (rasterizer_lights.c, psp_fixups.py) */
 long psp_lens_flare_peak;
+/* the level's lens flare markers (rasterizer_lights.c, psp_fixups.py FIXES_LFS) */
+unsigned long psp_lfs_frames, psp_lfs_markers, psp_lfs_kept, psp_lfs_hits, psp_lfs_skipped, psp_lfs_wrong;
 
 /* ---------- logging (psp_fixups.py's changes call this) */
 
@@ -852,6 +854,15 @@ static void object_report(SceUID file, unsigned long ticks)
 		start (rasterizer_lights.c, psp_fixups.py), against the 1,024 kept */
 		if (psp_lens_flare_peak)
 			platform_log("  lens flares: peak %ld a frame of the 1024 kept", psp_lens_flare_peak);
+		/* the markers' axes worked out only for the flares kept, from a table
+		by their direction bytes, and the markers past a full frame skipped
+		(FIXES_LFS; lfscheck counts answers that differ, 0 expected) */
+		if (psp_lfs_markers && psp_lfs_frames)
+			platform_log("  lens flare axes: %.1f level markers a frame, %.1f kept (axes asked), %.1f of those from the table, "
+				"%.1f past a full frame skipped; lfscheck: %lu differed",
+				(double)psp_lfs_markers / psp_lfs_frames, (double)psp_lfs_kept / psp_lfs_frames,
+				(double)psp_lfs_hits / psp_lfs_frames, (double)psp_lfs_skipped / psp_lfs_frames, psp_lfs_wrong);
+		psp_lfs_frames = psp_lfs_markers = psp_lfs_kept = psp_lfs_hits = psp_lfs_skipped = 0;
 	}
 	{
 		/* build 107: keep.txt's "sceneryhalf" (psp_fixups.py, objects.c):
