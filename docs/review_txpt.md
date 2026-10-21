@@ -32,14 +32,32 @@ A pre-touch load is the same `load()` that a bind or the frame's end uses: DMA f
 
 ## Cost
 
-On the main CPU, per keyed record: one `find()` (a hashed recent slot, then a binary search) and a residency check, skipped for a repeat of the last key. Reads that the ME's replay would have wanted at the frame's end now happen during the record walk instead, so the read time moves; it doesn't grow. Measured in txpt1's cache-model pair (below).
+On the main CPU, per keyed record: one `find()` (a hashed recent slot, then a binary search) and a residency check, skipped for a repeat of the last key. Reads that the replay would have wanted at the frame's end now happen during the record walk.
+
+Measured on b30's flight (the cache model, 1,800 ticks, M6 #2's words with and without the word) [E]:
+
+- The drawing phase grows 7.8% in model cycles (fetches + 72 per data miss + 64 per instruction miss): about 2.2 ms a frame at 333 MHz. The tick is unchanged (-0.2%) and the frame's end a little smaller (-0.5%). The metrics line agrees: draw 36.4 to 37.3 ms a frame.
+- By function: `psp_tex_pretouch` itself, `find()` (about 600 lookups a frame get past the last-key memo), and `fits()`, the loads' search for room, which now runs during the walk rather than at the frame's end. The rest is instruction-cache knock-on in the model draw path.
+- The in-flight sync adds no wait: `geinflight` carries out all 300 frames on the ME, 103 KB a frame, on both sides.
 
 ## Proof
 
 - Compiles: campaign and `PSP_MULTIPLAYER=1`.
-- txpt1 (emulator): see the findings rows (`untextured_frames_texpretouch`, `texpretouch_cost`). Expected: untextured frames on words + texpretouch near plain's; statecrc the same as words alone (it changes when a texture loads, not what plays).
+- Untextured frames, plain | words | words + `texpretouch` (emulator, the textures: line at each run's end) [E]:
+
+  | Stretch | plain | words | + texpretouch |
+  |---|---|---|---|
+  | a10 route, 9,000 ticks | 16 (run 10) | 111 (12) | 17 (10) |
+  | c20 hands off, 9,000 ticks | 18 (12)* | 35 (12) | 18 (11) |
+  | b30 route, 6,300 ticks | 24 (12) | 192 (14) | 82 (29) |
+
+  *c20's plain figure is from an earlier batch on the same build line.
+- a10 and c20 are back to plain's. b30 matches plain for its first 600 frames (19 and 21, the same as plain). After that, loads start waiting for room: 84, then 150, against 0 on the other two sides. 60 more frames go untextured, one run of them 29 frames long.
+- Why b30 runs out of room [D/U]: every pre-touched texture is marked as this frame's, and a mark protects it from eviction. On b30 the marked set grows to 2,559 KB of the caches' 2,632 KB (plain 2,444, words 2,410), and loads go from 412 to 552 (evictions 236 to 368). Some keys are marked for draws the replay never binds: a glow map drawn flat, a detail map skipped at distance, a level run culled after its record. Their marks hold room that real binds then can't get.
+- Play: on a10 and c20, the play hash and both random seeds match words alone at every tick. The parts that differ are object looping sounds first, then objects, which is the known sound-timing sensitivity. On b30, play splits at tick 1459, after looping sounds move at 690. It splits the same way between plain and words (tick 1165), so this is the same sensitivity, not a change in what plays [U].
 
 ## Risk
 
 - Hot code: the record writers of every textured draw. With the word off it costs one load and one branch per keyed record.
 - The texture-cache residency is touched from the record walk, in the middle of the engine's render walk, only on the main CPU and never while a replay is out.
+- Default: off. It isn't ready to go on by default. The words with it are back to plain's look on a10 and c20, but b30 is only part-way there (82 untextured frames against plain's 24), and it costs about 2.2 ms a frame of drawing [E]. Two things would fix it: mark only the keys the replay will bind, or leave a load to the replay once the marked set nears the caches' size; and memoise `find()` per record kind.
