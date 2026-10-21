@@ -70,6 +70,9 @@ Options:
     --compare-palettes          make each palette both ways, the bake's own
                                 and the fast one, and log their times and
                                 errors (the fast palettes' proof)
+    --no-clut4-exact            leave at 8 bits the textures of 16 colours or
+                                fewer that 4 bits would draw exactly the same
+                                (texpack.py). Alias --no-exact-clut
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
@@ -152,9 +155,10 @@ def run(command, log_path, cwd=None, env=None):
         raise RuntimeError('%s failed (%d); the end of %s:\n%s' % (os.path.basename(command[0]), r.returncode, log_path, tail))
 
 
-# the lines --profile and --compare-palettes add to a map's log, into the
-# bake's (texture classes, sizes and pixel hashes only, no names)
-MEASURES = ('texprofile', 'palcompare')
+# the lines --profile and --compare-palettes add to a map's log, and each
+# pack's exact-CLUT4 count, into the bake's (texture classes, sizes and pixel
+# hashes only, no names)
+MEASURES = ('texprofile', 'palcompare', 'clut4 exact')
 
 
 def echo_from(name, log_path, start, markers):
@@ -574,6 +578,9 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
+    # --no-exact-clut: the same, for option checks that take letters only
+    ap.add_argument('--no-clut4-exact', '--no-exact-clut', dest='no_clut4_exact', action='store_true',
+                    help='leave at 8 bits the textures of 16 colours or fewer that 4 bits would draw the same')
     ap.add_argument('--jobs', type=int, default=0,
                     help='maps baked at once (default: as many as the CPUs, at most 4, fewer when under 8 GB of '
                          'memory is free; 1 bakes them one after another). The maps come out the same whatever it is')
@@ -589,6 +596,8 @@ def main():
         TEXPACK_OPTIONS.append('--tints-from-means')
     if a.fast_palettes:
         TEXPACK_OPTIONS.append('--fast-palettes')
+    if a.no_clut4_exact:
+        TEXPACK_OPTIONS.append('--no-clut4-exact')
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or \
         CAMPAIGN + (MULTIPLAYER if a.multiplayer else []) + ['ui']
     unknown = [m for m in wanted if m not in ALL]

@@ -92,6 +92,12 @@ Four maps (a10, b30, c20, ui), every pack, 6,763 palettes [E]:
 - **What it would save:** with the cache, the palettes left are 1,246 CPU-seconds of the 9-minute bake (half of them lightmaps). At x1.6 that is ~470 CPU-seconds, about 2 minutes off 9 [U].
 - **Recommendation:** leave it off. The exact changes above took the bake from 101 to 9 minutes; this would take ~2 more, and its 16-colour outliers would need side-by-sides on the PSP first.
 
+## 16 colours where they are exact (clut4exact)
+
+Textures whose 8-bit texels use 16 palette words or fewer, over every level, are written at 4 bits: the same texels from half the bytes, which the GE samples faster (`texpack.py`, `clut4_exact()`; `docs/review_clut4exact.md`, the census in `design_clut4w.md`). Each is read back from both packings in the bake and kept at 8 bits unless every level and the runtime's average colour match; each pack's log says how many were switched and that 0 differ. Pack flag 2 marks them, so `psp_tex_average` samples them as before. 28-65 textures a pack, 42-334 KB [E, bake b140x]. `--no-clut4-exact` (or `--no-exact-clut`) leaves them at 8 bits.
+
+**Re-bake needed:** for the saving only. An older bake still loads and draws as before; an older EBOOT draws the new packs the same, but its object lighting takes a very slightly different average from the switched level maps.
+
 ## What a player needs to do
 
 Bake again with build 139's bundle: the palettes and decal cuts change.
