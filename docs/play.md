@@ -23,7 +23,7 @@ These steps are for **release b139**, the first public release. It is the campai
    - Linux (x86-64) with glibc 2.28 or later: any distribution from 2018 on.
 
    The bake uses the computer's own **Python** if it is 3.9 to 3.14; if there is none, it asks to download a portable one into its own folder. It needs the internet the first time.
-6. **About 8 GB free on the PC** while the bake runs. The result is about 2.9 GB; the rest is the bake's working files, which it deletes as it goes. <!-- TODO(master): the 8 GB is an estimate (the disc's maps, up to four maps' working files, the result); measure the peak on b139's full bake -->
+6. **About 8 GB free on the PC** while the bake runs. The result is about 2.2 GB (the campaign and the menus; 2.9 GB with the multiplayer maps); the rest is the bake's working files, which it deletes as it goes. <!-- TODO(master): the 8 GB is still an estimate (the disc's maps, up to four maps' working files, the result): no bake has measured its peak yet. The results are measured: b139c's campaign bake 2.21 GB, b139e's 24 maps 2.88 GB -->
 7. **A USB cable** for the PSP, or a card reader for the Memory Stick.
 
 **Finding `$STICK`.** On the PSP, open **Settings → USB Connection** and plug the cable in. Most Linux desktops mount the stick by themselves. Then:
@@ -94,7 +94,7 @@ The bake turns your disc's maps into the files the PSP reads: each map rebuilt f
    | `[3/4] Baking the maps` | the long part, several maps at once, with the time left. Leave the window open |
    | `[4/4] Putting it together` | the game, its menu sound and the maps into `COPY-TO-MEMORY-STICK` |
 
-   It bakes the ten campaign levels and the menus (`ui`). **How long:** about 10 minutes on an 8-core PC, longer on fewer cores. <!-- TODO(master): confirm from b139's bake --> **Disk:** it says how much it needs before it starts, and stops if the drive hasn't that much free (step 1).
+   It bakes the ten campaign levels and the menus (`ui`). **How long:** about 10 minutes on an 8-core PC, longer on fewer cores. **Disk:** it says how much it needs before it starts, and stops if the drive hasn't that much free (step 1).
 
 **Check:** the window ends with
 
