@@ -949,17 +949,81 @@ blends between ticks the PSP can't render more often than anyway: all are
 off unless ms0:/halo/keep.txt names them (shadows transparent particles
 decals hud textures interpolation), to measure what each costs */
 
-/* build 116: 512 (256 before): b116's "every restoration off" preset with
-the menu's own words came within a few characters of 253, past which
-keep.txt's last words were silently lost */
-static char keep_words[512] = "";
+/* keep.txt's text, read whole up to KEEP_FILE_BYTES (the launch menu writes
+no more): a preset with the menu's own words needs ~250, and words past the
+limit are lost silently. KEEP_DEFAULTS_ROOM more holds the campaign's
+default words (keep_defaults_add), however full the file is */
+#define KEEP_FILE_BYTES 509
+#define KEEP_DEFAULTS_ROOM 96
+static char keep_words[KEEP_FILE_BYTES + 3 + KEEP_DEFAULTS_ROOM] = "";
 /* build 106: bumped whenever keep_words changes, so psp_keep's remembered
 answers are asked again */
 static int keep_generation = 1;
 static SceUID keep_cache_lock = -1; /* made by keep_load, at start-up */
 
 static int keep_search(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 extern int psp_timers_off;
+
+#ifndef PSP_MULTIPLAYER
+/* The campaign's default words: M6 #2, frames in flight with the GE's calls
+carried out on the Media Engine (docs/review_m6default.md), on as if keep.txt
+named them, so every psp_keep() asks as before and the features' own code
+is untouched. Each has an off word; "m6off" turns all of them off. They play
+tick for tick as without them; the PSP-1000 draws b30 faster with them.
+texpretouch only with gemeon: it reads in what the ME's replay binds.
+Left out whole with the instruments that measure or split the frame as they
+did before (mebench, gemeoverlap, geserial): those words mean what they did.
+The multiplayer build has none of them: none was played against a server */
+static const struct
+{
+	const char *word, *off;
+} keep_defaults[] = {
+	{ "gedefer", "gedeferoff" },
+	{ "geinflight", "geinflightoff" },
+	{ "gemeon", "gemeonoff" },
+	{ "mevram", "mevramoff" },
+	{ "texpretouch", "notexpretouch" },
+	{ "mepoll", "mepolloff" },
+};
+static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
+
+static void keep_default_add(const char *word)
+{
+	size_t used = strlen(keep_words), length = strlen(word);
+
+	if (keep_search(word) || used + length + 2 > sizeof(keep_words))
+		return;
+	/* keep_words ends in a space: the word, then the space a whole-word
+	search needs after it */
+	memcpy(keep_words + used, word, length);
+	keep_words[used + length] = ' ';
+	keep_words[used + length + 1] = '\0';
+	strcat(keep_defaults_added, " ");
+	strcat(keep_defaults_added, word);
+}
+
+static void keep_defaults_add(void)
+{
+	int k;
+
+	keep_defaults_added[0] = '\0';
+	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
+		return;
+	for (k = 0; k < (int)(sizeof(keep_defaults) / sizeof(keep_defaults[0])); k++)
+	{
+		if (keep_search(keep_defaults[k].off))
+			continue;
+		if (!strcmp(keep_defaults[k].word, "texpretouch") && !keep_search("gemeon"))
+			continue;
+		keep_default_add(keep_defaults[k].word);
+	}
+	/* b30's busiest frames fill the 128 KB buffer, and the ME then waits
+	for its parts (design_inflightkb.md); a size given in keep.txt wins */
+	if (keep_search("geinflight") && psp_keep_number("inflightkb", -1) < 0)
+		keep_default_add("inflightkb224");
+}
+#endif
 
 static void keep_load(void)
 {
@@ -968,7 +1032,7 @@ static void keep_load(void)
 
 	if (file >= 0)
 	{
-		length = sceIoRead(file, keep_words + 1, sizeof(keep_words) - 3);
+		length = sceIoRead(file, keep_words + 1, KEEP_FILE_BYTES);
 		sceIoClose(file);
 	}
 	if (length < 0)
@@ -979,6 +1043,9 @@ static void keep_load(void)
 	for (file = 0; keep_words[file]; file++)
 		if (keep_words[file] == '\n' || keep_words[file] == '\r' || keep_words[file] == '\t' || keep_words[file] == ',')
 			keep_words[file] = ' ';
+#ifndef PSP_MULTIPLAYER
+	keep_defaults_add();
+#endif
 	keep_generation++;
 	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
 	the measuring off, notimers and nooverlay in one word */
@@ -987,7 +1054,7 @@ static void keep_load(void)
 	if (keep_cache_lock < 0)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
-		length ? keep_words : " nothing ");
+		strlen(keep_words) > 2 ? keep_words : " nothing ");
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
@@ -1034,6 +1101,10 @@ static void keep_load(void)
 	platform_log("keep words, shelved (docs/shelf.md): nwbatch and its kin built in only with PSP_SHELF=1; still built but shelved, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash (the b123 ME hygiene), mewake, mewarmtest, mefinishslow");
 	platform_log("keep words, the heap at each level change (opt-in): heapmap (its gaps and blocks of 16 KB or more, with what asked for each); recon builds only: poolpeaks (each game-state array's peak against its maximum)");
 	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
+#ifndef PSP_MULTIPLAYER
+	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of them), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none with mebench gemeoverlap geserial",
+		keep_defaults_added[0] ? keep_defaults_added : " none");
+#endif
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
