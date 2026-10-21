@@ -133,6 +133,24 @@ struct psp_stream
 	/* the game's sound class of what the stream plays (sound_manager.c's
 	channel_queue_sound names it), so a dry gap can say what fell silent */
 	long sound_class;
+	/* muffling: the I3DL2 source's high-frequency loss (obstruction,
+	occlusion, the direct path's own) as a one-pole low-pass, so a sound
+	behind a wall is duller as well as quieter, as on the Xbox. The main CPU
+	sets the coefficient (Q14, GAIN_ONE: no filter); the mixer keeps the
+	filter's state, on either CPU. "audioold": no filter */
+	LONG hf_millibels;
+	LONG lowpass_millibels;
+	int lowpass_coefficient;
+	int lowpass_left, lowpass_right;
+	/* Doppler and cones (DirectSound's, which the game sets and the mixer
+	ignored before): the velocity is the game's, relative to the listener
+	(sound_manager.c's update_channels); the cone's angles in degrees, its
+	outside volume in millibels; the step and gains follow them. "audioold":
+	neither */
+	float velocity[3];
+	float cone_forward[3];
+	DWORD cone_inside, cone_outside;
+	LONG cone_outside_millibels;
 
 	/* last, so a hand-over by ranges covers the fields above in a few whole
 	lines and only the queued packets' entries of this (psp_dsound_me_lines) */
@@ -336,6 +354,55 @@ static float dot3(const float *a, const float *b)
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 }
 
+static int audio_old = -1; /* "audioold": muffling, Doppler and cones off */
+
+/* DirectSound's cone: full inside half the inside angle of the sound's
+facing, the outside volume past half the outside angle, between them a
+straight line in millibels. offset: listener to sound */
+static float cone_gain(const struct psp_stream *stream, const float *offset)
+{
+	float length, cosine, angle, inside, outside;
+
+	if (audio_old || stream->cone_inside >= 360 || stream->cone_outside_millibels >= 0)
+		return 1.0f;
+	length = sqrtf(dot3(offset, offset));
+	if (length < 1.0e-4f)
+		return 1.0f;
+	cosine = -dot3(offset, stream->cone_forward) / length;
+	angle = acosf(cosine < -1.0f ? -1.0f : cosine > 1.0f ? 1.0f : cosine) * (180.0f / 3.14159265f);
+	inside = 0.5f * (float)stream->cone_inside;
+	outside = 0.5f * (float)(stream->cone_outside > stream->cone_inside ? stream->cone_outside : stream->cone_inside);
+	if (angle <= inside)
+		return 1.0f;
+	if (angle >= outside || outside <= inside)
+		return gain_from_millibels(stream->cone_outside_millibels);
+	return gain_from_millibels((LONG)(stream->cone_outside_millibels * (angle - inside) / (outside - inside)));
+}
+
+/* DirectSound's Doppler shift (factor 1) from the velocity along the line
+to the listener, held to an octave either way; 1 for a sound that isn't 3D */
+static float doppler_ratio(const struct psp_stream *stream)
+{
+	float offset[3], length, closing;
+	int axis;
+
+	if (audio_old || !stream->has_3d || stream->mode == DS3DMODE_DISABLE)
+		return 1.0f;
+	for (axis = 0; axis < 3; axis++)
+		offset[axis] = stream->mode == DS3DMODE_HEADRELATIVE ? stream->position[axis] :
+			stream->position[axis] - listener.position[axis];
+	length = sqrtf(dot3(offset, offset));
+	if (length < 1.0e-4f)
+		return 1.0f;
+	/* metres a second away from the listener */
+	closing = dot3(stream->velocity, offset) / length * listener.distance_factor;
+	if (closing < -171.5f)
+		closing = -171.5f;
+	if (closing > 343.0f)
+		closing = 343.0f;
+	return 343.0f / (343.0f + closing);
+}
+
 static void spatialize(const struct psp_stream *stream, float *left, float *right)
 {
 	float offset[3], right_axis[3], distance, attenuation, pan, side, ahead;
@@ -385,8 +452,9 @@ static void spatialize(const struct psp_stream *stream, float *left, float *righ
 		*left = cosf(angle);
 		*right = sinf(angle);
 	}
-	*left *= attenuation * stream->i3dl2_gain;
-	*right *= attenuation * stream->i3dl2_gain;
+	attenuation *= stream->i3dl2_gain * cone_gain(stream, offset);
+	*left *= attenuation;
+	*right *= attenuation;
 }
 
 static int gain_to_fixed(float gain)
@@ -439,15 +507,31 @@ static struct voice_packet *current_packet(struct psp_stream *stream)
 	}
 }
 
+/* the one-pole low-pass y += a (x - y) whose gain at I3DL2's reference
+frequency (5 kHz) is the source's high-frequency loss; Q14 (GAIN_ONE: none) */
+static int lowpass_coefficient(LONG millibels)
+{
+	float gain, c, g2, p, b;
+
+	if (millibels > -30)
+		return GAIN_ONE;
+	gain = gain_from_millibels(millibels);
+	if (gain < 0.05f)
+		gain = 0.05f;
+	g2 = gain * gain;
+	c = cosf(2.0f * 3.14159265f * 5000.0f / OUTPUT_RATE);
+	p = 1.0f - g2 * c;
+	/* b = 1 - a, the smaller root of (1 - g2) b^2 - 2 p b + (1 - g2) = 0 */
+	b = (p - sqrtf(p * p - (1.0f - g2) * (1.0f - g2))) / (1.0f - g2);
+	return (int)((1.0f - b) * GAIN_ONE);
+}
+
 /* build 86: a voice's step and gains for the next block, on the main CPU
 (floats and its maths library); 0 when it won't play (paused, nothing queued) */
 static int prepare_voice(struct psp_stream *stream)
 {
 	if (stream->paused || !stream->packet_count || !stream->sample_rate)
 		return 0;
-	stream->step = (unsigned long)(((unsigned long long)(stream->frequency ? stream->frequency : stream->sample_rate) << 16) /
-		OUTPUT_RATE);
-	voice_gains(stream, &stream->target_left, &stream->target_right);
 	{
 		extern int psp_keep(const char *name);
 		static int overrun = -1;
@@ -458,10 +542,27 @@ static int prepare_voice(struct psp_stream *stream)
 		{
 			overrun = psp_keep("silentoverrun") != 0;
 			adpcm_old = psp_keep("adpcmold") != 0;
+			audio_old = psp_keep("audioold") != 0;
 		}
 		stream->silent_overrun = overrun;
 		stream->adpcm_old = adpcm_old;
+		if (audio_old || !stream->has_3d)
+			stream->lowpass_coefficient = GAIN_ONE;
+		else if (stream->hf_millibels != stream->lowpass_millibels || !stream->lowpass_coefficient)
+		{
+			stream->lowpass_millibels = stream->hf_millibels;
+			stream->lowpass_coefficient = lowpass_coefficient(stream->hf_millibels);
+		}
 	}
+	{
+		unsigned long rate = stream->frequency ? stream->frequency : stream->sample_rate;
+		float doppler = doppler_ratio(stream);
+
+		if (doppler != 1.0f)
+			rate = (unsigned long)(rate * doppler + 0.5f);
+		stream->step = (unsigned long)(((unsigned long long)rate << 16) / OUTPUT_RATE);
+	}
+	voice_gains(stream, &stream->target_left, &stream->target_right);
 	if (stream->target_left > stream->peak_gain)
 		stream->peak_gain = stream->target_left;
 	stream->prepared_blocks++;
@@ -560,6 +661,19 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 			{
 				sample_left = l0;
 				sample_right = r0;
+			}
+			/* Q14 coefficient: a difference of up to 2^17 stays inside 32 bits */
+			if (stream->lowpass_coefficient < GAIN_ONE)
+			{
+				stream->lowpass_left += ((sample_left - stream->lowpass_left) * stream->lowpass_coefficient) >> 14;
+				stream->lowpass_right += ((sample_right - stream->lowpass_right) * stream->lowpass_coefficient) >> 14;
+				sample_left = stream->lowpass_left;
+				sample_right = stream->lowpass_right;
+			}
+			else
+			{
+				stream->lowpass_left = sample_left;
+				stream->lowpass_right = sample_right;
 			}
 			output[2 * done] += (sample_left * (left >> 8)) >> 14;
 			output[2 * done + 1] += (sample_right * (right >> 8)) >> 14;
@@ -1920,6 +2034,9 @@ static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description)
 	stream->minimum_distance = DS3D_DEFAULTMINDISTANCE;
 	stream->maximum_distance = DS3D_DEFAULTMAXDISTANCE;
 	stream->i3dl2_gain = 1.0f;
+	stream->lowpass_coefficient = GAIN_ONE;
+	stream->cone_inside = stream->cone_outside = 360;
+	stream->cone_forward[2] = 1.0f;
 	stream->decoded_block[0] = stream->decoded_block[1] = -1;
 	game_lock();
 	stream->next = streams;
@@ -2041,7 +2158,15 @@ HRESULT WINAPI IDirectSoundStream_SetI3DL2Source(LPDIRECTSOUNDSTREAM stream, LPC
 	if (direct > 0)
 		direct = 0;
 	{
-		STREAM_SETTER(record->i3dl2_gain = gain_from_millibels(direct))
+		/* the high frequencies' loss past the low ones' (the I3DL2 model's
+		high-frequency path): what the low-pass takes away */
+		LONG high = source->lDirectHF +
+			(LONG)(source->Obstruction.lHFLevel * (1.0f - source->Obstruction.flLFRatio)) +
+			(LONG)(source->Occlusion.lHFLevel * (1.0f - source->Occlusion.flLFRatio));
+
+		if (high > 0)
+			high = 0;
+		STREAM_SETTER(record->i3dl2_gain = gain_from_millibels(direct); record->hf_millibels = high)
 	}
 }
 
@@ -2050,10 +2175,29 @@ HRESULT WINAPI IDirectSoundStream_Pause(LPDIRECTSOUNDSTREAM stream, DWORD pause)
 	STREAM_SETTER(record->paused = pause == DSSTREAMPAUSE_PAUSE)
 }
 
-HRESULT WINAPI IDirectSoundStream_SetVelocity(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply) { (void)stream; (void)x; (void)y; (void)z; (void)apply; return DS_OK; }
-HRESULT WINAPI IDirectSoundStream_SetConeAngles(LPDIRECTSOUNDSTREAM stream, DWORD inside, DWORD outside, DWORD apply) { (void)stream; (void)inside; (void)outside; (void)apply; return DS_OK; }
-HRESULT WINAPI IDirectSoundStream_SetConeOrientation(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply) { (void)stream; (void)x; (void)y; (void)z; (void)apply; return DS_OK; }
-HRESULT WINAPI IDirectSoundStream_SetConeOutsideVolume(LPDIRECTSOUNDSTREAM stream, LONG volume, DWORD apply) { (void)stream; (void)volume; (void)apply; return DS_OK; }
+HRESULT WINAPI IDirectSoundStream_SetVelocity(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->velocity[0] = x; record->velocity[1] = y; record->velocity[2] = z)
+}
+
+HRESULT WINAPI IDirectSoundStream_SetConeAngles(LPDIRECTSOUNDSTREAM stream, DWORD inside, DWORD outside, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->cone_inside = inside; record->cone_outside = outside)
+}
+
+HRESULT WINAPI IDirectSoundStream_SetConeOrientation(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->cone_forward[0] = x; record->cone_forward[1] = y; record->cone_forward[2] = z)
+}
+
+HRESULT WINAPI IDirectSoundStream_SetConeOutsideVolume(LPDIRECTSOUNDSTREAM stream, LONG volume, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->cone_outside_millibels = volume)
+}
 
 /* ---------- buffers
 
