@@ -88,3 +88,8 @@ The path's own RAM [U, measured at the first build]: Tremor's code ~80 KB (off t
 2. The reader, the stubs and the silent voices with the decode on the main CPU only (the emulator proves exactness and positions).
 3. The decode in the ME's audio job, the 44.1 kHz output, the counts; the PSP run.
 4. The cache's split (the path's RAM out of the cache's block) and the effects' re-read count.
+
+## Built so far
+
+- **Bake side (step 1), not yet baked.** `bake/bundle/musicenc.c` (built by `build_tools.sh` through CMake on the bundle's static libvorbis 1.3.7 and libogg 1.3.5, shipped in `musicenc/bin`); `soundpack.py --music-stream PACK MUSICENC` (the `MusicPack` class: chains at 44.1 kHz before S9 halves them, entries at S9's chunk cuts x 2, one shared setup when every chain is stereo, the pack's key hash); `bake.py --music-stream` writes `maps/<map>.pmus` beside the map and logs the pack's counts only. `*.pmus` is ignored by git. [D] The encode is deterministic (two runs, same bytes) and the last packet's granule is the exact frame count; the pack round-trips on generated tones (no game data used).
+- **Runtime (steps 2-4):** not started.

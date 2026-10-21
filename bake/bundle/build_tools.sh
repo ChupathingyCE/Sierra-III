@@ -11,6 +11,8 @@
 #   invader/bin/        invader-build, invader-extract, invader-info (.exe on Windows)
 #   invader/definitions Invader's tag definitions (the bake's map readers use them)
 #   atracdenc/bin/      atracdenc (.exe on Windows)
+#   musicenc/bin/       musicenc (.exe on Windows): the music path's Vorbis
+#                       encoder (bundle/musicenc.c, on the libvorbis above)
 #   source/             the full source of the GPL and LGPL pieces, as built
 #   licenses/           each component's own licence texts (assemble.py lists them)
 #
@@ -68,7 +70,7 @@ if [[ $OS == Darwin && -z ${MACARCH:-} ]]; then
   say "universal binaries into $OUT"
   rm -rf "${OUT:?}"/*
   cp -R "$WORK/out-arm64/." "$OUT/"
-  for f in invader/bin/invader-build invader/bin/invader-extract invader/bin/invader-info atracdenc/bin/atracdenc; do
+  for f in invader/bin/invader-build invader/bin/invader-extract invader/bin/invader-info atracdenc/bin/atracdenc musicenc/bin/musicenc; do
     lipo -create "$WORK/out-arm64/$f" "$WORK/out-x86_64/$f" -output "$OUT/$f"
     codesign --force -s - "$OUT/$f"
     lipo -info "$OUT/$f"
@@ -80,7 +82,7 @@ if [[ $OS == Darwin && -z ${MACARCH:-} ]]; then
   else
     say "arm64 runs; no Rosetta here to run the x86_64 half"
   fi
-  du -sh "$OUT"/invader/bin/* "$OUT"/atracdenc/bin/* "$OUT/source"
+  du -sh "$OUT"/invader/bin/* "$OUT"/atracdenc/bin/* "$OUT"/musicenc/bin/* "$OUT/source"
   exit 0
 fi
 
@@ -241,15 +243,35 @@ logged "$B/atracdenc.configure.log" cmake -S "$(native "$SRC/atracdenc")" -B "$(
   -DCMAKE_DISABLE_FIND_PACKAGE_GTest=ON -DCMAKE_EXE_LINKER_FLAGS="$RUNTIME"
 logged "$B/atracdenc.build.log" cmake --build "$(native "$B/atracdenc")" -j "$JOBS" --target atracdenc
 
+# --- musicenc, on the static libvorbis and libogg ---------------------------
+# built through CMake so it takes each platform's toolchain as the rest do
+say "musicenc"
+mkdir -p "$B/musicenc-src"
+cp "$HERE/musicenc.c" "$B/musicenc-src/"
+cat > "$B/musicenc-src/CMakeLists.txt" <<'CMAKE'
+cmake_minimum_required(VERSION 3.15)
+project(musicenc C)
+add_executable(musicenc musicenc.c)
+target_include_directories(musicenc PRIVATE ${DEPS}/include)
+target_link_libraries(musicenc ${DEPS}/lib/libvorbisenc.a ${DEPS}/lib/libvorbis.a ${DEPS}/lib/libogg.a)
+if(NOT WIN32)
+  target_link_libraries(musicenc m)
+endif()
+CMAKE
+logged "$B/musicenc.configure.log" cmake -S "$(native "$B/musicenc-src")" -B "$(native "$B/musicenc")" "${COMMON[@]}" \
+  -DDEPS="$D" -DCMAKE_EXE_LINKER_FLAGS="$RUNTIME"
+logged "$B/musicenc.build.log" cmake --build "$(native "$B/musicenc")" -j "$JOBS" --target musicenc
+
 # --- out ------------------------------------------------------------------
 say "into $OUT"
-rm -rf "$OUT/invader" "$OUT/atracdenc" "$OUT/source" "$OUT/licenses"
-mkdir -p "$OUT/invader/bin" "$OUT/invader/definitions" "$OUT/atracdenc/bin" "$OUT/source" "$OUT/licenses"
+rm -rf "$OUT/invader" "$OUT/atracdenc" "$OUT/musicenc" "$OUT/source" "$OUT/licenses"
+mkdir -p "$OUT/invader/bin" "$OUT/invader/definitions" "$OUT/atracdenc/bin" "$OUT/musicenc/bin" "$OUT/source" "$OUT/licenses"
 for tool in invader-build invader-extract invader-info; do
   cp "$(find "$B/invader" -maxdepth 2 -type f -name "$tool$EXE" | head -1)" "$OUT/invader/bin/"
 done
 cp "$(find "$B/atracdenc" -maxdepth 3 -type f -name "atracdenc$EXE" | head -1)" "$OUT/atracdenc/bin/"
-for f in "$OUT"/invader/bin/* "$OUT"/atracdenc/bin/*; do
+cp "$(find "$B/musicenc" -maxdepth 3 -type f -name "musicenc$EXE" | head -1)" "$OUT/musicenc/bin/"
+for f in "$OUT"/invader/bin/* "$OUT"/atracdenc/bin/* "$OUT"/musicenc/bin/*; do
   case $TARGET in
     macos) strip -x "$f"; codesign --force -s - "$f" ;;     # stripping undoes the linker's ad-hoc signature
     windows) "${HOST:+$HOST-}strip" "$f" ;;
