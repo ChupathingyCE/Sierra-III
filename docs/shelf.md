@@ -25,6 +25,14 @@ Off by default and outside the per-object path, so they cost nothing measurable 
 
 The GE lists on the ME (`gemeoverlap`, lever L1) are the renderer session's to shelve or keep.
 
+## Kept on a branch, never merged
+
+Exact, but under the lever gate (a micro-lever must be >= ~1% of the binding lane): left on its branch, out of every build.
+
+| Experiment | Branch, keep words | Why shelved |
+|---|---|---|
+| The perception refresh skips objects that aren't bipeds, vehicles or projectiles (PRS; after halo-ce-vita's perception skip, BirchWoodGod) | `prs`; `percall` (off), `prscheck` (check) | Play and both seeds exact on b30, c20 and a30, 0 differences in 1.2 million objects passed over [E]. But it takes only 0.13 ms off b30's 40.8 ms tick in the cache model (~0.3%; half the count's 0.27), 0.03 on c20 and nothing on a30 [E], in hot code |
+
 ## Taking one off the shelf
 
 1. Build with `PSP_SHELF=1` (or move it back to the plain keep words).
