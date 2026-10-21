@@ -28,9 +28,16 @@ Moves (compaction, copies following the origin) and glyph changes wait for the s
 
 **Compiles:** campaign PGO of e4abae0 (success; `pgo_mismatch.txt` lists the changed functions, so a strict link needs a new profile); `PSP_MULTIPLAYER=1` and `PSP_METRICS=0`: pending.
 
-**Emulator [E]** (EBOOT e4abae0; readswait and nomouth on every run; d40, b40, a10, b30): pending.
+**Emulator [E]** (EBOOT e4abae0; readswait and nomouth on every run; d40, b40, a10, b30, 6,000 ticks each; a second plain on d40 and a10): **not ready for the PSP.**
+- Play and both random seeds the same at every tick on all four maps; plain against plain again the same whole state.
+- No finish went unreported (0 on every map). No stall address was ever held for a show (0): the emulator's GE ends each list before the next stall, so the gate's hold path is untested here.
+- `geshow3check` is **not 0**: VRAM copies d40 1607 of 1655, a10 1616 of 1844, b30 102 of 538, b40 1 of 129; textures, bind blocks, geometry, level copies and list room 0 everywhere. [D] these look like the check's own error: a copy's stamp (`e->frame`) moves at every lookup, in `vm_redirect` before its released test and in `vm_me_fold` for any tallied entry, so a released copy that is still looked up (and drawn from the original vertices) is stamped with the current frame. No draw reads a copy after its release, and `vm_place` gives the room back only `VM_QUARANTINE_FRAMES + 1` frames after it. The fix to the check: stamp the reclaim with the release frame (`e->released - VM_QUARANTINE_FRAMES - 1`), or move `e->frame` only when the copy's address is returned. A rerun must then show 0.
+- **Draws skipped for room** (must be 0): b30 123 (63 in the first 300 frames, 58 in the next 300, 2 later), a10 3. The part is sized from the recent peak, which starts low after loading, and a list that outgrows its part skips draws to the frame's end rather than waiting for the last show. a10 also skips more with the whole list full than plain does (plain 7,982 in all, geshow3 8,699; frames 1,500 to 2,400, the same stretch where its pictures differ).
+- Pictures (frames hashed on the ME's end of the next frame lose their `framecrc` line to the ME's log, so only part of each run is compared: d40 376 of 2,991, b40 2,459, a10 2,365, b30 2,423): d40 2 differ (plain's own spread 3), b40 3 (game time 300-306), a10 115 against a spread of 1 (the same clusters as geshow2's index copy: 1214-1298, 3182-3342, 3750-4226), b30 89 (66-122 with the room skips, and scattered to 2,572; no second plain on b30). Nothing seen beyond geshow2's, but the room skips are a picture difference of geshow3's own.
+- `showlat` (window start to swap, mean over the run) plain / geshow3: d40 67.6 / 71.8 ms, b40 74.4 / 78.7, a10 86.0 / 93.2, b30 125.2 / 139.5; the game thread's wait for the GE at the frame's end 4.5 / 2.7, 2.8 / 1.0, 6.4 / 4.8, 18.5 / 16.6 ms. The emulator's ME is simulated: neither is a PSP figure.
+- Before the PSP: the check's stamp, the room's sizing (no skips), and the `framecrc` line logged from the main CPU.
 
-**PSP-1000 [M]:** pairs specified for recon (d40, a10; `keepsets "- | geshow3"`, repeat 2, `showlat`): pending.
+**PSP-1000 [M]:** pairs (d40, a10; `keepsets "- | geshow3"`, repeat 2, `showlat`) wait on the emulator points above.
 
 ## Costs and risks
 
