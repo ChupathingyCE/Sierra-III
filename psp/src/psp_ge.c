@@ -2226,7 +2226,10 @@ static void ge_kind(int kind)
 	unsigned int now;
 
 	gebusy_kind_cut(kind); /* build 115 */
-	if (__builtin_expect(blip_depth_live, 0) && kind != KIND_HUD && kind != KIND_SCREEN)
+	/* (the see-through flush is counted where it has something to draw, and
+	the frame's end marks its kind as OTHER without drawing) */
+	if (__builtin_expect(blip_depth_live, 0) && kind != KIND_HUD && kind != KIND_SCREEN && kind != KIND_OTHER &&
+		kind != KIND_SEETHROUGH_FLUSH)
 	{
 		blip_depth_world_after++;
 		blip_depth_after_kind[kind]++;
@@ -14830,6 +14833,11 @@ static void transparent_flush_body(void)
 
 	if (!transparent_count)
 		return;
+	if (blip_depth_live)
+	{
+		blip_depth_world_after++;
+		blip_depth_after_kind[KIND_SEETHROUGH_FLUSH]++;
+	}
 	if (list_limit < list_bytes - HUD_RESERVE)
 		list_limit = list_bytes - HUD_RESERVE;
 	if (overlays_off < 0)
