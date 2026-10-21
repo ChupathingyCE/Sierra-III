@@ -3136,7 +3136,7 @@ static void gebusy_me_tail(void)
 	gebusy_cut = 0;
 }
 
-/* the GE's interrupts (pspgu's callbacks: interrupt context, so only the
+/* the GE's interrupts (its callbacks: interrupt context, so only the
 clock and a few sums) */
 static void gebusy_signal(int id)
 {
@@ -3161,6 +3161,36 @@ static void gebusy_finish(int id)
 	gebusy_finishes++;
 }
 
+/* gebusy2's own GE callbacks, given to every list in place of pspgu's.
+pspgu's signal callback notes each signal in its settings (a history and its
+count), and those words share a cache line with pspgu's list context, whose
+write position the Media Engine moves as it builds the frame. A SIGNAL from
+the ME's chunk interrupts the main CPU while the ME works, so the main CPU's
+cache took that line, with the position as RAM held it then, and marked it
+dirty. Writing the main CPU's cache back after the ME's frame then put that
+old position back over the ME's, and the frame's finish went to the wrong
+place in the list. The GE never reached it, and the game waited for the GE
+for ever. These touch only the main CPU's own words (PSP_MAIN_SIDE) */
+static PSP_MAIN_SIDE int gebusy_cbid = -1;
+
+static void gebusy_ge_signal(int id, void *arg)
+{
+	(void)arg;
+	gebusy_signal(id & 0xFFFF);
+}
+
+static void gebusy_ge_finish(int id, void *arg)
+{
+	(void)arg;
+	gebusy_finish(id & 0xFFFF);
+}
+
+/* sceGeListEnQueue's wrapper (psp_trace.c): the callbacks a list gets */
+int psp_ge_list_callback(int cbid)
+{
+	return gebusy_cbid >= 0 ? gebusy_cbid : cbid;
+}
+
 static void gebusy_start(void)
 {
 	ge_reads_on = psp_keep("gereads") ? 1 : 0; /* build 115 */
@@ -3177,9 +3207,24 @@ static void gebusy_start(void)
 	if (!gebusy_on)
 		return;
 	if (gebusy_me_on)
+	{
+		PspGeCallbackData callbacks = { gebusy_ge_signal, NULL, gebusy_ge_finish, NULL };
+
+		gebusy_cbid = sceGeSetCallback(&callbacks);
+		if (gebusy_cbid < 0)
+		{
+			platform_log("GE: gebusy2 off: no GE callbacks of its own (%08x); gebusy alone", (unsigned int)gebusy_cbid);
+			gebusy_cbid = -1;
+			gebusy_me_on = 0;
+		}
+	}
+	if (gebusy_me_on)
 		platform_log("GE: gebusy2 on (the Media Engine's chunks end with a SIGNAL too: the GE's busy time whoever kicks the list; a gebusy2: line after each frameend: line)");
-	sceGuSetCallback(GU_CALLBACK_SIGNAL, gebusy_signal);
-	sceGuSetCallback(GU_CALLBACK_FINISH, gebusy_finish);
+	else
+	{
+		sceGuSetCallback(GU_CALLBACK_SIGNAL, gebusy_signal);
+		sceGuSetCallback(GU_CALLBACK_FINISH, gebusy_finish);
+	}
 	gebusy_window_start = sceKernelGetSystemTimeLow();
 	platform_log("GE: gebusy on (a SIGNAL every %d draws; the GE's busy time in the frameend: line)", STALL_BATCH);
 }
