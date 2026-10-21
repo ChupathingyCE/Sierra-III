@@ -73,6 +73,10 @@ Options:
     --no-clut4-exact            leave at 8 bits the textures of 16 colours or
                                 fewer that 4 bits would draw exactly the same
                                 (texpack.py). Alias --no-exact-clut
+    --clut-look                 lightmaps and HUD sheets at 16 colours where
+                                they hold CLUT8's look under the CLUT4W
+                                strict bar (lossy: for Sheepdog01's look A/B only,
+                                docs/design_clut4w.md; not ui.map)
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
@@ -158,7 +162,7 @@ def run(command, log_path, cwd=None, env=None):
 # the lines --profile and --compare-palettes add to a map's log, and each
 # pack's exact-CLUT4 count, into the bake's (texture classes, sizes and pixel
 # hashes only, no names)
-MEASURES = ('texprofile', 'palcompare', 'clut4 exact')
+MEASURES = ('texprofile', 'palcompare', 'clut4 exact', 'clut4 look')
 
 
 def echo_from(name, log_path, start, markers):
@@ -578,6 +582,11 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
+    # --clut-look: lightmaps and HUD sheets at 16 colours under the CLUT4W
+    # strict bar (lossy: Sheepdog01's look A/B only, docs/design_clut4w.md); letters
+    # only, for the lab's sierra-bake option check
+    ap.add_argument('--clut-look', action='store_true',
+                    help='lightmaps and HUD sheets at 16 colours where they hold CLUT8\'s look (texpack.py --clut4-look)')
     # --no-exact-clut: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-exact', '--no-exact-clut', dest='no_clut4_exact', action='store_true',
                     help='leave at 8 bits the textures of 16 colours or fewer that 4 bits would draw the same')
@@ -598,6 +607,8 @@ def main():
         TEXPACK_OPTIONS.append('--fast-palettes')
     if a.no_clut4_exact:
         TEXPACK_OPTIONS.append('--no-clut4-exact')
+    if a.clut_look:
+        TEXPACK_OPTIONS.append('--clut4-look')
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or \
         CAMPAIGN + (MULTIPLAYER if a.multiplayer else []) + ['ui']
     unknown = [m for m in wanted if m not in ALL]
