@@ -390,7 +390,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				short glow_source = *(short const *)(definition + 112);
 				int channel;
 
-				psp_rso_volatile = 1; /* the glow follows the time: the records aren't kept (psp_ge.c, rso) */
+				/* the glow follows the time only where its two colours differ:
+				only then are the records not kept (psp_ge.c, rso) */
+				if (lower[0] != upper[0] || lower[1] != upper[1] || lower[2] != upper[2])
+					psp_rso_volatile |= 1;
 				for (channel = 0; channel < 3; channel++)
 					glow[channel] = lower[channel] + (upper[channel] - lower[channel]) * fraction;
 				if (glow_source >= 1 && glow_source <= 4 && psp_change_colors_valid)
@@ -438,7 +441,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			psp_model_draw_us[2]++;
 			if (drawn)
 				return;
-			psp_rso_volatile = 1; /* the Xbox path: nothing the rso keeps (psp_ge.c) */
+			psp_rso_volatile |= 2; /* the Xbox path: nothing the rso keeps (psp_ge.c) */
 		}
 	}
 #endif
@@ -554,7 +557,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			unsigned int key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale,
 				&u_offset, &v_offset, &blend);
 
-			psp_rso_volatile = 1; /* a see-through part, drawn by the frame's time and order: not kept (psp_ge.c, rso) */
+			psp_rso_volatile |= 4; /* a see-through part, drawn by the frame's time and order: not kept (psp_ge.c, rso) */
 			if (sort_filth)
 				*(short *)((char *)sort_filth + 8) = NONE;
 			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)

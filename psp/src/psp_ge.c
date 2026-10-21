@@ -10627,7 +10627,7 @@ static PSP_MAIN_SIDE defer_word *rso_cap_base;
 static PSP_MAIN_SIDE const void *rso_cap_buffers[RSO_MAX_PARTS * 2];
 /* since the last log line */
 static PSP_MAIN_SIDE unsigned long rso_frames, rso_asked_count, rso_sent, rso_sent_words, rso_kept, rso_new_key,
-	rso_no_room, rso_volatile_count, rso_broken, rso_kinds, rso_moved, rso_compared, rso_differ, rso_differ_words;
+	rso_no_room, rso_volatile_count[4], rso_broken, rso_kinds, rso_moved, rso_compared, rso_differ, rso_differ_words;
 static PSP_MAIN_SIDE int rso_differ_kind = -1, rso_differ_word = -1;
 
 static unsigned int rso_slot(long object_index)
@@ -10652,16 +10652,19 @@ static void rso_log(void)
 	float frames = (float)rso_frames;
 
 	platform_log("GE: rso: a frame (%lu frames): offered %.1f, sent again %.1f (%.0f words), walked and kept %.1f; "
-		"not kept: inputs changed %.1f, reads the time or the Xbox path %.1f, other records %.1f, the buffer started over %.1f, "
+		"not kept: inputs changed %.1f, a glow that follows the time %.1f, the Xbox path %.1f, a see-through part %.1f, "
+		"too many parts %.1f, other records %.1f, the buffer started over %.1f, "
 		"no room %.1f; geometry moved %.1f; %u entries in %u of %u KB",
 		rso_frames, rso_asked_count / frames, rso_sent / frames, rso_sent_words / frames, rso_kept / frames,
-		rso_new_key / frames, rso_volatile_count / frames, rso_kinds / frames, rso_broken / frames, rso_no_room / frames,
+		rso_new_key / frames, rso_volatile_count[0] / frames, rso_volatile_count[1] / frames,
+		rso_volatile_count[2] / frames, rso_volatile_count[3] / frames, rso_kinds / frames, rso_broken / frames, rso_no_room / frames,
 		rso_moved / frames, rso_entries, (unsigned int)(rso_end * 4 / 1024), (unsigned int)(rso_pool_words * 4 / 1024));
 	if (rso_check)
 		platform_log("GE: rsocheck: %lu walks compared with the kept records, %lu differ (%lu words; the first in a record of kind %d, word %d)",
 			rso_compared, rso_differ, rso_differ_words, rso_differ_kind, rso_differ_word);
 	rso_frames = rso_asked_count = rso_sent = rso_sent_words = rso_kept = rso_new_key = rso_no_room =
-		rso_volatile_count = rso_broken = rso_kinds = rso_moved = 0;
+		rso_broken = rso_kinds = rso_moved = 0;
+	memset(rso_volatile_count, 0, sizeof(rso_volatile_count));
 }
 
 /* entries unused in the last two windows dropped, the rest moved down */
@@ -10834,7 +10837,7 @@ void psp_rso_geometry(const void *vertex_buffer, const void *triangle_buffer)
 		return;
 	if (rso_cap_parts >= RSO_MAX_PARTS)
 	{
-		psp_rso_volatile = 1;
+		psp_rso_volatile |= 8;
 		return;
 	}
 	rso_cap_buffers[2 * rso_cap_parts] = vertex_buffer;
@@ -10897,7 +10900,12 @@ void psp_rso_capture_end(void)
 	psp_rso_capturing = 0;
 	if (psp_rso_volatile)
 	{
-		rso_volatile_count++;
+		unsigned int reason;
+
+		/* the first reason only, so the counts add up to the objects not kept */
+		for (reason = 0; reason < 3 && !(psp_rso_volatile & (1 << reason)); reason++)
+			;
+		rso_volatile_count[reason]++;
 		return;
 	}
 	if (!DEFER_RECORDING() || defer_paused || defer_resets != rso_cap_resets || defer_base != rso_cap_base ||
@@ -10972,8 +10980,10 @@ void psp_rso_capture_end(void)
 	rso_kept++;
 }
 
-/* each window's start, as it is written down: the keep words asked once, and
-the stamp that ages the entries */
+/* each window's start, as it is written down: the keep words asked once.
+The stamp that ages the entries moves at each frame's end (psp_ge_frame_end),
+not here: a frame begins several windows, so a per-window stamp aged every
+entry out before the next frame could send it again */
 static void rso_window(void)
 {
 	if (rso_asked < 0)
@@ -10983,7 +10993,6 @@ static void rso_window(void)
 		rso_asked = rso_check || psp_rso_all || psp_keep("rso");
 		psp_rso_on = rso_asked;
 	}
-	rso_stamp++;
 }
 
 /* the part's detail map on the main menu: its key (0 none) and its scale on
@@ -20080,6 +20089,7 @@ void psp_ge_frame_window(char *text, int size)
 
 void psp_ge_frame_end(void)
 {
+	rso_stamp++;
 	/* geinflight: the frame waits, written down whole, for the next frame's
 	first call */
 	if (INFLIGHT_RECORDING())
