@@ -55,6 +55,7 @@ Retail maps are zlib-compressed after a 2 KB header (`tools/dez.py`). Our bake r
 ## C. How we measured (the part we'd copy first)
 
 - **Make runs repeatable, then compare whole states.** Fixed ticks a frame, fixed seeds, and a hash of the game state after every tick (`fixedticks`, `fixedseed`, `statecrc`); `tools/statecmp.py` names the first tick and object that differ. Every "exact" claim above is two such logs agreeing on several levels. G1 and G5 in `game_bugs.md` were found this way.
+- **Leave lip sync out of those runs.** A speaking unit's mouth aperture is read at the sound's play position, which follows the clock and the mixer rather than the ticks, and it moves the unit's nodes, its weapon's marker and so its shots: the original game's behaviour. So any change that only moves timing (heap layout, logging, a faster draw path) parts two runs on maps with dialogue, and the difference isn't the change's. Our test word `nomouth` makes `game_sound_set_mouth_aperture` return at once (mouths stay shut, so never for play): with it, four builds that differ only in timing play identically through 9,000 ticks on a30; without it they part at tick 5,942 [E]. halo-ce-vita gets there another way: its fixed-tick mode runs the sound manager on a frame clock. `FIXES_112` (`game_sound.c#nomouth`), `review_nomouth.md`.
 - **Every change has an off word and a check word.** The off word restores the old code at launch, so one build A/Bs itself; the check word runs both ways and logs any difference ("0 of 4.8 M differ"). halo-ce-vita's verify modes do the same (`research_vita.md` §10).
 - **A cache model in the emulator.** Our PPSSPP patch simulates the 16 KB caches on every access and charges misses to functions and data (`tools/ppsspp_local_patches.diff`, `tools/cachemap.py`). It tells you *where* time goes; only hardware tells you how long.
 - **A strict interpreter** that reports what the hardware would fault on (unaligned accesses, FPU traps, bad addresses) and the JIT forgives (`game_bugs.md` X1, X3).
@@ -70,3 +71,13 @@ Retail maps are zlib-compressed after a 2 KB header (`tools/dez.py`). Our bake r
 | Inlining datum lookups | 48 KB more code; declined | `optimization_ranking.md` |
 | Light re-link memo, render-state memo | ~0 on the PSP [M] | `review_b121_machines.md`, `levers_next_b138.md` |
 | AI or posing at half rate for far actors | Not exact; behind words for an A/B, never default (`aihalf`, `posehalf`). halo-ce-vita's distance-tiered "Adaptive" AI rate is the better-tested form (`research_vita.md` §3) | `review_b122_aihalf.md` |
+
+## E. What a wide screen costs
+
+Halo keeps 4:3's vertical view and widens the horizontal one (`set_window_camera_values` in `main.c` sets the vertical field of view from 0.75 × the 4:3 tangent), so a 16:9 screen adds the side strips [D]. All our figures are 16:9 (480×272).
+
+- **Objects:** on b30's Pelican ride the game draws 155.5 objects a frame at 16:9 against 120 at 4:3, +30% (counted in ChupathingyCE's desktop build) [E]. That is per-object work on the CPU, which a lower render resolution doesn't buy back [U].
+- **Pixels:** 848 columns against 640 is +32.5% at the same height [D].
+- **Cull with the width you draw.** Until b19 ours culled a 640×480 view while drawing a 480:272 one, so the screen's sides could show space the game had culled (`engine_performance.md` §4.3) [D].
+- **Pick model detail for the lines you really draw.** The game measures an object's size on a 480-line screen; ours scales it to 272 lines (b19) [D]. It changes which detail level shows, so it is a look choice, not an exact one.
+- **Wait by blocking, not polling.** An idle core that sleeps in a short loop to check for work wakes thousands of times a second [U]; a semaphore or event flag lets it rest. We have no power figures; `game_bugs.md` G8 is the game's own busy-wait.

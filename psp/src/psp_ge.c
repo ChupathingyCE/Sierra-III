@@ -434,6 +434,34 @@ the ME: there the test is psp_on_me(), its own stack */
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
 #define GE_DEFER(record, ...) do { if (DEFER_RECORDING() && !defer_paused && (record)) return __VA_ARGS__; } while (0)
+/* "texpretouch": a draw's texture read in as its record is written, for a
+replay that can't read it itself (the Media Engine's, or gemesim's standing
+for it): psp_tex_pretouch says why. Only while recording, so a draw carried
+out at once binds (and loads) as it always did. Not with gemeoverlap: there
+the ME binds one half while this CPU writes the other, and both would write
+the texture cache's residency words through caches of their own */
+void psp_tex_pretouch(unsigned int key, int kind, int resident_only);
+int psp_tex_has(unsigned int key);
+static PSP_MAIN_SIDE int pretouch_on = 0, pretouch_all = 0;
+static void pretouch(unsigned int key, int kind, int resident_only);
+/* the record kinds, for psp_tex_pretouch's memo and census (psp_tex.c's
+PRETOUCH_KINDS, txc_names) */
+enum { TXPT_LEVEL_BASE, TXPT_LIGHTMAP, TXPT_LEVEL_DETAIL, TXPT_MODEL_BASE, TXPT_CHANGE, TXPT_GLOW, TXPT_MODEL_DETAIL,
+	TXPT_SPRITE, TXPT_CONTRAIL, TXPT_WIDGET, TXPT_SEETHROUGH, TXPT_LEVEL_SEETHROUGH, TXPT_SCREEN, TXPT_ZOOM, TXPT_LIGHT,
+	TXPT_DECAL, TXPT_BLIP, TXPT_BLIPS_END };
+#define PRETOUCHING() (pretouch_on && !me_overlap && DEFER_RECORDING() && !defer_paused)
+#define GE_PRETOUCH(key, kind) do { if (PRETOUCHING()) pretouch(key, kind, 0); } while (0)
+/* a texture the replay binds only for some draws (a level's detail maps,
+only near the eye): marked only if it's resident already, so it costs no
+load and no room ("txptall": loaded too) */
+#define GE_PRETOUCH_IF_RESIDENT(key, kind) do { if (PRETOUCHING()) pretouch(key, kind, !pretouch_all); } while (0)
+/* a texture the replay won't bind for this record (the census, recon only,
+counts the ones it binds anyway) */
+#ifdef PSP_RECON
+#define GE_PRETOUCH_PASSED(key, kind) do { if (PRETOUCHING()) psp_tex_pretouch(key, kind, 2); } while (0)
+#else
+#define GE_PRETOUCH_PASSED(key, kind) do { } while (0)
+#endif
 /* a frame's boundaries are written down only in a game: the menus and loads
 run as with gedefer alone */
 #define INFLIGHT_RECORDING() (inflight_on && DEFER_RECORDING() && psp_game_running())
@@ -609,6 +637,11 @@ static void defer_frame_begin(void)
 				/* geinflight too: its frame is carried out after the next
 				ticks, so a query in them reads what is built, as on the ME */
 				defer_me_semantics = psp_keep("gemesim") || psp_keep("gemeon") || me_bench || inflight_on;
+				pretouch_on = defer_me_semantics && psp_keep("texpretouch");
+				pretouch_all = psp_keep("txptall");
+				if (pretouch_on)
+					platform_log("GE: texpretouch: each recorded draw's textures read in as it is written down, for the replay's binds%s",
+						pretouch_all ? " (txptall: every texture a record names)" : "");
 				replay_kinds_on = psp_keep("mekinds") != 0;
 				if (replay_kinds_on)
 					platform_log("GE: mekinds: each record kind timed as it's carried out, the main CPU's and the ME's apart (a line each 300 frames)");
@@ -714,6 +747,18 @@ static defer_word *defer_take(int kind, unsigned int words)
 	defer_used += 1 + words;
 	defer_records++;
 	return at + 1;
+}
+
+/* the frame still out (geinflight) carried out first, as the record's own
+defer_take would: the ME then isn't running while the texture cache is
+changed here, and the load counts in the frame the replay binds in */
+static void pretouch(unsigned int key, int kind, int resident_only)
+{
+	if (inflight_room_away)
+		inflight_room_park();
+	if (inflight_pending)
+		inflight_sync();
+	psp_tex_pretouch(key, kind, resident_only);
 }
 
 /* n words copied, after one saying whether the pointer was NULL: 1 + n words */
@@ -1601,6 +1646,14 @@ docs/frames_in_flight.md) */
 static PSP_MAIN_SIDE SceUID inflight_thread = -1;
 static PSP_MAIN_SIDE unsigned int inflight_forwarded_stall = 0;
 static PSP_MAIN_SIDE unsigned long inflight_forwards = 0;
+/* how long the forwarder sleeps between looks. Each wake preempts the game
+thread (25-32 us on the PSP-1000, 600-720 wakes a second at 1 ms:
+design_mepoll.md), and the GE's lane has room to take the list in larger
+steps: the frame's last stall address is passed on at the frame's wait
+(defer_wait_me) whatever the period, so a longer one never leaves the list
+short, it only lets the GE start each stretch up to a period later.
+"mepoll" makes it gefwdN ms (4 if not given); otherwise 1 ms, as before */
+static PSP_MAIN_SIDE unsigned int inflight_forward_us = 1000;
 
 /* above the game's thread: once it runs it finishes its look before the game
 thread can go on, so the game thread's last forwarding at the frame's wait
@@ -1626,7 +1679,7 @@ static int inflight_forwarder(SceSize args, void *argp)
 				__real_sceGeListUpdateStallAddr((int)INFLIGHT_STALL[1], (void *)stall);
 			}
 		}
-		sceKernelDelayThread(1000);
+		sceKernelDelayThread(inflight_forward_us);
 	}
 	return 0;
 }
@@ -1643,6 +1696,14 @@ static void inflight_hand_over(void)
 		return;
 	if (inflight_thread < 0)
 	{
+		if (psp_keep("mepoll"))
+		{
+			extern int psp_keep_number(const char *prefix, int fallback);
+			int ms = psp_keep_number("gefwd", 4);
+
+			inflight_forward_us = (unsigned int)(ms < 1 ? 1 : ms > 16 ? 16 : ms) * 1000;
+			platform_log("GE: geinflight: mepoll: the forwarding thread looks every %u ms", inflight_forward_us / 1000);
+		}
 		inflight_thread = sceKernelCreateThread("ge forward", inflight_forwarder, 0x10, 0x1000, 0, NULL);
 		if (inflight_thread < 0 || sceKernelStartThread(inflight_thread, 0, NULL) < 0)
 		{
@@ -1965,6 +2026,7 @@ static unsigned long list_full_skips = 0, hud_reserve_low = 0;
 static int list_limit = DISPLAY_LIST_BYTES - HUD_RESERVE - TRANSPARENT_RESERVE;
 static void transparent_flush(void);
 static void taa_resolve(void);
+static void blip_place(void);
 static int hud_phase = 0;
 
 /* build 116 (b113 #6): the world drawn with the GE's ordered dither, as a
@@ -2216,11 +2278,25 @@ static char kind_order[KINDS + 1], kind_peak_order[KINDS + 1];
 static int kind_order_length = 0;
 
 static void gebusy_kind_cut(int kind);
+static int blip_depth_live; /* blipdepth (the motion sensor, below) */
+static unsigned long blip_depth_world_after;
+static unsigned long blip_depth_after_kind[KINDS], blip_depth_after_tested;
+
 static void ge_kind(int kind)
 {
 	unsigned int now;
 
 	gebusy_kind_cut(kind); /* build 115 */
+	/* (the see-through flush is counted where it has something to draw, and
+	the frame's end marks its kind as OTHER without drawing) */
+	if (__builtin_expect(blip_depth_live, 0) && kind != KIND_HUD && kind != KIND_SCREEN && kind != KIND_OTHER &&
+		kind != KIND_SEETHROUGH_FLUSH)
+	{
+		blip_depth_world_after++;
+		blip_depth_after_kind[kind]++;
+		if (sceGuGetStatus(GU_DEPTH_TEST))
+			blip_depth_after_tested++;
+	}
 	now = sceGuCheckList();
 
 	if (now > kind_mark)
@@ -3549,6 +3625,7 @@ static void ge_initialize(void)
 		sceGuInit();
 	gebusy_start(); /* build 113 */
 	sceGuStart(GU_DIRECT, display_list);
+	blip_place();
 	sceGuDrawBuffer(GU_PSM_5650, (void *)0, BUFFER_WIDTH);
 	sceGuDispBuffer(SCREEN_WIDTH, SCREEN_HEIGHT, (void *)FRAME_BYTES, BUFFER_WIDTH);
 	sceGuDepthBuffer((void *)(2 * FRAME_BYTES), BUFFER_WIDTH);
@@ -4781,6 +4858,7 @@ static void window_begin_list(const float *position, const float *forward, const
 	if (vram_busy)
 		vram_busy_load();
 	hud_phase = 0;
+	blip_depth_live = 0;
 	ge_kinds_frame_begin(); /* build 103 */
 	taa_done = 0;
 	taa_frame++;
@@ -5625,6 +5703,42 @@ sides. A request takes the smallest free block that holds it (best fit),
 split when what's left is worth keeping. "noarena" (keep word): the general
 heap only, as before. */
 #define ARENA_BYTES (LEVEL_STREAM_BUDGET + 32 * 1024)
+/* "heaproom256": on a map that carves, 256 KB of the arena's room moves to
+the level carve, taken whole at the map's open as the carve's floor (the level
+carve, below), so the general heap keeps those bytes. The geometry cache pays
+for it, 256 KB less when it is over 1 MB (psp_geo.c); the RAM budget census's
+replay found those bytes free. Frames in flight (geinflight's buffer) and the
+Media Engine's VRAM copies take about 200 KB more of the heap, enough to run
+a30 out of it, so with geinflight and a geometry cache over 1 MB it is on by
+default; elsewhere the heap has room, and the move would cost the geometry
+cache's misses for nothing. "heaproomoff" turns it off, "heaproom256" on with
+any geometry cache (with a 1 MB one its bytes come from the textures). A
+384 KB size (128 KB more from the textures) cost b30 texture loads and frames
+drawn with a texture missing, so it is gone (docs/review_sv.md) */
+unsigned int psp_heaproom_bytes(void)
+{
+#ifndef PSP_MULTIPLAYER
+	int psp_keep(const char *name);
+
+	if (psp_keep("heaproomoff"))
+		return 0;
+	if (psp_keep("heaproom256") || (inflight_buffer_bytes() && (psp_keep("geo2") || psp_keep("geo15"))))
+		return 256 * 1024;
+#endif
+	return 0; /* the multiplayer build's maps keep their geometry cache in the heap and carve nothing */
+}
+/* the arena's size, settled once (0: not yet): ARENA_BYTES less the heaproom
+share. The arena is taken once and kept for every map, so it is smaller on
+every map; the maps that carve take the difference back at their open (one
+that doesn't, the main menu among them, has the smaller arena and the heap) */
+static unsigned int arena_room_bytes = 0;
+
+static unsigned int arena_size(void)
+{
+	if (!arena_room_bytes)
+		arena_room_bytes = ARENA_BYTES - psp_heaproom_bytes();
+	return arena_room_bytes;
+}
 #define ARENA_ALIGN 16
 #define ARENA_SPLIT_LEAST 64
 struct arena_block
@@ -5707,8 +5821,12 @@ frame's end; a frame-end build that failed though the rooms had the bytes */
 static int carve_allowed = 0, carve_pack_short = 0;
 static unsigned int carve_most = 0, carve_below = 0, carve_want = 0, carve_idle = 0;
 static unsigned long carve_steps = 0, carve_returns = 0;
+/* "heaproom256": the bytes the carve keeps from the map's open to its end (0:
+none), the arena's share it stands in for */
+static unsigned int carve_floor = 0;
 unsigned int psp_tex_ram_textures(void);
 static void carve_release(void);
+static int carve_grow(unsigned int deficit);
 
 /* a room that takes blocks now */
 static int room_open(const struct copy_room *room)
@@ -5799,25 +5917,25 @@ static void __attribute__((cold)) arena_start(void)
 		platform_log("GE: the copies' arena: off (noarena); copies from the general heap");
 		return;
 	}
-	ARENA_ROOM->start = memalign(ARENA_ALIGN, ARENA_BYTES);
+	ARENA_ROOM->start = memalign(ARENA_ALIGN, arena_size());
 	if (!ARENA_ROOM->start)
 	{
-		platform_log("GE: the copies' arena: no room for %u KB; copies from the general heap", ARENA_BYTES / 1024);
+		platform_log("GE: the copies' arena: no room for %u KB; copies from the general heap", arena_room_bytes / 1024);
 		return;
 	}
-	ARENA_ROOM->bytes = ARENA_BYTES;
+	ARENA_ROOM->bytes = arena_room_bytes;
 	room_reset(ARENA_ROOM);
 	arena_state = 1;
-	platform_log("GE: the copies' arena: %u KB", ARENA_BYTES / 1024);
+	platform_log("GE: the copies' arena: %u KB", arena_room_bytes / 1024);
 	{
 		extern int psp_keep_number(const char *prefix, int fallback);
 
 		arena_squeeze = psp_keep_number("streamsqueeze", 0);
 	}
 	/* held by no copy for good: compaction keeps it at the start */
-	if (arena_squeeze > 0 && (unsigned int)arena_squeeze * 1024 < ARENA_BYTES)
+	if (arena_squeeze > 0 && (unsigned int)arena_squeeze * 1024 < arena_room_bytes)
 	{
-		arena_take(ARENA_ROOM, ARENA_BYTES - (unsigned int)arena_squeeze * 1024, NULL);
+		arena_take(ARENA_ROOM, arena_room_bytes - (unsigned int)arena_squeeze * 1024, NULL);
 		platform_log("GE: streamsqueeze (test): the copies held to %d KB of the arena, none from the general heap",
 			arena_squeeze);
 	}
@@ -5878,7 +5996,7 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 
 	if (arena_state < 0)
 		arena_start();
-	if (arena_state > 0 && (size <= ARENA_BYTES || (room_open(CARVE_ROOM) && size <= CARVE_ROOM->bytes)))
+	if (arena_state > 0 && (size <= ARENA_ROOM->bytes || (room_open(CARVE_ROOM) && size <= CARVE_ROOM->bytes)))
 	{
 		while (!(pointer = rooms_take(size, owner)) && level_stream_let_go_oldest())
 			arena_let_go++;
@@ -6471,6 +6589,7 @@ void psp_ge_level_carve(int carve_from_textures)
 	carve_lost = 0;
 	carve_allowed = carve_pack_short = 0;
 	carve_given = carve_want = carve_idle = 0;
+	carve_floor = 0;
 	carve_largest = 0;
 	carve_peak = carve_pieces = carve_pieces_peak = carve_steps = carve_returns = 0;
 	if (!carve_from_textures)
@@ -6488,6 +6607,27 @@ void psp_ge_level_carve(int carve_from_textures)
 	carve_allowed = 1;
 	platform_log("GE: the level carve: up to %d KB from the texture RAM cache, below the %u KB the geometry and animation caches carved, taken %u KB at a time only when the copies have no room in the arena or the heap; the texture RAM cache has %u KB",
 		kb, carve_below / 1024, LEVEL_CARVE_STEP / 1024, psp_tex_ram_textures() / 1024);
+	/* "heaproom256": the arena's missing share taken now, kept to the map's
+	end, on top of what the carve may take as it goes (none with the arena
+	off: no room for it in the heap, and the copies go there whole) */
+	if (arena_size() < ARENA_BYTES && arena_state != 0)
+	{
+		unsigned int floor_bytes = ARENA_BYTES - arena_size();
+
+		carve_most += floor_bytes;
+		if (carve_grow(floor_bytes))
+		{
+			carve_floor = carve_given;
+			platform_log("GE: heaproom: %u KB of the copies' room in the level carve for this map, the arena keeping %u KB of the heap",
+				carve_floor / 1024, arena_room_bytes / 1024);
+		}
+		else
+		{
+			carve_most -= floor_bytes;
+			platform_log("GE: heaproom: no %u KB for the copies in the level carve on this map: the arena's %u KB and the heap",
+				floor_bytes / 1024, arena_room_bytes / 1024);
+		}
+	}
 }
 
 /* the carve given back whole to the texture cache; its copies let go */
@@ -6501,6 +6641,7 @@ static void carve_release(void)
 	CARVE_ROOM->start = NULL;
 	CARVE_ROOM->used = 0;
 	carve_given = carve_idle = 0;
+	carve_floor = 0;
 	carve_largest = 0;
 	carve_lost = 0;
 	carve_returns++;
@@ -6623,7 +6764,7 @@ static void __attribute__((cold)) carve_frame_grow(void)
 			stream_waiting[k].arena_after = ge_hot.stream_frame;
 	if (CARVE_ROOM->start && !carve_lost)
 	{
-		if (CARVE_ROOM->used)
+		if (CARVE_ROOM->used || carve_floor)
 			carve_idle = 0;
 		else if (++carve_idle >= CARVE_IDLE_FRAMES)
 		{
@@ -7680,6 +7821,7 @@ static void __attribute__((cold)) stream_room_frame_end(void)
 
 int psp_tex_bind(unsigned int key, int *has_alpha);
 int psp_tex_size(unsigned int key, int *width, int *height);
+void psp_tex_hud_note(unsigned int key); /* stripcensus */
 static unsigned long textured_draws = 0, flat_draws = 0;
 
 /* the level's draws so far, textured and flat (not baked, or still on its
@@ -8234,6 +8376,8 @@ static unsigned int detail_neutral(unsigned int key)
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v)
 {
+	GE_PRETOUCH_IF_RESIDENT(primary_key, TXPT_LEVEL_DETAIL);
+	GE_PRETOUCH_IF_RESIDENT(micro_key, TXPT_LEVEL_DETAIL);
 	GE_DEFER(defer_words(DEFER_LEVEL_DETAIL, 6, primary_key, defer_bits(primary_u), defer_bits(primary_v), micro_key,
 		defer_bits(micro_u), defer_bits(micro_v), 0, 0)); /* build 112: gedefer */
 	detail_key[0] = primary_key; detail_u[0] = primary_u; detail_v[0] = primary_v;
@@ -8881,6 +9025,8 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
+	GE_PRETOUCH(base_key, TXPT_LEVEL_BASE);
+	GE_PRETOUCH(lightmap_key, TXPT_LIGHTMAP);
 	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
 		lightmap_key, alpha_tested)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -10388,6 +10534,25 @@ void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_
 	float const *glow)
 {
 	GE_BENCH_SKIP();
+	if (PRETOUCHING())
+	{
+		/* the replay binds the multipurpose map for a change colour that
+		isn't white, or for a glow without its glow map; the glow map for a
+		glow (model_lighting's passes): a part with neither binds nothing
+		of these */
+		unsigned int glow_rgb = abgr_from_rgb(glow) & 0xFFFFFF;
+		int mapped = glow_rgb && glow_map_key && psp_tex_has(glow_map_key);
+		int wanted_change = abgr_from_rgb(change) != 0xFFFFFFFF || (glow_rgb && !mapped);
+
+		if (pretouch_all || wanted_change)
+			GE_PRETOUCH(multipurpose_key, TXPT_CHANGE);
+		else
+			GE_PRETOUCH_PASSED(multipurpose_key, TXPT_CHANGE);
+		if (pretouch_all || mapped)
+			GE_PRETOUCH(glow_map_key, TXPT_GLOW);
+		else
+			GE_PRETOUCH_PASSED(glow_map_key, TXPT_GLOW);
+	}
 	GE_DEFER(defer_model_multipurpose(multipurpose_key, glow_map_key, change, glow));
 	change_key = multipurpose_key;
 	glow_key = glow_map_key;
@@ -10403,6 +10568,7 @@ static float model_detail_u = 1.0f, model_detail_v = 1.0f;
 void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale)
 {
 	GE_BENCH_SKIP();
+	GE_PRETOUCH(detail_key, TXPT_MODEL_DETAIL);
 	GE_DEFER(defer_model_detail(detail_key, u_scale, v_scale));
 	model_detail_key = detail_key;
 	model_detail_u = u_scale;
@@ -12202,6 +12368,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	int alpha_tested)
 {
 	GE_BENCH_SKIP();
+	GE_PRETOUCH(base_key, TXPT_MODEL_BASE);
 	GE_DEFER(defer_draw_model(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key,
 		u_scale, v_scale, alpha_tested));
 	ge_kind(in_sky ? KIND_SKY : KIND_MODEL); /* build 103 */
@@ -12636,6 +12803,7 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world)
 {
+	GE_PRETOUCH(bitmap_key, TXPT_SPRITE);
 	GE_DEFER(defer_sprites(vertices, sprite_count, bitmap_key, blend, view_to_world), 1); /* build 112: gedefer */
 	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE); /* build 103 */
@@ -12776,6 +12944,7 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
 {
+	GE_PRETOUCH(bitmap_key, TXPT_CONTRAIL);
 	GE_DEFER(defer_contrail(vertices, vertex_count, bitmap_key, blend), 1);
 	GE_BENCH_SKIP(0);
 	ge_kind(KIND_SPRITE);
@@ -12812,6 +12981,7 @@ void psp_ge_widget_begin(int depth_test)
 
 void psp_ge_widget_texture(unsigned int key)
 {
+	GE_PRETOUCH(key, TXPT_WIDGET);
 	GE_DEFER(defer_words(DEFER_WIDGET_TEXTURE, 1, key, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
 	widget_key = key;
 	if (!key)
@@ -13466,6 +13636,7 @@ void psp_ge_queue_transparent(void *vertices, int vertex_count, int uncompressed
 	short blend, const float *centroid)
 {
 	GE_BENCH_SKIP();
+	GE_PRETOUCH(key, TXPT_SEETHROUGH);
 	GE_DEFER(defer_queue_transparent(vertices, vertex_count, uncompressed, indices, index_count, strip, key,
 		u_scale, v_scale, u_offset, v_offset, blend, centroid));
 	ge_kind(KIND_SEETHROUGH_QUEUE); /* build 103 */
@@ -14784,6 +14955,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	long triangle_count, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset, short blend,
 	const float *centroid)
 {
+	GE_PRETOUCH(key, TXPT_LEVEL_SEETHROUGH);
 	GE_DEFER(defer_queue_level_transparent(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale,
 		u_offset, v_offset, blend, centroid)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -14815,6 +14987,11 @@ static void transparent_flush_body(void)
 
 	if (!transparent_count)
 		return;
+	if (blip_depth_live)
+	{
+		blip_depth_world_after++;
+		blip_depth_after_kind[KIND_SEETHROUGH_FLUSH]++;
+	}
 	if (list_limit < list_bytes - HUD_RESERVE)
 		list_limit = list_bytes - HUD_RESERVE;
 	if (overlays_off < 0)
@@ -15426,6 +15603,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
 		glyph_next = -1;
 	}
+	GE_PRETOUCH(key, TXPT_SCREEN);
 	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,
 		wrapped, u_scale, v_scale)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -15462,6 +15640,7 @@ static unsigned long zoom_masks = 0, zoom_masks_missing = 0;
 
 void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 {
+	GE_PRETOUCH(key, TXPT_ZOOM);
 	GE_DEFER(defer_words(DEFER_ZOOM_MASK, 2, key, strength, 0, 0, 0, 0, 0, 0));
 	GE_BENCH_SKIP();
 	ge_kind(KIND_SCREEN);
@@ -15482,6 +15661,7 @@ void psp_ge_zoom_mask(unsigned int key, unsigned int strength)
 		zoom_masks_missing++;
 		return;
 	}
+	psp_tex_hud_note(key);
 	out = list_take(2 * sizeof(struct hud_vertex));
 	if (!out)
 		return;
@@ -15781,6 +15961,7 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 	}
 	if (!psp_tex_bind(key, &alpha))
 		return;
+	psp_tex_hud_note(key);
 	{
 		/* the game's bitmap_data: width +4, height +6, flags +14 (bit 4: linear) */
 		const unsigned char *bitmap = (const unsigned char *)key;
@@ -16074,7 +16255,8 @@ static int level_stream_let_go_oldest(void)
 /* the carve's room counts too: copies kept there cost the heap nothing */
 static void level_streams_trim(void)
 {
-	unsigned long budget = LEVEL_STREAM_BUDGET + (room_open(CARVE_ROOM) ? CARVE_ROOM->bytes : 0);
+	unsigned long budget = (ARENA_ROOM->bytes ? ARENA_ROOM->bytes - (ARENA_BYTES - LEVEL_STREAM_BUDGET) : LEVEL_STREAM_BUDGET) +
+		(room_open(CARVE_ROOM) ? CARVE_ROOM->bytes : 0);
 
 	while (stream_bytes > budget && level_stream_let_go_oldest())
 		;
@@ -17547,6 +17729,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 void psp_ge_light_draw(const void *vertices, int vertex_count, const unsigned short *indices, long triangle_count,
 	unsigned int base_key)
 {
+	GE_PRETOUCH(base_key, TXPT_LIGHT);
 	GE_DEFER(defer_words(DEFER_LIGHT_DRAW, 5, DEFER_P(vertices), (unsigned int)vertex_count, DEFER_P(indices),
 		(unsigned int)triangle_count, base_key, 0, 0, 0)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -18424,6 +18607,7 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 void psp_ge_decal(void const *vertices, int quad_count, unsigned int key, short blend, unsigned long color,
 	int intensity, int alpha_tested, int permanent)
 {
+	GE_PRETOUCH(key, TXPT_DECAL);
 	GE_DEFER(defer_decal(vertices, quad_count, key, blend, color, intensity, alpha_tested, permanent)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	static unsigned int decal_calls = 0;
@@ -18459,8 +18643,63 @@ texture cache; psp_tex.c). The sensor's square runs from -1 to 1. */
 
 #define BLIP_TARGET 0x000CC000
 #define BLIP_SIZE 64
+#define BLIP_BYTES (BLIP_SIZE * BLIP_SIZE * 4)
 static int blips_open = 0;
 static unsigned long blips_drawn = 0;
+
+/* "blipdepth" (docs/review_vrbroom.md): the target drawn in the depth
+buffer's first 16 KB (the top 16 rows' depth) instead, so the 16 KB at
+BLIP_TARGET join the room the textures and the copies share (psp_tex.c).
+The depth buffer is idle there: the sensor is drawn in the HUD's turn, after
+the world's last depth test, every HUD draw has the test off, the target is
+drawn black from scratch before its blips, and the next frame's clear wipes
+it before the world tests against it.
+"blipdepthcheck": the target in the same place, BLIP_TARGET kept, and drawn
+again there after the composite, so the frame's end can compare the two:
+whether the GE wrote anything of the 3D pass's depth over the target after
+it was drawn. The emulator has no GE caches; that question is the PSP's */
+#define BLIP_TARGET_DEPTH (2 * FRAME_BYTES)
+#define BLIP_CHECK_MOST 64
+#define BLIP_CHECK_FILL 0x5AA5C33Cu /* what the check leaves at BLIP_TARGET: still there means no sensor that frame */
+static unsigned int blip_target = BLIP_TARGET;
+static int blip_check = 0;
+/* the frame's blips, for the check's second drawing (on the CPU that draws
+the first) */
+static struct { float x, y, radius, red, green, blue; unsigned int key; } blip_record[BLIP_CHECK_MOST];
+static int blip_record_count = 0, blip_record_lost = 0;
+static unsigned long blip_check_frames = 0, blip_check_differ = 0, blip_check_words = 0, blip_check_lost = 0;
+/* the first difference: its byte in the target, the frame, and the two words */
+static unsigned int blip_check_first = 0xFFFFFFFFu, blip_check_first_depth = 0, blip_check_first_reference = 0;
+static unsigned long blip_check_first_frame = 0;
+/* draws of the world's kinds after the target was drawn in the depth
+buffer, in that frame: none is expected (ge_kind) */
+static int blip_depth_live = 0;
+static unsigned long blip_depth_world_after = 0;
+
+/* set as the GE starts; psp_tex.c asks whether the 16 KB are free */
+static void blip_place(void)
+{
+	blip_check = psp_keep("blipdepthcheck") != 0;
+	blip_target = blip_check || psp_keep("blipdepth") ? BLIP_TARGET_DEPTH : BLIP_TARGET;
+	if (blip_check)
+	{
+		volatile unsigned int *reference = (volatile unsigned int *)(0x44000000 + BLIP_TARGET);
+		int k;
+
+		for (k = 0; k < BLIP_BYTES / 4; k++)
+			reference[k] = BLIP_CHECK_FILL;
+	}
+	if (blip_check)
+		platform_log("GE: blipdepthcheck: the motion sensor's target in the depth buffer at %06x, drawn at %06x too and compared at each frame's end",
+			blip_target, BLIP_TARGET);
+	else if (blip_target != BLIP_TARGET)
+		platform_log("GE: blipdepth: the motion sensor's target in the depth buffer at %06x", blip_target);
+}
+
+int psp_ge_blip_room_freed(void)
+{
+	return psp_keep("blipdepth") && !psp_keep("blipdepthcheck");
+}
 
 struct blip_vertex
 {
@@ -18497,6 +18736,7 @@ static int blip_texture(unsigned int key, float *uv)
 
 	if (!key || !psp_tex_size(key, &width, &height) || !psp_tex_bind(key, &alpha))
 		return 0;
+	psp_tex_hud_note(key);
 	for (corner = 0; corner < 4; corner++)
 	{
 		uv[2 * corner] *= width;
@@ -18512,19 +18752,13 @@ static unsigned int blip_color(float red, float green, float blue)
 	return 0xFF000000 | (PSP_CLAMP_255(b) << 16) | (PSP_CLAMP_255(g) << 8) | PSP_CLAMP_255(r);
 }
 
-void psp_ge_blips_begin(void)
+/* the target made the GE's frame, and black */
+static void blip_target_open(unsigned int target)
 {
-	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0)); /* build 112: gedefer */
-	ge_kind(KIND_HUD); /* build 103 */
-	list_hud_phase();
 	static const float everywhere[8] = { -1.0f, 1.0f, 1.0f, 1.0f, 1.0f, -1.0f, -1.0f, -1.0f };
 	static const float nothing[8] = { 0 };
 
-	if (!frame_open || list_full())
-		return;
-	/* the world's see-through parts belong to the frame, not the target */
-	transparent_flush();
-	sceGuDrawBufferList(GU_PSM_8888, (void *)BLIP_TARGET, BLIP_SIZE);
+	sceGuDrawBufferList(GU_PSM_8888, (void *)target, BLIP_SIZE);
 	sceGuOffset(2048 - BLIP_SIZE / 2, 2048 - BLIP_SIZE / 2);
 	sceGuViewport(2048, 2048, BLIP_SIZE, BLIP_SIZE);
 	sceGuScissor(0, 0, BLIP_SIZE, BLIP_SIZE);
@@ -18539,36 +18773,71 @@ void psp_ge_blips_begin(void)
 	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
 	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
 	ge_blend(1);
+}
+
+void psp_ge_blips_begin(void)
+{
+	GE_DEFER(defer_words(DEFER_BLIPS_BEGIN, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+	ge_kind(KIND_HUD);
+	list_hud_phase();
+
+	if (!frame_open || list_full())
+		return;
+	/* the world's see-through parts belong to the frame, not the target */
+	transparent_flush();
+	blip_target_open(blip_target);
+	blip_depth_live = blip_target != BLIP_TARGET;
+	blip_record_count = blip_record_lost = 0;
 	blips_open = 1;
+}
+
+static int blip_draw(float x, float y, float radius, float red, float green, float blue, unsigned int key)
+{
+	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
+	float xy[8] = { x - radius, y + radius, x + radius, y + radius, x + radius, y - radius, x - radius, y - radius };
+
+	if (list_full() || !blip_texture(key, uv))
+		return 0;
+	/* added light */
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	blip_quad(uv, xy, blip_color(red, green, blue));
+	return 1;
 }
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
+	GE_PRETOUCH(key, TXPT_BLIP);
 	GE_DEFER(defer_words(DEFER_BLIP, 7, defer_bits(x), defer_bits(y), defer_bits(radius), defer_bits(red),
-		defer_bits(green), defer_bits(blue), key, 0)); /* build 112: gedefer */
+		defer_bits(green), defer_bits(blue), key, 0));
 	GE_BENCH_SKIP();
-	ge_kind(KIND_HUD); /* build 103 */
-	float uv[8] = { 0.0f, 0.0f, 1.0f, 0.0f, 1.0f, 1.0f, 0.0f, 1.0f };
-	float xy[8] = { x - radius, y + radius, x + radius, y + radius, x + radius, y - radius, x - radius, y - radius };
+	ge_kind(KIND_HUD);
 
-	if (!blips_open || list_full() || !blip_texture(key, uv))
+	if (!blips_open || !blip_draw(x, y, radius, red, green, blue, key))
 		return;
-	/* added light */
-	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
-	blip_quad(uv, xy, blip_color(red, green, blue));
 	blips_drawn++;
+	if (blip_check)
+	{
+		if (blip_record_count < BLIP_CHECK_MOST)
+		{
+			blip_record[blip_record_count].x = x;
+			blip_record[blip_record_count].y = y;
+			blip_record[blip_record_count].radius = radius;
+			blip_record[blip_record_count].red = red;
+			blip_record[blip_record_count].green = green;
+			blip_record[blip_record_count].blue = blue;
+			blip_record[blip_record_count].key = key;
+			blip_record_count++;
+		}
+		else
+			blip_record_lost = 1;
+	}
 }
 
-void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
+/* the sweep and the mask over the target's blips */
+static void blip_target_close(float scale, unsigned int sweep_key, unsigned int mask_key)
 {
-	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
-		mask_key, 0, 0, 0)); /* build 112: gedefer */
-	ge_kind(KIND_HUD); /* build 103 */
 	static const float square[8] = { -1.015625f, 1.046875f, 1.046875f, 1.046875f, 1.046875f, -1.015625f, -1.015625f, -1.015625f };
 
-	if (!blips_open)
-		return;
-	blips_open = 0;
 	{
 		/* the sweep: its colour added, the blips under it kept by its alpha */
 		float low = 0.5f - scale * 0.5f, high = 0.5f + scale * 0.5f;
@@ -18591,11 +18860,93 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 			blip_quad(uv, square, 0xFFFFFFFF);
 		}
 	}
-	/* back to the frame */
+}
+
+static void blip_frame_back(void)
+{
 	sceGuDrawBufferList(GU_PSM_5650, draw_buffer, BUFFER_WIDTH);
 	sceGuOffset(2048 - SCREEN_WIDTH / 2, 2048 - SCREEN_HEIGHT / 2);
 	sceGuViewport(2048, 2048, SCREEN_WIDTH, SCREEN_HEIGHT);
 	sceGuScissor(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+}
+
+/* blipdepthcheck: the frame's target drawn again at BLIP_TARGET, after the
+composite has read the one in the depth buffer (the picture is blipdepth's) */
+static void blip_check_draw(float scale, unsigned int sweep_key, unsigned int mask_key)
+{
+	int k;
+
+	if (blip_record_lost || list_full())
+	{
+		blip_check_lost++;
+		return;
+	}
+	blip_target_open(BLIP_TARGET);
+	for (k = 0; k < blip_record_count; k++)
+		blip_draw(blip_record[k].x, blip_record[k].y, blip_record[k].radius, blip_record[k].red, blip_record[k].green,
+			blip_record[k].blue, blip_record[k].key);
+	blip_target_close(scale, sweep_key, mask_key);
+	blip_frame_back();
+	/* the texture state the composite left, so the HUD's draws after it find
+	what they find without the check */
+	sceGuTexMode(GU_PSM_8888, 0, 0, 0);
+	sceGuTexImage(0, BLIP_SIZE, BLIP_SIZE, BLIP_SIZE, (void *)(0x04000000 + blip_target));
+	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
+	sceGuTexFilter(GU_LINEAR, GU_LINEAR);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+}
+
+/* blipdepthcheck, at the frame's end with the GE done: the two targets
+compared word for word through the uncached view, and BLIP_TARGET filled so
+a frame without the sensor shows as one */
+static void blip_check_compare(void)
+{
+	volatile const unsigned int *depth = (volatile const unsigned int *)(0x44000000 + BLIP_TARGET_DEPTH);
+	volatile unsigned int *reference = (volatile unsigned int *)(0x44000000 + BLIP_TARGET);
+	unsigned int k, differ = 0;
+
+	if (reference[0] == BLIP_CHECK_FILL && reference[BLIP_BYTES / 8] == BLIP_CHECK_FILL &&
+		reference[BLIP_BYTES / 4 - 1] == BLIP_CHECK_FILL)
+		return;
+	/* colour only: the target's alpha bytes are the GE's stencil, which
+	these draws leave as they were (the depth's bytes in one, the fill in the
+	other); the composite reads the colour alone (GU_TCC_RGB, fixed blend) */
+	for (k = 0; k < BLIP_BYTES / 4; k++)
+		if ((depth[k] ^ reference[k]) & 0x00FFFFFFu)
+		{
+			if (!differ && !blip_check_differ)
+			{
+				blip_check_first = k * 4;
+				blip_check_first_depth = depth[k];
+				blip_check_first_reference = reference[k];
+				blip_check_first_frame = frames;
+			}
+			differ++;
+		}
+	blip_check_frames++;
+	if (differ)
+	{
+		blip_check_differ++;
+		blip_check_words += differ;
+	}
+	for (k = 0; k < BLIP_BYTES / 4; k++)
+		reference[k] = BLIP_CHECK_FILL;
+}
+
+void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
+{
+	GE_PRETOUCH(sweep_key, TXPT_BLIPS_END);
+	GE_PRETOUCH(mask_key, TXPT_BLIPS_END);
+	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
+		mask_key, 0, 0, 0));
+	ge_kind(KIND_HUD);
+
+	if (!blips_open)
+		return;
+	blips_open = 0;
+	blip_target_close(scale, sweep_key, mask_key);
+	/* back to the frame */
+	blip_frame_back();
 	if (!list_full())
 	{
 		/* the target, added over the sensor (42 of the game's pixels either
@@ -18608,7 +18959,7 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 
 		sceGuTexFlush();
 		sceGuTexMode(GU_PSM_8888, 0, 0, 0);
-		sceGuTexImage(0, BLIP_SIZE, BLIP_SIZE, BLIP_SIZE, (void *)(0x04000000 + BLIP_TARGET));
+		sceGuTexImage(0, BLIP_SIZE, BLIP_SIZE, BLIP_SIZE, (void *)(0x04000000 + blip_target));
 		sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 		sceGuTexFilter(GU_LINEAR, GU_LINEAR);
 		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
@@ -18623,6 +18974,8 @@ void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int 
 		sceGuDrawArray(GU_SPRITES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 2, NULL, out);
 		}
 	}
+	if (blip_check)
+		blip_check_draw(scale, sweep_key, mask_key);
 	ge_blend(0);
 	sceGuDisable(GU_TEXTURE_2D);
 	sceGuEnable(GU_FOG);
@@ -19455,6 +19808,10 @@ static void frame_end_show(void)
 			win_ge_worst = waited;
 		if (waited > ge_wait_worst)
 			ge_wait_worst = waited;
+		/* blipdepthcheck: the GE has the whole frame done */
+		if (blip_check)
+			blip_check_compare();
+		blip_depth_live = 0;
 		{
 			/* "framecrc": each finished picture hashed (FNV-1a over its
 			480 x 272 pixels, before the debug overlay) and logged with the
@@ -19587,6 +19944,23 @@ static void frame_end_show(void)
 			sky_draws, sky_parts, transparent_drawn, transparent_dropped, sprites_queued, hud_quads, text_characters,
 			blips_drawn, skinned_parts, skin_batches, skin_bytes / 1024, skin_failures, level_transparent_draws, decals_drawn, flashes_drawn, shadow_begins, shadow_requests, shadows_drawn, lights_drawn, light_cone_draws, light_cone_skipped, light_split_triangles, light_split_pieces, skin_cut_triangles, skin_cut_pieces, two_sided_draws, near_models, near_triangles_dropped);
 		platform_log("GE: cut pieces lost to a full cut buffer %lu (since the start)", cut_pieces_lost);
+		if (blip_target != BLIP_TARGET)
+		{
+			char kinds[KINDS * 12 + 1];
+			int length = 0, k;
+
+			for (k = 0; k < KINDS; k++)
+				if (blip_depth_after_kind[k])
+					length += snprintf(kinds + length, sizeof(kinds) - length, " %c%lu", kind_letters[k],
+						blip_depth_after_kind[k]);
+			kinds[length] = 0;
+			platform_log("GE: blipdepth: after the target, by kind:%s; %lu with the depth test on (since the start)",
+				length ? kinds : " none", blip_depth_after_tested);
+		}
+		if (blip_target != BLIP_TARGET)
+			platform_log("GE: blipdepth: %lu world draws after the target in the depth buffer; check: %lu frames compared, %lu differed (%lu words; the first at byte %u in frame %lu, depth %08x for %08x), %lu not drawn again (since the start)",
+				blip_depth_world_after, blip_check_frames, blip_check_differ, blip_check_words, blip_check_first,
+				blip_check_first_frame, blip_check_first_depth, blip_check_first_reference, blip_check_lost);
 		if (glyphs_drawn)
 			platform_log("GE: button glyphs drawn %lu (since the start)", glyphs_drawn);
 		cut_count_report(frames == 1 ? 1 : 300);
@@ -19744,7 +20118,7 @@ static void frame_end_show(void)
 		if (arena_state > 0)
 		{
 			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
-				ARENA_ROOM->used / 1024, ARENA_BYTES / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
+				ARENA_ROOM->used / 1024, ARENA_ROOM->bytes / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
 				arena_compactions, arena_moved_kb, arena_migrated);
 			carve_report();
 		}

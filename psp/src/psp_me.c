@@ -1210,7 +1210,60 @@ static struct
 	unsigned long jobs, failures, simulated;
 	unsigned long long me_cycles, me_job_cycles, wait_us, handover_us;
 	unsigned long me_worst_us, wait_worst_us;
+	/* me_run_slot's looks after the first, and the first's planned time */
+	unsigned long looks, first_look_us;
 } stats[ME_SLOTS];
+/* the last job's looks after the first, per slot (psp_me_audio's adaptive
+first look reads the audio slot's) */
+static unsigned int last_looks[ME_SLOTS];
+
+/* The audio job's first look ("mepoll", design_mepoll.md). The audio thread
+sleeps while the ME mixes, looking at the slot after a first sleep and then
+every 100 us; each look wakes it above the game's thread (30-60 us of the
+game's CPU on the PSP-1000). The job is ~0.7 ms of the ME's time, but it
+waits 0.9-2.4 ms behind the ME's other work, so a first look at 200 us is
+followed by ~10 more [M]. By default (200) it is as before.
+"mepoll" (audiolook0, the default under it): the first look at the last
+block's wait less AUDIO_LOOK_MARGIN_US, so a block takes one to three looks.
+When the first look already found the job done, the wait isn't known (it may
+have ended long before), so the next first look comes AUDIO_LOOK_MARGIN_US
+earlier; the measured wait is used only when there were later looks, so
+the delay's own overshoot can't ratchet the look later block after block.
+At most AUDIO_LOOK_MAX_US: a look later than the job's end holds the mixer's
+lock (the game thread may wait for it) and delays the block's output by as
+much, against a 23 ms block; the late-blocks count says if it ever costs.
+"mepoll audiolookN" (N > 0): a fixed first look at N us */
+#define AUDIO_LOOK_DEFAULT_US 200
+#define AUDIO_LOOK_MARGIN_US 300
+#define AUDIO_LOOK_MAX_US 2000
+static int audio_look_adaptive = 0;
+static unsigned int audio_first_look_us = AUDIO_LOOK_DEFAULT_US;
+
+static void audio_look_start(void)
+{
+	int n;
+
+	if (!psp_keep("mepoll"))
+		return;
+	n = psp_keep_number("audiolook", 0);
+	audio_look_adaptive = n <= 0;
+	audio_first_look_us = n <= 0 ? AUDIO_LOOK_DEFAULT_US : (unsigned int)(n > AUDIO_LOOK_MAX_US ? AUDIO_LOOK_MAX_US : n);
+	platform_log("ME: mepoll: the audio job's first look %s", audio_look_adaptive ? "adaptive" : "fixed");
+}
+
+static void audio_look_next(unsigned long waited_us)
+{
+	unsigned long next;
+
+	if (!audio_look_adaptive)
+		return;
+	if (!last_looks[ME_SLOT_AUDIO])
+		next = audio_first_look_us > AUDIO_LOOK_DEFAULT_US + AUDIO_LOOK_MARGIN_US ?
+			audio_first_look_us - AUDIO_LOOK_MARGIN_US : AUDIO_LOOK_DEFAULT_US;
+	else
+		next = waited_us > AUDIO_LOOK_DEFAULT_US + AUDIO_LOOK_MARGIN_US ? waited_us - AUDIO_LOOK_MARGIN_US : AUDIO_LOOK_DEFAULT_US;
+	audio_first_look_us = (unsigned int)(next > AUDIO_LOOK_MAX_US ? AUDIO_LOOK_MAX_US : next);
+}
 static unsigned long long report_mark = 0;
 static float busy_percent_last = 0.0f;
 
@@ -1463,6 +1516,7 @@ int psp_me_start(void)
 	me_yield_off = psp_keep("meyieldoff");
 	me_grace_off = psp_keep("megraceoff");
 	me_claim_old = psp_keep("meclaimold");
+	audio_look_start();
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
 	{
@@ -1576,11 +1630,13 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 	volatile struct me_slot *slot;
 	unsigned long long start;
 	unsigned long waited, me_us;
+	unsigned int looks = 0;
 	int k;
 
 	if (me_state <= 0 || arg_count > ME_JOB_ARGS)
 		return 0;
 	slot = SLOT(which);
+	last_looks[which] = 0;
 	start = sceKernelGetSystemTimeWide();
 	slot->type = type;
 	for (k = 0; k < arg_count; k++)
@@ -1624,8 +1680,12 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 				return 0;
 			}
 			sceKernelDelayThread(100);
+			looks++;
 		}
 		waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+		last_looks[which] = looks;
+		stats[which].looks += looks;
+		stats[which].first_look_us += first_look_us ? first_look_us : 100;
 		stats[which].me_cycles += slot->cycles;
 		stats[which].me_job_cycles += slot->job_cycles;
 		last_job_us[which] = me_cycles_per_us > 0.0f ? (unsigned int)((float)slot->job_cycles / me_cycles_per_us) : 0;
@@ -2975,12 +3035,15 @@ int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned
 	args[0] = (unsigned int)count;
 	args[1] = (unsigned int)frames;
 	args[2] = (unsigned int)output;
-	/* about 0.1-1 ms of work: a first look after 0.2 ms */
-	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 3, results, 200))
+	/* about 0.1-1 ms of work: a first look after 0.2 ms, or mepoll's
+	(audio_look_next) */
+	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 3, results, audio_first_look_us))
 		return 0;
 	*voices = results[0];
 	*clipped = results[1];
 	*waited_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+	if (me_state == 1)
+		audio_look_next(*waited_us);
 	return 1;
 }
 
@@ -3197,6 +3260,16 @@ void psp_me_report(void)
 		"stopped", busy_percent_last, (double)window / 1e6, length ? line : "; no jobs");
 	if (ring_line[0])
 		platform_log("%s", ring_line);
+	if (me_state == 1 && stats[ME_SLOT_AUDIO].jobs)
+	{
+		/* how often the audio thread woke to look (mepoll's measure; the
+		threads line's wakes count its output's returns too) */
+		unsigned long jobs = stats[ME_SLOT_AUDIO].jobs, tenths = stats[ME_SLOT_AUDIO].looks * 10 / jobs;
+
+		platform_log("ME: audio looks: %lu.%lu a job after the first, the first at %lu us on average (%s)", tenths / 10,
+			tenths % 10, stats[ME_SLOT_AUDIO].first_look_us / jobs,
+			audio_look_adaptive ? "mepoll: adaptive" : audio_first_look_us != AUDIO_LOOK_DEFAULT_US ? "mepoll: fixed" : "fixed");
+	}
 	if (me_state == 1 && (CONTROL->features & ME_FEATURE_STASH))
 	{
 		/* the ME's own counts since start (the stash) */
