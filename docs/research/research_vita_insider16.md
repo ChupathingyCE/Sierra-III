@@ -133,3 +133,7 @@ The second read turned up one exact tick item worth counting first (**S1**, the 
 - **For the multiplayer session:** the target-name search skipped when no living biped is within 20 units (`game_engine.c`, `find_closest_player_candidate_near`; ~5 ms a frame on the Vita in 32-player games, theirs), and S5.
 
 **Credit, if any is taken:** BirchWoodGod (halo-ce-vita), under his grant and held as above. The bounding-sphere copy is OpenCE's (CC0).
+
+# A relay (2026-10-21)
+
+**Hearsay, relayed by Sheepdog01; not checked by us:** BirchWoodGod says his playtesters report heavy battery drain, and slowdowns when playing at 16:9 that 4:3 doesn't show. Sheepdog01 asked for anything that could help. What we found, read at his public `b6a7a295`, is in `research_vita.md` §6, "Widescreen and battery". The report itself stays here, not there: `research_vita.md` goes out with the public release (`tools/public_export.py`, RULES), and this note doesn't.
