@@ -45,7 +45,8 @@ H-numbers are b139's first hand test (PSP-1000). "Fixed [E]" means the emulator 
 | H34 | No flashlight under camouflage | Halo's own behaviour [D]; no change |
 | H35, H36 | Camouflaged Elites invisible; powerups plain | Opt-in looks, off (see §Calls); neither confirmed on screen [E] |
 | H39 | Pelican off its path | Not reproduced; poseahead cleared (0 of 199,833 poses differ) [E]. A PSP run waits for your word |
-| H42, H8 | Bunker doorway light; signs through the floor | Not reproduced (the emulator's door is closed) / not touched |
+| H42 | Bunker doorway light (a bright wedge beside the door frame) | **Open, cause the lightmap** [E]: drawing the lightmap alone shows the wedge; its edge is a lightmap chart seam on the door-frame surface (two neighbouring triangles read different charts at the same corners). The PC draws a smooth wall there. Fix pending: a bad seam in the draw or bad lightmap coordinates from the bake |
+| H8 | Signs through the floor | Not touched |
 
 ## §Memory
 
