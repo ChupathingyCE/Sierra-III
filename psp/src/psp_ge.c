@@ -429,6 +429,7 @@ static PSP_MAIN_SIDE unsigned int frame_begin_us = 0, show_begin_us = 0;
 static PSP_MAIN_SIDE unsigned long show_lat_frames = 0, show_lat_sum = 0, show_lat_most = 0;
 static PSP_MAIN_SIDE unsigned long win_lat_frames = 0, win_lat_sum = 0, win_lat_most = 0;
 static PSP_MAIN_SIDE unsigned long show_frame_number = 0; /* the frame's number, for framecrc */
+static int show_shot = 0; /* the frame being shown takes a screenshot */
 static int stall_force; /* (defined with the stall wrapper) */
 static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */
 /* set by the frame's job itself (its args), so the ME never reads the main
@@ -20012,9 +20013,9 @@ static void show_picture(void)
 			menu_shot = psp_keep("menushot");
 		if (menu_shot)
 			psp_debug_draw((void *)(0x44000000 + (unsigned int)draw_buffer));
-		if (psp_screenshot_requested)
+		if (show_shot)
 		{
-			psp_screenshot_requested = 0;
+			show_shot = 0;
 			screenshot();
 		}
 		if (!menu_shot)
@@ -20088,6 +20089,10 @@ static void frame_end_show(void)
 
 		show_frame_number = frames;
 		show_begin_us = frame_begin_us;
+		/* taken now: under geshow2 the next frame's start may ask its own
+		shot before this one is shown */
+		show_shot = psp_screenshot_requested;
+		psp_screenshot_requested = 0;
 		/* geshow2: the GE's tail waited out and the frame shown by the
 		forwarding thread, while this thread goes on; the rest here is the
 		game thread's (the tables the record path reads) */
