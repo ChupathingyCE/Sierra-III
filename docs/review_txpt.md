@@ -17,7 +17,24 @@ The Media Engine split (`gedefer gemeon geinflight mevram`) draws many more fram
   - A load that's refused (budget spent, or no room) is left to the replay's bind, which wants it as before. So the change can only add textured draws, never take one away.
 - The load's accounting matches a bind's: `misses++` together with the load, so the log's "waited for the next frame" count (misses minus loads) stays honest.
 - It remembers the last texture it marked this frame. A model's parts and a level's runs often repeat one key, and then the call does no `find()`.
-- A `textures: texpretouch:` log line every 300 frames gives the number of touches, the loads made then, and the loads left to the replay.
+- A `textures: texpretouch:` log line every 300 frames gives the number of touches, the loads made then, the loads left to the replay, the marks stopped at the ceiling and the keys passed over as not resident.
+
+#### Mark only what the replay binds (`psp_tex_pretouch(key, kind, resident_only)`)
+
+A mark holds room that a later load can't then take, so a mark for a texture the replay never binds costs another draw its texture. The record writers now ask for a key only where the replay's own tests would bind it:
+
+- Level detail maps (bound only near the eye): marked only if already resident (`GE_PRETOUCH_IF_RESIDENT`). That costs no load and evicts nothing.
+- The multipurpose map: only when the change colour isn't white, or a glow has no glow map of its own: the tests `psp_ge_model_multipurpose` makes before it binds. The glow map: only with a glow, and only if the pack has it.
+- A ceiling: nothing more is marked once this frame's set plus the texture would pass `txptceilN` percent of the caches' room (85 by default). Past it, the replay's binds want what's missing, as they do without the word.
+- `txptall` marks every key again (the first version's filter); `txptall txptceil100` is the first version exactly.
+
+#### One memo per record kind
+
+A level draw names its base and its lightmap in turn, so one memo for every kind missed nearly every time. Each of the 18 record kinds now keeps its own last key, and a key already marked this frame returns before the ceiling and the load path.
+
+#### `txptcensus` (built only with `PSP_RECON`)
+
+Per record kind, the textures marked in a frame against those the replay then bound, at each of the first 8 frames that waited for room, and every 300 frames the totals, with the keys a filter passed over that the replay bound anyway. It's how the first version's over-marking was found and how the filters were checked.
 
 ### `psp/src/psp_ge.c`
 
@@ -34,30 +51,34 @@ A pre-touch load is the same `load()` that a bind or the frame's end uses: DMA f
 
 On the main CPU, per keyed record: one `find()` (a hashed recent slot, then a binary search) and a residency check, skipped for a repeat of the last key. Reads that the replay would have wanted at the frame's end now happen during the record walk.
 
-Measured on b30's flight (the cache model, 1,800 ticks, M6 #2's words with and without the word) [E]:
+Measured on b30's flight (the cache model, 1,800 ticks, 899 frames, M6 #2's words with and without the word) [E]:
 
-- The drawing phase grows 7.8% in model cycles (fetches + 72 per data miss + 64 per instruction miss): about 2.2 ms a frame at 333 MHz. The tick is unchanged (-0.2%) and the frame's end a little smaller (-0.5%). The metrics line agrees: draw 36.4 to 37.3 ms a frame.
-- By function: `psp_tex_pretouch` itself, `find()` (about 600 lookups a frame get past the last-key memo), and `fits()`, the loads' search for room, which now runs during the walk rather than at the frame's end. The rest is instruction-cache knock-on in the model draw path.
-- The in-flight sync adds no wait: `geinflight` carries out all 300 frames on the ME, 103 KB a frame, on both sides.
+- The drawing phase grows 5.2% in model cycles (fetches + 72 per data miss + 64 per instruction miss): about 1.5 ms a frame at 333 MHz, down from 7.8% (2.2 ms) before the memo and the filters. The tick is unchanged (-0.02%) and the frame's end a little smaller (-0.6%). The metrics line: draw 36.38 to 36.87 ms a frame.
+- On the same flight the word takes untextured frames from 75 to 24.
+- What's left is the `find()` per new key, the loads' search for room (`fits()`) now made during the record walk instead of at the frame's end, and instruction-cache knock-on in the model draw path.
 
 ## Proof
 
 - Compiles: campaign and `PSP_MULTIPLAYER=1`.
-- Untextured frames, plain | words | words + `texpretouch` (emulator, the textures: line at each run's end) [E]:
+- Untextured frames, plain | words | words + `texpretouch` (emulator, the `textures:` line at each run's end; longest run in brackets) [E]:
 
-  | Stretch | plain | words | + texpretouch |
-  |---|---|---|---|
-  | a10 route, 9,000 ticks | 16 (run 10) | 111 (12) | 17 (10) |
-  | c20 hands off, 9,000 ticks | 18 (12)* | 35 (12) | 18 (11) |
-  | b30 route, 6,300 ticks | 24 (12) | 192 (14) | 82 (29) |
+  | Stretch | plain | words | + texpretouch | + texpretouch, first version (`txptall txptceil100`) |
+  |---|---|---|---|---|
+  | b30 route, 6,300 ticks | 23 (12) | 175 (14) | 30 (12) | 96 (30) |
+  | a10 route, 9,000 ticks | 16 (10)* | 111 (12) | 14 (10) | 17 (10)* |
+  | c20 hands off, 9,000 ticks | 18 (12)* | 35 (12)* | 19 (12) | 18 (11)* |
 
-  *c20's plain figure is from an earlier batch on the same build line.
-- a10 and c20 are back to plain's. b30 matches plain for its first 600 frames (19 and 21, the same as plain). After that, loads start waiting for room: 84, then 150, against 0 on the other two sides. 60 more frames go untextured, one run of them 29 frames long.
-- Why b30 runs out of room [D/U]: every pre-touched texture is marked as this frame's, and a mark protects it from eviction. On b30 the marked set grows to 2,559 KB of the caches' 2,632 KB (plain 2,444, words 2,410), and loads go from 412 to 552 (evictions 236 to 368). Some keys are marked for draws the replay never binds: a glow map drawn flat, a detail map skipped at distance, a level run culled after its record. Their marks hold room that real binds then can't get.
-- Play: on a10 and c20, the play hash and both random seeds match words alone at every tick. The parts that differ are object looping sounds first, then objects, which is the known sound-timing sensitivity. On b30, play splits at tick 1459, after looping sounds move at 690. It splits the same way between plain and words (tick 1165), so this is the same sensitivity, not a change in what plays [U].
+  *From the first version's batch, the same code paths and routes.
+- Loads that waited for room on b30: 0 with the word (0 plain, 0 words), against 198 with the first version. `txptall` with the ceiling alone gives 5 and 70 untextured frames: the ceiling stops the waits, but the marks it keeps still crowd out real binds. The filters are what bring b30 back.
+- Largest frame set on b30: 2,416 KB with the word (plain and words 2,411; the first version 2,562, of the caches' 2,632). Loads 377 (plain 375, words 397, first version 572), evicted 199 (203, 216, 377).
+- Why the first version ran out of room, now measured (the census, at its first frames that waited for room, b30 frame ~710) [E]: the multipurpose maps were 34 marked, 19 bound, 139 KB unbound; the glow maps 20 marked, 17 bound, 32 KB unbound; every other kind was bound in full. Summed over the run's frames, the multipurpose maps' marks were 295,111 KB unbound of 648,345 KB marked, glow 53,729 KB, level detail 17,524 KB. With the filters: multipurpose 510 KB, glow 1,239 KB, level detail 8,424 KB. Decals (19,542 KB) and culled level runs (40,951 KB) still mark unbound textures, but they're small next to the room.
+- What the filters give up [E]: of the keys passed over, those the replay bound anyway are left to its bind, as without the word: 2,855 multipurpose maps, 607 screen quads (at the ceiling) and 430 blip ends over the run. That accounts for b30's 30 against plain's 23.
+- Play: with `nomouth` (lip sync kept out of game state), the play hash and both random seeds match words alone at every tick on b30 (6,300) and a10 (9,000), and plain against words matches on b30 too. Without `nomouth`, b30's play split at the looping sounds, as it splits between plain and words.
+- Compiles: campaign (`PSP_RECON` too) and `PSP_MULTIPLAYER=1`.
 
 ## Risk
 
 - Hot code: the record writers of every textured draw. With the word off it costs one load and one branch per keyed record.
 - The texture-cache residency is touched from the record walk, in the middle of the engine's render walk, only on the main CPU and never while a replay is out.
-- Default: off. It isn't ready to go on by default. The words with it are back to plain's look on a10 and c20, but b30 is only part-way there (82 untextured frames against plain's 24), and it costs about 2.2 ms a frame of drawing [E]. Two things would fix it: mark only the keys the replay will bind, or leave a load to the replay once the marked set nears the caches' size; and memoise `find()` per record kind.
+- The filters repeat the replay's own bind tests (`psp_ge_model_multipurpose`). If those tests change, the filters must change with them, or the marks drift back to unbound textures (`txptcensus` shows it).
+- Default: on with M6 #2's words, a restoration of plain's look: with them, b30, a10 and c20 draw as many textured frames as plain [E], at about 1.5 ms of drawing a frame [E], and play the same. It takes effect only with ME semantics, so the proposal is that `texpretouch` defaults to on whenever `gemeon` is on, with `notexpretouch` to turn it off. The PSP pair (b30's route, the words with and without it) gives the hardware's untextured frames and cost [M].
