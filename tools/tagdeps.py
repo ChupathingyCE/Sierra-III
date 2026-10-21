@@ -236,7 +236,7 @@ def print_level_shaders(m, d, tags):
             text += '; bump %s %dx%d %s mips %d, scale %g, u %g v %g' % (pb['tag'], pb['w'], pb['h'], pb['format'],
                                                                      pb['mips'], bump_scale, su, sv)
         print(text)
-        if not (bb and pb and flags & 1):
+        if not (bb and pb and flags & 1) or not (tw and th):
             continue
         img = decode_bump(m, pb)
         if img is None:

@@ -597,6 +597,10 @@ def main():
     ap.add_argument('--lm-chart-halve', action='store_true', default=True,
                     help="the asset track's lightmaps halved chart by chart where plain halving breaks a seam "
                          "(texpack.py --lm-chart-halve; the default)")
+    ap.add_argument('--no-cutout-fine', action='store_true',
+                    help='texpack.py --no-cutout-fine: cut-outs finer than their baked base map at the usual size')
+    ap.add_argument('--base-as-bump', action='store_true',
+                    help='texpack.py --base-as-bump: a map named as both base and bump map dropped, as before')
     ap.add_argument('--no-lm-chart-halve', dest='lm_chart_halve', action='store_false',
                     help="the asset track's lightmaps halved plainly, as before")
     ap.add_argument('--chart-max', type=int, default=-1,
@@ -639,6 +643,10 @@ def main():
         TEXPACK_OPTIONS.append('--fast-palettes')
     if a.lm_chart_halve:
         TEXPACK_OPTIONS.append('--lm-chart-halve')
+    if a.no_cutout_fine:
+        TEXPACK_OPTIONS.append('--no-cutout-fine')
+    if a.base_as_bump:
+        TEXPACK_OPTIONS.append('--base-as-bump')
     if a.chart_max >= 0:
         TEXPACK_OPTIONS.extend(['--chart-max', str(a.chart_max)])
     if a.lightmap_seam_whole:

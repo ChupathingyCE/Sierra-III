@@ -190,6 +190,14 @@ def level_looks(m, d, B):
 # alpha (as before), not their bump map's
 CUTOUT_FROM_BUMP = True
 CUTOUTS = []   # (base map, bump map) whose alpha came from the bump map
+# a cut-out whose bump map is finer than the baked base map keeps up to 2
+# bump texels a baked texel (to 512 a side): halved to 256 x 64, a10's
+# grating repeats every 3.2 texels, and the GE's filtered alpha test turns
+# its wires into rows of blobs; at 512 x 128 (6.4 texels) the wire holds.
+# --no-cutout-fine: the usual size, as before
+CUTOUT_FINE = True
+CUTOUT_FINE_MOST = 2.0
+CUTOUTS_ENLARGED = []   # (base map, baked size before, after)
 
 
 def cutout_alpha(img, cutout, m):
@@ -299,6 +307,9 @@ def relief_looks(m, d, B):
         su, sv = struct.unpack_from('<2f', m.data, o + 312)
         base, bump = m.by_id.get(base_id), m.by_id.get(bump_id)
         if not base or not bump or base.name not in by_tag or bump.name not in by_tag:
+            continue
+        # a colour map named as its own bump map holds no normals to light
+        if bump.name == base.name:
             continue
         fallback = bump_scale if bump_scale else 1.0
         reliefs.setdefault(by_tag[base.name][0]['address'], dict(
@@ -1345,6 +1356,14 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         tw, th, limit = b['w'], b['h'], 512
     while cls != 'lightmap' and max(tw, th) > limit:
         tw, th = max(1, tw // 2), max(1, th // 2)
+    cutout = look.get('cutout') if look and CUTOUT_FROM_BUMP and CUTOUT_FINE and cls == 'level (senv)' else None
+    if cutout and act == 'clut' and tw > 0 and th > 0:
+        before = (tw, th)
+        across = lambda: min(abs(cutout['u']) * cutout['bump']['w'] / tw, abs(cutout['v']) * cutout['bump']['h'] / th)
+        while max(tw, th) * 2 <= 512 and across() > CUTOUT_FINE_MOST:
+            tw, th = tw * 2, th * 2
+        if (tw, th) != before:
+            CUTOUTS_ENLARGED.append((b['tag'], before, (tw, th)))
     if act != 'clut' or b['type'] != '2d' or not pow2(tw) or not pow2(th):
         return None
     img = decode(m, b) if image is None else image
@@ -1549,6 +1568,11 @@ def main():
     ap.add_argument('--no-composites', action='store_true',
                     help='no see-through composites: each shader drawn as one of its maps and a tint, as before '
                          '(seethrough.COMPOSITES)')
+    ap.add_argument('--no-cutout-fine', action='store_true',
+                    help='cut-outs finer than their baked base map baked at the usual size, as before (CUTOUT_FINE)')
+    ap.add_argument('--base-as-bump', action='store_true',
+                    help='a map a shader names as both its base and its bump map dropped as a bump map, as before '
+                         '(refs.BASE_OVER_BUMP)')
     ap.add_argument('--no-cutout-bump', action='store_true',
                     help='alpha-tested level shaders cut out by their base map\'s alpha, as before, not their bump '
                          'map\'s (CUTOUT_FROM_BUMP)')
@@ -1615,9 +1639,11 @@ def main():
     d = Defs()
     m = CacheMap(a.map)
     global ALPHA_COVERAGE, ALPHA_TESTED, ALPHA_SPLIT, EFFECTS_CLUT4
-    global LOOK_ALPHA_ANY, CUTOUT_FROM_BUMP
+    global LOOK_ALPHA_ANY, CUTOUT_FROM_BUMP, CUTOUT_FINE
     LOOK_ALPHA_ANY = not a.look_alpha_first
     CUTOUT_FROM_BUMP = not a.no_cutout_bump
+    CUTOUT_FINE = not a.no_cutout_fine
+    refs.BASE_OVER_BUMP = not a.base_as_bump
     ALPHA_SPLIT, EFFECTS_CLUT4 = not a.no_alpha_split, a.effects_clut4
     ALPHA_TESTED = alpha_tested_bitmaps(m, d)
     if a.alpha_coverage:
@@ -1716,6 +1742,10 @@ def main():
     print('cut-outs: %d level base maps alpha-tested by their bump maps\' alpha%s' % (
         len(set(CUTOUTS)), ': ' + ', '.join('%s (%s)' % c for c in sorted(set(CUTOUTS))[:12]) if CUTOUTS else ''),
         file=sys.stderr)
+    print('cut-outs kept fine%s: %d base maps%s' % (
+        '' if CUTOUT_FINE else ' (off: --no-cutout-fine)', len(set(CUTOUTS_ENLARGED)),
+        ': ' + ', '.join('%s %dx%d -> %dx%d' % (t, w0, h0, w1, h1) for t, (w0, h0), (w1, h1) in sorted(set(CUTOUTS_ENLARGED)))
+        if CUTOUTS_ENLARGED else ''), file=sys.stderr)
     if LIGHTMAP_SCALE > 1 and LIGHTMAP_CHARTS:
         fixed = [r for r in LIGHTMAP_CHART_LOG if r[3] or r[6]]
         print('lightmap charts (--lm-chart-halve, step %d, %d spots, at most %s texels across): %d charts refitted '
