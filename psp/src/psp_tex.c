@@ -2015,6 +2015,13 @@ int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *cou
 	return 1;
 }
 
+/* the bake's exact CLUT4 (pack flag 2, texpack.py): a texture it would
+have made CLUT8, in 16 colours that draw it texel for texel. Its average is
+sampled where the CLUT8 bytes were, so object lighting and the flashlight
+take the same colour from it as before ("c4xavgoff": CLUT4's own sample) */
+#define EXACT_CLUT4 2
+static unsigned int texel_offset(struct pack_entry const *entry, int x, int y, int *nibble);
+
 /* a resident texture's average colour (ABGR), from a sample of its top
 level's texels through the palette; kept per texture (build 36: the
 flashlight's added light, which can't take a second texture) */
@@ -2024,6 +2031,8 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	struct pack_entry const *entry;
 	unsigned int palette_bytes, bytes, row, rows, total, step, at, sum[3] = { 0, 0, 0 }, n = 0;
 	const unsigned char *texels;
+	static int own_sample = -1;
+	int clut8_order;
 
 	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]))
 		return 0;
@@ -2041,8 +2050,11 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 		return 1;
 	}
 	entry = &entries[index];
+	if (own_sample < 0)
+		own_sample = psp_keep("c4xavgoff");
+	clut8_order = entry->psm == GU_PSM_T4 && (entry->flags & EXACT_CLUT4) && !own_sample;
 	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
-	bytes = entry->psm == GU_PSM_T4 ? (entry->width + 1) / 2 : entry->width;
+	bytes = entry->psm == GU_PSM_T4 && !clut8_order ? (entry->width + 1) / 2 : entry->width;
 	row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u;
 	rows = (entry->height + 7) & ~7u;
 	total = row * rows;
@@ -2050,11 +2062,20 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	texels = (const unsigned char *)((resident_at[index] + palette_bytes) | 0x40000000);
 	for (at = 0; at < total; at += step)
 	{
-		unsigned int value = texels[at], k;
+		unsigned int value = clut8_order ? 0 : texels[at], k;
 
-		for (k = 0; k < (entry->psm == GU_PSM_T4 ? 2u : 1u); k++)
+		if (clut8_order)
 		{
-			unsigned int i = entry->psm == GU_PSM_T4 ? (value >> (4 * k)) & 15 : value, r, g, b;
+			/* the texel this byte was in the CLUT8 layout; its padding read entry 0 */
+			unsigned int x = (at >> 7) % (row / 16) * 16 + (at & 15), y = (at >> 7) / (row / 16) * 8 + ((at >> 4) & 7);
+			int nibble;
+
+			if (x < entry->width && y < entry->height)
+				value = (texels[texel_offset(entry, (int)x, (int)y, &nibble)] >> (4 * nibble)) & 15;
+		}
+		for (k = 0; k < (entry->psm == GU_PSM_T4 && !clut8_order ? 2u : 1u); k++)
+		{
+			unsigned int i = entry->psm == GU_PSM_T4 && !clut8_order ? (value >> (4 * k)) & 15 : value, r, g, b;
 
 			if (entry->clut == GU_PSM_8888)
 			{
