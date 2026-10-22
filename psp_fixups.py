@@ -29755,6 +29755,11 @@ static void actor_perception_refresh_test_object(
 # (melee and leaps are timed to the tick), dormant actors (they barely think)
 # and an actor's first update. The service timer counts thinking ticks, so the
 # timeslice holder (the costly search) comes round half as often too.
+# "aicad3" is the same rest with the timeslice kept at full rate: the timer
+# counts every tick and an actor that wins the slot thinks whole that tick, so
+# the firing-position search (cover) and the re-plan come round as often as
+# without the word. With aicad2 the marines lost b30's beach: a marine waits
+# twice as long to be sent to cover.
 # Off by default: it plays differently, so it ships only after an A/B shows it
 # breaks nothing. Campaign only: never in the multiplayer build or a networked
 # game, whose clients must simulate as the server does
@@ -29764,7 +29769,7 @@ FIXES_AICAD["source/ai/actors.c#aicad"] = [
 	long actor_index)
 {""",
  """#ifdef HALO_PSP
-/* psp_fixups.py (FIXES_AICAD): "aicad2" (see there) */
+/* psp_fixups.py (FIXES_AICAD): "aicad2" and "aicad3" (see there) */
 int psp_keep(const char *name);
 void platform_psp_log(const char *format, ...);
 boolean network_coop_active(void);
@@ -29775,7 +29780,7 @@ thinks on its first update */
 static short psp_aicad_identifier[MAXIMUM_ACTORS];
 static struct
 {
-	unsigned long updates, rested, swarm, charging, dormant, first;
+	unsigned long updates, rested, timeslice, swarm, charging, dormant, first;
 } psp_aicad_stats;
 static long psp_aicad_logged = NONE;
 
@@ -29787,10 +29792,11 @@ static boolean psp_aicad_active(
 #ifdef PSP_MULTIPLAYER
 		psp_aicad_on = 0;
 #else
-		psp_aicad_on = psp_keep("aicad2");
+		psp_aicad_on = psp_keep("aicad2") ? 2 : psp_keep("aicad3") ? 3 : 0;
 #endif
 		if (psp_aicad_on)
-			platform_psp_log("ai: each actor thinks on every other tick, half on even ticks and half on odd (aicad2)");
+			platform_psp_log("ai: each actor thinks on every other tick, half on even ticks and half on odd (aicad%d)%s",
+				psp_aicad_on, psp_aicad_on == 3 ? "; the timeslice at full rate" : "");
 	}
 	return psp_aicad_on && game_connection() == _game_connection_local && !network_coop_active();
 }
@@ -29808,6 +29814,10 @@ boolean psp_aicad_rest(
 		((game_time_get() + absolute_index) & 1) == 0)
 		return FALSE;
 	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
 	return !actor->meta.swarm && !actor->meta.dormant && actor->state.action != _actor_action_charge &&
 		psp_aicad_identifier[absolute_index] == actor->identifier;
 }
@@ -29829,7 +29839,9 @@ static void psp_aicad_count(
 		psp_aicad_stats.rested++;
 	else if ((game_time_get() + absolute_index) & 1)
 	{
-		if (actor->meta.swarm)
+		if (psp_aicad_on == 3 && actor->meta.timeslice)
+			psp_aicad_stats.timeslice++;
+		else if (actor->meta.swarm)
 			psp_aicad_stats.swarm++;
 		else if (actor->meta.dormant)
 			psp_aicad_stats.dormant++;
@@ -29842,8 +29854,8 @@ static void psp_aicad_count(
 	if (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900)
 	{
 		if (psp_aicad_logged != NONE)
-			platform_psp_log("aicad: game time %ld | actor updates %lu, rested %lu; resting turns kept: swarm %lu dormant %lu charging %lu first %lu",
-				now, psp_aicad_stats.updates, psp_aicad_stats.rested, psp_aicad_stats.swarm,
+			platform_psp_log("aicad: game time %ld | actor updates %lu, rested %lu; resting turns kept: timeslice %lu swarm %lu dormant %lu charging %lu first %lu",
+				now, psp_aicad_stats.updates, psp_aicad_stats.rested, psp_aicad_stats.timeslice, psp_aicad_stats.swarm,
 				psp_aicad_stats.dormant, psp_aicad_stats.charging, psp_aicad_stats.first);
 		psp_aicad_logged = now;
 	}
@@ -29874,7 +29886,7 @@ static void actor_update_begin(
 	/* FIXES_AICAD: the timeslice (the firing-position search, the re-plan)
 	comes round at half rate too: it is given on two ticks in four, one of
 	each parity, so both halves of the actors still compete for it */
-	if (psp_aicad_active() && (game_time_get() & 2))
+	if (psp_aicad_active() && psp_aicad_on == 2 && (game_time_get() & 2))
 		ai_globals->time_given_this_frame = TRUE;
 #endif
 #ifdef HALO_PSP
@@ -29894,13 +29906,20 @@ static void actor_update_begin(
 	{
 #ifdef HALO_PSP
 		/* FIXES_AICAD: a resting actor keeps its last situation and decision
-		and can't hold the timeslice; perception skips its prop service */
-		boolean psp_rest = psp_aicad_rest(actor_index);
+		and perception skips its prop service. aicad2: it can't hold the
+		timeslice either; aicad3: the slot is given first, and its holder
+		doesn't rest */
+		boolean psp_full_slot = psp_aicad_active() && psp_aicad_on == 3;
+		boolean psp_rest;
 
+		if (psp_full_slot)
+			actor_get_timeslice(actor_index);
+		psp_rest = psp_aicad_rest(actor_index);
 		psp_aicad_count(actor_index, psp_rest);
 		if (psp_rest)
 		{
-			actor->meta.timeslice = FALSE;
+			if (!psp_full_slot)
+				actor->meta.timeslice = FALSE;
 			actor_input_update(actor_index);
 			actor_perception_update(actor_index);
 			actor_emotion_update(actor_index);
@@ -29908,7 +29927,8 @@ static void actor_update_begin(
 		}
 		else
 		{
-			actor_get_timeslice(actor_index);
+			if (!psp_full_slot)
+				actor_get_timeslice(actor_index);
 			actor_input_update(actor_index);
 			actor_perception_update(actor_index);
 			actor_situation_update(actor_index);
