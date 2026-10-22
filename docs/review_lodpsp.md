@@ -10,4 +10,6 @@
 
 ## Proof [E]
 
-(filled in by the merge request's proof batch)
+Lab batch lodpsp1 39760883341 (Sierra-III lodpsp 4c78094 against w140 13a0194 itself, two builds in one batch; fixedticks fixedseed statecrc nomouth; bake b140z): **with `lodpsp` off, play and both random seeds identical to 13a0194** at all 1,800 ticks of b40 and 3,600 of b30 (hands off); strict 0 sites on every run. Compiles: campaign PGO 39760616629 ok (heap 5,748 KB), PSP_METRICS=0 39760872313 ok (5,756 KB).
+
+**The side-by-side** (b40's opening cinematic, the defaults against `lodpsp`, a shot every 3 s at the same game times; the shots stay on the lab's results branch, `sierra-batch/39760883341/b40-def-shots` and `b40-lodpsp-shots`, not in this repository): pixels that differ of 130,560: 0 (t1), 38 (t2), 1,089 (t4), **9,143 (t5)**, 8,245 (t7), 5,590 (t8), 0 (t10): the most is 7% of the screen, on the near characters' edges where a lower level of detail is drawn.
