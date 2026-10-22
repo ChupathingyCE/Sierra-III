@@ -26725,6 +26725,24 @@ FIXES_STENCILS["source/game/game.c#stencilsfirst"] = [
 #   game time too), as nwbatch's list did; a later compute anywhere replaces
 #   it whole; the frame's last tick makes those still left.
 # "nmskip": on (shelved, opt-in: small and not exact, docs/review_perf-levers.md).
+#
+# VISLAZY, on by default ("vislazyoff" turns it off; "nmskip" or "nmskipcheck"
+# named wins over it): the same skip on every tick, not only a frame's first,
+# for the same objects when the last frame didn't draw them; their matrices are
+# made only when something reads them (docs/review_vislazy.md). An object
+# nobody draws or reads was having its node walk made every tick for nothing:
+# 17-54% of animation and node matrices' time on the heavy maps. Its
+# collision model doesn't keep it out, so two more readers are caught:
+# - The Media Engine's perception rays (collisions.c, FIXES_122) can't make a
+#   compute: a ray that reaches an object whose compute is owed is left to the
+#   main CPU (-1), whose test reads it through the accessor.
+# - A game state saved (a checkpoint) holds node matrices: every owed compute
+#   is made first, so a revert loads what it would have.
+# The left-out compute stays owed however long the object goes unread (the
+# 8-tick limit is the frame's-end form's), and the renderer's lists mark what
+# each frame draws. "vislazycheck" makes every compute as before and checks
+# each skip and each read's catch-up as nmskipcheck does, naming the reader;
+# the "vislazy:" line counts the catch-ups by reader.
 # "nmskipcheck": makes every compute
 # as before, but checks each would-be skip (the sphere and root unchanged) and
 # each read's catch-up (bit for bit against the compute it stands in for), and
@@ -26747,6 +26765,57 @@ static game_state_before_load_proc before_load_procs[] =
 	psp_nms_game_state_loading,
 #endif
 };"""),
+("""static game_state_before_save_proc before_save_procs[] =
+{
+	dummy,
+};""",
+ """#ifdef HALO_PSP
+void psp_nms_game_state_saving(void); /* objects.c (psp_fixups.py, FIXES_NMSKIP: vislazy) */
+#endif
+
+static game_state_before_save_proc before_save_procs[] =
+{
+	dummy,
+#ifdef HALO_PSP
+	psp_nms_game_state_saving,
+#endif
+};"""),
+]
+
+# vislazy: the Media Engine's rays leave an object whose compute is owed to
+# the main CPU, and the renderer's lists say what each frame draws
+FIXES_NMSKIP["source/physics/collisions.c#vislazy"] = [
+("""				marks.objects[absolute_index >> 5] |= 1ul << (absolute_index & 31);
+				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,""",
+ """				marks.objects[absolute_index >> 5] |= 1ul << (absolute_index & 31);
+				{
+					/* psp_fixups.py (FIXES_NMSKIP, vislazy): an object whose node
+					matrices are owed is made only by the main CPU, so its ray is
+					the main CPU's (objects.c) */
+					extern int psp_nms_count;
+					extern unsigned long psp_nms_pending[];
+
+					if (psp_nms_count && ((psp_nms_pending[(unsigned short)absolute_index >> 5] >> (absolute_index & 31)) & 1))
+						return -1;
+				}
+				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,"""),
+]
+FIXES_NMSKIP["source/render/render_objects.c#vislazy"] = [
+("""		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
+			psp_rendered_full++;
+	}
+#endif""",
+ """		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
+			psp_rendered_full++;
+	}
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): what the frame draws
+		(objects.c) */
+		extern void psp_vl_listed(long const *indices, short count);
+
+		psp_vl_listed(render_object_globals.rendered_object_indices, render_object_globals.rendered_object_count);
+	}
+#endif"""),
 ]
 
 FIXES_NMSKIP["source/objects/objects.c#nmskip"] = [
@@ -26760,13 +26829,13 @@ extern long psp_nms_settle_time;
 bit is tested in line, as readers are many and left-out computes few */
 extern int psp_nms_count;
 extern unsigned long psp_nms_pending[];
-void psp_nms_settle(long object_index);
+void psp_nms_settle(long object_index, void *site);
 static void psp_nms_forget(void);
 #define PSP_NMS_READ(index) do { \\
 		unsigned long psp_nms_absolute = (unsigned long)(index) & 0xFFFFUL; \\
 		if (psp_nms_count && psp_nms_absolute < MAXIMUM_OBJECTS_PER_MAP && \\
 			((psp_nms_pending[psp_nms_absolute >> 5] >> (psp_nms_absolute & 31)) & 1)) \\
-			psp_nms_settle(index); \\
+			psp_nms_settle(index, __builtin_return_address(0)); \\
 	} while (0)
 #else
 #define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + game_time_get())
@@ -26814,6 +26883,53 @@ long psp_nms_settle_time = NONE;
 int psp_nms_count = 0;
 unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;
+/* vislazy: the skip on every tick for what the last frame didn't draw */
+static int psp_vl_on = 0, psp_vl_ticked = 0;
+static unsigned long psp_vl_drawn[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static unsigned long psp_vl_peak, psp_vl_frames, psp_vl_sites_other;
+#define PSP_VL_SITES 16
+static void *psp_vl_site[PSP_VL_SITES];
+static unsigned long psp_vl_site_n[PSP_VL_SITES];
+static void *psp_nms_reader;
+
+/* the renderer's list for a view (render_objects.c): the first list after a
+tick starts the frame's set afresh, and a frame's views add to it */
+void psp_vl_listed(long const *indices, short count)
+{
+	short k;
+
+	if (psp_vl_on <= 0)
+		return;
+	if (psp_vl_ticked)
+	{
+		csmemset(psp_vl_drawn, 0, sizeof(psp_vl_drawn));
+		psp_vl_ticked = 0;
+		psp_vl_frames++;
+	}
+	for (k = 0; k < count; k++)
+	{
+		unsigned long absolute = (unsigned long)indices[k] & 0xFFFFUL;
+
+		if (absolute < MAXIMUM_OBJECTS_PER_MAP)
+			psp_vl_drawn[absolute >> 5] |= 1ul << (absolute & 31);
+	}
+}
+
+/* which code read an object whose compute was owed */
+static void psp_vl_site_note(void)
+{
+	int s;
+
+	for (s = 0; s < PSP_VL_SITES && psp_vl_site[s] && psp_vl_site[s] != psp_nms_reader; s++)
+		;
+	if (s == PSP_VL_SITES)
+	{
+		psp_vl_sites_other++;
+		return;
+	}
+	psp_vl_site[s] = psp_nms_reader;
+	psp_vl_site_n[s]++;
+}
 static short *psp_nms_entry_of = NULL;
 static struct psp_nms_entry *psp_nms_entries = NULL;
 static short psp_nms_free[PSP_NMS_ENTRIES];
@@ -26821,7 +26937,7 @@ static int psp_nms_free_count = 0;
 static struct psp_nms_root *psp_nms_roots = NULL;
 static real_matrix4x3 *psp_nms_kept = NULL;
 static unsigned long psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded,
-	psp_nms_read, psp_nms_frame_end, psp_nms_stale, psp_nms_refused[6], psp_nms_gate_wrong,
+	psp_nms_read, psp_nms_frame_end, psp_nms_stale, psp_nms_refused[7], psp_nms_gate_wrong,
 	psp_nms_made_differs, psp_nms_made_checked, psp_nms_skip_us, psp_nms_check_reports;
 static void psp_nms_settle_absolute(long absolute, int at_frame_end);
 
@@ -26926,6 +27042,12 @@ __attribute__((noinline)) static int psp_nms_begin(void)
 
 		psp_nms_check = psp_keep("nmskipcheck") != 0;
 		psp_nms_on = psp_nms_check || psp_keep("nmskip");
+		if (!psp_nms_on && !psp_keep("vislazyoff"))
+		{
+			psp_vl_on = 1;
+			psp_nms_check = psp_keep("vislazycheck") != 0;
+			psp_nms_on = 1;
+		}
 		if (psp_nms_on)
 		{
 			psp_nms_entry_of = (short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nms_entry_of));
@@ -26943,11 +27065,15 @@ __attribute__((noinline)) static int psp_nms_begin(void)
 		}
 	}
 	if (psp_nms_on <= 0)
+	{
+		psp_vl_on = 0;
 		return 0;
+	}
 	psp_nms_ticks++;
+	psp_vl_ticked = 1;
 	if (psp_lights_link_tick)
 		psp_nms_last_ticks++;
-	return !psp_lights_link_tick;
+	return psp_vl_on || !psp_lights_link_tick;
 }
 
 /* 1 when this compute (and the postprocess after it, which these types
@@ -26965,7 +27091,9 @@ __attribute__((noinline)) static int psp_nms_skip(long object_index, struct obje
 	psp_nms_seen++;
 	if (object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE)
 		reason = 0;
-	else if (definition->object.collision_model.index != NONE)
+	else if (psp_vl_on && ((psp_vl_drawn[absolute >> 5] >> (absolute & 31)) & 1))
+		reason = 6;
+	else if (!psp_vl_on && definition->object.collision_model.index != NONE)
 		reason = 1;
 	else if (object->object.animation.interpolation_frame_count)
 		reason = 2;
@@ -27023,6 +27151,8 @@ __attribute__((noinline)) static int psp_nms_skip(long object_index, struct obje
 	psp_nms_pending[absolute >> 5] |= 1ul << (absolute & 31);
 	psp_nms_count++;
 	psp_nms_skipped++;
+	if ((unsigned long)psp_nms_count > psp_vl_peak)
+		psp_vl_peak = psp_nms_count;
 	return 1;
 }
 
@@ -27078,7 +27208,7 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 
 	psp_nms_release(absolute);
 	/* its object gone, or a game state from another time (a revert) */
-	if (!object_header_try_and_get(entry.object_index) || entry.time > now || now - entry.time > 8)
+	if (!object_header_try_and_get(entry.object_index) || entry.time > now || (!psp_vl_on && now - entry.time > 8))
 	{
 		psp_nms_stale++;
 		return;
@@ -27086,7 +27216,11 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 	if (at_frame_end)
 		psp_nms_frame_end++;
 	else
+	{
 		psp_nms_read++;
+		if (psp_vl_on)
+			psp_vl_site_note();
+	}
 	if (!psp_nms_check)
 	{
 		psp_nms_make(entry.object_index, &entry);
@@ -27107,8 +27241,10 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 	{
 		psp_nms_made_differs++;
 		if (psp_nms_check_reports++ < 20)
-			platform_psp_log("nmskipcheck: t=%ld %s (#%08lx): the catch-up from tick %ld differs from the compute it stands in for",
-				now, tag_get_name(object->definition_index), (unsigned long)entry.object_index, entry.time);
+			platform_psp_log("%s: t=%ld %s (#%08lx): the catch-up from tick %ld differs from the compute it stands in for (reader %08lx)",
+				psp_vl_on ? "vislazycheck" : "nmskipcheck",
+				now, tag_get_name(object->definition_index), (unsigned long)entry.object_index, entry.time,
+				(unsigned long)psp_nms_reader);
 	}
 	csmemcpy(nodes, psp_nms_kept, size);
 	object->object.bounding_sphere_center = center;
@@ -27121,8 +27257,9 @@ __attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int
 }
 
 /* a reader of an object whose compute was left out: made first */
-__attribute__((noinline)) void psp_nms_settle(long object_index)
+__attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
 {
+	psp_nms_reader = site;
 	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
 
 	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
@@ -27137,7 +27274,7 @@ __attribute__((noinline)) static void psp_nms_close(void)
 	psp_nms_open = 0;
 	if (psp_nms_on <= 0)
 		return;
-	if (psp_nms_count && psp_lights_link_tick)
+	if (psp_nms_count && psp_lights_link_tick && !psp_vl_on)
 	{
 		for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
 			while (psp_nms_pending[word])
@@ -27145,15 +27282,31 @@ __attribute__((noinline)) static void psp_nms_close(void)
 	}
 	if (psp_nms_ticks >= 900)
 	{
-		platform_psp_log("nmskip: %lu ticks (%lu a frame's last): %lu computes of scenery and its kin on the others, %lu left out "
+		platform_psp_log("%s: %lu ticks (%lu a frame's last): %lu computes of scenery and its kin on the others, %lu left out "
 			"(%lu replaced by a later compute, %lu made for a reader, %lu at the frame's end, %lu stale); kept: attached %lu, "
-			"collision model %lu, interpolating %lu, root animated %lu, root moved or unknown %lu, no room %lu",
+			"collision model %lu, interpolating %lu, root animated %lu, root moved or unknown %lu, no room %lu, drawn last frame %lu",
+			psp_vl_on ? "vislazy" : "nmskip",
 			psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded, psp_nms_read,
 			psp_nms_frame_end, psp_nms_stale, psp_nms_refused[0], psp_nms_refused[1], psp_nms_refused[2],
-			psp_nms_refused[3], psp_nms_refused[4], psp_nms_refused[5]);
+			psp_nms_refused[3], psp_nms_refused[4], psp_nms_refused[5], psp_nms_refused[6]);
+		if (psp_vl_on)
+		{
+			char sites[PSP_VL_SITES * 20];
+			int at = 0, s;
+
+			sites[0] = 0;
+			for (s = 0; s < PSP_VL_SITES && psp_vl_site[s]; s++)
+				at += snprintf(sites + at, sizeof(sites) - at, " %08lx:%lu", (unsigned long)psp_vl_site[s], psp_vl_site_n[s]);
+			platform_psp_log("vislazy: %lu frames listed; computes owed now %d, peak %lu; catch-ups by reader (site:n):%s; other readers %lu",
+				psp_vl_frames, psp_nms_count, psp_vl_peak, sites, psp_vl_sites_other);
+			csmemset(psp_vl_site, 0, sizeof(psp_vl_site));
+			csmemset(psp_vl_site_n, 0, sizeof(psp_vl_site_n));
+			psp_vl_frames = psp_vl_peak = psp_vl_sites_other = 0;
+		}
 		if (psp_nms_check)
-			platform_psp_log("nmskipcheck: the skips' test wrong %lu of %lu; catch-ups differing %lu of %lu; "
+			platform_psp_log("%s: the skips' test wrong %lu of %lu; catch-ups differing %lu of %lu; "
 				"the computes it would leave out %.3f ms a tick",
+				psp_vl_on ? "vislazycheck" : "nmskipcheck",
 				psp_nms_gate_wrong, psp_nms_skipped, psp_nms_made_differs, psp_nms_made_checked,
 				(float)psp_nms_skip_us / (float)psp_nms_ticks / 1000.0f);
 		psp_nms_ticks = psp_nms_last_ticks = psp_nms_seen = psp_nms_skipped = psp_nms_superseded = 0;
@@ -27176,6 +27329,20 @@ static void psp_nms_forget(void)
 	psp_nms_free_count = PSP_NMS_ENTRIES;
 	for (k = 0; k < PSP_NMS_ROOTS; k++)
 		psp_nms_roots[k].object_index = NONE;
+}
+
+/* a game state is saved (a checkpoint): it holds the node matrices, so every
+owed compute is made first, and a revert loads what it would have */
+void psp_nms_game_state_saving(void)
+{
+	long word;
+
+	if (psp_nms_on <= 0 || !psp_nms_count)
+		return;
+	psp_nms_reader = (void *)psp_nms_game_state_saving;
+	for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
+		while (psp_nms_pending[word])
+			psp_nms_settle_absolute(word * 32 + __builtin_ctz(psp_nms_pending[word]), 0);
 }
 
 /* a game state is loaded (a revert): its objects' matrices are as it was
