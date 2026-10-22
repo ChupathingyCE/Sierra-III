@@ -10,4 +10,4 @@ Build 118 added a small table that remembers `collision_bsp_test_sphere`'s answe
 
 ## Proof [E]
 
-(filled in by the merge request's proof batch)
+Lab batch smemooff1 39745272677 (Sierra-III smemooff d822b7f on w140 21e73d4; b30 and a30 on their timed routes, c20 hands off; fixedticks fixedseed statecrc nomouth, to game time 125 s; bake b140z): **play and both random seeds identical at all 3,750 ticks** with the defaults (memo off) against `spherememo` and against `spherememocheck`, on all three maps; `spherememocheck` counted 0 answers that differed from the walk; strict 0 sites on every run. The table's hit rate on this base, per 300 ticks: b30 131 of 19,661 queries (0.7%), a30 1,205 of 32,032 (3.8%), c20 521 of 9,000 (5.8%). Compiles: campaign PGO 39745255365 ok (heap 5,764 KB), PSP_METRICS=0 39745261360 ok (5,772 KB).
