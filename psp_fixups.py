@@ -30640,7 +30640,486 @@ void ai_scripting_place(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_VEHPROBE: a moving vehicle's empty surroundings asked once
+# Each tick a moving vehicle asks, for every mass point (22 on a banshee), a
+# ground query (collision_get_features_in_sphere about the point) and, in the
+# new physics, a swept ray from where the point is to where the move takes it;
+# a point with an antigravity probe casts one more ray straight down. In the
+# air nearly all of them find nothing (a30's banshees: 91% of updates have
+# nothing within one sphere about the whole vehicle). So one sphere is asked
+# first, about the centre of mass, reaching every point's query sphere, its
+# antigravity probe and the move's likely sweep. When it holds nothing, a
+# query whose sphere lies inside it, or a ray whose two ends lie inside it,
+# would find nothing too, and is not asked: its answer is the one it gives
+# when it finds nothing (the ground plane below the world, no material, no
+# ray hit), so the vehicle moves exactly as before. Each is checked where it
+# is asked, against the sphere actually walked, so a sweep longer than the
+# guess is simply cast. The sphere's test answers yes to more than the
+# queries could ever find, never to less: the level's any surface or edge
+# (the early-out walk), and every scenery or machine object (the types those
+# queries test) whose sphere reaches it, walked through children and
+# siblings without the gates the queries add (invisible, no collisions, the
+# parent's own type); a walk that fills its 256 leaves counts as yes. A
+# vehicle on the ground last tick is not asked about: the ground is in reach,
+# and asking would only cost. Only which work is done changes, never an
+# answer; the objects' marks (magic_number) differ, which the play hash and
+# the sleep checksum leave out. Keep words, all off by default: "vehprobe"
+# (both physics), "vehprobe1" (the new physics only: the banshee's, not the
+# radius physics of the dropship and the Pelican), "vehprobecheck" (the
+# sphere decides, every query is asked anyway, and any query it would have
+# skipped that found something is counted in the "vehprobe:" log line).
+# Campaign only: the multiplayer build compiles it off
+FIXES_VEHPROBE = {}
+FIXES_VEHPROBE["source/physics/collisions.c#vehprobe"] = [
+("""	return features->count[_collision_feature_sphere] != 0 ||
+		features->count[_collision_feature_cylinder] != 0 ||
+		features->count[_collision_feature_prism] != 0;
+}
+
+boolean collision_fix_pill(""", """	return features->count[_collision_feature_sphere] != 0 ||
+		features->count[_collision_feature_cylinder] != 0 ||
+		features->count[_collision_feature_prism] != 0;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VEHPROBE): any object a vehicle's ground query or
+swept ray could test in this sphere: scenery or a machine whose sphere (the
+datum's or its copy) reaches it, through children and siblings, ignoring
+only the vehicle and what it carries, as both of those do */
+static boolean psp_vehprobe_object_reaches(
+	long object_index,
+	real_point3d const *center,
+	real radius,
+	long ignore_object_index)
+{
+	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		if (object_index != ignore_object_index)
+		{
+			struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+			if (TEST_FLAG(_collision_test_for_vehicles_flags, object->object.type + _collision_test_objects_first_type_bit) &&
+				(point_in_sphere(center, &object->object.bounding_sphere_center, object->object.bounding_sphere_radius + radius) ||
+					point_in_sphere(center, &sphere->center, sphere->radius + radius)))
+			{
+				return TRUE;
+			}
+			if (object->object.first_child_object_index != NONE &&
+				psp_vehprobe_object_reaches(object->object.first_child_object_index, center, radius, ignore_object_index))
+			{
+				return TRUE;
+			}
+		}
+		object_index = object->object.next_object_index;
+	}
+	while (object_index != NONE);
+
+	return FALSE;
+}
+
+/* psp_fixups.py (FIXES_VEHPROBE): TRUE when nothing a vehicle's ground
+queries (_collision_test_for_bipeds_dead_flags) or swept rays
+(_collision_test_for_vehicles_flags, the same objects) could meet lies in
+the sphere. No marks are left: clusters are kept apart here, and an object
+in two clusters is simply looked at twice */
+boolean psp_vehprobe_reach_empty(
+	real_point3d const *center,
+	real radius,
+	long ignore_object_index)
+{
+	struct collision_bsp_test_sphere_result result;
+	unsigned long clusters[(MAXIMUM_CLUSTERS_PER_STRUCTURE + 31) / 32];
+	boolean found;
+	short leaf_reference_index;
+
+	psp_sphere_any = 1;
+	psp_sphere_any_found = 0;
+	found = collision_bsp_test_sphere(
+		global_collision_bsp_get(),
+		MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+		breakable_surface_flags_get(),
+		center,
+		radius,
+		&result);
+	psp_sphere_any = 0;
+	psp_sphere_any_found = 0;
+	if (found || result.leaf_count >= 256)
+	{
+		return FALSE;
+	}
+
+	memset(clusters, 0, sizeof(clusters));
+	for (leaf_reference_index = 0; leaf_reference_index < result.leaf_count; leaf_reference_index++)
+	{
+		long cluster_index = collision_cluster_index_from_leaf(result.leaf_indices[leaf_reference_index]);
+		long reference_index;
+		long object_index;
+
+		/* (structure_cluster_mark skips a cluster that fits no cluster) */
+		if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE ||
+			(clusters[cluster_index >> 5] & (1ul << (cluster_index & 31))))
+		{
+			continue;
+		}
+		clusters[cluster_index >> 5] |= 1ul << (cluster_index & 31);
+		for (object_index = cluster_get_first_collideable_object(&reference_index, (short)cluster_index);
+			object_index != NONE;
+			object_index = cluster_get_next_collideable_object(&reference_index))
+		{
+			if (psp_vehprobe_object_reaches(object_index, center, radius, ignore_object_index))
+			{
+				return FALSE;
+			}
+		}
+	}
+
+	return TRUE;
+}
+#endif
+
+boolean collision_fix_pill("""),
+]
+FIXES_VEHPROBE["source/physics/physics.c#vehprobe"] = [
+# the state, the sphere and its tests, ahead of compute_ground_plane
+("""static void compute_ground_plane(
+	long object_index,
+	struct mass_point_datum *mass_point,
+	struct mass_point_definition const *mass_point_definition)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VEHPROBE): one sphere about a moving vehicle, asked
+before its mass points' ground queries and rays. Mode: bit 1 the new
+physics, bit 2 the radius physics, bit 4 "vehprobecheck" */
+int psp_keep(const char *name);
+boolean psp_vehprobe_reach_empty(real_point3d const *center, real radius, long ignore_object_index);
+static int psp_vp_mode = -1;
+static boolean psp_vp_active = FALSE, psp_vp_empty = FALSE, psp_vp_eligible = FALSE;
+static real_point3d psp_vp_center;
+static real psp_vp_radius;
+static unsigned long psp_vp_updates[2], psp_vp_probes[2], psp_vp_empties[2];
+static unsigned long psp_vp_ground[2], psp_vp_rays[2], psp_vp_wrong, psp_vp_total;
+/* kept between the sphere and what is tested inside it, against rounding */
+#define PSP_VP_SLACK (1.0f/64.0f)
+
+/* a sphere of this extra radius about the point lies inside the empty sphere */
+static boolean psp_vp_inside(
+	real_point3d const *point,
+	real extra)
+{
+	real limit = psp_vp_radius - extra - PSP_VP_SLACK;
+	real dx = point->x - psp_vp_center.x;
+	real dy = point->y - psp_vp_center.y;
+	real dz = point->z - psp_vp_center.z;
+
+	return psp_vp_active && psp_vp_empty && limit > 0.0f && dx*dx + dy*dy + dz*dz <= limit*limit;
+}
+
+/* FALSE when the ray need not be cast: both its ends lie in the empty
+sphere, so it does (a sphere is convex) */
+static boolean psp_vp_ray(
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	real_point3d end;
+
+	psp_vp_eligible = FALSE;
+	if (!psp_vp_active)
+		return TRUE;
+	end.x = point->x + vector->i;
+	end.y = point->y + vector->j;
+	end.z = point->z + vector->k;
+	if (psp_vp_inside(point, 0.0f) && psp_vp_inside(&end, 0.0f))
+	{
+		psp_vp_rays[0]++;
+		psp_vp_eligible = TRUE;
+		return (psp_vp_mode & 4) != 0;
+	}
+	psp_vp_rays[1]++;
+	return TRUE;
+}
+
+/* a ray hit: always TRUE; "vehprobecheck" counts a hit the sphere ruled out */
+static boolean psp_vp_hit(
+	void)
+{
+	if (psp_vp_eligible)
+		psp_vp_wrong++;
+	return TRUE;
+}
+
+/* the sphere for this update: about the centre of mass, reaching each mass
+point's query sphere (its radius and the 1/16 the query adds) and its
+antigravity probe, and, in the new physics, this tick's sweep as velocity
+and spin would carry it, with room. How far it reaches only decides how much
+is skipped: each query and ray is checked against it where it is asked */
+static void psp_vp_begin(
+	long object_index,
+	struct physics_definition const *physics,
+	real_matrix4x3 const *matrix,
+	boolean radius_physics)
+{
+	struct object_datum const *object = object_get(object_index);
+	short mass_point_count = physics_mass_point_count(physics);
+	short mass_point_index;
+	real reach = 0.0f;
+	real arm = 0.0f;
+
+	psp_vp_active = FALSE;
+	psp_vp_empty = FALSE;
+	psp_vp_eligible = FALSE;
+	if (psp_vp_mode < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		/* (campaign only) */
+		psp_vp_mode = 0;
+#else
+		psp_vp_mode = psp_keep("vehprobe") ? 3 : psp_keep("vehprobe1") ? 1 : 0;
+		if (psp_keep("vehprobecheck"))
+			psp_vp_mode = (psp_vp_mode ? psp_vp_mode : 3) | 4;
+#endif
+	}
+	if (!(psp_vp_mode & (radius_physics ? 2 : 1)))
+		return;
+	psp_vp_updates[radius_physics]++;
+	if (TEST_FLAG(object->object.flags, _object_on_ground_bit))
+		return;
+
+	psp_vp_center = matrix->position;
+	for (mass_point_index = 0; mass_point_index < mass_point_count; mass_point_index++)
+	{
+		struct mass_point_definition const *mass_point_definition = TAG_BLOCK_GET_ELEMENT(
+			&physics->mass_points,
+			mass_point_index,
+			struct mass_point_definition);
+		short powered_mass_point_index = physics_powered_mass_point_index(physics, mass_point_definition);
+		real_point3d local_position = mass_point_definition->position;
+		real_point3d position;
+		real extra = mass_point_definition->radius + 0.0625f;
+		real distance;
+
+		if (radius_physics)
+		{
+			local_position.x -= physics->center_of_mass.x;
+			local_position.y -= physics->center_of_mass.y;
+			local_position.z -= physics->center_of_mass.z;
+		}
+		matrix4x3_transform_point(matrix, &local_position, &position);
+		distance = distance3d(&position, &psp_vp_center);
+		if (powered_mass_point_index != NONE)
+		{
+			struct powered_mass_point_definition const *powered_mass_point_definition = TAG_BLOCK_GET_ELEMENT(
+				&physics->powered_mass_points,
+				powered_mass_point_index,
+				struct powered_mass_point_definition);
+
+			if (TEST_FLAG(powered_mass_point_definition->flags, _powered_mass_point_antigrav_bit) &&
+				mass_point_definition->radius + powered_mass_point_definition->antigrav_height > extra)
+				extra = mass_point_definition->radius + powered_mass_point_definition->antigrav_height;
+		}
+		if (distance + extra > reach)
+			reach = distance + extra;
+		if (distance > arm)
+			arm = distance;
+	}
+	if (!radius_physics)
+	{
+		reach += 1.25f*(magnitude3d(&object->object.translational_velocity) +
+			magnitude3d(&object->object.angular_velocity)*arm) + 0.0625f;
+	}
+	psp_vp_radius = reach + 2.0f*PSP_VP_SLACK;
+	psp_vp_empty = psp_vehprobe_reach_empty(&psp_vp_center, psp_vp_radius, object_index);
+	psp_vp_active = TRUE;
+	psp_vp_probes[radius_physics]++;
+	psp_vp_empties[radius_physics] += psp_vp_empty;
+}
+
+static void psp_vp_end(
+	void)
+{
+	if (!psp_vp_mode)
+		return;
+	psp_vp_active = FALSE;
+	psp_vp_empty = FALSE;
+	psp_vp_eligible = FALSE;
+	if (++psp_vp_total % 600 == 0)
+	{
+		platform_psp_log("vehprobe: %lu updates (new physics %lu, radius physics %lu); asked %lu / %lu, nothing in reach %lu / %lu; ground queries skipped %lu, asked %lu; rays skipped %lu, cast %lu; check: %lu skippable found something",
+			psp_vp_updates[0] + psp_vp_updates[1], psp_vp_updates[0], psp_vp_updates[1],
+			psp_vp_probes[0], psp_vp_probes[1], psp_vp_empties[0], psp_vp_empties[1],
+			psp_vp_ground[0], psp_vp_ground[1], psp_vp_rays[0], psp_vp_rays[1], psp_vp_wrong);
+		psp_vp_updates[0] = psp_vp_updates[1] = psp_vp_probes[0] = psp_vp_probes[1] = 0;
+		psp_vp_empties[0] = psp_vp_empties[1] = psp_vp_ground[0] = psp_vp_ground[1] = 0;
+		psp_vp_rays[0] = psp_vp_rays[1] = 0;
+	}
+}
+#endif
+
+static void compute_ground_plane(
+	long object_index,
+	struct mass_point_datum *mass_point,
+	struct mass_point_definition const *mass_point_definition)
+{"""),
+# the ground query: not asked when its sphere lies in the empty one
+("""	struct collision_feature_list features;
+	struct collision_plane collision;
+
+	mass_point->ground_plane = depths_of_hell;""", """	struct collision_feature_list features;
+	struct collision_plane collision;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	boolean psp_skippable = FALSE;
+	boolean psp_found;
+#endif
+
+	mass_point->ground_plane = depths_of_hell;"""),
+("""	if (collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features) &&
+		collision_features_test_point(&features, &mass_point->position, &collision))""",
+"""#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE): its sphere (the query adds 1/16) lies
+	in the empty one, so it would find nothing: the answer is the one above */
+	if (psp_vp_active)
+	{
+		psp_skippable = psp_vp_inside(&mass_point->position, mass_point_definition->radius + 0.0625f);
+		psp_vp_ground[!psp_skippable]++;
+	}
+	psp_found = (!psp_skippable || (psp_vp_mode & 4)) &&
+		collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features);
+	if (psp_found && psp_skippable)
+		psp_vp_wrong++;
+	if (psp_found &&
+		collision_features_test_point(&features, &mass_point->position, &collision))
+#else
+	if (collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features) &&
+		collision_features_test_point(&features, &mass_point->position, &collision))
+#endif"""),
+# the new physics' antigravity probe
+("""				if (collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&point, &probe_vector) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# the new physics' sweep (every pass: nothing else moves in between)
+("""				if (collision_test_vector(
+						_collision_test_for_vehicles_flags |
+							FLAG(_collision_test_front_facing_surfaces_bit),
+						&mass_point->position,
+						&delta,
+						instance->object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&mass_point->position, &delta) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_vehicles_flags |
+							FLAG(_collision_test_front_facing_surfaces_bit),
+						&mass_point->position,
+						&delta,
+						instance->object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# the radius physics: its sphere once its frame is known, its antigravity probe
+("""	matrix4x3_from_point_and_vectors(
+		&world_matrix,
+		&object->object.position,
+		&object->object.forward,
+		&object->object.up);
+""", """	matrix4x3_from_point_and_vectors(
+		&world_matrix,
+		&object->object.position,
+		&object->object.forward,
+		&object->object.up);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_begin(object_index, physics, &world_matrix, TRUE);
+#endif
+"""),
+("""				if (collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&point, &probe_vector) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# physics_update: the sphere asked before the new physics' compute, and both
+# physics close it (unit collisions are not the mass points')
+("""			magic_torque);
+		return;""", """			magic_torque);
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_VEHPROBE) */
+		psp_vp_end();
+#endif
+		return;"""),
+("""#ifdef HALO_PSP
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_new(""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_begin(object_index, physics, &instance.world_matrix, FALSE);
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_new("""),
+("""	physics_compute_unit_collisions(object_index);""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_end();
+#endif
+	physics_compute_unit_collisions(object_index);"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
