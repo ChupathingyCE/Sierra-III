@@ -72,3 +72,12 @@ Moves (compaction, copies following the origin) and glyph changes wait for the s
 - When the list room part is too small (b40's largest frames, up to 560 KB [M]), the frame waits for the last show as under geshow2's hand-over.
 - The record and the ME now both run beside the GE's tail, so all three share the bus [U]. The PSP pair prices it.
 - Latency: N is shown at the GE's finish of N as before, but N+1 is recorded beside N's tail: `showlat` +12 to +16 ms in d40's slow stretch, +1 to +7 elsewhere [M, PSP-3000].
+
+## On by default, on idxring's ring: proof (idxring3, w140 2637bed) [E]
+
+Sierra-III idxring3 c29425a (idxring's three commits on w140 2637bed + geshow3 in M6 #2's default table); lab batch idxring3a 39729577438 (a10 and d40 hands off to game time 6,000, fixedticks fixedseed statecrc framecrc nomouth, two runs a side; `on` = the defaults, `off` = `geshow3off`; bake b140z):
+- **Play and both random seeds identical at all 6,000 ticks**, on vs off and between the runs of each side, on both maps. The whole-state hash parts on vs off (looping sounds, the objects allocation) and also between runs of one side (a10 off/off2 from tick 3,682, d40 on/on2 from 1,458), so it doesn't judge this change.
+- **Pictures within the runs' own spread:** a10 on/off differ at 23-42 of ~2,986 frames, against 22-45 between runs of one side; d40 2-5 against 3-6.
+- `geshow3check`: 0 reuses of what the GE reads before its frame was shown (a10: textures 0 of 52, geometry 0 of 209, level copies 0 of 26, VRAM copies 0 of 1,825, list room 0 of 2,699; d40 likewise). Draws skipped for room in a part 0; finishes not reported 0. The ring's waits 0 (no range caught up with the frame being shown). List-full skips equal on and off (a10 8,158 both; d40 0 both). Strict 0 sites on every run.
+- Front door: menu -> a10 with the defaults (hop2-on), as m6menu2's hop; the return leg is the PSP's (the master's fd-return).
+- Compiles: campaign PGO 39729492710 ok (heap 5,764 KB; 86 functions without counts, the base 83: the ring's).
