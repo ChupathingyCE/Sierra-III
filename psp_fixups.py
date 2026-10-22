@@ -30216,17 +30216,229 @@ FIXES_AICAD["source/ai/actor_perception.c#aicad"] = [
 ]
 
 # ---------- FIXES_LODPSP: models' level of detail picked nearer (a compromise)
-# "lodpsp": models already pick their level of detail at the size they appear
-# on the PSP's 272 lines (FIXES_19; "fulllod" for the game's 480). This picks it
-# as if the screen were 272/480 as tall again, so lower levels come in 1.76x
+# Models already pick their level of detail at the size they appear on the
+# PSP's 272 lines (FIXES_19; "fulllod" for the game's 480). This picks it as
+# if the screen were 272/480 as tall again, so lower levels come in 1.76x
 # nearer and the smallest objects drop out sooner: a compromise for the
-# GE-bound cinematics, off by default, the owner's call after an A/B. Shadows
-# follow the same pixels
+# GE-bound stretches, on by default ("lodpspoff" turns it off; "lodpsp" is
+# still accepted). Shadows follow the same pixels.
+# Some models' lower levels lose a part rather than simplify it: the
+# Pelican's cockpit window has no glass below its top level, so it went
+# black. So each model gets a floor, read from its own data the first time it
+# is drawn: the lowest level at which every region permutation still draws
+# every see-through shader its top level draws (opaque materials merged into
+# one at a lower level are the simplification itself, not a loss). The nearer pick never goes below a
+# model's floor; it goes there only where the game's own pick would.
+# "lodpspall": the nearer pick with no floor (for the A/B)
 FIXES_LODPSP = {}
 FIXES_LODPSP["source/render/render_objects.c#lodpsp"] = [
+("""static real object_get_level_of_detail_pixels(
+	long object_index)
+{
+	real_point3d center;""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_LODPSP) */
+#include "models/model_definitions.h"
+#include "cache/cache_files.h"
+#include <stdio.h>
+
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+/* render_models.c's part layout (models.c): the shader a part draws and
+whether it is drawn at all */
+struct psp_lod_part
+{
+	unsigned long flags;
+	short shader_index;
+};
+
+#define PSP_LOD_LEVELS 5
+#define PSP_LOD_FLOORS 1024 /* models a map draws: a few hundred */
+static unsigned long psp_lod_floors[PSP_LOD_FLOORS]; /* the model's datum index + 1, << 3 | its floor */
+static unsigned long psp_lod_floors_map = 0;
+
+/* each new map's tags (cache_files.c, psp_fixups.py FIXES_LODPSP): the
+floors were the last map's */
+unsigned long psp_lod_map_serial = 1;
+
+/* the shaders a geometry draws, as a mask of the model's shader indices */
+static unsigned long psp_lod_shaders(struct model const *model, short geometry_index)
+{
+	struct model_geometry_header { byte reserved[0x24]; struct tag_block parts; } const *geometry;
+	unsigned long mask = 0;
+	long part_index;
+
+	if (geometry_index < 0 || geometry_index >= model->geometries.count)
+		return 0;
+	geometry = tag_block_get_element_with_size(&model->geometries, geometry_index, 0x30);
+	for (part_index = 0; part_index < geometry->parts.count; part_index++)
+	{
+		struct psp_lod_part const *part = tag_block_get_element_with_size(&geometry->parts, part_index, 0x68);
+
+		if (!(part->flags & 1) /* stripped: never drawn */ && part->shader_index >= 0 &&
+			part->shader_index < model->shaders.count && part->shader_index < 32)
+		{
+			struct psp_lod_shader_reference { struct tag_reference shader; } const *reference =
+				tag_block_get_element_with_size(&model->shaders, part->shader_index, 0x20);
+
+			/* only see-through parts: a lower level that merges opaque
+			materials into one simplifies, where one without its glass or
+			glow loses a part */
+			if (reference->shader.index != NONE &&
+				shader_type_is_transparent(shader_definition_get(reference->shader.index)->base.type))
+				mask |= 1UL << part->shader_index;
+		}
+	}
+	return mask;
+}
+
+/* the lowest level at which every region permutation still draws every
+shader of its top level */
+static long psp_lod_floor_find(long model_index, struct model const *model)
+{
+	long floor = 0, region_index, lost = 0;
+
+	for (region_index = 0; region_index < model->regions.count; region_index++)
+	{
+		struct model_region const *region = TAG_BLOCK_GET_ELEMENT(&model->regions, region_index, struct model_region);
+		long permutation_index;
+
+		for (permutation_index = 0; permutation_index < region->permutations.count; permutation_index++)
+		{
+			struct model_region_permutation const *permutation = TAG_BLOCK_GET_ELEMENT(&region->permutations, permutation_index,
+				struct model_region_permutation);
+			unsigned long top = psp_lod_shaders(model, permutation->geometry_indices[PSP_LOD_LEVELS - 1]);
+			long level;
+
+			for (level = PSP_LOD_LEVELS - 2; level >= floor; level--)
+				if ((psp_lod_shaders(model, permutation->geometry_indices[level]) & top) != top)
+				{
+					floor = level + 1;
+					lost |= top & ~psp_lod_shaders(model, permutation->geometry_indices[level]);
+					break;
+				}
+		}
+	}
+	if (floor > 0)
+	{
+		char types[64];
+		int at = 0;
+		long shader_index;
+
+		types[0] = 0;
+		for (shader_index = 0; shader_index < 32 && at < (int)sizeof(types) - 4; shader_index++)
+			if (lost & (1UL << shader_index))
+			{
+				struct psp_lod_shader_reference { struct tag_reference shader; } const *reference =
+					tag_block_get_element_with_size(&model->shaders, shader_index, 0x20);
+				struct shader const *shader = reference->shader.index == NONE ? NULL :
+					shader_definition_get(reference->shader.index);
+
+				at += snprintf(types + at, sizeof(types) - at, " %d", shader ? (int)shader->base.type : -1);
+			}
+		platform_psp_log("lodpsp: %s keeps level %ld and above (its lower levels lose shaders of type%s)",
+			tag_get_name(model_index), floor, types);
+	}
+	return floor;
+}
+
+static long psp_lod_floor(long model_index, struct model const *model)
+{
+	unsigned long key = ((unsigned long)model_index + 1) << 3, slot, probe;
+
+	if (psp_lod_floors_map != psp_lod_map_serial)
+	{
+		csmemset(psp_lod_floors, 0, sizeof(psp_lod_floors));
+		psp_lod_floors_map = psp_lod_map_serial;
+		/* "lodpspscan": every model of the map at once, drawn or not, so the
+		log names each one whose lower levels lose a part */
+		if (psp_keep("lodpspscan"))
+		{
+			struct tag_iterator iterator;
+			long index, models = 0, floored = 0;
+
+			tag_iterator_new(&iterator, MODELS_GROUP_TAG);
+			while ((index = tag_iterator_next(&iterator)) != NONE)
+			{
+				models++;
+				floored += psp_lod_floor_find(index, model_definition_get(index)) > 0;
+			}
+			platform_psp_log("lodpsp: scan: %ld models, %ld keep a floor", models, floored);
+		}
+	}
+	slot = ((unsigned long)model_index * 2654435761UL) % PSP_LOD_FLOORS;
+	for (probe = 0; probe < PSP_LOD_FLOORS; probe++, slot = (slot + 1) % PSP_LOD_FLOORS)
+	{
+		if ((psp_lod_floors[slot] & ~7UL) == key)
+			return (long)(psp_lod_floors[slot] & 7);
+		if (!psp_lod_floors[slot])
+		{
+			long floor = psp_lod_floor_find(model_index, model);
+
+			psp_lod_floors[slot] = key | (unsigned long)floor;
+			return floor;
+		}
+	}
+	return psp_lod_floor_find(model_index, model);
+}
+
+/* the level render_model picks at these pixels; -1 when it draws nothing */
+static long psp_lod_level(struct model const *model, real pixels)
+{
+	long level = PSP_LOD_LEVELS - 1;
+
+	if (pixels < model->detail_cutoff_pixels[0])
+		return -1;
+	while (level > 0 && pixels < model->detail_cutoff_pixels[level])
+		level--;
+	return level;
+}
+
+/* the nearer pick: the PSP's pixels scaled by 272/480 again, but never a
+level below the model's floor unless the game's own pick (pixels) is there */
+static real psp_lod_nearer(long object_index, real pixels)
+{
+	static signed char all = -1;
+	long model_index = object_definition_get(object_get(object_index)->definition_index)->object.model.index;
+	real nearer = pixels * (272.0f / 480.0f);
+	struct model const *model;
+	long floor;
+
+	if (model_index == NONE)
+		return nearer;
+	if (all < 0)
+		all = (signed char)(psp_keep("lodpspall") != 0);
+	if (all)
+		return nearer;
+	model = model_definition_get(model_index);
+	floor = psp_lod_floor(model_index, model);
+	if (floor == 0 || psp_lod_level(model, nearer) >= floor)
+		return nearer;
+	if (psp_lod_level(model, pixels) < floor)
+		return pixels;
+	return model->detail_cutoff_pixels[floor] > nearer ? model->detail_cutoff_pixels[floor] : nearer;
+}
+#endif
+
+static real object_get_level_of_detail_pixels(
+	long object_index)
+{
+	real_point3d center;"""),
 ("\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);",
- "\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) *\n"
- "\t\t\t(PSP_KEEP_ONCE(\"lodpsp\") ? (272.0f / 480.0f) * (272.0f / 480.0f) : 272.0f / 480.0f);"),
+ "\t{\n"
+ "\t\treal pixels = render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n\n"
+ "\t\treturn PSP_KEEP_ONCE(\"lodpspoff\") ? pixels : psp_lod_nearer(object_index, pixels);\n"
+ "\t}"),
+]
+FIXES_LODPSP["source/cache/cache_files.c#lodpsp"] = [
+("\t\t\t\tpsp_ge_forget_map();\n",
+ "\t\t\t\tpsp_ge_forget_map();\n"
+ "\t\t\t\t{\n"
+ "\t\t\t\t\t/* the models' level of detail floors were the last map's (FIXES_LODPSP) */\n"
+ "\t\t\t\t\textern unsigned long psp_lod_map_serial;\n\n"
+ "\t\t\t\t\tpsp_lod_map_serial++;\n"
+ "\t\t\t\t}\n"),
 ]
 
 
