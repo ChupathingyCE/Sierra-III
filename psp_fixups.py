@@ -26800,6 +26800,27 @@ FIXES_NMSKIP["source/physics/collisions.c#vislazy"] = [
 				}
 				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,"""),
 ]
+# vislazy: an object whose compute was left out while its animation plays is
+# not still, though its datum is unchanged (objects.c, the sleep check)
+FIXES_NMSKIP["source/objects/objects.c#vislazy"] = [
+("""	else
+		object_update(object_index);
+	if (psp_family_checksum(header) == before)
+""", """	else
+		object_update(object_index);
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): a skipped compute of a
+		playing animation is a change the checksum can't see */
+		extern long psp_vl_moving;
+		int psp_vl_moved = psp_vl_moving == object_index;
+
+		psp_vl_moving = NONE;
+		if (psp_vl_moved)
+			before = ~psp_family_checksum(header);
+	}
+	if (psp_family_checksum(header) == before)
+"""),
+]
 FIXES_NMSKIP["source/render/render_objects.c#vislazy"] = [
 ("""		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
 			psp_rendered_full++;
@@ -26885,6 +26906,9 @@ unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;
 /* vislazy: the skip on every tick for what the last frame didn't draw */
 static int psp_vl_on = 0, psp_vl_ticked = 0;
+/* the object whose compute the skip just left out while its animation plays
+(the sleep check, psp_sleepy_update) */
+long psp_vl_moving = NONE;
 static unsigned long psp_vl_drawn[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
 static unsigned long psp_vl_peak, psp_vl_frames, psp_vl_sites_other;
 #define PSP_VL_SITES 16
@@ -27071,6 +27095,7 @@ __attribute__((noinline)) static int psp_nms_begin(void)
 	}
 	psp_nms_ticks++;
 	psp_vl_ticked = 1;
+	psp_vl_moving = NONE;
 	if (psp_lights_link_tick)
 		psp_nms_last_ticks++;
 	return psp_vl_on || !psp_lights_link_tick;
@@ -27151,6 +27176,14 @@ __attribute__((noinline)) static int psp_nms_skip(long object_index, struct obje
 	psp_nms_pending[absolute >> 5] |= 1ul << (absolute & 31);
 	psp_nms_count++;
 	psp_nms_skipped++;
+	/* an animation playing moves the nodes the compute would have made, so
+	the eager compute changes the object's datum (its node matrices) though
+	the skip leaves it as it was: the sleep check (psp_sleepy_update) must
+	see it changed, or the object falls asleep, stops updating and keeps
+	its pose where the eager build would have kept it awake and moving */
+	if (psp_vl_on && object->object.animation.animation_graph_index != NONE &&
+		object->object.animation.state.index != NONE)
+		psp_vl_moving = object_index;
 	if ((unsigned long)psp_nms_count > psp_vl_peak)
 		psp_vl_peak = psp_nms_count;
 	return 1;
