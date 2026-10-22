@@ -90,3 +90,31 @@ The second v3 batch, on the fix (same maps, words and stretches as before):
 - **Priced** at the share of the PSP's record time [E x M]: c10 0.51-0.53 ms a frame (gate 0.65: under), a30 0.88-1.20 (gate 0.63-1.18: over), b30 1.12 at the whole map's record time (gate 1.17: at it; beach 0.85, flight 1.34).
 
 Over the gate on a30 and at it on b30, so it goes to the PSP: a c10 and a30 pair from one build, off and `rso`, settles how long. c10's miss is the resting: an object whose inputs changed twice running rests for 64 frames, and on c10 that is most of them [U: which input moves is not yet counted].
+
+## v4: the reflection record, camera-faded reflections, room made when full
+
+Base: w140 13a0194 merged in. On w140 every walk wrote the new reflection record, which v3 refused as "other records", so v3 kept nothing there.
+
+- **The reflection record kept** with the model's own records (v4a). On b30 that sent 66 of 93 offered a frame again; a30 and c10 still sent none, because most of their reflections are faded by the camera's distance, and v4a counted those as inputs that change.
+- **A camera-faded reflection kept, its fade worked out again before a send** (`psp_rso_fade`, `rso_fades_same`). While a walk is kept, each fade's cutoff, falloff and fraction go into the entry (up to 8). Before a send, the fraction is worked out again at the model's distance along the view now, by the same function on the same globals, and every fraction must be equal bit for bit. Any difference means the object is walked, counted as "a reflection's fade". So a send carries a fade only when the walk would have written that same fade.
+- **The key trimmed to what the records are made from.** The effect record writes intensity only for camouflage, its only reader. The key leaves out the effect, function values, shadow fields and the distant lights past the count.
+- **Room made only when an entry doesn't fit** (`rso_make_room`, at most once a frame). It drops entries unused for 2 frames and ones kept but never sent, and keeps the ones that were sent (`RSO_SENT`). Slots are no longer cleared mid-probe.
+
+## Proof and gain, v4b [E]
+
+The v4b batch (22 of 22 played; cache pairs off vs `rso` on b30, a30, c10 to 120 s; off, off2, `rso`, `rsocheck` with statecrc and framecrc on b30, a30, c10, a10 to tick 6,000; `nomouth fixedticks fixedseed` on every run):
+- **Records sent again** a frame: **b30 71 of 93** offered (no room 17), **a30 65 of 134** (see-through 25, resting 43), **c10 28 of 40** (no room 12). Against v4a: 66 / 0 / 0. Inputs changed is now at most 1.3 a frame anywhere (node matrices).
+- **`rsocheck` 0 differ** on b30 (289k walks over two windows), a30 (251k) and c10 (79k). On a10, 1 differs in each of 2,016 and 3,569: a part-draw record's index-buffer address. The check compares before `rso_send`'s own test, which refuses an entry whose buffers have moved ("geometry moved"), so that record is never sent [D].
+- **Play and both random seeds the same at all 6,000 ticks** on all four maps, `rso` and `rsocheck` against off.
+- **Pictures**: framecrc against off differs at b30 1,467, a30 2, c10 2, a10 23 frames of ~2,990. Two runs with it off in the same batch differ at 1,486 / 1 / 3 / 19. That is inside the control on b30 and c10, and on a30 and a10 within a few frames of it.
+- **Memory**: a10's heap free low is 220 KB both ways (largest block 200 vs 201 KB); a30's heap lines are the same. a10 counts 6 failed heap requests against 5 with it off [U: which request].
+- **Gain**, the record lane in the cache model (visibility to the HUD, game time 5-110 s): **b30 17.36 -> 16.77 ms a frame (-3.4%)**, **a30 12.18 -> 11.63 (-4.5%)**, **c10 10.98 -> 10.56 (-3.8%)**. The model draw step falls by 0.48-0.76 ms. render_model's own step grows by 0.66 / 0.53 / 0.31 ms.
+- **Priced** at the share of the PSP's record time [E x M]: **b30 ~1.09 ms a frame (gate 1.17: under)**, a30 0.81-1.10 (gate 0.63-1.18: over its low end), **c10 ~1.07 (gate 0.65: over)**.
+
+**Not merged:** b30 sends more than v3 but falls short of its gate. Where the rest goes [U, from the counts]: on b30 and c10, room is made in nearly every frame (578 and 600 of 600). Each time, the whole block is moved down (up to 47 KB on b30), and still 12-17 offered objects a frame find no room. c10's block is 24 KB, because RSO_LEAVES_FREE halves it there. **v4c:** make room only when the entries it would drop free enough for the new one, so a full block of sent entries is left as it is, not moved every frame. Give c10 the room its 12 no-room objects need (~10 KB). Then look at the per-sent cost in render_model's own step: the key compare and the fade recompute, now 0.3-0.7 ms.
+
+## On by default (v4b, the master's call 2026-10-22 06:32)
+
+v4b is exact (play and both random seeds as without it at all 6,000 ticks on b30, a30, c10 and a10; `rsocheck` 0 differences on b30, a30 and c10) and a net gain on every map in the cache model, so it goes in as a clean win: on by default in the campaign build, `rsooff` turns it off (`rsocheck` and `rsoall` as before). The multiplayer build keeps it opt-in (`rso`). ~1 ms a frame is under the PSP's A/A noise floor, so it is judged in the emulator. Its records live in free user RAM outside the heap; with none there it logs `GE: rso: no room ... off` and stays off. Proof on the merged head (w140 8281d74 + v4b): below.
+
+Lab batch rso4on1 39771253325 (Sierra-III rso4on 0fe78cf; the defaults (rso on) against `rsooff`; fixedticks fixedseed statecrc framecrc nomouth, to game time 200 s; bake b140z): **play and both random seeds identical at all 6,000 ticks on b30, a30, c10 and a10**; pictures inside the runs' own spread (on vs off: b30 518 of 2,995 frames, where b30's timed route differs at 1,486 between two identical runs (rso4b off/off2); a30 6, c10 7, a10 38); `rsocheck` on b30: 93,039 walks compared, 0 differ; re-sent a frame b30 6.0 of 6.9 offered over this stretch, a30 14.5 of 21.3, c10 28.0 of 39.6. The front door with the defaults (menu -> a10) and a strict hop: clean, strict 0 sites on every run. Compiles: campaign PGO 39771236784 ok (heap 5,744 KB), PSP_METRICS=0 39771242102 ok (5,752 KB).

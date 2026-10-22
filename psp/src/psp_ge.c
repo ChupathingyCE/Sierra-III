@@ -970,7 +970,10 @@ static int defer_model_effect(int type, float intensity)
 	defer_word *at = defer_take(DEFER_MODEL_EFFECT, 2);
 
 	at[0].i = type;
-	at[1].f = intensity;
+	/* the replay reads the intensity for camouflage only: a still object's
+	effect is the engine's "none", whose intensity is left unset, so it is
+	written as 0 and the record is the same each time its inputs are (rso) */
+	at[1].f = (type & 0xFF) == 1 ? intensity : 0.0f;
 	return 1;
 }
 
@@ -11655,13 +11658,17 @@ pretouched, and each part's geometry is locked again, which must give the
 addresses the records hold (else the walk runs). A model whose walk reads the
 time (a glow), draws a see-through part, takes the Xbox path for a part
 (psp_rso_volatile) or writes any other kind of record isn't kept; nor, in
-models.c, one with point lights, an effect, or a debug view on.
+models.c, one with point lights, an effect, or a debug view on. A part's
+reflection faded by the camera's distance is kept with its fade's inputs and
+answer, and the fade is worked out again before a send: the records go only
+if every fraction comes out the same, bit for bit.
 
 The kept records are in one block of free user RAM outside the heap, never
 the heap: "rsokbN" KB (RSO_KB by default), halved until RSO_LEAVES_FREE stays
-free there. An entry is a header, the key, each part's two buffers and the
-records. At a frame's first object, entries unused for two frames are dropped
-and the rest moved down. The key isn't built in a struct: models.c compares
+free there. An entry is a header, the key, each faded reflection's cutoff,
+falloff and fraction, each part's two buffers and the records. Room is made
+only when an entry doesn't fit (rso_make_room): the entries sent stay, so
+the room goes to what is sent again rather than to the first come. The key isn't built in a struct: models.c compares
 the inputs in place with the kept key, field by field, only the bytes the
 walk reads, and writes the key straight into the entry once a walk is kept.
 An object whose inputs changed RSO_CHANGES times running without a send (a
@@ -11676,8 +11683,14 @@ set or not: the replay reads only that) */
 #define RSO_MAX_PARTS 32
 #define RSO_CHANGES 2
 #define RSO_REST 64
-enum { RSO_WORDS, RSO_OBJECT, RSO_USED, RSO_KEY_WORDS, RSO_PARTS, RSO_RECORD_WORDS, RSO_RECORDS, RSO_CHANGED, RSO_REST_UNTIL,
-	RSO_HEADER };
+#define RSO_MAX_FADES 8
+enum { RSO_WORDS, RSO_OBJECT, RSO_USED, RSO_KEY_WORDS, RSO_FADES, RSO_PARTS, RSO_RECORD_WORDS, RSO_RECORDS, RSO_CHANGED,
+	RSO_REST_UNTIL, RSO_SENT, RSO_HEADER };
+/* an entry: the header, the key, each camera-faded reflection's cutoff,
+falloff and fraction, each part's two buffers, the records */
+#define RSO_FADE_AT(entry) ((entry) + RSO_HEADER + (entry)[RSO_KEY_WORDS])
+#define RSO_BUFFERS_AT(entry) (RSO_FADE_AT(entry) + 3 * (entry)[RSO_FADES])
+#define RSO_RECORDS_AT(entry) (RSO_BUFFERS_AT(entry) + 2 * (entry)[RSO_PARTS])
 struct vertex_buffer;
 struct triangle_buffer;
 void *psp_vertex_lock(const struct vertex_buffer *buffer);
@@ -11687,21 +11700,28 @@ the object offered (NONE, -1, none), and the walk's marks */
 int psp_rso_on = 0, psp_rso_all = 0;
 long psp_rso_object = -1;
 int psp_rso_volatile = 0, psp_rso_capturing = 0;
+/* models.c: the key's field where a compare found the inputs changed (0 the
+header, 1 regions, 2 ambient, 3 distant lights, 4 reflection tint, 5 centroid,
+6 radius, 7 change colours, 8 node matrices, 9 the length; 10, here: a
+camera-faded reflection's fraction) */
+int psp_rso_field = 0;
 static PSP_MAIN_SIDE int rso_check = 0, rso_room_tried = 0;
 static PSP_MAIN_SIDE unsigned int *rso_pool = NULL, rso_pool_words = 0, rso_end = 0, rso_entries = 0;
 static PSP_MAIN_SIDE unsigned int rso_slot_entry[RSO_SLOTS]; /* an entry's offset + 1; 0 none */
 static PSP_MAIN_SIDE long rso_slot_object[RSO_SLOTS];
-static PSP_MAIN_SIDE unsigned long rso_compacted = 0;
+static PSP_MAIN_SIDE unsigned long rso_compacted = 0; /* the frame last counted */
 /* the walk being kept */
 static PSP_MAIN_SIDE long rso_cap_object;
-static PSP_MAIN_SIDE unsigned int rso_found, rso_cap_changes, rso_cap_start, rso_cap_parts, rso_cap_checked;
+static PSP_MAIN_SIDE unsigned int rso_found, rso_cap_changes, rso_cap_start, rso_cap_parts, rso_cap_checked, rso_cap_fades;
+static PSP_MAIN_SIDE float rso_cap_fade[RSO_MAX_FADES * 3];
+static PSP_MAIN_SIDE unsigned long rso_last_compact = 0;
 static PSP_MAIN_SIDE unsigned long rso_cap_resets, rso_cap_records;
 static PSP_MAIN_SIDE defer_word *rso_cap_base;
 static PSP_MAIN_SIDE const void *rso_cap_buffers[RSO_MAX_PARTS * 2];
 /* since the last log line */
 static PSP_MAIN_SIDE unsigned long rso_frames, rso_asked_count, rso_sent, rso_sent_words, rso_kept, rso_new_key,
-	rso_no_room, rso_volatile_count[4], rso_broken, rso_kinds, rso_moved, rso_compared, rso_differ, rso_differ_words,
-	rso_resting;
+	rso_no_room, rso_volatile_count[5], rso_broken, rso_kinds, rso_moved, rso_compared, rso_differ, rso_differ_words,
+	rso_resting, rso_kind_count[32], rso_field_count[11], rso_compactions;
 static PSP_MAIN_SIDE int rso_differ_kind = -1, rso_differ_word = -1;
 
 static unsigned int rso_slot(long object_index)
@@ -11724,35 +11744,63 @@ static void rso_forget(void)
 static void rso_log(void)
 {
 	float frames = (float)rso_frames;
+	int kind, top_kind = 0;
 
+	for (kind = 1; kind < 32; kind++)
+		if (rso_kind_count[kind] > rso_kind_count[top_kind])
+			top_kind = kind;
 	platform_log("GE: rso: a frame (%lu frames): offered %.1f, sent again %.1f (%.0f words), walked and kept %.1f; "
 		"not kept: inputs changed %.1f, a glow that follows the time %.1f, the Xbox path %.1f, a see-through part %.1f, "
-		"too many parts %.1f, other records %.1f, the buffer started over %.1f, "
-		"no room %.1f; geometry moved %.1f; resting (inputs that keep changing) %.1f; %u entries in %u of %u KB",
+		"too many parts %.1f, too many camera-faded reflections %.1f, other records %.1f (most: kind %d, %.1f), "
+		"the buffer started over %.1f, no room %.1f; geometry moved %.1f; resting (inputs that keep changing) %.1f; "
+		"%u entries in %u of %u KB, made room %lu times",
 		rso_frames, rso_asked_count / frames, rso_sent / frames, rso_sent_words / frames, rso_kept / frames,
 		rso_new_key / frames, rso_volatile_count[0] / frames, rso_volatile_count[1] / frames,
-		rso_volatile_count[2] / frames, rso_volatile_count[3] / frames, rso_kinds / frames, rso_broken / frames, rso_no_room / frames,
-		rso_moved / frames, rso_resting / frames, rso_entries, (unsigned int)(rso_end * 4 / 1024), (unsigned int)(rso_pool_words * 4 / 1024));
+		rso_volatile_count[2] / frames, rso_volatile_count[3] / frames, rso_volatile_count[4] / frames, rso_kinds / frames,
+		top_kind, rso_kind_count[top_kind] / frames, rso_broken / frames, rso_no_room / frames,
+		rso_moved / frames, rso_resting / frames, rso_entries, (unsigned int)(rso_end * 4 / 1024),
+		(unsigned int)(rso_pool_words * 4 / 1024), rso_compactions);
+	platform_log("GE: rso: inputs changed, by the key's first field that differs, a frame: header %.1f, regions %.1f, "
+		"ambient %.1f, distant lights %.1f, reflection tint %.1f, centroid %.1f, radius %.1f, "
+		"change colours %.1f, node matrices %.1f, length %.1f, a reflection's fade %.1f",
+		rso_field_count[0] / frames, rso_field_count[1] / frames, rso_field_count[2] / frames, rso_field_count[3] / frames,
+		rso_field_count[4] / frames, rso_field_count[5] / frames, rso_field_count[6] / frames,
+		rso_field_count[7] / frames, rso_field_count[8] / frames, rso_field_count[9] / frames, rso_field_count[10] / frames);
 	if (rso_check)
 		platform_log("GE: rsocheck: %lu walks compared with the kept records, %lu differ (%lu words; the first in a record of kind %d, word %d)",
 			rso_compared, rso_differ, rso_differ_words, rso_differ_kind, rso_differ_word);
 	rso_frames = rso_asked_count = rso_sent = rso_sent_words = rso_kept = rso_new_key = rso_no_room =
-		rso_broken = rso_kinds = rso_moved = rso_resting = 0;
+		rso_broken = rso_kinds = rso_moved = rso_resting = rso_compactions = 0;
 	memset(rso_volatile_count, 0, sizeof(rso_volatile_count));
+	memset(rso_kind_count, 0, sizeof(rso_kind_count));
+	memset(rso_field_count, 0, sizeof(rso_field_count));
 }
 
-/* entries unused in the last two windows dropped, the rest moved down */
-static void rso_compact(void)
+/* room made when an entry doesn't fit, at most once a frame: entries unused
+for two frames, and entries kept but never sent though their object has
+been drawn since, are dropped and the rest moved down. An entry is never stale by age (a send locks
+its geometry again and checks the addresses, and its key is compared whole),
+so one that stays is sent again whenever its object is drawn as before; and
+the ones sent stay ahead of new walks, which are kept only into the room
+left (keep the most sent, not the first come). Offsets into the pool held
+across the call (rso_found, rso_cap_checked) are void after it, so it runs
+only where none is held */
+static void rso_make_room(void)
 {
 	unsigned int from = 0, to = 0;
 
+	if (rso_last_compact == rso_stamp)
+		return;
+	rso_last_compact = rso_stamp;
+	rso_compactions++;
 	memset(rso_slot_entry, 0, sizeof(rso_slot_entry));
 	rso_entries = 0;
 	while (from < rso_end)
 	{
 		unsigned int words = rso_pool[from + RSO_WORDS];
+		unsigned int used = rso_pool[from + RSO_USED];
 
-		if (rso_stamp - rso_pool[from + RSO_USED] <= 2)
+		if (rso_stamp - used <= 2 && (rso_pool[from + RSO_SENT] || rso_stamp - used <= 1 || !rso_pool[from + RSO_KEY_WORDS]))
 		{
 			unsigned int slot;
 
@@ -11767,9 +11815,22 @@ static void rso_compact(void)
 		from += words;
 	}
 	rso_end = to;
-	rso_compacted = rso_stamp;
-	if (++rso_frames >= 600)
-		rso_log();
+}
+
+/* words at the pool's end for an entry, room made once if need be: its offset,
+or -1 if it doesn't fit */
+static int rso_take(unsigned int words)
+{
+	unsigned int at;
+
+	if (rso_end + words > rso_pool_words || rso_entries >= RSO_SLOTS / 2)
+		rso_make_room();
+	if (rso_end + words > rso_pool_words || rso_entries >= RSO_SLOTS / 2)
+		return -1;
+	at = rso_end;
+	rso_end += words;
+	rso_entries++;
+	return (int)at;
 }
 
 /* the block outside the heap, once */
@@ -11811,9 +11872,9 @@ where they point and its textures are pretouched; 0 (nothing written) if a
 part's geometry moved or the records don't fit */
 static int rso_send(unsigned int *entry)
 {
-	unsigned int key_words = entry[RSO_KEY_WORDS], parts = entry[RSO_PARTS], words = entry[RSO_RECORD_WORDS];
-	const void *const *buffers = (const void *const *)(entry + RSO_HEADER + key_words);
-	defer_word *record = (defer_word *)(entry + RSO_HEADER + key_words + 2 * parts), *at, *end = record + words;
+	unsigned int parts = entry[RSO_PARTS], words = entry[RSO_RECORD_WORDS];
+	const void *const *buffers = (const void *const *)RSO_BUFFERS_AT(entry);
+	defer_word *record = (defer_word *)RSO_RECORDS_AT(entry), *at, *end = record + words;
 	unsigned int part = 0;
 
 	if (words > DEFER_LARGEST)
@@ -11873,7 +11934,11 @@ int psp_rso_find(long object_index, const unsigned int **kept, unsigned int *kep
 	if (!DEFER_RECORDING() || defer_paused || me_overlap || !rso_room())
 		return 0;
 	if (rso_compacted != rso_stamp)
-		rso_compact();
+	{
+		rso_compacted = rso_stamp;
+		if (++rso_frames >= 600)
+			rso_log();
+	}
 	rso_asked_count++;
 	slot = rso_slot(object_index);
 	if (rso_slot_entry[slot])
@@ -11894,33 +11959,93 @@ int psp_rso_find(long object_index, const unsigned int **kept, unsigned int *kep
 static void rso_rest(long object_index, unsigned int *entry)
 {
 	unsigned int slot = rso_slot(object_index);
+	int at;
 
-	entry[RSO_USED] = 0; /* dropped at the next frame */
-	rso_slot_entry[slot] = 0;
-	if (rso_end + RSO_HEADER > rso_pool_words || rso_entries >= RSO_SLOTS / 2)
+	/* the slot keeps the old entry until the new one is in: clearing it
+	would break the probe of every object placed past it */
+	entry[RSO_USED] = 0; /* dropped when room is next made */
+	if ((at = rso_take(RSO_HEADER)) < 0)
 		return;
-	entry = rso_pool + rso_end;
+	entry = rso_pool + at;
 	memset(entry, 0, RSO_HEADER * sizeof(unsigned int));
 	entry[RSO_WORDS] = RSO_HEADER;
 	entry[RSO_OBJECT] = (unsigned int)object_index;
 	entry[RSO_USED] = rso_stamp;
 	entry[RSO_REST_UNTIL] = rso_stamp + RSO_REST;
-	rso_slot_entry[slot] = rso_end + 1;
+	slot = rso_slot(object_index);
+	rso_slot_entry[slot] = (unsigned int)at + 1;
 	rso_slot_object[slot] = object_index;
-	rso_end += RSO_HEADER;
-	rso_entries++;
+}
+
+/* the reflection's fade by the camera's distance (rasterizer.c's model
+draw); while a walk is being kept, its inputs and answer are noted, for
+psp_rso_reuse to work out again before the walk's records are sent */
+static float rso_fraction(float distance, float cutoff, float falloff)
+{
+	float fraction = (distance - cutoff) / (falloff - cutoff);
+
+	return fraction < 0.0f ? 0.0f : fraction > 1.0f ? 1.0f : fraction;
+}
+
+float psp_rso_fade(float distance, float cutoff, float falloff)
+{
+	float fraction = rso_fraction(distance, cutoff, falloff);
+
+	if (psp_rso_capturing)
+	{
+		if (rso_cap_fades < RSO_MAX_FADES)
+		{
+			rso_cap_fade[3 * rso_cap_fades] = cutoff;
+			rso_cap_fade[3 * rso_cap_fades + 1] = falloff;
+			rso_cap_fade[3 * rso_cap_fades + 2] = fraction;
+			rso_cap_fades++;
+		}
+		else
+			psp_rso_volatile |= 16;
+	}
+	return fraction;
+}
+
+/* whether each of a kept entry's faded reflections works out to the fraction
+its records hold, at the model's distance now (bit for bit) */
+static int rso_fades_same(const unsigned int *entry, const float *centroid)
+{
+	extern float psp_model_distance_along_view(const float *centroid);
+	const float *fade = (const float *)RSO_FADE_AT(entry);
+	unsigned int count = entry[RSO_FADES], i;
+	float distance;
+
+	if (!count)
+		return 1;
+	distance = psp_model_distance_along_view(centroid);
+	for (i = 0; i < count; i++, fade += 3)
+	{
+		union { float f; unsigned int u; } now, kept;
+
+		now.f = rso_fraction(distance, fade[0], fade[1]);
+		kept.f = fade[2];
+		if (now.u != kept.u)
+			return 0;
+	}
+	return 1;
 }
 
 /* models.c, after psp_rso_find said 1, with whether the inputs equal the kept
-key: 1 if the kept records were sent (render_model's walk is skipped); 0 if
-the walk that follows is to be kept (psp_rso_capture_end); -1 if it is walked
-and not kept (the object rests) */
-int psp_rso_reuse(long object_index, int same)
+key and the model's centroid (for the faded reflections): 1 if the kept
+records were sent (render_model's walk is skipped); 0 if the walk that
+follows is to be kept (psp_rso_capture_end); -1 if it is walked and not kept
+(the object rests) */
+int psp_rso_reuse(long object_index, int same, const float *centroid)
 {
 	unsigned int *entry = rso_found ? rso_pool + rso_found - 1 : NULL;
 
 	rso_cap_checked = 0;
 	rso_cap_changes = 0;
+	if (entry && same && !rso_fades_same(entry, centroid))
+	{
+		same = 0;
+		psp_rso_field = 10;
+	}
 	if (entry && !entry[RSO_KEY_WORDS])
 	{
 		if ((int)(entry[RSO_REST_UNTIL] - rso_stamp) > 0)
@@ -11938,12 +12063,15 @@ int psp_rso_reuse(long object_index, int same)
 		{
 			entry[RSO_USED] = rso_stamp;
 			entry[RSO_CHANGED] = 0;
+			if (entry[RSO_SENT] < 0xFFFF)
+				entry[RSO_SENT]++;
 			return 1;
 		}
 	}
 	else if (entry)
 	{
 		rso_new_key++;
+		rso_field_count[(unsigned int)psp_rso_field < 11 ? psp_rso_field : 9]++;
 		rso_cap_changes = entry[RSO_CHANGED] + 1;
 		if (rso_cap_changes >= RSO_CHANGES)
 		{
@@ -11956,6 +12084,7 @@ int psp_rso_reuse(long object_index, int same)
 	psp_rso_capturing = 1;
 	rso_cap_object = object_index;
 	rso_cap_parts = 0;
+	rso_cap_fades = 0;
 	rso_cap_resets = defer_resets;
 	rso_cap_records = defer_records;
 	rso_cap_start = defer_used;
@@ -11978,15 +12107,17 @@ void psp_rso_geometry(const void *vertex_buffer, const void *triangle_buffer)
 	rso_cap_parts++;
 }
 
-/* rsocheck: the walk's records against the kept ones */
+/* rsocheck: the walk's records (and its fades and buffers) against the kept
+ones */
 static void rso_compare(const unsigned int *kept, const defer_word *record, unsigned int words, unsigned int parts)
 {
-	const defer_word *old = (const defer_word *)(kept + RSO_HEADER + kept[RSO_KEY_WORDS] + 2 * kept[RSO_PARTS]), *at;
+	const defer_word *old = (const defer_word *)RSO_RECORDS_AT(kept), *at;
 	unsigned long differ = 0;
 
 	rso_compared++;
-	if (kept[RSO_RECORD_WORDS] != words || kept[RSO_PARTS] != parts ||
-		memcmp(kept + RSO_HEADER + kept[RSO_KEY_WORDS], rso_cap_buffers, 2 * parts * sizeof(void *)))
+	if (kept[RSO_RECORD_WORDS] != words || kept[RSO_PARTS] != parts || kept[RSO_FADES] != rso_cap_fades ||
+		memcmp(RSO_FADE_AT(kept), rso_cap_fade, 3 * rso_cap_fades * sizeof(float)) ||
+		memcmp(RSO_BUFFERS_AT(kept), rso_cap_buffers, 2 * parts * sizeof(void *)))
 		differ = words + 1;
 	else
 		for (at = record; at < record + words; at += at->u >> 8)
@@ -12037,7 +12168,7 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 		unsigned int reason;
 
 		/* the first reason only, so the counts add up to the objects not kept */
-		for (reason = 0; reason < 3 && !(psp_rso_volatile & (1 << reason)); reason++)
+		for (reason = 0; reason < 4 && !(psp_rso_volatile & (1 << reason)); reason++)
 			;
 		rso_volatile_count[reason]++;
 		return NULL;
@@ -12064,9 +12195,11 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 		if (kind == DEFER_DRAW_MODEL)
 			parts++;
 		else if (kind == DEFER_MODEL_MULTIPURPOSE ? !at[3].u || !at[7].u :
-			kind != DEFER_MODEL_BEGIN && kind != DEFER_MODEL_SHAPE && kind != DEFER_MODEL_EFFECT)
+			kind != DEFER_MODEL_BEGIN && kind != DEFER_MODEL_SHAPE && kind != DEFER_MODEL_EFFECT &&
+			kind != DEFER_MODEL_REFLECTION)
 		{
 			rso_kinds++;
+			rso_kind_count[kind & 31]++;
 			return NULL;
 		}
 	}
@@ -12077,41 +12210,45 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 	}
 	if (rso_cap_checked)
 		rso_compare(rso_pool + rso_cap_checked - 1, record, words, parts);
-	total = RSO_HEADER + key_words + 2 * parts + words;
+	total = RSO_HEADER + key_words + 3 * rso_cap_fades + 2 * parts + words;
 	slot = rso_slot(rso_cap_object);
 	if (rso_slot_entry[slot])
 	{
 		entry = rso_pool + rso_slot_entry[slot] - 1;
 		if (entry[RSO_WORDS] != total)
 		{
-			entry[RSO_USED] = 0; /* dropped at the next frame */
+			entry[RSO_USED] = 0; /* dropped when room is next made */
 			entry = NULL;
 		}
 	}
 	if (!entry)
 	{
-		if (rso_end + total > rso_pool_words || rso_entries >= RSO_SLOTS / 2)
+		int offset = rso_take(total);
+
+		if (offset < 0)
 		{
 			rso_no_room++;
 			return NULL;
 		}
-		entry = rso_pool + rso_end;
-		rso_slot_entry[slot] = rso_end + 1;
+		entry = rso_pool + offset;
+		slot = rso_slot(rso_cap_object);
+		rso_slot_entry[slot] = (unsigned int)offset + 1;
 		rso_slot_object[slot] = rso_cap_object;
-		rso_end += total;
-		rso_entries++;
 	}
 	entry[RSO_WORDS] = total;
 	entry[RSO_OBJECT] = (unsigned int)rso_cap_object;
 	entry[RSO_USED] = rso_stamp;
 	entry[RSO_KEY_WORDS] = key_words;
+	entry[RSO_FADES] = rso_cap_fades;
 	entry[RSO_PARTS] = parts;
 	entry[RSO_RECORD_WORDS] = words;
 	entry[RSO_RECORDS] = (unsigned int)records;
 	entry[RSO_CHANGED] = rso_cap_changes;
 	entry[RSO_REST_UNTIL] = 0;
-	memcpy(entry + RSO_HEADER + key_words, rso_cap_buffers, 2 * parts * sizeof(void *));
-	memcpy(entry + RSO_HEADER + key_words + 2 * parts, record, words * sizeof(defer_word));
+	entry[RSO_SENT] = 0;
+	memcpy(RSO_FADE_AT(entry), rso_cap_fade, 3 * rso_cap_fades * sizeof(float));
+	memcpy(RSO_BUFFERS_AT(entry), rso_cap_buffers, 2 * parts * sizeof(void *));
+	memcpy(RSO_RECORDS_AT(entry), record, words * sizeof(defer_word));
 	rso_kept++;
 	return entry + RSO_HEADER;
 }
@@ -12126,7 +12263,14 @@ static void rso_window(void)
 	{
 		rso_check = psp_keep("rsocheck") != 0;
 		psp_rso_all = psp_keep("rsoall") != 0;
+#ifdef PSP_MULTIPLAYER
 		rso_asked = rso_check || psp_rso_all || psp_keep("rso");
+#else
+		/* on by default in the campaign: exact (play and both seeds as
+		without it on four maps, its check counting no difference) and a
+		gain on every map in the cache model; "rsooff" turns it off */
+		rso_asked = rso_check || psp_rso_all || !psp_keep("rsooff");
+#endif
 		psp_rso_on = rso_asked;
 	}
 }
