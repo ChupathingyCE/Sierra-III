@@ -641,6 +641,14 @@ void *psp_tex_glyph_room(unsigned int *generation)
 	return ram_cache;
 }
 
+/* the same, never asking for a block: for the Media Engine's work, which
+can't make the system calls that asking takes */
+void *psp_tex_glyph_room_held(unsigned int *generation)
+{
+	*generation = ram_cache_generation;
+	return ram_cache;
+}
+
 /* geinflight's record buffer in the front room (NULL without one: no
 volatile partition, asleep, or the room not asked for) and the block's
 generation: records begun in an older one were in the block the system had

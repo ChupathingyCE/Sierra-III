@@ -17427,7 +17427,11 @@ texture cache (psp_tex.c, GLYPH_ROOM_BYTES), so neither each build's heap nor
 VRAM's rooms pay for it; the program holds it run-length coded (14 KB) and
 unpacks it there, again after each sleep (the block goes back to the system) */
 void *psp_tex_glyph_room(unsigned int *generation);
-static unsigned int glyph_generation = 0;
+void *psp_tex_glyph_room_held(unsigned int *generation);
+/* written by the main CPU only (glyph_sheet): the Media Engine's replay
+only reads them */
+static PSP_MAIN_SIDE unsigned int glyph_generation = 0;
+static PSP_MAIN_SIDE int glyph_me_old = -1;
 
 static void __attribute__((noinline, cold)) glyph_sheet_unpack(unsigned char *room)
 {
@@ -17461,18 +17465,40 @@ static void __attribute__((noinline, cold)) glyph_sheet_unpack(unsigned char *ro
 	sceKernelDcacheWritebackRange(room, PSP_GLYPH_SHEET_WIDTH * PSP_GLYPH_SHEET_HEIGHT);
 }
 
-/* the sheet, unpacked if the RAM block is new; NULL without one */
+/* the sheet, unpacked if the RAM block is new; NULL without one.
+The Media Engine's work (the replay under gemeon) never unpacks it:
+unpacking hands the sheet to the GE with a system call, and a missing block
+is asked for with more, which the ME can't make. The recording unpacks it
+first, on the main CPU (glyph_sheet_ready); a replay that finds the block
+changed since (a sleep between) leaves the quad out for that frame.
+"glyphmeold": unpacked wherever it is first drawn */
 static const void *glyph_sheet(void)
 {
 	unsigned int generation;
-	unsigned char *room = psp_tex_glyph_room(&generation);
+	unsigned char *room;
 
+	if (PSP_ME_WORK() && glyph_me_old <= 0)
+	{
+		room = psp_tex_glyph_room_held(&generation);
+		return room && generation == glyph_generation ? room : NULL;
+	}
+	room = psp_tex_glyph_room(&generation);
 	if (room && generation != glyph_generation)
 	{
 		glyph_sheet_unpack(room);
 		glyph_generation = generation;
 	}
 	return room;
+}
+
+/* the main CPU's unpack, as a button glyph is recorded: the replay then
+finds the sheet there */
+static void glyph_sheet_ready(void)
+{
+	if (glyph_me_old < 0)
+		glyph_me_old = psp_keep("glyphmeold") != 0;
+	if (!glyph_me_old && !PSP_ME_WORK())
+		(void)glyph_sheet();
 }
 
 /* the game's dynamic_screen_vertex: position, texture coordinates, colour (ARGB) */
@@ -17754,6 +17780,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 	{
 		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
 		glyph_next = -1;
+		glyph_sheet_ready();
 	}
 	GE_PRETOUCH(key, TXPT_SCREEN);
 	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,

@@ -697,6 +697,11 @@ static void heap_me_check(void *caller, size_t size, const char *how)
 	__asm__ ("move %0, $sp" : "=r"(sp));
 	if (!psp_me_context || (sp & 0x1FFFFFFFu) < 0x01000000u) /* not on the ME itself: no log from there */
 		return;
+	/* the context names the thread doing the ME's work on the main CPU; a
+	thread that took the CPU from it meanwhile (the cache file reader) asks
+	for the heap as its own */
+	if ((unsigned int)sceKernelGetThreadId() != psp_me_context)
+		return;
 	for (k = 0; k < HEAP_ME_CALLERS && heap_me_callers[k]; k++)
 		if (heap_me_callers[k] == caller)
 			return;
