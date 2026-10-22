@@ -95,6 +95,9 @@ PROFILE = False             # --profile
 COMPARE_PALETTES = False    # --compare-palettes
 # options every texpack.py run takes (--tints-from-means)
 TEXPACK_OPTIONS = []
+# --slim-level: the level's rendered vertices without the binormal and tangent
+# the port never reads (tools/levelslim.py)
+LEVEL_SLIM = False
 ATRACDENC = os.path.join(HERE, 'atracdenc')    # the bundled encoder (else atracdenc on PATH)
 MUSICENC = os.path.join(HERE, 'musicenc')      # the music path's Vorbis encoder (bundle/musicenc.c)
 sys.path.insert(0, HERE)
@@ -362,6 +365,12 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     final = os.path.join(out_maps, name + '.map')
     run([sys.executable, os.path.join(LIB, 'dez.py'), built, final], log_path, env=env)
     os.remove(built)
+    # before the texture and decal steps: the decal bake keys its walls by
+    # the pack addresses this moves
+    if LEVEL_SLIM:
+        start = os.path.getsize(log_path)
+        run([sys.executable, os.path.join(LIB, 'levelslim.py'), final, pgeo], log_path, cwd=LIB, env=env)
+        echo_from(name, log_path, start, ('levelslim:',))
     log('%s: textures' % name)
     start = os.path.getsize(log_path)
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
@@ -606,6 +615,9 @@ def main():
     # --no-exact-clut: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-exact', '--no-exact-clut', dest='no_clut4_exact', action='store_true',
                     help='leave at 8 bits the textures of 16 colours or fewer that 4 bits would draw the same')
+    ap.add_argument('--slim-level', action='store_true',
+                    help="the level's rendered vertices without the binormal and tangent the port never reads "
+                         '(24 bytes a vertex in the geometry pack instead of 32; exact)')
     ap.add_argument('--jobs', type=int, default=0,
                     help='maps baked at once (default: as many as the CPUs, at most 4, fewer when under 8 GB of '
                          'memory is free; 1 bakes them one after another). The maps come out the same whatever it is')
@@ -615,7 +627,8 @@ def main():
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD, PROFILE, COMPARE_PALETTES
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM
+    LEVEL_SLIM = a.slim_level
     COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
     if a.tints_from_means:
         TEXPACK_OPTIONS.append('--tints-from-means')

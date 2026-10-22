@@ -1267,6 +1267,14 @@ static unsigned int fits(int which, unsigned int start, unsigned int size, unsig
 
 /* at the ring position, the arena's start, or just after a protected
 texture; whatever unprotected is in the chosen space is evicted */
+void psp_ge_show3_reuse(int kind, unsigned int stamp); /* psp_ge.c: geshow3check */
+
+/* the frame counter, for geshow3check's stamps (psp_ge.c) */
+unsigned int psp_tex_frame_now(void)
+{
+	return frame;
+}
+
 static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 {
 	struct arena *arena = &arenas[which];
@@ -1298,6 +1306,7 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 
 		if (at && resident_in[index] == which && at < start + size && at + alignment(entries[index].size) > start)
 		{
+			psp_ge_show3_reuse(0, last_frame[index]); /* geshow3check */
 			resident_at[index] = 0;
 			evictions++;
 		}
@@ -1341,6 +1350,8 @@ static int load(int index)
 	return load_into(index, -1);
 }
 
+extern volatile int psp_ge_show_busy; /* psp_ge.c */
+
 static int load_into(int index, int only)
 {
 	struct pack_entry const *entry = &entries[index];
@@ -1356,10 +1367,12 @@ static int load_into(int index, int only)
 		at = allocate(which = 0, alignment(entry->size), RECENT_FRAMES);
 	if (!at && only != 0)
 		at = allocate(which = 1, alignment(entry->size), RECENT_FRAMES);
+	/* the frame the GE may still be drawing (geshow2: shown off the game
+	thread) keeps its textures too */
 	if (!at && only != 1)
-		at = allocate(which = 0, alignment(entry->size), 1);
+		at = allocate(which = 0, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	if (!at && only != 0)
-		at = allocate(which = 1, alignment(entry->size), 1);
+		at = allocate(which = 1, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	if (!at)
 	{
 		waits++;
@@ -1612,6 +1625,8 @@ static const unsigned int *bind_block(int index, struct pack_entry const *entry,
 		return NULL;
 	}
 	slot = oldest;
+	if (bind_block_meta[slot].index != -1)
+		psp_ge_show3_reuse(1, bind_block_meta[slot].frame); /* geshow3check */
 	if (bind_block_meta[slot].index >= 0 && bind_block_meta[slot].index < bind_block_entries &&
 		bind_block_of[bind_block_meta[slot].index] == slot)
 		bind_block_of[bind_block_meta[slot].index] = -1;
