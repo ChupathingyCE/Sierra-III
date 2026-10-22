@@ -191,6 +191,26 @@ static int strip_census = -1;
 static unsigned int *hud_bound = NULL;
 static int find(unsigned int key);
 
+/* a table the Media Engine's replay writes (last_frame, bind_counts: a bind
+on the ME, psp_ge.c's geinflight): on whole 64-byte lines of its own. The ME
+writes back whole lines from its own cache, so a table sharing its first or
+last line with a heap neighbour would put that line back as it was at the
+hand-over, over the main CPU's newer bytes there: a heap chunk's header,
+changed by a malloc or free while the replay ran, comes back stale.
+"texlinesold": calloc's 16-byte alignment, as before */
+static void *line_calloc(size_t count, size_t size)
+{
+	size_t bytes = (count * size + 63) & ~(size_t)63;
+	void *table;
+
+	if (psp_keep("texlinesold"))
+		return calloc(count, size);
+	table = memalign(64, bytes ? bytes : 64);
+	if (table)
+		memset(table, 0, bytes ? bytes : 64);
+	return table;
+}
+
 static void strip_census_free(void)
 {
 	free(hud_bound);
@@ -205,7 +225,7 @@ void psp_tex_hud_note(unsigned int key)
 		strip_census = psp_keep("stripcensus") != 0;
 	if (!strip_census || !entries || (index = find(key)) < 0)
 		return;
-	if (!hud_bound && !(hud_bound = calloc(entry_count, 2 * sizeof(unsigned int))))
+	if (!hud_bound && !(hud_bound = line_calloc(entry_count, 2 * sizeof(unsigned int))))
 		return;
 	if (hud_bound[2 * index + 1] != frame)
 	{
@@ -1029,10 +1049,10 @@ void psp_tex_map_opened(const char *name)
 	}
 	entries = malloc(header[2]);
 	resident_at = calloc(header[1], sizeof(unsigned int));
-	last_frame = calloc(header[1], sizeof(unsigned int));
+	last_frame = line_calloc(header[1], sizeof(unsigned int));
 	resident_in = calloc(header[1], 1);
 	hud_pinned = calloc(header[1], 1);
-	bind_counts = calloc(header[1], sizeof(unsigned short));
+	bind_counts = line_calloc(header[1], sizeof(unsigned short));
 	if (!ram_cache)
 		ram_cache_acquire();
 	if (!entries || !resident_at || !last_frame || !resident_in || sceIoRead(file, entries, header[2]) != (int)header[2])
@@ -1966,7 +1986,7 @@ static int txc_ready(void)
 		free(txc_kind);
 		txc_marked_at = calloc(entry_count, sizeof(unsigned int));
 		txc_skipped_at = calloc(entry_count, sizeof(unsigned int));
-		txc_bound_at = calloc(entry_count, sizeof(unsigned int));
+		txc_bound_at = line_calloc(entry_count, sizeof(unsigned int));
 		txc_kind = calloc(entry_count, 1);
 		txc_for = entries;
 		if (!txc_marked_at || !txc_skipped_at || !txc_bound_at || !txc_kind)
