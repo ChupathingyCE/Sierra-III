@@ -14401,8 +14401,12 @@ FIXES_118["source/units/units.c#verify"] = [
 # an entry (or with an index past 16 bits) isn't kept, and the table is
 # forgotten when the collision BSP is set (a map's load, a BSP switch: the
 # next BSP is read into the same tag window) and when a map's tags load.
-# "spherewalk" (keep.txt): every query walks, as before; "spherememocheck":
-# a hit walks too and compares, and the log counts any difference
+# Off by default: on b30 the table answers ~5% of the queries, and keying
+# and comparing every query costs more than the walks it saves (+1.56% of the
+# tick in the cache model; the PSP-1000's cinematic agrees). "spherememo"
+# (keep.txt): the table on; "spherememocheck": the table on, and a hit walks
+# too and compares, the log counting any difference; "spherewalk": off, as
+# the default
 FIXES_118["source/physics/collision_bsp.c#spherememo"] = [
 ("""boolean collision_bsp_test_sphere(
 	struct collision_bsp const *bsp,""",
@@ -14582,7 +14586,7 @@ boolean collision_bsp_test_sphere(
 
 		if (psp_sphere_memo_on < 0)
 		{
-			psp_sphere_memo_on = !psp_keep("spherewalk");
+			psp_sphere_memo_on = (psp_keep("spherememo") || psp_keep("spherememocheck")) && !psp_keep("spherewalk");
 			psp_sphere_memo_check = psp_keep("spherememocheck");
 		}
 		if (psp_sphere_memo_on)
