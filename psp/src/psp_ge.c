@@ -11336,6 +11336,10 @@ static void vm_report(void)
 remember it. Parts on several nodes are planned for skinning when their
 triangles are given (see-through parts aren't: they are queued with one
 matrix) */
+struct skin_batch;
+static void batch_sphere(struct skin_batch *b, const struct skin_part *skin, const void *vertices);
+static PSP_MAIN_SIDE int batch_sphere_old = -1;
+
 static int model_convert(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
 	int strip, struct skin_part **skin)
 {
@@ -11534,6 +11538,20 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 				memcpy(record + 12, position, 12);
 			}
 		}
+	}
+	/* each batch's sphere now, on the main CPU, from the records just
+	written: the plan is a plain heap block, and the Media Engine's replay,
+	which draws the batch near the eye, must write none of it (a line it
+	writes back carries a neighbouring chunk's header as it was).
+	"batchsphereold": worked out the first time it is drawn near the eye */
+	if (batch_sphere_old < 0)
+		batch_sphere_old = psp_keep("batchsphereold") != 0;
+	if (part && !batch_sphere_old)
+	{
+		int b;
+
+		for (b = 0; b < part->batch_count; b++)
+			batch_sphere(&part->batches[b], part, vertices);
 	}
 	free(node0);
 	ge_writeback(vertices, count * (part ? part->stride : 24));
@@ -13250,10 +13268,12 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 				}
 				if (!near_sphere_full)
 				{
-					if (b->radius < 0.0f)
+					/* the ME's work never works one out: the corner loop
+					instead, which draws what the sphere would have */
+					if (b->radius < 0.0f && (batch_sphere_old > 0 || !PSP_ME_WORK()))
 						batch_sphere(b, skin, vertices);
-					whole_by_sphere = batch_sphere_inside(b, skin->weights, (const float (*)[3][4])depth_row,
-						limit > NEAR_CLIP ? limit : NEAR_CLIP);
+					whole_by_sphere = b->radius >= 0.0f && batch_sphere_inside(b, skin->weights,
+						(const float (*)[3][4])depth_row, limit > NEAR_CLIP ? limit : NEAR_CLIP);
 				}
 
 				unsigned int loop_start = probe_clock(); /* build 119's probe */
