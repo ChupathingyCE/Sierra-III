@@ -250,8 +250,8 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED,
-	DEFER_FRAME_END, DEFER_WINDOW_BEGIN
+	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED, DEFER_MODEL_REFLECTION,
+	DEFER_FRAME_END, DEFER_WINDOW_BEGIN /* last: REPLAY_SERVED follows it */
 };
 typedef union
 {
@@ -599,6 +599,7 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 void psp_ge_model_effect(int type, float intensity);
 void psp_ge_model_point_light(const float *position, unsigned int color);
 void psp_ge_model_multipurpose(unsigned int multipurpose_key, unsigned int glow_key, float const *change, float const *glow);
+void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
 void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale);
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
@@ -975,6 +976,15 @@ static int defer_model_multipurpose(unsigned int multipurpose_key, unsigned int 
 	return 1;
 }
 
+static int defer_model_reflection(unsigned int cube_key, float const *rgb)
+{
+	defer_word *at = defer_take(DEFER_MODEL_REFLECTION, 1 + 4);
+
+	at[0].u = cube_key;
+	defer_copy(at + 1, rgb, 3);
+	return 1;
+}
+
 static int defer_model_detail(unsigned int detail_key, float u_scale, float v_scale)
 {
 	defer_word *at = defer_take(DEFER_MODEL_DETAIL, 3);
@@ -1303,7 +1313,8 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_TEXT_CHARACTER] = "text characters", [DEFER_TEXT_END] = "text end", [DEFER_TEXT_BEGIN] = "text begin",
 	[DEFER_CONTRAIL] = "contrails", [DEFER_ZOOM_MASK] = "zoom mask", [DEFER_FOG_PLANAR] = "planar fog",
 	[DEFER_SEETHROUGH_TINT] = "see-through tint", [DEFER_SEETHROUGH_METER] = "see-through meters",
-	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_FRAME_END] = "frame end (list's part)",
+	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_MODEL_REFLECTION] = "model reflection",
+	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
 };
 
@@ -1393,6 +1404,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_MODEL_DETAIL:
 			psp_ge_model_detail(w[0].u, w[1].f, w[2].f);
+			break;
+		case DEFER_MODEL_REFLECTION:
+			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 3));
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -2521,6 +2535,17 @@ static const char *const kind_names[KINDS] = { "other", "sky", "level", "lights"
 	"models", "see-through queued", "decals", "sprites (particles)", "flares", "shadows", "see-through drawn", "screen quads", "HUD" };
 static const char kind_letters[KINDS] = { 'o', 'k', 'L', 'l', 'B', 'M', 'q', 'd', 'p', 'f', 's', 'T', 'Q', 'H' };
 #define LEVEL_RESERVE 0x18000 /* 96 KB */
+/* The decals' and particles' room. The light pass comes before them in the
+frame, and where many dynamic lights reach a lot of level (a10's lit
+corridors in a firefight) it can take most of the list by itself: then the
+blood, scorch marks and floor stencils, and the particles, were the draws
+left out, and whole decals vanished for as long as the fight lasted. Light
+draws now stop LIGHT_RESERVE bytes earlier; what the light pass loses is
+some light on the farthest surfaces in the fullest frames. Keep word
+"nolightreserve": as before */
+#define LIGHT_RESERVE 0x10000 /* 64 KB */
+static int light_reserve_on = -1;
+static unsigned long light_reserve_held = 0;
 static int ge_kind_now = KIND_OTHER, level_reserve_on = -1, level_begun = 0;
 static unsigned int kind_mark = 0, kind_seen = 0;
 static unsigned int kind_frame_bytes[KINDS], kind_peak_bytes[KINDS], kind_frame_skips[KINDS], kind_peak_skips[KINDS];
@@ -2595,6 +2620,12 @@ static void ge_kind(int kind)
 		kind_frame_bytes[ge_kind_now] += now - kind_mark;
 	kind_mark = now;
 	ge_kind_now = kind;
+	if (!PSP_ME_WORK())
+	{
+		extern int psp_tex_screen_pass; /* psp_tex.c: the HUD's textures pinned */
+
+		psp_tex_screen_pass = kind == KIND_HUD || kind == KIND_SCREEN;
+	}
 	if (!(kind_seen & (1u << kind)) && kind_order_length < KINDS)
 	{
 		kind_seen |= 1u << kind;
@@ -2612,9 +2643,17 @@ static void ge_kinds_frame_begin(void)
 	kind_seen = 0;
 	kind_order_length = 0;
 	ge_kind_now = KIND_OTHER;
+	if (!PSP_ME_WORK())
+	{
+		extern int psp_tex_screen_pass;
+
+		psp_tex_screen_pass = 0;
+	}
 	level_begun = 0;
 	if (level_reserve_on < 0)
 		level_reserve_on = !psp_keep("nolevelreserve");
+	if (light_reserve_on < 0)
+		light_reserve_on = !psp_keep("nolightreserve");
 }
 
 /* build 107: when the list is full, the smallest models on the screen go
@@ -3022,20 +3061,25 @@ static void __attribute__((noinline, cold)) ge_kinds_report(void)
 	near_batches_by_sphere = near_sphere_mismatches = 0;
 	model_size_floor_peak = model_size_floor;
 	model_bone_loads = model_take_bytes = model_part_calls = model_bone_calls = model_bone_sub_bytes = 0;
-	platform_log("GE: fullest frame %u KB, kinds in order %s (L level, o other, k sky, l lights, B level see-through, M models, q see-through queued, d decals, p particles, f flares, s shadows, T see-through drawn, Q screen quads, H HUD); the level's reserve %s, held back %lu draws",
-		kind_peak_total / 1024, kind_peak_order, level_reserve_on > 0 ? "on" : "off", level_reserve_held);
+	platform_log("GE: fullest frame %u KB, kinds in order %s (L level, o other, k sky, l lights, B level see-through, M models, q see-through queued, d decals, p particles, f flares, s shadows, T see-through drawn, Q screen quads, H HUD); the level's reserve %s, held back %lu draws; the decals' and particles' reserve %s, light draws held back %lu",
+		kind_peak_total / 1024, kind_peak_order, level_reserve_on > 0 ? "on" : "off", level_reserve_held,
+		light_reserve_on > 0 ? "on" : "off", light_reserve_held);
 	memset(kind_bytes, 0, sizeof(kind_bytes));
 	memset(kind_skips, 0, sizeof(kind_skips));
 	kind_frames = 0;
 	kind_peak_total = 0;
 	level_reserve_held = 0;
+	light_reserve_held = 0;
 }
 
-/* the limit for the kind running: lower before the level has begun */
+/* the limit for the kind running: lower before the level has begun, and
+lower for the light pass */
 static int kind_limit(void)
 {
 	if (level_reserve_on > 0 && !level_begun && ge_kind_now != KIND_LEVEL && ge_kind_now != KIND_SKY && !hud_phase)
-		return list_limit - LEVEL_RESERVE;
+		return list_limit - LEVEL_RESERVE - (ge_kind_now == KIND_LIGHT && light_reserve_on > 0 ? LIGHT_RESERVE : 0);
+	if (ge_kind_now == KIND_LIGHT && light_reserve_on > 0 && !hud_phase)
+		return list_limit - LIGHT_RESERVE;
 	return list_limit;
 }
 
@@ -3049,7 +3093,12 @@ static int list_full(void)
 		platform_log("GE: the display list is full; draws skipped until the frame ends");
 	kind_frame_skips[ge_kind_now]++;
 	if (limit != list_limit && sceGuCheckList() < list_limit - DISPLAY_LIST_MARGIN)
-		level_reserve_held++;
+	{
+		if (ge_kind_now == KIND_LIGHT && light_reserve_on > 0)
+			light_reserve_held++;
+		else
+			level_reserve_held++;
+	}
 	return 1;
 }
 
@@ -4477,6 +4526,8 @@ static void uv_shift(float scale_u, float scale_v)
 	sceGuTexOffset(su, sv);
 }
 static float near_object_distance = 1e30f, near_object_distance_last = 1e30f;
+/* "neardump": the nearest model's sphere radius, for the screenshot frames' line */
+static float near_object_radius = 0.0f, near_object_radius_last = 0.0f;
 static unsigned long near_auto_us = 0, near_auto_frames = 0, near_auto_chosen[3], near_auto_by_objects = 0;
 static unsigned long near_auto_chosen_high[2]; /* build 84: x8, x16 */
 
@@ -4509,6 +4560,8 @@ static float near_plane_auto(const float *eye, float game_near)
 	}
 	near_object_distance_last = near_object_distance;
 	near_object_distance = 1e30f;
+	near_object_radius_last = near_object_radius;
+	near_object_radius = 0.0f;
 	/* build 106: the nearest model's limit first, and the level tested
 	only at the scales it leaves (each test is a sphere query of the level,
 	1.2 ms a frame in the emulator at b30's beach, where the marines held
@@ -4538,6 +4591,17 @@ static float near_plane_auto(const float *eye, float game_near)
 		}
 	}
 	scale = level_scale;
+	{
+		/* "neardump": on a screenshot's frame, what decided its near plane */
+		extern volatile int psp_screenshot_requested;
+		static int dump = -1;
+
+		if (dump < 0)
+			dump = psp_keep("neardump");
+		if (dump && psp_screenshot_requested)
+			platform_log("neardump: near plane x%d (objects allow x%d, the level x%d); nearest model's sphere %.3f from the eye (radius %.3f), seated %d",
+				scale, object_scale, level_scale, near_object_distance_last, near_object_radius_last, player_seated);
+	}
 	near_auto_chosen[scale >= 4 ? 2 : scale == 2 ? 1 : 0]++;
 	if (scale >= 8)
 		near_auto_chosen_high[scale == 16 ? 1 : 0]++;
@@ -5491,16 +5555,20 @@ static float window_begin_main(const float *position, float z_near, float z_far)
 		for as the frame begins, so "tdump" lists the frame's see-through
 		draws too. "shotrunN": each of those moments takes N frames in a
 		row (at most 72 shots then), so a frame-to-frame change (a wobble,
-		a flicker) can be told from motion by comparing neighbours */
+		a flicker) can be told from motion by comparing neighbours.
+		"shotfromN": none before N seconds of game time, so the shots can
+		cover a stretch late in a map (the PC reference's rule, so a PSP shot
+		and a PC frame share their ticks) */
 		extern volatile int psp_screenshot_requested;
 		extern int psp_keep_number(const char *prefix, int fallback);
 		extern long psp_game_time_peek(void);
 		static int shot_every = -2, shot_run = 1, shot_run_left = 0, shots_asked = 0, shots_most = 24;
-		static long shot_next = -1;
+		static long shot_next = -1, shot_from = 0;
 
 		if (shot_every == -2)
 		{
 			shot_every = psp_keep_number("shotevery", 0);
+			shot_from = (long)psp_keep_number("shotfrom", 0) * 30;
 			shot_run = psp_keep_number("shotrun", 1);
 			if (shot_run < 1)
 				shot_run = 1;
@@ -5511,6 +5579,8 @@ static float window_begin_main(const float *position, float z_near, float z_far)
 		{
 			long now = psp_game_time_peek(), period = (long)shot_every * 30;
 
+			if (shot_next < 0 && shot_from > 0)
+				shot_next = shot_from;
 			if (shot_next >= 0 && now >= shot_next)
 				shot_run_left = shot_run;
 			if (shot_run_left > 0)
@@ -7862,7 +7932,17 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 	int size, k;
 	unsigned int header[16];
 	const unsigned char *at, *end;
+	static int mode_word = -1;
 
+	/* the debug menu's modes from keep.txt, for A/Bs without hands:
+	"stencilsslack" baked with two steps of slack, "stencilsnudge" the bake
+	off (the old nudge) */
+	if (mode_word < 0)
+	{
+		mode_word = psp_keep("stencilsnudge") ? 2 : psp_keep("stencilsslack") ? 1 : 0;
+		if (mode_word)
+			stencil_mode = mode_word;
+	}
 	bake_forget();
 	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pstn", name);
 	file = sceIoOpen(path, PSP_O_RDONLY, 0);
@@ -8604,6 +8684,102 @@ static float pixels_per_unit(void)
 {
 	return (SCREEN_HEIGHT * 0.5f) / fov_tan_half();
 }
+
+#ifdef PSP_DEBUG_TOOLS
+/* "sdump" (debug tools): on a screenshot's frame, every level, model and
+decal draw whose screen box meets the box of the keep words sboxlN, sboxtN,
+sboxrN, sboxbN (pixels; the whole screen when left out), with its map, its
+alpha test and whether the map has alpha, and for the level its shader. tdump
+lists only the see-through draws; this names what draws anything else that
+is on screen. Name lookups walk the tags, so not on the Media Engine */
+extern volatile int psp_screenshot_requested;
+static int sdump = -1, sdump_limits[4];
+static void const *sdump_shader = NULL;
+
+/* the environment shader of the level draw that follows (psp_fixups.py) */
+void psp_ge_sdump_shader(void const *shader)
+{
+	sdump_shader = shader;
+}
+
+static int sdump_wanted(void)
+{
+	if (sdump < 0)
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		sdump = psp_keep("sdump") != 0;
+		sdump_limits[0] = psp_keep_number("sboxl", 0);
+		sdump_limits[1] = psp_keep_number("sboxt", 0);
+		sdump_limits[2] = psp_keep_number("sboxr", SCREEN_WIDTH);
+		sdump_limits[3] = psp_keep_number("sboxb", SCREEN_HEIGHT);
+	}
+	if (sdump && psp_screenshot_requested && !PSP_ME_WORK())
+	{
+		static int listed = 0;
+
+		/* once a run: a run plays one map */
+		if (!listed)
+		{
+			extern void psp_sdump_shared_bases(void); /* hud_draw.c (psp_fixups.py) */
+
+			listed = 1;
+			psp_sdump_shared_bases();
+		}
+		return 1;
+	}
+	return 0;
+}
+
+/* box: left, top, right, bottom in pixels, from camera-space points. A point
+behind the near plane makes the box the whole screen: the draw passes the
+eye, and its box can't be worked out from its corners */
+static void sdump_box_start(float *box)
+{
+	box[0] = box[1] = 1e30f;
+	box[2] = box[3] = -1e30f;
+}
+
+static void sdump_box_add(float *box, const float *c)
+{
+	float scale = pixels_per_unit(), x, y;
+
+	if (c[2] < NEAR_CLIP)
+	{
+		box[0] = box[1] = -1e29f;
+		box[2] = box[3] = 1e29f;
+		return;
+	}
+	x = SCREEN_WIDTH * 0.5f + c[0] / c[2] * scale;
+	y = SCREEN_HEIGHT * 0.5f - c[1] / c[2] * scale;
+	if (x < box[0]) box[0] = x;
+	if (y < box[1]) box[1] = y;
+	if (x > box[2]) box[2] = x;
+	if (y > box[3]) box[3] = y;
+}
+
+/* 1 when the box meets the screen and the asked-for box; text: the box */
+static int sdump_box_text(const float *box, char *text, int size)
+{
+	int l = box[0] < -9999.0f ? -9999 : (int)box[0], t = box[1] < -9999.0f ? -9999 : (int)box[1];
+	int r = box[2] > 9999.0f ? 9999 : (int)box[2], b = box[3] > 9999.0f ? 9999 : (int)box[3];
+
+	if (r < 0 || b < 0 || l >= SCREEN_WIDTH || t >= SCREEN_HEIGHT)
+		return 0;
+	if (r < sdump_limits[0] || b < sdump_limits[1] || l >= sdump_limits[2] || t >= sdump_limits[3])
+		return 0;
+	snprintf(text, size, "box %d %d %d %d", l, t, r, b);
+	return 1;
+}
+
+static char const *sdump_map_name(unsigned int key)
+{
+	extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
+	char const *name = key ? psp_bitmap_tag_name((void const *)(key & ~3u)) : NULL;
+
+	return name ? name : "?";
+}
+#endif
 
 /* texture coordinate units per world unit over a draw's triangles */
 static float uv_density(const struct ge_vertex *stream, const unsigned short *indices, long triangle_count)
@@ -9586,6 +9762,29 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	}
 	level_uv_us += probe_clock() - probe_mark;
 	level_probe_draws++;
+#ifdef PSP_DEBUG_TOOLS
+	if (sdump_wanted())
+	{
+		extern char const *psp_shader_tag_name(void const *shader); /* hud_draw.c (psp_fixups.py) */
+		float box[4], c[3];
+		char text[64];
+		char const *shader = sdump_shader ? (const char *)sdump_shader : NULL;
+		char const *shader_name = shader ? psp_shader_tag_name(shader) : NULL;
+		long corner;
+
+		sdump_box_start(box);
+		for (corner = 0; corner < triangle_count * 3; corner++)
+		{
+			level_to_camera(&stream->base[indices[corner]].x, c);
+			sdump_box_add(box, c);
+		}
+		if (sdump_box_text(box, text, sizeof(text)))
+			platform_log("sdump: level %s shader %s (type %d flags %04x kind %d) map %s alpha tested %d map alpha %d triangles %ld",
+				text, shader_name ? shader_name : "?", shader ? *(const short *)(shader + 36) : -1,
+				shader ? *(const unsigned short *)(shader + 40) : 0, shader ? *(const short *)(shader + 42) : -1,
+				sdump_map_name(base_key), alpha_tested, base_alpha, triangle_count);
+	}
+#endif
 	if (textured)
 	{
 		int base_width = 0, base_height = 0;
@@ -9837,6 +10036,25 @@ static unsigned int color_from_rgb(const float *rgb)
 	return 0xFF000000 | (b << 16) | (g << 8) | r;
 }
 
+/* "modelambientN", "modellightN": the models' ambient light and distant
+lights times N percent (100 when absent), to find how far the GE's lighting
+falls short of the original's in shade (the PC reference draws first-person
+weapons and armour lighter there) before a default is chosen. Read without a
+log line: this may first run on the Media Engine, which mustn't print */
+static float model_ambient_gain = -1.0f, model_light_gain = 1.0f;
+
+static unsigned int color_from_rgb_scaled(const float *rgb, float gain)
+{
+	float scaled[3];
+
+	if (gain == 1.0f)
+		return color_from_rgb(rgb);
+	scaled[0] = rgb[0] * gain;
+	scaled[1] = rgb[1] * gain;
+	scaled[2] = rgb[2] * gain;
+	return color_from_rgb(scaled);
+}
+
 void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float u_scale, float v_scale,
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
@@ -9850,14 +10068,19 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	model_node_count = node_matrix_count;
 	model_u_scale = u_scale != 0.0f ? u_scale : 1.0f;
 	model_v_scale = v_scale != 0.0f ? v_scale : 1.0f;
-	model_ambient = ambient ? color_from_rgb(ambient) : MODEL_LIGHT;
+	if (model_ambient_gain < 0.0f)
+	{
+		model_ambient_gain = (float)psp_keep_number("modelambient", 100) * 0.01f;
+		model_light_gain = (float)psp_keep_number("modellight", 100) * 0.01f;
+	}
+	model_ambient = ambient ? color_from_rgb_scaled(ambient, model_ambient_gain) : MODEL_LIGHT;
 	model_light_count = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
 	model_point_count = 0; /* build 117: psp_ge_model_point_light follows */
 	for (index = 0; index < model_light_count; index++)
 	{
 		const float *light = index ? light1 : light0;
 
-		model_light_color[index] = color_from_rgb(light);
+		model_light_color[index] = color_from_rgb_scaled(light, model_light_gain);
 		/* the GE wants the direction toward the light */
 		model_light_toward[index].x = -light[3];
 		model_light_toward[index].y = -light[4];
@@ -9957,7 +10180,10 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 			if (reach < 0.0f && player_seated != 1)
 				reach = 0.0f;
 			if (reach >= 0.0f && reach < near_object_distance)
+			{
 				near_object_distance = reach;
+				near_object_radius = radius;
+			}
 		}
 		{
 			float nearest = c[2] - radius;
@@ -9975,14 +10201,52 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 shimmer that bends what is behind it; the GE draws it faint, see-through by
 the camouflage's amount, without writing depth */
 static float model_camouflage = 0.0f;
+/* "camoshimmer": the camouflaged model's own map added at this much of
+full (0-255) in place of the faded draw (psp_ge_draw_model_body) */
+#define CAMO_SHIMMER_LEVEL 48
+static int camo_shimmer = -1;
+static unsigned long camo_shimmer_parts = 0;
 static unsigned long two_sided_draws = 0;
 static int model_cull = -1;
 int psp_keep(const char *name);
 
+/* An object whose tag says its transparency self-occludes (Cortana) is
+drawn by the Xbox in two goes: every see-through part of it writes its depth
+with colour off and both sides drawn, then the parts draw as usual, so only
+her nearest surface shows (rasterizer_xbox_transparent_geometry.c, the
+modifier effect, type 2). Drawn without it, her hair's and head's back
+layers blend over her face in the order they sort, and where her parts
+meet that shows as a hard edge. Each such model gets a number its parts
+carry (model_occluder; 0 for none). Her model on a level that asks for it
+(models.c's cortana hack, the type's second byte here) also sorts after
+every other see-through draw, as the Xbox's sort puts her.
+"noselfocclude": neither, as before */
+static unsigned short model_occluder = 0, model_occluder_last = 0;
+static unsigned char model_sorted_last = 0;
+static int self_occlude = -1;
+static unsigned long self_occlude_parts = 0, self_occlude_runs = 0;
+
 void psp_ge_model_effect(int type, float intensity)
 {
+	int sorted_last = (type >> 8) & 1;
+
 	GE_BENCH_SKIP();
 	GE_DEFER(defer_model_effect(type, intensity));
+	type &= 0xFF;
+	if (self_occlude < 0)
+		self_occlude = !psp_keep("noselfocclude");
+	model_occluder = 0;
+	model_sorted_last = 0;
+	if (self_occlude)
+	{
+		if (type == 2)
+		{
+			if (++model_occluder_last == 0)
+				model_occluder_last = 1;
+			model_occluder = model_occluder_last;
+		}
+		model_sorted_last = (unsigned char)sorted_last;
+	}
 	model_camouflage = type == 1 && intensity > 0.0f ? (intensity > 1.0f ? 1.0f : intensity) : 0.0f;
 }
 
@@ -11345,6 +11609,73 @@ void psp_ge_model_detail(unsigned int detail_key, float u_scale, float v_scale)
 	model_detail_key = detail_key;
 	model_detail_u = u_scale;
 	model_detail_v = v_scale;
+}
+
+/* A model shader's reflection: on the Xbox its cube map, times the
+multipurpose map's red (the specular mask) and the tint and brightness the
+vertex program gives each vertex, is added over the lit base (the model
+pixel shader's last stage, rasterizer_xbox_models.c), so a shiny part keeps
+its sheen in shade, where the base x the lighting goes dark. The GE has no
+cube maps and one texture a pass. A pass of its own for every shiny part
+costs too much, so the reflection's average is folded into the part's
+ambient light: the base x (lighting + reflection / the base's average)
+matches base x lighting + reflection on average, at no cost. The shader's
+side (brightness, tints, the distance fade, the lighting's reflection tint)
+comes from psp_fixups.py; the cube map's average from the pack (an 8 x 8
+patch of it under its key, texpack.py), else REFLECTION_CUBE_DEFAULT.
+"noreflection": none, as before */
+#define REFLECTION_CUBE_DEFAULT 0.35f
+static unsigned int reflection_cube_key = 0;
+static float reflection_rgb[3] = { 0.0f, 0.0f, 0.0f };
+static int reflection_off = -1;
+static unsigned long reflection_parts = 0, reflection_cubes_known = 0;
+
+void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
+{
+	GE_BENCH_SKIP();
+	GE_DEFER(defer_model_reflection(cube_key, rgb));
+	reflection_cube_key = cube_key;
+	reflection_rgb[0] = rgb ? rgb[0] : 0.0f;
+	reflection_rgb[1] = rgb ? rgb[1] : 0.0f;
+	reflection_rgb[2] = rgb ? rgb[2] : 0.0f;
+}
+
+int psp_tex_average_known(unsigned int key, unsigned int *abgr);
+
+/* the part's ambient with its reflection folded in, or the model's own */
+static unsigned int ambient_with_reflection(unsigned int base_key)
+{
+	unsigned int base, mask_abgr, cube_abgr;
+	float cube[3] = { REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT }, mask = 0.5f;
+	float ambient[3];
+	int channel;
+
+	if (reflection_off < 0)
+	{
+		reflection_off = psp_keep("noreflection");
+		if (reflection_off)
+			platform_log("GE: noreflection: model reflections not folded into their ambient light");
+	}
+	if (reflection_off || reflection_rgb[0] + reflection_rgb[1] + reflection_rgb[2] <= 0.004f ||
+		!psp_tex_average_known(base_key, &base))
+		return model_ambient;
+	if (reflection_cube_key && psp_tex_average_known(reflection_cube_key, &cube_abgr))
+	{
+		for (channel = 0; channel < 3; channel++)
+			cube[channel] = (float)((cube_abgr >> (8 * channel)) & 0xFF) * (1.0f / 255.0f);
+		reflection_cubes_known++;
+	}
+	if (change_key && psp_tex_average_known(change_key, &mask_abgr))
+		mask = (float)(mask_abgr & 0xFF) * (1.0f / 255.0f);
+	for (channel = 0; channel < 3; channel++)
+	{
+		float b = (float)((base >> (8 * channel)) & 0xFF) * (1.0f / 255.0f);
+
+		ambient[channel] = (float)((model_ambient >> (8 * channel)) & 0xFF) * (1.0f / 255.0f) +
+			reflection_rgb[channel] * cube[channel] * mask / (b > 0.08f ? b : 0.08f);
+	}
+	reflection_parts++;
+	return color_from_rgb(ambient);
 }
 
 /* a pass over the part's triangles with the multipurpose map's mask: 0 the
@@ -12834,6 +13165,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	static int back_pass_off = -1;
 	int base_alpha = 0, textured, soft = 0, two_sided = (alpha_tested & 2) != 0;
 	struct skin_part *skin = NULL;
+	unsigned int part_ambient;
 
 	alpha_tested &= 1;
 	model_cut_count = 0;
@@ -13022,6 +13354,30 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		}
 	}
 	textured = psp_tex_bind(base_key, &base_alpha);
+#ifdef PSP_DEBUG_TOOLS
+	/* a model's box: its sphere's (psp_ge_model_shape), the whole screen
+	without one (first person, the sky) */
+	if (sdump_wanted())
+	{
+		float box[4], c[3];
+		char text[64];
+		int corner;
+
+		sdump_box_start(box);
+		for (corner = 0; corner < 4; corner++)
+		{
+			float r = model_sphere_radius > 0.0f ? model_sphere_radius : 0.0f;
+
+			c[0] = model_sphere[0] + (corner & 1 ? r : -r);
+			c[1] = model_sphere[1] + (corner & 2 ? r : -r);
+			c[2] = model_sphere_radius > 0.0f ? model_sphere[2] - r : -1.0f;
+			sdump_box_add(box, c);
+		}
+		if (sdump_box_text(box, text, sizeof(text)))
+			platform_log("sdump: model %s map %s alpha tested %d map alpha %d sky %d first person %d indices %ld",
+				text, sdump_map_name(base_key), alpha_tested, base_alpha, in_sky, model_first_person, index_count);
+	}
+#endif
 	if (textured)
 	{
 		/* unlit for now: the texture dimmed toward the level's lighting */
@@ -13039,8 +13395,33 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	}
 	else
 		sceGuColor(color);
+	part_ambient = model_ambient;
+	if (textured && model_camouflage <= 0.0f && !in_sky)
+		model_ambient = ambient_with_reflection(base_key);
 	model_lighting(1);
-	if (model_camouflage > 0.0f)
+	if (camo_shimmer < 0)
+		camo_shimmer = psp_keep("camoshimmer");
+	if (model_camouflage > 0.0f && camo_shimmer > 0 && textured)
+	{
+		/* "camoshimmer" (a look call, off by default): the Xbox bends what
+		lies behind a camouflaged model, which the GE can't sample; in its
+		place the model's own map, unlit, added faintly over the frame and
+		drifting a little each frame, so the outline catches the eye as the
+		Xbox's shimmer does instead of vanishing against a dark room. One
+		pass, as the faded draw it replaces */
+		unsigned int level = (unsigned int)(model_camouflage * CAMO_SHIMMER_LEVEL);
+		float drift = (float)(taa_frame & 255) * (1.0f / 256.0f);
+
+		model_lighting(0);
+		sceGuColor(0xFF000000u | ((level + level / 4) << 16) | (level << 8) | level);
+		sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+		sceGuTexOffset(drift, drift * 0.5f);
+		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+		ge_blend(1);
+		sceGuDepthMask(GU_TRUE);
+		camo_shimmer_parts++;
+	}
+	else if (model_camouflage > 0.0f)
 	{
 		/* the model's own colour faded to a trace (15% at full camouflage) */
 		int alpha = (int)((1.0f - model_camouflage * 0.85f) * 255.0f);
@@ -13097,6 +13478,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	}
 	sceGuDisable(GU_CULL_FACE);
 	model_lighting(0);
+	model_ambient = part_ambient;
 	/* passes 2 and 3: the change colour multiplied in and the
 	self-illumination added, where pass 1 drew */
 	if (textured && change_key && model_camouflage <= 0.0f && !in_sky)
@@ -13121,6 +13503,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	{
 		ge_blend(0);
 		sceGuDepthMask(GU_FALSE);
+		if (camo_shimmer > 0 && textured)
+			sceGuTexOffset(0.0f, 0.0f);
 	}
 	if (textured)
 	{
@@ -13298,8 +13682,8 @@ struct transparent_draw
 	blended per vertex by the angle in place of tint; 0 for one tint */
 	unsigned char angle_tinted;
 	unsigned int tint_face, tint_edge;
-	/* SEETHROUGH_EXACT_DEPTH and SEETHROUGH_CLAMPED (below) */
-	unsigned char depth_mode;
+	/* SEETHROUGH_EXACT_DEPTH, SEETHROUGH_CLAMPED and SEETHROUGH_ONE_SIDED (below) */
+	unsigned short depth_mode;
 	/* after b116: the shader (its tag's definition) the part was queued
 	with, for tdump; 0 for sprites and parts queued without one */
 	unsigned int shader;
@@ -13315,6 +13699,13 @@ struct transparent_draw
 	blend BLEND_METER_TINT or BLEND_METER_BRIGHTNESS and the meter's tint
 	colour (ARGB) in tint; NULL for every other draw */
 	const unsigned int *clut;
+	/* a model part whose shader isn't two-sided: its back faces culled
+	(PSP_SEETHROUGH_ONE_SIDED; seethrough_cull) */
+	unsigned char one_sided;
+	/* a self-occluding object's part: its object's number (model_occluder),
+	0 for every other draw; and whether it sorts after every other draw */
+	unsigned short occluder;
+	unsigned char sorted_last;
 };
 
 /* build 116: a meter shader's blends, as the Xbox sets them
@@ -13334,6 +13725,15 @@ psp_ge_seethrough_shader); the call's pieces all take it, and it goes back
 to white when the call returns. Untinted, b30's ocean drew white */
 static unsigned int seethrough_next_tint = 0xFFFFFFFF;
 static unsigned int seethrough_next_shader = 0; /* after b116: for tdump */
+/* a generic shader that asks to be left out of its object's effect (its flags
+byte +41, bit 5: shader_ignores_effect): no part in a self-occluding
+object's depth */
+static int seethrough_ignores_effect(unsigned int shader)
+{
+	const unsigned char *definition = (const unsigned char *)shader;
+
+	return shader && *(const short *)(definition + 36) == 5 && (definition[41] & 0x20) != 0;
+}
 /* build 116: the tint is half the shader's colour, drawn with the GE's
 colour doubling (a shader brighter than its map: Cortana, the holograms) */
 static unsigned char seethrough_next_doubled = 0;
@@ -13387,9 +13787,17 @@ white bar between them). Keep word "waterunfogged": as before */
 #define SEETHROUGH_FOG_FADE 128
 /* the shader has tints face on and edge on (seethrough_tint_set's flags) */
 #define SEETHROUGH_ANGLE_TINTED 256
-static unsigned char seethrough_next_depth = 0;
+/* A generic or chicago shader without its two-sided flag (bit 2 of the flags
+byte at +41) is drawn front faces only on the level, as the Xbox's
+environment passes cull (D3DCULL_CCW). Drawn both sides with the overlay's
+nudge toward the eye, a back face at a silhouette corner passed the depth
+test over the front face beside it: a dashed one-pixel line along a pillar's
+edge (b30's interior). Keep word "overlaysnocull": both sides, as before */
+#define SEETHROUGH_ONE_SIDED 512
+static unsigned short seethrough_next_depth = 0;
 static int seethrough_map_clamp = 0; /* the engine side's, for the next psp_ge_seethrough_shader */
 static unsigned long seethrough_exact_draws = 0, seethrough_clamped_draws = 0, seethrough_fog_faded_draws = 0;
+static unsigned long level_culled_draws = 0;
 /* build 116 (b113 #16): a meter shader's parameters, for the next queue
 call, set as the tint is (psp_ge_seethrough_meter; seethrough_meter_next 0:
 not a meter). Builds 21-115 dropped meter shaders: the plasma weapons' heat
@@ -13546,6 +13954,9 @@ static int psp_ge_sprites_body(void const *vertices, int sprite_count, unsigned 
 		cx += in[4 * sprite].x; cy += in[4 * sprite].y; cz += in[4 * sprite].z;
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -13586,7 +13997,7 @@ int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_k
 	return result;
 }
 
-/* ---------- contrails (build 113, b113_candidates.md #1; keep word "contrails")
+/* ---------- contrails (b113_candidates.md #1; on by default, "nocontrails" off)
 
 The trail behind a projectile (the plasma rifle's and pistol's bolts, the
 needler's needles): render_contrails.c builds a strip of quads along the
@@ -13604,15 +14015,53 @@ pair the one it is drawn from (itself, or the nearest one before it) */
 #define CONTRAIL_PAIRS 256
 static unsigned char contrail_pair_ok[CONTRAIL_PAIRS];
 static short contrail_pair_from[CONTRAIL_PAIRS];
-static unsigned long contrail_pairs_folded = 0, contrails_out_of_view = 0;
+static unsigned long contrail_pairs_folded = 0, contrails_out_of_view = 0, contrails_faded = 0;
 
-static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend)
+/* The Xbox's effect shader takes the vertex alpha into the colour wherever
+the framebuffer blend has no alpha of its own (rasterizer_xbox_transparent_
+geometry.c, the effect's last combiner): added, subtracted and max colours
+are scaled by it, multiplied and min colours move toward white by it, double
+multiplied toward grey. A contrail's alpha is its fade, by the states over
+each point's life and to zero at both ends, so on the GE's added blend,
+which never reads alpha, the trail drew at full strength from muzzle to
+projectile: a line. Here the corners' colours take their alpha as the Xbox
+does. Keep word "contrailsflat": as before (alpha left to the blend) */
+static unsigned int contrail_faded_color(unsigned int abgr, int blend)
+{
+	unsigned int a = abgr >> 24, r = abgr & 0xFF, g = (abgr >> 8) & 0xFF, b = (abgr >> 16) & 0xFF, toward;
+
+	switch (blend)
+	{
+	case 3: case 4: case 6: case 7: /* add, subtract, max, alpha-multiply-add */
+		r = r * a / 255; g = g * a / 255; b = b * a / 255;
+		break;
+	case 1: case 2: case 5: /* multiply, double multiply, min */
+		toward = blend == 2 ? 128 : 255;
+		r = (r * a + toward * (255 - a)) / 255;
+		g = (g * a + toward * (255 - a)) / 255;
+		b = (b * a + toward * (255 - a)) / 255;
+		break;
+	default: /* alpha blend: the GE reads the alpha itself */
+		break;
+	}
+	return (abgr & 0xFF000000) | (b << 16) | (g << 8) | r;
+}
+
+static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned int bitmap_key, short packed)
 {
 	struct game_sprite_vertex const *in = vertices;
 	struct sprite_vertex *out;
 	struct transparent_draw *draw;
 	int segments = vertex_count / 2 - 1, corner;
 	float cx = 0.0f, cy = 0.0f, cz = 0.0f;
+	/* the blend in the low byte; the shader's map flags above it
+	(render_contrails.c's call: bit 1 u clamped, bit 2 v clamped) */
+	short blend = (short)(packed & 0xFF);
+	int map_flags = (packed >> 8) & 0xFF;
+	static int flat = -1;
+
+	if (flat < 0)
+		flat = psp_keep("contrailsflat");
 
 	if (!frame_open || !vertices || segments <= 0 || !bitmap_key || list_full())
 		return 0;
@@ -13676,10 +14125,21 @@ static int psp_ge_contrail_body(void const *vertices, int vertex_count, unsigned
 		o->u = v->u;
 		o->v = v->v;
 		o->color = (argb & 0xFF00FF00) | ((argb >> 16) & 0xFF) | ((argb & 0xFF) << 16);
+		if (!flat)
+			o->color = contrail_faded_color(o->color, blend);
 		o->x = v->x; o->y = v->y; o->z = v->z;
 		cx += v->x; cy += v->y; cz += v->z;
 	}
+	if (!flat)
+		contrails_faded++;
 	draw = &transparent[transparent_count++];
+	/* the slot's last user's depth and wrap flags would stay otherwise; the
+	map repeats along the trail unless the shader clamps it, as on the Xbox */
+	draw->depth_mode = flat ? 0 :
+		(unsigned short)(((map_flags & 2) ? SEETHROUGH_CLAMP_U : 0) | ((map_flags & 4) ? SEETHROUGH_CLAMP_V : 0));
+	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -13774,6 +14234,13 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 {
 	GE_DEFER(defer_widget_sprite(point, radius, scale_x, scale_y, rotation, color)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
+	static int sprites_off = -1;
+
+	/* "nowidgetsprites": lens flares and glows left out, for A/Bs */
+	if (sprites_off < 0)
+		sprites_off = psp_keep("nowidgetsprites");
+	if (sprites_off)
+		return;
 	ge_kind(KIND_WIDGET); /* build 103 */
 	static const float corner_uv[4][2] = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 } };
 	static const int fan[6] = { 0, 1, 2, 0, 2, 3 };
@@ -13835,6 +14302,9 @@ void psp_ge_widget_sprite(float const *point, float radius, float scale_x, float
 		o->z = centre[2] + camera_right[2] * offset[k][0] - camera_up[2] * offset[k][1];
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -14199,6 +14669,23 @@ static void seethrough_vfpu_place(const float *p, float *q)
 		: : "r"(p), "r"(q) : "memory");
 }
 
+/* A see-through model part is drawn one-sided unless its shader is
+two-sided, as the Xbox draws it (rasterizer_xbox_transparent_geometry.c:
+D3DCULL_CCW unless the shader's two-sided flag; the flag rides in the queue's
+blend word, PSP_SEETHROUGH_ONE_SIDED). Both sides drawn, an added hologram
+(Cortana) took her back's light on top of her front's: brighter, and her
+far side's markings over her face, inside out. "seethroughtwosided": every
+see-through part drawn from both sides, as before */
+static int seethrough_cull = -1;
+static unsigned long seethrough_culled_draws = 0;
+
+static int seethrough_cull_on(void)
+{
+	if (seethrough_cull < 0)
+		seethrough_cull = !psp_keep("seethroughtwosided");
+	return seethrough_cull;
+}
+
 static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int key, float u_scale, float v_scale, float u_offset, float v_offset,
 	short blend, const float *centroid)
@@ -14231,6 +14718,9 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 		}
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -14317,6 +14807,9 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	draw->u_offset = u_offset;
 	draw->v_offset = v_offset;
 	draw->blend = PSP_SEETHROUGH_BLEND(blend);
+	draw->one_sided = PSP_SEETHROUGH_ONE_SIDED(blend) && seethrough_cull_on();
+	draw->occluder = in_sky || seethrough_ignores_effect(seethrough_next_shader) ? 0 : model_occluder;
+	draw->sorted_last = model_sorted_last;
 	draw->tint = seethrough_next_tint;
 	draw->shader = seethrough_next_shader;
 	draw->doubled = seethrough_next_doubled;
@@ -14463,7 +14956,8 @@ static void seethrough_tint_set(unsigned int tint, int flags, unsigned int shade
 	seethrough_next_angle = (flags & SEETHROUGH_ANGLE_TINTED) != 0;
 	seethrough_next_face = face;
 	seethrough_next_edge = edge;
-	seethrough_next_depth = (unsigned char)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED | SEETHROUGH_FOG_FADE));
+	seethrough_next_depth = (unsigned short)(flags & (SEETHROUGH_EXACT_DEPTH | SEETHROUGH_CLAMPED | SEETHROUGH_FOG_FADE |
+		SEETHROUGH_ONE_SIDED));
 	flags &= 15;
 	seethrough_next_doubled = (unsigned char)(flags == 1);
 	seethrough_next_model = flags == 2 ? SEETHROUGH_ADD : flags == 3 ? SEETHROUGH_FLAT : SEETHROUGH_MODULATE;
@@ -14486,7 +14980,7 @@ void psp_ge_seethrough_map_clamp(int u, int v)
 
 void psp_ge_seethrough_shader(unsigned int shader)
 {
-	static int pushed = -1, wrapped = -1, unfogged = -1;
+	static int pushed = -1, wrapped = -1, unfogged = -1, both_sides = -1;
 	int flags = 0;
 	unsigned int tint = psp_tex_shader_tint(shader, &flags), face = 0, edge = 0;
 
@@ -14495,6 +14989,7 @@ void psp_ge_seethrough_shader(unsigned int shader)
 		pushed = psp_keep("seethroughpush");
 		wrapped = psp_keep("seethroughwrap");
 		unfogged = psp_keep("waterunfogged");
+		both_sides = psp_keep("overlaysnocull");
 	}
 	if (shader)
 	{
@@ -14509,6 +15004,8 @@ void psp_ge_seethrough_shader(unsigned int shader)
 
 		if (!pushed && !decal && type >= 5 && type <= 10)
 			flags |= SEETHROUGH_EXACT_DEPTH;
+		if (!both_sides && (type == 5 || type == 6) && !(definition[41] & 4))
+			flags |= SEETHROUGH_ONE_SIDED;
 		if (!wrapped)
 			flags |= type == 7 ? SEETHROUGH_CLAMPED : type == 5 || type == 6 ? seethrough_map_clamp : 0;
 		/* water's flags word at +40: bit 2 atmospheric fog */
@@ -14518,6 +15015,25 @@ void psp_ge_seethrough_shader(unsigned int shader)
 	seethrough_map_clamp = 0;
 	if (shader && psp_tex_shader_angle_tints(shader, &face, &edge))
 		flags |= SEETHROUGH_ANGLE_TINTED;
+	/* glass with no diffuse map draws its reflection (psp_fixups.py,
+	psp_transparent_map): the perpendicular colour face on, the parallel one
+	edge on, each times its own alpha (argb floats at +140 and +156) */
+	if (shader && *(const short *)((const unsigned char *)shader + 36) == 8 &&
+		*(const long *)((const unsigned char *)shader + 356) == -1)
+	{
+		const float *perpendicular = (const float *)((const unsigned char *)shader + 140);
+		const float *parallel = (const float *)((const unsigned char *)shader + 156);
+		float a[3] = { perpendicular[1] * perpendicular[0], perpendicular[2] * perpendicular[0],
+			perpendicular[3] * perpendicular[0] };
+		float b[3] = { parallel[1] * parallel[0], parallel[2] * parallel[0], parallel[3] * parallel[0] };
+		float middle[3] = { 0.5f * (a[0] + b[0]), 0.5f * (a[1] + b[1]), 0.5f * (a[2] + b[2]) };
+
+		face = abgr_from_rgb(a);
+		edge = abgr_from_rgb(b);
+		/* the level's see-through draws take one tint: the two's middle */
+		tint = abgr_from_rgb(middle);
+		flags = (flags & ~15) | SEETHROUGH_ANGLE_TINTED;
+	}
 
 	seethrough_tint_set(tint, flags, shader, face, edge);
 }
@@ -14720,6 +15236,9 @@ static struct transparent_draw *transparent_slot(unsigned int key, float u_scale
 		return NULL;
 	}
 	draw = &transparent[transparent_count++];
+	draw->one_sided = 0;
+	draw->occluder = 0;
+	draw->sorted_last = 0;
 	draw->color = 0xFFFFFFFF; /* build 116: no fade unless the filler sets one */
 	draw->colored = 0;
 	draw->tint = 0xFFFFFFFF;
@@ -14844,6 +15363,18 @@ the distance (the debug menu: off, 1, 2, 4, 8%; default 2), never under
 0.01 units (3 cm). "nudgewide": no ceiling (b60-b75) */
 static int nudge_wide = -1;
 static unsigned long nudges_clamped = 0, nudges_asked = 0;
+/* A surface seen nearly edge-on gets no slope part. Its depth changes by
+thousands of steps across two pixels, so the slope part (uncapped: the lift
+limit is off by default) moved it most of the way to the eye, and a light
+strip on a wall behind a pillar drew as a dashed bright line on the pillar's
+face. The Xbox draws the level's overlays with no depth bias at all, so it
+never shows them through what stands in front. Edge-on, a surface covers a
+pixel or two, and losing its slope part costs at most those pixels to its
+own wall. "nudgeedgeN": the cosine (in hundredths) between the view and the
+surface's normal under which the slope part is dropped; "nudgeedge0" keeps
+it at every angle */
+static float nudge_edge_cos = -1.0f;
+static unsigned long nudges_edge_on = 0;
 static float slope_units_capped(float units, const float *a, const float *b, const float *c, float reference)
 {
 	float ceiling, nearest = a[2], lift, cos_angle, length;
@@ -14853,7 +15384,20 @@ static float slope_units_capped(float units, const float *a, const float *b, con
 
 	if (nudge_wide < 0)
 		nudge_wide = psp_keep("nudgewide");
+	if (nudge_edge_cos < 0.0f)
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		nudge_edge_cos = psp_keep_number("nudgeedge", 10) * 0.01f;
+	}
 	nudges_asked++;
+	length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * sqrtf(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
+	cos_angle = length > 0.0f ? fabsf(n[0] * m[0] + n[1] * m[1] + n[2] * m[2]) / length : 1.0f;
+	if (units > 0.0f && cos_angle < nudge_edge_cos)
+	{
+		nudges_edge_on++;
+		return 0.0f;
+	}
 	if (nudge_wide || nudge_percent <= 0)
 		return units;
 	if (b[2] < nearest) nearest = b[2];
@@ -14868,8 +15412,6 @@ static float slope_units_capped(float units, const float *a, const float *b, con
 	lift = nudge_percent * 0.01f * nearest;
 	if (lift < 0.01f)
 		lift = 0.01f;
-	length = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) * sqrtf(m[0] * m[0] + m[1] * m[1] + m[2] * m[2]);
-	cos_angle = length > 0.0f ? fabsf(n[0] * m[0] + n[1] * m[1] + n[2] * m[2]) / length : 1.0f;
 	if (cos_angle < 0.02f)
 		cos_angle = 0.02f;
 	ceiling = (lift / cos_angle) * projection_near * 61439.0f / (nearest * nearest);
@@ -15751,9 +16293,57 @@ extern volatile int psp_screenshot_requested;
 static int tdump = -1;
 static long tskip = -1; /* "tskipN" (transparent_flush_body) */
 
+/* whether draw a goes after draw b: far to near, Cortana's parts on a level
+that asks for it after every other (psp_ge_model_effect) */
+static int transparent_later(const struct transparent_draw *a, const struct transparent_draw *b)
+{
+	if (a->sorted_last != b->sorted_last)
+		return a->sorted_last;
+	return a->distance < b->distance;
+}
+
+/* the depth of one self-occluding object's run of parts (the draws from
+order position index on that carry its number), both sides, nothing else
+written, as the Xbox's first go (psp_ge_model_effect). The parts then draw
+as usual, and only their nearest surface passes the depth test */
+static void transparent_occluder_depth(int index)
+{
+	unsigned short occluder = transparent[transparent_order[index]].occluder;
+
+	self_occlude_runs++;
+	sceGuPixelMask(0xFFFFFFFF);
+	sceGuDisable(GU_TEXTURE_2D);
+	sceGuDepthMask(GU_FALSE);
+	for (; index < transparent_count; index++)
+	{
+		struct transparent_draw const *draw = &transparent[transparent_order[index]];
+		int middle = draw->colored ? GU_COLOR_8888 : GU_NORMAL_8BIT;
+
+		if (draw->occluder != occluder)
+			break;
+		/* (a first-person part keeps its own projection: left to draw as before) */
+		if ((!draw->vertices && !draw->cut_vertices) || draw->sprites || draw->level || draw->sky ||
+			draw->first_person || list_full())
+			continue;
+		sceGumLoadMatrix(&draw->matrix);
+		if (draw->index_count > 0)
+			sceGumDrawArray(draw->strip ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
+				GU_TEXTURE_32BITF | middle | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				draw->index_count, draw->indices, draw->vertices);
+		if (draw->cut_count > 0 && draw->cut_vertices)
+			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | middle | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
+				draw->cut_count, NULL, draw->cut_vertices);
+		self_occlude_parts++;
+	}
+	sceGuDepthMask(GU_TRUE);
+	sceGuEnable(GU_TEXTURE_2D);
+	sceGuPixelMask(0);
+}
+
 static void transparent_flush_body(void)
 {
 	int saved_limit = list_limit;
+	unsigned short occluder_drawn = 0;
 
 	int index, other;
 
@@ -15768,6 +16358,8 @@ static void transparent_flush_body(void)
 		list_limit = list_bytes - HUD_RESERVE;
 	if (overlays_off < 0)
 		overlays_off = psp_keep("nooverlays");
+	if (level_cull < 0)
+		level_cull = psp_keep("nocull") ? 0 : psp_keep("cullflip") ? 2 : 1;
 	/* build 62: the world's projection and depth slice for the world's
 	see-through parts, whatever is current. A flush can come while the
 	first-person projection is still set (no model end after the weapon's
@@ -15782,7 +16374,7 @@ static void transparent_flush_body(void)
 	/* far to near (the sky's parts count as farthest) */
 	for (index = 0; index < transparent_count; index++)
 	{
-		for (other = index; other > 0 && transparent[transparent_order[other - 1]].distance < transparent[index].distance; other--)
+		for (other = index; other > 0 && transparent_later(&transparent[transparent_order[other - 1]], &transparent[index]); other--)
 			transparent_order[other] = transparent_order[other - 1];
 		transparent_order[other] = index;
 	}
@@ -15849,6 +16441,10 @@ static void transparent_flush_body(void)
 				index, transparent_count, draw->key, name ? name : "no tag", draw->sky, draw->level, draw->first_person,
 				draw->sprites, draw->blend, sqrtf(draw->distance), draw->index_count, draw->cut_count, draw->depth_units,
 				draw->matrix.w.x, draw->matrix.w.y, draw->matrix.w.z, state_depth, model_first_person);
+			/* the bake's tint as the draw carries it (the ocean's colour) */
+			platform_log("tdump: %d/%d tint %08x model %d doubled %d angle %d face %08x edge %08x colour %08x coloured %d",
+				index, transparent_count, draw->tint, draw->tint_model, draw->doubled, draw->angle_tinted,
+				draw->tint_face, draw->tint_edge, draw->color, draw->colored);
 		}
 		/* "tskipN": the see-through draws whose map is the bitmap_data at
 		address N (decimal; tdump prints it in hex) left out, to tell which
@@ -15862,6 +16458,10 @@ static void transparent_flush_body(void)
 		}
 		if (tskip > 0 && draw->key == (unsigned int)tskip)
 			continue;
+		/* a self-occluding object's run of parts: its depth first */
+		if (draw->occluder && draw->occluder != occluder_drawn)
+			transparent_occluder_depth(index);
+		occluder_drawn = draw->occluder;
 		if ((draw->first_person ? list_full_first_person() : list_full()) || (draw->level && overlays_off) ||
 			!psp_tex_bind(draw->key, NULL))
 			continue;
@@ -15955,10 +16555,25 @@ static void transparent_flush_body(void)
 				seethrough_exact_draws++;
 			}
 			sceGuDepthOffset(units);
+			/* the level's own triangles and their cut pieces keep the base
+			pass's winding; a bake's stencil layers (level 3) don't */
+			if ((draw->depth_mode & SEETHROUGH_ONE_SIDED) && draw->level <= 2 && level_cull)
+			{
+				sceGuFrontFace(level_cull == 1 ? LEVEL_FRONT : (LEVEL_FRONT == GU_CW ? GU_CCW : GU_CW));
+				sceGuEnable(GU_CULL_FACE);
+				level_culled_draws++;
+			}
 		}
 		sceGuTexScale(draw->u_scale, draw->v_scale);
 		sceGuTexOffset(draw->u_offset, draw->v_offset);
 		sceGumLoadMatrix(&draw->matrix);
+		if (draw->one_sided)
+		{
+			/* the model's own winding, as its solid parts are culled */
+			sceGuFrontFace(LEVEL_FRONT);
+			sceGuEnable(GU_CULL_FACE);
+			seethrough_culled_draws++;
+		}
 		if (draw->depth_mode & SEETHROUGH_CLAMPED)
 		{
 			sceGuTexWrap(draw->depth_mode & SEETHROUGH_CLAMP_U ? GU_CLAMP : GU_REPEAT,
@@ -16030,6 +16645,8 @@ static void transparent_flush_body(void)
 		}
 		if (draw->color != 0xFFFFFFFF && !draw->sprites && !draw->colored)
 			sceGuColor(0xFFFFFFFF);
+		if (draw->one_sided)
+			sceGuDisable(GU_CULL_FACE);
 		if (draw->clut)
 		{
 			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGBA);
@@ -16046,7 +16663,10 @@ static void transparent_flush_body(void)
 		if (draw->tint_model == SEETHROUGH_FLAT)
 			sceGuTexEnvColor(0xFFFFFFFF);
 		if (draw->level)
+		{
 			sceGuDepthOffset(0);
+			sceGuDisable(GU_CULL_FACE);
+		}
 		if (draw->level >= 3)
 			sceGuDepthFunc(GU_GEQUAL);
 		if (draw->first_person)
@@ -16174,7 +16794,51 @@ typedef char meter_words_check[sizeof(struct psp_seethrough_meter) == METER_WORD
 fills the PSP's screen; the menus' 640 x 480 (4:3) is pillarboxed, as the
 3D view behind them isn't */
 static float ui_scale_x = SCREEN_WIDTH / GAME_SCREEN_WIDTH, ui_scale_y = SCREEN_HEIGHT / GAME_SCREEN_HEIGHT;
-static float ui_offset_x = 0.0f;
+static float ui_offset_x = 0.0f, ui_offset_y = 0.0f;
+
+/* The menus drawn larger: "menuzoomN", N percent (110, 115), about the
+screen's centre. On the PSP's 4.3 inches the menus' text, at the TV's share
+of the screen, reads small. One zoom for the whole 640 x 480 page keeps every
+box and line where it was against the others, so nothing comes to overlap;
+115 is the most that keeps the Xbox's title-safe area (32 of 480 from each
+edge, where its menus lay out) on the screen: 240 / 208. 115 by default;
+"menuzoom100" draws the menus at the TV's size again */
+#define MENU_ZOOM_MOST 115
+#define MENU_ZOOM_DEFAULT 115
+static float menu_zoom = 0.0f;
+
+/* the menus' button glyphs drawn larger, "menuglyphN", N percent (125, 150):
+a screen key's glyph (its label to its right) grows up and to the left,
+into the gap before the key ahead of it; a glyph in a line of text grows up
+and to the right, the line's cursor moving on by as much (psp_sdl.c,
+psp_button_glyph_extra), and no taller than its line's icon box. 125 by
+default; "menuglyph100" draws them at the original size */
+#define MENU_GLYPH_MOST 150
+#define MENU_GLYPH_DEFAULT 125
+static float menu_glyph_zoom = 0.0f;
+
+static float keep_percent(const char *prefix, int fallback, int most)
+{
+	int percent = psp_keep_number(prefix, fallback);
+
+	return (percent < 100 ? 100 : percent > most ? most : percent) / 100.0f;
+}
+
+/* how much larger a glyph in a menu's text draws (1: not in the menus, or
+"menuglyph100"); psp_sdl.c widens the text's cursor by the same */
+static float menu_glyph_zoom_get(void)
+{
+	if (menu_glyph_zoom == 0.0f)
+		menu_glyph_zoom = keep_percent("menuglyph", MENU_GLYPH_DEFAULT, MENU_GLYPH_MOST);
+	return menu_glyph_zoom;
+}
+
+float psp_ge_menu_glyph_zoom(int glyph, int menus)
+{
+	if (!menus || glyph < 0 || glyph >= PSP_GLYPH_COUNT)
+		return 1.0f;
+	return fminf(menu_glyph_zoom_get(), 100.0f / psp_glyph_height[glyph]);
+}
 /* build 36: the HUD laid out in a smaller window (hud.c, psp_fixups.py) is
 drawn this much larger */
 static float hud_zoom = 1.0f;
@@ -16200,10 +16864,18 @@ void psp_ge_ui_space(int width, int height)
 		return;
 	if (ui_centered)
 		width = 640;
+	if (menu_zoom == 0.0f)
+		menu_zoom = keep_percent("menuzoom", MENU_ZOOM_DEFAULT, MENU_ZOOM_MOST);
 	ui_scale_y = (float)SCREEN_HEIGHT / height;
+	ui_offset_y = 0.0f;
 	if (width * 3 <= height * 4 + 4)
 	{
 		/* 4:3 or narrower: square pixels, centred */
+		if (ui_centered)
+		{
+			ui_scale_y *= menu_zoom;
+			ui_offset_y = (SCREEN_HEIGHT - height * ui_scale_y) * 0.5f;
+		}
 		ui_scale_x = ui_scale_y;
 		ui_offset_x = (SCREEN_WIDTH - width * ui_scale_x) * 0.5f;
 	}
@@ -16285,7 +16957,7 @@ static void hud_draw(struct game_screen_vertex const *in, int width, int height,
 		out[index].v = in[index].v * hud_v_scale * height;
 		out[index].color = argb_to_abgr(use_vertex_color ? in[index].argb : color, red, green, blue, fade);
 		out[index].x = hud_pixel((in[index].x + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
-		out[index].y = hud_pixel((in[index].y + offset_y) * ui_scale_y * hud_zoom);
+		out[index].y = hud_pixel((in[index].y + offset_y) * ui_scale_y * hud_zoom + ui_offset_y);
 		out[index].z = 0.0f;
 	}
 	sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 4, NULL, out);
@@ -16357,12 +17029,20 @@ takes the glyph's key: a number no bitmap's address can be, which carries
 through the defer queue unchanged. The quad keeps the game's place, size and
 colour for the icon; only the picture is the PSP's */
 #define GLYPH_KEY_BASE 0x100u
+/* in the key, beside the glyph: its label is to its right (a menu's screen
+key), so a larger glyph grows away from it */
+#define GLYPH_LABELLED 0x80u
 static PSP_MAIN_SIDE int glyph_next = -1;
 static unsigned long glyphs_drawn = 0;
 
 void psp_ge_glyph_next(int glyph)
 {
 	glyph_next = glyph >= 0 && glyph < PSP_GLYPH_COUNT ? glyph : -1;
+}
+
+void psp_ge_glyph_next_labelled(int glyph)
+{
+	glyph_next = glyph >= 0 && glyph < PSP_GLYPH_COUNT ? glyph | (int)GLYPH_LABELLED : -1;
 }
 
 void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, float red, float green, float blue,
@@ -16628,8 +17308,8 @@ static unsigned int *glyph_palette(unsigned int abgr)
 (psp_glyph_height) on the quad's bottom, its own shape across; centred when
 it is narrower, else from the quad's left edge (the text's cursor moves on
 by the difference: psp_button_glyph_extra, psp_sdl.c) */
-static void glyph_quad(struct game_screen_vertex const *in, int glyph, short blend, float red, float green,
-	float blue, float fade, float offset_x, float offset_y)
+static void glyph_quad(struct game_screen_vertex const *in, int glyph, int labelled, short blend, float red,
+	float green, float blue, float fade, float offset_x, float offset_y)
 {
 	unsigned short const *cell = psp_glyph_cells[glyph];
 	struct hud_vertex *out;
@@ -16646,12 +17326,27 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 		y1 = fmaxf(y1, in[corner].y);
 	}
 	/* the glyph's own share of the box's height, on the box's bottom (the
-	text's line) */
-	y0 = y1 - (y1 - y0) * psp_glyph_height[glyph] / 100.0f;
-	wide = (y1 - y0) * cell[2] / cell[3];
-	if (wide <= x1 - x0)
-		x0 += (x1 - x0 - wide) * 0.5f;
-	x1 = x0 + wide;
+	text's line), larger in the menus with "menuglyphN" */
+	{
+		float zoom = !ui_centered ? 1.0f : labelled ? menu_glyph_zoom_get() : psp_ge_menu_glyph_zoom(glyph, 1);
+		float box = x1 - x0, height = (y1 - y0) * psp_glyph_height[glyph] / 100.0f;
+
+		/* a screen key's glyph keeps the right edge it has at its own size */
+		if (labelled && zoom > 1.0f)
+		{
+			wide = height * cell[2] / cell[3];
+			x1 = wide <= box ? x0 + (box + wide) * 0.5f : x0 + wide;
+			x0 = x1 - wide * zoom;
+		}
+		else
+		{
+			wide = height * zoom * cell[2] / cell[3];
+			if (wide <= box)
+				x0 += (box - wide) * 0.5f;
+			x1 = x0 + wide;
+		}
+		y0 = y1 - height * zoom;
+	}
 	palette = glyph_palette(argb_to_abgr(in[0].argb, red, green, blue, fade));
 	out = list_take(2 * sizeof(struct hud_vertex));
 	sheet = glyph_sheet();
@@ -16667,9 +17362,9 @@ static void glyph_quad(struct game_screen_vertex const *in, int glyph, short ble
 	out[1].v = cell[1] + cell[3] - 0.5f;
 	out[0].color = out[1].color = 0xFFFFFFFF;
 	out[0].x = hud_pixel((x0 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
-	out[0].y = hud_pixel((y0 + offset_y) * ui_scale_y * hud_zoom);
+	out[0].y = hud_pixel((y0 + offset_y) * ui_scale_y * hud_zoom + ui_offset_y);
 	out[1].x = hud_pixel((x1 + offset_x) * ui_scale_x * hud_zoom + ui_offset_x);
-	out[1].y = hud_pixel((y1 + offset_y) * ui_scale_y * hud_zoom);
+	out[1].y = hud_pixel((y1 + offset_y) * ui_scale_y * hud_zoom + ui_offset_y);
 	out[0].z = out[1].z = 0.0f;
 	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 	sceGuClutLoad(256 / 8, palette);
@@ -16710,9 +17405,10 @@ static void screen_quad(void const *vertices, unsigned int key, short blend, flo
 	transparent_flush();
 	if (list_full())
 		return;
-	if (key - GLYPH_KEY_BASE < PSP_GLYPH_COUNT && !meter)
+	if (((key - GLYPH_KEY_BASE) & ~GLYPH_LABELLED) < PSP_GLYPH_COUNT && !meter)
 	{
-		glyph_quad(in, (int)(key - GLYPH_KEY_BASE), blend, red, green, blue, fade, offset_x, offset_y);
+		glyph_quad(in, (int)((key - GLYPH_KEY_BASE) & ~GLYPH_LABELLED), ((key - GLYPH_KEY_BASE) & GLYPH_LABELLED) != 0,
+			blend, red, green, blue, fade, offset_x, offset_y);
 		hud_quads++;
 		return;
 	}
@@ -17476,6 +18172,15 @@ void psp_ge_light_begin(const float *position, const float *forward, const float
 	GE_DEFER(defer_light_begin(position, forward, color, radius, cosine_falloff, cosine_cutoff)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
 	int k;
+	static int pass_off = -1;
+
+	/* "nolightpass": the debug menu's "not drawn" from keep.txt, for A/Bs */
+	if (pass_off < 0)
+	{
+		pass_off = psp_keep("nolightpass");
+		if (pass_off)
+			light_mode = 3;
+	}
 
 	light.open = frame_open && radius > 0.0f && color[0] + color[1] + color[2] > 0.01f;
 	for (k = 0; k < 3; k++)
@@ -17691,6 +18396,18 @@ static int outside_cone(const float *p0, const float *p1, const float *p2, float
 /* the light pass's cut pieces (psp_ge_light_draw_body begins it) */
 static struct cut_store light_pieces;
 
+/* Mode 2 lifts the light toward the eye so that cut and split pieces, whose
+corners are new, still land on the surface the base pass drew. A whole
+triangle kept as the level drew it has the base pass's own corners, so it
+lands on the very same depths (as the lightmap pass does) and needs no lift.
+Lifted, a face seen edge-on put its light over the face in front of it along
+the corner between them: a bright line or dashes, the full height of a
+pillar. Those triangles are drawn without the lift. Keep word "lightliftall":
+every triangle lifted */
+static int light_exact_on = -1, light_emit_exact = 0;
+static unsigned char light_exact_of[SCRATCH_TRIANGLES];
+static unsigned long light_exact_triangles = 0;
+
 /* one lit triangle (corners: camera space, texture coordinates, the light's
 reach at 5, the world position at 7): kept, cut up, or skipped by the view */
 static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
@@ -17713,6 +18430,7 @@ static void light_emit(float corners[3][CORNER_FLOATS], struct shadow_vertex *ou
 			*(float *)&o->color = corners[corner][5]; /* coloured once the tint is known */
 			o->x = corners[corner][7]; o->y = corners[corner][8]; o->z = corners[corner][9];
 		}
+		light_exact_of[*kept_count] = (unsigned char)light_emit_exact;
 		(*kept_count)++;
 		return;
 	}
@@ -17825,6 +18543,15 @@ with an edge longer than a fifth of the light's radius is now split into
 four, again and again (four levels at most) where it can reach the light,
 and each piece lit at its own corners. Keep word "nolightsplit": as before */
 static int light_split_on = -1;
+
+/* The split decided per edge, not per triangle: two triangles sharing an
+edge split it alike, at the same midpoint (0.5 * (a + b) is the same float
+from either end), so their pieces meet corner to corner. Decided per
+triangle, a neighbour split one level less put its long edge against the
+other's two halves: a T-junction, which the GE rasterises with hairline
+gaps, dark along the seams of the flashlight's pool. Keep word
+"lightsplitold": the per-triangle split */
+static int light_split_edges = -1;
 static unsigned long light_split_triangles = 0, light_split_pieces = 0;
 
 static void light_emit_spot(float corners[3][CORNER_FLOATS], struct shadow_vertex *out, long *kept_count, int *cut_count)
@@ -17880,6 +18607,17 @@ static float distance_squared3(const float *a, const float *b)
 
 static float light_split_tangent = 1.0f;
 
+/* symmetric in a and b, bit for bit, so both triangles on an edge agree */
+static int light_edge_splits(const float *a, const float *b)
+{
+	float near_a = distance_squared3(a, light.position), near_b = distance_squared3(b, light.position);
+	float split = 0.5f * sqrtf(near_a < near_b ? near_a : near_b);
+
+	if (split < 0.2f * light.radius)
+		split = 0.2f * light.radius;
+	return distance_squared3(a, b) > split * split;
+}
+
 static void light_split(float p[3][3], float uv[3][2], const unsigned int normal[3], int depth,
 	struct shadow_vertex *out, long *kept_count, int *cut_count)
 {
@@ -17914,7 +18652,58 @@ static void light_split(float p[3][3], float uv[3][2], const unsigned int normal
 	split = 0.5f * nearest;
 	if (split < 0.2f * light.radius)
 		split = 0.2f * light.radius;
-	if (depth < 3 && longest > split)
+	if (light_split_edges < 0)
+		light_split_edges = !psp_keep("lightsplitold");
+	if (light_split_edges)
+	{
+		/* halve the longest edge that needs it, then the halves again: six
+		halvings, about the old three levels of four (64 pieces at most) */
+		int pick = -1;
+		float pick_length = 0.0f;
+
+		for (corner = 0; corner < 3 && depth < 6; corner++)
+		{
+			const float *a = p[corner], *b = p[(corner + 1) % 3];
+			float length = distance_squared3(a, b);
+
+			if (length > pick_length && light_edge_splits(a, b))
+			{
+				pick = corner;
+				pick_length = length;
+			}
+		}
+		if (pick >= 0)
+		{
+			int next = (pick + 1) % 3, other = (pick + 2) % 3, k;
+			float half[2][3][3], half_uv[2][3][2], m[3], muv[2];
+			unsigned int half_normal[3];
+
+			for (k = 0; k < 3; k++)
+				m[k] = 0.5f * (p[pick][k] + p[next][k]);
+			muv[0] = 0.5f * (uv[pick][0] + uv[next][0]);
+			muv[1] = 0.5f * (uv[pick][1] + uv[next][1]);
+			/* (pick, m, other) and (m, next, other): the parent's winding */
+			memcpy(half[0][0], p[pick], sizeof(m));
+			memcpy(half[0][1], m, sizeof(m));
+			memcpy(half[0][2], p[other], sizeof(m));
+			memcpy(half[1][0], m, sizeof(m));
+			memcpy(half[1][1], p[next], sizeof(m));
+			memcpy(half[1][2], p[other], sizeof(m));
+			memcpy(half_uv[0][0], uv[pick], sizeof(muv));
+			memcpy(half_uv[0][1], muv, sizeof(muv));
+			memcpy(half_uv[0][2], uv[other], sizeof(muv));
+			memcpy(half_uv[1][0], muv, sizeof(muv));
+			memcpy(half_uv[1][1], uv[next], sizeof(muv));
+			memcpy(half_uv[1][2], uv[other], sizeof(muv));
+			light_split_pieces++;
+			/* level surfaces are flat: one normal does for the pieces */
+			half_normal[0] = half_normal[1] = half_normal[2] = normal[pick];
+			light_split(half[0], half_uv[0], half_normal, depth + 1, out, kept_count, cut_count);
+			light_split(half[1], half_uv[1], half_normal, depth + 1, out, kept_count, cut_count);
+			return;
+		}
+	}
+	else if (depth < 3 && longest > split)
 	{
 		float m[3][3], muv[3][2], piece[3][3], piece_uv[3][2];
 		unsigned int piece_normal[3];
@@ -18287,7 +19076,11 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				continue;
 			}
 		}
+		if (light_exact_on < 0)
+			light_exact_on = !psp_keep("lightliftall");
+		light_emit_exact = light_exact_on;
 		light_emit(corners, out, &kept_count, &cut_count);
+		light_emit_exact = 0;
 	}
 #ifdef PSP_RECON
 	if (census_run_count)
@@ -18394,11 +19187,12 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		stood that close in front of it (review). Within a band (distances
 		doubling) the lift is at most 4 times the one asked for */
 		unsigned char band_of[SCRATCH_TRIANGLES];
-		long band_count[LIGHT_BANDS], t;
-		float band_near[LIGHT_BANDS];
+		/* and one more band, LIGHT_BANDS: the exact triangles, no lift */
+		long band_count[LIGHT_BANDS + 1], t;
+		float band_near[LIGHT_BANDS + 1];
 		int b;
 
-		for (b = 0; b < LIGHT_BANDS; b++)
+		for (b = 0; b <= LIGHT_BANDS; b++)
 		{
 			band_count[b] = 0;
 			band_near[b] = 1e30f;
@@ -18417,13 +19211,13 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 				if (d2 < nearest)
 					nearest = d2;
 			}
-			b = light_band(nearest);
+			b = light_exact_of[t] ? LIGHT_BANDS : light_band(nearest);
 			band_of[t] = (unsigned char)b;
 			band_count[b]++;
 			if (nearest < band_near[b])
 				band_near[b] = nearest;
 		}
-		for (b = 0; b < LIGHT_BANDS; b++)
+		for (b = 0; b <= LIGHT_BANDS; b++)
 		{
 			struct shadow_vertex *copy;
 			long n = 0;
@@ -18436,7 +19230,9 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			for (t = 0; t < kept_count; t++)
 				if (band_of[t] == b)
 					memcpy(copy + 3 * n++, out + 3 * t, 3 * sizeof(struct shadow_vertex));
-			sceGuDepthOffset(light_nudge_units(sqrtf(band_near[b])));
+			if (b == LIGHT_BANDS)
+				light_exact_triangles += n;
+			sceGuDepthOffset(b == LIGHT_BANDS ? 0 : light_nudge_units(sqrtf(band_near[b])));
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
 				(int)n * 3, NULL, copy);
 			light_nudged_draws++;
@@ -18638,6 +19434,7 @@ struct decal_vertex_ge
 };
 
 static int decal_pull = -1, decal_big = 0, decal_all = -1, decal_slope = -1, decal_batch = 0;
+static int decal_square = -1;
 static unsigned long decals_small = 0, decals_offscreen = 0;
 /* build 106: decal calls with no quad on the screen, left before the bind */
 static unsigned long decals_wholly_left_out = 0;
@@ -19228,6 +20025,24 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		}
 		if (!psp_tex_bind(key, &alpha))
 			return;
+#ifdef PSP_DEBUG_TOOLS
+		if (sdump_wanted())
+		{
+			float box[4], c[3];
+			char text[64];
+			int q;
+
+			sdump_box_start(box);
+			for (q = 0; q < original_quads * 4; q++)
+			{
+				to_camera((const float *)(in + 16 * q), c);
+				sdump_box_add(box, c);
+			}
+			if (sdump_box_text(box, text, sizeof(text)))
+				platform_log("sdump: decal %s map %s blend %d alpha tested %d map alpha %d permanent %d quads %d",
+					text, sdump_map_name(key), blend, alpha_tested, alpha, permanent, original_quads);
+		}
+#endif
 		out = list_take(kept * 6 * sizeof(struct decal_vertex_ge));
 		if (!out)
 			return;
@@ -19322,7 +20137,15 @@ static void psp_ge_decal_body(void const *vertices, int quad_count, unsigned int
 		}
 		fragment = 0xFF000000 | (r[2] << 16) | (r[1] << 8) | r[0];
 		constant = 0xFF000000 | (e[2] << 16) | (e[1] << 8) | e[0];
-		sceGuTexFunc(GU_TFX_BLEND, GU_TCC_RGB);
+		/* an alpha-tested decal (a10's floor markings) is cut out by its
+		map's alpha on the Xbox (rasterizer_xbox_decals.c: the alpha test
+		reads r0.a, the texel's); with the texel's alpha left out the test
+		saw the fragment's 0xFF and drew the whole quad as a square. The
+		multiply blends read no alpha, so the colour is unchanged.
+		"decalsquare": as before */
+		if (decal_square < 0)
+			decal_square = psp_keep("decalsquare");
+		sceGuTexFunc(GU_TFX_BLEND, alpha_tested && alpha && !decal_square ? GU_TCC_RGBA : GU_TCC_RGB);
 		sceGuTexEnvColor(constant);
 		/* the frame times twice this, or this */
 		if (half)
@@ -19904,7 +20727,7 @@ static void text_character(void const *vertices)
 		out[corner].v = in[corner].v;
 		out[corner].color = argb_to_abgr(in[corner].argb, 1.0f, 1.0f, 1.0f, 1.0f);
 		out[corner].x = (in[corner].x + text_offset_x) * ui_scale_x * hud_zoom + ui_offset_x;
-		out[corner].y = (in[corner].y + text_offset_y) * ui_scale_y * hud_zoom;
+		out[corner].y = (in[corner].y + text_offset_y) * ui_scale_y * hud_zoom + ui_offset_y;
 		out[corner].z = 0.0f;
 	}
 	sceGuDrawArray(GU_TRIANGLE_FAN, GU_TEXTURE_32BITF | GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_2D, 4, NULL, out);
@@ -20838,8 +21661,8 @@ static void frame_end_show(void)
 		/* build 89: the counters over these 300 frames (they were never
 		reset, so a bench window's line carried every earlier window's;
 		review), and the ME's part on a line of its own (512 characters) */
-		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes (last 300 frames)",
-			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, stencil_mode, bake_substituted,
+		platform_log("GE: light pass mode %d: %lu triangles as the level drew them, %lu nudged draws, %lu skipped, %lu unlifted; stencil bake (mode %d): %lu wall triangles drawn as %lu pieces, %lu stencil layer draws (%lu triangles), %lu stencil triangles on the old path; level vertices %s: %lu materials at 16 bits, %lu too wide, %lu 16-bit passes (last 300 frames)",
+			light_mode, light_index_triangles, light_nudged_draws, lights_skipped, light_exact_triangles, stencil_mode, bake_substituted,
 			bake_pieces_drawn, bake_layer_draws, bake_layer_triangles, bake_old_path_triangles,
 			level_compact > 0 ? "16-bit (levelcompact)" : "float", compact_streams, compact_refused, compact_draws);
 		if (level_local > 0)
@@ -20932,9 +21755,22 @@ static void frame_end_show(void)
 			seethrough_angle_draws, level_angle_draws, planar_fog_windows, meter_parts, meter_parts_dropped,
 			seethrough_doubled_draws, seethrough_added_draws, seethrough_flat_draws, seethrough_rounded_draws,
 			seethrough_angle_tinted_draws);
-		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu",
-			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws);
-		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = 0;
+		platform_log("GE: see-through depth as the Xbox's, last 300 frames: level draws without a nudge %lu; draws with the map clamped %lu; added water faded by the fog %lu; level draws front faces only %lu",
+			seethrough_exact_draws, seethrough_clamped_draws, seethrough_fog_faded_draws, level_culled_draws);
+		seethrough_exact_draws = seethrough_clamped_draws = seethrough_fog_faded_draws = level_culled_draws = 0;
+		{
+			extern void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped);
+			extern unsigned long psp_transparent_noise_count(void);
+			unsigned long layers_queued, layers_unmapped;
+
+			psp_transparent_layers_counts(&layers_queued, &layers_unmapped);
+			platform_log("GE: models as the Xbox draws them, last 300 frames: see-through parts one-sided %lu (seethroughtwosided: both sides); extra layers queued %lu, %lu with no map (nolayers: none); camouflaged parts shimmering %lu (camoshimmer); generic shaders' second map passes %lu (genericnoise); self-occluding objects' depth first %lu times, %lu parts (noselfocclude: none)",
+				seethrough_culled_draws, layers_queued, layers_unmapped, camo_shimmer_parts, psp_transparent_noise_count(),
+				self_occlude_runs, self_occlude_parts);
+		}
+		self_occlude_runs = self_occlude_parts = 0;
+		seethrough_culled_draws = 0;
+		camo_shimmer_parts = 0;
 		seethrough_angle_draws = 0;
 		level_angle_draws = 0;
 		seethrough_doubled_draws = 0;
@@ -20983,7 +21819,7 @@ static void frame_end_show(void)
 		if (light_merge > 0)
 			platform_log("GE: lightmerge: merged light draws, last 300 frames: %lu", light_merged_draws);
 		light_merged_draws = 0;
-		light_index_triangles = light_nudged_draws = lights_skipped = 0;
+		light_index_triangles = light_nudged_draws = lights_skipped = light_exact_triangles = 0;
 		bake_substituted = bake_pieces_drawn = bake_layer_draws = bake_layer_triangles = bake_old_path_triangles = 0;
 		compact_draws = 0;
 		/* build 90 */
@@ -20994,10 +21830,10 @@ static void frame_end_show(void)
 		decal_cache_scans = decal_cache_uses = decal_project_us = 0;
 		/* build 113 */
 		if (contrails_queued || contrails_out_of_view)
-			platform_log("GE: contrails (contrails): %lu queued, %lu segments; %lu pairs of corners folded away (behind the "
+			platform_log("GE: contrails (contrails): %lu queued (%lu faded by their alpha), %lu segments; %lu pairs of corners folded away (behind the "
 				"near plane or past the GE's range), %lu contrails wholly out of view (last 300 frames)", contrails_queued,
-				contrail_segments, contrail_pairs_folded, contrails_out_of_view);
-		contrails_queued = contrail_segments = contrail_pairs_folded = contrails_out_of_view = 0;
+				contrails_faded, contrail_segments, contrail_pairs_folded, contrails_out_of_view);
+		contrails_queued = contrail_segments = contrail_pairs_folded = contrails_out_of_view = contrails_faded = 0;
 		if (zoom_masks || zoom_masks_missing)
 			platform_log("GE: zoom masks (zoommask): %lu drawn, %lu not in the texture pack (last 300 frames)", zoom_masks,
 				zoom_masks_missing);
@@ -21151,13 +21987,13 @@ static void frame_end_show(void)
 
 					for (b = 0; b < ANGLE_BUCKETS; b++)
 						all += angle_triangles[b];
-					platform_log("GE: angle buckets: %lu draws, %lu us a frame sorting (the bucket loop alone %lu); triangles by 1/cos (1, 1.4, 2, 2.8, 4, 5.7, 8): %lu%% %lu%% %lu%% %lu%% %lu%% %lu%% %lu%%; overlays: %lu asked of the collision (%lu on a wall, %lu free, %lu us in all; %d draws remembered, %lu replaced); slope nudges %lu, held to the lift limit (%d%% of the distance) %lu%s",
+					platform_log("GE: angle buckets: %lu draws, %lu us a frame sorting (the bucket loop alone %lu); triangles by 1/cos (1, 1.4, 2, 2.8, 4, 5.7, 8): %lu%% %lu%% %lu%% %lu%% %lu%% %lu%% %lu%%; overlays: %lu asked of the collision (%lu on a wall, %lu free, %lu us in all; %d draws remembered, %lu replaced); slope nudges %lu, held to the lift limit (%d%% of the distance) %lu, dropped edge-on %lu%s",
 						angle_draws, angle_us / 300, angle_loop_us / 300, all ? angle_triangles[0] * 100 / all : 0, all ? angle_triangles[1] * 100 / all : 0,
 						all ? angle_triangles[2] * 100 / all : 0, all ? angle_triangles[3] * 100 / all : 0,
 						all ? angle_triangles[4] * 100 / all : 0, all ? angle_triangles[5] * 100 / all : 0,
-						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped,
+						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped, nudges_edge_on,
 						nudge_wide > 0 ? " (nudgewide: not held)" : "");
-					nudges_asked = nudges_clamped = 0;
+					nudges_asked = nudges_clamped = nudges_edge_on = 0;
 					if (me_slant > 0)
 						platform_log("GE: meslant: %lu of %lu sorted draws split with the Media Engine, %lu triangles of %lu (%lu%%) bucketed there; %lu fell back to this CPU; meslantcheck: %lu triangles checked, %lu answers differing",
 							me_slant_split, me_slant_draws, me_slant_triangles, all, all ? me_slant_triangles * 100 / all : 0,

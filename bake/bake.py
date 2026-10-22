@@ -82,6 +82,17 @@ Options:
                                 strict bar (texpack.py; by default they go to
                                 16 colours, docs/review_clut4look.md; ui.map
                                 never does). Alias --no-clut-look
+    --alpha-audit               log how many texels of each texture with
+                                alpha the GE's alpha test hides or draws
+                                otherwise than the source does
+    --no-alpha-split            alpha-tested maps' palettes fitted as one
+                                (as before): an entry may stand for hidden
+                                and drawn texels
+    --effects-clut4             effects and see-through maps may take 16
+                                colours (as before)
+    --drawn-by-shape            a see-through shader blended by its alpha
+                                draws the map that shapes what the frame
+                                shows (its mask), not only its colour
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
@@ -172,6 +183,10 @@ def run(command, log_path, cwd=None, env=None):
 # pack's exact-CLUT4 count, into the bake's (texture classes, sizes and pixel
 # hashes only, no names)
 MEASURES = ('texprofile', 'palcompare', 'clut4 exact', 'clut4 look')
+# every pack's lines on its textures' alpha (--alpha-audit's name each
+# texture: tag names and counts, never texels)
+ALPHA_LINES = ('alpha shapes', 'effects kept at 8 bits', 'alpha audit', 'cut-outs')
+ALPHA_AUDIT = False         # --alpha-audit
 
 
 def echo_from(name, log_path, start, markers):
@@ -298,6 +313,8 @@ def tool_env():
         env['TEXPACK_PROFILE'] = '1'
     if COMPARE_PALETTES:
         env['TEXPACK_PALETTE_COMPARE'] = '1'
+    if ALPHA_AUDIT:
+        env['TEXPACK_ALPHA_AUDIT'] = '1'
     # one thread of numpy's linear algebra in each step: the bake runs its
     # maps side by side (--jobs), and each library's own threads, one per
     # CPU in every step at once, fought over the CPUs (OpenBLAS's wait by
@@ -376,7 +393,7 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
     run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '.ptex')] + TEXPACK_OPTIONS,
         log_path, cwd=LIB, env=env)
     echo_from(name, log_path, start, ('tint ', 'see-through shaders tinted', 'meter shader maps', 'HUD sheets', 'glow ', 'detail mask', 'quality ',
-                                'kmeans compare summary', 'kmeans compare worse', 'bump relief') + MEASURES)
+                                'kmeans compare summary', 'kmeans compare worse', 'bump relief') + MEASURES + ALPHA_LINES)
     # the main menu is the hardware's showcase (CLAUDE.md): a pack of its own
     # at the most the GE can take, beside the usual one ("noshowcase")
     if name == 'ui':
@@ -396,7 +413,8 @@ def bake_map(name, retail, out_maps, work, track, keep_work, detail='', sound=''
         start = os.path.getsize(log_path)
         run([sys.executable, os.path.join(LIB, 'texpack.py'), final, os.path.join(out_maps, name + '_track.ptex'),
              '--lightmap-scale', '2', '--alpha-coverage', '--pgeo', pgeo] + TEXPACK_OPTIONS, log_path, cwd=LIB, env=env)
-        echo_from(name, log_path, start, MEASURES)
+        echo_from(name, log_path, start, ('lightmaps 1/', 'lightmaps whole', 'lightmap seams', 'lightmap charts')
+                  + MEASURES + ALPHA_LINES)
     if detail and name != 'ui':
         log('%s: textures at full size for %s' % (name, detail))
         start = os.path.getsize(log_path)
@@ -618,18 +636,52 @@ def main():
     ap.add_argument('--slim-level', action='store_true',
                     help="the level's rendered vertices without the binormal and tangent the port never reads "
                          '(24 bytes a vertex in the geometry pack instead of 32; exact)')
+    # on by default: it restores the original's smooth lighting where plain
+    # halving flattens a small chart against its neighbour (a hard-edged step)
+    ap.add_argument('--lm-chart-halve', action='store_true', default=True,
+                    help="the asset track's lightmaps halved chart by chart where plain halving breaks a seam "
+                         "(texpack.py --lm-chart-halve; the default)")
+    ap.add_argument('--no-cutout-fine', action='store_true',
+                    help='texpack.py --no-cutout-fine: cut-outs finer than their baked base map at the usual size')
+    ap.add_argument('--base-as-bump', action='store_true',
+                    help='texpack.py --base-as-bump: a map named as both base and bump map dropped, as before')
+    ap.add_argument('--no-lm-chart-halve', dest='lm_chart_halve', action='store_false',
+                    help="the asset track's lightmaps halved plainly, as before")
+    ap.add_argument('--chart-max', type=int, default=-1,
+                    help="texpack.py --chart-max: --lm-chart-halve's largest chart, texels across (-1: texpack's own)")
+    ap.add_argument('--lightmap-seam-whole', action='store_true',
+                    help="texpack.py --lightmap-seam-whole: seam-breaking pages also baked whole (too many: off)")
+    ap.add_argument('--seam-step', type=int, default=0,
+                    help="the asset track's seam test (texpack.py --seam-step; 0: texpack's own)")
+    ap.add_argument('--seam-spots', type=int, default=0, help="texpack.py --seam-spots (0: texpack's own)")
     ap.add_argument('--jobs', type=int, default=0,
                     help='maps baked at once (default: as many as the CPUs, at most 4, fewer when under 8 GB of '
                          'memory is free; 1 bakes them one after another). The maps come out the same whatever it is')
+    ap.add_argument('--alpha-audit', action='store_true',
+                    help='log, texture by texture, how many texels the alpha test treats otherwise than the source '
+                         'does, packed and with the palettes as fitted before (names and counts only)')
+    ap.add_argument('--no-alpha-split', action='store_true',
+                    help='alpha-tested maps\' palettes fitted as one, as before')
+    ap.add_argument('--drawn-by-shape', action='store_true',
+                    help='see-through shaders blended by their alpha draw the map that shapes what the frame shows')
+    ap.add_argument('--effects-clut4', action='store_true',
+                    help='effects and see-through maps may take 16 colours, as before')
     ap.add_argument('--compare-old', action='store_true',
                     help="also make each palette and decal cut as the bake did before this one (scikit-learn's k-means, "
                          'Triangle), and log how they compare: the new bake\'s proof (docs/bake_changes.md)')
     a = ap.parse_args()
     if a.sound == 'none':
         a.sound = ''
-    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM
+    global COMPARE_OLD, PROFILE, COMPARE_PALETTES, LEVEL_SLIM, ALPHA_AUDIT
     LEVEL_SLIM = a.slim_level
     COMPARE_OLD, PROFILE, COMPARE_PALETTES = a.compare_old, a.profile, a.compare_palettes
+    ALPHA_AUDIT = a.alpha_audit
+    if a.no_alpha_split:
+        TEXPACK_OPTIONS.append('--no-alpha-split')
+    if a.effects_clut4:
+        TEXPACK_OPTIONS.append('--effects-clut4')
+    if a.drawn_by_shape:
+        TEXPACK_OPTIONS.append('--drawn-by-shape')
     if a.tints_from_means:
         TEXPACK_OPTIONS.append('--tints-from-means')
     if a.fast_palettes:
@@ -638,6 +690,20 @@ def main():
         TEXPACK_OPTIONS.append('--no-clut4-exact')
     if a.no_clut4_look:
         TEXPACK_OPTIONS.append('--no-clut4-look')
+    if a.lm_chart_halve:
+        TEXPACK_OPTIONS.append('--lm-chart-halve')
+    if a.no_cutout_fine:
+        TEXPACK_OPTIONS.append('--no-cutout-fine')
+    if a.base_as_bump:
+        TEXPACK_OPTIONS.append('--base-as-bump')
+    if a.chart_max >= 0:
+        TEXPACK_OPTIONS.extend(['--chart-max', str(a.chart_max)])
+    if a.lightmap_seam_whole:
+        TEXPACK_OPTIONS.append('--lightmap-seam-whole')
+    if a.seam_step:
+        TEXPACK_OPTIONS.extend(['--seam-step', str(a.seam_step)])
+    if a.seam_spots:
+        TEXPACK_OPTIONS.extend(['--seam-spots', str(a.seam_spots)])
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or \
         CAMPAIGN + (MULTIPLAYER if a.multiplayer else []) + ['ui']
     unknown = [m for m in wanted if m not in ALL]

@@ -86,6 +86,19 @@ static unsigned int pack_generation = 0;
 it was drawn in */
 static unsigned int *resident_at = NULL, *last_frame = NULL;
 static unsigned char *resident_in = NULL;
+/* the textures the HUD and the other screen-space draws use (the meters,
+the crosshair, the motion sensor, the text): kept as long as they're drawn
+within RECENT_FRAMES, whatever the frame's other textures need, and read past
+the frame's read budget when missing. The HUD draws last in a frame, so in
+the next frame's first pass its textures were last frame's, and when both
+caches were full of this frame's (a fight under load), the second pass
+evicted them; the HUD then lost parts until they were read again, and at
+low frame rates the budget was spent before the HUD's turn. 1: pinned.
+"hudpinoff": as before */
+static unsigned char *hud_pinned = NULL;
+static int hud_pin_on = -1;
+static unsigned long hud_misses = 0, hud_reads_past_budget = 0, hud_untextured = 0;
+int psp_tex_screen_pass = 0; /* psp_ge.c: set while the screen-space draws are made */
 /* build 44: binds per entry since the last report, to see which textures
 the GE samples most and whether those are the ones in VRAM (the GE reads
 VRAM about ten times faster than main memory: YAPSPD 11.7) */
@@ -119,6 +132,14 @@ face on, the tint edge on) sorted by address, blended per vertex by the angle
 Cortana's face-on body was as bright as her rim. "noangletint": the middle */
 static unsigned int *angle_tints = NULL;
 static int angle_tint_count = 0;
+/* the see-through shaders drawn from a texture of their own (texpack.py
+'TNC1', seethrough.py composite): pairs of (the shader's tag address, the
+map the composite is drawn in place of) sorted by address; the texture is
+under the shader's address | 1. One map and a tint can't hold a shader whose
+look comes from two maps (a thruster's cone from one, its colour from
+another). "nocomposite": drawn as one map and a tint, as without them */
+static unsigned int *composites = NULL;
+static int composite_count = 0;
 static int drawn_map_scale(void);
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
 static unsigned short vram_pending[512];
@@ -280,6 +301,8 @@ void psp_tex_close(void)
 	free(resident_at);
 	free(last_frame);
 	free(resident_in);
+	free(hud_pinned);
+	hud_pinned = NULL;
 	free(averages);
 	averages = NULL;
 	averages_count = 0;
@@ -289,6 +312,9 @@ void psp_tex_close(void)
 	free(angle_tints);
 	angle_tints = NULL;
 	angle_tint_count = 0;
+	free(composites);
+	composites = NULL;
+	composite_count = 0;
 	free(drawn_maps);
 	drawn_maps = NULL;
 	drawn_map_count = 0;
@@ -1005,6 +1031,7 @@ void psp_tex_map_opened(const char *name)
 	resident_at = calloc(header[1], sizeof(unsigned int));
 	last_frame = calloc(header[1], sizeof(unsigned int));
 	resident_in = calloc(header[1], 1);
+	hud_pinned = calloc(header[1], 1);
 	bind_counts = calloc(header[1], sizeof(unsigned short));
 	if (!ram_cache)
 		ram_cache_acquire();
@@ -1059,21 +1086,39 @@ void psp_tex_map_opened(const char *name)
 			}
 		}
 		if (tables == 2 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
-			table[0] == 0x31414E54 /* TNA1 */ && table[1] > 0 && table[1] <= 4096 &&
-			(angle_tints = malloc(table[1] * 12)) != NULL)
+			table[0] == 0x31414E54 /* TNA1 */ && table[1] <= 4096)
 		{
-			if (sceIoRead(file, angle_tints, table[1] * 12) == (int)(table[1] * 12))
-				angle_tint_count = (int)table[1];
+			tables = 3;
+			if (table[1] > 0 && (angle_tints = malloc(table[1] * 12)) != NULL)
+			{
+				if (sceIoRead(file, angle_tints, table[1] * 12) == (int)(table[1] * 12))
+					angle_tint_count = (int)table[1];
+				else
+				{
+					free(angle_tints);
+					angle_tints = NULL;
+					tables = 0;
+				}
+			}
+		}
+		if (tables == 3 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
+			table[0] == 0x31434E54 /* TNC1 */ && table[1] > 0 && table[1] <= 4096 &&
+			(composites = malloc(table[1] * 8)) != NULL)
+		{
+			if (sceIoRead(file, composites, table[1] * 8) == (int)(table[1] * 8))
+				composite_count = (int)table[1];
 			else
 			{
-				free(angle_tints);
-				angle_tints = NULL;
+				free(composites);
+				composites = NULL;
 			}
 		}
 		platform_log("textures: see-through tints for %d shaders%s; drawn maps chosen by the bake for %d%s", tint_count,
 			tint_count ? "" : " (a pack baked before build 116: none)", drawn_map_count,
 			drawn_map_count ? (drawn_map_scale() ? " (drawnmapscale: the smallest scale's instead)" : "") :
 			" (none in this pack: the smallest scale's for all)");
+		platform_log("textures: see-through composites for %d shaders%s", composite_count,
+			composite_count && psp_keep("nocomposite") ? " (nocomposite: one map and a tint instead)" : "");
 	}
 	if (angle_tint_count)
 		platform_log("textures: tints by angle for %d shaders%s", angle_tint_count,
@@ -1110,6 +1155,41 @@ static int drawn_map_scale(void)
 	return on;
 }
 
+/* the map a see-through shader's composite is drawn in place of, or -1 when
+it has none (or "nocomposite", or "drawnmapscale": the composite is laid out
+on the bake's choice of map, so it goes with that choice) */
+int psp_tex_has(unsigned int key);
+
+static int composite_map(unsigned int shader)
+{
+	static int off = -1;
+	int low = 0, high = composite_count - 1;
+
+	if (off < 0)
+		off = psp_keep("nocomposite");
+	if (off || drawn_map_scale())
+		return -1;
+	while (composites && low <= high)
+	{
+		int middle = (low + high) / 2;
+
+		if (composites[2 * middle] == shader)
+			return psp_tex_has(shader | 1) ? (int)composites[2 * middle + 1] : -1;
+		if (composites[2 * middle] < shader)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return -1;
+}
+
+/* the key of a see-through shader's composite when it has one, else key (the
+map's own) */
+unsigned int psp_tex_composite_key(unsigned int shader, unsigned int key)
+{
+	return composite_map(shader) >= 0 ? shader | 1 : key;
+}
+
 /* a shader's place in the pack's drawn maps, or -1 */
 static int drawn_map_find(unsigned int shader)
 {
@@ -1134,8 +1214,11 @@ static int drawn_map_find(unsigned int shader)
 shader's maps), or -1 for the runtime's smallest-scale rule */
 int psp_tex_shader_map(unsigned int shader)
 {
-	int found = drawn_map_scale() ? -1 : drawn_map_find(shader);
+	int found = composite_map(shader);
 
+	if (found >= 0)
+		return found;
+	found = drawn_map_scale() ? -1 : drawn_map_find(shader);
 	return found < 0 ? -1 : (int)drawn_maps[3 * found + 1];
 }
 
@@ -1151,7 +1234,8 @@ unsigned int psp_tex_shader_tint(unsigned int shader, int *flags)
 		*flags = 0;
 	if (off < 0)
 		off = psp_keep("notint");
-	if (off)
+	/* a composite is the shader's whole colour already */
+	if (off || composite_map(shader) >= 0)
 		return 0xFFFFFFFF;
 	if (drawn_map_scale() && (found = drawn_map_find(shader)) >= 0)
 	{
@@ -1245,7 +1329,8 @@ static int find(unsigned int key)
 last `recent` frames (1: this frame only) */
 static int protected_at(int index, int which, unsigned int recent)
 {
-	return resident_at[index] && resident_in[index] == which && last_frame[index] + recent > frame;
+	return resident_at[index] && resident_in[index] == which &&
+		(last_frame[index] + recent > frame || (hud_pinned && hud_pinned[index] && last_frame[index] + RECENT_FRAMES > frame));
 }
 
 static unsigned int fits(int which, unsigned int start, unsigned int size, unsigned int recent)
@@ -1666,8 +1751,12 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	entry = &entries[index];
 	if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
 		return bind_standin(entry, has_alpha);
+	if (hud_pin_on < 0)
+		hud_pin_on = !psp_keep("hudpinoff");
 	if (!resident_at[index])
 	{
+		int screen = psp_tex_screen_pass, past_budget = screen && hud_pin_on > 0;
+
 		misses++;
 		if (PSP_ME_WORK())
 		{
@@ -1675,12 +1764,22 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 			frame_untextured = 1;
 			return 0;
 		}
-		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+		if (screen)
 		{
+			hud_misses++;
+			if (frame_loaded >= LOAD_BUDGET_BYTES && past_budget)
+				hud_reads_past_budget++;
+		}
+		if ((frame_loaded >= LOAD_BUDGET_BYTES && !past_budget) || !load(index))
+		{
+			if (screen)
+				hud_untextured++;
 			frame_untextured = 1;
 			return 0;
 		}
 	}
+	if (psp_tex_screen_pass && hud_pin_on > 0 && hud_pinned && !PSP_ME_WORK())
+		hud_pinned[index] = 1;
 	if (last_frame[index] != frame)
 	{
 		frame_set_bytes += alignment(entry->size);
@@ -2115,6 +2214,26 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	return 1;
 }
 
+/* a texture's average once worked out, even after it has left memory;
+else worked out now, bringing it in without binding it if need be (a model
+reflection's cube map patch and multipurpose map, psp_ge.c). 0 when it
+can't be had this frame */
+int psp_tex_average_known(unsigned int key, unsigned int *abgr)
+{
+	int index = key && entries ? find(key) : -1;
+
+	if (index < 0)
+		return 0;
+	if (averages_count == entry_count && averages[index])
+	{
+		*abgr = averages[index];
+		return 1;
+	}
+	if (!resident_at[index] && !psp_tex_resident(key))
+		return 0;
+	return psp_tex_average(key, abgr);
+}
+
 /* ---------- build 102: object lighting from the lightmaps
 
 Halo lights an object from the level under it: a ray down finds the
@@ -2308,14 +2427,16 @@ int psp_tex_has(unsigned int key)
 the pack has one (texpack.py, apply_relief: under the base's key | 2), else
 the key itself. The Xbox lights a level's bump map per pixel; the GE can't,
 so the bake folds the relief into the base, lit from one fixed direction.
-"norelief": the plain base map, as before */
+The bake filters the bump over each base texel's footprint; sampled one
+bump texel per base texel, it aliased into vertical streaks along a30's
+stretched cliff walls. Keep word "norelief": no relief */
 unsigned int psp_relief_key(unsigned int key)
 {
-	static int off = -1;
+	static int on = -1;
 
-	if (off < 0)
-		off = psp_keep("norelief");
-	return key && !off && psp_tex_has(key | 2) ? key | 2 : key;
+	if (on < 0)
+		on = !psp_keep("norelief");
+	return key && on && psp_tex_has(key | 2) ? key | 2 : key;
 }
 
 int psp_tex_size(unsigned int key, int *width, int *height)
@@ -2377,6 +2498,9 @@ void psp_tex_frame_end(void)
 		platform_log("textures: %lu loaded (%lu KB), %lu requests waited for the next frame, %lu for room; %lu evicted; largest frame %lu textures, %lu KB; %lu frames drew something untextured (longest run %lu)",
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
+	if (entries && frame % 300 == 0)
+		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured",
+			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured);
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
 	if (entries && frame % 300 == 0 && bind_blocks_on > 0)

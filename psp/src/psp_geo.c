@@ -36,6 +36,7 @@ psp_geo_generation(), which changes with every load into the block. */
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 /* the animation cache, this pack's second reader (psp_anim.c) */
 void psp_anim_close(void);
 void psp_anim_map_opened(unsigned int bytes, unsigned int first, unsigned int end, unsigned int page,
@@ -328,6 +329,68 @@ static int fits(unsigned int start, unsigned int size)
 	return 1;
 }
 
+/* The ring passes over blocks drawn in the last geo_keep_frames frames (a
+second chance), up to GEO_SKIP_STEPS times, before it evicts by position
+alone. Without it the ring evicted whatever it reached, oldest loaded first
+however often drawn: once a level's working set neared the cache's size,
+each wrap of the ring (about every 20 s on a10 and b30 on the PSP-1000)
+threw out blocks still in view, read them again within frames, and drew
+them late (0.7-1.6 MB a wrap). "geofifo" (or "geokeep0"): as before */
+#define GEO_SKIP_STEPS 16
+static int geo_keep_frames = -1;
+static unsigned long skips = 0, skip_fallbacks = 0;
+
+static int kept_entry(const struct geo_entry *e)
+{
+	return protected_entry(e) || (e->at && e->last_frame + (unsigned int)geo_keep_frames > frame);
+}
+
+/* where the ring goes on once at has passed its stretch: from the arena to
+the second stretch when there is one, else back to the arena's start */
+static unsigned int ring_after(unsigned int at)
+{
+	if (extra_start && at >= arena_start && at <= arena_end)
+		return extra_start;
+	return arena_start;
+}
+
+static unsigned int allocate_skipping(unsigned int size)
+{
+	unsigned int at = arena_next;
+	int steps, index;
+
+	for (steps = 0; steps < GEO_SKIP_STEPS; steps++)
+	{
+		unsigned int past = 0;
+
+		/* past a stretch's end the ring goes on at the other's start, as
+		allocate's does; a block no stretch holds is left to allocate */
+		if (!stretch_end(at) || at + size > stretch_end(at))
+			at = ring_after(at);
+		if (at + size > stretch_end(at))
+			at = ring_after(at);
+		if (at + size > stretch_end(at))
+			break;
+		for (index = 0; index < entry_count; index++)
+		{
+			const struct geo_entry *e = &entries[index];
+			unsigned int end;
+
+			if (!e->at || e->at >= at + size || e->at + alignment(e->size) <= at || !kept_entry(e))
+				continue;
+			end = e->at + alignment(e->size);
+			if (end > past)
+				past = end;
+		}
+		if (!past)
+			return at;
+		skips++;
+		at = past;
+	}
+	skip_fallbacks++;
+	return 0;
+}
+
 static unsigned int allocate(unsigned int size)
 {
 	unsigned int start = 0;
@@ -335,8 +398,14 @@ static unsigned int allocate(unsigned int size)
 
 	if (!arena_start || size > largest_stretch())
 		return 0;
+	if (geo_keep_frames < 0)
+		geo_keep_frames = psp_keep("geofifo") ? 0 : psp_keep_number("geokeep", 60);
+	if (geo_keep_frames > 0)
+		start = allocate_skipping(size);
+	if (start)
+		;
 	/* the ring runs on from the end of one stretch to the start of the other */
-	if (fits(arena_next, size))
+	else if (fits(arena_next, size))
 		start = arena_next;
 	else if (extra_start && arena_next >= arena_start && arena_next <= arena_end && fits(extra_start, size))
 		start = extra_start;
@@ -1024,6 +1093,8 @@ void psp_geo_frame_end(void)
 #ifdef PSP_RECON
 		geo_places_report();
 #endif
+		platform_log("geometry: the ring passed %lu blocks drawn in the last %d frames, and %lu times found none older",
+			skips, geo_keep_frames, skip_fallbacks);
 		psp_anim_report();
 	}
 	frame++;

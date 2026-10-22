@@ -752,6 +752,7 @@ one tick in OBJECT_SAMPLE and scaling by it keeps it unbiased for 1/8 of the
 calls. "objecttimeall": every tick timed, as before. Returns the scale for
 this tick's times, or 0 for a tick that isn't timed */
 #define OBJECT_SAMPLE 8
+static unsigned long object_scale_now;
 unsigned long psp_object_sample(void)
 {
 	static int every_tick = -1;
@@ -760,9 +761,57 @@ unsigned long psp_object_sample(void)
 	if (every_tick < 0)
 		every_tick = psp_keep("objecttimeall") != 0;
 	if (every_tick)
-		return 1;
-	return (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
+		return object_scale_now = 1;
+	return object_scale_now = (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
 }
+
+#if PSP_DEBUG_TOOLS
+/* "vehiclecost": the vehicles' updates timed by definition, so a flier's or a
+Warthog's tick cost reads apart from the rest (the per-type line sums every
+vehicle). Timed on the sampled ticks only, so counts are scaled as times are */
+#define VEHICLE_ACCOUNTS 16
+static struct { long definition_index; unsigned long microseconds, updates; } vehicle_accounts[VEHICLE_ACCOUNTS];
+static int vehicle_cost = -1;
+
+void psp_vehicle_account(long definition_index, unsigned long microseconds)
+{
+	int k;
+
+	if (vehicle_cost < 0)
+		vehicle_cost = psp_keep("vehiclecost") != 0;
+	if (!vehicle_cost)
+		return;
+	for (k = 0; k < VEHICLE_ACCOUNTS && vehicle_accounts[k].updates && vehicle_accounts[k].definition_index != definition_index; k++)
+		;
+	if (k == VEHICLE_ACCOUNTS)
+		return;
+	vehicle_accounts[k].definition_index = definition_index;
+	vehicle_accounts[k].microseconds += microseconds;
+	vehicle_accounts[k].updates += object_scale_now;
+}
+
+static void vehicle_report(unsigned long ticks)
+{
+	char *tag_get_name(long tag_index);
+	char line[512];
+	int length, k;
+
+	if (vehicle_cost <= 0 || !ticks)
+		return;
+	length = snprintf(line, sizeof(line), "vehiclecost: ms per tick (updates per tick, us each):");
+	for (k = 0; k < VEHICLE_ACCOUNTS && vehicle_accounts[k].updates; k++)
+	{
+		char const *name = tag_get_name(vehicle_accounts[k].definition_index), *last = strrchr(name, '\\');
+
+		if (length < (int)sizeof(line) - 64)
+			length += snprintf(line + length, sizeof(line) - length, " %s %.2f (%.2f, %lu);", last ? last + 1 : name,
+				vehicle_accounts[k].microseconds / 1000.0 / ticks, (double)vehicle_accounts[k].updates / ticks,
+				vehicle_accounts[k].microseconds / vehicle_accounts[k].updates);
+	}
+	platform_log("  %s", line);
+	memset(vehicle_accounts, 0, sizeof(vehicle_accounts));
+}
+#endif
 
 /* build 113: render_objects.c's counts (psp_fixups.py), since the last report */
 long psp_rendered_views, psp_rendered_full, psp_rendered_peak, psp_rendered_capacity, psp_render_states_new, psp_render_states_evicted;
@@ -772,6 +821,9 @@ static void object_report(SceUID file, unsigned long ticks)
 	char line[1024];
 	int length, type;
 
+#if PSP_DEBUG_TOOLS
+	vehicle_report(ticks);
+#endif
 	length = snprintf(line, sizeof(line), "objects_update by type, ms per tick (updates per tick):");
 	for (type = 0; type < OBJECT_ACCOUNTS_FIRST_LINE && length < (int)sizeof(line) - 64; type++)
 	{
@@ -1077,7 +1129,7 @@ static void keep_load(void)
 	/* build 115 */
 	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* build 116: the restorations are on by default; these words turn each off */
-	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages");
+	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nearseatcine nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
 	speed defaults' off words */
 	platform_log("keep words, build 117's restorations off: hudonemap glassflat lightcutone geoshare nopointlights ditherall; speed: vrammodels0; tests: ladderN exitatN");
@@ -1114,6 +1166,7 @@ static void keep_load(void)
 	platform_log("keep words, build 132's recon (emulator): nmreaders (who first reads each object's node matrices after they're computed, by nodes, and the call sites of other objects' reads)");
 	platform_log("keep words, build 136's: wake-on-write on in local games (a sleeping object checksummed only when something marked it since its last check); speed off: wakeonwriteoff (every sleeper summed every tick); opt-in: wakeonwrite (on in networked games too); check: wakecheck (every sleeper summed anyway, an unmarked change logged with the words that changed). wakeonwrite and wakecheck win over the off word");
 	platform_log("keep words, the profile: stepsall (every frame's steps timed; otherwise one frame in %d, and profile.txt's figures scaled by the frames each stands for)", STEPS_TIMED_EVERY);
+	platform_log("keep words, models as the Xbox draws them: restorations off: seethroughtwosided (see-through parts drawn from both sides), nolayers (shaders' extra layers left out), nearseatcine (a seated player's cinematics keep the near plane out), noselfocclude (Cortana's back layers drawn over her front, her parts sorted with the rest); look calls (opt-in, for an A/B): camoshimmer (active camouflage as its own map added faintly), genericnoise (a generic shader's second map drawn again over it, moving); instruments: neardump (what set the near plane, on shot frames), shotfromN (shots start at N s), scriptsdump (scenario scripts at load; recon builds)");
 	platform_log("keep words, shelved (docs/shelf.md): nwbatch and its kin built in only with PSP_SHELF=1; still built but shelved, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash (the b123 ME hygiene), mewake, mewarmtest, mefinishslow");
 	platform_log("keep words, the heap at each level change (opt-in): heapmap (its gaps and blocks of 16 KB or more, with what asked for each); recon builds only: poolpeaks (each game-state array's peak against its maximum)");
 	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
@@ -2338,6 +2391,32 @@ static void ladder_tick(unsigned long ticks_seen)
 	exit_game("ladder done");
 }
 
+/* teleport.txt's and route.txt's spot: the player put there and turned, or,
+with "flycam" (debug tools), the debug camera (debug_camera_load's flying
+camera) put there looking along the direction and the player left alone.
+The spot is then the eye, as a screenshot's "from" and "looking" give it,
+and neither a cutscene's camera nor where the player is gets in the way:
+a10's corridors can be seen while its opening still plays, their BSP put in
+with commands.txt's switch_bsp */
+static void spot_visit(const float *spot)
+{
+	extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
+#ifdef PSP_DEBUG_TOOLS
+	static int fly = -1;
+
+	if (fly < 0)
+		fly = psp_keep("flycam") != 0;
+	if (fly)
+	{
+		extern void psp_director_fly(float x, float y, float z, float fx, float fy, float fz); /* director.c (psp_fixups.py) */
+
+		psp_director_fly(spot[0], spot[1], spot[2], spot[3], spot[4], spot[5]);
+		return;
+	}
+#endif
+	psp_player_teleport(spot[0], spot[1], spot[2], spot[3], spot[4], spot[5]);
+}
+
 /* build 126: "frametrace" (psp_frametrace.c) */
 void psp_frametrace_tick(unsigned long microseconds);
 void psp_frametrace_frame(unsigned long draw_us, unsigned long ticks, unsigned long end_us);
@@ -2516,13 +2595,12 @@ steps in order: the console has no way to wait */
 
 		if (file)
 		{
-			extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
 			float p[6];
 
 			if (fscanf(file, "%f %f %f %f %f %f", &p[0], &p[1], &p[2], &p[3], &p[4], &p[5]) == 6)
 			{
 				platform_log("teleport.txt: to %.2f %.2f %.2f looking %.2f %.2f %.2f", p[0], p[1], p[2], p[3], p[4], p[5]);
-				psp_player_teleport(p[0], p[1], p[2], p[3], p[4], p[5]);
+				spot_visit(p);
 			}
 			fclose(file);
 		}
@@ -2562,9 +2640,7 @@ steps in order: the console has no way to wait */
 			if ((float)ticks_seen < next[0] * 30.0f)
 				break;
 			{
-				extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
-
-				psp_player_teleport(next[1], next[2], next[3], next[4], next[5], next[6]);
+				spot_visit(next + 1);
 				route_count++;
 				if (route_count % 10 == 1)
 					platform_log("route.txt: spot %lu at %.1f s: %.2f %.2f %.2f", route_count, next[0], next[1], next[2], next[3]);
@@ -2714,6 +2790,34 @@ steps in order: the console has no way to wait */
 		extern void psp_transwalk_tick(void); /* psp_fixups.py (FIXES_TRANSITIONS) */
 
 		psp_transwalk_tick();
+	}
+	{
+		/* "saveeveryN" (a checkpoint every N s of game time) and "revertatN"
+		(the last one reverted to at game second N): the checkpoint writer's
+		timing over many checkpoints on the PSP, and, with statecrc, whether a
+		format restores the game state exactly (two runs that differ only in
+		the format must play on identically after the revert) */
+		static int every = -2, revert_at = -2;
+
+		if (every == -2 && psp_keep_loaded())
+		{
+			every = psp_keep_number("saveevery", 0);
+			revert_at = psp_keep_number("revertat", 0);
+		}
+		if ((every > 0 && ticks_seen % ((unsigned long)every * 30) == 0) ||
+			(revert_at > 0 && ticks_seen == (unsigned long)revert_at * 30))
+		{
+			extern void main_save_map_nonsafe(void);
+			extern void main_revert_map(void);
+			int reverting = revert_at > 0 && ticks_seen == (unsigned long)revert_at * 30;
+
+			psp_player_snapshot(player_text, sizeof(player_text));
+			platform_log("saveevery: %s at tick %lu (%s)", reverting ? "revert" : "checkpoint", ticks_seen, player_text);
+			if (reverting)
+				main_revert_map();
+			else
+				main_save_map_nonsafe();
+		}
 	}
 	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
 	{

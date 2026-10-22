@@ -34,6 +34,10 @@ static real_rgb_color psp_change_colors[4];
 static boolean psp_change_colors_valid = FALSE;
 static long psp_unique_identifier = 0;
 static boolean psp_animation_valid = FALSE;
+/* the drawn object's reflection tint (its lighting's) and its distance
+along the view, for its parts' reflections (psp_ge.c, psp_ge_model_reflection) */
+static real_argb_color psp_reflection_tint;
+static real psp_model_camera_distance = 0.0f;
 unsigned int psp_tex_bitmap_key(long tag_index, int bitmap);
 int psp_tex_bitmap_count(long tag_index);
 
@@ -96,6 +100,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			}
 		}
 		key = psp_tex_bitmap_key(*(long const *)(map + map_at), bitmap);
+		if (!(*(unsigned char const *)(definition + 41) & 0x80))
+		{
+			/* a shader the bake drew whole into a texture of its own, laid
+			out on this map (psp_tex.c, composite_map) */
+			extern unsigned int psp_tex_composite_key(unsigned int shader, unsigned int key);
+
+			key = psp_tex_composite_key((unsigned int)shader, key);
+		}
 		{
 			/* the map's own clamping, as the Xbox sets its address modes
 			(rasterizer_xbox_transparent_geometry.c): the map's flags word,
@@ -151,6 +163,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			if (!PSP_KEEP_ONCE("seethroughflat"))
 				*blend = PSP_SEETHROUGH_PACK(*blend, fade_mode, fade, keep_with_camouflage);
 		}
+		/* a shader that isn't two-sided (its flags byte, bit 2) is drawn
+		from the front only, as the Xbox culls it (psp_ge.c, seethrough_cull) */
+		if (!(*(unsigned char const *)(definition + 41) & 4))
+			*blend = (short)(*blend | PSP_SEETHROUGH_ONE_SIDED_BIT);
 	}
 	else if (type == 7)
 		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
@@ -280,11 +296,21 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			/* and active camouflage: how see-through the model is (build 30) */
 			extern void psp_ge_model_effect(int type, float intensity);
 
-			psp_ge_model_effect(parameters->effect.type, parameters->effect.intensity);
+			/* (and, in the type's second byte, whether it's Cortana's model on a
+			level that sorts her see-through parts last: models.c's cortana hack) */
+			extern boolean rasterizer_model_cortana_hack;
+
+			psp_ge_model_effect(parameters->effect.type | (rasterizer_model_cortana_hack ? 0x100 : 0),
+				parameters->effect.intensity);
 		}
 		psp_animation_valid = parameters->animation.values != NULL;
 		if (psp_animation_valid)
 			csmemcpy(psp_animation_values, parameters->animation.values, sizeof(psp_animation_values));
+		psp_reflection_tint = lighting->reflection_tint_color;
+		psp_model_camera_distance =
+			(parameters->centroid.x - global_window_parameters.camera.position.x) * global_window_parameters.camera.forward.i +
+			(parameters->centroid.y - global_window_parameters.camera.position.y) * global_window_parameters.camera.forward.j +
+			(parameters->centroid.z - global_window_parameters.camera.position.z) * global_window_parameters.camera.forward.k;
 		psp_unique_identifier = parameters->unique_identifier;
 		psp_change_colors_valid = parameters->animation.colors != NULL;
 		if (psp_change_colors_valid)
@@ -402,6 +428,39 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			shader: texpack.py, glow_looks) is under the shader's address | 2 */
 			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0,
 				multipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);
+			{
+				/* its reflection's strength and tint, as the Xbox's model draw
+				sets them (rasterizer_xbox_models.c): the brightness faded by
+				the distance between the shader's falloff and cutoff, both
+				times the lighting's reflection tint, the view's angle taken
+				as midway between the perpendicular and parallel ends. The
+				cube map at +356 (its index at +368), the distances at +316
+				and +320, the brightnesses at +324 and +340, the tints at +328
+				and +344 */
+				extern void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
+				long cube = model_shader ? *(long const *)(definition + 368) : NONE;
+				float reflection[3] = { 0.0f, 0.0f, 0.0f };
+
+				if (cube != NONE)
+				{
+					float falloff = *(float const *)(definition + 316), cutoff = *(float const *)(definition + 320);
+					float fraction = 1.0f, brightness;
+					float const *perpendicular = (float const *)(definition + 328), *parallel = (float const *)(definition + 344);
+					int channel;
+
+					if (cutoff != 0.0f && falloff != cutoff)
+					{
+						fraction = (psp_model_camera_distance - cutoff) / (falloff - cutoff);
+						fraction = fraction < 0.0f ? 0.0f : fraction > 1.0f ? 1.0f : fraction;
+					}
+					brightness = fraction * 0.5f * (*(float const *)(definition + 324) + *(float const *)(definition + 340)) *
+						psp_reflection_tint.alpha;
+					for (channel = 0; channel < 3; channel++)
+						reflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *
+							(&psp_reflection_tint.red)[channel];
+				}
+				psp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);
+			}
 			/* on the main menu, the detail map itself over the base that holds
 			its average (psp_ge.c, model_detail_pass): shaders with the double
 			multiply and no mask, whose folded base the pack has. Its scale is
@@ -512,12 +571,21 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					if ((*(unsigned short const *)(definition + 108) & 1) &&
 						*(short const *)(key + 4) > 0 && *(short const *)(key + 6) > 0)
 					{
-						scales[which][0] *= (float)*(short const *)(base_key + 4) / (float)*(short const *)(key + 4);
-						scales[which][1] *= (float)*(short const *)(base_key + 6) / (float)*(short const *)(key + 6);
+						/* the bitmap's own key: a relief version is under key | 2 */
+						scales[which][0] *= (float)*(short const *)((base_key & ~3u) + 4) / (float)*(short const *)(key + 4);
+						scales[which][1] *= (float)*(short const *)((base_key & ~3u) + 6) / (float)*(short const *)(key + 6);
 					}
 				}
 			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
 		}
+#ifdef PSP_DEBUG_TOOLS
+		{
+			/* "sdump" names the shader of what it lists (psp_ge.c) */
+			extern void psp_ge_sdump_shader(void const *shader);
+
+			psp_ge_sdump_shader(shader);
+		}
+#endif
 		psp_environment_draw(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
 			0xFF000000 | (b << 16) | (g << 8) | r, base_key, psp_lightmap_key, alpha_tested);
 	}
@@ -2141,15 +2209,24 @@ he is in; psp_ge.c). Build 116 (b113 #17): 2 in a seat without the
 third-person camera (a Pelican's bench), where the vehicle's own walls are
 at the eye and its sphere holds the plane in as on foot; b90-b115 let the
 plane out to 16 x there and cut the cabin open. Keep word "nearseatedfar":
-1 in any seat, as before */
+1 in any seat, as before.
+In a cinematic the camera is the script's, not the seat's: a sphere around
+it belongs to whoever the shot is close on (a10's opening: the player rides
+the cryo tube while the camera sits at Keyes' and Cortana's faces, and the
+plane went out to 16 x and cut their heads open). So 0 there, as on foot.
+Keep word "nearseatcine": seated in cinematics too, as before */
 int psp_player_seated(void)
 {
-	static int far_in_any_seat = -1;
+	static int far_in_any_seat = -1, seated_in_cinematics = -1;
 	long unit_index = psp_local_unit(NULL);
 	struct unit_datum *unit;
 	struct object_datum *vehicle;
 
 	if (unit_index == NONE)
+		return 0;
+	if (seated_in_cinematics < 0)
+		seated_in_cinematics = psp_keep("nearseatcine") != 0;
+	if (!seated_in_cinematics && cinematic_in_progress())
 		return 0;
 	unit = unit_get(unit_index);
 	if (unit->object.parent_object_index == NONE)
@@ -2855,6 +2932,29 @@ void psp_transwalk_tick(void)
 #endif
 '''
 
+# "flycam" (debug tools; psp_platform.c's spot_visit): the debug camera put
+# at a spot, as debug_camera_load does from its file, for looking at a place
+# the player can't be brought to (a10's corridors behind its opening)
+APPEND["source/camera/director.c"] = r'''
+#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+void psp_director_fly(float x, float y, float z, float fx, float fy, float fz)
+{
+	struct director *director = director_get(0);
+	struct flying_camera *camera = (struct flying_camera *)director->camera_data;
+	real_point3d position;
+	real_vector3d forward;
+
+	position.x = x; position.y = y; position.z = z;
+	forward.i = fx; forward.j = fy; forward.k = fz;
+	if (normalize3d(&forward) == 0.f)
+		return;
+	flying_camera_new_from_point_and_vector(camera, &position, &forward);
+	director_set_camera(0, (director_camera_update_proc)flying_camera_update, FALSE);
+	director->camera_mode_index = _camera_flying;
+}
+#endif
+'''
+
 
 def appended(tree):
     for rel, code in APPEND.items():
@@ -2955,6 +3055,9 @@ KEEP_DECLARATION = "#ifdef HALO_PSP\nint psp_keep(const char *name); /* psp_plat
 PSP_SLEEP_CODE = """#ifdef HALO_PSP
 void psp_object_account(int type, unsigned long microseconds); /* psp_platform.c; psp_fixups.py */
 void psp_object_count(int type); /* psp_platform.c */
+#if PSP_DEBUG_TOOLS
+void psp_vehicle_account(long definition_index, unsigned long microseconds); /* psp_platform.c: "vehiclecost" */
+#endif
 unsigned long psp_object_sample(void); /* psp_platform.c: this tick's scale for each object's time, 0 untimed */
 int psp_keep(const char *name);
 static unsigned long psp_object_start, psp_object_scale;
@@ -3978,6 +4081,7 @@ FIXES_22 = {
  """#ifdef HALO_PSP
 int psp_ge_active(void);
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
+void psp_dynamic_vertices_release(long dynamic_vertex_buffer_index); /* psp_fixups.py */
 #endif
 
 void build_sprites_end(
@@ -4001,6 +4105,24 @@ void build_sprites_end(
 #endif
 			rasterizer_dynamic_vertices_unlock(group->vertex_buffer_index);
 			if (TEST_FLAG(data->flags, _build_sprites_screen_space_bit))"""),
+# the groups' vertices given back once the GE layer has copied them, last
+# first (each is the top of the stack only once those after it are gone)
+("""	SET_FLAG(data->flags, _build_sprites_valid_bit, FALSE);
+	return;
+}
+
+void build_sprite_prepare_for_window(void)""",
+ """#ifdef HALO_PSP
+	if (psp_ge_active() && !TEST_FLAG(data->flags, _build_sprites_screen_space_bit))
+		for (group_index = data->group_count - 1; group_index >= 0; group_index--)
+			if (data->groups[group_index].vertices)
+				psp_dynamic_vertices_release(data->groups[group_index].vertex_buffer_index);
+#endif
+	SET_FLAG(data->flags, _build_sprites_valid_bit, FALSE);
+	return;
+}
+
+void build_sprite_prepare_for_window(void)"""),
 ],
 }
 
@@ -4090,7 +4212,7 @@ FIXES_19 = {
 ("\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n",
  "\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n#ifdef HALO_PSP\n\tpsp_object_account(12, psp_microseconds() - psp_object_start);\n#endif\n"),
 ("\t\t\t\t\tobject_update(object_index);\n",
- "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
+ "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n#if PSP_DEBUG_TOOLS\n\t\t\t\t\t\tif (object_header->type == _object_type_vehicle)\n\t\t\t\t\t\t\tpsp_vehicle_account(object_header->datum->definition_index, (psp_microseconds() - psp_object_start) * psp_object_scale);\n#endif\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
 ("\tobjects_garbage_collection();\n\n\tprofile_exit(section);",
  "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n\tobjects_garbage_collection();\n\tpsp_object_account(13, psp_microseconds() - psp_object_start);\n#else\n\tobjects_garbage_collection();\n#endif\n\n\tprofile_exit(section);"),
 ],
@@ -4716,6 +4838,26 @@ format before (psp_state_read reads either) */
 #define PSP_STATE_RAW_ABOVE ((PSP_STATE_PAGE - PSP_STATE_PAGE_WORDS / 8) / 4) /* 992 words: past this, raw */
 #define PSP_STATE_STAGE 32768
 static unsigned long psp_state_words_header[PSP_STATE_WORDS_HEADER / 4];
+static byte psp_state_stage_reserved[PSP_STATE_STAGE + 63] __attribute__((aligned(64)));
+int psp_keep(const char *name);
+
+/* each write's time, so a slow checkpoint can be told apart from a slow
+stick: on the PSP-1000 most checkpoints write at the stick's ~6 MB/s, but
+some one 32 KB write takes 0.8 s (the screenshots' and the log's writes
+show the same spikes) */
+static unsigned long psp_state_writes = 0, psp_state_write_worst_us = 0;
+
+static int psp_state_write_timed(HANDLE handle, void const *bytes, unsigned long size, unsigned long *written)
+{
+	unsigned long start = psp_microseconds(), took;
+	int ok = WriteFile(handle, bytes, size, written, NULL) ? 1 : 0;
+
+	took = psp_microseconds() - start;
+	psp_state_writes++;
+	if (took > psp_state_write_worst_us)
+		psp_state_write_worst_us = took;
+	return ok;
+}
 
 static unsigned long psp_state_entry_bytes(unsigned short count)
 {
@@ -4737,9 +4879,19 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 
 	if (size % PSP_STATE_PAGE || 16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER)
 		return FALSE;
-	/* build 117: the stage 64-byte aligned (an independent review: b115's
-	fast path wrote straight from the game state's aligned buffer) */
-	stage_block = (byte *)malloc(PSP_STATE_STAGE + 63);
+	/* the stage 64-byte aligned (an independent review: b115's fast path
+	wrote straight from the game state's aligned buffer). It is reserved for
+	the whole run: taken from the heap at each checkpoint, it failed whenever
+	the heap was tight (a fragmented heap late in a long level), and the
+	checkpoint fell back to the page format, 2 MB written whole, 1.1-1.2 s.
+	"statestagemalloc": from the heap at each checkpoint, as before */
+	{
+		static int from_heap = -1;
+
+		if (from_heap < 0)
+			from_heap = psp_keep("statestagemalloc");
+		stage_block = from_heap ? (byte *)malloc(PSP_STATE_STAGE + 63) : psp_state_stage_reserved;
+	}
 	if (!stage_block)
 		return FALSE;
 	stage = (byte *)(((unsigned long)stage_block + 63) & ~63UL);
@@ -4765,8 +4917,9 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 	header[1] = size;
 	header[2] = pages;
 	header[3] = stream;
+	psp_state_writes = psp_state_write_worst_us = 0;
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
-		!WriteFile(handle, header, PSP_STATE_WORDS_HEADER, &written, NULL) || written != PSP_STATE_WORDS_HEADER)
+		!psp_state_write_timed(handle, header, PSP_STATE_WORDS_HEADER, &written) || written != PSP_STATE_WORDS_HEADER)
 		ok = FALSE;
 	for (page = 0; ok && page < pages; page++)
 	{
@@ -4786,7 +4939,7 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 			it for the next one is [U]) */
 			unsigned long whole = used & ~(unsigned long)(PSP_STATE_PAGE - 1);
 
-			ok = WriteFile(handle, stage, whole, &written, NULL) && written == whole;
+			ok = psp_state_write_timed(handle, stage, whole, &written) && written == whole;
 			if (!ok)
 				break;
 			memmove(stage, stage + whole, used - whole);
@@ -4811,13 +4964,168 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 		used += bytes;
 	}
 	if (ok && used)
-		ok = WriteFile(handle, stage, used, &written, NULL) && written == used;
-	free(stage_block);
+		ok = psp_state_write_timed(handle, stage, used, &written) && written == used;
+	if (stage_block != psp_state_stage_reserved)
+		free(stage_block);
 	if (ok)
-		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms",
+		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms (%lu writes, the slowest %lu ms)",
 			kept, pages, (PSP_STATE_WORDS_HEADER + stream) / 1024, kept * PSP_STATE_PAGE / 1024,
-			(psp_microseconds() - start) / 1000);
+			(psp_microseconds() - start) / 1000, psp_state_writes, psp_state_write_worst_us / 1000);
 	return ok;
+}
+
+/* "statedelta" (opt-in, for a PSP A/B): each page at a fixed place in the
+file (4 KB of header, then page n at 4 KB + n * 4 KB), and a checkpoint
+writes only the pages that changed since the last one, straight from the
+game state (no stage). Between b30's checkpoints 20-60% of the kept pages
+change, so it writes 0.4-1.2 MB where the compact format writes 1.3-1.5 MB;
+the stick's 0.8 s spikes come about once every few MB written, so fewer
+bytes should mean fewer of them [U]. A page is "changed" when its 64-bit
+hash (two lanes: FNV-1a and a rotate-add) differs from the one it had when
+written; the hashes describe the file, so they are forgotten whenever the
+file is opened or a write fails, and the next checkpoint writes every page.
+Runs of pages to write are joined across gaps of up to PSP_STATE_DELTA_GAP
+pages (an unchanged page is rewritten rather than paying a seek and a write
+call). The header goes last, with the map of non-empty pages */
+#define PSP_STATE_SIGNATURE_DELTA 0x44535350 /* 'PSSD' */
+#define PSP_STATE_DELTA_HEADER 4096
+#define PSP_STATE_DELTA_PAGES 1024
+#define PSP_STATE_DELTA_GAP 3
+static unsigned long psp_state_delta_hash[PSP_STATE_DELTA_PAGES][2];
+static unsigned char psp_state_delta_dirty[PSP_STATE_DELTA_PAGES / 8];
+static int psp_state_delta_valid = 0;
+
+void psp_state_file_opened(void)
+{
+	psp_state_delta_valid = 0;
+}
+
+static boolean psp_state_write_delta(HANDLE handle, byte const *buffer, unsigned long size)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, changed = 0, bytes = 0;
+	unsigned long start = psp_microseconds(), scan_us;
+	byte *map = (byte *)&header[4];
+	boolean ok = TRUE;
+
+	if (size % PSP_STATE_PAGE || pages > PSP_STATE_DELTA_PAGES || 16 + PSP_STATE_MAP_BYTES(pages) > PSP_STATE_DELTA_HEADER)
+		return FALSE;
+	csmemset(header, 0, PSP_STATE_DELTA_HEADER);
+	csmemset(psp_state_delta_dirty, 0, sizeof(psp_state_delta_dirty));
+	for (page = 0; page < pages; page++)
+	{
+		unsigned long const *words = (unsigned long const *)(buffer + page * PSP_STATE_PAGE);
+		unsigned long fnv = 0x811C9DC5UL, rot = 0x9E3779B9UL, any = 0;
+		long w;
+
+		for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
+		{
+			unsigned long word = words[w];
+
+			any |= word;
+			fnv = (fnv ^ word) * 16777619UL;
+			rot = ((rot << 7) | (rot >> 25)) + word;
+		}
+		if (!any)
+			fnv = rot = 0; /* an empty page: nothing to write, and its hash says so */
+		else
+		{
+			map[page >> 3] |= 1 << (page & 7);
+			kept++;
+		}
+		if (!psp_state_delta_valid || psp_state_delta_hash[page][0] != fnv || psp_state_delta_hash[page][1] != rot)
+		{
+			psp_state_delta_hash[page][0] = fnv;
+			psp_state_delta_hash[page][1] = rot;
+			if (any)
+			{
+				psp_state_delta_dirty[page >> 3] |= 1 << (page & 7);
+				changed++;
+			}
+		}
+	}
+	scan_us = psp_microseconds() - start;
+	header[0] = PSP_STATE_SIGNATURE_DELTA;
+	header[1] = size;
+	header[2] = pages;
+	psp_state_writes = psp_state_write_worst_us = 0;
+	for (page = 0; ok && page < pages; )
+	{
+		unsigned long last, end, gap;
+
+		if (!(psp_state_delta_dirty[page >> 3] & (1 << (page & 7))))
+		{
+			page++;
+			continue;
+		}
+		/* the run: from this page to the last dirty one reachable across
+		gaps of at most PSP_STATE_DELTA_GAP clean pages */
+		last = page;
+		for (end = page + 1, gap = 0; end < pages && gap <= PSP_STATE_DELTA_GAP; end++)
+		{
+			if (psp_state_delta_dirty[end >> 3] & (1 << (end & 7)))
+			{
+				last = end;
+				gap = 0;
+			}
+			else
+				gap++;
+		}
+		end = last + 1;
+		if (SetFilePointer(handle, PSP_STATE_DELTA_HEADER + page * PSP_STATE_PAGE, NULL, FILE_BEGIN) ==
+				INVALID_SET_FILE_POINTER ||
+			!psp_state_write_timed(handle, buffer + page * PSP_STATE_PAGE, (end - page) * PSP_STATE_PAGE, &written) ||
+			written != (end - page) * PSP_STATE_PAGE)
+			ok = FALSE;
+		bytes += (end - page) * PSP_STATE_PAGE;
+		page = end;
+	}
+	if (ok && (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+		!psp_state_write_timed(handle, header, PSP_STATE_DELTA_HEADER, &written) || written != PSP_STATE_DELTA_HEADER))
+		ok = FALSE;
+	if (!ok)
+	{
+		psp_state_delta_valid = 0;
+		return FALSE;
+	}
+	platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu changed (%s), %lu KB written in %lu ms (scan %lu ms; %lu writes, the slowest %lu ms) [statedelta]",
+		kept, pages, changed, psp_state_delta_valid ? "since the last checkpoint" : "every page: the first since the file opened",
+		(bytes + PSP_STATE_DELTA_HEADER) / 1024, (psp_microseconds() - start) / 1000, scan_us / 1000, psp_state_writes,
+		psp_state_write_worst_us / 1000);
+	psp_state_delta_valid = 1;
+	return TRUE;
+}
+
+/* the delta format's pages: each run of kept pages read from its own place */
+static boolean psp_state_read_delta(HANDLE handle, byte *buffer, unsigned long size, unsigned long const *first)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, read;
+	byte const *map = (byte const *)&header[4];
+
+	if (pages > PSP_STATE_DELTA_PAGES || 16 + PSP_STATE_MAP_BYTES(pages) > PSP_STATE_HEADER)
+		return FALSE;
+	csmemcpy(header, first, PSP_STATE_HEADER);
+	for (page = 0; page < pages; )
+	{
+		unsigned long run = 0;
+
+		if (!(map[page >> 3] & (1 << (page & 7))))
+		{
+			csmemset(buffer + page * PSP_STATE_PAGE, 0, PSP_STATE_PAGE);
+			page++;
+			continue;
+		}
+		while (page + run < pages && (map[(page + run) >> 3] & (1 << ((page + run) & 7))))
+			run++;
+		if (SetFilePointer(handle, PSP_STATE_DELTA_HEADER + page * PSP_STATE_PAGE, NULL, FILE_BEGIN) ==
+				INVALID_SET_FILE_POINTER ||
+			!ReadFile(handle, buffer + page * PSP_STATE_PAGE, run * PSP_STATE_PAGE, &read, NULL) ||
+			read != run * PSP_STATE_PAGE)
+			return FALSE;
+		page += run;
+	}
+	return TRUE;
 }
 
 /* header: signature, size, page count, then one bit per page */
@@ -4831,6 +5139,17 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
 	psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+	{
+		static int delta = -1;
+
+		if (delta < 0)
+			delta = psp_keep("statedelta");
+		if (delta && psp_state_write_delta(handle, buffer, size))
+		{
+			psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+			return TRUE;
+		}
+	}
 	{
 		/* build 116 (R10): the compact format, unless "statepages" (or it
 		can't: no room for its staging buffer); the pages as before then */
@@ -4991,6 +5310,8 @@ static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
 		return FALSE;
 	if (header[0] == PSP_STATE_SIGNATURE_WORDS)
 		return psp_state_read_words(handle, buffer, size, header);
+	if (header[0] == PSP_STATE_SIGNATURE_DELTA)
+		return psp_state_read_delta(handle, buffer, size, header);
 	if (header[0] != PSP_STATE_SIGNATURE)
 		return FALSE;
 	csmemset(buffer, 0, size);
@@ -5062,6 +5383,16 @@ boolean game_state_write_to_file(
 			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
 		bytes_read == xbox_game_state_globals.buffer_size &&
 		game_state_image_accept(image, xbox_game_state_globals.buffer_size))
+#endif"""),
+# statedelta's page hashes describe the file: a file opened anew is unknown
+("""		xbox_game_state_globals.file_open = TRUE;""",
+ """		xbox_game_state_globals.file_open = TRUE;
+#ifdef HALO_PSP
+		{
+			void psp_state_file_opened(void);
+
+			psp_state_file_opened();
+		}
 #endif"""),
 ]
 
@@ -5873,6 +6204,7 @@ FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#highwater"] =
 peak kept for the heartbeat (psp_platform.c) */
 static long psp_dynamic_vertex_peak[NUMBER_OF_RASTERIZER_VERTEX_TYPES], psp_dynamic_triangle_peak = 0,
 	psp_dynamic_buffer_peak[2];
+static unsigned long psp_dynamic_released = 0, psp_dynamic_released_vertices = 0; /* psp_dynamic_vertices_release */
 
 void psp_dynamic_geometry_report(void)
 {
@@ -5890,11 +6222,85 @@ void psp_dynamic_geometry_report(void)
 			vertex_type, psp_dynamic_vertex_peak[vertex_type], dynamic_vertices.groups[vertex_type].total_vertex_count,
 			psp_dynamic_vertex_peak[vertex_type] * size / 1024, dynamic_vertices.groups[vertex_type].total_vertex_count * size / 1024);
 	}
-	platform_psp_log("dynamic geometry, frame peaks:%s triangles %ld of %d (%ld of %d KB); buffers %ld and %ld of %d and %d",
+	platform_psp_log("dynamic geometry, frame peaks:%s triangles %ld of %d (%ld of %d KB); buffers %ld and %ld of %d and %d; given back once copied %lu groups (%lu vertices)",
 		line, psp_dynamic_triangle_peak, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES,
 		psp_dynamic_triangle_peak * 6 / 1024, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES * 6 / 1024,
 		psp_dynamic_buffer_peak[0], psp_dynamic_buffer_peak[1], RASTERIZER_MAXIMUM_DYNAMIC_VERTEX_BUFFERS,
-		RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS);
+		RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS, psp_dynamic_released, psp_dynamic_released_vertices);
+}
+#endif
+
+#ifdef HALO_PSP
+/* The dynamic vertices of a sprite group or a contrail are given back once
+the GE layer has copied them into its display list (build_sprites_end and
+render_contrail, psp_fixups.py): the buffer is a stack per vertex type, so a
+group that is the top of its stack pops off it. On the Xbox the GPU reads
+them later in the frame, so every group of the frame held its room to the
+end, each at its definition's most sprites: a30's and b30's fights filled
+all 4,096 vertices (1,024 sprites) and later sprites and contrails weren't
+drawn ("build_sprite failed to allocate dynamic vertices"). Exact: the same
+vertices are copied either way. "dynamickeep": held to the frame's end */
+int psp_keep(const char *name);
+
+void psp_dynamic_vertices_release(
+	long dynamic_vertex_buffer_index)
+{
+	static int keep = -1;
+	struct dynamic_vertex_buffer *buffer;
+	struct dynamic_vertex_group *group;
+
+	if (dynamic_vertex_buffer_index == NONE || dynamic_vertex_buffer_index < 0 ||
+		dynamic_vertex_buffer_index >= dynamic_vertices.buffer_count)
+		return;
+	if (keep < 0)
+		keep = psp_keep("dynamickeep");
+	if (keep)
+		return;
+	buffer = &dynamic_vertices.buffers[dynamic_vertex_buffer_index];
+	if (buffer->type < 0 || buffer->type >= NUMBER_OF_RASTERIZER_VERTEX_TYPES)
+		return;
+	group = &dynamic_vertices.groups[buffer->type];
+	/* the frame's peak is what the stack reached, not where it ends */
+	if (group->vertex_count > psp_dynamic_vertex_peak[buffer->type])
+		psp_dynamic_vertex_peak[buffer->type] = group->vertex_count;
+	if (dynamic_vertices.buffer_count > psp_dynamic_buffer_peak[0])
+		psp_dynamic_buffer_peak[0] = dynamic_vertices.buffer_count;
+	if (buffer->vertex_count <= 0 || buffer->vertex_start_index + buffer->vertex_count != group->vertex_count)
+		return;
+	group->vertex_count = buffer->vertex_start_index;
+	psp_dynamic_released++;
+	psp_dynamic_released_vertices += buffer->vertex_count;
+	buffer->vertex_count = 0;
+	if (dynamic_vertex_buffer_index == dynamic_vertices.buffer_count - 1)
+		dynamic_vertices.buffer_count--;
+}
+
+/* the same for a contrail's triangles, which the GE layer never reads (it
+draws the strip from the corners alone) */
+void psp_dynamic_triangles_release(
+	long dynamic_triangle_buffer_index)
+{
+	static int keep = -1;
+	struct dynamic_triangle_buffer *buffer;
+
+	if (dynamic_triangle_buffer_index == NONE || dynamic_triangle_buffer_index < 0 ||
+		dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count)
+		return;
+	if (keep < 0)
+		keep = psp_keep("dynamickeep");
+	if (keep)
+		return;
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (dynamic_triangles.triangle_count > psp_dynamic_triangle_peak)
+		psp_dynamic_triangle_peak = dynamic_triangles.triangle_count;
+	if (dynamic_triangles.buffer_count > psp_dynamic_buffer_peak[1])
+		psp_dynamic_buffer_peak[1] = dynamic_triangles.buffer_count;
+	if (buffer->triangle_count <= 0 || buffer->triangle_start_index + buffer->triangle_count != dynamic_triangles.triangle_count)
+		return;
+	dynamic_triangles.triangle_count = buffer->triangle_start_index;
+	buffer->triangle_count = 0;
+	if (dynamic_triangle_buffer_index == dynamic_triangles.buffer_count - 1)
+		dynamic_triangles.buffer_count--;
 }
 #endif
 
@@ -6921,6 +7327,154 @@ particle definition, the top ones logged with the particles line */
 static struct { long definition_index; unsigned long made, physics, us; } psp_particle_kinds[PSP_PARTICLE_KINDS];
 unsigned long psp_slip_effects = 0; /* vehicles.c's create_slipping_effects (psp_fixups.py) */
 char *tag_get_name(long tag_index);
+/* "particlecensus": which effects make the most particles in a fight,
+and which the budget and the burst thinning leave out (the ranks of what
+to keep are set from it). Per particle definition, over each 30 s: free
+particles made, refused over the budget and left out thinning; attached
+ones made (never refused). Contrails (made, and failed for room) and
+effects that failed for room are counted with them (contrails.c,
+effects.c) */
+#define PSP_CENSUS_KINDS 64
+struct psp_census_kind { long definition_index; unsigned long made, refused, thinned, attached; };
+static struct psp_census_kind psp_census[PSP_CENSUS_KINDS];
+static unsigned long psp_census_lost = 0;
+unsigned long psp_census_contrails_made = 0, psp_census_contrails_failed = 0, psp_census_effects_failed = 0;
+int psp_census_on = -1;
+
+static struct psp_census_kind *psp_census_kind(long definition_index)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 26, n;
+
+	for (n = 0; n < PSP_CENSUS_KINDS; n++, k = (k + 1) % PSP_CENSUS_KINDS)
+	{
+		if (psp_census[k].definition_index == definition_index &&
+			(psp_census[k].made | psp_census[k].refused | psp_census[k].thinned | psp_census[k].attached))
+			return &psp_census[k];
+		if (!(psp_census[k].made | psp_census[k].refused | psp_census[k].thinned | psp_census[k].attached))
+		{
+			psp_census[k].definition_index = definition_index;
+			return &psp_census[k];
+		}
+	}
+	psp_census_lost++;
+	return NULL;
+}
+
+#define PSP_CENSUS(definition, field) \
+	do { if (psp_census_on > 0) { struct psp_census_kind *psp_c = psp_census_kind(definition); if (psp_c) psp_c->field++; } } while (0)
+
+static void psp_census_report(void)
+{
+	char line[1024];
+	int length, shown, k;
+	unsigned long made = 0, refused = 0, thinned = 0, attached = 0;
+
+	for (k = 0; k < PSP_CENSUS_KINDS; k++)
+	{
+		made += psp_census[k].made;
+		refused += psp_census[k].refused;
+		thinned += psp_census[k].thinned;
+		attached += psp_census[k].attached;
+	}
+	platform_psp_log("particle census over 30 s: free %lu made, %lu refused over the budget, %lu left out thinning; attached %lu made; contrails %lu made, %lu failed for room; effects failed for room %lu; kinds past the table %lu",
+		made, refused, thinned, attached, psp_census_contrails_made, psp_census_contrails_failed, psp_census_effects_failed,
+		psp_census_lost);
+	/* the kinds by what was asked for (made, refused and thinned), most first */
+	length = snprintf(line, sizeof(line), "particle census by kind (free made, refused, thinned; attached made):");
+	for (shown = 0; shown < 16; shown++)
+	{
+		int best = -1;
+		unsigned long best_total = 0;
+
+		for (k = 0; k < PSP_CENSUS_KINDS; k++)
+		{
+			unsigned long total = psp_census[k].made + psp_census[k].refused + psp_census[k].thinned + psp_census[k].attached;
+
+			if (total && total > best_total)
+			{
+				best = k;
+				best_total = total;
+			}
+		}
+		if (best < 0 || length > (int)sizeof(line) - 128)
+			break;
+		{
+			const char *name = tag_get_name(psp_census[best].definition_index);
+			const char *slash = name ? strrchr(name, '\\\\') : NULL;
+
+			length += snprintf(line + length, sizeof(line) - length, " %s %lu %lu %lu %lu;",
+				slash ? slash + 1 : name ? name : "?", psp_census[best].made, psp_census[best].refused,
+				psp_census[best].thinned, psp_census[best].attached);
+		}
+		psp_census[best].made = psp_census[best].refused = psp_census[best].thinned = psp_census[best].attached = 0;
+	}
+	platform_psp_log("%s", line);
+	memset(psp_census, 0, sizeof(psp_census));
+	psp_census_lost = psp_census_contrails_made = psp_census_contrails_failed = psp_census_effects_failed = 0;
+}
+
+/* "particleranks": which free particles the budget and the burst thinning
+give up first, by the definition's tag path (worked out once a definition).
+ 1: a slow projectile's own visuals (plasma, needles, the fuel rod, rockets,
+    grenades): never refused or thinned;
+ 2: tracers: never refused, thinned only by their own rule (one in N);
+ 3: the rest (impacts, sparks, flashes, blood): the budget and thinning as
+    before, and past three quarters of the budget only those within
+    PSP_RANK3_NEAR world units of the eye (nearest first);
+ 4: smoke, debris, dust and ambient effects: thinned from PSP_RANK4_THIN
+    free particles and refused at PSP_RANK4_BUDGET, so they give way first.
+The budget's count still includes ranks 1 and 2, so a fight full of them
+leaves less room for 3 and 4 */
+#include "camera/observer.h"
+#define PSP_RANK_SLOTS 128
+#define PSP_RANK3_NEAR 10.0f
+#define PSP_RANK4_THIN 48
+#define PSP_RANK4_BUDGET 192
+static struct { long definition_index; unsigned char rank, keep_one_in; unsigned short count; } psp_ranks[PSP_RANK_SLOTS];
+static int psp_ranks_on = -1;
+static const struct { const char *part; unsigned char rank, keep_one_in; } psp_rank_rules[] = {
+	{ "tracer", 2, 1 },
+	{ "grenade", 1, 1 }, { "needle", 1, 1 }, { "fuel rod", 1, 1 }, { "rocket", 1, 1 },
+	{ "projectile", 1, 1 }, { "bolt", 1, 1 },
+	{ "smoke", 4, 1 }, { "debris", 4, 1 }, { "dust", 4, 1 }, { "smolder", 4, 1 }, { "drifting", 4, 1 },
+	{ "lingering", 4, 1 }, { "ambient", 4, 1 }, { "gravel", 4, 1 }, { "chips", 4, 1 }, { "casing", 4, 1 },
+	{ "spray", 4, 1 }, { "steam", 4, 1 }, { "flame", 4, 1 },
+};
+
+static int psp_particle_rank(long definition_index, int *keep_one_in)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 25, n;
+
+	for (n = 0; n < PSP_RANK_SLOTS; n++, k = (k + 1) % PSP_RANK_SLOTS)
+	{
+		if (psp_ranks[k].rank && psp_ranks[k].definition_index == definition_index)
+			break;
+		if (!psp_ranks[k].rank)
+		{
+			const char *name = tag_get_name(definition_index);
+			unsigned int r;
+
+			psp_ranks[k].definition_index = definition_index;
+			psp_ranks[k].rank = 3;
+			psp_ranks[k].keep_one_in = 1;
+			for (r = 0; name && r < sizeof(psp_rank_rules) / sizeof(psp_rank_rules[0]); r++)
+				if (strstr(name, psp_rank_rules[r].part))
+				{
+					psp_ranks[k].rank = psp_rank_rules[r].rank;
+					psp_ranks[k].keep_one_in = psp_rank_rules[r].keep_one_in;
+					break;
+				}
+			break;
+		}
+	}
+	if (n == PSP_RANK_SLOTS)
+		return 3;
+	*keep_one_in = psp_ranks[k].keep_one_in;
+	if (psp_ranks[k].keep_one_in > 1 && ++psp_ranks[k].count % psp_ranks[k].keep_one_in)
+		*keep_one_in = 0; /* this one is left out */
+	return psp_ranks[k].rank;
+}
+
 static int psp_particle_kind(long definition_index)
 {
 	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 27, n;
@@ -6951,26 +7505,58 @@ void particle_new(
 
 	particle->flags = 0;""",
  """#ifdef HALO_PSP
+	if (psp_census_on < 0)
+		psp_census_on = psp_keep("particlecensus");
 	if (data->object_index == NONE)
 	{
+		int psp_rank = 3, psp_keep_this = 1;
+		long psp_budget, psp_thin_from;
+
 		if (psp_particle_budget < 0)
 			psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
-		if (psp_free_particles >= psp_particle_budget)
+		if (psp_ranks_on < 0)
+			psp_ranks_on = psp_keep("particleranks");
+		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF)
+			psp_rank = psp_particle_rank(data->definition_index, &psp_keep_this);
+		if (psp_rank == 2 && !psp_keep_this)
+		{
+			psp_particles_thinned++;
+			PSP_CENSUS(data->definition_index, thinned);
+			return;
+		}
+		psp_budget = psp_rank == 4 ? PSP_RANK4_BUDGET : psp_particle_budget;
+		psp_thin_from = psp_rank == 4 ? PSP_RANK4_THIN : 96;
+		if (psp_rank >= 3 && psp_free_particles >= psp_budget)
 		{
 			psp_particles_refused++;
+			PSP_CENSUS(data->definition_index, refused);
 			return;
+		}
+		if (psp_rank == 3 && psp_ranks_on > 0 && psp_free_particles >= psp_budget * 3 / 4)
+		{
+			struct observer_result const *psp_eye = observer_get_camera(0);
+			real psp_dx = data->position.x - psp_eye->position.x, psp_dy = data->position.y - psp_eye->position.y,
+				psp_dz = data->position.z - psp_eye->position.z;
+
+			if (psp_dx * psp_dx + psp_dy * psp_dy + psp_dz * psp_dz > PSP_RANK3_NEAR * PSP_RANK3_NEAR)
+			{
+				psp_particles_refused++;
+				PSP_CENSUS(data->definition_index, refused);
+				return;
+			}
 		}
 		/* build 41: past 96 in flight, every second new one is left out,
 		past 160 two of three: a big burst (the tank shell's) comes out
 		thinner but on time, where the budget alone took it whole and then
 		refused everything after (dense, and a big cut in frames) */
-		if (psp_particle_budget != 0x7FFF && psp_free_particles >= 96)
+		if (psp_rank >= 3 && psp_particle_budget != 0x7FFF && psp_free_particles >= psp_thin_from)
 		{
 			static unsigned long psp_thin = 0;
 
-			if (++psp_thin % (psp_free_particles >= 160 ? 3 : 2))
+			if (++psp_thin % (psp_free_particles >= psp_thin_from + 64 ? 3 : 2))
 			{
 				psp_particles_thinned++;
+				PSP_CENSUS(data->definition_index, thinned);
 				return;
 			}
 		}
@@ -6984,7 +7570,12 @@ void particle_new(
 	/* counted at once, so one frame's burst meets the budget too (the
 	count was only last frame's) */
 	if (data->object_index == NONE)
+	{
 		psp_free_particles++;
+		PSP_CENSUS(data->definition_index, made);
+	}
+	else
+		PSP_CENSUS(data->definition_index, attached);
 	{
 		int psp_kind = psp_particle_kind(data->definition_index);
 
@@ -7153,12 +7744,60 @@ void particle_new(
 			}
 			platform_psp_log("%s", line);
 			memset(psp_particle_kinds, 0, sizeof(psp_particle_kinds));
+			if (psp_census_on > 0)
+				psp_census_report();
 		}
 		}
 	}
 #endif
 	profile_exit(particles_update_section);
 """),
+]
+
+# particlecensus (particles.c above): contrails made and failed for room,
+# and effects that failed for room, counted with the particles
+FIXES_36["source/effects/contrails.c#census"] = [
+("""		contrail_index = datum_new(contrail_data);
+		if (contrail_index != NONE)
+		{""",
+ """		contrail_index = datum_new(contrail_data);
+#ifdef HALO_PSP
+		{
+			extern int psp_census_on;
+			extern unsigned long psp_census_contrails_made, psp_census_contrails_failed;
+
+			if (psp_census_on > 0)
+			{
+				if (contrail_index != NONE)
+					psp_census_contrails_made++;
+				else
+					psp_census_contrails_failed++;
+			}
+		}
+#endif
+		if (contrail_index != NONE)
+		{"""),
+]
+FIXES_36["source/effects/effects.c#census"] = [
+("""			if (effect_index != NONE)
+			{
+				struct effect_datum *effect = effect_get(effect_index);
+
+				effect->definition_index = definition_index;""",
+ """#ifdef HALO_PSP
+			{
+				extern int psp_census_on;
+				extern unsigned long psp_census_effects_failed;
+
+				if (effect_index == NONE && psp_census_on > 0)
+					psp_census_effects_failed++;
+			}
+#endif
+			if (effect_index != NONE)
+			{
+				struct effect_datum *effect = effect_get(effect_index);
+
+				effect->definition_index = definition_index;"""),
 ]
 
 # build 68: object lighting reads three of a material's vertices for their
@@ -12648,24 +13287,37 @@ void psp_flipwatch_flip(long vehicle_index, int approach_type);
 char *tag_get_name(long tag_index);
 #if PSP_DEBUG_TOOLS
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 void platform_psp_log(const char *format, ...);
 
-/* "flipfixture": a Warthog within 30 units of the player (else the nearest
-vehicle) put upside down just in front of him, touching his search's sphere,
-once, at game time 60; at game time 150, once it has fallen and settled,
-where it lies against the player */
-static void psp_flip_fixture(long unit_index)
+/* "flipfixture": a Warthog within 30 units of the player (else one made from
+the map's Warthog tag, else the nearest vehicle) put upside down just in front
+of him, touching his search's sphere, once, at game time 60 (flipfixtureatN:
+at N, for a campaign map's player once he is on the ground); 90 ticks later,
+once it has fallen and settled, where it lies against the player.
+"flippressN": the action button held for ticks N to N+9, so the flip comes
+at a game time of the test's choosing (an input script's times are the
+clock's). Answers whether to hold the action button this tick */
+long psp_drive_warthog_definition(void); /* FIXES_DRIVE */
+
+static int psp_flip_fixture(long unit_index)
 {
 	static int fixture = -1;
-	static long placed = NONE;
+	static long placed = NONE, at = 60, press = -1;
 	struct object_iterator iterator;
 	struct object_datum *object, *unit;
-	long best = NONE;
+	long best = NONE, warthog;
 	real best_distance = 30.0f * 30.0f;
+	int pressing;
 
 	if (fixture < 0)
+	{
 		fixture = psp_keep("flipfixture");
-	if (placed != NONE && game_time_get() >= 150)
+		at = psp_keep_number("flipfixtureat", 60);
+		press = psp_keep_number("flippress", -1);
+	}
+	pressing = press >= 0 && game_time_get() >= press && game_time_get() < press + 10;
+	if (placed != NONE && game_time_get() >= at + 90)
 	{
 		struct object_datum *vehicle = object_try_and_get_and_verify_type(placed, _object_mask_vehicle);
 
@@ -12684,8 +13336,8 @@ static void psp_flip_fixture(long unit_index)
 				vehicle->object.bounding_sphere_radius, unit->object.bounding_sphere_radius);
 		placed = NONE;
 	}
-	if (!fixture || game_time_get() < 60)
-		return;
+	if (!fixture || game_time_get() < at)
+		return pressing;
 	fixture = 0;
 	unit = object_get(unit_index);
 	object_iterator_new(&iterator, _object_mask_vehicle, 0);
@@ -12706,10 +13358,22 @@ static void psp_flip_fixture(long unit_index)
 			best = iterator.index;
 		}
 	}
+	if ((best == NONE || best_distance >= 0.0f) && (warthog = psp_drive_warthog_definition()) != NONE)
+	{
+		struct object_placement_data data;
+
+		object_placement_data_new(&data, warthog, NONE);
+		data.position = unit->object.position;
+		data.position.z += 3.0f;
+		best = object_new(&data);
+		unit = object_get(unit_index);
+		if (best != NONE)
+			platform_psp_log("flipfixture: no Warthog within 30 units of the player: %s made", tag_get_name(warthog));
+	}
 	if (best == NONE)
 	{
 		platform_psp_log("flipfixture: no vehicle within 30 units of the player");
-		return;
+		return pressing;
 	}
 	{
 		struct object_datum *vehicle = object_get(best);
@@ -12751,6 +13415,7 @@ static void psp_flip_fixture(long unit_index)
 		platform_psp_log("flipfixture: %s #%08lx put upside down %.2f units in front of the player (%.2f %.2f %.2f)",
 			tag_get_name(vehicle->definition_index), (unsigned long)best, offset, place.x, place.y, place.z);
 	}
+	return pressing;
 }
 #endif
 #endif
@@ -12791,7 +13456,8 @@ static void player_examine_nearby_vehicle(
 						!player_handle_action(iterator.datum_index) &&""",
  """#ifdef HALO_PSP
 #if PSP_DEBUG_TOOLS
-					psp_flip_fixture(player->unit_index);
+					if (psp_flip_fixture(player->unit_index))
+						SET_FLAG(action->control_flags, _unit_control_action_bit, TRUE);
 #endif
 					if (psp_flipwatch_on())
 						psp_flipwatch_player(player->action_result, player->action_object_index,
@@ -13029,10 +13695,13 @@ FIXES_113["source/render/render_objects.c#renderstates"] = [
 ]
 
 
-# build 113: contrails, the Covenant weapons' tracers (b113_candidates.md #1;
-# keep word "contrails"): the strip render_contrail builds goes to the GE's
-# see-through draws (psp_ge.c, psp_ge_contrail) instead of the
-# transparent-geometry groups the PSP never draws. Without the word, as before
+# build 113: contrails, the weapons' tracers (b113_candidates.md #1): the
+# strip render_contrail builds goes to the GE's see-through draws (psp_ge.c,
+# psp_ge_contrail) instead of the transparent-geometry groups the PSP never
+# draws. Drawn by default (the tracers' restoration, H28), though in a
+# firefight they cost about 1.2 ms a frame in the emulator [E] (7%);
+# keep word "nocontrails" leaves them out ("contrails" is still accepted
+# and changes nothing)
 FIXES_113["source/render/render_contrails.c#contrails"] = [
 ("""static void render_contrail(
 	struct contrail_datum *contrail,
@@ -13044,6 +13713,8 @@ FIXES_113["source/render/render_contrails.c#contrails"] = [
 int psp_keep(const char *name);
 int psp_ge_active(void);
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend); /* psp_ge.c */
+void psp_dynamic_vertices_release(long dynamic_vertex_buffer_index); /* psp_fixups.py */
+void psp_dynamic_triangles_release(long dynamic_triangle_buffer_index);
 #endif
 
 static void render_contrail(
@@ -13059,18 +13730,26 @@ static void render_contrail(
 			{
 				static int psp_contrails = -1;
 
+				/* the tracers of the Covenant weapons and the rifles are
+				contrails, so without them most fire shows none; "nocontrails"
+				leaves them out, for the time they cost in a fight */
 				if (psp_contrails < 0)
-					psp_contrails = psp_keep("contrails");
+					psp_contrails = !psp_keep("nocontrails");
 				if (psp_contrails && psp_ge_active())
 				{
-					/* the shader's blend: contrail shaders lay out their first
-					words as effect shaders do (flags, then the blend function) */
+					/* the shader's blend and its map's clamp flags: contrail
+					shaders lay out their first words as effect shaders do
+					(flags, the blend function, the fade mode, the map's flags) */
+					struct shader_effect_definition const *effect = (struct shader_effect_definition const *)shader;
+
 					psp_ge_contrail(first_vertex, vertex_count, (unsigned int)bitmap,
-						((struct shader_effect_definition const *)shader)->framebuffer_blend_function);
+						(short)((effect->framebuffer_blend_function & 0xFF) | ((effect->primary_map_flags & 6) << 8)));
 					rasterizer_dynamic_triangles_unlock(triangle_buffer_index);
 					rasterizer_dynamic_vertices_unlock(vertex_buffer_index);
 					rasterizer_dynamic_triangles_delete(triangle_buffer_index);
 					rasterizer_dynamic_vertices_delete(vertex_buffer_index);
+					psp_dynamic_vertices_release(vertex_buffer_index);
+					psp_dynamic_triangles_release(triangle_buffer_index);
 					rasterizer_globals.current_lock_operation = _rasterizer_lock_none;
 					return;
 				}
@@ -14009,6 +14688,41 @@ char const *psp_shader_tag_name(void const *shader)
 	}
 	return NULL;
 }
+
+#if PSP_DEBUG_TOOLS
+/* "sdump", once a map: each alpha-tested level shader whose base map an
+earlier level shader (in the tags' order, the bake's) also draws without
+the alpha test. The bake folds a base map's detail maps in by the first
+shader to use it, and keeps the map's alpha only when that one tests it */
+void psp_sdump_shared_bases(void)
+{
+	struct tag_iterator outer, inner;
+	long tested_index, other_index;
+	extern void platform_log(const char *format, ...);
+
+	tag_iterator_new(&outer, 0x73656E76 /* senv */);
+	while ((tested_index = tag_iterator_next(&outer)) != NONE)
+	{
+		char const *tested = (char const *)tag_get(0x73656E76, tested_index);
+		long base = *(long const *)(tested + 148);
+
+		if (!(*(unsigned short const *)(tested + 40) & 1) || base == NONE)
+			continue;
+		tag_iterator_new(&inner, 0x73656E76);
+		while ((other_index = tag_iterator_next(&inner)) != NONE && other_index != tested_index)
+		{
+			char const *other = (char const *)tag_get(0x73656E76, other_index);
+
+			if (*(long const *)(other + 148) == base && !(*(unsigned short const *)(other + 40) & 1))
+			{
+				platform_log("sdump: base map %s: alpha tested by %s, drawn first untested by %s", tag_get_name(base),
+					tag_get_name(tested_index), tag_get_name(other_index));
+				break;
+			}
+		}
+	}
+}
+#endif
 #endif
 
 void hud_draw_bitmap(
@@ -14278,12 +14992,31 @@ FIXES_118["source/rasterizer/rasterizer.c#glasslit"] = [
 	}""",
  """	else if (type == 8)
 	{
+		extern int psp_tex_has(unsigned int key);
+		long reflection_map = *(long const *)(definition + 184);
+
 		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
 		*u_scale = *(float const *)(definition + 340);
 		*v_scale = *u_scale;
 		/* alpha-blended, lit (fade mode 3: psp_ge.c's SEETHROUGH_LIT) */
 		if (object && !PSP_KEEP_ONCE("glassflat"))
 			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+		/* glass with no diffuse map is its tint and its reflection on the
+		Xbox: without either drawn, a10's floor glass showed the dark pipes
+		under it as a black pit. Its reflection is drawn: the cube map's
+		average (the pack's patch of it) added, tinted between the parallel
+		and perpendicular colours by the angle it is seen at (psp_ge.c,
+		psp_ge_seethrough_shader). The perpendicular and parallel colours'
+		alphas at +140 and +156, the cube map's index at +184.
+		"glassnoreflection": not drawn, as before */
+		if (!key && reflection_map != NONE &&
+			(*(float const *)(definition + 140) > 0.0f || *(float const *)(definition + 156) > 0.0f) &&
+			psp_tex_has(psp_tex_bitmap_key(reflection_map, 0)) && !PSP_KEEP_ONCE("glassnoreflection"))
+		{
+			key = psp_tex_bitmap_key(reflection_map, 0);
+			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
 	}"""),
 ]
 
@@ -19382,7 +20115,7 @@ FIXES_129["source/rasterizer/xbox/rasterizer_xbox_widgets.c#walls"] = [
 static unsigned long psp_flare_bipeds = 0;""",
  """/* build 116: characters in a flare's way (b113 #2) */
 static unsigned long psp_flare_bipeds = 0;
-static int psp_flare_walls = -1, psp_flare_walls_check = 0;
+static int psp_flare_walls = -1, psp_flare_walls_check = 0, psp_flare_level_short = 0, psp_flare_debug = 0;
 unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare_walls_differed = 0; /* psp_ge.c logs them */"""),
 ("""				/* the level's sky surfaces (no material) are where the
 				sky is drawn: a ray that meets one has reached the sky */
@@ -19406,20 +20139,48 @@ unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare
 					{
 						psp_flare_walls = !psp_keep("flaresfull");
 						psp_flare_walls_check = psp_keep("flarescheck") != 0;
+						psp_flare_level_short = psp_keep("flaresshort") != 0;
+						psp_flare_debug = psp_keep("flaresdebug") ? 40 : 0;
 					}
 					/* the level alone, with the full test's surface flags:
 					a wall that is not sky hides the flare whatever the
-					objects say, as they can only meet the ray nearer */
+					objects say, as they can only meet the ray nearer.
+					This ray runs to the flare's own point (all but 2 cm),
+					as the Xbox's test square is depth-tested there: the
+					ray above stops 0.15 short so as not to meet the
+					flare's own object, and the level has no such object.
+					Stopped short, a wall within 0.15 of a lamp on its far
+					side (or of a door's lamp slid into it) let the flare
+					shine through ("flaresshort": as before) */
 					if (psp_flare_walls || psp_flare_walls_check)
 					{
+						real_vector3d level_ray = ray;
+
+						if (!psp_flare_level_short)
+						{
+							real length;
+
+							vector_from_points3d(&global_window_parameters.camera.position, point, &level_ray);
+							length = magnitude3d(&level_ray);
+							if (length > 0.05f)
+								scale_vector3d(&level_ray, (length - 0.02f) / length, &level_ray);
+						}
 						level_hides = collision_test_vector(
 							FLAG(_collision_test_front_facing_surfaces_bit) |
 								FLAG(_collision_test_ignore_invisible_surfaces_bit) |
 								FLAG(_collision_test_structure_bit),
 							&global_window_parameters.camera.position,
-							&ray,
+							&level_ray,
 							NONE,
 							&collision) && collision.material_index != NONE;
+						if (psp_flare_debug > 0)
+						{
+							psp_flare_debug--;
+							platform_psp_log("flaresdebug: flare %ld at %.2f %.2f %.2f, %.2f from the eye: level %s (t %.3f, material %d)",
+								index, point->x, point->y, point->z, magnitude3d(&level_ray),
+								level_hides ? "hides it" : "clear", level_hides ? collision.t : 1.0f,
+								(int)collision.material_index);
+						}
 					}
 					if (level_hides && !psp_flare_walls_check)
 					{
@@ -22583,6 +23344,8 @@ static short draw_bitmap_texel_x = 0;
  """#ifdef HALO_PSP
 extern int psp_button_glyph(int icon, int menus, unsigned short cell[4]);
 extern void psp_ge_glyph_next(int glyph);
+/* (its label to its right: psp_ge.c draws a larger glyph away from it) */
+extern void psp_ge_glyph_next_labelled(int glyph);
 
 /* a screen's button key ("a_butn" beside its "=SELECT" label) is a widget
 whose picture is the Xbox's button, so the text's icon hook never sees it:
@@ -22701,7 +23464,7 @@ boolean psp_keyboard_background(
 		texels.y0 = 0;
 		texels.x1 = (short)(face.x1 - face.x0);
 		texels.y1 = (short)(face.y1 - face.y0);
-		psp_ge_glyph_next(glyphs[index]);
+		psp_ge_glyph_next_labelled(glyphs[index]);
 		draw_bitmap_in_rect(bitmap, &face, &texels, NULL, 0xff2090f0, NULL, FALSE);
 		psp_ge_glyph_next(NONE);
 	}
@@ -22915,7 +23678,7 @@ static void widget_instance_render_recursive(
 				draw_bitmap_in_rect(""",
  """				draw_bitmap_texel_y = texel_y;
 #ifdef HALO_PSP
-				psp_ge_glyph_next(psp_menu_key_glyph(widget, definition, &color));
+				psp_ge_glyph_next_labelled(psp_menu_key_glyph(widget, definition, &color));
 #endif
 				draw_bitmap_in_rect("""),
 ("""					FALSE);
@@ -23640,6 +24403,264 @@ static game_state_before_load_proc before_load_procs[] =
 #endif
 """),
 ]
+# the player's flip: the vehicle's upending flag and approach side, written
+# into a vehicle that has usually been asleep since it came to rest upside
+# down. Unmarked, the sleeper keeps its old checksum, its update never runs,
+# the torque never starts and the flag never clears, so the prompt never
+# comes back (wakecheck's hands-off ladder has no player to press, so it
+# couldn't see this writer). "flipwakeoff": the flip left unmarked, for an A/B
+FIXES_WAKE["source/game/players.c#wake_flip"] = [
+("""		target_vehicle->vehicle.unknown42A = 0;
+""", """		target_vehicle->vehicle.unknown42A = 0;
+		if (!PSP_KEEP_ONCE("flipwakeoff"))
+		{
+			void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+			psp_wake(player->action_object_index);
+		}
+"""),
+]
+
+# ---------- FIXES_DRIVE: a scripted Warthog drive, the same on the PSP and the PC
+# A drive the emulator and ChupathingyCE's desktop build can both play with no
+# hands, so their vehicle physics compare on the same input: the PC reference
+# hooks carry these pairs to the desktop tree by their keep word, and there
+# the guard is opened, so on the PC they are built whatever the build. On the
+# PSP only in PSP_DEBUG_TOOLS builds: it creates and moves a vehicle.
+# "drivetest" (keep.txt): at game time drivetestatN (2700, b30's beach after
+# the landing), the AI erased (and again every second, so only the vehicle's
+# own physics plays), a Warthog made where the player stands, facing the
+# nearest scenery 4-25 units off, and the player put in its driver's seat.
+# Then a fixed schedule of throttle and steering, by ticks from the start:
+# 0-30 still; 30-180 full ahead at the scenery (a collision with an object);
+# 180-240 reverse; 240-540 full ahead, steering hard left (a donut); 540-840
+# hard right; 840-900 still. Each tick of it logs the Warthog's place,
+# motion, facing and spin ("drivetest:" lines; Sierra-III tools/drivecmp.py
+# compares two runs)
+FIXES_DRIVE = {}
+FIXES_DRIVE["source/units/units.c#drivetest"] = [
+("""					_unit_animation_postpone_weapon_ik_until_interpolation_ends_bit,
+					FALSE);
+			}
+		}
+	}
+
+	return;
+}
+""", """					_unit_animation_postpone_weapon_ik_until_interpolation_ends_bit,
+					FALSE);
+			}
+		}
+	}
+
+	return;
+}
+
+#ifdef HALO_PSP
+#if !defined(__psp__) || defined(PSP_DEBUG_TOOLS)
+/* "drivetest": psp_fixups.py's FIXES_DRIVE says what it plays */
+#include "cache/cache_files.h"
+#include "hs/hs.h"
+#include "tag_files/tag_files.h"
+#include "units/vehicle_definitions.h"
+
+int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
+void platform_psp_log(const char *format, ...);
+
+#define PSP_DRIVE_TICKS 900
+static int psp_drive_on = -1;
+static long psp_drive_start, psp_drive_vehicle = NONE, psp_drive_target = NONE;
+static struct unit_control_data psp_drive_control_data;
+
+/* the map's Warthog: the vehicle tag whose name ends in "warthog" */
+long psp_drive_warthog_definition(void)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, VEHICLE_DEFINITION_TAG);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		char const *name = tag_get_name(tag_index);
+		size_t length = strlen(name);
+
+		if (length >= 7 && !strcmp(name + length - 7, "warthog"))
+			return tag_index;
+	}
+	return NONE;
+}
+
+/* a horizontal unit vector from a to b; FALSE when they are on one vertical */
+static boolean psp_drive_heading(real_point3d const *a, real_point3d const *b, real_vector3d *heading)
+{
+	real length;
+
+	heading->i = b->x - a->x;
+	heading->j = b->y - a->y;
+	heading->k = 0.0f;
+	length = (real)sqrt(heading->i * heading->i + heading->j * heading->j);
+	if (length < 0.001f)
+		return FALSE;
+	heading->i /= length;
+	heading->j /= length;
+	return TRUE;
+}
+
+static void psp_drive_begin(long unit_index)
+{
+	struct object_datum *unit = object_get(unit_index);
+	struct object_iterator iterator;
+	struct object_datum *object;
+	struct object_placement_data data;
+	struct unit_definition *definition;
+	long warthog = psp_drive_warthog_definition();
+	real best = 25.0f * 25.0f;
+	real_vector3d heading;
+	short seat_index;
+
+	hs_compile_and_evaluate("ai_erase_all");
+	if (warthog == NONE)
+	{
+		platform_psp_log("drivetest: t=%ld no Warthog in this map's tags", game_time_get());
+		return;
+	}
+	object_iterator_new(&iterator, _object_mask_scenery, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		real dx = object->object.position.x - unit->object.position.x;
+		real dy = object->object.position.y - unit->object.position.y;
+		real distance = dx * dx + dy * dy;
+
+		if (distance >= 4.0f * 4.0f && distance < best && object->object.bounding_sphere_radius >= 0.5f)
+		{
+			best = distance;
+			psp_drive_target = iterator.index;
+		}
+	}
+	heading.i = unit->object.forward.i;
+	heading.j = unit->object.forward.j;
+	heading.k = 0.0f;
+	if (psp_drive_target != NONE)
+		psp_drive_heading(&unit->object.position, &object_get(psp_drive_target)->object.position, &heading);
+	object_placement_data_new(&data, warthog, NONE);
+	data.position = unit->object.position;
+	data.position.z += 0.8f;
+	data.forward = heading;
+	data.up = *global_up3d;
+	psp_drive_vehicle = object_new(&data);
+	if (psp_drive_vehicle == NONE)
+	{
+		platform_psp_log("drivetest: t=%ld the Warthog couldn't be made", game_time_get());
+		return;
+	}
+	definition = unit_definition_get(object_get(psp_drive_vehicle)->definition_index);
+	for (seat_index = 0; seat_index < definition->unit.seats.count; seat_index++)
+		if (TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&definition->unit.seats, seat_index, struct unit_seat)->flags, _unit_seat_driver_bit))
+			break;
+	if (seat_index == definition->unit.seats.count || !unit_enter_seat(unit_index, psp_drive_vehicle, seat_index))
+		platform_psp_log("drivetest: t=%ld the player couldn't take the driver's seat", game_time_get());
+	unit = object_get(unit_index);
+	platform_psp_log("drivetest: t=%ld %s #%08lx made at %.4f %.4f %.4f heading %.4f %.4f; target %s at %.4f %.4f %.4f radius %.3f",
+		game_time_get(), tag_get_name(warthog), (unsigned long)psp_drive_vehicle, data.position.x, data.position.y, data.position.z,
+		heading.i, heading.j, psp_drive_target != NONE ? tag_get_name(object_get(psp_drive_target)->definition_index) : "none",
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.x : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.y : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.z : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.bounding_sphere_radius : 0.0f);
+}
+
+/* the player's control during the drive: the schedule's throttle and a
+facing the Warthog steers to (at the target, or square to its left or right
+for full lock) */
+struct unit_control_data const *psp_drive_control(long unit_index, struct unit_control_data const *control_data)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	struct object_datum *vehicle;
+	real_vector3d facing;
+	long now, step;
+	real throttle = 0.0f;
+	int steer = 0;
+
+	if (psp_drive_on < 0)
+	{
+		psp_drive_on = psp_keep("drivetest");
+		psp_drive_start = psp_keep_number("drivetestat", 2700);
+	}
+	if (!psp_drive_on || unit->unit.player_index == NONE || (now = game_time_get()) < psp_drive_start)
+		return control_data;
+	if (psp_drive_on == 1)
+	{
+		psp_drive_on = 2;
+		psp_drive_begin(unit_index);
+	}
+	step = now - psp_drive_start;
+	if (psp_drive_vehicle == NONE || step > PSP_DRIVE_TICKS ||
+		!(vehicle = (struct object_datum *)object_try_and_get_and_verify_type(psp_drive_vehicle, _object_mask_vehicle)))
+		return control_data;
+	if (step % 30 == 0 && step > 0)
+		hs_compile_and_evaluate("ai_erase_all");
+	if (step >= 30 && step < 180)
+		throttle = 1.0f;
+	else if (step >= 180 && step < 240)
+		throttle = -1.0f;
+	else if (step >= 240 && step < 540)
+		throttle = 1.0f, steer = 1;
+	else if (step >= 540 && step < 840)
+		throttle = 1.0f, steer = -1;
+	facing.i = vehicle->object.forward.i;
+	facing.j = vehicle->object.forward.j;
+	facing.k = 0.0f;
+	if (steer)
+	{
+		real i = facing.i;
+
+		facing.i = -steer * facing.j;
+		facing.j = steer * i;
+	}
+	else if (psp_drive_target != NONE && object_try_and_get_and_verify_type(psp_drive_target, _object_mask_scenery))
+		psp_drive_heading(&vehicle->object.position, &object_get(psp_drive_target)->object.position, &facing);
+	if (normalize3d(&facing) < 0.001f)
+		facing = *global_forward3d;
+	psp_drive_control_data = *control_data;
+	psp_drive_control_data.control_flags = 0;
+	psp_drive_control_data.primary_trigger = 0.0f;
+	psp_drive_control_data.throttle.i = throttle;
+	psp_drive_control_data.throttle.j = 0.0f;
+	psp_drive_control_data.throttle.k = 0.0f;
+	psp_drive_control_data.facing_vector = facing;
+	psp_drive_control_data.aiming_vector = facing;
+	psp_drive_control_data.looking_vector = facing;
+	platform_psp_log("drivetest: t=%ld step %ld throttle %.0f steer %d | pos %.4f %.4f %.4f vel %.4f %.4f %.4f "
+		"fwd %.4f %.4f %.4f up %.4f %.4f %.4f spin %.4f %.4f %.4f", now, step, throttle, steer,
+		vehicle->object.position.x, vehicle->object.position.y, vehicle->object.position.z,
+		vehicle->object.translational_velocity.i, vehicle->object.translational_velocity.j, vehicle->object.translational_velocity.k,
+		vehicle->object.forward.i, vehicle->object.forward.j, vehicle->object.forward.k,
+		vehicle->object.up.i, vehicle->object.up.j, vehicle->object.up.k,
+		vehicle->object.angular_velocity.i, vehicle->object.angular_velocity.j, vehicle->object.angular_velocity.k);
+	return &psp_drive_control_data;
+}
+#endif
+#endif
+"""),
+("""	if (unit->unit.player_index == NONE)
+		network_actors_note_control(unit_index, control_data);
+""", """#ifdef HALO_PSP
+#if !defined(__psp__) || defined(PSP_DEBUG_TOOLS)
+	{
+		/* "drivetest" (psp_fixups.py's FIXES_DRIVE): may make a vehicle,
+		so the unit is looked up again */
+		struct unit_control_data const *psp_drive_control(long unit_index, struct unit_control_data const *control_data);
+
+		control_data = psp_drive_control(unit_index, control_data);
+		unit = unit_get(unit_index);
+	}
+#endif
+#endif
+	if (unit->unit.player_index == NONE)
+		network_actors_note_control(unit_index, control_data);
+"""),
+]
 
 
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
@@ -23658,6 +24679,29 @@ FIXES_RECON = {}
 # carry them to ChupathingyCE's own build: the same
 # count from the original, on the same stretch. It also names the definition
 # being drawn for psp_ge.c's draw census (psp_census_definition)
+# "scriptsdump": the scenario's script names and types at load, so a run's
+# commands can wake one (a level's late cutscene reached without playing to it)
+FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
+("""	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
+	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+	{""",
+ """	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
+	{
+		/* psp_fixups.py (FIXES_RECON #scriptsdump) */
+		extern int psp_keep(const char *name);
+		extern void platform_psp_log(const char *format, ...);
+
+		if (psp_keep("scriptsdump"))
+			for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+			{
+				struct hs_script const *script = TAG_BLOCK_GET_ELEMENT(&scenario->hs_scripts, script_index, struct hs_script);
+
+				platform_psp_log("scriptsdump: %d %.32s type %d", (int)script_index, script->name, (int)script->script_type);
+			}
+	}
+	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+	{"""),
+]
 FIXES_RECON["source/render/render_objects.c#modelcensus"] = [
 ("""static void render_object_list(
 	struct object_render_data *data,
@@ -24412,10 +25456,15 @@ FIXES_RECON["source/effects/particles.c#particlecensus"] = [
 \t\treturn;
 \t}
 """),
-("\t\t\tpsp_particles_refused++;\n\t\t\treturn;\n",
- "\t\t\tpsp_particles_refused++;\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\treturn;\n"),
-("\t\t\t\tpsp_particles_thinned++;\n\t\t\t\treturn;\n",
- "\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\t\treturn;\n"),
+# refused (2) and thinned (3), the budget's and particleranks' alike
+("\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\treturn;\n",
+ "\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\treturn;\n"),
+("\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\treturn;\n",
+ "\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\treturn;\n"),
+("\t\t\t\tpsp_particles_refused++;\n\t\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\t\treturn;\n",
+ "\t\t\t\tpsp_particles_refused++;\n\t\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\t\treturn;\n"),
+("\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\t\treturn;\n",
+ "\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\t\treturn;\n"),
 ("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n",
 """\tparticle_index = datum_new(particle_data);
 
@@ -27698,6 +28747,312 @@ void psp_contrails_points_list(
 ]
 
 
+# ---------- FIXES_MODELS: models drawn as the Xbox draws them (b139's hand test)
+# A generic or chicago see-through shader can carry extra layers: other
+# see-through shaders drawn over the same triangles first (the Xbox's
+# transparent_geometry_layer_draw, rasterizer_xbox_transparent_geometry.c:
+# the layers, then the shader itself, nested up to two deep). The GE drew
+# the shader alone, so a powerup on the ground lost the patterns turning
+# over its sphere. Each layer goes to the GE's see-through queue just before
+# its shader, with the same sort point, so the queue keeps the Xbox's order.
+# A restoration, on by default; keep word "nolayers": the shader alone
+FIXES_MODELS = {}
+# glass that isn't two-sided (its flags word +40, bit 2) is drawn from the
+# front only, as the Xbox culls it; generic and chicago shaders take theirs
+# in psp_transparent_map itself (psp_ge.c, seethrough_cull)
+FIXES_MODELS["source/rasterizer/rasterizer.c#glasscull"] = [
+("""			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
+	}
+	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))""",
+ """			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
+		if (!(*(unsigned short const *)(definition + 40) & 4))
+			*blend = (short)(*blend | PSP_SEETHROUGH_ONE_SIDED_BIT);
+	}
+	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))"""),
+]
+FIXES_MODELS["source/rasterizer/rasterizer.c#layers"] = [
+("""void rasterizer_model_transparent_geometry_submit(
+	struct shader *shader,
+	short shader_permutation_index,""",
+ """#ifdef HALO_PSP
+/* a shader's extra layers (+72: a block of tag references, the tag index at
++12 in each), each queued as its own see-through draw of the same triangles,
+its own layers first. psp_transparent_map's state (the clamp, the meter) is
+the last call's, so the caller works its own shader out again after this */
+static unsigned long psp_transparent_layers_queued = 0, psp_transparent_layers_unmapped = 0;
+
+static void psp_transparent_layers(struct shader const *shader, short permutation,
+	struct triangle_buffer const *triangle_buffer, long triangle_count, struct vertex_buffer const *vertex_buffer,
+	real_point3d const *centroid, int depth)
+{
+	extern void psp_ge_transparent(struct triangle_buffer const *, long, struct vertex_buffer const *,
+		unsigned int, float, float, float, float, short, float const *);
+	extern void psp_ge_seethrough_shader(unsigned int shader);
+	extern void psp_ge_seethrough_meter(const void *meter);
+	char const *definition = (char const *)shader;
+	short type = shader ? *(short const *)(definition + 36) : -1;
+	long count, layer;
+	char const *layers;
+
+	if ((type != 5 && type != 6) || depth >= 2)
+		return;
+	count = *(long const *)(definition + 72);
+	layers = *(char const *const *)(definition + 76);
+	for (layer = 0; layers && layer < count && layer < 8; layer++)
+	{
+		long index = *(long const *)(layers + 16 * layer + 12);
+		struct shader const *layer_shader;
+		float u_scale, v_scale, u_offset, v_offset;
+		short blend;
+		unsigned int key;
+
+		if (index == NONE)
+			continue;
+		layer_shader = (struct shader const *)shader_definition_get(index);
+		if (!layer_shader)
+			continue;
+		psp_transparent_layers(layer_shader, permutation, triangle_buffer, triangle_count, vertex_buffer, centroid,
+			depth + 1);
+		key = psp_transparent_map(layer_shader, permutation, TRUE, &u_scale, &v_scale, &u_offset, &v_offset, &blend);
+		if (!key)
+		{
+			psp_transparent_layers_unmapped++;
+			continue;
+		}
+		psp_ge_seethrough_shader((unsigned int)layer_shader);
+		psp_ge_seethrough_meter(psp_transparent_meter);
+		psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset, v_offset,
+			blend, &centroid->x);
+		psp_transparent_layers_queued++;
+	}
+}
+
+/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped)
+{
+	*queued = psp_transparent_layers_queued;
+	*unmapped = psp_transparent_layers_unmapped;
+	psp_transparent_layers_queued = psp_transparent_layers_unmapped = 0;
+}
+#endif
+
+void rasterizer_model_transparent_geometry_submit(
+	struct shader *shader,
+	short shader_permutation_index,"""),
+("""			if (sort_filth)
+				*(short *)((char *)sort_filth + 8) = NONE;
+			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+			{""",
+ """			if (sort_filth)
+				*(short *)((char *)sort_filth + 8) = NONE;
+			/* the shader's extra layers first (FIXES_MODELS #layers) */
+			if (dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE && shader &&
+				(*(short const *)((char const *)shader + 36) == 5 || *(short const *)((char const *)shader + 36) == 6) &&
+				*(long const *)((char const *)shader + 72) > 0 && !PSP_KEEP_ONCE("nolayers"))
+			{
+				psp_transparent_layers(shader, shader_permutation_index, triangle_buffer, triangle_count, vertex_buffer,
+					centroid, 0);
+				key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale, &u_offset,
+					&v_offset, &blend);
+			}
+			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+			{"""),
+]
+# A generic shader's look comes from up to four maps through the Xbox's
+# combiners; the GE draws one (the map the bake chose, tinted by the rest).
+# Where the rest moves, still tints lose it: the camouflage powerup's noise
+# turning over its sphere is drawn as its still mask. The bake's composites
+# can't hold it either (a noise that scrolls under a mask that doesn't).
+# genericnoise (opt-in, a look call: an added pass is not the combiners'
+# product) draws the shader's first other map once more over the same
+# triangles, with that map's own scale and animation, blended as the shader
+# blends, at GENERIC_NOISE_LEVEL of its strength and untinted
+# A dynamic light's gel. The Xbox shapes each dynamic light on the level
+# with its gel, a cube map turned by the light's yaw, roll and pitch
+# functions over game time (rasterizer_xbox_environment.c,
+# _rasterizer_environment_diffuse_light_begin): a10's alert lights are
+# rotating beacons, red beams sweeping the walls. The GE's light pass lights
+# by distance, cone and angle only (psp_ge.c), so each alert light flooded
+# the walls around it with its full red every frame, and the hard edge
+# where that red met an unlit recess showed through Cortana's hologram as a
+# seam. A light without a cone (cosines -1; a spotlight's cone already
+# comes from psp_ge.c's projected cone) now carries its gel's average
+# colour: the beams' light over a turn, not their sweep. A restoration of
+# the light's level, on by default; keep word "nogel": the full colour.
+# "lightdump" (an instrument): on a screenshot's frame, each light the
+# level's light pass takes, with its tag, colour, gel and cone
+FIXES_MODELS["source/interface/hud_draw.c#lightname"] = [
+("""		if (tag_get(0x73686472, tag_index) == shader)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+""",
+ """		if (tag_get(0x73686472, tag_index) == shader)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+
+/* the light tag whose definition this is, or NULL ("lightdump") */
+char const *psp_light_tag_name(void const *definition)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, 0x6C696768 /* ligh */);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		if (tag_get(0x6C696768, tag_index) == definition)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+"""),
+]
+FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
+("""				psp_ge_light_begin(&light->position.x, &light->forward.i, &light->color.red, light->radius,""",
+ """				extern volatile int psp_screenshot_requested;
+				extern int psp_tex_average_known(unsigned int key, unsigned int *abgr);
+				real_rgb_color colour = light->color;
+				/* the gel's tag index (+0x70: its reference's index at +12)
+				and the cone's cutoff cosine, -1 for a light without one */
+				long gel = definition ? *(long const *)(definition + 0x70) : NONE;
+				unsigned int average = 0;
+				int gel_known = gel != NONE && psp_tex_average_known(psp_tex_bitmap_key(gel, 0), &average);
+
+				if (gel_known && *(float const *)(definition + 32) <= -0.99f && !PSP_KEEP_ONCE("nogel"))
+				{
+					colour.red *= (float)(average & 0xFF) / 255.0f;
+					colour.green *= (float)((average >> 8) & 0xFF) / 255.0f;
+					colour.blue *= (float)((average >> 16) & 0xFF) / 255.0f;
+				}
+				if (psp_screenshot_requested && PSP_KEEP_ONCE("lightdump"))
+				{
+					extern char const *psp_light_tag_name(void const *definition);
+					char const *name = definition ? psp_light_tag_name(definition) : NULL;
+
+					platform_log("lightdump: light %ld of %ld %s colour %.3f %.3f %.3f drawn %.3f %.3f %.3f gel %ld %s %08x radius %.2f at %.2f %.2f %.2f facing %.2f %.2f %.2f cone %.3f %.3f",
+						light_index, rasterizer_lights.light_count, name ? name : "(no tag)",
+						light->color.red, light->color.green, light->color.blue,
+						colour.red, colour.green, colour.blue, gel, gel_known ? "average" : "unknown", average,
+						light->radius, light->position.x, light->position.y, light->position.z,
+						light->forward.i, light->forward.j, light->forward.k,
+						definition ? *(float const *)(definition + 28) : -1.0f,
+						definition ? *(float const *)(definition + 32) : -1.0f);
+				}
+				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,"""),
+]
+
+FIXES_MODELS["source/rasterizer/rasterizer.c#genericnoise"] = [
+("""static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,""",
+ """/* the map psp_transparent_map draws in place of the bake's choice, counted
+from the shader's first map (a cube map included); -1 the bake's */
+static int psp_transparent_map_forced = -1;
+
+static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,"""),
+("""			int chosen = psp_tex_shader_map((unsigned int)shader);
+""",
+ """			int chosen = psp_transparent_map_forced >= 0 ? psp_transparent_map_forced :
+				psp_tex_shader_map((unsigned int)shader);
+"""),
+("""/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts(""",
+ """#define GENERIC_NOISE_LEVEL 0.5f
+static unsigned long psp_transparent_noise_passes = 0;
+
+/* a generic shader's first map other than the one drawn (not a cube map,
+not the same bitmap), queued as a second draw of the same triangles */
+static void psp_transparent_noise(struct shader const *shader, short permutation,
+	struct triangle_buffer const *triangle_buffer, long triangle_count, struct vertex_buffer const *vertex_buffer,
+	real_point3d const *centroid)
+{
+	extern void psp_ge_transparent(struct triangle_buffer const *, long, struct vertex_buffer const *,
+		unsigned int, float, float, float, float, short, float const *);
+	extern void psp_ge_seethrough_shader(unsigned int shader);
+	extern void psp_ge_seethrough_meter(const void *meter);
+	extern int psp_tex_shader_map(unsigned int shader);
+	char const *definition = (char const *)shader;
+	long map_count, index;
+	int skip, drawn;
+	char const *maps;
+	float u_scale, v_scale, u_offset, v_offset;
+	short blend;
+	unsigned int key;
+
+	/* generic only, and not a numeric counter (its digits are the maps) */
+	if (!shader || *(short const *)(definition + 36) != 5 || (*(unsigned char const *)(definition + 41) & 0x80))
+		return;
+	map_count = *(long const *)(definition + 84);
+	maps = *(char const *const *)(definition + 88);
+	skip = *(short const *)(definition + 42) != 0 ? 1 : 0;
+	if (!maps || map_count - skip < 2)
+		return;
+	drawn = psp_tex_shader_map((unsigned int)shader);
+	if (drawn < 0)
+	{
+		/* a shader the bake left to the runtime's rule (psp_transparent_map,
+		the camouflage powerup's among them): the smallest scale after the
+		first map the GE can draw */
+		for (drawn = skip, index = 1; index < map_count - skip && index < 4; index++)
+		{
+			float scale = *(float const *)(maps + 100 * (skip + index) + 4);
+			float best = *(float const *)(maps + 100 * drawn + 4);
+
+			if (scale != 0.0f && (best == 0.0f || scale <= best))
+				drawn = (int)(skip + index);
+		}
+	}
+	if (drawn < skip || drawn >= map_count)
+		return;
+	for (index = skip; index < map_count && index < 4; index++)
+		if (index != drawn && *(long const *)(maps + 100 * index + 40) != *(long const *)(maps + 100 * drawn + 40) &&
+			*(long const *)(maps + 100 * index + 40) != NONE)
+			break;
+	if (index >= map_count || index >= 4)
+		return;
+	psp_transparent_map_forced = (int)index;
+	key = psp_transparent_map(shader, permutation, TRUE, &u_scale, &v_scale, &u_offset, &v_offset, &blend);
+	psp_transparent_map_forced = -1;
+	if (!key)
+		return;
+	blend = (short)((PSP_SEETHROUGH_PACK(PSP_SEETHROUGH_BLEND(blend), PSP_SEETHROUGH_MODE(blend),
+		PSP_SEETHROUGH_FADE(blend) * GENERIC_NOISE_LEVEL, PSP_SEETHROUGH_KEEP_WITH_CAMOUFLAGE(blend)) & 0x7fff) |
+		(blend & PSP_SEETHROUGH_ONE_SIDED_BIT));
+	psp_ge_seethrough_shader(0);
+	psp_ge_seethrough_meter(NULL);
+	psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset, v_offset,
+		blend, &centroid->x);
+	psp_transparent_noise_passes++;
+}
+
+/* for the GE's log line (psp_ge.c) */
+unsigned long psp_transparent_noise_count(void)
+{
+	unsigned long passes = psp_transparent_noise_passes;
+
+	psp_transparent_noise_passes = 0;
+	return passes;
+}
+
+/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts("""),
+("""				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);""",
+ """				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);
+				if (!psp_transparent_meter && PSP_KEEP_ONCE("genericnoise"))
+					psp_transparent_noise(shader, shader_permutation_index, triangle_buffer, triangle_count,
+						vertex_buffer, centroid);"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
@@ -28452,7 +29807,7 @@ static void decal_check("""),
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + (list(FIXES_MUSIC.items()) if os.environ.get("PSP_MUSIC", "") == "1" else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

@@ -6,7 +6,7 @@ Native PlayStation Portable port of Halo: Combat Evolved, built for the original
 
 ## Where it stands
 
-The whole campaign loads and plays on a PSP-1000, all ten maps in one session. As of build 119 (2026-10-13, on Sheepdog01's PSP-1000), *The Maw* (d40) runs at 19 fps; *The Pillar of Autumn*, *Assault on the Control Room* and *Two Betrayals* are within a few milliseconds of 15 fps at 30 ticks a second; the heaviest map, *The Silent Cartographer* (b30), runs at about 4 fps in its opening flight and 9 on the beach. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
+The whole campaign loads and plays on a PSP-1000, all ten maps in one session. As of build 139 (2026-10-21, its release candidate's ladder: each map's opening, on the PSP-3000, which measures within 3% of the PSP-1000), *The Maw* (d40) runs at 24 fps, *Two Betrayals* (c40) at 21, *Assault on the Control Room* (b40) at 17 and *The Pillar of Autumn* (a10) at 16, all at about 30 ticks a second. The heaviest map, *The Silent Cartographer* (b30), runs at 4.5 fps in its opening flight, where the game itself runs at 9 ticks a second, under a third of real time; *Keyes* (d20) and *Halo* (a30) open at 7 to 8 fps and 15 ticks a second. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
 
 The target is a steady 30 ticks a second at 30 fps everywhere in the campaign. 15/15 (15 fps at 15 ticks a second) is a milestone to bench against, not the floor or the ceiling. The plan is `docs/rebuild_plan.md`, and every known speed lever, ranked, is in `docs/optimization_ranking.md`.
 
