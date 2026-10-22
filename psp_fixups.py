@@ -38,6 +38,16 @@ static boolean psp_animation_valid = FALSE;
 along the view, for its parts' reflections (psp_ge.c, psp_ge_model_reflection) */
 static real_argb_color psp_reflection_tint;
 static real psp_model_camera_distance = 0.0f;
+/* a model's distance along the view: models.c's rso works it out the same way,
+to check a kept reflection's fade (psp_ge.c, rso) */
+real psp_model_distance_along_view(real const *point)
+{
+	real_point3d const *centroid = (real_point3d const *)point;
+
+	return (centroid->x - global_window_parameters.camera.position.x) * global_window_parameters.camera.forward.i +
+		(centroid->y - global_window_parameters.camera.position.y) * global_window_parameters.camera.forward.j +
+		(centroid->z - global_window_parameters.camera.position.z) * global_window_parameters.camera.forward.k;
+}
 unsigned int psp_tex_bitmap_key(long tag_index, int bitmap);
 int psp_tex_bitmap_count(long tag_index);
 
@@ -307,10 +317,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		if (psp_animation_valid)
 			csmemcpy(psp_animation_values, parameters->animation.values, sizeof(psp_animation_values));
 		psp_reflection_tint = lighting->reflection_tint_color;
-		psp_model_camera_distance =
-			(parameters->centroid.x - global_window_parameters.camera.position.x) * global_window_parameters.camera.forward.i +
-			(parameters->centroid.y - global_window_parameters.camera.position.y) * global_window_parameters.camera.forward.j +
-			(parameters->centroid.z - global_window_parameters.camera.position.z) * global_window_parameters.camera.forward.k;
+		psp_model_camera_distance = psp_model_distance_along_view(&parameters->centroid.x);
 		psp_unique_identifier = parameters->unique_identifier;
 		psp_change_colors_valid = parameters->animation.colors != NULL;
 		if (psp_change_colors_valid)
@@ -455,12 +462,11 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 
 					if (cutoff != 0.0f && falloff != cutoff)
 					{
-						extern int psp_rso_volatile;
+						/* by the camera's distance: psp_ge.c works it out, and rso
+						checks it again before sending a kept walk */
+						extern float psp_rso_fade(float distance, float cutoff, float falloff);
 
-						/* the fade reads the camera: not kept (psp_ge.c, rso) */
-						psp_rso_volatile |= 16;
-						fraction = (psp_model_camera_distance - cutoff) / (falloff - cutoff);
-						fraction = fraction < 0.0f ? 0.0f : fraction > 1.0f ? 1.0f : fraction;
+						fraction = psp_rso_fade(psp_model_camera_distance, cutoff, falloff);
 					}
 					brightness = fraction * 0.5f * (*(float const *)(definition + 324) + *(float const *)(definition + 340)) *
 						psp_reflection_tint.alpha;
@@ -29182,7 +29188,7 @@ FIXES_RSO["source/models/models.c#rso"] = [
 extern long psp_rso_object;
 extern int psp_rso_field;
 int psp_rso_find(long object_index, unsigned int const **kept, unsigned int *kept_words);
-int psp_rso_reuse(long object_index, int same);
+int psp_rso_reuse(long object_index, int same, float const *centroid);
 unsigned int *psp_rso_capture_end(unsigned int key_words);
 
 /* whether the walk reads only render_model's inputs, the model's tag data
@@ -29201,9 +29207,14 @@ static boolean psp_rso_keyable(real_matrix4x3 const *node_matrices, short node_c
 /* the key: the bytes of render_model's inputs that the walk reads, packed in
 words. The words before a field fix its length (the model index its region
 count, the node count its matrices), so two keys of different inputs differ
-before either is read past its end. Left out: the lighting's and the
-effect's padding, the point light indices (none are read with no point
-lights), and the effect's type (none). With key NULL, only its words,
+before either is read past its end. Only what the walk's records are made
+from: the distant lights the count names, the reflection tint (the lighting's
+shadow vector and colour are read only by the shadow pass), no point light
+indices (none are read with no point lights), and nothing of the effect
+(none: its intensity is unset there and the record writes 0; the function
+values, read only by see-through parts, which are never kept). A
+reflection faded by the camera's distance is checked in psp_ge.c (rso).
+ With key NULL, only its words,
 counted by the same fields so the length can't drift from them; with
 fill, written there; else compared there in place, which stops at the first
 difference: 0 if they differ, else the words */
@@ -29229,7 +29240,8 @@ static unsigned int psp_rso_key(
 {
 	unsigned int at = 0, head[5];
 	short level = NUMBER_OF_DETAIL_LEVELS_PER_MODEL - 1;
-	unsigned int effect_bytes = (unsigned int)((char const *)(model_effect + 1) - (char const *)&model_effect->intensity);
+	short lights = lighting->distant_light_count < 0 ? 0 : lighting->distant_light_count > 2 ? 2 :
+		lighting->distant_light_count;
 
 #define PSP_RSO_FIELD(field, pointer, bytes) \
 	do { \
@@ -29260,18 +29272,17 @@ static unsigned int psp_rso_key(
 	if (region_count)
 		PSP_RSO_FIELD(1, region_permutation_indices, region_count);
 	PSP_RSO_FIELD(2, &lighting->ambient_color, sizeof(lighting->ambient_color));
-	PSP_RSO_FIELD(3, lighting->distant_lights, sizeof(lighting->distant_lights));
-	PSP_RSO_FIELD(4, &lighting->reflection_tint_color, (char const *)(lighting + 1) - (char const *)&lighting->reflection_tint_color);
-	PSP_RSO_FIELD(5, &model_effect->intensity, effect_bytes);
-	PSP_RSO_FIELD(6, centroid, sizeof(*centroid));
-	PSP_RSO_FIELD(7, &radius, sizeof(radius));
-	PSP_RSO_FIELD(8, change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
-	PSP_RSO_FIELD(9, function_values, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS * sizeof(real));
-	PSP_RSO_FIELD(10, node_matrices, node_count * sizeof(real_matrix4x3));
+	if (lights)
+		PSP_RSO_FIELD(3, lighting->distant_lights, lights * sizeof(lighting->distant_lights[0]));
+	PSP_RSO_FIELD(4, &lighting->reflection_tint_color, sizeof(lighting->reflection_tint_color));
+	PSP_RSO_FIELD(5, centroid, sizeof(*centroid));
+	PSP_RSO_FIELD(6, &radius, sizeof(radius));
+	PSP_RSO_FIELD(7, change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
+	PSP_RSO_FIELD(8, node_matrices, node_count * sizeof(real_matrix4x3));
 #undef PSP_RSO_FIELD
 	if (key && !fill && at != kept_words)
 	{
-		psp_rso_field = 11;
+		psp_rso_field = 9;
 		return 0;
 	}
 	return at;
@@ -29308,7 +29319,7 @@ void render_model(
 					level_of_detail_pixels, node_matrices, node_count, region_permutation_indices, psp_rso_regions,
 					change_colors, function_values, lighting, centroid, radius, model_effect,
 					forced_shader_permutation_index, flags) != 0;
-				int reuse = psp_rso_reuse(unique_identifier, same);
+				int reuse = psp_rso_reuse(unique_identifier, same, &centroid->x);
 
 				if (reuse > 0)
 				{
