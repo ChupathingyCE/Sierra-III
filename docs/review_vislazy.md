@@ -26,16 +26,31 @@ The frame's-end skip (nmskip) already had the machinery: a compute left out keep
 | Render interpolation (off on the PSP) | reads through the accessor every tick: exact, and the lever then does nothing |
 | Direct reads of the block | none for these types: the other direct readers are the compute itself, the postprocess (not these types), biped limp noodle (bipeds), the allocation |
 | Writers (set position, attach, a new animation) | need nothing: the catch-up reads the inputs recorded at the update, not the present ones, as the eager compute did |
+| The sleep check (`psp_sleepy_update`): an object whose update leaves its datum's checksum unchanged two ticks running falls asleep and is no longer updated. The node matrices are in the datum, so it reads them without an accessor | the skip of an object whose animation plays marks the update as a change (`psp_vl_moving`): the eager compute would have rewritten its nodes, so it stays awake as it would have. A skip of an object with no animation playing changes nothing the eager compute wouldn't (its default pose from the same root inputs), so it sleeps as before |
+
+The sleep check was the gap: with its compute left out, a swaying tree's datum stopped changing, so the tree fell asleep, stopped updating and kept a stale pose, where the eager build keeps it awake and moving. b30's Pelican, made at a tick when two such trees (with collision models) were asleep, was placed against their stale nodes. `vislazycheck` couldn't see it, as it makes every compute (the trees stay awake there). Found by keeping one kind of object out at a time (the run is exact with no collision models, no scenery or no animations in the lazy set, and still differs with every owed compute made at the objects loop's end) and tracing that tick's reads, computes and skips.
 
 An owed compute stays owed however long the object goes unread (nmskip's 8-tick limit is dropped under vislazy; a game time later than now is a revert, and is dropped). An object deleted while owed leaves a stale entry that its slot's next object releases.
 
 ## Proof
 
-(filled from the runs)
+All in the emulator, campaign PGO build, fixedticks fixedseed nomouth, VISLAZY on against `vislazyoff` [E]:
+
+| Map (stretch) | Ticks | Play hash | Global seed | Local seed |
+|---|---|---|---|---|
+| b30 (the timed route: cinematic, flight, landing, beach) | 8,400 | same at every tick | same | same |
+| a30 (timed route) | 9,000 | same | same | same |
+| c20 (route t5) | 8,100 | same | same | same |
+| d20 (swamp route) | 3,000 | same | same | same |
+| a10 (hands off) | 4,800 | same | same | same |
+
+The whole-state hash differs by design (owed node matrices sit in the objects allocation). Before the sleep check's fix, b30's play parted at tick 4351 (the Pelican made at the landing), with the local seed following at 4374; the other four maps were already the same.
+
+`vislazycheck` on b30 and c20: the skips' test wrong 0 and catch-ups differing 0 in every 900-tick window (b30: 46,437 skips and 4,710 catch-ups in the first). It can't see a reader that bypasses the accessors (it makes every compute), which is how the sleep check got past it; the play proof above is the one that covers those.
 
 ## Cost and gain
 
-(filled from the runs)
+Removal in the emulator [E]: the check word's "computes it would leave out" times the share of left-out computes no reader asks for (the `vislazy:` lines). b30: 0.22-0.42 ms a tick of computes left out, 88% never made (275,251 left out, 31,655 made for a reader): about 0.2-0.37 ms a tick. c20: 0.01-0.10 ms a tick, 51% never made. a30 50%, d20 36%, a10 52% never made. Animated scenery now stays awake as it does without the lever, so these are what the lever removes from the eager build; an object's update still runs, only its node walk is left out.
 
 ## Logs
 
