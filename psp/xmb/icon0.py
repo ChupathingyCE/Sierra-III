@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Draws ICON0.PNG, the game-list tile, for both builds from the Sierra-III mark.
 
-The tile: smoked glass inside the first placeholder's border, in the mark's amber: see-through,
-so the XMB's own wallpaper shows behind it;
+The tile: frosted smoked glass over the wallpaper (the patch of PIC1 it covers, blurred and
+darkened) inside the first placeholder's border, in the mark's amber;
 the mark as it sits on the wallpaper (PSP under the III), with the title's amber rule under
 SIERRA running up to PSP; the build named beneath it in Audiowide, the font of the title's
 COMBAT EVOLVED. Written to psp/xmb/<campaign|mp>/ICON0.PNG.
@@ -30,11 +30,14 @@ BUILDS = {"campaign": "CAMPAIGN", "mp": "MULTIPLAYER"}
 AMBER_TOP, AMBER_BOTTOM = (0xc2, 0x9b, 0x63), (0xa0, 0x6e, 0x26)
 STEEL_TOP, STEEL_BOTTOM = (0xe9, 0xee, 0xf2), (0x9a, 0xa7, 0xb2)
 
-# The glass is the tile's own alpha, black at this much: the XMB blends ICON0 over whatever is
-# behind it, so the wallpaper seen through the glass is the real one, lined up wherever the XMB
-# puts the tile and as it moves into focus. A painted copy of PIC1's patch never lined up (the
-# tile isn't where a photo puts it: H13), and blurring the copy to hide that read as a blur.
-GLASS_DIM = 0.45
+# Where the XMB draws the highlighted tile over PIC1 (docs/xmb_menu.md: about (24, 101), 146 x 81,
+# measured from a photo, +-4 px); the 144 x 80 tile centred there.
+TILE_AT = (25, 101)
+# Frosted, not clear: on the PSP the tile isn't where the photo put it (the patch's planet edge
+# showed shifted left of the wallpaper's), and it moves as the XMB brings the entry into focus.
+# Blurred this much (tile px), the patch keeps only the scene's colours, which line up at any
+# offset the XMB gives it; a sharp edge jogs at a pixel or two.
+GLASS_DIM, GLASS_BLUR = 0.45, 14.0
 
 BORDER = 2                           # px at tile size, as on the placeholder
 MARK_W = 120                         # the lettering's width at tile size (600 units in the SVG)
@@ -110,11 +113,22 @@ def label(text, px):
     return fill, ascent
 
 
-def tile(name, dim):
+def glass(build, dim, blur):
+    """The patch of the build's wallpaper the tile covers, so the tile reads as glass over the
+    scene: darkened by `dim` (0 = clear) and softened by `blur` (tile px)."""
+    pic1 = Image.open(os.path.join(HERE, build, "PIC1.PNG")).convert("RGB")
+    x, y = TILE_AT
+    patch = pic1.crop((x, y, x + TILE[0], y + TILE[1])).resize((TILE[0] * SS, TILE[1] * SS), Image.LANCZOS)
+    if blur:
+        patch = patch.filter(ImageFilter.GaussianBlur(blur * SS))
+    return Image.eval(patch, lambda v: int(v * (1 - dim)))
+
+
+def tile(build, name, dim=0.0, blur=0.0):
     w, h = TILE[0] * SS, TILE[1] * SS
     img = vgradient((w, h), AMBER_TOP, AMBER_BOTTOM).convert("RGBA")
     b = BORDER * SS
-    img.paste(Image.new("RGBA", (w - 2 * b, h - 2 * b), (0, 0, 0, round(255 * dim))), (b, b))
+    img.paste(glass(build, dim, blur).crop((b, b, w - b, h - b)), (b, b))
 
     m, margin = mark(MARK_W * SS)
     img.alpha_composite(with_shadow(m, dy=SS, blur=SS * 0.8), (round(MARK_X * SS - margin), round(MARK_Y * SS - margin)))
@@ -126,14 +140,14 @@ def tile(name, dim):
 
     lab, ascent = label(name, LABEL_PX * SS)
     img.alpha_composite(with_shadow(lab, dy=SS, blur=SS * 0.6), (LABEL_X * SS, LABEL_BOTTOM * SS - ascent))
-    return img.resize(TILE, Image.LANCZOS)
+    return img.convert("RGB").resize(TILE, Image.LANCZOS)
 
 
 def main():
     for build, name in BUILDS.items():
         path = os.path.join(HERE, build, "ICON0.PNG")
         # plain, non-interlaced PNG with no metadata: the XMB can show a blank tile otherwise
-        tile(name, GLASS_DIM).save(path, format="PNG", optimize=True)
+        tile(build, name, GLASS_DIM, GLASS_BLUR).save(path, format="PNG", optimize=True)
         print("wrote", os.path.relpath(path, HERE), TILE)
 
 
