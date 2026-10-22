@@ -27784,7 +27784,8 @@ words. The words before a field fix its length (the model index its region
 count, the node count its matrices), so two keys of different inputs differ
 before either is read past its end. Left out: the lighting's and the
 effect's padding, the point light indices (none are read with no point
-lights), and the effect's type (none). With key NULL, only its words; with
+lights), and the effect's type (none). With key NULL, only its words,
+counted by the same fields so the length can't drift from them; with
 fill, written there; else compared there in place, which stops at the first
 difference: 0 if they differ, else the words */
 static unsigned int psp_rso_key(
@@ -27814,7 +27815,9 @@ static unsigned int psp_rso_key(
 #define PSP_RSO_FIELD(pointer, bytes) \
 	do { \
 		unsigned int psp_rso_bytes = (unsigned int)(bytes); \
-		if (fill) \
+		if (!key) \
+			; \
+		else if (fill) \
 		{ \
 			key[at + (psp_rso_bytes + 3) / 4 - 1] = 0; \
 			csmemcpy(key + at, (pointer), psp_rso_bytes); \
@@ -27824,9 +27827,6 @@ static unsigned int psp_rso_key(
 		at += (psp_rso_bytes + 3) / 4; \
 	} while (0)
 
-	if (!key)
-		return 5 + (unsigned int)(region_count + 3) / 4 + 3 + 2 * 6 + 10 + (effect_bytes + 3) / 4 + 3 + 1 +
-			NUMBER_OF_OBJECT_CHANGE_COLORS * 3 + NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS + 12 * (unsigned int)node_count;
 	while (level > 0 && level_of_detail_pixels < model->detail_cutoff_pixels[level])
 		level--;
 	head[0] = (unsigned int)model_index;
@@ -27847,7 +27847,7 @@ static unsigned int psp_rso_key(
 	PSP_RSO_FIELD(function_values, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS * sizeof(real));
 	PSP_RSO_FIELD(node_matrices, node_count * sizeof(real_matrix4x3));
 #undef PSP_RSO_FIELD
-	return fill || at == kept_words ? at : 0;
+	return !key || fill || at == kept_words ? at : 0;
 }
 #endif
 
