@@ -29988,6 +29988,233 @@ static void actor_perception_refresh_test_object(
 """),
 ]
 
+# ---------- FIXES_AICAD: AI thinking at half rate, staggered by actor (a compromise)
+# The AI's thinking (perception's prop servicing and the timeslice holder's
+# refresh, situation, the decision loop, and through the timeslice the
+# firing-position search and the path re-plan) is most of ai_update on the
+# fight maps. With "aicad2" each actor thinks on every other tick, half the
+# actors on even ticks and half on odd, so the tick's AI cost halves without
+# a spike. Every tick still runs what the player sees: the unit's input,
+# perception's decays and danger zone, emotion, the action's own timers,
+# moving, looking, firing and the unit's control, all from the last decision.
+# A reaction can come one tick (33 ms) later; Halo's own perception delays
+# are hundreds of milliseconds. Kept at full rate: swarms, charging actors
+# (melee and leaps are timed to the tick), dormant actors (they barely think)
+# and an actor's first update. The service timer counts thinking ticks, so the
+# timeslice holder (the costly search) comes round half as often too.
+# "aicad3" is the same rest with the timeslice kept at full rate: the timer
+# counts every tick and an actor that wins the slot thinks whole that tick, so
+# the firing-position search (cover) and the re-plan come round as often as
+# without the word. With aicad2 the marines lost b30's beach: a marine waits
+# twice as long to be sent to cover.
+# Off by default: it plays differently, so it ships only after an A/B shows it
+# breaks nothing. Campaign only: never in the multiplayer build or a networked
+# game, whose clients must simulate as the server does
+FIXES_AICAD = {}
+FIXES_AICAD["source/ai/actors.c#aicad"] = [
+("""static void actor_update_begin(
+	long actor_index)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AICAD): "aicad2" and "aicad3" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+boolean network_coop_active(void);
+
+static int psp_aicad_on = -1;
+/* the identifier each slot last thought as: a new actor in a reused slot
+thinks on its first update */
+static short psp_aicad_identifier[MAXIMUM_ACTORS];
+static struct
+{
+	unsigned long updates, rested, timeslice, swarm, charging, dormant, first;
+} psp_aicad_stats;
+static long psp_aicad_logged = NONE;
+
+static boolean psp_aicad_active(
+	void)
+{
+	if (psp_aicad_on < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		psp_aicad_on = 0;
+#else
+		psp_aicad_on = psp_keep("aicad2") ? 2 : psp_keep("aicad3") ? 3 : 0;
+#endif
+		if (psp_aicad_on)
+			platform_psp_log("ai: each actor thinks on every other tick, half on even ticks and half on odd (aicad%d)%s",
+				psp_aicad_on, psp_aicad_on == 3 ? "; the timeslice at full rate" : "");
+	}
+	return psp_aicad_on && game_connection() == _game_connection_local && !network_coop_active();
+}
+
+/* TRUE on an actor's resting tick. No side effects: perception's ray queue
+asks it too, before the actor updates */
+boolean psp_aicad_rest(
+	long actor_index)
+{
+	struct actor_datum *actor;
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (!psp_aicad_active() ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS ||
+		((game_time_get() + absolute_index) & 1) == 0)
+		return FALSE;
+	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
+	return !actor->meta.swarm && !actor->meta.dormant && actor->state.action != _actor_action_charge &&
+		psp_aicad_identifier[absolute_index] == actor->identifier;
+}
+
+/* the census: actor updates, how many rested, and why the rest kept the
+full rate on their resting tick (every 30 s of game time, cumulative) */
+static void psp_aicad_count(
+	long actor_index,
+	boolean rest)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+	long now;
+
+	if (psp_aicad_on <= 0 || absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+		return;
+	psp_aicad_stats.updates++;
+	if (rest)
+		psp_aicad_stats.rested++;
+	else if ((game_time_get() + absolute_index) & 1)
+	{
+		if (psp_aicad_on == 3 && actor->meta.timeslice)
+			psp_aicad_stats.timeslice++;
+		else if (actor->meta.swarm)
+			psp_aicad_stats.swarm++;
+		else if (actor->meta.dormant)
+			psp_aicad_stats.dormant++;
+		else if (actor->state.action == _actor_action_charge)
+			psp_aicad_stats.charging++;
+		else
+			psp_aicad_stats.first++;
+	}
+	now = game_time_get();
+	if (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900)
+	{
+		if (psp_aicad_logged != NONE)
+			platform_psp_log("aicad: game time %ld | actor updates %lu, rested %lu; resting turns kept: timeslice %lu swarm %lu dormant %lu charging %lu first %lu",
+				now, psp_aicad_stats.updates, psp_aicad_stats.rested, psp_aicad_stats.timeslice, psp_aicad_stats.swarm,
+				psp_aicad_stats.dormant, psp_aicad_stats.charging, psp_aicad_stats.first);
+		psp_aicad_logged = now;
+	}
+}
+
+/* after perception, which asks psp_aicad_rest again: an actor's first update
+is a whole one */
+static void psp_aicad_seen(
+	long actor_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (psp_aicad_on > 0 && absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS)
+		psp_aicad_identifier[absolute_index] = actor_get(actor_index)->identifier;
+}
+#endif
+
+static void actor_update_begin(
+	long actor_index)
+{"""),
+("""	ai_globals->time_given_this_frame = FALSE;
+
+#ifdef HALO_PSP
+	/* perception's rays, one per actor""",
+ """	ai_globals->time_given_this_frame = FALSE;
+
+#ifdef HALO_PSP
+	/* FIXES_AICAD: the timeslice (the firing-position search, the re-plan)
+	comes round at half rate too: it is given on two ticks in four, one of
+	each parity, so both halves of the actors still compete for it */
+	if (psp_aicad_active() && psp_aicad_on == 2 && (game_time_get() & 2))
+		ai_globals->time_given_this_frame = TRUE;
+#endif
+#ifdef HALO_PSP
+	/* perception's rays, one per actor"""),
+("""	if (actor_general_update(actor_index))
+	{
+		actor_get_timeslice(actor_index);
+		actor_input_update(actor_index);
+		actor_perception_update(actor_index);
+		actor_situation_update(actor_index);
+		actor_emotion_update(actor_index);
+		actor_clear_orders(actor_index);
+		actor_decision_loop(actor_index);
+		actor_action_update(actor_index);
+""",
+ """	if (actor_general_update(actor_index))
+	{
+#ifdef HALO_PSP
+		/* FIXES_AICAD: a resting actor keeps its last situation and decision
+		and perception skips its prop service. aicad2: it can't hold the
+		timeslice either; aicad3: the slot is given first, and its holder
+		doesn't rest */
+		boolean psp_full_slot = psp_aicad_active() && psp_aicad_on == 3;
+		boolean psp_rest;
+
+		if (psp_full_slot)
+			actor_get_timeslice(actor_index);
+		psp_rest = psp_aicad_rest(actor_index);
+		psp_aicad_count(actor_index, psp_rest);
+		if (psp_rest)
+		{
+			if (!psp_full_slot)
+				actor->meta.timeslice = FALSE;
+			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+		}
+		else
+		{
+			if (!psp_full_slot)
+				actor_get_timeslice(actor_index);
+			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_situation_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+			actor_decision_loop(actor_index);
+		}
+		psp_aicad_seen(actor_index);
+#else
+		actor_get_timeslice(actor_index);
+		actor_input_update(actor_index);
+		actor_perception_update(actor_index);
+		actor_situation_update(actor_index);
+		actor_emotion_update(actor_index);
+		actor_clear_orders(actor_index);
+		actor_decision_loop(actor_index);
+#endif
+		actor_action_update(actor_index);
+"""),
+]
+FIXES_AICAD["source/ai/actor_perception.c#aicad"] = [
+("""	struct object_datum *unit;
+	short index;
+
+	if (psp_aihalf_on < 0)""",
+ """	struct object_datum *unit;
+	short index;
+
+	/* FIXES_AICAD: an actor resting from thinking services no prop either,
+	and its ray isn't queued */
+	{
+		extern boolean psp_aicad_rest(long actor_index); /* actors.c */
+
+		if (psp_aicad_rest(actor_index))
+			return TRUE;
+	}
+	if (psp_aihalf_on < 0)"""),
+]
+
 # ---------- FIXES_LODPSP: models' level of detail picked nearer (a compromise)
 # Models already pick their level of detail at the size they appear on the
 # PSP's 272 lines (FIXES_19; "fulllod" for the game's 480). This picks it as
@@ -30215,7 +30442,417 @@ FIXES_LODPSP["source/cache/cache_files.c#lodpsp"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# "aioutcome" (keep.txt; recon builds only): what the AI's fights came to, for
+# judging a behaviour A/B (farslice, aihalf) by outcomes where state hashes
+# can't serve (the two sides part at the first changed decision). It reads
+# and changes nothing the game uses. Each 5 s of game time a line: actors
+# alive by team; kills by the victim's team and the killer (a player, AI on
+# the player's side, AI against it, other); the hits the players took (count
+# and damage, the deathless cheat on) and dealt; active encounters and their
+# living count; far actors stuck (awake, 20+ units from every player, in
+# uncover or fight, the same firing position for 30 s). At each event a line:
+# an encounter's first active tick and the tick it is cleared, each script's
+# first run and end, each ai_place (with its name), game_save and
+# cinematic_start. A game time going backwards (a revert, a new map) starts
+# the counts over
+FIXES_RECON["source/ai/ai.c#aioutcome"] = [
+("""void ai_handle_death(
+	long unit_index,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): "aioutcome" (see there) */
+#include "hs/hs_scenario_definitions.h"
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+char const *hs_runtime_get_executing_thread_name(void);
+
+#define PSP_AIOUTCOME_TEAMS 16
+#define PSP_AIOUTCOME_ENCOUNTERS 128
+#define PSP_AIOUTCOME_SCRIPTS 512
+#define PSP_AIOUTCOME_STUCK_TICKS 900
+#define PSP_AIOUTCOME_FAR 20.0f
+
+enum
+{
+	_psp_aioutcome_by_player,
+	_psp_aioutcome_by_ally,
+	_psp_aioutcome_by_enemy,
+	_psp_aioutcome_by_other,
+	NUMBER_OF_PSP_AIOUTCOME_KILLERS
+};
+
+static int psp_aioutcome_on = -1;
+static long psp_aioutcome_time = NONE;
+static unsigned long psp_aioutcome_kills[PSP_AIOUTCOME_TEAMS][NUMBER_OF_PSP_AIOUTCOME_KILLERS];
+static unsigned long psp_aioutcome_player_hit, psp_aioutcome_player_hits;
+static real psp_aioutcome_player_damage;
+static byte psp_aioutcome_encounter_flags[PSP_AIOUTCOME_ENCOUNTERS]; /* 1 active seen, 2 had living, 4 cleared */
+static byte psp_aioutcome_script_flags[PSP_AIOUTCOME_SCRIPTS]; /* 1 started, 2 ended */
+static struct
+{
+	short identifier;
+	short position;
+	long since;
+} psp_aioutcome_actors[MAXIMUM_ACTORS];
+
+/* also ai_script.c's, so it names a placement only when the word is on */
+boolean psp_aioutcome_enabled(
+	void)
+{
+	long now;
+
+	if (psp_aioutcome_on < 0)
+		psp_aioutcome_on = psp_keep("aioutcome");
+	if (!psp_aioutcome_on)
+		return FALSE;
+	now = game_time_get();
+	if (psp_aioutcome_time != NONE && now < psp_aioutcome_time)
+	{
+		csmemset(psp_aioutcome_kills, 0, sizeof(psp_aioutcome_kills));
+		csmemset(psp_aioutcome_encounter_flags, 0, sizeof(psp_aioutcome_encounter_flags));
+		csmemset(psp_aioutcome_script_flags, 0, sizeof(psp_aioutcome_script_flags));
+		csmemset(psp_aioutcome_actors, 0, sizeof(psp_aioutcome_actors));
+		psp_aioutcome_player_hit = psp_aioutcome_player_hits = 0;
+		psp_aioutcome_player_damage = 0.0f;
+		platform_psp_log("aioutcome: game time %ld | counts started over (the game time went back)", now);
+	}
+	psp_aioutcome_time = now;
+	return TRUE;
+}
+
+static short psp_aioutcome_player_team(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+			return unit_get(player->unit_index)->object.owner_team_index;
+	}
+	return NONE;
+}
+
+static void psp_aioutcome_death(
+	long unit_index,
+	long responsible_unit_index)
+{
+	short team, killer = _psp_aioutcome_by_other;
+
+	if (!psp_aioutcome_enabled())
+		return;
+	team = unit_get(unit_index)->object.owner_team_index;
+	if (responsible_unit_index != NONE && responsible_unit_index != unit_index)
+	{
+		struct unit_datum *responsible = unit_get(responsible_unit_index);
+		short player_team = psp_aioutcome_player_team();
+
+		if (responsible->unit.player_index != NONE)
+			killer = _psp_aioutcome_by_player;
+		else if (player_team != NONE)
+			killer = game_team_is_enemy(player_team, responsible->object.owner_team_index) ?
+				_psp_aioutcome_by_enemy : _psp_aioutcome_by_ally;
+	}
+	if (team >= 0 && team < PSP_AIOUTCOME_TEAMS)
+		psp_aioutcome_kills[team][killer]++;
+}
+
+static void psp_aioutcome_damage(
+	long unit_index,
+	long responsible_unit_index,
+	real fraction)
+{
+	if (!psp_aioutcome_enabled())
+		return;
+	if (unit_get(unit_index)->unit.player_index != NONE)
+	{
+		psp_aioutcome_player_hit++;
+		psp_aioutcome_player_damage += fraction;
+	}
+	else if (responsible_unit_index != NONE && unit_get(responsible_unit_index)->unit.player_index != NONE)
+		psp_aioutcome_player_hits++;
+}
+
+/* hs_runtime.c: a script thread's first run and its end */
+void psp_aioutcome_script(
+	long script_index,
+	boolean ended)
+{
+	byte flag = ended ? 2 : 1;
+
+	if (!psp_aioutcome_enabled() || script_index < 0 || script_index >= PSP_AIOUTCOME_SCRIPTS ||
+		script_index >= global_scenario_get()->hs_scripts.count ||
+		(psp_aioutcome_script_flags[script_index] & flag))
+		return;
+	psp_aioutcome_script_flags[script_index] |= flag;
+	platform_psp_log("aioutcome: game time %ld | script %s %s", game_time_get(),
+		TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->hs_scripts, script_index, struct hs_script)->name,
+		ended ? "ends" : "starts");
+}
+
+/* hs_runtime.c: a script's call, as it begins; only the calls that mark the
+mission's course are logged */
+void psp_aioutcome_call(
+	char const *name)
+{
+	if (!name || !psp_aioutcome_enabled() ||
+		(csstrncmp(name, "game_save", 9) != 0 && csstrcmp(name, "cinematic_start") != 0))
+		return;
+	platform_psp_log("aioutcome: game time %ld | %s calls %s", game_time_get(),
+		hs_runtime_get_executing_thread_name(), name);
+}
+
+/* ai_script.c: ai_place, by name */
+void psp_aioutcome_place(
+	char const *name)
+{
+	platform_psp_log("aioutcome: game time %ld | %s places %s", game_time_get(),
+		hs_runtime_get_executing_thread_name(), name);
+}
+
+static void psp_aioutcome_tick(
+	void)
+{
+	struct data_iterator iterator;
+	struct encounter_datum *encounter;
+	struct actor_datum *actor;
+	struct player_datum *player;
+	real_point3d heads[4];
+	short head_count = 0;
+	long now;
+	long active_encounters = 0, living = 0, stuck = 0;
+	long alive[PSP_AIOUTCOME_TEAMS] = {0};
+	char alive_line[160], kill_line[320];
+	int at;
+	short team;
+
+	if (!psp_aioutcome_enabled())
+		return;
+	now = game_time_get();
+
+	data_iterator_new(&iterator, encounter_data);
+	while ((encounter = data_iterator_next(&iterator)) != NULL)
+	{
+		short index = iterator.absolute_index;
+		short count = encounter->current_count + encounter->current_swarm_count;
+		char const *name;
+		byte *flags;
+
+		if (index < 0 || index >= PSP_AIOUTCOME_ENCOUNTERS || index >= global_scenario_get()->ai_encounters.count)
+			continue;
+		flags = &psp_aioutcome_encounter_flags[index];
+		name = TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->ai_encounters, index, struct encounter_definition)->name;
+		if (encounter->active)
+		{
+			active_encounters++;
+			living += count;
+			if (!(*flags & 1))
+			{
+				*flags |= 1;
+				platform_psp_log("aioutcome: game time %ld | encounter %s active, %d living", now, name, (int)count);
+			}
+		}
+		if (count > 0)
+			*flags |= 2;
+		else if ((*flags & 2) && !(*flags & 4))
+		{
+			*flags |= 4;
+			platform_psp_log("aioutcome: game time %ld | encounter %s cleared", now, name);
+		}
+	}
+	if (now % 150 != 0)
+		return;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && head_count < 4)
+	{
+		if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+			heads[head_count++] = unit_get(player->unit_index)->object.bounding_sphere_center;
+	}
+	data_iterator_new(&iterator, actor_data);
+	while ((actor = data_iterator_next(&iterator)) != NULL)
+	{
+		short index = iterator.absolute_index;
+		long object_index = actor->meta.swarm ? actor->meta.swarm_unit_index : actor->meta.unit_index;
+		struct object_datum *unit = object_index == NONE ? NULL : object_try_and_get(object_index);
+		boolean far = head_count > 0;
+		short k;
+
+		if (!unit || TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
+			continue;
+		if (actor->meta.team_index >= 0 && actor->meta.team_index < PSP_AIOUTCOME_TEAMS)
+			alive[actor->meta.team_index]++;
+		if (index < 0 || index >= MAXIMUM_ACTORS)
+			continue;
+		for (k = 0; k < head_count; k++)
+		{
+			if (distance_squared3d(&heads[k], &unit->object.bounding_sphere_center) < PSP_AIOUTCOME_FAR * PSP_AIOUTCOME_FAR)
+				far = FALSE;
+		}
+		if (!far || !actor->meta.active || actor->meta.dormant ||
+			(actor->state.action != _actor_action_uncover && actor->state.action != _actor_action_fight) ||
+			psp_aioutcome_actors[index].identifier != actor->identifier ||
+			psp_aioutcome_actors[index].position != actor->firing_positions.current_position_index)
+		{
+			psp_aioutcome_actors[index].identifier = actor->identifier;
+			psp_aioutcome_actors[index].position = actor->firing_positions.current_position_index;
+			psp_aioutcome_actors[index].since = now;
+		}
+		else if (now - psp_aioutcome_actors[index].since >= PSP_AIOUTCOME_STUCK_TICKS)
+			stuck++;
+	}
+
+	alive_line[0] = kill_line[0] = 0;
+	for (team = 0, at = 0; team < PSP_AIOUTCOME_TEAMS && at < (int)sizeof(alive_line) - 16; team++)
+	{
+		if (alive[team])
+			at += snprintf(alive_line + at, sizeof(alive_line) - at, " %d:%ld", (int)team, alive[team]);
+	}
+	for (team = 0, at = 0; team < PSP_AIOUTCOME_TEAMS && at < (int)sizeof(kill_line) - 40; team++)
+	{
+		unsigned long const *kills = psp_aioutcome_kills[team];
+
+		if (kills[0] || kills[1] || kills[2] || kills[3])
+			at += snprintf(kill_line + at, sizeof(kill_line) - at, " %d:%lu/%lu/%lu/%lu", (int)team,
+				kills[_psp_aioutcome_by_player], kills[_psp_aioutcome_by_ally],
+				kills[_psp_aioutcome_by_enemy], kills[_psp_aioutcome_by_other]);
+	}
+	platform_psp_log("aioutcome: game time %ld | alive by team:%s | killed by team (player/ally AI/enemy AI/other):%s | "
+		"players hit %lu (damage %.2f), hits %lu | encounters active %ld, living %ld | far actors stuck %ld",
+		now, alive_line, kill_line, psp_aioutcome_player_hit, (double)psp_aioutcome_player_damage,
+		psp_aioutcome_player_hits, active_encounters, living, stuck);
+}
+#endif
+
+void ai_handle_death(
+	long unit_index,"""),
+("""	long responsible_unit_index = ai_get_responsible_unit(
+		killer_object_index,
+		damage_category != _damage_category_vehicle);
+	short hostility = _comm_hostility_none;
+""",
+ """	long responsible_unit_index = ai_get_responsible_unit(
+		killer_object_index,
+		damage_category != _damage_category_vehicle);
+	short hostility = _comm_hostility_none;
+
+#ifdef HALO_PSP
+	psp_aioutcome_death(unit_index, responsible_unit_index); /* FIXES_RECON #aioutcome */
+#endif
+"""),
+("""	short hostility;
+
+	if (!delayed &&
+		damage_category != _damage_category_falling &&""",
+ """	short hostility;
+
+#ifdef HALO_PSP
+	/* FIXES_RECON #aioutcome: a delayed call repeats an earlier hit for the
+	AI's reaction, so it isn't counted again */
+	if (!delayed)
+		psp_aioutcome_damage(unit_index, responsible_unit_index, fraction);
+#endif
+	if (!delayed &&
+		damage_category != _damage_category_falling &&"""),
+("""	profile_exit(ai_update_section);
+""",
+ """#ifdef HALO_PSP
+	if (update_ai && ai_globals->ai_active)
+		psp_aioutcome_tick(); /* FIXES_RECON #aioutcome */
+#endif
+	profile_exit(ai_update_section);
+"""),
+]
+FIXES_RECON["source/hs/hs_runtime.c#aioutcome"] = [
+("""static void hs_thread_main(
+	long thread_index)
+{
+	struct hs_thread_datum *thread = hs_thread_get(thread_index);""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): ai.c */
+void psp_aioutcome_script(long script_index, boolean ended);
+void psp_aioutcome_call(char const *name);
+#endif
+
+static void hs_thread_main(
+	long thread_index)
+{
+	struct hs_thread_datum *thread = hs_thread_get(thread_index);"""),
+("""		if (hs_scenario_script_disabled((short)thread->script_index))
+		{
+			thread->sleep_until = NONE;
+			hs_runtime_globals.executing_thread_index = NONE;
+
+			return;
+		}
+	}
+""",
+ """		if (hs_scenario_script_disabled((short)thread->script_index))
+		{
+			thread->sleep_until = NONE;
+			hs_runtime_globals.executing_thread_index = NONE;
+
+			return;
+		}
+#ifdef HALO_PSP
+		psp_aioutcome_script(thread->script_index, FALSE); /* FIXES_RECON #aioutcome */
+#endif
+	}
+"""),
+("""			function->evaluate(
+				expression->index,
+				thread_index,
+				initialize);""",
+ """#ifdef HALO_PSP
+			if (initialize)
+				psp_aioutcome_call(function->name); /* FIXES_RECON #aioutcome */
+#endif
+			function->evaluate(
+				expression->index,
+				thread_index,
+				initialize);"""),
+("""			if (script->script_type==_hs_script_startup ||
+				script->script_type==_hs_script_dormant)
+			{
+				thread->sleep_until = NONE;
+			}""",
+ """			if (script->script_type==_hs_script_startup ||
+				script->script_type==_hs_script_dormant)
+			{
+				thread->sleep_until = NONE;
+#ifdef HALO_PSP
+				psp_aioutcome_script(thread->script_index, TRUE); /* FIXES_RECON #aioutcome */
+#endif
+			}"""),
+]
+FIXES_RECON["source/ai/ai_script.c#aioutcome"] = [
+("""void ai_scripting_place(
+	long ai_reference)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): ai.c */
+boolean psp_aioutcome_enabled(void);
+void psp_aioutcome_place(char const *name);
+#endif
+
+void ai_scripting_place(
+	long ai_reference)
+{
+#ifdef HALO_PSP
+	/* FIXES_RECON #aioutcome: the scripted placements' order */
+	if (ai_reference != NONE && psp_aioutcome_enabled())
+	{
+		char ai_name[256];
+
+		ai_index_to_string(ai_reference, global_scenario_get(), ai_name, sizeof(ai_name));
+		psp_aioutcome_place(ai_name);
+	}
+#endif"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
