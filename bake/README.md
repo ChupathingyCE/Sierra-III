@@ -16,7 +16,8 @@ copy to the Memory Stick. Nothing from the game is included here.
 - **The release zip** (`halo_psp_bNNN.zip`) from the same release as this
   bundle.
 - **Free disk space:** the bake says how much before it starts, and stops if
-  there isn't enough (about 8 GB). <!-- TODO(master): the campaign bake's peak and result from b139's bake -->
+  there isn't enough (about 8 GB). The result is about 2.2 GB for the
+  campaign and the menus, 2.9 GB with the multiplayer maps. <!-- TODO(master): the 8 GB peak is still an estimate; no bake has measured it. Results measured: b139c 2.21 GB, b139e (24 maps) 2.88 GB -->
 - **The internet, the first time:** the bake fetches its Python libraries
   (numpy, Pillow, shapely, about 30 MB). Python itself it uses from your
   computer if it has 3.9 to 3.14; if not, it offers to download a portable
@@ -51,7 +52,7 @@ copy to the Memory Stick. Nothing from the game is included here.
    |---|---|---|
    | 1/4 Reading your disc | each map read and checked against the retail disc's hashes | a minute or two |
    | 2/4 Setting up | the bake's Python libraries, the first time only | a minute or two (then seconds) |
-   | 3/4 Baking the maps | each map rebuilt for the PSP's memory, its textures and wall decals baked; several maps at once, with the time left | the long part: about 10 minutes on an 8-core PC, longer on fewer cores <!-- TODO(master): confirm from b139's bake --> |
+   | 3/4 Baking the maps | each map rebuilt for the PSP's memory, its textures and wall decals baked; several maps at once, with the time left | the long part: about 10 minutes on an 8-core PC, longer on fewer cores |
    | 4/4 Putting it together | the game, its menu sound and the maps into `COPY-TO-MEMORY-STICK` | seconds |
 
    It ends by saying what to copy where. Press Enter to close the window.

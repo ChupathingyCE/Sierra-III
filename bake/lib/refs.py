@@ -61,11 +61,19 @@ def padding(m, d):
     return tot
 
 
+# a colour map that a shader names as both its base and its bump map (c10's
+# hanging moss) is drawn, so it is baked as a base map; the bump role alone
+# had it dropped and the surface drew flat in the shader's colour.
+# texpack.py --base-as-bump: dropped, as before
+BASE_OVER_BUMP = True
+
+
 def classify(roles_for_tag, bm):
     r = ' '.join(sorted(roles_for_tag))
     if 'lightmaps bitmap' in r:
         return 'lightmap'
-    if bm['format'] == 'P8' or 'bump map' in r or bm['usage'] in ('height map', 'vector map'):
+    bump_role = 'bump map' in r and not (BASE_OVER_BUMP and 'base map' in r)
+    if bm['format'] == 'P8' or bump_role or bm['usage'] in ('height map', 'vector map'):
         return 'bump'
     if bm['type'] == 'cube' or 'reflection cube map' in r:
         return 'cube'

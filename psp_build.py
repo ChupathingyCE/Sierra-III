@@ -753,6 +753,8 @@ def main():
           "; failures in compile_errors.txt: " + ", ".join(os.path.basename(s) for s, e in bad) if bad else ""))
     if bad:
         sys.exit("not linking: %d units failed to compile" % len(bad))
+    if not MULTIPLAYER:
+        seed_profile(items)
     if PGO == "use":
         mismatched = profile_mismatches(results)
         with open(os.path.join(OUT, "pgo_mismatch.txt"), "w") as f:
@@ -807,6 +809,77 @@ def main():
                     icon0, icon1, pic0, pic1, snd0, os.path.join(OUT, "halo.prx"), "NULL"],
                    check=True, capture_output=True)
     print("wrote", os.path.join(OUT, "EBOOT.PBP"))
+
+# The release's ready-made profile, every campaign level open: its own
+# slot, so unzipping a new build over the stick never
+# touches a player's profiles. Built from code each build (psp/seed/
+# all_levels.c), so it follows the save format: the profile's bytes from the
+# engine's headers, the checksum, the folder and its meta file from the save
+# code in the tree, each read here and refused when it isn't what this
+# expects. Written to <out>/stick/, the stick's own tree.
+SEED_NAME = "All Levels"
+
+def seed_profile(items):
+    import hashlib, struct
+    def read(rel):
+        return open(os.path.join(TREE, rel), encoding="utf-8", errors="replace").read()
+    def need(pattern, text, what):
+        m = re.search(pattern, text, re.S)
+        if not m:
+            sys.exit("psp_build: the all-levels profile: %s no longer reads as expected (%s)" % (what, pattern))
+        return m
+    profile_c = read("source/saved games/player_profile.c")
+    files_c = read("source/saved games/saved_game_files.c")
+    xapi_c = read("port/linux/src/xbox_xapi.c")
+    look = int(need(r"DEFAULT_LOOK_SENSITIVITY = (\d+)", profile_c, "player_profile.c's look sensitivity").group(1))
+    checked = int(need(r"PLAYER_PROFILE_CHECKSUM_DATA_SIZE = (\d+)", files_c, "the profile's checksummed size").group(1))
+    # the content signature: SHA-1 of the title key (with its terminator, as
+    # sizeof counts it) and then the data
+    key = need(r'signature_title_key\[\] = "([^"\\]*)";', xapi_c, "the signature's key").group(1).encode() + b"\0"
+    need(r"sha1_initialize\(context\);\s*sha1_update\(context, signature_title_key, sizeof\(signature_title_key\)\);",
+         xapi_c, "the signature's start")
+    # the save folder: <u:>\UDATA\<FNV-1a of the name's UTF-16, 48 bits, as 12 hex digits>
+    need(r"hash = 1469598103934665603ULL;.*?hash \^= \(unsigned long long\)\*name;\s*hash \*= 1099511628211ULL;",
+         xapi_c, "the save folder's hash")
+    need(r'SAVE_DATA_DIRECTORY "\\\\%012llX\\\\", root, separator, hash & 0xffffffffffffULL', xapi_c,
+         "the save folder's name")
+    folder = need(r'#define SAVE_DATA_DIRECTORY "(\w+)"', xapi_c, "the save data folder").group(1)
+    meta = need(r'#define SAVE_META_FILE "([\w.]+)"', xapi_c, "the save meta file").group(1)
+    need(r'"%s%s", save_game_directory, "blam\.sav"\);\s*checksum_data_size = PLAYER_PROFILE_CHECKSUM_DATA_SIZE;',
+         files_c, "the profile's file name")
+    need(r'L"u:\\\\"', files_c, "the profiles' drive")
+
+    flags = [f for s, f, e in items if s == "source/saved games/player_profile.c"][0]
+    probe = os.path.join(HERE, "psp/seed/all_levels.c")
+    obj = os.path.join(OUT, "seed", "all_levels.o")
+    os.makedirs(os.path.dirname(obj), exist_ok=True)
+    name_c = 'L"' + SEED_NAME + '"'
+    r = subprocess.run(PSP + flags + ["-DPSP_SEED_NAME=" + name_c, "-DPSP_SEED_LOOK_SENSITIVITY=%d" % look,
+                                      "-include", os.path.join(HERE, "psp_post.h"), "-c", probe, "-o", obj],
+                       cwd=TREE, capture_output=True, text=True)
+    if r.returncode:
+        sys.exit("psp_build: the all-levels profile didn't compile:\n" + r.stderr[-3000:])
+    def section(name):
+        out = obj + "." + name
+        subprocess.run(["psp-objcopy", "-O", "binary", "--only-section=.rodata." + name, obj, out], check=True)
+        return open(out, "rb").read()
+    profile = section("psp_seed_profile")
+    size, block_size, signature_size = struct.unpack("<3H", section("psp_seed_sizes"))
+    if len(profile) != size or size != checked or signature_size != hashlib.sha1().digest_size:
+        sys.exit("psp_build: the all-levels profile: %d bytes, %d checksummed, a %d-byte signature: not the format this writes"
+                 % (len(profile), checked, signature_size))
+    block = profile + hashlib.sha1(key + profile).digest()
+    block += b"\0" * (block_size - len(block))
+    name16 = SEED_NAME.encode("utf-16-le")
+    h = 1469598103934665603
+    for unit in struct.unpack("<%dH" % (len(name16) // 2), name16):
+        h = ((h ^ unit) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    where = os.path.join(OUT, "stick", "halo", "save", "u", folder, "%012X" % (h & 0xFFFFFFFFFFFF))
+    shutil.rmtree(os.path.join(OUT, "stick"), ignore_errors=True)
+    os.makedirs(where)
+    open(os.path.join(where, "blam.sav"), "wb").write(block)
+    open(os.path.join(where, meta), "wb").write(name16)
+    print("seed: the all-levels profile \"%s\" at %s" % (SEED_NAME, os.path.relpath(where, OUT)))
 
 def xmb_files():
     """The XMB menu art for pack-pbp, in its order: ICON0, ICON1, PIC0, PIC1, SND0.

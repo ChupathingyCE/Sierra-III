@@ -322,15 +322,70 @@ def nearest_centre(points, centres, chunk=16384):
     return out
 
 
-def quantize(img, colors, fast=False):
+ALPHA_SIDE = 128   # the GE's alpha test passes a texel whose alpha is above 0x7F
+
+
+def split_counts(on, off, colors, cutout):
+    """how many of the palette's entries each side of the alpha test gets:
+    by its share of the texels, at least one each. A cut-out's hidden texels
+    show only where the filter blends them into an edge, so they take at most
+    a quarter of the entries"""
+    if not off:
+        return colors, 0
+    if not on:
+        return 0, colors
+    k_off = int(round(colors * off / float(on + off)))
+    k_off = max(1, min(k_off, colors // 4 if cutout else colors - 1))
+    return colors - k_off, k_off
+
+
+def quantize_split(img, colors, fast=False, cutout=False):
+    """quantize() for a texture the GE alpha-tests (a cut-out): the texels
+    each side of the test are fitted apart, on entries of their own. An
+    entry's alpha is the mean of its texels', so no entry mixes texels the
+    test passes with texels it hides: with RGBA clustered as one 4-D point,
+    hidden texels whose colour is far from the rest and the shape's own
+    could share an entry, and the shape lost its edge or gained a square"""
+    h, w = img.shape[:2]
+    pts = img.reshape(-1, 4).astype(np.float32)
+    side = pts[:, 3] >= ALPHA_SIDE
+    k_on, k_off = split_counts(int(side.sum()), int((~side).sum()), colors, cutout)
+    pal = np.zeros((colors, 4), np.float64)
+    idx = np.zeros(len(pts), np.int64)
+    at = 0
+    for mask, k in ((side, k_on), (~side, k_off)):
+        if not k:
+            continue
+        group = pts[mask]
+        uniq = np.unique(group, axis=0)
+        if len(uniq) <= k:
+            centres = uniq.astype(np.float64)
+        else:
+            sample = group if len(group) <= 40000 else group[np.random.RandomState(0).choice(len(group), 40000, replace=False)]
+            centres = (fast_kmeans if fast else best_kmeans)(sample, k, 60)
+        centres = np.clip(np.rint(centres), 0, 255)
+        # rounding never crosses the test: a mean of values on one side stays there
+        pal[at:at + len(centres)] = centres
+        idx[mask] = at + nearest_centre(group, centres)
+        at += len(centres)
+    pal = pal.astype(np.uint8)
+    idx = idx.reshape(h, w)
+    return idx, pal, pal[idx], True
+
+
+def quantize(img, colors, fast=False, split=False, cutout=False):
     """CLUT quantization; returns (indices HxW, palette Nx4 uint8, reconstructed
     RGBA, has_alpha).  Alpha is treated as data, not transparency: Halo's
     environment textures keep blend/specular masks in alpha and need the RGB
     under alpha 0, so RGBA is clustered as a 4-D point (kmeans() above,
     seeded by k-means++ on a sample).  Opaque textures cluster RGB only.
-    fast: the palette by fast_kmeans() (texpack --fast-palettes)"""
+    fast: the palette by fast_kmeans() (texpack --fast-palettes).
+    split: a texture whose alpha is a shape, by quantize_split() (cutout: one
+    the GE alpha-tests)"""
     h, w = img.shape[:2]
     has_alpha = img[:, :, 3].min() < 255
+    if split and has_alpha and img[:, :, 3].max() >= ALPHA_SIDE:
+        return quantize_split(img, colors, fast, cutout)
     ch = 4 if has_alpha else 3
     pts = img.reshape(-1, 4)[:, :ch].astype(np.float32)
     uniq = np.unique(pts, axis=0)

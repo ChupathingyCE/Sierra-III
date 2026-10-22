@@ -13,6 +13,9 @@ the plain-C units have no -I for psp/include).
              2 fade when parallel
   bit 6      "don't fade with active camouflage" (chicago extra flags, bit 0)
   bits 7-14  how much the fade source takes away (0: none, 255: all)
+  bit 15     one-sided: the shader isn't two-sided, so its back faces are
+             culled, as the Xbox culls them (D3DCULL_CCW unless the
+             shader's two-sided flag is set)
 
 A plain blend function (nothing above bit 3) is full strength, no fade, so
 every queue entry made before build 116 reads the same as before.
@@ -27,6 +30,8 @@ every queue entry made before build 116 reads the same as before.
 #define PSP_SEETHROUGH_MODE(packed) (((packed) >> 4) & 3)
 #define PSP_SEETHROUGH_KEEP_WITH_CAMOUFLAGE(packed) (((packed) & 64) != 0)
 #define PSP_SEETHROUGH_FADE(packed) ((float)(255 - (((packed) >> 7) & 255)) / 255.0f)
+#define PSP_SEETHROUGH_ONE_SIDED_BIT 0x8000
+#define PSP_SEETHROUGH_ONE_SIDED(packed) (((packed) & PSP_SEETHROUGH_ONE_SIDED_BIT) != 0)
 
 /* build 116 (b113 #16): a meter shader's parameters (a plasma rifle's heat
 gauge, the Warthog's speedometer), worked out on the engine side the way the

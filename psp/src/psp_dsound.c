@@ -1462,9 +1462,46 @@ static void mix(short *output, unsigned long frames)
 static short output_buffers[2][MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
 static int audio_started = 0;
 
+/* "audio44" (opt-in, for a listening A/B on the PSP): the mix taken from
+22,050 to 44,100 Hz here and played on an ordinary 44.1 kHz channel, instead
+of the hardware's sample-rate converter, whose filter isn't documented. The
+fizzy, shimmering treble heard on the PSP is what the images of a converter that
+holds or interpolates linearly sound like [U]: a 7 kHz tone mixed at 22,050
+leaves an image at 15 kHz unless a filter takes it out. Here a half-band
+filter (12 taps, a Blackman-windowed sinc) does: flat to 6.6 kHz, -2.6 dB at
+9.9 kHz (where the bake's own half-rate filter already cuts), images 20 dB
+down at 13 kHz and 54 dB at 15 kHz. The even outputs are the mix's own
+samples, delayed UP_TAPS; the odd ones the filter's half-way points */
+#define UP_TAPS 6
+static const int up_taps[UP_TAPS] = { 20276, -5378, 2003, -659, 154, -12 }; /* Q15; 2 x sum = 1 */
+static short up_history[2 * UP_TAPS * OUTPUT_CHANNELS];
+static short up_input[(2 * UP_TAPS + MIX_FRAMES) * OUTPUT_CHANNELS];
+static short output44[2][2 * MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
+
+static void upsample(const short *in, short *out)
+{
+	int j, c, k;
+
+	memcpy(up_input, up_history, sizeof(up_history));
+	memcpy(up_input + 2 * UP_TAPS * OUTPUT_CHANNELS, in, MIX_FRAMES * OUTPUT_CHANNELS * sizeof(short));
+	for (j = 0; j < MIX_FRAMES; j++)
+		for (c = 0; c < OUTPUT_CHANNELS; c++)
+		{
+			const short *e = up_input + (j + UP_TAPS) * OUTPUT_CHANNELS + c;
+			int sum = 0, value;
+
+			for (k = 0; k < UP_TAPS; k++)
+				sum += up_taps[k] * (e[-k * OUTPUT_CHANNELS] + e[(k + 1) * OUTPUT_CHANNELS]);
+			value = (sum + 16384) >> 15;
+			out[2 * j * OUTPUT_CHANNELS + c] = e[0];
+			out[(2 * j + 1) * OUTPUT_CHANNELS + c] = (short)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
+		}
+	memcpy(up_history, up_input + MIX_FRAMES * OUTPUT_CHANNELS, sizeof(up_history));
+}
+
 static int audio_thread(SceSize arguments, void *argument)
 {
-	int channel = sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2), which = 0;
+	int channel = -1, which = 0, up = 0;
 	SceUID dump = -1;
 	unsigned long dumped = 0;
 
@@ -1477,11 +1514,18 @@ static int audio_thread(SceSize arguments, void *argument)
 	}
 	(void)arguments;
 	(void)argument;
+	{
+		extern int psp_keep(const char *word);
+
+		up = psp_keep("audio44");
+	}
+	channel = up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
+		sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2);
 	if (channel < 0)
 		platform_log("audio: no output channel (%08x); sound runs silent", channel);
 	else
-		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)", OUTPUT_RATE, MIX_FRAMES,
-			MIX_FRAMES * 1000 / OUTPUT_RATE);
+		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)%s", OUTPUT_RATE, MIX_FRAMES,
+			MIX_FRAMES * 1000 / OUTPUT_RATE, up ? "; to 44,100 Hz by the half-band filter (audio44)" : "");
 	{
 		extern int psp_keep(const char *word);
 
@@ -1513,7 +1557,14 @@ static int audio_thread(SceSize arguments, void *argument)
 			static SceUInt64 last_return = 0;
 			SceUInt64 now;
 
-			sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output_buffers[which]);
+			if (up)
+			{
+				upsample(output_buffers[which], output44[which]);
+				sceKernelDcacheWritebackRange(output44[which], sizeof(output44[which]));
+				sceAudioOutputPannedBlocking(channel, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, output44[which]);
+			}
+			else
+				sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output_buffers[which]);
 			now = sceKernelGetSystemTimeWide();
 			if (last_return)
 			{

@@ -19,8 +19,9 @@
 #
 # writes into the output folder:
 #   halo_psp_<LABEL>.zip   PSP/GAME/halo/ (EBOOT.PBP, halo_crash.prx,
-#                          halo_profile.prx, LICENSE-mecore.md, licenses/), and
-#                          halo/presets.txt when psp/presets.txt exists
+#                          halo_profile.prx, LICENSE-mecore.md, licenses/),
+#                          halo/presets.txt when psp/presets.txt exists, and
+#                          the campaign's all-levels profile in halo/save/
 #   halo.elf, halo.map     the linked program and its link map
 #   build.log              everything the build printed
 #
@@ -142,8 +143,13 @@ if [[ -f $SRC/psp/presets.txt ]]; then
         echo "build_release: psp/presets.txt has $count presets; the launch menu holds ${most:-?}" >&2
         exit 1
     fi
-    mkdir -p "$pkg/halo"; cp "$SRC/psp/presets.txt" "$pkg/halo/presets.txt"; top+=(halo)
+    mkdir -p "$pkg/halo"; cp "$SRC/psp/presets.txt" "$pkg/halo/presets.txt"
 fi
+# the stick's own files psp_build.py made beside the EBOOT: the campaign's
+# ready-made profile with every level open, in a slot of its own, so
+# unzipping a new build never touches a player's profiles
+if [[ -d $OUT/build/stick ]]; then cp -r "$OUT/build/stick/." "$pkg/"; fi
+[[ -d $pkg/halo ]] && top+=(halo)
 # every file and folder carries the commit's time and fixed permissions, so
 # the zip's bytes depend only on the commit (Python's zip tool also sorts)
 stamp=$(git -C "$SRC" log -1 --format=%ct)
