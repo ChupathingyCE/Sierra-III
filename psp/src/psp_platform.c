@@ -758,6 +758,14 @@ unsigned long psp_object_sample(void)
 	static int every_tick = -1;
 	static unsigned int tick = 0;
 
+	{
+		/* texlinecheck's tick word and heapwalk's walk (psp_tex.c, psp_libc.c) */
+		extern void psp_texline_tick(void);
+		extern void psp_heap_walk(const char *where);
+
+		psp_texline_tick();
+		psp_heap_walk("a tick");
+	}
 	if (every_tick < 0)
 		every_tick = psp_keep("objecttimeall") != 0;
 	if (every_tick)

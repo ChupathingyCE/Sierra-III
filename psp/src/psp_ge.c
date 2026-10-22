@@ -1987,6 +1987,14 @@ static void inflight_wait_me(void)
 	defer_wait_me(); /* the last stall address passed on with it */
 	psp_me_window[0] = 0;
 	sceKernelDcacheWritebackInvalidateAll();
+	{
+		/* texlinecheck and heapwalk: what the ME's frame left (psp_tex.c, psp_libc.c) */
+		extern void psp_texline_check(void);
+		extern void psp_heap_walk(const char *where);
+
+		psp_texline_check();
+		psp_heap_walk("the frame back from the ME");
+	}
 	me_wrote = 0;
 	if (defer_me_failed != failed)
 	{

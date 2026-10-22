@@ -190,6 +190,82 @@ the HUD, and the last such frame */
 static int strip_census = -1;
 static unsigned int *hud_bound = NULL;
 static int find(unsigned int key);
+long psp_game_time_peek(void);
+
+/* "texlinecheck": a probe of the hazard texlines removes, on any layout. One
+word the Media Engine's replay counts on each bind of a resident texture (as
+it writes last_frame[] and bind_counts[]), and one word the main CPU counts
+on each game tick, which runs while the ME replays (geinflight). With
+"texlinesbad" both words share one 64-byte line, as a calloc'd table's edge
+line shares one with a heap chunk header; without it each is on a line of
+its own, as texlines puts the tables. A third line, the ME's alone, keeps the
+ME's count again. After each frame back from the ME: the main CPU's word
+should hold its last count, and the ME's its own copy's; a word that doesn't
+was put back by the other CPU's write-back of the whole line. The emulator
+has no caches: 0 both ways on either layout */
+static unsigned int texline_probe[3][16] __attribute__((aligned(64)));
+static PSP_MAIN_SIDE int texline_on = -1;
+static PSP_MAIN_SIDE unsigned int texline_main_count = 0, texline_checks = 0, texline_main_back = 0,
+	texline_me_lost = 0, texline_me_writes = 0, texline_events = 0;
+/* the ME's word and its copy (NULL: off); set once by the main CPU, read by the replay */
+static PSP_MAIN_SIDE volatile unsigned int *texline_me = NULL, *texline_me_copy = NULL;
+static PSP_MAIN_SIDE volatile unsigned int *texline_main = NULL;
+
+/* each game tick, on the main CPU */
+void psp_texline_tick(void)
+{
+	extern int psp_keep_loaded(void);
+
+	if (texline_on < 0)
+	{
+		if (!psp_keep_loaded())
+			return;
+		texline_on = psp_keep("texlinecheck") != 0;
+		if (texline_on)
+		{
+			int bad = psp_keep("texlinesbad") != 0;
+
+			memset(texline_probe, 0, sizeof(texline_probe));
+			texline_main = bad ? &texline_probe[0][8] : &texline_probe[1][0];
+			texline_me_copy = &texline_probe[2][0];
+			texline_me = &texline_probe[0][0];
+			platform_log("textures: texlinecheck: the ME's bind word and the main CPU's tick word %s",
+				bad ? "on one 64-byte line (texlinesbad: the hazard forced)" : "on lines of their own (as texlines)");
+		}
+	}
+	if (texline_main)
+		*texline_main = ++texline_main_count;
+}
+
+/* the frame back from the ME (psp_ge.c, after its whole-cache write-back) */
+void psp_texline_check(void)
+{
+	unsigned int main_word, me_word, me_copy;
+
+	if (!texline_main)
+		return;
+	main_word = *texline_main;
+	me_word = *texline_me;
+	me_copy = *texline_me_copy;
+	texline_checks++;
+	texline_me_writes = me_copy;
+	if (main_word != texline_main_count || me_word != me_copy)
+	{
+		if (main_word != texline_main_count)
+			texline_main_back++;
+		if (me_word != me_copy)
+			texline_me_lost++;
+		if (texline_events++ < 8)
+			platform_log("textures: texlinecheck: check %u, game time %ld: the main CPU's word %u (wrote %u), the ME's %u (its copy %u)",
+				texline_checks, psp_game_time_peek(), main_word, texline_main_count, me_word, me_copy);
+		/* both words as they should be, for the next frame's look */
+		*texline_main = texline_main_count;
+		*texline_me = me_copy;
+	}
+	if (texline_checks % 300 == 0)
+		platform_log("textures: texlinecheck: %u checks; the main CPU's word put back %u times, the ME's count lost %u times; %u ME writes",
+			texline_checks, texline_main_back, texline_me_lost, texline_me_writes);
+}
 
 /* a table the Media Engine's replay writes (last_frame, bind_counts: a bind
 on the ME, psp_ge.c's geinflight): on whole 64-byte lines of its own. The ME
@@ -1808,6 +1884,11 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	last_frame[index] = frame;
 	if (bind_counts && bind_counts[index] < 65535)
 		bind_counts[index]++;
+	if (texline_me && PSP_ME_WORK())
+	{
+		(*texline_me)++;
+		(*texline_me_copy)++;
+	}
 	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit
 	palette; or a texture in its own colours (the showcase's, ui.map:
 	texpack.py --showcase), with no palette */
