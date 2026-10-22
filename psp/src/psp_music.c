@@ -27,6 +27,7 @@ is counted, and the voice comes back with a short fade */
 #include <pspiofilemgr.h>
 #include <pspthreadman.h>
 #include <malloc.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -84,14 +85,8 @@ struct voice
 	int primed;                 /* decoding from a restart: the first packet gives nothing */
 	unsigned int next_packet;   /* the next packet to decode */
 	unsigned int next_offset;   /* its bytes into the chain's packets */
-	/* the index window: packets [index_first, index_first + index_count) */
-	unsigned int index_first, index_count, index_wanted;
-	unsigned int index[INDEX_PACKETS][2];
-	/* two pieces of packet bytes, each 16 KB from piece_at[k] in the chain's packets */
-	unsigned int piece_at[2], piece_wanted;
-	int piece_ok[2];
-	unsigned char piece[2][PIECE_BYTES];
-	short pcm[PCM_FRAMES * 2];
+	unsigned int index_wanted;  /* the index window the decode wants */
+	unsigned int piece_wanted;  /* the first of the two pieces it wants */
 	unsigned int pcm_frames;
 	int fade;                   /* frames into the fade-in after a dropout or a start */
 	int left, right;            /* the gains the last block ended on */
@@ -99,7 +94,20 @@ struct voice
 	vorbis_dsp_state dsp;
 	vorbis_block block;
 	int dsp_ready;
+	short pcm[PCM_FRAMES * 2];
+	/* the reader's part, on lines of its own: the decode (on the ME, often)
+	only reads it, so the main CPU never drops it after a job, and the
+	reader's writes never share a line with the decode's */
+	/* the index window: packets [index_first, index_first + index_count) */
+	unsigned int index_first __attribute__((aligned(64))), index_count;
+	/* two pieces of packet bytes, each 16 KB from piece_at[k] in the chain's packets */
+	unsigned int piece_at[2];
+	int piece_ok[2];
+	unsigned int index[INDEX_PACKETS][2];
+	unsigned char piece[2][PIECE_BYTES] __attribute__((aligned(64)));
 };
+/* what the decode writes in a voice */
+#define VOICE_DECODE_BYTES offsetof(struct voice, index_first)
 
 static struct
 {
@@ -114,31 +122,46 @@ static struct
 	struct voice *voices[VOICES];
 	SceUID reader_wake, out_ready, out_free, io_lock, state_lock;
 	int out_channel;
-	short out[2][OUT_FRAMES * 2] __attribute__((aligned(64)));
-	int out_which;
+	unsigned char *pool;
 	/* counts, for the heartbeat */
-	unsigned long blocks, late_blocks, out_late, pieces, piece_worst_us, stubs_made, not_in_pack, restarts, decode_us,
-		decode_worst_us, playing_worst;
+	unsigned long out_late, pieces, piece_worst_us, stubs_made, not_in_pack, decode_us, decode_worst_us;
 } music;
+
+/* what the decode writes outside the voices and the pool: the ME's audio job
+runs it, so it sits on lines of its own (the main CPU drops the head and the
+output after each job, and never writes any of it while one is out) */
+static struct __attribute__((aligned(64)))
+{
+	unsigned char *pool_next;
+	unsigned long pool_failed;
+	int wake;                   /* the reader is wanted: signalled after the block */
+	int out_which;
+	unsigned long blocks, late_blocks, restarts, playing_worst;
+	short out[2][OUT_FRAMES * 2] __attribute__((aligned(64)));
+	/* the decode's scratch: only the CPU that decodes reads it */
+	int sums[OUT_FRAMES * 2] __attribute__((aligned(64)));
+	unsigned char joined[PIECE_BYTES];
+} dec;
+/* the part the main CPU reads after a job */
+#define DEC_READ_BYTES offsetof(__typeof__(dec), sums)
 
 /* ---------- the pool (Tremor's malloc family, renamed at link) */
 
-static unsigned char *pool_next, *pool_end;
-static unsigned long pool_failed;
+static unsigned char *pool_end;
 
 void *mu_malloc(unsigned int bytes)
 {
 	unsigned char *p;
 
 	bytes = (bytes + 15) & ~15u;
-	if (!pool_next || pool_next + bytes + 16 > pool_end)
+	if (!dec.pool_next || dec.pool_next + bytes + 16 > pool_end)
 	{
-		pool_failed++;
+		dec.pool_failed++;
 		return NULL;
 	}
-	p = pool_next;
+	p = dec.pool_next;
 	*(unsigned int *)p = bytes;
-	pool_next += bytes + 16;
+	dec.pool_next += bytes + 16;
 	return p + 16;
 }
 
@@ -249,7 +272,8 @@ static void start_once(void)
 	pool = memalign(64, POOL_BYTES);
 	if (!pool)
 		return;
-	pool_next = pool;
+	music.pool = pool;
+	dec.pool_next = pool;
 	pool_end = pool + POOL_BYTES;
 	/* the voices' windows and queues off the heap, not the codec's pool */
 	for (k = 0; k < VOICES; k++)
@@ -275,15 +299,31 @@ static void start_once(void)
 }
 
 /* the map's tags are in: its pack, if the keep word wants one (cache_files.c) */
+static void psp_music_map_open(const char *name, int wanted);
+
 void psp_music_map_opened(const char *name)
 {
 	static int wanted = -1;
+	int locked;
+
+	if (wanted < 0)
+		wanted = psp_keep("musicstream") != 0;
+	/* not while a job decodes: it reads the pack's tables and the setup
+	(before the first map there is no lock, and no job) */
+	locked = music.state_lock > 0;
+	if (locked)
+		sceKernelWaitSema(music.state_lock, 1, NULL);
+	psp_music_map_open(name, wanted);
+	if (locked)
+		sceKernelSignalSema(music.state_lock, 1);
+}
+
+static void psp_music_map_open(const char *name, int wanted)
+{
 	char path[128];
 	unsigned char *setup = NULL;
 	unsigned int bytes, k;
 
-	if (wanted < 0)
-		wanted = psp_keep("musicstream") != 0;
 	pack_close(NULL);
 	memset(music.stubs, 0, sizeof(music.stubs));
 	free(music.entries);
@@ -293,7 +333,7 @@ void psp_music_map_opened(const char *name)
 	if (!wanted)
 		return;
 	start_once();
-	if (!pool_next || music.out_channel < 0)
+	if (!dec.pool_next || music.out_channel < 0)
 	{
 		platform_log("music: no pool or no channel; off");
 		return;
@@ -381,7 +421,7 @@ void psp_music_map_opened(const char *name)
 	}
 	free(setup);
 	platform_log("music: %s.pmus: %u permutations in %u chains; pool %u KB used", name, music.header.entries,
-		music.header.chains, (unsigned)(pool_next - (pool_end - POOL_BYTES)) / 1024);
+		music.header.chains, (unsigned)(dec.pool_next - (pool_end - POOL_BYTES)) / 1024);
 }
 
 /* ---------- the cache's side (xbox_sound_cache.c, the stub path) */
@@ -580,11 +620,20 @@ static int reader_thread(SceSize arguments, void *argument)
 				if (at >= c->body || (v->piece_ok[slot] && v->piece_at[slot] == at))
 					continue;
 				n = c->body - at < PIECE_BYTES ? c->body - at : PIECE_BYTES;
+				/* a slot's flags change only under the lock, which the audio
+				thread holds while a job decodes: no job sees a slot ready
+				while its bytes are being read, and they are in RAM before
+				it says so */
+				sceKernelWaitSema(music.state_lock, 1, NULL);
 				v->piece_ok[slot] = 0;
+				sceKernelSignalSema(music.state_lock, 1);
 				if (read_at(c->packets_at + at, v->piece[slot], n))
 				{
+					sceKernelDcacheWritebackRange(v->piece[slot], n);
+					sceKernelWaitSema(music.state_lock, 1, NULL);
 					v->piece_at[slot] = at;
 					v->piece_ok[slot] = 1;
+					sceKernelSignalSema(music.state_lock, 1);
 					music.pieces++;
 				}
 			}
@@ -615,10 +664,11 @@ static short clip16(int value)
 }
 
 /* decode until the queue holds frames up to `until` (in the chain); 0 when
-a packet or the index isn't in RAM yet */
+a packet or the index isn't in RAM yet. No kernel call: it runs in the ME's
+audio job (the reader is woken after the block, by dec.wake) */
 static int decode_to(struct voice *v, unsigned int until)
 {
-	static unsigned char joined[PIECE_BYTES];
+	unsigned char *joined = dec.joined;
 
 	while (v->position + v->pcm_frames < until)
 	{
@@ -693,13 +743,13 @@ static int decode_to(struct voice *v, unsigned int until)
 		{
 			/* half the second piece played: the reader moves on a piece */
 			v->piece_wanted += PIECE_BYTES;
-			sceKernelSignalSema(music.reader_wake, 1);
+			dec.wake = 1;
 		}
 		if (v->next_packet >= v->index_first + v->index_count * 3 / 4 &&
 			v->index_first + v->index_count < music.chains[v->chain].packets)
 		{
 			v->index_wanted = v->next_packet;
-			sceKernelSignalSema(music.reader_wake, 1);
+			dec.wake = 1;
 		}
 	}
 	return 1;
@@ -747,8 +797,8 @@ static void voice_seek(struct voice *v, int chain, unsigned int position)
 	v->piece_wanted = offset & ~(PIECE_BYTES - 1);
 	v->piece_ok[0] = v->piece_ok[1] = 0;
 	v->fade = 0;
-	music.restarts++;
-	sceKernelSignalSema(music.reader_wake, 1);
+	dec.restarts++;
+	dec.wake = 1;
 }
 
 static struct voice *voice_for(const void *owner)
@@ -770,27 +820,51 @@ static struct voice *voice_for(const void *owner)
 	return music.voices[spare];
 }
 
-/* one mixer block's music (the audio thread, after the 22,050 Hz mix): each
-mark is a music voice's chain, its frames [from, to) at 44.1 kHz and its
-gains (14 bits) at the block's end */
-void psp_music_block(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
-	const int *left, const int *right, int count)
+/* a block with music, before the mixer's job (the audio thread): an output
+buffer is free, and the state lock is taken until psp_music_finish, so the
+reader changes nothing the job reads. 0: no music this block */
+int psp_music_prepare(void)
 {
-	static int sums[OUT_FRAMES * 2];
-	short *out;
-	int k, playing = 0;
-	SceUInt64 t0;
-
 	if (!music.on)
-		return;
+		return 0;
 	if (sceKernelPollSema(music.out_free, 1) < 0)
 	{
 		music.out_late++;
-		return;
+		return 0;
 	}
-	t0 = sceKernelGetSystemTimeWide();
 	sceKernelWaitSema(music.state_lock, 1, NULL);
-	memset(sums, 0, sizeof(sums));
+	return 1;
+}
+
+/* the main CPU decodes a block itself after the ME was handed blocks: its
+copies of what the ME wrote are dropped first, and the voices start again
+from their positions (a job the ME stopped in may have left them half done) */
+void psp_music_own(void)
+{
+	int k;
+
+	sceKernelDcacheWritebackInvalidateRange(music.pool, POOL_BYTES);
+	sceKernelDcacheWritebackInvalidateRange(&dec, sizeof(dec));
+	for (k = 0; k < VOICES; k++)
+		if (music.voices[k])
+		{
+			sceKernelDcacheWritebackInvalidateRange(music.voices[k], sizeof(struct voice));
+			music.voices[k]->chain = -1;
+		}
+}
+
+/* one mixer block's music, after its 22,050 Hz mix, inside the mixer's job
+(the ME's, or this CPU's when the ME doesn't take it): each mark is a music
+voice's chain, its frames [from, to) at 44.1 kHz and its gains (14 bits) at
+the block's end. No kernel call reachable from here */
+void psp_music_decode(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
+	const int *left, const int *right, int count)
+{
+	int *sums = dec.sums;
+	short *out;
+	int k, playing = 0;
+
+	memset(sums, 0, sizeof(dec.sums));
 	for (k = 0; k < VOICES; k++)
 		if (music.voices[k])
 			music.voices[k]->used++;
@@ -809,7 +883,7 @@ void psp_music_block(const void *const *owners, const int *chains, const unsigne
 		{
 			/* late: silent this block; the next block starts it again from
 			the packet before its position, with the fade */
-			music.late_blocks++;
+			dec.late_blocks++;
 			v->chain = -1;
 			continue;
 		}
@@ -848,15 +922,37 @@ void psp_music_block(const void *const *owners, const int *chains, const unsigne
 	for (k = 0; k < VOICES; k++)
 		if (music.voices[k] && music.voices[k]->used > 8)
 			music.voices[k]->owner = NULL;
-	sceKernelSignalSema(music.state_lock, 1);
-	out = music.out[music.out_which];
+	out = dec.out[dec.out_which];
 	for (k = 0; k < OUT_FRAMES * 2; k++)
 		out[k] = clip16(sums[k]);
-	music.out_which ^= 1;
+	dec.out_which ^= 1;
+	dec.blocks++;
+	if ((unsigned long)playing > dec.playing_worst)
+		dec.playing_worst = playing;
+}
+
+/* after the job (the audio thread): what the ME wrote that this CPU reads is
+dropped from its cache (on_me), the reader woken if the decode wants it, the
+lock let go and the block played */
+void psp_music_finish(int on_me)
+{
+	SceUInt64 t0 = sceKernelGetSystemTimeWide();
+	int k;
+
+	if (on_me)
+	{
+		sceKernelDcacheInvalidateRange(&dec, DEC_READ_BYTES);
+		for (k = 0; k < VOICES; k++)
+			if (music.voices[k])
+				sceKernelDcacheInvalidateRange(music.voices[k], (VOICE_DECODE_BYTES + 63) & ~63u);
+	}
+	if (dec.wake)
+	{
+		dec.wake = 0;
+		sceKernelSignalSema(music.reader_wake, 1);
+	}
+	sceKernelSignalSema(music.state_lock, 1);
 	sceKernelSignalSema(music.out_ready, 1);
-	music.blocks++;
-	if ((unsigned long)playing > music.playing_worst)
-		music.playing_worst = playing;
 	t0 = sceKernelGetSystemTimeWide() - t0;
 	music.decode_us += (unsigned long)t0;
 	if (t0 > music.decode_worst_us)
@@ -872,7 +968,7 @@ static int output_thread(SceSize arguments, void *argument)
 	for (;;)
 	{
 		sceKernelWaitSema(music.out_ready, 1, NULL);
-		sceAudioOutputBlocking(music.out_channel, PSP_AUDIO_VOLUME_MAX, music.out[which]);
+		sceAudioOutputBlocking(music.out_channel, PSP_AUDIO_VOLUME_MAX, dec.out[which]);
 		which ^= 1;
 		sceKernelSignalSema(music.out_free, 1);
 	}
@@ -886,9 +982,9 @@ void psp_music_report(void)
 	if (!music.on)
 		return;
 	platform_log("music: %lu blocks, late %lu, output full %lu; voices at most %lu; restarts %lu; pieces %lu (worst %lu us); "
-		"stubs %lu, not in the pack %lu; decode %lu us a block (worst %lu); pool %lu KB%s",
-		music.blocks, music.late_blocks, music.out_late, music.playing_worst, music.restarts, music.pieces,
-		music.piece_worst_us, music.stubs_made, music.not_in_pack, music.blocks ? music.decode_us / music.blocks : 0,
-		music.decode_worst_us, (unsigned long)(pool_next - (pool_end - POOL_BYTES)) / 1024, pool_failed ? ", full" : "");
+		"stubs %lu, not in the pack %lu; main CPU after the job %lu us a block (worst %lu); pool %lu KB%s",
+		dec.blocks, dec.late_blocks, music.out_late, dec.playing_worst, dec.restarts, music.pieces,
+		music.piece_worst_us, music.stubs_made, music.not_in_pack, dec.blocks ? music.decode_us / dec.blocks : 0,
+		music.decode_worst_us, (unsigned long)(dec.pool_next - (pool_end - POOL_BYTES)) / 1024, dec.pool_failed ? ", full" : "");
 #endif
 }

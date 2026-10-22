@@ -1367,11 +1367,35 @@ int psp_audio_setting(int set, int value)
 /* the music voices of a block (psp_music.c): who, which chain, the frames
 at 44.1 kHz and the gains */
 #define MUSIC_MARKS 4
-void psp_music_block(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
+int psp_music_prepare(void);
+void psp_music_own(void);
+void psp_music_decode(const void *const *owners, const int *chains, const unsigned long *from, const unsigned long *to,
 	const int *left, const int *right, int count);
+void psp_music_finish(int on_me);
+void psp_me_audio_music(int on);
 static const void *music_owner[MUSIC_MARKS];
 static int music_chain[MUSIC_MARKS], music_left[MUSIC_MARKS], music_right[MUSIC_MARKS];
-static unsigned long music_from[MUSIC_MARKS], music_to[MUSIC_MARKS], music_scale_of[MUSIC_MARKS], music_marks;
+static unsigned long music_from[MUSIC_MARKS], music_scale_of[MUSIC_MARKS], music_marks;
+/* written by the job (the ME's, often): a line of its own */
+static unsigned long music_to[64 / sizeof(unsigned long)] __attribute__((aligned(64)));
+
+/* the block's music, after its mix, in the mixer's job (either CPU): where
+each marked voice's frames end, from where the mix left it (on to the next
+packet of the same chain, or as far as the step went), then the decode */
+void psp_dsound_music_job(unsigned long frames)
+{
+	unsigned long k;
+
+	for (k = 0; k < music_marks; k++)
+	{
+		struct psp_stream *voice = (struct psp_stream *)music_owner[k];
+		struct voice_packet *head = current_packet(voice);
+
+		music_to[k] = head && head->music - 1 == music_chain[k] ? head->music_start + voice->frame * head->music_scale :
+			music_from[k] + ((voice->step * frames) >> 16) * music_scale_of[k];
+	}
+	psp_music_decode(music_owner, music_chain, music_from, music_to, music_left, music_right, (int)music_marks);
+}
 #endif
 
 static void mix(short *output, unsigned long frames)
@@ -1385,7 +1409,7 @@ static void mix(short *output, unsigned long frames)
 #if PSP_MUSIC
 	/* the music path runs this map (psp_music.c): off, no voice is marked */
 	extern int psp_music_active(void);
-	int music_on = psp_music_active();
+	int music_on = psp_music_active(), music_job = 0;
 	unsigned long k;
 #endif
 
@@ -1427,6 +1451,9 @@ static void mix(short *output, unsigned long frames)
 			music_marks++;
 		}
 	}
+	/* the decode rides the mixer's job: the ME then takes its whole cache
+	hand-over (the codec's state is far past the ranges' reach) */
+	music_job = music_marks && psp_music_prepare();
 #endif
 	if (on_me && edram_unreachable(1))
 		mute_cache_voices(list, count);
@@ -1447,6 +1474,9 @@ static void mix(short *output, unsigned long frames)
 		for (k = 0; ranges_on && k < count && bytes <= HANDOVER_WHOLE_BYTES; k++)
 			bytes += voice_lines(list[k], frames, LINES_COUNT);
 		ranges = ranges_on && bytes <= HANDOVER_WHOLE_BYTES;
+#if PSP_MUSIC
+		ranges = ranges && !music_job;
+#endif
 		if (ranges)
 		{
 			for (k = 0; k < count; k++)
@@ -1457,7 +1487,13 @@ static void mix(short *output, unsigned long frames)
 		else
 			sceKernelDcacheWritebackAll();
 		sceKernelDcacheWritebackInvalidateRange(output, frames * OUTPUT_CHANNELS * sizeof(short));
+#if PSP_MUSIC
+		psp_me_audio_music(music_job);
+#endif
 		mixed = psp_meaudio_run((void *const *)list, count, output, frames, &voices, &clipped, &me_us);
+#if PSP_MUSIC
+		psp_me_audio_music(0);
+#endif
 		/* what the ME changed, dropped from this cache (whole lines: see
 		STREAM_BYTES; nothing here wrote to them, the lock is held): the
 		fields and entries the mix writes, or each voice whole */
@@ -1488,23 +1524,23 @@ static void mix(short *output, unsigned long frames)
 		if (edram_unreachable(0))
 			mute_cache_voices(list, count);
 		voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped);
+#if PSP_MUSIC
+		if (music_job)
+		{
+			if (on_me)
+				psp_music_own();
+			psp_dsound_music_job(frames);
+		}
+#endif
 	}
 #if PSP_MUSIC
 	for (k = 0; k < music_marks; k++)
-	{
-		struct psp_stream *voice = (struct psp_stream *)music_owner[k];
-		struct voice_packet *head = current_packet(voice);
-
-		/* on to the next packet of the same chain, or as far as the step went */
-		music_to[k] = head && head->music - 1 == music_chain[k] ? head->music_start + voice->frame * head->music_scale :
-			music_from[k] + ((voice->step * frames) >> 16) * music_scale_of[k];
-		voice->music_block = 0;
-	}
+		((struct psp_stream *)music_owner[k])->music_block = 0;
 #endif
 	pthread_mutex_unlock(&mixer_lock);
 #if PSP_MUSIC
-	if (music_marks)
-		psp_music_block(music_owner, music_chain, music_from, music_to, music_left, music_right, (int)music_marks);
+	if (music_job)
+		psp_music_finish(mixed);
 #endif
 	clipped_blocks += clipped != 0;
 	mix_blocks++;

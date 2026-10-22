@@ -462,6 +462,15 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 		/* args: count, frames, output */
 		voices = psp_dsound_mix_list((void *const *)AUDIO_LIST, slot->args[0], sums, (short *)slot->args[2],
 			slot->args[1], &clipped);
+#if PSP_MUSIC
+		/* args[3]: the block's music decodes here, after its mix */
+		if (slot->args[3])
+		{
+			extern void psp_dsound_music_job(unsigned long frames);
+
+			psp_dsound_music_job(slot->args[1]);
+		}
+#endif
 		slot->results[0] = (unsigned int)voices;
 		slot->results[1] = (unsigned int)clipped;
 		break;
@@ -596,6 +605,9 @@ static void me_serve(volatile struct me_slot *slot, int *sums)
 	what it has in the cache: the voices it reads (psp_dsound_me_lines says
 	why that is all of them), or the whole cache past 16 KB */
 	ranges = type == ME_JOB_AUDIO && (control->features & ME_FEATURE_AUDIO_RANGES) &&
+#if PSP_MUSIC
+		!slot->args[3] &&
+#endif
 		psp_dsound_me_lines((void *const *)AUDIO_LIST, slot->args[0], slot->args[1], 0);
 	if (!ranges)
 		meLibDcacheWritebackInvalidateAll();
@@ -3020,11 +3032,25 @@ float psp_me_cycles_per_us(void)
 	return me_cycles_per_us;
 }
 
+#if PSP_MUSIC
+/* the next audio job decodes the block's music too (psp_dsound.c) */
+static unsigned int audio_music;
+
+void psp_me_audio_music(int on)
+{
+	audio_music = on != 0;
+}
+#endif
+
 /* the audio job's list: up to 256 voices, written through the uncached view */
 int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
 	unsigned long *clipped, unsigned long *waited_us)
 {
+#if PSP_MUSIC
+	unsigned int args[4], results[ME_JOB_RESULTS];
+#else
 	unsigned int args[3], results[ME_JOB_RESULTS];
+#endif
 	unsigned long long start = sceKernelGetSystemTimeWide();
 	unsigned long k;
 
@@ -3037,7 +3063,12 @@ int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned
 	args[2] = (unsigned int)output;
 	/* about 0.1-1 ms of work: a first look after 0.2 ms, or mepoll's
 	(audio_look_next) */
+#if PSP_MUSIC
+	args[3] = audio_music;
+	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 4, results, audio_first_look_us))
+#else
 	if (!psp_me_run(ME_SLOT_AUDIO, ME_JOB_AUDIO, args, 3, results, audio_first_look_us))
+#endif
 		return 0;
 	*voices = results[0];
 	*clipped = results[1];
