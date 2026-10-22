@@ -98,6 +98,12 @@ Textures whose 8-bit texels use 16 palette words or fewer, over every level, are
 
 **Re-bake needed:** for the saving only. An older bake still loads and draws as before; an older EBOOT draws the new packs the same, but its object lighting takes a very slightly different average from the switched level maps.
 
+## 16 colours where they look the same (the CLUT4 look set)
+
+Lightmaps and HUD sheets the bake would make CLUT8 are written at 4 bits when one 16-colour palette over the whole chain passes the CLUT4W census's strict bar on every level: screen PSNR within 1 dB of CLUT8's own (or over 45 dB), no texel more than one 5-bit step past CLUT8's worst, and for alpha the same tests on coverage (`texpack.py`, `clut4_look()`; `docs/review_clut4look.md`). Unlike the exact set this is lossy, so a texture that misses the bar stays CLUT8. CLUT8's chain is kept (same levels and sizes); ui.map (the showcase), the meters' grid and the multipurpose maps stay out. On by default (Sheepdog01, 2026-10-21); `--no-clut4-look` (or `--no-clut-look`) bakes without it. Each pack's log has `clut4 look` lines: textures switched, KB saved, the lowest level dB per class, and how many missed the bar. 13-50 textures a pack, 30-523 KB (the asset track's packs 30-137 KB; per map in `review_clut4look.md`) [E, bake b140y].
+
+**Re-bake needed:** for the saving only. Older bakes load and draw as before; the runtime already takes CLUT4 lightmaps and HUD sheets.
+
 ## What a player needs to do
 
 Bake again with build 139's bundle: the palettes and decal cuts change.
