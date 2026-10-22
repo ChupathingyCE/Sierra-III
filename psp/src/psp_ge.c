@@ -1987,6 +1987,14 @@ static void inflight_wait_me(void)
 	defer_wait_me(); /* the last stall address passed on with it */
 	psp_me_window[0] = 0;
 	sceKernelDcacheWritebackInvalidateAll();
+	{
+		/* texlinecheck and heapwalk: what the ME's frame left (psp_tex.c, psp_libc.c) */
+		extern void psp_texline_check(void);
+		extern void psp_heap_walk(const char *where);
+
+		psp_texline_check();
+		psp_heap_walk("the frame back from the ME");
+	}
 	me_wrote = 0;
 	if (defer_me_failed != failed)
 	{
@@ -8097,7 +8105,16 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		w->hash_mask = slots - 1;
 		w->hash = calloc(slots, sizeof(unsigned short));
 		w->flags = calloc(w->original ? w->original : 1, 1);
-		w->drawn_frame = calloc(w->affected_count ? w->affected_count : 1, sizeof(unsigned int));
+		/* written by the replay (on the ME under geinflight): whole lines of
+		its own, as psp_tex.c's line_calloc says why */
+		{
+			size_t bytes = ((w->affected_count ? w->affected_count : 1) * sizeof(unsigned int) + 63) & ~(size_t)63;
+
+			w->drawn_frame = psp_keep("texlinesold") ? calloc(bytes / sizeof(unsigned int), sizeof(unsigned int)) :
+				memalign(64, bytes);
+			if (w->drawn_frame)
+				memset(w->drawn_frame, 0, bytes);
+		}
 		if (!w->hash || !w->flags || !w->drawn_frame)
 		{
 			free(w->hash);
@@ -14556,7 +14573,9 @@ static void transparent_table_acquire(void)
 		where = "free user RAM outside the heap";
 	}
 	else
-		transparent = memalign(16, bytes);
+		/* the replay (on the ME under geinflight) queues into it: whole
+		lines of its own, as psp_tex.c's line_calloc says why */
+		transparent = psp_keep("texlinesold") ? memalign(16, bytes) : memalign(64, (bytes + 63) & ~63);
 	transparent_capacity = transparent ? wanted : 0;
 	platform_log("GE: the see-through table: %d draws a frame, %d KB from %s%s; then %d KB free in user RAM",
 		transparent_capacity, bytes / 1024, where, transparent ? "" : " (no memory: none drawn)",
