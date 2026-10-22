@@ -415,6 +415,11 @@ static volatile int show2_asked = 0;
 /* the replay copies the engine's index lists into the list (the ME reads it:
 set once, before the first hand-over) */
 static int show2_copy_indices = 0;
+/* the engine's index buffer a ring that waits for the show instead
+(psp_ring_place, psp_fixups.py): the copy took list room, and a10's full
+list then skipped draws plain draws. Keep word "geshow2copy": the copy */
+static int show2_ring = 0;
+static PSP_MAIN_SIDE unsigned long show2_ring_waits = 0;
 static PSP_MAIN_SIDE int show2_owed = 0; /* a show asked whose end the game thread hasn't taken yet */
 static PSP_MAIN_SIDE int show2_list_started = 0; /* the forwarding thread starts the next frame's list */
 static PSP_MAIN_SIDE SceUID show2_sema = -1;
@@ -1913,9 +1918,12 @@ static void inflight_hand_over(void)
 		}
 		if (show2_on)
 		{
-			show2_copy_indices = !psp_keep("geshow2nocopy");
+			show2_ring = !psp_keep("geshow2copy") && !psp_keep("geshow2nocopy");
+			show2_copy_indices = !show2_ring && !psp_keep("geshow2nocopy");
 			platform_log("GE: geshow2: the frame shown, and the list started again, by the forwarding thread while the game thread records the next%s",
-				show2_copy_indices ? "" : "; geshow2nocopy: the engine's index lists handed to the GE as they are (the GE may draw a later frame's)");
+				show2_ring ? "; the engine's index buffer a ring that waits for the show" :
+				show2_copy_indices ? "; geshow2copy: the engine's index lists copied into the list" :
+				"; geshow2nocopy: the engine's index lists handed to the GE as they are (the GE may draw a later frame's)");
 		}
 	}
 	/* geshow2: the list this frame draws into starts once the last frame is
@@ -2208,6 +2216,21 @@ static void show2_settle(int why)
 			show3_out--;
 		}
 	}
+}
+
+/* geshow2's ring of engine triangles (psp_fixups.py): on, and a range about
+to reach the last frame's waits until the GE has done with it */
+int psp_ge_triangle_ring(void)
+{
+	return show2_ring;
+}
+
+void psp_ge_triangles_wait(void)
+{
+	if (!show2_owed)
+		return;
+	show2_ring_waits++;
+	show2_settle(SHOW2_OTHER);
 }
 
 /* geshow2: the show of the frame whose list has ended, asked of the
@@ -21728,11 +21751,11 @@ static void frame_end_show(void)
 				waits += show2_waited[why];
 				us += show2_wait_us[why];
 			}
-			platform_log("GE: geshow2: %lu frames shown by the forwarding thread; the game thread waited for a show %lu times, %.1f ms a frame (at a hand-over %lu, %lu us; a call run at once %lu, %lu us; a compaction %lu; copies moved %lu; other %lu; at the ME's end %lu, %lu us; for list room %lu); level copies spared for the frame shown %lu; index lists copied %lu (%lu KB) (last 300 frames)",
+			platform_log("GE: geshow2: %lu frames shown by the forwarding thread; the game thread waited for a show %lu times, %.1f ms a frame (at a hand-over %lu, %lu us; a call run at once %lu, %lu us; a compaction %lu; copies moved %lu; other %lu; at the ME's end %lu, %lu us; for list room %lu); level copies spared for the frame shown %lu; index lists copied %lu (%lu KB); the triangle ring's waits %lu (in other) (last 300 frames)",
 				show2_shows, waits, us / 1000.0f / 300, show2_waited[SHOW2_HAND_OVER], show2_wait_us[SHOW2_HAND_OVER],
 				show2_waited[SHOW2_DRAIN], show2_wait_us[SHOW2_DRAIN], show2_waited[SHOW2_COMPACT], show2_waited[SHOW2_FOLLOW],
 				show2_waited[SHOW2_OTHER], show2_waited[SHOW3_ME_END], show2_wait_us[SHOW3_ME_END], show2_waited[SHOW3_ROOM],
-				show2_spared, show2_index_copies, show2_index_bytes / 1024);
+				show2_spared, show2_index_copies, show2_index_bytes / 1024, show2_ring_waits);
 			if (show3_on)
 			{
 				char text[320];
@@ -21753,7 +21776,7 @@ static void frame_end_show(void)
 						reused, text);
 				show3_rooms_shared = show3_rooms_whole = show3_held = show3_room_skips = show3_grown = show3_jumped = 0;
 			}
-			show2_shows = show2_spared = show2_index_copies = show2_index_bytes = 0;
+			show2_shows = show2_spared = show2_index_copies = show2_index_bytes = show2_ring_waits = 0;
 			memset(show2_waited, 0, sizeof(show2_waited));
 			memset(show2_wait_us, 0, sizeof(show2_wait_us));
 		}

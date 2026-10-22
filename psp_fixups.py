@@ -6302,6 +6302,50 @@ void psp_dynamic_triangles_release(
 	if (dynamic_triangle_buffer_index == dynamic_triangles.buffer_count - 1)
 		dynamic_triangles.buffer_count--;
 }
+
+/* geshow2: the GE may still draw the last frame's triangles while this
+frame's walk asks for its own, so under geshow2 the index buffer is a ring
+(psp_ge_triangle_ring): each frame goes on where the last ended, wrapping to
+the start, and a range that would reach the last frame's waits for its show.
+dynamic_triangles.triangle_count stays the frame's own span, so the engine's
+overflow test keeps its meaning (the tail left at a wrap counts in it). One
+window a frame only: a second window's walk would rewrite the first's before
+its show, as the engine's reset does */
+extern int psp_ge_triangle_ring(void);
+extern void psp_ge_triangles_wait(void);
+static int psp_ring_on = 0;
+static long psp_ring_next = 0, psp_ring_kept = 0;
+
+static void psp_ring_begin(void)
+{
+	psp_ring_on = psp_ge_triangle_ring() && main_get_window_count() == 1;
+	psp_ring_kept = psp_ring_on ? dynamic_triangles.triangle_count : 0;
+	if (!psp_ring_on)
+		psp_ring_next = 0;
+}
+
+/* the range's first triangle, or NONE when the frame has no room; *span
+the frame's span with it */
+static long psp_ring_place(long count, long span, long *new_span)
+{
+	long start = psp_ring_next, grown = span + count;
+
+	if (start + count > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES)
+	{
+		grown += RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - start;
+		start = 0;
+	}
+	if (grown >= RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES)
+		return NONE;
+	if (psp_ring_kept && grown > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - psp_ring_kept)
+	{
+		psp_ge_triangles_wait();
+		psp_ring_kept = 0;
+	}
+	psp_ring_next = start + count;
+	*new_span = grown;
+	return start;
+}
 #endif
 
 void rasterizer_dynamic_geometry_begin(
@@ -6318,6 +6362,52 @@ void rasterizer_dynamic_geometry_begin(
 		psp_dynamic_buffer_peak[0] = dynamic_vertices.buffer_count;
 	if (dynamic_triangles.buffer_count > psp_dynamic_buffer_peak[1])
 		psp_dynamic_buffer_peak[1] = dynamic_triangles.buffer_count;
+	psp_ring_begin();
+#endif
+"""),
+]
+FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#ring"] = [
+("""		if (dynamic_triangles.triangle_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES-count &&
+			dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
+		{
+			struct dynamic_triangle_buffer *dynamic_triangle_buffer;
+
+			dynamic_triangle_buffer_index = dynamic_triangles.buffer_count;
+			dynamic_triangle_buffer =
+				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
+			dynamic_triangle_buffer->triangle_count = count;
+			dynamic_triangles.triangle_count += count;
+""",
+ """#ifdef HALO_PSP
+		/* geshow2's ring (psp_ring_place); otherwise the engine's own test */
+		long psp_start = dynamic_triangles.triangle_count, psp_span = dynamic_triangles.triangle_count + count;
+
+		if (psp_ring_on && dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
+			psp_start = psp_ring_place(count, dynamic_triangles.triangle_count, &psp_span);
+		if (psp_start != NONE && psp_span<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES &&
+			dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
+		{
+			struct dynamic_triangle_buffer *dynamic_triangle_buffer;
+
+			dynamic_triangle_buffer_index = dynamic_triangles.buffer_count;
+			dynamic_triangle_buffer =
+				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+			dynamic_triangle_buffer->triangle_start_index = psp_start;
+			dynamic_triangle_buffer->triangle_count = count;
+			dynamic_triangles.triangle_count = psp_span;
+#else
+		if (dynamic_triangles.triangle_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES-count &&
+			dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
+		{
+			struct dynamic_triangle_buffer *dynamic_triangle_buffer;
+
+			dynamic_triangle_buffer_index = dynamic_triangles.buffer_count;
+			dynamic_triangle_buffer =
+				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
+			dynamic_triangle_buffer->triangle_count = count;
+			dynamic_triangles.triangle_count += count;
 #endif
 """),
 ]
