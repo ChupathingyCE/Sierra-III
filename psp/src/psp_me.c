@@ -1284,6 +1284,25 @@ static int me_yield_off = 0;
 /* "megraceoff": the ring's and the batches' deadlines as they were, the
 first wait past one stopping the ME (see BATCH_RECORD_DEADLINE_US) */
 static int me_grace_off = 0;
+/* a late ring job's rest (RING_DEADLINE_US says what it is): the first
+RING_REST_US; again within RING_AGAIN_US of coming back, twice the last, up
+to RING_REST_MAX_US */
+#define RING_REST_US 1000000ull
+#define RING_REST_MAX_US 16000000ull
+#define RING_AGAIN_US 5000000ull
+static int ring_give_up = 0;              /* "ringgiveup" */
+static unsigned int ring_lates = 0, ring_revivals = 0;
+static unsigned long long ring_late_mark = 0, ring_revive_mark = 0, ring_rest_base_us = RING_REST_US, ring_rest_us = RING_REST_US;
+#ifdef PSP_RECON
+/* "ringlateN" (recon): ring jobs whose ticket is a multiple of N (N > 0)
+are taken as late by the wait, so the rest and the revival can be watched
+where no job is ever late (the emulator runs a job inside its push).
+Simulated, the ME is also behind from that job until the revival check
+lets it catch up, as a real late ME is. "ringhang" (with ringlateN): it
+never catches up, as a hung ME, and the ring must stay off */
+static unsigned int ring_late_every = 0;
+static int ring_hang_test = 0, ring_sim_behind = 0;
+#endif
 /* lines said about waits past a deadline, at most DEADLINE_LINES */
 static unsigned int deadline_lines = 0;
 #define DEADLINE_LINES 8
@@ -1516,6 +1535,24 @@ int psp_me_start(void)
 	me_yield_off = psp_keep("meyieldoff");
 	me_grace_off = psp_keep("megraceoff");
 	me_claim_old = psp_keep("meclaimold");
+	ring_give_up = psp_keep("ringgiveup");
+	{
+		int rest = psp_keep_number("ringrest", -1);
+
+		if (rest >= 0)
+			ring_rest_base_us = ring_rest_us = (unsigned long long)rest * 1000ull;
+	}
+#ifdef PSP_RECON
+	{
+		int n = psp_keep_number("ringlate", 0);
+
+		ring_late_every = n > 0 ? (unsigned int)n : 0u;
+		ring_hang_test = ring_late_every && psp_keep("ringhang");
+		if (ring_late_every)
+			platform_log("ME: ringlate: every ring job whose ticket is a multiple of %u taken as late%s",
+				ring_late_every, ring_hang_test ? "; ringhang: the ME never catches up" : "");
+	}
+#endif
 	audio_look_start();
 	report_mark = sceKernelGetSystemTimeWide();
 	if (emulator())
@@ -1874,10 +1911,19 @@ int psp_me_finish(int which, unsigned int *results)
 /* ---------- the job ring, the main CPU's side */
 
 /* a job that isn't done this long after its push is reported, and the main
-CPU does its work instead (psp_me_wait returns 0). The ring is then off for
-the session: the ME may still finish the job late and write its output,
-which nobody reads again. A slant job is ~0.1-2 ms of work (~1 us a
-triangle, b90) and may wait behind one audio block (~0.6 ms) */
+CPU does its work instead (psp_me_wait returns 0). The ring then rests: the
+ME may still finish the job late and write its output, which nobody reads,
+so nothing more is pushed until the ME has popped every job pushed before
+(then none of its writes is still to come), and not before the rest's end
+(RING_REST_US; "ringrestN": N ms). It comes back at a frame end
+(ring_revive), where the ring's one producer is between frames. An ME that
+never catches up (hung) keeps it off. One late again within
+RING_AGAIN_US of coming back rests twice as long each time, up to
+RING_REST_MAX_US, so an ME that is late again and again costs the main CPU
+at most one deadline's wait a rest. "ringgiveup": the first late job turns
+the ring off for the session, as before. A slant job is ~0.1-2 ms of
+work (~1 us a triangle, b90) and may wait behind one audio block (~0.6 ms);
+a ray job can wait behind a whole render job's stretch between yields */
 #define RING_DEADLINE_US 10000
 /* between two looks at popped while waiting: ~1 us, so the look costs the
 bus little while the ME reads its inputs (code_review_b119_me.md, 1) */
@@ -1887,7 +1933,7 @@ bus little while the ME reads its inputs (code_review_b119_me.md, 1) */
 extern volatile unsigned int psp_me_window[16];
 static unsigned int ring_next = 0;        /* the next ticket */
 static unsigned int ring_popped_seen = 0; /* popped, as last read */
-static int ring_dead = 0;                 /* a job failed: the ring takes no more */
+static int ring_dead = 0;                 /* a job failed: 1 the ring takes no more, 2 it rests (RING_REST_US) */
 /* the first ticket after the wake's restart; tickets before it went to an ME
 that was reset, and their entries hold no answer for them */
 static unsigned int ring_epoch = 0;
@@ -1987,6 +2033,12 @@ static __attribute__((noinline, cold)) void ring_push_simulated(unsigned int ind
 		ring_run(index, 0, 0);
 	psp_me_context = 0;
 	ring_stats.simulated_us += sceKernelGetSystemTimeLow() - job_start;
+#ifdef PSP_RECON
+	if (ring_late_every && t && t % ring_late_every == 0)
+		ring_sim_behind = 1;
+	if (ring_sim_behind)
+		return;
+#endif
 	RING_POPPED = t + 1;
 }
 
@@ -2020,21 +2072,65 @@ static __attribute__((noinline, cold)) int ring_fail(int why, unsigned int ticke
 	const struct me_ring_request *request = &ring_requests[index];
 	const struct me_ring_result *result = &ring_results[index];
 
-	if (why == 1)
+	if (why == 1 && ring_dead == 0)
 	{
-		platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here",
-			ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
+		unsigned long long now = sceKernelGetSystemTimeWide();
+
+		/* the jobs pushed with it are late too: one late stretch, one rest */
+		ring_lates++;
+		if (ring_revivals && now - ring_revive_mark <= RING_AGAIN_US)
+			ring_rest_us = ring_rest_us * 2 > RING_REST_MAX_US ? RING_REST_MAX_US : ring_rest_us * 2;
+		else
+			ring_rest_us = ring_rest_base_us;
+		ring_late_mark = now;
+		ring_dead = ring_give_up ? 1 : 2;
+		if (ring_give_up)
+			platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring is off from here (ringgiveup)",
+				ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED);
+		else
+			platform_log("ME: ring job %u (type %u) not done %u ms after its push (popped %u); the main CPU does it, and the ring rests at least %lu ms, until the ME has caught up (late stretches %u)",
+				ticket, request->type, RING_DEADLINE_US / 1000, RING_POPPED, (unsigned long)(ring_rest_us / 1000), ring_lates);
 		if (me_state == 1)
 			me_stash_dump("a ring job late");
 	}
 	else if (why == 2)
+	{
 		platform_log("ME: ring job %u (type %u) came back %s (ticket %u); the main CPU does it, and the ring is off from here",
 			ticket, request->type, result->status == RING_STACK ? "past its stack allowance" :
 			result->status == RING_BAD_TYPE ? "as an unknown type" : "with another job's answer", result->ticket);
-	if (why)
 		ring_dead = 1;
+	}
 	ring_stats.failures++;
 	return 0;
+}
+
+/* the frame end's look at a resting ring (RING_DEADLINE_US says why it
+rests): back on once the ME runs, has popped every job pushed, and the rest
+is over. Pushes come only from the game thread, which is here, so none can
+land between the look at popped and the ring's return */
+static __attribute__((noinline, cold)) void ring_revive(void)
+{
+	unsigned long long now = sceKernelGetSystemTimeWide();
+
+	if (now - ring_late_mark < ring_rest_us || me_state <= 0 || CONTROL->stop)
+		return;
+#ifdef PSP_RECON
+	if (ring_hang_test)
+		return;
+	if (ring_sim_behind)
+	{
+		ring_sim_behind = 0;
+		RING_POPPED = ring_next;
+	}
+#endif
+	if (RING_POPPED != ring_next)
+		return;
+	ring_popped_seen = ring_next;
+	ring_dead = 0;
+	ring_revivals++;
+	ring_revive_mark = now;
+	platform_log("ME: the ring back on, %lu ms after its late job (late stretches %u, back on %u times)",
+		(unsigned long)((now - ring_late_mark) / 1000), ring_lates, ring_revivals);
 }
 
 /* a job collected later than the ring's next ME_RING_ENTRIES pushes would
@@ -2255,6 +2351,15 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	done, and another job's answer would stop the ring for the session */
 	if (ring_restarted && ticket - ring_epoch >= ring_next - ring_epoch)
 		return ring_fail(0, ticket, index);
+#ifdef PSP_RECON
+	if (ring_late_every && ticket && ticket % ring_late_every == 0)
+	{
+		while (sceKernelGetSystemTimeLow() - ring_push_mark[index] <= RING_DEADLINE_US)
+			for (k = 0; k < RING_WAIT_NOPS; k++)
+				__asm__ __volatile__("nop");
+		return ring_fail(1, ticket, index);
+	}
+#endif
 	if ((int)(RING_POPPED - ticket) > 0)
 		ring_stats.at_once++;
 	else
@@ -2906,6 +3011,8 @@ void psp_me_wake_poll(void)
 	unsigned int sleeps;
 	int k;
 
+	if (ring_dead == 2)
+		ring_revive();
 	if (!wake_pending)
 		return;
 	if (me_state > 0)
