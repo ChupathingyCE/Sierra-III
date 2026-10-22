@@ -758,6 +758,14 @@ unsigned long psp_object_sample(void)
 	static int every_tick = -1;
 	static unsigned int tick = 0;
 
+	{
+		/* texlinecheck's tick word and heapwalk's walk (psp_tex.c, psp_libc.c) */
+		extern void psp_texline_tick(void);
+		extern void psp_heap_walk(const char *where);
+
+		psp_texline_tick();
+		psp_heap_walk("a tick");
+	}
 	if (every_tick < 0)
 		every_tick = psp_keep("objecttimeall") != 0;
 	if (every_tick)
@@ -1034,10 +1042,10 @@ carried out on the Media Engine (docs/review_m6default.md), on as if keep.txt
 named them, so every psp_keep() asks as before and the features' own code
 is untouched. Each has an off word; "m6off" turns all of them off. They play
 tick for tick as without them; the PSP-1000 draws b30 faster with them.
-texpretouch is out of the defaults: on some builds its touches corrupt the
-heap on hardware (a crash at b30's load on the route runs); keep word
-"texpretouch" brings it back, and only with gemeon, since it reads in what
-the ME's replay binds.
+texpretouch only with gemeon: it reads in what the ME's replay binds
+(back on since avgme: the ME's work never allocates (the averages' table
+is made when the pack opens), and texlines keeps the tables the replay
+writes on whole cache lines of their own; avgold / texlinesold undo them).
 geshow3 (docs/review_geshow3.md): the ME replays the next frame into a
 second list while the GE ends this one; it takes effect only with the
 forwarding thread (geinflight, gemeon), and its index ranges come from
@@ -1053,6 +1061,7 @@ static const struct
 	{ "geinflight", "geinflightoff" },
 	{ "gemeon", "gemeonoff" },
 	{ "mevram", "mevramoff" },
+	{ "texpretouch", "notexpretouch" },
 	{ "mepoll", "mepolloff" },
 	{ "geshow3", "geshow3off" },
 };
@@ -1083,6 +1092,11 @@ static void keep_defaults_add(void)
 	so m6off and the instruments leave it on */
 	if (!keep_search("blipdepthoff"))
 		keep_default_add("blipdepth");
+	/* AI on alternate ticks with the timeslice kept whole (docs/review_aicad.md):
+	a compromise, on for the hand test so it can be felt (Sheepdog01, 2026-10-22);
+	aicad3off is the other side, and aicad2 still wins when asked */
+	if (!keep_search("aicad3off") && !keep_search("aicad2"))
+		keep_default_add("aicad3");
 	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
 		return;
 	for (k = 0; k < (int)(sizeof(keep_defaults) / sizeof(keep_defaults[0])); k++)
@@ -1180,7 +1194,7 @@ static void keep_load(void)
 	platform_log("keep words, the heap at each level change (opt-in): heapmap (its gaps and blocks of 16 KB or more, with what asked for each); recon builds only: poolpeaks (each game-state array's peak against its maximum)");
 	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
 #ifndef PSP_MULTIPLAYER
-	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff mepolloff (texpretouch opt-in), inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
+	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
 		keep_defaults_added[0] ? keep_defaults_added : " none");
 #endif
 }

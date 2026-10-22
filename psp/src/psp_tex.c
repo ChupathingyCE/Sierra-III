@@ -112,6 +112,12 @@ static char map_name[64];
 /* per entry: its average colour once worked out (psp_tex_average) */
 static unsigned int *averages = NULL;
 static int averages_count = 0;
+/* "avgold": the averages' table allocated by the first psp_tex_average, as
+before, on whichever CPU asks: on the Media Engine (the replay's flashlight
+pass) that ran newlib's malloc there, beside the main CPU's own and outside
+its lock. "avgmerealloc" (the proof of it): the ME's work frees and
+allocates the table again at each average it asks for */
+static PSP_MAIN_SIDE int avg_old = 0, avg_me_realloc = 0;
 /* the see-through shaders' tints (texpack.py), pairs of (the shader's tag
 address, its tint ABGR) sorted by address. Bits of the address: 0, the tint
 is half the colour, for the GE's colour doubling; 1, the tint is added to the
@@ -190,6 +196,102 @@ the HUD, and the last such frame */
 static int strip_census = -1;
 static unsigned int *hud_bound = NULL;
 static int find(unsigned int key);
+long psp_game_time_peek(void);
+
+/* "texlinecheck": a probe of the hazard texlines removes, on any layout. One
+word the Media Engine's replay counts on each bind of a resident texture (as
+it writes last_frame[] and bind_counts[]), and one word the main CPU counts
+on each game tick, which runs while the ME replays (geinflight). With
+"texlinesbad" both words share one 64-byte line, as a calloc'd table's edge
+line shares one with a heap chunk header; without it each is on a line of
+its own, as texlines puts the tables. A third line, the ME's alone, keeps the
+ME's count again. After each frame back from the ME: the main CPU's word
+should hold its last count, and the ME's its own copy's; a word that doesn't
+was put back by the other CPU's write-back of the whole line. The emulator
+has no caches: 0 both ways on either layout */
+static unsigned int texline_probe[3][16] __attribute__((aligned(64)));
+static PSP_MAIN_SIDE int texline_on = -1;
+static PSP_MAIN_SIDE unsigned int texline_main_count = 0, texline_checks = 0, texline_main_back = 0,
+	texline_me_lost = 0, texline_me_writes = 0, texline_events = 0;
+/* the ME's word and its copy (NULL: off); set once by the main CPU, read by the replay */
+static PSP_MAIN_SIDE volatile unsigned int *texline_me = NULL, *texline_me_copy = NULL;
+static PSP_MAIN_SIDE volatile unsigned int *texline_main = NULL;
+
+/* each game tick, on the main CPU */
+void psp_texline_tick(void)
+{
+	extern int psp_keep_loaded(void);
+
+	if (texline_on < 0)
+	{
+		if (!psp_keep_loaded())
+			return;
+		texline_on = psp_keep("texlinecheck") != 0;
+		if (texline_on)
+		{
+			int bad = psp_keep("texlinesbad") != 0;
+
+			memset(texline_probe, 0, sizeof(texline_probe));
+			texline_main = bad ? &texline_probe[0][8] : &texline_probe[1][0];
+			texline_me_copy = &texline_probe[2][0];
+			texline_me = &texline_probe[0][0];
+			platform_log("textures: texlinecheck: the ME's bind word and the main CPU's tick word %s",
+				bad ? "on one 64-byte line (texlinesbad: the hazard forced)" : "on lines of their own (as texlines)");
+		}
+	}
+	if (texline_main)
+		*texline_main = ++texline_main_count;
+}
+
+/* the frame back from the ME (psp_ge.c, after its whole-cache write-back) */
+void psp_texline_check(void)
+{
+	unsigned int main_word, me_word, me_copy;
+
+	if (!texline_main)
+		return;
+	main_word = *texline_main;
+	me_word = *texline_me;
+	me_copy = *texline_me_copy;
+	texline_checks++;
+	texline_me_writes = me_copy;
+	if (main_word != texline_main_count || me_word != me_copy)
+	{
+		if (main_word != texline_main_count)
+			texline_main_back++;
+		if (me_word != me_copy)
+			texline_me_lost++;
+		if (texline_events++ < 8)
+			platform_log("textures: texlinecheck: check %u, game time %ld: the main CPU's word %u (wrote %u), the ME's %u (its copy %u)",
+				texline_checks, psp_game_time_peek(), main_word, texline_main_count, me_word, me_copy);
+		/* both words as they should be, for the next frame's look */
+		*texline_main = texline_main_count;
+		*texline_me = me_copy;
+	}
+	if (texline_checks % 300 == 0)
+		platform_log("textures: texlinecheck: %u checks; the main CPU's word put back %u times, the ME's count lost %u times; %u ME writes",
+			texline_checks, texline_main_back, texline_me_lost, texline_me_writes);
+}
+
+/* a table the Media Engine's replay writes (last_frame, bind_counts: a bind
+on the ME, psp_ge.c's geinflight): on whole 64-byte lines of its own. The ME
+writes back whole lines from its own cache, so a table sharing its first or
+last line with a heap neighbour would put that line back as it was at the
+hand-over, over the main CPU's newer bytes there: a heap chunk's header,
+changed by a malloc or free while the replay ran, comes back stale.
+"texlinesold": calloc's 16-byte alignment, as before */
+static void *line_calloc(size_t count, size_t size)
+{
+	size_t bytes = (count * size + 63) & ~(size_t)63;
+	void *table;
+
+	if (psp_keep("texlinesold"))
+		return calloc(count, size);
+	table = memalign(64, bytes ? bytes : 64);
+	if (table)
+		memset(table, 0, bytes ? bytes : 64);
+	return table;
+}
 
 static void strip_census_free(void)
 {
@@ -205,7 +307,7 @@ void psp_tex_hud_note(unsigned int key)
 		strip_census = psp_keep("stripcensus") != 0;
 	if (!strip_census || !entries || (index = find(key)) < 0)
 		return;
-	if (!hud_bound && !(hud_bound = calloc(entry_count, 2 * sizeof(unsigned int))))
+	if (!hud_bound && !(hud_bound = line_calloc(entry_count, 2 * sizeof(unsigned int))))
 		return;
 	if (hud_bound[2 * index + 1] != frame)
 	{
@@ -1029,10 +1131,22 @@ void psp_tex_map_opened(const char *name)
 	}
 	entries = malloc(header[2]);
 	resident_at = calloc(header[1], sizeof(unsigned int));
-	last_frame = calloc(header[1], sizeof(unsigned int));
+	last_frame = line_calloc(header[1], sizeof(unsigned int));
 	resident_in = calloc(header[1], 1);
 	hud_pinned = calloc(header[1], 1);
-	bind_counts = calloc(header[1], sizeof(unsigned short));
+	bind_counts = line_calloc(header[1], sizeof(unsigned short));
+	/* the averages' table here, on the main CPU: the ME's work only fills it
+	(psp_tex_average), on lines of its own */
+	avg_old = psp_keep("avgold") != 0;
+	avg_me_realloc = psp_keep("avgmerealloc") != 0;
+	free(averages);
+	averages = NULL;
+	averages_count = 0;
+	if (!avg_old && !avg_me_realloc)
+	{
+		averages = line_calloc(header[1], sizeof(unsigned int));
+		averages_count = averages ? (int)header[1] : 0;
+	}
 	if (!ram_cache)
 		ram_cache_acquire();
 	if (!entries || !resident_at || !last_frame || !resident_in || sceIoRead(file, entries, header[2]) != (int)header[2])
@@ -1788,6 +1902,11 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	last_frame[index] = frame;
 	if (bind_counts && bind_counts[index] < 65535)
 		bind_counts[index]++;
+	if (texline_me && PSP_ME_WORK())
+	{
+		(*texline_me)++;
+		(*texline_me_copy)++;
+	}
 	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit
 	palette; or a texture in its own colours (the showcase's, ui.map:
 	texpack.py --showcase), with no palette */
@@ -1966,7 +2085,7 @@ static int txc_ready(void)
 		free(txc_kind);
 		txc_marked_at = calloc(entry_count, sizeof(unsigned int));
 		txc_skipped_at = calloc(entry_count, sizeof(unsigned int));
-		txc_bound_at = calloc(entry_count, sizeof(unsigned int));
+		txc_bound_at = line_calloc(entry_count, sizeof(unsigned int));
 		txc_kind = calloc(entry_count, 1);
 		txc_for = entries;
 		if (!txc_marked_at || !txc_skipped_at || !txc_bound_at || !txc_kind)
@@ -2150,8 +2269,13 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 
 	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]))
 		return 0;
-	if (averages_count != entry_count)
+	if (averages_count != entry_count || (avg_me_realloc && PSP_ME_WORK()))
 	{
+		/* the ME makes no library calls: the table comes from the pack's
+		open, and the ME's work without one has no average (avgold and
+		avgmerealloc: allocated here, as before) */
+		if (PSP_ME_WORK() && !avg_old && !avg_me_realloc)
+			return 0;
 		free(averages);
 		averages = calloc(entry_count, sizeof(unsigned int));
 		averages_count = averages ? entry_count : 0;

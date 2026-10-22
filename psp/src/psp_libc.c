@@ -1041,6 +1041,112 @@ void psp_heap_map(const char *label)
 	heap_map_lines(label, " between", space->between, between);
 }
 
+/* "heapwalk": newlib's chunks walked at each game tick and as each frame
+comes back from the Media Engine, and the first header that can't be right
+logged with where it is and its 64-byte line, so a header put back stale is
+seen where it happens rather than at the _malloc_r that later follows it.
+Checked: each chunk's size (at least 16, a multiple of 8, inside the heap);
+for a free chunk (its next chunk's in-use bit clear), the next chunk's
+previous size equal to its own, and its two bin links each a chunk in the
+heap or one of newlib's bin heads. It only reads. Off: one test a call */
+#define HEAP_WALK_LINES 6
+#define HEAP_BIN_WORDS (2 * 128 + 2) /* newlib's av_[] (mallocr.c, NAV 128) */
+static int heap_walk_on = -1;
+static unsigned long heap_walks = 0, heap_walk_bad = 0, heap_walk_chunks = 0;
+static int heap_walk_logged = 0;
+static struct heap_chunk *heap_walk_last_bad = NULL;
+
+static int heap_link_ok(unsigned long link, char *base, char *top)
+{
+	unsigned long bins = (unsigned long)__malloc_av_;
+
+	if (link >= bins - 16 && link < bins + HEAP_BIN_WORDS * sizeof(void *))
+		return 1;
+	return link >= (unsigned long)base && link < (unsigned long)top && !(link & 7);
+}
+
+void psp_heap_walk(const char *where)
+{
+	extern int psp_keep(const char *name);
+	extern int psp_keep_loaded(void);
+	extern long psp_game_time_peek(void);
+	struct heap_chunk *chunk, *first, *top, *before = NULL;
+	char *base, *end;
+	const char *why = NULL;
+	unsigned long chunks = 0;
+
+	if (heap_walk_on < 0)
+	{
+		if (!psp_keep_loaded())
+			return;
+		heap_walk_on = psp_keep("heapwalk") != 0;
+		if (heap_walk_on)
+			platform_log("heapwalk: on (newlib's chunks walked each tick and as each frame comes back from the Media Engine)");
+	}
+	if (!heap_walk_on || __malloc_sbrk_base == (char *)-1)
+		return;
+	__malloc_lock(_REENT);
+	base = __malloc_sbrk_base;
+	top = __malloc_av_[2];
+	end = base + (unsigned long)sce_newlib_heap_kb_size * 1024;
+	first = (struct heap_chunk *)(base + ((16 - (((unsigned long)base + 8) & 15)) & 15));
+	if ((char *)top < base || (char *)top >= end)
+		why = "the top chunk outside the heap";
+	else
+		for (chunk = first; chunk != top; before = chunk, chunk = HEAP_CHUNK_AFTER(chunk))
+		{
+			unsigned long size = HEAP_CHUNK_SIZE(chunk);
+			struct heap_chunk *next;
+
+			chunks++;
+			if (size < 16 || (size & 7) || (char *)chunk + size > (char *)top)
+			{
+				why = "a size that isn't a chunk's";
+				break;
+			}
+			next = HEAP_CHUNK_AFTER(chunk);
+			if (!(next->size & 1))
+			{
+				const unsigned long *links = (const unsigned long *)(chunk + 1);
+
+				if (next != top && next->previous_size != size)
+				{
+					why = "a free chunk whose next chunk has another previous size";
+					break;
+				}
+				if (!heap_link_ok(links[0], base, (char *)top) || !heap_link_ok(links[1], base, (char *)top))
+				{
+					why = "a free chunk's bin link outside the heap and the bins";
+					break;
+				}
+			}
+		}
+	heap_walks++;
+	heap_walk_chunks += chunks;
+	if (why)
+	{
+		heap_walk_bad++;
+		if (chunk != heap_walk_last_bad && heap_walk_logged < HEAP_WALK_LINES)
+		{
+			const unsigned long *line = (const unsigned long *)((unsigned long)chunk & ~63ul);
+
+			heap_walk_logged++;
+			platform_log("heapwalk: BAD at %s, game time %ld, walk %lu: %s: chunk %p (heap +%lu) size %08lx previous %08lx links %08lx %08lx; the chunk before %p size %08lx",
+				where, psp_game_time_peek(), heap_walks, why, chunk, (unsigned long)((char *)chunk - base),
+				chunk->size, chunk->previous_size, ((const unsigned long *)(chunk + 1))[0],
+				((const unsigned long *)(chunk + 1))[1], before, before ? before->size : 0ul);
+			platform_log("heapwalk: its line %p: %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx %08lx",
+				line, line[0], line[1], line[2], line[3], line[4], line[5], line[6], line[7], line[8], line[9],
+				line[10], line[11], line[12], line[13], line[14], line[15]);
+		}
+		heap_walk_last_bad = chunk;
+	}
+	__malloc_unlock(_REENT);
+	if (heap_walks % 1000 == 0)
+		platform_log("heapwalk: %lu walks, %lu chunks a walk, %lu found a bad header", heap_walks,
+			heap_walk_chunks / heap_walks, heap_walk_bad);
+}
+
 #if defined(PSP_METRICS) && PSP_METRICS
 /* for the per-map heap figures (psp_metrics.c): the heap's free space and
 its largest free block, which a large request needs, by heapmap's walk
