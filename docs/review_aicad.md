@@ -35,9 +35,39 @@ Every tick still runs `actor_general_update`, `actor_input_update`, perception's
 
 ## 3. Evidence
 
-To fill: the emulator's ai_update per window off against `aicad2` (b30 flight, landing and beach; d20; c20), the outcome census against the off runs' own spread, the strict run's faults, and the b40 side-by-side for `lodpsp`.
+**The gain [E, cache model, hands-off fixedticks fixedseed nomouth, one run a side].** ai_update in ms a tick of the emulator's clock (profile windows), off against `aicad2`:
+
+| Map, stretch | Off | aicad2 | Removed |
+|---|---|---|---|
+| b30, flight and landing (ticks 0-2,515) | 4.82 | 3.17 | 1.65 (34%) |
+| b30, beach (2,515 on; the fights part) | 3.04 | 1.77 | 1.27 (42%) |
+| d20, swamp route to 88 s | 1.80 | 1.20 | 0.60 (33%) |
+| c20, route to 120 s | 1.35 | 1.11 | 0.24 (18%) |
+
+The tick phase's cycles (fetches + 72 D-misses + 64 I-misses) fall 12.9% on b30, 2.3% on d20, 4.0% on c20. The census line: on b30 half the actor updates rest (42,882 of 86,352; charging kept 278), and on d20 and c20 only 30% (swarms keep their full rate: 2,593 and 4,283 turns). Scaled to the PSP's ai_update (25.1-29.6 ms a frame on b30 [M]) at 34-42%, that is about 9-12 ms a frame on b30 [U], well above the A/A floor of 2.5-4.4 ms a stretch, but only if play holds.
+
+**The outcomes [E, recon build, `aioutcome`, b30's timed route to game time 450 s, play left to vary: three runs a side].**
+
+| Run | Marines alive at the beach's end (gt 5,700) | Covenant left on the beach | beach_lz_marine cleared | save_beach_lz | save_beach_1 |
+|---|---|---|---|---|---|
+| off a | 8 | 0 | 4,143 | 4,147 | 5,790 |
+| off b | 8 | 0 | 4,120 | 4,122 | 5,790 |
+| off c | 6 | 1 | no | 4,397 | no |
+| aicad2 a | 7 | 1 | no | 4,497 | no |
+| aicad2 b | **0** | **6** | no | no | no |
+| aicad2 c | 3 | 1 | no | 9,597 | no |
+
+Everything scripted later (save_beach_5, the shaft and valley placements, shaftB at 13,084) comes at the same tick in all six. No far actor stuck, no crash. But the beach fight goes worse for the marines in every `aicad2` run: the covenant are never cleared, the beach's first save is never written, and one run loses every marine, where the off runs' worst is 6 marines and one covenant left. **That is outside the runs' own spread: `aicad2` as built breaks the beach fight, so it isn't ready for the owner's A/B.**
+
+**Why, most likely [U].** On the beach the marines and the covenant both think half as often, but the timeslice (the firing-position search that sends a marine to cover) comes round half as often too, and a marine out of cover dies; the covenant, with more units, are hurt less by the same delay. The next build to try keeps the timeslice at its full rate and rests only the decision loop, situation and prop service (or exempts actors near a player, as farslice did); it removes less (the search is about half of the decisions' time [E]).
+
+**Strict [E].** b30 with `aicad2` and `lodpsp` to game time 130 s on the strict interpreter: 3,762 ticks, 0 faults.
+
+**`lodpsp`'s look [E].** b40's opening, screenshots every 3 s: at 4 s 387 pixels differ, at 7 s 2,293 (the nearest elite's armour edges and its weapon: a lower level of detail on a model about a third of the screen tall), at 10 s none. A player sees slightly coarser silhouettes on models in the cinematic's middle distance.
+
+**Compiles:** campaign, recon and `PSP_METRICS=0` builds of this branch succeed.
 
 ## 4. The owner's A/B
 
-- **`aicad2` on b30:** one PSP job, keepsets `- | aicad2`, repeat 2, b30's timed route, nomouth. Read the flight and the beach, not the opening cinematic (it has favoured one side in A/A pairs). Then play b30's beach and d20 by hand with the word on: do marines hold the beach, do enemies flank and take cover as usual.
+- **`aicad2` on b30:** not yet: it fails the outcome census above. A narrower build first (timeslice at full rate), its census, then the PSP pair.
 - **`lodpsp` on b40's opening:** keepsets `- | lodpsp`, repeat 2, and the emulator's screenshots side by side.
