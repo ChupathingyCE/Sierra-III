@@ -46,7 +46,23 @@ Moves (compaction, copies following the origin) and glyph changes wait for the s
 - Pictures (`framecrc` now on every frame; each against plain-vs-plain-again on the same host): d40 35 of 2,994 differ (spread 3), b40 8 of 2,997 (spread 1): both as geshow2 alone gives on those maps (d40 25-35, b40 8-9 in earlier runs), the index copy. a10: geshow3 122, geshow2 alone 121, geshow3 against geshow2 9 of 2,984 (spread 3). b30: 447 against its own spread of 422. geshow3 adds nothing seen beyond geshow2's.
 - `showlat` mean plain / geshow3: d40 67.6 / 71.9 ms, a10 86.0 / 93.2 (geshow2 alone 91.3), b40 74.4 / 78.8, b30 125.4 / 139.6. The emulator's ME is simulated: a direction only.
 
-**PSP [M]:** pairs on the PSP-3000 (d40 to game time 120 s, a10 to 160 s; `keepsets "- | geshow3"`, repeat 2, `showlat`, `gebusy`): pending. The jump path has never run on a real GE. If the pairs show `by a jump` above 0 and end in the game, the GE stops at a stall address equal to its PC while the jump is pending, as the emulator's does, and the path is settled; a hang or a `no answer` would mean it doesn't, and the jump must wait for the GE's finish instead.
+**PSP-3000 [M]** (the fixed branch before the merge; `keepsets "- | geshow3"`, repeat 2, `gebusy`, `showlat`; every run ended in the game; frame by the clock, plain -> geshow3, each side's two runs within 0.2 ms):
+
+| Map, game time | Frame, ms | Drawing, ms | Tick, ms |
+|---|---:|---:|---:|
+| d40 150-570 (slow stretch) | 43.7 -> 34.3 (22.9 -> 29.2 fps) | 38.3 -> 21.4 | 1.3 -> 1.9 |
+| d40 300-2000 | 41.3 -> 34.5 | 31.4 -> 20.1 | 2.7 -> 3.1 |
+| d40 2000-2700 | 35.4 -> 34.7 | 19.7 -> 14.6 | 5.3 -> 5.0 |
+| d40 2700-3600 | 34.5 -> 33.4 | 22.0 -> 13.8 | 5.1 -> 4.5 |
+| a10 300-2000 | 37.7 -> 36.1 | 17.8 -> 16.3 | 6.6 -> 6.8 |
+| a10 2000-2700 | 45.8 -> 45.1 | 24.4 -> 23.9 | 9.7 -> 9.6 |
+| a10 2700-4700 | 80.1 -> 79.6 | 38.6 -> 38.4 | 20.9 -> 20.8 |
+
+- d40's slow stretch reaches the 30 fps cap: the ME's replay of N+1 no longer waits for the GE's end of N (geshow2 alone reached 38.6 ms there on the PSP-1000). a10 is bound by the CPU's lane, so it gains little.
+- `showlat` (window start to swap), plain -> geshow3: d40 mean 36.4 -> 41.6 ms; its slow windows 46.0 / 39.6 -> 58.5 / 55.1 (+12 to +16), its 30 fps windows +1 to +3. a10 mean 54.7 -> 57.9 (+3 to +7 a window). Less than geshow2's +17 to +21 in d40's slow stretch, but not back to plain's: N+1 is recorded beside N's tail, so a frame's start comes earlier against its show. **Default-on is a call on this latency.**
+- Counters: draws skipped for room 0, finishes not reported 0 on both maps. Stall addresses held for a show: d40 237 and 239, a10 2 and 0, with no hang: the gate's hold works on a real GE. Parts grown 0 and **jumps 0** on both maps (largest lists 198 KB d40, 684 KB a10): the jump path has still never run on a real GE. Until a run shows jumps above 0 and ends in the game, it is [U]; a hang there would mean the GE doesn't stop at a stall address equal to its PC while the jump is pending, and the jump would have to wait for the GE's finish instead.
+- Draws skipped with the whole list full on a10: plain 8,008-8,033, geshow3 8,635-8,706, as in the emulator (geshow2's index copy).
+- The PSP-1000 is the target; these are the PSP-3000's figures, which have matched the 1000's within ~3% a map on every build run on both.
 
 **Merged with gebusy2's own GE callbacks.** With `gebusy2` on, every list gets gebusy2's callbacks instead of pspgu's, so pspgu's finish callback (geshow3's) is never called: gebusy2's finish callback hands geshow3 the finish id (`gebusy_ge_finish`). The wait marks gebusy2 puts round the frame end's GE wait sit in `show_picture`, where geshow3 moved that wait. geshow3 with `gebusy2` has not run yet.
 
@@ -55,4 +71,4 @@ Moves (compaction, copies following the origin) and glyph changes wait for the s
 - The GE's finish is waited for through its callback. If the firmware ever left a finish unreported, the show would wait 400 ms and go on, counted.
 - When the list room part is too small (b40's largest frames, up to 560 KB [M]), the frame waits for the last show as under geshow2's hand-over.
 - The record and the ME now both run beside the GE's tail, so all three share the bus [U]. The PSP pair prices it.
-- Latency: N is shown at the GE's finish of N as before. N+1's replay no longer waits for that, so `showlat` should come back to about plain's [U].
+- Latency: N is shown at the GE's finish of N as before, but N+1 is recorded beside N's tail: `showlat` +12 to +16 ms in d40's slow stretch, +1 to +7 elsewhere [M, PSP-3000].
