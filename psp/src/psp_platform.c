@@ -1835,6 +1835,17 @@ unsigned long psp_heartbeat_clock(void)
 void psp_player_snapshot(char *text, int size);
 unsigned long psp_tag_loaded_calls = 0; /* cache_files.c (psp_fixups.py) */
 static char player_text[160] = "player: not yet";
+/* the local biped's crouch, 0 to 1 (-1: none), taken with player_text on the
+game's thread: the heartbeat reading the player's unit itself raced a
+checkpoint revert restoring it, and asserted on a half-loaded unit index.
+Read through a call that isn't inlined, so the heartbeat's branches stay
+those its profile counted (PSP_PGO_STRICT) */
+static volatile float player_crouch_now = -1.0f;
+
+static __attribute__((noinline)) float player_crouch_copy(void)
+{
+	return player_crouch_now;
+}
 static unsigned long ticks_since_snapshot;
 
 /* ---------- build 87: "benchrun" (launch menu): a fixed benchmark
@@ -2723,6 +2734,11 @@ steps in order: the console has no way to wait */
 	{
 		ticks_since_snapshot = 0;
 		psp_player_snapshot(player_text, sizeof(player_text));
+		{
+			extern float psp_player_crouch(void);
+
+			player_crouch_now = psp_player_crouch();
+		}
 	}
 	tick_count++;
 	tick_total += microseconds;
@@ -3269,12 +3285,11 @@ static int heartbeat_thread(SceSize args, void *argp)
 				psp_nub_seen[2], psp_nub_seen[3]);
 			{
 				extern volatile unsigned int controls_events[5];
-				extern float psp_player_crouch(void);
 
 				if (controls_events[0] | controls_events[1] | controls_events[2])
 					platform_log("controls (since launch): crouch toggled %u times; d-pad left tapped %u times (the game reloaded %u), held %u times (the game acted %u); crouched %d%% now",
 						controls_events[0], controls_events[1], controls_events[3], controls_events[2], controls_events[4],
-						(int)(psp_player_crouch() * 100.0f));
+						(int)(player_crouch_copy() * 100.0f));
 			}
 			if ((beat & 1) == 0)
 			{

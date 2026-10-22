@@ -1176,10 +1176,11 @@ int __real_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg);
 volatile int psp_ge_enqueued = -1;
 int __wrap_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg)
 {
+	extern int psp_ge_list_callback(int cbid);
 	int result;
 
 	psp_trace_line("GE list %08x, stall %08x", (unsigned)list, (unsigned)stall);
-	result = __real_sceGeListEnQueue(list, stall, cbid, arg);
+	result = __real_sceGeListEnQueue(list, stall, psp_ge_list_callback(cbid), arg);
 	psp_ge_enqueued = result;
 	psp_trace_line("GE list = %d", result);
 	return result;
