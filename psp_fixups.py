@@ -30011,6 +30011,7 @@ FIXES_LODPSP["source/render/render_objects.c#lodpsp"] = [
 """#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_LODPSP) */
 #include "models/model_definitions.h"
+#include "cache/cache_files.h"
 #include <stdio.h>
 
 int psp_keep(const char *name);
@@ -30112,6 +30113,21 @@ static long psp_lod_floor(long model_index, struct model const *model)
 	{
 		csmemset(psp_lod_floors, 0, sizeof(psp_lod_floors));
 		psp_lod_floors_map = psp_lod_map_serial;
+		/* "lodpspscan": every model of the map at once, drawn or not, so the
+		log names each one whose lower levels lose a part */
+		if (psp_keep("lodpspscan"))
+		{
+			struct tag_iterator iterator;
+			long index, models = 0, floored = 0;
+
+			tag_iterator_new(&iterator, MODELS_GROUP_TAG);
+			while ((index = tag_iterator_next(&iterator)) != NONE)
+			{
+				models++;
+				floored += psp_lod_floor_find(index, model_definition_get(index)) > 0;
+			}
+			platform_psp_log("lodpsp: scan: %ld models, %ld keep a floor", models, floored);
+		}
 	}
 	slot = ((unsigned long)model_index * 2654435761UL) % PSP_LOD_FLOORS;
 	for (probe = 0; probe < PSP_LOD_FLOORS; probe++, slot = (slot + 1) % PSP_LOD_FLOORS)
