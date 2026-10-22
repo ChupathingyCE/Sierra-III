@@ -1170,6 +1170,93 @@ def clut4_exact_report():
             '%s %d (%d KB)' % (cls, n, saved // 1024) for cls, (n, saved) in sorted(by_class.items()))), file=sys.stderr)
 
 
+# ---- The CLUT4 look set (docs/review_clut4look.md, the census in
+# design_clut4w.md). Lightmaps and HUD sheets that hold CLUT8's look at 16
+# colours, for half the bytes in the VRAM texture cache and the GE's fastest
+# sampling. Unlike the exact set it is lossy, so each texture must pass the
+# census's strict bar: one palette for every level, each level within 1 dB of
+# CLUT8's screen PSNR (or over 45 dB) and no texel more than one 5-bit step
+# past CLUT8's worst; anything that misses stays CLUT8. The chain is CLUT8's
+# own, so nothing changes with distance but the colours. --no-clut4-look
+# leaves them all at 8 bits.
+CLUT4_LOOK = True
+CLUT4_LOOK_CLASSES = ('lightmap', 'ui/hud')
+CLUT4_LOOK_MADE = []     # (class, CLUT8 bytes, CLUT4 bytes, lowest dB at 8, lowest dB at 4)
+CLUT4_LOOK_FAILED = []   # the class of each tried that missed the bar
+SCREEN_SHIFT = np.array([3, 2, 3], np.uint8)
+
+
+def look_errors(orig, made, alpha, tested):
+    """one level's error at the screen's 5/6/5 bits, as the CLUT4W census
+    measures it: the colour where it can be seen, and the alpha (a cut-out
+    by the texels whose test turns over, any other by its own dB and worst)"""
+    o = ((orig[:, :, :3] >> SCREEN_SHIFT) << SCREEN_SHIFT).astype(np.int16)
+    m = ((made[:, :, :3] >> SCREEN_SHIFT) << SCREEN_SHIFT).astype(np.int16)
+    seen = orig[:, :, 3] > 127 if tested else np.ones(orig.shape[:2], bool)
+    if not seen.any():
+        seen = np.ones(orig.shape[:2], bool)
+    r = dict(db=psnr(o[seen], m[seen]), worst=int(np.abs(o - m)[seen].max(1).max()))
+    if alpha:
+        oa, ma = orig[:, :, 3], made[:, :, 3]
+        if tested:
+            r['flips'] = float(((oa > 127) != (ma > 127)).mean())
+        else:
+            r.update(adb=psnr(oa, ma), aworst=int(np.abs(oa.astype(np.int16) - ma.astype(np.int16)).max()))
+    return r
+
+
+def look_passes(e4, e8):
+    """the census's strict bar (CLUT4W_BARS['strict'] on the clut4w branch)"""
+    if e4['db'] < min(e8['db'] - 1.0, 45.0) or e4['worst'] > e8['worst'] + 8:
+        return False
+    if 'adb' in e4 and (e4['adb'] < min(e8['adb'] - 1.0, 45.0) or e4['aworst'] > e8['aworst'] + 8):
+        return False
+    return not ('flips' in e4 and e4['flips'] > e8['flips'] + 0.001)
+
+
+def clut4_look(made, b, cls, pal, alpha, level_imgs, level_ix):
+    """made at 4 bits with one 16-colour palette when every level passes the
+    strict bar against CLUT8's own error, else made as it was"""
+    every = np.concatenate([i.reshape(-1, 1, 4) for i in level_imgs], 0)
+    _, pal16, _, _ = make_palette(every, 16, cls)
+    pal16 = pal16[:16]
+    tested = alpha and b['tag'] in ALPHA_TESTED
+    rows, four_ix = [], []
+    for img, ix in zip(level_imgs, level_ix):
+        ix4 = nearest(img, pal16, alpha)
+        four_ix.append(ix4)
+        rows.append((look_errors(img, pal[ix], alpha, tested), look_errors(img, pal16[ix4], alpha, tested)))
+    if not all(look_passes(e4, e8) for e8, e4 in rows):
+        CLUT4_LOOK_FAILED.append(cls)
+        return made
+    w, h = made['w'], made['h']
+    levels = [pack_level(ix4, lw, lh, 4) for ix4, (lw, lh) in zip(four_ix, level_sizes(w, h, len(four_ix)))]
+    data = palette_words(pal16, alpha).tobytes() + b''.join(levels)
+    CLUT4_LOOK_MADE.append((cls, len(made['data']), len(data), min(r[0]['db'] for r in rows),
+                            min(r[1]['db'] for r in rows)))
+    return dict(made, psm=4, flags=0, data=data)
+
+
+def clut4_look_report():
+    """the pack's 'clut4 look' lines (the bake's log echoes them): classes,
+    counts, bytes and the lowest level dB, no names"""
+    if not CLUT4_LOOK:
+        return
+    before = sum(r[1] for r in CLUT4_LOOK_MADE)
+    after = sum(r[2] for r in CLUT4_LOOK_MADE)
+    print('clut4 look, %s pack: %d textures to 16 colours (lossy, strict bar), %d -> %d bytes (saves %d KB); '
+          '%d tried missed the bar (kept at 8 bits)' % (PROFILE_PACK, len(CLUT4_LOOK_MADE), before, after,
+                                                        (before - after) // 1024, len(CLUT4_LOOK_FAILED)), file=sys.stderr)
+    for cls in CLUT4_LOOK_CLASSES:
+        rows = [r for r in CLUT4_LOOK_MADE if r[0] == cls]
+        if rows:
+            print('clut4 look, %s pack, %s: %d textures, saves %d KB; lowest level dB 8 bits median %.1f, 4 bits median '
+                  '%.1f, lowest %.1f; missed %d' % (
+                      PROFILE_PACK, cls, len(rows), sum(r[1] - r[2] for r in rows) // 1024,
+                      float(np.median([r[3] for r in rows])), float(np.median([r[4] for r in rows])),
+                      min(r[4] for r in rows), CLUT4_LOOK_FAILED.count(cls)), file=sys.stderr)
+
+
 @profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
              relief=None):
@@ -1279,6 +1366,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     clut = 3 if alpha else 0
     levels = []
     level_ix = []
+    level_imgs = []    # each level's image, for the look set's bar
     w, h, level_img = tw, th, small
     chain_img = small
     fix_coverage = ALPHA_COVERAGE and alpha and b['tag'] in ALPHA_TESTED and not own_levels and not grid
@@ -1300,6 +1388,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
                                      diffuse(level_img, pal, alpha, len(pal)) if diffusing else nearest(level_img, pal, alpha))
         levels.append(pack_level(ix, w, h, bits))
         level_ix.append(ix)
+        level_imgs.append(level_img)
         # a detail map tiles up to a hundred times across a surface, so it
         # mips down to a single texel: its average, the neutral grey (build 31)
         if cls == 'detail':
@@ -1323,6 +1412,10 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     # map (the change colour reads 256 entries); the showcase stays as it is
     if CLUT4_EXACT and bits == 8 and not grid and own_colours and not SHOWCASE:
         made = clut4_exact(made, cls, words, level_ix)
+    # the meters' grid and the multipurpose maps read their palettes; the
+    # showcase keeps every colour
+    if CLUT4_LOOK and made['psm'] == 5 and cls in CLUT4_LOOK_CLASSES and not grid and own_colours and not SHOWCASE:
+        made = clut4_look(made, b, cls, pal, alpha, level_imgs, level_ix)
     return made
 
 
@@ -1336,6 +1429,9 @@ def main():
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
+    ap.add_argument('--no-clut4-look', action='store_true',
+                    help='lightmaps and HUD sheets stay at 8 bits even where 16 colours pass the CLUT4W strict bar '
+                         '(docs/review_clut4look.md)')
     ap.add_argument('--no-clut4-exact', action='store_true',
                     help='textures of 16 colours or fewer that the 16-colour rule leaves at 8 bits stay at 8 bits')
     ap.add_argument('--tints-from-means', action='store_true',
@@ -1386,6 +1482,9 @@ def main():
     HUD_CLUT4 = a.hud_clut4
     global CLUT4_EXACT
     CLUT4_EXACT = not a.no_clut4_exact
+    global CLUT4_LOOK
+    # ui.map is the showcase (CLAUDE.md): its packs keep every colour
+    CLUT4_LOOK = not a.no_clut4_look and os.path.splitext(os.path.basename(a.map))[0] != 'ui'
     FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
     if FULL_DETAIL - set(DETAIL_CLASSES):
         sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
@@ -1566,6 +1665,7 @@ def main():
         print('showcase: %d textures in their own colours (%d bytes), every map at its own size up to 512' % (
             len(own), sum(len(d) for d in {id(e['data']): e['data'] for e in own}.values())), file=sys.stderr)
     clut4_exact_report()
+    clut4_look_report()
     print('%s: %d textures, %d bytes; skipped %s' % (a.out, len(entries), len(out), skipped))
     if FAST_PALETTES:
         print('palettes: fast (--fast-palettes)', file=sys.stderr)

@@ -73,6 +73,11 @@ Options:
     --no-clut4-exact            leave at 8 bits the textures of 16 colours or
                                 fewer that 4 bits would draw exactly the same
                                 (texpack.py). Alias --no-exact-clut
+    --no-clut4-look             leave at 8 bits the lightmaps and HUD sheets
+                                that 16 colours would draw within the CLUT4W
+                                strict bar (texpack.py; by default they go to
+                                16 colours, docs/review_clut4look.md; ui.map
+                                never does). Alias --no-clut-look
 
 Nothing from the game is in this tool; it only converts the copy you own."""
 import argparse, concurrent.futures, hashlib, json, os, re, shutil, subprocess, sys, threading, time
@@ -161,7 +166,7 @@ def run(command, log_path, cwd=None, env=None):
 # the lines --profile and --compare-palettes add to a map's log, and each
 # pack's exact-CLUT4 count, into the bake's (texture classes, sizes and pixel
 # hashes only, no names)
-MEASURES = ('texprofile', 'palcompare', 'clut4 exact')
+MEASURES = ('texprofile', 'palcompare', 'clut4 exact', 'clut4 look')
 
 
 def echo_from(name, log_path, start, markers):
@@ -587,6 +592,11 @@ def main():
     ap.add_argument('--music', default=MUSIC)
     ap.add_argument('--list-music', action='store_true')
     ap.add_argument('--tints-from-means', action='store_true')
+    # --no-clut-look: the same, for option checks that take letters only
+    ap.add_argument('--no-clut4-look', '--no-clut-look', dest='no_clut4_look', action='store_true',
+                    help='leave at 8 bits the lightmaps and HUD sheets that 16 colours would draw within the strict bar')
+    # the look set's switch before it was the default: older run specs still pass it
+    ap.add_argument('--clut-look', action='store_true', help=argparse.SUPPRESS)
     # --no-exact-clut: the same, for option checks that take letters only
     ap.add_argument('--no-clut4-exact', '--no-exact-clut', dest='no_clut4_exact', action='store_true',
                     help='leave at 8 bits the textures of 16 colours or fewer that 4 bits would draw the same')
@@ -611,6 +621,8 @@ def main():
         TEXPACK_OPTIONS.append('--fast-palettes')
     if a.no_clut4_exact:
         TEXPACK_OPTIONS.append('--no-clut4-exact')
+    if a.no_clut4_look:
+        TEXPACK_OPTIONS.append('--no-clut4-look')
     wanted = [m.strip() for m in a.maps.split(',') if m.strip()] or \
         CAMPAIGN + (MULTIPLAYER if a.multiplayer else []) + ['ui']
     unknown = [m for m in wanted if m not in ALL]
