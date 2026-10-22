@@ -1035,6 +1035,10 @@ named them, so every psp_keep() asks as before and the features' own code
 is untouched. Each has an off word; "m6off" turns all of them off. They play
 tick for tick as without them; the PSP-1000 draws b30 faster with them.
 texpretouch only with gemeon: it reads in what the ME's replay binds.
+geshow3 (docs/review_geshow3.md): the ME replays the next frame into a
+second list while the GE ends this one; it takes effect only with the
+forwarding thread (geinflight, gemeon), and its index ranges come from
+geshow2's ring, so the GE never reads a later frame's triangles.
 Left out whole with the instruments that measure or split the frame as they
 did before (mebench, gemeoverlap, geserial): those words mean what they did.
 The multiplayer build has none of them: none was played against a server */
@@ -1048,6 +1052,7 @@ static const struct
 	{ "mevram", "mevramoff" },
 	{ "texpretouch", "notexpretouch" },
 	{ "mepoll", "mepolloff" },
+	{ "geshow3", "geshow3off" },
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
