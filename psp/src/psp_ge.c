@@ -23124,3 +23124,33 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 	(void)stream; (void)lowest; (void)highest;
 }
 #endif
+
+/* the exit (exitatN, ladderN, the level's end, HOME): it comes mid-frame,
+from the tick. Under geinflight a frame may be out with the Media Engine
+and the GE's list left at a stall address the forwarding thread passes on;
+psp_me_exit then stops the ME and the firmware's exit starts with the GE
+still waiting in a list nobody will finish. So the frame out is waited for
+as every frame's is, the open list is ended, and the GE is given up to
+200 ms to reach its end. "exitdrainoff" exits as before */
+void psp_ge_exit_drain(void)
+{
+	unsigned int waited = 0;
+
+	if (!ge_ready || psp_keep("exitdrainoff") || inflight_room_away)
+		return;
+	if (inflight_pending)
+		inflight_sync();
+	if (frame_open)
+	{
+		stall_force = 1;
+		sceGuFinish();
+		stall_force = 0;
+	}
+	while (sceGeDrawSync(1) != 0 && waited < 200)
+	{
+		sceKernelDelayThread(1000);
+		waited++;
+	}
+	platform_log("GE: exit: the frame out waited for, the list ended, the GE %s (%u ms)",
+		waited < 200 ? "done" : "still busy", waited);
+}

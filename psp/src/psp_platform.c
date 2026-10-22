@@ -1749,6 +1749,7 @@ void psp_fpu_mask_traps(void)
 
 void psp_tex_save_learned(void);
 void psp_me_exit(const char *why);
+void psp_ge_exit_drain(void);
 
 /* builds 88-104 kept ms0:/halo/log/exit.txt open from start-up to record
 how far the HOME exit got. It answered its question (b90: ARK-4 Kommander's
@@ -1761,6 +1762,12 @@ static int exit_callbacks_registered[3] = { 1, 1, 1 };
 static void exit_game(const char *why)
 {
 	exiting = 1;
+	/* the GE's frame and list finished before the ME is stopped under it
+	(psp_ge.c, psp_ge_exit_drain); only from the game's own thread: HOME
+	comes on the callback thread, mid-way through whatever the game does,
+	and geinflight's own failure exits from inside the GE's records */
+	if (strcmp(why, "HOME") != 0 && strncmp(why, "geinflight", 10) != 0)
+		psp_ge_exit_drain();
 	/* the Media Engine first, before any Memory Stick work: the XMB reloads
 	over the memory it runs from (an ME left running crashed the PSP on
 	HOME), and a file write that blocked ahead of it would hang the exit
