@@ -112,6 +112,12 @@ static char map_name[64];
 /* per entry: its average colour once worked out (psp_tex_average) */
 static unsigned int *averages = NULL;
 static int averages_count = 0;
+/* "avgold": the averages' table allocated by the first psp_tex_average, as
+before, on whichever CPU asks: on the Media Engine (the replay's flashlight
+pass) that ran newlib's malloc there, beside the main CPU's own and outside
+its lock. "avgmerealloc" (the proof of it): the ME's work frees and
+allocates the table again at each average it asks for */
+static PSP_MAIN_SIDE int avg_old = 0, avg_me_realloc = 0;
 /* the see-through shaders' tints (texpack.py), pairs of (the shader's tag
 address, its tint ABGR) sorted by address. Bits of the address: 0, the tint
 is half the colour, for the GE's colour doubling; 1, the tint is added to the
@@ -1129,6 +1135,18 @@ void psp_tex_map_opened(const char *name)
 	resident_in = calloc(header[1], 1);
 	hud_pinned = calloc(header[1], 1);
 	bind_counts = line_calloc(header[1], sizeof(unsigned short));
+	/* the averages' table here, on the main CPU: the ME's work only fills it
+	(psp_tex_average), on lines of its own */
+	avg_old = psp_keep("avgold") != 0;
+	avg_me_realloc = psp_keep("avgmerealloc") != 0;
+	free(averages);
+	averages = NULL;
+	averages_count = 0;
+	if (!avg_old && !avg_me_realloc)
+	{
+		averages = line_calloc(header[1], sizeof(unsigned int));
+		averages_count = averages ? (int)header[1] : 0;
+	}
 	if (!ram_cache)
 		ram_cache_acquire();
 	if (!entries || !resident_at || !last_frame || !resident_in || sceIoRead(file, entries, header[2]) != (int)header[2])
@@ -2251,8 +2269,13 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 
 	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]))
 		return 0;
-	if (averages_count != entry_count)
+	if (averages_count != entry_count || (avg_me_realloc && PSP_ME_WORK()))
 	{
+		/* the ME makes no library calls: the table comes from the pack's
+		open, and the ME's work without one has no average (avgold and
+		avgmerealloc: allocated here, as before) */
+		if (PSP_ME_WORK() && !avg_old && !avg_me_realloc)
+			return 0;
 		free(averages);
 		averages = calloc(entry_count, sizeof(unsigned int));
 		averages_count = averages ? entry_count : 0;
