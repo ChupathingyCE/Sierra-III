@@ -2360,6 +2360,11 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 		return ring_fail(1, ticket, index);
 	}
 #endif
+	/* resting: the ME is behind a late job, so one pushed with it that isn't
+	done yet would only wait out a deadline of its own ("ringgiveup" waits,
+	as before) */
+	if (ring_dead == 2 && (int)(RING_POPPED - ticket) <= 0)
+		return ring_fail(0, ticket, index);
 	if ((int)(RING_POPPED - ticket) > 0)
 		ring_stats.at_once++;
 	else
