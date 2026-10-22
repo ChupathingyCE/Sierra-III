@@ -1174,10 +1174,11 @@ int __wrap_sceDmacMemcpy(void *dst, const void *src, SceSize size)
 int __real_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg);
 int __wrap_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg)
 {
+	extern int psp_ge_list_callback(int cbid);
 	int result;
 
 	psp_trace_line("GE list %08x, stall %08x", (unsigned)list, (unsigned)stall);
-	result = __real_sceGeListEnQueue(list, stall, cbid, arg);
+	result = __real_sceGeListEnQueue(list, stall, psp_ge_list_callback(cbid), arg);
 	psp_trace_line("GE list = %d", result);
 	return result;
 }

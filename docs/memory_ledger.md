@@ -149,3 +149,5 @@ No pixel moved by 24 or more in any pair. c20's differences are faint dither-pat
 **The frames for Sheepdog01** (lab results branch, `sierra-batch/39680280258/<run>/shotNNN_tT.png`, the same names on both sides of a pair): `c20-plain-1` vs `c20-look` (track pack; most changed: `shot001_t13.png`, `shot002_t19.png`), `c20-plain-main` vs `c20-look-main` (full-size lightmaps; `shot001_t13.png`), `b30-plain-1` vs `b30-look` (`shot009_t104.png`); `c20-plain-2` and `b30-plain-2` are the controls.
 
 **Sheepdog01's call:** whether 16-colour lightmaps and HUD sheets (strict bar; at most a 17-level channel step on 0.3% of a frame here) look the same to him. The bytes: c20 -137 KB on the shipped track pack (-523 KB on the main pack), b30 -30 KB. If yes, it ships as its own pack beside the usual one with a keep word to pick it (`design_clut4w.md` recommendation 2), after the all-maps bake the bake rule asks.
+
+**Decided (Sheepdog01, 2026-10-21 17:17):** it ships, on by default in the bake (not as a second pack), `--no-clut4-look` to bake without it; Sierra-III `clut4ship`, `docs/review_clut4look.md`.
