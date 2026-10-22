@@ -1140,7 +1140,7 @@ static void keep_load(void)
 	platform_log("keep words, build 117's restorations off: hudonemap glassflat lightcutone geoshare nopointlights ditherall; speed: vrammodels0; tests: ladderN exitatN");
 	/* build 118: its restoration and fix, each turned off by these; its exact
 	speed-ups' off words; their self-checks; and the instruments */
-	platform_log("keep words, build 118's: restoration off: overlaywallnear; fix off: mapfilesopen; speed off: restlesscheck spherewalk nearspherefull multiscan verifyvectors tcutfull; checks: spherememocheck nearspherecheck multicheck tcutcheck; instruments: mebench, gemeoverlap (opt-in)");
+	platform_log("keep words, build 118's: restoration off: overlaywallnear; fix off: mapfilesopen; speed off: restlesscheck nearspherefull multiscan verifyvectors tcutfull; tests: spherememo (the sphere memo, off by default since 2026-10-22); checks: spherememocheck nearspherecheck multicheck tcutcheck; instruments: mebench, gemeoverlap (opt-in)");
 	/* build 119: its exact speed-ups' off words, their self-checks, the
 	clock fix's off word, and the PSP probes */
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
