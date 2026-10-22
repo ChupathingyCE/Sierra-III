@@ -29996,10 +29996,11 @@ static void actor_perception_refresh_test_object(
 # GE-bound stretches, on by default ("lodpspoff" turns it off; "lodpsp" is
 # still accepted). Shadows follow the same pixels.
 # Some models' lower levels lose a part rather than simplify it: the
-# Pelican's cockpit window has no glass below its top levels, so it went
+# Pelican's cockpit window has no glass below its top level, so it went
 # black. So each model gets a floor, read from its own data the first time it
 # is drawn: the lowest level at which every region permutation still draws
-# every shader its top level draws. The nearer pick never goes below a
+# every see-through shader its top level draws (opaque materials merged into
+# one at a lower level are the simplification itself, not a loss). The nearer pick never goes below a
 # model's floor; it goes there only where the game's own pick would.
 # "lodpspall": the nearer pick with no floor (for the A/B)
 FIXES_LODPSP = {}
@@ -30050,7 +30051,17 @@ static unsigned long psp_lod_shaders(struct model const *model, short geometry_i
 
 		if (!(part->flags & 1) /* stripped: never drawn */ && part->shader_index >= 0 &&
 			part->shader_index < model->shaders.count && part->shader_index < 32)
-			mask |= 1UL << part->shader_index;
+		{
+			struct psp_lod_shader_reference { struct tag_reference shader; } const *reference =
+				tag_block_get_element_with_size(&model->shaders, part->shader_index, 0x20);
+
+			/* only see-through parts: a lower level that merges opaque
+			materials into one simplifies, where one without its glass or
+			glow loses a part */
+			if (reference->shader.index != NONE &&
+				shader_type_is_transparent(shader_definition_get(reference->shader.index)->base.type))
+				mask |= 1UL << part->shader_index;
+		}
 	}
 	return mask;
 }
