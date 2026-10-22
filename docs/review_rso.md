@@ -75,3 +75,18 @@ Base: rso 69520aa merged with w140 bc12443 (one conflict, psp_fixups.py: FIXES_R
 - **Inputs that keep changing rest** (`rso_rest`). v2 kept an object again every frame its inputs changed (b30 8, a30 17, c10 10 a frame), filling the room with entries that were never sent and copying ~700 bytes each time. Now an object whose inputs changed twice running without a send gets a header-only entry and is walked, not kept, for 64 frames (`RSO_CHANGES`, `RSO_REST`); counted as "resting" on the log line. Only which objects are walked changes, never what a walk or a send writes.
 
 Exactness argument unchanged: a hit still needs every byte the walk reads to be equal, and the records sent are the ones that walk wrote.
+
+## Proof and gain, v3 [E]
+
+v3's first batch sent nothing on any map: the key's length was counted with 12 words a node matrix, but `real_matrix4x3` is 13 (the scale first), so every kept key was a node count's words short, the fill ran into the entry's own buffer fields, and every compare stopped at the node matrices as "inputs changed", so every object rested (b30 78-89 of 86-94 offered a frame). Play and both seeds were still the same at all 6,000 ticks on every map. The length is now counted by the same field list as the fill and the compare (one macro list; with no key it only adds up), host-tested: length = fill = compare for 1-16 nodes and 0-5 regions, a moved matrix fails the compare, nothing written past the entry.
+
+The second v3 batch, on the fix (same maps, words and stretches as before):
+- **Records sent again**, a frame of the cache runs' second 600-frame window: **b30 68 of 93** offered (6,075 words; 75 entries in 42 of 48 KB; later windows 68-70 of 93-94), **a30 65 of 134** (5,265 words; 109 entries in 43-45 KB; 43 resting, 25 see-through), **c10 15 of 40** (1,919 words; 40 entries in 20 of 24 KB; 20 resting). Against v2: b30 56, a30 50, c10 29. c10 loses: its offered models' inputs change often enough that most of them rest (the hands-off run's only window: 2 sent, 35 resting).
+- **`rsocheck` 0 differ on every map**, now with records compared whole: b30 138,840 walks, a30 145,242, c10 9,819, a10 1,001.
+- **Play and both random seeds the same at all 6,000 ticks** on b30, a30, c10, a10 (`rso` and `rsocheck` against off); the whole state differs only in `objects` and `object looping sounds`, which follow the emulator's speed (a10's two runs with it off differ there too).
+- **Pictures**: framecrc against off differs at b30 1,020, a30 1, c10 3, a10 10 frames of ~2,990, against two runs with it off in the same batch at 1,041 / 2 / 4 / 12: inside the control on every map.
+- **Memory**: the heap's lines on a10 and a30 the same with it on and off; the block stays outside the heap.
+- **Gain**, the record lane in the cache model (visibility to the HUD, game time 5-110 s, the same stretch both sides): **c10 10.80 -> 10.61 ms a frame (-1.8%**; objects pass 3.31 -> 3.09), **a30 11.86 -> 11.28 (-4.9%**; 7.31 -> 6.75), **b30 17.07 -> 16.47 (-3.5%**; 7.95 -> 7.43). The model draw step falls by 0.28-0.54 ms; render_model's own step, where the key is compared and the kept records copied, grows by 0.20 / 0.57 / 0.58 (v2 0.39 / 0.76 / 0.69, with less sent).
+- **Priced** at the share of the PSP's record time [E x M]: c10 0.51-0.53 ms a frame (gate 0.65: under), a30 0.88-1.20 (gate 0.63-1.18: over), b30 1.12 at the whole map's record time (gate 1.17: at it; beach 0.85, flight 1.34).
+
+Over the gate on a30 and at it on b30, so it goes to the PSP: a c10 and a30 pair from one build, off and `rso`, settles how long. c10's miss is the resting: an object whose inputs changed twice running rests for 64 frames, and on c10 that is most of them [U: which input moves is not yet counted].
