@@ -11653,8 +11653,9 @@ built in models.c (psp_fixups.py, FIXES_RSO). What the walk does besides
 writing records is done again here: each texture the records bind is
 pretouched, and each part's geometry is locked again, which must give the
 addresses the records hold (else the walk runs). A model whose walk reads the
-time (a glow), draws a see-through part, takes the Xbox path for a part
-(psp_rso_volatile) or writes any other kind of record isn't kept; nor, in
+time (a glow), draws a see-through part, takes the Xbox path for a part, has
+a reflection faded by the camera's distance (psp_rso_volatile) or writes any
+other kind of record isn't kept; nor, in
 models.c, one with point lights, an effect, or a debug view on.
 
 The kept records are in one block of free user RAM outside the heap, never
@@ -11687,6 +11688,11 @@ the object offered (NONE, -1, none), and the walk's marks */
 int psp_rso_on = 0, psp_rso_all = 0;
 long psp_rso_object = -1;
 int psp_rso_volatile = 0, psp_rso_capturing = 0;
+/* models.c: the key's field where a compare found the inputs changed (0 the
+header, 1 regions, 2 ambient, 3 distant lights, 4 reflection tint and shadow,
+5 effect, 6 centroid, 7 radius, 8 change colours, 9 function values, 10 node
+matrices, 11 the length) */
+int psp_rso_field = 0;
 static PSP_MAIN_SIDE int rso_check = 0, rso_room_tried = 0;
 static PSP_MAIN_SIDE unsigned int *rso_pool = NULL, rso_pool_words = 0, rso_end = 0, rso_entries = 0;
 static PSP_MAIN_SIDE unsigned int rso_slot_entry[RSO_SLOTS]; /* an entry's offset + 1; 0 none */
@@ -11700,8 +11706,8 @@ static PSP_MAIN_SIDE defer_word *rso_cap_base;
 static PSP_MAIN_SIDE const void *rso_cap_buffers[RSO_MAX_PARTS * 2];
 /* since the last log line */
 static PSP_MAIN_SIDE unsigned long rso_frames, rso_asked_count, rso_sent, rso_sent_words, rso_kept, rso_new_key,
-	rso_no_room, rso_volatile_count[4], rso_broken, rso_kinds, rso_moved, rso_compared, rso_differ, rso_differ_words,
-	rso_resting;
+	rso_no_room, rso_volatile_count[5], rso_broken, rso_kinds, rso_moved, rso_compared, rso_differ, rso_differ_words,
+	rso_resting, rso_kind_count[32], rso_field_count[12];
 static PSP_MAIN_SIDE int rso_differ_kind = -1, rso_differ_word = -1;
 
 static unsigned int rso_slot(long object_index)
@@ -11724,21 +11730,35 @@ static void rso_forget(void)
 static void rso_log(void)
 {
 	float frames = (float)rso_frames;
+	int kind, top_kind = 0;
 
+	for (kind = 1; kind < 32; kind++)
+		if (rso_kind_count[kind] > rso_kind_count[top_kind])
+			top_kind = kind;
 	platform_log("GE: rso: a frame (%lu frames): offered %.1f, sent again %.1f (%.0f words), walked and kept %.1f; "
 		"not kept: inputs changed %.1f, a glow that follows the time %.1f, the Xbox path %.1f, a see-through part %.1f, "
-		"too many parts %.1f, other records %.1f, the buffer started over %.1f, "
-		"no room %.1f; geometry moved %.1f; resting (inputs that keep changing) %.1f; %u entries in %u of %u KB",
+		"too many parts %.1f, a reflection faded by the camera %.1f, other records %.1f (most: kind %d, %.1f), "
+		"the buffer started over %.1f, no room %.1f; geometry moved %.1f; resting (inputs that keep changing) %.1f; "
+		"%u entries in %u of %u KB",
 		rso_frames, rso_asked_count / frames, rso_sent / frames, rso_sent_words / frames, rso_kept / frames,
 		rso_new_key / frames, rso_volatile_count[0] / frames, rso_volatile_count[1] / frames,
-		rso_volatile_count[2] / frames, rso_volatile_count[3] / frames, rso_kinds / frames, rso_broken / frames, rso_no_room / frames,
+		rso_volatile_count[2] / frames, rso_volatile_count[3] / frames, rso_volatile_count[4] / frames, rso_kinds / frames,
+		top_kind, rso_kind_count[top_kind] / frames, rso_broken / frames, rso_no_room / frames,
 		rso_moved / frames, rso_resting / frames, rso_entries, (unsigned int)(rso_end * 4 / 1024), (unsigned int)(rso_pool_words * 4 / 1024));
+	platform_log("GE: rso: inputs changed, by the key's first field that differs, a frame: header %.1f, regions %.1f, "
+		"ambient %.1f, distant lights %.1f, tint and shadow %.1f, effect %.1f, centroid %.1f, radius %.1f, "
+		"change colours %.1f, functions %.1f, node matrices %.1f, length %.1f",
+		rso_field_count[0] / frames, rso_field_count[1] / frames, rso_field_count[2] / frames, rso_field_count[3] / frames,
+		rso_field_count[4] / frames, rso_field_count[5] / frames, rso_field_count[6] / frames, rso_field_count[7] / frames,
+		rso_field_count[8] / frames, rso_field_count[9] / frames, rso_field_count[10] / frames, rso_field_count[11] / frames);
 	if (rso_check)
 		platform_log("GE: rsocheck: %lu walks compared with the kept records, %lu differ (%lu words; the first in a record of kind %d, word %d)",
 			rso_compared, rso_differ, rso_differ_words, rso_differ_kind, rso_differ_word);
 	rso_frames = rso_asked_count = rso_sent = rso_sent_words = rso_kept = rso_new_key = rso_no_room =
 		rso_broken = rso_kinds = rso_moved = rso_resting = 0;
 	memset(rso_volatile_count, 0, sizeof(rso_volatile_count));
+	memset(rso_kind_count, 0, sizeof(rso_kind_count));
+	memset(rso_field_count, 0, sizeof(rso_field_count));
 }
 
 /* entries unused in the last two windows dropped, the rest moved down */
@@ -11944,6 +11964,7 @@ int psp_rso_reuse(long object_index, int same)
 	else if (entry)
 	{
 		rso_new_key++;
+		rso_field_count[(unsigned int)psp_rso_field < 12 ? psp_rso_field : 11]++;
 		rso_cap_changes = entry[RSO_CHANGED] + 1;
 		if (rso_cap_changes >= RSO_CHANGES)
 		{
@@ -12037,7 +12058,7 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 		unsigned int reason;
 
 		/* the first reason only, so the counts add up to the objects not kept */
-		for (reason = 0; reason < 3 && !(psp_rso_volatile & (1 << reason)); reason++)
+		for (reason = 0; reason < 4 && !(psp_rso_volatile & (1 << reason)); reason++)
 			;
 		rso_volatile_count[reason]++;
 		return NULL;
@@ -12064,9 +12085,11 @@ unsigned int *psp_rso_capture_end(unsigned int key_words)
 		if (kind == DEFER_DRAW_MODEL)
 			parts++;
 		else if (kind == DEFER_MODEL_MULTIPURPOSE ? !at[3].u || !at[7].u :
-			kind != DEFER_MODEL_BEGIN && kind != DEFER_MODEL_SHAPE && kind != DEFER_MODEL_EFFECT)
+			kind != DEFER_MODEL_BEGIN && kind != DEFER_MODEL_SHAPE && kind != DEFER_MODEL_EFFECT &&
+			kind != DEFER_MODEL_REFLECTION)
 		{
 			rso_kinds++;
+			rso_kind_count[kind & 31]++;
 			return NULL;
 		}
 	}

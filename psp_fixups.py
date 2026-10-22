@@ -455,6 +455,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 
 					if (cutoff != 0.0f && falloff != cutoff)
 					{
+						extern int psp_rso_volatile;
+
+						/* the fade reads the camera: not kept (psp_ge.c, rso) */
+						psp_rso_volatile |= 16;
 						fraction = (psp_model_camera_distance - cutoff) / (falloff - cutoff);
 						fraction = fraction < 0.0f ? 0.0f : fraction > 1.0f ? 1.0f : fraction;
 					}
@@ -29172,6 +29176,7 @@ FIXES_RSO["source/models/models.c#rso"] = [
 #define PSP_RSO_NODES 16
 #define PSP_RSO_REGIONS 16
 extern long psp_rso_object;
+extern int psp_rso_field;
 int psp_rso_find(long object_index, unsigned int const **kept, unsigned int *kept_words);
 int psp_rso_reuse(long object_index, int same);
 unsigned int *psp_rso_capture_end(unsigned int key_words);
@@ -29222,7 +29227,7 @@ static unsigned int psp_rso_key(
 	short level = NUMBER_OF_DETAIL_LEVELS_PER_MODEL - 1;
 	unsigned int effect_bytes = (unsigned int)((char const *)(model_effect + 1) - (char const *)&model_effect->intensity);
 
-#define PSP_RSO_FIELD(pointer, bytes) \
+#define PSP_RSO_FIELD(field, pointer, bytes) \
 	do { \
 		unsigned int psp_rso_bytes = (unsigned int)(bytes); \
 		if (!key) \
@@ -29233,7 +29238,10 @@ static unsigned int psp_rso_key(
 			csmemcpy(key + at, (pointer), psp_rso_bytes); \
 		} \
 		else if (at + (psp_rso_bytes + 3) / 4 > kept_words || memcmp(key + at, (pointer), psp_rso_bytes)) \
+		{ \
+			psp_rso_field = (field); \
 			return 0; \
+		} \
 		at += (psp_rso_bytes + 3) / 4; \
 	} while (0)
 
@@ -29244,20 +29252,25 @@ static unsigned int psp_rso_key(
 	head[2] = (unsigned int)flags;
 	head[3] = ((unsigned int)(unsigned short)lighting->distant_light_count << 16) | (unsigned short)node_count;
 	head[4] = (unsigned int)region_count;
-	PSP_RSO_FIELD(head, sizeof(head));
+	PSP_RSO_FIELD(0, head, sizeof(head));
 	if (region_count)
-		PSP_RSO_FIELD(region_permutation_indices, region_count);
-	PSP_RSO_FIELD(&lighting->ambient_color, sizeof(lighting->ambient_color));
-	PSP_RSO_FIELD(lighting->distant_lights, sizeof(lighting->distant_lights));
-	PSP_RSO_FIELD(&lighting->reflection_tint_color, (char const *)(lighting + 1) - (char const *)&lighting->reflection_tint_color);
-	PSP_RSO_FIELD(&model_effect->intensity, effect_bytes);
-	PSP_RSO_FIELD(centroid, sizeof(*centroid));
-	PSP_RSO_FIELD(&radius, sizeof(radius));
-	PSP_RSO_FIELD(change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
-	PSP_RSO_FIELD(function_values, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS * sizeof(real));
-	PSP_RSO_FIELD(node_matrices, node_count * sizeof(real_matrix4x3));
+		PSP_RSO_FIELD(1, region_permutation_indices, region_count);
+	PSP_RSO_FIELD(2, &lighting->ambient_color, sizeof(lighting->ambient_color));
+	PSP_RSO_FIELD(3, lighting->distant_lights, sizeof(lighting->distant_lights));
+	PSP_RSO_FIELD(4, &lighting->reflection_tint_color, (char const *)(lighting + 1) - (char const *)&lighting->reflection_tint_color);
+	PSP_RSO_FIELD(5, &model_effect->intensity, effect_bytes);
+	PSP_RSO_FIELD(6, centroid, sizeof(*centroid));
+	PSP_RSO_FIELD(7, &radius, sizeof(radius));
+	PSP_RSO_FIELD(8, change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
+	PSP_RSO_FIELD(9, function_values, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS * sizeof(real));
+	PSP_RSO_FIELD(10, node_matrices, node_count * sizeof(real_matrix4x3));
 #undef PSP_RSO_FIELD
-	return !key || fill || at == kept_words ? at : 0;
+	if (key && !fill && at != kept_words)
+	{
+		psp_rso_field = 11;
+		return 0;
+	}
+	return at;
 }
 #endif
 
