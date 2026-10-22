@@ -276,6 +276,10 @@ static int stall_me_qid = 0;
 static void *stall_me_address = NULL;
 static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
+/* gebusy2 (with the stall wrapper): the Media Engine's chunks given to the
+GE, and the main CPU's waits, for the GE's own busy time */
+static void gebusy_me_handed(unsigned int stall);
+static void gebusy_wait(int begin, int which);
 static PSP_MAIN_SIDE unsigned int defer_used = 0;
 /* each time the buffer starts over (rso: a span of records is one object's
 only if none came between its first and last) */
@@ -1563,11 +1567,13 @@ static void defer_wait_me(void)
 		return;
 	me_out = 0;
 	start = sceKernelGetSystemTimeLow();
+	gebusy_wait(1, 0);
 	if (!psp_me_finish(ME_SLOT_RENDER, results))
 	{
 		/* the ME stopped (HOME, sleep, a job past 500 ms) with the half
 		perhaps half carried out: the main CPU goes on alone from here,
 		and this frame may draw wrong */
+		gebusy_wait(0, 0);
 		psp_me_window[0] = 0;
 		defer_me_failed++;
 		me_overlap = 0;
@@ -1583,12 +1589,14 @@ static void defer_wait_me(void)
 	}
 	psp_me_window[0] = 0;
 	me_overlap_waits++;
+	gebusy_wait(0, 0);
 	me_overlap_wait_us += sceKernelGetSystemTimeLow() - start;
 	defer_me_own_us += psp_me_last_job_us(ME_SLOT_RENDER);
 	defer_me_jobs++;
 	if (results[1])
 	{
 		stall_forwarded++;
+		gebusy_me_handed(results[1]);
 		__real_sceGeListUpdateStallAddr((int)results[2], (void *)results[1]);
 	}
 }
@@ -1647,6 +1655,7 @@ static void defer_hand_over(void)
 	if (stall_me_address)
 	{
 		stall_forwarded++;
+		gebusy_me_handed((unsigned int)stall_me_address);
 		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
 		stall_me_address = NULL;
 	}
@@ -1690,6 +1699,7 @@ static int inflight_forwarder(SceSize args, void *argp)
 			{
 				inflight_forwarded_stall = stall;
 				inflight_forwards++;
+				gebusy_me_handed(stall);
 				__real_sceGeListUpdateStallAddr((int)INFLIGHT_STALL[1], (void *)stall);
 			}
 		}
@@ -1925,6 +1935,7 @@ static void defer_drain(void)
 	{
 		stall_forwarded++;
 		list_write_back(stall_me_address); /* build 114: listcachedall */
+		gebusy_me_handed((unsigned int)stall_me_address);
 		__real_sceGeListUpdateStallAddr(stall_me_qid, stall_me_address);
 		stall_me_address = NULL;
 	}
@@ -3007,32 +3018,194 @@ static PSP_MAIN_SIDE volatile unsigned char gebusy_finish_kind = 0;
 static PSP_MAIN_SIDE volatile unsigned long gebusy_kind_us[KINDS];
 static int gebusy_cut = 0;
 
+/* "gebusy2" (gebusy with the Media Engine's lists): when the ME replays the
+frame (gemeon, geinflight), its stall updates pass the wrapper below as the
+ME's work and reach the GE later, from the main CPU, so gebusy's SIGNALs
+timed only what the main CPU kicks itself: the list's finish. Here the ME
+ends each chunk it publishes with a SIGNAL too. The ME reads no clock: every
+time is the main CPU's. Whoever passes an ME stall address to the GE notes
+the time for each chunk that address covers (gebusy_me_handed), and the
+SIGNAL's interrupt closes the chunk as gebusy's do. The SIGNAL's id carries
+the chunk's slot and kind, so the ME writes nothing the main CPU reads from
+its cache: each chunk's stall address and the count go to an uncached board.
+Also kept: the GE's idle time inside a list (it had reached the stall and
+waited for more), and its busy time while the main CPU waited (for the ME's
+job, or at the frame's end for the GE) */
+#define GEBUSY_ME_ID 0x8000
+static int gebusy_me_on = 0, me_tail_on = 0;
+static unsigned int gebusy_me_next = 0; /* the ME's (or its stand-in's) */
+static volatile unsigned int gebusy_me_board_word[GEBUSY_SLOTS + 16] __attribute__((aligned(64)));
+#define GEBUSY_ME_BOARD ((volatile unsigned int *)(0x40000000u | (unsigned int)gebusy_me_board_word))
+static PSP_MAIN_SIDE volatile unsigned int gebusy_me_handed_at[GEBUSY_SLOTS];
+static PSP_MAIN_SIDE unsigned int gebusy_me_marked = 0;
+static PSP_MAIN_SIDE volatile unsigned long gebusy_me_chunks = 0, gebusy_idle_us = 0, gebusy_waited_us[2];
+static PSP_MAIN_SIDE volatile unsigned int gebusy_in_list = 0;
+static PSP_MAIN_SIDE volatile unsigned int gebusy_wait_open = 0, gebusy_wait_which = 0, gebusy_wait_from = 0;
+static PSP_MAIN_SIDE volatile unsigned int gebusy_waited_which = 0, gebusy_waited_from = 0, gebusy_waited_to = 0;
+
+/* how much of [a, b] lies in [c, d] (the clock wraps: differences only) */
+static unsigned int gebusy_span(unsigned int a, unsigned int b, unsigned int c, unsigned int d)
+{
+	unsigned int from = (int)(c - a) > 0 ? c : a, to = (int)(d - b) < 0 ? d : b;
+
+	return (int)(to - from) > 0 ? to - from : 0;
+}
+
 static void gebusy_add(unsigned int start, unsigned int now, int kind)
 {
 	if ((int)(gebusy_last_reached - start) > 0)
 		start = gebusy_last_reached;
+	else if (gebusy_me_on && gebusy_in_list)
+		gebusy_idle_us += start - gebusy_last_reached;
 	if ((int)(now - start) > 0)
 	{
 		gebusy_us += now - start;
 		if (kind >= 0 && kind < KINDS)
 			gebusy_kind_us[kind] += now - start;
+		if (gebusy_me_on)
+		{
+			if (gebusy_waited_to)
+				gebusy_waited_us[gebusy_waited_which] += gebusy_span(start, now, gebusy_waited_from, gebusy_waited_to);
+			if (gebusy_wait_open)
+				gebusy_waited_us[gebusy_wait_which] += gebusy_span(start, now, gebusy_wait_from, now);
+		}
 	}
 	gebusy_last_reached = now;
 }
 
-/* the GE's interrupts (pspgu's callbacks: interrupt context, so only the
+/* the main CPU passes an ME stall address on: each chunk the ME has
+published up to it can start now. Before the call that passes it, so the
+GE can't reach a SIGNAL whose slot still holds an older time. Both the
+forwarding thread and the game thread pass addresses on: interrupts off
+keeps one from cutting into the other. Within a frame the list only grows,
+and a frame's last address covers all of its chunks before the next frame
+publishes any, so the address order is the chunks' order */
+static void gebusy_me_handed(unsigned int stall)
+{
+	unsigned int flags, now, count;
+
+	if (!gebusy_me_on)
+		return;
+	flags = sceKernelCpuSuspendIntr();
+	now = sceKernelGetSystemTimeLow();
+	count = GEBUSY_ME_BOARD[GEBUSY_SLOTS];
+	if (count - gebusy_me_marked > GEBUSY_SLOTS)
+		gebusy_me_marked = count - GEBUSY_SLOTS;
+	while (gebusy_me_marked != count && GEBUSY_ME_BOARD[gebusy_me_marked & (GEBUSY_SLOTS - 1)] <= stall)
+		gebusy_me_handed_at[gebusy_me_marked++ & (GEBUSY_SLOTS - 1)] = now;
+	sceKernelCpuResumeIntr(flags);
+}
+
+/* the main CPU starts (1) or ends (0) a wait: which 0 for the ME's job, 1
+for the GE at the frame's end */
+static void gebusy_wait(int begin, int which)
+{
+	unsigned int flags, now;
+
+	if (!gebusy_me_on)
+		return;
+	flags = sceKernelCpuSuspendIntr();
+	now = sceKernelGetSystemTimeLow();
+	if (begin)
+	{
+		gebusy_wait_which = (unsigned int)which;
+		gebusy_wait_from = now;
+		gebusy_wait_open = 1;
+	}
+	else if (gebusy_wait_open)
+	{
+		gebusy_waited_which = gebusy_wait_which;
+		gebusy_waited_from = gebusy_wait_from;
+		gebusy_waited_to = now;
+		gebusy_wait_open = 0;
+	}
+	sceKernelCpuResumeIntr(flags);
+}
+
+/* on the ME (or its stand-in): the chunk being published ends with a
+SIGNAL. Its id: GEBUSY_ME_ID, the kind, the slot */
+static void *gebusy_me_signal(void *stall)
+{
+	unsigned int slot = gebusy_me_next & (GEBUSY_SLOTS - 1);
+
+	gebusy_inserting = 1;
+	gebusy_stall = stall;
+	sceGuSignal(GU_SIGNAL_NOWAIT, (int)(GEBUSY_ME_ID | ((unsigned int)ge_kind_now & 0x7F) << 8 | slot));
+	gebusy_inserting = 0;
+	stall = gebusy_stall;
+	GEBUSY_ME_BOARD[slot] = (unsigned int)stall;
+	gebusy_me_next++;
+	__asm__ __volatile__("sync");
+	GEBUSY_ME_BOARD[GEBUSY_SLOTS] = gebusy_me_next;
+	return stall;
+}
+
+/* the frame's end on the ME (geinflight): the draws since the last stall
+update sit unpublished until the main CPU's finish, which runs only after
+the next frame's ticks. gebusy2 publishes them here, as a chunk of their
+own; "metail" publishes them here without the instrument */
+static void gebusy_me_tail(void)
+{
+	if ((!gebusy_me_on && !me_tail_on) || !stall_pending)
+		return;
+	gebusy_cut = 1;
+	sceGuGetMemory(4);
+	gebusy_cut = 0;
+}
+
+/* the GE's interrupts (its callbacks: interrupt context, so only the
 clock and a few sums) */
 static void gebusy_signal(int id)
 {
-	gebusy_add(gebusy_handed[id & (GEBUSY_SLOTS - 1)], sceKernelGetSystemTimeLow(), gebusy_kind[id & (GEBUSY_SLOTS - 1)]);
+	if (id & GEBUSY_ME_ID)
+	{
+		gebusy_add(gebusy_me_handed_at[id & (GEBUSY_SLOTS - 1)], sceKernelGetSystemTimeLow(), (id >> 8) & 0x7F);
+		gebusy_me_chunks++;
+	}
+	else
+		gebusy_add(gebusy_handed[id & (GEBUSY_SLOTS - 1)], sceKernelGetSystemTimeLow(), gebusy_kind[id & (GEBUSY_SLOTS - 1)]);
 	gebusy_chunks++;
+	gebusy_in_list = 1;
 }
 
 static void gebusy_finish(int id)
 {
 	(void)id;
+	/* the wait for the finish isn't idle time in the list: the GE had every
+	draw, and only the list's end was still to come */
+	gebusy_in_list = 0;
 	gebusy_add(gebusy_finish_handed, sceKernelGetSystemTimeLow(), gebusy_finish_kind);
 	gebusy_finishes++;
+}
+
+/* gebusy2's own GE callbacks, given to every list in place of pspgu's.
+pspgu's signal callback notes each signal in its settings (a history and its
+count), and those words share a cache line with pspgu's list context, whose
+write position the Media Engine moves as it builds the frame. A SIGNAL from
+the ME's chunk interrupts the main CPU while the ME works, so the main CPU's
+cache took that line, with the position as RAM held it then, and marked it
+dirty. Writing the main CPU's cache back after the ME's frame then put that
+old position back over the ME's, and the frame's finish went to the wrong
+place in the list. The GE never reached it, and the game waited for the GE
+for ever. These touch only the main CPU's own words (PSP_MAIN_SIDE) */
+static PSP_MAIN_SIDE int gebusy_cbid = -1;
+
+static void gebusy_ge_signal(int id, void *arg)
+{
+	(void)arg;
+	gebusy_signal(id & 0xFFFF);
+}
+
+static void gebusy_ge_finish(int id, void *arg)
+{
+	(void)arg;
+	gebusy_finish(id & 0xFFFF);
+}
+
+/* sceGeListEnQueue's wrapper (psp_trace.c): the callbacks a list gets */
+int psp_ge_list_callback(int cbid)
+{
+	return gebusy_cbid >= 0 ? gebusy_cbid : cbid;
 }
 
 static void gebusy_start(void)
@@ -3043,11 +3216,32 @@ static void gebusy_start(void)
 	probes_on = psp_keep("probes") ? 1 : 0; /* build 119 */
 	if (probes_on)
 		platform_log("GE: probes on (the near corner loop, the level's passes, the light draw and the decal calls split by piece)");
-	gebusy_on = psp_keep("gebusy");
+	me_tail_on = psp_keep("metail") ? 1 : 0;
+	if (me_tail_on)
+		platform_log("GE: metail on (the Media Engine publishes the frame's last draws to the GE at its frame's end)");
+	gebusy_me_on = psp_keep("gebusy2") ? 1 : 0;
+	gebusy_on = psp_keep("gebusy") || gebusy_me_on;
 	if (!gebusy_on)
 		return;
-	sceGuSetCallback(GU_CALLBACK_SIGNAL, gebusy_signal);
-	sceGuSetCallback(GU_CALLBACK_FINISH, gebusy_finish);
+	if (gebusy_me_on)
+	{
+		PspGeCallbackData callbacks = { gebusy_ge_signal, NULL, gebusy_ge_finish, NULL };
+
+		gebusy_cbid = sceGeSetCallback(&callbacks);
+		if (gebusy_cbid < 0)
+		{
+			platform_log("GE: gebusy2 off: no GE callbacks of its own (%08x); gebusy alone", (unsigned int)gebusy_cbid);
+			gebusy_cbid = -1;
+			gebusy_me_on = 0;
+		}
+	}
+	if (gebusy_me_on)
+		platform_log("GE: gebusy2 on (the Media Engine's chunks end with a SIGNAL too: the GE's busy time whoever kicks the list; a gebusy2: line after each frameend: line)");
+	else
+	{
+		sceGuSetCallback(GU_CALLBACK_SIGNAL, gebusy_signal);
+		sceGuSetCallback(GU_CALLBACK_FINISH, gebusy_finish);
+	}
 	gebusy_window_start = sceKernelGetSystemTimeLow();
 	platform_log("GE: gebusy on (a SIGNAL every %d draws; the GE's busy time in the frameend: line)", STALL_BATCH);
 }
@@ -3062,7 +3256,16 @@ static void gebusy_window(char *text, int size, unsigned long frames_in_window)
 		return;
 	snprintf(text, size, "; GE busy %.1f ms a frame, %.1f%% of the clock (%lu chunks, %lu finishes)%s",
 		gebusy_us / 1000.0 / n, wall ? 100.0 * gebusy_us / wall : 0.0, gebusy_chunks, gebusy_finishes,
-		PSP_ME_WORK() ? " (not while the ME builds)" : "");
+		gebusy_me_on ? "" : " (the ME's lists not timed: gebusy2)");
+	if (gebusy_me_on)
+	{
+		platform_log("gebusy2: the ME's chunks %.1f a frame, of %.1f; the GE idle in a list %.1f ms a frame; "
+			"busy while the main CPU waited for the ME %.1f, for the GE %.1f ms a frame",
+			(double)gebusy_me_chunks / n, (double)gebusy_chunks / n, gebusy_idle_us / 1000.0 / n,
+			gebusy_waited_us[0] / 1000.0 / n, gebusy_waited_us[1] / 1000.0 / n);
+		gebusy_me_chunks = gebusy_idle_us = 0;
+		gebusy_waited_us[0] = gebusy_waited_us[1] = 0;
+	}
 	{
 		/* build 115: the same time by kind, ms a frame (a line of its own) */
 		char line[420];
@@ -3101,6 +3304,8 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 	list_flush_pending();
 	if (PSP_ME_WORK())
 	{
+		if (gebusy_me_on && !stall_force)
+			stall = gebusy_me_signal(stall);
 		stall_me_qid = qid;
 		stall_me_address = stall;
 		/* geinflight on the Media Engine: the list's lines to RAM, then the
@@ -3136,6 +3341,8 @@ int __wrap_sceGeListUpdateStallAddr(int qid, void *stall)
 			gebusy_handed[slot] = sceKernelGetSystemTimeLow();
 		}
 	}
+	if (stall_force)
+		gebusy_me_handed(~0u); /* a finish covers every chunk the ME published */
 	stall_forwarded++;
 	list_write_back(stall); /* build 114: listcachedall */
 	if ((stall_forwarded & 63) == 0)
@@ -3155,7 +3362,7 @@ chunk of the old kind (a stall update with its SIGNAL; sceGuGetMemory makes
 pspgu update the stall address), so no chunk mixes kinds */
 static void gebusy_kind_cut(int kind)
 {
-	if (gebusy_on <= 0 || kind == ge_kind_now || !stall_pending || PSP_ME_WORK())
+	if (gebusy_on <= 0 || kind == ge_kind_now || !stall_pending || (PSP_ME_WORK() && !gebusy_me_on))
 		return;
 	gebusy_cut = 1;
 	sceGuGetMemory(4);
@@ -20242,7 +20449,13 @@ static int frame_end_list(void)
 	frame is shown. The GE meanwhile has the frame's every draw and waits at
 	the stall, so the picture doesn't wait for it */
 	if (inflight_on && PSP_ME_WORK())
+	{
+		/* gebusy2: the list's last draws (the transparent flush, the TAA
+		resolve) go to the GE with a SIGNAL of their own now, or they would
+		wait for the main CPU's finish untimed */
+		gebusy_me_tail();
 		inflight_finish_left = 1;
+	}
 	else
 	{
 		/* the finish's stall update always reaches the GE */
@@ -20300,7 +20513,9 @@ static void frame_end_show(void)
 		frame's list. Long waits: the GE is the limit (fill, passes); short:
 		the CPU is, and drawing overlapped with the next frame's work would
 		gain little */
+		gebusy_wait(1, 1);
 		sceGuSync(0, 0);
+		gebusy_wait(0, 1);
 		waited = sceKernelGetSystemTimeLow() - mark;
 		ge_wait_us += waited;
 		win_ge_us += waited;

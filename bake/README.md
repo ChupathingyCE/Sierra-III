@@ -119,6 +119,7 @@ as they are).
 |---|---|
 | `--maps c20,bloodgulch,ui` | only these maps (always include `ui`, the menus) |
 | `--multiplayer` | the thirteen multiplayer maps too |
+| `--no-clut4-look` | keep lightmaps and HUD sheets at 256 colours (by default the ones that look the same at 16 colours, under a strict error bar, are baked at 16: smaller maps, a little faster to draw); `--no-clut-look` is the same |
 | `--no-cache` | make every palette afresh (by default a palette made once is kept in `<output>/work/palettes` for the textures that come up again in the asset track's pack and in other maps; the maps come out the same either way) |
 | `--jobs N` | bake N maps at once (default: one per CPU, at most 4, fewer with under 8 GB of memory free; the maps come out the same either way); each map's own log is in `<output>/work/<map>.log` |
 | `--detail fp,vehicles` | also bake `_detail.ptex`, those classes' textures at full size (`fp`, `weapons`, `vehicles`, `characters`), for the launch menu's "asset detail" |
