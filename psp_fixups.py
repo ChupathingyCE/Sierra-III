@@ -28060,14 +28060,15 @@ void sound_cache_idle(
 # The engine already ages a decal by its tag's lifetime: decal_update, run
 # for every decal each drawn frame, fades its intensity over the last
 # decay_time seconds and frees it at lifetime (the Xbox's own path, kept by
-# ChupathingyCE and the port alike). A tag lifetime of 0 means forever (the
-# "decalcensus" line counts the tags met with each), and such a decal stays
-# until the decal vertex cache recycles it, the least recently used first; a
-# long fight fills it with up to 2,048, each aged and drawn every frame its
-# cluster shows. This gives each new dynamic decal whose tag
-# lifetime is 0 or longer a lifetime of its own and a short fade, and the
-# engine's path does the rest. The level's placed decals are made permanent
-# and never pass through here, and decal_update skips permanent decals.
+# ChupathingyCE and the port alike; 0 means forever). The stock tags give
+# minutes (up to 180 s on c20, 300 s on b30), so a long fight makes decals
+# faster than that retires them and fills the decal vertex cache, up to
+# 2,048, each aged and drawn every frame its cluster shows. This gives each
+# new dynamic decal whose tag lifetime is 0 or longer than N seconds a
+# lifetime of N and a short fade, and the engine's path does the rest. Not a
+# restoration: the original keeps them for their tags' lifetimes. The level's
+# placed decals are made permanent and never pass through here, and
+# decal_update skips permanent decals.
 # Keep words: "decalfadeoff": as before; "decalfadeN": N seconds (default
 # 30). "decalcensus": a "decals:" line every 5 s of game time with the live
 # counts and the tag lifetimes met. Campaign only: freeing decals early can
