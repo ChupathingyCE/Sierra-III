@@ -1,4 +1,4 @@
-# Review: the frame shown off the game thread (S10a; keep words `geshow2`, `geshow2nocopy`, `showlat`)
+# Review: the frame shown off the game thread (S10a; keep words `geshow2`, `geshow2copy`, `geshow2nocopy`, `showlat`)
 
 With M6 #2 on (`gedefer geinflight gemeon`), the game thread waits at the next frame's first call (`psp_ge_window_begin` -> `inflight_sync` -> `inflight_wait_me`) for the Media Engine to end frame N. Then, in `frame_end_show`, it waits for the GE's tail (`sceGuSync`) and the swap, and only after that, in `window_begin_main`, does it start the one display list for N+1 and record it. On d40, b40's slow stretches and a10's opening the draw lane binds, so the frame is serial: R + max(T, M + G) + rest (frames_in_flight.md §4b). `geshow2` moves the GE's tail, the show and the list's start to the existing "ge forward" thread, so the game thread records N+1 while the GE finishes N. That's one record buffer, one list and no new memory. It's **off by default**: it needs `geinflight` and `gemeon` (on by default in the campaign build), and it changes input latency, which is Sheepdog01's call. Labels: [M] PSP, [E] emulator, [D] code, [U] inference.
 
@@ -18,7 +18,16 @@ With M6 #2 on (`gedefer geinflight gemeon`), the game thread waits at the next f
 - **What the GE may still read while N+1 is recorded**, kept while `psp_ge_show_busy` is set:
   - textures drawn last frame: `load_into`'s last-resort `recent` is 2, not 1;
   - level copies drawn last frame: `level_stream_let_go_oldest` passes them over and counts them as `spared`;
-  - **the engine's index lists**: a level draw that dropped no triangle handed the GE `dynamic_triangles`' own buffer, which the next walk rewrites. Under `geshow2` the replay copies it into the list first. `geshow2nocopy` leaves it unprotected, for diagnosis only.
+  - **the engine's index lists**: a level draw that dropped no triangle hands the GE `dynamic_triangles`' own buffer, which the next walk rewrites. Under `geshow2` the frames take that buffer from its two ends in turn (below), so the next walk writes the other end. `geshow2copy` brings back the earlier protection, a copy into the list at the replay; `geshow2nocopy` leaves the lists unprotected, for diagnosis only.
+
+## The index buffer from its two ends (`psp_fixups.py` `#highwater`, `#ring`; `psp_ge.c`)
+
+The copy held exactly what plain's GE reads, but it took list room: on a10's fullest stretch the full list then skipped more draws than plain (8,696 against 7,982 over the run) [E], and taking the copy's room with nothing copied changed the pictures as the copy did. So the copy is replaced by a layout that needs neither room nor memory.
+
+- `psp_ring_begin()` (in `rasterizer_dynamic_geometry_begin`, before the engine's reset): under `geshow2`, with one window, it keeps the last frame's use (`psp_ring_kept`) and flips `psp_ring_down`. One frame lays its ranges from the start up, exactly as the engine does; the next from the end down.
+- `psp_ring_place(count, span)` (in `_rasterizer_dynamic_triangles_new`, after the engine's own room test, which is unchanged): if the frame's use with this range would reach the last frame's end of the buffer, `psp_ge_triangles_wait()` waits for the last frame's show (`show2_settle`, counted as the `triangle ring's waits` on the `GE: geshow2:` line) and forgets it. It returns `span` going up, or `MAX - span - count` going down.
+- A frame never wraps, so it has the engine's whole 32,768 triangles, and `triangle_count` stays its own use. A first version wrapped like a ring and counted the tail it left at the wrap; a10's fullest frames (23,051 triangles, single ranges near 8,000) then overflowed the engine's test ("too many dynamic triangles"), dropped their later draws, and changed the pictures [E]. Two ends can't leave a tail.
+- Two windows a frame (split screen) turn it off: a second window's walk rewrites the first's before its show, as the engine's reset does. A frame with it off is laid from the start, so the next one goes down.
 - **`showlat`** (a separate word, for both sides of an A/B): each frame's time from its window's start (ticks done, camera set) to the swap that shows it. It goes on a `GE: showlat:` line every 300 frames and on the heartbeat's `frameend` line.
 
 ## §7.3's ordering items, and how each is kept [D]
@@ -48,6 +57,18 @@ With M6 #2 on (`gedefer geinflight gemeon`), the game thread waits at the next f
   - With `geshow2nocopy` the pictures come back within about the plain spread, so **the index copy is what changes them**. How identical indices, copied into the list's cached room, draw differently in the emulator is **not yet found** [U]. Suspects: the cached-line creation (`list_take`'s 0x18 lines) under the replay, or the copy coming before `angle_sort`. Until it's explained, `geshow2` is not proven picture-exact, and default-on waits for it. It's harmless while off.
 - The emulator's ME is simulated: the job runs inside the hand-over, so the hand-over waits out the GE's tail on the game thread there. Neither the frame time nor `showlat` from the emulator prices the change. d40's `showlat`: 64-69 ms plain, 70-75 `geshow2`, in emulator milliseconds.
 - Index copies: d40 22 draws a frame, ~27.5 KB of list a frame; b30 ~12.6 KB; b40 0; a10 ~1.7 KB. They stay well inside the 768 KB list (d40 168 -> 197 KB a frame).
+
+**The two ends [E]** (emupool, one batch; PGO campaign-w140c, bake b140x; `nearauto assettrack geo2 fixedticks fixedseed statecrc framecrc nomouth showlat exitat200 readswait`, plain against `+ geshow2`, every run reached game time 5,943-5,996):
+
+| | plain / plain again | plain / two ends (2 runs) | plain / `geshow2copy` |
+|---|---|---|---|
+| a10 frames differing (of ~2,985) | 3 | 2, 2 | 119 |
+| a10 draws skipped, list full | 7,982 / 7,982 | 7,982, 7,982 | 8,696 |
+| d40 frames differing (of ~2,995) | 9 | 8 | |
+
+- Play and both random seeds are identical at all 6,000 ticks on every run. No "too many dynamic triangles". The engine's peak use is plain's (a10 23,051, d40 12,020).
+- The copy's clusters at a10 game time 1,240-1,306 and 3,182-3,346 (0 list-full skips on either side, yet the copy's room alone changed them) are gone too, under both layouts tried (the wrapping one put the index lists at other addresses each frame). So what changed those pictures follows the display list's layout, not where the index lists lie [E]. Nothing in a game frame places a texture or palette in the list (only the loading notice does) [D], so the likelier reader is a draw that reads list bytes it didn't write, which plain would carry too; not found [U].
+- **The cost:** a range waits only when two frames together pass 32,768 triangles. a10: 202 waits, all in its fullest 300 frames (game time ~4,200-4,800); there the game thread waits for the show 7.7 ms a frame against the copy's 0.8 (emulator time: the emulator's ME and GE don't price it). d40: none. On those frames the walk loses `geshow2`'s overlap with the GE's tail; the PSP prices it [U].
 
 **Compiles:** campaign PGO (build2), `PSP_MULTIPLAYER=1` and `PSP_METRICS=0` (build) of dc67317; the merge with w140 bc12443 (015c471, build). `pgo_mismatch.txt` lists the changed psp_ge.c functions (`psp_ge_draw_level_body`, `frame_end_show`, `defer_drain`, the forwarder and others): **a strict release link needs a new profile**. The PSP pairs run with `allowmismatch=yes`. Both sides run one EBOOT, so the A/B is fair.
 
