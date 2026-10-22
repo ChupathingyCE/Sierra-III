@@ -1,6 +1,6 @@
-# Review: aicad2 and lodpsp (two compromises, both off by default)
+# Review: aicad2 and aicad3 (AI thinking at half rate; compromises, off by default)
 
-Both are compromises under the look rule (CLAUDE.md: approximate the original's look and feel; a compromise is priced like any lever, built off behind its keep word and shown to the owner as an A/B). Neither changes anything with its word off. Both are campaign-only in effect: `aicad2` is compiled out of action in the multiplayer build and ignored in networked games; `lodpsp` changes only what is drawn.
+Both are compromises under the look rule (CLAUDE.md: approximate the original's look and feel; a compromise is priced like any lever, built off behind its keep word and shown to the owner as an A/B; AI thinking less often ships only after an A/B shows it breaks nothing). Neither changes anything with its word off. Both are campaign only: compiled out of action in the multiplayer build and ignored in networked games. `aicad3` is the one for the A/B; `aicad2` failed its outcome census and is kept for comparison. The emulator's `aioutcome` census (recon builds) comes with them.
 
 ## 1. `aicad2`: each actor thinks on every other tick (lever AICAD)
 
@@ -21,19 +21,19 @@ Every tick still runs `actor_general_update`, `actor_input_update`, perception's
 
 **Price [U, before the read].** ai_update is 25.1-29.6 ms a frame on b30 on the PSP [M], of it thinking ~78% [E]; halving it is ~10-12 ms a frame on b30, ~7 on d20, ~2 on c20, if the halving is linear.
 
-**Evidence:** emulator gain and outcome census: section 3 (to fill from the batches).
+**Evidence:** section 4. aicad2 is kept as it was built; `aicad3` (section 2b) is the one to test.
 
-## 2. `lodpsp`: models' detail picked 1.76x nearer (lever LODS)
+## 2. `aicad3`: the same rest, the timeslice at full rate
 
-**Already in the port [D].** Since early builds the level-of-detail pixels are measured on the PSP's 272 lines (`object_get_level_of_detail_pixels`, `FIXES_19` `#lod`: the frustum's pixel count x 272/480; `fulllod` turns it off). So the port already picks lower levels 1.76x nearer than the Xbox, at the size models really appear.
+**What it changes from aicad2.** `actor_get_timeslice` runs every tick, before the rest test, exactly as without the word (no 2-in-4 gate), and the actor that wins the slot thinks whole that tick. So the firing-position search that sends an actor to cover, and the path re-plan, come round as often as in the original; only the other actors' decision loop, situation and prop service rest on alternate ticks. The ray queue asks before the slot is given, so for the holder it can queue a ray from last tick's answer; at worst that ray goes unused (the queued answer is taken only when it matches the call bit for bit). The census line adds `timeslice N`: resting turns kept because the actor held the slot.
 
-**What `lodpsp` adds.** The same factor again (x (272/480)^2 in all), so lower levels come in 1.76x nearer than now (3.1x nearer than the Xbox) and the smallest objects drop out sooner. Shadows follow the same pixels. This is what the model census counted as "LODS" (it scaled the pixels the renderer had already scaled). It is a compromise for the GE-bound cinematics (b40's opening above all), not a correction: the owner's call after an A/B.
+**Why.** aicad2 sent marines to cover half as often, and the beach went worse for them (section 4). The search is the one part of thinking whose delay a fight feels: it decides where a unit stands.
 
-**Key line:** render_objects.c, `object_get_level_of_detail_pixels`: `* (PSP_KEEP_ONCE("lodpsp") ? (272/480)^2 : 272/480)`.
+## 3. `lodpsp`
 
-**Price [E/U].** b40 cinematic model vertices -15.7% [E] x the models' GE time there (~16 ms a frame [M]) = at most ~2.5 ms a frame where the GE binds; ~0 on play stretches (draws at the top level already).
+In w140 on its own (`FIXES_LODPSP`, `docs/review_lodpsp.md`); this branch no longer carries it. Its look evidence (the b40 shots below) is that review's too.
 
-## 3. Evidence
+## 4. Evidence
 
 **The gain [E, cache model, hands-off fixedticks fixedseed nomouth, one run a side].** ai_update in ms a tick of the emulator's clock (profile windows), off against `aicad2`:
 
@@ -57,7 +57,7 @@ The tick phase's cycles (fetches + 72 D-misses + 64 I-misses) fall 12.9% on b30,
 | aicad2 b | **0** | **6** | no | no | no |
 | aicad2 c | 3 | 1 | no | 9,597 | no |
 
-Everything scripted later (save_beach_5, the shaft and valley placements, shaftB at 13,084) comes at the same tick in all six. No far actor stuck, no crash. But the beach fight goes worse for the marines in every `aicad2` run: the covenant are never cleared, the beach's first save is never written, and one run loses every marine, where the off runs' worst is 6 marines and one covenant left. **That is outside the runs' own spread: `aicad2` as built breaks the beach fight, so it isn't ready for the owner's A/B.**
+Everything scripted later (save_beach_5, the shaft and valley placements, shaftB at 13,084) comes at the same tick in all six. No far actor stuck, no crash. But the beach fight goes worse for the marines in every `aicad2` run: the covenant are never cleared, the beach's first save is never written, and one run loses every marine, where the off runs' worst is 6 marines and one covenant left. **That is outside the runs' own spread: `aicad2` as built breaks the beach fight, so it isn't ready for the owner's A/B** (but see "aicad2 looked again" below).
 
 **Why, most likely [U].** On the beach the marines and the covenant both think half as often, but the timeslice (the firing-position search that sends a marine to cover) comes round half as often too, and a marine out of cover dies; the covenant, with more units, are hurt less by the same delay. The next build to try keeps the timeslice at its full rate and rests only the decision loop, situation and prop service (or exempts actors near a player, as farslice did); it removes less (the search is about half of the decisions' time [E]).
 
@@ -67,7 +67,40 @@ Everything scripted later (save_beach_5, the shaft and valley placements, shaftB
 
 **Compiles:** campaign, recon and `PSP_METRICS=0` builds of this branch succeed.
 
-## 4. The owner's A/B
+### aicad3
 
-- **`aicad2` on b30:** not yet: it fails the outcome census above. A narrower build first (timeslice at full rate), its census, then the PSP pair.
-- **`lodpsp` on b40's opening:** keepsets `- | lodpsp`, repeat 2, and the emulator's screenshots side by side.
+**The gain [E, cache model as above, one run a side].**
+
+| Map, stretch | Off | aicad3 | Removed | (aicad2) |
+|---|---|---|---|---|
+| b30, flight and landing | 4.79 | 4.09 | 0.70 (15%) | 34% |
+| b30, beach (the fights part) | 2.57 | 1.88 | 0.69 (27%) | 42% |
+| d20, swamp route | 1.74 | 1.57 | 0.17 (10%) | 33% |
+| c20, route to 120 s | 1.35 | 1.40 | none | 18% |
+
+Tick-phase cycles: b30 -6.4%, d20 -0.5%, c20 -3.1%. Rested: 47% of b30's actor updates (2,093 resting turns kept by the slot), 20% on d20 and 25% on c20, where swarms, dormant and charging actors think every tick. Keeping the search at full rate gives back about half of aicad2's gain on b30 and most of it elsewhere: the search is the costly part of thinking [E].
+
+**What that could be on the PSP [U].** b30's ai_update is 25.1-29.6 ms a frame [M]; 15% of it on the flight is ~3.8-4.4 ms a frame, and 27% on the beach ~6.8-8.0, against the A/A floor (one side's own spread: flight 2.5, landing 3.4, beach 3.0 ms). The flight's gap should clear its floor narrowly; the landing's may not. The beach's would clear it easily, but the fights part there, so it is the less reliable stretch.
+
+**The outcomes [E, the same census, three runs a side plus a fixed pair].**
+
+| Run | Marines at gt 5,700 | Covenant left | beach_lz_marine cleared | save_beach_lz | save_beach_1 |
+|---|---|---|---|---|---|
+| off a | 0 | 5 | no | no | no |
+| off b | 4 | 1 | no | 4,922 | no |
+| off c | 5 | 1 | no | 4,712 | no |
+| off, fixed seed | 6 | 1 | no | 4,352 | no |
+| aicad3 a | 6 | 0 | 4,205 | 4,207 | 5,790 |
+| aicad3 b | 7 | 0 | 4,239 | 4,242 | 5,790 |
+| aicad3 c | 5 | 0 | 4,566 | 4,567 | 5,790 |
+| aicad3, fixed seed | 5 | 0 | 4,437 | 4,442 | 5,790 |
+
+Everything scripted later (save_beach_5 at 6,750, the valley at 6,660, shaftB at 10,775) comes at the same tick in all eight; no far actor stuck, no crash. With `aicad3` the beach is cleared in all four runs, and with the defaults in none of these four. Off's spread over both censuses is wide: 0-8 marines, 0-5 covenant left, beach cleared in 2 of 7. `aicad3` sits inside it, at its better end. The fixed pair parts at game time 45 s, in the first fight, as any change to the AI's timing would. **Verdict: `aicad3` breaks nothing the census can see; it goes to the owner's A/B.**
+
+**aicad2 looked again.** This census's off runs did worse than the first's (one lost every marine, as one aicad2 run did). So aicad2's 7/0/3 is at the worse end of off's spread rather than clearly outside it, but it never cleared the beach or wrote save_beach_1 in three runs. It stays built and untested on the PSP.
+
+## 5. The owner's A/B
+
+- **`aicad3` on b30:** one PSP job, keepsets `- | aicad3`, repeat 2, b30's timed route, nomouth on both sides. Read the flight first (its gap should be ~4 ms against a floor of 2.5), then the landing and the beach; not the opening cinematic, which has favoured one side in A/A pairs. Then play b30's beach and d20 by hand with the word on: marines take cover and hold the beach, enemies flank and take cover as usual, nothing stands idle.
+- **`aicad2`:** no PSP time; kept for comparison.
+- **`lodpsp`:** the emulator side-by-sides (`docs/review_lodpsp.md`).
