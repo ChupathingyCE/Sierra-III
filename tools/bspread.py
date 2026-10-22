@@ -35,7 +35,8 @@ def load(map_path, pgeo_path, which=0):
     bf = fo(d, 'ScenarioStructureBSP')
     so = tr(base)
     sn, sp = struct.unpack_from('<iI', m.data, so + bf['surfaces'])
-    surfaces = np.frombuffer(m.data, '<u2', sn * 3, tr(sp)).reshape(sn, 3)
+    # a BSP without surfaces may leave their pointer 0
+    surfaces = np.frombuffer(m.data, '<u2', sn * 3, tr(sp)).reshape(sn, 3) if sn > 0 else np.zeros((0, 3), '<u2')
     ln, lp = struct.unpack_from('<iI', m.data, so + bf['lightmaps'])
     lmf = fo(d, 'ScenarioStructureBSPLightmap')
     mf = fo(d, 'ScenarioStructureBSPMaterial')

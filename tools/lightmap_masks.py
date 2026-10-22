@@ -66,6 +66,8 @@ def page_masks(map_path, pgeo_path, sizes):
     d = Defs()
     m = CacheMap(map_path)
     pack = open(pgeo_path, 'rb').read() if pgeo_path and os.path.exists(pgeo_path) else b''
+    # a slim pack's rendered vertices are 24 bytes (levelslim.py); the lightmap's follow them
+    stride = 24 if len(pack) >= HEADER and struct.unpack_from('<I', pack, 40)[0] & 0x10 else 32
     scn = m.tags[m.scenario_id & 0xffff]
     sf = fo(d, 'Scenario')
     bf = fo(d, 'ScenarioStructureBSP')
@@ -105,7 +107,8 @@ def page_masks(map_path, pgeo_path, sizes):
                 if key >= PACK_BASE:
                     if not pack:
                         continue
-                    raw = pack[HEADER + key - PACK_BASE + rcount * 32: HEADER + key - PACK_BASE + rcount * 32 + lcount * 8]
+                    at = HEADER + key - PACK_BASE + rcount * stride
+                    raw = pack[at:at + lcount * 8]
                 else:
                     raw = m.data[tr(key) + rcount * 32: tr(key) + rcount * 32 + lcount * 8]
                 lm = np.frombuffer(raw, np.uint8).reshape(lcount, 8)
