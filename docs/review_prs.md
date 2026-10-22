@@ -25,3 +25,7 @@
 **Cost and risk:** one header read and two compares per visited object (`object_get` read the header before too). The walk's PGO counts no longer match its code until the next profile is made, so a `PSP_PGO_STRICT=1` link lists this function until then. Multiplayer: the skip is exact, so it leaves the simulation as it was [D]; it compiles into `PSP_MULTIPLAYER=1`. The rest of the saving (not reading the header or the datum at all, from typed cluster lists) waits on RT1.
 
 **Credit:** after halo-ce-vita's perception count, by BirchWoodGod (`docs/research/research_vita_insider16.md`, S2).
+
+## On w140 0d82d9a (prs2, 2026-10-22) [E]
+
+PRS's four commits cherry-picked onto w140 0d82d9a (M6 #2 and geshow3 on by default); one conflict, the fixups group list (FIXES_PRS kept, before FIXES_RECON). Lab batch prs3 39736917074 (b30 and a30 on their timed routes, c20 hands off, fixedticks fixedseed statecrc nomouth, to game time 125 s): **play and both random seeds identical at all 3,750 ticks** on vs `percall` and `prscheck` vs `percall`, on all three maps; `prscheck` passed over 1,209,739 (b30), 246,060 (c20) and 230,700 (a30) objects with 0 differences; strict 0 sites. The whole-state hash parts on vs off in allocations only, as it did on prs1. Compiles: campaign PGO 39736902863 ok (heap 5,764 KB), PSP_METRICS=0 39736907221 ok (5,772 KB); 87 functions without counts against the base's 86.
