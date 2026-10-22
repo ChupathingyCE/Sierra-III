@@ -332,6 +332,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		/* once the GE draws, a model part's static geometry goes to it, in a
 		warm flat color per shader (psp_fixups.py) */
 		extern int psp_ge_active(void);
+		extern int psp_rso_volatile;
 		extern boolean psp_model_draw(struct triangle_buffer const *, long, struct vertex_buffer const *, unsigned int,
 			unsigned int, float, float, int);
 		extern unsigned int psp_tex_bitmap_key(long, int);
@@ -415,6 +416,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				short glow_source = *(short const *)(definition + 112);
 				int channel;
 
+				/* the glow follows the time only where its two colours differ:
+				only then are the records not kept (psp_ge.c, rso) */
+				if (lower[0] != upper[0] || lower[1] != upper[1] || lower[2] != upper[2])
+					psp_rso_volatile |= 1;
 				for (channel = 0; channel < 3; channel++)
 					glow[channel] = lower[channel] + (upper[channel] - lower[channel]) * fraction;
 				if (glow_source >= 1 && glow_source <= 4 && psp_change_colors_valid)
@@ -495,6 +500,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			psp_model_draw_us[2]++;
 			if (drawn)
 				return;
+			psp_rso_volatile |= 2; /* the Xbox path: nothing the rso keeps (psp_ge.c) */
 		}
 	}
 #endif
@@ -613,11 +619,13 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 
 		if (psp_ge_active())
 		{
+			extern int psp_rso_volatile;
 			float u_scale, v_scale, u_offset, v_offset;
 			short blend;
 			unsigned int key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale,
 				&u_offset, &v_offset, &blend);
 
+			psp_rso_volatile |= 4; /* a see-through part, drawn by the frame's time and order: not kept (psp_ge.c, rso) */
 			if (sort_filth)
 				*(short *)((char *)sort_filth + 8) = NONE;
 			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
@@ -1885,6 +1893,9 @@ otherwise; NULL when the cache hasn't read them yet, and the draw is left
 for a frame */
 void *psp_vertex_lock(const struct vertex_buffer *buffer);
 void *psp_index_lock(const struct triangle_buffer *buffer);
+/* psp_ge.c (rso): a kept walk's buffers, as its parts are locked */
+extern int psp_rso_capturing;
+void psp_rso_geometry(const void *vertex_buffer, const void *triangle_buffer);
 void *psp_level_vertices(const struct vertex_buffer *buffer);
 void *psp_geo_lock(unsigned int address, unsigned int size);
 unsigned int psp_geo_level_stride(void);
@@ -2115,6 +2126,8 @@ boolean psp_model_draw(
 	indices = psp_index_lock(triangle_buffer);
 	if (!indices)
 		return psp_geometry_missing();
+	if (psp_rso_capturing)
+		psp_rso_geometry(vertex_buffer, triangle_buffer);
 	psp_ge_draw_model(vertices, vertex_buffer->count, vertex_buffer->type == _rasterizer_vertex_type_model_uncompressed,
 		(const unsigned short *)indices, strip ? triangle_count + 2 : 3 * triangle_count, strip, color, base_key,
 		u_scale, v_scale, alpha_tested);
@@ -29145,6 +29158,212 @@ FIXES_OCEAN["source/rasterizer/rasterizer.c#oceanfog"] = [
 ]
 
 
+# ---------- FIXES_RSO: a still object's records sent again ("rso", psp_ge.c)
+# render_model's inputs for an object, byte for byte, are the key: when they
+# equal the ones its kept records were made from, psp_ge.c sends those
+# records and the walk (the relative node matrices, the parts, the shaders'
+# keys and colours) is skipped. render_objects.c offers the object
+# (scenery, or every type with "rsoall"); render_model makes the key only
+# where the walk depends on nothing else: no point lights (their list is the
+# frame's), no effect, no first-person, shadow or sky flag, no debug view,
+# no cortana hack, at most PSP_RSO_NODES nodes
+FIXES_RSO = {}
+FIXES_RSO["source/models/models.c#rso"] = [
+("""void render_model(
+	long model_index,""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RSO) */
+#define PSP_RSO_NODES 16
+#define PSP_RSO_REGIONS 16
+extern long psp_rso_object;
+int psp_rso_find(long object_index, unsigned int const **kept, unsigned int *kept_words);
+int psp_rso_reuse(long object_index, int same);
+unsigned int *psp_rso_capture_end(unsigned int key_words);
+
+/* whether the walk reads only render_model's inputs, the model's tag data
+and the map's constants: no point lights (their list is the frame's), no
+effect, no first-person, shadow, sky or immediate flag, no debug view */
+static boolean psp_rso_keyable(real_matrix4x3 const *node_matrices, short node_count, short region_count,
+	struct render_lighting const *lighting, struct render_model_effect const *model_effect, unsigned long flags)
+{
+	return node_matrices && node_count > 0 && node_count <= PSP_RSO_NODES && region_count >= 0 &&
+		region_count <= PSP_RSO_REGIONS && !(flags & ~FLAG(_render_model_no_planar_fog_bit)) &&
+		lighting->point_light_count == 0 && model_effect->type == 0 /* none (render_objects.c's enum) */ &&
+		!rasterizer_model_cortana_hack && rasterizer_debug_options.debug_model_lod == NONE && !render_model_nodes &&
+		!render_model_markers && !render_model_vertex_counts && !render_model_index_counts && !render_model_no_geometry;
+}
+
+/* the key: the bytes of render_model's inputs that the walk reads, packed in
+words. The words before a field fix its length (the model index its region
+count, the node count its matrices), so two keys of different inputs differ
+before either is read past its end. Left out: the lighting's and the
+effect's padding, the point light indices (none are read with no point
+lights), and the effect's type (none). With key NULL, only its words,
+counted by the same fields so the length can't drift from them; with
+fill, written there; else compared there in place, which stops at the first
+difference: 0 if they differ, else the words */
+static unsigned int psp_rso_key(
+	unsigned int *key,
+	unsigned int kept_words,
+	boolean fill,
+	long model_index,
+	struct model const *model,
+	real level_of_detail_pixels,
+	real_matrix4x3 const *node_matrices,
+	short node_count,
+	char const *region_permutation_indices,
+	short region_count,
+	real_rgb_color const *change_colors,
+	real const *function_values,
+	struct render_lighting const *lighting,
+	real_point3d const *centroid,
+	real radius,
+	struct render_model_effect const *model_effect,
+	short forced_shader_permutation_index,
+	unsigned long flags)
+{
+	unsigned int at = 0, head[5];
+	short level = NUMBER_OF_DETAIL_LEVELS_PER_MODEL - 1;
+	unsigned int effect_bytes = (unsigned int)((char const *)(model_effect + 1) - (char const *)&model_effect->intensity);
+
+#define PSP_RSO_FIELD(pointer, bytes) \
+	do { \
+		unsigned int psp_rso_bytes = (unsigned int)(bytes); \
+		if (!key) \
+			; \
+		else if (fill) \
+		{ \
+			key[at + (psp_rso_bytes + 3) / 4 - 1] = 0; \
+			csmemcpy(key + at, (pointer), psp_rso_bytes); \
+		} \
+		else if (at + (psp_rso_bytes + 3) / 4 > kept_words || memcmp(key + at, (pointer), psp_rso_bytes)) \
+			return 0; \
+		at += (psp_rso_bytes + 3) / 4; \
+	} while (0)
+
+	while (level > 0 && level_of_detail_pixels < model->detail_cutoff_pixels[level])
+		level--;
+	head[0] = (unsigned int)model_index;
+	head[1] = ((unsigned int)(unsigned short)level << 16) | (unsigned short)forced_shader_permutation_index;
+	head[2] = (unsigned int)flags;
+	head[3] = ((unsigned int)(unsigned short)lighting->distant_light_count << 16) | (unsigned short)node_count;
+	head[4] = (unsigned int)region_count;
+	PSP_RSO_FIELD(head, sizeof(head));
+	if (region_count)
+		PSP_RSO_FIELD(region_permutation_indices, region_count);
+	PSP_RSO_FIELD(&lighting->ambient_color, sizeof(lighting->ambient_color));
+	PSP_RSO_FIELD(lighting->distant_lights, sizeof(lighting->distant_lights));
+	PSP_RSO_FIELD(&lighting->reflection_tint_color, (char const *)(lighting + 1) - (char const *)&lighting->reflection_tint_color);
+	PSP_RSO_FIELD(&model_effect->intensity, effect_bytes);
+	PSP_RSO_FIELD(centroid, sizeof(*centroid));
+	PSP_RSO_FIELD(&radius, sizeof(radius));
+	PSP_RSO_FIELD(change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
+	PSP_RSO_FIELD(function_values, NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS * sizeof(real));
+	PSP_RSO_FIELD(node_matrices, node_count * sizeof(real_matrix4x3));
+#undef PSP_RSO_FIELD
+	return !key || fill || at == kept_words ? at : 0;
+}
+#endif
+
+void render_model(
+	long model_index,"""),
+("""		if (!centroid)
+		{
+			centroid = &node_matrices->position;
+		}
+""",
+"""		if (!centroid)
+		{
+			centroid = &node_matrices->position;
+		}
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_RSO): the records kept for these inputs, sent
+		again in place of the walk (psp_ge.c, rso) */
+		boolean psp_rso_walk = FALSE;
+		short psp_rso_regions = (short)MIN(model->regions.count, region_permutation_count);
+
+		if (psp_rso_object != NONE && psp_rso_object == unique_identifier)
+		{
+			unsigned int const *kept;
+			unsigned int kept_words;
+
+			psp_rso_object = NONE;
+			if (psp_rso_keyable(node_matrices, node_count, psp_rso_regions, lighting, model_effect, flags) &&
+				psp_rso_find(unique_identifier, &kept, &kept_words))
+			{
+				int same = kept && psp_rso_key((unsigned int *)kept, kept_words, FALSE, model_index, model,
+					level_of_detail_pixels, node_matrices, node_count, region_permutation_indices, psp_rso_regions,
+					change_colors, function_values, lighting, centroid, radius, model_effect,
+					forced_shader_permutation_index, flags) != 0;
+				int reuse = psp_rso_reuse(unique_identifier, same);
+
+				if (reuse > 0)
+				{
+					rasterizer_model_cortana_hack = FALSE;
+					profile_exit(render_model_section);
+					return;
+				}
+				psp_rso_walk = reuse == 0;
+			}
+		}
+#endif
+"""),
+("""			rasterizer_model_end();
+		}
+	}
+
+	rasterizer_model_cortana_hack = FALSE;""",
+"""			rasterizer_model_end();
+		}
+#ifdef HALO_PSP
+		if (psp_rso_walk)
+		{
+			/* psp_fixups.py (FIXES_RSO): the walk kept, and its key written
+			into the entry (the inputs are as they were before the walk) */
+			unsigned int words = psp_rso_key(NULL, 0, FALSE, model_index, model, level_of_detail_pixels,
+				node_matrices, node_count, region_permutation_indices, psp_rso_regions, change_colors,
+				function_values, lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+			unsigned int *key = psp_rso_capture_end(words);
+
+			if (key)
+				(void)psp_rso_key(key, words, TRUE, model_index, model, level_of_detail_pixels, node_matrices,
+					node_count, region_permutation_indices, psp_rso_regions, change_colors, function_values,
+					lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+		}
+#endif
+	}
+
+	rasterizer_model_cortana_hack = FALSE;"""),
+]
+FIXES_RSO["source/render/render_objects.c#rso"] = [
+("""					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+""",
+"""					{
+						/* psp_fixups.py (FIXES_RSO): this object's records may be kept (psp_ge.c, rso) */
+						extern long psp_rso_object;
+						extern int psp_rso_on, psp_rso_all;
+
+						psp_rso_object = psp_rso_on && (psp_rso_all || object->object.type == _object_type_scenery) ?
+							object_index : NONE;
+					}
+					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+"""),
+("""					if (debug_objects)
+""",
+"""					{
+						extern long psp_rso_object;
+
+						psp_rso_object = NONE; /* psp_fixups.py (FIXES_RSO) */
+					}
+					if (debug_objects)
+"""),
+]
+
+
 # ---------- FIXES_LFS: the level's lens-flare markers, their axes worked out
 # only when kept, and remembered by their direction bytes
 # rasterizer_lens_flare_submit_for_cluster worked out each marker's direction
@@ -29745,7 +29964,7 @@ static void actor_perception_refresh_test_object(
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
