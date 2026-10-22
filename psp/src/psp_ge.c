@@ -415,9 +415,10 @@ static volatile int show2_asked = 0;
 /* the replay copies the engine's index lists into the list (the ME reads it:
 set once, before the first hand-over) */
 static int show2_copy_indices = 0;
-/* the engine's index buffer a ring that waits for the show instead
-(psp_ring_place, psp_fixups.py): the copy took list room, and a10's full
-list then skipped draws plain draws. Keep word "geshow2copy": the copy */
+/* the engine's index buffer taken from its two ends in turn, waiting for
+the show, instead (psp_ring_place, psp_fixups.py): the copy took list room,
+and a10's full list then skipped draws plain draws. Keep word "geshow2copy":
+the copy */
 static int show2_ring = 0;
 static PSP_MAIN_SIDE unsigned long show2_ring_waits = 0;
 static PSP_MAIN_SIDE int show2_owed = 0; /* a show asked whose end the game thread hasn't taken yet */
@@ -1921,7 +1922,7 @@ static void inflight_hand_over(void)
 			show2_ring = !psp_keep("geshow2copy") && !psp_keep("geshow2nocopy");
 			show2_copy_indices = !show2_ring && !psp_keep("geshow2nocopy");
 			platform_log("GE: geshow2: the frame shown, and the list started again, by the forwarding thread while the game thread records the next%s",
-				show2_ring ? "; the engine's index buffer a ring that waits for the show" :
+				show2_ring ? "; the engine's index buffer from its two ends in turn, waiting for the show" :
 				show2_copy_indices ? "; geshow2copy: the engine's index lists copied into the list" :
 				"; geshow2nocopy: the engine's index lists handed to the GE as they are (the GE may draw a later frame's)");
 		}

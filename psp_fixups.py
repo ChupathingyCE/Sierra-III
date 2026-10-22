@@ -6304,47 +6304,39 @@ void psp_dynamic_triangles_release(
 }
 
 /* geshow2: the GE may still draw the last frame's triangles while this
-frame's walk asks for its own, so under geshow2 the index buffer is a ring
-(psp_ge_triangle_ring): each frame goes on where the last ended, wrapping to
-the start, and a range that would reach the last frame's waits for its show.
-dynamic_triangles.triangle_count stays the frame's own span, so the engine's
-overflow test keeps its meaning (the tail left at a wrap counts in it). One
-window a frame only: a second window's walk would rewrite the first's before
-its show, as the engine's reset does */
+frame's walk asks for its own, so under geshow2 the frames take the index
+buffer from its two ends in turn (psp_ge_triangle_ring): one frame from the
+start up, as the engine lays it out, the next from the end down. A range that
+would reach the last frame's waits for its show. A frame never wraps, so its
+whole room is the engine's (a ring's tail left at a wrap overflowed a10's
+fullest frames), and dynamic_triangles.triangle_count stays the frame's own
+use for the engine's overflow test. One window a frame only: a second
+window's walk would rewrite the first's before its show, as the engine's
+reset does */
 extern int psp_ge_triangle_ring(void);
 extern void psp_ge_triangles_wait(void);
-static int psp_ring_on = 0;
-static long psp_ring_next = 0, psp_ring_kept = 0;
+static int psp_ring_on = 0, psp_ring_down = 0;
+static long psp_ring_kept = 0;
 
 static void psp_ring_begin(void)
 {
 	psp_ring_on = psp_ge_triangle_ring() && main_get_window_count() == 1;
 	psp_ring_kept = psp_ring_on ? dynamic_triangles.triangle_count : 0;
-	if (!psp_ring_on)
-		psp_ring_next = 0;
+	/* the last frame's end of the buffer is the other one: after a frame
+	the engine laid out, from the start, the next goes down from the end */
+	psp_ring_down = psp_ring_on && !psp_ring_down;
 }
 
-/* the range's first triangle, or NONE when the frame has no room; *span
-the frame's span with it */
-static long psp_ring_place(long count, long span, long *new_span)
+/* the range's first triangle; the caller has checked the frame's room
+(span + count within the buffer) */
+static long psp_ring_place(long count, long span)
 {
-	long start = psp_ring_next, grown = span + count;
-
-	if (start + count > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES)
-	{
-		grown += RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - start;
-		start = 0;
-	}
-	if (grown >= RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES)
-		return NONE;
-	if (psp_ring_kept && grown > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - psp_ring_kept)
+	if (psp_ring_kept && span + count > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - psp_ring_kept)
 	{
 		psp_ge_triangles_wait();
 		psp_ring_kept = 0;
 	}
-	psp_ring_next = start + count;
-	*new_span = grown;
-	return start;
+	return psp_ring_down ? RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - span - count : span;
 }
 #endif
 
@@ -6367,48 +6359,19 @@ void rasterizer_dynamic_geometry_begin(
 """),
 ]
 FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#ring"] = [
-("""		if (dynamic_triangles.triangle_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES-count &&
-			dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
-		{
-			struct dynamic_triangle_buffer *dynamic_triangle_buffer;
-
-			dynamic_triangle_buffer_index = dynamic_triangles.buffer_count;
-			dynamic_triangle_buffer =
-				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+("""				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
 			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
 			dynamic_triangle_buffer->triangle_count = count;
-			dynamic_triangles.triangle_count += count;
 """,
- """#ifdef HALO_PSP
-		/* geshow2's ring (psp_ring_place); otherwise the engine's own test */
-		long psp_start = dynamic_triangles.triangle_count, psp_span = dynamic_triangles.triangle_count + count;
-
-		if (psp_ring_on && dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
-			psp_start = psp_ring_place(count, dynamic_triangles.triangle_count, &psp_span);
-		if (psp_start != NONE && psp_span<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES &&
-			dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
-		{
-			struct dynamic_triangle_buffer *dynamic_triangle_buffer;
-
-			dynamic_triangle_buffer_index = dynamic_triangles.buffer_count;
-			dynamic_triangle_buffer =
-				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
-			dynamic_triangle_buffer->triangle_start_index = psp_start;
-			dynamic_triangle_buffer->triangle_count = count;
-			dynamic_triangles.triangle_count = psp_span;
+ """				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+#ifdef HALO_PSP
+			/* the engine's own room test above; geshow2's two ends place the range */
+			dynamic_triangle_buffer->triangle_start_index = psp_ring_on ?
+				psp_ring_place(count, dynamic_triangles.triangle_count) : dynamic_triangles.triangle_count;
 #else
-		if (dynamic_triangles.triangle_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES-count &&
-			dynamic_triangles.buffer_count<RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS-1)
-		{
-			struct dynamic_triangle_buffer *dynamic_triangle_buffer;
-
-			dynamic_triangle_buffer_index = dynamic_triangles.buffer_count;
-			dynamic_triangle_buffer =
-				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
 			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
-			dynamic_triangle_buffer->triangle_count = count;
-			dynamic_triangles.triangle_count += count;
 #endif
+			dynamic_triangle_buffer->triangle_count = count;
 """),
 ]
 # build 93: the debug-drawing vertex buffer (render_debug's lines and
