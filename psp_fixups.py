@@ -1819,6 +1819,7 @@ void *psp_vertex_lock(const struct vertex_buffer *buffer);
 void *psp_index_lock(const struct triangle_buffer *buffer);
 void *psp_level_vertices(const struct vertex_buffer *buffer);
 void *psp_geo_lock(unsigned int address, unsigned int size);
+unsigned int psp_geo_level_stride(void);
 int psp_geo_external(unsigned int address);
 unsigned long psp_geometry_draws_missed = 0;
 static boolean psp_geometry_missing(void)
@@ -1856,14 +1857,15 @@ void psp_environment_draw(
 	if (!buffer->triangles || first_triangle_index + triangle_count > buffer->triangle_count)
 		return;
 	/* the lightmap's vertices follow the material's own (as the Xbox path's
-	vertex_buffer + 1), when the level has lightmaps. Build 68: in the
-	geometry pack they are one block (32 bytes a vertex, then 8), read once */
+	vertex_buffer + 1), when the level has lightmaps. In the geometry pack
+	they are one block (the pack's rendered vertices, then 8 bytes a lightmap
+	vertex), read once */
 	if (lightmap_key && lightmap->hardware_format && lightmap->count == vertex_buffer->count)
 	{
 		unsigned int base_address = ((const unsigned int *)vertex_buffer->hardware_format)[1];
 		unsigned int lightmap_address = ((const unsigned int *)lightmap->hardware_format)[1];
 
-		if (psp_geo_external(base_address) && lightmap_address == base_address + 32 * (unsigned int)vertex_buffer->count)
+		if (psp_geo_external(base_address) && lightmap_address == base_address + psp_geo_level_stride() * (unsigned int)vertex_buffer->count)
 		{
 			/* the pack addresses themselves: the renderer keeps its own copies
 			of a material and asks the cache for the bytes only to build them */

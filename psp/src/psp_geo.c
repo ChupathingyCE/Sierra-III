@@ -202,6 +202,14 @@ static unsigned long map_formats = 0;
 
 unsigned long psp_geo_map_formats(void) { return map_formats; }
 
+/* bit 4: the level's rendered vertices are packed without the binormal and
+tangent, which the port never reads (tools/levelslim.py): 24 bytes each, the
+uv right after the normal */
+#define PGEO_LEVEL_SLIM 0x10u
+
+/* the bytes of one of the level's rendered vertices in the pack */
+unsigned int psp_geo_level_stride(void) { return map_formats & PGEO_LEVEL_SLIM ? 24u : 32u; }
+
 /* the map's layout, from its first model part's vertex descriptor: a map
 built with its geometry outside (invader-build -G) keeps 6 bytes a level
 vertex in the tags (three int16 about the material's centroid, times a scale
