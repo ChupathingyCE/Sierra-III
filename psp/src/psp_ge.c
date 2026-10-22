@@ -20240,8 +20240,25 @@ and before its swap; the world's see-through draws go first, so none lands
 on top */
 void psp_ge_loading_veil(const struct psp_loading_view *view)
 {
+	static int veil_old = -1;
+
 	if (!frame_open || !view || PSP_ME_WORK())
 		return;
+	/* geinflight: the frame's calls are written down and carried out later,
+	so frame_open is the last frame's, and with gemeon the Media Engine may be
+	writing that frame's list right now. Drawn from here the veil would land
+	in a list another CPU is writing, or past its finish: the main menu's
+	settle, whose veil comes after the frame's end, hung the GE that way. The
+	veil is left out instead, as it already was wherever frame_open had shut.
+	"veilold": drawn as before */
+	if (veil_old < 0)
+		veil_old = psp_keep("veilold") != 0;
+	if (!veil_old && (INFLIGHT_RECORDING() || inflight_pending || inflight_me_out))
+		return;
+	/* gedefer: the frame's calls written down so far go first, so the
+	veil lands over them */
+	if (!veil_old)
+		GE_DEFER_DRAIN();
 	list_hud_phase();
 	loading_trail(view->progress, 1);
 	loading_overlay(view);
