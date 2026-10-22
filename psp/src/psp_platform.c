@@ -1093,8 +1093,8 @@ static void keep_defaults_add(void)
 	if (!keep_search("blipdepthoff"))
 		keep_default_add("blipdepth");
 	/* AI on alternate ticks with the timeslice kept whole (docs/review_aicad.md):
-	a compromise, on for the hand test so it can be felt (Sheepdog01, 2026-10-22);
-	aicad3off is the other side, and aicad2 still wins when asked */
+	a compromise, on so it can be felt in play; aicad3off is the other
+	side, and aicad2 still wins when asked */
 	if (!keep_search("aicad3off") && !keep_search("aicad2"))
 		keep_default_add("aicad3");
 	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
