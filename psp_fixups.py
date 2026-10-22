@@ -28056,7 +28056,191 @@ void sound_cache_idle(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_LFS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_DECALFADE: dynamic decals fade out and go after a while
+# The engine already ages a decal by its tag's lifetime: decal_update, run
+# for every decal each drawn frame, fades its intensity over the last
+# decay_time seconds and frees it at lifetime (the Xbox's own path, kept by
+# ChupathingyCE and the port alike; 0 means forever). The stock tags give
+# minutes (up to 180 s on c20, 300 s on b30), so a long fight makes decals
+# faster than that retires them and fills the decal vertex cache, up to
+# 2,048, each aged and drawn every frame its cluster shows. This gives each
+# new dynamic decal whose tag lifetime is 0 or longer than N seconds a
+# lifetime of N and a short fade, and the engine's path does the rest. Not a
+# restoration: the original keeps them for their tags' lifetimes. The level's
+# placed decals are made permanent and never pass through here, and
+# decal_update skips permanent decals.
+# Keep words: "decalfadeoff": as before; "decalfadeN": N seconds (default
+# 30). "decalcensus": a "decals:" line every 5 s of game time with the live
+# counts and the tag lifetimes met. Campaign only: freeing decals early can
+# change how often decal_insert's unlock pass draws from the local random
+# seed, which other code reads, so the multiplayer build stays as it was
+FIXES_DECALFADE = {}
+FIXES_DECALFADE["source/effects/decals.c#decalfade"] = [
+("""boolean debug_decals;
+
+/* ---------- public code */
+""", """boolean debug_decals;
+
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (FIXES_DECALFADE) */
+int psp_keep_number(const char *prefix, int fallback);
+void platform_log(const char *format, ...);
+
+enum
+{
+	PSP_DECALFADE_DEFAULT_SECONDS = 30,
+	PSP_DECAL_CENSUS_TICKS = 150
+};
+
+/* long enough to read as a fade rather than a pop, short enough that a
+decal is gone soon after it starts to go */
+static real const PSP_DECALFADE_DECAY_SECONDS = 2.0f;
+
+static long psp_decals_made = 0;
+static long psp_decals_tag_forever = 0;
+static long psp_decals_tag_own = 0;
+static real psp_decals_tag_longest = 0.0f;
+static long psp_decals_given_fade = 0;
+static long psp_decals_expired = 0;
+
+/* 0 while keep.txt is unread, so nothing made before it is aged by it */
+static real psp_decalfade_seconds(
+	void)
+{
+	static real seconds = -1.0f;
+
+	if (seconds < 0.0f)
+	{
+		long n;
+
+		if (!psp_keep_loaded())
+			return 0.0f;
+		n = psp_keep("decalfadeoff") ? 0 : psp_keep_number("decalfade", PSP_DECALFADE_DEFAULT_SECONDS);
+		seconds = n > 0 ? (real)n : 0.0f;
+	}
+	return seconds;
+}
+
+/* after the tag's own draws from the local seed, so the seed moves as before */
+static void psp_decalfade_new(
+	real *lifetime,
+	real *decay_time)
+{
+	real seconds = psp_decalfade_seconds();
+
+	psp_decals_made++;
+	if (*lifetime == 0.0f)
+		psp_decals_tag_forever++;
+	else
+	{
+		psp_decals_tag_own++;
+		if (*lifetime > psp_decals_tag_longest)
+			psp_decals_tag_longest = *lifetime;
+	}
+	if (seconds > 0.0f && (*lifetime == 0.0f || *lifetime > seconds))
+	{
+		*lifetime = seconds;
+		*decay_time = seconds < PSP_DECALFADE_DECAY_SECONDS ? seconds : PSP_DECALFADE_DECAY_SECONDS;
+		psp_decals_given_fade++;
+	}
+}
+
+static void psp_decal_census(
+	void)
+{
+	static long next_tick = 0;
+	long now;
+	struct data_iterator iterator;
+	struct decal_datum *decal;
+	long dynamic = 0;
+	long fading = 0;
+	long placed = 0;
+
+	if (!PSP_KEEP_ONCE("decalcensus"))
+		return;
+	now = game_time_get();
+	/* a new map starts game time again */
+	if (now < next_tick && now + PSP_DECAL_CENSUS_TICKS >= next_tick)
+		return;
+	next_tick = now + PSP_DECAL_CENSUS_TICKS;
+	data_iterator_new(&iterator, global_decal_data);
+	while ((decal = data_iterator_next(&iterator)) != NULL)
+	{
+		if (TEST_FLAG(decal->flags, _decal_permanent_bit))
+			placed++;
+		else
+		{
+			dynamic++;
+			if (decal->intensity < 255)
+				fading++;
+		}
+	}
+	platform_log("decals: game time %ld, live %ld dynamic (%ld fading, %ld locked) and %ld placed; made %ld (tag lifetime none %ld, own %ld, longest %ld ds), %ld given the fade (%ld s), %ld expired",
+		now, dynamic, fading, decal_globals->locked_count, placed, psp_decals_made,
+		psp_decals_tag_forever, psp_decals_tag_own, (long)(psp_decals_tag_longest * 10.0f),
+		psp_decals_given_fade, (long)psp_decalfade_seconds(), psp_decals_expired);
+}
+#endif
+
+/* ---------- public code */
+"""),
+("""	if (global_decal_data->valid)
+	{
+		struct data_iterator iterator;
+
+		data_iterator_new(&iterator, global_decal_data);
+
+		while (data_iterator_next(&iterator))
+		{
+			decal_update(iterator.datum_index);
+		}
+	}
+""", """	if (global_decal_data->valid)
+	{
+		struct data_iterator iterator;
+
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+		psp_decal_census();
+#endif
+		data_iterator_new(&iterator, global_decal_data);
+
+		while (data_iterator_next(&iterator))
+		{
+			decal_update(iterator.datum_index);
+		}
+	}
+"""),
+("""							decal->decay_time = real_local_random_range(
+								definition->decay_time_lower_bound,
+								definition->decay_time_upper_bound);
+""", """							decal->decay_time = real_local_random_range(
+								definition->decay_time_lower_bound,
+								definition->decay_time_upper_bound);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+							if (!permanent)
+								psp_decalfade_new(&decal->lifetime, &decal->decay_time);
+#endif
+"""),
+("""			rasterizer_decal_vertices_delete(decal_index);
+		}
+	}
+
+	return;
+}
+static void decal_check(""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			psp_decals_expired++;
+#endif
+			rasterizer_decal_vertices_delete(decal_index);
+		}
+	}
+
+	return;
+}
+static void decal_check("""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

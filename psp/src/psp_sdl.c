@@ -42,6 +42,9 @@ the times counted from the first time the game reads the controls */
 static struct { float seconds; unsigned int buttons; int x, y; } input_script[MAXIMUM_SCRIPT_LINES];
 static int input_script_count = 0;
 static SceInt64 input_script_start = 0;
+static int input_script_game_time = -1;
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
 
 static void input_script_load(void)
 {
@@ -76,9 +79,26 @@ static void input_script_apply(SceCtrlData *pad)
 
 	if (!input_script_count)
 		return;
-	if (!input_script_start)
-		input_script_start = sceKernelGetSystemTimeWide();
-	seconds = (sceKernelGetSystemTimeWide() - input_script_start) / 1e6f;
+	/* "inputgametime": the times in game time (ticks / 30), as a route's
+	are, so two builds whose frames cost differently still press each
+	button on the same tick (an exactness pair needs that) */
+	if (input_script_game_time < 0 && psp_keep_loaded())
+		input_script_game_time = psp_keep("inputgametime") != 0;
+	if (input_script_game_time > 0)
+	{
+		extern unsigned char game_time_initialized(void);
+		extern long game_time_get(void);
+
+		if (!game_time_initialized())
+			return;
+		seconds = game_time_get() / 30.0f;
+	}
+	else
+	{
+		if (!input_script_start)
+			input_script_start = sceKernelGetSystemTimeWide();
+		seconds = (sceKernelGetSystemTimeWide() - input_script_start) / 1e6f;
+	}
 	for (index = 0; index < input_script_count && input_script[index].seconds <= seconds; index++)
 		current = index;
 	if (current >= 0)
