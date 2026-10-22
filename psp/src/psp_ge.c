@@ -12263,7 +12263,14 @@ static void rso_window(void)
 	{
 		rso_check = psp_keep("rsocheck") != 0;
 		psp_rso_all = psp_keep("rsoall") != 0;
+#ifdef PSP_MULTIPLAYER
 		rso_asked = rso_check || psp_rso_all || psp_keep("rso");
+#else
+		/* on by default in the campaign: exact (play and both seeds as
+		without it on four maps, its check counting no difference) and a
+		gain on every map in the cache model; "rsooff" turns it off */
+		rso_asked = rso_check || psp_rso_all || !psp_keep("rsooff");
+#endif
 		psp_rso_on = rso_asked;
 	}
 }

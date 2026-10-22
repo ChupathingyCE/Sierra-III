@@ -112,3 +112,9 @@ The v4b batch (22 of 22 played; cache pairs off vs `rso` on b30, a30, c10 to 120
 - **Priced** at the share of the PSP's record time [E x M]: **b30 ~1.09 ms a frame (gate 1.17: under)**, a30 0.81-1.10 (gate 0.63-1.18: over its low end), **c10 ~1.07 (gate 0.65: over)**.
 
 **Not merged:** b30 sends more than v3 but falls short of its gate. Where the rest goes [U, from the counts]: on b30 and c10, room is made in nearly every frame (578 and 600 of 600). Each time, the whole block is moved down (up to 47 KB on b30), and still 12-17 offered objects a frame find no room. c10's block is 24 KB, because RSO_LEAVES_FREE halves it there. **v4c:** make room only when the entries it would drop free enough for the new one, so a full block of sent entries is left as it is, not moved every frame. Give c10 the room its 12 no-room objects need (~10 KB). Then look at the per-sent cost in render_model's own step: the key compare and the fade recompute, now 0.3-0.7 ms.
+
+## On by default (v4b, the master's call 2026-10-22 06:32)
+
+v4b is exact (play and both random seeds as without it at all 6,000 ticks on b30, a30, c10 and a10; `rsocheck` 0 differences on b30, a30 and c10) and a net gain on every map in the cache model, so it goes in as a clean win: on by default in the campaign build, `rsooff` turns it off (`rsocheck` and `rsoall` as before). The multiplayer build keeps it opt-in (`rso`). ~1 ms a frame is under the PSP's A/A noise floor, so it is judged in the emulator. Its records live in free user RAM outside the heap; with none there it logs `GE: rso: no room ... off` and stays off. Proof on the merged head (w140 8281d74 + v4b): below.
+
+(filled in by the merge request's proof batch)
