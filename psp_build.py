@@ -669,15 +669,25 @@ def link(objs, stubs):
     if old_data not in text or old_bss not in text:
         sys.exit("psp_build: the SDK's linkfile.prx has changed; the Media Engine's variables can't be placed")
     me_objects = ("*psp_ge.o", "*psp_tex.o", "*libpspgu.a:*")
+    # PSP_MUSIC: the decoder's own variables (Tremor's, libogg's) on lines of
+    # their own, apart from the GE layer's block too. The decode runs in the
+    # ME's audio job and writes them (mapping0.o's counter), while the main
+    # CPU writes whatever the link would otherwise put beside them; the GE
+    # layer's variables are the main CPU's whenever its work isn't on the ME
+    music_data = music_bss = ""
+    if MUSIC:
+        music_objects = ("*libmu_vorbisidec.a:*", "*libogg.a:*")
+        music_data = "".join("    %s(.data .data.*)\n" % o for o in music_objects) + "    . = ALIGN(64);\n"
+        music_bss = "".join("   %s(.bss .bss.* COMMON)\n" % o for o in music_objects) + "   . = ALIGN(64);\n"
     text = text.replace(old_data, "    _fdata = . ;\n"
                         "    . = ALIGN(64);\n    __psp_main_side_start = .;\n    KEEP(*(.data.psp_main_side))\n"
                         "    . = ALIGN(64);\n    __psp_main_side_end = .;\n    __psp_me_data_start = .;\n" +
                         "".join("    %s(.data .data.*)\n" % o for o in me_objects) +
-                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n"
+                        "    . = ALIGN(64);\n    __psp_me_data_end = .;\n" + music_data +
                         "    *(.data .data.* .gnu.linkonce.d.*)\n")
     text = text.replace(old_bss, "   *(.dynbss)\n   . = ALIGN(64);\n   __psp_me_bss_start = .;\n" +
                         "".join("   %s(.bss .bss.* COMMON)\n" % o for o in me_objects) +
-                        "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n"
+                        "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n" + music_bss +
                         "   *(.bss .bss.* .gnu.linkonce.b.*)\n")
     linkfile = os.path.join(OUT, "linkfile_layout.prx")
     open(linkfile, "w").write(text)
