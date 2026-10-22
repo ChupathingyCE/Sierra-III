@@ -30663,8 +30663,8 @@ void ai_scripting_place(
 # vehicle on the ground last tick is not asked about: the ground is in reach,
 # and asking would only cost. Only which work is done changes, never an
 # answer; the objects' marks (magic_number) differ, which the play hash and
-# the sleep checksum leave out. Keep words, all off by default: "vehprobe"
-# (both physics), "vehprobe1" (the new physics only: the banshee's, not the
+# the sleep checksum leave out. On by default in the campaign ("vehprobeoff"
+# turns it off; "vehprobe" still names it, both physics); "vehprobe1" (the new physics only: the banshee's, not the
 # radius physics of the dropship and the Pelican), "vehprobecheck" (the
 # sphere decides, every query is asked anyway, and any query it would have
 # skipped that found something is counted in the "vehprobe:" log line).
@@ -30874,7 +30874,9 @@ static void psp_vp_begin(
 		/* (campaign only) */
 		psp_vp_mode = 0;
 #else
-		psp_vp_mode = psp_keep("vehprobe") ? 3 : psp_keep("vehprobe1") ? 1 : 0;
+		/* on by default in the campaign: "vehprobeoff" turns it off,
+		   "vehprobe1" keeps it to the new physics only */
+		psp_vp_mode = psp_keep("vehprobeoff") ? 0 : psp_keep("vehprobe1") ? 1 : 3;
 		if (psp_keep("vehprobecheck"))
 			psp_vp_mode = (psp_vp_mode ? psp_vp_mode : 3) | 4;
 #endif
