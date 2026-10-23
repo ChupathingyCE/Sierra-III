@@ -1042,10 +1042,9 @@ carried out on the Media Engine (docs/review_m6default.md), on as if keep.txt
 named them, so every psp_keep() asks as before and the features' own code
 is untouched. Each has an off word; "m6off" turns all of them off. They play
 tick for tick as without them; the PSP-1000 draws b30 faster with them.
-texpretouch is out of the defaults while a hang at a run's exit on the
-PSP-1000 has no proven cause (nothing implicates it, but it was on in the
-run that hung); keep word "texpretouch" brings it back, and only with
-gemeon, since it reads in what the ME's replay binds.
+texpretouch only with gemeon: it reads in what the ME's replay binds;
+without it, textures arrive late and models draw white for a few frames
+(about six times the untextured frames on b30's route).
 geshow3 (docs/review_geshow3.md): the ME replays the next frame into a
 second list while the GE ends this one; it takes effect only with the
 forwarding thread (geinflight, gemeon), and its index ranges come from
@@ -1061,6 +1060,7 @@ static const struct
 	{ "geinflight", "geinflightoff" },
 	{ "gemeon", "gemeonoff" },
 	{ "mevram", "mevramoff" },
+	{ "texpretouch", "notexpretouch" },
 	{ "mepoll", "mepolloff" },
 	{ "geshow3", "geshow3off" },
 };
@@ -1096,11 +1096,6 @@ static void keep_defaults_add(void)
 	side, and aicad2 still wins when asked */
 	if (!keep_search("aicad3off") && !keep_search("aicad2"))
 		keep_default_add("aicad3");
-	/* the heartbeat below the game thread: at its old priority each beat's
-	report put a spike of ~8 ms into a frame every 5 s, enough to push a
-	frame near 33 ms past the vertical blank; hblowoff is the other side */
-	if (!keep_search("hblowoff"))
-		keep_default_add("hblow");
 	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
 		return;
 	for (k = 0; k < (int)(sizeof(keep_defaults) / sizeof(keep_defaults[0])); k++)
@@ -1198,7 +1193,7 @@ static void keep_load(void)
 	platform_log("keep words, the heap at each level change (opt-in): heapmap (its gaps and blocks of 16 KB or more, with what asked for each); recon builds only: poolpeaks (each game-state array's peak against its maximum)");
 	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
 #ifndef PSP_MULTIPLAYER
-	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff mepolloff (texpretouch opt-in), inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
+	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
 		keep_defaults_added[0] ? keep_defaults_added : " none");
 #endif
 }
@@ -3185,8 +3180,9 @@ static int heartbeat_thread(SceSize args, void *argp)
 	/* "hblow": the heartbeat below the game thread (0x20), so its reports
 	and their formatting run only while the game thread waits (the vertical
 	blank, the GE). Its default priority (0x18) is above the game's, so a
-	beat's work can hold the game thread past a vertical blank (on by
-	default in the campaign; hblowoff keeps the old priority) */
+	beat's work can hold the game thread past a vertical blank. Opt-in: below
+	the game thread the heartbeat, which also writes the log, can't keep up
+	on a busy map (lines dropped), and it is the lead suspect for a freeze */
 	if (psp_keep("hblow"))
 		sceKernelChangeThreadPriority(0, 0x28);
 	if (!psp_keep("logflushgame"))
