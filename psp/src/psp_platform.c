@@ -1096,6 +1096,11 @@ static void keep_defaults_add(void)
 	side, and aicad2 still wins when asked */
 	if (!keep_search("aicad3off") && !keep_search("aicad2"))
 		keep_default_add("aicad3");
+	/* the heartbeat below the game thread: at its old priority each beat's
+	report put a spike of ~8 ms into a frame every 5 s, enough to push a
+	frame near 33 ms past the vertical blank; hblowoff is the other side */
+	if (!keep_search("hblowoff"))
+		keep_default_add("hblow");
 	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
 		return;
 	for (k = 0; k < (int)(sizeof(keep_defaults) / sizeof(keep_defaults[0])); k++)
@@ -3180,8 +3185,8 @@ static int heartbeat_thread(SceSize args, void *argp)
 	/* "hblow": the heartbeat below the game thread (0x20), so its reports
 	and their formatting run only while the game thread waits (the vertical
 	blank, the GE). Its default priority (0x18) is above the game's, so a
-	beat's work can hold the game thread past a vertical blank: this word
-	tests whether that is where a calm stretch's late frames come from */
+	beat's work can hold the game thread past a vertical blank (on by
+	default in the campaign; hblowoff keeps the old priority) */
 	if (psp_keep("hblow"))
 		sceKernelChangeThreadPriority(0, 0x28);
 	if (!psp_keep("logflushgame"))
