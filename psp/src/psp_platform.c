@@ -1176,7 +1176,7 @@ static void keep_load(void)
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf ditherlift (offsets +4) dithershift (detail and sky passes dithered, the pattern moved each pass) dithershiftall (every blend); recon: noglowpass nobackpass ditherprobe (the GE's rounding, logged at start-up)");
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
-	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times)");
+	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times; and a framelate line: the late frames, held or not, and their gaps); hblow (the heartbeat thread below the game thread)");
 	platform_log("keep words, build 127's: speed off: logeachline (each log line written at once for the first 20 s, its newline apart)");
 	platform_log("keep words, build 128's: speed off: obscurertest (the camera's ray through every object as each model pass begins, which only a debug display reads), nearautofull (nearauto's level spheres gathered whole, not stopped at the first surface); check: nearautocheck");
 	platform_log("keep words, build 129's: speed off: flaresfull (a flare's ray tests the objects even when the level hides it), fractiondouble (the animations' and periodic functions' fractions in software double); check: flarescheck, fractioncheck");
@@ -3162,6 +3162,13 @@ static void hwprofile_report(void)
 	}
 }
 
+/* the heartbeat's work between its sleeps, for frametrace's late frames:
+busy while a beat reports, spans counting the beats begun, work_us their
+time (by the clock, the stick's waits included) */
+volatile int psp_heartbeat_busy = 0;
+volatile unsigned long psp_heartbeat_spans = 0, psp_heartbeat_work_us = 0;
+static unsigned long heartbeat_work_start = 0;
+
 static int heartbeat_thread(SceSize args, void *argp)
 {
 	long last_ticks = -1;
@@ -3170,6 +3177,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 	(void)args; (void)argp;
 	psp_fpu_mask_traps();
+	/* "hblow": the heartbeat below the game thread (0x20), so its reports
+	and their formatting run only while the game thread waits (the vertical
+	blank, the GE). Its default priority (0x18) is above the game's, so a
+	beat's work can hold the game thread past a vertical blank: this word
+	tests whether that is where a calm stretch's late frames come from */
+	if (psp_keep("hblow"))
+		sceKernelChangeThreadPriority(0, 0x28);
 	if (!psp_keep("logflushgame"))
 	{
 		log_wake_thread = sceKernelGetThreadId();
@@ -3183,6 +3197,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 		int window_done = 0;
 		double seconds;
 
+		/* the beat's work ends here: frametrace asks whether a late frame
+		overlapped it */
+		if (psp_heartbeat_busy)
+		{
+			psp_heartbeat_work_us += psp_heartbeat_clock() - heartbeat_work_start;
+			psp_heartbeat_busy = 0;
+		}
 		/* every second for the first 20, then every 5 */
 		/* build 98: with "blackbox", the log saved every quarter second
 		meanwhile (psp_trace.c) */
@@ -3220,6 +3241,9 @@ static int heartbeat_thread(SceSize args, void *argp)
 			}
 		}
 		beat++;
+		heartbeat_work_start = psp_heartbeat_clock();
+		psp_heartbeat_spans++;
+		psp_heartbeat_busy = 1;
 		heartbeat_beats = beat;
 		now = sceKernelGetSystemTimeWide();
 		seconds = (now - last_time) / 1e6;
