@@ -61,4 +61,4 @@ The tutorial lights staying yellow on a10 (not reproduced: it likely needs a leg
   | d20 | 7.3 | 7.8 |
   | d40 | 24.7 | 29.5 (the cap) |
 
-- **Relaunches:** see `build_b140.md` (the PSP-1000 was off USB at the release's turn; the run moved to the PSP-3000).
+- **Relaunches** of the shipping EBOOT (b30 route + deathless, exitat180, PSP-3000, 39917735690): **5 of 5 exited**, each with its `GE: exit:` line [M]. The PSP-1000 was off USB at the release's turn (39914216140 not run). With the same fixes on b140h2/h3 the PSP-1000 ran 15 of 15 (39873195417, 39873229050, 39890880477).
