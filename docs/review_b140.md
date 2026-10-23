@@ -46,4 +46,19 @@ The tutorial lights staying yellow on a10 (not reproduced: it likely needs a leg
 
 ## Proof of this build
 
-To fill: the profile counted at ccf6011 (pgo-gen140ra/rb), the strict link, the release check against b139, the PSP ladder, relaunch and front-door runs.
+- **Profile:** `pgo/campaign-b140.tgz`, 13 counting runs at ccf6011 on the b140z bake (pgo-gen140ra 39912460858, rb 39912469206: every campaign opening, b30's flight, bench, run and hallway); merged with pspdev's psp-gcov-tool 15.2.0.
+- **Strict builds** (`PSP_PGO_STRICT=1`): 0 functions without counts. b140 (metrics on) 39913654863, EBOOT fe20986e0425216f; **b140rel (`PSP_METRICS=0`, the one that ships) 39913659207, EBOOT 86408aa92133c1dc**, heap 5,736 KB.
+- **Release check** (rc140 39914211621, the emulator's strict interpreter): every campaign map's opening to 60 s, b30's route and the front door to a10: 0 sites, no crash, all ended normally [E]. The pairs against b139 are not a state-CRC match by design: aicad3 and lodpsp change play (your calls); the exact changes each carry their own play + seeds proof in their reviews.
+- **The PSP ladder** (ladder45, PSP-3000, 39914224218), fps over the second half of each opening, against b139's same stretch on the same PSP [M]:
+
+  | Map | b139 | b140 |
+  |---|---:|---:|
+  | b30 | 4.5 | 6.5 |
+  | b40 | 16.8 | 27.8 |
+  | c10 | 9.0 | 12.8 |
+  | c20 | 10.9 | 14.0 |
+  | c40 | 20.5 | 29.9 (the cap) |
+  | d20 | 7.3 | 7.8 |
+  | d40 | 24.7 | 29.5 (the cap) |
+
+- **Relaunches:** see `build_b140.md` (the PSP-1000 was off USB at the release's turn; the run moved to the PSP-3000).
