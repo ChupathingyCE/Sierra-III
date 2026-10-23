@@ -5262,7 +5262,17 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 	byte const *map = (byte const *)&header[4], *in;
 	unsigned short const *counts;
 	byte *entry;
+	/* the entry's copy in the checkpoint stage, which no write is using
+	while a saved game is read: from the heap it failed whenever the heap
+	was full (as it is late in a level), and it was asked for after the
+	stream had been read over the game state's tail, so the refused read
+	left a broken game state that the map's restart then crashed on (a
+	data array's elements at a garbage address). "stateentrymalloc": from
+	the heap, as before */
+	static int entry_from_heap = -1;
 
+	if (entry_from_heap < 0)
+		entry_from_heap = psp_keep("stateentrymalloc");
 	csmemcpy(header, first, PSP_STATE_HEADER);
 	if (16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER ||
 		!ReadFile(handle, (byte *)header + PSP_STATE_HEADER, PSP_STATE_WORDS_HEADER - PSP_STATE_HEADER, &read, NULL) ||
@@ -5272,7 +5282,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 	counts = PSP_STATE_COUNTS(header, pages);
 	if (stream > size || (stream && (!ReadFile(handle, buffer + size - stream, stream, &read, NULL) || read != stream)))
 		return FALSE;
-	entry = (byte *)malloc(PSP_STATE_PAGE);
+	entry = entry_from_heap ? (byte *)malloc(PSP_STATE_PAGE) :
+		(byte *)(((unsigned long)psp_state_stage_reserved + 63) & ~63UL);
 	if (!entry)
 		return FALSE;
 	in = buffer + size - stream;
@@ -5289,7 +5300,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 		bytes = psp_state_entry_bytes(counts[page]);
 		if (in + bytes > buffer + size || in < (byte const *)out)
 		{
-			free(entry);
+			if (entry_from_heap)
+				free(entry);
 			return FALSE;
 		}
 		if (counts[page] >= PSP_STATE_RAW_ABOVE)
@@ -5308,7 +5320,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 				set += (unsigned long)__builtin_popcountl(((unsigned long const *)entry)[w]);
 			if (set != counts[page])
 			{
-				free(entry);
+				if (entry_from_heap)
+					free(entry);
 				return FALSE;
 			}
 			for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
@@ -5316,7 +5329,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 		}
 		in += bytes;
 	}
-	free(entry);
+	if (entry_from_heap)
+		free(entry);
 	return in == buffer + size;
 }
 
