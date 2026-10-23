@@ -12512,7 +12512,7 @@ itself, and the map repeats ten times across the part) */
 static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, const unsigned short *indices,
 	long index_count, int strip, struct skin_part *skin, ScePspFMatrix4 *model)
 {
-	static int off = -1, bias = 0, logs = 0;
+	static int off = -1, bias = 0, pull = 0, logs = 0;
 	static unsigned int logged[3];
 	int bound;
 
@@ -12520,6 +12520,11 @@ static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, co
 	{
 		off = psp_keep("nomodeldetail");
 		bias = psp_keep_number("modeldetailbias", 0);
+		/* tested nearer-or-equal with its depth pulled toward the eye, not
+		equal: far out on the ring the equal test missed by a rounding on some
+		frames and not others, and the band flickered. "detailpullN" another
+		pull, "detailequal" the equal test */
+		pull = psp_keep("detailequal") ? 0 : psp_keep_number("detailpull", 64);
 	}
 	if (off)
 		return;
@@ -12542,7 +12547,9 @@ static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, co
 	if (bias)
 		sceGuTexLevelMode(tex_level_mode, tex_bias + bias * 0.25f);
 	sceGuDisable(GU_ALPHA_TEST);
-	sceGuDepthFunc(GU_EQUAL);
+	sceGuDepthFunc(pull > 0 ? GU_GEQUAL : GU_EQUAL);
+	if (pull > 0)
+		sceGuDepthOffset(pull > 4096 ? 4096 : pull);
 	sceGuDepthMask(GU_TRUE);
 	/* fogged toward its neutral colour, which the blend leaves unchanged */
 	sceGuFog(fog_near, fog_far, detail_neutral(model_detail_key));
@@ -12553,6 +12560,8 @@ static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, co
 	if (bias)
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
 	sceGuFog(fog_near, fog_far, fog_color);
+	if (pull > 0)
+		sceGuDepthOffset(0);
 	sceGuDepthMask(GU_FALSE);
 	sceGuDepthFunc(GU_GEQUAL);
 }
