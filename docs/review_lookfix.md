@@ -27,4 +27,17 @@
 
 **Cost.** One call and a compare per frame on the look path. `main_update_time` gains a store and a cached keep-number test. Both functions change shape, so the campaign profile doesn't match them until it is next regenerated (they are listed in `pgo_mismatch.txt`; neither is hot).
 
+**Evidence** [E] (emulator, a30 route; nub held fully right for 60 s of game time, then partly right; yaw per real second, the ramp left out):
+
+| Frame rate | Off: full stick | On: full stick | Off: part stick | On: part stick |
+|---|---|---|---|---|
+| 28 fps | 6.12 rad/s | 6.14 rad/s | 0.208 rad/s | 0.208 rad/s |
+| 14.5 fps (`frameslow40`) | | 6.13 rad/s | | 0.207 rad/s |
+| 7.7 fps (`frameslow100`) | 3.14 rad/s | 6.13 rad/s | 0.099 rad/s | 0.208 rad/s |
+
+- **Rate.** With it off, at 7.7 fps the view turns at about half its rate. With it on, the rate is the same at every frame rate.
+- **Exactness.** With the look stick at rest, on and off play the same: the play hash and both seeds are equal at all 6,000 ticks on b30's route (hands off) and on a30's route (forward held, so magnetism can engage). The whole state differs only in `objects` and `hud unit interface`, the parts that follow timing.
+- **Strict interpreter.** a30 with the stick held, forward held and slow frames: no bad accesses.
+- **Compiles.** The campaign PGO build and a `PSP_METRICS=0` build both compile, and neither changed function is in `pgo_mismatch.txt`.
+
 **By hand.** On b30's beach, hold the nub fully right with the keep word on, then with `lookrealoff`, in the busy stretch (the first fight, where frames drop below 15). With it on, a full turn should take the same time there as on the quiet sand. With it off, it should take visibly longer in the fight. Then try short flicks: with it on, a flick of the same length should turn the same angle wherever you are.
