@@ -31533,7 +31533,425 @@ static void compute_ground_plane(
 	physics_compute_unit_collisions(object_index);"""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_AIMCACHE: the aim and look screens' deltas kept and applied again
+# A unit's aim and look screens (and a vehicle's aiming overlays) blend four
+# frames of an overlay animation a node: three normalised lerps of four
+# quaternions and a bilinear translation, then one quaternions_multiply into
+# the node's rotation and one add into its translation. The blended delta is a
+# pure function of the animation, the screen's bounds, and the yaw and pitch;
+# a unit that holds its aim makes the same delta tick after tick. The table
+# keeps each delta under its full key (both pointers and the angles' bits) and,
+# on the same key, applies it with the same multiply and add: the same bits.
+# The leaf's own delta is now held in a local before its add (x += E and
+# d = E; x += d round alike: fp-contract is off and floats are evaluated as
+# floats), so the miss path and the off path are the one code.
+# The table is per map (tag pointers are reused by the next map) and keyed
+# whole (no hash-only hits). Campaign only.
+# Keep words: "aimcacheoff" (as before); "aimcachecheck" (each hit also
+# computes the leaf on a copy of the nodes and compares the deltas and the
+# resulting nodes bit for bit, then applies the kept one: 'aimcache: check'
+# counts); "aimcachestat" (a line a second: calls, hits, misses, uncached, the
+# leaf's time by path, and the four corner frames' cells for PREDEC: fetched
+# already this tick, fetched last tick, new).
+FIXES_AIMCACHE = {}
+FIXES_AIMCACHE["source/models/model_animations.c#aimcache"] = [
+("""void aiming_screen_apply(
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (FIXES_AIMCACHE) */
+extern unsigned long psp_microseconds(void);
+void platform_psp_log(const char *format, ...);
+int psp_keep(const char *name);
+long game_time_get(void);
+
+#define PSP_AC_SETS 32
+#define PSP_AC_WAYS 4
+#define PSP_AC_FLOATS 128
+#define PSP_AC_CELLS 256
+struct psp_ac_entry
+{
+	struct animation const *animation;
+	struct animation_aiming_screen_bounds const *bounds;
+	unsigned long yaw, pitch;
+	unsigned long used;
+	short count; /* floats kept; 0: the leaf changes nothing */
+	short valid;
+	real delta[PSP_AC_FLOATS];
+};
+static struct psp_ac_entry *psp_ac_table = NULL;
+static struct real_orientation *psp_ac_scratch = NULL;
+static int psp_ac_on = -1, psp_ac_check = 0, psp_ac_stat = 0;
+static real *psp_ac_out = NULL, *psp_ac_out_end = NULL;
+static unsigned long psp_ac_clock = 0;
+/* counters ('aimcache:' lines, aimcachestat) */
+static unsigned long psp_ac_n[4]; /* calls, hits, misses, uncached */
+static unsigned long psp_ac_us[3]; /* hits, misses, uncached */
+static unsigned long psp_ac_checked, psp_ac_differed;
+static unsigned long psp_ac_cell[4]; /* computes with valid frames, cell this tick already, last tick, new */
+static long psp_ac_log_tick = -1;
+struct psp_ac_cell { struct animation const *animation; short f[4]; long tick; };
+static struct psp_ac_cell psp_ac_cells[PSP_AC_CELLS];
+
+union psp_ac_bits { real r; unsigned long u; };
+static unsigned long psp_ac_bits_of(real r)
+{
+	union psp_ac_bits b;
+
+	b.r = r;
+	return b.u;
+}
+
+static int psp_ac_ready(void)
+{
+	if (psp_ac_on < 0)
+	{
+		psp_ac_on = psp_keep("aimcacheoff") == 0;
+		psp_ac_stat = psp_keep("aimcachestat") != 0;
+		psp_ac_check = psp_ac_on && psp_keep("aimcachecheck") != 0;
+		if (psp_ac_on)
+		{
+			psp_ac_table = (struct psp_ac_entry *)calloc(PSP_AC_SETS * PSP_AC_WAYS, sizeof(*psp_ac_table));
+			if (psp_ac_check)
+				psp_ac_scratch = (struct real_orientation *)malloc(MAXIMUM_NODES_PER_MODEL * sizeof(*psp_ac_scratch));
+			if (!psp_ac_table || (psp_ac_check && !psp_ac_scratch))
+			{
+				platform_psp_log("aimcache: no room; off");
+				psp_ac_on = 0;
+			}
+			else
+				platform_psp_log("aimcache: on (%u KB)%s", (unsigned)(PSP_AC_SETS * PSP_AC_WAYS * sizeof(*psp_ac_table) / 1024),
+					psp_ac_check ? ", checking each hit" : "");
+		}
+		else
+			platform_psp_log("aimcache: off (aimcacheoff)");
+	}
+	return psp_ac_on;
+}
+
+/* game.c, game_initialize_for_new_map: the next map's tags may sit where
+this one's were */
+void psp_aimcache_new_map(void)
+{
+	int i;
+
+	if (psp_ac_table)
+		for (i = 0; i < PSP_AC_SETS * PSP_AC_WAYS; i++)
+			psp_ac_table[i].valid = 0;
+	for (i = 0; i < PSP_AC_CELLS; i++)
+		psp_ac_cells[i].animation = NULL;
+}
+
+static void psp_ac_log(void)
+{
+	long tick = game_time_get();
+
+	if (psp_ac_log_tick < 0 || tick < psp_ac_log_tick)
+		psp_ac_log_tick = tick;
+	if (tick - psp_ac_log_tick < 30)
+		return;
+	psp_ac_log_tick = tick;
+	platform_psp_log("aimcache: tick %ld: calls %lu hits %lu misses %lu uncached %lu; us %lu %lu %lu; check %lu compared %lu differed; cells %lu: tick %lu last %lu new %lu",
+		tick, psp_ac_n[0], psp_ac_n[1], psp_ac_n[2], psp_ac_n[3], psp_ac_us[0], psp_ac_us[1], psp_ac_us[2],
+		psp_ac_checked, psp_ac_differed, psp_ac_cell[0], psp_ac_cell[1], psp_ac_cell[2], psp_ac_cell[3]);
+	memset(psp_ac_n, 0, sizeof(psp_ac_n));
+	memset(psp_ac_us, 0, sizeof(psp_ac_us));
+	memset(psp_ac_cell, 0, sizeof(psp_ac_cell));
+}
+
+/* PREDEC's count: were this compute's four corner frames fetched already
+this tick, or last tick (a prediction from last tick would have had them)? */
+static void psp_ac_cell_seen(struct animation const *animation, short f00, short f10, short f01, short f11)
+{
+	long tick;
+	unsigned long h;
+	struct psp_ac_cell *c;
+
+	if (!psp_ac_stat)
+		return;
+	tick = game_time_get();
+	h = ((unsigned long)animation >> 4) * 2654435761UL ^ (unsigned long)(unsigned short)f00 * 40503UL ^ (unsigned long)(unsigned short)f11 * 9973UL;
+	c = &psp_ac_cells[(h ^ (h >> 13)) & (PSP_AC_CELLS - 1)];
+	psp_ac_cell[0]++;
+	if (c->animation == animation && c->f[0] == f00 && c->f[1] == f10 && c->f[2] == f01 && c->f[3] == f11)
+	{
+		if (c->tick == tick)
+			psp_ac_cell[1]++;
+		else if (c->tick == tick - 1)
+			psp_ac_cell[2]++;
+		else
+			psp_ac_cell[3]++;
+	}
+	else
+	{
+		psp_ac_cell[3]++;
+		c->animation = animation;
+		c->f[0] = f00; c->f[1] = f10; c->f[2] = f01; c->f[3] = f11;
+	}
+	c->tick = tick;
+}
+
+/* the kept delta, applied with the leaf's own tail */
+static void psp_ac_apply(struct animation const *animation, real const *delta, struct real_orientation *node_orientations)
+{
+	unsigned long rotation_flags = 0, translation_flags = 0;
+	short node_index;
+
+	for (node_index = 0; node_index < animation->node_count; node_index++)
+	{
+		struct real_orientation *orientation = &node_orientations[node_index];
+
+		if (!(node_index & (LONG_BITS - 1)))
+		{
+			short long_index = node_index >> LONG_BITS_BITS;
+
+			translation_flags = animation->nodes_with_translation_flags[long_index];
+			rotation_flags = animation->nodes_with_rotation_flags[long_index];
+		}
+		if (TEST_FLAG(rotation_flags, 0))
+		{
+			real_quaternion rotation;
+
+			memcpy(&rotation, delta, sizeof(rotation));
+			delta += 4;
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+		}
+		rotation_flags >>= 1;
+		if (TEST_FLAG(translation_flags, 0))
+		{
+			orientation->translation.x += delta[0];
+			orientation->translation.y += delta[1];
+			orientation->translation.z += delta[2];
+			delta += 3;
+		}
+		translation_flags >>= 1;
+	}
+}
+
+/* the floats a delta of this animation takes */
+static int psp_ac_floats(struct animation const *animation)
+{
+	int n = 0, i, words = (animation->node_count + LONG_BITS - 1) >> LONG_BITS_BITS;
+
+	for (i = 0; i < words; i++)
+	{
+		unsigned long mask = (i == words - 1 && (animation->node_count & (LONG_BITS - 1))) ?
+			((1UL << (animation->node_count & (LONG_BITS - 1))) - 1) : ~0UL;
+
+		n += 4 * __builtin_popcountl(animation->nodes_with_rotation_flags[i] & mask) +
+			3 * __builtin_popcountl(animation->nodes_with_translation_flags[i] & mask);
+	}
+	return n;
+}
+
+static void psp_ac_inner_aiming_screen_apply(struct animation const *animation, struct animation_aiming_screen_bounds const *aiming_screen_bounds, real yaw, real pitch, struct real_orientation *node_orientations);
+void aiming_screen_apply(struct animation const *animation, struct animation_aiming_screen_bounds const *aiming_screen_bounds, real yaw, real pitch, struct real_orientation *node_orientations)
+{
+	unsigned long yb, pb, h, t0 = 0;
+	struct psp_ac_entry *set, *e, *victim;
+	int w, floats;
+
+	if (psp_ac_ready() <= 0)
+	{
+		if (psp_ac_stat)
+		{
+			t0 = psp_microseconds();
+			psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+			psp_ac_us[2] += psp_microseconds() - t0;
+			psp_ac_n[0]++;
+			psp_ac_n[3]++;
+			psp_ac_log();
+		}
+		else
+			psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+		return;
+	}
+	if (psp_ac_stat)
+		t0 = psp_microseconds();
+	psp_ac_n[0]++;
+	yb = psp_ac_bits_of(yaw);
+	pb = psp_ac_bits_of(pitch);
+	h = ((unsigned long)animation >> 4) * 2654435761UL ^ ((unsigned long)aiming_screen_bounds >> 2) * 40503UL ^ yb * 2246822519UL ^ pb * 3266489917UL;
+	set = &psp_ac_table[((h ^ (h >> 15)) & (PSP_AC_SETS - 1)) * PSP_AC_WAYS];
+	psp_ac_clock++;
+	for (w = 0; w < PSP_AC_WAYS; w++)
+	{
+		e = &set[w];
+		if (e->valid && e->animation == animation && e->bounds == aiming_screen_bounds && e->yaw == yb && e->pitch == pb)
+		{
+			e->used = psp_ac_clock;
+			if (psp_ac_check)
+			{
+				/* the leaf made again on a copy of the nodes, beside the kept delta */
+				real fresh[PSP_AC_FLOATS];
+				int nodes = animation->node_count, differed;
+
+				memcpy(psp_ac_scratch, node_orientations, nodes * sizeof(*psp_ac_scratch));
+				psp_ac_out = fresh;
+				psp_ac_out_end = fresh + PSP_AC_FLOATS;
+				psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, psp_ac_scratch);
+				differed = (int)(psp_ac_out - fresh) != e->count || memcmp(fresh, e->delta, e->count * sizeof(real)) != 0;
+				psp_ac_out = psp_ac_out_end = NULL;
+				if (e->count)
+					psp_ac_apply(animation, e->delta, node_orientations);
+				differed |= memcmp(psp_ac_scratch, node_orientations, nodes * sizeof(*psp_ac_scratch)) != 0;
+				psp_ac_checked++;
+				if (differed)
+				{
+					if (psp_ac_differed < 8)
+						platform_psp_log("aimcache: check: differed at tick %ld (animation %08lx, yaw %08lx pitch %08lx)",
+							game_time_get(), (unsigned long)animation, yb, pb);
+					psp_ac_differed++;
+				}
+			}
+			else if (e->count) /* 0: the leaf changed nothing (frames out of the animation) */
+				psp_ac_apply(animation, e->delta, node_orientations);
+			psp_ac_n[1]++;
+			if (psp_ac_stat)
+			{
+				psp_ac_us[0] += psp_microseconds() - t0;
+				psp_ac_log();
+			}
+			return;
+		}
+	}
+	floats = psp_ac_floats(animation);
+	if (floats > PSP_AC_FLOATS)
+	{
+		psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+		psp_ac_n[3]++;
+		if (psp_ac_stat)
+		{
+			psp_ac_us[2] += psp_microseconds() - t0;
+			psp_ac_log();
+		}
+		return;
+	}
+	victim = &set[0];
+	for (w = 0; w < PSP_AC_WAYS; w++)
+	{
+		if (!set[w].valid)
+		{
+			victim = &set[w];
+			break;
+		}
+		if (set[w].used < victim->used)
+			victim = &set[w];
+	}
+	psp_ac_out = victim->delta;
+	psp_ac_out_end = victim->delta + PSP_AC_FLOATS;
+	psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+	victim->count = (short)(psp_ac_out - victim->delta);
+	victim->valid = victim->count == 0 || victim->count == floats;
+	psp_ac_out = psp_ac_out_end = NULL;
+	victim->animation = animation;
+	victim->bounds = aiming_screen_bounds;
+	victim->yaw = yb;
+	victim->pitch = pb;
+	victim->used = psp_ac_clock;
+	psp_ac_n[2]++;
+	if (psp_ac_stat)
+	{
+		psp_ac_us[1] += psp_microseconds() - t0;
+		psp_ac_log();
+	}
+}
+static void psp_ac_inner_aiming_screen_apply(
+#else
+void aiming_screen_apply(
+#endif
+"""),
+("""	data00 = animation_get_frame_data(animation, frame_index00);
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	psp_ac_cell_seen(animation, frame_index00, frame_index10, frame_index01, frame_index11); /* FIXES_AIMCACHE */
+#endif
+	data00 = animation_get_frame_data(animation, frame_index00);
+"""),
+("""			quaternions_interpolate_and_normalize(&yaw_rotation0, &yaw_rotation1, pitch_fraction, &rotation);
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+""",
+"""			quaternions_interpolate_and_normalize(&yaw_rotation0, &yaw_rotation1, pitch_fraction, &rotation);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			if (psp_ac_out) /* FIXES_AIMCACHE: the delta kept */
+			{
+				if (psp_ac_out + 4 <= psp_ac_out_end)
+					memcpy(psp_ac_out, &rotation, sizeof(rotation));
+				psp_ac_out += 4;
+			}
+#endif
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+"""),
+("""			orientation->translation.x +=
+				(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+				(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.y +=
+				(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+				(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.z +=
+				(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+				(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			{
+				/* FIXES_AIMCACHE: each delta held before its add (the same
+				rounding), so it can be kept */
+				real psp_ac_dx =
+					(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+					(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+				real psp_ac_dy =
+					(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+					(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+				real psp_ac_dz =
+					(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+					(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+
+				orientation->translation.x += psp_ac_dx;
+				orientation->translation.y += psp_ac_dy;
+				orientation->translation.z += psp_ac_dz;
+				if (psp_ac_out)
+				{
+					if (psp_ac_out + 3 <= psp_ac_out_end)
+					{
+						psp_ac_out[0] = psp_ac_dx;
+						psp_ac_out[1] = psp_ac_dy;
+						psp_ac_out[2] = psp_ac_dz;
+					}
+					psp_ac_out += 3;
+				}
+			}
+#else
+			orientation->translation.x +=
+				(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+				(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.y +=
+				(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+				(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.z +=
+				(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+				(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+#endif
+"""),
+]
+FIXES_AIMCACHE["source/game/game.c#aimcache"] = [
+("""		psp_fixed_seed_new_map();
+	}
+#endif
+""",
+"""		psp_fixed_seed_new_map();
+	}
+#endif
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		extern void psp_aimcache_new_map(void); /* model_animations.c (psp_fixups.py, FIXES_AIMCACHE) */
+
+		psp_aimcache_new_map();
+	}
+#endif
+"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
