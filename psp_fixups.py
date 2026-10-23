@@ -32033,7 +32033,243 @@ boolean psp_thread_has_exited_waiting(struct thread_reference *thread_reference)
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+
+# ---------- FIXES_LOOKREAL: the stick turns the view by real time
+# main.c caps a local frame's time at a fifteenth of a second, so below 15
+# frames a second the game world runs slow, as on the Xbox. The view was
+# turned by that capped time too, so the stick's turn rate in real terms fell
+# with the frame rate and stepped as it changed: at 10 fps a held stick turned
+# two thirds as fast as at 15. The stick's part of the turn now uses the
+# frame's real length (main_update_time keeps it before the cap), bounded at a
+# quarter second so a hitch or a checkpoint save doesn't spin the view.
+# Everything else keeps the capped time: magnetism follows its target's motion
+# in game time, and the pitch limits and autolevel step by game ticks. With
+# the stick at rest the turn is the old one bit for bit. Local games only (a
+# network client's frame time isn't capped, so nothing changes there).
+# Keep words: "lookrealoff" (as before); "lookstat" (a line a second of real
+# time: real and game seconds, frames, yaw turned); "frameslowN" (N ms more
+# each frame, tests only: slow frames on demand).
+FIXES_LOOKREAL = {}
+FIXES_LOOKREAL["source/game/player_control.c#lookreal"] = [
+("""static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+""",
+ """static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+#ifdef HALO_PSP
+/* the frame's real length, before main.c's cap (main_update_time sets it;
+psp_fixups.py, FIXES_LOOKREAL) */
+real psp_look_real_seconds = 0.f;
+static int psp_look_real = -1;
+static int psp_look_stat;
+static real psp_look_stat_real;
+static real psp_look_stat_game;
+static real psp_look_stat_yaw;
+static long psp_look_stat_frames;
+
+/* the time the stick turns the view by: the frame's real length, at most a
+quarter second, where the game's own time was capped */
+static real psp_look_time_delta(
+	real time_delta_sec)
+{
+	real seconds = psp_look_real_seconds;
+
+	if (psp_look_real < 0)
+	{
+		extern int psp_keep(const char *name);
+
+		psp_look_real = psp_keep("lookrealoff") == 0;
+		psp_look_stat = psp_keep("lookstat") != 0;
+		platform_psp_log("lookreal: %s", psp_look_real ? "on" : "off (lookrealoff)");
+	}
+	if (!psp_look_real || time_delta_sec <= 0.f || seconds <= 0.f ||
+		game_connection() != _game_connection_local)
+	{
+		return time_delta_sec;
+	}
+	return seconds < 0.25f ? seconds : 0.25f;
+}
+
+static void psp_look_stat_note(
+	real time_delta_sec,
+	real look_time_delta,
+	real yaw,
+	real stick_yaw)
+{
+	psp_look_stat_real += psp_look_real_seconds;
+	psp_look_stat_game += time_delta_sec;
+	psp_look_stat_yaw += yaw;
+	psp_look_stat_frames++;
+	if (psp_look_stat_real >= 1.f)
+	{
+		platform_psp_log("lookstat: tick %ld: real %.3f s, game %.3f s, %ld frames (%.1f fps), yaw %.4f rad (%.4f rad/s real), stick %.2f, last look time %.4f",
+			game_time_get(), (double)psp_look_stat_real, (double)psp_look_stat_game, psp_look_stat_frames,
+			(double)(psp_look_stat_frames / psp_look_stat_real), (double)psp_look_stat_yaw,
+			(double)(psp_look_stat_yaw / psp_look_stat_real), (double)stick_yaw, (double)look_time_delta);
+		psp_look_stat_real = psp_look_stat_game = psp_look_stat_yaw = 0.f;
+		psp_look_stat_frames = 0;
+	}
+}
+#endif
+"""),
+("""					real_euler_angles2d look_delta;
+""",
+ """					real_euler_angles2d look_delta;
+#ifdef HALO_PSP
+					real look_time_delta = psp_look_time_delta(time_delta_sec);
+					real_euler_angles2d look_magnetism;
+					real_euler_angles2d look_stick;
+					boolean look_magnetized = FALSE;
+#endif
+"""),
+("""						control->look_acceleration_time += time_delta_sec;""",
+ """#ifdef HALO_PSP
+						/* how long the stick has been held: real time, as the turn */
+						control->look_acceleration_time += look_time_delta;
+#else
+						control->look_acceleration_time += time_delta_sec;
+#endif"""),
+("""							look_delta.yaw = target_angular_velocity.yaw * magnetism_scale +""",
+ """#ifdef HALO_PSP
+							look_magnetism.yaw = target_angular_velocity.yaw * magnetism_scale;
+							look_magnetism.pitch = target_angular_velocity.pitch * magnetism_scale;
+							look_stick.yaw = look_delta.yaw * input_scale;
+							look_stick.pitch = look_delta.pitch * input_scale;
+							look_magnetized = TRUE;
+#endif
+							look_delta.yaw = target_angular_velocity.yaw * magnetism_scale +"""),
+("""						real facing_scale = time_delta_sec * TICKS_PER_SECOND;
+
+						input->facing_delta.yaw = facing_scale * look_delta.yaw;
+						input->facing_delta.pitch = facing_scale * look_delta.pitch;
+""",
+ """						real facing_scale = time_delta_sec * TICKS_PER_SECOND;
+
+#ifdef HALO_PSP
+						if (look_time_delta != time_delta_sec)
+						{
+							/* the stick's part by real time; magnetism's by game
+							time, as its target moves. Unmagnetised, the stick's
+							part alone, so a stick at rest turns by exactly what
+							it did */
+							real stick_scale = look_time_delta * TICKS_PER_SECOND;
+
+							if (look_magnetized)
+							{
+								input->facing_delta.yaw = facing_scale * look_magnetism.yaw + stick_scale * look_stick.yaw;
+								input->facing_delta.pitch = facing_scale * look_magnetism.pitch + stick_scale * look_stick.pitch;
+							}
+							else
+							{
+								input->facing_delta.yaw = stick_scale * look_delta.yaw;
+								input->facing_delta.pitch = stick_scale * look_delta.pitch;
+							}
+						}
+						else
+#endif
+						{
+						input->facing_delta.yaw = facing_scale * look_delta.yaw;
+						input->facing_delta.pitch = facing_scale * look_delta.pitch;
+						}
+#ifdef HALO_PSP
+						if (psp_look_stat && local_player_index == 0)
+							psp_look_stat_note(time_delta_sec, look_time_delta, input->facing_delta.yaw, clamped_yaw);
+#endif
+"""),
+]
+FIXES_LOOKREAL["source/main/main.c#lookreal"] = [
+("""static void main_update_time_unthrottled(
+""",
+ """#ifdef HALO_PSP
+/* the frame's real length before the cap, for the stick's turn
+(player_control.c; psp_fixups.py, FIXES_LOOKREAL) */
+extern real psp_look_real_seconds;
+#endif
+
+static void main_update_time_unthrottled(
+"""),
+("""	previous_counter = counter;
+
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+""",
+ """	previous_counter = counter;
+
+#ifdef HALO_PSP
+	psp_look_real_seconds = 0.f;
+#endif
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+#ifdef HALO_PSP
+		psp_look_real_seconds = seconds_elapsed;
+#endif
+"""),
+("""			0.001000000047497451f;
+	}
+
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+""",
+ """			0.001000000047497451f;
+	}
+
+#ifdef HALO_PSP
+	psp_look_real_seconds = 0.f;
+#endif
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+#ifdef HALO_PSP
+		psp_look_real_seconds = seconds_elapsed;
+#endif
+"""),
+("""	if (halo_interpolation_enabled())
+	{
+		main_update_time_unthrottled();
+		return;
+	}
+""",
+ """#ifdef HALO_PSP
+	{
+		/* "frameslowN": N ms more each frame, for tests that need slow
+		frames on demand (the look's: lookstat) */
+		extern int psp_keep_loaded(void);
+		extern int psp_keep_number(const char *prefix, int fallback);
+		static int frame_slow = -1;
+
+		if (frame_slow < 0 && psp_keep_loaded())
+			frame_slow = psp_keep_number("frameslow", 0);
+		if (frame_slow > 0)
+			Sleep(frame_slow);
+	}
+#endif
+	if (halo_interpolation_enabled())
+	{
+		main_update_time_unthrottled();
+		return;
+	}
+"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
