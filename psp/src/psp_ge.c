@@ -18003,6 +18003,8 @@ each multiplied by the shape; the frame then gets
 colour x tint + frame x alpha (alpha: the fade, or the empty colour's).
 NULL when the map has no 32-bit palette or the display list is full;
 *count_out: the palette's entries */
+static int meter_swap = -1;
+
 static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter const *meter, int *count_out)
 {
 	const unsigned int *palette;
@@ -18050,10 +18052,21 @@ static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter
 		}
 		meter_worked++;
 	}
+	if (meter_swap < 0)
+		meter_swap = psp_keep("meterswap");
 	for (entry = hit ? count : 0; entry < count; entry++)
 	{
 		unsigned int texel = palette[entry], shape = texel >> 24, position = (texel >> 16) & 0xFF;
 		int channel, out[3], alpha_out;
+
+		/* B3 test: the position in the alpha and the shape in the grey */
+		if (meter_swap)
+		{
+			unsigned int grey = position;
+
+			position = shape;
+			shape = grey;
+		}
 
 		/* build 116: outside tint mode 2 (the models' meters only; the HUD's
 		are all in it) the blend takes no alpha, so the alpha is the alpha
