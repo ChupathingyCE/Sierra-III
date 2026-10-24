@@ -24939,7 +24939,12 @@ void objects_update(
 """, """void object_compute_node_matrices(
 	long object_index)
 {
-""" + C(17)),
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[17]++;
+	}
+"""),
 ]
 FIXES_RECON["source/ai/actors.c#workcensus"] = [
 ("""static void actor_update(
@@ -24948,7 +24953,12 @@ FIXES_RECON["source/ai/actors.c#workcensus"] = [
 """, """static void actor_update(
 	long actor_index)
 {
-""" + C(12)),
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[12]++;
+	}
+"""),
 ]
 FIXES_RECON["source/ai/actor_perception.c#workcensus"] = [
 ("""void actor_perception_update(
@@ -24957,7 +24967,12 @@ FIXES_RECON["source/ai/actor_perception.c#workcensus"] = [
 """, """void actor_perception_update(
 	long actor_index)
 {
-""" + C(13)),
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[13]++;
+	}
+"""),
 ]
 FIXES_RECON["source/physics/collisions.c#workcensus"] = [
 ("""	long ignore_object_index,
@@ -24967,7 +24982,12 @@ FIXES_RECON["source/physics/collisions.c#workcensus"] = [
 """, """	long ignore_object_index,
 	struct collision_result *collision)
 {
-""" + C(14) + """	boolean hit = FALSE;
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[14]++;
+	}
+	boolean hit = FALSE;
 """),
 ("""	long ignore_object_index,
 	struct collision_feature_list *features)
@@ -24976,7 +24996,12 @@ FIXES_RECON["source/physics/collisions.c#workcensus"] = [
 """, """	long ignore_object_index,
 	struct collision_feature_list *features)
 {
-""" + C(15) + """	unsigned long structure_flags;
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[15]++;
+	}
+	unsigned long structure_flags;
 """),
 ]
 FIXES_RECON["source/structures/cluster_partitions.c#workcensus"] = [
@@ -24987,7 +25012,12 @@ FIXES_RECON["source/structures/cluster_partitions.c#workcensus"] = [
 """, """	float radius,
 	struct location const *location)
 {
-""" + C(16) + """	short cluster_indices[64];
+	{
+		extern unsigned long psp_workcensus[24];
+
+		psp_workcensus[16]++;
+	}
+	short cluster_indices[64];
 """),
 ]
 FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
