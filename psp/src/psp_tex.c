@@ -2053,8 +2053,9 @@ replay never binds (a culled run, a far surface's detail maps), so: a kind
 the replay binds only sometimes is marked only if it's already resident
 (resident_only: it costs no load and evicts nothing); and nothing more is
 marked once this frame's set nears the caches' room ("txptceilN", percent,
-85 by default: b30's beach marked 2,559 KB of 2,632 without it, and loads
-then waited for room). Past the ceiling the replay's binds ask for what's
+95 by default: b30's beach marked 2,559 KB of 2,632 without it, and loads
+then waited for room; at 85, b30's flight stopped marking models' maps and
+drew them white for up to 47 frames running, against 13 at 95). Past the ceiling the replay's binds ask for what's
 missing, as without texpretouch */
 #define PRETOUCH_KINDS 18
 static PSP_MAIN_SIDE unsigned long pretouch_calls = 0, pretouch_loads = 0, pretouch_refused = 0, pretouch_ceiling_stops = 0,
@@ -2212,7 +2213,7 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 		return; /* marked already, by a bind or another kind */
 	size = alignment(entries[index].size);
 	if (pretouch_percent < 0)
-		pretouch_percent = psp_keep_number("txptceil", 85);
+		pretouch_percent = psp_keep_number("txptceil", 95);
 	room = (VRAM_CACHE_END - VRAM_CACHE_START) + (arenas[1].end - arenas[1].start);
 	if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent)
 	{

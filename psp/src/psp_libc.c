@@ -648,7 +648,7 @@ static void *heap_note(void *result, size_t size, const char *kind, void *caller
 	if (!result)
 	{
 		if (++psp_heap_failures <= HEAP_FAILURES_LOGGED)
-			platform_log("heap: %s of %u bytes FAILED (large requests so far %lu KB)%s", kind, (unsigned)size,
+			platform_log("heap: %s of %u bytes FAILED for %p (large requests so far %lu KB)%s", kind, (unsigned)size, caller,
 				heap_large_total / 1024, psp_heap_failures == HEAP_FAILURES_LOGGED ? "; further failures are only counted" : "");
 		/* the map at the moment a large request finds no room: what took the
 		space the level change left */
@@ -751,6 +751,25 @@ extern struct heap_chunk *__malloc_av_[]; /* [2]: the top chunk */
 void __malloc_lock(struct _reent *reent);
 void __malloc_unlock(struct _reent *reent);
 extern int sce_newlib_heap_kb_size; /* PSP_HEAP_SIZE_KB (psp_platform.c) */
+
+/* the heap's room in KB: free inside it plus what the system hasn't handed
+over yet. Walks newlib's free bins, so for rare callers only */
+unsigned long psp_heap_room_kb(void)
+{
+	struct mallinfo info = mallinfo();
+	unsigned long untaken = 0;
+	char *taken = sbrk(0);
+
+	if (__malloc_sbrk_base != (char *)-1 && taken != (char *)-1)
+	{
+		char *end = __malloc_sbrk_base + (unsigned long)sce_newlib_heap_kb_size * 1024;
+
+		if (taken < end)
+			untaken = end - taken;
+	}
+	return ((unsigned long)info.fordblks + untaken) / 1024;
+}
+
 
 #define HEAP_MAP_LARGE 0x4000
 #define HEAP_MAP_TAGS 256

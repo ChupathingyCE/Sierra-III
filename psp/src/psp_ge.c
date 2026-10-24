@@ -6628,7 +6628,7 @@ static struct copy_room rooms[2];
 #define ARENA_ROOM (&rooms[0])
 #define CARVE_ROOM (&rooms[1])
 static int arena_state = -1; /* -1: not started; 0: off ("noarena", or no room); 1: on */
-static unsigned long arena_let_go = 0, arena_from_heap = 0;
+static unsigned long arena_let_go = 0, arena_from_heap = 0, copy_reserve_refused = 0;
 /* pieces the general heap holds now (from_heap counts all ever sent there) */
 static unsigned long arena_heap_live = 0;
 /* the largest free block at the last frame's end, for the log */
@@ -6878,6 +6878,25 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 		{
 			arena_from_heap++;
 			arena_heap_live++;
+		}
+	}
+	/* "copyreserveN": a level copy the rooms refused doesn't take the heap's
+	last N KB, which the engine's own requests need (a10 and a30 filled the
+	heap with spilled copies, then the engine's mallocs failed). The copy is
+	only a speed-up: refused, the draw reads the level's own data */
+	if (overflow)
+	{
+		extern unsigned long psp_heap_room_kb(void);
+		static int reserve_kb = -1;
+
+		if (reserve_kb < 0)
+			reserve_kb = psp_keep_number("copyreserve", 0);
+		if (reserve_kb > 0 && psp_heap_room_kb() < (unsigned long)reserve_kb + bytes / 1024 + 1)
+		{
+			copy_reserve_refused++;
+			if (arena_state > 0)
+				carve_want += size;
+			return NULL;
 		}
 	}
 	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign) */
@@ -22670,9 +22689,9 @@ static void frame_end_show(void)
 			list_peak, display_list_size, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
 		if (arena_state > 0)
 		{
-			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now); compacted %lu times, %lu KB; brought back %lu",
+			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now), kept off the heap's reserve %lu; compacted %lu times, %lu KB; brought back %lu",
 				ARENA_ROOM->used / 1024, ARENA_ROOM->bytes / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
-				arena_compactions, arena_moved_kb, arena_migrated);
+				copy_reserve_refused, arena_compactions, arena_moved_kb, arena_migrated);
 			carve_report();
 		}
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu (%lu with glow maps, %lu clamped); meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
