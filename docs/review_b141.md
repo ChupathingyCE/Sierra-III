@@ -53,6 +53,6 @@ Labels: [M] measured on a PSP (which one is named), [E] emulator, [D] read in co
   | d20 | 7.8 | 8.8 | 8.1 |
   | d40 | 29.5 | 29.7 | 29.8 |
 
-- **Relaunches** of the shipping EBOOT: PSP-1000 x5, lab 40083100054 (in flight at writing). b140rel on the PSP-1000: 5 of 5 exited (40073256355).
-- **Timers off** (the shipping EBOOT, default vs `timerson`, PSP-3000 x2 by game time reached in 600 s): lab 40084340672 (in flight at writing). Before it: lean on the measuring build, b30 +2.8% game time [M PSP-3000, 40075822966], a30 +0.4% (in the noise, 40079598701).
+- **Relaunches** of the shipping EBOOT (b30 route + deathless, exitat180, PSP-1000, lab 40083100054): **5 of 5 exited**, game time 5285-5299, no crash [M]. b140rel on the same PSP: 5 of 5 (40073256355).
+- **Timers off** (the shipping EBOOT, default against `timerson`, b30 route + deathless, PSP-3000 x2, game time reached in 600 s, lab 40084340672): 11,032 / 11,045 against 10,882 / 10,995, **+0.9%** [M]. Lean on the measuring build gave +2.8% (40075822966), but lean also turns the overlay off; the overlay's share is in a PSP-1000 pair (40088316339).
 
