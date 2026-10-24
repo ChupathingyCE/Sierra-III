@@ -1727,6 +1727,24 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
             ("\t\tswitch (prop->state)\n\t\t{\n\t\tcase _prop_state_unacknowledged:\n",
              "actor_perception_update: prop state", "before"),
         ],
+        # d20's particles_update step is 5.3-7.9 ms a frame on the PSP and
+        # 1.4-3.3 in the emulator (api-job 40104742872): which part holds it
+        "source/effects/particles.c": [
+            ("\t\tif (psp_points_begin())\n", "particles_update: points listed for the ME", "before"),
+            ("\t\t\tpsp_points_hand_over();\n\t\t}\n\t}\n#endif\n", "particles_update: the particle loop", "after"),
+            ("\tprofile_exit(particles_update_section);\n", "particles_update: end", "before"),
+        ],
+        "source/effects/contrails.c": [
+            ("\t\tpsp_points_end();\n", "contrails_update: the ME's points collected", "before"),
+        ],
+        "source/effects/effects.c": [
+            ("\tboolean visible;\n\tshort iteration_index;\n", "effect_update: its own work", "after"),
+            ("\t\t\t\tobject_impulse_sound_new(\n", "effect_update: object sound", "before"),
+            ("\t\t\t\tunattached_impulse_sound_new(\n", "effect_update: unattached sound", "before"),
+            ("\t\t\tdecal_new(\n", "effect_update: decal", "before"),
+            ("\t\t\tarea_of_effect_cause_damage(&damage, NONE);\n", "effect_update: area damage", "before"),
+            ("\t\t\t\t\tparticle_new(&data);\n", "effect_update: particle new", "before"),
+        ],
     }
     # build 106: an object's lighting as it is drawn (b30's beach: 7-10 ms a
     # frame under the step "object_get_level_of_detail_pixels", which is the
