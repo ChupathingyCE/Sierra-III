@@ -2075,6 +2075,8 @@ texture touched only if resident (a detail or change map) is marked when it
 is, and any texture left unmarked (not resident, past the budget or the
 ceiling) sets psp_tex_chunk_missed: psp_ge.c publishes no more that frame */
 PSP_MAIN_SIDE int psp_tex_chunking = 0, psp_tex_chunk_missed = 0;
+/* "mechunkpassold" (a test): a resident-only texture not marked, as without mechunk */
+static PSP_MAIN_SIDE int chunk_pass_old = -1;
 
 #ifdef PSP_RECON
 /* "txptcensus" (recon): per record kind, the textures marked in a frame
@@ -2216,7 +2218,9 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 	/* (a texture touched only if resident and not resident isn't missed: the
 	ME binding it draws untextured and asks for it, as the replay always has,
 	touching nothing the main CPU writes) */
-	if (resident_only == 2 && psp_tex_chunking && resident_at[index])
+	if (chunk_pass_old < 0)
+		chunk_pass_old = psp_keep("mechunkpassold");
+	if (resident_only == 2 && psp_tex_chunking && resident_at[index] && !chunk_pass_old)
 		resident_only = 1;
 	else if (resident_only == 2)
 	{
