@@ -24875,6 +24875,121 @@ FIXES_RECON["source/cache/xbox_sound_cache.c#soundclass"] = [
 	}
 """),
 ]
+# "workcensus" (keep.txt; master 2026-10-24): every 300 ticks, a count of the
+# tick's units of work: objects updated by type, actors updated and
+# perceiving, collision vector and sphere queries, partition relinks, node
+# matrix computes. The pairs name "workcensus", so the lab's desktop hooks
+# (pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the
+# same counts from the original on the same stretch, so any work the PSP
+# does that the PC doesn't stands out
+FIXES_RECON["source/objects/objects.c#workcensus"] = [
+("""void objects_update(
+	void)
+{
+""", """unsigned long psp_workcensus[24];
+
+void objects_update(
+	void)
+{
+	{
+		/* psp_fixups.py FIXES_RECON #workcensus */
+		static unsigned long ticks;
+		static int on = -1;
+		int psp_keep(const char *name);
+		void platform_psp_log(const char *format, ...);
+
+		if (on < 0)
+			on = psp_keep("workcensus");
+		if (on && ++ticks % 300 == 0)
+		{
+			unsigned long *w = psp_workcensus;
+
+			platform_psp_log("workcensus: 300 ticks to %lu: objects updated: biped %lu vehicle %lu weapon %lu equipment %lu garbage %lu projectile %lu scenery %lu machine %lu control %lu light %lu placeholder %lu sound %lu | actors updated %lu perceiving %lu | collision vectors %lu spheres %lu | relinks %lu | node matrices %lu",
+				ticks, w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7], w[8], w[9], w[10], w[11], w[12], w[13], w[14], w[15], w[16], w[17]);
+			{
+				int k;
+
+				for (k = 0; k < 24; k++)
+					w[k] = 0;
+			}
+		}
+	}
+"""),
+("""static boolean object_update(
+	long object_index)
+{
+	struct object_header_datum *header = object_header_get(object_index);
+	struct object_datum *object = object_get(object_index);
+""", """static boolean object_update(
+	long object_index)
+{
+	struct object_header_datum *header = object_header_get(object_index);
+	struct object_datum *object = object_get(object_index);
+	{
+		extern unsigned long psp_workcensus[24];
+
+		/* psp_fixups.py FIXES_RECON #workcensus */
+		if ((unsigned)object->object.type < 12)
+			psp_workcensus[object->object.type]++;
+	}
+"""),
+("""void object_compute_node_matrices(
+	long object_index)
+{
+""", """void object_compute_node_matrices(
+	long object_index)
+{
+""" + C(17)),
+]
+FIXES_RECON["source/ai/actors.c#workcensus"] = [
+("""static void actor_update(
+	long actor_index)
+{
+""", """static void actor_update(
+	long actor_index)
+{
+""" + C(12)),
+]
+FIXES_RECON["source/ai/actor_perception.c#workcensus"] = [
+("""void actor_perception_update(
+	long actor_index)
+{
+""", """void actor_perception_update(
+	long actor_index)
+{
+""" + C(13)),
+]
+FIXES_RECON["source/physics/collisions.c#workcensus"] = [
+("""	long ignore_object_index,
+	struct collision_result *collision)
+{
+	boolean hit = FALSE;
+""", """	long ignore_object_index,
+	struct collision_result *collision)
+{
+""" + C(14) + """	boolean hit = FALSE;
+"""),
+("""	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+	unsigned long structure_flags;
+""", """	long ignore_object_index,
+	struct collision_feature_list *features)
+{
+""" + C(15) + """	unsigned long structure_flags;
+"""),
+]
+FIXES_RECON["source/structures/cluster_partitions.c#workcensus"] = [
+("""	float radius,
+	struct location const *location)
+{
+	short cluster_indices[64];
+""", """	float radius,
+	struct location const *location)
+{
+""" + C(16) + """	short cluster_indices[64];
+"""),
+]
 FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
 ("""	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
 	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
