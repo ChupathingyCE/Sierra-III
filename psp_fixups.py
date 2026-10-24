@@ -31487,6 +31487,7 @@ struct psp_bspr_state
 {
 	struct psp_bspr_sphere_slot spheres[PSP_BSPR_SPHERES];
 	struct psp_bspr_ray_slot rays[PSP_BSPR_RAYS];
+	unsigned char sphere_next; /* the slot a new sphere answer takes */
 };
 /* the 1,088 bytes object_types.c adds to the biped datum */
 typedef char psp_bspr_state_fits[sizeof(struct psp_bspr_state) <= 1088 ? 1 : -1];
@@ -31624,10 +31625,29 @@ static boolean psp_bspr_sphere_take(struct collision_bsp const *bsp, short break
 	key->radius = psp_bspr_bits(radius);
 	key->generation = generation;
 	key->count = breakable_surface_count;
-	/* the same question lands in the same one of the biped's slots each tick */
-	/* 8 slots (a standing biped asks ~7 spheres a tick on a30: 4 evicted each
-	other, coll1 40137468615); "bspr4": the first 4 only, as before */
-	w = &state->spheres[((((unsigned long)bsp >> 4) ^ key->x ^ (key->y >> 7) ^ key->radius) * 0x9E3779B1UL) >> psp_bspr_shift];
+	/* every slot is looked in, and a new answer takes the slots in turn: a
+	standing biped asks ~7 spheres a tick on a30, and one slot picked by a hash
+	let two of them evict each other with others free (bspr1 40144173994: 604
+	of 2,112 answered with 8 slots). "bspr4": the first 4 slots only, picked
+	by the hash as before */
+	if (psp_bspr_shift == 30)
+		w = &state->spheres[((((unsigned long)bsp >> 4) ^ key->x ^ (key->y >> 7) ^ key->radius) * 0x9E3779B1UL) >> 30];
+	else
+	{
+		for (k = 0, w = NULL; k < PSP_BSPR_SPHERES; k++)
+			if (state->spheres[k].bsp == key->bsp && state->spheres[k].x == key->x &&
+				state->spheres[k].y == key->y && state->spheres[k].z == key->z &&
+				state->spheres[k].radius == key->radius)
+			{
+				w = &state->spheres[k];
+				break;
+			}
+		if (!w)
+		{
+			w = &state->spheres[state->sphere_next % PSP_BSPR_SPHERES];
+			state->sphere_next = (unsigned char)((state->sphere_next + 1) % PSP_BSPR_SPHERES);
+		}
+	}
 	if (w->bsp == key->bsp && w->x == key->x && w->y == key->y && w->z == key->z &&
 		w->radius == key->radius && w->generation == key->generation && w->count == key->count)
 	{
