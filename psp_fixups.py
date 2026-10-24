@@ -23660,7 +23660,16 @@ FIXES_HOIST["source/objects/object_types.c#hoist"] = [
 	boolean result;
 	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
 	result = FALSE;
-""", """boolean object_type_update(
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_HOIST): the by-type bodies below, called from the
+wrappers before them and from objects.c's update */
+boolean object_type_update_for_type(short type, long object_index);
+void object_type_export_function_values_for_type(short type, long object_index);
+void object_type_preprocess_node_orientations_for_type(short type, long object_index, struct real_orientation *node_orientations);
+void object_type_postprocess_node_matrices_for_type(short type, long object_index, struct real_matrix4x3 *node_matrices);
+#endif
+
+boolean object_type_update(
 	long object_index)
 {
 	return object_type_update_for_type(object_get(object_index)->object.type, object_index);
