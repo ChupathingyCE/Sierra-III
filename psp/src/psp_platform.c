@@ -1143,6 +1143,14 @@ static void keep_load(void)
 	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
+#if !(defined(PSP_METRICS) && PSP_METRICS)
+	/* the release: the game's instrument timers (a clock call per model part,
+	per moving particle, per physics update...) feed only statistics no
+	release prints, and cost b30 ~3% of its game speed on the PSP-3000.
+	"timerson" keeps them, for a release that's being measured */
+	if (!keep_search("timerson"))
+		psp_timers_off = 1;
+#endif
 	steps_every = keep_search("stepsall") ? 1 : STEPS_TIMED_EVERY;
 	if (keep_cache_lock < 0)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
