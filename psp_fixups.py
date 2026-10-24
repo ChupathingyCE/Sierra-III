@@ -11717,9 +11717,11 @@ FIXES_CHUPA["source/physics/bsp3d.c#trusted"] = [
 			node_index >= bsp->nodes.count ||
 			depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
 #else
-		/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted) */
+		/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted); a
+		caller may still start the walk at NONE (no tree), so only the
+		bounds and depth tests go */
 		(void)depth;
-		if (0)
+		if (node_index < 0)
 #endif
 		{"""),
 ]
