@@ -23091,6 +23091,35 @@ static unsigned long psp_lplan_epoch = 0;
 static struct structure_bsp *psp_lplan_structure = NULL;
 static unsigned long psp_lplan_hits = 0, psp_lplan_kept = 0, psp_lplan_walked = 0, psp_lplan_mismatches = 0;
 
+/* the keys of lights seen once and not yet kept, oldest let go first */
+#define PSP_LPLAN_SEEN 32
+static unsigned long psp_lplan_seen[PSP_LPLAN_SEEN];
+static int psp_lplan_seen_next = 0;
+
+static int psp_lplan_seen_before(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices)
+{
+	unsigned long key = 2166136261u;
+	unsigned char const *byte;
+	long k;
+
+	for (byte = (unsigned char const *)center, k = 0; k < (long)sizeof(*center); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	for (byte = (unsigned char const *)&radius, k = 0; k < (long)sizeof(radius); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	for (byte = (unsigned char const *)cluster_indices, k = 0; k < cluster_count * (long)sizeof(short); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	key |= 1; /* 0 marks an empty entry */
+	for (k = 0; k < PSP_LPLAN_SEEN; k++)
+		if (psp_lplan_seen[k] == key)
+		{
+			psp_lplan_seen[k] = 0;
+			return 1;
+		}
+	psp_lplan_seen[psp_lplan_seen_next] = key;
+	psp_lplan_seen_next = (psp_lplan_seen_next + 1) % PSP_LPLAN_SEEN;
+	return 0;
+}
+
 static long psp_lplan_surfaces(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
 	long *out, long maximum)
 {
@@ -23116,6 +23145,7 @@ static long psp_lplan_surfaces(real_point3d const *center, real radius, short cl
 	if (psp_lplan_epoch != psp_tex_map_opens || psp_lplan_structure != structure)
 	{
 		csmemset(psp_lplan, 0, sizeof(psp_lplan));
+		csmemset(psp_lplan_seen, 0, sizeof(psp_lplan_seen));
 		psp_lplan_pool_used = 0;
 		psp_lplan_epoch = psp_tex_map_opens;
 		psp_lplan_structure = structure;
@@ -23146,7 +23176,9 @@ static long psp_lplan_surfaces(real_point3d const *center, real radius, short cl
 			psp_lplan_walked++;
 			return -1;
 		}
-		if (n <= psp_lplan_pool_cap)
+		/* a plan is kept the second time its light is seen as it was: a light
+		that moves never takes pool room (c20, b30 and a30's mostly do) */
+		if (n <= psp_lplan_pool_cap && psp_lplan_seen_before(center, radius, cluster_count, cluster_indices))
 		{
 			int fits = 1;
 
