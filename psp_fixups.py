@@ -11726,6 +11726,29 @@ FIXES_CHUPA["source/interface/terminal.c#render2"] = [
 		{
 			struct output_line_datum *line;"""),
 ]
+# The main menu's music faded and started over every 75 s (B2): the attract
+# mode's countdown stops the music before its movie, the PSP has no attract
+# movie to play, so the countdown restarts and the music starts again from
+# its first track. The PSP's menu waits with no countdown and the music
+# runs through its tracks; "attractmode" keeps the countdown
+FIXES_CHUPA["source/interface/attract_mode.c#nomovie"] = [
+("""		time_since_last_event = MAX(attract_mode_countdown_timer, time_since_last_event);
+		time_elapsed = current_time-time_since_last_event;
+""", """		time_since_last_event = MAX(attract_mode_countdown_timer, time_since_last_event);
+		time_elapsed = current_time-time_since_last_event;
+#ifdef HALO_PSP
+		{
+			static int psp_attract = -1;
+			int psp_keep(const char *name);
+
+			if (psp_attract < 0)
+				psp_attract = psp_keep("attractmode");
+			if (!psp_attract)
+				time_elapsed = 0;
+		}
+#endif
+"""),
+]
 FIXES_CHUPA["source/physics/collision_bsp.c#trusted"] = [
 ("""	long *nodes_left)
 {
