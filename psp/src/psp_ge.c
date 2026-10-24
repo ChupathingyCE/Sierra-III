@@ -22786,10 +22786,11 @@ static void frame_end_show(void)
 		}
 		if (frames > 1)
 		{
-			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu (see-through %lu, no triangles %lu, skinning plan failed %lu); see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",
+			platform_log("GE: waited for the GE %lu us a frame (worst %lu) over the last 300 frames; frame end: cache write-back %lu us, buffer swap %lu, textures %lu; draws skipped with the display list full %lu in all; see-through parts placed by the CPU %lu; buffers on several nodes drawn rigid %lu; see-through flushes under the first-person projection %lu; HUD quads that left early with the depth test off %lu",
 				ge_wait_us / 300, ge_wait_worst, frame_end_us[0] / 300, frame_end_us[1] / 300, frame_end_us[2] / 300,
-				list_full_skips, transparent_placed, multi_node_rigid, multi_node_rigid_why[0], multi_node_rigid_why[1],
-				multi_node_rigid_why[2], first_person_flushes, screen_quad_bailed);
+				list_full_skips, transparent_placed, multi_node_rigid, first_person_flushes, screen_quad_bailed);
+			platform_log("GE: buffers on several nodes drawn rigid, by why: see-through %lu, no triangles given %lu, the skinning plan failed %lu",
+				multi_node_rigid_why[0], multi_node_rigid_why[1], multi_node_rigid_why[2]);
 			ge_kinds_report(); /* build 103 */
 			CENSUS(census_report());
 			replay_kinds_report(300); /* mekinds */
