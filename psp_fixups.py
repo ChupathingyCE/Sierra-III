@@ -24886,11 +24886,13 @@ FIXES_RECON["source/objects/objects.c#workcensus"] = [
 ("""void objects_update(
 	void)
 {
+	static struct profile_section section = {"objects_update", NONE, TRUE};
 """, """unsigned long psp_workcensus[24];
 
 void objects_update(
 	void)
 {
+	static struct profile_section section = {"objects_update", NONE, TRUE};
 	{
 		/* psp_fixups.py FIXES_RECON #workcensus */
 		static unsigned long ticks;
