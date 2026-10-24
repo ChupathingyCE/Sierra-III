@@ -5446,13 +5446,15 @@ static void showcase_levels(void)
 		return;
 	showcase_applied = psp_showcase_map;
 	tex_bias = tex_bias_base + (psp_showcase_map ? psp_keep_number("showcasebias", SHOWCASE_BIAS_DEFAULT) * 0.25f : 0.0f);
-	/* B14 test, "showcasesharp": the menu's textures at their largest level
-	whatever the slope says. The PSP drew the menu's hull from a small level
-	where the emulator draws it sharp (lab 40107746080 against 40106798630):
-	the real GE's level choice by slope differs from PPSSPP's */
+	/* the menu's textures at their largest level whatever the slope says:
+	the real GE's level choice by slope drew the menu's hull from a small,
+	blurred level where the emulator draws it sharp (lab 40107746080 against
+	40106798630; the PSP-3000 with this, 40108671359, matches the emulator).
+	The showcase rule allows it (nothing reaches the other maps);
+	"showcasesharpoff" leaves the choice to the slope */
 	if (tex_level_mode_base < 0)
 		tex_level_mode_base = tex_level_mode;
-	tex_level_mode = psp_showcase_map && psp_keep("showcasesharp") ? GU_TEXTURE_CONST : tex_level_mode_base;
+	tex_level_mode = psp_showcase_map && !psp_keep("showcasesharpoff") ? GU_TEXTURE_CONST : tex_level_mode_base;
 	sceGuTexLevelMode(tex_level_mode, tex_bias);
 }
 
