@@ -160,5 +160,11 @@ rm -f "$OUT/halo_psp_$LABEL.zip"
 # (a zip stores local times: UTC, so the time zone of the machine doesn't show)
 (cd "$pkg" && TZ=UTC python3 -m zipfile -c "$OUT/halo_psp_$LABEL.zip" "${top[@]}")
 cp "$OUT/build/halo.elf" "$OUT/build/halo.map" "$OUT/"
+# each text section's own alignment, which the link map doesn't print, so a
+# code layout can be placed where the link will really put it
+find "$OUT/build/obj" -name '*.o' -print0 | LC_ALL=C sort -z | while IFS= read -r -d '' o; do
+    psp-readelf -SW "$o" | awk -v rel="${o#"$OUT/build/obj/"}" '
+        sub(/^ *\[ *[0-9]+\] /, "") && $1 ~ /^\.text/ && $2 == "PROGBITS" { print $1 "\t" rel "\t" $NF }'
+done > "$OUT/halo.secalign.txt" || true
 log "$(grep -E '^program ' "$OUT/build.log" | tail -1)"
 log "wrote $OUT/halo_psp_$LABEL.zip ($(sha256sum "$OUT/build/EBOOT.PBP" | cut -c1-16) EBOOT)"
