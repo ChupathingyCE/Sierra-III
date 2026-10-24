@@ -33560,9 +33560,9 @@ FIXES_VITA = {}
 FIXES_VITA["source/memory/lruv_cache.c#lvw"] = [
 (r"""static void lruv_cache_verify(
 	struct lruv_cache *cache,
-	boolean verify_blocks)
-{
-""", r"""#ifdef HALO_PSP
+	boolean verify_blocks);
+""", r"""/* (the declarations at the prototype: lruv_block_new, before the definition, uses them) */
+#ifdef HALO_PSP
 /* psp_fixups.py (FIXES_VITA #lvw): "lruvverify" (see there) */
 extern int psp_keep(const char *name);
 static int psp_lruv_walk = -1;
@@ -33630,6 +33630,14 @@ static int psp_lruv_census_slot(struct lruv_cache *cache)
 #endif
 
 static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks);
+"""),
+(r"""static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks)
+{
+""", r"""static void lruv_cache_verify(
 	struct lruv_cache *cache,
 	boolean verify_blocks)
 {
