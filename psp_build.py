@@ -854,7 +854,9 @@ def seed_profile(items):
     obj = os.path.join(OUT, "seed", "all_levels.o")
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     name_c = 'L"' + SEED_NAME + '"'
-    r = subprocess.run(PSP + flags + ["-DPSP_SEED_NAME=" + name_c, "-DPSP_SEED_LOOK_SENSITIVITY=%d" % look,
+    # -G0 last: the probe's tables are read back by section name, which small
+    # data (PSP_CFLAGS=-G8) would move out of .rodata
+    r = subprocess.run(PSP + flags + ["-G0", "-DPSP_SEED_NAME=" + name_c, "-DPSP_SEED_LOOK_SENSITIVITY=%d" % look,
                                       "-include", os.path.join(HERE, "psp_post.h"), "-c", probe, "-o", obj],
                        cwd=TREE, capture_output=True, text=True)
     if r.returncode:
