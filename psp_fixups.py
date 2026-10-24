@@ -24977,11 +24977,18 @@ FIXES_RECON["source/ai/actor_perception.c#workcensus"] = [
 """),
 ]
 FIXES_RECON["source/physics/collisions.c#workcensus"] = [
-("""	long ignore_object_index,
+("""boolean collision_test_vector(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	long ignore_object_index,
 	struct collision_result *collision)
 {
-	boolean hit = FALSE;
-""", """	long ignore_object_index,
+""", """boolean collision_test_vector(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	long ignore_object_index,
 	struct collision_result *collision)
 {
 	{
@@ -24989,13 +24996,23 @@ FIXES_RECON["source/physics/collisions.c#workcensus"] = [
 
 		psp_workcensus[14]++;
 	}
-	boolean hit = FALSE;
 """),
-("""	long ignore_object_index,
+("""boolean collision_get_features_in_sphere(
+	unsigned long flags,
+	real_point3d const *center,
+	real radius,
+	real height,
+	real width,
+	long ignore_object_index,
 	struct collision_feature_list *features)
 {
-	unsigned long structure_flags;
-""", """	long ignore_object_index,
+""", """boolean collision_get_features_in_sphere(
+	unsigned long flags,
+	real_point3d const *center,
+	real radius,
+	real height,
+	real width,
+	long ignore_object_index,
 	struct collision_feature_list *features)
 {
 	{
@@ -25003,15 +25020,23 @@ FIXES_RECON["source/physics/collisions.c#workcensus"] = [
 
 		psp_workcensus[15]++;
 	}
-	unsigned long structure_flags;
 """),
 ]
 FIXES_RECON["source/structures/cluster_partitions.c#workcensus"] = [
-("""	float radius,
+("""void cluster_partition_reconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference,
+	real_point3d const *position,
+	float radius,
 	struct location const *location)
 {
-	short cluster_indices[64];
-""", """	float radius,
+""", """void cluster_partition_reconnect(
+	struct cluster_partition *partition,
+	long datum_index,
+	long *first_cluster_reference,
+	real_point3d const *position,
+	float radius,
 	struct location const *location)
 {
 	{
@@ -25019,7 +25044,6 @@ FIXES_RECON["source/structures/cluster_partitions.c#workcensus"] = [
 
 		psp_workcensus[16]++;
 	}
-	short cluster_indices[64];
 """),
 ]
 FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
