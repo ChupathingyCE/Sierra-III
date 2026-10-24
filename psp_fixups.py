@@ -33204,7 +33204,268 @@ static void main_update_time_unthrottled(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_VITA: ideas from halo-ce-vita (BirchWoodGod), built our way
+# docs/research/research_vita_insider16.md, S1 and S2 (credited in the README)
+#
+# LVW (S1): lruv_cache_verify(cache, TRUE) walks every live block of an lruv
+# cache and only asserts its links and page order. lruv_block_new and
+# lruv_block_delete each call it (delete twice), so the decal vertex cache, a
+# block a decal and near full in a fight, was walked whole about three times
+# for each decal made; memory_pool_verify's walk was the same case
+# ("poolverify"). The walk changes nothing, so leaving it out is exact. Keep
+# word "lruvverify": the walk.
+# A hole's blocks were also found by a pass over every slot of the block
+# array; they are the blocks after the hole's block in the list, found there
+# and still deleted in the array's order (halo-ce-vita's list walk). Keep word
+# "lruvarraypass": the pass.
+# "lruvcensus" (PSP_RECON): every 5 s of game time, per cache and per tick,
+# the walks asked for, the blocks they cover, the array passes and slots, and
+# emulated microseconds in each.
+FIXES_VITA = {}
+FIXES_VITA["source/memory/lruv_cache.c#lvw"] = [
+(r"""static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks)
+{
+""", r"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VITA #lvw): "lruvverify" (see there) */
+extern int psp_keep(const char *name);
+static int psp_lruv_walk = -1;
+#ifdef PSP_RECON
+extern unsigned int sceKernelGetSystemTimeLow(void);
+void platform_psp_log(const char *format, ...);
+long game_time_get(void);
+#define PSP_LRUV_CENSUS_CACHES 4
+static int psp_lruv_census_on = -1;
+static long psp_lruv_census_tick = -1;
+static unsigned long psp_lruv_census_ticks;
+static struct
+{
+	struct lruv_cache *cache;
+	unsigned long walks, blocks, walk_us, passes, slots, pass_us, listed, listed_blocks;
+} psp_lruv_census[PSP_LRUV_CENSUS_CACHES];
+
+static int psp_lruv_census_slot(struct lruv_cache *cache)
+{
+	long now;
+	int k;
+
+	if (psp_lruv_census_on < 0)
+		psp_lruv_census_on = psp_keep("lruvcensus");
+	if (!psp_lruv_census_on)
+		return -1;
+	now = game_time_get();
+	if (now != psp_lruv_census_tick)
+	{
+		if (now % 150 == 0 && psp_lruv_census_ticks)
+		{
+			float ticks = (float)psp_lruv_census_ticks;
+
+			for (k = 0; k < PSP_LRUV_CENSUS_CACHES; k++)
+				if (psp_lruv_census[k].cache)
+				{
+					platform_psp_log("lruvcensus: game time %ld | %s, per tick: walks %.2f over %.1f blocks, %.1f us; "
+						"array passes %.2f over %.1f slots, %.1f us; list finds %.2f, %.2f blocks | live %d of %d",
+						now, psp_lruv_census[k].cache->name,
+						psp_lruv_census[k].walks / ticks, psp_lruv_census[k].blocks / ticks, psp_lruv_census[k].walk_us / ticks,
+						psp_lruv_census[k].passes / ticks, psp_lruv_census[k].slots / ticks, psp_lruv_census[k].pass_us / ticks,
+						psp_lruv_census[k].listed / ticks, psp_lruv_census[k].listed_blocks / ticks,
+						(int)psp_lruv_census[k].cache->blocks->actual_count, (int)psp_lruv_census[k].cache->blocks->maximum_count);
+					psp_lruv_census[k].walks = psp_lruv_census[k].blocks = psp_lruv_census[k].walk_us = 0;
+					psp_lruv_census[k].passes = psp_lruv_census[k].slots = psp_lruv_census[k].pass_us = 0;
+					psp_lruv_census[k].listed = psp_lruv_census[k].listed_blocks = 0;
+				}
+			psp_lruv_census_ticks = 0;
+		}
+		psp_lruv_census_tick = now;
+		psp_lruv_census_ticks++;
+	}
+	for (k = 0; k < PSP_LRUV_CENSUS_CACHES; k++)
+		if (psp_lruv_census[k].cache == cache)
+			return k;
+	for (k = 0; k < PSP_LRUV_CENSUS_CACHES; k++)
+		if (!psp_lruv_census[k].cache)
+		{
+			psp_lruv_census[k].cache = cache;
+			return k;
+		}
+	return -1;
+}
+#endif
+#endif
+
+static void lruv_cache_verify(
+	struct lruv_cache *cache,
+	boolean verify_blocks)
+{
+#if defined(HALO_PSP) && defined(PSP_RECON)
+	int psp_census = -1;
+	unsigned int psp_census_start = 0;
+#endif
+"""),
+(r"""	data_verify(cache->blocks);
+
+	if (verify_blocks)
+	{
+""", r"""	data_verify(cache->blocks);
+
+#ifdef HALO_PSP
+	if (verify_blocks)
+	{
+		if (psp_lruv_walk < 0)
+			psp_lruv_walk = psp_keep("lruvverify");
+#ifdef PSP_RECON
+		psp_census = psp_lruv_census_slot(cache);
+		if (psp_census >= 0)
+		{
+			psp_lruv_census[psp_census].walks++;
+			psp_lruv_census[psp_census].blocks += cache->blocks->actual_count;
+			psp_census_start = sceKernelGetSystemTimeLow();
+		}
+#endif
+		verify_blocks = psp_lruv_walk;
+	}
+#endif
+	if (verify_blocks)
+	{
+"""),
+(r"""			block_index = block->next_block_index;
+		}
+	}
+
+	return;
+}""", r"""			block_index = block->next_block_index;
+		}
+	}
+#if defined(HALO_PSP) && defined(PSP_RECON)
+	if (psp_census >= 0)
+		psp_lruv_census[psp_census].walk_us += sceKernelGetSystemTimeLow() - psp_census_start;
+#endif
+
+	return;
+}"""),
+(r"""	if (found_hole)
+	{
+		data_iterator_new(&iterator, cache->blocks);
+		while ((block = data_iterator_next(&iterator)) != NULL)
+		{
+			if (block->first_page_index < best_hole.first_page_index + desired_page_count &&
+				block->first_page_index + block->page_count > best_hole.first_page_index)
+			{
+				match_assert(
+					"c:\\halo\\SOURCE\\memory\\lruv_cache.c",
+					375,
+					!cache->locked_block_proc || !cache->locked_block_proc(iterator.index));
+				lruv_block_delete(cache, iterator.datum_index);
+			}
+		}
+""", r"""	if (found_hole)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_VITA #lvw): the list keeps blocks in page
+		order and the hole starts where its block ends, so the blocks it
+		covers are the ones after that block, up to its last page. They are
+		gathered there, then deleted in slot order, the order the pass over
+		the array met them in (the delete procs and the free list see the same
+		sequence). More than the gather holds: the pass, as before */
+		static int psp_hole_list = -1;
+		long psp_covered[32];
+		int psp_covered_count = 0;
+		boolean psp_pass = TRUE;
+#ifdef PSP_RECON
+		int psp_census = psp_lruv_census_slot(cache);
+		unsigned int psp_census_start = sceKernelGetSystemTimeLow();
+#endif
+
+		if (psp_hole_list < 0)
+			psp_hole_list = !psp_keep("lruvarraypass");
+		if (psp_hole_list)
+		{
+			long at = best_hole.block_index == NONE ? cache->first_block_index :
+				((struct lruv_cache_block *)datum_get(cache->blocks, best_hole.block_index))->next_block_index;
+
+			psp_pass = FALSE;
+			while (at != NONE)
+			{
+				int k;
+
+				block = datum_get(cache->blocks, at);
+				if (block->first_page_index >= best_hole.first_page_index + desired_page_count)
+					break;
+				if (block->first_page_index + block->page_count > best_hole.first_page_index)
+				{
+					if (psp_covered_count == (int)(sizeof(psp_covered) / sizeof(psp_covered[0])))
+					{
+						psp_pass = TRUE;
+						break;
+					}
+					for (k = psp_covered_count++; k > 0 && (psp_covered[k - 1] & 0xFFFF) > (at & 0xFFFF); k--)
+						psp_covered[k] = psp_covered[k - 1];
+					psp_covered[k] = at;
+				}
+				at = block->next_block_index;
+			}
+			if (!psp_pass)
+			{
+				int k;
+
+				for (k = 0; k < psp_covered_count; k++)
+				{
+					match_assert(
+						"c:\\halo\\SOURCE\\memory\\lruv_cache.c",
+						375,
+						!cache->locked_block_proc || !cache->locked_block_proc(psp_covered[k]));
+					lruv_block_delete(cache, psp_covered[k]);
+				}
+			}
+#ifdef PSP_RECON
+			if (psp_census >= 0 && !psp_pass)
+			{
+				psp_lruv_census[psp_census].listed++;
+				psp_lruv_census[psp_census].listed_blocks += psp_covered_count;
+			}
+#endif
+		}
+#ifdef PSP_RECON
+		if (psp_census >= 0 && psp_pass)
+		{
+			psp_lruv_census[psp_census].passes++;
+			psp_lruv_census[psp_census].slots += cache->blocks->count;
+		}
+#endif
+		if (psp_pass)
+#endif
+		{
+		data_iterator_new(&iterator, cache->blocks);
+		while ((block = data_iterator_next(&iterator)) != NULL)
+		{
+			if (block->first_page_index < best_hole.first_page_index + desired_page_count &&
+				block->first_page_index + block->page_count > best_hole.first_page_index)
+			{
+				match_assert(
+					"c:\\halo\\SOURCE\\memory\\lruv_cache.c",
+					375,
+					!cache->locked_block_proc || !cache->locked_block_proc(iterator.index));
+				lruv_block_delete(cache, iterator.datum_index);
+			}
+		}
+		}
+#if defined(HALO_PSP) && defined(PSP_RECON)
+		if (psp_census >= 0)
+			psp_lruv_census[psp_census].pass_us += sceKernelGetSystemTimeLow() - psp_census_start;
+#endif
+"""),
+]
+
+# PRS (S2) count first: "perccensus" (PSP_RECON): every 5 s of game time, per
+# tick, the perception refreshes, the objects their cluster walk visits (with
+# children), those met already in the refresh, and those perception passes
+# over (childless, of a type it doesn't test: neither biped, vehicle nor
+# projectile), by type, with emulated microseconds in the cluster walk
+
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
