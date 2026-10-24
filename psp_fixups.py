@@ -24775,6 +24775,85 @@ FIXES_RECON = {}
 # being drawn for psp_ge.c's draw census (psp_census_definition)
 # "scriptsdump": the scenario's script names and types at load, so a run's
 # commands can wake one (a level's late cutscene reached without playing to it)
+# "soundclass" (keep.txt; Sheepdog01 2026-10-24: the sound cache needed to miss no
+# load): with the 5 s "sound cache:" line, the sounds playing by class group
+# and size. snd1 (lab 40092058746) found "playing" (locked pages) at 1.0-1.8 MB
+# (d20 1,792 KB, the whole default cache): this says whether music, ambience,
+# dialogue or effects hold it, which decides what a smaller cache can shed. A
+# permutation two channels play counts once
+FIXES_RECON["source/sound/sound_manager.c#soundclass"] = [
+("static struct sound_manager_globals sound_manager_globals = { 0 };\n",
+ """static struct sound_manager_globals sound_manager_globals = { 0 };
+
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+void psp_sound_playing_census(void)
+{
+	enum { GROUPS = 7 };
+	static char const *const names[GROUPS] = { "music", "ambient", "devices", "dialogue", "weapons", "vehicles", "other" };
+	struct sound_permutation const *seen[MAXIMUM_SOUND_CHANNELS * 2];
+	unsigned long bytes[GROUPS] = { 0 }, largest = 0;
+	int counts[GROUPS] = { 0 }, seen_count = 0, largest_class = -1, k, j, slot;
+
+	if (!psp_keep("soundclass") || !sound_data)
+		return;
+	for (k = 0; k < sound_manager_globals.channel_count && k < MAXIMUM_SOUND_CHANNELS; k++)
+	{
+		struct sound_channel_datum const *channel = &sound_channels[k];
+		struct sound_permutation const *permutations[2];
+		struct sound_datum *sound;
+		short sound_class;
+		int group;
+
+		if (channel->sound_index == NONE)
+			continue;
+		sound = (struct sound_datum *)datum_try_and_get(sound_data, channel->sound_index);
+		if (!sound)
+			continue;
+		sound_class = sound_definition_get(sound->definition_index)->sound_class;
+		group = sound_class == 32 ? 0 : sound_class >= 33 && sound_class <= 35 ? 1 : sound_class >= 26 && sound_class <= 30 ? 2 :
+			sound_class == 19 || sound_class == 44 || sound_class == 46 || sound_class == 47 ? 3 :
+			sound_class >= 4 && sound_class <= 10 ? 4 : sound_class == 22 || sound_class == 23 ? 5 : 6;
+		permutations[0] = channel->playing_permutation;
+		permutations[1] = channel->queued_permutation;
+		for (slot = 0; slot < 2; slot++)
+		{
+			struct sound_permutation const *permutation = permutations[slot];
+
+			if (!permutation)
+				continue;
+			for (j = 0; j < seen_count && seen[j] != permutation; j++)
+				;
+			if (j < seen_count)
+				continue;
+			seen[seen_count++] = permutation;
+			bytes[group] += (unsigned long)permutation->samples.size;
+			counts[group]++;
+			if ((unsigned long)permutation->samples.size > largest)
+			{
+				largest = (unsigned long)permutation->samples.size;
+				largest_class = sound_class;
+			}
+		}
+	}
+	platform_psp_log("soundclass: playing (KB, permutations): %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d, %s %lu/%d; largest %lu KB (class %d)",
+		names[0], bytes[0] / 1024, counts[0], names[1], bytes[1] / 1024, counts[1], names[2], bytes[2] / 1024, counts[2],
+		names[3], bytes[3] / 1024, counts[3], names[4], bytes[4] / 1024, counts[4], names[5], bytes[5] / 1024, counts[5],
+		names[6], bytes[6] / 1024, counts[6], largest / 1024, largest_class);
+}
+"""),
+]
+FIXES_RECON["source/cache/xbox_sound_cache.c#soundclass"] = [
+("""		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+}""", """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+	{
+		extern void psp_sound_playing_census(void);
+
+		psp_sound_playing_census();
+	}
+}"""),
+]
 FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
 ("""	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
 	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
