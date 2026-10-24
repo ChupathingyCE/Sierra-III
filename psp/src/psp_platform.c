@@ -1070,7 +1070,11 @@ static const struct
 	/* the dither centred for the GE's truncating writes: without it dark
 	scenes draw about 4 levels darker than the PC on every channel (a10's
 	opening against ChupathingyCE's frames); a restoration, Sheepdog01's call */
-	{ "ditherlift", "noditherlift" }, PSP_RELEASE_DEFAULTS
+	{ "ditherlift", "noditherlift" },
+	/* a light's gel lit by its six faces, so the alert lights' beams reach the
+	walls (psp_fixups.py, gelfaces); on provisionally (Sheepdog01, 2026-10-24) while
+	its cost in a10's hallway (+8-15%) is weighed */
+	{ "gelfaces", "nogelfaces" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
