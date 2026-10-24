@@ -494,6 +494,7 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - build 136: `wakeonwriteoff` (WT, wake-on-write: every sleeping object checksummed every tick again, not only those a writer marked; on by default in local games only, `wakeonwrite` puts it on in networked games too; `docs/wake_on_write.md`).
 - `decalfadeoff` (DFADE: dynamic decals live their tags' own lifetimes again, up to 300 s, instead of 30 s and a 2 s fade; `decalfadeN` sets N seconds, `decalcensus` logs the live counts; campaign only; `docs/review_decalfade.md`).
 - `lfsonceoff` (LFS: the level's lens-flare markers' direction and up worked out for every marker every frame again, not only for the flares kept and from the direction-byte table; `docs/review_lfs.md`). Check word `lfscheck` (every table answer worked out again and compared, no marker past a full frame skipped, the BSP's distinct direction triples counted).
+- BSPR v2 (b141 candidate, on: b30 -2.1 to -2.6 ms a frame on the PSP-3000): `bspsame` (a biped's last collision answers not kept: every sphere and ray question walks the BSP), `bspsamecheck` (each kept answer checked against the walk, and a mismatch counted; `docs/review_bspr2.md`).
 
 Opt-in look calls (build 122, off, for Sheepdog01's A/B; `docs/review_b122_look.md`): `seethroughvfpu` (multi-node see-through parts placed on the VFPU), `lightmerge` (the light pass's bands drawn as one, each corner lifted), `foliagetwopass` (alpha-tested model parts' soft second pass), `sceneryhalf` (B2, build 107).
 
