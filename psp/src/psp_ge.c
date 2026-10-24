@@ -6629,6 +6629,49 @@ static struct copy_room rooms[2];
 #define CARVE_ROOM (&rooms[1])
 static int arena_state = -1; /* -1: not started; 0: off ("noarena", or no room); 1: on */
 static unsigned long arena_let_go = 0, arena_from_heap = 0, copy_reserve_refused = 0;
+
+/* The heap's last KB are kept for the engine's own requests: a level copy or
+one of this file's speed-up tables (triangle lists, skin plans, spheres)
+that would take them is refused instead, and its draw takes the slower path
+it has without one. a10 and a30 filled the heap with these, and the engine's
+mallocs then failed. "copyreserveN": N KB (256 by default; copyreserve0, as
+before). The room is read once a frame (it walks the heap's free lists) and
+what this file takes meanwhile is counted off it */
+static int heap_reserve_kb = -1;
+static unsigned long heap_room_frame = ~0ul, heap_room_kb_now = 0, heap_reserve_refused = 0;
+
+static int heap_reserve_allows(size_t bytes)
+{
+	extern unsigned long psp_heap_room_kb(void);
+	unsigned long kb = (unsigned long)(bytes / 1024) + 1;
+
+	if (heap_reserve_kb < 0)
+		heap_reserve_kb = psp_keep_number("copyreserve", 256);
+	if (heap_reserve_kb <= 0)
+		return 1;
+	if (psp_on_me())
+		return 0; /* the heap's lock is a system call */
+	if (heap_room_frame != show_frame_number)
+	{
+		heap_room_frame = show_frame_number;
+		heap_room_kb_now = psp_heap_room_kb();
+	}
+	if (heap_room_kb_now < (unsigned long)heap_reserve_kb + kb)
+		return 0;
+	heap_room_kb_now -= kb;
+	return 1;
+}
+
+/* a speed-up table's block, or none while the heap is near its reserve */
+static void *cache_malloc(size_t bytes)
+{
+	if (!heap_reserve_allows(bytes))
+	{
+		heap_reserve_refused++;
+		return NULL;
+	}
+	return malloc(bytes);
+}
 /* pieces the general heap holds now (from_heap counts all ever sent there) */
 static unsigned long arena_heap_live = 0;
 /* the largest free block at the last frame's end, for the log */
@@ -6880,24 +6923,14 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 			arena_heap_live++;
 		}
 	}
-	/* "copyreserveN": a level copy the rooms refused doesn't take the heap's
-	last N KB, which the engine's own requests need (a10 and a30 filled the
-	heap with spilled copies, then the engine's mallocs failed). The copy is
-	only a speed-up: refused, the draw reads the level's own data */
-	if (overflow)
+	/* a copy the rooms refused doesn't take the heap's reserve
+	(heap_reserve_allows): refused, the draw reads the level's own data */
+	if (overflow && !heap_reserve_allows(bytes))
 	{
-		extern unsigned long psp_heap_room_kb(void);
-		static int reserve_kb = -1;
-
-		if (reserve_kb < 0)
-			reserve_kb = psp_keep_number("copyreserve", 0);
-		if (reserve_kb > 0 && psp_heap_room_kb() < (unsigned long)reserve_kb + bytes / 1024 + 1)
-		{
-			copy_reserve_refused++;
-			if (arena_state > 0)
-				carve_want += size;
-			return NULL;
-		}
+		copy_reserve_refused++;
+		if (arena_state > 0)
+			carve_want += size;
+		return NULL;
 	}
 	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign) */
 	pointer = memalign(ARENA_ALIGN, bytes);
@@ -10623,7 +10656,7 @@ static void vertex_nodes(const void *vertices, int index, int uncompressed, int 
 winding; strips' joining triangles dropped) into a new array */
 static unsigned short *triangle_list(const unsigned short *indices, int index_count, int strip, int *triangle_count)
 {
-	unsigned short *list = malloc((strip ? (index_count - 2) : index_count / 3) * 3 * sizeof(unsigned short) + 4);
+	unsigned short *list = cache_malloc((strip ? (index_count - 2) : index_count / 3) * 3 * sizeof(unsigned short) + 4);
 	int count = 0, i;
 
 	if (!list)
@@ -10746,7 +10779,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 		}
 	}
 	/* batches: each triangle into the first whose slots agree with its nodes */
-	batch_of = malloc(triangle_count);
+	batch_of = cache_malloc(triangle_count);
 	if (!batch_of)
 	{
 		free(list);
@@ -10800,7 +10833,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 		unsigned short *out;
 		int b;
 
-		part = malloc(bytes);
+		part = cache_malloc(bytes);
 		if (!part)
 		{
 			free(batch_of);
@@ -11454,7 +11487,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	}
 	if (skin && indices)
 	{
-		node0 = malloc(count * 3);
+		node0 = cache_malloc(count * 3);
 		if (node0)
 		{
 			node1 = node0 + count;
@@ -13048,7 +13081,7 @@ static void near_clusters_make(struct skin_batch *b, const struct skin_part *ski
 		return;
 	}
 	b->cluster_count = 0;
-	b->clusters = count > 0 ? malloc(count * sizeof(float[4])) : NULL;
+	b->clusters = count > 0 ? cache_malloc(count * sizeof(float[4])) : NULL;
 	if (!b->clusters)
 		return;
 	b->cluster_count = count;
@@ -13829,7 +13862,7 @@ static struct rigid_runs *rigid_runs_for(const void *vertices, const unsigned sh
 		free(slot->spheres);
 		slot->spheres = NULL;
 	}
-	slot->spheres = malloc(count * sizeof(float[4]));
+	slot->spheres = cache_malloc(count * sizeof(float[4]));
 	if (!slot->spheres)
 		return NULL;
 	rigid_runs_bytes += (unsigned long)count * sizeof(float[4]);
@@ -22689,9 +22722,9 @@ static void frame_end_show(void)
 			list_peak, display_list_size, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
 		if (arena_state > 0)
 		{
-			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now), kept off the heap's reserve %lu; compacted %lu times, %lu KB; brought back %lu",
+			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now), kept off the heap's reserve %lu (tables %lu); compacted %lu times, %lu KB; brought back %lu",
 				ARENA_ROOM->used / 1024, ARENA_ROOM->bytes / 1024, arena_largest / 1024, arena_let_go, arena_from_heap, arena_heap_live,
-				copy_reserve_refused, arena_compactions, arena_moved_kb, arena_migrated);
+				copy_reserve_refused, heap_reserve_refused, arena_compactions, arena_moved_kb, arena_migrated);
 			carve_report();
 		}
 		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu (%lu with glow maps, %lu clamped); meter palettes %lu worked out, %lu reused; model palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
