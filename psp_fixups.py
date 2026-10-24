@@ -7616,7 +7616,7 @@ sum, no random draw). Past the budget everything but the always-kept is
 refused. Kept particles skip particle_new's own thinning. Campaign only */
 #define PSP_PRIO_SLOTS 128
 static struct { long definition_index; float sum; } psp_prio[PSP_PRIO_SLOTS];
-static int psp_prio_on = -1;
+static int psp_prio_on = -1, psp_prio_room = 100;
 static int psp_prio_admitted = 0;
 static unsigned long psp_prio_kept = 0, psp_prio_left = 0;
 
@@ -7662,9 +7662,15 @@ int psp_particle_admit(long definition_index, real_point3d const *at, int attach
 
 	if (psp_prio_on < 0)
 	{
-		psp_prio_on = psp_keep("particleprio");
+		/* particleprioN: the rules judge fullness against N% of the budget,
+		so a smaller N leaves out more (the first PSP A/B kept more than the
+		old thinning, as near particles are no longer thinned) */
+		psp_prio_room = psp_keep_number("particleprio", 0);
+		psp_prio_on = psp_keep("particleprio") || psp_prio_room > 0;
+		if (psp_prio_room < 10 || psp_prio_room > 100)
+			psp_prio_room = 100;
 		if (psp_prio_on)
-			platform_psp_log("particles: particleprio: free particles kept by priority (rank, distance, size) before they are built");
+			platform_psp_log("particles: particleprio: free particles kept by priority (rank, distance, size) before they are built, judged against %d%% of the budget", psp_prio_room);
 	}
 	if (!psp_prio_on)
 		return 1;
@@ -7705,7 +7711,7 @@ int psp_particle_admit(long definition_index, real_point3d const *at, int attach
 			return 1;
 		}
 	}
-	fill = (float)psp_free_particles / (float)psp_particle_budget;
+	fill = (float)psp_free_particles * 100.0f / ((float)psp_particle_budget * (float)psp_prio_room);
 	if (fill >= 1.0f)
 	{
 		psp_particles_refused++;
