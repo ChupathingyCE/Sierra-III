@@ -251,7 +251,7 @@ enum
 	DEFER_DECAL, DEFER_BLIPS_BEGIN, DEFER_BLIP, DEFER_BLIPS_END, DEFER_TEXT_CHARACTER, DEFER_TEXT_END,
 	DEFER_TEXT_BEGIN, DEFER_CONTRAIL, DEFER_ZOOM_MASK /* build 113 */,
 	DEFER_FOG_PLANAR, DEFER_SEETHROUGH_TINT, DEFER_SEETHROUGH_METER /* build 116 */,
-	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED, DEFER_MODEL_REFLECTION, DEFER_LIGHT_GEL,
+	DEFER_MODEL_POINT_LIGHT, DEFER_MODEL_DETAIL, DEFER_FOG_SUBMERGED, DEFER_MODEL_REFLECTION, DEFER_LIGHT_GEL, DEFER_LEVEL_GLOW,
 	DEFER_FRAME_END, DEFER_WINDOW_BEGIN /* last: REPLAY_SERVED follows it */
 };
 typedef union
@@ -636,6 +636,11 @@ int psp_tex_resident(unsigned int key);
 void psp_ge_window_target(int target);
 void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primary_v,
 	unsigned int micro_key, float micro_u, float micro_v);
+void psp_ge_level_glow(unsigned int primary_key, float const *primary, unsigned int secondary_key,
+	float const *secondary);
+static void level_glow_set(unsigned int primary_key, unsigned int primary_color, unsigned int secondary_key,
+	unsigned int secondary_color);
+static unsigned int abgr_from_rgb(float const *rgb);
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested);
@@ -1344,6 +1349,7 @@ static const char *const replay_kind_names[REPLAY_KINDS] =
 	[DEFER_SEETHROUGH_TINT] = "see-through tint", [DEFER_SEETHROUGH_METER] = "see-through meters",
 	[DEFER_MODEL_POINT_LIGHT] = "model point lights", [DEFER_MODEL_REFLECTION] = "model reflection",
 	[DEFER_LIGHT_GEL] = "light gel faces",
+	[DEFER_LEVEL_GLOW] = "level glow",
 	[DEFER_FRAME_END] = "frame end (list's part)",
 	[DEFER_WINDOW_BEGIN] = "window begin (list's part)", [REPLAY_SERVED] = "audio and ring served",
 };
@@ -1466,6 +1472,9 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			break;
 		case DEFER_LEVEL_DETAIL:
 			psp_ge_level_detail(w[0].u, w[1].f, w[2].f, w[3].u, w[4].f, w[5].f);
+			break;
+		case DEFER_LEVEL_GLOW:
+			level_glow_set(w[0].u, w[1].u, w[2].u, w[3].u);
 			break;
 		case DEFER_DRAW_LEVEL:
 			psp_ge_draw_level(w[0].p, w[1].p, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].u, w[6].u, w[7].u,
@@ -9452,6 +9461,44 @@ void psp_ge_level_detail(unsigned int primary_key, float primary_u, float primar
 	detail_key[1] = micro_key; detail_u[1] = micro_u; detail_v[1] = micro_v;
 }
 
+/* a level shader's self-illumination (psp_fixups.py works out the two colours
+its illumination map's red and green weigh, as the Xbox does; texpack.py,
+level_glow_looks, bakes a glow map for each under the shader's address | 2 and
+| 3). The Xbox adds the colour to the lightmap and the base then multiplies
+the frame, so a lit-up area shows its own texture at full brightness: after
+the base, lightmap and detail passes the same triangles are drawn again with
+the glow map (the base x one channel of the illumination map) times the colour,
+added. Added rather than screened: the lit-up part of a level is dark around
+it, where the Xbox's clamp at 1 is out of reach. A shader with no base map is
+drawn flat, and takes its glow map's own texels. "nolevelglow": left out */
+static unsigned int level_glow_key[2], level_glow_color[2];
+static unsigned long level_glow_passes = 0;
+static int level_glow_off = -1;
+
+static void level_glow_set(unsigned int primary_key, unsigned int primary_color, unsigned int secondary_key,
+	unsigned int secondary_color)
+{
+	level_glow_key[0] = primary_key;
+	level_glow_color[0] = primary_color;
+	level_glow_key[1] = secondary_key;
+	level_glow_color[1] = secondary_color;
+}
+
+void psp_ge_level_glow(unsigned int primary_key, float const *primary, unsigned int secondary_key,
+	float const *secondary)
+{
+	unsigned int primary_color = abgr_from_rgb(primary) & 0xFFFFFF;
+	unsigned int secondary_color = abgr_from_rgb(secondary) & 0xFFFFFF;
+
+	/* a map the replay will bind */
+	if (primary_color && psp_tex_has(primary_key))
+		GE_PRETOUCH(primary_key, TXPT_GLOW);
+	if (secondary_color && psp_tex_has(secondary_key))
+		GE_PRETOUCH(secondary_key, TXPT_GLOW);
+	GE_DEFER(defer_words(DEFER_LEVEL_GLOW, 4, primary_key, primary_color, secondary_key, secondary_color, 0, 0, 0, 0));
+	level_glow_set(primary_key, primary_color, secondary_key, secondary_color);
+}
+
 #define CODE_UNKNOWN 0x80
 static unsigned char vertex_codes[65536];
 /* build 119's probe: the level's passes on the PSP, by piece (the slant
@@ -9624,6 +9671,58 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 		sceGuDepthFunc(GU_GEQUAL);
 	}
 	submerged_us += ge_clock() - start;
+}
+
+static void level_glow_pass(const struct level_stream *stream, const unsigned short *draw, long kept_count,
+	struct cut_store *pieces, int cut_count, float slope, int textured)
+{
+	int which, begun = 0;
+
+	if (level_glow_off < 0)
+	{
+		level_glow_off = psp_keep("nolevelglow");
+		if (level_glow_off)
+			platform_log("GE: nolevelglow: level self-illumination left out");
+	}
+	if (level_glow_off)
+		return;
+	for (which = 0; which < 2; which++)
+	{
+		if (!level_glow_color[which] || !psp_tex_bind(level_glow_key[which], NULL))
+			continue;
+		if (!begun)
+		{
+			/* over the triangles the base pass drew (depth equal), as the
+			base's own: its coordinates and its level of detail */
+			sceGuEnable(GU_TEXTURE_2D);
+			sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+			sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+			sceGuDisable(GU_ALPHA_TEST);
+			sceGuDepthFunc(GU_EQUAL);
+			sceGuDepthMask(GU_TRUE);
+			/* added light fades to nothing in the fog */
+			sceGuFog(fog_near, fog_far, 0xFF000000);
+			sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+			ge_blend(1);
+			if (uv_centre)
+				uv_shift(1.0f, 1.0f);
+			begun = 1;
+		}
+		sceGuColor(0xFF000000 | level_glow_color[which]);
+		draw_pass_angled(stream->base, draw, (int)kept_count * 3, pieces, cut_count, 0, slope, 0);
+		level_glow_passes++;
+	}
+	if (!begun)
+		return;
+	ge_blend(0);
+	if (uv_centre)
+		sceGuTexOffset(0.0f, 0.0f);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuDepthMask(GU_FALSE);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuColor(0xFFFFFFFF);
+	if (!textured)
+		sceGuDisable(GU_TEXTURE_2D);
 }
 
 static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_vertices, int vertex_count,
@@ -10098,6 +10197,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			sceGuDepthFunc(GU_GEQUAL);
 		}
 		level_detail_us += probe_clock() - probe_mark;
+		level_glow_pass(stream, draw, kept_count, &pieces_store, cut_count, base_slope, 1);
 		sceGuDisable(GU_TEXTURE_2D);
 		sceGuTexLevelMode(tex_level_mode, tex_bias);
 		if (submerged_density > 0.0f)
@@ -10116,6 +10216,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		compact_now = stream->compact_base ? stream : NULL;
 		pass_scale_u = pass_scale_v = 1.0f;
 		draw_pass(stream->base, draw, (int)kept_count * 3, &pieces_store, cut_count, 0);
+		level_glow_pass(stream, draw, kept_count, &pieces_store, cut_count, 0.0f, 0);
 		compact_now = NULL;
 		flat_draws++;
 	}
@@ -22889,9 +22990,9 @@ static void frame_end_show(void)
 		/* build 89: in two lines; the one line passed the log's 512
 		characters and the peaks (the cut-corner one is the only sign that
 		MAXIMUM_CUT_CORNERS ran out) never reached the log (review) */
-		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu; peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
+		platform_log("GE: frame %lu, %lu level draws (%lu textured, %lu flat so far), %lu triangles; %lu cut up near the camera, %lu skipped; %lu model parts (%lu buffers converted, %lu again after the cache moved them); level streams %lu KB (%lu let go); detail passes %lu, level glow passes %lu; peaks: list %d of %d bytes, cut corners %d of %d; looking (%.2f %.2f %.2f)",
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
-			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes,
+			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes, level_glow_passes,
 			list_peak, display_list_size, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
 		if (arena_state > 0)
 		{

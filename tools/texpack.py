@@ -288,6 +288,45 @@ def glow_looks(m, B):
     return glows
 
 
+def level_glow_looks(m, d, B):
+    """senv shaders that light themselves: the shader's address | 2 (the
+    primary colour) or | 3 (the secondary) -> the base bitmap (None where the
+    shader has none) and the illumination map to bake a glow map from. On the
+    Xbox a level shader's self-illumination is added to the lightmap, and the
+    base map then multiplies the frame (rasterizer_xbox_environment.c: the
+    lightmap pass's final combiner adds the illumination; the base pass is the
+    product), so a lit-up area shows its own texture at full brightness, as a
+    model's does (glow_looks). The map's red weighs the primary colour and its
+    green the secondary, at the level's coordinates times the map scale; its
+    alpha (the plasma colour) isn't drawn. The self-illumination properties are
+    at +384 (the diffuse properties' 276 bytes after +108): the primary colours
+    at +412 (on) and +424 (off), its period at +440, the secondary's 60 bytes
+    on, the scale at +592 and the map's index at +608"""
+    by_tag = {}
+    for b in B:
+        by_tag.setdefault(b['tag'], []).append(b)
+    glows = {}
+    for t in m.tags:
+        if t.group != 'senv' or not t.address:
+            continue
+        o = m.off(t.address)
+        scale, = struct.unpack_from('<f', m.data, o + 592)
+        mask_id, = struct.unpack_from('<i', m.data, o + 608)
+        base_id, = struct.unpack_from('<i', m.data, o + 148)
+        mask, base = m.by_id.get(mask_id), m.by_id.get(base_id)
+        if not mask or mask.name not in by_tag:
+            continue
+        for which in range(2):
+            colours = struct.unpack_from('<6f', m.data, o + 412 + 60 * which)
+            period, = struct.unpack_from('<f', m.data, o + 440 + 60 * which)
+            if period == 0.0 or not any(colours):
+                continue
+            glows[t.address | (2 + which)] = dict(
+                shader=t.name, mask=by_tag[mask.name][0], channel=which, scale=scale or 1.0,
+                base=by_tag[base.name][0] if base and base.name in by_tag else None)
+    return glows
+
+
 def relief_looks(m, d, B):
     """senv shaders with a bump map: base bitmap address -> (the bump map's
     entry, its scale on the base's coordinates). shader_environment's diffuse
@@ -519,6 +558,21 @@ def apply_glow(img, multipurpose):
     h, w = img.shape[:2]
     green = channel_at(multipurpose, 1, w, h)
     rgb = np.clip(img[:, :, :3].astype(np.float32) * green + 0.5, 0, 255).astype(np.uint8)
+    return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
+
+
+def apply_level_glow(img, glow):
+    """what a level shader's self-illumination pass adds, at full colour: the
+    base x one channel of the illumination map, which the Xbox samples at the
+    level's coordinates times its scale, wrapped (here at each of the base's
+    texels); opaque"""
+    h, w = img.shape[:2]
+    mask = glow['mask']
+    mh, mw = mask.shape[:2]
+    u = np.floor((np.arange(w) + 0.5) / w * glow['scale'] * mw).astype(np.int64) % mw
+    v = np.floor((np.arange(h) + 0.5) / h * glow['scale'] * mh).astype(np.int64) % mh
+    one = mask[v[:, None], u[None, :], glow['channel']:glow['channel'] + 1].astype(np.float32) / 255.0
+    rgb = np.clip(img[:, :, :3].astype(np.float32) * one + 0.5, 0, 255).astype(np.uint8)
     return np.concatenate([rgb, np.full((h, w, 1), 255, np.uint8)], 2)
 
 
@@ -1616,7 +1670,7 @@ def seams_broken(m, b, cls):
 
 @profiled
 def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, glow=None, own_colours=True,
-             relief=None, image=None, whole=False):
+             relief=None, image=None, whole=False, level_glow=None):
     act, tw, th = target(b, cls)
     if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and not whole:
         tw, th = max(8, tw // LIGHTMAP_SCALE), max(8, th // LIGHTMAP_SCALE)
@@ -1663,6 +1717,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
         img = apply_model_look(img, model_look)
     if glow is not None:
         img = apply_glow(img, glow)
+    if level_glow is not None:
+        img = apply_level_glow(img, level_glow)
     own_levels = None
     if cls == 'detail':
         # the Xbox's own mip chain belongs to the bitmap, not to an image given
@@ -1869,6 +1925,8 @@ def main():
                     help='see-through tints from every map\'s mean, drawn on the runtime\'s own map (as before build 121)')
     ap.add_argument('--no-glow-maps', action='store_true',
                     help='no glow maps: the self-illumination pass adds its colour by the mask alone')
+    ap.add_argument('--no-level-glow-maps', action='store_true',
+                    help='no level glow maps: a level shader\'s self-illumination isn\'t drawn (as before)')
     ap.add_argument('--premultiplied-masks', action='store_true',
                     help='detail masks read from the RGBA-resized multipurpose map, darkened under its alpha (as before)')
     ap.add_argument('--no-relief', action='store_true',
@@ -2108,6 +2166,46 @@ def main():
     print('glow maps: %d self-illuminated model shaders, %d maps, %d bytes%s' % (
         len(glows), sum(1 for v in made.values() if v is not None), glow_bytes,
         ' (--no-glow-maps)' if a.no_glow_maps else ''), file=sys.stderr)
+    # the self-illuminated level shaders' glow maps the same way, one a colour:
+    # the shader's address | 2 (the illumination map's red, the primary colour)
+    # and | 3 (its green, the secondary), at the base map's size; a shader with
+    # no base map takes the illumination map's own, tiled as many times as its
+    # scale tiles it (to 512), over white
+    lglows = level_glow_looks(m, d, B) if not a.no_level_glow_maps else {}
+    lmade = {}
+    lglow_bytes = 0
+    for key in sorted(lglows):
+        g = lglows[key]
+        base, mask = g['base'], g['mask']
+        pair = (base['address'] if base else None, mask['address'], g['channel'], g['scale'])
+        if pair not in lmade:
+            mask_img = decode(m, mask)
+            lmade[pair] = None
+            if mask_img is not None and mask_img[:, :, g['channel']].any():
+                glow = dict(mask=mask_img, channel=g['channel'], scale=g['scale'])
+                if base:
+                    cls = refs.classify(roles.get(base['tag'], ()), base)
+                    lmade[pair] = bake_one(m, base, cls, looks.get(base['address']), level_glow=glow)
+                else:
+                    tile = 1
+                    while tile < g['scale']:
+                        tile *= 2
+                    side = (min(512, mask['w'] * tile), min(512, mask['h'] * tile))
+                    lmade[pair] = bake_one(m, dict(mask, w=side[0], h=side[1]), 'level (senv)', level_glow=glow,
+                                           image=np.full((side[1], side[0], 4), 255, np.uint8))
+            if lmade[pair] is not None:
+                lglow_bytes += len(lmade[pair]['data'])
+        r = lmade[pair]
+        if r is None:
+            print('level glow map for %s: none (%s empty or not baked)' % (g['shader'], mask['tag']), file=sys.stderr)
+            continue
+        entries.append(dict(r, key=key, name='%s (level glow map, %s)' % (g['shader'], ('primary', 'secondary')[g['channel']])))
+        print('level glow map for %s: %s x the %s of %s, scale %g, %dx%d, %d bytes' % (
+            g['shader'], base['tag'] if base else 'white', ('red', 'green')[g['channel']], mask['tag'], g['scale'],
+            r['w'], r['h'], len(r['data'])), file=sys.stderr)
+    print('level glow maps: %d colours of self-illuminated level shaders, %d maps, %d bytes%s' % (
+        len(lglows), sum(1 for v in lmade.values() if v is not None), lglow_bytes,
+        ' (--no-level-glow-maps)' if a.no_level_glow_maps else ''), file=sys.stderr)
     print('alpha shapes: %s; %d alpha-tested bitmaps' % (
         'each side of the alpha test fitted apart' if ALPHA_SPLIT else 'one 4-D fit (--no-alpha-split)',
         len(ALPHA_TESTED)), file=sys.stderr)
