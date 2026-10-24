@@ -23399,6 +23399,344 @@ void *object_header_block_get(
 """),
 ]
 
+# ---------- HOIST (api-job 40135731866, lever 1): the object update chain takes
+# the object and definition object_update already holds, not a lookup of each in
+# every callee (object_get is the header's datum since OBJALL; the definition is
+# a tag_get). Each callee's public body is now a wrapper that looks up and calls a
+# static _with body; object_update calls the _with bodies with its own pointers
+# and gives the object_type_* loops the type. Exact while the object pool moves
+# nothing between the hoist and the use (it moves blocks only at memory_pool_compact
+# and in the reallocate of an object being made) and the tags stay put.
+# "hoistold": the old calls. "hoistcheck" (PSP_RECON): each hoisted pointer looked
+# up again and counted, expected 0 differing
+FIXES_HOIST = {}
+FIXES_HOIST["source/objects/objects.c#hoist"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{
+""", """/* psp_fixups.py (FIXES_HOIST): the chain's _with bodies, declared ahead of their callers */
+static void object_compute_node_matrices_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+static void object_compute_function_values_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+static void object_compute_change_colors_with(long object_index, struct object_datum *object, struct object_definition *object_definition);
+static void object_connect_lights_with(long object_index, struct object_datum *object, struct object_definition *object_definition, boolean disconnect, boolean reconnect);
+boolean object_type_update_for_type(short type, long object_index);
+void object_type_export_function_values_for_type(short type, long object_index);
+void object_type_preprocess_node_orientations_for_type(short type, long object_index, struct real_orientation *node_orientations);
+void object_type_postprocess_node_matrices_for_type(short type, long object_index, struct real_matrix4x3 *node_matrices);
+/* objects_update's two asserts: the loop's own header holds the datum object_get returns */
+#define PSP_HOIST_OBJECT(header, index) (PSP_KEEP_ONCE("hoistold") ? object_get(index) : (header)->datum)
+
+#ifdef PSP_RECON
+/* "hoistcheck": a hoisted pointer against a fresh lookup (a NULL definition is the callee's own lookup) */
+static void psp_hoist_check(long object_index, struct object_datum *object, struct object_definition *object_definition)
+{
+	static int on = -1;
+	static unsigned long checked, differed;
+	int psp_keep(const char *name);
+	int psp_keep_loaded(void);
+	void platform_psp_log(const char *format, ...);
+
+	if (on < 0 && psp_keep_loaded())
+		on = psp_keep("hoistcheck");
+	if (on <= 0)
+		return;
+	checked++;
+	if (object_get_and_verify_type(object_index, _object_mask_all) != object ||
+		(object_definition && object_definition_get(object->definition_index) != object_definition) ||
+		object_header_get(object_index)->type != object->object.type)
+	{
+		if (differed++ < 8)
+			platform_psp_log("hoistcheck: a held pointer differs from its lookup (object %ld)", object_index);
+	}
+	if (checked % 100000 == 0)
+		platform_psp_log("hoistcheck: %lu pointers looked up again, %lu differed", checked, differed);
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_node_matrices_with(object_index, object, object_definition_get(object->definition_index));
+}
+
+static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+	
+	real_matrix4x3 *object_nodes""", """	struct model *psp_hoist_model = NULL;
+	struct animation_graph *psp_hoist_graph = NULL;
+	
+	real_matrix4x3 *object_nodes"""),
+("""model_definition_get(object_definition->object.model.index)->nodes.count>0)""",
+ """(psp_hoist_model = model_definition_get(object_definition->object.model.index))->nodes.count>0)"""),
+("""struct model *model = model_definition_get(object_definition->object.model.index);""",
+ """struct model *model = PSP_KEEP_ONCE("hoistold") ? model_definition_get(object_definition->object.model.index) : psp_hoist_model;"""),
+("""animation_graph_definition_get(
+					object->object.animation.animation_graph_index);""",
+ """animation_graph_definition_get(
+					object->object.animation.animation_graph_index);
+				psp_hoist_graph = animation_graph;"""),
+("""struct animation_graph *animation_graph= animation_graph_definition_get(object_definition->object.animation_graph.index);""",
+ """struct animation_graph *animation_graph= psp_hoist_graph && !PSP_KEEP_ONCE("hoistold") &&
+					object->object.animation.animation_graph_index == object_definition->object.animation_graph.index ?
+					psp_hoist_graph : animation_graph_definition_get(object_definition->object.animation_graph.index);"""),
+("""object_type_preprocess_node_orientations(object_index, node_orientations);""",
+ """if (PSP_KEEP_ONCE("hoistold"))
+				object_type_preprocess_node_orientations(object_index, node_orientations);
+			else
+				object_type_preprocess_node_orientations_for_type(object->object.type, object_index, node_orientations);"""),
+# object_update (shelved nwbatch or not, this call and its tail are the same)
+("""object_compute_node_matrices(object_index);
+			}
+			if (timed)
+				psp_object_account(timed + 2, psp_microseconds() - mark);
+""", """psp_hoist ? object_compute_node_matrices_with(object_index, object, object_definition) : object_compute_node_matrices(object_index);
+			}
+			if (timed)
+				psp_object_account(timed + 2, psp_microseconds() - mark);
+"""),
+("""	struct object_header_datum *header = object_header_get(object_index);
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """	struct object_header_datum *header = object_header_get(object_index);
+	/* psp_fixups.py (FIXES_HOIST): the header's datum is what object_get returns; "hoistold" looks it up again */
+	const int psp_hoist = !PSP_KEEP_ONCE("hoistold");
+	struct object_datum *object = psp_hoist ? header->datum : object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+"""),
+("""object_type_update(object_index);
+			if (timed)
+""", """if (psp_hoist)
+				object_type_update_for_type(object->object.type, object_index);
+			else
+				object_type_update(object_index);
+			if (timed)
+"""),
+("""object_type_export_function_values(object_index);
+			if (timed)
+""", """if (psp_hoist)
+				object_type_export_function_values_for_type(object->object.type, object_index);
+			else
+				object_type_export_function_values(object_index);
+			if (timed)
+"""),
+("""		object_compute_function_values(object_index);
+		object_compute_change_colors(object_index);
+#ifdef HALO_PSP
+		if (psp_machine_mark)
+""", """		if (psp_hoist)
+		{
+			object_compute_function_values_with(object_index, object, object_definition);
+			object_compute_change_colors_with(object_index, object, object_definition);
+		}
+		else
+		{
+			object_compute_function_values(object_index);
+			object_compute_change_colors(object_index);
+		}
+#ifdef HALO_PSP
+		if (psp_machine_mark)
+"""),
+("""object_definition_get(object->definition_index)->object.model.index==NONE
+""", """(psp_hoist ? object_definition : object_definition_get(object->definition_index))->object.model.index==NONE
+"""),
+("""if (!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+#endif
+			object_connect_lights(object_index, TRUE, TRUE);
+""", """if (!psp_lights_defer(object_index)) /* psp_fixups.py (FIXES_LD1) */
+#endif
+			psp_hoist ? object_connect_lights_with(object_index, object, object_definition, TRUE, TRUE) : object_connect_lights(object_index, TRUE, TRUE);
+"""),
+("""static void object_connect_lights(
+	long object_index,
+	boolean disconnect,
+	boolean reconnect)
+{
+	struct object_datum *object = object_get(object_index);
+
+	if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+	{
+		short i;
+		struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """static void object_connect_lights(
+	long object_index,
+	boolean disconnect,
+	boolean reconnect)
+{
+	object_connect_lights_with(object_index, object_get(object_index), NULL, disconnect, reconnect);
+}
+
+static void object_connect_lights_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition,
+	boolean disconnect,
+	boolean reconnect)
+{
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+
+	if (TEST_FLAG(object->object.flags, _object_has_attached_lights_bit))
+	{
+		short i;
+		/* the wrapper leaves this lookup to an object that has lights */
+		if (!object_definition)
+			object_definition = object_definition_get(object->definition_index);
+"""),
+("""static void object_compute_function_values(
+	long object_index)
+{
+	short function_index;
+
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """static void object_compute_function_values(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_function_values_with(object_index, object, object_definition_get(object->definition_index));
+}
+
+static void object_compute_function_values_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+	short function_index;
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+
+"""),
+("""static void object_compute_change_colors(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+	struct object_definition *object_definition = object_definition_get(object->definition_index);
+""", """static void object_compute_change_colors(
+	long object_index)
+{
+	struct object_datum *object = object_get(object_index);
+
+	object_compute_change_colors_with(object_index, object, object_definition_get(object->definition_index));
+}
+
+static void object_compute_change_colors_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
+{
+#ifdef PSP_RECON
+	psp_hoist_check(object_index, object, object_definition);
+#endif
+"""),
+("""object_type_postprocess_node_matrices(object_index, matrices);""",
+ """if (PSP_KEEP_ONCE("hoistold"))
+			object_type_postprocess_node_matrices(object_index, matrices);
+		else
+			object_type_postprocess_node_matrices_for_type(object->object.type, object_index, matrices);"""),
+("""416, object_get(object_index)->object.parent_object_index==NONE);""",
+ """416, PSP_HOIST_OBJECT(object_header, object_index)->object.parent_object_index==NONE);"""),
+("""417, object_get(object_index)->object.next_object_index==NONE);""",
+ """417, PSP_HOIST_OBJECT(object_header, object_index)->object.next_object_index==NONE);"""),
+]
+FIXES_HOIST["source/objects/object_types.c#hoist"] = [
+("""boolean object_type_update(
+	long object_index)
+{
+	short i;
+	boolean result;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+	result = FALSE;
+""", """boolean object_type_update(
+	long object_index)
+{
+	return object_type_update_for_type(object_get(object_index)->object.type, object_index);
+}
+
+boolean object_type_update_for_type(
+	short type,
+	long object_index)
+{
+	short i;
+	boolean result;
+	struct object_type_definition *definition = object_type_definition_get(type);
+	result = FALSE;
+"""),
+("""void object_type_export_function_values(
+	long object_index)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+""", """void object_type_export_function_values(
+	long object_index)
+{
+	object_type_export_function_values_for_type(object_get(object_index)->object.type, object_index);
+}
+
+void object_type_export_function_values_for_type(
+	short type,
+	long object_index)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+"""),
+("""void object_type_preprocess_node_orientations(
+	long object_index,
+	struct real_orientation *node_orientations)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+""", """void object_type_preprocess_node_orientations(
+	long object_index,
+	struct real_orientation *node_orientations)
+{
+	object_type_preprocess_node_orientations_for_type(object_get(object_index)->object.type, object_index, node_orientations);
+}
+
+void object_type_preprocess_node_orientations_for_type(
+	short type,
+	long object_index,
+	struct real_orientation *node_orientations)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+"""),
+("""void object_type_postprocess_node_matrices(
+	long object_index,
+	struct real_matrix4x3 *node_matrices)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(object_get(object_index)->object.type);
+""", """void object_type_postprocess_node_matrices(
+	long object_index,
+	struct real_matrix4x3 *node_matrices)
+{
+	object_type_postprocess_node_matrices_for_type(object_get(object_index)->object.type, object_index, node_matrices);
+}
+
+void object_type_postprocess_node_matrices_for_type(
+	short type,
+	long object_index,
+	struct real_matrix4x3 *node_matrices)
+{
+	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+"""),
+]
+
 # ---------- the level's mirror pass: on the PSP the mirror window never
 # opens (FIXES_108 render.c#mirror), so has_mirror is always FALSE and
 # rasterizer_environment_reflection_mirror_draw draws nothing; the pass still
@@ -25792,16 +26130,10 @@ void objects_update(
 		}
 	}
 """),
-("""static boolean object_update(
-	long object_index)
-{
-	struct object_header_datum *header = object_header_get(object_index);
-	struct object_datum *object = object_get(object_index);
-""", """static boolean object_update(
-	long object_index)
-{
-	struct object_header_datum *header = object_header_get(object_index);
-	struct object_datum *object = object_get(object_index);
+("""	struct object_definition *object_definition = object_definition_get(object->definition_index);
+
+	boolean result = TRUE;
+""", """	struct object_definition *object_definition = object_definition_get(object->definition_index);
 	{
 		extern unsigned long psp_workcensus[24];
 
@@ -25809,12 +26141,18 @@ void objects_update(
 		if ((unsigned)object->object.type < 12)
 			psp_workcensus[object->object.type]++;
 	}
+
+	boolean result = TRUE;
 """),
-("""void object_compute_node_matrices(
-	long object_index)
+("""static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
 {
-""", """void object_compute_node_matrices(
-	long object_index)
+""", """static void object_compute_node_matrices_with(
+	long object_index,
+	struct object_datum *object,
+	struct object_definition *object_definition)
 {
 	{
 		extern unsigned long psp_workcensus[24];
@@ -34363,7 +34701,7 @@ static void lruv_cache_verify(
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
