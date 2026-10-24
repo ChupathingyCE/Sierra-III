@@ -68,3 +68,59 @@ int psp_scratch_holds(const void *pointer)
 
 	return at >= SCRATCH_BASE && at < SCRATCH_BASE + SCRATCH_BYTES;
 }
+
+/* execution probe (keep.txt "spadexec"): can the CPU run code from the
+scratchpad, and how fast? Nothing documents it (docs/research/
+research_icache.md, open question 4). The tick's instruction misses are
+mostly capacity misses (more code than the 16 KB cache holds), so code that
+could run from the scratchpad without going through the instruction cache
+would take the hottest few KB out of that competition. The same counting
+loop runs from a heap buffer (through the cache) and from the scratchpad,
+and the log says how long each took. A fault here leaves the "calling" line
+last in the log and the crash handler's address in the scratchpad's range */
+static const unsigned int probe_loop[] = {
+	0x00001021, /* addu  v0, zero, zero */
+	0x24420001, /* addiu v0, v0, 1 */
+	0x1444fffe, /* bne   v0, a0, (the addiu) */
+	0x00000000, /* nop */
+	0x03e00008, /* jr    ra */
+	0x00000000, /* nop */
+};
+
+static unsigned int probe_time(void *code, unsigned int count, unsigned int *result)
+{
+	unsigned int (*run)(unsigned int) = (unsigned int (*)(unsigned int))code;
+	unsigned int start;
+
+	(void)run(16); /* once to warm whichever cache it goes through */
+	start = sceKernelGetSystemTimeLow();
+	*result = run(count);
+	return sceKernelGetSystemTimeLow() - start;
+}
+
+void psp_scratch_exec_probe(void)
+{
+	const unsigned int count = 3000000, bytes = sizeof(probe_loop);
+	unsigned int ram_us, scratch_us, ram_result = 0, scratch_result = 0;
+	void *ram, *scratch;
+
+	if (!psp_keep("spadexec"))
+		return;
+	ram = memalign(64, 64);
+	scratch = psp_scratch_take(64, "the execution probe");
+	if (!ram || !psp_scratch_holds(scratch))
+	{
+		platform_log("spadexec: no room for the probe (heap %p, scratchpad %p)", ram, scratch);
+		return;
+	}
+	memcpy(ram, probe_loop, bytes);
+	memcpy(scratch, probe_loop, bytes);
+	sceKernelDcacheWritebackAll();
+	sceKernelIcacheInvalidateAll();
+	ram_us = probe_time(ram, count, &ram_result);
+	platform_log("spadexec: %u loops from main RAM (cached): %u us; calling the scratchpad copy at %p", count, ram_us, scratch);
+	scratch_us = probe_time(scratch, count, &scratch_result);
+	platform_log("spadexec: %u loops from the scratchpad: %u us (main RAM %u us); results %u and %u (3 instructions a loop: %.2f and %.2f cycles each at 333 MHz)",
+		count, scratch_us, ram_us, scratch_result, ram_result,
+		(double)scratch_us * 333.0 / (3.0 * count), (double)ram_us * 333.0 / (3.0 * count));
+}
