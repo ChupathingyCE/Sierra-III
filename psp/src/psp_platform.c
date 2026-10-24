@@ -1049,6 +1049,10 @@ geshow3 (docs/review_geshow3.md): the ME replays the next frame into a
 second list while the GE ends this one; it takes effect only with the
 forwarding thread (geinflight, gemeon), and its index ranges come from
 geshow2's ring, so the GE never reads a later frame's triangles.
+geowindow: the tag window's span no BSP of the map uses becomes the geometry
+cache's second stretch (b30 +312 KB, c20 +1.2 MB): memory otherwise idle,
+which plays the same (only reads change); both PSPs' ladders ran every map
+with it, no level change or frame rate different (lab 40092726147, 40092793841).
 Left out whole with the instruments that measure or split the frame as they
 did before (mebench, gemeoverlap, geserial): those words mean what they did.
 The multiplayer build has none of them: none was played against a server */
@@ -1062,7 +1066,7 @@ static const struct
 	{ "mevram", "mevramoff" },
 	{ "texpretouch", "notexpretouch" },
 	{ "mepoll", "mepolloff" },
-	{ "geshow3", "geshow3off" }, PSP_RELEASE_DEFAULTS
+	{ "geshow3", "geshow3off" }, { "geowindow", "geowindowoff" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
