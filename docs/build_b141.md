@@ -1,6 +1,6 @@
 # Build 141: the b140 polish (2026-10-24)
 
-`review_b141.md` lists every change and why. Build 141 is build 140 with the fixes from your b140 and b140p1 hand tests: the real-time look back on, the meter load off, models no longer drawn white for long stretches, the heap's failures gone on a10 and a30, and the release's instrument timers off (b30 ~3% faster). No new levers: BSPR v2 and the rest wait for build 142.
+`review_b141.md` lists every change and why. Build 141 is build 140 with the fixes from your b140 and b140p1 hand tests: the real-time look back on, the meter load off, models no longer drawn white for long stretches, the heap's failures gone on a10 and a30, and the release's instrument timers off (b30 about 1% faster). No new levers: BSPR v2 and the rest wait for build 142.
 
 `halo_psp_b141rel.zip`, EBOOT `867cc24547f73d14`: built from Sierra-III `0915fb4` (w140) with `PSP_PGO_PROFILE=campaign-b141 PSP_PGO_STRICT=1 PSP_METRICS=0` (lab sierra-build 40082747122). It needs the **b140z** bake, as build 140 did. The measuring twin (metrics on) is EBOOT `6ad8950f7b47f1b6` (40082744222).
 
