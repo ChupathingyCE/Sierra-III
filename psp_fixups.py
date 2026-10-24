@@ -594,6 +594,45 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				}
 			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
 		}
+		{
+			/* its self-illumination (shader_environment's properties at +384: the
+			colours at +412 and +424, the function at +436, the period and phase at
+			+440 and +444, the secondary's the same 60 bytes on; the map's index at
+			+608; texpack.py, level_glow_looks): the two colours its map's red and
+			green weigh, each between its off and on colour by a periodic function
+			of (time + phase) / period, as the Xbox works them out
+			(rasterizer_xbox_environment.c). The glow maps are under the shader's
+			address | 2 and | 3. A draw after a lit one clears them */
+			extern void psp_ge_level_glow(unsigned int, float const *, unsigned int, float const *);
+			extern real periodic_function_evaluate(short, real);
+			static int live = 0;
+			char const *definition = (char const *)shader;
+			float colours[2][3] = { { 0.0f, 0.0f, 0.0f }, { 0.0f, 0.0f, 0.0f } };
+			int lit = shader && *(short const *)(definition + 36) == 3 && *(long const *)(definition + 608) != NONE;
+
+			if (lit)
+			{
+				int which, channel;
+
+				for (which = 0; which < 2; which++)
+				{
+					float const *on = (float const *)(definition + 412 + 60 * which), *off = on + 3;
+					float period = *(float const *)(definition + 440 + 60 * which);
+					float value;
+
+					if (period == 0.0f)
+						continue;
+					value = periodic_function_evaluate(*(short const *)(definition + 436 + 60 * which),
+						(global_frame_parameters.game_time_sec + *(float const *)(definition + 444 + 60 * which)) / period);
+					for (channel = 0; channel < 3; channel++)
+						colours[which][channel] = off[channel] + (on[channel] - off[channel]) * value;
+				}
+			}
+			if (lit || live)
+				psp_ge_level_glow(lit ? (unsigned int)definition | 2 : 0, colours[0],
+					lit ? (unsigned int)definition | 3 : 0, colours[1]);
+			live = lit;
+		}
 #ifdef PSP_DEBUG_TOOLS
 		{
 			/* "sdump" names the shader of what it lists (psp_ge.c) */
