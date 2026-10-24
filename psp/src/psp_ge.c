@@ -17840,6 +17840,15 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 		name ? name : "(no tag)", *(const short *)(bitmap + 4), *(const short *)(bitmap + 6), x0, y0, x1, y1,
 		in[0].u, in[0].v, in[2].u, in[2].v, red, green, blue, fade, in[0].argb, blend, meter_parameters ? ", meter" : "",
 		wrapped ? ", wrapped" : "");
+	if (meter_parameters)
+	{
+		/* the meter's words as hud_draw_meter set them: the fill rides in the
+		top bytes of the gradient's minimum and the flash colours */
+		unsigned long const *words = meter_parameters;
+
+		platform_log("hdump: meter words %08lx %08lx %08lx %08lx %08lx %08lx %08lx", words[0], words[1], words[2],
+			words[3], words[4], words[5], words[6]);
+	}
 }
 
 /* the HUD's quads, timed for the log (build 31) */
