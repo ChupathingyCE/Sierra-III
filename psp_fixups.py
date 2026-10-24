@@ -22844,6 +22844,179 @@ FIXES_136["source/items/weapons.c#nwbatch"] = [
 """),
 ]
 
+# ---------- lightplancensus (a count, off; for the light-plan lever): how
+# many dynamic lights a frame find their sphere, radius and cluster set as a
+# light had them the frame before, and how many of those then find the same
+# surface list, so a per-light surface plan kept across frames can be sized
+# before it is built (api-job 40130751164, lever L1)
+FIXES_LIGHTPLAN = {}
+FIXES_LIGHTPLAN["source/structures/structure_render.c#lightplancensus"] = [
+("""void structure_render_lightmaps(
+	void)
+{
+	profile_enter(render_structure_lightmaps_section);
+""",
+ """#ifdef HALO_PSP
+int psp_keep(const char *name); /* psp_platform.c */
+void platform_log(const char *format, ...);
+
+#define PSP_LP_SLOTS 64
+static struct { unsigned long in, out; } psp_lp_last[PSP_LP_SLOTS], psp_lp_now[PSP_LP_SLOTS];
+static int psp_lp_on = -1, psp_lp_last_count = 0, psp_lp_now_count = 0;
+static unsigned long psp_lp_frames = 0, psp_lp_calls = 0, psp_lp_whole = 0, psp_lp_same_in = 0, psp_lp_same_out = 0,
+	psp_lp_empty = 0, psp_lp_full = 0, psp_lp_surfaces = 0, psp_lp_most = 0;
+
+static unsigned long psp_lp_hash(const void *at, long bytes, unsigned long hash)
+{
+	const unsigned char *byte = at;
+
+	while (bytes-- > 0)
+		hash = (hash ^ *byte++) * 16777619u;
+	return hash;
+}
+
+/* once a frame, before the lights: this frame's lights become the last */
+static void psp_lp_frame(void)
+{
+	if (psp_lp_on < 0)
+	{
+		psp_lp_on = psp_keep("lightplancensus");
+		if (psp_lp_on)
+			platform_log("lights: lightplancensus: each dynamic light's sphere, clusters and surface list against the last frame's");
+	}
+	if (!psp_lp_on)
+		return;
+	memcpy(psp_lp_last, psp_lp_now, sizeof(psp_lp_now));
+	psp_lp_last_count = psp_lp_now_count;
+	psp_lp_now_count = 0;
+	psp_lp_frames++;
+}
+
+static void psp_lp_note(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long const *surface_indices, long surface_count)
+{
+	unsigned long in, out;
+	int k, count = psp_lp_now_count;
+
+	if (psp_lp_on <= 0)
+		return;
+	psp_lp_calls++;
+	if (!cluster_indices)
+	{
+		psp_lp_whole++;
+		return;
+	}
+	in = psp_lp_hash(center, sizeof(*center), 2166136261u);
+	in = psp_lp_hash(&radius, sizeof(radius), in);
+	in = psp_lp_hash(cluster_indices, cluster_count * sizeof(short), in);
+	out = psp_lp_hash(surface_indices, surface_count * sizeof(long), 2166136261u);
+	psp_lp_surfaces += surface_count;
+	if ((unsigned long)surface_count > psp_lp_most)
+		psp_lp_most = surface_count;
+	if (surface_count == 0)
+		psp_lp_empty++;
+	if (surface_count >= MAXIMUM_LOCALLY_RENDERED_SURFACES)
+		psp_lp_full++;
+	for (k = 0; k < psp_lp_last_count; k++)
+		if (psp_lp_last[k].in == in)
+		{
+			psp_lp_same_in++;
+			if (psp_lp_last[k].out == out)
+				psp_lp_same_out++;
+			break;
+		}
+	if (count < PSP_LP_SLOTS)
+	{
+		psp_lp_now[count].in = in;
+		psp_lp_now[count].out = out;
+		psp_lp_now_count = count + 1;
+	}
+}
+
+/* psp_ge.c's 300-frame report */
+void psp_light_plan_report(void)
+{
+	if (psp_lp_on <= 0 || !psp_lp_frames)
+		return;
+	platform_log("lights: lightplancensus: %lu frames, %lu dynamic light walks (%lu of the whole visible list); "
+		"%lu with the sphere and clusters of a light the frame before, %lu of those with the same surfaces; "
+		"%lu found none, %lu filled the list; %lu surfaces a walk (most %lu)",
+		psp_lp_frames, psp_lp_calls, psp_lp_whole, psp_lp_same_in, psp_lp_same_out, psp_lp_empty, psp_lp_full,
+		psp_lp_calls > psp_lp_whole ? psp_lp_surfaces / (psp_lp_calls - psp_lp_whole) : 0, psp_lp_most);
+	psp_lp_frames = psp_lp_calls = psp_lp_whole = psp_lp_same_in = psp_lp_same_out = psp_lp_empty = psp_lp_full =
+		psp_lp_surfaces = psp_lp_most = 0;
+}
+#endif
+
+void structure_render_lightmaps(
+	void)
+{
+	profile_enter(render_structure_lightmaps_section);
+#ifdef HALO_PSP
+	psp_lp_frame();
+#endif
+"""),
+("""	profile_enter(render_structure_diffuse_lights_section);
+
+	if (cluster_indices)
+	{
+		environment_surface_count = structure_visibility_build_surfaces(
+			surface_indices,
+			MAXIMUM_LOCALLY_RENDERED_SURFACES,
+			bounding_sphere_center,
+			bounding_sphere_radius,
+			NULL,
+			0,
+			NULL,
+			cluster_count,
+			cluster_indices);
+		environment_triangles_index = structure_render_build_dynamic_triangles(
+			surface_indices,
+			environment_surface_count,
+			NULL);
+	}
+	else
+	{
+		environment_triangles_index = structure_render_globals.environment_triangles_index;
+		environment_surface_count = render.environment_surface_count;
+		environment_surface_indices = render.environment_surface_indices;
+	}
+""",
+ """	profile_enter(render_structure_diffuse_lights_section);
+
+	if (cluster_indices)
+	{
+		environment_surface_count = structure_visibility_build_surfaces(
+			surface_indices,
+			MAXIMUM_LOCALLY_RENDERED_SURFACES,
+			bounding_sphere_center,
+			bounding_sphere_radius,
+			NULL,
+			0,
+			NULL,
+			cluster_count,
+			cluster_indices);
+#ifdef HALO_PSP
+		psp_lp_note(bounding_sphere_center, bounding_sphere_radius, cluster_count, cluster_indices,
+			surface_indices, environment_surface_count);
+#endif
+		environment_triangles_index = structure_render_build_dynamic_triangles(
+			surface_indices,
+			environment_surface_count,
+			NULL);
+	}
+	else
+	{
+#ifdef HALO_PSP
+		psp_lp_note(bounding_sphere_center, bounding_sphere_radius, 0, NULL, NULL, 0);
+#endif
+		environment_triangles_index = structure_render_globals.environment_triangles_index;
+		environment_surface_count = render.environment_surface_count;
+		environment_surface_indices = render.environment_surface_indices;
+	}
+"""),
+]
+
 # ---------- the level's mirror pass: on the PSP the mirror window never
 # opens (FIXES_108 render.c#mirror), so has_mirror is always FALSE and
 # rasterizer_environment_reflection_mirror_draw draws nothing; the pass still
@@ -33800,7 +33973,7 @@ static void lruv_cache_verify(
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_LIGHTPLAN.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

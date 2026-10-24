@@ -23054,6 +23054,12 @@ static void frame_end_show(void)
 				platform_log("GE: surfacesortcheck: %lu lists came out different", psp_surface_sort_mismatches);
 			psp_surface_sorts = psp_surface_sorts_in_order = psp_surface_sort_mismatches = psp_surface_sorts_by_bits = 0;
 		}
+		{
+			/* lightplancensus (psp_fixups.py, structure_render.c): lights whose plan held from the frame before */
+			extern void psp_light_plan_report(void);
+
+			psp_light_plan_report();
+		}
 		/* build 119's probe */
 		if (probes_on)
 			platform_log("GE: light pass triangles: %lu looked at, %lu with a corner in reach; the triangle loop %lu us a frame over %lu draws; before the loop %lu us, after it %lu us (last 300 frames)",
