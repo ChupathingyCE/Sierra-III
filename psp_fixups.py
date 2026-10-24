@@ -15549,6 +15549,19 @@ static int psp_order_surface_indices_by_bits(
 	return 1;
 }
 
+/* each index above the one before it: the list is its own sort */
+static int psp_surface_indices_ascending(
+	long const *elements,
+	long element_count)
+{
+	long k;
+
+	for (k = 1; k < element_count; k++)
+		if (elements[k - 1] >= elements[k])
+			return 0;
+	return 1;
+}
+
 /* psp_fixups.py (build 119): qsort_4byte (cseries/sort.c) for
 compare_surface_indices, its comparison (a > b) written in */
 static void psp_sort_surface_indices(
@@ -15688,12 +15701,15 @@ static void structure_render_dynamic_triangles_from_indices(
 #ifdef HALO_PSP
 	{
 		extern int psp_keep(const char *name);
-		static int old = -1, check = 0;
+		static int old = -1, check = 0, in_order = 1;
 
 		if (old < 0)
 		{
 			old = psp_keep("surfaceqsort");
 			check = psp_keep("surfacesortcheck");
+			/* a list already ascending (lightplan's are) is left as it is:
+			its sort is itself; "surfaceinorderoff" sorts it anyway */
+			in_order = !psp_keep("surfaceinorderoff");
 		}
 		if (old)
 			qsort_4byte(surface_indices, surface_count, compare_surface_indices);
@@ -15716,6 +15732,8 @@ static void structure_render_dynamic_triangles_from_indices(
 				free(copy);
 			}
 		}
+		else if (in_order && psp_surface_indices_ascending(surface_indices, surface_count))
+			psp_surface_sorts_in_order++;
 		else if (psp_order_surface_indices_by_bits(surface_indices, surface_count, structure_bsp->surfaces.count))
 			psp_surface_sorts_by_bits++;
 		else
@@ -23039,7 +23057,35 @@ static struct
 	long first, count;
 } psp_lplan[PSP_LPLAN_SLOTS];
 static unsigned short *psp_lplan_pool = NULL;
-static long psp_lplan_pool_size = 0, psp_lplan_pool_used = 0;
+static long psp_lplan_pool_size = 0, psp_lplan_pool_used = 0, psp_lplan_pool_cap = 0;
+
+/* the pool grows in 8 KB steps as plans need it, never past its cap, and
+stays as it is when the heap has no room: a map whose lights move takes
+little or none of it (a30, the tight maps) */
+static int psp_lplan_grow(long need)
+{
+	long size = psp_lplan_pool_size;
+	unsigned short *more;
+
+	if (psp_lplan_pool_used + need <= size)
+		return 1;
+	while (size < psp_lplan_pool_used + need)
+		size += 4096;
+	if (size > psp_lplan_pool_cap)
+		return 0;
+	more = malloc(size * sizeof(unsigned short));
+	if (!more)
+		return 0;
+	/* (no free(NULL): this build's free reads the header before the pointer) */
+	if (psp_lplan_pool)
+	{
+		memcpy(more, psp_lplan_pool, psp_lplan_pool_used * sizeof(unsigned short));
+		free(psp_lplan_pool);
+	}
+	psp_lplan_pool = more;
+	psp_lplan_pool_size = size;
+	return 1;
+}
 static int psp_lplan_on = -1, psp_lplan_check = 0, psp_lplan_next = 0;
 static unsigned long psp_lplan_epoch = 0;
 static struct structure_bsp *psp_lplan_structure = NULL;
@@ -23058,15 +23104,11 @@ static long psp_lplan_surfaces(real_point3d const *center, real radius, short cl
 		psp_lplan_check = psp_lplan_on && psp_keep("lightplancheck");
 		if (psp_lplan_on)
 		{
-			long kb = psp_keep_number("lightplankb", 24);
+			long kb = psp_keep_number("lightplankb", 64);
 
-			psp_lplan_pool_size = (kb < 4 ? 4 : kb > 128 ? 128 : kb) * 512;
-			psp_lplan_pool = malloc(psp_lplan_pool_size * sizeof(unsigned short));
-			if (!psp_lplan_pool)
-				psp_lplan_on = 0;
-			platform_log("lights: lightplan: dynamic lights' surface plans kept across frames (%ld KB)%s%s",
-				psp_lplan_pool_size / 512, psp_lplan_check ? "; lightplancheck" : "",
-				psp_lplan_pool ? "" : ": NO ROOM, off");
+			psp_lplan_pool_cap = (kb < 8 ? 8 : kb > 128 ? 128 : kb) * 512;
+			platform_log("lights: lightplan: dynamic lights' surface plans kept across frames (the pool grows to %ld KB)%s",
+				psp_lplan_pool_cap / 512, psp_lplan_check ? "; lightplancheck" : "");
 		}
 	}
 	if (!psp_lplan_on || cluster_count > PSP_LPLAN_CLUSTERS)
@@ -23104,7 +23146,7 @@ static long psp_lplan_surfaces(real_point3d const *center, real radius, short cl
 			psp_lplan_walked++;
 			return -1;
 		}
-		if (n <= psp_lplan_pool_size)
+		if (n <= psp_lplan_pool_cap)
 		{
 			int fits = 1;
 
@@ -23113,17 +23155,18 @@ static long psp_lplan_surfaces(real_point3d const *center, real radius, short cl
 					fits = 0;
 			if (fits)
 			{
-				/* the pool fills from the start: when a plan doesn't fit, every
-				plan is let go and it starts again */
-				if (psp_lplan_pool_used + n > psp_lplan_pool_size || psp_lplan[psp_lplan_next].used)
+				/* the pool grows as plans need it; when it can grow no more,
+				every plan is let go and it starts again */
+				if (!psp_lplan_grow(n))
 				{
-					if (psp_lplan_pool_used + n > psp_lplan_pool_size)
-					{
-						csmemset(psp_lplan, 0, sizeof(psp_lplan));
-						psp_lplan_pool_used = 0;
-						psp_lplan_next = 0;
-					}
+					csmemset(psp_lplan, 0, sizeof(psp_lplan));
+					psp_lplan_pool_used = 0;
+					psp_lplan_next = 0;
+					fits = psp_lplan_grow(n);
 				}
+			}
+			if (fits)
+			{
 				slot = psp_lplan_next;
 				psp_lplan_next = (psp_lplan_next + 1) % PSP_LPLAN_SLOTS;
 				psp_lplan[slot].used = 1;
