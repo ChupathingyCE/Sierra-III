@@ -136,6 +136,11 @@ until a PSP run shows that stretch of the eDRAM is ours: edramcheck watches
 as before the stale-claim fix (batch_job says why that order holds the main
 CPU) */
 #define ME_FEATURE_CLAIM_OLD 128u
+/* "mebcc1": the ME's 0xBCC00000 unit's word 0x40 set to 1, as m-cid
+(mcidclan) found fastest for code on the ME (psp-media-engine-reload's
+README), where me-core's minimal VME set-up leaves it at 2. A test until a
+PSP-1000 A/B shows whether the ME's jobs run faster */
+#define ME_FEATURE_BCC 256u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -1070,6 +1075,7 @@ void meLibOnProcess(void)
 	int halt_ready = 0; /* mehalt: the exception handler is set up */
 	int ring_ready = 0; /* the main CPU has turned the ring on */
 	unsigned int ring_popped = 0, ring_last_look = 0, ring_quiet = RING_LINGER_PASSES;
+	int features_seen = 0; /* the features word has been written (mebcc1 applied) */
 
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
 	meLibSync();
@@ -1104,9 +1110,19 @@ void meLibOnProcess(void)
 
 		/* the features word is looked at every 256th pass (it is set once,
 		after start), so the polling idle costs what it would without it */
-		if ((control->alive & 255) == 0 && (!halt_ready || !ring_ready))
+		if ((control->alive & 255) == 0 && (!halt_ready || !ring_ready || !features_seen))
 		{
 			unsigned int features = control->features;
+
+			if (features && !features_seen)
+			{
+				features_seen = 1;
+				if (features & ME_FEATURE_BCC)
+				{
+					hw(0xBCC00040) = 1;
+					meLibSync();
+				}
+			}
 
 			if ((features & ME_FEATURE_HALT) && !halt_ready)
 			{
@@ -1616,7 +1632,7 @@ int psp_me_start(void)
 		(psp_keep("meaudiofirst") ? ME_FEATURE_AUDIO_FIRST : 0u) |
 		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u) |
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
-		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u);
+		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -3054,7 +3070,7 @@ void psp_me_wake_poll(void)
 	frame (a ring job not done in 10 ms turns the ring off for the session) */
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
-		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u);
+		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u);
 	__asm__ __volatile__("sync");
 	now = sceKernelGetSystemTimeWide();
 	if (me_restartable == 2)
