@@ -17801,6 +17801,7 @@ static struct
 	struct psp_seethrough_meter meter;
 	unsigned long frame;
 	int count;
+	unsigned int source; /* a hash of the bitmap's palette it was worked out from */
 } meter_cache[METER_CACHE];
 static unsigned long meter_reused = 0, meter_worked = 0;
 
@@ -17997,17 +17998,23 @@ NULL when the map has no 32-bit palette or the display list is full;
 static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter const *meter, int *count_out)
 {
 	const unsigned int *palette;
-	unsigned int *computed = NULL, fill = meter->gradient_min_color >> 24, flash_end = meter->flash_color >> 24;
+	unsigned int *computed = NULL, fill = meter->gradient_min_color >> 24, flash_end = meter->flash_color >> 24, source = 0;
 	int count, entry, slot, free_slot = -1, hit = 0;
 
 	if (!psp_tex_palette(key, &palette, &count))
 		return NULL;
+	/* the bitmap's palette itself is part of the match: one worked out
+	before the bitmap's palette was in place was kept for as long as the
+	meter's words stayed the same, so a full health bar drew empty until
+	something changed its words (the overshield woke it: B3) */
+	for (entry = 0; entry < count; entry++)
+		source = source * 31u + palette[entry];
 	/* a meter that hasn't changed since it was last worked out (most of
 	them, most frames) reuses that palette (build 31): the sum is a
 	dozen divisions an entry, about a third of a millisecond a meter */
 	for (slot = 0; slot < METER_CACHE; slot++)
 	{
-		if (meter_cache[slot].key == key && meter_cache[slot].count == count &&
+		if (meter_cache[slot].key == key && meter_cache[slot].count == count && meter_cache[slot].source == source &&
 			!memcmp(&meter_cache[slot].meter, meter, sizeof(*meter)))
 		{
 			computed = meter_cache_palette[slot];
@@ -18031,6 +18038,7 @@ static unsigned int *meter_palette(unsigned int key, struct psp_seethrough_meter
 			meter_cache[free_slot].count = count;
 			meter_cache[free_slot].meter = *meter;
 			meter_cache[free_slot].frame = frames + 1;
+			meter_cache[free_slot].source = source;
 		}
 		else
 		{
