@@ -6,9 +6,9 @@ Native PlayStation Portable port of Halo: Combat Evolved, built for the original
 
 ## Where it stands
 
-The whole campaign loads and plays on a PSP-1000, all ten maps in one session. As of build 119 (2026-10-13, on Sheepdog01's PSP-1000), *The Maw* (d40) runs at 19 fps; *The Pillar of Autumn*, *Assault on the Control Room* and *Two Betrayals* are within a few milliseconds of the floor of 15 fps at 30 ticks a second; the heaviest map, *The Silent Cartographer* (b30), runs at about 4 fps in its opening flight and 9 on the beach. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
+The whole campaign loads and plays on a PSP-1000, all ten maps in one session. As of build 139 (2026-10-21, its release candidate's ladder: each map's opening, on the PSP-3000, which measures within 3% of the PSP-1000), *The Maw* (d40) runs at 24 fps, *Two Betrayals* (c40) at 21, *Assault on the Control Room* (b40) at 17 and *The Pillar of Autumn* (a10) at 16, all at about 30 ticks a second. The heaviest map, *The Silent Cartographer* (b30), runs at 4.5 fps in its opening flight, where the game itself runs at 9 ticks a second, under a third of real time; *Keyes* (d20) and *Halo* (a30) open at 7 to 8 fps and 15 ticks a second. The engine base is ChupathingyCE. Each build's notes are `docs/build_bNNN.md`, and what it did on the PSP `docs/hardware_bNNN.md`.
 
-The goal is a steady 30 ticks a second everywhere in the campaign, with 30 fps the target and 15 fps at 30 ticks the floor. The plan is `docs/rebuild_plan.md`, and every known speed lever, ranked, is in `docs/optimization_ranking.md`.
+The target is a steady 30 ticks a second at 30 fps everywhere in the campaign. 15/15 (15 fps at 15 ticks a second) is a milestone to bench against, not the floor or the ceiling. The plan is `docs/rebuild_plan.md`, and every known speed lever, ranked, is in `docs/optimization_ranking.md`.
 
 ## How it's made
 
@@ -49,24 +49,17 @@ It fetches the engine and the Media Engine library at the commits `upstream/pins
 
 ## Maps
 
-The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image:
-
-```
-bake/make_bundle.sh <out>                  # once: needs the Invader fork built (UPSTREAM.md)
-<out>/halo-psp-bake <disc image> <maps out>
-```
-
-Then copy the output's `halo/` folder to the root of the Memory Stick. `bake/README.md` has the details.
+The port reads maps baked for the PSP: the map itself, plus its texture, geometry and stencil packs. Make them from your own disc image with the bake bundle for your system (Windows, macOS or Linux), which comes with each release: put the disc image and the build zip in the bundle's two folders, double-click `Bake Halo` (`Bake Halo.cmd`, `Bake Halo.command` or `bake-halo.sh`), and copy what it puts in `COPY-TO-MEMORY-STICK` (the game, with its menu sound, and the maps) to the root of the Memory Stick. `bake/README.md` has the details and the command line; `bake/make_bundle.sh <out>` builds a bundle from source.
 
 ## Installing
 
-Unzip the build zip at the Memory Stick's root: `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`), and `halo/presets.txt` (the launch menu's test presets) when the build has one. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
+**`docs/play.md` is the player's guide**, step by step from a stock PSP and your own Xbox disc to a playable game: custom firmware, imaging the disc, the bake, the stick, the first launch, and what to send when it goes wrong. In short: unzip the build zip at the Memory Stick's root: `PSP/GAME/halo/` (EBOOT.PBP, the two PRX modules, `LICENSE-mecore.md`), and `halo/presets.txt` (the launch menu's test presets) when the build has one. Put the baked `halo/` folder at the stick's root. It needs custom firmware (built and tested on 6.61 with ARK-4).
 
 ## Multiplayer
 
-The multiplayer build lives on the `mp-recon` branch. It is built with `PSP_MULTIPLAYER=1`, installs to `PSP/GAME/halomp` beside the campaign build, and keeps its settings in `ms0:/halomp`.
+**Multiplayer isn't part of the first public release (b139).** The multiplayer build is in development: it joins Halo PC's public ChupathingyCE games over the internet, from its ONLINE GAMES screen, on the thirteen multiplayer maps from the disc. When a release carries it, it has its own zip (`halo_psp_bNNNmp.zip`): it installs to `PSP/GAME/halomp` beside the campaign build, reads the same baked maps, and keeps its settings in `ms0:/halomp`. It is built from `main` with `PSP_MULTIPLAYER=1`. For now it only joins: no hosting, no PSP-to-PSP play (`docs/mp_client_only.md`).
 
-A PSP-1000 has played whole games against a PC on ChupathingyCE's dedicated server, over the PC's own Wi-Fi hotspot. `docs/multiplayer_setup.md` walks through it: the build, the bake, the hotspot, ARK-4's WPA2 setting, the server and the stick.
+`docs/multiplayer_setup.md` walks through it: the Wi-Fi a PSP can join, ARK-4's WPA2 setting, the online list, what to do when it goes wrong, and playing over your own PC's hotspot and dedicated server.
 
 ## History
 
@@ -76,14 +69,17 @@ This repository was created on 2026-10-09. The history before then was rebuilt f
 
 What Sierra-III is built on (the decomp, ChupathingyCE, Invader, the Media Engine library, PPSSPP, pspdev) is in `UPSTREAM.md`. Beyond that, Sierra-III learns from other ports of the same decomp, and credits each one whose ideas or code it takes:
 
-- **[halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita)** by BirchWoodGod, Halo CE on the PS Vita: exact speed-ups to the campaign's AI and collision walks, and test methods (`docs/research/research_vita.md`). Used with his permission.
-- **[Halo 64](https://github.com/JackTulli/halo-64)** by JackTulli, Halo CE's multiplayer on the Nintendo 64 (CC0): fixes and speed-ups for a MIPS console (`docs/research/research_halo64.md`).
-- **Overpass** (Red Hat, SIL OFL 1.1), from ChupathingyCE's assets: the letters on the PSP button glyphs (`psp/glyphs/psp_glyphs.png`, drawn by `tools/psp_glyphs.py` in the shapes of the PSP-1000's buttons).
+- **[halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-vita)** by BirchWoodGod, Halo CE on the PS Vita (GPL-3.0): exact speed-ups to the campaign's AI and object walks (b126's RV1, RV2 and RV4; perception passing over the objects it only stamps, PRS, from his count), and test methods (`docs/research/research_vita.md`). The code taken is his own, used with his permission.
+- **[Halo 64](https://github.com/JackTulli/halo-64)** by JackTulli, Halo CE's multiplayer on the Nintendo 64 (CC0): fixes and speed-ups for a MIPS console (`docs/research/research_halo64.md`): a still unit's aiming change as x86 computes it (b126's RH1), and the path search's clear by its header (H2, taken in halo-ce-vita's form).
+- **[DamnationCE](https://github.com/xshxdex98/DamnationCE)** by xshxdex98 (CC0): the HUD's weapon state zeroed before it's filled (`488bd83e`; b126's RB1), found through halo-ce-vita's notes (`docs/research/research_vita.md` §9).
+- **ChupathingyCE's PC audio** (Jeff Clark, `5f3a0f98` "Fix Xbox ADPCM decoding"): the Xbox ADPCM block layout (the header's sample first, 63 nibbles, one padding), which cured the port's 344 Hz buzz (`psp_dsound.c`, the bake's `soundpack.py` and `snd0.py`).
+- **Krona One** (Yvonne Schüttler) and **Audiowide** (Astigmatic), both SIL OFL 1.1: the game title on the XMB wallpaper and the tile's label (`psp/xmb/fonts/` holds Audiowide with its licence).
+- **Overpass** (the Overpass Project Authors, Red Hat; SIL OFL 1.1), from ChupathingyCE's assets: the letters on the PSP button glyphs (`psp/glyphs/psp_glyphs.png`, drawn by `tools/psp_glyphs.py` in the shapes of the PSP-1000's buttons).
 
 Each borrowed change also names its source in its commit message and its build's review.
 
 ## Licence
 
-None chosen yet. The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
+MIT for Sierra-III's own work (`LICENSE`), which also names what it doesn't cover: the XMB wallpaper (below), our patches to Invader and PPSSPP (under their GPL), and third-party files carried as they are. The engine and the tools this builds on carry their own licences (`UPSTREAM.md`).
 
-Sierra-III was created under Microsoft's "Game Content Usage Rules" using assets from Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. The only such assets in this repository are the XMB menu's wallpaper, made from stills of our own gameplay footage. Halo: Combat Evolved © Microsoft Corporation.
+Sierra-III was created under Microsoft's "[Game Content Usage Rules](https://www.xbox.com/en-US/developers/rules)" using assets from Halo: Combat Evolved, and it is not endorsed by or affiliated with Microsoft. The only such assets in this repository are the campaign's XMB wallpaper (`psp/xmb/campaign/PIC1.PNG`), made from stills of our own gameplay footage. Halo: Combat Evolved © Microsoft Corporation.

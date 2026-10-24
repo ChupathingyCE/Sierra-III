@@ -60,7 +60,7 @@ struct option
 	int on;
 };
 
-/* build 93: trimmed (Sheepdog01): near2, near4, overlayslope1, overlayslope4,
+/* build 93: trimmed: near2, near4, overlayslope1, overlayslope4,
 decalall, flatshade, tdump, visdump, noboxtest, detailallfar, levelcompact and
 interpolation left the menu. They still work typed into keep.txt, and the
 menu keeps them there as "other words" */
@@ -77,12 +77,18 @@ static struct option options[] = {
 	{ "lean", "lean play: timers and overlay off (notimers nooverlay)", 0, 0 },
 	{ "statememo", "GE state the GE already has left out (binds, lighting)", 0, 0 },
 	/* build 113's switches (docs/build_b113.md) */
-	{ "contrails", "Covenant tracers (contrails) drawn", 0, 0 },
+	{ "nocontrails", "no tracers (contrails) behind shots", 0, 0 },
 	{ "zoommask", "zoom: the mask as a soft edge (blur stand-in)", 6, 0 },
 	{ "zoommaskfull", "zoom: the mask at full strength", 6, 0 },
 	{ "gebusy", "GE busy time in the log", 0, 0 },
+#ifdef PSP_MULTIPLAYER
 	{ "gedefer", "GE calls written down, carried out at frame end", 0, 0 },
 	{ "gemeon", "GE calls carried out on the ME (with gedefer)", 0, 0 },
+#else
+	/* the campaign has gedefer, gemeon and the rest of M6 #2 on unless
+	told otherwise (psp_platform.c, keep_defaults) */
+	{ "m6off", "frames in flight on the ME (M6 #2) OFF", 0, 0 },
+#endif
 	{ "weaksum", "b112's sleep checksum (the flip bug)", 0, 0 },
 	{ "renderstates256", "render-state cache 256 (b112's)", 0, 0 },
 	{ "benchrun", "benchmark: 4 views x 9 switches, ~6 min", 0, 0 },
@@ -202,7 +208,7 @@ static void load_presets(void)
 /* the preset the game was started with, for the launch menu's header and
 the screenshots' stamp line: its number (the digits its name starts with, or
 its place in the list), "+" once an option is changed after it; empty when
-none was applied (a lab run's keep.txt, or words set by hand) */
+none was applied (a test run's keep.txt, or words set by hand) */
 static char preset_label[8] = "";
 
 const char *psp_preset_label(void)
@@ -256,6 +262,15 @@ static int front_door_main_menu = 0;
 int psp_front_door_main_menu(void)
 {
 	return front_door_main_menu;
+}
+
+/* set when this launch went through the launch menu: the boot screen's hint
+on how to open it is left out then (psp_loading.c) */
+static int front_door_launch_menu = 0;
+
+int psp_front_door_launch_menu(void)
+{
+	return front_door_launch_menu;
 }
 
 /* the buttons held as the game starts; reading waits for the next sample,
@@ -795,6 +810,7 @@ void psp_menu(int build)
 		}
 		return;
 	}
+	front_door_launch_menu = 1;
 	int back = 0, dump_menu = -1;
 
 	scan_maps();
@@ -820,8 +836,8 @@ void psp_menu(int build)
 
 		/* build 71: redrawn only when something changed, at the start of a
 		vertical blank. The debug screen draws straight into the picture on
-		show, so clearing and redrawing it 16 times a second flickered (Sheepdog01,
-		b70) */
+		show, so clearing and redrawing it 16 times a second flickered
+		(b70) */
 		/* build 114: a hash of every option (b71-b113 packed them as bits of
 		one int, and options past the 32nd wrapped onto the first: toggling
 		one could leave the screen unchanged) */
@@ -834,7 +850,7 @@ void psp_menu(int build)
 			/* build 92: drawn whole into the buffer not on show, then shown
 			at the next vertical blank. b91's scrolling list redrew every
 			line on each move straight into the picture on show, which takes
-			longer than a blank: the D-pad flicker (Sheepdog01, b91) */
+			longer than a blank: the D-pad flicker (b91) */
 			back = !back;
 			pspDebugScreenSetBase((u32 *)(MENU_VRAM + back * MENU_BUFFER_BYTES));
 			pspDebugScreenClear();

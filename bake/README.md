@@ -1,82 +1,165 @@
 # halo-psp-bake
 
 Turns **your own copy** of Halo: Combat Evolved for the original Xbox into the
-map files the PSP build reads. Nothing from the game is included here.
+map files the PSP build reads, and puts them together with the game, ready to
+copy to the Memory Stick. Nothing from the game is included here.
 
 ## What you need
 
-- A Linux PC (x86-64) with Python 3.9 to 3.13 (`python3 -m venv` must work;
-  on Debian/Ubuntu: `sudo apt install python3-venv`). Python 3.14 alone won't
-  do yet: the decal bake's `triangle` doesn't build there. On a system whose
-  only Python is 3.14 (a current Arch or CachyOS), install
-  [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`):
-  the script then has uv fetch a Python 3.12 for the bake alone.
-- The bundled Invader needs glibc 2.39 or later (Ubuntu 24.04, Fedora 40, a
-  current Arch or CachyOS). On older systems, build it from source: see
-  INVADER.md.
-- An image of your Halo disc: NTSC, version 01.10.12.2276 (the one the build
-  was made with; the tool checks each map's SHA-256 against hashes.json).
-  A bare game-partition image (what most Xbox dumping tools and extract-xiso
-  make) or a full Redump image both work. A folder with the disc's maps
-  (`maps/*.map`) works too.
-- About 3 GB free while it runs; the result is about 1.6 GB.
+- **A computer:** Windows 10 or 11 (x86-64), macOS 11 or later (Apple silicon
+  or Intel), or Linux (x86-64, any distribution from 2018 on).
+- **An image of your Halo disc:** NTSC (USA), version 01.10.12.2276, the one
+  the build was made for (the bake checks every map). A bare game-partition
+  image (what most Xbox dumping tools and extract-xiso make), a full Redump
+  image, or a folder of the disc's files (the one holding `default.xbe` and
+  `maps`).
+- **The release zip** (`halo_psp_bNNN.zip`) from the same release as this
+  bundle.
+- **Free disk space:** the bake says how much before it starts, and stops if
+  there isn't enough (about 8 GB). The result is about 2.2 GB for the
+  campaign and the menus, 2.9 GB with the multiplayer maps. <!-- TODO(master): the 8 GB peak is still an estimate; no bake has measured it. Results measured: b139c 2.21 GB, b139e (24 maps) 2.88 GB -->
+- **The internet, the first time:** the bake fetches its Python libraries
+  (numpy, Pillow, shapely, about 30 MB). Python itself it uses from your
+  computer if it has 3.9 to 3.14; if not, it offers to download a portable
+  Python 3.12 (python-build-standalone's official release, about 25 to 35 MB,
+  checked against the SHA-256 the bake carries) into `.python` in this folder.
+  Nothing is installed anywhere else.
 
-## Run it
+## Bake in four steps
+
+1. **Unpack the bundle.** Windows: right-click the zip, *Extract All*. Keep the
+   folder's path short (Windows counts every character of the paths the bake
+   writes inside it; the bake says if it's too long, and `C:\halo-psp-bake`
+   always works).
+2. **Put in your two files:**
+   - your disc image in `1-PUT-YOUR-DISC-IMAGE-HERE`;
+   - the release zip, as downloaded, in `2-PUT-THE-HALO-ZIP-HERE`.
+3. **Double-click the bake:**
+   - **Windows:** `Bake Halo.cmd`. If *Windows protected your PC* appears,
+     choose *More info*, then *Run anyway*.
+   - **macOS:** `Bake Halo.command`. The first time, macOS says it can't check
+     the file (it isn't signed by an Apple developer): choose *Done*, open
+     *System Settings*, *Privacy & Security*, scroll down to `Bake Halo.command`
+     and choose *Open Anyway*, then double-click it again. On macOS 14 or
+     earlier: right-click it, *Open*, *Open*.
+   - **Linux:** `bake-halo.sh` (if your file manager asks, *Run*; or
+     right-click, *Run as a Program*). If it only opens in a text editor, open
+     a terminal in this folder and type `./bake-halo.sh`.
+
+   A window opens and shows what it found, then four stages:
+
+   | Stage | What happens | How long |
+   |---|---|---|
+   | 1/4 Reading your disc | each map read and checked against the retail disc's hashes | a minute or two |
+   | 2/4 Setting up | the bake's Python libraries, the first time only | a minute or two (then seconds) |
+   | 3/4 Baking the maps | each map rebuilt for the PSP's memory, its textures and wall decals baked; several maps at once, with the time left | the long part: about 10 minutes on an 8-core PC, longer on fewer cores |
+   | 4/4 Putting it together | the game, its menu sound and the maps into `COPY-TO-MEMORY-STICK` | seconds |
+
+   It ends by saying what to copy where. Press Enter to close the window.
+4. **Copy to the Memory Stick:** the two folders inside `COPY-TO-MEMORY-STICK`
+   (`PSP` and `halo`) go to the top of the stick, **merged** with the folders
+   already there. Windows merges by itself (if it asks about files with the
+   same name, *Replace the files in the destination*). On macOS use Terminal,
+   not Finder, which can replace the stick's whole `PSP` folder, ARK-4's
+   files with it: `cp -R ~/Downloads/halo-psp-bake/COPY-TO-MEMORY-STICK/.
+   /Volumes/<the stick's name>/`.
+
+The campaign build's bake makes the ten campaign levels and the menus. Put
+the multiplayer build's zip (`halo_psp_bNNNmp.zip`) in step 2 instead and it
+bakes the thirteen multiplayer maps too, and makes that build's menu sound.
+
+To bake again (a new release), put the new zip in step 2 and double-click
+again: `COPY-TO-MEMORY-STICK` is made afresh each time. On the stick, delete
+`halo/maps` before you copy the new one in, so no old pack is left behind.
+
+## When it stops
+
+Every problem ends in one sentence saying what's wrong and what to do, and
+the details go to `bake-log.txt` in this folder. The common ones:
+
+| It says | What to do |
+|---|---|
+| Put your Halo disc image (or the release zip) in the folder ... | that folder is empty |
+| There are 2 things in ... | leave only the disc image (or the zip) in that folder |
+| ... is a compressed archive | unpack it first; put the `.iso` inside it in the folder |
+| ... isn't an Xbox disc image this bake can read | it isn't a disc image, or not a whole one: make it again from your disc |
+| This disc is another version of Halo ... | another version or region: the bake needs NTSC 01.10.12.2276 |
+| N of the disc's maps (...) isn't / aren't the retail ones ... | a damaged image or changed maps: make it again from your disc |
+| This folder's path is too long for Windows ... | move the whole folder to `C:\halo-psp-bake` |
+| There is ... free on this drive, and the bake needs about ... | free some space, or move the folder to a drive with more |
+| Setting up failed: ... | usually no internet the first time; the sentence says |
+| The bake of ... failed | please report it, with `bake-log.txt` |
+
+Two notes don't stop the bake: the **menu sound** (the music the PSP plays on
+the game's entry in its menu, cut from your disc) and the **loading screen's
+chant** (read from your disc's `default.xbe`). If either can't be made, the
+game plays all the same, and the end of the bake says why.
+
+`bake-log.txt` is what to attach to an issue. It holds the names, sizes and
+hashes of your disc's maps and everything the bake printed, with your home
+folder written as `~`; never anything from the disc itself.
+
+## The command line
+
+The same file takes the bake's own arguments, for a different output folder
+or the options below (on Windows `"Bake Halo.cmd" ...`, on macOS
+`./Bake\ Halo.command ...`):
 
 ```
-./halo-psp-bake ~/Halo.iso ~/halo-psp-out
+./bake-halo.sh <disc image or folder> <output folder> [options]
 ```
 
-The first run sets up a Python environment beside the script (needs the
-internet once). Then, for each map, it reads it from the image, checks it,
-rebuilds it for the PSP's memory, and bakes the textures, the asset track's
-textures (`_track.ptex`: half-size lightmaps, plants that keep their leaves at
-a distance) and the wall decals. Expect 3 to 10 minutes a map (all 24: an
-hour or two).
+The output folder then holds `halo/maps/` and `halo/chant.adp` (and, with
+`--eboot`, `PSP/GAME/halo/EBOOT.PBP`): copy its contents to the stick. Unlike
+the double-click, it doesn't check the disc first (a map that doesn't match
+is skipped, or baked anyway with `--force`), and like it, it bakes the sounds
+the way the release is tested (`--sound s9`; `--sound none` keeps the disc's
+as they are).
 
-`--detail fp,vehicles` also bakes `_detail.ptex`, with those classes' textures
-at full size (fp, weapons, vehicles, characters). The launch menu chooses:
-"asset track" uses the `_track` packs, "asset detail" the `_detail` ones.
+| Option | What it does |
+|---|---|
+| `--maps c20,bloodgulch,ui` | only these maps (always include `ui`, the menus) |
+| `--multiplayer` | the thirteen multiplayer maps too |
+| `--no-clut4-look` | keep lightmaps and HUD sheets at 256 colours (by default the ones that look the same at 16 colours, under a strict error bar, are baked at 16: smaller maps, a little faster to draw); `--no-clut-look` is the same |
+| `--no-cache` | make every palette afresh (by default a palette made once is kept in `<output>/work/palettes` for the textures that come up again in the asset track's pack and in other maps; the maps come out the same either way) |
+| `--jobs N` | bake N maps at once (default: one per CPU, at most 4, fewer with under 8 GB of memory free; the maps come out the same either way); each map's own log is in `<output>/work/<map>.log` |
+| `--detail fp,vehicles` | also bake `_detail.ptex`, those classes' textures at full size (`fp`, `weapons`, `vehicles`, `characters`), for the launch menu's "asset detail" |
+| `--sound s9` | the default: every sound at 22,050 Hz at most, effects mono, music stereo (`none`: the disc's sounds as they are) |
+| `--eboot PATH` | the release's `EBOOT.PBP`: a copy with the menu sound goes to `<output>/PSP/GAME/halo/` (`halomp/` for the multiplayer build's) |
+| `--music [MAP:]TAG[@START][+LENGTH]` | another clip for the menu sound; `--maps ui --list-music` lists a map's music and lengths |
+| `--setup` | only set up the Python environment and check the tools |
+| `--help` | every option |
 
-Only some maps: `--maps c20,bloodgulch,ui` (always include `ui`).
+The menu sound is encoded with atracdenc, which every bundle carries. If it
+won't start, the bake warns, loudly, and copies the EBOOT as it is.
 
-## The menu's sound (optional)
+Maps from this version of the tool are for **build 139 or later** (its
+palettes and wall decals are made differently: Sierra-III's
+`docs/bake_changes.md`). Bake again when a release says its bundle changed.
 
-Give the bake the release's EBOOT and it adds a clip of the music, cut from
-your disc, as the sound the PSP's menu plays on the game's entry:
+The bake leaves a stamp beside the maps, `halo/bake.txt`: the bake format
+they are and the bundle that made them. The game reads it as it starts. If
+the maps are from a bundle whose format this build doesn't read (or have no
+stamp: bakes before build 139), it says so on the screen, "YOUR MAPS NEED
+BAKING AGAIN" with the bundle it needs, and START quits: bake again with the
+bundle that came with the build and copy the new `halo` folder over the old
+one. Builds that read the same format share a bake.
 
-```
-./halo-psp-bake ~/Halo.iso ~/halo-psp-out --eboot ~/Downloads/halo-bNNN/PSP/GAME/halo/EBOOT.PBP
-```
+## What's inside, and the licences
 
-The copy goes to `~/halo-psp-out/PSP/GAME/halo/EBOOT.PBP` (`halomp/` for the
-multiplayer build's). `--music` picks another clip:
-`[MAP:]TAG[@START][+LENGTH]`, a music tag by path, with seconds, e.g.
-`--music 'b30:levels\b30\music\b30_01@10+30'`. `--maps ui --list-music` lists a
-map's music and its lengths, without baking anything.
-
-The sound is encoded with atracdenc (bundled when the bundle was made with
-it; otherwise one on PATH). If it can't be made, the bake says why and copies
-the EBOOT as it is: the sound is never why a bake fails.
-
-## Then
-
-Copy `~/halo-psp-out/halo` to the root of the Memory Stick, so it holds
-`halo/maps/`. The game itself (`PSP/GAME/halo/`) comes from the build's zip,
-or, with `--eboot`, from `~/halo-psp-out/PSP/`: then copy both folders.
-
-Maps from this version of the tool need **build 108 or later**: the BSPs'
-grass and the bytes of four tag blocks the game never reads are left out,
-which is what lets a30, a50 and b40 fit the PSP's memory. Older builds can't
-load them, and build 108 still loads maps baked before it.
-
-## Licences
-
-- The bake tools in `lib/` are part of the Halo PSP port.
-- Invader (`invader/`) is GPLv3 (LICENSES/). This is a modified version: the
-  full source is in `invader-src.tar.gz`, and `invader-psp-fork.patch` is the
-  change against upstream Invader (commit d43ce55).
-- The game code the build runs is ChupathingyCE (CC0).
-- atracdenc (`atracdenc/`, when bundled) is LGPL-2.1 (LICENSES/); its source
-  is in `atracdenc-src.tar.gz`. The libraries beside it (libsndfile and its
-  codecs) are the build machine's, under their own licences.
+- `Bake Halo.cmd`, `Bake Halo.command` or `bake-halo.sh` (and on Linux
+  `halo-psp-bake`, the same file under the command's own name),
+  `launcher.py`, `guided.py`, `bake.py`, `xiso.py`, `lib/`: the bake itself
+  (the Halo PSP port's own scripts).
+- `invader/bin`: Invader (`invader-build`, `invader-extract`, `invader-info`),
+  the port's fork, GPLv3. Its full source is `source/invader-src.tar.gz`, and
+  `source/invader-psp-fork.patch` is the change against upstream Invader
+  (commit d43ce55). INVADER.md says how to rebuild it.
+- `atracdenc/bin`: atracdenc, LGPL-2.1, with libsndfile (LGPL-2.1) linked in;
+  their source is in `source/`.
+- Every program is linked statically, so nothing else needs installing.
+- `LICENSES/README.txt` lists every component, its licence and where its
+  source is; the licence texts are beside it.
+- Made by the bake, in this folder only: `.venv` (the Python libraries),
+  `.python` (the portable Python, if it downloaded one), `temp` (while it
+  works), `COPY-TO-MEMORY-STICK` and `bake-log.txt`.

@@ -492,8 +492,12 @@ These words turn a shipped speed lever **off** again, for A/Bs and diagnosis:
 - build 118: `verifyvectors` (X10, the vector checks), `tcutfull` (T1, the see-through cut's sphere test), `restlesscheck` (the restless back-off: every sleep candidate checked every tick).
 - build 119: `nearclusterfull` (NC, the near corner loop's runs of 16), `skinaxisloop` (SU, the corner sums' axes written out), `rigidrunsfull` (NR, the rigid near path's runs), `surfaceqsort` (SS, the light pass's surface bits), `vblankslow` (the clock fix: the vertical blank thread back below the game thread).
 - build 136: `wakeonwriteoff` (WT, wake-on-write: every sleeping object checksummed every tick again, not only those a writer marked; on by default in local games only, `wakeonwrite` puts it on in networked games too; `docs/wake_on_write.md`).
+- `decalfadeoff` (DFADE: dynamic decals live their tags' own lifetimes again, up to 300 s, instead of 30 s and a 2 s fade; `decalfadeN` sets N seconds, `decalcensus` logs the live counts; campaign only; `docs/review_decalfade.md`).
+- `lfsonceoff` (LFS: the level's lens-flare markers' direction and up worked out for every marker every frame again, not only for the flares kept and from the direction-byte table; `docs/review_lfs.md`). Check word `lfscheck` (every table answer worked out again and compared, no marker past a full frame skipped, the BSP's distinct direction triples counted).
 
 Opt-in look calls (build 122, off, for Sheepdog01's A/B; `docs/review_b122_look.md`): `seethroughvfpu` (multi-node see-through parts placed on the VFPU), `lightmerge` (the light pass's bands drawn as one, each corner lifted), `foliagetwopass` (alpha-tested model parts' soft second pass), `sceneryhalf` (B2, build 107).
+
+Opt-in, off (`docs/review_gebusy2.md`): `metail` (under M6 #2 the ME publishes its frame's last draws to the GE at its frame's end, not with the main CPU's finish after the next ticks; exact). Instrument `gebusy2`: `gebusy` with the ME's lists timed too.
 
 Opt-in speed calls (the cut stream, off, for Sheepdog01's A/B; `docs/review_cutstream.md`): `cutless` (triangles and cut pieces wholly off the screen not cut: −1.1 to −1.4 ms a frame of renderer CPU [E], but one or two colour steps move in scattered pixels in the emulator, cause not found), `guardwide` (the guard planes at 1920 pixels: not pixel for pixel, and no less cutting). The fix's off word: `cutstreamoff` (the fixed cut buffers, pieces past them lost). Recon: `cutcount`, `cutlessmaskN`.
 

@@ -12,7 +12,7 @@ host's map names it (docs/multiplayer_plan.md, section 3.2). The disc maps'
 salts don't all follow Invader's formula (Blood Gulch: the last 114 tags'
 are 1 or 2 more), so the IDs are carried over; the port's Invader fork reads
 them (upstream Invader takes only the path). Reads a retail map compressed
-or not. The group names are Invader's (fourcc.hpp, through halomap.py)."""
+or not. The group names are halomap.py's table, spelled as Invader spells them."""
 import os, struct, sys, tempfile, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -23,8 +23,6 @@ def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
     source, out = sys.argv[1], sys.argv[2]
-    if not FOURCC_GROUP:
-        sys.exit('tagindex: no Invader group names (HALO_PSP_INVADER_DEFINITIONS)')
     data = open(source, 'rb').read()
     length, = struct.unpack_from('<I', data, 8)
     with tempfile.TemporaryDirectory() as folder:
@@ -41,7 +39,8 @@ def main():
         if tag.index != position or tag.tag_id & 0xFFFF != position:
             sys.exit('tagindex: tag %d is listed at %d' % (tag.index, position))
         lines.append('%s.%s\t%08X\n' % (tag.name, FOURCC_GROUP[tag.group], tag.tag_id & 0xFFFFFFFF))  # (CacheMap's is signed)
-    with open(out, 'w', encoding='latin1') as f:
+    # '\n' on every system: the fork's index reader takes the ID to the end of the line
+    with open(out, 'w', encoding='latin1', newline='\n') as f:
         f.writelines(lines)
     print('tagindex: %d tags in %s' % (len(lines), out))
 

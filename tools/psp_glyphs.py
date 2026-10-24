@@ -83,12 +83,12 @@ BODY_ALPHA = 0.5
 #   solid     one shade (SOLID), between the gloss's light and dark
 #   soft      that shade with a thin soft highlight inside the top edge
 #   satin     that shade under the gloss, lighter (SATIN_GLOSS of its
-#             strength): Sheepdog01's pick, "B+ and some gloss" (2026-10-16)
+#             strength): the pick, "B+ and some gloss" (2026-10-16)
 #   vertical  lighter at the top, darker at the bottom (SPREAD either way)
 #   underlit  the other way: darker at the top, lighter at the bottom
 #   dome      lighter in the middle, darker toward the edges
 #   diagonal  lighter at the top left, darker at the bottom right
-#   (Sheepdog01's pick, 2026-10-16: dome, at SPREAD 0.26)
+#   (the pick, 2026-10-16: dome, at SPREAD 0.26)
 FINISH = "dome"
 SOLID = 0.72
 SATIN_GLOSS = 0.45
@@ -272,7 +272,7 @@ def bezier(a, control, b, steps=24):
 
 
 # one leaf of the D-pad as the up button, as a PSP-3000's photo shows it
-# (Sheepdog01): its outer edge a little bowed, long straight sides, then a short
+# (drawn by hand): its outer edge a little bowed, long straight sides, then a short
 # taper to a point at the pad's middle; corners and point rounded (DPAD_ROUND,
 # drawn as rounded())
 DPAD_LEAF = ([(0.1, 0.62), (0.1, 0.12)] + bezier((0.1, 0.12), (0.5, 0.04), (0.9, 0.12))[1:] +
@@ -370,7 +370,7 @@ def corner(at, toward_a, toward_b, reach, steps=96):
     return [(start[0] + length * px, start[1] + length * py) for px, py in path[::n // steps]]
 
 
-# the shoulder's shape (Sheepdog01's picks, 2026-10-16): the two slanted sides at
+# the shoulder's shape (the picks, 2026-10-16): the two slanted sides at
 # SHOULDER_ANGLE degrees to the top and bottom; the outer top and inner
 # bottom corners rounded broadly (SHOULDER_CURVES: how far along each edge,
 # in units of the height); the two sharp points softened a little
@@ -382,9 +382,9 @@ SHOULDER_POINTS = 0.07
 
 
 def shoulder_outline():
-    """the PSP's L button (Sheepdog01, 2026-10-16: "the exact shape"), in its own
+    """the PSP's L button (2026-10-16: "the exact shape"), in its own
     box from 0 to 1 each way, and the box's width over its height. After a
-    trace of a PSP-3000 photo (the trace itself too ragged), shaped with Sheepdog01:
+    trace of a PSP-3000 photo (the trace itself too ragged), shaped by hand:
     a flat top and bottom; the outer side and the inner side straight slants
     at SHOULDER_ANGLE, the outer one curving broadly into the top and the
     inner one into the bottom; the other two corners points. Worked in units
@@ -427,7 +427,7 @@ def shoulder(layers, letter, cells, size, font):
 def nub(layers, size, font):
     """the PSP's nub: a dark disc, its grip a dense cross-hatch (fine lines
     both ways across it, lighter than the disc), named above it as the
-    Xbox's stick icons are ("RIGHT", "LEFT"): "NUB" (Sheepdog01)"""
+    Xbox's stick icons are ("RIGHT", "LEFT"): "NUB"."""
     r, cy = 0.33, 0.64
     mask = blank(size, size)
     ImageDraw.Draw(mask).ellipse(((0.5 - r) * size, (cy - r) * size, (0.5 + r) * size, (cy + r) * size), fill=255)
@@ -460,7 +460,7 @@ def cluster(layers, size):
 
 
 def pill(layers, text, cells, size, font):
-    """START or SELECT, after Sheepdog01's sketch: the PSP-1000's key, flat along
+    """START or SELECT, after a hand sketch: the PSP-1000's key, flat along
     its top and curved underneath like a shallow bowl, its name on it (the
     two keys are one shape)"""
     width = cells * size
@@ -495,7 +495,7 @@ def paste(target, source, x, y, scale=1.0):
 
 
 # how tall a glyph draws, as a share of the Xbox icon's box it replaces
-# (Sheepdog01: 80%, on the text's line); a glyph named over its button, as the
+# (80%, on the text's line); a glyph named over its button, as the
 # Xbox's stick icons are, takes the whole box as they do
 HEIGHT_SHARE = 0.8
 FULL_HEIGHT = {"nub"}
@@ -507,7 +507,7 @@ PLUS_CELLS = 0.45
 
 def chord(layers, first, second, size, font):
     """two buttons pressed together: each at its own size, never scaled
-    (Sheepdog01), with a plus between them"""
+    to fit, with a plus between them"""
     total = layers.a.shape[1]
     paste(layers, first, 0, 0)
     paste(layers, second, total - second.a.shape[1], 0)

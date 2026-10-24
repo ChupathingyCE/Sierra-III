@@ -21,7 +21,7 @@ REPO = os.environ.get("HALO_REPO", "/tmp/halo-sp")
 OUT = os.environ.get("PSP_OUT", "/tmp/psp_halo")
 TREE = os.path.join(OUT, "tree")
 OBJ = os.path.join(OUT, "obj")
-# The toolchain: $PSPDEV as pspdev sets it (/opt/psp/pspdev here, /opt/pspdev in the lab runner)
+# The toolchain: $PSPDEV as pspdev sets it (/opt/psp/pspdev or /opt/pspdev)
 PSPDEV = os.environ.get("PSPDEV", "/opt/psp/pspdev")
 SDK = PSPDEV + "/psp/sdk"
 # mcidclan's me-core-mapper: installed into the toolchain by default (its "make install");
@@ -43,7 +43,7 @@ PLATFORM_FILES = [
     "d3d8_gl", "d3d8_resources", "xbox_textures", "nv2a_vsh", "xbdm",
 ]
 # build 107: the campaign-only engine. Co-op and multiplayer become a branch
-# of their own, with their own budgets (Sheepdog01, 2026-10-08), so the campaign
+# of their own, with their own budgets (2026-10-08), so the campaign
 # build leaves out the networking, the netcode and the multiplayer game
 # engines: 0.55 MB of code and buffers (docs/dead_code_inventory.md).
 # psp/src/psp_campaign.c answers what the campaign still calls in them, "no
@@ -57,7 +57,7 @@ MULTIPLAYER_UNITS = ("source/networking/", "source/bungie_net/", "source/game/ga
 CAMPAIGN_KEEPS = ("source/bungie_net/common/thread_win32.c",)
 def multiplayer_unit(rel):
     return rel.startswith(MULTIPLAYER_UNITS) and rel not in CAMPAIGN_KEEPS
-# The multiplayer build is a client (Sheepdog01, 2026-10-17): it leaves out
+# The multiplayer build is a client (2026-10-17): it leaves out
 # ChupathingyCE's network co-op too, a game on a campaign map that needs a
 # host (psp/src/psp_nocoop.c answers it, as the campaign build's does).
 # PSP_MP_COOP=1 builds the co-op units back in
@@ -65,9 +65,16 @@ MP_COOP = os.environ.get("PSP_MP_COOP", "") == "1"
 # ... and hosts nothing: PSP_MP_HOST=1 (or co-op, which needs a host) builds
 # hosting back in (psp_limits.h's PSP_MP_CLIENT_ONLY)
 MP_HOST = MP_COOP or os.environ.get("PSP_MP_HOST", "") == "1"
-# psp_capacity.h (build 113: 64 KB lower; the multiplayer build without
-# co-op 640 KB higher, its pools for AI small)
-GAME_STATE_BASE = 0x092A0000 + (0xA0000 if MULTIPLAYER and not MP_COOP and os.environ.get("PSP_BIG_RAM", "") != "1" else 0)
+# PSP_POOLS_XBOX=1: the campaign's actor, prop, light and glow particle
+# arrays at the Xbox's sizes, and the game state as long as they need
+# (psp_capacity.h's PSP_POOLS_GAME_STATE_SAVED). A layout, not a keep word:
+# for long runs that measure the arrays' peaks against the Xbox's limits
+POOLS_XBOX = os.environ.get("PSP_POOLS_XBOX", "") == "1"
+# psp_capacity.h (the multiplayer build without co-op 640 KB higher, its
+# pools for AI small; the campaign's 400 KB higher, its arrays sized from
+# their peaks: PSP_POOLS_GAME_STATE_SAVED and PSP_POOLS_GPU_SAVED)
+GAME_STATE_BASE = 0x092A0000 + (0xA0000 if MULTIPLAYER and not MP_COOP and os.environ.get("PSP_BIG_RAM", "") != "1" else 0) + (
+    0x64000 if not MULTIPLAYER and not POOLS_XBOX else 0)
 COOP_UNITS = ("port/linux/game/coop_", "port/linux/game/network_coop.c", "port/linux/game/network_actors.c")
 def coop_unit(rel):
     return rel.startswith(COOP_UNITS)
@@ -114,7 +121,13 @@ ONLINE_GAMES_UNITS = ("source/interface/ui_widget.c", "source/interface/ui_widge
 def desktop_unit(rel):
     return rel.startswith(CHUPA_DESKTOP_UNITS) and not (MULTIPLAYER and rel in CHUPA_MULTIPLAYER_KEEPS)
 
-PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading"]
+PSP_FILES = ["psp_memory", "psp_platform", "psp_sdl", "psp_libc", "psp_ge", "psp_tex", "psp_vfpu", "psp_menu", "psp_geo", "psp_anim", "psp_debug", "psp_me", "psp_trace", "psp_crash", "psp_scratch", "psp_watch", "psp_frametrace", "psp_loading", "psp_bakecheck", "psp_metrics"]
+# the bake format this build reads (bake/bake.py's BAKE_FORMAT): one number
+# for the bake's stamp and the game's check (psp/src/psp_bakecheck.c)
+_bake_format = re.search(r"^BAKE_FORMAT = (\d+)$", open(os.path.join(HERE, "bake", "bake.py"), encoding="utf-8").read(), re.M)
+if not _bake_format:
+    sys.exit("psp_build: no BAKE_FORMAT line in bake/bake.py")
+BAKE_FORMAT = int(_bake_format.group(1))
 
 # build 38: the game's optimisation level (PSP_GAME_OPT=-Os builds the A/B
 # variant that trades speed tricks for smaller code: the hardware profiler
@@ -143,6 +156,12 @@ RECON = os.environ.get("PSP_RECON", "") == "1"
 # the heap gets the space. The campaign/multiplayer split will be a flavour
 # of the same kind
 DEBUG_TOOLS = os.environ.get("PSP_DEBUG_TOOLS", "") == "1"
+# PSP_METRICS: each map's figures in the log (psp/src/psp_metrics.c: where
+# each second went, the slow frames and what each was doing, the reads, the
+# heap's low point). On unless PSP_METRICS=0, so every test build has them; a
+# final release is built with PSP_METRICS=0, and then every hook
+# (psp/include/psp_metrics.h) compiles to nothing
+METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # PSP_DITHERSHIFT=1: the GE's dither moved each pass (keep words dithershift,
 # dithershiftall). Its tests sit in psp_ge.c's hot paths, so a default build
 # leaves them out. Passed to psp_ge.c's own compile, which takes none of the
@@ -183,14 +202,19 @@ PGO_EXTRA = os.environ.get("PSP_PGO_EXTRA", "").replace(",", " ").split()
 # - PSP_PGO_LOOP_TRANSFORMS=1: keeps GCC's loop unswitching, splitting,
 #   versioning for strides and predictive commoning, which copy loops (more
 #   code for the 16 KB instruction cache to hold); off unless set
-# - PSP_PGO_HOT_FRACTION=N: --param hot-bb-count-fraction (GCC's 10000
-#   unless set): a smaller N calls less code hot and optimises the rest for
-#   size, which lost (more instructions, more misses on b30)
+# - PSP_PGO_HOT_FRACTION=N: --param hot-bb-count-fraction: a block is hot
+#   when it ran at least 1/N as often as the program's busiest counter.
+#   20000 unless set (GCC's own is 10000): the threshold moves with each new
+#   profile's busiest counter, and one 4% higher left the tick's small
+#   animation and matrix helpers just under it, called rather than inlined
+#   (c10's tick +8% in the cache model, +10% on the PSP); at 20000 they
+#   stay inlined (docs/review_c10hot.md). A smaller N lost (more
+#   instructions, more misses on b30); 10000 builds GCC's own
 # - PSP_PGO_HOT_PERMILLE=N: --param hot-bb-count-ws-permille; GCC reads it
 #   only with LTO, so it changes nothing here (the sweep's control)
-# These are switches of their own because a lab build switch's value can't
+# These are switches of their own because a test harness's switch value can't
 # hold an "=" (PSP_NAME=letters, digits and -_.,)
-for _sw, _flag, _default in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction=", ""),
+for _sw, _flag, _default in (("PSP_PGO_HOT_FRACTION", "--param=hot-bb-count-fraction=", "20000"),
                              ("PSP_PGO_HOT_PERMILLE", "--param=hot-bb-count-ws-permille=", ""),
                              ("PSP_PGO_ALIGN_FUNCTIONS", "-falign-functions=", "64"),
                              ("PSP_PGO_ALIGN_LOOPS", "-falign-loops=", "32")):
@@ -248,7 +272,7 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-fno-delete-null-pointer-checks", "-fno-omit-frame-pointer", "-w",
        "-ffunction-sections", "-fdata-sections", "-fno-math-errno", "-fsingle-precision-constant",
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
-       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
+       ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
        # code (the 16 KB instruction cache holds more of what runs)
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
@@ -370,7 +394,7 @@ COLD_PORT_UNITS = ("port/linux/src/port_config.c", "port/linux/src/xiso.c", "por
                    "port/linux/src/nv2a_psh.c", "port/linux/src/nv2a_vsh.c", "port/linux/src/gl_functions.c",
                    "port/linux/src/bink_null.c", "port/third_party/tomlc17/tomlc17.c",
                    "port/linux/game/pal_tags.c", "psp/src/psp_campaign.c", "psp/src/psp_nocoop.c", "psp/src/psp_chupa.c",
-                   "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c",
+                   "psp/src/psp_chupa_platform.c", "psp/src/psp_tag_layouts.c", "psp/src/psp_bakecheck.c",
                    # mpb1: internet play runs on its own threads, a join's
                    # keys once; the ONLINE GAMES screen only in the menus
                    "psp/src/psp_online.c", "psp/src/psp_internet.c") + INTERNET_UNITS
@@ -398,6 +422,8 @@ def compile_one(item):
         extra = extra + ["-fno-inline", "-fno-inline-small-functions", "-fno-inline-functions-called-once"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
+    if src.endswith("psp_bakecheck.c"):
+        defines.append("-DPSP_BAKE_FORMAT=%d" % BAKE_FORMAT)
     if src.endswith("psp_platform.c"):
         defines.append("-DPSP_HEAP_KB=%d" % HEAP_KB)
         if PGO == "use":
@@ -407,7 +433,7 @@ def compile_one(item):
     # 46 shipped with a stale psp_tex.o (reused without this check, so an
     # edit to psp_tex.c never reached the EBOOT): the learned-binds file was
     # written without "vramranked", as the first version did
-    if (os.environ.get("PSP_REUSE") and os.path.exists(obj) and not src.endswith("psp_platform.c")
+    if (os.environ.get("PSP_REUSE") and os.path.exists(obj) and not src.endswith(("psp_platform.c", "psp_bakecheck.c"))
             and os.path.getmtime(obj) > os.path.getmtime(os.path.join(TREE, src))):
         return src, 0, "", obj
     # PGO: the object named relative to the tree (the compiler's directory),
@@ -435,6 +461,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
+               ["-DPSP_METRICS=1"] if METRICS else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
                ["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + [
@@ -446,7 +473,7 @@ def compile_one(item):
         # PGO: the port's own files named through the tree's link to the
         # checkout (tree/sierra), as the engine's are named relative to the
         # tree: a function's file name is part of its profile's checksum, so
-        # counts made on the lab's runner match a build on any machine
+        # counts made on one machine match a build on any machine
         cmd = [a.replace(HERE + "/", "sierra/") for a in cmd]
     # PGO=use: a counted unit compiles with its warnings on (they change no
     # code), so GCC's word that it dropped a function's counts reaches
@@ -581,7 +608,7 @@ def link(objs, stubs):
     #     T1). Only a PGO build has .text.hot sections;
     #   a file name: coldfirst, then that file's hot functions in its order
     #     (one section name a line, tools/icache_order.py's order.txt); or,
-    #     when its lines are placements ("*<object>(<section>)", the lab's
+    #     when its lines are placements ("*<object>(<section>)", the test
     #     tools/codeorder.py: the call graph's order, T2), those in its order
     #     and nothing first, each function's cold part placed beside it.
     # A linker script gives each input section to the first rule that
@@ -726,6 +753,8 @@ def main():
           "; failures in compile_errors.txt: " + ", ".join(os.path.basename(s) for s, e in bad) if bad else ""))
     if bad:
         sys.exit("not linking: %d units failed to compile" % len(bad))
+    if not MULTIPLAYER:
+        seed_profile(items)
     if PGO == "use":
         mismatched = profile_mismatches(results)
         with open(os.path.join(OUT, "pgo_mismatch.txt"), "w") as f:
@@ -769,8 +798,10 @@ def main():
     subprocess.run(["psp-fixup-imports", os.path.join(OUT, "halo.elf")], check=True)
     subprocess.run(["psp-prxgen", os.path.join(OUT, "halo.elf"), os.path.join(OUT, "halo.prx")], check=True)
     # the title the XMB shows: the multiplayer build's is its own, so the two
-    # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart
-    title = os.environ.get("PSP_TITLE", "Halo PSP multiplayer" if MULTIPLAYER else "Halo PSP bring-up")
+    # EBOOTs installed side by side (PSP/GAME/halo, PSP/GAME/halomp) tell apart;
+    # the game is named only as what this ports, so the title claims no
+    # endorsement (Microsoft's Game Content Usage Rules)
+    title = os.environ.get("PSP_TITLE", "Sierra-III: Halo CE port (multiplayer)" if MULTIPLAYER else "Sierra-III: Halo CE port")
     subprocess.run(["mksfoex"] + (["-d", "MEMSIZE=1"] if BIG_RAM else []) +
                    [title, os.path.join(OUT, "PARAM.SFO")], check=True)
     icon0, icon1, pic0, pic1, snd0 = xmb_files()
@@ -778,6 +809,77 @@ def main():
                     icon0, icon1, pic0, pic1, snd0, os.path.join(OUT, "halo.prx"), "NULL"],
                    check=True, capture_output=True)
     print("wrote", os.path.join(OUT, "EBOOT.PBP"))
+
+# The release's ready-made profile, every campaign level open: its own
+# slot, so unzipping a new build over the stick never
+# touches a player's profiles. Built from code each build (psp/seed/
+# all_levels.c), so it follows the save format: the profile's bytes from the
+# engine's headers, the checksum, the folder and its meta file from the save
+# code in the tree, each read here and refused when it isn't what this
+# expects. Written to <out>/stick/, the stick's own tree.
+SEED_NAME = "All Levels"
+
+def seed_profile(items):
+    import hashlib, struct
+    def read(rel):
+        return open(os.path.join(TREE, rel), encoding="utf-8", errors="replace").read()
+    def need(pattern, text, what):
+        m = re.search(pattern, text, re.S)
+        if not m:
+            sys.exit("psp_build: the all-levels profile: %s no longer reads as expected (%s)" % (what, pattern))
+        return m
+    profile_c = read("source/saved games/player_profile.c")
+    files_c = read("source/saved games/saved_game_files.c")
+    xapi_c = read("port/linux/src/xbox_xapi.c")
+    look = int(need(r"DEFAULT_LOOK_SENSITIVITY = (\d+)", profile_c, "player_profile.c's look sensitivity").group(1))
+    checked = int(need(r"PLAYER_PROFILE_CHECKSUM_DATA_SIZE = (\d+)", files_c, "the profile's checksummed size").group(1))
+    # the content signature: SHA-1 of the title key (with its terminator, as
+    # sizeof counts it) and then the data
+    key = need(r'signature_title_key\[\] = "([^"\\]*)";', xapi_c, "the signature's key").group(1).encode() + b"\0"
+    need(r"sha1_initialize\(context\);\s*sha1_update\(context, signature_title_key, sizeof\(signature_title_key\)\);",
+         xapi_c, "the signature's start")
+    # the save folder: <u:>\UDATA\<FNV-1a of the name's UTF-16, 48 bits, as 12 hex digits>
+    need(r"hash = 1469598103934665603ULL;.*?hash \^= \(unsigned long long\)\*name;\s*hash \*= 1099511628211ULL;",
+         xapi_c, "the save folder's hash")
+    need(r'SAVE_DATA_DIRECTORY "\\\\%012llX\\\\", root, separator, hash & 0xffffffffffffULL', xapi_c,
+         "the save folder's name")
+    folder = need(r'#define SAVE_DATA_DIRECTORY "(\w+)"', xapi_c, "the save data folder").group(1)
+    meta = need(r'#define SAVE_META_FILE "([\w.]+)"', xapi_c, "the save meta file").group(1)
+    need(r'"%s%s", save_game_directory, "blam\.sav"\);\s*checksum_data_size = PLAYER_PROFILE_CHECKSUM_DATA_SIZE;',
+         files_c, "the profile's file name")
+    need(r'L"u:\\\\"', files_c, "the profiles' drive")
+
+    flags = [f for s, f, e in items if s == "source/saved games/player_profile.c"][0]
+    probe = os.path.join(HERE, "psp/seed/all_levels.c")
+    obj = os.path.join(OUT, "seed", "all_levels.o")
+    os.makedirs(os.path.dirname(obj), exist_ok=True)
+    name_c = 'L"' + SEED_NAME + '"'
+    r = subprocess.run(PSP + flags + ["-DPSP_SEED_NAME=" + name_c, "-DPSP_SEED_LOOK_SENSITIVITY=%d" % look,
+                                      "-include", os.path.join(HERE, "psp_post.h"), "-c", probe, "-o", obj],
+                       cwd=TREE, capture_output=True, text=True)
+    if r.returncode:
+        sys.exit("psp_build: the all-levels profile didn't compile:\n" + r.stderr[-3000:])
+    def section(name):
+        out = obj + "." + name
+        subprocess.run(["psp-objcopy", "-O", "binary", "--only-section=.rodata." + name, obj, out], check=True)
+        return open(out, "rb").read()
+    profile = section("psp_seed_profile")
+    size, block_size, signature_size = struct.unpack("<3H", section("psp_seed_sizes"))
+    if len(profile) != size or size != checked or signature_size != hashlib.sha1().digest_size:
+        sys.exit("psp_build: the all-levels profile: %d bytes, %d checksummed, a %d-byte signature: not the format this writes"
+                 % (len(profile), checked, signature_size))
+    block = profile + hashlib.sha1(key + profile).digest()
+    block += b"\0" * (block_size - len(block))
+    name16 = SEED_NAME.encode("utf-16-le")
+    h = 1469598103934665603
+    for unit in struct.unpack("<%dH" % (len(name16) // 2), name16):
+        h = ((h ^ unit) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    where = os.path.join(OUT, "stick", "halo", "save", "u", folder, "%012X" % (h & 0xFFFFFFFFFFFF))
+    shutil.rmtree(os.path.join(OUT, "stick"), ignore_errors=True)
+    os.makedirs(where)
+    open(os.path.join(where, "blam.sav"), "wb").write(block)
+    open(os.path.join(where, meta), "wb").write(name16)
+    print("seed: the all-levels profile \"%s\" at %s" % (SEED_NAME, os.path.relpath(where, OUT)))
 
 def xmb_files():
     """The XMB menu art for pack-pbp, in its order: ICON0, ICON1, PIC0, PIC1, SND0.

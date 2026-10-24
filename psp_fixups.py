@@ -34,6 +34,20 @@ static real_rgb_color psp_change_colors[4];
 static boolean psp_change_colors_valid = FALSE;
 static long psp_unique_identifier = 0;
 static boolean psp_animation_valid = FALSE;
+/* the drawn object's reflection tint (its lighting's) and its distance
+along the view, for its parts' reflections (psp_ge.c, psp_ge_model_reflection) */
+static real_argb_color psp_reflection_tint;
+static real psp_model_camera_distance = 0.0f;
+/* a model's distance along the view: models.c's rso works it out the same way,
+to check a kept reflection's fade (psp_ge.c, rso) */
+real psp_model_distance_along_view(real const *point)
+{
+	real_point3d const *centroid = (real_point3d const *)point;
+
+	return (centroid->x - global_window_parameters.camera.position.x) * global_window_parameters.camera.forward.i +
+		(centroid->y - global_window_parameters.camera.position.y) * global_window_parameters.camera.forward.j +
+		(centroid->z - global_window_parameters.camera.position.z) * global_window_parameters.camera.forward.k;
+}
 unsigned int psp_tex_bitmap_key(long tag_index, int bitmap);
 int psp_tex_bitmap_count(long tag_index);
 
@@ -55,7 +69,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 	/* build 107: a first map that is a cube map (the shader's "first map
 	type": a reflection) is passed over for the next one, which the GE can
 	draw. b30's ocean ("water simple": a reflection cube, then three ripple
-	maps) had no map at all and wasn't drawn: the white water Sheepdog01 saw (b106) */
+	maps) had no map at all and wasn't drawn: the white water the tester saw (b106) */
 	short first_map_type = (type == 5 || type == 6) ? *(short const *)(definition + 42) : 0;
 	long map_count = (type == 5 || type == 6) ? *(long const *)(definition + 84) : 0;
 
@@ -96,6 +110,14 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			}
 		}
 		key = psp_tex_bitmap_key(*(long const *)(map + map_at), bitmap);
+		if (!(*(unsigned char const *)(definition + 41) & 0x80))
+		{
+			/* a shader the bake drew whole into a texture of its own, laid
+			out on this map (psp_tex.c, composite_map) */
+			extern unsigned int psp_tex_composite_key(unsigned int shader, unsigned int key);
+
+			key = psp_tex_composite_key((unsigned int)shader, key);
+		}
 		{
 			/* the map's own clamping, as the Xbox sets its address modes
 			(rasterizer_xbox_transparent_geometry.c): the map's flags word,
@@ -151,6 +173,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			if (!PSP_KEEP_ONCE("seethroughflat"))
 				*blend = PSP_SEETHROUGH_PACK(*blend, fade_mode, fade, keep_with_camouflage);
 		}
+		/* a shader that isn't two-sided (its flags byte, bit 2) is drawn
+		from the front only, as the Xbox culls it (psp_ge.c, seethrough_cull) */
+		if (!(*(unsigned char const *)(definition + 41) & 4))
+			*blend = (short)(*blend | PSP_SEETHROUGH_ONE_SIDED_BIT);
 	}
 	else if (type == 7)
 		key = psp_tex_bitmap_key(*(long const *)(definition + 88), 0);
@@ -280,11 +306,18 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			/* and active camouflage: how see-through the model is (build 30) */
 			extern void psp_ge_model_effect(int type, float intensity);
 
-			psp_ge_model_effect(parameters->effect.type, parameters->effect.intensity);
+			/* (and, in the type's second byte, whether it's Cortana's model on a
+			level that sorts her see-through parts last: models.c's cortana hack) */
+			extern boolean rasterizer_model_cortana_hack;
+
+			psp_ge_model_effect(parameters->effect.type | (rasterizer_model_cortana_hack ? 0x100 : 0),
+				parameters->effect.intensity);
 		}
 		psp_animation_valid = parameters->animation.values != NULL;
 		if (psp_animation_valid)
 			csmemcpy(psp_animation_values, parameters->animation.values, sizeof(psp_animation_values));
+		psp_reflection_tint = lighting->reflection_tint_color;
+		psp_model_camera_distance = psp_model_distance_along_view(&parameters->centroid.x);
 		psp_unique_identifier = parameters->unique_identifier;
 		psp_change_colors_valid = parameters->animation.colors != NULL;
 		if (psp_change_colors_valid)
@@ -306,6 +339,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		/* once the GE draws, a model part's static geometry goes to it, in a
 		warm flat color per shader (psp_fixups.py) */
 		extern int psp_ge_active(void);
+		extern int psp_rso_volatile;
 		extern boolean psp_model_draw(struct triangle_buffer const *, long, struct vertex_buffer const *, unsigned int,
 			unsigned int, float, float, int);
 		extern unsigned int psp_tex_bitmap_key(long, int);
@@ -350,7 +384,9 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		restoration; keep word "senvflat" brings the flat colour back */
 		else if (shader && *(short const *)((char const *)shader + 36) == 3 && !PSP_KEEP_ONCE("senvflat"))
 		{
-			base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			extern unsigned int psp_relief_key(unsigned int);
+
+			base_key = psp_relief_key(psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0));
 			alpha_tested = *(unsigned short const *)((char const *)shader + 40) & 1;
 		}
 		{
@@ -359,6 +395,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			as the shader's change colour source picks. Model shaders only:
 			these offsets mean something else in other shaders (build 116) */
 			extern void psp_ge_model_multipurpose(unsigned int, unsigned int, float const *, float const *);
+			extern int psp_showcase_map;
 			extern real periodic_function_evaluate(short, real);
 			char const *definition = (char const *)shader;
 			boolean model_shader = base_key && *(short const *)(definition + 36) == 4;
@@ -386,6 +423,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				short glow_source = *(short const *)(definition + 112);
 				int channel;
 
+				/* the glow follows the time only where its two colours differ:
+				only then are the records not kept (psp_ge.c, rso) */
+				if (lower[0] != upper[0] || lower[1] != upper[1] || lower[2] != upper[2])
+					psp_rso_volatile |= 1;
 				for (channel = 0; channel < 3; channel++)
 					glow[channel] = lower[channel] + (upper[channel] - lower[channel]) * fraction;
 				if (glow_source >= 1 && glow_source <= 4 && psp_change_colors_valid)
@@ -399,6 +440,62 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			shader: texpack.py, glow_looks) is under the shader's address | 2 */
 			psp_ge_model_multipurpose(multipurpose != NONE ? psp_tex_bitmap_key(multipurpose, 0) : 0,
 				multipurpose != NONE ? (unsigned int)definition | 2 : 0, change, glow);
+			{
+				/* its reflection's strength and tint, as the Xbox's model draw
+				sets them (rasterizer_xbox_models.c): the brightness faded by
+				the distance between the shader's falloff and cutoff, both
+				times the lighting's reflection tint, the view's angle taken
+				as midway between the perpendicular and parallel ends. The
+				cube map at +356 (its index at +368), the distances at +316
+				and +320, the brightnesses at +324 and +340, the tints at +328
+				and +344 */
+				extern void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
+				long cube = model_shader ? *(long const *)(definition + 368) : NONE;
+				float reflection[3] = { 0.0f, 0.0f, 0.0f };
+
+				if (cube != NONE)
+				{
+					float falloff = *(float const *)(definition + 316), cutoff = *(float const *)(definition + 320);
+					float fraction = 1.0f, brightness;
+					float const *perpendicular = (float const *)(definition + 328), *parallel = (float const *)(definition + 344);
+					int channel;
+
+					if (cutoff != 0.0f && falloff != cutoff)
+					{
+						/* by the camera's distance: psp_ge.c works it out, and rso
+						checks it again before sending a kept walk */
+						extern float psp_rso_fade(float distance, float cutoff, float falloff);
+
+						fraction = psp_rso_fade(psp_model_camera_distance, cutoff, falloff);
+					}
+					brightness = fraction * 0.5f * (*(float const *)(definition + 324) + *(float const *)(definition + 340)) *
+						psp_reflection_tint.alpha;
+					for (channel = 0; channel < 3; channel++)
+						reflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *
+							(&psp_reflection_tint.red)[channel];
+				}
+				psp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);
+			}
+			/* on the main menu, the detail map itself over the base that holds
+			its average (psp_ge.c, model_detail_pass): shaders with the double
+			multiply and no mask, whose folded base the pack has. Its scale is
+			on the base map's coordinates, v by the v scale too, as the Xbox's
+			vertex constants have it (rasterizer_xbox_models.c) */
+			if (psp_showcase_map)
+			{
+				extern void psp_ge_model_detail(unsigned int, float, float);
+				long detail = model_shader ? *(long const *)(definition + 232) : NONE;
+				float scale = model_shader ? *(float const *)(definition + 216) : 0.0f;
+				float v_detail = model_shader ? *(float const *)(definition + 236) : 0.0f;
+
+				if (scale == 0.0f)
+					scale = 1.0f;
+				if (v_detail == 0.0f)
+					v_detail = 1.0f;
+				psp_ge_model_detail(detail != NONE && (base_key & 1) && *(short const *)(definition + 212) == 0 &&
+					*(short const *)(definition + 214) == 0 ? psp_tex_bitmap_key(detail, 0) : 0,
+					(u_scale ? u_scale : 1.0f) * scale, (v_scale ? v_scale : 1.0f) * scale * v_detail);
+			}
 		}
 		{
 			boolean drawn;
@@ -413,6 +510,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			psp_model_draw_us[2]++;
 			if (drawn)
 				return;
+			psp_rso_volatile |= 2; /* the Xbox path: nothing the rso keeps (psp_ge.c) */
 		}
 	}
 #endif
@@ -449,7 +547,9 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 		tested (tag offsets, from the tag definitions; build 20) */
 		if (shader && *(short const *)((char const *)shader + 36) == 3)
 		{
-			base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			extern unsigned int psp_relief_key(unsigned int);
+
+			base_key = psp_relief_key(psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0));
 			alpha_tested = *(unsigned short const *)((char const *)shader + 40) & 1;
 		}
 		{
@@ -487,12 +587,21 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					if ((*(unsigned short const *)(definition + 108) & 1) &&
 						*(short const *)(key + 4) > 0 && *(short const *)(key + 6) > 0)
 					{
-						scales[which][0] *= (float)*(short const *)(base_key + 4) / (float)*(short const *)(key + 4);
-						scales[which][1] *= (float)*(short const *)(base_key + 6) / (float)*(short const *)(key + 6);
+						/* the bitmap's own key: a relief version is under key | 2 */
+						scales[which][0] *= (float)*(short const *)((base_key & ~3u) + 4) / (float)*(short const *)(key + 4);
+						scales[which][1] *= (float)*(short const *)((base_key & ~3u) + 6) / (float)*(short const *)(key + 6);
 					}
 				}
 			psp_ge_level_detail(keys[0], scales[0][0], scales[0][1], keys[1], scales[1][0], scales[1][1]);
 		}
+#ifdef PSP_DEBUG_TOOLS
+		{
+			/* "sdump" names the shader of what it lists (psp_ge.c) */
+			extern void psp_ge_sdump_shader(void const *shader);
+
+			psp_ge_sdump_shader(shader);
+		}
+#endif
 		psp_environment_draw(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
 			0xFF000000 | (b << 16) | (g << 8) | r, base_key, psp_lightmap_key, alpha_tested);
 	}
@@ -520,11 +629,13 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 
 		if (psp_ge_active())
 		{
+			extern int psp_rso_volatile;
 			float u_scale, v_scale, u_offset, v_offset;
 			short blend;
 			unsigned int key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale,
 				&u_offset, &v_offset, &blend);
 
+			psp_rso_volatile |= 4; /* a see-through part, drawn by the frame's time and order: not kept (psp_ge.c, rso) */
 			if (sort_filth)
 				*(short *)((char *)sort_filth + 8) = NONE;
 			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
@@ -776,7 +887,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 ("	pthread_attr_setstacksize(&thread_attributes, stack_size > 0x100000 ? stack_size : 0x100000);",
  """#ifdef HALO_PSP
 	/* 1 MB per thread doesn't fit the PSP's 24 MB; the Xbox asked 16 KB.
-	The deepest any of these threads has gone, in every log the lab holds
+	The deepest any of these threads has gone, in every log of the test runs
 	from both builds, is under 11 KB (the main menu's saved-game check;
 	the cache file thread under 5 KB, the others under 2 KB): 48 KB keeps
 	four times that. Stacks come from the free user RAM above the heap,
@@ -1792,8 +1903,12 @@ otherwise; NULL when the cache hasn't read them yet, and the draw is left
 for a frame */
 void *psp_vertex_lock(const struct vertex_buffer *buffer);
 void *psp_index_lock(const struct triangle_buffer *buffer);
+/* psp_ge.c (rso): a kept walk's buffers, as its parts are locked */
+extern int psp_rso_capturing;
+void psp_rso_geometry(const void *vertex_buffer, const void *triangle_buffer);
 void *psp_level_vertices(const struct vertex_buffer *buffer);
 void *psp_geo_lock(unsigned int address, unsigned int size);
+unsigned int psp_geo_level_stride(void);
 int psp_geo_external(unsigned int address);
 unsigned long psp_geometry_draws_missed = 0;
 static boolean psp_geometry_missing(void)
@@ -1831,14 +1946,15 @@ void psp_environment_draw(
 	if (!buffer->triangles || first_triangle_index + triangle_count > buffer->triangle_count)
 		return;
 	/* the lightmap's vertices follow the material's own (as the Xbox path's
-	vertex_buffer + 1), when the level has lightmaps. Build 68: in the
-	geometry pack they are one block (32 bytes a vertex, then 8), read once */
+	vertex_buffer + 1), when the level has lightmaps. In the geometry pack
+	they are one block (the pack's rendered vertices, then 8 bytes a lightmap
+	vertex), read once */
 	if (lightmap_key && lightmap->hardware_format && lightmap->count == vertex_buffer->count)
 	{
 		unsigned int base_address = ((const unsigned int *)vertex_buffer->hardware_format)[1];
 		unsigned int lightmap_address = ((const unsigned int *)lightmap->hardware_format)[1];
 
-		if (psp_geo_external(base_address) && lightmap_address == base_address + 32 * (unsigned int)vertex_buffer->count)
+		if (psp_geo_external(base_address) && lightmap_address == base_address + psp_geo_level_stride() * (unsigned int)vertex_buffer->count)
 		{
 			/* the pack addresses themselves: the renderer keeps its own copies
 			of a material and asks the cache for the bytes only to build them */
@@ -2020,6 +2136,8 @@ boolean psp_model_draw(
 	indices = psp_index_lock(triangle_buffer);
 	if (!indices)
 		return psp_geometry_missing();
+	if (psp_rso_capturing)
+		psp_rso_geometry(vertex_buffer, triangle_buffer);
 	psp_ge_draw_model(vertices, vertex_buffer->count, vertex_buffer->type == _rasterizer_vertex_type_model_uncompressed,
 		(const unsigned short *)indices, strip ? triangle_count + 2 : 3 * triangle_count, strip, color, base_key,
 		u_scale, v_scale, alpha_tested);
@@ -2032,7 +2150,7 @@ boolean psp_model_draw(
 /* build 108: the local player's unit for the helpers below, or NONE. Only
 while a game is in progress: between maps the player and object tables are
 disposed but still hold the last map's indices, so reading them asserts
-(data.c#396 data->valid) and then faults. Sheepdog01's b107 run of b30: the level
+(data.c#396 data->valid) and then faults. b107's run of b30: the level
 ended, b40 wasn't on the stick, the game's error loop drew a frame, and
 nearauto's psp_player_seated read the gone player's unit (object index
 #906, a bus error in object_get_and_verify_type) */
@@ -2092,8 +2210,8 @@ void psp_player_snapshot(char *text, int size)
 }
 
 /* build 59: the local player put at a spot and turned to a direction
-(ms0:/halo/teleport.txt, psp_platform.c), for repeating what Sheepdog01 saw at a
-place his screenshots name */
+(ms0:/halo/teleport.txt, psp_platform.c), for repeating what the tester saw at a
+place the screenshots name */
 void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz)
 {
 	long unit_index = psp_local_unit(NULL);
@@ -2114,15 +2232,24 @@ he is in; psp_ge.c). Build 116 (b113 #17): 2 in a seat without the
 third-person camera (a Pelican's bench), where the vehicle's own walls are
 at the eye and its sphere holds the plane in as on foot; b90-b115 let the
 plane out to 16 x there and cut the cabin open. Keep word "nearseatedfar":
-1 in any seat, as before */
+1 in any seat, as before.
+In a cinematic the camera is the script's, not the seat's: a sphere around
+it belongs to whoever the shot is close on (a10's opening: the player rides
+the cryo tube while the camera sits at Keyes' and Cortana's faces, and the
+plane went out to 16 x and cut their heads open). So 0 there, as on foot.
+Keep word "nearseatcine": seated in cinematics too, as before */
 int psp_player_seated(void)
 {
-	static int far_in_any_seat = -1;
+	static int far_in_any_seat = -1, seated_in_cinematics = -1;
 	long unit_index = psp_local_unit(NULL);
 	struct unit_datum *unit;
 	struct object_datum *vehicle;
 
 	if (unit_index == NONE)
+		return 0;
+	if (seated_in_cinematics < 0)
+		seated_in_cinematics = psp_keep("nearseatcine") != 0;
+	if (!seated_in_cinematics && cinematic_in_progress())
 		return 0;
 	unit = unit_get(unit_index);
 	if (unit->object.parent_object_index == NONE)
@@ -2215,6 +2342,643 @@ void psp_collision_test(const float *fixed_origin)
 ''',
 }
 
+
+# ---------- FIXES_TRANSITIONS: the release's transition check ("transwalk")
+# Code appended to players.c, beside the other helpers that move the local
+# player: the loading zones are players.c's own records
+APPEND["source/game/players.c"] += r'''
+#ifdef HALO_PSP
+/* "transwalk" (keep.txt): every BSP switch of a level and its mission's end,
+reached without hands, for the release's transition check. The game switches
+BSPs itself when the player stands in one of the scenario's loading zones
+(its BSP switch trigger volumes, players_update_before_game above) while the
+zone's source BSP is loaded; the level's scripts switch the others. So the
+player is put inside each zone in turn, from its source BSP, and the switch
+that follows is the game's own. A zone whose source isn't loaded is reached
+through the zones that lead there, as a player would walk; only a BSP no
+zone leads to is switched to by force, the way a zone switches
+(main_switch_structure_bsp). Each switch is logged with the time across it
+and, 8 s on, what the level drew flat, the frames that drew something
+untextured and the heap's failed requests since; a shot before each step,
+and 2 and 7 s after each switch. "transwalkN": N s at each step (10).
+"transwaitN": the walk starts no sooner than N s in (a level whose opening
+holds the player without a cinematic: a10's cryo tests). "transwon": then the mission's end (game_won, as a level's last script calls
+it), and the run ends 25 s into whatever follows */
+#define TRANSWALK_ZONES 128
+#define TRANSWALK_BSPS 16
+enum
+{
+	_transwalk_wait,	/* for the player, out of the opening cinematic */
+	_transwalk_zones,
+	_transwalk_force,	/* the BSPs no zone led to */
+	_transwalk_won,
+	_transwalk_next,	/* in the map that followed the mission's end */
+	_transwalk_done
+};
+
+static struct
+{
+	char map[64];
+	int phase;
+	long next, cinematic_since, no_player_since, teleport_at, settle_at, report_at, shot_at[2];
+	short zone, zone_to, forced, forced_for, travels, bsp;
+	unsigned long textured, flat, untextured, failures;
+	unsigned long switches, by_zone, by_force, by_script, quiet, placed;
+	unsigned int last_us, won_us;
+	unsigned short seen, asked;
+	unsigned char tried[TRANSWALK_ZONES], travelled[TRANSWALK_ZONES];
+	char won_from[64];
+} transwalk;
+
+static struct scenario_bsp_switch_trigger_volume *transwalk_zone(short index)
+{
+	return TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->bsp_switch_trigger_volumes, index,
+		struct scenario_bsp_switch_trigger_volume);
+}
+
+static short transwalk_zone_count(void)
+{
+	return (short)MIN(global_scenario_get()->bsp_switch_trigger_volumes.count, TRANSWALK_ZONES);
+}
+
+static struct scenario_trigger_volume *transwalk_volume(short zone_index)
+{
+	struct scenario *scenario = global_scenario_get();
+	short volume = transwalk_zone(zone_index)->trigger_volume_index;
+
+	if (volume < 0 || volume >= scenario->trigger_volumes.count)
+		return NULL;
+	return TAG_BLOCK_GET_ELEMENT(&scenario->trigger_volumes, volume, struct scenario_trigger_volume);
+}
+
+/* a point of the volume (or of the volume grown by "scale" about its middle)
+inside the loaded BSP's open space and outside every zone that would switch
+away from it ("avoid": the loaded BSP, or NONE to allow them): the nearest
+column to the middle, its lowest such point, so the player stands rather than
+falls. A zone's middle can lie outside one of its two BSPs (the void past a
+doorway), where the game neither switches nor draws */
+static boolean transwalk_spot(struct scenario_trigger_volume *volume, real scale, short avoid, real_point3d *spot,
+	real_vector3d *facing)
+{
+	real_matrix4x3 matrix;
+	real best = -1.0f;
+	int i, j, k;
+	short zone, count = transwalk_zone_count();
+
+	if (volume->type == _scenario_trigger_volume_type_oriented)
+	{
+		matrix4x3_from_point_and_vectors(&matrix, &volume->position, &volume->forward, &volume->up);
+		*facing = volume->forward;
+	}
+	else
+	{
+		facing->i = 1.0f; facing->j = 0.0f; facing->k = 0.0f;
+	}
+	for (i = -2; i <= 2; i++)
+		for (j = -2; j <= 2; j++)
+		{
+			real distance = (real)(i * i + j * j);
+
+			if (best >= 0.0f && distance >= best)
+				continue;
+			for (k = 0; k <= 4; k++)
+			{
+				real_point3d local, point;
+				struct location location;
+				real fi = 0.5f + scale * (real)i / 4.0f, fj = 0.5f + scale * (real)j / 4.0f, fk = (real)k / 4.0f;
+				boolean blocked = FALSE;
+
+				/* the bottom and top rows a little inside, off the floor and the ceiling */
+				fk = 0.1f + 0.8f * fk;
+				if (volume->type == _scenario_trigger_volume_type_oriented)
+				{
+					local.x = volume->extents.i * fi;
+					local.y = volume->extents.j * fj;
+					local.z = volume->extents.k * fk;
+					matrix4x3_transform_point(&matrix, &local, &point);
+				}
+				else
+				{
+					point.x = volume->bounds.x0 + (volume->bounds.x1 - volume->bounds.x0) * fi;
+					point.y = volume->bounds.y0 + (volume->bounds.y1 - volume->bounds.y0) * fj;
+					point.z = volume->bounds.z0 + (volume->bounds.z1 - volume->bounds.z0) * fk;
+				}
+				scenario_location_from_point(&location, &point);
+				if (location.cluster_index == NONE || location.leaf_index == NONE)
+					continue;
+				for (zone = 0; avoid != NONE && zone < count && !blocked; zone++)
+				{
+					struct scenario_bsp_switch_trigger_volume *other = transwalk_zone(zone);
+
+					blocked = other->source_structure_bsp_index == avoid &&
+						scenario_trigger_volume_test_point(other->trigger_volume_index, &point);
+				}
+				if (blocked)
+					continue;
+				*spot = point;
+				best = distance;
+				break;
+			}
+		}
+	return best >= 0.0f;
+}
+
+/* the player's bounding sphere, which the zones' test reads, put at "spot" */
+static void transwalk_put(real_point3d const *spot, real_vector3d const *facing)
+{
+	long unit_index = psp_local_unit(NULL);
+	struct object_datum *object;
+	real_point3d origin;
+
+	if (unit_index == NONE)
+		return;
+	object = object_get(unit_index);
+	/* a seat holds the unit where its vehicle is */
+	if (object->object.parent_object_index != NONE)
+		unit_scripting_exit_vehicle(unit_index);
+	object_get_origin(unit_index, &origin);
+	psp_player_teleport(
+		spot->x - (object->object.bounding_sphere_center.x - origin.x),
+		spot->y - (object->object.bounding_sphere_center.y - origin.y),
+		spot->z - (object->object.bounding_sphere_center.z - origin.z),
+		facing->i, facing->j, facing->k);
+}
+
+static void transwalk_enter(short index)
+{
+	struct scenario_bsp_switch_trigger_volume *zone = transwalk_zone(index);
+	struct scenario_trigger_volume *volume = transwalk_volume(index);
+	real_point3d spot;
+	real_vector3d facing;
+	boolean inside;
+
+	if (psp_local_unit(NULL) == NONE || !volume)
+	{
+		platform_psp_log("transitions: loading zone #%d not entered (%s)", index,
+			volume ? "no player" : "no such trigger volume");
+		return;
+	}
+	inside = transwalk_spot(volume, 1.0f, NONE, &spot, &facing);
+	if (!inside)
+	{
+		/* nowhere inside the loaded BSP: the middle, as a last resort */
+		if (volume->type == _scenario_trigger_volume_type_oriented)
+		{
+			real_matrix4x3 matrix;
+			real_point3d local;
+
+			local.x = volume->extents.i * 0.5f;
+			local.y = volume->extents.j * 0.5f;
+			local.z = volume->extents.k * 0.5f;
+			matrix4x3_from_point_and_vectors(&matrix, &volume->position, &volume->forward, &volume->up);
+			matrix4x3_transform_point(&matrix, &local, &spot);
+		}
+		else
+		{
+			spot.x = (volume->bounds.x0 + volume->bounds.x1) * 0.5f;
+			spot.y = (volume->bounds.y0 + volume->bounds.y1) * 0.5f;
+			spot.z = (volume->bounds.z0 + volume->bounds.z1) * 0.5f;
+		}
+	}
+	transwalk_put(&spot, &facing);
+	platform_psp_log("transitions: into loading zone #%d (BSP %d -> %d) at %.1f %.1f %.1f%s", index,
+		zone->source_structure_bsp_index, zone->destination_structure_bsp_index, spot.x, spot.y, spot.z,
+		inside ? "" : " (its middle: no point of it is inside the BSP)");
+}
+
+/* after a switch: a player left outside the new BSP (the game neither draws
+nor moves him there) is put inside it, in the zone he came through or one
+that leads to the BSP, short of any zone that would switch away again */
+static void transwalk_settle(void)
+{
+	long unit_index = psp_local_unit(NULL);
+	struct location location;
+	real_point3d spot;
+	real_vector3d facing;
+	short k, count = transwalk_zone_count(), bsp = global_structure_bsp_index;
+	int pass;
+
+	if (unit_index == NONE)
+		return;
+	scenario_location_from_point(&location, &object_get(unit_index)->object.bounding_sphere_center);
+	if (location.cluster_index != NONE && location.leaf_index != NONE)
+		return;
+	for (pass = 0; pass < 3; pass++)
+		for (k = 0; k < count; k++)
+		{
+			struct scenario_bsp_switch_trigger_volume *zone = transwalk_zone(k);
+			struct scenario_trigger_volume *volume = transwalk_volume(k);
+			boolean candidate = pass < 2 ? zone->destination_structure_bsp_index == bsp :
+				zone->source_structure_bsp_index == bsp;
+
+			if (volume && candidate && transwalk_spot(volume, pass == 0 ? 1.0f : 2.5f, bsp, &spot, &facing))
+			{
+				transwalk_put(&spot, &facing);
+				transwalk.placed++;
+				platform_psp_log("transitions: the player was outside BSP %d: put inside it by loading zone #%d, at %.1f %.1f %.1f",
+					bsp, k, spot.x, spot.y, spot.z);
+				return;
+			}
+		}
+	platform_psp_log("transitions: the player is outside BSP %d, and no zone of it has a point inside", bsp);
+}
+
+static void transwalk_counts(unsigned long *textured, unsigned long *flat, unsigned long *untextured)
+{
+	extern void psp_ge_level_draw_counts(unsigned long *textured, unsigned long *flat); /* psp_ge.c */
+	extern unsigned long psp_tex_untextured_frames(void); /* psp_tex.c */
+
+	psp_ge_level_draw_counts(textured, flat);
+	*untextured = psp_tex_untextured_frames();
+}
+
+/* the switch just seen: what caused it, and the counts its report compares */
+static void transwalk_switched(short from, short to, long now, unsigned int gap_us)
+{
+	extern volatile unsigned long psp_heap_failures; /* psp_libc.c */
+	char how[48];
+
+	if (transwalk.zone != NONE && to == transwalk.zone_to)
+	{
+		snprintf(how, sizeof(how), "loading zone #%d", transwalk.zone);
+		transwalk.by_zone++;
+		transwalk.zone = NONE;
+	}
+	else if (to == transwalk.forced)
+	{
+		snprintf(how, sizeof(how), "force");
+		transwalk.by_force++;
+		transwalk.forced = NONE;
+	}
+	else
+	{
+		snprintf(how, sizeof(how), "the level's scripts (or a revert)");
+		transwalk.by_script++;
+	}
+	transwalk.switches++;
+	platform_psp_log("transitions: BSP %d -> %d at game time %ld by %s; %u ms across the switch", from, to, now, how,
+		gap_us / 1000);
+	if (to >= 0 && to < TRANSWALK_BSPS)
+		transwalk.seen |= (unsigned short)(1u << to);
+	transwalk_counts(&transwalk.textured, &transwalk.flat, &transwalk.untextured);
+	transwalk.failures = psp_heap_failures;
+	transwalk.settle_at = now + 3;
+	transwalk.shot_at[0] = now + 60;
+	transwalk.shot_at[1] = now + 210;
+	transwalk.report_at = now + 240;
+}
+
+static void transwalk_report(void)
+{
+	extern volatile unsigned long psp_heap_failures; /* psp_libc.c */
+	extern void psp_heap_line(char *line, int size); /* psp_libc.c */
+	unsigned long textured, flat, untextured;
+	char heap[200];
+
+	transwalk_counts(&textured, &flat, &untextured);
+	psp_heap_line(heap, sizeof(heap));
+	platform_psp_log("transitions: 8 s in BSP %d: level draws %lu textured, %lu flat; %lu frames drew something untextured; %lu heap requests failed; %s",
+		transwalk.bsp, textured - transwalk.textured, flat - transwalk.flat, untextured - transwalk.untextured,
+		psp_heap_failures - transwalk.failures, heap);
+}
+
+static void transwalk_summary(void)
+{
+	char list[64];
+	int length = 0;
+	short k, count = (short)global_scenario_get()->structure_bsp_references.count;
+	unsigned long untried = 0;
+
+	list[0] = 0;
+	for (k = 0; k < count && k < TRANSWALK_BSPS; k++)
+		if (transwalk.seen & (1u << k))
+			length += snprintf(list + length, sizeof(list) - length, " %d", k);
+	for (k = 0; k < transwalk_zone_count(); k++)
+		untried += !transwalk.tried[k];
+	platform_psp_log("transitions: %s: %lu switches (%lu by loading zones, %lu forced, %lu by the scripts or reverts); %lu zones left no switch, %lu not tried; the player put back inside %lu times; BSPs loaded:%s (of %d)",
+		transwalk.map, transwalk.switches, transwalk.by_zone, transwalk.by_force, transwalk.by_script, transwalk.quiet,
+		untried, transwalk.placed, list, count);
+}
+
+/* the first zone of the shortest way through the zones from the loaded BSP
+to the source of a zone not tried yet, or NONE */
+static short transwalk_route(short from)
+{
+	short parent_zone[TRANSWALK_BSPS], queue[TRANSWALK_BSPS], head = 0, tail = 0, k, count = transwalk_zone_count();
+	boolean reached[TRANSWALK_BSPS];
+
+	if (from < 0 || from >= TRANSWALK_BSPS)
+		return NONE;
+	csmemset(reached, 0, sizeof(reached));
+	reached[from] = TRUE;
+	parent_zone[from] = NONE;
+	queue[tail++] = from;
+	while (head < tail)
+	{
+		short bsp = queue[head++];
+
+		for (k = 0; k < count; k++)
+			if (!transwalk.tried[k] && transwalk_zone(k)->source_structure_bsp_index == bsp && bsp != from)
+			{
+				/* back along the way to its first zone */
+				short at = bsp, first = NONE;
+
+				while (at != from)
+				{
+					first = parent_zone[at];
+					at = transwalk_zone(first)->source_structure_bsp_index;
+				}
+				return first;
+			}
+		for (k = 0; k < count; k++)
+		{
+			struct scenario_bsp_switch_trigger_volume *zone = transwalk_zone(k);
+			short to = zone->destination_structure_bsp_index;
+
+			/* a zone the level's scripts undid twice (c10's lift switches straight
+			back) isn't a way through */
+			if (zone->source_structure_bsp_index == bsp && to >= 0 && to < TRANSWALK_BSPS && !reached[to] &&
+				transwalk.travelled[k] < 2)
+			{
+				reached[to] = TRUE;
+				parent_zone[to] = k;
+				queue[tail++] = to;
+			}
+		}
+	}
+	return NONE;
+}
+
+static void transwalk_step_into(short k, long now, long dwell, boolean travel)
+{
+	extern volatile int psp_screenshot_requested; /* psp_ge.c */
+
+	if (travel)
+	{
+		platform_psp_log("transitions: on the way, through loading zone #%d", k);
+		if (transwalk.travelled[k] < 255)
+			transwalk.travelled[k]++;
+	}
+	transwalk.tried[k] = 1;
+	transwalk.zone = k;
+	transwalk.zone_to = transwalk_zone(k)->destination_structure_bsp_index;
+	psp_screenshot_requested = 1;
+	transwalk.teleport_at = now + 15;
+	transwalk.next = now + dwell;
+}
+
+void psp_transwalk_tick(void)
+{
+	static int asked = -1, won = 0;
+	static long dwell = 300, start = 0;
+	extern volatile int psp_screenshot_requested; /* psp_ge.c */
+	extern unsigned int sceKernelGetSystemTimeLow(void);
+	extern boolean hs_compile_and_evaluate(char const *source); /* hs.c */
+	extern void psp_exit_game(const char *why); /* psp_platform.c */
+	unsigned int now_us = sceKernelGetSystemTimeLow(), gap_us;
+	struct scenario *scenario;
+	const char *map;
+	long now;
+	short bsp, k, count;
+
+	if (asked < 0)
+	{
+		won = psp_keep("transwon");
+		dwell = (long)psp_keep_number("transwalk", 10) * 30;
+		start = (long)psp_keep_number("transwait", 0) * 30;
+		asked = won || psp_keep("transwalk") || psp_keep_number("transwalk", 0) > 0;
+	}
+	if (!asked)
+		return;
+	gap_us = now_us - transwalk.last_us;
+	transwalk.last_us = now_us;
+	/* after game_won the game may leave play (the credits, the menu):
+	timed by the clock */
+	if ((transwalk.phase == _transwalk_won && now_us - transwalk.won_us > 120000000u) ||
+		(transwalk.phase == _transwalk_next && now_us - transwalk.won_us > 25000000u))
+	{
+		if (transwalk.phase == _transwalk_won)
+			platform_psp_log("transitions: no new level in play 120 s after %s's game_won", transwalk.won_from);
+		psp_exit_game("transitions done");
+		return;
+	}
+	if (!game_in_progress() || global_scenario_index == NONE)
+		return;
+	scenario = global_scenario_get();
+	now = game_time_get();
+	bsp = global_structure_bsp_index;
+	map = tag_get_name(global_scenario_index);
+	/* by name: a map's scenario is its first tag, so every map's has the same index */
+	if (strcmp(transwalk.map, map) != 0)
+	{
+		if (transwalk.phase == _transwalk_won)
+		{
+			platform_psp_log("transitions: the mission's end: %s won, %s in play (BSP %d); the run ends 25 s on",
+				transwalk.won_from, map, bsp);
+			transwalk.phase = _transwalk_next;
+			transwalk.won_us = now_us;
+			transwalk.shot_at[0] = now + 90;
+			transwalk.shot_at[1] = now + 300;
+			transwalk.report_at = now + 240;
+			transwalk_counts(&transwalk.textured, &transwalk.flat, &transwalk.untextured);
+		}
+		else if (transwalk.phase != _transwalk_next)
+		{
+			unsigned int keep = transwalk.last_us;
+
+			csmemset(&transwalk, 0, sizeof(transwalk));
+			transwalk.last_us = keep;
+			transwalk.phase = _transwalk_wait;
+			transwalk.next = now + (start > 30 ? start : 30);
+			transwalk.zone = transwalk.zone_to = transwalk.forced = transwalk.forced_for = NONE;
+			transwalk.cinematic_since = transwalk.no_player_since = transwalk.teleport_at = -1;
+			transwalk.settle_at = transwalk.report_at = transwalk.shot_at[0] = transwalk.shot_at[1] = -1;
+			platform_psp_log("transitions: %s: %ld BSPs, %ld loading zones, %ld trigger volumes; BSP %d loaded",
+				map, scenario->structure_bsp_references.count, scenario->bsp_switch_trigger_volumes.count,
+				scenario->trigger_volumes.count, bsp);
+			if (bsp >= 0 && bsp < TRANSWALK_BSPS)
+				transwalk.seen |= (unsigned short)(1u << bsp);
+		}
+		snprintf(transwalk.map, sizeof(transwalk.map), "%s", map);
+		transwalk.bsp = bsp;
+	}
+	if (bsp != transwalk.bsp)
+	{
+		transwalk_switched(transwalk.bsp, bsp, now, gap_us);
+		transwalk.bsp = bsp;
+	}
+	if (now == transwalk.settle_at && transwalk.phase < _transwalk_won)
+		transwalk_settle();
+	if (now == transwalk.shot_at[0] || now == transwalk.shot_at[1])
+		psp_screenshot_requested = 1;
+	if (now == transwalk.report_at)
+		transwalk_report();
+	if (now == transwalk.teleport_at && transwalk.zone != NONE)
+		transwalk_enter(transwalk.zone);
+	if (now < transwalk.next || transwalk.phase >= _transwalk_won)
+		return;
+	if (transwalk.phase == _transwalk_done)
+	{
+		psp_exit_game("transitions done");
+		return;
+	}
+	/* a cinematic holds the player where its script puts him: a step waits
+	for it, up to 8 minutes for the opening's (c40's runs past 3) and 1 minute
+	for any other.
+	With no player for 2 minutes (lost, and the level not brought back),
+	the walk ends there */
+	if (psp_local_unit(NULL) == NONE || cinematic_in_progress())
+	{
+		boolean gone = psp_local_unit(NULL) == NONE;
+
+		if (transwalk.cinematic_since < 0)
+			transwalk.cinematic_since = now;
+		if (gone && transwalk.no_player_since < 0)
+			transwalk.no_player_since = now;
+		if (gone && transwalk.phase != _transwalk_wait && now - transwalk.no_player_since >= 3600)
+		{
+			platform_psp_log("transitions: no player since game time %ld: the walk ends", transwalk.no_player_since);
+			transwalk.phase = _transwalk_force;
+			for (k = 0; k < transwalk_zone_count(); k++)
+				if (!transwalk.tried[k])
+					platform_psp_log("transitions: loading zone #%d (BSP %d -> %d) not tried", k,
+						transwalk_zone(k)->source_structure_bsp_index, transwalk_zone(k)->destination_structure_bsp_index);
+			transwalk.asked = 0xFFFF;
+		}
+		else if (now - transwalk.cinematic_since < (transwalk.phase == _transwalk_wait ? 14400 : 1800))
+		{
+			transwalk.next = now + 30;
+			return;
+		}
+		else
+			platform_psp_log("transitions: going on at game time %ld, %s", now, gone ? "with no player" : "in a cinematic");
+	}
+	if (psp_local_unit(NULL) != NONE)
+		transwalk.no_player_since = -1;
+	transwalk.cinematic_since = -1;
+	if (transwalk.phase == _transwalk_wait)
+	{
+		platform_psp_log("transitions: play from game time %ld", now);
+		transwalk.phase = _transwalk_zones;
+	}
+	if (transwalk.zone != NONE)
+	{
+		real_point3d origin;
+		long unit_index = psp_local_unit(NULL);
+
+		origin.x = origin.y = origin.z = 0.0f;
+		if (unit_index != NONE)
+			object_get_origin(unit_index, &origin);
+		platform_psp_log("transitions: loading zone #%d (BSP %d -> %d) left no switch in %ld s; the player at %.1f %.1f %.1f, BSP %d",
+			transwalk.zone, transwalk_zone(transwalk.zone)->source_structure_bsp_index, transwalk.zone_to, dwell / 30,
+			origin.x, origin.y, origin.z, bsp);
+		transwalk.quiet++;
+		transwalk.zone = NONE;
+	}
+	if (transwalk.forced != NONE)
+	{
+		platform_psp_log("transitions: BSP %d, forced, didn't load (BSP %d is)", transwalk.forced, bsp);
+		transwalk.forced = NONE;
+	}
+	count = transwalk_zone_count();
+	if (transwalk.phase == _transwalk_zones)
+	{
+		for (k = 0; k < count; k++)
+			if (!transwalk.tried[k] && transwalk_zone(k)->source_structure_bsp_index == bsp)
+				break;
+		if (k < count)
+		{
+			transwalk_step_into(k, now, dwell, FALSE);
+			return;
+		}
+		/* none from here: on through the zones toward one, as a player would
+		walk (a few tries: the scripts may switch back) */
+		k = transwalk.travels < 24 ? transwalk_route(bsp) : NONE;
+		if (k != NONE)
+		{
+			transwalk.travels++;
+			transwalk_step_into(k, now, dwell, TRUE);
+			return;
+		}
+		/* no way there through the zones: the next one's source, by force */
+		for (k = 0; k < count; k++)
+			if (!transwalk.tried[k])
+				break;
+		if (k < count)
+		{
+			short from = transwalk_zone(k)->source_structure_bsp_index;
+
+			if (transwalk.forced_for == k || from < 0 || from >= scenario->structure_bsp_references.count)
+			{
+				platform_psp_log("transitions: loading zone #%d not reached (BSP %d, its source, didn't stay loaded)", k, from);
+				transwalk.tried[k] = 1;
+				transwalk.next = now + 1;
+				return;
+			}
+			transwalk.forced_for = k;
+			transwalk.forced = from;
+			platform_psp_log("transitions: BSP %d forced at game time %ld, for loading zone #%d: no zone leads there from BSP %d", from, now, k, bsp);
+			psp_screenshot_requested = 1;
+			main_switch_structure_bsp(from);
+			transwalk.next = now + 150;
+			return;
+		}
+		transwalk.phase = _transwalk_force;
+	}
+	for (k = 0; k < scenario->structure_bsp_references.count && k < TRANSWALK_BSPS; k++)
+		if (!(transwalk.seen & (1u << k)) && !(transwalk.asked & (1u << k)))
+			break;
+	if (k < scenario->structure_bsp_references.count && k < TRANSWALK_BSPS)
+	{
+		transwalk.asked |= (unsigned short)(1u << k);
+		transwalk.forced = k;
+		platform_psp_log("transitions: BSP %d forced at game time %ld: no loading zone led to it", k, now);
+		psp_screenshot_requested = 1;
+		main_switch_structure_bsp(k);
+		transwalk.next = now + dwell;
+		return;
+	}
+	transwalk_summary();
+	if (won)
+	{
+		snprintf(transwalk.won_from, sizeof(transwalk.won_from), "%s", transwalk.map);
+		platform_psp_log("transitions: game_won at game time %ld", now);
+		psp_screenshot_requested = 1;
+		transwalk.phase = _transwalk_won;
+		transwalk.won_us = now_us;
+		hs_compile_and_evaluate("game_won");
+		return;
+	}
+	transwalk.phase = _transwalk_done;
+	transwalk.next = now + 60;
+}
+#endif
+'''
+
+# "flycam" (debug tools; psp_platform.c's spot_visit): the debug camera put
+# at a spot, as debug_camera_load does from its file, for looking at a place
+# the player can't be brought to (a10's corridors behind its opening)
+APPEND["source/camera/director.c"] = r'''
+#if defined(HALO_PSP) && PSP_DEBUG_TOOLS
+void psp_director_fly(float x, float y, float z, float fx, float fy, float fz)
+{
+	struct director *director = director_get(0);
+	struct flying_camera *camera = (struct flying_camera *)director->camera_data;
+	real_point3d position;
+	real_vector3d forward;
+
+	position.x = x; position.y = y; position.z = z;
+	forward.i = fx; forward.j = fy; forward.k = fz;
+	if (normalize3d(&forward) == 0.f)
+		return;
+	flying_camera_new_from_point_and_vector(camera, &position, &forward);
+	director_set_camera(0, (director_camera_update_proc)flying_camera_update, FALSE);
+	director->camera_mode_index = _camera_flying;
+}
+#endif
+'''
+
+
 def appended(tree):
     for rel, code in APPEND.items():
         path = os.path.join(tree, rel)
@@ -2260,7 +3024,7 @@ PRELUDE = '''/* PSP sizes (psp_fixups.py) */
 PSP_TEXTURE_CACHE_SIZE, are psp_capacity.h's: every file reads them, not
 only the files changed here) */
 #define PSP_TEXTURE_STEAL_GUARD 0x4000
-/* build 102: 1.125 MB (was 1 MB): Sheepdog01's b101 Library run streamed 99 MB of
+/* build 102: 1.125 MB (was 1 MB): b101's Library run streamed 99 MB of
 sound in 6.5 minutes through the 1 MB cache (2,954 loads, 35 failed for
 room, the last second's working set up to 1000 KB); half of the 256 KB the
 build gave back to the heap (AI debugger, log buffers). Build 107: chosen at
@@ -2314,6 +3078,9 @@ KEEP_DECLARATION = "#ifdef HALO_PSP\nint psp_keep(const char *name); /* psp_plat
 PSP_SLEEP_CODE = """#ifdef HALO_PSP
 void psp_object_account(int type, unsigned long microseconds); /* psp_platform.c; psp_fixups.py */
 void psp_object_count(int type); /* psp_platform.c */
+#if PSP_DEBUG_TOOLS
+void psp_vehicle_account(long definition_index, unsigned long microseconds); /* psp_platform.c: "vehiclecost" */
+#endif
 unsigned long psp_object_sample(void); /* psp_platform.c: this tick's scale for each object's time, 0 untimed */
 int psp_keep(const char *name);
 static unsigned long psp_object_start, psp_object_scale;
@@ -2665,7 +3432,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 A sleeping body skips its whole update, and its own bytes don't change when
 what it rests on goes away, so a body that came to rest on something else
 (another body that was cleared away, a vehicle, the player) stayed in the
-air (Sheepdog01's b113 Test 3: an Elite's body hanging above the beach). On the
+air (b113's Test 3: an Elite's body hanging above the beach). On the
 Xbox its physics runs every tick and finds itself airborne the tick its
 support goes (bipeds.c: the at-rest bit is worked out afresh each tick).
 The level never moves, so a body it holds can only start moving if
@@ -2777,7 +3544,7 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 	if (header->type == _object_type_vehicle)
 	{
 		/* build 40: each vehicle kind's update time, parked (at rest) or
-		not (Sheepdog01: the warthog and the scorpion cost far more than the ghost;
+		not (the warthog and the scorpion cost far more than the ghost;
 		their physics tags have 15 and 18 mass points to the ghost's 5,
 		each tested against the ground every tick) */
 		static struct { long definition; unsigned long us[2], count[2]; } psp_vehicle_cost[8];
@@ -2824,7 +3591,7 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 	}
 	/* build 102: idle machines sleep too, as scenery does: a machine whose
 	update leaves it byte-identical twice running is skipped until something
-	changes it. Sheepdog01's b101 Library combat: 61 machines (doors, lifts, the
+	changes it. b101's Library combat: 61 machines (doors, lifts, the
 	elevator's parts) cost 7.5 ms a tick. What a machine reads besides its own
 	bytes is covered: its power and position groups (a switch, a script) go
 	into the checksum (psp_family_checksum); an automatic door still runs on
@@ -2877,7 +3644,7 @@ static void psp_object_update(long object_index, short absolute_index, struct ob
 		psp_sleepy_update(object_index, absolute_index, header, may);
 		return;
 	}
-	/* build 105: a settled corpse sleeps as idle scenery does. Sheepdog01's b102
+	/* build 105: a settled corpse sleeps as idle scenery does. b102's
 	run 3: 116 biped updates a tick in the Library's first Flood fight with
 	at most 35 actors, about 0.74 ms each; the garbage collector never takes
 	a body a player can see. Only a truly dead one (garbage: a Flood combat
@@ -3141,7 +3908,7 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 		would (object_update's object_connect_lights): to the same places,
 		but first in their clusters' lists, where every light the tick
 		reconnects goes. Without it the lists' order changed (machinesleep on
-		d20, lab 38526377504), and with it the lights a lit object picks */
+		d20), and with it the lights a lit object picks */
 		if (header->type == _object_type_machine &&
 			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&
 			(!TEST_FLAG(sleeper->object.flags, _object_invisible_bit) ||
@@ -3337,6 +4104,7 @@ FIXES_22 = {
  """#ifdef HALO_PSP
 int psp_ge_active(void);
 int psp_ge_sprites(void const *vertices, int sprite_count, unsigned int bitmap_key, short blend, float const *view_to_world);
+void psp_dynamic_vertices_release(long dynamic_vertex_buffer_index); /* psp_fixups.py */
 #endif
 
 void build_sprites_end(
@@ -3360,6 +4128,24 @@ void build_sprites_end(
 #endif
 			rasterizer_dynamic_vertices_unlock(group->vertex_buffer_index);
 			if (TEST_FLAG(data->flags, _build_sprites_screen_space_bit))"""),
+# the groups' vertices given back once the GE layer has copied them, last
+# first (each is the top of the stack only once those after it are gone)
+("""	SET_FLAG(data->flags, _build_sprites_valid_bit, FALSE);
+	return;
+}
+
+void build_sprite_prepare_for_window(void)""",
+ """#ifdef HALO_PSP
+	if (psp_ge_active() && !TEST_FLAG(data->flags, _build_sprites_screen_space_bit))
+		for (group_index = data->group_count - 1; group_index >= 0; group_index--)
+			if (data->groups[group_index].vertices)
+				psp_dynamic_vertices_release(data->groups[group_index].vertex_buffer_index);
+#endif
+	SET_FLAG(data->flags, _build_sprites_valid_bit, FALSE);
+	return;
+}
+
+void build_sprite_prepare_for_window(void)"""),
 ],
 }
 
@@ -3449,7 +4235,7 @@ FIXES_19 = {
 ("\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n",
  "\t\tstructure_decals_update(\n\t\t\tlast_active_cluster_bits,\n\t\t\tactive_cluster_bits,\n\t\t\tcluster_count);\n\t}\n#ifdef HALO_PSP\n\tpsp_object_account(12, psp_microseconds() - psp_object_start);\n#endif\n"),
 ("\t\t\t\t\tobject_update(object_index);\n",
- "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
+ "#ifdef HALO_PSP\n\t\t\t\t\tif (psp_object_scale)\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_start = psp_microseconds();\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n#if PSP_DEBUG_TOOLS\n\t\t\t\t\t\tif (object_header->type == _object_type_vehicle)\n\t\t\t\t\t\t\tpsp_vehicle_account(object_header->datum->definition_index, (psp_microseconds() - psp_object_start) * psp_object_scale);\n#endif\n\t\t\t\t\t}\n\t\t\t\t\telse\n\t\t\t\t\t{\n\t\t\t\t\t\tpsp_object_update(object_index, i, object_header);\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\t}\n#else\n\t\t\t\t\tobject_update(object_index);\n#endif\n"),
 ("\tobjects_garbage_collection();\n\n\tprofile_exit(section);",
  "#ifdef HALO_PSP\n\tpsp_object_start = psp_microseconds();\n\tobjects_garbage_collection();\n\tpsp_object_account(13, psp_microseconds() - psp_object_start);\n#else\n\tobjects_garbage_collection();\n#endif\n\n\tprofile_exit(section);"),
 ],
@@ -4057,6 +4843,7 @@ static boolean psp_state_page_empty(unsigned long const *words)
 /* build 116 (R11): the log holds its writes around a checkpoint, so the
 sound reader has the Memory Stick first after it (psp_platform.c) */
 void psp_log_hold(unsigned int milliseconds);
+#include "psp_metrics.h"
 #define PSP_STATE_LOG_HOLD_MS 2500
 
 /* build 116 (R10): the checkpoint's pages stored compactly. b115 test 1
@@ -4074,6 +4861,26 @@ format before (psp_state_read reads either) */
 #define PSP_STATE_RAW_ABOVE ((PSP_STATE_PAGE - PSP_STATE_PAGE_WORDS / 8) / 4) /* 992 words: past this, raw */
 #define PSP_STATE_STAGE 32768
 static unsigned long psp_state_words_header[PSP_STATE_WORDS_HEADER / 4];
+static byte psp_state_stage_reserved[PSP_STATE_STAGE + 63] __attribute__((aligned(64)));
+int psp_keep(const char *name);
+
+/* each write's time, so a slow checkpoint can be told apart from a slow
+stick: on the PSP-1000 most checkpoints write at the stick's ~6 MB/s, but
+some one 32 KB write takes 0.8 s (the screenshots' and the log's writes
+show the same spikes) */
+static unsigned long psp_state_writes = 0, psp_state_write_worst_us = 0;
+
+static int psp_state_write_timed(HANDLE handle, void const *bytes, unsigned long size, unsigned long *written)
+{
+	unsigned long start = psp_microseconds(), took;
+	int ok = WriteFile(handle, bytes, size, written, NULL) ? 1 : 0;
+
+	took = psp_microseconds() - start;
+	psp_state_writes++;
+	if (took > psp_state_write_worst_us)
+		psp_state_write_worst_us = took;
+	return ok;
+}
 
 static unsigned long psp_state_entry_bytes(unsigned short count)
 {
@@ -4095,9 +4902,19 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 
 	if (size % PSP_STATE_PAGE || 16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER)
 		return FALSE;
-	/* build 117: the stage 64-byte aligned (an independent review: b115's
-	fast path wrote straight from the game state's aligned buffer) */
-	stage_block = (byte *)malloc(PSP_STATE_STAGE + 63);
+	/* the stage 64-byte aligned (an independent review: b115's fast path
+	wrote straight from the game state's aligned buffer). It is reserved for
+	the whole run: taken from the heap at each checkpoint, it failed whenever
+	the heap was tight (a fragmented heap late in a long level), and the
+	checkpoint fell back to the page format, 2 MB written whole, 1.1-1.2 s.
+	"statestagemalloc": from the heap at each checkpoint, as before */
+	{
+		static int from_heap = -1;
+
+		if (from_heap < 0)
+			from_heap = psp_keep("statestagemalloc");
+		stage_block = from_heap ? (byte *)malloc(PSP_STATE_STAGE + 63) : psp_state_stage_reserved;
+	}
 	if (!stage_block)
 		return FALSE;
 	stage = (byte *)(((unsigned long)stage_block + 63) & ~63UL);
@@ -4123,8 +4940,9 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 	header[1] = size;
 	header[2] = pages;
 	header[3] = stream;
+	psp_state_writes = psp_state_write_worst_us = 0;
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
-		!WriteFile(handle, header, PSP_STATE_WORDS_HEADER, &written, NULL) || written != PSP_STATE_WORDS_HEADER)
+		!psp_state_write_timed(handle, header, PSP_STATE_WORDS_HEADER, &written) || written != PSP_STATE_WORDS_HEADER)
 		ok = FALSE;
 	for (page = 0; ok && page < pages; page++)
 	{
@@ -4144,7 +4962,7 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 			it for the next one is [U]) */
 			unsigned long whole = used & ~(unsigned long)(PSP_STATE_PAGE - 1);
 
-			ok = WriteFile(handle, stage, whole, &written, NULL) && written == whole;
+			ok = psp_state_write_timed(handle, stage, whole, &written) && written == whole;
 			if (!ok)
 				break;
 			memmove(stage, stage + whole, used - whole);
@@ -4169,13 +4987,168 @@ static boolean psp_state_write_words(HANDLE handle, byte const *buffer, unsigned
 		used += bytes;
 	}
 	if (ok && used)
-		ok = WriteFile(handle, stage, used, &written, NULL) && written == used;
-	free(stage_block);
+		ok = psp_state_write_timed(handle, stage, used, &written) && written == used;
+	if (stage_block != psp_state_stage_reserved)
+		free(stage_block);
 	if (ok)
-		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms",
+		platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu KB as non-zero words (%lu KB as pages), written in %lu ms (%lu writes, the slowest %lu ms)",
 			kept, pages, (PSP_STATE_WORDS_HEADER + stream) / 1024, kept * PSP_STATE_PAGE / 1024,
-			(psp_microseconds() - start) / 1000);
+			(psp_microseconds() - start) / 1000, psp_state_writes, psp_state_write_worst_us / 1000);
 	return ok;
+}
+
+/* "statedelta" (opt-in, for a PSP A/B): each page at a fixed place in the
+file (4 KB of header, then page n at 4 KB + n * 4 KB), and a checkpoint
+writes only the pages that changed since the last one, straight from the
+game state (no stage). Between b30's checkpoints 20-60% of the kept pages
+change, so it writes 0.4-1.2 MB where the compact format writes 1.3-1.5 MB;
+the stick's 0.8 s spikes come about once every few MB written, so fewer
+bytes should mean fewer of them [U]. A page is "changed" when its 64-bit
+hash (two lanes: FNV-1a and a rotate-add) differs from the one it had when
+written; the hashes describe the file, so they are forgotten whenever the
+file is opened or a write fails, and the next checkpoint writes every page.
+Runs of pages to write are joined across gaps of up to PSP_STATE_DELTA_GAP
+pages (an unchanged page is rewritten rather than paying a seek and a write
+call). The header goes last, with the map of non-empty pages */
+#define PSP_STATE_SIGNATURE_DELTA 0x44535350 /* 'PSSD' */
+#define PSP_STATE_DELTA_HEADER 4096
+#define PSP_STATE_DELTA_PAGES 1024
+#define PSP_STATE_DELTA_GAP 3
+static unsigned long psp_state_delta_hash[PSP_STATE_DELTA_PAGES][2];
+static unsigned char psp_state_delta_dirty[PSP_STATE_DELTA_PAGES / 8];
+static int psp_state_delta_valid = 0;
+
+void psp_state_file_opened(void)
+{
+	psp_state_delta_valid = 0;
+}
+
+static boolean psp_state_write_delta(HANDLE handle, byte const *buffer, unsigned long size)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, changed = 0, bytes = 0;
+	unsigned long start = psp_microseconds(), scan_us;
+	byte *map = (byte *)&header[4];
+	boolean ok = TRUE;
+
+	if (size % PSP_STATE_PAGE || pages > PSP_STATE_DELTA_PAGES || 16 + PSP_STATE_MAP_BYTES(pages) > PSP_STATE_DELTA_HEADER)
+		return FALSE;
+	csmemset(header, 0, PSP_STATE_DELTA_HEADER);
+	csmemset(psp_state_delta_dirty, 0, sizeof(psp_state_delta_dirty));
+	for (page = 0; page < pages; page++)
+	{
+		unsigned long const *words = (unsigned long const *)(buffer + page * PSP_STATE_PAGE);
+		unsigned long fnv = 0x811C9DC5UL, rot = 0x9E3779B9UL, any = 0;
+		long w;
+
+		for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
+		{
+			unsigned long word = words[w];
+
+			any |= word;
+			fnv = (fnv ^ word) * 16777619UL;
+			rot = ((rot << 7) | (rot >> 25)) + word;
+		}
+		if (!any)
+			fnv = rot = 0; /* an empty page: nothing to write, and its hash says so */
+		else
+		{
+			map[page >> 3] |= 1 << (page & 7);
+			kept++;
+		}
+		if (!psp_state_delta_valid || psp_state_delta_hash[page][0] != fnv || psp_state_delta_hash[page][1] != rot)
+		{
+			psp_state_delta_hash[page][0] = fnv;
+			psp_state_delta_hash[page][1] = rot;
+			if (any)
+			{
+				psp_state_delta_dirty[page >> 3] |= 1 << (page & 7);
+				changed++;
+			}
+		}
+	}
+	scan_us = psp_microseconds() - start;
+	header[0] = PSP_STATE_SIGNATURE_DELTA;
+	header[1] = size;
+	header[2] = pages;
+	psp_state_writes = psp_state_write_worst_us = 0;
+	for (page = 0; ok && page < pages; )
+	{
+		unsigned long last, end, gap;
+
+		if (!(psp_state_delta_dirty[page >> 3] & (1 << (page & 7))))
+		{
+			page++;
+			continue;
+		}
+		/* the run: from this page to the last dirty one reachable across
+		gaps of at most PSP_STATE_DELTA_GAP clean pages */
+		last = page;
+		for (end = page + 1, gap = 0; end < pages && gap <= PSP_STATE_DELTA_GAP; end++)
+		{
+			if (psp_state_delta_dirty[end >> 3] & (1 << (end & 7)))
+			{
+				last = end;
+				gap = 0;
+			}
+			else
+				gap++;
+		}
+		end = last + 1;
+		if (SetFilePointer(handle, PSP_STATE_DELTA_HEADER + page * PSP_STATE_PAGE, NULL, FILE_BEGIN) ==
+				INVALID_SET_FILE_POINTER ||
+			!psp_state_write_timed(handle, buffer + page * PSP_STATE_PAGE, (end - page) * PSP_STATE_PAGE, &written) ||
+			written != (end - page) * PSP_STATE_PAGE)
+			ok = FALSE;
+		bytes += (end - page) * PSP_STATE_PAGE;
+		page = end;
+	}
+	if (ok && (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
+		!psp_state_write_timed(handle, header, PSP_STATE_DELTA_HEADER, &written) || written != PSP_STATE_DELTA_HEADER))
+		ok = FALSE;
+	if (!ok)
+	{
+		psp_state_delta_valid = 0;
+		return FALSE;
+	}
+	platform_psp_log("checkpoint: %lu of %lu pages of game state, %lu changed (%s), %lu KB written in %lu ms (scan %lu ms; %lu writes, the slowest %lu ms) [statedelta]",
+		kept, pages, changed, psp_state_delta_valid ? "since the last checkpoint" : "every page: the first since the file opened",
+		(bytes + PSP_STATE_DELTA_HEADER) / 1024, (psp_microseconds() - start) / 1000, scan_us / 1000, psp_state_writes,
+		psp_state_write_worst_us / 1000);
+	psp_state_delta_valid = 1;
+	return TRUE;
+}
+
+/* the delta format's pages: each run of kept pages read from its own place */
+static boolean psp_state_read_delta(HANDLE handle, byte *buffer, unsigned long size, unsigned long const *first)
+{
+	unsigned long *header = psp_state_words_header;
+	unsigned long pages = size / PSP_STATE_PAGE, page, read;
+	byte const *map = (byte const *)&header[4];
+
+	if (pages > PSP_STATE_DELTA_PAGES || 16 + PSP_STATE_MAP_BYTES(pages) > PSP_STATE_HEADER)
+		return FALSE;
+	csmemcpy(header, first, PSP_STATE_HEADER);
+	for (page = 0; page < pages; )
+	{
+		unsigned long run = 0;
+
+		if (!(map[page >> 3] & (1 << (page & 7))))
+		{
+			csmemset(buffer + page * PSP_STATE_PAGE, 0, PSP_STATE_PAGE);
+			page++;
+			continue;
+		}
+		while (page + run < pages && (map[(page + run) >> 3] & (1 << ((page + run) & 7))))
+			run++;
+		if (SetFilePointer(handle, PSP_STATE_DELTA_HEADER + page * PSP_STATE_PAGE, NULL, FILE_BEGIN) ==
+				INVALID_SET_FILE_POINTER ||
+			!ReadFile(handle, buffer + page * PSP_STATE_PAGE, run * PSP_STATE_PAGE, &read, NULL) ||
+			read != run * PSP_STATE_PAGE)
+			return FALSE;
+		page += run;
+	}
+	return TRUE;
 }
 
 /* header: signature, size, page count, then one bit per page */
@@ -4185,9 +5158,21 @@ static boolean psp_state_write(HANDLE handle, byte const *buffer, unsigned long 
 	unsigned long pages = size / PSP_STATE_PAGE, page, written, kept = 0, start = psp_microseconds();
 	byte *map = (byte *)&header[3];
 
+	PSP_METRICS_EVENT(PSP_METRICS_CHECKPOINT); /* the slow frame that follows is the checkpoint's (psp_metrics.c) */
 	if (size % PSP_STATE_PAGE || pages > (PSP_STATE_HEADER - 12) * 8)
 		return FALSE;
 	psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+	{
+		static int delta = -1;
+
+		if (delta < 0)
+			delta = psp_keep("statedelta");
+		if (delta && psp_state_write_delta(handle, buffer, size))
+		{
+			psp_log_hold(PSP_STATE_LOG_HOLD_MS);
+			return TRUE;
+		}
+	}
 	{
 		/* build 116 (R10): the compact format, unless "statepages" (or it
 		can't: no room for its staging buffer); the pages as before then */
@@ -4277,7 +5262,17 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 	byte const *map = (byte const *)&header[4], *in;
 	unsigned short const *counts;
 	byte *entry;
+	/* the entry's copy in the checkpoint stage, which no write is using
+	while a saved game is read: from the heap it failed whenever the heap
+	was full (as it is late in a level), and it was asked for after the
+	stream had been read over the game state's tail, so the refused read
+	left a broken game state that the map's restart then crashed on (a
+	data array's elements at a garbage address). "stateentrymalloc": from
+	the heap, as before */
+	static int entry_from_heap = -1;
 
+	if (entry_from_heap < 0)
+		entry_from_heap = psp_keep("stateentrymalloc");
 	csmemcpy(header, first, PSP_STATE_HEADER);
 	if (16 + PSP_STATE_MAP_BYTES(pages) + 2 * pages > PSP_STATE_WORDS_HEADER ||
 		!ReadFile(handle, (byte *)header + PSP_STATE_HEADER, PSP_STATE_WORDS_HEADER - PSP_STATE_HEADER, &read, NULL) ||
@@ -4287,7 +5282,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 	counts = PSP_STATE_COUNTS(header, pages);
 	if (stream > size || (stream && (!ReadFile(handle, buffer + size - stream, stream, &read, NULL) || read != stream)))
 		return FALSE;
-	entry = (byte *)malloc(PSP_STATE_PAGE);
+	entry = entry_from_heap ? (byte *)malloc(PSP_STATE_PAGE) :
+		(byte *)(((unsigned long)psp_state_stage_reserved + 63) & ~63UL);
 	if (!entry)
 		return FALSE;
 	in = buffer + size - stream;
@@ -4304,7 +5300,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 		bytes = psp_state_entry_bytes(counts[page]);
 		if (in + bytes > buffer + size || in < (byte const *)out)
 		{
-			free(entry);
+			if (entry_from_heap)
+				free(entry);
 			return FALSE;
 		}
 		if (counts[page] >= PSP_STATE_RAW_ABOVE)
@@ -4323,7 +5320,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 				set += (unsigned long)__builtin_popcountl(((unsigned long const *)entry)[w]);
 			if (set != counts[page])
 			{
-				free(entry);
+				if (entry_from_heap)
+					free(entry);
 				return FALSE;
 			}
 			for (w = 0; w < PSP_STATE_PAGE_WORDS; w++)
@@ -4331,7 +5329,8 @@ static boolean psp_state_read_words(HANDLE handle, byte *buffer, unsigned long s
 		}
 		in += bytes;
 	}
-	free(entry);
+	if (entry_from_heap)
+		free(entry);
 	return in == buffer + size;
 }
 
@@ -4341,12 +5340,15 @@ static boolean psp_state_read(HANDLE handle, byte *buffer, unsigned long size)
 	unsigned long pages = size / PSP_STATE_PAGE, page, read;
 	byte const *map = (byte const *)&header[3];
 
+	PSP_METRICS_EVENT(PSP_METRICS_REVERT);
 	if (SetFilePointer(handle, 0, NULL, FILE_BEGIN) == INVALID_SET_FILE_POINTER ||
 		!ReadFile(handle, header, PSP_STATE_HEADER, &read, NULL) || read != PSP_STATE_HEADER ||
 		header[1] != size || header[2] != pages)
 		return FALSE;
 	if (header[0] == PSP_STATE_SIGNATURE_WORDS)
 		return psp_state_read_words(handle, buffer, size, header);
+	if (header[0] == PSP_STATE_SIGNATURE_DELTA)
+		return psp_state_read_delta(handle, buffer, size, header);
 	if (header[0] != PSP_STATE_SIGNATURE)
 		return FALSE;
 	csmemset(buffer, 0, size);
@@ -4418,6 +5420,16 @@ boolean game_state_write_to_file(
 			xbox_game_state_globals.buffer_size, &bytes_read, NULL) &&
 		bytes_read == xbox_game_state_globals.buffer_size &&
 		game_state_image_accept(image, xbox_game_state_globals.buffer_size))
+#endif"""),
+# statedelta's page hashes describe the file: a file opened anew is unknown
+("""		xbox_game_state_globals.file_open = TRUE;""",
+ """		xbox_game_state_globals.file_open = TRUE;
+#ifdef HALO_PSP
+		{
+			void psp_state_file_opened(void);
+
+			psp_state_file_opened();
+		}
 #endif"""),
 ]
 
@@ -4531,7 +5543,11 @@ FIXES_23["source/rasterizer/rasterizer.c"].append(
 			unsigned int base_key = 0;
 
 			if (shader && *(short const *)((char const *)shader + 36) == 3)
-				base_key = psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0);
+			{
+				extern unsigned int psp_relief_key(unsigned int);
+
+				base_key = psp_relief_key(psp_tex_bitmap_key(*(long const *)((char const *)shader + 148), 0));
+			}
 			psp_environment_light(dynamic_triangle_buffer_index, first_triangle_index, triangle_count, vertex_buffer,
 				base_key);
 			return;
@@ -5149,7 +6165,7 @@ FIXES_31["source/objects/objects.c#vehicles"] = [
 """),
 ]
 
-# build 36: particles. Sheepdog01's b35 run: under sustained assault rifle fire the
+# build 36: particles. b35's run: under sustained assault rifle fire the
 # game's frame step (particles_update, particle_systems_update...) took 15-39
 # ms a frame and render_particles 10-14 more: each free particle (a spark, a
 # chip of rock) runs point physics with a collision ray every frame, and
@@ -5225,6 +6241,7 @@ FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#highwater"] =
 peak kept for the heartbeat (psp_platform.c) */
 static long psp_dynamic_vertex_peak[NUMBER_OF_RASTERIZER_VERTEX_TYPES], psp_dynamic_triangle_peak = 0,
 	psp_dynamic_buffer_peak[2];
+static unsigned long psp_dynamic_released = 0, psp_dynamic_released_vertices = 0; /* psp_dynamic_vertices_release */
 
 void psp_dynamic_geometry_report(void)
 {
@@ -5242,11 +6259,121 @@ void psp_dynamic_geometry_report(void)
 			vertex_type, psp_dynamic_vertex_peak[vertex_type], dynamic_vertices.groups[vertex_type].total_vertex_count,
 			psp_dynamic_vertex_peak[vertex_type] * size / 1024, dynamic_vertices.groups[vertex_type].total_vertex_count * size / 1024);
 	}
-	platform_psp_log("dynamic geometry, frame peaks:%s triangles %ld of %d (%ld of %d KB); buffers %ld and %ld of %d and %d",
+	platform_psp_log("dynamic geometry, frame peaks:%s triangles %ld of %d (%ld of %d KB); buffers %ld and %ld of %d and %d; given back once copied %lu groups (%lu vertices)",
 		line, psp_dynamic_triangle_peak, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES,
 		psp_dynamic_triangle_peak * 6 / 1024, RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES * 6 / 1024,
 		psp_dynamic_buffer_peak[0], psp_dynamic_buffer_peak[1], RASTERIZER_MAXIMUM_DYNAMIC_VERTEX_BUFFERS,
-		RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS);
+		RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLE_BUFFERS, psp_dynamic_released, psp_dynamic_released_vertices);
+}
+#endif
+
+#ifdef HALO_PSP
+/* The dynamic vertices of a sprite group or a contrail are given back once
+the GE layer has copied them into its display list (build_sprites_end and
+render_contrail, psp_fixups.py): the buffer is a stack per vertex type, so a
+group that is the top of its stack pops off it. On the Xbox the GPU reads
+them later in the frame, so every group of the frame held its room to the
+end, each at its definition's most sprites: a30's and b30's fights filled
+all 4,096 vertices (1,024 sprites) and later sprites and contrails weren't
+drawn ("build_sprite failed to allocate dynamic vertices"). Exact: the same
+vertices are copied either way. "dynamickeep": held to the frame's end */
+int psp_keep(const char *name);
+
+void psp_dynamic_vertices_release(
+	long dynamic_vertex_buffer_index)
+{
+	static int keep = -1;
+	struct dynamic_vertex_buffer *buffer;
+	struct dynamic_vertex_group *group;
+
+	if (dynamic_vertex_buffer_index == NONE || dynamic_vertex_buffer_index < 0 ||
+		dynamic_vertex_buffer_index >= dynamic_vertices.buffer_count)
+		return;
+	if (keep < 0)
+		keep = psp_keep("dynamickeep");
+	if (keep)
+		return;
+	buffer = &dynamic_vertices.buffers[dynamic_vertex_buffer_index];
+	if (buffer->type < 0 || buffer->type >= NUMBER_OF_RASTERIZER_VERTEX_TYPES)
+		return;
+	group = &dynamic_vertices.groups[buffer->type];
+	/* the frame's peak is what the stack reached, not where it ends */
+	if (group->vertex_count > psp_dynamic_vertex_peak[buffer->type])
+		psp_dynamic_vertex_peak[buffer->type] = group->vertex_count;
+	if (dynamic_vertices.buffer_count > psp_dynamic_buffer_peak[0])
+		psp_dynamic_buffer_peak[0] = dynamic_vertices.buffer_count;
+	if (buffer->vertex_count <= 0 || buffer->vertex_start_index + buffer->vertex_count != group->vertex_count)
+		return;
+	group->vertex_count = buffer->vertex_start_index;
+	psp_dynamic_released++;
+	psp_dynamic_released_vertices += buffer->vertex_count;
+	buffer->vertex_count = 0;
+	if (dynamic_vertex_buffer_index == dynamic_vertices.buffer_count - 1)
+		dynamic_vertices.buffer_count--;
+}
+
+/* the same for a contrail's triangles, which the GE layer never reads (it
+draws the strip from the corners alone) */
+void psp_dynamic_triangles_release(
+	long dynamic_triangle_buffer_index)
+{
+	static int keep = -1;
+	struct dynamic_triangle_buffer *buffer;
+
+	if (dynamic_triangle_buffer_index == NONE || dynamic_triangle_buffer_index < 0 ||
+		dynamic_triangle_buffer_index >= dynamic_triangles.buffer_count)
+		return;
+	if (keep < 0)
+		keep = psp_keep("dynamickeep");
+	if (keep)
+		return;
+	buffer = &dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+	if (dynamic_triangles.triangle_count > psp_dynamic_triangle_peak)
+		psp_dynamic_triangle_peak = dynamic_triangles.triangle_count;
+	if (dynamic_triangles.buffer_count > psp_dynamic_buffer_peak[1])
+		psp_dynamic_buffer_peak[1] = dynamic_triangles.buffer_count;
+	if (buffer->triangle_count <= 0 || buffer->triangle_start_index + buffer->triangle_count != dynamic_triangles.triangle_count)
+		return;
+	dynamic_triangles.triangle_count = buffer->triangle_start_index;
+	buffer->triangle_count = 0;
+	if (dynamic_triangle_buffer_index == dynamic_triangles.buffer_count - 1)
+		dynamic_triangles.buffer_count--;
+}
+
+/* geshow2: the GE may still draw the last frame's triangles while this
+frame's walk asks for its own, so under geshow2 the frames take the index
+buffer from its two ends in turn (psp_ge_triangle_ring): one frame from the
+start up, as the engine lays it out, the next from the end down. A range that
+would reach the last frame's waits for its show. A frame never wraps, so its
+whole room is the engine's (a ring's tail left at a wrap overflowed a10's
+fullest frames), and dynamic_triangles.triangle_count stays the frame's own
+use for the engine's overflow test. One window a frame only: a second
+window's walk would rewrite the first's before its show, as the engine's
+reset does */
+extern int psp_ge_triangle_ring(void);
+extern void psp_ge_triangles_wait(void);
+static int psp_ring_on = 0, psp_ring_down = 0;
+static long psp_ring_kept = 0;
+
+static void psp_ring_begin(void)
+{
+	psp_ring_on = psp_ge_triangle_ring() && main_get_window_count() == 1;
+	psp_ring_kept = psp_ring_on ? dynamic_triangles.triangle_count : 0;
+	/* the last frame's end of the buffer is the other one: after a frame
+	the engine laid out, from the start, the next goes down from the end */
+	psp_ring_down = psp_ring_on && !psp_ring_down;
+}
+
+/* the range's first triangle; the caller has checked the frame's room
+(span + count within the buffer) */
+static long psp_ring_place(long count, long span)
+{
+	if (psp_ring_kept && span + count > RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - psp_ring_kept)
+	{
+		psp_ge_triangles_wait();
+		psp_ring_kept = 0;
+	}
+	return psp_ring_down ? RASTERIZER_MAXIMUM_DYNAMIC_TRIANGLES - span - count : span;
 }
 #endif
 
@@ -5264,7 +6391,24 @@ void rasterizer_dynamic_geometry_begin(
 		psp_dynamic_buffer_peak[0] = dynamic_vertices.buffer_count;
 	if (dynamic_triangles.buffer_count > psp_dynamic_buffer_peak[1])
 		psp_dynamic_buffer_peak[1] = dynamic_triangles.buffer_count;
+	psp_ring_begin();
 #endif
+"""),
+]
+FIXES_36["source/rasterizer/xbox/rasterizer_xbox_draw_primitives.c#ring"] = [
+("""				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
+			dynamic_triangle_buffer->triangle_count = count;
+""",
+ """				&dynamic_triangles.buffers[dynamic_triangle_buffer_index];
+#ifdef HALO_PSP
+			/* the engine's own room test above; geshow2's two ends place the range */
+			dynamic_triangle_buffer->triangle_start_index = psp_ring_on ?
+				psp_ring_place(count, dynamic_triangles.triangle_count) : dynamic_triangles.triangle_count;
+#else
+			dynamic_triangle_buffer->triangle_start_index = dynamic_triangles.triangle_count;
+#endif
+			dynamic_triangle_buffer->triangle_count = count;
 """),
 ]
 # build 93: the debug-drawing vertex buffer (render_debug's lines and
@@ -5363,7 +6507,7 @@ void matrix4x3_multiply(
 ]
 
 # build 36: the HUD. At the Xbox's size the HUD covers the same share of the
-# PSP's screen as of a TV, which on 4.3 inches is small (Sheepdog01, b35). Halo
+# PSP's screen as of a TV, which on 4.3 inches is small (b35). Halo
 # places each element from a corner (or the centre) of the window's bounds,
 # so the weapon and unit HUD and the messages are laid out in a window k
 # times smaller and the GE draws them k times larger: every element grows
@@ -5374,7 +6518,7 @@ void matrix4x3_multiply(
 # The default, 848 / 480 = 1.767, is the zoom at which a HUD texel is one
 # PSP pixel (480/848 x 1.767 = 1.000, 272/480 x 1.767 = 1.001); with hudsnap
 # (psp_ge.c, hud_draw) the HUD is drawn 1:1, with nothing left to filter.
-# Sheepdog01 chose it over 1.5 by A/B (hardware_b120.md, test 4b)
+# chosen over 1.5 by A/B (hardware_b120.md, test 4b)
 FIXES_36["source/interface/hud.c"] = [
 ("""void hud_draw_screen(
 	void)
@@ -5389,7 +6533,7 @@ side (the game's own window units; hud_draw.c's hud_calculate_point) */
 short psp_hud_push = 0;
 #define PSP_HUD_PUSH 32
 /* the top corners' elements move this far up, for the room the 1:1 zoom
-takes (Sheepdog01, test 4b: closer to the top edge); about 12 PSP pixels, leaving
+takes (test 4b: closer to the top edge); about 12 PSP pixels, leaving
 the ammo and shield bars ~6 pixels from the edge */
 short psp_hud_push_up = 0;
 #define PSP_HUD_PUSH_UP 7
@@ -5477,7 +6621,7 @@ void hud_draw_screen(
 
 # build 40: the corner elements pushed out toward the screen's sides. Halo
 # keeps them a TV's safe area in from each edge, which the zoom made larger
-# still (Sheepdog01, b39: "push it more to the outer sides horizontally"). A fixed
+# still (b39: "push it more to the outer sides horizontally"). A fixed
 # distance, so the elements of one corner keep their places to each other
 FIXES_36["source/interface/hud_draw.c"] = [
 ("""		point.y = placement->offset.y *
@@ -5505,7 +6649,7 @@ FIXES_36["source/interface/hud_draw.c"] = [
 # which a thread of the port's (d3d8_gl.c) moves on at 60 Hz; a PSP thread
 # runs until it waits, so the spinning game thread kept that thread from
 # ever running, and after a second the game gave up on its frame-rate
-# control (Sheepdog01's red "stuck waiting for VBLANK callback!"). Waiting a
+# control (the red "stuck waiting for VBLANK callback!"). Waiting a
 # millisecond at a time lets it run
 FIXES_36["source/main/main.c"] = [
 ("""				if (precache_in_progress)
@@ -5944,10 +7088,12 @@ void psp_game_state_report(void)
 		}
 		else if (kind == 'm')
 		{
-			long in_use = pool->size - pool->free_size;
+			/* in KB, as the peak is kept (bytes against KB made this the use at the
+			moment, not the most) */
+			long in_use = (pool->size - pool->free_size) / 1024;
 
 			if (in_use > psp_state_records[k].peak)
-				psp_state_records[k].peak = (short)(in_use / 1024);
+				psp_state_records[k].peak = (short)in_use;
 			used = psp_state_records[k].peak;
 			of = pool->size / 1024;
 		}
@@ -6156,7 +7302,7 @@ static __inline__ void *psp_tag_block_element(struct tag_block const *block, lon
 # build 66: Halo's adaptive vertical-blank throttle off on the PSP. It paces
 # frames to whole vertical-blank intervals (2 = 30 fps, 3 = 20, 4 = 15) and
 # steps the interval down after repeated misses, then SLEEPS to pad every
-# frame out to it: Sheepdog01's b64 run spent 3.9 ms a frame in
+# frame out to it: b64's run spent 3.9 ms a frame in
 # main_rasterizer_throttle at 21 fps. Without it the frame runs as fast as it
 # can, capped at 30 fps by the millisecond branch. "vblankthrottle": as before
 # build 66: verify_tag_reference looked every reference up by NAME (tag_loaded:
@@ -6219,7 +7365,7 @@ FIXES_36["source/main/main.c#throttle"] = [
 		extern int psp_keep(const char *name);
 		static int vblank_throttle = -1;
 
-		/* build 90: on by default (Sheepdog01's b87 run 3: with it the warthog's
+		/* build 90: on by default (b87's run 3: with it the warthog's
 		rubber banding was almost gone; with interpolation it was worse).
 		"novblankthrottle" turns it off, and benchrun runs without it so its
 		figures stay comparable with earlier runs'; build 112: ceilingbench
@@ -6242,7 +7388,7 @@ FIXES_36["source/effects/particles.c"] = [
 {""",
  """#ifdef HALO_PSP
 /* build 38: the budget for particles in flight (128 refused smoke, debris
-and explosion parts with the sparks, Sheepdog01's "missing effects"), and how many
+and explosion parts with the sparks, the "missing effects"), and how many
 of them run their physics each frame: each costs about 70 us (the wind where
 it is and a collision ray); past the budget they take turns, every second
 or third frame with the time they missed (the particle's own clock and
@@ -6252,7 +7398,7 @@ animation still run every frame) */
 static float psp_particle_dt[HALO_PORT_MAXIMUM_PARTICLES];
 /* build 39: a new particle runs its physics every frame for its first few
 (the spark off a pistol hit is gone in a quarter second: waiting a turn in
-its first frames left it hanging where it was born, Sheepdog01's "mistimed" shots).
+its first frames left it hanging where it was born, the "mistimed" shots).
 Only older ones take turns */
 #define PSP_PARTICLE_YOUNG_FRAMES 6
 static unsigned char psp_particle_age[HALO_PORT_MAXIMUM_PARTICLES];
@@ -6264,13 +7410,161 @@ static int psp_particle_budget = -1;
 static long psp_free_particles = 0;
 static unsigned long psp_particles_thinned = 0, psp_particles_refused = 0, psp_particle_updates = 0, psp_particle_physics = 0;
 static unsigned long psp_particle_us = 0, psp_particles_peak = 0, psp_particles_live_total = 0;
-/* build 46: which particles cost the time (Sheepdog01: the sparks off a vehicle's
+/* build 46: which particles cost the time (the sparks off a vehicle's
 scrapes look like the assault rifle's): made and physics time per
 particle definition, the top ones logged with the particles line */
 #define PSP_PARTICLE_KINDS 32
 static struct { long definition_index; unsigned long made, physics, us; } psp_particle_kinds[PSP_PARTICLE_KINDS];
 unsigned long psp_slip_effects = 0; /* vehicles.c's create_slipping_effects (psp_fixups.py) */
 char *tag_get_name(long tag_index);
+/* "particlecensus": which effects make the most particles in a fight,
+and which the budget and the burst thinning leave out (the ranks of what
+to keep are set from it). Per particle definition, over each 30 s: free
+particles made, refused over the budget and left out thinning; attached
+ones made (never refused). Contrails (made, and failed for room) and
+effects that failed for room are counted with them (contrails.c,
+effects.c) */
+#define PSP_CENSUS_KINDS 64
+struct psp_census_kind { long definition_index; unsigned long made, refused, thinned, attached; };
+static struct psp_census_kind psp_census[PSP_CENSUS_KINDS];
+static unsigned long psp_census_lost = 0;
+unsigned long psp_census_contrails_made = 0, psp_census_contrails_failed = 0, psp_census_effects_failed = 0;
+int psp_census_on = -1;
+
+static struct psp_census_kind *psp_census_kind(long definition_index)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 26, n;
+
+	for (n = 0; n < PSP_CENSUS_KINDS; n++, k = (k + 1) % PSP_CENSUS_KINDS)
+	{
+		if (psp_census[k].definition_index == definition_index &&
+			(psp_census[k].made | psp_census[k].refused | psp_census[k].thinned | psp_census[k].attached))
+			return &psp_census[k];
+		if (!(psp_census[k].made | psp_census[k].refused | psp_census[k].thinned | psp_census[k].attached))
+		{
+			psp_census[k].definition_index = definition_index;
+			return &psp_census[k];
+		}
+	}
+	psp_census_lost++;
+	return NULL;
+}
+
+#define PSP_CENSUS(definition, field) \
+	do { if (psp_census_on > 0) { struct psp_census_kind *psp_c = psp_census_kind(definition); if (psp_c) psp_c->field++; } } while (0)
+
+static void psp_census_report(void)
+{
+	char line[1024];
+	int length, shown, k;
+	unsigned long made = 0, refused = 0, thinned = 0, attached = 0;
+
+	for (k = 0; k < PSP_CENSUS_KINDS; k++)
+	{
+		made += psp_census[k].made;
+		refused += psp_census[k].refused;
+		thinned += psp_census[k].thinned;
+		attached += psp_census[k].attached;
+	}
+	platform_psp_log("particle census over 30 s: free %lu made, %lu refused over the budget, %lu left out thinning; attached %lu made; contrails %lu made, %lu failed for room; effects failed for room %lu; kinds past the table %lu",
+		made, refused, thinned, attached, psp_census_contrails_made, psp_census_contrails_failed, psp_census_effects_failed,
+		psp_census_lost);
+	/* the kinds by what was asked for (made, refused and thinned), most first */
+	length = snprintf(line, sizeof(line), "particle census by kind (free made, refused, thinned; attached made):");
+	for (shown = 0; shown < 16; shown++)
+	{
+		int best = -1;
+		unsigned long best_total = 0;
+
+		for (k = 0; k < PSP_CENSUS_KINDS; k++)
+		{
+			unsigned long total = psp_census[k].made + psp_census[k].refused + psp_census[k].thinned + psp_census[k].attached;
+
+			if (total && total > best_total)
+			{
+				best = k;
+				best_total = total;
+			}
+		}
+		if (best < 0 || length > (int)sizeof(line) - 128)
+			break;
+		{
+			const char *name = tag_get_name(psp_census[best].definition_index);
+			const char *slash = name ? strrchr(name, '\\\\') : NULL;
+
+			length += snprintf(line + length, sizeof(line) - length, " %s %lu %lu %lu %lu;",
+				slash ? slash + 1 : name ? name : "?", psp_census[best].made, psp_census[best].refused,
+				psp_census[best].thinned, psp_census[best].attached);
+		}
+		psp_census[best].made = psp_census[best].refused = psp_census[best].thinned = psp_census[best].attached = 0;
+	}
+	platform_psp_log("%s", line);
+	memset(psp_census, 0, sizeof(psp_census));
+	psp_census_lost = psp_census_contrails_made = psp_census_contrails_failed = psp_census_effects_failed = 0;
+}
+
+/* "particleranks": which free particles the budget and the burst thinning
+give up first, by the definition's tag path (worked out once a definition).
+ 1: a slow projectile's own visuals (plasma, needles, the fuel rod, rockets,
+    grenades): never refused or thinned;
+ 2: tracers: never refused, thinned only by their own rule (one in N);
+ 3: the rest (impacts, sparks, flashes, blood): the budget and thinning as
+    before, and past three quarters of the budget only those within
+    PSP_RANK3_NEAR world units of the eye (nearest first);
+ 4: smoke, debris, dust and ambient effects: thinned from PSP_RANK4_THIN
+    free particles and refused at PSP_RANK4_BUDGET, so they give way first.
+The budget's count still includes ranks 1 and 2, so a fight full of them
+leaves less room for 3 and 4 */
+#include "camera/observer.h"
+#define PSP_RANK_SLOTS 128
+#define PSP_RANK3_NEAR 10.0f
+#define PSP_RANK4_THIN 48
+#define PSP_RANK4_BUDGET 192
+static struct { long definition_index; unsigned char rank, keep_one_in; unsigned short count; } psp_ranks[PSP_RANK_SLOTS];
+static int psp_ranks_on = -1;
+static const struct { const char *part; unsigned char rank, keep_one_in; } psp_rank_rules[] = {
+	{ "tracer", 2, 1 },
+	{ "grenade", 1, 1 }, { "needle", 1, 1 }, { "fuel rod", 1, 1 }, { "rocket", 1, 1 },
+	{ "projectile", 1, 1 }, { "bolt", 1, 1 },
+	{ "smoke", 4, 1 }, { "debris", 4, 1 }, { "dust", 4, 1 }, { "smolder", 4, 1 }, { "drifting", 4, 1 },
+	{ "lingering", 4, 1 }, { "ambient", 4, 1 }, { "gravel", 4, 1 }, { "chips", 4, 1 }, { "casing", 4, 1 },
+	{ "spray", 4, 1 }, { "steam", 4, 1 }, { "flame", 4, 1 },
+};
+
+static int psp_particle_rank(long definition_index, int *keep_one_in)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 25, n;
+
+	for (n = 0; n < PSP_RANK_SLOTS; n++, k = (k + 1) % PSP_RANK_SLOTS)
+	{
+		if (psp_ranks[k].rank && psp_ranks[k].definition_index == definition_index)
+			break;
+		if (!psp_ranks[k].rank)
+		{
+			const char *name = tag_get_name(definition_index);
+			unsigned int r;
+
+			psp_ranks[k].definition_index = definition_index;
+			psp_ranks[k].rank = 3;
+			psp_ranks[k].keep_one_in = 1;
+			for (r = 0; name && r < sizeof(psp_rank_rules) / sizeof(psp_rank_rules[0]); r++)
+				if (strstr(name, psp_rank_rules[r].part))
+				{
+					psp_ranks[k].rank = psp_rank_rules[r].rank;
+					psp_ranks[k].keep_one_in = psp_rank_rules[r].keep_one_in;
+					break;
+				}
+			break;
+		}
+	}
+	if (n == PSP_RANK_SLOTS)
+		return 3;
+	*keep_one_in = psp_ranks[k].keep_one_in;
+	if (psp_ranks[k].keep_one_in > 1 && ++psp_ranks[k].count % psp_ranks[k].keep_one_in)
+		*keep_one_in = 0; /* this one is left out */
+	return psp_ranks[k].rank;
+}
+
 static int psp_particle_kind(long definition_index)
 {
 	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 27, n;
@@ -6301,26 +7595,58 @@ void particle_new(
 
 	particle->flags = 0;""",
  """#ifdef HALO_PSP
+	if (psp_census_on < 0)
+		psp_census_on = psp_keep("particlecensus");
 	if (data->object_index == NONE)
 	{
+		int psp_rank = 3, psp_keep_this = 1;
+		long psp_budget, psp_thin_from;
+
 		if (psp_particle_budget < 0)
 			psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
-		if (psp_free_particles >= psp_particle_budget)
+		if (psp_ranks_on < 0)
+			psp_ranks_on = psp_keep("particleranks");
+		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF)
+			psp_rank = psp_particle_rank(data->definition_index, &psp_keep_this);
+		if (psp_rank == 2 && !psp_keep_this)
+		{
+			psp_particles_thinned++;
+			PSP_CENSUS(data->definition_index, thinned);
+			return;
+		}
+		psp_budget = psp_rank == 4 ? PSP_RANK4_BUDGET : psp_particle_budget;
+		psp_thin_from = psp_rank == 4 ? PSP_RANK4_THIN : 96;
+		if (psp_rank >= 3 && psp_free_particles >= psp_budget)
 		{
 			psp_particles_refused++;
+			PSP_CENSUS(data->definition_index, refused);
 			return;
+		}
+		if (psp_rank == 3 && psp_ranks_on > 0 && psp_free_particles >= psp_budget * 3 / 4)
+		{
+			struct observer_result const *psp_eye = observer_get_camera(0);
+			real psp_dx = data->position.x - psp_eye->position.x, psp_dy = data->position.y - psp_eye->position.y,
+				psp_dz = data->position.z - psp_eye->position.z;
+
+			if (psp_dx * psp_dx + psp_dy * psp_dy + psp_dz * psp_dz > PSP_RANK3_NEAR * PSP_RANK3_NEAR)
+			{
+				psp_particles_refused++;
+				PSP_CENSUS(data->definition_index, refused);
+				return;
+			}
 		}
 		/* build 41: past 96 in flight, every second new one is left out,
 		past 160 two of three: a big burst (the tank shell's) comes out
 		thinner but on time, where the budget alone took it whole and then
-		refused everything after (Sheepdog01: dense, and a big cut in frames) */
-		if (psp_particle_budget != 0x7FFF && psp_free_particles >= 96)
+		refused everything after (dense, and a big cut in frames) */
+		if (psp_rank >= 3 && psp_particle_budget != 0x7FFF && psp_free_particles >= psp_thin_from)
 		{
 			static unsigned long psp_thin = 0;
 
-			if (++psp_thin % (psp_free_particles >= 160 ? 3 : 2))
+			if (++psp_thin % (psp_free_particles >= psp_thin_from + 64 ? 3 : 2))
 			{
 				psp_particles_thinned++;
+				PSP_CENSUS(data->definition_index, thinned);
 				return;
 			}
 		}
@@ -6334,7 +7660,12 @@ void particle_new(
 	/* counted at once, so one frame's burst meets the budget too (the
 	count was only last frame's) */
 	if (data->object_index == NONE)
+	{
 		psp_free_particles++;
+		PSP_CENSUS(data->definition_index, made);
+	}
+	else
+		PSP_CENSUS(data->definition_index, attached);
 	{
 		int psp_kind = psp_particle_kind(data->definition_index);
 
@@ -6503,12 +7834,60 @@ void particle_new(
 			}
 			platform_psp_log("%s", line);
 			memset(psp_particle_kinds, 0, sizeof(psp_particle_kinds));
+			if (psp_census_on > 0)
+				psp_census_report();
 		}
 		}
 	}
 #endif
 	profile_exit(particles_update_section);
 """),
+]
+
+# particlecensus (particles.c above): contrails made and failed for room,
+# and effects that failed for room, counted with the particles
+FIXES_36["source/effects/contrails.c#census"] = [
+("""		contrail_index = datum_new(contrail_data);
+		if (contrail_index != NONE)
+		{""",
+ """		contrail_index = datum_new(contrail_data);
+#ifdef HALO_PSP
+		{
+			extern int psp_census_on;
+			extern unsigned long psp_census_contrails_made, psp_census_contrails_failed;
+
+			if (psp_census_on > 0)
+			{
+				if (contrail_index != NONE)
+					psp_census_contrails_made++;
+				else
+					psp_census_contrails_failed++;
+			}
+		}
+#endif
+		if (contrail_index != NONE)
+		{"""),
+]
+FIXES_36["source/effects/effects.c#census"] = [
+("""			if (effect_index != NONE)
+			{
+				struct effect_datum *effect = effect_get(effect_index);
+
+				effect->definition_index = definition_index;""",
+ """#ifdef HALO_PSP
+			{
+				extern int psp_census_on;
+				extern unsigned long psp_census_effects_failed;
+
+				if (effect_index == NONE && psp_census_on > 0)
+					psp_census_effects_failed++;
+			}
+#endif
+			if (effect_index != NONE)
+			{
+				struct effect_datum *effect = effect_get(effect_index);
+
+				effect->definition_index = definition_index;"""),
 ]
 
 # build 68: object lighting reads three of a material's vertices for their
@@ -6733,7 +8112,7 @@ void sample_lightmap(
 # lightmap's colour and the surface texture's, from the texture pack
 # (psp_tex.c's psp_tex_light_texel): the game's bitmaps have no pixels here,
 # so bitmap_2d_get_pixel answered "none", white, and every object was lit as
-# if it stood in full light (Sheepdog01, b101). "lightwhite" in keep.txt: as before
+# if it stood in full light (b101). "lightwhite" in keep.txt: as before
 FIXES_36["source/objects/object_lights.c#lightmapsample"] = [
 ("""	pixel32_to_real_rgb_color(
 		bitmap_2d_get_pixel(bitmap, &texcoord, 1.0f),
@@ -7371,7 +8750,7 @@ def packed_designators(tree):
 # throttle off (build 66) the frame loop measures its first frame against a
 # start time of 0, and that wall-clock value read as a signed long is
 # negative for 24.8 days out of every 49.7, depending on the PSP's date: the
-# game then asked to Sleep() for weeks before its first tick (Sheepdog01's b70 run,
+# game then asked to Sleep() for weeks before its first tick (b70's run,
 # 2026-10-05: game time 0 forever, step main_update_time). The emulator's
 # date happened to give a positive value
 FIXES_36["port/linux/src/xbox_kernel.c#clock"] = [
@@ -7431,7 +8810,7 @@ FIXES_36["source/main/main.c#sleep"] = [
 ]
 
 # build 101: "crumbs" (psp_trace.c): the last steps drawn straight onto the
-# screen, so a freeze that takes the whole PSP down (Sheepdog01's b100 runs: no
+# screen, so a freeze that takes the whole PSP down (b100's runs: no
 # crash report, no sound, no input; the crash handler's own test froze the
 # same way) leaves the last thing the game started on the frozen picture
 def _crumb(name, detail="0"):
@@ -7462,7 +8841,7 @@ FIXES_36["source/effects/effects.c#crumbs"] = [
 # one byte into its struct, after a one-byte boolean: on x86 a misaligned
 # word just works, on the PSP's MIPS it is an address error. The strict
 # emulator caught it on a grenade's blast (breakable_surface_extant, from
-# breakable_surface_damage_area_of_effect); Sheepdog01's b97-b100 freezes in The
+# breakable_surface_damage_area_of_effect); b97-b100's freezes in The
 # Library came at grenades and shots near the Flood. Aligned on 4 bytes now
 FIXES_36["source/physics/breakable_surfaces.c#aligned"] = [
 ("\tboolean enabled;\n\tbyte breakable_surface_flags[MAXIMUM_STRUCTURE_BSPS_PER_SCENARIO][32];\n",
@@ -7585,7 +8964,7 @@ FIXES_105["source/render/render_debug.c"] = [
 ]
 
 # build 106: what the garbage collector does, for the corpse-sleep tests
-# (b105 run 1: Sheepdog01 saw bodies vanish once he looked away, well below the 50
+# (b105 run 1: bodies vanished once the view turned away, well below the 50
 # active ones that start a collection on their own). Counted by reason; the
 # heartbeat's objects line reports them
 FIXES_106 = {}
@@ -8105,7 +9484,7 @@ FIXES_106["source/objects/object_lights.c#inline"] = [
 """ + _PSP_DATUM_INLINE + """
 /* port: port/linux/src (halo.log) */"""),
 ]
-# build 106: game_sound_update in four steps for the profile. Sheepdog01's b105
+# build 106: game_sound_update in four steps for the profile. b105's
 # run: 11.5 ms a frame (median of 94 windows; up to 16.4), against about 1 ms
 # in the emulator on b30. Its parts: the cluster's sound environment, the
 # potentially audible set (every cluster against the camera's), the
@@ -8155,7 +9534,7 @@ FIXES_106["source/sound/game_sound.c#steps"] = [
 # gets a collision test from the camera (structure, water, objects, scenery,
 # machines) every frame it is refreshed: the emulator's step-tagged PC samples
 # put The Library's "game_sound_update: looping sounds" step at 6.3% of the
-# time, two thirds of it these tests; Sheepdog01's b105 run measured the step at
+# time, two thirds of it these tests; b105's run measured the step at
 # 11.5 ms a frame. Two changes:
 # - source_audible: a sound past its maximum distance is out whatever the test
 #   says, so it isn't tested (exact: the same sounds are heard);
@@ -8305,7 +9684,7 @@ void compute_sound_obstruction(
 """),
 ]
 # build 117: looked for again by default: the GE lights models by them now
-# (b116 test 1: Sheepdog01 saw no lighting on actors). "nopointlights": as before.
+# (b116 test 1: the tester saw no lighting on actors). "nopointlights": as before.
 # build 106: an object's dynamic point lights (muzzle flashes, plasma bolts)
 # are looked for only to pick the Xbox's vertex shader with
 # per-vertex point lights (rasterizer_xbox_models.c); the GE draws a model
@@ -8426,7 +9805,7 @@ FIXES_106["source/objects/widgets/lightning.c"] = [
 # highest-priority ready thread and never shares the CPU between equals, so a
 # read that has finished in the driver waits for the game thread to block
 # before its thread can issue the next one, and it keeps the stick's lock
-# meanwhile. Sheepdog01's b105 run: 87 ms a call for reads the stick does in about
+# meanwhile. b105's run: 87 ms a call for reads the stick does in about
 # 4 ms. The thread sleeps in the driver nearly all the time, so it costs the
 # game thread little CPU. psp_platform.c's psp_cache_thread_priority has the
 # rule and the keep word ("readerslow" leaves it where pthreads put it)
@@ -9207,7 +10586,7 @@ void cluster_partition_reconnect(
 """),
 ]
 
-# build 108: Sheepdog01's b107 run of b30, to the level's end (docs/hardware_b107.md)
+# build 108: b107's run of b30, to the level's end (docs/hardware_b107.md)
 FIXES_108 = {}
 # b30's floors are mirrors: the security room's at z 9.95 (BSP b30a, cluster
 # 48) and the map room's at z -14.92 (b30b, cluster 14). With one in view the
@@ -9748,6 +11127,38 @@ FIXES_112["source/game/game.c#statecrc"] = [
 	collision_log_end_period();
 	profile_tick_end();"""),
 ]
+# "nomouth" (keep.txt; a test word, off by default): lip sync is the one path
+# from the sound manager into game state. update_channels hands each speaking
+# unit a mouth aperture read at the channel's estimated play time, which
+# follows the clock and the mixer's progress, not game ticks; the aperture
+# drives an overlay animation on the unit's nodes, so anything that moves the
+# CPU's timing (heap layout, log volume, a faster draw path) can move a
+# unit's nodes, a weapon's marker and the shot it fires. That is why statecrc
+# runs part on changes that don't touch play. With the word, the aperture is
+# left out (mouths stay shut), so exactness runs compare play alone. Never for
+# play: it changes the look. Nothing changes with the word off
+FIXES_112["source/sound/game_sound.c#nomouth"] = [
+("""void game_sound_set_mouth_aperture(
+	long object_index,
+	real mouth_aperture)
+{
+""", """void game_sound_set_mouth_aperture(
+	long object_index,
+	real mouth_aperture)
+{
+#ifdef HALO_PSP
+	{
+		extern int psp_keep(const char *name);
+		static int nomouth = -1;
+
+		if (nomouth < 0)
+			nomouth = psp_keep("nomouth");
+		if (nomouth)
+			return;
+	}
+#endif
+"""),
+]
 FIXES_112["source/objects/objects.c#statecrc"] = [
 ("void objects_update(\n\tvoid)\n{",
  """#ifdef HALO_PSP
@@ -10176,6 +11587,41 @@ FIXES_CHUPA["source/saved games/game_state.c#allocations"] = [
 	MAXIMUM_GAME_STATE_ALLOCATIONS = 256,
 #endif"""),
 ]
+FIXES_CHUPA["port/linux/src/d3d8_gl.c#immediate"] = [
+("""		device.immediate_capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		device.immediate_vertices = realloc(device.immediate_vertices,
+			device.immediate_capacity * floats * sizeof(float));
+	}""",
+ """#ifdef HALO_PSP
+		/* a full heap can refuse the grow (64 KB first, then doubling), and
+		the copy below would then write through NULL. The old buffer and its
+		size stay, and the rest of the batch is dropped: End sees no vertices
+		and draws none of it, so no primitive is drawn in part. The same
+		allocation as before whenever the heap has room (psp_fixups.py,
+		FIXES_CHUPA) */
+		unsigned long capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		float *vertices = realloc(device.immediate_vertices, capacity * floats * sizeof(float));
+		static int refused;
+
+		if (!vertices)
+		{
+			if (!refused)
+				platform_log("immediate draw: no heap for %lu vertices (%lu bytes): such batches are skipped",
+					capacity, capacity * floats * (unsigned long)sizeof(float));
+			refused = 1;
+			device.immediate_active = FALSE;
+			device.immediate_count = 0;
+			return;
+		}
+		device.immediate_vertices = vertices;
+		device.immediate_capacity = capacity;
+#else
+		device.immediate_capacity = device.immediate_capacity ? device.immediate_capacity * 2 : 256;
+		device.immediate_vertices = realloc(device.immediate_vertices,
+			device.immediate_capacity * floats * sizeof(float));
+#endif
+	}"""),
+]
 FIXES_CHUPA["port/linux/src/d3d8_gl.c#samplers"] = [
 ("""#define SAMPLER_CACHE_SIZE 512""",
  """#ifdef HALO_PSP
@@ -10253,7 +11699,7 @@ FIXES_CHUPA["source/rasterizer/rasterizer_text.c#atlas"] = [
 # hand-made map can't send the game outside the data. On b30's beach they
 # were 1-2% of the tick's instructions [E], and they make the hot code
 # bigger (docs/chupa_rebase.md). The PSP's maps are
-# its own bake of Sheepdog01's disc, and the retail BSPs and animations are sound
+# its own bake of a retail disc, and the retail BSPs and animations are sound
 # (ChupathingyCE's own notes say so), so the PSP reads them as
 # halo-ce-universal does: these checks answer TRUE and the compiler drops
 # them. PSP_MAP_CHECKS=1 (psp_build.py) builds them in, for a map that isn't
@@ -10467,7 +11913,7 @@ FIXES_MULTIPLAYER = {}
 # own MAXIMUM_NETWORK_MACHINE_COUNT (128): past slot 15 the host's lookup
 # answers NULL, and the first message to every machine read through it
 # (network_game_server_send_message_to_all_machines). Found by the first
-# PSP-hosted game in the emulator (lab run 38344820258, 2026-10-12): the host
+# PSP-hosted game in the emulator (2026-10-12): the host
 # faulted at its game's first message to all machines
 FIXES_MULTIPLAYER["source/networking/network_server_message_handler.c#host"] = [
 ("""	MAXIMUM_NETWORK_MACHINE_COUNT = HALO_PORT_MAXIMUM_NETWORK_MACHINES,
@@ -10569,7 +12015,7 @@ enum keeps 128 for every other file */
 # nodes from it. The tables the code already runs from are any size (the
 # bake's -Y: the nodes in use plus 512). The multiplayer maps have no scripts
 # at all, and Blood Gulch failed to load at the PC's limits for want of the
-# heap this holds (lab run 38075974578). The campaign build is unchanged:
+# heap this holds. The campaign build is unchanged:
 # the same 351 KB there is the campaign's own decision
 FIXES_MULTIPLAYER["source/hs/hs.c#standin"] = [
 ("""	hs_syntax_data = data_new(
@@ -10709,7 +12155,7 @@ FIXES_MULTIPLAYER["port/linux/game/network_distributed.c#aligned"] = [
 			word length;""")),
 ]
 
-# ---------- the multiplayer build as a client (Sheepdog01, 2026-10-17)
+# ---------- the multiplayer build as a client (the maintainer's call)
 # Hosting and ad hoc are dropped until the campaign reaches its performance
 # targets (they come back as co-op's prerequisite). psp_limits.h's
 # PSP_MP_CLIENT_ONLY (unless PSP_MP_HOST=1 or PSP_MP_COOP=1): no server is
@@ -11224,7 +12670,7 @@ FIXES_INTERNET["port/linux/game/map_families.c#downloaded"] = [
 ]
 # ... and started again once the PSP has joined its network, when it couldn't
 # start at WSAStartup: the access point refused the PSP's first try once
-# (sierra-hw 38936073185), the tunnel's socket failed with it, and internet
+# (a hardware run), the tunnel's socket failed with it, and internet
 # play stayed off while the PSP's next try joined (psp_net.c calls this)
 FIXES_INTERNET["port/linux/src/xnet.c#retry"] = [
 ("""int WSAAPI WSAStartup(WORD version_requested, LPWSADATA data)
@@ -11505,7 +12951,7 @@ FIXES_INTERNET["port/linux/src/p2p.c#priority"] = [
 ]
 # KCP with no memory: ikcp_input wrote through the NULL a full heap gave it
 # (a bus error on the tunnel's thread when a map's load took the heap to its
-# top while the host kept sending: lab 38987358496, 39016196537), and
+# top while the host kept sending: two emulator runs), and
 # ikcp_ack_push called abort(). A segment there's no memory for is now
 # neither kept nor acknowledged, so the sender sends it again; an ack there's
 # no room for is left out, the same. The send side already checked, behind
@@ -11704,8 +13150,8 @@ void psp_signal_report(char *text, int size)
 # yet been in time and three live ones whose signatures hold agree on an
 # offset from the PSP's clock, that offset is taken (logged) and the windows
 # apply to it. One host with a wrong clock can't move it: in the emulator a
-# single host three hours off did, before the three were required (lab
-# sierra-netplay 38861729099)
+# single host three hours off did, before the three were required (a
+# netplay run)
 FIXES_INTERNET["port/linux/src/p2p_lobby.c#clock"] = [
 ("""		memmove(lobby.queue, lobby.queue + 1, sizeof(*lobby.queue) * (size_t)(--lobby.queue_count));
 		if (!listing_read(queued.payload, queued.size, &listing) || listing.version < delta_legacy_minimum() ||
@@ -11914,7 +13360,7 @@ FIXES_INTERNET["port/linux/src/p2p_signal.c#capacity"] = [
 # the player's action and button, the flip and the vehicle physics' upending.
 # "flipfixture" (debug tools only: it moves a vehicle) puts the vehicle nearest
 # the player upside down just in front of him, two seconds into the map, so
-# the emulator can reproduce Sheepdog01's sequence with no hands.
+# the emulator can reproduce the hand-played sequence.
 FIXES_113 = {}
 FIXES_113["source/game/players.c#flipwatch"] = [
 ("""static void player_examine_nearby_vehicle(
@@ -11931,24 +13377,37 @@ void psp_flipwatch_flip(long vehicle_index, int approach_type);
 char *tag_get_name(long tag_index);
 #if PSP_DEBUG_TOOLS
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 void platform_psp_log(const char *format, ...);
 
-/* "flipfixture": a Warthog within 30 units of the player (else the nearest
-vehicle) put upside down just in front of him, touching his search's sphere,
-once, at game time 60; at game time 150, once it has fallen and settled,
-where it lies against the player */
-static void psp_flip_fixture(long unit_index)
+/* "flipfixture": a Warthog within 30 units of the player (else one made from
+the map's Warthog tag, else the nearest vehicle) put upside down just in front
+of him, touching his search's sphere, once, at game time 60 (flipfixtureatN:
+at N, for a campaign map's player once he is on the ground); 90 ticks later,
+once it has fallen and settled, where it lies against the player.
+"flippressN": the action button held for ticks N to N+9, so the flip comes
+at a game time of the test's choosing (an input script's times are the
+clock's). Answers whether to hold the action button this tick */
+long psp_drive_warthog_definition(void); /* FIXES_DRIVE */
+
+static int psp_flip_fixture(long unit_index)
 {
 	static int fixture = -1;
-	static long placed = NONE;
+	static long placed = NONE, at = 60, press = -1;
 	struct object_iterator iterator;
 	struct object_datum *object, *unit;
-	long best = NONE;
+	long best = NONE, warthog;
 	real best_distance = 30.0f * 30.0f;
+	int pressing;
 
 	if (fixture < 0)
+	{
 		fixture = psp_keep("flipfixture");
-	if (placed != NONE && game_time_get() >= 150)
+		at = psp_keep_number("flipfixtureat", 60);
+		press = psp_keep_number("flippress", -1);
+	}
+	pressing = press >= 0 && game_time_get() >= press && game_time_get() < press + 10;
+	if (placed != NONE && game_time_get() >= at + 90)
 	{
 		struct object_datum *vehicle = object_try_and_get_and_verify_type(placed, _object_mask_vehicle);
 
@@ -11967,8 +13426,8 @@ static void psp_flip_fixture(long unit_index)
 				vehicle->object.bounding_sphere_radius, unit->object.bounding_sphere_radius);
 		placed = NONE;
 	}
-	if (!fixture || game_time_get() < 60)
-		return;
+	if (!fixture || game_time_get() < at)
+		return pressing;
 	fixture = 0;
 	unit = object_get(unit_index);
 	object_iterator_new(&iterator, _object_mask_vehicle, 0);
@@ -11979,7 +13438,7 @@ static void psp_flip_fixture(long unit_index)
 		real dz = object->object.position.z - unit->object.position.z;
 		real distance = dx * dx + dy * dy + dz * dz;
 
-		/* a Warthog first (Sheepdog01's sightings), else the nearest */
+		/* a Warthog first (as seen in the hardware tests), else the nearest */
 		if (object->object.parent_object_index == NONE && distance < 30.0f * 30.0f &&
 			strstr(tag_get_name(object->definition_index), "warthog") != NULL)
 			distance -= 30.0f * 30.0f;
@@ -11989,10 +13448,22 @@ static void psp_flip_fixture(long unit_index)
 			best = iterator.index;
 		}
 	}
+	if ((best == NONE || best_distance >= 0.0f) && (warthog = psp_drive_warthog_definition()) != NONE)
+	{
+		struct object_placement_data data;
+
+		object_placement_data_new(&data, warthog, NONE);
+		data.position = unit->object.position;
+		data.position.z += 3.0f;
+		best = object_new(&data);
+		unit = object_get(unit_index);
+		if (best != NONE)
+			platform_psp_log("flipfixture: no Warthog within 30 units of the player: %s made", tag_get_name(warthog));
+	}
 	if (best == NONE)
 	{
 		platform_psp_log("flipfixture: no vehicle within 30 units of the player");
-		return;
+		return pressing;
 	}
 	{
 		struct object_datum *vehicle = object_get(best);
@@ -12034,6 +13505,7 @@ static void psp_flip_fixture(long unit_index)
 		platform_psp_log("flipfixture: %s #%08lx put upside down %.2f units in front of the player (%.2f %.2f %.2f)",
 			tag_get_name(vehicle->definition_index), (unsigned long)best, offset, place.x, place.y, place.z);
 	}
+	return pressing;
 }
 #endif
 #endif
@@ -12074,7 +13546,8 @@ static void player_examine_nearby_vehicle(
 						!player_handle_action(iterator.datum_index) &&""",
  """#ifdef HALO_PSP
 #if PSP_DEBUG_TOOLS
-					psp_flip_fixture(player->unit_index);
+					if (psp_flip_fixture(player->unit_index))
+						SET_FLAG(action->control_flags, _unit_control_action_bit, TRUE);
 #endif
 					if (psp_flipwatch_on())
 						psp_flipwatch_player(player->action_result, player->action_object_index,
@@ -12312,10 +13785,13 @@ FIXES_113["source/render/render_objects.c#renderstates"] = [
 ]
 
 
-# build 113: contrails, the Covenant weapons' tracers (b113_candidates.md #1;
-# keep word "contrails"): the strip render_contrail builds goes to the GE's
-# see-through draws (psp_ge.c, psp_ge_contrail) instead of the
-# transparent-geometry groups the PSP never draws. Without the word, as before
+# build 113: contrails, the weapons' tracers (b113_candidates.md #1): the
+# strip render_contrail builds goes to the GE's see-through draws (psp_ge.c,
+# psp_ge_contrail) instead of the transparent-geometry groups the PSP never
+# draws. Drawn by default (the tracers' restoration, H28), though in a
+# firefight they cost about 1.2 ms a frame in the emulator [E] (7%);
+# keep word "nocontrails" leaves them out ("contrails" is still accepted
+# and changes nothing)
 FIXES_113["source/render/render_contrails.c#contrails"] = [
 ("""static void render_contrail(
 	struct contrail_datum *contrail,
@@ -12327,6 +13803,8 @@ FIXES_113["source/render/render_contrails.c#contrails"] = [
 int psp_keep(const char *name);
 int psp_ge_active(void);
 int psp_ge_contrail(void const *vertices, int vertex_count, unsigned int bitmap_key, short blend); /* psp_ge.c */
+void psp_dynamic_vertices_release(long dynamic_vertex_buffer_index); /* psp_fixups.py */
+void psp_dynamic_triangles_release(long dynamic_triangle_buffer_index);
 #endif
 
 static void render_contrail(
@@ -12342,18 +13820,26 @@ static void render_contrail(
 			{
 				static int psp_contrails = -1;
 
+				/* the tracers of the Covenant weapons and the rifles are
+				contrails, so without them most fire shows none; "nocontrails"
+				leaves them out, for the time they cost in a fight */
 				if (psp_contrails < 0)
-					psp_contrails = psp_keep("contrails");
+					psp_contrails = !psp_keep("nocontrails");
 				if (psp_contrails && psp_ge_active())
 				{
-					/* the shader's blend: contrail shaders lay out their first
-					words as effect shaders do (flags, then the blend function) */
+					/* the shader's blend and its map's clamp flags: contrail
+					shaders lay out their first words as effect shaders do
+					(flags, the blend function, the fade mode, the map's flags) */
+					struct shader_effect_definition const *effect = (struct shader_effect_definition const *)shader;
+
 					psp_ge_contrail(first_vertex, vertex_count, (unsigned int)bitmap,
-						((struct shader_effect_definition const *)shader)->framebuffer_blend_function);
+						(short)((effect->framebuffer_blend_function & 0xFF) | ((effect->primary_map_flags & 6) << 8)));
 					rasterizer_dynamic_triangles_unlock(triangle_buffer_index);
 					rasterizer_dynamic_vertices_unlock(vertex_buffer_index);
 					rasterizer_dynamic_triangles_delete(triangle_buffer_index);
 					rasterizer_dynamic_vertices_delete(vertex_buffer_index);
+					psp_dynamic_vertices_release(vertex_buffer_index);
+					psp_dynamic_triangles_release(triangle_buffer_index);
 					rasterizer_globals.current_lock_operation = _rasterizer_lock_none;
 					return;
 				}
@@ -12387,7 +13873,7 @@ void rasterizer_screen_effect(
 	{
 		static int psp_zoom_mask = -1;
 
-		/* "zoommaskfull": the whole alpha always, for Sheepdog01 to compare */
+		/* "zoommaskfull": the whole alpha always, to compare */
 		if (psp_zoom_mask < 0)
 			psp_zoom_mask = psp_keep("zoommaskfull") ? 2 : psp_keep("zoommask");
 		/* the whole alpha with no blur; a third with one, the blur's
@@ -12402,7 +13888,7 @@ void rasterizer_screen_effect(
 
 
 # build 113: the sound cache's placement (b113_candidates.md #24; keep word
-# "soundplace", Sheepdog01's call). b112 run 6 dropped sounds while only 650-1,100 KB
+# "soundplace", the maintainer's call). b112 run 6 dropped sounds while only 650-1,100 KB
 # of its 1,792 were playing: a sound needs one run of the cache's pages, and
 # sounds still playing (or loading) can't be pushed out, so where they sit
 # splits the space. Big sounds (32 KB and up: dialogue, engine and ambient
@@ -12552,7 +14038,7 @@ FIXES_113["source/cache/xbox_sound_cache.c#noroom"] = [
 
 # ---------- build 114
 FIXES_114 = {}
-# build 114: "drawdistN" (B9, optimization_ranking.md; Sheepdog01 approved it as a
+# build 114: "drawdistN" (B9, optimization_ranking.md; approved as a
 # switch to try): the far clip at N world units outside cutscenes. The
 # engine already brings each window's far clip in to its fog when the fog is
 # fully dense there (just above); the cap goes beside it, for the render and
@@ -12851,7 +14337,7 @@ FIXES_116["source/rasterizer/rasterizer.c#planarfog"] = [
 # frame indices words, both fine at 2-byte alignment. The last pair is the
 # default translation animation_get_node_orientations copies itself for a
 # node without translation keyframes: the strict interpreter stopped b115.1
-# there on a10, a30 and c40 at the same game times b115 stopped (lab batch
+# there on a10, a30 and c40 at the same game times b115 stopped (the batch
 # campaign-strict-b1151)
 FIXES_116["source/models/model_animations.c#unaligned"] = [
 ("""	node_header = ((unsigned long const *)(data+header->translation_node_headers_offset))[adjusted_node_index];""",
@@ -12944,7 +14430,7 @@ FIXES_118["source/units/units.c#verify"] = [
 # about a quarter of a50's tick in the cache model (tickmap118). Its answer
 # depends only on its inputs: the BSP (tag data, fixed until the next map or
 # BSP switch), the centre and radius, and the breakable surfaces' flags. The
-# probe that came first (lab run 38368364688) found 53-59% of a50's queries
+# probe that came first found 53-59% of a50's queries
 # repeat one of the tick before exactly (a standing biped asks the same thing
 # every tick), b30 38%, c10 43%, d20 15-32%, c20 13%; none repeat within a
 # tick. So a small table keeps recent answers under all their inputs, compared
@@ -12952,8 +14438,12 @@ FIXES_118["source/units/units.c#verify"] = [
 # an entry (or with an index past 16 bits) isn't kept, and the table is
 # forgotten when the collision BSP is set (a map's load, a BSP switch: the
 # next BSP is read into the same tag window) and when a map's tags load.
-# "spherewalk" (keep.txt): every query walks, as before; "spherememocheck":
-# a hit walks too and compares, and the log counts any difference
+# Off by default: on b30 the table answers ~5% of the queries, and keying
+# and comparing every query costs more than the walks it saves (+1.56% of the
+# tick in the cache model; the PSP-1000's cinematic agrees). "spherememo"
+# (keep.txt): the table on; "spherememocheck": the table on, and a hit walks
+# too and compares, the log counting any difference; "spherewalk": off, as
+# the default
 FIXES_118["source/physics/collision_bsp.c#spherememo"] = [
 ("""boolean collision_bsp_test_sphere(
 	struct collision_bsp const *bsp,""",
@@ -13133,7 +14623,7 @@ boolean collision_bsp_test_sphere(
 
 		if (psp_sphere_memo_on < 0)
 		{
-			psp_sphere_memo_on = !psp_keep("spherewalk");
+			psp_sphere_memo_on = (psp_keep("spherememo") || psp_keep("spherememocheck")) && !psp_keep("spherewalk");
 			psp_sphere_memo_check = psp_keep("spherememocheck");
 		}
 		if (psp_sphere_memo_on)
@@ -13292,6 +14782,41 @@ char const *psp_shader_tag_name(void const *shader)
 	}
 	return NULL;
 }
+
+#if PSP_DEBUG_TOOLS
+/* "sdump", once a map: each alpha-tested level shader whose base map an
+earlier level shader (in the tags' order, the bake's) also draws without
+the alpha test. The bake folds a base map's detail maps in by the first
+shader to use it, and keeps the map's alpha only when that one tests it */
+void psp_sdump_shared_bases(void)
+{
+	struct tag_iterator outer, inner;
+	long tested_index, other_index;
+	extern void platform_log(const char *format, ...);
+
+	tag_iterator_new(&outer, 0x73656E76 /* senv */);
+	while ((tested_index = tag_iterator_next(&outer)) != NONE)
+	{
+		char const *tested = (char const *)tag_get(0x73656E76, tested_index);
+		long base = *(long const *)(tested + 148);
+
+		if (!(*(unsigned short const *)(tested + 40) & 1) || base == NONE)
+			continue;
+		tag_iterator_new(&inner, 0x73656E76);
+		while ((other_index = tag_iterator_next(&inner)) != NONE && other_index != tested_index)
+		{
+			char const *other = (char const *)tag_get(0x73656E76, other_index);
+
+			if (*(long const *)(other + 148) == base && !(*(unsigned short const *)(other + 40) & 1))
+			{
+				platform_log("sdump: base map %s: alpha tested by %s, drawn first untested by %s", tag_get_name(base),
+					tag_get_name(tested_index), tag_get_name(other_index));
+				break;
+			}
+		}
+	}
+}
+#endif
 #endif
 
 void hud_draw_bitmap(
@@ -13561,12 +15086,31 @@ FIXES_118["source/rasterizer/rasterizer.c#glasslit"] = [
 	}""",
  """	else if (type == 8)
 	{
+		extern int psp_tex_has(unsigned int key);
+		long reflection_map = *(long const *)(definition + 184);
+
 		key = psp_tex_bitmap_key(*(long const *)(definition + 356), 0);
 		*u_scale = *(float const *)(definition + 340);
 		*v_scale = *u_scale;
 		/* alpha-blended, lit (fade mode 3: psp_ge.c's SEETHROUGH_LIT) */
 		if (object && !PSP_KEEP_ONCE("glassflat"))
 			*blend = PSP_SEETHROUGH_PACK(0, 3, 1.0f, 0);
+		/* glass with no diffuse map is its tint and its reflection on the
+		Xbox: without either drawn, a10's floor glass showed the dark pipes
+		under it as a black pit. Its reflection is drawn: the cube map's
+		average (the pack's patch of it) added, tinted between the parallel
+		and perpendicular colours by the angle it is seen at (psp_ge.c,
+		psp_ge_seethrough_shader). The perpendicular and parallel colours'
+		alphas at +140 and +156, the cube map's index at +184.
+		"glassnoreflection": not drawn, as before */
+		if (!key && reflection_map != NONE &&
+			(*(float const *)(definition + 140) > 0.0f || *(float const *)(definition + 156) > 0.0f) &&
+			psp_tex_has(psp_tex_bitmap_key(reflection_map, 0)) && !PSP_KEEP_ONCE("glassnoreflection"))
+		{
+			key = psp_tex_bitmap_key(reflection_map, 0);
+			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
 	}"""),
 ]
 
@@ -14857,14 +16401,14 @@ FIXES_121["source/devices/device_machines.c#machinetime"] = [
 
 # The level sphere walk (collision_bsp_test_sphere), which a biped's physics
 # asks ~20 times a tick: on a50 it is a quarter of the tick's instructions
-# (cachemap, lab 38512475945: bsp2d 12.8%, bsp3d 10.6%, the edge test 4.1%).
+# (cachemap: bsp2d 12.8%, bsp3d 10.6%, the edge test 4.1%).
 # Three changes, each giving the walk's own answer, list for list, in order.
 # They pay only on a walk that reaches several leaves (a50: ~48 a walk, half
 # its surface tests repeats); a walk of a leaf or two (c20: 1.7, 12% repeats)
-# costs more with their bookkeeping (lab 38525896825: c20 +1.05%), and so
+# costs more with their bookkeeping (c20 +1.05%), and so
 # does any walk through a copy of the engine's code instead of the engine's
-# own (switching a walk over at its third leaf still cost c20 +0.80%, lab
-# 38539791064: the copy's code and data misses). So each walk is the engine's
+# own (switching a walk over at its third leaf still cost c20 +0.80%,
+# the copy's code and data misses). So each walk is the engine's
 # own while the last walks averaged three leaves or fewer, and otherwise a
 # copy with all three changes:
 # - a leaf's reference is looked for in the plane stack through 64 buckets
@@ -16528,7 +18072,7 @@ FIXES_122["source/objects/objects.c#merays"] = [
 )]
 
 
-# B1 in docs/optimization_ranking.md, Sheepdog01's to judge after an A/B: far actors
+# B1 in docs/optimization_ranking.md, to be judged after an A/B: far actors
 # service their props at half rate. Bungie's actor_perception_update already
 # services one prop an actor a tick, the first whose stepped timer reaches the
 # last tick's highest, and non-enemies and far props less often; on an
@@ -16733,7 +18277,7 @@ void psp_perception_queue("""),
 				prop_timer >= actor->meta.highest_prop_timer)"""),
 ]
 
-# Two behaviour A/Bs for Sheepdog01 (docs/optimization_ranking.md section 6, B3 and
+# Two behaviour A/Bs (docs/optimization_ranking.md section 6, B3 and
 # B4; docs/review_b122_farrate.md). Both off by default and campaign only:
 # - "machinesfar": an always-moving machine (type 2: c20's gears and
 #   platforms) that is far from the player, out of view and carrying nothing
@@ -17236,14 +18780,14 @@ int psp_crumb_mark(const char *what, const char *detail); /* psp_trace.c (build 
 		would (object_update's object_connect_lights): to the same places,
 		but first in their clusters' lists, where every light the tick
 		reconnects goes. Without it the lists' order changed (machinesleep on
-		d20, lab 38526377504), and with it the lights a lit object picks */
+		d20), and with it the lights a lit object picks */
 		if (header->type == _object_type_machine &&
 			TEST_FLAG(sleeper->object.flags, _object_dynamic_lighting_recompute_bit) &&""",
 """		/* a sleeping machine's or item's lights are still reconnected as its
 		update would (object_update's object_connect_lights): to the same
 		places, but first in their clusters' lists, where every light the
 		tick reconnects goes. Without it the lists' order changed
-		(machinesleep on d20, lab 38526377504), and with it the lights a lit
+		(machinesleep on d20), and with it the lights a lit
 		object picks. Only items with lights pay for the test below */
 		if ((header->type == _object_type_machine ||
 				((header->type == _object_type_weapon || header->type == _object_type_equipment) &&
@@ -18356,7 +19900,7 @@ FIXES_128 = {}
 # are added up and psp_collision_report (the heartbeat, every 30 s) logs who
 # used the collision code and for how long. The question it answers: what
 # moving collision to the Media Engine would take off b30's tick, where the
-# collision functions are ~16% of it in the cache models (lab 38698483247).
+# collision functions are ~16% of it in the cache models.
 # Plays no differently: the log reads the calls, it decides nothing
 FIXES_128["source/physics/collision_usage.c#report"] = [
 ("""	collision_usage_buffer[collision_usage_current_period] = collision_usage_current;
@@ -18506,7 +20050,7 @@ FIXES_128["source/rasterizer/rasterizer.c#obscurer"] = [
 # it of up to four spheres about the eye each frame, largest first, and
 # collision_test_sphere answered each with the full gather of every leaf,
 # surface, edge and vertex inside. On a50 the PSP-1000 spent 3.9 ms a frame
-# deciding (lab 38732215900: 8,112 such sphere tests at 1.26 ms each in
+# deciding (8,112 such sphere tests at 1.26 ms each in
 # 300 s, the collision log's unknown user), most of them on the spheres that
 # do touch, which an early stop makes cheap. The same yes or no, so the same
 # near plane: only the walk's work changes. Nothing else asks this way: the
@@ -18655,7 +20199,7 @@ FIXES_129 = {}
 # walked first and objects are tested only in the leaves the ray crossed up
 # to its wall, where a hit can only bring the answer nearer: so when the
 # level alone meets a wall that is not sky, the answer is "hidden" whatever
-# the objects say, and their test is skipped. On c20 (lab 38745678938) the
+# the objects say, and their test is skipped. On c20 the
 # flare test was 6.9 ms a frame and nine flare answers in ten hidden. Exact:
 # the same answers; only the objects' marks (the ray stamped the objects it
 # tested) differ. Keep words "flaresfull" (the full test always, as before)
@@ -18665,7 +20209,7 @@ FIXES_129["source/rasterizer/xbox/rasterizer_xbox_widgets.c#walls"] = [
 static unsigned long psp_flare_bipeds = 0;""",
  """/* build 116: characters in a flare's way (b113 #2) */
 static unsigned long psp_flare_bipeds = 0;
-static int psp_flare_walls = -1, psp_flare_walls_check = 0;
+static int psp_flare_walls = -1, psp_flare_walls_check = 0, psp_flare_level_short = 0, psp_flare_debug = 0;
 unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare_walls_differed = 0; /* psp_ge.c logs them */"""),
 ("""				/* the level's sky surfaces (no material) are where the
 				sky is drawn: a ray that meets one has reached the sky */
@@ -18689,20 +20233,48 @@ unsigned long psp_flare_walls_hidden = 0, psp_flare_walls_checked = 0, psp_flare
 					{
 						psp_flare_walls = !psp_keep("flaresfull");
 						psp_flare_walls_check = psp_keep("flarescheck") != 0;
+						psp_flare_level_short = psp_keep("flaresshort") != 0;
+						psp_flare_debug = psp_keep("flaresdebug") ? 40 : 0;
 					}
 					/* the level alone, with the full test's surface flags:
 					a wall that is not sky hides the flare whatever the
-					objects say, as they can only meet the ray nearer */
+					objects say, as they can only meet the ray nearer.
+					This ray runs to the flare's own point (all but 2 cm),
+					as the Xbox's test square is depth-tested there: the
+					ray above stops 0.15 short so as not to meet the
+					flare's own object, and the level has no such object.
+					Stopped short, a wall within 0.15 of a lamp on its far
+					side (or of a door's lamp slid into it) let the flare
+					shine through ("flaresshort": as before) */
 					if (psp_flare_walls || psp_flare_walls_check)
 					{
+						real_vector3d level_ray = ray;
+
+						if (!psp_flare_level_short)
+						{
+							real length;
+
+							vector_from_points3d(&global_window_parameters.camera.position, point, &level_ray);
+							length = magnitude3d(&level_ray);
+							if (length > 0.05f)
+								scale_vector3d(&level_ray, (length - 0.02f) / length, &level_ray);
+						}
 						level_hides = collision_test_vector(
 							FLAG(_collision_test_front_facing_surfaces_bit) |
 								FLAG(_collision_test_ignore_invisible_surfaces_bit) |
 								FLAG(_collision_test_structure_bit),
 							&global_window_parameters.camera.position,
-							&ray,
+							&level_ray,
 							NONE,
 							&collision) && collision.material_index != NONE;
+						if (psp_flare_debug > 0)
+						{
+							psp_flare_debug--;
+							platform_psp_log("flaresdebug: flare %ld at %.2f %.2f %.2f, %.2f from the eye: level %s (t %.3f, material %d)",
+								index, point->x, point->y, point->z, magnitude3d(&level_ray),
+								level_hides ? "hides it" : "clear", level_hides ? collision.t : 1.0f,
+								(int)collision.material_index);
+						}
 					}
 					if (level_hides && !psp_flare_walls_check)
 					{
@@ -18882,7 +20454,7 @@ FIXES_130 = {}
 # emulator's host) answered. With fixedticks a run then draws the same
 # pictures every time (framecrc, tools/framecmp.py): d20 drew a different
 # picture in 3,740 of 12,237 frames between two runs of one build without
-# it (lab 38762220140). Slower; never for play
+# it. Slower; never for play
 FIXES_130["source/cache/cache_files_windows.c#readswait"] = [
 ("""	request->pending = TRUE;
 #endif
@@ -20051,9 +21623,9 @@ real_matrix4x3 *object_get_node_matrices(
 # ---------- FIXES_135: the ME pose job on by default (lever MP)
 #
 # b131 shipped it off after the PSP-3000 hung once with it on; that hang came
-# at the ME's start-up, before any map loaded (lab 38784036485, its log
+# at the ME's start-up, before any map loaded (its log
 # recovered), and the same configuration then ran clean and bit-exact on the
-# 3000 (lab 38812680216). On the PSP-1000 it takes ~1.15 ms off b30's flight
+# 3000. On the PSP-1000 it takes ~1.15 ms off b30's flight
 # tick (2.0%). On by default wherever the ME runs the job ring; "poseaheadoff"
 # turns it off, "poseahead" makes the poses on the main CPU (the plumbing
 # alone), "poseaheadcheck" compares each one with the main CPU's decode.
@@ -20319,15 +21891,15 @@ static void psp_nwb_begin(void)
 		psp_nwb_held = psp_keep("nwbatchheld") != 0;
 		/* opt-in: on c10 the batch cost 9.7 ms a tick for ~300 light scenery
 		computes that cost ~3 ms in their updates, each taking its object's
-		datum and blocks cold out of the loop (the PSP-3000's ladder, lab
-		38884427350), while b30's few heavy ones gained; "nwbatchoff" still
+		datum and blocks cold out of the loop (the PSP-3000's
+		ladder), while b30's few heavy ones gained; "nwbatchoff" still
 		wins over it */
 		psp_nwb_on = psp_nwb_held || (psp_keep("nwbatch") && !psp_keep("nwbatchoff"));
 		/* scenery and its kin only: on the PSP-3000 b30's scenery computes
-		cost a fifth as much made together (lab 38871696661), while c20's
+		cost a fifth as much made together, while c20's
 		machines cost the same either way and its unarmed bipeds were nearly
 		all read by another object's update first, which made them in the
-		middle of that update instead (lab 38878940196: the tick 5% slower).
+		middle of that update instead (the tick 5% slower).
 		"nwbatchwide": machines, controls and bipeds too ("nwbatchnobipeds"
 		leaves the bipeds out of that) */
 		psp_nwb_types = FLAG(_object_type_scenery) | FLAG(_object_type_light_fixture) | FLAG(_object_type_placeholder) |
@@ -21008,7 +22580,7 @@ FIXES_FRONT["source/main/console.c#frontdoor"] = [
 
 # The saved-game check the main menu waits on: no menu input until it ends
 # (ui_widget.c, perform_filesystem_initialization). On the Xbox it runs under
-# the intro movie; with no movie the wait shows, about a minute on Sheepdog01's
+# the intro movie; with no movie the wait shows, about a minute on a
 # PSP-1000 (test 1). These lines time its parts, so the fix goes where the
 # time is: the Memory Stick's free-space count, the saved games' scan, or the
 # profiles' reads. One line each, once a start-up.
@@ -21092,7 +22664,7 @@ FIXES_FRONT["source/interface/ui_widget.c#checktimes"] = [
 # variants on every start-up (z:\saved\playlists\default_playlist\NN: the
 # folder emptied, the file created and written). z: is the Xbox's scratch
 # partition on its hard drive; on the PSP it is the Memory Stick, and that
-# rewrite was nearly all of the ~54 s the menu took no input on Sheepdog01's
+# rewrite was nearly all of the ~54 s the menu took no input on a
 # PSP-1000 (frontdoor3's timers: the profiles' reads 54,195 ms). A variant
 # whose file already holds the same bytes is left as it is, so only a fresh
 # stick writes them, once. "variantswrite" writes them every time, as before.
@@ -21105,7 +22677,7 @@ FIXES_FRONT["source/saved games/playlist_profile.c#variants"] = [
  '#ifdef HALO_PSP\n\t\tplatform_log("front door: the default game variants: %ld already on the stick, %ld written (%lu ms)",\n\t\t\tpsp_variants_kept, (long)NUMBER_OF_DEFAULT_PLAYLIST_PROFILES - psp_variants_kept,\n\t\t\t(psp_microseconds() - psp_variants_start) / 1000);\n#endif\n\t\tsaved_game_files_notify_memory_units_changed();\n\t}\n\telse\n\t{\n\t\terror('),
 ]
 
-# The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
+# The shelf (a project rule): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
@@ -21183,7 +22755,7 @@ FIXES_FRONT["port/linux/src/xbox_files.c#pathscan"] = [
 # The campaign build reads no game variants at start-up. The saved-game check
 # made the 26 default multiplayer variants (each compared with the stick's
 # copy) and then read all 26 again into the saved-game list: 130 stick calls
-# and ~3 s before the menu took input on the PSP-1000 (lab 39021437349), for
+# and ~3 s before the menu took input on the PSP-1000, for
 # lists only a multiplayer menu shows. Now they're made, and listed, the
 # first time something asks for them, as the multiplayer build still does at
 # start-up. Keep word "bootvariants": at start-up, as before.
@@ -21229,6 +22801,262 @@ FIXES_FRONT["source/saved games/saved_game_files.c#bootvariants"] = [
 	short number_of_playlist_files = psp_variants_asked() ? enumerate_default_playlist_profiles() : 0;
 #else
 	short number_of_playlist_files = enumerate_default_playlist_profiles();
+#endif
+"""),
+]
+
+# The saved games' list, z:\saved\hdmu.map (saved_game_files.c), is a file of
+# fixed-size entries whose length says how many there are. Deleting a profile
+# moves the entries after it down one and shortens the file by one entry
+# (remove_nth_entry_in_mapfile). The PSP's C library can't shorten a file
+# (psp_libc.c's ftruncate only lengthens one, and reports success), so the
+# last entry stayed behind: deleting the newest profile left it listed with
+# its folder gone, and deleting any other listed the last one twice. The
+# profile screens then read the missing file again on every frame (about
+# 7 ms of Memory Stick a try), "failed to retrieve player profile" closed the
+# edit screen with the red "event handler function failed", and deleting the
+# leftover failed with "ghost meta data likely". A shorter length is now made
+# as pspsdk's own truncate() makes one: the part kept read, the file opened
+# again emptied, the part written back (only up to 64 KB kept: the list is
+# at most 52 KB, and nothing else the game shortens). The list is rebuilt
+# from the save folders at every launch, so a failure here lasts only until
+# the next one. Keep word "shrinkold": left as it is, as before.
+FIXES_FRONT["port/linux/src/xbox_files.c#shrink"] = [
+("BOOL WINAPI SetEndOfFile(HANDLE handle)\n{", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_FRONT #shrink): the handle keeps its place, at the
+new end, on a descriptor opened again */
+static BOOL psp_transfer_all(int descriptor, char *data, unsigned long size, int writing)
+{
+	while (size)
+	{
+		ssize_t count = writing ? write(descriptor, data, size) : read(descriptor, data, size);
+
+		if (count <= 0)
+			return FALSE;
+		data += count;
+		size -= (unsigned long)count;
+	}
+	return TRUE;
+}
+
+static BOOL psp_file_shorten(struct platform_file *file, unsigned long length)
+{
+	char *kept = NULL;
+	int descriptor;
+	BOOL success = FALSE;
+
+	if (length && !(kept = malloc(length)))
+	{
+		SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+		return FALSE;
+	}
+	close(file->descriptor);
+	descriptor = open(file->path, O_RDONLY | O_CLOEXEC);
+	if (descriptor >= 0)
+	{
+		success = psp_transfer_all(descriptor, kept, length, 0);
+		close(descriptor);
+	}
+	/* a part that couldn't be read is left in the file, not lost */
+	descriptor = open(file->path, (success ? O_TRUNC : 0) | O_RDWR | O_CLOEXEC, 0644);
+	if (descriptor >= 0)
+	{
+		if (success)
+			success = psp_transfer_all(descriptor, kept, length, 1);
+		lseek(descriptor, (off_t)length, SEEK_SET);
+	}
+	else
+		success = FALSE;
+	file->descriptor = descriptor;
+	if (!success)
+		platform_set_last_error_from_errno(errno);
+	free(kept);
+	return success;
+}
+#endif
+
+BOOL WINAPI SetEndOfFile(HANDLE handle)
+{"""),
+("""	if (posix_seek(file->descriptor, 0, 0, SEEK_CUR, &low, &high) != 0 ||
+		posix_truncate(file->descriptor, low, high) != 0)
+	{
+		platform_set_last_error_from_errno(errno);
+		return FALSE;
+	}
+	return TRUE;
+}""", """#ifdef HALO_PSP
+	if (posix_seek(file->descriptor, 0, 0, SEEK_CUR, &low, &high) != 0)
+	{
+		platform_set_last_error_from_errno(errno);
+		return FALSE;
+	}
+	{
+		/* psp_fixups.py (FIXES_FRONT #shrink) */
+		extern int psp_keep(const char *name);
+		off_t end = lseek(file->descriptor, 0, SEEK_END);
+
+		lseek(file->descriptor, (off_t)low, SEEK_SET);
+		/* only files whose kept part fits a heap block: the saved games'
+		list is at most 100 entries (52 KB); the game state files are only
+		ever lengthened, and one left longer by an older build stays as it
+		was rather than needing 3 MB of heap */
+		if (!high && end > (off_t)low && low <= 0x10000 && !psp_keep("shrinkold"))
+			return psp_file_shorten(file, low);
+	}
+	if (posix_truncate(file->descriptor, low, high) != 0)
+#else
+	if (posix_seek(file->descriptor, 0, 0, SEEK_CUR, &low, &high) != 0 ||
+		posix_truncate(file->descriptor, low, high) != 0)
+#endif
+	{
+		platform_set_last_error_from_errno(errno);
+		return FALSE;
+	}
+	return TRUE;
+}"""),
+]
+
+# CopyFileA's 64 KB buffer was on the stack, and the game copies with it on
+# its player profile thread (a profile renamed: synchronize_metadata_display_
+# name_with_profile_name copies blam.sav and savegame.bin to the new name's
+# folder). The port gives such threads 48 KB of stack (CreateThread's floor),
+# so naming a new profile ran the thread 18 KB or more past its stack: the
+# crash saving a new profile (pthread0007, a breakpoint in the firmware), and
+# the new name's folder left with its SaveMeta.xbx and no blam.sav, which
+# then refused that name for good ("maybe the name is already in use?"). On
+# the PSP the buffer is taken from the heap, or a small one on the stack when
+# the heap has no 64 KB to give. No keep word: the old way is the overflow.
+FIXES_FRONT["port/linux/src/xbox_files.c#copybuffer"] = [
+("""	char buffer[65536];
+	int source, destination;""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT #copybuffer): game threads have 48 KB of
+	stack */
+	char small_buffer[2048];
+	char *buffer = small_buffer;
+	size_t buffer_size = sizeof(small_buffer);
+#else
+	char buffer[65536];
+	size_t buffer_size = sizeof(buffer);
+#endif
+	int source, destination;"""),
+("""	for (;;)
+	{
+		ssize_t count = read(source, buffer, sizeof(buffer));""", """#ifdef HALO_PSP
+	{
+		char *heap_buffer = malloc(65536);
+
+		if (heap_buffer)
+		{
+			buffer = heap_buffer;
+			buffer_size = 65536;
+		}
+	}
+#endif
+	for (;;)
+	{
+		ssize_t count = read(source, buffer, buffer_size);"""),
+("""	close(source);
+	close(destination);
+	return success;
+}""", """	close(source);
+	close(destination);
+#ifdef HALO_PSP
+	if (buffer != small_buffer)
+		free(buffer);
+#endif
+	return success;
+}"""),
+]
+
+# A save folder holding its SaveMeta.xbx but neither blam.sav nor blam.lst
+# can't be listed, opened or deleted from the menus ("random crap found by
+# XFindNextSaveGame()"), yet its name is taken: XCreateSaveGame refuses any
+# name whose folder exists. On the Xbox the dashboard's memory screen could
+# remove one; the PSP has none, so the launch's enumeration removes them
+# (after its folder scan, not during it). Such folders came from a rename cut
+# short (the copy above). A save folder's delete also scans again while the
+# folder is still there, in case the stick's listing skipped an entry the
+# first pass removed beside it. Keep word "ghostskeep": both as before.
+FIXES_FRONT["port/linux/src/xbox_xapi.c#ghosts"] = [
+("""	delete_tree(directory);
+	return ERROR_SUCCESS;""", """#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_FRONT #ghosts) */
+		extern int psp_keep(const char *name);
+		int pass;
+
+		delete_tree(directory);
+		if (!psp_keep("ghostskeep"))
+		{
+			for (pass = 0; pass < 2 && GetFileAttributesA(directory) != (DWORD)-1; pass++)
+				delete_tree(directory);
+			if (GetFileAttributesA(directory) != (DWORD)-1)
+				return ERROR_DIR_NOT_EMPTY;
+		}
+	}
+#else
+	delete_tree(directory);
+#endif
+	return ERROR_SUCCESS;"""),
+]
+FIXES_FRONT["source/saved games/saved_game_files.c#ghosts"] = [
+("""	long number_of_enumerated_files = 0;
+
+	while (memory_unit_index <= _memory_unit_hard_drive)
+	{
+		if (take_mutex(saved_game_files_globals.general_mutex, SAVED_GAME_FILES_MUTEX_TIMEOUT))""", """	long number_of_enumerated_files = 0;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FRONT #ghosts) */
+	enum { PSP_GHOSTS = 4 };
+	WCHAR psp_ghost_names[PSP_GHOSTS][MAX_GAMENAME];
+	char psp_ghost_folders[PSP_GHOSTS][16];
+	long psp_ghost_count = 0;
+#endif
+
+	while (memory_unit_index <= _memory_unit_hard_drive)
+	{
+		if (take_mutex(saved_game_files_globals.general_mutex, SAVED_GAME_FILES_MUTEX_TIMEOUT))"""),
+("""										wide_to_ascii(message, (char *)message, sizeof(message)));
+									file.type = NONE;""", """										wide_to_ascii(message, (char *)message, sizeof(message)));
+									file.type = NONE;
+#ifdef HALO_PSP
+									if (psp_ghost_count < PSP_GHOSTS)
+									{
+										csmemcpy(psp_ghost_names[psp_ghost_count], find_data.szSaveGameName,
+											sizeof(psp_ghost_names[psp_ghost_count]));
+										psp_ghost_names[psp_ghost_count][MAX_GAMENAME - 1] = 0;
+										csstrncpy(psp_ghost_folders[psp_ghost_count], find_data.wfd.cFileName,
+											sizeof(psp_ghost_folders[psp_ghost_count]) - 1);
+										psp_ghost_folders[psp_ghost_count][sizeof(psp_ghost_folders[psp_ghost_count]) - 1] = 0;
+										psp_ghost_count++;
+									}
+#endif"""),
+("""						while ((boolean)XFindNextSaveGame(find_handle, &find_data));
+
+						if (!XFindClose(find_handle))
+						{
+							error(_error_silent, "XFindClose() failed");
+						}
+""", """						while ((boolean)XFindNextSaveGame(find_handle, &find_data));
+
+						if (!XFindClose(find_handle))
+						{
+							error(_error_silent, "XFindClose() failed");
+						}
+#ifdef HALO_PSP
+						{
+							extern int psp_keep(const char *name);
+							extern void platform_log(const char *format, ...);
+							long ghost;
+
+							for (ghost = 0; ghost < psp_ghost_count && !psp_keep("ghostskeep"); ghost++)
+							{
+								platform_log("saved games: %s the save folder %s (no blam.sav or blam.lst)",
+									XDeleteSaveGame(root_path, psp_ghost_names[ghost]) ? "failed to delete" : "deleted",
+									psp_ghost_folders[ghost]);
+							}
+							psp_ghost_count = 0;
+						}
 #endif
 """),
 ]
@@ -21572,6 +23400,441 @@ float psp_player_crouch(void)
 	return biped ? biped->biped.crouch : -1.0f;
 }
 #endif"""),
+]
+
+# ---------- FIXES_MENUS: the menus as the PSP's (docs/review_menus.md)
+# the maintainer's call: the PSP's glyphs wherever an Xbox button shows, each
+# build's main menu without the other mode, the PSP named where the menus'
+# text names the Xbox. Keep words: "xboxglyphs" (the Xbox's buttons, here as
+# in play), "glyphmapfixed" (each icon site's own map, not the one the pad
+# is in), "menumultiplayer" / "menucampaign" (the entry back),
+# "menuwarnall" (the red warnings of designed stops back), "xboxwording".
+FIXES_MENUS = {}
+
+FIXES_MENUS["source/interface/ui_widget.c#menus"] = [
+("""static short draw_bitmap_texel_y = 0;
+""",
+ """static short draw_bitmap_texel_y = 0;
+#ifdef HALO_PSP
+/* the same for the column: the virtual keyboard's legend covers its Xbox
+buttons with its own background from beside them (psp_keyboard_background) */
+static short draw_bitmap_texel_x = 0;
+#endif
+"""),
+("""			vertices[vertex_index].texture_coordinates.x =
+				(vertex_index % 3) ? texture_width : 0.0f;""",
+ """			vertices[vertex_index].texture_coordinates.x =
+#ifdef HALO_PSP
+				draw_bitmap_texel_x / bitmap_width +
+#endif
+				((vertex_index % 3) ? texture_width : 0.0f);"""),
+("""static void widget_instance_render_recursive(
+	struct widget_instance *widget,
+	rectangle2d *clip_rect,
+	point2d offset,
+	boolean focus,
+	boolean use_nifty_plasma_fx)
+{""",
+ """#ifdef HALO_PSP
+extern int psp_button_glyph(int icon, int menus, unsigned short cell[4]);
+extern void psp_ge_glyph_next(int glyph);
+/* (its label to its right: psp_ge.c draws a larger glyph away from it) */
+extern void psp_ge_glyph_next_labelled(int glyph);
+
+/* a screen's button key ("a_butn" beside its "=SELECT" label) is a widget
+whose picture is the Xbox's button, so the text's icon hook never sees it:
+drawn as the PSP's glyph for that button in the menus, in its label's colour
+as the text's icons are (NONE: not a key, or "xboxglyphs") */
+static int psp_menu_key_glyph(
+	struct widget_instance *widget,
+	struct ui_widget_definition const *definition,
+	pixel32 *color)
+{
+	short button = ui_mouse_key_button(widget);
+	short best_distance = 17;
+	struct widget_instance *sibling;
+	int glyph;
+
+	if (button == NONE || (glyph = psp_button_glyph(button, TRUE, NULL)) < 0)
+		return NONE;
+	/* the label: the text box that starts just right of the key, as
+	ui_mouse_note_target pairs them */
+	for (sibling = widget->parent ? widget->parent->child : NULL; sibling; sibling = sibling->next)
+	{
+		struct ui_widget_definition const *label;
+		short distance;
+
+		if (sibling == widget || sibling->type != _ui_widget_type_text_box || !sibling->visible)
+			continue;
+		label = ui_widget_definition_get(sibling->definition_tag_index);
+		distance = (short)ABS(label->bounds.x0 + sibling->horizontal_offset -
+			(definition->bounds.x1 + widget->horizontal_offset));
+		if (distance < best_distance &&
+			label->bounds.y0 + sibling->vertical_offset < definition->bounds.y1 + widget->vertical_offset &&
+			label->bounds.y1 + sibling->vertical_offset > definition->bounds.y0 + widget->vertical_offset)
+		{
+			best_distance = distance;
+			*color = (*color & 0xFF000000) | (real_argb_color_to_pixel32(&label->text_color) & 0x00FFFFFF);
+		}
+	}
+	return glyph;
+}
+
+/* one part of the virtual keyboard's background, texel for texel: the
+screen's (x0, y0)-(x1, y1) from the picture's (texel_x, texel_y) */
+static void psp_keyboard_piece(
+	struct bitmap_data *bitmap,
+	short x0,
+	short y0,
+	short x1,
+	short y1,
+	short texel_x,
+	short texel_y)
+{
+	rectangle2d rect, texels;
+
+	rect.x0 = x0;
+	rect.y0 = y0;
+	rect.x1 = x1;
+	rect.y1 = y1;
+	texels.x0 = 0;
+	texels.y0 = 0;
+	texels.x1 = (short)(x1 - x0);
+	texels.y1 = (short)(y1 - y0);
+	draw_bitmap_texel_x = texel_x;
+	draw_bitmap_texel_y = texel_y;
+	draw_bitmap_in_rect(bitmap, &rect, &texels, NULL, 0xffffffff, NULL, FALSE);
+	draw_bitmap_texel_x = 0;
+	draw_bitmap_texel_y = 0;
+}
+
+/* (virtual_keyboard.c) The keyboard's "=BACK" and "=ENTER" legends, Xbox
+buttons and all, are its full-screen background picture's own
+(virtual_keyboard.c's legend rectangles). The picture is drawn in parts
+round the two buttons' boxes, each box filled from the same rows left of the
+legends (no key or text there; drawing over the button would only blend
+with it), then the PSP's glyph is drawn in each in the legends' blue. The
+places are measured on the rendered screen; the picture itself is left as
+it is. FALSE: drawn as the game draws it ("xboxglyphs") */
+boolean psp_keyboard_background(
+	struct bitmap_data *bitmap)
+{
+	static short const buttons[2][3] =
+	{
+		{ _icon_b_button, 368, 392 },
+		{ _icon_a_button, 470, 494 },
+	};
+	short const band_y0 = 412, band_y1 = 442, face_y0 = 416, face_y1 = 440, fill_x = 336;
+	int glyphs[NUMBEROF(buttons)];
+	short x = 0;
+	short index;
+
+	for (index = 0; index < NUMBEROF(buttons); index++)
+	{
+		glyphs[index] = psp_button_glyph(buttons[index][0], TRUE, NULL);
+		if (glyphs[index] < 0)
+			return FALSE;
+	}
+	psp_keyboard_piece(bitmap, 0, 0, 640, band_y0, 0, 0);
+	psp_keyboard_piece(bitmap, 0, band_y1, 640, 480, 0, band_y1);
+	for (index = 0; index < NUMBEROF(buttons); index++)
+	{
+		short box_x0 = (short)(buttons[index][1] - 2), box_x1 = (short)(buttons[index][2] + 2);
+
+		psp_keyboard_piece(bitmap, x, band_y0, box_x0, band_y1, x, band_y0);
+		psp_keyboard_piece(bitmap, box_x0, band_y0, box_x1, band_y1, fill_x, band_y0);
+		x = box_x1;
+	}
+	psp_keyboard_piece(bitmap, x, band_y0, 640, band_y1, x, band_y0);
+	for (index = 0; index < NUMBEROF(buttons); index++)
+	{
+		rectangle2d face, texels;
+
+		face.x0 = buttons[index][1];
+		face.x1 = buttons[index][2];
+		face.y0 = face_y0;
+		face.y1 = face_y1;
+		texels.x0 = 0;
+		texels.y0 = 0;
+		texels.x1 = (short)(face.x1 - face.x0);
+		texels.y1 = (short)(face.y1 - face.y0);
+		psp_ge_glyph_next_labelled(glyphs[index]);
+		draw_bitmap_in_rect(bitmap, &face, &texels, NULL, 0xff2090f0, NULL, FALSE);
+		psp_ge_glyph_next(NONE);
+	}
+	return TRUE;
+}
+
+/* the main menu's entry for the mode a build hasn't got (the campaign
+build's MULTIPLAYER, whose menus' units are compiled out; the multiplayer
+build's CAMPAIGN), told by where it leads rather than by its place: an
+entry that opens a screen of the multiplayer menus, or the one that runs the
+new campaign's "new game if no plyr profiles" */
+#define PSP_MULTIPLAYER_MENUS "ui\\\\shell\\\\main_menu\\\\multiplayer_type_select\\\\"
+enum
+{
+	_psp_menu_entry_other = 0,
+	_psp_menu_entry_campaign,
+	_psp_menu_entry_multiplayer,
+
+	PSP_FUNCTION_NEW_GAME_IF_NO_PROFILES = 101,
+};
+
+static short psp_menu_entry_mode(
+	long definition_tag_index,
+	short depth)
+{
+	struct ui_widget_definition *definition;
+	struct ui_widget_event_handler_reference *handlers;
+	struct ui_widget_child_reference *children;
+	long index;
+
+	if (definition_tag_index == NONE)
+		return _psp_menu_entry_other;
+	definition = ui_widget_definition_get(definition_tag_index);
+	handlers = (struct ui_widget_event_handler_reference *)xbox_pointer(definition->event_handlers.address);
+	for (index = 0; index < definition->event_handlers.count; index++)
+	{
+		char const *name = handlers[index].widget_tag.index != NONE ? tag_get_name(handlers[index].widget_tag.index) : NULL;
+
+		if (TEST_FLAG(handlers[index].flags, _event_handler_run_function_bit) &&
+			handlers[index].function == PSP_FUNCTION_NEW_GAME_IF_NO_PROFILES)
+		{
+			return _psp_menu_entry_campaign;
+		}
+		if (name && !strncmp(name, PSP_MULTIPLAYER_MENUS, sizeof(PSP_MULTIPLAYER_MENUS) - 1))
+			return _psp_menu_entry_multiplayer;
+	}
+	/* (an entry may be a frame round the item that answers) */
+	if (depth > 0)
+	{
+		children = (struct ui_widget_child_reference *)xbox_pointer(definition->child_widgets.address);
+		for (index = 0; index < definition->child_widgets.count; index++)
+		{
+			short mode = psp_menu_entry_mode(children[index].widget_tag.index, (short)(depth - 1));
+
+			if (mode != _psp_menu_entry_other)
+				return mode;
+		}
+	}
+	return _psp_menu_entry_other;
+}
+
+static void psp_main_menu_without_other_mode(
+	void)
+{
+#ifdef PSP_MULTIPLAYER
+	short const dropped = _psp_menu_entry_campaign;
+	boolean const kept = PSP_KEEP_ONCE("menucampaign");
+#else
+	short const dropped = _psp_menu_entry_multiplayer;
+	boolean const kept = PSP_KEEP_ONCE("menumultiplayer");
+#endif
+	struct tag_iterator iterator;
+	long list_tag;
+	long lists = 0;
+
+	if (kept)
+		return;
+	tag_iterator_new(&iterator, UI_WIDGET_DEFINITION_TAG);
+	while ((list_tag = tag_iterator_next(&iterator)) != NONE)
+	{
+		struct ui_widget_definition *list = ui_widget_definition_get(list_tag);
+		struct ui_widget_child_reference *children =
+			(struct ui_widget_child_reference *)xbox_pointer(list->child_widgets.address);
+		short found[3] = { NONE, NONE, NONE };
+		short x[16], y[16];
+		long count = list->child_widgets.count;
+		long index;
+
+		if (count < 2 || count > NUMBEROF(x))
+			continue;
+		for (index = 0; index < count; index++)
+		{
+			struct ui_widget_definition const *item = children[index].widget_tag.index != NONE ?
+				ui_widget_definition_get(children[index].widget_tag.index) : NULL;
+			short mode = psp_menu_entry_mode(children[index].widget_tag.index, 1);
+
+			/* (a mode found twice: not the main menu) */
+			found[mode] = found[mode] == NONE ? (short)index : (short)-2;
+			x[index] = (short)((item ? item->bounds.x0 : 0) + children[index].horizontal_offset);
+			y[index] = (short)((item ? item->bounds.y0 : 0) + children[index].vertical_offset);
+		}
+		/* the main menu: one entry of each mode (dropped once, the list no
+		longer matches, so a map's tags loaded again aren't cut twice) */
+		if (found[_psp_menu_entry_campaign] < 0 || found[_psp_menu_entry_multiplayer] < 0)
+			continue;
+		/* the entries after it each take the place of the one before, so
+		the list closes up, and up and down move between what's left */
+		for (index = count - 1; index > found[dropped]; index--)
+		{
+			children[index].horizontal_offset = (short)(children[index].horizontal_offset + x[index - 1] - x[index]);
+			children[index].vertical_offset = (short)(children[index].vertical_offset + y[index - 1] - y[index]);
+		}
+		csmemmove(&children[found[dropped]], &children[found[dropped] + 1],
+			(count - found[dropped] - 1) * sizeof(*children));
+		list->child_widgets.count--;
+		lists++;
+	}
+	if (lists)
+		error(_error_log, "menus: the main menu without the %s entry (\\"%s\\" brings it back)",
+			dropped == _psp_menu_entry_campaign ? "campaign" : "multiplayer",
+			dropped == _psp_menu_entry_campaign ? "menucampaign" : "menumultiplayer");
+}
+
+/* the menus' text names the Xbox where the PSP is meant: each string list's
+"Xbox" made the PSP's, in place (only ever shorter, so every string keeps
+its own room). The longer phrases first, so the result reads naturally */
+static void psp_menu_strings_name_the_psp(
+	void)
+{
+	static struct
+	{
+		wchar_t const *from;
+		wchar_t const *to;
+	} const swaps[] =
+	{
+		{ L"Xbox video game system", L"PSP system" },
+		{ L"Xbox Video Game System", L"PSP System" },
+		{ L"Xbox console", L"PSP" },
+		{ L"Xbox Console", L"PSP" },
+		{ L"Xbox Hard Disk", L"Memory Stick" },
+		{ L"Xbox hard disk", L"Memory Stick" },
+		{ L"Xbox", L"PSP" },
+		{ L"XBOX", L"PSP" },
+	};
+	long counts[NUMBEROF(swaps)];
+	struct tag_iterator iterator;
+	long list_tag;
+	long total = 0;
+	long index;
+
+	if (PSP_KEEP_ONCE("xboxwording"))
+		return;
+	csmemset(counts, 0, sizeof(counts));
+	tag_iterator_new(&iterator, UNICODE_STRING_LIST_TAG);
+	while ((list_tag = tag_iterator_next(&iterator)) != NONE)
+	{
+		struct string_list *list = unicode_string_list_definition_get(list_tag);
+		long string_index;
+
+		for (string_index = 0; string_index < list->strings.count; string_index++)
+		{
+			struct string_list_entry *entry = TAG_BLOCK_GET_ELEMENT(&list->strings, string_index, struct string_list_entry);
+			long length = entry->string.size / (long)sizeof(wchar_t);
+			wchar_t *text = length > 0 ? tag_data_get_pointer(&entry->string, 0, entry->string.size) : NULL;
+			long at;
+
+			if (!text)
+				continue;
+			for (at = 0; at < length && text[at]; at++)
+			{
+				for (index = 0; index < NUMBEROF(swaps); index++)
+				{
+					long from = (long)wcslen(swaps[index].from);
+					long to = (long)wcslen(swaps[index].to);
+
+					if (at + from <= length && !wcsncmp(text + at, swaps[index].from, from))
+					{
+						csmemcpy(text + at, swaps[index].to, to * sizeof(wchar_t));
+						csmemmove(text + at + to, text + at + from, (length - at - from) * sizeof(wchar_t));
+						csmemset(text + length - (from - to), 0, (from - to) * sizeof(wchar_t));
+						at += to - 1;
+						counts[index]++;
+						total++;
+						break;
+					}
+				}
+			}
+		}
+	}
+	if (total)
+		error(_error_log, "menus: \\"Xbox\\" made the PSP's in the strings %ld times (%ld %ld %ld %ld %ld %ld %ld %ld by phrase; \\"xboxwording\\" keeps them)",
+			total, counts[0], counts[1], counts[2], counts[3], counts[4], counts[5], counts[6], counts[7]);
+}
+
+/* (cache_files.c) each map's tags, as they load */
+void psp_menu_tags_loaded(
+	void)
+{
+	psp_main_menu_without_other_mode();
+	psp_menu_strings_name_the_psp();
+}
+#endif
+static void widget_instance_render_recursive(
+	struct widget_instance *widget,
+	rectangle2d *clip_rect,
+	point2d offset,
+	boolean focus,
+	boolean use_nifty_plasma_fx)
+{"""),
+("""				draw_bitmap_texel_y = texel_y;
+				draw_bitmap_in_rect(""",
+ """				draw_bitmap_texel_y = texel_y;
+#ifdef HALO_PSP
+				psp_ge_glyph_next_labelled(psp_menu_key_glyph(widget, definition, &color));
+#endif
+				draw_bitmap_in_rect("""),
+("""					FALSE);
+				draw_bitmap_texel_y = 0;""",
+ """					FALSE);
+#ifdef HALO_PSP
+				/* (a quad that wasn't drawn mustn't hand the glyph on) */
+				psp_ge_glyph_next(NONE);
+#endif
+				draw_bitmap_texel_y = 0;"""),
+]
+
+FIXES_MENUS["source/interface/virtual_keyboard.c#menus"] = [
+("""		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
+	}
+""",
+ """#ifdef HALO_PSP
+		/* the legends' Xbox buttons are the picture's own (ui_widget.c) */
+		extern boolean psp_keyboard_background(struct bitmap_data *bitmap);
+
+		if (!psp_keyboard_background(bitmap))
+#endif
+		draw_bitmap_in_rect(bitmap, &bounds, &bounds, NULL, 0xffffffff, NULL, FALSE);
+	}
+"""),
+]
+
+FIXES_MENUS["source/cache/cache_files.c#menus"] = [
+("""				menu_tags_loaded(cache_file_globals.header.name);
+			}
+""",
+ """				menu_tags_loaded(cache_file_globals.header.name);
+			}
+#ifdef HALO_PSP
+			/* the menus as the PSP's (interface/ui_widget.c) */
+			{
+				extern void psp_menu_tags_loaded(void);
+
+				psp_menu_tags_loaded();
+			}
+#endif
+"""),
+]
+
+# A menu function's FALSE is often a designed stop, not a failure: "new game
+# if no plyr profiles" with no profiles has opened the name entry itself,
+# "player profile begin editing" on an empty slot has opened the "create a
+# new profile?" dialog, and FALSE stops the handler's own next screen from
+# opening over them. The Xbox noted each silently (error, _error_silent, in
+# event_handler_dispatch, still in debug.txt); ChupathingyCE's console
+# warning drew them in red over the menus. Now in debug.txt, by name, as the
+# Xbox's note; keep word "menuwarnall" draws them in red as before.
+FIXES_MENUS["source/interface/ui_widget_event_handler_functions.c#menus"] = [
+("""		if (!result)
+			console_warning("event handler '%s' failed", event_handler_function_list.names[(short)function_index]);""",
+ """#ifdef HALO_PSP
+		if (!result && !PSP_KEEP_ONCE("menuwarnall"))
+			error(_error_silent, "event handler '%s' answered FALSE", event_handler_function_list.names[(short)function_index]);
+		else
+#endif
+		if (!result)
+			console_warning("event handler '%s' failed", event_handler_function_list.names[(short)function_index]);"""),
 ]
 
 SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
@@ -22186,6 +24449,312 @@ FIXES_WAKE["source/render/render_objects.c#wake_render_state"] = [
 		}
 """),
 ]
+# A game state loaded (a checkpoint revert, a saved game, a core load) puts
+# back every object's bytes without marking any, often under the identifier
+# the object slept with, and a new map or a map reset can deal a slot the
+# identifier its last owner had: either way an unmarked sleeper would keep the
+# checksum it slept with and skip its update on bytes that aren't the ones
+# summed. So both empty the sleep, restless and mark tables, and every object
+# is summed afresh as a new one (exact by construction: it only makes the
+# checks run). "sleepforgetoff" (keep.txt): the tables kept across, as before
+FIXES_WAKE["source/objects/objects.c#wake_forget"] = [
+("""long psp_objects_restless_skipped; /* updates made without the checks (the heartbeat's sleep line) */
+""", """long psp_objects_restless_skipped; /* updates made without the checks (the heartbeat's sleep line) */
+
+/* psp_fixups.py (FIXES_WAKE): what the tables say of a slot stops being
+about its object's bytes once a game state loads or a map starts */
+void psp_sleep_forget(void)
+{
+	if (PSP_KEEP_ONCE("sleepforgetoff"))
+		return;
+	csmemset(psp_sleep, 0, sizeof(psp_sleep));
+	csmemset(psp_restless, 0, sizeof(psp_restless));
+	csmemset(psp_wake_marked, 0, sizeof(psp_wake_marked));
+}
+"""),
+]
+FIXES_WAKE["source/saved games/game_state.c#wake_forget"] = [
+("""static game_state_before_load_proc before_load_procs[] =
+{""",
+ """#ifdef HALO_PSP
+void psp_sleep_forget(void); /* objects.c (psp_fixups.py, FIXES_WAKE) */
+#endif
+
+static game_state_before_load_proc before_load_procs[] =
+{"""),
+("""	game_sound_clear,
+""", """	game_sound_clear,
+#ifdef HALO_PSP
+	psp_sleep_forget,
+#endif
+"""),
+# here rather than in objects_initialize_for_new_map: this unit isn't one the
+# profile counts, so a release's profile still matches
+("""	game_state_note_event("map start");
+""", """	game_state_note_event("map start");
+#ifdef HALO_PSP
+	psp_sleep_forget();
+#endif
+"""),
+]
+# the player's flip: the vehicle's upending flag and approach side, written
+# into a vehicle that has usually been asleep since it came to rest upside
+# down. Unmarked, the sleeper keeps its old checksum, its update never runs,
+# the torque never starts and the flag never clears, so the prompt never
+# comes back (wakecheck's hands-off ladder has no player to press, so it
+# couldn't see this writer). "flipwakeoff": the flip left unmarked, for an A/B
+FIXES_WAKE["source/game/players.c#wake_flip"] = [
+("""		target_vehicle->vehicle.unknown42A = 0;
+""", """		target_vehicle->vehicle.unknown42A = 0;
+		if (!PSP_KEEP_ONCE("flipwakeoff"))
+		{
+			void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+
+			psp_wake(player->action_object_index);
+		}
+"""),
+]
+
+# ---------- FIXES_DRIVE: a scripted Warthog drive, the same on the PSP and the PC
+# A drive the emulator and ChupathingyCE's desktop build can both play with no
+# hands, so their vehicle physics compare on the same input: the PC reference
+# hooks carry these pairs to the desktop tree by their keep word, and there
+# the guard is opened, so on the PC they are built whatever the build. On the
+# PSP only in PSP_DEBUG_TOOLS builds: it creates and moves a vehicle.
+# "drivetest" (keep.txt): at game time drivetestatN (2700, b30's beach after
+# the landing), the AI erased (and again every second, so only the vehicle's
+# own physics plays), a Warthog made where the player stands, facing the
+# nearest scenery 4-25 units off, and the player put in its driver's seat.
+# Then a fixed schedule of throttle and steering, by ticks from the start:
+# 0-30 still; 30-180 full ahead at the scenery (a collision with an object);
+# 180-240 reverse; 240-540 full ahead, steering hard left (a donut); 540-840
+# hard right; 840-900 still. Each tick of it logs the Warthog's place,
+# motion, facing and spin ("drivetest:" lines; Sierra-III tools/drivecmp.py
+# compares two runs)
+FIXES_DRIVE = {}
+FIXES_DRIVE["source/units/units.c#drivetest"] = [
+("""					_unit_animation_postpone_weapon_ik_until_interpolation_ends_bit,
+					FALSE);
+			}
+		}
+	}
+
+	return;
+}
+""", """					_unit_animation_postpone_weapon_ik_until_interpolation_ends_bit,
+					FALSE);
+			}
+		}
+	}
+
+	return;
+}
+
+#ifdef HALO_PSP
+#if !defined(__psp__) || defined(PSP_DEBUG_TOOLS)
+/* "drivetest": psp_fixups.py's FIXES_DRIVE says what it plays */
+#include "cache/cache_files.h"
+#include "hs/hs.h"
+#include "tag_files/tag_files.h"
+#include "units/vehicle_definitions.h"
+
+int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
+void platform_psp_log(const char *format, ...);
+
+#define PSP_DRIVE_TICKS 900
+static int psp_drive_on = -1;
+static long psp_drive_start, psp_drive_vehicle = NONE, psp_drive_target = NONE;
+static struct unit_control_data psp_drive_control_data;
+
+/* the map's Warthog: the vehicle tag whose name ends in "warthog" */
+long psp_drive_warthog_definition(void)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, VEHICLE_DEFINITION_TAG);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		char const *name = tag_get_name(tag_index);
+		size_t length = strlen(name);
+
+		if (length >= 7 && !strcmp(name + length - 7, "warthog"))
+			return tag_index;
+	}
+	return NONE;
+}
+
+/* a horizontal unit vector from a to b; FALSE when they are on one vertical */
+static boolean psp_drive_heading(real_point3d const *a, real_point3d const *b, real_vector3d *heading)
+{
+	real length;
+
+	heading->i = b->x - a->x;
+	heading->j = b->y - a->y;
+	heading->k = 0.0f;
+	length = (real)sqrt(heading->i * heading->i + heading->j * heading->j);
+	if (length < 0.001f)
+		return FALSE;
+	heading->i /= length;
+	heading->j /= length;
+	return TRUE;
+}
+
+static void psp_drive_begin(long unit_index)
+{
+	struct object_datum *unit = object_get(unit_index);
+	struct object_iterator iterator;
+	struct object_datum *object;
+	struct object_placement_data data;
+	struct unit_definition *definition;
+	long warthog = psp_drive_warthog_definition();
+	real best = 25.0f * 25.0f;
+	real_vector3d heading;
+	short seat_index;
+
+	hs_compile_and_evaluate("ai_erase_all");
+	if (warthog == NONE)
+	{
+		platform_psp_log("drivetest: t=%ld no Warthog in this map's tags", game_time_get());
+		return;
+	}
+	object_iterator_new(&iterator, _object_mask_scenery, 0);
+	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
+	{
+		real dx = object->object.position.x - unit->object.position.x;
+		real dy = object->object.position.y - unit->object.position.y;
+		real distance = dx * dx + dy * dy;
+
+		if (distance >= 4.0f * 4.0f && distance < best && object->object.bounding_sphere_radius >= 0.5f)
+		{
+			best = distance;
+			psp_drive_target = iterator.index;
+		}
+	}
+	heading.i = unit->object.forward.i;
+	heading.j = unit->object.forward.j;
+	heading.k = 0.0f;
+	if (psp_drive_target != NONE)
+		psp_drive_heading(&unit->object.position, &object_get(psp_drive_target)->object.position, &heading);
+	object_placement_data_new(&data, warthog, NONE);
+	data.position = unit->object.position;
+	data.position.z += 0.8f;
+	data.forward = heading;
+	data.up = *global_up3d;
+	psp_drive_vehicle = object_new(&data);
+	if (psp_drive_vehicle == NONE)
+	{
+		platform_psp_log("drivetest: t=%ld the Warthog couldn't be made", game_time_get());
+		return;
+	}
+	definition = unit_definition_get(object_get(psp_drive_vehicle)->definition_index);
+	for (seat_index = 0; seat_index < definition->unit.seats.count; seat_index++)
+		if (TEST_FLAG(TAG_BLOCK_GET_ELEMENT(&definition->unit.seats, seat_index, struct unit_seat)->flags, _unit_seat_driver_bit))
+			break;
+	if (seat_index == definition->unit.seats.count || !unit_enter_seat(unit_index, psp_drive_vehicle, seat_index))
+		platform_psp_log("drivetest: t=%ld the player couldn't take the driver's seat", game_time_get());
+	unit = object_get(unit_index);
+	platform_psp_log("drivetest: t=%ld %s #%08lx made at %.4f %.4f %.4f heading %.4f %.4f; target %s at %.4f %.4f %.4f radius %.3f",
+		game_time_get(), tag_get_name(warthog), (unsigned long)psp_drive_vehicle, data.position.x, data.position.y, data.position.z,
+		heading.i, heading.j, psp_drive_target != NONE ? tag_get_name(object_get(psp_drive_target)->definition_index) : "none",
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.x : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.y : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.position.z : 0.0f,
+		psp_drive_target != NONE ? object_get(psp_drive_target)->object.bounding_sphere_radius : 0.0f);
+}
+
+/* the player's control during the drive: the schedule's throttle and a
+facing the Warthog steers to (at the target, or square to its left or right
+for full lock) */
+struct unit_control_data const *psp_drive_control(long unit_index, struct unit_control_data const *control_data)
+{
+	struct unit_datum *unit = unit_get(unit_index);
+	struct object_datum *vehicle;
+	real_vector3d facing;
+	long now, step;
+	real throttle = 0.0f;
+	int steer = 0;
+
+	if (psp_drive_on < 0)
+	{
+		psp_drive_on = psp_keep("drivetest");
+		psp_drive_start = psp_keep_number("drivetestat", 2700);
+	}
+	if (!psp_drive_on || unit->unit.player_index == NONE || (now = game_time_get()) < psp_drive_start)
+		return control_data;
+	if (psp_drive_on == 1)
+	{
+		psp_drive_on = 2;
+		psp_drive_begin(unit_index);
+	}
+	step = now - psp_drive_start;
+	if (psp_drive_vehicle == NONE || step > PSP_DRIVE_TICKS ||
+		!(vehicle = (struct object_datum *)object_try_and_get_and_verify_type(psp_drive_vehicle, _object_mask_vehicle)))
+		return control_data;
+	if (step % 30 == 0 && step > 0)
+		hs_compile_and_evaluate("ai_erase_all");
+	if (step >= 30 && step < 180)
+		throttle = 1.0f;
+	else if (step >= 180 && step < 240)
+		throttle = -1.0f;
+	else if (step >= 240 && step < 540)
+		throttle = 1.0f, steer = 1;
+	else if (step >= 540 && step < 840)
+		throttle = 1.0f, steer = -1;
+	facing.i = vehicle->object.forward.i;
+	facing.j = vehicle->object.forward.j;
+	facing.k = 0.0f;
+	if (steer)
+	{
+		real i = facing.i;
+
+		facing.i = -steer * facing.j;
+		facing.j = steer * i;
+	}
+	else if (psp_drive_target != NONE && object_try_and_get_and_verify_type(psp_drive_target, _object_mask_scenery))
+		psp_drive_heading(&vehicle->object.position, &object_get(psp_drive_target)->object.position, &facing);
+	if (normalize3d(&facing) < 0.001f)
+		facing = *global_forward3d;
+	psp_drive_control_data = *control_data;
+	psp_drive_control_data.control_flags = 0;
+	psp_drive_control_data.primary_trigger = 0.0f;
+	psp_drive_control_data.throttle.i = throttle;
+	psp_drive_control_data.throttle.j = 0.0f;
+	psp_drive_control_data.throttle.k = 0.0f;
+	psp_drive_control_data.facing_vector = facing;
+	psp_drive_control_data.aiming_vector = facing;
+	psp_drive_control_data.looking_vector = facing;
+	platform_psp_log("drivetest: t=%ld step %ld throttle %.0f steer %d | pos %.4f %.4f %.4f vel %.4f %.4f %.4f "
+		"fwd %.4f %.4f %.4f up %.4f %.4f %.4f spin %.4f %.4f %.4f", now, step, throttle, steer,
+		vehicle->object.position.x, vehicle->object.position.y, vehicle->object.position.z,
+		vehicle->object.translational_velocity.i, vehicle->object.translational_velocity.j, vehicle->object.translational_velocity.k,
+		vehicle->object.forward.i, vehicle->object.forward.j, vehicle->object.forward.k,
+		vehicle->object.up.i, vehicle->object.up.j, vehicle->object.up.k,
+		vehicle->object.angular_velocity.i, vehicle->object.angular_velocity.j, vehicle->object.angular_velocity.k);
+	return &psp_drive_control_data;
+}
+#endif
+#endif
+"""),
+("""	if (unit->unit.player_index == NONE)
+		network_actors_note_control(unit_index, control_data);
+""", """#ifdef HALO_PSP
+#if !defined(__psp__) || defined(PSP_DEBUG_TOOLS)
+	{
+		/* "drivetest" (psp_fixups.py's FIXES_DRIVE): may make a vehicle,
+		so the unit is looked up again */
+		struct unit_control_data const *psp_drive_control(long unit_index, struct unit_control_data const *control_data);
+
+		control_data = psp_drive_control(unit_index, control_data);
+		unit = unit_get(unit_index);
+	}
+#endif
+#endif
+	if (unit->unit.player_index == NONE)
+		network_actors_note_control(unit_index, control_data);
+"""),
+]
 
 
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
@@ -22199,11 +24768,34 @@ FIXES_RECON = {}
 # "modelcensus" (keep.txt): every 5 s of game time, a log line of the models
 # drawn: a frame's count by object type and by size on screen (the level of
 # detail's pixels), and the definitions drawn most. b30's Pelican ride draws
-# ~167 models a frame at ~0.22 ms of CPU each (lab 38822408622); this says
-# what they are. The pairs name "modelcensus", so the lab's desktop hooks
-# (pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the same
+# ~167 models a frame at ~0.22 ms of CPU each; this says
+# what they are. The pairs name "modelcensus", so desktop hooks
+# carry them to ChupathingyCE's own build: the same
 # count from the original, on the same stretch. It also names the definition
 # being drawn for psp_ge.c's draw census (psp_census_definition)
+# "scriptsdump": the scenario's script names and types at load, so a run's
+# commands can wake one (a level's late cutscene reached without playing to it)
+FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
+("""	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
+	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+	{""",
+ """	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
+	{
+		/* psp_fixups.py (FIXES_RECON #scriptsdump) */
+		extern int psp_keep(const char *name);
+		extern void platform_psp_log(const char *format, ...);
+
+		if (psp_keep("scriptsdump"))
+			for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+			{
+				struct hs_script const *script = TAG_BLOCK_GET_ELEMENT(&scenario->hs_scripts, script_index, struct hs_script);
+
+				platform_psp_log("scriptsdump: %d %.32s type %d", (int)script_index, script->name, (int)script->script_type);
+			}
+	}
+	for (script_index = 0; script_index<scenario->hs_scripts.count; script_index++)
+	{"""),
+]
 FIXES_RECON["source/render/render_objects.c#modelcensus"] = [
 ("""static void render_object_list(
 	struct object_render_data *data,
@@ -22408,7 +25000,7 @@ void render_objects(
 # checks by object type: per tick, sleepers checked and how many of them had
 # changed (woken), and objects checked on their way to sleep. On b30 the
 # checks cost 3.8-6.8 ms a tick for 270-530 sleeping scenery objects
-# (lab 38881473541). If wakes are rare, being told a sleeper changed (when
+# (the emulator). If wakes are rare, being told a sleeper changed (when
 # something writes it) could replace checking every sleeper every tick
 FIXES_RECON["source/objects/objects.c#sleepcensus"] = [
 ("""static void psp_sleepy_update(long object_index, short absolute_index, struct object_header_datum *header, int may_sleep)
@@ -22472,16 +25064,16 @@ static void psp_sleepy_update(long object_index, short absolute_index, struct ob
 	struct object_datum const *object = header->datum;
 	unsigned long before = 0;"""),
 ("""	psp_objects_sleep_checked++;
-""", """	psp_objects_sleep_checked++;
+	if (psp_sleep_debug > 0""", """	psp_objects_sleep_checked++;
 	/* psp_fixups.py (FIXES_RECON #sleepcensus) */
 	psp_sleep_census(header->type,
 		psp_sleep[absolute_index].identifier == header->identifier && psp_sleep[absolute_index].quiet >= 2,
 		psp_sleep[absolute_index].checksum == before);
-"""),
+	if (psp_sleep_debug > 0"""),
 ]
 
 # "objtrace" (recon only): the table the emulator's object access trace reads
-# (the lab's PSP_OBJTRACE). At each objects_update the game lists every
+# (the patched emulator's PSP_OBJTRACE). At each objects_update the game lists every
 # object's data (where it lies, its type, the top-level object it belongs to,
 # whether it is asleep), and while a top-level object and its attachments
 # update, it names that object. The emulator then counts, by instruction, each
@@ -22581,9 +25173,14 @@ void objects_update(
 	
 	last_active_cluster_bits = object_globals->last_active_cluster_bits;
 """),
-("""					psp_object_update(object_index, i, object_header);
-""", """					psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
-					psp_object_update(object_index, i, object_header);
+("""					psp_nmr_tops++;
+					if (psp_ws_asleep(i, object_header))""", """					psp_nmr_tops++;
+					psp_objtrace[2] = (unsigned long)i; /* (FIXES_RECON #objtrace) */
+					if (psp_ws_asleep(i, object_header))"""),
+("""						psp_object_count(object_header->type);
+					}
+""", """						psp_object_count(object_header->type);
+					}
 					psp_objtrace[2] = (unsigned long)-1;
 """),
 ("""				object_update(DATUM_INDEX_NEW(i, object_header->identifier));
@@ -22593,8 +25190,288 @@ void objects_update(
 """),
 ]
 
+# "poolpeaks" (keep.txt): which game-state arrays and pools could shrink
+# exactly on every map. At each level's end (psp_loading.c, before the old
+# level is let go) and every 60 s of game time (psp_platform.c), a line per
+# array: its maximum count and element size, the furthest index in use since
+# the level began (the count's high-water mark: an array can't be cut below
+# it), and the count and live datums now; for a memory pool, the most in use
+# and the furthest end a block reached. The count's high-water is caught
+# where the count grows (datum_new, datum_new_at_index), a hook in hot code,
+# so this is a recon instrument. The heartbeat's "game state:" survey samples
+# every 5 s and misses peaks between its looks
+FIXES_RECON["source/memory/data.c#poolpeaks"] = [
+("""long datum_new_at_index(
+	struct data_array *data,
+	long index)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #poolpeaks): "poolpeaks" (see there) */
+int psp_data_peaks_on;
+#define PSP_DATA_PEAKS 256
+static struct { struct data_array const *data; short peak; } psp_data_peaks[PSP_DATA_PEAKS];
 
-# The shelf (Sheepdog01, 2026-10-16): experiments kept, not deleted, but built only
+static unsigned int psp_data_peak_slot(struct data_array const *data)
+{
+	unsigned int slot = ((unsigned long)data >> 3) % PSP_DATA_PEAKS, probes;
+
+	for (probes = 0; probes < PSP_DATA_PEAKS; probes++, slot = (slot + 1) % PSP_DATA_PEAKS)
+		if (psp_data_peaks[slot].data == data || !psp_data_peaks[slot].data)
+			return slot;
+	return PSP_DATA_PEAKS;
+}
+
+static void psp_data_peak_note(struct data_array const *data)
+{
+	unsigned int slot = psp_data_peak_slot(data);
+
+	if (slot == PSP_DATA_PEAKS)
+		return;
+	psp_data_peaks[slot].data = data;
+	if (data->count > psp_data_peaks[slot].peak)
+		psp_data_peaks[slot].peak = data->count;
+}
+
+/* the furthest count since the last reset (0: it hasn't grown since) */
+short psp_data_peak(struct data_array const *data)
+{
+	unsigned int slot = psp_data_peak_slot(data);
+
+	return slot < PSP_DATA_PEAKS && psp_data_peaks[slot].data == data ? psp_data_peaks[slot].peak : 0;
+}
+
+void psp_data_peaks_reset(void)
+{
+	int k;
+
+	for (k = 0; k < PSP_DATA_PEAKS; k++)
+		psp_data_peaks[k].peak = 0;
+}
+#endif
+
+long datum_new_at_index(
+	struct data_array *data,
+	long index)
+{
+"""),
+("""			if (absolute_index>=data->count)
+			{
+				data->count = absolute_index+1;
+			}
+""", """			if (absolute_index>=data->count)
+			{
+				data->count = absolute_index+1;
+#ifdef HALO_PSP
+				if (psp_data_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+					psp_data_peak_note(data);
+#endif
+			}
+"""),
+("""			if (data->count<=absolute_index)
+			{
+				data->count = absolute_index+1;
+			}
+""", """			if (data->count<=absolute_index)
+			{
+				data->count = absolute_index+1;
+#ifdef HALO_PSP
+				if (psp_data_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+					psp_data_peak_note(data);
+#endif
+			}
+"""),
+]
+FIXES_RECON["source/memory/memory_pool.c#poolpeaks"] = [
+("""boolean memory_pool_block_allocate(
+	struct memory_pool *pool,
+	void **reference,
+	long size)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #poolpeaks): "poolpeaks" (see there). A pool
+hands out blocks after its last one and compacts when that fails, so both
+count: the most in use, and the furthest a block's end reached */
+int psp_memory_pool_peaks_on;
+#define PSP_POOL_PEAKS 8
+static struct { struct memory_pool const *pool; long least_free, furthest_end; } psp_pool_peaks[PSP_POOL_PEAKS];
+
+static long psp_memory_pool_end(struct memory_pool const *pool)
+{
+	return pool->last_block ?
+		(long)((byte *)pool->last_block + pool->last_block->size - (byte *)pool->base_address) : 0;
+}
+
+static int psp_memory_pool_slot(struct memory_pool const *pool)
+{
+	int k;
+
+	for (k = 0; k < PSP_POOL_PEAKS; k++)
+		if (psp_pool_peaks[k].pool == pool)
+			return k;
+	for (k = 0; k < PSP_POOL_PEAKS; k++)
+		if (!psp_pool_peaks[k].pool)
+		{
+			psp_pool_peaks[k].pool = pool;
+			psp_pool_peaks[k].least_free = pool->size;
+			psp_pool_peaks[k].furthest_end = 0;
+			return k;
+		}
+	return -1;
+}
+
+static void psp_memory_pool_note(struct memory_pool const *pool)
+{
+	int k = psp_memory_pool_slot(pool);
+	long end = psp_memory_pool_end(pool);
+
+	if (k < 0)
+		return;
+	if (pool->free_size < psp_pool_peaks[k].least_free)
+		psp_pool_peaks[k].least_free = pool->free_size;
+	if (end > psp_pool_peaks[k].furthest_end)
+		psp_pool_peaks[k].furthest_end = end;
+}
+
+/* since the last reset, now included */
+void psp_memory_pool_peak(struct memory_pool const *pool, long *least_free, long *furthest_end)
+{
+	int k;
+
+	psp_memory_pool_note(pool);
+	k = psp_memory_pool_slot(pool);
+	*least_free = k < 0 ? pool->free_size : psp_pool_peaks[k].least_free;
+	*furthest_end = k < 0 ? psp_memory_pool_end(pool) : psp_pool_peaks[k].furthest_end;
+}
+
+void psp_memory_pool_peaks_reset(void)
+{
+	int k;
+
+	for (k = 0; k < PSP_POOL_PEAKS; k++)
+		if (psp_pool_peaks[k].pool)
+		{
+			psp_pool_peaks[k].least_free = psp_pool_peaks[k].pool->size;
+			psp_pool_peaks[k].furthest_end = 0;
+		}
+}
+#endif
+
+boolean memory_pool_block_allocate(
+	struct memory_pool *pool,
+	void **reference,
+	long size)
+{
+"""),
+("""		pool->free_size -= block->size;
+""", """		pool->free_size -= block->size;
+#ifdef HALO_PSP
+		if (psp_memory_pool_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+			psp_memory_pool_note(pool);
+#endif
+"""),
+("""		block->size = actual_new_size;
+""", """		block->size = actual_new_size;
+#ifdef HALO_PSP
+		if (psp_memory_pool_peaks_on) /* psp_fixups.py (FIXES_RECON #poolpeaks) */
+			psp_memory_pool_note(pool);
+#endif
+"""),
+]
+FIXES_RECON["source/saved games/game_state.c#poolpeaks"] = [
+("""void *game_state_malloc(
+	const char *name,
+	const char *type,
+	long size)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #poolpeaks): "poolpeaks" (see there) */
+extern int psp_data_peaks_on, psp_memory_pool_peaks_on; /* data.c, memory_pool.c */
+short psp_data_peak(struct data_array const *data);
+void psp_data_peaks_reset(void);
+void psp_memory_pool_peak(struct memory_pool const *pool, long *least_free, long *furthest_end);
+void psp_memory_pool_peaks_reset(void);
+static int psp_pool_peaks_asked;
+
+/* after keep.txt is read (psp_platform.c) */
+void psp_pool_peaks_start(void)
+{
+	psp_pool_peaks_asked = psp_keep("poolpeaks") != 0;
+	psp_data_peaks_on = psp_memory_pool_peaks_on = psp_pool_peaks_asked;
+	if (psp_pool_peaks_asked)
+		platform_psp_log("poolpeaks: on");
+}
+
+/* each array: "name maximum x size: peak P, now C (L live)", with P the
+count's high-water since the level began, and the room above P */
+void psp_pool_peaks_report(const char *label, int level_end)
+{
+	char line[480], text[128];
+	int length = 0, k, added;
+	long above = 0;
+
+	if (!psp_pool_peaks_asked)
+		return;
+	for (k = 0; k < psp_state_record_count; k++)
+	{
+		const char *name = psp_state_records[k].name[0] ? psp_state_records[k].name : "?";
+		char kind = psp_state_records[k].type[0];
+
+		if (kind == 'd')
+		{
+			struct data_array const *data = psp_state_records[k].pointer;
+			short peak = psp_data_peak(data);
+
+			if (!data->valid)
+				continue;
+			if (data->count > peak)
+				peak = data->count;
+			above += (long)(data->maximum_count - peak) * data->size;
+			added = snprintf(text, sizeof(text), " %.28s %d x %d: peak %d, now %d (%d live);", name,
+				data->maximum_count, data->size, peak, data->count, data->actual_count);
+		}
+		else if (kind == 'm')
+		{
+			struct memory_pool const *pool = psp_state_records[k].pointer;
+			long least_free, furthest_end;
+
+			psp_memory_pool_peak(pool, &least_free, &furthest_end);
+			added = snprintf(text, sizeof(text), " %.28s pool %ld KB: peak %ld KB in use, furthest end %ld KB, now %ld KB;",
+				name, pool->size / 1024, (pool->size - least_free) / 1024, furthest_end / 1024,
+				(pool->size - pool->free_size) / 1024);
+		}
+		else
+			continue;
+		if (added >= (int)sizeof(text))
+			added = sizeof(text) - 1;
+		if (length && length + added >= (int)sizeof(line) - 48)
+		{
+			platform_psp_log("poolpeaks (%s):%s", label, line);
+			length = 0;
+		}
+		memcpy(line + length, text, added + 1);
+		length += added;
+	}
+	if (length)
+		platform_psp_log("poolpeaks (%s):%s", label, line);
+	platform_psp_log("poolpeaks (%s): %ld KB between the arrays' peaks and their maximums", label, above / 1024);
+	if (level_end)
+	{
+		psp_data_peaks_reset();
+		psp_memory_pool_peaks_reset();
+	}
+}
+#endif
+
+void *game_state_malloc(
+	const char *name,
+	const char *type,
+	long size)
+{
+"""),
+]
+
+
+# The shelf (a project rule): experiments kept, not deleted, but built only
 # with PSP_SHELF=1. A switched-off feature still costs when its hooks sit in
 # hot code: nwbatch's, off, made each object's update ~2.5 KB bigger, and
 # b133 ran c10 7% slower for it (the cache model: the same instructions, 26%
@@ -22602,6 +25479,126 @@ void objects_update(
 # ("<file>#<tag>"); the shelved experiments are listed in docs/shelf.md.
 SHELVED_TAGS = {"nwbatch", "nwbatchwrites"}
 SHELF = os.environ.get("PSP_SHELF", "") == "1"
+
+
+# ---------- the measurement round's counters (docs/plan_measurement_round.md,
+# "the new counters"; docs/review_metrics.md). Each reads and changes
+# nothing the game uses, and each is off until its keep word.
+
+# "objcost": each object definition's cost, updating (timed on the ticks the
+# per-type line samples, so the same scale) and drawing (each rendered
+# object's call, with what it carries and its shadow); psp_platform.c's
+# psp_objcost and its report in profile.txt and the log
+FIXES_RECON["source/objects/objects.c#objcost"] = [
+("\t\t\t\t\t\tpsp_object_account(object_header->type, (psp_microseconds() - psp_object_start) * psp_object_scale);\n",
+"""\t\t\t\t\t\t{
+\t\t\t\t\t\t\t/* psp_fixups.py (FIXES_RECON #objcost) */
+\t\t\t\t\t\t\textern void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count);
+\t\t\t\t\t\t\tunsigned long psp_us = (psp_microseconds() - psp_object_start) * psp_object_scale;
+
+\t\t\t\t\t\t\tpsp_object_account(object_header->type, psp_us);
+\t\t\t\t\t\t\tpsp_objcost(object_header->datum->definition_index, object_header->type, 0, psp_us, psp_object_scale);
+\t\t\t\t\t\t}
+"""),
+]
+FIXES_RECON["source/render/render_objects.c#objcost"] = [
+("\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];\n\t\trender_object(data);\n",
+"""\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];
+#ifdef HALO_PSP
+\t\t{
+\t\t\t/* psp_fixups.py (FIXES_RECON #objcost) */
+\t\t\textern void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count);
+\t\t\tunsigned long psp_start = psp_microseconds();
+
+\t\t\trender_object(data);
+\t\t\tpsp_objcost(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1,
+\t\t\t\tpsp_microseconds() - psp_start, 1);
+\t\t}
+#else
+\t\trender_object(data);
+#endif
+"""),
+]
+
+# "particlecensus": each particle asked for, by the effect that asked, and
+# what became of it (made, unseen at birth, over the budget, thinned out of a
+# burst, no room in the pool); psp_platform.c's psp_particle_census
+FIXES_RECON["source/effects/effects.c#particlecensus"] = [
+("\t\t\t\t\tparticle_new(&data);\n",
+"""#ifdef HALO_PSP
+\t\t\t\t\t{
+\t\t\t\t\t\t/* psp_fixups.py (FIXES_RECON #particlecensus): the effect asking */
+\t\t\t\t\t\textern long psp_particle_effect;
+
+\t\t\t\t\t\tpsp_particle_effect = effect->definition_index;
+\t\t\t\t\t\tparticle_new(&data);
+\t\t\t\t\t\tpsp_particle_effect = -1;
+\t\t\t\t\t}
+#else
+\t\t\t\t\tparticle_new(&data);
+#endif
+"""),
+]
+FIXES_RECON["source/effects/particles.c#particlecensus"] = [
+("\tif (location.leaf_index == NONE ||\n\t\t!new_particle_is_visible(definition, &location, &position, data->radius))\n\t{\n\t\treturn;\n\t}\n",
+"""\tif (location.leaf_index == NONE ||
+\t\t!new_particle_is_visible(definition, &location, &position, data->radius))
+\t{
+#ifdef HALO_PSP
+\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 1);
+#endif
+\t\treturn;
+\t}
+"""),
+# refused (2) and thinned (3), the budget's and particleranks' alike
+("\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\treturn;\n",
+ "\t\t\tpsp_particles_thinned++;\n\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\treturn;\n"),
+("\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\treturn;\n",
+ "\t\t\tpsp_particles_refused++;\n\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\treturn;\n"),
+("\t\t\t\tpsp_particles_refused++;\n\t\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\t\treturn;\n",
+ "\t\t\t\tpsp_particles_refused++;\n\t\t\t\tPSP_CENSUS(data->definition_index, refused);\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 2);\n\t\t\t\treturn;\n"),
+("\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\t\treturn;\n",
+ "\t\t\t\tpsp_particles_thinned++;\n\t\t\t\tPSP_CENSUS(data->definition_index, thinned);\n\t\t\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 3);\n\t\t\t\treturn;\n"),
+("\tparticle_index = datum_new(particle_data);\n\n\tif (particle_index == NONE)\n\t\treturn;\n#ifdef HALO_PSP\n",
+"""\tparticle_index = datum_new(particle_data);
+
+\tif (particle_index == NONE)
+\t{
+#ifdef HALO_PSP
+\t\tpsp_particle_census(psp_particle_effect, data->definition_index, 4);
+#endif
+\t\treturn;
+\t}
+#ifdef HALO_PSP
+\tpsp_particle_census(psp_particle_effect, data->definition_index, 0);
+"""),
+("void particle_new(\n\tstruct new_particle_data const *data)\n{",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #particlecensus): psp_platform.c */
+extern long psp_particle_effect;
+void psp_particle_census(long effect, long particle, int outcome);
+#endif
+
+void particle_new(
+\tstruct new_particle_data const *data)
+{"""),
+]
+
+# "geocluster": psp_geo.c's misses by where the camera is, named once a frame
+FIXES_RECON["source/structures/structure_visibility.c#geocluster"] = [
+("\tprofile_enter(render_structure_visibility_portal_traversal);\n\tif (render.cluster_index != NONE)\n",
+"""#ifdef HALO_PSP
+\t{
+\t\t/* psp_fixups.py (FIXES_RECON #geocluster) */
+\t\textern void psp_geo_camera(short bsp, short cluster);
+
+\t\tpsp_geo_camera(global_structure_bsp_index, (short)render.cluster_index);
+\t}
+#endif
+\tprofile_enter(render_structure_visibility_portal_traversal);
+\tif (render.cluster_index != NONE)
+"""),
+]
 
 
 # ---------- FIXES_LOADING: the loading screen (docs/plan_loading_screen.md)
@@ -22658,7 +25655,7 @@ FIXES_LOADING["source/main/main.c#loading"] = [
 			extern void psp_loading_end(void);
 
 			/* no settle at boot: nothing has been drawn yet, and the first
-			frame drawn from here never finished (loading2, lab 39027957157) */
+			frame drawn from here never finished (the loading2 runs) */
 			psp_loading_end();
 		}
 #endif
@@ -22701,6 +25698,70 @@ void psp_main_settle(void)
 void main_loop(
 	void)
 {
+"""),
+]
+
+# The boot screen (psp_loading.c): the start-up's way to the main menu is a
+# load like any other, so its progress shows; then the menu's first frames,
+# drawn by main_loop as always, go under the veil until its textures are in,
+# and the menu takes no input meanwhile. A settle of its own frames, not
+# psp_main_settle's: at this point the port's vertical blank thread hasn't
+# started (main_initialize_time), and D3DDevice_Present waits for its flips.
+# Keep words: "bootsettleoff" (the menu at once), "bootlog" (no boot screen).
+FIXES_LOADING["source/main/main.c#bootscreen"] = [
+("""	if (main_globals.want_to_be_at_main_menu)
+	{
+		main_menu_load();
+		return;
+	}
+""", """	if (main_globals.want_to_be_at_main_menu)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_LOADING #bootscreen) */
+		extern void psp_loading_boot_menu_begin(void);
+		extern void psp_loading_boot_loaded(void);
+
+		psp_loading_boot_menu_begin();
+		main_menu_load();
+		psp_loading_boot_loaded();
+#else
+		main_menu_load();
+#endif
+		return;
+	}
+"""),
+("""					render_interpolation_frame_end();
+					profile_render_end();
+""", """#ifdef HALO_PSP
+					{
+						/* psp_fixups.py (FIXES_LOADING #bootscreen): the veil over
+						the main menu's first frames, before the frame is shown */
+						extern void psp_loading_boot_frame(void);
+
+						psp_loading_boot_frame();
+					}
+#endif
+					render_interpolation_frame_end();
+					profile_render_end();
+"""),
+]
+# (as the Xbox's widgets wait out its own loading screen, just above)
+FIXES_LOADING["source/interface/ui_widget.c#bootscreen"] = [
+("""	if (progress_bar_is_active())
+		return;
+	if (virtual_keyboard_active())
+""", """	if (progress_bar_is_active())
+		return;
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_LOADING #bootscreen) */
+		extern int psp_loading_holds_input(void);
+
+		if (psp_loading_holds_input())
+			return;
+	}
+#endif
+	if (virtual_keyboard_active())
 """),
 ]
 
@@ -22976,7 +26037,317 @@ void psp_step(const char *name);
 						PSP_STOP_REASON(PSP_STOP_OTHER);
 """),
 ]
-# The dry gaps (Sheepdog01's "sound cutting out"): the Xbox topped each stream's 4
+# The loading chant's tone is the game's own bytes (default.xbe's .data;
+# docs/research/chant_provenance.md), so the PSP build doesn't carry this copy:
+# the port reads the player's bake instead (psp_loading.c, halo/chant.adp).
+# Unreferenced and static, the table is left out of the program; the Xbox
+# path that used it plays through DirectSound buffers, which are null objects
+# here
+FIXES_SOUND["source/interface/progress_bar.c#chant"] = [
+("""byte compressed_monk_tone[18396]=""",
+ """#ifdef HALO_PSP
+static const byte psp_disc_monk_tone[18396] __attribute__((unused))=
+#else
+byte compressed_monk_tone[18396]=
+#endif"""),
+("""		IDirectSoundBuffer_SetBufferData(progress_bar_globals.sounds[sound_index], compressed_monk_tone,
+			sizeof(compressed_monk_tone));
+		IDirectSoundBuffer_SetLoopRegion(progress_bar_globals.sounds[sound_index], 0,
+			sizeof(compressed_monk_tone));""",
+ """#ifdef HALO_PSP
+		IDirectSoundBuffer_SetBufferData(progress_bar_globals.sounds[sound_index], NULL, 0);
+		IDirectSoundBuffer_SetLoopRegion(progress_bar_globals.sounds[sound_index], 0, 0);
+#else
+		IDirectSoundBuffer_SetBufferData(progress_bar_globals.sounds[sound_index], compressed_monk_tone,
+			sizeof(compressed_monk_tone));
+		IDirectSoundBuffer_SetLoopRegion(progress_bar_globals.sounds[sound_index], 0,
+			sizeof(compressed_monk_tone));
+#endif"""),
+]
+# A full sound cache wrote the Xbox's debug dump (d:\stabbed.txt: the scenario,
+# the players and every page run, several hundred lines) to the Memory Stick in
+# the middle of a frame, at most once every 10 s (7 times in one b30 run). The
+# dump only reads; the failure itself stays in the log (FIXES_113's "sound
+# cache: no room" lines) and the 10 s gate is kept. "cachedump" writes it
+FIXES_SOUND["source/cache/xbox_sound_cache.c#nostabbed"] = [
+("""		lruv_debug_to_file(
+			"d:\\\\stabbed.txt",
+#ifdef HALO_PSP
+			tag_get_name(sound->runtime_tag_index), /* psp_fixups.py (build 108) */
+#else
+			sound->name,
+#endif
+			sound->samples.size,
+			xbox_sound_cache_globals.cache,
+			scenario_debug_to_file,
+			cache_block_get_sound_permutation_name);
+""",
+ """#ifdef HALO_PSP
+		/* "cachedump": the Xbox's dump, to the stick (a hitch: hundreds of lines) */
+		{
+			extern int psp_keep(const char *name);
+
+			if (psp_keep("cachedump"))
+				lruv_debug_to_file(
+					"d:\\\\stabbed.txt",
+					tag_get_name(sound->runtime_tag_index),
+					sound->samples.size,
+					xbox_sound_cache_globals.cache,
+					scenario_debug_to_file,
+					cache_block_get_sound_permutation_name);
+		}
+#else
+		lruv_debug_to_file(
+			"d:\\\\stabbed.txt",
+			sound->name,
+			sound->samples.size,
+			xbox_sound_cache_globals.cache,
+			scenario_debug_to_file,
+			cache_block_get_sound_permutation_name);
+#endif
+"""),
+]
+# A sound queued to a channel that is still playing but has nothing left to
+# submit. A permutation shorter than the stream's queue goes out whole the
+# moment it starts; its last packet moves the queued permutation (none yet)
+# to playing, so the channel plays on with no playing permutation. The sound
+# manager then queues the next one (the channel isn't "queued"), it is filed
+# as queued, and the fill, which reads only the playing permutation, never
+# sends it: when the queue drains the channel goes idle and the manager starts
+# another, so permutations are dropped: music plays a fraction of a second at
+# a time, skipping forward. A shallow queue (the Xbox's 4 packets) makes it
+# rare, since the manager usually queues the next permutation in time. Such a sound now becomes the playing permutation and the queue is
+# topped up at once, so the stream carries on. "streamnolink": as before
+FIXES_SOUND["source/sound/sound_dsound_xbox.c#link"] = [
+("""		case _sound_channel_playing:
+			channel->state= _sound_channel_queued;
+			channel->queued_permutation= sound;
+			break;
+""",
+ """		case _sound_channel_playing:
+#ifdef HALO_PSP
+			{
+				extern int psp_stream_link(void); /* psp_dsound.c */
+
+				if (!channel->playing_permutation && psp_stream_link())
+				{
+					channel->playing_permutation= sound;
+					channel->sample_offset= 0;
+					dsound_channel_fill(index);
+					break;
+				}
+			}
+#endif
+			channel->state= _sound_channel_queued;
+			channel->queued_permutation= sound;
+			break;
+"""),
+]
+# Which path fades a looping sound out (a fade with no cause in the log can't
+# be told from a sound bug): each fade-out
+# of a sound that isn't an impulse is logged with its class, its track type
+# (1 start, 2 loop, 3 stopping, 4 stop), the mode (0 linear, 1 crossfade), its
+# length and whether a sound fades in in its place. The paths fade differently
+# (inaudible 2 s, a pitch range's crossfade 0.5 s, a track change by its tag),
+# so the line names the cause. The first 40 of a launch
+FIXES_SOUND["source/sound/sound_manager.c#fadelog"] = [
+("""	fade_start_time = sound_manager_globals.render_time - 1;
+""",
+ """#ifdef HALO_PSP
+	{
+		static int psp_fades_logged = 0;
+
+		if (fade_out_sound_index != NONE && psp_fades_logged < 40)
+		{
+			struct sound_datum *psp_sound = sound_get(fade_out_sound_index);
+
+			if (psp_sound->type != _sound_impulse)
+			{
+				psp_fades_logged++;
+				platform_psp_log("sound: a looping sound fades out: class %d, track type %d, mode %d over %ld ms%s, at %ld ms",
+					(int)sound_definition_get(psp_sound->definition_index)->sound_class, (int)psp_sound->type, (int)mode,
+					(long)(seconds * 1000.f), fade_in_sound_index != NONE ? ", another fading in" : "",
+					(long)sound_manager_globals.render_time);
+			}
+		}
+	}
+#endif
+	fade_start_time = sound_manager_globals.render_time - 1;
+"""),
+]
+# E2 (audio_fidelity.md): the cache allocator added every run of pages (a
+# block or the gap before one) to every hole still open, up to 256 of them:
+# blocks x open holes a call, with up to 512 blocks. Holes close in the order
+# they opened (the assert at 351), so a hole's page count is the pages since
+# it opened (a running total less its start) and its last used tick the
+# largest since then (a falling deque of the runs' ticks, front dropped as the
+# holes it served close). The holes reach the choice in the same order with
+# the same values, so the same block is chosen. Caches with more pages than
+# the deque holds, and "lruvoldscan", use the loop as before
+FIXES_SOUND["source/memory/lruv_cache.c#window"] = [
+("""	hole_read_index = 0;
+	hole_write_index = 0;
+	pending_block_index = NONE;
+	page_index = 0;
+	block_index = cache->first_block_index;
+""",
+ """	hole_read_index = 0;
+	hole_write_index = 0;
+	pending_block_index = NONE;
+	page_index = 0;
+	block_index = cache->first_block_index;
+#ifdef HALO_PSP
+#define PSP_LRUV_RUNS 4096
+	{
+		extern int psp_keep(const char *name);
+		static int psp_window = -1;
+
+		if (psp_window < 0)
+			psp_window = !psp_keep("lruvoldscan");
+		if (psp_window && cache->page_count < PSP_LRUV_RUNS - 2)
+		{
+			/* a hole's pages and runs before it opened, by its ring slot */
+			static long psp_hole_pages_before[MAXIMUM_LRUV_CACHE_HOLES];
+			static long psp_hole_first_run[MAXIMUM_LRUV_CACHE_HOLES];
+			/* the runs' ticks, falling from front to back, and their run numbers */
+			static unsigned long psp_tick[PSP_LRUV_RUNS];
+			static long psp_tick_run[PSP_LRUV_RUNS];
+			long psp_front = 0, psp_back = 0, psp_pages = 0, psp_run = 0;
+
+			while (page_index < cache->page_count)
+			{
+				locked = FALSE;
+
+				if (NEXT_HOLE_INDEX(hole_write_index) != hole_read_index)
+				{
+					hole = &holes[hole_write_index];
+					hole->block_index = pending_block_index;
+					hole->first_page_index = page_index;
+					hole->last_used_tick = 0;
+					hole->page_count = 0;
+					psp_hole_pages_before[hole_write_index] = psp_pages;
+					psp_hole_first_run[hole_write_index] = psp_run;
+					hole_write_index = NEXT_HOLE_INDEX(hole_write_index);
+				}
+
+				if (block_index == NONE)
+				{
+					last_used_tick = 0;
+					page_count = cache->page_count - page_index;
+					page_index = cache->page_count;
+				}
+				else
+				{
+					block = datum_get(cache->blocks, block_index);
+					if (page_index == block->first_page_index)
+					{
+						last_used_tick = block->last_used_tick;
+						page_count = block->page_count;
+						locked = cache->locked_block_proc &&
+							cache->locked_block_proc(block_index);
+						if ((unsigned long)block->last_used_tick == (unsigned long)cache->tick)
+							locked = TRUE;
+						else if (!locked &&
+							(oldest_unlocked_block_index == NONE ||
+							(unsigned long)block->last_used_tick < oldest_unlocked_tick))
+						{
+							oldest_unlocked_block_index = block_index;
+							oldest_unlocked_tick = block->last_used_tick;
+						}
+
+						page_index = block->first_page_index + block->page_count;
+						pending_block_index = block_index;
+						block_index = block->next_block_index;
+					}
+					else
+					{
+						last_used_tick = 0;
+						page_count = block->first_page_index - page_index;
+						match_assert(
+							"c:\\\\halo\\\\SOURCE\\\\memory\\\\lruv_cache.c",
+							311,
+							page_count>0);
+						page_index = block->first_page_index;
+					}
+				}
+
+				if (locked)
+				{
+					hole_read_index = hole_write_index;
+					psp_front = psp_back = 0;
+				}
+				else
+				{
+					while (psp_back > psp_front && psp_tick[psp_back - 1] <= (unsigned long)last_used_tick)
+						psp_back--;
+					psp_tick[psp_back] = last_used_tick;
+					psp_tick_run[psp_back] = psp_run;
+					psp_back++;
+					psp_pages += page_count;
+					while (hole_read_index != hole_write_index &&
+						psp_pages - psp_hole_pages_before[hole_read_index] >= desired_page_count)
+					{
+						int psp_high = cache == psp_lruv_high_cache && desired_page_count >= PSP_LRUV_HIGH_PAGES;
+
+						hole = &holes[hole_read_index];
+						while (psp_tick_run[psp_front] < psp_hole_first_run[hole_read_index])
+							psp_front++;
+						hole->page_count = psp_pages - psp_hole_pages_before[hole_read_index];
+						hole->last_used_tick = psp_tick[psp_front];
+						if (!found_hole || psp_high ||
+							(hole->last_used_tick < best_hole.last_used_tick ||
+							(hole->last_used_tick == best_hole.last_used_tick &&
+							 hole->page_count < best_hole.page_count)))
+						{
+							best_hole = *hole;
+							found_hole = TRUE;
+						}
+						hole_read_index = NEXT_HOLE_INDEX(hole_read_index);
+					}
+				}
+				psp_run++;
+			}
+		}
+	}
+#endif
+"""),
+]
+# Melee with no weapon: the Xbox and PC games block it (weapon_prevents_
+# melee_attack is TRUE for no weapon). ChupathingyCE lets a player with no
+# weapon melee, for multiplayer gametypes whose loadout is none (MrBruh,
+# c9ee319a), and the gate holds in the campaign too: before the first weapon
+# the player's melee rays hit the nearest wall and play its material's impact
+# sound, which the original never did. The campaign build blocks it again;
+# the multiplayer build keeps upstream's rule, in step with the PC servers.
+# "unarmedmelee": the campaign as upstream (a player with no weapon melees)
+FIXES_SOUND["source/units/bipeds.c#unarmed"] = [
+("""				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE) ||""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+				static int psp_unarmed_melee = -1;
+
+				if (psp_unarmed_melee < 0)
+				{
+					extern int psp_keep(const char *name);
+
+					psp_unarmed_melee = psp_keep("unarmedmelee") != 0;
+				}
+				if (weapon_index == NONE && biped->unit.parent_seat_index == NONE)
+				{
+					static int psp_unarmed_logged = 0;
+
+					if (psp_unarmed_logged < 4)
+					{
+						psp_unarmed_logged++;
+						platform_psp_log("melee: with no weapon, %s", psp_unarmed_melee ?
+							"played (unarmedmelee: as upstream)" : "refused (as the Xbox and PC games)");
+					}
+				}
+				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE && psp_unarmed_melee) ||
+#else
+				if (((weapon_index == NONE && biped->unit.parent_seat_index == NONE) ||
+#endif"""),
+]
+# The dry gaps (the "sound cutting out"): the Xbox topped each stream's 4
 # packets (about 743 ms) up at interrupt time, the port once a frame, so a
 # frame longer than that left long sounds silent. The queue's depth comes from
 # psp_stream_packets() (psp_dsound.c: 16 by default, "streampackets4" for the
@@ -23024,7 +26395,7 @@ FIXES_SOUND["source/sound/sound_dsound_xbox.c#queue"] = [
 # from a location on the stack that never set it, so objects, actors and
 # props carry stack garbage there. Play never reads it, but the sleep
 # checksum and the state hashes do, so a change that only moves the stack's
-# history (LD1, lab ld1why1 39045094664) made the pools differ and woke
+# history (LD1, the ld1why1 runs) made the pools differ and woke
 # sleepers for nothing. Set as award_bonus sets it, where the object's
 # location is stored. "bonusold": left as copied
 FIXES_BONUS = {}
@@ -23054,8 +26425,8 @@ FIXES_BONUS["source/objects/objects.c#bonus"] = [
 # ---------- FIXES_DRAWCOLD: debug-only work out of the model draw path (lever #3)
 # rasterizer_debug_model_vertices runs after every model part's draw and
 # returns unless its debug display is on; the call alone cost b30's drawing
-# 318 I-misses and 4.6 k instructions a tick in the cache model (lab
-# p3walkb30a, 39038135510). Tested where it's called, it costs one load.
+# 318 I-misses and 4.6 k instructions a tick in the cache model
+# (p3walkb30a). Tested where it's called, it costs one load.
 # "debugvertexcall": called every part, as before
 FIXES_DRAWCOLD = {}
 FIXES_DRAWCOLD["source/models/models.c#debuggate"] = [
@@ -23176,11 +26547,5729 @@ FIXES_LD1["source/game/game_time.c#lightsframe"] = [
 ]
 
 
+# ---------- FIXES_CACHE: the cache work (docs/cache_work.md)
+# nodeprefetch: each node's lines asked for while the node before it is
+# computed. object_compute_node_matrices writes each node's matrix into the
+# object's node block, which last tick's compute wrote and the rest of the
+# tick has since pushed out of the 16 KB data cache, so the matrix's first
+# stores wait a whole miss each for their lines (52 bytes: one or two 64-byte
+# lines), and the node's links in the model tag (parent, sibling, child) miss
+# too: the tick's top data-miss sites in the cache model. The walk is a queue,
+# so the node after next is often named already: its three lines are asked
+# for one node ahead of time, which is about the ~72 cycles a line takes to
+# land ("cache 0x1E" never stalls; halo_bench v7b), and the next node's when
+# the queue held nothing further. Each queued node is asked for once.
+# Exact: a prefetch changes no value. Off unless "nodeprefetch": in the cache
+# model it loses (each line lands ~40 of its ~72 cycles ahead, so the load
+# still waits, and the asking costs ~12 cycles a node), and the PSP shows no
+# gain it could be hiding.
+FIXES_CACHE = {}
+FIXES_CACHE["source/objects/objects.c#nodeprefetch"] = [
+("""void object_compute_node_matrices(
+	long object_index)
+{
+""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_CACHE): the line holding p asked for, without a wait */
+#define PSP_LINE_PREFETCH(p) __asm__ volatile ("cache 0x1E, 0(%0)" : : "r" (p))
+
+/* the lines node node_index's compute first touches: both ends of its matrix
+and its links in the model tag (a tag block without data is left alone: the
+pointer would name no memory) */
+static __inline__ void psp_node_lines_prefetch(
+	real_matrix4x3 *object_nodes,
+	struct model *model,
+	short node_index)
+{
+	PSP_LINE_PREFETCH(&object_nodes[node_index]);
+	PSP_LINE_PREFETCH(&object_nodes[node_index].position.z);
+	if (model->nodes.address)
+		PSP_LINE_PREFETCH(&((struct model_node *)model->nodes.address)[node_index].next_sibling_node_index);
+}
+#endif
+
+void object_compute_node_matrices(
+	long object_index)
+{
+"""),
+("""		node_index = 0;
+		node_count = 1;
+		unknown_var = 0;
+		node_stack[0] = 0;
+
+		while (TRUE)
+		{""", """		node_index = 0;
+		node_count = 1;
+		unknown_var = 0;
+		node_stack[0] = 0;
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_CACHE) */
+		const int psp_node_prefetch = PSP_KEEP_ONCE("nodeprefetch");
+		short psp_node_asked = 0; /* the queue's places asked for, up to here */
+
+		if (psp_node_prefetch)
+			psp_node_lines_prefetch(object_nodes, model, 0);
+#endif
+
+		while (TRUE)
+		{"""),
+("""			if (node_index==node_count)
+			{
+				break;
+			}""", """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_CACHE) */
+			if (psp_node_prefetch)
+			{
+				while (psp_node_asked<node_count-1 && psp_node_asked<node_index+1)
+					psp_node_lines_prefetch(object_nodes, model, node_stack[++psp_node_asked]);
+			}
+#endif
+			if (node_index==node_count)
+			{
+				break;
+			}"""),
+]
+
+# typehdr: object_get_and_verify_type checks the type its header holds. The
+# check read the type from the object's own data, a line the caller often
+# never touches otherwise, and in the cache model that one load missed about
+# 1,200 times a tick on b30's beach (18% of the calls, the tick's most-missed
+# load with no window for a prefetch). The header beside the data pointer
+# carries the same type, written with it when the object is made and never
+# changed (object_new sets both from the definition), so the
+# check passes and fails exactly as before. "notypehdr": the object's own
+FIXES_CACHE["source/objects/objects.c#typehdr"] = [
+("""	struct object_datum *result = object_header_get(object_index)->datum;
+
+	match_vassert(
+		"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+		1690,
+		TEST_FLAG(valid_type_flags, result->object.type),""",
+ """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_CACHE) */
+	struct object_header_datum *psp_header = object_header_get(object_index);
+	struct object_datum *result = psp_header->datum;
+	const int psp_type = PSP_KEEP_ONCE("notypehdr") ? result->object.type : psp_header->type;
+#else
+	struct object_datum *result = object_header_get(object_index)->datum;
+#endif
+
+	match_vassert(
+		"c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c",
+		1690,
+#ifdef HALO_PSP
+		TEST_FLAG(valid_type_flags, psp_type),
+#else
+		TEST_FLAG(valid_type_flags, result->object.type),
+#endif"""),
+]
+
+# ---------- the campaign's update rings (memory_savings S6, for a10's heap)
+# A campaign game is local: each frame builds at most 7 ticks' updates
+# (game_time.c: a local connection's cap) and takes them all before the next
+# (update_client_local_ticks, then each tick's update_client_dequeue), and
+# nothing else fills either ring in the campaign build (the network handlers
+# aren't in it). So the client's ring needs 8 and gets 16 (a power of two:
+# it is indexed by the update's number), not 128 (66 KB at the campaign's 16
+# players), and the host's, read only right after each update is built, 1,
+# not 32 (16 KB). About 74 KB of .bss back to the heap; the multiplayer
+# build is untouched. PSP_CFLAGS=-DPSP_FULL_RINGS builds the old sizes
+FIXES_CAMPAIGNNET = {}
+FIXES_CAMPAIGNNET["source/game/player_queues_new.c#campaign"] = [
+("""	MAXIMUM_SERVER_UPDATES = 32,""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER) && !defined(PSP_FULL_RINGS)
+	/* psp_fixups.py (FIXES_CAMPAIGNNET): a local game's update, read as built */
+	MAXIMUM_SERVER_UPDATES = 1,
+#else
+	MAXIMUM_SERVER_UPDATES = 32,
+#endif"""),
+("""	MAXIMUM_CLIENT_UPDATES = 128,""",
+ """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER) && !defined(PSP_FULL_RINGS)
+	/* psp_fixups.py (FIXES_CAMPAIGNNET): a frame's 7 ticks at most, taken
+	before the next frame's */
+	MAXIMUM_CLIENT_UPDATES = 16,
+#else
+	MAXIMUM_CLIENT_UPDATES = 128,
+#endif"""),
+]
+
+
+# ---------- FIXES_STENCILS: the stencil bake's block taken as the old map goes
+# The .pstn is read into one block (~162 KB on c20), and after a level change
+# the heap's only free piece that large is its top; the load's own small
+# requests could eat it before the geometry pack opened and asked (the
+# heap ladder runs). psp_ge_stencils_reserve takes it here, the old map let go
+FIXES_STENCILS = {}
+FIXES_STENCILS["source/game/game.c#stencilsfirst"] = [
+("""	ui_widgets_close_all();
+	ui_widgets_safe_to_load(FALSE);
+	game_globals->active = FALSE;
+""", """	ui_widgets_close_all();
+	ui_widgets_safe_to_load(FALSE);
+	game_globals->active = FALSE;
+#ifdef HALO_PSP
+	{
+		extern void psp_ge_stencils_reserve(void); /* psp_ge.c (FIXES_STENCILS) */
+
+		psp_ge_stencils_reserve();
+	}
+#endif
+"""),
+]
+
+
+
+# ---------- FIXES_NMSKIP: node matrices left to the frame's last tick (lever #2)
+# With two ticks a frame (b30, a30, c20, d20), each object's node matrices are
+# made on both, and the first tick's are overwritten by the second's before a
+# frame draws them. For an object nothing else reads in between, the first
+# compute is work nobody sees (nmreaders: 24-45% of the nodes made in the
+# object loop on b30, c20, d20 are not read before the next compute). This
+# leaves that compute out on every tick but a frame's last, for scenery, sound
+# scenery and placeholders that hold and are held by nothing. It stays exact:
+# - Nothing tests these objects' collision (they have no collision model), so
+#   neither the collision tests nor the Media Engine's rays, which read node
+#   matrices without the accessors, ever look at them.
+# - Their bounding spheres, which code everywhere reads without asking, can't
+#   change: the root node's inputs (position, facing, scale, mirroring, the
+#   animation playing) are those its last compute read, and the animation
+#   leaves the root alone (no node-0 channel, no overlays), so the compute
+#   would write the sphere it holds.
+# - A read through the accessors, or a deactivation, makes the left-out
+#   compute first, from the inputs the object had where it was left out (its
+#   game time too), as nwbatch's list did; a later compute anywhere replaces
+#   it whole; the frame's last tick makes those still left.
+# "nmskip": on (shelved, opt-in: small and not exact, docs/review_perf-levers.md).
+#
+# VISLAZY, on by default ("vislazyoff" turns it off; "nmskip" or "nmskipcheck"
+# named wins over it): the same skip on every tick, not only a frame's first,
+# for the same objects when the last frame didn't draw them; their matrices are
+# made only when something reads them (docs/review_vislazy.md). An object
+# nobody draws or reads was having its node walk made every tick for nothing:
+# 17-54% of animation and node matrices' time on the heavy maps. Its
+# collision model doesn't keep it out, so two more readers are caught:
+# - The Media Engine's perception rays (collisions.c, FIXES_122) can't make a
+#   compute: a ray that reaches an object whose compute is owed is left to the
+#   main CPU (-1), whose test reads it through the accessor.
+# - A game state saved (a checkpoint) holds node matrices: every owed compute
+#   is made first, so a revert loads what it would have.
+# The left-out compute stays owed however long the object goes unread (the
+# 8-tick limit is the frame's-end form's), and the renderer's lists mark what
+# each frame draws. "vislazycheck" makes every compute as before and checks
+# each skip and each read's catch-up as nmskipcheck does, naming the reader;
+# the "vislazy:" line counts the catch-ups by reader.
+# "nmskipcheck": makes every compute
+# as before, but checks each would-be skip (the sphere and root unchanged) and
+# each read's catch-up (bit for bit against the compute it stands in for), and
+# logs what each costs. Not with nwbatch (the shelf).
+FIXES_NMSKIP = {}
+
+FIXES_NMSKIP["source/saved games/game_state.c#nmskip"] = [
+("""static game_state_before_load_proc before_load_procs[] =
+{""",
+ """#ifdef HALO_PSP
+void psp_nms_game_state_loading(void); /* objects.c (psp_fixups.py, FIXES_NMSKIP) */
+#endif
+
+static game_state_before_load_proc before_load_procs[] =
+{"""),
+("""	cluster_partitions_port_forget,
+};""",
+ """	cluster_partitions_port_forget,
+#ifdef HALO_PSP
+	psp_nms_game_state_loading,
+#endif
+};"""),
+("""static game_state_before_save_proc before_save_procs[] =
+{
+	dummy,
+};""",
+ """#ifdef HALO_PSP
+void psp_nms_game_state_saving(void); /* objects.c (psp_fixups.py, FIXES_NMSKIP: vislazy) */
+#endif
+
+static game_state_before_save_proc before_save_procs[] =
+{
+	dummy,
+#ifdef HALO_PSP
+	psp_nms_game_state_saving,
+#endif
+};"""),
+]
+
+# vislazy: the Media Engine's rays leave an object whose compute is owed to
+# the main CPU, and the renderer's lists say what each frame draws
+FIXES_NMSKIP["source/physics/collisions.c#vislazy"] = [
+("""				marks.objects[absolute_index >> 5] |= 1ul << (absolute_index & 31);
+				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,""",
+ """				marks.objects[absolute_index >> 5] |= 1ul << (absolute_index & 31);
+				{
+					/* psp_fixups.py (FIXES_NMSKIP, vislazy): an object whose node
+					matrices are owed is made only by the main CPU, so its ray is
+					the main CPU's (objects.c) */
+					extern int psp_nms_count;
+					extern unsigned long psp_nms_pending[];
+
+					if (psp_nms_count && ((psp_nms_pending[(unsigned short)absolute_index >> 5] >> (absolute_index & 31)) & 1))
+						return -1;
+				}
+				if (psp_object_test_vector_quiet(object_index, bsp_flags, flags, point, vector,"""),
+]
+# vislazy: an object whose compute was left out while its animation plays is
+# not still, though its datum is unchanged (objects.c, the sleep check)
+FIXES_NMSKIP["source/objects/objects.c#vislazy"] = [
+("""	else
+		object_update(object_index);
+	if (psp_family_checksum(header) == before)
+""", """	else
+		object_update(object_index);
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): a skipped compute of a
+		playing animation is a change the checksum can't see */
+		extern long psp_vl_moving;
+		int psp_vl_moved = psp_vl_moving == object_index;
+
+		psp_vl_moving = NONE;
+		if (psp_vl_moved)
+			before = ~psp_family_checksum(header);
+	}
+	if (psp_family_checksum(header) == before)
+"""),
+]
+FIXES_NMSKIP["source/render/render_objects.c#vislazy"] = [
+("""		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
+			psp_rendered_full++;
+	}
+#endif""",
+ """		if (render_object_globals.rendered_object_count == MAXIMUM_RENDERED_OBJECTS)
+			psp_rendered_full++;
+	}
+	{
+		/* psp_fixups.py (FIXES_NMSKIP, vislazy): what the frame draws
+		(objects.c) */
+		extern void psp_vl_listed(long const *indices, short count);
+
+		psp_vl_listed(render_object_globals.rendered_object_indices, render_object_globals.rendered_object_count);
+	}
+#endif"""),
+]
+
+FIXES_NMSKIP["source/objects/objects.c#nmskip"] = [
+("""#define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + game_time_get())""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_NMSKIP): a left-out compute made later reads the game
+time it was left out at */
+extern long psp_nms_settle_time;
+#define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + (psp_nms_settle_time != NONE ? psp_nms_settle_time : game_time_get()))
+/* a reader of an object whose compute was left out has it made first; the
+bit is tested in line, as readers are many and left-out computes few */
+extern int psp_nms_count;
+extern unsigned long psp_nms_pending[];
+void psp_nms_settle(long object_index, void *site);
+static void psp_nms_forget(void);
+#define PSP_NMS_READ(index) do { \\
+		unsigned long psp_nms_absolute = (unsigned long)(index) & 0xFFFFUL; \\
+		if (psp_nms_count && psp_nms_absolute < MAXIMUM_OBJECTS_PER_MAP && \\
+			((psp_nms_pending[psp_nms_absolute >> 5] >> (psp_nms_absolute & 31)) & 1)) \\
+			psp_nms_settle(index, __builtin_return_address(0)); \\
+	} while (0)
+#else
+#define OBJECT_FRAME_INDEX_GET(object_index) ((object_index) + game_time_get())
+#endif"""),
+("""real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{""",
+ """/* psp_fixups.py (FIXES_NMSKIP): the computes left out until the frame's
+last tick. A bit an absolute index marks an object whose compute is owed;
+its entry keeps what that compute would have read. Each object's last
+compute's root inputs are kept in a small direct-mapped table, so a skip
+can see the root (and the sphere) wouldn't move */
+#define PSP_NMS_ENTRIES 256
+#define PSP_NMS_ROOTS 256
+#define PSP_NMS_TYPES (FLAG(_object_type_scenery) | FLAG(_object_type_sound_scenery) | FLAG(_object_type_placeholder))
+struct psp_nms_inputs
+{
+	real_point3d position;
+	real_vector3d forward, up;
+	real scale;
+	unsigned long flags;
+	struct object_animation_state animation;
+	long parent_object_index;
+	short parent_node_index;
+	real functions[NUMBER_OF_OUTGOING_OBJECT_FUNCTIONS];
+};
+struct psp_nms_entry
+{
+	long object_index;
+	long time;
+	struct psp_nms_inputs inputs;
+};
+struct psp_nms_root
+{
+	long object_index;
+	real_point3d position;
+	real_vector3d forward, up;
+	real scale;
+	unsigned long mirrored;
+	long graph;
+	short state;
+};
+long psp_nms_settle_time = NONE;
+/* read in line by the accessors: no left-out computes, no test */
+int psp_nms_count = 0;
+unsigned long psp_nms_pending[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static int psp_nms_on = -1, psp_nms_check = 0, psp_nms_open = 0;
+/* vislazy: the skip on every tick for what the last frame didn't draw */
+static int psp_vl_on = 0, psp_vl_ticked = 0;
+/* the object whose compute the skip just left out while its animation plays
+(the sleep check, psp_sleepy_update) */
+long psp_vl_moving = NONE;
+static unsigned long psp_vl_drawn[(MAXIMUM_OBJECTS_PER_MAP + 31) / 32];
+static unsigned long psp_vl_peak, psp_vl_frames, psp_vl_sites_other;
+#define PSP_VL_SITES 16
+static void *psp_vl_site[PSP_VL_SITES];
+static unsigned long psp_vl_site_n[PSP_VL_SITES];
+static void *psp_nms_reader;
+
+/* the renderer's list for a view (render_objects.c): the first list after a
+tick starts the frame's set afresh, and a frame's views add to it */
+void psp_vl_listed(long const *indices, short count)
+{
+	short k;
+
+	if (psp_vl_on <= 0)
+		return;
+	if (psp_vl_ticked)
+	{
+		csmemset(psp_vl_drawn, 0, sizeof(psp_vl_drawn));
+		psp_vl_ticked = 0;
+		psp_vl_frames++;
+	}
+	for (k = 0; k < count; k++)
+	{
+		unsigned long absolute = (unsigned long)indices[k] & 0xFFFFUL;
+
+		if (absolute < MAXIMUM_OBJECTS_PER_MAP)
+			psp_vl_drawn[absolute >> 5] |= 1ul << (absolute & 31);
+	}
+}
+
+/* which code read an object whose compute was owed */
+static void psp_vl_site_note(void)
+{
+	int s;
+
+	for (s = 0; s < PSP_VL_SITES && psp_vl_site[s] && psp_vl_site[s] != psp_nms_reader; s++)
+		;
+	if (s == PSP_VL_SITES)
+	{
+		psp_vl_sites_other++;
+		return;
+	}
+	psp_vl_site[s] = psp_nms_reader;
+	psp_vl_site_n[s]++;
+}
+static short *psp_nms_entry_of = NULL;
+static struct psp_nms_entry *psp_nms_entries = NULL;
+static short psp_nms_free[PSP_NMS_ENTRIES];
+static int psp_nms_free_count = 0;
+static struct psp_nms_root *psp_nms_roots = NULL;
+static real_matrix4x3 *psp_nms_kept = NULL;
+static unsigned long psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded,
+	psp_nms_read, psp_nms_frame_end, psp_nms_stale, psp_nms_refused[7], psp_nms_gate_wrong,
+	psp_nms_made_differs, psp_nms_made_checked, psp_nms_skip_us, psp_nms_check_reports;
+static void psp_nms_settle_absolute(long absolute, int at_frame_end);
+
+static void psp_nms_inputs_get(struct object_datum const *object, struct psp_nms_inputs *inputs)
+{
+	csmemset(inputs, 0, sizeof(*inputs));
+	inputs->position = object->object.position;
+	inputs->forward = object->object.forward;
+	inputs->up = object->object.up;
+	inputs->scale = object->object.scale;
+	inputs->flags = object->object.flags;
+	inputs->animation = object->object.animation;
+	inputs->parent_object_index = object->object.parent_object_index;
+	inputs->parent_node_index = object->object.parent_node_index;
+	csmemcpy(inputs->functions, object->object.outgoing_function_values, sizeof(inputs->functions));
+}
+
+static void psp_nms_inputs_put(struct object_datum *object, struct psp_nms_inputs const *inputs)
+{
+	object->object.position = inputs->position;
+	object->object.forward = inputs->forward;
+	object->object.up = inputs->up;
+	object->object.scale = inputs->scale;
+	object->object.flags = inputs->flags;
+	object->object.animation = inputs->animation;
+	object->object.parent_object_index = inputs->parent_object_index;
+	object->object.parent_node_index = inputs->parent_node_index;
+	csmemcpy(object->object.outgoing_function_values, inputs->functions, sizeof(inputs->functions));
+}
+
+static int psp_nms_waits(long absolute)
+{
+	return (psp_nms_pending[absolute >> 5] >> (absolute & 31)) & 1;
+}
+
+static void psp_nms_release(long absolute)
+{
+	psp_nms_pending[absolute >> 5] &= ~(1ul << (absolute & 31));
+	psp_nms_free[psp_nms_free_count++] = psp_nms_entry_of[absolute];
+	psp_nms_count--;
+}
+
+/* the root inputs each compute read (object_compute_node_matrices' end) */
+__attribute__((noinline)) static void psp_nms_note(long object_index, struct object_datum const *object)
+{
+	struct psp_nms_root *root = &psp_nms_roots[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (PSP_NMS_ROOTS - 1)];
+
+	root->object_index = object_index;
+	root->position = object->object.position;
+	root->forward = object->object.forward;
+	root->up = object->object.up;
+	root->scale = object->object.scale;
+	root->mirrored = object->object.flags & FLAG(_object_mirrored_bit);
+	root->graph = object->object.animation.animation_graph_index;
+	root->state = object->object.animation.state.index;
+}
+
+static int psp_nms_root_same(long object_index, struct object_datum const *object)
+{
+	struct psp_nms_root const *root = &psp_nms_roots[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) & (PSP_NMS_ROOTS - 1)];
+
+	return root->object_index == object_index &&
+		!csmemcmp(&root->position, &object->object.position, sizeof(root->position)) &&
+		!csmemcmp(&root->forward, &object->object.forward, sizeof(root->forward)) &&
+		!csmemcmp(&root->up, &object->object.up, sizeof(root->up)) &&
+		!csmemcmp(&root->scale, &object->object.scale, sizeof(root->scale)) &&
+		root->mirrored == (object->object.flags & FLAG(_object_mirrored_bit)) &&
+		root->graph == object->object.animation.animation_graph_index &&
+		root->state == object->object.animation.state.index;
+}
+
+/* 1 when the animation leaves the root node where its default puts it: no
+channel of node 0 in the animation playing, and no overlays (an overlay is
+weighted by a function value, which moves even a constant channel) */
+static int psp_nms_root_still(struct object_datum const *object, struct object_definition const *definition)
+{
+	if (definition->object.animation_graph.index != NONE &&
+		animation_graph_definition_get(definition->object.animation_graph.index)->object_overlays.count > 0)
+		return 0;
+	if (object->object.animation.animation_graph_index != NONE && object->object.animation.state.index != NONE)
+	{
+		struct animation_graph *graph = animation_graph_definition_get(object->object.animation.animation_graph_index);
+		struct animation const *animation;
+
+		if (!VALID_INDEX(object->object.animation.state.index, graph->animations.count))
+			return 0;
+		animation = TAG_BLOCK_GET_ELEMENT(&graph->animations, object->object.animation.state.index, struct animation);
+		if ((animation->nodes_with_translation_flags[0] | animation->nodes_with_rotation_flags[0] |
+			animation->nodes_with_scale_flags[0]) & 1)
+			return 0;
+	}
+	return 1;
+}
+
+__attribute__((noinline)) static int psp_nms_begin(void)
+{
+	extern int psp_lights_link_tick; /* FIXES_LD1: the frame's last tick */
+
+	if (psp_nms_on < 0)
+	{
+		int k;
+
+		psp_nms_check = psp_keep("nmskipcheck") != 0;
+		psp_nms_on = psp_nms_check || psp_keep("nmskip");
+		if (!psp_nms_on && !psp_keep("vislazyoff"))
+		{
+			psp_vl_on = 1;
+			psp_nms_check = psp_keep("vislazycheck") != 0;
+			psp_nms_on = 1;
+		}
+		if (psp_nms_on)
+		{
+			psp_nms_entry_of = (short *)malloc(MAXIMUM_OBJECTS_PER_MAP * sizeof(*psp_nms_entry_of));
+			psp_nms_entries = (struct psp_nms_entry *)malloc(PSP_NMS_ENTRIES * sizeof(*psp_nms_entries));
+			psp_nms_roots = (struct psp_nms_root *)calloc(PSP_NMS_ROOTS, sizeof(*psp_nms_roots));
+			if (psp_nms_check)
+				psp_nms_kept = (real_matrix4x3 *)malloc(MAXIMUM_NODES_PER_MODEL * sizeof(*psp_nms_kept));
+			if (!psp_nms_entry_of || !psp_nms_entries || !psp_nms_roots || (psp_nms_check && !psp_nms_kept))
+				psp_nms_on = 0;
+			for (k = 0; k < PSP_NMS_ROOTS && psp_nms_roots; k++)
+				psp_nms_roots[k].object_index = NONE;
+			for (k = 0; k < PSP_NMS_ENTRIES; k++)
+				psp_nms_free[k] = (short)k;
+			psp_nms_free_count = PSP_NMS_ENTRIES;
+		}
+	}
+	if (psp_nms_on <= 0)
+	{
+		psp_vl_on = 0;
+		return 0;
+	}
+	psp_nms_ticks++;
+	psp_vl_ticked = 1;
+	psp_vl_moving = NONE;
+	if (psp_lights_link_tick)
+		psp_nms_last_ticks++;
+	return psp_vl_on || !psp_lights_link_tick;
+}
+
+/* 1 when this compute (and the postprocess after it, which these types
+don't have) is left to the frame's last tick */
+__attribute__((noinline)) static int psp_nms_skip(long object_index, struct object_datum *object)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+	struct object_definition const *definition = object_definition_get(object->definition_index);
+	struct psp_nms_entry *entry;
+	extern unsigned long psp_object_epoch;
+	extern int psp_merays_out;
+	void psp_merays_settle(void);
+	int reason;
+
+	psp_nms_seen++;
+	if (object->object.parent_object_index != NONE || object->object.first_child_object_index != NONE)
+		reason = 0;
+	else if (psp_vl_on && ((psp_vl_drawn[absolute >> 5] >> (absolute & 31)) & 1))
+		reason = 6;
+	else if (!psp_vl_on && definition->object.collision_model.index != NONE)
+		reason = 1;
+	else if (object->object.animation.interpolation_frame_count)
+		reason = 2;
+	else if (!psp_nms_root_still(object, definition))
+		reason = 3;
+	else if (!psp_nms_root_same(object_index, object))
+		reason = 4;
+	else if (!psp_nms_free_count && !psp_nms_waits(absolute))
+		reason = 5;
+	else
+		reason = -1;
+	if (reason >= 0)
+	{
+		psp_nms_refused[reason]++;
+		return 0;
+	}
+	if (psp_nms_check)
+	{
+		/* made as before; the skip's claims checked against it */
+		real_matrix4x3 root = ((real_matrix4x3 *)object_header_block_get(object_index, &object->object.node_matrices))[0];
+		real_point3d center = object->object.bounding_sphere_center;
+		real radius = object->object.bounding_sphere_radius;
+		unsigned long start = psp_microseconds();
+
+		object_compute_node_matrices(object_index);
+		psp_nms_skip_us += psp_microseconds() - start;
+		if (csmemcmp(&root, object_header_block_get(object_index, &object->object.node_matrices), sizeof(root)) ||
+			csmemcmp(&center, &object->object.bounding_sphere_center, sizeof(center)) ||
+			radius != object->object.bounding_sphere_radius)
+		{
+			psp_nms_gate_wrong++;
+			if (psp_nms_check_reports++ < 20)
+				platform_psp_log("nmskipcheck: t=%ld %s (#%08lx): the root or sphere moved though the skip's test passed",
+					game_time_get(), tag_get_name(object->definition_index), (unsigned long)object_index);
+		}
+	}
+	else
+	{
+		/* what the compute counts on entry (FIXES_121, FIXES_122) */
+		if (psp_merays_out)
+			psp_merays_settle();
+		psp_object_epoch++;
+	}
+	if (psp_nms_waits(absolute))
+	{
+		/* an earlier tick's, which this one's replaces */
+		psp_nms_release(absolute);
+		psp_nms_superseded++;
+	}
+	psp_nms_entry_of[absolute] = psp_nms_free[--psp_nms_free_count];
+	entry = &psp_nms_entries[psp_nms_entry_of[absolute]];
+	entry->object_index = object_index;
+	entry->time = game_time_get();
+	psp_nms_inputs_get(object, &entry->inputs);
+	psp_nms_pending[absolute >> 5] |= 1ul << (absolute & 31);
+	psp_nms_count++;
+	psp_nms_skipped++;
+	/* an animation playing moves the nodes the compute would have made, so
+	the eager compute changes the object's datum (its node matrices) though
+	the skip leaves it as it was: the sleep check (psp_sleepy_update) must
+	see it changed, or the object falls asleep, stops updating and keeps
+	its pose where the eager build would have kept it awake and moving */
+	if (psp_vl_on && object->object.animation.animation_graph_index != NONE &&
+		object->object.animation.state.index != NONE)
+		psp_vl_moving = object_index;
+	if ((unsigned long)psp_nms_count > psp_vl_peak)
+		psp_vl_peak = psp_nms_count;
+	return 1;
+}
+
+/* a compute anywhere replaces the one left out (object_compute_node_matrices) */
+__attribute__((noinline)) static void psp_nms_drop(long object_index)
+{
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute) &&
+		psp_nms_entries[psp_nms_entry_of[absolute]].object_index == object_index)
+	{
+		psp_nms_release(absolute);
+		psp_nms_superseded++;
+	}
+}
+
+/* the left-out compute, made now from its entry's inputs and game time; the
+object's inputs as they are now are put back after, but for any the compute
+itself changed (a facing it mended), as nwbatch's list did */
+static void psp_nms_make(long object_index, struct psp_nms_entry const *entry)
+{
+	struct object_datum *object = object_get(object_index);
+	struct psp_nms_inputs now, after;
+	extern unsigned long psp_object_epoch;
+	unsigned long epoch = psp_object_epoch;
+	unsigned char *n = (unsigned char *)&now;
+	unsigned char const *p = (unsigned char const *)&entry->inputs, *a = (unsigned char const *)&after;
+	unsigned int k;
+
+	psp_nms_inputs_get(object, &now);
+	psp_nms_inputs_put(object, &entry->inputs);
+	psp_nms_settle_time = entry->time;
+	object_compute_node_matrices(object_index);
+	psp_nms_settle_time = NONE;
+	/* the skip counted it already */
+	psp_object_epoch = epoch;
+	psp_nms_inputs_get(object, &after);
+	for (k = 0; k < sizeof(now); k++)
+		if (a[k] != p[k])
+			n[k] = a[k];
+	psp_nms_inputs_put(object, &now);
+}
+
+__attribute__((noinline)) static void psp_nms_settle_absolute(long absolute, int at_frame_end)
+{
+	struct psp_nms_entry entry = psp_nms_entries[psp_nms_entry_of[absolute]];
+	long now = game_time_get();
+	struct object_datum *object;
+	real_matrix4x3 *nodes;
+	long size;
+	real_point3d center;
+	real radius;
+
+	psp_nms_release(absolute);
+	/* its object gone, or a game state from another time (a revert) */
+	if (!object_header_try_and_get(entry.object_index) || entry.time > now || (!psp_vl_on && now - entry.time > 8))
+	{
+		psp_nms_stale++;
+		return;
+	}
+	if (at_frame_end)
+		psp_nms_frame_end++;
+	else
+	{
+		psp_nms_read++;
+		if (psp_vl_on)
+			psp_vl_site_note();
+	}
+	if (!psp_nms_check)
+	{
+		psp_nms_make(entry.object_index, &entry);
+		return;
+	}
+	/* the compute already made where the skip would have been is what the
+	reader sees; the catch-up is made, compared, and taken back */
+	object = object_get(entry.object_index);
+	nodes = (real_matrix4x3 *)object_header_block_get(entry.object_index, &object->object.node_matrices);
+	size = MIN((long)object->object.node_matrices.size, (long)(MAXIMUM_NODES_PER_MODEL * sizeof(real_matrix4x3)));
+	csmemcpy(psp_nms_kept, nodes, size);
+	center = object->object.bounding_sphere_center;
+	radius = object->object.bounding_sphere_radius;
+	psp_nms_make(entry.object_index, &entry);
+	psp_nms_made_checked++;
+	if (csmemcmp(psp_nms_kept, nodes, size) || csmemcmp(&center, &object->object.bounding_sphere_center, sizeof(center)) ||
+		radius != object->object.bounding_sphere_radius)
+	{
+		psp_nms_made_differs++;
+		if (psp_nms_check_reports++ < 20)
+			platform_psp_log("%s: t=%ld %s (#%08lx): the catch-up from tick %ld differs from the compute it stands in for (reader %08lx)",
+				psp_vl_on ? "vislazycheck" : "nmskipcheck",
+				now, tag_get_name(object->definition_index), (unsigned long)entry.object_index, entry.time,
+				(unsigned long)psp_nms_reader);
+	}
+	csmemcpy(nodes, psp_nms_kept, size);
+	object->object.bounding_sphere_center = center;
+	object->object.bounding_sphere_radius = radius;
+	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(entry.object_index) < MAXIMUM_OBJECTS_PER_MAP)
+	{
+		psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(entry.object_index)].center = center;
+		psp_object_spheres[DATUM_INDEX_TO_ABSOLUTE_INDEX(entry.object_index)].radius = radius;
+	}
+}
+
+/* a reader of an object whose compute was left out: made first */
+__attribute__((noinline)) void psp_nms_settle(long object_index, void *site)
+{
+	psp_nms_reader = site;
+	long absolute = DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index);
+
+	if (absolute < MAXIMUM_OBJECTS_PER_MAP && psp_nms_waits(absolute))
+		psp_nms_settle_absolute(absolute, 0);
+}
+
+/* the objects' loop is over: on the frame's last tick, what is left is made */
+__attribute__((noinline)) static void psp_nms_close(void)
+{
+	long word;
+
+	psp_nms_open = 0;
+	if (psp_nms_on <= 0)
+		return;
+	if (psp_nms_count && psp_lights_link_tick && !psp_vl_on)
+	{
+		for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
+			while (psp_nms_pending[word])
+				psp_nms_settle_absolute(word * 32 + __builtin_ctz(psp_nms_pending[word]), 1);
+	}
+	if (psp_nms_ticks >= 900)
+	{
+		platform_psp_log("%s: %lu ticks (%lu a frame's last): %lu computes of scenery and its kin on the others, %lu left out "
+			"(%lu replaced by a later compute, %lu made for a reader, %lu at the frame's end, %lu stale); kept: attached %lu, "
+			"collision model %lu, interpolating %lu, root animated %lu, root moved or unknown %lu, no room %lu, drawn last frame %lu",
+			psp_vl_on ? "vislazy" : "nmskip",
+			psp_nms_ticks, psp_nms_last_ticks, psp_nms_seen, psp_nms_skipped, psp_nms_superseded, psp_nms_read,
+			psp_nms_frame_end, psp_nms_stale, psp_nms_refused[0], psp_nms_refused[1], psp_nms_refused[2],
+			psp_nms_refused[3], psp_nms_refused[4], psp_nms_refused[5], psp_nms_refused[6]);
+		if (psp_vl_on)
+		{
+			char sites[PSP_VL_SITES * 20];
+			int at = 0, s;
+
+			sites[0] = 0;
+			for (s = 0; s < PSP_VL_SITES && psp_vl_site[s]; s++)
+				at += snprintf(sites + at, sizeof(sites) - at, " %08lx:%lu", (unsigned long)psp_vl_site[s], psp_vl_site_n[s]);
+			platform_psp_log("vislazy: %lu frames listed; computes owed now %d, peak %lu; catch-ups by reader (site:n):%s; other readers %lu",
+				psp_vl_frames, psp_nms_count, psp_vl_peak, sites, psp_vl_sites_other);
+			csmemset(psp_vl_site, 0, sizeof(psp_vl_site));
+			csmemset(psp_vl_site_n, 0, sizeof(psp_vl_site_n));
+			psp_vl_frames = psp_vl_peak = psp_vl_sites_other = 0;
+		}
+		if (psp_nms_check)
+			platform_psp_log("%s: the skips' test wrong %lu of %lu; catch-ups differing %lu of %lu; "
+				"the computes it would leave out %.3f ms a tick",
+				psp_vl_on ? "vislazycheck" : "nmskipcheck",
+				psp_nms_gate_wrong, psp_nms_skipped, psp_nms_made_differs, psp_nms_made_checked,
+				(float)psp_nms_skip_us / (float)psp_nms_ticks / 1000.0f);
+		psp_nms_ticks = psp_nms_last_ticks = psp_nms_seen = psp_nms_skipped = psp_nms_superseded = 0;
+		psp_nms_read = psp_nms_frame_end = psp_nms_stale = psp_nms_skip_us = 0;
+		csmemset(psp_nms_refused, 0, sizeof(psp_nms_refused));
+	}
+}
+
+/* a map's objects go: nothing of theirs is owed */
+static void psp_nms_forget(void)
+{
+	long k;
+
+	if (psp_nms_on <= 0)
+		return;
+	csmemset(psp_nms_pending, 0, sizeof(psp_nms_pending));
+	psp_nms_count = 0;
+	for (k = 0; k < PSP_NMS_ENTRIES; k++)
+		psp_nms_free[k] = (short)k;
+	psp_nms_free_count = PSP_NMS_ENTRIES;
+	for (k = 0; k < PSP_NMS_ROOTS; k++)
+		psp_nms_roots[k].object_index = NONE;
+}
+
+/* a game state is saved (a checkpoint): it holds the node matrices, so every
+owed compute is made first, and a revert loads what it would have */
+void psp_nms_game_state_saving(void)
+{
+	long word;
+
+	if (psp_nms_on <= 0 || !psp_nms_count)
+		return;
+	psp_nms_reader = (void *)psp_nms_game_state_saving;
+	for (word = 0; word < (MAXIMUM_OBJECTS_PER_MAP + 31) / 32; word++)
+		while (psp_nms_pending[word])
+			psp_nms_settle_absolute(word * 32 + __builtin_ctz(psp_nms_pending[word]), 0);
+}
+
+/* a game state is loaded (a revert): its objects' matrices are as it was
+saved, so nothing is owed, and no root input noted before stands */
+void psp_nms_game_state_loading(void)
+{
+	psp_nms_forget();
+}
+
+real_matrix4x3 *object_get_node_matrices(
+	long object_index)
+{"""),
+# the accessors: what they hand out is made first
+("""		psp_nmr_read(object_index, __builtin_return_address(0));
+	/* while a frame is drawn""",
+ """		psp_nmr_read(object_index, __builtin_return_address(0));
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+	/* while a frame is drawn"""),
+("""		psp_nmr_read(object_index, __builtin_return_address(0));
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 1060""",
+ """		psp_nmr_read(object_index, __builtin_return_address(0));
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 1060"""),
+# a deactivated object leaves the loop with its matrices as they should be
+("""	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+""",
+ """	psp_lights_flush(object_index); /* psp_fixups.py (FIXES_LD1) */
+	PSP_NMS_READ(object_index); /* psp_fixups.py (FIXES_NMSKIP) */
+"""),
+# a compute anywhere replaces a left-out one whole
+("""	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_computed(object_index);
+""",
+ """	/* psp_fixups.py (FIXES_NMSKIP) */
+	if (psp_nms_count)
+		psp_nms_drop(object_index);
+	/* psp_fixups.py (FIXES_134 #nmreaders) */
+	if (psp_nmr_on)
+		psp_nmr_computed(object_index);
+"""),
+# ... and notes what it placed the root from
+("""	/* psp_fixups.py (build 107): and its copy */
+	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) < MAXIMUM_OBJECTS_PER_MAP)""",
+ """	/* psp_fixups.py (FIXES_NMSKIP) */
+	if (psp_nms_on > 0 && TEST_FLAG(PSP_NMS_TYPES, object->object.type))
+		psp_nms_note(object_index, object);
+	/* psp_fixups.py (build 107): and its copy */
+	if (psp_object_spheres && DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) < MAXIMUM_OBJECTS_PER_MAP)"""),
+# the skip: a left-out compute takes its postprocess with it, as posehalf's does
+("""			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped)
+""",
+ """			if (!TEST_FLAG(object->object.flags, _object_do_not_recompute_node_matrices_bit) && !psp_pose_skipped &&
+				!(psp_nms_open && TEST_FLAG(PSP_NMS_TYPES, object->object.type) &&
+					(psp_pose_skipped = psp_nms_skip(object_index, object)) != 0)) /* psp_fixups.py (FIXES_NMSKIP) */
+"""),
+("""	psp_object_account(12, psp_microseconds() - psp_object_start);
+""",
+ """	psp_object_account(12, psp_microseconds() - psp_object_start);
+	psp_nms_open = psp_nms_begin(); /* psp_fixups.py (FIXES_NMSKIP) */
+"""),
+("""	psp_nmr_in_update = 0;
+	psp_pose_ahead_make();
+""",
+ """	psp_nmr_in_update = 0;
+	psp_nms_close(); /* psp_fixups.py (FIXES_NMSKIP) */
+	psp_pose_ahead_make();
+"""),
+("""void objects_dispose_from_old_map(
+	void)
+{
+""",
+ """void objects_dispose_from_old_map(
+	void)
+{
+#ifdef HALO_PSP
+	psp_nms_forget(); /* psp_fixups.py (FIXES_NMSKIP) */
+#endif
+"""),
+]
+
+
+# ---------- FIXES_OBJWALK: the collision tests' object loops in line (lever CW)
+# collision_test_vector and collision_get_features_in_sphere walk every
+# collideable object of each cluster they reach (b30's beach: ~50 objects a
+# vector test, ~11 M objects a 108 s run) and reject ~95% of them on the
+# sphere copy. Each object cost three calls across units (the cluster
+# partition's next reference, the sphere copy, fast_vector_intersects_sphere),
+# ~100 instructions, most of them the calls' frames (-fno-omit-frame-pointer).
+# Here the reference list's step and the sphere test are in line; the same
+# list is walked in the same order and the same float operations decide
+# (-ffp-contract=off), so the same objects are tested. "objwalkold": the
+# calls, as before
+FIXES_OBJWALK = {}
+FIXES_OBJWALK["source/math/real_math.h#objwalk"] = [
+("""boolean fast_vector_intersects_sphere(real_point3d const *point, real_vector3d const *vector, real_point3d const *center, real radius);
+""", """boolean fast_vector_intersects_sphere(real_point3d const *point, real_vector3d const *vector, real_point3d const *center, real radius);
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_OBJWALK): fast_vector_intersects_sphere's test, in
+line for the collision tests' object loops; the function is this too */
+static __inline__ boolean psp_vector_intersects_sphere(
+	real_point3d const *point,
+	real_vector3d const *vector,
+	real_point3d const *center,
+	real radius)
+{
+	real_point3d p = {point->x-center->x, point->y-center->y, point->z - center->z};
+	real c = (p.x*p.x) + (p.y*p.y) + (p.z*p.z) - (radius*radius);
+	real b;
+	real a;
+	real disc;
+	real neg_a_minus_b;
+
+	if (c < 0.f)
+		return TRUE;
+	b = vector->i*p.x + vector->j*p.y + vector->k*p.z;
+	if (b >= 0.f)
+		return FALSE;
+	a = vector->i*vector->i + vector->j*vector->j + vector->k*vector->k;
+	disc = b * b - a * c;
+	if (disc <= 0.f)
+		return FALSE;
+	neg_a_minus_b = -a - b;
+	if (neg_a_minus_b < 0.f)
+		return TRUE;
+	return neg_a_minus_b * neg_a_minus_b < disc;
+}
+#endif
+"""),
+]
+FIXES_OBJWALK["source/math/real_math.c#objwalk"] = [
+("""	real radius)
+{
+	real_point3d p = {point->x-center->x, point->y-center->y, point->z - center->z};
+	real c = (p.x*p.x) + (p.y*p.y) + (p.z*p.z) - (radius*radius);
+	real_vector3d direction;
+""", """	real radius)
+{
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_OBJWALK): one copy of the test (real_math.h) */
+	return psp_vector_intersects_sphere(point, vector, center, radius);
+#else
+	real_point3d p = {point->x-center->x, point->y-center->y, point->z - center->z};
+	real c = (p.x*p.x) + (p.y*p.y) + (p.z*p.z) - (radius*radius);
+	real_vector3d direction;
+"""),
+("""				if (neg_a_minus_b < 0.f)
+				{
+					return TRUE;
+				}
+				else
+				{
+					return neg_a_minus_b * neg_a_minus_b < disc;
+				}
+			}
+		}
+	}
+}""", """				if (neg_a_minus_b < 0.f)
+				{
+					return TRUE;
+				}
+				else
+				{
+					return neg_a_minus_b * neg_a_minus_b < disc;
+				}
+			}
+		}
+	}
+#endif
+}"""),
+]
+FIXES_OBJWALK["source/physics/collisions.c#objwalk"] = [
+("""#include "objects/objects.h"
+""", """#include "objects/objects.h"
+#ifdef HALO_PSP
+#include "objects/reference_lists.h" /* psp_fixups.py (FIXES_OBJWALK) */
+#endif
+"""),
+# the sphere-copy check out of line, so psp_sphere_of is small enough to go in line
+("""	if (psp_sphere_check < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_sphere_check = psp_keep("spherecheck");
+	}
+	if (psp_sphere_check)
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		psp_sphere_checked++;
+		if (memcmp(&object->object.bounding_sphere_center, &sphere->center, sizeof(sphere->center)) ||
+			memcmp(&object->object.bounding_sphere_radius, &sphere->radius, sizeof(sphere->radius)))
+			psp_sphere_wrong++;
+	}
+	psp_sphere_tests++;
+	return sphere;
+}
+
+/* object_test_vector's own sphere test */
+static boolean psp_sphere_may_cross(
+	long object_index,
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+	if (fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;""", """	/* psp_fixups.py (FIXES_OBJWALK): -1 until the keep word is read */
+	if (psp_sphere_check)
+		psp_sphere_compare(object_index, sphere);
+	psp_sphere_tests++;
+	return sphere;
+}
+
+/* psp_fixups.py (FIXES_OBJWALK): "objwalkold" walks through the calls */
+static int psp_objwalk_old = -1;
+
+static __inline__ boolean psp_objwalk_inline(void)
+{
+	if (psp_objwalk_old < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_objwalk_old = psp_keep("objwalkold") != 0;
+	}
+	return !psp_objwalk_old;
+}
+
+/* cluster_get_next_collideable_object, in line: reference_lists.h's step */
+static __inline__ long psp_next_collideable(boolean walk_inline, long *reference_index)
+{
+	if (walk_inline)
+	{
+		struct data_reference const *reference;
+
+		if (*reference_index == NONE)
+			return NONE;
+		reference = (struct data_reference const *)psp_datum_get_inline(
+			collideable_object_cluster_partition.data_reference_data, *reference_index);
+		*reference_index = reference->next_reference_index;
+		return reference->datum_index;
+	}
+	return cluster_get_next_collideable_object(reference_index);
+}
+
+/* object_test_vector's own sphere test */
+static __inline__ boolean psp_sphere_may_cross(
+	boolean walk_inline,
+	long object_index,
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+	if (walk_inline ? psp_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius) :
+		fast_vector_intersects_sphere(point, vector, &sphere->center, sphere->radius))
+		return TRUE;"""),
+("""static struct psp_object_sphere const *psp_sphere_of(long object_index)
+{""", """static void psp_sphere_compare(long object_index, struct psp_object_sphere const *sphere) __attribute__((noinline));
+static __inline__ struct psp_object_sphere const *psp_sphere_of(long object_index) __attribute__((always_inline));
+
+/* psp_fixups.py (FIXES_OBJWALK): "spherecheck", each sphere copy compared
+with the datum's */
+static void psp_sphere_compare(long object_index, struct psp_object_sphere const *sphere)
+{
+	struct object_datum const *object;
+
+	if (psp_sphere_check < 0)
+	{
+		int psp_keep(const char *name);
+
+		psp_sphere_check = psp_keep("spherecheck");
+		if (!psp_sphere_check)
+			return;
+	}
+	object = object_get(object_index);
+	psp_sphere_checked++;
+	if (memcmp(&object->object.bounding_sphere_center, &sphere->center, sizeof(sphere->center)) ||
+		memcmp(&object->object.bounding_sphere_radius, &sphere->radius, sizeof(sphere->radius)))
+		psp_sphere_wrong++;
+}
+
+static struct psp_object_sphere const *psp_sphere_of(long object_index)
+{"""),
+("""				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+
+					for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+						object_index != NONE;
+						object_index = cluster_get_next_collideable_object(&reference_index))
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_cross(object_index, point, vector) &&
+#endif""", """				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_OBJWALK) */
+					boolean walk_inline = psp_objwalk_inline();
+
+					for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+						object_index != NONE;
+						object_index = psp_next_collideable(walk_inline, &reference_index))
+#else
+					for (object_index = cluster_get_first_collideable_object(&reference_index, cluster_index);
+						object_index != NONE;
+						object_index = cluster_get_next_collideable_object(&reference_index))
+#endif
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_cross(walk_inline, object_index, point, vector) &&
+#endif"""),
+("""				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+
+					for (object_index = cluster_get_first_collideable_object(
+							&reference_index,
+							cluster_index);
+						object_index != NONE;
+						object_index = cluster_get_next_collideable_object(&reference_index))
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_touch(""", """				if (structure_cluster_mark(cluster_index))
+				{
+					long reference_index;
+					long object_index;
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_OBJWALK) */
+					boolean walk_inline = psp_objwalk_inline();
+#endif
+
+					for (object_index = cluster_get_first_collideable_object(
+							&reference_index,
+							cluster_index);
+						object_index != NONE;
+#ifdef HALO_PSP
+						object_index = psp_next_collideable(walk_inline, &reference_index))
+#else
+						object_index = cluster_get_next_collideable_object(&reference_index))
+#endif
+					{
+						if (
+#ifdef HALO_PSP
+							psp_sphere_may_touch("""),
+]
+
+
+# ---------- FIXES_POOLS: the glow particles' array at the PSP's size
+# glow.c sizes it with an enum of its own, not one of the engine's
+# capacities, so psp_capacity.h's size (the campaign's, with the actor,
+# prop and light arrays; PSP_POOLS_XBOX=1 the Xbox's) reaches it here
+FIXES_POOLS = {}
+FIXES_POOLS["source/objects/widgets/glow.c#pools"] = [
+("""	MAXIMUM_GLOW_PARTICLES = 512
+""", """#ifdef HALO_PSP
+	MAXIMUM_GLOW_PARTICLES = PSP_MAXIMUM_GLOW_PARTICLES /* psp_capacity.h (FIXES_POOLS) */
+#else
+	MAXIMUM_GLOW_PARTICLES = 512
+#endif
+"""),
+]
+
+
+# ---------- FIXES_GEFEED: the Xbox vertex shaders' constants left unmade
+# The PSP runs d3d8_gl.c as the null renderer: it never makes a GL device, so
+# the vertex constants it stores (constants_store) are read by nothing, and
+# the GE draws from the engine's own node matrices and lighting
+# (psp_ge_model_begin). Each model draw still wrote its nodes out as shader
+# constants and stored them, and its lighting too: ~1.5-2% of the drawing
+# phase in the cache model on b30 (docs/ge_audit.md). "vshconstants": made and
+# stored as before
+FIXES_GEFEED = {}
+FIXES_GEFEED["port/linux/src/d3d8_gl.c#gefeed"] = [
+("""void WINAPI D3DDevice_SetVertexShaderConstant(INT reg, CONST void *constant_data, DWORD constant_count)
+{
+	long first = reg + XGPU_VERTEX_CONSTANT_BIAS;
+""", """void WINAPI D3DDevice_SetVertexShaderConstant(INT reg, CONST void *constant_data, DWORD constant_count)
+{
+	long first = reg + XGPU_VERTEX_CONSTANT_BIAS;
+
+#ifdef HALO_PSP
+	{
+		extern int psp_vsh_constants_skip(void); /* psp_ge.c (FIXES_GEFEED) */
+
+		if (psp_vsh_constants_skip())
+			return;
+	}
+#endif
+"""),
+]
+FIXES_GEFEED["source/rasterizer/xbox/rasterizer_xbox.c#gefeed"] = [
+("""	if (rasterizer_debug_options.model_lighting_ambient > 0.0f)
+	{
+		csmemset(&lighting_constants, 0, sizeof(lighting_constants));""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_vsh_constants_skip(void); /* psp_ge.c (FIXES_GEFEED) */
+
+		if (psp_vsh_constants_skip())
+			return;
+	}
+#endif
+	if (rasterizer_debug_options.model_lighting_ambient > 0.0f)
+	{
+		csmemset(&lighting_constants, 0, sizeof(lighting_constants));"""),
+("""	for (node_index = 0; node_index < skinning->node_matrix_count; node_index++)
+	{
+		real scale = skinning->node_matrices[node_index].scale;""",
+ """#ifdef HALO_PSP
+	{
+		extern int psp_vsh_constants_skip(void); /* psp_ge.c (FIXES_GEFEED) */
+
+		if (psp_vsh_constants_skip())
+			return;
+	}
+#endif
+	for (node_index = 0; node_index < skinning->node_matrix_count; node_index++)
+	{
+		real scale = skinning->node_matrices[node_index].scale;"""),
+]
+
+
+# ---------- FIXES_WS: sleeping scenery passed over in the object walk (lever WS)
+# Under wake-on-write, a sleeping piece of scenery nothing has marked gets the
+# same answer every tick: still asleep, with three counters moved. Reaching
+# that answer went through psp_object_update's type tests and
+# psp_sleepy_update's checks, with calls to small functions spread over the
+# program (the clock, the connection, the flip watch), each likely a cache
+# miss; b30's walk passes ~300 such sleepers a tick. The walk now asks the
+# same questions inline and moves the same counters. Anything the full path
+# would treat differently (marked, not settled, restless, a zero checksum, a
+# child, the check modes, networked games without wakeonwrite) takes the full
+# path. "sleeperwalk" (keep.txt): every sleeper through the full path
+FIXES_WS = {}
+
+FIXES_WS["source/objects/objects.c#sleeperwalk"] = [
+("\nvoid objects_update(\n\tvoid)\n{",
+ """
+/* psp_fixups.py (FIXES_WS): whether this tick's walk may pass over settled
+scenery itself; decided as the tick's walk starts */
+static int psp_ws_keep = -1, psp_ws_ready = 0;
+long psp_ws_passed;
+
+static void psp_ws_tick_begin(void)
+{
+	if (psp_ws_keep < 0)
+		psp_ws_keep = !psp_keep("sleeperwalk");
+	/* each switch the full path reads, once it has been read */
+	psp_ws_ready = psp_ws_keep && psp_sleep_enabled == 1 && psp_scenery_half == 0 && psp_restless_on >= 0 &&
+		psp_wake_on > 0 && !psp_wake_check && psp_func_check == 0 &&
+		(psp_wake_on == 2 || game_connection() == _game_connection_local);
+}
+
+/* 1: the object is settled scenery the full path would leave asleep, and its
+counters have been moved as that path moves them */
+static inline int psp_ws_asleep(short absolute_index, struct object_header_datum const *header)
+{
+	struct object_datum const *object;
+
+	if (!psp_ws_ready || header->type != _object_type_scenery || absolute_index >= MAXIMUM_OBJECTS_PER_MAP ||
+		psp_wake_marked[absolute_index] || psp_sleep[absolute_index].identifier != header->identifier ||
+		psp_sleep[absolute_index].quiet < 2 || !psp_sleep[absolute_index].checksum ||
+		(psp_restless_on && (psp_restless[absolute_index] & PSP_RESTLESS_SKIPPING)))
+		return 0;
+	object = header->datum;
+	if (object->object.first_child_object_index != NONE)
+		return 0;
+	psp_wake_skipped++;
+	psp_objects_sleep_checked++;
+	psp_objects_asleep++;
+	if (TEST_FLAG(object->object.flags, _object_garbage_bit))
+		++object_globals->active_garbage_object_count;
+	psp_ws_passed++;
+	return 1;
+}
+
+void objects_update(
+	void)
+{"""),
+("#ifdef HALO_PSP\n\tpsp_object_scale = psp_object_sample();\n",
+ "#ifdef HALO_PSP\n\tpsp_object_scale = psp_object_sample();\n\tpsp_ws_tick_begin(); /* psp_fixups.py (FIXES_WS) */\n"),
+("\t\t\t\t\tpsp_nmr_tops++;\n\t\t\t\t\tif (psp_object_scale)\n",
+ "\t\t\t\t\tpsp_nmr_tops++;\n\t\t\t\t\tif (psp_ws_asleep(i, object_header)) /* psp_fixups.py (FIXES_WS) */\n\t\t\t\t\t\tpsp_object_count(object_header->type);\n\t\t\t\t\telse if (psp_object_scale)\n"),
+]
+
+
+# ---------- FIXES_MEJOBS: point physics on the Media Engine ("mepoints")
+# The frame's free particles and contrail points each run point_physics_update
+# (the wind where the point is, then up to three collision rays against the
+# level and its water): 12-24 us a point on the PSP-1000, ~100 points a frame
+# in a fight, and the same again for a vehicle's dust contrails. Each point's
+# physics reads only its own position, velocity and location, its physics tag,
+# the level's collision BSP, its water and the wind; so its answer can be made
+# anywhere, ahead of the loop that uses it.
+# - particles_update lists the points whose physics this frame will run (the
+#   turn rule of FIXES_36 predicted as the loop will apply it), then the
+#   contrails' points, and hands the last PSP_POINTS_MAX of them to the ME as
+#   one ring job. The ME makes them from the back of the list; the main CPU
+#   runs its loops from the front as before.
+# - As the main CPU reaches a listed point it takes the ME's answer if the ME
+#   has made it and the point's inputs are bit for bit the ones listed (and the
+#   level's breakable surfaces as they were); otherwise it makes the point
+#   itself, and moves the line the ME must not cross past it. Neither CPU ever
+#   waits for the other inside the loops: the two meet where they meet.
+# - The ME's copy of the physics (psp_point_physics_quiet) is the engine's,
+#   test for test and operation for operation, without the usage log, the
+#   collision-user stack and the reports of a map's bad data: a point that
+#   would report one is left to the main CPU. Its arithmetic is the main CPU's
+#   (the FPU's control word handed over, no VFPU on the way, no fused
+#   multiply-adds in the build).
+# - The ME writes each answer's line back before it says the answer is made,
+#   and only the ME writes the answers and its progress word; only the main
+#   CPU writes the list and its own word. The main CPU drops an answer's line
+#   before reading it.
+# On by default: exact, and on the PSP no slower anywhere and a little
+# faster in fights; "nomepoints" leaves every point to the main CPU;
+# "mepointscheck" also makes every taken point here and compares, bit for bit
+# (play then uses the main CPU's own answers); "mepointsminN" the fewest
+# listed points worth a hand-over (8 unless set)
+FIXES_MEJOBS = {}
+FIXES_MEJOBS["source/physics/collisions.c#mepoints"] = [
+("""boolean collision_test_pill(
+	unsigned long flags,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_MEJOBS #mepoints): collision_test_vector for point
+physics on the Media Engine, for its flags only (the structure and the water,
+no objects): the same tests in the same order, writing only its stack and
+*collision. A ray that would report a map's bad leaf, material or fog chain
+(the main CPU's reports, once each) or that asks for more is left to the
+main CPU: -1 */
+/* scenario_location_from_point's answer (bsp3d_test_point's walk, then the
+leaf's cluster). A node or plane the map doesn't have would be reported
+there, so it is left to the main CPU: -1 */
+static short psp_location_from_point_quiet(struct location *location, real_point3d const *point)
+{
+	struct bsp3d const *bsp = global_bsp3d_get();
+	struct structure_bsp *structure_bsp = global_structure_bsp_get();
+	long node_index = 0, leaf_index, cluster_index;
+	short depth = 0;
+
+	do
+	{
+		struct bsp3d_node const *node;
+
+		if (node_index < 0 || node_index >= bsp->nodes.count || depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
+			return -1;
+		node = TAG_BLOCK_GET_ELEMENT(&bsp->nodes, node_index, struct bsp3d_node);
+		if ((unsigned long)node->plane_designator >= (unsigned long)bsp->planes.count)
+			return -1;
+		node_index = node->children[plane3d_distance_to_point(
+			TAG_BLOCK_GET_ELEMENT(&bsp->planes, node->plane_designator, real_plane3d), point) >= 0.f];
+	}
+	while (!(node_index & LONG_MIN));
+
+	leaf_index = node_index != NONE ? node_index & LONG_MAX : NONE;
+	cluster_index = NONE;
+	if (leaf_index != NONE)
+	{
+		if ((leaf_index & LONG_MAX) >= structure_bsp->leaves.count)
+			leaf_index = NONE;
+		else
+		{
+			cluster_index = TAG_BLOCK_GET_ELEMENT(&structure_bsp->leaves, leaf_index & LONG_MAX,
+				struct structure_leaf)->cluster_index;
+			if (cluster_index != NONE && !VALID_INDEX(cluster_index, structure_bsp->clusters.count))
+			{
+				leaf_index = NONE;
+				cluster_index = NONE;
+			}
+		}
+	}
+	location->leaf_index = leaf_index;
+	location->cluster_index = (short)cluster_index;
+	return FALSE;
+}
+
+short psp_collision_test_vector_points(
+	unsigned long flags,
+	real_point3d const *point,
+	real_vector3d const *vector,
+	struct collision_result *collision)
+{
+	boolean hit = FALSE;
+
+	if (TEST_FLAG(flags, _collision_test_objects_bit) ||
+		TEST_FLAG(flags, _collision_test_use_vehicle_physics_bit) ||
+		TEST_FLAG(flags, _collision_test_try_to_keep_location_valid_bit))
+		return -1;
+
+	collision->type = NONE;
+	collision->start_location.leaf_index = NONE;
+	collision->start_location.cluster_index = NONE;
+	collision->location.leaf_index = NONE;
+	collision->location.cluster_index = NONE;
+	collision->t = 1.0f;
+
+	if ((TEST_FLAG(flags, _collision_test_structure_bit) || TEST_FLAG(flags, _collision_test_media_bit)) &&
+		!debug_collision_skip_vectors)
+	{
+		struct structure_bsp *structure_bsp = global_structure_bsp_get();
+		unsigned long bsp_flags = 0;
+		struct collision_bsp_test_vector_result bsp_result;
+
+		if (!(flags & (FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_back_facing_surfaces_bit))))
+			flags |= FLAG(_collision_test_front_facing_surfaces_bit) | FLAG(_collision_test_back_facing_surfaces_bit);
+		SET_FLAG(bsp_flags, _collision_test_front_facing_surfaces_bit, TEST_FLAG(flags, _collision_test_front_facing_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_back_facing_surfaces_bit, TEST_FLAG(flags, _collision_test_back_facing_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_ignore_two_sided_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_two_sided_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_ignore_invisible_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_invisible_surfaces_bit));
+		SET_FLAG(bsp_flags, _collision_test_ignore_breakable_surfaces_bit, TEST_FLAG(flags, _collision_test_ignore_breakable_surfaces_bit));
+
+		if (psp_collision_bsp_test_vector_quiet(bsp_flags, global_collision_bsp_get(), MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+			breakable_surface_flags_get(), point, vector, REAL_MAX, &bsp_result) &&
+			TEST_FLAG(flags, _collision_test_structure_bit))
+		{
+			long material_type = NONE;
+
+			collision->t = bsp_result.t;
+			collision->type = _collision_result_structure;
+			collision->plane = *bsp_result.plane;
+			if (bsp_result.plane_designator & LONG_MIN)
+				plane3d_negate(&collision->plane, &collision->plane);
+			/* collision_structure_material_type's answer, its reports left out */
+			if (bsp_result.material_index != NONE)
+			{
+				if (bsp_result.material_index < 0 || bsp_result.material_index >= structure_bsp->collision_materials.count)
+					return -1;
+				material_type = TAG_BLOCK_GET_ELEMENT(&structure_bsp->collision_materials, bsp_result.material_index,
+					struct structure_collision_material)->runtime_physics_material_type;
+				if (material_type != NONE && (material_type < 0 || material_type >= NUMBER_OF_MATERIAL_TYPES))
+					return -1;
+			}
+			collision->material_type = (short)material_type;
+			collision->surface_index = bsp_result.surface_index;
+			collision->plane_designator = bsp_result.plane_designator;
+			collision->flags = bsp_result.flags;
+			collision->breakable_surface_index = bsp_result.breakable_surface_index;
+			collision->material_index = bsp_result.material_index;
+			hit = TRUE;
+		}
+
+		if (bsp_result.leaf_count > 0)
+		{
+			long first = bsp_result.leaf_indices[0], last = bsp_result.leaf_indices[bsp_result.leaf_count - 1];
+
+			/* collision_cluster_index_from_leaf's answers, its report left out */
+			if ((first != NONE && (first & LONG_MAX) >= structure_bsp->leaves.count) ||
+				(last != NONE && (last & LONG_MAX) >= structure_bsp->leaves.count))
+				return -1;
+			collision->start_location.leaf_index = first;
+			collision->start_location.cluster_index = (short)collision_cluster_index_from_leaf(first);
+			collision->location.leaf_index = last;
+			collision->location.cluster_index = (short)collision_cluster_index_from_leaf(last);
+		}
+
+		if (TEST_FLAG(flags, _collision_test_media_bit) &&
+			collision->location.cluster_index != NONE)
+		{
+			struct structure_fog_plane const *fog_plane;
+			struct structure_fog_region const *fog_region;
+			struct structure_fog_palette_entry const *fog_palette_entry;
+			struct fog_definition const *fog = NULL;
+			long cluster_index = collision->location.cluster_index;
+			short fog_reference;
+
+			/* collision_cluster_fog_plane's answer; a chain it would report
+			is the main CPU's */
+			if (cluster_index < 0 || cluster_index >= structure_bsp->clusters.count)
+				return -1;
+			fog_reference = TAG_BLOCK_GET_ELEMENT(&structure_bsp->clusters, cluster_index, struct structure_cluster)->fog_reference;
+			if (fog_reference != NONE && TEST_FLAG((word)fog_reference, 15))
+			{
+				if ((fog_reference & SHORT_MAX) >= structure_bsp->fog_planes.count)
+					return -1;
+				fog_plane = TAG_BLOCK_GET_ELEMENT(&structure_bsp->fog_planes, fog_reference & SHORT_MAX, struct structure_fog_plane);
+				if (fog_plane->runtime_material_type != NONE)
+				{
+					if (fog_plane->region_index < 0 || fog_plane->region_index >= structure_bsp->fog_regions.count)
+						return -1;
+					fog_region = TAG_BLOCK_GET_ELEMENT(&structure_bsp->fog_regions, fog_plane->region_index, struct structure_fog_region);
+					if (fog_region->fog_palette_index < 0 || fog_region->fog_palette_index >= structure_bsp->fog_palette.count)
+						return -1;
+					fog_palette_entry = TAG_BLOCK_GET_ELEMENT(&structure_bsp->fog_palette, fog_region->fog_palette_index,
+						struct structure_fog_palette_entry);
+					if (fog_palette_entry->fog.index == NONE)
+						return -1;
+					fog = fog_definition_get(fog_palette_entry->fog.index);
+				}
+			}
+			if (fog)
+			{
+				real_plane3d plane;
+				real point_distance;
+				real vector_dot;
+
+				plane = fog_plane->plane;
+				plane.d -= fog->plane_distance;
+				point_distance = plane3d_distance_to_point(&plane, point);
+				vector_dot = dot_product3d(&plane.n, vector);
+
+				if ((point_distance > 0.0f) != (vector_dot > 0.0f) &&
+					fabs(point_distance) < fabs(vector_dot) &&
+					fabs(vector_dot) >= _real_epsilon)
+				{
+					real t = -(point_distance / vector_dot);
+
+					if (t < collision->t)
+					{
+						boolean negate = point_distance < 0.0f;
+						long material_type;
+
+						collision->t = t;
+						collision->plane = plane;
+						collision->type = _collision_result_media;
+						if (negate)
+						{
+							plane3d_negate(&collision->plane, &collision->plane);
+							material_type = _material_water;
+						}
+						else
+						{
+							material_type = fog_plane->runtime_material_type;
+							if (material_type < 0 || material_type >= NUMBER_OF_MATERIAL_TYPES)
+								material_type = NONE;
+						}
+						collision->material_type = (short)material_type;
+						hit = TRUE;
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		/* the engine's ray with nothing to test still moves the location to
+		its end: particles without structure or water collisions change leaf
+		this way, so the ME must too */
+		add_vectors3d((real_vector3d const *)point, vector, (real_vector3d *)&collision->point);
+		return psp_location_from_point_quiet(&collision->location, &collision->point);
+	}
+
+	if (!hit)
+		collision->t = 1.0f;
+	COLLISION_POINT_FROM_LINE3D(point, vector, collision->t, &collision->point);
+	return hit;
+}
+#endif
+
+boolean collision_test_pill(
+	unsigned long flags,"""),
+]
+FIXES_MEJOBS["source/physics/point_physics.c#mepoints"] = [
+# the location word after the cluster index is no part of the answer (nothing
+# reads it, and a collision result leaves it unset): kept as the point had it,
+# so the ME's answers and the main CPU's leave the same bytes
+("""			if (!collision_test_vector(collision_flags, position, &delta, NONE, &collision))
+			{
+				if (collision.location.leaf_index != NONE)
+				{
+					*location = collision.location;
+				}
+""",
+ """			if (!collision_test_vector(collision_flags, position, &delta, NONE, &collision))
+			{
+				if (collision.location.leaf_index != NONE)
+				{
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+					location->leaf_index = collision.location.leaf_index;
+					location->cluster_index = collision.location.cluster_index;
+#else
+					*location = collision.location;
+#endif
+				}
+"""),
+("""			if (collision.location.leaf_index != NONE)
+			{
+				*location = collision.location;
+			}
+
+			position->x = collision.plane.n.i * offset + collision.point.x;""",
+ """			if (collision.location.leaf_index != NONE)
+			{
+#ifdef HALO_PSP
+				/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+				location->leaf_index = collision.location.leaf_index;
+				location->cluster_index = collision.location.cluster_index;
+#else
+				*location = collision.location;
+#endif
+			}
+
+			position->x = collision.plane.n.i * offset + collision.point.x;"""),
+("""/* ---------- private code */
+
+static void render_debug_point_physics(""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_MEJOBS #mepoints): see the notes there */
+#include <string.h>
+#include <stdlib.h>
+#include <math.h>
+#include "breakable_surfaces.h"
+
+short psp_collision_test_vector_points(unsigned long flags, real_point3d const *point, real_vector3d const *vector,
+	struct collision_result *collision);
+int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
+unsigned long psp_microseconds(void);
+void platform_psp_log(const char *format, ...);
+int psp_me_ring_ready(void);
+int psp_me_push_points(const void *inputs, unsigned int count, void *answers, unsigned int answer_bytes,
+	unsigned int generation, void *main_word, void *me_word, unsigned int *ticket);
+int psp_me_wait(unsigned int ticket, unsigned int *results);
+void psp_me_ring_step(unsigned int step);
+
+/* the most points one hand-over lists: the ME's share is the back of the
+list, and a fight's ~100 particles a frame and a vehicle's dust fit */
+#define PSP_POINTS_MAX 128
+#define PSP_POINTS_SLOTS 1024 /* HALO_PORT_MAXIMUM_PARTICLES, HALO_PORT_MAXIMUM_CONTRAIL_POINTS */
+
+/* a listed point's inputs: the main CPU's, unchanged from the hand-over to
+the frame's end */
+struct psp_point_input
+{
+	struct point_physics_definition const *definition;
+	long leaf_index;
+	short cluster_index;
+	short kind; /* 0 a particle, 1 a contrail point */
+	real_point3d position;
+	real_vector3d velocity;
+	real radius;
+	real dt;
+	long slot;
+};
+
+/* its answer: the ME's, a line of its own */
+struct psp_point_answer
+{
+	long result; /* point_physics_update's flags, or -1: left to the main CPU */
+	long leaf_index;
+	short cluster_index;
+	short material_type;
+	real_point3d position;
+	real_vector3d velocity;
+	real_vector3d normal;
+	long collided; /* the normal and material written, as point_physics_update writes them */
+	long pad[3];
+};
+typedef char psp_point_answer_line_assert[sizeof(struct psp_point_answer) == 64 ? 1 : -1];
+
+/* a word with a line of its own, read and written through the uncached view
+only: the generation in the top half, a list index in the bottom */
+struct psp_points_word
+{
+	unsigned long value;
+	unsigned long pad[15];
+} __attribute__((aligned(64)));
+#define PSP_POINTS_UNCACHED(word) (*(volatile unsigned long *)((unsigned long)&(word)->value | 0x40000000u))
+
+/* the main CPU's: the ME starts no point below this index */
+static struct psp_points_word psp_points_main_word;
+/* the ME's: the lowest index it has made, all above it made too */
+static struct psp_points_word psp_points_me_word;
+
+static int psp_points_on = -1, psp_points_check = 0, psp_points_min = 8;
+static struct psp_point_input *psp_point_inputs; /* the list as it is made: PSP_POINTS_MAX, kept circular */
+static struct psp_point_answer *psp_point_answers;
+static unsigned char *psp_point_slots[2]; /* by kind, a slot's list index + 1, 0 none */
+static int psp_points_listed, psp_points_count, psp_points_out;
+static unsigned int psp_points_generation, psp_points_ticket;
+static unsigned long psp_points_cursor; /* the main CPU's word as it last wrote it */
+static byte psp_points_breakable[MAXIMUM_BREAKABLE_SURFACES_PER_MAP / 8];
+static struct
+{
+	unsigned long frames, jobs, listed, handed, taken, here, changed, unserved, compared, differed, refused, failed;
+	unsigned long me_made;
+} psp_points_stats;
+
+/* point_physics_update as the ME runs it: the same arithmetic in the same
+order, with the collision rays through psp_collision_test_vector_points.
+Flags 0, no force, the caller's location; -1: a point it doesn't serve
+(an argument out of the ordinary, which the main CPU asserts or reports) */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+static long psp_point_physics_quiet(
+	struct point_physics_definition const *definition,
+	struct location *location,
+	real_point3d *position,
+	real_vector3d *translational_velocity,
+	real_vector3d *collision_normal,
+	short *collision_material_type,
+	long *collided,
+	real radius,
+	real dt)
+{
+	unsigned long result = 0;
+
+	if (!valid_real_point3d(position) || !valid_real_vector3d(translational_velocity) || !(radius >= 0.0f) ||
+		debug_point_physics)
+		return -1;
+	*collided = 0;
+	if (dt != 0.0f)
+	{
+		struct collision_result collision;
+		real_vector3d wind_vector;
+		real_vector3d delta;
+		real_vector3d parallel;
+		real_vector3d perpendicular;
+		real radius_squared = radius * radius;
+		real radius_cubed = radius_squared * radius;
+		real mass = definition->runtime_mass_over_radius_cubed;
+		real buoyancy_scale;
+		real friction;
+		real dt_over_mass;
+		real offset;
+		real t;
+		unsigned long collision_flags;
+		long wind_flags;
+		boolean underwater;
+		short i;
+
+		wind_flags = 0;
+		SET_FLAG(wind_flags, _scenario_current_simple_bit, TEST_FLAG(definition->flags, _point_physics_simple_wind_bit));
+		SET_FLAG(wind_flags, _scenario_current_damped_bit, TEST_FLAG(definition->flags, _point_physics_damped_wind_bit));
+		underwater = scenario_get_current(location, position, &wind_vector, wind_flags);
+
+		if (underwater)
+		{
+			mass += global_water_mass_over_radius_cubed;
+			buoyancy_scale = definition->runtime_water_buoyancy_scale;
+			friction = definition->water_friction * radius_squared;
+			SET_FLAG(result, _point_physics_in_water_bit, TRUE);
+		}
+		else
+		{
+			mass += global_air_mass_over_radius_cubed;
+			buoyancy_scale = definition->runtime_air_buoyancy_scale;
+			friction = definition->air_friction * radius_squared;
+			SET_FLAG(result, _point_physics_in_air_bit, TRUE);
+		}
+
+		mass = mass * radius_cubed;
+		dt_over_mass = dt / mass;
+
+		if (TEST_FLAG(definition->flags, _point_physics_no_gravity_bit))
+			buoyancy_scale = 0.0f;
+
+		translational_velocity->k = ((global_gravity * TICKS_PER_SECOND) * TICKS_PER_SECOND) * buoyancy_scale * dt + translational_velocity->k;
+
+		if (mass == 0.0f)
+		{
+			t = (friction == 0.0f) ? 0.0f : 1.0f;
+		}
+		else
+		{
+			t = dt_over_mass * friction;
+			t = PIN(t, 0.0f, 1.0f);
+		}
+
+		translational_velocity->i += (wind_vector.i - translational_velocity->i) * t;
+		translational_velocity->j += (wind_vector.j - translational_velocity->j) * t;
+		translational_velocity->k += (wind_vector.k - translational_velocity->k) * t;
+
+		collision_flags = FLAG(_collision_test_front_facing_surfaces_bit);
+		SET_FLAG(collision_flags, _collision_test_media_bit, TEST_FLAG(definition->flags, _point_physics_water_collisions_bit));
+		SET_FLAG(collision_flags, _collision_test_structure_bit, TEST_FLAG(definition->flags, _point_physics_structure_collisions_bit));
+
+		for (i = 0; dt != 0.0f && i < MAXIMUM_POINT_PHYSICS_COLLISIONS; i++)
+		{
+			short hit;
+
+			delta.i = translational_velocity->i * dt;
+			delta.j = translational_velocity->j * dt;
+			delta.k = translational_velocity->k * dt;
+
+			hit = psp_collision_test_vector_points(collision_flags, position, &delta, &collision);
+			if (hit < 0)
+				return -1;
+			if (!hit)
+			{
+				if (collision.location.leaf_index != NONE)
+				{
+					location->leaf_index = collision.location.leaf_index;
+					location->cluster_index = collision.location.cluster_index;
+				}
+				*position = collision.point;
+				break;
+			}
+
+			offset = MIN(radius, 0.005f);
+
+			if (collision.type == _collision_result_media)
+				SET_FLAG(result, _point_physics_collided_with_water_bit, TRUE);
+			else if (collision.type == _collision_result_structure)
+				SET_FLAG(result, _point_physics_collided_with_structure_bit, TRUE);
+
+			*collision_normal = collision.plane.n;
+			*collision_material_type = collision.material_type;
+			*collided = 1;
+
+			component_vectors_from_normal3d(translational_velocity, &collision.plane.n, &parallel, &perpendicular);
+			translational_velocity->i = (1.0f - definition->contact_friction) * perpendicular.i - parallel.i * definition->elasticity;
+			translational_velocity->j = (1.0f - definition->contact_friction) * perpendicular.j - parallel.j * definition->elasticity;
+			translational_velocity->k = (1.0f - definition->contact_friction) * perpendicular.k - parallel.k * definition->elasticity;
+
+			if (collision.location.leaf_index != NONE)
+			{
+				location->leaf_index = collision.location.leaf_index;
+				location->cluster_index = collision.location.cluster_index;
+			}
+
+			position->x = collision.plane.n.i * offset + collision.point.x;
+			position->y = collision.plane.n.j * offset + collision.point.y;
+			position->z = collision.plane.n.k * offset + collision.point.z;
+
+			dt -= collision.t * dt;
+		}
+	}
+
+	return (long)result;
+}
+
+/* on the Media Engine (psp_me.c's ring, ME_JOB_POINTS): the list from its
+back, until the main CPU's word says it has got there. Writes only its
+answers' lines and its own word. args: the list, the answers, the count, the
+generation, the main CPU's FPU control, the two words */
+__attribute__((optimize("no-tree-loop-distribute-patterns")))
+void psp_points_me_make(const unsigned int *args, unsigned int *results)
+{
+	struct psp_point_input const *inputs = (struct psp_point_input const *)args[0];
+	struct psp_point_answer *answers = (struct psp_point_answer *)args[1];
+	unsigned long count = args[2], generation = args[3] & 0xFFFFu, made = 0, unserved = 0;
+	struct psp_points_word *main_word = (struct psp_points_word *)args[5];
+	struct psp_points_word *me_word = (struct psp_points_word *)args[6];
+	unsigned int control;
+	long k;
+
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(args[4]));
+	for (k = (long)count - 1; k >= 0; k--)
+	{
+		struct psp_point_input const *in = &inputs[k];
+		struct psp_point_answer *answer = &answers[k];
+		unsigned long cursor = PSP_POINTS_UNCACHED(main_word);
+		struct location location;
+
+		if ((cursor >> 16) != generation || (unsigned long)k < (cursor & 0xFFFFu))
+			break;
+		/* audio first: a block waiting is mixed between two points */
+		psp_me_ring_step((unsigned int)k);
+		location.leaf_index = in->leaf_index;
+		location.cluster_index = in->cluster_index;
+		location.bonus = 0;
+		answer->position = in->position;
+		answer->velocity = in->velocity;
+		answer->result = psp_point_physics_quiet(in->definition, &location, &answer->position, &answer->velocity,
+			&answer->normal, &answer->material_type, &answer->collided, in->radius, in->dt);
+		answer->leaf_index = location.leaf_index;
+		answer->cluster_index = location.cluster_index;
+		if (answer->result < 0)
+			unserved++;
+		/* the line in main RAM before the word says it is made */
+		__builtin_allegrex_cache(0x1A, (unsigned int)answer);
+		__asm__ __volatile__("sync");
+		PSP_POINTS_UNCACHED(me_word) = (generation << 16) | (unsigned long)k;
+		__asm__ __volatile__("sync");
+		made++;
+	}
+	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
+	results[0] = made;
+	results[1] = unserved;
+}
+
+/* 1: listing for this frame. The storage on first use; off for good if
+there is no room for it */
+int psp_points_begin(void)
+{
+	if (psp_points_on < 0)
+	{
+		psp_points_on = !psp_keep("nomepoints");
+		psp_points_check = psp_keep("mepointscheck");
+		psp_points_min = psp_keep_number("mepointsmin", 8);
+		if (psp_points_on)
+		{
+			psp_point_inputs = (struct psp_point_input *)memalign(64, PSP_POINTS_MAX * sizeof(struct psp_point_input));
+			psp_point_answers = (struct psp_point_answer *)memalign(64, PSP_POINTS_MAX * sizeof(struct psp_point_answer));
+			psp_point_slots[0] = (unsigned char *)calloc(2, PSP_POINTS_SLOTS);
+			psp_point_slots[1] = psp_point_slots[0] ? psp_point_slots[0] + PSP_POINTS_SLOTS : NULL;
+			if (!psp_point_inputs || !psp_point_answers || !psp_point_slots[0])
+			{
+				platform_psp_log("mepoints: no room for the list (%u bytes): off", (unsigned int)(PSP_POINTS_MAX *
+					(sizeof(struct psp_point_input) + sizeof(struct psp_point_answer)) + 2 * PSP_POINTS_SLOTS));
+				free(psp_point_inputs);
+				free(psp_point_answers);
+				free(psp_point_slots[0]);
+				psp_points_on = 0;
+			}
+			else
+			{
+				void sceKernelDcacheWritebackInvalidateRange(const void *start, unsigned int bytes);
+
+				/* no cached copy of the words on this CPU, ever: a line written
+				back late would land on the other CPU's word */
+				sceKernelDcacheWritebackInvalidateRange(&psp_points_main_word, sizeof(psp_points_main_word));
+				sceKernelDcacheWritebackInvalidateRange(&psp_points_me_word, sizeof(psp_points_me_word));
+				PSP_POINTS_UNCACHED(&psp_points_main_word) = 0;
+				platform_psp_log("mepoints: point physics on the Media Engine, up to %d points a frame (from %d)%s",
+					PSP_POINTS_MAX, psp_points_min, psp_points_check ? "; mepointscheck: every taken point compared" : "");
+			}
+		}
+	}
+	psp_points_listed = 0;
+	return psp_points_on && psp_me_ring_ready();
+}
+
+/* a point whose physics this frame will run, as the loop will run it */
+void psp_points_list(
+	int kind,
+	long slot,
+	struct point_physics_definition const *definition,
+	struct location const *location,
+	real_point3d const *position,
+	real_vector3d const *velocity,
+	real radius,
+	real dt)
+{
+	struct psp_point_input *in = &psp_point_inputs[psp_points_listed % PSP_POINTS_MAX];
+
+	if (slot < 0 || slot >= PSP_POINTS_SLOTS || debug_point_physics)
+		return;
+	in->definition = definition;
+	in->leaf_index = location->leaf_index;
+	in->cluster_index = location->cluster_index;
+	in->kind = (short)kind;
+	in->position = *position;
+	in->velocity = *velocity;
+	in->radius = radius;
+	in->dt = dt;
+	in->slot = slot;
+	psp_points_listed++;
+}
+
+/* the list's last PSP_POINTS_MAX points, in the order listed, to the ME */
+void psp_points_hand_over(void)
+{
+	int count = psp_points_listed < PSP_POINTS_MAX ? psp_points_listed : PSP_POINTS_MAX, k;
+
+	psp_points_stats.frames++;
+	psp_points_stats.listed += psp_points_listed;
+	psp_points_count = 0;
+	if (count < psp_points_min || count <= 0)
+		return;
+	/* the circular list turned so its oldest kept point is first */
+	if (psp_points_listed > PSP_POINTS_MAX)
+	{
+		int first = psp_points_listed % PSP_POINTS_MAX;
+		struct psp_point_input turned[16];
+
+		while (first > 0)
+		{
+			int step = first < 16 ? first : 16;
+
+			memcpy(turned, psp_point_inputs, step * sizeof(turned[0]));
+			memmove(psp_point_inputs, psp_point_inputs + step, (PSP_POINTS_MAX - step) * sizeof(turned[0]));
+			memcpy(psp_point_inputs + PSP_POINTS_MAX - step, turned, step * sizeof(turned[0]));
+			first -= step;
+		}
+	}
+	for (k = 0; k < count; k++)
+		psp_point_slots[psp_point_inputs[k].kind][psp_point_inputs[k].slot] = (unsigned char)(k + 1);
+	memcpy(psp_points_breakable, breakable_surface_flags_get(), sizeof(psp_points_breakable));
+	psp_points_count = count;
+	/* never 0, the words' value before any job */
+	psp_points_generation = (psp_points_generation + 1) & 0xFFFFu;
+	if (!psp_points_generation)
+		psp_points_generation = 1;
+	psp_points_cursor = (unsigned long)psp_points_generation << 16;
+	PSP_POINTS_UNCACHED(&psp_points_main_word) = psp_points_cursor;
+	__asm__ __volatile__("sync");
+	if (psp_me_push_points(psp_point_inputs, (unsigned int)count, psp_point_answers,
+		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation, &psp_points_main_word,
+		&psp_points_me_word, &psp_points_ticket))
+	{
+		psp_points_out = 1;
+		psp_points_stats.jobs++;
+		psp_points_stats.handed += count;
+	}
+	else
+		psp_points_stats.refused++;
+}
+
+/* mepointscheck: which fields of two answers differ, a bit each (the normal
+and material only where both collided) */
+static unsigned int psp_points_differ(struct psp_point_answer const *a, struct psp_point_answer const *b)
+{
+	unsigned int mask = 0;
+
+	if (a->result != b->result)
+		mask |= 1;
+	if (a->leaf_index != b->leaf_index)
+		mask |= 2;
+	if (a->cluster_index != b->cluster_index)
+		mask |= 4;
+	if (memcmp(&a->position, &b->position, sizeof(a->position)))
+		mask |= 8;
+	if (memcmp(&a->velocity, &b->velocity, sizeof(a->velocity)))
+		mask |= 16;
+	if (!a->collided != !b->collided)
+		mask |= 32;
+	else if (a->collided && memcmp(&a->normal, &b->normal, sizeof(a->normal)))
+		mask |= 64;
+	if (a->collided && b->collided && a->material_type != b->material_type)
+		mask |= 128;
+	return mask;
+}
+
+static void psp_points_mask_names(unsigned int mask, char *text)
+{
+	static char const *const names[8] = { "result", "leaf", "cluster", "position", "velocity", "collided", "normal", "material" };
+	int k;
+
+	text[0] = 0;
+	for (k = 0; k < 8; k++)
+		if (mask & (1u << k))
+		{
+			strcat(text, text[0] ? "," : "");
+			strcat(text, names[k]);
+		}
+	if (!text[0])
+		strcpy(text, "none");
+}
+
+#define PSP_POINTS_BITS(v) (*(unsigned long const *)&(v))
+
+static void psp_points_report_answer(char const *who, struct psp_point_answer const *a)
+{
+	platform_psp_log("mepointscheck:   %s result %lx leaf %ld cluster %d position %08lx %08lx %08lx velocity %08lx %08lx %08lx "
+		"collided %ld normal %08lx %08lx %08lx material %d",
+		who, (unsigned long)a->result, a->leaf_index, a->cluster_index, PSP_POINTS_BITS(a->position.x),
+		PSP_POINTS_BITS(a->position.y), PSP_POINTS_BITS(a->position.z), PSP_POINTS_BITS(a->velocity.i),
+		PSP_POINTS_BITS(a->velocity.j), PSP_POINTS_BITS(a->velocity.k), a->collided,
+		a->collided ? PSP_POINTS_BITS(a->normal.i) : 0, a->collided ? PSP_POINTS_BITS(a->normal.j) : 0,
+		a->collided ? PSP_POINTS_BITS(a->normal.k) : 0, a->collided ? a->material_type : 0);
+}
+
+/* a difference, every field in hex: this CPU's answer, the ME's, and the
+ME's copy run here from the listed inputs, and those inputs */
+static void psp_points_report(int kind, long slot, struct psp_point_input const *in, struct psp_point_answer const *mine,
+	struct psp_point_answer const *me, struct psp_point_answer const *now)
+{
+	char fields[80], now_mine[80], now_me[80];
+
+	psp_points_mask_names(psp_points_differ(mine, me), fields);
+	psp_points_mask_names(psp_points_differ(now, mine), now_mine);
+	psp_points_mask_names(psp_points_differ(now, me), now_me);
+	platform_psp_log("mepointscheck: kind %d slot %ld differs in %s; the ME's copy here differs from this CPU's in %s, "
+		"from the ME's in %s", kind, slot, fields, now_mine, now_me);
+	platform_psp_log("mepointscheck:   listed definition %p leaf %ld cluster %d position %08lx %08lx %08lx velocity %08lx %08lx %08lx "
+		"radius %08lx dt %08lx",
+		(void const *)in->definition, in->leaf_index, in->cluster_index, PSP_POINTS_BITS(in->position.x),
+		PSP_POINTS_BITS(in->position.y), PSP_POINTS_BITS(in->position.z), PSP_POINTS_BITS(in->velocity.i),
+		PSP_POINTS_BITS(in->velocity.j), PSP_POINTS_BITS(in->velocity.k), PSP_POINTS_BITS(in->radius),
+		PSP_POINTS_BITS(in->dt));
+	psp_points_report_answer("this CPU", mine);
+	psp_points_report_answer("the ME  ", me);
+	psp_points_report_answer("ME copy ", now);
+}
+
+static int psp_points_same(struct psp_point_input const *in, struct point_physics_definition const *definition,
+	struct location const *location, real_point3d const *position, real_vector3d const *velocity, real radius, real dt)
+{
+	unsigned long const *a = (unsigned long const *)&in->position, *b = (unsigned long const *)position;
+	unsigned long const *c = (unsigned long const *)&in->velocity, *d = (unsigned long const *)velocity;
+	union { real value; unsigned long bits; } r0, r1, t0, t1;
+
+	r0.value = in->radius;
+	r1.value = radius;
+	t0.value = in->dt;
+	t1.value = dt;
+	return in->definition == definition && in->leaf_index == location->leaf_index &&
+		in->cluster_index == location->cluster_index && a[0] == b[0] && a[1] == b[1] && a[2] == b[2] &&
+		c[0] == d[0] && c[1] == d[1] && c[2] == d[2] && r0.bits == r1.bits && t0.bits == t1.bits &&
+		!memcmp(psp_points_breakable, breakable_surface_flags_get(), sizeof(psp_points_breakable));
+}
+
+/* point_physics_update at a listed point's loop: the ME's answer when it
+has made it from these same inputs, else made here as before */
+unsigned long psp_point_physics(
+	int kind,
+	long slot,
+	unsigned long flags,
+	struct point_physics_definition const *definition,
+	struct location *location,
+	short force_weather_palette_index,
+	real_point3d *position,
+	real_vector3d *translational_velocity,
+	real_vector3d const *translational_force,
+	real_vector3d *collision_normal,
+	short *collision_material_type,
+	real radius,
+	real dt)
+{
+	if (psp_points_count && !flags && force_weather_palette_index == NONE && !translational_force &&
+		slot >= 0 && slot < PSP_POINTS_SLOTS && psp_point_slots[kind][slot])
+	{
+		int k = psp_point_slots[kind][slot] - 1;
+		struct psp_point_input const *in = &psp_point_inputs[k];
+
+		if (in->kind == kind && in->slot == slot &&
+			psp_points_same(in, definition, location, position, translational_velocity, radius, dt))
+		{
+			unsigned long made = psp_points_out ? PSP_POINTS_UNCACHED(&psp_points_me_word) : 0;
+
+			if (psp_points_out && (made >> 16) == psp_points_generation && (made & 0xFFFFu) <= (unsigned long)k)
+			{
+				struct psp_point_answer const *answer = &psp_point_answers[k];
+
+				__builtin_allegrex_cache(0x1B, (unsigned int)answer);
+				__asm__ __volatile__("sync");
+				if (answer->result >= 0)
+				{
+					psp_points_stats.taken++;
+					if (psp_points_check)
+					{
+						struct location here_location = *location;
+						real_point3d here_position = *position;
+						real_vector3d here_velocity = *translational_velocity, here_normal;
+						short here_material = NONE;
+						unsigned long here = point_physics_update(0, definition, &here_location, NONE, &here_position,
+							&here_velocity, NULL, &here_normal, &here_material, radius, dt);
+						int collided = (here & (FLAG(_point_physics_collided_with_structure_bit) |
+							FLAG(_point_physics_collided_with_water_bit))) != 0;
+
+						psp_points_stats.compared++;
+						if (here != (unsigned long)answer->result || here_location.leaf_index != answer->leaf_index ||
+							here_location.cluster_index != answer->cluster_index ||
+							memcmp(&here_position, &answer->position, sizeof(here_position)) ||
+							memcmp(&here_velocity, &answer->velocity, sizeof(here_velocity)) ||
+							(collided && (memcmp(&here_normal, &answer->normal, sizeof(here_normal)) ||
+								here_material != answer->material_type)))
+						{
+							if (psp_points_stats.differed++ < 12)
+								{
+									struct psp_point_answer mine, now;
+									struct location now_location;
+
+									mine.result = (long)here;
+									mine.leaf_index = here_location.leaf_index;
+									mine.cluster_index = here_location.cluster_index;
+									mine.material_type = here_material;
+									mine.position = here_position;
+									mine.velocity = here_velocity;
+									mine.normal = here_normal;
+									mine.collided = collided;
+									/* the ME's copy run here and now from the listed inputs: equal to
+									this CPU's answer, the inputs moved on after the hand-over; equal to
+									the ME's, the two copies differ */
+									now_location.leaf_index = in->leaf_index;
+									now_location.cluster_index = in->cluster_index;
+									now_location.bonus = 0;
+									now.position = in->position;
+									now.velocity = in->velocity;
+									now.material_type = NONE;
+									now.result = psp_point_physics_quiet(in->definition, &now_location, &now.position, &now.velocity,
+										&now.normal, &now.material_type, &now.collided, in->radius, in->dt);
+									now.leaf_index = now_location.leaf_index;
+									now.cluster_index = now_location.cluster_index;
+									psp_points_report(kind, slot, in, &mine, answer, &now);
+								}
+						}
+						/* play goes on from this CPU's own answer */
+						*location = here_location;
+						*position = here_position;
+						*translational_velocity = here_velocity;
+						if (collision_normal && collided)
+							*collision_normal = here_normal;
+						if (collision_material_type && collided)
+							*collision_material_type = here_material;
+						return here;
+					}
+					location->leaf_index = answer->leaf_index;
+					location->cluster_index = answer->cluster_index;
+					*position = answer->position;
+					*translational_velocity = answer->velocity;
+					if (answer->collided)
+					{
+						if (collision_normal)
+							*collision_normal = answer->normal;
+						if (collision_material_type)
+							*collision_material_type = answer->material_type;
+					}
+					return (unsigned long)answer->result;
+				}
+				psp_points_stats.unserved++;
+			}
+			else
+			{
+				/* made here: the ME starts nothing up to this point */
+				psp_points_stats.here++;
+				if (psp_points_out && (psp_points_cursor & 0xFFFFu) < (unsigned long)k + 1)
+				{
+					psp_points_cursor = ((unsigned long)psp_points_generation << 16) | ((unsigned long)k + 1);
+					PSP_POINTS_UNCACHED(&psp_points_main_word) = psp_points_cursor;
+				}
+			}
+		}
+		else
+			psp_points_stats.changed++;
+	}
+	return point_physics_update(flags, definition, location, force_weather_palette_index, position,
+		translational_velocity, translational_force, collision_normal, collision_material_type, radius, dt);
+}
+
+/* the frame's points done: the ME stopped and its job collected, so the
+list may be written again */
+void psp_points_end(void)
+{
+	int k;
+
+	if (psp_points_out)
+	{
+		unsigned int results[11] = { 0 };
+
+		PSP_POINTS_UNCACHED(&psp_points_main_word) = ((unsigned long)psp_points_generation << 16) | 0xFFFFu;
+		__asm__ __volatile__("sync");
+		if (psp_me_wait(psp_points_ticket, results))
+			psp_points_stats.me_made += results[0];
+		else
+			psp_points_stats.failed++;
+		psp_points_out = 0;
+	}
+	for (k = 0; k < psp_points_count; k++)
+		psp_point_slots[psp_point_inputs[k].kind][psp_point_inputs[k].slot] = 0;
+	psp_points_count = 0;
+	if (psp_points_on > 0)
+	{
+		static unsigned long mark = 0;
+		unsigned long now = psp_microseconds();
+
+		if (!mark)
+			mark = now;
+		if (now - mark >= 30000000UL)
+		{
+			unsigned long frames = psp_points_stats.frames ? psp_points_stats.frames : 1;
+
+			mark = now;
+			platform_psp_log("mepoints: over %lu frames, %lu points listed a frame; %lu hand-overs (%lu refused, %lu failed) of %lu points: "
+				"the ME made %lu, the loops took %lu of them, made %lu here first, %lu changed since listed, %lu left to this CPU; "
+				"checked %lu, %lu differed",
+				psp_points_stats.frames, psp_points_stats.listed / frames, psp_points_stats.jobs, psp_points_stats.refused,
+				psp_points_stats.failed, psp_points_stats.handed, psp_points_stats.me_made, psp_points_stats.taken,
+				psp_points_stats.here, psp_points_stats.changed, psp_points_stats.unserved, psp_points_stats.compared,
+				psp_points_stats.differed);
+			memset(&psp_points_stats, 0, sizeof(psp_points_stats));
+		}
+	}
+}
+#endif
+
+/* ---------- private code */
+
+static void render_debug_point_physics("""),
+]
+FIXES_MEJOBS["source/effects/particles.c#mepoints"] = [
+("""	psp_particle_frame++;
+#endif
+
+	profile_enter(particles_update_section);
+""",
+ """	psp_particle_frame++;
+#endif
+
+	profile_enter(particles_update_section);
+#ifdef HALO_PSP
+	{
+		/* psp_fixups.py (FIXES_MEJOBS #mepoints): the points whose physics
+		the loop below will run, with the dt and radius it will give them */
+		int psp_points_begin(void);
+		void psp_points_list(int kind, long slot, struct point_physics_definition const *definition,
+			struct location const *location, real_point3d const *position, real_vector3d const *velocity,
+			real radius, real dt);
+		void psp_points_hand_over(void);
+		void psp_contrails_points_list(real dt);
+
+		if (psp_points_begin())
+		{
+			long psp_index;
+
+			for (psp_index = data_next_index(particle_data, NONE);
+				psp_index != NONE;
+				psp_index = data_next_index(particle_data, psp_index))
+			{
+				struct particle_datum *psp_particle = particle_get(psp_index);
+				struct particle_definition *psp_definition;
+				long psp_slot = psp_index & 0xFFFF;
+				unsigned char psp_age;
+				real psp_new_age;
+
+				if (psp_particle->object_index != NONE ||
+					TEST_FLAG(psp_particle->flags, _particle_datum_at_rest_bit) ||
+					psp_slot >= HALO_PORT_MAXIMUM_PARTICLES)
+					continue;
+				psp_age = psp_particle_age[psp_slot];
+				if (psp_age < PSP_PARTICLE_YOUNG_FRAMES)
+					psp_age++;
+				if (psp_turn > 1 && psp_age >= PSP_PARTICLE_YOUNG_FRAMES && (psp_slot + psp_particle_frame) % psp_turn)
+					continue;
+				psp_definition = particle_definition_get(psp_particle->definition_index);
+				psp_new_age = dt + psp_particle->age;
+				if (psp_new_age >= psp_particle->lifespan && psp_particle->age != 0.0f &&
+					!psp_definition->final_sequence_count)
+					continue;
+				psp_points_list(0, psp_slot, point_physics_definition_get(psp_definition->physics.index),
+					&psp_particle->location, &psp_particle->position, &psp_particle->translational_velocity,
+					((psp_definition->radius_upper_bound - psp_definition->radius_lower_bound) *
+						(psp_new_age / psp_particle->lifespan) + psp_definition->radius_lower_bound) * psp_particle->radius,
+					dt + psp_particle_dt[psp_slot]);
+			}
+			psp_contrails_points_list(dt);
+			psp_points_hand_over();
+		}
+	}
+#endif
+"""),
+("""			collision_flags = point_physics_update(
+				0,
+				physics,
+				&particle->location,""",
+ """#ifdef HALO_PSP
+			/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+			unsigned long psp_point_physics(int kind, long slot, unsigned long flags,
+				struct point_physics_definition const *definition, struct location *location,
+				short force_weather_palette_index, real_point3d *position, real_vector3d *translational_velocity,
+				real_vector3d const *translational_force, real_vector3d *collision_normal,
+				short *collision_material_type, real radius, real dt);
+
+			collision_flags = psp_point_physics(0, particle_index & 0xFFFF,
+#else
+			collision_flags = point_physics_update(
+#endif
+				0,
+				physics,
+				&particle->location,"""),
+]
+FIXES_MEJOBS["source/effects/contrails.c#mepoints"] = [
+("""				if (state->physics.index != NONE)
+				{
+					point_physics_update(
+						0,""",
+ """				if (state->physics.index != NONE)
+				{
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_MEJOBS #mepoints) */
+					unsigned long psp_point_physics(int kind, long slot, unsigned long flags,
+						struct point_physics_definition const *definition, struct location *location,
+						short force_weather_palette_index, real_point3d *position, real_vector3d *translational_velocity,
+						real_vector3d const *translational_force, real_vector3d *collision_normal,
+						short *collision_material_type, real radius, real dt);
+
+					psp_point_physics(1, contrail_point_index & 0xFFFF,
+#else
+					point_physics_update(
+#endif
+						0,"""),
+("""		contrail_verify(contrail_index);
+
+		if (instance_index == MAXIMUM_CONTRAIL_INSTANCES &&
+			contrail->object_index == NONE)
+		{
+			contrail_delete(contrail_index);
+		}
+	}
+
+	return;
+}""",
+ """		contrail_verify(contrail_index);
+
+		if (instance_index == MAXIMUM_CONTRAIL_INSTANCES &&
+			contrail->object_index == NONE)
+		{
+			contrail_delete(contrail_index);
+		}
+	}
+
+#ifdef HALO_PSP
+	{
+		void psp_points_end(void); /* point_physics.c (psp_fixups.py FIXES_MEJOBS #mepoints) */
+
+		psp_points_end();
+	}
+#endif
+	return;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_MEJOBS #mepoints): the contrails' points whose
+physics contrail_update_points will run this frame, from particles_update
+(before this file's loop: a contrail's state may still move on before its
+physics, and its point is then made here as before) */
+void psp_contrails_points_list(
+	real dt)
+{
+	void psp_points_list(int kind, long slot, struct point_physics_definition const *definition,
+		struct location const *location, real_point3d const *position, real_vector3d const *velocity,
+		real radius, real dt);
+	long contrail_index;
+
+	for (contrail_index = data_next_index(contrail_data, NONE);
+		contrail_index != NONE;
+		contrail_index = data_next_index(contrail_data, contrail_index))
+	{
+		struct contrail_datum *contrail = contrail_get(contrail_index);
+		struct contrail_definition *definition = contrail_definition_get(contrail->definition_index);
+		short instance_index;
+
+		for (instance_index = 0; instance_index < MAXIMUM_CONTRAIL_INSTANCES; instance_index++)
+		{
+			long contrail_point_index = contrail->first_contrail_point_indices[instance_index];
+
+			while (contrail_point_index != NONE)
+			{
+				struct contrail_point_datum *contrail_point = contrail_point_get(contrail_point_index);
+
+				if (!TEST_FLAG(contrail_point->flags, _contrail_point_expired_bit) &&
+					!TEST_FLAG(contrail_point->flags, _contrail_point_new_bit) &&
+					contrail_point->state_index >= 0 && contrail_point->state_index < definition->states.count)
+				{
+					struct contrail_point_state *state = TAG_BLOCK_GET_ELEMENT(&definition->states,
+						contrail_point->state_index, struct contrail_point_state);
+
+					if (state->physics.index != NONE)
+						psp_points_list(1, contrail_point_index & 0xFFFF, point_physics_definition_get(state->physics.index),
+							&contrail_point->location, &contrail_point->position, &contrail_point->velocity,
+							state->width * 0.5f, dt);
+				}
+				contrail_point_index = contrail_point->next_contrail_point_index;
+			}
+		}
+	}
+}
+#endif"""),
+]
+
+
+# ---------- FIXES_MODELS: models drawn as the Xbox draws them (b139's hand test)
+# A generic or chicago see-through shader can carry extra layers: other
+# see-through shaders drawn over the same triangles first (the Xbox's
+# transparent_geometry_layer_draw, rasterizer_xbox_transparent_geometry.c:
+# the layers, then the shader itself, nested up to two deep). The GE drew
+# the shader alone, so a powerup on the ground lost the patterns turning
+# over its sphere. Each layer goes to the GE's see-through queue just before
+# its shader, with the same sort point, so the queue keeps the Xbox's order.
+# A restoration, on by default; keep word "nolayers": the shader alone
+FIXES_MODELS = {}
+# glass that isn't two-sided (its flags word +40, bit 2) is drawn from the
+# front only, as the Xbox culls it; generic and chicago shaders take theirs
+# in psp_transparent_map itself (psp_ge.c, seethrough_cull)
+FIXES_MODELS["source/rasterizer/rasterizer.c#glasscull"] = [
+("""			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
+	}
+	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))""",
+ """			*u_scale = *v_scale = 1.0f;
+			*blend = 3;
+		}
+		if (!(*(unsigned short const *)(definition + 40) & 4))
+			*blend = (short)(*blend | PSP_SEETHROUGH_ONE_SIDED_BIT);
+	}
+	else if (type == 9 && object && !PSP_KEEP_ONCE("nometers"))"""),
+]
+FIXES_MODELS["source/rasterizer/rasterizer.c#layers"] = [
+("""void rasterizer_model_transparent_geometry_submit(
+	struct shader *shader,
+	short shader_permutation_index,""",
+ """#ifdef HALO_PSP
+/* a shader's extra layers (+72: a block of tag references, the tag index at
++12 in each), each queued as its own see-through draw of the same triangles,
+its own layers first. psp_transparent_map's state (the clamp, the meter) is
+the last call's, so the caller works its own shader out again after this */
+static unsigned long psp_transparent_layers_queued = 0, psp_transparent_layers_unmapped = 0;
+
+static void psp_transparent_layers(struct shader const *shader, short permutation,
+	struct triangle_buffer const *triangle_buffer, long triangle_count, struct vertex_buffer const *vertex_buffer,
+	real_point3d const *centroid, int depth)
+{
+	extern void psp_ge_transparent(struct triangle_buffer const *, long, struct vertex_buffer const *,
+		unsigned int, float, float, float, float, short, float const *);
+	extern void psp_ge_seethrough_shader(unsigned int shader);
+	extern void psp_ge_seethrough_meter(const void *meter);
+	char const *definition = (char const *)shader;
+	short type = shader ? *(short const *)(definition + 36) : -1;
+	long count, layer;
+	char const *layers;
+
+	if ((type != 5 && type != 6) || depth >= 2)
+		return;
+	count = *(long const *)(definition + 72);
+	layers = *(char const *const *)(definition + 76);
+	for (layer = 0; layers && layer < count && layer < 8; layer++)
+	{
+		long index = *(long const *)(layers + 16 * layer + 12);
+		struct shader const *layer_shader;
+		float u_scale, v_scale, u_offset, v_offset;
+		short blend;
+		unsigned int key;
+
+		if (index == NONE)
+			continue;
+		layer_shader = (struct shader const *)shader_definition_get(index);
+		if (!layer_shader)
+			continue;
+		psp_transparent_layers(layer_shader, permutation, triangle_buffer, triangle_count, vertex_buffer, centroid,
+			depth + 1);
+		key = psp_transparent_map(layer_shader, permutation, TRUE, &u_scale, &v_scale, &u_offset, &v_offset, &blend);
+		if (!key)
+		{
+			psp_transparent_layers_unmapped++;
+			continue;
+		}
+		psp_ge_seethrough_shader((unsigned int)layer_shader);
+		psp_ge_seethrough_meter(psp_transparent_meter);
+		psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset, v_offset,
+			blend, &centroid->x);
+		psp_transparent_layers_queued++;
+	}
+}
+
+/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts(unsigned long *queued, unsigned long *unmapped)
+{
+	*queued = psp_transparent_layers_queued;
+	*unmapped = psp_transparent_layers_unmapped;
+	psp_transparent_layers_queued = psp_transparent_layers_unmapped = 0;
+}
+#endif
+
+void rasterizer_model_transparent_geometry_submit(
+	struct shader *shader,
+	short shader_permutation_index,"""),
+("""			if (sort_filth)
+				*(short *)((char *)sort_filth + 8) = NONE;
+			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+			{""",
+ """			if (sort_filth)
+				*(short *)((char *)sort_filth + 8) = NONE;
+			/* the shader's extra layers first (FIXES_MODELS #layers) */
+			if (dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE && shader &&
+				(*(short const *)((char const *)shader + 36) == 5 || *(short const *)((char const *)shader + 36) == 6) &&
+				*(long const *)((char const *)shader + 72) > 0 && !PSP_KEEP_ONCE("nolayers"))
+			{
+				psp_transparent_layers(shader, shader_permutation_index, triangle_buffer, triangle_count, vertex_buffer,
+					centroid, 0);
+				key = psp_transparent_map(shader, shader_permutation_index, TRUE, &u_scale, &v_scale, &u_offset,
+					&v_offset, &blend);
+			}
+			if (key && dynamic_triangle_buffer_index == NONE && dynamic_vertex_buffer_index == NONE)
+			{"""),
+]
+# A generic shader's look comes from up to four maps through the Xbox's
+# combiners; the GE draws one (the map the bake chose, tinted by the rest).
+# Where the rest moves, still tints lose it: the camouflage powerup's noise
+# turning over its sphere is drawn as its still mask. The bake's composites
+# can't hold it either (a noise that scrolls under a mask that doesn't).
+# genericnoise (opt-in, a look call: an added pass is not the combiners'
+# product) draws the shader's first other map once more over the same
+# triangles, with that map's own scale and animation, blended as the shader
+# blends, at GENERIC_NOISE_LEVEL of its strength and untinted
+# A dynamic light's gel. The Xbox shapes each dynamic light on the level
+# with its gel, a cube map turned by the light's yaw, roll and pitch
+# functions over game time (rasterizer_xbox_environment.c,
+# _rasterizer_environment_diffuse_light_begin): a10's alert lights are
+# rotating beacons, red beams sweeping the walls. The GE's light pass lights
+# by distance, cone and angle only (psp_ge.c), so each alert light flooded
+# the walls around it with its full red every frame, and the hard edge
+# where that red met an unlit recess showed through Cortana's hologram as a
+# seam. A light without a cone (cosines -1; a spotlight's cone already
+# comes from psp_ge.c's projected cone) now carries its gel's average
+# colour: the beams' light over a turn, not their sweep. A restoration of
+# the light's level, on by default; keep word "nogel": the full colour.
+# "lightdump" (an instrument): on a screenshot's frame, each light the
+# level's light pass takes, with its tag, colour, gel and cone
+FIXES_MODELS["source/interface/hud_draw.c#lightname"] = [
+("""		if (tag_get(0x73686472, tag_index) == shader)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+""",
+ """		if (tag_get(0x73686472, tag_index) == shader)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+
+/* the light tag whose definition this is, or NULL ("lightdump") */
+char const *psp_light_tag_name(void const *definition)
+{
+	struct tag_iterator iterator;
+	long tag_index;
+
+	tag_iterator_new(&iterator, 0x6C696768 /* ligh */);
+	while ((tag_index = tag_iterator_next(&iterator)) != NONE)
+	{
+		if (tag_get(0x6C696768, tag_index) == definition)
+			return tag_get_name(tag_index);
+	}
+	return NULL;
+}
+"""),
+]
+FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
+("""				psp_ge_light_begin(&light->position.x, &light->forward.i, &light->color.red, light->radius,""",
+ """				extern volatile int psp_screenshot_requested;
+				extern int psp_tex_average_known(unsigned int key, unsigned int *abgr);
+				real_rgb_color colour = light->color;
+				/* the gel's tag index (+0x70: its reference's index at +12)
+				and the cone's cutoff cosine, -1 for a light without one */
+				long gel = definition ? *(long const *)(definition + 0x70) : NONE;
+				unsigned int average = 0;
+				int gel_known = gel != NONE && psp_tex_average_known(psp_tex_bitmap_key(gel, 0), &average);
+
+				if (gel_known && *(float const *)(definition + 32) <= -0.99f && !PSP_KEEP_ONCE("nogel"))
+				{
+					colour.red *= (float)(average & 0xFF) / 255.0f;
+					colour.green *= (float)((average >> 8) & 0xFF) / 255.0f;
+					colour.blue *= (float)((average >> 16) & 0xFF) / 255.0f;
+				}
+				if (psp_screenshot_requested && PSP_KEEP_ONCE("lightdump"))
+				{
+					extern char const *psp_light_tag_name(void const *definition);
+					char const *name = definition ? psp_light_tag_name(definition) : NULL;
+
+					platform_log("lightdump: light %ld of %ld %s colour %.3f %.3f %.3f drawn %.3f %.3f %.3f gel %ld %s %08x radius %.2f at %.2f %.2f %.2f facing %.2f %.2f %.2f cone %.3f %.3f",
+						light_index, rasterizer_lights.light_count, name ? name : "(no tag)",
+						light->color.red, light->color.green, light->color.blue,
+						colour.red, colour.green, colour.blue, gel, gel_known ? "average" : "unknown", average,
+						light->radius, light->position.x, light->position.y, light->position.z,
+						light->forward.i, light->forward.j, light->forward.k,
+						definition ? *(float const *)(definition + 28) : -1.0f,
+						definition ? *(float const *)(definition + 32) : -1.0f);
+				}
+				psp_ge_light_begin(&light->position.x, &light->forward.i, &colour.red, light->radius,"""),
+]
+
+FIXES_MODELS["source/rasterizer/rasterizer.c#genericnoise"] = [
+("""static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,""",
+ """/* the map psp_transparent_map draws in place of the bake's choice, counted
+from the shader's first map (a cube map included); -1 the bake's */
+static int psp_transparent_map_forced = -1;
+
+static unsigned int psp_transparent_map(struct shader const *shader, short permutation, boolean object,"""),
+("""			int chosen = psp_tex_shader_map((unsigned int)shader);
+""",
+ """			int chosen = psp_transparent_map_forced >= 0 ? psp_transparent_map_forced :
+				psp_tex_shader_map((unsigned int)shader);
+"""),
+("""/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts(""",
+ """#define GENERIC_NOISE_LEVEL 0.5f
+static unsigned long psp_transparent_noise_passes = 0;
+
+/* a generic shader's first map other than the one drawn (not a cube map,
+not the same bitmap), queued as a second draw of the same triangles */
+static void psp_transparent_noise(struct shader const *shader, short permutation,
+	struct triangle_buffer const *triangle_buffer, long triangle_count, struct vertex_buffer const *vertex_buffer,
+	real_point3d const *centroid)
+{
+	extern void psp_ge_transparent(struct triangle_buffer const *, long, struct vertex_buffer const *,
+		unsigned int, float, float, float, float, short, float const *);
+	extern void psp_ge_seethrough_shader(unsigned int shader);
+	extern void psp_ge_seethrough_meter(const void *meter);
+	extern int psp_tex_shader_map(unsigned int shader);
+	char const *definition = (char const *)shader;
+	long map_count, index;
+	int skip, drawn;
+	char const *maps;
+	float u_scale, v_scale, u_offset, v_offset;
+	short blend;
+	unsigned int key;
+
+	/* generic only, and not a numeric counter (its digits are the maps) */
+	if (!shader || *(short const *)(definition + 36) != 5 || (*(unsigned char const *)(definition + 41) & 0x80))
+		return;
+	map_count = *(long const *)(definition + 84);
+	maps = *(char const *const *)(definition + 88);
+	skip = *(short const *)(definition + 42) != 0 ? 1 : 0;
+	if (!maps || map_count - skip < 2)
+		return;
+	drawn = psp_tex_shader_map((unsigned int)shader);
+	if (drawn < 0)
+	{
+		/* a shader the bake left to the runtime's rule (psp_transparent_map,
+		the camouflage powerup's among them): the smallest scale after the
+		first map the GE can draw */
+		for (drawn = skip, index = 1; index < map_count - skip && index < 4; index++)
+		{
+			float scale = *(float const *)(maps + 100 * (skip + index) + 4);
+			float best = *(float const *)(maps + 100 * drawn + 4);
+
+			if (scale != 0.0f && (best == 0.0f || scale <= best))
+				drawn = (int)(skip + index);
+		}
+	}
+	if (drawn < skip || drawn >= map_count)
+		return;
+	for (index = skip; index < map_count && index < 4; index++)
+		if (index != drawn && *(long const *)(maps + 100 * index + 40) != *(long const *)(maps + 100 * drawn + 40) &&
+			*(long const *)(maps + 100 * index + 40) != NONE)
+			break;
+	if (index >= map_count || index >= 4)
+		return;
+	psp_transparent_map_forced = (int)index;
+	key = psp_transparent_map(shader, permutation, TRUE, &u_scale, &v_scale, &u_offset, &v_offset, &blend);
+	psp_transparent_map_forced = -1;
+	if (!key)
+		return;
+	blend = (short)((PSP_SEETHROUGH_PACK(PSP_SEETHROUGH_BLEND(blend), PSP_SEETHROUGH_MODE(blend),
+		PSP_SEETHROUGH_FADE(blend) * GENERIC_NOISE_LEVEL, PSP_SEETHROUGH_KEEP_WITH_CAMOUFLAGE(blend)) & 0x7fff) |
+		(blend & PSP_SEETHROUGH_ONE_SIDED_BIT));
+	psp_ge_seethrough_shader(0);
+	psp_ge_seethrough_meter(NULL);
+	psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset, v_offset,
+		blend, &centroid->x);
+	psp_transparent_noise_passes++;
+}
+
+/* for the GE's log line (psp_ge.c) */
+unsigned long psp_transparent_noise_count(void)
+{
+	unsigned long passes = psp_transparent_noise_passes;
+
+	psp_transparent_noise_passes = 0;
+	return passes;
+}
+
+/* for the GE's log line (psp_ge.c) */
+void psp_transparent_layers_counts("""),
+("""				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);""",
+ """				psp_ge_seethrough_meter(psp_transparent_meter); /* build 116: NULL unless a meter */
+				psp_ge_transparent(triangle_buffer, triangle_count, vertex_buffer, key, u_scale, v_scale, u_offset,
+					v_offset, blend, &centroid->x);
+				if (!psp_transparent_meter && PSP_KEEP_ONCE("genericnoise"))
+					psp_transparent_noise(shader, shader_permutation_index, triangle_buffer, triangle_count,
+						vertex_buffer, centroid);"""),
+]
+
+
 def shelved(groups):
     return [(rel, pairs) for rel, pairs in groups if SHELF or rel.partition('#')[2] not in SHELVED_TAGS]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_LOADING.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# ---------- FIXES_OCEAN: the planar fog seen from above (a restoration)
+# The Xbox fogs every level surface below the fog's plane by a pass of its
+# own (rasterizer_xbox_environment_fog.c), with the eye above the plane too;
+# FIXES_116's planar fog reaches only an eye inside it. Each window hands the
+# GE the settled plane and planar fog (psp_ge.c, psp_ge_fog_submerged), which
+# draws that pass over the level draws reaching below the plane. Keep word
+# "oceanfogold": as before
+FIXES_OCEAN = {}
+FIXES_OCEAN["source/rasterizer/rasterizer.c#oceanfog"] = [
+("""		psp_ge_fog_planar(settled->planar_color.red, settled->planar_color.green, settled->planar_color.blue,
+			settled->planar_maximum_distance, settled->planar_maximum_density * eye);""",
+ """		psp_ge_fog_planar(settled->planar_color.red, settled->planar_color.green, settled->planar_color.blue,
+			settled->planar_maximum_distance, settled->planar_maximum_density * eye);
+		{
+			/* psp_fixups.py (FIXES_OCEAN): the same planar fog, for the surfaces below the plane */
+			extern void psp_ge_fog_submerged(float i, float j, float k, float d, unsigned int color, float density,
+				float depth, float distance);
+			unsigned int r = (unsigned int)((settled->planar_color.red < 0.0f ? 0.0f : settled->planar_color.red > 1.0f ? 1.0f :
+				settled->planar_color.red) * 255.0f + 0.5f);
+			unsigned int g = (unsigned int)((settled->planar_color.green < 0.0f ? 0.0f : settled->planar_color.green > 1.0f ? 1.0f :
+				settled->planar_color.green) * 255.0f + 0.5f);
+			unsigned int b = (unsigned int)((settled->planar_color.blue < 0.0f ? 0.0f : settled->planar_color.blue > 1.0f ? 1.0f :
+				settled->planar_color.blue) * 255.0f + 0.5f);
+
+			psp_ge_fog_submerged(settled->plane.n.i, settled->plane.n.j, settled->plane.n.k, settled->plane.d,
+				(b << 16) | (g << 8) | r, settled->planar_mode == 1 ? settled->planar_maximum_density : 0.0f,
+				settled->planar_maximum_depth, settled->planar_maximum_distance);
+		}"""),
+]
+
+
+# ---------- FIXES_RSO: a still object's records sent again ("rso", psp_ge.c)
+# render_model's inputs for an object, byte for byte, are the key: when they
+# equal the ones its kept records were made from, psp_ge.c sends those
+# records and the walk (the relative node matrices, the parts, the shaders'
+# keys and colours) is skipped. render_objects.c offers the object
+# (scenery, or every type with "rsoall"); render_model makes the key only
+# where the walk depends on nothing else: no point lights (their list is the
+# frame's), no effect, no first-person, shadow or sky flag, no debug view,
+# no cortana hack, at most PSP_RSO_NODES nodes
+FIXES_RSO = {}
+FIXES_RSO["source/models/models.c#rso"] = [
+("""void render_model(
+	long model_index,""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RSO) */
+#define PSP_RSO_NODES 16
+#define PSP_RSO_REGIONS 16
+extern long psp_rso_object;
+extern int psp_rso_field;
+int psp_rso_find(long object_index, unsigned int const **kept, unsigned int *kept_words);
+int psp_rso_reuse(long object_index, int same, float const *centroid);
+unsigned int *psp_rso_capture_end(unsigned int key_words);
+
+/* whether the walk reads only render_model's inputs, the model's tag data
+and the map's constants: no point lights (their list is the frame's), no
+effect, no first-person, shadow, sky or immediate flag, no debug view */
+static boolean psp_rso_keyable(real_matrix4x3 const *node_matrices, short node_count, short region_count,
+	struct render_lighting const *lighting, struct render_model_effect const *model_effect, unsigned long flags)
+{
+	return node_matrices && node_count > 0 && node_count <= PSP_RSO_NODES && region_count >= 0 &&
+		region_count <= PSP_RSO_REGIONS && !(flags & ~FLAG(_render_model_no_planar_fog_bit)) &&
+		lighting->point_light_count == 0 && model_effect->type == 0 /* none (render_objects.c's enum) */ &&
+		!rasterizer_model_cortana_hack && rasterizer_debug_options.debug_model_lod == NONE && !render_model_nodes &&
+		!render_model_markers && !render_model_vertex_counts && !render_model_index_counts && !render_model_no_geometry;
+}
+
+/* the key: the bytes of render_model's inputs that the walk reads, packed in
+words. The words before a field fix its length (the model index its region
+count, the node count its matrices), so two keys of different inputs differ
+before either is read past its end. Only what the walk's records are made
+from: the distant lights the count names, the reflection tint (the lighting's
+shadow vector and colour are read only by the shadow pass), no point light
+indices (none are read with no point lights), and nothing of the effect
+(none: its intensity is unset there and the record writes 0; the function
+values, read only by see-through parts, which are never kept). A
+reflection faded by the camera's distance is checked in psp_ge.c (rso).
+ With key NULL, only its words,
+counted by the same fields so the length can't drift from them; with
+fill, written there; else compared there in place, which stops at the first
+difference: 0 if they differ, else the words */
+static unsigned int psp_rso_key(
+	unsigned int *key,
+	unsigned int kept_words,
+	boolean fill,
+	long model_index,
+	struct model const *model,
+	real level_of_detail_pixels,
+	real_matrix4x3 const *node_matrices,
+	short node_count,
+	char const *region_permutation_indices,
+	short region_count,
+	real_rgb_color const *change_colors,
+	real const *function_values,
+	struct render_lighting const *lighting,
+	real_point3d const *centroid,
+	real radius,
+	struct render_model_effect const *model_effect,
+	short forced_shader_permutation_index,
+	unsigned long flags)
+{
+	unsigned int at = 0, head[5];
+	short level = NUMBER_OF_DETAIL_LEVELS_PER_MODEL - 1;
+	short lights = lighting->distant_light_count < 0 ? 0 : lighting->distant_light_count > 2 ? 2 :
+		lighting->distant_light_count;
+
+#define PSP_RSO_FIELD(field, pointer, bytes) \
+	do { \
+		unsigned int psp_rso_bytes = (unsigned int)(bytes); \
+		if (!key) \
+			; \
+		else if (fill) \
+		{ \
+			key[at + (psp_rso_bytes + 3) / 4 - 1] = 0; \
+			csmemcpy(key + at, (pointer), psp_rso_bytes); \
+		} \
+		else if (at + (psp_rso_bytes + 3) / 4 > kept_words || memcmp(key + at, (pointer), psp_rso_bytes)) \
+		{ \
+			psp_rso_field = (field); \
+			return 0; \
+		} \
+		at += (psp_rso_bytes + 3) / 4; \
+	} while (0)
+
+	while (level > 0 && level_of_detail_pixels < model->detail_cutoff_pixels[level])
+		level--;
+	head[0] = (unsigned int)model_index;
+	head[1] = ((unsigned int)(unsigned short)level << 16) | (unsigned short)forced_shader_permutation_index;
+	head[2] = (unsigned int)flags;
+	head[3] = ((unsigned int)(unsigned short)lighting->distant_light_count << 16) | (unsigned short)node_count;
+	head[4] = (unsigned int)region_count;
+	PSP_RSO_FIELD(0, head, sizeof(head));
+	if (region_count)
+		PSP_RSO_FIELD(1, region_permutation_indices, region_count);
+	PSP_RSO_FIELD(2, &lighting->ambient_color, sizeof(lighting->ambient_color));
+	if (lights)
+		PSP_RSO_FIELD(3, lighting->distant_lights, lights * sizeof(lighting->distant_lights[0]));
+	PSP_RSO_FIELD(4, &lighting->reflection_tint_color, sizeof(lighting->reflection_tint_color));
+	PSP_RSO_FIELD(5, centroid, sizeof(*centroid));
+	PSP_RSO_FIELD(6, &radius, sizeof(radius));
+	PSP_RSO_FIELD(7, change_colors, NUMBER_OF_OBJECT_CHANGE_COLORS * sizeof(real_rgb_color));
+	PSP_RSO_FIELD(8, node_matrices, node_count * sizeof(real_matrix4x3));
+#undef PSP_RSO_FIELD
+	if (key && !fill && at != kept_words)
+	{
+		psp_rso_field = 9;
+		return 0;
+	}
+	return at;
+}
+#endif
+
+void render_model(
+	long model_index,"""),
+("""		if (!centroid)
+		{
+			centroid = &node_matrices->position;
+		}
+""",
+"""		if (!centroid)
+		{
+			centroid = &node_matrices->position;
+		}
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_RSO): the records kept for these inputs, sent
+		again in place of the walk (psp_ge.c, rso) */
+		boolean psp_rso_walk = FALSE;
+		short psp_rso_regions = (short)MIN(model->regions.count, region_permutation_count);
+
+		if (psp_rso_object != NONE && psp_rso_object == unique_identifier)
+		{
+			unsigned int const *kept;
+			unsigned int kept_words;
+
+			psp_rso_object = NONE;
+			if (psp_rso_keyable(node_matrices, node_count, psp_rso_regions, lighting, model_effect, flags) &&
+				psp_rso_find(unique_identifier, &kept, &kept_words))
+			{
+				int same = kept && psp_rso_key((unsigned int *)kept, kept_words, FALSE, model_index, model,
+					level_of_detail_pixels, node_matrices, node_count, region_permutation_indices, psp_rso_regions,
+					change_colors, function_values, lighting, centroid, radius, model_effect,
+					forced_shader_permutation_index, flags) != 0;
+				int reuse = psp_rso_reuse(unique_identifier, same, &centroid->x);
+
+				if (reuse > 0)
+				{
+					rasterizer_model_cortana_hack = FALSE;
+					profile_exit(render_model_section);
+					return;
+				}
+				psp_rso_walk = reuse == 0;
+			}
+		}
+#endif
+"""),
+("""			rasterizer_model_end();
+		}
+	}
+
+	rasterizer_model_cortana_hack = FALSE;""",
+"""			rasterizer_model_end();
+		}
+#ifdef HALO_PSP
+		if (psp_rso_walk)
+		{
+			/* psp_fixups.py (FIXES_RSO): the walk kept, and its key written
+			into the entry (the inputs are as they were before the walk) */
+			unsigned int words = psp_rso_key(NULL, 0, FALSE, model_index, model, level_of_detail_pixels,
+				node_matrices, node_count, region_permutation_indices, psp_rso_regions, change_colors,
+				function_values, lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+			unsigned int *key = psp_rso_capture_end(words);
+
+			if (key)
+				(void)psp_rso_key(key, words, TRUE, model_index, model, level_of_detail_pixels, node_matrices,
+					node_count, region_permutation_indices, psp_rso_regions, change_colors, function_values,
+					lighting, centroid, radius, model_effect, forced_shader_permutation_index, flags);
+		}
+#endif
+	}
+
+	rasterizer_model_cortana_hack = FALSE;"""),
+]
+FIXES_RSO["source/render/render_objects.c#rso"] = [
+("""					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+""",
+"""					{
+						/* psp_fixups.py (FIXES_RSO): this object's records may be kept (psp_ge.c, rso) */
+						extern long psp_rso_object;
+						extern int psp_rso_on, psp_rso_all;
+
+						psp_rso_object = psp_rso_on && (psp_rso_all || object->object.type == _object_type_scenery) ?
+							object_index : NONE;
+					}
+					render_model(
+						definition->object.model.index,
+						level_of_detail_pixels,
+"""),
+("""					if (debug_objects)
+""",
+"""					{
+						extern long psp_rso_object;
+
+						psp_rso_object = NONE; /* psp_fixups.py (FIXES_RSO) */
+					}
+					if (debug_objects)
+"""),
+]
+
+
+# ---------- FIXES_LFS: the level's lens-flare markers, their axes worked out
+# only when kept, and remembered by their direction bytes
+# rasterizer_lens_flare_submit_for_cluster worked out each marker's direction
+# and up (a multiply, perpendicular3d, two normalize3d, two compressions with
+# six floor()s, which are double) every frame for every marker of every
+# drawn cluster, before rasterizer_lens_flare_submit's tests dropped most of
+# them (a10 from its first doors: 2,590 markers a frame, at most 1,024 kept).
+# Neither the tests nor anything else before the copy reads those two words,
+# and they depend only on the marker's three direction bytes, so they are
+# worked out after the submit, for the kept flare only, and remembered in a
+# small table keyed on the bytes. Once the frame's flares are full and the
+# overflow has been reported, the submit can keep nothing more, so the
+# frame's later markers skip the definition lookup and the call. Exact by
+# construction. "lfsonceoff" (keep.txt): as before; "lfscheck": every
+# remembered answer worked out again and compared, no marker skipped (each
+# one submitted and checked to have kept nothing), the BSP's distinct
+# direction triples counted once; both counted on the heartbeat's
+# "lens flare axes" line
+FIXES_LFS = {}
+FIXES_LFS["source/rasterizer/rasterizer_lights.c#lfs"] = [
+("""static long local_lens_flare_count = 0;
+""", """static long local_lens_flare_count = 0;
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_LFS): a marker's compressed direction and up by its
+three direction bytes. The answer is a function of the key alone, so an
+entry is never stale, across frames, BSPs or maps */
+#define PSP_LFS_MEMO_BITS 6
+struct psp_lfs_memo_entry
+{
+	unsigned long key; /* the three bytes and bit 24; 0 while empty */
+	unsigned long compressed_direction;
+	unsigned long compressed_up;
+};
+static struct psp_lfs_memo_entry psp_lfs_memo[1 << PSP_LFS_MEMO_BITS];
+static signed char psp_lfs_on = -1; /* -1 until keep.txt is read: the original path */
+static boolean psp_lfs_check = FALSE;
+static boolean psp_lfs_full_reported = FALSE; /* the submit's overflow error has been said */
+static struct structure_bsp *psp_lfs_counted_bsp = NULL;
+/* the heartbeat's "lens flare axes" line (psp_platform.c) */
+extern unsigned long psp_lfs_frames, psp_lfs_markers, psp_lfs_kept, psp_lfs_hits, psp_lfs_skipped, psp_lfs_wrong;
+
+static void psp_lfs_axes_worked_out(
+	struct structure_lens_flare_marker const *marker,
+	unsigned long *compressed_direction,
+	unsigned long *compressed_up)
+{
+	real_vector3d direction;
+	real_vector3d up;
+
+	set_real_vector3d(
+		&direction,
+		marker->i_direction*(1.0f/127.0f),
+		marker->j_direction*(1.0f/127.0f),
+		marker->k_direction*(1.0f/127.0f));
+
+	perpendicular3d(&direction, &up);
+	normalize3d(&direction);
+	normalize3d(&up);
+
+	*compressed_direction= compress_real_vector3d_to_int32_clamp(&direction);
+	*compressed_up= compress_real_vector3d_to_int32_clamp(&up);
+}
+
+static unsigned long psp_lfs_key(
+	struct structure_lens_flare_marker const *marker)
+{
+	return 0x01000000UL | ((unsigned long)(byte)marker->i_direction << 16) |
+		((unsigned long)(byte)marker->j_direction << 8) | (unsigned long)(byte)marker->k_direction;
+}
+
+/* the kept flare's two words, from the table or worked out into it */
+static void psp_lfs_axes(
+	struct structure_lens_flare_marker const *marker,
+	struct rasterizer_lens_flare_submit_parameters *kept)
+{
+	unsigned long key= psp_lfs_key(marker);
+	struct psp_lfs_memo_entry *entry= &psp_lfs_memo[(key * 2654435761UL) >> (32 - PSP_LFS_MEMO_BITS)];
+
+	psp_lfs_kept++;
+	if (entry->key == key)
+	{
+		psp_lfs_hits++;
+		if (psp_lfs_check)
+		{
+			unsigned long direction, up;
+
+			psp_lfs_axes_worked_out(marker, &direction, &up);
+			if (direction != entry->compressed_direction || up != entry->compressed_up)
+				psp_lfs_wrong++;
+		}
+	}
+	else
+	{
+		psp_lfs_axes_worked_out(marker, &entry->compressed_direction, &entry->compressed_up);
+		entry->key= key;
+	}
+	kept->compressed_direction= entry->compressed_direction;
+	kept->compressed_up= entry->compressed_up;
+}
+
+/* lfscheck: how many distinct direction triples the BSP's markers have,
+said once a BSP (the table's size against them) */
+static void psp_lfs_count_directions(
+	struct structure_bsp *structure_bsp)
+{
+	unsigned long keys[1024];
+	long distinct= 0, index, seen;
+
+	for (index= 0; index < structure_bsp->lens_flare_markers.count; index++)
+	{
+		struct structure_lens_flare_marker *marker=
+			TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flare_markers, index, struct structure_lens_flare_marker);
+		unsigned long key= psp_lfs_key(marker);
+
+		for (seen= 0; seen < distinct && seen < 1024 && keys[seen] != key; seen++)
+			;
+		if (seen == distinct)
+		{
+			if (distinct < 1024)
+				keys[distinct]= key;
+			distinct++;
+		}
+	}
+	platform_psp_log("lens flare axes: the BSP's %ld level markers have %ld%s distinct direction triples (a table of %d)",
+		structure_bsp->lens_flare_markers.count, distinct > 1024 ? 1024L : distinct, distinct > 1024 ? " or more" : "",
+		1 << PSP_LFS_MEMO_BITS);
+}
+#endif
+"""),
+("""		long marker_count= MIN(
+			structure_bsp->lens_flare_markers.count,
+			SHORT_MAX+1-MAXIMUM_QUEUED_LENS_FLARES);
+""", """		long marker_count= MIN(
+			structure_bsp->lens_flare_markers.count,
+			SHORT_MAX+1-MAXIMUM_QUEUED_LENS_FLARES);
+
+#ifdef HALO_PSP
+		if (psp_lfs_on < 0 && psp_keep_loaded())
+		{
+			psp_lfs_on= (signed char)!psp_keep("lfsonceoff");
+			psp_lfs_check= psp_lfs_on && psp_keep("lfscheck");
+		}
+		if (psp_lfs_check && structure_bsp != psp_lfs_counted_bsp)
+		{
+			psp_lfs_counted_bsp= structure_bsp;
+			psp_lfs_count_directions(structure_bsp);
+		}
+#endif
+"""),
+("""			structure_lens_flare= TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flares, marker->lens_flare_index, struct structure_lens_flare);
+
+			{
+				real_vector3d direction;""",
+ """#ifdef HALO_PSP
+			if (psp_lfs_on > 0)
+			{
+				long kept_before= local_lens_flare_count;
+				boolean full= kept_before >= MAXIMUM_LENS_FLARES_PER_FRAME;
+
+				psp_lfs_markers++;
+				if (full && psp_lfs_full_reported)
+				{
+					psp_lfs_skipped++;
+					if (!psp_lfs_check)
+						continue;
+				}
+				else if (full && global_window_parameters.rasterizer_target == _rasterizer_target_render_primary)
+				{
+					/* this submit says the overflow (once a run); later ones do nothing */
+					psp_lfs_full_reported= TRUE;
+				}
+
+				structure_lens_flare= TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flares, marker->lens_flare_index, struct structure_lens_flare);
+				parameters.definition= lens_flare_definition_get(structure_lens_flare->lens_flare.index);
+				parameters.position= marker->position;
+				parameters.compressed_direction= 0;
+				parameters.compressed_up= 0;
+				parameters.compressed_light_color= NONE;
+				parameters.light_identifier= NONE;
+				parameters.compressed_light_scale= 0;
+				parameters.light_index= (short)(structure_lens_flare_marker_index>>16);
+				parameters.lens_flare_index= (short)structure_lens_flare_marker_index;
+				parameters.compressed_window_index= (byte)render.window_index;
+
+				rasterizer_lens_flare_submit(&parameters);
+				if (local_lens_flare_count != kept_before)
+				{
+					if (full)
+						psp_lfs_wrong++; /* kept past full: a skip would have lost it */
+					psp_lfs_axes(marker, &local_lens_flare_parameters[kept_before]);
+				}
+				continue;
+			}
+#endif
+			structure_lens_flare= TAG_BLOCK_GET_ELEMENT(&structure_bsp->lens_flares, marker->lens_flare_index, struct structure_lens_flare);
+
+			{
+				real_vector3d direction;"""),
+("""			extern long psp_lens_flare_peak;
+
+			if (local_lens_flare_count > psp_lens_flare_peak)
+				psp_lens_flare_peak = local_lens_flare_count;
+""", """			extern long psp_lens_flare_peak;
+
+			if (local_lens_flare_count > psp_lens_flare_peak)
+				psp_lens_flare_peak = local_lens_flare_count;
+			psp_lfs_frames++; /* psp_fixups.py (FIXES_LFS) */
+"""),
+]
+
+
+# ---------- FIXES_SOUNDEDRAM: R2, the sound cache in the Media Engine's eDRAM
+# ("soundedram", psp_dsound.c; docs/me_programme.md section 5). With the word
+# off every change here does what the code did before: the start-up block is
+# the cache, and the stick reads straight into it
+FIXES_SOUNDEDRAM = {}
+FIXES_SOUNDEDRAM["source/cache/physical_memory_map.c#soundedram"] = [
+("""	physical_memory_map_globals.sound_cache_base_address = XPhysicalAlloc(SOUND_CACHE_SIZE, -1, 0, PAGE_READWRITE);""",
+ """#ifdef HALO_PSP
+	{
+		/* the block may be larger or smaller than the cache, and the cache
+		may not be in it (psp_dsound.c, "soundedram", "soundgeo") */
+		extern unsigned long psp_sound_block_bytes(void);
+		extern void *psp_sound_cache_place(void *block);
+		void *block = XPhysicalAlloc(psp_sound_block_bytes(), -1, 0, PAGE_READWRITE);
+
+		physical_memory_map_globals.sound_cache_base_address = block ? psp_sound_cache_place(block) : NULL;
+	}
+#else
+	physical_memory_map_globals.sound_cache_base_address = XPhysicalAlloc(SOUND_CACHE_SIZE, -1, 0, PAGE_READWRITE);
+#endif"""),
+("""		XPhysicalFree(physical_memory_map_globals.sound_cache_base_address);""",
+ """#ifdef HALO_PSP
+	{
+		extern void *psp_sound_block(void);
+
+		XPhysicalFree(psp_sound_block());
+	}
+#else
+		XPhysicalFree(physical_memory_map_globals.sound_cache_base_address);
+#endif"""),
+]
+FIXES_SOUNDEDRAM["source/cache/xbox_sound_cache.c#soundedram"] = [
+("""		cache_sound->sound = sound;
+		cache_file_read(
+			sound->cache_tag_index,
+			sound->samples.file_offset,
+			sound->samples.size,
+			cache_address,
+			&cache_sound->loaded,
+			FALSE);""",
+ """		cache_sound->sound = sound;
+#ifdef HALO_PSP
+		/* the cache in the ME's eDRAM: the read goes through main RAM */
+		if (psp_sound_edram_mode())
+			psp_sound_upload_start(sound->cache_tag_index, sound->samples.file_offset, sound->samples.size,
+				cache_address, &cache_sound->loaded, cache_sound, cache_sound->identifier, sound);
+		else
+#endif
+		cache_file_read(
+			sound->cache_tag_index,
+			sound->samples.file_offset,
+			sound->samples.size,
+			cache_address,
+			&cache_sound->loaded,
+			FALSE);"""),
+("""void sound_cache_idle(
+	void)
+{
+	lruv_idle(xbox_sound_cache_globals.cache);""",
+ """#ifdef HALO_PSP
+int psp_sound_edram_mode(void);
+void psp_sound_upload_start(long tag_index, long file_offset, long size, void *dest, byte *loaded, void *datum,
+	short identifier, void *sound);
+void psp_sound_upload_poll(void);
+void psp_sound_upload_forget(void);
+void psp_sound_upload_report(void);
+
+/* "soundedram": a load's sound still the one its block was made for, before
+a piece is copied into the block and before the sound is called loaded */
+int psp_sound_cache_alive(void *datum, short identifier, void *sound, unsigned long address)
+{
+	struct xbox_cache_sound_datum *cache_sound = datum;
+
+	return cache_sound->identifier == identifier && cache_sound->sound == sound &&
+		(unsigned long)((struct sound_permutation *)sound)->cache_base_address == address;
+}
+#endif
+
+void sound_cache_idle(
+	void)
+{
+	lruv_idle(xbox_sound_cache_globals.cache);
+#ifdef HALO_PSP
+	psp_sound_upload_poll();
+#endif"""),
+("""void sound_cache_close(
+	void)
+{
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+""",
+ """void sound_cache_close(
+	void)
+{
+	struct data_iterator iterator;
+	struct xbox_cache_sound_datum *cache_sound;
+
+#ifdef HALO_PSP
+	psp_sound_upload_forget();
+#endif
+"""),
+("""		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+}""",
+ """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+	{
+		extern void psp_sound_upload_report(void);
+
+		psp_sound_upload_report();
+	}
+}"""),
+]
+
+
+# ---------- FIXES_DECALFADE: dynamic decals fade out and go after a while
+# The engine already ages a decal by its tag's lifetime: decal_update, run
+# for every decal each drawn frame, fades its intensity over the last
+# decay_time seconds and frees it at lifetime (the Xbox's own path, kept by
+# ChupathingyCE and the port alike; 0 means forever). The stock tags give
+# minutes (up to 180 s on c20, 300 s on b30), so a long fight makes decals
+# faster than that retires them and fills the decal vertex cache, up to
+# 2,048, each aged and drawn every frame its cluster shows. This gives each
+# new dynamic decal whose tag lifetime is 0 or longer than N seconds a
+# lifetime of N and a short fade, and the engine's path does the rest. Not a
+# restoration: the original keeps them for their tags' lifetimes. The level's
+# placed decals are made permanent and never pass through here, and
+# decal_update skips permanent decals.
+# Keep words: "decalfadeoff": as before; "decalfadeN": N seconds (default
+# 30). "decalcensus": a "decals:" line every 5 s of game time with the live
+# counts and the tag lifetimes met. Campaign only: freeing decals early can
+# change how often decal_insert's unlock pass draws from the local random
+# seed, which other code reads, so the multiplayer build stays as it was
+FIXES_DECALFADE = {}
+FIXES_DECALFADE["source/effects/decals.c#decalfade"] = [
+("""boolean debug_decals;
+
+/* ---------- public code */
+""", """boolean debug_decals;
+
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (FIXES_DECALFADE) */
+int psp_keep_number(const char *prefix, int fallback);
+void platform_log(const char *format, ...);
+
+enum
+{
+	PSP_DECALFADE_DEFAULT_SECONDS = 30,
+	PSP_DECAL_CENSUS_TICKS = 150
+};
+
+/* long enough to read as a fade rather than a pop, short enough that a
+decal is gone soon after it starts to go */
+static real const PSP_DECALFADE_DECAY_SECONDS = 2.0f;
+
+static long psp_decals_made = 0;
+static long psp_decals_tag_forever = 0;
+static long psp_decals_tag_own = 0;
+static real psp_decals_tag_longest = 0.0f;
+static long psp_decals_given_fade = 0;
+static long psp_decals_expired = 0;
+
+/* 0 while keep.txt is unread, so nothing made before it is aged by it */
+static real psp_decalfade_seconds(
+	void)
+{
+	static real seconds = -1.0f;
+
+	if (seconds < 0.0f)
+	{
+		long n;
+
+		if (!psp_keep_loaded())
+			return 0.0f;
+		n = psp_keep("decalfadeoff") ? 0 : psp_keep_number("decalfade", PSP_DECALFADE_DEFAULT_SECONDS);
+		seconds = n > 0 ? (real)n : 0.0f;
+	}
+	return seconds;
+}
+
+/* after the tag's own draws from the local seed, so the seed moves as before */
+static void psp_decalfade_new(
+	real *lifetime,
+	real *decay_time)
+{
+	real seconds = psp_decalfade_seconds();
+
+	psp_decals_made++;
+	if (*lifetime == 0.0f)
+		psp_decals_tag_forever++;
+	else
+	{
+		psp_decals_tag_own++;
+		if (*lifetime > psp_decals_tag_longest)
+			psp_decals_tag_longest = *lifetime;
+	}
+	if (seconds > 0.0f && (*lifetime == 0.0f || *lifetime > seconds))
+	{
+		*lifetime = seconds;
+		*decay_time = seconds < PSP_DECALFADE_DECAY_SECONDS ? seconds : PSP_DECALFADE_DECAY_SECONDS;
+		psp_decals_given_fade++;
+	}
+}
+
+static void psp_decal_census(
+	void)
+{
+	static long next_tick = 0;
+	long now;
+	struct data_iterator iterator;
+	struct decal_datum *decal;
+	long dynamic = 0;
+	long fading = 0;
+	long placed = 0;
+
+	if (!PSP_KEEP_ONCE("decalcensus"))
+		return;
+	now = game_time_get();
+	/* a new map starts game time again */
+	if (now < next_tick && now + PSP_DECAL_CENSUS_TICKS >= next_tick)
+		return;
+	next_tick = now + PSP_DECAL_CENSUS_TICKS;
+	data_iterator_new(&iterator, global_decal_data);
+	while ((decal = data_iterator_next(&iterator)) != NULL)
+	{
+		if (TEST_FLAG(decal->flags, _decal_permanent_bit))
+			placed++;
+		else
+		{
+			dynamic++;
+			if (decal->intensity < 255)
+				fading++;
+		}
+	}
+	platform_log("decals: game time %ld, live %ld dynamic (%ld fading, %ld locked) and %ld placed; made %ld (tag lifetime none %ld, own %ld, longest %ld ds), %ld given the fade (%ld s), %ld expired",
+		now, dynamic, fading, decal_globals->locked_count, placed, psp_decals_made,
+		psp_decals_tag_forever, psp_decals_tag_own, (long)(psp_decals_tag_longest * 10.0f),
+		psp_decals_given_fade, (long)psp_decalfade_seconds(), psp_decals_expired);
+}
+#endif
+
+/* ---------- public code */
+"""),
+("""	if (global_decal_data->valid)
+	{
+		struct data_iterator iterator;
+
+		data_iterator_new(&iterator, global_decal_data);
+
+		while (data_iterator_next(&iterator))
+		{
+			decal_update(iterator.datum_index);
+		}
+	}
+""", """	if (global_decal_data->valid)
+	{
+		struct data_iterator iterator;
+
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+		psp_decal_census();
+#endif
+		data_iterator_new(&iterator, global_decal_data);
+
+		while (data_iterator_next(&iterator))
+		{
+			decal_update(iterator.datum_index);
+		}
+	}
+"""),
+("""							decal->decay_time = real_local_random_range(
+								definition->decay_time_lower_bound,
+								definition->decay_time_upper_bound);
+""", """							decal->decay_time = real_local_random_range(
+								definition->decay_time_lower_bound,
+								definition->decay_time_upper_bound);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+							if (!permanent)
+								psp_decalfade_new(&decal->lifetime, &decal->decay_time);
+#endif
+"""),
+("""			rasterizer_decal_vertices_delete(decal_index);
+		}
+	}
+
+	return;
+}
+static void decal_check(""", """#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			psp_decals_expired++;
+#endif
+			rasterizer_decal_vertices_delete(decal_index);
+		}
+	}
+
+	return;
+}
+static void decal_check("""),
+]
+
+
+# PRS: perception's refresh tests every object in every cluster an actor
+# can see, ~350 visits a tick on b30's beach, and 88% of them are objects it
+# only stamps with the object marker: neither biped, vehicle nor projectile.
+# Within the refresh's marker epoch a stamp is read only by a later
+# object_mark_function on the same object, and that answer only gates the
+# biped, vehicle and projectile tests; children are walked either way. Later
+# epochs compare with a newer marker, and the sleep checksum and the play hash
+# leave magic_number out. So such an object is passed over from its header's
+# type (typehdr: the same type as its datum's), walking its children and
+# siblings as before, without its call to object_get, its stamp, or the two
+# datum lines they touch. After halo-ce-vita's perception count (BirchWoodGod).
+# "percall": every object tested and stamped as before. "prscheck": the skip
+# decides, but each passed-over object is stamped anyway (the stamp "percall"
+# would give it) and its datum's type is checked against the header's; every
+# 150 ticks a "prscheck:" line gives the objects passed over and the
+# differences (0 expected)
+FIXES_PRS = {}
+FIXES_PRS["source/ai/actor_perception.c#prs"] = [
+(r"""static void actor_perception_refresh_test_object(
+	long actor_index,
+	long object_index,
+	struct actor_perception_refresh_list *enemy_list,
+	struct actor_perception_refresh_list *friend_list)
+{
+""", r"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PRS) */
+void platform_psp_log(const char *format, ...);
+static unsigned long psp_prs_passed, psp_prs_differences;
+static long psp_prs_logged = -1;
+
+static void __attribute__((noinline, cold)) psp_prs_check(long object_index, struct object_datum const *object, long type)
+{
+	long now = game_time_get();
+
+	object_mark_function(object_index);
+	psp_prs_passed++;
+	psp_prs_differences += object->object.type != type;
+	if (now % 150 == 0 && now != psp_prs_logged)
+	{
+		psp_prs_logged = now;
+		platform_psp_log("prscheck: game time %ld | passed over %lu, differences %lu", now, psp_prs_passed,
+			psp_prs_differences);
+	}
+}
+#endif
+
+static void actor_perception_refresh_test_object(
+	long actor_index,
+	long object_index,
+	struct actor_perception_refresh_list *enemy_list,
+	struct actor_perception_refresh_list *friend_list)
+{
+"""),
+(r"""	actor = actor_get(actor_index);
+
+	while (object_index != NONE)
+	{
+		current_object = actor_perception_object_get(object_index);
+""", r"""	actor = actor_get(actor_index);
+
+	while (object_index != NONE)
+	{
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_PRS): a type the tests below ignore is only
+		stamped, and no later reader in this refresh can tell */
+		struct object_header_datum const *psp_header = object_header_get(object_index);
+		long psp_type = psp_header->type;
+
+		if (psp_type != _object_type_biped && psp_type != _object_type_vehicle &&
+			psp_type != _object_type_projectile && !PSP_KEEP_ONCE("percall"))
+		{
+			struct object_datum const *psp_object = psp_header->datum;
+
+			if (PSP_KEEP_ONCE("prscheck"))
+				psp_prs_check(object_index, psp_object, psp_type);
+			if (psp_object->object.first_child_object_index != NONE)
+			{
+				actor_perception_refresh_test_object(
+					actor_index,
+					psp_object->object.first_child_object_index,
+					enemy_list,
+					friend_list);
+			}
+			object_index = psp_object->object.next_object_index;
+			continue;
+		}
+#endif
+		current_object = actor_perception_object_get(object_index);
+"""),
+]
+
+# ---------- FIXES_AICAD: AI thinking at half rate, staggered by actor (a compromise)
+# The AI's thinking (perception's prop servicing and the timeslice holder's
+# refresh, situation, the decision loop, and through the timeslice the
+# firing-position search and the path re-plan) is most of ai_update on the
+# fight maps. With "aicad2" each actor thinks on every other tick, half the
+# actors on even ticks and half on odd, so the tick's AI cost halves without
+# a spike. Every tick still runs what the player sees: the unit's input,
+# perception's decays and danger zone, emotion, the action's own timers,
+# moving, looking, firing and the unit's control, all from the last decision.
+# A reaction can come one tick (33 ms) later; Halo's own perception delays
+# are hundreds of milliseconds. Kept at full rate: swarms, charging actors
+# (melee and leaps are timed to the tick), dormant actors (they barely think)
+# and an actor's first update. The service timer counts thinking ticks, so the
+# timeslice holder (the costly search) comes round half as often too.
+# "aicad3" is the same rest with the timeslice kept at full rate: the timer
+# counts every tick and an actor that wins the slot thinks whole that tick, so
+# the firing-position search (cover) and the re-plan come round as often as
+# without the word. With aicad2 the marines lost b30's beach: a marine waits
+# twice as long to be sent to cover.
+# Off by default: it plays differently, so it ships only after an A/B shows it
+# breaks nothing. Campaign only: never in the multiplayer build or a networked
+# game, whose clients must simulate as the server does
+FIXES_AICAD = {}
+FIXES_AICAD["source/ai/actors.c#aicad"] = [
+("""static void actor_update_begin(
+	long actor_index)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_AICAD): "aicad2" and "aicad3" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+boolean network_coop_active(void);
+
+static int psp_aicad_on = -1;
+/* the identifier each slot last thought as: a new actor in a reused slot
+thinks on its first update */
+static short psp_aicad_identifier[MAXIMUM_ACTORS];
+static struct
+{
+	unsigned long updates, rested, timeslice, swarm, charging, dormant, first;
+} psp_aicad_stats;
+static long psp_aicad_logged = NONE;
+
+static boolean psp_aicad_active(
+	void)
+{
+	if (psp_aicad_on < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		psp_aicad_on = 0;
+#else
+		psp_aicad_on = psp_keep("aicad2") ? 2 : psp_keep("aicad3") ? 3 : 0;
+#endif
+		if (psp_aicad_on)
+			platform_psp_log("ai: each actor thinks on every other tick, half on even ticks and half on odd (aicad%d)%s",
+				psp_aicad_on, psp_aicad_on == 3 ? "; the timeslice at full rate" : "");
+	}
+	return psp_aicad_on && game_connection() == _game_connection_local && !network_coop_active();
+}
+
+/* TRUE on an actor's resting tick. No side effects: perception's ray queue
+asks it too, before the actor updates */
+boolean psp_aicad_rest(
+	long actor_index)
+{
+	struct actor_datum *actor;
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (!psp_aicad_active() ||
+		absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS ||
+		((game_time_get() + absolute_index) & 1) == 0)
+		return FALSE;
+	actor = actor_get(actor_index);
+	/* aicad3: the slot's holder thinks whole. The ray queue asks before the
+	slot is given and sees last tick's holder: a ray at most goes unused */
+	if (psp_aicad_on == 3 && actor->meta.timeslice)
+		return FALSE;
+	return !actor->meta.swarm && !actor->meta.dormant && actor->state.action != _actor_action_charge &&
+		psp_aicad_identifier[absolute_index] == actor->identifier;
+}
+
+/* the census: actor updates, how many rested, and why the rest kept the
+full rate on their resting tick (every 30 s of game time, cumulative) */
+static void psp_aicad_count(
+	long actor_index,
+	boolean rest)
+{
+	struct actor_datum *actor = actor_get(actor_index);
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+	long now;
+
+	if (psp_aicad_on <= 0 || absolute_index < 0 || absolute_index >= MAXIMUM_ACTORS)
+		return;
+	psp_aicad_stats.updates++;
+	if (rest)
+		psp_aicad_stats.rested++;
+	else if ((game_time_get() + absolute_index) & 1)
+	{
+		if (psp_aicad_on == 3 && actor->meta.timeslice)
+			psp_aicad_stats.timeslice++;
+		else if (actor->meta.swarm)
+			psp_aicad_stats.swarm++;
+		else if (actor->meta.dormant)
+			psp_aicad_stats.dormant++;
+		else if (actor->state.action == _actor_action_charge)
+			psp_aicad_stats.charging++;
+		else
+			psp_aicad_stats.first++;
+	}
+	now = game_time_get();
+	if (psp_aicad_logged == NONE || now < psp_aicad_logged || now - psp_aicad_logged >= 900)
+	{
+		if (psp_aicad_logged != NONE)
+			platform_psp_log("aicad: game time %ld | actor updates %lu, rested %lu; resting turns kept: timeslice %lu swarm %lu dormant %lu charging %lu first %lu",
+				now, psp_aicad_stats.updates, psp_aicad_stats.rested, psp_aicad_stats.timeslice, psp_aicad_stats.swarm,
+				psp_aicad_stats.dormant, psp_aicad_stats.charging, psp_aicad_stats.first);
+		psp_aicad_logged = now;
+	}
+}
+
+/* after perception, which asks psp_aicad_rest again: an actor's first update
+is a whole one */
+static void psp_aicad_seen(
+	long actor_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(actor_index);
+
+	if (psp_aicad_on > 0 && absolute_index >= 0 && absolute_index < MAXIMUM_ACTORS)
+		psp_aicad_identifier[absolute_index] = actor_get(actor_index)->identifier;
+}
+#endif
+
+static void actor_update_begin(
+	long actor_index)
+{"""),
+("""	ai_globals->time_given_this_frame = FALSE;
+
+#ifdef HALO_PSP
+	/* perception's rays, one per actor""",
+ """	ai_globals->time_given_this_frame = FALSE;
+
+#ifdef HALO_PSP
+	/* FIXES_AICAD: the timeslice (the firing-position search, the re-plan)
+	comes round at half rate too: it is given on two ticks in four, one of
+	each parity, so both halves of the actors still compete for it */
+	if (psp_aicad_active() && psp_aicad_on == 2 && (game_time_get() & 2))
+		ai_globals->time_given_this_frame = TRUE;
+#endif
+#ifdef HALO_PSP
+	/* perception's rays, one per actor"""),
+("""	if (actor_general_update(actor_index))
+	{
+		actor_get_timeslice(actor_index);
+		actor_input_update(actor_index);
+		actor_perception_update(actor_index);
+		actor_situation_update(actor_index);
+		actor_emotion_update(actor_index);
+		actor_clear_orders(actor_index);
+		actor_decision_loop(actor_index);
+		actor_action_update(actor_index);
+""",
+ """	if (actor_general_update(actor_index))
+	{
+#ifdef HALO_PSP
+		/* FIXES_AICAD: a resting actor keeps its last situation and decision
+		and perception skips its prop service. aicad2: it can't hold the
+		timeslice either; aicad3: the slot is given first, and its holder
+		doesn't rest */
+		boolean psp_full_slot = psp_aicad_active() && psp_aicad_on == 3;
+		boolean psp_rest;
+
+		if (psp_full_slot)
+			actor_get_timeslice(actor_index);
+		psp_rest = psp_aicad_rest(actor_index);
+		psp_aicad_count(actor_index, psp_rest);
+		if (psp_rest)
+		{
+			if (!psp_full_slot)
+				actor->meta.timeslice = FALSE;
+			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+		}
+		else
+		{
+			if (!psp_full_slot)
+				actor_get_timeslice(actor_index);
+			actor_input_update(actor_index);
+			actor_perception_update(actor_index);
+			actor_situation_update(actor_index);
+			actor_emotion_update(actor_index);
+			actor_clear_orders(actor_index);
+			actor_decision_loop(actor_index);
+		}
+		psp_aicad_seen(actor_index);
+#else
+		actor_get_timeslice(actor_index);
+		actor_input_update(actor_index);
+		actor_perception_update(actor_index);
+		actor_situation_update(actor_index);
+		actor_emotion_update(actor_index);
+		actor_clear_orders(actor_index);
+		actor_decision_loop(actor_index);
+#endif
+		actor_action_update(actor_index);
+"""),
+]
+FIXES_AICAD["source/ai/actor_perception.c#aicad"] = [
+("""	struct object_datum *unit;
+	short index;
+
+	if (psp_aihalf_on < 0)""",
+ """	struct object_datum *unit;
+	short index;
+
+	/* FIXES_AICAD: an actor resting from thinking services no prop either,
+	and its ray isn't queued */
+	{
+		extern boolean psp_aicad_rest(long actor_index); /* actors.c */
+
+		if (psp_aicad_rest(actor_index))
+			return TRUE;
+	}
+	if (psp_aihalf_on < 0)"""),
+]
+
+# ---------- FIXES_LODPSP: models' level of detail picked nearer (a compromise)
+# Models already pick their level of detail at the size they appear on the
+# PSP's 272 lines (FIXES_19; "fulllod" for the game's 480). This picks it as
+# if the screen were 272/480 as tall again, so lower levels come in 1.76x
+# nearer and the smallest objects drop out sooner: a compromise for the
+# GE-bound stretches, on by default ("lodpspoff" turns it off; "lodpsp" is
+# still accepted). Shadows follow the same pixels.
+# Some models' lower levels lose a part rather than simplify it: the
+# Pelican's cockpit window has no glass below its top level, so it went
+# black. So each model gets a floor, read from its own data the first time it
+# is drawn: the lowest level at which every region permutation still draws
+# every see-through shader its top level draws (opaque materials merged into
+# one at a lower level are the simplification itself, not a loss). The nearer pick never goes below a
+# model's floor; it goes there only where the game's own pick would.
+# "lodpspall": the nearer pick with no floor (for the A/B)
+FIXES_LODPSP = {}
+FIXES_LODPSP["source/render/render_objects.c#lodpsp"] = [
+("""static real object_get_level_of_detail_pixels(
+	long object_index)
+{
+	real_point3d center;""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_LODPSP) */
+#include "models/model_definitions.h"
+#include "cache/cache_files.h"
+#include <stdio.h>
+
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+
+/* render_models.c's part layout (models.c): the shader a part draws and
+whether it is drawn at all */
+struct psp_lod_part
+{
+	unsigned long flags;
+	short shader_index;
+};
+
+#define PSP_LOD_LEVELS 5
+#define PSP_LOD_FLOORS 1024 /* models a map draws: a few hundred */
+static unsigned long psp_lod_floors[PSP_LOD_FLOORS]; /* the model's datum index + 1, << 3 | its floor */
+static unsigned long psp_lod_floors_map = 0;
+
+/* each new map's tags (cache_files.c, psp_fixups.py FIXES_LODPSP): the
+floors were the last map's */
+unsigned long psp_lod_map_serial = 1;
+
+/* the shaders a geometry draws, as a mask of the model's shader indices */
+static unsigned long psp_lod_shaders(struct model const *model, short geometry_index)
+{
+	struct model_geometry_header { byte reserved[0x24]; struct tag_block parts; } const *geometry;
+	unsigned long mask = 0;
+	long part_index;
+
+	if (geometry_index < 0 || geometry_index >= model->geometries.count)
+		return 0;
+	geometry = tag_block_get_element_with_size(&model->geometries, geometry_index, 0x30);
+	for (part_index = 0; part_index < geometry->parts.count; part_index++)
+	{
+		struct psp_lod_part const *part = tag_block_get_element_with_size(&geometry->parts, part_index, 0x68);
+
+		if (!(part->flags & 1) /* stripped: never drawn */ && part->shader_index >= 0 &&
+			part->shader_index < model->shaders.count && part->shader_index < 32)
+		{
+			struct psp_lod_shader_reference { struct tag_reference shader; } const *reference =
+				tag_block_get_element_with_size(&model->shaders, part->shader_index, 0x20);
+
+			/* only see-through parts: a lower level that merges opaque
+			materials into one simplifies, where one without its glass or
+			glow loses a part */
+			if (reference->shader.index != NONE &&
+				shader_type_is_transparent(shader_definition_get(reference->shader.index)->base.type))
+				mask |= 1UL << part->shader_index;
+		}
+	}
+	return mask;
+}
+
+/* the lowest level at which every region permutation still draws every
+shader of its top level */
+static long psp_lod_floor_find(long model_index, struct model const *model)
+{
+	long floor = 0, region_index, lost = 0;
+
+	for (region_index = 0; region_index < model->regions.count; region_index++)
+	{
+		struct model_region const *region = TAG_BLOCK_GET_ELEMENT(&model->regions, region_index, struct model_region);
+		long permutation_index;
+
+		for (permutation_index = 0; permutation_index < region->permutations.count; permutation_index++)
+		{
+			struct model_region_permutation const *permutation = TAG_BLOCK_GET_ELEMENT(&region->permutations, permutation_index,
+				struct model_region_permutation);
+			unsigned long top = psp_lod_shaders(model, permutation->geometry_indices[PSP_LOD_LEVELS - 1]);
+			long level;
+
+			for (level = PSP_LOD_LEVELS - 2; level >= floor; level--)
+				if ((psp_lod_shaders(model, permutation->geometry_indices[level]) & top) != top)
+				{
+					floor = level + 1;
+					lost |= top & ~psp_lod_shaders(model, permutation->geometry_indices[level]);
+					break;
+				}
+		}
+	}
+	if (floor > 0)
+	{
+		char types[64];
+		int at = 0;
+		long shader_index;
+
+		types[0] = 0;
+		for (shader_index = 0; shader_index < 32 && at < (int)sizeof(types) - 4; shader_index++)
+			if (lost & (1UL << shader_index))
+			{
+				struct psp_lod_shader_reference { struct tag_reference shader; } const *reference =
+					tag_block_get_element_with_size(&model->shaders, shader_index, 0x20);
+				struct shader const *shader = reference->shader.index == NONE ? NULL :
+					shader_definition_get(reference->shader.index);
+
+				at += snprintf(types + at, sizeof(types) - at, " %d", shader ? (int)shader->base.type : -1);
+			}
+		platform_psp_log("lodpsp: %s keeps level %ld and above (its lower levels lose shaders of type%s)",
+			tag_get_name(model_index), floor, types);
+	}
+	return floor;
+}
+
+static long psp_lod_floor(long model_index, struct model const *model)
+{
+	unsigned long key = ((unsigned long)model_index + 1) << 3, slot, probe;
+
+	if (psp_lod_floors_map != psp_lod_map_serial)
+	{
+		csmemset(psp_lod_floors, 0, sizeof(psp_lod_floors));
+		psp_lod_floors_map = psp_lod_map_serial;
+		/* "lodpspscan": every model of the map at once, drawn or not, so the
+		log names each one whose lower levels lose a part */
+		if (psp_keep("lodpspscan"))
+		{
+			struct tag_iterator iterator;
+			long index, models = 0, floored = 0;
+
+			tag_iterator_new(&iterator, MODELS_GROUP_TAG);
+			while ((index = tag_iterator_next(&iterator)) != NONE)
+			{
+				models++;
+				floored += psp_lod_floor_find(index, model_definition_get(index)) > 0;
+			}
+			platform_psp_log("lodpsp: scan: %ld models, %ld keep a floor", models, floored);
+		}
+	}
+	slot = ((unsigned long)model_index * 2654435761UL) % PSP_LOD_FLOORS;
+	for (probe = 0; probe < PSP_LOD_FLOORS; probe++, slot = (slot + 1) % PSP_LOD_FLOORS)
+	{
+		if ((psp_lod_floors[slot] & ~7UL) == key)
+			return (long)(psp_lod_floors[slot] & 7);
+		if (!psp_lod_floors[slot])
+		{
+			long floor = psp_lod_floor_find(model_index, model);
+
+			psp_lod_floors[slot] = key | (unsigned long)floor;
+			return floor;
+		}
+	}
+	return psp_lod_floor_find(model_index, model);
+}
+
+/* the level render_model picks at these pixels; -1 when it draws nothing */
+static long psp_lod_level(struct model const *model, real pixels)
+{
+	long level = PSP_LOD_LEVELS - 1;
+
+	if (pixels < model->detail_cutoff_pixels[0])
+		return -1;
+	while (level > 0 && pixels < model->detail_cutoff_pixels[level])
+		level--;
+	return level;
+}
+
+/* the nearer pick: the PSP's pixels scaled by 272/480 again, but never a
+level below the model's floor unless the game's own pick (pixels) is there */
+static real psp_lod_nearer(long object_index, real pixels)
+{
+	static signed char all = -1;
+	long model_index = object_definition_get(object_get(object_index)->definition_index)->object.model.index;
+	real nearer = pixels * (272.0f / 480.0f);
+	struct model const *model;
+	long floor;
+
+	if (model_index == NONE)
+		return nearer;
+	if (all < 0)
+		all = (signed char)(psp_keep("lodpspall") != 0);
+	if (all)
+		return nearer;
+	model = model_definition_get(model_index);
+	floor = psp_lod_floor(model_index, model);
+	if (floor == 0 || psp_lod_level(model, nearer) >= floor)
+		return nearer;
+	if (psp_lod_level(model, pixels) < floor)
+		return pixels;
+	return model->detail_cutoff_pixels[floor] > nearer ? model->detail_cutoff_pixels[floor] : nearer;
+}
+#endif
+
+static real object_get_level_of_detail_pixels(
+	long object_index)
+{
+	real_point3d center;"""),
+("\t\treturn render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);",
+ "\t{\n"
+ "\t\treal pixels = render_frustum_sphere_diameter_in_pixels(&render.frustum, &center, radius) * (272.0f / 480.0f);\n\n"
+ "\t\treturn PSP_KEEP_ONCE(\"lodpspoff\") ? pixels : psp_lod_nearer(object_index, pixels);\n"
+ "\t}"),
+]
+FIXES_LODPSP["source/cache/cache_files.c#lodpsp"] = [
+("\t\t\t\tpsp_ge_forget_map();\n",
+ "\t\t\t\tpsp_ge_forget_map();\n"
+ "\t\t\t\t{\n"
+ "\t\t\t\t\t/* the models' level of detail floors were the last map's (FIXES_LODPSP) */\n"
+ "\t\t\t\t\textern unsigned long psp_lod_map_serial;\n\n"
+ "\t\t\t\t\tpsp_lod_map_serial++;\n"
+ "\t\t\t\t}\n"),
+]
+
+
+# "aioutcome" (keep.txt; recon builds only): what the AI's fights came to, for
+# judging a behaviour A/B (farslice, aihalf) by outcomes where state hashes
+# can't serve (the two sides part at the first changed decision). It reads
+# and changes nothing the game uses. Each 5 s of game time a line: actors
+# alive by team; kills by the victim's team and the killer (a player, AI on
+# the player's side, AI against it, other); the hits the players took (count
+# and damage, the deathless cheat on) and dealt; active encounters and their
+# living count; far actors stuck (awake, 20+ units from every player, in
+# uncover or fight, the same firing position for 30 s). At each event a line:
+# an encounter's first active tick and the tick it is cleared, each script's
+# first run and end, each ai_place (with its name), game_save and
+# cinematic_start. A game time going backwards (a revert, a new map) starts
+# the counts over
+FIXES_RECON["source/ai/ai.c#aioutcome"] = [
+("""void ai_handle_death(
+	long unit_index,""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): "aioutcome" (see there) */
+#include "hs/hs_scenario_definitions.h"
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+char const *hs_runtime_get_executing_thread_name(void);
+
+#define PSP_AIOUTCOME_TEAMS 16
+#define PSP_AIOUTCOME_ENCOUNTERS 128
+#define PSP_AIOUTCOME_SCRIPTS 512
+#define PSP_AIOUTCOME_STUCK_TICKS 900
+#define PSP_AIOUTCOME_FAR 20.0f
+
+enum
+{
+	_psp_aioutcome_by_player,
+	_psp_aioutcome_by_ally,
+	_psp_aioutcome_by_enemy,
+	_psp_aioutcome_by_other,
+	NUMBER_OF_PSP_AIOUTCOME_KILLERS
+};
+
+static int psp_aioutcome_on = -1;
+static long psp_aioutcome_time = NONE;
+static unsigned long psp_aioutcome_kills[PSP_AIOUTCOME_TEAMS][NUMBER_OF_PSP_AIOUTCOME_KILLERS];
+static unsigned long psp_aioutcome_player_hit, psp_aioutcome_player_hits;
+static real psp_aioutcome_player_damage;
+static byte psp_aioutcome_encounter_flags[PSP_AIOUTCOME_ENCOUNTERS]; /* 1 active seen, 2 had living, 4 cleared */
+static byte psp_aioutcome_script_flags[PSP_AIOUTCOME_SCRIPTS]; /* 1 started, 2 ended */
+static struct
+{
+	short identifier;
+	short position;
+	long since;
+} psp_aioutcome_actors[MAXIMUM_ACTORS];
+
+/* also ai_script.c's, so it names a placement only when the word is on */
+boolean psp_aioutcome_enabled(
+	void)
+{
+	long now;
+
+	if (psp_aioutcome_on < 0)
+		psp_aioutcome_on = psp_keep("aioutcome");
+	if (!psp_aioutcome_on)
+		return FALSE;
+	now = game_time_get();
+	if (psp_aioutcome_time != NONE && now < psp_aioutcome_time)
+	{
+		csmemset(psp_aioutcome_kills, 0, sizeof(psp_aioutcome_kills));
+		csmemset(psp_aioutcome_encounter_flags, 0, sizeof(psp_aioutcome_encounter_flags));
+		csmemset(psp_aioutcome_script_flags, 0, sizeof(psp_aioutcome_script_flags));
+		csmemset(psp_aioutcome_actors, 0, sizeof(psp_aioutcome_actors));
+		psp_aioutcome_player_hit = psp_aioutcome_player_hits = 0;
+		psp_aioutcome_player_damage = 0.0f;
+		platform_psp_log("aioutcome: game time %ld | counts started over (the game time went back)", now);
+	}
+	psp_aioutcome_time = now;
+	return TRUE;
+}
+
+static short psp_aioutcome_player_team(
+	void)
+{
+	struct data_iterator iterator;
+	struct player_datum *player;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL)
+	{
+		if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+			return unit_get(player->unit_index)->object.owner_team_index;
+	}
+	return NONE;
+}
+
+static void psp_aioutcome_death(
+	long unit_index,
+	long responsible_unit_index)
+{
+	short team, killer = _psp_aioutcome_by_other;
+
+	if (!psp_aioutcome_enabled())
+		return;
+	team = unit_get(unit_index)->object.owner_team_index;
+	if (responsible_unit_index != NONE && responsible_unit_index != unit_index)
+	{
+		struct unit_datum *responsible = unit_get(responsible_unit_index);
+		short player_team = psp_aioutcome_player_team();
+
+		if (responsible->unit.player_index != NONE)
+			killer = _psp_aioutcome_by_player;
+		else if (player_team != NONE)
+			killer = game_team_is_enemy(player_team, responsible->object.owner_team_index) ?
+				_psp_aioutcome_by_enemy : _psp_aioutcome_by_ally;
+	}
+	if (team >= 0 && team < PSP_AIOUTCOME_TEAMS)
+		psp_aioutcome_kills[team][killer]++;
+}
+
+static void psp_aioutcome_damage(
+	long unit_index,
+	long responsible_unit_index,
+	real fraction)
+{
+	if (!psp_aioutcome_enabled())
+		return;
+	if (unit_get(unit_index)->unit.player_index != NONE)
+	{
+		psp_aioutcome_player_hit++;
+		psp_aioutcome_player_damage += fraction;
+	}
+	else if (responsible_unit_index != NONE && unit_get(responsible_unit_index)->unit.player_index != NONE)
+		psp_aioutcome_player_hits++;
+}
+
+/* hs_runtime.c: a script thread's first run and its end */
+void psp_aioutcome_script(
+	long script_index,
+	boolean ended)
+{
+	byte flag = ended ? 2 : 1;
+
+	if (!psp_aioutcome_enabled() || script_index < 0 || script_index >= PSP_AIOUTCOME_SCRIPTS ||
+		script_index >= global_scenario_get()->hs_scripts.count ||
+		(psp_aioutcome_script_flags[script_index] & flag))
+		return;
+	psp_aioutcome_script_flags[script_index] |= flag;
+	platform_psp_log("aioutcome: game time %ld | script %s %s", game_time_get(),
+		TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->hs_scripts, script_index, struct hs_script)->name,
+		ended ? "ends" : "starts");
+}
+
+/* hs_runtime.c: a script's call, as it begins; only the calls that mark the
+mission's course are logged */
+void psp_aioutcome_call(
+	char const *name)
+{
+	if (!name || !psp_aioutcome_enabled() ||
+		(csstrncmp(name, "game_save", 9) != 0 && csstrcmp(name, "cinematic_start") != 0))
+		return;
+	platform_psp_log("aioutcome: game time %ld | %s calls %s", game_time_get(),
+		hs_runtime_get_executing_thread_name(), name);
+}
+
+/* ai_script.c: ai_place, by name */
+void psp_aioutcome_place(
+	char const *name)
+{
+	platform_psp_log("aioutcome: game time %ld | %s places %s", game_time_get(),
+		hs_runtime_get_executing_thread_name(), name);
+}
+
+static void psp_aioutcome_tick(
+	void)
+{
+	struct data_iterator iterator;
+	struct encounter_datum *encounter;
+	struct actor_datum *actor;
+	struct player_datum *player;
+	real_point3d heads[4];
+	short head_count = 0;
+	long now;
+	long active_encounters = 0, living = 0, stuck = 0;
+	long alive[PSP_AIOUTCOME_TEAMS] = {0};
+	char alive_line[160], kill_line[320];
+	int at;
+	short team;
+
+	if (!psp_aioutcome_enabled())
+		return;
+	now = game_time_get();
+
+	data_iterator_new(&iterator, encounter_data);
+	while ((encounter = data_iterator_next(&iterator)) != NULL)
+	{
+		short index = iterator.absolute_index;
+		short count = encounter->current_count + encounter->current_swarm_count;
+		char const *name;
+		byte *flags;
+
+		if (index < 0 || index >= PSP_AIOUTCOME_ENCOUNTERS || index >= global_scenario_get()->ai_encounters.count)
+			continue;
+		flags = &psp_aioutcome_encounter_flags[index];
+		name = TAG_BLOCK_GET_ELEMENT(&global_scenario_get()->ai_encounters, index, struct encounter_definition)->name;
+		if (encounter->active)
+		{
+			active_encounters++;
+			living += count;
+			if (!(*flags & 1))
+			{
+				*flags |= 1;
+				platform_psp_log("aioutcome: game time %ld | encounter %s active, %d living", now, name, (int)count);
+			}
+		}
+		if (count > 0)
+			*flags |= 2;
+		else if ((*flags & 2) && !(*flags & 4))
+		{
+			*flags |= 4;
+			platform_psp_log("aioutcome: game time %ld | encounter %s cleared", now, name);
+		}
+	}
+	if (now % 150 != 0)
+		return;
+
+	data_iterator_new(&iterator, player_data);
+	while ((player = data_iterator_next(&iterator)) != NULL && head_count < 4)
+	{
+		if (player->unit_index != NONE && object_try_and_get(player->unit_index))
+			heads[head_count++] = unit_get(player->unit_index)->object.bounding_sphere_center;
+	}
+	data_iterator_new(&iterator, actor_data);
+	while ((actor = data_iterator_next(&iterator)) != NULL)
+	{
+		short index = iterator.absolute_index;
+		long object_index = actor->meta.swarm ? actor->meta.swarm_unit_index : actor->meta.unit_index;
+		struct object_datum *unit = object_index == NONE ? NULL : object_try_and_get(object_index);
+		boolean far = head_count > 0;
+		short k;
+
+		if (!unit || TEST_FLAG(unit->object.damage_flags, _object_dead_bit))
+			continue;
+		if (actor->meta.team_index >= 0 && actor->meta.team_index < PSP_AIOUTCOME_TEAMS)
+			alive[actor->meta.team_index]++;
+		if (index < 0 || index >= MAXIMUM_ACTORS)
+			continue;
+		for (k = 0; k < head_count; k++)
+		{
+			if (distance_squared3d(&heads[k], &unit->object.bounding_sphere_center) < PSP_AIOUTCOME_FAR * PSP_AIOUTCOME_FAR)
+				far = FALSE;
+		}
+		if (!far || !actor->meta.active || actor->meta.dormant ||
+			(actor->state.action != _actor_action_uncover && actor->state.action != _actor_action_fight) ||
+			psp_aioutcome_actors[index].identifier != actor->identifier ||
+			psp_aioutcome_actors[index].position != actor->firing_positions.current_position_index)
+		{
+			psp_aioutcome_actors[index].identifier = actor->identifier;
+			psp_aioutcome_actors[index].position = actor->firing_positions.current_position_index;
+			psp_aioutcome_actors[index].since = now;
+		}
+		else if (now - psp_aioutcome_actors[index].since >= PSP_AIOUTCOME_STUCK_TICKS)
+			stuck++;
+	}
+
+	alive_line[0] = kill_line[0] = 0;
+	for (team = 0, at = 0; team < PSP_AIOUTCOME_TEAMS && at < (int)sizeof(alive_line) - 16; team++)
+	{
+		if (alive[team])
+			at += snprintf(alive_line + at, sizeof(alive_line) - at, " %d:%ld", (int)team, alive[team]);
+	}
+	for (team = 0, at = 0; team < PSP_AIOUTCOME_TEAMS && at < (int)sizeof(kill_line) - 40; team++)
+	{
+		unsigned long const *kills = psp_aioutcome_kills[team];
+
+		if (kills[0] || kills[1] || kills[2] || kills[3])
+			at += snprintf(kill_line + at, sizeof(kill_line) - at, " %d:%lu/%lu/%lu/%lu", (int)team,
+				kills[_psp_aioutcome_by_player], kills[_psp_aioutcome_by_ally],
+				kills[_psp_aioutcome_by_enemy], kills[_psp_aioutcome_by_other]);
+	}
+	platform_psp_log("aioutcome: game time %ld | alive by team:%s | killed by team (player/ally AI/enemy AI/other):%s | "
+		"players hit %lu (damage %.2f), hits %lu | encounters active %ld, living %ld | far actors stuck %ld",
+		now, alive_line, kill_line, psp_aioutcome_player_hit, (double)psp_aioutcome_player_damage,
+		psp_aioutcome_player_hits, active_encounters, living, stuck);
+}
+#endif
+
+void ai_handle_death(
+	long unit_index,"""),
+("""	long responsible_unit_index = ai_get_responsible_unit(
+		killer_object_index,
+		damage_category != _damage_category_vehicle);
+	short hostility = _comm_hostility_none;
+""",
+ """	long responsible_unit_index = ai_get_responsible_unit(
+		killer_object_index,
+		damage_category != _damage_category_vehicle);
+	short hostility = _comm_hostility_none;
+
+#ifdef HALO_PSP
+	psp_aioutcome_death(unit_index, responsible_unit_index); /* FIXES_RECON #aioutcome */
+#endif
+"""),
+("""	short hostility;
+
+	if (!delayed &&
+		damage_category != _damage_category_falling &&""",
+ """	short hostility;
+
+#ifdef HALO_PSP
+	/* FIXES_RECON #aioutcome: a delayed call repeats an earlier hit for the
+	AI's reaction, so it isn't counted again */
+	if (!delayed)
+		psp_aioutcome_damage(unit_index, responsible_unit_index, fraction);
+#endif
+	if (!delayed &&
+		damage_category != _damage_category_falling &&"""),
+("""	profile_exit(ai_update_section);
+""",
+ """#ifdef HALO_PSP
+	if (update_ai && ai_globals->ai_active)
+		psp_aioutcome_tick(); /* FIXES_RECON #aioutcome */
+#endif
+	profile_exit(ai_update_section);
+"""),
+]
+FIXES_RECON["source/hs/hs_runtime.c#aioutcome"] = [
+("""static void hs_thread_main(
+	long thread_index)
+{
+	struct hs_thread_datum *thread = hs_thread_get(thread_index);""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): ai.c */
+void psp_aioutcome_script(long script_index, boolean ended);
+void psp_aioutcome_call(char const *name);
+#endif
+
+static void hs_thread_main(
+	long thread_index)
+{
+	struct hs_thread_datum *thread = hs_thread_get(thread_index);"""),
+("""		if (hs_scenario_script_disabled((short)thread->script_index))
+		{
+			thread->sleep_until = NONE;
+			hs_runtime_globals.executing_thread_index = NONE;
+
+			return;
+		}
+	}
+""",
+ """		if (hs_scenario_script_disabled((short)thread->script_index))
+		{
+			thread->sleep_until = NONE;
+			hs_runtime_globals.executing_thread_index = NONE;
+
+			return;
+		}
+#ifdef HALO_PSP
+		psp_aioutcome_script(thread->script_index, FALSE); /* FIXES_RECON #aioutcome */
+#endif
+	}
+"""),
+("""			function->evaluate(
+				expression->index,
+				thread_index,
+				initialize);""",
+ """#ifdef HALO_PSP
+			if (initialize)
+				psp_aioutcome_call(function->name); /* FIXES_RECON #aioutcome */
+#endif
+			function->evaluate(
+				expression->index,
+				thread_index,
+				initialize);"""),
+("""			if (script->script_type==_hs_script_startup ||
+				script->script_type==_hs_script_dormant)
+			{
+				thread->sleep_until = NONE;
+			}""",
+ """			if (script->script_type==_hs_script_startup ||
+				script->script_type==_hs_script_dormant)
+			{
+				thread->sleep_until = NONE;
+#ifdef HALO_PSP
+				psp_aioutcome_script(thread->script_index, TRUE); /* FIXES_RECON #aioutcome */
+#endif
+			}"""),
+]
+FIXES_RECON["source/ai/ai_script.c#aioutcome"] = [
+("""void ai_scripting_place(
+	long ai_reference)
+{""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_RECON #aioutcome): ai.c */
+boolean psp_aioutcome_enabled(void);
+void psp_aioutcome_place(char const *name);
+#endif
+
+void ai_scripting_place(
+	long ai_reference)
+{
+#ifdef HALO_PSP
+	/* FIXES_RECON #aioutcome: the scripted placements' order */
+	if (ai_reference != NONE && psp_aioutcome_enabled())
+	{
+		char ai_name[256];
+
+		ai_index_to_string(ai_reference, global_scenario_get(), ai_name, sizeof(ai_name));
+		psp_aioutcome_place(ai_name);
+	}
+#endif"""),
+]
+
+
+# ---------- FIXES_VEHPROBE: a moving vehicle's empty surroundings asked once
+# Each tick a moving vehicle asks, for every mass point (22 on a banshee), a
+# ground query (collision_get_features_in_sphere about the point) and, in the
+# new physics, a swept ray from where the point is to where the move takes it;
+# a point with an antigravity probe casts one more ray straight down. In the
+# air nearly all of them find nothing (a30's banshees: 91% of updates have
+# nothing within one sphere about the whole vehicle). So one sphere is asked
+# first, about the centre of mass, reaching every point's query sphere, its
+# antigravity probe and the move's likely sweep. When it holds nothing, a
+# query whose sphere lies inside it, or a ray whose two ends lie inside it,
+# would find nothing too, and is not asked: its answer is the one it gives
+# when it finds nothing (the ground plane below the world, no material, no
+# ray hit), so the vehicle moves exactly as before. Each is checked where it
+# is asked, against the sphere actually walked, so a sweep longer than the
+# guess is simply cast. The sphere's test answers yes to more than the
+# queries could ever find, never to less: the level's any surface or edge
+# (the early-out walk), and every scenery or machine object (the types those
+# queries test) whose sphere reaches it, walked through children and
+# siblings without the gates the queries add (invisible, no collisions, the
+# parent's own type); a walk that fills its 256 leaves counts as yes. A
+# vehicle on the ground last tick is not asked about: the ground is in reach,
+# and asking would only cost. Only which work is done changes, never an
+# answer; the objects' marks (magic_number) differ, which the play hash and
+# the sleep checksum leave out. On by default in the campaign ("vehprobeoff"
+# turns it off; "vehprobe" still names it, both physics); "vehprobe1" (the new physics only: the banshee's, not the
+# radius physics of the dropship and the Pelican), "vehprobecheck" (the
+# sphere decides, every query is asked anyway, and any query it would have
+# skipped that found something is counted in the "vehprobe:" log line).
+# Campaign only: the multiplayer build compiles it off
+FIXES_VEHPROBE = {}
+FIXES_VEHPROBE["source/physics/collisions.c#vehprobe"] = [
+("""	return features->count[_collision_feature_sphere] != 0 ||
+		features->count[_collision_feature_cylinder] != 0 ||
+		features->count[_collision_feature_prism] != 0;
+}
+
+boolean collision_fix_pill(""", """	return features->count[_collision_feature_sphere] != 0 ||
+		features->count[_collision_feature_cylinder] != 0 ||
+		features->count[_collision_feature_prism] != 0;
+}
+
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VEHPROBE): any object a vehicle's ground query or
+swept ray could test in this sphere: scenery or a machine whose sphere (the
+datum's or its copy) reaches it, through children and siblings, ignoring
+only the vehicle and what it carries, as both of those do */
+static boolean psp_vehprobe_object_reaches(
+	long object_index,
+	real_point3d const *center,
+	real radius,
+	long ignore_object_index)
+{
+	do
+	{
+		struct object_datum const *object = object_get(object_index);
+
+		if (object_index != ignore_object_index)
+		{
+			struct psp_object_sphere const *sphere = psp_sphere_of(object_index);
+
+			if (TEST_FLAG(_collision_test_for_vehicles_flags, object->object.type + _collision_test_objects_first_type_bit) &&
+				(point_in_sphere(center, &object->object.bounding_sphere_center, object->object.bounding_sphere_radius + radius) ||
+					point_in_sphere(center, &sphere->center, sphere->radius + radius)))
+			{
+				return TRUE;
+			}
+			if (object->object.first_child_object_index != NONE &&
+				psp_vehprobe_object_reaches(object->object.first_child_object_index, center, radius, ignore_object_index))
+			{
+				return TRUE;
+			}
+		}
+		object_index = object->object.next_object_index;
+	}
+	while (object_index != NONE);
+
+	return FALSE;
+}
+
+/* psp_fixups.py (FIXES_VEHPROBE): TRUE when nothing a vehicle's ground
+queries (_collision_test_for_bipeds_dead_flags) or swept rays
+(_collision_test_for_vehicles_flags, the same objects) could meet lies in
+the sphere. No marks are left: clusters are kept apart here, and an object
+in two clusters is simply looked at twice */
+boolean psp_vehprobe_reach_empty(
+	real_point3d const *center,
+	real radius,
+	long ignore_object_index)
+{
+	struct collision_bsp_test_sphere_result result;
+	unsigned long clusters[(MAXIMUM_CLUSTERS_PER_STRUCTURE + 31) / 32];
+	boolean found;
+	short leaf_reference_index;
+
+	psp_sphere_any = 1;
+	psp_sphere_any_found = 0;
+	found = collision_bsp_test_sphere(
+		global_collision_bsp_get(),
+		MAXIMUM_BREAKABLE_SURFACES_PER_MAP,
+		breakable_surface_flags_get(),
+		center,
+		radius,
+		&result);
+	psp_sphere_any = 0;
+	psp_sphere_any_found = 0;
+	if (found || result.leaf_count >= 256)
+	{
+		return FALSE;
+	}
+
+	memset(clusters, 0, sizeof(clusters));
+	for (leaf_reference_index = 0; leaf_reference_index < result.leaf_count; leaf_reference_index++)
+	{
+		long cluster_index = collision_cluster_index_from_leaf(result.leaf_indices[leaf_reference_index]);
+		long reference_index;
+		long object_index;
+
+		/* (structure_cluster_mark skips a cluster that fits no cluster) */
+		if (cluster_index < 0 || cluster_index >= MAXIMUM_CLUSTERS_PER_STRUCTURE ||
+			(clusters[cluster_index >> 5] & (1ul << (cluster_index & 31))))
+		{
+			continue;
+		}
+		clusters[cluster_index >> 5] |= 1ul << (cluster_index & 31);
+		for (object_index = cluster_get_first_collideable_object(&reference_index, (short)cluster_index);
+			object_index != NONE;
+			object_index = cluster_get_next_collideable_object(&reference_index))
+		{
+			if (psp_vehprobe_object_reaches(object_index, center, radius, ignore_object_index))
+			{
+				return FALSE;
+			}
+		}
+	}
+
+	return TRUE;
+}
+#endif
+
+boolean collision_fix_pill("""),
+]
+FIXES_VEHPROBE["source/physics/physics.c#vehprobe"] = [
+# the state, the sphere and its tests, ahead of compute_ground_plane
+("""static void compute_ground_plane(
+	long object_index,
+	struct mass_point_datum *mass_point,
+	struct mass_point_definition const *mass_point_definition)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_VEHPROBE): one sphere about a moving vehicle, asked
+before its mass points' ground queries and rays. Mode: bit 1 the new
+physics, bit 2 the radius physics, bit 4 "vehprobecheck" */
+int psp_keep(const char *name);
+boolean psp_vehprobe_reach_empty(real_point3d const *center, real radius, long ignore_object_index);
+static int psp_vp_mode = -1;
+static boolean psp_vp_active = FALSE, psp_vp_empty = FALSE, psp_vp_eligible = FALSE;
+static real_point3d psp_vp_center;
+static real psp_vp_radius;
+static unsigned long psp_vp_updates[2], psp_vp_probes[2], psp_vp_empties[2];
+static unsigned long psp_vp_ground[2], psp_vp_rays[2], psp_vp_wrong, psp_vp_total;
+/* kept between the sphere and what is tested inside it, against rounding */
+#define PSP_VP_SLACK (1.0f/64.0f)
+
+/* a sphere of this extra radius about the point lies inside the empty sphere */
+static boolean psp_vp_inside(
+	real_point3d const *point,
+	real extra)
+{
+	real limit = psp_vp_radius - extra - PSP_VP_SLACK;
+	real dx = point->x - psp_vp_center.x;
+	real dy = point->y - psp_vp_center.y;
+	real dz = point->z - psp_vp_center.z;
+
+	return psp_vp_active && psp_vp_empty && limit > 0.0f && dx*dx + dy*dy + dz*dz <= limit*limit;
+}
+
+/* FALSE when the ray need not be cast: both its ends lie in the empty
+sphere, so it does (a sphere is convex) */
+static boolean psp_vp_ray(
+	real_point3d const *point,
+	real_vector3d const *vector)
+{
+	real_point3d end;
+
+	psp_vp_eligible = FALSE;
+	if (!psp_vp_active)
+		return TRUE;
+	end.x = point->x + vector->i;
+	end.y = point->y + vector->j;
+	end.z = point->z + vector->k;
+	if (psp_vp_inside(point, 0.0f) && psp_vp_inside(&end, 0.0f))
+	{
+		psp_vp_rays[0]++;
+		psp_vp_eligible = TRUE;
+		return (psp_vp_mode & 4) != 0;
+	}
+	psp_vp_rays[1]++;
+	return TRUE;
+}
+
+/* a ray hit: always TRUE; "vehprobecheck" counts a hit the sphere ruled out */
+static boolean psp_vp_hit(
+	void)
+{
+	if (psp_vp_eligible)
+		psp_vp_wrong++;
+	return TRUE;
+}
+
+/* the sphere for this update: about the centre of mass, reaching each mass
+point's query sphere (its radius and the 1/16 the query adds) and its
+antigravity probe, and, in the new physics, this tick's sweep as velocity
+and spin would carry it, with room. How far it reaches only decides how much
+is skipped: each query and ray is checked against it where it is asked */
+static void psp_vp_begin(
+	long object_index,
+	struct physics_definition const *physics,
+	real_matrix4x3 const *matrix,
+	boolean radius_physics)
+{
+	struct object_datum const *object = object_get(object_index);
+	short mass_point_count = physics_mass_point_count(physics);
+	short mass_point_index;
+	real reach = 0.0f;
+	real arm = 0.0f;
+
+	psp_vp_active = FALSE;
+	psp_vp_empty = FALSE;
+	psp_vp_eligible = FALSE;
+	if (psp_vp_mode < 0)
+	{
+#ifdef PSP_MULTIPLAYER
+		/* (campaign only) */
+		psp_vp_mode = 0;
+#else
+		/* on by default in the campaign: "vehprobeoff" turns it off,
+		   "vehprobe1" keeps it to the new physics only */
+		psp_vp_mode = psp_keep("vehprobeoff") ? 0 : psp_keep("vehprobe1") ? 1 : 3;
+		if (psp_keep("vehprobecheck"))
+			psp_vp_mode = (psp_vp_mode ? psp_vp_mode : 3) | 4;
+#endif
+	}
+	if (!(psp_vp_mode & (radius_physics ? 2 : 1)))
+		return;
+	psp_vp_updates[radius_physics]++;
+	if (TEST_FLAG(object->object.flags, _object_on_ground_bit))
+		return;
+
+	psp_vp_center = matrix->position;
+	for (mass_point_index = 0; mass_point_index < mass_point_count; mass_point_index++)
+	{
+		struct mass_point_definition const *mass_point_definition = TAG_BLOCK_GET_ELEMENT(
+			&physics->mass_points,
+			mass_point_index,
+			struct mass_point_definition);
+		short powered_mass_point_index = physics_powered_mass_point_index(physics, mass_point_definition);
+		real_point3d local_position = mass_point_definition->position;
+		real_point3d position;
+		real extra = mass_point_definition->radius + 0.0625f;
+		real distance;
+
+		if (radius_physics)
+		{
+			local_position.x -= physics->center_of_mass.x;
+			local_position.y -= physics->center_of_mass.y;
+			local_position.z -= physics->center_of_mass.z;
+		}
+		matrix4x3_transform_point(matrix, &local_position, &position);
+		distance = distance3d(&position, &psp_vp_center);
+		if (powered_mass_point_index != NONE)
+		{
+			struct powered_mass_point_definition const *powered_mass_point_definition = TAG_BLOCK_GET_ELEMENT(
+				&physics->powered_mass_points,
+				powered_mass_point_index,
+				struct powered_mass_point_definition);
+
+			if (TEST_FLAG(powered_mass_point_definition->flags, _powered_mass_point_antigrav_bit) &&
+				mass_point_definition->radius + powered_mass_point_definition->antigrav_height > extra)
+				extra = mass_point_definition->radius + powered_mass_point_definition->antigrav_height;
+		}
+		if (distance + extra > reach)
+			reach = distance + extra;
+		if (distance > arm)
+			arm = distance;
+	}
+	if (!radius_physics)
+	{
+		reach += 1.25f*(magnitude3d(&object->object.translational_velocity) +
+			magnitude3d(&object->object.angular_velocity)*arm) + 0.0625f;
+	}
+	psp_vp_radius = reach + 2.0f*PSP_VP_SLACK;
+	psp_vp_empty = psp_vehprobe_reach_empty(&psp_vp_center, psp_vp_radius, object_index);
+	psp_vp_active = TRUE;
+	psp_vp_probes[radius_physics]++;
+	psp_vp_empties[radius_physics] += psp_vp_empty;
+}
+
+static void psp_vp_end(
+	void)
+{
+	if (!psp_vp_mode)
+		return;
+	psp_vp_active = FALSE;
+	psp_vp_empty = FALSE;
+	psp_vp_eligible = FALSE;
+	if (++psp_vp_total % 600 == 0)
+	{
+		platform_psp_log("vehprobe: %lu updates (new physics %lu, radius physics %lu); asked %lu / %lu, nothing in reach %lu / %lu; ground queries skipped %lu, asked %lu; rays skipped %lu, cast %lu; check: %lu skippable found something",
+			psp_vp_updates[0] + psp_vp_updates[1], psp_vp_updates[0], psp_vp_updates[1],
+			psp_vp_probes[0], psp_vp_probes[1], psp_vp_empties[0], psp_vp_empties[1],
+			psp_vp_ground[0], psp_vp_ground[1], psp_vp_rays[0], psp_vp_rays[1], psp_vp_wrong);
+		psp_vp_updates[0] = psp_vp_updates[1] = psp_vp_probes[0] = psp_vp_probes[1] = 0;
+		psp_vp_empties[0] = psp_vp_empties[1] = psp_vp_ground[0] = psp_vp_ground[1] = 0;
+		psp_vp_rays[0] = psp_vp_rays[1] = 0;
+	}
+}
+#endif
+
+static void compute_ground_plane(
+	long object_index,
+	struct mass_point_datum *mass_point,
+	struct mass_point_definition const *mass_point_definition)
+{"""),
+# the ground query: not asked when its sphere lies in the empty one
+("""	struct collision_feature_list features;
+	struct collision_plane collision;
+
+	mass_point->ground_plane = depths_of_hell;""", """	struct collision_feature_list features;
+	struct collision_plane collision;
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	boolean psp_skippable = FALSE;
+	boolean psp_found;
+#endif
+
+	mass_point->ground_plane = depths_of_hell;"""),
+("""	if (collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features) &&
+		collision_features_test_point(&features, &mass_point->position, &collision))""",
+"""#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE): its sphere (the query adds 1/16) lies
+	in the empty one, so it would find nothing: the answer is the one above */
+	if (psp_vp_active)
+	{
+		psp_skippable = psp_vp_inside(&mass_point->position, mass_point_definition->radius + 0.0625f);
+		psp_vp_ground[!psp_skippable]++;
+	}
+	psp_found = (!psp_skippable || (psp_vp_mode & 4)) &&
+		collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features);
+	if (psp_found && psp_skippable)
+		psp_vp_wrong++;
+	if (psp_found &&
+		collision_features_test_point(&features, &mass_point->position, &collision))
+#else
+	if (collision_get_features_in_sphere(
+			_collision_test_for_bipeds_dead_flags,
+			&mass_point->position,
+			mass_point_definition->radius,
+			0.0f,
+			mass_point_definition->radius,
+			object_index,
+			&features) &&
+		collision_features_test_point(&features, &mass_point->position, &collision))
+#endif"""),
+# the new physics' antigravity probe
+("""				if (collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&point, &probe_vector) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						instance->object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# the new physics' sweep (every pass: nothing else moves in between)
+("""				if (collision_test_vector(
+						_collision_test_for_vehicles_flags |
+							FLAG(_collision_test_front_facing_surfaces_bit),
+						&mass_point->position,
+						&delta,
+						instance->object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&mass_point->position, &delta) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_vehicles_flags |
+							FLAG(_collision_test_front_facing_surfaces_bit),
+						&mass_point->position,
+						&delta,
+						instance->object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# the radius physics: its sphere once its frame is known, its antigravity probe
+("""	matrix4x3_from_point_and_vectors(
+		&world_matrix,
+		&object->object.position,
+		&object->object.forward,
+		&object->object.up);
+""", """	matrix4x3_from_point_and_vectors(
+		&world_matrix,
+		&object->object.position,
+		&object->object.forward,
+		&object->object.up);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_begin(object_index, physics, &world_matrix, TRUE);
+#endif
+"""),
+("""				if (collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+						&collision))""", """				if (
+#ifdef HALO_PSP
+					/* psp_fixups.py (FIXES_VEHPROBE) */
+					psp_vp_ray(&point, &probe_vector) &&
+#endif
+					collision_test_vector(
+						_collision_test_for_bipeds_dead_flags,
+						&point,
+						&probe_vector,
+						object_index,
+						&collision)
+#ifdef HALO_PSP
+					&& psp_vp_hit()
+#endif
+					)"""),
+# physics_update: the sphere asked before the new physics' compute, and both
+# physics close it (unit collisions are not the mass points')
+("""			magic_torque);
+		return;""", """			magic_torque);
+#ifdef HALO_PSP
+		/* psp_fixups.py (FIXES_VEHPROBE) */
+		psp_vp_end();
+#endif
+		return;"""),
+("""#ifdef HALO_PSP
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_new(""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_begin(object_index, physics, &instance.world_matrix, FALSE);
+	psp_mark = psp_microseconds();
+#endif
+	physics_compute_new("""),
+("""	physics_compute_unit_collisions(object_index);""", """#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_VEHPROBE) */
+	psp_vp_end();
+#endif
+	physics_compute_unit_collisions(object_index);"""),
+]
+
+# ---------- FIXES_AIMCACHE: the aim and look screens' deltas kept and applied again
+# A unit's aim and look screens (and a vehicle's aiming overlays) blend four
+# frames of an overlay animation a node: three normalised lerps of four
+# quaternions and a bilinear translation, then one quaternions_multiply into
+# the node's rotation and one add into its translation. The blended delta is a
+# pure function of the animation, the screen's bounds, and the yaw and pitch;
+# a unit that holds its aim makes the same delta tick after tick. The table
+# keeps each delta under its full key (both pointers and the angles' bits) and,
+# on the same key, applies it with the same multiply and add: the same bits.
+# The leaf's own delta is now held in a local before its add (x += E and
+# d = E; x += d round alike: fp-contract is off and floats are evaluated as
+# floats), so the miss path and the off path are the one code.
+# The table is per map (tag pointers are reused by the next map) and keyed
+# whole (no hash-only hits). Campaign only.
+# Keep words: "aimcacheoff" (as before); "aimcachecheck" (each hit also
+# computes the leaf on a copy of the nodes and compares the deltas and the
+# resulting nodes bit for bit, then applies the kept one: 'aimcache: check'
+# counts); "aimcachestat" (a line a second: calls, hits, misses, uncached, the
+# leaf's time by path, and the four corner frames' cells for PREDEC: fetched
+# already this tick, fetched last tick, new).
+FIXES_AIMCACHE = {}
+FIXES_AIMCACHE["source/models/model_animations.c#aimcache"] = [
+("""void aiming_screen_apply(
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+/* psp_fixups.py (FIXES_AIMCACHE) */
+extern unsigned long psp_microseconds(void);
+void platform_psp_log(const char *format, ...);
+int psp_keep(const char *name);
+long game_time_get(void);
+
+#define PSP_AC_SETS 32
+#define PSP_AC_WAYS 4
+#define PSP_AC_FLOATS 128
+#define PSP_AC_CELLS 256
+struct psp_ac_entry
+{
+	struct animation const *animation;
+	struct animation_aiming_screen_bounds const *bounds;
+	unsigned long yaw, pitch;
+	unsigned long used;
+	short count; /* floats kept; 0: the leaf changes nothing */
+	short valid;
+	real delta[PSP_AC_FLOATS];
+};
+static struct psp_ac_entry *psp_ac_table = NULL;
+static struct real_orientation *psp_ac_scratch = NULL;
+static int psp_ac_on = -1, psp_ac_check = 0, psp_ac_stat = 0;
+static real *psp_ac_out = NULL, *psp_ac_out_end = NULL;
+static unsigned long psp_ac_clock = 0;
+/* counters ('aimcache:' lines, aimcachestat) */
+static unsigned long psp_ac_n[4]; /* calls, hits, misses, uncached */
+static unsigned long psp_ac_us[3]; /* hits, misses, uncached */
+static unsigned long psp_ac_checked, psp_ac_differed;
+static unsigned long psp_ac_cell[4]; /* computes with valid frames, cell this tick already, last tick, new */
+static long psp_ac_log_tick = -1;
+struct psp_ac_cell { struct animation const *animation; short f[4]; long tick; };
+static struct psp_ac_cell psp_ac_cells[PSP_AC_CELLS];
+
+union psp_ac_bits { real r; unsigned long u; };
+static unsigned long psp_ac_bits_of(real r)
+{
+	union psp_ac_bits b;
+
+	b.r = r;
+	return b.u;
+}
+
+static int psp_ac_ready(void)
+{
+	if (psp_ac_on < 0)
+	{
+		psp_ac_on = psp_keep("aimcacheoff") == 0;
+		psp_ac_stat = psp_keep("aimcachestat") != 0;
+		psp_ac_check = psp_ac_on && psp_keep("aimcachecheck") != 0;
+		if (psp_ac_on)
+		{
+			psp_ac_table = (struct psp_ac_entry *)calloc(PSP_AC_SETS * PSP_AC_WAYS, sizeof(*psp_ac_table));
+			if (psp_ac_check)
+				psp_ac_scratch = (struct real_orientation *)malloc(MAXIMUM_NODES_PER_MODEL * sizeof(*psp_ac_scratch));
+			if (!psp_ac_table || (psp_ac_check && !psp_ac_scratch))
+			{
+				platform_psp_log("aimcache: no room; off");
+				psp_ac_on = 0;
+			}
+			else
+				platform_psp_log("aimcache: on (%u KB)%s", (unsigned)(PSP_AC_SETS * PSP_AC_WAYS * sizeof(*psp_ac_table) / 1024),
+					psp_ac_check ? ", checking each hit" : "");
+		}
+		else
+			platform_psp_log("aimcache: off (aimcacheoff)");
+	}
+	return psp_ac_on;
+}
+
+/* game.c, game_initialize_for_new_map: the next map's tags may sit where
+this one's were */
+void psp_aimcache_new_map(void)
+{
+	int i;
+
+	if (psp_ac_table)
+		for (i = 0; i < PSP_AC_SETS * PSP_AC_WAYS; i++)
+			psp_ac_table[i].valid = 0;
+	for (i = 0; i < PSP_AC_CELLS; i++)
+		psp_ac_cells[i].animation = NULL;
+}
+
+static void psp_ac_log(void)
+{
+	long tick = game_time_get();
+
+	if (psp_ac_log_tick < 0 || tick < psp_ac_log_tick)
+		psp_ac_log_tick = tick;
+	if (tick - psp_ac_log_tick < 30)
+		return;
+	psp_ac_log_tick = tick;
+	platform_psp_log("aimcache: tick %ld: calls %lu hits %lu misses %lu uncached %lu; us %lu %lu %lu; check %lu compared %lu differed; cells %lu: tick %lu last %lu new %lu",
+		tick, psp_ac_n[0], psp_ac_n[1], psp_ac_n[2], psp_ac_n[3], psp_ac_us[0], psp_ac_us[1], psp_ac_us[2],
+		psp_ac_checked, psp_ac_differed, psp_ac_cell[0], psp_ac_cell[1], psp_ac_cell[2], psp_ac_cell[3]);
+	memset(psp_ac_n, 0, sizeof(psp_ac_n));
+	memset(psp_ac_us, 0, sizeof(psp_ac_us));
+	memset(psp_ac_cell, 0, sizeof(psp_ac_cell));
+}
+
+/* PREDEC's count: were this compute's four corner frames fetched already
+this tick, or last tick (a prediction from last tick would have had them)? */
+static void psp_ac_cell_seen(struct animation const *animation, short f00, short f10, short f01, short f11)
+{
+	long tick;
+	unsigned long h;
+	struct psp_ac_cell *c;
+
+	if (!psp_ac_stat)
+		return;
+	tick = game_time_get();
+	h = ((unsigned long)animation >> 4) * 2654435761UL ^ (unsigned long)(unsigned short)f00 * 40503UL ^ (unsigned long)(unsigned short)f11 * 9973UL;
+	c = &psp_ac_cells[(h ^ (h >> 13)) & (PSP_AC_CELLS - 1)];
+	psp_ac_cell[0]++;
+	if (c->animation == animation && c->f[0] == f00 && c->f[1] == f10 && c->f[2] == f01 && c->f[3] == f11)
+	{
+		if (c->tick == tick)
+			psp_ac_cell[1]++;
+		else if (c->tick == tick - 1)
+			psp_ac_cell[2]++;
+		else
+			psp_ac_cell[3]++;
+	}
+	else
+	{
+		psp_ac_cell[3]++;
+		c->animation = animation;
+		c->f[0] = f00; c->f[1] = f10; c->f[2] = f01; c->f[3] = f11;
+	}
+	c->tick = tick;
+}
+
+/* the kept delta, applied with the leaf's own tail */
+static void psp_ac_apply(struct animation const *animation, real const *delta, struct real_orientation *node_orientations)
+{
+	unsigned long rotation_flags = 0, translation_flags = 0;
+	short node_index;
+
+	for (node_index = 0; node_index < animation->node_count; node_index++)
+	{
+		struct real_orientation *orientation = &node_orientations[node_index];
+
+		if (!(node_index & (LONG_BITS - 1)))
+		{
+			short long_index = node_index >> LONG_BITS_BITS;
+
+			translation_flags = animation->nodes_with_translation_flags[long_index];
+			rotation_flags = animation->nodes_with_rotation_flags[long_index];
+		}
+		if (TEST_FLAG(rotation_flags, 0))
+		{
+			real_quaternion rotation;
+
+			memcpy(&rotation, delta, sizeof(rotation));
+			delta += 4;
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+		}
+		rotation_flags >>= 1;
+		if (TEST_FLAG(translation_flags, 0))
+		{
+			orientation->translation.x += delta[0];
+			orientation->translation.y += delta[1];
+			orientation->translation.z += delta[2];
+			delta += 3;
+		}
+		translation_flags >>= 1;
+	}
+}
+
+/* the floats a delta of this animation takes */
+static int psp_ac_floats(struct animation const *animation)
+{
+	int n = 0, i, words = (animation->node_count + LONG_BITS - 1) >> LONG_BITS_BITS;
+
+	for (i = 0; i < words; i++)
+	{
+		unsigned long mask = (i == words - 1 && (animation->node_count & (LONG_BITS - 1))) ?
+			((1UL << (animation->node_count & (LONG_BITS - 1))) - 1) : ~0UL;
+
+		n += 4 * __builtin_popcountl(animation->nodes_with_rotation_flags[i] & mask) +
+			3 * __builtin_popcountl(animation->nodes_with_translation_flags[i] & mask);
+	}
+	return n;
+}
+
+static void psp_ac_inner_aiming_screen_apply(struct animation const *animation, struct animation_aiming_screen_bounds const *aiming_screen_bounds, real yaw, real pitch, struct real_orientation *node_orientations);
+void aiming_screen_apply(struct animation const *animation, struct animation_aiming_screen_bounds const *aiming_screen_bounds, real yaw, real pitch, struct real_orientation *node_orientations)
+{
+	unsigned long yb, pb, h, t0 = 0;
+	struct psp_ac_entry *set, *e, *victim;
+	int w, floats;
+
+	if (psp_ac_ready() <= 0)
+	{
+		if (psp_ac_stat)
+		{
+			t0 = psp_microseconds();
+			psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+			psp_ac_us[2] += psp_microseconds() - t0;
+			psp_ac_n[0]++;
+			psp_ac_n[3]++;
+			psp_ac_log();
+		}
+		else
+			psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+		return;
+	}
+	if (psp_ac_stat)
+		t0 = psp_microseconds();
+	psp_ac_n[0]++;
+	yb = psp_ac_bits_of(yaw);
+	pb = psp_ac_bits_of(pitch);
+	h = ((unsigned long)animation >> 4) * 2654435761UL ^ ((unsigned long)aiming_screen_bounds >> 2) * 40503UL ^ yb * 2246822519UL ^ pb * 3266489917UL;
+	set = &psp_ac_table[((h ^ (h >> 15)) & (PSP_AC_SETS - 1)) * PSP_AC_WAYS];
+	psp_ac_clock++;
+	for (w = 0; w < PSP_AC_WAYS; w++)
+	{
+		e = &set[w];
+		if (e->valid && e->animation == animation && e->bounds == aiming_screen_bounds && e->yaw == yb && e->pitch == pb)
+		{
+			e->used = psp_ac_clock;
+			if (psp_ac_check)
+			{
+				/* the leaf made again on a copy of the nodes, beside the kept delta */
+				real fresh[PSP_AC_FLOATS];
+				int nodes = animation->node_count, differed;
+
+				memcpy(psp_ac_scratch, node_orientations, nodes * sizeof(*psp_ac_scratch));
+				psp_ac_out = fresh;
+				psp_ac_out_end = fresh + PSP_AC_FLOATS;
+				psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, psp_ac_scratch);
+				differed = (int)(psp_ac_out - fresh) != e->count || memcmp(fresh, e->delta, e->count * sizeof(real)) != 0;
+				psp_ac_out = psp_ac_out_end = NULL;
+				if (e->count)
+					psp_ac_apply(animation, e->delta, node_orientations);
+				differed |= memcmp(psp_ac_scratch, node_orientations, nodes * sizeof(*psp_ac_scratch)) != 0;
+				psp_ac_checked++;
+				if (differed)
+				{
+					if (psp_ac_differed < 8)
+						platform_psp_log("aimcache: check: differed at tick %ld (animation %08lx, yaw %08lx pitch %08lx)",
+							game_time_get(), (unsigned long)animation, yb, pb);
+					psp_ac_differed++;
+				}
+			}
+			else if (e->count) /* 0: the leaf changed nothing (frames out of the animation) */
+				psp_ac_apply(animation, e->delta, node_orientations);
+			psp_ac_n[1]++;
+			if (psp_ac_stat)
+			{
+				psp_ac_us[0] += psp_microseconds() - t0;
+				psp_ac_log();
+			}
+			return;
+		}
+	}
+	floats = psp_ac_floats(animation);
+	if (floats > PSP_AC_FLOATS)
+	{
+		psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+		psp_ac_n[3]++;
+		if (psp_ac_stat)
+		{
+			psp_ac_us[2] += psp_microseconds() - t0;
+			psp_ac_log();
+		}
+		return;
+	}
+	victim = &set[0];
+	for (w = 0; w < PSP_AC_WAYS; w++)
+	{
+		if (!set[w].valid)
+		{
+			victim = &set[w];
+			break;
+		}
+		if (set[w].used < victim->used)
+			victim = &set[w];
+	}
+	psp_ac_out = victim->delta;
+	psp_ac_out_end = victim->delta + PSP_AC_FLOATS;
+	psp_ac_inner_aiming_screen_apply(animation, aiming_screen_bounds, yaw, pitch, node_orientations);
+	victim->count = (short)(psp_ac_out - victim->delta);
+	victim->valid = victim->count == 0 || victim->count == floats;
+	psp_ac_out = psp_ac_out_end = NULL;
+	victim->animation = animation;
+	victim->bounds = aiming_screen_bounds;
+	victim->yaw = yb;
+	victim->pitch = pb;
+	victim->used = psp_ac_clock;
+	psp_ac_n[2]++;
+	if (psp_ac_stat)
+	{
+		psp_ac_us[1] += psp_microseconds() - t0;
+		psp_ac_log();
+	}
+}
+static void psp_ac_inner_aiming_screen_apply(
+#else
+void aiming_screen_apply(
+#endif
+"""),
+("""	data00 = animation_get_frame_data(animation, frame_index00);
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	psp_ac_cell_seen(animation, frame_index00, frame_index10, frame_index01, frame_index11); /* FIXES_AIMCACHE */
+#endif
+	data00 = animation_get_frame_data(animation, frame_index00);
+"""),
+("""			quaternions_interpolate_and_normalize(&yaw_rotation0, &yaw_rotation1, pitch_fraction, &rotation);
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+""",
+"""			quaternions_interpolate_and_normalize(&yaw_rotation0, &yaw_rotation1, pitch_fraction, &rotation);
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			if (psp_ac_out) /* FIXES_AIMCACHE: the delta kept */
+			{
+				if (psp_ac_out + 4 <= psp_ac_out_end)
+					memcpy(psp_ac_out, &rotation, sizeof(rotation));
+				psp_ac_out += 4;
+			}
+#endif
+			quaternions_multiply(&rotation, &orientation->rotation, &orientation->rotation);
+"""),
+("""			orientation->translation.x +=
+				(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+				(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.y +=
+				(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+				(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.z +=
+				(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+				(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+""",
+"""#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+			{
+				/* FIXES_AIMCACHE: each delta held before its add (the same
+				rounding), so it can be kept */
+				real psp_ac_dx =
+					(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+					(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+				real psp_ac_dy =
+					(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+					(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+				real psp_ac_dz =
+					(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+					(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+
+				orientation->translation.x += psp_ac_dx;
+				orientation->translation.y += psp_ac_dy;
+				orientation->translation.z += psp_ac_dz;
+				if (psp_ac_out)
+				{
+					if (psp_ac_out + 3 <= psp_ac_out_end)
+					{
+						psp_ac_out[0] = psp_ac_dx;
+						psp_ac_out[1] = psp_ac_dy;
+						psp_ac_out[2] = psp_ac_dz;
+					}
+					psp_ac_out += 3;
+				}
+			}
+#else
+			orientation->translation.x +=
+				(translation01.x*inverse_yaw_fraction+translation11.x*yaw_fraction)*pitch_fraction+
+				(translation00.x*inverse_yaw_fraction+translation10.x*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.y +=
+				(translation01.y*inverse_yaw_fraction+translation11.y*yaw_fraction)*pitch_fraction+
+				(translation00.y*inverse_yaw_fraction+translation10.y*yaw_fraction)*inverse_pitch_fraction;
+			orientation->translation.z +=
+				(translation00.z*inverse_yaw_fraction+translation10.z*yaw_fraction)*inverse_pitch_fraction+
+				(translation01.z*inverse_yaw_fraction+translation11.z*yaw_fraction)*pitch_fraction;
+#endif
+"""),
+]
+FIXES_AIMCACHE["source/game/game.c#aimcache"] = [
+("""		psp_fixed_seed_new_map();
+	}
+#endif
+""",
+"""		psp_fixed_seed_new_map();
+	}
+#endif
+#if defined(HALO_PSP) && !defined(PSP_MULTIPLAYER)
+	{
+		extern void psp_aimcache_new_map(void); /* model_animations.c (psp_fixups.py, FIXES_AIMCACHE) */
+
+		psp_aimcache_new_map();
+	}
+#endif
+"""),
+]
+
+
+# ---------- FIXES_PROFWAIT: a profile write waits for the last one by sleeping
+# player_profile_write (and the playlist profiles' reads and writes) wait for
+# the previous write's thread in an empty loop on thread_has_exited. On
+# Windows and the Xbox the scheduler shares the CPU, so the writer finishes
+# while the caller spins. The PSP runs only the highest-priority ready
+# thread, and the writer starts at pthreads' default (0x3c), below the game
+# thread (0x20): once the game thread spins, the writer never runs again
+# and the game stops for good, with HOME still answering (the callbacks
+# thread is above it). Any profile write made while the last one's thread
+# is still alive does it (a10's look inversion saves the profile). The
+# waits now sleep a millisecond a turn, so
+# the writer gets the CPU; a thread create_thread failed to make (no handle)
+# counts as done instead of being waited on for ever. "profwaitold" keeps
+# the empty loop, for the A/B.
+FIXES_PROFWAIT = {}
+FIXES_PROFWAIT["source/bungie_net/common/thread_win32.c#profwait"] = [
+("""void dispose_thread(
+	struct thread_reference *thread_reference)
+{""", """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PROFWAIT): thread_has_exited for a loop that waits on
+it, which must block for the thread it waits for to run */
+boolean psp_thread_has_exited_waiting(
+	struct thread_reference *thread_reference)
+{
+	extern int psp_keep(const char *name);
+	extern void platform_log(const char *format, ...);
+	extern int sceKernelDelayThread(unsigned int delay);
+	static int said_waiting = 0;
+	static int said_missing = 0;
+
+	if (thread_reference->handle == NULL && !psp_keep("profwaitold"))
+	{
+		/* create_thread keeps the reference when the thread can't be made */
+		if (!said_missing)
+			platform_log("profile io: waited on a thread that was never made: taken as finished");
+		said_missing = 1;
+		return TRUE;
+	}
+	if (thread_has_exited(thread_reference))
+		return TRUE;
+	if (psp_keep("profwaitold"))
+		return FALSE;
+	if (!said_waiting)
+		platform_log("profile io: the last write's thread is still running: waiting for it, a millisecond at a time");
+	said_waiting = 1;
+	sceKernelDelayThread(1000);
+	return FALSE;
+}
+#endif
+
+void dispose_thread(
+	struct thread_reference *thread_reference)
+{"""),
+]
+for _rel in ("source/saved games/player_profile.c", "source/saved games/playlist_profile.c"):
+    FIXES_PROFWAIT[_rel + "#profwait"] = [
+("""#include "bungie_net/common/thread.h"
+""", """#include "bungie_net/common/thread.h"
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_PROFWAIT): this file's only use of thread_has_exited
+is the empty loop that waits for the last profile io thread; the loop has to
+sleep so that thread, below the game thread, can run and finish */
+boolean psp_thread_has_exited_waiting(struct thread_reference *thread_reference);
+#define thread_has_exited(thread_reference) psp_thread_has_exited_waiting(thread_reference)
+#endif
+"""),
+]
+
+
+# ---------- FIXES_LOOKREAL: the stick turns the view by real time
+# main.c caps a local frame's time at a fifteenth of a second, so below 15
+# frames a second the game world runs slow, as on the Xbox. The view was
+# turned by that capped time too, so the stick's turn rate in real terms fell
+# with the frame rate and stepped as it changed: at 10 fps a held stick turned
+# two thirds as fast as at 15. The stick's part of the turn now uses the
+# frame's real length (main_update_time keeps it before the cap), bounded at a
+# quarter second so a hitch or a checkpoint save doesn't spin the view.
+# Everything else keeps the capped time: magnetism follows its target's motion
+# in game time, and the pitch limits and autolevel step by game ticks. With
+# the stick at rest the turn is the old one bit for bit. Local games only (a
+# network client's frame time isn't capped, so nothing changes there).
+# Keep words: "lookrealoff" (as before); "lookstat" (a line a second of real
+# time: real and game seconds, frames, yaw turned); "frameslowN" (N ms more
+# each frame, tests only: slow frames on demand).
+FIXES_LOOKREAL = {}
+FIXES_LOOKREAL["source/game/player_control.c#lookreal"] = [
+("""static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+""",
+ """static real player_control_autolevel_time[MAXIMUM_NUMBER_OF_LOCAL_PLAYERS];
+#ifdef HALO_PSP
+/* the frame's real length, before main.c's cap (main_update_time sets it;
+psp_fixups.py, FIXES_LOOKREAL) */
+real psp_look_real_seconds = 0.f;
+static int psp_look_real = -1;
+static int psp_look_stat;
+static real psp_look_stat_real;
+static real psp_look_stat_game;
+static real psp_look_stat_yaw;
+static long psp_look_stat_frames;
+
+/* the time the stick turns the view by: the frame's real length, at most a
+quarter second, where the game's own time was capped */
+static real psp_look_time_delta(
+	real time_delta_sec)
+{
+	real seconds = psp_look_real_seconds;
+
+	if (psp_look_real < 0)
+	{
+		extern int psp_keep(const char *name);
+
+		psp_look_real = psp_keep("lookrealoff") == 0;
+		psp_look_stat = psp_keep("lookstat") != 0;
+		platform_psp_log("lookreal: %s", psp_look_real ? "on" : "off (lookrealoff)");
+	}
+	if (!psp_look_real || time_delta_sec <= 0.f || seconds <= 0.f ||
+		game_connection() != _game_connection_local)
+	{
+		return time_delta_sec;
+	}
+	return seconds < 0.25f ? seconds : 0.25f;
+}
+
+static void psp_look_stat_note(
+	real time_delta_sec,
+	real look_time_delta,
+	real yaw,
+	real stick_yaw)
+{
+	psp_look_stat_real += psp_look_real_seconds;
+	psp_look_stat_game += time_delta_sec;
+	psp_look_stat_yaw += yaw;
+	psp_look_stat_frames++;
+	if (psp_look_stat_real >= 1.f)
+	{
+		platform_psp_log("lookstat: tick %ld: real %.3f s, game %.3f s, %ld frames (%.1f fps), yaw %.4f rad (%.4f rad/s real), stick %.2f, last look time %.4f",
+			game_time_get(), (double)psp_look_stat_real, (double)psp_look_stat_game, psp_look_stat_frames,
+			(double)(psp_look_stat_frames / psp_look_stat_real), (double)psp_look_stat_yaw,
+			(double)(psp_look_stat_yaw / psp_look_stat_real), (double)stick_yaw, (double)look_time_delta);
+		psp_look_stat_real = psp_look_stat_game = psp_look_stat_yaw = 0.f;
+		psp_look_stat_frames = 0;
+	}
+}
+#endif
+"""),
+("""					real_euler_angles2d look_delta;
+""",
+ """					real_euler_angles2d look_delta;
+#ifdef HALO_PSP
+					real look_time_delta = psp_look_time_delta(time_delta_sec);
+					real_euler_angles2d look_magnetism;
+					real_euler_angles2d look_stick;
+					boolean look_magnetized = FALSE;
+#endif
+"""),
+("""						control->look_acceleration_time += time_delta_sec;""",
+ """#ifdef HALO_PSP
+						/* how long the stick has been held: real time, as the turn */
+						control->look_acceleration_time += look_time_delta;
+#else
+						control->look_acceleration_time += time_delta_sec;
+#endif"""),
+("""							look_delta.yaw = target_angular_velocity.yaw * magnetism_scale +""",
+ """#ifdef HALO_PSP
+							look_magnetism.yaw = target_angular_velocity.yaw * magnetism_scale;
+							look_magnetism.pitch = target_angular_velocity.pitch * magnetism_scale;
+							look_stick.yaw = look_delta.yaw * input_scale;
+							look_stick.pitch = look_delta.pitch * input_scale;
+							look_magnetized = TRUE;
+#endif
+							look_delta.yaw = target_angular_velocity.yaw * magnetism_scale +"""),
+("""						real facing_scale = time_delta_sec * TICKS_PER_SECOND;
+
+						input->facing_delta.yaw = facing_scale * look_delta.yaw;
+						input->facing_delta.pitch = facing_scale * look_delta.pitch;
+""",
+ """						real facing_scale = time_delta_sec * TICKS_PER_SECOND;
+
+#ifdef HALO_PSP
+						if (look_time_delta != time_delta_sec)
+						{
+							/* the stick's part by real time; magnetism's by game
+							time, as its target moves. Unmagnetised, the stick's
+							part alone, so a stick at rest turns by exactly what
+							it did */
+							real stick_scale = look_time_delta * TICKS_PER_SECOND;
+
+							if (look_magnetized)
+							{
+								input->facing_delta.yaw = facing_scale * look_magnetism.yaw + stick_scale * look_stick.yaw;
+								input->facing_delta.pitch = facing_scale * look_magnetism.pitch + stick_scale * look_stick.pitch;
+							}
+							else
+							{
+								input->facing_delta.yaw = stick_scale * look_delta.yaw;
+								input->facing_delta.pitch = stick_scale * look_delta.pitch;
+							}
+						}
+						else
+#endif
+						{
+						input->facing_delta.yaw = facing_scale * look_delta.yaw;
+						input->facing_delta.pitch = facing_scale * look_delta.pitch;
+						}
+#ifdef HALO_PSP
+						if (psp_look_stat && local_player_index == 0)
+							psp_look_stat_note(time_delta_sec, look_time_delta, input->facing_delta.yaw, clamped_yaw);
+#endif
+"""),
+]
+FIXES_LOOKREAL["source/main/main.c#lookreal"] = [
+("""static void main_update_time_unthrottled(
+""",
+ """#ifdef HALO_PSP
+/* the frame's real length before the cap, for the stick's turn
+(player_control.c; psp_fixups.py, FIXES_LOOKREAL) */
+extern real psp_look_real_seconds;
+#endif
+
+static void main_update_time_unthrottled(
+"""),
+("""	previous_counter = counter;
+
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+""",
+ """	previous_counter = counter;
+
+#ifdef HALO_PSP
+	psp_look_real_seconds = 0.f;
+#endif
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+#ifdef HALO_PSP
+		psp_look_real_seconds = seconds_elapsed;
+#endif
+"""),
+("""			0.001000000047497451f;
+	}
+
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+""",
+ """			0.001000000047497451f;
+	}
+
+#ifdef HALO_PSP
+	psp_look_real_seconds = 0.f;
+#endif
+	if (main_globals.movie)
+	{
+		seconds_elapsed = main_globals.recording_dt;
+	}
+	else
+	{
+		seconds_elapsed = PIN(seconds_elapsed, 0.0f, 1.0f);
+#ifdef HALO_PSP
+		psp_look_real_seconds = seconds_elapsed;
+#endif
+"""),
+("""	if (halo_interpolation_enabled())
+	{
+		main_update_time_unthrottled();
+		return;
+	}
+""",
+ """#ifdef HALO_PSP
+	{
+		/* "frameslowN": N ms more each frame, for tests that need slow
+		frames on demand (the look's: lookstat) */
+		extern int psp_keep_loaded(void);
+		extern int psp_keep_number(const char *prefix, int fallback);
+		static int frame_slow = -1;
+
+		if (frame_slow < 0 && psp_keep_loaded())
+			frame_slow = psp_keep_number("frameslow", 0);
+		if (frame_slow > 0)
+			Sleep(frame_slow);
+	}
+#endif
+	if (halo_interpolation_enabled())
+	{
+		main_update_time_unthrottled();
+		return;
+	}
+"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

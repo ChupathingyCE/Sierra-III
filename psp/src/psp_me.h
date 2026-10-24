@@ -16,6 +16,7 @@
 #define ME_JOB_GE 4 /* build 112: a run of the GE layer's waiting calls (psp_ge.c, "gemeon") */
 #define ME_JOB_EDRAM 5 /* build 115: fill or check a stretch of the ME's eDRAM (edramcheck) */
 /* 6: ME_JOB_SLANT, a ring job (below) */
+#define ME_JOB_SOUNDCOPY 11 /* "soundedram": staged sound pieces copied into the sound cache in eDRAM (psp_dsound.c) */
 
 int psp_me_start(void);
 int psp_me_running(void);
@@ -29,6 +30,7 @@ void psp_me_edram_probe(void);
 /* build 118: a job handed over without waiting, then finished (gemeoverlap) */
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count);
 int psp_me_finish(int which, unsigned int *results);
+int psp_me_submitted_done(int which);
 
 /* sleep and wake: the power callback stops the ME as the PSP sleeps and asks
 for a restart once it is awake; with "mewake" the main thread's frame end
@@ -41,6 +43,11 @@ void psp_me_wake_test_sleep(void);
 /* the exit (HOME, the game's own): the ME stopped, and held in reset if it
 may still be running, before the firmware takes the PSP back */
 void psp_me_exit(const char *why);
+/* how many times the ME has stopped (a failure, a sleep, the exit): whatever
+it held in its eDRAM is taken as gone from the first stop on */
+extern volatile unsigned int psp_me_stops;
+/* 1 when the ME's jobs are simulated (the emulator: the main CPU runs them) */
+int psp_me_simulated(void);
 
 /* The job ring (ME phase 1, keep word "meslant" turns it on): jobs handed
 to the ME without a slot of their own, collected later. Each job is a leaf:
@@ -55,6 +62,7 @@ The ring serves one producer thread, the main CPU's renderer. */
 #define ME_JOB_RINGTEST 7 /* "meringtest": the ring's own check (psp_me_ring_test) */
 #define ME_JOB_PERC_RAYS 8 /* "meraysperc": perception's queued rays (actor_perception.c, psp_fixups.py FIXES_122) */
 #define ME_JOB_POSES 9 /* next tick's base poses (objects.c, psp_fixups.py FIXES_131 #poseahead) */
+#define ME_JOB_POINTS 12 /* "mepoints": the frame's particles' and contrail points' physics (point_physics.c, psp_fixups.py FIXES_MEJOBS) */
 #ifdef PSP_RECON
 #define ME_JOB_BUSLOAD 10 /* "mebusN": a memory load on the ME through a tick (psp_me_bus_phase) */
 /* the tick's start (phase 1) and end (phase 0), from psp_phase */
@@ -85,8 +93,91 @@ struct psp_me_job
 	unsigned int output_bytes;
 };
 
+/* The ME's eDRAM, as offsets from its start (0x80000000 to the ME, cached;
+the main CPU can't reach it). docs/me_programme.md, stage 1 */
+#define ME_EDRAM 0x80000000u
+#define ME_EDRAM_WATCHED_END 0x30000u  /* 0-192 KB: left as found (edramcheck hashes it) */
+#define ME_EDRAM_SCRATCH 0x30000u      /* 16 KB: mebusedram's stores */
+#define ME_EDRAM_PRIVATE 0x34000u      /* 48 KB: the ME's own state (psp_me.c) */
+#define ME_EDRAM_RESIDENT 0x40000u     /* to 1.5 MB: data jobs keep there */
+#define ME_EDRAM_RESIDENT_END 0x180000u
+#define ME_EDRAM_STACK_TOP 0x200000u   /* a PSP-1000's: the stack grows down from it */
+/* "soundedram" (R2): the sound cache takes 256 KB to 1,920 KB instead, the
+resident room and the top of the stack's half MB with it. On both PSPs the
+ME's stack never reached below 1,984 KB (edramcheck over the ten-map ladder),
+so 128 KB stays its, twice the reach measured */
+#define ME_EDRAM_SOUND 0x40000u
+#define ME_EDRAM_SOUND_END 0x1E0000u
+
+/* On the ME, inside a long job: an audio block waiting is mixed now and,
+from a slot job (not from inside a ring job), the ring's waiting jobs run.
+Each touches only its own inputs and outputs, so this is exact anywhere a
+job may call it. Elsewhere it does nothing */
+void psp_me_yield(void);
+
 int psp_me_ring_ready(void);
 void psp_me_writeback(const void *start, unsigned int bytes);
+
+/* Batches (docs/me_programme.md, stage 1): a client's records handed to the
+ME a chunk at a time while the main CPU adds more, each made by the same
+function on whichever CPU gets to it, under the main CPU's FPU control word.
+The rule: psp_me_batch_need before the main CPU reads a record's answer. It
+never waits for work the ME hasn't started: a record not handed over, or
+handed over and not begun, is made here instead (taken back).
+
+A record is record_bytes (whole 64-byte lines) in the client's arena; make()
+reads and writes only its own record (and memory nobody writes meanwhile).
+After psp_me_batch_add returns it, the client fills the record; it must not
+write it again after the hand-over (the next add or psp_me_batch_close) until
+psp_me_batch_need has returned for it. */
+#define ME_JOB_BATCH 11
+#define ME_BATCH_ARGS 8
+#define ME_BATCH_TICKETS 16
+
+typedef void (*psp_me_record_fn)(void *record, const unsigned int *args);
+
+struct psp_me_batch_word
+{
+	unsigned int value;
+	unsigned int pad[15];
+} __attribute__((aligned(64)));
+
+struct psp_me_batch
+{
+	/* only ever through the uncached view: limit is the main CPU's (the ME
+	makes no record from it on), started and done the ME's (it claimed and
+	finished every record below them), withdrawn the ME's count of jobs it
+	ended at the limit */
+	struct psp_me_batch_word limit, started, done, withdrawn;
+	psp_me_record_fn make;
+	unsigned char *records;
+	unsigned char *state;       /* a byte a record, the main CPU's */
+	unsigned int record_bytes, capacity, chunk;
+	unsigned int args[ME_BATCH_ARGS];
+	unsigned int added, handed, limit_now;
+	unsigned int tickets[ME_BATCH_TICKETS], ticket_count;
+	/* counts since the last report: made by the ME, made here (never handed,
+	taken back, after a failure), waits for a record the ME was on */
+	unsigned long by_me, by_main, taken, waits, refused;
+};
+
+/* records: capacity * record_bytes, 64-byte aligned; state: capacity bytes.
+chunk: records a hand-over. Returns 0 if the shapes break the rules */
+int psp_me_batch_init(struct psp_me_batch *b, psp_me_record_fn make, void *records, unsigned char *state,
+	unsigned int record_bytes, unsigned int capacity, unsigned int chunk, const unsigned int *args);
+/* a new pass: every record of the last one made (psp_me_batch_finish) */
+void psp_me_batch_begin(struct psp_me_batch *b);
+/* the next record to fill, its index in *index; NULL when full (the client
+makes it itself) */
+void *psp_me_batch_add(struct psp_me_batch *b, unsigned int *index);
+/* what's added and not handed over goes now */
+void psp_me_batch_close(struct psp_me_batch *b);
+/* record index made and readable here: 1 by the ME, 0 made here */
+int psp_me_batch_need(struct psp_me_batch *b, unsigned int index);
+/* every record made, every job collected: the arena is the client's again */
+void psp_me_batch_finish(struct psp_me_batch *b);
+/* "mebatchtest": the batch's own check, once a frame */
+void psp_me_batch_test(void);
 int psp_me_push(const struct psp_me_job *job, unsigned int *ticket);
 int psp_me_wait(unsigned int ticket, unsigned int *results);
 /* a pushed job collected later: collect runs before the ring would reuse its entry */

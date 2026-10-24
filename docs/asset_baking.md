@@ -340,13 +340,13 @@ Each script runs in under 5 s, except the full texture bake (about 90 s with k-m
 ## 8. Addendum, 2026-10-03 (build 49): the bake now keeps each bitmap's own mip count
 
 * **The design in §3.2 said lightmaps stay without mips, as on the Xbox; `tools/texpack.py` didn't do that.** It built every texture's chain down to 8 px, lightmaps included. Measured on `bloodgulch.map`: all 15 lightmaps have 0 extra mip levels on the Xbox, as do 11 object bitmaps and 78 HUD bitmaps.
-* **The visible cost:** a lightmap page is an atlas of charts separated by dark gutters, and its small levels mix the charts and gutters together. Surfaces the GE textured from those levels (seen edge-on, or far off) came out dark. These were Sheepdog01's thin dark lines: present in normal play, absent with keep word `nomip`, which forces full-size textures (b47 / b48).
+* **The visible cost:** a lightmap page is an atlas of charts separated by dark gutters, and its small levels mix the charts and gutters together. Surfaces the GE textured from those levels (seen edge-on, or far off) came out dark. These were the thin dark lines seen on hardware: present in normal play, absent with keep word `nomip`, which forces full-size textures (b47 / b48).
 * **The fix (exact, more faithful):** a baked texture gets at most the Xbox bitmap's level count (its mip count + 1, less the levels dropped above the baked size). 129 of 501 Blood Gulch textures changed. Lightmaps, and objects with none on the Xbox, now have a single level; effects sprites lost the extra levels the source never had. The pack went from 5.41 to 5.18 MB. Keys and count are unchanged, so the learned VRAM file stays valid.
 * Rule for the next wave: the bake follows the source's own level count. More levels is a deviation, not a free improvement.
 
 ## 9. Addendum, 2026-10-03 (pack 51): HUD meter greys must keep their step
 
 * **Measured from `bloodgulch.map`:** the assault rifle's ammo meter (`ui\hud\bitmaps\combined\hud_ammo_meters`, sequence 1) draws its 60 rounds with greys 4, 8 … 240. Its meter definition has alpha multiplier 4 and bias 2, so with n rounds loaded the threshold is 4n + 2, and a round lights while its grey is below that. Bungie put the threshold halfway between two rounds.
-* **The bug:** the bake's 64-grey grid palette used greys 4k + 2, which moved round 60's 240 to 242: exactly the full magazine's threshold, so the last round never lit. Sheepdog01 reported it in every build.
+* **The bug:** the bake's 64-grey grid palette used greys 4k + 2, which moved round 60's 240 to 242: exactly the full magazine's threshold, so the last round never lit. Every hardware test showed it.
 * **The fix:** the grid's offset is now the bitmap's commonest grey modulo 4 (0 here), and greys round to the nearest grid value. 9 meter bitmaps changed; nothing else in the pack did.
 * Rule: a quantized bitmap that the code compares against thresholds must keep the values its thresholds were designed around. Check the meter definition's multiplier and bias against the bitmap's greys before choosing a palette.

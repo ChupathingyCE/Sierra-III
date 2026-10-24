@@ -28,6 +28,8 @@ arrives its surfaces are drawn in their flat colour. */
 #include <pspdmac.h>
 #include "psp_me.h" /* build 118: PSP_ME_WORK */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
+#include "psp_bindblock.h"
+#include "psp_metrics.h"
 
 void platform_log(const char *format, ...);
 void *tag_get(long group_tag, long tag_index);
@@ -43,7 +45,13 @@ struct pack_entry
 	unsigned int offset, size;
 };
 
-#define VRAM_CACHE_START 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+#define VRAM_CACHE_START_FIXED 0x000D0000 /* after two frame buffers, the depth buffer and the motion sensor's 16 KB target (psp_ge.c) */
+/* "blipdepth" (psp_ge.c, docs/review_vrbroom.md): the motion sensor's target
+drawn in the depth buffer instead, so its 16 KB at 0x0CC000 join the room
+shared by the textures and the copies */
+#define VRAM_CACHE_START_BLIPDEPTH 0x000CC000
+static unsigned int vram_cache_start = VRAM_CACHE_START_FIXED, vram_blip_freed = 0;
+#define VRAM_CACHE_START vram_cache_start
 #define VRAM_CACHE_END_FULL 0x00200000 /* the end of VRAM: the on-screen log stops once the GE runs (psp_platform.c) */
 /* build 93: benchrun keeps VRAM's last 256 KB for its bus tests (the display
 list in VRAM, the VRAM-only GE load; psp_ge.c), for the whole run so every
@@ -51,11 +59,12 @@ switch has the same texture placement */
 #define VRAM_BENCH_BYTES 0x40000
 static unsigned int vram_cache_end = VRAM_CACHE_END_FULL;
 #define VRAM_CACHE_END vram_cache_end
-/* build 117: the VRAM given to the model buffers by default, in KB */
-#define VRAM_MODELS_DEFAULT_KB 784
+/* the models' VRAM room by default, in KB: past 600 the texture cache is
+too small for b30, which then draws untextured for seconds at a time */
+#define VRAM_MODELS_DEFAULT_KB 600
 #define VRAM_TEXTURES_LEAST (256 * 1024) /* the least VRAM the texture cache keeps beside the models' room */
-/* build 116: "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies
-of the most-read model buffers (psp_tex_vram_models) */
+/* "vrammodelsN": the top N KB of VRAM given to psp_ge.c's copies of the
+most-read model buffers (psp_tex_vram_models) */
 static unsigned int vram_models_bytes = 0;
 #define LOAD_BUDGET_BYTES (96 * 1024) /* a frame's Memory Stick reads: ~7 ms */
 #define STAGING_BYTES (32 * 1024) /* build 68: 32 (was 64): 32 KB of zeroed data back; the Memory Stick gives 14.5 MB/s at 32 KB against 15.7 at 64 (halo_bench v10) */
@@ -71,10 +80,25 @@ into a palette; and the bytes a texel of a texture takes (T8 and direct) */
 static SceUID pack = -1;
 static struct pack_entry *entries = NULL;
 static int entry_count = 0;
+/* each pack opened gets a number of its own (bindblocks: a block is its pack's) */
+static unsigned int pack_generation = 0;
 /* per entry: where it is in the cache (0 if not resident), the last frame
 it was drawn in */
 static unsigned int *resident_at = NULL, *last_frame = NULL;
 static unsigned char *resident_in = NULL;
+/* the textures the HUD and the other screen-space draws use (the meters,
+the crosshair, the motion sensor, the text): kept as long as they're drawn
+within RECENT_FRAMES, whatever the frame's other textures need, and read past
+the frame's read budget when missing. The HUD draws last in a frame, so in
+the next frame's first pass its textures were last frame's, and when both
+caches were full of this frame's (a fight under load), the second pass
+evicted them; the HUD then lost parts until they were read again, and at
+low frame rates the budget was spent before the HUD's turn. 1: pinned.
+"hudpinoff": as before */
+static unsigned char *hud_pinned = NULL;
+static int hud_pin_on = -1;
+static unsigned long hud_misses = 0, hud_reads_past_budget = 0, hud_untextured = 0;
+int psp_tex_screen_pass = 0; /* psp_ge.c: set while the screen-space draws are made */
 /* build 44: binds per entry since the last report, to see which textures
 the GE samples most and whether those are the ones in VRAM (the GE reads
 VRAM about ten times faster than main memory: YAPSPD 11.7) */
@@ -88,6 +112,12 @@ static char map_name[64];
 /* per entry: its average colour once worked out (psp_tex_average) */
 static unsigned int *averages = NULL;
 static int averages_count = 0;
+/* "avgold": the averages' table allocated by the first psp_tex_average, as
+before, on whichever CPU asks: on the Media Engine (the replay's flashlight
+pass) that ran newlib's malloc there, beside the main CPU's own and outside
+its lock. "avgmerealloc" (the proof of it): the ME's work frees and
+allocates the table again at each average it asks for */
+static PSP_MAIN_SIDE int avg_old = 0, avg_me_realloc = 0;
 /* the see-through shaders' tints (texpack.py), pairs of (the shader's tag
 address, its tint ABGR) sorted by address. Bits of the address: 0, the tint
 is half the colour, for the GE's colour doubling; 1, the tint is added to the
@@ -101,6 +131,21 @@ maps; the tint for the rule's map, for the keep word drawnmapscale) sorted
 by address. A pack without them leaves every shader to the rule */
 static unsigned int *drawn_maps = NULL;
 static int drawn_map_count = 0;
+/* the shaders whose combiners read the angle a surface is seen at (texpack.py
+'TNA1'): triples of (the shader's tag address with its tint's flags, the tint
+face on, the tint edge on) sorted by address, blended per vertex by the angle
+(psp_ge.c); without them those shaders draw at the middle angle's tint, so
+Cortana's face-on body was as bright as her rim. "noangletint": the middle */
+static unsigned int *angle_tints = NULL;
+static int angle_tint_count = 0;
+/* the see-through shaders drawn from a texture of their own (texpack.py
+'TNC1', seethrough.py composite): pairs of (the shader's tag address, the
+map the composite is drawn in place of) sorted by address; the texture is
+under the shader's address | 1. One map and a tint can't hold a shader whose
+look comes from two maps (a thruster's cone from one, its colour from
+another). "nocomposite": drawn as one map and a tint, as without them */
+static unsigned int *composites = NULL;
+static int composite_count = 0;
 static int drawn_map_scale(void);
 /* build 39: the textures waiting for VRAM until the first frame (preload) */
 static unsigned short vram_pending[512];
@@ -114,7 +159,7 @@ struct arena
 };
 #define RAM_CACHE_BYTES (256 * 1024)
 static struct arena arenas[2] = {
-	{ 0x04000000 + VRAM_CACHE_START, 0x04000000 + VRAM_CACHE_END_FULL, 0x04000000 + VRAM_CACHE_START, 0x40000000 },
+	{ 0x04000000 + VRAM_CACHE_START_FIXED, 0x04000000 + VRAM_CACHE_END_FULL, 0x04000000 + VRAM_CACHE_START_FIXED, 0x40000000 },
 	{ 0, 0, 0, 0x40000000 } };
 static void *ram_cache = NULL;
 static unsigned int frame = 1, frame_loaded = 0;
@@ -136,6 +181,204 @@ static int alignment(unsigned int size)
 
 static void bind_totals_save(void);
 static void bind_totals_gather(void);
+
+/* "stripcensus" (docs/review_vrbroom.md): which textures the HUD
+binds, and which of them could live in the frame and depth buffers' padding
+strips instead of the cache. Each buffer is 512 pixels a row of which 480
+show, so pixels 480-511 of every row (64 bytes a row, 272 rows: 17 KB a
+buffer) are VRAM that nothing draws or shows. The GE samples a texture with
+any buffer width, so a texture fits a strip when a row of it takes at most 64
+bytes at a buffer width of 1,024 bytes: T8 up to 64 texels wide, 16-bit up to
+32, 32-bit up to 16 (T4's 2,048-texel width is past the GE's 2,044), its
+levels stacked down the strip, unswizzled. Its palette can't follow: a
+palette is read as one run of bytes. Per entry: the frames it was bound for
+the HUD, and the last such frame */
+static int strip_census = -1;
+static unsigned int *hud_bound = NULL;
+static int find(unsigned int key);
+long psp_game_time_peek(void);
+
+/* "texlinecheck": a probe of the hazard texlines removes, on any layout. One
+word the Media Engine's replay counts on each bind of a resident texture (as
+it writes last_frame[] and bind_counts[]), and one word the main CPU counts
+on each game tick, which runs while the ME replays (geinflight). With
+"texlinesbad" both words share one 64-byte line, as a calloc'd table's edge
+line shares one with a heap chunk header; without it each is on a line of
+its own, as texlines puts the tables. A third line, the ME's alone, keeps the
+ME's count again. After each frame back from the ME: the main CPU's word
+should hold its last count, and the ME's its own copy's; a word that doesn't
+was put back by the other CPU's write-back of the whole line. The emulator
+has no caches: 0 both ways on either layout */
+static unsigned int texline_probe[3][16] __attribute__((aligned(64)));
+static PSP_MAIN_SIDE int texline_on = -1;
+static PSP_MAIN_SIDE unsigned int texline_main_count = 0, texline_checks = 0, texline_main_back = 0,
+	texline_me_lost = 0, texline_me_writes = 0, texline_events = 0;
+/* the ME's word and its copy (NULL: off); set once by the main CPU, read by the replay */
+static PSP_MAIN_SIDE volatile unsigned int *texline_me = NULL, *texline_me_copy = NULL;
+static PSP_MAIN_SIDE volatile unsigned int *texline_main = NULL;
+
+/* each game tick, on the main CPU */
+void psp_texline_tick(void)
+{
+	extern int psp_keep_loaded(void);
+
+	if (texline_on < 0)
+	{
+		if (!psp_keep_loaded())
+			return;
+		texline_on = psp_keep("texlinecheck") != 0;
+		if (texline_on)
+		{
+			int bad = psp_keep("texlinesbad") != 0;
+
+			memset(texline_probe, 0, sizeof(texline_probe));
+			texline_main = bad ? &texline_probe[0][8] : &texline_probe[1][0];
+			texline_me_copy = &texline_probe[2][0];
+			texline_me = &texline_probe[0][0];
+			platform_log("textures: texlinecheck: the ME's bind word and the main CPU's tick word %s",
+				bad ? "on one 64-byte line (texlinesbad: the hazard forced)" : "on lines of their own (as texlines)");
+		}
+	}
+	if (texline_main)
+		*texline_main = ++texline_main_count;
+}
+
+/* the frame back from the ME (psp_ge.c, after its whole-cache write-back) */
+void psp_texline_check(void)
+{
+	unsigned int main_word, me_word, me_copy;
+
+	if (!texline_main)
+		return;
+	main_word = *texline_main;
+	me_word = *texline_me;
+	me_copy = *texline_me_copy;
+	texline_checks++;
+	texline_me_writes = me_copy;
+	if (main_word != texline_main_count || me_word != me_copy)
+	{
+		if (main_word != texline_main_count)
+			texline_main_back++;
+		if (me_word != me_copy)
+			texline_me_lost++;
+		if (texline_events++ < 8)
+			platform_log("textures: texlinecheck: check %u, game time %ld: the main CPU's word %u (wrote %u), the ME's %u (its copy %u)",
+				texline_checks, psp_game_time_peek(), main_word, texline_main_count, me_word, me_copy);
+		/* both words as they should be, for the next frame's look */
+		*texline_main = texline_main_count;
+		*texline_me = me_copy;
+	}
+	if (texline_checks % 300 == 0)
+		platform_log("textures: texlinecheck: %u checks; the main CPU's word put back %u times, the ME's count lost %u times; %u ME writes",
+			texline_checks, texline_main_back, texline_me_lost, texline_me_writes);
+}
+
+/* a table the Media Engine's replay writes (last_frame, bind_counts: a bind
+on the ME, psp_ge.c's geinflight): on whole 64-byte lines of its own. The ME
+writes back whole lines from its own cache, so a table sharing its first or
+last line with a heap neighbour would put that line back as it was at the
+hand-over, over the main CPU's newer bytes there: a heap chunk's header,
+changed by a malloc or free while the replay ran, comes back stale.
+"texlinesold": calloc's 16-byte alignment, as before */
+static void *line_calloc(size_t count, size_t size)
+{
+	size_t bytes = (count * size + 63) & ~(size_t)63;
+	void *table;
+
+	if (psp_keep("texlinesold"))
+		return calloc(count, size);
+	table = memalign(64, bytes ? bytes : 64);
+	if (table)
+		memset(table, 0, bytes ? bytes : 64);
+	return table;
+}
+
+static void strip_census_free(void)
+{
+	free(hud_bound);
+	hud_bound = NULL;
+}
+
+void psp_tex_hud_note(unsigned int key)
+{
+	int index;
+
+	if (strip_census < 0)
+		strip_census = psp_keep("stripcensus") != 0;
+	if (!strip_census || !entries || (index = find(key)) < 0)
+		return;
+	if (!hud_bound && !(hud_bound = line_calloc(entry_count, 2 * sizeof(unsigned int))))
+		return;
+	if (hud_bound[2 * index + 1] != frame)
+	{
+		hud_bound[2 * index]++;
+		hud_bound[2 * index + 1] = frame;
+	}
+}
+
+/* the rows a strip would need for the entry's levels, 0 when it can't fit */
+static unsigned int strip_rows(struct pack_entry const *entry)
+{
+	unsigned int width = entry->width, height = entry->height, rows = 0;
+	int level;
+
+	if (entry->psm == GU_PSM_T4 || (entry->psm == GU_PSM_T8 ? width : width * TEXEL_BYTES(entry)) > 64)
+		return 0;
+	for (level = 0; level < entry->levels; level++)
+	{
+		rows += height;
+		height = height > 1 ? height / 2 : 1;
+	}
+	return rows <= 272 ? rows : 0;
+}
+
+static void strip_census_report(unsigned int frames)
+{
+	char line[440]; /* the log's lines end at 512 characters */
+	int index, length = 0, count = 0, every = 0, fit = 0;
+	unsigned int bytes = 0, vram = 0, every_bytes = 0, fit_bytes = 0, fit_vram = 0, fit_palettes = 0, fit_rows = 0;
+
+	if (!hud_bound)
+		return;
+	for (index = 0; index < entry_count; index++)
+	{
+		struct pack_entry const *entry = &entries[index];
+		unsigned int size = alignment(entry->size), rows = strip_rows(entry), palette;
+		int in_vram = resident_at[index] && !resident_in[index];
+
+		if (!hud_bound[2 * index])
+			continue;
+		palette = DIRECT(entry) ? 0 : (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
+		count++;
+		bytes += size;
+		if (in_vram)
+			vram += size;
+		if (hud_bound[2 * index] * 10 >= frames * 9)
+		{
+			every++;
+			every_bytes += size;
+		}
+		if (rows)
+		{
+			fit++;
+			fit_bytes += size - palette;
+			fit_palettes += palette;
+			fit_rows += rows;
+			if (in_vram)
+				fit_vram += size;
+		}
+		if (length < (int)sizeof(line) - 72)
+			length += snprintf(line + length, sizeof(line) - length, " %08x %ux%u psm%u l%u %uB %s %u %s;", entry->key,
+				entry->width, entry->height, entry->psm, entry->levels, size, resident_at[index] ?
+				(resident_in[index] ? "RAM" : "VRAM") : "out", hud_bound[2 * index], rows ? "fits" : "-");
+		hud_bound[2 * index] = 0;
+	}
+	platform_log("textures: stripcensus: %d HUD textures over %u frames, %u KB (%u KB in VRAM); %d bound in 9 frames of 10 or more (%u KB); %d would fit the padding strips (%u KB of texels, %u KB of palettes that can't follow, %u rows of 816; %u KB of them in VRAM now)",
+		count, frames, bytes / 1024, vram / 1024, every, every_bytes / 1024, fit, fit_bytes / 1024, fit_palettes / 1024,
+		fit_rows, fit_vram / 1024);
+	if (length)
+		platform_log("textures: stripcensus (key size psm levels bytes place frames fit):%s", line);
+}
 /* build 89: the heartbeat's in-play save (psp_tex_save_pending) */
 static volatile int snapshot_pending = 0, snapshot_writing = 0;
 
@@ -160,12 +403,20 @@ void psp_tex_close(void)
 	free(resident_at);
 	free(last_frame);
 	free(resident_in);
+	free(hud_pinned);
+	hud_pinned = NULL;
 	free(averages);
 	averages = NULL;
 	averages_count = 0;
 	free(tints);
 	tints = NULL;
 	tint_count = 0;
+	free(angle_tints);
+	angle_tints = NULL;
+	angle_tint_count = 0;
+	free(composites);
+	composites = NULL;
+	composite_count = 0;
 	free(drawn_maps);
 	drawn_maps = NULL;
 	drawn_map_count = 0;
@@ -178,6 +429,16 @@ void psp_tex_close(void)
 	free(bind_totals);
 	bind_totals = NULL;
 	entry_count = 0;
+	strip_census_free();
+	/* the sensor's 16 KB, when psp_ge.c draws its target in the depth buffer
+	(never under benchrun, whose rooms are fixed) */
+	{
+		extern int psp_ge_blip_room_freed(void);
+
+		vram_blip_freed = !psp_keep("benchrun") && psp_ge_blip_room_freed() ? VRAM_CACHE_START_FIXED - VRAM_CACHE_START_BLIPDEPTH : 0;
+		vram_cache_start = VRAM_CACHE_START_FIXED - vram_blip_freed;
+		arenas[0].start = 0x04000000 + VRAM_CACHE_START;
+	}
 	/* build 103: and 256 KB below that for the level's vertex copies
 	(psp_ge.c's setting 25, benchrun's "level vertices in VRAM") */
 	if (psp_keep("benchrun"))
@@ -205,7 +466,7 @@ void psp_tex_close(void)
 	benchrun, whose rooms are up there.
 	Build 117: 600 KB by default (b116 test 2 [M]: the models' GE time 31%
 	less in b30's cinematic and 44% less in the flight after it, the flight
-	16% faster; Sheepdog01's call, 2026-10-12). "vrammodels0" turns it off */
+	16% faster; the maintainer's call, 2026-10-12). "vrammodels0" turns it off */
 	vram_models_bytes = 0;
 	if (!psp_keep("benchrun"))
 	{
@@ -214,13 +475,17 @@ void psp_tex_close(void)
 		/* at least 256 KB stay the textures': a 512 x 512 indexed map with its
 		levels (341 KB) can still sit in VRAM, and below that the set's best
 		third, worth most of its binds, would no longer fit */
-		if (kb >= 64 && (unsigned int)kb * 1024 <= VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST)
+		/* blipdepth's 16 KB go to the copies' room: a KB of VRAM holding
+		geometry takes ~5.6 times the bus reads off the ticks that a KB holding
+		textures does (docs/research/vram_budget.md section 3), and the
+		texture cache keeps its size, so the same textures fit as without it */
+		if (kb >= 64 && (unsigned int)kb * 1024 + vram_blip_freed <= VRAM_CACHE_END_FULL - VRAM_CACHE_START - VRAM_TEXTURES_LEAST)
 		{
-			vram_models_bytes = (unsigned int)kb * 1024;
+			vram_models_bytes = (unsigned int)kb * 1024 + vram_blip_freed;
 			if (vram_cache_end > VRAM_CACHE_END_FULL - vram_models_bytes)
 				vram_cache_end = VRAM_CACHE_END_FULL - vram_models_bytes;
-			platform_log("textures: vrammodels: the top %d KB of VRAM for the model buffers; the texture cache %u KB",
-				kb, (vram_cache_end - VRAM_CACHE_START) / 1024);
+			platform_log("textures: vrammodels: the top %u KB of VRAM for the model buffers; the texture cache %u KB",
+				vram_models_bytes / 1024, (vram_cache_end - VRAM_CACHE_START) / 1024);
 		}
 		else if (!kb)
 			platform_log("textures: vrammodels0: the model buffers stay in main RAM (as b116 without the word)");
@@ -231,6 +496,12 @@ void psp_tex_close(void)
 	}
 	arenas[0].end = 0x04000000 + VRAM_CACHE_END;
 	arenas[0].next = arenas[0].start;
+	/* the VRAM it freed, per map */
+	if (vram_blip_freed)
+		platform_log("textures: blipdepth: the motion sensor's target in the depth buffer; %u KB freed at %06x, to the %s (%u KB; the texture cache %u KB)",
+			vram_blip_freed / 1024, VRAM_CACHE_START, vram_models_bytes ? "copies' room" : "texture cache",
+			vram_models_bytes ? vram_models_bytes / 1024 : (VRAM_CACHE_END - VRAM_CACHE_START) / 1024,
+			(VRAM_CACHE_END - VRAM_CACHE_START) / 1024);
 	arenas[1].next = arenas[1].start;
 }
 
@@ -250,7 +521,7 @@ static int volatile_locked = 0;
 
 /* build 67: "texsqueeze" caps the RAM cache at 1 MB and "texvramonly" leaves
 it empty, so a map that otherwise fits the caches whole (Blood Gulch: 5 MB in
-1.2 MB of VRAM and the 4 MB partition, 0 evictions in Sheepdog01's b64 run) has to
+1.2 MB of VRAM and the 4 MB partition, 0 evictions in b64's run) has to
 stream textures from the Memory Stick during play. The first measure of
 in-play streaming on hardware: loads, waits, evictions, the worst frame's
 reading, and how many frames drew something untextured meanwhile */
@@ -266,6 +537,18 @@ while the PSP sleeps, so each acquisition has a generation, and psp_ge.c
 unpacks the sheet again when it changes */
 #define GLYPH_ROOM_BYTES (32 * 1024)
 static unsigned int ram_cache_generation = 0;
+/* after the glyph sheet, geinflight's record buffer when "inflightroom"
+asks for it there (psp_ge.c, psp_ge_inflight_room_bytes): asked once, as
+the block is first taken, so no texture is ever in it; only in the
+volatile partition (the heap's 256 KB block keeps it all for textures) */
+unsigned int psp_ge_inflight_room_bytes(void);
+static int inflight_room_asked = 0;
+static unsigned int inflight_room_bytes = 0;
+
+static unsigned int front_bytes(void)
+{
+	return GLYPH_ROOM_BYTES + (volatile_locked ? inflight_room_bytes : 0);
+}
 
 static void ram_cache_acquire(void)
 {
@@ -284,6 +567,13 @@ static void ram_cache_acquire(void)
 	}
 	given = size;
 	ram_cache_bytes = (unsigned int)size;
+	if (!inflight_room_asked)
+	{
+		inflight_room_asked = 1;
+		inflight_room_bytes = (psp_ge_inflight_room_bytes() + 63) & ~63u;
+		if (inflight_room_bytes > ram_cache_bytes / 4)
+			inflight_room_bytes = 0;
+	}
 	if (!squeezed)
 		squeezed = psp_keep("texvramonly") ? 2 : psp_keep("texsqueeze") ? 1 : -1;
 	if (squeezed == 1 && size > SQUEEZED_BYTES)
@@ -292,18 +582,19 @@ static void ram_cache_acquire(void)
 		size = 0;
 	if ((unsigned int)size > ram_cache_bytes - carved_bytes)
 		size = (int)(ram_cache_bytes - carved_bytes);
-	if (size < GLYPH_ROOM_BYTES)
-		size = GLYPH_ROOM_BYTES;
+	if ((unsigned int)size < front_bytes())
+		size = (int)front_bytes();
 	if (ram_cache)
 	{
 		ram_cache_generation++;
-		arenas[1].start = arenas[1].next = (unsigned int)ram_cache + GLYPH_ROOM_BYTES;
+		arenas[1].start = arenas[1].next = (unsigned int)ram_cache + front_bytes();
 		arenas[1].end = (unsigned int)ram_cache + size;
 		sceKernelDcacheWritebackInvalidateRange(ram_cache, given);
 	}
-	platform_log("textures: RAM cache %d KB (%s%s%s; the glyph sheet's 32 KB before it)", (size - GLYPH_ROOM_BYTES) / 1024, volatile_locked ? "volatile partition" : "heap",
+	platform_log("textures: RAM cache %d KB (%s%s%s; the glyph sheet's 32 KB before it, then %u KB of geinflight's records)",
+		(int)(size - front_bytes()) / 1024, volatile_locked ? "volatile partition" : "heap",
 		squeezed == 1 ? ", squeezed by keep.txt" : squeezed == 2 ? ", left empty by keep.txt" : "",
-		carved_bytes ? ", the rest the geometry cache's" : "");
+		carved_bytes ? ", the rest the geometry cache's" : "", (front_bytes() - GLYPH_ROOM_BYTES) / 1024);
 }
 
 /* build 68: bytes at the end of the RAM block for the geometry cache (0 gives
@@ -315,7 +606,7 @@ void *psp_tex_carve(unsigned int bytes)
 
 	if (!ram_cache)
 		ram_cache_acquire();
-	if (!ram_cache || bytes > ram_cache_bytes - GLYPH_ROOM_BYTES)
+	if (!ram_cache || bytes > ram_cache_bytes - front_bytes())
 		return NULL;
 	carved_bytes = bytes;
 	/* the cache runs to the carve, wherever the last map's carve left it: a
@@ -348,6 +639,44 @@ void *psp_tex_glyph_room(unsigned int *generation)
 		ram_cache_acquire();
 	*generation = ram_cache_generation;
 	return ram_cache;
+}
+
+/* the same, never asking for a block: for the Media Engine's work, which
+can't make the system calls that asking takes */
+void *psp_tex_glyph_room_held(unsigned int *generation)
+{
+	*generation = ram_cache_generation;
+	return ram_cache;
+}
+
+/* geinflight's record buffer in the front room (NULL without one: no
+volatile partition, asleep, or the room not asked for) and the block's
+generation: records begun in an older one were in the block the system had
+while the PSP slept */
+void *psp_tex_inflight_room(unsigned int *generation)
+{
+	*generation = ram_cache_generation;
+	if (!volatile_locked || !ram_cache || !inflight_room_bytes)
+		return NULL;
+	return (void *)((unsigned int)ram_cache + GLYPH_ROOM_BYTES);
+}
+
+/* the lowest carved address while the volatile partition is lent (NULL while
+it isn't: asleep, or the heap's block instead), and the block's generation.
+The level carve (psp_ge.c) is carved last, so it starts there; a new
+generation says the block went back to the system and came again */
+void *psp_tex_carve_now(unsigned int *generation)
+{
+	*generation = ram_cache_generation;
+	if (!volatile_locked || !ram_cache || !carved_bytes)
+		return NULL;
+	return (void *)((unsigned int)ram_cache + ram_cache_bytes - carved_bytes);
+}
+
+/* the RAM the texture cache itself has now, for the level carve's log */
+unsigned int psp_tex_ram_textures(void)
+{
+	return arenas[1].end > arenas[1].start ? arenas[1].end - arenas[1].start : 0;
 }
 
 /* build 106: the bytes carved now (the geometry cache's, then the animation
@@ -810,9 +1139,22 @@ void psp_tex_map_opened(const char *name)
 	}
 	entries = malloc(header[2]);
 	resident_at = calloc(header[1], sizeof(unsigned int));
-	last_frame = calloc(header[1], sizeof(unsigned int));
+	last_frame = line_calloc(header[1], sizeof(unsigned int));
 	resident_in = calloc(header[1], 1);
-	bind_counts = calloc(header[1], sizeof(unsigned short));
+	hud_pinned = calloc(header[1], 1);
+	bind_counts = line_calloc(header[1], sizeof(unsigned short));
+	/* the averages' table here, on the main CPU: the ME's work only fills it
+	(psp_tex_average), on lines of its own */
+	avg_old = psp_keep("avgold") != 0;
+	avg_me_realloc = psp_keep("avgmerealloc") != 0;
+	free(averages);
+	averages = NULL;
+	averages_count = 0;
+	if (!avg_old && !avg_me_realloc)
+	{
+		averages = line_calloc(header[1], sizeof(unsigned int));
+		averages_count = averages ? (int)header[1] : 0;
+	}
 	if (!ram_cache)
 		ram_cache_acquire();
 	if (!entries || !resident_at || !last_frame || !resident_in || sceIoRead(file, entries, header[2]) != (int)header[2])
@@ -824,6 +1166,7 @@ void psp_tex_map_opened(const char *name)
 	}
 	pack = file;
 	entry_count = header[1];
+	pack_generation++;
 	{
 		/* the tints, right after the directory when the pack has them
 		('TNT1', a count, the pairs), then the drawn maps ('TND1', a count,
@@ -849,22 +1192,59 @@ void psp_tex_map_opened(const char *name)
 			}
 		}
 		if (tables && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
-			table[0] == 0x31444E54 /* TND1 */ && table[1] > 0 && table[1] <= 4096 &&
-			(drawn_maps = malloc(table[1] * 12)) != NULL)
+			table[0] == 0x31444E54 /* TND1 */ && table[1] <= 4096)
 		{
-			if (sceIoRead(file, drawn_maps, table[1] * 12) == (int)(table[1] * 12))
-				drawn_map_count = (int)table[1];
+			tables = 2;
+			if (table[1] > 0 && (drawn_maps = malloc(table[1] * 12)) != NULL)
+			{
+				if (sceIoRead(file, drawn_maps, table[1] * 12) == (int)(table[1] * 12))
+					drawn_map_count = (int)table[1];
+				else
+				{
+					free(drawn_maps);
+					drawn_maps = NULL;
+					tables = 0;
+				}
+			}
+		}
+		if (tables == 2 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
+			table[0] == 0x31414E54 /* TNA1 */ && table[1] <= 4096)
+		{
+			tables = 3;
+			if (table[1] > 0 && (angle_tints = malloc(table[1] * 12)) != NULL)
+			{
+				if (sceIoRead(file, angle_tints, table[1] * 12) == (int)(table[1] * 12))
+					angle_tint_count = (int)table[1];
+				else
+				{
+					free(angle_tints);
+					angle_tints = NULL;
+					tables = 0;
+				}
+			}
+		}
+		if (tables == 3 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
+			table[0] == 0x31434E54 /* TNC1 */ && table[1] > 0 && table[1] <= 4096 &&
+			(composites = malloc(table[1] * 8)) != NULL)
+		{
+			if (sceIoRead(file, composites, table[1] * 8) == (int)(table[1] * 8))
+				composite_count = (int)table[1];
 			else
 			{
-				free(drawn_maps);
-				drawn_maps = NULL;
+				free(composites);
+				composites = NULL;
 			}
 		}
 		platform_log("textures: see-through tints for %d shaders%s; drawn maps chosen by the bake for %d%s", tint_count,
 			tint_count ? "" : " (a pack baked before build 116: none)", drawn_map_count,
 			drawn_map_count ? (drawn_map_scale() ? " (drawnmapscale: the smallest scale's instead)" : "") :
 			" (none in this pack: the smallest scale's for all)");
+		platform_log("textures: see-through composites for %d shaders%s", composite_count,
+			composite_count && psp_keep("nocomposite") ? " (nocomposite: one map and a tint instead)" : "");
 	}
+	if (angle_tint_count)
+		platform_log("textures: tints by angle for %d shaders%s", angle_tint_count,
+			psp_keep("noangletint") ? " (noangletint: the middle angle's)" : "");
 	platform_log("textures: %s, %d textures; caches %d KB of VRAM and %d KB of RAM", path, entry_count,
 		(VRAM_CACHE_END - VRAM_CACHE_START) / 1024, (int)(arenas[1].end - arenas[1].start) / 1024);
 	{
@@ -897,6 +1277,41 @@ static int drawn_map_scale(void)
 	return on;
 }
 
+/* the map a see-through shader's composite is drawn in place of, or -1 when
+it has none (or "nocomposite", or "drawnmapscale": the composite is laid out
+on the bake's choice of map, so it goes with that choice) */
+int psp_tex_has(unsigned int key);
+
+static int composite_map(unsigned int shader)
+{
+	static int off = -1;
+	int low = 0, high = composite_count - 1;
+
+	if (off < 0)
+		off = psp_keep("nocomposite");
+	if (off || drawn_map_scale())
+		return -1;
+	while (composites && low <= high)
+	{
+		int middle = (low + high) / 2;
+
+		if (composites[2 * middle] == shader)
+			return psp_tex_has(shader | 1) ? (int)composites[2 * middle + 1] : -1;
+		if (composites[2 * middle] < shader)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return -1;
+}
+
+/* the key of a see-through shader's composite when it has one, else key (the
+map's own) */
+unsigned int psp_tex_composite_key(unsigned int shader, unsigned int key)
+{
+	return composite_map(shader) >= 0 ? shader | 1 : key;
+}
+
 /* a shader's place in the pack's drawn maps, or -1 */
 static int drawn_map_find(unsigned int shader)
 {
@@ -921,8 +1336,11 @@ static int drawn_map_find(unsigned int shader)
 shader's maps), or -1 for the runtime's smallest-scale rule */
 int psp_tex_shader_map(unsigned int shader)
 {
-	int found = drawn_map_scale() ? -1 : drawn_map_find(shader);
+	int found = composite_map(shader);
 
+	if (found >= 0)
+		return found;
+	found = drawn_map_scale() ? -1 : drawn_map_find(shader);
 	return found < 0 ? -1 : (int)drawn_maps[3 * found + 1];
 }
 
@@ -938,7 +1356,8 @@ unsigned int psp_tex_shader_tint(unsigned int shader, int *flags)
 		*flags = 0;
 	if (off < 0)
 		off = psp_keep("notint");
-	if (off)
+	/* a composite is the shader's whole colour already */
+	if (off || composite_map(shader) >= 0)
 		return 0xFFFFFFFF;
 	if (drawn_map_scale() && (found = drawn_map_find(shader)) >= 0)
 	{
@@ -963,6 +1382,37 @@ unsigned int psp_tex_shader_tint(unsigned int shader, int *flags)
 			high = middle - 1;
 	}
 	return 0xFFFFFFFF;
+}
+
+/* a see-through shader's tints face on and edge on (ABGR, with the flags of
+its psp_tex_shader_tint), or 0 when it has none (or "noangletint", "notint",
+"drawnmapscale") */
+int psp_tex_shader_angle_tints(unsigned int shader, unsigned int *face, unsigned int *edge)
+{
+	static int off = -1;
+	int low = 0, high = angle_tint_count - 1;
+
+	if (!angle_tints)
+		return 0;
+	if (off < 0)
+		off = psp_keep("noangletint") || psp_keep("notint") || drawn_map_scale();
+	while (!off && low <= high)
+	{
+		int middle = (low + high) / 2;
+		unsigned int address = angle_tints[3 * middle] & ~3u;
+
+		if (address == shader)
+		{
+			*face = angle_tints[3 * middle + 1];
+			*edge = angle_tints[3 * middle + 2];
+			return 1;
+		}
+		if (address < shader)
+			low = middle + 1;
+		else
+			high = middle - 1;
+	}
+	return 0;
 }
 
 static int find(unsigned int key)
@@ -1001,7 +1451,8 @@ static int find(unsigned int key)
 last `recent` frames (1: this frame only) */
 static int protected_at(int index, int which, unsigned int recent)
 {
-	return resident_at[index] && resident_in[index] == which && last_frame[index] + recent > frame;
+	return resident_at[index] && resident_in[index] == which &&
+		(last_frame[index] + recent > frame || (hud_pinned && hud_pinned[index] && last_frame[index] + RECENT_FRAMES > frame));
 }
 
 static unsigned int fits(int which, unsigned int start, unsigned int size, unsigned int recent)
@@ -1023,6 +1474,14 @@ static unsigned int fits(int which, unsigned int start, unsigned int size, unsig
 
 /* at the ring position, the arena's start, or just after a protected
 texture; whatever unprotected is in the chosen space is evicted */
+void psp_ge_show3_reuse(int kind, unsigned int stamp); /* psp_ge.c: geshow3check */
+
+/* the frame counter, for geshow3check's stamps (psp_ge.c) */
+unsigned int psp_tex_frame_now(void)
+{
+	return frame;
+}
+
 static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 {
 	struct arena *arena = &arenas[which];
@@ -1054,6 +1513,7 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 
 		if (at && resident_in[index] == which && at < start + size && at + alignment(entries[index].size) > start)
 		{
+			psp_ge_show3_reuse(0, last_frame[index]); /* geshow3check */
 			resident_at[index] = 0;
 			evictions++;
 		}
@@ -1073,6 +1533,13 @@ unsigned long psp_tex_load_count(void)
 	return loads + misses + waits;
 }
 
+/* frames that drew something untextured so far: "transwalk" reads it across
+a BSP switch (psp_fixups.py, FIXES_TRANSITIONS) */
+unsigned long psp_tex_untextured_frames(void)
+{
+	return untextured_frames;
+}
+
 void psp_tex_io_window(unsigned long *reads, unsigned long *us, unsigned long *worst_us)
 {
 	*reads = window_reads;
@@ -1090,6 +1557,8 @@ static int load(int index)
 	return load_into(index, -1);
 }
 
+extern volatile int psp_ge_show_busy; /* psp_ge.c */
+
 static int load_into(int index, int only)
 {
 	struct pack_entry const *entry = &entries[index];
@@ -1105,10 +1574,12 @@ static int load_into(int index, int only)
 		at = allocate(which = 0, alignment(entry->size), RECENT_FRAMES);
 	if (!at && only != 0)
 		at = allocate(which = 1, alignment(entry->size), RECENT_FRAMES);
+	/* the frame the GE may still be drawing (geshow2: shown off the game
+	thread) keeps its textures too */
 	if (!at && only != 1)
-		at = allocate(which = 0, alignment(entry->size), 1);
+		at = allocate(which = 0, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	if (!at && only != 0)
-		at = allocate(which = 1, alignment(entry->size), 1);
+		at = allocate(which = 1, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	if (!at)
 	{
 		waits++;
@@ -1152,6 +1623,7 @@ static int load_into(int index, int only)
 		window_us += took;
 		if (took > window_worst_us)
 			window_worst_us = took;
+		PSP_METRICS_STICK(PSP_METRICS_TEXTURES, entry->size, took);
 	}
 	resident_at[index] = at;
 	resident_in[index] = (unsigned char)which;
@@ -1266,7 +1738,126 @@ void __wrap_sceGuTexFilter(int min, int mag)
 	__real_sceGuTexFilter(min, mag);
 }
 
+/* "bindblocks": a resident texture's bind words (its palette, mode, levels
+and filter: 8 words and 4 a level) written once into a block of their own and
+CALLed, instead of sent by a dozen pspgu calls a bind. The PSP-1000 puts the
+model parts' binds at 2.6 ms a frame on b30's flight (probes), ~11 us a
+bind; leaving 8% of them out (statememo, b114) saved
+nothing measurable, so the cost is in each bind. The words are pspgu's own
+(pspsdk's sceGuClutMode, ClutLoad, TexMode, TexImage, TexFilter, flushes
+included), so the GE gets the same state; the draw hash follows the CALL and
+proves it. The only pspgu state the calls keep (the context's texture_mode)
+nothing reads. It is the texture slot table phase E needs, in a form the GE
+reads: a block holds where its texture sits, so it is good while that holds
+(the texture's index and address), and a slot is reused only after
+BIND_BLOCK_QUARANTINE frames, as a list the GE is still drawing may CALL it.
+Never in the Media Engine's work. A block is written back from the data cache
+once, when it's made */
+#define BIND_BLOCK_WORDS 48 /* 8 + 4 a level (8 at most) + RET, to whole cache lines */
+/* b30's beach binds more than 96 textures in two frames (lab bindblk1: up to
+150 binds a frame found every slot in use) */
+#define BIND_BLOCKS 192
+#define BIND_BLOCK_QUARANTINE 2
+struct bind_block
+{
+	int index;
+	unsigned int address, frame;
+};
+static int bind_blocks_on = -1;
+static unsigned int (*bind_block_words)[BIND_BLOCK_WORDS] = NULL;
+static struct bind_block bind_block_meta[BIND_BLOCKS];
+static short *bind_block_of = NULL; /* per entry: its block, or -1 */
+static int bind_block_entries = 0;
+static unsigned int bind_block_generation = 0;
+static unsigned long bind_blocks_called = 0, bind_blocks_made = 0, bind_blocks_full = 0;
+static unsigned int bind_blocks_full_frame = 0;
+
+/* the block for this entry at this address, made if need be; NULL when
+every slot is in use or still quarantined */
+static const unsigned int *bind_block(int index, struct pack_entry const *entry, unsigned int address,
+	unsigned int palette_bytes)
+{
+	int slot, oldest = -1;
+	unsigned int *w;
+
+	if (bind_block_generation != pack_generation || bind_block_entries != entry_count)
+	{
+		/* a new pack: the entries' blocks forgotten */
+		free(bind_block_of);
+		bind_block_of = malloc(entry_count * sizeof(*bind_block_of));
+		if (!bind_block_of)
+		{
+			bind_block_entries = 0;
+			return NULL;
+		}
+		memset(bind_block_of, 0xFF, entry_count * sizeof(*bind_block_of));
+		/* -1 free; -2 the last pack's, free once out of quarantine (a list
+		still in flight may CALL it) */
+		for (slot = 0; slot < BIND_BLOCKS; slot++)
+			bind_block_meta[slot].index = bind_block_entries && bind_block_meta[slot].index != -1 ? -2 : -1;
+		bind_block_entries = entry_count;
+		bind_block_generation = pack_generation;
+		bind_blocks_full_frame = 0;
+	}
+	slot = bind_block_of[index];
+	if (slot >= 0 && bind_block_meta[slot].index == index && bind_block_meta[slot].address == address)
+	{
+		bind_block_meta[slot].frame = frame;
+		return bind_block_words[slot];
+	}
+	/* every slot was in use at this frame's last look, and none comes out
+	of quarantine until the frame changes: no search */
+	if (bind_blocks_full_frame == frame)
+	{
+		bind_blocks_full++;
+		return NULL;
+	}
+	/* a free slot, else the longest unused one out of quarantine */
+	for (slot = 0; slot < BIND_BLOCKS; slot++)
+	{
+		if (bind_block_meta[slot].index == -1)
+		{
+			oldest = slot;
+			break;
+		}
+		if (bind_block_meta[slot].frame + BIND_BLOCK_QUARANTINE > frame)
+			continue;
+		if (oldest < 0 || bind_block_meta[slot].frame < bind_block_meta[oldest].frame)
+			oldest = slot;
+	}
+	if (oldest < 0)
+	{
+		bind_blocks_full++;
+		bind_blocks_full_frame = frame;
+		return NULL;
+	}
+	slot = oldest;
+	if (bind_block_meta[slot].index != -1)
+		psp_ge_show3_reuse(1, bind_block_meta[slot].frame); /* geshow3check */
+	if (bind_block_meta[slot].index >= 0 && bind_block_meta[slot].index < bind_block_entries &&
+		bind_block_of[bind_block_meta[slot].index] == slot)
+		bind_block_of[bind_block_meta[slot].index] = -1;
+	w = bind_block_words[slot];
+	bind_block_fill(w, entry->clut, entry->psm, entry->levels, entry->width, entry->height, address, palette_bytes);
+	sceKernelDcacheWritebackRange(w, BIND_BLOCK_WORDS * 4);
+	bind_block_meta[slot].index = index;
+	bind_block_meta[slot].address = address;
+	bind_block_meta[slot].frame = frame;
+	bind_block_of[index] = (short)slot;
+	bind_blocks_made++;
+	return w;
+}
+
 /* makes the texture the GE's current one; 0 if it isn't there (yet) */
+#ifdef PSP_RECON
+/* "txptcensus" (recon; psp_tex_pretouch): which textures the replay bound this frame */
+static int txc_on = -1;
+static struct pack_entry const *txc_for = NULL;
+static unsigned int *txc_bound_at = NULL;
+#define TXC_BOUND(index) do { if (txc_on > 0 && txc_for == entries) txc_bound_at[index] = frame; } while (0)
+#else
+#define TXC_BOUND(index) do { } while (0)
+#endif
 int psp_tex_bind(unsigned int key, int *has_alpha)
 {
 	int index, level;
@@ -1278,11 +1869,16 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	index = find(key);
 	if (index < 0)
 		return 0;
+	TXC_BOUND(index);
 	entry = &entries[index];
 	if (psp_tex_standin == 1 || (psp_tex_standin == 2 && binding_lightmap))
 		return bind_standin(entry, has_alpha);
+	if (hud_pin_on < 0)
+		hud_pin_on = !psp_keep("hudpinoff");
 	if (!resident_at[index])
 	{
+		int screen = psp_tex_screen_pass, past_budget = screen && hud_pin_on > 0;
+
 		misses++;
 		if (PSP_ME_WORK())
 		{
@@ -1290,12 +1886,22 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 			frame_untextured = 1;
 			return 0;
 		}
-		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+		if (screen)
 		{
+			hud_misses++;
+			if (frame_loaded >= LOAD_BUDGET_BYTES && past_budget)
+				hud_reads_past_budget++;
+		}
+		if ((frame_loaded >= LOAD_BUDGET_BYTES && !past_budget) || !load(index))
+		{
+			if (screen)
+				hud_untextured++;
 			frame_untextured = 1;
 			return 0;
 		}
 	}
+	if (psp_tex_screen_pass && hud_pin_on > 0 && hud_pinned && !PSP_ME_WORK())
+		hud_pinned[index] = 1;
 	if (last_frame[index] != frame)
 	{
 		frame_set_bytes += alignment(entry->size);
@@ -1304,6 +1910,11 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	last_frame[index] = frame;
 	if (bind_counts && bind_counts[index] < 65535)
 		bind_counts[index]++;
+	if (texline_me && PSP_ME_WORK())
+	{
+		(*texline_me)++;
+		(*texline_me_copy)++;
+	}
 	/* 8-bit (256 colours) or 4-bit (16) indices into a 16- or 32-bit
 	palette; or a texture in its own colours (the showcase's, ui.map:
 	texpack.py --showcase), with no palette */
@@ -1320,6 +1931,30 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		return 1;
 	}
 	psp_tex_binds_sent++;
+	if (bind_blocks_on < 0)
+	{
+		bind_blocks_on = psp_keep("bindblocks");
+		if (bind_blocks_on && !(bind_block_words = memalign(64, BIND_BLOCKS * sizeof(*bind_block_words))))
+			bind_blocks_on = 0;
+	}
+	if (bind_blocks_on && !PSP_ME_WORK())
+	{
+		const unsigned int *block = bind_block(index, entry, address, palette_bytes);
+
+		if (block)
+		{
+			/* BASE and CALL, as pspgu's sceGuCallList (without its stall update) */
+			sceGuSendCommandi(0x10, ((unsigned int)block >> 8) & 0xF0000);
+			sceGuSendCommandi(0x0A, (unsigned int)block & 0xFFFFFF);
+			bind_blocks_called++;
+			if (has_alpha)
+				*has_alpha = entry->flags & 1;
+			memo_key = key;
+			memo_address = address;
+			memo_frame = frame;
+			return 1;
+		}
+	}
 	start = address; /* where the texture starts (address moves past the palette and levels) */
 	if (palette_bytes)
 	{
@@ -1402,6 +2037,212 @@ int psp_tex_resident(unsigned int key)
 	return 1;
 }
 
+/* "texpretouch": a texture brought in as its draw is written down for the
+Media Engine's replay (psp_ge.c, the GE_DEFER records), so the replay's bind
+finds it there. The ME can't read the Memory Stick: a bind there that finds
+its texture missing only asks for it, the main CPU reads it at the frame's
+end, and every texture's first sight drew a frame (or more) untextured.
+Records are written while no replay runs and in the frame (this file's
+frame) the replay binds in, so a texture marked here is protected from the
+rest of the frame's loads as a bind would protect it. A texture already
+resident is only marked: that keeps it from being evicted by a later
+record's load before the replay draws it. A load the frame's budget or room
+refuses is left to the replay's bind, which counts it.
+A mark holds room a bind can't then get, and records name textures the
+replay never binds (a culled run, a far surface's detail maps), so: a kind
+the replay binds only sometimes is marked only if it's already resident
+(resident_only: it costs no load and evicts nothing); and nothing more is
+marked once this frame's set nears the caches' room ("txptceilN", percent,
+85 by default: b30's beach marked 2,559 KB of 2,632 without it, and loads
+then waited for room). Past the ceiling the replay's binds ask for what's
+missing, as without texpretouch */
+#define PRETOUCH_KINDS 18
+static PSP_MAIN_SIDE unsigned long pretouch_calls = 0, pretouch_loads = 0, pretouch_refused = 0, pretouch_ceiling_stops = 0,
+	pretouch_not_resident = 0;
+/* the last texture each record kind asked for, and its frame: a level draw
+names its base and its lightmap in turn, so one memo for all kinds missed
+every time; a kind's runs of one texture come in a row */
+static PSP_MAIN_SIDE unsigned int pretouch_key[PRETOUCH_KINDS], pretouch_frame[PRETOUCH_KINDS];
+static PSP_MAIN_SIDE int pretouch_percent = -1;
+
+#ifdef PSP_RECON
+/* "txptcensus" (recon): per record kind, the textures marked in a frame
+against those the replay then bound, and those a filter passed over that
+the replay bound anyway (what the filters cost in looks) */
+static const char *const txc_names[PRETOUCH_KINDS] = { "levelbase", "lightmap", "leveldetail", "modelbase", "change",
+	"glow", "modeldetail", "sprite", "contrail", "widget", "seethrough", "levelseethrough", "screen", "zoom", "light",
+	"decal", "blip", "blipsend" };
+static int txc_wait_frames = 0;
+static unsigned int *txc_marked_at = NULL, *txc_skipped_at = NULL;
+static unsigned char *txc_kind = NULL;
+static unsigned long txc_waits_seen = 0, txc_frames = 0;
+static unsigned long txc_marked[PRETOUCH_KINDS], txc_marked_kb[PRETOUCH_KINDS], txc_unbound[PRETOUCH_KINDS],
+	txc_unbound_kb[PRETOUCH_KINDS], txc_skipped_bound[PRETOUCH_KINDS], txc_skipped[PRETOUCH_KINDS], txc_unannounced = 0;
+
+static int txc_ready(void)
+{
+	if (txc_on < 0)
+		txc_on = psp_keep("txptcensus") != 0;
+	if (!txc_on || !entries)
+		return 0;
+	if (txc_for != entries)
+	{
+		free(txc_marked_at);
+		free(txc_skipped_at);
+		free(txc_bound_at);
+		free(txc_kind);
+		txc_marked_at = calloc(entry_count, sizeof(unsigned int));
+		txc_skipped_at = calloc(entry_count, sizeof(unsigned int));
+		txc_bound_at = line_calloc(entry_count, sizeof(unsigned int));
+		txc_kind = calloc(entry_count, 1);
+		txc_for = entries;
+		if (!txc_marked_at || !txc_skipped_at || !txc_bound_at || !txc_kind)
+		{
+			txc_on = 0;
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static void txc_note(int index, int kind, int marked)
+{
+	if (!txc_ready())
+		return;
+	if (marked)
+		txc_marked_at[index] = frame;
+	else
+		txc_skipped_at[index] = frame;
+	txc_kind[index] = (unsigned char)kind;
+}
+
+static void txc_frame_end(void)
+{
+	unsigned long marked[PRETOUCH_KINDS] = { 0 }, unbound_kb[PRETOUCH_KINDS] = { 0 }, bound[PRETOUCH_KINDS] = { 0 };
+	unsigned long unannounced = 0;
+	int index, k, waited;
+	char line[600];
+	int at = 0;
+
+	line[0] = 0;
+
+	if (txc_on <= 0 || txc_for != entries || !entries)
+		return;
+	for (index = 0; index < entry_count; index++)
+	{
+		int was_bound = txc_bound_at[index] == frame;
+
+		k = txc_kind[index];
+		if (txc_marked_at[index] == frame)
+		{
+			marked[k]++;
+			txc_marked[k]++;
+			txc_marked_kb[k] += alignment(entries[index].size) / 1024;
+			if (was_bound)
+				bound[k]++;
+			else
+			{
+				unbound_kb[k] += alignment(entries[index].size);
+				txc_unbound[k]++;
+				txc_unbound_kb[k] += alignment(entries[index].size) / 1024;
+			}
+		}
+		else if (txc_skipped_at[index] == frame)
+		{
+			txc_skipped[k]++;
+			if (was_bound)
+				txc_skipped_bound[k]++;
+		}
+		else if (was_bound)
+			unannounced++;
+	}
+	txc_unannounced += unannounced;
+	txc_frames++;
+	waited = waits != txc_waits_seen;
+	txc_waits_seen = waits;
+	if (waited && txc_wait_frames < 8)
+	{
+		txc_wait_frames++;
+		for (k = 0; k < PRETOUCH_KINDS && at < (int)sizeof(line) - 48; k++)
+			if (marked[k])
+				at += snprintf(line + at, sizeof(line) - at, " %s %lu/%lu/%luKB", txc_names[k], marked[k], bound[k],
+					unbound_kb[k] / 1024);
+		platform_log("textures: txptcensus: frame %u waited for room (%lu in all); set %lu KB; marked/bound/unbound KB by kind:%s; bound unannounced %lu",
+			frame, waits, frame_set_bytes / 1024, line, unannounced);
+	}
+	if (frame % 300 == 0)
+	{
+		at = 0;
+		line[0] = 0;
+		for (k = 0; k < PRETOUCH_KINDS && at < (int)sizeof(line) - 56; k++)
+			if (txc_marked[k] || txc_skipped[k])
+				at += snprintf(line + at, sizeof(line) - at, " %s %lu/%lu/%lu/%lu", txc_names[k], txc_marked_kb[k],
+					txc_unbound_kb[k], txc_skipped[k], txc_skipped_bound[k]);
+		platform_log("textures: txptcensus: %lu frames; by kind marked KB/unbound KB/passed over/passed over but bound:%s; bound unannounced %lu",
+			txc_frames, line, txc_unannounced);
+	}
+}
+#else
+#define txc_note(index, kind, marked) do { } while (0)
+#endif
+
+/* resident_only: 1 marks the texture only if it's resident; 2 (the census
+alone) notes a key a filter passed over */
+void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
+{
+	int index;
+	unsigned int size, room;
+
+	if (!key || !entries || PSP_ME_WORK() || (unsigned int)kind >= PRETOUCH_KINDS)
+		return;
+	if (pretouch_frame[kind] == frame && pretouch_key[kind] == key)
+		return;
+	index = find(key);
+	if (index < 0)
+		return;
+	pretouch_key[kind] = key;
+	pretouch_frame[kind] = frame;
+	if (resident_only == 2)
+	{
+		txc_note(index, kind, 0);
+		return;
+	}
+	pretouch_calls++;
+	if (resident_at[index] && last_frame[index] == frame)
+		return; /* marked already, by a bind or another kind */
+	size = alignment(entries[index].size);
+	if (pretouch_percent < 0)
+		pretouch_percent = psp_keep_number("txptceil", 85);
+	room = (VRAM_CACHE_END - VRAM_CACHE_START) + (arenas[1].end - arenas[1].start);
+	if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent)
+	{
+		pretouch_ceiling_stops++;
+		txc_note(index, kind, 0);
+		return;
+	}
+	if (!resident_at[index])
+	{
+		if (resident_only)
+		{
+			pretouch_not_resident++;
+			txc_note(index, kind, 0);
+			return;
+		}
+		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+		{
+			pretouch_refused++;
+			txc_note(index, kind, 0);
+			return;
+		}
+		misses++; /* as a bind's load counts: the log's waits stay misses - loads */
+		pretouch_loads++;
+	}
+	frame_set_bytes += size;
+	frame_set_count++;
+	last_frame[index] = frame;
+	txc_note(index, kind, 1);
+}
+
 /* a resident texture's 16-bit (5650) palette, the same way (the change
 colour's mask, in a multipurpose map's blue; build 31) */
 int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *count)
@@ -1415,6 +2256,13 @@ int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *cou
 	return 1;
 }
 
+/* the bake's exact CLUT4 (pack flag 2, texpack.py): a texture it would
+have made CLUT8, in 16 colours that draw it texel for texel. Its average is
+sampled where the CLUT8 bytes were, so object lighting and the flashlight
+take the same colour from it as before ("c4xavgoff": CLUT4's own sample) */
+#define EXACT_CLUT4 2
+static unsigned int texel_offset(struct pack_entry const *entry, int x, int y, int *nibble);
+
 /* a resident texture's average colour (ABGR), from a sample of its top
 level's texels through the palette; kept per texture (build 36: the
 flashlight's added light, which can't take a second texture) */
@@ -1424,11 +2272,18 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	struct pack_entry const *entry;
 	unsigned int palette_bytes, bytes, row, rows, total, step, at, sum[3] = { 0, 0, 0 }, n = 0;
 	const unsigned char *texels;
+	static int own_sample = -1;
+	int clut8_order;
 
 	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]))
 		return 0;
-	if (averages_count != entry_count)
+	if (averages_count != entry_count || (avg_me_realloc && PSP_ME_WORK()))
 	{
+		/* the ME makes no library calls: the table comes from the pack's
+		open, and the ME's work without one has no average (avgold and
+		avgmerealloc: allocated here, as before) */
+		if (PSP_ME_WORK() && !avg_old && !avg_me_realloc)
+			return 0;
 		free(averages);
 		averages = calloc(entry_count, sizeof(unsigned int));
 		averages_count = averages ? entry_count : 0;
@@ -1441,8 +2296,11 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 		return 1;
 	}
 	entry = &entries[index];
+	if (own_sample < 0)
+		own_sample = psp_keep("c4xavgoff");
+	clut8_order = entry->psm == GU_PSM_T4 && (entry->flags & EXACT_CLUT4) && !own_sample;
 	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
-	bytes = entry->psm == GU_PSM_T4 ? (entry->width + 1) / 2 : entry->width;
+	bytes = entry->psm == GU_PSM_T4 && !clut8_order ? (entry->width + 1) / 2 : entry->width;
 	row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u;
 	rows = (entry->height + 7) & ~7u;
 	total = row * rows;
@@ -1450,11 +2308,20 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	texels = (const unsigned char *)((resident_at[index] + palette_bytes) | 0x40000000);
 	for (at = 0; at < total; at += step)
 	{
-		unsigned int value = texels[at], k;
+		unsigned int value = clut8_order ? 0 : texels[at], k;
 
-		for (k = 0; k < (entry->psm == GU_PSM_T4 ? 2u : 1u); k++)
+		if (clut8_order)
 		{
-			unsigned int i = entry->psm == GU_PSM_T4 ? (value >> (4 * k)) & 15 : value, r, g, b;
+			/* the texel this byte was in the CLUT8 layout; its padding read entry 0 */
+			unsigned int x = (at >> 7) % (row / 16) * 16 + (at & 15), y = (at >> 7) / (row / 16) * 8 + ((at >> 4) & 7);
+			int nibble;
+
+			if (x < entry->width && y < entry->height)
+				value = (texels[texel_offset(entry, (int)x, (int)y, &nibble)] >> (4 * nibble)) & 15;
+		}
+		for (k = 0; k < (entry->psm == GU_PSM_T4 && !clut8_order ? 2u : 1u); k++)
+		{
+			unsigned int i = entry->psm == GU_PSM_T4 && !clut8_order ? (value >> (4 * k)) & 15 : value, r, g, b;
 
 			if (entry->clut == GU_PSM_8888)
 			{
@@ -1479,6 +2346,26 @@ int psp_tex_average(unsigned int key, unsigned int *abgr)
 	return 1;
 }
 
+/* a texture's average once worked out, even after it has left memory;
+else worked out now, bringing it in without binding it if need be (a model
+reflection's cube map patch and multipurpose map, psp_ge.c). 0 when it
+can't be had this frame */
+int psp_tex_average_known(unsigned int key, unsigned int *abgr)
+{
+	int index = key && entries ? find(key) : -1;
+
+	if (index < 0)
+		return 0;
+	if (averages_count == entry_count && averages[index])
+	{
+		*abgr = averages[index];
+		return 1;
+	}
+	if (!resident_at[index] && !psp_tex_resident(key))
+		return 0;
+	return psp_tex_average(key, abgr);
+}
+
 /* ---------- build 102: object lighting from the lightmaps
 
 Halo lights an object from the level under it: a ray down finds the
@@ -1488,7 +2375,7 @@ ambient and its two distant lights' strength, the surface's texture colour
 bitmap's pixels in the texture cache (bitmap_2d_get_pixel); here the pixels
 are in this pack, the game's bitmaps have none, and the read answered
 "none", white: every object, characters, vehicles and scenery alike, lit as
-if it stood in full light (Sheepdog01, b101: "the lighting seems to be ignored by
+if it stood in full light (b101: "the lighting seems to be ignored by
 characters and vehicle models, as well as some rocks"). So the samples come
 from here: the texel itself when the texture is resident (exact: the
 lightmap's colours through its palette); else, while the map loads (static
@@ -1668,6 +2555,22 @@ int psp_tex_has(unsigned int key)
 	return key && entries && find(key) >= 0;
 }
 
+/* a level (senv) base map's key with its bump map's relief baked in, when
+the pack has one (texpack.py, apply_relief: under the base's key | 2), else
+the key itself. The Xbox lights a level's bump map per pixel; the GE can't,
+so the bake folds the relief into the base, lit from one fixed direction.
+The bake filters the bump over each base texel's footprint; sampled one
+bump texel per base texel, it aliased into vertical streaks along a30's
+stretched cliff walls. Keep word "norelief": no relief */
+unsigned int psp_relief_key(unsigned int key)
+{
+	static int on = -1;
+
+	if (on < 0)
+		on = !psp_keep("norelief");
+	return key && on && psp_tex_has(key | 2) ? key | 2 : key;
+}
+
 int psp_tex_size(unsigned int key, int *width, int *height)
 {
 	int index = key && entries ? find(key) : -1;
@@ -1705,6 +2608,9 @@ void psp_tex_frame_end(void)
 	}
 	if (vram_pending_count && entries)
 		preload_vram();
+#ifdef PSP_RECON
+	txc_frame_end();
+#endif
 	if (frame_set_bytes > frame_set_peak)
 	{
 		frame_set_peak = frame_set_bytes;
@@ -1725,7 +2631,19 @@ void psp_tex_frame_end(void)
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
 	if (entries && frame % 300 == 0)
+		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured",
+			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured);
+	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
+	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
+	{
+		platform_log("textures: bindblocks: %lu binds a frame CALLed a ready block, %lu blocks made a frame, %lu times every slot in use (last 300 frames)",
+			bind_blocks_called / 300, bind_blocks_made / 300, bind_blocks_full);
+		bind_blocks_called = bind_blocks_made = bind_blocks_full = 0;
+	}
+	if (entries && frame % 300 == 0 && pretouch_calls)
+		platform_log("textures: texpretouch: %lu textures touched as their draws were written down, %lu read then, %lu left to the replay (budget or room), %lu at the ceiling, %lu not resident (resident only)",
+			pretouch_calls, pretouch_loads, pretouch_refused, pretouch_ceiling_stops, pretouch_not_resident);
 	if (entries && frame % 300 == 0 && (wanted_total || wanted_dropped))
 		platform_log("textures: %lu wanted by the Media Engine's work and read at the frame's end, %lu more than the list held (gemesim)",
 			wanted_total, wanted_dropped);
@@ -1816,6 +2734,8 @@ void psp_tex_frame_end(void)
 			line, vram_binds, vram_bytes / 1024, ram_binds, ram_bytes / 1024);
 		learned_snapshot();
 	}
+	if (entries && hud_bound && frame % 900 == 600)
+		strip_census_report(900);
 	frame++;
 	frame_loaded = 0;
 }

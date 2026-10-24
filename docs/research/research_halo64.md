@@ -99,7 +99,7 @@ Halo 64 shipped a per-biped level cache on the main CPU (12 October; `source/phy
 - If even 0.1 overflows, the biped walks the level as before and retries after 30 ticks (`N64_PILL_CACHE_RETRY_TICKS`).
 - For us: a cap on each copy's bytes with the same backoff turns a50's 30–60 KB copies [U] into "no copy where the level is too busy". The cost is a miss, never a wrong answer. Step 2's log of each copy's bytes then tells us how often a50 falls back.
 
-## 3. The A/B shelf (behaviour changes, Sheepdog01's call)
+## 3. The A/B shelf (behaviour changes, the maintainer's call)
 
 None of these is exact. Each would ship off by default behind a keep word, with an A/B, if the exact work runs out.
 
@@ -139,5 +139,5 @@ None of these is exact. Each would ship off by default behind a keep word, with 
 
 - **A heap that can't fragment.** The map image gets a home made at boot and never freed. Everything long-lived (sound, mixer rings, animation cache, HUD slots) is reserved at boot below it. They found leaks by diffing heap dumps from one game to the next, until every menu showed the same 74 blocks. Worth copying if campaign sessions ever fragment across level loads or checkpoint reloads; b120 ran all ten maps in one session without a crash [M].
 - **A compiler trap.** Their "is there room?" probe did `malloc` then `free` without using the block, and GCC removed both, so every probe succeeded. Fixed by keeping the block in a `volatile`. Check any room probe of ours for the same pattern.
-- **Their unattended test.** `debug_cycle=<seconds>` returns to the menu, which starts the next map: every map in turn, as a player goes. Our lab does the same job differently.
+- **Their unattended test.** `debug_cycle=<seconds>` returns to the menu, which starts the next map: every map in turn, as a player goes. Our test harness does the same job differently.
 - **The workflow.** Their log shows an AI-assisted port with the user testing every build ("built, not tested by me (the user tests)"), and the log covers about a week (8–14 October), from the first two-player game on Wizard to the release. The HISTORY/NOTES split mirrors our `STATE` plus build notes. It's a good public example of the shape we plan for the README's "How it's made" section.

@@ -2,7 +2,7 @@
 changes (build 113). Each is a keep word, off unless asked for, and costs
 nothing while off but the test of its word.
 
-"flipwatch": the vehicle flip prompt (b113_candidates.md #10). Sheepdog01's sequence,
+"flipwatch": the vehicle flip prompt (b113_candidates.md #10). The sequence seen
 across several builds: a vehicle flips, the player walks up, the prompt to
 flip it appears, goes before he can press, and never comes back however he
 walks around it. The prompt is worked out every tick from four conditions
@@ -34,12 +34,16 @@ struct flipwatch_vehicle
 	int dead, tipped, upending, driver, at_rest, asleep;
 };
 
-static int flipwatch_enabled = -1;
-static struct flipwatch_vehicle flipwatch_vehicles[FLIPWATCH_VEHICLES];
-static struct { long index, tick; } flipwatch_sleepers[FLIPWATCH_SLEEPERS];
-static int flipwatch_next_sleeper = 0;
-static long flipwatch_action_result = -2, flipwatch_action_object = -2;
-static int flipwatch_action_bit = -1;
+/* the watch runs in the ticks, while the Media Engine may be drawing a frame
+(geinflight): its words go with the main CPU's (psp_me.h's PSP_MAIN_SIDE), off
+the ME's cache lines */
+#define FLIPWATCH_MAIN_SIDE __attribute__((section(".data.psp_main_side")))
+static FLIPWATCH_MAIN_SIDE int flipwatch_enabled = -1;
+static FLIPWATCH_MAIN_SIDE struct flipwatch_vehicle flipwatch_vehicles[FLIPWATCH_VEHICLES];
+static FLIPWATCH_MAIN_SIDE struct { long index, tick; } flipwatch_sleepers[FLIPWATCH_SLEEPERS];
+static FLIPWATCH_MAIN_SIDE int flipwatch_next_sleeper = 0;
+static FLIPWATCH_MAIN_SIDE long flipwatch_action_result = -2, flipwatch_action_object = -2;
+static FLIPWATCH_MAIN_SIDE int flipwatch_action_bit = -1;
 
 int psp_flipwatch_on(void)
 {
@@ -172,7 +176,7 @@ void psp_flipwatch_player(long action_result, long action_object, int action_bit
 }
 
 /* the vehicle just flipped, watched by the sleep (objects.c) for 60 ticks */
-static long flipwatch_watch_index = -1, flipwatch_watch_until = 0;
+static FLIPWATCH_MAIN_SIDE long flipwatch_watch_index = -1, flipwatch_watch_until = 0;
 
 long psp_flipwatch_watched(void)
 {

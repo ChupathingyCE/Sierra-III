@@ -16,7 +16,7 @@ pthreads):
 
 #include <pspkernel.h>
 /* the build number in the log (bump with every package) */
-#define PSP_BUILD_NUMBER 138
+#define PSP_BUILD_NUMBER 140
 /* the engine base the build was made from, for the log */
 #define PSP_ENGINE_BASE "ChupathingyCE"
 /* build 77: the last heartbeat's budget, for the debug overlay (psp_debug.c) */
@@ -45,6 +45,7 @@ PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
 
 /* ms0:/halo, or the multiplayer build's ms0:/halomp (psp_paths.h) */
 #include "psp_paths.h"
+#include "psp_metrics.h"
 #define DATA_ROOT PSP_DATA_ROOT
 /* in a folder of its own: the game's own files (debug.txt, stderr.txt,
 gamestate.txt) are written next to each other in ms0:/halo, and a file's
@@ -60,6 +61,8 @@ long psp_game_time_peek(void);
 long psp_garbage_runs[3], psp_garbage_removed, psp_garbage_bipeds_removed;
 /* build 107: the most lens flares a frame has submitted (rasterizer_lights.c, psp_fixups.py) */
 long psp_lens_flare_peak;
+/* the level's lens flare markers (rasterizer_lights.c, psp_fixups.py FIXES_LFS) */
+unsigned long psp_lfs_frames, psp_lfs_markers, psp_lfs_kept, psp_lfs_hits, psp_lfs_skipped, psp_lfs_wrong;
 
 /* ---------- logging (psp_fixups.py's changes call this) */
 
@@ -184,6 +187,13 @@ static char *log_batch = log_batch_small, *log_copy = log_copy_small;
 static int log_batch_size = sizeof(log_batch_small);
 static int log_batch_length = 0, log_batch_dropped = 0;
 static volatile int log_batching = 0;
+/* a batch three quarters full wakes the heartbeat to write it, so the game
+thread never waits on the stick for the log: a write and a close can take
+over a second each on a busy stick, and the game's reads queue behind them.
+Created with the heartbeat; "logflushgame": the game thread writes it, as
+before */
+static SceUID log_wake = -1;
+static SceUID log_wake_thread = -1;
 
 static void log_flush(void);
 static int log_lock_take(void);
@@ -195,7 +205,7 @@ void psp_log_flush(void)
 }
 
 /* build 99: the blackbox batches from the first frame (b98 wrote each
-traced line at once until 20 s in: Sheepdog01's b98 run 2 started very slowly), and
+traced line at once until 20 s in: b98's run 2 started very slowly), and
 the game thread writes the batch at every frame's end, so a freeze loses at
 most the frame it happened in */
 static volatile int log_frame_flush = 0;
@@ -314,7 +324,7 @@ void psp_log_exiting(void)
 {
 	exiting = 1;
 }
-/* build 104: and in play, at most half a second: b103 run 1 (Sheepdog01) hung
+/* build 104: and in play, at most half a second: b103 run 1 hung
 loading The Library with the game thread holding this lock while it waited
 on another (psp_trace.c's handle table), and the heartbeat waited here
 forever behind it. A wait that times out goes on without the lock (two
@@ -449,7 +459,12 @@ void psp_log_write(const char *text)
 		/* build 99: a batch three quarters full is written at once (the
 		blackbox's first frames stream hundreds of textures in one frame) */
 		if (log_batch_length > log_batch_size * 3 / 4)
-			log_flush();
+		{
+			if (log_wake >= 0 && sceKernelGetThreadId() != log_wake_thread)
+				sceKernelSignalSema(log_wake, 1); /* (a second signal while one waits is refused: harmless) */
+			else
+				log_flush();
+		}
 		return;
 	}
 	file = sceIoOpen(LOG_PATH, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_APPEND, 0777);
@@ -536,6 +551,16 @@ struct profile_front_entry
 static struct profile_front_entry *profile_front = NULL; /* [PROFILE_FRONT] */
 static int profile_used = 0;
 
+/* The steps are timed in one frame of every few, and the profile's figures
+scaled up by the frames they stand for. A busy frame passes 2,000 steps or
+more (b30's beach), each a clock read (a system call) and a table lookup,
+and only the profile reads what they measure. "stepsall" (keep.txt) times
+every frame */
+#define STEPS_TIMED_EVERY 4
+static int steps_every = STEPS_TIMED_EVERY;
+static int steps_timed = 1;
+static unsigned long steps_frame = 0, steps_window_frames = 0, steps_window_timed = 0;
+
 void *psp_scratch_take(unsigned int bytes, const char *what);
 
 void psp_profile_tables_take(void)
@@ -555,6 +580,7 @@ static void profile_forget(void)
 	memset(profile_slots, 0, PROFILE_SLOTS * sizeof(*profile_slots));
 	memset(profile_front, 0, PROFILE_FRONT * sizeof(*profile_front));
 	profile_used = 0;
+	steps_window_frames = steps_window_timed = 0;
 }
 
 static struct profile_slot *profile_slot_for(const char *name)
@@ -589,6 +615,32 @@ windows and the per-type object lines then read 0; the heartbeat's frame and
 tick times stay. Set when keep.txt is read */
 int psp_timers_off = 0;
 
+/* at each frame's end: whether the next frame's steps are timed. The step
+running across the edge is closed or opened here, so each timed frame's
+time is all charged and an untimed frame's none */
+static void steps_frame_edge(void)
+{
+	int next = ++steps_frame % steps_every == 0;
+	unsigned int now;
+
+	steps_window_frames++;
+	if (next)
+		steps_window_timed++;
+	if (next == steps_timed || psp_timers_off)
+		return;
+	now = sceKernelGetSystemTimeLow();
+	if (!next && profile_last_name && profile_slots)
+	{
+		struct profile_slot *slot = profile_slot_for(profile_last_name);
+
+		slot->microseconds += now - profile_last_time;
+		slot->calls++;
+	}
+	profile_last_name = next ? last_step : NULL;
+	profile_last_time = now;
+	steps_timed = next;
+}
+
 void psp_step(const char *name)
 {
 	unsigned int now;
@@ -606,17 +658,19 @@ void psp_step(const char *name)
 		}
 		return;
 	}
-	now = sceKernelGetSystemTimeLow();
-
-	if (profile_last_name && profile_slots)
+	if (steps_timed)
 	{
-		struct profile_slot *slot = profile_slot_for(profile_last_name);
+		now = sceKernelGetSystemTimeLow();
+		if (profile_last_name && profile_slots)
+		{
+			struct profile_slot *slot = profile_slot_for(profile_last_name);
 
-		slot->microseconds += now - profile_last_time;
-		slot->calls++;
+			slot->microseconds += now - profile_last_time;
+			slot->calls++;
+		}
+		profile_last_name = name;
+		profile_last_time = now;
 	}
-	profile_last_name = name;
-	profile_last_time = now;
 	last_step = name;
 	if (step_count < STEP_LOG_LIMIT)
 		platform_log("step %d: %s", ++step_count, name);
@@ -626,7 +680,7 @@ void psp_step(const char *name)
 		extern void psp_trace_line(const char *format, ...);
 
 		/* build 99: in play (the blackbox), each step the first time it
-		runs: a freeze after something new happens (Sheepdog01's b97/b98: the first
+		runs: a freeze after something new happens (b97/b98: the first
 		shot at an infection form) shows which code it entered */
 		static const char *seen[2048];
 
@@ -698,17 +752,74 @@ one tick in OBJECT_SAMPLE and scaling by it keeps it unbiased for 1/8 of the
 calls. "objecttimeall": every tick timed, as before. Returns the scale for
 this tick's times, or 0 for a tick that isn't timed */
 #define OBJECT_SAMPLE 8
+static unsigned long object_scale_now;
 unsigned long psp_object_sample(void)
 {
 	static int every_tick = -1;
 	static unsigned int tick = 0;
 
+	{
+		/* texlinecheck's tick word and heapwalk's walk (psp_tex.c, psp_libc.c) */
+		extern void psp_texline_tick(void);
+		extern void psp_heap_walk(const char *where);
+
+		psp_texline_tick();
+		psp_heap_walk("a tick");
+	}
 	if (every_tick < 0)
 		every_tick = psp_keep("objecttimeall") != 0;
 	if (every_tick)
-		return 1;
-	return (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
+		return object_scale_now = 1;
+	return object_scale_now = (tick++ % OBJECT_SAMPLE) == 0 ? OBJECT_SAMPLE : 0;
 }
+
+#if PSP_DEBUG_TOOLS
+/* "vehiclecost": the vehicles' updates timed by definition, so a flier's or a
+Warthog's tick cost reads apart from the rest (the per-type line sums every
+vehicle). Timed on the sampled ticks only, so counts are scaled as times are */
+#define VEHICLE_ACCOUNTS 16
+static struct { long definition_index; unsigned long microseconds, updates; } vehicle_accounts[VEHICLE_ACCOUNTS];
+static int vehicle_cost = -1;
+
+void psp_vehicle_account(long definition_index, unsigned long microseconds)
+{
+	int k;
+
+	if (vehicle_cost < 0)
+		vehicle_cost = psp_keep("vehiclecost") != 0;
+	if (!vehicle_cost)
+		return;
+	for (k = 0; k < VEHICLE_ACCOUNTS && vehicle_accounts[k].updates && vehicle_accounts[k].definition_index != definition_index; k++)
+		;
+	if (k == VEHICLE_ACCOUNTS)
+		return;
+	vehicle_accounts[k].definition_index = definition_index;
+	vehicle_accounts[k].microseconds += microseconds;
+	vehicle_accounts[k].updates += object_scale_now;
+}
+
+static void vehicle_report(unsigned long ticks)
+{
+	char *tag_get_name(long tag_index);
+	char line[512];
+	int length, k;
+
+	if (vehicle_cost <= 0 || !ticks)
+		return;
+	length = snprintf(line, sizeof(line), "vehiclecost: ms per tick (updates per tick, us each):");
+	for (k = 0; k < VEHICLE_ACCOUNTS && vehicle_accounts[k].updates; k++)
+	{
+		char const *name = tag_get_name(vehicle_accounts[k].definition_index), *last = strrchr(name, '\\');
+
+		if (length < (int)sizeof(line) - 64)
+			length += snprintf(line + length, sizeof(line) - length, " %s %.2f (%.2f, %lu);", last ? last + 1 : name,
+				vehicle_accounts[k].microseconds / 1000.0 / ticks, (double)vehicle_accounts[k].updates / ticks,
+				vehicle_accounts[k].microseconds / vehicle_accounts[k].updates);
+	}
+	platform_log("  %s", line);
+	memset(vehicle_accounts, 0, sizeof(vehicle_accounts));
+}
+#endif
 
 /* build 113: render_objects.c's counts (psp_fixups.py), since the last report */
 long psp_rendered_views, psp_rendered_full, psp_rendered_peak, psp_rendered_capacity, psp_render_states_new, psp_render_states_evicted;
@@ -718,6 +829,9 @@ static void object_report(SceUID file, unsigned long ticks)
 	char line[1024];
 	int length, type;
 
+#if PSP_DEBUG_TOOLS
+	vehicle_report(ticks);
+#endif
 	length = snprintf(line, sizeof(line), "objects_update by type, ms per tick (updates per tick):");
 	for (type = 0; type < OBJECT_ACCOUNTS_FIRST_LINE && length < (int)sizeof(line) - 64; type++)
 	{
@@ -751,6 +865,12 @@ static void object_report(SceUID file, unsigned long ticks)
 			ticks ? (double)psp_items_lit_reason[5] / ticks : 0.0);
 		platform_log("  weapons on the ground per tick: %.2f updated, %.2f asleep",
 			ticks ? (double)psp_weapons_ground / ticks : 0.0, ticks ? (double)psp_weapons_asleep / ticks : 0.0);
+		{
+			extern long psp_ws_passed; /* objects.c (psp_fixups.py FIXES_WS) */
+
+			platform_log("  sleeping scenery passed over in the walk per tick: %.2f", ticks ? (double)psp_ws_passed / ticks : 0.0);
+			psp_ws_passed = 0;
+		}
 		memset(psp_items_lit_reason, 0, sizeof(psp_items_lit_reason));
 		psp_weapons_ground = psp_weapons_asleep = 0;
 		psp_objects_asleep = psp_objects_sleep_checked = psp_vehicles_asleep = psp_corpses_asleep = 0;
@@ -794,6 +914,15 @@ static void object_report(SceUID file, unsigned long ticks)
 		start (rasterizer_lights.c, psp_fixups.py), against the 1,024 kept */
 		if (psp_lens_flare_peak)
 			platform_log("  lens flares: peak %ld a frame of the 1024 kept", psp_lens_flare_peak);
+		/* the markers' axes worked out only for the flares kept, from a table
+		by their direction bytes, and the markers past a full frame skipped
+		(FIXES_LFS; lfscheck counts answers that differ, 0 expected) */
+		if (psp_lfs_markers && psp_lfs_frames)
+			platform_log("  lens flare axes: %.1f level markers a frame, %.1f kept (axes asked), %.1f of those from the table, "
+				"%.1f past a full frame skipped; lfscheck: %lu differed",
+				(double)psp_lfs_markers / psp_lfs_frames, (double)psp_lfs_kept / psp_lfs_frames,
+				(double)psp_lfs_hits / psp_lfs_frames, (double)psp_lfs_skipped / psp_lfs_frames, psp_lfs_wrong);
+		psp_lfs_frames = psp_lfs_markers = psp_lfs_kept = psp_lfs_hits = psp_lfs_skipped = 0;
 	}
 	{
 		/* build 107: keep.txt's "sceneryhalf" (psp_fixups.py, objects.c):
@@ -891,17 +1020,98 @@ blends between ticks the PSP can't render more often than anyway: all are
 off unless ms0:/halo/keep.txt names them (shadows transparent particles
 decals hud textures interpolation), to measure what each costs */
 
-/* build 116: 512 (256 before): b116's "every restoration off" preset with
-the menu's own words came within a few characters of 253, past which
-keep.txt's last words were silently lost */
-static char keep_words[512] = "";
+/* keep.txt's text, read whole up to KEEP_FILE_BYTES (the launch menu writes
+no more): a preset with the menu's own words needs ~250, and words past the
+limit are lost silently. KEEP_DEFAULTS_ROOM more holds the campaign's
+default words (keep_defaults_add), however full the file is */
+#define KEEP_FILE_BYTES 509
+#define KEEP_DEFAULTS_ROOM 96
+static char keep_words[KEEP_FILE_BYTES + 3 + KEEP_DEFAULTS_ROOM] = "";
 /* build 106: bumped whenever keep_words changes, so psp_keep's remembered
 answers are asked again */
 static int keep_generation = 1;
 static SceUID keep_cache_lock = -1; /* made by keep_load, at start-up */
 
 static int keep_search(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 extern int psp_timers_off;
+
+#ifndef PSP_MULTIPLAYER
+/* The campaign's default words: M6 #2, frames in flight with the GE's calls
+carried out on the Media Engine (docs/review_m6default.md), on as if keep.txt
+named them, so every psp_keep() asks as before and the features' own code
+is untouched. Each has an off word; "m6off" turns all of them off. They play
+tick for tick as without them; the PSP-1000 draws b30 faster with them.
+texpretouch only with gemeon: it reads in what the ME's replay binds;
+without it, textures arrive late and models draw white for a few frames
+(about six times the untextured frames on b30's route).
+geshow3 (docs/review_geshow3.md): the ME replays the next frame into a
+second list while the GE ends this one; it takes effect only with the
+forwarding thread (geinflight, gemeon), and its index ranges come from
+geshow2's ring, so the GE never reads a later frame's triangles.
+Left out whole with the instruments that measure or split the frame as they
+did before (mebench, gemeoverlap, geserial): those words mean what they did.
+The multiplayer build has none of them: none was played against a server */
+static const struct
+{
+	const char *word, *off;
+} keep_defaults[] = {
+	{ "gedefer", "gedeferoff" },
+	{ "geinflight", "geinflightoff" },
+	{ "gemeon", "gemeonoff" },
+	{ "mevram", "mevramoff" },
+	{ "texpretouch", "notexpretouch" },
+	{ "mepoll", "mepolloff" },
+	{ "geshow3", "geshow3off" },
+};
+static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
+
+static void keep_default_add(const char *word)
+{
+	size_t used = strlen(keep_words), length = strlen(word);
+
+	if (keep_search(word) || used + length + 2 > sizeof(keep_words))
+		return;
+	/* keep_words ends in a space: the word, then the space a whole-word
+	search needs after it */
+	memcpy(keep_words + used, word, length);
+	keep_words[used + length] = ' ';
+	keep_words[used + length + 1] = '\0';
+	strcat(keep_defaults_added, " ");
+	strcat(keep_defaults_added, word);
+}
+
+static void keep_defaults_add(void)
+{
+	int k;
+
+	keep_defaults_added[0] = '\0';
+	/* the motion sensor's target in the depth buffer (docs/review_vrbroom.md):
+	exact, and its 16 KB of VRAM go to the model copies; apart from M6 #2,
+	so m6off and the instruments leave it on */
+	if (!keep_search("blipdepthoff"))
+		keep_default_add("blipdepth");
+	/* AI on alternate ticks with the timeslice kept whole (docs/review_aicad.md):
+	a compromise, on so it can be felt in play; aicad3off is the other
+	side, and aicad2 still wins when asked */
+	if (!keep_search("aicad3off") && !keep_search("aicad2"))
+		keep_default_add("aicad3");
+	if (keep_search("m6off") || keep_search("mebench") || keep_search("gemeoverlap") || keep_search("geserial"))
+		return;
+	for (k = 0; k < (int)(sizeof(keep_defaults) / sizeof(keep_defaults[0])); k++)
+	{
+		if (keep_search(keep_defaults[k].off))
+			continue;
+		if (!strcmp(keep_defaults[k].word, "texpretouch") && !keep_search("gemeon"))
+			continue;
+		keep_default_add(keep_defaults[k].word);
+	}
+	/* b30's busiest frames fill the 128 KB buffer, and the ME then waits
+	for its parts (design_inflightkb.md); a size given in keep.txt wins */
+	if (keep_search("geinflight") && psp_keep_number("inflightkb", -1) < 0)
+		keep_default_add("inflightkb224");
+}
+#endif
 
 static void keep_load(void)
 {
@@ -910,7 +1120,7 @@ static void keep_load(void)
 
 	if (file >= 0)
 	{
-		length = sceIoRead(file, keep_words + 1, sizeof(keep_words) - 3);
+		length = sceIoRead(file, keep_words + 1, KEEP_FILE_BYTES);
 		sceIoClose(file);
 	}
 	if (length < 0)
@@ -921,56 +1131,71 @@ static void keep_load(void)
 	for (file = 0; keep_words[file]; file++)
 		if (keep_words[file] == '\n' || keep_words[file] == '\r' || keep_words[file] == '\t' || keep_words[file] == ',')
 			keep_words[file] = ' ';
+#ifndef PSP_MULTIPLAYER
+	keep_defaults_add();
+#endif
 	keep_generation++;
 	/* build 114: "lean" (E2, optimization_ranking.md): the play set-up with
 	the measuring off, notimers and nooverlay in one word */
 	psp_timers_off = keep_search("notimers") || keep_search("lean");
+	steps_every = keep_search("stepsall") ? 1 : STEPS_TIMED_EVERY;
 	if (keep_cache_lock < 0)
 		keep_cache_lock = sceKernelCreateSema("halo keep cache", 0, 1, 1, NULL);
 	platform_log("null path keeps:%s(keep.txt; skipped otherwise: transparent particles textures interpolation; also: noshadows nodecals nodetail nocull cullflip nooverlays fullparticles novfpu hwprofile hud100 hud115 hud130 hud145 hud160 hudnopush vehiclesawake flaresexact nohud noparticles fulllod awake sleepdebug audiodump savetest menutest ...)",
-		length ? keep_words : " nothing ");
+		strlen(keep_words) > 2 ? keep_words : " nothing ");
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
 	/* build 115 */
-	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar");
+	platform_log("keep words, continued: iostats gereads vramtexN edramcheck overlayfreefar inflightkbN inflightroom inflighttextold");
 	/* build 116: the restorations are on by default; these words turn each off */
-	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nometers lognohold statepages");
+	platform_log("keep words, restorations off: overlayfreenear clearblue seethroughflat senvflat planarfogoff notint waterwhite flaresnobipeds nodither detailgrey80 flashnearest nearseatedfar nearseatcine nometers lognohold statepages");
 	/* build 117: its own restorations, each turned off by these; and the
 	speed defaults' off words */
 	platform_log("keep words, build 117's restorations off: hudonemap glassflat lightcutone geoshare nopointlights ditherall; speed: vrammodels0; tests: ladderN exitatN");
 	/* build 118: its restoration and fix, each turned off by these; its exact
 	speed-ups' off words; their self-checks; and the instruments */
-	platform_log("keep words, build 118's: restoration off: overlaywallnear; fix off: mapfilesopen; speed off: restlesscheck spherewalk nearspherefull multiscan verifyvectors tcutfull; checks: spherememocheck nearspherecheck multicheck tcutcheck; instruments: mebench, gemeoverlap (opt-in)");
+	platform_log("keep words, build 118's: restoration off: overlaywallnear; fix off: mapfilesopen; speed off: restlesscheck nearspherefull multiscan verifyvectors tcutfull; tests: spherememo (the sphere memo, off by default since 2026-10-22); checks: spherememocheck nearspherecheck multicheck tcutcheck; instruments: mebench, gemeoverlap (opt-in)");
 	/* build 119: its exact speed-ups' off words, their self-checks, the
 	clock fix's off word, and the PSP probes */
 	platform_log("keep words, build 119's: speed off: nearclusterfull skinaxisloop rigidrunsfull surfaceqsort; checks: nearclustercheck skinaxischeck rigidrunscheck surfacesortcheck; fix off: vblankslow; instruments: probes (opt-in)");
 	platform_log("keep words, build 120's: speed off: itemsawake; check: itemsleepcheck; Media Engine (opt-in): mehalt mefinishslow");
 	platform_log("keep words, build 123's: speed off: aiprofilefull; speed, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash meraysminN weapontracksleep; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); lit items: litemsawake; recon: activecensus");
-	platform_log("keep words, the controls: off: crouchhold (crouch held, under the engine's 98%% rule), actiontap (the X button as the engine reads it); actionholdN (ms before d-pad left acts, 250); the nub: nubdeadN nubreachN (percent of half travel; or ms0:/halo/nub.txt); the profile until Halo's menu sets it: buttonpresetN (0-4) stickpresetN (0-3) looksensN (1-10) lookinvert");
+	platform_log("keep words, the controls: off: crouchhold (crouch held, under the engine's 98%% rule), actiontap (the X button as the engine reads it), menuselectpress (select in the menus is back on its press, chords and all, not a tap); actionholdN (ms before d-pad left acts, 180); the nub: nubdeadN nubreachN (percent of half travel; or ms0:/halo/nub.txt); the profile until Halo's menu sets it: buttonpresetN (0-4) stickpresetN (0-3) looksensN (1-10) lookinvert");
 	platform_log("keep words, build 124's: speed off: weapontrackawake (weapontracksleep retired); retired: cutroom cutroomoff (see the cut stream's line); restorations off: levelexactoff (the level drawn from the eye as the GE rounds it), machinefuncsheld (sleeping machines hold their functions); checks: funccheck; tests: shotrunN (N frames in a row at each shotevery moment)");
 	platform_log("keep words, the scene ladder: sceneladder (each campaign map's opening cutscene, one after another; the game plays on after the last)");
-	platform_log("keep words, the level copies' room: fix off: streamroomoff (a material with no room for its copy tried again on every draw); tests: streamsqueezeN (the copies held to N KB of the arena, none from the general heap)");
+	platform_log("keep words, the transition check (opt-in): transwalk (each loading zone of the level in turn, then any BSP none reaches, forced), transwalkN (N s at each), transwaitN (not before N s in), transwon (then the mission's end, game_won, and 25 s into what follows)");
+	platform_log("keep words, the level copies' room: fix off: streamroomoff (a material with no room for its copy tried again on every draw); tests: streamsqueezeN (the copies held to N KB of the arena, none from the general heap); levelcarveN (KB of the texture RAM cache for the copies past the arena, on maps whose geometry cache is carved there; 768 by default, levelcarve0 none); heap: heaproom256 (256 KB of the arena's room in the level carve, from the geometry cache; on by default with geinflight and geo2 or geo15), heaproomoff (not even then); campaign only");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
 	platform_log("keep words, build 122's: Media Engine: meraysoff (perception's rays back on the main CPU), meraysfrontN (checked by perccheck)");
-	platform_log("keep words, build 122's look calls (opt-in, for Sheepdog01's A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
-	platform_log("keep words, build 122's behaviour calls (opt-in, for Sheepdog01's A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
+	platform_log("keep words, build 122's look calls (opt-in, for an A/B): seethroughvfpu lightmerge foliagetwopass sceneryhalf");
+	platform_log("keep words, build 122's behaviour calls (opt-in, for an A/B): aihalf aihalfdistN aihalfview; campaign only: machinesfar posehalf");
+	platform_log("keep words, compromises: lodpspoff (models' detail picked at the PSP's size, not 1.76x nearer; on by default, lodpsp still accepted), lodpspall (the nearer pick with no floor for models whose lower levels lose a part); recon: lodpspscan (every model's floor logged as a map's first model is drawn)");
+	platform_log("keep words, compromises (opt-in, for an A/B): campaign only: aicad2 (each actor thinks on every other tick, staggered), aicad3 (the same, the timeslice at full rate); recon: aioutcome");
 	platform_log("keep words, the Media Engine's wake: opt-in: mewake (the ME started again after a sleep; mewakeoff wins over it); fix off: meresetwhole (the reset register written whole); recon: mewaketest");
 	platform_log("keep words, the level given from an origin near the eye: restoration off: levellocaloff (the level's copies from the world's origin, as before); instrument (opt-in): geprecision (the GE's precision measured as the first frame begins: the log's geprecision lines)");
 	platform_log("keep words, see-through as the Xbox draws it: restorations off: seethroughpush (the port's depth nudges for surfaces that aren't decals), seethroughwrap (every map repeated), waterunfogged (added water unfogged); look call (opt-in): ditherhalf ditherlift (offsets +4) dithershift (detail and sky passes dithered, the pattern moved each pass) dithershiftall (every blend); recon: noglowpass nobackpass ditherprobe (the GE's rounding, logged at start-up)");
 	platform_log("keep words, build 126's: speed off: pathclearfull (a path search's whole state cleared before it, RV2), deletedwalkall (a deleted object's fix-up walks every object, RV1), aipathold (the nearby firing positions test searches first, smoothing scans from the first, RV4); checks: pathclearpoison deletedcheck aipathcheck; restorations off: weaponstateold (the HUD's weapon state left as the stack held it, RB1), aimchangeold (a still unit with no aiming limit at full aiming change, RH1)");
-	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times)");
+	platform_log("keep words, build 126's instrument (opt-in): frametrace (every frame timed and split; a line each 300 frames: the slow frames, the game time lost, the run's 99%% and 99.9%% frame times; and a framelate line: the late frames, held or not, and their gaps); hblow (the heartbeat thread below the game thread)");
 	platform_log("keep words, build 127's: speed off: logeachline (each log line written at once for the first 20 s, its newline apart)");
 	platform_log("keep words, build 128's: speed off: obscurertest (the camera's ray through every object as each model pass begins, which only a debug display reads), nearautofull (nearauto's level spheres gathered whole, not stopped at the first surface); check: nearautocheck");
 	platform_log("keep words, build 129's: speed off: flaresfull (a flare's ray tests the objects even when the level hides it), fractiondouble (the animations' and periodic functions' fractions in software double); check: flarescheck, fractioncheck");
 	platform_log("keep words, build 130's instruments (opt-in): posepredict (how often a tick's base pose is the frame after its last), framecrc (each finished picture hashed and logged with the game time; tools/framecmp.py compares two runs), readswait (every cache file read waited for as it is asked, so pictures do not depend on read timing; slower)");
-	platform_log("keep words, build 130's default change (Sheepdog01, 2026-10-15): cutless on (triangles and cut pieces wholly off the screen left out); cutlessoff cuts and draws them as before");
+	platform_log("keep words, build 130's default change (2026-10-15): cutless on (triangles and cut pieces wholly off the screen left out); cutlessoff cuts and draws them as before");
 	platform_log("keep words, build 131's (opt-in while proven): poseahead (next tick's base poses made ahead on the main CPU), poseaheadme (made ahead on the Media Engine during the frame's drawing, for animations in the tags or resident in the animation cache), poseaheadcheck (made ahead and decoded anyway, compared bit for bit)");
 	platform_log("keep words, build 131's: speed off: surfaceboundoff (the level sphere walk tests every surface it reaches, out of reach or not); check: surfacetestcheck");
 	platform_log("keep words, build 132's: speed off: poseaheadoff (the Media Engine pose job off: on by default where the ME runs the job ring); as before: memarksatlaunch (the launch's register read also reads the ME's own two words while it runs)");
 	platform_log("keep words, build 132's recon (emulator): nmreaders (who first reads each object's node matrices after they're computed, by nodes, and the call sites of other objects' reads)");
 	platform_log("keep words, build 136's: wake-on-write on in local games (a sleeping object checksummed only when something marked it since its last check); speed off: wakeonwriteoff (every sleeper summed every tick); opt-in: wakeonwrite (on in networked games too); check: wakecheck (every sleeper summed anyway, an unmarked change logged with the words that changed). wakeonwrite and wakecheck win over the off word");
+	platform_log("keep words, the profile: stepsall (every frame's steps timed; otherwise one frame in %d, and profile.txt's figures scaled by the frames each stands for)", STEPS_TIMED_EVERY);
+	platform_log("keep words, models as the Xbox draws them: restorations off: seethroughtwosided (see-through parts drawn from both sides), nolayers (shaders' extra layers left out), nearseatcine (a seated player's cinematics keep the near plane out), noselfocclude (Cortana's back layers drawn over her front, her parts sorted with the rest); look calls (opt-in, for an A/B): camoshimmer (active camouflage as its own map added faintly), genericnoise (a generic shader's second map drawn again over it, moving); instruments: neardump (what set the near plane, on shot frames), shotfromN (shots start at N s), scriptsdump (scenario scripts at load; recon builds)");
 	platform_log("keep words, shelved (docs/shelf.md): nwbatch and its kin built in only with PSP_SHELF=1; still built but shelved, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash (the b123 ME hygiene), mewake, mewarmtest, mefinishslow");
+	platform_log("keep words, the heap at each level change (opt-in): heapmap (its gaps and blocks of 16 KB or more, with what asked for each); recon builds only: poolpeaks (each game-state array's peak against its maximum)");
+	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
+#ifndef PSP_MULTIPLAYER
+	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
+		keep_defaults_added[0] ? keep_defaults_added : " none");
+#endif
 }
 
 /* build 102: whether keep.txt has been read yet (psp_trace.c's stick lock
@@ -1194,13 +1419,19 @@ unsigned long psp_sound_cache_bytes(void)
 	{
 		int kb = psp_keep_number("sound", SOUND_CACHE_DEFAULT_KB);
 
+		/* "soundedram" (psp_dsound.c): the eDRAM's room at most */
+		extern unsigned long psp_sound_edram_bytes(void);
+		unsigned long room = psp_sound_edram_bytes();
+
 		if (kb < 512)
 			kb = 512;
 		if (kb > 4096)
 			kb = 4096;
 		bytes = ((unsigned long)kb * 1024) & ~0xFFFul;
+		if (room && bytes > room)
+			bytes = room;
 		platform_log("sound cache: %lu KB (%s)", bytes / 1024,
-			kb == SOUND_CACHE_DEFAULT_KB ? "the default" : "keep.txt's sound word");
+			room ? "soundedram: the ME's eDRAM" : kb == SOUND_CACHE_DEFAULT_KB ? "the default" : "keep.txt's sound word");
 	}
 	return bytes;
 }
@@ -1214,6 +1445,220 @@ static int profile_compare(const void *a, const void *b)
 
 /* writes the window's table to log/profile.txt (and its top lines to the log)
 and starts a new one; frames is how many frames the window rendered */
+#ifdef PSP_RECON
+/* ---------- the measurement round's counters (PSP_RECON=1;
+docs/plan_measurement_round.md, the new counters). Their hooks sit in hot
+code (each object's update and draw, each particle's birth), so only recon
+builds carry them, each behind its keep word */
+char *tag_get_name(long tag_index);
+
+/* a tag's name without its folders, for lines that must stay short. A tag
+index carries its salt in the high half, and a map's salts are 0x8000 and
+over, so a real tag index is negative as a long: NONE (-1) is the only "no
+tag", here and in the counters below */
+static const char *tag_short_name(long tag)
+{
+	const char *name = tag != -1 ? tag_get_name(tag) : NULL;
+	const char *slash;
+
+	if (!name)
+		return "?";
+	slash = strrchr(name, '\\');
+	return slash ? slash + 1 : name;
+}
+
+/* "objcost": each object definition's cost, its updates on the tick (timed
+on the sampled ticks, objects.c, as the per-type line) and its drawing
+(render_objects.c's per-object call, with the objects it carries, and its
+shadow), FIXES_RECON #objcost. Which vehicle costs what (the Pelican, the
+dropship, the Banshee against the Warthog and the Scorpion) */
+#define OBJCOST_SLOTS 128
+static struct { long definition; int type; unsigned long tick_us, updates, draw_us, draws; } objcost[OBJCOST_SLOTS];
+static int objcost_on = -1;
+
+void psp_objcost(long definition, int type, int drawing, unsigned long microseconds, unsigned long count)
+{
+	unsigned int k, n;
+
+	if (objcost_on < 0)
+		objcost_on = psp_keep("objcost") != 0;
+	if (!objcost_on || definition == -1)
+		return;
+	k = ((unsigned long)definition * 2654435761u) >> 25;
+	for (n = 0; n < OBJCOST_SLOTS; n++, k = (k + 1) % OBJCOST_SLOTS)
+	{
+		if (!objcost[k].updates && !objcost[k].draws)
+		{
+			objcost[k].definition = definition;
+			objcost[k].type = type;
+		}
+		if (objcost[k].definition == definition)
+		{
+			if (drawing)
+			{
+				objcost[k].draw_us += microseconds;
+				objcost[k].draws += count;
+			}
+			else
+			{
+				objcost[k].tick_us += microseconds;
+				objcost[k].updates += count;
+			}
+			return;
+		}
+	}
+}
+
+/* "particlecensus": particles asked for, by the effect that asked (or, for
+a particle made outside an effect, by the particle), and what became of
+each: made, left out unseen at birth, refused over the budget, thinned out
+of a burst, or no room in the pool (particles.c, effects.c; FIXES_RECON
+#particlecensus) */
+#define PARTICLE_CENSUS_SLOTS 64
+#define PARTICLE_OUTCOMES 5
+static const char *const particle_outcomes[PARTICLE_OUTCOMES] = { "made", "unseen", "budget", "thinned", "pool full" };
+static struct { long tag; int from_effect; unsigned long count[PARTICLE_OUTCOMES]; } particle_census[PARTICLE_CENSUS_SLOTS];
+static int particle_census_on = -1;
+/* the effect whose particle is being made (effects.c), -1 for none */
+long psp_particle_effect = -1;
+
+void psp_particle_census(long effect, long particle, int outcome)
+{
+	long tag = effect != -1 ? effect : particle;
+	unsigned int k, n;
+
+	if (particle_census_on < 0)
+		particle_census_on = psp_keep("particlecensus") != 0;
+	if (!particle_census_on || tag == -1 || outcome < 0 || outcome >= PARTICLE_OUTCOMES)
+		return;
+	k = ((unsigned long)tag * 2654435761u) >> 26;
+	for (n = 0; n < PARTICLE_CENSUS_SLOTS; n++, k = (k + 1) % PARTICLE_CENSUS_SLOTS)
+	{
+		int o, empty = 1;
+
+		for (o = 0; o < PARTICLE_OUTCOMES; o++)
+			if (particle_census[k].count[o])
+				empty = 0;
+		if (empty)
+		{
+			particle_census[k].tag = tag;
+			particle_census[k].from_effect = effect != -1;
+		}
+		if (particle_census[k].tag == tag && particle_census[k].from_effect == (effect != -1))
+		{
+			particle_census[k].count[outcome]++;
+			return;
+		}
+	}
+}
+
+static void recon_counters_report(SceUID file, double seconds, unsigned long frames, unsigned long ticks)
+{
+	static char report[6144];
+	char line[512];
+	int report_length = 0, length, k, shown;
+
+	if (objcost_on > 0 && (frames || ticks))
+	{
+		/* the costliest first: ms a tick updating plus ms a frame drawing */
+		static const char *const types[] = { "biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+			"machine", "control", "light", "placeholder", "sound scenery" };
+		double type_tick[12] = { 0 }, type_draw[12] = { 0 };
+
+		report_length += snprintf(report + report_length, sizeof(report) - report_length,
+			"objcost: %-36s %-10s %9s %9s %9s %9s\n", "definition", "type", "tick ms", "updates", "frame ms", "draws");
+		length = snprintf(line, sizeof(line), "objcost (ms a tick updating, updates a tick | ms a frame drawing, with what it carries, draws a frame):");
+		for (k = 0; k < OBJCOST_SLOTS; k++)
+			if (objcost[k].type >= 0 && objcost[k].type < 12)
+			{
+				type_tick[objcost[k].type] += ticks ? objcost[k].tick_us / 1000.0 / ticks : 0.0;
+				type_draw[objcost[k].type] += frames ? objcost[k].draw_us / 1000.0 / frames : 0.0;
+			}
+		for (shown = 0; shown < 24; shown++)
+		{
+			int best = -1;
+			double best_cost = 0.0;
+
+			for (k = 0; k < OBJCOST_SLOTS; k++)
+			{
+				double cost = (ticks ? objcost[k].tick_us / 1000.0 / ticks : 0.0) + (frames ? objcost[k].draw_us / 1000.0 / frames : 0.0);
+
+				if ((objcost[k].updates || objcost[k].draws) && cost > best_cost)
+				{
+					best = k;
+					best_cost = cost;
+				}
+			}
+			if (best < 0)
+				break;
+			report_length += snprintf(report + report_length, sizeof(report) - report_length, "objcost: %-36.36s %-10s %9.3f %9.2f %9.3f %9.2f\n",
+				tag_short_name(objcost[best].definition), objcost[best].type >= 0 && objcost[best].type < 12 ? types[objcost[best].type] : "?",
+				ticks ? objcost[best].tick_us / 1000.0 / ticks : 0.0, ticks ? (double)objcost[best].updates / ticks : 0.0,
+				frames ? objcost[best].draw_us / 1000.0 / frames : 0.0, frames ? (double)objcost[best].draws / frames : 0.0);
+			if (shown < 6 && length < (int)sizeof(line) - 80)
+				length += snprintf(line + length, sizeof(line) - length, " %.24s %.2f, %.1f | %.2f, %.1f;", tag_short_name(objcost[best].definition),
+					ticks ? objcost[best].tick_us / 1000.0 / ticks : 0.0, ticks ? (double)objcost[best].updates / ticks : 0.0,
+					frames ? objcost[best].draw_us / 1000.0 / frames : 0.0, frames ? (double)objcost[best].draws / frames : 0.0);
+			objcost[best].updates = objcost[best].draws = 0; /* shown: out of the running */
+		}
+		platform_log("%s", line);
+		length = snprintf(line, sizeof(line), "objcost by type (ms a tick updating | ms a frame drawing):");
+		for (k = 0; k < 12 && length < (int)sizeof(line) - 48; k++)
+			if (type_tick[k] > 0.0 || type_draw[k] > 0.0)
+				length += snprintf(line + length, sizeof(line) - length, " %s %.2f | %.2f;", types[k], type_tick[k], type_draw[k]);
+		platform_log("%s", line);
+		memset(objcost, 0, sizeof(objcost));
+	}
+	if (particle_census_on > 0)
+	{
+		unsigned long totals[PARTICLE_OUTCOMES] = { 0 };
+		int o;
+
+		for (k = 0; k < PARTICLE_CENSUS_SLOTS; k++)
+			for (o = 0; o < PARTICLE_OUTCOMES; o++)
+				totals[o] += particle_census[k].count[o];
+		length = snprintf(line, sizeof(line), "particlecensus over %.1f s: made %lu, unseen %lu, budget %lu, thinned %lu, pool full %lu; by effect (made/unseen/budget/thinned/full), the most asked first:",
+			seconds, totals[0], totals[1], totals[2], totals[3], totals[4]);
+		report_length += snprintf(report + report_length, sizeof(report) - report_length,
+			"particlecensus: %-36s %6s %8s %8s %8s %8s %8s\n", "effect (or particle)", "effect", particle_outcomes[0], particle_outcomes[1],
+			particle_outcomes[2], particle_outcomes[3], particle_outcomes[4]);
+		for (shown = 0; shown < 20; shown++)
+		{
+			int best = -1;
+			unsigned long best_asked = 0;
+
+			for (k = 0; k < PARTICLE_CENSUS_SLOTS; k++)
+			{
+				unsigned long asked = 0;
+
+				for (o = 0; o < PARTICLE_OUTCOMES; o++)
+					asked += particle_census[k].count[o];
+				if (asked > best_asked)
+				{
+					best = k;
+					best_asked = asked;
+				}
+			}
+			if (best < 0)
+				break;
+			report_length += snprintf(report + report_length, sizeof(report) - report_length, "particlecensus: %-36.36s %6s %8lu %8lu %8lu %8lu %8lu\n",
+				tag_short_name(particle_census[best].tag), particle_census[best].from_effect ? "yes" : "no",
+				particle_census[best].count[0], particle_census[best].count[1], particle_census[best].count[2],
+				particle_census[best].count[3], particle_census[best].count[4]);
+			if (shown < 6 && length < (int)sizeof(line) - 72)
+				length += snprintf(line + length, sizeof(line) - length, " %.24s %lu/%lu/%lu/%lu/%lu;", tag_short_name(particle_census[best].tag),
+					particle_census[best].count[0], particle_census[best].count[1], particle_census[best].count[2],
+					particle_census[best].count[3], particle_census[best].count[4]);
+			memset(particle_census[best].count, 0, sizeof(particle_census[best].count));
+		}
+		platform_log("%s", line);
+		memset(particle_census, 0, sizeof(particle_census));
+	}
+	if (file >= 0 && report_length)
+		sceIoWrite(file, report, report_length);
+}
+#endif
+
 static void profile_report(double seconds, unsigned long frames, unsigned long ticks)
 {
 	static struct profile_slot copy[PROFILE_SLOTS];
@@ -1225,6 +1670,8 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 	SceUID file;
 	char line[160];
 
+	double scale;
+
 	if (!profile_slots)
 		return;
 	memcpy(copy, profile_slots, sizeof(copy));
@@ -1233,12 +1680,18 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 		profile_slots[index].microseconds = 0;
 		profile_slots[index].calls = 0;
 	}
+	/* the untimed frames' share, as the timed ones spent it */
+	scale = steps_window_timed ? (double)steps_window_frames / steps_window_timed : 1.0;
+	steps_window_frames = steps_window_timed = 0;
 	for (index = 0; index < PROFILE_SLOTS; index++)
 	{
 		if (copy[index].name && copy[index].microseconds)
 		{
-			copy[used++] = copy[index];
-			total += copy[index].microseconds;
+			copy[used] = copy[index];
+			copy[used].microseconds = (unsigned long)(copy[index].microseconds * scale + 0.5);
+			copy[used].calls = (unsigned long)(copy[index].calls * scale + 0.5);
+			total += copy[used].microseconds;
+			used++;
 		}
 	}
 	qsort(copy, used, sizeof(copy[0]), profile_compare);
@@ -1264,6 +1717,9 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 	if (file >= 0)
 		sceIoWrite(file, report, report_length);
 	object_report(file, ticks);
+#ifdef PSP_RECON
+	recon_counters_report(file, seconds, frames, ticks);
+#endif
 	if (file >= 0)
 		sceIoClose(file);
 }
@@ -1292,10 +1748,11 @@ void psp_fpu_mask_traps(void)
 
 void psp_tex_save_learned(void);
 void psp_me_exit(const char *why);
+void psp_ge_exit_drain(void);
 
 /* builds 88-104 kept ms0:/halo/log/exit.txt open from start-up to record
 how far the HOME exit got. It answered its question (b90: ARK-4 Kommander's
-Exit, the only way Sheepdog01 quits, never calls the exit callback at all), and
+Exit, the usual way to quit, never calls the exit callback at all), and
 build 105 gives its descriptor back: b104 run 1 showed the PSP lets the
 game hold only about ten files at once */
 static int exit_callbacks_registered[3] = { 1, 1, 1 };
@@ -1304,12 +1761,18 @@ static int exit_callbacks_registered[3] = { 1, 1, 1 };
 static void exit_game(const char *why)
 {
 	exiting = 1;
+	/* the GE's frame and list finished before the ME is stopped under it
+	(psp_ge.c, psp_ge_exit_drain); only from the game's own thread: HOME
+	comes on the callback thread, mid-way through whatever the game does,
+	and geinflight's own failure exits from inside the GE's records */
+	if (strcmp(why, "HOME") != 0 && strncmp(why, "geinflight", 10) != 0)
+		psp_ge_exit_drain();
 	/* the Media Engine first, before any Memory Stick work: the XMB reloads
 	over the memory it runs from (an ME left running crashed the PSP on
 	HOME), and a file write that blocked ahead of it would hang the exit
 	there. psp_me_exit leaves it halted or held in reset, the states the
 	firmware's own ME boot starts from */
-	psp_me_exit(why);
+	PSP_METRICS_ME_EXIT(why);
 	platform_log("%s: exiting", why);
 	log_flush();
 	/* build 89: no texture save here any more. The learned binds are saved
@@ -1318,14 +1781,13 @@ static void exit_game(const char *why)
 	sceKernelExitGame();
 }
 
-#ifdef PSP_MULTIPLAYER
-/* the multiplayer build's own tests end the game this way too
-(psp_online.c's onlinedoneN, for the emulator) */
+/* for the other units: the multiplayer build's own tests (psp_online.c's
+onlinedoneN, for the emulator), the bake check (psp_bakecheck.c) and the
+transition check's end (psp_fixups.py, FIXES_TRANSITIONS) */
 void psp_exit_game(const char *why)
 {
 	exit_game(why);
 }
-#endif
 
 static int exit_callback(int a, int b, void *c)
 {
@@ -1335,7 +1797,7 @@ static int exit_callback(int a, int b, void *c)
 }
 
 /* build 108: a level's end asks for the next map (main_change_map_name,
-psp_fixups.py). The stick holds the maps Sheepdog01 baked, not the whole campaign,
+psp_fixups.py). The stick holds the maps baked for the test, not the whole campaign,
 and with the next one missing the game showed its "damaged disc" error and
 looped there for good; b107's run of b30 crashed in that loop instead. The
 level is finished, so the run ends here: the game exits, the log saying
@@ -1364,6 +1826,8 @@ void psp_geo_resume(void);
 void psp_io_reopen_all(int shift, char *line, int size);
 void psp_me_sleep_stop(void);
 void psp_me_wake_request(void);
+void psp_ge_inflight_room_suspend(void);
+void psp_ge_inflight_room_resume(void);
 
 static int power_callback(int unknown, int flags, void *argument)
 {
@@ -1373,6 +1837,9 @@ static int power_callback(int unknown, int flags, void *argument)
 		/* the Media Engine stopped before the sleep: the main CPU runs its
 		jobs until the wake's restart has it answering again */
 		psp_me_sleep_stop();
+		/* geinflight's records, when they live in the partition: the game
+		thread holds before its next one (psp_ge.c) */
+		psp_ge_inflight_room_suspend();
 		/* build 68: the geometry cache's blocks are in the same partition; its
 		read in flight is waited for first */
 		psp_geo_suspend();
@@ -1391,6 +1858,7 @@ static int power_callback(int unknown, int flags, void *argument)
 		}
 		psp_tex_resume();
 		psp_geo_resume();
+		psp_ge_inflight_room_resume();
 		/* not here: this thread can't know the game's threads are out of
 		the ME's jobs. The main thread's next frame end starts it */
 		psp_me_wake_request();
@@ -1449,6 +1917,17 @@ unsigned long psp_heartbeat_clock(void)
 void psp_player_snapshot(char *text, int size);
 unsigned long psp_tag_loaded_calls = 0; /* cache_files.c (psp_fixups.py) */
 static char player_text[160] = "player: not yet";
+/* the local biped's crouch, 0 to 1 (-1: none), taken with player_text on the
+game's thread: the heartbeat reading the player's unit itself raced a
+checkpoint revert restoring it, and asserted on a half-loaded unit index.
+Read through a call that isn't inlined, so the heartbeat's branches stay
+those its profile counted (PSP_PGO_STRICT) */
+static volatile float player_crouch_now = -1.0f;
+
+static __attribute__((noinline)) float player_crouch_copy(void)
+{
+	return player_crouch_now;
+}
 static unsigned long ticks_since_snapshot;
 
 /* ---------- build 87: "benchrun" (launch menu): a fixed benchmark
@@ -1475,7 +1954,7 @@ static const struct
 {
 	/* build 88: z 0.55 (b87's 0.20 put the feet in the floor: the game
 	pushed the player 0.8 units away each time, and b87 placed him again
-	every window, which made this view's numbers noisy; Sheepdog01's b86 spot
+	every window, which made this view's numbers noisy; b86's spot
 	itself reads 0.53) */
 	{ "blue base, b86 spot", { 37.74f, -88.22f, 0.55f, 0.25f, 0.97f, 0.0f } },
 	{ "red base front", { 95.0f, -172.0f, 0.45f, 0.0f, 1.0f, 0.05f } },
@@ -1630,7 +2109,7 @@ static void bench_tick(void)
 	else if (config == BENCH_VRAM_BUSY)
 		psp_ge_setting(22, 1, -1);	/* the load's size held: measure */
 	/* build 88: put at the spot when the view changes, and again only if the
-	game has moved the player off it (b87: every window, and Sheepdog01 saw the
+	game has moved the player off it (b87: every window, and the tester saw the
 	teleport repeat; each one can hitch the window it starts) */
 	{
 		extern int psp_player_origin(float *out);
@@ -1772,7 +2251,7 @@ static void stack_report(void)
 			continue;
 		/* build 97: our own threads' stacks only. b95/b96 read every
 		thread's, the system's idle threads too, whose stacks are kernel
-		memory: on the PSP a user-mode read there is an exception (Sheepdog01's b96
+		memory: on the PSP a user-mode read there is an exception (b96's
 		runs 1 and 2 both died at tick 75, the first time this ran; the
 		emulator doesn't protect kernel memory) */
 		if (!(info.attr & PSP_THREAD_ATTR_USER) || (unsigned int)info.stack < 0x08800000u ||
@@ -1802,8 +2281,8 @@ static void bus_probe(const char *when); /* build 105, below */
 
 
 /* build 117: keep.txt's "ladderN": the campaign's openings one after
-another, N seconds of game time each, with nobody at the controls (Sheepdog01,
-2026-10-12: a test session that runs itself). N seconds into a map, the
+another, N seconds of game time each, with nobody at the controls
+(2026-10-12: a test session that runs itself). N seconds into a map, the
 next one in the campaign's order loads; one that isn't on the stick is
 passed over, and after the last the game exits. Start it from the launch
 menu on any campaign map. The map's name comes from the cache file's
@@ -1855,7 +2334,7 @@ static int ladder_load_next(const char *from)
 }
 
 /* keep.txt's "sceneladder": the openings' cutscenes only, for a showcase
-(Sheepdog01, 2026-10-14). A map's turn ends once its cutscene has been over for
+(2026-10-14). A map's turn ends once its cutscene has been over for
 SCENE_SETTLE of game time: several openings run one scene into the next
 with a moment's gap, and the wait keeps a chain whole. A map whose
 cutscene hasn't started by SCENE_WAIT has none, and is passed over;
@@ -1941,6 +2420,32 @@ static void ladder_tick(unsigned long ticks_seen)
 	exit_game("ladder done");
 }
 
+/* teleport.txt's and route.txt's spot: the player put there and turned, or,
+with "flycam" (debug tools), the debug camera (debug_camera_load's flying
+camera) put there looking along the direction and the player left alone.
+The spot is then the eye, as a screenshot's "from" and "looking" give it,
+and neither a cutscene's camera nor where the player is gets in the way:
+a10's corridors can be seen while its opening still plays, their BSP put in
+with commands.txt's switch_bsp */
+static void spot_visit(const float *spot)
+{
+	extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
+#ifdef PSP_DEBUG_TOOLS
+	static int fly = -1;
+
+	if (fly < 0)
+		fly = psp_keep("flycam") != 0;
+	if (fly)
+	{
+		extern void psp_director_fly(float x, float y, float z, float fx, float fy, float fz); /* director.c (psp_fixups.py) */
+
+		psp_director_fly(spot[0], spot[1], spot[2], spot[3], spot[4], spot[5]);
+		return;
+	}
+#endif
+	psp_player_teleport(spot[0], spot[1], spot[2], spot[3], spot[4], spot[5]);
+}
+
 /* build 126: "frametrace" (psp_frametrace.c) */
 void psp_frametrace_tick(unsigned long microseconds);
 void psp_frametrace_frame(unsigned long draw_us, unsigned long ticks, unsigned long end_us);
@@ -1983,6 +2488,14 @@ void psp_tick_account(unsigned long microseconds)
 		}
 		if (ticks_seen % 900 == 75)
 			stack_report();
+		if (ticks_seen % 1800 == 75)
+		{
+			/* "poolpeaks": the peaks so far, every 60 s of game time */
+			extern void psp_pool_peaks_report(const char *label, int level_end) __attribute__((weak));
+
+			if (psp_pool_peaks_report)
+				psp_pool_peaks_report("every 60 s", 0);
+		}
 	}
 
 	/* build 105: the bus probe's second reading, 10 s into play */
@@ -2111,13 +2624,12 @@ steps in order: the console has no way to wait */
 
 		if (file)
 		{
-			extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
 			float p[6];
 
 			if (fscanf(file, "%f %f %f %f %f %f", &p[0], &p[1], &p[2], &p[3], &p[4], &p[5]) == 6)
 			{
 				platform_log("teleport.txt: to %.2f %.2f %.2f looking %.2f %.2f %.2f", p[0], p[1], p[2], p[3], p[4], p[5]);
-				psp_player_teleport(p[0], p[1], p[2], p[3], p[4], p[5]);
+				spot_visit(p);
 			}
 			fclose(file);
 		}
@@ -2126,7 +2638,7 @@ steps in order: the console has no way to wait */
 	forward_y forward_z": the player put at each spot in turn, at that many
 	seconds of play (game ticks), each line once. A route replayed from a
 	hardware log's "player: at" lines (tools/route_from_log.py), so the
-	emulator can size the caches on the route Sheepdog01 actually played */
+	emulator can size the caches on the route actually played */
 	{
 		static FILE *route = NULL;
 		static int route_done = 0;
@@ -2157,9 +2669,7 @@ steps in order: the console has no way to wait */
 			if ((float)ticks_seen < next[0] * 30.0f)
 				break;
 			{
-				extern void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz);
-
-				psp_player_teleport(next[1], next[2], next[3], next[4], next[5], next[6]);
+				spot_visit(next + 1);
 				route_count++;
 				if (route_count % 10 == 1)
 					platform_log("route.txt: spot %lu at %.1f s: %.2f %.2f %.2f", route_count, next[0], next[1], next[2], next[3]);
@@ -2305,6 +2815,39 @@ steps in order: the console has no way to wait */
 	}
 #endif
 	ladder_tick(ticks_seen); /* build 117 */
+	{
+		extern void psp_transwalk_tick(void); /* psp_fixups.py (FIXES_TRANSITIONS) */
+
+		psp_transwalk_tick();
+	}
+	{
+		/* "saveeveryN" (a checkpoint every N s of game time) and "revertatN"
+		(the last one reverted to at game second N): the checkpoint writer's
+		timing over many checkpoints on the PSP, and, with statecrc, whether a
+		format restores the game state exactly (two runs that differ only in
+		the format must play on identically after the revert) */
+		static int every = -2, revert_at = -2;
+
+		if (every == -2 && psp_keep_loaded())
+		{
+			every = psp_keep_number("saveevery", 0);
+			revert_at = psp_keep_number("revertat", 0);
+		}
+		if ((every > 0 && ticks_seen % ((unsigned long)every * 30) == 0) ||
+			(revert_at > 0 && ticks_seen == (unsigned long)revert_at * 30))
+		{
+			extern void main_save_map_nonsafe(void);
+			extern void main_revert_map(void);
+			int reverting = revert_at > 0 && ticks_seen == (unsigned long)revert_at * 30;
+
+			psp_player_snapshot(player_text, sizeof(player_text));
+			platform_log("saveevery: %s at tick %lu (%s)", reverting ? "revert" : "checkpoint", ticks_seen, player_text);
+			if (reverting)
+				main_revert_map();
+			else
+				main_save_map_nonsafe();
+		}
+	}
 	if ((ticks_seen == 300 || ticks_seen == 450) && psp_keep("savetest"))
 	{
 		/* the main loop does both between ticks, as for the campaign's own
@@ -2324,12 +2867,17 @@ steps in order: the console has no way to wait */
 	{
 		ticks_since_snapshot = 0;
 		psp_player_snapshot(player_text, sizeof(player_text));
+		{
+			extern float psp_player_crouch(void);
+
+			player_crouch_now = psp_player_crouch();
+		}
 	}
 	tick_count++;
 	tick_total += microseconds;
 	if (microseconds > tick_maximum)
 		tick_maximum = microseconds;
-	psp_frametrace_tick(microseconds); /* build 126 */
+	PSP_METRICS_FRAMETRACE_TICK(microseconds); /* build 126 */
 }
 
 void psp_ge_frame_end(void);
@@ -2340,7 +2888,7 @@ void psp_phase(int phase);
 4+). With interpolation off (its default on the PSP), a frame shows the
 state of the last tick: frames alternating 1 and 2 ticks move the world in
 uneven steps, which reads as judder in fast turns (the warthog's donut
-bounce, Sheepdog01 b80: a candidate cause). keep word "interpolation" smooths it */
+bounce, b80: a candidate cause). keep word "interpolation" smooths it */
 static unsigned long ticks_per_frame_histogram[5];
 /* the last frame's length, for the mixer's dry gaps (psp_dsound.c): a gap
 follows a frame longer than the streams' queue */
@@ -2363,9 +2911,10 @@ void psp_frame_account(unsigned long microseconds)
 	psp_ge_frame_end();
 	psp_phase(0);
 	/* build 126: "frametrace" (psp_frametrace.c) */
-	psp_frametrace_frame(microseconds, ticks, psp_heartbeat_clock() - end_start);
+	PSP_METRICS_FRAMETRACE_FRAME(microseconds, ticks, psp_heartbeat_clock() - end_start);
 	psp_last_frame_us = microseconds;
 	frame_count++;
+	steps_frame_edge();
 	frame_total += microseconds;
 	if (microseconds > frame_maximum)
 		frame_maximum = microseconds;
@@ -2390,7 +2939,14 @@ static struct
 	volatile unsigned long long phase_count[HW_PHASES][HW_COUNTERS];
 	volatile unsigned int phase_changes;
 	volatile unsigned int cop0_24;
+	/* the split by thread ("hwthreads"; psp/profile/main.c): per phase,
+	microseconds of the clock, of the other threads and of the idle thread,
+	and the thread switches */
+	volatile unsigned int threads_wanted;
+	volatile unsigned int threads_tracked;
+	volatile unsigned long long phase_threads[HW_PHASES][4];
 } hwprofile __attribute__((aligned(64)));
+static unsigned long long hwprofile_threads_last[HW_PHASES][4];
 static unsigned long long hwprofile_phase_last[HW_PHASES][HW_COUNTERS];
 static int partitions_reported = 0;
 static unsigned long long hwprofile_last[HW_COUNTERS];
@@ -2427,6 +2983,7 @@ static void hwprofile_start(const char *eboot_path)
 	snprintf(path, sizeof(path), "%s", eboot_path ? eboot_path : "ms0:/PSP/GAME/halo/EBOOT.PBP");
 	slash = strrchr(path, '/');
 	snprintf(slash ? slash + 1 : path, sizeof(path) - (slash ? (size_t)(slash + 1 - path) : 0), "halo_profile.prx");
+	hwprofile.threads_wanted = psp_keep("hwthreads") != 0;
 	module = sceKernelLoadModule(path, 0, NULL);
 	if (module >= 0)
 		module = sceKernelStartModule(module, sizeof(address), &address, &status, NULL);
@@ -2546,7 +3103,71 @@ static void hwprofile_report(void)
 		}
 		platform_log("hardware by phase, continued:%s", line);
 	}
+	{
+		/* Each phase's share of the clock: the system counter (0) runs at
+		333 MHz whatever the CPU does, while the CPU's (1), the shares
+		above, stops while the idle thread has the CPU halted. A window that
+		waits (a frame-rate cap, a load) shows its active phases larger by
+		the cycles' count than by the clock: the "missing third" of the
+		measurement round */
+		static const char *const names[HW_PHASES] = { "other", "tick", "drawing", "frame end" };
+		static unsigned long long system_last[HW_PHASES], active_last[HW_PHASES];
+		unsigned long long system[HW_PHASES], active[HW_PHASES], system_all = 0;
+		char line[400];
+		int length = 0, phase;
+
+		for (phase = 0; phase < HW_PHASES; phase++)
+		{
+			system[phase] = hwprofile.phase_count[phase][0] - system_last[phase];
+			active[phase] = hwprofile.phase_count[phase][1] - active_last[phase];
+			system_last[phase] = hwprofile.phase_count[phase][0];
+			active_last[phase] = hwprofile.phase_count[phase][1];
+			system_all += system[phase];
+		}
+		for (phase = 0; phase < HW_PHASES && length < (int)sizeof(line) - 64; phase++)
+			length += snprintf(line + length, sizeof(line) - length, " %s %.1f%% (halted %.1f%%);", names[phase],
+				system_all ? 100.0 * system[phase] / system_all : 0.0,
+				system[phase] && system[phase] > active[phase] ? 100.0 * (system[phase] - active[phase]) / system[phase] : 0.0);
+		platform_log("hardware by phase, of the clock (share of the system cycles; in brackets, the share of the phase the CPU was halted):%s", line);
+	}
+	if (hwprofile.threads_wanted)
+	{
+		/* "hwthreads": who ran in each phase, by the threads' run clocks:
+		the game's thread is the phase's clock less the other threads and
+		the idle thread */
+		static const char *const names[HW_PHASES] = { "other", "tick", "drawing", "frame end" };
+		unsigned long long d[HW_PHASES][4], clock_all = 0;
+		char line[500];
+		int length = 0, phase, k;
+
+		for (phase = 0; phase < HW_PHASES; phase++)
+			for (k = 0; k < 4; k++)
+			{
+				d[phase][k] = hwprofile.phase_threads[phase][k] - hwprofile_threads_last[phase][k];
+				hwprofile_threads_last[phase][k] = hwprofile.phase_threads[phase][k];
+			}
+		for (phase = 0; phase < HW_PHASES; phase++)
+			clock_all += d[phase][0];
+		for (phase = 0; phase < HW_PHASES && length < (int)sizeof(line) - 120; phase++)
+		{
+			double clock = d[phase][0] ? (double)d[phase][0] : 1.0;
+			unsigned long long busy = d[phase][1] + d[phase][2];
+			double game = d[phase][0] > busy ? (double)(d[phase][0] - busy) : 0.0;
+
+			length += snprintf(line + length, sizeof(line) - length, " %s %.1f%% (game %.1f%%, others %.1f%%, idle %.1f%%; %lu switches);",
+				names[phase], clock_all ? 100.0 * d[phase][0] / clock_all : 0.0,
+				100.0 * game / clock, 100.0 * d[phase][1] / clock, 100.0 * d[phase][2] / clock, (unsigned long)d[phase][3]);
+		}
+		platform_log("hardware by thread (each phase's share of the clock; in brackets, who had the CPU in it; %u threads):%s", hwprofile.threads_tracked, line);
+	}
 }
+
+/* the heartbeat's work between its sleeps, for frametrace's late frames:
+busy while a beat reports, spans counting the beats begun, work_us their
+time (by the clock, the stick's waits included) */
+volatile int psp_heartbeat_busy = 0;
+volatile unsigned long psp_heartbeat_spans = 0, psp_heartbeat_work_us = 0;
+static unsigned long heartbeat_work_start = 0;
 
 static int heartbeat_thread(SceSize args, void *argp)
 {
@@ -2556,6 +3177,19 @@ static int heartbeat_thread(SceSize args, void *argp)
 
 	(void)args; (void)argp;
 	psp_fpu_mask_traps();
+	/* "hblow": the heartbeat below the game thread (0x20), so its reports
+	and their formatting run only while the game thread waits (the vertical
+	blank, the GE). Its default priority (0x18) is above the game's, so a
+	beat's work can hold the game thread past a vertical blank. Opt-in: below
+	the game thread the heartbeat, which also writes the log, can't keep up
+	on a busy map (lines dropped), and it is the lead suspect for a freeze */
+	if (psp_keep("hblow"))
+		sceKernelChangeThreadPriority(0, 0x28);
+	if (!psp_keep("logflushgame"))
+	{
+		log_wake_thread = sceKernelGetThreadId();
+		log_wake = sceKernelCreateSema("halo log wake", 0, 0, 1, NULL);
+	}
 	for (;;)
 	{
 		SceInt64 now;
@@ -2564,6 +3198,13 @@ static int heartbeat_thread(SceSize args, void *argp)
 		int window_done = 0;
 		double seconds;
 
+		/* the beat's work ends here: frametrace asks whether a late frame
+		overlapped it */
+		if (psp_heartbeat_busy)
+		{
+			psp_heartbeat_work_us += psp_heartbeat_clock() - heartbeat_work_start;
+			psp_heartbeat_busy = 0;
+		}
 		/* every second for the first 20, then every 5 */
 		/* build 98: with "blackbox", the log saved every quarter second
 		meanwhile (psp_trace.c) */
@@ -2576,12 +3217,34 @@ static int heartbeat_thread(SceSize args, void *argp)
 			slices = blackbox ? (beat < 20 ? 4 : 20) : 1;
 			for (slice = 0; slice < slices; slice++)
 			{
-				sceKernelDelayThread((beat < 20 ? 1000000 : 5000000) / slices);
+				SceInt64 until = sceKernelGetSystemTimeWide() + (beat < 20 ? 1000000 : 5000000) / slices;
+
+				/* asleep for the slice, but up at once to write a filling batch */
+				for (;;)
+				{
+					SceInt64 left = until - sceKernelGetSystemTimeWide();
+					SceUInt timeout;
+
+					if (left <= 0)
+						break;
+					timeout = (SceUInt)left;
+					if (log_wake < 0)
+					{
+						sceKernelDelayThread(timeout);
+						break;
+					}
+					if (sceKernelWaitSema(log_wake, 1, &timeout) < 0)
+						break;
+					log_flush();
+				}
 				if (blackbox && slice + 1 < slices)
 					log_flush();
 			}
 		}
 		beat++;
+		heartbeat_work_start = psp_heartbeat_clock();
+		psp_heartbeat_spans++;
+		psp_heartbeat_busy = 1;
 		heartbeat_beats = beat;
 		now = sceKernelGetSystemTimeWide();
 		seconds = (now - last_time) / 1e6;
@@ -2645,7 +3308,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 		}
 #endif
 		/* build 73: the Memory Stick reads of this window: how many, how
-		long in all, the slowest one (Sheepdog01's b71/b72: 1.7-5 s a frame at the
+		long in all, the slowest one (b71/b72: 1.7-5 s a frame at the
 		frame's end, the reads the suspects) */
 		if (ticks >= 0 && last_ticks >= 0)
 		{
@@ -2728,7 +3391,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 			psp_handles_reserve();
 		}
 		/* build 103: the game counts as activity, so the firmware doesn't dim
-		the backlight (Sheepdog01, b102: the screen went dark after a while without
+		the backlight (b102: the screen went dark after a while without
 		buttons; the analog stick alone doesn't reset the timer) or put the PSP
 		to sleep during play, a cutscene or a bench left alone */
 		if (ticks >= 0)
@@ -2761,7 +3424,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 		/* once the game runs, its lines wait in the batch for the beat's
 		write: a line written at once costs the stick an open, a write and a
 		close, and a map's first seconds log the most while it streams the
-		most (lab 38616912734, b30: the log held the stick 7.1 s up to tick
+		most (b30 in the emulator: the log held the stick 7.1 s up to tick
 		400, and geometry waited 0.58 s behind it). A crash still writes the
 		batch (psp_crash.c); a hang loses at most the beat's lines */
 		if (ticks >= 0 && (beat > 20 || !log_each_line()))
@@ -2780,12 +3443,11 @@ static int heartbeat_thread(SceSize args, void *argp)
 				psp_nub_seen[2], psp_nub_seen[3]);
 			{
 				extern volatile unsigned int controls_events[5];
-				extern float psp_player_crouch(void);
 
 				if (controls_events[0] | controls_events[1] | controls_events[2])
 					platform_log("controls (since launch): crouch toggled %u times; d-pad left tapped %u times (the game reloaded %u), held %u times (the game acted %u); crouched %d%% now",
 						controls_events[0], controls_events[1], controls_events[3], controls_events[2], controls_events[4],
-						(int)(psp_player_crouch() * 100.0f));
+						(int)(player_crouch_copy() * 100.0f));
 			}
 			if ((beat & 1) == 0)
 			{
@@ -2853,16 +3515,16 @@ static void load_crash_handler(const char *eboot_path)
 	platform_log("crash handler %s: %s (0x%08x)", path, module >= 0 ? "installed" : "not loaded", (unsigned)module);
 }
 
-/* build 114: the last launch's files kept, numbered, in the log folder:
-log.txt, profile.txt and crash.txt become log/NNN_log.txt and so on (NNN
-counts launches), and only the last OLD_LAUNCHES sets stay. Until b113 the
-log was removed at every launch, so a test whose log wasn't pulled before
-the next launch was lost, and profile.txt gathered every launch's windows.
-Renamed within the one folder: whether the Memory Stick's driver moves a
-file to another folder isn't known, so crash.txt (in the data folder) is
-tried and left where it was if the rename fails. No keep word: keep.txt is
-read after this, and the cost is a few renames at start-up */
-#define OLD_LAUNCHES 8
+/* The last launches' files kept, numbered, in the log folder: log.txt,
+profile.txt and crash.txt become log/NNN_log.txt and so on (NNN counts
+launches), and only the last OLD_LAUNCHES sets stay, so a test whose log
+wasn't pulled before the next launch isn't lost, and profile.txt doesn't
+gather every launch's windows. Renamed within the one folder: whether the
+Memory Stick's driver moves a file to another folder isn't known, so
+crash.txt (in the data folder) is tried and left where it was if the rename
+fails. No keep word: keep.txt is read after this, and the cost is a few
+renames at start-up */
+#define OLD_LAUNCHES 20
 static void keep_last_launch(void)
 {
 	static const char *const names[3] = { LOG_FOLDER "/log.txt", LOG_FOLDER "/profile.txt", DATA_ROOT "/crash.txt" };
@@ -2996,6 +3658,26 @@ int main(int argc, char **argv)
 	}
 	keep_load();
 	{
+		/* "heapmap" and "poolpeaks": the heap's map and the game state's
+		peaks at each level change (psp_libc.c; psp_fixups.py FIXES_RECON
+		#poolpeaks, linked weakly) */
+		extern void psp_heap_map_start(void);
+		extern void psp_pool_peaks_start(void) __attribute__((weak));
+
+		psp_heap_map_start();
+		if (psp_pool_peaks_start)
+			psp_pool_peaks_start();
+		else if (psp_keep("poolpeaks"))
+			platform_log("poolpeaks: not in this build (PSP_RECON=1 builds it)");
+	}
+	{
+		/* before anything reads the maps: a bake of another format is
+		explained on the screen rather than drawn wrong (psp_bakecheck.c) */
+		extern void psp_bake_check(void);
+
+		psp_bake_check();
+	}
+	{
 		/* build 37: the VFPU's matrix product, checked against the FPU */
 		extern void psp_vfpu_initialize(void);
 
@@ -3008,6 +3690,13 @@ int main(int argc, char **argv)
 		hwprofile_start(argc > 0 ? argv[0] : NULL);
 		bus_probe("at start-up, the GE idle");
 	}
+	{
+		/* the loading screen from here to the main menu, in place of the log
+		on the screen (psp_loading.c; the probe above wants the GE idle) */
+		extern void psp_loading_boot_begin(void);
+
+		psp_loading_boot_begin();
+	}
 
 	thread = sceKernelCreateThread("halo heartbeat", heartbeat_thread, 0x18, 0x4000, 0, NULL);
 	if (thread >= 0)
@@ -3016,7 +3705,7 @@ int main(int argc, char **argv)
 	write each second, as the game's do once it runs: each line written at
 	once cost the stick an open, a write and a close, and the heartbeat's
 	(at a priority above the game's and the saved-game check's) held the
-	stick 3 s at the first frame on the PSP-1000 (lab 39021437349).
+	stick 3 s at the first frame on the PSP-1000.
 	A crash still writes the batch (psp_crash.c); a hang loses at most a
 	second's lines. "logeachline": each line at once, as before */
 	if (thread >= 0 && !log_each_line())

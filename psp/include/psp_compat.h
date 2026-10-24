@@ -16,7 +16,7 @@
 
 /* build 75: CLOCK_MONOTONIC from the microsecond counter since boot. The C
 library answers every clock with the wall clock (sceKernelLibcGettimeofday),
-and with the PSP's clock chip unset (battery out; Sheepdog01's PSP-1000, 2026-10-05)
+and with the PSP's clock chip unset (battery out; a PSP-1000, 2026-10-05)
 that clock misbehaves: d3d8_gl.c's 60 Hz vertical blank thread, which paces
 itself on CLOCK_MONOTONIC, slowed down further and further, and Present,
 which waits on it once two frames are queued, went from 30 fps to under 1

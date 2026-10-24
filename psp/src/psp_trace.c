@@ -1,6 +1,6 @@
 /* psp_trace.c - the load trace (build 96), the blackbox (build 98)
 
-Why: Sheepdog01's b95 runs 1 and 2 on the PSP-1000 died loading The Library, just
+Why: b95's runs 1 and 2 on the PSP-1000 died loading The Library, just
 after the texture pack opened, with the ME on and off: the log stopped, the
 heartbeat thread (which outranks the game) stopped with it, no crash.txt was
 written, and about 10 s later the PSP powered itself off. The emulator loads
@@ -60,7 +60,7 @@ void psp_trace_start(const char *why)
 {
 	/* build 102: only with "blackbox". On by default (b96-b101) it wrote
 	hundreds of lines at once at every map load: Blood Gulch's texture
-	preload took 9 s instead of 1.2 (Sheepdog01's b101 run 3) */
+	preload took 9 s instead of 1.2 (b101's run 3) */
 	if (psp_trace || !psp_keep("blackbox"))
 		return;
 	psp_trace = 1;
@@ -70,8 +70,8 @@ void psp_trace_start(const char *why)
 /* build 98: "blackbox" (keep.txt, the launch menu): the trace goes on in
 play, without the steps (Memory Stick, DMA, GE list and display calls: a few
 lines a frame), and the heartbeat saves the log four times a second, so a
-freeze that takes the whole PSP down leaves its last quarter second. Sheepdog01's
-b97 run 1 froze in The Library's first fight with nothing in the log after
+freeze that takes the whole PSP down leaves its last quarter second.
+b97's run 1 froze in The Library's first fight with nothing in the log after
 the last 5 s batch */
 void psp_trace_stop(const char *why)
 {
@@ -306,7 +306,7 @@ static SceUID stick_lock = -1;
 own time (lock or no lock: the stick does one request at a time, so a
 thread's synchronous read also waits for any other thread's read in the
 driver; an asynchronous read's transfer is not in it) and, with the lock,
-the time spent waiting for it. Sheepdog01's b101 run 2 waited 59 s for the lock
+the time spent waiting for it. b101's run 2 waited 59 s for the lock
 over 2,379 waits, 0.9 s at worst, and which thread waited decides whether
 that was a stall on the screen (the game thread) or a late block (the
 loader, the sound) */
@@ -325,7 +325,7 @@ static struct stick_thread
 /* The stick's slow calls, a quarter second and more: the lock's totals say
 how long each thread held it, not which call it was. A b126 run on the
 PSP-1000 had the log's thread hold the stick 1.46 s in one call, with an
-animation read stalled behind it (lab 38706758115). The slowest four of
+animation read stalled behind it. The slowest four of
 each report's window are kept */
 #define STICK_SLOW_US 250000
 #define STICK_SLOW_KEPT 4
@@ -541,6 +541,21 @@ static void stick_give(void)
 }
 
 /* the heartbeat's report: one line, the threads by name */
+/* a seek and the read it positions, under one hold of the lock: taken per
+call, another thread's write could slip in between and the read wait twice
+(a geometry read waited behind a log write, then again behind the log's
+close). The lock is re-entrant, so the wrapped calls inside keep this
+hold's name */
+void psp_stick_hold(SceUID fd)
+{
+	stick_take_op(kind_of_fd(fd), "read", path_of_fd(fd));
+}
+
+void psp_stick_release(void)
+{
+	stick_give();
+}
+
 void psp_stick_report(void)
 {
 	char line[400];
@@ -630,7 +645,7 @@ void psp_stick_report(void)
 /* build 106: each thread's priority and its share of the CPU since the last
 report (the heartbeat, every 30 s), and how often it was woken.
 
-Why: Sheepdog01's b105 run spent 647 s in the cache file thread's 7,468 stick
+Why: b105's run spent 647 s in the cache file thread's 7,468 stick
 calls, 87 ms a call, for reads of about 30 KB that the stick does in about
 4 ms. The PSP's scheduler runs the highest-priority ready thread and never
 shares the CPU between equals, so a reader whose read has finished waits
@@ -707,7 +722,7 @@ void psp_threads_report(void)
 
 /* ---------- build 103: the open-handle table
 
-Why: Sheepdog01's b102 run 3 (The Library, the first Flood fight) crashed in the C
+Why: b102's run 3 (The Library, the first Flood fight) crashed in the C
 library's readdir: the kernel had refused a directory open with
 SCE_KERNEL_ERROR_MFILE (0x80020320, "too many open files": the firmware's
 iofilemgr gives out at most 64 descriptors, files and directories together),
@@ -1157,26 +1172,53 @@ int __wrap_sceDmacMemcpy(void *dst, const void *src, SceSize size)
 }
 
 int __real_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg);
+/* the id of the last list handed to the GE (geshow3, psp_ge.c) */
+volatile int psp_ge_enqueued = -1;
 int __wrap_sceGeListEnQueue(const void *list, void *stall, int cbid, void *arg)
 {
+	extern int psp_ge_list_callback(int cbid);
 	int result;
 
 	psp_trace_line("GE list %08x, stall %08x", (unsigned)list, (unsigned)stall);
-	result = __real_sceGeListEnQueue(list, stall, cbid, arg);
+	result = __real_sceGeListEnQueue(list, stall, psp_ge_list_callback(cbid), arg);
+	psp_ge_enqueued = result;
 	psp_trace_line("GE list = %d", result);
 	return result;
 }
 
 int __real_sceDisplaySetFrameBuf(void *top, int width, int format, int sync);
+/* geshow3 (psp_ge.c): the swap's pointers move on the game thread before the
+GE has ended the frame they show; the display is set by psp_display_release
+once it has */
+int psp_display_hold = 0;
+static void *display_held_top = NULL;
+static int display_held = 0, display_held_width = 0, display_held_format = 0, display_held_sync = 0;
 int __wrap_sceDisplaySetFrameBuf(void *top, int width, int format, int sync)
 {
 	int result;
 
+	if (psp_display_hold)
+	{
+		display_held_top = top;
+		display_held_width = width;
+		display_held_format = format;
+		display_held_sync = sync;
+		display_held = 1;
+		return 0;
+	}
 	psp_trace_line("display %08x, width %d, format %d, sync %d", (unsigned)top, width, format, sync);
 	psp_shown_buffer = (unsigned int)top;
 	result = __real_sceDisplaySetFrameBuf(top, width, format, sync);
 	psp_trace_line("display = %d", result);
 	return result;
+}
+
+int psp_display_release(void)
+{
+	if (!display_held)
+		return 0;
+	display_held = 0;
+	return __wrap_sceDisplaySetFrameBuf(display_held_top, display_held_width, display_held_format, display_held_sync);
 }
 
 int __real_sceIoWrite(SceUID fd, const void *data, SceSize size);
@@ -1263,7 +1305,7 @@ int __wrap_sceIoDclose(SceUID fd)
 /* build 103: libcglue's open() returns the kernel's error code (negative,
 but not -1) when sceIoDopen refuses a directory, and newlib's opendir tests
 only for -1: it then built a DIR on 0x80020320 and readdir indexed the
-descriptor table with it (Sheepdog01's b102 run 3 crash). Any negative result is
+descriptor table with it (b102's run 3 crash). Any negative result is
 made the -1 the C library promises, with errno set */
 #include <errno.h>
 #include <fcntl.h>

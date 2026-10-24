@@ -52,6 +52,7 @@ the tag window alone. */
 #include <string.h>
 #include <malloc.h>
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
+#include "psp_metrics.h"
 
 void platform_log(const char *format, ...);
 int psp_keep(const char *name);
@@ -406,6 +407,7 @@ static void read_pages(unsigned int first_page, unsigned int count, unsigned int
 	took = sceKernelGetSystemTimeLow() - start;
 	read_us += took;
 	psp_stick_read_us += took; /* build 126: frametrace */
+	PSP_METRICS_STICK(PSP_METRICS_ANIMATIONS, bytes, took);
 	window_us += took;
 	reads++;
 	window_reads++;
@@ -515,6 +517,13 @@ void psp_anim_close(void)
 	animation_first = animation_end = page_base = 0;
 	memo_start = memo_end = memo_at = 0;
 	free_failure_blocks();
+}
+
+/* where its block in the tag window ends (0: none), so the geometry cache
+can take what lies past it (psp_geo.c, "geowindow") */
+unsigned int psp_anim_window_end(void)
+{
+	return block_slots[0] ? block_at[0] + (block_slots[0] << page_shift) : 0;
 }
 
 /* the pack holds animation data: bytes of it in [first, end) (offsets from

@@ -148,6 +148,11 @@ class Means:
             self.cache[tag_id] = bitmap_mean(self.m, b) if b else None
         return self.cache[tag_id]
 
+    def image(self, tag_id):
+        """a 2D bitmap's top level (h x w x RGBA, 0-255), or None"""
+        b = self._bitmap(tag_id)
+        return decode(self.m, b) if b is not None and b['type'] == '2d' else None
+
     def texels(self, tag_id):
         if tag_id not in self.texel_cache:
             b = self._bitmap(tag_id)
@@ -235,16 +240,22 @@ def _argb(data, at):
     return np.array([r, g, b, a])
 
 
-def generic_result(m, o, maps):
+# the generic combiners' vertex colour 1 by the angle the surface is seen at:
+# fade(perpendicular) in red, green and alpha, fade(parallel) in blue (the
+# stage inputs' names). Face on, perpendicular is 0 and parallel 1
+VIEWS = {None: (0.5, 0.5, 0.5, 0.5), 'face': (0.0, 0.0, 1.0, 0.0), 'edge': (1.0, 1.0, 0.0, 1.0)}
+
+
+def generic_result(m, o, maps, view=None):
     """the shader's colour (n x RGBA, 0-1), each map given as its texels (n x
-    RGBA) or a mean (RGBA)"""
+    RGBA) or a mean (RGBA); view: the angle (VIEWS), the middle by default"""
     n = max([len(x) for x in maps[:4] if x is not None and np.ndim(x) == 2] or [1])
     stages_n, stages_p = struct.unpack_from('<iI', m.data, o + 96)
     reg = {k: np.zeros((n, 4)) for k in _REGISTERS}
     for i, x in enumerate(maps[:4]):
         reg['T%d' % i] = _rows(x, n)
     reg['V0'] = np.ones((n, 4))        # the diffuse light: unlit, white
-    reg['V1'] = np.full((n, 4), 0.5)   # the fades by angle: their middle
+    reg['V1'] = np.tile(np.array(VIEWS[view]), (n, 1))   # the fades by angle
     reg['R0'][:, 3] = reg['T0'][:, 3]  # the combiners start with map 0's alpha in scratch 0
     if stages_n <= 0:
         reg['R0'] = reg['T0'].copy()
@@ -372,6 +383,9 @@ def water_tint(m, o, means):
 # a colour more than this over its map's (the GE multiplies by at most 1)
 # is drawn doubled: the tint at half, the GE's colour doubling on
 DOUBLED_ABOVE = 1.02
+# a shader whose colour face on and edge on differ by more than this (0-1,
+# any channel) gets the two tints, blended per vertex by the angle
+ANGLE_APART = 2.0 / 255.0
 _LUMA = np.array([0.299, 0.587, 0.114])
 
 
@@ -399,6 +413,12 @@ class Tint:
     def __init__(self, tint, drawn, result, mean, model=MODULATE):
         self.tint, self.drawn, self.result, self.mean, self.model = tint, drawn, result, mean, model
         self.scale_drawn, self.alt, self.errors, self.shares = drawn, None, None, {}
+        # each candidate map's share of the alpha (its variance when only
+        # that map varies), and the framebuffer blend: for texpack's audit
+        self.alpha_shares, self.blend = {}, None
+        # (face-on tint, edge-on tint), RGBA 0-1, for a generic shader whose
+        # combiners read the angle; None when the angle changes nothing
+        self.angle = None
 
     @property
     def doubled(self):
@@ -425,6 +445,33 @@ def _visible(result, blend):
     """what the frame gets of the shader's colour: through its alpha for an
     alpha blend, as it is otherwise"""
     return result[:, :3] * result[:, 3:4] if blend == 0 else result[:, :3]
+
+
+# DRAWN_BY_SHAPE (texpack --drawn-by-shape): a shader whose blend lets what
+# is behind it through by its alpha (alpha blend, alpha-multiply-add) draws
+# the map that carries most of what the frame shows over a dark background
+# and over a light one, so a map that only shapes the alpha (a mask: a
+# thruster's cone, a shore layer's fading edge) counts for the part of the
+# background it hides, not only for the colour it darkens
+DRAWN_BY_SHAPE = False
+SHAPE_BLENDS = (0, 7)
+
+
+def _shown(result, blend):
+    """the luminance the frame shows of the shader over black and over
+    white, side by side (n x 2)"""
+    lum = result[:, :3] @ _LUMA
+    if blend not in SHAPE_BLENDS:
+        return np.stack([lum, lum], 1)
+    a = result[:, 3]
+    src = lum * a if blend == 0 else lum
+    return np.stack([src, src + 1.0 - a], 1)
+
+
+def _share(result, blend):
+    if DRAWN_BY_SHAPE:
+        return float(_shown(result, blend).var(0).sum())
+    return float((_visible(result, blend) @ _LUMA).var())
 
 
 def _fit(result, texels, blend, fade_free):
@@ -455,6 +502,30 @@ def _fit(result, texels, blend, fade_free):
         if errors[best] < MODEL_BETTER * errors['modulate'] and (best == 'flat' or k.max() > 0.5 / 255.0):
             return np.append(k if best == 'add' else flat, tint[3]), ADD if best == 'add' else FLAT, errors
     return tint, model, errors
+
+
+def _scales_up(m, o):
+    """whether a generic shader's stages scale an output by 2 or 4"""
+    stages_n, stages_p = struct.unpack_from('<iI', m.data, o + 96)
+    if stages_n <= 0:
+        return False
+    so = m.off(stages_p)
+    for s in range(min(stages_n, 7)):
+        colour_mapping, = struct.unpack_from('<h', m.data, so + 112 * s + 60 + 26)
+        alpha_mapping, = struct.unpack_from('<h', m.data, so + 112 * s + 88 + 22)
+        if colour_mapping in (2, 3) or alpha_mapping in (2, 3):
+            return True
+    return False
+
+
+def _shuffled(texels, i, n):
+    """n of a map's texels in a fixed order of its own (seeded by its place,
+    so a bake gives the same tints every time). n is the drawn map's sample
+    size: a smaller map than the drawn one has fewer texels (TEXELS caps the
+    sample), so its order is repeated to fill the rows, and a larger one's is
+    cut short; every row of the shader's result then has one texel of each"""
+    order = np.random.default_rng(1 + i).permutation(len(texels))
+    return texels[np.resize(order, n)]
 
 
 def _maps(m, o, kind):
@@ -504,11 +575,25 @@ def shader_tint(m, tag, means, from_means=False):
     maps = _maps(m, o, kind)
     map_means = [means(i) for i, _ in maps]
 
-    def evaluate(group):
+    # a generic shader that scales a stage's output up clips wherever its
+    # other maps are bright, which their means would hide (Cortana: the noise
+    # mask times 4, so the PSP drew her brighter than the Xbox): for its tint,
+    # the other maps come in as their own texels, in an order unrelated to the
+    # drawn map's
+    spread = kind == GENERIC and _scales_up(m, o)
+
+    def other(i, spread_out, n):
+        texels = means.texels(maps[i][0]) if spread_out and n else None
+        return map_means[i] if texels is None else _shuffled(texels, i, n)
+
+    def evaluate(group, view=None, spread_out=False):
         """the shader over the texels of the maps in group (one bitmap at one
-        scale), every other map at its mean"""
-        given = [means.texels(maps[i][0]) if i in group else map_means[i] for i in range(count)]
-        return generic_result(m, o, given) if kind == GENERIC else chicago_result(m, o, maps_p, count, given)
+        scale), every other map at its mean (or its texels, spread_out, as
+        many as the group's)"""
+        drawn = [means.texels(maps[i][0]) for i in group]
+        n = max([len(x) for x in drawn if x is not None] or [0])
+        given = [means.texels(maps[i][0]) if i in group else other(i, spread_out, n) for i in range(count)]
+        return generic_result(m, o, given, view) if kind == GENERIC else chicago_result(m, o, maps_p, count, given)
 
     def group_of(j):
         return {i for i in range(skip, count) if maps[i] == maps[j]}
@@ -529,7 +614,7 @@ def shader_tint(m, tag, means, from_means=False):
         texels = means.texels(maps[j][0])
         if texels is None:
             return None
-        result = evaluate(group_of(j))
+        result = evaluate(group_of(j), spread_out=spread)
         if result is None:
             return None
         tint, model, errors = _fit(result, texels, blend, fade_free)
@@ -539,13 +624,14 @@ def shader_tint(m, tag, means, from_means=False):
 
     # each candidate's share of the output: the variance of what the frame
     # gets when that map (with its layered copies) is the only one varying
-    shares = {}
+    shares, alpha_shares = {}, {}
     for j in range(skip, count):
         if any(maps[i] == maps[j] for i in shares) or means.texels(maps[j][0]) is None:
             continue
         result = evaluate(group_of(j))
         if result is not None:
-            shares[j] = float((_visible(result, blend) @ _LUMA).var())
+            shares[j] = _share(result, blend)
+            alpha_shares[j] = float(result[:, 3].var())
     drawn = scale_drawn
     if shares:
         best = max(shares, key=lambda j: shares[j])
@@ -556,16 +642,174 @@ def shader_tint(m, tag, means, from_means=False):
     if found is None:
         # a map that can't be sampled (3D, unreadable): from its mean
         return shader_tint(m, tag, means, from_means=True)
-    found.scale_drawn, found.shares = scale_drawn, shares
+    found.scale_drawn, found.shares, found.alpha_shares, found.blend = scale_drawn, shares, alpha_shares, blend
     if drawn != scale_drawn:
         found.alt = tint_for(scale_drawn) or shader_tint(m, tag, means, from_means=True)
+    if kind == GENERIC and found.model in (MODULATE, DOUBLED):
+        _angle_tints(found, [evaluate(group_of(drawn), view, spread) for view in ('face', 'edge')])
     return found
+
+
+def _angle_tints(found, results):
+    """found.angle from the shader's colour face on and edge on (results),
+    when the two differ by more than ANGLE_APART in a channel. Both are
+    drawn with one doubling, so the middle tint is redone to match it"""
+    if any(r is None for r in results):
+        return
+    face, edge = (r.mean(0) for r in results)
+    if np.abs(face - edge).max() <= ANGLE_APART:
+        return
+    floor = np.maximum(found.mean, 1.0 / 255.0)
+    quotients = [face / floor, edge / floor, found.result / floor]
+    doubled = any(q[:3].max() > DOUBLED_ABOVE for q in quotients)
+    half = 0.5 if doubled else 1.0
+    face_tint, edge_tint, middle = (np.clip(np.append(q[:3] * half, q[3]), 0.0, 1.0) for q in quotients)
+    if doubled != found.doubled:
+        found.tint, found.model = middle, DOUBLED if doubled else MODULATE
+    found.angle = (face_tint, edge_tint)
+
+
+# ---------------------------------------------------------------- composites
+
+# COMPOSITES (texpack.py; --no-composites leaves them out): one map and a tint
+# can't stand for a shader whose look comes from two maps. A thruster's cone
+# is one map's alpha and its colour another's; the Jackal's shield is a mask
+# times two noise maps, added. Drawn as one of them, the cone came out a hard
+# card and the shield a solid disc. Such a shader gets a texture of its own:
+# the shader worked out texel by texel with every map in place, laid out on
+# the map it is drawn in place of (that map's scale, offset, clamping and
+# animation carry it). What a still texture can't hold: the other maps'
+# scrolling (frozen where it stood at time 0), the angle (its middle value)
+COMPOSITES = True
+# another map earns a composite when it carries this share of the output (or,
+# for a blend that lets the background through, of the alpha) against the
+# map that carries most
+COMPOSITE_SHARE = 0.1
+# below this the alpha hardly varies at all: no shape to keep
+ALPHA_FLAT = 1e-4
+COMPOSITE_SIDE = 256
+# how far from a whole number another map's repeats over the drawn map's may
+# be before the composite would show a seam where it tiles
+TILE_APART = 0.01
+
+
+def _place(m, o, kind, i):
+    """map i's (u scale, v scale, u offset, v offset, u clamped, v clamped),
+    as psp_transparent_map reads them"""
+    stride, scale_at = (220, 84) if kind == CHICAGO else (100, 4)
+    maps_p, = struct.unpack_from('<I', m.data, o + 88)
+    mo = m.off(maps_p) + stride * i
+    flags, = struct.unpack_from('<H', m.data, mo)
+    su, sv, ou, ov = struct.unpack_from('<4f', m.data, mo + scale_at)
+    u_bit, v_bit = (4, 8) if kind == CHICAGO else (2, 4)
+    return su or 1.0, sv or 1.0, ou, ov, bool(flags & u_bit), bool(flags & v_bit)
+
+
+def _sample(img, u, v, clamp_u, clamp_v):
+    """img (h x w x RGBA, 0-255) at texture coordinates u, v, filtered as the
+    GE filters (bilinear), repeated or clamped as the map is: n x RGBA 0-1"""
+    h, w = img.shape[:2]
+    x, y = u * w - 0.5, v * h - 0.5
+    x0, y0 = np.floor(x), np.floor(y)
+    fx, fy = (x - x0)[:, None], (y - y0)[:, None]
+
+    def index(i, n, clamp):
+        return (np.clip(i, 0, n - 1) if clamp else np.mod(i, n)).astype(np.int64)
+    xa, xb = index(x0, w, clamp_u), index(x0 + 1, w, clamp_u)
+    ya, yb = index(y0, h, clamp_v), index(y0 + 1, h, clamp_v)
+    f = img.astype(np.float64) / 255.0
+    return (f[ya, xa] * (1 - fx) + f[ya, xb] * fx) * (1 - fy) + (f[yb, xa] * (1 - fx) + f[yb, xb] * fx) * fy
+
+
+def _pow2(v):
+    p = 1
+    while p < v:
+        p *= 2
+    return p
+
+
+def composite(m, tag, means, found):
+    """(the map index the composite is drawn in place of, the composite as
+    h x w x RGBA uint8, a note for the log) for a shader that needs one, or
+    (None, None, why not) for one that would but can't have it, or None"""
+    shares = getattr(found, 'shares', None)
+    if not shares or len(shares) < 2:
+        return None
+    o = m.off(tag.address)
+    kind, = struct.unpack_from('<H', m.data, o + 36)
+    count, maps_p = struct.unpack_from('<iI', m.data, o + 84)
+    first_map_type, = struct.unpack_from('<h', m.data, o + 42)
+    skip = 1 if first_map_type != 0 else 0
+    maps = _maps(m, o, kind)
+    alpha, blend = found.alpha_shares, found.blend
+    top, top_alpha = max(shares.values()), max(alpha.values())
+    shaped = blend in SHAPE_BLENDS and top_alpha > ALPHA_FLAT
+    shape = max(alpha, key=lambda j: alpha[j])
+    others = [j for j in shares if maps[j] != maps[found.drawn] and (
+        shares[j] >= COMPOSITE_SHARE * top or (shaped and alpha[j] >= COMPOSITE_SHARE * top_alpha))]
+    if not others:
+        return None
+    if found.angle is not None:
+        return None, None, 'its colour turns with the angle it is seen at'
+    places = {i: _place(m, o, kind, i) for i in range(skip, count)}
+    images = {i: means.image(maps[i][0]) for i in range(skip, count)}
+
+    def fits(basis):
+        """the composite's size laid out on basis, or None when another map
+        spans more of the surface than basis does, or would seam where
+        basis repeats"""
+        su, sv, _, _, cu, cv = places[basis]
+        w, h = images[basis].shape[1], images[basis].shape[0]
+        for i in range(skip, count):
+            if i == basis or images[i] is None:
+                continue
+            for r, clamped, side in ((places[i][0] / su, cu, 1), (places[i][1] / sv, cv, 0)):
+                if not clamped and (r < 1.0 - TILE_APART or abs(r - round(r)) > TILE_APART):
+                    return None
+                need = images[i].shape[side] * r
+                if side:
+                    w = max(w, need)
+                else:
+                    h = max(h, need)
+        w, h = _pow2(w), _pow2(h)
+        base_w, base_h = images[basis].shape[1], images[basis].shape[0]
+        return max(base_w, min(w, COMPOSITE_SIDE)), max(base_h, min(h, COMPOSITE_SIDE))
+
+    # laid out on the map that shapes it where the shape is what's lost (a
+    # cone's mask stays still while its colour scrolls), else on the drawn map
+    order = ([shape] if shaped else []) + [found.drawn, found.scale_drawn]
+    basis = next((j for j in order if images.get(j) is not None and fits(j)), None)
+    if basis is None:
+        return None, None, 'no map spans the others whole'
+    w, h = fits(basis)
+    su, sv, ou, ov, _, _ = places[basis]
+    tu, tv = np.meshgrid((np.arange(w) + 0.5) / w, (np.arange(h) + 0.5) / h)
+    # the surface's coordinates under each texel of the basis, then each map's
+    su_, sv_ = (tu.ravel() - ou) / su, (tv.ravel() - ov) / sv
+    given = []
+    for i in range(count):
+        if i < skip or images.get(i) is None:
+            given.append(means(maps[i][0]))
+            continue
+        pu, pv, qu, qv, cu, cv = places[i]
+        given.append(_sample(images[i], su_ * pu + qu, sv_ * pv + qv, cu, cv))
+    result = generic_result(m, o, given) if kind == GENERIC else chicago_result(m, o, maps_p, count, given)
+    if result is None:
+        return None, None, 'its combiners could not be worked out'
+    img = (np.clip(result, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8).reshape(h, w, 4)
+    return basis, img, 'map %d %s, %dx%d, from maps %s' % (
+        basis, 'shapes it' if basis == shape and shaped else 'drawn', w, h,
+        ' '.join(str(i) for i in range(skip, count) if images.get(i) is not None))
 
 
 def abgr(rgba):
     """a tint as the GE's colour word"""
     r, g, b, a = (int(round(float(v) * 255.0)) for v in rgba)
     return (a << 24) | (b << 16) | (g << 8) | r
+
+
+# (shader name, Tint) for every shader the last tints() call worked out
+FOUND = []
 
 
 def tints(m, bitmaps, shaders=None, from_means=False):
@@ -577,12 +821,15 @@ def tints(m, bitmaps, shaders=None, from_means=False):
     the one the runtime's own rule picks"""
     means = Means(m, bitmaps)
     out, drawn = {}, {}
+    del FOUND[:]
     for t in m.tags:
         if t.group not in ('sotr', 'schi', 'swat') or (shaders is not None and t.name not in shaders):
             continue
         found = shader_tint(m, t, means, from_means)
         if found is None:
             continue
+        found.tag = t
+        FOUND.append((t.name, found))
         if not found.plain():
             out[t.address | found.flags()] = (found.word(), t.name, found)
         if found.drawn != found.scale_drawn:

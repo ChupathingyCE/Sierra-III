@@ -2,7 +2,7 @@
 driven by Invader's tag definition JSON for struct layouts.
 
 Spec sources:
-  - /tmp/halo-sp/source/cache/cache_files.c   (cache_file_header, cache_file_tag_header,
+  - ChupathingyCE's source/cache/cache_files.c (cache_file_header, cache_file_tag_header,
                                                 cache_file_tag_instance, BSP header)
   - Invader src/tag/hek/definition/*.json      (field layouts of every tag group)
 
@@ -10,9 +10,12 @@ Only reads; never writes the map.
 """
 import json, glob, os, struct, collections
 
-# build 102: the one-shot bake ships Invader's definitions beside it
-# (HALO_PSP_INVADER_DEFINITIONS: the definition JSON files and fourcc.hpp)
-DEF_DIR = os.environ.get('HALO_PSP_INVADER_DEFINITIONS', '/home/claude/invader/src/tag/hek/definition')
+# Invader's definitions (the definition JSON files): where
+# HALO_PSP_INVADER_DEFINITIONS says (the bake sets it), else the bundle's own
+# beside lib/, else a development checkout's
+_BUNDLED = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'invader', 'definitions')
+DEF_DIR = os.environ.get('HALO_PSP_INVADER_DEFINITIONS') or (
+    _BUNDLED if os.path.isdir(_BUNDLED) else '/home/claude/invader/src/tag/hek/definition')
 
 PRIM = {
     'float': 4, 'int32': 4, 'uint32': 4, 'Angle': 4, 'Fraction': 4, 'ColorARGBInt': 4,
@@ -31,7 +34,7 @@ class Defs:
         self.structs, self.enums, self.bitfields = {}, {}, {}
         self.groups = {}   # group name -> struct name
         for fn in glob.glob(os.path.join(d, '*.json')):
-            for s in json.load(open(fn)):
+            for s in json.load(open(fn, encoding='utf-8')):
                 t = s['type']
                 if t == 'struct':
                     self.structs[s['name']] = s
@@ -87,14 +90,63 @@ def fourcc(v):
     return struct.pack('>I', v).decode('latin1') if v not in (0, 0xFFFFFFFF) else '----'
 
 
-# fourcc -> invader group name (from Invader include/invader/hek/fourcc.hpp)
-FOURCC_GROUP = {}
-_fh = (os.path.join(os.environ['HALO_PSP_INVADER_DEFINITIONS'], 'fourcc.hpp') if os.environ.get('HALO_PSP_INVADER_DEFINITIONS')
-       else '/home/claude/invader/include/invader/hek/fourcc.hpp')
-if os.path.exists(_fh):
-    import re
-    for m in re.finditer(r'TAG_FOURCC_(\w+) = 0x([0-9A-Fa-f]+)', open(_fh).read()):
-        FOURCC_GROUP[fourcc(int(m.group(2), 16))] = m.group(1).lower()
+# Every tag group's four-character tag -> its name. The names are Halo's own
+# (the tag files' extensions in the editing kit), the spelling Invader's
+# definitions (Defs.groups) and its tag index (tagindex.py) use. The tags were
+# read from ChupathingyCE's source, which names each group where the engine
+# uses it: a *_TAG enum in the group's definitions header (cited per line
+# below by subsystem), object_types.c's object types, hs.c's script types,
+# widgets.c's widget types, and the PC port's ce_models.c for the shader
+# family and gbxmodel. Four groups the engine never loads (the editing kit's
+# own: spheroid, input_device_defaults, preferences_network_game,
+# tag_collection) are listed so that no tag in a map goes unnamed.
+# tools/tag_groups_check.py checks the table against an engine checkout.
+FOURCC_GROUP = {
+    # objects (objects/: object_types.c, the lights, damage; items/, units/, devices/)
+    'obje': 'object', 'unit': 'unit', 'bipd': 'biped', 'vehi': 'vehicle',
+    'item': 'item', 'weap': 'weapon', 'eqip': 'equipment', 'garb': 'garbage',
+    'proj': 'projectile', 'scen': 'scenery', 'plac': 'placeholder',
+    'ssce': 'sound_scenery', 'devi': 'device', 'mach': 'device_machine',
+    'ctrl': 'device_control', 'lifi': 'device_light_fixture',
+    'itmc': 'item_collection', 'ligh': 'light', 'lens': 'lens_flare',
+    'jpt!': 'damage_effect', 'cdmg': 'continuous_damage_effect',
+    # units and AI (units/dialogue_definitions.h, ai/actor_definitions.h)
+    'actr': 'actor', 'actv': 'actor_variant', 'udlg': 'dialogue',
+    # widgets (objects/widgets/)
+    'ant!': 'antenna', 'flag': 'flag', 'glw!': 'glow', 'elec': 'lightning',
+    'mgs2': 'light_volume',
+    # models, animation, collision, physics (models/, physics/)
+    'mode': 'model', 'mod2': 'gbxmodel', 'antr': 'model_animations',
+    'coll': 'model_collision_geometry', 'phys': 'physics', 'pphy': 'point_physics',
+    # effects (effects/)
+    'effe': 'effect', 'deca': 'decal', 'cont': 'contrail', 'part': 'particle',
+    'pctl': 'particle_system', 'rain': 'weather_particle_system',
+    'foot': 'material_effects',
+    # shaders (shaders/, the PC port's ce_models.c)
+    'shdr': 'shader', 'senv': 'shader_environment', 'soso': 'shader_model',
+    'sotr': 'shader_transparent_generic', 'schi': 'shader_transparent_chicago',
+    'scex': 'shader_transparent_chicago_extended', 'swat': 'shader_transparent_water',
+    'sgla': 'shader_transparent_glass', 'smet': 'shader_transparent_meter',
+    'spla': 'shader_transparent_plasma',
+    # scenario and level (scenario/, structures/, game/game_globals.h,
+    # camera/following_camera.c, the rasterizer's detail objects)
+    'scnr': 'scenario', 'sbsp': 'scenario_structure_bsp', 'sky ': 'sky',
+    'fog ': 'fog', 'wind': 'wind', 'matg': 'globals', 'trak': 'camera_track',
+    'dobc': 'detail_object_collection', 'mply': 'multiplayer_scenario_description',
+    # interface (interface/, hs.c's script types)
+    'DeLa': 'ui_widget_definition', 'Soul': 'ui_widget_collection',
+    'hudg': 'hud_globals', 'hmt ': 'hud_message_text', 'hud#': 'hud_number',
+    'unhi': 'unit_hud_interface', 'wphi': 'weapon_hud_interface',
+    'grhi': 'grenade_hud_interface', 'metr': 'meter', 'vcky': 'virtual_keyboard',
+    # sound (sound/)
+    'snd!': 'sound', 'lsnd': 'sound_looping', 'snde': 'sound_environment',
+    # text and bitmaps (text/, bitmaps/)
+    'ustr': 'unicode_string_list', 'str#': 'string_list', 'font': 'font',
+    'bitm': 'bitmap', 'colo': 'color_table',
+    # the editing kit's own, never in the engine
+    'boom': 'spheroid', 'devc': 'input_device_defaults',
+    'ngpr': 'preferences_network_game', 'tagc': 'tag_collection',
+}
 
 
 class TagInstance:

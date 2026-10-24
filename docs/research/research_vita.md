@@ -4,14 +4,14 @@ A tour of BirchWoodGod's [halo-ce-vita](https://github.com/BirchWoodGod/halo-ce-
 
 Labels: [M] measured on a PSP, [E] emulator or estimate, [D] read in code or data, [U] inference. The Vita port's own numbers are from Vita hardware, its Linux harness or callgrind's Cortex-A9 model, and are marked as theirs.
 
-**Licence: read before borrowing code.** The Vita port is **GPL-3.0-only**: its generated tag layouts come from Invader's GPL definitions, and the licence covers the whole port. The decomp and OpenCE underneath stay CC0. Sierra-III has no licence chosen yet (`README.md`).
+**Licence: read before borrowing code.** The Vita port is **GPL-3.0-only**: its generated tag layouts come from Invader's GPL definitions, and the licence covers the whole port. The decomp and OpenCE underneath stay CC0. Sierra-III's own code is MIT (`LICENSE`), with the carve-outs it names.
 
-**Permission (Sheepdog01, 2026-10-14):** BirchWoodGod, the port's author, told Sheepdog01 on Discord that Sierra-III may take from it as it pleases. That covers the code he wrote. It can't cover what isn't his to grant:
+**Permission (2026-10-14):** BirchWoodGod, the port's author, told the maintainer (Sheepdog-01) on Discord that Sierra-III may take from it as it pleases. That covers the code he wrote. It can't cover what isn't his to grant:
 - `port/linux/src/tag_layouts.h` and anything else generated from Invader (GPL-3, SnowyMouse's);
 - code he credits to others, such as iamhaller's networking or Bruno Santana's settings work (ask them, or take the idea only);
 - upstream decomp and OpenCE code, which is CC0 anyway.
 
-Anything taken still names the Vita port in its commit and review. The exchange is transcribed in the lab's research notes (its `permissions.md`). His words: "Dude steal away I want to try your port sometime!"
+Anything taken still names the Vita port in its commit and review. The exchange is kept in the project's private research notes. His words: "Dude steal away I want to try your port sometime!"
 
 **Where to read it.** `port/vita/README.md` (settings, the profiles' costs, debug switches), `ROADMAP.md` and the main README's Performance section. Engine changes carry `/* port: */` or `/* (port) */` comments under `#ifdef HALO_LINUX` (the Vita builds the Linux platform layer); the speed ones name their map and their measurement.
 
@@ -69,7 +69,7 @@ These are smaller changes inside the same hot code: `actor_firing_position.c`, p
 | Prefetch hints in perception (`__builtin_prefetch`; ~1,600 misses a tick in the props walk) | `prefetch_map.md`: on the PSP a fill blocks every load, so hints gain little without reshaping the code. The *targets* they name (the props walk, the cluster object walk) are worth checking against our map |
 | `tag_loaded` answers memoized | `verify_tag_reference` answered from the reference (b66) |
 
-## 3. The A/B shelf (behaviour changes, Sheepdog01's call)
+## 3. The A/B shelf (behaviour changes, the maintainer's call)
 
 Their settings panel sorts these by cost, and the profiles have been played by real players: useful evidence of what passes a feel test.
 
@@ -98,18 +98,63 @@ For us [U]: anything in the audio package that changes which sounds the game thi
 - The tick on its own core, overlapping the render without locks ("an object may be drawn mid-update"). Our analogue is the ME roadmap; their experience says drawing a half-updated object looks acceptable in play, which is evidence for phase 3, not a design we can copy.
 - Dynamic resolution, frame interpolation, the fourth core: Vita hardware.
 
-## 6. What we could offer back
+## 6. What we could offer back (refreshed 2026-10-20, against insider.16)
 
-The Vita port is processor-bound on the beach too, and it lacks these [D]:
+Checked item by item against `1.1.1-insider.16` (`82a9f97e`) [D]: our `docs/for_other_ports/` lists (`portable_speedups.md`, `game_bugs.md`, the measuring method) and the day's levers. **Already has**, **has similar** or **lacks** names his file and function. Ranked by worth to him on his own limit: b30's beach, where by his README the Vita's processor limits ("drawing many characters, and the game's own simulation of them"). His tick runs on its own core beside the render core.
 
-1. **Exact sleeping.** Our machine sleep (a machine whose update would leave it byte-identical sleeps) and ground-weapon sleep, with their functions kept. Their nearest is "Scenery updates: Quarter", which isn't exact. On our b30 beach, ground weapons cost 5.1 ms a tick before b124 [M].
-2. **The `weapon_new` bug** behind it: `tracked_object_index` is never set, so a new weapon "tracks" object slot 0. Their engine has it too (`items/weapons.c`). It matters to anything that reasons about a ground weapon's state.
-3. **Surface dedup in the sphere walk.** Our `psp_surface_seen_before` skips a surface already walked from another leaf, for walks past three leaves; their walk has no dedup [D].
-4. Halo 64's finds apply to them as well: the prism facing test first (H3) and the `add_feature` hash (H4).
+**The plain answer:** nearly everything of ours that cuts render-core work is GE-specific and doesn't carry over to a GXM renderer that runs the Xbox's combiners. What carries is mostly tick work. That pays on the beach only where his tick core is near the frame too, which his README suggests but doesn't measure [U]. The one render-core item is the lightning clear (4), and it is for The Library, not b30.
 
-Not needed on their side: H1's `aiming_change` fix. ARM converts a NaN to 0, which gives the same byte as x86, so only MIPS ports diverge there.
+| Rank | Offer | He | Applies to the Vita? | Why it's worth it to him | Where ours lives |
+|---|---|---|---|---|---|
+| 1 | **Exact sleeping, with wake-on-write.** An object whose update leaves its datum byte-identical sleeps, and a checksum wakes it. Covers vehicles, corpses, machines, ground weapons and lit items. Writers from outside the update mark it, so unmarked sleepers skip even the checksum | **Lacks.** Has a non-exact scenery divisor (`objects.c`, `objects_scenery_update_skipped`, `HALO_SCENERY_UPDATE_DIVISOR`) and a resting-lights memo for multiplayer only (`objects.c`, `objects_resting_lights_*`) | Yes. It is exact, so it is also safe for his crossplay lockstep | The biggest exact tick saving we have. Ours, measured on the PSP: 8 parked vehicles cost 4.7 ms a tick before [M]; ground weapons 5.1 ms a tick [M]; wake-on-write −2.3 to −2.8 ms a tick on b30 [M]. Fights leave bodies and weapons lying | `psp_fixups.py`: `PSP_SLEEP_CODE` (`psp_sleepy_update`), `FIXES_106`, `FIXES_121`, `FIXES_123L`, `FIXES_WAKE`; check word `wakecheck` |
+| 1a | **Its two prerequisites (bugs):** `weapon_new` never sets `tracked_object_index` (G2), and a corpse's aim never settles (G5) | **Lacks both** [D]: `items/weapons.c`, `weapon_new` sets only state and overheat effect. The Vita's tick hash masks neither, since neither is uninitialised | Yes (engine code) | Without them, ground weapons and bodies never look idle to a sleep rule | `FIXES_123L` (`objects.c#weapontrack`), `FIXES_106` (`units.c#aim`) |
+| 2 | **Feedback on his L1 (dark attached lights).** We built it from his insider.16 change and counted it | Has it (his, `objects/object_lights.c`, `light_attached_reconnect`) | Yes | Our count: it removes 59% of attached-light relinks on b30 (~30 a tick), 33% on a10, 83% on a30 and 72% on c10; b30 tick −1.6% [E]. But in ours it **isn't picture-exact on a10**: 177–226 of 4,490 frames differ, against 70–126 between two runs of the old path [E]. Probably a light comes back linked one tick late [U]; that may come from our once-a-frame relink and sleep. His draw hash can settle it on his side cheaply | held on its own branch; `object_connect_lights`, the `darklights:` count line |
+| 3 | **Marker lookups remembered, and `_stricmp` without a `tolower` call per character** | **Lacks.** `models/models.c`, `model_find_marker` (binary search by `_stricmp`); `port/linux/src/msvc_crt.c` (calls `tolower` per character) | Yes, though a smaller share on a Cortex-A9's larger caches [U] | Each tick, every weapon, aim and attachment finds its marker by name. Ours: 2.5% of b30's tick misses [E]; `_stricmp` ~1% of b30's beach [E] | `FIXES_109` (`models.c#markers`), `FIXES_107` (`msvc_crt.c`) |
+| 4 | **Lightning's 147 KB scratch clear** | **Lacks.** `objects/widgets/lightning.c` clears `points[4097]` once per chain, every frame | Yes, **on his render core** (widgets draw) | Ours: The Library's `widgets_render` went from 6.4 to 0.5 ms [M, PSP]. On the Vita it is a memset of ~147 KB a chain, so smaller, but it lands on his limiting core in Sentinel fights [U] | `FIXES_106` (`lightning.c`) |
+| 5 | **Case-blind path lookup without folder scans (P4)** | **Lacks.** `port/linux/src/xbox_files.c` lists the folder for each path part (`posix_find_entry_case_insensitive`) | Yes if his card's file system ignores case [U] | Load and start-up time, not frames. Ours was 23 s of a 27 s start-up check [M, PSP Memory Stick]; the Vita's storage is faster [U] | `FIXES_FRONT` (`xbox_files.c#pathscan`) |
+| 6 | **The lever gate (a habit):** before building a speed-up, count the work it would remove (plane tests, misses, objects walked) and check that the stretch is limited by that core | **Has similar**: his speed comments name their map and measurement, taken after the change | Yes | Today it stopped five candidates of ours before or at their first build (BSP walk loop, mass-point walk, GE bounding boxes, texture residency, more VRAM), each with its count. A method, not code | a habit, not yet in `docs/for_other_ports/` |
+| 7 | **Surface dedup in the sphere walk** | **Lacks** [D]: `physics/collision_bsp.c`, `collision_surface_test_sphere` and its recursive callers keep no "walked" mark | Yes (tick) | A surface reached from several leaves is tested once, for walks of more than three leaves. Gain unmeasured on our side too [U] | `psp_fixups.py`, `psp_surface_seen_before` |
+| 8 | **The stale-profile guard:** count the functions compiled without profile counts, and refuse to ship when there are any | **Has the risk, lacks the guard.** `tools/linux_build.py` silences the out-of-date profile warnings (`PROFILE_USE_FLAGS`); the Vita build uses PGO only if one is supplied (`tools/vita_build.py`, `vita_pgo_profile`) | Only if he adopts an ARM harness profile for the Vita | Ours: a profile from the build before left 52 functions without counts and cost 6.5–7% of the tick [E]; the build's own profile took 7.7–8.8% off the tick [M] | `PSP_PGO_STRICT=1` and `pgo_mismatch.txt` in `psp_build.py` |
+| 9 | **A per-event pixel trail for look bugs:** the desktop build's GL calls for one frame, with what each event changed in the back buffer (in all, and in chosen rows) | **Has similar**: a per-frame draw hash (`port/vita/null/vgxm_null.c`, `HALO_DRAW_HASH`). It says that frames differ, not which event made the difference | Yes, for differences between the Vita and the desktop build | Today it found two of our look bugs in one read each: the far ocean's missing fog layers and the glass tint pass. Both causes were ours and he doesn't share them (below) | our test tooling, outside the port's repo |
+| 10 | **`location.bonus` in release builds (G1)** | **Has similar**: his tick hash builds zero all stack locals (`port/linux/game/tick_hash.c`); release builds keep the garbage | Yes | His resting-lights hash mixes the whole `location`, bonus word included (`objects.c`). Any object whose location is rebuilt on the stack may then miss the memo [U]. The fix is one line | `FIXES_BONUS` (`objects.c#bonus`) |
+| 11 | **Shared mass-point object lists for a vehicle's ground queries** | **Lacks** (`physics/physics.c`, `physics_compute_new`'s queries) | Yes | Low. Below our own gate: −0.5% of a drive tick [E], −4.3% on the PSP but within the noise [M]. His packed-sphere copy already makes each object visit cheap [U] | its own branch, `physics_compute_new` |
+| 12 | **Single precision for the "fraction of"** | **Lacks** (`math/periodic_functions.c`: `fmod` in `double`) | Barely: the A9 has hardware doubles [U] | Ours: c20 tick −3.4% [M], but that came from software doubles | `FIXES_129` (`halo_math.h#fraction`) |
+| 13 | **Attached lights relinked once a frame (LD1)** | **Lacks** | Weakly. With 30 ticks to ~25 frames it saves about a sixth of relinks, and on a threaded tick "the last tick before a frame" is fuzzy [U] | Low once L1 is in | `FIXES_LD1` |
+| 14 | **The main menu rewrites 26 variant files each start (G6)** | **Lacks** [D]: no port change in `saved games/playlist_profile.c` | Yes | Start-up only. Ours was ~54 s on a PSP-1000 Memory Stick [M]; much less on the Vita [U] | `FIXES_FRONT` (`playlist_profile.c#variants`) |
 
-Sierra-III is private, so an offer would be ideas and short snippets, not links, and it would say plainly that the work is Claude-assisted. Their GPL-3 doesn't stop us sending ideas or code of our own; it only governs code we take from them.
+**He already has these** [D]: a packed bounding-sphere copy for the collision walks (`port/linux/game/object_bounds_cache.c`, OpenCE's) and the walks' inlined sphere tests (`physics/collision_bsp.c`); the light pass's surface sort without a call per comparison (`structures/structure_render.c`, `structure_render_sort_surface_indices`); `tag_loaded` remembered, which covers our `verify_tag_reference` change (`cache/cache_files.c`); `datum_new` resuming after a full array (`memory/data.c`, OpenCE's); the collision log off on a threaded tick (`physics/collision_usage.c`); and the path clear and deleted-object walk, which are his to begin with.
+
+**Not needed, or ours alone:**
+- H1/X2 (`aiming_change`): ARM converts NaN to 0, as x86 does.
+- X3 (unaligned loads): the A9 handles plain unaligned loads in hardware.
+- **The far ocean**: our cause is our own clipper. It cut b30's far underwater pieces, so they lost their fog pass. He runs the Xbox's fog code (`rasterizer/xbox/rasterizer_xbox_environment_fog.c`) on a GPU that clips.
+- **The glass tint pass**: our GE layer never drew it. He draws it (`rasterizer_xbox_transparent_geometry.c`).
+- **c10's prop pool**: ours tops out at 512, and a full pool refuses quietly. His pools are four to eight times native (`halo_port_capacity.h`).
+- X4 (the sound cache's page count): bites only with a cache under 4 MB [U].
+- Everything for the GE, the Media Engine, VRAM and the bake.
+- Halo 64's H3 and H4 aren't ours to offer. He lacks H4's `add_feature` hash (`physics/collision_features.c`) [D]; H3 is unchecked.
+
+### Widescreen and battery (2026-10-21)
+
+Two questions: what 16:9 costs him against 4:3, and where battery goes. Read at his public main, `b6a7a295` (2026-10-18, the newest public commit; insider.16 isn't on hand, so its files may differ) [D]. Our port always draws 16:9 (480×272), so every figure of ours is a widescreen figure.
+
+**The plain answer:** 16:9 costs him what it costs the original game: about a third more objects, on his render core, and a third more pixels, which his dynamic resolution absorbs. Nothing in his 16:9 path is wasted [D]. For battery, his own code holds the two usual levers (cores that poll while idle, clocks pinned at the top); we have no power figures of our own.
+
+| Rank | Offer | He | Applies to the Vita? | Why it's worth it to him | Where ours lives |
+|---|---|---|---|---|---|
+| W1 | **What 16:9 costs, counted.** The game keeps 4:3's vertical view and widens the horizontal one, so 16:9 adds the side strips' objects | **Same shape** [D]: `set_window_camera_values` (`main/main.c`) sets the vertical field of view from 0.75 × the 4:3 tangent; the view is `halo_screen_width()` wide, 848 for 16:9 and 640 for 4:3 (`port/vita/platform/d3d8_gxm.c`, `screen_width_wanted`). Culling and drawing use the same width, so nothing on screen was culled | Yes: it is the game's own view, not our renderer | b30's Pelican ride: 155.5 objects a frame at 16:9 against 120 at 4:3, +30% [E, ChupathingyCE's desktop build]. 848 columns against 640: +32.5% pixels at the same render scale [D]. Dynamic resolution buys back pixels, not the render core's per-object work, so where his render core limits, 16:9 should cost it about a third more [U] | `recon_134.md`, "Does the original draw fewer?" |
+| W2 | **Idle cores that block instead of polling** (battery) | **Polls** [D]: the tick thread's wait for work and the main thread's join (`port/linux/game/tick_thread.c`, `tick_thread`, `halo_tick_thread_join`: 500 spins, then 50 µs sleeps); the render worker's wait for records (`port/vita/platform/d3d8_gxm.c`, `render_worker`: 200 spins, then 50 µs); `worker_drain` (50 µs); the GPU waits (`port/vita/host/vita_gxm.c`, `vgxm_wait_gpu_idle`, `vgxm_frame_submit_begin`: 100 µs sleeps on the notification). He already blocks on semaphores elsewhere (the log, the shader compiler) | Yes [U]: a core asleep in a blocking wait can idle; one woken every 50 µs mostly can't | At 30 FPS a core whose work ends early polls out the rest of the frame: a 15 ms tick leaves 18 ms, up to ~360 wake-ups a frame at 50 µs [U, arithmetic]. Keep the short spin, then wait on a semaphore or event flag the other side signals, and on GXM's notification wait for the GPU [U]. His per-core busy shares (`vita_fourth_core.c`, from the kernel's idle clocks) can show the cost before and after. No figure of ours is about power | The same lesson on the PSP, not a power measurement: Halo's throttle spin given a sleep (`FIXES_36`, `main.c`; `game_bugs.md` G8); the Media Engine's idle poll, 551 polls per 20 ms (`media_engine.md`, `code_review_b119_me.md` #1) |
+| W3 | **Clocks lowered when there is slack** (battery; a pointer, not an offer) | **Pinned** [D]: `main` (`port/vita/host/vita_main.c`) raises ARM, bus, GPU and crossbar to 444/222/222/166 at start (from Bruno Santana's build) and never lowers them, so menus, pause, loading and cutscenes run at the top clocks | Yes [U] | The usual handheld battery lever: lower the GPU and crossbar (or the ARM) in the menus, on pause and while loading, and raise them again in play [U] | Nothing to give: Sierra-III sets 333/166 for the whole run too (`psp/src/psp_platform.c`) |
+| W4 | **The debug-vertex call per model part,** tested where it's called | **Lacks** [D]: `models/models.c`, both part loops of the model draw call `rasterizer_debug_model_vertices` after every part; it returns unless its debug display is on | Yes, on his render core, and it grows with the objects drawn (+30% at 16:9) [U] | Small and exact: on b30 the call cost 318 I-misses and 4.6 k instructions a tick [E]; less on the A9's larger caches [U] | `FIXES_DRAWCOLD` (`models.c#debuggate`) |
+| W5 | **Lip sync parts runs that should match** (a test method) | **Has similar** [D]: `HALO_FIXED_TICK` runs the sound manager on a frame clock and waits for every sound read (`sound/sound_manager.c`, `cache/xbox_sound_cache.c`), which removes the same cause in his harness | Yes, for runs his fixed tick doesn't cover: the tick thread on, or the Vita itself [U] | The mouth aperture is read at the sound's play position, which follows the clock and the mixer, and it moves the speaking unit's nodes, its weapon's marker and so its shots: the original game's behaviour. Any change in timing then parts two runs on maps with dialogue. Ours: with the word, four builds that differ only in timing play identically through 9,000 ticks on a30; without it they part at tick 5,942 [E] | keep word `nomouth`: `FIXES_112` (`game_sound.c#nomouth`), `review_nomouth.md`, commit `7c70f1ac` |
+
+**Not for him:**
+- The field of view's tangent remembered (`b107_candidates.md` §5, `build_b114.md`): ours was in our own renderer (`psp/src/psp_ge.c`, `fov_tan_half`). His engine works it out once per camera (`render/render_cameras.c`) [D].
+- Halo's throttle spin: he avoids it already. The Vita runs unthrottled and caps frames by sleeping (`main/main.c`, after `main_rasterizer_throttle`'s spin; `HALO_NO_VSYNC`, `vita_host_sleep_us`) [D].
+- Model detail for the lines really drawn (ours: 272 lines, `engine_performance.md` §4.3): his equivalent would follow the dynamic resolution's lines. A look question we never measured [U].
+- A 16:9 screen with 4:3's horizontal view (rows cut instead of sides added) would draw fewer objects than 4:3 [U], but frames the game differently from the Xbox: his call, and no work of ours.
+
+**How to offer it.** Sierra-III is private, so the offer is ideas and short snippets of our own code: no links, and no names of our test machinery. It says plainly that Claude wrote the code and the maintainer directs and tests it. His GPL-3 governs only code we take from him, not what we send. insider.16 was given privately, so the offer cites only his own file and function names back to him.
 
 ---
 
@@ -178,3 +223,23 @@ Not ours: the cloaked Flood slowdown in The Maw (#33) is the Vita GPU's screen c
 5. **The weapon interface fix:** did the HUD visibly change, and does anyone know what the Xbox showed?
 6. **The evasion bug:** has it ever been seen in a campaign level?
 7. **Would they like ours?** Exact machine and ground-weapon sleeping, the `tracked_object_index` fix, and surface dedup in the sphere walk (§6).
+
+## 12. Since `61debf0` (read 2026-10-19, at `b6a7a29`)
+
+**No new speed-ups.** [D] Main has six commits since `61debf0`, all README (the v1.1.0 video, a donation badge added and removed, PC players pointed to OpenCE); no branch has moved since 10-09. Every `perf/*` branch was already in `61debf0` except `perf/coop-host` (`05bcacf8`: a co-op host re-reads only the device groups `devices.c` marks as changed). That one is co-op only, so it isn't ours.
+
+A second pass over the `61debf0` tree found three switches the first read left out:
+
+| Switch (their file) | What it does | Exact? | For us |
+|---|---|---|---|
+| `HALO_SKY_LATE` (`render/render.c`, on by default) | The sky is drawn after the opaque scene, only on pixels still at the cleared depth. On the Vita's tile renderer, a blended layer drawn first is paid in full (one to two screens of fragments a frame). | Yes (every pixel ends the same, by their argument) | **Leave.** Our GE already draws the sky's see-through parts first in the end-of-frame transparent list, and its solid parts at the far plane without writing depth (`psp_ge.c`). The GE isn't a tile renderer, and on b136's ladder the CPU waits 0.3–0.4 ms a frame for it on a30, b30 and d20 [M]. Payout is ~0 on b30/a30/d20 until frames in flight (#4) make the GE the limit [U]. |
+| `HALO_AI_PERCEPTION_LOD=n` (`ai/actor_perception.c`) | Actors more than n units from every player refresh their props' line of sight every other tick. | No (AI behaviour) | **Leave.** He retired it for Bruno Santana's think rate (§3). Thinking less often is open to experiment here, but it ships only after an A/B (CLAUDE.md), and §3 already holds the better version. |
+| `HALO_DECAL_STACK_CAP=n` (`rasterizer_xbox_decals.c`, opt-in) | At most n decals drawn in one 0.15-unit cell; older ones under them are left out (a10's knot: ~800 quads, 2.4 screens of blended pixels). | No (an old mark that showed through goes) | **Shelf, the maintainer's call.** It detracts. GE fill only matters in decal piles, and the GE isn't the limit (above). |
+
+**Credit, if any is taken:** all three are BirchWoodGod's code under his grant (header), except the think rate, which is Bruno Santana's (idea only).
+
+**What we could offer back:** unchanged (§6, and `docs/for_other_ports/`). His crossplay is at network version 29, the same as ours (OpenCE build-206, ChupathingyCE 0.7.5b). That matters only once multiplayer is unshelved.
+
+## 13. Addendum (2026-10-20): insider.16
+
+`1.1.1-insider.16` (`82a9f97e`, a pre-release developer package) is read in `research_vita_insider16.md`. Most of it is multiplayer, menus and Forge. One tick idea is worth a count: dark attached lights left off the map (L1), against `object_connect_lights`' 2.57 ms a tick on b30. There is a client clock fix for the multiplayer session (L3), and nothing new for the look list.

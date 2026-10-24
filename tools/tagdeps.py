@@ -7,11 +7,13 @@ groups that lead to what is drawn or fired: a weapon to its first-person
 model and its projectile, a model to its shaders, a projectile to its
 attachments (contrails, lights, particle systems, effects).
 
-    python3 tagdeps.py MAP PATTERN [--depth N] [--all]
+    python3 tagdeps.py MAP PATTERN [--depth N] [--all] [--stages]
 
   PATTERN  part of a tag name, e.g. "plasma rifle" (case does not matter)
   --depth  how many steps to follow (default 3)
   --all    follow every group, not only those below
+  --stages every see-through shader's combiner stages (always when the
+           pattern matches four or fewer)
 
 Prints names and groups only: no tag data leaves the machine. Uses the bake's
 map reader (bake/lib/halomap.py) and Invader's tag definitions
@@ -29,6 +31,7 @@ before the texel fit), how well each drawing model fits, and the combiner
 stages of a generic shader whose tint changed: derived colours and register
 wiring, no tag data."""
 import os
+import struct
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -97,6 +100,12 @@ def main():
     for tag in roots:
         show(tag, 0, '')
         print()
+    # model shaders (soso) whose name holds the pattern: how they are drawn
+    # on the PC (the base map's scale, the detail map's scale, function and
+    # mask, which maps are set), for checking what the PSP's one pass keeps.
+    # Numbers and enum names only
+    print_model_shaders(m, d, [t for t in m.tags if t.group == 'soso' and pattern in t.name.lower()])
+    print_level_shaders(m, d, [t for t in m.tags if t.group == 'senv' and pattern in t.name.lower()])
     # every meter and plasma shader in the map, whoever uses it
     for group in ('smet', 'spla'):
         names = sorted(t.name for t in m.tags if t.group == group)
@@ -154,8 +163,133 @@ def main():
             print('    fit over the texels: error modulate %.5f, add %.5f, flat %.5f; each map\'s share of the output: %s' % (
                 found.errors['modulate'], found.errors['add'], found.errors['flat'],
                 ', '.join('map %d %.5f' % (j, v) for j, v in sorted(found.shares.items())) or 'none'))
-        print_tint_inputs(m, t, means, stages=not same)
+        print_tint_inputs(m, t, means, stages=not same or len(shaders) <= 4 or '--stages' in sys.argv)
     print('tints that change from the means\' (texels, the drawn map, the model): %d' % changed)
+
+
+def print_model_shaders(m, d, tags):
+    struct = d.groups.get('shader_model')
+    if not struct:
+        print('model shaders: no definition for soso here')
+        return
+    fields = d.fields(struct)
+    for t in sorted(tags, key=lambda t: t.name):
+        o = m.off(t.address)
+        if o is None:
+            continue
+        parts = []
+        for off, f, sz in fields:
+            name = f.get('name', '')
+            ftype = f['type']
+            if ftype == 'TagDependency':
+                target = struct_unpack('<i', m.data, o + off + 12)
+                parts.append('%s %s' % (name, 'set' if target != -1 else 'none'))
+            elif ftype in ('float', 'Fraction') and any(w in name for w in ('map u scale', 'map v scale', 'detail map', 'translucency', 'brightness')):
+                parts.append('%s %.4g' % (name, struct_unpack('<f', m.data, o + off)))
+            elif ftype in d.enums and name.startswith('detail'):
+                v = struct_unpack('<H', m.data, o + off)
+                options = d.enums[ftype].get('options', [])
+                parts.append('%s %s' % (name, options[v] if v < len(options) else v))
+            elif ftype in d.bitfields and 'flags' in name:
+                parts.append('%s 0x%x' % (name, struct_unpack('<H' if sz == 2 else '<I', m.data, o + off)))
+        print('model shader %s: %s' % (t.name, '; '.join(parts)))
+
+
+def print_level_shaders(m, d, tags):
+    """level (senv) shaders whose name holds the pattern: their flags, base
+    and bump maps' sizes, the bump map's scale, and for an alpha-tested one
+    how the cut-out the bake makes from the bump map's alpha samples it: the
+    bump map's texels per baked base texel (over 1: the shape is thinned to
+    a sample of it) and the share drawn, at the bump's own size and as baked.
+    Numbers only"""
+    try:
+        import numpy as np
+        from texpack import bitmap_list, target, MAXIMUM_SIDE
+        from bitmap_bake import decode_bump
+        import refs
+    except ImportError as e:
+        print('level shaders: not worked out here (%s)' % e)
+        return
+    B = bitmap_list(m, d)
+    first = {}
+    for b in B:
+        first.setdefault(b['tag'], b)
+    roles = refs.bitmap_roles(m, d)
+    for t in sorted(tags, key=lambda t: t.name):
+        o = m.off(t.address)
+        if o is None:
+            continue
+        flags, = struct.unpack_from('<H', m.data, o + 40)
+        base = m.by_id.get(struct.unpack_from('<i', m.data, o + 148)[0])
+        bump = m.by_id.get(struct.unpack_from('<i', m.data, o + 308)[0])
+        bump_scale, = struct.unpack_from('<f', m.data, o + 292)
+        su, sv = struct.unpack_from('<2f', m.data, o + 312)
+        bb = first.get(base.name) if base else None
+        pb = first.get(bump.name) if bump else None
+        text = 'level shader %s: flags 0x%x' % (t.name, flags)
+        if bb:
+            act, tw, th = target(bb, refs.classify(roles.get(bb['tag'], ()), bb))
+            while max(tw, th) > MAXIMUM_SIDE:
+                tw, th = max(1, tw // 2), max(1, th // 2)
+            text += '; base %s %dx%d %s mips %d, baked %dx%d' % (bb['tag'], bb['w'], bb['h'], bb['format'], bb['mips'], tw, th)
+        if pb:
+            text += '; bump %s %dx%d %s mips %d, scale %g, u %g v %g' % (pb['tag'], pb['w'], pb['h'], pb['format'],
+                                                                     pb['mips'], bump_scale, su, sv)
+        print(text)
+        if not (bb and pb and flags & 1) or not (tw and th):
+            continue
+        img = decode_bump(m, pb)
+        if img is None:
+            print('    cut-out: the bump map cannot be read')
+            continue
+        u = su if su else (bump_scale if bump_scale else 1.0)
+        v = sv if sv else (bump_scale if bump_scale else 1.0)
+        a = img[:, :, 3] > 127
+        bh, bw = a.shape
+        xs = np.floor((np.arange(tw) + 0.5) / tw * u * bw).astype(np.int64) % bw
+        ys = np.floor((np.arange(th) + 0.5) / th * v * bh).astype(np.int64) % bh
+        cut = a[ys[:, None], xs[None, :]]
+        # runs of drawn texels along rows: a wire mesh has long runs, beads short ones
+        def runs(x):
+            r = np.diff(np.concatenate([np.zeros((x.shape[0], 1), bool), x, np.zeros((x.shape[0], 1), bool)], 1).astype(np.int8), axis=1)
+            starts, ends = np.where(r == 1), np.where(r == -1)
+            n = len(starts[0])
+            return (ends[1] - starts[1]).mean() if n else 0.0
+        print('    cut-out: bump texels per baked base texel %.2f x %.2f; drawn %.3f at the bump\'s size, %.3f as baked; '
+              'mean drawn run along a row %.1f bump texels, %.1f baked texels (%.1f bump texels long)' % (
+                  u * bw / tw, v * bh / th, a.mean(), cut.mean(), runs(a), runs(cut), runs(cut) * u * bw / tw))
+        # what the GE draws: the bake's cut-out at the base map's own size,
+        # box-filtered to a baked size, magnified back bilinearly and tested
+        # (alpha > 0x7F); its mismatch against the cut-out at full size, and
+        # the lattice's period (the strongest repeat along a row and a column)
+        from PIL import Image
+        W, H = bb['w'], bb['h']
+        xs = np.floor((np.arange(W) + 0.5) / W * u * bw).astype(np.int64) % bw
+        ys = np.floor((np.arange(H) + 0.5) / H * v * bh).astype(np.int64) % bh
+        full = img[ys[:, None], xs[None, :], 3]
+        ref = full > 127
+
+        def period(x, axis):
+            f = np.abs(np.fft.rfft(x - x.mean(), axis=axis)).mean(1 - axis)
+            k = int(np.argmax(f[1:])) + 1
+            return x.shape[axis] / k
+
+        sizes = []
+        sw, sh = tw, th
+        while sw <= min(512, W) and sh <= min(512, H):
+            sizes.append((sw, sh))
+            sw, sh = sw * 2, sh * 2
+        parts = []
+        for sw, sh in sizes:
+            small = Image.fromarray(full).resize((sw, sh), Image.Resampling.BOX)
+            back = np.array(small.resize((W, H), Image.Resampling.BILINEAR)) > 127
+            parts.append('%dx%d: %.3f wrong, drawn %.3f' % (sw, sh, (back != ref).mean(), back.mean()))
+        print('    as the GE draws it: lattice period %.1f x %.1f base texels; %s' % (
+            period(ref.astype(np.float32), 1), period(ref.astype(np.float32), 0), '; '.join(parts)))
+
+
+def struct_unpack(fmt, data, at):
+    return struct.unpack_from(fmt, data, at)[0]
 
 
 # the shader fields a tint depends on, by their tag enums' order
@@ -190,12 +324,41 @@ def print_tint_inputs(m, t, means, stages=False):
         u, v = struct.unpack_from('<ff', m.data, mo + stride * i + scale_at)
         target = m.by_id.get(tid)
         mean = means(tid)
-        print('    map %d: %s, scale %g x %g, mean %s' % (
+        # the bitmap's kind: a bump or vector map read as colours averages
+        # its normals, not what the combiners make of them
+        b = means.first.get(target.name) if target is not None else None
+        kind_text = ', %s %s %s %dx%d' % (b['usage'], b['type'], b['format'], b['w'], b['h']) if b else ''
+        print('    map %d: %s, scale %g x %g, mean %s%s' % (
             i, target.name if target is not None else 'none', u, v,
-            ' '.join('%.2f' % x for x in mean) if mean is not None else 'unreadable'))
+            ' '.join('%.2f' % x for x in mean) if mean is not None else 'unreadable', kind_text))
+        if b and b['type'] == 'cube':
+            for line in cube_face_lines(m, b):
+                print('      ' + line)
     if stages and kind == seethrough.GENERIC:
         for line in stage_lines(m, o):
             print('    ' + line)
+
+
+def cube_face_lines(m, b):
+    """a cube map's faces in stored order: each face's mean, and its top and
+    bottom halves' (what a reflection sees depends on which faces and halves
+    it reaches, not on the six faces' mean)"""
+    import seethrough
+    from bitmap_bake import BPP
+    bpp = BPP[b['fmt']] if b['fmt'] < len(BPP) else 0
+    face = seethrough._face_bytes(b, bpp) if bpp else 0
+    for stride in (face, (face + 127) // 128 * 128):
+        if stride and 6 * stride == b['pixels_size']:
+            lines = []
+            for k in range(6):
+                img = seethrough.decode(m, dict(b, pixels_offset=b['pixels_offset'] + k * stride, pixels_size=stride))
+                if img is None:
+                    return ['face %d unreadable' % k]
+                h = img.shape[0] // 2
+                rgb = lambda x: ' '.join('%.2f' % v for v in x.reshape(-1, 4).mean(0)[:3] / 255.0)
+                lines.append('face %d: mean %s; top half %s; bottom half %s' % (k, rgb(img), rgb(img[:h]), rgb(img[h:])))
+            return lines
+    return ['faces not placed (%d bytes)' % b['pixels_size']]
 
 
 # the generic shader's combiner registers and mappings, for stage_lines

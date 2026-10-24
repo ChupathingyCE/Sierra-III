@@ -11,22 +11,36 @@ draw at most once a frame. After the load, the settle draws the level's
 first view with no tick until its textures are in. The drawing itself is
 the GE layer's (psp_ge_loading_*, linked weakly): without it the screen
 holds as before, with the chant, the settle and the timings.
+The same screen covers the start-up, from keep.txt's reading to the main
+menu ("the boot screen", below).
 Keep words: "loadingoff" (none of it), "chantoff", "chantheap" (the chant's voices
-from the heap: psp_dsound.c), "settleoff", "settleN". */
+from the heap: psp_dsound.c), "settleoff", "settleN", "loadholdN" (the screen's
+shortest showing, 6 s by default; "loadhold0" none); the boot screen's "bootlog",
+"boothintN", "bootsettleoff". */
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
 #include "psp_loading.h"
+#include "psp_paths.h" /* PSP_DATA_ROOT: ms0:/halo or ms0:/halomp */
+#include "psp_metrics.h"
+#include <pspiofilemgr.h>
+#include <pspkernel.h>
 
 extern unsigned long psp_microseconds(void);
 extern void platform_log(const char *format, ...);
 extern int psp_keep(const char *name);
 extern int psp_keep_number(const char *prefix, int fallback);
 extern unsigned long psp_tex_load_count(void);
+/* "heapmap" (psp_libc.c) and "poolpeaks" (psp_fixups.py FIXES_RECON
+#poolpeaks, so linked weakly): measured where a level ends and begins */
+extern void psp_heap_map(const char *label);
+extern void psp_pool_peaks_report(const char *label, int level_end) __attribute__((weak));
 
 static struct
 {
 	int active;
 	int screen;               /* drawing asked for (not "loadingoff") */
+	int boot;                 /* the start-up's load (from init.txt, or the main menu's) */
 	char map[64];
 	unsigned long begin_us;
 	unsigned long last_draw_us;
@@ -40,7 +54,27 @@ static struct
 	unsigned long settle_loads_first; /* and at the settle's start */
 	int settle_frames;
 	int settle_quiet;         /* settle frames in a row that read no texture */
+	unsigned long settle_not_before_us; /* the settle lasts at least to here (0: no such end) */
+	unsigned long hold_us;    /* the screen's shortest showing, from begin_us (0: none) */
 } loading;
+
+/* the boot screen's state (below); "active" from the program's start until
+the start-up's load, or the main menu's settle, ends */
+static struct
+{
+	int active;
+	volatile int drawing;     /* the boot screen's thread has the screen */
+	volatile int stop;
+	SceUID thread;
+	unsigned long start_us;
+	unsigned long hint_us;    /* the hint shows this long from start_us (0: not at all) */
+	unsigned long frames;
+	int loaded;               /* the start-up's load has ended: its progress is whole */
+	int settling;             /* the main menu's first frames under the veil, its input held */
+	float shown;              /* the progress as the boot screen's thread drew it */
+} boot;
+
+static const char *boot_hint(unsigned long now);
 
 /* the frame shown when the load began, kept where the GE layer chooses
 (the shown buffer may simply stay in VRAM): no static copy here, since a
@@ -75,10 +109,16 @@ static float brightness_of(float progress)
 
 /* The chant: the Xbox's four looping copies of one tone at four pitches
 (progress_bar.c's SetPitch -4681, -6386, -3999, -8773, in 1/4096 octave from
-48 kHz), each swelling over its own part of the load. The bytes are the
-engine's own (progress_bar.c compressed_monk_tone, Xbox ADPCM at 22,050 Hz). */
+48 kHz), each swelling over its own part of the load. The tone is the
+game's own (Xbox ADPCM at 22,050 Hz in default.xbe), so the EBOOT carries no
+copy: the bake reads it from the player's disc into halo/chant.adp
+(bake/lib/chant.py), and the screen is silent without it. Static, so a load
+takes no heap block for it (the holes mem138 closed); written back before
+the Media Engine mixes it */
 #define CHANT_VOICES 4
-extern unsigned char compressed_monk_tone[18396];
+#define CHANT_BYTES 18396
+static unsigned char chant_tone[CHANT_BYTES] __attribute__((aligned(64)));
+static int chant_tone_state; /* 0 unread, 1 read, -1 missing */
 extern void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned long sample_rate,
 	unsigned long frequency, long millibels);
 extern void psp_dsound_loop_volume(void *voice, long millibels);
@@ -89,15 +129,38 @@ static const float chant_range[CHANT_VOICES][2] = { { 0.0f, 1.0f }, { 0.4f, 1.0f
 static const float chant_swell[CHANT_VOICES] = { 3500.0f, 4500.0f, 3500.0f, 4500.0f };
 static void *chant[CHANT_VOICES];
 
+static int chant_read(void)
+{
+	if (!chant_tone_state)
+	{
+		/* the bake writes it into halo/ only; the multiplayer build
+		(ms0:/halomp) reads that copy when it has none of its own */
+		SceUID file = sceIoOpen(PSP_DATA_ROOT "/chant.adp", PSP_O_RDONLY, 0);
+		int got;
+
+		if (file < 0)
+			file = sceIoOpen("ms0:/halo/chant.adp", PSP_O_RDONLY, 0);
+		got = file >= 0 ? sceIoRead(file, chant_tone, CHANT_BYTES) : -1;
+
+		if (file >= 0)
+			sceIoClose(file);
+		chant_tone_state = got == CHANT_BYTES ? 1 : -1;
+		if (chant_tone_state > 0)
+			sceKernelDcacheWritebackRange(chant_tone, CHANT_BYTES);
+		platform_log("loading: the chant %s", chant_tone_state > 0 ? "read from the bake (chant.adp)" :
+			"is silent: chant.adp isn't in the bake (re-bake from the disc to hear it)");
+	}
+	return chant_tone_state > 0;
+}
+
 static void chant_start(void)
 {
 	int k;
 
-	if (psp_keep("chantoff"))
+	if (psp_keep("chantoff") || !chant_read())
 		return;
 	for (k = 0; k < CHANT_VOICES; k++)
-		chant[k] = psp_dsound_loop_start(compressed_monk_tone, sizeof(compressed_monk_tone), 22050,
-			chant_frequency[k], -5000);
+		chant[k] = psp_dsound_loop_start(chant_tone, CHANT_BYTES, 22050, chant_frequency[k], -5000);
 }
 
 static void chant_gains(float progress)
@@ -129,14 +192,15 @@ static void chant_stop(void)
 }
 
 /* the progress as the screen and the chant show it: while loading at most
-once a frame's time; while settling once each of the game's frames */
+once a frame's time; while settling once each of the game's frames. While
+the boot screen's thread has the screen it draws, and eases, by itself */
 static void update(int phase)
 {
 	struct psp_loading_view view;
 	unsigned long now = psp_microseconds();
 	float target;
 
-	if (!loading.screen)
+	if (!loading.screen || boot.drawing)
 		return;
 	if (phase == 0 && loading.draws && now - loading.last_draw_us < 33000)
 		return;
@@ -144,6 +208,10 @@ static void update(int phase)
 		target = 1.0f;
 	else
 		target = loading.expected ? (float)loading.done / (float)loading.expected : 0.0f;
+	/* a load faster than the hold shows its progress by the clock, so the
+	chant's crescendo has its length */
+	if (loading.hold_us && target > (float)(now - loading.begin_us) / (float)loading.hold_us)
+		target = (float)(now - loading.begin_us) / (float)loading.hold_us;
 	if (target > 1.0f)
 		target = 1.0f;
 	loading.shown = ease(loading.shown, target, loading.draws ? (now - loading.last_draw_us) / 1e6f : 0.0f);
@@ -154,24 +222,50 @@ static void update(int phase)
 	view.brightness = brightness_of(loading.shown);
 	view.phase = phase;
 	view.captured = captured;
+	view.notice = boot_hint(now);
 	if (phase == 0 && psp_ge_loading_frame)
 		psp_ge_loading_frame(&view);
 	if (phase == 1 && psp_ge_loading_veil)
 		psp_ge_loading_veil(&view);
 }
 
-void psp_loading_begin(const char *map_name)
+static void loading_begin(const char *map_name, int with_chant)
 {
+	char label[80];
+
+	/* before the old level is let go */
+	snprintf(label, sizeof(label), "leaving for %s", map_name ? map_name : "?");
+	if (psp_pool_peaks_report)
+		psp_pool_peaks_report(label, 1);
+	PSP_METRICS_HEAP_MAP_LEAVING(label);
 	memset(&loading, 0, sizeof(loading));
 	loading.active = 1;
 	loading.screen = !psp_keep("loadingoff");
+	loading.boot = boot.active;
 	loading.begin_us = psp_microseconds();
+	/* the screen's shortest showing (the Xbox's chant needs a few
+	seconds, and the PSP loads a level in one or two), the load and the
+	settle hidden behind it; not at boot, whose screen has its own pace.
+	"loadholdN" sets N seconds, "loadhold0" shows it only as long as the load */
+	loading.hold_us = loading.screen && !loading.boot ? (unsigned long)psp_keep_number("loadhold", 6) * 1000000ul : 0;
 	strncpy(loading.map, map_name ? map_name : "?", sizeof(loading.map) - 1);
-	captured = loading.screen && psp_ge_loading_capture ? psp_ge_loading_capture() : NULL;
-	if (loading.screen)
+	{
+		extern void psp_ge_stencils_expect(const char *map_name);
+
+		psp_ge_stencils_expect(map_name);
+	}
+	/* the boot screen's thread draws the start-up's load, from black */
+	captured = loading.screen && !boot.drawing && psp_ge_loading_capture ? psp_ge_loading_capture() : NULL;
+	if (loading.screen && with_chant)
 		chant_start();
-	platform_log("loading: %s begins%s", loading.map,
-		!loading.screen ? " (loadingoff: no screen)" : psp_ge_loading_frame ? "" : " (no screen in this build)");
+	platform_log("loading: %s begins%s%s", loading.map,
+		!loading.screen ? " (loadingoff: no screen)" : psp_ge_loading_frame ? "" : " (no screen in this build)",
+		boot.drawing ? " (under the boot screen)" : "");
+}
+
+void psp_loading_begin(const char *map_name)
+{
+	loading_begin(map_name, 1);
 }
 
 void psp_loading_expect(unsigned long bytes)
@@ -201,36 +295,46 @@ plays with surfaces missing and frames slow. main.c's psp_main_settle
 draws the frames (psp_fixups.py FIXES_LOADING); the engine's own frame-lock
 reset after a load (main_start_time) drops the time they took.
 Keep words: "settleoff" (none), "settleN" (cap N seconds, 3 by default). */
-int psp_loading_settle_begin(void)
+static int settle_start(unsigned long not_before_us)
 {
-	int cap;
+	int cap = psp_keep_number("settle", 3);
 
-	if (!loading.active || psp_keep("settleoff"))
-		return 0;
-	cap = psp_keep_number("settle", 3);
 	if (cap <= 0)
 		return 0;
 	loading.settle_cap_us = (unsigned long)cap * 1000000ul;
 	loading.settle_us = psp_microseconds();
+	/* the cap stops a settle that never warms; a shortest showing (the boot's
+	hint) stretches it */
+	loading.settle_not_before_us = not_before_us;
+	if (not_before_us && (long)(not_before_us - (loading.settle_us + loading.settle_cap_us)) > 0)
+		loading.settle_cap_us = not_before_us - loading.settle_us;
 	loading.settle_loads = loading.settle_loads_first = psp_tex_load_count();
 	loading.settle_frames = 0;
 	loading.settle_quiet = 0;
 	return 1;
 }
 
+int psp_loading_settle_begin(void)
+{
+	if (!loading.active || psp_keep("settleoff"))
+		return 0;
+	return settle_start(loading.hold_us ? loading.begin_us + loading.hold_us : 0);
+}
+
 int psp_loading_settle_frame(void)
 {
-	unsigned long count = psp_tex_load_count();
+	unsigned long count = psp_tex_load_count(), now = psp_microseconds();
 
 	loading.settle_frames++;
 	loading.settle_quiet = count == loading.settle_loads ? loading.settle_quiet + 1 : 0;
 	loading.settle_loads = count;
 	/* warm, and the screen's progress (and the chant) played out to its end */
-	if ((loading.settle_frames >= 4 && loading.settle_quiet >= 3 && (!loading.screen || loading.shown >= 0.99f)) ||
-		psp_microseconds() - loading.settle_us >= loading.settle_cap_us)
+	if ((loading.settle_frames >= 4 && loading.settle_quiet >= 3 && (!loading.screen || loading.shown >= 0.99f) &&
+		(!loading.settle_not_before_us || (long)(now - loading.settle_not_before_us) >= 0)) ||
+		now - loading.settle_us >= loading.settle_cap_us)
 	{
 		platform_log("loading: %s settled in %lu ms, %d frames, %lu texture reads and waits%s", loading.map,
-			(psp_microseconds() - loading.settle_us) / 1000, loading.settle_frames, count - loading.settle_loads_first,
+			(now - loading.settle_us) / 1000, loading.settle_frames, count - loading.settle_loads_first,
 			loading.settle_quiet >= 3 ? "" : " (at the cap, still reading)");
 		return 0;
 	}
@@ -244,6 +348,8 @@ void psp_loading_settle_veil(void)
 
 void psp_loading_end(void)
 {
+	char label[80];
+
 	if (!loading.active)
 		return;
 	platform_log("loading: %s took %lu ms (%lu of %lu bytes counted, %lu frames drawn)", loading.map,
@@ -251,4 +357,222 @@ void psp_loading_end(void)
 	loading.active = 0;
 	chant_stop();
 	captured = NULL;
+	if (loading.boot)
+	{
+		boot.loaded = 1;
+		boot.active = 0;
+		boot.settling = 0;
+	}
+	{
+		extern void psp_ge_stencils_retry(void);
+
+		psp_ge_stencils_retry();
+	}
+	/* after the time above, which it would add to, and once the chant has
+	let its voices go */
+	snprintf(label, sizeof(label), "%s loaded", loading.map);
+	PSP_METRICS_HEAP_MAP_LOADED(label, loading.map);
+}
+
+/* ---------- the boot screen (from the hand test: the
+loading screen over the start-up rather than the log scrolling; a few
+seconds' hint on the launch menu while the game loads behind it; the main
+menu settled before it is shown, so nothing pops in)
+
+From keep.txt's reading (main) to the game's first frame, a thread of its
+own draws the loading screen about 30 times a second: a cold start's black,
+the start-up load's progress (ui.map's, or init.txt's map), and for the
+first seconds the hint. The GE starts early for it (psp_ge_boot_start, with
+a display list of its own); the game's thread starts up as before and draws
+nothing until its first frame, whose ge_initialize stops this thread
+(psp_loading_boot_screen_stop). The thread outranks the game's only so its
+frames keep coming while the game's thread yields to the Memory Stick's
+reader; a frame is a few hundred microseconds of CPU, the rest is sleep.
+
+On the way to the main menu (main.c's main_setup_connection) the menu's
+first frames are then drawn under the veil, as a level's settle, while its
+input is held (ui_widget.c's process_ui_widgets, which the Xbox held the
+same way under its own loading screen), until its textures, the showcase's
+too, stop coming in, and not before the hint has had its seconds. Unlike a
+level's settle the menu ticks meanwhile: its scenes and music run as before.
+The level's settle stays off at boot: before main_loop's main_initialize_time
+starts the port's vertical blank thread, D3DDevice_Present waits for a
+second frame's flip that never comes (interpolation off: d3d8_gl.c), which
+is where loading2's boots from init.txt sat at game time 0.
+Keep words: "bootlog" (no boot screen: the log on the screen, as before),
+"boothintN" (the hint for N seconds, 3 by default; "boothint0": none; left
+out after the launch menu), "bootsettleoff" (the menu shown and taking input
+at once, as before). */
+#define BOOT_HINT "Hold L as the game starts for the development menu"
+/* above the game's thread (0x20), below the Memory Stick's reader (0x1c) */
+#define BOOT_PRIORITY 0x1f
+#define BOOT_FRAME_US 30000
+
+static const char *boot_hint(unsigned long now)
+{
+	return boot.active && boot.hint_us && now - boot.start_us < boot.hint_us ? BOOT_HINT : NULL;
+}
+
+/* the pause between the boot screen's frames, then, in the emulator, the end
+of any Media Engine job the game's thread is running. The emulator has no
+ME: the game's thread runs each job itself with psp_me_context set (psp_me.c,
+ring_push_simulated), and the GE layer takes all work done meanwhile for the
+ME's (PSP_ME_WORK). That word is global, so a boot frame drawn inside such a
+job would have its stall updates held for the game's thread to pass on: its
+list never reaches its FINISH, this thread waits on the GE for good, and the
+game's first frame waits behind it. Giving the CPU up lets the job finish.
+The first frame needs no wait: this thread starts it from main(), before the
+ME starts. On the PSP the ME runs its own jobs and the word stays 0. (A
+function of its own in the delay's place, so the boot thread keeps its
+profile) */
+static __attribute__((noinline)) void boot_frame_pause(void)
+{
+	extern volatile unsigned int psp_me_context;
+
+	sceKernelDelayThread(BOOT_FRAME_US);
+	while (psp_me_context)
+		sceKernelDelayThread(100);
+}
+
+static int boot_thread(SceSize args, void *argp)
+{
+	extern void psp_fpu_mask_traps(void);
+	unsigned long last = psp_microseconds();
+
+	(void)args;
+	(void)argp;
+	/* as every thread of the game's (the Xbox ran with the FPU's traps masked) */
+	psp_fpu_mask_traps();
+	/* for the loading picture the bake may carry (read as a load's frame is
+	captured); the frame itself is a cold start's black, so it isn't kept */
+	if (psp_ge_loading_capture)
+		psp_ge_loading_capture();
+	while (!boot.stop)
+	{
+		struct psp_loading_view view;
+		unsigned long now = psp_microseconds();
+		float target = boot.loaded ? 1.0f :
+			loading.active && loading.expected ? (float)loading.done / (float)loading.expected : 0.0f;
+
+		if (target > 1.0f)
+			target = 1.0f;
+		boot.shown = ease(boot.shown, target, (now - last) / 1e6f);
+		last = now;
+		view.progress = boot.shown;
+		view.brightness = brightness_of(boot.shown);
+		view.phase = 0;
+		view.captured = NULL;
+		view.notice = boot_hint(now);
+		psp_ge_loading_frame(&view);
+		boot.frames++;
+		boot_frame_pause();
+	}
+	return 0;
+}
+
+/* main(), keep.txt read */
+void psp_loading_boot_begin(void)
+{
+	extern int psp_front_door_launch_menu(void);
+	int hint = psp_keep_number("boothint", 3);
+
+	memset(&boot, 0, sizeof(boot));
+	boot.active = 1;
+	boot.start_us = psp_microseconds();
+	/* whoever came through the launch menu knows the way to it */
+	boot.hint_us = hint > 0 && !psp_front_door_launch_menu() ? (unsigned long)hint * 1000000ul : 0;
+	if (psp_keep("bootlog") || !psp_ge_boot_start || !psp_ge_loading_frame)
+	{
+		platform_log("boot screen: off (%s): the log on the screen", psp_keep("bootlog") ? "bootlog" : "not in this build");
+		return;
+	}
+	boot.thread = sceKernelCreateThread("halo boot screen", boot_thread, BOOT_PRIORITY, 0x4000,
+		PSP_THREAD_ATTR_USER | PSP_THREAD_ATTR_VFPU, NULL);
+	if (boot.thread < 0)
+	{
+		platform_log("boot screen: no thread (%08x): the log on the screen", (unsigned int)boot.thread);
+		return;
+	}
+	if (!psp_ge_boot_start())
+	{
+		sceKernelDeleteThread(boot.thread);
+		return;
+	}
+	boot.drawing = 1;
+	sceKernelStartThread(boot.thread, 0, NULL);
+}
+
+/* main.c's boot path, before the main menu's load: the menu's own music
+starts as it ends, so no chant */
+void psp_loading_boot_menu_begin(void)
+{
+	loading_begin("levels\\ui\\ui", 0);
+}
+
+/* and after it: the menu's first frames under the veil until it's warm */
+void psp_loading_boot_loaded(void)
+{
+	if (!loading.active)
+		return;
+	if (psp_keep("bootsettleoff") || !settle_start(boot.hint_us ? boot.start_us + boot.hint_us : 0))
+	{
+		psp_loading_end();
+		return;
+	}
+	boot.settling = 1;
+}
+
+static void boot_settled(void)
+{
+	platform_log("boot: the main menu shown %lu ms after the boot screen's start (its input also waits for the saved-game check)",
+		(psp_microseconds() - boot.start_us) / 1000);
+	psp_loading_end();
+}
+
+/* main_loop, each frame the game draws, before it is shown */
+void psp_loading_boot_frame(void)
+{
+	if (!boot.settling)
+		return;
+	update(1);
+	if (!psp_loading_settle_frame())
+		boot_settled();
+}
+
+/* ui_widget.c's process_ui_widgets: the menu takes no input while settling */
+int psp_loading_holds_input(void)
+{
+	/* a settle whose frames stopped coming lets go a second past its cap */
+	if (boot.settling && psp_microseconds() - loading.settle_us > loading.settle_cap_us + 1000000ul)
+	{
+		platform_log("boot: the main menu's settle drew no frames to its cap; its input let go");
+		boot_settled();
+	}
+	return boot.settling;
+}
+
+/* ge_initialize, at the game's first frame: the game's thread draws from here */
+void psp_loading_boot_screen_stop(void)
+{
+	SceUInt wait = 1000000;
+
+	if (!boot.drawing)
+		return;
+	boot.stop = 1;
+	if (sceKernelWaitThreadEnd(boot.thread, &wait) < 0)
+	{
+		platform_log("boot screen: its thread didn't end within a second; ended");
+		sceKernelTerminateThread(boot.thread);
+	}
+	sceKernelDeleteThread(boot.thread);
+	boot.drawing = 0;
+	/* the load's progress goes on from where the boot screen showed it */
+	if (loading.active)
+	{
+		loading.shown = boot.shown;
+		loading.last_draw_us = psp_microseconds();
+		loading.draws += boot.frames;
+	}
+	platform_log("boot screen: %lu frames in %lu ms; the game's frames from here", boot.frames,
+		(psp_microseconds() - boot.start_us) / 1000);
 }

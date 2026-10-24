@@ -29,7 +29,7 @@ more below; the heap gives them. It must end at or below 0x09600000 */
 window (PSP_PGO=generate's counters need it) */
 #define HALO_PORT_GAME_STATE_BASE_ADDRESS 0x0AC00000
 #else
-#define HALO_PORT_GAME_STATE_BASE_ADDRESS (0x092A0000 + PSP_MP_GAME_STATE_SAVED) /* PSP: just below the tag window (0x09600000) */
+#define HALO_PORT_GAME_STATE_BASE_ADDRESS (0x092A0000 + PSP_MP_GAME_STATE_SAVED + PSP_POOLS_GAME_STATE_SAVED + PSP_POOLS_GPU_SAVED) /* PSP: just below the tag window (0x09600000) */
 #endif
 /* PSP, build 107: 64 KB moved from the GPU part to the CPU part, the total
 unchanged. The GPU part holds only the decal vertices, 160 KB
@@ -51,8 +51,41 @@ game) keeps the campaign's pools */
 #else
 #define PSP_MP_GAME_STATE_SAVED 0
 #endif
-#define HALO_PORT_GAME_STATE_CPU_SIZE (0x325000 - PSP_MP_GAME_STATE_SAVED) /* (0x305000; b107-b112 0x315000) */
-#define HALO_PORT_GAME_STATE_GPU_SIZE 0x30000 /* (0x40000) */
+/* The campaign's actor, prop, light and glow particle arrays are about
+twice the most any long-play run reached (actor 63, prop 254, lights 338,
+glow particles 128): the rest of those arrays is game-state memory the heap
+can use. Actors keep room past that and lights the Xbox's whole array: with
+every encounter of a level placed at once, b40 reached 139 actors and filled
+896 lights, a bound no real play reaches but one a missing scripted actor
+could make matter. They give back 280,960 bytes (96 actors of 1,828, 256
+props of 312, 256 glow particles of 100), and the CPU part is
+shorter by that rounded down to whole 4 KB pages: it starts that much higher,
+ending where it did, and the heap below takes the room (psp_build.py's
+GAME_STATE_BASE follows). A fight past an array's size fails to make the new
+actor, prop, light or glow particle, as the Xbox's did past its own sizes.
+PSP_POOLS_XBOX=1 (psp_build.py) builds the Xbox's sizes back in, for runs
+that measure the arrays' peaks; the multiplayer build keeps its own pools.
+The memory census (docs/memory_census.md) sized six more of the campaign's
+arrays from their peaks in every run that logged them (long play, every
+encounter placed at once, the hand test's play), at 1.5-3 times the most:
+looping sounds 640 (peak 347), contrail points 768 (431), contrails 96
+(31), particle systems 32 (12), system particles 448 (244) and swarm
+components 160 (81). They give back 70,528 bytes; with the 36 KB the CPU
+part never allocated, its end comes 0x18000 lower, leaving about 8 KB
+unallocated. The GPU part holds the decal vertices alone, exactly 0x28000
+(2,560 pages of 64 bytes), so it is that long. The heap below takes the
+128 KB: it ran full in play, the checkpoint writer's buffer among the
+requests it failed */
+#if !defined(PSP_MULTIPLAYER) && !defined(PSP_POOLS_XBOX)
+#define PSP_POOLS_SMALL 1
+#define PSP_POOLS_GAME_STATE_SAVED 0x5C000
+#define PSP_POOLS_GPU_SAVED 0x8000
+#else
+#define PSP_POOLS_GAME_STATE_SAVED 0
+#define PSP_POOLS_GPU_SAVED 0
+#endif
+#define HALO_PORT_GAME_STATE_CPU_SIZE (0x325000 - PSP_MP_GAME_STATE_SAVED - PSP_POOLS_GAME_STATE_SAVED)
+#define HALO_PORT_GAME_STATE_GPU_SIZE (0x30000 - PSP_POOLS_GPU_SAVED) /* (0x40000) */
 #define HALO_PORT_GAME_STATE_SIZE (HALO_PORT_GAME_STATE_CPU_SIZE+HALO_PORT_GAME_STATE_GPU_SIZE)
 #ifndef PSP_RECON_64MB
 typedef char halo_port_game_state_below_tag_window[
@@ -112,12 +145,20 @@ PSP's heap can't spare */
 /* the multiplayer build's (above); a custom map's few actors still fit */
 #define HALO_PORT_MAXIMUM_ACTORS 8
 #define HALO_PORT_MAXIMUM_PROPS 32
+#elif defined(PSP_POOLS_SMALL)
+/* the campaign's (the game state, above) */
+#define HALO_PORT_MAXIMUM_ACTORS 160 /* (256) */
+#define HALO_PORT_MAXIMUM_PROPS 512 /* (768) */
 #else
 #define HALO_PORT_MAXIMUM_ACTORS 256
 #define HALO_PORT_MAXIMUM_PROPS 768
 #endif
 #define HALO_PORT_MAXIMUM_SWARMS 32
+#ifdef PSP_POOLS_SMALL
+#define HALO_PORT_MAXIMUM_SWARM_COMPONENTS 160 /* (256) */
+#else
 #define HALO_PORT_MAXIMUM_SWARM_COMPONENTS 256
+#endif
 
 /* ---------- objects */
 
@@ -146,11 +187,30 @@ cliffs (350 scenery objects) it stayed full for minutes (b112 run 5) */
 #define HALO_PORT_MAXIMUM_EFFECTS 256
 #define HALO_PORT_MAXIMUM_EFFECT_LOCATIONS 512
 #define HALO_PORT_MAXIMUM_PARTICLES 1024
+#ifdef PSP_POOLS_SMALL
+/* the campaign's (the game state, above) */
+#define HALO_PORT_MAXIMUM_PARTICLE_SYSTEMS 32 /* (64) */
+#define HALO_PORT_MAXIMUM_SYSTEM_PARTICLES 448 /* (512) */
+#define HALO_PORT_MAXIMUM_CONTRAILS 96 /* (256) */
+#define HALO_PORT_MAXIMUM_CONTRAIL_POINTS 768 /* (1024) */
+#else
 #define HALO_PORT_MAXIMUM_PARTICLE_SYSTEMS 64
 #define HALO_PORT_MAXIMUM_SYSTEM_PARTICLES 512
 #define HALO_PORT_MAXIMUM_CONTRAILS 256
 #define HALO_PORT_MAXIMUM_CONTRAIL_POINTS 1024
+#endif
 #define HALO_PORT_MAXIMUM_LIGHTS_PER_MAP 896
+#ifdef PSP_POOLS_SMALL
+/* the campaign's (the game state, above). Not one of the engine's
+capacities: glow.c's own, psp_fixups.py's FIXES_POOLS */
+#define PSP_MAXIMUM_GLOW_PARTICLES 256 /* (512) */
+#else
+#define PSP_MAXIMUM_GLOW_PARTICLES 512
+#endif
+#ifdef PSP_POOLS_SMALL
+#define HALO_PORT_MAXIMUM_GAME_LOOPING_SOUNDS 640 /* (1024; the campaign's, the game state above) */
+#else
 #define HALO_PORT_MAXIMUM_GAME_LOOPING_SOUNDS 1024
+#endif
 
 #endif /* __HALO_PORT_CAPACITY_H */

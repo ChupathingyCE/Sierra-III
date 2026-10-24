@@ -37,6 +37,7 @@ the game calls every frame, and from Flush, never from the audio thread.
 #include <string.h>
 #include "psp_sound.h"   /* what the engine tells the mixer: stop reasons, classes */
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
+#include "psp_me.h"      /* the eDRAM map and the sound copy job (soundedram) */
 
 void platform_log(const char *format, ...);
 
@@ -108,12 +109,48 @@ struct psp_stream
 	int target_left, target_right;
 	/* build 87: frames this voice had nothing queued to play while the game
 	still had it playing (written by the mixer, on either CPU): a gap, if
-	the game then queues more (Sheepdog01's b86 run 2: regular breaks heard with
+	the game then queues more (b86's run 2: regular breaks heard with
 	either mixer, the output never late) */
 	unsigned long dry_frames;
+	/* frames this voice was mixed (written by the mixer, on either CPU):
+	the loading chant's line says whether its voices played at all */
+	unsigned long mixed_frames;
+	/* where the last packet the game queued ended, and its permutation: a
+	packet of the same permutation that doesn't start there skips sound */
+	const unsigned char *queued_end;
+	const void *queued_context;
+	/* the loudest gain it was prepared with, and how many blocks were
+	prepared: whether the loading chant was ever loud enough to hear */
+	int peak_gain;
+	unsigned long prepared_blocks;
+	/* "silentoverrun": a silent voice advances a whole block even past what
+	is queued, as before (set by the main CPU with the gains, read by the
+	mixer on either CPU) */
+	int silent_overrun;
+	/* "adpcmold": the header's sample left out and the padding nibble played,
+	as before (set with silent_overrun) */
+	int adpcm_old;
 	/* the game's sound class of what the stream plays (sound_manager.c's
 	channel_queue_sound names it), so a dry gap can say what fell silent */
 	long sound_class;
+	/* muffling: the I3DL2 source's high-frequency loss (obstruction,
+	occlusion, the direct path's own) as a one-pole low-pass, so a sound
+	behind a wall is duller as well as quieter, as on the Xbox. The main CPU
+	sets the coefficient (Q14, GAIN_ONE: no filter); the mixer keeps the
+	filter's state, on either CPU. "audioold": no filter */
+	LONG hf_millibels;
+	LONG lowpass_millibels;
+	int lowpass_coefficient;
+	int lowpass_left, lowpass_right;
+	/* Doppler and cones (DirectSound's, which the game sets and the mixer
+	ignored before): the velocity is the game's, relative to the listener
+	(sound_manager.c's update_channels); the cone's angles in degrees, its
+	outside volume in millibels; the step and gains follow them. "audioold":
+	neither */
+	float velocity[3];
+	float cone_forward[3];
+	DWORD cone_inside, cone_outside;
+	LONG cone_outside_millibels;
 
 	/* last, so a hand-over by ranges covers the fields above in a few whole
 	lines and only the queued packets' entries of this (psp_dsound_me_lines) */
@@ -163,7 +200,7 @@ static float master_volume = 1.0f;
 
 /* the mixer's own accounting, for the log */
 static unsigned long mix_blocks = 0, mix_microseconds = 0, mix_voice_blocks = 0, mix_peak_voices = 0;
-/* build 40 (Sheepdog01: sound cutting out in the heaviest fighting): which of
+/* build 40 (sound cutting out in the heaviest fighting): which of
 three it is. The worst block's mixing time and the longest wait for the
 mixer's lock (the game holds it to start and change sounds); blocks that
 reached the output late (a gap heard); and blocks that hit the 16-bit limit
@@ -182,6 +219,13 @@ the long frames being the suspected cause */
 #define GAP_RECORDS 6
 static struct { long context, sound_class; unsigned long dry_ms, frame_ms; } gap_records[GAP_RECORDS];
 static unsigned long gap_record_count = 0;
+/* packets that didn't continue their permutation where the last one ended
+(sound skipped without a gap), and unplayed packets a flush threw away */
+static struct { long context, sound_class, bytes; unsigned long queued; } jump_records[GAP_RECORDS];
+static unsigned long jump_record_count = 0, flushed_unplayed = 0;
+/* permutations queued to a channel with nothing left to send (psp_stream_link) */
+static unsigned long stream_links = 0;
+static int stream_link_off = -1;
 extern unsigned long psp_last_frame_us; /* psp_platform.c, psp_frame_account */
 static unsigned long cut_sounds = 0, mix_worst_us = 0, lock_worst_us = 0, late_blocks = 0, clipped_blocks = 0, gap_worst_us = 0;
 
@@ -230,9 +274,13 @@ static inline int ima_expand(int nibble, int *predictor, int *index)
 }
 
 /* one Xbox ADPCM block of a packet into the stream's decoded block: per
-channel a 4-byte header (predictor, step index), then 4-byte groups of
-eight nibbles, low nibble first, alternating between channels; 64 samples
-per channel. The decoded block is always two channels (a mono one twice) */
+channel a 4-byte header (the block's first sample, step index), then 4-byte
+groups of eight nibbles, low nibble first, alternating between channels; 64
+samples per channel. The nibbles code the 63 samples after the header's: the
+64th only pads the block. Decoding it in place of the header's sample put a
+wrong sample in every 64, a buzz at 344 Hz in 22 kHz sounds (after
+ChupathingyCE's dsound_sdl.c decode_adpcm, Jeff Clark). "adpcmold" decodes
+as before. The decoded block is always two channels (a mono one twice) */
 static void decode_block(struct psp_stream *stream, const struct voice_packet *packet, long block)
 {
 	unsigned long channels = stream->channels;
@@ -245,17 +293,22 @@ static void decode_block(struct psp_stream *stream, const struct voice_packet *p
 		int predictor = (short)(header[0] | (header[1] << 8));
 		int index = header[2] > 88 ? 88 : header[2];
 		short *output = stream->decoded[block & 1] + channel;
+		unsigned long first = stream->adpcm_old ? 0 : 1;
 
+		if (first)
+			output[0] = (short)predictor;
 		for (group = 0; group < 8; group++)
 		{
 			const unsigned char *nibbles = data + 4 * channels + (group * channels + channel) * 4;
 
 			for (byte = 0; byte < 4; byte++)
 			{
-				unsigned long sample = group * 8 + byte * 2;
+				/* nibble n codes sample n + first */
+				unsigned long sample = group * 8 + byte * 2 + first;
 
 				output[2 * sample] = (short)ima_expand(nibbles[byte] & 0xf, &predictor, &index);
-				output[2 * (sample + 1)] = (short)ima_expand(nibbles[byte] >> 4, &predictor, &index);
+				if (sample + 1 < XBOX_ADPCM_BLOCK_SAMPLES)
+					output[2 * (sample + 1)] = (short)ima_expand(nibbles[byte] >> 4, &predictor, &index);
 			}
 		}
 	}
@@ -299,6 +352,63 @@ static inline void packet_frame(struct psp_stream *stream, const struct voice_pa
 static float dot3(const float *a, const float *b)
 {
 	return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static int audio_old = -1; /* "audioold": muffling, Doppler and cones off */
+/* voice blocks each item changed, for the log: a count of 0 with the items
+on means the game never asked for it on that stretch */
+static unsigned long fx_prepared = 0, fx_muffled = 0, fx_shifted = 0, fx_coned = 0;
+
+/* DirectSound's cone: full inside half the inside angle of the sound's
+facing, the outside volume past half the outside angle, between them a
+straight line in millibels. offset: listener to sound */
+static float cone_gain(const struct psp_stream *stream, const float *offset)
+{
+	float length, facing, cosine, angle, inside, outside;
+
+	if (audio_old || stream->cone_inside >= 360 || stream->cone_outside_millibels >= 0)
+		return 1.0f;
+	length = sqrtf(dot3(offset, offset));
+	if (length < 1.0e-4f)
+		return 1.0f;
+	/* the facing as the game gives it, not taken to be of unit length */
+	facing = sqrtf(dot3(stream->cone_forward, stream->cone_forward));
+	if (facing < 1.0e-4f)
+		return 1.0f;
+	cosine = -dot3(offset, stream->cone_forward) / (length * facing);
+	angle = acosf(cosine < -1.0f ? -1.0f : cosine > 1.0f ? 1.0f : cosine) * (180.0f / 3.14159265f);
+	inside = 0.5f * (float)stream->cone_inside;
+	outside = 0.5f * (float)(stream->cone_outside > stream->cone_inside ? stream->cone_outside : stream->cone_inside);
+	if (angle <= inside)
+		return 1.0f;
+	fx_coned++;
+	if (angle >= outside || outside <= inside)
+		return gain_from_millibels(stream->cone_outside_millibels);
+	return gain_from_millibels((LONG)(stream->cone_outside_millibels * (angle - inside) / (outside - inside)));
+}
+
+/* DirectSound's Doppler shift (factor 1) from the velocity along the line
+to the listener, held to an octave either way; 1 for a sound that isn't 3D */
+static float doppler_ratio(const struct psp_stream *stream)
+{
+	float offset[3], length, closing;
+	int axis;
+
+	if (audio_old || !stream->has_3d || stream->mode == DS3DMODE_DISABLE)
+		return 1.0f;
+	for (axis = 0; axis < 3; axis++)
+		offset[axis] = stream->mode == DS3DMODE_HEADRELATIVE ? stream->position[axis] :
+			stream->position[axis] - listener.position[axis];
+	length = sqrtf(dot3(offset, offset));
+	if (length < 1.0e-4f)
+		return 1.0f;
+	/* metres a second away from the listener */
+	closing = dot3(stream->velocity, offset) / length * listener.distance_factor;
+	if (closing < -171.5f)
+		closing = -171.5f;
+	if (closing > 343.0f)
+		closing = 343.0f;
+	return 343.0f / (343.0f + closing);
 }
 
 static void spatialize(const struct psp_stream *stream, float *left, float *right)
@@ -350,8 +460,9 @@ static void spatialize(const struct psp_stream *stream, float *left, float *righ
 		*left = cosf(angle);
 		*right = sinf(angle);
 	}
-	*left *= attenuation * stream->i3dl2_gain;
-	*right *= attenuation * stream->i3dl2_gain;
+	attenuation *= stream->i3dl2_gain * cone_gain(stream, offset);
+	*left *= attenuation;
+	*right *= attenuation;
 }
 
 static int gain_to_fixed(float gain)
@@ -404,15 +515,71 @@ static struct voice_packet *current_packet(struct psp_stream *stream)
 	}
 }
 
+/* the one-pole low-pass y += a (x - y) whose gain at I3DL2's reference
+frequency (5 kHz) is the source's high-frequency loss; Q14 (GAIN_ONE: none) */
+static int lowpass_coefficient(LONG millibels)
+{
+	float gain, c, g2, p, b;
+
+	if (millibels > -30)
+		return GAIN_ONE;
+	gain = gain_from_millibels(millibels);
+	if (gain < 0.05f)
+		gain = 0.05f;
+	g2 = gain * gain;
+	c = cosf(2.0f * 3.14159265f * 5000.0f / OUTPUT_RATE);
+	p = 1.0f - g2 * c;
+	/* b = 1 - a, the smaller root of (1 - g2) b^2 - 2 p b + (1 - g2) = 0 */
+	b = (p - sqrtf(p * p - (1.0f - g2) * (1.0f - g2))) / (1.0f - g2);
+	return (int)((1.0f - b) * GAIN_ONE);
+}
+
 /* build 86: a voice's step and gains for the next block, on the main CPU
 (floats and its maths library); 0 when it won't play (paused, nothing queued) */
 static int prepare_voice(struct psp_stream *stream)
 {
 	if (stream->paused || !stream->packet_count || !stream->sample_rate)
 		return 0;
-	stream->step = (unsigned long)(((unsigned long long)(stream->frequency ? stream->frequency : stream->sample_rate) << 16) /
-		OUTPUT_RATE);
+	{
+		extern int psp_keep(const char *name);
+		static int overrun = -1;
+
+		static int adpcm_old = -1;
+
+		if (overrun < 0)
+		{
+			overrun = psp_keep("silentoverrun") != 0;
+			adpcm_old = psp_keep("adpcmold") != 0;
+			audio_old = psp_keep("audioold") != 0;
+		}
+		stream->silent_overrun = overrun;
+		stream->adpcm_old = adpcm_old;
+		if (audio_old || !stream->has_3d)
+			stream->lowpass_coefficient = GAIN_ONE;
+		else if (stream->hf_millibels != stream->lowpass_millibels || !stream->lowpass_coefficient)
+		{
+			stream->lowpass_millibels = stream->hf_millibels;
+			stream->lowpass_coefficient = lowpass_coefficient(stream->hf_millibels);
+		}
+	}
+	{
+		unsigned long rate = stream->frequency ? stream->frequency : stream->sample_rate;
+		float doppler = doppler_ratio(stream);
+
+		if (doppler != 1.0f)
+		{
+			rate = (unsigned long)(rate * doppler + 0.5f);
+			fx_shifted++;
+		}
+		stream->step = (unsigned long)(((unsigned long long)rate << 16) / OUTPUT_RATE);
+	}
 	voice_gains(stream, &stream->target_left, &stream->target_right);
+	if (stream->target_left > stream->peak_gain)
+		stream->peak_gain = stream->target_left;
+	stream->prepared_blocks++;
+	fx_prepared++;
+	if (stream->lowpass_coefficient < GAIN_ONE)
+		fx_muffled++;
 	return 1;
 }
 
@@ -423,6 +590,9 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 {
 	unsigned long step = stream->step, done = 0;
 	int target_left = stream->target_left, target_right = stream->target_right, left, right, ramp_left, ramp_right;
+	/* the filter's state in registers: output may alias the record, so
+	fields written in the loop would be stored every sample */
+	int lowpass = stream->lowpass_coefficient, lowpass_left = stream->lowpass_left, lowpass_right = stream->lowpass_right;
 
 	if (!stream->gains_valid)
 	{
@@ -439,17 +609,43 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 	stream->current_right = target_right;
 	if (!target_left && !target_right && !left && !right)
 	{
-		/* silent: just advance. Build 89: not past the end of what's queued
-		(a silent voice that had run dry kept counting, so the start of what
-		the game queued next was skipped) */
+		/* silent: just advance, and never past the end of what's queued.
+		A voice that runs out inside the block stops at the end, as a heard
+		one does (not counted as a gap: nothing was heard): an overshoot left in frame would be
+		played off the start of the packet the game queues next (finished
+		packets wait for the game to collect them, so the queue doesn't look
+		empty and the position isn't reset) */
 		unsigned long long advance;
+		unsigned long position, queued = 0;
 
 		if (!current_packet(stream))
 			return 0;
-		advance = (unsigned long long)step * frames + stream->fraction;
+		for (position = 0; position < stream->packet_count; position++)
+		{
+			const struct voice_packet *candidate = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
 
-		stream->frame += (unsigned long)(advance >> 16);
-		stream->fraction = (unsigned long)(advance & 0xFFFF);
+			if (!candidate->finished)
+				queued += candidate->frames;
+		}
+		queued -= stream->frame;
+		advance = (unsigned long long)step * frames + stream->fraction;
+		if ((advance >> 16) < queued || stream->silent_overrun)
+		{
+			stream->frame += (unsigned long)(advance >> 16);
+			stream->fraction = (unsigned long)(advance & 0xFFFF);
+			stream->mixed_frames += frames;
+		}
+		else
+		{
+			unsigned long long reach = ((unsigned long long)queued << 16) - stream->fraction;
+			unsigned long played = (unsigned long)((reach + step - 1) / step);
+
+			if (played > frames)
+				played = frames;
+			stream->frame += queued;
+			stream->fraction = 0;
+			stream->mixed_frames += played;
+		}
 		current_packet(stream);
 		return 0;
 	}
@@ -483,6 +679,21 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 				sample_left = l0;
 				sample_right = r0;
 			}
+			/* 16-bit samples: a difference under 2^16 times a Q14
+			coefficient stays inside 32 bits */
+			if (lowpass < GAIN_ONE)
+			{
+				lowpass_left += ((sample_left - lowpass_left) * lowpass) >> 14;
+				lowpass_right += ((sample_right - lowpass_right) * lowpass) >> 14;
+				sample_left = lowpass_left;
+				sample_right = lowpass_right;
+			}
+			else
+			{
+				/* so a filter that starts next block starts from the sound */
+				lowpass_left = sample_left;
+				lowpass_right = sample_right;
+			}
 			output[2 * done] += (sample_left * (left >> 8)) >> 14;
 			output[2 * done + 1] += (sample_right * (right >> 8)) >> 14;
 			left += ramp_left;
@@ -493,6 +704,9 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 			done++;
 		}
 	}
+	stream->lowpass_left = lowpass_left;
+	stream->lowpass_right = lowpass_right;
+	stream->mixed_frames += done;
 	if (done < frames)
 		stream->dry_frames += frames - done;
 	return 1;
@@ -561,7 +775,8 @@ static unsigned long cache_lines(const void *start, unsigned long bytes, int op)
 {
 	unsigned int line, first = (unsigned int)start & ~63u, end = (unsigned int)start + bytes;
 
-	if (!bytes || ((unsigned int)start & 0x40000000u))
+	/* (the eDRAM, "soundedram": no main-RAM line holds it) */
+	if (!bytes || ((unsigned int)start & 0x40000000u) || ((unsigned int)start & 0x1FFFFFFFu) < 0x08000000u)
 		return 0;
 	if (op == LINES_WRITEBACK)
 		for (line = first; line < end; line += 64)
@@ -664,6 +879,447 @@ int psp_dsound_me_lines(void *const *list, unsigned long count, unsigned long fr
 	return 1;
 }
 
+/* ---------- R2: the sound cache in the Media Engine's eDRAM ("soundedram")
+
+docs/me_programme.md, section 5. The sound cache moves out of main RAM into
+the ME's eDRAM (psp_me.h's ME_EDRAM_SOUND), and the main RAM it took is free:
+the heap's, or with "soundgeo" the geometry cache's (psp_geo.c).
+- The engine sees the cache at its eDRAM address, which only the ME can
+  reach. The mixer runs there, and nothing on the main CPU reads a sound's
+  bytes (cache_lines leaves them alone).
+- The stick reader can't write eDRAM either, so a sound is read a piece at a
+  time into a small staging area in main RAM, and an ME job
+  (ME_JOB_SOUNDCOPY) copies each piece into place. The engine's "loaded" is
+  set once the last piece is in, so a sound stays "loading" a frame or two
+  longer than it did.
+- The main CPU can't mix from it. Once the ME has stopped (a failure, a
+  sleep: the eDRAM is then taken as lost, even if a wake restarts the ME),
+  every voice playing from the cache is mixed silent and new loads are
+  marked failed: the sound goes quiet, and nothing reads eDRAM from the main
+  CPU. The log says so once.
+- The emulator has no eDRAM. There (mode 2) the cache stays in main RAM at
+  the eDRAM's size, and the staging and the copies run as the simulated ME's
+  jobs, so all of the PSP's path but the eDRAM itself is exercised. */
+#define SOUND_BLOCK_DEFAULT_BYTES (1792ul * 1024) /* psp_platform.c's SOUND_CACHE_DEFAULT_KB: what the cache took in main RAM */
+#define STAGE_SLOTS 2
+#define STAGE_SLOT_BYTES (64 * 1024)
+/* a whole number of the reader's 512-byte sectors; the last piece of a sound,
+which the reader rounds up to them, still fits its slot */
+#define STAGE_PIECE_BYTES (60 * 1024)
+#define UPLOADS_MAX 256
+#define READ_FAILED 2 /* cache_files.h's _cache_file_read_failed */
+
+short cache_file_read(long tag_index, long offset, long size, void *buffer, unsigned char *completion_flag,
+	unsigned char blocking);
+int psp_sound_cache_alive(void *datum, short identifier, void *sound, unsigned long address);
+unsigned long psp_sound_cache_bytes(void);
+int psp_me_start(void);
+int psp_keep(const char *word);
+
+struct upload
+{
+	unsigned char *dest;   /* the sound's block in the cache */
+	unsigned char *loaded; /* the engine's flag */
+	void *datum, *sound;
+	long tag_index, file_offset, size, issued, copied;
+	SceUInt64 start_us;
+	short identifier;
+	unsigned char outstanding, failed, dead, finished;
+};
+
+#define SLOT_FREE 0
+#define SLOT_READING 1
+#define SLOT_COPYING 2
+struct stage_slot
+{
+	unsigned char *buffer;
+	volatile unsigned char done; /* the reader's completion flag: 0 reading, 1 read, READ_FAILED */
+	unsigned char state;
+	int upload;
+	long offset, bytes;
+	unsigned int sequence;
+};
+
+static int edram_mode = -1; /* 0 off, 1 the ME's eDRAM, 2 simulated (the emulator) */
+static unsigned char *sound_block = NULL, *spare_start = NULL;
+static unsigned long block_bytes = 0, spare_bytes = 0;
+/* the cache's bytes, when the main CPU must not read them (modes 1 and 2) */
+static const unsigned char *edram_lo = NULL, *edram_hi = NULL;
+static unsigned int stops_at_start = 0;
+static int edram_lost = 0, copy_out = 0;
+static struct upload uploads[UPLOADS_MAX];
+static unsigned int upload_head = 0, upload_count = 0, next_sequence = 0;
+static struct stage_slot stage[STAGE_SLOTS];
+static unsigned long up_sounds = 0, up_bytes = 0, up_pieces = 0, up_jobs = 0, up_failed = 0, up_dropped = 0,
+	up_full = 0, up_after_loss = 0, up_wait_us = 0, up_worst_us = 0, muted_blocks = 0, muted_said = 0;
+
+int psp_sound_edram_mode(void)
+{
+	if (edram_mode < 0)
+	{
+		edram_mode = 0;
+		if (!psp_keep("soundedram"))
+			return 0;
+		if (psp_keep("edramcheck"))
+			platform_log("sound eDRAM: refused: edramcheck patterns the same stretch; the cache stays in main RAM");
+		else if (!psp_me_start())
+			platform_log("sound eDRAM: refused: the Media Engine is off (nomeaudio?); the cache stays in main RAM");
+		else
+			edram_mode = psp_me_simulated() ? 2 : 1;
+	}
+	return edram_mode;
+}
+
+/* the cache's room when it isn't in main RAM, 0 when it is */
+unsigned long psp_sound_edram_bytes(void)
+{
+	return psp_sound_edram_mode() ? ME_EDRAM_SOUND_END - ME_EDRAM_SOUND : 0;
+}
+
+/* what physical_memory_allocate takes from the heap at start-up for sound
+(psp_fixups.py FIXES_SOUNDEDRAM): the cache itself (mode 0, as before), the
+staging (mode 1), both (mode 2). With "soundgeo" at least the default
+cache's 1,792 KB, the part sound doesn't use being the geometry cache's */
+unsigned long psp_sound_block_bytes(void)
+{
+	unsigned long cache = psp_sound_cache_bytes(), stage_bytes = STAGE_SLOTS * STAGE_SLOT_BYTES, want;
+	int geo = psp_keep("soundgeo");
+
+	switch (psp_sound_edram_mode())
+	{
+	case 1:
+		want = geo && SOUND_BLOCK_DEFAULT_BYTES > stage_bytes ? SOUND_BLOCK_DEFAULT_BYTES : stage_bytes;
+		break;
+	case 2:
+		want = cache + stage_bytes;
+		break;
+	default:
+		want = geo && cache < SOUND_BLOCK_DEFAULT_BYTES ? SOUND_BLOCK_DEFAULT_BYTES : cache;
+		break;
+	}
+	return want;
+}
+
+/* the block taken (psp_sound_block_bytes' size): where the cache goes, which
+the engine keeps as the cache's base */
+void *psp_sound_cache_place(void *block)
+{
+	unsigned long cache = psp_sound_cache_bytes(), stage_bytes = STAGE_SLOTS * STAGE_SLOT_BYTES, used;
+	unsigned char *base;
+	int k;
+
+	sound_block = (unsigned char *)block;
+	block_bytes = psp_sound_block_bytes();
+	switch (psp_sound_edram_mode())
+	{
+	case 1:
+		base = (unsigned char *)(ME_EDRAM + ME_EDRAM_SOUND);
+		used = stage_bytes;
+		break;
+	case 2:
+		base = sound_block + stage_bytes;
+		used = stage_bytes + cache;
+		break;
+	default:
+		base = sound_block;
+		used = cache;
+		break;
+	}
+	if (edram_mode)
+	{
+		for (k = 0; k < STAGE_SLOTS; k++)
+			stage[k].buffer = sound_block + k * STAGE_SLOT_BYTES;
+		edram_lo = base;
+		edram_hi = base + cache;
+		stops_at_start = psp_me_stops;
+	}
+	if (psp_keep("soundgeo") && block_bytes >= used + 64 * 1024)
+	{
+		spare_start = sound_block + used;
+		spare_bytes = (unsigned long)(block_bytes - used) & ~63ul;
+	}
+	platform_log("sound eDRAM: %s; cache %lu KB at %08x, %lu KB taken from the heap at %08x (%lu KB staging), %lu KB spare%s",
+		edram_mode == 1 ? "the cache in the ME's eDRAM" : edram_mode == 2 ? "SIMULATED (the emulator: the cache stays in main RAM)" :
+		"off", cache / 1024, (unsigned int)base, block_bytes / 1024, (unsigned int)sound_block,
+		edram_mode ? stage_bytes / 1024 : 0, spare_bytes / 1024, spare_bytes ? " for the geometry cache (soundgeo)" : "");
+	return base;
+}
+
+/* the start-up block's part sound doesn't use, for the geometry cache
+("soundgeo"); NULL if none */
+void *psp_sound_spare(unsigned long *bytes)
+{
+	*bytes = spare_bytes;
+	return spare_bytes ? spare_start : NULL;
+}
+
+/* the block to give back (physical_memory_free) */
+void *psp_sound_block(void)
+{
+	return sound_block;
+}
+
+/* instead of the stick reader's read into the cache (xbox_sound_cache.c):
+the sound's pieces go through the staging */
+void psp_sound_upload_start(long tag_index, long file_offset, long size, void *dest, unsigned char *loaded, void *datum,
+	short identifier, void *sound)
+{
+	struct upload *u;
+
+	if (edram_lost || upload_count == UPLOADS_MAX)
+	{
+		/* failed, as a read that failed: the voices that play it are mixed
+		silent after a loss (mute_cache_voices) */
+		if (edram_lost)
+			up_after_loss++;
+		else
+			up_full++;
+		*loaded = READ_FAILED;
+		return;
+	}
+	u = &uploads[(upload_head + upload_count++) % UPLOADS_MAX];
+	memset(u, 0, sizeof(*u));
+	u->dest = (unsigned char *)dest;
+	u->loaded = loaded;
+	u->datum = datum;
+	u->sound = sound;
+	u->identifier = identifier;
+	u->tag_index = tag_index;
+	u->file_offset = file_offset;
+	u->size = size;
+	u->start_us = sceKernelGetSystemTimeWide();
+	*loaded = 0;
+}
+
+/* the map is going (sound_cache_close): no waiting load is the engine's any more */
+void psp_sound_upload_forget(void)
+{
+	unsigned int k;
+
+	for (k = 0; k < upload_count; k++)
+		uploads[(upload_head + k) % UPLOADS_MAX].dead = 1;
+}
+
+static void piece_done(struct stage_slot *slot, int copied)
+{
+	struct upload *u = &uploads[slot->upload];
+
+	u->outstanding--;
+	if (copied)
+		u->copied += slot->bytes;
+	else
+		u->failed = 1;
+	slot->state = SLOT_FREE;
+}
+
+static void edram_loss(const char *why)
+{
+	if (edram_lost)
+		return;
+	edram_lost = 1;
+	platform_log("sound eDRAM: %s: the sound cache in its eDRAM is taken as lost; sounds from it are silent from here on",
+		why);
+}
+
+/* the game thread, every frame (sound_cache_idle): collect the copy job,
+start reads into free staging, hand what was read to the ME */
+void psp_sound_upload_poll(void)
+{
+	unsigned int k;
+
+	if (edram_mode <= 0)
+		return;
+	/* collected once done, never waited for: the ME may be on a long job */
+	if (copy_out && (psp_me_submitted_done(ME_SLOT_PROBE) || psp_me_stops != stops_at_start))
+	{
+		unsigned int results[ME_JOB_RESULTS] = { 0 };
+		int ok = psp_me_finish(ME_SLOT_PROBE, results) && results[0] != 0xFFFFFFFFu;
+
+		copy_out = 0;
+		for (k = 0; k < STAGE_SLOTS; k++)
+			if (stage[k].state == SLOT_COPYING)
+				piece_done(&stage[k], ok);
+		if (!ok)
+			edram_loss("the copy job failed");
+	}
+	if (psp_me_stops != stops_at_start)
+		edram_loss("the Media Engine stopped");
+	if (muted_blocks && !muted_said)
+	{
+		muted_said = 1;
+		platform_log("sound eDRAM: voices from the cache mixed silent: the main CPU mixes and can't read the eDRAM");
+	}
+	/* pieces read for a load that's gone, or that failed */
+	for (k = 0; k < STAGE_SLOTS; k++)
+	{
+		struct stage_slot *slot = &stage[k];
+
+		if (slot->state != SLOT_READING || !slot->done)
+			continue;
+		if (slot->done == READ_FAILED)
+			up_failed++;
+		if (slot->done == READ_FAILED || edram_lost || uploads[slot->upload].dead)
+			piece_done(slot, 0);
+	}
+	/* loads with nothing left to do: the engine told */
+	for (k = 0; k < upload_count; k++)
+	{
+		struct upload *u = &uploads[(upload_head + k) % UPLOADS_MAX];
+
+		if (u->finished || u->outstanding)
+			continue;
+		if (edram_lost && !u->dead)
+			u->failed = 1;
+		if (!u->dead && !u->failed && u->copied < u->size)
+			continue;
+		u->finished = 1;
+		if (u->dead || !psp_sound_cache_alive(u->datum, u->identifier, u->sound, (unsigned long)u->dest))
+		{
+			up_dropped++;
+			continue;
+		}
+		*u->loaded = u->failed ? READ_FAILED : 1;
+		if (!u->failed)
+		{
+			unsigned long us = (unsigned long)(sceKernelGetSystemTimeWide() - u->start_us);
+
+			up_sounds++;
+			up_bytes += u->size;
+			up_wait_us += us;
+			if (us > up_worst_us)
+				up_worst_us = us;
+		}
+	}
+	while (upload_count && uploads[upload_head].finished)
+	{
+		upload_head = (upload_head + 1) % UPLOADS_MAX;
+		upload_count--;
+	}
+	if (edram_lost)
+		return;
+	/* new reads, in the loads' order */
+	for (k = 0; k < STAGE_SLOTS; k++)
+	{
+		struct stage_slot *slot = &stage[k];
+		unsigned int n;
+		struct upload *u = NULL;
+
+		if (slot->state != SLOT_FREE)
+			continue;
+		for (n = 0; n < upload_count && !u; n++)
+		{
+			struct upload *candidate = &uploads[(upload_head + n) % UPLOADS_MAX];
+
+			if (!candidate->finished && !candidate->dead && !candidate->failed && candidate->issued < candidate->size)
+				u = candidate;
+		}
+		if (!u)
+			break;
+		slot->upload = (int)(u - uploads);
+		slot->offset = u->issued;
+		slot->bytes = u->size - u->issued < STAGE_PIECE_BYTES ? u->size - u->issued : STAGE_PIECE_BYTES;
+		slot->sequence = next_sequence++;
+		slot->state = SLOT_READING;
+		slot->done = 0;
+		u->issued += slot->bytes;
+		u->outstanding++;
+		up_pieces++;
+		cache_file_read(u->tag_index, u->file_offset + slot->offset, slot->bytes, slot->buffer, (unsigned char *)&slot->done, 0);
+	}
+	/* what's read, to the ME in the order it was asked for: one job */
+	if (!copy_out)
+	{
+		unsigned int args[ME_JOB_ARGS] = { 0 }, n = 0, order[STAGE_SLOTS], m = 0, j;
+
+		for (k = 0; k < STAGE_SLOTS; k++)
+			if (stage[k].state == SLOT_READING && stage[k].done == 1)
+			{
+				for (j = m++; j > 0 && stage[order[j - 1]].sequence > stage[k].sequence; j--)
+					order[j] = order[j - 1];
+				order[j] = k;
+			}
+		for (j = 0; j < m && 3 * n + 2 < ME_JOB_ARGS; j++)
+		{
+			struct stage_slot *slot = &stage[order[j]];
+			struct upload *u = &uploads[slot->upload];
+			unsigned long bytes = (slot->bytes + 15) & ~15ul;
+
+			/* a sound deleted while it loaded: its block may be another's now */
+			if (u->dead || !psp_sound_cache_alive(u->datum, u->identifier, u->sound, (unsigned long)u->dest))
+			{
+				u->dead = 1;
+				piece_done(slot, 0);
+				continue;
+			}
+			sceKernelDcacheWritebackInvalidateRange(slot->buffer, (bytes + 63) & ~63ul);
+			args[3 * n] = (unsigned int)slot->buffer;
+			args[3 * n + 1] = (unsigned int)(u->dest + slot->offset);
+			args[3 * n + 2] = (unsigned int)bytes;
+			slot->state = SLOT_COPYING;
+			n++;
+		}
+		if (n)
+		{
+			if (psp_me_submit(ME_SLOT_PROBE, ME_JOB_SOUNDCOPY, args, ME_JOB_ARGS))
+			{
+				copy_out = 1;
+				up_jobs++;
+			}
+			else
+			{
+				for (k = 0; k < STAGE_SLOTS; k++)
+					if (stage[k].state == SLOT_COPYING)
+						stage[k].state = SLOT_READING;
+				if (!psp_me_running())
+					edram_loss("the Media Engine isn't running");
+			}
+		}
+	}
+}
+
+/* psp_sound_cache_report's line (every 5 s) */
+void psp_sound_upload_report(void)
+{
+	if (edram_mode <= 0)
+		return;
+	platform_log("sound eDRAM: %lu sounds in (%lu KB, %lu pieces, %lu copy jobs), each %lu ms from asked to loaded on average (worst %lu); %lu reads failed, %lu deleted while loading, %lu refused (queue full), %lu after the loss; %lu blocks with voices mixed silent%s",
+		up_sounds, up_bytes / 1024, up_pieces, up_jobs, up_sounds ? up_wait_us / up_sounds / 1000 : 0, up_worst_us / 1000,
+		up_failed, up_dropped, up_full, up_after_loss, muted_blocks, edram_lost ? "; LOST" : "");
+}
+
+/* voices playing from the cache, mixed silent where it can't be read: by the
+main CPU, or by an ME that has stopped since (its eDRAM taken as lost). The
+silent path of mix_voice only moves the position on */
+static int edram_unreachable(int on_me)
+{
+	return edram_hi && (!on_me || psp_me_stops != stops_at_start);
+}
+
+static void mute_cache_voices(struct psp_stream *const *list, unsigned long count)
+{
+	unsigned long k, position;
+	int any = 0;
+
+	for (k = 0; k < count; k++)
+	{
+		struct psp_stream *stream = list[k];
+
+		for (position = 0; position < stream->packet_count && position < MAXIMUM_STREAM_PACKETS; position++)
+		{
+			const struct voice_packet *packet = &stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS];
+
+			if (!packet->finished && packet->data >= edram_lo && packet->data < edram_hi)
+			{
+				stream->target_left = stream->target_right = 0;
+				stream->current_left = stream->current_right = 0;
+				any = 1;
+				break;
+			}
+		}
+	}
+	muted_blocks += any;
+}
+
 #define VOICE_LIST_MAX 256
 int psp_meaudio_start(void);
 void psp_me_handover(int which, unsigned long us);
@@ -720,6 +1376,8 @@ static void mix(short *output, unsigned long frames)
 		}
 		list[count++] = stream;
 	}
+	if (on_me && edram_unreachable(1))
+		mute_cache_voices(list, count);
 	if (on_me)
 	{
 		unsigned long k, bytes = frames * OUTPUT_CHANNELS * sizeof(short);
@@ -774,7 +1432,11 @@ static void mix(short *output, unsigned long frames)
 			me_failures++;
 	}
 	if (!mixed)
+	{
+		if (edram_unreachable(0))
+			mute_cache_voices(list, count);
 		voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped);
+	}
 	pthread_mutex_unlock(&mixer_lock);
 	clipped_blocks += clipped != 0;
 	mix_blocks++;
@@ -800,9 +1462,46 @@ static void mix(short *output, unsigned long frames)
 static short output_buffers[2][MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
 static int audio_started = 0;
 
+/* "audio44" (opt-in, for a listening A/B on the PSP): the mix taken from
+22,050 to 44,100 Hz here and played on an ordinary 44.1 kHz channel, instead
+of the hardware's sample-rate converter, whose filter isn't documented. The
+fizzy, shimmering treble heard on the PSP is what the images of a converter that
+holds or interpolates linearly sound like [U]: a 7 kHz tone mixed at 22,050
+leaves an image at 15 kHz unless a filter takes it out. Here a half-band
+filter (12 taps, a Blackman-windowed sinc) does: flat to 6.6 kHz, -2.6 dB at
+9.9 kHz (where the bake's own half-rate filter already cuts), images 20 dB
+down at 13 kHz and 54 dB at 15 kHz. The even outputs are the mix's own
+samples, delayed UP_TAPS; the odd ones the filter's half-way points */
+#define UP_TAPS 6
+static const int up_taps[UP_TAPS] = { 20276, -5378, 2003, -659, 154, -12 }; /* Q15; 2 x sum = 1 */
+static short up_history[2 * UP_TAPS * OUTPUT_CHANNELS];
+static short up_input[(2 * UP_TAPS + MIX_FRAMES) * OUTPUT_CHANNELS];
+static short output44[2][2 * MIX_FRAMES * OUTPUT_CHANNELS] __attribute__((aligned(64)));
+
+static void upsample(const short *in, short *out)
+{
+	int j, c, k;
+
+	memcpy(up_input, up_history, sizeof(up_history));
+	memcpy(up_input + 2 * UP_TAPS * OUTPUT_CHANNELS, in, MIX_FRAMES * OUTPUT_CHANNELS * sizeof(short));
+	for (j = 0; j < MIX_FRAMES; j++)
+		for (c = 0; c < OUTPUT_CHANNELS; c++)
+		{
+			const short *e = up_input + (j + UP_TAPS) * OUTPUT_CHANNELS + c;
+			int sum = 0, value;
+
+			for (k = 0; k < UP_TAPS; k++)
+				sum += up_taps[k] * (e[-k * OUTPUT_CHANNELS] + e[(k + 1) * OUTPUT_CHANNELS]);
+			value = (sum + 16384) >> 15;
+			out[2 * j * OUTPUT_CHANNELS + c] = e[0];
+			out[(2 * j + 1) * OUTPUT_CHANNELS + c] = (short)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
+		}
+	memcpy(up_history, up_input + MIX_FRAMES * OUTPUT_CHANNELS, sizeof(up_history));
+}
+
 static int audio_thread(SceSize arguments, void *argument)
 {
-	int channel = sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2), which = 0;
+	int channel = -1, which = 0, up = 0;
 	SceUID dump = -1;
 	unsigned long dumped = 0;
 
@@ -815,11 +1514,18 @@ static int audio_thread(SceSize arguments, void *argument)
 	}
 	(void)arguments;
 	(void)argument;
+	{
+		extern int psp_keep(const char *word);
+
+		up = psp_keep("audio44");
+	}
+	channel = up ? sceAudioChReserve(PSP_AUDIO_NEXT_CHANNEL, 2 * MIX_FRAMES, PSP_AUDIO_FORMAT_STEREO) :
+		sceAudioSRCChReserve(MIX_FRAMES, OUTPUT_RATE, 2);
 	if (channel < 0)
 		platform_log("audio: no output channel (%08x); sound runs silent", channel);
 	else
-		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)", OUTPUT_RATE, MIX_FRAMES,
-			MIX_FRAMES * 1000 / OUTPUT_RATE);
+		platform_log("audio: %d Hz stereo, %d samples a block (%d ms)%s", OUTPUT_RATE, MIX_FRAMES,
+			MIX_FRAMES * 1000 / OUTPUT_RATE, up ? "; to 44,100 Hz by the half-band filter (audio44)" : "");
 	{
 		extern int psp_keep(const char *word);
 
@@ -851,7 +1557,14 @@ static int audio_thread(SceSize arguments, void *argument)
 			static SceUInt64 last_return = 0;
 			SceUInt64 now;
 
-			sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output_buffers[which]);
+			if (up)
+			{
+				upsample(output_buffers[which], output44[which]);
+				sceKernelDcacheWritebackRange(output44[which], sizeof(output44[which]));
+				sceAudioOutputPannedBlocking(channel, PSP_AUDIO_VOLUME_MAX, PSP_AUDIO_VOLUME_MAX, output44[which]);
+			}
+			else
+				sceAudioSRCOutputBlocking(PSP_AUDIO_VOLUME_MAX, output_buffers[which]);
 			now = sceKernelGetSystemTimeWide();
 			if (last_return)
 			{
@@ -909,6 +1622,8 @@ void psp_audio_report(void)
 		platform_log("audio: Media Engine mixed %lu of the blocks (menu: %s), waited for %lu us a block on average, %lu at most (main CPU asleep meanwhile); %lu failed; %lu over the voice list; %lu handed over by ranges (the rest by the whole cache)",
 			me_blocks, me_wanted ? "ME" : "main CPU", me_blocks ? me_wait_us / me_blocks : 0, me_wait_worst_us, me_failures,
 			me_overflows, ranges_blocks);
+	platform_log("audio: of %lu voice blocks, muffled %lu, pitch moved by Doppler %lu, quieter outside a cone %lu%s",
+		fx_prepared, fx_muffled, fx_shifted, fx_coned, audio_old > 0 ? " (audioold: all off)" : "");
 	platform_log("audio: the game waited for the mixer's lock %lu times, %lu us in all, %lu at most; voices that ran dry and were then fed more (a gap heard) %lu, %lu ms of silence in all, the longest %lu ms",
 		game_lock_waits, game_lock_wait_us, game_lock_worst_us, dry_gaps, dry_gap_frames * 1000 / OUTPUT_RATE,
 		dry_gap_worst * 1000 / OUTPUT_RATE);
@@ -925,6 +1640,22 @@ void psp_audio_report(void)
 				k + 1, gap_record_count, gap_records[k].context, gap_records[k].sound_class, gap_records[k].dry_ms,
 				gap_records[k].frame_ms);
 	}
+	{
+		unsigned long k, shown = jump_record_count < GAP_RECORDS ? jump_record_count : GAP_RECORDS;
+
+		if (stream_links)
+			platform_log("audio: %lu permutations queued to a channel with nothing left to send (%s)", stream_links,
+				stream_link_off > 0 ? "streamnolink: filed as queued and dropped" : "linked on");
+		stream_links = 0;
+		if (jump_record_count || flushed_unplayed)
+			platform_log("audio: %lu packets didn't continue their sound where the last ended; %lu unplayed packets flushed",
+				jump_record_count, flushed_unplayed);
+		for (k = 0; k < shown; k++)
+			platform_log("audio: jump %lu of %lu: channel %ld, sound class %ld, %ld bytes from the last packet's end, %lu queued",
+				k + 1, jump_record_count, jump_records[k].context, jump_records[k].sound_class, jump_records[k].bytes,
+				jump_records[k].queued);
+	}
+	jump_record_count = flushed_unplayed = 0;
 	gap_record_count = 0;
 	memset(cut_by_reason, 0, sizeof(cut_by_reason));
 	dry_gaps = dry_gap_frames = dry_gap_worst = 0;
@@ -957,6 +1688,21 @@ int psp_stream_packets(void)
 			packets == 4 ? ": the Xbox's depth" : "");
 	}
 	return packets;
+}
+
+/* sound_dsound_xbox.c's queue_sound: a permutation queued to a channel that
+plays on with nothing left to send becomes its playing permutation (psp_fixups.py
+FIXES_SOUND #link); "streamnolink" files it as queued, as before, where the
+fill never sent it. Counted for the log: each would have been a permutation
+dropped */
+int psp_stream_link(void)
+{
+	extern int psp_keep(const char *name);
+
+	if (stream_link_off < 0)
+		stream_link_off = psp_keep("streamnolink") != 0;
+	stream_links++;
+	return !stream_link_off;
 }
 
 /* ---------- completion */
@@ -1107,6 +1853,20 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 		*input->pdwStatus = XMEDIAPACKET_STATUS_PENDING;
 	if (input->pdwCompletedSize)
 		*input->pdwCompletedSize = 0;
+	if (stream->queued_context && input->pContext == stream->queued_context && entry->data &&
+		entry->data != stream->queued_end)
+	{
+		if (jump_record_count < GAP_RECORDS)
+		{
+			jump_records[jump_record_count].context = (long)stream->context;
+			jump_records[jump_record_count].sound_class = stream->sound_class;
+			jump_records[jump_record_count].bytes = (long)(entry->data - stream->queued_end);
+			jump_records[jump_record_count].queued = stream->packet_count;
+		}
+		jump_record_count++;
+	}
+	stream->queued_end = entry->data ? entry->data + input->dwMaxSize : NULL;
+	stream->queued_context = input->pContext;
 	if (psp_sound_queueing_class >= 0)
 		stream->sound_class = psp_sound_queueing_class;
 	if (stream->packet_count && stream->dry_frames)
@@ -1156,6 +1916,14 @@ static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 		cut_sounds++;
 		cut_by_reason[psp_sound_stop_reason]++;
 	}
+	{
+		unsigned long position;
+
+		for (position = 0; position < stream->packet_count; position++)
+			if (!stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS].finished)
+				flushed_unplayed++;
+	}
+	stream->queued_context = NULL;
 	while (stream->packet_count)
 	{
 		struct voice_packet *head = &stream->packets[stream->packet_head];
@@ -1340,6 +2108,9 @@ static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description)
 	stream->minimum_distance = DS3D_DEFAULTMINDISTANCE;
 	stream->maximum_distance = DS3D_DEFAULTMAXDISTANCE;
 	stream->i3dl2_gain = 1.0f;
+	stream->lowpass_coefficient = GAIN_ONE;
+	stream->cone_inside = stream->cone_outside = 360;
+	stream->cone_forward[2] = 1.0f;
 	stream->decoded_block[0] = stream->decoded_block[1] = -1;
 	game_lock();
 	stream->next = streams;
@@ -1461,7 +2232,15 @@ HRESULT WINAPI IDirectSoundStream_SetI3DL2Source(LPDIRECTSOUNDSTREAM stream, LPC
 	if (direct > 0)
 		direct = 0;
 	{
-		STREAM_SETTER(record->i3dl2_gain = gain_from_millibels(direct))
+		/* the high frequencies' loss past the low ones' (the I3DL2 model's
+		high-frequency path): what the low-pass takes away */
+		LONG high = source->lDirectHF +
+			(LONG)(source->Obstruction.lHFLevel * (1.0f - source->Obstruction.flLFRatio)) +
+			(LONG)(source->Occlusion.lHFLevel * (1.0f - source->Occlusion.flLFRatio));
+
+		if (high > 0)
+			high = 0;
+		STREAM_SETTER(record->i3dl2_gain = gain_from_millibels(direct); record->hf_millibels = high)
 	}
 }
 
@@ -1470,10 +2249,29 @@ HRESULT WINAPI IDirectSoundStream_Pause(LPDIRECTSOUNDSTREAM stream, DWORD pause)
 	STREAM_SETTER(record->paused = pause == DSSTREAMPAUSE_PAUSE)
 }
 
-HRESULT WINAPI IDirectSoundStream_SetVelocity(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply) { (void)stream; (void)x; (void)y; (void)z; (void)apply; return DS_OK; }
-HRESULT WINAPI IDirectSoundStream_SetConeAngles(LPDIRECTSOUNDSTREAM stream, DWORD inside, DWORD outside, DWORD apply) { (void)stream; (void)inside; (void)outside; (void)apply; return DS_OK; }
-HRESULT WINAPI IDirectSoundStream_SetConeOrientation(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply) { (void)stream; (void)x; (void)y; (void)z; (void)apply; return DS_OK; }
-HRESULT WINAPI IDirectSoundStream_SetConeOutsideVolume(LPDIRECTSOUNDSTREAM stream, LONG volume, DWORD apply) { (void)stream; (void)volume; (void)apply; return DS_OK; }
+HRESULT WINAPI IDirectSoundStream_SetVelocity(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->velocity[0] = x; record->velocity[1] = y; record->velocity[2] = z)
+}
+
+HRESULT WINAPI IDirectSoundStream_SetConeAngles(LPDIRECTSOUNDSTREAM stream, DWORD inside, DWORD outside, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->cone_inside = inside; record->cone_outside = outside)
+}
+
+HRESULT WINAPI IDirectSoundStream_SetConeOrientation(LPDIRECTSOUNDSTREAM stream, FLOAT x, FLOAT y, FLOAT z, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->cone_forward[0] = x; record->cone_forward[1] = y; record->cone_forward[2] = z)
+}
+
+HRESULT WINAPI IDirectSoundStream_SetConeOutsideVolume(LPDIRECTSOUNDSTREAM stream, LONG volume, DWORD apply)
+{
+	(void)apply;
+	STREAM_SETTER(record->cone_outside_millibels = volume)
+}
 
 /* ---------- buffers
 
@@ -1641,6 +2439,13 @@ void psp_dsound_loop_stop(void *voice)
 
 	if (!voice)
 		return;
+	{
+		struct psp_stream *stream = stream_from_interface((IDirectSoundStream *)voice);
+
+		platform_log("audio: a loop voice stopped after %lu ms mixed in %lu blocks prepared (%s, frequency %lu, gain %d at the end, %d at its loudest, of %d)",
+			stream->mixed_frames * 1000 / OUTPUT_RATE, stream->prepared_blocks, loop_voice_index(voice) < 0 ? "heap" : "static slot",
+			(unsigned long)stream->frequency, stream->target_left, stream->peak_gain, GAIN_ONE);
+	}
 	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
 	k = loop_voice_index(voice);
 	if (k < 0)

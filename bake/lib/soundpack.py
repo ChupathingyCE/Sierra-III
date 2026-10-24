@@ -4,8 +4,8 @@ smaller for the PSP, before invader-build builds the map from them.
 The disc stores effects and dialogue at 22,050 Hz (some stereo) and music
 and some ambience at 44,100 Hz stereo, all Xbox ADPCM. The port mixes at
 22,050 Hz (psp_dsound.c), so everything above 11 kHz is lost on the PSP
-anyway, and an effect played in 3D is mixed as mono. streaming.md S9 (Sheepdog01,
-2026-10-11: "a reduction in resource usage with near zero quality cost"):
+anyway, and an effect played in 3D is mixed as mono. streaming.md S9
+(2026-10-11: "a reduction in resource usage with near zero quality cost"):
 
     s9    every sound at 22,050 Hz at most; effects mono; music stereo
     s10   s9, and footsteps, impacts and casings at 11,025 Hz (S10: a
@@ -71,8 +71,9 @@ def _expand(nibble, predictor, index):
 
 def decode(data, channels):
     """Xbox ADPCM bytes -> int16 array (samples, channels), as psp_dsound.c
-    decodes: per block, a 4-byte header a channel (predictor, step index),
-    then 8 groups of 4 bytes a channel, eight nibbles each, low first"""
+    decodes: per block, a 4-byte header a channel (the block's first sample,
+    step index), then 8 groups of 4 bytes a channel, eight nibbles each, low
+    first, coding the 63 samples after the header's (the 64th pads)"""
     block_bytes = BLOCK_BYTES * channels
     blocks = len(data) // block_bytes
     if blocks == 0:
@@ -84,22 +85,27 @@ def decode(data, channels):
         predictor = (header[:, 0] | (header[:, 1] << 8)).astype(np.int32)
         predictor = np.where(predictor >= 32768, predictor - 65536, predictor)
         index = np.minimum(header[:, 2], 88)
+        out[:, 0, c] = predictor
         for group in range(8):
             at = 4 * channels + (group * channels + c) * 4
             for byte in range(4):
                 b = raw[:, at + byte].astype(np.int32)
                 for half, nibble in enumerate((b & 15, b >> 4)):
+                    sample = group * 8 + byte * 2 + half + 1
+                    if sample >= BLOCK_SAMPLES:
+                        break
                     predictor, index = _expand(nibble, predictor, index)
-                    out[:, group * 8 + byte * 2 + half, c] = predictor
+                    out[:, sample, c] = predictor
     return out.reshape(blocks * BLOCK_SAMPLES, channels)
 
 
 def encode(pcm):
     """int16 array (samples, channels) -> Xbox ADPCM bytes, whole blocks
-    (the last padded with silence). Each block on its own: the header's
-    predictor is the true sample before the block, its step index the one
-    nearest the block's first differences; each nibble the one whose
-    decoded value is nearest (all sixteen tried)"""
+    (the last padded with silence). Each block on its own: the header holds
+    the block's first sample exactly and a step index fitted to its first
+    differences; nibbles code the 63 samples after it, each the one whose
+    decoded value is nearest (all sixteen tried); the 64th nibble pads (0),
+    as the Xbox's own encoder leaves it"""
     samples, channels = pcm.shape
     blocks = max(1, (samples + BLOCK_SAMPLES - 1) // BLOCK_SAMPLES)
     padded = np.zeros((blocks * BLOCK_SAMPLES, channels), np.int32)
@@ -109,21 +115,20 @@ def encode(pcm):
     nibbles_all = np.arange(16, dtype=np.int32)
     for c in range(channels):
         signal = x[:, :, c]
-        previous = np.concatenate([[signal[0, 0]], signal[:-1, -1]]).astype(np.int32)
-        first = np.abs(np.diff(np.concatenate([previous[:, None], signal[:, :4]], 1), axis=1)).mean(1)
+        first = np.abs(np.diff(signal[:, :5], axis=1)).mean(1)
         index = np.clip(np.searchsorted(STEPS, (first * 2).astype(np.int32)), 0, 88).astype(np.int32)
-        predictor = previous.copy()
+        predictor = np.clip(signal[:, 0], -32768, 32767).astype(np.int32)
         out[:, 4 * c] = (predictor & 0xFF).astype(np.uint8)
         out[:, 4 * c + 1] = ((predictor >> 8) & 0xFF).astype(np.uint8)
         out[:, 4 * c + 2] = index.astype(np.uint8)
         codes = np.zeros((blocks, BLOCK_SAMPLES), np.int32)
-        for k in range(BLOCK_SAMPLES):
+        for k in range(BLOCK_SAMPLES - 1):
             # every nibble's outcome, the nearest kept
             p = np.repeat(predictor[:, None], 16, 1)
             i = np.repeat(index[:, None], 16, 1)
             n = np.broadcast_to(nibbles_all, p.shape)
             p2, i2 = _expand(n, p, i)
-            best = np.abs(p2 - signal[:, k:k + 1]).argmin(1)
+            best = np.abs(p2 - signal[:, k + 1:k + 2]).argmin(1)
             rows = np.arange(blocks)
             codes[:, k] = best
             predictor = p2[rows, best]
@@ -186,7 +191,7 @@ class Definitions:
     def __init__(self, folder):
         self.structs, self.enums, self.bitfields = {}, {}, {}
         for path in glob.glob(os.path.join(folder, '*.json')):
-            for item in json.load(open(path)):
+            for item in json.load(open(path, encoding='utf-8')):
                 kind = item.get('type')
                 if kind == 'struct':
                     self.structs[item['name']] = item

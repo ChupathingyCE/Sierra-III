@@ -115,7 +115,7 @@ index 8d4b05a..80db818 100644
  
  static int __IoAllocFd(FileNode *f) {
 +	// local patch (Halo PSP port, b105): PSP_MAXFD=<n> hands out descriptors
-+	// below n only. Sheepdog01's PSP-1000 (6.61, ARK-4) refused the 13th (b104 run 1:
++	// below n only. a PSP-1000 (6.61, ARK-4) refused the 13th (b104 run 1:
 +	// descriptors 3-12 in use), where the emulator allows 64
 +	static int limit = -1;
 +	if (limit < 0) {

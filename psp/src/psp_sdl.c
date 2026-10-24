@@ -42,6 +42,9 @@ the times counted from the first time the game reads the controls */
 static struct { float seconds; unsigned int buttons; int x, y; } input_script[MAXIMUM_SCRIPT_LINES];
 static int input_script_count = 0;
 static SceInt64 input_script_start = 0;
+static int input_script_game_time = -1;
+int psp_keep(const char *name);
+int psp_keep_loaded(void);
 
 static void input_script_load(void)
 {
@@ -76,9 +79,26 @@ static void input_script_apply(SceCtrlData *pad)
 
 	if (!input_script_count)
 		return;
-	if (!input_script_start)
-		input_script_start = sceKernelGetSystemTimeWide();
-	seconds = (sceKernelGetSystemTimeWide() - input_script_start) / 1e6f;
+	/* "inputgametime": the times in game time (ticks / 30), as a route's
+	are, so two builds whose frames cost differently still press each
+	button on the same tick (an exactness pair needs that) */
+	if (input_script_game_time < 0 && psp_keep_loaded())
+		input_script_game_time = psp_keep("inputgametime") != 0;
+	if (input_script_game_time > 0)
+	{
+		extern unsigned char game_time_initialized(void);
+		extern long game_time_get(void);
+
+		if (!game_time_initialized())
+			return;
+		seconds = game_time_get() / 30.0f;
+	}
+	else
+	{
+		if (!input_script_start)
+			input_script_start = sceKernelGetSystemTimeWide();
+		seconds = (sceKernelGetSystemTimeWide() - input_script_start) / 1e6f;
+	}
 	for (index = 0; index < input_script_count && input_script[index].seconds <= seconds; index++)
 		current = index;
 	if (current >= 0)
@@ -185,7 +205,8 @@ every Halo layout works with this one physical layout
   select + right      -> a screenshot; select + left -> the debug menu
   start               -> start
 In Halo's menus the buttons are the pad's own (cross A, circle B, square X,
-triangle Y; the D-pad and the nub move). */
+triangle Y; the D-pad and the nub move), and select tapped alone is back
+(menu_select_update). */
 
 /* the last controls the game read, for the heartbeat (psp_platform.c) */
 volatile unsigned int psp_pad_buttons, psp_pad_reads;
@@ -293,6 +314,47 @@ static void nub_calibrated_axes(unsigned char lx, unsigned char ly, Sint16 *x, S
 		*y = (Sint16)((ay < 0.0f ? -1.0f : 1.0f) * (engine_dead + (1.0f - engine_dead) * fabsf(ay)) * 32767.0f);
 }
 
+/* select in the menus is the Xbox's back button, which closes the pause
+menu (its handler resumes the game) and steps back through the others.
+Taken on the press, select's chords would reach the menus too: select +
+right's screenshot would close the pause menu in the frame before the shot,
+select + left's debug menu would step back. So back is a tap, as zoom is in
+play: sent on select's release when nothing else was pressed with it, and
+the D-pad goes to nobody while select is held.
+"menuselectpress": back on the press and the D-pad through, as before */
+static int menu_select_press = -1, menu_select_held = 0, menu_select_used = 0, menu_back_live = 0;
+static unsigned int menu_back_at = 0;
+
+#define MENU_BACK_PULSE_US 150000u
+#define PAD_FACE_AND_SHOULDERS (PSP_CTRL_UP | PSP_CTRL_DOWN | PSP_CTRL_LEFT | PSP_CTRL_RIGHT | PSP_CTRL_LTRIGGER | \
+	PSP_CTRL_RTRIGGER | PSP_CTRL_TRIANGLE | PSP_CTRL_CIRCLE | PSP_CTRL_CROSS | PSP_CTRL_SQUARE | PSP_CTRL_START)
+
+static void menu_select_update(unsigned int b, unsigned int now)
+{
+	if (menu_select_press < 0)
+		menu_select_press = psp_keep("menuselectpress") != 0;
+	if (pad_swallowed)
+		menu_select_used = 1;
+	if (b & PSP_CTRL_SELECT)
+	{
+		if (b & PAD_FACE_AND_SHOULDERS)
+			menu_select_used = 1;
+		menu_select_held = 1;
+	}
+	else if (menu_select_held)
+	{
+		/* (a tap in play is zoom: no back left waiting for the next menu) */
+		if (!menu_select_used && in_menus())
+		{
+			menu_back_at = now;
+			menu_back_live = 1;
+		}
+		menu_select_held = menu_select_used = 0;
+	}
+	if (menu_back_live && now - menu_back_at >= MENU_BACK_PULSE_US)
+		menu_back_live = 0;
+}
+
 /* once a fresh read: the crouch toggle and X's tap or hold */
 static void controls_update(const SceCtrlData *pad, unsigned int now)
 {
@@ -301,7 +363,7 @@ static void controls_update(const SceCtrlData *pad, unsigned int now)
 
 	if (crouch_toggle_on < 0)
 	{
-		int ms = psp_keep_number("actionhold", 250);
+		int ms = psp_keep_number("actionhold", 180);
 
 		crouch_toggle_on = !psp_keep("crouchhold");
 		action_split_on = !psp_keep("actiontap");
@@ -312,6 +374,7 @@ static void controls_update(const SceCtrlData *pad, unsigned int now)
 	if (pad->Lx > psp_nub_seen[1]) psp_nub_seen[1] = pad->Lx;
 	if (pad->Ly < psp_nub_seen[2]) psp_nub_seen[2] = pad->Ly;
 	if (pad->Ly > psp_nub_seen[3]) psp_nub_seen[3] = pad->Ly;
+	menu_select_update(b, now);
 	if (pad_swallowed || in_menus())
 	{
 		crouch_chord_held = 0;
@@ -371,16 +434,28 @@ static const unsigned char glyphs_in_menus[PSP_BUTTON_ICONS] =
 
 /* the glyph and its cell on the sheet (x, y, width, height in pixels); -1
 for an icon the PSP has no glyph for, or with "xboxglyphs" (the Xbox's icons,
-as the maps have them) */
+as the maps have them). The map is the one the pad is in (in_menus), since a
+prompt drawn by the HUD over the pause menu, or a menu's text in play, means
+the buttons that work there. "glyphmapfixed" takes the caller's: menus from
+the menus' text, play from the HUD's.
+
+The menus have no black, white, triggers, stick clicks or right stick: their
+icons keep the play map's glyphs, as the menus name them only when they
+describe play's controls (the profile's settings) */
 int psp_button_glyph(int icon, int menus, unsigned short cell[4])
 {
-	static int xbox = -1;
+	static int xbox = -1, fixed = -1;
 	int glyph;
 
 	if (xbox < 0)
+	{
 		xbox = psp_keep("xboxglyphs");
+		fixed = psp_keep("glyphmapfixed");
+	}
 	if (xbox || icon < 0 || icon >= PSP_BUTTON_ICONS)
 		return -1;
+	if (!fixed)
+		menus = in_menus();
 	glyph = (menus ? glyphs_in_menus : glyphs_in_play)[icon];
 	if (cell)
 		memcpy(cell, psp_glyph_cells[glyph], sizeof(psp_glyph_cells[glyph]));
@@ -390,14 +465,18 @@ int psp_button_glyph(int icon, int menus, unsigned short cell[4])
 /* how much further the text moves on past a glyph than past the icon it
 stands for, in the game's screen units: the glyph is drawn at its share of
 the icon's height (psp_glyph_height) in its own shape (psp_ge.c, glyph_quad), so a wide one (Select + up)
-takes more room than the Xbox's round button */
+takes more room than the Xbox's round button, and a glyph the menus draw
+larger ("menuglyphN") more again */
+float psp_ge_menu_glyph_zoom(int glyph, int menus);
+
 float psp_button_glyph_extra(int glyph, float icon_width, float icon_height)
 {
 	float wide;
 
 	if (glyph < 0 || glyph >= PSP_GLYPH_COUNT)
 		return 0.0f;
-	wide = icon_height * psp_glyph_height[glyph] / 100.0f * psp_glyph_cells[glyph][2] / psp_glyph_cells[glyph][3];
+	wide = icon_height * psp_glyph_height[glyph] / 100.0f * psp_ge_menu_glyph_zoom(glyph, in_menus()) *
+		psp_glyph_cells[glyph][2] / psp_glyph_cells[glyph][3];
 	return wide > icon_width ? wide - icon_width : 0.0f;
 }
 
@@ -554,18 +633,24 @@ bool SDL_GetGamepadButton(SDL_Gamepad *gamepad, SDL_GamepadButton button)
 	(void)gamepad;
 	if (in_menus())
 	{
+		/* the D-pad with select held is select's chord's (menu_select_update) */
+		unsigned int dpad = menu_select_press || !(b & PSP_CTRL_SELECT) ? b : 0;
+
 		switch (button)
 		{
 		case SDL_GAMEPAD_BUTTON_SOUTH: return (b & PSP_CTRL_CROSS) != 0;
 		case SDL_GAMEPAD_BUTTON_EAST: return (b & PSP_CTRL_CIRCLE) != 0;
 		case SDL_GAMEPAD_BUTTON_WEST: return (b & PSP_CTRL_SQUARE) != 0;
 		case SDL_GAMEPAD_BUTTON_NORTH: return (b & PSP_CTRL_TRIANGLE) != 0;
-		case SDL_GAMEPAD_BUTTON_DPAD_UP: return (b & PSP_CTRL_UP) != 0;
-		case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return (b & PSP_CTRL_DOWN) != 0;
-		case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return (b & PSP_CTRL_LEFT) != 0;
-		case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return (b & PSP_CTRL_RIGHT) != 0;
+		case SDL_GAMEPAD_BUTTON_DPAD_UP: return (dpad & PSP_CTRL_UP) != 0;
+		case SDL_GAMEPAD_BUTTON_DPAD_DOWN: return (dpad & PSP_CTRL_DOWN) != 0;
+		case SDL_GAMEPAD_BUTTON_DPAD_LEFT: return (dpad & PSP_CTRL_LEFT) != 0;
+		case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: return (dpad & PSP_CTRL_RIGHT) != 0;
 		case SDL_GAMEPAD_BUTTON_START: return (b & PSP_CTRL_START) != 0;
-		case SDL_GAMEPAD_BUTTON_BACK: return (b & PSP_CTRL_SELECT) != 0;
+		case SDL_GAMEPAD_BUTTON_BACK:
+			if (menu_select_press)
+				return (b & PSP_CTRL_SELECT) != 0;
+			return menu_back_live && sceKernelGetSystemTimeLow() - menu_back_at < MENU_BACK_PULSE_US;
 		default: return false;
 		}
 	}
