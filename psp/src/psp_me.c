@@ -1427,6 +1427,23 @@ int psp_me_simulated(void)
 	return me_state == 2;
 }
 
+/* psp_ge.c's mechunk: the frame's job reads its records as the main CPU
+publishes them. On the ME, before each piece, what it has cached written back
+and dropped (the line the last piece ended in held words written since);
+whether a stop is asked, so a job waiting for more ends; and, on the main
+CPU, the job's watchdog started again at each piece: a frame recorded slowly
+(a hitch, a load) is no ME late */
+void psp_me_cache_refresh(void)
+{
+	if (psp_on_me())
+		meLibDcacheWritebackInvalidateAll();
+}
+
+int psp_me_stop_asked(void)
+{
+	return CONTROL->stop != 0;
+}
+
 static void me_stop(const char *why, int for_sleep)
 {
 	volatile struct me_control *control = CONTROL;
@@ -1779,6 +1796,12 @@ static unsigned long long submit_mark[ME_SLOTS];
 /* the slot job out serves the ring between its steps (the GE layer's
 replay yields every 32 records): pushes go on while it runs */
 static int slot_yields[ME_SLOTS];
+
+void psp_me_touch(int which)
+{
+	if (which >= 0 && which < ME_SLOTS && submitted[which] == 1)
+		submit_mark[which] = sceKernelGetSystemTimeWide();
+}
 
 int psp_me_submit(int which, unsigned int type, const unsigned int *args, int arg_count)
 {

@@ -1902,12 +1902,15 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 	}
 	if (psp_tex_screen_pass && hud_pin_on > 0 && hud_pinned && !PSP_ME_WORK())
 		hud_pinned[index] = 1;
+	/* stored only when it changes: a texture marked before the Media Engine
+	binds it (mechunk) leaves the line holding its word unwritten by the ME,
+	while the main CPU may write the words beside it */
 	if (last_frame[index] != frame)
 	{
 		frame_set_bytes += alignment(entry->size);
 		frame_set_count++;
+		last_frame[index] = frame;
 	}
-	last_frame[index] = frame;
 	if (bind_counts && bind_counts[index] < 65535)
 		bind_counts[index]++;
 	if (texline_me && PSP_ME_WORK())
@@ -2065,6 +2068,13 @@ names its base and its lightmap in turn, so one memo for all kinds missed
 every time; a kind's runs of one texture come in a row */
 static PSP_MAIN_SIDE unsigned int pretouch_key[PRETOUCH_KINDS], pretouch_frame[PRETOUCH_KINDS];
 static PSP_MAIN_SIDE int pretouch_percent = -1;
+/* psp_ge.c's mechunk: the frame is replayed by the ME while it is written
+down, so a texture its published records bind must be marked (kept for the
+frame) before the ME binds it. While psp_ge.c sets psp_tex_chunking, a
+texture touched only if resident (a detail or change map) is marked when it
+is, and any texture left unmarked (not resident, past the budget or the
+ceiling) sets psp_tex_chunk_missed: psp_ge.c publishes no more that frame */
+PSP_MAIN_SIDE int psp_tex_chunking = 0, psp_tex_chunk_missed = 0;
 
 #ifdef PSP_RECON
 /* "txptcensus" (recon): per record kind, the textures marked in a frame
@@ -2203,7 +2213,12 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 		return;
 	pretouch_key[kind] = key;
 	pretouch_frame[kind] = frame;
-	if (resident_only == 2)
+	/* (a texture touched only if resident and not resident isn't missed: the
+	ME binding it draws untextured and asks for it, as the replay always has,
+	touching nothing the main CPU writes) */
+	if (resident_only == 2 && psp_tex_chunking && resident_at[index])
+		resident_only = 1;
+	else if (resident_only == 2)
 	{
 		txc_note(index, kind, 0);
 		return;
@@ -2218,6 +2233,7 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 	if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent)
 	{
 		pretouch_ceiling_stops++;
+		psp_tex_chunk_missed = 1;
 		txc_note(index, kind, 0);
 		return;
 	}
@@ -2226,12 +2242,14 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 		if (resident_only)
 		{
 			pretouch_not_resident++;
+			psp_tex_chunk_missed = 1;
 			txc_note(index, kind, 0);
 			return;
 		}
 		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
 		{
 			pretouch_refused++;
+			psp_tex_chunk_missed = 1;
 			txc_note(index, kind, 0);
 			return;
 		}
