@@ -11704,6 +11704,25 @@ FIXES_CHUPA["source/rasterizer/rasterizer_text.c#atlas"] = [
 # halo-ce-universal does: these checks answer TRUE and the compiler drops
 # them. PSP_MAP_CHECKS=1 (psp_build.py) builds them in, for a map that isn't
 # the bake's or a comparison
+# bsp3d_test_point (the point-in-level walk: 1.2-2.5% of the tick's
+# fetches on b30, a30, c20 and d20 [E census141b]) has the same per-node
+# check in its own loop; a trusted map skips it as the walks above do
+FIXES_CHUPA["source/physics/bsp3d.c#trusted"] = [
+("""		if (node_index < 0 ||
+			node_index >= bsp->nodes.count ||
+			depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
+		{""",
+ """#if !defined(HALO_PSP) || defined(PSP_MAP_CHECKS)
+		if (node_index < 0 ||
+			node_index >= bsp->nodes.count ||
+			depth++ >= MAXIMUM_BSP3D_TRAVERSAL_DEPTH)
+#else
+		/* psp_fixups.py (FIXES_CHUPA): a trusted map (see #trusted) */
+		(void)depth;
+		if (0)
+#endif
+		{"""),
+]
 FIXES_CHUPA["source/physics/collision_bsp.c#trusted"] = [
 ("""	long *nodes_left)
 {
