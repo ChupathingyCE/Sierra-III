@@ -5432,7 +5432,7 @@ it moved. "showcasebiasN": N quarter levels coarser, on ui.map only (the
 showcase rule: nothing it does reaches the other maps) */
 extern int psp_showcase_map;
 static float tex_bias_base = -1.0f;
-static int showcase_applied = -1;
+static int showcase_applied = -1, tex_level_mode_base = -1;
 
 int psp_keep_number(const char *prefix, int fallback);
 
@@ -5446,6 +5446,13 @@ static void showcase_levels(void)
 		return;
 	showcase_applied = psp_showcase_map;
 	tex_bias = tex_bias_base + (psp_showcase_map ? psp_keep_number("showcasebias", SHOWCASE_BIAS_DEFAULT) * 0.25f : 0.0f);
+	/* B14 test, "showcasesharp": the menu's textures at their largest level
+	whatever the slope says. The PSP drew the menu's hull from a small level
+	where the emulator draws it sharp (lab 40107746080 against 40106798630):
+	the real GE's level choice by slope differs from PPSSPP's */
+	if (tex_level_mode_base < 0)
+		tex_level_mode_base = tex_level_mode;
+	tex_level_mode = psp_showcase_map && psp_keep("showcasesharp") ? GU_TEXTURE_CONST : tex_level_mode_base;
 	sceGuTexLevelMode(tex_level_mode, tex_bias);
 }
 
