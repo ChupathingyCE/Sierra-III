@@ -11725,6 +11725,28 @@ FIXES_CHUPA["source/physics/bsp3d.c#trusted"] = [
 #endif
 		{"""),
 ]
+# The engine's console output (script prints, "true" and other messages) is
+# drawn over the game whenever there is any: ChupathingyCE since 0.8.0 draws it
+# only while the console is open ("terminal_render 2", Milenko, commits
+# 3a4dee17 and 827e688d). The PSP has no console to open, so it is drawn
+# only with "terminalon"; the log keeps every line either way
+FIXES_CHUPA["source/interface/terminal.c#render2"] = [
+("""		if (terminal_render_enable)
+		{
+			struct output_line_datum *line;""",
+ """#ifdef HALO_PSP
+		static int psp_terminal_on = -1;
+		int psp_keep(const char *name);
+
+		if (psp_terminal_on < 0)
+			psp_terminal_on = psp_keep("terminalon");
+		if (terminal_render_enable && (psp_terminal_on || terminal_globals.input_state))
+#else
+		if (terminal_render_enable)
+#endif
+		{
+			struct output_line_datum *line;"""),
+]
 FIXES_CHUPA["source/physics/collision_bsp.c#trusted"] = [
 ("""	long *nodes_left)
 {
