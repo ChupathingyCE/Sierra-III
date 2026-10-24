@@ -2489,7 +2489,7 @@ static void ge_dither(int on)
 	span, half the pattern; the 5-bit steps come back as half-steps */
 	static const ScePspIMatrix4 matrix = { { -4, 0, -3, 1 }, { 2, -2, 3, -1 }, { -3, 1, -4, 0 }, { 3, -1, 2, -2 } };
 	static const ScePspIMatrix4 half = { { -2, 0, -2, 0 }, { 1, -1, 1, -1 }, { -2, 0, -2, 0 }, { 1, -1, 1, -1 } };
-	/* "ditherlift" (opt-in, with dithershift's A/B): every offset 4 higher.
+	/* "ditherlift" (on by default, keep_defaults; noditherlift): every offset 4 higher.
 	The matrix above is centred for a GE that rounds; one that truncates
 	(PPSSPP's, and ditherprobe's row 0 on the PSP) loses half a step with it
 	on every dithered draw, which shows most in the dark. Lifted, a
