@@ -6662,7 +6662,11 @@ static int heap_reserve_allows(size_t bytes)
 	return 1;
 }
 
-/* a speed-up table's block, or none while the heap is near its reserve */
+/* a speed-up table's block, or none while the heap is near its reserve.
+Only for tables whose absence costs time (bounding spheres, cluster runs):
+never for a skinned part's plan, without which its vertices are drawn on one
+node (doors sliding whole, hands off the gun) until the buffer is converted
+again */
 static void *cache_malloc(size_t bytes)
 {
 	if (!heap_reserve_allows(bytes))
@@ -10656,7 +10660,7 @@ static void vertex_nodes(const void *vertices, int index, int uncompressed, int 
 winding; strips' joining triangles dropped) into a new array */
 static unsigned short *triangle_list(const unsigned short *indices, int index_count, int strip, int *triangle_count)
 {
-	unsigned short *list = cache_malloc((strip ? (index_count - 2) : index_count / 3) * 3 * sizeof(unsigned short) + 4);
+	unsigned short *list = malloc((strip ? (index_count - 2) : index_count / 3) * 3 * sizeof(unsigned short) + 4);
 	int count = 0, i;
 
 	if (!list)
@@ -10779,7 +10783,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 		}
 	}
 	/* batches: each triangle into the first whose slots agree with its nodes */
-	batch_of = cache_malloc(triangle_count);
+	batch_of = malloc(triangle_count);
 	if (!batch_of)
 	{
 		free(list);
@@ -10833,7 +10837,7 @@ static struct skin_part *skin_plan(const void *vertices, int count, int uncompre
 		unsigned short *out;
 		int b;
 
-		part = cache_malloc(bytes);
+		part = malloc(bytes);
 		if (!part)
 		{
 			free(batch_of);
@@ -11487,7 +11491,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	}
 	if (skin && indices)
 	{
-		node0 = cache_malloc(count * 3);
+		node0 = malloc(count * 3);
 		if (node0)
 		{
 			node1 = node0 + count;
