@@ -17812,19 +17812,17 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 		glyph_sheet_ready();
 	}
 	GE_PRETOUCH(key, TXPT_SCREEN);
-	/* a HUD meter's palette is worked out from its map's when the quad is
-	drawn, and under gemeon that is the Media Engine's replay, which can't
-	load a texture: a meter whose map wasn't in memory then was left out,
-	every frame (the shield and health bars missing on the PSP, the emulator
-	unaffected). The recording, on the main CPU, brings the map in first.
-	"meterloadold": as before */
+	/* "meterload": the recording loads a HUD meter's map before the quad is
+	queued, outside pretouch's guards. Off by default: on the PSP it left the
+	bars as empty as before and lost model palettes (Chief's change colours),
+	so the bars' fault lies upstream of the map. Kept for the bars' A/B */
 	if (meter_parameters && !defer_replaying && !psp_on_me())
 	{
-		static int meter_load_old = -1;
+		static int meter_load = -1;
 
-		if (meter_load_old < 0)
-			meter_load_old = psp_keep("meterloadold") != 0;
-		if (!meter_load_old)
+		if (meter_load < 0)
+			meter_load = psp_keep("meterload") != 0;
+		if (meter_load)
 			(void)psp_tex_resident(key);
 	}
 	GE_DEFER(defer_screen_quad(vertices, key, blend, red, green, blue, fade, offset_x, offset_y, meter_parameters,

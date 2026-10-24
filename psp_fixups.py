@@ -32046,8 +32046,8 @@ boolean psp_thread_has_exited_waiting(struct thread_reference *thread_reference)
 # in game time, and the pitch limits and autolevel step by game ticks. With
 # the stick at rest the turn is the old one bit for bit. Local games only (a
 # network client's frame time isn't capped, so nothing changes there).
-# Keep words: "lookreal" turns it on (opt-in: in hand play the turn felt
-# variable, the look skipping ahead in the turn's direction); "lookstat" (a line a second of real
+# Keep words: "lookrealoff" turns it off (a hand test preferred the real-time
+# turn to the capped one); "lookstat" (a line a second of real
 # time: real and game seconds, frames, yaw turned); "frameslowN" (N ms more
 # each frame, tests only: slow frames on demand).
 FIXES_LOOKREAL = {}
@@ -32077,9 +32077,9 @@ static real psp_look_time_delta(
 	{
 		extern int psp_keep(const char *name);
 
-		psp_look_real = psp_keep("lookreal") != 0;
+		psp_look_real = psp_keep("lookrealoff") == 0;
 		psp_look_stat = psp_keep("lookstat") != 0;
-		platform_psp_log("lookreal: %s", psp_look_real ? "on (lookreal)" : "off");
+		platform_psp_log("lookreal: %s", psp_look_real ? "on" : "off (lookrealoff)");
 	}
 	if (!psp_look_real || time_delta_sec <= 0.f || seconds <= 0.f ||
 		game_connection() != _game_connection_local)
