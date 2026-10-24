@@ -4659,6 +4659,21 @@ static float near_plane_auto(const float *eye, float game_near)
 		near_auto_chosen_high[scale == 16 ? 1 : 0]++;
 	near_auto_frames++;
 	near_auto_us += ge_clock() - start;
+	/* "nearcine": in a cutscene, a model nearer the eye than the game's own
+	plane gets a plane a quarter as far. The 16:9 view shows the sides that
+	4:3 left off screen, and there the cinematic camera's close-ups cut
+	faces open (a10's Keyes). The depth range coarsens only while it lasts.
+	"nearcineoff": the game's plane as before */
+	if (scale == 1 && near_object_distance_last < game_near * 1.4f)
+	{
+		extern unsigned char cinematic_in_progress(void);
+		static int near_cine = -1;
+
+		if (near_cine < 0)
+			near_cine = !psp_keep("nearcineoff");
+		if (near_cine && cinematic_in_progress())
+			return game_near * 0.25f;
+	}
 	return game_near * scale;
 }
 
