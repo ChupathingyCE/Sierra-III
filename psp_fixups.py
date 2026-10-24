@@ -32047,7 +32047,8 @@ boolean psp_thread_has_exited_waiting(struct thread_reference *thread_reference)
 # the stick at rest the turn is the old one bit for bit. Local games only (a
 # network client's frame time isn't capped, so nothing changes there).
 # Keep words: "lookrealoff" turns it off (a hand test preferred the real-time
-# turn to the capped one); "lookstat" (a line a second of real
+# turn to the capped one), and "fixedticks" does too (an exact run's turn
+# can't follow the wall clock); "lookstat" (a line a second of real
 # time: real and game seconds, frames, yaw turned); "frameslowN" (N ms more
 # each frame, tests only: slow frames on demand).
 FIXES_LOOKREAL = {}
@@ -32077,7 +32078,7 @@ static real psp_look_time_delta(
 	{
 		extern int psp_keep(const char *name);
 
-		psp_look_real = psp_keep("lookrealoff") == 0;
+		psp_look_real = psp_keep("lookrealoff") == 0 && !psp_keep("fixedticks");
 		psp_look_stat = psp_keep("lookstat") != 0;
 		platform_psp_log("lookreal: %s", psp_look_real ? "on" : "off (lookrealoff)");
 	}

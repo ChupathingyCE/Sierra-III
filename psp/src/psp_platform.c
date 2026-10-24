@@ -1025,7 +1025,7 @@ no more): a preset with the menu's own words needs ~250, and words past the
 limit are lost silently. KEEP_DEFAULTS_ROOM more holds the campaign's
 default words (keep_defaults_add), however full the file is */
 #define KEEP_FILE_BYTES 509
-#define KEEP_DEFAULTS_ROOM 96
+#define KEEP_DEFAULTS_ROOM 192
 static char keep_words[KEEP_FILE_BYTES + 3 + KEEP_DEFAULTS_ROOM] = "";
 /* build 106: bumped whenever keep_words changes, so psp_keep's remembered
 answers are asked again */
@@ -1077,8 +1077,13 @@ static void keep_default_add(const char *word)
 	memcpy(keep_words + used, word, length);
 	keep_words[used + length] = ' ';
 	keep_words[used + length + 1] = '\0';
-	strcat(keep_defaults_added, " ");
-	strcat(keep_defaults_added, word);
+	/* the log's list of added words: kept within its buffer, whatever the
+	defaults grow to */
+	if (strlen(keep_defaults_added) + length + 2 <= sizeof(keep_defaults_added))
+	{
+		strcat(keep_defaults_added, " ");
+		strcat(keep_defaults_added, word);
+	}
 }
 
 static void keep_defaults_add(void)
