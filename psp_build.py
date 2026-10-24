@@ -613,6 +613,31 @@ def link(objs, stubs):
     #     and nothing first, each function's cold part placed beside it.
     # A linker script gives each input section to the first rule that
     # matches it, so the most specific placements come first.
+    # A function's main part is named by its profile: .text.hot.F when PGO's
+    # counts found it hot, .text.F when they didn't or the function changed
+    # since it was counted (a recon build, PSP_TICK_STEPS, debug tools), while
+    # its cold part stays .text.unlikely.F either way. A layout that placed
+    # the cold part by name and missed the main part under its other name put
+    # the two far apart, and the cold part's branches back into the main part
+    # (R_MIPS_PC16, +-128 KB) no longer reached: every placement of a main
+    # part matches both names, and a cold part the layout doesn't place
+    # itself (the function wasn't split when the layout was made) follows
+    # its main part, so the pair stays together in any build
+    def layout_placements(placements):
+        out, seen = [], set(placements)
+        for p in placements:
+            m = re.match(r"^(\S*)\((\.text\.(?:hot\.)?)(\S+)\)$", p)
+            more = []
+            if m and not m.group(3).startswith(("unlikely.", "startup.", "exit.")):
+                p = "%s(.text.hot.%s .text.%s)" % (m.group(1), m.group(3), m.group(3))
+                cold = "%s(.text.unlikely.%s)" % (m.group(1), m.group(3))
+                if cold not in seen:
+                    more = [cold]
+            for q in [p] + more:
+                if q not in out:
+                    out.append(q)
+        return out
+
     linkfile = SDK + "/lib/linkfile.prx"
     text = open(linkfile).read()
     layout = os.environ.get("PSP_TEXT_LAYOUT", "")
@@ -628,9 +653,9 @@ def link(objs, stubs):
                 layout = os.path.join(HERE, "psp/layout", layout + ".txt")
             lines = [l.strip() for l in open(layout) if l.strip() and not l.startswith("#")]
             if lines and all(l.startswith("*") for l in lines):
-                first = lines
+                first = layout_placements(lines)
             else:
-                first += ["*(%s)" % l for l in lines if l.startswith(".text.")]
+                first += layout_placements(["*(%s)" % l for l in lines if l.startswith(".text.")])
         old_text = "    _ftext = . ;\n    *(.text .stub .text.* .gnu.linkonce.t.*)\n"
         if old_text not in text:
             sys.exit("psp_build: the SDK's linkfile.prx has changed; PSP_TEXT_LAYOUT can't place the code")
