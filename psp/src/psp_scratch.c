@@ -124,3 +124,70 @@ void psp_scratch_exec_probe(void)
 		count, scratch_us, ram_us, scratch_result, ram_result,
 		(double)scratch_us * 333.0 / (3.0 * count), (double)ram_us * 333.0 / (3.0 * count));
 }
+
+/* the second probe (keep.txt "spadexec2"): does code run from the
+scratchpad go through the instruction cache? The first probe showed it runs
+at cached speed, which a loop small enough to stay in the cache would show
+either way. Two 12 KB straight-line routines, one in main RAM and one in the
+scratchpad, are run in turn: if the scratchpad's fetches bypass the cache,
+the main-RAM routine keeps its 12 KB of the 16 KB cache and stays fast; if
+they are cached, the two (24 KB) evict each other every pass and the
+main-RAM routine misses on every line. It takes 12 KB of the scratchpad
+before the other pieces ask, so most of them go to the heap for that run */
+#define PROBE2_WORDS 3072u
+
+static void probe2_fill(unsigned int *code)
+{
+	unsigned int k;
+
+	code[0] = 0x00001021; /* addu v0, zero, zero */
+	for (k = 1; k < PROBE2_WORDS - 2; k++)
+		code[k] = 0x24420001; /* addiu v0, v0, 1 */
+	code[PROBE2_WORDS - 2] = 0x03e00008; /* jr ra */
+	code[PROBE2_WORDS - 1] = 0x00000000; /* nop */
+}
+
+static unsigned int probe2_run(void *a, void *b, unsigned int passes)
+{
+	unsigned int (*run_a)(void) = (unsigned int (*)(void))a, (*run_b)(void) = (unsigned int (*)(void))b;
+	unsigned int start = sceKernelGetSystemTimeLow(), k, sum = 0;
+
+	for (k = 0; k < passes; k++)
+	{
+		sum += run_a();
+		if (run_b)
+			sum += run_b();
+	}
+	(void)sum;
+	return sceKernelGetSystemTimeLow() - start;
+}
+
+void psp_scratch_exec_probe2(void)
+{
+	const unsigned int bytes = PROBE2_WORDS * 4u, passes = 200;
+	unsigned int ram_alone, scratch_alone, both;
+	void *ram, *scratch;
+
+	if (!psp_keep("spadexec2"))
+		return;
+	ram = memalign(64, bytes);
+	scratch = psp_scratch_take(bytes, "the second execution probe");
+	if (!ram || !psp_scratch_holds(scratch))
+	{
+		platform_log("spadexec2: no room for the probe (heap %p, scratchpad %p)", ram, scratch);
+		return;
+	}
+	probe2_fill((unsigned int *)ram);
+	probe2_fill((unsigned int *)scratch);
+	sceKernelDcacheWritebackAll();
+	sceKernelIcacheInvalidateAll();
+	(void)probe2_run(ram, NULL, 2);
+	ram_alone = probe2_run(ram, NULL, passes);
+	(void)probe2_run(scratch, NULL, 2);
+	scratch_alone = probe2_run(scratch, NULL, passes);
+	both = probe2_run(ram, scratch, passes);
+	platform_log("spadexec2: %u passes of 12 KB: main RAM alone %u us, scratchpad alone %u us, both in turn %u us (alone summed %u us): %s",
+		passes, ram_alone, scratch_alone, both, ram_alone + scratch_alone,
+		both <= (ram_alone + scratch_alone) * 5 / 4 ? "the scratchpad's fetches leave the instruction cache alone" :
+		"the scratchpad's fetches go through the instruction cache (the two evict each other)");
+}

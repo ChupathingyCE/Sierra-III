@@ -312,9 +312,10 @@ void psp_vfpu_initialize(void)
 	if (psp_keep("vfpuround"))
 		vfpu_rounding();
 	{
-		extern void psp_scratch_exec_probe(void);
+		extern void psp_scratch_exec_probe(void), psp_scratch_exec_probe2(void);
 
 		psp_scratch_exec_probe();
+		psp_scratch_exec_probe2();
 	}
 	/* and the time each takes, for the log */
 	/* chained (each product feeds the next, as a skeleton's do), so the
