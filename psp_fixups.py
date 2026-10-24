@@ -15549,6 +15549,19 @@ static int psp_order_surface_indices_by_bits(
 	return 1;
 }
 
+/* each index above the one before it: the list is its own sort */
+static int psp_surface_indices_ascending(
+	long const *elements,
+	long element_count)
+{
+	long k;
+
+	for (k = 1; k < element_count; k++)
+		if (elements[k - 1] >= elements[k])
+			return 0;
+	return 1;
+}
+
 /* psp_fixups.py (build 119): qsort_4byte (cseries/sort.c) for
 compare_surface_indices, its comparison (a > b) written in */
 static void psp_sort_surface_indices(
@@ -15688,12 +15701,15 @@ static void structure_render_dynamic_triangles_from_indices(
 #ifdef HALO_PSP
 	{
 		extern int psp_keep(const char *name);
-		static int old = -1, check = 0;
+		static int old = -1, check = 0, in_order = 1;
 
 		if (old < 0)
 		{
 			old = psp_keep("surfaceqsort");
 			check = psp_keep("surfacesortcheck");
+			/* a list already ascending (lightplan's are) is left as it is:
+			its sort is itself; "surfaceinorderoff" sorts it anyway */
+			in_order = !psp_keep("surfaceinorderoff");
 		}
 		if (old)
 			qsort_4byte(surface_indices, surface_count, compare_surface_indices);
@@ -15716,6 +15732,8 @@ static void structure_render_dynamic_triangles_from_indices(
 				free(copy);
 			}
 		}
+		else if (in_order && psp_surface_indices_ascending(surface_indices, surface_count))
+			psp_surface_sorts_in_order++;
 		else if (psp_order_surface_indices_by_bits(surface_indices, surface_count, structure_bsp->surfaces.count))
 			psp_surface_sorts_by_bits++;
 		else
@@ -22841,6 +22859,488 @@ FIXES_136["source/items/weapons.c#nwbatch"] = [
 			void psp_nwb_sphere_read(long object_index);
 
 			psp_nwb_sphere_read(owner_object_index);
+"""),
+]
+
+# lightplan (psp_fixups.py, FIXES_LIGHTPLAN): a dynamic light's candidate
+# surfaces, the visible filter left out, for the plan kept across frames
+APPEND["source/structures/structure_visibility.c"] = r"""
+#ifdef HALO_PSP
+/* lightplan: every surface in the subclusters of the light's clusters that
+its sphere's box meets (structure_visibility_build_surfaces_traverse_clusters
+without the visible test), once each, in ascending order. -1 when the light
+takes the node walk instead (a radius under structure_sphere_threshold), the
+BSP isn't verified, or more than maximum are found: the caller then walks
+as before */
+long psp_light_candidates(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long *out, long maximum)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	unsigned long flags[MAXIMUM_SURFACES_PER_STRUCTURE / LONG_BITS];
+	real_rectangle3d box;
+	long found = 0, words, word;
+	short list_index;
+
+	if (!structure_bsp_port_verify(structure) || radius < structure_sphere_threshold)
+		return -1;
+	words = (structure->surfaces.count + LONG_BITS - 1) / LONG_BITS;
+	csmemset(flags, 0, words * sizeof(unsigned long));
+	box.x0 = center->x - radius;
+	box.x1 = center->x + radius;
+	box.y0 = center->y - radius;
+	box.y1 = center->y + radius;
+	box.z0 = center->z - radius;
+	box.z1 = center->z + radius;
+	for (list_index = 0; list_index < cluster_count; list_index++)
+	{
+		struct structure_visibility_cluster *cluster;
+		short subcluster_index;
+
+		if (cluster_indices[list_index] < 0 || cluster_indices[list_index] >= structure->clusters.count)
+			continue;
+		cluster = TAG_BLOCK_GET_ELEMENT(&structure->clusters, cluster_indices[list_index],
+			struct structure_visibility_cluster);
+		for (subcluster_index = 0; subcluster_index < cluster->subclusters.count; subcluster_index++)
+		{
+			struct structure_visibility_subcluster *subcluster = TAG_BLOCK_GET_ELEMENT(&cluster->subclusters,
+				subcluster_index, struct structure_visibility_subcluster);
+			short rectangle_intersection = bounding_rectangles_intersect(&box, &subcluster->world_bounds);
+			short plane_intersection = rectangle_intersection
+				? planes_intersect_rectangle(&subcluster->world_bounds, 0, NULL)
+				: _intersection_out;
+			long k;
+
+			if (!plane_intersection)
+				continue;
+			for (k = 0; k < subcluster->surface_indices.count; k++)
+			{
+				long surface_index = PSP_SURFACE_INDEX(&subcluster->surface_indices, k);
+
+				if ((unsigned long)surface_index >= (unsigned long)structure->surfaces.count
+					|| BIT_VECTOR_TEST_FLAG(flags, surface_index))
+					continue;
+				if (found >= maximum)
+					return -1;
+				BIT_VECTOR_SET_FLAG(flags, surface_index, TRUE);
+				found++;
+			}
+		}
+	}
+	/* read back in order: the bits mark exactly the candidates */
+	found = 0;
+	for (word = 0; word < words; word++)
+	{
+		unsigned long bits = flags[word];
+		long bit = word * LONG_BITS;
+
+		for (; bits; bits >>= 1, bit++)
+			if (bits & 1)
+				out[found++] = bit;
+	}
+	return found;
+}
+#endif
+"""
+
+# ---------- lightplancensus (a count, off; for the light-plan lever): how
+# many dynamic lights a frame find their sphere, radius and cluster set as a
+# light had them the frame before, and how many of those then find the same
+# surface list, so a per-light surface plan kept across frames can be sized
+# before it is built (api-job 40130751164, lever L1)
+FIXES_LIGHTPLAN = {}
+FIXES_LIGHTPLAN["source/structures/structure_render.c#lightplancensus"] = [
+("""void structure_render_lightmaps(
+	void)
+{
+	profile_enter(render_structure_lightmaps_section);
+""",
+ """#ifdef HALO_PSP
+int psp_keep(const char *name); /* psp_platform.c */
+void platform_log(const char *format, ...);
+
+#define PSP_LP_SLOTS 64
+static struct { unsigned long in, out; } psp_lp_last[PSP_LP_SLOTS], psp_lp_now[PSP_LP_SLOTS];
+static int psp_lp_on = -1, psp_lp_last_count = 0, psp_lp_now_count = 0;
+static unsigned long psp_lp_frames = 0, psp_lp_calls = 0, psp_lp_whole = 0, psp_lp_same_in = 0, psp_lp_same_out = 0,
+	psp_lp_empty = 0, psp_lp_full = 0, psp_lp_surfaces = 0, psp_lp_most = 0;
+
+static unsigned long psp_lp_hash(const void *at, long bytes, unsigned long hash)
+{
+	const unsigned char *byte = at;
+
+	while (bytes-- > 0)
+		hash = (hash ^ *byte++) * 16777619u;
+	return hash;
+}
+
+/* once a frame, before the lights: this frame's lights become the last */
+static void psp_lp_frame(void)
+{
+	if (psp_lp_on < 0)
+	{
+		psp_lp_on = psp_keep("lightplancensus");
+		if (psp_lp_on)
+			platform_log("lights: lightplancensus: each dynamic light's sphere, clusters and surface list against the last frame's");
+	}
+	if (!psp_lp_on)
+		return;
+	memcpy(psp_lp_last, psp_lp_now, sizeof(psp_lp_now));
+	psp_lp_last_count = psp_lp_now_count;
+	psp_lp_now_count = 0;
+	psp_lp_frames++;
+}
+
+static void psp_lp_note(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long const *surface_indices, long surface_count)
+{
+	unsigned long in, out;
+	int k, count = psp_lp_now_count;
+
+	if (psp_lp_on <= 0)
+		return;
+	psp_lp_calls++;
+	if (!cluster_indices)
+	{
+		psp_lp_whole++;
+		return;
+	}
+	in = psp_lp_hash(center, sizeof(*center), 2166136261u);
+	in = psp_lp_hash(&radius, sizeof(radius), in);
+	in = psp_lp_hash(cluster_indices, cluster_count * sizeof(short), in);
+	out = psp_lp_hash(surface_indices, surface_count * sizeof(long), 2166136261u);
+	psp_lp_surfaces += surface_count;
+	if ((unsigned long)surface_count > psp_lp_most)
+		psp_lp_most = surface_count;
+	if (surface_count == 0)
+		psp_lp_empty++;
+	if (surface_count >= MAXIMUM_LOCALLY_RENDERED_SURFACES)
+		psp_lp_full++;
+	for (k = 0; k < psp_lp_last_count; k++)
+		if (psp_lp_last[k].in == in)
+		{
+			psp_lp_same_in++;
+			if (psp_lp_last[k].out == out)
+				psp_lp_same_out++;
+			break;
+		}
+	if (count < PSP_LP_SLOTS)
+	{
+		psp_lp_now[count].in = in;
+		psp_lp_now[count].out = out;
+		psp_lp_now_count = count + 1;
+	}
+}
+
+/* "lightplan" (off by default until proven): a dynamic light's candidate
+surfaces kept while its sphere, radius and clusters are bit for bit as a
+light had them before, in a pool of 16-bit indices; each frame only the
+visible filter runs over them. The visible candidates are the walk's own
+surfaces, and ascending: the triangle build sorts its list first, so what
+is drawn is the same. Not kept for a light that takes the node walk, finds
+more than the list holds, or doesn't fit the pool. "lightplancheck" walks
+as before too and counts lists that came out different. "lightplankbN": the
+pool's KB (24) */
+long psp_light_candidates(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long *out, long maximum); /* structure_visibility.c */
+extern unsigned long psp_tex_map_opens; /* psp_tex.c */
+int psp_keep_number(const char *prefix, int fallback);
+
+#define PSP_LPLAN_SLOTS 24
+#define PSP_LPLAN_CLUSTERS 16
+static struct
+{
+	int used;
+	real_point3d center;
+	real radius;
+	short cluster_count;
+	short clusters[PSP_LPLAN_CLUSTERS];
+	long first, count;
+} psp_lplan[PSP_LPLAN_SLOTS];
+static unsigned short *psp_lplan_pool = NULL;
+static long psp_lplan_pool_size = 0, psp_lplan_pool_used = 0, psp_lplan_pool_cap = 0;
+
+/* the pool grows in 8 KB steps as plans need it, never past its cap, and
+stays as it is when the heap has no room: a map whose lights move takes
+little or none of it (a30, the tight maps) */
+static int psp_lplan_grow(long need)
+{
+	long size = psp_lplan_pool_size;
+	unsigned short *more;
+
+	if (psp_lplan_pool_used + need <= size)
+		return 1;
+	while (size < psp_lplan_pool_used + need)
+		size += 4096;
+	if (size > psp_lplan_pool_cap)
+		return 0;
+	more = malloc(size * sizeof(unsigned short));
+	if (!more)
+		return 0;
+	/* (no free(NULL): this build's free reads the header before the pointer) */
+	if (psp_lplan_pool)
+	{
+		memcpy(more, psp_lplan_pool, psp_lplan_pool_used * sizeof(unsigned short));
+		free(psp_lplan_pool);
+	}
+	psp_lplan_pool = more;
+	psp_lplan_pool_size = size;
+	return 1;
+}
+static int psp_lplan_on = -1, psp_lplan_check = 0, psp_lplan_next = 0;
+static unsigned long psp_lplan_epoch = 0;
+static struct structure_bsp *psp_lplan_structure = NULL;
+static unsigned long psp_lplan_hits = 0, psp_lplan_kept = 0, psp_lplan_walked = 0, psp_lplan_mismatches = 0;
+
+/* the keys of lights seen once and not yet kept, oldest let go first */
+#define PSP_LPLAN_SEEN 32
+static unsigned long psp_lplan_seen[PSP_LPLAN_SEEN];
+static int psp_lplan_seen_next = 0;
+
+static int psp_lplan_seen_before(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices)
+{
+	unsigned long key = 2166136261u;
+	unsigned char const *byte;
+	long k;
+
+	for (byte = (unsigned char const *)center, k = 0; k < (long)sizeof(*center); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	for (byte = (unsigned char const *)&radius, k = 0; k < (long)sizeof(radius); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	for (byte = (unsigned char const *)cluster_indices, k = 0; k < cluster_count * (long)sizeof(short); k++)
+		key = (key ^ byte[k]) * 16777619u;
+	key |= 1; /* 0 marks an empty entry */
+	for (k = 0; k < PSP_LPLAN_SEEN; k++)
+		if (psp_lplan_seen[k] == key)
+		{
+			psp_lplan_seen[k] = 0;
+			return 1;
+		}
+	psp_lplan_seen[psp_lplan_seen_next] = key;
+	psp_lplan_seen_next = (psp_lplan_seen_next + 1) % PSP_LPLAN_SEEN;
+	return 0;
+}
+
+static long psp_lplan_surfaces(real_point3d const *center, real radius, short cluster_count, short const *cluster_indices,
+	long *out, long maximum)
+{
+	struct structure_bsp *structure = global_structure_bsp_get();
+	long k, n, kept = 0;
+	int slot = -1;
+
+	if (psp_lplan_on < 0)
+	{
+		psp_lplan_on = psp_keep("lightplan");
+		psp_lplan_check = psp_lplan_on && psp_keep("lightplancheck");
+		if (psp_lplan_on)
+		{
+			long kb = psp_keep_number("lightplankb", 64);
+
+			psp_lplan_pool_cap = (kb < 8 ? 8 : kb > 128 ? 128 : kb) * 512;
+			platform_log("lights: lightplan: dynamic lights' surface plans kept across frames (the pool grows to %ld KB)%s",
+				psp_lplan_pool_cap / 512, psp_lplan_check ? "; lightplancheck" : "");
+		}
+	}
+	if (!psp_lplan_on || cluster_count > PSP_LPLAN_CLUSTERS)
+		return -1;
+	if (psp_lplan_epoch != psp_tex_map_opens || psp_lplan_structure != structure)
+	{
+		csmemset(psp_lplan, 0, sizeof(psp_lplan));
+		csmemset(psp_lplan_seen, 0, sizeof(psp_lplan_seen));
+		psp_lplan_pool_used = 0;
+		psp_lplan_epoch = psp_tex_map_opens;
+		psp_lplan_structure = structure;
+	}
+	for (k = 0; k < PSP_LPLAN_SLOTS; k++)
+		if (psp_lplan[k].used && psp_lplan[k].cluster_count == cluster_count
+			&& !memcmp(&psp_lplan[k].radius, &radius, sizeof(radius))
+			&& !memcmp(&psp_lplan[k].center, center, sizeof(*center))
+			&& !memcmp(psp_lplan[k].clusters, cluster_indices, cluster_count * sizeof(short)))
+		{
+			slot = (int)k;
+			break;
+		}
+	if (slot >= 0)
+	{
+		unsigned short const *candidate = psp_lplan_pool + psp_lplan[slot].first;
+
+		for (k = 0; k < psp_lplan[slot].count; k++)
+			if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, candidate[k]))
+				out[kept++] = candidate[k];
+		psp_lplan_hits++;
+	}
+	else
+	{
+		n = psp_light_candidates(center, radius, cluster_count, cluster_indices, out, maximum);
+		if (n < 0)
+		{
+			psp_lplan_walked++;
+			return -1;
+		}
+		/* a plan is kept the second time its light is seen as it was: a light
+		that moves never takes pool room (c20, b30 and a30's mostly do) */
+		if (n <= psp_lplan_pool_cap && psp_lplan_seen_before(center, radius, cluster_count, cluster_indices))
+		{
+			int fits = 1;
+
+			for (k = 0; k < n; k++)
+				if ((unsigned long)out[k] > 0xFFFF)
+					fits = 0;
+			if (fits)
+			{
+				/* the pool grows as plans need it; when it can grow no more,
+				every plan is let go and it starts again */
+				if (!psp_lplan_grow(n))
+				{
+					csmemset(psp_lplan, 0, sizeof(psp_lplan));
+					psp_lplan_pool_used = 0;
+					psp_lplan_next = 0;
+					fits = psp_lplan_grow(n);
+				}
+			}
+			if (fits)
+			{
+				slot = psp_lplan_next;
+				psp_lplan_next = (psp_lplan_next + 1) % PSP_LPLAN_SLOTS;
+				psp_lplan[slot].used = 1;
+				psp_lplan[slot].center = *center;
+				psp_lplan[slot].radius = radius;
+				psp_lplan[slot].cluster_count = cluster_count;
+				memcpy(psp_lplan[slot].clusters, cluster_indices, cluster_count * sizeof(short));
+				psp_lplan[slot].first = psp_lplan_pool_used;
+				psp_lplan[slot].count = n;
+				for (k = 0; k < n; k++)
+					psp_lplan_pool[psp_lplan_pool_used + k] = (unsigned short)out[k];
+				psp_lplan_pool_used += n;
+				psp_lplan_kept++;
+			}
+		}
+		/* this frame's list from the candidates either way (in place: kept <= k) */
+		for (k = 0; k < n; k++)
+			if (BIT_VECTOR_TEST_FLAG(render.environment_surface_flags, out[k]))
+				out[kept++] = out[k];
+	}
+	if (psp_lplan_check)
+	{
+		/* (static: a test's 32 KB kept off the drawing thread's stack) */
+		static long walked[MAXIMUM_LOCALLY_RENDERED_SURFACES];
+		static unsigned long marks[MAXIMUM_SURFACES_PER_STRUCTURE / LONG_BITS];
+		long m;
+
+		m = structure_visibility_build_surfaces(walked, (short)maximum, center, radius, NULL, 0, NULL,
+			cluster_count, cluster_indices);
+		if (m != kept)
+			psp_lplan_mismatches++;
+		else
+		{
+			csmemset(marks, 0, ((structure->surfaces.count + LONG_BITS - 1) / LONG_BITS) * sizeof(unsigned long));
+			for (k = 0; k < m; k++)
+				BIT_VECTOR_SET_FLAG(marks, walked[k], TRUE);
+			for (k = 0; k < kept; k++)
+				if (!BIT_VECTOR_TEST_FLAG(marks, out[k]) || (k && out[k] <= out[k - 1]))
+				{
+					psp_lplan_mismatches++;
+					break;
+				}
+		}
+	}
+	return kept;
+}
+
+/* psp_ge.c's 300-frame report */
+void psp_light_plan_report(void)
+{
+	if (psp_lplan_on > 0)
+	{
+		platform_log("lights: lightplan: %lu plans used again, %lu kept, %lu walked as before (the node walk or too many); pool %ld of %ld%s",
+			psp_lplan_hits, psp_lplan_kept, psp_lplan_walked, psp_lplan_pool_used, psp_lplan_pool_size,
+			psp_lplan_check ? (psp_lplan_mismatches ? "; lightplancheck: SOME LISTS CAME OUT DIFFERENT" : "; lightplancheck: all the same") : "");
+		if (psp_lplan_mismatches)
+			platform_log("lights: lightplancheck: %lu lists came out different", psp_lplan_mismatches);
+		psp_lplan_hits = psp_lplan_kept = psp_lplan_walked = psp_lplan_mismatches = 0;
+	}
+	if (psp_lp_on <= 0 || !psp_lp_frames)
+		return;
+	platform_log("lights: lightplancensus: %lu frames, %lu dynamic light walks (%lu of the whole visible list); "
+		"%lu with the sphere and clusters of a light the frame before, %lu of those with the same surfaces; "
+		"%lu found none, %lu filled the list; %lu surfaces a walk (most %lu)",
+		psp_lp_frames, psp_lp_calls, psp_lp_whole, psp_lp_same_in, psp_lp_same_out, psp_lp_empty, psp_lp_full,
+		psp_lp_calls > psp_lp_whole ? psp_lp_surfaces / (psp_lp_calls - psp_lp_whole) : 0, psp_lp_most);
+	psp_lp_frames = psp_lp_calls = psp_lp_whole = psp_lp_same_in = psp_lp_same_out = psp_lp_empty = psp_lp_full =
+		psp_lp_surfaces = psp_lp_most = 0;
+}
+#endif
+
+void structure_render_lightmaps(
+	void)
+{
+	profile_enter(render_structure_lightmaps_section);
+#ifdef HALO_PSP
+	psp_lp_frame();
+#endif
+"""),
+("""	profile_enter(render_structure_diffuse_lights_section);
+
+	if (cluster_indices)
+	{
+		environment_surface_count = structure_visibility_build_surfaces(
+			surface_indices,
+			MAXIMUM_LOCALLY_RENDERED_SURFACES,
+			bounding_sphere_center,
+			bounding_sphere_radius,
+			NULL,
+			0,
+			NULL,
+			cluster_count,
+			cluster_indices);
+		environment_triangles_index = structure_render_build_dynamic_triangles(
+			surface_indices,
+			environment_surface_count,
+			NULL);
+	}
+	else
+	{
+		environment_triangles_index = structure_render_globals.environment_triangles_index;
+		environment_surface_count = render.environment_surface_count;
+		environment_surface_indices = render.environment_surface_indices;
+	}
+""",
+ """	profile_enter(render_structure_diffuse_lights_section);
+
+	if (cluster_indices)
+	{
+#ifdef HALO_PSP
+		environment_surface_count = psp_lplan_surfaces(bounding_sphere_center, bounding_sphere_radius, cluster_count,
+			cluster_indices, surface_indices, MAXIMUM_LOCALLY_RENDERED_SURFACES);
+		if (environment_surface_count < 0)
+#endif
+		environment_surface_count = structure_visibility_build_surfaces(
+			surface_indices,
+			MAXIMUM_LOCALLY_RENDERED_SURFACES,
+			bounding_sphere_center,
+			bounding_sphere_radius,
+			NULL,
+			0,
+			NULL,
+			cluster_count,
+			cluster_indices);
+#ifdef HALO_PSP
+		psp_lp_note(bounding_sphere_center, bounding_sphere_radius, cluster_count, cluster_indices,
+			surface_indices, environment_surface_count);
+#endif
+		environment_triangles_index = structure_render_build_dynamic_triangles(
+			surface_indices,
+			environment_surface_count,
+			NULL);
+	}
+	else
+	{
+#ifdef HALO_PSP
+		psp_lp_note(bounding_sphere_center, bounding_sphere_radius, 0, NULL, NULL, 0);
+#endif
+		environment_triangles_index = structure_render_globals.environment_triangles_index;
+		environment_surface_count = render.environment_surface_count;
+		environment_surface_indices = render.environment_surface_indices;
+	}
 """),
 ]
 
@@ -33863,7 +34363,7 @@ static void lruv_cache_verify(
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

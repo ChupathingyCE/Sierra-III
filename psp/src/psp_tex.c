@@ -1116,12 +1116,18 @@ long psp_tex_pack_bytes(const char *name, char *path, int size)
 }
 
 /* a map's tags were loaded: its texture pack, if there is one */
+/* maps opened so far: caches keyed on a map's data (lightplan's surface
+plans, psp_fixups.py) start again when it moves */
+PSP_MAIN_SIDE unsigned long psp_tex_map_opens = 0;
+
 void psp_tex_map_opened(const char *name)
 {
 	char path[128];
 	unsigned int header[3];
 	SceUID file = -1;
 	int which;
+
+	psp_tex_map_opens++;
 
 	if (!name || !name[0])
 		return;
