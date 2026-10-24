@@ -7599,6 +7599,158 @@ static int psp_particle_kind(long definition_index)
 	}
 	return -1;
 }
+
+/* "particleprio" (a compromise, off by default; Sheepdog01 2026-10-24): a new
+free particle's fate decided at the top of effect_generate_particles, before
+its position, velocity, BSP location, visibility, lighting and sequence are
+worked out, so one left out costs almost nothing (on d20 half the particles
+asked for were thinned after paying all of that). Kept by priority: a slow
+projectile's visuals, attached particles, anything within 3 world units of
+the eye and first-person effects always; tracers by their own rule;
+impacts, sparks and flashes all while the budget is under 3/8 full, then
+only nearer as it fills (the far edge from 40 world units down to 10 at 3/4);
+smoke, dust and debris by how full the budget is times how large they look
+(radius over distance), and none past 40 units once it is 3/8 full. A
+fraction keeps that share of a definition's particles in turn (a running
+sum, no random draw). Past the budget everything but the always-kept is
+refused. Kept particles skip particle_new's own thinning. Campaign only */
+#define PSP_PRIO_SLOTS 128
+static struct { long definition_index; float sum; } psp_prio[PSP_PRIO_SLOTS];
+static int psp_prio_on = -1, psp_prio_room = 100;
+static int psp_prio_admitted = 0;
+static unsigned long psp_prio_kept = 0, psp_prio_left = 0;
+
+static int psp_particle_rank_of(long definition_index)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 25, n;
+	int keep;
+
+	for (n = 0; n < PSP_RANK_SLOTS; n++, k = (k + 1) % PSP_RANK_SLOTS)
+		if (psp_ranks[k].rank && psp_ranks[k].definition_index == definition_index)
+			return psp_ranks[k].rank;
+	/* first seen: worked out (and its one-in-N count started) by the rank's own function */
+	return psp_particle_rank(definition_index, &keep);
+}
+
+static int psp_prio_take(long definition_index, float share)
+{
+	unsigned int k = ((unsigned long)definition_index * 2654435761u) >> 25, n;
+
+	if (share >= 1.0f)
+		return 1;
+	for (n = 0; n < PSP_PRIO_SLOTS; n++, k = (k + 1) % PSP_PRIO_SLOTS)
+		if (psp_prio[k].definition_index == definition_index || !psp_prio[k].definition_index)
+		{
+			psp_prio[k].definition_index = definition_index;
+			psp_prio[k].sum += share;
+			if (psp_prio[k].sum < 1.0f)
+				return 0;
+			psp_prio[k].sum -= 1.0f;
+			return 1;
+		}
+	return share >= 0.5f;
+}
+
+int psp_particle_admit(long definition_index, real_point3d const *at, int attached, int node_relative,
+	int first_person, real radius)
+{
+#ifdef PSP_MULTIPLAYER
+	return 1;
+#else
+	int rank;
+	float fill, distance = 0.0f, share;
+
+	if (psp_prio_on < 0)
+	{
+		/* particleprioN: the rules judge fullness against N% of the budget,
+		so a smaller N leaves out more (the first PSP A/B kept more than the
+		old thinning, as near particles are no longer thinned) */
+		psp_prio_room = psp_keep_number("particleprio", 0);
+		psp_prio_on = psp_keep("particleprio") || psp_prio_room > 0;
+		if (psp_prio_room < 10 || psp_prio_room > 100)
+			psp_prio_room = 100;
+		if (psp_prio_on)
+			platform_psp_log("particles: particleprio: free particles kept by priority (rank, distance, size) before they are built, judged against %d%% of the budget", psp_prio_room);
+	}
+	if (!psp_prio_on)
+		return 1;
+	if (psp_particle_budget < 0)
+		psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
+	if (psp_particle_budget == 0x7FFF || attached || first_person)
+		return 1;
+	rank = psp_particle_rank_of(definition_index);
+	if (rank == 1)
+	{
+		psp_prio_admitted = 1;
+		return 1;
+	}
+	if (rank == 2)
+	{
+		int keep;
+
+		(void)psp_particle_rank(definition_index, &keep);
+		if (!keep)
+		{
+			psp_particles_thinned++;
+			psp_prio_left++;
+			PSP_CENSUS(definition_index, thinned);
+			return 0;
+		}
+		psp_prio_admitted = 1;
+		return 1;
+	}
+	if (!node_relative)
+	{
+		struct observer_result const *eye = observer_get_camera(0);
+		real dx = at->x - eye->position.x, dy = at->y - eye->position.y, dz = at->z - eye->position.z;
+
+		distance = sqrtf(dx * dx + dy * dy + dz * dz);
+		if (distance < 3.0f)
+		{
+			psp_prio_admitted = 1;
+			return 1;
+		}
+	}
+	fill = (float)psp_free_particles * 100.0f / ((float)psp_particle_budget * (float)psp_prio_room);
+	if (fill >= 1.0f)
+	{
+		psp_particles_refused++;
+		psp_prio_left++;
+		PSP_CENSUS(definition_index, refused);
+		return 0;
+	}
+	if (rank == 4)
+	{
+		float size = node_relative ? 1.0f : radius / (distance > 1.0f ? distance : 1.0f) / 0.05f;
+
+		share = (1.0f - fill) / 0.8f;
+		share = (share > 1.0f ? 1.0f : share) * (size < 0.2f ? 0.2f : size > 1.0f ? 1.0f : size);
+		if (!node_relative && distance > 40.0f && fill > 0.375f)
+			share = 0.0f;
+	}
+	else if (fill < 0.375f)
+		share = 1.0f;
+	else if (node_relative)
+		share = 1.0f - (fill - 0.375f) / 0.625f;
+	else
+	{
+		float far = 40.0f - (fill - 0.375f) / 0.375f * 30.0f;
+
+		far = far < 10.0f ? 10.0f : far;
+		share = distance <= 6.0f ? 1.0f : distance >= far ? 0.0f : 1.0f - (distance - 6.0f) / (far - 6.0f);
+	}
+	if (!psp_prio_take(definition_index, share))
+	{
+		psp_particles_thinned++;
+		psp_prio_left++;
+		PSP_CENSUS(definition_index, thinned);
+		return 0;
+	}
+	psp_prio_kept++;
+	psp_prio_admitted = 1;
+	return 1;
+#endif
+}
 #endif
 
 void particle_new(
@@ -7617,15 +7769,19 @@ void particle_new(
 		psp_census_on = psp_keep("particlecensus");
 	if (data->object_index == NONE)
 	{
-		int psp_rank = 3, psp_keep_this = 1;
+		int psp_rank = 3, psp_keep_this = 1, psp_pre = psp_prio_admitted;
 		long psp_budget, psp_thin_from;
 
+		psp_prio_admitted = 0;
 		if (psp_particle_budget < 0)
 			psp_particle_budget = psp_keep("fullparticles") ? 0x7FFF : PSP_PARTICLE_BUDGET;
 		if (psp_ranks_on < 0)
 			psp_ranks_on = psp_keep("particleranks");
-		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF)
+		if (psp_ranks_on > 0 && psp_particle_budget != 0x7FFF && !psp_pre)
 			psp_rank = psp_particle_rank(data->definition_index, &psp_keep_this);
+		/* kept by particleprio: only the pool's end refuses it (below) */
+		if (psp_pre)
+			psp_rank = 1;
 		if (psp_rank == 2 && !psp_keep_this)
 		{
 			psp_particles_thinned++;
@@ -7823,6 +7979,11 @@ void particle_new(
 			psp_particle_updates = 0;
 		psp_particles_live_total = psp_particles_peak = psp_particle_physics = psp_particle_us = 0;
 		psp_particles_refused = psp_particle_turns_skipped = psp_particles_thinned = 0;
+		if (psp_prio_on > 0)
+		{
+			platform_psp_log("particles: particleprio kept %lu and left out %lu before they were built", psp_prio_kept, psp_prio_left);
+			psp_prio_kept = psp_prio_left = 0;
+		}
 		{
 			char line[768];
 			int length, shown, k;
@@ -7885,6 +8046,32 @@ FIXES_36["source/effects/contrails.c#census"] = [
 #endif
 		if (contrail_index != NONE)
 		{"""),
+]
+FIXES_36["source/effects/effects.c#prio"] = [
+("""				real_point3d world_point;
+				real_vector3d world_direction;
+				real_vector3d world_velocity;
+				real emission_radius = effect_real_random_range(""",
+ """				real_point3d world_point;
+				real_vector3d world_direction;
+				real_vector3d world_velocity;
+				real emission_radius;
+
+#ifdef HALO_PSP
+				{
+					/* psp_fixups.py (particles.c, "particleprio"): kept or
+					left out before anything of it is worked out */
+					extern int psp_particle_admit(long, real_point3d const *, int, int, int, real);
+
+					if (!psp_particle_admit(particles->particle.index, &instance->matrix.position,
+						TEST_FLAG(particles->flags, _effect_particle_attached_bit), instance->node_designator != NONE,
+						instance->node_designator != NONE &&
+							TEST_FLAG(instance->node_designator, _effect_location_first_person_bit),
+						particles->radius_upper_bound))
+						continue;
+				}
+#endif
+				emission_radius = effect_real_random_range("""),
 ]
 FIXES_36["source/effects/effects.c#census"] = [
 ("""			if (effect_index != NONE)
