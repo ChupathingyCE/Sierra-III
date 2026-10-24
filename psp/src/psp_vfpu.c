@@ -174,6 +174,94 @@ static void vfpu_probe(void)
 	}
 }
 
+/* rounding check (keep.txt "vfpuround"): whether the VFPU's single-lane
+add, multiply, divide and square root round as the FPU's do, bit for bit,
+over a spread of values. A VFPU form of the engine's quaternion maths stays in
+step with the FPU's (and with multiplayer servers) only if they all agree */
+static unsigned int vfpu_lane(int op, float a, float b)
+{
+	unsigned int out, x, y;
+
+	memcpy(&x, &a, sizeof(x));
+	memcpy(&y, &b, sizeof(y));
+
+	switch (op)
+	{
+	case 0:
+		__asm__ volatile("mtv %1, S000\n" "mtv %2, S001\n" "vadd.s S002, S000, S001\n" "mfv %0, S002\n"
+			: "=r"(out) : "r"(x), "r"(y));
+		break;
+	case 1:
+		__asm__ volatile("mtv %1, S000\n" "mtv %2, S001\n" "vmul.s S002, S000, S001\n" "mfv %0, S002\n"
+			: "=r"(out) : "r"(x), "r"(y));
+		break;
+	case 2:
+		__asm__ volatile("mtv %1, S000\n" "mtv %2, S001\n" "vdiv.s S002, S000, S001\n" "mfv %0, S002\n"
+			: "=r"(out) : "r"(x), "r"(y));
+		break;
+	default:
+		__asm__ volatile("mtv %1, S000\n" "vsqrt.s S002, S000\n" "mfv %0, S002\n"
+			: "=r"(out) : "r"(x));
+		break;
+	}
+	return out;
+}
+
+static void vfpu_rounding(void)
+{
+	static const char *const names[4] = { "add", "multiply", "divide", "square root" };
+	volatile float x, y;
+	float fpu;
+	unsigned int bits, fpu_bits, first[4][3];
+	int op, trial, wrong[4] = { 0, 0, 0, 0 };
+
+	for (trial = 0; trial < 20000; trial++)
+	{
+		/* magnitudes from 1e-6 to 1e6, as node positions, quaternion parts
+		and lengths take */
+		float scale_x = 1e-6f, scale_y = 1e-6f;
+		int k, steps_x = (int)((seed >> 3) % 13), steps_y;
+
+		(void)random_value(1.0f);
+		steps_y = (int)((seed >> 7) % 13);
+		for (k = 0; k < steps_x; k++)
+			scale_x *= 10.0f;
+		for (k = 0; k < steps_y; k++)
+			scale_y *= 10.0f;
+		x = random_value(scale_x);
+		y = random_value(scale_y);
+		if (y == 0.0f)
+			y = 1.0f;
+		for (op = 0; op < 4; op++)
+		{
+			float a = x, b = y;
+
+			if (op == 3)
+				a = fabsf(a);
+			fpu = op == 0 ? a + b : op == 1 ? a * b : op == 2 ? a / b : __builtin_sqrtf(a);
+			memcpy(&fpu_bits, &fpu, sizeof(fpu_bits));
+			bits = vfpu_lane(op, a, b);
+			if (bits != fpu_bits)
+			{
+				if (!wrong[op])
+				{
+					memcpy(&first[op][0], &a, 4);
+					memcpy(&first[op][1], &b, 4);
+					first[op][2] = bits ^ fpu_bits;
+				}
+				wrong[op]++;
+			}
+		}
+	}
+	for (op = 0; op < 4; op++)
+		platform_log("VFPU rounding: %s differs from the FPU in %d of 20000%s",
+			names[op], wrong[op], wrong[op] ? "" : " (bit for bit the same)");
+	for (op = 0; op < 4; op++)
+		if (wrong[op])
+			platform_log("VFPU rounding: first %s difference: %08x, %08x: bits %08x apart",
+				names[op], first[op][0], first[op][1], first[op][2]);
+}
+
 /* start-up: 2000 random products both ways; the VFPU stays on if they agree
 to within a few last bits relative to the values' size */
 void psp_vfpu_initialize(void)
@@ -221,6 +309,8 @@ void psp_vfpu_initialize(void)
 	}
 	if (psp_keep("vfputest"))
 		vfpu_probe();
+	if (psp_keep("vfpuround"))
+		vfpu_rounding();
 	/* and the time each takes, for the log */
 	/* chained (each product feeds the next, as a skeleton's do), so the
 	compiler can't drop the loop */
