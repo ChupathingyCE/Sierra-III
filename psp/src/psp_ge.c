@@ -398,6 +398,35 @@ static PSP_MAIN_SIDE unsigned long inflight_handed = 0, inflight_me_failed = 0;
 static volatile unsigned int inflight_stall_word[16] __attribute__((aligned(64))); /* [0] address, [1] id: written uncached */
 #define INFLIGHT_STALL ((volatile unsigned int *)(0x40000000u | (unsigned int)inflight_stall_word))
 static void inflight_hand_over(void);
+/* "mechunk" (lever MECHUNK, docs/design_mechunk.md): with geinflight, gemeon
+and geshow3, the frame is handed to the Media Engine in pieces as it is
+written down, not whole at its end, so the ME draws it beside the record
+instead of after it while the main CPU sleeps (a10's armoury: the record ~34
+ms, then 27 ms asleep for the ME's 30). One job a frame, with a moving end:
+the main CPU writes its cache back and publishes how far the records are
+whole (a record is whole once the next one is taken); the ME replays up to
+there, drops its cache, looks again, and leaves at the final mark (the frame's
+end). Only while every texture the published records bind was marked this
+frame (psp_tex.c keeps a marked texture for the frame, so the main CPU's
+loads meanwhile never move one the ME is binding); the first that wasn't,
+or a call that runs at once, stops the publishing for the rest of the frame,
+which then goes over whole at its end as before. The gate: a frame chunks
+only when the last one kept the main CPU waiting for the ME. Off by default */
+static PSP_MAIN_SIDE int chunk_on = -1, chunk_all = 0, chunk_frame = 0, chunk_stopped = 0;
+static PSP_MAIN_SIDE unsigned int chunk_words = 2048, chunk_published = 0, chunk_gate_us = 2000;
+static PSP_MAIN_SIDE unsigned int chunk_wait_last_us = 0;
+static PSP_MAIN_SIDE unsigned long chunk_frames = 0, chunk_gated = 0, chunk_publishes = 0, chunk_publish_us = 0,
+	chunk_stops_texture = 0, chunk_stops_drain = 0, chunk_simulated = 0;
+/* [0] the records' end published (words), [1] the final mark, [2] how far the
+ME has replayed, [3] the ME's looks: written uncached */
+static volatile unsigned int chunk_word[16] __attribute__((aligned(64)));
+#define CHUNK_LINE ((volatile unsigned int *)(0x40000000u | (unsigned int)chunk_word))
+static void chunk_publish(int final);
+static void chunk_piece(void);
+static PSP_MAIN_SIDE int chunk_out = 0; /* the frame out with the ME went in pieces */
+extern int psp_tex_chunking, psp_tex_chunk_missed; /* psp_tex.c */
+extern int psp_me_simulated(void); /* psp_me.c */
+extern void psp_me_touch(int which);
 /* "geshow2" (with geinflight and gemeon): the frame shown off the game
 thread. Without it the game thread, at the next frame's first call, waits for
 the ME to end frame N and then for the GE's tail, the swap and the list's
@@ -884,6 +913,8 @@ static defer_word *defer_take(int kind, unsigned int words)
 	}
 	if (!defer_used && inflight_room)
 		(void)psp_tex_inflight_room(&inflight_room_generation);
+	if (chunk_frame && !chunk_stopped && defer_used - chunk_published >= chunk_words)
+		chunk_piece();
 	at = defer_base + defer_used;
 	at->u = (unsigned int)kind | (1 + words) << 8;
 	defer_used += 1 + words;
@@ -1657,10 +1688,46 @@ unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results)
 	Simulated (args[3] 0), the main CPU runs it: marked as before */
 	if (!args[3])
 		psp_me_context = args[2] ? args[2] : 1;
-	replay_inflight = args[4] == 2;
-	defer_replay((const defer_word *)args[0], args[1], (int)args[3]);
+	replay_inflight = args[4] >= 2;
+	if (args[4] == 3 && args[3])
+	{
+		/* mechunk: what the main CPU has published, as it publishes it,
+		until the final mark; the cache dropped before each piece (what it
+		read of the line the last piece ended in may be older than the
+		records now there). Audio and the ring served while it waits */
+		extern void psp_me_cache_refresh(void);
+		extern int psp_me_stop_asked(void);
+		unsigned int at = 0, looks = 0;
+
+		for (;;)
+		{
+			/* the final mark first: the main CPU writes the end before it,
+			so an end read after a final mark is the last */
+			unsigned int final = CHUNK_LINE[1], end = CHUNK_LINE[0];
+
+			if (end > at)
+			{
+				psp_me_cache_refresh();
+				defer_replay((const defer_word *)args[0] + at, end - at, 1);
+				at = end;
+				CHUNK_LINE[2] = at;
+				continue;
+			}
+			if (final || psp_me_stop_asked())
+				break;
+			looks++;
+			inflight_serve();
+		}
+		CHUNK_LINE[3] = looks;
+		results[0] = at;
+	}
+	else
+	{
+		/* mechunk simulated (the emulator): the published piece, run here */
+		defer_replay((const defer_word *)args[0] + (args[4] == 3 ? args[5] : 0), args[1], (int)args[3]);
+		results[0] = args[1];
+	}
 	replay_inflight = 0;
-	results[0] = args[1];
 	/* build 118: gemeoverlap (args[4]): the newest stall address the run
 	kept goes back in the slot (uncached), for the main CPU to pass on, and
 	is forgotten here: only the ME writes stall_me_address meanwhile */
@@ -1685,7 +1752,10 @@ static int defer_on_me(void)
 	extern int psp_me_run(int which, unsigned int type, const unsigned int *args, int arg_count, unsigned int *results,
 		unsigned int first_look_us);
 	extern unsigned int psp_me_last_job_us(int which);
-	unsigned int args[3], results[8], start;
+	/* all six words: the slot keeps a word not given from the job before,
+	and a mode word (args[4]) left from a frame in flight or in pieces would
+	be read as this job's */
+	unsigned int args[6] = { 0 }, results[8], start;
 
 	if (defer_me_on < 0)
 		defer_me_on = psp_keep("gemeon");
@@ -1698,7 +1768,7 @@ static int defer_on_me(void)
 	args[1] = defer_used;
 	args[2] = defer_me_thread;
 	start = sceKernelGetSystemTimeLow();
-	if (!psp_me_run(1 /* the render slot */, 4 /* ME_JOB_GE */, args, 3, results, 20))
+	if (!psp_me_run(1 /* the render slot */, 4 /* ME_JOB_GE */, args, 6, results, 20))
 	{
 		defer_me_failed++;
 		return 0;
@@ -1893,16 +1963,19 @@ static int inflight_forwarder(SceSize args, void *argp)
 	return 0;
 }
 
-static void inflight_hand_over(void)
+/* mode 2: the whole frame; 3 (mechunk): the frame's records from word
+"from" on, and, on the ME, whatever more is published until the final mark.
+1 if the ME took it */
+static int inflight_hand_over_from(unsigned int from, unsigned int mode)
 {
-	unsigned int args[5];
+	unsigned int args[6];
 
 	if (defer_me_on < 0)
 		defer_me_on = psp_keep("gemeon");
 	if (!defer_me_on || !psp_me_running() || !defer_used)
-		return; /* carried out on the main CPU at the next frame's first call */
+		return 0; /* carried out on the main CPU at the next frame's first call */
 	if (inflight_room_lost())
-		return;
+		return 0;
 	if (inflight_thread < 0)
 	{
 		if (psp_keep("mepoll"))
@@ -1937,7 +2010,7 @@ static void inflight_hand_over(void)
 				(unsigned int)inflight_thread);
 			defer_me_on = 0;
 			show2_on = show3_on = 0;
-			return;
+			return 0;
 		}
 		if (show3_on)
 		{
@@ -1967,26 +2040,168 @@ static void inflight_hand_over(void)
 	INFLIGHT_STALL[0] = 0;
 	inflight_forwarded_stall = 0;
 	args[0] = (unsigned int)defer_buffer;
-	args[1] = defer_used;
+	/* mechunk on the ME: the job reads its end from the published word */
+	args[1] = mode == 3 && !psp_me_simulated() ? 0 : defer_used - from;
 	args[2] = defer_me_thread;
 	args[3] = 0; /* (psp_me.c sets it: on the ME or not) */
-	args[4] = 2; /* the newest stall address back in the results, and published as it moves */
+	args[4] = mode; /* the newest stall address back in the results, and published as it moves */
+	args[5] = from;
+	if (mode == 3)
+	{
+		CHUNK_LINE[1] = 0;
+		CHUNK_LINE[2] = 0;
+		__asm__ __volatile__("sync");
+		CHUNK_LINE[0] = defer_used;
+	}
 	psp_me_window[0] = 1;
 	inflight_me_out = 1;
 	/* simulated (the emulator), the job runs inside psp_me_submit, here */
 	defer_replaying = 1;
-	if (!psp_me_submit(ME_SLOT_RENDER, ME_JOB_GE, args, 5))
+	if (!psp_me_submit(ME_SLOT_RENDER, ME_JOB_GE, args, 6))
 	{
 		defer_replaying = 0;
 		inflight_me_out = 0;
 		psp_me_window[0] = 0;
-		return;
+		return 0;
 	}
 	defer_replaying = 0;
 	me_out = 1;
 	me_wrote = 1;
 	inflight_handed++;
 	sceKernelWakeupThread(inflight_thread);
+	return 1;
+}
+
+static void inflight_hand_over(void)
+{
+	(void)inflight_hand_over_from(0, 2);
+}
+
+/* mechunk: the records written so far handed on (mode 0), or the frame's
+final mark (1, its end; 2, a call that runs at once). On the ME the first
+piece hands the job over and each later one moves the published end; in the
+emulator (no ME code runs) each piece is carried out here as the simulated
+ME would, and the final mark hands over the rest as a job, so the frame
+ends, and its newest stall address reaches the GE, as before */
+static void chunk_publish(int mode)
+{
+	unsigned int mark = sceKernelGetSystemTimeLow();
+	int simulated = psp_me_simulated();
+
+	if (!chunk_frame)
+		return;
+	if (mode)
+		chunk_frame = 0;
+	if (simulated)
+	{
+		if (mode && !chunk_published)
+		{
+			/* nothing went in pieces: the whole frame as before */
+			if (mode == 1)
+				inflight_hand_over();
+			return;
+		}
+		if (mode)
+		{
+			(void)inflight_hand_over_from(chunk_published, 3);
+			chunk_published = 0;
+			return;
+		}
+		if (!chunk_published)
+		{
+			inflight_me_out = 1;
+			psp_me_window[0] = 1;
+		}
+		defer_replaying = 1;
+		psp_me_context = defer_me_thread ? defer_me_thread : 1;
+		replay_inflight = 1;
+		defer_replay(defer_buffer + chunk_published, defer_used - chunk_published, 0);
+		replay_inflight = 0;
+		psp_me_context = 0;
+		defer_replaying = 0;
+		chunk_published = defer_used;
+		chunk_simulated++;
+		chunk_publishes++;
+		return;
+	}
+	if (!inflight_me_out)
+	{
+		/* the frame's first piece (a final mark with none before: the whole
+		frame, as before; a call that runs at once: carried out here) */
+		if (mode == 1)
+			inflight_hand_over();
+		if (mode)
+			return;
+		if (!inflight_hand_over_from(0, 3))
+		{
+			chunk_frame = 0;
+			return;
+		}
+	}
+	else
+	{
+		sceKernelDcacheWritebackAll();
+		__asm__ __volatile__("sync");
+		CHUNK_LINE[0] = defer_used;
+		if (mode)
+		{
+			__asm__ __volatile__("sync");
+			CHUNK_LINE[1] = 1;
+		}
+		psp_me_touch(ME_SLOT_RENDER);
+	}
+	chunk_published = mode ? 0 : defer_used;
+	chunk_publishes++;
+	chunk_publish_us += sceKernelGetSystemTimeLow() - mark;
+}
+
+/* a piece, unless a texture the records bind wasn't marked this frame: from
+there the rest of the frame waits for its end (psp_tex.c may load over a
+texture that isn't marked while the ME runs) */
+static void chunk_piece(void)
+{
+	if (psp_tex_chunk_missed)
+	{
+		chunk_stops_texture++;
+		chunk_stopped = 1;
+		return;
+	}
+	chunk_publish(0);
+}
+
+/* whether the next frame goes in pieces: "mechunk" with the frame in flight
+on the ME and shown by geshow3; and the gate: the main CPU waited for the ME
+past mechunkgateN ms (2) at the last frame not sent in pieces, which every
+64th frame is, to look again ("mechunkall": every frame) */
+static int chunk_wanted(void)
+{
+	static PSP_MAIN_SIDE unsigned int frames = 0;
+	extern int psp_keep_number(const char *prefix, int fallback);
+
+	if (chunk_on < 0)
+	{
+		chunk_on = psp_keep("mechunk") && !psp_keep("inflighttextold") && !psp_keep("gemeoverlap") &&
+			!psp_keep("mebench");
+		chunk_all = psp_keep("mechunkall");
+		chunk_words = (unsigned int)psp_keep_number("mechunkkb", 8);
+		chunk_words = (chunk_words < 4 ? 4 : chunk_words > 32 ? 32 : chunk_words) * 1024 / sizeof(defer_word);
+		chunk_gate_us = (unsigned int)psp_keep_number("mechunkgate", 2) * 1000;
+		if (chunk_on)
+			platform_log("GE: mechunk: the frame handed to the ME in pieces of %u KB as it is written%s",
+				(unsigned int)(chunk_words * sizeof(defer_word) / 1024),
+				chunk_all ? " (mechunkall: every frame)" : "; gated on the main CPU's wait for the ME");
+	}
+	if (!chunk_on || !inflight_on || defer_me_on <= 0 || !show3_on || me_overlap || !pretouch_on)
+		return 0;
+	frames++;
+	if (chunk_all)
+		return 1;
+	if ((frames & 63) == 0)
+		return 0;
+	if (chunk_wait_last_us > chunk_gate_us)
+		return 1;
+	chunk_gated++;
+	return 0;
 }
 
 /* the frame back from the Media Engine: waited for, the GE given the rest,
@@ -1994,9 +2209,13 @@ what the ME wrote read fresh, and the main CPU's part of its end */
 static void inflight_wait_me(void)
 {
 	unsigned long failed = defer_me_failed;
+	unsigned int wait_mark = sceKernelGetSystemTimeLow();
+	int was_chunked = chunk_out;
 
 	inflight_me_out = 0;
 	defer_wait_me(); /* the last stall address passed on with it */
+	if (!was_chunked)
+		chunk_wait_last_us = sceKernelGetSystemTimeLow() - wait_mark;
 	psp_me_window[0] = 0;
 	sceKernelDcacheWritebackInvalidateAll();
 	{
@@ -2131,7 +2350,13 @@ void psp_ge_inflight_room_resume(void)
 static void defer_drain(void)
 {
 	/* geinflight: a call that runs at once while the frame is out with the
-	Media Engine (a text update, a full buffer) waits for it */
+	Media Engine (a text update, a full buffer) waits for it; a frame going
+	over in pieces gets its final mark first, so the ME's job ends */
+	if (chunk_frame)
+	{
+		chunk_stops_drain++;
+		chunk_publish(2);
+	}
 	if (inflight_me_out)
 	{
 		inflight_wait_me();
@@ -12044,6 +12269,8 @@ static int rso_send(unsigned int *entry)
 	}
 	if (!defer_used && inflight_room)
 		(void)psp_tex_inflight_room(&inflight_room_generation);
+	if (chunk_frame && !chunk_stopped && defer_used - chunk_published >= chunk_words)
+		chunk_piece();
 	memcpy(defer_base + defer_used, record, words * sizeof(defer_word));
 	defer_used += words;
 	defer_records += entry[RSO_RECORDS];
@@ -22300,9 +22527,24 @@ void psp_ge_frame_end(void)
 		inflight_pending = 1;
 		window_main_done = 0;
 		inflight_window_written = 0;
-		inflight_hand_over();
+		chunk_out = chunk_frame;
+		if (chunk_frame)
+			chunk_publish(1);
+		else
+			inflight_hand_over();
+		chunk_stopped = 0;
+		chunk_frame = chunk_wanted();
+		chunk_published = 0;
+		psp_tex_chunking = chunk_frame;
+		psp_tex_chunk_missed = 0;
+		if (chunk_frame)
+			chunk_frames++;
 		return;
 	}
+	/* (a frame not in flight goes in no pieces) */
+	if (chunk_frame)
+		chunk_publish(2);
+	psp_tex_chunking = 0;
 	GE_DEFER_DRAIN(); /* build 112: gedefer */
 	/* the ring's one producer, between frames: where the ME can be restarted
 	after a sleep (a slot job still out puts it off to a later frame end) */
@@ -22961,6 +23203,16 @@ static void frame_end_show(void)
 						defer_me_jobs, defer_me_failed, defer_me_jobs ? defer_me_wait_us / defer_me_jobs : 0,
 						defer_me_jobs ? defer_me_own_us / defer_me_jobs : 0);
 				defer_me_jobs = defer_me_failed = defer_me_wait_us = defer_me_own_us = 0;
+				if (chunk_on > 0)
+				{
+					platform_log("GE: mechunk: %lu frames in pieces, %lu gated off (the last wait %u us); %lu pieces (%lu run here, simulated), "
+						"%lu us a piece to publish; stopped early for a texture %lu, for a call that ran at once %lu; the ME's looks for more %u",
+						chunk_frames, chunk_gated, chunk_wait_last_us, chunk_publishes, chunk_simulated,
+						chunk_publishes ? chunk_publish_us / chunk_publishes : 0, chunk_stops_texture, chunk_stops_drain,
+						CHUNK_LINE[3]);
+					chunk_frames = chunk_gated = chunk_publishes = chunk_simulated = chunk_publish_us = 0;
+					chunk_stops_texture = chunk_stops_drain = 0;
+				}
 				/* build 118: gemeoverlap. waited: the main CPU's time in
 				psp_me_finish a half (simulated: the half's own time) */
 				if (me_overlap_runs || me_overlap_alone)
