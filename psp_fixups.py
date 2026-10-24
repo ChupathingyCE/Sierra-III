@@ -31396,7 +31396,7 @@ static void psp_lfs_count_directions(
 # and flags. Objects moving into the sphere change what the caller does with
 # the leaves (the cluster object lists are walked after this, every time),
 # not the BSP's answer. So each biped keeps its last few questions with their
-# answers in a tail of its own object datum (4 spheres, 2 rays: no table and
+# answers in a tail of its own object datum (8 spheres, 2 rays: no table and
 # no heap; the tail moves with the datum when the object pool compacts, is
 # zeroed when a biped is made and whenever a game state is loaded). A
 # question is the key's 7 words (a ray's, 11) compared bit for bit, with the breakable flags as a generation that moves
@@ -31409,7 +31409,7 @@ static void psp_lfs_count_directions(
 # match walks too, compares, uses the walk's answer, and the log counts any
 # difference
 FIXES_BSPR = {}
-# (the tail: the engine's biped datum is 0x480 bytes; 640 more hold the kept
+# (the tail: the engine's biped datum is 0x480 bytes; 1,088 more hold the kept
 # answers, set at each map's start, so the word off costs the pool nothing)
 FIXES_BSPR["source/objects/object_types.c#bspsame"] = [
 ("""	struct object_type_definition *definition = first_object_type_definition;
@@ -31424,7 +31424,7 @@ FIXES_BSPR["source/objects/object_types.c#bspsame"] = [
 		the engine's own size and nothing is kept */
 		int psp_keep(const char *name);
 
-		biped_data_definition.game_datum_size = psp_keep("bspsame") ? 0x480 : 0x480 + 640;
+		biped_data_definition.game_datum_size = psp_keep("bspsame") ? 0x480 : 0x480 + 1088;
 	}
 #endif
 """),
@@ -31452,7 +31452,7 @@ boolean collision_bsp_test_sphere(
 #include "objects/objects.h"
 #include "objects/object_types.h"
 extern int psp_sphere_any;
-#define PSP_BSPR_SPHERES 4
+#define PSP_BSPR_SPHERES 8
 #define PSP_BSPR_RAYS 2
 #define PSP_BSPR_SPHERE_LIST 36 /* surfaces, edges, vertices and leaves together */
 #define PSP_BSPR_RAY_LEAVES 16
@@ -31488,13 +31488,13 @@ struct psp_bspr_state
 	struct psp_bspr_sphere_slot spheres[PSP_BSPR_SPHERES];
 	struct psp_bspr_ray_slot rays[PSP_BSPR_RAYS];
 };
-/* the 640 bytes object_types.c adds to the biped datum */
-typedef char psp_bspr_state_fits[sizeof(struct psp_bspr_state) <= 640 ? 1 : -1];
+/* the 1,088 bytes object_types.c adds to the biped datum */
+typedef char psp_bspr_state_fits[sizeof(struct psp_bspr_state) <= 1088 ? 1 : -1];
 /* the biped being updated (bipeds.c): its header's datum pointer, NULL
 outside biped_update. Read through it at each question, so a datum moved by
 a compaction is still found; its tail starts 0x480 bytes in */
 void *const *psp_bspr_datum_at;
-static int psp_bspr_on = -1, psp_bspr_check = 0;
+static int psp_bspr_on = -1, psp_bspr_check = 0, psp_bspr_shift = 29;
 /* the breakable flags last seen, and the generation every key carries
 (never 0, so a zeroed tail matches nothing) */
 static unsigned long psp_bspr_flags[PSP_BSPR_FLAG_WORDS], psp_bspr_generation = 1;
@@ -31528,8 +31528,8 @@ void psp_bspr_forget_loaded(void)
 	psp_bspr_forget();
 	object_iterator_new(&iterator, _object_mask_biped, 0);
 	while ((object = (struct object_datum *)object_iterator_next(&iterator)) != NULL)
-		if (object_header_get(iterator.index)->data_size >= 0x480 + 640)
-			csmemset((byte *)object + 0x480, 0, 640);
+		if (object_header_get(iterator.index)->data_size >= 0x480 + 1088)
+			csmemset((byte *)object + 0x480, 0, 1088);
 }
 
 static unsigned long psp_bspr_bits(real value)
@@ -31589,6 +31589,7 @@ static struct psp_bspr_state *psp_bspr_state_get(void)
 	{
 		psp_bspr_on = !psp_keep("bspsame");
 		psp_bspr_check = psp_keep("bspsamecheck");
+		psp_bspr_shift = psp_keep("bspr4") ? 30 : 29;
 	}
 	return psp_bspr_on && psp_bspr_datum_at ? (struct psp_bspr_state *)((byte *)*psp_bspr_datum_at + 0x480) : NULL;
 }
@@ -31624,7 +31625,9 @@ static boolean psp_bspr_sphere_take(struct collision_bsp const *bsp, short break
 	key->generation = generation;
 	key->count = breakable_surface_count;
 	/* the same question lands in the same one of the biped's slots each tick */
-	w = &state->spheres[((((unsigned long)bsp >> 4) ^ key->x ^ (key->y >> 7) ^ key->radius) * 0x9E3779B1UL) >> 30];
+	/* 8 slots (a standing biped asks ~7 spheres a tick on a30: 4 evicted each
+	other, coll1 40137468615); "bspr4": the first 4 only, as before */
+	w = &state->spheres[((((unsigned long)bsp >> 4) ^ key->x ^ (key->y >> 7) ^ key->radius) * 0x9E3779B1UL) >> psp_bspr_shift];
 	if (w->bsp == key->bsp && w->x == key->x && w->y == key->y && w->z == key->z &&
 		w->radius == key->radius && w->generation == key->generation && w->count == key->count)
 	{
@@ -31884,7 +31887,7 @@ FIXES_BSPR["source/units/bipeds.c#bspsame"] = [
 	{
 		struct object_header_datum *psp_bspr_header = object_header_get(biped_index);
 
-		psp_bspr_datum_at = psp_bspr_header->data_size >= 0x480 + 640 ? (void *const *)&psp_bspr_header->datum : NULL;
+		psp_bspr_datum_at = psp_bspr_header->data_size >= 0x480 + 1088 ? (void *const *)&psp_bspr_header->datum : NULL;
 	}
 #endif
 	biped_verify_object_vectors(biped_index, "pre-update");"""),
@@ -31935,11 +31938,11 @@ FIXES_BSPR["source/objects/objects.c#bspsame"] = [
 ("""	rules->count = (header->data_size < 2048 ? header->data_size : 2048) / 4;""",
  """	rules->count = (header->data_size < 2048 ? header->data_size : 2048) / 4;
 	rules->tail_first = rules->tail_end = -1;
-	if (header->type == _object_type_biped && header->data_size >= 0x480 + 640)
+	if (header->type == _object_type_biped && header->data_size >= 0x480 + 1088)
 	{
 		rules->tail_first = 0x480 / 4;
-		rules->tail_end = (0x480 + 640) / 4;
-		rules->count = (header->data_size < 2048 + 640 ? header->data_size : 2048 + 640) / 4;
+		rules->tail_end = (0x480 + 1088) / 4;
+		rules->count = (header->data_size < 2048 + 1088 ? header->data_size : 2048 + 1088) / 4;
 	}"""),
 ("""		(index >= rules->colours_first && index < rules->colours_end))
 		return 0;""",
