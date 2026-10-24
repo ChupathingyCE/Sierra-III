@@ -1074,7 +1074,13 @@ static const struct
 	/* a light's gel lit by its six faces, so the alert lights' beams reach the
 	walls (psp_fixups.py, gelfaces); on provisionally (Sheepdog01, 2026-10-24) while
 	its cost in a10's hallway (+8-15%) is weighed */
-	{ "gelfaces", "nogelfaces" }, PSP_RELEASE_DEFAULTS
+	{ "gelfaces", "nogelfaces" },
+	/* the frame handed to the ME in pieces as it is written, gated on the main
+	CPU's wait for the ME (psp_ge.c, mechunk): where the frame waits for the
+	ME the replay runs beside the writing (a30 7.7 -> 12.7 fps, d20 11.4 ->
+	13.7 on the PSP-3000's ladder120); where it doesn't, the gate leaves the
+	frame whole (b30 6.5 -> 6.6) */
+	{ "mechunk", "mechunkoff" }, PSP_RELEASE_DEFAULTS
 };
 static char keep_defaults_added[KEEP_DEFAULTS_ROOM] = "";
 
