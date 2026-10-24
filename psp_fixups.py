@@ -24846,13 +24846,13 @@ void psp_sound_playing_census(void)
 ]
 FIXES_RECON["source/cache/xbox_sound_cache.c#soundclass"] = [
 ("""		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
-}""", """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
+""", """		psp_sound_cache_load_bytes / 1024, psp_sound_cache_largest / 1024, psp_sound_cache_failures);
 	{
 		extern void psp_sound_playing_census(void);
 
 		psp_sound_playing_census();
 	}
-}"""),
+"""),
 ]
 FIXES_RECON["source/hs/hs.c#scriptsdump"] = [
 ("""	csmemset(hs_syntax_nodes_marked, 0, sizeof(hs_syntax_nodes_marked));
