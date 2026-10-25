@@ -8662,6 +8662,8 @@ static unsigned long streams_wanted_total = 0, streams_wanted_dropped = 0;
 
 /* a level copy already built, or NULL; changes nothing (with the shadows) */
 static struct level_stream *level_stream_find(const void *vertices);
+/* "levelpretouch" (psp_ge_draw_level): copies built as their draws were written down, and those without room */
+static unsigned long level_pretouches = 0, level_pretouch_missed = 0;
 
 /* a wall's stencil layers given from its copy's origin: they lie on the
 wall's pieces, drawn with depth EQUAL, so they take the same snapped
@@ -10524,6 +10526,31 @@ void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int 
 {
 	GE_PRETOUCH(base_key, TXPT_LEVEL_BASE);
 	GE_PRETOUCH(lightmap_key, TXPT_LIGHTMAP);
+	/* "levelpretouch" (on; levelpretouchoff): a level draw without its copy
+	gets it built now, as its record is written. The Media Engine's replay
+	can't build one: it asked for it at the frame's end and left the draw out
+	of that frame (every level draw of the frame after a BSP switch, B16; a
+	piece of the ocean gone for a frame, B21). Only a missing copy settles the
+	frame in flight, so frames whose copies are all built pay one lookup a
+	draw (geopretouch142 built on every draw and cost 0.8-2.2 ms) */
+	if (PRETOUCHING() && vertices && vertex_count > 0)
+	{
+		static int level_pretouch = -1;
+
+		if (level_pretouch < 0)
+			level_pretouch = !psp_keep("levelpretouchoff");
+		if (level_pretouch && !level_stream_find(vertices))
+		{
+			if (inflight_room_away)
+				inflight_room_park();
+			if (inflight_pending)
+				inflight_sync();
+			stream_asked_texture = base_key;
+			level_pretouches++;
+			if (!level_stream_get(vertices, lightmap_vertices, vertex_count))
+				level_pretouch_missed++;
+		}
+	}
 	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
 		lightmap_key, alpha_tested)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -23482,6 +23509,9 @@ static void frame_end_show(void)
 				if (walls_wanted_total || walls_wanted_dropped)
 					platform_log("GE: gemesim: %lu see-through level triangles wanted asked by the Media Engine's work and asked at the frame's end, %lu more than the list held",
 						walls_wanted_total, walls_wanted_dropped);
+				if (level_pretouches)
+					platform_log("GE: levelpretouch: %lu level copies built as their draws were written down, %lu without room",
+						level_pretouches, level_pretouch_missed);
 				if (model_pretouches)
 					platform_log("GE: modelpretouch: %lu model buffers converted as their draws were written down, %lu without room",
 						model_pretouches, model_pretouch_missed);
