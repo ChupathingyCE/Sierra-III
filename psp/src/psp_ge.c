@@ -9797,9 +9797,15 @@ static void frame_level_record(const struct level_stream *stream, const unsigned
 planar colour, its alpha the density at each vertex, blended over what the
 draw's passes left where they drew (depth equal), in the positions those
 passes used (the 16-bit copy or the floats) so the depths agree. The pieces
-cut at the near plane are left out: they lie at the eye, above the water
-with the eye above it but for the shallows underfoot. Counted with
-"oceanfogold" too, so both sides of an A/B say what the pass would cost */
+cut at the near or guard planes are fogged too, in the floats draw_pass drew
+them with: a large seabed triangle starting under the eye and running out
+(b30's flight, looking out of the Pelican's back) was cut, its pieces left
+unfogged, and the bare seabed showed with a hard edge against its fogged
+neighbours (B21). "submergedcutold": the pieces left out, as before.
+Counted with "oceanfogold" too, so both sides of an A/B say what the pass
+would cost */
+static int submerged_cut_old = -1;
+static unsigned long submerged_cut_vertices = 0;
 static void submerged_pass(const struct level_stream *stream, const unsigned short *draw, long kept_count,
 	unsigned int lowest, unsigned int highest)
 {
@@ -9808,7 +9814,9 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 	unsigned int start, i, count;
 	int axis, compact = compact_now != NULL;
 
-	if (kept_count <= 0)
+	if (submerged_cut_old < 0)
+		submerged_cut_old = psp_keep("submergedcutold") != 0;
+	if (kept_count <= 0 && (submerged_cut_old || cut_vertices_count <= 0))
 		return;
 	/* the box's corner farthest below the plane (world positions) */
 	for (axis = 0; axis < 3; axis++)
@@ -9821,7 +9829,8 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 	if (eye_height < 0.0f)
 		return;
 	start = ge_clock();
-	count = highest - lowest + 1;
+	/* a draw whose triangles were all cut has no kept range */
+	count = kept_count > 0 ? highest - lowest + 1 : 0;
 	submerged_draws++;
 	submerged_triangles += kept_count;
 	submerged_vertices += count;
@@ -9829,9 +9838,9 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 	{
 		struct submerged_float { unsigned int color; float x, y, z; } *floats = NULL;
 		struct submerged_short { unsigned int color; short x, y, z, pad; } *shorts = NULL;
-		void *taken = list_take(count * (compact ? sizeof(*shorts) : sizeof(*floats)));
+		void *taken = count ? list_take(count * (compact ? sizeof(*shorts) : sizeof(*floats))) : NULL;
 
-		if (!taken)
+		if (count && !taken)
 		{
 			submerged_dropped++;
 			submerged_us += ge_clock() - start;
@@ -9881,16 +9890,53 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 		sceGuDepthMask(GU_TRUE);
 		sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
 		ge_blend(1);
-		if (compact)
+		if (kept_count > 0 && compact)
 		{
 			compact_begin(0);
 			sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				(int)kept_count * 3, draw, shorts - lowest);
 			compact_end();
 		}
-		else
+		else if (kept_count > 0)
 			sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				(int)kept_count * 3, draw, floats - lowest);
+		/* the cut pieces, fogged the same way, at the floats draw_pass drew them at */
+		if (!submerged_cut_old && cut_vertices_count > 0 && cut_vertices_prepared[0])
+		{
+			struct submerged_float *pieces = list_take(cut_vertices_count * (int)sizeof(*pieces));
+			int k;
+
+			if (pieces)
+			{
+				for (k = 0; k < cut_vertices_count; k++)
+				{
+					const struct ge_vertex *v = &cut_vertices_prepared[0][k];
+					float depth = d - (n[0] * v->x + n[1] * v->y + n[2] * v->z), density;
+					unsigned int alpha = 0;
+
+					if (depth > 0.0f)
+					{
+						float dx = v->x - level_eye[0], dy = v->y - level_eye[1], dz = v->z - level_eye[2];
+						float distance = sqrtf(dx * dx + dy * dy + dz * dz), a, b;
+
+						if (submerged_segment)
+							distance *= depth / (depth + eye_height);
+						a = depth * submerged_inverse_depth;
+						b = distance * submerged_inverse_distance;
+						density = submerged_density * (a < 1.0f ? a : 1.0f) * (b < 1.0f ? b : 1.0f);
+						alpha = (unsigned int)(density * 255.0f + 0.5f);
+					}
+					pieces[k].color = (alpha << 24) | submerged_color;
+					pieces[k].x = v->x;
+					pieces[k].y = v->y;
+					pieces[k].z = v->z;
+				}
+				sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, cut_vertices_count, NULL, pieces);
+				submerged_cut_vertices += (unsigned long)cut_vertices_count;
+			}
+			else
+				submerged_dropped++;
+		}
 		ge_blend(0);
 		sceGuDepthMask(GU_FALSE);
 		sceGuDepthFunc(GU_GEQUAL);
@@ -23230,10 +23276,12 @@ static void frame_end_show(void)
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
 		if (submerged_windows)
-			platform_log("GE: ocean fog, last 300 frames: windows with planar fog %lu; level draws below the plane with the eye above %lu, triangles %lu, vertices %lu, %lu us on the CPU%s; left out (list full) %lu",
+			platform_log("GE: ocean fog, last 300 frames: windows with planar fog %lu; level draws below the plane with the eye above %lu, triangles %lu, vertices %lu, %lu us on the CPU%s; left out (list full) %lu; cut-piece vertices %lu%s",
 				submerged_windows, submerged_draws, submerged_triangles, submerged_vertices, submerged_us,
-				submerged_old ? " (oceanfogold: counted, not drawn)" : "", submerged_dropped);
+				submerged_old ? " (oceanfogold: counted, not drawn)" : "", submerged_dropped,
+				submerged_cut_vertices, submerged_cut_old > 0 ? " (submergedcutold: left out)" : "");
 		submerged_windows = submerged_draws = submerged_triangles = submerged_vertices = submerged_us = submerged_dropped = 0;
+		submerged_cut_vertices = 0;
 		if (light_merge > 0)
 			platform_log("GE: lightmerge: merged light draws, last 300 frames: %lu", light_merged_draws);
 		light_merged_draws = 0;
