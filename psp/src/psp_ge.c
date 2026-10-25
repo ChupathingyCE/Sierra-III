@@ -8662,6 +8662,8 @@ static unsigned long streams_wanted_total = 0, streams_wanted_dropped = 0;
 
 /* a level copy already built, or NULL; changes nothing (with the shadows) */
 static struct level_stream *level_stream_find(const void *vertices);
+/* "levelpretouch" (psp_ge_draw_level): copies built as their draws were written down, and those without room */
+static unsigned long level_pretouches = 0, level_pretouch_missed = 0;
 
 /* a wall's stencil layers given from its copy's origin: they lie on the
 wall's pieces, drawn with depth EQUAL, so they take the same snapped
@@ -10518,12 +10520,41 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	part_add(3);
 }
 
+/* "levelpretouch" (on; levelpretouchoff): a level draw without its copy
+gets it built now, as its record is written. The Media Engine's replay
+can't build one: it asked for it at the frame's end and left the draw out
+of that frame (every level draw of the frame after a BSP switch, B16; a
+piece of the ocean or the shore's water gone for a frame, B21). Only a
+missing copy settles the frame in flight, so frames whose copies are all
+built pay one lookup a draw (geopretouch142 built on every draw and cost
+0.8-2.2 ms) */
+static void level_pretouch(const void *vertices, const void *lightmap_vertices, int vertex_count, unsigned int key)
+{
+	static int level_pretouch_on = -1;
+
+	if (!PRETOUCHING() || !vertices || vertex_count <= 0)
+		return;
+	if (level_pretouch_on < 0)
+		level_pretouch_on = !psp_keep("levelpretouchoff");
+	if (!level_pretouch_on || level_stream_find(vertices))
+		return;
+	if (inflight_room_away)
+		inflight_room_park();
+	if (inflight_pending)
+		inflight_sync();
+	stream_asked_texture = key;
+	level_pretouches++;
+	if (!level_stream_get(vertices, lightmap_vertices, vertex_count))
+		level_pretouch_missed++;
+}
+
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
 	GE_PRETOUCH(base_key, TXPT_LEVEL_BASE);
 	GE_PRETOUCH(lightmap_key, TXPT_LIGHTMAP);
+	level_pretouch(vertices, lightmap_vertices, vertex_count, base_key);
 	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
 		lightmap_key, alpha_tested)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -14737,12 +14768,53 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	part_add(9);
 }
 
+/* "modelpretouch" (on; modelpretouchoff): a model part's buffer converted as
+its record is written, when the geometry cache has read it afresh since its
+last conversion. The Media Engine's replay can't convert one: it asked for
+it at the frame's end and left the part out of that frame, and with every
+part of a model in one block read again the whole model went for a frame or
+two (b30's opening cutscene: the Pelican over the camera, B8). The frame in
+flight is settled first, as pretouch does, since the replay reads the table
+a conversion may change; most frames convert nothing here */
+static int model_pretouch = -1;
+static unsigned long model_pretouches = 0, model_pretouch_missed = 0;
+
+static int model_converted_now(const void *vertices)
+{
+	unsigned int slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS, tries = 0;
+
+	while (converted[slot] && converted[slot] != vertices)
+	{
+		slot = (slot + 1) % CONVERTED_BUFFERS;
+		if (++tries >= CONVERTED_BUFFERS)
+			return 1; /* the table full: model_convert says so itself */
+	}
+	return converted[slot] && converted_generation[slot] == psp_geo_generation(vertices);
+}
+
 void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const unsigned short *indices,
 	long index_count, int strip, unsigned int color, unsigned int base_key, float u_scale, float v_scale,
 	int alpha_tested)
 {
 	GE_BENCH_SKIP();
 	GE_PRETOUCH(base_key, TXPT_MODEL_BASE);
+	if (PRETOUCHING() && vertices && vertex_count > 0)
+	{
+		if (model_pretouch < 0)
+			model_pretouch = !psp_keep("modelpretouchoff");
+		if (model_pretouch && !model_converted_now(vertices))
+		{
+			struct skin_part *skin;
+
+			if (inflight_room_away)
+				inflight_room_park();
+			if (inflight_pending)
+				inflight_sync();
+			model_pretouches++;
+			if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
+				model_pretouch_missed++;
+		}
+	}
 	GE_DEFER(defer_draw_model(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key,
 		u_scale, v_scale, alpha_tested));
 	ge_kind(in_sky ? KIND_SKY : KIND_MODEL); /* build 103 */
@@ -17528,6 +17600,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	const float *centroid)
 {
 	GE_PRETOUCH(key, TXPT_LEVEL_SEETHROUGH);
+	level_pretouch(vertices, NULL, vertex_count, key);
 	GE_DEFER(defer_queue_level_transparent(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale,
 		u_offset, v_offset, blend, centroid)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -23441,6 +23514,12 @@ static void frame_end_show(void)
 				if (walls_wanted_total || walls_wanted_dropped)
 					platform_log("GE: gemesim: %lu see-through level triangles wanted asked by the Media Engine's work and asked at the frame's end, %lu more than the list held",
 						walls_wanted_total, walls_wanted_dropped);
+				if (level_pretouches)
+					platform_log("GE: levelpretouch: %lu level copies built as their draws were written down, %lu without room",
+						level_pretouches, level_pretouch_missed);
+				if (model_pretouches)
+					platform_log("GE: modelpretouch: %lu model buffers converted as their draws were written down, %lu without room",
+						model_pretouches, model_pretouch_missed);
 				if (converts_wanted_total || converts_wanted_dropped)
 					platform_log("GE: gemesim: %lu model buffers wanted converted by the Media Engine's work and converted at the frame's end, %lu more than the list held",
 						converts_wanted_total, converts_wanted_dropped);
