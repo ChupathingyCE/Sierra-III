@@ -4843,6 +4843,10 @@ b79's tank runs sat at x1 on most frames, "held down by an object", four
 times coarser depth than on foot; a model that close is cut triangle by
 triangle anyway, psp_ge_draw_model) */
 static int player_seated = 0;
+/* first-person models drawn in the frame being drawn and in the one before
+(psp_ge_model_shape): nearcine's test for whose eye the camera is */
+static unsigned int first_person_models = 0, first_person_models_last = 0;
+static unsigned long near_cine_frames = 0, near_cine_first_person = 0;
 static float near_plane_auto(const float *eye, float game_near)
 {
 	extern int psp_player_seated(void);
@@ -4858,6 +4862,8 @@ static float near_plane_auto(const float *eye, float game_near)
 	}
 	near_object_distance_last = near_object_distance;
 	near_object_distance = 1e30f;
+	first_person_models_last = first_person_models;
+	first_person_models = 0;
 	near_object_radius_last = near_object_radius;
 	near_object_radius = 0.0f;
 	/* build 106: the nearest model's limit first, and the level tested
@@ -4909,16 +4915,30 @@ static float near_plane_auto(const float *eye, float game_near)
 	plane gets a plane a quarter as far. The 16:9 view shows the sides that
 	4:3 left off screen, and there the cinematic camera's close-ups cut
 	faces open (a10's Keyes). The depth range coarsens only while it lasts.
-	"nearcineoff": the game's plane as before */
+	Not while the camera is the player's own eye (his first-person weapon
+	drawn the frame before): b30's flight is a cutscene seen from the
+	Pelican's bench, the cabin at the eye, and the quarter plane made the
+	16-bit depth four times coarser for all of it: the far ocean tied with
+	the seabed again and the shore and the beach structure fought (B21).
+	"nearcinefp": in first person too, as before. "nearcineoff": the game's
+	plane as before */
 	if (scale == 1 && near_object_distance_last < game_near * 1.4f)
 	{
 		extern unsigned char cinematic_in_progress(void);
 		static int near_cine = -1;
 
 		if (near_cine < 0)
-			near_cine = !psp_keep("nearcineoff");
+			near_cine = psp_keep("nearcineoff") ? 0 : psp_keep("nearcinefp") ? 2 : 1;
 		if (near_cine && cinematic_in_progress())
-			return game_near * 0.25f;
+		{
+			if (first_person_models_last && near_cine == 1)
+				near_cine_first_person++;
+			else
+			{
+				near_cine_frames++;
+				return game_near * 0.25f;
+			}
+		}
 	}
 	return game_near * scale;
 }
@@ -9797,9 +9817,15 @@ static void frame_level_record(const struct level_stream *stream, const unsigned
 planar colour, its alpha the density at each vertex, blended over what the
 draw's passes left where they drew (depth equal), in the positions those
 passes used (the 16-bit copy or the floats) so the depths agree. The pieces
-cut at the near plane are left out: they lie at the eye, above the water
-with the eye above it but for the shallows underfoot. Counted with
-"oceanfogold" too, so both sides of an A/B say what the pass would cost */
+cut at the near or guard planes are fogged too, in the floats draw_pass drew
+them with: a large seabed triangle starting under the eye and running out
+(b30's flight, looking out of the Pelican's back) was cut, its pieces left
+unfogged, and the bare seabed showed with a hard edge against its fogged
+neighbours (B21). "submergedcutold": the pieces left out, as before.
+Counted with "oceanfogold" too, so both sides of an A/B say what the pass
+would cost */
+static int submerged_cut_old = -1;
+static unsigned long submerged_cut_vertices = 0;
 static void submerged_pass(const struct level_stream *stream, const unsigned short *draw, long kept_count,
 	unsigned int lowest, unsigned int highest)
 {
@@ -9808,7 +9834,9 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 	unsigned int start, i, count;
 	int axis, compact = compact_now != NULL;
 
-	if (kept_count <= 0)
+	if (submerged_cut_old < 0)
+		submerged_cut_old = psp_keep("submergedcutold") != 0;
+	if (kept_count <= 0 && (submerged_cut_old || cut_vertices_count <= 0))
 		return;
 	/* the box's corner farthest below the plane (world positions) */
 	for (axis = 0; axis < 3; axis++)
@@ -9821,7 +9849,8 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 	if (eye_height < 0.0f)
 		return;
 	start = ge_clock();
-	count = highest - lowest + 1;
+	/* a draw whose triangles were all cut has no kept range */
+	count = kept_count > 0 ? highest - lowest + 1 : 0;
 	submerged_draws++;
 	submerged_triangles += kept_count;
 	submerged_vertices += count;
@@ -9829,9 +9858,9 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 	{
 		struct submerged_float { unsigned int color; float x, y, z; } *floats = NULL;
 		struct submerged_short { unsigned int color; short x, y, z, pad; } *shorts = NULL;
-		void *taken = list_take(count * (compact ? sizeof(*shorts) : sizeof(*floats)));
+		void *taken = count ? list_take(count * (compact ? sizeof(*shorts) : sizeof(*floats))) : NULL;
 
-		if (!taken)
+		if (count && !taken)
 		{
 			submerged_dropped++;
 			submerged_us += ge_clock() - start;
@@ -9881,16 +9910,53 @@ static void submerged_pass(const struct level_stream *stream, const unsigned sho
 		sceGuDepthMask(GU_TRUE);
 		sceGuBlendFunc(GU_ADD, GU_SRC_ALPHA, GU_ONE_MINUS_SRC_ALPHA, 0, 0);
 		ge_blend(1);
-		if (compact)
+		if (kept_count > 0 && compact)
 		{
 			compact_begin(0);
 			sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_16BIT | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				(int)kept_count * 3, draw, shorts - lowest);
 			compact_end();
 		}
-		else
+		else if (kept_count > 0)
 			sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				(int)kept_count * 3, draw, floats - lowest);
+		/* the cut pieces, fogged the same way, at the floats draw_pass drew them at */
+		if (!submerged_cut_old && cut_vertices_count > 0 && cut_vertices_prepared[0])
+		{
+			struct submerged_float *pieces = list_take(cut_vertices_count * (int)sizeof(*pieces));
+			int k;
+
+			if (pieces)
+			{
+				for (k = 0; k < cut_vertices_count; k++)
+				{
+					const struct ge_vertex *v = &cut_vertices_prepared[0][k];
+					float depth = d - (n[0] * v->x + n[1] * v->y + n[2] * v->z), density;
+					unsigned int alpha = 0;
+
+					if (depth > 0.0f)
+					{
+						float dx = v->x - level_eye[0], dy = v->y - level_eye[1], dz = v->z - level_eye[2];
+						float distance = sqrtf(dx * dx + dy * dy + dz * dz), a, b;
+
+						if (submerged_segment)
+							distance *= depth / (depth + eye_height);
+						a = depth * submerged_inverse_depth;
+						b = distance * submerged_inverse_distance;
+						density = submerged_density * (a < 1.0f ? a : 1.0f) * (b < 1.0f ? b : 1.0f);
+						alpha = (unsigned int)(density * 255.0f + 0.5f);
+					}
+					pieces[k].color = (alpha << 24) | submerged_color;
+					pieces[k].x = v->x;
+					pieces[k].y = v->y;
+					pieces[k].z = v->z;
+				}
+				sceGumDrawArray(GU_TRIANGLES, GU_COLOR_8888 | GU_VERTEX_32BITF | GU_TRANSFORM_3D, cut_vertices_count, NULL, pieces);
+				submerged_cut_vertices += (unsigned long)cut_vertices_count;
+			}
+			else
+				submerged_dropped++;
+		}
 		ge_blend(0);
 		sceGuDepthMask(GU_FALSE);
 		sceGuDepthFunc(GU_GEQUAL);
@@ -10619,6 +10685,8 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 	if (far_fp > first_person_near)
 		first_person_far = far_fp;
 	first_person = first_person != 0;
+	if (first_person)
+		first_person_models++;
 	if (first_person != model_first_person)
 	{
 		use_projection(first_person);
@@ -23230,10 +23298,12 @@ static void frame_end_show(void)
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
 		if (submerged_windows)
-			platform_log("GE: ocean fog, last 300 frames: windows with planar fog %lu; level draws below the plane with the eye above %lu, triangles %lu, vertices %lu, %lu us on the CPU%s; left out (list full) %lu",
+			platform_log("GE: ocean fog, last 300 frames: windows with planar fog %lu; level draws below the plane with the eye above %lu, triangles %lu, vertices %lu, %lu us on the CPU%s; left out (list full) %lu; cut-piece vertices %lu%s",
 				submerged_windows, submerged_draws, submerged_triangles, submerged_vertices, submerged_us,
-				submerged_old ? " (oceanfogold: counted, not drawn)" : "", submerged_dropped);
+				submerged_old ? " (oceanfogold: counted, not drawn)" : "", submerged_dropped,
+				submerged_cut_vertices, submerged_cut_old > 0 ? " (submergedcutold: left out)" : "");
 		submerged_windows = submerged_draws = submerged_triangles = submerged_vertices = submerged_us = submerged_dropped = 0;
+		submerged_cut_vertices = 0;
 		if (light_merge > 0)
 			platform_log("GE: lightmerge: merged light draws, last 300 frames: %lu", light_merged_draws);
 		light_merged_draws = 0;
@@ -23434,6 +23504,10 @@ static void frame_end_show(void)
 						near_auto ? " (nearauto)" : " (fixed)", near_auto_chosen[2], near_auto_chosen_high[0], near_auto_chosen_high[1], near_auto_chosen[1], near_auto_chosen[0],
 						near_auto_by_objects, near_auto_frames ? near_auto_us / near_auto_frames : 0, level_draws_inside / 300,
 						level_draws_classified / 300, angle_far_triangles / 300, detail_passes_skipped_far / 300);
+					if (near_cine_frames || near_cine_first_person)
+						platform_log("GE: nearcine: %lu frames at a quarter plane (a cutscene's close-up), %lu left at the game's plane (the player's own eye)",
+							near_cine_frames, near_cine_first_person);
+					near_cine_frames = near_cine_first_person = 0;
 					if (near_auto_check > 0)
 						platform_log("GE: nearautocheck: %lu sphere answers compared, %lu differed", near_auto_checked, near_auto_differed);
 					platform_log("GE: uv centring %s: %lu draws, largest shift %.0f repeats; GE serial %s",
