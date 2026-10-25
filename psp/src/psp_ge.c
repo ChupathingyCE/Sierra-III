@@ -10528,6 +10528,7 @@ piece of the ocean or the shore's water gone for a frame, B21). Only a
 missing copy settles the frame in flight, so frames whose copies are all
 built pay one lookup a draw (geopretouch142 built on every draw and cost
 0.8-2.2 ms) */
+static int pretouch_me_busy(void);
 static void level_pretouch(const void *vertices, const void *lightmap_vertices, int vertex_count, unsigned int key)
 {
 	static int level_pretouch_on = -1;
@@ -10536,7 +10537,7 @@ static void level_pretouch(const void *vertices, const void *lightmap_vertices, 
 		return;
 	if (level_pretouch_on < 0)
 		level_pretouch_on = !psp_keep("levelpretouchoff");
-	if (!level_pretouch_on || level_stream_find(vertices))
+	if (!level_pretouch_on || level_stream_find(vertices) || pretouch_me_busy())
 		return;
 	if (inflight_room_away)
 		inflight_room_park();
@@ -14779,6 +14780,23 @@ flight is settled first, as pretouch does, since the replay reads the table
 a conversion may change; most frames convert nothing here */
 static int model_pretouch = -1;
 static unsigned long model_pretouches = 0, model_pretouch_missed = 0;
+static unsigned long pretouch_chunk_skips = 0;
+
+/* mechunk: pieces of this frame already handed to the Media Engine, which is
+replaying them while the frame is still being written. A conversion here
+rewrites a buffer in place and may free skinning plans (the sweep, a stale
+part's plan) that those pieces draw from: the PSP-3000's marines drew with
+broken faces (B22, modelpretouch on). Such a draw is left to the frame's end,
+as before */
+static int pretouch_me_busy(void)
+{
+	if (chunk_frame && chunk_published)
+	{
+		pretouch_chunk_skips++;
+		return 1;
+	}
+	return 0;
+}
 
 static int model_converted_now(const void *vertices)
 {
@@ -14803,7 +14821,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	{
 		if (model_pretouch < 0)
 			model_pretouch = !psp_keep("modelpretouchoff");
-		if (model_pretouch && !model_converted_now(vertices))
+		if (model_pretouch && !model_converted_now(vertices) && !pretouch_me_busy())
 		{
 			struct skin_part *skin;
 
@@ -23519,8 +23537,8 @@ static void frame_end_show(void)
 					platform_log("GE: levelpretouch: %lu level copies built as their draws were written down, %lu without room",
 						level_pretouches, level_pretouch_missed);
 				if (model_pretouches)
-					platform_log("GE: modelpretouch: %lu model buffers converted as their draws were written down, %lu without room",
-						model_pretouches, model_pretouch_missed);
+					platform_log("GE: modelpretouch: %lu model buffers converted as their draws were written down, %lu without room; %lu model or level draws left to the frame's end (a piece of the frame on the ME)",
+						model_pretouches, model_pretouch_missed, pretouch_chunk_skips);
 				if (converts_wanted_total || converts_wanted_dropped)
 					platform_log("GE: gemesim: %lu model buffers wanted converted by the Media Engine's work and converted at the frame's end, %lu more than the list held",
 						converts_wanted_total, converts_wanted_dropped);
