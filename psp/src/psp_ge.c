@@ -22864,7 +22864,7 @@ CPU's (the GE waited for, the picture shown, the frame's reads and logs) */
 ends (on the Media Engine under geinflight) and added in by the main CPU
 when the frame is shown, since the heartbeat's thread clears the window's
 own counters whenever it reports them */
-static struct { unsigned long transparent, flush_us, draws, triangles, list_bytes; } list_part;
+static struct { unsigned long transparent, flush_us, draws, models, triangles, list_bytes; } list_part;
 
 static int frame_end_list(void)
 {
@@ -22880,6 +22880,7 @@ static int frame_end_list(void)
 	CENSUS(census_frame());
 	list_part.flush_us = ge_clock() - flush_mark;
 	list_part.draws = draws_this_frame;
+	list_part.models = model_draws_this_frame;
 	list_part.triangles = triangles_this_frame;
 	/* the display list's high-water mark: it has no overflow check of its own
 	(build 19) */
@@ -23105,8 +23106,9 @@ static void show_picture(int show3)
 	win_swap_us += sceKernelGetSystemTimeLow() - mark;
 }
 
-/* every draw of every frame shown so far, for the settle's warm test
-(psp_loading.c): a settle that has drawn nothing has warmed nothing */
+/* every level draw and model part of every frame shown so far, for the
+settle's warm test (psp_loading.c): a settle that has drawn nothing has
+warmed nothing (the main menu's ring is models alone) */
 static PSP_MAIN_SIDE unsigned long draws_shown_total = 0;
 
 unsigned long psp_ge_draws_shown(void)
@@ -23121,7 +23123,7 @@ static void frame_end_show(void)
 	win_transparent += list_part.transparent;
 	win_flush_us += list_part.flush_us;
 	win_draws += list_part.draws;
-	draws_shown_total += list_part.draws;
+	draws_shown_total += list_part.draws + list_part.models;
 	win_triangles += list_part.triangles;
 	win_list_bytes += list_part.list_bytes;
 	window_main_done = 0;
