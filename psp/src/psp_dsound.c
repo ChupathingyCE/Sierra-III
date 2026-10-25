@@ -55,7 +55,6 @@ void platform_log(const char *format, ...);
 
 struct voice_packet
 {
-	XMEDIAPACKET packet;
 	const unsigned char *data;
 	unsigned long frames;
 	BOOL finished;            /* played out by the mixer, not yet completed */
@@ -65,8 +64,6 @@ struct psp_stream
 {
 	/* must be first: in C an IDirectSoundStream is just { lpVtbl } */
 	IDirectSoundStream object;
-	struct psp_stream *next;
-	ULONG reference_count;
 	LPFNXMEDIAOBJECTCALLBACK callback;
 	LPVOID context;
 
@@ -74,23 +71,11 @@ struct psp_stream
 	BOOL adpcm;
 	unsigned long channels;
 	DWORD sample_rate;
-	DWORD frequency;
-
-	BOOL paused;
-
-	/* 2D gains */
-	float volume;             /* SetVolume */
-	float mix_left, mix_right;
-
-	/* 3D */
-	BOOL has_3d;
-	DWORD mode;
-	float position[3];
-	float minimum_distance, maximum_distance;
-	float i3dl2_gain;
 
 	unsigned long packet_head;
 	unsigned long packet_count;
+	/* packets completed so far (the game's own count of them is in stream_game) */
+	unsigned long popped;
 	/* position inside the head unfinished packet: whole frames and a 16-bit fraction */
 	unsigned long frame;
 	unsigned long fraction;
@@ -115,10 +100,6 @@ struct psp_stream
 	/* frames this voice was mixed (written by the mixer, on either CPU):
 	the loading chant's line says whether its voices played at all */
 	unsigned long mixed_frames;
-	/* where the last packet the game queued ended, and its permutation: a
-	packet of the same permutation that doesn't start there skips sound */
-	const unsigned char *queued_end;
-	const void *queued_context;
 	/* the loudest gain it was prepared with, and how many blocks were
 	prepared: whether the loading chant was ever loud enough to hear */
 	int peak_gain;
@@ -130,27 +111,14 @@ struct psp_stream
 	/* "adpcmold": the header's sample left out and the padding nibble played,
 	as before (set with silent_overrun) */
 	int adpcm_old;
-	/* the game's sound class of what the stream plays (sound_manager.c's
-	channel_queue_sound names it), so a dry gap can say what fell silent */
-	long sound_class;
 	/* muffling: the I3DL2 source's high-frequency loss (obstruction,
 	occlusion, the direct path's own) as a one-pole low-pass, so a sound
 	behind a wall is duller as well as quieter, as on the Xbox. The main CPU
 	sets the coefficient (Q14, GAIN_ONE: no filter); the mixer keeps the
 	filter's state, on either CPU. "audioold": no filter */
-	LONG hf_millibels;
 	LONG lowpass_millibels;
 	int lowpass_coefficient;
 	int lowpass_left, lowpass_right;
-	/* Doppler and cones (DirectSound's, which the game sets and the mixer
-	ignored before): the velocity is the game's, relative to the listener
-	(sound_manager.c's update_channels); the cone's angles in degrees, its
-	outside volume in millibels; the step and gains follow them. "audioold":
-	neither */
-	float velocity[3];
-	float cone_forward[3];
-	DWORD cone_inside, cone_outside;
-	LONG cone_outside_millibels;
 
 	/* last, so a hand-over by ranges covers the fields above in a few whole
 	lines and only the queued packets' entries of this (psp_dsound_me_lines) */
@@ -163,7 +131,9 @@ a line shared with other data would carry stale copies of its bytes */
 void *memalign(size_t alignment, size_t size);
 
 static pthread_mutex_t mixer_lock = PTHREAD_MUTEX_INITIALIZER;
-static struct psp_stream *streams;
+/* the game links and unlinks with single stores (the links are in stream_game)
+and the audio thread walks the list without the lock: see MIXLOCK below */
+static struct psp_stream *volatile streams;
 
 /* build 86: the game's side of the mixer's lock, timed when it has to wait:
 the audio thread holds it through a block's mix, and with the Media Engine
@@ -228,6 +198,290 @@ static unsigned long stream_links = 0;
 static int stream_link_off = -1;
 extern unsigned long psp_last_frame_us; /* psp_platform.c, psp_frame_account */
 static unsigned long cut_sounds = 0, mix_worst_us = 0, lock_worst_us = 0, late_blocks = 0, clipped_blocks = 0, gap_worst_us = 0;
+
+/* MIXLOCK. The record above (struct psp_stream) is the mixer's: the Media
+Engine reads and writes it a cache line at a time while a block mixes, so
+only the audio thread touches it, and only between jobs. The game's side of a
+voice never waits for the mixer: setters write this record, on cache lines of
+its own beside the mixer's, and the queue's changes (a packet queued,
+completed, the stream flushed) go through a ring the audio thread empties
+before it prepares each block, so each reaches the mix at the block it reached
+when the game held the mixer's lock for it. "mixlockold": the lock held
+through the job and every call under it, as before (the ring's commands
+applied at once, under it) */
+struct stream_game
+{
+	/* the mixer's list, walked by the audio thread: single stores, no lock */
+	struct psp_stream *volatile next;
+	ULONG reference_count;
+	DWORD sample_rate; /* a copy of the mixer's, for SetFrequency(0) */
+	/* what the game sets and prepare_voice reads, on the main CPU only: written
+	whole with interrupts off (set_enter), as the audio thread preempts the game */
+	BOOL paused;
+	DWORD frequency;
+	float volume;             /* SetVolume */
+	float mix_left, mix_right;
+	BOOL has_3d;
+	DWORD mode;
+	float position[3];
+	float minimum_distance, maximum_distance;
+	float i3dl2_gain;
+	LONG hf_millibels;
+	float velocity[3];
+	float cone_forward[3];
+	DWORD cone_inside, cone_outside;
+	LONG cone_outside_millibels;
+	/* the game's view of the queue, as the mixer's record will hold it once the
+	ring is empty: the packets as queued (the mixer keeps their data and frames),
+	and how many were completed since the stream began */
+	unsigned long head, count, popped;
+	/* set by the audio thread after each block that ended: the packets before
+	this number (counted from the stream's start) are played out */
+	volatile unsigned long finished_to;
+	const unsigned char *queued_end;
+	const void *queued_context;
+	long sound_class;
+	/* once released: kept until a block that began after has ended */
+	struct psp_stream *zombie_next;
+	unsigned long zombie_stamp;
+	XMEDIAPACKET packet[MAXIMUM_STREAM_PACKETS];
+};
+#define GAME_BYTES ((sizeof(struct stream_game) + 63) & ~(size_t)63)
+#define GAME_OF(stream) ((struct stream_game *)((unsigned char *)(stream) + STREAM_BYTES))
+
+#define MIX_COMMANDS 512 /* a power of two */
+enum { CMD_PUSH, CMD_POP, CMD_RESET };
+struct mix_command
+{
+	struct psp_stream *stream;
+	const unsigned char *data;
+	unsigned long type, frames;
+	long sound_class;
+};
+static struct mix_command commands[MIX_COMMANDS];
+/* the game puts at the tail, the audio thread takes at the head */
+static volatile unsigned long command_head, command_tail;
+/* "mixlockold", read once by audio_start before any stream or the audio thread exists */
+static int mixlock_old = 0;
+/* the audio thread is waiting for the Media Engine's job: the game's calls
+meanwhile are the ones the lock held up. Blocks begun and ended, for freeing */
+static volatile int job_running = 0;
+static volatile unsigned long blocks_begun = 0, blocks_ended = 0;
+/* for the log: the game's calls into the mixer, those that came during a job,
+commands queued, the ring's fullest, times the game waited for room in it */
+static unsigned long game_calls = 0, would_waits = 0, commands_queued = 0, ring_fullest = 0, ring_full_waits = 0;
+static struct psp_stream *zombies;
+
+/* one command applied to the mixer's record: by the audio thread before it prepares
+a block, or at once by the game under the lock (mixlockold); what the game did to these fields before */
+static void mix_apply(const struct mix_command *command)
+{
+	struct psp_stream *stream = command->stream;
+
+	if (command->type == CMD_PUSH)
+	{
+		struct voice_packet *entry = &stream->packets[(stream->packet_head + stream->packet_count) % MAXIMUM_STREAM_PACKETS];
+
+		entry->data = command->data;
+		entry->frames = command->frames;
+		entry->finished = FALSE;
+		if (stream->packet_count && stream->dry_frames)
+		{
+			if (gap_record_count < GAP_RECORDS)
+			{
+				gap_records[gap_record_count].context = (long)stream->context;
+				gap_records[gap_record_count].sound_class = command->sound_class;
+				gap_records[gap_record_count].dry_ms = stream->dry_frames * 1000 / OUTPUT_RATE;
+				gap_records[gap_record_count].frame_ms = psp_last_frame_us / 1000;
+			}
+			gap_record_count++;
+			dry_gaps++;
+			dry_gap_frames += stream->dry_frames;
+			if (stream->dry_frames > dry_gap_worst)
+				dry_gap_worst = stream->dry_frames;
+		}
+		stream->dry_frames = 0;
+		if (!stream->packet_count)
+		{
+			/* a stream that ran dry starts over */
+			stream->frame = 0;
+			stream->fraction = 0;
+			stream->gains_valid = FALSE;
+		}
+		stream->packet_count++;
+	}
+	else if (command->type == CMD_POP)
+	{
+		struct voice_packet *entry = &stream->packets[stream->packet_head];
+
+		if (stream->decoded_packet[0] == entry)
+			stream->decoded_packet[0] = NULL;
+		if (stream->decoded_packet[1] == entry)
+			stream->decoded_packet[1] = NULL;
+		entry->data = NULL;
+		entry->finished = FALSE;
+		stream->packet_head = (stream->packet_head + 1) % MAXIMUM_STREAM_PACKETS;
+		stream->packet_count--;
+		stream->popped++;
+	}
+	else
+	{
+		stream->frame = 0;
+		stream->fraction = 0;
+		stream->dry_frames = 0;
+		stream->decoded_packet[0] = stream->decoded_packet[1] = NULL;
+	}
+}
+
+/* the audio thread, before it prepares a block */
+static void drain_commands(void)
+{
+	while (command_head != command_tail)
+	{
+		mix_apply(&commands[command_head % MIX_COMMANDS]);
+		command_head++;
+	}
+}
+
+/* the game's side. mixlockold: applied at once, the caller holds the lock.
+Otherwise queued, the tail moved with interrupts off (the audio thread preempts
+the game); the game waits for room only when 512 are out, which the audio
+thread empties every block */
+static void mix_command(struct psp_stream *stream, unsigned long type, const unsigned char *data, unsigned long frames,
+	long sound_class)
+{
+	struct mix_command command;
+
+	command.stream = stream;
+	command.type = type;
+	command.data = data;
+	command.frames = frames;
+	command.sound_class = sound_class;
+	if (mixlock_old)
+	{
+		mix_apply(&command);
+		return;
+	}
+	for (;;)
+	{
+		unsigned int flags = sceKernelCpuSuspendIntr();
+		unsigned long used = command_tail - command_head;
+
+		if (used < MIX_COMMANDS)
+		{
+			commands[command_tail % MIX_COMMANDS] = command;
+			__asm__ __volatile__("" : : : "memory");
+			command_tail++;
+			commands_queued++;
+			if (used + 1 > ring_fullest)
+				ring_fullest = used + 1;
+			sceKernelCpuResumeIntr(flags);
+			return;
+		}
+		sceKernelCpuResumeIntr(flags);
+		ring_full_waits++;
+		sceKernelDelayThread(1000);
+	}
+}
+
+/* the audio thread, after a block: how many packets from the stream's start are played out */
+static void publish_finished(struct psp_stream *stream)
+{
+	unsigned long k = 0;
+
+	while (k < stream->packet_count && stream->packets[(stream->packet_head + k) % MAXIMUM_STREAM_PACKETS].finished)
+		k++;
+	GAME_OF(stream)->finished_to = stream->popped + k;
+}
+
+/* whether the packet `position` places from the head is played out: the mixer's
+flag under the lock (mixlockold); otherwise what the last block that ended
+published, so a call that comes while a block mixes sees the block before it
+(DirectSoundDoWork completes it a frame later) */
+static int packet_finished(struct psp_stream *stream, unsigned long position)
+{
+	struct stream_game *game = GAME_OF(stream);
+
+	if (mixlock_old)
+		return stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS].finished;
+	return (long)(game->finished_to - (game->popped + position)) > 0;
+}
+
+/* the game's entry into a setter: the lock (mixlockold), or interrupts off for
+its few stores. Counts the calls that came while the Media Engine mixed: each
+would have waited for the lock until the job ended */
+static unsigned int set_enter(void)
+{
+	if (mixlock_old)
+	{
+		game_lock();
+		return 0;
+	}
+	game_calls++;
+	would_waits += job_running;
+	return sceKernelCpuSuspendIntr();
+}
+
+static void set_leave(unsigned int flags)
+{
+	if (mixlock_old)
+		pthread_mutex_unlock(&mixer_lock);
+	else
+		sceKernelCpuResumeIntr(flags);
+}
+
+/* the game's entry into the queue's calls: the lock (mixlockold), or nothing:
+its side is its own record and the ring. Counted as set_enter counts */
+static void queue_enter(void)
+{
+	if (mixlock_old)
+	{
+		game_lock();
+		return;
+	}
+	game_calls++;
+	would_waits += job_running;
+}
+
+static void queue_leave(void)
+{
+	if (mixlock_old)
+		pthread_mutex_unlock(&mixer_lock);
+}
+
+/* a released stream's record is the Media Engine's while a block that took it
+into its list runs, and the ring may still hold its commands: freed once a
+block that began after the unlink has ended (zombie_stamp, set by stream_unlink) */
+static void reap_streams(void)
+{
+	struct psp_stream **link = &zombies;
+
+	while (*link)
+	{
+		struct psp_stream *stream = *link;
+		struct stream_game *game = GAME_OF(stream);
+
+		if ((long)(blocks_ended - game->zombie_stamp) >= 0)
+		{
+			*link = game->zombie_next;
+			free(stream);
+		}
+		else
+			link = &game->zombie_next;
+	}
+}
+
+static void retire_stream(struct psp_stream *stream)
+{
+	if (mixlock_old)
+	{
+		free(stream);
+		return;
+	}
+	GAME_OF(stream)->zombie_next = zombies;
+	zombies = stream;
+	reap_streams();
+}
 
 static float gain_from_millibels(LONG millibels)
 {
@@ -362,7 +616,7 @@ static unsigned long fx_prepared = 0, fx_muffled = 0, fx_shifted = 0, fx_coned =
 /* DirectSound's cone: full inside half the inside angle of the sound's
 facing, the outside volume past half the outside angle, between them a
 straight line in millibels. offset: listener to sound */
-static float cone_gain(const struct psp_stream *stream, const float *offset)
+static float cone_gain(const struct stream_game *stream, const float *offset)
 {
 	float length, facing, cosine, angle, inside, outside;
 
@@ -389,7 +643,7 @@ static float cone_gain(const struct psp_stream *stream, const float *offset)
 
 /* DirectSound's Doppler shift (factor 1) from the velocity along the line
 to the listener, held to an octave either way; 1 for a sound that isn't 3D */
-static float doppler_ratio(const struct psp_stream *stream)
+static float doppler_ratio(const struct stream_game *stream)
 {
 	float offset[3], length, closing;
 	int axis;
@@ -411,7 +665,7 @@ static float doppler_ratio(const struct psp_stream *stream)
 	return 343.0f / (343.0f + closing);
 }
 
-static void spatialize(const struct psp_stream *stream, float *left, float *right)
+static void spatialize(const struct stream_game *stream, float *left, float *right)
 {
 	float offset[3], right_axis[3], distance, attenuation, pan, side, ahead;
 	int axis;
@@ -472,7 +726,7 @@ static int gain_to_fixed(float gain)
 	return value < 0 ? 0 : value > 2 * GAIN_ONE ? 2 * GAIN_ONE : value;
 }
 
-static void voice_gains(const struct psp_stream *stream, int *left, int *right)
+static void voice_gains(const struct stream_game *stream, int *left, int *right)
 {
 	float l, r;
 
@@ -538,7 +792,9 @@ static int lowpass_coefficient(LONG millibels)
 (floats and its maths library); 0 when it won't play (paused, nothing queued) */
 static int prepare_voice(struct psp_stream *stream)
 {
-	if (stream->paused || !stream->packet_count || !stream->sample_rate)
+	struct stream_game *game = GAME_OF(stream);
+
+	if (game->paused || !stream->packet_count || !stream->sample_rate)
 		return 0;
 	{
 		extern int psp_keep(const char *name);
@@ -554,17 +810,17 @@ static int prepare_voice(struct psp_stream *stream)
 		}
 		stream->silent_overrun = overrun;
 		stream->adpcm_old = adpcm_old;
-		if (audio_old || !stream->has_3d)
+		if (audio_old || !game->has_3d)
 			stream->lowpass_coefficient = GAIN_ONE;
-		else if (stream->hf_millibels != stream->lowpass_millibels || !stream->lowpass_coefficient)
+		else if (game->hf_millibels != stream->lowpass_millibels || !stream->lowpass_coefficient)
 		{
-			stream->lowpass_millibels = stream->hf_millibels;
-			stream->lowpass_coefficient = lowpass_coefficient(stream->hf_millibels);
+			stream->lowpass_millibels = game->hf_millibels;
+			stream->lowpass_coefficient = lowpass_coefficient(game->hf_millibels);
 		}
 	}
 	{
-		unsigned long rate = stream->frequency ? stream->frequency : stream->sample_rate;
-		float doppler = doppler_ratio(stream);
+		unsigned long rate = game->frequency ? game->frequency : stream->sample_rate;
+		float doppler = doppler_ratio(game);
 
 		if (doppler != 1.0f)
 		{
@@ -573,7 +829,7 @@ static int prepare_voice(struct psp_stream *stream)
 		}
 		stream->step = (unsigned long)(((unsigned long long)rate << 16) / OUTPUT_RATE);
 	}
-	voice_gains(stream, &stream->target_left, &stream->target_right);
+	voice_gains(game, &stream->target_left, &stream->target_right);
 	if (stream->target_left > stream->peak_gain)
 		stream->peak_gain = stream->target_left;
 	stream->prepared_blocks++;
@@ -1356,14 +1612,19 @@ static void mix(short *output, unsigned long frames)
 	int on_me = me_wanted && psp_meaudio_running(), mixed = 0;
 	SceUInt64 start = sceKernelGetSystemTimeWide();
 
-	pthread_mutex_lock(&mixer_lock);
+	blocks_begun++;
+	if (mixlock_old)
 	{
-		unsigned long waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
+		pthread_mutex_lock(&mixer_lock);
+		{
+			unsigned long waited = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 
-		if (waited > lock_worst_us)
-			lock_worst_us = waited;
+			if (waited > lock_worst_us)
+				lock_worst_us = waited;
+		}
 	}
-	for (stream = streams; stream; stream = stream->next)
+	drain_commands();
+	for (stream = streams; stream; stream = GAME_OF(stream)->next)
 	{
 		if (!prepare_voice(stream))
 			continue;
@@ -1405,9 +1666,11 @@ static void mix(short *output, unsigned long frames)
 		else
 			sceKernelDcacheWritebackAll();
 		sceKernelDcacheWritebackInvalidateRange(output, frames * OUTPUT_CHANNELS * sizeof(short));
+		job_running = 1;
 		mixed = psp_meaudio_run((void *const *)list, count, output, frames, &voices, &clipped, &me_us);
+		job_running = 0;
 		/* what the ME changed, dropped from this cache (whole lines: see
-		STREAM_BYTES; nothing here wrote to them, the lock is held): the
+		STREAM_BYTES; nothing here wrote to them (the lock is held, or the game's side is on lines of its own): the
 		fields and entries the mix writes, or each voice whole */
 		for (k = 0; k < count; k++)
 		{
@@ -1437,7 +1700,15 @@ static void mix(short *output, unsigned long frames)
 			mute_cache_voices(list, count);
 		voices = psp_dsound_mix_list((void *const *)list, count, sums, output, frames, &clipped);
 	}
-	pthread_mutex_unlock(&mixer_lock);
+	{
+		unsigned long k;
+
+		for (k = 0; k < count; k++)
+			publish_finished(list[k]);
+	}
+	blocks_ended++;
+	if (mixlock_old)
+		pthread_mutex_unlock(&mixer_lock);
 	clipped_blocks += clipped != 0;
 	mix_blocks++;
 	mix_voice_blocks += voices;
@@ -1600,6 +1871,13 @@ static void audio_start(void)
 		if (psp_keep("nomeaudio"))
 			me_wanted = 0;
 	}
+	{
+		extern int psp_keep(const char *word);
+
+		/* before the audio thread or any stream exists: nothing reads it earlier */
+		mixlock_old = psp_keep("mixlockold") != 0;
+		platform_log("audio: the mixer's lock %s", mixlock_old ? "held through the Media Engine's job, as before (mixlockold)" : "not held across the job: the game's side is on cache lines of its own, its changes reach the mix by a ring (MIXLOCK)");
+	}
 	/* above the game's thread, which it interrupts for a moment every 23 ms */
 	thread = sceKernelCreateThread("halo audio", audio_thread, 0x12, 0x4000, 0, NULL);
 	if (thread >= 0)
@@ -1627,6 +1905,9 @@ void psp_audio_report(void)
 	platform_log("audio: the game waited for the mixer's lock %lu times, %lu us in all, %lu at most; voices that ran dry and were then fed more (a gap heard) %lu, %lu ms of silence in all, the longest %lu ms",
 		game_lock_waits, game_lock_wait_us, game_lock_worst_us, dry_gaps, dry_gap_frames * 1000 / OUTPUT_RATE,
 		dry_gap_worst * 1000 / OUTPUT_RATE);
+	platform_log("audio: mixlock%s: %lu of the game's %lu calls into the mixer came while the Media Engine mixed (each would have waited for the lock until the job ended); %lu commands queued, the ring %lu of %d at most, %lu waits for room in it",
+		mixlock_old ? " (mixlockold: the lock held through the job)" : "", would_waits, game_calls, commands_queued, ring_fullest, MIX_COMMANDS,
+		ring_full_waits);
 	if (cut_sounds)
 		platform_log("audio: cut by the game, by reason: an older like sound retired %lu, the new one retired %lu, its source gone %lu, the players dead %lu, faded out %lu, its voice taken %lu, no voice free %lu, not cached in time %lu, all stopped %lu, other %lu",
 			cut_by_reason[PSP_STOP_INSTANCE_OLDER], cut_by_reason[PSP_STOP_INSTANCE_NEWER], cut_by_reason[PSP_STOP_SOURCE_LOST],
@@ -1660,6 +1941,7 @@ void psp_audio_report(void)
 	memset(cut_by_reason, 0, sizeof(cut_by_reason));
 	dry_gaps = dry_gap_frames = dry_gap_worst = 0;
 	game_lock_waits = game_lock_wait_us = game_lock_worst_us = 0;
+	would_waits = game_calls = commands_queued = ring_fullest = ring_full_waits = 0;
 	me_blocks = me_wait_us = me_wait_worst_us = me_failures = me_overflows = ranges_blocks = 0;
 	mix_blocks = mix_microseconds = mix_voice_blocks = mix_peak_voices = 0;
 	mix_worst_us = lock_worst_us = late_blocks = clipped_blocks = gap_worst_us = cut_sounds = 0;
@@ -1707,30 +1989,28 @@ int psp_stream_link(void)
 
 /* ---------- completion */
 
-/* completes the head packet; called with the lock held, which the game's
-callback runs without */
+/* completes the head packet; called with the lock held (mixlockold), which the
+game's callback runs without */
 static void stream_complete_head(struct psp_stream *stream, DWORD status, DWORD completed_size)
 {
-	struct voice_packet *entry = &stream->packets[stream->packet_head];
-	XMEDIAPACKET packet = entry->packet;
+	struct stream_game *game = GAME_OF(stream);
+	XMEDIAPACKET packet = game->packet[game->head];
 
-	if (stream->decoded_packet[0] == entry)
-		stream->decoded_packet[0] = NULL;
-	if (stream->decoded_packet[1] == entry)
-		stream->decoded_packet[1] = NULL;
-	entry->data = NULL;
-	entry->finished = FALSE;
-	stream->packet_head = (stream->packet_head + 1) % MAXIMUM_STREAM_PACKETS;
-	stream->packet_count--;
+	game->head = (game->head + 1) % MAXIMUM_STREAM_PACKETS;
+	game->count--;
+	game->popped++;
+	mix_command(stream, CMD_POP, NULL, 0, 0);
 	if (packet.pdwCompletedSize)
 		*packet.pdwCompletedSize = completed_size;
 	if (packet.pdwStatus)
 		*packet.pdwStatus = status;
 	if (stream->callback)
 	{
-		pthread_mutex_unlock(&mixer_lock);
+		if (mixlock_old)
+			pthread_mutex_unlock(&mixer_lock);
 		stream->callback(stream->context, packet.pContext, status);
-		game_lock();
+		if (mixlock_old)
+			game_lock();
 	}
 	else if (packet.hCompletionEvent)
 	{
@@ -1742,13 +2022,16 @@ static void streams_complete_finished(void)
 {
 	struct psp_stream *stream;
 
-	game_lock();
-	for (stream = streams; stream; stream = stream->next)
+	queue_enter();
+	for (stream = streams; stream; stream = GAME_OF(stream)->next)
 	{
-		while (stream->packet_count && stream->packets[stream->packet_head].finished)
-			stream_complete_head(stream, XMEDIAPACKET_STATUS_SUCCESS, stream->packets[stream->packet_head].packet.dwMaxSize);
+		struct stream_game *game = GAME_OF(stream);
+
+		while (game->count && packet_finished(stream, 0))
+			stream_complete_head(stream, XMEDIAPACKET_STATUS_SUCCESS, game->packet[game->head].dwMaxSize);
 	}
-	pthread_mutex_unlock(&mixer_lock);
+	queue_leave();
+	reap_streams();
 }
 
 /* ---------- stream interface */
@@ -1761,47 +2044,51 @@ static struct psp_stream *stream_from_interface(void *stream)
 static ULONG STDMETHODCALLTYPE stream_add_reference(IDirectSoundStream *object)
 {
 	struct psp_stream *stream = stream_from_interface(object);
+	unsigned int guard;
 	ULONG count;
 
-	game_lock();
-	count = ++stream->reference_count;
-	pthread_mutex_unlock(&mixer_lock);
+	guard = set_enter();
+	count = ++GAME_OF(stream)->reference_count;
+	set_leave(guard);
 	return count;
 }
 
 static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object);
 
-/* out of the mixer's list: under the lock, so no block is mixing it */
+/* out of the mixer's list: under the lock (mixlockold), or by single stores that
+the audio thread's walk can't see torn. The record stays until zombie_stamp passes */
 static void stream_unlink(struct psp_stream *stream)
 {
-	struct psp_stream **link;
+	struct psp_stream *volatile *link;
 
-	game_lock();
-	for (link = &streams; *link; link = &(*link)->next)
+	queue_enter();
+	for (link = &streams; *link; link = &GAME_OF(*link)->next)
 	{
 		if (*link == stream)
 		{
-			*link = stream->next;
+			*link = GAME_OF(stream)->next;
 			break;
 		}
 	}
-	pthread_mutex_unlock(&mixer_lock);
+	GAME_OF(stream)->zombie_stamp = blocks_begun + 1;
+	queue_leave();
 }
 
 static ULONG STDMETHODCALLTYPE stream_release(IDirectSoundStream *object)
 {
 	struct psp_stream *stream = stream_from_interface(object);
+	unsigned int guard;
 	ULONG count;
 
-	game_lock();
-	count = --stream->reference_count;
-	pthread_mutex_unlock(&mixer_lock);
+	guard = set_enter();
+	count = --GAME_OF(stream)->reference_count;
+	set_leave(guard);
 	if (count)
 		return count;
 
 	stream_flush(object);
 	stream_unlink(stream);
-	free(stream);
+	retire_stream(stream);
 	return 0;
 }
 
@@ -1819,16 +2106,17 @@ static HRESULT STDMETHODCALLTYPE stream_get_status(IDirectSoundStream *object, L
 {
 	struct psp_stream *stream = stream_from_interface(object);
 
-	game_lock();
-	*status = stream->packet_count < MAXIMUM_STREAM_PACKETS ? XMO_STATUSF_ACCEPT_INPUT_DATA : 0;
-	pthread_mutex_unlock(&mixer_lock);
+	queue_enter();
+	*status = GAME_OF(stream)->count < MAXIMUM_STREAM_PACKETS ? XMO_STATUSF_ACCEPT_INPUT_DATA : 0;
+	queue_leave();
 	return S_OK;
 }
 
 static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCXMEDIAPACKET input, LPCXMEDIAPACKET output)
 {
 	struct psp_stream *stream = stream_from_interface(object);
-	struct voice_packet *entry;
+	struct stream_game *game = GAME_OF(stream);
+	const unsigned char *data;
 	unsigned long frames;
 
 	(void)output;
@@ -1838,62 +2126,37 @@ static HRESULT STDMETHODCALLTYPE stream_process(IDirectSoundStream *object, LPCX
 	frames = stream->adpcm ?
 		input->dwMaxSize / (XBOX_ADPCM_BLOCK_BYTES * stream->channels) * XBOX_ADPCM_BLOCK_SAMPLES :
 		input->dwMaxSize / (2 * stream->channels);
-	game_lock();
-	if (stream->packet_count == MAXIMUM_STREAM_PACKETS)
+	queue_enter();
+	if (game->count == MAXIMUM_STREAM_PACKETS)
 	{
-		pthread_mutex_unlock(&mixer_lock);
+		queue_leave();
 		return E_OUTOFMEMORY;
 	}
-	entry = &stream->packets[(stream->packet_head + stream->packet_count) % MAXIMUM_STREAM_PACKETS];
-	entry->packet = *input;
-	entry->data = (const unsigned char *)input->pvBuffer;
-	entry->frames = entry->data ? frames : 0;
-	entry->finished = FALSE;
+	game->packet[(game->head + game->count) % MAXIMUM_STREAM_PACKETS] = *input;
+	data = (const unsigned char *)input->pvBuffer;
 	if (input->pdwStatus)
 		*input->pdwStatus = XMEDIAPACKET_STATUS_PENDING;
 	if (input->pdwCompletedSize)
 		*input->pdwCompletedSize = 0;
-	if (stream->queued_context && input->pContext == stream->queued_context && entry->data &&
-		entry->data != stream->queued_end)
+	if (game->queued_context && input->pContext == game->queued_context && data &&
+		data != game->queued_end)
 	{
 		if (jump_record_count < GAP_RECORDS)
 		{
 			jump_records[jump_record_count].context = (long)stream->context;
-			jump_records[jump_record_count].sound_class = stream->sound_class;
-			jump_records[jump_record_count].bytes = (long)(entry->data - stream->queued_end);
-			jump_records[jump_record_count].queued = stream->packet_count;
+			jump_records[jump_record_count].sound_class = game->sound_class;
+			jump_records[jump_record_count].bytes = (long)(data - game->queued_end);
+			jump_records[jump_record_count].queued = game->count;
 		}
 		jump_record_count++;
 	}
-	stream->queued_end = entry->data ? entry->data + input->dwMaxSize : NULL;
-	stream->queued_context = input->pContext;
+	game->queued_end = data ? data + input->dwMaxSize : NULL;
+	game->queued_context = input->pContext;
 	if (psp_sound_queueing_class >= 0)
-		stream->sound_class = psp_sound_queueing_class;
-	if (stream->packet_count && stream->dry_frames)
-	{
-		if (gap_record_count < GAP_RECORDS)
-		{
-			gap_records[gap_record_count].context = (long)stream->context;
-			gap_records[gap_record_count].sound_class = stream->sound_class;
-			gap_records[gap_record_count].dry_ms = stream->dry_frames * 1000 / OUTPUT_RATE;
-			gap_records[gap_record_count].frame_ms = psp_last_frame_us / 1000;
-		}
-		gap_record_count++;
-		dry_gaps++;
-		dry_gap_frames += stream->dry_frames;
-		if (stream->dry_frames > dry_gap_worst)
-			dry_gap_worst = stream->dry_frames;
-	}
-	stream->dry_frames = 0;
-	if (!stream->packet_count)
-	{
-		/* a stream that ran dry starts over */
-		stream->frame = 0;
-		stream->fraction = 0;
-		stream->gains_valid = FALSE;
-	}
-	stream->packet_count++;
-	pthread_mutex_unlock(&mixer_lock);
+		game->sound_class = psp_sound_queueing_class;
+	mix_command(stream, CMD_PUSH, data, data ? frames : 0, game->sound_class);
+	game->count++;
+	queue_leave();
 	return S_OK;
 }
 
@@ -1906,12 +2169,13 @@ static HRESULT STDMETHODCALLTYPE stream_discontinuity(IDirectSoundStream *object
 static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 {
 	struct psp_stream *stream = stream_from_interface(object);
+	struct stream_game *game = GAME_OF(stream);
 
-	game_lock();
+	queue_enter();
 	/* build 43: a sound stopped by the game before it finished playing (a
 	voice taken for a newer sound, or a sound the game gave up on): the
 	heard cut-offs, if the output itself never runs late */
-	if (stream->packet_count && !stream->packets[stream->packet_head].finished)
+	if (game->count && !packet_finished(stream, 0))
 	{
 		cut_sounds++;
 		cut_by_reason[psp_sound_stop_reason]++;
@@ -1919,23 +2183,20 @@ static HRESULT STDMETHODCALLTYPE stream_flush(IDirectSoundStream *object)
 	{
 		unsigned long position;
 
-		for (position = 0; position < stream->packet_count; position++)
-			if (!stream->packets[(stream->packet_head + position) % MAXIMUM_STREAM_PACKETS].finished)
+		for (position = 0; position < game->count; position++)
+			if (!packet_finished(stream, position))
 				flushed_unplayed++;
 	}
-	stream->queued_context = NULL;
-	while (stream->packet_count)
+	game->queued_context = NULL;
+	while (game->count)
 	{
-		struct voice_packet *head = &stream->packets[stream->packet_head];
+		int done = packet_finished(stream, 0);
 
-		stream_complete_head(stream, head->finished ? XMEDIAPACKET_STATUS_SUCCESS : XMEDIAPACKET_STATUS_FLUSHED,
-			head->finished ? head->packet.dwMaxSize : 0);
+		stream_complete_head(stream, done ? XMEDIAPACKET_STATUS_SUCCESS : XMEDIAPACKET_STATUS_FLUSHED,
+			done ? game->packet[game->head].dwMaxSize : 0);
 	}
-	stream->frame = 0;
-	stream->fraction = 0;
-	stream->dry_frames = 0;
-	stream->decoded_packet[0] = stream->decoded_packet[1] = NULL;
-	pthread_mutex_unlock(&mixer_lock);
+	mix_command(stream, CMD_RESET, NULL, 0, 0);
+	queue_leave();
 	return S_OK;
 }
 
@@ -2022,9 +2283,9 @@ HRESULT WINAPI IDirectSound_SetDistanceFactor(LPDIRECTSOUND sound, FLOAT factor,
 {
 	(void)sound;
 	(void)apply;
-	game_lock();
+	unsigned int guard = set_enter();
 	listener.distance_factor = factor > 0.0f ? factor : 1.0f;
-	pthread_mutex_unlock(&mixer_lock);
+	set_leave(guard);
 	return DS_OK;
 }
 
@@ -2032,9 +2293,9 @@ HRESULT WINAPI IDirectSound_SetRolloffFactor(LPDIRECTSOUND sound, FLOAT factor, 
 {
 	(void)sound;
 	(void)apply;
-	game_lock();
+	unsigned int guard = set_enter();
 	listener.rolloff_factor = factor >= 0.0f ? factor : 1.0f;
-	pthread_mutex_unlock(&mixer_lock);
+	set_leave(guard);
 	return DS_OK;
 }
 
@@ -2042,11 +2303,11 @@ HRESULT WINAPI IDirectSound_SetPosition(LPDIRECTSOUND sound, FLOAT x, FLOAT y, F
 {
 	(void)sound;
 	(void)apply;
-	game_lock();
+	unsigned int guard = set_enter();
 	listener.position[0] = x;
 	listener.position[1] = y;
 	listener.position[2] = z;
-	pthread_mutex_unlock(&mixer_lock);
+	set_leave(guard);
 	return DS_OK;
 }
 
@@ -2069,7 +2330,7 @@ HRESULT WINAPI IDirectSound_SetOrientation(LPDIRECTSOUND sound, FLOAT x_front, F
 {
 	(void)sound;
 	(void)apply;
-	game_lock();
+	unsigned int guard = set_enter();
 	listener.front[0] = x_front;
 	listener.front[1] = y_front;
 	listener.front[2] = z_front;
@@ -2078,50 +2339,53 @@ HRESULT WINAPI IDirectSound_SetOrientation(LPDIRECTSOUND sound, FLOAT x_front, F
 	listener.top[2] = z_top;
 	normalize3(listener.front);
 	normalize3(listener.top);
-	pthread_mutex_unlock(&mixer_lock);
+	set_leave(guard);
 	return DS_OK;
 }
 
-/* a stream as DirectSound starts one, in STREAM_BYTES of 64-byte aligned
-memory, and in the mixer's list */
+/* a stream as DirectSound starts one, in STREAM_BYTES + GAME_BYTES of 64-byte
+aligned memory (the mixer's record, then the game's), and in the mixer's list */
 static void stream_start(struct psp_stream *stream, LPCDSSTREAMDESC description)
 {
 	const WAVEFORMATEX *format = description->lpwfxFormat;
+	struct stream_game *game = GAME_OF(stream);
 
-	memset(stream, 0, STREAM_BYTES);
+	memset(stream, 0, STREAM_BYTES + GAME_BYTES);
 	stream->object.lpVtbl = &stream_vtable;
-	stream->reference_count = 1;
+	game->reference_count = 1;
 	stream->callback = description->lpfnCallback;
 	stream->context = description->lpvContext;
-	stream->sound_class = -1;
+	game->sound_class = -1;
 	stream->adpcm = format && format->wFormatTag == WAVE_FORMAT_XBOX_ADPCM;
 	stream->channels = format && format->nChannels == 2 ? 2 : 1;
 	stream->sample_rate = format ? format->nSamplesPerSec : 0;
-	stream->frequency = stream->sample_rate;
-	stream->volume = 1.0f;
+	game->sample_rate = stream->sample_rate;
+	game->frequency = stream->sample_rate;
+	game->volume = 1.0f;
 	/* DirectSound's default mix bins: a mono voice to both fronts, a
 	stereo voice's channels to the front left and right */
-	stream->mix_left = 1.0f;
-	stream->mix_right = 1.0f;
-	stream->has_3d = (description->dwFlags & DSSTREAMCAPS_CTRL3D) != 0;
-	stream->mode = DS3DMODE_NORMAL;
-	stream->minimum_distance = DS3D_DEFAULTMINDISTANCE;
-	stream->maximum_distance = DS3D_DEFAULTMAXDISTANCE;
-	stream->i3dl2_gain = 1.0f;
+	game->mix_left = 1.0f;
+	game->mix_right = 1.0f;
+	game->has_3d = (description->dwFlags & DSSTREAMCAPS_CTRL3D) != 0;
+	game->mode = DS3DMODE_NORMAL;
+	game->minimum_distance = DS3D_DEFAULTMINDISTANCE;
+	game->maximum_distance = DS3D_DEFAULTMAXDISTANCE;
+	game->i3dl2_gain = 1.0f;
 	stream->lowpass_coefficient = GAIN_ONE;
-	stream->cone_inside = stream->cone_outside = 360;
-	stream->cone_forward[2] = 1.0f;
+	game->cone_inside = game->cone_outside = 360;
+	game->cone_forward[2] = 1.0f;
 	stream->decoded_block[0] = stream->decoded_block[1] = -1;
-	game_lock();
-	stream->next = streams;
+	queue_enter();
+	game->next = streams;
+	__asm__ __volatile__("" : : : "memory");
 	streams = stream;
-	pthread_mutex_unlock(&mixer_lock);
+	queue_leave();
 }
 
 HRESULT WINAPI IDirectSound_CreateSoundStream(LPDIRECTSOUND sound, LPCDSSTREAMDESC description,
 	LPDIRECTSOUNDSTREAM *result, LPUNKNOWN outer)
 {
-	struct psp_stream *stream = memalign(64, STREAM_BYTES);
+	struct psp_stream *stream = memalign(64, STREAM_BYTES + GAME_BYTES);
 
 	(void)sound;
 	(void)outer;
@@ -2145,17 +2409,17 @@ unsigned long __stdcall DirectSoundGetStreamVoiceStatus(LPDIRECTSOUNDSTREAM stre
 	struct psp_stream *record = stream_from_interface(stream);
 	unsigned long active;
 
-	game_lock();
-	active = record->packet_count != 0;
-	pthread_mutex_unlock(&mixer_lock);
+	queue_enter();
+	active = GAME_OF(record)->count != 0;
+	queue_leave();
 	return active;
 }
 
 #define STREAM_SETTER(body) \
-	struct psp_stream *record = stream_from_interface(stream); \
-	game_lock(); \
+	struct stream_game *record = GAME_OF(stream_from_interface(stream)); \
+	unsigned int guard = set_enter(); \
 	body; \
-	pthread_mutex_unlock(&mixer_lock); \
+	set_leave(guard); \
 	return DS_OK;
 
 HRESULT WINAPI IDirectSoundStream_SetFrequency(LPDIRECTSOUNDSTREAM stream, DWORD frequency)
@@ -2165,7 +2429,9 @@ HRESULT WINAPI IDirectSoundStream_SetFrequency(LPDIRECTSOUNDSTREAM stream, DWORD
 
 HRESULT WINAPI IDirectSoundStream_SetVolume(LPDIRECTSOUNDSTREAM stream, LONG volume)
 {
-	STREAM_SETTER(record->volume = gain_from_millibels(volume))
+	float gain = gain_from_millibels(volume);
+
+	STREAM_SETTER(record->volume = gain)
 }
 
 HRESULT WINAPI IDirectSoundStream_SetMixBins(LPDIRECTSOUNDSTREAM stream, DWORD mix_bin_mask)
@@ -2178,21 +2444,34 @@ HRESULT WINAPI IDirectSoundStream_SetMixBins(LPDIRECTSOUNDSTREAM stream, DWORD m
 /* volumes come in the order of the set bits of the mask */
 HRESULT WINAPI IDirectSoundStream_SetMixBinVolumes(LPDIRECTSOUNDSTREAM stream, DWORD mix_bin_mask, const LONG *volumes)
 {
-	struct psp_stream *record = stream_from_interface(stream);
+	struct stream_game *record = GAME_OF(stream_from_interface(stream));
 	unsigned long bit, index = 0;
+	float left = 0.0f, right = 0.0f;
+	int has_left = 0, has_right = 0;
+	unsigned int guard;
 
-	game_lock();
 	for (bit = 0; bit < 32; bit++)
 	{
 		if (!(mix_bin_mask & (1UL << bit)))
 			continue;
 		if ((1UL << bit) == DSMIXBIN_FRONT_LEFT)
-			record->mix_left = gain_from_millibels(volumes[index]);
+		{
+			left = gain_from_millibels(volumes[index]);
+			has_left = 1;
+		}
 		else if ((1UL << bit) == DSMIXBIN_FRONT_RIGHT)
-			record->mix_right = gain_from_millibels(volumes[index]);
+		{
+			right = gain_from_millibels(volumes[index]);
+			has_right = 1;
+		}
 		index++;
 	}
-	pthread_mutex_unlock(&mixer_lock);
+	guard = set_enter();
+	if (has_left)
+		record->mix_left = left;
+	if (has_right)
+		record->mix_right = right;
+	set_leave(guard);
 	return DS_OK;
 }
 
@@ -2240,7 +2519,9 @@ HRESULT WINAPI IDirectSoundStream_SetI3DL2Source(LPDIRECTSOUNDSTREAM stream, LPC
 
 		if (high > 0)
 			high = 0;
-		STREAM_SETTER(record->i3dl2_gain = gain_from_millibels(direct); record->hf_millibels = high)
+		float direct_gain = gain_from_millibels(direct);
+
+		STREAM_SETTER(record->i3dl2_gain = direct_gain; record->hf_millibels = high)
 	}
 }
 
@@ -2366,9 +2647,17 @@ of a voice needs */
 static union
 {
 	struct psp_stream stream;
-	unsigned char bytes[STREAM_BYTES];
+	unsigned char bytes[STREAM_BYTES + GAME_BYTES];
 } loop_voices[LOOP_VOICES] __attribute__((aligned(64)));
 static unsigned char loop_voice_used[LOOP_VOICES];
+
+/* an unlinked slot is the Media Engine's until a block that began after the unlink has ended */
+static int loop_voice_busy(int k)
+{
+	unsigned long stamp = GAME_OF(&loop_voices[k].stream)->zombie_stamp;
+
+	return !mixlock_old && stamp && (long)(blocks_ended - stamp) < 0;
+}
 static int loop_heap = -1;
 
 static int loop_voice_index(const void *voice)
@@ -2409,7 +2698,7 @@ void *psp_dsound_loop_start(const void *adpcm, unsigned long bytes, unsigned lon
 	}
 	else
 	{
-		for (k = 0; k < LOOP_VOICES && loop_voice_used[k]; k++)
+		for (k = 0; k < LOOP_VOICES && (loop_voice_used[k] || loop_voice_busy(k)); k++)
 			;
 		if (k == LOOP_VOICES)
 			return NULL;
@@ -2444,7 +2733,7 @@ void psp_dsound_loop_stop(void *voice)
 
 		platform_log("audio: a loop voice stopped after %lu ms mixed in %lu blocks prepared (%s, frequency %lu, gain %d at the end, %d at its loudest, of %d)",
 			stream->mixed_frames * 1000 / OUTPUT_RATE, stream->prepared_blocks, loop_voice_index(voice) < 0 ? "heap" : "static slot",
-			(unsigned long)stream->frequency, stream->target_left, stream->peak_gain, GAIN_ONE);
+			(unsigned long)GAME_OF(stream)->frequency, stream->target_left, stream->peak_gain, GAIN_ONE);
 	}
 	DirectSoundStopStream((LPDIRECTSOUNDSTREAM)voice);
 	k = loop_voice_index(voice);
