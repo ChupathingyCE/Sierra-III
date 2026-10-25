@@ -4843,6 +4843,10 @@ b79's tank runs sat at x1 on most frames, "held down by an object", four
 times coarser depth than on foot; a model that close is cut triangle by
 triangle anyway, psp_ge_draw_model) */
 static int player_seated = 0;
+/* first-person models drawn in the frame being drawn and in the one before
+(psp_ge_model_shape): nearcine's test for whose eye the camera is */
+static unsigned int first_person_models = 0, first_person_models_last = 0;
+static unsigned long near_cine_frames = 0, near_cine_first_person = 0;
 static float near_plane_auto(const float *eye, float game_near)
 {
 	extern int psp_player_seated(void);
@@ -4858,6 +4862,8 @@ static float near_plane_auto(const float *eye, float game_near)
 	}
 	near_object_distance_last = near_object_distance;
 	near_object_distance = 1e30f;
+	first_person_models_last = first_person_models;
+	first_person_models = 0;
 	near_object_radius_last = near_object_radius;
 	near_object_radius = 0.0f;
 	/* build 106: the nearest model's limit first, and the level tested
@@ -4909,16 +4915,30 @@ static float near_plane_auto(const float *eye, float game_near)
 	plane gets a plane a quarter as far. The 16:9 view shows the sides that
 	4:3 left off screen, and there the cinematic camera's close-ups cut
 	faces open (a10's Keyes). The depth range coarsens only while it lasts.
-	"nearcineoff": the game's plane as before */
+	Not while the camera is the player's own eye (his first-person weapon
+	drawn the frame before): b30's flight is a cutscene seen from the
+	Pelican's bench, the cabin at the eye, and the quarter plane made the
+	16-bit depth four times coarser for all of it: the far ocean tied with
+	the seabed again and the shore and the beach structure fought (B21).
+	"nearcinefp": in first person too, as before. "nearcineoff": the game's
+	plane as before */
 	if (scale == 1 && near_object_distance_last < game_near * 1.4f)
 	{
 		extern unsigned char cinematic_in_progress(void);
 		static int near_cine = -1;
 
 		if (near_cine < 0)
-			near_cine = !psp_keep("nearcineoff");
+			near_cine = psp_keep("nearcineoff") ? 0 : psp_keep("nearcinefp") ? 2 : 1;
 		if (near_cine && cinematic_in_progress())
-			return game_near * 0.25f;
+		{
+			if (first_person_models_last && near_cine == 1)
+				near_cine_first_person++;
+			else
+			{
+				near_cine_frames++;
+				return game_near * 0.25f;
+			}
+		}
 	}
 	return game_near * scale;
 }
@@ -10665,6 +10685,8 @@ void psp_ge_model_shape(int first_person, const float *centroid, float radius, f
 	if (far_fp > first_person_near)
 		first_person_far = far_fp;
 	first_person = first_person != 0;
+	if (first_person)
+		first_person_models++;
 	if (first_person != model_first_person)
 	{
 		use_projection(first_person);
@@ -23482,6 +23504,10 @@ static void frame_end_show(void)
 						near_auto ? " (nearauto)" : " (fixed)", near_auto_chosen[2], near_auto_chosen_high[0], near_auto_chosen_high[1], near_auto_chosen[1], near_auto_chosen[0],
 						near_auto_by_objects, near_auto_frames ? near_auto_us / near_auto_frames : 0, level_draws_inside / 300,
 						level_draws_classified / 300, angle_far_triangles / 300, detail_passes_skipped_far / 300);
+					if (near_cine_frames || near_cine_first_person)
+						platform_log("GE: nearcine: %lu frames at a quarter plane (a cutscene's close-up), %lu left at the game's plane (the player's own eye)",
+							near_cine_frames, near_cine_first_person);
+					near_cine_frames = near_cine_first_person = 0;
 					if (near_auto_check > 0)
 						platform_log("GE: nearautocheck: %lu sphere answers compared, %lu differed", near_auto_checked, near_auto_differed);
 					platform_log("GE: uv centring %s: %lu draws, largest shift %.0f repeats; GE serial %s",
