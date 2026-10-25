@@ -1077,6 +1077,12 @@ static void *allocate_resource_memory(unsigned long size)
 
 						psp_phase(2);
 						main_game_render((double)main_globals.seconds_elapsed);
+						{
+							/* the main menu's veil, before the frame's end (psp_loading.c) */
+							extern void psp_loading_boot_veil(void);
+
+							psp_loading_boot_veil();
+						}
 						psp_frame_account(psp_heartbeat_clock() - psp_start);
 					}
 #else
