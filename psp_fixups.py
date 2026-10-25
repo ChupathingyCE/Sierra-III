@@ -27607,6 +27607,16 @@ void psp_main_settle(void)
 
 	if (game_engine_running() || debug_no_drawing || !psp_loading_settle_begin())
 		return;
+	/* one tick first, unseen, so the settle draws the view play begins with:
+	at game time 0 a level draws nothing (a10's settle drew 0 for its whole
+	cap) and so warms nothing, and the textures came in under play (B1, the
+	sky first). Play starts a tick later. "settletickoff": as before */
+	{
+		extern int psp_keep(const char *name);
+
+		if (!psp_keep("settletickoff"))
+			game_time_update(1.0f / TICKS_PER_SECOND);
+	}
 	do
 	{
 		unsigned long psp_start = psp_heartbeat_clock();
