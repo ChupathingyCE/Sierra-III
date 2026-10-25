@@ -12999,10 +12999,11 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 	far dimmer than either the add or the screen (the desktop build's frames),
 	but on the PSP the clamp shows the base's aliasing where the ring is seen
 	edge on, which the screen hides under the glow (the emulator: twice
-	the shimmer), and the ring was judged fine without it. So off by default:
-	"glowclamp" turns it on ("glownoclamp" still says off) */
+	the shimmer). On by default since Sheepdog01 found the ring's inner textures
+	too bright on the PSP (B15): the clamp is the original's look, the
+	shimmer its price. "glownoclamp": the screen alone, as before */
 	if (glow_no_clamp < 0)
-		glow_no_clamp = !psp_keep("glowclamp");
+		glow_no_clamp = psp_keep("glownoclamp") != 0;
 	clamped = psp_showcase_map && !glow_no_clamp && glow_base_key;
 	if (glow_add || clamped)
 		sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
