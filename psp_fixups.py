@@ -23746,6 +23746,437 @@ void object_type_postprocess_node_matrices_for_type(
 """),
 ]
 
+# ---------- UNITHOIST (api-job 40135731866, lever 2): the biped update chain takes the
+# biped and definition biped_update already holds, not a lookup of each in every
+# helper (FIXES_HOIST's idea, one chain down). A helper is passed them, or NULL under
+# "unithoistold", and looks them up itself when it gets NULL. biped_snap_facing and
+# biped_get_physics_pill have other callers, so each keeps a wrapper over a static
+# _with body; objects.c's object_get_origin and object_mark_function get a public
+# _with body the same way (perception's refresh marks the object it just got).
+# biped_verify_object_vectors returned after its lookup when "verifyvectors" is off;
+# it now returns first. The two discarded biped_definition_get calls (a tag_get
+# whose result nothing reads) go with the hoist. Exact while the object pool moves
+# nothing between biped_update's lookup and the helper: only memory_pool_compact
+# moves a live object's block, and block_reallocate moves the one being made.
+# "unithoistold": the old calls. "unithoistcheck" (PSP_RECON): each held pointer
+# looked up again and counted, expected 0 differing
+FIXES_UNITHOIST = {}
+FIXES_UNITHOIST["source/units/bipeds.c#unithoist"] = [
+("""static void biped_snap_facing(
+	long biped_index);
+""", """static void biped_snap_facing(
+	long biped_index);
+/* psp_fixups.py (FIXES_UNITHOIST): bodies that take the biped and definition biped_update holds */
+static void biped_snap_facing_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition);
+static void biped_get_physics_pill_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition,
+	real_point3d *base,
+	real *height,
+	real *width);
+real_point3d *psp_object_get_origin_with(long object_index, struct object_datum *object, real_point3d *origin);
+
+#ifdef PSP_RECON
+/* "unithoistcheck": a held pointer against a fresh lookup (NULL: that helper looks up for itself) */
+static void psp_unithoist_check(long biped_index, struct biped_datum *biped, struct biped_definition *definition)
+{
+	static int on = -1;
+	static unsigned long checked, differed;
+	int psp_keep(const char *name);
+	int psp_keep_loaded(void);
+	void platform_psp_log(const char *format, ...);
+
+	if (!biped)
+		return;
+	if (on < 0 && psp_keep_loaded())
+		on = psp_keep("unithoistcheck");
+	if (on <= 0)
+		return;
+	checked++;
+	if (biped_get(biped_index) != biped ||
+		(definition && biped_definition_get(biped->definition_index) != definition))
+	{
+		if (differed++ < 8)
+			platform_psp_log("unithoistcheck: a held pointer differs from its lookup (biped %ld)", biped_index);
+	}
+	if (checked % 100000 == 0)
+		platform_psp_log("unithoistcheck: %lu pointers looked up again, %lu differed", checked, differed);
+}
+#endif
+"""),
+("""	struct biped_datum *biped = biped_get(biped_index);
+#ifdef HALO_PSP
+	{
+		/* (units.c's #verify, psp_fixups.py) */
+""", """	struct biped_datum *biped;
+#ifdef HALO_PSP
+	{
+		/* (units.c's #verify, psp_fixups.py) */
+"""),
+("""		if (!psp_verify)
+			return;
+	}
+#endif
+""", """		if (!psp_verify)
+		{
+			/* psp_fixups.py (FIXES_UNITHOIST): the lookup waits for a verify that runs */
+			if (PSP_KEEP_ONCE("unithoistold"))
+				(void)biped_get(biped_index);
+			return;
+		}
+	}
+#endif
+	biped = biped_get(biped_index);
+"""),
+("""	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+	object_get_origin(biped_index, base);
+""", """	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_get_physics_pill_with(biped_index, biped, biped_definition_get(biped->definition_index), base, height, width);
+}
+
+static void biped_get_physics_pill_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition,
+	real_point3d *base,
+	real *height,
+	real *width)
+{
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, biped, definition);
+#endif
+	if (PSP_KEEP_ONCE("unithoistold"))
+		object_get_origin(biped_index, base);
+	else
+		psp_object_get_origin_with(biped_index, (struct object_datum *)biped, base);
+"""),
+("""static void biped_snap_facing(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+
+""", """static void biped_snap_facing(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_snap_facing_with(biped_index, biped, biped_definition_get(biped->definition_index));
+}
+
+static void biped_snap_facing_with(
+	long biped_index,
+	struct biped_datum *biped,
+	struct biped_definition *definition)
+{
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, biped, definition);
+#endif
+
+"""),
+("""static void biped_update_dead(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+""", """static void biped_update_dead(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static void biped_update_airborne(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	boolean flying = FALSE;
+""", """static void biped_update_airborne(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+	boolean flying = FALSE;
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static void biped_update_landing(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_definition_get(biped->definition_index);
+""", """static void biped_update_landing(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+	if (!held_biped)
+		biped_definition_get(biped->definition_index);
+"""),
+("""static void biped_update_slipping(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+	biped_definition_get(biped->definition_index);
+""", """static void biped_update_slipping(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+	if (!held_biped)
+		biped_definition_get(biped->definition_index);
+"""),
+("""static void biped_try_to_make_footsteps(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	boolean air_contact;
+	boolean moving;
+
+	biped_definition_get(biped->definition_index);
+""", """static void biped_try_to_make_footsteps(
+	long biped_index,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	boolean air_contact;
+	boolean moving;
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+	if (!held_biped)
+		biped_definition_get(biped->definition_index);
+"""),
+("""static void biped_falling_danger(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+""", """static void biped_falling_danger(
+	long biped_index,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static boolean biped_check_discard(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+
+""", """static boolean biped_check_discard(
+	long biped_index,
+	struct biped_datum *held_biped)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, NULL);
+#endif
+
+"""),
+("""static void biped_update_turning(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	unsigned long flags = definition->biped.flags;
+""", """static void biped_update_turning(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_datum *biped = held_biped ? held_biped : biped_get(biped_index);
+	struct biped_definition *definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+	unsigned long flags = definition->biped.flags;
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""static void biped_update_moving(
+	long biped_index,
+	struct unit_animation_update_data *animation)
+{
+	struct biped_physics physics;
+	struct biped_definition *definition;
+	struct biped_datum *biped;
+	real movement_scale;
+	word in_flags;
+
+	biped = biped_get(biped_index);
+""", """static void biped_update_moving(
+	long biped_index,
+	struct unit_animation_update_data *animation,
+	struct biped_datum *held_biped,
+	struct biped_definition *held_definition)
+{
+	struct biped_physics physics;
+	struct biped_definition *definition;
+	struct biped_datum *biped;
+	real movement_scale;
+	word in_flags;
+
+	biped = held_biped ? held_biped : biped_get(biped_index);
+#ifdef PSP_RECON
+	psp_unithoist_check(biped_index, held_biped, held_definition);
+#endif
+"""),
+("""	definition = biped_definition_get(biped->definition_index);
+	physics.biped_index = biped_index;
+""", """	definition = held_definition ? held_definition : biped_definition_get(biped->definition_index);
+	physics.biped_index = biped_index;
+"""),
+("""	biped_get_physics_pill(
+		biped_index,
+		&physics.position,
+		&physics.height,
+		&physics.width);
+""", """	if (held_biped)
+		biped_get_physics_pill_with(biped_index, biped, definition, &physics.position, &physics.height, &physics.width);
+	else
+		biped_get_physics_pill(
+			biped_index,
+			&physics.position,
+			&physics.height,
+			&physics.width);
+"""),
+("""boolean biped_update(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct unit_animation_update_data animation;
+""", """boolean biped_update(
+	long biped_index)
+{
+	struct biped_datum *biped = biped_get(biped_index);
+	struct biped_definition *definition = biped_definition_get(biped->definition_index);
+	struct unit_animation_update_data animation;
+	/* psp_fixups.py (FIXES_UNITHOIST): handed to the helpers below, which look up when given NULL ("unithoistold") */
+	struct biped_datum *const psp_held_biped = PSP_KEEP_ONCE("unithoistold") ? NULL : biped;
+	struct biped_definition *const psp_held_definition = psp_held_biped ? definition : NULL;
+"""),
+("""		biped_snap_facing(biped_index);
+		if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit) ||
+""", """		if (psp_held_biped)
+			biped_snap_facing_with(biped_index, biped, definition);
+		else
+			biped_snap_facing(biped_index);
+		if (TEST_FLAG(biped->object.damage_flags, _object_dead_bit) ||
+"""),
+("""biped_update_turning(biped_index, &animation);""",
+ """biped_update_turning(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_moving(biped_index, &animation);""",
+ """biped_update_moving(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_dead(biped_index, &animation);""",
+ """biped_update_dead(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_airborne(biped_index, &animation);""",
+ """biped_update_airborne(biped_index, &animation, psp_held_biped, psp_held_definition);"""),
+("""biped_update_landing(biped_index, &animation);""",
+ """biped_update_landing(biped_index, &animation, psp_held_biped);"""),
+("""biped_update_slipping(biped_index, &animation);""",
+ """biped_update_slipping(biped_index, &animation, psp_held_biped);"""),
+("""biped_try_to_make_footsteps(biped_index);
+		biped_falling_danger(biped_index);
+		biped_check_discard(biped_index);""",
+ """biped_try_to_make_footsteps(biped_index, psp_held_biped);
+		biped_falling_danger(biped_index, psp_held_biped, psp_held_definition);
+		biped_check_discard(biped_index, psp_held_biped);"""),
+]
+FIXES_UNITHOIST["source/objects/objects.c#unithoist"] = [
+("""real_point3d *object_get_origin(
+	long object_index,
+	real_point3d *origin)
+{
+	struct object_datum *object = object_get(object_index);
+
+""", """/* psp_fixups.py (FIXES_UNITHOIST): the caller's object, when it holds it */
+real_point3d *psp_object_get_origin_with(long object_index, struct object_datum *object, real_point3d *origin);
+
+real_point3d *object_get_origin(
+	long object_index,
+	real_point3d *origin)
+{
+	return psp_object_get_origin_with(object_index, object_get(object_index), origin);
+}
+
+real_point3d *psp_object_get_origin_with(
+	long object_index,
+	struct object_datum *object,
+	real_point3d *origin)
+{
+
+"""),
+("""boolean object_mark_function(
+	long object_index)
+{
+	boolean result;
+	struct object_datum *object = object_get(object_index);
+""", """/* psp_fixups.py (FIXES_UNITHOIST): perception's refresh marks the object it just got */
+boolean psp_object_mark_function_with(struct object_datum *object);
+
+boolean object_mark_function(
+	long object_index)
+{
+	return psp_object_mark_function_with(object_get(object_index));
+}
+
+boolean psp_object_mark_function_with(
+	struct object_datum *object)
+{
+	boolean result;
+"""),
+]
+FIXES_UNITHOIST["source/ai/actor_perception.c#unithoist"] = [
+("""#define current_object pointers.current_object
+""", """#define current_object pointers.current_object
+	boolean psp_object_mark_function_with(struct object_datum *object); /* psp_fixups.py (FIXES_UNITHOIST) */
+"""),
+("""		if (object_mark_function(object_index))
+""", """		if (PSP_KEEP_ONCE("unithoistold") ? object_mark_function(object_index) : psp_object_mark_function_with(current_object))
+"""),
+]
+
 # ---------- the level's mirror pass: on the PSP the mirror window never
 # opens (FIXES_108 render.c#mirror), so has_mirror is always FALSE and
 # rasterizer_environment_reflection_mirror_draw draws nothing; the pass still
@@ -34725,6 +35156,153 @@ static void lruv_cache_verify(
 """),
 ]
 
+# ---------- TAGSNAP (api-job 40135731866, lever 4): tag_get's found-it path read
+# four globals (tags_loaded, global_tag_instances, tag_header, its tag_count). It
+# reads one static pair {instances, count} now, refreshed at every place those
+# are set or cleared: scenario_tags_load's two loads (the Xbox path, and the
+# Custom Edition path the PSP build compiles out), scenario_tags_unload's clear,
+# and cache_files_set_tag_instances (the menus' tags grow the table). A NULL
+# instances is "not loaded". Exact while nothing else writes those globals.
+# "tagsnapold": the pair stays empty and tag_get reads the globals as before.
+# "tagsnapcheck" (PSP_RECON): every tag_get compares the pair with the globals
+# and counts the differences, expected 0
+FIXES_TAGSNAP = {}
+FIXES_TAGSNAP["source/cache/cache_files.c#tagsnap"] = [
+("""extern struct cache_file_tag_instance *global_tag_instances;""",
+ """extern struct cache_file_tag_instance *global_tag_instances;
+#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_TAGSNAP): tag_get's tags, as one pair kept in step with the globals */
+static struct { struct cache_file_tag_instance *instances; long count; } psp_tagsnap;
+
+static void psp_tagsnap_refresh(void)
+{
+	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
+		!PSP_KEEP_ONCE("tagsnapold"))
+	{
+		psp_tagsnap.instances = global_tag_instances;
+		psp_tagsnap.count = cache_file_globals.tag_header->tag_count;
+	}
+	else
+	{
+		psp_tagsnap.instances = NULL;
+		psp_tagsnap.count = 0;
+	}
+}
+
+#ifdef PSP_RECON
+/* "tagsnapcheck": the pair against the globals it stands for */
+static void psp_tagsnap_check(void)
+{
+	static int on = -1;
+	static unsigned long checked, differed;
+	int psp_keep(const char *name);
+	int psp_keep_loaded(void);
+	void platform_psp_log(const char *format, ...);
+	int loaded;
+
+	if (on < 0 && psp_keep_loaded())
+		on = psp_keep("tagsnapcheck");
+	if (on <= 0 || PSP_KEEP_ONCE("tagsnapold"))
+		return;
+	loaded = cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header;
+	checked++;
+	if (psp_tagsnap.instances != (loaded ? global_tag_instances : NULL) ||
+		psp_tagsnap.count != (loaded ? cache_file_globals.tag_header->tag_count : 0))
+	{
+		if (differed++ < 8)
+			platform_psp_log("tagsnapcheck: the pair differs from the globals (count %ld)", (long)psp_tagsnap.count);
+	}
+	if (checked % 1000000 == 0)
+		platform_psp_log("tagsnapcheck: %lu tag_gets compared, %lu differed", checked, differed);
+}
+#endif
+#endif"""),
+("""	cache_file_globals.tags_loaded = FALSE;
+	global_tag_instances = NULL;
+""",
+ """	cache_file_globals.tags_loaded = FALSE;
+	global_tag_instances = NULL;
+#ifdef HALO_PSP
+	psp_tagsnap_refresh();
+#endif
+"""),
+("""	cache_file_globals.tag_header->tag_count = count;
+	global_tag_instances = instances;
+""",
+ """	cache_file_globals.tag_header->tag_count = count;
+	global_tag_instances = instances;
+#ifdef HALO_PSP
+	psp_tagsnap_refresh();
+#endif
+"""),
+("""			tags_header_register_vertex_and_index_buffers(cache_file_globals.tag_header);
+			cache_file_globals.tags_loaded = TRUE;
+""",
+ """			tags_header_register_vertex_and_index_buffers(cache_file_globals.tag_header);
+			cache_file_globals.tags_loaded = TRUE;
+#ifdef HALO_PSP
+			psp_tagsnap_refresh();
+#endif
+"""),
+("""			global_tag_instances = xbox_pointer(ce_header->tag_instances);
+			cache_file_globals.tags_loaded = TRUE;
+""",
+ """			global_tag_instances = xbox_pointer(ce_header->tag_instances);
+			cache_file_globals.tags_loaded = TRUE;
+#ifdef HALO_PSP
+			psp_tagsnap_refresh();
+#endif
+"""),
+("""	if (cache_file_globals.tags_loaded && global_tag_instances && cache_file_globals.tag_header &&
+		absolute_index >= 0 && absolute_index < cache_file_globals.tag_header->tag_count)
+	{
+		struct cache_file_tag_instance *instance = &global_tag_instances[absolute_index];""",
+ """	struct cache_file_tag_instance *psp_tags = psp_tagsnap.instances;
+	long psp_count = psp_tagsnap.count;
+
+#ifdef PSP_RECON
+	psp_tagsnap_check();
+#endif
+	if (!psp_tags && PSP_KEEP_ONCE("tagsnapold") && cache_file_globals.tags_loaded && global_tag_instances &&
+		cache_file_globals.tag_header)
+	{
+		psp_tags = global_tag_instances;
+		psp_count = cache_file_globals.tag_header->tag_count;
+	}
+	if (psp_tags && absolute_index >= 0 && absolute_index < psp_count)
+	{
+		struct cache_file_tag_instance *instance = &psp_tags[absolute_index];"""),
+]
+
+# ---------- DGFAST (api-job 40135731866, lever 6): datum_get's found-it path ahead of
+# its two release asserts, which run on every call (cseries.h match_assert is a live
+# branch in a release build). A found datum returns at once; the asserts run when it
+# isn't found, so debug.txt still reports an invalid read. Left off the found path:
+# the "valid" assert (data.c:396) alone, whose failure the caller never saw (it got
+# the same pointer). An identifier of 0 on a zero-invalid array isn't found-it here,
+# so it reaches both asserts as before. The same pointer or NULL in every case.
+# "dgfastold": the asserts first, as before
+FIXES_DGFAST = {}
+FIXES_DGFAST["source/memory/data.c#dgfast"] = [
+("""	identifier = index>>16;
+	absolute_index = index;
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c", 396, data->valid);
+""",
+ """	identifier = index>>16;
+	absolute_index = index;
+#if defined(HALO_PSP) && defined(HALO_RELEASE)
+	/* psp_fixups.py (FIXES_DGFAST): found-it first, the asserts below when it isn't ("dgfastold": as before) */
+	if (absolute_index>=0 && absolute_index<data->count && !PSP_KEEP_ONCE("dgfastold"))
+	{
+		header = (struct datum_header *)((byte *)xbox_pointer(data->data)+data->size*absolute_index);
+		if (header->identifier && (identifier ? identifier==header->identifier : !data->identifier_zero_invalid))
+			return header;
+	}
+#endif
+	match_assert("c:\\\\halo\\\\SOURCE\\\\memory\\\\data.c", 396, data->valid);
+"""),
+]
+
 # PRS (S2) count first: "perccensus" (PSP_RECON): every 5 s of game time, per
 # tick, the perception refreshes, the objects their cluster walk visits (with
 # children), those met already in the refresh, and those perception passes
@@ -34733,7 +35311,7 @@ static void lruv_cache_verify(
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
