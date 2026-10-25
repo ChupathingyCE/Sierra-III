@@ -103,6 +103,7 @@ static const struct item items[] =
 
 static int menu_open = 0, cursor = 0, overlay = -1, swallowing = 0, select_released = 0;
 int psp_keep(const char *name);
+int psp_keep_number(const char *prefix, int fallback);
 static unsigned int last_buttons = 0;
 static int screen_ready = 0;
 static unsigned long long fps_mark = 0, tps_mark = 0, launch_mark = 0;
@@ -286,6 +287,22 @@ void psp_debug_draw(void *vram)
 		snprintf(line, sizeof(line), "TICK %4.1f MS   REND %4.1f MS   PORT %4.1f MS   WAIT %4.1f MS", psp_budget_last[2],
 			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5]);
 		text(0, 1, 0xFF80FF80, line);
+		/* the lab's runs numbered ("rigrunN rigofM", sierra-hw), so whoever
+		watches the PSP knows which of a job's runs is playing */
+		{
+			static int run = -1, runs = 0;
+
+			if (run < 0)
+			{
+				run = psp_keep_number("rigrun", 0);
+				runs = psp_keep_number("rigof", 0);
+			}
+			if (run > 0)
+			{
+				snprintf(line, sizeof(line), "RUN %d/%d", run, runs);
+				text(0, 3, 0xFFFFFF80, line);
+			}
+		}
 	}
 	if (heap_warning)
 	{
