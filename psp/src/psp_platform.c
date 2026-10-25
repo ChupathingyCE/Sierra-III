@@ -1052,7 +1052,7 @@ geshow2's ring, so the GE never reads a later frame's triangles.
 geowindow: the tag window's span no BSP of the map uses becomes the geometry
 cache's second stretch (b30 +312 KB, c20 +1.2 MB): memory otherwise idle,
 which plays the same (only reads change); both PSPs' ladders ran every map
-with it, no level change or frame rate different (lab 40092726147, 40092793841).
+with it, no level change or frame rate different (PSP runs).
 Left out whole with the instruments that measure or split the frame as they
 did before (mebench, gemeoverlap, geserial): those words mean what they did.
 The multiplayer build has none of them: none was played against a server */
@@ -1069,10 +1069,10 @@ static const struct
 	{ "geshow3", "geshow3off" }, { "geowindow", "geowindowoff" },
 	/* the dither centred for the GE's truncating writes: without it dark
 	scenes draw about 4 levels darker than the PC on every channel (a10's
-	opening against ChupathingyCE's frames); a restoration, Sheepdog01's call */
+	opening against ChupathingyCE's frames); a restoration */
 	{ "ditherlift", "noditherlift" },
 	/* a light's gel lit by its six faces, so the alert lights' beams reach the
-	walls (psp_fixups.py, gelfaces); on provisionally (Sheepdog01, 2026-10-24) while
+	walls (psp_fixups.py, gelfaces); on provisionally while
 	its cost in a10's hallway (+8-15%) is weighed */
 	{ "gelfaces", "nogelfaces" },
 	/* the frame handed to the ME in pieces as it is written, gated on the main

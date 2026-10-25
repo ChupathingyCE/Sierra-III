@@ -5717,8 +5717,8 @@ static void showcase_levels(void)
 	tex_bias = tex_bias_base + (psp_showcase_map ? psp_keep_number("showcasebias", SHOWCASE_BIAS_DEFAULT) * 0.25f : 0.0f);
 	/* the menu's textures at their largest level whatever the slope says:
 	the real GE's level choice by slope drew the menu's hull from a small,
-	blurred level where the emulator draws it sharp (lab 40107746080 against
-	40106798630; the PSP-3000 with this, 40108671359, matches the emulator).
+	blurred level where the emulator draws it sharp (a PSP run against
+	an earlier one; the PSP-3000 with this build matches the emulator).
 	The showcase rule allows it (nothing reaches the other maps);
 	"showcasesharpoff" leaves the choice to the slope */
 	if (tex_level_mode_base < 0)
@@ -6298,7 +6298,7 @@ only. A level triangle across the far clip is drawn whole, past it, and one
 wholly past it is dropped whole, so where the far ocean meets the sky the
 edge was a row of whole triangles, some reaching into the sky's band and
 some missing, that changed as the view moved (b30's flight on the PSP:
-sierra-hw 40216518479 against the emulator's frames at the same camera,
+a PSP run against the emulator's frames at the same camera,
 which clip each pixel at the far plane as the Xbox does). Such a triangle is
 cut there and its near piece drawn; one wholly past it is left out. The bits
 sit above outside()'s five, so every other decision reads CODE_PLANES as
@@ -13092,7 +13092,7 @@ static int glow_map_pass(void *vertices, const unsigned short *indices, long ind
 	far dimmer than either the add or the screen (the desktop build's frames),
 	but on the PSP the clamp shows the base's aliasing where the ring is seen
 	edge on, which the screen hides under the glow (the emulator: twice
-	the shimmer). On by default since Sheepdog01 found the ring's inner textures
+	the shimmer). On by default since the ring's inner textures looked
 	too bright on the PSP (B15): the clamp is the original's look, the
 	shimmer its price. "glownoclamp": the screen alone, as before */
 	if (glow_no_clamp < 0)

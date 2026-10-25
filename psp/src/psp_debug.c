@@ -287,7 +287,7 @@ void psp_debug_draw(void *vram)
 		snprintf(line, sizeof(line), "TICK %4.1f MS   REND %4.1f MS   PORT %4.1f MS   WAIT %4.1f MS", psp_budget_last[2],
 			psp_budget_last[3], psp_budget_last[4], psp_budget_last[5]);
 		text(0, 1, 0xFF80FF80, line);
-		/* the lab's runs numbered ("rigrunN rigofM", sierra-hw), so whoever
+		/* a test job's runs numbered ("rigrunN rigofM"), so whoever
 		watches the PSP knows which of a job's runs is playing */
 		{
 			static int run = -1, runs = 0;

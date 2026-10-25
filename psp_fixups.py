@@ -7682,7 +7682,7 @@ static int psp_particle_kind(long definition_index)
 	return -1;
 }
 
-/* "particleprio" (a compromise, off by default; Sheepdog01 2026-10-24): a new
+/* "particleprio" (a compromise, off by default): a new
 free particle's fate decided at the top of effect_generate_particles, before
 its position, velocity, BSP location, visibility, lighting and sequence are
 worked out, so one left out costs almost nothing (on d20 half the particles
@@ -26854,9 +26854,9 @@ FIXES_RECON = {}
 # being drawn for psp_ge.c's draw census (psp_census_definition)
 # "scriptsdump": the scenario's script names and types at load, so a run's
 # commands can wake one (a level's late cutscene reached without playing to it)
-# "soundclass" (keep.txt; Sheepdog01 2026-10-24: the sound cache needed to miss no
+# "soundclass" (keep.txt: the sound cache needed to miss no
 # load): with the 5 s "sound cache:" line, the sounds playing by class group
-# and size. snd1 (lab 40092058746) found "playing" (locked pages) at 1.0-1.8 MB
+# and size. an earlier run found "playing" (locked pages) at 1.0-1.8 MB
 # (d20 1,792 KB, the whole default cache): this says whether music, ambience,
 # dialogue or effects hold it, which decides what a smaller cache can shed. A
 # permutation two channels play counts once
@@ -26936,7 +26936,7 @@ FIXES_RECON["source/cache/xbox_sound_cache.c#soundclass"] = [
 # "workcensus" (keep.txt; master 2026-10-24): every 300 ticks, a count of the
 # tick's units of work: objects updated by type, actors updated and
 # perceiving, collision vector and sphere queries, partition relinks, node
-# matrix computes. The pairs name "workcensus", so the lab's desktop hooks
+# matrix computes. The pairs name "workcensus", so the desktop hooks
 # (pc/chupa/sierra_hooks.py) carry them to ChupathingyCE's own build: the
 # same counts from the original on the same stretch, so any work the PSP
 # does that the PC doesn't stands out
