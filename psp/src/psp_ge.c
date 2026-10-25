@@ -10528,6 +10528,7 @@ piece of the ocean or the shore's water gone for a frame, B21). Only a
 missing copy settles the frame in flight, so frames whose copies are all
 built pay one lookup a draw (geopretouch142 built on every draw and cost
 0.8-2.2 ms) */
+static int pretouch_me_busy(void);
 static void level_pretouch(const void *vertices, const void *lightmap_vertices, int vertex_count, unsigned int key)
 {
 	static int level_pretouch_on = -1;
@@ -10542,6 +10543,8 @@ static void level_pretouch(const void *vertices, const void *lightmap_vertices, 
 		inflight_room_park();
 	if (inflight_pending)
 		inflight_sync();
+	if (pretouch_me_busy())
+		return;
 	stream_asked_texture = key;
 	level_pretouches++;
 	if (!level_stream_get(vertices, lightmap_vertices, vertex_count))
@@ -14779,6 +14782,25 @@ flight is settled first, as pretouch does, since the replay reads the table
 a conversion may change; most frames convert nothing here */
 static int model_pretouch = -1;
 static unsigned long model_pretouches = 0, model_pretouch_missed = 0;
+static unsigned long pretouch_chunk_skips = 0;
+
+/* the Media Engine still drawing from this frame's records or the last's
+(mechunk's pieces handed to it while the frame is being written, or a
+frame out that the sync didn't wait for). A conversion here rewrites a
+buffer in place and may free skinning plans (the sweep, a stale part's
+plan) that it draws from: the PSP-3000's marines drew with spikes across
+the screen from their heads (B22, modelpretouch on: 40213200628 run 1);
+the emulator runs the ME's work inside the hand-over, so its frames never
+showed it. Such a draw is left to the frame's end, as before */
+static int pretouch_me_busy(void)
+{
+	if (inflight_me_out || (chunk_frame && chunk_published))
+	{
+		pretouch_chunk_skips++;
+		return 1;
+	}
+	return 0;
+}
 
 static int model_converted_now(const void *vertices)
 {
@@ -14811,9 +14833,12 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 				inflight_room_park();
 			if (inflight_pending)
 				inflight_sync();
-			model_pretouches++;
-			if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
-				model_pretouch_missed++;
+			if (!pretouch_me_busy())
+			{
+				model_pretouches++;
+				if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
+					model_pretouch_missed++;
+			}
 		}
 	}
 	GE_DEFER(defer_draw_model(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key,
@@ -23519,8 +23544,8 @@ static void frame_end_show(void)
 					platform_log("GE: levelpretouch: %lu level copies built as their draws were written down, %lu without room",
 						level_pretouches, level_pretouch_missed);
 				if (model_pretouches)
-					platform_log("GE: modelpretouch: %lu model buffers converted as their draws were written down, %lu without room",
-						model_pretouches, model_pretouch_missed);
+					platform_log("GE: modelpretouch: %lu model buffers converted as their draws were written down, %lu without room; %lu model or level draws left to the frame's end (a piece of the frame on the ME)",
+						model_pretouches, model_pretouch_missed, pretouch_chunk_skips);
 				if (converts_wanted_total || converts_wanted_dropped)
 					platform_log("GE: gemesim: %lu model buffers wanted converted by the Media Engine's work and converted at the frame's end, %lu more than the list held",
 						converts_wanted_total, converts_wanted_dropped);
