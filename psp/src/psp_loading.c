@@ -34,6 +34,8 @@ extern void platform_log(const char *format, ...);
 extern int psp_keep(const char *name);
 extern int psp_keep_number(const char *prefix, int fallback);
 extern unsigned long psp_tex_load_count(void);
+extern unsigned long psp_tex_untextured_frames(void);
+extern unsigned long psp_ge_draws_shown(void);
 /* "heapmap" (psp_libc.c) and "poolpeaks" (psp_fixups.py FIXES_RECON
 #poolpeaks, so linked weakly): measured where a level ends and begins */
 extern void psp_heap_map(const char *label);
@@ -55,6 +57,8 @@ static struct
 	unsigned long settle_cap_us;
 	unsigned long settle_loads; /* the texture cache's count at the last settle frame */
 	unsigned long settle_loads_first; /* and at the settle's start */
+	unsigned long settle_untextured;  /* frames that drew something untextured, at the last settle frame */
+	unsigned long settle_draws_first; /* draws shown, at the settle's start */
 	int settle_frames;
 	int settle_quiet;         /* settle frames in a row that read no texture */
 	unsigned long settle_not_before_us; /* the settle lasts at least to here (0: no such end) */
@@ -312,6 +316,8 @@ static int settle_start(unsigned long not_before_us)
 	if (not_before_us && (long)(not_before_us - (loading.settle_us + loading.settle_cap_us)) > 0)
 		loading.settle_cap_us = not_before_us - loading.settle_us;
 	loading.settle_loads = loading.settle_loads_first = psp_tex_load_count();
+	loading.settle_untextured = psp_tex_untextured_frames();
+	loading.settle_draws_first = psp_ge_draws_shown();
 	loading.settle_frames = 0;
 	loading.settle_quiet = 0;
 	return 1;
@@ -326,19 +332,34 @@ int psp_loading_settle_begin(void)
 
 int psp_loading_settle_frame(void)
 {
+	static int warm = -1;
 	unsigned long count = psp_tex_load_count(), now = psp_heartbeat_clock();
+	unsigned long untextured = psp_tex_untextured_frames(), draws = psp_ge_draws_shown();
+	int still;
 
+	/* warm takes more than no reads (B1: at game time 0 a level settle read
+	none and handed over after 4 frames): no frame drawing something
+	untextured either, and something drawn at all. The counts are of the
+	frames shown, so they trail the frame just drawn by one.
+	"settlewarmoff": reads alone, as before */
+	if (warm < 0)
+		warm = !psp_keep("settlewarmoff");
 	loading.settle_frames++;
-	loading.settle_quiet = count == loading.settle_loads ? loading.settle_quiet + 1 : 0;
+	still = count == loading.settle_loads && (!warm || untextured == loading.settle_untextured);
+	loading.settle_quiet = still ? loading.settle_quiet + 1 : 0;
 	loading.settle_loads = count;
+	loading.settle_untextured = untextured;
 	/* warm, and the screen's progress (and the chant) played out to its end */
-	if ((loading.settle_frames >= 4 && loading.settle_quiet >= 3 && (!loading.screen || loading.shown >= 0.99f) &&
+	if ((loading.settle_frames >= 4 && loading.settle_quiet >= 3 && (!warm || draws != loading.settle_draws_first) &&
+		(!loading.screen || loading.shown >= 0.99f) &&
 		(!loading.settle_not_before_us || (long)(now - loading.settle_not_before_us) >= 0)) ||
 		now - loading.settle_us >= loading.settle_cap_us)
 	{
-		platform_log("loading: %s settled in %lu ms, %d frames, %lu texture reads and waits%s", loading.map,
+		platform_log("loading: %s settled in %lu ms, %d frames, %lu texture reads and waits, %lu draws shown%s", loading.map,
 			(now - loading.settle_us) / 1000, loading.settle_frames, count - loading.settle_loads_first,
-			loading.settle_quiet >= 3 ? "" : " (at the cap, still reading)");
+			draws - loading.settle_draws_first,
+			loading.settle_quiet < 3 ? " (at the cap, still reading)" :
+			draws == loading.settle_draws_first ? " (at the cap, nothing drawn)" : "");
 		return 0;
 	}
 	return 1;
@@ -533,11 +554,32 @@ static void boot_settled(void)
 }
 
 /* main_loop, each frame the game draws, before it is shown */
+/* the main menu's veil, in its own frame: main_loop calls this between the
+frame's render and its account (psp_fixups.py, FIXES_LOADING #bootscreen).
+After the frame's end the list is finished or the Media Engine's, so the
+veil drawn there found the frame shut and drew nothing (B1: the ring orange
+in the menu's first frames). "settleveiloff": after, as before */
+static int boot_veil_early(void)
+{
+	static int early = -1;
+
+	if (early < 0)
+		early = !psp_keep("settleveiloff");
+	return early;
+}
+
+void psp_loading_boot_veil(void)
+{
+	if (boot.settling && boot_veil_early())
+		update(1);
+}
+
 void psp_loading_boot_frame(void)
 {
 	if (!boot.settling)
 		return;
-	update(1);
+	if (!boot_veil_early())
+		update(1);
 	if (!psp_loading_settle_frame())
 		boot_settled();
 }

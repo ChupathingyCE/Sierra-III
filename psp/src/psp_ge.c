@@ -22583,9 +22583,10 @@ and before its swap; the world's see-through draws go first, so none lands
 on top */
 void psp_ge_loading_veil(const struct psp_loading_view *view)
 {
-	static int veil_old = -1;
+	static int veil_old = -1, veil_settle = -1;
+	int settle;
 
-	if (!frame_open || !view || PSP_ME_WORK())
+	if (!view || PSP_ME_WORK())
 		return;
 	/* geinflight: the frame's calls are written down and carried out later,
 	so frame_open is the last frame's, and with gemeon the Media Engine may be
@@ -22595,8 +22596,22 @@ void psp_ge_loading_veil(const struct psp_loading_view *view)
 	veil is left out instead, as it already was wherever frame_open had shut.
 	"veilold": drawn as before */
 	if (veil_old < 0)
+	{
 		veil_old = psp_keep("veilold") != 0;
-	if (!veil_old && (INFLIGHT_RECORDING() || inflight_pending || inflight_me_out))
+		veil_settle = !psp_keep("settleveiloff");
+	}
+	/* B1: so every settle frame was shown raw, the level's first view before
+	its textures were in. What the frame has written down is carried out
+	first (the ME waited for), and the veil then goes into a list only the
+	main CPU is writing, as after a big model's drain. With nothing written
+	(a frame still waiting or out) the test below still leaves it out.
+	"settleveiloff": as before */
+	settle = veil_settle && !veil_old && INFLIGHT_RECORDING();
+	if (settle)
+		GE_DEFER_DRAIN();
+	if (!frame_open)
+		return;
+	if (!veil_old && (inflight_pending || inflight_me_out || (INFLIGHT_RECORDING() && !settle)))
 		return;
 	/* gedefer: the frame's calls written down so far go first, so the
 	veil lands over them */
@@ -23090,6 +23105,15 @@ static void show_picture(int show3)
 	win_swap_us += sceKernelGetSystemTimeLow() - mark;
 }
 
+/* every draw of every frame shown so far, for the settle's warm test
+(psp_loading.c): a settle that has drawn nothing has warmed nothing */
+static PSP_MAIN_SIDE unsigned long draws_shown_total = 0;
+
+unsigned long psp_ge_draws_shown(void)
+{
+	return draws_shown_total;
+}
+
 static void frame_end_show(void)
 {
 	runs_wanted_make();
@@ -23097,6 +23121,7 @@ static void frame_end_show(void)
 	win_transparent += list_part.transparent;
 	win_flush_us += list_part.flush_us;
 	win_draws += list_part.draws;
+	draws_shown_total += list_part.draws;
 	win_triangles += list_part.triangles;
 	win_list_bytes += list_part.list_bytes;
 	window_main_done = 0;
