@@ -6,8 +6,10 @@ copy to the Memory Stick. Nothing from the game is included here.
 
 ## What you need
 
-- **A computer:** Windows 10 or 11 (x86-64), macOS 11 or later (Apple silicon
-  or Intel), or Linux (x86-64, any distribution from 2018 on).
+- **A computer:** Windows 10 or 11 (x86-64), or Linux (x86-64) with glibc 2.39
+  or later (Ubuntu 24.04, Debian 13, Fedora 40, a current rolling release). A
+  macOS bundle comes with a release only when its notes list one (b143 has
+  none).
 - **An image of your Halo disc:** NTSC (USA), version 01.10.12.2276, the one
   the build was made for (the bake checks every map). A bare game-partition
   image (what most Xbox dumping tools and extract-xiso make), a full Redump
@@ -17,7 +19,7 @@ copy to the Memory Stick. Nothing from the game is included here.
   bundle.
 - **Free disk space:** the bake says how much before it starts, and stops if
   there isn't enough (about 8 GB). The result is about 2.2 GB for the
-  campaign and the menus, 2.9 GB with the multiplayer maps. <!-- TODO(master): the 8 GB peak is still an estimate; no bake has measured it. Results measured: b139c 2.21 GB, b139e (24 maps) 2.88 GB -->
+  campaign and the menus, 2.9 GB with the multiplayer maps.
 - **The internet, the first time:** the bake fetches its Python libraries
   (numpy, Pillow, shapely, about 30 MB). Python itself it uses from your
   computer if it has 3.9 to 3.14; if not, it offers to download a portable

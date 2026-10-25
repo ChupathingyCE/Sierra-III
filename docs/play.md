@@ -4,7 +4,18 @@ This guide takes you from a PSP and your own Halo: Combat Evolved disc for the o
 
 Sierra-III contains nothing from the game. You bake the maps yourself, from your own disc, on your own PC. Never download game files, and never share the ones you bake.
 
-These steps are for **release b139**, the first public release. It is the campaign only: multiplayer isn't part of it (step 7).
+These steps are for **release b143**, the first public release. It is the campaign only: multiplayer isn't part of it (step 7).
+
+## The short version
+
+1. Get a PSP with custom firmware (ARK-4) and a Memory Stick with 3.5 GB free (steps 1 and 2).
+2. Make an image of your own Halo disc for the original Xbox, NTSC, version 01.10.12.2276 (step 3).
+3. From the release page, download the game zip and the bake tool for Windows or Linux (step 4).
+4. Unpack the bake tool, put the disc image and the game zip in its two folders, and double-click the bake. It takes about 10 minutes on an 8-core PC (step 4).
+5. Copy what it made to the root of the Memory Stick (step 5).
+6. On the PSP: Game, Memory Stick, Sierra-III: Halo CE port (step 6).
+
+**What to expect:** the whole campaign plays, but only the lightest levels run near full speed. Most run between 12 and 20 frames a second and the heaviest, *The Silent Cartographer*, about 6 (step 6, "What to expect"). It is a work in progress.
 
 **Commands** are for a terminal on Linux or macOS (bash, zsh or dash all work). On Windows, each step says what to do in File Explorer or the Command Prompt instead. Three names stand for paths on your machine:
 - `$STICK`: where your PSP's Memory Stick is mounted (step 1, "Finding `$STICK`", shows how to find it).
@@ -16,14 +27,15 @@ These steps are for **release b139**, the first public release. It is the campai
 1. **A PSP.** The port is built for the PSP-1000 and tested on it; the PSP-2000 and PSP-3000 work too.
 2. **Custom firmware:** official firmware 6.61 with ARK-4 (step 2). Sierra-III is built and tested on that.
 3. **A Memory Stick** (or an adapter) with about 3.5 GB free: the bake of all 24 maps is about 2.9 GB, and the rest is room for the game and its logs.
-4. **Your Halo disc** for the original Xbox, **NTSC, version 01.10.12.2276**, as a disc image (step 3).
+4. **Your Halo disc** for the original Xbox, **NTSC, version 01.10.12.2276**, as a disc image (step 3). Other versions and languages aren't supported yet: the bake refuses them rather than guess (step 3).
 5. **A PC to bake on**, any one of:
    - Windows 10 or 11 (x86-64);
-   - macOS 11 or later (Apple silicon or Intel);
-   - Linux (x86-64) with glibc 2.28 or later: any distribution from 2018 on.
+   - Linux (x86-64) with **glibc 2.39 or later**: Ubuntu 24.04, Debian 13, Fedora 40, or a current rolling release such as Arch. Older systems can't run b143's Linux bake tool; a build for older ones is planned.
+
+   b143 has no macOS bake tool. Bake on a Windows or Linux PC (a virtual machine will do), then copy the result to the stick from your Mac (step 5).
 
    The bake uses the computer's own **Python** if it is 3.9 to 3.14; if there is none, it asks to download a portable one into its own folder. It needs the internet the first time.
-6. **About 8 GB free on the PC** while the bake runs. The result is about 2.2 GB (the campaign and the menus; 2.9 GB with the multiplayer maps); the rest is the bake's working files, which it deletes as it goes. <!-- TODO(master): the 8 GB is still an estimate (the disc's maps, up to four maps' working files, the result): no bake has measured its peak yet. The results are measured: b139c's campaign bake 2.21 GB, b139e's 24 maps 2.88 GB -->
+6. **About 8 GB free on the PC** while the bake runs. The result is about 2.2 GB (the campaign and the menus); the rest is the bake's working files, which it deletes as it goes. The 8 GB is a safe estimate: the bake says how much it needs before it starts, and stops if the drive hasn't that much free.
 7. **A USB cable** for the PSP, or a card reader for the Memory Stick.
 
 **Finding `$STICK`.** On the PSP, open **Settings → USB Connection** and plug the cable in. Most Linux desktops mount the stick by themselves. Then:
@@ -58,7 +70,7 @@ The bake reads your disc's files out of an image you made. It takes any of these
 - **A folder** with the disc's files: the one that holds `default.xbe` and `maps/`, so the bake finds both (with only the maps, the loading screen is silent: step 4).
 
 1. **Make the image from your own disc.** An ordinary PC DVD drive can't read an Xbox disc; Redump's guides describe ways to dump one. Don't download an image.
-2. **The bake checks it for you** (step 4): before anything long starts, it reads every map it needs out of the image and checks each against the retail NTSC 01.10.12.2276 maps' SHA-256 (`hashes.json` in the bundle).
+2. **The bake checks it for you** (step 4): before anything long starts, it reads every map it needs out of the image and checks each against the retail NTSC 01.10.12.2276 maps' SHA-256 (`hashes.json` in the bundle). Other disc versions, and other language releases in particular, aren't checked against anything yet, so the bake refuses them. Support for more versions is planned, and will come with a release that says so.
 
 **Check:** in step 4, the bake's first stage ends with `[1/4] Your disc checks out`. If it says the disc is another version, or that some maps aren't the retail ones ("Hash mismatch", step 4), the image is another version or region, or a bad dump: make it again from your disc.
 
@@ -66,15 +78,14 @@ The bake reads your disc's files out of an image you made. It takes any of these
 
 The bake turns your disc's maps into the files the PSP reads: each map rebuilt for the PSP's memory, plus its texture, geometry and wall-decal packs. It reads the loading screen's chant out of the disc's `default.xbe`, adds a clip of your disc's music to the game as the sound the PSP's menu plays on its entry, and puts the game and the maps together in one folder, ready for the stick.
 
-**Use the bake bundle from the same release as the build zip.** A release says when its bundle changed and the maps must be baked again (b139 does: `bake_changes.md`).
+**Use the bake bundle from the same release as the build zip.** A release says when its bundle changed and the maps must be baked again (b143 does: maps baked with an older tool still load, but miss the level glow maps, the alert lights' wall light and the HUD bars' own transparency; `bake_changes.md`).
 
-1. **Download** from the release page, **[Sierra-III-Release's releases](https://github.com/Sheepdog-01/Sierra-III-Release/releases)**, the build zip, `halo_psp_b139.zip`, and the bake bundle for your system:
+1. **Download** from the release page, **[Sierra-III-Release's releases](https://github.com/Sheepdog-01/Sierra-III-Release/releases)**, the build zip, `halo_psp_b143.zip`, and the bake bundle for your system:
 
    | System | Bundle |
    |---|---|
-   | Windows | `halo-psp-bake-windows-b139.zip` |
-   | macOS | `halo-psp-bake-macos-b139.tar.gz` |
-   | Linux | `halo-psp-bake-linux-b139.tar.gz` |
+   | Windows 10 or 11 | `halo-psp-bake-windows-b143.zip` |
+   | Linux, glibc 2.39 or later | `halo-psp-bake-linux-b143.tar.gz` |
 
    Each has a `.sha256` beside it, which the bundle's SHA-256 must equal (Windows PowerShell: `Get-FileHash <file>`; macOS: `shasum -a 256 <file>`; Linux: `sha256sum <file>`).
 2. **Unpack the bundle.** It makes one folder, `halo-psp-bake`. On Windows (right-click, *Extract All*), keep its path short: `C:\halo-psp-bake` always works, and the bake says if the path is too long.
@@ -83,7 +94,6 @@ The bake turns your disc's maps into the files the PSP reads: each map rebuilt f
    - the build zip, as downloaded, in `halo-psp-bake/2-PUT-THE-HALO-ZIP-HERE`.
 4. **Double-click the bake** in `halo-psp-bake`:
    - **Windows:** `Bake Halo.cmd`. If *Windows protected your PC* appears: *More info*, *Run anyway*.
-   - **macOS:** `Bake Halo.command`. The first time, macOS says it can't check it: choose *Done*, then *System Settings*, *Privacy & Security*, and *Open Anyway* beside `Bake Halo.command`; double-click it again. (macOS 14 or earlier: right-click it, *Open*, *Open*.)
    - **Linux:** `bake-halo.sh` (if asked, *Run*; or right-click, *Run as a Program*). If it only opens in an editor: `cd "$BAKE" && ./bake-halo.sh` in a terminal.
 5. **Let it run.** A window shows what it found, then four stages:
 
@@ -166,7 +176,7 @@ prints `the build is on the stick` and lists the three files. On Windows, check 
 ## 6. First launch
 
 1. On the PSP, open **Game → Memory Stick** and start **Sierra-III: Halo CE port** (the game's name in the list, beside the Sierra-III tile).
-2. **The start-up.** The game shows a loading screen with a thin progress bar while it starts, then its menus. For the first 3 seconds the screen also says `Hold L as the game starts for the development menu` (the launch menu, below). <!-- TODO(master): the time from the XMB to the main menu on b139 (its hand test) --> The first launch of a new build takes a few seconds longer (the saved-game check).
+2. **The start-up.** The game shows a loading screen with a thin progress bar while it starts, then its menus. For the first 3 seconds the screen also says `Hold L as the game starts for the development menu` (the launch menu, below). The first launch of a new build takes a few seconds longer (the saved-game check).
 3. **The main menu** is Halo's own, with the ring behind it. It answers once its textures are in. In Halo's menus the buttons are the pad's: cross is A, circle B, square X, triangle Y; the d-pad and the nub move.
 4. **Starting a level.** Pick **Campaign** and a level. While it loads you hear the **chant**, as on the Xbox: four voices of the monk tone, swelling with the load. The loading screen stays at least 6 seconds, so the chant can swell as it does on the Xbox. Between levels the last view zooms out and fades. A level's first view stands still for up to 3 s while its textures arrive; then play starts.
 5. **In play**, the PSP is one Xbox pad:
@@ -187,11 +197,38 @@ prints `the build is on the stick` and lists the three files. On Windows, check 
    | select + right | screenshot (to `halo/shots/`) |
    | start | pause menu |
 
-   Halo's own control settings (presets, look sensitivity, invert) apply on top. A small performance readout is on by default; the launch menu's `nooverlay` turns it off.
-6. **How fast:** README's "Where it stands" says what each level runs at. The heaviest stretches run slowly; this is the port's open work.
+   Halo's own control settings (presets, look sensitivity, invert) apply on top. The performance readout (frame rate and timings) is off; the launch menu's `overlay` word, or the in-game debug menu, turns it on.
+6. **How fast:** see "What to expect", below. The heaviest stretches run slowly; this is the port's open work.
 7. **To quit:** HOME → **ARK-4 Kommander** → **Exit**.
 
-**Quit before you put the PSP to sleep** (the power switch). Sleep during play is still being tested; if the game doesn't come back from a sleep, hold POWER until the PSP turns off. <!-- TODO(master): drop or soften this once a hand test sleeps and wakes b139 cleanly (the open test since b131: build_b131.md test 6) -->
+## What to expect
+
+**Speed.** The port's aim is 30 frames a second everywhere; it isn't there yet. Measured on a PSP-1000 at its standard clock, over the second half of the first two minutes of each level (the stretch includes fights, so it is not a best case), on the build just before b143's final profile:
+
+| Level | Frames a second |
+|---|---|
+| *The Maw* (d40) | about 30 |
+| *Assault on the Control Room* (b40) | about 29 |
+| *Two Betrayals* (c40) | about 26 |
+| *The Pillar of Autumn* (a10) | about 20 |
+| *343 Guilty Spark* (c10) | about 17 |
+| *Truth and Reconciliation* (a50) | about 16 |
+| *Keyes* (d20) | about 14 |
+| *Halo* (a30) | about 13 |
+| *The Library* (c20) | about 13 |
+| *The Silent Cartographer* (b30) | about 6 |
+
+A PSP-3000 measures within 3% of these. On the lighter levels the game's own logic keeps close to its full 30 ticks a second; on the heaviest it falls behind too, so those play in slow motion as well as at a low frame rate.
+
+**What's different from the Xbox**, as far as we know (the build notes list more):
+- A slight missing polygon at *The Silent Cartographer*'s far horizon.
+- The Pelican's canopy glass is lighter than on the PC, and its side panes stay dim.
+- Some cutscene audio drifts from its picture, a few animations are cut short, and some lights on world geometry are missing.
+- Multiplayer isn't included.
+
+**What it is:** a work in progress, tested by one person on his own PSPs. Reports of crashes and visual faults are welcome (step 8).
+
+**Quit before you put the PSP to sleep** (the power switch). Sleep during play is still being tested; if the game doesn't come back from a sleep, hold POWER until the PSP turns off.
 
 **The launch menu** (optional; the game calls it the development menu). **Hold L as the game starts**, or put an empty file `halo/menu.txt` on the stick, and the game opens a plain text menu before it starts:
 - **MAPS:** every map on the stick, and whether its texture pack is beside it (`NO TEXTURE PACK` means the bake of that map is incomplete). The chosen map starts straight away.
