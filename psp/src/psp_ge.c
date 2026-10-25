@@ -6290,6 +6290,37 @@ static inline void model_to_camera(const ScePspFMatrix4 *m, const float *p, floa
 	out[2] = x * camera_forward[0] + y * camera_forward[1] + z * camera_forward[2] + ge_eye_camera[2];
 }
 
+/* "farcut" (on; farcutoff: as before): the GE clips at the near plane
+only. A level triangle across the far clip is drawn whole, past it, and one
+wholly past it is dropped whole, so where the far ocean meets the sky the
+edge was a row of whole triangles, some reaching into the sky's band and
+some missing, that changed as the view moved (b30's flight on the PSP:
+sierra-hw 40216518479 against the emulator's frames at the same camera,
+which clip each pixel at the far plane as the Xbox does). Such a triangle is
+cut there and its near piece drawn; one wholly past it is left out. The bits
+sit above outside()'s five, so every other decision reads CODE_PLANES as
+before */
+#define CODE_PLANES 0x1F
+#define CODE_PAST 0x20
+#define CODE_SHORT 0x40
+#define CODE_FAR (CODE_PAST | CODE_SHORT)
+#define CLIP_INNER 0x20 /* clip_triangle: keeps the side short of the far clip */
+static int far_cut = -1, far_cut_active = 0;
+static float far_cut_at = 0.0f;
+static unsigned long far_cut_triangles = 0, far_cut_boxes = 0, far_cut_dropped = 0;
+
+/* once a draw, from the far clip the frame has set */
+static inline void far_cut_begin(void)
+{
+	far_cut_active = far_cut > 0 && view_far > 0.0f;
+	far_cut_at = view_far;
+}
+
+static inline int far_cut_code(float z)
+{
+	return !far_cut_active ? 0 : z > far_cut_at ? CODE_PAST : CODE_SHORT;
+}
+
 /* the signed distance of a point inside one plane (positive inside) */
 static inline float plane_distance(const float *v, int plane)
 {
@@ -6299,6 +6330,7 @@ static inline float plane_distance(const float *v, int plane)
 	case 1: return guard_x * v[2] - v[0];
 	case 2: return guard_x * v[2] + v[0];
 	case 3: return guard_y * v[2] - v[1];
+	case 5: return far_cut_at - v[2];
 	default: return guard_y * v[2] + v[1];
 	}
 }
@@ -6440,7 +6472,7 @@ a frame (the buffer's room is the most it held) */
 static int cut_count_on = 0;
 static struct cut_tally
 {
-	unsigned long near, guard_only, whole_off, pieces, off_screen, lost, peak, frames_over;
+	unsigned long near, guard_only, far_end, whole_off, pieces, off_screen, lost, peak, frames_over;
 } cut_tally[CUT_KINDS];
 static int cut_frame_peak[CUT_KINDS];
 static const char *const cut_kind_names[CUT_KINDS] = { "level", "rigid parts", "bending parts", "see-through parts", "other (lights, shadows, stencils, level see-through)" };
@@ -6481,8 +6513,10 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 
 		if (bits & 1)
 			tally->near++;
-		else
+		else if (bits & 0x1E)
 			tally->guard_only++;
+		else
+			tally->far_end++;
 	}
 	if ((less || cut_count_on) && piece_off_screen(polygon[0], polygon[1], polygon[2]))
 	{
@@ -6495,7 +6529,7 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 		}
 	}
 	memcpy(buffer[0], polygon, 3 * sizeof(polygon[0]));
-	for (plane = 0; plane < 5 && count >= 3; plane++)
+	for (plane = 0; plane < 6 && count >= 3; plane++)
 	{
 		int kept = 0;
 
@@ -6558,6 +6592,13 @@ static int clip_triangle(float polygon[3][CORNER_FLOATS], int bits, struct cut_s
 		cut_frame_peak[store->kind] = store->count + 3 * store->lost;
 	clipped_this_frame++;
 	return added;
+}
+
+/* a triangle across the far clip: its near piece, also cut to the planes it crosses */
+static int clip_at_far(float polygon[3][CORNER_FLOATS], int planes, struct cut_store *store)
+{
+	far_cut_triangles++;
+	return clip_triangle(polygon, planes | CLIP_INNER, store);
 }
 
 /* a triangle stored as it is (cut_piece's room, counted as a cut's) */
@@ -10029,6 +10070,8 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	unsigned int lowest = 0xFFFF, highest = 0;
 	struct level_stream *stream;
 	int cut_count = 0, base_alpha = 0, textured, all_inside, far_possible = 0;
+	int fog_pieces = 0, fog_dropped = 0;
+	float box_near = 1e30f, box_far = -1e30f;
 	unsigned int cut_us = 0;
 	float base_slope = 0.0f, detail_pass_slope = 0.0f;
 	struct cut_store pieces_store;
@@ -10039,6 +10082,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	cut_vertices_count = 0;
 	cut_vertices_prepared[0] = cut_vertices_prepared[1] = NULL;
 	cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_LEVEL);
+	far_cut_begin();
 	stream_asked_texture = base_key;
 	stream = level_stream_get(vertices, lightmap_vertices, vertex_count);
 	if (!stream)
@@ -10088,6 +10132,17 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			to_camera(p, c);
 			if (outside(c))
 				all_inside = 0;
+			if (c[2] < box_near)
+				box_near = c[2];
+			if (c[2] > box_far)
+				box_far = c[2];
+		}
+		/* a box across the far clip (depth is linear, so its corners bound
+		every vertex's): its triangles may need cutting there */
+		if (all_inside && far_cut_active && box_far > far_cut_at && box_near <= far_cut_at)
+		{
+			all_inside = 0;
+			far_cut_boxes++;
 		}
 	}
 	if (all_inside)
@@ -10104,7 +10159,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	for (index = 0; index < triangle_count && !all_inside; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
-		int bits[3], corner;
+		int bits[3], corner, planes, split;
 
 		for (corner = 0; corner < 3; corner++)
 		{
@@ -10115,12 +10170,14 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 				float point[3];
 
 				level_to_camera(&stream->base[triangle[corner]].x, point);
-				code = outside(point);
+				code = outside(point) | far_cut_code(point[2]);
 				vertex_codes[triangle[corner]] = (unsigned char)code;
 			}
 			bits[corner] = code;
 		}
-		if (!(bits[0] | bits[1] | bits[2]))
+		planes = (bits[0] | bits[1] | bits[2]) & CODE_PLANES;
+		split = ((bits[0] | bits[1] | bits[2]) & CODE_FAR) == CODE_FAR;
+		if (!planes && !split)
 		{
 			/* safe: kept as it is (copied only once something was dropped) */
 			if (kept)
@@ -10142,8 +10199,12 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			memcpy(kept, indices, kept_count * 3 * sizeof(unsigned short));
 			draw = kept;
 		}
-		if (bits[0] & bits[1] & bits[2])
+		if (bits[0] & bits[1] & bits[2] & (CODE_PLANES | CODE_PAST))
+		{
 			culled_this_frame++;
+			if (!(bits[0] & bits[1] & bits[2] & CODE_PLANES))
+				far_cut_dropped++;
+		}
 		else
 		{
 			float corners[3][CORNER_FLOATS] = { { 0.0f } };
@@ -10161,9 +10222,17 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 			{
 				/* build 47: the cutting timed on its own (taken out of the
 				classification's time below) */
+				int before = cut_count, dropped = pieces_store.dropped;
 				unsigned int cut_start = ge_clock();
 
-				cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &pieces_store);
+				cut_count += split ? clip_at_far(corners, planes, &pieces_store) :
+					clip_triangle(corners, planes, &pieces_store);
+				/* pieces cut only at the far clip are far: no reason for the detail passes */
+				if (!planes)
+				{
+					fog_pieces += cut_count - before;
+					fog_dropped += pieces_store.dropped - dropped;
+				}
 				cut_us += ge_clock() - cut_start;
 			}
 		}
@@ -10233,7 +10302,7 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 		every kept triangle past the detail fade, the detail passes were
 		skipped for them too (the ground at the feet lost its detail map when
 		the rest of a large material's visible triangles were far; review) */
-		if (cut_count > 0 || pieces_store.dropped)
+		if (cut_count > fog_pieces || pieces_store.dropped > fog_dropped)
 			angle_near_any = 1;
 	}
 	/* build 66: the cut corners as GE vertices, once for the base passes and
@@ -12150,6 +12219,13 @@ static void cut_take(void)
 			platform_log("GE: cutlessmask%d: off-screen cuts left out for those kinds only", cut_less_mask);
 	}
 	cut_count_on = psp_keep("cutcount");
+	{
+		extern int psp_keep_number(const char *prefix, int fallback);
+
+		far_cut = !psp_keep("farcutoff");
+		if (!far_cut)
+			platform_log("GE: farcutoff: level triangles across the far clip drawn whole, as before");
+	}
 	if (!cut_stream)
 		platform_log("GE: cutstreamoff: cut pieces past the fixed buffers are lost, pieces off the screen drawn");
 	if (!cut_less)
@@ -17455,6 +17531,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 		return;
 	memset(vertex_codes + lowest, CODE_UNKNOWN, highest - lowest + 1);
 	cut_store_begin(&pieces_store, cut_corners, MAXIMUM_CUT_CORNERS, CUT_OTHER);
+	far_cut_begin();
 	/* build 116: a surface that fades by the angle it is seen at (above) */
 	if (PSP_SEETHROUGH_MODE(blend) != 0 && seethrough_fades(PSP_SEETHROUGH_BLEND(blend)) && !baked &&
 		triangle_count <= LEVEL_ANGLE_TRIANGLES &&
@@ -17467,7 +17544,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 	for (index = 0; index < triangle_count; index++)
 	{
 		const unsigned short *triangle = indices + 3 * index;
-		int bits[3], corner;
+		int bits[3], corner, planes, split;
 
 		if (baked && bake_stencil_has(baked, triangle))
 			continue;
@@ -17482,12 +17559,14 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				float point[3];
 
 				level_to_camera(&stream->base[triangle[corner]].x, point);
-				code = outside(point);
+				code = outside(point) | far_cut_code(point[2]);
 				vertex_codes[triangle[corner]] = (unsigned char)code;
 			}
 			bits[corner] = code;
 		}
-		if (!(bits[0] | bits[1] | bits[2]))
+		planes = (bits[0] | bits[1] | bits[2]) & CODE_PLANES;
+		split = ((bits[0] | bits[1] | bits[2]) & CODE_FAR) == CODE_FAR;
+		if (!planes && !split)
 		{
 			memcpy(kept + 3 * kept_count, triangle, 3 * sizeof(unsigned short));
 			if (kept_count < OVERLAY_TRIANGLES)
@@ -17517,7 +17596,7 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 			}
 			kept_count++;
 		}
-		else if (!(bits[0] & bits[1] & bits[2]))
+		else if (!(bits[0] & bits[1] & bits[2] & (CODE_PLANES | CODE_PAST)))
 		{
 			float corners[3][CORNER_FLOATS] = { { 0.0f } };
 
@@ -17536,7 +17615,8 @@ static void psp_ge_queue_level_transparent_body(const void *vertices, int vertex
 				cut_units = units;
 			if (units < 0 && (overlay_free_far > 0 ? !cut_units_free || -units < cut_units_free : -units > cut_units_free))
 				cut_units_free = -units;
-			cut_count += clip_triangle(corners, bits[0] | bits[1] | bits[2], &pieces_store);
+			cut_count += split ? clip_at_far(corners, planes, &pieces_store) :
+				clip_triangle(corners, planes, &pieces_store);
 		}
 	}
 	if (kept_count > OVERLAY_TRIANGLES)
@@ -23423,6 +23503,10 @@ static void frame_end_show(void)
 		seethrough_vfpu_vertices = 0;
 		planar_fog_windows = 0;
 		meter_parts = meter_parts_dropped = 0;
+		if (far_cut_triangles || far_cut_boxes || far_cut_dropped)
+			platform_log("GE: farcut, last 300 frames: %lu level triangles cut at the far clip (%.1f), %lu left out wholly past it, %lu draws classified only for it",
+				far_cut_triangles, far_cut_at, far_cut_dropped, far_cut_boxes);
+		far_cut_triangles = far_cut_boxes = far_cut_dropped = 0;
 		if (submerged_windows)
 			platform_log("GE: ocean fog, last 300 frames: windows with planar fog %lu; level draws below the plane with the eye above %lu, triangles %lu, vertices %lu, %lu us on the CPU%s; left out (list full) %lu; cut-piece vertices %lu%s",
 				submerged_windows, submerged_draws, submerged_triangles, submerged_vertices, submerged_us,
@@ -23968,7 +24052,7 @@ static void me_classify_measure(const struct level_stream *stream, unsigned int 
 	me_classify_jobs++;
 	me_classify_vertices += highest - lowest + 1;
 	for (v = lowest; v <= highest; v++)
-		if (!(vertex_codes[v] & CODE_UNKNOWN) && vertex_codes[v] != me_codes[v])
+		if (!(vertex_codes[v] & CODE_UNKNOWN) && (vertex_codes[v] & CODE_PLANES) != me_codes[v])
 			me_classify_mismatches++;
 	/* build 87: the same function on the main CPU, the range out of its cache
 	first (as the ME starts), into vertex_codes (done with for this draw: every
