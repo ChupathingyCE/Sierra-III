@@ -131,7 +131,7 @@ EBOOT.PBP is linked with these libraries from the PSP toolchain (pspdev):
   me-core           MIT licence           ../LICENSE-mecore.md
 The game's own source, with which the EBOOT can be rebuilt and relinked
 against changed copies of these libraries, is at
-https://github.com/Sheepdog-01/Sierra-III (docs/toolchain.md).
+https://github.com/Sheepdog-01/Sierra-III-Release (docs/toolchain.md).
 EOF
 top=(PSP)
 if [[ -f $SRC/psp/presets.txt ]]; then
