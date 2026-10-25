@@ -66,7 +66,7 @@ interpolation left the menu. They still work typed into keep.txt, and the
 menu keeps them there as "other words" */
 static struct option options[] = {
 	{ "nearauto", "near plane: by what is near the eye", 1, 0 },
-	{ "nooverlay", "performance overlay OFF at start", 0, 0 },
+	{ "nooverlay", "performance overlay OFF at start", 0, 0 }, { "overlay", "performance overlay ON at start (a release starts without it)", 0, 0 },
 	{ "nomeaudio", "sound mixed on the main CPU, not the ME", 0, 0 },
 	/* build 114's switches (docs/build_b114.md): b113's defaults back */
 	{ "list512", "display list 512 KB (b113's; 768 now)", 0, 0 },

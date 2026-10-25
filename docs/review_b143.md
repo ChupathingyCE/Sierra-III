@@ -53,6 +53,10 @@ PSP-1000 ladder45, tock against its levers off, at 86fa057 [M, one run each, `me
 - Tests and recon only: `spadexec`, `vfpuround`, `workcensus`, `soundclass`, the particle step labels, `hdump`, and the report line's rigid-by-why counts.
 - Tooling: code layout `w142a_tgc90` (a build switch; the tick's release check and zip use it), `halo.secalign.txt`, the overlay's `RUN N/M` line (f452dd1, `psp_debug.c`), the layout fix for main and cold parts (3af0ad5), `tagdeps.py`.
 
+## 5. The release's own defaults
+
+- **The performance overlay is off in the release** (Sheepdog01, 2026-10-25 16:14): `PSP_RELEASE_DEFAULTS` (`psp_post.h`) adds `{ "nooverlay", "overlay" }` beside `notimers`, so a build made with `PSP_METRICS=0` starts without the FPS/TPS line. The launch menu's new `overlay` entry (`psp_menu.c`, on the same line as `nooverlay`, so no line moves and the profile still fits) starts with it on, and the in-game debug menu still toggles it. Test builds are unchanged: the overlay stays on. [D]
+
 ## Things to question
 
 - **Pretouch cost.** The b30 flight costs +2.4 ms (1.6%) on the PSP-1000 [M] against 0.9 ms in plan_preconvert. Which is right?

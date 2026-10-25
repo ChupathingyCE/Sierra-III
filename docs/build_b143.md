@@ -12,7 +12,7 @@
 
 ## On the PSP
 
-Install as b141: unzip into `$psp`, then clear `init.txt`, `keep.txt` and `input.txt`. The log's first line should say `bring-up build 143`. Maps: a bake from this commit's bake tool (the lab's b143).
+Install as b141: unzip into `$psp`, then clear `init.txt`, `keep.txt` and `input.txt`. The log's first line should say `bring-up build 143`. The performance overlay is off in the release: turn it on with `overlay` in the launch menu, or from the in-game debug menu. Maps: a bake from this commit's bake tool (the lab's b143).
 
 ## What to try
 

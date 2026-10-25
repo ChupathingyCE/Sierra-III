@@ -65,5 +65,5 @@ same in both builds and one profile fits them */
 #if defined(PSP_METRICS) && PSP_METRICS
 #define PSP_RELEASE_DEFAULTS
 #else
-#define PSP_RELEASE_DEFAULTS { "notimers", "timerson" },
+#define PSP_RELEASE_DEFAULTS { "notimers", "timerson" }, { "nooverlay", "overlay" },
 #endif
