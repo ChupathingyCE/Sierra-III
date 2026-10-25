@@ -2,7 +2,7 @@
 
 `review_b143.md` lists every change and why. Build 143 is build 141 with your hand-test fixes, the tock's exact speed levers on, and the B21 shore and horizon work. It has the same release shape as b141. [D]
 
-`halo_psp_b143rel.zip`, EBOOT `<hash after the strict build>`, from Sierra-III `bea8aee` plus its profile (`pgo/campaign-b143.tgz`) and the 143 bump. It needs a bake made with the bake tool at this commit (the lab's **b143**): it carries the level glow maps, the gel faces and the HUD meters' own alphas. Older bakes draw as before for glow and gel faces. [D]
+`halo_psp_b143rel.zip`, EBOOT `184572c617a4f654` (lab sierra-build 40236181760; the same EBOOT the release check rc143rel2 40234721052 ran), from Sierra-III `bea8aee` plus its profile (`pgo/campaign-b143.tgz`) and the 143 bump. It needs a bake made with the bake tool at this commit (the lab's **b143**): it carries the level glow maps, the gel faces and the HUD meters' own alphas. Older bakes draw as before for glow and gel faces. [D]
 
 ## What it restores and fixes
 
