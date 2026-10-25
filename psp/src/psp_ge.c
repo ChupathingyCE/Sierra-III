@@ -10537,12 +10537,14 @@ static void level_pretouch(const void *vertices, const void *lightmap_vertices, 
 		return;
 	if (level_pretouch_on < 0)
 		level_pretouch_on = !psp_keep("levelpretouchoff");
-	if (!level_pretouch_on || level_stream_find(vertices) || pretouch_me_busy())
+	if (!level_pretouch_on || level_stream_find(vertices))
 		return;
 	if (inflight_room_away)
 		inflight_room_park();
 	if (inflight_pending)
 		inflight_sync();
+	if (pretouch_me_busy())
+		return;
 	stream_asked_texture = key;
 	level_pretouches++;
 	if (!level_stream_get(vertices, lightmap_vertices, vertex_count))
@@ -14782,15 +14784,17 @@ static int model_pretouch = -1;
 static unsigned long model_pretouches = 0, model_pretouch_missed = 0;
 static unsigned long pretouch_chunk_skips = 0;
 
-/* mechunk: pieces of this frame already handed to the Media Engine, which is
-replaying them while the frame is still being written. A conversion here
-rewrites a buffer in place and may free skinning plans (the sweep, a stale
-part's plan) that those pieces draw from: the PSP-3000's marines drew with
-broken faces (B22, modelpretouch on). Such a draw is left to the frame's end,
-as before */
+/* the Media Engine still drawing from this frame's records or the last's
+(mechunk's pieces handed to it while the frame is being written, or a
+frame out that the sync didn't wait for). A conversion here rewrites a
+buffer in place and may free skinning plans (the sweep, a stale part's
+plan) that it draws from: the PSP-3000's marines drew with spikes across
+the screen from their heads (B22, modelpretouch on: 40213200628 run 1);
+the emulator runs the ME's work inside the hand-over, so its frames never
+showed it. Such a draw is left to the frame's end, as before */
 static int pretouch_me_busy(void)
 {
-	if (chunk_frame && chunk_published)
+	if (inflight_me_out || (chunk_frame && chunk_published))
 	{
 		pretouch_chunk_skips++;
 		return 1;
@@ -14821,7 +14825,7 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 	{
 		if (model_pretouch < 0)
 			model_pretouch = !psp_keep("modelpretouchoff");
-		if (model_pretouch && !model_converted_now(vertices) && !pretouch_me_busy())
+		if (model_pretouch && !model_converted_now(vertices))
 		{
 			struct skin_part *skin;
 
@@ -14829,9 +14833,12 @@ void psp_ge_draw_model(void *vertices, int vertex_count, int uncompressed, const
 				inflight_room_park();
 			if (inflight_pending)
 				inflight_sync();
-			model_pretouches++;
-			if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
-				model_pretouch_missed++;
+			if (!pretouch_me_busy())
+			{
+				model_pretouches++;
+				if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
+					model_pretouch_missed++;
+			}
 		}
 	}
 	GE_DEFER(defer_draw_model(vertices, vertex_count, uncompressed, indices, index_count, strip, color, base_key,
