@@ -10520,37 +10520,41 @@ static void psp_ge_draw_level_body(const void *vertices, const void *lightmap_ve
 	part_add(3);
 }
 
+/* "levelpretouch" (on; levelpretouchoff): a level draw without its copy
+gets it built now, as its record is written. The Media Engine's replay
+can't build one: it asked for it at the frame's end and left the draw out
+of that frame (every level draw of the frame after a BSP switch, B16; a
+piece of the ocean or the shore's water gone for a frame, B21). Only a
+missing copy settles the frame in flight, so frames whose copies are all
+built pay one lookup a draw (geopretouch142 built on every draw and cost
+0.8-2.2 ms) */
+static void level_pretouch(const void *vertices, const void *lightmap_vertices, int vertex_count, unsigned int key)
+{
+	static int level_pretouch_on = -1;
+
+	if (!PRETOUCHING() || !vertices || vertex_count <= 0)
+		return;
+	if (level_pretouch_on < 0)
+		level_pretouch_on = !psp_keep("levelpretouchoff");
+	if (!level_pretouch_on || level_stream_find(vertices))
+		return;
+	if (inflight_room_away)
+		inflight_room_park();
+	if (inflight_pending)
+		inflight_sync();
+	stream_asked_texture = key;
+	level_pretouches++;
+	if (!level_stream_get(vertices, lightmap_vertices, vertex_count))
+		level_pretouch_missed++;
+}
+
 void psp_ge_draw_level(const void *vertices, const void *lightmap_vertices, int vertex_count,
 	const unsigned short *indices, long triangle_count, unsigned int color,
 	unsigned int base_key, unsigned int lightmap_key, int alpha_tested)
 {
 	GE_PRETOUCH(base_key, TXPT_LEVEL_BASE);
 	GE_PRETOUCH(lightmap_key, TXPT_LIGHTMAP);
-	/* "levelpretouch" (on; levelpretouchoff): a level draw without its copy
-	gets it built now, as its record is written. The Media Engine's replay
-	can't build one: it asked for it at the frame's end and left the draw out
-	of that frame (every level draw of the frame after a BSP switch, B16; a
-	piece of the ocean gone for a frame, B21). Only a missing copy settles the
-	frame in flight, so frames whose copies are all built pay one lookup a
-	draw (geopretouch142 built on every draw and cost 0.8-2.2 ms) */
-	if (PRETOUCHING() && vertices && vertex_count > 0)
-	{
-		static int level_pretouch = -1;
-
-		if (level_pretouch < 0)
-			level_pretouch = !psp_keep("levelpretouchoff");
-		if (level_pretouch && !level_stream_find(vertices))
-		{
-			if (inflight_room_away)
-				inflight_room_park();
-			if (inflight_pending)
-				inflight_sync();
-			stream_asked_texture = base_key;
-			level_pretouches++;
-			if (!level_stream_get(vertices, lightmap_vertices, vertex_count))
-				level_pretouch_missed++;
-		}
-	}
+	level_pretouch(vertices, lightmap_vertices, vertex_count, base_key);
 	GE_DEFER(defer_draw_level(vertices, lightmap_vertices, vertex_count, indices, triangle_count, color, base_key,
 		lightmap_key, alpha_tested)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
@@ -17596,6 +17600,7 @@ void psp_ge_queue_level_transparent(const void *vertices, int vertex_count, cons
 	const float *centroid)
 {
 	GE_PRETOUCH(key, TXPT_LEVEL_SEETHROUGH);
+	level_pretouch(vertices, NULL, vertex_count, key);
 	GE_DEFER(defer_queue_level_transparent(vertices, vertex_count, indices, triangle_count, key, u_scale, v_scale,
 		u_offset, v_offset, blend, centroid)); /* build 112: gedefer */
 	GE_BENCH_SKIP();
