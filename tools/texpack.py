@@ -680,8 +680,59 @@ def grid_offset(img):
     return int(np.bincount((img[:, :, 2][a].astype(np.int32) & 3), minlength=4).argmax())
 
 
-def grid_palette(offset):
-    return np.array([[min(255, (i >> 2) * 4 + offset)] * 3 + [(i & 3) * 85] for i in range(256)], np.uint8)
+GRID_ALPHAS = (0, 85, 170, 255)
+METER_ALPHAS = True       # --no-meter-alphas: the fixed four, as before
+METER_LOG = []
+
+
+def grid_palette(offset, alphas=GRID_ALPHAS):
+    return np.array([[min(255, (i >> 2) * 4 + offset)] * 3 + [alphas[i & 3]] for i in range(256)], np.uint8)
+
+
+# B3: the grid kept four alpha levels, 0, 85, 170 and 255, and the GE
+# multiplies each meter colour by its entry's alpha (psp_ge.c, meter_palette),
+# so a shape drawn at 127 came out at 85 and the bars drew dimmer than the
+# PC's. The four levels are now the bitmap's own: 0 and 255 always, the other
+# two the centres of a two-way split of its partial alphas, weighted by pixel
+# count. The greys are untouched (the rifle's rounds need all 64)
+def meter_alphas(img):
+    a = img[:, :, 3].astype(np.int64).ravel()
+    inner = a[(a > 0) & (a < 255)]
+    if not inner.size:
+        return GRID_ALPHAS
+    v = np.arange(1, 255)
+    w = np.bincount(inner, minlength=256)[1:255].astype(np.float64)
+    c = np.array([85.0, 170.0])
+    for _ in range(32):
+        near = np.abs(v[:, None] - c[None, :]).argmin(1)
+        new = c.copy()
+        for k in (0, 1):
+            s = w[near == k].sum()
+            if s:
+                new[k] = (v[near == k] * w[near == k]).sum() / s
+        if np.allclose(new, c):
+            break
+        c = new
+    mid = sorted(min(254, max(1, int(round(x)))) for x in c)
+    if mid[0] == mid[1]:
+        return GRID_ALPHAS
+    return (0, mid[0], mid[1], 255)
+
+
+def meter_alpha_note(tag, img, alphas):
+    """one log line a meter: its commonest alphas, the levels chosen, and the
+    mean alpha error over drawn pixels with the old levels and the new"""
+    a = img[:, :, 3].astype(np.int64).ravel()
+    drawn = a[a > 0]
+    count = np.bincount(a, minlength=256)
+    top = np.argsort(-count)[:6]
+    old_err = np.abs(drawn - (drawn + 42) // 85 * 85)
+    new_err = np.abs(drawn[:, None] - np.array(alphas)[None, :]).min(1) if drawn.size else old_err
+    METER_LOG.append('%s: alphas %s; commonest alpha:pixels %s; %d of %d drawn pixels more than 8 off the old levels; '
+                     'mean error old %.2f new %.2f' % (
+                         tag, alphas, ' '.join('%d:%d' % (t, count[t]) for t in top if count[t]),
+                         int((old_err > 8).sum()), drawn.size,
+                         old_err.mean() if drawn.size else 0.0, new_err.mean() if drawn.size else 0.0))
 
 
 def grey_meter(img):
@@ -691,9 +742,12 @@ def grey_meter(img):
     return len(np.unique(rgba[:, [2, 3]], axis=0)) > 256
 
 
-def grid_index(img, offset=2):
+def grid_index(img, offset=2, alphas=None):
     y = np.clip((img[:, :, 2].astype(np.int32) - offset + 2) >> 2, 0, 63)
-    a = (img[:, :, 3].astype(np.int32) + 42) // 85
+    if alphas is None:
+        a = (img[:, :, 3].astype(np.int32) + 42) // 85
+    else:
+        a = np.abs(img[:, :, 3].astype(np.int32)[:, :, None] - np.array(alphas)[None, None, :]).argmin(2)
     return y * 4 + a
 
 
@@ -1757,7 +1811,11 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
                     psm=3 if wide else 0)
     if grid:
         grid_off = grid_offset(small)
-        idx, pal, alpha = grid_index(small, grid_off), grid_palette(grid_off), True
+        grid_a = meter_alphas(small) if METER_ALPHAS else None
+        if grid_a is not None:
+            meter_alpha_note(b['tag'], small, grid_a)
+        idx = grid_index(small, grid_off, grid_a)
+        pal, alpha = grid_palette(grid_off, grid_a or GRID_ALPHAS), True
     elif own_levels:
         # one palette for every level: the faded levels' near-greys need
         # entries of their own, which the top level alone wouldn't earn
@@ -1836,7 +1894,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     if ALPHA_AUDIT and alpha and not grid:
         alpha_audit(b, cls, small, pal[idx], bits, shape)
     while len(levels) < min(8, source_levels):
-        ix = idx if not levels else (grid_index(level_img, grid_off) if grid else
+        ix = idx if not levels else (grid_index(level_img, grid_off, grid_a) if grid else
                                      diffuse(level_img, pal, alpha, len(pal)) if diffusing else
                                      nearest(level_img, pal, alpha, split=shape is not None))
         levels.append(pack_level(ix, w, h, bits))
@@ -1899,6 +1957,8 @@ def main():
                          '(docs/review_clut4look.md)')
     ap.add_argument('--no-clut4-exact', action='store_true',
                     help='textures of 16 colours or fewer that the 16-colour rule leaves at 8 bits stay at 8 bits')
+    ap.add_argument('--no-meter-alphas', action='store_true',
+                    help="the meters' grid keeps the fixed alphas 0, 85, 170, 255 (as before)")
     ap.add_argument('--no-alpha-split', action='store_true',
                     help='alpha-tested maps\' palettes fitted as one 4-D k-means, the alpha test\'s sides '
                          'mixed in an entry (as before)')
@@ -1980,6 +2040,8 @@ def main():
     HUD_CLUT4 = a.hud_clut4
     global CLUT4_EXACT
     CLUT4_EXACT = not a.no_clut4_exact
+    global METER_ALPHAS
+    METER_ALPHAS = not a.no_meter_alphas
     global CLUT4_LOOK
     # ui.map is the showcase (CLAUDE.md): its packs keep every colour
     CLUT4_LOOK = not a.no_clut4_look and os.path.splitext(os.path.basename(a.map))[0] != 'ui'
@@ -2216,6 +2278,10 @@ def main():
         print('effects kept at 8 bits: %d maps the 16-colour test would have taken, %d bytes more at their top level' % (
             len(kept), sum(k[2] for k in kept)), file=sys.stderr)
     alpha_audit_summary()
+    print('meter alphas: %s' % ('fixed 0/85/170/255 (--no-meter-alphas)' if not METER_ALPHAS
+                                else '%d meter bitmaps' % len(METER_LOG)), file=sys.stderr)
+    for line in METER_LOG:
+        print('meter alphas: ' + line, file=sys.stderr)
     if HUD_CLUT4:
         print('HUD sheets: 16 colours allowed (--hud-clut4)', file=sys.stderr)
     else:
