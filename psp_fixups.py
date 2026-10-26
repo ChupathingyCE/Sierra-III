@@ -1754,6 +1754,14 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
     # prop_status_refresh's calls are assignments, which the call pattern
     # can't see: labelled steps split it instead
     STEP_LABELS_TICK = {
+        # HOIST writes these calls as "psp_hoist ? f_with(...) : f(...)", which
+        # the per-call markers don't see, so their time went to the step before
+        # them (an accounting call): labelled here instead
+        "source/objects/objects.c": [
+            ("\t\t\t\tpsp_hoist ? object_compute_node_matrices_with(object_index, object, object_definition) : object_compute_node_matrices(object_index);\n",
+             "object_compute_node_matrices", "before"),
+            ("#ifdef HALO_PSP\n\t\t\tif (!psp_lights_defer(object_index))", "object_connect_lights", "before"),
+        ],
         "source/ai/actor_perception.c": [
             ("\t\tprop->ignore = TEST_FLAG(unit->unit.flags, _unit_ignored_by_actors_bit);\n",
              "prop_status_refresh: start", "before"),
