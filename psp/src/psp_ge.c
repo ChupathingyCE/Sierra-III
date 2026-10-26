@@ -7281,8 +7281,13 @@ static void *copy_alloc(unsigned int bytes, void **owner)
 			carve_want += size;
 		return NULL;
 	}
-	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign) */
-	pointer = memalign(ARENA_ALIGN, bytes);
+	/* 16-byte aligned like the arena's blocks (the 16-bit copies had memalign).
+	A refusal isn't a failure: the carve may grow for it (below) */
+	{
+		extern void *psp_heap_try_memalign(size_t alignment, size_t size);
+
+		pointer = psp_heap_try_memalign(ARENA_ALIGN, bytes);
+	}
 	if (pointer && overflow && stream_room > 0)
 	{
 		arena_from_heap++;
