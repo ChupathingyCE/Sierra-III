@@ -6898,9 +6898,11 @@ cache's misses for nothing. "heaproomoff" turns it off, "heaproom256" on with
 any geometry cache (with a 1 MB one its bytes come from the textures). A
 384 KB size (128 KB more from the textures) cost b30 texture loads and frames
 drawn with a texture missing, so it is gone (docs/review_sv.md).
-"heaproomN" (N KB, in 64s, 64 to 768): the same move at another size, the
+"heaproomN" (N KB, in 128s, 128 to 768): the same move at another size, the
 geometry cache paying all of it down to 1 MB, so the textures keep what they
-had. Smaller vertex formats (PRECONVERT) let the cache hold the same play in
+had. In the carve's own steps: the carve is taken 128 KB at a time, so a
+size between them takes the rest from the textures, and b30 then draws many
+more frames with a texture missing. Smaller vertex formats (PRECONVERT) let the cache hold the same play in
 less, and this is how those bytes reach the heap; the replay of the cache at
 smaller sizes prices each map (docs/memory_survey_b144.md, section 6) */
 #define HEAPROOM_MOST_KB 768
@@ -6916,7 +6918,7 @@ unsigned int psp_heaproom_bytes(void)
 	kb = psp_keep_number("heaproom", 0);
 	if (kb > 0)
 	{
-		kb = (kb + 63) & ~63;
+		kb = (kb + 127) & ~127;
 		return (unsigned int)(kb < HEAPROOM_MOST_KB ? kb : HEAPROOM_MOST_KB) * 1024u;
 	}
 	if (inflight_buffer_bytes() && (psp_keep("geo2") || psp_keep("geo15")))
