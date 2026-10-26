@@ -20142,10 +20142,24 @@ static float light_split_tangent = 1.0f;
 static int light_edge_splits(const float *a, const float *b)
 {
 	float near_a = distance_squared3(a, light.position), near_b = distance_squared3(b, light.position);
-	float split = 0.5f * sqrtf(near_a < near_b ? near_a : near_b);
+	float nearest = sqrtf(near_a < near_b ? near_a : near_b), split, least;
 
-	if (split < 0.2f * light.radius)
-		split = 0.2f * light.radius;
+	if (light_spot_base())
+	{
+		/* the cone worked out per corner: pieces about a third of the pool's
+		width where they are, so the pool has corners inside it to be bright
+		and round (by distance alone the pool near the player was two pieces
+		across and drew dim) */
+		split = 0.3f * nearest * (light_split_tangent > 0.05f ? light_split_tangent : 0.05f);
+		least = 0.03f * light.radius;
+	}
+	else
+	{
+		split = 0.5f * nearest;
+		least = 0.2f * light.radius;
+	}
+	if (split < least)
+		split = least;
 	return distance_squared3(a, b) > split * split;
 }
 
@@ -20192,7 +20206,7 @@ static void light_split(float p[3][3], float uv[3][2], const unsigned int normal
 		int pick = -1;
 		float pick_length = 0.0f;
 
-		for (corner = 0; corner < 3 && depth < 6; corner++)
+		for (corner = 0; corner < 3 && depth < (light_spot_base() ? 9 : 6); corner++)
 		{
 			const float *a = p[corner], *b = p[(corner + 1) % 3];
 			float length = distance_squared3(a, b);
@@ -20425,6 +20439,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			{
 				float p[3][3], uv[3][2], longest = 0.0f;
 				unsigned int normal[3];
+				int split_it;
 
 				for (corner = 0; corner < 3; corner++)
 				{
@@ -20442,7 +20457,14 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 					if (edge > longest)
 						longest = edge;
 				}
-				if (longest > 0.04f * light.radius * light.radius)
+				/* the cone per corner: any edge longer than its piece
+				size there goes to the split, small triangles included */
+				light_split_tangent = tangent;
+				split_it = longest > 0.04f * light.radius * light.radius;
+				if (light_spot_base())
+					for (corner = 0; corner < 3 && !split_it; corner++)
+						split_it = light_edge_splits(p[corner], p[(corner + 1) % 3]);
+				if (split_it)
 				{
 					float nearest = 1e30f;
 
