@@ -8374,7 +8374,12 @@ void psp_ge_stencils_reserve(void)
 	sceIoClose(file);
 	if (size <= 64)
 		return;
-	stencils_held = memalign(64, size);
+	/* a refusal here isn't a failure: the map's own load asks again */
+	{
+		extern void *psp_heap_try_memalign(size_t alignment, size_t size);
+
+		stencils_held = psp_heap_try_memalign(64, size);
+	}
 	if (stencils_held)
 		stencils_held_size = size;
 	platform_log("stencils: %s's %d KB %s as the old map was let go", path, size / 1024,
@@ -8445,7 +8450,18 @@ void psp_ge_stencils_open(const char *name, unsigned int map_crc)
 		free(stencils_held);
 		stencils_held = NULL;
 		stencils_held_size = 0;
-		bake.file = size > 64 ? memalign(64, size) : NULL;
+		/* the load's end asks once more (below), so only that last ask is
+		a failure the overlay should count */
+		if (size <= 64)
+			bake.file = NULL;
+		else if (stencils_retrying || stencils_old_way())
+			bake.file = memalign(64, size);
+		else
+		{
+			extern void *psp_heap_try_memalign(size_t alignment, size_t size);
+
+			bake.file = psp_heap_try_memalign(64, size);
+		}
 		if (!bake.file && size > 64 && !stencils_old_way() && !stencils_retrying)
 		{
 			/* no room while the load holds its temporaries: once more at its end */
