@@ -6897,15 +6897,29 @@ default; elsewhere the heap has room, and the move would cost the geometry
 cache's misses for nothing. "heaproomoff" turns it off, "heaproom256" on with
 any geometry cache (with a 1 MB one its bytes come from the textures). A
 384 KB size (128 KB more from the textures) cost b30 texture loads and frames
-drawn with a texture missing, so it is gone (docs/review_sv.md) */
+drawn with a texture missing, so it is gone (docs/review_sv.md).
+"heaproomN" (N KB, in 64s, 64 to 768): the same move at another size, the
+geometry cache paying all of it down to 1 MB, so the textures keep what they
+had. Smaller vertex formats (PRECONVERT) let the cache hold the same play in
+less, and this is how those bytes reach the heap; the replay of the cache at
+smaller sizes prices each map (docs/memory_survey_b144.md, section 6) */
+#define HEAPROOM_MOST_KB 768
 unsigned int psp_heaproom_bytes(void)
 {
 #ifndef PSP_MULTIPLAYER
 	int psp_keep(const char *name);
+	int psp_keep_number(const char *prefix, int fallback);
+	int kb;
 
 	if (psp_keep("heaproomoff"))
 		return 0;
-	if (psp_keep("heaproom256") || (inflight_buffer_bytes() && (psp_keep("geo2") || psp_keep("geo15"))))
+	kb = psp_keep_number("heaproom", 0);
+	if (kb > 0)
+	{
+		kb = (kb + 63) & ~63;
+		return (unsigned int)(kb < HEAPROOM_MOST_KB ? kb : HEAPROOM_MOST_KB) * 1024u;
+	}
+	if (inflight_buffer_bytes() && (psp_keep("geo2") || psp_keep("geo15")))
 		return 256 * 1024;
 #endif
 	return 0; /* the multiplayer build's maps keep their geometry cache in the heap and carve nothing */

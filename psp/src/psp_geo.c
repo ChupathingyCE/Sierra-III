@@ -1256,14 +1256,22 @@ pack that fits (Blood Gulch's) keeps the heap's, for the reason above */
 			}
 			arena_bytes = psp_keep("geo2") ? 2048 * 1024 : psp_keep("geo15") ? 1536 * 1024 : ARENA_BYTES;
 #ifndef PSP_MULTIPLAYER
-			/* "heaproom256" (psp_ge.c): the level copies' room that leaves
-			the heap is carved below this cache, and comes from here when
-			it is over 1 MB */
+			/* "heaproom256", "heaproomN" (psp_ge.c): the level copies' room
+			that leaves the heap is carved below this cache, and comes from
+			here as far as it is over 1 MB (the rest from the textures) */
 			{
 				extern unsigned int psp_heaproom_bytes(void);
+				unsigned int room = psp_heaproom_bytes();
 
-				if (arena_bytes > ARENA_BYTES && psp_heaproom_bytes())
-					arena_bytes -= 256 * 1024;
+				if (arena_bytes > ARENA_BYTES && room)
+				{
+					unsigned int give = room < arena_bytes - ARENA_BYTES ? room : arena_bytes - ARENA_BYTES;
+
+					arena_bytes -= give;
+					if (give < room)
+						platform_log("geometry: heaproom: this cache gives %u KB of the %u KB; the textures give the rest",
+							give / 1024, room / 1024);
+				}
 			}
 #endif
 			/* the main menu, the showcase (CLAUDE.md): its whole pack (ui's
