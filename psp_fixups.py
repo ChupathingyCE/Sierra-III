@@ -1745,7 +1745,11 @@ if os.environ.get("PSP_TICK_STEPS", "") == "1":
                                          # perception's own parts: which of them the line of sight is
                                          ("void prop_position_refresh(", None),
                                          ("static void actor_perception_refresh_danger_zone(", None)],
-        "source/objects/objects.c": [("static boolean object_update(", None)],
+        # objects_update too: object_update's last call for bipeds and vehicles
+        # is the accounting, so without markers in the loop that step held the
+        # loop's own work (on-demand node matrices, attachments, the next
+        # object's set-up) under the accounting's name
+        "source/objects/objects.c": [("static boolean object_update(", None), ("void objects_update(", None)],
     })
     # prop_status_refresh's calls are assignments, which the call pattern
     # can't see: labelled steps split it instead
