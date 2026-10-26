@@ -1934,6 +1934,25 @@ def step_call(match):
         return match.group(0)
     return '%s(PSP_STEP("%s"), %s(%s));' % (match.group(1), match.group(2), match.group(2), match.group(3))
 
+# A step runs from its marker to the next, and markers go before calls made
+# as statements: a call inside a conditional expression ("a ? f() : g()", as
+# HOIST writes its calls) gets none, so its time is booked to whatever step
+# came before it. Named in the build log so a split can be read with that in
+# mind, or the call given a label (STEP_LABELS). Short helpers are left out
+UNMARKED = re.compile(r"[?:]\s*\(?\s*([a-z_][a-z0-9_]{5,})\s*\(")
+UNMARKED_IGNORE = {"psp_microseconds", "object_get", "object_definition_get", "datum_get", "unit_get", "biped_get",
+                   "actor_get", "prop_get", "sizeof", "magnitude3d", "magnitude_squared3d", "normalize3d", "dot_product3d"}
+
+def unmarked_calls(body):
+    found = []
+    for line in body.split("\n"):
+        if "PSP_STEP(" in line or line.lstrip().startswith(("//", "/*", "*", "#")):
+            continue
+        for m in UNMARKED.finditer(line):
+            if m.group(1) not in UNMARKED_IGNORE and m.group(1) not in found:
+                found.append(m.group(1))
+    return found
+
 def breadcrumbs(tree):
     changed = 0
     for rel, functions in STEPS.items():
@@ -1945,7 +1964,12 @@ def breadcrumbs(tree):
             start, end = definition(text, function)
             if stop:
                 end = text.index(stop, start)
-            text = text[:start] + CALL.sub(step_call, text[start:end]) + text[end:]
+            body = CALL.sub(step_call, text[start:end])
+            unseen = unmarked_calls(body)
+            if unseen:
+                print("psp_fixups: steps: %s %s: calls the markers don't see (their time goes to the step before, unless STEP_LABELS gives them one): %s"
+                      % (rel, function.split("(")[0].split()[-1], ", ".join(unseen)))
+            text = text[:start] + body + text[end:]
         open(path, "w", errors="surrogateescape").write(declare_step(text))
         changed += 1
     for rel, lines in STEP_LINES.items():
