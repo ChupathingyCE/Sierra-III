@@ -16942,6 +16942,16 @@ static PSP_MAIN_SIDE unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, 
 
 static PSP_MAIN_SIDE unsigned long overlay_backing_full = 0;
 
+/* "overlaymemo": a list whose answers find no heap is asked again for each of
+its triangles (overlay_answers_for), so a full heap failed one calloc per
+triangle per frame: b30's burst at heaproom256 (heapwho1) was ~7,000 failed
+asks a game second, each a walk of the free lists. Remembering the refused
+list for the rest of the frame keeps every answer the same (no room means on
+a wall either way) and asks the heap once */
+static PSP_MAIN_SIDE int overlay_memo = -1;
+static PSP_MAIN_SIDE unsigned int overlay_refused_key = 0, overlay_refused_frame = 0;
+static PSP_MAIN_SIDE unsigned long overlay_no_room = 0, overlay_no_room_skipped = 0;
+
 /* build 112: triangles whose answer work marked as the Media Engine's needed
 and didn't have (gemesim): finding it takes heap for the answers and casts
 the engine's collision rays, which read the game's data while the main CPU
@@ -17028,8 +17038,20 @@ static int overlay_on_a_wall(const struct level_stream *copy, const unsigned sho
 		return overlay_want(copy, indices, triangle_count, triangle);
 	if (!flags)
 	{
-		if (!(flags = calloc(triangle_count, 1)))
+		if (overlay_memo < 0)
+			overlay_memo = psp_keep("overlaymemo");
+		if (overlay_memo && key == overlay_refused_key && ge_hot.stream_frame == overlay_refused_frame)
+		{
+			overlay_no_room_skipped++;
 			return 1;
+		}
+		if (!(flags = calloc(triangle_count, 1)))
+		{
+			overlay_no_room++;
+			overlay_refused_key = key;
+			overlay_refused_frame = ge_hot.stream_frame;
+			return 1;
+		}
 		if (overlay_backing_count >= OVERLAY_BACKINGS)
 		{
 			static PSP_MAIN_SIDE int victim = 0;
@@ -23635,6 +23657,10 @@ static void frame_end_show(void)
 						all ? angle_triangles[6] * 100 / all : 0, overlay_wall_asks, overlay_on_walls, overlay_free, overlay_ask_us, overlay_backing_count, overlay_backing_full, nudges_asked, nudge_percent, nudges_clamped, nudges_edge_on,
 						nudge_wide > 0 ? " (nudgewide: not held)" : "");
 					nudges_asked = nudges_clamped = nudges_edge_on = 0;
+					if (overlay_no_room || overlay_no_room_skipped)
+						platform_log("GE: overlays without heap for their answers: %lu asks refused, %lu more not asked (overlaymemo%s), each drawn as on a wall",
+							overlay_no_room, overlay_no_room_skipped, overlay_memo > 0 ? "" : " off");
+					overlay_no_room = overlay_no_room_skipped = 0;
 					if (me_slant > 0)
 						platform_log("GE: meslant: %lu of %lu sorted draws split with the Media Engine, %lu triangles of %lu (%lu%%) bucketed there; %lu fell back to this CPU; meslantcheck: %lu triangles checked, %lu answers differing",
 							me_slant_split, me_slant_draws, me_slant_triangles, all, all ? me_slant_triangles * 100 / all : 0,
