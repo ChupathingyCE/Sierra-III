@@ -2620,9 +2620,20 @@ int psp_tex_light_texel(unsigned int key, float u, float v, unsigned int *argb)
 	{
 		*argb = light_last[slot].argb;
 		light_last_used++;
+		/* the page's last colour stands in: not this point's own (B30) */
+		{
+			extern int psp_light_miss;
+
+			psp_light_miss = 1;
+		}
 		return 1;
 	}
 	light_white++;
+	{
+		extern int psp_light_miss;
+
+		psp_light_miss = 1;
+	}
 	return 0;
 }
 
@@ -2677,9 +2688,12 @@ int psp_tex_light_average(unsigned int key, unsigned int *argb)
 
 void psp_tex_light_report(void)
 {
-	if (light_exact + light_read + light_last_used + light_white)
-		platform_log("object lighting: lightmap samples %lu from resident textures, %lu read from the pack (%lu us in all), %lu the page's last colour, %lu white (nothing to go on)",
-			light_exact, light_read, light_read_us, light_last_used, light_white);
+	/* object_lights.c and render_objects.c (psp_fixups.py: FIXES_36, FIXES_B30) */
+	extern unsigned long psp_object_light_samples_missed, psp_light_retries;
+
+	if (light_exact + light_read + light_last_used + light_white + psp_object_light_samples_missed)
+		platform_log("object lighting: lightmap samples %lu from resident textures, %lu read from the pack (%lu us in all), %lu the page's last colour, %lu white (nothing to go on); %lu reads with no floor copies; objects sampled again after a miss %lu",
+			light_exact, light_read, light_read_us, light_last_used, light_white, psp_object_light_samples_missed, psp_light_retries);
 }
 
 /* whether the pack has a texture under this key (build 36: a model's base map

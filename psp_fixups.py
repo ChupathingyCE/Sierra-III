@@ -8198,6 +8198,13 @@ FIXES_36["source/objects/object_lights.c#geometry"] = [
 extern long psp_structure_vertex_stride; /* psp_geo.c; psp_fixups.py */
 int psp_ge_level_vertex_texcoords(unsigned long key, int vertex_index, float *uv, float *lightmap_uv); /* psp_ge.c */
 unsigned long psp_object_light_samples_missed = 0;
+/* B30: set by any read of this sample that had nothing real to go on (the
+copies or normals not there this frame, psp_tex.c's white or page's-last-colour
+answers); lights_distant_lighting_at_point then reports no sample */
+int psp_light_miss = 0;
+/* B30: set while an object is sampled when any of its points missed;
+render_objects.c samples it again until one doesn't (FIXES_B30) */
+int psp_light_object_missed = 0;
 
 /* the three vertices' coordinates from the renderer's copies when the data
 is in the geometry pack: 1 if they are there, 0 if not this frame */
@@ -8214,6 +8221,7 @@ static int psp_material_texcoords(struct structure_material const *material, str
 			surface->vertex_indices[k], uv, lightmap_uv))
 		{
 			psp_object_light_samples_missed++;
+			psp_light_miss = 1;
 			return 0;
 		}
 		texcoords[k].x = lightmap ? lightmap_uv[0] : uv[0];
@@ -8248,6 +8256,7 @@ static void psp_material_normals(struct structure_material const *material, stru
 			normals[k].j = 0.0f;
 			normals[k].k = 1.0f;
 			psp_object_light_samples_missed++;
+			psp_light_miss = 1;
 		}
 	}
 }
@@ -35694,7 +35703,87 @@ FIXES_DGFAST["source/memory/data.c#dgfast"] = [
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# B30 (Sheepdog01 2026-10-26 11:40, a restoration): doors lit bright where the
+# level around them is black. An object's lighting is sampled from the
+# lightmap under it, and on the PSP that read uses the renderer's copies of
+# the floor, there only for floor already drawn: seen from a lit room, a door's
+# dark-side floor isn't, the sample answered white, and machines (unlike units
+# and items) never sample again, so the door stayed bright (api-job door-light
+# 40361599823). A sample with nothing real to go on now counts as no sample,
+# and an object with such a miss is sampled again at the engine's refresh
+# interval until a clean one lands. "lightoldmiss": as before.
+FIXES_B30 = {}
+FIXES_B30["source/objects/object_lights.c#b30"] = [
+("""						sample_diffuse_texture(
+							material,
+							diffuse_bitmap,""",
+"""#ifdef HALO_PSP
+						psp_light_miss = 0;
+#endif
+						sample_diffuse_texture(
+							material,
+							diffuse_bitmap,"""),
+("""						result = TRUE;""",
+"""#ifdef HALO_PSP
+						/* psp_fixups.py (FIXES_B30): a read with nothing real behind it isn't a sample */
+						if (psp_light_miss && !PSP_KEEP_ONCE("lightoldmiss"))
+							psp_light_object_missed = 1;
+						else
+#endif
+						result = TRUE;"""),
+]
+FIXES_B30["source/render/render_objects.c#b30"] = [
+("""	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+	{
+		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)""",
+"""#ifdef HALO_PSP
+	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit) ||
+		psp_light_pending(object_index))
+#else
+	if (TEST_FLAG(object_get(object_index)->object.flags, _object_static_lighting_recompute_bit))
+#endif
+	{
+		if (level_of_detail_pixels > OBJECT_RENDER_STATE_LARGE_PIXELS)"""),
+("""		lights_prepare_for_object_static(object_index, &state->desired_lighting);""",
+"""#ifdef HALO_PSP
+		psp_light_object_missed = 0;
+#endif
+		lights_prepare_for_object_static(object_index, &state->desired_lighting);
+#ifdef HALO_PSP
+		psp_light_pending_set(object_index, psp_light_object_missed);
+#endif"""),
+("""void render_objects(""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_B30): objects whose last lighting sample missed, by
+absolute index; sampled again at the recompute interval until clean */
+extern int psp_light_object_missed;
+static unsigned char psp_light_pending_bits[4096 / 8];
+unsigned long psp_light_retries = 0;
+
+static boolean psp_light_pending(long object_index)
+{
+	unsigned int index = (unsigned int)object_index & 4095;
+
+	return (psp_light_pending_bits[index >> 3] >> (index & 7)) & 1;
+}
+
+static void psp_light_pending_set(long object_index, int missed)
+{
+	unsigned int index = (unsigned int)object_index & 4095;
+
+	if (psp_light_pending(object_index))
+		psp_light_retries++;
+	if (missed)
+		psp_light_pending_bits[index >> 3] |= (unsigned char)(1 << (index & 7));
+	else
+		psp_light_pending_bits[index >> 3] &= (unsigned char)~(1 << (index & 7));
+}
+#endif
+
+void render_objects("""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
