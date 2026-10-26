@@ -1192,6 +1192,12 @@ void psp_geo_map_opened(const char *name, unsigned int map_crc, const void *firs
 	map_formats = 0;
 	if (!name || !name[0])
 		return;
+	{
+		/* before any carve below reads it (B29) */
+		extern void psp_showcase_refresh(const char *name);
+
+		psp_showcase_refresh(name);
+	}
 	if (!outside)
 		return;
 	snprintf(path, sizeof(path), PSP_MAPS_ROOT "/%s.pgeo", name);

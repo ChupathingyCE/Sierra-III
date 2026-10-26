@@ -2336,6 +2336,17 @@ void psp_map_opened(const char *name)
 	psp_showcase_map = !strcmp(current_map, "ui") && !psp_keep("noshowcase");
 }
 
+/* every map load, from the geometry pack's open (psp_geo.c): a map whose
+cache file is still open from an earlier visit (the menu again after a
+level) never reaches psp_map_opened, and the flag kept the level's 0, so
+the menu took a level's carves while it loaded its full-size pack (B29).
+"showcaseonce" leaves the flag to psp_map_opened alone, as before */
+void psp_showcase_refresh(const char *name)
+{
+	if (!psp_keep("showcaseonce"))
+		psp_showcase_map = name && !strcmp(name, "ui") && !psp_keep("noshowcase");
+}
+
 static int map_on_stick(const char *name)
 {
 	char path[96];
