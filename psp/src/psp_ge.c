@@ -4798,6 +4798,7 @@ static int near_auto_full = -1, near_auto_check = -1;
 static unsigned long near_auto_checked = 0, near_auto_differed = 0;
 static int near_auto = 0;
 static int near_scale = -1; /* build 77: file scope, for the debug menu */
+static int showcase_near = -1;
 /* build 79's GE antialias flag ("geaa", GU_LINE_SMOOTH) is gone in build 80:
 on the hardware it is for lines (PPSSPP's reading: the texture is looked up
 by screen position and alpha halved), and with triangles it painted every
@@ -5972,7 +5973,16 @@ static float window_begin_main(const float *position, float z_near, float z_far)
 		frames, the error loop when a map is missing) the level and the
 		player are gone, and its tests read them (b107's b30 run: a bus
 		error at the level's end); the game's own plane then */
-		if (near_auto && psp_game_running())
+		/* the main menu's near plane x4, whatever nearauto would choose: the
+		ring's panels overlap and the 16-bit depth could not tell them apart,
+		so they cut each other open. The menu's camera never
+		comes within the wider plane of anything, and the showcase rule keeps
+		it off every level. "showcasenearoff": the levels' own choice */
+		if (showcase_near < 0)
+			showcase_near = !psp_keep("showcasenearoff");
+		if (psp_showcase_map && showcase_near)
+			z_near *= 4;
+		else if (near_auto && psp_game_running())
 			z_near = near_plane_auto(position, z_near);
 		else if (!near_auto)
 			z_near *= near_scale;
