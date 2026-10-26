@@ -20106,6 +20106,22 @@ four, again and again (four levels at most) where it can reach the light,
 and each piece lit at its own corners. Keep word "nolightsplit": as before */
 static int light_split_on = -1;
 
+/* B7, a restoration (Sheepdog01 2026-10-26: on by default whatever it costs): a
+spotlight's pool drawn with the surface's own texture, as the point lights
+are, its cone worked out per corner. With one texture a pass the projected
+cone took the texture's slot and the surface came in as its average colour
+only, so the flashlight on a10's dark walls was a dim, flat pool while it
+lit models fully. The pieces split finer near the light, so the pool's edge
+stays round. "lightconetex": the projected cone as before */
+static int light_base_tex = -1;
+
+static int light_spot_base(void)
+{
+	if (light_base_tex < 0)
+		light_base_tex = !psp_keep("lightconetex");
+	return light_base_tex;
+}
+
 /* The split decided per edge, not per triangle: two triangles sharing an
 edge split it alike, at the same midpoint (0.5 * (a + b) is the same float
 from either end), so their pieces meet corner to corner. Decided per
@@ -20318,7 +20334,7 @@ static void light_split(float p[3][3], float uv[3][2], const unsigned int normal
 		float corners[3][CORNER_FLOATS], reach[3];
 
 		for (corner = 0; corner < 3; corner++)
-			reach[corner] = light_reach(p[corner], normal[corner], 0);
+			reach[corner] = light_reach(p[corner], normal[corner], light_spot_base());
 		if (reach[0] <= 0.0f && reach[1] <= 0.0f && reach[2] <= 0.0f)
 			return;
 		memset(corners, 0, sizeof(corners));
@@ -20348,6 +20364,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	unsigned char *cone = NULL;
 	ScePspFMatrix4 cone_projection;
 	float tangent = 0.0f, tint[3] = { 1.0f, 1.0f, 1.0f }, saved[3], near_saved;
+	int cone_tex;
 
 	if (!light.open || !frame_open || triangle_count <= 0 || !vertices || !indices || list_full())
 		return;
@@ -20377,14 +20394,21 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			vertex_count = stream->count;
 		}
 	}
+	cone_tex = spot && !light_spot_base();
 	if (spot)
 	{
-		/* the base texture's average colour (it must be resident) */
-		if (!psp_tex_bind(base_key, &alpha) || !psp_tex_average(base_key, &average))
+		if (!psp_tex_bind(base_key, &alpha))
 			return;
-		tint[0] = (average & 0xFF) / 255.0f;
-		tint[1] = ((average >> 8) & 0xFF) / 255.0f;
-		tint[2] = ((average >> 16) & 0xFF) / 255.0f;
+		/* the projected cone's way: the base texture's average colour (it
+		must be resident) */
+		if (cone_tex)
+		{
+			if (!psp_tex_average(base_key, &average))
+				return;
+			tint[0] = (average & 0xFF) / 255.0f;
+			tint[1] = ((average >> 8) & 0xFF) / 255.0f;
+			tint[2] = ((average >> 16) & 0xFF) / 255.0f;
+		}
 		tangent = sqrtf(1.0f - light.cosine_cutoff * light.cosine_cutoff) / light.cosine_cutoff;
 		cone_matrix(&cone_projection);
 	}
@@ -20528,14 +20552,14 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 			if (memo->tag != tag)
 			{
 				memo->tag = tag;
-				memo->reach = light_reach(source[corner], stream->normals[vertex], !spot);
+				memo->reach = light_reach(source[corner], stream->normals[vertex], !cone_tex);
 				memo->camera_known = 0;
 			}
 			reach[corner] = memo->reach;
 			if (light_memo_check)
 			{
 				/* "lightmemocheck": worked out again and compared, bit for bit */
-				float again = light_reach(source[corner], stream->normals[vertex], !spot);
+				float again = light_reach(source[corner], stream->normals[vertex], !cone_tex);
 
 				if (memcmp(&again, &memo->reach, sizeof(again)))
 					light_memo_mismatches++;
@@ -20720,7 +20744,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	near_clip = near_saved;
 	if (!kept_count && !cut_count && !whole_count && !light_pieces.dropped)
 		return;
-	/* the light's colour, times the surface's average colour for a spotlight */
+	/* the light's colour, times the surface's average colour for a projected cone */
 	for (index = 0; index < 3; index++)
 	{
 		saved[index] = light.color[index];
@@ -20730,7 +20754,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 		for (index = 0; index < kept_count * 3; index++)
 			out[index].color = light_color(*(float *)&out[index].color);
 	sceGuEnable(GU_TEXTURE_2D);
-	if (spot)
+	if (cone_tex)
 	{
 		cone = cone_texture(light.cosine_falloff, light.cosine_cutoff);
 		sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
@@ -20916,7 +20940,7 @@ static void psp_ge_light_draw_body(const void *vertices, int vertex_count, const
 	world_model();
 	for (index = 0; index < 3; index++)
 		light.color[index] = saved[index];
-	if (spot)
+	if (cone_tex)
 		sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
 	sceGuFog(fog_near, fog_far, fog_color);
 	ge_blend(0);
