@@ -10991,10 +10991,12 @@ part's specular material is its reflection's strength (part_specular, 0 for
 a part that reflects nothing), and the GE adds the specular term after the
 texture (separate specular colour), so the glint stays in shade as the
 Xbox's sheen does. Per vertex, in the lighting the GE does anyway: no pass
-of its own. "specpowerN": the highlight's exponent (16) */
+of its own. "specpowerN": the highlight's exponent (8); "specgainN": the
+strength in percent (200: the shader's reflection strength is a mean over
+the mask, and the highlight stands for its brightest part) */
 int psp_keep_number(const char *prefix, int fallback);
 static PSP_MAIN_SIDE int model_specular = -1;
-static PSP_MAIN_SIDE float model_specular_power = 16.0f;
+static PSP_MAIN_SIDE float model_specular_power = 8.0f, model_specular_gain = 2.0f;
 static unsigned int part_specular = 0;
 static unsigned long specular_parts = 0;
 
@@ -13040,7 +13042,7 @@ static unsigned long reflection_parts = 0, reflection_cubes_known = 0;
 
 static void reflection_keeps(void);
 /* the reflection pass's words (reflection_keeps, below) */
-static PSP_MAIN_SIDE int env_fp = -1, env_near = 0, env_pixels = 160, env_gain = 100;
+static PSP_MAIN_SIDE int env_fp = -1, env_near = 0, env_pixels = 160, env_gain = 100, env_min = 0;
 
 void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
 {
@@ -13105,7 +13107,11 @@ static int reflection_strength(float *rgb)
 
 	if (reflection_off > 0 || reflection_rgb[0] + reflection_rgb[1] + reflection_rgb[2] <= 0.004f)
 		return 0;
-	if (change_key && psp_tex_average_known(change_key, &mask_abgr))
+	/* a part without a multipurpose map reflects over its whole surface (a
+	visor, glass) */
+	if (!change_key)
+		mask = 1.0f;
+	else if (psp_tex_average_known(change_key, &mask_abgr))
 		mask = (float)(mask_abgr & 0xFF) * (1.0f / 255.0f);
 	for (channel = 0; channel < 3; channel++)
 	{
@@ -13126,7 +13132,10 @@ the camera's right and up (lights 2 and 3 carry them; lighting is off for
 this pass), and the pass adds it times the part's strength where pass 1
 drew. The mask is the part's average (one texture a pass, and the frame
 has no alpha to hold the mask in): a part shiny in places shines evenly.
-A pass more per such part. "envgainN": the strength in percent (100) */
+A pass more per such part. "envgainN": the strength in percent (100).
+"envminN": only parts whose strongest channel reflects at least N percent
+(a visor or glass, not the armour around it, whose mask the pass can't
+apply) */
 static unsigned long env_passes = 0, env_unbound = 0;
 
 /* the reflection words, read on this CPU before any replay needs them */
@@ -13138,23 +13147,29 @@ static void reflection_keeps(void)
 	if (reflection_off)
 		platform_log("GE: noreflection: model reflections not folded into their ambient light");
 	model_specular = psp_keep("modelspecular");
-	model_specular_power = (float)psp_keep_number("specpower", 16);
+	model_specular_power = (float)psp_keep_number("specpower", 8);
+	model_specular_gain = (float)psp_keep_number("specgain", 200) * (1.0f / 100.0f);
 	if (model_specular)
 		platform_log("GE: modelspecular: shiny parts' highlights from the GE's specular lighting, power %.0f",
 			model_specular_power);
 	env_near = psp_keep("envnear");
 	env_pixels = psp_keep_number("envpixels", 160);
 	env_gain = psp_keep_number("envgain", 100);
+	env_min = psp_keep_number("envmin", 0);
 	env_fp = psp_keep("envfp");
 	if (env_fp || env_near)
-		platform_log("GE: reflections drawn as a pass: %s%s (at %d pixels across), gain %d%%",
-			env_fp ? "first person " : "", env_near ? "near models" : "", env_pixels, env_gain);
+		platform_log("GE: reflections drawn as a pass: %s%s (at %d pixels across), gain %d%%, parts reflecting at least %d%%",
+			env_fp ? "first person " : "", env_near ? "near models" : "", env_pixels, env_gain, env_min);
 }
 
-static int env_part(void)
+static int env_part(const float *strength)
 {
 	int width, height;
+	float most = strength[0] > strength[1] ? strength[0] : strength[1];
 
+	most = most > strength[2] ? most : strength[2];
+	if (most * 100.0f < (float)env_min)
+		return 0;
 	if (!(model_first_person ? env_fp : env_near && model_pixels >= (float)env_pixels))
 		return 0;
 	return reflection_cube_key && psp_tex_size(reflection_cube_key, &width, &height) && width == 32 && height == 32;
@@ -14838,13 +14853,13 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		sceGuColor(color);
 	part_ambient = model_ambient;
 	shiny = textured && model_camouflage <= 0.0f && !in_sky && reflection_strength(shine);
-	env = shiny && env_part();
+	env = shiny && env_part(shine);
 	if (textured && model_camouflage <= 0.0f && !in_sky && !env)
 		model_ambient = ambient_with_reflection(base_key);
 	part_specular = shiny && model_specular > 0 ? 0xFF000000u |
-		((unsigned int)PSP_CLAMP_255((int)(shine[2] * 255.0f)) << 16) |
-		((unsigned int)PSP_CLAMP_255((int)(shine[1] * 255.0f)) << 8) |
-		(unsigned int)PSP_CLAMP_255((int)(shine[0] * 255.0f)) : 0xFF000000u;
+		((unsigned int)PSP_CLAMP_255((int)(shine[2] * model_specular_gain * 255.0f)) << 16) |
+		((unsigned int)PSP_CLAMP_255((int)(shine[1] * model_specular_gain * 255.0f)) << 8) |
+		(unsigned int)PSP_CLAMP_255((int)(shine[0] * model_specular_gain * 255.0f)) : 0xFF000000u;
 	model_lighting(1);
 	if (camo_shimmer < 0)
 		camo_shimmer = psp_keep("camoshimmer");

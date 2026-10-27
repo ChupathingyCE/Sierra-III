@@ -475,6 +475,31 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 							(&psp_reflection_tint.red)[channel];
 				}
 				psp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);
+				if (cube != NONE && PSP_KEEP_ONCE("refldump"))
+				{
+					/* each shiny shader once a map: which part is which (Chief's
+					visor against his armour), and the strengths that pick them */
+					extern char const *psp_shader_tag_name(void const *shader);
+					static void const *dumped[64];
+					static int dumped_count = 0;
+					int k;
+
+					for (k = 0; k < dumped_count && dumped[k] != definition; k++)
+						;
+					if (k == dumped_count && dumped_count < 64)
+					{
+						char const *name = psp_shader_tag_name(definition);
+
+						dumped[dumped_count++] = definition;
+						platform_log("refldump: %s reflection %.3f %.3f %.3f (brightness %.2f / %.2f, tint %.2f %.2f %.2f / %.2f %.2f %.2f, the lighting's %.2f %.2f %.2f x %.2f) multipurpose %s",
+							name ? name : "(no tag)", reflection[0], reflection[1], reflection[2],
+							*(float const *)(definition + 324), *(float const *)(definition + 340),
+							((float const *)(definition + 328))[0], ((float const *)(definition + 328))[1], ((float const *)(definition + 328))[2],
+							((float const *)(definition + 344))[0], ((float const *)(definition + 344))[1], ((float const *)(definition + 344))[2],
+							psp_reflection_tint.red, psp_reflection_tint.green, psp_reflection_tint.blue, psp_reflection_tint.alpha,
+							multipurpose != NONE ? "yes" : "none");
+					}
+				}
 			}
 			/* on the main menu, the detail map itself over the base that holds
 			its average (psp_ge.c, model_detail_pass): shaders with the double
