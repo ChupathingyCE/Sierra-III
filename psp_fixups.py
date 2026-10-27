@@ -32869,8 +32869,10 @@ FIXES_SOUNDEDRAM["source/cache/xbox_sound_cache.c#soundedram"] = [
 # load queue that drains slowly (the eDRAM path: two 60 KB pieces in flight,
 # moved on once a frame) means as many yields a frame as sounds waiting:
 # 'sound_render: prioritise' went 0.1-0.7 -> 3-30 ms a frame over d20's
-# opening (40096390859). The word keeps the yield for blocking requests only;
-# the answer is the same either way (not loaded yet). The counts are always
+# opening (40096390859). Only a blocking request yields ("soundyieldold":
+# every one, as before); the answer is the same either way (not loaded yet),
+# and the yield costs ~1.36 ms on the PSP, ~950 times in d20's opening. The
+# counts are always
 # kept and logged with the sound cache's line
 ("""			else
 			{
