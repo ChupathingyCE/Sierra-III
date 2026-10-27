@@ -2347,8 +2347,13 @@ cache file is still open from an earlier visit (the menu again after a
 level) never reaches psp_map_opened, and the flag kept the level's 0, so
 the menu took a level's carves while it loaded its full-size pack (B29).
 "showcaseonce" leaves the flag to psp_map_opened alone, as before */
+/* counts map loads, so a cache keyed by a map's tag addresses knows when
+they've changed (psp_fixups.py, the Chief parts' kinds) */
+int psp_map_generation = 0;
+
 void psp_showcase_refresh(const char *name)
 {
+	psp_map_generation++;
 	if (!psp_keep("showcaseonce"))
 		psp_showcase_map = name && !strcmp(name, "ui") && !psp_keep("noshowcase");
 }

@@ -1043,7 +1043,7 @@ static int defer_model_reflection(unsigned int cube_key, float const *rgb)
 	defer_word *at = defer_take(DEFER_MODEL_REFLECTION, 1 + 4);
 
 	at[0].u = cube_key;
-	defer_copy(at + 1, rgb, 3);
+	defer_copy(at + 1, rgb, 4);
 	return 1;
 }
 
@@ -1476,7 +1476,7 @@ static void defer_replay(const defer_word *buffer, unsigned int used, int on_me)
 			psp_ge_model_detail(w[0].u, w[1].f, w[2].f);
 			break;
 		case DEFER_MODEL_REFLECTION:
-			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 3));
+			psp_ge_model_reflection(w[0].u, defer_copy_back(w + 1, &rest, 4));
 			break;
 		case DEFER_DRAW_MODEL:
 			psp_ge_draw_model((void *)w[0].p, w[1].i, w[2].i, (const unsigned short *)w[3].p, w[4].i, w[5].i,
@@ -13037,25 +13037,35 @@ patch of it under its key, texpack.py), else REFLECTION_CUBE_DEFAULT.
 #define REFLECTION_CUBE_DEFAULT 0.35f
 static unsigned int reflection_cube_key = 0;
 static float reflection_rgb[3] = { 0.0f, 0.0f, 0.0f };
+/* which of Chief's parts the part is: 1 his visor, 2 his armour, 0 none
+(psp_fixups.py, by the shader's name) */
+static int reflection_chief = 0;
 static int reflection_off = -1;
 static unsigned long reflection_parts = 0, reflection_cubes_known = 0;
 
 static void reflection_keeps(void);
 /* the reflection pass's words (reflection_keeps, below) */
 static PSP_MAIN_SIDE int env_fp = -1, env_near = 0, env_pixels = 160, env_gain = 100, env_min = 0;
+/* "chiefvisor" (opt-in while Sheepdog01 judges it): Chief's visor gets the
+reflection pass wherever he is drawn at least 24 pixels across, at
+chiefvisorgainN percent (150). On the Xbox the visor's gold is its cube
+map's, added over a near-black base: folded into the lighting it can't
+show, since the GE's ambient stops at 1 and the base x 1 stays dark */
+static PSP_MAIN_SIDE int chief_visor = 0, chief_visor_gain = 150;
 
 void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
 {
 	GE_BENCH_SKIP();
 	reflection_keeps();
 	/* a reflection pass binds the part's sphere map in the replay */
-	if (env_fp > 0 || env_near > 0)
+	if (env_fp > 0 || env_near > 0 || chief_visor > 0)
 		GE_PRETOUCH(cube_key, TXPT_MODEL_DETAIL);
 	GE_DEFER(defer_model_reflection(cube_key, rgb));
 	reflection_cube_key = cube_key;
 	reflection_rgb[0] = rgb ? rgb[0] : 0.0f;
 	reflection_rgb[1] = rgb ? rgb[1] : 0.0f;
 	reflection_rgb[2] = rgb ? rgb[2] : 0.0f;
+	reflection_chief = rgb ? (int)rgb[3] : 0;
 }
 
 int psp_tex_average_known(unsigned int key, unsigned int *abgr);
@@ -13156,6 +13166,10 @@ static void reflection_keeps(void)
 	env_pixels = psp_keep_number("envpixels", 160);
 	env_gain = psp_keep_number("envgain", 100);
 	env_min = psp_keep_number("envmin", 0);
+	chief_visor = psp_keep("chiefvisor");
+	chief_visor_gain = psp_keep_number("chiefvisorgain", 150);
+	if (chief_visor)
+		platform_log("GE: chiefvisor: Chief's visor drawn with its reflection pass, gain %d%%", chief_visor_gain);
 	env_fp = psp_keep("envfp");
 	if (env_fp || env_near)
 		platform_log("GE: reflections drawn as a pass: %s%s (at %d pixels across), gain %d%%, parts reflecting at least %d%%",
@@ -13167,6 +13181,8 @@ static int env_part(const float *strength)
 	int width, height;
 	float most = strength[0] > strength[1] ? strength[0] : strength[1];
 
+	if (chief_visor && reflection_chief == 1 && model_pixels >= 24.0f)
+		return reflection_cube_key && psp_tex_size(reflection_cube_key, &width, &height) && width == 32 && height == 32;
 	most = most > strength[2] ? most : strength[2];
 	if (most * 100.0f < (float)env_min)
 		return 0;
@@ -13179,7 +13195,7 @@ static int reflection_env_pass(void *vertices, const unsigned short *indices, lo
 	struct skin_part *skin, ScePspFMatrix4 *model, const float *strength)
 {
 	ScePspFVector3 across, upward;
-	float gain = (float)env_gain * (1.0f / 100.0f);
+	float gain = (float)(reflection_chief == 1 && chief_visor ? chief_visor_gain : env_gain) * (1.0f / 100.0f);
 	unsigned int color;
 
 	if (!psp_tex_bind(reflection_cube_key, NULL))

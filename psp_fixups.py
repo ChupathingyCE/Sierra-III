@@ -451,7 +451,10 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				and +344 */
 				extern void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
 				long cube = model_shader ? *(long const *)(definition + 368) : NONE;
-				float reflection[3] = { 0.0f, 0.0f, 0.0f };
+				/* the strength, then which of Chief's parts this shader is
+				(1 his visor, 2 his armour, 0 none): the centerpiece gets
+				passes of its own (psp_ge.c, chiefvisor) */
+				float reflection[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 				if (cube != NONE)
 				{
@@ -473,6 +476,42 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					for (channel = 0; channel < 3; channel++)
 						reflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *
 							(&psp_reflection_tint.red)[channel];
+				}
+				if (cube != NONE)
+				{
+					/* Chief's parts by their shaders' names, once a shader a map:
+					the name is looked up through the shader tags */
+					extern int psp_map_generation;
+					extern char const *psp_shader_tag_name(void const *shader);
+					static void const *chief_shader[64];
+					static signed char chief_kind[64];
+					static int chief_count = 0, chief_generation = -1;
+					int k, kind = -1;
+
+					if (chief_generation != psp_map_generation)
+					{
+						chief_generation = psp_map_generation;
+						chief_count = 0;
+					}
+					for (k = 0; k < chief_count; k++)
+						if (chief_shader[k] == definition)
+						{
+							kind = chief_kind[k];
+							break;
+						}
+					if (kind < 0)
+					{
+						char const *name = psp_shader_tag_name(definition);
+
+						kind = !name ? 0 : !strcmp(name, "characters\\\\cyborg\\\\shaders\\\\visor") ? 1 :
+							!strncmp(name, "characters\\\\cyborg\\\\", 18) ? 2 : 0;
+						if (chief_count < 64)
+						{
+							chief_shader[chief_count] = definition;
+							chief_kind[chief_count++] = (signed char)kind;
+						}
+					}
+					reflection[3] = (float)kind;
 				}
 				psp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);
 				if (cube != NONE && PSP_KEEP_ONCE("refldump"))
