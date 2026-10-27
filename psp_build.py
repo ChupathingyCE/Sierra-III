@@ -696,6 +696,28 @@ def link(objs, stubs):
                         "".join("   %s(.bss .bss.* COMMON)\n" % o for o in me_objects) +
                         "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n"
                         "   *(.bss .bss.* .gnu.linkonce.b.*)\n")
+    # pspgu's and pspgum's small variables (gu_list, gu_states,
+    # gu_curr_context, gum_current_matrix, ...: the SDK builds them -G8, so
+    # they sit in .sdata and .sbss, out of the block above) are the ME's too.
+    # Left where the linker puts them they share 64-byte lines with libc's
+    # malloc and impure words and pspdebug's screen cursor, which the main
+    # CPU writes while the ME draws: the emulator's model of the two caches
+    # (mecohere) caught the ME's gu_list and gu_states write lost under the
+    # main CPU's dirty line. Each gets lines of its own, still inside .sdata
+    # and .sbss, so their $gp-relative loads keep their reach
+    me_small = ("*libpspgu.a:*", "*libpspgum.a:*")
+    sdata = re.findall(r"\n([ \t]*)\*\(\.sdata \.sdata\.\* \.gnu\.linkonce\.s\.\*\)", text)
+    sbss = re.findall(r"\n([ \t]*)\*\(\.dynsbss\)", text)
+    if len(sdata) != 1 or len(sbss) != 1:
+        sys.exit("psp_build: the SDK's linkfile.prx has changed; pspgu's small variables can't be placed")
+    text = text.replace("\n%s*(.sdata .sdata.* .gnu.linkonce.s.*)" % sdata[0],
+                        "\n%s. = ALIGN(64);\n" % sdata[0] +
+                        "".join("%s%s(.sdata .sdata.*)\n" % (sdata[0], o) for o in me_small) +
+                        "%s. = ALIGN(64);\n%s*(.sdata .sdata.* .gnu.linkonce.s.*)" % (sdata[0], sdata[0]))
+    text = text.replace("\n%s*(.dynsbss)" % sbss[0],
+                        "\n%s. = ALIGN(64);\n" % sbss[0] +
+                        "".join("%s%s(.sbss .sbss.*)\n" % (sbss[0], o) for o in me_small) +
+                        "%s. = ALIGN(64);\n%s*(.dynsbss)" % (sbss[0], sbss[0]))
     linkfile = os.path.join(OUT, "linkfile_layout.prx")
     open(linkfile, "w").write(text)
     # build 107: the link map (halo.map: each function's and variable's
