@@ -1,0 +1,4 @@
+{
+  "about": "The disc images the releases were baked from and tested with (bake.py, fingerprint). A bake from any other image still runs; its stamp (halo/bake.txt) and log say it isn't one of these. Each entry: the image's name as its owner had it, its SHA-1 (whole file), default.xbe's SHA-256, the title record's version, and the builds tested with it.",
+  "images": []
+}
