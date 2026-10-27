@@ -26730,6 +26730,32 @@ static int psp_visrect_apart(struct portal_hull const *a, struct portal_hull con
 """),
 ]
 
+# ---------- FIXES_ASSERTSEVAL: asserts whose expressions do the game's work (research, X10)
+#
+# PSP_ASSERTS_OFF compiles the fatal asserts out without evaluating them. Two
+# kinds of assert expression do work the game needs: the sound manager's
+# check that a sound is loaded is itself the cache request (an LRU touch and
+# the sound's first-sight set-up, xbox_sound_cache.c), and the keyframe
+# search's loop guard counts inside its assert. Both now do their work
+# outside the assert, so compiling the checks out leaves it; with asserts kept
+# nothing changes (assertsoff1 40460818822, api-job 40473519163).
+FIXES_ASSERTSEVAL = {}
+FIXES_ASSERTSEVAL["source/sound/sound_manager.c#loaded"] = [snd_eval("0x79A"), snd_eval("0x9DA")]
+FIXES_ASSERTSEVAL["source/models/model_animations.c#killer"] = [
+(r"""		match_assert(
+			"c:\\halo\\SOURCE\\models\\model_animations.c",
+			1356,
+			++infinite_loop_killer<200);
+""",
+r"""		/* psp_fixups.py (FIXES_ASSERTSEVAL): counted outside the assert */
+		++infinite_loop_killer;
+		match_assert(
+			"c:\\halo\\SOURCE\\models\\model_animations.c",
+			1356,
+			infinite_loop_killer<200);
+"""),
+]
+
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
 #
 # Measuring instruments, built only with PSP_RECON=1 (psp_build.py): their
@@ -35597,7 +35623,7 @@ FIXES_DGFAST["source/memory/data.c#dgfast"] = [
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
