@@ -26,9 +26,15 @@ A texture in VRAM read from the ME gives what isn't there: Chief's change map ca
 - The 40-slot mask cache (`multipurpose_cache`, 40 KB of static RAM) and its working-out loop: the masks are data.
 - `psp_tex_average`'s sampling (kept only for a texture missing from `TAV1`, which the gate makes impossible in a release).
 
-## Costs, to be measured before it's built
+## Costs (sizing bake, lab sierra-bake 40446101594, texpack's `b25 sizing` line) [M]
 
-- **Pack size:** +2 KB per multipurpose map (two 8888 CLUTs), in the texture caches, not the heap. Estimate 50-200 KB per map [U]: the sizing run counts them.
+| Map | Textures | Multipurpose maps | Both mask CLUTs | Meter maps (to RAM) | `TAV1` |
+|---|---|---|---|---|---|
+| b30 | 732, 10,657 KB | 82, 1,041 KB | +90 KB (+0.8%) | 3, 16 KB | 5,864 B |
+| c20 | 768, 14,684 KB | 39, 497 KB | +35 KB (+0.2%) | 3, 20 KB | 6,152 B |
+| ui | 380, 6,633 KB | 5, 66 KB | +6 KB | 0 | 3,048 B |
+
+- **Only the change mask is needed:** the glow mask (green) serves a self-illuminated part without a glow map, and the bake makes a glow map for every self-illuminated model shader (54 on b30); every PSP run of 10-26 logged self-illumination 100% through glow maps. So one CLUT a map: about +45 KB on b30, +18 KB on c20, in the texture caches while those maps are resident. `glowflat` (a test word) then draws without the glow map's mask as before.
 - **Meter maps in RAM:** the GE reads them from RAM (swizzled: ~20% slower than VRAM [M], few and small).
 - **A rebake** for the release. The bake tools ship with it already (b143's Windows and Linux bundles).
 
