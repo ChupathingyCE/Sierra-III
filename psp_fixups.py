@@ -26730,6 +26730,18 @@ static int psp_visrect_apart(struct portal_hull const *a, struct portal_hull con
 """),
 ]
 
+def snd_eval(code):
+    old = ("\t\tmatch_assert(\n\t\t\t\"c:\\\\halo\\\\SOURCE\\\\sound\\\\sound_manager.c\",\n\t\t\t%s,\n"
+           "\t\t\tsound_cache_sound_loaded(permutation));\n") % code
+    new = ("\t\t{\n"
+           "\t\t\t/* psp_fixups.py (FIXES_ASSERTSEVAL): the request is the game's,\n"
+           "\t\t\tnot only the check's (an LRU touch, the sound's first-sight\n"
+           "\t\t\tset-up), so it's made even where asserts are compiled out */\n"
+           "\t\t\tboolean psp_sound_loaded = sound_cache_sound_loaded(permutation);\n\n"
+           "\t\t\tmatch_assert(\n\t\t\t\t\"c:\\\\halo\\\\SOURCE\\\\sound\\\\sound_manager.c\",\n\t\t\t\t%s,\n"
+           "\t\t\t\tpsp_sound_loaded);\n\t\t\t(void)psp_sound_loaded;\n\t\t}\n") % code
+    return (old, new)
+
 # ---------- FIXES_ASSERTSEVAL: asserts whose expressions do the game's work (research, X10)
 #
 # PSP_ASSERTS_OFF compiles the fatal asserts out without evaluating them. Two
