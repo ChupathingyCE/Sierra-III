@@ -26740,24 +26740,42 @@ static int psp_visrect_apart(struct portal_hull const *a, struct portal_hull con
 # outside the assert, so compiling the checks out leaves it; with asserts kept
 # nothing changes (assertsoff1 40460818822, api-job 40473519163).
 FIXES_ASSERTSEVAL = {}
-FIXES_ASSERTSEVAL["source/cseries/cseries.h#evaluated"] = [
-("""#else
-/* an assert whose expression the game needs done (see above) */
-#define match_assert_evaluated(file, line, expr) match_assert(file, line, expr)
-#define match_vassert_evaluated(file, line, expr, string) match_vassert(file, line, expr, string)
-#endif""",
-"""#elif defined(PSP_ASSERTS_OFF)
-/* psp_fixups.py (FIXES_ASSERTSEVAL): with the fatal asserts compiled out
-(PSP_ASSERTS_OFF), an assert whose expression the game needs done is still
-done, unchecked: path_obstacle_avoidance.c's heap_insert (assertsoff5
-40490801164: only ai/'s asserts off parted b30 at tick 82) */
-#define match_assert_evaluated(file, line, expr) { (void)(expr); }
-#define match_vassert_evaluated(file, line, expr, string) { (void)(expr); }
-#else
-/* an assert whose expression the game needs done (see above) */
-#define match_assert_evaluated(file, line, expr) match_assert(file, line, expr)
-#define match_vassert_evaluated(file, line, expr, string) match_vassert(file, line, expr, string)
-#endif"""),
+# The asserts whose expression is the game's own work, which a later
+# ChupathingyCE marks match_vassert_evaluated (not at our pin): the obstacle
+# path's heap_insert and the script compiler's hs_parse_variable. With asserts
+# compiled out they were dropped: assertsoff5 (40490801164), compiling out
+# only ai/'s asserts, parted b30 at tick 82
+FIXES_ASSERTSEVAL["source/ai/path_obstacle_avoidance.c#heap"] = [
+("""		match_vassert("c:\\\\halo\\\\SOURCE\\\\ai\\\\path_obstacle_avoidance.c", 420, heap_insert(path, step_index), NULL);
+""",
+"""		{
+			/* psp_fixups.py (FIXES_ASSERTSEVAL): the insert is the game's */
+			boolean psp_inserted = heap_insert(path, step_index);
+
+			match_vassert("c:\\\\halo\\\\SOURCE\\\\ai\\\\path_obstacle_avoidance.c", 420, psp_inserted, NULL);
+			(void)psp_inserted;
+		}
+"""),
+]
+FIXES_ASSERTSEVAL["source/hs/hs_compile.c#variable"] = [
+("""						match_vassert(
+							"c:\\\\halo\\\\source\\\\hs\\\\hs_library_internal_compile.h",
+							0x126,
+							hs_parse_variable(variable_expression_index),
+							"asserted");
+""",
+"""						{
+							/* psp_fixups.py (FIXES_ASSERTSEVAL): the parse is the game's */
+							boolean psp_parsed = hs_parse_variable(variable_expression_index);
+
+							match_vassert(
+								"c:\\\\halo\\\\source\\\\hs\\\\hs_library_internal_compile.h",
+								0x126,
+								psp_parsed,
+								"asserted");
+							(void)psp_parsed;
+						}
+"""),
 ]
 FIXES_ASSERTSEVAL["source/sound/sound_manager.c#loaded"] = [snd_eval("0x79A"), snd_eval("0x9DA")]
 # The frame data checks ask the animation cache for the frame again
