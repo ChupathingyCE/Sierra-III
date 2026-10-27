@@ -74,6 +74,8 @@ int psp_keep_number(const char *prefix, int fallback);
 simulated or after a stop */
 unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *sums, short *output,
 	unsigned long frames, unsigned long *clipped);
+unsigned long psp_dsound_mix_split(void *const *list, unsigned long count, int *sums, short *output,
+	unsigned long frames, unsigned long *clipped, unsigned int *split);
 unsigned int psp_ge_me_classify(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_angle(const unsigned int *args, unsigned int *results);
 unsigned int psp_ge_me_replay(const unsigned int *args, unsigned int *results);
@@ -463,12 +465,17 @@ static void run_job(volatile struct me_slot *slot, int *sums, int on_me)
 	case ME_JOB_AUDIO:
 	{
 		unsigned long clipped = 0, voices;
+		/* on the ME, where its cycles went (results 2-5); the main CPU
+		can't read the ME's counter, so it leaves them 0 */
+		unsigned int split[4] = { 0, 0, 0, 0 }, k;
 
 		/* args: count, frames, output */
-		voices = psp_dsound_mix_list((void *const *)AUDIO_LIST, slot->args[0], sums, (short *)slot->args[2],
-			slot->args[1], &clipped);
+		voices = psp_dsound_mix_split((void *const *)AUDIO_LIST, slot->args[0], sums, (short *)slot->args[2],
+			slot->args[1], &clipped, on_me ? split : NULL);
 		slot->results[0] = (unsigned int)voices;
 		slot->results[1] = (unsigned int)clipped;
+		for (k = 0; k < 4; k++)
+			slot->results[2 + k] = split[k];
 		break;
 	}
 	case ME_JOB_CLASSIFY:
@@ -3167,6 +3174,16 @@ float psp_me_cycles_per_us(void)
 }
 
 /* the audio job's list: up to 256 voices, written through the uncached view */
+/* where the ME's audio time went (its own counter, summed over the blocks
+it mixed): the 'ME: audio split' line takes the job apart into decoding,
+the voices' mixing loop and the sums' ends; the job's code less these is
+its entry and the voice list */
+static struct
+{
+	unsigned long long decode, voices, ends, voice_frames;
+	unsigned long blocks;
+} audio_split;
+
 int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned long frames, unsigned long *voices,
 	unsigned long *clipped, unsigned long *waited_us)
 {
@@ -3187,6 +3204,14 @@ int psp_me_audio(void *const *list, unsigned long count, short *output, unsigned
 		return 0;
 	*voices = results[0];
 	*clipped = results[1];
+	if (results[3] || results[5])
+	{
+		audio_split.decode += results[2];
+		audio_split.voices += results[3];
+		audio_split.ends += results[4];
+		audio_split.voice_frames += results[5];
+		audio_split.blocks++;
+	}
 	*waited_us = (unsigned long)(sceKernelGetSystemTimeWide() - start);
 	if (me_state == 1)
 		audio_look_next(*waited_us);
@@ -3359,6 +3384,18 @@ void psp_me_report(void)
 			stats[k].jobs ? (unsigned long)(stats[k].wait_us / stats[k].jobs) : 0, stats[k].wait_worst_us, stats[k].failures);
 		if (length >= (int)sizeof(line))
 			length = (int)sizeof(line) - 1;
+	}
+	if (audio_split.blocks && me_cycles_per_us > 0.0f)
+	{
+		float per_block = me_cycles_per_us * (float)audio_split.blocks;
+
+		platform_log("ME: audio split over %lu blocks: decoding %lu us a block, the voices' mixing %lu (decoding included; %lu cycles a voice-frame, %lu without decoding), the sums' zeroing and output %lu",
+			audio_split.blocks, (unsigned long)((float)audio_split.decode / per_block),
+			(unsigned long)((float)audio_split.voices / per_block),
+			audio_split.voice_frames ? (unsigned long)(audio_split.voices / audio_split.voice_frames) : 0,
+			audio_split.voice_frames ? (unsigned long)((audio_split.voices - audio_split.decode) / audio_split.voice_frames) : 0,
+			(unsigned long)((float)audio_split.ends / per_block));
+		memset(&audio_split, 0, sizeof(audio_split));
 	}
 	ring_line[0] = 0;
 	if (ring_stats.jobs || ring_stats.failures || ring_stats.refused_busy || ring_stats.refused_full || ring_stats.refused_check)

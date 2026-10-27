@@ -844,11 +844,34 @@ static int prepare_voice(struct psp_stream *stream)
 	return 1;
 }
 
-/* a decoded block's frames, decoding it if its buffer holds another */
-static inline const short *decoded_frames(struct psp_stream *stream, const struct voice_packet *packet, long block)
+/* the ME's cycle counter (coprocessor 0 register 9). Only the ME may read
+it: the main CPU runs in user mode, where the read faults. So it is read
+only through a split pointer, which only the ME's audio job passes */
+static inline unsigned int me_count(void)
+{
+	unsigned int count;
+
+	__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+	return count;
+}
+
+/* a decoded block's frames, decoding it if its buffer holds another; with
+decode_cycles (the ME only), the decode's cycles are added to it */
+static inline const short *decoded_frames(struct psp_stream *stream, const struct voice_packet *packet, long block,
+	unsigned int *decode_cycles)
 {
 	if (block != stream->decoded_block[block & 1] || packet != stream->decoded_packet[block & 1])
-		decode_block(stream, packet, block);
+	{
+		if (decode_cycles)
+		{
+			unsigned int start = me_count();
+
+			decode_block(stream, packet, block);
+			*decode_cycles += me_count() - start;
+		}
+		else
+			decode_block(stream, packet, block);
+	}
 	return stream->decoded[block & 1];
 }
 
@@ -867,7 +890,7 @@ spends here it can't spend on the draws it replays:
   agree, which they do for any voice that has only ever been mono.
 "memixcheck" mixes each block both ways and counts any difference */
 static unsigned long mix_heard(struct psp_stream *stream, int *output, unsigned long frames, int left, int right,
-	int ramp_left, int ramp_right, int lowpass, int *lowpass_left_io, int *lowpass_right_io)
+	int ramp_left, int ramp_right, int lowpass, int *lowpass_left_io, int *lowpass_right_io, unsigned int *decode_cycles)
 {
 	unsigned long done = 0, step = stream->step, channels = stream->channels;
 	int lowpass_left = *lowpass_left_io, lowpass_right = *lowpass_right_io;
@@ -905,12 +928,12 @@ static unsigned long mix_heard(struct psp_stream *stream, int *output, unsigned 
 				if ((long)(frame >> 6) != block)
 				{
 					block = (long)(frame >> 6);
-					base = decoded_frames(stream, packet, block);
+					base = decoded_frames(stream, packet, block, decode_cycles);
 				}
 				pair = base + 2 * (frame & 63);
 				/* the next frame, in the other buffer past a block's end */
 				if (fraction && frame < last)
-					next = (frame & 63) != 63 ? pair + 2 : decoded_frames(stream, packet, block + 1);
+					next = (frame & 63) != 63 ? pair + 2 : decoded_frames(stream, packet, block + 1, decode_cycles);
 				l0 = pair[0];
 				r0 = pair[1];
 			}
@@ -974,7 +997,7 @@ static unsigned long mix_heard(struct psp_stream *stream, int *output, unsigned 
 /* mixes one prepared voice into output (frames of stereo 32-bit sums);
 returns whether it played. Integers only, no calls out of this file: the
 Media Engine runs it (build 86) */
-static int mix_voice(struct psp_stream *stream, int *output, unsigned long frames)
+static int mix_voice(struct psp_stream *stream, int *output, unsigned long frames, unsigned int *decode_cycles)
 {
 	unsigned long step = stream->step, done = 0;
 	int target_left = stream->target_left, target_right = stream->target_right, left, right, ramp_left, ramp_right;
@@ -1038,7 +1061,8 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 		return 0;
 	}
 	if (!stream->memix_old)
-		done = mix_heard(stream, output, frames, left, right, ramp_left, ramp_right, lowpass, &lowpass_left, &lowpass_right);
+		done = mix_heard(stream, output, frames, left, right, ramp_left, ramp_right, lowpass, &lowpass_left, &lowpass_right,
+			decode_cycles);
 	else
 	{
 		while (done < frames)
@@ -1109,18 +1133,37 @@ static int mix_voice(struct psp_stream *stream, int *output, unsigned long frame
 sums (frames of stereo 32-bit sums); returns the voices heard, and whether
 any sample hit the 16-bit limit. The same code on either CPU: the main
 CPU's mix below, and the Media Engine's job (psp_meaudio.c). No library
-calls (the zeroing is a loop, not memset) */
+calls (the zeroing is a loop, not memset).
+split (the ME's audio job only; NULL on the main CPU): where the ME's cycles
+went, so its audio time can be taken apart on the PSP: [0] decoding, [1] the
+voices' mixing including their decoding, [2] zeroing the sums and writing
+the output, [3] voice-frames heard */
 __attribute__((optimize("no-tree-loop-distribute-patterns")))
-unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *sums, short *output,
-	unsigned long frames, unsigned long *clipped)
+unsigned long psp_dsound_mix_split(void *const *list, unsigned long count, int *sums, short *output,
+	unsigned long frames, unsigned long *clipped, unsigned int *split)
 {
 	unsigned long sample, k, voices = 0;
+	unsigned int mark = split ? me_count() : 0, ends = 0;
 	int over = 0;
 
 	for (sample = 0; sample < frames * OUTPUT_CHANNELS; sample++)
 		sums[sample] = 0;
+	if (split)
+	{
+		unsigned int now = me_count();
+
+		ends += now - mark;
+		mark = now;
+	}
 	for (k = 0; k < count; k++)
-		voices += mix_voice((struct psp_stream *)list[k], sums, frames);
+		voices += mix_voice((struct psp_stream *)list[k], sums, frames, split ? &split[0] : NULL);
+	if (split)
+	{
+		unsigned int now = me_count();
+
+		split[1] += now - mark;
+		mark = now;
+	}
 	for (sample = 0; sample < frames * OUTPUT_CHANNELS; sample++)
 	{
 		int value = sums[sample];
@@ -1129,8 +1172,19 @@ unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *s
 			over = 1;
 		output[sample] = (short)(value > 32767 ? 32767 : value < -32768 ? -32768 : value);
 	}
+	if (split)
+	{
+		split[2] += ends + (me_count() - mark);
+		split[3] += voices * frames;
+	}
 	*clipped = over;
 	return voices;
+}
+
+unsigned long psp_dsound_mix_list(void *const *list, unsigned long count, int *sums, short *output,
+	unsigned long frames, unsigned long *clipped)
+{
+	return psp_dsound_mix_split(list, count, sums, output, frames, clipped, NULL);
 }
 
 /* ---------- the Media Engine's cache hand-over by ranges
