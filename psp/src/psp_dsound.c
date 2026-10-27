@@ -1570,6 +1570,28 @@ static void edram_loss(const char *why)
 
 /* the game thread, every frame (sound_cache_idle): collect the copy job,
 start reads into free staging, hand what was read to the ME */
+/* "soundnoyield" and the counts behind it (psp_fixups.py, FIXES_SOUNDEDRAM's
+request fixup): how often a request for a sound not yet loaded yielded the
+thread, and for how long */
+unsigned long psp_sound_request_yields = 0, psp_sound_request_yield_us = 0, psp_sound_request_unyielded = 0;
+
+int psp_sound_noyield(void)
+{
+	static int on = -1;
+
+	if (on < 0)
+		on = psp_keep("soundnoyield");
+	return on;
+}
+
+void psp_sound_request_report(void)
+{
+	platform_log("sound requests: %lu yields of the thread for a sound not loaded yet, %lu us in them (%lu us each); %lu not yielded (soundnoyield%s)",
+		psp_sound_request_yields, psp_sound_request_yield_us,
+		psp_sound_request_yields ? psp_sound_request_yield_us / psp_sound_request_yields : 0,
+		psp_sound_request_unyielded, psp_sound_noyield() ? "" : " off");
+}
+
 void psp_sound_upload_poll(void)
 {
 	unsigned int k;

@@ -32862,6 +32862,46 @@ FIXES_SOUNDEDRAM["source/cache/physical_memory_map.c#soundedram"] = [
 #endif"""),
 ]
 FIXES_SOUNDEDRAM["source/cache/xbox_sound_cache.c#soundedram"] = [
+# "soundnoyield" (research, 2026-10-26: why SNDEDRAM cost d20's opening
+# +11-14% a frame): a request for a sound not yet loaded yields the thread
+# (SwitchToThread, sched_yield) even when the caller doesn't wait for it.
+# prioritize_sounds asks every sound that isn't playing, every frame, so a
+# load queue that drains slowly (the eDRAM path: two 60 KB pieces in flight,
+# moved on once a frame) means as many yields a frame as sounds waiting:
+# 'sound_render: prioritise' went 0.1-0.7 -> 3-30 ms a frame over d20's
+# opening (40096390859). The word keeps the yield for blocking requests only;
+# the answer is the same either way (not loaded yet). The counts are always
+# kept and logged with the sound cache's line
+("""			else
+			{
+				SwitchToThread();
+			}
+		}
+		while (!result && block);""",
+ """			else
+			{
+#ifdef HALO_PSP
+				extern int psp_sound_noyield(void);
+				extern unsigned long psp_sound_request_yields, psp_sound_request_yield_us, psp_sound_request_unyielded;
+				extern unsigned int sceKernelGetSystemTimeLow(void);
+
+				if (block || !psp_sound_noyield())
+				{
+					unsigned int psp_began = sceKernelGetSystemTimeLow();
+
+					SwitchToThread();
+					psp_sound_request_yields++;
+					psp_sound_request_yield_us += sceKernelGetSystemTimeLow() - psp_began;
+				}
+				else
+					psp_sound_request_unyielded++;
+#else
+				SwitchToThread();
+#endif
+			}
+		}
+		while (!result && block);"""),
+
 ("""		cache_sound->sound = sound;
 		cache_file_read(
 			sound->cache_tag_index,
@@ -32938,6 +32978,11 @@ void sound_cache_idle(
 		extern void psp_sound_upload_report(void);
 
 		psp_sound_upload_report();
+	}
+	{
+		extern void psp_sound_request_report(void);
+
+		psp_sound_request_report();
 	}
 }"""),
 ]
