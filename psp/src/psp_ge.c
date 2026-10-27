@@ -4218,7 +4218,7 @@ size, so a line that is the smallest mip level's colour shows the texture */
 static int magenta = -1;
 static int tex_level_mode = GU_TEXTURE_AUTO;
 static float tex_bias = 0.0f;
-#define SHOWCASE_BIAS_DEFAULT 0 /* quarter levels; off: a bias across the whole menu smears the ring and the sky */
+#define SHOWCASE_BIAS_DEFAULT 8 /* quarter levels: two levels coarser, which Sheepdog01 judged right on the PSP-1000 by hand (sharper levels shimmer on the hull); a bias smears the ring and the sky some, so 4 is still to be tried by hand; showcasebias0 as before */
 static int in_sky;
 static unsigned long ge_part_us[GE_PARTS], ge_part_calls[GE_PARTS];
 static const char *const ge_part_names[GE_PARTS] = {
