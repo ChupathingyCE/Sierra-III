@@ -16942,7 +16942,8 @@ static PSP_MAIN_SIDE unsigned long overlay_wall_asks = 0, overlay_on_walls = 0, 
 
 static PSP_MAIN_SIDE unsigned long overlay_backing_full = 0;
 
-/* "overlaymemo": a list whose answers find no heap is asked again for each of
+/* "overlaymemo" (on by default; "overlaymemooff": as before): a list whose
+answers find no heap is asked again for each of
 its triangles (overlay_answers_for), so a full heap failed one calloc per
 triangle per frame: b30's burst at heaproom256 (heapwho1) was ~7,000 failed
 asks a game second, each a walk of the free lists. Remembering the refused
@@ -17039,7 +17040,7 @@ static int overlay_on_a_wall(const struct level_stream *copy, const unsigned sho
 	if (!flags)
 	{
 		if (overlay_memo < 0)
-			overlay_memo = psp_keep("overlaymemo");
+			overlay_memo = !psp_keep("overlaymemooff");
 		if (overlay_memo && key == overlay_refused_key && ge_hot.stream_frame == overlay_refused_frame)
 		{
 			overlay_no_room_skipped++;
@@ -23659,7 +23660,7 @@ static void frame_end_show(void)
 					nudges_asked = nudges_clamped = nudges_edge_on = 0;
 					if (overlay_no_room || overlay_no_room_skipped)
 						platform_log("GE: overlays without heap for their answers: %lu asks refused, %lu more not asked (overlaymemo%s), each drawn as on a wall",
-							overlay_no_room, overlay_no_room_skipped, overlay_memo > 0 ? "" : " off");
+							overlay_no_room, overlay_no_room_skipped, overlay_memo > 0 ? "" : "off");
 					overlay_no_room = overlay_no_room_skipped = 0;
 					if (me_slant > 0)
 						platform_log("GE: meslant: %lu of %lu sorted draws split with the Media Engine, %lu triangles of %lu (%lu%%) bucketed there; %lu fell back to this CPU; meslantcheck: %lu triangles checked, %lu answers differing",
