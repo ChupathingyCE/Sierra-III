@@ -143,6 +143,13 @@ CPU) */
 README), where me-core's minimal VME set-up leaves it at 2. A test until a
 PSP-1000 A/B shows whether the ME's jobs run faster */
 #define ME_FEATURE_BCC 256u
+/* "mefaultoff": the ME's exception vector left as me-core leaves it, not
+pointed at psp_me_fault_vector */
+#define ME_FEATURE_FAULT_OFF 512u
+/* "mefaulttest": a test of the record, never for play: about 5 s after
+start the ME loads a word from an odd address (an address error), so the
+main CPU's next deadline stops it and the log shows the record */
+#define ME_FEATURE_FAULT_TEST 1024u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -174,6 +181,17 @@ static unsigned int stash_storage[STASH_WORDS] __attribute__((aligned(64)));
 
 /* whole cache lines of their own; only ever used through the uncached view */
 static struct me_control control_storage __attribute__((aligned(64)));
+
+/* B31: what the ME's exception vector saw, written by psp_me_fault_vector
+on the ME and read by the main CPU when it stops an ME that didn't answer:
+a fault in a job (a bad or unaligned address, a firmware call, a trap) stops
+the ME with nothing to say where, since me-core installs no vector unless
+mehalt asks. Uncached on both sides; a line of its own */
+struct me_fault
+{
+	unsigned int count, cause, epc, bad_address, sp, ra, status, pad[9];
+} __attribute__((aligned(64)));
+struct me_fault psp_me_fault_storage __attribute__((aligned(64)));
 static struct me_slot slot_storage[ME_SLOTS] __attribute__((aligned(64)));
 static void *audio_list_storage[AUDIO_LIST_MAX] __attribute__((aligned(64)));
 #define UNCACHED(p) ((volatile __typeof__(*(p)) *)(0x40000000u | (unsigned int)(p)))
@@ -429,6 +447,52 @@ void meLibOnExternalInterrupt(void)
 		:
 		: "i"(&control_storage.wakes)
 		: "k0", "k1", "memory");
+}
+
+/* B31: the ME's exception vector, unless "mefaultoff": the exception's
+Cause, EPC, BadVAddr, $sp, $ra and Status, and a count, into
+psp_me_fault_storage through the uncached view, then a spin. Only k0 and k1
+are used, so the record holds the faulting code's own $sp and $ra. A fault
+is fatal either way: the main CPU's 40 ms deadline stops the ME and reports
+the record. Interrupts stay off on the ME without mehalt, so nothing else
+comes here; mehalt installs me-core's vector instead */
+void psp_me_fault_vector(void);
+__asm__(
+	".text\n"
+	".align 4\n"
+	".globl psp_me_fault_vector\n"
+	".ent psp_me_fault_vector\n"
+	"psp_me_fault_vector:\n"
+	".set push\n"
+	".set noreorder\n"
+	".set noat\n"
+	"	la $k0, psp_me_fault_storage\n"
+	"	li $k1, 0x40000000\n"
+	"	or $k0, $k0, $k1\n"
+	"	mfc0 $k1, $13\n"
+	"	sw $k1, 4($k0)\n"
+	"	mfc0 $k1, $14\n"
+	"	sw $k1, 8($k0)\n"
+	"	mfc0 $k1, $8\n"
+	"	sw $k1, 12($k0)\n"
+	"	sw $sp, 16($k0)\n"
+	"	sw $ra, 20($k0)\n"
+	"	mfc0 $k1, $12\n"
+	"	sw $k1, 24($k0)\n"
+	"	lw $k1, 0($k0)\n"
+	"	addiu $k1, $k1, 1\n"
+	"	sw $k1, 0($k0)\n"
+	"	sync\n"
+	"1:	b 1b\n"
+	"	nop\n"
+	".set pop\n"
+	".end psp_me_fault_vector\n");
+
+static void me_fault_vector_install(void)
+{
+	unsigned int vector = 0x80000000u | (unsigned int)psp_me_fault_vector;
+
+	__asm__ __volatile__("cache 0x8, 0(%0)\n\tsync\n\tmtc0 %0, $25\n\tsync" : : "r"(vector) : "memory");
 }
 
 /* "mehalt"'s idle. halted is raised before the slots are looked
@@ -1083,6 +1147,7 @@ void meLibOnProcess(void)
 	int ring_ready = 0; /* the main CPU has turned the ring on */
 	unsigned int ring_popped = 0, ring_last_look = 0, ring_quiet = RING_LINGER_PASSES;
 	int features_seen = 0; /* the features word has been written (mebcc1 applied) */
+	unsigned int fault_test_at = 0; /* mefaulttest: when, by the ME's cycle counter */
 
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_IN;
 	meLibSync();
@@ -1124,6 +1189,10 @@ void meLibOnProcess(void)
 			if (features && !features_seen)
 			{
 				features_seen = 1;
+				if (!(features & (ME_FEATURE_FAULT_OFF | ME_FEATURE_HALT)))
+					me_fault_vector_install();
+				if (features & ME_FEATURE_FAULT_TEST)
+					fault_test_at = me_cycles() + 333u * 1000000u * 5u;
 				if (features & ME_FEATURE_BCC)
 				{
 					hw(0xBCC00040) = 1;
@@ -1147,6 +1216,12 @@ void meLibOnProcess(void)
 		}
 		control->alive++;
 		control->clock = me_cycles();
+		if (fault_test_at && (int)(control->clock - fault_test_at) > 0)
+		{
+			volatile unsigned int *odd = (volatile unsigned int *)(0x80000000u | (unsigned int)&control_storage | 1u);
+
+			(void)*odd;
+		}
 		/* build 89: the stop word is looked at after the slots (below), so a
 		job asked for just before a stop is still served: b86-b88 halted with
 		it pending and its caller waited 40 ms holding the mixer's lock.
@@ -1477,8 +1552,19 @@ static void me_stop(const char *why, int for_sleep)
 			platform_log("ME: stopped (%s); halted itself after %d ms; the main CPU runs its jobs from here", why, k);
 		else
 		{
+			volatile struct me_fault *fault = UNCACHED(&psp_me_fault_storage);
+
 			kcall_2(me_hold_reset, 0);
 			platform_log("ME: stopped (%s): NO answer in 100 ms, held in reset; the main CPU runs its jobs from here", why);
+			/* B31: where it faulted (EPC is in kseg0: less 0x88804000, the
+			link map's address), or that it didn't */
+			if (fault->count)
+				platform_log("ME: fault: %u exceptions; Cause %08x (code %u), EPC %08x, BadVAddr %08x, sp %08x, ra %08x, Status %08x",
+					fault->count, fault->cause, (fault->cause >> 2) & 31, fault->epc, fault->bad_address, fault->sp,
+					fault->ra, fault->status);
+			else
+				platform_log("ME: fault: none recorded (%s): the ME was running, not faulted",
+					psp_keep("mefaultoff") ? "the vector off, mefaultoff" : "the vector in");
 		}
 	}
 	else if (me_state == 2)
@@ -1552,6 +1638,8 @@ int psp_me_start(void)
 	/* no cached copy of them anywhere on this CPU; then the words that
 	matter (they are in zeroed memory already) */
 	sceKernelDcacheWritebackInvalidateRange(&control_storage, sizeof(control_storage));
+	sceKernelDcacheWritebackInvalidateRange(&psp_me_fault_storage, sizeof(psp_me_fault_storage));
+	memset((void *)UNCACHED(&psp_me_fault_storage), 0, sizeof(psp_me_fault_storage));
 	sceKernelDcacheWritebackInvalidateRange(slot_storage, sizeof(slot_storage));
 	sceKernelDcacheWritebackInvalidateRange(audio_list_storage, sizeof(audio_list_storage));
 	control->alive = control->stop = control->clock = control->jobs = 0;
@@ -1656,7 +1744,8 @@ int psp_me_start(void)
 		(psp_keep("meaudiofirst") ? ME_FEATURE_AUDIO_FIRST : 0u) |
 		(psp_keep("meaudioranges") ? ME_FEATURE_AUDIO_RANGES : 0u) | (psp_keep("mestash") ? ME_FEATURE_STASH : 0u) |
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
-		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u);
+		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
+		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u);
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -3100,7 +3189,8 @@ void psp_me_wake_poll(void)
 	frame (a ring job not done in 10 ms turns the ring off for the session) */
 	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
-		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u);
+		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
+		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u);
 	__asm__ __volatile__("sync");
 	now = sceKernelGetSystemTimeWide();
 	if (me_restartable == 2)
