@@ -274,8 +274,15 @@ PSP = ["psp-gcc", "-G0", GAME_OPT, "-march=allegrex", "-ffp-contract=off", "-fsh
        "-DHALO_PSP=1", "-DHALO_RELEASE=1", "-DHALO_ANDROID=1",
        ] + (["-DPSP_MULTIPLAYER=1"] if MULTIPLAYER else []) + (["-DPSP_MP_COOP=1"] if MULTIPLAYER and MP_COOP else []) + (["-DPSP_MP_HOST=1"] if MULTIPLAYER and MP_HOST else []) + (["-DPSP_MAP_CHECKS=1"] if MAP_CHECKS else []) + (["-DPSP_POOLS_XBOX=1"] if POOLS_XBOX else []) + (["-DPSP_RECON_64MB=1"] if BIG_RAM else []) + (["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (["-DPSP_TICK_STEPS=1"] if TICK_STEPS else []) + (["-DPSP_RECON=1"] if RECON else []) + (["-DPSP_METRICS=1"] if METRICS else []) + (["-DPSP_PGO_GENERATE=1"] if PGO == "generate" else []) + os.environ.get("PSP_CFLAGS", "").split() + [
        # build 19: failed asserts are cold paths, laid out away from the hot
-       # code (the 16 KB instruction cache holds more of what runs)
+       # code (the 16 KB instruction cache holds more of what runs).
+       # X10 (Sheepdog01 2026-10-27 07:19: "off everywhere"): the fatal asserts are
+       # compiled out, unevaluated: tick -1.5 to -1.8%, drawing -3 to -5%,
+       # instruction misses -8 to -11% (assertsoff7), play identical
+       # (assertsoff6). The asserts that do the game's work are evaluated
+       # outside their checks (psp_fixups.py's FIXES_ASSERTSEVAL).
+       # PSP_ASSERTS_ON=1 keeps them, cold, as before
        "-DPSP_ASSERTS_COLD=1", "-freorder-blocks-and-partition", "-mno-explicit-relocs",
+       ] + ([] if os.environ.get("PSP_ASSERTS_ON", "") == "1" else ["-DPSP_ASSERTS_OFF=1"]) + [
        # the port's own sources are compiled by full path, and __FILE__ (asserts)
        # would put that path in the EBOOT: written relative to the checkout, the
        # same commit builds the same bytes on any machine

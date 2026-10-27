@@ -72,6 +72,7 @@ PSPDEV=<pspdev> tools/build_release.sh <out>
 | `PSP_POOLS_XBOX=1` | The Xbox's actor, prop, light and glow particle arrays and the game state as long as they need; for runs that measure the arrays' peaks |
 | `PSP_METRICS=0` | Leaves out the per-map metrics (`metrics budget`, `hitches`, `hitch`, `io`, `heap` lines; `psp/src/psp_metrics.c`), on in every other build: set it for the final release only |
 | `PSP_NO_COLD=1` | Everything at the hot optimisation level |
+| `PSP_ASSERTS_ON=1` | Keeps the fatal asserts (cold, logged to `debug.txt` when they fail); by default they're compiled out (X10, Sheepdog01 2026-10-27) |
 | `PSP_SHELF=1` | Builds the shelved experiments back in (`docs/shelf.md`) |
 | `PSP_DITHERSHIFT=1` | Builds in the GE's dither moved each pass (keep words `dithershift`, `dithershiftall`; `docs/review_dithershift.md`): its tests sit in hot draw paths, so a default build leaves them out |
 | `PSP_PGO_STRICT=1` | Refuses to link when the profile doesn't match the code (any function compiled without its counts): set it for every release build and its release check. Every PGO build lists them in `pgo_mismatch.txt` |
