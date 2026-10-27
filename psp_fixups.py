@@ -515,6 +515,8 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 							chief_shader[chief_count] = definition;
 							chief_kind[chief_count++] = (signed char)kind;
 						}
+						if (kind > 0)
+							platform_log("chief: %s is Chief's %s (map load %d)", name, kind == 1 ? "visor" : "armour", psp_map_generation);
 					}
 					reflection[3] = (float)kind;
 					psp_chief_part = kind;

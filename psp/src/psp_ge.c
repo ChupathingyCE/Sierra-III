@@ -13057,6 +13057,19 @@ void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
 {
 	GE_BENCH_SKIP();
 	reflection_keeps();
+	if (chief_visor > 0 && rgb && (int)rgb[3] == 1)
+	{
+		static int logged = 0;
+		int width = 0, height = 0;
+
+		if (!logged)
+		{
+			logged = 1;
+			psp_tex_size(cube_key, &width, &height);
+			platform_log("GE: chiefvisor: the visor's reflection %.2f %.2f %.2f, its map %08x %dx%d (a sphere map is 32x32)",
+				rgb[0], rgb[1], rgb[2], cube_key, width, height);
+		}
+	}
 	/* a reflection pass binds the part's sphere map in the replay */
 	if (env_fp > 0 || env_near > 0 || chief_visor > 0)
 		GE_PRETOUCH(cube_key, TXPT_MODEL_DETAIL);
