@@ -13161,6 +13161,10 @@ A pass more per such part. "envgainN": the strength in percent (100).
 (a visor or glass, not the armour around it, whose mask the pass can't
 apply) */
 static unsigned long env_passes = 0, env_unbound = 0;
+/* the visor's parts reaching the draw: all, textured and lit, shiny, and how
+many pixels across the last one was */
+static unsigned long visor_drawn = 0, visor_textured = 0, visor_shiny = 0;
+static float visor_pixels = 0.0f;
 
 /* the reflection words, read on this CPU before any replay needs them */
 static void reflection_keeps(void)
@@ -14883,6 +14887,13 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		sceGuColor(color);
 	part_ambient = model_ambient;
 	shiny = textured && model_camouflage <= 0.0f && !in_sky && reflection_strength(shine);
+	if (reflection_chief == 1)
+	{
+		visor_drawn++;
+		visor_textured += textured != 0;
+		visor_shiny += shiny != 0;
+		visor_pixels = model_pixels;
+	}
 	env = shiny && env_part(shine);
 	if (textured && model_camouflage <= 0.0f && !in_sky && !env)
 		model_ambient = ambient_with_reflection(base_key);
@@ -23846,9 +23857,9 @@ static void frame_end_show(void)
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, change_unbound, glow_passes, glow_mapped, glow_clamped, glow_unmapped, meter_worked, meter_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
-		if (model_specular > 0 || env_fp > 0 || env_near > 0)
-			platform_log("GE: reflections: %lu parts with a specular highlight, %lu reflection passes, %lu without their sphere map in memory",
-				specular_parts, env_passes, env_unbound);
+		if (model_specular > 0 || env_fp > 0 || env_near > 0 || chief_visor > 0)
+			platform_log("GE: reflections: %lu parts with a specular highlight, %lu reflection passes, %lu without their sphere map in memory; Chief's visor drawn %lu (%lu textured, %lu shiny, last %.0f pixels across)",
+				specular_parts, env_passes, env_unbound, visor_drawn, visor_textured, visor_shiny, visor_pixels);
 		if (PSP_DITHERSHIFT && dither_shift > 0)
 		{
 			platform_log("GE: %s: %lu passes dithered at a moved place", dither_shift == 2 ? "dithershiftall" : "dithershift", dither_moves);
