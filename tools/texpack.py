@@ -1930,6 +1930,19 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     return made
 
 
+def b25_sizing(entries):
+    """design_b25_bake.md's costs for this pack: the multipurpose maps' two
+    mask CLUTs (8888, 64-byte aligned), the meter maps the loader would keep
+    in RAM, and the averages table"""
+    mp = [e for e in entries if 'multipurpose' in e.get('reads', '')]
+    meters = [e for e in entries if 'meter' in e.get('reads', '')]
+    masks = sum(2 * ((16 if e['psm'] == 4 else 256) * 4 + 63) // 64 * 64 for e in mp)
+    print('b25 sizing: %d textures, %d KB; %d multipurpose maps (%d KB of their own), their mask CLUTs +%d KB; '
+          '%d meter maps, %d KB kept in RAM; averages table %d bytes'
+          % (len(entries), sum(len(e['data']) for e in entries) // 1024, len(mp), sum(len(e['data']) for e in mp) // 1024,
+             masks // 1024, len(meters), sum(len(e['data']) for e in meters) // 1024, 8 + 8 * len(entries)), file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('map')
@@ -2127,6 +2140,8 @@ def main():
             continue
         r['key'] = b['address']
         r['name'] = b['tag']
+        # what the runtime reads out of this texture (design_b25_bake.md)
+        r['reads'] = ('multipurpose' if not own_colours else '') + (' meter' if meter else '')
         entries.append(r)
         if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and LIGHTMAP_WHOLE:
             broken, worst = seams_broken(m, b, cls)
@@ -2392,6 +2407,7 @@ def main():
                 blob += b'\0'
         dir_bytes += struct.pack('<IHHBBBBII', e['key'], e['w'], e['h'], e['levels'], e['psm'], e['clut'],
                                  (1 if e['alpha'] else 0) | e.get('flags', 0), start, len(e['data']))
+    b25_sizing(entries)
     out = bytearray(struct.pack('<4sII', b'PTX1', len(entries), directory)) + dir_bytes + tint_bytes
     while len(out) < offset:
         out += b'\0'
