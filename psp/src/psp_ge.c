@@ -10982,6 +10982,22 @@ then sends what b116 sent) */
 static int lit_points_maybe_on = 0;
 static unsigned long lit_sets_sent = 0, lit_sets_memo = 0;
 
+/* "modelspecular" (opt-in while it is priced): a shiny part's highlight from
+the GE's own specular lighting. The Xbox adds a part's reflection over its
+lit base (psp_ge_model_reflection); its brightest share, the sky or a lamp
+in the cube map, shows as a glint that moves as the part turns. Here the
+two directional lights are also specular lights of their own colour, the
+part's specular material is its reflection's strength (part_specular, 0 for
+a part that reflects nothing), and the GE adds the specular term after the
+texture (separate specular colour), so the glint stays in shade as the
+Xbox's sheen does. Per vertex, in the lighting the GE does anyway: no pass
+of its own. "specpowerN": the highlight's exponent (16) */
+int psp_keep_number(const char *prefix, int fallback);
+static PSP_MAIN_SIDE int model_specular = -1;
+static PSP_MAIN_SIDE float model_specular_power = 16.0f;
+static unsigned int part_specular = 0;
+static unsigned long specular_parts = 0;
+
 /* lighting changed outside model_lighting: 0 turned off; 1 the lights'
 parameters; 2 everything unknown (a frame's start) */
 static void lit_forget(int what)
@@ -11011,6 +11027,19 @@ static void model_lighting(int on)
 	}
 	if (lit_enabled != 1)
 		sceGuEnable(GU_LIGHTING); /* (each part turns lighting off for its later passes: not counted) */
+	if (model_specular)
+	{
+		/* the part's own: sceGuColor set every material colour to the
+		part's, so this is sent for every part */
+		if (!lit_params)
+		{
+			sceGuLightMode(GU_SEPARATE_SPECULAR_COLOR);
+			sceGuSpecular(model_specular_power);
+		}
+		sceGuMaterial(GU_SPECULAR, (int)part_specular);
+		if (part_specular & 0xFFFFFF)
+			specular_parts++;
+	}
 	if (!lit_params || lit_ambient != model_ambient)
 	{
 		sceGuAmbient(model_ambient);
@@ -11022,12 +11051,15 @@ static void model_lighting(int on)
 		{
 			if (!lit_params || memcmp(&lit_toward[index], &model_light_toward[index], sizeof(ScePspFVector3)) != 0)
 			{
-				sceGuLight(index, GU_DIRECTIONAL, GU_DIFFUSE, &model_light_toward[index]);
+				sceGuLight(index, GU_DIRECTIONAL, model_specular ? GU_DIFFUSE_AND_SPECULAR : GU_DIFFUSE,
+					&model_light_toward[index]);
 				sent = 1;
 			}
 			if (!lit_params || lit_color[index] != model_light_color[index])
 			{
 				sceGuLightColor(index, GU_DIFFUSE, model_light_color[index]);
+				if (model_specular)
+					sceGuLightColor(index, GU_SPECULAR, model_light_color[index]);
 				sent = 1;
 			}
 			if (!lit_params || !lit_on[index])
@@ -13006,9 +13038,17 @@ static float reflection_rgb[3] = { 0.0f, 0.0f, 0.0f };
 static int reflection_off = -1;
 static unsigned long reflection_parts = 0, reflection_cubes_known = 0;
 
+static void reflection_keeps(void);
+/* the reflection pass's words (reflection_keeps, below) */
+static PSP_MAIN_SIDE int env_fp = -1, env_near = 0, env_pixels = 160, env_gain = 100;
+
 void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
 {
 	GE_BENCH_SKIP();
+	reflection_keeps();
+	/* a reflection pass binds the part's sphere map in the replay */
+	if (env_fp > 0 || env_near > 0)
+		GE_PRETOUCH(cube_key, TXPT_MODEL_DETAIL);
 	GE_DEFER(defer_model_reflection(cube_key, rgb));
 	reflection_cube_key = cube_key;
 	reflection_rgb[0] = rgb ? rgb[0] : 0.0f;
@@ -13052,6 +13092,119 @@ static unsigned int ambient_with_reflection(unsigned int base_key)
 	}
 	reflection_parts++;
 	return color_from_rgb(ambient);
+}
+
+/* a part's reflection strength (0-1 a channel): the shader's brightness and
+tint times the multipurpose map's mask on average, as folded into the
+ambient above; 0 when the part reflects nothing or "noreflection" */
+static int reflection_strength(float *rgb)
+{
+	unsigned int mask_abgr;
+	float mask = 0.5f;
+	int channel;
+
+	if (reflection_off > 0 || reflection_rgb[0] + reflection_rgb[1] + reflection_rgb[2] <= 0.004f)
+		return 0;
+	if (change_key && psp_tex_average_known(change_key, &mask_abgr))
+		mask = (float)(mask_abgr & 0xFF) * (1.0f / 255.0f);
+	for (channel = 0; channel < 3; channel++)
+	{
+		rgb[channel] = reflection_rgb[channel] * mask;
+		rgb[channel] = rgb[channel] > 1.0f ? 1.0f : rgb[channel];
+	}
+	return 1;
+}
+
+/* "envfp", "envnear" (opt-in while they are priced): a shiny part's
+reflection drawn as the Xbox draws it, added over the lit base, for the
+first-person weapon (envfp) and for models at least envpixelsN pixels
+across on the screen (envnear, 160: Chief in a cutscene, a vehicle beside
+the player), instead of folded into the ambient. The bake turns the
+part's cube map into a sphere map (texpack.py, sphere_map); the GE's
+environment mapping picks its texel from the normal's two components along
+the camera's right and up (lights 2 and 3 carry them; lighting is off for
+this pass), and the pass adds it times the part's strength where pass 1
+drew. The mask is the part's average (one texture a pass, and the frame
+has no alpha to hold the mask in): a part shiny in places shines evenly.
+A pass more per such part. "envgainN": the strength in percent (100) */
+static unsigned long env_passes = 0, env_unbound = 0;
+
+/* the reflection words, read on this CPU before any replay needs them */
+static void reflection_keeps(void)
+{
+	if (env_fp >= 0)
+		return;
+	reflection_off = psp_keep("noreflection");
+	if (reflection_off)
+		platform_log("GE: noreflection: model reflections not folded into their ambient light");
+	model_specular = psp_keep("modelspecular");
+	model_specular_power = (float)psp_keep_number("specpower", 16);
+	if (model_specular)
+		platform_log("GE: modelspecular: shiny parts' highlights from the GE's specular lighting, power %.0f",
+			model_specular_power);
+	env_near = psp_keep("envnear");
+	env_pixels = psp_keep_number("envpixels", 160);
+	env_gain = psp_keep_number("envgain", 100);
+	env_fp = psp_keep("envfp");
+	if (env_fp || env_near)
+		platform_log("GE: reflections drawn as a pass: %s%s (at %d pixels across), gain %d%%",
+			env_fp ? "first person " : "", env_near ? "near models" : "", env_pixels, env_gain);
+}
+
+static int env_part(void)
+{
+	int width, height;
+
+	if (!(model_first_person ? env_fp : env_near && model_pixels >= (float)env_pixels))
+		return 0;
+	return reflection_cube_key && psp_tex_size(reflection_cube_key, &width, &height) && width == 32 && height == 32;
+}
+
+static int reflection_env_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
+	struct skin_part *skin, ScePspFMatrix4 *model, const float *strength)
+{
+	ScePspFVector3 across, upward;
+	float gain = (float)env_gain * (1.0f / 100.0f);
+	unsigned int color;
+
+	if (!psp_tex_bind(reflection_cube_key, NULL))
+		return 0;
+	color = 0xFF000000u | ((unsigned int)PSP_CLAMP_255((int)(strength[2] * gain * 255.0f)) << 16) |
+		((unsigned int)PSP_CLAMP_255((int)(strength[1] * gain * 255.0f)) << 8) |
+		(unsigned int)PSP_CLAMP_255((int)(strength[0] * gain * 255.0f));
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+	sceGuColor(color);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuTexWrap(GU_CLAMP, GU_CLAMP);
+	sceGuTexScale(1.0f, 1.0f);
+	sceGuTexOffset(0.0f, 0.0f);
+	/* u from the normal along the camera's right, v along its down (the
+	sphere map's first row is up): the GE takes (1 + n . light) / 2 */
+	across.x = camera_right[0];
+	across.y = camera_right[1];
+	across.z = camera_right[2];
+	upward.x = -camera_up[0];
+	upward.y = -camera_up[1];
+	upward.z = -camera_up[2];
+	sceGuLight(2, GU_DIRECTIONAL, GU_DIFFUSE, &across);
+	sceGuLight(3, GU_DIRECTIONAL, GU_DIFFUSE, &upward);
+	lit_forget(1);
+	sceGuTexMapMode(GU_ENVIRONMENT_MAP, 2, 3);
+	sceGuDepthFunc(GU_EQUAL);
+	sceGuDepthMask(GU_TRUE);
+	/* added light fades to nothing in the fog */
+	sceGuFog(fog_near, fog_far, 0xFF000000);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	ge_blend(1);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	ge_blend(0);
+	sceGuTexMapMode(GU_TEXTURE_COORDS, 0, 0);
+	sceGuTexWrap(GU_REPEAT, GU_REPEAT);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuDepthMask(GU_FALSE);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuColor(0xFFFFFFFF);
+	return 1;
 }
 
 /* the change colour multiplied in by the multipurpose map's mask, with the
@@ -14452,6 +14605,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	int base_alpha = 0, textured, soft = 0, two_sided = (alpha_tested & 2) != 0;
 	struct skin_part *skin = NULL;
 	unsigned int part_ambient;
+	float shine[3] = { 0.0f, 0.0f, 0.0f };
+	int shiny, env;
 
 	alpha_tested &= 1;
 	model_cut_count = 0;
@@ -14682,8 +14837,14 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	else
 		sceGuColor(color);
 	part_ambient = model_ambient;
-	if (textured && model_camouflage <= 0.0f && !in_sky)
+	shiny = textured && model_camouflage <= 0.0f && !in_sky && reflection_strength(shine);
+	env = shiny && env_part();
+	if (textured && model_camouflage <= 0.0f && !in_sky && !env)
 		model_ambient = ambient_with_reflection(base_key);
+	part_specular = shiny && model_specular > 0 ? 0xFF000000u |
+		((unsigned int)PSP_CLAMP_255((int)(shine[2] * 255.0f)) << 16) |
+		((unsigned int)PSP_CLAMP_255((int)(shine[1] * 255.0f)) << 8) |
+		(unsigned int)PSP_CLAMP_255((int)(shine[0] * 255.0f)) : 0xFF000000u;
 	model_lighting(1);
 	if (camo_shimmer < 0)
 		camo_shimmer = psp_keep("camoshimmer");
@@ -14787,6 +14948,14 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			else if (glow_map_pass(vertices, indices, index_count, strip, skin, &model))
 				glow_passes++;
 		}
+	}
+	if (env)
+	{
+		if (reflection_env_pass(vertices, indices, index_count, strip, skin, &model, shine))
+			env_passes++;
+		else
+			env_unbound++;
+		sceGuTexScale(model_u_scale * (u_scale != 0.0f ? u_scale : 1.0f), model_v_scale * (v_scale != 0.0f ? v_scale : 1.0f));
 	}
 	if (textured && model_detail_key && psp_showcase_map && model_camouflage <= 0.0f && !in_sky)
 		model_detail_pass(vertices, indices, index_count, strip, skin, &model);
@@ -23624,6 +23793,9 @@ static void frame_end_show(void)
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, change_unbound, glow_passes, glow_mapped, glow_clamped, glow_unmapped, meter_worked, meter_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
+		if (model_specular > 0 || env_fp > 0 || env_near > 0)
+			platform_log("GE: reflections: %lu parts with a specular highlight, %lu reflection passes, %lu without their sphere map in memory",
+				specular_parts, env_passes, env_unbound);
 		if (PSP_DITHERSHIFT && dither_shift > 0)
 		{
 			platform_log("GE: %s: %lu passes dithered at a moved place", dither_shift == 2 ? "dithershiftall" : "dithershift", dither_moves);
