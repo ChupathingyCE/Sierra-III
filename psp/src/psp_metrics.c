@@ -159,9 +159,12 @@ static void report(const char *when)
 		/* FIXES_COMPACTSKIP (memory_pool.c): since the program started */
 		extern unsigned int psp_compact_skipped, psp_compact_walked, psp_compact_check_moved;
 
+		extern unsigned int psp_gc_head_found, psp_gc_head_kept;
+
 		platform_log("metrics compact (%s, %s): pool compactions skipped (already compact) %u, walked %u, "
-			"blocks a skip would have left out of place %u",
-			m.map, when, psp_compact_skipped, psp_compact_walked, psp_compact_check_moved);
+			"blocks a skip would have left out of place %u; garbage collector's player heads found %u, kept %u",
+			m.map, when, psp_compact_skipped, psp_compact_walked, psp_compact_check_moved,
+			psp_gc_head_found, psp_gc_head_kept);
 	}
 	if (m.heap_samples)
 		platform_log("metrics heap (%s, %s): free low %lu KB at game time %ld; largest block low %lu KB at game time %ld; in use peak %lu KB; "

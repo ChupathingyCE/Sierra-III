@@ -26522,7 +26522,7 @@ void memory_pool_compact(
 	boolean psp_already_compact;
 
 	if (psp_compact_mode < 0)
-		psp_compact_mode = psp_keep("compactcheck") ? 2 : psp_keep("compactalways") ? 0 : 1;
+		psp_compact_mode = psp_keep("compactcheck") ? 2 : psp_keep("compactalways") || psp_keep("smallwins1old") ? 0 : 1;
 	psp_already_compact = pool->size - memory_pool_get_used_size(pool) == pool->free_size;
 	if (psp_already_compact && psp_compact_mode == 1)
 	{
@@ -26545,6 +26545,90 @@ void memory_pool_compact(
 				if (psp_already_compact)
 					psp_compact_check_moved++;
 #endif
+"""),
+]
+
+
+# ---------- FIXES_GCHEAD: the garbage collector's player heads, once a collection (research, GCLATE)
+#
+# Late in b30 the collector tests ~200 garbage objects a tick against every
+# player's view (object_visible_to_any_player, its only caller), and each test
+# finds the player's head with object_get_marker_by_name: a search of the
+# model's markers by name and a node transform, the same answer every time
+# within one collection (it deletes garbage only, never the player's unit).
+# The head is found once a collection and kept for the rest of it. Exact by
+# construction. Keep words "gcheadold" (as before), "smallwins1old" (the whole
+# first small-wins batch: this and FIXES_COMPACTSKIP)
+
+FIXES_GCHEAD = {}
+FIXES_GCHEAD["source/objects/objects.c#gchead"] = [
+("""boolean object_visible_to_any_player(
+	long object_index)
+{""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_GCHEAD) */
+extern int psp_keep(const char *name);
+static int psp_gc_head_mode = -1; /* 1 kept for a collection, 0 as before */
+static int psp_gc_heads_live;
+static long psp_gc_head_unit[16];
+static real_point3d psp_gc_head_position[16];
+unsigned int psp_gc_head_found, psp_gc_head_kept;
+
+static void psp_gc_heads_begin(void)
+{
+	int k;
+
+	if (psp_gc_head_mode < 0)
+		psp_gc_head_mode = !psp_keep("gcheadold") && !psp_keep("smallwins1old");
+	for (k = 0; k < 16; k++)
+		psp_gc_head_unit[k] = NONE;
+	psp_gc_heads_live = psp_gc_head_mode;
+}
+
+static void psp_gc_head(long player_index, long unit_index, real_point3d *position)
+{
+	int slot = DATUM_INDEX_TO_ABSOLUTE_INDEX(player_index) & 15;
+
+	if (psp_gc_heads_live && psp_gc_head_unit[slot] == unit_index)
+	{
+		*position = psp_gc_head_position[slot];
+		psp_gc_head_kept++;
+		return;
+	}
+	unit_get_head_position(unit_index, position);
+	psp_gc_head_found++;
+	if (psp_gc_heads_live)
+	{
+		psp_gc_head_unit[slot] = unit_index;
+		psp_gc_head_position[slot] = *position;
+	}
+}
+#endif
+
+boolean object_visible_to_any_player(
+	long object_index)
+{"""),
+("""					unit_get_head_position(player->unit_index, &player_position);
+""",
+"""#ifdef HALO_PSP
+					psp_gc_head(player_index, player->unit_index, &player_position);
+#else
+					unit_get_head_position(player->unit_index, &player_position);
+#endif
+"""),
+("""			garbage_collect_mode_wide = garbage_collect_mode;
+""",
+"""			garbage_collect_mode_wide = garbage_collect_mode;
+#ifdef HALO_PSP
+			psp_gc_heads_begin();
+#endif
+"""),
+("""		/* port: in network co-op, active garbage left above its target is
+""",
+"""#ifdef HALO_PSP
+		psp_gc_heads_live = 0;
+#endif
+		/* port: in network co-op, active garbage left above its target is
 """),
 ]
 
@@ -35415,7 +35499,7 @@ FIXES_DGFAST["source/memory/data.c#dgfast"] = [
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
