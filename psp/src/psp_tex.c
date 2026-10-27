@@ -97,6 +97,7 @@ low frame rates the budget was spent before the HUD's turn. 1: pinned.
 "hudpinoff": as before */
 static unsigned char *hud_pinned = NULL;
 static int hud_pin_on = -1;
+static void hud_pin_list_forget(void); /* hudpinme, below */
 static unsigned long hud_misses = 0, hud_reads_past_budget = 0, hud_untextured = 0;
 int psp_tex_screen_pass = 0; /* psp_ge.c: set while the screen-space draws are made */
 /* build 44: binds per entry since the last report, to see which textures
@@ -418,6 +419,7 @@ void psp_tex_close(void)
 	free(resident_in);
 	free(hud_pinned);
 	hud_pinned = NULL;
+	hud_pin_list_forget();
 	free(averages);
 	averages = NULL;
 	averages_count = 0;
@@ -2246,6 +2248,18 @@ pins them, read past the frame's budget, and marked past the ceiling (the
 HUD's set is small) */
 static PSP_MAIN_SIDE int hud_pin_me = -1;
 static PSP_MAIN_SIDE unsigned long hud_pretouched = 0, hud_pretouch_past_ceiling = 0, hud_pretouch_refused = 0;
+/* the pinned textures, so a frame's start reads back any the cache lost:
+there, before the frame's own records, last frame's textures may give way
+(hudpin1: under a full cache 2,337 of the HUD's loads found no room once
+the frame's own set filled both caches, and the meters still went) */
+#define HUD_PIN_LIST 96
+static PSP_MAIN_SIDE int hud_pin_list[HUD_PIN_LIST], hud_pin_count = 0;
+static PSP_MAIN_SIDE unsigned long hud_frame_start_loads = 0, hud_frame_start_refused = 0;
+
+static void hud_pin_list_forget(void)
+{
+	hud_pin_count = 0;
+}
 
 void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 {
@@ -2286,7 +2300,11 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 	}
 	pretouch_calls++;
 	if (hud && hud_pinned)
+	{
+		if (!hud_pinned[index] && hud_pin_count < HUD_PIN_LIST)
+			hud_pin_list[hud_pin_count++] = index;
 		hud_pinned[index] = 1;
+	}
 	if (resident_at[index] && last_frame[index] == frame)
 		return; /* marked already, by a bind or another kind */
 	size = alignment(entries[index].size);
@@ -2698,10 +2716,10 @@ void psp_tex_frame_end(void)
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
 	if (entries && frame % 300 == 0)
-		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room",
+		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room; read back at a frame's start %lu, refused %lu (%d pinned)",
 			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured,
 			hud_pin_me > 0 ? "hudpinme" : hud_pin_me == 0 ? "hudpinmeold" : "none yet", hud_pretouched, hud_pretouch_past_ceiling,
-			hud_pretouch_refused);
+			hud_pretouch_refused, hud_frame_start_loads, hud_frame_start_refused, hud_pin_count);
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
 	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
@@ -2807,4 +2825,22 @@ void psp_tex_frame_end(void)
 		strip_census_report(900);
 	frame++;
 	frame_loaded = 0;
+	/* the HUD's pinned textures read back before the frame's records, where
+	last frame's textures can give way (hudpinme) */
+	if (hud_pin_me > 0 && entries)
+	{
+		int k;
+
+		for (k = 0; k < hud_pin_count; k++)
+		{
+			int index = hud_pin_list[k];
+
+			if (resident_at[index] || last_frame[index] + RECENT_FRAMES <= frame)
+				continue;
+			if (load(index))
+				hud_frame_start_loads++;
+			else
+				hud_frame_start_refused++;
+		}
+	}
 }
