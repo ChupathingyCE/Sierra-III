@@ -2264,6 +2264,18 @@ static void hud_pin_list_forget(void)
 	hud_pin_count = 0;
 }
 
+/* the room the pins hold (the master: what the pin keeps from the rest) */
+static unsigned int hud_pin_kb(int resident)
+{
+	unsigned int bytes = 0;
+	int k;
+
+	for (k = 0; k < hud_pin_count && entries; k++)
+		if (!resident || resident_at[hud_pin_list[k]])
+			bytes += alignment(entries[hud_pin_list[k]].size);
+	return bytes / 1024;
+}
+
 /* the HUD's pinned textures the cache lost, read back at the frame's first
 record (psp_ge.c's pretouch has carried out any frame still in flight by
 then, so nothing it binds is evicted), before the frame's own set fills
@@ -2753,10 +2765,10 @@ void psp_tex_frame_end(void)
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
 	if (entries && frame % 300 == 0)
-		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room; read back at a frame's start %lu, refused %lu (%d pinned)",
+		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room; read back at a frame's start %lu, refused %lu (%d pinned, %u KB, %u KB of them resident)",
 			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured,
 			hud_pin_me > 0 ? "hudpinme" : hud_pin_me == 0 ? "hudpinmeold" : "none yet", hud_pretouched, hud_pretouch_past_ceiling,
-			hud_pretouch_refused, hud_frame_start_loads, hud_frame_start_refused, hud_pin_count);
+			hud_pretouch_refused, hud_frame_start_loads, hud_frame_start_refused, hud_pin_count, hud_pin_kb(0), hud_pin_kb(1));
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
 	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
