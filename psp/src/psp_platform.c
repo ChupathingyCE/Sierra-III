@@ -1072,8 +1072,9 @@ static const struct
 	opening against ChupathingyCE's frames); a restoration */
 	{ "ditherlift", "noditherlift" },
 	/* a light's gel lit by its six faces, so the alert lights' beams reach the
-	walls (psp_fixups.py, gelfaces); on provisionally while
-	its cost in a10's hallway (+8-15%) is weighed */
+	walls (psp_fixups.py, gelfaces), or sampled from the gel's own cube at
+	each lit vertex where the pack keeps it (nogelcube: by the faces); on
+	provisionally while its cost in a10's hallway (+8-15%) is weighed */
 	{ "gelfaces", "nogelfaces" },
 	/* the frame handed to the ME in pieces as it is written, gated on the main
 	CPU's wait for the ME (psp_ge.c, mechunk): where the frame waits for the

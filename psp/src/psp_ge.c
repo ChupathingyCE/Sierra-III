@@ -240,7 +240,7 @@ instruction cache longer. The ME step moves the carrying out to the ME. Off
 #define SCREEN_VERTEX_WORDS 5 /* struct game_screen_vertex: x, y, u, v, argb */
 #define SPRITE_VERTEX_WORDS 6 /* struct game_sprite_vertex: x, y, z, u, v, argb */
 #define METER_WORDS 7 /* struct psp_seethrough_meter (the game's rasterizer_meter_parameters) */
-#define LIGHT_GEL_FLOATS 27 /* psp_ge_light_gel: six face colours, then the gel's forward, left and up */
+#define LIGHT_GEL_FLOATS 28 /* psp_ge_light_gel: six face colours, the gel's forward, left and up, then its cube's key */
 enum
 {
 	DEFER_MODEL_BEGIN = 1, DEFER_MODEL_SHAPE, DEFER_MODEL_EFFECT, DEFER_MODEL_MULTIPURPOSE, DEFER_DRAW_MODEL,
@@ -19651,9 +19651,12 @@ static struct
 	int open;
 	/* a gel's six face colours (+X, -X, +Y, -Y, +Z, -Z) and its frame
 	(forward, left, up: the cube's +X, +Y, +Z), when psp_ge_light_gel gave
-	them; gel 0 for a light lit by its colour alone */
+	them; gel 0 for a light lit by its colour alone. gel_cube: the gel
+	itself, sampled at each vertex in place of the faces (psp_tex.c,
+	psp_tex_gel_cube), NULL when the pack keeps none or "nogelcube" */
 	int gel;
 	float gel_faces[18], gel_frame[9];
+	const void *gel_cube;
 } light;
 static unsigned long lights_drawn = 0;
 /* build 119's probe: the light pass's triangles looked at, and those with a
@@ -19696,6 +19699,7 @@ void psp_ge_light_begin(const float *position, const float *forward, const float
 	light.cosine_cutoff = cosine_cutoff;
 	light.cosine_falloff = cosine_falloff > cosine_cutoff ? cosine_falloff : cosine_cutoff + 0.001f;
 	light.gel = 0;
+	light.gel_cube = NULL;
 }
 
 /* the light just begun shaped by its gel (rasterizer.c, after the light's
@@ -19706,21 +19710,30 @@ colours, weighed by how far its direction leans toward each axis. NULL: by
 the colour alone */
 void psp_ge_light_gel(const float *gel)
 {
+	extern const void *psp_tex_gel_cube(unsigned int key);
+
 	GE_DEFER(defer_light_gel(gel));
 	GE_BENCH_SKIP();
 	light.gel = gel != NULL;
+	light.gel_cube = NULL;
 	if (gel)
 	{
+		unsigned int cube_key;
+
 		memcpy(light.gel_faces, gel, sizeof(light.gel_faces));
 		memcpy(light.gel_frame, gel + 18, sizeof(light.gel_frame));
+		memcpy(&cube_key, gel + 27, sizeof(cube_key));
+		light.gel_cube = cube_key ? psp_tex_gel_cube(cube_key) : NULL;
 	}
 }
 
 /* a vertex's gel colour (0-1 a channel): its direction from the light in
-the gel's frame, each axis weighed by its share of the squared length, on
-the face of that axis's sign */
+the gel's frame, looked up in the gel's cube where the pack keeps it, else
+each axis weighed by its share of the squared length, on the face of that
+axis's sign */
 static void light_gel_at(const float *p, float *rgb)
 {
+	extern void psp_tex_gel_cube_at(const void *gel, float x, float y, float z, float *rgb);
 	const float *f = light.gel_frame;
 	float d[3], x, y, z, xx, yy, zz, inverse;
 	const float *fx, *fy, *fz;
@@ -19731,6 +19744,11 @@ static void light_gel_at(const float *p, float *rgb)
 	x = d[0] * f[0] + d[1] * f[1] + d[2] * f[2];
 	y = d[0] * f[3] + d[1] * f[4] + d[2] * f[5];
 	z = d[0] * f[6] + d[1] * f[7] + d[2] * f[8];
+	if (light.gel_cube)
+	{
+		psp_tex_gel_cube_at(light.gel_cube, x, y, z, rgb);
+		return;
+	}
 	xx = x * x;
 	yy = y * y;
 	zz = z * z;

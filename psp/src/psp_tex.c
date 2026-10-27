@@ -132,6 +132,22 @@ static struct
 	float faces[18];
 } gel_faces_kept[GEL_FACES_KEPT];
 static int gel_faces_next = 0;
+/* the light gels' kept cubes (psp_tex_gel_cube): a CLUT8 patch whose entry
+255 is GEL_CUBE_MARK holds the six faces stacked, GEL_CUBE_SIDE a side
+(texpack.py, gel_cube). The light pass samples one at every lit vertex, so
+each is copied out of the uncached texture once, as colours, and kept by key */
+#define GEL_CUBE_MARK 0xC0BE
+#define GEL_CUBE_SIDE 16
+#define GEL_CUBE_TEXELS (6 * GEL_CUBE_SIDE * GEL_CUBE_SIDE)
+#define GEL_CUBES_KEPT 4
+struct gel_cube
+{
+	unsigned int key;
+	int known;
+	unsigned short texels[GEL_CUBE_TEXELS]; /* GU_PSM_5650 */
+};
+static struct gel_cube gel_cubes_kept[GEL_CUBES_KEPT];
+static int gel_cubes_next = 0;
 /* the see-through shaders' tints (texpack.py), pairs of (the shader's tag
 address, its tint ABGR) sorted by address. Bits of the address: 0, the tint
 is half the colour, for the GE's colour doubling; 1, the tint is added to the
@@ -426,6 +442,7 @@ void psp_tex_close(void)
 	free(baked_averages);
 	baked_averages = NULL;
 	memset(gel_faces_kept, 0, sizeof(gel_faces_kept));
+	memset(gel_cubes_kept, 0, sizeof(gel_cubes_kept));
 	free(tints);
 	tints = NULL;
 	tint_count = 0;
@@ -2460,7 +2477,8 @@ int psp_tex_average_known(unsigned int key, unsigned int *abgr)
 the cube's face order: +X, -X, +Y, -Y, +Z, -Z), from palette entries 1-6
 where entry 15 marks them (texpack.py, cube_patch); kept per key, so a
 gel that has left memory isn't brought back each frame. 0 when the patch
-carries none or can't be had this frame */
+carries none or can't be had this frame. A patch that keeps the cube too
+(psp_tex_gel_cube) has them in the same entries */
 
 int psp_tex_gel_faces(unsigned int key, float *faces)
 {
@@ -2482,10 +2500,11 @@ int psp_tex_gel_faces(unsigned int key, float *faces)
 	gel_faces_next = (gel_faces_next + 1) % GEL_FACES_KEPT;
 	gel_faces_kept[k].key = key;
 	gel_faces_kept[k].known = 0;
-	if (DIRECT(&entries[index]) || entries[index].clut != GU_PSM_5650 || entries[index].psm != GU_PSM_T4)
+	if (DIRECT(&entries[index]) || entries[index].clut != GU_PSM_5650)
 		return 0;
 	palette = (const unsigned short *)(resident_at[index] | 0x40000000);
-	if (palette[15] != GEL_FACES_MARK)
+	if (entries[index].psm == GU_PSM_T4 ? palette[15] != GEL_FACES_MARK :
+		entries[index].psm != GU_PSM_T8 || palette[255] != GEL_CUBE_MARK)
 		return 0;
 	for (index = 0; index < 6; index++)
 	{
@@ -2498,6 +2517,118 @@ int psp_tex_gel_faces(unsigned int key, float *faces)
 	gel_faces_kept[k].known = 1;
 	memcpy(faces, gel_faces_kept[k].faces, sizeof(gel_faces_kept[k].faces));
 	return 1;
+}
+
+/* a light's gel cube (texpack.py, gel_cube) for psp_tex_gel_cube_at, or
+NULL when its patch keeps none ("nogelcube" asks for none; then the faces'
+means shape the light, psp_tex_gel_faces) or can't be had this frame */
+const void *psp_tex_gel_cube(unsigned int key)
+{
+	int index = key && entries ? find(key) : -1, k, t;
+	const unsigned short *palette;
+	const unsigned char *texels;
+	struct gel_cube *cube;
+
+	if (index < 0)
+		return NULL;
+	for (k = 0; k < GEL_CUBES_KEPT; k++)
+		if (gel_cubes_kept[k].key == key)
+			return gel_cubes_kept[k].known ? &gel_cubes_kept[k] : NULL;
+	if (!resident_at[index] && !psp_tex_resident(key))
+		return NULL;
+	cube = &gel_cubes_kept[gel_cubes_next];
+	gel_cubes_next = (gel_cubes_next + 1) % GEL_CUBES_KEPT;
+	cube->key = key;
+	cube->known = 0;
+	if (DIRECT(&entries[index]) || entries[index].clut != GU_PSM_5650 || entries[index].psm != GU_PSM_T8 ||
+		entries[index].width != GEL_CUBE_SIDE || entries[index].height != 6 * GEL_CUBE_SIDE)
+		return NULL;
+	palette = (const unsigned short *)(resident_at[index] | 0x40000000);
+	if (palette[255] != GEL_CUBE_MARK)
+		return NULL;
+	/* a row of 16 one-byte texels is one swizzle block's width, so the
+	swizzled level is in plain row order */
+	texels = (const unsigned char *)((resident_at[index] + 256 * 2) | 0x40000000);
+	for (t = 0; t < GEL_CUBE_TEXELS; t++)
+		cube->texels[t] = palette[texels[t]];
+	cube->known = 1;
+	return cube;
+}
+
+/* the gel's colour (0-1 a channel) in direction x, y, z of its frame: the
+face of the largest axis and the place on it as a cube map lookup takes
+them (Direct3D's faces, as the Xbox's), the four nearest texels blended,
+clamped at the face's edges */
+void psp_tex_gel_cube_at(const void *gel, float x, float y, float z, float *rgb)
+{
+	const struct gel_cube *cube = (const struct gel_cube *)gel;
+	float ax = x < 0.0f ? -x : x, ay = y < 0.0f ? -y : y, az = z < 0.0f ? -z : z;
+	float major, s, t, u, v, fu, fv, w[4];
+	int face, u0, v0, u1, v1, k, at[4];
+
+	if (ax >= ay && ax >= az)
+	{
+		major = ax;
+		face = x >= 0.0f ? 0 : 1;
+		s = x >= 0.0f ? -z : z;
+		t = -y;
+	}
+	else if (ay >= az)
+	{
+		major = ay;
+		face = y >= 0.0f ? 2 : 3;
+		s = x;
+		t = y >= 0.0f ? z : -z;
+	}
+	else
+	{
+		major = az;
+		face = z >= 0.0f ? 4 : 5;
+		s = z >= 0.0f ? x : -x;
+		t = -y;
+	}
+	if (major < 1e-12f)
+	{
+		rgb[0] = rgb[1] = rgb[2] = 0.0f;
+		return;
+	}
+	u = (s / major + 1.0f) * (0.5f * GEL_CUBE_SIDE) - 0.5f;
+	v = (t / major + 1.0f) * (0.5f * GEL_CUBE_SIDE) - 0.5f;
+	if (u < 0.0f)
+		u = 0.0f;
+	if (v < 0.0f)
+		v = 0.0f;
+	if (u > GEL_CUBE_SIDE - 1)
+		u = GEL_CUBE_SIDE - 1;
+	if (v > GEL_CUBE_SIDE - 1)
+		v = GEL_CUBE_SIDE - 1;
+	u0 = (int)u;
+	v0 = (int)v;
+	u1 = u0 < GEL_CUBE_SIDE - 1 ? u0 + 1 : u0;
+	v1 = v0 < GEL_CUBE_SIDE - 1 ? v0 + 1 : v0;
+	fu = u - (float)u0;
+	fv = v - (float)v0;
+	face *= GEL_CUBE_SIDE * GEL_CUBE_SIDE;
+	at[0] = face + v0 * GEL_CUBE_SIDE + u0;
+	at[1] = face + v0 * GEL_CUBE_SIDE + u1;
+	at[2] = face + v1 * GEL_CUBE_SIDE + u0;
+	at[3] = face + v1 * GEL_CUBE_SIDE + u1;
+	w[0] = (1.0f - fu) * (1.0f - fv);
+	w[1] = fu * (1.0f - fv);
+	w[2] = (1.0f - fu) * fv;
+	w[3] = fu * fv;
+	rgb[0] = rgb[1] = rgb[2] = 0.0f;
+	for (k = 0; k < 4; k++)
+	{
+		unsigned int c = cube->texels[at[k]];
+
+		rgb[0] += w[k] * (float)(c & 31);
+		rgb[1] += w[k] * (float)((c >> 5) & 63);
+		rgb[2] += w[k] * (float)(c >> 11);
+	}
+	rgb[0] *= 1.0f / 31.0f;
+	rgb[1] *= 1.0f / 63.0f;
+	rgb[2] *= 1.0f / 31.0f;
 }
 
 /* ---------- build 102: object lighting from the lightmaps

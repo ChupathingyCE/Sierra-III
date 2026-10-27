@@ -466,14 +466,11 @@ def gel_average(m, b):
     return [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
 
 
-def gel_faces(m, b):
-    """a light's gel cube map's six faces' mean colours, in the cube's face
-    order (+X, -X, +Y, -Y, +Z, -Z), or None. The light pass looks the gel up
-    by the direction from the light in the gel's frame, +X its forward, +Y
-    its left, +Z its up (the engine's environment light vertex shader), so a
-    wall above the light sees the +Z face and one ahead of it the +X face.
-    Each face's top level, its mip chain held in turn as gel_average reads
-    the padded layout; unpadded data is taken in that order too"""
+def gel_face_images(m, b):
+    """a light's gel cube map's six faces' top levels as RGBA arrays, in the
+    cube's face order (+X, -X, +Y, -Y, +Z, -Z), or None. Each face's mip
+    chain is held in turn as gel_average reads the padded layout; unpadded
+    data is taken in that order too"""
     fmt, w, h = b['fmt'], b['w'], b['h']
     if b['type'] != 'cube' or fmt in (17,) or BPP[fmt] == 0:
         return None
@@ -493,13 +490,41 @@ def gel_faces(m, b):
     for k in range(6):
         face = data[k * stride:k * stride + top]
         if dxt:
-            img = decode_dxt(face, 4, len(face) // block * 4, FORMATS[fmt])
+            img = decode_dxt(face, w, h, FORMATS[fmt])
         else:
-            img = decode_plain(face, len(face) * 8 // BPP[fmt], 1, fmt, False)
+            img = decode_plain(face, w, h, fmt, bool(b['flags'] & 8))
         if img is None:
             return None
-        faces.append([int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)])
+        faces.append(img)
     return faces
+
+
+def gel_faces(m, b):
+    """a light's gel cube map's six faces' mean colours, in the cube's face
+    order (+X, -X, +Y, -Y, +Z, -Z), or None. The light pass looks the gel up
+    by the direction from the light in the gel's frame, +X its forward, +Y
+    its left, +Z its up (the engine's environment light vertex shader), so a
+    wall above the light sees the +Z face and one ahead of it the +X face"""
+    images = gel_face_images(m, b)
+    if images is None:
+        return None
+    return [[int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)] for img in images]
+
+
+GEL_CUBE_SIDE = 16             # texels a side of each face of a gel's kept cube (psp_tex.c, GEL_CUBE_SIDE)
+
+
+def gel_cube(m, b):
+    """a light's gel cube map at GEL_CUBE_SIDE texels a side, its six faces
+    stacked top to bottom in the cube's face order, as RGBA, or None. The
+    Xbox looks the gel up per pixel, so a beacon's narrow turning beam sweeps
+    the walls at full strength; a face's mean spreads it over the face at a
+    fraction of that. The PSP samples this at each lit vertex (psp_tex.c,
+    psp_tex_gel_cube_at)"""
+    images = gel_face_images(m, b)
+    if images is None:
+        return None
+    return np.concatenate([downscale(img, GEL_CUBE_SIDE, GEL_CUBE_SIDE) for img in images], 0)
 
 
 def gel_bitmaps(roles):
@@ -509,9 +534,11 @@ def gel_bitmaps(roles):
 
 
 GEL_FACES_MARK = 0xFACE        # palette entry 15 of a gel patch that carries its six faces (psp_tex.c)
+GEL_CUBE_MARK = 0xC0BE         # palette entry 255 of a gel patch that carries its cube as well (psp_tex.c)
+GEL_CUBE_FIRST = 7             # the cube's colours from this palette entry on (0 the mean, 1-6 the faces)
 
 
-def cube_patch(m, b, rgb=None, faces=None):
+def cube_patch(m, b, rgb=None, faces=None, cube=None):
     """a cube map's average colour as an 8 x 8 patch of that one colour,
     under the cube map's own key: the GE draws no cube maps, and a model's
     reflection is folded into its lighting by this average (psp_ge.c,
@@ -519,7 +546,10 @@ def cube_patch(m, b, rgb=None, faces=None):
     data starts with it), unless rgb gives the colour (a light's gel). A
     gel's six face colours, when given, sit in palette entries 1-6 (every
     texel is entry 0, so the patch still draws and averages as one colour),
-    entry 15 marking them"""
+    entry 15 marking them. A gel's cube, when given, makes the patch CLUT8
+    instead: the six faces stacked (gel_cube), its texels indexing entries
+    7-254, entries 0-6 as above and entry 255 marking it; its average is
+    still entry 0's"""
     if rgb is not None:
         r, g, bl = rgb
     else:
@@ -529,6 +559,22 @@ def cube_patch(m, b, rgb=None, faces=None):
         r, g, bl = [int(round(x)) for x in img[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
     def entry_of(r, g, bl):
         return (r >> 3) | ((g >> 2) << 5) | ((bl >> 3) << 11)    # GU_PSM_5650, as the packed palettes
+    if cube is not None and faces is not None:
+        colours = 255 - GEL_CUBE_FIRST
+        opaque = cube.copy()
+        opaque[:, :, 3] = 255
+        idx, pal, _, _ = quantize(opaque, colours)
+        entries = [entry_of(r, g, bl)] + [entry_of(*face) for face in faces]
+        entries += [entry_of(int(p[0]), int(p[1]), int(p[2])) for p in pal[:colours]]
+        entries += [0] * (255 - len(entries)) + [GEL_CUBE_MARK]
+        palette = np.array(entries, '<u2').tobytes()
+        w, h = cube.shape[1], cube.shape[0]
+        row, rows = level_bytes(w, h, 8)
+        level = np.zeros((rows, row), np.uint8)
+        level[:h, :w] = idx + GEL_CUBE_FIRST
+        expanded = (entries[0] & 31) * 255 // 31, ((entries[0] >> 5) & 63) * 255 // 63, (entries[0] >> 11) * 255 // 31
+        return dict(w=w, h=h, levels=1, clut=0, alpha=False, psm=5, average=expanded,
+                    data=palette + swizzle_psp(level.tobytes(), row, rows))
     entries = [entry_of(r, g, bl)] + [0] * 15
     if faces is not None:
         entries[1:7] = [entry_of(*face) for face in faces]
@@ -541,6 +587,7 @@ def cube_patch(m, b, rgb=None, faces=None):
 
 NO_CUBE_PATCHES = False        # --no-cube-patches: no cube map averages in the pack (as build 139)
 NO_GEL_FACES = False           # --no-gel-faces: a gel patch with the single gel average only, the behaviour before per-face averages
+NO_GEL_CUBE = False            # --no-gel-cube: a gel patch with its face means only, the behaviour before the kept cube
 CUBE_PATCHES = []
 
 
@@ -1972,7 +2019,10 @@ def runtime_reads(entries):
             meters += len(e['data'])
     averages = []
     for e in entries:
-        if e['psm'] in (4, 5):
+        if 'average' in e:
+            r, g, b = e['average']
+            averages.append(0xFF000000 | (b << 16) | (g << 8) | r)
+        elif e['psm'] in (4, 5):
             r, g, b = runtime_average(e)
             averages.append(0xFF000000 | (b << 16) | (g << 8) | r)
         else:
@@ -2049,6 +2099,8 @@ def main():
                     help="no cube map averages in the pack (as build 139)")
     ap.add_argument('--no-gel-faces', action='store_true',
                     help="a light's gel patch with the single gel average only, the behaviour before per-face averages")
+    ap.add_argument('--no-gel-cube', action='store_true',
+                    help="a light's gel patch with its face means only, without the cube the light pass samples per vertex")
     ap.add_argument('--relief-unfiltered', action='store_true',
                     help="the bump relief sampled at the base's texels without averaging (as build 139)")
     ap.add_argument('--showcase', action='store_true',
@@ -2085,8 +2137,9 @@ def main():
     QUALITY, QUALITY_REPORT = a.quality, a.quality_report
     PREMULTIPLIED_MASKS = a.premultiplied_masks
     SHOWCASE = a.showcase
-    global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES, NO_GEL_FACES
+    global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES, NO_GEL_FACES, NO_GEL_CUBE
     NO_GEL_FACES = a.no_gel_faces
+    NO_GEL_CUBE = a.no_gel_cube
     NO_RELIEF = a.no_relief
     OLD_RELIEF = a.relief_unfiltered
     NO_CUBE_PATCHES = a.no_cube_patches
@@ -2167,7 +2220,8 @@ def main():
         if r is None and b['type'] == 'cube' and b['index'] == 0 and not NO_CUBE_PATCHES:
             rgb = gel_average(m, b) if b['tag'] in gels else None
             faces = gel_faces(m, b) if rgb is not None and not NO_GEL_FACES else None
-            r = cube_patch(m, b, rgb, faces)
+            cube = gel_cube(m, b) if faces is not None and not NO_GEL_CUBE else None
+            r = cube_patch(m, b, rgb, faces, cube)
             if r is not None:
                 CUBE_PATCHES.append(b['tag'])
                 if rgb is not None:
@@ -2176,6 +2230,9 @@ def main():
                 if faces is not None:
                     print('  light gel %s: faces %s' % (b['tag'], ' / '.join('%d %d %d' % tuple(f) for f in faces)),
                           file=sys.stderr)
+                if cube is not None:
+                    print('  light gel %s: its cube kept at %d a side (%dx%d source, brightest texel %d)'
+                          % (b['tag'], GEL_CUBE_SIDE, b['w'], b['h'], int(cube[:, :, :3].max())), file=sys.stderr)
         if r is None:
             skipped[cls] = skipped.get(cls, 0) + 1
             continue

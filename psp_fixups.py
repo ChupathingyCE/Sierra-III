@@ -31693,15 +31693,21 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 				unsigned int average = 0;
 				int gel_known = gel != NONE && psp_tex_average_known(psp_tex_bitmap_key(gel, 0), &average);
 				int gel_faced = 0;
-				/* the six faces' colours, then the gel's forward, left and up */
-				float gel_shape[27];
+				unsigned int gel_cube_key = 0;
+				/* the six faces' colours, the gel's forward, left and up, then
+				its cube's key (0: none, the faces shape it) */
+				float gel_shape[28];
 
 				if (gel_known && *(float const *)(definition + 32) <= -0.99f && !PSP_KEEP_ONCE("nogel"))
 				{
 					extern int psp_tex_gel_faces(unsigned int key, float *faces);
 
+					extern const void *psp_tex_gel_cube(unsigned int key);
+
 					if (PSP_KEEP_ONCE("gelfaces") && psp_tex_gel_faces(psp_tex_bitmap_key(gel, 0), gel_shape))
 						gel_faced = psp_light_gel_frame(light, gel_shape + 18);
+					if (gel_faced && !PSP_KEEP_ONCE("nogelcube") && psp_tex_gel_cube(psp_tex_bitmap_key(gel, 0)))
+						gel_cube_key = psp_tex_bitmap_key(gel, 0);
 					if (!gel_faced)
 					{
 						colour.red *= (float)(average & 0xFF) / 255.0f;
@@ -31723,8 +31729,9 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 						definition ? *(float const *)(definition + 28) : -1.0f,
 						definition ? *(float const *)(definition + 32) : -1.0f);
 					if (gel_faced)
-						platform_log("lightdump: light %ld's gel faces %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f forward %.2f %.2f %.2f up %.2f %.2f %.2f",
-							light_index, gel_shape[0], gel_shape[1], gel_shape[2], gel_shape[3], gel_shape[4], gel_shape[5],
+						platform_log("lightdump: light %ld's gel %s, faces %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f / %.2f %.2f %.2f forward %.2f %.2f %.2f up %.2f %.2f %.2f",
+							light_index, gel_cube_key ? "sampled from its cube" : "by its faces' means",
+							gel_shape[0], gel_shape[1], gel_shape[2], gel_shape[3], gel_shape[4], gel_shape[5],
 							gel_shape[6], gel_shape[7], gel_shape[8], gel_shape[9], gel_shape[10], gel_shape[11],
 							gel_shape[12], gel_shape[13], gel_shape[14], gel_shape[15], gel_shape[16], gel_shape[17],
 							gel_shape[18], gel_shape[19], gel_shape[20], gel_shape[24], gel_shape[25], gel_shape[26]);
@@ -31739,6 +31746,7 @@ FIXES_MODELS["source/rasterizer/rasterizer.c#lightgel"] = [
 				{
 					extern void psp_ge_light_gel(const float *gel);
 
+					memcpy(gel_shape + 27, &gel_cube_key, sizeof(gel_cube_key));
 					psp_ge_light_gel(gel_faced ? gel_shape : NULL);
 				}"""),
 ]
