@@ -26632,6 +26632,101 @@ boolean object_visible_to_any_player(
 """),
 ]
 
+# ---------- FIXES_SMALLWINS2: small wins batch 2 (research; Sheepdog01 2026-10-27 01:39-01:44)
+#
+# Shelved small wins revived, each exact, each with its own off word, all off
+# with "smallwins2old".
+#
+# VIS ("visrectold"; check "visrectcheck"): the visibility walk clips each
+# portal's screen hull against the region seen so far (convex_hull2d_intersect,
+# a clip by every edge). When the two hulls' bounding rectangles lie apart by
+# more than the clip's tolerance, the clip can only come back empty, and the
+# walk skips it. survc1 (lab 39647350447) counted ~92-96 such clips a frame on
+# b30. The check runs the clip anyway for every one skipped and counts any
+# that wasn't empty (expected 0; the metrics line).
+FIXES_SMALLWINS2 = {}
+FIXES_SMALLWINS2["source/structures/structure_visibility.c#visrect"] = [
+("""#define PSP_PORTAL_STEPS 160
+""",
+"""/* psp_fixups.py (FIXES_SMALLWINS2 #visrect) */
+extern int psp_keep(const char *name);
+static int psp_visrect_mode = -1; /* 1 skip, 0 as before, 2 check */
+unsigned int psp_visrect_skipped, psp_visrect_check_kept;
+#define PSP_VISRECT_MARGIN 0.01f
+
+static int psp_visrect_apart(struct portal_hull const *a, struct portal_hull const *b)
+{
+	real ax0, ax1, ay0, ay1, bx0, bx1, by0, by1;
+	short k;
+
+	if (psp_visrect_mode < 0)
+		psp_visrect_mode = psp_keep("visrectcheck") ? 2 :
+			psp_keep("visrectold") || psp_keep("smallwins2old") ? 0 : 1;
+	if (!psp_visrect_mode || a->vertex_count <= 0 || b->vertex_count <= 0)
+		return 0;
+	ax0 = ax1 = a->vertices[0].x;
+	ay0 = ay1 = a->vertices[0].y;
+	for (k = 1; k < a->vertex_count; k++)
+	{
+		if (a->vertices[k].x < ax0) ax0 = a->vertices[k].x;
+		if (a->vertices[k].x > ax1) ax1 = a->vertices[k].x;
+		if (a->vertices[k].y < ay0) ay0 = a->vertices[k].y;
+		if (a->vertices[k].y > ay1) ay1 = a->vertices[k].y;
+	}
+	bx0 = bx1 = b->vertices[0].x;
+	by0 = by1 = b->vertices[0].y;
+	for (k = 1; k < b->vertex_count; k++)
+	{
+		if (b->vertices[k].x < bx0) bx0 = b->vertices[k].x;
+		if (b->vertices[k].x > bx1) bx1 = b->vertices[k].x;
+		if (b->vertices[k].y < by0) by0 = b->vertices[k].y;
+		if (b->vertices[k].y > by1) by1 = b->vertices[k].y;
+	}
+	if (bx0 > ax1 + PSP_VISRECT_MARGIN || bx1 < ax0 - PSP_VISRECT_MARGIN ||
+		by0 > ay1 + PSP_VISRECT_MARGIN || by1 < ay0 - PSP_VISRECT_MARGIN)
+	{
+		psp_visrect_skipped++;
+		return psp_visrect_mode == 1 ? 1 : 2;
+	}
+	return 0;
+}
+
+#define PSP_PORTAL_STEPS 160
+"""),
+("""				struct portal_hull clipped_hull;
+
+				clipped_hull.vertex_count = convex_hull2d_intersect(
+					visible_region->vertex_count,
+					visible_region->vertices,
+					portal_hull.vertex_count,
+					portal_hull.vertices,
+					MAXIMUM_PORTAL_HULL_VERTICES,
+					clipped_hull.vertices,
+					0.0001f);
+""",
+"""				struct portal_hull clipped_hull;
+#ifdef HALO_PSP
+				int psp_apart = psp_visrect_apart(visible_region, &portal_hull);
+
+				if (psp_apart == 1)
+					clipped_hull.vertex_count = 0;
+				else
+#endif
+				clipped_hull.vertex_count = convex_hull2d_intersect(
+					visible_region->vertex_count,
+					visible_region->vertices,
+					portal_hull.vertex_count,
+					portal_hull.vertices,
+					MAXIMUM_PORTAL_HULL_VERTICES,
+					clipped_hull.vertices,
+					0.0001f);
+#ifdef HALO_PSP
+				if (psp_apart == 2 && clipped_hull.vertex_count != 0)
+					psp_visrect_check_kept++;
+#endif
+"""),
+]
+
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
 #
 # Measuring instruments, built only with PSP_RECON=1 (psp_build.py): their
@@ -35499,7 +35594,7 @@ FIXES_DGFAST["source/memory/data.c#dgfast"] = [
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
