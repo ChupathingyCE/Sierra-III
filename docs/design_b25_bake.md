@@ -14,17 +14,19 @@ A texture in VRAM read from the ME gives what isn't there: Chief's change map ca
 
 **The rule this design follows.** The replay reads nothing out of a texture in VRAM. Everything it derives from a texture is either made by the bake (it never changes) or read from a texture the bake places in RAM (meters: their palette is fixed, their value isn't).
 
-## What the bake adds (tools/texpack.py)
+## What the bake adds (tools/texpack.py, `runtime_reads`)
 
-1. **Averages: a `TAV1` table** after the existing tables (`'TAV1', u32 count, count x { u32 key, u32 average (ABGR) }`, sorted by key), every texture's `runtime_average` (texpack already works it out exactly as `psp_tex_average` does, for the exact-CLUT4 check). The runtime fills its averages table from it at pack open; `psp_tex_average` reads the table and never samples a texture.
-2. **Masks: two CLUTs inside each multipurpose map's block.** After the levels, 256 x u32 each, 64-byte aligned: the change mask (the palette's blue expanded to 8 bits, grey, alpha 0xFF) and the glow mask (green). Exactly what `multipurpose_pass` computes today. A directory flag bit (8: masks follow the levels) marks them. The replay binds the map and points the CLUT load at `resident address + mask offset`: an address, no read. The GE loads the CLUT from wherever the texture lives.
-3. **Meters: a directory flag bit (16: the CPU reads this texture's palette; keep it in RAM).** On the meter maps (texpack's `meter_maps`), and on any other texture whose palette a CPU reads. The loader puts flagged textures in the RAM cache only (`load_into(index, 1)`, which exists). `meter_palette` is unchanged.
-4. **A version gate.** A build that needs these refuses a pack without a `TAV1` table, on screen ("this pack is from an older bake: bake again with this release's tools"), instead of drawing wrong. The bake's id is already logged at start.
+1. **Averages: a `TAV1` table** after the others (`'TAV1', u32 count, count x u32 average (ABGR)`, one a texture in directory order; 0 for a texture in its own colours), each texture's `runtime_average`, worked out exactly as `psp_tex_average` sampled it. Every table before it (`TNT1` to `TNC1`) is now written, empty or not, so the chain always reaches it.
+2. **The change mask after each multipurpose map's levels:** the palette's blue as a grey 8888 CLUT (16 or 256 entries), 64-byte aligned, the last bytes of the texture's data, marked by directory flag 8. Exactly what `multipurpose_pass` worked out. Only the change mask: the glow pass draws from the glow maps the bake makes (`glow_looks`).
+3. **Meters: directory flag 16** (the CPU reads this palette; keep it in main RAM) on texpack's `meter_maps`.
+4. **Bake format 2** (`bake.py`'s `BAKE_FORMAT`): a build with this refuses older maps at the bake check, on screen, before anything draws.
 
-## What the runtime loses
+## What the runtime does with it
 
-- The 40-slot mask cache (`multipurpose_cache`, 40 KB of static RAM) and its working-out loop: the masks are data.
-- `psp_tex_average`'s sampling (kept only for a texture missing from `TAV1`, which the gate makes impossible in a release).
+- `change_pass` binds the multipurpose map and loads the CLUT from `psp_tex_change_mask`: the resident address plus the offset, no read. The 40-slot mask cache (40 KB of static RAM) and its working-out go.
+- `psp_tex_average` takes the table's value where it used to sample (same rules: the texture resident, kept in `averages` once asked, so `psp_tex_average_known` behaves as before). The sampling, `c4xavgoff`, `avgold` and `avgmerealloc` go.
+- `load` puts flag-16 textures in the RAM cache only, and the start's VRAM set leaves them out. `meter_palette` is unchanged.
+- A part with a glow colour and no glow map isn't lit (`glow_unmapped` counts them; it was the mask alone before). `glowflat` goes.
 
 ## Costs (sizing bake, lab sierra-bake 40446101594, texpack's `b25 sizing` line) [M]
 
@@ -34,7 +36,7 @@ A texture in VRAM read from the ME gives what isn't there: Chief's change map ca
 | c20 | 768, 14,684 KB | 39, 497 KB | +35 KB (+0.2%) | 3, 20 KB | 6,152 B |
 | ui | 380, 6,633 KB | 5, 66 KB | +6 KB | 0 | 3,048 B |
 
-- **Only the change mask is needed:** the glow mask (green) serves a self-illuminated part without a glow map, and the bake makes a glow map for every self-illuminated model shader (54 on b30); every PSP run of 10-26 logged self-illumination 100% through glow maps. So one CLUT a map: about +45 KB on b30, +18 KB on c20, in the texture caches while those maps are resident. `glowflat` (a test word) then draws without the glow map's mask as before.
+- **Only the change mask is needed:** the glow mask (green) served a self-illuminated part without a glow map, and the bake makes a glow map for every self-illuminated model shader (54 on b30); every PSP run of 10-26 logged self-illumination 100% through glow maps. Built (sierra-bake 40447629227): b30 82 masks +43 KB, a10 76 +38 KB, c20 39 +17 KB, ui 5 +3 KB, in the texture caches while those maps are resident.
 - **Meter maps in RAM:** the GE reads them from RAM (swizzled: ~20% slower than VRAM [M], few and small).
 - **A rebake** for the release. The bake tools ship with it already (b143's Windows and Linux bundles).
 
