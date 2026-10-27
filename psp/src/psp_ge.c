@@ -4141,6 +4141,12 @@ static volatile int boot_frozen = 0;
 /* the buffer being drawn (relative to VRAM), swapped each frame */
 static void *draw_buffer = (void *)0;
 static unsigned long frames = 0, draws_this_frame = 0, triangles_this_frame = 0;
+
+/* the frame in hand, for log lines that name one (phasemark, psp_platform.c) */
+unsigned long psp_ge_frame_number(void)
+{
+	return frames;
+}
 static unsigned long clipped_this_frame = 0, culled_this_frame = 0, model_draws_this_frame = 0;
 
 /* the camera, for the CPU's checks: position, and its right, up and forward

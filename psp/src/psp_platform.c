@@ -1194,7 +1194,7 @@ static void keep_load(void)
 	platform_log("keep words, build 123's: speed off: aiprofilefull; speed, opt-in: meaudiofirst meraysbatch meaudioranges mepushdrop mestash meraysminN weapontracksleep; restorations off: cutroomoff (cutroom: the larger cut buffer from the start); lit items: litemsawake; recon: activecensus");
 	platform_log("keep words, the controls: off: crouchhold (crouch held, under the engine's 98%% rule), actiontap (the X button as the engine reads it), menuselectpress (select in the menus is back on its press, chords and all, not a tap); actionholdN (ms before d-pad left acts, 180); the nub: nubdeadN nubreachN (percent of half travel; or ms0:/halo/nub.txt); the profile until Halo's menu sets it: buttonpresetN (0-4) stickpresetN (0-3) looksensN (1-10) lookinvert");
 	platform_log("keep words, build 124's: speed off: weapontrackawake (weapontracksleep retired); retired: cutroom cutroomoff (see the cut stream's line); restorations off: levelexactoff (the level drawn from the eye as the GE rounds it), machinefuncsheld (sleeping machines hold their functions); checks: funccheck; tests: shotrunN (N frames in a row at each shotevery moment)");
-	platform_log("keep words, the scene ladder: sceneladder (each campaign map's opening cutscene, one after another; the game plays on after the last)");
+	platform_log("keep words, the scene ladder: sceneladder (each campaign map's opening cutscene, one after another; the game plays on after the last); sceneladderexit (quits after the last); ladderskip<map> (that map passed over, by both ladders); phasemark (a log line at each phase edge, the heartbeat's window cut there; the time map)");
 	platform_log("keep words, the transition check (opt-in): transwalk (each loading zone of the level in turn, then any BSP none reaches, forced), transwalkN (N s at each), transwaitN (not before N s in), transwon (then the mission's end, game_won, and 25 s into what follows)");
 	platform_log("keep words, the level copies' room: fix off: streamroomoff (a material with no room for its copy tried again on every draw); tests: streamsqueezeN (the copies held to N KB of the arena, none from the general heap); levelcarveN (KB of the texture RAM cache for the copies past the arena, on maps whose geometry cache is carved there; 768 by default, levelcarve0 none); heap: heaproom256 (256 KB of the arena's room in the level carve, from the geometry cache; on by default with geinflight and geo2 or geo15), heaproomN (N KB, 128 to 768 in 128s, the same way), heaproomoff (not even then); campaign only");
 	platform_log("keep words, build 122's: speed off: percold surfacetestold machinesawake meslantoff posingold animlockcall; restorations off: noreopen drawnmapscale; HUD back to b120's: hudnosnap hud150 hudnopushup; checks: perccheck surfacetestcheck meslantcheck meringtest relinkcheck posingcheck; opt-in: relinkmemo posingmemo; recon: machinetime reopentest");
@@ -1977,6 +1977,10 @@ is; the heartbeat's own lines (budget, GE, audio, ME) follow it, so
 tools/benchparse.py turns a log into a table. About four minutes; the game
 carries on as usual after it ("bench: done"). Stand still, touch nothing */
 volatile unsigned int psp_heartbeat_windows = 0;
+/* phasemark (phase_tick, below): set at a phase edge, it ends the heartbeat's
+window there; phase_cut_beat says the beat in hand was one */
+volatile int psp_phase_cut = 0;
+static int phase_cut_beat = 0;
 /* build 89: heartbeats so far (the first 20 are 1 s apart, then 5 s) */
 static volatile int heartbeat_beats = 0;
 static volatile unsigned long ticks_since_frame;
@@ -2368,6 +2372,14 @@ static int ladder_load_next(const char *from)
 		if (!strcmp(order[k], from))
 			at = k;
 	for (k = at + 1; k < (int)(sizeof(order) / sizeof(order[0])); k++)
+	{
+		char skip[24];
+
+		/* "ladderskip<map>" (the time map's intro bench): passed over, as a map
+		not on the stick is */
+		snprintf(skip, sizeof(skip), "ladderskip%s", order[k]);
+		if (psp_keep(skip))
+			continue;
 		if (map_on_stick(order[k]))
 		{
 			extern unsigned char hs_compile_and_evaluate(const char *source);
@@ -2378,6 +2390,7 @@ static int ladder_load_next(const char *from)
 			hs_compile_and_evaluate(command);
 			return 1;
 		}
+	}
 	return 0;
 }
 
@@ -2398,7 +2411,7 @@ static void scene_ladder_tick(unsigned long ticks_seen)
 	extern unsigned char cinematic_in_progress(void); /* the engine's boolean */
 	static char map[32];
 	static unsigned long started, last_scene;
-	static int seen_scene, asked, done;
+	static int seen_scene, scene_over, asked, done;
 
 	if (done || !current_map[0] || !strcmp(current_map, "ui"))
 		return;
@@ -2406,7 +2419,7 @@ static void scene_ladder_tick(unsigned long ticks_seen)
 	{
 		snprintf(map, sizeof(map), "%s", current_map);
 		started = ticks_seen;
-		seen_scene = asked = 0;
+		seen_scene = scene_over = asked = 0;
 		platform_log("scene ladder: %s, waiting for its cutscene", map);
 		return;
 	}
@@ -2417,10 +2430,18 @@ static void scene_ladder_tick(unsigned long ticks_seen)
 		if (!seen_scene)
 			platform_log("scene ladder: %s's cutscene began at game time %lu", map, ticks_seen - started);
 		seen_scene = 1;
+		scene_over = 0;
 		last_scene = ticks_seen;
 		if (ticks_seen - started < SCENE_LIMIT)
 			return;
 		platform_log("scene ladder: %s's cutscene still running at the limit", map);
+	}
+	else if (seen_scene && !scene_over)
+	{
+		/* the phase edge the time map reads (its stretch spec) */
+		scene_over = 1;
+		platform_log("scene ladder: %s's cutscene ended at game time %lu", map, ticks_seen - started);
+		return;
 	}
 	else if (seen_scene ? ticks_seen - last_scene < SCENE_SETTLE : ticks_seen - started < SCENE_WAIT)
 		return;
@@ -2429,8 +2450,68 @@ static void scene_ladder_tick(unsigned long ticks_seen)
 	asked = 1;
 	if (!ladder_load_next(map))
 	{
+		/* "sceneladderexit": the game quits after the last map, so a rig run
+		ends in the game (the agent, ARK-4's launcher, takes back a game that
+		quits by itself); by default it plays on, for a showcase video */
+		if (psp_keep("sceneladderexit"))
+		{
+			platform_log("scene ladder: %s was the last map on the stick; quitting (sceneladderexit)", map);
+			exit_game("scene ladder done");
+		}
 		platform_log("scene ladder: %s was the last map on the stick; playing on", map);
 		done = 1;
+	}
+}
+
+/* keep.txt's "phasemark" (the lab's time map, psp/sierra/timemap): a log line
+at each of a level's phase edges (the map loaded, its cutscene begun and
+ended, a BSP switch), with the heartbeat's window cut there, so each window's
+averages (the heartbeat, the step profile and the lines that report with it)
+hold one phase rather than straddling two. Reads only; play is unchanged */
+static void phase_mark(const char *map, const char *edge)
+{
+	extern unsigned long psp_ge_frame_number(void);
+
+	platform_log("phase: %s, %s at game time %ld, frame %lu", map, edge, psp_game_time_peek(), psp_ge_frame_number());
+	psp_phase_cut = 1;
+	if (log_wake >= 0)
+		sceKernelSignalSema(log_wake, 1);
+}
+
+static void phase_tick(void)
+{
+	extern unsigned char cinematic_in_progress(void);
+	extern short global_structure_bsp_index;
+	static int on = -1, in_scene;
+	static short bsp;
+	static char map[32];
+	int scene;
+
+	if (on < 0)
+		on = psp_keep("phasemark");
+	if (!on || !current_map[0])
+		return;
+	if (strcmp(map, current_map) != 0)
+	{
+		snprintf(map, sizeof(map), "%s", current_map);
+		in_scene = 0;
+		bsp = global_structure_bsp_index;
+		phase_mark(map, "map loaded");
+		return;
+	}
+	scene = cinematic_in_progress() != 0;
+	if (scene != in_scene)
+	{
+		in_scene = scene;
+		phase_mark(map, scene ? "cutscene began" : "cutscene ended");
+	}
+	if (global_structure_bsp_index != bsp)
+	{
+		char edge[32];
+
+		snprintf(edge, sizeof(edge), "BSP %d -> %d", bsp, global_structure_bsp_index);
+		bsp = global_structure_bsp_index;
+		phase_mark(map, edge);
 	}
 }
 
@@ -2862,6 +2943,7 @@ steps in order: the console has no way to wait */
 		}
 	}
 #endif
+	phase_tick();
 	ladder_tick(ticks_seen); /* build 117 */
 	{
 		extern void psp_transwalk_tick(void); /* psp_fixups.py (FIXES_TRANSITIONS) */
@@ -3284,12 +3366,18 @@ static int heartbeat_thread(SceSize args, void *argp)
 					if (sceKernelWaitSema(log_wake, 1, &timeout) < 0)
 						break;
 					log_flush();
+					if (psp_phase_cut)
+						break;
 				}
+				if (psp_phase_cut)
+					break;
 				if (blackbox && slice + 1 < slices)
 					log_flush();
 			}
 		}
 		beat++;
+		phase_cut_beat = psp_phase_cut;
+		psp_phase_cut = 0;
 		heartbeat_work_start = psp_heartbeat_clock();
 		psp_heartbeat_spans++;
 		psp_heartbeat_busy = 1;
@@ -3331,7 +3419,7 @@ static int heartbeat_thread(SceSize args, void *argp)
 			{
 				profile_frames += fc;
 				profile_ticks += tc;
-				if ((beat & 1) == 0)
+				if ((beat & 1) == 0 || phase_cut_beat)
 				{
 					profile_report((now - profile_window_start) / 1e6, profile_frames, profile_ticks);
 					profile_window_start = now;
