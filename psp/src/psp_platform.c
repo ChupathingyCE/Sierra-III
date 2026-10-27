@@ -615,6 +615,17 @@ windows and the per-type object lines then read 0; the heartbeat's frame and
 tick times stay. Set when keep.txt is read */
 int psp_timers_off = 0;
 
+#if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
+/* "objsteps" (below): each step's time charged to the object being updated
+or drawn as well */
+static int objsteps_depth = 0;
+static unsigned long objsteps_frames = 0, objsteps_timed_frames = 0;
+static void objsteps_charge(const char *step, unsigned int microseconds);
+#define OBJSTEPS_CHARGE(step, microseconds) do { if (objsteps_depth > 0) objsteps_charge(step, microseconds); } while (0)
+#else
+#define OBJSTEPS_CHARGE(step, microseconds) do { } while (0)
+#endif
+
 /* at each frame's end: whether the next frame's steps are timed. The step
 running across the edge is closed or opened here, so each timed frame's
 time is all charged and an untimed frame's none */
@@ -623,6 +634,11 @@ static void steps_frame_edge(void)
 	int next = ++steps_frame % steps_every == 0;
 	unsigned int now;
 
+#if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
+	objsteps_frames++;
+	if (steps_timed)
+		objsteps_timed_frames++;
+#endif
 	steps_window_frames++;
 	if (next)
 		steps_window_timed++;
@@ -635,6 +651,7 @@ static void steps_frame_edge(void)
 
 		slot->microseconds += now - profile_last_time;
 		slot->calls++;
+		OBJSTEPS_CHARGE(profile_last_name, now - profile_last_time);
 	}
 	profile_last_name = next ? last_step : NULL;
 	profile_last_time = now;
@@ -667,6 +684,7 @@ void psp_step(const char *name)
 
 			slot->microseconds += now - profile_last_time;
 			slot->calls++;
+			OBJSTEPS_CHARGE(profile_last_name, now - profile_last_time);
 		}
 		profile_last_name = name;
 		profile_last_time = now;
@@ -1547,6 +1565,254 @@ void psp_objcost(long definition, int type, int drawing, unsigned long microseco
 	}
 }
 
+#ifdef PSP_TICK_STEPS
+/* "objsteps" (R1 builds: PSP_TICK_STEPS=1 PSP_RECON=1; timemap's request,
+lab psp/sierra/timemap/objsteps_request.md): each step's time charged to
+the object definition being updated or drawn as well as to the step, so the
+profile says what a grunt's tick or a flying Pelican's goes on. The object
+is a stack: object_update pushes itself on entry and pops on exit, so a
+rider updated inside its vehicle is charged to itself; render_object's call
+does the same for drawing. A push or pop closes the step's interval so far
+(charged to the object below), so each microsecond goes to the object whose
+code ran it. Cells are (definition, step, update or draw): 128 definitions,
+the last for any past them, and 48 steps, the last for any past them, in
+microseconds of the timed frames, scaled up as the profile's are. Cleared
+each profile window and at each map load (definition indices are a map's) */
+#define OBJSTEPS_DEFINITIONS 128
+#define OBJSTEPS_STEPS 48
+#define OBJSTEPS_DEPTH 8
+static int objsteps_on = -1;
+static struct { long definition; int drawing; } objsteps_stack[OBJSTEPS_DEPTH];
+static long objsteps_definition[OBJSTEPS_DEFINITIONS];
+static signed char objsteps_type[OBJSTEPS_DEFINITIONS];
+static const char *objsteps_step[OBJSTEPS_STEPS];
+static unsigned long (*objsteps_us)[OBJSTEPS_STEPS][2] = NULL; /* [OBJSTEPS_DEFINITIONS], from the heap */
+static unsigned long objsteps_deep = 0;
+
+static void objsteps_clear(void)
+{
+	if (objsteps_us)
+		memset(objsteps_us, 0, OBJSTEPS_DEFINITIONS * sizeof(*objsteps_us));
+	memset(objsteps_definition, 0, sizeof(objsteps_definition));
+	memset(objsteps_type, -1, sizeof(objsteps_type));
+	memset(objsteps_step, 0, sizeof(objsteps_step));
+	objsteps_frames = objsteps_timed_frames = 0;
+	objsteps_deep = 0;
+}
+
+static int objsteps_ready(void)
+{
+	if (objsteps_on < 0)
+	{
+		objsteps_on = psp_keep("objsteps") != 0;
+		if (objsteps_on)
+		{
+			objsteps_us = malloc(OBJSTEPS_DEFINITIONS * sizeof(*objsteps_us));
+			if (!objsteps_us)
+			{
+				platform_log("objsteps: no room for its table (%u KB): off", (unsigned int)(OBJSTEPS_DEFINITIONS * sizeof(*objsteps_us) / 1024));
+				objsteps_on = 0;
+			}
+			else
+				objsteps_clear();
+		}
+	}
+	return objsteps_on;
+}
+
+static void objsteps_charge(const char *step, unsigned int microseconds)
+{
+	long definition;
+	unsigned int row, column, n;
+
+	if (objsteps_depth > OBJSTEPS_DEPTH || !objsteps_us || !step)
+		return;
+	definition = objsteps_stack[objsteps_depth - 1].definition;
+	row = (((unsigned long)definition * 2654435761u) >> 25) % (OBJSTEPS_DEFINITIONS - 1);
+	for (n = 0; n < OBJSTEPS_DEFINITIONS - 1; n++, row = (row + 1) % (OBJSTEPS_DEFINITIONS - 1))
+		if (objsteps_type[row] < 0 || objsteps_definition[row] == definition)
+			break;
+	if (n == OBJSTEPS_DEFINITIONS - 1)
+		row = OBJSTEPS_DEFINITIONS - 1;
+	else if (objsteps_type[row] < 0)
+	{
+		objsteps_definition[row] = definition;
+		objsteps_type[row] = 12; /* unknown until the push names it */
+	}
+	for (column = 0; column < OBJSTEPS_STEPS - 1; column++)
+		if (!objsteps_step[column] || objsteps_step[column] == step)
+			break;
+	if (column < OBJSTEPS_STEPS - 1 && !objsteps_step[column])
+		objsteps_step[column] = step;
+	objsteps_us[row][column][objsteps_stack[objsteps_depth - 1].drawing] += microseconds;
+}
+
+/* the step running so far charged to the object on top, before the stack
+changes */
+static void objsteps_split(void)
+{
+	unsigned int now;
+
+	if (psp_timers_off || !steps_timed || !profile_last_name || !profile_slots)
+		return;
+	now = sceKernelGetSystemTimeLow();
+	profile_slot_for(profile_last_name)->microseconds += now - profile_last_time;
+	if (objsteps_depth > 0)
+		objsteps_charge(profile_last_name, now - profile_last_time);
+	profile_last_time = now;
+}
+
+void psp_objsteps_push(long definition, int type, int drawing)
+{
+	if (!objsteps_ready())
+		return;
+	objsteps_split();
+	if (objsteps_depth < OBJSTEPS_DEPTH)
+	{
+		objsteps_stack[objsteps_depth].definition = definition;
+		objsteps_stack[objsteps_depth].drawing = drawing != 0;
+	}
+	else
+		objsteps_deep++;
+	objsteps_depth++;
+	if (objsteps_depth <= OBJSTEPS_DEPTH && objsteps_us)
+	{
+		/* the type, for the report's rows by type: on the row charge would use */
+		unsigned int row = (((unsigned long)definition * 2654435761u) >> 25) % (OBJSTEPS_DEFINITIONS - 1), n;
+
+		for (n = 0; n < OBJSTEPS_DEFINITIONS - 1; n++, row = (row + 1) % (OBJSTEPS_DEFINITIONS - 1))
+			if (objsteps_type[row] < 0 || objsteps_definition[row] == definition)
+			{
+				objsteps_definition[row] = definition;
+				objsteps_type[row] = (signed char)(type >= 0 && type < 12 ? type : 12);
+				break;
+			}
+	}
+}
+
+void psp_objsteps_pop(void)
+{
+	if (objsteps_on <= 0 || objsteps_depth <= 0)
+		return;
+	objsteps_split();
+	objsteps_depth--;
+}
+
+/* at each map load (psp_showcase_refresh) */
+static void objsteps_map_loaded(void)
+{
+	if (objsteps_on > 0)
+		objsteps_clear();
+	objsteps_depth = 0;
+	memset(objcost, 0, sizeof(objcost));
+}
+
+/* one side of a row: its largest steps, in ms a tick (update) or a frame (draw) */
+static int objsteps_side(char *out, int room, unsigned long (*cells)[2], int drawing, double scale, double per)
+{
+	int length = 0, shown, column;
+	unsigned char taken[OBJSTEPS_STEPS] = { 0 };
+
+	for (shown = 0; shown < 8; shown++)
+	{
+		int best = -1;
+
+		for (column = 0; column < OBJSTEPS_STEPS; column++)
+			if (!taken[column] && cells[column][drawing] && (best < 0 || cells[column][drawing] > cells[best][drawing]))
+				best = column;
+		if (best < 0 || length > room - 64)
+			break;
+		taken[best] = 1;
+		length += snprintf(out + length, room - length, "%s %s %.3f", shown ? "," : "",
+			best == OBJSTEPS_STEPS - 1 ? "(other steps)" : objsteps_step[best] ? objsteps_step[best] : "?",
+			per > 0.0 ? cells[best][drawing] * scale / 1000.0 / per : 0.0);
+	}
+	return length;
+}
+
+static void objsteps_report(SceUID file, unsigned long frames, unsigned long ticks)
+{
+	static const char *const types[13] = { "biped", "vehicle", "weapon", "equipment", "garbage", "projectile", "scenery",
+		"machine", "control", "light", "placeholder", "sound scenery", "?" };
+	static unsigned long by_type[13][OBJSTEPS_STEPS][2];
+	static char line[1024];
+	double scale = objsteps_timed_frames ? (double)objsteps_frames / objsteps_timed_frames : 1.0;
+	unsigned char listed[OBJSTEPS_DEFINITIONS] = { 0 };
+	int shown, row, length, column;
+
+	if (objsteps_on <= 0 || !objsteps_us || !(frames || ticks))
+		return;
+	length = snprintf(line, sizeof(line), "\nobjsteps (ms a tick updating | ms a frame drawing, by step, the costliest definitions first; %lu of %lu frames timed, %lu pushes past %d deep):\n",
+		objsteps_timed_frames, objsteps_frames, objsteps_deep, OBJSTEPS_DEPTH);
+	if (file >= 0)
+		sceIoWrite(file, line, length);
+	platform_log("%.*s", length - 2, line + 1);
+	for (shown = 0; shown < 16; shown++)
+	{
+		int best = -1;
+		double best_cost = 0.0;
+
+		for (row = 0; row < OBJSTEPS_DEFINITIONS; row++)
+		{
+			double cost = 0.0;
+
+			if (listed[row] || objsteps_type[row] < 0)
+				continue;
+			for (column = 0; column < OBJSTEPS_STEPS; column++)
+				cost += (ticks ? objsteps_us[row][column][0] / (double)ticks : 0.0) + (frames ? objsteps_us[row][column][1] / (double)frames : 0.0);
+			if (cost > best_cost)
+			{
+				best = row;
+				best_cost = cost;
+			}
+		}
+		if (best < 0)
+			break;
+		listed[best] = 1;
+		length = snprintf(line, sizeof(line), "objsteps: %s (%s) | tick:", best == OBJSTEPS_DEFINITIONS - 1 ? "(other definitions)" :
+			tag_short_name(objsteps_definition[best]), types[objsteps_type[best] >= 0 && objsteps_type[best] <= 12 ? objsteps_type[best] : 12]);
+		length += objsteps_side(line + length, sizeof(line) - length, objsteps_us[best], 0, scale, (double)ticks);
+		length += snprintf(line + length, sizeof(line) - length, "; draw:");
+		length += objsteps_side(line + length, sizeof(line) - length, objsteps_us[best], 1, scale, (double)frames);
+		platform_log("%s", line);
+		if (file >= 0 && length < (int)sizeof(line) - 1)
+		{
+			line[length++] = '\n';
+			sceIoWrite(file, line, length);
+		}
+	}
+	/* the rest by type, so the table sums to the whole */
+	memset(by_type, 0, sizeof(by_type));
+	for (row = 0; row < OBJSTEPS_DEFINITIONS; row++)
+		if (!listed[row] && objsteps_type[row] >= 0)
+			for (column = 0; column < OBJSTEPS_STEPS; column++)
+			{
+				by_type[objsteps_type[row]][column][0] += objsteps_us[row][column][0];
+				by_type[objsteps_type[row]][column][1] += objsteps_us[row][column][1];
+			}
+	for (row = 0; row < 13; row++)
+	{
+		int any = 0;
+
+		for (column = 0; column < OBJSTEPS_STEPS; column++)
+			any |= by_type[row][column][0] || by_type[row][column][1];
+		if (!any)
+			continue;
+		length = snprintf(line, sizeof(line), "objsteps: the other %s | tick:", types[row]);
+		length += objsteps_side(line + length, sizeof(line) - length, by_type[row], 0, scale, (double)ticks);
+		length += snprintf(line + length, sizeof(line) - length, "; draw:");
+		length += objsteps_side(line + length, sizeof(line) - length, by_type[row], 1, scale, (double)frames);
+		platform_log("%s", line);
+		if (file >= 0 && length < (int)sizeof(line) - 1)
+		{
+			line[length++] = '\n';
+			sceIoWrite(file, line, length);
+		}
+	}
+	objsteps_clear();
+}
+#endif
+
 /* "particlecensus": particles asked for, by the effect that asked (or, for
 a particle made outside an effect, by the particle), and what became of
 each: made, left out unseen at birth, refused over the budget, thinned out
@@ -1757,6 +2023,9 @@ static void profile_report(double seconds, unsigned long frames, unsigned long t
 	object_report(file, ticks);
 #ifdef PSP_RECON
 	recon_counters_report(file, seconds, frames, ticks);
+#ifdef PSP_TICK_STEPS
+	objsteps_report(file, frames, ticks);
+#endif
 #endif
 	if (file >= 0)
 		sceIoClose(file);
@@ -2349,6 +2618,9 @@ the menu took a level's carves while it loaded its full-size pack (B29).
 "showcaseonce" leaves the flag to psp_map_opened alone, as before */
 void psp_showcase_refresh(const char *name)
 {
+#if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
+	objsteps_map_loaded();
+#endif
 	if (!psp_keep("showcaseonce"))
 		psp_showcase_map = name && !strcmp(name, "ui") && !psp_keep("noshowcase");
 }

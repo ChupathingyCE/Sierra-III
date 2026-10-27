@@ -27830,6 +27830,38 @@ FIXES_RECON["source/objects/objects.c#objcost"] = [
 \t\t\t\t\t\t}
 """),
 ]
+# "objsteps" (R1 builds: PSP_TICK_STEPS=1 too): each step's time charged to
+# the object being updated or drawn as well (psp_platform.c, objsteps). The
+# stack's push and pop around object_update, so a rider updated inside its
+# vehicle is its own; and around render_object, below
+FIXES_RECON["source/objects/objects.c#objsteps"] = [
+("""
+	boolean result = TRUE;
+	if (!TEST_FLAG(header->flags, _object_header_do_not_update_bit))
+	{""", """
+	boolean result = TRUE;
+#ifdef PSP_TICK_STEPS
+	/* psp_fixups.py (FIXES_RECON #objsteps) */
+	extern void psp_objsteps_push(long definition, int type, int drawing);
+	extern void psp_objsteps_pop(void);
+
+	psp_objsteps_push(object->definition_index, object->object.type, 0);
+#endif
+	if (!TEST_FLAG(header->flags, _object_header_do_not_update_bit))
+	{"""),
+("""
+	return result;
+}
+
+void object_compute_node_matrices_recursive(""", """
+#ifdef PSP_TICK_STEPS
+	psp_objsteps_pop();
+#endif
+	return result;
+}
+
+void object_compute_node_matrices_recursive("""),
+]
 FIXES_RECON["source/render/render_objects.c#objcost"] = [
 ("\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];\n\t\trender_object(data);\n",
 """\t\t\trender_object_globals.rendered_object_indices[rendered_object_index];
@@ -27845,6 +27877,28 @@ FIXES_RECON["source/render/render_objects.c#objcost"] = [
 \t\t}
 #else
 \t\trender_object(data);
+#endif
+"""),
+]
+
+FIXES_RECON["source/render/render_objects.c#objsteps"] = [
+("""\t\t\tunsigned long psp_start = psp_microseconds();
+
+\t\t\trender_object(data);
+""", """\t\t\tunsigned long psp_start = psp_microseconds();
+
+#ifdef PSP_TICK_STEPS
+\t\t\t{
+\t\t\t\t/* psp_fixups.py (FIXES_RECON #objsteps) */
+\t\t\t\textern void psp_objsteps_push(long definition, int type, int drawing);
+\t\t\t\textern void psp_objsteps_pop(void);
+
+\t\t\t\tpsp_objsteps_push(object_get(data->object_index)->definition_index, object_get_type(data->object_index), 1);
+\t\t\t\trender_object(data);
+\t\t\t\tpsp_objsteps_pop();
+\t\t\t}
+#else
+\t\t\trender_object(data);
 #endif
 """),
 ]
