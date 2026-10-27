@@ -620,6 +620,9 @@ enum { TXPT_LEVEL_BASE, TXPT_LIGHTMAP, TXPT_LEVEL_DETAIL, TXPT_MODEL_BASE, TXPT_
 	TXPT_DECAL, TXPT_BLIP, TXPT_BLIPS_END };
 #define PRETOUCHING() (pretouch_on && !me_overlap && DEFER_RECORDING() && !defer_paused)
 #define GE_PRETOUCH(key, kind) do { if (PRETOUCHING()) pretouch(key, kind, 0); } while (0)
+/* the HUD's and the motion sensor's: pinned, past the frame's budget and the
+ceiling (psp_tex_pretouch, "hudpinme") */
+#define GE_PRETOUCH_HUD(key, kind) do { if (PRETOUCHING()) pretouch(key, kind, 3); } while (0)
 /* a texture the replay binds only for some draws (a level's detail maps,
 only near the eye): marked only if it's resident already, so it costs no
 load and no room ("txptall": loaded too) */
@@ -18450,7 +18453,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 		glyph_next = -1;
 		glyph_sheet_ready();
 	}
-	GE_PRETOUCH(key, TXPT_SCREEN);
+	GE_PRETOUCH_HUD(key, TXPT_SCREEN);
 	/* "meterload": the recording loads a HUD meter's map before the quad is
 	queued, outside pretouch's guards. Off by default: on the PSP it left the
 	bars as empty as before and lost model palettes (Chief's change colours),
@@ -21950,7 +21953,7 @@ static int blip_draw(float x, float y, float radius, float red, float green, flo
 
 void psp_ge_blip(float x, float y, float radius, float red, float green, float blue, unsigned int key)
 {
-	GE_PRETOUCH(key, TXPT_BLIP);
+	GE_PRETOUCH_HUD(key, TXPT_BLIP);
 	GE_DEFER(defer_words(DEFER_BLIP, 7, defer_bits(x), defer_bits(y), defer_bits(radius), defer_bits(red),
 		defer_bits(green), defer_bits(blue), key, 0));
 	GE_BENCH_SKIP();
@@ -22079,8 +22082,8 @@ static void blip_check_compare(void)
 
 void psp_ge_blips_end(float center_x, float center_y, float scale, unsigned int sweep_key, unsigned int mask_key)
 {
-	GE_PRETOUCH(sweep_key, TXPT_BLIPS_END);
-	GE_PRETOUCH(mask_key, TXPT_BLIPS_END);
+	GE_PRETOUCH_HUD(sweep_key, TXPT_BLIPS_END);
+	GE_PRETOUCH_HUD(mask_key, TXPT_BLIPS_END);
 	GE_DEFER(defer_words(DEFER_BLIPS_END, 5, defer_bits(center_x), defer_bits(center_y), defer_bits(scale), sweep_key,
 		mask_key, 0, 0, 0));
 	ge_kind(KIND_HUD);

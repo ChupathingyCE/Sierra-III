@@ -2233,9 +2233,23 @@ static void txc_frame_end(void)
 
 /* resident_only: 1 marks the texture only if it's resident; 2 (the census
 alone) notes a key a filter passed over */
+/* "hudpinme" (on by default; "hudpinmeold": as before): resident_only 3 is
+the HUD's and the motion sensor's records (psp_ge.c, GE_PRETOUCH_HUD). With
+the Media Engine replaying the frame (gemeon), the HUD's binds run on the ME,
+where the pin above is never set, and the HUD records come last, after the
+ceiling below has stopped marking: under a full texture cache the meters
+and the sensor were drawn untextured or not at all while the log's HUD line
+(main-CPU binds only) said none were missing (GROUNDTEX's test bakes,
+groundtex1/2, 2026-10-26: b30's HUD quads -10%, c20's nearly all). Here, on
+the main CPU as the record is written, they're pinned as a main-CPU bind
+pins them, read past the frame's budget, and marked past the ceiling (the
+HUD's set is small) */
+static PSP_MAIN_SIDE int hud_pin_me = -1;
+static PSP_MAIN_SIDE unsigned long hud_pretouched = 0, hud_pretouch_past_ceiling = 0, hud_pretouch_refused = 0;
+
 void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 {
-	int index;
+	int index, hud = 0;
 	unsigned int size, room;
 
 	if (!key || !entries || PSP_ME_WORK() || (unsigned int)kind >= PRETOUCH_KINDS)
@@ -2247,6 +2261,17 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 		return;
 	pretouch_key[kind] = key;
 	pretouch_frame[kind] = frame;
+	if (resident_only == 3)
+	{
+		if (hud_pin_me < 0)
+			hud_pin_me = !psp_keep("hudpinmeold");
+		if (hud_pin_on < 0)
+			hud_pin_on = !psp_keep("hudpinoff");
+		hud = hud_pin_me > 0 && hud_pin_on > 0;
+		resident_only = 0;
+		if (hud)
+			hud_pretouched++;
+	}
 	/* (a texture touched only if resident and not resident isn't missed: the
 	ME binding it draws untextured and asks for it, as the replay always has,
 	touching nothing the main CPU writes) */
@@ -2260,13 +2285,17 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 		return;
 	}
 	pretouch_calls++;
+	if (hud && hud_pinned)
+		hud_pinned[index] = 1;
 	if (resident_at[index] && last_frame[index] == frame)
 		return; /* marked already, by a bind or another kind */
 	size = alignment(entries[index].size);
 	if (pretouch_percent < 0)
 		pretouch_percent = psp_keep_number("txptceil", 95);
 	room = (VRAM_CACHE_END - VRAM_CACHE_START) + (arenas[1].end - arenas[1].start);
-	if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent)
+	if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent && hud)
+		hud_pretouch_past_ceiling++;
+	else if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent)
 	{
 		pretouch_ceiling_stops++;
 		psp_tex_chunk_missed = 1;
@@ -2282,8 +2311,10 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 			txc_note(index, kind, 0);
 			return;
 		}
-		if (frame_loaded >= LOAD_BUDGET_BYTES || !load(index))
+		if ((frame_loaded >= LOAD_BUDGET_BYTES && !hud) || !load(index))
 		{
+			if (hud)
+				hud_pretouch_refused++;
 			pretouch_refused++;
 			psp_tex_chunk_missed = 1;
 			txc_note(index, kind, 0);
@@ -2667,8 +2698,10 @@ void psp_tex_frame_end(void)
 			loads, load_bytes / 1024, misses - (loads - preloaded), waits, evictions, frame_set_peak_count, frame_set_peak / 1024,
 			untextured_frames, untextured_run_worst);
 	if (entries && frame % 300 == 0)
-		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured",
-			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured);
+		platform_log("textures, the HUD's and the screen's (%s): %lu missing when drawn (%lu read past the frame's budget), %lu drawn untextured; recorded for the Media Engine (%s): %lu marked, %lu past the ceiling, %lu refused room",
+			hud_pin_on > 0 ? "pinned" : "hudpinoff", hud_misses, hud_reads_past_budget, hud_untextured,
+			hud_pin_me > 0 ? "hudpinme" : hud_pin_me == 0 ? "hudpinmeold" : "none yet", hud_pretouched, hud_pretouch_past_ceiling,
+			hud_pretouch_refused);
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
 	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
