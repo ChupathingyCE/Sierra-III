@@ -2261,6 +2261,30 @@ static void hud_pin_list_forget(void)
 	hud_pin_count = 0;
 }
 
+/* the HUD's pinned textures the cache lost, read back at the frame's first
+record (psp_ge.c's pretouch has carried out any frame still in flight by
+then, so nothing it binds is evicted), before the frame's own set fills
+the caches and while last frame's textures can give way */
+static PSP_MAIN_SIDE unsigned int hud_readback_frame = ~0u;
+
+static void hud_read_back(void)
+{
+	int k;
+
+	hud_readback_frame = frame;
+	for (k = 0; k < hud_pin_count; k++)
+	{
+		int index = hud_pin_list[k];
+
+		if (resident_at[index] || last_frame[index] + RECENT_FRAMES <= frame)
+			continue;
+		if (load(index))
+			hud_frame_start_loads++;
+		else
+			hud_frame_start_refused++;
+	}
+}
+
 void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 {
 	int index, hud = 0;
@@ -2268,6 +2292,8 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 
 	if (!key || !entries || PSP_ME_WORK() || (unsigned int)kind >= PRETOUCH_KINDS)
 		return;
+	if (hud_pin_me > 0 && hud_readback_frame != frame)
+		hud_read_back();
 	if (pretouch_frame[kind] == frame && pretouch_key[kind] == key)
 		return;
 	index = find(key);
@@ -2825,22 +2851,4 @@ void psp_tex_frame_end(void)
 		strip_census_report(900);
 	frame++;
 	frame_loaded = 0;
-	/* the HUD's pinned textures read back before the frame's records, where
-	last frame's textures can give way (hudpinme) */
-	if (hud_pin_me > 0 && entries)
-	{
-		int k;
-
-		for (k = 0; k < hud_pin_count; k++)
-		{
-			int index = hud_pin_list[k];
-
-			if (resident_at[index] || last_frame[index] + RECENT_FRAMES <= frame)
-				continue;
-			if (load(index))
-				hud_frame_start_loads++;
-			else
-				hud_frame_start_refused++;
-		}
-	}
 }
