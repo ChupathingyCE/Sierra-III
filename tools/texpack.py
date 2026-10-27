@@ -2181,8 +2181,12 @@ def main():
             continue
         r['key'] = b['address']
         r['name'] = b['tag']
-        # what the runtime reads out of this texture (design_b25_bake.md)
-        r['reads'] = ('multipurpose' if not own_colours else '') + (' meter' if meter else '')
+        # what the runtime reads out of this texture (design_b25_bake.md):
+        # the HUD's meters (a unit's shield and health panels, a weapon's
+        # ammunition: 'meter bitmap' fields) go through meter_palette as the
+        # meter shaders' maps do, without that shader's grid palette
+        hud_meter = any('meter bitmap' in role for role in tag_roles)
+        r['reads'] = ('multipurpose' if not own_colours else '') + (' meter' if meter or hud_meter else '')
         entries.append(r)
         if cls == 'lightmap' and LIGHTMAP_SCALE > 1 and LIGHTMAP_WHOLE:
             broken, worst = seams_broken(m, b, cls)
