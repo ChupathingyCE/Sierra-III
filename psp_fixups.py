@@ -26473,6 +26473,81 @@ struct unit_control_data const *psp_drive_control(long unit_index, struct unit_c
 ]
 
 
+
+# ---------- FIXES_COMPACTSKIP: a compaction of a pool already compact (research, GCLATE)
+#
+# Late in b30 the object garbage collector runs every tick with active garbage
+# over its trigger, collects nothing (every body in view), and still compacts
+# the object pool: a walk of every block header (lab levers.tsv GCLATE). A
+# pool whose blocks already lie end to end (its contiguous free room equals
+# its free room) has nothing to move, and the walk would only rewrite links
+# that already hold, so it is skipped. Exact by construction: the pool's bytes
+# and links are what the walk would leave. Keep word "compactalways" walks as
+# before; "compactcheck" walks anyway and counts blocks the skip would have
+# left out of place (psp_compact_report, expected 0).
+
+FIXES_COMPACTSKIP = {}
+FIXES_COMPACTSKIP["source/memory/memory_pool.c#compactskip"] = [
+("""void memory_pool_compact(
+	struct memory_pool *pool)
+{
+	byte *destination;
+	struct memory_pool_block *block;
+	struct memory_pool_block *previous_block;
+
+	block = pool->first_block;
+	if (block)
+	{
+		destination = pool->base_address;
+		previous_block = NULL;
+		do
+		{
+			if ((byte *)block > destination)
+			{
+""",
+"""#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_COMPACTSKIP): 1 skip, 0 walk always, 2 walk and check */
+int psp_keep(const char *name);
+static int psp_compact_mode = -1;
+unsigned int psp_compact_skipped, psp_compact_walked, psp_compact_check_moved;
+#endif
+
+void memory_pool_compact(
+	struct memory_pool *pool)
+{
+	byte *destination;
+	struct memory_pool_block *block;
+	struct memory_pool_block *previous_block;
+#ifdef HALO_PSP
+	boolean psp_already_compact;
+
+	if (psp_compact_mode < 0)
+		psp_compact_mode = psp_keep("compactcheck") ? 2 : psp_keep("compactalways") ? 0 : 1;
+	psp_already_compact = pool->size - memory_pool_get_used_size(pool) == pool->free_size;
+	if (psp_already_compact && psp_compact_mode == 1)
+	{
+		psp_compact_skipped++;
+		return;
+	}
+	psp_compact_walked++;
+#endif
+
+	block = pool->first_block;
+	if (block)
+	{
+		destination = pool->base_address;
+		previous_block = NULL;
+		do
+		{
+			if ((byte *)block > destination)
+			{
+#ifdef HALO_PSP
+				if (psp_already_compact)
+					psp_compact_check_moved++;
+#endif
+"""),
+]
+
 # ---------- FIXES_RECON: recon censuses (docs/recon_134.md)
 #
 # Measuring instruments, built only with PSP_RECON=1 (psp_build.py): their
@@ -35340,7 +35415,7 @@ FIXES_DGFAST["source/memory/data.c#dgfast"] = [
 
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

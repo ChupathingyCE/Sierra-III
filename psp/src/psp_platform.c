@@ -1225,6 +1225,7 @@ static void keep_load(void)
 	platform_log("keep words, the memory census (opt-in; docs/memory_census.md): memcensus (the geometry cache's working set and re-reads by distance, the tag window's free span); geowindow (the tag window's span no BSP of the map uses, past the animation cache's, as the geometry cache's second region)");
 	platform_log("keep words, the HUD's textures: fix off: hudpinmeold (with the Media Engine replaying the frame, the HUD's and the motion sensor's textures were neither pinned nor read past the frame's budget, and lost to a full texture cache)");
 	platform_log("keep words, the sound mixer's lock (MIXLOCK): speed off: mixlockold (the audio thread holds the mixer's lock through the Media Engine's job and the game's sound calls wait for it, as before; by default they never wait)");
+	platform_log("keep words, a pool compaction (COMPACTSKIP): speed off: compactalways (a pool already compact is walked anyway, as before); check: compactcheck (walks, and counts blocks a skip would have left out of place on the metrics compact line)");
 #ifndef PSP_MULTIPLAYER
 	platform_log("keep words, the campaign's defaults (M6 #2, docs/review_m6default.md): added:%s; off: m6off (all of M6 #2), gedeferoff geinflightoff gemeonoff mevramoff notexpretouch mepolloff, inflightkbN (another buffer size; 128 as before); none of M6 #2 with mebench gemeoverlap geserial; blipdepthoff (the sensor target in its own 16 KB)",
 		keep_defaults_added[0] ? keep_defaults_added : " none");
