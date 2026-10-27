@@ -26557,8 +26557,11 @@ void memory_pool_compact(
 # model's markers by name and a node transform, the same answer every time
 # within one collection (it deletes garbage only, never the player's unit).
 # The head is found once a collection and kept for the rest of it. Exact by
-# construction. Keep words "gcheadold" (as before), "smallwins1old" (the whole
-# first small-wins batch: this and FIXES_COMPACTSKIP)
+# construction in the emulator, but NOT on the PSP: there the on side removed
+# 7-9 garbage objects in the player's view in its first collection, as if the
+# kept head were not where it is (the PSP-3000 pair 40484028762; the off side
+# removed none in 192 collections). Until that is understood it is opt-in:
+# keep word "gchead"; "smallwins1old" turns the whole batch off
 
 FIXES_GCHEAD = {}
 FIXES_GCHEAD["source/objects/objects.c#gchead"] = [
@@ -26579,7 +26582,7 @@ static void psp_gc_heads_begin(void)
 	int k;
 
 	if (psp_gc_head_mode < 0)
-		psp_gc_head_mode = !psp_keep("gcheadold") && !psp_keep("smallwins1old");
+		psp_gc_head_mode = psp_keep("gchead") && !psp_keep("smallwins1old");
 	for (k = 0; k < 16; k++)
 		psp_gc_head_unit[k] = NONE;
 	psp_gc_heads_live = psp_gc_head_mode;
