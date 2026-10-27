@@ -85,7 +85,13 @@ Every bake fingerprints what it reads and says so at the start of its log, then 
 
 It never refuses an image for this. An image nobody has tested still bakes; the log and the stamp just say it isn't on the tested list. If something looks wrong in play, send those lines with your report: they tell us which image it came from, so problems can be traced to the images that cause them.
 
-**Tested with:** the images in `tested_images.json`, which each release fills in with the image it was baked from and tested on.
+**Tested with:** the images in `tested_images.json`, which each release fills in with the image it was baked from and tested on. So far one:
+
+| Image | default.xbe | Builds |
+|---|---|---|
+| Halo - Combat Evolved (USA) (Rev 2), as an xiso: SHA-1 `bf3e1071bf8b7f0080cae86adc32b44233dbe8aa`, 3,625,713,664 bytes | title 4D530004 version 9, North America; SHA-256 `4094e994…d95aae` | b146 |
+
+An xiso is the disc's file system repacked, so its whole-file hashes are its own; the `default.xbe` lines are what match another copy of the same disc. A bake counts an image as tested when either matches.
 
 ## When it stops
 
