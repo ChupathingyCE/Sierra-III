@@ -147,7 +147,8 @@ PSP-1000 A/B shows whether the ME's jobs run faster */
 pointed at psp_me_fault_vector */
 #define ME_FEATURE_FAULT_OFF 512u
 /* "mefaulttest": a test of the record, never for play: about 5 s after
-start the ME loads a word from an odd address (an address error), so the
+start the ME runs a break instruction (an exception on any MIPS: an odd
+address's load was let through on the ME, sierra-hw 40576363461), so the
 main CPU's next deadline stops it and the log shows the record */
 #define ME_FEATURE_FAULT_TEST 1024u
 
@@ -1192,7 +1193,10 @@ void meLibOnProcess(void)
 				if (!(features & (ME_FEATURE_FAULT_OFF | ME_FEATURE_HALT)))
 					me_fault_vector_install();
 				if (features & ME_FEATURE_FAULT_TEST)
+				{
 					fault_test_at = me_cycles() + 333u * 1000000u * 5u;
+					UNCACHED(&psp_me_fault_storage)->pad[0] = 1; /* armed */
+				}
 				if (features & ME_FEATURE_BCC)
 				{
 					hw(0xBCC00040) = 1;
@@ -1218,9 +1222,8 @@ void meLibOnProcess(void)
 		control->clock = me_cycles();
 		if (fault_test_at && (int)(control->clock - fault_test_at) > 0)
 		{
-			volatile unsigned int *odd = (volatile unsigned int *)(0x80000000u | (unsigned int)&control_storage | 1u);
-
-			(void)*odd;
+			UNCACHED(&psp_me_fault_storage)->pad[0] = 2; /* about to break */
+			__asm__ __volatile__("break");
 		}
 		/* build 89: the stop word is looked at after the slots (below), so a
 		job asked for just before a stop is still served: b86-b88 halted with
@@ -1565,6 +1568,8 @@ static void me_stop(const char *why, int for_sleep)
 			else
 				platform_log("ME: fault: none recorded (%s): the ME was running, not faulted",
 					psp_keep("mefaultoff") ? "the vector off, mefaultoff" : "the vector in");
+			if (fault->pad[0])
+				platform_log("ME: fault: mefaulttest %s", fault->pad[0] == 2 ? "reached its break" : "armed, not reached");
 		}
 	}
 	else if (me_state == 2)
