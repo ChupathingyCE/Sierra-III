@@ -109,15 +109,18 @@ the counts follow how the map is played now); with keep.txt's "vramranked",
 the next run's VRAM set is chosen from them instead of by size */
 static unsigned int *bind_totals = NULL;
 static char map_name[64];
-/* per entry: its average colour once worked out (psp_tex_average) */
-static unsigned int *averages = NULL;
+/* per entry: its average colour (ABGR), from the pack's 'TAV1' table
+(texpack.py, runtime_reads: worked out as the runtime sampled it until b144,
+so nothing on the Media Engine reads a texture for it). averages holds the
+ones asked for while the texture was resident, so psp_tex_average_known
+answers after it has left; the ME's work writes it, on lines of its own */
+static unsigned int *averages = NULL, *baked_averages = NULL;
 static int averages_count = 0;
-/* "avgold": the averages' table allocated by the first psp_tex_average, as
-before, on whichever CPU asks: on the Media Engine (the replay's flashlight
-pass) that ran newlib's malloc there, beside the main CPU's own and outside
-its lock. "avgmerealloc" (the proof of it): the ME's work frees and
-allocates the table again at each average it asks for */
-static PSP_MAIN_SIDE int avg_old = 0, avg_me_realloc = 0;
+/* directory flags (texpack.py): the change mask's CLUT ends the texture's
+data; the CPU reads its palette (the meters), so it's kept in main RAM, which
+the Media Engine can reach */
+#define CHANGE_MASK 8
+#define CPU_READS 16
 /* the light gels' six face colours (psp_tex_gel_faces) */
 #define GEL_FACES_MARK 0xFACE
 #define GEL_FACES_KEPT 16
@@ -418,6 +421,8 @@ void psp_tex_close(void)
 	free(averages);
 	averages = NULL;
 	averages_count = 0;
+	free(baked_averages);
+	baked_averages = NULL;
 	memset(gel_faces_kept, 0, sizeof(gel_faces_kept));
 	free(tints);
 	tints = NULL;
@@ -833,7 +838,7 @@ static void preload(int ranked)
 		{
 			unsigned int size = (entries[order[k]].size + 63) & ~63u;
 
-			if (used + size <= vram && vram_pending_count < 512)
+			if (used + size <= vram && vram_pending_count < 512 && !(entries[order[k]].flags & CPU_READS))
 			{
 				used += size;
 				vram_pending[vram_pending_count++] = order[k];
@@ -1160,18 +1165,9 @@ void psp_tex_map_opened(const char *name)
 	resident_in = calloc(header[1], 1);
 	hud_pinned = calloc(header[1], 1);
 	bind_counts = line_calloc(header[1], sizeof(unsigned short));
-	/* the averages' table here, on the main CPU: the ME's work only fills it
-	(psp_tex_average), on lines of its own */
-	avg_old = psp_keep("avgold") != 0;
-	avg_me_realloc = psp_keep("avgmerealloc") != 0;
 	free(averages);
-	averages = NULL;
-	averages_count = 0;
-	if (!avg_old && !avg_me_realloc)
-	{
-		averages = line_calloc(header[1], sizeof(unsigned int));
-		averages_count = averages ? (int)header[1] : 0;
-	}
+	averages = line_calloc(header[1], sizeof(unsigned int));
+	averages_count = averages ? (int)header[1] : 0;
 	if (!ram_cache)
 		ram_cache_acquire();
 	if (!entries || !resident_at || !last_frame || !resident_in || sceIoRead(file, entries, header[2]) != (int)header[2])
@@ -1241,17 +1237,36 @@ void psp_tex_map_opened(const char *name)
 			}
 		}
 		if (tables == 3 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
-			table[0] == 0x31434E54 /* TNC1 */ && table[1] > 0 && table[1] <= 4096 &&
-			(composites = malloc(table[1] * 8)) != NULL)
+			table[0] == 0x31434E54 /* TNC1 */ && table[1] <= 4096)
 		{
-			if (sceIoRead(file, composites, table[1] * 8) == (int)(table[1] * 8))
-				composite_count = (int)table[1];
-			else
+			tables = 4;
+			if (table[1] > 0 && (composites = malloc(table[1] * 8)) != NULL)
 			{
-				free(composites);
-				composites = NULL;
+				if (sceIoRead(file, composites, table[1] * 8) == (int)(table[1] * 8))
+					composite_count = (int)table[1];
+				else
+				{
+					free(composites);
+					composites = NULL;
+					tables = 0;
+				}
 			}
+			else if (table[1] > 0)
+				tables = 0;
 		}
+		/* the averages ('TAV1', one a texture in directory order), since bake
+		format 2; a pack without them has no averages: models' reflections
+		stay out of their ambient and the flashlight's cone untinted */
+		if (tables == 4 && sceIoRead(file, table, sizeof(table)) == (int)sizeof(table) &&
+			table[0] == 0x31564154 /* TAV1 */ && table[1] == header[1] &&
+			(baked_averages = malloc(table[1] * 4)) != NULL &&
+			sceIoRead(file, baked_averages, table[1] * 4) != (int)(table[1] * 4))
+		{
+			free(baked_averages);
+			baked_averages = NULL;
+		}
+		if (!baked_averages)
+			platform_log("textures: no averages in this pack (baked before bake format 2): bake again with this build's tools");
 		platform_log("textures: see-through tints for %d shaders%s; drawn maps chosen by the bake for %d%s", tint_count,
 			tint_count ? "" : " (a pack baked before build 116: none)", drawn_map_count,
 			drawn_map_count ? (drawn_map_scale() ? " (drawnmapscale: the smallest scale's instead)" : "") :
@@ -1571,7 +1586,7 @@ static int load_into(int index, int only);
 
 static int load(int index)
 {
-	return load_into(index, -1);
+	return load_into(index, entries[index].flags & CPU_READS ? 1 : -1);
 }
 
 extern volatile int psp_ge_show_busy; /* psp_ge.c */
@@ -2296,94 +2311,31 @@ int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *cou
 	return 1;
 }
 
-/* the bake's exact CLUT4 (pack flag 2, texpack.py): a texture it would
-have made CLUT8, in 16 colours that draw it texel for texel. Its average is
-sampled where the CLUT8 bytes were, so object lighting and the flashlight
-take the same colour from it as before ("c4xavgoff": CLUT4's own sample) */
-#define EXACT_CLUT4 2
-static unsigned int texel_offset(struct pack_entry const *entry, int x, int y, int *nibble);
-
-/* a resident texture's average colour (ABGR), from a sample of its top
-level's texels through the palette; kept per texture (build 36: the
-flashlight's added light, which can't take a second texture) */
+/* a resident texture's average colour (ABGR), from the bake (the
+flashlight's added light, which can't take a second texture: build 36) */
 int psp_tex_average(unsigned int key, unsigned int *abgr)
 {
 	int index = key && entries ? find(key) : -1;
-	struct pack_entry const *entry;
-	unsigned int palette_bytes, bytes, row, rows, total, step, at, sum[3] = { 0, 0, 0 }, n = 0;
-	const unsigned char *texels;
-	static int own_sample = -1;
-	int clut8_order;
 
-	if (index < 0 || !resident_at[index] || DIRECT(&entries[index]))
+	if (index < 0 || !resident_at[index] || !averages || !baked_averages || !baked_averages[index])
 		return 0;
-	if (averages_count != entry_count || (avg_me_realloc && PSP_ME_WORK()))
-	{
-		/* the ME makes no library calls: the table comes from the pack's
-		open, and the ME's work without one has no average (avgold and
-		avgmerealloc: allocated here, as before) */
-		if (PSP_ME_WORK() && !avg_old && !avg_me_realloc)
-			return 0;
-		free(averages);
-		averages = calloc(entry_count, sizeof(unsigned int));
-		averages_count = averages ? entry_count : 0;
-		if (!averages)
-			return 0;
-	}
-	if (averages[index])
-	{
-		*abgr = averages[index];
-		return 1;
-	}
-	entry = &entries[index];
-	if (own_sample < 0)
-		own_sample = psp_keep("c4xavgoff");
-	clut8_order = entry->psm == GU_PSM_T4 && (entry->flags & EXACT_CLUT4) && !own_sample;
-	palette_bytes = (entry->clut == GU_PSM_8888 ? 4 : 2) * (entry->psm == GU_PSM_T4 ? 16 : 256);
-	bytes = entry->psm == GU_PSM_T4 && !clut8_order ? (entry->width + 1) / 2 : entry->width;
-	row = ((bytes < 16 ? 16 : bytes) + 15) & ~15u;
-	rows = (entry->height + 7) & ~7u;
-	total = row * rows;
-	step = total / 2048 + 1;
-	texels = (const unsigned char *)((resident_at[index] + palette_bytes) | 0x40000000);
-	for (at = 0; at < total; at += step)
-	{
-		unsigned int value = clut8_order ? 0 : texels[at], k;
-
-		if (clut8_order)
-		{
-			/* the texel this byte was in the CLUT8 layout; its padding read entry 0 */
-			unsigned int x = (at >> 7) % (row / 16) * 16 + (at & 15), y = (at >> 7) / (row / 16) * 8 + ((at >> 4) & 7);
-			int nibble;
-
-			if (x < entry->width && y < entry->height)
-				value = (texels[texel_offset(entry, (int)x, (int)y, &nibble)] >> (4 * nibble)) & 15;
-		}
-		for (k = 0; k < (entry->psm == GU_PSM_T4 && !clut8_order ? 2u : 1u); k++)
-		{
-			unsigned int i = entry->psm == GU_PSM_T4 && !clut8_order ? (value >> (4 * k)) & 15 : value, r, g, b;
-
-			if (entry->clut == GU_PSM_8888)
-			{
-				unsigned int c = ((const unsigned int *)(resident_at[index] | 0x40000000))[i];
-
-				r = c & 0xFF; g = (c >> 8) & 0xFF; b = (c >> 16) & 0xFF;
-			}
-			else
-			{
-				unsigned int c = ((const unsigned short *)(resident_at[index] | 0x40000000))[i];
-
-				r = (c & 31) * 255 / 31; g = ((c >> 5) & 63) * 255 / 63; b = (c >> 11) * 255 / 31;
-			}
-			sum[0] += r; sum[1] += g; sum[2] += b;
-			n++;
-		}
-	}
-	if (!n)
-		return 0;
-	averages[index] = 0xFF000000 | ((sum[2] / n) << 16) | ((sum[1] / n) << 8) | (sum[0] / n);
+	if (!averages[index])
+		averages[index] = baked_averages[index];
 	*abgr = averages[index];
 	return 1;
+}
+
+/* a resident multipurpose map's change mask (texpack.py, change_mask): the
+address of its CLUT, the data's last bytes, for the GE to load; NULL when the
+map isn't resident or the pack has no mask for it. Nothing is read */
+const void *psp_tex_change_mask(unsigned int key, int *count)
+{
+	int index = key && entries ? find(key) : -1;
+
+	if (index < 0 || !resident_at[index] || !(entries[index].flags & CHANGE_MASK))
+		return NULL;
+	*count = entries[index].psm == GU_PSM_T4 ? 16 : 256;
+	return (const void *)(resident_at[index] + entries[index].size - *count * 4);
 }
 
 /* a texture's average once worked out, even after it has left memory;

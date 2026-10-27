@@ -17,7 +17,9 @@ File layout (little endian):
     u16 width, u16 height, u8 levels, u8 psm (5 = T8, 4 = T4; in its own colours,
     --showcase: 3 = 8888, 0 = 5650), u8 clut (0 = 5650, 3 = 8888; 0xFF none),
     u8 flags (1 = has alpha; 2 = an exact CLUT4: 8-bit texels in 16
-    colours, its average sampled as its CLUT8 layout's), u32 offset, u32 size }
+    colours, its average sampled as its CLUT8 layout's; 8 = the change
+    mask's CLUT, 16 or 256 x u32, is the data's last bytes; 16 = the CPU reads
+    its palette, so it's kept in main RAM), u32 offset, u32 size }
   tints, right after the directory: 'TNT1', u32 count, then count x
     { u32 shader tag address, u32 tint (ABGR) }, sorted by address: the
     see-through shaders' tints for the one map the GE draws of each
@@ -45,11 +47,16 @@ File layout (little endian):
     shaders drawn from a texture of their own (seethrough.composite), whose
     directory entries are keyed by the shader's tag address | 1. Only when
     there are any, after a 'TNA1' (of count 0 when no shader is angled)
+  averages, right after the composites: 'TAV1', u32 count (the textures'),
+    then count x u32: each texture's average colour (ABGR; 0 for one in its
+    own colours), in directory order, as psp_tex_average used to sample it.
+    Since bake format 2 every table above is written, empty or not
   glow maps: directory entries keyed by a self-illuminated model shader's
     tag address | 2 (glow_looks), beside the bitmaps' keys; entries with the
     same texels share their data
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
-    each level swizzled, rows padded to 16 bytes and to 8 rows
+    each level swizzled, rows padded to 16 bytes and to 8 rows; then a
+    multipurpose map's change mask (flag 8), 64-byte aligned
 """
 import sys, os, struct, argparse, hashlib, io, time
 import numpy as np
@@ -1930,17 +1937,51 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     return made
 
 
-def b25_sizing(entries):
-    """design_b25_bake.md's costs for this pack: the multipurpose maps' two
-    mask CLUTs (8888, 64-byte aligned), the meter maps the loader would keep
-    in RAM, and the averages table"""
-    mp = [e for e in entries if 'multipurpose' in e.get('reads', '')]
-    meters = [e for e in entries if 'meter' in e.get('reads', '')]
-    masks = sum(2 * ((16 if e['psm'] == 4 else 256) * 4 + 63) // 64 * 64 for e in mp)
-    print('b25 sizing: %d textures, %d KB; %d multipurpose maps (%d KB of their own), their mask CLUTs +%d KB; '
-          '%d meter maps, %d KB kept in RAM; averages table %d bytes'
-          % (len(entries), sum(len(e['data']) for e in entries) // 1024, len(mp), sum(len(e['data']) for e in mp) // 1024,
-             masks // 1024, len(meters), sum(len(e['data']) for e in meters) // 1024, 8 + 8 * len(entries)), file=sys.stderr)
+CHANGE_MASK_FLAG = 8  # the change mask's CLUT follows the levels
+CPU_READS_FLAG = 16   # the CPU reads this texture's palette: kept in main RAM
+
+
+def change_mask(e):
+    """a multipurpose map's change mask, as the GE's CLUT for the change pass
+    (psp_ge.c, multipurpose_pass): the palette's blue (the Xbox's change
+    channel) as a grey 8888 word, alpha full. The Media Engine replays the
+    pass and can't read a texture in VRAM, so the bake works it out"""
+    _, words = read_levels(e)
+    w = words.astype(np.uint32)
+    blue = (w >> 16) & 0xFF if e['alpha'] else (w >> 11) * 255 // 31
+    return (0xFF000000 | (blue << 16) | (blue << 8) | blue).astype('<u4').tobytes()
+
+
+def runtime_reads(entries):
+    """what the runtime would otherwise read out of the textures themselves,
+    made here (design_b25_bake.md): each multipurpose map's change mask after
+    its levels (64-byte aligned, the last bytes of its data), the meter maps
+    marked for main RAM, and every texture's average colour as the 'TAV1'
+    table's bytes, in directory order (0: none, a texture in its own colours)"""
+    masks = meters = 0
+    for e in entries:
+        reads = e.get('reads', '')
+        if 'multipurpose' in reads and e['psm'] in (4, 5):
+            mask = change_mask(e)
+            data = bytes(e['data'])
+            e['data'] = data + b'\0' * (-len(data) % 64) + mask
+            e['flags'] = e.get('flags', 0) | CHANGE_MASK_FLAG
+            masks += len(e['data']) - len(data)
+        if 'meter' in reads:
+            e['flags'] = e.get('flags', 0) | CPU_READS_FLAG
+            meters += len(e['data'])
+    averages = []
+    for e in entries:
+        if e['psm'] in (4, 5):
+            r, g, b = runtime_average(e)
+            averages.append(0xFF000000 | (b << 16) | (g << 8) | r)
+        else:
+            averages.append(0)
+    print('runtime reads: %d change masks (+%d KB), %d meter maps kept in RAM (%d KB), averages for %d of %d textures'
+          % (sum(1 for e in entries if e.get('flags', 0) & CHANGE_MASK_FLAG), masks // 1024,
+             sum(1 for e in entries if e.get('flags', 0) & CPU_READS_FLAG), meters // 1024,
+             sum(1 for v in averages if v), len(entries)), file=sys.stderr)
+    return struct.pack('<4sI', b'TAV1', len(averages)) + struct.pack('<%dI' % len(averages), *averages)
 
 
 def main():
@@ -2375,21 +2416,18 @@ def main():
         face, edge = tints[key][2].angle
         print('  tints by angle for %s: face on %08x, edge on %08x' % (
             names[key & ~3], seethrough.abgr(face), seethrough.abgr(edge)), file=sys.stderr)
-    tint_bytes = b''
-    if tints or drawn or composites:
-        tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
-            struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
-        if drawn or angled or composites:
-            tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
-                struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
-                            drawn[address].alt.word()) for address in sorted(drawn))
-        if angled or composites:
-            tint_bytes += struct.pack('<4sI', b'TNA1', len(angled)) + b''.join(
-                struct.pack('<III', key, seethrough.abgr(tints[key][2].angle[0]),
-                            seethrough.abgr(tints[key][2].angle[1])) for key in angled)
-        if composites:
-            tint_bytes += struct.pack('<4sI', b'TNC1', len(composites)) + b''.join(
-                struct.pack('<II', address, composites[address]) for address in sorted(composites))
+    # every table is written, empty or not, so the averages can follow them
+    tint_bytes = struct.pack('<4sI', b'TNT1', len(tints)) + b''.join(
+        struct.pack('<II', key, tints[key][0]) for key in sorted(tints))
+    tint_bytes += struct.pack('<4sI', b'TND1', len(drawn)) + b''.join(
+        struct.pack('<III', address | drawn[address].alt.flags(), drawn[address].drawn,
+                    drawn[address].alt.word()) for address in sorted(drawn))
+    tint_bytes += struct.pack('<4sI', b'TNA1', len(angled)) + b''.join(
+        struct.pack('<III', key, seethrough.abgr(tints[key][2].angle[0]),
+                    seethrough.abgr(tints[key][2].angle[1])) for key in angled)
+    tint_bytes += struct.pack('<4sI', b'TNC1', len(composites)) + b''.join(
+        struct.pack('<II', address, composites[address]) for address in sorted(composites))
+    tint_bytes += runtime_reads(entries)
     header = 12
     directory = 20 * len(entries)
     offset = (header + directory + len(tint_bytes) + 15) // 16 * 16
@@ -2407,7 +2445,6 @@ def main():
                 blob += b'\0'
         dir_bytes += struct.pack('<IHHBBBBII', e['key'], e['w'], e['h'], e['levels'], e['psm'], e['clut'],
                                  (1 if e['alpha'] else 0) | e.get('flags', 0), start, len(e['data']))
-    b25_sizing(entries)
     out = bytearray(struct.pack('<4sII', b'PTX1', len(entries), directory)) + dir_bytes + tint_bytes
     while len(out) < offset:
         out += b'\0'
