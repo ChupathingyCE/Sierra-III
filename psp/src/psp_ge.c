@@ -1040,7 +1040,9 @@ static int defer_model_multipurpose(unsigned int multipurpose_key, unsigned int 
 
 static int defer_model_reflection(unsigned int cube_key, float const *rgb)
 {
-	defer_word *at = defer_take(DEFER_MODEL_REFLECTION, 1 + 4);
+	/* the key, then the copy's flag and its 4 floats: the tint and which of
+	Chief's parts it is */
+	defer_word *at = defer_take(DEFER_MODEL_REFLECTION, 1 + 1 + 4);
 
 	at[0].u = cube_key;
 	defer_copy(at + 1, rgb, 4);
