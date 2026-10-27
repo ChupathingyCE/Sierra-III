@@ -2259,7 +2259,7 @@ where the pin above is never set, and the HUD records come last, after the
 ceiling below has stopped marking: under a full texture cache the meters
 and the sensor were drawn untextured or not at all while the log's HUD line
 (main-CPU binds only) said none were missing (GROUNDTEX's test bakes,
-groundtex1/2, 2026-10-26: b30's HUD quads -10%, c20's nearly all). Here, on
+groundtex1/2: b30's HUD quads -10%, c20's nearly all). Here, on
 the main CPU as the record is written, they're pinned as a main-CPU bind
 pins them, read past the frame's budget, and marked past the ceiling (the
 HUD's set is small) */

@@ -20130,7 +20130,7 @@ four, again and again (four levels at most) where it can reach the light,
 and each piece lit at its own corners. Keep word "nolightsplit": as before */
 static int light_split_on = -1;
 
-/* B7, a restoration (Sheepdog01 2026-10-26: on by default whatever it costs): a
+/* B7, a restoration, on by default whatever it costs (Sheepdog01's call): a
 spotlight's pool drawn with the surface's own texture, as the point lights
 are, its cone worked out per corner. With one texture a pass the projected
 cone took the texture's slot and the surface came in as its average colour
