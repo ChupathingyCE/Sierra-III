@@ -14988,7 +14988,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 			env_unbound++;
 		sceGuTexScale(model_u_scale * (u_scale != 0.0f ? u_scale : 1.0f), model_v_scale * (v_scale != 0.0f ? v_scale : 1.0f));
 	}
-	if (textured && model_detail_key && psp_showcase_map && model_camouflage <= 0.0f && !in_sky)
+	if (textured && model_detail_key && model_camouflage <= 0.0f && !in_sky)
 		model_detail_pass(vertices, indices, index_count, strip, skin, &model);
 	if (model_camouflage > 0.0f)
 	{

@@ -1058,6 +1058,9 @@ DETAIL_CLASSES = {
     'weapons': lambda tag: tag.startswith('weapons\\') and '\\fp\\' not in tag,
     'vehicles': lambda tag: tag.startswith('vehicles\\'),
     'characters': lambda tag: tag.startswith('characters\\') and '\\fp\\' not in tag,
+    # Chief, a centerpiece as the main menu's ring is (Sheepdog01, 2026-10-27): his
+    # armour, visor and first-person hands at their own size
+    'chief': lambda tag: tag.startswith('characters\\cyborg\\'),
 }
 FULL_DETAIL = set()
 
