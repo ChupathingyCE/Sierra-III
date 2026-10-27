@@ -13118,8 +13118,9 @@ static int reflection_strength(float *rgb)
 	if (reflection_off > 0 || reflection_rgb[0] + reflection_rgb[1] + reflection_rgb[2] <= 0.004f)
 		return 0;
 	/* a part without a multipurpose map reflects over its whole surface (a
-	visor, glass) */
-	if (!change_key)
+	visor, glass), and so does Chief's visor: its multipurpose map's average
+	isn't its reflection mask (the pack keeps the map for its change colour) */
+	if (!change_key || reflection_chief == 1)
 		mask = 1.0f;
 	else if (psp_tex_average_known(change_key, &mask_abgr))
 		mask = (float)(mask_abgr & 0xFF) * (1.0f / 255.0f);
@@ -14982,6 +14983,14 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	}
 	if (env)
 	{
+		static int visor_logged = 0;
+
+		if (reflection_chief == 1 && !visor_logged && !PSP_ME_WORK())
+		{
+			visor_logged = 1;
+			platform_log("GE: chiefvisor: the visor's pass at strength %.2f %.2f %.2f x gain %d%%, %.0f pixels across",
+				shine[0], shine[1], shine[2], chief_visor_gain, model_pixels);
+		}
 		if (reflection_env_pass(vertices, indices, index_count, strip, skin, &model, shine))
 			env_passes++;
 		else
