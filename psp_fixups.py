@@ -30601,7 +30601,7 @@ static struct psp_points_word psp_points_main_word;
 /* the ME's: the lowest index it has made, all above it made too */
 static struct psp_points_word psp_points_me_word;
 
-static int psp_points_on = -1, psp_points_check = 0, psp_points_min = 8;
+static int psp_points_on = -1, psp_points_check = 0, psp_points_min = 8, psp_points_slow_lines = 0, psp_points_clock_here = 0, psp_points_failed_lines = 0;
 static struct psp_point_input *psp_point_inputs; /* the list as it is made: PSP_POINTS_MAX, kept circular */
 static struct psp_point_answer *psp_point_answers;
 static unsigned char *psp_point_slots[2]; /* by kind, a slot's list index + 1, 0 none */
@@ -30613,7 +30613,42 @@ static struct
 {
 	unsigned long frames, jobs, listed, handed, taken, here, changed, unserved, compared, differed, refused, failed;
 	unsigned long me_made;
+	unsigned long slowest_us, slowest_kind, slowest_slot;
+	real longest_reach;
 } psp_points_stats;
+
+/* B31: a points job that held the ME past an audio block's 40 ms deadline
+stopped the ME for the session (sierra-hw 40447700908, 40529047236,
+40530552701). On the PSP a point takes at most ~80 us on the ME (sierra-hw
+40555717812), so such a job was stuck, not slow: the job reports its slowest
+point and the failed job's point is logged, to catch it */
+static inline int psp_on_me(void)
+{
+	unsigned int sp;
+
+	__asm__ ("move %0, $sp" : "=r"(sp));
+	return (sp & 0x1FFFFFFFu) < 0x01000000u;
+}
+
+/* "mepointsclock" (the emulator): the simulated ME's points timed by the
+main CPU's clock, a system call inside the ME's work that gemesim's check
+would report, so only on asking */
+#define PSP_POINTS_CLOCK_HERE 0x40000u
+
+/* a point's time, for the slowest point's line: on the ME its cycle counter
+(which faults on the main CPU in user mode); elsewhere microseconds times
+333 with PSP_POINTS_CLOCK_HERE, else 0 */
+static inline unsigned int psp_points_clock(int on_me)
+{
+	unsigned int count;
+
+	if (on_me > 0)
+	{
+		__asm__ __volatile__("mfc0 %0, $9" : "=r"(count));
+		return count;
+	}
+	return on_me < 0 ? (unsigned int)psp_microseconds() * 333u : 0u;
+}
 
 /* point_physics_update as the ME runs it: the same arithmetic in the same
 order, with the collision rays through psp_collision_test_vector_points.
@@ -30761,7 +30796,10 @@ static long psp_point_physics_quiet(
 /* on the Media Engine (psp_me.c's ring, ME_JOB_POINTS): the list from its
 back, until the main CPU's word says it has got there. Writes only its
 answers' lines and its own word. args: the list, the answers, the count, the
-generation, the main CPU's FPU control, the two words */
+generation (PSP_POINTS_CLOCK_HERE above it), the main CPU's FPU control, the two
+words. results: made, left to the main CPU, the slowest point's time (about
+us, on the ME only) and its index, the index of the point with the longest
+first ray and that ray's length squared (a float's bits) */
 __attribute__((optimize("no-tree-loop-distribute-patterns")))
 void psp_points_me_make(const unsigned int *args, unsigned int *results)
 {
@@ -30770,7 +30808,10 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 	unsigned long count = args[2], generation = args[3] & 0xFFFFu, made = 0, unserved = 0;
 	struct psp_points_word *main_word = (struct psp_points_word *)args[5];
 	struct psp_points_word *me_word = (struct psp_points_word *)args[6];
-	unsigned int control;
+	int on_me = psp_on_me();
+	int clock = on_me ? 1 : (args[3] & PSP_POINTS_CLOCK_HERE) ? -1 : 0;
+	unsigned int control, slowest = 0, slowest_k = 0, longest_k = 0;
+	real longest = 0.0f;
 	long k;
 
 	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
@@ -30791,8 +30832,25 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 		location.bonus = 0;
 		answer->position = in->position;
 		answer->velocity = in->velocity;
-		answer->result = psp_point_physics_quiet(in->definition, &location, &answer->position, &answer->velocity,
-			&answer->normal, &answer->material_type, &answer->collided, in->radius, in->dt);
+		{
+			real reach = (in->velocity.i * in->velocity.i + in->velocity.j * in->velocity.j +
+				in->velocity.k * in->velocity.k) * in->dt * in->dt;
+			unsigned int start = psp_points_clock(clock), took;
+
+			answer->result = psp_point_physics_quiet(in->definition, &location, &answer->position, &answer->velocity,
+				&answer->normal, &answer->material_type, &answer->collided, in->radius, in->dt);
+			took = psp_points_clock(clock) - start;
+			if (took > slowest)
+			{
+				slowest = took;
+				slowest_k = (unsigned int)k;
+			}
+			if (reach > longest)
+			{
+				longest = reach;
+				longest_k = (unsigned int)k;
+			}
+		}
 		answer->leaf_index = location.leaf_index;
 		answer->cluster_index = location.cluster_index;
 		if (answer->result < 0)
@@ -30807,6 +30865,15 @@ void psp_points_me_make(const unsigned int *args, unsigned int *results)
 	__asm__ __volatile__("ctc1 %0, $31" : : "r"(control));
 	results[0] = made;
 	results[1] = unserved;
+	results[2] = slowest / 333u;
+	results[3] = slowest_k;
+	results[4] = longest_k;
+	{
+		union { real value; unsigned int bits; } bits;
+
+		bits.value = longest;
+		results[5] = bits.bits;
+	}
 }
 
 /* 1: listing for this frame. The storage on first use; off for good if
@@ -30818,6 +30885,7 @@ int psp_points_begin(void)
 		psp_points_on = !psp_keep("nomepoints");
 		psp_points_check = psp_keep("mepointscheck");
 		psp_points_min = psp_keep_number("mepointsmin", 8);
+		psp_points_clock_here = psp_keep("mepointsclock");
 		if (psp_points_on)
 		{
 			psp_point_inputs = (struct psp_point_input *)memalign(64, PSP_POINTS_MAX * sizeof(struct psp_point_input));
@@ -30916,7 +30984,8 @@ void psp_points_hand_over(void)
 	PSP_POINTS_UNCACHED(&psp_points_main_word) = psp_points_cursor;
 	__asm__ __volatile__("sync");
 	if (psp_me_push_points(psp_point_inputs, (unsigned int)count, psp_point_answers,
-		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation, &psp_points_main_word,
+		(unsigned int)count * sizeof(struct psp_point_answer), psp_points_generation |
+		(psp_points_clock_here ? PSP_POINTS_CLOCK_HERE : 0u), &psp_points_main_word,
 		&psp_points_me_word, &psp_points_ticket))
 	{
 		psp_points_out = 1;
@@ -31149,6 +31218,40 @@ unsigned long psp_point_physics(
 		translational_velocity, translational_force, collision_normal, collision_material_type, radius, dt);
 }
 
+/* B31: a job's slowest point on the ME and its longest first ray, kept for
+the stats line; a point slow enough to hold the ME past an audio block's
+deadline, or (on either CPU) one whose first ray is over 10 world units, is
+logged with what it was given */
+static void psp_points_note_slowest(unsigned int const *results)
+{
+	unsigned int us = results[2], slow_k = results[3], long_k = results[4];
+	union { unsigned int bits; real value; } reach;
+	struct psp_point_input const *in = NULL;
+
+	reach.bits = results[5];
+	if (slow_k < (unsigned int)psp_points_count && us > psp_points_stats.slowest_us)
+	{
+		psp_points_stats.slowest_us = us;
+		psp_points_stats.slowest_kind = (unsigned long)psp_point_inputs[slow_k].kind;
+		psp_points_stats.slowest_slot = (unsigned long)psp_point_inputs[slow_k].slot;
+	}
+	if (long_k < (unsigned int)psp_points_count && reach.value > psp_points_stats.longest_reach)
+		psp_points_stats.longest_reach = reach.value;
+	if (us >= 5000u && slow_k < (unsigned int)psp_points_count)
+		in = &psp_point_inputs[slow_k];
+	else if (reach.value > 100.0f && long_k < (unsigned int)psp_points_count)
+		in = &psp_point_inputs[long_k];
+	if (in && psp_points_slow_lines < 12)
+	{
+		psp_points_slow_lines++;
+		platform_psp_log("mepoints: a point %s (the job's slowest about %u us, its longest first ray %.2f world units): "
+			"kind %d slot %ld definition %p leaf %ld cluster %d position %.3f %.3f %.3f velocity %.3f %.3f %.3f radius %.4f dt %.4f",
+			us >= 5000u ? "slow" : "with a long ray", us, sqrt(reach.value), in->kind, in->slot,
+			(void const *)in->definition, in->leaf_index, in->cluster_index, in->position.x, in->position.y,
+			in->position.z, in->velocity.i, in->velocity.j, in->velocity.k, in->radius, in->dt);
+	}
+}
+
 /* the frame's points done: the ME stopped and its job collected, so the
 list may be written again */
 void psp_points_end(void)
@@ -31162,7 +31265,37 @@ void psp_points_end(void)
 		PSP_POINTS_UNCACHED(&psp_points_main_word) = ((unsigned long)psp_points_generation << 16) | 0xFFFFu;
 		__asm__ __volatile__("sync");
 		if (psp_me_wait(psp_points_ticket, results))
+		{
 			psp_points_stats.me_made += results[0];
+			if (results[0])
+				psp_points_note_slowest(results);
+		}
+		else if (psp_points_failed_lines < 4)
+		{
+			/* B31: the point the ME was on when the job failed (the one below
+			the last it made), with what it was given: replayed in the
+			emulator, it says whether that point is slow or the ME faulted */
+			unsigned long made = PSP_POINTS_UNCACHED(&psp_points_me_word);
+			long k = (made >> 16) == psp_points_generation ? (long)(made & 0xFFFFu) - 1 : psp_points_count - 1;
+
+			psp_points_failed_lines++;
+			psp_points_stats.failed++;
+			if (k >= 0 && k < psp_points_count)
+			{
+				struct psp_point_input const *in = &psp_point_inputs[k];
+
+				platform_psp_log("mepoints: the job failed %s point %ld of %d (the ME's word %08lx): kind %d slot %ld definition %p "
+					"leaf %ld cluster %d position %08lx %08lx %08lx velocity %08lx %08lx %08lx radius %08lx dt %08lx",
+					(made >> 16) == psp_points_generation ? "at" : "with none made, not begun or on its first,", k,
+					psp_points_count, made, in->kind, in->slot, (void const *)in->definition, in->leaf_index, in->cluster_index,
+					PSP_POINTS_BITS(in->position.x), PSP_POINTS_BITS(in->position.y), PSP_POINTS_BITS(in->position.z),
+					PSP_POINTS_BITS(in->velocity.i), PSP_POINTS_BITS(in->velocity.j), PSP_POINTS_BITS(in->velocity.k),
+					PSP_POINTS_BITS(in->radius), PSP_POINTS_BITS(in->dt));
+			}
+			else
+				platform_psp_log("mepoints: the job failed before its first point (the ME's word %08lx, %d points)", made,
+					psp_points_count);
+		}
 		else
 			psp_points_stats.failed++;
 		psp_points_out = 0;
@@ -31184,11 +31317,13 @@ void psp_points_end(void)
 			mark = now;
 			platform_psp_log("mepoints: over %lu frames, %lu points listed a frame; %lu hand-overs (%lu refused, %lu failed) of %lu points: "
 				"the ME made %lu, the loops took %lu of them, made %lu here first, %lu changed since listed, %lu left to this CPU; "
-				"checked %lu, %lu differed",
+				"checked %lu, %lu differed; the slowest point the ME made about %lu us (kind %lu slot %lu), the longest first ray "
+				"%.2f world units",
 				psp_points_stats.frames, psp_points_stats.listed / frames, psp_points_stats.jobs, psp_points_stats.refused,
 				psp_points_stats.failed, psp_points_stats.handed, psp_points_stats.me_made, psp_points_stats.taken,
 				psp_points_stats.here, psp_points_stats.changed, psp_points_stats.unserved, psp_points_stats.compared,
-				psp_points_stats.differed);
+				psp_points_stats.differed, psp_points_stats.slowest_us, psp_points_stats.slowest_kind,
+				psp_points_stats.slowest_slot, sqrt(psp_points_stats.longest_reach));
 			memset(&psp_points_stats, 0, sizeof(psp_points_stats));
 		}
 	}
