@@ -26740,6 +26740,25 @@ static int psp_visrect_apart(struct portal_hull const *a, struct portal_hull con
 # outside the assert, so compiling the checks out leaves it; with asserts kept
 # nothing changes (assertsoff1 40460818822, api-job 40473519163).
 FIXES_ASSERTSEVAL = {}
+FIXES_ASSERTSEVAL["source/cseries/cseries.h#evaluated"] = [
+("""#else
+/* an assert whose expression the game needs done (see above) */
+#define match_assert_evaluated(file, line, expr) match_assert(file, line, expr)
+#define match_vassert_evaluated(file, line, expr, string) match_vassert(file, line, expr, string)
+#endif""",
+"""#elif defined(PSP_ASSERTS_OFF)
+/* psp_fixups.py (FIXES_ASSERTSEVAL): with the fatal asserts compiled out
+(PSP_ASSERTS_OFF), an assert whose expression the game needs done is still
+done, unchecked: path_obstacle_avoidance.c's heap_insert (assertsoff5
+40490801164: only ai/'s asserts off parted b30 at tick 82) */
+#define match_assert_evaluated(file, line, expr) { (void)(expr); }
+#define match_vassert_evaluated(file, line, expr, string) { (void)(expr); }
+#else
+/* an assert whose expression the game needs done (see above) */
+#define match_assert_evaluated(file, line, expr) match_assert(file, line, expr)
+#define match_vassert_evaluated(file, line, expr, string) match_vassert(file, line, expr, string)
+#endif"""),
+]
 FIXES_ASSERTSEVAL["source/sound/sound_manager.c#loaded"] = [snd_eval("0x79A"), snd_eval("0x9DA")]
 # The frame data checks ask the animation cache for the frame again
 # (psp_anim.c keeps the last few ranges it hands out), and with asserts
