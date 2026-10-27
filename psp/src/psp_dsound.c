@@ -1744,12 +1744,16 @@ int psp_audio_setting(int set, int value)
 the same voices, the outputs and the voices after compared; the block plays
 MEMIX's. On the main CPU only (the check keeps the block off the ME), and
 only for blocks of up to CHECK_VOICES voices */
-#define CHECK_VOICES 32
+#define CHECK_VOICES 64
 static int memix_check = 0;
 static unsigned char *check_copies;
 static short check_output[MIX_FRAMES * OUTPUT_CHANNELS];
 static unsigned long check_blocks = 0, check_skipped = 0, check_output_differed = 0, check_state_differed = 0,
 	check_first_differed = 0;
+/* which of MEMIX's paths the checked voice blocks took: a check that never
+reached a path says nothing about it */
+static unsigned long check_mono = 0, check_stereo = 0, check_pcm = 0, check_filtered = 0, check_stepped = 0,
+	check_stepped_adpcm = 0;
 
 static unsigned long mix_checked(struct psp_stream **list, unsigned long count, int *sums, short *output,
 	unsigned long frames, unsigned long *clipped)
@@ -1764,8 +1768,20 @@ static unsigned long mix_checked(struct psp_stream **list, unsigned long count, 
 	}
 	for (k = 0; k < count; k++)
 	{
-		memcpy(before + k * STREAM_BYTES, list[k], sizeof(struct psp_stream));
+		const struct psp_stream *voice = list[k];
+
+		memcpy(before + k * STREAM_BYTES, voice, sizeof(struct psp_stream));
 		list[k]->memix_old = 1;
+		if (voice->channels == 1 && voice->lowpass_left == voice->lowpass_right)
+			check_mono++;
+		else
+			check_stereo++;
+		check_pcm += !voice->adpcm;
+		check_filtered += voice->lowpass_coefficient < GAIN_ONE;
+		/* a pitch other than the output's interpolates; in ADPCM it reads
+		across each 64-frame block's end into the other buffer */
+		check_stepped += voice->step != 0x10000;
+		check_stepped_adpcm += voice->step != 0x10000 && voice->adpcm;
 	}
 	voices_old = psp_dsound_mix_list((void *const *)list, count, sums, check_output, frames, &clipped_old);
 	for (k = 0; k < count; k++)
@@ -2099,8 +2115,12 @@ void psp_audio_report(void)
 			me_blocks, me_wanted ? "ME" : "main CPU", me_blocks ? me_wait_us / me_blocks : 0, me_wait_worst_us, me_failures,
 			me_overflows, ranges_blocks);
 	if (memix_check)
+	{
 		platform_log("audio: memixcheck: %lu blocks mixed both ways (%lu with more than %d voices not checked): outputs differed in %lu, the voices after in %lu (first at block %lu)",
 			check_blocks, check_skipped, CHECK_VOICES, check_output_differed, check_state_differed, check_first_differed);
+		platform_log("audio: memixcheck: voice blocks by path: mono %lu, stereo or unequal filters %lu, PCM %lu, filtered %lu, interpolated %lu (ADPCM, across block ends: %lu)",
+			check_mono, check_stereo, check_pcm, check_filtered, check_stepped, check_stepped_adpcm);
+	}
 	platform_log("audio: of %lu voice blocks, muffled %lu, pitch moved by Doppler %lu, quieter outside a cone %lu%s",
 		fx_prepared, fx_muffled, fx_shifted, fx_coned, audio_old > 0 ? " (audioold: all off)" : "");
 	platform_log("audio: the game waited for the mixer's lock %lu times, %lu us in all, %lu at most; voices that ran dry and were then fed more (a gap heard) %lu, %lu ms of silence in all, the longest %lu ms",
