@@ -410,6 +410,12 @@ def cold_code(rel):
 # than folding them into their caller. Slower; never for play
 NOINLINE_UNITS = [w for w in os.environ.get("PSP_NOINLINE", "").split(",") if w]
 
+# PSP_ASSERTS_OFF_UNITS=ai/,objects/ (recon only): the units whose path
+# contains one of these words are compiled with PSP_ASSERTS_OFF (the fatal
+# asserts compiled out, unevaluated), the rest as usual: a bisection for the
+# assert whose expression does the game's work (X10, assertsoff1-4)
+ASSERTS_OFF_UNITS = [w for w in os.environ.get("PSP_ASSERTS_OFF_UNITS", "").split(",") if w]
+
 def compile_one(item):
     src, flags, extra = item
     rel = os.path.relpath(src, HERE) if src.startswith("/") else src
@@ -420,6 +426,8 @@ def compile_one(item):
         extra = extra + pgo_flags(rel)
     if any(word in rel for word in NOINLINE_UNITS):
         extra = extra + ["-fno-inline", "-fno-inline-small-functions", "-fno-inline-functions-called-once"]
+    if any(word in rel for word in ASSERTS_OFF_UNITS):
+        extra = extra + ["-DPSP_ASSERTS_OFF=1"]
     os.makedirs(os.path.dirname(obj), exist_ok=True)
     defines = ["-Dmain=halo_main"] if src.endswith("shell/shell_xbox.c") else []
     if src.endswith("psp_bakecheck.c"):
