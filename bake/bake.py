@@ -145,7 +145,9 @@ MULTIPLAYER_TAG_SPACE = '0x600000'
 # maps from the bundle before it wrongly: a pack's layout, Invader's flags or
 # tag space, or anything a release says needs a re-bake. Builds that read the
 # same format share a bake.
-BAKE_FORMAT = 2  # 2: texture packs carry the change masks, the meters' RAM flag and the averages (design_b25_bake.md)
+# 2 (b144): texture packs carry the change masks, the meters' RAM flag and
+# the averages (docs/design_b25_bake.md)
+BAKE_FORMAT = 2
 
 
 # maps bake side by side (--jobs): one line at a time, whole
