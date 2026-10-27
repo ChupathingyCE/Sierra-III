@@ -2254,6 +2254,9 @@ there, before the frame's own records, last frame's textures may give way
 the frame's own set filled both caches, and the meters still went) */
 #define HUD_PIN_LIST 96
 static PSP_MAIN_SIDE int hud_pin_list[HUD_PIN_LIST], hud_pin_count = 0;
+/* the frame each was last asked for: a texture refused room never gets a
+drawn frame (last_frame), so that can't say it's still wanted */
+static PSP_MAIN_SIDE unsigned int hud_pin_asked[HUD_PIN_LIST];
 static PSP_MAIN_SIDE unsigned long hud_frame_start_loads = 0, hud_frame_start_refused = 0;
 
 static void hud_pin_list_forget(void)
@@ -2276,7 +2279,7 @@ static void hud_read_back(void)
 	{
 		int index = hud_pin_list[k];
 
-		if (resident_at[index] || last_frame[index] + RECENT_FRAMES <= frame)
+		if (resident_at[index] || hud_pin_asked[k] + RECENT_FRAMES <= frame)
 			continue;
 		if (load(index))
 			hud_frame_start_loads++;
@@ -2327,9 +2330,17 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 	pretouch_calls++;
 	if (hud && hud_pinned)
 	{
+		int k;
+
 		if (!hud_pinned[index] && hud_pin_count < HUD_PIN_LIST)
 			hud_pin_list[hud_pin_count++] = index;
 		hud_pinned[index] = 1;
+		for (k = 0; k < hud_pin_count; k++)
+			if (hud_pin_list[k] == index)
+			{
+				hud_pin_asked[k] = frame;
+				break;
+			}
 	}
 	if (resident_at[index] && last_frame[index] == frame)
 		return; /* marked already, by a bind or another kind */
