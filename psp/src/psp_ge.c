@@ -12181,6 +12181,9 @@ int psp_tex_palette(unsigned int key, const unsigned int **palette, int *count);
 int psp_tex_palette16(unsigned int key, const unsigned short **palette, int *count);
 static unsigned int change_key = 0, change_color = 0xFFFFFFFF, glow_color = 0, glow_key = 0;
 static unsigned long change_passes = 0, glow_passes = 0, glow_mapped = 0;
+/* change passes left out because the multipurpose map wasn't resident when
+the pass ran (its part drawn without the change colour that frame) */
+static unsigned long change_unbound = 0;
 static int in_sky;
 
 struct skin_part;
@@ -13192,7 +13195,10 @@ static int change_pass(void *vertices, const unsigned short *indices, long index
 	the reflection mask, green self-illumination, blue the change colour,
 	alpha the detail mask. Gearbox's PC release reordered them */
 	if (!psp_tex_bind(change_key, NULL) || !(mask = psp_tex_change_mask(change_key, &count)))
+	{
+		change_unbound++;
 		return 0;
+	}
 	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
 	sceGuClutLoad(count / 8, mask);
 	/* white toward the colour by the mask */
@@ -23490,8 +23496,8 @@ static void frame_end_show(void)
 				copy_reserve_refused, heap_reserve_refused, arena_compactions, arena_moved_kb, arena_migrated);
 			carve_report();
 		}
-		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu, self-illumination %lu (%lu with glow maps, %lu clamped, %lu without a glow map: unlit); meter palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
-			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, glow_passes, glow_mapped, glow_clamped, glow_unmapped, meter_worked, meter_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
+		platform_log("GE: widget sprites %lu (%lu begun, %lu untextured; %lu of %lu flare answers clear, %lu rays cast, %lu answers kept); change colour passes %lu (%lu left out, the map not resident), self-illumination %lu (%lu with glow maps, %lu clamped, %lu without a glow map: unlit); meter palettes %lu worked out, %lu reused; HUD quads %lu us a frame (with the see-through flush inside), characters %lu (picture changed %lu times)",
+			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, change_unbound, glow_passes, glow_mapped, glow_clamped, glow_unmapped, meter_worked, meter_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
 		if (PSP_DITHERSHIFT && dither_shift > 0)
