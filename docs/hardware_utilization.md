@@ -72,9 +72,48 @@ VFPU forms:
 3. **The one VFPU job isn't bit-exact today.** `matrix4x3_multiply` runs on `vmmul` and is switched on by a tolerance check (`psp/src/psp_vfpu.c`: `worst < 1e-5f`; lab levers.tsv calls it "last-bit different"). So `vmmul`'s accumulation order already differs from the FPU's somewhere. Measuring `vdot`/`vmmul` against the FPU (the brief's first open question) decides the D rows. Whether node matrices reach multiplayer's shared state is item 6 (api-job hwmpbound1).
 4. **Not settled:** the alignment of tag data (collision planes, portals, keyframes; a map-level check of block offsets mod 16 would settle it); `objects_update`, `effect_update` and `structure_visibility_*`'s inlined float work.
 
-## 4-5. To come
+## 4. The memory side (from the lab's findings; no new runs)
 
-- 4: the memory side.
+**Instruction misses outnumber data misses** [M]. Per million cycles, the intros show 3,456-4,916 I-misses against 2,470-3,121 D-misses (`cpu_cycles_by_kind`), about 1.2-1.8x. On a10 the tick alone has 5,035 against 2,814 (w139). Code size and layout is the largest single memory lever. It is already being worked (the `tgc` layouts, `tick_imiss_by_layout`). Denser code helps it, the VFPU's included.
+
+**Where the data misses come from** [E] (cache model, lm1 39895433740; b30, a30, c20, d20):
+
+| Source | Share of data misses |
+|---|---|
+| The tag window (tag data, mostly the collision BSPs and their planes) | 28-37% |
+| The collision walks' own state | 15-30% |
+| The object pool | 12-14% |
+| Thread stacks | 9-10% |
+| Node matrices and animation | 5-6% |
+| Spheres and cluster references | 3-4% |
+
+Collision is about half of it, which matches section 3: the tick's hottest float work is a memory walk, not maths.
+
+**The scratchpad** (16 KB, as fast as a cache hit, off the bus) [M, w142 tm-plain log]: 15,104 of 16,384 bytes used:
+- the models' near-cut corner table (8,448 B, drawing);
+- the profiler's slots (6,144 B) and front table (512 B).
+
+The split was set at build 108 by the cache model's misses per byte (`psp_scratch.c`, `overnight_b108.md`). The tick's top miss sources today (tag window, collision) get none of it. The feasibility notes' lever (the top of each BSP in the scratchpad) was never built. **Lead:**
+- re-rank the 16 KB by misses per byte on w142's cache map;
+- price the winner with a PSP pair, never the cache model (the lab's cache rule; `noscratch` is the off switch);
+- ask whether the profiler's 6.6 KB belongs there in play builds.
+
+**The ME's eDRAM** (lab `psp/sierra/findings/edram.md`):
+- About 1,664 KB is claimable.
+- The main CPU can't load from it; only the ME or DMA can. So it is the ME's memory, and it matters to placement: an ME job's tables can live there.
+- The two big claims exclude each other: CPA, the checkpoint (1,089 KB), and R2, the sound cache (1,664 KB; rejected on the PSP as built).
+
+**The bus: the GE's traffic is what costs the tick** [M]:
+- When the ME and the main CPU both walked RAM, neither slowed (mewalk).
+- The ME's loads cost the tick 1.4-6.7% (`tick_change_me_busload`, PSP-1000).
+- When the GE pulled from main RAM under M6 #2, 77-94% of the tick's rise was contention: each miss stalled longer (`contention_tick_ms`, PSP-3000). With textures resident in VRAM (mevram) it fell to 55-76% of a smaller rise.
+- That answers the brief's open question: the ME's traffic is cheap; the GE's main-RAM reads are what the tick pays for. So data the GE reads belongs in VRAM first.
+- DMA's own share of the bus budget is about 1 [D] (`bus_budget`).
+
+**VRAM:** the plan lives on the dashboard (`vram_plan`), which this session can't open. To be read through the master.
+
+## 5. To come
+
 - 5: the placement map.
 
 ## 6. The multiplayer boundary (api-job hwmpbound1 40731381973, read and spot-checked)
