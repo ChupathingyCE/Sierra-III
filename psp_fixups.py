@@ -36259,9 +36259,11 @@ void render_objects("""),
 # can't change. The walk's other writes the tick sees go the same way: which
 # render state an object's lighting is cached in (the datum's
 # cached_render_state_index, which the sleep checksum sums) is kept in an
-# array of the walk's own, and the decals' fade and their vertex cache's
-# clock move from the frame's start into game_frame, beside the particles'
-# update, so the drawing only reads them. "walkwrites"
+# array of the walk's own (the wake a new one gives a sleeper kept for the
+# frame's end), the particles it draws or drops are noted apart and handed
+# over at the frame's end, and the decals' fade and their vertex cache's clock
+# move from the frame's start into game_frame, beside the particles' update,
+# so the drawing only reads them. "walkwrites"
 # (a test): which game state words the frame writes at all, from a hash of
 # every 64-byte block before and after render_frame.
 FIXES_WALKAPART = {}
@@ -36463,6 +36465,13 @@ FIXES_WALKAPART["source/render/render.c#walkapart"] = [
 	rasterizer_frame_end();
 #ifdef HALO_PSP
 	psp_walk_side = 0;
+	{
+		void psp_walk_particles_frame_end(void); /* particles.c (walkapart) */
+		void psp_walk_render_states_frame_end(void); /* render_objects.c (walkapart) */
+
+		psp_walk_particles_frame_end();
+		psp_walk_render_states_frame_end();
+	}
 	psp_walk_writes(1);
 	{
 		void psp_mevis_frame_end(void); /* structure_visibility.c (mevis) */
@@ -36537,6 +36546,23 @@ datum alone. An entry is trusted only while its state still names the object,
 as the datum's field is, so one left from a reset object or an evicted state
 is passed over. */
 static long psp_walk_render_states[MAXIMUM_OBJECTS_PER_MAP];
+
+/* A new render state wakes its sleeping object (FIXES_WAKE), as the datum's
+changed field would; with walkapart the wakes are kept for the frame's end,
+where the tick's side applies them before its next sleep check. */
+static long psp_walk_wakes[256];
+static short psp_walk_wakes_count = 0;
+
+void psp_walk_render_states_frame_end(
+	void)
+{
+	void psp_wake(long object_index); /* psp_fixups.py (FIXES_WAKE) */
+	short index;
+
+	for (index = 0; index < psp_walk_wakes_count; index++)
+		psp_wake(psp_walk_wakes[index]);
+	psp_walk_wakes_count = 0;
+}
 #endif
 
 void render_objects_initialize_for_new_map(
@@ -36581,7 +36607,9 @@ void render_objects_initialize_for_new_map(
 ("""			psp_wake(object_index);
 		}
 """, """#ifdef HALO_PSP
-			if (!psp_state_of) /* the datum changes only without walkapart */
+			if (psp_state_of && psp_walk_wakes_count < NUMBEROF(psp_walk_wakes))
+				psp_walk_wakes[psp_walk_wakes_count++] = object_index;
+			else
 #endif
 			psp_wake(object_index);
 		}
@@ -36660,6 +36688,123 @@ FIXES_WALKAPART["source/game/game.c#walkapart"] = [
 	}
 #endif
 	collision_log_end_period();
+"""),
+]
+# the particles the drawing walk draws (the frame it last drew each, which
+# particles_update reads to drop the long unseen) and the ones it drops because
+# the object they hang off is gone: with walkapart, noted in bit sets of the
+# walk's own and handed to the particles at the frame's end. Nothing reads the
+# frame index or makes a particle between the walk and the frame's end, and
+# datum_new takes the first free slot whatever order the slots were freed in,
+# so the particles end each frame as before.
+FIXES_WALKAPART["source/effects/particles.c#walkapart"] = [
+("""void particle_delete(
+	long particle_index)
+{
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART) */
+static unsigned long psp_walk_particles_drawn[HALO_PORT_MAXIMUM_PARTICLES / 32];
+static unsigned long psp_walk_particles_dropped[HALO_PORT_MAXIMUM_PARTICLES / 32];
+static long psp_walk_particles_frame;
+static boolean psp_walk_particles_noted = FALSE;
+
+void psp_walk_particle_drawn(
+	long particle_index,
+	long frame_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(particle_index);
+
+	psp_walk_particles_drawn[absolute_index >> 5] |= 1UL << (absolute_index & 31);
+	psp_walk_particles_frame = frame_index;
+	psp_walk_particles_noted = TRUE;
+}
+
+void psp_walk_particle_dropped(
+	long particle_index)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(particle_index);
+
+	psp_walk_particles_dropped[absolute_index >> 5] |= 1UL << (absolute_index & 31);
+	psp_walk_particles_noted = TRUE;
+}
+
+/* render_frame's end, the tick's side again: what the walk noted, applied */
+void psp_walk_particles_frame_end(
+	void)
+{
+	long word_index;
+
+	if (!psp_walk_particles_noted || !particle_data || !particle_data->valid)
+		return;
+	psp_walk_particles_noted = FALSE;
+	for (word_index = 0; word_index < HALO_PORT_MAXIMUM_PARTICLES / 32; word_index++)
+	{
+		unsigned long drawn = psp_walk_particles_drawn[word_index];
+		unsigned long dropped = psp_walk_particles_dropped[word_index];
+
+		psp_walk_particles_drawn[word_index] = 0;
+		psp_walk_particles_dropped[word_index] = 0;
+		while (drawn | dropped)
+		{
+			long bit = __builtin_ctz(drawn | dropped);
+			long absolute_index = word_index * 32 + bit;
+			struct datum_header *header = (struct datum_header *)((byte *)xbox_pointer(particle_data->data) +
+				particle_data->size * absolute_index);
+
+			if (absolute_index < particle_data->maximum_count && header->identifier)
+			{
+				if (drawn & (1UL << bit))
+					((struct particle_datum *)header)->last_rendered_frame_index = psp_walk_particles_frame;
+				if (dropped & (1UL << bit))
+					datum_delete(particle_data, header->identifier << 16 | absolute_index);
+			}
+			drawn &= ~(1UL << bit);
+			dropped &= ~(1UL << bit);
+		}
+	}
+}
+#endif
+
+void particle_delete(
+	long particle_index)
+{
+"""),
+]
+FIXES_WALKAPART["source/render/render_particles.c#walkapart"] = [
+("""void render_particles(
+""", """#ifdef HALO_PSP
+int psp_walk_own_marks(void); /* objects.c (walkapart) */
+void psp_walk_particle_drawn(long particle_index, long frame_index); /* particles.c */
+void psp_walk_particle_dropped(long particle_index);
+#endif
+
+void render_particles(
+"""),
+("""								particle_delete(rendered_particle->particle_index);
+""", """#ifdef HALO_PSP
+								if (psp_walk_own_marks())
+									psp_walk_particle_dropped(rendered_particle->particle_index);
+								else
+#endif
+								particle_delete(rendered_particle->particle_index);
+"""),
+("""							/* January explicitly reasserts the detached sentinel here. */
+							particle->object_index = NONE;
+""", """							/* January explicitly reasserts the detached sentinel here. */
+#ifdef HALO_PSP
+							if (!psp_walk_own_marks()) /* it is NONE already: the branch's test */
+#endif
+							particle->object_index = NONE;
+"""),
+("""								particle->last_rendered_frame_index =
+									render.frame_index;
+""", """#ifdef HALO_PSP
+								if (psp_walk_own_marks())
+									psp_walk_particle_drawn(rendered_particle->particle_index, render.frame_index);
+								else
+#endif
+								particle->last_rendered_frame_index =
+									render.frame_index;
 """),
 ]
 FIXES_WALKAPART["source/saved games/game_state.c#walkwrites"] = [
