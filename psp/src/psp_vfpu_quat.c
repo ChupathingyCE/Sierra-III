@@ -11,15 +11,14 @@ product (psp_vfpu.c, keep word vfpupose). The same pattern as that product:
   is a last bit off); only the products, the blends and the matrix's sums
   pack into vector instructions;
 - the VFPU's own forms ("D": vdot.q for a sum, vrsq.s for 1/sqrt) are shorter
-  but round their own way; they're here for the bench only.
+  but round their own way (within 12 last bits on silicon).
 
 keep.txt "vfpuquatbench": both kinds against the engine's own functions at
 start-up, how many differ and by how much, and their time in a chain.
 
-keep.txt "vfpuquat": the E forms in play (off by default, the FPU's path the
-other side). They're switched on only if 2000 random inputs to each, in place
-too, give the engine's bits. "vfpuquatcheck" makes each call both ways,
-counts the calls that differ and plays the FPU's bits.
+In play (off by default, the FPU's path the other side): "vfpuquat" the
+exact interpolation, "vfpuquatd" the D interpolation and normalize; the
+section "in play" below says why and how each is checked.
 
 The Media Engine has no VFPU, and its pose job reaches quaternion_normalize
 (animation_get_node_orientations): each entry answers 0 when the caller's
@@ -56,9 +55,9 @@ union bits
 	unsigned int u;
 };
 
-/* ---------- the FPU's way, copied from the engine (real_math.c,
-matrix_math.c) for the check word: the start-up check confirms each matches
-the engine's own function bit for bit */
+/* ---------- the FPU's way, copied from the engine (real_math.c) for the
+check word: the start-up check confirms each matches the engine's own
+function bit for bit */
 
 static void fpu_normalize(struct quat *q)
 {
@@ -93,40 +92,6 @@ static void fpu_interpolate(const struct quat *q0, const struct quat *q1, float 
 	blend.w = q0->w * v + q1->w * t;
 	*result = blend;
 	fpu_normalize(result);
-}
-
-static void fpu_rotation(struct matrix43 *matrix, const struct quat *q)
-{
-	float scale = q->i * q->i + q->j * q->j + q->k * q->k + q->w * q->w;
-	float x, y, z, wx, wy, wz, xx, xy, xz, yy, yz, zz;
-
-	if (scale != 0.0f)
-		scale = 2.0f / scale;
-	else
-		scale = 0.0f;
-	x = scale * q->i;
-	y = scale * q->j;
-	z = scale * q->k;
-	wx = q->w * x;
-	wy = q->w * y;
-	wz = q->w * z;
-	xx = q->i * x;
-	xy = q->i * y;
-	xz = q->i * z;
-	yy = q->j * y;
-	yz = q->j * z;
-	zz = q->k * z;
-	matrix->scale = 1.0f;
-	matrix->n[0][0] = 1.0f - (yy + zz);
-	matrix->n[0][1] = xy - wz;
-	matrix->n[0][2] = xz + wy;
-	matrix->n[1][0] = xy + wz;
-	matrix->n[1][1] = 1.0f - (xx + zz);
-	matrix->n[1][2] = yz - wx;
-	matrix->n[2][0] = xz - wy;
-	matrix->n[2][1] = yz + wx;
-	matrix->n[2][2] = 1.0f - (xx + yy);
-	matrix->n[3][0] = matrix->n[3][1] = matrix->n[3][2] = 0.0f;
 }
 
 /* ---------- the VFPU's forms. The VFPU's registers keep their values from
@@ -187,7 +152,19 @@ static void __attribute__((noinline)) vfpu_normalize_d(struct quat *q)
 	union bits magnitude_squared;
 
 	magnitude_squared.u = vfpu_load_magnitude(q, 1);
-	if (magnitude_squared.f > 0.0f)
+	if (magnitude_squared.f > 0.0f && magnitude_squared.f < 1e-30f)
+	{
+		/* the VFPU flushes denormals: a length this small takes the FPU's root */
+		union bits one_over;
+
+		one_over.f = 1.0f / __builtin_sqrtf(magnitude_squared.f);
+		__asm__ volatile(
+			"mtv %1, S021\n"
+			"vscl.q C000, C000, S021\n"
+			"sv.s S000, 0(%0)\n" "sv.s S001, 4(%0)\n" "sv.s S002, 8(%0)\n" "sv.s S003, 12(%0)\n"
+			: : "r"(q), "r"(one_over.u) : "memory");
+	}
+	else if (magnitude_squared.f > 0.0f)
 		__asm__ volatile(
 			"vrsq.s S021, S020\n"
 			"vscl.q C000, C000, S021\n"
@@ -257,8 +234,9 @@ static void __attribute__((noinline)) vfpu_interpolate(const struct quat *q0, co
 		result->i = result->j = result->k = 0.0f;
 		result->w = 1.0f;
 	}
-	else if (form == 0)
+	else if (form == 0 || magnitude_squared.f < 1e-30f)
 	{
+		/* the exact form, or a length so small the VFPU would flush it */
 		one_over.f = 1.0f / __builtin_sqrtf(magnitude_squared.f);
 		__asm__ volatile(
 			"mtv %1, S201\n"
@@ -503,11 +481,26 @@ static void vfpu_quat_bench(void)
 		BENCH_TRIALS, us[0], us[1], us[2], us[3], us[4], us[5], us[6], us[7], us[8], us[9]);
 }
 
-/* ---------- in play (keep word "vfpuquat", psp_fixups.py FIXES_VFPUQUAT) */
+/* ---------- in play (psp_fixups.py FIXES_VFPUQUAT)
 
-int psp_vfpuquat_on = 0;
+"vfpuquat": the interpolation's E form, the FPU's bits (on silicon 929 ->
+683 ns a call); the E normalize and rotation are slower than the FPU's, so
+they stay off. "vfpuquatd" (wins over vfpuquat): the VFPU's own forms of the
+interpolation and the normalize, vdot.q for the length and vrsq.s for its
+reciprocal root (2.2x and 1.55x on silicon, within 12 last bits). The
+interpolation's hemisphere dot stays sequential: its sign picks which way a
+node turns, and a near-zero dot taken the other way would turn it the long
+way round; only the length's rounding moves. Posing is local to the client
+(hardware_utilization.md section 6), so the last bits may differ when the
+side-by-sides show it plays and looks the same; statecrc can't be its proof.
+"vfpuquatcheck": the FPU's way beside each call, the calls that differ
+counted (and their worst last-bit distance); the exact form plays the FPU's
+bits, the D forms their own. */
+
+int psp_vfpuquat_mode = 0; /* 0 off, 1 exact interpolation, 2 the D forms */
 static int vfpuquat_check = 0;
-static unsigned long calls[3], differ[3], report_frame = 0;
+static unsigned long calls[2], differ[2], report_frame = 0;
+static unsigned int worst[2];
 
 /* the Media Engine's stack is in its eDRAM: only 0x08000000-0x0fffffff (main
 RAM) is the main CPU's */
@@ -519,8 +512,8 @@ static int on_main_cpu(void)
 	return (stack >> 27) == 1;
 }
 
-/* the calls a frame and, with the check word, those that differed, every
-300 frames (counted on the normalize, the busiest entry) */
+/* the main CPU's calls a frame (and with the check word, those that differed)
+every 300 frames */
 static void report(void)
 {
 	unsigned long frame = psp_ge_frame_number();
@@ -528,30 +521,48 @@ static void report(void)
 	if (frame - report_frame < 300)
 		return;
 	if (report_frame)
-		platform_log("VFPU quat: calls a frame: normalize %lu, interpolate %lu, rotation %lu%s (differed %lu, %lu, %lu)",
-			calls[0] / (frame - report_frame), calls[1] / (frame - report_frame), calls[2] / (frame - report_frame),
-			vfpuquat_check ? "; vfpuquatcheck" : "", differ[0], differ[1], differ[2]);
+		platform_log("VFPU quat: calls a frame (%s): normalize %lu, interpolate %lu%s (differed %lu, %lu; worst %u, %u ulp)",
+			psp_vfpuquat_mode == 2 ? "vfpuquatd" : "vfpuquat",
+			calls[0] / (frame - report_frame), calls[1] / (frame - report_frame),
+			vfpuquat_check ? "; vfpuquatcheck" : "", differ[0], differ[1], worst[0], worst[1]);
 	report_frame = frame;
 	memset(calls, 0, sizeof(calls));
 	memset(differ, 0, sizeof(differ));
+	memset(worst, 0, sizeof(worst));
 }
 
+static void check_tally(int which, const struct quat *fpu, const struct quat *vfpu)
+{
+	const float *a = &fpu->i, *b = &vfpu->i;
+	int lane, differs = 0;
+
+	for (lane = 0; lane < 4; lane++)
+	{
+		unsigned int apart = ulps_apart(a[lane], b[lane]);
+
+		if (apart)
+			differs = 1;
+		if (apart > worst[which])
+			worst[which] = apart;
+	}
+	differ[which] += differs;
+}
+
+/* quaternion_normalize: the D form only (mode 2) */
 int psp_vfpu_quaternion_normalize(void *q)
 {
-	if (!on_main_cpu())
+	if (psp_vfpuquat_mode != 2 || !on_main_cpu())
 		return 0;
 	if (vfpuquat_check)
 	{
-		struct quat fpu = *(struct quat *)q, vfpu = fpu;
+		struct quat fpu = *(struct quat *)q;
 
 		fpu_normalize(&fpu);
-		vfpu_normalize_e(&vfpu);
-		differ[0] += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
-		/* play keeps the FPU's bits, so a difference can't change the game */
-		*(struct quat *)q = fpu;
+		vfpu_normalize_d((struct quat *)q);
+		check_tally(0, &fpu, (const struct quat *)q);
 	}
 	else
-		vfpu_normalize_e((struct quat *)q);
+		vfpu_normalize_d((struct quat *)q);
 	if ((++calls[0] & 255) == 0)
 		report();
 	return 1;
@@ -559,6 +570,8 @@ int psp_vfpu_quaternion_normalize(void *q)
 
 int psp_vfpu_quaternions_interpolate_and_normalize(const void *q0, const void *q1, float t, void *result)
 {
+	int form = psp_vfpuquat_mode == 2 ? 2 : 0;
+
 	if (!on_main_cpu())
 		return 0;
 	if (vfpuquat_check)
@@ -566,91 +579,80 @@ int psp_vfpu_quaternions_interpolate_and_normalize(const void *q0, const void *q
 		struct quat fpu, vfpu;
 
 		fpu_interpolate((const struct quat *)q0, (const struct quat *)q1, t, &fpu);
-		vfpu_interpolate((const struct quat *)q0, (const struct quat *)q1, t, &vfpu, 0);
-		differ[1] += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
-		*(struct quat *)result = fpu;
+		vfpu_interpolate((const struct quat *)q0, (const struct quat *)q1, t, &vfpu, form);
+		check_tally(1, &fpu, &vfpu);
+		/* the exact form plays the FPU's bits, so a difference can't change
+		the game; the D forms play their own */
+		*(struct quat *)result = form ? vfpu : fpu;
 	}
 	else
-		vfpu_interpolate((const struct quat *)q0, (const struct quat *)q1, t, (struct quat *)result, 0);
-	calls[1]++;
-	return 1;
-}
-
-int psp_vfpu_matrix4x3_rotation_from_quaternion(void *matrix, const void *quaternion)
-{
-	if (!on_main_cpu())
-		return 0;
-	if (vfpuquat_check)
-	{
-		struct matrix43 fpu, vfpu;
-
-		fpu_rotation(&fpu, (const struct quat *)quaternion);
-		vfpu_rotation(&vfpu, (const struct quat *)quaternion, 0);
-		differ[2] += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
-		memcpy(matrix, &fpu, sizeof(fpu));
-	}
-	else
-		vfpu_rotation((struct matrix43 *)matrix, (const struct quat *)quaternion, 0);
-	calls[2]++;
+		vfpu_interpolate((const struct quat *)q0, (const struct quat *)q1, t, (struct quat *)result, form);
+	if ((++calls[1] & 255) == 0)
+		report();
 	return 1;
 }
 
 /* start-up (psp_platform.c, after psp_vfpu_initialize): the bench if asked;
-then, with "vfpuquat", 2000 random inputs to each E form (normalized and
-not; the blend in place both ways too) against the engine's own functions,
-and the copies above against them too (the check word's reference). On only
-if nothing differs */
+then 2000 random inputs (normalized and not; the blend in place both ways
+too) through the forms the keep word asks for, against the engine's own
+functions. The exact form goes on only if none differ; the D forms only if
+none is further than 64 last bits from the engine's (the bench: 12) and in
+place gives the same bits as apart */
 void psp_vfpu_quat_initialize(void)
 {
 	struct quat q0, q1, fpu, vfpu, copy;
-	struct matrix43 matrix_fpu, matrix_vfpu;
-	int trial, differ_e[3] = { 0, 0, 0 }, differ_copy = 0;
+	int trial, mode, form, differ_interpolate = 0, differ_normalize = 0, aliased_wrong = 0, differ_copy = 0;
+	struct tally tally_interpolate = { 0, 0 }, tally_normalize = { 0, 0 };
 
 	if (!psp_vfpu_on)
 		return;
 	if (psp_keep("vfpuquatbench"))
 		vfpu_quat_bench();
-	if (!psp_keep("vfpuquat"))
+	mode = psp_keep("vfpuquatd") ? 2 : psp_keep("vfpuquat") ? 1 : 0;
+	if (!mode)
 		return;
+	form = mode == 2 ? 2 : 0;
 	for (trial = 0; trial < 2000; trial++)
 	{
 		float t = (random_value(1.0f) + 1.0f) * 0.5f;
 
-		random_quat(&q0, 0);
-		fpu = vfpu = copy = q0;
-		quaternion_normalize(&fpu);
-		vfpu_normalize_e(&vfpu);
-		differ_e[0] += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
-		fpu_normalize(&copy);
-		differ_copy += memcmp(&fpu, &copy, sizeof(fpu)) != 0;
-
 		random_quat(&q0, 1);
 		random_quat(&q1, trial & 1);
 		quaternions_interpolate_and_normalize(&q0, &q1, t, &fpu);
-		vfpu_interpolate(&q0, &q1, t, &vfpu, 0);
-		differ_e[1] += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
+		vfpu_interpolate(&q0, &q1, t, &vfpu, form);
+		differ_interpolate += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
+		tally_floats(&tally_interpolate, &fpu.i, &vfpu.i, 4);
 		copy = q0;
-		vfpu_interpolate(&copy, &q1, t, &copy, 0);
-		differ_e[1] += memcmp(&fpu, &copy, sizeof(fpu)) != 0;
+		vfpu_interpolate(&copy, &q1, t, &copy, form);
+		aliased_wrong += memcmp(&vfpu, &copy, sizeof(copy)) != 0;
 		copy = q1;
-		vfpu_interpolate(&q0, &copy, t, &copy, 0);
-		differ_e[1] += memcmp(&fpu, &copy, sizeof(fpu)) != 0;
+		vfpu_interpolate(&q0, &copy, t, &copy, form);
+		aliased_wrong += memcmp(&vfpu, &copy, sizeof(copy)) != 0;
 		fpu_interpolate(&q0, &q1, t, &copy);
 		differ_copy += memcmp(&fpu, &copy, sizeof(fpu)) != 0;
 
-		matrix4x3_rotation_from_quaternion(&matrix_fpu, &q0);
-		vfpu_rotation(&matrix_vfpu, &q0, 0);
-		differ_e[2] += memcmp(&matrix_fpu, &matrix_vfpu, sizeof(matrix_fpu)) != 0;
-		matrix4x3_rotation_from_quaternion(&matrix_fpu, &q1);
-		vfpu_rotation(&matrix_vfpu, &q1, 0);
-		differ_e[2] += memcmp(&matrix_fpu, &matrix_vfpu, sizeof(matrix_fpu)) != 0;
-		fpu_rotation(&matrix_vfpu, &q1);
-		differ_copy += memcmp(&matrix_fpu, &matrix_vfpu, sizeof(matrix_fpu)) != 0;
+		if (mode == 2)
+		{
+			random_quat(&q0, 0);
+			fpu = vfpu = copy = q0;
+			quaternion_normalize(&fpu);
+			vfpu_normalize_d(&vfpu);
+			differ_normalize += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
+			tally_floats(&tally_normalize, &fpu.i, &vfpu.i, 4);
+			fpu_normalize(&copy);
+			differ_copy += memcmp(&fpu, &copy, sizeof(fpu)) != 0;
+		}
 	}
 	vfpuquat_check = psp_keep("vfpuquatcheck");
-	psp_vfpuquat_on = !differ_e[0] && !differ_e[1] && !differ_e[2] && (!vfpuquat_check || !differ_copy);
-	platform_log("VFPU: posing maths (vfpuquat): 2000 inputs each, differ from the FPU: normalize %d, interpolate %d (in place both ways too), rotation %d; the check's copies %d; %s%s",
-		differ_e[0], differ_e[1], differ_e[2], differ_copy,
-		psp_vfpuquat_on ? "on" : "OFF: it disagrees with the FPU",
-		psp_vfpuquat_on && vfpuquat_check ? " (vfpuquatcheck: every call checked, the FPU's bits played)" : "");
+	if (aliased_wrong || (vfpuquat_check && differ_copy))
+		mode = 0;
+	else if (mode == 1 && differ_interpolate)
+		mode = 0;
+	else if (mode == 2 && (tally_interpolate.worst > 64 || tally_normalize.worst > 64))
+		mode = 0;
+	psp_vfpuquat_mode = mode;
+	platform_log("VFPU: posing maths (%s): 2000 inputs, differ from the FPU: interpolate %d (worst %u ulp), normalize %d (worst %u ulp); in place wrong %d; the check's copies %d; %s%s",
+		form ? "vfpuquatd" : "vfpuquat", differ_interpolate, tally_interpolate.worst, differ_normalize, tally_normalize.worst,
+		aliased_wrong, differ_copy, mode ? "on" : "OFF: it disagrees with the FPU",
+		mode && vfpuquat_check ? " (vfpuquatcheck: every call checked)" : "");
 }

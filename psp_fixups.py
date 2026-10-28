@@ -36282,15 +36282,15 @@ void quaternions_multiply(
 """),
 ]
 
-# The rest of posing on the VFPU (lever VFPUQ; Sierra-III
-# docs/hardware_utilization.md sections 3 and 7): quaternion_normalize,
-# quaternions_interpolate_and_normalize and matrix4x3_rotation_from_quaternion
-# in element-wise forms whose bits are the FPU's (psp/src/psp_vfpu_quat.c:
-# sums of squares sequential, square root and divide on the FPU). "vfpuquat"
-# turns them on (off by default while they are priced); "vfpuquatcheck" makes
-# each call both ways, counts those that differ and plays the FPU's bits.
-# Main CPU only: each entry answers 0 on the Media Engine (no VFPU; its pose
-# job reaches quaternion_normalize), and the FPU's code below runs instead.
+# The rest of posing on the VFPU (levers VFPUQ, VFPUQD; Sierra-III
+# docs/hardware_utilization.md sections 3 and 7; psp/src/psp_vfpu_quat.c):
+# "vfpuquat" the interpolation's element-wise form, the FPU's bits;
+# "vfpuquatd" the VFPU's own forms (vdot.q, vrsq.s) of the interpolation and
+# the normalize, within a few last bits (posing is local to the client). Both
+# off by default; "vfpuquatcheck" counts the calls that differ. The rotation
+# matrix stays on the FPU: its VFPU form is slower. Main CPU only: each entry
+# answers 0 on the Media Engine (no VFPU; its pose job reaches
+# quaternion_normalize), and the FPU's code below runs instead.
 FIXES_VFPUQUAT = {}
 FIXES_VFPUQUAT["source/math/real_math.c#vfpuquat"] = [
 ("""void quaternion_normalize(
@@ -36298,7 +36298,7 @@ FIXES_VFPUQUAT["source/math/real_math.c#vfpuquat"] = [
 {
 	real magnitude_squared = q->v.i*q->v.i + q->v.j*q->v.j + q->v.k*q->v.k + q->w*q->w;
 	if (magnitude_squared > 0.f)""", """#ifdef HALO_PSP
-extern int psp_vfpuquat_on;
+extern int psp_vfpuquat_mode;
 int psp_vfpu_quaternion_normalize(void *q);
 int psp_vfpu_quaternions_interpolate_and_normalize(const void *q0, const void *q1, float t, void *result);
 #endif
@@ -36307,8 +36307,8 @@ void quaternion_normalize(
 	real_quaternion *q)
 {
 #ifdef HALO_PSP
-	/* psp_fixups.py (FIXES_VFPUQUAT): the VFPU's element-wise form, the FPU's bits; main CPU only */
-	if (psp_vfpuquat_on && psp_vfpu_quaternion_normalize(q))
+	/* psp_fixups.py (FIXES_VFPUQUAT): vfpuquatd's form on the main CPU */
+	if (psp_vfpuquat_mode == 2 && psp_vfpu_quaternion_normalize(q))
 		return;
 #endif
 	{
@@ -36339,7 +36339,7 @@ void quaternion_from_angle_and_vector("""),
 {
 #ifdef HALO_PSP
 	/* psp_fixups.py (FIXES_VFPUQUAT) */
-	if (psp_vfpuquat_on && psp_vfpu_quaternions_interpolate_and_normalize(q0, q1, t, result))
+	if (psp_vfpuquat_mode && psp_vfpu_quaternions_interpolate_and_normalize(q0, q1, t, result))
 		return;
 #endif
 	quaternions_interpolate(q0, q1, t, result);
@@ -36347,45 +36347,6 @@ void quaternion_from_angle_and_vector("""),
 	return;
 }"""),
 ]
-FIXES_VFPUQUAT["source/math/matrix_math.c#vfpuquat"] = [
-("""void matrix4x3_rotation_from_quaternion(
-	real_matrix4x3 *matrix,
-	real_quaternion const *quaternion)
-{
-	real scale =""", """#ifdef HALO_PSP
-extern int psp_vfpuquat_on;
-int psp_vfpu_matrix4x3_rotation_from_quaternion(void *matrix, const void *quaternion);
-#endif
-
-void matrix4x3_rotation_from_quaternion(
-	real_matrix4x3 *matrix,
-	real_quaternion const *quaternion)
-{
-#ifdef HALO_PSP
-	/* psp_fixups.py (FIXES_VFPUQUAT): the VFPU's element-wise form, the FPU's bits; main CPU only */
-	if (psp_vfpuquat_on && psp_vfpu_matrix4x3_rotation_from_quaternion(matrix, quaternion))
-		return;
-#endif
-	{
-	real scale ="""),
-("""	matrix->position.x = 0.f;
-	matrix->position.y = 0.f;
-	matrix->position.z = 0.f;
-
-	return;
-}
-
-void matrix4x3_from_point_and_quaternion(""", """	matrix->position.x = 0.f;
-	matrix->position.y = 0.f;
-	matrix->position.z = 0.f;
-	}
-
-	return;
-}
-
-void matrix4x3_from_point_and_quaternion("""),
-]
-
 for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
