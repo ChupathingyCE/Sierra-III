@@ -24,13 +24,14 @@ ME code changes). With the emulator the ME's jobs run on the main CPU and the
 GE isn't timed: the lanes are the PSP's.
 
 A window opens at each phase edge (phasemark's: a map loaded, a cutscene
-begun or ended, a BSP switch) and records "lanetraceN" frames (default 120)
-or until its 1,024 notes are used; then it prints one line a frame:
+begun or ended, a BSP switch) and records "lanetraceN" frames (default 60)
+or until its 1,536 notes are used; then it prints one line a frame:
   lanes F +W: c1@T c2@T ... | g T-T/K ... | m S.J T-T o U ... | r J T-T o U ...
-F the frame, W its length in us, every T in us from the last frame's end.
+F the frame, W its length in us, every T in us from the last frame's end
+(negative: before it, a job handed over in the frame before).
 tools: the lab's psp/sierra/timemap/lanes.py reads them.
 
-Measurement only: nothing the game does changes. The notes (16 KB) come from
+Measurement only: nothing the game does changes. The notes (18 KB) come from
 the heap when the word is first seen; without it every hook is one test of a
 word. Compiled with PSP_METRICS, so a final release has none of it. */
 
@@ -47,21 +48,23 @@ int psp_keep(const char *name);
 int psp_keep_number(const char *prefix, int fallback);
 void platform_log(const char *format, ...);
 
-#define LANE_NOTES 1024
+#define LANE_NOTES 1536
 #define LANE_LINE 480
 
+/* 12 bytes: the end, the start, and kind (4 bits), b (12) and c (16) */
 struct lane_note
 {
 	unsigned int t;    /* the end (a phase change: its moment) */
-	unsigned int from; /* a span's start */
-	unsigned int b;    /* g: the kind; m: slot << 8 | type; r: type */
-	unsigned int c;    /* m, r: the ME's own time, us; c: the phase */
-	unsigned int kind;
+	unsigned int from; /* a span's start; a frame's number */
+	unsigned int packed;
 };
+#define LANE_KIND(n) ((n)->packed >> 28)
+#define LANE_B(n) (((n)->packed >> 16) & 0xFFF) /* g: the kind; m: slot << 8 | type; r: type; a frame: its ticks */
+#define LANE_C(n) ((n)->packed & 0xFFFF)        /* m, r: the ME's own time, us (to 65 ms); c: the phase */
 
 volatile int psp_lane_on = 0;          /* 1 while a window records */
 static int lane_word = -1;              /* -1: the keep word not read yet */
-static int lane_frames_wanted = 120;
+static int lane_frames_wanted = 60;
 static struct lane_note *lane_notes;
 static volatile unsigned int lane_count;
 static unsigned int lane_frames, lane_window_start, lane_last_end;
@@ -76,7 +79,7 @@ static int lane_ready(void)
 		lane_word = psp_keep("lanetrace") != 0 || n > 0;
 		if (lane_word)
 		{
-			lane_frames_wanted = n > 0 ? n : 120;
+			lane_frames_wanted = n > 0 ? n : 60;
 			lane_notes = (struct lane_note *)malloc(LANE_NOTES * sizeof(*lane_notes));
 			if (!lane_notes)
 			{
@@ -106,11 +109,9 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 	sceKernelCpuResumeIntr(flags);
 	if (index >= LANE_NOTES)
 		return;
-	lane_notes[index].kind = kind;
 	lane_notes[index].from = from;
 	lane_notes[index].t = t;
-	lane_notes[index].b = b;
-	lane_notes[index].c = c;
+	lane_notes[index].packed = kind << 28 | (b & 0xFFF) << 16 | (c > 0xFFFF ? 0xFFFF : c);
 }
 
 /* a phase edge (psp_platform.c's phase_mark): a window opens unless one is
@@ -126,7 +127,7 @@ void psp_lane_arm(void)
 	psp_lane_on = 1;
 }
 
-static int lane_add(char *line, int at, const char *format, unsigned int x, unsigned int y, unsigned int z, unsigned int w)
+static int lane_add(char *line, int at, const char *format, int x, int y, int z, int w)
 {
 	int n = snprintf(line + at, LANE_LINE - at, format, x, y, z, w);
 
@@ -145,7 +146,7 @@ static void lane_print(void)
 	{
 		unsigned int end_note = k, frame_end, at, j, first = 1;
 
-		while (end_note < count && lane_notes[end_note].kind != PSP_LANE_FRAME)
+		while (end_note < count && LANE_KIND(&lane_notes[end_note]) != PSP_LANE_FRAME)
 			end_note++;
 		frame_end = end_note < count ? lane_notes[end_note].t : lane_notes[count - 1].t;
 		for (j = k; j < end_note;)
@@ -157,20 +158,22 @@ static void lane_print(void)
 			{
 				struct lane_note const *n = &lane_notes[j];
 
-				switch (n->kind)
+				int from = (int)(n->from - frame_start), t = (int)(n->t - frame_start);
+
+				switch (LANE_KIND(n))
 				{
 				case PSP_LANE_PHASE:
-					at = lane_add(line, at, " c%u@%u", n->c, n->t - frame_start, 0, 0);
+					at = lane_add(line, at, " c%d@%d", (int)LANE_C(n), t, 0, 0);
 					break;
 				case PSP_LANE_GE:
-					at = lane_add(line, at, " g%u-%u/%u", n->from - frame_start, n->t - frame_start, n->b, 0);
+					at = lane_add(line, at, " g%d-%d/%d", from, t, (int)LANE_B(n), 0);
 					break;
 				case PSP_LANE_ME_SLOT:
-					at = lane_add(line, at, " m%u.%u", n->b >> 8, n->b & 0xFF, 0, 0);
-					at = lane_add(line, at, ":%u-%u/o%u", n->from - frame_start, n->t - frame_start, n->c, 0);
+					at = lane_add(line, at, " m%d.%d", (int)(LANE_B(n) >> 8), (int)(LANE_B(n) & 0xFF), 0, 0);
+					at = lane_add(line, at, ":%d-%d/o%d", from, t, (int)LANE_C(n), 0);
 					break;
 				case PSP_LANE_ME_RING:
-					at = lane_add(line, at, " r%u:%u-%u/o%u", n->b, n->from - frame_start, n->t - frame_start, n->c);
+					at = lane_add(line, at, " r%d:%d-%d/o%d", (int)LANE_B(n), from, t, (int)LANE_C(n));
 					break;
 				}
 			}

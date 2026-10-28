@@ -6,7 +6,7 @@ PSP_METRICS=0 every hook compiles to nothing */
 
 #define PSP_LANE_PHASE 1   /* the main CPU's phase changed: c = the phase */
 #define PSP_LANE_GE 2      /* the GE busy from `from` to t: b = the draws' kind */
-#define PSP_LANE_ME_SLOT 3 /* a slot job handed over at `from`, seen done at t: b = slot << 8 | type, c = the ME's own us */
+#define PSP_LANE_ME_SLOT 3 /* a slot job handed over at `from`, seen done at t: b = slot << 8 | type (12 bits), c = the ME's own us (to 65 ms) */
 #define PSP_LANE_ME_RING 4 /* a ring job pushed at `from`, collected at t: b = type, c = the ME's own us */
 #define PSP_LANE_FRAME 5   /* a frame ended at t: from = its number, b = its ticks */
 
