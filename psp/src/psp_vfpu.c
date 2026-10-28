@@ -283,10 +283,11 @@ static void __attribute__((noinline)) vfpu_quat_multiply_e(const struct quat *q0
 	__asm__ volatile(
 		"lv.s S000, 0(%0)\n" "lv.s S001, 4(%0)\n" "lv.s S002, 8(%0)\n" "lv.s S003, 12(%0)\n"
 		"lv.s S010, 0(%1)\n" "lv.s S011, 4(%1)\n" "lv.s S012, 8(%1)\n" "lv.s S013, 12(%1)\n"
-		"vpfxs [y, w, z, w]\n" "vpfxt [z, y, w, w]\n" "vmul.q C100, C000, C010\n"
-		"vpfxs [x, y, x, x]\n" "vpfxt [w, w, y, -x]\n" "vmul.q C110, C000, C010\n"
-		"vpfxs [w, z, w, y]\n" "vpfxt [x, x, z, -y]\n" "vmul.q C120, C000, C010\n"
-		"vpfxs [z, x, y, z]\n" "vpfxt [y, z, x, z]\n" "vmul.q C130, C000, C010\n"
+		/* operand swizzles: the assembler emits the vpfxs/vpfxt prefixes */
+		"vmul.q C100, C000[y,w,z,w], C010[z,y,w,w]\n"
+		"vmul.q C110, C000[x,y,x,x], C010[w,w,y,-x]\n"
+		"vmul.q C120, C000[w,z,w,y], C010[x,x,z,-y]\n"
+		"vmul.q C130, C000[z,x,y,z], C010[y,z,x,z]\n"
 		"vadd.q C200, C100, C110\n"
 		"vadd.q C200, C200, C120\n"
 		"vsub.q C200, C200, C130\n"
