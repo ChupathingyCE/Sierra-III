@@ -153,6 +153,10 @@ start the ME runs a break instruction (an exception on any MIPS: an odd
 address's load was let through on the ME, in a run on the PSP), so the
 main CPU's next deadline stops it and the log shows the record */
 #define ME_FEATURE_FAULT_TEST 1024u
+/* "mewakeprobe": at a restart the ME tries each kind of work a job does
+before its loop (me_wake_probe), marking each step, so after a real sleep
+the log says which kind hangs or reads wrong */
+#define ME_FEATURE_WAKE_PROBE 2048u
 
 /* The debug stash: where the ME is, in words of its own (two cache lines,
 only ever used through the uncached view), so a main CPU that gives up on a
@@ -338,7 +342,7 @@ around a restart's release and at exit, so the log shows what a sleep
 changes */
 struct me_sysregs
 {
-	unsigned int reset, bus_clock, clock, avc, marks[2];
+	unsigned int reset, bus_clock, clock, avc, marks[4]; /* 2-3: mewakeprobe's step and fails */
 };
 static struct me_sysregs regs_launch, regs_sleep, regs_wake, regs_exit;
 
@@ -383,6 +387,9 @@ are idle while the ME runs our code */
 #define ME_MARK_STUB_DONE   0x57a90002u
 #define ME_MARK_PROCESS_IN  0x57a90003u
 #define ME_MARK_PROCESS_RUN 0x57a90004u
+#define ME_MARK_PROBE      0xbfc006c8 /* me_wake_probe's step */
+#define ME_MARK_PROBE_FAIL 0xbfc006cc /* its steps that read back wrong, a bit each */
+#define ME_MARK_PROBE_BASE 0x57a90010u /* + the step begun; + 0xf when all are done */
 
 /* kernel mode only: the registers and the SRAM are out of a user thread's
 reach */
@@ -394,6 +401,8 @@ static inline void sysregs_read(struct me_sysregs *regs)
 	regs->avc = HW_SYS_AVC_POWER;
 	regs->marks[0] = hw(ME_MARK_START);
 	regs->marks[1] = hw(ME_MARK_PROCESS);
+	regs->marks[2] = hw(ME_MARK_PROBE);
+	regs->marks[3] = hw(ME_MARK_PROBE_FAIL);
 }
 
 /* 1 while a client thread is inside a slot's job (psp_me_run, or from
@@ -1146,6 +1155,82 @@ static void me_ring_linger(unsigned int popped, unsigned int *last_look)
 	}
 }
 
+/* mewakeprobe's main-RAM buffers: the first written with a pattern by the
+main CPU before the release (psp_me_wake_poll), the second written by the ME */
+static unsigned int wake_probe_in[1024] __attribute__((aligned(64)));
+static unsigned int wake_probe_out[1024] __attribute__((aligned(64)));
+static volatile float wake_probe_sink;
+
+#define WAKE_PROBE_WORD(k) ((unsigned int)(k) * 2654435761u)
+
+static unsigned int wake_probe_deep(unsigned int depth) __attribute__((noinline));
+static unsigned int wake_probe_deep(unsigned int depth)
+{
+	volatile unsigned int frame[256]; /* 1 KB of stack a level */
+	unsigned int k, sum = 0;
+
+	for (k = 0; k < 256; k++)
+		frame[k] = depth + k;
+	if (depth)
+		sum = wake_probe_deep(depth - 1);
+	for (k = 0; k < 256; k++)
+		sum += frame[k];
+	return sum;
+}
+
+/* What a job does that the idle loop doesn't, a step at a time: the FPU, a
+cached read of main RAM, a cached write of main RAM written back, the
+eDRAM through the cache (mebusedram's scratch, free in play builds), and 24
+KB of stack. The mark names the step begun, so a hang names its step; a step
+that reads back wrong sets its bit and the probe goes on */
+static void me_wake_probe(void)
+{
+	volatile unsigned int *edram = (volatile unsigned int *)(ME_EDRAM + ME_EDRAM_SCRATCH);
+	unsigned int fails = 0, sum, k;
+
+	hw(ME_MARK_PROBE_FAIL) = 0;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 1;
+	meLibSync();
+	{
+		volatile float a = 1.5f, b = 2.25f;
+
+		wake_probe_sink = a * b + a / b;
+		if (wake_probe_sink < 4.0f || wake_probe_sink > 4.1f)
+			fails |= 1;
+	}
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 2;
+	meLibSync();
+	for (k = 0, sum = 0; k < 1024; k++)
+		sum += wake_probe_in[k] ^ WAKE_PROBE_WORD(k);
+	if (sum)
+		fails |= 2;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 3;
+	meLibSync();
+	for (k = 0; k < 1024; k++)
+		wake_probe_out[k] = ~WAKE_PROBE_WORD(k);
+	meLibDcacheWritebackInvalidateRange((u32Me)wake_probe_out, sizeof(wake_probe_out));
+	for (k = 0, sum = 0; k < 1024; k++)
+		sum += UNCACHED(&wake_probe_out[k])[0] ^ ~WAKE_PROBE_WORD(k);
+	if (sum)
+		fails |= 4;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 4;
+	meLibSync();
+	for (k = 0; k < 2048; k++)
+		edram[k] = WAKE_PROBE_WORD(k + 7);
+	meLibDcacheWritebackInvalidateRange((u32Me)edram, 2048 * 4);
+	for (k = 0, sum = 0; k < 2048; k++)
+		sum += edram[k] ^ WAKE_PROBE_WORD(k + 7);
+	if (sum)
+		fails |= 8;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 5;
+	meLibSync();
+	if (wake_probe_deep(24) == 0)
+		fails |= 16;
+	hw(ME_MARK_PROBE_FAIL) = fails;
+	hw(ME_MARK_PROBE) = ME_MARK_PROBE_BASE + 0xf;
+	meLibSync();
+}
+
 __attribute__((noinline, aligned(4)))
 void meLibOnProcess(void)
 {
@@ -1184,6 +1269,8 @@ void meLibOnProcess(void)
 	me_private_main.in_ring = 0;
 	hw(ME_MARK_PROCESS) = ME_MARK_PROCESS_RUN;
 	meLibSync();
+	if (control->features & ME_FEATURE_WAKE_PROBE)
+		me_wake_probe();
 	for (;;)
 	{
 		int k;
@@ -1302,12 +1389,15 @@ void meLibOnSleep(void)
 	me_sleeps++;
 }
 
+static void wake_early_restart(void);
+
 void meLibOnWake(void)
 {
 	sysregs_read(&regs_wake);
 	reset_hold();
 	me_state = -1;
 	me_sleeps++;
+	wake_early_restart();
 }
 
 /* ---------- the main CPU's side */
@@ -1505,6 +1595,20 @@ int psp_is_emulator(void)
 any other reason than a sleep (a job that timed out, HOME), since an ME that
 failed once is not trusted again by a wake */
 static int me_restartable = 0;
+/* the features word the ME reads at a restart: launch's, so a wake runs as
+launch does (before, meaudiofirst, meaudioranges and mestash were left out),
+with mewakeprobe's probe */
+static unsigned int wake_features = 0;
+/* "mewakeearly": the ME released in the kernel's wake handler (meLibOnWake,
+the firmware's resume phase 0x10005, where its own ME boot runs and where
+me-core's own sleep path releases it), not at a frame end after the resume;
+its jobs are still handed back at a frame end (psp_me_wake_poll) */
+static int wake_early = 0;
+static volatile int wake_released_early = 0;
+static unsigned long long wake_early_release;
+static void wake_prepare(void);
+static int me_restart_kernel(void *unused);
+
 /* 1 from a release of the ME's reset (launch, a restart) until it is seen
 halted or is held in reset again: while set, the ME may still be running
 our code, and the exit holds it before the firmware takes the PSP back */
@@ -1603,8 +1707,8 @@ static void stop_at_exit(void)
 
 static void sysregs_line(char *line, int size, const char *name, const struct me_sysregs *regs)
 {
-	snprintf(line, size, "%s %08x %08x %08x %08x (marks %08x %08x)", name, regs->reset, regs->bus_clock, regs->clock,
-		regs->avc, regs->marks[0], regs->marks[1]);
+	snprintf(line, size, "%s %08x %08x %08x %08x (marks %08x %08x %08x %08x)", name, regs->reset, regs->bus_clock, regs->clock,
+		regs->avc, regs->marks[0], regs->marks[1], regs->marks[2], regs->marks[3]);
 }
 
 /* HOME, or the game's own exit: the firmware reboots into the XMB and boots
@@ -1758,6 +1862,8 @@ int psp_me_start(void)
 		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
 		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u);
+	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
+	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -3136,6 +3242,20 @@ static void wake_report(const char *format, ...)
 	wake_line_ready = 1;
 }
 
+/* in the kernel's wake handler, with mewakeearly: every client has handed
+its job back at the sleep's stop, and the game's threads don't run during
+the resume, so the words are ours */
+static void wake_early_restart(void)
+{
+	if (!wake_early || me_restartable != 1)
+		return;
+	wake_prepare();
+	wake_early_release = sceKernelGetSystemTimeWide();
+	me_maybe_running = 1;
+	me_restart_kernel(NULL);
+	wake_released_early = 1;
+}
+
 /* the power callback, the wake complete */
 void psp_me_wake_request(void)
 {
@@ -3167,6 +3287,8 @@ static int me_restart_kernel(void *unused)
 	meLibResumeCpuIntr(interrupts);
 	hw(ME_MARK_START) = 0;
 	hw(ME_MARK_PROCESS) = 0;
+	hw(ME_MARK_PROBE) = 0;
+	hw(ME_MARK_PROBE_FAIL) = 0;
 	memcpy((void *)ME_HANDLER_BASE, psp_me_wake_stub, stub);
 	memcpy((void *)(ME_HANDLER_BASE + stub), &__start__me_section, handler);
 	sceKernelDcacheWritebackInvalidateAll();
@@ -3179,6 +3301,17 @@ static int me_restart_kernel(void *unused)
 /* how far the ME's start got, from its marks */
 static const char *wake_stage(const struct me_sysregs *regs)
 {
+	static const char *const probe_steps[] = { "", "the FPU", "a cached read of main RAM",
+		"a cached write of main RAM, written back", "the eDRAM through the cache", "24 KB of stack" };
+	static char probe_line[120];
+
+	if (regs->marks[1] == ME_MARK_PROCESS_RUN && regs->marks[2] > ME_MARK_PROBE_BASE &&
+		regs->marks[2] <= ME_MARK_PROBE_BASE + 5)
+	{
+		snprintf(probe_line, sizeof(probe_line), "into its loop's probe, stopped in step %u: %s",
+			regs->marks[2] - ME_MARK_PROBE_BASE, probe_steps[regs->marks[2] - ME_MARK_PROBE_BASE]);
+		return probe_line;
+	}
 	if (regs->marks[1] == ME_MARK_PROCESS_RUN)
 		return "into its loop (past its first cache write-back)";
 	if (regs->marks[1] == ME_MARK_PROCESS_IN)
@@ -3223,26 +3356,18 @@ void psp_me_wake_poll(void)
 		}
 	wake_pending = 0;
 	sleeps = me_sleeps;
-	/* every word the ME reads at its start, as at launch; the slots and the
-	ring carried on from where the main CPU's counters are, so a ticket or
-	request number handed out before the sleep can never be taken for one
-	of the new ME's */
-	control->stop = control->alive = control->clock = control->jobs = 0;
-	control->halted = 0;
-	for (k = 0; k < ME_SLOTS; k++)
-		SLOT(k)->request = SLOT(k)->done = slot_request[k];
-	ring_epoch = ring_next;
-	ring_restarted = 1;
-	ring_popped_seen = ring_next;
-	RING_PUSHED = RING_POPPED = ring_next;
-	/* before the release, where launch sets them after its start check: the
-	ME reads them on its first pass, so the ring is served from the first
-	frame (a ring job not done in 10 ms turns the ring off for the session) */
-	control->features = (me_halting ? ME_FEATURE_HALT : 0u) | (ring_on ? ME_FEATURE_RING : 0u) |
-		(me_yield_off ? ME_FEATURE_NO_YIELD : 0u) | (psp_keep("meedramstate") ? ME_FEATURE_EDRAM_STATE : 0u) |
-		(me_claim_old ? ME_FEATURE_CLAIM_OLD : 0u) | (psp_keep("mebcc1") ? ME_FEATURE_BCC : 0u) |
-		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u);
-	__asm__ __volatile__("sync");
+	if (wake_released_early)
+	{
+		/* released in the kernel's wake handler already */
+		wake_released_early = 0;
+		release = wake_early_release;
+		now = sceKernelGetSystemTimeWide();
+		while (control->alive == 0 && sceKernelGetSystemTimeWide() - now < WAKE_ANSWER_US)
+			sceKernelDelayThread(500);
+		now = sceKernelGetSystemTimeWide();
+		goto answered;
+	}
+	wake_prepare();
 	now = sceKernelGetSystemTimeWide();
 	if (me_restartable == 2)
 	{
@@ -3256,6 +3381,7 @@ void psp_me_wake_poll(void)
 	kcall_3(me_restart_kernel, 0, 0);
 	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
 		sceKernelDelayThread(500);
+answered:
 	kcall_3(me_sysregs_kernel, 0, &regs_answer);
 	if (control->alive == 0 || me_sleeps != sleeps)
 	{
@@ -3267,8 +3393,39 @@ void psp_me_wake_poll(void)
 		return;
 	}
 	me_state = 1;
-	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release; %u frame ends waiting for its clients)",
-		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release), wake_frames);
+	wake_report("ME: restarted after wake in %lu ms (its first idle poll %lu us after the reset's release%s; %u frame ends waiting for its clients%s)",
+		(unsigned long)((now - wake_mark) / 1000), (unsigned long)(now - release),
+		release < wake_mark ? ", released in the kernel's wake handler" : "", wake_frames,
+		!(wake_features & ME_FEATURE_WAKE_PROBE) ? "" :
+		regs_answer.marks[2] != ME_MARK_PROBE_BASE + 0xf ? "; the probe didn't finish" :
+		regs_answer.marks[3] ? "; the probe finished, some steps read back wrong (marks)" : "; the probe's 5 steps all right");
+}
+
+/* every word the ME reads at its start, as at launch; the slots and the
+ring carried on from where the main CPU's counters are, so a ticket or
+request number handed out before the sleep can never be taken for one of
+the new ME's. The features before the release, where launch sets them after
+its start check: the ME reads them on its first pass, so the ring is served
+from the first frame (a ring job not done in 10 ms turns the ring off for
+the session). With mewakeprobe, the probe's input pattern too */
+static void wake_prepare(void)
+{
+	volatile struct me_control *control = CONTROL;
+	int k;
+
+	control->stop = control->alive = control->clock = control->jobs = 0;
+	control->halted = 0;
+	for (k = 0; k < ME_SLOTS; k++)
+		SLOT(k)->request = SLOT(k)->done = slot_request[k];
+	ring_epoch = ring_next;
+	ring_restarted = 1;
+	ring_popped_seen = ring_next;
+	RING_PUSHED = RING_POPPED = ring_next;
+	control->features = wake_features;
+	if (wake_features & ME_FEATURE_WAKE_PROBE)
+		for (k = 0; k < 1024; k++)
+			wake_probe_in[k] = WAKE_PROBE_WORD(k);
+	__asm__ __volatile__("sync");
 }
 
 static int me_sleep_kernel(void)
@@ -3296,6 +3453,21 @@ void psp_me_wake_test_sleep(void)
 		me_sleeps++;
 	}
 	platform_log("mewaketest: the ME stopped and held as a sleep holds it");
+}
+
+static int me_wake_kernel(void)
+{
+	meLibOnWake();
+	return 0;
+}
+
+/* mewaketest's wake: the kernel's wake handler as a real wake runs it (with
+mewakeearly, the release is there), then the power callback's request */
+void psp_me_wake_test_wake(void)
+{
+	if (me_restartable == 1)
+		kcall_2(me_wake_kernel, 0);
+	psp_me_wake_request();
 }
 
 /* build 87: the last job's own code time on the ME, in microseconds (its
