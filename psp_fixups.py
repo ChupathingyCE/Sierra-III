@@ -36737,8 +36737,16 @@ def mevis_copies(tree):
         return piece
 
     order = [name for name in functions if name in copied]
+    # the file's macros that name the state (PSP_PVS_FALLBACK), made again
+    # for the copies
+    macros, restore = "", ""
+    for m in re.finditer(r"^#define (\w+) ([^\n]*)$", text, re.M):
+        if state.search(m.group(2)) and "(" not in m.group(1):
+            macros += "#undef %s\n#define %s (%s)\n" % (m.group(1), m.group(1), convert(m.group(2)))
+            restore += "#undef %s\n#define %s %s\n" % (m.group(1), m.group(1), m.group(2))
     out = ["\n#ifdef HALO_PSP\n/* mevis's copies (psp_fixups.py mevis_copies): %s */\n" % ", ".join(order)]
     out.append(MEVIS_HEAD)
+    out.append(macros)
     for name in order:
         header, body = functions[name]
         out.append(convert(header).replace("__inline__ ", "").rstrip("\n") + ";\n")
@@ -36754,6 +36762,8 @@ def mevis_copies(tree):
             body = body.replace("{\n", "{\n\tpsp_me_ring_step(0x5649);\n", 1)
         out.append("\n" + header.replace("__inline__ ", "") + body)
     out.append(MEVIS_TAIL)
+    # (what follows in the file, appended later, as before)
+    out.append(restore + "#undef PSP_STEP\n#define PSP_STEP(name) psp_step(name)\n")
     out.append("#endif\n")
     open(path, "w", errors="surrogateescape").write(text + "".join(out))
     return len(order)
@@ -36867,7 +36877,8 @@ static unsigned int psp_mv_hash(unsigned int hash, void const *data, unsigned in
 }
 
 /* an answer by its hashes: the visible clusters' bits, the rendered
-clusters (index and clip bounds, in order), the environment's surfaces */
+clusters (index and clip bounds, in order), the environment's surfaces'
+bits */
 static void psp_mv_answer(struct render_globals const *view, unsigned int *clusters, unsigned int *cluster_hash,
 	unsigned int *surfaces, unsigned int *surface_hash)
 {
@@ -36884,8 +36895,10 @@ static void psp_mv_answer(struct render_globals const *view, unsigned int *clust
 	*clusters = (unsigned int)view->rendered_cluster_count;
 	*cluster_hash = hash;
 	*surfaces = (unsigned int)view->environment_surface_count;
-	*surface_hash = psp_mv_hash(2166136261u, view->environment_surface_indices,
-		(unsigned int)view->environment_surface_count * sizeof(view->environment_surface_indices[0]));
+	/* (the PSP's subcluster walk marks the surfaces in the flags and counts
+	them; the index list isn't written) */
+	*surface_hash = psp_mv_hash(2166136261u, view->environment_surface_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
 }
 
 static __inline__ unsigned int psp_mv_cycles(void)
