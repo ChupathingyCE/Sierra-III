@@ -4553,6 +4553,13 @@ static void ge_initialize(void)
 
 		psp_loading_boot_screen_stop();
 	}
+	{
+		/* the level BSP's top nodes first (psp_scratch.c; "noscratchbsp" off): the
+		profiler's tables keep their room, the cut corners go to the heap */
+		extern void psp_scratch_bsp_take(void);
+
+		psp_scratch_bsp_take();
+	}
 	cut_take();
 	psp_profile_tables_take();
 	display_list_acquire();
