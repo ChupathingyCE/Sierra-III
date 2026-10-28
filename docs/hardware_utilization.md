@@ -148,6 +148,12 @@ Per-pass figures are research's (lab `coord/handoff/render_ownership_2026-10-27.
 - What the hardware argues for is a split: the ME takes visibility, the level pass and the small passes; the main CPU keeps the model walk and does more of its maths on the VFPU.
 - That is B plus mevis, the order research and the master's second opinion already reached. The VFPU findings add a reason to keep models on the main CPU, rather than a reason to revisit C.
 
+**Posing on the ME (MEPOSE, PNC) against the VFPU** (the master's 13:35 list):
+- **The VFPU took the main CPU's share first.** VFPUP and VFPUQD, now in the tock, take ~1 ms off b30's flight tick [M].
+- **MEPOSE** would move the posing of objects nobody reads early (no parent, no children, nothing held) to the ME. Movable: ~4.8-5.4% of c20's tick, ~0.7% of b30's [U on E]. On the ME that work runs the FPU's way, ~2x slower than the VFPU's, but off the main CPU entirely.
+- **It pays where the ME has room.** It then competes for the ME's time with mevis and B's replay, and placement is judged by the overall balance (the 12:27 rule). So it comes after mevis lands, priced by a c20 PSP pair, and its movable share is re-counted on the tock with the VFPU forms in.
+- **PNC** stays held: it needs B's records and jobs.
+
 **A conflict to settle:** RM (VFPU frustum tests, `render_frustum_cube_visible`, ≤ 4.4% of drawing's fetches) runs inside visibility. If visibility moves to the ME, RM has no VFPU to use. Visibility on the ME (8 ms off the main CPU) outranks RM.
 
 ## 6. The multiplayer boundary (api-job hwmpbound1 40731381973, read and spot-checked)
@@ -199,3 +205,16 @@ The PSP is only ever a client of ChupathingyCE's desktop host (network version 2
 - The rotation matrix's nine sums each need lanes from different registers, so they stay scalar (~15% of the function).
 - That totals ~133 M, about 0.7%: under the gate. So the exact forms alone don't pay.
 - The VFPU's own instructions do much more: `vqmul.q` is the whole product in one instruction, and `vdot.q` a whole dot. Since posing is local to the client (section 6), #2 and #4 become one lever, priced by `vfpubench`.
+
+## 8. Results so far (PSP-3000 pairs on b30's route, 2 runs a side)
+
+| Lever | Status | b30 tick | Notes |
+|---|---|---|---|
+| **VFPUP** (the quaternion product, element-wise, exact) | in the tock, on | -0.2 ms every stretch; cinematic frame -1.6% | 573 products a frame; pair 40741608139 |
+| **VFPUQD** (interpolate + normalize with vdot/vrsq, ≤12 ulp) | in the tock, on (Sheepdog01 16:13) | -0.8 ms flight, -0.3 ms cinematic | Fixed-seed fights re-roll; the free-play census found nothing broken; landing/beach gaps not credited (different fights); pair 40775475465 |
+| **SCRATCHBSP** (the level collision BSP's top 304 nodes in the scratchpad) | in the tock, on | -0.3 ms cinematic and flight | Exact; the near-cut table moved to the heap; pair 40775509445 |
+| LBM v2 (budget's lazy biped matrices) | rejected as built | +0.5 to +1.1 ms | Exact but slower everywhere; pair 40747441996 |
+| VFPUNODE (node products) | parked at the gate | ≤ ~0.5% | Already on vmmul |
+| VFPUQ exact (interpolate) | parked at the gate | ~0.5% | Superseded by VFPUQD; normalize and rotation are slower exact |
+| NRCHK, WM for mevis | in progress | | Helpers nrchk, wmbench |
+
