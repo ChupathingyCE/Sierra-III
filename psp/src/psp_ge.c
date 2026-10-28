@@ -7101,6 +7101,22 @@ static unsigned long carve_steps = 0, carve_returns = 0;
 /* "heaproom256": the bytes the carve keeps from the map's open to its end (0:
 none), the arena's share it stands in for */
 static unsigned int carve_floor = 0;
+/* "carveshare" (B34): the carve's free steps lent back to the textures while
+the copies don't need them, rather than only once it is empty. The copies'
+pieces sit at the carve's top (placed there, and compacted upward), so its
+free bytes gather at its bottom, next to the texture RAM cache; a bottom
+step free for CARVE_SHARE_FRAMES frame ends in a row, in a frame that wanted
+no growth, goes back to the textures, one a frame. The copies take it back
+as before (carve_grow) when they find no room. On a10 the section loads
+empty the carve and the copies then use a third of it, while the textures
+of the boarding craft are refused room for want of an 86 KB run [M, PSP-3000
+census]. Read once a map (psp_ge_level_carve), as the copies' pieces may be
+placed from the Media Engine's work */
+#define CARVE_SHARE_FRAMES 8
+#define CARVE_RETAKE_FRAMES 300
+static int carve_share = 0;
+static unsigned int carve_bottom_free = 0, carve_shared_frame = 0;
+static unsigned long carve_shares = 0, carve_retakes = 0, carve_share_compactions = 0;
 unsigned int psp_tex_ram_textures(void);
 static void carve_release(void);
 static int carve_grow(unsigned int deficit);
@@ -7223,13 +7239,25 @@ the rest is worth keeping; NULL: none */
 static void *arena_take(struct copy_room *room, unsigned int size, void **owner)
 {
 	struct arena_block *block, *best = NULL;
+	int top = room == CARVE_ROOM && carve_share > 0; /* carveshare: the highest best fit, the piece at its top */
 
 	for (block = (struct arena_block *)room->start; block; block = arena_next(room, block))
-		if (!block->used && block->size >= size && (!best || block->size < best->size))
+		if (!block->used && block->size >= size && (!best || block->size < best->size || (top && block->size == best->size)))
 			best = block;
 	if (!best)
 		return NULL;
-	if (best->size - size >= ARENA_SPLIT_LEAST)
+	if (top && best->size - size >= ARENA_SPLIT_LEAST)
+	{
+		struct arena_block *piece = (struct arena_block *)((char *)best + best->size - size), *after = arena_next(room, best);
+
+		piece->size = size;
+		piece->previous = best->size - size;
+		best->size -= size;
+		if (after)
+			after->previous = size;
+		best = piece;
+	}
+	else if (best->size - size >= ARENA_SPLIT_LEAST)
 	{
 		struct arena_block *rest = (struct arena_block *)((char *)best + size), *after;
 
@@ -7439,6 +7467,58 @@ static void __attribute__((cold)) arena_compact(struct copy_room *room)
 	if (first_moved)
 		ge_writeback(first_moved, (unsigned int)(to - first_moved));
 	arena_compactions++;
+	arena_moved_kb += moved / 1024;
+}
+
+/* carveshare: the carve's used blocks moved to its top, in order, so its
+free bytes lie in one block at its bottom. Walked from the top down, each
+block moves up past free space only, never over a block not yet moved */
+static void __attribute__((cold)) carve_compact_up(struct copy_room *room)
+{
+	struct arena_block *block, *last = NULL, *placed = NULL, *below;
+	char *to = room->start + room->bytes, *end = to;
+	unsigned long moved = 0;
+
+	for (block = (struct arena_block *)room->start; block; block = arena_next(room, block))
+		last = block;
+	for (block = last; block; block = below)
+	{
+		unsigned int size = block->size;
+
+		below = block->previous ? (struct arena_block *)((char *)block - block->previous) : NULL;
+		if (!block->used)
+			continue;
+		if ((char *)block != to - size)
+		{
+			void *was = block + 1;
+
+			memmove(to - size, block, size);
+			moved += size;
+			vm_level_move(was, (struct arena_block *)(to - size) + 1);
+		}
+		block = (struct arena_block *)(to - size);
+		if (block->owner)
+			*block->owner = block + 1;
+		if (placed)
+			placed->previous = size;
+		placed = block;
+		to -= size;
+	}
+	if (to > room->start)
+	{
+		block = (struct arena_block *)room->start;
+		block->size = (unsigned int)(to - room->start);
+		block->previous = 0;
+		block->used = 0;
+		block->owner = NULL;
+		if (placed)
+			placed->previous = block->size;
+	}
+	else if (placed)
+		placed->previous = 0;
+	if (moved)
+		ge_writeback(to, (unsigned int)(end - to));
+	carve_share_compactions++;
 	arena_moved_kb += moved / 1024;
 }
 
@@ -7883,6 +7963,9 @@ void psp_ge_level_carve(int carve_from_textures)
 	carve_floor = 0;
 	carve_largest = 0;
 	carve_peak = carve_pieces = carve_pieces_peak = carve_steps = carve_returns = 0;
+	carve_share = psp_keep("carveshare") != 0;
+	carve_bottom_free = carve_shared_frame = 0;
+	carve_shares = carve_retakes = carve_share_compactions = 0;
 	if (!carve_from_textures)
 		return; /* the geometry cache from the heap: the textures keep the whole block */
 	if (kb <= 0 || psp_showcase_map || psp_keep("noarena") || psp_keep_number("streamsqueeze", 0) > 0)
@@ -8004,10 +8087,67 @@ static int __attribute__((cold)) carve_grow(unsigned int deficit)
 	carve_given += step;
 	carve_steps++;
 	carve_idle = 0;
+	if (carve_shares && ge_hot.stream_frame - carve_shared_frame < CARVE_RETAKE_FRAMES)
+		carve_retakes++;
 	if (carve_steps <= 16)
 		platform_log("GE: the level carve grew %u KB to %u of %u KB at %08x (the copies wanted %u KB more); the texture RAM cache keeps %u KB",
 			step / 1024, carve_given / 1024, carve_most / 1024, (unsigned int)at, deficit / 1024, psp_tex_ram_textures() / 1024);
 	return 1;
+}
+
+/* carveshare: the carve's bottom step given back to the texture RAM cache
+once it has been free for CARVE_SHARE_FRAMES frame ends in a row, in frames
+that wanted no growth; never below the heaproom floor, and only while the
+carve still lies right below the other caches' shares. The GE is let finish
+first, as for a compaction: a copy let go a few frames ago may still be in a
+list in flight, and textures will be read into the step */
+static void __attribute__((cold)) carve_share_frame_end(unsigned int deficit)
+{
+	struct arena_block *first, *next;
+
+	if (!room_open(CARVE_ROOM) || deficit)
+	{
+		carve_bottom_free = 0;
+		return;
+	}
+	first = (struct arena_block *)CARVE_ROOM->start;
+	if (first->used || first->size < LEVEL_CARVE_STEP || carve_given < carve_floor + LEVEL_CARVE_STEP)
+	{
+		carve_bottom_free = 0;
+		return;
+	}
+	if (++carve_bottom_free < CARVE_SHARE_FRAMES || psp_tex_carved() != carve_below + carve_given)
+		return;
+	show2_settle(SHOW2_COMPACT);
+	if (CARVE_ROOM->bytes == LEVEL_CARVE_STEP)
+		carve_release(); /* the last step, free: the carve given back whole */
+	else
+	{
+		next = arena_next(CARVE_ROOM, first);
+		if (first->size > LEVEL_CARVE_STEP)
+		{
+			struct arena_block *rest = (struct arena_block *)((char *)first + LEVEL_CARVE_STEP);
+
+			rest->size = first->size - LEVEL_CARVE_STEP;
+			rest->previous = 0;
+			rest->used = 0;
+			rest->owner = NULL;
+			if (next)
+				next->previous = rest->size;
+		}
+		else if (next)
+			next->previous = 0;
+		CARVE_ROOM->start += LEVEL_CARVE_STEP;
+		CARVE_ROOM->bytes -= LEVEL_CARVE_STEP;
+		carve_given -= LEVEL_CARVE_STEP;
+		psp_tex_carve(carve_below + carve_given);
+	}
+	carve_shares++;
+	carve_shared_frame = ge_hot.stream_frame;
+	carve_bottom_free = 0;
+	if (carve_shares <= 16)
+		platform_log("GE: carveshare: a free %u KB step of the level carve lent to the texture RAM cache (the carve %u KB, the textures %u KB)",
+			LEVEL_CARVE_STEP / 1024, carve_given / 1024, psp_tex_ram_textures() / 1024);
 }
 
 /* at a frame's end, after the arena's housekeeping: what the copies lacked
@@ -8053,6 +8193,8 @@ static void __attribute__((cold)) carve_frame_grow(void)
 	if (deficit && carve_grow(deficit))
 		for (k = 0; k < stream_waiting_count; k++)
 			stream_waiting[k].arena_after = ge_hot.stream_frame;
+	if (carve_share > 0)
+		carve_share_frame_end(deficit);
 	if (CARVE_ROOM->start && !carve_lost)
 	{
 		if (CARVE_ROOM->used || carve_floor)
@@ -8081,6 +8223,9 @@ static void __attribute__((cold)) carve_report(void)
 		carve_given / 1024, carve_most / 1024, carve_steps, carve_returns, psp_tex_ram_textures() / 1024, copies, carve_pieces,
 		CARVE_ROOM->start ? CARVE_ROOM->used / 1024 : 0, carve_largest / 1024, carve_peak / 1024, carve_pieces_peak,
 		carve_sleeps, carve_lost ? " (lost now)" : "");
+	if (carve_share > 0)
+		platform_log("GE: carveshare: %lu steps lent to the textures, %lu taken back within %d frames of a lending; %lu upward compactions",
+			carve_shares, carve_retakes, CARVE_RETAKE_FRAMES, carve_share_compactions);
 }
 
 /* the power callback's thread, before the PSP sleeps: the carve goes back to
@@ -8110,7 +8255,21 @@ static void __attribute__((cold)) arena_frame_end(void)
 		overflowed = arena_from_heap != arena_seen_from_heap;
 		arena_seen_from_heap = arena_from_heap;
 		for (k = 0; k < 2; k++)
-			if (free_total[k] >= 64 * 1024 && largest[k] < free_total[k] / 2 &&
+			if (k == 1 && carve_share > 0)
+			{
+				/* carveshare: upward, when that frees a bottom step to lend */
+				const struct arena_block *first = (const struct arena_block *)CARVE_ROOM->start;
+
+				if (room_open(CARVE_ROOM) && free_total[k] >= LEVEL_CARVE_STEP && carve_given >= carve_floor + LEVEL_CARVE_STEP &&
+					(first->used || first->size < LEVEL_CARVE_STEP) &&
+					ge_hot.stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY)
+				{
+					show2_settle(SHOW2_COMPACT);
+					carve_compact_up(CARVE_ROOM);
+					compacted = 1;
+				}
+			}
+			else if (free_total[k] >= 64 * 1024 && largest[k] < free_total[k] / 2 &&
 				(overflowed || ge_hot.stream_frame - arena_last_compact >= ARENA_COMPACT_EVERY))
 			{
 				show2_settle(SHOW2_COMPACT); /* geshow2: it moves copies the GE may be drawing from */
