@@ -519,6 +519,82 @@ static void vfpu_posing_bench(void)
 		BENCH_TRIALS, fpu_us, e_us, d_us, interpolate_fpu_us, interpolate_d_us);
 }
 
+/* The quaternion product in play ("vfpupose", psp_fixups.py FIXES_VFPUPOSE):
+the element-wise form above, whose bits are the FPU's (it keeps every lane's
+operations in the engine's order). The Media Engine has no VFPU and reaches
+engine code through its jobs, so the product goes to the VFPU only when the
+caller's stack is in main RAM: the ME's stack is in its eDRAM. */
+int psp_vfpupose_on = 0;
+unsigned long psp_vfpupose_products = 0, psp_vfpupose_differ = 0;
+static int vfpupose_check = 0;
+
+/* real_math.c's quaternions_multiply, the FPU's way, for the check */
+static void fpu_quat_multiply(const struct quat *q0, const struct quat *q1, struct quat *result)
+{
+	struct quat product;
+
+	product.i = +q0->j * q1->k + q0->i * q1->w + q0->w * q1->i - q0->k * q1->j;
+	product.j = +q0->w * q1->j + q0->j * q1->w + q0->k * q1->i - q0->i * q1->k;
+	product.k = +q0->k * q1->w + q0->i * q1->j + q0->w * q1->k - q0->j * q1->i;
+	product.w = +q0->w * q1->w - q0->i * q1->i - q0->j * q1->j - q0->k * q1->k;
+	*result = product;
+}
+
+int psp_vfpu_quaternions_multiply(const void *q0, const void *q1, void *result)
+{
+	unsigned int stack;
+
+	__asm__ volatile("move %0, $sp" : "=r"(stack));
+	if ((stack >> 27) != 1) /* not 0x08000000-0x0fffffff: the ME */
+		return 0;
+	if (vfpupose_check)
+	{
+		struct quat fpu, vfpu;
+
+		fpu_quat_multiply((const struct quat *)q0, (const struct quat *)q1, &fpu);
+		vfpu_quat_multiply_e((const struct quat *)q0, (const struct quat *)q1, &vfpu);
+		if (memcmp(&fpu, &vfpu, sizeof(fpu)))
+			psp_vfpupose_differ++;
+		/* play keeps the FPU's bits, so a difference can't change the game */
+		*(struct quat *)result = fpu;
+	}
+	else
+		vfpu_quat_multiply_e((const struct quat *)q0, (const struct quat *)q1, (struct quat *)result);
+	psp_vfpupose_products++;
+	return 1;
+}
+
+/* on only if 2000 random products, in place both ways too, give the FPU's
+bits exactly */
+static void vfpupose_initialize(void)
+{
+	struct quat q0, q1, fpu, vfpu, copy;
+	int trial, differ = 0;
+
+	for (trial = 0; trial < 2000; trial++)
+	{
+		random_quat(&q0);
+		q1.i = random_value(1.0f);
+		q1.j = random_value(1.0f);
+		q1.k = random_value(1.0f);
+		q1.w = random_value(1.0f);
+		fpu_quat_multiply(&q0, &q1, &fpu);
+		vfpu_quat_multiply_e(&q0, &q1, &vfpu);
+		differ += memcmp(&fpu, &vfpu, sizeof(fpu)) != 0;
+		copy = q0;
+		vfpu_quat_multiply_e(&copy, &q1, &copy);
+		differ += memcmp(&fpu, &copy, sizeof(fpu)) != 0;
+		copy = q1;
+		vfpu_quat_multiply_e(&q0, &copy, &copy);
+		differ += memcmp(&fpu, &copy, sizeof(fpu)) != 0;
+	}
+	vfpupose_check = psp_keep("vfpuposecheck");
+	psp_vfpupose_on = differ == 0;
+	platform_log("VFPU: quaternion product (vfpupose): 2000 products, in place both ways too, %d differ from the FPU; %s%s",
+		differ, psp_vfpupose_on ? "on" : "OFF: it disagrees with the FPU",
+		psp_vfpupose_on && vfpupose_check ? " (vfpuposecheck: every product checked, the FPU's bits played)" : "");
+}
+
 /* start-up: 2000 random products both ways; the VFPU stays on if they agree
 to within a few last bits relative to the values' size */
 void psp_vfpu_initialize(void)
@@ -592,4 +668,6 @@ void psp_vfpu_initialize(void)
 	platform_log("VFPU: matrix product checked against the FPU, worst relative difference %g%s; 2000 products %u us (FPU %u us); %s",
 		(double)worst, aliased_ok ? "" : ", WRONG in place", vfpu_us, fpu_us,
 		psp_vfpu_on ? "on" : psp_keep("novfpu") ? "off (novfpu)" : "OFF: it disagrees with the FPU");
+	if (psp_vfpu_on && psp_keep("vfpupose"))
+		vfpupose_initialize();
 }

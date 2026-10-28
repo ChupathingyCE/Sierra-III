@@ -24256,7 +24256,7 @@ static void frame_end_show(void)
 			{
 				/* build 37: the renderer's own CPU time a frame, by kind (the
 				rest of each profile step is the game's) */
-				extern unsigned long psp_vfpu_multiplies;
+				extern unsigned long psp_vfpu_multiplies, psp_vfpupose_products, psp_vfpupose_differ;
 				char text[512];
 				int length = 0, k;
 				unsigned long total = 0;
@@ -24269,8 +24269,8 @@ static void frame_end_show(void)
 					ge_entry_us[k] = 0;
 				}
 				entry_snapshot = 0;
-				platform_log("GE: renderer CPU us a frame: %s (all %lu); VFPU matrix products %lu a frame", text,
-					total / 300, psp_vfpu_multiplies / 300);
+				platform_log("GE: renderer CPU us a frame: %s (all %lu); VFPU matrix products %lu a frame; VFPU quaternion products %lu a frame (%lu differed)",
+					text, total / 300, psp_vfpu_multiplies / 300, psp_vfpupose_products / 300, psp_vfpupose_differ);
 				budget_renderer_us = total / 300;
 				/* build 64: the angle buckets, the overlays' walls, nearauto
 				and the trial splits, over the last 300 frames */
@@ -24333,7 +24333,7 @@ static void frame_end_show(void)
 					near_auto_by_objects = near_auto_us = near_auto_frames = 0;
 					level_draws_inside = level_draws_classified = angle_far_triangles = detail_passes_skipped_far = 0;
 				}
-				psp_vfpu_multiplies = 0;
+				psp_vfpu_multiplies = psp_vfpupose_products = psp_vfpupose_differ = 0;
 				{
 					/* build 47: the parts, us a frame and calls a frame, and
 					what one timer reading costs */
