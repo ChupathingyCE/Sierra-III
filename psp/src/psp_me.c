@@ -84,6 +84,7 @@ unsigned int psp_ge_me_slant(const unsigned int *args, unsigned int *results);
 void psp_perception_me_rays(const unsigned int *args, unsigned int *results);
 void psp_pose_me_make(const unsigned int *args, unsigned int *results); /* objects.c (psp_fixups.py FIXES_131) */
 void psp_points_me_make(const unsigned int *args, unsigned int *results); /* point_physics.c (psp_fixups.py FIXES_MEJOBS) */
+void psp_mevis_me_job(const unsigned int *args, unsigned int *results); /* structure_visibility.c (psp_fixups.py mevis_copies) */
 
 #define AUDIO_LIST_MAX 256
 #define MIX_FRAMES_MAX 512
@@ -1046,6 +1047,11 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	case ME_JOB_POINTS:
 		psp_points_me_make(args, results);
 		break;
+#ifdef PSP_WALKAPART
+	case ME_JOB_VISIBILITY:
+		psp_mevis_me_job(args, results);
+		break;
+#endif
 #ifdef PSP_RECON
 	case ME_JOB_BUSLOAD:
 		bus_load_job(args, results);
@@ -2421,6 +2427,36 @@ int psp_me_push_perc_rays(const void *rays, unsigned int count, void *answers, u
 	if (!job.args[ME_RING_ARG_CONTINUES])
 		psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
 	return psp_me_push(&job, ticket);
+}
+
+/* "mevis" (psp_fixups.py mevis_copies, structure_visibility.c): the frame's
+visibility made again on the ME from the camera in the record, a measurement
+of what option C's walk would cost there. It reads the level and the objects
+anywhere in RAM (the whole cache handed over, as for the rays), and writes its
+record's answer lines and its own state, on lines nothing else uses. Never
+waited for with psp_me_wait: the frame's end looks at psp_me_ring_done, so a
+slow answer never makes the ring rest */
+#ifdef PSP_WALKAPART
+int psp_me_push_visibility(void *record, unsigned int record_bytes, unsigned int *ticket)
+{
+	struct psp_me_job job;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_VISIBILITY;
+	job.args[0] = (unsigned int)record;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = record;
+	job.output_bytes = record_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
+}
+#endif
+
+/* a ring job done (its output written back), without waiting */
+int psp_me_ring_done(unsigned int ticket)
+{
+	return (int)(RING_POPPED - ticket) > 0;
 }
 
 /* next tick's base poses (psp_fixups.py FIXES_131, objects.c #poseahead): a

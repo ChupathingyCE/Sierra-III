@@ -167,6 +167,11 @@ METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # leaves them out. Passed to psp_ge.c's own compile, which takes none of the
 # engine's defines
 DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
+# PSP_WALKAPART=1: option C's groundwork, the drawing walk kept from the tick's
+# state (keep word walkapart) and its tests (mevis, walkwrites; psp_fixups.py
+# FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
+# loop, so a default build leaves all of it out
+WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
 # build 110: PSP_MAP_CHECKS=1 keeps ChupathingyCE's checks of a map's data as
 # the tick reads it (animations, collision walks). Off by default: the PSP's
 # maps are its own bake, trusted as the Xbox game trusts its own (psp_fixups.py,
@@ -474,6 +479,7 @@ def compile_one(item):
                pgo_flags(rel) if opt == "-O2" else []) + (
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
+               ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
