@@ -1,6 +1,6 @@
 # Hardware utilization: does the port use the PSP well?
 
-Draft, phase 1 (the survey) in progress. The hardware session's brief is in the lab (`coord/handoff/hardware_2026-10-28.md`). Phase 2 turns this into a ranked reshuffle for Sheepdog01 before anything is rebuilt. Labels: [M] PSP, [E] emulator or estimate, [D] code or data, [U] inference.
+Draft: phase 1 (the survey) done except the VRAM plan; phase 2's ranked list in section 7, for Sheepdog01 before any rebuild. The hardware session's brief is in the lab (`coord/handoff/hardware_2026-10-28.md`). Labels: [M] PSP, [E] emulator or estimate, [D] code or data, [U] inference.
 
 ## 1. Which lane limits each map
 
@@ -112,9 +112,39 @@ The split was set at build 108 by the cache model's misses per byte (`psp_scratc
 
 **VRAM:** the plan lives on the dashboard (`vram_plan`), which this session can't open. To be read through the master.
 
-## 5. To come
+## 5. The placement map
 
-- 5: the placement map.
+Each unit's strengths, measured:
+- **The main CPU** has the VFPU: 1.9-2.6x its own FPU on the node product [M].
+- **The ME** has an FPU exactly as fast as the main CPU's and bit-exact with it. It has no VFPU. Its traffic costs the tick 1.4-6.7% [M], and it runs branchy scalar work at 0.88-0.96x the main CPU's time (mevis [M]).
+- **The GE** has spare fill on the main-CPU-bound maps [M]. Its main-RAM reads are what slow the tick (section 4).
+
+So:
+- matrix and vector work goes where the VFPU is;
+- branchy scalar work goes to the ME;
+- bytes the GE reads go to VRAM.
+
+Per-pass figures are research's (lab `coord/handoff/render_ownership_2026-10-27.md` 6b, b30) unless marked.
+
+| Job | Runs on today | Best unit | Why |
+|---|---|---|---|
+| Visibility (find_clusters, subclusters, find_rendered_objects): 8.0-8.8 ms a frame | main CPU | **ME** | Scalar and branchy, no VFPU, static inputs; measured 0.88-0.93x on the ME, exact, never late (mevis [M]); its one tie to the tick (the marker stamp) is cut by walkapart |
+| Level pass: 2.1-3.5 ms | main CPU walk, ME replay | **ME** (B's first job) | No VFPU; self-contained |
+| Model walk and node matrices: ~20 ms main, 27.9 ME replay | main CPU walk (VFPU product), ME replay | **Main CPU, more of it on the VFPU** | Holds every VFPU use in the walk; on the ME the node products would take ~2.5-5 ms instead of 1.3-1.9 [M]. Part draws can balance either way (B) |
+| Decals, HUD, screen quads: ~0.6 ms | main CPU | ME jobs | Cheap, no VFPU |
+| Particles, contrails: 1.3-2.9 ms | main CPU | Main CPU for now | Reach firmware paths that need stand-ins |
+| Tick: posing (quaternions, rotation matrices, node walk; ~10% of b30's tick [E]) | main CPU's FPU | **Main CPU's VFPU** (E forms; section 3) | Element-wise forms are exact; LBM first removes the unneeded matrices |
+| Tick: collision BSP walks (about half the data misses) | main CPU | **Main CPU, with the scratchpad**; batched queries to the ME later (L3, BW) | One dot a node: memory, not maths. The ME's own cache and cheap bus traffic make batched line-of-sight a fit, once AI's share of the ME is settled against drawing's |
+| AI rays | ME ring jobs | ME (as now) | 1-3% of the ME [M] |
+| Sound | ME | ME (as now) | |
+| Geometry and textures the GE reads | VRAM where they fit | VRAM | 9.6 µs of tick a KB of geometry from main RAM [M]; the VRAM route is nearly used up (the master's second opinion) |
+
+**Plan C re-weighed with the VFPU:**
+- Full C, where the ME owns all drawing, gives up the VFPU on exactly the pass that uses it (models). It also keeps the GE's main-RAM reads beside the tick.
+- What the hardware argues for is a split: the ME takes visibility, the level pass and the small passes; the main CPU keeps the model walk and does more of its maths on the VFPU.
+- That is B plus mevis, the order research and the master's second opinion already reached. The VFPU findings add a reason to keep models on the main CPU, rather than a reason to revisit C.
+
+**A conflict to settle:** RM (VFPU frustum tests, `render_frustum_cube_visible`, ≤ 4.4% of drawing's fetches) runs inside visibility. If visibility moves to the ME, RM has no VFPU to use. Visibility on the ME (8 ms off the main CPU) outranks RM.
 
 ## 6. The multiplayer boundary (api-job hwmpbound1 40731381973, read and spot-checked)
 
@@ -144,3 +174,17 @@ The PSP is only ever a client of ChupathingyCE's desktop host (network version 2
 **Side notes for the multiplayer session:**
 - The engine's `port/linux/NETCODE.md` still says version 10.
 - The join token's size comes from `sizeof` on an array parameter, so it is pointer-sized: 8 bytes on PC, 4 on the PSP, in non-`DEBUG` builds. Unchecked which the PSP's multiplayer build is.
+
+## 7. Phase 2: the ranked list (draft, for Sheepdog01 before any rebuild)
+
+| # | Lever | Worth | Risk | Exactness | Priced by |
+|---|---|---|---|---|---|
+| 1 | **Visibility on the ME** (mevis; research's) | 8.0-8.8 ms of the main CPU's frame on b30 [M] | Low: measured exact, never late | Exact (statecrc [E]) | Research's PSP pair; this session endorses its placement |
+| 2 | **Posing on the VFPU**: the quaternion chain and `matrix4x3_rotation_from_quaternion` in E forms (normalize's sqrt kept on the FPU, as VFPUQ) | ≤ ~3.8% of the tick's fetches [U]; part of posing's ~10% of b30's tick [E] | Low-medium: unaligned matrices need `lv.s` or temporaries | Exact by construction (E) | One A/B pair, b30 flight; after or with budget's LBM |
+| 3 | **The scratchpad re-ranked** by misses per byte on w142 (candidates: the top of each map's collision BSP, the planes it touches first) | Unsized: the tick's top miss sources (tag window, collision) hold none of it today | Low: `noscratch` is the off switch; one owner thread | Exact (only placement) | Cache rule: a PSP pair, never the cache model |
+| 4 | **Node products and transforms on the VFPU** (D forms: `object_compute_node_matrices_with`, `matrix4x3_transform_point`) | ≤ ~3.3% of the tick's fetches [U] | Medium | Not bit-exact (like today's `vmmul`); safe for multiplayer (section 6), so both A/B sides carry the new maths | First the `vdot`/`vmmul` rounding bench (it can ride on item 2's PSP pair) |
+| 5 | **Small passes as ME jobs** (decals, HUD) | ~0.6 ms main [M] | Low | Exact | Part of B |
+| 6 | **Collision queries batched to the ME** (L3, BW) | Large but unsized; needs AI's and drawing's split of the ME first | High (XL) | Exact if the ME's FPU is (it is [M]) | Later |
+| - | RM (VFPU frustum tests) | ≤ 4.4% of drawing's fetches | | | **Dropped** if 1 lands |
+
+The two rule rewordings in the brief wait on Sheepdog01's wording. Section 6 is the evidence for the second: no client float has to be bit-exact with the host.
