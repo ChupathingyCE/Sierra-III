@@ -72,8 +72,36 @@ VFPU forms:
 3. **The one VFPU job isn't bit-exact today.** `matrix4x3_multiply` runs on `vmmul` and is switched on by a tolerance check (`psp/src/psp_vfpu.c`: `worst < 1e-5f`; lab levers.tsv calls it "last-bit different"). So `vmmul`'s accumulation order already differs from the FPU's somewhere. Measuring `vdot`/`vmmul` against the FPU (the brief's first open question) decides the D rows. Whether node matrices reach multiplayer's shared state is item 6 (api-job hwmpbound1).
 4. **Not settled:** the alignment of tag data (collision planes, portals, keyframes; a map-level check of block offsets mod 16 would settle it); `objects_update`, `effect_update` and `structure_visibility_*`'s inlined float work.
 
-## 4-6. To come
+## 4-5. To come
 
 - 4: the memory side.
 - 5: the placement map.
-- 6: the multiplayer boundary.
+
+## 6. The multiplayer boundary (api-job hwmpbound1 40731381973, read and spot-checked)
+
+The PSP is only ever a client of ChupathingyCE's desktop host (network version 29; `FIXES_MPCLIENT`). **Halo's netcode isn't lockstep: nothing a client computes has to stay bit-exact with the host** [D]. What crosses the wire is either the client's own word (input, aim: taken as given, clamped) or the host's word, which the client accepts and snaps or glides to.
+
+| System | Verdict | Why [D] (engine at the pin d98982b) |
+|---|---|---|
+| Input, aim | LOCAL (the client's word) | sent as floats, the host clamps them (`network_distributed.c`), nothing recomputed to compare |
+| Own biped movement | PREDICTED, bounds-checked | the host takes the client's position within 3.5 units (`HOST_ACCEPT_TOLERANCE`); the client snaps to the host's past 3.0 (`LOCAL_CORRECTION_TOLERANCE`) |
+| Other players, vehicles | PREDICTED | host states in 16-bit vectors; under 1.0 unit the copy glides half the gap a tick, past it jumps (`network_objects.c`) |
+| Own vehicle | PREDICTED, bounds-checked | 4.0 / 5.0 units (`LOCAL_VEHICLE_TOLERANCE`, `HOST_VEHICLE_ACCEPT_TOLERANCE`) |
+| Damage, death | host's | the client deals no damage; its hit reports (floats, node, region) pass the host's bounds (3-6 units, finite), not a bit match (`network_damage.c`) |
+| Node matrices, animation, collision | LOCAL | never on the wire; reach the host only through movement and hit reports, both bounds-checked |
+| Projectiles, particles, decals, contrails, lights, sound, HUD, drawing | LOCAL | no message types for them (`network_distributed.h`'s enum); projectiles are client-only objects |
+
+**Checks across machines:** none per tick. The engine's checksums (FNV-1a in `network_distributed.c`) are the host deciding whether a state changed since its last send, not a desync test (checked). At join: a token mixing the build time and `tag_groups_checksum()` in non-`DEBUG` builds, and the map version.
+
+**What does have to match** is discrete, not float: objects placed at map load must take the same datum indices as the host's (`network_objects.c`). Whether a Sierra-III bake keeps that order is unchecked.
+
+**So for the bit-exact rule** (the brief's rewording 2): VFPU maths that differs in the last bits is safe for multiplayer, on the tick as well as in drawing. What it could change is behaviour well inside the tolerances: a biped drifting past 3.0 units would snap visibly, and hit reports choose region and material on the client. Neither needs bit equality; both need the play to stay the same, which the campaign's side-by-sides already test. Two things keep statecrc useful in the lab anyway: exactness proofs for A/Bs, and the repeatability of fixed-seed runs. A lever that changes the last bits needs its new maths on both sides of its A/B.
+
+**Riskiest calls** [U]:
+1. Own biped prediction: the PSP's collision differs from the PC's (the packed collision tree), so a large drift shows as snaps, independently of any VFPU work.
+2. Hit reports: a systematic PSP bias in node matrices would go unnoticed (by design: what the shooter saw hit, hits).
+3. Map-load object indices against the bake: a hard failure if wrong; not float.
+
+**Side notes for the multiplayer session:**
+- The engine's `port/linux/NETCODE.md` still says version 10.
+- The join token's size comes from `sizeof` on an array parameter, so it is pointer-sized: 8 bytes on PC, 4 on the PSP, in non-`DEBUG` builds. Unchecked which the PSP's multiplayer build is.
