@@ -44,7 +44,8 @@ Options:
                                 <output>/work/<map>.log
     --force                     bake maps whose hashes don't match
     --detail fp,vehicles        also bake _detail.ptex with these classes at
-                                full size (fp, weapons, vehicles, characters):
+                                full size (fp, weapons, vehicles, characters,
+                                chief):
                                 the launch menu's "assetdetail" uses them
     --sound s9                  the sound bake (the default; streaming.md S9):
                                 every sound at 22,050 Hz at most, effects mono,

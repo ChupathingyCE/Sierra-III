@@ -538,7 +538,7 @@ GEL_CUBE_MARK = 0xC0BE         # palette entry 255 of a gel patch that carries i
 GEL_CUBE_FIRST = 7             # the cube's colours from this palette entry on (0 the mean, 1-6 the faces)
 
 
-def cube_patch(m, b, rgb=None, faces=None, cube=None):
+def cube_patch(m, b, rgb=None, faces=None, cube=None, sphere=None):
     """a cube map's average colour as an 8 x 8 patch of that one colour,
     under the cube map's own key: the GE draws no cube maps, and a model's
     reflection is folded into its lighting by this average (psp_ge.c,
@@ -575,6 +575,19 @@ def cube_patch(m, b, rgb=None, faces=None, cube=None):
         expanded = (entries[0] & 31) * 255 // 31, ((entries[0] >> 5) & 63) * 255 // 63, (entries[0] >> 11) * 255 // 31
         return dict(w=w, h=h, levels=1, clut=0, alpha=False, psm=5, average=expanded,
                     data=palette + swizzle_psp(level.tobytes(), row, rows))
+    if sphere is not None:
+        # a model reflection's sphere map, CLUT8; its average stays the
+        # patch's (entry 0 expanded), so the reflection folded into the
+        # part's ambient (psp_ge.c, ambient_with_reflection) is as before
+        mean = entry_of(r, g, bl)
+        idx, pal, _, _ = quantize(sphere, 256)
+        palette = np.array([entry_of(int(p[0]), int(p[1]), int(p[2])) for p in pal[:256]], '<u2').tobytes()
+        row, rows = level_bytes(SPHERE_SIDE, SPHERE_SIDE, 8)
+        level = np.zeros((rows, row), np.uint8)
+        level[:SPHERE_SIDE, :SPHERE_SIDE] = idx
+        expanded = (mean & 31) * 255 // 31, ((mean >> 5) & 63) * 255 // 63, (mean >> 11) * 255 // 31
+        return dict(w=SPHERE_SIDE, h=SPHERE_SIDE, levels=1, clut=0, alpha=False, psm=5, average=expanded,
+                    data=palette + swizzle_psp(level.tobytes(), row, rows))
     entries = [entry_of(r, g, bl)] + [0] * 15
     if faces is not None:
         entries[1:7] = [entry_of(*face) for face in faces]
@@ -584,6 +597,51 @@ def cube_patch(m, b, rgb=None, faces=None, cube=None):
     level = swizzle_psp(bytes(row * rows), row, rows)                # every texel entry 0
     return dict(w=8, h=8, levels=1, clut=0, alpha=False, data=palette + level, psm=4)
 
+
+SPHERE_SIDE = 32               # texels a side of a model reflection's sphere map (psp_ge.c, reflection_env_pass)
+
+
+def sphere_map(m, b):
+    """a model reflection's cube map as a sphere map, SPHERE_SIDE a side, as
+    RGBA, or None: the colour reflected toward the eye by a surface whose
+    normal, seen from the eye, points at that texel (s right, t up, the
+    middle facing the eye), for an eye looking along +X with +Z up. The GE
+    has no cube maps; its environment mapping makes a texel from the
+    normal's two components along the camera's right and up
+    (sceGuTexMapMode GU_ENVIRONMENT_MAP), so a shiny part's reflection moves
+    as it turns, though not as the camera does. The cube is looked up as
+    Direct3D's faces (psp_tex.c, psp_tex_gel_cube_at)"""
+    faces = gel_face_images(m, b)
+    if faces is None:
+        return None
+    side = faces[0].shape[0]
+    n = SPHERE_SIDE
+    c = (np.arange(n) + 0.5) / n * 2.0 - 1.0
+    s, t = np.meshgrid(c, -c)                                         # row 0 is up
+    z = np.sqrt(np.clip(1.0 - s * s - t * t, 0.0, 1.0))
+    norm = np.sqrt(np.maximum(s * s + t * t + z * z, 1e-12))
+    s, t, z = s / norm, t / norm, z / norm
+    rx, ry, rz = 2.0 * z * s, 2.0 * z * t, 2.0 * z * z - 1.0          # the view reflected (view space)
+    x, y, zz = -rz, -rx, ry                                           # into the world: forward +X, left +Y, up +Z
+    ax, ay, az = np.abs(x), np.abs(y), np.abs(zz)
+    out = np.zeros((n, n, 4), np.float64)
+    major = np.maximum(np.maximum(ax, ay), az)
+    pick_x = (ax >= ay) & (ax >= az)
+    pick_y = ~pick_x & (ay >= az)
+    pick_z = ~pick_x & ~pick_y
+    face = np.where(pick_x, np.where(x >= 0, 0, 1), np.where(pick_y, np.where(y >= 0, 2, 3), np.where(zz >= 0, 4, 5)))
+    sc = np.where(pick_x, np.where(x >= 0, -zz, zz), np.where(pick_y, x, np.where(zz >= 0, x, -x)))
+    tc = np.where(pick_x, -y, np.where(pick_y, np.where(y >= 0, zz, -zz), -y))
+    u = np.clip(((sc / major + 1.0) * 0.5 * side).astype(int), 0, side - 1)
+    v = np.clip(((tc / major + 1.0) * 0.5 * side).astype(int), 0, side - 1)
+    for k in range(6):
+        where = face == k
+        out[where] = faces[k][v[where], u[where]]
+    out[:, :, 3] = 255
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
+
+
+NO_SPHERE_MAPS = False         # --no-sphere-maps: a model reflection's cube as its 8 x 8 average patch only, as before
 
 NO_CUBE_PATCHES = False        # --no-cube-patches: no cube map averages in the pack (as build 139)
 NO_GEL_FACES = False           # --no-gel-faces: a gel patch with the single gel average only, the behaviour before per-face averages
@@ -1000,6 +1058,9 @@ DETAIL_CLASSES = {
     'weapons': lambda tag: tag.startswith('weapons\\') and '\\fp\\' not in tag,
     'vehicles': lambda tag: tag.startswith('vehicles\\'),
     'characters': lambda tag: tag.startswith('characters\\') and '\\fp\\' not in tag,
+    # Chief, a centerpiece as the main menu's ring is (Sheepdog01, 2026-10-27): his
+    # armour, visor and first-person hands at their own size
+    'chief': lambda tag: tag.startswith('characters\\cyborg\\'),
 }
 FULL_DETAIL = set()
 
@@ -2099,6 +2160,8 @@ def main():
                     help="no cube map averages in the pack (as build 139)")
     ap.add_argument('--no-gel-faces', action='store_true',
                     help="a light's gel patch with the single gel average only, the behaviour before per-face averages")
+    ap.add_argument('--no-sphere-maps', action='store_true',
+                    help="a model reflection's cube map as its average alone, without the sphere map the reflection pass draws")
     ap.add_argument('--no-gel-cube', action='store_true',
                     help="a light's gel patch with its face means only, without the cube the light pass samples per vertex")
     ap.add_argument('--relief-unfiltered', action='store_true',
@@ -2137,8 +2200,9 @@ def main():
     QUALITY, QUALITY_REPORT = a.quality, a.quality_report
     PREMULTIPLIED_MASKS = a.premultiplied_masks
     SHOWCASE = a.showcase
-    global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES, NO_GEL_FACES, NO_GEL_CUBE
+    global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES, NO_GEL_FACES, NO_GEL_CUBE, NO_SPHERE_MAPS
     NO_GEL_FACES = a.no_gel_faces
+    NO_SPHERE_MAPS = a.no_sphere_maps
     NO_GEL_CUBE = a.no_gel_cube
     NO_RELIEF = a.no_relief
     OLD_RELIEF = a.relief_unfiltered
@@ -2221,7 +2285,8 @@ def main():
             rgb = gel_average(m, b) if b['tag'] in gels else None
             faces = gel_faces(m, b) if rgb is not None and not NO_GEL_FACES else None
             cube = gel_cube(m, b) if faces is not None and not NO_GEL_CUBE else None
-            r = cube_patch(m, b, rgb, faces, cube)
+            sphere = sphere_map(m, b) if rgb is None and not NO_SPHERE_MAPS else None
+            r = cube_patch(m, b, rgb, faces, cube, sphere)
             if r is not None:
                 CUBE_PATCHES.append(b['tag'])
                 if rgb is not None:

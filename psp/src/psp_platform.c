@@ -1094,6 +1094,9 @@ static const struct
 	each lit vertex where the pack keeps it (nogelcube: by the faces); on
 	provisionally while its cost in a10's hallway (+8-15%) is weighed */
 	{ "gelfaces", "nogelfaces" },
+	/* Chief's visor drawn gold from its own sphere map (psp_ge.c, chiefvisor):
+	folded into the lighting it stayed near black; a restoration */
+	{ "chiefvisor", "nochiefvisor" },
 	/* the frame handed to the ME in pieces as it is written, gated on the main
 	CPU's wait for the ME (psp_ge.c, mechunk): where the frame waits for the
 	ME the replay runs beside the writing (a30 7.7 -> 12.7 fps, d20 11.4 ->
@@ -2616,11 +2619,16 @@ cache file is still open from an earlier visit (the menu again after a
 level) never reaches psp_map_opened, and the flag kept the level's 0, so
 the menu took a level's carves while it loaded its full-size pack (B29).
 "showcaseonce" leaves the flag to psp_map_opened alone, as before */
+/* counts map loads, so a cache keyed by a map's tag addresses knows when
+they've changed (psp_fixups.py, the Chief parts' kinds) */
+int psp_map_generation = 0;
+
 void psp_showcase_refresh(const char *name)
 {
 #if defined(PSP_RECON) && defined(PSP_TICK_STEPS)
 	objsteps_map_loaded();
 #endif
+	psp_map_generation++;
 	if (!psp_keep("showcaseonce"))
 		psp_showcase_map = name && !strcmp(name, "ui") && !psp_keep("noshowcase");
 }

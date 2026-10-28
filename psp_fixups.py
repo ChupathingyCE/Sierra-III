@@ -38,6 +38,9 @@ static boolean psp_animation_valid = FALSE;
 along the view, for its parts' reflections (psp_ge.c, psp_ge_model_reflection) */
 static real_argb_color psp_reflection_tint;
 static real psp_model_camera_distance = 0.0f;
+/* which of Chief's parts the part being drawn is (1 his visor, 2 his armour
+or hands, 0 none): set with its reflection, read by its detail map */
+static int psp_chief_part = 0;
 /* a model's distance along the view: models.c's rso works it out the same way,
 to check a kept reflection's fade (psp_ge.c, rso) */
 real psp_model_distance_along_view(real const *point)
@@ -451,7 +454,12 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 				and +344 */
 				extern void psp_ge_model_reflection(unsigned int cube_key, float const *rgb);
 				long cube = model_shader ? *(long const *)(definition + 368) : NONE;
-				float reflection[3] = { 0.0f, 0.0f, 0.0f };
+
+				psp_chief_part = 0;
+				/* the strength, then which of Chief's parts this shader is
+				(1 his visor, 2 his armour, 0 none): the centerpiece gets
+				passes of its own (psp_ge.c, chiefvisor) */
+				float reflection[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
 
 				if (cube != NONE)
 				{
@@ -474,14 +482,81 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 						reflection[channel] = brightness * 0.5f * (perpendicular[channel] + parallel[channel]) *
 							(&psp_reflection_tint.red)[channel];
 				}
+				if (cube != NONE)
+				{
+					/* Chief's parts by their shaders' names, once a shader a map:
+					the name is looked up through the shader tags */
+					extern int psp_map_generation;
+					extern char const *psp_shader_tag_name(void const *shader);
+					static void const *chief_shader[64];
+					static signed char chief_kind[64];
+					static int chief_count = 0, chief_generation = -1;
+					int k, kind = -1;
+
+					if (chief_generation != psp_map_generation)
+					{
+						chief_generation = psp_map_generation;
+						chief_count = 0;
+					}
+					for (k = 0; k < chief_count; k++)
+						if (chief_shader[k] == definition)
+						{
+							kind = chief_kind[k];
+							break;
+						}
+					if (kind < 0)
+					{
+						char const *name = psp_shader_tag_name(definition);
+
+						kind = !name ? 0 : !strcmp(name, "characters\\\\cyborg\\\\shaders\\\\visor") ? 1 :
+							!strncmp(name, "characters\\\\cyborg\\\\", 18) ? 2 : 0;
+						if (chief_count < 64)
+						{
+							chief_shader[chief_count] = definition;
+							chief_kind[chief_count++] = (signed char)kind;
+						}
+						if (kind > 0)
+							platform_log("chief: %s is Chief's %s (map load %d)", name, kind == 1 ? "visor" : "armour", psp_map_generation);
+					}
+					reflection[3] = (float)kind;
+					psp_chief_part = kind;
+				}
 				psp_ge_model_reflection(cube != NONE ? psp_tex_bitmap_key(cube, 0) : 0, reflection);
+				if (cube != NONE && PSP_KEEP_ONCE("refldump"))
+				{
+					/* each shiny shader once a map: which part is which (Chief's
+					visor against his armour), and the strengths that pick them */
+					extern char const *psp_shader_tag_name(void const *shader);
+					static void const *dumped[64];
+					static int dumped_count = 0;
+					int k;
+
+					for (k = 0; k < dumped_count && dumped[k] != definition; k++)
+						;
+					if (k == dumped_count && dumped_count < 64)
+					{
+						char const *name = psp_shader_tag_name(definition);
+
+						dumped[dumped_count++] = definition;
+						platform_log("refldump: %s reflection %.3f %.3f %.3f (brightness %.2f / %.2f, tint %.2f %.2f %.2f / %.2f %.2f %.2f, the lighting's %.2f %.2f %.2f x %.2f) multipurpose %s",
+							name ? name : "(no tag)", reflection[0], reflection[1], reflection[2],
+							*(float const *)(definition + 324), *(float const *)(definition + 340),
+							((float const *)(definition + 328))[0], ((float const *)(definition + 328))[1], ((float const *)(definition + 328))[2],
+							((float const *)(definition + 344))[0], ((float const *)(definition + 344))[1], ((float const *)(definition + 344))[2],
+							psp_reflection_tint.red, psp_reflection_tint.green, psp_reflection_tint.blue, psp_reflection_tint.alpha,
+							multipurpose != NONE ? "yes" : "none");
+					}
+				}
 			}
 			/* on the main menu, the detail map itself over the base that holds
 			its average (psp_ge.c, model_detail_pass): shaders with the double
 			multiply and no mask, whose folded base the pack has. Its scale is
 			on the base map's coordinates, v by the v scale too, as the Xbox's
 			vertex constants have it (rasterizer_xbox_models.c) */
-			if (psp_showcase_map)
+			/* "chiefdetail": Chief's armour too, the centerpiece in every
+			level (Sheepdog01, 2026-10-27), as the ring is on the menu; every other
+			part then sends none, so his detail map never carries over */
+			if (psp_showcase_map || PSP_KEEP_ONCE("chiefdetail"))
 			{
 				extern void psp_ge_model_detail(unsigned int, float, float);
 				long detail = model_shader ? *(long const *)(definition + 232) : NONE;
@@ -492,7 +567,8 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 					scale = 1.0f;
 				if (v_detail == 0.0f)
 					v_detail = 1.0f;
-				psp_ge_model_detail(detail != NONE && (base_key & 1) && *(short const *)(definition + 212) == 0 &&
+				psp_ge_model_detail((psp_showcase_map || psp_chief_part == 2) &&
+					detail != NONE && (base_key & 1) && *(short const *)(definition + 212) == 0 &&
 					*(short const *)(definition + 214) == 0 ? psp_tex_bitmap_key(detail, 0) : 0,
 					(u_scale ? u_scale : 1.0f) * scale, (v_scale ? v_scale : 1.0f) * scale * v_detail);
 			}
