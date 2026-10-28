@@ -36245,7 +36245,360 @@ static void psp_light_pending_set(long object_index, int missed)
 void render_objects("""),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+# 2026-10-28 (research, the master's 07:40: C's first step): "walkapart", the
+# frame's drawing kept out of the state the tick owns. The drawing walk's
+# marking passes (the collision tests the render makes: objects in a ray's
+# clusters, the features in a sphere) stamp every object they visit with
+# global_object_marker in its datum's magic_number, and the cluster marks in
+# structure_globals, the same words the tick's own passes use: the one
+# object field the walk writes (objtrace's census, datum3 40665035843: every
+# other field's drawing-walk stores are 0). With walkapart, a pass begun while
+# the frame is drawn keeps its marks in arrays of its own, outside the game
+# state, so a walk on another CPU (option C) shares no words with the tick.
+# The marks mean the same (a pass's marker is new at its begin, so every
+# object and cluster starts unmarked), so play can't change. "walkwrites"
+# (a test): which game state words the frame writes at all, from a hash of
+# every 64-byte block before and after render_frame.
+FIXES_WALKAPART = {}
+FIXES_WALKAPART["source/objects/objects.c#walkapart"] = [
+("""void object_marker_begin(
+	void)
+{
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART): the drawing's marks apart */
+int psp_keep(const char *name);
+int psp_walk_side = 0; /* render.c: while render_frame runs */
+static int psp_walk_apart = -1;
+static boolean psp_walk_marking = FALSE;
+static long psp_walk_marker = 0, psp_walk_marks[MAXIMUM_OBJECTS_PER_MAP];
+unsigned long psp_walk_marks_unkeyed = 0; /* a mark by datum alone while the frame is drawn */
+
+int psp_walk_own_marks(void)
+{
+	if (!psp_walk_side)
+		return 0;
+	if (psp_walk_apart < 0)
+		psp_walk_apart = psp_keep("walkapart") != 0;
+	return psp_walk_apart;
+}
+#endif
+
+void object_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3503, !psp_walk_marking);
+		++psp_walk_marker;
+		psp_walk_marking = TRUE;
+		return;
+	}
+#endif
+"""),
+("""void object_marker_end(
+	void)
+{
+""", """void object_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		psp_walk_marking = FALSE;
+		return;
+	}
+#endif
+"""),
+("""	struct object_datum *object = object_get(object_index);
+	boolean result;
+
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+""", """	struct object_datum *object;
+	boolean result;
+
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+		return psp_walk_marks[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP] != psp_walk_marker;
+#endif
+	object = object_get(object_index);
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3526, object_globals->object_marker_initialized);
+"""),
+("""boolean object_mark_function(
+	long object_index)
+{
+	return psp_object_mark_function_with(object_get(object_index));
+}
+""", """boolean object_mark_function(
+	long object_index)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		long *mark = &psp_walk_marks[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP];
+
+		if (*mark == psp_walk_marker)
+			return FALSE;
+		*mark = psp_walk_marker;
+		return TRUE;
+	}
+#endif
+	return psp_object_mark_function_with(object_get(object_index));
+}
+"""),
+("""	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3543, object_globals->object_marker_initialized);
+""", """#ifdef HALO_PSP
+	/* (its one direct caller, perception, is the tick's: counted if not) */
+	if (psp_walk_own_marks())
+		psp_walk_marks_unkeyed++;
+#endif
+	match_assert("c:\\\\halo\\\\SOURCE\\\\objects\\\\objects.c", 3543, object_globals->object_marker_initialized);
+"""),
+]
+FIXES_WALKAPART["source/structures/structures.c#walkapart"] = [
+("""void structure_cluster_marker_begin(
+	void)
+{
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART, objects.c): the drawing's cluster
+marks apart, as its object marks */
+int psp_walk_own_marks(void);
+static boolean psp_walk_cluster_marking = FALSE;
+static long psp_walk_cluster_marker = 0, psp_walk_cluster_marks[MAXIMUM_CLUSTERS_PER_STRUCTURE];
+#endif
+
+void structure_cluster_marker_begin(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		match_assert("c:\\\\halo\\\\SOURCE\\\\structures\\\\structures.c", 0x103, !psp_walk_cluster_marking);
+		psp_walk_cluster_marker++;
+		psp_walk_cluster_marking = TRUE;
+		return;
+	}
+#endif
+"""),
+("""void structure_cluster_marker_end(
+	void)
+{
+""", """void structure_cluster_marker_end(
+	void)
+{
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		psp_walk_cluster_marking = FALSE;
+		return;
+	}
+#endif
+"""),
+("""		return FALSE;
+	}
+
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+""", """		return FALSE;
+	}
+
+#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+		return (boolean)(psp_walk_cluster_marks[cluster_index] != psp_walk_cluster_marker);
+#endif
+	return (boolean)(structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker);
+"""),
+("""	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+""", """#ifdef HALO_PSP
+	if (psp_walk_own_marks())
+	{
+		if (psp_walk_cluster_marks[cluster_index] == psp_walk_cluster_marker)
+			return FALSE;
+		psp_walk_cluster_marks[cluster_index] = psp_walk_cluster_marker;
+		return TRUE;
+	}
+#endif
+	if (structure_globals.cluster_magic_numbers[cluster_index]!=structure_globals.cluster_marker)
+	{
+		structure_globals.cluster_magic_numbers[cluster_index]= structure_globals.cluster_marker;
+		return TRUE;
+	}
+"""),
+]
+FIXES_WALKAPART["source/render/render.c#walkapart"] = [
+("""	render.frame_index++;
+	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	memset(&parameters, 0, sizeof(parameters));
+""", """#ifdef HALO_PSP
+	extern int psp_walk_side; /* objects.c (walkapart) */
+	void psp_walk_writes(int after); /* game_state.c (walkwrites) */
+
+	psp_walk_writes(0);
+	psp_walk_side = 1;
+#endif
+	render.frame_index++;
+	render.time_delta_since_tick_sec = time_delta_since_tick_sec;
+	memset(&parameters, 0, sizeof(parameters));
+"""),
+("""	halo_screen_ui_offset(FALSE);
+	rasterizer_windows_end();
+	rasterizer_frame_end();
+
+	return;
+}
+""", """	halo_screen_ui_offset(FALSE);
+	rasterizer_windows_end();
+	rasterizer_frame_end();
+#ifdef HALO_PSP
+	psp_walk_side = 0;
+	psp_walk_writes(1);
+#endif
+
+	return;
+}
+"""),
+]
+FIXES_WALKAPART["source/saved games/game_state.c#walkwrites"] = [
+("""	if (length)
+		platform_psp_log("state: records at tick %ld:%s", tick, line);
+}
+#endif
+""", """	if (length)
+		platform_psp_log("state: records at tick %ld:%s", tick, line);
+}
+
+/* "walkwrites" (a test; psp_fixups.py FIXES_WALKAPART): the game state the
+frame's drawing writes. Each 64-byte block's hash before render_frame and
+after it; a block that changed is counted against its allocation, and in a
+data array by its offset in the element (the field), so the frame's writes
+into the tick's state are listed by allocation and field, every 300 frames.
+Other threads that write the game state while the frame is drawn show too.
+Test only: ~5 MB hashed twice a frame, and a table of 4 bytes a block */
+#define PSP_WALK_FIELDS 6
+static unsigned long *psp_walk_block_hashes = NULL;
+static long psp_walk_block_count = 0;
+static unsigned long psp_walk_frames = 0, psp_walk_frames_written = 0;
+static unsigned long psp_walk_blocks[PSP_STATE_RECORDS];
+static long psp_walk_field[PSP_STATE_RECORDS][PSP_WALK_FIELDS];
+static unsigned long psp_walk_field_count[PSP_STATE_RECORDS][PSP_WALK_FIELDS];
+
+static unsigned long psp_walk_block_hash(const unsigned long *word)
+{
+	unsigned long hash = 2166136261UL;
+	int k;
+
+	for (k = 0; k < 16; k++)
+		hash = (hash ^ word[k]) * 16777619UL;
+	return hash;
+}
+
+static void psp_walk_count(int record, long offset)
+{
+	struct data_array *data = (struct data_array *)psp_state_records[record].pointer;
+	long field = offset;
+	int k;
+
+	psp_walk_blocks[record]++;
+	if (psp_state_records[record].type[0] == 'd' && data->valid && data->size > 0)
+	{
+		long first = (long)((char *)data->data - (char *)psp_state_records[record].pointer);
+
+		field = offset >= first ? (offset - first) % data->size : -1 - offset;
+	}
+	for (k = 0; k < PSP_WALK_FIELDS; k++)
+	{
+		if (psp_walk_field_count[record][k] && psp_walk_field[record][k] == field)
+		{
+			psp_walk_field_count[record][k]++;
+			return;
+		}
+		if (!psp_walk_field_count[record][k])
+		{
+			psp_walk_field[record][k] = field;
+			psp_walk_field_count[record][k] = 1;
+			return;
+		}
+	}
+}
+
+void psp_walk_writes(int after)
+{
+	static int asked = -1;
+	char *base = (char *)game_state_globals.base_address;
+	long blocks, block;
+	int record, written = 0;
+
+	if (asked < 0)
+		asked = psp_keep("walkwrites");
+	if (!asked || !base)
+		return;
+	blocks = game_state_globals.cpu_allocation_size / 64;
+	if (blocks > psp_walk_block_count)
+	{
+		free(psp_walk_block_hashes);
+		psp_walk_block_hashes = (unsigned long *)malloc(blocks * sizeof(unsigned long));
+		psp_walk_block_count = psp_walk_block_hashes ? blocks : 0;
+		if (!psp_walk_block_hashes)
+			return;
+		after = 0;
+	}
+	if (((unsigned long)base & 3) != 0)
+		return;
+	if (!after)
+	{
+		for (block = 0; block < blocks; block++)
+			psp_walk_block_hashes[block] = psp_walk_block_hash((const unsigned long *)(base + block * 64));
+		return;
+	}
+	psp_walk_frames++;
+	record = 0;
+	for (block = 0; block < blocks; block++)
+	{
+		char *at = base + block * 64;
+
+		if (psp_walk_block_hash((const unsigned long *)at) == psp_walk_block_hashes[block])
+			continue;
+		written = 1;
+		while (record + 1 < psp_state_record_count && (char *)psp_state_records[record + 1].pointer <= at)
+			record++;
+		if (record < psp_state_record_count)
+			psp_walk_count(record, (long)(at - (char *)psp_state_records[record].pointer));
+	}
+	psp_walk_frames_written += written;
+	if (psp_walk_frames % 300 == 0)
+	{
+		extern unsigned long psp_walk_marks_unkeyed; /* objects.c */
+
+		platform_psp_log("walkwrites: %lu of %lu frames wrote the game state while drawn; marks by datum alone while drawn %lu (last 300 frames)",
+			psp_walk_frames_written, psp_walk_frames, psp_walk_marks_unkeyed);
+		for (record = 0; record < psp_state_record_count; record++)
+		{
+			char line[400];
+			int length = 0, k;
+
+			if (!psp_walk_blocks[record])
+				continue;
+			for (k = 0; k < PSP_WALK_FIELDS && psp_walk_field_count[record][k]; k++)
+				length += snprintf(line + length, sizeof(line) - length, " %s%ld x%lu",
+					psp_walk_field[record][k] < 0 ? "header+" : "+", psp_walk_field[record][k] < 0 ?
+					-1 - psp_walk_field[record][k] : psp_walk_field[record][k], psp_walk_field_count[record][k]);
+			platform_psp_log("walkwrites: %.32s: %lu blocks;%s", psp_state_records[record].name[0] ?
+				psp_state_records[record].name : "?", psp_walk_blocks[record], line);
+			psp_walk_blocks[record] = 0;
+			memset(psp_walk_field_count[record], 0, sizeof(psp_walk_field_count[record]));
+		}
+		psp_walk_frames = psp_walk_frames_written = 0;
+		psp_walk_marks_unkeyed = 0;
+	}
+}
+#endif
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_WALKAPART.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
