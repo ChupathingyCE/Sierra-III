@@ -1794,11 +1794,11 @@ static int load_into(int index, int only)
 	/* "texrecentN" (B34): a middle pass that still keeps what was drawn in
 	the last N frames, so a texture drawn on alternate frames, or drawn later
 	in this frame than the load, isn't taken while staler ones sit further
-	round the ring. On the PSP-1000 (sierra-hw 40766802890 against
-	40761956885, a10 on Sheepdog01's path) N = 8 took the waits for room from 609
-	to 154: a10's boarding craft kept three of its four looks */
+	round the ring. On by default at 8 ("texrecent0" turns it off): on the
+	PSP-1000, on a10's long play, it took the waits for room from 609 to 154
+	and the boarding craft kept three of its four looks */
 	if (!at && recent_middle < 0)
-		recent_middle = psp_keep_number("texrecent", 0);
+		recent_middle = psp_keep_number("texrecent", 8);
 	if (!at && recent_middle > 2 && only != 1)
 		at = allocate(which = 0, alignment(entry->size), (unsigned int)recent_middle);
 	if (!at && recent_middle > 2 && only != 0)
