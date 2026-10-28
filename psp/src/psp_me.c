@@ -1047,9 +1047,11 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	case ME_JOB_POINTS:
 		psp_points_me_make(args, results);
 		break;
+#ifdef PSP_WALKAPART
 	case ME_JOB_VISIBILITY:
 		psp_mevis_me_job(args, results);
 		break;
+#endif
 #ifdef PSP_RECON
 	case ME_JOB_BUSLOAD:
 		bus_load_job(args, results);
@@ -2434,6 +2436,7 @@ anywhere in RAM (the whole cache handed over, as for the rays), and writes its
 record's answer lines and its own state, on lines nothing else uses. Never
 waited for with psp_me_wait: the frame's end looks at psp_me_ring_done, so a
 slow answer never makes the ring rest */
+#ifdef PSP_WALKAPART
 int psp_me_push_visibility(void *record, unsigned int record_bytes, unsigned int *ticket)
 {
 	struct psp_me_job job;
@@ -2448,6 +2451,7 @@ int psp_me_push_visibility(void *record, unsigned int record_bytes, unsigned int
 	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
 	return psp_me_push(&job, ticket);
 }
+#endif
 
 /* a ring job done (its output written back), without waiting */
 int psp_me_ring_done(unsigned int ticket)
