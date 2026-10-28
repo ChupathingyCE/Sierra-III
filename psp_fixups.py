@@ -15153,7 +15153,7 @@ FIXES_118["source/scenario/scenario.c#spherememo"] = [
 
 				psp_sphere_memo_forget();
 				psp_scratch_census_bsp(global_collision_bsp);
-				/* psp_scratch.c: the top nodes' copy, "scratchbsp" */
+				/* psp_scratch.c: the top nodes' copy ("noscratchbsp" off) */
 				{
 					extern void psp_scratch_bsp_fill(const void *collision_bsp);
 
@@ -36298,12 +36298,12 @@ void quaternions_multiply(
 # planes they test, first by misses per byte in the tick (and high in the
 # drawing): every walk of the level starts at the root, and the tag data
 # spreads those nodes and planes over hundreds of lines in two arrays.
-# "scratchbsp" (keep.txt; psp_scratch.c, psp_scratchbsp.h): a breadth-first
+# On by default, "noscratchbsp" off (keep.txt; psp_scratch.c, psp_scratchbsp.h): a breadth-first
 # copy of the top nodes, each with its plane, packed two to a line in the
 # scratchpad, refilled as each collision BSP is set and dropped as a map's
 # tags load. The level walks (sphere, ray, pill, point) read a top node from
 # the copy on the main CPU; the ME's walks read the tag data. The same bits:
-# the answers don't change. Off by default (a placement, priced on the PSP)
+# the answers don't change.
 FIXES_SCRATCHBSP = {}
 FIXES_SCRATCHBSP["source/physics/collision_bsp.c#scratchbsp"] = [
 ("""#include "tag_files/tag_groups.h"

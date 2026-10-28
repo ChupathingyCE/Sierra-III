@@ -19,7 +19,7 @@ each with one job, and never freed or shared as working space. The pieces
 8,448 bytes) and the profiler's slots and front table (psp_platform.c, 6,656;
 the heartbeat thread reads them for its report, as it read the old table).
 
-keep.txt "scratchbsp": the level collision BSP's top nodes take the cut
+On by default ("noscratchbsp" off): the level collision BSP's top nodes take the cut
 corners' room (below, psp_scratchbsp.h): the census by misses per byte puts
 them first in the tick, and the cut corners last.
 
@@ -344,7 +344,7 @@ void psp_scratch_exec_probe2(void)
 		"the scratchpad's fetches go through the instruction cache (the two evict each other)");
 }
 
-/* keep.txt "scratchbsp" (psp_scratchbsp.h): the level collision BSP's top
+/* on by default, "noscratchbsp" off (psp_scratchbsp.h): the level collision BSP's top
 nodes, each with its plane, in the room the profiler's tables leave; the
 models' cut corners go to the heap (the census: the nodes nearest the root
 take hundreds of misses a byte in the tick and the drawing, the cut corners
@@ -370,7 +370,7 @@ void psp_scratch_bsp_take(void)
 	unsigned int at = (scratch_used + 15) & ~15u, bytes;
 	void *pointer;
 
-	if (!psp_keep("scratchbsp"))
+	if (psp_keep("noscratchbsp"))
 		return;
 #ifdef PSP_MAP_CHECKS
 	/* the walks' node checks would refuse a copy's index: the walks read the tag data */
