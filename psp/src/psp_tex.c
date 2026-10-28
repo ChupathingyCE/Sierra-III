@@ -1577,7 +1577,12 @@ static char const *census_name(int index)
 	extern char const *psp_shader_tag_name(void const *shader);
 	unsigned int key = entries[index].key;
 	char const *name = key & 3u ? psp_shader_tag_name((void const *)(key & ~3u)) : psp_bitmap_tag_name((void const *)key);
+	int other;
 
+	/* a glow map's entry shares its texels with its bitmap's entry */
+	for (other = 0; !name && other < entry_count; other++)
+		if (other != index && !(entries[other].key & 3u) && entries[other].offset == entries[index].offset)
+			name = psp_bitmap_tag_name((void const *)entries[other].key);
 	return name ? name : "?";
 }
 
