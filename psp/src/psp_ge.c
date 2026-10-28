@@ -13216,7 +13216,7 @@ static unsigned long reflection_parts = 0, reflection_cubes_known = 0;
 
 static void reflection_keeps(void);
 /* Chief's visor gets the reflection pass wherever he is drawn at least 24
-pixels across, at chiefvisorgainN percent (70: with the armour's sheen on, as bright as the PC's bronze): a restoration, one of the
+pixels across, at chiefvisorgainN percent (150: beside the PC's c40 close-ups, the nearest in brightness): a restoration, one of the
 campaign's defaults (psp_platform.c; "nochiefvisor" turns it off). On the
 Xbox the visor's gold is its cube map's, added over a near-black base:
 folded into the lighting it can't show, since the GE's ambient stops at 1
@@ -13353,7 +13353,7 @@ static void reflection_keeps(void)
 	reflection_words.env_gain = psp_keep_number("envgain", 100);
 	reflection_words.env_min = psp_keep_number("envmin", 0);
 	reflection_words.chief_visor = psp_keep("chiefvisor");
-	reflection_words.chief_visor_gain = psp_keep_number("chiefvisorgain", 70);
+	reflection_words.chief_visor_gain = psp_keep_number("chiefvisorgain", 150);
 	reflection_words.sheen = psp_keep("chiefsheen");
 	reflection_words.sheen_gain = psp_keep_number("sheengain", 100);
 	if (reflection_words.sheen)
