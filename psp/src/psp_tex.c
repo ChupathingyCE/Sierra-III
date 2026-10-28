@@ -85,6 +85,20 @@ static unsigned int pack_generation = 0;
 /* per entry: where it is in the cache (0 if not resident), the last frame
 it was drawn in */
 static unsigned int *resident_at = NULL, *last_frame = NULL;
+/* "texrecentN" (load_into) */
+static int recent_middle = -1;
+/* "texcensus" (below, before protected_at) */
+struct tex_census
+{
+	unsigned int stamp; /* the frame last counted as without */
+	unsigned short without, room, budget, evict_n;
+	unsigned int evict_kb;
+	unsigned int evicted_frame, evicted_age;
+	unsigned short evicted_by, evicted_recent;
+};
+static int census_on = -1;
+static struct tex_census *census = NULL;
+static int census_evictor = -1;
 static unsigned char *resident_in = NULL;
 /* the textures the HUD and the other screen-space draws use (the meters,
 the crosshair, the motion sensor, the text): kept as long as they're drawn
@@ -435,6 +449,8 @@ void psp_tex_close(void)
 	free(entries);
 	free(resident_at);
 	free(last_frame);
+	free(census);
+	census = NULL;
 	free(resident_in);
 	free(hud_pinned);
 	hud_pinned = NULL;
@@ -1184,6 +1200,8 @@ void psp_tex_map_opened(const char *name)
 	entries = malloc(header[2]);
 	resident_at = calloc(header[1], sizeof(unsigned int));
 	last_frame = line_calloc(header[1], sizeof(unsigned int));
+	free(census);
+	census = psp_keep("texcensus") ? calloc(header[1], sizeof(struct tex_census)) : NULL;
 	resident_in = calloc(header[1], 1);
 	hud_pinned = calloc(header[1], 1);
 	bind_counts = line_calloc(header[1], sizeof(unsigned short));
@@ -1501,6 +1519,149 @@ static int find(unsigned int key)
 	return -1;
 }
 
+/* "texcensus" (B34, a test): which textures go without, why, and what evicted
+them. Each texture that a draw found missing in a frame (a bind, a pretouch or
+the Media Engine's list) counts that frame once, with what kept it out (no
+room, or the frame's load budget spent); each eviction notes its victim's age
+and its evictor. Every 300 frames the eight textures longest without and the
+five that evicted the most are logged by name, so a starved model can be
+found by map time. Written on the main CPU's miss, load and eviction paths
+only, never on a resident bind. */
+
+static int census_ready(void)
+{
+	if (census_on < 0)
+		census_on = psp_keep("texcensus") != 0;
+	return census_on > 0 && census != NULL;
+}
+
+/* index went without in this frame; why: 1 no room, 2 the budget, 0 not known */
+static void census_without(int index, int why)
+{
+	struct tex_census *c;
+
+	if (!census_ready() || index < 0 || index >= entry_count)
+		return;
+	c = &census[index];
+	if (c->stamp != frame)
+	{
+		c->stamp = frame;
+		c->without++;
+	}
+	if (why == 1)
+		c->room++;
+	else if (why == 2)
+		c->budget++;
+}
+
+static void census_evicted(int victim, unsigned int recent)
+{
+	struct tex_census *c;
+
+	if (!census_ready())
+		return;
+	c = &census[victim];
+	c->evicted_frame = frame;
+	c->evicted_age = frame - last_frame[victim];
+	c->evicted_by = census_evictor >= 0 ? (unsigned short)census_evictor : 0xFFFF;
+	c->evicted_recent = (unsigned short)recent;
+	if (census_evictor >= 0)
+	{
+		census[census_evictor].evict_n++;
+		census[census_evictor].evict_kb += alignment(entries[victim].size) / 1024;
+	}
+}
+
+/* a pack entry's tag: a bitmap's, or for a baked look (key | 1 or | 2) its shader's */
+static char const *census_name(int index)
+{
+	extern char const *psp_bitmap_tag_name(void const *bitmap); /* hud_draw.c (psp_fixups.py) */
+	extern char const *psp_shader_tag_name(void const *shader);
+	unsigned int key = entries[index].key;
+	char const *name = key & 3u ? psp_shader_tag_name((void const *)(key & ~3u)) : psp_bitmap_tag_name((void const *)key);
+	int other;
+
+	/* a glow map's entry shares its texels with its bitmap's entry */
+	for (other = 0; !name && other < entry_count; other++)
+		if (other != index && !(entries[other].key & 3u) && entries[other].offset == entries[index].offset)
+			name = psp_bitmap_tag_name((void const *)entries[other].key);
+	return name ? name : "?";
+}
+
+static void census_report(void)
+{
+	int top[8], evictors[5], n = 0, m = 0, k, index;
+	char line[600];
+	int length;
+
+	if (!census_ready())
+		return;
+	/* the eight longest without and the five that evicted the most: a pass
+	each, every 300 frames */
+	for (n = 0; n < 8; n++)
+	{
+		int best = -1;
+
+		for (index = 0; index < entry_count; index++)
+			if (census[index].without &&
+				(best < 0 || census[index].without > census[best].without))
+			{
+				for (k = 0; k < n && top[k] != index; k++)
+					;
+				if (k == n)
+					best = index;
+			}
+		if (best < 0)
+			break;
+		top[n] = best;
+	}
+	for (m = 0; m < 5; m++)
+	{
+		int best = -1;
+
+		for (index = 0; index < entry_count; index++)
+			if (census[index].evict_kb && (best < 0 || census[index].evict_kb > census[best].evict_kb))
+			{
+				for (k = 0; k < m && evictors[k] != index; k++)
+					;
+				if (k == m)
+					best = index;
+			}
+		if (best < 0)
+			break;
+		evictors[m] = best;
+	}
+	for (k = 0; k < n; k++)
+	{
+		struct tex_census const *c = &census[top[k]];
+		struct pack_entry const *e = &entries[top[k]];
+		char const *name = census_name(top[k]);
+		char const *by = c->evicted_frame && c->evicted_by < entry_count ? census_name(c->evicted_by) : NULL;
+
+		platform_log("textures: texcensus: game time %ld: without %u frames of 300: %s (key %08x, %ux%u, %u KB; room %u, budget %u); evicted %u frames ago at age %u (%s pass) by %s",
+			psp_game_time_peek(), c->without, name, e->key, e->width, e->height, alignment(e->size) / 1024,
+			c->room, c->budget, c->evicted_frame ? frame - c->evicted_frame : 0, c->evicted_age,
+			!c->evicted_frame ? "no" : c->evicted_recent > 2 ? "first" : "second",
+			!c->evicted_frame ? "-" : c->evicted_by == 0xFFFF ? "the carve or a suspend" : by ? by : "?");
+	}
+	length = 0;
+	line[0] = 0;
+	for (k = 0; k < m && length < (int)sizeof(line) - 120; k++)
+	{
+		char const *name = census_name(evictors[k]);
+
+		length += snprintf(line + length, sizeof(line) - length, " %s (%u KB) evicted %u (%u KB);",
+			name, alignment(entries[evictors[k]].size) / 1024, census[evictors[k]].evict_n, census[evictors[k]].evict_kb);
+	}
+	if (m)
+		platform_log("textures: texcensus: the most evicting:%s", line);
+	for (index = 0; index < entry_count; index++)
+	{
+		census[index].without = census[index].room = census[index].budget = census[index].evict_n = 0;
+		census[index].evict_kb = 0;
+	}
+}
+
 /* room for size bytes in an arena without evicting any texture drawn in the
 last `recent` frames (1: this frame only) */
 static int protected_at(int index, int which, unsigned int recent)
@@ -1568,6 +1729,7 @@ static unsigned int allocate(int which, unsigned int size, unsigned int recent)
 		if (at && resident_in[index] == which && at < start + size && at + alignment(entries[index].size) > start)
 		{
 			psp_ge_show3_reuse(0, last_frame[index]); /* geshow3check */
+			census_evicted(index, recent);
 			resident_at[index] = 0;
 			evictions++;
 		}
@@ -1624,19 +1786,34 @@ static int load_into(int index, int only)
 	VRAM was a ring that evicted last frame's textures while the 4 MB in RAM
 	sat mostly empty, and on the PSP surfaces vanished and came back as their
 	textures were read from the Memory Stick again */
+	census_evictor = index;
 	if (only != 1)
 		at = allocate(which = 0, alignment(entry->size), RECENT_FRAMES);
 	if (!at && only != 0)
 		at = allocate(which = 1, alignment(entry->size), RECENT_FRAMES);
+	/* "texrecentN" (B34): a middle pass that still keeps what was drawn in
+	the last N frames, so a texture drawn on alternate frames, or drawn later
+	in this frame than the load, isn't taken while staler ones sit further
+	round the ring. On the PSP-1000 (sierra-hw 40766802890 against
+	40761956885, a10 on Sheepdog01's path) N = 8 took the waits for room from 609
+	to 154: a10's boarding craft kept three of its four looks */
+	if (!at && recent_middle < 0)
+		recent_middle = psp_keep_number("texrecent", 0);
+	if (!at && recent_middle > 2 && only != 1)
+		at = allocate(which = 0, alignment(entry->size), (unsigned int)recent_middle);
+	if (!at && recent_middle > 2 && only != 0)
+		at = allocate(which = 1, alignment(entry->size), (unsigned int)recent_middle);
 	/* the frame the GE may still be drawing (geshow2: shown off the game
 	thread) keeps its textures too */
 	if (!at && only != 1)
 		at = allocate(which = 0, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
 	if (!at && only != 0)
 		at = allocate(which = 1, alignment(entry->size), psp_ge_show_busy ? 2 : 1);
+	census_evictor = -1;
 	if (!at)
 	{
 		waits++;
+		census_without(index, 1);
 		return 0;
 	}
 	read_start = sceKernelGetSystemTimeLow();
@@ -1948,6 +2125,7 @@ int psp_tex_bind(unsigned int key, int *has_alpha)
 		}
 		if ((frame_loaded >= LOAD_BUDGET_BYTES && !past_budget) || !load(index))
 		{
+			census_without(index, frame_loaded >= LOAD_BUDGET_BYTES && !past_budget ? 2 : 0);
 			if (screen)
 				hud_untextured++;
 			frame_untextured = 1;
@@ -2385,6 +2563,7 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 	else if (frame_set_bytes + size > room / 100 * (unsigned int)pretouch_percent)
 	{
 		pretouch_ceiling_stops++;
+		census_without(index, 0);
 		psp_tex_chunk_missed = 1;
 		txc_note(index, kind, 0);
 		return;
@@ -2400,6 +2579,7 @@ void psp_tex_pretouch(unsigned int key, int kind, int resident_only)
 		}
 		if ((frame_loaded >= LOAD_BUDGET_BYTES && !hud) || !load(index))
 		{
+			census_without(index, frame_loaded >= LOAD_BUDGET_BYTES && !hud ? 2 : 0);
 			if (hud)
 				hud_pretouch_refused++;
 			pretouch_refused++;
@@ -2897,8 +3077,11 @@ void psp_tex_frame_end(void)
 		int k;
 
 		for (k = 0; k < wanted_count; k++)
+		{
+			census_without(wanted[k], frame_loaded >= LOAD_BUDGET_BYTES ? 2 : 0);
 			if (!resident_at[wanted[k]] && frame_loaded < LOAD_BUDGET_BYTES)
 				load(wanted[k]);
+		}
 		wanted_count = 0;
 	}
 	if (vram_pending_count && entries)
@@ -2932,6 +3115,8 @@ void psp_tex_frame_end(void)
 			hud_pretouch_refused, hud_frame_start_loads, hud_frame_start_refused, hud_pin_count, hud_pin_kb(0), hud_pin_kb(1));
 	if (entries && frame % 300 == 0)
 		psp_tex_light_report();
+	if (entries && frame % 300 == 0)
+		census_report();
 	if (entries && frame % 300 == 0 && bind_blocks_on > 0)
 	{
 		platform_log("textures: bindblocks: %lu binds a frame CALLed a ready block, %lu blocks made a frame, %lu times every slot in use (last 300 frames)",
