@@ -11003,8 +11003,18 @@ of its own. "specpowerN": the highlight's exponent (8); "specgainN": the
 strength in percent (200: the shader's reflection strength is a mean over
 the mask, and the highlight stands for its brightest part) */
 int psp_keep_number(const char *prefix, int fallback);
-static PSP_MAIN_SIDE int model_specular = -1;
-static PSP_MAIN_SIDE float model_specular_power = 8.0f, model_specular_gain = 2.0f;
+/* the reflection words (reflection_keeps, below): read once on the main
+CPU, written back, and from then on only read, by whichever CPU replays the
+draws. A cache line of their own, the type's alignment padding the struct
+to it. Each was a lazy static (-1 until read) on the lines the main CPU
+writes while the ME works (PSP_MAIN_SIDE): a Media Engine that still saw -1
+read them again itself and wrote that line under the main CPU's dirty copy,
+and on the PSP Chief vanished leaving his pod or drew yellow-orange
+(Sheepdog01, 2026-10-27 19:24), where the emulator's one cache drew him right */
+static struct __attribute__((aligned(64))) reflection_words {
+	int read, specular, env_fp, env_near, env_pixels, env_gain, env_min, chief_visor, chief_visor_gain;
+	float specular_power, specular_gain;
+} reflection_words = { 0, 0, 0, 0, 160, 100, 0, 0, 150, 8.0f, 2.0f };
 static unsigned int part_specular = 0;
 static unsigned long specular_parts = 0;
 
@@ -11037,14 +11047,14 @@ static void model_lighting(int on)
 	}
 	if (lit_enabled != 1)
 		sceGuEnable(GU_LIGHTING); /* (each part turns lighting off for its later passes: not counted) */
-	if (model_specular)
+	if (reflection_words.specular)
 	{
 		/* the part's own: sceGuColor set every material colour to the
 		part's, so this is sent for every part */
 		if (!lit_params)
 		{
 			sceGuLightMode(GU_SEPARATE_SPECULAR_COLOR);
-			sceGuSpecular(model_specular_power);
+			sceGuSpecular(reflection_words.specular_power);
 		}
 		sceGuMaterial(GU_SPECULAR, (int)part_specular);
 		if (part_specular & 0xFFFFFF)
@@ -11061,14 +11071,14 @@ static void model_lighting(int on)
 		{
 			if (!lit_params || memcmp(&lit_toward[index], &model_light_toward[index], sizeof(ScePspFVector3)) != 0)
 			{
-				sceGuLight(index, GU_DIRECTIONAL, model_specular ? GU_DIFFUSE_AND_SPECULAR : GU_DIFFUSE,
+				sceGuLight(index, GU_DIRECTIONAL, reflection_words.specular ? GU_DIFFUSE_AND_SPECULAR : GU_DIFFUSE,
 					&model_light_toward[index]);
 				sent = 1;
 			}
 			if (!lit_params || lit_color[index] != model_light_color[index])
 			{
 				sceGuLightColor(index, GU_DIFFUSE, model_light_color[index]);
-				if (model_specular)
+				if (reflection_words.specular)
 					sceGuLightColor(index, GU_SPECULAR, model_light_color[index]);
 				sent = 1;
 			}
@@ -13052,8 +13062,6 @@ static int reflection_off = -1;
 static unsigned long reflection_parts = 0, reflection_cubes_known = 0;
 
 static void reflection_keeps(void);
-/* the reflection pass's words (reflection_keeps, below) */
-static PSP_MAIN_SIDE int env_fp = -1, env_near = 0, env_pixels = 160, env_gain = 100, env_min = 0;
 /* Chief's visor gets the reflection pass wherever he is drawn at least 24
 pixels across, at chiefvisorgainN percent (150): a restoration, opt-in until
 it draws right on the PSP (Sheepdog01 19:24: Chief vanished leaving the pod on the
@@ -13061,13 +13069,12 @@ PSP-1000, and drew yellow-orange on the PSP-3000; fine in the emulator). On the
 Xbox the visor's gold is its cube map's, added over a near-black base:
 folded into the lighting it can't show, since the GE's ambient stops at 1
 and the base x 1 stays dark */
-static PSP_MAIN_SIDE int chief_visor = 0, chief_visor_gain = 150;
 
 void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
 {
 	GE_BENCH_SKIP();
 	reflection_keeps();
-	if (chief_visor > 0 && rgb && (int)rgb[3] == 1)
+	if (reflection_words.chief_visor > 0 && rgb && (int)rgb[3] == 1)
 	{
 		static int logged = 0;
 		int width = 0, height = 0;
@@ -13081,7 +13088,8 @@ void psp_ge_model_reflection(unsigned int cube_key, float const *rgb)
 		}
 	}
 	/* a reflection pass binds the part's sphere map in the replay */
-	if (env_fp > 0 || env_near > 0 || (chief_visor > 0 && rgb && (int)rgb[3] == 1))
+	if (reflection_words.env_fp > 0 || reflection_words.env_near > 0 ||
+		(reflection_words.chief_visor > 0 && rgb && (int)rgb[3] == 1))
 		GE_PRETOUCH(cube_key, TXPT_MODEL_DETAIL);
 	GE_DEFER(defer_model_reflection(cube_key, rgb));
 	reflection_cube_key = cube_key;
@@ -13176,32 +13184,34 @@ many pixels across the last one was */
 static unsigned long visor_drawn = 0, visor_textured = 0, visor_shiny = 0;
 static float visor_pixels = 0.0f;
 
-/* the reflection words, read on this CPU before any replay needs them */
+/* the reflection words, read on the main CPU at its first reflection call,
+before any record that needs them is replayed (reflection_words, above) */
 static void reflection_keeps(void)
 {
-	if (env_fp >= 0)
+	if (reflection_words.read || psp_on_me())
 		return;
-	reflection_off = psp_keep("noreflection");
-	if (reflection_off)
-		platform_log("GE: noreflection: model reflections not folded into their ambient light");
-	model_specular = psp_keep("modelspecular");
-	model_specular_power = (float)psp_keep_number("specpower", 8);
-	model_specular_gain = (float)psp_keep_number("specgain", 200) * (1.0f / 100.0f);
-	if (model_specular)
+	reflection_words.specular = psp_keep("modelspecular");
+	reflection_words.specular_power = (float)psp_keep_number("specpower", 8);
+	reflection_words.specular_gain = (float)psp_keep_number("specgain", 200) * (1.0f / 100.0f);
+	if (reflection_words.specular)
 		platform_log("GE: modelspecular: shiny parts' highlights from the GE's specular lighting, power %.0f",
-			model_specular_power);
-	env_near = psp_keep("envnear");
-	env_pixels = psp_keep_number("envpixels", 160);
-	env_gain = psp_keep_number("envgain", 100);
-	env_min = psp_keep_number("envmin", 0);
-	chief_visor = psp_keep("chiefvisor");
-	chief_visor_gain = psp_keep_number("chiefvisorgain", 150);
-	if (chief_visor)
-		platform_log("GE: chiefvisor: Chief's visor drawn with its reflection pass, gain %d%%", chief_visor_gain);
-	env_fp = psp_keep("envfp");
-	if (env_fp || env_near)
+			reflection_words.specular_power);
+	reflection_words.env_near = psp_keep("envnear");
+	reflection_words.env_pixels = psp_keep_number("envpixels", 160);
+	reflection_words.env_gain = psp_keep_number("envgain", 100);
+	reflection_words.env_min = psp_keep_number("envmin", 0);
+	reflection_words.chief_visor = psp_keep("chiefvisor");
+	reflection_words.chief_visor_gain = psp_keep_number("chiefvisorgain", 150);
+	if (reflection_words.chief_visor)
+		platform_log("GE: chiefvisor: Chief's visor drawn with its reflection pass, gain %d%%",
+			reflection_words.chief_visor_gain);
+	reflection_words.env_fp = psp_keep("envfp");
+	if (reflection_words.env_fp || reflection_words.env_near)
 		platform_log("GE: reflections drawn as a pass: %s%s (at %d pixels across), gain %d%%, parts reflecting at least %d%%",
-			env_fp ? "first person " : "", env_near ? "near models" : "", env_pixels, env_gain, env_min);
+			reflection_words.env_fp ? "first person " : "", reflection_words.env_near ? "near models" : "",
+			reflection_words.env_pixels, reflection_words.env_gain, reflection_words.env_min);
+	reflection_words.read = 1;
+	sceKernelDcacheWritebackRange(&reflection_words, sizeof(reflection_words));
 }
 
 static int env_part(const float *strength)
@@ -13209,12 +13219,13 @@ static int env_part(const float *strength)
 	int width, height;
 	float most = strength[0] > strength[1] ? strength[0] : strength[1];
 
-	if (chief_visor && reflection_chief == 1 && model_pixels >= 24.0f)
+	if (reflection_words.chief_visor && reflection_chief == 1 && model_pixels >= 24.0f)
 		return reflection_cube_key && psp_tex_size(reflection_cube_key, &width, &height) && width == 32 && height == 32;
 	most = most > strength[2] ? most : strength[2];
-	if (most * 100.0f < (float)env_min)
+	if (most * 100.0f < (float)reflection_words.env_min)
 		return 0;
-	if (!(model_first_person ? env_fp : env_near && model_pixels >= (float)env_pixels))
+	if (!(model_first_person ? reflection_words.env_fp :
+		reflection_words.env_near && model_pixels >= (float)reflection_words.env_pixels))
 		return 0;
 	return reflection_cube_key && psp_tex_size(reflection_cube_key, &width, &height) && width == 32 && height == 32;
 }
@@ -13223,7 +13234,8 @@ static int reflection_env_pass(void *vertices, const unsigned short *indices, lo
 	struct skin_part *skin, ScePspFMatrix4 *model, const float *strength)
 {
 	ScePspFVector3 across, upward;
-	float gain = (float)(reflection_chief == 1 && chief_visor ? chief_visor_gain : env_gain) * (1.0f / 100.0f);
+	float gain = (float)(reflection_chief == 1 && reflection_words.chief_visor ? reflection_words.chief_visor_gain :
+		reflection_words.env_gain) * (1.0f / 100.0f);
 	unsigned int color;
 
 	if (!psp_tex_bind(reflection_cube_key, NULL))
@@ -14907,10 +14919,10 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	env = shiny && env_part(shine);
 	if (textured && model_camouflage <= 0.0f && !in_sky && !env)
 		model_ambient = ambient_with_reflection(base_key);
-	part_specular = shiny && model_specular > 0 ? 0xFF000000u |
-		((unsigned int)PSP_CLAMP_255((int)(shine[2] * model_specular_gain * 255.0f)) << 16) |
-		((unsigned int)PSP_CLAMP_255((int)(shine[1] * model_specular_gain * 255.0f)) << 8) |
-		(unsigned int)PSP_CLAMP_255((int)(shine[0] * model_specular_gain * 255.0f)) : 0xFF000000u;
+	part_specular = shiny && reflection_words.specular > 0 ? 0xFF000000u |
+		((unsigned int)PSP_CLAMP_255((int)(shine[2] * reflection_words.specular_gain * 255.0f)) << 16) |
+		((unsigned int)PSP_CLAMP_255((int)(shine[1] * reflection_words.specular_gain * 255.0f)) << 8) |
+		(unsigned int)PSP_CLAMP_255((int)(shine[0] * reflection_words.specular_gain * 255.0f)) : 0xFF000000u;
 	model_lighting(1);
 	if (camo_shimmer < 0)
 		camo_shimmer = psp_keep("camoshimmer");
@@ -15023,7 +15035,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		{
 			visor_logged = 1;
 			platform_log("GE: chiefvisor: the visor's pass at strength %.2f %.2f %.2f x gain %d%%, %.0f pixels across",
-				shine[0], shine[1], shine[2], chief_visor_gain, model_pixels);
+				shine[0], shine[1], shine[2], reflection_words.chief_visor_gain, model_pixels);
 		}
 		if (reflection_env_pass(vertices, indices, index_count, strip, skin, &model, shine))
 			env_passes++;
@@ -23867,7 +23879,8 @@ static void frame_end_show(void)
 			widget_sprites, widget_begins, widget_untextured, occlusion_visible, occlusion_tests, psp_occlusion_rays_cast, psp_occlusion_rays_kept, change_passes, change_unbound, glow_passes, glow_mapped, glow_clamped, glow_unmapped, meter_worked, meter_reused, hud_quad_us / (frames ? frames : 1), text_us / (frames ? frames : 1), text_changes);
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
-		if (model_specular > 0 || env_fp > 0 || env_near > 0 || chief_visor > 0)
+		if (reflection_words.specular > 0 || reflection_words.env_fp > 0 || reflection_words.env_near > 0 ||
+			reflection_words.chief_visor > 0)
 			platform_log("GE: reflections: %lu parts with a specular highlight, %lu reflection passes, %lu without their sphere map in memory; Chief's visor drawn %lu (%lu textured, %lu shiny, last %.0f pixels across)",
 				specular_parts, env_passes, env_unbound, visor_drawn, visor_textured, visor_shiny, visor_pixels);
 		if (PSP_DITHERSHIFT && dither_shift > 0)
