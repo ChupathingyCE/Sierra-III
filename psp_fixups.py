@@ -36251,13 +36251,17 @@ void render_objects("""),
 # marking passes (the collision tests the render makes: objects in a ray's
 # clusters, the features in a sphere) stamp every object they visit with
 # global_object_marker in its datum's magic_number, and the cluster marks in
-# structure_globals, the same words the tick's own passes use: the one
-# object field the walk writes (objtrace's census: every other field's
-# drawing-walk stores are 0). With walkapart, a pass begun while
-# the frame is drawn keeps its marks in arrays of its own, outside the game
-# state, so a walk on another CPU (option C) shares no words with the tick.
-# The marks mean the same (a pass's marker is new at its begin, so every
-# object and cluster starts unmarked), so play can't change. "walkwrites"
+# structure_globals, the same words the tick's own passes use. With
+# walkapart, a pass begun while the frame is drawn keeps its marks in arrays
+# of its own, outside the game state, so a walk on another CPU (option C)
+# shares no words with the tick. The marks mean the same (a pass's marker is
+# new at its begin, so every object and cluster starts unmarked), so play
+# can't change. The walk's other writes the tick sees go the same way: which
+# render state an object's lighting is cached in (the datum's
+# cached_render_state_index, which the sleep checksum sums) is kept in an
+# array of the walk's own, and the decals' fade and their vertex cache's
+# clock move from the frame's start into game_frame, beside the particles'
+# update, so the drawing only reads them. "walkwrites"
 # (a test): which game state words the frame writes at all, from a hash of
 # every 64-byte block before and after render_frame.
 FIXES_WALKAPART = {}
@@ -36274,13 +36278,17 @@ static boolean psp_walk_marking = FALSE;
 static long psp_walk_marker = 0, psp_walk_marks[MAXIMUM_OBJECTS_PER_MAP];
 unsigned long psp_walk_marks_unkeyed = 0; /* a mark by datum alone while the frame is drawn */
 
-int psp_walk_own_marks(void)
+int psp_walk_apart_keep(void)
 {
-	if (!psp_walk_side)
-		return 0;
 	if (psp_walk_apart < 0)
 		psp_walk_apart = psp_keep("walkapart") != 0;
 	return psp_walk_apart;
+}
+
+/* while the frame is drawn, with walkapart */
+int psp_walk_own_marks(void)
+{
+	return psp_walk_side && psp_walk_apart_keep();
 }
 #endif
 
@@ -36515,6 +36523,143 @@ FIXES_WALKAPART["source/render/render_objects.c#mevis"] = [
 			psp_microseconds() - psp_mv_start);
 	}
 #endif
+"""),
+]
+FIXES_WALKAPART["source/render/render_objects.c#walkapart"] = [
+("""void render_objects_initialize_for_new_map(
+	void)
+{
+	data_make_valid(cached_object_render_states);
+""", """#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART): which render state each object's
+lighting is cached in, by the object's absolute index, so the walk leaves the
+datum alone. An entry is trusted only while its state still names the object,
+as the datum's field is, so one left from a reset object or an evicted state
+is passed over. */
+static long psp_walk_render_states[MAXIMUM_OBJECTS_PER_MAP];
+#endif
+
+void render_objects_initialize_for_new_map(
+	void)
+{
+	data_make_valid(cached_object_render_states);
+#ifdef HALO_PSP
+	memset(psp_walk_render_states, 0xff, sizeof(psp_walk_render_states)); /* NONE */
+#endif
+"""),
+("""static long object_get_cached_render_state(
+	long object_index,
+	real level_of_detail_pixels)
+{
+	struct object_datum *object = object_get(object_index);
+	long render_state_index = NONE;
+
+	if (object->object.cached_render_state_index != NONE &&
+""", """static long object_get_cached_render_state(
+	long object_index,
+	real level_of_detail_pixels)
+{
+	struct object_datum *object = object_get(object_index);
+	long render_state_index = NONE;
+#ifdef HALO_PSP
+	int psp_walk_own_marks(void); /* objects.c (walkapart) */
+	long *psp_state_of = psp_walk_own_marks() ?
+		&psp_walk_render_states[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP] : NULL;
+
+	if (psp_state_of)
+	{
+		struct object_render_state *cached = (struct object_render_state *)datum_try_and_get(
+			cached_object_render_states, *psp_state_of);
+
+		if (cached && cached->object_index == object_index)
+			render_state_index = *psp_state_of;
+	}
+	else
+#endif
+	if (object->object.cached_render_state_index != NONE &&
+"""),
+("""			psp_wake(object_index);
+		}
+""", """#ifdef HALO_PSP
+			if (!psp_state_of) /* the datum changes only without walkapart */
+#endif
+			psp_wake(object_index);
+		}
+"""),
+("""			object->object.cached_render_state_index = render_state_index;
+""", """#ifdef HALO_PSP
+			if (psp_state_of)
+				*psp_state_of = render_state_index;
+			else
+#endif
+			object->object.cached_render_state_index = render_state_index;
+"""),
+]
+# the decals' fade and the vertex cache's clock, run once a drawn frame from
+# the frame's start, move to the end of game_frame with walkapart: nothing runs
+# between the two but the window's setup, so the order of every decal's update
+# against the tick's decal_new is the same
+FIXES_WALKAPART["source/rasterizer/xbox/rasterizer_xbox.c#walkapart"] = [
+("""	if (rasterizer_debug_options.draw_environment_decals)
+	{
+		rasterizer_decal_vertices_begin_update();
+		decals_update();
+		rasterizer_decal_vertices_end_update();
+	}
+	return;
+}
+""", """#ifdef HALO_PSP
+	psp_walk_decals_update(0);
+#else
+	if (rasterizer_debug_options.draw_environment_decals)
+	{
+		rasterizer_decal_vertices_begin_update();
+		decals_update();
+		rasterizer_decal_vertices_end_update();
+	}
+#endif
+	return;
+}
+
+#ifdef HALO_PSP
+/* walkapart (psp_fixups.py FIXES_WALKAPART): from the frame's start (0) as
+before, or from game_frame (1) with walkapart */
+void psp_walk_decals_update(
+	int from_game_frame)
+{
+	int psp_walk_apart_keep(void); /* objects.c */
+
+	if (from_game_frame != psp_walk_apart_keep())
+		return;
+	if (rasterizer_debug_options.draw_environment_decals)
+	{
+		rasterizer_decal_vertices_begin_update();
+		decals_update();
+		rasterizer_decal_vertices_end_update();
+	}
+}
+#endif
+"""),
+("""void _rasterizer_frame_begin(
+""", """#ifdef HALO_PSP
+void psp_walk_decals_update(int from_game_frame);
+#endif
+
+void _rasterizer_frame_begin(
+"""),
+]
+FIXES_WALKAPART["source/game/game.c#walkapart"] = [
+("""	numeric_countdown_timer_update();
+	collision_log_end_period();
+""", """	numeric_countdown_timer_update();
+#ifdef HALO_PSP
+	{
+		void psp_walk_decals_update(int from_game_frame); /* rasterizer_xbox.c (walkapart) */
+
+		psp_walk_decals_update(1);
+	}
+#endif
+	collision_log_end_period();
 """),
 ]
 FIXES_WALKAPART["source/saved games/game_state.c#walkwrites"] = [
