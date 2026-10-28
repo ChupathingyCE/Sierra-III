@@ -2249,9 +2249,13 @@ void psp_audio_report(void)
 (about 743 ms), and its packet callbacks topped them up at interrupt time; the
 port tops them up only once a frame (DirectSoundDoWork from sound_render), so
 a frame longer than the queue (a checkpoint save, a log close) left long sounds
-silent. The packets point into the sound cache, so a deeper queue costs no
-memory. "streampacketsN" sets N (2-32); "streampackets4" is the Xbox's depth */
-#define STREAM_PACKETS_DEFAULT 16
+silent. A packet is ~186 ms (2,304 bytes of ADPCM at 22 kHz), so 8 cover ~1.5 s.
+A deeper queue isn't free: each packet queued holds its sound in the sound
+cache, and at 16 the pieces queued ahead (a cutscene's music, the next loop)
+held so much that the cache refused other sounds for room, Cortana's lines
+among them (B33). "streampacketsN" sets N (2-32); "streampackets4" is the
+Xbox's depth */
+#define STREAM_PACKETS_DEFAULT 8
 int psp_stream_packets(void)
 {
 	extern int psp_keep_number(const char *prefix, int fallback);
