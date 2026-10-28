@@ -13055,8 +13055,9 @@ static void reflection_keeps(void);
 /* the reflection pass's words (reflection_keeps, below) */
 static PSP_MAIN_SIDE int env_fp = -1, env_near = 0, env_pixels = 160, env_gain = 100, env_min = 0;
 /* Chief's visor gets the reflection pass wherever he is drawn at least 24
-pixels across, at chiefvisorgainN percent (150): a restoration, one of the
-campaign's defaults (psp_platform.c; "nochiefvisor" turns it off). On the
+pixels across, at chiefvisorgainN percent (150): a restoration, opt-in until
+it draws right on the PSP (Sheepdog01 19:24: Chief vanished leaving the pod on the
+PSP-1000, and drew yellow-orange on the PSP-3000; fine in the emulator). On the
 Xbox the visor's gold is its cube map's, added over a near-black base:
 folded into the lighting it can't show, since the GE's ambient stops at 1
 and the base x 1 stays dark */

@@ -1094,9 +1094,6 @@ static const struct
 	each lit vertex where the pack keeps it (nogelcube: by the faces); on
 	provisionally while its cost in a10's hallway (+8-15%) is weighed */
 	{ "gelfaces", "nogelfaces" },
-	/* Chief's visor drawn gold from its own sphere map (psp_ge.c, chiefvisor):
-	folded into the lighting it stayed near black; a restoration */
-	{ "chiefvisor", "nochiefvisor" },
 	/* the frame handed to the ME in pieces as it is written, gated on the main
 	CPU's wait for the ME (psp_ge.c, mechunk): where the frame waits for the
 	ME the replay runs beside the writing (a30 7.7 -> 12.7 fps, d20 11.4 ->
