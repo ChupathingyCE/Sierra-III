@@ -2395,6 +2395,21 @@ void psp_player_teleport(float x, float y, float z, float fx, float fy, float fz
 
 	if (unit_index == NONE)
 		return;
+	/* a seated unit's position is its seat's offset, so a spot written
+	there was read from the seat: a10's cryo pod held Chief 56 units off and
+	he vanished leaving it (B32, a route's spot at 228.5 s). The spot is
+	where the tester stood; seated, he stood nowhere */
+	if (object_get(unit_index)->object.parent_object_index != NONE)
+	{
+		static int psp_seated_logged = 0;
+
+		if (!psp_seated_logged)
+		{
+			psp_seated_logged = 1;
+			platform_psp_log("teleport: a spot passed over while the player is seated (game time %ld)", game_time_get());
+		}
+		return;
+	}
 	position.x = x; position.y = y; position.z = z;
 	facing.i = fx; facing.j = fy; facing.k = fz;
 	object_set_position(unit_index, &position, NULL, NULL);
