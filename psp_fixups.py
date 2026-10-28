@@ -36245,14 +36245,15 @@ static void psp_light_pending_set(long object_index, int missed)
 void render_objects("""),
 ]
 
-# 2026-10-28 (research, the master's 07:40: C's first step): "walkapart", the
-# frame's drawing kept out of the state the tick owns. The drawing walk's
+# "walkapart" (option C's first step: the ME owns the drawing): the frame's
+# drawing kept out of the state the tick owns, so the walk can move to
+# another CPU. The drawing walk's
 # marking passes (the collision tests the render makes: objects in a ray's
 # clusters, the features in a sphere) stamp every object they visit with
 # global_object_marker in its datum's magic_number, and the cluster marks in
 # structure_globals, the same words the tick's own passes use: the one
-# object field the walk writes (objtrace's census, datum3 40665035843: every
-# other field's drawing-walk stores are 0). With walkapart, a pass begun while
+# object field the walk writes (objtrace's census: every other field's
+# drawing-walk stores are 0). With walkapart, a pass begun while
 # the frame is drawn keeps its marks in arrays of its own, outside the game
 # state, so a walk on another CPU (option C) shares no words with the tick.
 # The marks mean the same (a pass's marker is new at its begin, so every
@@ -36658,8 +36659,8 @@ for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + 
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
-# ---------- "mevis" (research, 2026-10-28: option C's step 2, the master's
-# 07:40): the frame's visibility made a second time, on the Media Engine,
+# ---------- "mevis" (option C's second step): the frame's visibility made a
+# second time, on the Media Engine,
 # from the same camera, timed there and checked against the main CPU's
 # answer. A measurement of what C's walk would cost on the ME beside today's
 # drawing; the frame still draws from the main CPU's answer. The ME runs the
