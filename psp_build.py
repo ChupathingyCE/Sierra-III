@@ -697,27 +697,36 @@ def link(objs, stubs):
                         "   . = ALIGN(64);\n   __psp_me_bss_end = .;\n"
                         "   *(.bss .bss.* .gnu.linkonce.b.*)\n")
     # pspgu's and pspgum's small variables (gu_list, gu_states,
-    # gu_curr_context, gum_current_matrix, ...: the SDK builds them -G8, so
-    # they sit in .sdata and .sbss, out of the block above) are the ME's too.
-    # Left where the linker puts them they share 64-byte lines with libc's
-    # malloc and impure words and pspdebug's screen cursor, which the main
-    # CPU writes while the ME draws: the emulator's model of the two caches
-    # (mecohere) caught the ME's gu_list and gu_states write lost under the
-    # main CPU's dirty line. Each gets lines of its own, still inside .sdata
-    # and .sbss, so their $gp-relative loads keep their reach
+    # gu_curr_context, gum_vfpucontext, ...: the SDK builds them -G8, so they
+    # sit in .sbss, out of the block above) are the ME's too. Left where the
+    # linker puts them they share 64-byte lines with pspdebug's screen state
+    # and libgcc's emutls words, which the main CPU writes while the ME draws:
+    # the emulator's model of the two caches (mecohere) caught the ME's
+    # gu_list and gu_states write lost under the main CPU's dirty line. They
+    # go last in .sbss, on the one line just below the ME's .bss block, with
+    # pspdebug's and emutls' words moved below the other small variables: the
+    # ME's block starts 64-byte aligned, so as long as .sbss ends inside the
+    # same line as before nothing after it moves (gusdata's padding moved all
+    # of .bss ~190 bytes: tick +4.6% on the PSP-3000, 40622597150 vs
+    # 40622631324), and they stay in $gp's reach. gum_current_matrix (.sdata)
+    # stays first in .sdata, its line shared only with libc's start-up words
+    # PSP_GU_PLACE=sdk leaves them where the SDK's script puts them: the other
+    # side of the placement's A/B, from the same commit
     me_small = ("*libpspgu.a:*", "*libpspgum.a:*")
-    sdata = re.findall(r"\n([ \t]*)\*\(\.sdata \.sdata\.\* \.gnu\.linkonce\.s\.\*\)", text)
-    sbss = re.findall(r"\n([ \t]*)\*\(\.dynsbss\)", text)
-    if len(sdata) != 1 or len(sbss) != 1:
+    main_busy = ("*libpspdebug.a:*", "*libgcc.a:emutls.o")
+    sbss = [] if os.environ.get("PSP_GU_PLACE") == "sdk" else re.findall(r"\n([ \t]*)\*\(\.sbss \.sbss\.\* \.gnu\.linkonce\.sb\.\*\)\n([ \t]*)\*\(\.scommon\)", text)
+    if len(sbss) != 1 and os.environ.get("PSP_GU_PLACE") != "sdk":
         sys.exit("psp_build: the SDK's linkfile.prx has changed; pspgu's small variables can't be placed")
-    text = text.replace("\n%s*(.sdata .sdata.* .gnu.linkonce.s.*)" % sdata[0],
-                        "\n%s. = ALIGN(64);\n" % sdata[0] +
-                        "".join("%s%s(.sdata .sdata.*)\n" % (sdata[0], o) for o in me_small) +
-                        "%s. = ALIGN(64);\n%s*(.sdata .sdata.* .gnu.linkonce.s.*)" % (sdata[0], sdata[0]))
-    text = text.replace("\n%s*(.dynsbss)" % sbss[0],
-                        "\n%s. = ALIGN(64);\n" % sbss[0] +
-                        "".join("%s%s(.sbss .sbss.*)\n" % (sbss[0], o) for o in me_small) +
-                        "%s. = ALIGN(64);\n%s*(.dynsbss)" % (sbss[0], sbss[0]))
+    if sbss:
+        ind = sbss[0][0]
+        text = text.replace("\n%s*(.sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)" % sbss[0],
+                            "\n%s*(EXCLUDE_FILE(%s) .sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)\n" %
+                            (ind, " ".join(me_small + main_busy), sbss[0][1]) +
+                            "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in main_busy) +
+                            "%s. = ALIGN(64);\n%s__psp_me_small_start = .;\n" % (ind, ind) +
+                            "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in me_small) +
+                            "%s__psp_me_small_end = .;\n" % ind +
+                            "%sASSERT(__psp_me_small_end - __psp_me_small_start <= 64, \"pspgu's small variables outgrew their line\");" % ind)
     linkfile = os.path.join(OUT, "linkfile_layout.prx")
     open(linkfile, "w").write(text)
     # build 107: the link map (halo.map: each function's and variable's
