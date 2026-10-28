@@ -36993,6 +36993,7 @@ static unsigned long psp_mv_frames, psp_mv_answers, psp_mv_late, psp_mv_wait_us,
 	psp_mv_differ_objects, psp_mv_main_us_clusters, psp_mv_main_us_objects, psp_mv_main_views, psp_mv_too_deep,
 	psp_mv_depth_most, psp_mv_pvs;
 static unsigned long long psp_mv_cycles_clusters, psp_mv_cycles_objects, psp_mv_cycles_most;
+static unsigned long psp_mv_differ_parts[4], psp_mv_differ_lines;
 
 static int psp_mv_start(void)
 {
@@ -37102,7 +37103,20 @@ void psp_mevis_frame_end(void)
 				if (psp_mv_have_clusters && (psp_mv_record->clusters != psp_mv_main_clusters ||
 					psp_mv_record->cluster_hash != psp_mv_main_cluster_hash || psp_mv_record->surfaces != psp_mv_main_surfaces ||
 					psp_mv_record->surface_hash != psp_mv_main_surface_hash))
+				{
 					psp_mv_differ_clusters++;
+					psp_mv_differ_parts[0] += psp_mv_record->clusters != psp_mv_main_clusters;
+					psp_mv_differ_parts[1] += psp_mv_record->cluster_hash != psp_mv_main_cluster_hash;
+					psp_mv_differ_parts[2] += psp_mv_record->surfaces != psp_mv_main_surfaces;
+					psp_mv_differ_parts[3] += psp_mv_record->surface_hash != psp_mv_main_surface_hash;
+					if (psp_mv_differ_lines < 8)
+					{
+						psp_mv_differ_lines++;
+						platform_psp_log("mevis: differs: clusters %u here, %u on the ME (bits and bounds %08x, %08x); surfaces %u, %u (%08x, %08x)",
+							psp_mv_main_clusters, psp_mv_record->clusters, psp_mv_main_cluster_hash, psp_mv_record->cluster_hash,
+							psp_mv_main_surfaces, psp_mv_record->surfaces, psp_mv_main_surface_hash, psp_mv_record->surface_hash);
+					}
+				}
 				if (psp_mv_have_objects && (psp_mv_record->objects != psp_mv_main_object_count ||
 					psp_mv_record->object_hash != psp_mv_main_object_hash))
 					psp_mv_differ_objects++;
@@ -37117,7 +37131,7 @@ void psp_mevis_frame_end(void)
 		float per_us = psp_me_cycles_per_us();
 		double answers = psp_mv_answers ? (double)psp_mv_answers : 1.0, views = psp_mv_main_views ? (double)psp_mv_main_views : 1.0;
 
-		platform_psp_log("mevis: %lu answers from the ME in %lu frames: on the ME %.2f ms a frame (clusters %.2f + objects %.2f, the most %.2f), here %.2f ms (clusters %.2f + objects %.2f); not done by the frame's end %lu (waited %.2f ms a frame); differing from here: clusters %lu, objects %lu; cut at %d clusters deep %lu times (the deepest %lu); portal walks over budget %lu; not taken by the ring %lu (last 300 frames)",
+		platform_psp_log("mevis: %lu answers from the ME in %lu frames: on the ME %.2f ms a frame (clusters %.2f + objects %.2f, the most %.2f), here %.2f ms (clusters %.2f + objects %.2f); not done by the frame's end %lu (waited %.2f ms a frame); differing from here: clusters %lu, objects %lu; cut at %d clusters deep %lu times (the deepest %lu); portal walks over budget %lu; not taken by the ring %lu; of the clusters' differences: count %lu, bits and bounds %lu, surface count %lu, surfaces %lu; the ME's clock %.1f cycles a us (last 300 frames)",
 			psp_mv_answers, psp_mv_frames,
 			per_us > 0.0f ? (psp_mv_cycles_clusters + psp_mv_cycles_objects) / per_us / 1000.0 / answers : 0.0,
 			per_us > 0.0f ? psp_mv_cycles_clusters / per_us / 1000.0 / answers : 0.0,
@@ -37126,7 +37140,9 @@ void psp_mevis_frame_end(void)
 			(psp_mv_main_us_clusters + psp_mv_main_us_objects) / 1000.0 / views,
 			psp_mv_main_us_clusters / 1000.0 / views, psp_mv_main_us_objects / 1000.0 / views,
 			psp_mv_late, psp_mv_wait_us / 1000.0 / 300.0, psp_mv_differ_clusters, psp_mv_differ_objects,
-			PSP_MV_DEPTH, psp_mv_too_deep, psp_mv_depth_most, psp_mv_pvs, psp_mv_refused);
+			PSP_MV_DEPTH, psp_mv_too_deep, psp_mv_depth_most, psp_mv_pvs, psp_mv_refused, psp_mv_differ_parts[0],
+			psp_mv_differ_parts[1], psp_mv_differ_parts[2], psp_mv_differ_parts[3], (double)per_us);
+		csmemset(psp_mv_differ_parts, 0, sizeof(psp_mv_differ_parts));
 		psp_mv_frames = psp_mv_answers = psp_mv_late = psp_mv_wait_us = psp_mv_refused = psp_mv_differ_clusters = 0;
 		psp_mv_differ_objects = psp_mv_main_us_clusters = psp_mv_main_us_objects = psp_mv_main_views = psp_mv_too_deep = 0;
 		psp_mv_depth_most = psp_mv_pvs = 0;
