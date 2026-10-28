@@ -13639,7 +13639,7 @@ static int change_pass(void *vertices, const unsigned short *indices, long index
 	return 1;
 }
 
-/* "chiefsheen" (opt-in while Sheepdog01 judges it): the Xbox adds a shiny part's
+/* "chiefsheen" (a restoration, on by default): the Xbox adds a shiny part's
 reflection over its lit, change-coloured base, by the multipurpose map's
 red (the reflection mask). Folded into the ambient light, as every other
 part's is, it is multiplied by the base instead, so Chief's armour stayed
