@@ -12,7 +12,8 @@ microsecond clock (sceKernelGetSystemTimeLow), so every time is on one clock:
   c  the main CPU's phase changes (psp_phase: 0 other, 1 tick, 2 drawing,
      3 frame end);
   g  the GE's busy spans, as gebusy and gebusy2 close them (their SIGNAL and
-     FINISH interrupts): start, end and the draws' kind;
+     FINISH interrupts): start, end and the draws' kind; spans of one kind
+     less than 0.1 ms apart joined;
   m  a Media Engine slot job (audio, the replay of the frame, the eDRAM
      probe): when the main CPU handed it over, when it saw it done, and the
      ME's own time for it (its cycle counter, as psp_me.c converts it);
@@ -50,6 +51,7 @@ void platform_log(const char *format, ...);
 
 #define LANE_NOTES 1536
 #define LANE_LINE 480
+#define LANE_GE_JOIN_US 100
 
 /* 12 bytes: the end, the start, and kind (4 bits), b (12) and c (16) */
 struct lane_note
@@ -104,14 +106,28 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 		return;
 	flags = sceKernelCpuSuspendIntr();
 	index = lane_count;
-	if (index < LANE_NOTES)
-		lane_count = index + 1;
-	sceKernelCpuResumeIntr(flags);
-	if (index >= LANE_NOTES)
+	/* a GE span that starts within LANE_GE_JOIN_US of the last note's end,
+	that note a span of the same kind, extends it: the GE closes 60-150
+	spans a frame (gebusy2's chunks), which filled a window's notes in 10-22
+	frames on the PSP (lane-hw 40714069887) */
+	if (kind == PSP_LANE_GE && index > 0 && index <= LANE_NOTES &&
+		LANE_KIND(&lane_notes[index - 1]) == PSP_LANE_GE && LANE_B(&lane_notes[index - 1]) == (b & 0xFFF) &&
+		(int)(from - lane_notes[index - 1].t) <= LANE_GE_JOIN_US && (int)(t - lane_notes[index - 1].t) > 0)
+	{
+		lane_notes[index - 1].t = t;
+		sceKernelCpuResumeIntr(flags);
 		return;
-	lane_notes[index].from = from;
-	lane_notes[index].t = t;
-	lane_notes[index].packed = kind << 28 | (b & 0xFFF) << 16 | (c > 0xFFFF ? 0xFFFF : c);
+	}
+	if (index < LANE_NOTES)
+	{
+		/* written before the interrupts come back, so a GE span joining the
+		last note never sees a slot taken and not yet filled */
+		lane_count = index + 1;
+		lane_notes[index].from = from;
+		lane_notes[index].t = t;
+		lane_notes[index].packed = kind << 28 | (b & 0xFFF) << 16 | (c > 0xFFFF ? 0xFFFF : c);
+	}
+	sceKernelCpuResumeIntr(flags);
 }
 
 /* a phase edge (psp_platform.c's phase_mark): a window opens unless one is
