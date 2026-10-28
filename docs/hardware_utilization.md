@@ -1,6 +1,6 @@
 # Hardware utilization: does the port use the PSP well?
 
-Draft: phase 1 (the survey) done except the VRAM plan; phase 2's ranked list in section 7, for Sheepdog01 before any rebuild. The hardware session's brief is in the lab (`coord/handoff/hardware_2026-10-28.md`). Labels: [M] PSP, [E] emulator or estimate, [D] code or data, [U] inference.
+Draft: phase 1 (the survey) done; phase 2's ranked list in section 7, for Sheepdog01 before any rebuild. The hardware session's brief is in the lab (`coord/handoff/hardware_2026-10-28.md`). Labels: [M] PSP, [E] emulator or estimate, [D] code or data, [U] inference.
 
 ## 1. Which lane limits each map
 
@@ -106,11 +106,15 @@ The split was set at build 108 by the cache model's misses per byte (`psp_scratc
 **The bus: the GE's traffic is what costs the tick** [M]:
 - When the ME and the main CPU both walked RAM, neither slowed (mewalk).
 - The ME's loads cost the tick 1.4-6.7% (`tick_change_me_busload`, PSP-1000).
-- When the GE pulled from main RAM under M6 #2, 77-94% of the tick's rise was contention: each miss stalled longer (`contention_tick_ms`, PSP-3000). With textures resident in VRAM (mevram) it fell to 55-76% of a smaller rise.
+- When the GE pulled from main RAM under M6 #2, 77-94% of the tick's rise was contention: each miss stalled longer (`contention_tick_ms`, PSP-3000). With the models' vertices read from VRAM (mevram) it fell to 55-76% of a smaller rise.
 - That answers the brief's open question: the ME's traffic is cheap; the GE's main-RAM reads are what the tick pays for. So data the GE reads belongs in VRAM first.
 - DMA's own share of the bus budget is about 1 [D] (`bus_budget`).
 
-**VRAM:** the plan lives on the dashboard (`vram_plan`), which this session can't open. To be read through the master.
+**VRAM today** [M, w142 tm-plain 40566969386, a10's intro, PSP-3000 log]: of the 2 MB, the display takes 832 KB, the texture cache 616 KB and the model buffers (`vrammodels`) 616 KB.
+- **Textures:** the cache is filled by binds per byte; its best third holds 189-270 KB. Several of the most-bound textures still live in RAM (a 128x128 at 4,896 binds in 900 frames).
+- **Model buffers:** they run full. In different 300-frame windows they were full 0-274 times and copied up to 6 MB into VRAM.
+- **The room is spoken for** (the master's 12:55 note; levers.tsv M6B, CTNG, VRSP, VRBTEX). The dashboard's `vram_plan` is b115's and stale.
+- **What's left is choosing what earns the room,** not finding more of it. The copies into the model buffers are bus traffic of their own: a lead for phase 2 is to price their churn against what they save the GE.
 
 ## 5. The placement map
 
