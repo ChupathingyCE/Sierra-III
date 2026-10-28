@@ -28360,6 +28360,55 @@ void psp_lruv_log_map(struct lruv_cache *cache, const char *(*name)(long block_i
 
 long lruv_block_new("""),
 ]
+# B33 (a10's intro: Cortana's line and an ambience loop refused for room while
+# the cache held enough in pieces): b113's placement puts every sound of 32 KB
+# and more at the top, so the long ambient loops, held for as long as they
+# play, sit among the cutscene's music and dialogue, which come and go; the
+# room left between them is pieces. "soundloopstop": only the classes that
+# play as long loops (engines, machines, the devices' and the world's
+# ambience) take the top, so what is held long gathers there and the room
+# below heals as the short sounds end
+FIXES_SOUND["source/cache/xbox_sound_cache.c#soundloopstop"] = [
+("""	cache_block_index = lruv_block_new(
+		xbox_sound_cache_globals.cache,
+		sound->samples.size);
+#ifdef HALO_PSP
+	if (cache_block_index != NONE)
+	{
+		psp_sound_cache_loads++;""",
+ """#ifdef HALO_PSP
+	{
+		extern struct lruv_cache *psp_lruv_high_cache; /* lruv_cache.c */
+		extern int psp_keep(const char *name);
+		static int psp_loops_top = -1;
+		struct lruv_cache *psp_high_saved = psp_lruv_high_cache;
+
+		if (psp_loops_top < 0)
+			psp_loops_top = psp_keep("soundloopstop");
+		if (psp_loops_top && psp_high_saved)
+		{
+			short psp_class = sound_definition_get(sound->runtime_tag_index)->sound_class;
+
+			/* vehicle_engine 23; device_machinery, _nature, _computers 28-30;
+			ambient_nature, _machinery, _computers 33-35 (sound_classes.c) */
+			if (!(psp_class == 23 || (psp_class >= 28 && psp_class <= 30) || (psp_class >= 33 && psp_class <= 35)))
+				psp_lruv_high_cache = NULL;
+		}
+		cache_block_index = lruv_block_new(
+			xbox_sound_cache_globals.cache,
+			sound->samples.size);
+		psp_lruv_high_cache = psp_high_saved;
+	}
+#else
+	cache_block_index = lruv_block_new(
+		xbox_sound_cache_globals.cache,
+		sound->samples.size);
+#endif
+#ifdef HALO_PSP
+	if (cache_block_index != NONE)
+	{
+		psp_sound_cache_loads++;"""),
+]
 FIXES_SOUND["source/cache/xbox_sound_cache.c#soundmap"] = [
 ("""				"%ld KB held by sounds playing or loading", (long)(sound->samples.size / 1024), psp_game_time_peek(),
 				clearable * 4, locked_pages * 4);
