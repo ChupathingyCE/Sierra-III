@@ -540,12 +540,15 @@ GEL_CUBE_MARK = 0xC0BE         # palette entry 255 of a gel patch that carries i
 GEL_CUBE_FIRST = 7             # the cube's colours from this palette entry on (0 the mean, 1-6 the faces)
 
 
-def cube_patch(m, b, rgb=None, faces=None, cube=None, sphere=None):
+def cube_patch(m, b, rgb=None, faces=None, cube=None, sphere=None, mean=None):
     """a cube map's average colour as an 8 x 8 patch of that one colour,
     under the cube map's own key: the GE draws no cube maps, and a model's
     reflection is folded into its lighting by this average (psp_ge.c,
-    psp_ge_model_reflection). The first face stands for the six (the bitmap's
-    data starts with it), unless rgb gives the colour (a light's gel). A
+    psp_ge_model_reflection), and Chief's sheen is added by it. mean gives
+    it as the six faces' mean (a model reflection's cube, unless
+    --cube-first-face); without it the first face stands for the six (the
+    bitmap's data starts with it), unless rgb gives the colour (a light's
+    gel). A
     gel's six face colours, when given, sit in palette entries 1-6 (every
     texel is entry 0, so the patch still draws and averages as one colour),
     entry 15 marking them. A gel's cube, when given, makes the patch CLUT8
@@ -554,6 +557,8 @@ def cube_patch(m, b, rgb=None, faces=None, cube=None, sphere=None):
     still entry 0's"""
     if rgb is not None:
         r, g, bl = rgb
+    elif mean is not None:
+        r, g, bl = mean
     else:
         img = decode(m, b)
         if img is None:
@@ -644,6 +649,7 @@ def sphere_map(m, b):
 
 
 NO_SPHERE_MAPS = False         # --no-sphere-maps: a model reflection's cube as its 8 x 8 average patch only, as before
+CUBE_FIRST_FACE = False        # --cube-first-face: a model reflection's average from its first face, as before
 
 NO_CUBE_PATCHES = False        # --no-cube-patches: no cube map averages in the pack (as build 139)
 NO_GEL_FACES = False           # --no-gel-faces: a gel patch with the single gel average only, the behaviour before per-face averages
@@ -2178,6 +2184,8 @@ def main():
                     help="no cube map averages in the pack (as build 139)")
     ap.add_argument('--no-gel-faces', action='store_true',
                     help="a light's gel patch with the single gel average only, the behaviour before per-face averages")
+    ap.add_argument('--cube-first-face', action='store_true',
+                    help="a model reflection cube's average from its first face only, as before (default: the six faces' mean)")
     ap.add_argument('--no-sphere-maps', action='store_true',
                     help="a model reflection's cube map as its average alone, without the sphere map the reflection pass draws")
     ap.add_argument('--no-gel-cube', action='store_true',
@@ -2221,6 +2229,8 @@ def main():
     global NO_RELIEF, OLD_RELIEF, NO_CUBE_PATCHES, NO_GEL_FACES, NO_GEL_CUBE, NO_SPHERE_MAPS
     NO_GEL_FACES = a.no_gel_faces
     NO_SPHERE_MAPS = a.no_sphere_maps
+    global CUBE_FIRST_FACE
+    CUBE_FIRST_FACE = a.cube_first_face
     NO_GEL_CUBE = a.no_gel_cube
     NO_RELIEF = a.no_relief
     OLD_RELIEF = a.relief_unfiltered
@@ -2304,7 +2314,17 @@ def main():
             faces = gel_faces(m, b) if rgb is not None and not NO_GEL_FACES else None
             cube = gel_cube(m, b) if faces is not None and not NO_GEL_CUBE else None
             sphere = sphere_map(m, b) if rgb is None and not NO_SPHERE_MAPS else None
-            r = cube_patch(m, b, rgb, faces, cube, sphere)
+            # a model reflection's average over its six faces: its first face
+            # alone (the default before) is one side of the room, and Chief's
+            # cube is warmer and brighter there than the whole
+            mean = gel_average(m, b) if rgb is None and not CUBE_FIRST_FACE else None
+            if mean is not None:
+                first = decode(m, b)
+                if first is not None:
+                    f = [int(round(x)) for x in first[:, :, :3].reshape(-1, 3).astype(np.float64).mean(0)]
+                    print('  reflection cube %s: six faces\' mean %d %d %d (the first face %d %d %d)'
+                          % (b['tag'], mean[0], mean[1], mean[2], f[0], f[1], f[2]), file=sys.stderr)
+            r = cube_patch(m, b, rgb, faces, cube, sphere, mean)
             if r is not None:
                 CUBE_PATCHES.append(b['tag'])
                 if rgb is not None:
