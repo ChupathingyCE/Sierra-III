@@ -294,7 +294,8 @@ static void __attribute__((noinline)) vfpu_rotation(struct matrix43 *matrix, con
 		"mtv %0, S030\n" "mtv %1, S230\n"
 		"vscl.t C100, C000, S030\n"
 		"vmul.t C110, C000[x,x,y], C100[y,z,z]\n"
-		"vmul.t C120, C000[w,w,w], C100[z,y,x]\n"
+		/* .q: a triple can't swizzle in lane w; the fourth lane is unused */
+		"vmul.q C120, C000[w,w,w,w], C100[z,y,x,x]\n"
 		"vmul.t C130, C000, C100\n"
 		"vadd.t C200, C130[y,x,x], C130[z,z,y]\n"
 		"vadd.t C210, C110, C120\n"
