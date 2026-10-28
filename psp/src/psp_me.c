@@ -1208,7 +1208,7 @@ static void me_wake_probe(void)
 	meLibSync();
 	for (k = 0; k < 1024; k++)
 		wake_probe_out[k] = ~WAKE_PROBE_WORD(k);
-	meLibDcacheWritebackInvalidateRange((u32Me)wake_probe_out, sizeof(wake_probe_out));
+	meLibDcacheWritebackInvalidateRange((u32)wake_probe_out, sizeof(wake_probe_out));
 	for (k = 0, sum = 0; k < 1024; k++)
 		sum += UNCACHED(&wake_probe_out[k])[0] ^ ~WAKE_PROBE_WORD(k);
 	if (sum)
@@ -1217,7 +1217,7 @@ static void me_wake_probe(void)
 	meLibSync();
 	for (k = 0; k < 2048; k++)
 		edram[k] = WAKE_PROBE_WORD(k + 7);
-	meLibDcacheWritebackInvalidateRange((u32Me)edram, 2048 * 4);
+	meLibDcacheWritebackInvalidateRange((u32)edram, 2048 * 4);
 	for (k = 0, sum = 0; k < 2048; k++)
 		sum += edram[k] ^ WAKE_PROBE_WORD(k + 7);
 	if (sum)
