@@ -63,6 +63,7 @@ ships beside the EBOOT. */
 #include <unistd.h>
 #include <me-core-mapper/me-core.h>
 #include "psp_me.h"
+#include "psp_lanetrace.h"
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
 void platform_log(const char *format, ...);
@@ -1870,6 +1871,9 @@ static int me_run_slot(int which, unsigned int type, const unsigned int *args, i
 		stats[which].wait_worst_us = waited;
 	if (me_us > stats[which].me_worst_us)
 		stats[which].me_worst_us = me_us;
+	/* "lanetrace" (psp_lanetrace.c): handed over, seen done, the ME's own time */
+	PSP_LANE(PSP_LANE_ME_SLOT, (unsigned int)start, sceKernelGetSystemTimeLow(), (unsigned int)which << 8 | (type & 0xFF),
+		last_job_us[which]);
 	return 1;
 }
 
@@ -2025,6 +2029,9 @@ static int me_finish_slot(int which, unsigned int *results)
 	stats[which].wait_us += waited;
 	if (waited > stats[which].wait_worst_us)
 		stats[which].wait_worst_us = waited;
+	/* "lanetrace" (psp_lanetrace.c): handed over, seen done, the ME's own time */
+	PSP_LANE(PSP_LANE_ME_SLOT, (unsigned int)submit_mark[which], sceKernelGetSystemTimeLow(),
+		(unsigned int)which << 8 | (slot->type & 0xFF), last_job_us[which]);
 	return 1;
 }
 
@@ -2557,6 +2564,9 @@ int psp_me_wait(unsigned int ticket, unsigned int *results)
 	ring_stats.look_cycles += result->look_cycles;
 	if (result->look_cycles > ring_stats.look_worst_cycles)
 		ring_stats.look_worst_cycles = result->look_cycles;
+	/* "lanetrace" (psp_lanetrace.c): pushed, collected, the ME's own time */
+	PSP_LANE(PSP_LANE_ME_RING, ring_push_mark[index], now, request->type,
+		me_cycles_per_us > 0.0f ? (unsigned int)((float)result->job_cycles / me_cycles_per_us) : 0);
 	return 1;
 }
 

@@ -46,6 +46,7 @@ PSP_HEAP_SIZE_KB(PSP_HEAP_KB);
 /* ms0:/halo, or the multiplayer build's ms0:/halomp (psp_paths.h) */
 #include "psp_paths.h"
 #include "psp_metrics.h"
+#include "psp_lanetrace.h"
 #define DATA_ROOT PSP_DATA_ROOT
 /* in a folder of its own: the game's own files (debug.txt, stderr.txt,
 gamestate.txt) are written next to each other in ms0:/halo, and a file's
@@ -2765,6 +2766,7 @@ static void phase_mark(const char *map, const char *edge)
 
 	platform_log("phase: %s, %s at game time %ld, frame %lu", map, edge, psp_game_time_peek(), psp_ge_frame_number());
 	psp_phase_cut = 1;
+	PSP_LANE_ARM(); /* "lanetrace" (psp_lanetrace.c): a window of frames from here */
 	if (log_wake >= 0)
 		sceKernelSignalSema(log_wake, 1);
 }
@@ -3333,6 +3335,12 @@ void psp_frame_account(unsigned long microseconds)
 	psp_phase(0);
 	/* build 126: "frametrace" (psp_frametrace.c) */
 	PSP_METRICS_FRAMETRACE_FRAME(microseconds, ticks, psp_heartbeat_clock() - end_start);
+	{
+		/* "lanetrace" (psp_lanetrace.c) */
+		extern unsigned long psp_ge_frame_number(void);
+
+		PSP_LANE_FRAME_END(psp_ge_frame_number(), (unsigned int)ticks);
+	}
 	psp_last_frame_us = microseconds;
 	frame_count++;
 	steps_frame_edge();
@@ -3386,6 +3394,8 @@ volatile int psp_current_phase = 0;
 void psp_phase(int phase)
 {
 	psp_current_phase = phase;
+	/* "lanetrace" (psp_lanetrace.c) */
+	PSP_LANE(PSP_LANE_PHASE, 0, sceKernelGetSystemTimeLow(), 0, (unsigned int)phase);
 	if (hwprofile_running)
 		halo_profile_phase(phase);
 #ifdef PSP_RECON
