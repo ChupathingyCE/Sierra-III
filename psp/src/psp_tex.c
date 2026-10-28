@@ -1300,7 +1300,7 @@ void psp_tex_map_opened(const char *name)
 	free(census);
 	census = psp_keep("texcensus") ? calloc(header[1], sizeof(struct tex_census)) : NULL;
 	free(texlod_seen);
-	texlod_seen = psp_keep_number("texlod", 0) > 0 ? calloc((header[1] + 7) / 8, 1) : NULL;
+	texlod_seen = psp_keep_number("texlod", 0) > 0 ? calloc((header[1] + 3) / 4, 1) : NULL;
 	resident_in = calloc(header[1], 1);
 	hud_pinned = calloc(header[1], 1);
 	bind_counts = line_calloc(header[1], sizeof(unsigned short));
@@ -1725,21 +1725,26 @@ cost a command each and tell nothing: emulator runs only */
 static int texlod_frames = -1;
 static unsigned int texlod_window = 0, texlod_window_due = 0;
 
+/* texlod_seen: two bits a texture, bound (set by the bind) and logged */
 static void texlod_mark(int index)
 {
-	struct pack_entry const *e;
-	unsigned int width, height, level, bytes[8];
-
 	if (texlod_window_due)
 	{
 		sceGuSendCommandi(0, 0xA60000 | (texlod_window_due & 0xFFFFu));
 		texlod_window_due = 0;
 	}
 	sceGuSendCommandi(0, 0xA50000 | (index >= 0 && index < 0xFFFF ? (unsigned int)index : 0xFFFFu));
-	/* the log is the main CPU's (a system call) */
-	if (index < 0 || PSP_ME_WORK() || !texlod_seen || (texlod_seen[index / 8] & (1u << (index % 8))))
-		return;
-	texlod_seen[index / 8] |= (unsigned char)(1u << (index % 8));
+	/* logged at the frame's end, on the main CPU (the Media Engine's replay
+	binds most textures, and the log is a system call) */
+	if (index >= 0 && texlod_seen)
+		texlod_seen[index / 4] |= (unsigned char)(1u << (index % 4 * 2));
+}
+
+static void texlod_log(int index)
+{
+	struct pack_entry const *e;
+	unsigned int width, height, level, bytes[8];
+
 	e = &entries[index];
 	width = e->width;
 	height = e->height;
@@ -1769,7 +1774,17 @@ static int texlod_on(void)
 first bind (the frame's list is closed by now) */
 static void texlod_frame_end(unsigned int frame_number)
 {
-	if (!texlod_on() || frame_number % (unsigned int)texlod_frames)
+	int index;
+
+	if (!texlod_on())
+		return;
+	for (index = 0; texlod_seen && index < entry_count; index++)
+		if ((texlod_seen[index / 4] >> (index % 4 * 2) & 3u) == 1u)
+		{
+			texlod_seen[index / 4] |= (unsigned char)(2u << (index % 4 * 2));
+			texlod_log(index);
+		}
+	if (frame_number % (unsigned int)texlod_frames)
 		return;
 	texlod_window_due = ++texlod_window & 0xFFFFu;
 	platform_log("textures: texlod: window %u ends at game time %ld (frame %u)", texlod_window & 0xFFFFu,
