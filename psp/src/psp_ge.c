@@ -10733,6 +10733,7 @@ static ScePspFVector3 model_light_toward[2];
 place and a colour already scaled by its reach at the model's centre
 (psp_fixups.py, the model's begin) */
 static int model_point_count = 0;
+static unsigned int model_detail_key; /* psp_ge_model_detail, below */
 static unsigned int model_point_color[2];
 static ScePspFVector3 model_point_position[2];
 static unsigned long model_point_parts = 0;
@@ -10787,6 +10788,11 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	model_ambient = ambient ? color_from_rgb_scaled(ambient, model_ambient_gain) : MODEL_LIGHT;
 	model_light_count = light_count < 0 ? 0 : light_count > 2 ? 2 : light_count;
 	model_point_count = 0; /* build 117: psp_ge_model_point_light follows */
+	/* a part's detail map is set by its own call (psp_ge_model_detail), made
+	only where a detail pass is wanted: the menu's showcase, or Chief with
+	chiefdetail. The draw body no longer checks the showcase, so a key left
+	from the menu's last part must not reach the next map's models */
+	model_detail_key = 0;
 	for (index = 0; index < model_light_count; index++)
 	{
 		const float *light = index ? light1 : light0;
