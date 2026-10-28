@@ -2744,7 +2744,7 @@ static void scene_ladder_tick(unsigned long ticks_seen)
 	}
 }
 
-/* keep.txt's "phasemark" (the lab's time map, psp/sierra/timemap): a log line
+/* keep.txt's "phasemark" (a time map of each level's phases): a log line
 at each of a level's phase edges (the map loaded, its cutscene begun and
 ended, a BSP switch), with the heartbeat's window cut there, so each window's
 averages (the heartbeat, the step profile and the lines that report with it)

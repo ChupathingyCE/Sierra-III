@@ -4226,7 +4226,7 @@ size, so a line that is the smallest mip level's colour shows the texture */
 static int magenta = -1;
 static int tex_level_mode = GU_TEXTURE_AUTO;
 static float tex_bias = 0.0f;
-#define SHOWCASE_BIAS_DEFAULT 8 /* quarter levels: two levels coarser, which Sheepdog01 judged right on the PSP-1000 by hand (sharper levels shimmer on the hull); a bias smears the ring and the sky some, so 4 is still to be tried by hand; showcasebias0 as before */
+#define SHOWCASE_BIAS_DEFAULT 8 /* quarter levels: two levels coarser, judged right on a PSP-1000 by hand (sharper levels shimmer on the hull); a bias smears the ring and the sky some, so 4 is still to be tried by hand; showcasebias0 as before */
 static int in_sky;
 static unsigned long ge_part_us[GE_PARTS], ge_part_calls[GE_PARTS];
 static const char *const ge_part_names[GE_PARTS] = {
@@ -11009,8 +11009,8 @@ draws. A cache line of their own, the type's alignment padding the struct
 to it. Each was a lazy static (-1 until read) on the lines the main CPU
 writes while the ME works (PSP_MAIN_SIDE): a Media Engine that still saw -1
 read them again itself and wrote that line under the main CPU's dirty copy,
-and on the PSP Chief vanished leaving his pod or drew yellow-orange
-(Sheepdog01, 2026-10-27 19:24), where the emulator's one cache drew him right */
+and on the PSP Chief drew yellow-orange in a run with the visor on,
+where the emulator's one cache drew him right */
 static struct __attribute__((aligned(64))) reflection_words {
 	int read, specular, env_fp, env_near, env_pixels, env_gain, env_min, chief_visor, chief_visor_gain;
 	float specular_power, specular_gain;
@@ -20384,7 +20384,7 @@ four, again and again (four levels at most) where it can reach the light,
 and each piece lit at its own corners. Keep word "nolightsplit": as before */
 static int light_split_on = -1;
 
-/* B7, a restoration, on by default whatever it costs (Sheepdog01's call): a
+/* B7, a restoration, on by default whatever it costs (the project's call): a
 spotlight's pool drawn with the surface's own texture, as the point lights
 are, its cone worked out per corner. With one texture a pass the projected
 cone took the texture's slot and the surface came in as its average colour

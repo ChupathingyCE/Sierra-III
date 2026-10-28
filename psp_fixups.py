@@ -554,7 +554,7 @@ static unsigned int psp_transparent_map(struct shader const *shader, short permu
 			on the base map's coordinates, v by the v scale too, as the Xbox's
 			vertex constants have it (rasterizer_xbox_models.c) */
 			/* "chiefdetail": Chief's armour too, the centerpiece in every
-			level (Sheepdog01, 2026-10-27), as the ring is on the menu; every other
+			level, as the ring is on the menu; every other
 			part then sends none, so his detail map never carries over */
 			if (psp_showcase_map || PSP_KEEP_ONCE("chiefdetail"))
 			{
@@ -26735,7 +26735,7 @@ boolean object_visible_to_any_player(
 """),
 ]
 
-# ---------- FIXES_SMALLWINS2: small wins batch 2 (research; Sheepdog01 2026-10-27 01:39-01:44)
+# ---------- FIXES_SMALLWINS2: small wins batch 2
 #
 # Shelved small wins revived, each exact, each with its own off word, all off
 # with "smallwins2old".
@@ -26744,7 +26744,7 @@ boolean object_visible_to_any_player(
 # portal's screen hull against the region seen so far (convex_hull2d_intersect,
 # a clip by every edge). When the two hulls' bounding rectangles lie apart by
 # more than the clip's tolerance, the clip can only come back empty, and the
-# walk skips it. survc1 (lab 39647350447) counted ~92-96 such clips a frame on
+# walk skips it. A survey counted ~92-96 such clips a frame on
 # b30. The check runs the clip anyway for every one skipped and counts any
 # that wasn't empty (expected 0; the metrics line).
 FIXES_SMALLWINS2 = {}
@@ -30763,9 +30763,9 @@ static struct
 } psp_points_stats;
 
 /* B31: a points job that held the ME past an audio block's 40 ms deadline
-stopped the ME for the session (sierra-hw 40447700908, 40529047236,
-40530552701). On the PSP a point takes at most ~80 us on the ME (sierra-hw
-40555717812), so such a job was stuck, not slow: the job reports its slowest
+stopped the ME for the session (three runs on the PSP). On the PSP a
+point takes at most ~80 us on the ME (measured there), so such a job
+was stuck, not slow: the job reports its slowest
 point and the failed job's point is logged, to catch it */
 static inline int psp_on_me(void)
 {
@@ -36038,7 +36038,7 @@ FIXES_DGFAST["source/memory/data.c#dgfast"] = [
 
 
 
-# B30 (Sheepdog01 2026-10-26 11:40, a restoration): doors lit bright where the
+# B30 (a restoration): doors lit bright where the
 # level around them is black. An object's lighting is sampled from the
 # lightmap under it, and on the PSP that read uses the renderer's copies of
 # the floor, there only for floor already drawn: seen from a lit room, a door's

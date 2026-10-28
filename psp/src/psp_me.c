@@ -148,7 +148,7 @@ pointed at psp_me_fault_vector */
 #define ME_FEATURE_FAULT_OFF 512u
 /* "mefaulttest": a test of the record, never for play: about 5 s after
 start the ME runs a break instruction (an exception on any MIPS: an odd
-address's load was let through on the ME, sierra-hw 40576363461), so the
+address's load was let through on the ME, in a run on the PSP), so the
 main CPU's next deadline stops it and the log shows the record */
 #define ME_FEATURE_FAULT_TEST 1024u
 
