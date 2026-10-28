@@ -418,7 +418,7 @@ One line each: the build it shipped in, then what it measured.
 - **Flare rays kept 3 frames:** b31/b44.
 - **Portal walk budget:** b31.
 - **Back-face culling:** b35.
-- **Particle budgets:** b36–b41. Updates had cost 15–39 ms a frame under fire [M b35].
+- **Particle budgets:** b36–b41. Updates had cost 15–39 ms a frame under fire [M b35]. The budgets price the updates (a count); drawing particles costs by their screen coverage, not their count (a30's opening: 100–150 sprites a frame covering ~14 screens, 0.3 once away from the pod [E]).
 - **Near-plane verdicts per batch:** b43.
 - **Cached list writes with `cache 0x18`; stall updates batched:** b48.
 - **Box pre-test, detail fade buckets, palette cache:** b66.

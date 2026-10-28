@@ -56,7 +56,7 @@ Two jobs shaped like the renderer's costliest CPU steps:
 
 With `meclassify`, each level draw runs both jobs on the ME after the main CPU's own work. Then the **same function runs again on the main CPU**, with the data first flushed out of its cache, as the ME's is at the start of a job.
 - The log line `GE: ME measure (meclassify): …` gives, per job, the ME's code time per vertex or triangle against the main CPU's, both starting cold, and the answers that differ.
-- **That is the like-for-like number** that decides any offload. If the ME is about as fast as the main CPU, splitting a draw between them pays; if it is twice as slow (as b86's audio hinted), the ME can take about a third of the work.
+- **That is the like-for-like number** that decides any offload. If the ME is about as fast as the main CPU, splitting a draw between them pays; if it is twice as slow (as b86's audio hinted), the ME can take about a third of the work. (Answered below, b90 run 3: as fast as the main CPU [M].)
 - **It costs frame time while on**, because the main CPU waits and repeats the work. It is an instrument, not a speed-up.
 - [S: both jobs 0 differing answers over ~900,000 vertices and ~950,000 triangles. ]
 
@@ -88,7 +88,7 @@ Lower on the list:
 - Collision rays for sound obstruction and AI (the larger prize named in `audio.md` §6.4, but the collision code would have to run self-contained on the ME: a big port).
 - Particles.
 
-**Decision point:** `meclassify` on hardware gives the ME's speed on exactly these two jobs. If the ME's own time per triangle is near the main CPU's, build option 1 first, behind a switch, and measure it with benchrun.
+**Decision point (settled, next section):** `meclassify` on hardware gives the ME's speed on exactly these two jobs. If the ME's own time per triangle is near the main CPU's, build option 1 first, behind a switch, and measure it with benchrun.
 
 ## The ME's speed, measured (b90 run 3) [M]
 
