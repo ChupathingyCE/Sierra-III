@@ -36250,7 +36250,7 @@ void render_objects("""),
 # docs/hardware_utilization.md section 7). The element-wise form keeps each
 # lane's operations in the engine's order, so its bits are the FPU's (PSP-3000
 # vfpubench: 20,000 of 20,000 the same) at 3.3x the speed in a chain.
-# "vfpupose" turns it on (off by default while it is priced); "vfpuposecheck"
+# On by default (exact); "novfpupose" turns it off; "vfpuposecheck"
 # also makes each product the FPU's way, compares, and plays the FPU's bits.
 # Only the main CPU takes it: psp_vfpu_quaternions_multiply answers 0 on the
 # Media Engine (no VFPU), and the FPU's code below runs instead.

@@ -519,7 +519,7 @@ static void vfpu_posing_bench(void)
 		BENCH_TRIALS, fpu_us, e_us, d_us, interpolate_fpu_us, interpolate_d_us);
 }
 
-/* The quaternion product in play ("vfpupose", psp_fixups.py FIXES_VFPUPOSE):
+/* The quaternion product in play (on by default, "novfpupose" off; psp_fixups.py FIXES_VFPUPOSE):
 the element-wise form above, whose bits are the FPU's (it keeps every lane's
 operations in the engine's order). The Media Engine has no VFPU and reaches
 engine code through its jobs, so the product goes to the VFPU only when the
@@ -668,6 +668,6 @@ void psp_vfpu_initialize(void)
 	platform_log("VFPU: matrix product checked against the FPU, worst relative difference %g%s; 2000 products %u us (FPU %u us); %s",
 		(double)worst, aliased_ok ? "" : ", WRONG in place", vfpu_us, fpu_us,
 		psp_vfpu_on ? "on" : psp_keep("novfpu") ? "off (novfpu)" : "OFF: it disagrees with the FPU");
-	if (psp_vfpu_on && psp_keep("vfpupose"))
+	if (psp_vfpu_on && !psp_keep("novfpupose"))
 		vfpupose_initialize();
 }
