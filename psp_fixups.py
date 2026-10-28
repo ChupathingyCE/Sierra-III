@@ -28319,6 +28319,63 @@ FIXES_LOADING["source/cache/cache_files.c#loading"] = [
 
 # ---------- sound (the sound session; docs/audio_fidelity.md)
 FIXES_SOUND = {}
+# The sound cache's map at its first two refusals (B33: a10's bridge music
+# refused for room while the cache held enough in pieces): each block's place,
+# size, whether it could be pushed out, and its sound, so the proper fix
+# (where the room goes) is chosen from what holds it
+FIXES_SOUND["source/memory/lruv_cache.c#soundmap"] = [
+("""	return best;
+}
+#endif
+
+long lruv_block_new(""",
+ """	return best;
+}
+
+/* each block in page order, with the free runs between them: the sound
+cache's log line at a refusal (xbox_sound_cache.c) */
+void psp_lruv_log_map(struct lruv_cache *cache, const char *(*name)(long block_index))
+{
+	extern void platform_psp_log(const char *format, ...);
+	long page = 0, block_index = cache->first_block_index;
+
+	while (block_index != NONE)
+	{
+		struct lruv_cache_block *block = datum_get(cache->blocks, block_index);
+		int held = (cache->locked_block_proc && cache->locked_block_proc(block_index)) ||
+			(unsigned long)block->last_used_tick == (unsigned long)cache->tick;
+
+		if (block->first_page_index > page)
+			platform_psp_log("sound cache map: free %ld KB at page %ld", (block->first_page_index - page) * 4, page);
+		platform_psp_log("sound cache map: %s %ld KB at page %ld (last used %ld, now %ld): %s", held ? "held" : "clearable",
+			(long)block->page_count * 4, (long)block->first_page_index, (long)block->last_used_tick, (long)cache->tick,
+			name ? name(block_index) : "?");
+		page = block->first_page_index + block->page_count;
+		block_index = block->next_block_index;
+	}
+	if (page < cache->page_count)
+		platform_psp_log("sound cache map: free %ld KB at page %ld (the end)", (cache->page_count - page) * 4, page);
+}
+#endif
+
+long lruv_block_new("""),
+]
+FIXES_SOUND["source/cache/xbox_sound_cache.c#soundmap"] = [
+("""				"%ld KB held by sounds playing or loading", (long)(sound->samples.size / 1024), psp_game_time_peek(),
+				clearable * 4, locked_pages * 4);
+""",
+ """				"%ld KB held by sounds playing or loading", (long)(sound->samples.size / 1024), psp_game_time_peek(),
+				clearable * 4, locked_pages * 4);
+			if (psp_sound_cache_failures <= 2)
+			{
+				extern void psp_lruv_log_map(struct lruv_cache *cache, const char *(*name)(long block_index)); /* lruv_cache.c */
+
+				platform_psp_log("sound cache: the sound refused: %s", tag_get_name(sound->runtime_tag_index));
+				psp_lruv_log_map(xbox_sound_cache_globals.cache, cache_block_get_sound_permutation_name);
+			}
+"""),
+]
+
 # Where sound_render's time goes, for the sound work's budget: a step before
 # each part, so profile.txt names them ("sound_render: …"). The last step goes
 # back to "sound_render", which the time after it was charged to before
