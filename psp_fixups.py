@@ -15148,8 +15148,11 @@ FIXES_118["source/scenario/scenario.c#spherememo"] = [
 			{
 				/* psp_fixups.py (build 118): collision_bsp.c#spherememo */
 				extern void psp_sphere_memo_forget(void);
+				/* psp_scratch.c: the level's collision BSP named for the cache map ("scratchcensus") */
+				extern void psp_scratch_census_bsp(const void *collision_bsp);
 
 				psp_sphere_memo_forget();
+				psp_scratch_census_bsp(global_collision_bsp);
 			}
 #endif"""),
 ]

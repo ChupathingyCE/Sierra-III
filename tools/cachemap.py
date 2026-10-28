@@ -90,6 +90,40 @@ def game_state_layout(log):
     return spans
 
 
+def scratch_spans(log):
+    """the spans psp_scratch.c names ("scratch span:" lines): the scratchpad's
+    pieces when they come from the heap (noscratch), and the level's collision
+    BSP array by array ("scratchcensus")"""
+    spans = []
+    for line in open(log, errors='replace'):
+        m = re.search(r'scratch span: ([0-9a-f]{8}) (\d+) (.*)$', line)
+        if m:
+            start = int(m.group(1), 16)
+            spans.append((start, start + int(m.group(2)), 'span: ' + m.group(3).strip(), 's'))
+    return spans
+
+
+def scratch_topsets(log):
+    """the level BSP's top levels ("scratch topset: <depth> <n|p> <lines>"):
+    for each depth, the node and plane lines of every node down to it, the
+    BSPs of one run together"""
+    sets = defaultdict(set)
+    for line in open(log, errors='replace'):
+        m = re.search(r'scratch topset: (\d+) ([np]) ([0-9a-f,]+)', line)
+        if m:
+            sets[(int(m.group(1)), m.group(2))].update(int(a, 16) for a in m.group(3).split(','))
+    return sets
+
+
+def hottest_curve(misses_p, start, end, budgets=(1024, 2048, 4096, 8192, 16384)):
+    """the misses the hottest lines of one span hold, for each budget of bytes:
+    what that span would hand the scratchpad if its best lines were there"""
+    lines = [misses_p[(a - LO) >> 6] for a in range(start & ~63, end, 64) if LO <= a < HI]
+    counts = sorted(lines, reverse=True)
+    total = sum(counts)
+    return total, [(b, sum(counts[:b // 64])) for b in budgets], [(b, sum(lines[:b // 64])) for b in budgets]
+
+
 def tag_spans(map_path):
     """the tags' data in the tag window, from an Xbox cache file (the baked,
     decompressed map): each tag runs to the next tag's start"""
@@ -196,7 +230,9 @@ def main():
     phases, totals, (accesses, misses, ifetches, imisses, dmiss_pc) = load_dump(dump)
     symbols = elf_symbols(elf)
     program_end = max(end for start, end, name, kind in symbols)
-    data_spans = [s for s in symbols if s[3] in 'bdgsrv' or s[3] == 'b'] + game_state_layout(log)
+    spans_named = scratch_spans(log)
+    topsets = scratch_topsets(log)
+    data_spans = [s for s in symbols if s[3] in 'bdgsrv' or s[3] == 'b'] + game_state_layout(log) + spans_named
     if map_path:
         data_spans += tag_spans(map_path)
     data_namer = Namer(data_spans)
@@ -240,6 +276,35 @@ def main():
         print('data misses by name (size, misses per KB):')
         for key, (a, m, size) in sorted(by_name.items(), key=lambda x: -x[1][1])[:top]:
             print('  %9d  %5.1f%%  %8d B  %8.0f/KB  %s' % (m, 100.0 * m / total_misses, size, m * 1024.0 / max(size, 1), key))
+        # the scratchpad census: each named span's hottest lines
+        if spans_named:
+            print('scratchpad census, each named span: misses held by its hottest 1/2/4/8/16 KB of lines | by its first 1/2/4/8/16 KB:')
+            ceilings = [(TAG_WINDOW[0], TAG_WINDOW[1], 'ceiling: the whole tag window (lines need not sit together)', 'r'),
+                        (GAME_STATE[0], GAME_STATE[1], 'ceiling: the whole game state', 'r'),
+                        (LO, HI, 'ceiling: all of main RAM', 'r')]
+            for start, end, name, kind in sorted(spans_named + ceilings, key=lambda s: -hottest_curve(misses[p], s[0], s[1])[0]):
+                total, curve, prefix = hottest_curve(misses[p], start, end)
+                if total:
+                    print('  %9d  %8d B at %08x  %s | hottest %s | first %s' % (total, end - start, start, name,
+                          ' '.join('%dK:%d' % (b // 1024, m) for b, m in curve),
+                          ' '.join('%dK:%d' % (b // 1024, m) for b, m in prefix)))
+        if topsets:
+            print('scratchpad census, the level BSP\'s top levels (nodes down to depth d and the planes they test: lines, misses):')
+            nodes_so_far, planes_so_far = set(), set()
+            for d in range(max(k[0] for k in topsets) + 1):
+                nodes_so_far |= topsets.get((d, 'n'), set())
+                planes_so_far |= topsets.get((d, 'p'), set())
+                mn = sum(misses[p][(a - LO) >> 6] for a in nodes_so_far if LO <= a < HI)
+                mp = sum(misses[p][(a - LO) >> 6] for a in planes_so_far if LO <= a < HI)
+                print('  depth %2d: node lines %5d (%6d B) misses %9d | plane lines %5d (%6d B) misses %9d | together %9d in %6d B' % (
+                    d, len(nodes_so_far), 64 * len(nodes_so_far), mn, len(planes_so_far), 64 * len(planes_so_far), mp,
+                    mn + mp, 64 * (len(nodes_so_far) + len(planes_so_far))))
+        if spans_named:
+            print('scratchpad census, small named data (up to 8 KB) by misses per KB:')
+            small = [(m * 1024.0 / size, m, size, key) for key, (a, m, size) in by_name.items()
+                     if m and size <= 8192 and not key.startswith('(')]
+            for per_kb, m, size, key in sorted(small, reverse=True)[:40]:
+                print('  %9d  %6d B  %9.0f/KB  %s' % (m, size, per_kb, key))
         # the code whose loads and stores missed (DCM3 dumps)
         if dmiss_pc is not None:
             by_code = defaultdict(int)
