@@ -3,8 +3,8 @@ Media Engine's work placed on one clock, frame by frame.
 
 Why. frametrace splits the main CPU per frame, and gebusy2 and mekinds
 average the GE and the ME over 300 frames. Nothing put the three lanes on one
-timeline per frame, so the time map's swimlane (the lab's
-psp/sierra/timemap/recon_build.md, A3) placed the GE and ME blocks by
+timeline per frame, so the time map's swimlane (its design note,
+item A3) placed the GE and ME blocks by
 estimate.
 
 What. While a window records, each of these is noted with the main CPU's
@@ -30,7 +30,7 @@ or until its 1,536 notes are used; then it prints one line a frame:
   lanes F +W: c1@T c2@T ... | g T-T/K ... | m S.J T-T o U ... | r J T-T o U ...
 F the frame, W its length in us, every T in us from the last frame's end
 (negative: before it, a job handed over in the frame before).
-tools: the lab's psp/sierra/timemap/lanes.py reads them.
+tools: a lanes reader script reads them.
 
 Measurement only: nothing the game does changes. The notes (18 KB) come from
 the heap when the word is first seen; without it every hook is one test of a
@@ -111,7 +111,7 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 	that note a GE span too, extends it (kind 127 when their kinds differ:
 	gebusy2's line has the kinds' totals): the GE closes 60-150
 	spans a frame (gebusy2's chunks), which filled a window's notes in 10-22
-	frames on the PSP (lane-hw 40714069887); joined, ~5-8 a frame */
+	frames on the PSP; joined, ~5-8 a frame */
 	if (kind == PSP_LANE_GE && index > 0 && index <= LANE_NOTES &&
 		LANE_KIND(&lane_notes[index - 1]) == PSP_LANE_GE &&
 		(int)(from - lane_notes[index - 1].t) <= LANE_GE_JOIN_US && (int)(t - lane_notes[index - 1].t) > 0)
