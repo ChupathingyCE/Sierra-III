@@ -262,6 +262,262 @@ static void vfpu_rounding(void)
 				names[op], first[op][0], first[op][1], first[op][2]);
 }
 
+/* posing bench (keep.txt "vfpubench"): what the VFPU would save on the
+tick's quaternion maths, and at what exactness. Three forms of each:
+the engine's own function (the FPU's), an element-wise VFPU form that keeps
+the FPU's order of operations lane by lane (so it must match bit for bit),
+and the VFPU's own instructions (vqmul, vdot, vrsq), which sum in their
+order. The engine's quaternions are 4-byte aligned, so every form loads
+and stores one float at a time. */
+void quaternions_multiply(const void *q0, const void *q1, void *result);
+void quaternion_normalize(void *q);
+void quaternions_interpolate_and_normalize(const void *q0, const void *q1, float t, void *result);
+
+struct quat { float i, j, k, w; };
+
+/* each lane is ((p1 + p2) + p3) - p4 in the engine's order; the w lane's
+"- a*b" terms become "+ a*(-b)", which IEEE makes the same bits */
+static void __attribute__((noinline)) vfpu_quat_multiply_e(const struct quat *q0, const struct quat *q1,
+	struct quat *result)
+{
+	__asm__ volatile(
+		"lv.s S000, 0(%0)\n" "lv.s S001, 4(%0)\n" "lv.s S002, 8(%0)\n" "lv.s S003, 12(%0)\n"
+		"lv.s S010, 0(%1)\n" "lv.s S011, 4(%1)\n" "lv.s S012, 8(%1)\n" "lv.s S013, 12(%1)\n"
+		"vpfxs [y, w, z, w]\n" "vpfxt [z, y, w, w]\n" "vmul.q C100, C000, C010\n"
+		"vpfxs [x, y, x, x]\n" "vpfxt [w, w, y, -x]\n" "vmul.q C110, C000, C010\n"
+		"vpfxs [w, z, w, y]\n" "vpfxt [x, x, z, -y]\n" "vmul.q C120, C000, C010\n"
+		"vpfxs [z, x, y, z]\n" "vpfxt [y, z, x, z]\n" "vmul.q C130, C000, C010\n"
+		"vadd.q C200, C100, C110\n"
+		"vadd.q C200, C200, C120\n"
+		"vsub.q C200, C200, C130\n"
+		"sv.s S200, 0(%2)\n" "sv.s S201, 4(%2)\n" "sv.s S202, 8(%2)\n" "sv.s S203, 12(%2)\n"
+		: : "r"(q0), "r"(q1), "r"(result) : "memory");
+}
+
+/* the VFPU's quaternion product, operands as given or swapped (the bench
+says which order matches the engine's) */
+static void __attribute__((noinline)) vfpu_quat_multiply_d(const struct quat *q0, const struct quat *q1,
+	struct quat *result)
+{
+	__asm__ volatile(
+		"lv.s S000, 0(%0)\n" "lv.s S001, 4(%0)\n" "lv.s S002, 8(%0)\n" "lv.s S003, 12(%0)\n"
+		"lv.s S010, 0(%1)\n" "lv.s S011, 4(%1)\n" "lv.s S012, 8(%1)\n" "lv.s S013, 12(%1)\n"
+		"vqmul.q C200, C000, C010\n"
+		"sv.s S200, 0(%2)\n" "sv.s S201, 4(%2)\n" "sv.s S202, 8(%2)\n" "sv.s S203, 12(%2)\n"
+		: : "r"(q0), "r"(q1), "r"(result) : "memory");
+}
+
+static void __attribute__((noinline)) vfpu_quat_multiply_d_swapped(const struct quat *q0, const struct quat *q1,
+	struct quat *result)
+{
+	vfpu_quat_multiply_d(q1, q0, result);
+}
+
+/* the VFPU's 4-lane dot and its reciprocal square root, one float each */
+static float vfpu_dot4(const struct quat *a, const struct quat *b)
+{
+	float out;
+
+	__asm__ volatile(
+		"lv.s S000, 0(%1)\n" "lv.s S001, 4(%1)\n" "lv.s S002, 8(%1)\n" "lv.s S003, 12(%1)\n"
+		"lv.s S010, 0(%2)\n" "lv.s S011, 4(%2)\n" "lv.s S012, 8(%2)\n" "lv.s S013, 12(%2)\n"
+		"vdot.q S020, C000, C010\n"
+		"sv.s S020, 0(%0)\n"
+		: : "r"(&out), "r"(a), "r"(b) : "memory");
+	return out;
+}
+
+static float vfpu_rsq(float x)
+{
+	float out;
+
+	__asm__ volatile("lv.s S000, 0(%1)\n" "vrsq.s S001, S000\n" "sv.s S001, 0(%0)\n"
+		: : "r"(&out), "r"(&x) : "memory");
+	return out;
+}
+
+/* quaternions_interpolate_and_normalize the VFPU's way: vdot for both dots,
+vrsq for the length */
+static void __attribute__((noinline)) vfpu_quat_interpolate_d(const struct quat *q0, const struct quat *q1, float t,
+	struct quat *result)
+{
+	float v, weights[2], magnitude_squared;
+
+	/* as quaternions_interpolate: v from t before t's sign flips; vfpu_dot4
+	leaves q0 in C000 and q1 in C010 for the blend below */
+	v = 1.0f - t;
+	if (vfpu_dot4(q0, q1) < 0.0f)
+		t = -t;
+	weights[0] = v;
+	weights[1] = t;
+	__asm__ volatile(
+		"lv.s S020, 0(%2)\n" "lv.s S021, 4(%2)\n"
+		"vscl.q C100, C000, S020\n"
+		"vscl.q C110, C010, S021\n"
+		"vadd.q C120, C100, C110\n"
+		"vdot.q S130, C120, C120\n"
+		"sv.s S130, 0(%0)\n"
+		"sv.s S120, 0(%1)\n" "sv.s S121, 4(%1)\n" "sv.s S122, 8(%1)\n" "sv.s S123, 12(%1)\n"
+		: : "r"(&magnitude_squared), "r"(result), "r"(weights) : "memory");
+	if (magnitude_squared > 0.0f)
+		__asm__ volatile(
+			"vrsq.s S131, S130\n"
+			"vscl.q C120, C120, S131\n"
+			"sv.s S120, 0(%0)\n" "sv.s S121, 4(%0)\n" "sv.s S122, 8(%0)\n" "sv.s S123, 12(%0)\n"
+			: : "r"(result) : "memory");
+	else
+	{
+		result->i = result->j = result->k = 0.0f;
+		result->w = 1.0f;
+	}
+}
+
+/* last-bit distance between two floats of the same sign (large when the
+signs differ) */
+static unsigned int ulps_apart(float a, float b)
+{
+	int x, y;
+
+	memcpy(&x, &a, sizeof(x));
+	memcpy(&y, &b, sizeof(y));
+	if ((x < 0) != (y < 0))
+		return (x & 0x7fffffff) == 0 && (y & 0x7fffffff) == 0 ? 0 : 0x7fffffffu;
+	return x > y ? (unsigned int)(x - y) : (unsigned int)(y - x);
+}
+
+struct bench_tally
+{
+	int differ;
+	unsigned int worst;
+};
+
+static void tally_quat(struct bench_tally *tally, const struct quat *a, const struct quat *b)
+{
+	const float *x = &a->i, *y = &b->i;
+	int lane, differs = 0;
+
+	for (lane = 0; lane < 4; lane++)
+	{
+		unsigned int apart = ulps_apart(x[lane], y[lane]);
+
+		if (apart)
+			differs = 1;
+		if (apart > tally->worst)
+			tally->worst = apart;
+	}
+	tally->differ += differs;
+}
+
+static void random_quat(struct quat *q)
+{
+	q->i = random_value(1.0f);
+	q->j = random_value(1.0f);
+	q->k = random_value(1.0f);
+	q->w = random_value(1.0f);
+	quaternion_normalize(q);
+}
+
+#define BENCH_TRIALS 20000
+#define BENCH_TABLE 16
+
+static void vfpu_posing_bench(void)
+{
+	static struct quat table[BENCH_TABLE];
+	struct bench_tally product_e = { 0, 0 }, product_d = { 0, 0 }, product_d_swapped = { 0, 0 };
+	struct bench_tally dot = { 0, 0 }, rsq = { 0, 0 }, interpolate_d = { 0, 0 };
+	struct quat q0, q1, fpu, vfpu, chain;
+	unsigned int start, fpu_us, e_us, d_us, interpolate_fpu_us, interpolate_d_us;
+	int trial;
+
+	for (trial = 0; trial < BENCH_TABLE; trial++)
+		random_quat(&table[trial]);
+	for (trial = 0; trial < BENCH_TRIALS; trial++)
+	{
+		float t = (random_value(1.0f) + 1.0f) * 0.5f, fpu_dot, x;
+
+		random_quat(&q0);
+		/* not normalized: the skeletons' products and blends see lengths
+		near 1, not exactly 1 */
+		q1.i = random_value(1.0f);
+		q1.j = random_value(1.0f);
+		q1.k = random_value(1.0f);
+		q1.w = random_value(1.0f);
+
+		quaternions_multiply(&q0, &q1, &fpu);
+		vfpu_quat_multiply_e(&q0, &q1, &vfpu);
+		tally_quat(&product_e, &fpu, &vfpu);
+		vfpu_quat_multiply_d(&q0, &q1, &vfpu);
+		tally_quat(&product_d, &fpu, &vfpu);
+		vfpu_quat_multiply_d_swapped(&q0, &q1, &vfpu);
+		tally_quat(&product_d_swapped, &fpu, &vfpu);
+
+		fpu_dot = q0.i * q1.i + q0.j * q1.j + q0.k * q1.k + q0.w * q1.w;
+		{
+			unsigned int apart = ulps_apart(fpu_dot, vfpu_dot4(&q0, &q1));
+
+			dot.differ += apart != 0;
+			if (apart > dot.worst)
+				dot.worst = apart;
+		}
+		x = fabsf(fpu_dot) + 1e-3f;
+		{
+			unsigned int apart = ulps_apart(1.0f / __builtin_sqrtf(x), vfpu_rsq(x));
+
+			rsq.differ += apart != 0;
+			if (apart > rsq.worst)
+				rsq.worst = apart;
+		}
+
+		quaternions_interpolate_and_normalize(&q0, &q1, t, &fpu);
+		vfpu_quat_interpolate_d(&q0, &q1, t, &vfpu);
+		tally_quat(&interpolate_d, &fpu, &vfpu);
+	}
+
+	/* chained (each result feeds the next, as a node chain's do), so the
+	compiler can't drop the loops */
+	chain = table[0];
+	start = sceKernelGetSystemTimeLow();
+	for (trial = 0; trial < BENCH_TRIALS; trial++)
+		quaternions_multiply(&table[trial & (BENCH_TABLE - 1)], &chain, &chain);
+	fpu_us = sceKernelGetSystemTimeLow() - start;
+	sink = chain.w;
+	chain = table[0];
+	start = sceKernelGetSystemTimeLow();
+	for (trial = 0; trial < BENCH_TRIALS; trial++)
+		vfpu_quat_multiply_e(&table[trial & (BENCH_TABLE - 1)], &chain, &chain);
+	e_us = sceKernelGetSystemTimeLow() - start;
+	sink = chain.w;
+	chain = table[0];
+	start = sceKernelGetSystemTimeLow();
+	for (trial = 0; trial < BENCH_TRIALS; trial++)
+		vfpu_quat_multiply_d(&table[trial & (BENCH_TABLE - 1)], &chain, &chain);
+	d_us = sceKernelGetSystemTimeLow() - start;
+	sink = chain.w;
+	chain = table[0];
+	start = sceKernelGetSystemTimeLow();
+	for (trial = 0; trial < BENCH_TRIALS; trial++)
+		quaternions_interpolate_and_normalize(&table[trial & (BENCH_TABLE - 1)], &chain, 0.3f, &chain);
+	interpolate_fpu_us = sceKernelGetSystemTimeLow() - start;
+	sink = chain.w;
+	chain = table[0];
+	start = sceKernelGetSystemTimeLow();
+	for (trial = 0; trial < BENCH_TRIALS; trial++)
+		vfpu_quat_interpolate_d(&table[trial & (BENCH_TABLE - 1)], &chain, 0.3f, &chain);
+	interpolate_d_us = sceKernelGetSystemTimeLow() - start;
+	sink = chain.w;
+
+	platform_log("VFPU bench: quaternion product, element-wise form: differs from the FPU in %d of %d (worst %u ulp)",
+		product_e.differ, BENCH_TRIALS, product_e.worst);
+	platform_log("VFPU bench: quaternion product, vqmul: differs in %d (worst %u ulp); swapped operands: differs in %d (worst %u ulp)",
+		product_d.differ, product_d.worst, product_d_swapped.differ, product_d_swapped.worst);
+	platform_log("VFPU bench: vdot.q against the FPU's sum: differs in %d of %d (worst %u ulp); vrsq.s against 1/sqrt: differs in %d (worst %u ulp)",
+		dot.differ, BENCH_TRIALS, dot.worst, rsq.differ, rsq.worst);
+	platform_log("VFPU bench: interpolate and normalize, vdot and vrsq: differs in %d of %d (worst %u ulp)",
+		interpolate_d.differ, BENCH_TRIALS, interpolate_d.worst);
+	platform_log("VFPU bench: %d chained calls: product FPU %u us, element-wise %u us, vqmul %u us; interpolate and normalize FPU %u us, VFPU %u us",
+		BENCH_TRIALS, fpu_us, e_us, d_us, interpolate_fpu_us, interpolate_d_us);
+}
+
 /* start-up: 2000 random products both ways; the VFPU stays on if they agree
 to within a few last bits relative to the values' size */
 void psp_vfpu_initialize(void)
@@ -311,6 +567,8 @@ void psp_vfpu_initialize(void)
 		vfpu_probe();
 	if (psp_keep("vfpuround"))
 		vfpu_rounding();
+	if (psp_keep("vfpubench"))
+		vfpu_posing_bench();
 	{
 		extern void psp_scratch_exec_probe(void), psp_scratch_exec_probe2(void);
 
