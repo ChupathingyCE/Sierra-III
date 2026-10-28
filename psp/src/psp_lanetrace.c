@@ -241,4 +241,24 @@ void psp_lane_frame(unsigned long frame_number, unsigned int ticks)
 	}
 }
 
+#else
+
+/* a final release (PSP_METRICS=0): the hooks' tests stay (psp_lanetrace.h),
+so these answer them and record nothing */
+volatile int psp_lane_on = 0;
+
+void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigned int b, unsigned int c)
+{
+	(void)kind; (void)from; (void)t; (void)b; (void)c;
+}
+
+void psp_lane_arm(void)
+{
+}
+
+void psp_lane_frame(unsigned long frame_number, unsigned int ticks)
+{
+	(void)frame_number; (void)ticks;
+}
+
 #endif
