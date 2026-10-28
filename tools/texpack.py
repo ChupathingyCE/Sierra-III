@@ -1053,8 +1053,9 @@ def alpha_audit_summary():
               file=sys.stderr)
 # build 102: per-class detail (texpack.py --full-detail fp,vehicles,...):
 # these classes keep their top level (the bake otherwise halves every texture
-# of 64 px and more) and the 256 px cap rises to 512. A lever to try, not the
-# default: each doubles its textures' bytes four times over
+# of 64 px and more) and the 256 px cap rises to 512. Each quadruples its
+# textures' bytes; only Chief is the default (a restoration: his detail map
+# reads on his own textures), the rest are levers to try
 DETAIL_CLASSES = {
     'fp': lambda tag: '\\fp\\' in tag,
     'weapons': lambda tag: tag.startswith('weapons\\') and '\\fp\\' not in tag,
@@ -2131,7 +2132,8 @@ def main():
                          'broken seam spots is treated (0: SEAM_SPOTS_BROKEN, CHART_SPOTS)')
     ap.add_argument('--pgeo', default=None, help='the map\'s geometry pack (default: beside the map) for the lightmap masks')
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
-    ap.add_argument('--full-detail', default='', help='classes kept at full size: fp, weapons, vehicles, characters')
+    ap.add_argument('--full-detail', default='chief', help='classes kept at full size: fp, weapons, vehicles, characters, chief '
+                    '(the default: Chief, the centerpiece in every level); none: no class')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
     ap.add_argument('--no-clut4-look', action='store_true',
                     help='lightmaps and HUD sheets stay at 8 bits even where 16 colours pass the CLUT4W strict bar '
@@ -2232,7 +2234,7 @@ def main():
     global CLUT4_LOOK
     # ui.map is the showcase (CLAUDE.md): its packs keep every colour
     CLUT4_LOOK = not a.no_clut4_look and os.path.splitext(os.path.basename(a.map))[0] != 'ui'
-    FULL_DETAIL = set(c for c in a.full_detail.split(',') if c)
+    FULL_DETAIL = set(c for c in a.full_detail.split(',') if c and c != 'none')
     if FULL_DETAIL - set(DETAIL_CLASSES):
         sys.exit('texpack: unknown --full-detail class(es): %s' % ', '.join(sorted(FULL_DETAIL - set(DETAIL_CLASSES))))
     d = Defs()

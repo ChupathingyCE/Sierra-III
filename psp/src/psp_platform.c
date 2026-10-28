@@ -1097,6 +1097,12 @@ static const struct
 	/* Chief's visor drawn gold from its own sphere map (psp_ge.c, chiefvisor):
 	folded into the lighting it stayed near black; a restoration */
 	{ "chiefvisor", "nochiefvisor" },
+	/* Chief's armour as the Xbox draws it: its reflection added over the lit,
+	change-coloured base where the multipurpose map marks it (psp_ge.c,
+	chiefsheen), and its detail map over textures kept at their own size
+	(chiefdetail; texpack.py bakes Chief at full size by default); restorations */
+	{ "chiefsheen", "nochiefsheen" },
+	{ "chiefdetail", "nochiefdetail" },
 	/* the frame handed to the ME in pieces as it is written, gated on the main
 	CPU's wait for the ME (psp_ge.c, mechunk): where the frame waits for the
 	ME the replay runs beside the writing (a30 7.7 -> 12.7 fps, d20 11.4 ->
