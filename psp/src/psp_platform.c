@@ -4116,6 +4116,13 @@ int main(int argc, char **argv)
 
 		psp_vfpu_initialize();
 	}
+	{
+		/* the rest of posing on the VFPU (psp_vfpu_quat.c): after the matrix
+		product's check, which decides whether the VFPU is used at all */
+		extern void psp_vfpu_quat_initialize(void);
+
+		psp_vfpu_quat_initialize();
+	}
 	/* build 93: benchrun starts the profiler too (its counters go on each
 	RESULT line) */
 	if (psp_keep("hwprofile") || psp_keep("benchrun"))
