@@ -1604,6 +1604,15 @@ the firmware's resume phase 0x10005, where its own ME boot runs and where
 me-core's own sleep path releases it), not at a frame end after the resume;
 its jobs are still handed back at a frame end (psp_me_wake_poll) */
 static int wake_early = 0;
+/* "mewakefw": the restart lets go of the blocks around the ME that launch
+found running and the wake left in reset. b132 test 7's registers [M]:
+the reset register read 0 at launch, and 0x20 after the restart, the AVC
+block's reset (uOFW's sysreg driver: 0x08 AW, 0x10 VME, 0x20 AVC) still
+held, which the firmware's own ME boot lets go of last
+(sceSysregAvcResetDisable, me_wrapper's boot) and ours never did. The ME
+then made 91 idle polls and hung in its first job */
+static int wake_fw = 0;
+#define WAKE_FW_RESETS 0x28u /* AW and AVC; the VME's (0x10) goes with the ME's */
 static volatile int wake_released_early = 0;
 static unsigned long long wake_early_release;
 static void wake_prepare(void);
@@ -1864,6 +1873,7 @@ int psp_me_start(void)
 		(psp_keep("mefaultoff") ? ME_FEATURE_FAULT_OFF : 0u) | (psp_keep("mefaulttest") ? ME_FEATURE_FAULT_TEST : 0u);
 	wake_features = control->features | (psp_keep("mewakeprobe") ? ME_FEATURE_WAKE_PROBE : 0u);
 	wake_early = psp_keep("mewake") && !psp_keep("mewakeoff") && psp_keep("mewakeearly");
+	wake_fw = psp_keep("mewakefw");
 	platform_log("ME: the ME runs (firmware table %d; %u idle polls in 20 ms; its cycle counter runs at %.1f a microsecond%s; Cause %08x, after clearing DC %08x)",
 		table, control->alive - before, me_cycles_per_us, me_cycles_per_us < 1.0f ? ": ME times will read 0" : "",
 		control->cause_before, control->cause_after);
@@ -3294,6 +3304,19 @@ static int me_restart_kernel(void *unused)
 	sceKernelDcacheWritebackInvalidateAll();
 	sceKernelIcacheInvalidateAll();
 	reset_release();
+	if (wake_fw)
+	{
+		/* only the blocks launch found running, a bit at a time as the
+		firmware's driver does */
+		unsigned int held = HW_SYS_RESET_ENABLE & WAKE_FW_RESETS & ~regs_launch.reset;
+
+		if (held)
+		{
+			meLibSuspendCpuIntr(interrupts);
+			HW_SYS_RESET_ENABLE &= ~held;
+			meLibResumeCpuIntr(interrupts);
+		}
+	}
 	sysregs_read(&regs_release_after);
 	return 0;
 }
