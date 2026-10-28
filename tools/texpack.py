@@ -1070,8 +1070,32 @@ DETAIL_CLASSES = {
     # Chief, a centerpiece as the main menu's ring is: his
     # armour, visor and first-person hands at their own size
     'chief': lambda tag: tag.startswith('characters\\cyborg\\'),
+    # only the detail maps Chief's shaders draw (chief_detail_tags): his base,
+    # multipurpose and glow maps stay halved as every character's are, since
+    # at full size they crowd the level's textures out of the cache
+    'chiefdetail': lambda tag: tag in CHIEF_DETAIL_TAGS,
+    # the rest of Chief (base, multipurpose, glow) at up to 256 a side: twice
+    # the halved objects' 128, a quarter of his own 512's bytes
+    'chief256': lambda tag: tag.startswith('characters\\cyborg\\') and tag not in CHIEF_DETAIL_TAGS,
 }
+# the classes whose cap is below the full-detail 512
+DETAIL_LIMITS = {'chief256': 256}
 FULL_DETAIL = set()
+CHIEF_DETAIL_TAGS = set()
+
+
+def chief_detail_tags(m):
+    """the detail bitmaps of Chief's model shaders (soso, characters\\cyborg\\),
+    from the field the runtime's detail pass reads (psp_fixups.py, definition + 232)"""
+    tags = set()
+    for t in m.tags:
+        if t.group != 'soso' or not t.address or not t.name.startswith('characters\\cyborg\\'):
+            continue
+        detail, = struct.unpack_from('<i', m.data, m.off(t.address) + 232)
+        bitmap = m.by_id.get(detail)
+        if bitmap and bitmap.group == 'bitm':
+            tags.add(bitmap.name)
+    return tags
 
 
 def full_detail(tag):
@@ -1862,7 +1886,8 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
     if cls == 'objects (soso)' and '\\fp\\' not in b['tag']:
         limit = OBJECT_SIDE
     if FULL_DETAIL and act == 'clut' and full_detail(b['tag']):
-        tw, th, limit = b['w'], b['h'], 512
+        tw, th = b['w'], b['h']
+        limit = min([DETAIL_LIMITS.get(c, 512) for c in FULL_DETAIL if DETAIL_CLASSES[c](b['tag'])] or [512])
     # the showcase: every map at its own size, up to the GE's 512 a side
     if SHOWCASE and act == 'clut' and cls != 'lightmap':
         tw, th, limit = b['w'], b['h'], 512
@@ -2138,8 +2163,8 @@ def main():
                          'broken seam spots is treated (0: SEAM_SPOTS_BROKEN, CHART_SPOTS)')
     ap.add_argument('--pgeo', default=None, help='the map\'s geometry pack (default: beside the map) for the lightmap masks')
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
-    ap.add_argument('--full-detail', default='chief', help='classes kept at full size: fp, weapons, vehicles, characters, chief '
-                    '(the default: Chief, the centerpiece in every level); none: no class')
+    ap.add_argument('--full-detail', default='chiefdetail,chief256', help='classes kept at full size: fp, weapons, vehicles, characters, chief, chiefdetail, chief256 (the rest of Chief, to 256) '
+                    '(the default: the detail maps of Chief, the centerpiece in every level); none: no class')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
     ap.add_argument('--no-clut4-look', action='store_true',
                     help='lightmaps and HUD sheets stay at 8 bits even where 16 colours pass the CLUT4W strict bar '
@@ -2295,6 +2320,10 @@ def main():
     skipped = {}
     looks = level_looks(m, d, B)
     mlooks = model_looks(m, d, B)
+    if FULL_DETAIL & {'chiefdetail', 'chief256'}:
+        CHIEF_DETAIL_TAGS.update(chief_detail_tags(m))
+        print('chiefdetail: %d detail maps kept at full size: %s' % (len(CHIEF_DETAIL_TAGS), ', '.join(sorted(CHIEF_DETAIL_TAGS))),
+              file=sys.stderr)
     reliefs = relief_looks(m, d, B)
     relief_count = 0
     gels = gel_bitmaps(roles)
