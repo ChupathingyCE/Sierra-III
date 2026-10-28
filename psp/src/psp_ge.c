@@ -10723,6 +10723,65 @@ failed (the log names only the first 12 buffers, which see-through parts
 usually take) */
 static unsigned long multi_node_rigid_why[3];
 
+/* "model14" (docs/design_model14.md): an opaque rigid part's vertices as
+14-byte records: u16 uv (the source's s16 + 32768, undone by the texture
+offset), s8 normal with the node in the pad byte the GE skips, s16 position
+on a power-of-two step, the part's own, folded into its model matrix. A
+step that is a power of two keeps the matrix a uniform scale (normals keep
+their direction) and puts shared corners of parts with one step on the same
+lattice point. First-person parts, the sky and see-through parts stay in
+floats: the first are seen closest, the last are read on the CPU */
+static int model14 = -1;
+/* the step's exponent + 128 a converted block (0: float records) */
+static unsigned char converted_step[CONVERTED_BUFFERS];
+/* set by the caller before model_convert: the part must stay in floats */
+static int convert_float_only = 0;
+/* the step of the block model_convert last answered for (0: floats), and of
+the part being drawn */
+static float convert_k = 0.0f, part_k14 = 0.0f;
+static unsigned long model14_parts = 0, model14_vertices = 0, model14_refused = 0;
+/* skinned parts left at 28/32 bytes: what step 3b would take 10 bytes a vertex off */
+static unsigned long model14_skinned_parts = 0, model14_skinned_vertices = 0;
+
+static float step_of(unsigned char code)
+{
+	union { float f; unsigned int u; } k;
+
+	if (!code)
+		return 0.0f;
+	k.u = (unsigned int)(code - 128 + 127) << 23;
+	return k.f;
+}
+
+/* a rigid record's position in the part's own space */
+static const float *record_point(const void *vertices, int v, float *out)
+{
+	const short *q;
+
+	if (part_k14 == 0.0f)
+		return (const float *)((const char *)vertices + 24 * v + 12);
+	q = (const short *)((const char *)vertices + 14 * v + 8);
+	out[0] = q[0] * part_k14;
+	out[1] = q[1] * part_k14;
+	out[2] = q[2] * part_k14;
+	return out;
+}
+
+/* the part's texture scale; a 14-byte part's u16 coordinates read as
+(s + 32768) / 32768, so the offset takes the 32768 back off */
+static void model_tex_scale(float su, float sv)
+{
+	if (part_k14 != 0.0f)
+	{
+		su *= 32768.0f / 32767.0f;
+		sv *= 32768.0f / 32767.0f;
+		sceGuTexScale(su, sv);
+		sceGuTexOffset(-su, -sv);
+	}
+	else
+		sceGuTexScale(su, sv);
+}
+
 /* the model's lighting, from the game (build 22): an ambient colour and up
 to two distant lights, each a colour and the direction its light travels */
 static unsigned int model_ambient = MODEL_LIGHT;
@@ -10771,6 +10830,14 @@ void psp_ge_model_begin(const float *node_matrices, int node_matrix_count, float
 	const float *ambient, int light_count, const float *light0, const float *light1)
 {
 	GE_BENCH_SKIP();
+	/* model14's switch, read on the main CPU before any replay needs it, and
+	written back: the ME only reads it (a lazy read there would write a line
+	the main CPU may also hold) */
+	if (model14 < 0 && !psp_on_me())
+	{
+		model14 = psp_keep("model14");
+		sceKernelDcacheWritebackRange(&model14, sizeof(model14));
+	}
 	if (DEFER_RECORDING() &&
 		defer_model_begin(node_matrices, node_matrix_count, u_scale, v_scale, ambient, light_count, light0, light1))
 		return;
@@ -11586,10 +11653,20 @@ static struct
 {
 	void *vertices;
 	const unsigned short *indices;
-	int count, uncompressed, index_count, strip, skin;
+	int count, uncompressed, index_count, strip, skin, float_only;
 } converts_wanted[CONVERTS_WANTED];
 static int converts_wanted_count = 0;
 static unsigned long converts_wanted_total = 0, converts_wanted_dropped = 0;
+
+/* a converted block's step (0: float records, or not converted) */
+static float converted_k(const void *vertices)
+{
+	unsigned int slot = ((unsigned int)vertices >> 4) % CONVERTED_BUFFERS, tries = 0;
+
+	while (converted[slot] && converted[slot] != vertices && ++tries < CONVERTED_BUFFERS)
+		slot = (slot + 1) % CONVERTED_BUFFERS;
+	return converted[slot] == vertices ? step_of(converted_step[slot]) : 0.0f;
+}
 
 static void convert_want(void *vertices, int count, int uncompressed, const unsigned short *indices, int index_count,
 	int strip, int skin)
@@ -11612,6 +11689,7 @@ static void convert_want(void *vertices, int count, int uncompressed, const unsi
 	converts_wanted[k].index_count = index_count;
 	converts_wanted[k].strip = strip;
 	converts_wanted[k].skin = skin;
+	converts_wanted[k].float_only = convert_float_only;
 	converts_wanted_count++;
 	converts_wanted_total++;
 }
@@ -12052,6 +12130,10 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 
 	if (skin)
 		*skin = NULL;
+	convert_k = 0.0f;
+	/* read on the main CPU (psp_ge_model_begin); the ME only reads it */
+	if (model14 < 0 && !psp_on_me())
+		model14 = psp_keep("model14");
 	if (converted_sweep_late < 0)
 		converted_sweep_late = psp_keep("sweeplate");
 	if (converted_used >= (converted_sweep_late ? CONVERTED_BUFFERS * 3 / 4 : converted_sweep_mark) &&
@@ -12094,8 +12176,15 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 
 		if (generation == converted_generation[slot])
 		{
+			if (converted_step[slot] && !skin)
+			{
+				/* see-through parts read float records on the CPU */
+				model14_refused++;
+				return 0;
+			}
 			if (skin)
 				*skin = skinned[slot];
+			convert_k = step_of(converted_step[slot]);
 			return 1;
 		}
 		if (PSP_ME_WORK())
@@ -12166,11 +12255,50 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 	if (skin)
 		*skin = part;
 	converted_count++;
+	converted_step[slot] = 0;
+	if (model14 > 0 && part && !uncompressed && !convert_float_only && count > 0)
+	{
+		model14_skinned_parts++;
+		model14_skinned_vertices += (unsigned long)count;
+	}
+	if (model14 > 0 && skin && !part && !uncompressed && !convert_float_only && count > 0)
+	{
+		/* the smallest power of two that keeps every coordinate in 16 bits */
+		float largest = 0.0f, k = 1.0f / 16777216.0f;
+		int e = -24;
+
+		for (index = 0; index < count; index++)
+		{
+			const float *p = (const float *)((const unsigned char *)vertices + 32 * index);
+			int axis;
+
+			for (axis = 0; axis < 3; axis++)
+			{
+				float a = p[axis] < 0.0f ? -p[axis] : p[axis];
+
+				if (a > largest)
+					largest = a;
+			}
+		}
+		while (largest > 32767.0f * k && e < 24)
+		{
+			k *= 2.0f;
+			e++;
+		}
+		if (largest <= 32767.0f * k)
+		{
+			converted_step[slot] = (unsigned char)(e + 128);
+			convert_k = k;
+			model14_parts++;
+			model14_vertices += (unsigned long)count;
+		}
+	}
 	for (index = 0; index < count; index++)
 	{
 		unsigned char *vertex = (unsigned char *)vertices + 32 * index;
 		float position[3], uv[2];
 		unsigned int nodes, packed_normal = 0;
+		short texcoord[2] = { 0, 0 };
 
 		if (uncompressed)
 		{
@@ -12193,8 +12321,6 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		}
 		else
 		{
-			short texcoord[2];
-
 			memcpy(position, vertex, 12);
 			memcpy(&packed_normal, vertex + 12, 4);
 			memcpy(texcoord, vertex + 24, 4);
@@ -12227,6 +12353,29 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 				record[uv_at + 11] = 0;
 				memcpy(record + uv_at + 12, position, 12);
 			}
+			else if (convert_k != 0.0f)
+			{
+				/* the 14-byte record; record i ends before vertex i + 1 starts */
+				unsigned char *record = (unsigned char *)vertices + 14 * index;
+				unsigned short u16[2];
+				short q[3];
+				float inverse = 1.0f / convert_k;
+
+				u16[0] = (unsigned short)(texcoord[0] + 32768);
+				u16[1] = (unsigned short)(texcoord[1] + 32768);
+				for (k = 0; k < 3; k++)
+				{
+					float v = position[k] * inverse;
+					int r = (int)(v < 0.0f ? v - 0.5f : v + 0.5f);
+
+					q[k] = (short)(r < -32767 ? -32767 : r > 32767 ? 32767 : r);
+				}
+				memcpy(record, u16, 4);
+				for (k = 0; k < 3; k++)
+					record[4 + k] = (unsigned char)(signed char)(normal[k] * 127.0f);
+				record[7] = (unsigned char)(nodes & 0xFF);
+				memcpy(record + 8, q, 6);
+			}
 			else
 			{
 				/* 24 bytes: texture coordinate, an 8-bit normal and the first
@@ -12256,8 +12405,12 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 			batch_sphere(&part->batches[b], part, vertices);
 	}
 	free(node0);
-	ge_writeback(vertices, count * (part ? part->stride : 24));
-	vm_note(vertices, (unsigned int)count * (part ? part->stride : 24)); /* build 116: vrammodels */
+	{
+		int stride = part ? part->stride : convert_k != 0.0f ? 14 : 24;
+
+		ge_writeback(vertices, count * stride);
+		vm_note(vertices, (unsigned int)(count * stride)); /* vrammodels: a copy may go to VRAM */
+	}
 	return 1;
 }
 
@@ -13426,7 +13579,7 @@ static void __attribute__((noinline, cold)) model_detail_pass(void *vertices, co
 	sceGuTexFunc(GU_TFX_REPLACE, GU_TCC_RGB);
 	sceGuTexWrap(GU_REPEAT, GU_REPEAT);
 	/* on the part's own coordinates, as the base: times the vertices' scale */
-	sceGuTexScale(model_u_scale * model_detail_u, model_v_scale * model_detail_v);
+	model_tex_scale(model_u_scale * model_detail_u, model_v_scale * model_detail_v);
 	if (bias)
 		sceGuTexLevelMode(tex_level_mode, tex_bias + bias * 0.25f);
 	sceGuDisable(GU_ALPHA_TEST);
@@ -14470,7 +14623,8 @@ static void model_geometry(void *vertices, const unsigned short *indices, long i
 	{
 		if (index_count > 0)
 			sceGumDrawArray(strip ? GU_TRIANGLE_STRIP : GU_TRIANGLES,
-				GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_INDEX_16BIT | GU_TRANSFORM_3D,
+				(part_k14 != 0.0f ? GU_TEXTURE_16BIT | GU_NORMAL_8BIT | GU_VERTEX_16BIT :
+				GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF) | GU_INDEX_16BIT | GU_TRANSFORM_3D,
 				(int)index_count, indices, vertices);
 		if (model_cut_count > 0 && model_cut_vertices)
 			sceGumDrawArray(GU_TRIANGLES, GU_TEXTURE_32BITF | GU_NORMAL_8BIT | GU_VERTEX_32BITF | GU_TRANSFORM_3D,
@@ -14507,11 +14661,11 @@ static int rigid_corner_bits(const void *vertices, unsigned short corner, const 
 {
 	int known = corner < CORNER_VERDICTS ? corner_verdict[corner] : -1, bits;
 	const float *p;
-	float camera_point[3];
+	float camera_point[3], point[3];
 
 	if (known >= corner_stamp && known < corner_stamp + CORNER_STAMP_STEP)
 		return known - corner_stamp;
-	p = (const float *)((const char *)vertices + 24 * corner + 12);
+	p = record_point(vertices, corner, point);
 	camera_point[0] = rigid_rows[0][0] * p[0] + rigid_rows[0][1] * p[1] + rigid_rows[0][2] * p[2] + rigid_rows[0][3];
 	camera_point[1] = rigid_rows[1][0] * p[0] + rigid_rows[1][1] * p[1] + rigid_rows[1][2] * p[2] + rigid_rows[1][3];
 	camera_point[2] = rigid_rows[2][0] * p[0] + rigid_rows[2][1] * p[1] + rigid_rows[2][2] * p[2] + rigid_rows[2][3];
@@ -14662,7 +14816,8 @@ static struct rigid_runs *rigid_runs_for(const void *vertices, const unsigned sh
 			for (c = 0; c < 3; c++)
 			{
 				unsigned short v = strip ? indices[t + c] : indices[3 * t + c];
-				const float *p = (const float *)((const char *)vertices + 24 * v + 12);
+				float point[3];
+				const float *p = record_point(vertices, v, point);
 
 				for (axis = 0; axis < 3; axis++)
 				{
@@ -14677,7 +14832,8 @@ static struct rigid_runs *rigid_runs_for(const void *vertices, const unsigned sh
 			for (c = 0; c < 3; c++)
 			{
 				unsigned short v = strip ? indices[t + c] : indices[3 * t + c];
-				const float *p = (const float *)((const char *)vertices + 24 * v + 12);
+				float point[3];
+				const float *p = record_point(vertices, v, point);
 				float dx = p[0] - slot->spheres[k][0], dy = p[1] - slot->spheres[k][1], dz = p[2] - slot->spheres[k][2];
 				float d = dx * dx + dy * dy + dz * dz;
 
@@ -14749,8 +14905,11 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		return;
 	}
 	part_start();
+	part_k14 = 0.0f;
+	convert_float_only = model_first_person || in_sky;
 	if (!model_convert(vertices, vertex_count, uncompressed, indices, (int)index_count, strip, &skin))
 		return;
+	part_k14 = convert_k;
 	part_add(4);
 	sceGumMatrixMode(GU_MODEL);
 	if (skin)
@@ -14760,7 +14919,19 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		/* one node: the first vertex's (stored times three, for the Xbox's
 		vertex shader constants) */
 		node_matrix(vertices, indices, &model);
-		sceGumLoadMatrix(&model);
+		if (part_k14 != 0.0f)
+		{
+			/* the GE reads q / 32768 */
+			ScePspFMatrix4 scaled = model;
+			float s = part_k14 * 32768.0f;
+
+			scaled.x.x *= s; scaled.x.y *= s; scaled.x.z *= s;
+			scaled.y.x *= s; scaled.y.y *= s; scaled.y.z *= s;
+			scaled.z.x *= s; scaled.z.y *= s; scaled.z.z *= s;
+			sceGumLoadMatrix(&scaled);
+		}
+		else
+			sceGumLoadMatrix(&model);
 		part_add(5);
 		if (model_near && !model_first_person &&
 			!rigid_part_whole(vertices, indices, index_count, strip, &model, projection_near * 1.25f))
@@ -14869,16 +15040,40 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 					{
 						const unsigned char *record = (const unsigned char *)vertices + 24 * corner[k];
 						const float *uv = (const float *)record, *p = (const float *)(record + 12);
+						const unsigned char *normal = record + 8;
+						float point[3], ge_uv[2], ge_point[3];
 
+						if (part_k14 != 0.0f)
+						{
+							/* the pieces are drawn through the same scaled matrix and
+							texture offset, so they keep the GE's own units */
+							const unsigned short *t;
+							const short *q;
+							int a;
+
+							record = (const unsigned char *)vertices + 14 * corner[k];
+							t = (const unsigned short *)record;
+							q = (const short *)(record + 8);
+							normal = record + 4;
+							for (a = 0; a < 3; a++)
+							{
+								point[a] = q[a] * part_k14;
+								ge_point[a] = q[a] * (1.0f / 32768.0f);
+							}
+							ge_uv[0] = t[0] * (1.0f / 32768.0f);
+							ge_uv[1] = t[1] * (1.0f / 32768.0f);
+							p = point;
+							uv = ge_uv;
+						}
 						model_to_camera(&model, p, polygon[k]);
 						polygon[k][3] = uv[0];
 						polygon[k][4] = uv[1];
-						polygon[k][5] = (signed char)record[8];
-						polygon[k][6] = (signed char)record[9];
-						polygon[k][10] = (signed char)record[10];
-						polygon[k][7] = p[0];
-						polygon[k][8] = p[1];
-						polygon[k][9] = p[2];
+						polygon[k][5] = (signed char)normal[0];
+						polygon[k][6] = (signed char)normal[1];
+						polygon[k][10] = (signed char)normal[2];
+						polygon[k][7] = part_k14 != 0.0f ? ge_point[0] : p[0];
+						polygon[k][8] = part_k14 != 0.0f ? ge_point[1] : p[1];
+						polygon[k][9] = part_k14 != 0.0f ? ge_point[2] : p[2];
 					}
 					model_cut_count += clip_triangle(polygon, bits[0] | bits[1] | bits[2], &pieces_store);
 				}
@@ -14951,7 +15146,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		sceGuEnable(GU_TEXTURE_2D);
 		sceGuTexFunc(GU_TFX_MODULATE, base_alpha && alpha_tested ? GU_TCC_RGBA : GU_TCC_RGB);
 		sceGuTexWrap(GU_REPEAT, GU_REPEAT);
-		sceGuTexScale(model_u_scale * (u_scale != 0.0f ? u_scale : 1.0f), model_v_scale * (v_scale != 0.0f ? v_scale : 1.0f));
+		model_tex_scale(model_u_scale * (u_scale != 0.0f ? u_scale : 1.0f), model_v_scale * (v_scale != 0.0f ? v_scale : 1.0f));
 		/* lit by the GE from the game's lighting; this is the material colour */
 		sceGuColor(0xFFFFFFFF);
 		if (base_alpha && alpha_tested)
@@ -15117,6 +15312,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		sceGuTexScale(1.0f, 1.0f);
 		sceGuDisable(GU_TEXTURE_2D);
 	}
+	if (part_k14 != 0.0f)
+		sceGuTexOffset(0.0f, 0.0f);
 	world_model();
 	model_cut_count = 0;
 	model_cut_vertices = NULL;
@@ -15580,7 +15777,7 @@ static void halo_matrix(const float *node, ScePspFMatrix4 *model)
 
 static void node_matrix(const void *vertices, const unsigned short *indices, ScePspFMatrix4 *model)
 {
-	int node_index = ((const unsigned char *)vertices)[24 * indices[0] + 11] / 3;
+	int node_index = ((const unsigned char *)vertices)[part_k14 != 0.0f ? 14 * indices[0] + 7 : 24 * indices[0] + 11] / 3;
 
 	if (node_index >= model_node_count)
 		node_index = 0;
@@ -16370,6 +16567,7 @@ static void psp_ge_queue_transparent_body(void *vertices, int vertex_count, int 
 	if (!frame_open || index_count < 3 || !vertices || !indices || !model_nodes || model_node_count <= 0 ||
 		vertex_count <= 0 || !model_convert(vertices, vertex_count, uncompressed, NULL, 0, 0, NULL))
 		return;
+	part_k14 = 0.0f;
 	if (transparent_full())
 	{
 		transparent_dropped++;
@@ -23412,7 +23610,11 @@ static void runs_wanted_make(void)
 				near_clusters_make(w->batch, w->skin, w->vertices);
 		}
 		else
+		{
+			part_k14 = converted_k(w->vertices);
 			(void)rigid_runs_for(w->vertices, w->indices, w->index_count, w->strip);
+			part_k14 = 0.0f;
+		}
 		runs_wanted_made++;
 	}
 	runs_wanted_count = 0;
@@ -23663,6 +23865,7 @@ static void frame_end_show(void)
 			{
 				struct skin_part *plan;
 
+				convert_float_only = converts_wanted[k].float_only;
 				model_convert(converts_wanted[k].vertices, converts_wanted[k].count, converts_wanted[k].uncompressed,
 					converts_wanted[k].indices, converts_wanted[k].index_count, converts_wanted[k].strip,
 					converts_wanted[k].skin ? &plan : NULL);
@@ -23927,6 +24130,10 @@ static void frame_end_show(void)
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes, level_glow_passes,
 			list_peak, display_list_size, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+		if (model14 > 0)
+			platform_log("GE: model14: %lu parts (%lu vertices, %lu KB less than 24-byte records); see-through asks refused %lu; skinned parts at full size %lu (%lu vertices; 10 bytes less a vertex would free %lu KB)",
+				model14_parts, model14_vertices, model14_vertices * 10 / 1024, model14_refused,
+				model14_skinned_parts, model14_skinned_vertices, model14_skinned_vertices * 10 / 1024);
 		if (arena_state > 0)
 		{
 			platform_log("GE: the copies' arena: %lu of %u KB used, largest free %u KB; let go for room %lu; pieces to the heap %lu (%lu there now), kept off the heap's reserve %lu (tables %lu); compacted %lu times, %lu KB; brought back %lu",
