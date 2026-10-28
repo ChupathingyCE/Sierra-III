@@ -184,11 +184,18 @@ The PSP is only ever a client of ChupathingyCE's desktop host (network version 2
 | # | Lever | Worth | Risk | Exactness | Priced by |
 |---|---|---|---|---|---|
 | 1 | **Visibility on the ME** (mevis; research's) | 8.0-8.8 ms of the main CPU's frame on b30 [M] | Low: measured exact, never late | Exact (statecrc [E]) | Research's PSP pair; this session endorses its placement |
-| 2 | **Posing on the VFPU**: the quaternion chain and `matrix4x3_rotation_from_quaternion` in E forms (normalize's sqrt kept on the FPU, as VFPUQ) | ≤ ~3.8% of the tick's fetches [U]; part of posing's ~10% of b30's tick [E] | Low-medium: unaligned matrices need `lv.s` or temporaries | Exact by construction (E) | One A/B pair, b30 flight; after or with budget's LBM |
+| 2 | **Posing on the VFPU** (merged with 4 after the count below): the quaternion product, blends and normalizes, and the rotation matrices, in the VFPU's own instructions (`vqmul`, `vdot`, `vrsq`) where they pay | Exact forms alone: ~0.7% of b30's tick fetches [E count], under the 1% gate. The VFPU's own forms: per-call times from `vfpubench` [M, pending] | Medium: unaligned data, so `lv.s` loads | Not bit-exact; posing is LOCAL (section 6), so the A/B carries the new maths on both sides and side-by-sides judge it | `vfpubench`'s PSP run first (times and rounding), then one A/B pair on b30's flight |
 | 3 | **The scratchpad re-ranked** by misses per byte on w142 (candidates: the top of each map's collision BSP, the planes it touches first) | Unsized: the tick's top miss sources (tag window, collision) hold none of it today | Low: `noscratch` is the off switch; one owner thread | Exact (only placement) | Cache rule: a PSP pair, never the cache model |
-| 4 | **Node products and transforms on the VFPU** (D forms: `object_compute_node_matrices_with`, `matrix4x3_transform_point`) | ≤ ~3.3% of the tick's fetches [U] | Medium | Not bit-exact (like today's `vmmul`); safe for multiplayer (section 6), so both A/B sides carry the new maths | First the `vdot`/`vmmul` rounding bench (it can ride on item 2's PSP pair) |
+| 4 | (merged into 2) | | | | |
 | 5 | **Small passes as ME jobs** (decals, HUD) | ~0.6 ms main [M] | Low | Exact | Part of B |
 | 6 | **Collision queries batched to the ME** (L3, BW) | Large but unsized; needs AI's and drawing's split of the ME first | High (XL) | Exact if the ME's FPU is (it is [M]) | Later |
 | - | RM (VFPU frustum tests) | ≤ 4.4% of drawing's fetches | | | **Dropped** if 1 lands |
 
-The two rule rewordings in the brief wait on Sheepdog01's wording. Section 6 is the evidence for the second: no client float has to be bit-exact with the host.
+**Sheepdog01's 12:27 ruling:** both rule rewordings are in force; the list goes ahead in this order.
+
+**#2's removal count** (b30's flight, cache map 40640730484 [E]): the five targets are 787 M of 20.0 G tick fetches (3.9%).
+- Element-wise forms can only pack the products. `quaternions_multiply` packs well (16 multiplies and 12 adds into 4 swizzled `vmul.q` and 3 `vadd.q`).
+- `quaternion_normalize` gains nothing: its sum stays sequential, and the sqrt and divide stay on the FPU.
+- The rotation matrix's nine sums each need lanes from different registers, so they stay scalar (~15% of the function).
+- That totals ~133 M, about 0.7%: under the gate. So the exact forms alone don't pay.
+- The VFPU's own instructions do much more: `vqmul.q` is the whole product in one instruction, and `vdot.q` a whole dot. Since posing is local to the client (section 6), #2 and #4 become one lever, priced by `vfpubench`.
