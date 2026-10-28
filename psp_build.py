@@ -706,10 +706,10 @@ def link(objs, stubs):
     # go last in .sbss, on the one line just below the ME's .bss block, with
     # pspdebug's and emutls' words moved below the other small variables: the
     # ME's block starts 64-byte aligned, so as long as .sbss ends inside the
-    # same line as before nothing after it moves (gusdata's padding moved all
-    # of .bss ~190 bytes: tick +4.6% on the PSP-3000, 40622597150 vs
-    # 40622631324), and they stay in $gp's reach. gum_current_matrix (.sdata)
-    # stays first in .sdata, its line shared only with libc's start-up words
+    # same line as before nothing after it moves (padding them out instead
+    # moved all of .bss ~190 bytes, and the PSP's tick paid for the new cache
+    # sets), and they stay in $gp's reach. gum_current_matrix (.sdata) stays
+    # first in .sdata, its line shared only with libc's start-up words.
     # PSP_GU_PLACE=sdk leaves them where the SDK's script puts them: the other
     # side of the placement's A/B, from the same commit
     me_small = ("*libpspgu.a:*", "*libpspgum.a:*")
