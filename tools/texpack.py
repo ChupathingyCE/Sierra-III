@@ -2158,7 +2158,7 @@ def main():
     ap.add_argument('--pgeo', default=None, help='the map\'s geometry pack (default: beside the map) for the lightmap masks')
     ap.add_argument('--alpha-coverage', action='store_true', help='asset track: alpha-tested textures keep their coverage at every level')
     ap.add_argument('--full-detail', default='chiefdetail', help='classes kept at full size: fp, weapons, vehicles, characters, chief, chiefdetail '
-                    '(the default: Chief'"'"'s detail maps, the centerpiece in every level); none: no class')
+                    '(the default: the detail maps of Chief, the centerpiece in every level); none: no class')
     ap.add_argument('--hud-clut4', action='store_true', help='HUD sheets may take 16 colours again (as before build 120)')
     ap.add_argument('--no-clut4-look', action='store_true',
                     help='lightmaps and HUD sheets stay at 8 bits even where 16 colours pass the CLUT4W strict bar '
