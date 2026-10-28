@@ -85,6 +85,8 @@ static unsigned int pack_generation = 0;
 /* per entry: where it is in the cache (0 if not resident), the last frame
 it was drawn in */
 static unsigned int *resident_at = NULL, *last_frame = NULL;
+/* "texrecentN" (load_into) */
+static int recent_middle = -1;
 /* "texcensus" (below, before protected_at) */
 struct tex_census
 {
@@ -1789,6 +1791,18 @@ static int load_into(int index, int only)
 		at = allocate(which = 0, alignment(entry->size), RECENT_FRAMES);
 	if (!at && only != 0)
 		at = allocate(which = 1, alignment(entry->size), RECENT_FRAMES);
+	/* "texrecentN" (B34): a middle pass that still keeps what was drawn in
+	the last N frames, so a texture drawn on alternate frames, or drawn later
+	in this frame than the load, isn't taken while staler ones sit further
+	round the ring. On the PSP-1000 (sierra-hw 40766802890 against
+	40761956885, a10 on Sheepdog01's path) N = 8 took the waits for room from 609
+	to 154: a10's boarding craft kept three of its four looks */
+	if (!at && recent_middle < 0)
+		recent_middle = psp_keep_number("texrecent", 0);
+	if (!at && recent_middle > 2 && only != 1)
+		at = allocate(which = 0, alignment(entry->size), (unsigned int)recent_middle);
+	if (!at && recent_middle > 2 && only != 0)
+		at = allocate(which = 1, alignment(entry->size), (unsigned int)recent_middle);
 	/* the frame the GE may still be drawing (geshow2: shown off the game
 	thread) keeps its textures too */
 	if (!at && only != 1)
