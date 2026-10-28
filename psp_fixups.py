@@ -15153,6 +15153,12 @@ FIXES_118["source/scenario/scenario.c#spherememo"] = [
 
 				psp_sphere_memo_forget();
 				psp_scratch_census_bsp(global_collision_bsp);
+				/* psp_scratch.c: the top nodes' copy, "scratchbsp" */
+				{
+					extern void psp_scratch_bsp_fill(const void *collision_bsp);
+
+					psp_scratch_bsp_fill(global_collision_bsp);
+				}
 			}
 #endif"""),
 ]
@@ -36285,7 +36291,63 @@ void quaternions_multiply(
 """),
 ]
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+
+# ---------- FIXES_SCRATCHBSP: the level BSP's top nodes in the scratchpad
+# The scratchpad census (noscratch scratchcensus, cache model, b30 c20 d20
+# a10) ranks the level collision BSP's nodes nearest the root, with the
+# planes they test, first by misses per byte in the tick (and high in the
+# drawing): every walk of the level starts at the root, and the tag data
+# spreads those nodes and planes over hundreds of lines in two arrays.
+# "scratchbsp" (keep.txt; psp_scratch.c, psp_scratchbsp.h): a breadth-first
+# copy of the top nodes, each with its plane, packed two to a line in the
+# scratchpad, refilled as each collision BSP is set and dropped as a map's
+# tags load. The level walks (sphere, ray, pill, point) read a top node from
+# the copy on the main CPU; the ME's walks read the tag data. The same bits:
+# the answers don't change. Off by default (a placement, priced on the PSP)
+FIXES_SCRATCHBSP = {}
+FIXES_SCRATCHBSP["source/physics/collision_bsp.c#scratchbsp"] = [
+("""#include "tag_files/tag_groups.h"
+""", """#include "tag_files/tag_groups.h"
+#ifdef HALO_PSP
+#include "psp_scratchbsp.h" /* psp_fixups.py (FIXES_SCRATCHBSP) */
+#endif
+"""),
+] + [
+('\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n\t\tdistance = plane3d_distance_to_point(plane, data->point);\n\t\tdot',
+ "\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n\t\tdistance = plane3d_distance_to_point(plane, data->point);\n\t\tdot"),
+('\t\thits) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n',
+ "\t\thits) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth, &data->nodes_left))\n\t\t{\n\t\t\treturn FALSE;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n"),
+('\t\tof each node above, so it is never full) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n',
+ "\t\tof each node above, so it is never full) */\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n"),
+('\t\tlong designator;\n\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&data->bsp->bsp3d.planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n',
+ "\t\tlong designator;\n\n\t\tif (!collision_bsp3d_enter_node(data->bsp, node_index, depth++, &data->nodes_left))\n\t\t{\n\t\t\treturn;\n\t\t}\n#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(data->bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&data->bsp->bsp3d.planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n"),
+]
+FIXES_SCRATCHBSP["source/physics/bsp3d.c#scratchbsp"] = [
+("""#include "math/geometry.h"
+""", """#include "math/geometry.h"
+#ifdef HALO_PSP
+#include "psp_scratchbsp.h" /* psp_fixups.py (FIXES_SCRATCHBSP) */
+#endif
+"""),
+('\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&bsp->nodes,\n\t\t\tnode_index,\n\t\t\tstruct bsp3d_node);\n\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t&bsp->planes,\n\t\t\tnode->plane_designator,\n\t\t\treal_plane3d);\n\n\t\tnode_index = node->children[plane3d_distance_to_point(plane, point) >= 0.f];',
+ "#if defined(HALO_PSP) && !defined(PSP_MAP_CHECKS)\n\t\t/* psp_fixups.py (FIXES_SCRATCHBSP): a top node from the scratchpad's copy */\n\t\tif (PSP_SB_HERE(bsp, node_index))\n\t\t\tPSP_SB_GET(node_index, node, plane, struct bsp3d_node const *, real_plane3d const *);\n\t\telse\n#endif\n\t\t{\n\t\t\tnode = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&bsp->nodes,\n\t\t\t\tnode_index,\n\t\t\t\tstruct bsp3d_node);\n\t\t\tplane = TAG_BLOCK_GET_ELEMENT(\n\t\t\t\t&bsp->planes,\n\t\t\t\tnode->plane_designator,\n\t\t\t\treal_plane3d);\n\t\t}\n\n\t\tnode_index = node->children[plane3d_distance_to_point(plane, point) >= 0.f];"),
+]
+# (dropped as a map's tags load: a new map's BSP may sit where the old one did)
+FIXES_SCRATCHBSP["source/cache/cache_files.c#scratchbsp"] = [
+("""				psp_sphere_memo_forget();
+			}""",
+ """				psp_sphere_memo_forget();
+			}
+			{
+				/* psp_fixups.py (FIXES_SCRATCHBSP) */
+				extern void psp_scratch_bsp_forget(void);
+
+				psp_scratch_bsp_forget();
+			}"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_SCRATCHBSP.items()) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 

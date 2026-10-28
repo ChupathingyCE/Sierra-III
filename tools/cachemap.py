@@ -288,6 +288,30 @@ def main():
                     print('  %9d  %8d B at %08x  %s | hottest %s | first %s' % (total, end - start, start, name,
                           ' '.join('%dK:%d' % (b // 1024, m) for b, m in curve),
                           ' '.join('%dK:%d' % (b // 1024, m) for b, m in prefix)))
+        if spans_named:
+            # the hottest 64-byte lines of all of main RAM, each with every
+            # symbol or span that overlaps it (a line of small globals is
+            # named by all of them, not only by the one at its start)
+            hot = sorted(((misses[p][line], line) for line in range(LINES) if misses[p][line]), reverse=True)[:512]
+            overlap_spans = sorted(data_spans)
+            starts = [s[0] for s in overlap_spans]
+            print('scratchpad census, the hottest lines of main RAM (misses, cumulative, address, region: what overlaps the line):')
+            running = 0
+            for rank, (m, line) in enumerate(hot):
+                running += m
+                address = LO + (line << 6)
+                i = bisect.bisect_right(starts, address + 63)
+                names = []
+                while i > 0 and len(names) < 6:
+                    i -= 1
+                    start, end, name, kind = overlap_spans[i]
+                    if end > address and start < address + 64:
+                        names.append(name)
+                    if start < address - 0x40000:
+                        break
+                if rank < 200 or rank in (255, 383, 511):
+                    print('  %4d %9d %10d  %08x  %s: %s' % (rank + 1, m, running, address, region(address, program_end),
+                          ', '.join(reversed(names)) or '-'))
         if topsets:
             print('scratchpad census, the level BSP\'s top levels (nodes down to depth d and the planes they test: lines, misses):')
             nodes_so_far, planes_so_far = set(), set()

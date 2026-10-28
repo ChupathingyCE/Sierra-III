@@ -19,6 +19,10 @@ each with one job, and never freed or shared as working space. The pieces
 8,448 bytes) and the profiler's slots and front table (psp_platform.c, 6,656;
 the heartbeat thread reads them for its report, as it read the old table).
 
+keep.txt "scratchbsp": the level collision BSP's top nodes take the cut
+corners' room (below, psp_scratchbsp.h): the census by misses per byte puts
+them first in the tick, and the cut corners last.
+
 keep.txt "noscratch": every piece comes from the heap instead, for the
 hardware A/B (the same code, the same data, only its place differs). */
 #include <pspkernel.h>
@@ -338,4 +342,102 @@ void psp_scratch_exec_probe2(void)
 		passes, ram_alone, scratch_alone, both, ram_alone + scratch_alone,
 		both <= (ram_alone + scratch_alone) * 5 / 4 ? "the scratchpad's fetches leave the instruction cache alone" :
 		"the scratchpad's fetches go through the instruction cache (the two evict each other)");
+}
+
+/* keep.txt "scratchbsp" (psp_scratchbsp.h): the level collision BSP's top
+nodes, each with its plane, in the room the profiler's tables leave; the
+models' cut corners go to the heap (the census: the nodes nearest the root
+take hundreds of misses a byte in the tick and the drawing, the cut corners
+a few). The copy is made, breadth first from the root, as each collision
+BSP is set (a map's first and every switch) and dropped as a map's tags
+load, all on the game thread, the walks' only reader of it */
+#include "psp_scratchbsp.h"
+
+/* the profiler's slots and front table (psp_platform.c: 512 of 12 bytes and
+64 of 8), taken after this piece */
+#define SCRATCH_PROFILER_BYTES 6656u
+
+struct psp_sb_slot *psp_sb_slots = NULL;
+void const *psp_sb_tree = NULL;
+static unsigned int sb_room = 0;
+
+void psp_scratch_bsp_take(void)
+{
+	unsigned int at = (scratch_used + 15) & ~15u, bytes;
+	void *pointer;
+
+	if (!psp_keep("scratchbsp"))
+		return;
+#ifdef PSP_MAP_CHECKS
+	/* the walks' node checks would refuse a copy's index: the walks read the tag data */
+	platform_log("scratchbsp: left out in a PSP_MAP_CHECKS build");
+	return;
+#endif
+	if (psp_keep("noscratch") || at + SCRATCH_PROFILER_BYTES + 64 * sizeof(struct psp_sb_slot) > SCRATCH_BYTES)
+	{
+		platform_log("scratchbsp: no room in the scratchpad: the walks read the tag data");
+		return;
+	}
+	bytes = (SCRATCH_BYTES - SCRATCH_PROFILER_BYTES - at) / sizeof(struct psp_sb_slot) * sizeof(struct psp_sb_slot);
+	pointer = psp_scratch_take(bytes, "the level BSP's top nodes");
+	if (!psp_scratch_holds(pointer))
+		return;
+	psp_sb_slots = pointer;
+	sb_room = bytes / sizeof(struct psp_sb_slot);
+}
+
+void psp_scratch_bsp_forget(void)
+{
+	psp_sb_tree = NULL;
+}
+
+void psp_scratch_bsp_fill(const void *collision_bsp)
+{
+	const struct scratch_block *blocks = (const struct scratch_block *)collision_bsp;
+	const struct scratch_bsp3d_node *nodes;
+	const float *planes;
+	unsigned int used = 1, k, depth_end = 1, depth = 0;
+
+	psp_sb_tree = NULL;
+	if (!psp_sb_slots || !blocks)
+		return;
+	nodes = (const struct scratch_bsp3d_node *)blocks[0].address;
+	planes = (const float *)blocks[1].address;
+	if (!nodes || blocks[0].count <= 0 || !planes || blocks[1].count <= 0 ||
+		nodes[0].plane_designator < 0 || nodes[0].plane_designator >= blocks[1].count)
+		return;
+	/* slot 0 is the root; each copied node's children that are nodes take
+	the next slots while there is room (so the copy is the tree's top,
+	breadth first), and a child left out keeps its index into the tag data */
+	psp_sb_slots[0].node_index = 0;
+	for (k = 0; k < used; k++)
+	{
+		struct psp_sb_slot *slot = &psp_sb_slots[k];
+		const struct scratch_bsp3d_node *node = &nodes[slot->node_index];
+		int c;
+
+		if (k == depth_end)
+		{
+			depth++;
+			depth_end = used;
+		}
+		memcpy(slot->plane, planes + 4 * node->plane_designator, sizeof(slot->plane));
+		slot->designator = node->plane_designator;
+		for (c = 0; c < 2; c++)
+		{
+			long child = node->children[c];
+
+			slot->children[c] = child;
+			if (child >= 0 && child < blocks[0].count && used < sb_room &&
+				nodes[child].plane_designator >= 0 && nodes[child].plane_designator < blocks[1].count)
+			{
+				psp_sb_slots[used].node_index = child;
+				slot->children[c] = PSP_SB_TAG | (long)used;
+				used++;
+			}
+		}
+	}
+	psp_sb_tree = collision_bsp;
+	platform_log("scratchbsp: %u of the level BSP's %ld nodes in the scratchpad (to depth %u), %u bytes", used,
+		blocks[0].count, depth, used * (unsigned int)sizeof(struct psp_sb_slot));
 }
