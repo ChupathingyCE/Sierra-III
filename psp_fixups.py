@@ -28410,6 +28410,27 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#soundloopstop"] = [
 		psp_sound_cache_loads++;"""),
 ]
 FIXES_SOUND["source/cache/xbox_sound_cache.c#soundmap"] = [
+("""	return xbox_sound_cache_globals.debug_block_name;
+}
+""",
+ """	return xbox_sound_cache_globals.debug_block_name;
+}
+
+#ifdef HALO_PSP
+/* the map's label (B33): the sound and why its block is held, the game's
+references to it (software: sounds that asked for it; hardware: packets
+queued) and whether it has loaded */
+static const char *psp_sound_block_label(long block_index)
+{
+	struct xbox_cache_sound_datum *cache_sound = datum_get(xbox_sound_cache_globals.cache_sounds, block_index);
+
+	sprintf(xbox_sound_cache_globals.debug_block_name, "%.80s (software %d, hardware %d%s)",
+		tag_get_name(cache_sound->sound->runtime_tag_index), cache_sound->software_reference_count,
+		cache_sound->hardware_reference_count, cache_sound->loaded ? "" : ", loading");
+	return xbox_sound_cache_globals.debug_block_name;
+}
+#endif
+"""),
 ("""				"%ld KB held by sounds playing or loading", (long)(sound->samples.size / 1024), psp_game_time_peek(),
 				clearable * 4, locked_pages * 4);
 """,
@@ -28420,7 +28441,7 @@ FIXES_SOUND["source/cache/xbox_sound_cache.c#soundmap"] = [
 				extern void psp_lruv_log_map(struct lruv_cache *cache, const char *(*name)(long block_index)); /* lruv_cache.c */
 
 				platform_psp_log("sound cache: the sound refused: %s", tag_get_name(sound->runtime_tag_index));
-				psp_lruv_log_map(xbox_sound_cache_globals.cache, cache_block_get_sound_permutation_name);
+				psp_lruv_log_map(xbox_sound_cache_globals.cache, psp_sound_block_label);
 			}
 """),
 ]
