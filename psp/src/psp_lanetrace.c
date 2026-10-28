@@ -244,7 +244,7 @@ void psp_lane_frame(unsigned long frame_number, unsigned int ticks)
 #else
 
 /* a final release (PSP_METRICS=0): the hooks' tests stay (psp_lanetrace.h),
-so these answer them and record nothing */
+so these answer them and record nothing (the header names them *_off) */
 volatile int psp_lane_on = 0;
 
 void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigned int b, unsigned int c)

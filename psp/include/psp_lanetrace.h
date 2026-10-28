@@ -12,11 +12,21 @@ Engine's work on one clock, frame by frame (psp/src/psp_lanetrace.c) */
 /* The hooks keep their shape with PSP_METRICS=0 (the final release): each
 test stays, never true there, because a hook that vanished would change its
 host's control flow and a profile-guided build would drop the host's counts.
-The recorder itself is left out (psp_lanetrace.c's stubs) */
+The recorder is left out: its stubs have names of their own, so their empty
+bodies aren't checked against the recorder's counts */
 extern volatile int psp_lane_on;
+#ifdef PSP_METRICS
 void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigned int b, unsigned int c);
 void psp_lane_arm(void);
 void psp_lane_frame(unsigned long frame_number, unsigned int ticks);
+#else
+void psp_lane_note_off(unsigned int kind, unsigned int from, unsigned int t, unsigned int b, unsigned int c);
+void psp_lane_arm_off(void);
+void psp_lane_frame_off(unsigned long frame_number, unsigned int ticks);
+#define psp_lane_note psp_lane_note_off
+#define psp_lane_arm psp_lane_arm_off
+#define psp_lane_frame psp_lane_frame_off
+#endif
 #define PSP_LANE(kind, from, t, b, c) do { if (psp_lane_on) psp_lane_note((kind), (from), (t), (b), (c)); } while (0)
 #define PSP_LANE_ARM() psp_lane_arm()
 #define PSP_LANE_FRAME_END(frame_number, ticks) do { if (psp_lane_on) psp_lane_frame((frame_number), (ticks)); } while (0)
