@@ -11012,9 +11012,9 @@ read them again itself and wrote that line under the main CPU's dirty copy,
 and on the PSP Chief drew yellow-orange in a run with the visor on,
 where the emulator's one cache drew him right */
 static struct __attribute__((aligned(64))) reflection_words {
-	int read, specular, env_fp, env_near, env_pixels, env_gain, env_min, chief_visor, chief_visor_gain;
+	int read, specular, env_fp, env_near, env_pixels, env_gain, env_min, chief_visor, chief_visor_gain, sheen, sheen_gain;
 	float specular_power, specular_gain;
-} reflection_words = { 0, 0, 0, 0, 160, 100, 0, 0, 150, 8.0f, 2.0f };
+} reflection_words = { 0, 0, 0, 0, 160, 100, 0, 0, 150, 0, 100, 8.0f, 2.0f };
 static unsigned int part_specular = 0;
 static unsigned long specular_parts = 0;
 
@@ -13201,6 +13201,11 @@ static void reflection_keeps(void)
 	reflection_words.env_min = psp_keep_number("envmin", 0);
 	reflection_words.chief_visor = psp_keep("chiefvisor");
 	reflection_words.chief_visor_gain = psp_keep_number("chiefvisorgain", 150);
+	reflection_words.sheen = psp_keep("chiefsheen");
+	reflection_words.sheen_gain = psp_keep_number("sheengain", 100);
+	if (reflection_words.sheen)
+		platform_log("GE: chiefsheen: Chief's armour gets the Xbox's reflection added over it by its mask, gain %d%%",
+			reflection_words.sheen_gain);
 	if (reflection_words.chief_visor)
 		platform_log("GE: chiefvisor: Chief's visor drawn with its reflection pass, gain %d%%",
 			reflection_words.chief_visor_gain);
@@ -13478,6 +13483,57 @@ static int change_pass(void *vertices, const unsigned short *indices, long index
 	sceGuDepthMask(GU_FALSE);
 	sceGuDepthFunc(GU_GEQUAL);
 	sceGuTexEnvColor(0xFFFFFFFF);
+	return 1;
+}
+
+/* "chiefsheen" (opt-in while Sheepdog01 judges it): the Xbox adds a shiny part's
+reflection over its lit, change-coloured base, by the multipurpose map's
+red (the reflection mask). Folded into the ambient light, as every other
+part's is, it is multiplied by the base instead, so Chief's armour stayed
+the base's saturated green; added, the environment's grey brightens and
+greys the plates the mask marks, as on the Xbox. The cube map's average
+stands for the cube (no view dependence); the visor keeps its own pass */
+static unsigned long sheen_passes = 0;
+
+static int sheen_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
+	struct skin_part *skin, ScePspFMatrix4 *model)
+{
+	extern const void *psp_tex_reflection_mask(unsigned int key, int *count);
+	float cube[3] = { REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT };
+	float gain = (float)reflection_words.sheen_gain * (1.0f / 100.0f);
+	unsigned int cube_abgr, color;
+	const void *mask;
+	int count;
+
+	if (!psp_tex_bind(change_key, NULL) || !(mask = psp_tex_reflection_mask(change_key, &count)))
+		return 0;
+	if (reflection_cube_key && psp_tex_average_known(reflection_cube_key, &cube_abgr))
+	{
+		cube[0] = (float)(cube_abgr & 0xFF) * (1.0f / 255.0f);
+		cube[1] = (float)((cube_abgr >> 8) & 0xFF) * (1.0f / 255.0f);
+		cube[2] = (float)((cube_abgr >> 16) & 0xFF) * (1.0f / 255.0f);
+	}
+	color = 0xFF000000u |
+		((unsigned int)PSP_CLAMP_255((int)(reflection_rgb[2] * cube[2] * gain * 255.0f)) << 16) |
+		((unsigned int)PSP_CLAMP_255((int)(reflection_rgb[1] * cube[1] * gain * 255.0f)) << 8) |
+		(unsigned int)PSP_CLAMP_255((int)(reflection_rgb[0] * cube[0] * gain * 255.0f));
+	sceGuClutMode(GU_PSM_8888, 0, 0xFF, 0);
+	sceGuClutLoad(count / 8, mask);
+	sceGuTexFunc(GU_TFX_MODULATE, GU_TCC_RGB);
+	sceGuColor(color);
+	sceGuDisable(GU_ALPHA_TEST);
+	sceGuDepthFunc(GU_EQUAL);
+	sceGuDepthMask(GU_TRUE);
+	/* added light fades to nothing in the fog */
+	sceGuFog(fog_near, fog_far, 0xFF000000);
+	sceGuBlendFunc(GU_ADD, GU_FIX, GU_FIX, 0xFFFFFF, 0xFFFFFF);
+	ge_blend(1);
+	model_geometry(vertices, indices, index_count, strip, skin, model);
+	ge_blend(0);
+	sceGuFog(fog_near, fog_far, fog_color);
+	sceGuDepthMask(GU_FALSE);
+	sceGuDepthFunc(GU_GEQUAL);
+	sceGuColor(0xFFFFFFFF);
 	return 1;
 }
 
@@ -14676,7 +14732,7 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 	struct skin_part *skin = NULL;
 	unsigned int part_ambient;
 	float shine[3] = { 0.0f, 0.0f, 0.0f };
-	int shiny, env;
+	int shiny, env, sheen, sheen_count;
 
 	alpha_tested &= 1;
 	model_cut_count = 0;
@@ -14916,7 +14972,9 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 		visor_pixels = model_pixels;
 	}
 	env = shiny && env_part(shine);
-	if (textured && model_camouflage <= 0.0f && !in_sky && !env)
+	sheen = shiny && reflection_words.sheen && reflection_chief == 2 && change_key && !env &&
+		psp_tex_reflection_mask(change_key, &sheen_count) != NULL;
+	if (textured && model_camouflage <= 0.0f && !in_sky && !env && !sheen)
 		model_ambient = ambient_with_reflection(base_key);
 	part_specular = shiny && reflection_words.specular > 0 ? 0xFF000000u |
 		((unsigned int)PSP_CLAMP_255((int)(shine[2] * reflection_words.specular_gain * 255.0f)) << 16) |
@@ -15026,6 +15084,8 @@ static void psp_ge_draw_model_body(void *vertices, int vertex_count, int uncompr
 				glow_passes++;
 		}
 	}
+	if (sheen && sheen_pass(vertices, indices, index_count, strip, skin, &model))
+		sheen_passes++;
 	if (env)
 	{
 		static int visor_logged = 0;
@@ -23879,9 +23939,9 @@ static void frame_end_show(void)
 		platform_log("GE: flares hidden by the level alone %lu (their objects not tested); flarescheck: %lu answers compared, %lu differed",
 			psp_flare_walls_hidden, psp_flare_walls_checked, psp_flare_walls_differed);
 		if (reflection_words.specular > 0 || reflection_words.env_fp > 0 || reflection_words.env_near > 0 ||
-			reflection_words.chief_visor > 0)
-			platform_log("GE: reflections: %lu parts with a specular highlight, %lu reflection passes, %lu without their sphere map in memory; Chief's visor drawn %lu (%lu textured, %lu shiny, last %.0f pixels across)",
-				specular_parts, env_passes, env_unbound, visor_drawn, visor_textured, visor_shiny, visor_pixels);
+			reflection_words.chief_visor > 0 || reflection_words.sheen > 0)
+			platform_log("GE: reflections: %lu parts with a specular highlight, %lu reflection passes, %lu without their sphere map in memory; Chief's visor drawn %lu (%lu textured, %lu shiny, last %.0f pixels across); Chief's sheen passes %lu",
+				specular_parts, env_passes, env_unbound, visor_drawn, visor_textured, visor_shiny, visor_pixels, sheen_passes);
 		if (PSP_DITHERSHIFT && dither_shift > 0)
 		{
 			platform_log("GE: %s: %lu passes dithered at a moved place", dither_shift == 2 ? "dithershiftall" : "dithershift", dither_moves);

@@ -56,7 +56,9 @@ File layout (little endian):
     same texels share their data
   data: per texture, 16-byte aligned: the palette (256 x 2 or 4 bytes), then
     each level swizzled, rows padded to 16 bytes and to 8 rows; then a
-    multipurpose map's change mask (flag 8), 64-byte aligned
+    multipurpose map's change mask (flag 8), 64-byte aligned; Chief's
+    multipurpose maps also keep their reflection mask (flag 32) right before
+    it, so the change mask still ends the data
 """
 import sys, os, struct, argparse, hashlib, io, time
 import numpy as np
@@ -2047,6 +2049,7 @@ def bake_one(m, b, cls, look=None, model_look=None, full_hud=True, meter=False, 
 
 CHANGE_MASK_FLAG = 8  # the change mask's CLUT follows the levels
 CPU_READS_FLAG = 16   # the CPU reads this texture's palette: kept in main RAM
+REFL_MASK_FLAG = 32   # the reflection mask's CLUT comes right before the change mask's
 
 
 def change_mask(e):
@@ -2058,6 +2061,16 @@ def change_mask(e):
     w = words.astype(np.uint32)
     blue = (w >> 16) & 0xFF if e['alpha'] else (w >> 11) * 255 // 31
     return (0xFF000000 | (blue << 16) | (blue << 8) | blue).astype('<u4').tobytes()
+
+
+def reflection_mask(e):
+    """a multipurpose map's reflection mask, as the GE's CLUT for Chief's
+    sheen pass (psp_ge.c, sheen_pass): the palette's red (the Xbox's
+    reflection channel) as a grey 8888 word, alpha full"""
+    _, words = read_levels(e)
+    w = words.astype(np.uint32)
+    red = w & 0xFF if e['alpha'] else (w & 0x1F) * 255 // 31
+    return (0xFF000000 | (red << 16) | (red << 8) | red).astype('<u4').tobytes()
 
 
 def runtime_reads(entries):
@@ -2072,8 +2085,11 @@ def runtime_reads(entries):
         if 'multipurpose' in reads and e['psm'] in (4, 5):
             mask = change_mask(e)
             data = bytes(e['data'])
-            e['data'] = data + b'\0' * (-len(data) % 64) + mask
-            e['flags'] = e.get('flags', 0) | CHANGE_MASK_FLAG
+            # Chief's maps (a centerpiece, as the menu's ring) keep their
+            # reflection mask too, for the sheen the Xbox adds over his armour
+            refl = reflection_mask(e) if e.get('name', '').startswith('characters\\cyborg\\') else b''
+            e['data'] = data + b'\0' * (-len(data) % 64) + refl + mask
+            e['flags'] = e.get('flags', 0) | CHANGE_MASK_FLAG | (REFL_MASK_FLAG if refl else 0)
             masks += len(e['data']) - len(data)
         if 'meter' in reads:
             e['flags'] = e.get('flags', 0) | CPU_READS_FLAG
