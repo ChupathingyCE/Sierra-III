@@ -16,9 +16,9 @@ product (psp_vfpu.c, keep word vfpupose). The same pattern as that product:
 keep.txt "vfpuquatbench": both kinds against the engine's own functions at
 start-up, how many differ and by how much, and their time in a chain.
 
-In play (off by default, the FPU's path the other side): "vfpuquat" the
-exact interpolation, "vfpuquatd" the D interpolation and normalize; the
-section "in play" below says why and how each is checked.
+In play: the D interpolation and normalize by default ("novfpuquatd" turns
+them off: the FPU's path); "vfpuquat" the exact interpolation instead (off
+by default); the section "in play" below says why and how each is checked.
 
 The Media Engine has no VFPU, and its pose job reaches quaternion_normalize
 (animation_get_node_orientations): each entry answers 0 when the caller's
@@ -483,9 +483,7 @@ static void vfpu_quat_bench(void)
 
 /* ---------- in play (psp_fixups.py FIXES_VFPUQUAT)
 
-"vfpuquat": the interpolation's E form, the FPU's bits (on silicon 929 ->
-683 ns a call); the E normalize and rotation are slower than the FPU's, so
-they stay off. "vfpuquatd" (wins over vfpuquat): the VFPU's own forms of the
+By default (off word "novfpuquatd"): the VFPU's own forms of the
 interpolation and the normalize, vdot.q for the length and vrsq.s for its
 reciprocal root (2.2x and 1.55x on silicon, within 12 last bits). The
 interpolation's hemisphere dot stays sequential: its sign picks which way a
@@ -493,13 +491,15 @@ node turns, and a near-zero dot taken the other way would turn it the long
 way round; only the length's rounding moves. Posing is local to the client
 (hardware_utilization.md section 6), so the last bits may differ when the
 side-by-sides show it plays and looks the same; statecrc can't be its proof.
-"vfpuquatcheck": the FPU's way beside each call, the calls that differ
-counted (and their worst last-bit distance); the exact form plays the FPU's
-bits, the D forms their own. */
+"vfpuquat" (with novfpuquatd): the interpolation's E form instead, the FPU's
+bits (on silicon 929 -> 683 ns a call); the E normalize and rotation are
+slower than the FPU's, so they stay off. "vfpuquatcheck": the FPU's way beside each call, the calls that differ
+counted (and their worst last-bit distance, and any result that isn't a
+finite number); the exact form plays the FPU's bits, the D forms their own. */
 
 int psp_vfpuquat_mode = 0; /* 0 off, 1 exact interpolation, 2 the D forms */
 static int vfpuquat_check = 0;
-static unsigned long calls[2], differ[2], report_frame = 0;
+static unsigned long calls[2], differ[2], not_finite = 0, report_frame = 0;
 static unsigned int worst[2];
 
 /* the Media Engine's stack is in its eDRAM: only 0x08000000-0x0fffffff (main
@@ -521,14 +521,15 @@ static void report(void)
 	if (frame - report_frame < 300)
 		return;
 	if (report_frame)
-		platform_log("VFPU quat: calls a frame (%s): normalize %lu, interpolate %lu%s (differed %lu, %lu; worst %u, %u ulp)",
+		platform_log("VFPU quat: calls a frame (%s): normalize %lu, interpolate %lu%s (differed %lu, %lu; worst %u, %u ulp; not finite %lu)",
 			psp_vfpuquat_mode == 2 ? "vfpuquatd" : "vfpuquat",
 			calls[0] / (frame - report_frame), calls[1] / (frame - report_frame),
-			vfpuquat_check ? "; vfpuquatcheck" : "", differ[0], differ[1], worst[0], worst[1]);
+			vfpuquat_check ? "; vfpuquatcheck" : "", differ[0], differ[1], worst[0], worst[1], not_finite);
 	report_frame = frame;
 	memset(calls, 0, sizeof(calls));
 	memset(differ, 0, sizeof(differ));
 	memset(worst, 0, sizeof(worst));
+	not_finite = 0;
 }
 
 static void check_tally(int which, const struct quat *fpu, const struct quat *vfpu)
@@ -539,6 +540,9 @@ static void check_tally(int which, const struct quat *fpu, const struct quat *vf
 	for (lane = 0; lane < 4; lane++)
 	{
 		unsigned int apart = ulps_apart(a[lane], b[lane]);
+
+		if (!__builtin_isfinite(b[lane]))
+			not_finite++;
 
 		if (apart)
 			differs = 1;
@@ -608,7 +612,7 @@ void psp_vfpu_quat_initialize(void)
 		return;
 	if (psp_keep("vfpuquatbench"))
 		vfpu_quat_bench();
-	mode = psp_keep("vfpuquatd") ? 2 : psp_keep("vfpuquat") ? 1 : 0;
+	mode = !psp_keep("novfpuquatd") ? 2 : psp_keep("vfpuquat") ? 1 : 0;
 	if (!mode)
 		return;
 	form = mode == 2 ? 2 : 0;

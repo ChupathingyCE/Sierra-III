@@ -36284,10 +36284,11 @@ void quaternions_multiply(
 
 # The rest of posing on the VFPU (levers VFPUQ, VFPUQD; Sierra-III
 # docs/hardware_utilization.md sections 3 and 7; psp/src/psp_vfpu_quat.c):
-# "vfpuquat" the interpolation's element-wise form, the FPU's bits;
-# "vfpuquatd" the VFPU's own forms (vdot.q, vrsq.s) of the interpolation and
-# the normalize, within a few last bits (posing is local to the client). Both
-# off by default; "vfpuquatcheck" counts the calls that differ. The rotation
+# by default the VFPU's own forms (vdot.q, vrsq.s) of the interpolation and
+# the normalize, within a few last bits (posing is local to the client; off
+# word "novfpuquatd"); "vfpuquat" (with novfpuquatd) the interpolation's
+# element-wise form, the FPU's bits; "vfpuquatcheck" counts the calls that
+# differ. The rotation
 # matrix stays on the FPU: its VFPU form is slower. Main CPU only: each entry
 # answers 0 on the Media Engine (no VFPU; its pose job reaches
 # quaternion_normalize), and the FPU's code below runs instead.
@@ -36307,7 +36308,7 @@ void quaternion_normalize(
 	real_quaternion *q)
 {
 #ifdef HALO_PSP
-	/* psp_fixups.py (FIXES_VFPUQUAT): vfpuquatd's form on the main CPU */
+	/* psp_fixups.py (FIXES_VFPUQUAT): the VFPU's form on the main CPU (off word novfpuquatd) */
 	if (psp_vfpuquat_mode == 2 && psp_vfpu_quaternion_normalize(q))
 		return;
 #endif
