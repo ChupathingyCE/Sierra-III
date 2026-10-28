@@ -62,7 +62,7 @@ struct lane_note
 #define LANE_B(n) (((n)->packed >> 16) & 0xFFF) /* g: the kind; m: slot << 8 | type; r: type; a frame: its ticks */
 #define LANE_C(n) ((n)->packed & 0xFFFF)        /* m, r: the ME's own time, us (to 65 ms); c: the phase */
 
-volatile int psp_lane_on = 0;          /* 1 while a window records */
+volatile int psp_lane_on = 0;          /* 1 while a window records, 2 while it prints */
 static int lane_word = -1;              /* -1: the keep word not read yet */
 static int lane_frames_wanted = 60;
 static struct lane_note *lane_notes;
@@ -100,7 +100,7 @@ void psp_lane_note(unsigned int kind, unsigned int from, unsigned int t, unsigne
 {
 	unsigned int flags, index;
 
-	if (!psp_lane_on)
+	if (psp_lane_on != 1)
 		return;
 	flags = sceKernelCpuSuspendIntr();
 	index = lane_count;
@@ -135,30 +135,33 @@ static int lane_add(char *line, int at, const char *format, int x, int y, int z,
 }
 
 /* the window's frames, one line each (several when a frame's notes don't fit
-one): notes are taken in the order they were made, each into the frame whose
-end follows it */
-static void lane_print(void)
+one), LANE_PRINT_FRAMES frames at each frame's end after the window: all at
+once they overran the log's batch (tmlane2: its lines dropped). Notes are
+taken in the order they were made, each into the frame whose end follows it */
+#define LANE_PRINT_FRAMES 4
+static unsigned int print_k, print_frame_start, print_frames;
+
+static void lane_print_some(void)
 {
-	unsigned int k = 0, frame_start = lane_window_start, frame = 0, count = lane_count;
+	unsigned int count = lane_count, done = 0;
 	char line[LANE_LINE];
 
-	while (k < count)
+	while (print_k < count && done < LANE_PRINT_FRAMES)
 	{
-		unsigned int end_note = k, frame_end, at, j, first = 1;
+		unsigned int end_note = print_k, frame_end, at, j, first = 1;
 
 		while (end_note < count && LANE_KIND(&lane_notes[end_note]) != PSP_LANE_FRAME)
 			end_note++;
 		frame_end = end_note < count ? lane_notes[end_note].t : lane_notes[count - 1].t;
-		for (j = k; j < end_note;)
+		for (j = print_k; j < end_note;)
 		{
 			at = snprintf(line, sizeof(line), "lanes %u%s +%u:", lane_notes[end_note < count ? end_note : count - 1].from,
-				first ? "" : " (more)", frame_end - frame_start);
+				first ? "" : " (more)", frame_end - print_frame_start);
 			first = 0;
 			for (; j < end_note && at < LANE_LINE - 48; j++)
 			{
 				struct lane_note const *n = &lane_notes[j];
-
-				int from = (int)(n->from - frame_start), t = (int)(n->t - frame_start);
+				int from = (int)(n->from - print_frame_start), t = (int)(n->t - print_frame_start);
 
 				switch (LANE_KIND(n))
 				{
@@ -179,29 +182,42 @@ static void lane_print(void)
 			}
 			platform_log("%s", line);
 		}
-		frame++;
-		frame_start = frame_end;
-		k = end_note + 1;
+		print_frames++;
+		done++;
+		print_frame_start = frame_end;
+		print_k = end_note + 1;
 	}
-	platform_log("lanetrace: window %u, %u frames, %u notes%s", lane_windows, frame, count,
-		count >= LANE_NOTES ? " (full: the window ended early)" : "");
+	if (print_k >= count)
+	{
+		platform_log("lanetrace: window %u, %u frames, %u notes%s", lane_windows, print_frames, count,
+			count >= LANE_NOTES ? " (full: the window ended early)" : "");
+		psp_lane_on = 0;
+	}
 }
 
 /* a frame has ended (psp_platform.c's psp_frame_account, after the GE's
-frame end): the window closes after its frames, or when its notes run out */
+frame end): the window closes after its frames, or when its notes run out,
+and its lines go out a few frames at a time (psp_lane_on 2) */
 void psp_lane_frame(unsigned long frame_number, unsigned int ticks)
 {
 	unsigned int now;
 
-	if (!psp_lane_on)
+	if (psp_lane_on == 2)
+	{
+		lane_print_some();
+		return;
+	}
+	if (psp_lane_on != 1)
 		return;
 	now = sceKernelGetSystemTimeLow();
 	psp_lane_note(PSP_LANE_FRAME, (unsigned int)frame_number, now, ticks, 0);
 	lane_last_end = now;
 	if (++lane_frames >= (unsigned int)lane_frames_wanted || lane_count >= LANE_NOTES)
 	{
-		psp_lane_on = 0;
-		lane_print();
+		psp_lane_on = 2;
+		print_k = 0;
+		print_frames = 0;
+		print_frame_start = lane_window_start;
 	}
 }
 
