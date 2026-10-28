@@ -710,20 +710,23 @@ def link(objs, stubs):
     # of .bss ~190 bytes: tick +4.6% on the PSP-3000, 40622597150 vs
     # 40622631324), and they stay in $gp's reach. gum_current_matrix (.sdata)
     # stays first in .sdata, its line shared only with libc's start-up words
+    # PSP_GU_PLACE=sdk leaves them where the SDK's script puts them: the other
+    # side of the placement's A/B, from the same commit
     me_small = ("*libpspgu.a:*", "*libpspgum.a:*")
     main_busy = ("*libpspdebug.a:*", "*libgcc.a:emutls.o")
-    sbss = re.findall(r"\n([ \t]*)\*\(\.sbss \.sbss\.\* \.gnu\.linkonce\.sb\.\*\)\n([ \t]*)\*\(\.scommon\)", text)
-    if len(sbss) != 1:
+    sbss = [] if os.environ.get("PSP_GU_PLACE") == "sdk" else re.findall(r"\n([ \t]*)\*\(\.sbss \.sbss\.\* \.gnu\.linkonce\.sb\.\*\)\n([ \t]*)\*\(\.scommon\)", text)
+    if len(sbss) != 1 and os.environ.get("PSP_GU_PLACE") != "sdk":
         sys.exit("psp_build: the SDK's linkfile.prx has changed; pspgu's small variables can't be placed")
-    ind = sbss[0][0]
-    text = text.replace("\n%s*(.sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)" % sbss[0],
-                        "\n%s*(EXCLUDE_FILE(%s) .sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)\n" %
-                        (ind, " ".join(me_small + main_busy), sbss[0][1]) +
-                        "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in main_busy) +
-                        "%s. = ALIGN(64);\n%s__psp_me_small_start = .;\n" % (ind, ind) +
-                        "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in me_small) +
-                        "%s__psp_me_small_end = .;\n" % ind +
-                        "%sASSERT(__psp_me_small_end - __psp_me_small_start <= 64, \"pspgu's small variables outgrew their line\");" % ind)
+    if sbss:
+        ind = sbss[0][0]
+        text = text.replace("\n%s*(.sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)" % sbss[0],
+                            "\n%s*(EXCLUDE_FILE(%s) .sbss .sbss.* .gnu.linkonce.sb.*)\n%s*(.scommon)\n" %
+                            (ind, " ".join(me_small + main_busy), sbss[0][1]) +
+                            "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in main_busy) +
+                            "%s. = ALIGN(64);\n%s__psp_me_small_start = .;\n" % (ind, ind) +
+                            "".join("%s%s(.sbss .sbss.*)\n" % (ind, o) for o in me_small) +
+                            "%s__psp_me_small_end = .;\n" % ind +
+                            "%sASSERT(__psp_me_small_end - __psp_me_small_start <= 64, \"pspgu's small variables outgrew their line\");" % ind)
     linkfile = os.path.join(OUT, "linkfile_layout.prx")
     open(linkfile, "w").write(text)
     # build 107: the link map (halo.map: each function's and variable's
