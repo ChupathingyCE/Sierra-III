@@ -13494,11 +13494,11 @@ the base's saturated green; added, the environment's grey brightens and
 greys the plates the mask marks, as on the Xbox. The cube map's average
 stands for the cube (no view dependence); the visor keeps its own pass */
 static unsigned long sheen_passes = 0;
+extern const void *psp_tex_reflection_mask(unsigned int key, int *count);
 
 static int sheen_pass(void *vertices, const unsigned short *indices, long index_count, int strip,
 	struct skin_part *skin, ScePspFMatrix4 *model)
 {
-	extern const void *psp_tex_reflection_mask(unsigned int key, int *count);
 	float cube[3] = { REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT, REFLECTION_CUBE_DEFAULT };
 	float gain = (float)reflection_words.sheen_gain * (1.0f / 100.0f);
 	unsigned int cube_abgr, color;
