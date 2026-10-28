@@ -360,6 +360,10 @@ load, all on the game thread, the walks' only reader of it */
 struct psp_sb_slot *psp_sb_slots = NULL;
 void const *psp_sb_tree = NULL;
 static unsigned int sb_room = 0;
+/* the level's collision BSP as last set: a map's first is set before the
+renderer starts and takes the room, so the take fills it then */
+static const void *sb_level = NULL;
+void psp_scratch_bsp_fill(const void *collision_bsp);
 
 void psp_scratch_bsp_take(void)
 {
@@ -384,11 +388,14 @@ void psp_scratch_bsp_take(void)
 		return;
 	psp_sb_slots = pointer;
 	sb_room = bytes / sizeof(struct psp_sb_slot);
+	if (sb_level)
+		psp_scratch_bsp_fill(sb_level);
 }
 
 void psp_scratch_bsp_forget(void)
 {
 	psp_sb_tree = NULL;
+	sb_level = NULL;
 }
 
 void psp_scratch_bsp_fill(const void *collision_bsp)
@@ -399,6 +406,7 @@ void psp_scratch_bsp_fill(const void *collision_bsp)
 	unsigned int used = 1, k, depth_end = 1, depth = 0;
 
 	psp_sb_tree = NULL;
+	sb_level = collision_bsp;
 	if (!psp_sb_slots || !blocks)
 		return;
 	nodes = (const struct scratch_bsp3d_node *)blocks[0].address;
