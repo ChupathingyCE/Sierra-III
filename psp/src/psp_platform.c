@@ -1097,6 +1097,10 @@ static const struct
 	/* Chief's visor drawn gold from its own sphere map (psp_ge.c, chiefvisor):
 	folded into the lighting it stayed near black; a restoration */
 	{ "chiefvisor", "nochiefvisor" },
+	/* opaque rigid model parts as 14-byte GE records in place of 24 (psp_ge.c,
+	model14): fewer bytes on the bus, the same play; the pictures differ only
+	by the GE's own rounding of the positions */
+	{ "model14", "nomodel14" },
 	/* the frame handed to the ME in pieces as it is written, gated on the main
 	CPU's wait for the ME (psp_ge.c, mechunk): where the frame waits for the
 	ME the replay runs beside the writing (a30 7.7 -> 12.7 fps, d20 11.4 ->
