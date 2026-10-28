@@ -13355,7 +13355,7 @@ static void reflection_keeps(void)
 	reflection_words.chief_visor = psp_keep("chiefvisor");
 	reflection_words.chief_visor_gain = psp_keep_number("chiefvisorgain", 150);
 	reflection_words.sheen = psp_keep("chiefsheen");
-	reflection_words.sheen_gain = psp_keep_number("sheengain", 100);
+	reflection_words.sheen_gain = psp_keep_number("sheengain", 70);
 	if (reflection_words.sheen)
 		platform_log("GE: chiefsheen: Chief's armour gets the Xbox's reflection added over it by its mask, gain %d%%",
 			reflection_words.sheen_gain);
