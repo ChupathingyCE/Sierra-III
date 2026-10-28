@@ -36292,6 +36292,22 @@ int psp_walk_own_marks(void)
 {
 	return psp_walk_side && psp_walk_apart_keep();
 }
+
+/* one of walkapart's cuts (1 the render states, 2 the decals, 3 the
+particles), on with walkapart unless a test leaves it out to find which one
+a difference comes from ("walkskipstates", "walkskipdecals",
+"walkskipparticles") */
+int psp_walk_cut(int which)
+{
+	static signed char skip[4] = { -1, -1, -1, -1 };
+	static const char *const words[4] = { "", "walkskipstates", "walkskipdecals", "walkskipparticles" };
+
+	if (!psp_walk_apart_keep() || which < 1 || which > 3)
+		return psp_walk_apart_keep();
+	if (skip[which] < 0)
+		skip[which] = psp_keep(words[which]) != 0;
+	return !skip[which];
+}
 #endif
 
 void object_marker_begin(
@@ -36589,7 +36605,8 @@ void render_objects_initialize_for_new_map(
 	long render_state_index = NONE;
 #ifdef HALO_PSP
 	int psp_walk_own_marks(void); /* objects.c (walkapart) */
-	long *psp_state_of = psp_walk_own_marks() ?
+	int psp_walk_cut(int which); /* objects.c */
+	long *psp_state_of = psp_walk_own_marks() && psp_walk_cut(1) ?
 		&psp_walk_render_states[DATUM_INDEX_TO_ABSOLUTE_INDEX(object_index) % MAXIMUM_OBJECTS_PER_MAP] : NULL;
 
 	if (psp_state_of)
@@ -36655,9 +36672,9 @@ before, or from game_frame (1) with walkapart */
 void psp_walk_decals_update(
 	int from_game_frame)
 {
-	int psp_walk_apart_keep(void); /* objects.c */
+	int psp_walk_cut(int which); /* objects.c */
 
-	if (from_game_frame != psp_walk_apart_keep())
+	if (from_game_frame != psp_walk_cut(2))
 		return;
 	if (rasterizer_debug_options.draw_environment_decals)
 	{
@@ -36774,6 +36791,7 @@ FIXES_WALKAPART["source/render/render_particles.c#walkapart"] = [
 ("""void render_particles(
 """, """#ifdef HALO_PSP
 int psp_walk_own_marks(void); /* objects.c (walkapart) */
+int psp_walk_cut(int which);
 void psp_walk_particle_drawn(long particle_index, long frame_index); /* particles.c */
 void psp_walk_particle_dropped(long particle_index);
 #endif
@@ -36782,7 +36800,7 @@ void render_particles(
 """),
 ("""								particle_delete(rendered_particle->particle_index);
 """, """#ifdef HALO_PSP
-								if (psp_walk_own_marks())
+								if (psp_walk_own_marks() && psp_walk_cut(3))
 									psp_walk_particle_dropped(rendered_particle->particle_index);
 								else
 #endif
@@ -36792,14 +36810,14 @@ void render_particles(
 							particle->object_index = NONE;
 """, """							/* January explicitly reasserts the detached sentinel here. */
 #ifdef HALO_PSP
-							if (!psp_walk_own_marks()) /* it is NONE already: the branch's test */
+							if (!(psp_walk_own_marks() && psp_walk_cut(3))) /* it is NONE already: the branch's test */
 #endif
 							particle->object_index = NONE;
 """),
 ("""								particle->last_rendered_frame_index =
 									render.frame_index;
 """, """#ifdef HALO_PSP
-								if (psp_walk_own_marks())
+								if (psp_walk_own_marks() && psp_walk_cut(3))
 									psp_walk_particle_drawn(rendered_particle->particle_index, render.frame_index);
 								else
 #endif
