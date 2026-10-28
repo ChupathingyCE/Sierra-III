@@ -48,6 +48,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
+#include "psp_lanetrace.h"
 
 void platform_log(const char *format, ...);
 /* build 112: the GE layer logs through ge_log (defined with the deferral's
@@ -3746,6 +3747,8 @@ static void gebusy_add(unsigned int start, unsigned int now, int kind)
 		gebusy_idle_us += start - gebusy_last_reached;
 	if ((int)(now - start) > 0)
 	{
+		/* "lanetrace" (psp_lanetrace.c): the span on the main CPU's clock */
+		PSP_LANE(PSP_LANE_GE, start, now, (unsigned int)kind, 0);
 		gebusy_us += now - start;
 		if (kind >= 0 && kind < KINDS)
 			gebusy_kind_us[kind] += now - start;
