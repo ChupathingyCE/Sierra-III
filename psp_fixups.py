@@ -38622,7 +38622,9 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # values first, which is what its own update would have made by then. The
 # only writer of another object's inputs is a hidden weapon's export into its
 # holder, which in the walk ran after the holder's compute (the holder, then
-# its children): it makes the holder's first. Objects made during the walk
+# its children): it makes the holder's first. An object's own export, when it runs a
+# second time in the walk (a second update, a sleeper's functions), makes the
+# first one's values first, as the walk did before the second export. Objects made during the walk
 # are updated after the pass, in place, as before. Keep words: "fvpass" (the
 # pass), "fvpasscheck" (made in place as before; each object's inputs
 # are checked against what they were at its update, where the pass would have
@@ -38814,6 +38816,30 @@ FIXES_FISSION["source/objects/objects.c#fvpassread"] = [
 			psp_fvp_settle(object_index); /* psp_fixups.py (FIXES_FISSION) */
 #endif
 			*value_reference = object->object.outgoing_function_values[function_index];"""),
+]
+FIXES_FISSION["source/objects/object_types.c#fvpass"] = [
+("""	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+
+	for (i = 0; definition->part_definitions[i]; i++)
+	{
+		struct object_type_definition *current_definition = definition->part_definitions[i];
+		if (current_definition->datum_export_function_values)""",
+ """	short i;
+	struct object_type_definition *definition = object_type_definition_get(type);
+#ifdef HALO_PSP
+	/* psp_fixups.py (FIXES_FISSION): an object exported a second time in the
+	walk (updated again, or as a sleeper) has its first values made from the
+	inputs they were made from */
+	void psp_fvp_settle(long object_index);
+
+	psp_fvp_settle(object_index);
+#endif
+
+	for (i = 0; definition->part_definitions[i]; i++)
+	{
+		struct object_type_definition *current_definition = definition->part_definitions[i];
+		if (current_definition->datum_export_function_values)"""),
 ]
 FIXES_FISSION["source/effects/particle_systems.c#fvpass"] = [
 ("""		struct particle_system_datum *system = particle_system_get(system_index);
