@@ -167,6 +167,10 @@ METRICS = os.environ.get("PSP_METRICS", "1") != "0"
 # leaves them out. Passed to psp_ge.c's own compile, which takes none of the
 # engine's defines
 DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
+# PSP_DEADCODE_INLINE=1: the sleep's debug reports inline in the hot sleep
+# check and the collision usage log's empty calls kept, as before
+# psp_fixups.py's FIXES_DEADCHK: the old side of that layout's A/B (read by
+# psp_fixups.py, which builds without the group)
 # PSP_WALKAPART=1: option C's groundwork, the drawing walk kept from the tick's
 # state (keep word walkapart) and its tests (mevis, walkwrites; psp_fixups.py
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
