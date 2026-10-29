@@ -38610,7 +38610,7 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 """),
 ]
 
-# ---------- FIXES_PSC: a looping animation's base poses kept, made once a map
+# ---------- FIXES_PSC: a looping animation's poses kept, made once a map
 # An object that animates by itself (scenery's looping animations: c10's
 # swamp plants, 156 computes a tick hands off) takes its frame from game time,
 # so every tick decodes animation_get_node_orientations(model, animation,
@@ -38618,20 +38618,27 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # decode reads only the model, the animation (tag data, fixed within a map)
 # and the frame, so its answer is kept the first time it's made, in a table
 # by (model, animation, frame), and copied after that: the same function on
-# the same inputs, the same bits. Only the base pose is kept; what goes on top
-# of it (overlays, the scale, a parent, interpolation) is made from the copy
-# as from a decode. The Media Engine's pose job (poseahead) made most of
-# these poses ahead; it now leaves out a pose the table holds, and the
-# table keeps the first pose it hands over. Main RAM, in 16 KB pieces as the
-# map uses them, up to 96 KB ("psckbN" sets it); full, a pose is refused and
-# decoded as before. Dropped at each map's load. "pscoff": as before;
-# "psccheck": every pose the table hands over is decoded too and compared
-# bit for bit, and the decode is the one used
+# the same inputs, the same bits. For scenery, the table also keeps each
+# child node's local matrix, matrix4x3_from_orientation of its decoded
+# orientation, which the node chain otherwise makes every compute; the chain
+# still multiplies each child onto its parent as before, so the node matrices
+# are the same bits too. The root's orientation takes the object's scale, so
+# the root is made as before. A local matrix is used only when nothing
+# changed the children's orientations after the decode: no overlays in the
+# graph, no interpolation, and scenery's type has no preprocessing.
+# The Media Engine's pose job (poseahead) made most of these poses ahead; it
+# now leaves out a pose the table holds, and the table keeps the first pose it
+# hands over. Main RAM, in 16 KB pieces as the map uses them, up to 128 KB
+# ("psckbN" sets it); full, a pose is refused and made as before. Dropped at
+# each map's load. "pscexact": the decoded orientations alone; "pscoff": as
+# before; "psccheck": every pose and local matrix the table hands over is made
+# live too and compared bit for bit (the largest difference logged), and the
+# live one is used
 FIXES_PSC = {}
 FIXES_PSC["source/objects/objects.c#psc"] = [
 ("""/* the guess for this object's next tick: the frame after this one */
 static void psp_pose_ahead_list(""",
- """/* psp_fixups.py (FIXES_PSC): the base poses of looping animations */
+ """/* psp_fixups.py (FIXES_PSC): the poses of looping animations */
 #define PSP_PSC_ENTRIES 1024
 #define PSP_PSC_PIECE (16 * 1024)
 #define PSP_PSC_PIECES 32
@@ -38642,17 +38649,24 @@ struct psp_psc_entry
 	short frame;
 	short node_count;
 	real_orientation *pose;
+	real_matrix4x3 *locals; /* the children's local matrices (node 1 first), or NULL */
 };
 static struct psp_psc_entry *psp_psc_entries;
 static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
 static int psp_psc_mode = -1; /* 0 off, 1 on, 2 on and checked */
+static int psp_psc_matrices; /* the local matrices kept too (not "pscexact") */
 static int psp_psc_piece_count, psp_psc_piece_cap, psp_psc_used, psp_psc_count, psp_psc_no_room;
 static int psp_psc_listing; /* the object being posed takes its pose from the table */
 static boolean psp_psc_compression;
 static long psp_psc_logged;
-int psp_keep_number(const char *prefix, int fallback);
+/* the compute in progress: its object and the local matrices it may use */
+static long psp_psc_locals_object = NONE;
+static real_matrix4x3 const *psp_psc_locals;
+static short psp_psc_locals_count;
 static unsigned long psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten,
-	psp_psc_checked, psp_psc_differed, psp_psc_unlisted;
+	psp_psc_checked, psp_psc_differed, psp_psc_unlisted, psp_psc_local_used, psp_psc_local_checked, psp_psc_local_differed;
+static real psp_psc_local_largest;
+int psp_keep_number(const char *prefix, int fallback);
 
 static int psp_psc_on(void)
 {
@@ -38661,11 +38675,22 @@ static int psp_psc_on(void)
 		if (!psp_keep_loaded())
 			return 0;
 		psp_psc_mode = psp_keep("pscoff") ? 0 : psp_keep("psccheck") ? 2 : 1;
-		psp_psc_piece_cap = psp_keep_number("psckb", 96) * 1024 / PSP_PSC_PIECE;
+		psp_psc_matrices = !psp_keep("pscexact");
+		psp_psc_piece_cap = psp_keep_number("psckb", 128) * 1024 / PSP_PSC_PIECE;
 		if (psp_psc_piece_cap > PSP_PSC_PIECES)
 			psp_psc_piece_cap = PSP_PSC_PIECES;
 	}
 	return psp_psc_mode;
+}
+
+static void psp_psc_report(const char *what)
+{
+	platform_psp_log("psc: %s %d poses (%d KB used of %d in %d pieces, cap %d KB%s); %lu handed over, %lu kept (%lu from poseahead), %lu refused, %lu unwritten, %lu left out of poseahead; local matrices %lu used; checked: %lu poses (%lu differed), %lu matrices (%lu differed, largest %g)",
+		what, psp_psc_count, psp_psc_used / 1024, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count,
+		(psp_psc_piece_cap * PSP_PSC_PIECE) / 1024, psp_psc_matrices ? "" : ", pscexact",
+		psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten, psp_psc_unlisted,
+		psp_psc_local_used, psp_psc_checked, psp_psc_differed, psp_psc_local_checked, psp_psc_local_differed,
+		(double)psp_psc_local_largest);
 }
 
 /* a new map (its tags may sit where the last map's did), or the decode's
@@ -38675,10 +38700,7 @@ static void psp_psc_drop(void)
 	int k;
 
 	if (psp_psc_fills || psp_psc_refused)
-		platform_psp_log("psc: dropped %d poses (%d KB in %d pieces of %d); %lu handed over, %lu kept (%lu from poseahead), %lu refused, %lu unwritten, %lu left out of poseahead; %lu checked, %lu differed",
-			psp_psc_count, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count, psp_psc_piece_cap,
-			psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten, psp_psc_unlisted,
-			psp_psc_checked, psp_psc_differed);
+		psp_psc_report("dropped");
 	/* newlib's own free, as the pieces came from memalign and calloc (the
 	engine's free is its debug allocator's) */
 	for (k = 0; k < psp_psc_piece_count; k++)
@@ -38689,8 +38711,12 @@ static void psp_psc_drop(void)
 	psp_psc_piece_count = psp_psc_used = psp_psc_count = psp_psc_no_room = 0;
 	psp_psc_hits = psp_psc_fills = psp_psc_from_ahead = psp_psc_refused = psp_psc_unwritten = 0;
 	psp_psc_checked = psp_psc_differed = psp_psc_unlisted = 0;
+	psp_psc_local_used = psp_psc_local_checked = psp_psc_local_differed = 0;
+	psp_psc_local_largest = 0.f;
 	psp_psc_logged = 0;
 	psp_psc_listing = 0;
+	psp_psc_locals = NULL;
+	psp_psc_locals_object = NONE;
 }
 
 /* an object whose base pose the table may hold: its frame comes from game
@@ -38734,18 +38760,27 @@ static void psp_psc_log(void)
 	if (now - psp_psc_logged >= 900 || now < psp_psc_logged)
 	{
 		if (psp_psc_logged)
-			platform_psp_log("psc: %d poses kept (%d KB used of %d in %d pieces); %lu handed over, %lu kept (%lu from poseahead), %lu refused, %lu unwritten, %lu left out of poseahead; %lu checked, %lu differed",
-				psp_psc_count, psp_psc_used / 1024, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count,
-				psp_psc_hits, psp_psc_fills, psp_psc_from_ahead, psp_psc_refused, psp_psc_unwritten, psp_psc_unlisted,
-				psp_psc_checked, psp_psc_differed);
+			psp_psc_report("kept");
 		psp_psc_logged = now ? now : 1;
+	}
+}
+
+/* the compute that will use an entry's local matrices (scenery only: its type
+preprocesses nothing; NULL: the chain makes them as before) */
+static void psp_psc_use(long object_index, struct object_datum const *object, struct psp_psc_entry const *entry)
+{
+	if (entry && entry->locals && object->object.type == _object_type_scenery)
+	{
+		psp_psc_locals_object = object_index;
+		psp_psc_locals = entry->locals;
+		psp_psc_locals_count = entry->node_count;
 	}
 }
 
 /* the pose, if the table holds it: copied into out (or, checked, decoded
 and compared); FALSE: made as before */
-static boolean psp_psc_take(struct model const *model, struct animation const *animation, short frame,
-	real_orientation *out)
+static boolean psp_psc_take(long object_index, struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame, real_orientation *out)
 {
 	struct psp_psc_entry *entry = psp_psc_find(model, animation, frame);
 
@@ -38762,14 +38797,18 @@ static boolean psp_psc_take(struct model const *model, struct animation const *a
 	else
 		csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
 	psp_psc_hits++;
+	psp_psc_use(object_index, object, entry);
 	return TRUE;
 }
 
 /* room for a pose: an entry and its bytes, or NULL (refused) */
-static struct psp_psc_entry *psp_psc_room(struct model const *model, struct animation const *animation, short frame)
+static struct psp_psc_entry *psp_psc_room(struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame)
 {
 	extern boolean hs_model_animation_compression_enabled;
-	unsigned int bytes = (unsigned int)animation->node_count * sizeof(real_orientation);
+	int locals = psp_psc_matrices && object->object.type == _object_type_scenery && animation->node_count > 1;
+	unsigned int bytes = (unsigned int)animation->node_count * sizeof(real_orientation) +
+		(locals ? (unsigned int)(animation->node_count - 1) * sizeof(real_matrix4x3) : 0);
 	struct psp_psc_entry *entry;
 
 	if (psp_psc_no_room || psp_psc_count >= PSP_PSC_ENTRIES * 3 / 4)
@@ -38799,18 +38838,34 @@ static struct psp_psc_entry *psp_psc_room(struct model const *model, struct anim
 	if (!entry || entry->animation)
 		return NULL;
 	entry->pose = (real_orientation *)(psp_psc_pieces[psp_psc_piece_count - 1] + (psp_psc_used - (psp_psc_piece_count - 1) * PSP_PSC_PIECE));
+	entry->locals = locals ? (real_matrix4x3 *)(entry->pose + animation->node_count) : NULL;
 	entry->model = model;
 	entry->frame = frame;
 	entry->node_count = animation->node_count;
 	return entry;
 }
 
+/* an entry's pose in place: its local matrices made from it, and it counted */
+static void psp_psc_kept(struct psp_psc_entry *entry, struct animation const *animation)
+{
+	short k;
+
+	if (entry->locals)
+		for (k = 1; k < entry->node_count; k++)
+			matrix4x3_from_orientation((real_matrix4x3 *)&entry->locals[k - 1], &entry->pose[k]);
+	entry->animation = animation;
+	psp_psc_used += entry->node_count * sizeof(real_orientation) +
+		(entry->locals ? (entry->node_count - 1) * sizeof(real_matrix4x3) : 0);
+	psp_psc_count++;
+	psp_psc_fills++;
+}
+
 /* a pose poseahead handed over (made by the same decode, checked written):
 kept as it is */
-static void psp_psc_keep(struct model const *model, struct animation const *animation, short frame,
-	real_orientation const *pose)
+static void psp_psc_keep(long object_index, struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame, real_orientation const *pose)
 {
-	struct psp_psc_entry *entry = psp_psc_room(model, animation, frame);
+	struct psp_psc_entry *entry = psp_psc_room(object, model, animation, frame);
 
 	if (!entry)
 	{
@@ -38818,19 +38873,17 @@ static void psp_psc_keep(struct model const *model, struct animation const *anim
 		return;
 	}
 	csmemcpy(entry->pose, pose, entry->node_count * sizeof(real_orientation));
-	entry->animation = animation;
-	psp_psc_used += entry->node_count * sizeof(real_orientation);
-	psp_psc_count++;
-	psp_psc_fills++;
+	psp_psc_kept(entry, animation);
 	psp_psc_from_ahead++;
+	psp_psc_use(object_index, object, entry);
 }
 
 /* a pose made here: decoded into the table, then copied into out. FALSE: no
 room, or the decode wrote nothing (out is made as before) */
-static boolean psp_psc_make(struct model const *model, struct animation const *animation, short frame,
-	real_orientation *out)
+static boolean psp_psc_make(long object_index, struct object_datum const *object, struct model const *model,
+	struct animation const *animation, short frame, real_orientation *out)
 {
-	struct psp_psc_entry *entry = psp_psc_room(model, animation, frame);
+	struct psp_psc_entry *entry = psp_psc_room(object, model, animation, frame);
 
 	if (!entry)
 	{
@@ -38844,12 +38897,42 @@ static boolean psp_psc_make(struct model const *model, struct animation const *a
 		psp_psc_unwritten++;
 		return FALSE;
 	}
-	entry->animation = animation;
-	psp_psc_used += entry->node_count * sizeof(real_orientation);
-	psp_psc_count++;
-	psp_psc_fills++;
+	psp_psc_kept(entry, animation);
 	csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
+	psp_psc_use(object_index, object, entry);
 	return TRUE;
+}
+
+/* a child node's local matrix in the chain: the table's, or (checked) made
+and compared */
+static void psp_psc_local(real_matrix4x3 *out, real_orientation const *orientation, short node)
+{
+	real_matrix4x3 const *kept = &psp_psc_locals[node - 1];
+
+	if (psp_psc_mode == 2)
+	{
+		real const *a, *b;
+		int k;
+
+		matrix4x3_from_orientation(out, orientation);
+		psp_psc_local_checked++;
+		if (csmemcmp(out, kept, sizeof(real_matrix4x3)))
+		{
+			psp_psc_local_differed++;
+			a = (real const *)out;
+			b = (real const *)kept;
+			for (k = 0; k < (int)(sizeof(real_matrix4x3) / sizeof(real)); k++)
+			{
+				real d = a[k] > b[k] ? a[k] - b[k] : b[k] - a[k];
+
+				if (d > psp_psc_local_largest)
+					psp_psc_local_largest = d;
+			}
+		}
+	}
+	else
+		*out = *kept;
+	psp_psc_local_used++;
 }
 
 /* the guess for this object's next tick: the frame after this one */
@@ -38878,16 +38961,44 @@ static void psp_pose_ahead_list("""),
 				else if (psp_pose_predict)""",
  """				/* psp_fixups.py (FIXES_PSC): a looping animation's pose from the table, or kept in it */
 				psp_psc_listing = psp_psc_eligible(object, animation);
-				if (psp_psc_listing && psp_psc_take(model, animation, frame_index, node_orientations))
+				if (psp_psc_listing && psp_psc_take(object_index, object, model, animation, frame_index, node_orientations))
 					;
 				else if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
 				{
 					if (psp_psc_listing)
-						psp_psc_keep(model, animation, frame_index, node_orientations);
+						psp_psc_keep(object_index, object, model, animation, frame_index, node_orientations);
 				}
-				else if (psp_psc_listing && psp_psc_make(model, animation, frame_index, node_orientations))
+				else if (psp_psc_listing && psp_psc_make(object_index, object, model, animation, frame_index, node_orientations))
 					;
 				else if (psp_pose_predict)"""),
+# each compute starts with no local matrices; overlays (which may change any
+# node's orientation) take them away
+("""		world_relative = FALSE;
+
+		if (object->object.animation.animation_graph_index!=NONE)""",
+ """		world_relative = FALSE;
+		psp_psc_locals = NULL; /* psp_fixups.py (FIXES_PSC) */
+
+		if (object->object.animation.animation_graph_index!=NONE)"""),
+("""			for (overlay_index = 0; overlay_index<animation_graph->object_overlays.count; ++overlay_index)
+			{""",
+ """			if (animation_graph->object_overlays.count > 0)
+				psp_psc_locals = NULL; /* psp_fixups.py (FIXES_PSC) */
+			for (overlay_index = 0; overlay_index<animation_graph->object_overlays.count; ++overlay_index)
+			{"""),
+("""				real_orientation *orientation = &node_orientations[node_stack_index];
+				short parent_node_index = node->parent_node_index;
+
+				matrix4x3_from_orientation(&object_nodes[node_stack_index], orientation);""",
+ """				real_orientation *orientation = &node_orientations[node_stack_index];
+				short parent_node_index = node->parent_node_index;
+
+				/* psp_fixups.py (FIXES_PSC): the table's local matrix, made from this same orientation */
+				if (psp_psc_locals && psp_psc_locals_object == object_index && node_stack_index < psp_psc_locals_count &&
+					object->object.animation.interpolation_frame_count == 0)
+					psp_psc_local(&object_nodes[node_stack_index], orientation, node_stack_index);
+				else
+				matrix4x3_from_orientation(&object_nodes[node_stack_index], orientation);"""),
 ("""	psp_pose_on = -1;
 	psp_pose_ahead_forget();
 """, """	psp_pose_on = -1;
