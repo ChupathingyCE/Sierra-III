@@ -598,8 +598,9 @@ psp_ge_frame_window, psp_ge_budget, psp_ge_setting) never drains */
 /* build 118: the calls are written down only on the main CPU, never while
 carrying out. On the Media Engine (gemeoverlap) the main CPU's own words
 (defer_used, defer_replaying) say what the main CPU is doing meanwhile, not
-the ME: there the test is psp_on_me(), its own stack */
-#define DEFER_RECORDING() (defer_on && !defer_replaying && !psp_on_me())
+the ME: there the test is psp_on_me(), its own stack, made first, so the ME
+never reads those words' lines at all */
+#define DEFER_RECORDING() (!psp_on_me() && defer_on && !defer_replaying)
 #define GE_DEFER_DRAIN() do { if (!psp_on_me() && defer_used && !defer_replaying) defer_drain_for(__func__); } while (0)
 /* a deferred call's own test: deferring this frame, not already carrying
 out, not inside a model too big to defer, and written down */
@@ -19161,7 +19162,7 @@ static void hud_quad_dump(void const *vertices, unsigned int key, short blend, f
 		hdump = psp_keep("hdump");
 	/* not again when the defer queue replays the quad (gedefer), which may
 	run on the Media Engine (gemeon) */
-	if (!hdump || defer_replaying || psp_on_me() || !psp_screenshot_requested || !vertices || !key)
+	if (!hdump || psp_on_me() || defer_replaying || !psp_screenshot_requested || !vertices || !key)
 		return;
 	x0 = x1 = in[0].x;
 	y0 = y1 = in[0].y;
@@ -19219,7 +19220,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 {
 	hud_quad_dump(vertices, key, blend, red, green, blue, fade, meter_parameters, wrapped);
 	/* the mark is the game thread's: not read again when the queue replays */
-	if (glyph_next >= 0 && !defer_replaying && !psp_on_me())
+	if (glyph_next >= 0 && !psp_on_me() && !defer_replaying)
 	{
 		key = GLYPH_KEY_BASE + (unsigned int)glyph_next;
 		glyph_next = -1;
@@ -19230,7 +19231,7 @@ void psp_ge_screen_quad(void const *vertices, unsigned int key, short blend, flo
 	queued, outside pretouch's guards. Off by default: on the PSP it left the
 	bars as empty as before and lost model palettes (Chief's change colours),
 	so the bars' fault lies upstream of the map. Kept for the bars' A/B */
-	if (meter_parameters && !defer_replaying && !psp_on_me())
+	if (meter_parameters && !psp_on_me() && !defer_replaying)
 	{
 		static int meter_load = -1;
 
