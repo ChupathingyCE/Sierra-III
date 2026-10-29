@@ -556,13 +556,13 @@ int psp_display_release(void);
 extern volatile int psp_ge_enqueued;
 int sceGuFinishId(unsigned int id); /* pspgu: sceGuFinish with the FINISH's id */
 static PSP_MAIN_SIDE void *shot_buffer = NULL; /* the buffer screenshot() reads (the shown frame's) */
-static int stall_force; /* (defined with the stall wrapper) */
+static PSP_MAIN_SIDE int stall_force; /* (defined with the stall wrapper) */
 static int inflight_finish_left = 0; /* geinflight: the list's finish waits for the main CPU */
 /* set by the frame's job itself (its args), so the ME never reads the main
 CPU's words for it: publish each stall address, and serve the ring's jobs
 between records (geinflight) */
 static int replay_inflight = 0;
-static int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
+static PSP_MAIN_SIDE int replay_kinds_on = 0; /* "mekinds" (see defer_replay) */
 static PSP_MAIN_SIDE unsigned long inflight_frames = 0, inflight_words = 0, inflight_words_most = 0;
 /* the whole frame's words, the parts carried out when the buffer filled
 included (inflight_words counts only what is left at the sync) */
@@ -3670,7 +3670,8 @@ always goes through (stall_force, psp_ge_frame_end). Keep word "stalleach":
 every update passed on, as before */
 #define STALL_BATCH 16
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
-static int stall_batch = -1, stall_force = 0, stall_pending = 0;
+static int stall_batch = -1, stall_pending = 0;
+static PSP_MAIN_SIDE int stall_force = 0;
 static unsigned long stall_calls = 0, stall_forwarded = 0, stall_timed = 0, stall_timed_us = 0;
 
 /* build 79: "geserial" (and the debug menu): no stall update reaches the GE
@@ -11768,7 +11769,7 @@ entries it checks, so smaller sweeps cost less each. "sweeplate": at three
 quarters only, as before */
 #define CONVERTED_SWEEP_STEP 256
 static int converted_sweep_mark = CONVERTED_BUFFERS / 4;
-static int converted_sweep_late = -1;
+static PSP_MAIN_SIDE int converted_sweep_late = -1;
 unsigned int psp_geo_generation(const void *ptr);
 
 static void converted_sweep(void)
@@ -11915,8 +11916,8 @@ it is good, nothing is released or moved. The reads the ranking needs go in
 a tally only the ME's side writes (an entry's index; the last two words its
 draws and redirects), folded in at the frame's end once the ME is done. The
 same bytes: the same pixels */
-static int vm_me_on = 0, vm_me_dry = 0;
-static unsigned int *vm_me_tally = NULL;
+static PSP_MAIN_SIDE int vm_me_on = 0, vm_me_dry = 0;
+static PSP_MAIN_SIDE unsigned int *vm_me_tally = NULL;
 /* "mevramdry" (a test, off): the ME's reads go in the tally and the
 ranking as with mevram, so the frame's end uploads and evicts the same, but
 the ME's draws keep reading main RAM. Set against mevram it tells the
@@ -12060,7 +12061,7 @@ models leave 226-365 KB of the room idle. A stream is valid until it is
 written again (its origin moved), freed, or moved by the arena; each of
 those releases its copy (the quarantine covers a list the GE is still
 drawing), so a stale copy is never drawn. The same bytes: the same pixels */
-static int vm_level_on = -1;
+static PSP_MAIN_SIDE int vm_level_on = -1;
 
 /* a level stream just written (built, or its origin moved): its copy, if
 any, no longer holds its bytes */
@@ -12636,7 +12637,7 @@ list, in every pass). Their floats are staged in the scratchpad: written and
 read back for every model part cut at the near plane, and the emulator's
 cache model counted 0.8 M misses on them over b30's beach fight when they
 were in main memory */
-static float (*model_cut)[CORNER_FLOATS];
+static PSP_MAIN_SIDE float (*model_cut)[CORNER_FLOATS];
 
 void *psp_scratch_take(unsigned int bytes, const char *what); /* psp_scratch.c */
 /* at start, with keep.txt read: the cutting's words, and the scratchpad's buffer */
@@ -12767,14 +12768,14 @@ void *psp_vertex_lock(const struct vertex_buffer *buffer);
 void *psp_index_lock(const struct triangle_buffer *buffer);
 /* read by the fixups: whether to offer objects, every type or scenery only,
 the object offered (NONE, -1, none), and the walk's marks */
-int psp_rso_on = 0, psp_rso_all = 0;
-long psp_rso_object = -1;
-int psp_rso_volatile = 0, psp_rso_capturing = 0;
+PSP_MAIN_SIDE int psp_rso_on = 0, psp_rso_all = 0;
+PSP_MAIN_SIDE long psp_rso_object = -1;
+PSP_MAIN_SIDE int psp_rso_volatile = 0, psp_rso_capturing = 0;
 /* models.c: the key's field where a compare found the inputs changed (0 the
 header, 1 regions, 2 ambient, 3 distant lights, 4 reflection tint, 5 centroid,
 6 radius, 7 change colours, 8 node matrices, 9 the length; 10, here: a
 camera-faded reflection's fraction) */
-int psp_rso_field = 0;
+PSP_MAIN_SIDE int psp_rso_field = 0;
 static PSP_MAIN_SIDE int rso_check = 0, rso_room_tried = 0;
 static PSP_MAIN_SIDE unsigned int *rso_pool = NULL, rso_pool_words = 0, rso_end = 0, rso_entries = 0;
 static PSP_MAIN_SIDE unsigned int rso_slot_entry[RSO_SLOTS]; /* an entry's offset + 1; 0 none */
