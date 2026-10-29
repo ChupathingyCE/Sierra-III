@@ -76,6 +76,44 @@ The only multi-x lever. It takes one of the two ticks out of every heavy frame. 
 - **The rest:** the systems' own motion and ageing during the record. d20's effects and particles are 8-11 ms a frame [M], halved by FX15 first.
 - **Effects that spawn, damage or play sounds** stay on the main CPU.
 
+## Two enablers: the DMA controller and the ME's eDRAM (the master's ask 18:45Z, Sheepdog01 13:37)
+
+Sized, not built.
+
+### The DMA controller
+What's measured (`docs/big_levers.md` "The DMA controller" [M], halo_bench v6-v7, v10):
+- It copies RAM to RAM at 181 MB/s against a CPU memcpy's 76, and into VRAM at 323.
+- The call blocks its caller.
+- While it runs, a CPU miss takes 499 ns instead of 218, and the DMA drops to 64 MB/s when the CPU is busy.
+- It can't write the scratchpad.
+
+So it's worth using for a copy the main CPU would otherwise make itself, in one block, where the 2-2.5x saving lands on the binding lane. A background copy beside the main CPU's work costs it about what the copy would have. Every byte crosses the bus either way, so the GE and the ME see the same traffic; the DMA just takes it in a shorter burst.
+
+| Copy in the plan | Size | CPU memcpy | By DMA | Fit |
+|---|---|---|---|---|
+| C's field-level snapshot (walkr1) | b30 89 KB a drawing (the most 990), c10 46, a10 20 | b30 ~1.2 ms | ~0.5 ms, blocking: **~0.7 ms a frame back on b30** | good: one block, made once a frame. Better still if it lands in the ME's eDRAM (below), so the ME's walk reads it off the bus; DMA into eDRAM is a lead only (DMAEDRAM), to be proven first |
+| L15's interpolation snapshot (drawn objects' nodes, the camera) | ~40 KB a tick on b30 (784 nodes x 52 B), gathered from scattered datums | ~0.5 ms | many small blocks: the call's own cost eats it | poor: a gather, not a block |
+| AIME's hand-over | none: the actors' and props' arrays stay where they are; the main CPU writes the world back (one cache write-back, ~12-24 us) and drops the lines the ME wrote | - | - | not needed |
+| The record's copies | none: records are written in place in main RAM (the in-flight 224 KB) | - | - | not needed |
+
+**The DMA controller in the plan:** C's snapshot, ~0.7 ms a frame on b30, plus the bulk moves it already does or could do (texture uploads, the level arena's compactions). It's a small enabler, not a big move, and the copies the big moves need are mostly none.
+
+### The ME's eDRAM
+- **The space:** ~1,664 KB claimable (256-1,920 KB; findings `edram.md`). Only the ME and DMA reach it; the main CPU can't load from it.
+- **What it buys:** what the ME reads from there never touches the bus, so it neither slows the main CPU's misses nor the GE.
+- **The rule:** each claim is Sheepdog01's (`edram.md`); this is the proposed budget for the plan's claims, against today's register:
+
+| Claim | Size | What it buys | Status |
+|---|---|---|---|
+| CPA: the checkpoint built in eDRAM | up to 1,089 KB (b30's largest) | the save hitch off the main thread (~130 of ~190 ms median) | built, off; not exact yet; in the master's queue |
+| AIME: the cover search's path state and the ME's AI scratch | ~82 + ~32 = **~114 KB** | the search's 82 KB working set read and written off the bus, for the largest single piece of the AI's thinking (`perform: uncover` was 75% of the decision loop [E aitick2]) | with AIME step 2 |
+| C's snapshot | **~192 KB**, with overflow to main RAM (b30 89 KB a drawing typical, 990 worst) | the ME's draw walk reads the frame's state off the bus | with C step 3 (research) |
+| The level pass's positions (L1) | ~190 KB | the ME's near-plane cuts from eDRAM; ~1 MB of heap freed with the level copies in VRAM | plan |
+| CSTPOOL: a copy of the float constant pool for the ME's code | 64-80 KB | ~0.5-0.95 ms a frame on b30 (the main CPU's constants in the scratchpad) | waiting on Sheepdog01 |
+| **Total** | **~1,640-1,665 KB** | | **fits the 1,664 KB only just**, with the ME's stack held to 128 KB |
+
+The sound cache in eDRAM (R2) takes all of it and was rejected on the PSP (frame +7-14%), so it's out of this budget. If CPA's checkpoint grows past b30's 1,089 KB on a later map, C's overflow takes the difference: C is the claim that can spill to main RAM at the least cost.
+
 ## Not on the list, and why
 - **BW (biped_update on the ME), NW, PNC, MEPOSE:** the readers sit inside the same update, the ME's FPU is slower than the VFPU, and the copy-backs cost more than the walk. They're sized or lost on the PSP (NW2 c20 +3.2% [M]).
 - **MP (next tick's base poses on the ME):** that's pose-ahead, already on.
