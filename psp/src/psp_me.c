@@ -1056,7 +1056,7 @@ static __attribute__((noinline)) void ring_run(unsigned int index, int on_me, un
 	case ME_JOB_POINTS:
 		psp_points_me_make(args, results);
 		break;
-#ifdef PSP_WALKAPART
+#if defined(PSP_WALKAPART) || defined(PSP_MEVISLAND)
 	case ME_JOB_VISIBILITY:
 		psp_mevis_me_job(args, results);
 		break;
@@ -2552,7 +2552,7 @@ anywhere in RAM (the whole cache handed over, as for the rays), and writes its
 record's answer lines and its own state, on lines nothing else uses. Never
 waited for with psp_me_wait: the frame's end looks at psp_me_ring_done, so a
 slow answer never makes the ring rest */
-#ifdef PSP_WALKAPART
+#if defined(PSP_WALKAPART) || defined(PSP_MEVISLAND)
 int psp_me_push_visibility(void *record, unsigned int record_bytes, unsigned int *ticket)
 {
 	struct psp_me_job job;
@@ -2564,6 +2564,25 @@ int psp_me_push_visibility(void *record, unsigned int record_bytes, unsigned int
 	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
 	job.output = record;
 	job.output_bytes = record_bytes;
+	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
+	return psp_me_push(&job, ticket);
+}
+
+/* "mevisland": the same job, whose answer the frame uses. Its output is the
+copies' whole state block (the clusters, the surfaces' bits, the objects),
+past the cache's size, so the ME writes back its whole cache as the job ends
+and the record's lines go with it */
+int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket)
+{
+	struct psp_me_job job;
+
+	memset(&job, 0, sizeof(job));
+	job.type = ME_JOB_VISIBILITY;
+	job.args[0] = (unsigned int)record;
+	job.input[0] = NULL;
+	job.input_bytes[0] = ME_RING_ALL_OF_RAM;
+	job.output = answer;
+	job.output_bytes = answer_bytes;
 	psp_me_writeback(NULL, ME_RING_ALL_OF_RAM);
 	return psp_me_push(&job, ticket);
 }

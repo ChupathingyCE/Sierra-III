@@ -82,6 +82,17 @@ So visibility reads tick state (the cluster lists and the spheres). That state h
 
 So step 2 goes ahead: build `mevisland`.
 
+**The ME's side is slower than the doc assumed.** mevis measured the ME's visibility at 5.4–7.3 ms a frame on b30 [M], against the main CPU's 5.5 here. So the span becomes about the ME's time plus the copy-in, not the overlap alone: 8.4 → ~6.6 ms, **~1.8 ms a frame** [U from M], with 2.9 the ceiling if the ME were as fast as the main CPU. The pair decides.
+
+## Step 2: built (`PSP_MEVISLAND=1`, keep word `mevisland`)
+
+- **The push** (`psp_mevisland_push`, in place of `structure_visibility_compute` in `render_window`): mevis's record and job. The job's output is the copies' whole state block, so the ME writes back its cache when it ends.
+- **The collect** (`psp_mevisland_collect`, before `lights_preprocess_scene`): it waits for the answer, at most 50 ms. It then copies in exactly what `structure_visibility_compute` writes: the visible clusters' bits, the rendered clusters, the surfaces' bits and count, and the PVS-fallback flag. Nothing else reads the walk's other state (the hull cache is per walk; `rendered_cluster_indices` is read only inside a walk).
+- **The objects** (`psp_mevisland_objects`, in `find_rendered_objects`): the ME's list. The marks are made again on the main CPU, at the same point in the frame. An object is marked only as it is listed, so the objects' marks and the marker count are the main CPU's.
+- **The safety net:** a refused push, an ME still on an earlier answer, a late answer, or a failed job all have the main CPU make its own visibility there. The window's end (`psp_mevisland_settle`) collects a view that never reached its first reader (a film), so no tick runs with an answer outstanding.
+- **`mevislandcheck`:** the main CPU makes its own too, and a line every 300 views counts the differences.
+- **Proof:** exactness in the emulator (play and seeds every tick, `framecrc`, five maps, off vs on). Then `mevislandcheck` with the cache model (`mecohere`) on b30 and c20. Then the PSP-3000 pair, `- | mevisland`, in one `PSP_MEVISLAND=1` build.
+
 ## The steps
 
 1. **Measure the wait's split.** Per frame on b30 (route) and c20 (hands off), split the main CPU's time from `structure_visibility_compute`'s start to `lights_preprocess_scene` into:

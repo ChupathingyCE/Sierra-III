@@ -36320,6 +36320,76 @@ void render_objects("""),
 # object marks and the particle loop, so a default build runs w142's code.
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
 FIXES_WALKAPART = {}
+# PSP_MEVISLAND=1 (psp_build.py): the landing of mevis's copies, the frame's
+# visibility made on the ME and used (keep word mevisland;
+# docs/mevis_landing.md). A walkapart build has mevis's own hooks in the same
+# places, so it leaves these out
+MEVISLAND = os.environ.get("PSP_MEVISLAND", "") == "1"
+FIXES_MEVISLAND = {}
+FIXES_MEVISLAND["source/render/render.c#mevisland"] = [
+("""	parameters.fog = render.fog;
+
+	structure_visibility_compute();
+""", """	parameters.fog = render.fog;
+
+#ifdef HALO_PSP
+	{
+		int psp_mevisland_push(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+		if (!psp_mevisland_push())
+			structure_visibility_compute();
+	}
+#else
+	structure_visibility_compute();
+#endif
+"""),
+("""		lights_preprocess_scene();
+""", """#ifdef HALO_PSP
+		{
+			/* mevisland: visibility's first reader */
+			void psp_mevisland_collect(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+			psp_mevisland_collect();
+		}
+#endif
+		lights_preprocess_scene();
+"""),
+("""	bink_playback_render();
+	render_camera_debug_frustum(""", """#ifdef HALO_PSP
+	{
+		/* mevisland: a view that never reached its first reader (a film
+		playing) still takes its answer before the next tick */
+		void psp_mevisland_settle(void); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+		psp_mevisland_settle();
+	}
+#endif
+	bink_playback_render();
+	render_camera_debug_frustum("""),
+]
+FIXES_MEVISLAND["source/render/render_objects.c#mevisland"] = [
+("""	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+""", """#ifdef HALO_PSP
+	int psp_mevisland_objects(long *indices, short *count); /* structure_visibility.c (psp_fixups.py, mevisland) */
+
+	if (!psp_mevisland_objects(render_object_globals.rendered_object_indices, &render_object_globals.rendered_object_count))
+#endif
+	{
+	object_marker_begin();
+
+	render_object_globals.rendered_object_count = structure_visibility_find_objects(
+"""),
+("""		object_mark_function);
+
+	object_marker_end();
+""", """		object_mark_function);
+
+	object_marker_end();
+	}
+"""),
+]
 FIXES_WALKAPART["source/objects/objects.c#walkapart"] = [
 ("""void object_marker_begin(
 	void)
@@ -37880,7 +37950,7 @@ void game_tick(
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
@@ -38388,6 +38458,195 @@ void psp_mevis_frame_end(void)
 		psp_mv_cycles_clusters = psp_mv_cycles_objects = psp_mv_cycles_most = 0;
 	}
 }
+/* ---------- "mevisland" (docs/mevis_landing.md): the frame's visibility made
+on the ME and used. It is pushed where the main CPU's own would run
+(structure_visibility_compute) and collected at its first reader
+(lights_preprocess_scene). No tick runs between, and nothing the main CPU does
+in that span writes what visibility reads, so the answer is the main CPU's, bit
+for bit. A push the ring refuses, or an answer later than PSP_ML_LATE_US,
+has the main CPU make its own visibility there: the safety net, as before */
+#define PSP_ML_LATE_US 50000
+int psp_me_push_visibility_into(void *record, void *answer, unsigned int answer_bytes, unsigned int *ticket); /* psp_me.c */
+
+static int psp_ml_on = -1, psp_ml_check = 0, psp_ml_out = 0, psp_ml_waiting = 0, psp_ml_objects_ready = 0;
+static unsigned int psp_ml_ticket, psp_ml_state_bytes;
+static unsigned long psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed, psp_ml_wait_us,
+	psp_ml_wait_worst, psp_ml_waited, psp_ml_differ_clusters, psp_ml_differ_objects;
+
+/* this CPU's copies of lines the ME wrote, dropped before they are read. It
+never writes the copies' state or the record after the push (the push writes
+its whole cache back first), so dropping loses nothing of its own */
+static void psp_ml_drop(void const *p, unsigned int bytes)
+{
+	unsigned int start = (unsigned int)p & ~63u, end = ((unsigned int)p + bytes + 63u) & ~63u;
+
+	sceKernelDcacheInvalidateRange((void const *)start, end - start);
+}
+
+/* render.c's render_window, in place of structure_visibility_compute: 1 when
+the ME makes it, 0 when the main CPU should, now */
+int psp_mevisland_push(void)
+{
+	unsigned int control;
+
+	if (psp_ml_on < 0)
+	{
+		psp_ml_on = psp_keep("mevisland") ? (psp_mv != NULL || psp_mv_start()) : 0;
+		psp_ml_check = psp_ml_on && psp_keep("mevislandcheck");
+		psp_ml_state_bytes = (sizeof(struct psp_mv_state) + 63) & ~63u;
+		if (psp_ml_on)
+			platform_psp_log("mevisland: the frame's visibility made on the ME and used%s",
+				psp_ml_check ? "; mevislandcheck: the main CPU makes its own too, and the two are compared" : "");
+	}
+	if (!psp_ml_on)
+		return 0;
+	psp_ml_views++;
+	if (psp_ml_out)
+	{
+		/* an earlier answer, too late to be used, still being made: the
+		copies' state is the ME's until it ends */
+		if (!psp_me_ring_done(psp_ml_ticket))
+		{
+			psp_ml_busy++;
+			return 0;
+		}
+		psp_ml_out = 0;
+	}
+	/* (a structure the port can't hold: the main CPU's own path, which
+	clears what it can) */
+	if (!structure_bsp_port_verify(global_structure_bsp_get()))
+		return 0;
+	csmemcpy(psp_mv_record->head, &render, PSP_MV_HEAD_BYTES);
+	psp_mv_record->visrect_mode = psp_keep("visrectcheck") ? 2 : psp_keep("visrectold") || psp_keep("smallwins2old") ? 0 : 1;
+	__asm__ __volatile__("cfc1 %0, $31" : "=r"(control));
+	psp_mv_record->fpu_control = control;
+	psp_mv_record->done = 0;
+	if (!psp_me_push_visibility_into(psp_mv_record, psp_mv, psp_ml_state_bytes, &psp_ml_ticket))
+	{
+		psp_ml_refused++;
+		return 0;
+	}
+	psp_ml_out = psp_ml_waiting = 1;
+	return 1;
+}
+
+/* render.c, before lights_preprocess_scene (and at the window's end, for a
+view that never reached it): the ME's clusters and surfaces copied in, the
+fields structure_visibility_compute writes, or the main CPU's own made now */
+void psp_mevisland_collect(void)
+{
+	struct structure_bsp *structure;
+	unsigned int start, waited;
+	int done;
+
+	if (!psp_ml_waiting)
+		return;
+	psp_ml_waiting = 0;
+	start = sceKernelGetSystemTimeLow();
+	done = psp_me_ring_done(psp_ml_ticket);
+	while (!done && sceKernelGetSystemTimeLow() - start < PSP_ML_LATE_US)
+		done = psp_me_ring_done(psp_ml_ticket);
+	waited = sceKernelGetSystemTimeLow() - start;
+	psp_ml_wait_us += waited;
+	if (waited > psp_ml_wait_worst)
+		psp_ml_wait_worst = waited;
+	psp_ml_waited += waited > 0;
+	if (!done)
+	{
+		psp_ml_late++;
+		structure_visibility_compute();
+		return;
+	}
+	psp_ml_out = 0;
+	psp_ml_drop(psp_mv_record, sizeof(*psp_mv_record));
+	if (!psp_mv_record->done)
+	{
+		psp_ml_failed++;
+		structure_visibility_compute();
+		return;
+	}
+	structure = global_structure_bsp_get();
+	psp_ml_drop(&psp_mv->render, sizeof(psp_mv->render));
+	psp_ml_drop(psp_mv->objects, sizeof(psp_mv->objects));
+	if (psp_ml_check)
+	{
+		unsigned int clusters, cluster_hash, surfaces, surface_hash;
+
+		structure_visibility_compute();
+		psp_mv_answer(&render, &clusters, &cluster_hash, &surfaces, &surface_hash);
+		psp_ml_differ_clusters += clusters != psp_mv_record->clusters || cluster_hash != psp_mv_record->cluster_hash ||
+			surfaces != psp_mv_record->surfaces || surface_hash != psp_mv_record->surface_hash;
+	}
+	csmemcpy(render.visible_cluster_flags, psp_mv->render.visible_cluster_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->clusters.count));
+	render.rendered_cluster_count = psp_mv->render.rendered_cluster_count;
+	csmemcpy(render.rendered_clusters, psp_mv->render.rendered_clusters,
+		render.rendered_cluster_count * sizeof(render.rendered_clusters[0]));
+	csmemcpy(render.environment_surface_flags, psp_mv->render.environment_surface_flags,
+		BIT_VECTOR_SIZE_IN_BYTES(structure->surfaces.count));
+	render.environment_surface_count = psp_mv->render.environment_surface_count;
+	psp_pvs_fallback = (boolean)psp_mv_record->pvs_fallback;
+	psp_ml_objects_ready = 1;
+	psp_ml_used++;
+}
+
+/* render_objects.c's find_rendered_objects: the ME's list, and the marks the
+main CPU's walk would have left on the objects it listed (only those: an
+object is marked as it is listed) */
+int psp_mevisland_objects(long *indices, short *count)
+{
+	short k, n;
+
+	if (!psp_ml_objects_ready)
+		return 0;
+	psp_ml_objects_ready = 0;
+	n = (short)psp_mv_record->objects;
+	if (psp_ml_check)
+	{
+		/* the main CPU's own walk, which leaves its marks */
+		short mine;
+
+		object_marker_begin();
+		mine = structure_visibility_find_objects(indices, MAXIMUM_RENDERED_OBJECTS, cluster_get_first_collideable_object,
+			cluster_get_next_collideable_object, object_get_render_bounding_sphere, object_unmarked_function, object_mark_function);
+		mine += structure_visibility_find_objects(&indices[mine], MAXIMUM_RENDERED_OBJECTS - mine,
+			cluster_get_first_noncollideable_object, cluster_get_next_noncollideable_object, object_get_render_bounding_sphere,
+			object_unmarked_function, object_mark_function);
+		object_marker_end();
+		psp_ml_differ_objects += mine != n || psp_mv_hash(2166136261u, indices, (unsigned int)mine * sizeof(long)) !=
+			psp_mv_record->object_hash;
+		csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+		*count = n;
+		return 1;
+	}
+	csmemcpy(indices, psp_mv->objects, (unsigned int)n * sizeof(long));
+	object_marker_begin();
+	for (k = 0; k < n; k++)
+		object_mark_function(indices[k]);
+	object_marker_end();
+	*count = n;
+	return 1;
+}
+
+/* render.c, at the window's end */
+void psp_mevisland_settle(void)
+{
+	if (psp_ml_on <= 0)
+		return;
+	psp_mevisland_collect();
+	psp_ml_objects_ready = 0;
+	if (psp_ml_views >= 300)
+	{
+		platform_psp_log("mevisland: %lu views: the ME's answer used %lu; made here instead: refused by the ring %lu, the ME still on an earlier one %lu, late %lu, failed %lu; waited at the first reader %.2f ms a view (%lu views waited, the most %.2f ms) (last 300 views)",
+			psp_ml_views, psp_ml_used, psp_ml_refused, psp_ml_busy, psp_ml_late, psp_ml_failed,
+			psp_ml_wait_us / 1000.0 / psp_ml_views, psp_ml_waited, psp_ml_wait_worst / 1000.0);
+		if (psp_ml_check)
+			platform_psp_log("mevislandcheck: differing from the main CPU's own: clusters %lu, objects %lu (last 300 views)",
+				psp_ml_differ_clusters, psp_ml_differ_objects);
+		psp_ml_views = psp_ml_used = psp_ml_refused = psp_ml_busy = psp_ml_late = psp_ml_failed = 0;
+		psp_ml_wait_us = psp_ml_wait_worst = psp_ml_waited = psp_ml_differ_clusters = psp_ml_differ_objects = 0;
+	}
+}
 """
 
 
@@ -38423,7 +38682,7 @@ if CHECK_ONLY:
     sys.exit("psp_fixups: %d anchors don't match once" % len(failures) if failures else 0)
 # (before the passes below, which label and append: the copies are made from
 # the fixed text alone)
-if WALKAPART:
+if WALKAPART or MEVISLAND:
     print("psp_fixups: mevis's copies of %d visibility functions" % mevis_copies(TREE))
 print("psp_fixups: %d files changed, AI debug records shared in %d, unaligned accesses fixed in %d, breadcrumbs in %d, code appended to %d, passes skipped in %d, packed designators %d"
       % (len(FIXES), ai_debug_records(TREE), unaligned_accesses(TREE), breadcrumbs(TREE) + step_labels(TREE), appended(TREE), skipped_passes(TREE), packed_designators(TREE)))

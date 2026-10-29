@@ -176,6 +176,11 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
 # loop, so a default build leaves all of it out
 WALKAPART = os.environ.get("PSP_WALKAPART", "") == "1"
+# PSP_MEVISLAND=1: the frame's visibility made on the ME while the main CPU
+# goes on to its first reader (keep word mevisland; docs/mevis_landing.md).
+# It builds in mevis's copies of the visibility code, 23 KB, so a default
+# build leaves them out until a PSP pair prices the landing
+MEVISLAND = os.environ.get("PSP_MEVISLAND", "") == "1"
 # build 110: PSP_MAP_CHECKS=1 keeps ChupathingyCE's checks of a map's data as
 # the tick reads it (animations, collision walks). Off by default: the PSP's
 # maps are its own bake, trusted as the Xbox game trusts its own (psp_fixups.py,
@@ -484,6 +489,7 @@ def compile_one(item):
                ["-DPSP_DITHERSHIFT=1"] if DITHERSHIFT and src.endswith("psp_ge.c") else []) + (
                ["-DPSP_RECON=1"] if RECON else []) + (
                ["-DPSP_WALKAPART=1"] if WALKAPART else []) + (
+               ["-DPSP_MEVISLAND=1"] if MEVISLAND else []) + (
                ["-DPSP_METRICS=1"] if METRICS else []) + (
                # the switches their #if blocks test (psp_ge.c's debug tools)
                ["-DPSP_DEBUG_TOOLS=1"] if DEBUG_TOOLS else []) + (
