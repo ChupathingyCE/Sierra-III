@@ -38166,7 +38166,245 @@ FIXES_ACCLEAF["source/memory/data.c#accleaf"] = [
 ]
 
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
+
+# ---------- FIXES_FX15: effects' steps paired on a frame's two ticks (a compromise)
+# On the busy stretches a frame runs two ticks and draws only the second.
+# effects_update runs every tick, and most of its work there is each effect's
+# fixed cost (the object's pose and function values, the visibility test, the
+# walk of its particle blocks) while it sits inside an event's duration making
+# particles. With "fx15", on the first tick of a frame's pair such an effect
+# leaves its step to the second, which steps it by both ticks: the event's
+# clock and its particle counts come out the same (the count is an integral of
+# the event's fraction), only the first tick's particles are made a tick later,
+# at the second tick's place. Whatever the simulation or the AI can see steps
+# every tick: an event that ends on the first tick (its parts: sounds, lights,
+# damage, objects, and the next event's start), a stopped effect (it restarts
+# or goes), effects that make objects, lights or damage (the "must be
+# deterministic" ones), effects with a danger radius (the AI's grenades and
+# plasma), those on a player's view, and those on an object moving faster than
+# 0.02 world units a tick (their particles would come out in clumps a tick's
+# travel apart). The particles' own update (particles_update, contrails,
+# particle systems) already runs once a frame (game_frame), so it isn't
+# touched. "fx15census" counts what could wait and times it without waiting.
+# Off by default: it plays differently; campaign only, never in the
+# multiplayer build or a networked game. The census line: "fx15:" every 30 s
+FIXES_FX15 = {}
+FIXES_FX15["source/effects/effects.c#fx15"] = [
+("""void effects_update(
+	real dt)
+{
+	long effect_index;
+
+	profile_enter(effects_update_section);
+
+	for (effect_index = data_next_index(effect_data, NONE);
+		effect_index != NONE;
+		effect_index = data_next_index(effect_data, effect_index))
+	{
+		effect_update(effect_index, dt);
+	}
+
+	profile_exit(effects_update_section);
+""",
+ """#ifdef HALO_PSP
+/* psp_fixups.py (FIXES_FX15): "fx15" and "fx15census" (see there) */
+int psp_keep(const char *name);
+void platform_psp_log(const char *format, ...);
+unsigned long psp_heartbeat_clock(void);
+boolean network_coop_active(void);
+
+/* set by game_time_update's tick loop: TRUE on a tick another tick of the
+same frame follows, paired back from the frame's last (the drawn one) */
+int psp_fx15_tick_waits = 0;
+static int psp_fx15_on = -1; /* 0 off, 1 the census alone, 2 the waits */
+/* each slot's effect owing a tick, by its whole index: a slot deleted and
+used again in between owes nothing */
+static long psp_fx15_owed[HALO_PORT_MAXIMUM_EFFECTS];
+static struct
+{
+	unsigned long ticks_first, ticks_other, us_first, us_other;
+	unsigned long updates_first, waited, waitable, us_waitable, doubled;
+	unsigned long kept[7];
+} psp_fx15_stats;
+static long psp_fx15_logged = NONE;
+
+static int psp_fx15_mode(
+	void)
+{
+	if (psp_fx15_on < 0)
+	{
+		int index;
+
+#ifdef PSP_MULTIPLAYER
+		psp_fx15_on = 0;
+#else
+		psp_fx15_on = psp_keep("fx15") ? 2 : psp_keep("fx15census") ? 1 : 0;
+#endif
+		for (index = 0; index < HALO_PORT_MAXIMUM_EFFECTS; index++)
+			psp_fx15_owed[index] = NONE;
+		if (psp_fx15_on)
+			platform_psp_log("effects: %s",
+				psp_fx15_on == 2 ? "on a frame's pair of ticks, an effect only making particles steps once, on the drawn tick (fx15)"
+					: "counted, not paired (fx15census)");
+	}
+	return psp_fx15_on && game_connection() == _game_connection_local && !network_coop_active() ? psp_fx15_on : 0;
+}
+
+/* 0 when the effect's step may wait for the next tick, or what keeps it
+stepping this tick (psp_fx15_stats.kept) */
+static int psp_fx15_reason(
+	struct effect_datum *effect,
+	real dt)
+{
+	struct effect_definition *definition = effect_definition_get(effect->definition_index);
+	word flags = effect->header.flags;
+
+	if (TEST_FLAG(definition->flags, _effect_definition_must_be_deterministic_bit))
+		return 3;
+	if (definition->runtime_danger_radius != 0.0f)
+		return 4;
+	if (effect->local_player_index != NONE)
+		return 5;
+	if (!TEST_FLAG(flags, _effect_in_duration_bit) || TEST_FLAG(flags, _effect_stopped_bit))
+		return 2;
+	if (effect->event_duration - effect->event_time <= dt)
+		return 1;
+	if (effect->object_index != NONE &&
+		effect->velocity.i*effect->velocity.i + effect->velocity.j*effect->velocity.j +
+			effect->velocity.k*effect->velocity.k > 0.02f*0.02f)
+		return 6;
+	return 0;
+}
+
+static void psp_fx15_step(
+	long effect_index,
+	real dt,
+	int mode,
+	int waits)
+{
+	short absolute_index = DATUM_INDEX_TO_ABSOLUTE_INDEX(effect_index);
+	int reason;
+	unsigned long start;
+
+	if (absolute_index < 0 || absolute_index >= HALO_PORT_MAXIMUM_EFFECTS)
+	{
+		effect_update(effect_index, dt);
+		return;
+	}
+	if (psp_fx15_owed[absolute_index] == effect_index)
+	{
+		/* the tick it waited, then this one */
+		psp_fx15_owed[absolute_index] = NONE;
+		psp_fx15_stats.doubled++;
+		effect_update(effect_index, dt + dt);
+		return;
+	}
+	if (!waits)
+	{
+		effect_update(effect_index, dt);
+		return;
+	}
+	psp_fx15_stats.updates_first++;
+	reason = psp_fx15_reason(effect_get(effect_index), dt);
+	if (reason)
+	{
+		psp_fx15_stats.kept[reason]++;
+		effect_update(effect_index, dt);
+		return;
+	}
+	if (mode == 2)
+	{
+		psp_fx15_owed[absolute_index] = effect_index;
+		psp_fx15_stats.waited++;
+		return;
+	}
+	psp_fx15_stats.waitable++;
+	start = psp_heartbeat_clock();
+	effect_update(effect_index, dt);
+	psp_fx15_stats.us_waitable += psp_heartbeat_clock() - start;
+}
+
+static void psp_fx15_account(
+	int waits,
+	unsigned long us)
+{
+	long now = game_time_get();
+
+	if (waits)
+	{
+		psp_fx15_stats.ticks_first++;
+		psp_fx15_stats.us_first += us;
+	}
+	else
+	{
+		psp_fx15_stats.ticks_other++;
+		psp_fx15_stats.us_other += us;
+	}
+	if (psp_fx15_logged == NONE || now < psp_fx15_logged || now - psp_fx15_logged >= 900)
+	{
+		if (psp_fx15_logged != NONE)
+			platform_psp_log("fx15: game time %ld | ticks: a pair's first %lu, others %lu | effects_update us a tick: a pair's first %lu, others %lu"
+				" | a pair's first tick: effect updates %lu, waited %lu, could wait %lu (%lu us a tick of theirs)"
+				"; kept: event ends %lu, stopped or between events %lu, makes objects/lights/damage %lu, danger radius %lu, a player's view %lu, moving %lu"
+				" | doubled %lu | live: effects %d, particles %d",
+				now, psp_fx15_stats.ticks_first, psp_fx15_stats.ticks_other,
+				psp_fx15_stats.ticks_first ? psp_fx15_stats.us_first/psp_fx15_stats.ticks_first : 0,
+				psp_fx15_stats.ticks_other ? psp_fx15_stats.us_other/psp_fx15_stats.ticks_other : 0,
+				psp_fx15_stats.updates_first, psp_fx15_stats.waited, psp_fx15_stats.waitable,
+				psp_fx15_stats.ticks_first ? psp_fx15_stats.us_waitable/psp_fx15_stats.ticks_first : 0,
+				psp_fx15_stats.kept[1], psp_fx15_stats.kept[2], psp_fx15_stats.kept[3], psp_fx15_stats.kept[4],
+				psp_fx15_stats.kept[5], psp_fx15_stats.kept[6], psp_fx15_stats.doubled,
+				(int)effect_data->actual_count, particle_data ? (int)particle_data->actual_count : 0);
+		psp_fx15_logged = now;
+	}
+}
+#endif
+
+void effects_update(
+	real dt)
+{
+	long effect_index;
+#ifdef HALO_PSP
+	int psp_mode = psp_fx15_mode();
+	int psp_waits = psp_mode && psp_fx15_tick_waits;
+	unsigned long psp_start = psp_mode ? psp_heartbeat_clock() : 0;
+#endif
+
+	profile_enter(effects_update_section);
+
+	for (effect_index = data_next_index(effect_data, NONE);
+		effect_index != NONE;
+		effect_index = data_next_index(effect_data, effect_index))
+	{
+#ifdef HALO_PSP
+		if (psp_mode)
+		{
+			psp_fx15_step(effect_index, dt, psp_mode, psp_waits);
+			continue;
+		}
+#endif
+		effect_update(effect_index, dt);
+	}
+
+	profile_exit(effects_update_section);
+#ifdef HALO_PSP
+	if (psp_mode)
+		psp_fx15_account(psp_waits, psp_heartbeat_clock() - psp_start);
+#endif
+"""),
+]
+FIXES_FX15["source/game/game_time.c#fx15"] = [
+("""							psp_lights_link_tick = update_index + 1 == server_updates;
+""", """							psp_lights_link_tick = update_index + 1 == server_updates;
+							{
+								extern int psp_fx15_tick_waits; /* effects.c (FIXES_FX15) */
+
+								psp_fx15_tick_waits = ((server_updates - 1 - update_index) & 1) != 0;
+							}
+"""),
+]
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + ([] if DEADCODE_INLINE else list(FIXES_DEADCHK.items())) + ([] if ACCLEAF_OLD else list(FIXES_ACCLEAF.items())) + list(FIXES_OBJPLACE.items()) + list(FIXES_GSCHECK.items()) + list(FIXES_FX15.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else []) + ([] if WALKAPART or not MEVISLAND else list(FIXES_MEVISLAND.items()))):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
