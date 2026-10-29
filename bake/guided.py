@@ -586,6 +586,20 @@ def parse(args):
     return disc, output, game, maps, keep, rest
 
 
+def copy_log_to_stick(log_path, stick):
+    """A copy of the finished log goes with the maps, to halo/log/bake/ on the
+    stick, so the usual pull of halo/log brings the bake's story back with the
+    game's (Sheepdog01, 2026-10-29); the original stays beside the bundle. The game
+    rotates only log/NNN_* files, so the subfolder is left alone. Best-effort:
+    a copy that fails changes nothing about the bake"""
+    try:
+        folder = os.path.join(stick, 'halo', 'log', 'bake')
+        os.makedirs(folder, exist_ok=True)
+        shutil.copyfile(log_path, os.path.join(folder, LOG_NAME))
+    except OSError:
+        pass
+
+
 def main(args, launcher):
     # a file name the console's code page can't show mustn't stop the bake
     for stream in (sys.stdout, sys.stderr):
@@ -642,6 +656,8 @@ def main(args, launcher):
         screen.say('Please report it with %s, from this folder.' % LOG_NAME)
     log.line('finished in %s, exit %d' % (minutes(time.time() - begin), code))
     log.close()
+    if code == 0:
+        copy_log_to_stick(log_path, stick)
     held.close()
     try:
         os.remove(os.path.join(out, '.bake-lock'))

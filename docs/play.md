@@ -157,6 +157,7 @@ You copy one folder's contents: `COPY-TO-MEMORY-STICK` holds the **game** (the b
 | `halo/maps/` | each map's `.map` and its packs (`.ptex`, `_track.ptex`, `.pgeo`, `.pstn`) | your bake |
 | `halo/chant.adp` | the loading screen's chant | your bake |
 | `halo/log/`, `halo/shots/`, `halo/save/`, `halo/crash.txt`, `halo/stderr.txt` | what the game writes | the game |
+| `halo/log/bake/bake-log.txt` | a copy of your last bake's log, so it travels with the game's logs | your bake |
 | `halo/keep.txt`, `halo/init.txt` | the launch menu's choices (step 6) | the launch menu |
 
 **The stick rules:**
@@ -260,7 +261,7 @@ It writes your choices to `halo/keep.txt` (keep words, separated by spaces) and 
 2. **Open an issue** on **[Sierra-III-Release's issues page](https://github.com/Sheepdog-01/Sierra-III-Release/issues)** with:
    - the build number (the log's first line) and which zip you installed;
    - your PSP model (1000, 2000 or 3000) and your ARK-4 version;
-   - your PC's system (Windows, macOS or Linux), whether you baked with that release's bundle, and the bake's log (`bake-log.txt`, in the bundle's folder);
+   - your PC's system (Windows, macOS or Linux), whether you baked with that release's bundle, and the bake's log (`bake-log.txt`, in the bundle's folder; a copy rides in the log archive as `log/bake/bake-log.txt`);
    - what you did, what you saw, and what you expected;
    - the log archive from step 1, the crash screen's photo if there was one, and a screenshot from `halo/shots/` if it shows the problem.
 3. **Never attach game files:** nothing from `halo/maps/`, no `chant.adp`, nothing from your disc image or `COPY-TO-MEMORY-STICK`. `bake-log.txt` holds none.
