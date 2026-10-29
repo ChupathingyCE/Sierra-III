@@ -37132,8 +37132,90 @@ FIXES_SCRATCHBSP["source/cache/cache_files.c#scratchbsp"] = [
 			}"""),
 ]
 
+# ---------- FIXES_NRCHK: the root node's validity check, skippable (lever NRCHK)
+# object_compute_node_matrices tests every object's root matrix with
+# valid_real_matrix4x3 (scale and position finite; forward, left and up of
+# unit length and square to each other: three squared lengths and three dot
+# products) each time it is made. The test is pure, and its failing branch
+# only writes the matrix and its inputs to debug.txt (error, _error_silent)
+# and runs ocnm_root_matrix_custom, whose asserts are compiled out by
+# default: nothing the game reads afterwards depends on it, so leaving it
+# out can't change play. Its only reader is a person reading debug.txt.
+# On by default: the test left out ("nonrchk" puts it back). "nrchknan": only the finite tests,
+# 13 exponent checks against the six products, which still catch the NaN
+# or infinity a broken matrix carries on into the drawing and collision; a
+# matrix they fail always fails the full test too, and the branch then runs
+# as before. Either way the root's second test below (the same matrix) is
+# left out with it, as it is after a pass.
+FIXES_NRCHK = {}
+FIXES_NRCHK["source/objects/objects.c#nrchk"] = [
+("""static int psp_pose_enabled(void)
+{
+""", """/* psp_fixups.py (FIXES_NRCHK): 0 the full root test ("nonrchk"), 1 its finite
+tests only ("nrchknan"), 2 none (the default); read again for each map */
+static int psp_nrchk_mode = -1;
 
-for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
+static int psp_nrchk(void)
+{
+	if (psp_nrchk_mode < 0)
+		psp_nrchk_mode = psp_keep("nrchknan") ? 1 : psp_keep("nonrchk") ? 0 : 2;
+	return psp_nrchk_mode;
+}
+
+/* the finite half of valid_real_matrix4x3: no word of the scale, the axes
+or the position has an exponent of all ones */
+static boolean psp_matrix4x3_finite(
+	real_matrix4x3 const *matrix)
+{
+	unsigned long const *word = (unsigned long const *)matrix;
+	unsigned long bad = 0;
+	int i;
+
+	for (i = 0; i < 13; i++)
+		bad |= (word[i] & 0x7F800000UL) == 0x7F800000UL;
+	return !bad;
+}
+
+static int psp_pose_enabled(void)
+{
+"""),
+("""				psp_root_valid = valid_real_matrix4x3(&object_nodes[node_stack_index]);
+				if (!psp_root_valid)
+""", """				/* psp_fixups.py (FIXES_NRCHK): the test as the keep words choose */
+				switch (psp_nrchk())
+				{
+				case 2:
+					psp_root_valid = TRUE;
+					break;
+				case 1:
+					psp_root_valid = psp_matrix4x3_finite(&object_nodes[node_stack_index]);
+					break;
+				default:
+					psp_root_valid = valid_real_matrix4x3(&object_nodes[node_stack_index]);
+					break;
+				}
+				if (!psp_root_valid)
+"""),
+("""	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+#endif
+""", """	psp_pose_on = -1;
+	psp_pose_ahead_forget();
+	psp_nrchk_mode = -1; /* psp_fixups.py (FIXES_NRCHK) */
+#endif
+"""),
+("""static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+#endif
+""", """static int psp_pose_on;
+static void psp_pose_ahead_forget(void);
+static int psp_nrchk_mode; /* psp_fixups.py (FIXES_NRCHK) */
+#endif
+"""),
+]
+
+
+for rel, pairs in shelved(list(FIXES_19.items()) + list(FIXES_19_SKY.items()) + list(FIXES_22.items()) + list(FIXES_23.items()) + list(FIXES_31.items()) + list(FIXES_36.items()) + list(FIXES_105.items()) + list(FIXES_106.items()) + list(FIXES_107.items()) + list(FIXES_108.items()) + list(FIXES_109.items()) + list(FIXES_110.items()) + list(FIXES_112.items()) + list(FIXES_113.items()) + list(FIXES_114.items()) + list(FIXES_115.items()) + list(FIXES_116.items()) + list(FIXES_118.items()) + list(FIXES_119.items()) + list(FIXES_CHUPA.items()) + list(FIXES_MULTIPLAYER.items()) + list(FIXES_MPCLIENT.items()) + list(FIXES_PACKET_ALIGNMENT.items()) + list(FIXES_INTERNET.items()) + list(FIXES_121.items()) + list(FIXES_122.items()) + list(FIXES_123.items()) + list(FIXES_123L.items()) + list(FIXES_126.items()) + list(FIXES_128.items()) + list(FIXES_129.items()) + list(FIXES_130.items()) + list(FIXES_131.items()) + list(FIXES_132.items()) + list(FIXES_133.items()) + list(FIXES_134.items()) + list(FIXES_135.items()) + list(FIXES_136.items()) + list(FIXES_137.items()) + list(FIXES_WAKE.items()) + list(FIXES_DRIVE.items()) + list(FIXES_FRONT.items()) + list(FIXES_CONTROLS.items()) + list(FIXES_MENUS.items()) + list(FIXES_LOADING.items()) + list(FIXES_STENCILS.items()) + list(FIXES_POOLS.items()) + list(FIXES_CAMPAIGNNET.items()) + list(FIXES_LD1.items()) + list(FIXES_DRAWCOLD.items()) + list(FIXES_SOUND.items()) + list(FIXES_BONUS.items()) + list(FIXES_GEFEED.items()) + list(FIXES_WS.items()) + list(FIXES_CACHE.items()) + list(FIXES_NMSKIP.items()) + list(FIXES_OBJWALK.items()) + list(FIXES_SOUNDEDRAM.items()) + list(FIXES_MEJOBS.items()) + list(FIXES_OCEAN.items()) + list(FIXES_VITA.items()) + list(FIXES_RSO.items()) + list(FIXES_LFS.items()) + list(FIXES_DECALFADE.items()) + list(FIXES_MODELS.items()) + list(FIXES_PRS.items()) + list(FIXES_LODPSP.items()) + list(FIXES_AICAD.items()) + list(FIXES_VEHPROBE.items()) + list(FIXES_AIMCACHE.items()) + list(FIXES_PROFWAIT.items()) + list(FIXES_LOOKREAL.items()) + list(FIXES_BSPR.items()) + list(FIXES_MIRRORPASS.items()) + list(FIXES_HANDLES.items()) + list(FIXES_LIGHTPLAN.items()) + list(FIXES_HOIST.items()) + list(FIXES_UNITHOIST.items()) + list(FIXES_TAGSNAP.items()) + list(FIXES_DGFAST.items()) + list(FIXES_COMPACTSKIP.items()) + list(FIXES_GCHEAD.items()) + list(FIXES_SMALLWINS2.items()) + list(FIXES_ASSERTSEVAL.items()) + list(FIXES_B30.items()) + list(FIXES_VFPUPOSE.items()) + list(FIXES_VFPUQUAT.items()) + list(FIXES_SCRATCHBSP.items()) + list(FIXES_NRCHK.items()) + (list(FIXES_WALKAPART.items()) if WALKAPART else []) + (list(FIXES_RECON.items()) if os.environ.get("PSP_RECON", "") == "1" else [])):
     FIXES.setdefault(rel.split('#')[0], []).extend(pairs)
 
 
