@@ -91,12 +91,12 @@ So it's worth using for a copy the main CPU would otherwise make itself, in one 
 
 | Copy in the plan | Size | CPU memcpy | By DMA | Fit |
 |---|---|---|---|---|
-| C's field-level snapshot (walkr1) | b30 89 KB a drawing (the most 990), c10 46, a10 20 | b30 ~1.2 ms | ~0.5 ms, blocking: **~0.7 ms a frame back on b30** | good: one block, made once a frame. Better still if it lands in the ME's eDRAM (below), so the ME's walk reads it off the bus; DMA into eDRAM is a lead only (DMAEDRAM), to be proven first |
+| C's field-level snapshot (walkr1, walkr2) | b30 166 KB a drawing in 686 runs, the median run one 64-byte line (walkr2); c10, a10 less | b30 ~2 ms | many single lines: each call's own cost eats the gain | **poor: a gather, not a block** (walkr2 corrected walkr1's reading as one block) |
 | L15's interpolation snapshot (drawn objects' nodes, the camera) | ~40 KB a tick on b30 (784 nodes x 52 B), gathered from scattered datums | ~0.5 ms | many small blocks: the call's own cost eats it | poor: a gather, not a block |
 | AIME's hand-over | none: the actors' and props' arrays stay where they are; the main CPU writes the world back (one cache write-back, ~12-24 us) and drops the lines the ME wrote | - | - | not needed |
 | The record's copies | none: records are written in place in main RAM (the in-flight 224 KB) | - | - | not needed |
 
-**The DMA controller in the plan:** C's snapshot, ~0.7 ms a frame on b30, plus the bulk moves it already does or could do (texture uploads, the level arena's compactions). It's a small enabler, not a big move, and the copies the big moves need are mostly none.
+**The DMA controller in the plan:** no good fit is left. Every copy the big moves make is a gather of single lines (C's snapshot, L15's interpolation) or isn't needed (AIME, the record). It keeps the bulk moves it already does or could do (texture uploads, the level arena's compactions). halo_bench12's re-measure of its contention (Sheepdog01 13:49) may change what a background copy costs, not what fits.
 
 ### The ME's eDRAM
 - **The space:** ~1,664 KB claimable (256-1,920 KB; findings `edram.md`). Only the ME and DMA reach it; the main CPU can't load from it.
