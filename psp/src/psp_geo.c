@@ -226,6 +226,7 @@ static PSP_MAIN_SIDE unsigned long pcv_locks = 0, pcv_loads = 0, pcv_load_bytes 
 int psp_ge_pcv_relocate(void *block, unsigned int size);
 int psp_ge_pcv_check(void *block, const void *raw, unsigned int raw_bytes, const unsigned short *indices);
 void psp_ge_pcv_report(void);
+void psp_ge_pcv_locked(void *block);
 static unsigned long pcv_checked = 0, pcv_check_differed = 0;
 
 /* a block just read: its plan's offsets made addresses (main CPU, before the
@@ -1582,6 +1583,7 @@ void *psp_vertex_lock(const struct vertex_buffer *buffer)
 		return psp_vertex_lock_raw(buffer);
 	}
 	pcv_locks++;
+	psp_ge_pcv_locked(block);
 	if (pcv_check && !block[13])
 	{
 		/* the run-time conversion of the same bytes, once a load: the raw

@@ -12381,12 +12381,27 @@ static int pcv_answer(const struct pcv_header *h, int count, int uncompressed, i
 	}
 	*skin = (h->flags & PCV_SKINNED) ? (struct skin_part *)&h->part : NULL;
 	if (!me)
-	{
 		pcv_answers++;
-		if (vm_on > 0)
-			vm_note((unsigned char *)h + 64, h->count * h->stride); /* vrammodels: a copy may go to VRAM */
-	}
 	return 1;
+}
+
+/* a baked block locked for a draw (psp_vertex_lock, main CPU, as the draw is
+written down): the first lock after each read stands for the conversion a
+raw buffer would have had there, so the block is known to vrammodels as a
+converted buffer is (vm_note), once a load. Without it no baked buffer ever
+got a VRAM copy: the ME's replay answers baked draws, and only main-CPU
+conversions reached vm_note, so the GE read every baked vertex from main
+RAM and the bus it shares with the main CPU */
+void psp_ge_pcv_locked(void *block)
+{
+	struct pcv_header *h = block;
+
+	if (h->spare || (h->flags & PCV_BAD))
+		return;
+	h->spare = 1;
+	vm_note((unsigned char *)block + 64, h->count * h->stride);
+	/* the header's line is one the ME's replay reads (the plan) */
+	sceKernelDcacheWritebackRange(block, 64);
 }
 
 /* the records model_convert writes in place, from the vertices there and the
