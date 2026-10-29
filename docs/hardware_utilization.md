@@ -197,7 +197,7 @@ The emulator's bus census (`buscensus`, the halo-local patch's item 23; read wit
 
 **Priced (2026-10-29): park the build, keep the design.**
 - **The copy on the main CPU** [M] (`snapfield snapfieldactive`: copy-on-wake, the active objects and their children; c10 PSP-1000 pair, lab sierra-hw 40955133252): the frame +3.6 to +6.1 ms on every stretch, all of it in the drawing. The copy was 5.3 ms a frame on average, 8.6 at most, for 144 KB. That is 27 MB/s, a third of memcpy's rate, because its two passes walk every object's header and copy many small ranges. The bar is ~4.8 ms (a third of c10's ~14.5 ms model pass), so it sits on the line.
-- **The one-pass copy** [E] (`snapfieldfast`: only the active objects and children, the small ranges word by word) costs 43% less in the emulator (c10 1.02 against 1.79 ms). Its c10 pair is lab sierra-hw 40958783351.
+- **The one-pass copy clears the gate** [M] (`snapfieldfast`: only the active objects and children, the small ranges word by word; c10 PSP-1000 pair, lab sierra-hw 40958783351): the copy was 3.5 ms a frame on average for the same 144 KB, against 5.3 for the two-pass copy, and the frame rose +2.3 to +3.0 ms on every stretch. That is under the ~4.8 ms bar on the main CPU alone. The emulator had it at 1.02 ms against 1.79, so it times this copy about 3.5x short.
 - **The design's form** [U]: the ME gathers into eDRAM.
   - The main CPU's cache write-back is already paid: gemeon's handoff writes the whole cache back.
   - So the main CPU pays the wait for the gather, unless it has other work then, and the bus while the ME reads.
@@ -212,9 +212,7 @@ The emulator's bus census (`buscensus`, the halo-local patch's item 23; read wit
   - c10's are mostly its animated scenery, which moves every tick, so copying only what changed wouldn't cut them.
   - PSC would: a looping scenery's matrices are its table's frame times its transform. The snapshot could carry those (~60 B) instead of the node block, and the ME's walk rebuild the matrices (a VFPU multiply a node).
   - Counted (lab snapf6 40959834148 [E]; objects that animate by themselves with no parent, an upper bound on PSC's): c10 230 objects, 35 of the 76 KB; b30 4-8 KB of 50-68; a10 none. With ~60 B each in their place, the copy falls ~15% on c10 (144 to ~122 KB) and ~3% on b30. PSC is worth having, but it isn't what C waits on.
-- **It waits on two things:**
-  1. the one-pass copy's pair, which places the copy (under the bar on the main CPU: it stays there, its buffer in the heap);
-  2. PDC stage B's measured ME saving, since C adds the walk to the lane c10 is bound by.
+- **It waits on one thing:** PDC stage B's measured ME saving, since C adds the walk to the lane c10 is bound by. The copy's place is settled: it stays on the main CPU, under the bar, with its buffer in the heap.
 
   Then build C, b30 first.
 
