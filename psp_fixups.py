@@ -38637,7 +38637,9 @@ FIXES_FX15["source/game/game_time.c#fx15"] = [
 # RAM, in 16 KB pieces as the map uses them, up to 112 KB (c10's use;
 # "psckbN" sets it), and no new piece unless the heap keeps its largest free
 # block above 256 KB ("pscfloorN") and its free total above 320 KB; full, a
-# pose is refused and made as before. Dropped at each map's load. "pscexact": the decoded orientations alone; "pscoff": as
+# pose is refused and made as before. It gives its memory back for the rest
+# of the map when the heap falls under those floors later (checked every 150
+# ticks) or when it serves under 2 poses a tick. Dropped at each map's load. "pscexact": the decoded orientations alone; "pscoff": as
 # before; "psccheck": every pose and local matrix the table hands over is made
 # live too and compared bit for bit (the largest difference logged), and the
 # live one is used
@@ -38785,14 +38787,47 @@ static struct psp_psc_entry *psp_psc_find(struct model const *model, struct anim
 	return NULL;
 }
 
+/* the table gives its memory back for the rest of the map when the heap
+falls under its floors (the map's own later needs come first), or when it
+serves under 2 poses a tick over 900 ticks (too little for what it holds) */
+static void psp_psc_release(const char *why)
+{
+	platform_psp_log("psc: released (%s)", why);
+	psp_psc_report("released");
+	psp_psc_drop();
+	psp_psc_no_room = 1;
+}
+
 static void psp_psc_log(void)
 {
+	static long checked;
+	static unsigned long hits_then;
 	long now = game_time_get();
 
+	if (psp_psc_entries && (now - checked >= 150 || now < checked))
+	{
+		unsigned long free_bytes, largest, used;
+
+		checked = now;
+		psp_heap_survey(&free_bytes, &largest, &used);
+		if (largest < psp_psc_largest_floor || free_bytes < PSP_PSC_FREE_FLOOR)
+		{
+			psp_psc_release("the heap under its floors");
+			return;
+		}
+	}
 	if (now - psp_psc_logged >= 900 || now < psp_psc_logged)
 	{
 		if (psp_psc_logged)
+		{
 			psp_psc_report("kept");
+			if (psp_psc_entries && psp_psc_hits - hits_then < 2 * 900)
+			{
+				psp_psc_release("under 2 poses a tick served");
+				return;
+			}
+		}
+		hits_then = psp_psc_hits;
 		psp_psc_logged = now ? now : 1;
 	}
 }
