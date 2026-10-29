@@ -38818,7 +38818,7 @@ static void psp_psc_log(void)
 	}
 	if (now - psp_psc_logged >= 900 || now < psp_psc_logged)
 	{
-		if (psp_psc_logged)
+		if (psp_psc_logged && psp_psc_entries)
 		{
 			psp_psc_report("kept");
 			if (psp_psc_entries && psp_psc_hits - hits_then < 2 * 900)
@@ -39129,6 +39129,20 @@ static void psp_pose_ahead_list("""),
 					psp_psc_local(&object_nodes[node_stack_index], orientation, node_stack_index);
 				else
 				matrix4x3_from_orientation(&object_nodes[node_stack_index], orientation);"""),
+# the table's heap and yield checks every tick, whether or not an object it
+# serves is posed that tick
+("""static void psp_pose_ahead_make_work(void)
+{
+	unsigned int at = 0;
+	int k;
+
+""", """static void psp_pose_ahead_make_work(void)
+{
+	unsigned int at = 0;
+	int k;
+
+	psp_psc_log(); /* psp_fixups.py (FIXES_PSC) */
+"""),
 ("""	psp_pose_on = -1;
 	psp_pose_ahead_forget();
 """, """	psp_pose_on = -1;
