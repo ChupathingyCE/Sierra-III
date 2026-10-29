@@ -24941,3 +24941,65 @@ void psp_ge_sleep_quiet(char *line, int size)
 	snprintf(line, size, "GE: %s in %u us, its queue %s %u ms%s", had_out ? "the frame out collected" : "no frame out",
 		out_us, waited < 200 ? "empty after" : "stopped after", waited, stopped < 0 ? " (the stop failed)" : "");
 }
+
+#ifdef PSP_RECON
+/* The GE layer's 300-frame reports zero these counters, sometimes inside the
+span: then only the part after the zero is counted, rather than a wrapped difference */
+static unsigned long visspan_since(unsigned long now, unsigned long then)
+{
+	return now >= then ? now - then : now;
+}
+
+/* "visspan" (recon; docs/mevis_landing.md, step 1): the main CPU's time from
+the frame's visibility to its first reader (render.c: 0 before
+structure_visibility_compute, 1 after it, 2 before lights_preprocess_scene),
+split into visibility itself, the waits this layer times inside the span
+(the ME's frame out, the forwarding thread's show, the GE's end of a frame
+shown by this thread: under geshow2 the forwarding thread waits for it, and
+those waits aren't this thread's) and the rest. Visibility on the ME would
+overlap the span's waits on the GE and its work, not its wait on the ME */
+void psp_ge_visspan(int phase)
+{
+	static int on = -1;
+	static unsigned int mark, frames;
+	static unsigned long me0, show0, ge0, span_us, vis_us, me_us, show_us, ge_us;
+	unsigned int now;
+	unsigned long show = 0;
+	int k;
+
+	if (on < 0)
+		on = psp_keep("visspan") != 0;
+	if (!on || PSP_ME_WORK())
+		return;
+	now = sceKernelGetSystemTimeLow();
+	for (k = 0; k < SHOW2_WHYS; k++)
+		show += show2_wait_us[k];
+	if (phase == 0)
+	{
+		mark = now;
+		me0 = me_overlap_wait_us;
+		show0 = show;
+		ge0 = ge_wait_us;
+		return;
+	}
+	if (phase == 1)
+	{
+		vis_us += now - mark;
+		return;
+	}
+	span_us += now - mark;
+	me_us += visspan_since(me_overlap_wait_us, me0);
+	show_us += visspan_since(show, show0);
+	if (show2_on <= 0 || inflight_thread < 0)
+		ge_us += visspan_since(ge_wait_us, ge0);
+	if (++frames < 150)
+		return;
+	platform_log("GE: visspan: %u frames: visibility to its first reader %.2f ms a frame: visibility %.2f, waiting on the ME's frame %.2f, "
+		"on the show %.2f, on the GE's end %.2f, the rest %.2f",
+		frames, span_us / 1000.0f / frames, vis_us / 1000.0f / frames, me_us / 1000.0f / frames, show_us / 1000.0f / frames,
+		ge_us / 1000.0f / frames,
+		((long)span_us - (long)(vis_us + me_us + show_us + ge_us)) / 1000.0f / frames);
+	frames = 0;
+	span_us = vis_us = me_us = show_us = ge_us = 0;
+}
+#endif
