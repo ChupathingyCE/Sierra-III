@@ -171,6 +171,9 @@ DITHERSHIFT = os.environ.get("PSP_DITHERSHIFT", "") == "1"
 # check and the collision usage log's empty calls kept, as before
 # psp_fixups.py's FIXES_DEADCHK: the old side of that layout's A/B (read by
 # psp_fixups.py, which builds without the group)
+# PSP_ACCLEAF_OLD=1: the hottest lookups keep their keep tests (objallold,
+# hdrblkold, notypehdr, dgfastold): the old side of ACCLEAF's A/B (read by
+# psp_fixups.py, which builds without FIXES_ACCLEAF)
 # PSP_WALKAPART=1: option C's groundwork, the drawing walk kept from the tick's
 # state (keep word walkapart) and its tests (mevis, walkwrites; psp_fixups.py
 # FIXES_WALKAPART). Its hooks sit in the tick's object marks and the particle
