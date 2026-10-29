@@ -276,7 +276,7 @@ newest one is kept here (the call is a system call; the stall wrapper, below)
 and the main CPU passes it on when the run of waiting calls ends */
 static int stall_me_qid = 0;
 static void *stall_me_address = NULL;
-static unsigned long stall_forwarded; /* (defined with the stall wrapper) */
+static PSP_MAIN_SIDE unsigned long stall_forwarded; /* (defined with the stall wrapper) */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
 /* gebusy2 (with the stall wrapper): the Media Engine's chunks given to the
 GE, and the main CPU's waits, for the GE's own busy time */
@@ -3678,7 +3678,10 @@ every update passed on, as before */
 int __real_sceGeListUpdateStallAddr(int qid, void *stall);
 static int stall_batch = -1, stall_pending = 0;
 static PSP_MAIN_SIDE int stall_force = 0;
-static unsigned long stall_calls = 0, stall_forwarded = 0, stall_timed = 0, stall_timed_us = 0;
+static unsigned long stall_calls = 0;
+/* the main CPU's alone: kept off the line of the ME's stall_me_address, which
+its write-back could otherwise put back to an older address (mechunk) */
+static PSP_MAIN_SIDE unsigned long stall_forwarded = 0, stall_timed = 0, stall_timed_us = 0;
 
 /* build 79: "geserial" (and the debug menu): no stall update reaches the GE
 until the frame's list is finished, so the GE starts when the CPU is done
