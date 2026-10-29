@@ -26944,6 +26944,47 @@ r"""		/* psp_fixups.py (FIXES_ASSERTSEVAL): counted outside the assert */
 # uses, so play is the same with it on.
 FIXES_RECON = {}
 
+# "visspan" (docs/mevis_landing.md, step 1): the main CPU's span from the
+# frame's visibility to its first reader, timed and split (psp_ge.c)
+FIXES_RECON["source/render/render.c#visspan"] = [
+("""	render.frustum = *frustum;
+	parameters.camera = *rasterizer_camera;
+""", """	render.frustum = *frustum;
+#ifdef HALO_PSP
+	{
+		void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+		psp_ge_visspan(0);
+	}
+#endif
+	parameters.camera = *rasterizer_camera;
+"""),
+("""	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+	rasterizer_window_begin(&parameters);
+""", """	player_effect_get_screen_flash(local_player_index, &parameters.screen_flash);
+#ifdef HALO_PSP
+	{
+		void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+		psp_ge_visspan(1);
+	}
+#endif
+	rasterizer_window_begin(&parameters);
+"""),
+("""		first_person_weapon_render_update();
+		lights_preprocess_scene();
+""", """		first_person_weapon_render_update();
+#ifdef HALO_PSP
+		{
+			void psp_ge_visspan(int phase); /* psp_fixups.py (FIXES_RECON #visspan) */
+
+			psp_ge_visspan(2);
+		}
+#endif
+		lights_preprocess_scene();
+"""),
+]
+
 # "modelcensus" (keep.txt): every 5 s of game time, a log line of the models
 # drawn: a frame's count by object type and by size on screen (the level of
 # detail's pixels), and the definitions drawn most. b30's Pelican ride draws
