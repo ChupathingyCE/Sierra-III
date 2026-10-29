@@ -10898,6 +10898,13 @@ converted; the block can hold other vertices after an eviction */
 static unsigned int converted_generation[CONVERTED_BUFFERS];
 static unsigned long converted_count = 0, reconverted_count = 0;
 static unsigned long multi_node_rigid = 0, transparent_placed = 0;
+/* one buffer asked for both ways: whichever draw converted it first decided
+its records for the other (a see-through draw reading a skinned buffer's
+records as rigid ones; an opaque draw left rigid by a see-through draw that
+came first). A baked buffer's opaque draws never share the raw buffer's
+records, so these count what the bake draws differently */
+static unsigned char converted_seethrough[CONVERTED_BUFFERS];
+static PSP_MAIN_SIDE unsigned long seethrough_on_skinned = 0, opaque_on_seethrough = 0;
 /* multi_node_rigid by why: see-through, no triangles given, the skinning plan
 failed (the log names only the first 12 buffers, which see-through parts
 usually take) */
@@ -11786,6 +11793,7 @@ static void converted_sweep(void)
 	static const void *keep_address[CONVERTED_BUFFERS];
 	static unsigned int keep_generation[CONVERTED_BUFFERS];
 	static struct skin_part *keep_skin[CONVERTED_BUFFERS];
+	static unsigned char keep_seethrough[CONVERTED_BUFFERS];
 	int index, kept = 0;
 
 	for (index = 0; index < CONVERTED_BUFFERS; index++)
@@ -11797,6 +11805,7 @@ static void converted_sweep(void)
 			keep_address[kept] = converted[index];
 			keep_generation[kept] = converted_generation[index];
 			keep_skin[kept] = skinned[index];
+			keep_seethrough[kept] = converted_seethrough[index];
 			kept++;
 		}
 		else
@@ -11817,6 +11826,7 @@ static void converted_sweep(void)
 		converted[slot] = keep_address[index];
 		converted_generation[slot] = keep_generation[index];
 		skinned[slot] = keep_skin[index];
+		converted_seethrough[slot] = keep_seethrough[index];
 	}
 	converted_used = kept;
 	converted_sweeps++;
@@ -12580,6 +12590,10 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 				model14_refused++;
 				return 0;
 			}
+			if (!skin && skinned[slot] && !PSP_ME_WORK() && seethrough_on_skinned++ < 4)
+				platform_log("GE: frame %lu: a see-through draw of a buffer of %d vertices converted skinned", frames, count);
+			if (skin && converted_seethrough[slot] && !PSP_ME_WORK() && opaque_on_seethrough++ < 4)
+				platform_log("GE: frame %lu: an opaque draw of a buffer of %d vertices converted rigid for a see-through draw", frames, count);
 			if (skin)
 				*skin = skinned[slot];
 			convert_k = step_of(converted_step[slot]);
@@ -12620,6 +12634,7 @@ static int model_convert(void *vertices, int count, int uncompressed, const unsi
 		converted_used++;
 	converted[slot] = vertices;
 	skinned[slot] = part;
+	converted_seethrough[slot] = !skin;
 	if (!part)
 	{
 		/* build 42: a buffer whose vertices hang from several nodes but is
@@ -24522,6 +24537,9 @@ static void frame_end_show(void)
 			frames, draws_this_frame, textured_draws, flat_draws, triangles_this_frame, clipped_this_frame, culled_this_frame,
 			model_draws_this_frame, converted_count, reconverted_count, stream_bytes / 1024, streams_let_go, detail_passes, level_glow_passes,
 			list_peak, display_list_size, clip_peak, MAXIMUM_CUT_CORNERS, camera_forward[0], camera_forward[1], camera_forward[2]);
+		if (seethrough_on_skinned || opaque_on_seethrough)
+			platform_log("GE: buffers drawn both ways: %lu see-through draws of skinned records, %lu opaque draws of see-through rigid records",
+				seethrough_on_skinned, opaque_on_seethrough);
 		if (model14 > 0)
 			platform_log("GE: model14: %lu parts (%lu vertices, %lu KB less than 24-byte records); see-through asks refused %lu; skinned parts at full size %lu (%lu vertices; 10 bytes less a vertex would free %lu KB)",
 				model14_parts, model14_vertices, model14_vertices * 10 / 1024, model14_refused,

@@ -1,6 +1,27 @@
-# PRECONVERT: model vertex buffers baked in the GE's form (plan)
+# PRECONVERT: model vertex buffers baked in the GE's form
 
-Lever PRECONVERT (the lab's levers.tsv; Sheepdog01 2026-10-25 12:01: agreed). Drafted by api-job 40219741519 (claude-sonnet-5-5) against w142 609a0de; not built. Why: every model or level of detail first drawn is converted on the main CPU (b30 ~170 buffers a minute); the Media Engine's replay left such a draw out (B8), and modelpretouch, which converts as the draw is written, costs 0.9 ms a flight frame on the PSP-1000 (sierra-hw 40212908907, 3 runs a side) and must wait for the ME.
+Lever PRECONVERT (the lab's levers.tsv; agreed 2026-10-25). Why: every model or level of detail first drawn is converted on the main CPU (b30 ~170 buffers a minute); the Media Engine's replay left such a draw out (B8), and modelpretouch, which converts as the draw is written, costs 0.9 ms a flight frame on the PSP-1000 and must wait for the ME.
+
+## As built (branch preconv)
+
+The plan below was the starting point; what was built differs where noted.
+
+- **The bake** (`--preconvert`, opt-in; `tools/modelconvert.py`, run last for each map but ui): every model vertex buffer an opaque draw converts is converted here with model_convert's own arithmetic in float32 in the C's order (unpack_normal, pack_normal, vertex_nodes, triangle_list, skin_plan's colouring and batching, the records, batch_sphere, near_clusters_make). One block a buffer, appended past the pack's data: a 64-byte header (`struct pcv_header`: what the draw must pass, the raw buffer's address, the plan's `struct skin_part`), the records at +64, then a skinned buffer's batches, triangle lists and runs' spheres. The raw bytes stay where they were. [D]
+- **Found without a search** (instead of the plan's hash): each model part's `vertex_buffer.pad` word in the map, unused by the engine, holds its buffer's table index + 1; the table on the heap is one block address a buffer (~3 KB a campaign map). A block whose header names another raw buffer (a map and pack from different bakes) falls back to the raw buffer. [D]
+- **Marked by header word 15** (`'PCV1'`), not a format bit: word 10 is left alone, so an older build sees an ordinary pack (it reads to word 3 only) and its tag-layout check stays quiet. A build that meets another version ignores the region and converts at run time. [D]
+- **The runtime**: `psp_vertex_lock` hands an opaque draw (and rso's re-lock) the baked block; the see-through queue locks the raw buffer (`psp_vertex_lock_raw`) and converts its own rigid records as before. A skinned block's offsets become addresses as the block is read (`psp_ge_pcv_relocate`, before the read's write-back), checked to lie inside it. `model_convert` answers a baked buffer at once on either CPU: no conversion, no heap plan, nothing for the ME's work to leave out, and `model_converted_now` tells modelpretouch there is nothing to do. [D]
+- **Off**: `preconvertoff` (the A/B's other side, one bake, one build), `model14` (its own records), and the main menu (its arena is sized to its pack) convert at run time. **Check**: `preconvertcheck` converts each block's raw buffer at run time once a load and compares records, plans and sphere bits. [D]
+- **What stays at run time**: see-through draws (b30 41 conversions in 3,600 ticks, c10 18), and the few buffers two parts draw with different triangles (0-2 a map). The plan's v2 rigid twin would take the first. [E]
+
+### Measured
+
+- Python against the C, on the host: 1,900 synthetic buffers (strips and lists, degenerate joins, ±0, failing plans), records, plans, spheres and runs bit for bit. [E]
+- The bake (every map): 290-653 buffers a map baked, 0 plans failed; the pack grows by 2.5-5.0 MB a campaign map (b30 11.7 -> 16.5 MB, c10 17.5 -> 21.8 MB; about 42 MB over the ten), the baked blocks 5-10% larger than the raw vertices (a skinned block carries its triangle lists). [E]
+- b30 route (3,600 ticks) and c10 hands off (7,200), on vs preconvertoff: play and both seeds identical every tick; preconvertcheck 0 differ (b30 225 blocks, c10 136); pictures differ from the off side as much as two off runs differ from each other (b30 692 / 689 of 1,798 frames, c10 6 / 6 of 3,599); strict run 0 sites; the front door (menu, then a10) clean. [E]
+- Run-time conversions: b30 235 -> 41, c10 158 -> 18 (what is left is see-through); modelpretouch 194 / 140 -> 0. Geometry misses unchanged (513, 346), bytes read +5%, evictions +5 / +4; heap at the end -228 / -181 KB (no plans). [E]
+- The frame's price is a PSP pair's to give (the lab has the spec).
+
+## The plan (as drafted, against w142 609a0de)
 
 Open before building: the pack grows by about the raw model vertices (2-3 MB a map on the stick), the geometry arena takes the skinned parts' batch lists (more eviction, unmeasured), and see-through parts stay converted at run time unless the v2 rigid twin is added.
 
