@@ -210,11 +210,33 @@ The emulator's bus census (`buscensus`, the halo-local patch's item 23; read wit
   - b30 is the other way round: the main CPU binds (the ME 70-78 ms of a 115-170 ms frame), so C would pay there first.
 - **Cutting the copy** [E, U]: the node matrices are 53% of it (c10 76 of 144 KB, b30 49-68 of 93-129).
   - c10's are mostly its animated scenery, which moves every tick, so copying only what changed wouldn't cut them.
-  - PSC would: a looping scenery's matrices are its table's frame times its transform. The snapshot could carry those (~60 B) instead of the node block, and the ME's walk rebuild the matrices (a VFPU multiply a node).
+  - PSC would: a looping scenery's matrices are its table's frame times its transform. The snapshot could carry those (~60 B) instead of the node block, and the ME's walk rebuild the matrices (a scalar multiply a node: the ME has no VFPU, `psp_me.c` "no system calls, no library calls, no VFPU").
   - Counted (lab snapf6 40959834148 [E]; objects that animate by themselves with no parent, an upper bound on PSC's): c10 230 objects, 35 of the 76 KB; b30 4-8 KB of 50-68; a10 none. With ~60 B each in their place, the copy falls ~15% on c10 (144 to ~122 KB) and ~3% on b30. PSC is worth having, but it isn't what C waits on.
 - **It waits on one thing:** PDC stage B's measured ME saving, since C adds the walk to the lane c10 is bound by. The copy's place is settled: it stays on the main CPU, under the bar, with its buffer in the heap.
 
-  Then build C, b30 first.
+**Read against the code (2026-10-29; lab api-job cplan 40973577774, Opus, quotes spot-checked): the copy is priced, but C isn't ready to build** [D].
+- **Nothing reads the snapshot yet.** The walk reaches objects through the live header array, which the ticks change (`objects.c` `object_header->datum = NULL;`, and `memory_pool_compact` moves the datums). The snapshot needs a reader: its own header map by absolute index, and an accessor the walk goes through.
+- **The field list has holes for a walk that runs beside the ticks.** walkf1 listed what the ticks *changed* between drawings. A walk that runs beside the ticks needs everything it *reads* that a tick may write. Missing:
+  - the object links (0xc4-0xd0), region permutations, first widget, and velocity (lighting reads it);
+  - the flags word for weapons, equipment and scenery, and all four outgoing function values;
+  - both camouflage words;
+  - game time and the program globals walkreads counted (9-12 KB a drawing);
+  - the first-person weapon, antennas, particle systems, widgets, effects and weather.
+- **Copy-on-wake is half built.** Active objects and children are copied, but nothing copies an object when a tick wakes it.
+- **Visibility has to be placed.** It reads the clusters the ticks write. Collecting it before the next tick starts keeps it exact (`mevis_landing.md`).
+- **walkapart tells the walk from the tick by one global** (`psp_walk_side`). That only works while they take turns, so it must become a property of the CPU.
+- **The ME's limits:**
+  - no system calls, library calls or VFPU, so `error()` and lazy keep-word reads must go;
+  - the ring's 10 ms deadline, against a 14.5-20 ms walk;
+  - its late fallback (the main CPU redraws from live state) would be wrong once the next ticks have run. The fix-where-it-runs form is a bounded wait for the ME, with the main CPU walking the snapshot only if the ME is dead.
+
+**The build, in steps, each with its proof** (all in the emulator before any PSP time):
+0. **The reader:** the walk on the main CPU, reading a snapshot taken just before it, gives the same gestream, framecrc and statecrc on five maps.
+1. **Completeness, serially:** snapshot, then ticks N+1, then walk N from the snapshot, all on the main CPU. Any live read shows as a difference; fill the field list until none does.
+2. **Visibility collected before the hand-off.**
+3. **walkapart made safe beside the ticks:** statecrc every tick, no MEWRITES lines both sides wrote in game state.
+4. **The ME port:** no MERACE, MECOHERE lost or stale lines; a symbol audit of the ME's code.
+5. **A b30 PSP pair** `"- | C"`, once PDC's ME saving is measured.
 
 ## 5. The placement map
 
