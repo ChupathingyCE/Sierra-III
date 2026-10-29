@@ -38650,6 +38650,8 @@ struct psp_psc_entry
 	short node_count;
 	real_orientation *pose;
 	real_matrix4x3 *locals; /* the children's local matrices (node 1 first), or NULL */
+	short source; /* for psccheck's report: 1 poseahead's, 2 made here */
+	long made_at; /* game time */
 };
 static struct psp_psc_entry *psp_psc_entries;
 static unsigned char *psp_psc_pieces[PSP_PSC_PIECES];
@@ -38792,7 +38794,23 @@ static boolean psp_psc_take(long object_index, struct object_datum const *object
 		animation_get_node_orientations(model, animation, frame, out);
 		psp_psc_checked++;
 		if (csmemcmp(out, entry->pose, entry->node_count * sizeof(real_orientation)))
+		{
 			psp_psc_differed++;
+			if (psp_psc_differed <= 12)
+			{
+				real const *a = (real const *)out, *b = (real const *)entry->pose;
+				int k;
+
+				for (k = 0; k < entry->node_count * 8; k++)
+					if (*(unsigned long const *)&a[k] != *(unsigned long const *)&b[k])
+						break;
+				platform_psp_log("psc: check: object %08lx frame %d of %d, nodes %d, %s, made %s at %ld (now %ld): word %d of node %d: live %08lx (%g), kept %08lx (%g)",
+					(unsigned long)object_index, frame, animation->frame_count, entry->node_count,
+					TEST_FLAG(animation->flags, _animation_compressed_bit) ? "compressed" : "plain",
+					entry->source == 1 ? "by poseahead" : "here", entry->made_at, game_time_get(), k % 8, k / 8,
+					*(unsigned long const *)&a[k], (double)a[k], *(unsigned long const *)&b[k], (double)b[k]);
+			}
+		}
 	}
 	else
 		csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
@@ -38873,6 +38891,8 @@ static void psp_psc_keep(long object_index, struct object_datum const *object, s
 		return;
 	}
 	csmemcpy(entry->pose, pose, entry->node_count * sizeof(real_orientation));
+	entry->source = 1;
+	entry->made_at = game_time_get();
 	psp_psc_kept(entry, animation);
 	psp_psc_from_ahead++;
 	psp_psc_use(object_index, object, entry);
@@ -38897,6 +38917,8 @@ static boolean psp_psc_make(long object_index, struct object_datum const *object
 		psp_psc_unwritten++;
 		return FALSE;
 	}
+	entry->source = 2;
+	entry->made_at = game_time_get();
 	psp_psc_kept(entry, animation);
 	csmemcpy(out, entry->pose, entry->node_count * sizeof(real_orientation));
 	psp_psc_use(object_index, object, entry);
