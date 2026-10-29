@@ -206,7 +206,7 @@ The PSP is only ever a client of ChupathingyCE's desktop host (network version 2
 - That totals ~133 M, about 0.7%: under the gate. So the exact forms alone don't pay.
 - The VFPU's own instructions do much more: `vqmul.q` is the whole product in one instruction, and `vdot.q` a whole dot. Since posing is local to the client (section 6), #2 and #4 become one lever, priced by `vfpubench`.
 
-## 8. Results so far (PSP-3000 pairs on b30's route, 2 runs a side)
+## 8. Results so far (PSP pairs, 2 runs a side)
 
 | Lever | Status | b30 tick | Notes |
 |---|---|---|---|
@@ -216,5 +216,19 @@ The PSP is only ever a client of ChupathingyCE's desktop host (network version 2
 | LBM v2 (budget's lazy biped matrices) | rejected as built | +0.5 to +1.1 ms | Exact but slower everywhere; pair 40747441996 |
 | VFPUNODE (node products) | parked at the gate | ≤ ~0.5% | Already on vmmul |
 | VFPUQ exact (interpolate) | parked at the gate | ~0.5% | Superseded by VFPUQD; normalize and rotation are slower exact |
-| NRCHK, WM for mevis | in progress | | Helpers nrchk, wmbench |
+| **NRCHK** (the root node's validity test left out; it only wrote debug.txt) | in the tock, on | -0.3 to -0.7 ms; c10 -1.5 to -1.8 ms (with PGO) | Exact; a code-size effect, like X10; pairs 40793130396 (c10), 40795042670 |
+| WM (warm-vs-cold for mevis) | parked with numbers | | No gain: mevis's working set exceeds the ME's caches (wmbench) |
+| **GSCHECK** (the tick's two game-state checks off; `gscheck` puts them back) | in the tock (Sheepdog01 21:14) | c10 -0.2 to -0.3 ms early | One build, exact; pair 40809345943 |
+| **SLEEPDBG + COLLUSAGE** (the sleep's debug reports cold, the collision usage calls gone) | in the tock | c10 -0.3 to -0.5 ms (no PGO) | Exact; a two-build pair, so within layout's reach (below); 40812138009 vs 40812168360 |
+| **ACCLEAF** (the hottest lookups' keep tests out) | in the tock | c10 -1.0 ms (no PGO) | Exact; drawing +1.2 ms in the same two-build pair: layout; 40833635029 vs 40833694056/40835744413 |
+| **MECTX** (VFPU posing refuses the ME's work run on the main CPU) | in the tock | (a fidelity fix) | The emulator's ME posing now uses the real ME's FPU maths; MESTRICT sites 8 -> 1 (mectx2) |
+| **OBJPLACE** (sleepers' no-child/not-garbage bit beside the sleep tables) | merge asked | c10 -0.2 to -0.3 ms (-1.0 to -1.3%) | One build, exact; the object pool's traffic -5.7% b30, -11.2% c10 [E]; pair 40839486853 |
+| LW2 (the log written every 30 s) | shelved | none | The log's stick time -2/3, but nothing waited behind it; a hang would lose more log; pair 40834903762 |
+| PRECONVERT (model buffers baked in the GE's form) | not merged: Sheepdog01's call | none | Round 1 lost (+36% frame: the baked buffers skipped the VRAM copies); round 2 even; worth B8 and ~200 KB of heap for packs +2.5-5 MB a map; 40841204853, 40845838294 |
+| NW1, NW2 (node matrices on the ME) | can't pay / rejected | NW2: c20 tick +0.8 ms | NW1 sized at <= 3% of c20 with no cache relief; NW2 built and exact, but the walk is cheap on the VFPU and the copy-back costs more; pair 40843585564 |
+| SHADOWWALK, CSTPOOL, PROFSEC, MACHLINE, SKIDX8 | sized | | SHADOWWALK <= 0.15% of b30's frame; CSTPOOL ~0.5-0.95 ms a frame but needs an eDRAM claim (Sheepdog01); PROFSEC dormant; MACHLINE and SKIDX8 under the bar |
+
+**The tock against b148, each built as it ships** (its own profile, strict, layout w142a_tgc90; 2026-10-29 [M]): c10 (PSP-1000) tick -1.0 to -1.5 ms (-6 to -8%), frame -1.6 to -2.5%; b30's flight (PSP-3000) tick -2.2 ms (-4.5%), frame -2.0%; drawing +2.6 to +3.6% on both maps, which the cache model doesn't show (drawhunt1: equal) and link layout alone can do (below). The next test is a layout from the tock's own profile.
+
+**Method: link layout alone moves the frame 2-5% on the PSP** [M]. The same code (w142 bd6731a4) linked in default order and with w142a_tgc90, without PGO, on b30's flight: drawing 0.6-1.3 ms, the tick 1.3-2.0 ms, all real (40837811468 vs 40837873313). So a pair of two builds carries about a millisecond of layout either way: a change that moves code (a build switch, removed code) is priced in the build that ships, with a fresh profile and layout; keep-word A/Bs in one build are unaffected. The emulator also misses the GE's contention for the bus (PRECONVERT round 1) and the VFPU's speed on the main CPU (NW2): placement is settled on the PSP.
 
