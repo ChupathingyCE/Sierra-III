@@ -38717,8 +38717,11 @@ both moving averages). When the wait comes within PSP_ML_MARGIN_US of the
 walk itself, the next PSP_ML_REST views are made here, which also refreshes
 the walk's time, then the ME is tried again; a long run of pushes rests for
 PSP_ML_REFRESH views now and then to keep that time current. "mevislandalways"
-pushes every view (the A/B's other side) */
+pushes every view (the A/B's other side). The ME's time isn't free either (its
+own frame's replay waits behind the walk, and the bus is shared with the
+tick), so a walk under PSP_ML_MIN_WALK_US stays here: there's little to win */
 #define PSP_ML_MARGIN_US 500
+#define PSP_ML_MIN_WALK_US 1500
 #define PSP_ML_CHECK 32
 #define PSP_ML_REST 240
 #define PSP_ML_PUSHES_BEFORE_REFRESH 600
@@ -38872,7 +38875,7 @@ void psp_mevisland_collect(void)
 	if (!psp_ml_always && ++psp_ml_since_check >= PSP_ML_CHECK)
 	{
 		psp_ml_since_check = 0;
-		if (psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8)
+		if (psp_ml_wait_avg / 8 + PSP_ML_MARGIN_US >= psp_ml_main_avg / 8 || psp_ml_main_avg / 8 < PSP_ML_MIN_WALK_US)
 		{
 			psp_ml_rest = PSP_ML_REST;
 			psp_ml_rests++;

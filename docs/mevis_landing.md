@@ -116,6 +116,7 @@ So where the walk runs is decided by measurement, view by view:
 - Each view made on the main CPU is timed, and each wait for the ME's answer too (moving averages).
 - When the wait comes within 0.5 ms of the walk itself, the next 240 views are made on the main CPU (which refreshes the walk's time), then the ME is tried again.
 - After 600 pushes in a row, 16 views are made on the main CPU to keep the walk's time current.
+- A walk under 1.5 ms stays on the main CPU: the ME's time isn't free (its own frame's replay waits behind the walk, and the bus is shared with the tick).
 - `mevislandalways` pushes every view, the A/B's other side.
 
 Both paths are exact, so the choice changes no answer.
