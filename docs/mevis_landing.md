@@ -108,6 +108,18 @@ sierra-hw 40845560977 (329e167, `PSP_MEVISLAND=1`, b30's route to game time 90 s
 - **The main CPU still waits 2.8–3.8 ms a view at the first reader** (at most 7–20 ms). That's the ME's visibility outlasting the span. The next gain is the ME's own speed: its working set (mevis reads 45–93 KB a call against a 16 KB cache) and the gathered-spheres copy.
 - So `mevisland` is on by default, and built in unless `PSP_MEVISLAND=0`.
 
+## Placement by measurement (after c10)
+
+The hardware session's PGO pricing on the PSP-1000 (c10, hands off) has the drawing down 2.1–3.4 ms, but the tick up 0.8–1.5 ms. Its psp_mevisland_collect costs as much as the walk did (4,618 against 4,656 ms over a run): c10's span before the first reader is too short to hide the ME's walk, so the main CPU waits it out. That read compares two tocks with two profiles; a clean pair decides.
+
+So where the walk runs is decided by measurement, view by view:
+- Each view made on the main CPU is timed, and each wait for the ME's answer too (moving averages).
+- When the wait comes within 0.5 ms of the walk itself, the next 240 views are made on the main CPU (which refreshes the walk's time), then the ME is tried again.
+- After 600 pushes in a row, 16 views are made on the main CPU to keep the walk's time current.
+- `mevislandalways` pushes every view, the A/B's other side.
+
+Both paths are exact, so the choice changes no answer.
+
 ## The steps
 
 1. **Measure the wait's split.** Per frame on b30 (route) and c20 (hands off), split the main CPU's time from `structure_visibility_compute`'s start to `lights_preprocess_scene` into:
