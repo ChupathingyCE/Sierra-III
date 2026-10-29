@@ -1199,8 +1199,8 @@ void psp_heap_walk(const char *where)
 			heap_walk_chunks / heap_walks, heap_walk_bad);
 }
 
-#if defined(PSP_METRICS) && PSP_METRICS
-/* for the per-map heap figures (psp_metrics.c): the heap's free space and
+/* for the per-map heap figures (psp_metrics.c) and PSC's headroom guard
+(psp_fixups.py, FIXES_PSC), so in every build: the heap's free space and
 its largest free block, which a large request needs, by heapmap's walk
 above without its tables. The top chunk counts with what the system hasn't
 handed over yet, since a request can grow into both */
@@ -1255,4 +1255,3 @@ void psp_heap_survey(unsigned long *free_bytes, unsigned long *largest_bytes, un
 	*largest_bytes = largest;
 	*used_bytes = used_total;
 }
-#endif
