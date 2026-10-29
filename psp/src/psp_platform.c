@@ -1033,6 +1033,7 @@ static void object_report(SceUID file, unsigned long ticks)
 unsigned long psp_model_draw_us[3];
 
 void psp_sleepguard_start(void);
+#include "psp_sleep.h" /* B41: the sleep the game thread is ready for */
 
 /* ---------- what the null path keeps (build 19). With the GE drawing, the
 old Direct3D path's shadows, see-through parts, particles, decals, HUD and
@@ -1208,6 +1209,7 @@ static void keep_load(void)
 	/* B41's stopgap (psp_sleepguard.c): the sleep switch held off, once
 	the keep words can say otherwise */
 	psp_sleepguard_start();
+	psp_sleep_start();
 	/* build 89: in two lines (the one line passed the log's 512 characters) */
 	platform_log("keep words, continued: vramlargest clearmagenta nomip listuncached stalleach near2 near4 mipbias1 mipbias2 decaloffset passes overlayoffset decalbig detailbias15 detailbias2 decalall detailnear mipauto detailauto noangle visdump modeldrop overlaynoslope overlaynowall overlayslope1 overlayslope4 overlayfreefar skydump flatshade tdump");
 	platform_log("keep words, continued: nearauto walldump decalnoslope vblankthrottle noboxtest detailallfar verifytags texsqueeze texvramonly colltest geoasync nudgewide decalbatch menushot geserial vramcold uvwide nooverlay meaudio nomeaudio benchrun levelcompact meclassify noskincut novblankthrottle");
@@ -2157,6 +2159,13 @@ void psp_ge_inflight_room_resume(void);
 static int power_callback(int unknown, int flags, void *argument)
 {
 	(void)unknown; (void)argument;
+	psp_sleep_power_flags(flags);
+	/* B41 ("sleepready"): the game thread stops itself and takes everything
+	back at the wake (psp_sleep.c); if it can't in time, the old way below */
+	if ((flags & PSP_POWER_CB_SUSPENDING) && psp_sleep_suspending())
+		flags &= ~PSP_POWER_CB_SUSPENDING;
+	if ((flags & PSP_POWER_CB_RESUME_COMPLETE) && psp_sleep_resumed())
+		flags &= ~PSP_POWER_CB_RESUME_COMPLETE;
 	if (flags & PSP_POWER_CB_SUSPENDING)
 	{
 		/* the Media Engine stopped before the sleep: the main CPU runs its
@@ -3167,6 +3176,7 @@ steps in order: the console has no way to wait */
 		if (exit_tick > 0 && (long)ticks_seen == exit_tick)
 			exit_game("exitat");
 	}
+	psp_sleep_tick((long)ticks_seen); /* sleepdryN's moment */
 #ifdef PSP_PGO_GENERATE
 	{
 		/* PSP_PGO=generate (psp_build.py): the hot units' counts written to
@@ -3681,6 +3691,9 @@ static int heartbeat_thread(SceSize args, void *argp)
 			}
 		}
 		beat++;
+		/* B41's stall reporter, on the 5 s beats (psp_sleep.c) */
+		if (beat > 20)
+			psp_sleep_stall_check();
 		phase_cut_beat = psp_phase_cut;
 		psp_phase_cut = 0;
 		heartbeat_work_start = psp_heartbeat_clock();

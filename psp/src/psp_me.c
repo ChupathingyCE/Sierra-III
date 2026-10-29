@@ -63,6 +63,7 @@ ships beside the EBOOT. */
 #include <unistd.h>
 #include <me-core-mapper/me-core.h>
 #include "psp_me.h"
+#include "psp_sleep.h"
 #include "psp_lanetrace.h"
 #include "psp_paths.h"   /* ms0:/halo or ms0:/halomp, and the maps */
 
@@ -3401,7 +3402,11 @@ void psp_me_wake_poll(void)
 	}
 	release = now;
 	me_maybe_running = 1;
+	/* B41: a release that never returns (the ME's bus unpowered) is named
+	by the heartbeat's stall reporter */
+	PSP_WAIT_BEGIN(PSP_WAIT_ME_RESTART);
 	kcall_3(me_restart_kernel, 0, 0);
+	PSP_WAIT_END(PSP_WAIT_ME_RESTART);
 	while (control->alive == 0 && (now = sceKernelGetSystemTimeWide()) - release < WAKE_ANSWER_US)
 		sceKernelDelayThread(500);
 answered:

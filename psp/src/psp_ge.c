@@ -49,6 +49,7 @@ VRAM (16-bit color, 512 pixels a row); the on-screen log lives above them
 #include <stdarg.h>
 #include "psp_me.h" /* build 118: psp_on_me, PSP_ME_WORK, the submit/finish jobs */
 #include "psp_lanetrace.h"
+#include "psp_sleep.h" /* B41: the quiet points and the waits the stall reporter watches */
 
 void platform_log(const char *format, ...);
 /* build 112: the GE layer logs through ge_log (defined with the deferral's
@@ -2485,7 +2486,9 @@ static void show2_settle(int why)
 		return;
 	show2_owed = 0;
 	start = sceKernelGetSystemTimeLow();
+	PSP_WAIT_BEGIN(PSP_WAIT_SHOW_SETTLE);
 	sceKernelWaitSema(show2_sema, 1, NULL);
+	PSP_WAIT_END(PSP_WAIT_SHOW_SETTLE);
 	show2_waited[why]++;
 	show2_wait_us[why] += sceKernelGetSystemTimeLow() - start;
 	if (show3_on)
@@ -2537,7 +2540,9 @@ static void show2_list_drop(void)
 	show2_list_started = 0;
 	stall_force = 1;
 	sceGuFinish();
+	PSP_WAIT_BEGIN(PSP_WAIT_LIST_DROP);
 	sceGuSync(0, 0);
+	PSP_WAIT_END(PSP_WAIT_LIST_DROP);
 	stall_force = 0;
 }
 
@@ -6168,6 +6173,10 @@ void psp_ge_window_begin(const float *position, const float *forward, const floa
 	float vertical_field_of_view, float z_near, float z_far)
 {
 	rso_window();
+	/* B41: a sleep asked is carried out at a frame's first window, before
+	anything of the frame reaches the GE layer (psp_sleep.c) */
+	if (!window_main_done && !PSP_ME_WORK())
+		psp_sleep_check();
 	if (!(z_near > 0.01f))
 		z_near = 0.05f;
 	if (!(z_far > z_near))
@@ -23399,6 +23408,9 @@ void psp_ge_loading_frame(const struct psp_loading_view *view)
 {
 	if ((!ge_ready && !boot_up) || frame_open || !view || boot_frozen)
 		return;
+	/* B41: a load's frame is a quiet point too (no game frame open) */
+	if (ge_ready)
+		psp_sleep_check();
 	show2_list_drop();
 	sceGuStart(GU_DIRECT, ge_ready ? (void *)display_list : (void *)(0x04000000 + BOOT_LIST_AT));
 	/* no picture to start from (a cold start): from black */
@@ -23406,7 +23418,9 @@ void psp_ge_loading_frame(const struct psp_loading_view *view)
 	loading_overlay(view);
 	stall_force = 1;
 	sceGuFinish();
+	PSP_WAIT_BEGIN(PSP_WAIT_LOADING_SYNC);
 	sceGuSync(0, 0);
+	PSP_WAIT_END(PSP_WAIT_LOADING_SYNC);
 	stall_force = 0;
 	if (boot_frozen)
 		return;
@@ -23808,7 +23822,11 @@ static void show_picture(int show3)
 	if (show3)
 		show3_wait_finish(show3_asked & 0xFFFF);
 	else
+	{
+		PSP_WAIT_BEGIN(PSP_WAIT_SHOW_SYNC);
 		sceGuSync(0, 0);
+		PSP_WAIT_END(PSP_WAIT_SHOW_SYNC);
+	}
 	gebusy_wait(0, 1);
 	waited = sceKernelGetSystemTimeLow() - mark;
 	ge_wait_us += waited;
@@ -24857,4 +24875,45 @@ void psp_ge_exit_drain(void)
 	}
 	platform_log("GE: exit: the frame out waited for, the list ended, the GE %s (%u ms)",
 		waited < 200 ? "done" : "still busy", waited);
+}
+
+/* B41's sleepready and sleepdryN (psp_sleep.c), on the game thread with no
+frame of its own open (a frame's first window, a load's frame): everything
+the GE layer has out finished, so nothing of it runs while the PSP sleeps.
+The frame out with the Media Engine collected and shown (its end is the
+next record's otherwise), the show asked of the forwarding thread taken, the
+list it started for the next frame ended empty (as a load's frame does), and
+the GE given up to 200 ms to reach the end of its queue, then stopped. The
+window that follows starts its list afresh, so nothing waits on a list from
+before the sleep */
+void psp_ge_sleep_quiet(char *line, int size)
+{
+	unsigned int start = sceKernelGetSystemTimeLow(), out_us, waited = 0;
+	int had_out = inflight_pending || inflight_me_out, stopped = 0;
+
+	if (!ge_ready)
+	{
+		snprintf(line, size, "GE: not started");
+		return;
+	}
+	if (inflight_pending)
+		inflight_sync();
+	GE_DEFER_DRAIN();
+	out_us = sceKernelGetSystemTimeLow() - start;
+	show2_settle(SHOW2_OTHER);
+	show2_list_drop();
+	while (sceGeDrawSync(1) != 0 && waited < 200)
+	{
+		sceKernelDelayThread(1000);
+		waited++;
+	}
+	if (waited >= 200)
+	{
+		PspGeBreakParam unused;
+
+		stopped = sceGeBreak(1, &unused);
+	}
+	show3_out = 0;
+	snprintf(line, size, "GE: %s in %u us, its queue %s %u ms%s", had_out ? "the frame out collected" : "no frame out",
+		out_us, waited < 200 ? "empty after" : "stopped after", waited, stopped < 0 ? " (the stop failed)" : "");
 }
