@@ -38667,6 +38667,7 @@ static long psp_psc_logged;
 static long psp_psc_locals_object = NONE;
 static real_matrix4x3 const *psp_psc_locals;
 static short psp_psc_locals_count;
+static unsigned long psp_psc_ineligible;
 static unsigned long psp_psc_hits, psp_psc_fills, psp_psc_refused, psp_psc_unwritten,
 	psp_psc_checked, psp_psc_differed, psp_psc_ahead_same, psp_psc_ahead_other, psp_psc_local_used, psp_psc_local_checked, psp_psc_local_differed;
 static real psp_psc_local_largest;
@@ -38689,10 +38690,10 @@ static int psp_psc_on(void)
 
 static void psp_psc_report(const char *what)
 {
-	platform_psp_log("psc: %s %d poses (%d KB used of %d in %d pieces, cap %d KB%s); %lu handed over, %lu kept, %lu refused, %lu unwritten; poseahead's poses against the table: %lu the same, %lu different; local matrices %lu used; checked: %lu poses (%lu differed), %lu matrices (%lu differed, largest %g)",
+	platform_psp_log("psc: %s %d poses (%d KB used of %d in %d pieces, cap %d KB%s); %lu handed over, %lu kept, %lu refused, %lu unwritten, %lu not the model's nodes; poseahead's poses against the table: %lu the same, %lu different; local matrices %lu used; checked: %lu poses (%lu differed), %lu matrices (%lu differed, largest %g)",
 		what, psp_psc_count, psp_psc_used / 1024, (psp_psc_piece_count * PSP_PSC_PIECE) / 1024, psp_psc_piece_count,
 		(psp_psc_piece_cap * PSP_PSC_PIECE) / 1024, psp_psc_matrices ? "" : ", pscexact",
-		psp_psc_hits, psp_psc_fills, psp_psc_refused, psp_psc_unwritten, psp_psc_ahead_same, psp_psc_ahead_other,
+		psp_psc_hits, psp_psc_fills, psp_psc_refused, psp_psc_unwritten, psp_psc_ineligible, psp_psc_ahead_same, psp_psc_ahead_other,
 		psp_psc_local_used, psp_psc_checked, psp_psc_differed, psp_psc_local_checked, psp_psc_local_differed,
 		(double)psp_psc_local_largest);
 }
@@ -38713,7 +38714,7 @@ static void psp_psc_drop(void)
 		(free)(psp_psc_entries);
 	psp_psc_entries = NULL;
 	psp_psc_piece_count = psp_psc_used = psp_psc_count = psp_psc_no_room = 0;
-	psp_psc_hits = psp_psc_fills = psp_psc_refused = psp_psc_unwritten = 0;
+	psp_psc_hits = psp_psc_fills = psp_psc_refused = psp_psc_unwritten = psp_psc_ineligible = 0;
 	psp_psc_checked = psp_psc_differed = psp_psc_ahead_same = psp_psc_ahead_other = 0;
 	psp_psc_local_used = psp_psc_local_checked = psp_psc_local_differed = 0;
 	psp_psc_local_largest = 0.f;
@@ -38724,14 +38725,22 @@ static void psp_psc_drop(void)
 }
 
 /* an object whose base pose the table may hold: its frame comes from game
-time (the decode's own inputs are all the key holds) */
-static int psp_psc_eligible(struct object_datum const *object, struct animation const *animation)
+time (the decode's own inputs are all the key holds), and the decode writes
+the animation's nodes, which are the model's (when its checks refuse the
+pair, it writes the model's own pose, whose count may differ) */
+static int psp_psc_eligible(struct object_datum const *object, struct model const *model, struct animation const *animation)
 {
 	extern boolean hs_model_animation_compression_enabled;
 
 	if (!TEST_FLAG(object->object.flags, _object_animates_automatically_bit) || animation->frame_count <= 0 ||
 		animation->node_count <= 0 || animation->node_count > MAXIMUM_NODES_PER_MODEL || psp_psc_on() <= 0)
 		return 0;
+	if (!model || animation->type != _animation_base || model->nodes.count != animation->node_count ||
+		(animation->node_list_checksum && model->node_list_checksum && animation->node_list_checksum != model->node_list_checksum))
+	{
+		psp_psc_ineligible++;
+		return 0;
+	}
 	if (psp_psc_entries && psp_psc_compression != hs_model_animation_compression_enabled)
 		psp_psc_drop();
 	return 1;
@@ -38972,7 +38981,7 @@ static void psp_pose_ahead_list("""),
 					;
 				else if (psp_pose_predict)""",
  """				/* psp_fixups.py (FIXES_PSC): a looping animation's pose from the table, or kept in it */
-				psp_psc_listing = psp_psc_eligible(object, animation);
+				psp_psc_listing = psp_psc_eligible(object, model, animation);
 				if (psp_pose_ahead_take(object_index, model, animation, frame_index, node_orientations))
 				{
 					if (psp_psc_listing)
