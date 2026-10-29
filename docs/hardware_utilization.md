@@ -153,6 +153,17 @@ The emulator's bus census (`buscensus`, the halo-local patch's item 23; read wit
 2. **[M] Price it:** one PSP pair on c10 (`keepsets "- | snapdry"`, repeat=2). `snapdry` writes that snapshot at each frame's end, and nothing reads it. The pair prices the copy's own cost, the tick's contention included.
 3. **Go** if snapdry costs the frame less than a third of what C takes off the main CPU on the same map. The engine's whole walk is 12-56 ms a frame (b30 55.8 at b138, levers_next_b138.md); its visibility part alone is 8.4 on b30 (visspan, PSP-1000) [M]. Otherwise the copy eats C's gain, and C stays parked.
 
+**The gate's outcome (2026-10-29): C is parked** [E]:
+- **Step 1, the count** (lab snap1 40903127317, `tickwrites`: the 64-byte blocks of the game state the ticks change between two frames' drawing, at the PSP's 2 ticks a frame):
+  - b30 ~170 KB a frame (objects 88, AI props 32, actors 18, lights 12, particles 7; the drawing reads ~110 of it);
+  - c10 ~50 KB, a10 ~20 KB.
+- **Step 2's dry run in the emulator** (snapdry2 40905044915): the per-object copy needs 448 KB (a10) to 672 KB (b30, c10) a frame: each live object's memory with its nodes, plus the live lights and particles. That is 2.5-20x what the ticks change.
+- **It doesn't fit.** Once the level's buffers are in (display list 768 KB, copies' arena 800, gedefer 224), the heap refused it on every map: 450-670 KB were free inside, but only in pieces. While a 512 KB buffer held on b30, the level carve took 128 KB more from the texture cache. A real snapshot is double-buffered, so twice that.
+- So a PSP pair would price a copy that fits only by squeezing the level copies and the textures. It wasn't asked for.
+- **The ways back, not taken now:**
+  - (a) a field-level snapshot: only what the drawing reads and the ticks change (~110-170 KB on b30). It needs the walk's read set first, a "walkreads" census in the cache model.
+  - (b) the snapshot in the ME's eDRAM (~1.6 MB claimable), filled by DMA and read by the ME's walk. It conflicts with CPA's claim (1,089 KB).
+
 ## 5. The placement map
 
 Each unit's strengths, measured:
@@ -183,7 +194,8 @@ Per-pass figures are research's (lab `coord/handoff/render_ownership_2026-10-27.
 **Plan C re-weighed with the VFPU:**
 - Full C, where the ME owns all drawing, gives up the VFPU on exactly the pass that uses it (models). It also keeps the GE's main-RAM reads beside the tick.
 - What the hardware argues for is a split: the ME takes visibility, the level pass and the small passes; the main CPU keeps the model walk and does more of its maths on the VFPU.
-- That is B plus mevis, the order research and the master's second opinion already reached. The VFPU findings add a reason to keep models on the main CPU, rather than a reason to revisit C.
+- That is B plus mevis, the order research and the master's second opinion already reached.
+- C's snapshot doesn't fit the heap as a per-object copy (section 4, the gate's outcome): C is parked, and B is next. The VFPU findings add a reason to keep models on the main CPU, rather than a reason to revisit C.
 
 **A conflict to settle:** RM (VFPU frustum tests, `render_frustum_cube_visible`, ≤ 4.4% of drawing's fetches) runs inside visibility. If visibility moves to the ME, RM has no VFPU to use. Visibility on the ME (8 ms off the main CPU) outranks RM.
 
